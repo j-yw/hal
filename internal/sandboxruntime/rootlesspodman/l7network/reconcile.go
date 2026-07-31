@@ -94,10 +94,17 @@ func (r *Reconciler) Reconcile(_ context.Context, request rootlesspodman.Network
 			return ErrNamespaceUnverified
 		}
 		resolution, err := r.options.NamespaceResolver.Resolve(ctx, request)
-		if err != nil || resolution.Close == nil {
-			if resolution.Close != nil {
-				_ = resolution.Close.Close()
+		if resolution.Close == nil {
+			return ErrNamespaceUnverified
+		}
+		if err != nil {
+			state := &reconcileState{target: targetIdentity, resolution: resolution, validationFailed: true}
+			r.pending = state
+			if closeErr := state.resolution.Close.Close(); closeErr != nil {
+				return errors.Join(ErrNamespaceUnverified, ErrCleanupIncomplete)
 			}
+			state.closed = true
+			r.pending = nil
 			return ErrNamespaceUnverified
 		}
 		correlation := correlationFromIdentity(r.options.Identity)

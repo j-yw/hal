@@ -390,6 +390,36 @@ func TestL7RootlessPodmanRestartReconcilerRetainsCloseFailureAfterExpectedRuleVa
 	}
 }
 
+func TestL7RootlessPodmanRestartReconcilerRetainsPartialResolverCloseFailure(t *testing.T) {
+	closer := &retryCloser{failures: 1}
+	resolution := validNamespaceResolution()
+	resolution.Close = closer
+	reconciler, err := l7network.NewReconciler(l7network.ReconcilerOptions{Identity: testIdentity(), NamespaceResolver: &fakeNamespaceResolver{result: resolution, err: errors.New("private resolver drift")}, Rules: &fakeRules{}, RawPacketVerifierFactory: fakeRawPacketVerifierFactory, Runtime: &fakeRuntimeReconciler{}, GuestProxyAddress: "169.254.77.2", ProxyPort: 31077, TableName: "hal_l7_a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if err := reconciler.Reconcile(context.Background(), req); !errors.Is(err, l7network.ErrNamespaceUnverified) || !errors.Is(err, l7network.ErrCleanupIncomplete) {
+		t.Fatalf("first Reconcile()=%v", err)
+	}
+	swapped := req
+	swapped.Target.ID = "container-generation-b"
+	swapped.Target.Name = "hal-l7-b"
+	swapped.Target.Runtime.RuntimeID = "container-generation-b"
+	if err := reconciler.Reconcile(context.Background(), swapped); !errors.Is(err, l7network.ErrIdentityMismatch) {
+		t.Fatalf("swapped Reconcile()=%v", err)
+	}
+	if closer.calls != 1 {
+		t.Fatalf("swapped retry touched closer: %d", closer.calls)
+	}
+	if err := reconciler.Reconcile(context.Background(), req); !errors.Is(err, l7network.ErrNamespaceUnverified) || errors.Is(err, l7network.ErrCleanupIncomplete) {
+		t.Fatalf("exact retry=%v", err)
+	}
+	if closer.calls != 2 {
+		t.Fatalf("exact retry close calls=%d", closer.calls)
+	}
+}
+
 type fakeEndpoint struct {
 	address string
 	loss    chan struct{}
