@@ -404,6 +404,39 @@ func TestL6PolicyProxyCONNECTPreservesPipelinedBytesAfterHijack(t *testing.T) {
 	}
 }
 
+func TestL6PolicyProxyCONNECTRejectsNonAuthorityRequestTargets(t *testing.T) {
+	for _, target := range []string{"/", "*", "http://allowed.test:443/"} {
+		t.Run(target, func(t *testing.T) {
+			echo := newTCPEchoFixture(t)
+			var calls atomic.Int32
+			adapter := newTestAdapter(t, testAdapterOptions{
+				dial: mappingDialer(t, map[string]string{"93.184.216.34:443": echo}, &calls),
+			})
+			endpoint := startAdapter(t, adapter)
+			t.Cleanup(func() { stopAdapter(t, adapter) })
+			conn, err := net.Dial(l6TestNetwork, endpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: allowed.test:443\r\n\r\n", target); err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("CONNECT target %q status = %d, want 400", target, response.StatusCode)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("CONNECT target %q dialed upstream %d times", target, got)
+			}
+		})
+	}
+}
+
 func TestL6PolicyProxyRejectsDNSRebindingMixedAndUnsafeAnswersBeforeDial(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -549,6 +582,107 @@ func TestL6PolicyProxyEmitsOneFinalSanitizedDecisionForResolutionAndParseDenials
 		if strings.Contains(payload, "169.254.169.254") || strings.Contains(payload, "allowed.test") {
 			t.Fatalf("decision leaked destination: %s", payload)
 		}
+	}
+}
+
+func TestL6PolicyProxyLifecycleClosesOrdinaryHTTPUpstreamConnections(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		cleanup func(*testing.T, *Adapter)
+	}{
+		{
+			name: "stop",
+			cleanup: func(t *testing.T, adapter *Adapter) {
+				t.Helper()
+				stopAdapter(t, adapter)
+			},
+		},
+		{
+			name: "unexpected serve failure",
+			cleanup: func(t *testing.T, adapter *Adapter) {
+				t.Helper()
+				adapter.mu.Lock()
+				listener := adapter.listener
+				adapter.mu.Unlock()
+				if listener == nil {
+					t.Fatal("active listener unavailable")
+				}
+				if err := listener.Close(); err != nil {
+					t.Fatal(err)
+				}
+				waitFor(t, time.Second, func() bool {
+					_, active := adapter.Endpoint()
+					return !active
+				})
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			listener, err := net.Listen(l6TestNetwork, l6TestListenAddress)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = listener.Close() })
+			accepted := make(chan net.Conn, 1)
+			go func() {
+				conn, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					return
+				}
+				request, readErr := http.ReadRequest(bufio.NewReader(conn))
+				if readErr != nil {
+					_ = conn.Close()
+					return
+				}
+				_ = request.Body.Close()
+				accepted <- conn
+			}()
+
+			var calls atomic.Int32
+			adapter := newTestAdapter(t, testAdapterOptions{
+				dial: mappingDialer(t, map[string]string{
+					"93.184.216.34:80": listener.Addr().String(),
+				}, &calls),
+				limits: Limits{
+					RequestTimeout:  5 * time.Second,
+					ShutdownTimeout: 50 * time.Millisecond,
+				},
+			})
+			endpoint := startAdapter(t, adapter)
+			t.Cleanup(func() { stopAdapter(t, adapter) })
+			requestDone := make(chan error, 1)
+			go func() {
+				response, requestErr := proxyClient(t, endpoint).Get("http://allowed.test/stall")
+				if response != nil {
+					_ = response.Body.Close()
+				}
+				requestDone <- requestErr
+			}()
+
+			var upstream net.Conn
+			select {
+			case upstream = <-accepted:
+			case <-time.After(time.Second):
+				t.Fatal("proxy did not publish the ordinary HTTP request upstream")
+			}
+			defer upstream.Close()
+			tt.cleanup(t, adapter)
+
+			if err := upstream.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+				t.Fatal(err)
+			}
+			var extra [1]byte
+			if _, err := upstream.Read(extra[:]); err == nil {
+				t.Fatal("ordinary HTTP upstream connection remained readable after cleanup")
+			} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+				t.Fatal("ordinary HTTP upstream connection remained open after cleanup")
+			}
+			select {
+			case <-requestDone:
+			case <-time.After(time.Second):
+				t.Fatal("ordinary HTTP handler remained alive after cleanup")
+			}
+		})
 	}
 }
 
