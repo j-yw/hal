@@ -370,6 +370,91 @@ func TestL7ConfiguredProviderQueryReapsLeaderWhenDrainJoinStaysIncomplete(t *tes
 	}
 }
 
+func TestL7ConfiguredProviderQueryArrangesBoundedReapWhenTerminalObservationTimesOut(t *testing.T) {
+	originalStart := startL7ConfiguredProviderCommand
+	originalObserve := observeL7ConfiguredProviderLeaderState
+	originalSignal := signalL7ConfiguredProviderProcessGroup
+	originalReap := reapL7ConfiguredProviderCommand
+	releaseReap := make(chan struct{})
+	reapDone := make(chan struct{})
+	released := false
+	var leaderPID atomic.Int32
+	var reapStarted atomic.Bool
+	var unsafeSignal atomic.Bool
+	var signalCalls atomic.Int32
+	var reapCalls atomic.Int32
+	startL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		if err := originalStart(command); err != nil {
+			return err
+		}
+		leaderPID.Store(int32(command.Process.Pid))
+		return nil
+	}
+	observeL7ConfiguredProviderLeaderState = func(int) (bool, error) {
+		return false, nil
+	}
+	signalL7ConfiguredProviderProcessGroup = func(processGroupID int, signal syscall.Signal) error {
+		if reapStarted.Load() {
+			unsafeSignal.Store(true)
+		}
+		signalCalls.Add(1)
+		return originalSignal(processGroupID, signal)
+	}
+	reapL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		reapCalls.Add(1)
+		reapStarted.Store(true)
+		<-releaseReap
+		err := originalReap(command)
+		close(reapDone)
+		return err
+	}
+	t.Cleanup(func() {
+		if !released {
+			close(releaseReap)
+		}
+		select {
+		case <-reapDone:
+		case <-time.After(time.Second):
+		}
+		startL7ConfiguredProviderCommand = originalStart
+		observeL7ConfiguredProviderLeaderState = originalObserve
+		signalL7ConfiguredProviderProcessGroup = originalSignal
+		reapL7ConfiguredProviderCommand = originalReap
+		if reapCalls.Load() == 0 && leaderPID.Load() > 0 {
+			pid := int(leaderPID.Load())
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			var status syscall.WaitStatus
+			_, _ = syscall.Wait4(pid, &status, 0, nil)
+		}
+	})
+
+	started := time.Now()
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		20*time.Millisecond,
+		64,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "success",
+	)
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatal("configured provider query did not bound its arranged reap wait")
+	}
+	if !errors.Is(err, errL7ConfiguredProviderQuery) || len(output) > 64 {
+		t.Fatal("configured provider query did not fail with the sanitized sentinel")
+	}
+	if signalCalls.Load() == 0 || reapCalls.Load() != 1 || !reapStarted.Load() || unsafeSignal.Load() {
+		t.Fatal("configured provider query did not arrange one reuse-safe reap after signaling")
+	}
+	close(releaseReap)
+	released = true
+	select {
+	case <-reapDone:
+	case <-time.After(time.Second):
+		t.Fatal("configured provider arranged reap did not finish after release")
+	}
+	requireL7HelperProcessAbsent(t, int(leaderPID.Load()))
+}
+
 func TestL7ConfiguredProviderQueryBoundsEscapedRetainedPipe(t *testing.T) {
 	started := time.Now()
 	output, err := runL7ConfiguredProviderQuery(
