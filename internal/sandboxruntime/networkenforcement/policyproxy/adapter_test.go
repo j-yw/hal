@@ -325,6 +325,21 @@ func TestL6PolicyProxyAggregateLimitAccountsForParsedHeaderWorkingSets(t *testin
 	}
 }
 
+func TestL6PolicyProxyAggregateLimitAccountsForRequestHeaderReadAllowance(t *testing.T) {
+	limits := normalizeLimits(Limits{
+		MaxHeaderBytes:         2 << 10,
+		MaxResponseHeaderBytes: 1,
+		MaxRequestBodyBytes:    1,
+		MaxResponseBodyBytes:   1,
+		MaxConnectBytes:        1,
+		MaxResolvedAddresses:   1,
+		MaxConcurrent:          maxConcurrentRequests,
+	})
+	if validAggregateBufferLimit(limits) {
+		t.Fatal("request header read allowance exceeded aggregate buffer budget")
+	}
+}
+
 type listenerAcceptResult struct {
 	conn net.Conn
 	err  error
