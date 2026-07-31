@@ -13,7 +13,7 @@ func TestLiveEnforcementAggregationRequiresBothActiveSides(t *testing.T) {
 	plan := aggregationPlan(FirewallIntentModeApply)
 	listener := aggregationActiveListenerResult(plan)
 	rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
-	rules.Active.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
+	rules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
 
 	result := AggregateLiveEnforcementResult(plan, &listener, &rules)
 
@@ -28,7 +28,7 @@ func TestLiveEnforcementAggregationRequiresDefaultDenyRuleCapabilityProof(t *tes
 	plan := aggregationPlan(FirewallIntentModeApply)
 	listener := aggregationActiveListenerResult(plan)
 	provenRules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
-	provenRules.Active.CapabilityLabels = append(aggregationDefaultDenyRuleCapabilityLabels(), "iptables -A OUTPUT -d 127.0.0.1 --dport 443 token=secret")
+	provenRules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
 
 	result := AggregateLiveEnforcementResult(plan, &listener, &provenRules)
 
@@ -48,28 +48,20 @@ func TestLiveEnforcementAggregationRequiresDefaultDenyRuleCapabilityProof(t *tes
 		},
 		{
 			name:   "missing default-deny proof",
-			labels: []string{"domain_rules", "endpoint_rules", "private_range_rules", "metadata_endpoint"},
-		},
-		{
-			name:   "missing domain rule proof",
-			labels: []string{"default_deny", "endpoint_rules", "private_range_rules", "metadata_endpoint"},
-		},
-		{
-			name:   "missing endpoint rule proof",
-			labels: []string{"default_deny", "domain_rules", "private_range_rules", "metadata_endpoint"},
+			labels: []string{"private_range_rules", "metadata_endpoint"},
 		},
 		{
 			name:   "missing private range proof",
-			labels: []string{"default_deny", "domain_rules", "endpoint_rules", "metadata_endpoint"},
+			labels: []string{"default_deny", "metadata_endpoint"},
 		},
 		{
 			name:   "missing metadata endpoint proof",
-			labels: []string{"default_deny", "domain_rules", "endpoint_rules", "private_range_rules"},
+			labels: []string{"default_deny", "private_range_rules"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
-			rules.Active.CapabilityLabels = tt.labels
+			rules.Active.Inspection.CapabilityLabels = tt.labels
 
 			result := AggregateLiveEnforcementResult(plan, &listener, &rules)
 
@@ -89,7 +81,7 @@ func TestLiveEnforcementAggregationDowngradesPartialAndMetadataOnlyResults(t *te
 	plan := aggregationPlan(FirewallIntentModeApply)
 	activeListener := aggregationActiveListenerResult(plan)
 	activeRules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
-	activeRules.Active.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
+	activeRules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
 	failedListener := aggregationActiveListenerResult(plan)
 	failedListener.Status = LifecycleStatusFailed
 	failedListener.ReasonCode = LifecycleReasonAdapterFailed
@@ -391,7 +383,7 @@ func aggregationActiveRuleResult(plan Plan, mechanism EnforcementMechanism) Rule
 }
 
 func aggregationDefaultDenyRuleCapabilityLabels() []string {
-	return []string{"default_deny", "domain_rules", "endpoint_rules", "private_range_rules", "metadata_endpoint"}
+	return []string{"default_deny", "private_range_rules", "metadata_endpoint"}
 }
 
 func aggregationListenerMetadata(plan Plan, status LifecycleStatus, reason LifecycleReasonCode, operation string) ProxyListenerLifecycleMetadata {

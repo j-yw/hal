@@ -25,7 +25,7 @@ func TestLinuxRulesApplyUsesOneAtomicBatchAndInspectionBeforeProof(t *testing.T)
 		t.Fatalf("batches = %d, want one atomic batch", len(executor.batches))
 	}
 	batch := string(executor.batches[0])
-	for _, required := range []string{"add table inet", "policy drop", "ct state established,related accept", "tcp dport", "icmpv6 type"} {
+	for _, required := range []string{"add table inet", "hook output", "policy drop", "tcp dport", "icmpv6 type"} {
 		if !strings.Contains(batch, required) {
 			t.Fatalf("batch missing %q", required)
 		}
@@ -35,11 +35,62 @@ func TestLinuxRulesApplyUsesOneAtomicBatchAndInspectionBeforeProof(t *testing.T)
 			t.Fatalf("batch contains forbidden operation %q", forbidden)
 		}
 	}
+	if strings.Contains(batch, "ct state established,related accept") {
+		t.Fatalf("output profile contains broad established accept: %s", batch)
+	}
 	if metadata.Inspection == nil || metadata.Inspection.Status != networkenforcement.RuleInspectionStatusInspected {
 		t.Fatalf("metadata = %#v, want inspected proof", metadata)
 	}
 	if executor.listCalls < 2 {
 		t.Fatalf("list calls = %d, want ownership check and post-apply inspection", executor.listCalls)
+	}
+}
+
+func TestLinuxRulesForwardedTAPProfileInspectsInputAndForwardChains(t *testing.T) {
+	expected := testExpectedRuleSetForProfile(t, "generation-forwarded", RuleProfileForwardedTAP)
+	executor := newFakeNFTExecutor(expected)
+	adapter := NewAdapter(executor, AdapterOptions{})
+
+	metadata, err := adapter.ApplyAndInspect(context.Background(), expected)
+	if err != nil {
+		t.Fatalf("ApplyAndInspect: %v", err)
+	}
+	batch := string(executor.batches[0])
+	for _, required := range []string{"hook input", "hook forward", "iifname", "oifname", "tcp sport", "tcp dport"} {
+		if !strings.Contains(batch, required) {
+			t.Fatalf("forwarded batch missing %q", required)
+		}
+	}
+	if strings.Contains(batch, "hook output") {
+		t.Fatalf("forwarded profile unexpectedly used output chain: %s", batch)
+	}
+	if metadata.Inspection == nil {
+		t.Fatalf("forwarded profile omitted inspection proof: %#v", metadata)
+	}
+	for _, label := range metadata.Inspection.CapabilityLabels {
+		if label == "domain_rules" {
+			t.Fatalf("firewall proof claimed proxy-owned domain_rules: %#v", metadata.Inspection)
+		}
+	}
+}
+
+func TestLinuxRulesRequiresOwningUserAndNetworkNamespaces(t *testing.T) {
+	config := testRuleSetConfig("generation-namespace", RuleProfileWorkloadOutput)
+	config.Namespace = NewNamespaceHandle(0, 11)
+	if _, err := NewExpectedRuleSet(config); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("missing user namespace error = %v, want ErrInvalidConfiguration", err)
+	}
+	config.Namespace = NewNamespaceHandle(10, 0)
+	if _, err := NewExpectedRuleSet(config); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("missing network namespace error = %v, want ErrInvalidConfiguration", err)
+	}
+}
+
+func TestLinuxRulesRejectsLoopbackProxyAddress(t *testing.T) {
+	config := testRuleSetConfig("generation-loopback", RuleProfileWorkloadOutput)
+	config.ProxyAddress = "127.0.0.1"
+	if _, err := NewExpectedRuleSet(config); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("loopback proxy error = %v, want ErrInvalidConfiguration", err)
 	}
 }
 
@@ -89,6 +140,20 @@ func TestLinuxRulesBoundsInspectionAndRedactsErrors(t *testing.T) {
 		if strings.Contains(err.Error(), forbidden) {
 			t.Fatalf("error leaked private state %q: %v", forbidden, err)
 		}
+	}
+}
+
+func TestLinuxRulesRejectsOversizedBatchBeforeExecutorMutation(t *testing.T) {
+	expected := testExpectedRuleSet(t, "generation-batch-bound")
+	executor := newFakeNFTExecutor(expected)
+	adapter := NewAdapter(executor, AdapterOptions{MaxBatchBytes: 8})
+
+	_, err := adapter.ApplyAndInspect(context.Background(), expected)
+	if !errors.Is(err, ErrBatchTooLarge) {
+		t.Fatalf("error = %v, want ErrBatchTooLarge", err)
+	}
+	if len(executor.batches) != 0 {
+		t.Fatalf("executor received %d batches after bound rejection", len(executor.batches))
 	}
 }
 
@@ -169,8 +234,20 @@ func TestLinuxRulesPrivateInputsAreNotJSON(t *testing.T) {
 }
 
 func testExpectedRuleSet(t *testing.T, generation string) ExpectedRuleSet {
+	return testExpectedRuleSetForProfile(t, generation, RuleProfileWorkloadOutput)
+}
+
+func testExpectedRuleSetForProfile(t *testing.T, generation string, profile RuleProfile) ExpectedRuleSet {
 	t.Helper()
-	rules, err := NewExpectedRuleSet(RuleSetConfig{
+	rules, err := NewExpectedRuleSet(testRuleSetConfig(generation, profile))
+	if err != nil {
+		t.Fatalf("NewExpectedRuleSet: %v", err)
+	}
+	return rules
+}
+
+func testRuleSetConfig(generation string, profile RuleProfile) RuleSetConfig {
+	return RuleSetConfig{
 		Correlation: networkenforcement.EnforcementCorrelation{
 			SandboxID:            "sandbox-linuxrules",
 			ExecutionID:          "execution-linuxrules",
@@ -182,14 +259,11 @@ func testExpectedRuleSet(t *testing.T, generation string) ExpectedRuleSet {
 			TopologyGenerationID: "topology-linuxrules",
 			RuleGenerationID:     generation,
 		},
-		Namespace:     NewNamespaceHandle(11),
+		Profile:       profile,
+		Namespace:     NewNamespaceHandle(10, 11),
 		TableName:     "hal_l7_rules",
 		InterfaceName: "eth0",
 		ProxyAddress:  "192.0.2.10",
 		ProxyPort:     3128,
-	})
-	if err != nil {
-		t.Fatalf("NewExpectedRuleSet: %v", err)
 	}
-	return rules
 }
