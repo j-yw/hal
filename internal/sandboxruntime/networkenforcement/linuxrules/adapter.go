@@ -61,10 +61,14 @@ func (a *Adapter) ApplyAndInspect(ctx context.Context, expected ExpectedRuleSet)
 	if a.invalidOptions || a.executor == nil || a.now == nil || !expected.valid() {
 		return failedMetadata(expected, networkenforcement.LifecycleReasonCapabilityMissing), operationError{err: ErrInvalidConfiguration}
 	}
+	var rawPacketIsolation *networkenforcement.RawPacketIsolationProof
 	if expected.profile == RuleProfileWorkloadOutput {
-		if err := expected.rawPacketIsolation.VerifyRawPacketIsolation(ctx, expected.correlation); err != nil {
+		proof, err := expected.rawPacketIsolation.VerifyRawPacketIsolation(ctx, expected.correlation)
+		if err != nil || !networkenforcement.RawPacketIsolationProofMatches(proof, expected.correlation) {
 			return failedMetadata(expected, networkenforcement.LifecycleReasonCapabilityMissing), operationError{err: ErrRawPacketIsolation}
 		}
+		proof = networkenforcement.SanitizeRawPacketIsolationProof(proof)
+		rawPacketIsolation = &proof
 	}
 	present, owned, err := a.ownership(ctx, expected)
 	if err != nil {
@@ -105,7 +109,7 @@ func (a *Adapter) ApplyAndInspect(ctx context.Context, expected ExpectedRuleSet)
 		}
 		return failedMetadata(expected, networkenforcement.LifecycleReasonRuleInspectionFailed), operationError{err: ErrInspectionFailed}
 	}
-	return activeMetadata(expected, inspectedAtUnixMilli), nil
+	return activeMetadata(expected, inspectedAtUnixMilli, rawPacketIsolation), nil
 }
 
 func (a *Adapter) Cleanup(ctx context.Context, expected ExpectedRuleSet) error {
@@ -191,7 +195,7 @@ func (a *Adapter) applyBounded(ctx context.Context, expected ExpectedRuleSet, ba
 	return nil
 }
 
-func activeMetadata(expected ExpectedRuleSet, inspectedAtUnixMilli int64) networkenforcement.RuleLifecycleMetadata {
+func activeMetadata(expected ExpectedRuleSet, inspectedAtUnixMilli int64, rawPacketIsolation *networkenforcement.RawPacketIsolationProof) networkenforcement.RuleLifecycleMetadata {
 	correlation := expected.correlation
 	labels := []string{
 		"default_deny", "private_range_rules",
@@ -208,17 +212,18 @@ func activeMetadata(expected ExpectedRuleSet, inspectedAtUnixMilli int64) networ
 		ReasonCode:           networkenforcement.LifecycleReasonRuleInspected,
 	}
 	return networkenforcement.SanitizeRuleLifecycleMetadata(networkenforcement.RuleLifecycleMetadata{
-		ID:               correlation.RuleGenerationID,
-		PlanID:           correlation.PlanID,
-		AdapterID:        adapterID,
-		Status:           networkenforcement.LifecycleStatusActive,
-		Mechanisms:       []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismFirewall},
-		Operations:       []string{"apply_rules", "inspect_rules"},
-		PolicySnapshot:   &networkenforcement.PolicySnapshotIdentity{ID: correlation.PolicySnapshotID},
-		CapabilityLabels: labels,
-		Correlation:      &correlation,
-		Inspection:       &proof,
-		ReasonCode:       networkenforcement.LifecycleReasonActive,
+		ID:                 correlation.RuleGenerationID,
+		PlanID:             correlation.PlanID,
+		AdapterID:          adapterID,
+		Status:             networkenforcement.LifecycleStatusActive,
+		Mechanisms:         []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismFirewall},
+		Operations:         []string{"apply_rules", "inspect_rules"},
+		PolicySnapshot:     &networkenforcement.PolicySnapshotIdentity{ID: correlation.PolicySnapshotID},
+		CapabilityLabels:   labels,
+		Correlation:        &correlation,
+		Inspection:         &proof,
+		LinkLayerIsolation: rawPacketIsolation,
+		ReasonCode:         networkenforcement.LifecycleReasonActive,
 	})
 }
 

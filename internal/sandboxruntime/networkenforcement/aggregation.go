@@ -402,6 +402,14 @@ func aggregateProofCorrelatedWithPlan(plan Plan, listener *ProxyListenerLifecycl
 		plan.Proxy == nil || listenerCorrelation.ProxySessionID != plan.Proxy.ProxySessionID {
 		return false
 	}
+	if aggregatePlanRequiresRawPacketIsolation(plan) {
+		rawPacketProof := sanitizeRawPacketIsolationProofPtr(rules.Active.LinkLayerIsolation)
+		if !aggregateRawPacketIsolationVerified(rawPacketProof) ||
+			rawPacketProof.Correlation == nil ||
+			!EnforcementCorrelationsEqual(ruleCorrelation, *rawPacketProof.Correlation) {
+			return false
+		}
+	}
 	return true
 }
 
@@ -449,12 +457,23 @@ func aggregateRuleCapabilityCompatibleWithPlan(plan Plan, rules *RuleLifecycleRe
 			return false
 		}
 	}
-	if plan.RawProtocols != nil &&
-		(plan.RawProtocols.TCP == PostureBlock || plan.RawProtocols.UDP == PostureBlock || plan.RawProtocols.ICMP == PostureBlock) &&
-		!aggregateRuleCapabilityHasAnyLabel(labels, "raw_protocols", planOperationBlockRawProtocols) {
+	if aggregatePlanRequiresRawPacketIsolation(plan) &&
+		!aggregateRawPacketIsolationVerified(sanitizeRawPacketIsolationProofPtr(rules.Active.LinkLayerIsolation)) {
 		return false
 	}
 	return true
+}
+
+func aggregatePlanRequiresRawPacketIsolation(plan Plan) bool {
+	return plan.RawProtocols != nil &&
+		(plan.RawProtocols.TCP == PostureBlock || plan.RawProtocols.UDP == PostureBlock || plan.RawProtocols.ICMP == PostureBlock)
+}
+
+func aggregateRawPacketIsolationVerified(proof *RawPacketIsolationProof) bool {
+	return proof != nil && proof.Status == RawPacketIsolationStatusVerified &&
+		proof.ID != "" && proof.VerifiedAtUnixMilli > 0 &&
+		proof.Correlation != nil && EnforcementCorrelationComplete(*proof.Correlation) &&
+		proof.ReasonCode == LifecycleReasonRawPacketIsolationVerified && len(proof.WarningCodes) == 0
 }
 
 func aggregateRuleCapabilitySupportsCategory(labels []string, category AllowlistRuleCategory) bool {

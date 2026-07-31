@@ -169,8 +169,8 @@ func TestLinuxRulesWorkloadOutputRequiresIndependentRawPacketIsolation(t *testin
 
 type allowRawPacketIsolationVerifier struct{}
 
-func (allowRawPacketIsolationVerifier) VerifyRawPacketIsolation(context.Context, networkenforcement.EnforcementCorrelation) error {
-	return nil
+func (allowRawPacketIsolationVerifier) VerifyRawPacketIsolation(_ context.Context, correlation networkenforcement.EnforcementCorrelation) (networkenforcement.RawPacketIsolationProof, error) {
+	return testRawPacketIsolationProof(correlation), nil
 }
 
 type recordingRawPacketIsolationVerifier struct {
@@ -179,13 +179,23 @@ type recordingRawPacketIsolationVerifier struct {
 	correlation networkenforcement.EnforcementCorrelation
 }
 
-func (v *recordingRawPacketIsolationVerifier) VerifyRawPacketIsolation(_ context.Context, correlation networkenforcement.EnforcementCorrelation) error {
+func (v *recordingRawPacketIsolationVerifier) VerifyRawPacketIsolation(_ context.Context, correlation networkenforcement.EnforcementCorrelation) (networkenforcement.RawPacketIsolationProof, error) {
 	v.calls++
 	v.correlation = correlation
-	return v.err
+	return testRawPacketIsolationProof(correlation), v.err
 }
 
-func TestLinuxRulesRawPacketIsolationIsCheckedBeforeMutationAndNotProjected(t *testing.T) {
+func testRawPacketIsolationProof(correlation networkenforcement.EnforcementCorrelation) networkenforcement.RawPacketIsolationProof {
+	return networkenforcement.RawPacketIsolationProof{
+		ID:                  "raw-packet-proof-linuxrules",
+		Status:              networkenforcement.RawPacketIsolationStatusVerified,
+		VerifiedAtUnixMilli: 1735689600000,
+		Correlation:         &correlation,
+		ReasonCode:          networkenforcement.LifecycleReasonRawPacketIsolationVerified,
+	}
+}
+
+func TestLinuxRulesRawPacketIsolationIsCheckedBeforeMutationAndProjectedSeparately(t *testing.T) {
 	expected := testExpectedRuleSet(t, "generation-raw-check")
 	verifier := &recordingRawPacketIsolationVerifier{}
 	expected.rawPacketIsolation = verifier
@@ -202,6 +212,10 @@ func TestLinuxRulesRawPacketIsolationIsCheckedBeforeMutationAndNotProjected(t *t
 		if label == "raw_protocols" {
 			t.Fatalf("private runtime verifier was projected as rule proof: %#v", metadata)
 		}
+	}
+	if metadata.LinkLayerIsolation == nil ||
+		!networkenforcement.RawPacketIsolationProofMatches(*metadata.LinkLayerIsolation, expected.correlation) {
+		t.Fatalf("verified raw-packet isolation proof missing or mismatched: %#v", metadata.LinkLayerIsolation)
 	}
 
 	expected = testExpectedRuleSet(t, "generation-raw-failure")

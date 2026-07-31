@@ -25,10 +25,11 @@ func TestLiveEnforcementAggregationRequiresBothActiveSides(t *testing.T) {
 }
 
 func TestLiveEnforcementAggregationRejectsRuleOnlyRawProtocolLabel(t *testing.T) {
-	plan := aggregationPlan(FirewallIntentModeApply)
+	plan := aggregationRawProtocolPlan(FirewallIntentModeApply)
 	listener := aggregationActiveListenerResult(plan)
 	rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
 	rules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
+	rules.Active.LinkLayerIsolation = nil
 
 	result := AggregateLiveEnforcementResult(plan, &listener, &rules)
 
@@ -347,6 +348,21 @@ func aggregationPlan(mode FirewallIntentMode) Plan {
 	})
 }
 
+func aggregationRawProtocolPlan(mode FirewallIntentMode) Plan {
+	plan := aggregationPlan(mode)
+	plan.RawProtocols = &RawProtocolPlan{
+		TCP:  PostureBlock,
+		UDP:  PostureBlock,
+		ICMP: PostureBlock,
+	}
+	if plan.Firewall != nil {
+		firewall := *plan.Firewall
+		firewall.Operations = append(append([]string(nil), firewall.Operations...), planOperationBlockRawProtocols)
+		plan.Firewall = &firewall
+	}
+	return plan
+}
+
 func aggregationListenerAdapter(plan Plan, failures map[string]error) *recordingProxyListenerAdapter {
 	return &recordingProxyListenerAdapter{
 		failures: failures,
@@ -448,8 +464,22 @@ func aggregationRuleMetadata(plan Plan, status LifecycleStatus, reason Lifecycle
 			CapabilityLabels:     aggregationDefaultDenyRuleCapabilityLabels(),
 			ReasonCode:           LifecycleReasonRuleInspected,
 		}
+		if aggregatePlanRequiresRawPacketIsolation(plan) {
+			metadata.LinkLayerIsolation = aggregationRawPacketIsolationProof(plan)
+		}
 	}
 	return metadata
+}
+
+func aggregationRawPacketIsolationProof(plan Plan) *RawPacketIsolationProof {
+	correlation := aggregationCorrelation(plan)
+	return &RawPacketIsolationProof{
+		ID:                  "raw-packet-proof-aggregation",
+		Status:              RawPacketIsolationStatusVerified,
+		VerifiedAtUnixMilli: 1735689600000,
+		Correlation:         &correlation,
+		ReasonCode:          LifecycleReasonRawPacketIsolationVerified,
+	}
 }
 
 func aggregationCorrelation(plan Plan) EnforcementCorrelation {

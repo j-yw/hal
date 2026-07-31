@@ -57,10 +57,11 @@ type TableQuery struct {
 // exact correlated runtime generation cannot create raw packet sockets (for
 // example, CAP_NET_RAW is absent from its effective, permitted, inheritable,
 // bounding, and ambient capability sets).
-// A successful call is intentionally not serialized or projected as rule
-// inspection proof; cross-component composition owns that claim.
+// A successful call returns a distinct correlated proof. It must never be
+// folded into firewall rule inspection labels because inet rules cannot prove
+// link-layer mediation.
 type RawPacketIsolationVerifier interface {
-	VerifyRawPacketIsolation(context.Context, networkenforcement.EnforcementCorrelation) error
+	VerifyRawPacketIsolation(context.Context, networkenforcement.EnforcementCorrelation) (networkenforcement.RawPacketIsolationProof, error)
 }
 
 // RuleSetConfig contains safe correlation plus private live rule inputs. Raw

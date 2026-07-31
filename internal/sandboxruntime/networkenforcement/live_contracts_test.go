@@ -351,6 +351,7 @@ func TestLiveLifecyclePublicSchemaContainsNoUnsafeFields(t *testing.T) {
 		reflect.TypeOf(LiveLifecycleMetadata{}),
 		reflect.TypeOf(EnforcementCorrelation{}),
 		reflect.TypeOf(InspectedRuleProof{}),
+		reflect.TypeOf(RawPacketIsolationProof{}),
 		reflect.TypeOf(ProxyListenerLifecycleMetadata{}),
 		reflect.TypeOf(ProxyListenerLifecycleResult{}),
 		reflect.TypeOf(RuleLifecycleMetadata{}),

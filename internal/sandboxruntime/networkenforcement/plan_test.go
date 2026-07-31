@@ -411,6 +411,7 @@ func assertSafePlanFieldType(t *testing.T, typeName string, field reflect.Struct
 		case reflect.TypeOf(PolicySnapshotIdentity{}),
 			reflect.TypeOf(EnforcementCorrelation{}),
 			reflect.TypeOf(InspectedRuleProof{}),
+			reflect.TypeOf(RawPacketIsolationProof{}),
 			reflect.TypeOf(AllowlistPlan{}),
 			reflect.TypeOf(CategoryPosturePlan{}),
 			reflect.TypeOf(RawProtocolPlan{}),

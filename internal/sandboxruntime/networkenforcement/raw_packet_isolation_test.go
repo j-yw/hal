@@ -41,7 +41,7 @@ func TestRawPacketIsolationProofSanitizesAndFailsClosed(t *testing.T) {
 }
 
 func TestLiveEnforcementAggregationRequiresCorrelatedRawPacketIsolationProof(t *testing.T) {
-	plan := aggregationPlan(FirewallIntentModeApply)
+	plan := aggregationRawProtocolPlan(FirewallIntentModeApply)
 	listener := aggregationActiveListenerResult(plan)
 	correlation := aggregationCorrelation(plan)
 	validProof := RawPacketIsolationProof{
@@ -54,7 +54,7 @@ func TestLiveEnforcementAggregationRequiresCorrelatedRawPacketIsolationProof(t *
 
 	rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
 	rules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
-	rules.Active.RawPacketIsolation = &validProof
+	rules.Active.LinkLayerIsolation = &validProof
 	result := AggregateLiveEnforcementResult(plan, &listener, &rules)
 	assertStrongAggregatedEnforcement(t, result, ResultModeProxyFirewall, []EnforcementMechanism{
 		EnforcementMechanismProxy,
@@ -84,7 +84,9 @@ func TestLiveEnforcementAggregationRequiresCorrelatedRawPacketIsolationProof(t *
 			rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
 			rules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
 			if test.name != "missing proof" {
-				rules.Active.RawPacketIsolation = &candidate
+				rules.Active.LinkLayerIsolation = &candidate
+			} else {
+				rules.Active.LinkLayerIsolation = nil
 			}
 			result := AggregateLiveEnforcementResult(plan, &listener, &rules)
 			assertNoStrongAggregatedEnforcement(t, result)
