@@ -48,6 +48,7 @@ func testTools() ToolPaths {
 		Pasta:   "/opt/hal/bin/pasta",
 		Nsenter: "/opt/hal/bin/nsenter",
 		IP:      "/opt/hal/bin/ip",
+		NC:      "/opt/hal/bin/nc",
 		Keeper:  "/opt/hal/bin/sleep",
 	}
 }
@@ -148,6 +149,21 @@ type fakeRunner struct {
 	err    error
 }
 
+type fakeReachabilityProber struct {
+	mu       sync.Mutex
+	calls    int
+	mappings []Mapping
+	err      error
+}
+
+func (f *fakeReachabilityProber) Probe(_ context.Context, _ *NamespaceHandle, mapping Mapping) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.mappings = append(f.mappings, mapping)
+	return f.err
+}
+
 func (f *fakeRunner) Run(_ context.Context, spec ProcessSpec) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -235,6 +251,7 @@ func newTestLifecycle(t *testing.T, starter *fakeStarter, runner *fakeRunner, na
 		Starter:            starter,
 		Runner:             runner,
 		OpenNamespaces:     namespaces.Open,
+		Reachability:       &fakeReachabilityProber{},
 		CleanupTimeout:     250 * time.Millisecond,
 		InspectionTimeout:  250 * time.Millisecond,
 		InspectionInterval: time.Millisecond,
@@ -344,6 +361,7 @@ func TestLinuxTopologyStartsKeeperThenExactPastaMappingAndInspects(t *testing.T)
 	mapping := starter.specs[1]
 	wantMappingArgs := []string{
 		"--foreground", "--quiet",
+		"--config-net",
 		"--userns", "/proc/self/fd/3",
 		"--netns", "/proc/self/fd/4",
 		"--map-host-loopback", testGuestIP,
@@ -392,6 +410,64 @@ func TestLinuxTopologyStartsKeeperThenExactPastaMappingAndInspects(t *testing.T)
 	defer owned.Close()
 	if !owned.Correlates(namespaces.base) {
 		t.Fatal("session namespace handle did not preserve owning device/inode correlation")
+	}
+}
+
+func TestLinuxTopologyRequiresExactStructuralAndReachabilityProof(t *testing.T) {
+	if !validAddressInspection([]byte(`[
+		{"ifindex":1,"ifname":"lo","addr_info":[
+			{"family":"inet","local":"127.0.0.1","prefixlen":8,"scope":"host"},
+			{"family":"inet6","local":"::1","prefixlen":128,"scope":"host"}
+		]},
+		{"ifindex":7,"ifname":"halpasta0","addr_info":[
+			{"family":"inet","local":"192.0.2.10","prefixlen":24,"scope":"global"},
+			{"family":"inet6","local":"2001:db8::10","prefixlen":64,"scope":"global"}
+		]}
+	]`), testIface) {
+		t.Fatal("exact dual-stack address inspection rejected")
+	}
+	if !validRouteInspection(
+		[]byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"}]`),
+		[]byte(`[{"dst":"default","gateway":"2001:db8::1","dev":"halpasta0"},{"dst":"2001:db8::/64","dev":"halpasta0","scope":"link"}]`),
+		testIface,
+	) {
+		t.Fatal("exact dual-stack route inspection rejected")
+	}
+	for name, output := range map[string][]byte{
+		"extra interface": []byte(`[{"ifindex":1,"ifname":"lo","flags":["LOOPBACK","UP"]},{"ifindex":7,"ifname":"halpasta0","flags":["UP"]},{"ifindex":8,"ifname":"unexpected0","flags":["UP"]}]`),
+		"missing IPv6":    []byte(`[{"ifindex":1,"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1","prefixlen":8,"scope":"host"},{"family":"inet6","local":"::1","prefixlen":128,"scope":"host"}]},{"ifindex":7,"ifname":"halpasta0","addr_info":[{"family":"inet","local":"192.0.2.10","prefixlen":24,"scope":"global"}]}]`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if name == "extra interface" && validLinkInspection(output, testIface) {
+				t.Fatal("inspection accepted an extra interface")
+			}
+			if name == "missing IPv6" && validAddressInspection(output, testIface) {
+				t.Fatal("inspection accepted a missing address family")
+			}
+		})
+	}
+}
+
+func TestLinuxTopologyReachabilityFailureNeverPublishesActive(t *testing.T) {
+	starter := newFakeStarter()
+	runner := &fakeRunner{output: goodLinkJSON()}
+	namespaces := newFakeNamespaces(t, &starter.events)
+	prober := &fakeReachabilityProber{err: errors.New("dial endpoint secret")}
+	lifecycle, err := New(Config{
+		Enabled: true, Tools: testTools(), Starter: starter, Runner: runner,
+		OpenNamespaces: namespaces.Open, Reachability: prober,
+		CleanupTimeout: 250 * time.Millisecond, InspectionTimeout: 250 * time.Millisecond,
+		InspectionInterval: time.Millisecond, OutputLimit: 8 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := lifecycle.Start(context.Background(), testRequest("topology-gen-probe"))
+	if !errors.Is(err, ErrInspectionFailed) || session != nil {
+		t.Fatalf("Start = %#v, %v, want nil ErrInspectionFailed", session, err)
+	}
+	if prober.calls == 0 {
+		t.Fatal("reachability boundary was not called")
 	}
 }
 
