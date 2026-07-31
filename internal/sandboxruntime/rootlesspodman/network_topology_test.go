@@ -121,14 +121,17 @@ func TestL7PodmanTopologyRejectsUnsafeIdentityAndCreateArgsBeforePodman(t *testi
 		}(), createArgs: testPastaCreateArgs()},
 		{name: "host network", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "host"}},
 		{name: "default network", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "bridge"}},
-		{name: "wildcard mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=0.0.0.0,-t,none,-u,none"}},
-		{name: "guest address translation", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-guest-addr=169.254.77.2,-t,none,-u,none"}},
-		{name: "IPv4-only mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=169.254.77.2,--ipv4-only,-t,none,-u,none"}},
-		{name: "IPv6-only mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=fd00::77:2,--ipv6-only,-t,none,-u,none"}},
+		{name: "wildcard mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=0.0.0.0,-t,none,-u,none,-T,none,-U,none"}},
+		{name: "guest address translation", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-guest-addr=169.254.77.2,-t,none,-u,none,-T,none,-U,none"}},
+		{name: "IPv4-only mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=169.254.77.2,--ipv4-only,-t,none,-u,none,-T,none,-U,none"}},
+		{name: "IPv6-only mapping", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=fd00::77:2,--ipv6-only,-t,none,-u,none,-T,none,-U,none"}},
 		{name: "privileged", identity: testNetworkTopologyIdentity(), createArgs: append(testPastaCreateArgs(), "--privileged")},
 		{name: "net admin", identity: testNetworkTopologyIdentity(), createArgs: append(testPastaCreateArgs(), "--cap-add=NET_ADMIN")},
 		{name: "socket mount", identity: testNetworkTopologyIdentity(), createArgs: append(testPastaCreateArgs(), "--volume", "/run/podman/podman.sock:/run/podman/podman.sock")},
-		{name: "automatic tcp forwarding", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=169.254.77.2,-t,auto,-u,none"}},
+		{name: "automatic host-to-namespace TCP forwarding", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=169.254.77.2,-t,auto,-u,none,-T,none,-U,none"}},
+		{name: "missing namespace-to-init forwarding controls", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=169.254.77.2,-t,none,-u,none"}},
+		{name: "automatic namespace-to-init TCP forwarding", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=169.254.77.2,-t,none,-u,none,-T,auto,-U,none"}},
+		{name: "automatic namespace-to-init UDP forwarding", identity: testNetworkTopologyIdentity(), createArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=169.254.77.2,-t,none,-u,none,-T,none,-U,auto"}},
 		{name: "publish", identity: testNetworkTopologyIdentity(), createArgs: append(testPastaCreateArgs(), "--publish-all")},
 	}
 
@@ -514,7 +517,7 @@ func testPastaCreateArgs() []string {
 }
 
 func testPastaCreateArgsFor(guestAddress string) []string {
-	return []string{"--network", "pasta:--no-map-gw,--map-host-loopback=" + guestAddress + ",-t,none,-u,none"}
+	return []string{"--network", "pasta:--no-map-gw,--map-host-loopback=" + guestAddress + ",-t,none,-u,none,-T,none,-U,none"}
 }
 
 func proxyEnvironment(endpoint string) map[string]string {
