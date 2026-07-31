@@ -21,7 +21,7 @@ func expectedInspectionDocument(expected ExpectedRuleSet) inspectionDocument {
 	if expected.profile == RuleProfileWorkloadOutput {
 		objects = append(objects,
 			expectedChainObject(expected, outputChain, "output", false),
-			map[string]any{"rule": expectedRuleObject(expected, outputChain, "proxy", proxyExpressions(expected, "oifname", "daddr", "dport"))},
+			map[string]any{"rule": expectedRuleObject(expected, outputChain, "proxy", outputProxyExpressions(expected))},
 			map[string]any{"rule": expectedRuleObject(expected, outputChain, "ipv6-nd", neighborDiscoveryExpressions(expected, "oifname"))},
 		)
 		return inspectionDocument{NFTables: objects}
@@ -30,7 +30,7 @@ func expectedInspectionDocument(expected ExpectedRuleSet) inspectionDocument {
 		expectedChainObject(expected, inputChain, "input", false),
 		expectedChainObject(expected, forwardChain, "forward", false),
 		map[string]any{"rule": expectedRuleObject(expected, inputChain, "ipv6-nd", neighborDiscoveryExpressions(expected, "iifname"))},
-		map[string]any{"rule": expectedRuleObject(expected, forwardChain, "proxy-outbound", proxyExpressions(expected, "iifname", "daddr", "dport"))},
+		map[string]any{"rule": expectedRuleObject(expected, forwardChain, "proxy-outbound", forwardedProxyExpressions(expected))},
 		map[string]any{"rule": expectedRuleObject(expected, forwardChain, "proxy-return", proxyReturnExpressions(expected))},
 	)
 	return inspectionDocument{NFTables: objects}
@@ -57,25 +57,46 @@ func expectedRuleObject(expected ExpectedRuleSet, chain, role string, expression
 	}
 }
 
-func proxyExpressions(expected ExpectedRuleSet, interfaceKey, addressField, portField string) []any {
+func outputProxyExpressions(expected ExpectedRuleSet) []any {
+	expressions := []any{
+		matchExpression(map[string]any{"meta": map[string]any{"key": "oifname"}}, expected.interfaceName),
+	}
+	return append(expressions, proxyDestinationExpressions(expected)...)
+}
+
+func forwardedProxyExpressions(expected ExpectedRuleSet) []any {
+	expressions := []any{
+		matchExpression(map[string]any{"meta": map[string]any{"key": "iifname"}}, expected.interfaceName),
+		matchExpression(map[string]any{"meta": map[string]any{"key": "oifname"}}, expected.mappingInterfaceName),
+	}
+	return append(expressions, proxyDestinationExpressions(expected)...)
+}
+
+func proxyDestinationExpressions(expected ExpectedRuleSet) []any {
 	protocol := "ip"
 	if expected.proxyAddress.Is6() {
 		protocol = "ip6"
 	}
 	return []any{
-		matchExpression(map[string]any{"meta": map[string]any{"key": interfaceKey}}, expected.interfaceName),
-		matchExpression(map[string]any{"payload": map[string]any{"protocol": protocol, "field": addressField}}, expected.proxyAddress.String()),
-		matchExpression(map[string]any{"payload": map[string]any{"protocol": "tcp", "field": portField}}, float64(expected.proxyPort)),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": protocol, "field": "daddr"}}, expected.proxyAddress.String()),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "tcp", "field": "dport"}}, float64(expected.proxyPort)),
 		map[string]any{"accept": nil},
 	}
 }
 
 func proxyReturnExpressions(expected ExpectedRuleSet) []any {
-	expressions := proxyExpressions(expected, "oifname", "saddr", "sport")
-	expressions = append(expressions[:len(expressions)-1],
+	protocol := "ip"
+	if expected.proxyAddress.Is6() {
+		protocol = "ip6"
+	}
+	expressions := []any{
+		matchExpression(map[string]any{"meta": map[string]any{"key": "iifname"}}, expected.mappingInterfaceName),
+		matchExpression(map[string]any{"meta": map[string]any{"key": "oifname"}}, expected.interfaceName),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": protocol, "field": "saddr"}}, expected.proxyAddress.String()),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "tcp", "field": "sport"}}, float64(expected.proxyPort)),
 		matchExpression(map[string]any{"ct": map[string]any{"key": "state"}}, "established"),
 		map[string]any{"accept": nil},
-	)
+	}
 	return expressions
 }
 

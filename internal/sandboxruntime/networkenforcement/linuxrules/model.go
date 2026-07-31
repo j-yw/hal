@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	defaultMaxBatchBytes      = 64 << 10
-	defaultMaxInspectionBytes = 256 << 10
+	hardMaxBatchBytes         = 64 << 10
+	hardMaxInspectionBytes    = 256 << 10
+	defaultMaxBatchBytes      = hardMaxBatchBytes
+	defaultMaxInspectionBytes = hardMaxInspectionBytes
 	tableFamily               = "inet"
 	outputChain               = "hal_output"
 	inputChain                = "hal_input"
@@ -52,51 +54,59 @@ type TableQuery struct {
 // RuleSetConfig contains safe correlation plus private live rule inputs. Raw
 // topology and proxy values are deliberately excluded from JSON.
 type RuleSetConfig struct {
-	Correlation   networkenforcement.EnforcementCorrelation `json:"correlation"`
-	Profile       RuleProfile                               `json:"profile"`
-	Namespace     NamespaceHandle                           `json:"-"`
-	TableName     string                                    `json:"-"`
-	InterfaceName string                                    `json:"-"`
-	ProxyAddress  string                                    `json:"-"`
-	ProxyPort     uint16                                    `json:"-"`
+	Correlation          networkenforcement.EnforcementCorrelation `json:"correlation"`
+	Profile              RuleProfile                               `json:"profile"`
+	Namespace            NamespaceHandle                           `json:"-"`
+	TableName            string                                    `json:"-"`
+	InterfaceName        string                                    `json:"-"`
+	MappingInterfaceName string                                    `json:"-"`
+	ProxyAddress         string                                    `json:"-"`
+	ProxyPort            uint16                                    `json:"-"`
 }
 
 // ExpectedRuleSet is a validated, immutable expected-rule model.
 type ExpectedRuleSet struct {
-	correlation   networkenforcement.EnforcementCorrelation
-	profile       RuleProfile
-	namespace     NamespaceHandle
-	tableName     string
-	interfaceName string
-	proxyAddress  netip.Addr
-	proxyPort     uint16
-	ownerToken    string
-	ruleDigest    string
+	correlation          networkenforcement.EnforcementCorrelation
+	profile              RuleProfile
+	namespace            NamespaceHandle
+	tableName            string
+	interfaceName        string
+	mappingInterfaceName string
+	proxyAddress         netip.Addr
+	proxyPort            uint16
+	ownerToken           string
+	ruleDigest           string
 }
 
 func NewExpectedRuleSet(config RuleSetConfig) (ExpectedRuleSet, error) {
 	correlation := networkenforcement.SanitizeEnforcementCorrelation(config.Correlation)
 	address, addressErr := netip.ParseAddr(strings.TrimSpace(config.ProxyAddress))
+	mappingValid := config.Profile == RuleProfileWorkloadOutput && config.MappingInterfaceName == ""
+	if config.Profile == RuleProfileForwardedTAP {
+		mappingValid = validInterfaceName(config.MappingInterfaceName) && config.MappingInterfaceName != config.InterfaceName
+	}
 	if !networkenforcement.EnforcementCorrelationComplete(correlation) ||
 		!validRuleProfile(config.Profile) ||
 		!config.Namespace.valid() ||
 		!validNFTIdentifier(config.TableName, 32) ||
 		!validInterfaceName(config.InterfaceName) ||
-		addressErr != nil || address.IsUnspecified() || address.IsMulticast() || address.IsLoopback() ||
+		!mappingValid ||
+		addressErr != nil || address.IsUnspecified() || address.IsMulticast() || address.IsLoopback() || isKnownMetadataProxyAddress(address) ||
 		config.ProxyPort == 0 {
 		return ExpectedRuleSet{}, operationError{err: ErrInvalidConfiguration}
 	}
 
 	ownerToken := correlationDigest(correlation)[:24]
 	rules := ExpectedRuleSet{
-		correlation:   correlation,
-		profile:       config.Profile,
-		namespace:     config.Namespace,
-		tableName:     config.TableName,
-		interfaceName: config.InterfaceName,
-		proxyAddress:  address.Unmap(),
-		proxyPort:     config.ProxyPort,
-		ownerToken:    ownerToken,
+		correlation:          correlation,
+		profile:              config.Profile,
+		namespace:            config.Namespace,
+		tableName:            config.TableName,
+		interfaceName:        config.InterfaceName,
+		mappingInterfaceName: config.MappingInterfaceName,
+		proxyAddress:         address.Unmap(),
+		proxyPort:            config.ProxyPort,
+		ownerToken:           ownerToken,
 	}
 	rules.ruleDigest = inspectionDigest(expectedInspectionDocument(rules))
 	return rules, nil
@@ -114,7 +124,7 @@ func (r ExpectedRuleSet) valid() bool {
 	return networkenforcement.EnforcementCorrelationComplete(r.correlation) &&
 		validRuleProfile(r.profile) &&
 		r.namespace.valid() && validNFTIdentifier(r.tableName, 32) &&
-		validInterfaceName(r.interfaceName) && r.proxyAddress.IsValid() &&
+		validInterfaceName(r.interfaceName) && validMappingInterface(r) && r.proxyAddress.IsValid() &&
 		r.proxyPort != 0 && r.ownerToken != "" && r.ruleDigest != ""
 }
 
@@ -154,11 +164,11 @@ func (r ExpectedRuleSet) fullBatch(replace bool) []byte {
 	fmt.Fprintf(&builder, "add chain %s %s %s { type filter hook forward priority -100; policy drop; }\n", tableFamily, r.tableName, forwardChain)
 	fmt.Fprintf(&builder, "add rule %s %s %s iifname %s ip6 nexthdr icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept comment %s\n",
 		tableFamily, r.tableName, inputChain, quoteNFT(r.interfaceName), quoteNFT(r.ruleComment("ipv6-nd")))
-	fmt.Fprintf(&builder, "add rule %s %s %s iifname %s %s daddr %s tcp dport %d accept comment %s\n",
-		tableFamily, r.tableName, forwardChain, quoteNFT(r.interfaceName), addressFamily,
+	fmt.Fprintf(&builder, "add rule %s %s %s iifname %s oifname %s %s daddr %s tcp dport %d accept comment %s\n",
+		tableFamily, r.tableName, forwardChain, quoteNFT(r.interfaceName), quoteNFT(r.mappingInterfaceName), addressFamily,
 		r.proxyAddress.String(), r.proxyPort, quoteNFT(r.ruleComment("proxy-outbound")))
-	fmt.Fprintf(&builder, "add rule %s %s %s oifname %s %s saddr %s tcp sport %d ct state established accept comment %s\n",
-		tableFamily, r.tableName, forwardChain, quoteNFT(r.interfaceName), addressFamily,
+	fmt.Fprintf(&builder, "add rule %s %s %s iifname %s oifname %s %s saddr %s tcp sport %d ct state established accept comment %s\n",
+		tableFamily, r.tableName, forwardChain, quoteNFT(r.mappingInterfaceName), quoteNFT(r.interfaceName), addressFamily,
 		r.proxyAddress.String(), r.proxyPort, quoteNFT(r.ruleComment("proxy-return")))
 	return []byte(builder.String())
 }
@@ -219,6 +229,29 @@ func validRuleProfile(value RuleProfile) bool {
 	return value == RuleProfileWorkloadOutput || value == RuleProfileForwardedTAP
 }
 
+func validMappingInterface(r ExpectedRuleSet) bool {
+	if r.profile == RuleProfileWorkloadOutput {
+		return r.mappingInterfaceName == ""
+	}
+	return validInterfaceName(r.mappingInterfaceName) && r.mappingInterfaceName != r.interfaceName
+}
+
+func isKnownMetadataProxyAddress(address netip.Addr) bool {
+	address = address.Unmap()
+	for _, raw := range []string{
+		"169.254.169.254",
+		"168.63.129.16",
+		"100.100.100.200",
+		"fd00:ec2::254",
+		"fd20:ce::254",
+	} {
+		if address == netip.MustParseAddr(raw) {
+			return true
+		}
+	}
+	return false
+}
+
 func correlationDigest(correlation networkenforcement.EnforcementCorrelation) string {
 	joined := strings.Join([]string{
 		correlation.SandboxID,
@@ -228,6 +261,7 @@ func correlationDigest(correlation networkenforcement.EnforcementCorrelation) st
 		correlation.PlanID,
 		correlation.PolicySnapshotID,
 		correlation.ProxySessionID,
+		correlation.ProxyGenerationID,
 		correlation.TopologyGenerationID,
 		correlation.RuleGenerationID,
 	}, "\x00")

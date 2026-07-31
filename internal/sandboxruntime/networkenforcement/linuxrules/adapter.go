@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 )
@@ -16,16 +17,21 @@ type NFTExecutor interface {
 type AdapterOptions struct {
 	MaxBatchBytes      int
 	MaxInspectionBytes int64
+	Now                func() time.Time
 }
 
 type Adapter struct {
 	executor           NFTExecutor
 	maxBatchBytes      int
 	maxInspectionBytes int64
+	now                func() time.Time
+	invalidOptions     bool
 	mu                 sync.Mutex
 }
 
 func NewAdapter(executor NFTExecutor, options AdapterOptions) *Adapter {
+	invalidOptions := options.MaxBatchBytes < 0 || options.MaxBatchBytes > hardMaxBatchBytes ||
+		options.MaxInspectionBytes < 0 || options.MaxInspectionBytes > hardMaxInspectionBytes
 	maxBatchBytes := options.MaxBatchBytes
 	if maxBatchBytes <= 0 {
 		maxBatchBytes = defaultMaxBatchBytes
@@ -34,9 +40,14 @@ func NewAdapter(executor NFTExecutor, options AdapterOptions) *Adapter {
 	if maxInspectionBytes <= 0 {
 		maxInspectionBytes = defaultMaxInspectionBytes
 	}
+	now := options.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &Adapter{
 		executor: executor, maxBatchBytes: maxBatchBytes,
-		maxInspectionBytes: maxInspectionBytes,
+		maxInspectionBytes: maxInspectionBytes, now: now,
+		invalidOptions: invalidOptions,
 	}
 }
 
@@ -47,7 +58,7 @@ func (a *Adapter) ApplyAndInspect(ctx context.Context, expected ExpectedRuleSet)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.executor == nil || !expected.valid() {
+	if a.invalidOptions || a.executor == nil || a.now == nil || !expected.valid() {
 		return failedMetadata(expected, networkenforcement.LifecycleReasonCapabilityMissing), operationError{err: ErrInvalidConfiguration}
 	}
 	present, owned, err := a.ownership(ctx, expected)
@@ -82,7 +93,14 @@ func (a *Adapter) ApplyAndInspect(ctx context.Context, expected ExpectedRuleSet)
 		}
 		return failedMetadata(expected, networkenforcement.LifecycleReasonRuleInspectionFailed), safeError(err)
 	}
-	return activeMetadata(expected), nil
+	inspectedAtUnixMilli := a.now().UnixMilli()
+	if inspectedAtUnixMilli <= 0 {
+		if quarantineErr := a.quarantineIfOwned(ctx, expected); quarantineErr != nil {
+			return failedMetadata(expected, networkenforcement.LifecycleReasonQuarantineFailed), quarantineErr
+		}
+		return failedMetadata(expected, networkenforcement.LifecycleReasonRuleInspectionFailed), operationError{err: ErrInspectionFailed}
+	}
+	return activeMetadata(expected, inspectedAtUnixMilli), nil
 }
 
 func (a *Adapter) Cleanup(ctx context.Context, expected ExpectedRuleSet) error {
@@ -92,7 +110,7 @@ func (a *Adapter) Cleanup(ctx context.Context, expected ExpectedRuleSet) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.executor == nil || !expected.valid() {
+	if a.invalidOptions || a.executor == nil || !expected.valid() {
 		return operationError{err: ErrInvalidConfiguration}
 	}
 	present, owned, err := a.ownership(ctx, expected)
@@ -168,20 +186,21 @@ func (a *Adapter) applyBounded(ctx context.Context, expected ExpectedRuleSet, ba
 	return nil
 }
 
-func activeMetadata(expected ExpectedRuleSet) networkenforcement.RuleLifecycleMetadata {
+func activeMetadata(expected ExpectedRuleSet, inspectedAtUnixMilli int64) networkenforcement.RuleLifecycleMetadata {
 	correlation := expected.correlation
 	labels := []string{
 		"default_deny", "private_range_rules",
 		"metadata_endpoint", "loopback_rules", "link_local_rules", "raw_protocols",
 	}
 	proof := networkenforcement.InspectedRuleProof{
-		ID:               "proof-" + expected.ownerToken,
-		RuleDigest:       expected.ruleDigest,
-		Status:           networkenforcement.RuleInspectionStatusInspected,
-		Correlation:      &correlation,
-		Mechanisms:       []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismFirewall},
-		CapabilityLabels: labels,
-		ReasonCode:       networkenforcement.LifecycleReasonRuleInspected,
+		ID:                   "proof-" + expected.ownerToken,
+		RuleDigest:           expected.ruleDigest,
+		Status:               networkenforcement.RuleInspectionStatusInspected,
+		InspectedAtUnixMilli: inspectedAtUnixMilli,
+		Correlation:          &correlation,
+		Mechanisms:           []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismFirewall},
+		CapabilityLabels:     labels,
+		ReasonCode:           networkenforcement.LifecycleReasonRuleInspected,
 	}
 	return networkenforcement.SanitizeRuleLifecycleMetadata(networkenforcement.RuleLifecycleMetadata{
 		ID:               correlation.RuleGenerationID,

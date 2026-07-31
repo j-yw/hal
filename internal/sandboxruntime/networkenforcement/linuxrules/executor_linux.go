@@ -60,7 +60,7 @@ func (e *productionExecutor) ApplyBatch(ctx context.Context, namespace Namespace
 }
 
 func (e *productionExecutor) ListTableJSON(ctx context.Context, namespace NamespaceHandle, query TableQuery, maxBytes int64) ([]byte, error) {
-	if !namespace.valid() || query.family != tableFamily || !validNFTIdentifier(query.name, 32) || maxBytes <= 0 {
+	if !namespace.valid() || query.family != tableFamily || !validNFTIdentifier(query.name, 32) || maxBytes <= 0 || maxBytes > hardMaxInspectionBytes {
 		return nil, ErrInvalidConfiguration
 	}
 	command, namespaceFiles, err := e.namespaceCommand(ctx, namespace, "--json", "list", "table", query.family, query.name)
@@ -106,6 +106,7 @@ func (e *productionExecutor) namespaceCommand(ctx context.Context, namespace Nam
 	commandArgs = append(commandArgs, args...)
 	command := exec.CommandContext(ctx, e.nsenterPath, commandArgs...)
 	command.ExtraFiles = []*os.File{userFile, networkFile}
+	command.Env = []string{}
 	runtime.KeepAlive(namespace)
 	return command, command.ExtraFiles, nil
 }

@@ -12,6 +12,7 @@ type EnforcementCorrelation struct {
 	PlanID               string `json:"planId,omitempty"`
 	PolicySnapshotID     string `json:"policySnapshotId,omitempty"`
 	ProxySessionID       string `json:"proxySessionId,omitempty"`
+	ProxyGenerationID    string `json:"proxyGenerationId,omitempty"`
 	TopologyGenerationID string `json:"topologyGenerationId,omitempty"`
 	RuleGenerationID     string `json:"ruleGenerationId,omitempty"`
 }
@@ -31,14 +32,15 @@ const (
 // inspection. It intentionally carries no namespace, interface, address,
 // port, table, chain, rule body, handle, process, or command data.
 type InspectedRuleProof struct {
-	ID               string                  `json:"id,omitempty"`
-	RuleDigest       string                  `json:"ruleDigest,omitempty"`
-	Status           RuleInspectionStatus    `json:"status,omitempty"`
-	Correlation      *EnforcementCorrelation `json:"correlation,omitempty"`
-	Mechanisms       []EnforcementMechanism  `json:"mechanisms,omitempty"`
-	CapabilityLabels []string                `json:"capabilityLabels,omitempty"`
-	ReasonCode       LifecycleReasonCode     `json:"reasonCode,omitempty"`
-	WarningCodes     []LifecycleWarningCode  `json:"warningCodes,omitempty"`
+	ID                   string                  `json:"id,omitempty"`
+	RuleDigest           string                  `json:"ruleDigest,omitempty"`
+	Status               RuleInspectionStatus    `json:"status,omitempty"`
+	InspectedAtUnixMilli int64                   `json:"inspectedAtUnixMilli,omitempty"`
+	Correlation          *EnforcementCorrelation `json:"correlation,omitempty"`
+	Mechanisms           []EnforcementMechanism  `json:"mechanisms,omitempty"`
+	CapabilityLabels     []string                `json:"capabilityLabels,omitempty"`
+	ReasonCode           LifecycleReasonCode     `json:"reasonCode,omitempty"`
+	WarningCodes         []LifecycleWarningCode  `json:"warningCodes,omitempty"`
 }
 
 // SanitizeEnforcementCorrelation returns a copy containing safe identifiers
@@ -53,6 +55,7 @@ func SanitizeEnforcementCorrelation(value EnforcementCorrelation) EnforcementCor
 		PlanID:               sanitizeIdentifier(value.PlanID),
 		PolicySnapshotID:     sanitizeIdentifier(value.PolicySnapshotID),
 		ProxySessionID:       sanitizeIdentifier(value.ProxySessionID),
+		ProxyGenerationID:    sanitizeIdentifier(value.ProxyGenerationID),
 		TopologyGenerationID: sanitizeIdentifier(value.TopologyGenerationID),
 		RuleGenerationID:     sanitizeIdentifier(value.RuleGenerationID),
 	}
@@ -69,6 +72,7 @@ func EnforcementCorrelationComplete(value EnforcementCorrelation) bool {
 		sanitized.PlanID != "" &&
 		sanitized.PolicySnapshotID != "" &&
 		sanitized.ProxySessionID != "" &&
+		sanitized.ProxyGenerationID != "" &&
 		sanitized.TopologyGenerationID != "" &&
 		sanitized.RuleGenerationID != ""
 }
@@ -87,24 +91,27 @@ func EnforcementCorrelationsEqual(left, right EnforcementCorrelation) bool {
 func SanitizeInspectedRuleProof(value InspectedRuleProof) InspectedRuleProof {
 	correlation := sanitizeEnforcementCorrelationPtr(value.Correlation)
 	sanitized := InspectedRuleProof{
-		ID:               sanitizeIdentifier(value.ID),
-		RuleDigest:       sanitizeIdentifier(value.RuleDigest),
-		Status:           sanitizeRuleInspectionStatus(value.Status),
-		Correlation:      correlation,
-		Mechanisms:       sanitizeEnforcementMechanismList(value.Mechanisms),
-		CapabilityLabels: sanitizeIdentifierList(value.CapabilityLabels),
-		ReasonCode:       sanitizeLifecycleReasonCode(value.ReasonCode),
-		WarningCodes:     sanitizeLifecycleWarningCodeList(value.WarningCodes),
+		ID:                   sanitizeIdentifier(value.ID),
+		RuleDigest:           sanitizeIdentifier(value.RuleDigest),
+		Status:               sanitizeRuleInspectionStatus(value.Status),
+		InspectedAtUnixMilli: sanitizePositiveUnixMilli(value.InspectedAtUnixMilli),
+		Correlation:          correlation,
+		Mechanisms:           sanitizeEnforcementMechanismList(value.Mechanisms),
+		CapabilityLabels:     sanitizeIdentifierList(value.CapabilityLabels),
+		ReasonCode:           sanitizeLifecycleReasonCode(value.ReasonCode),
+		WarningCodes:         sanitizeLifecycleWarningCodeList(value.WarningCodes),
 	}
 	inputInvalid := (value.ID != "" && sanitized.ID == "") ||
 		(value.RuleDigest != "" && sanitized.RuleDigest == "") ||
 		(value.Correlation != nil && correlation == nil) ||
+		(value.InspectedAtUnixMilli != 0 && sanitized.InspectedAtUnixMilli == 0) ||
 		len(value.Mechanisms) != len(sanitized.Mechanisms) ||
 		len(value.CapabilityLabels) != len(sanitized.CapabilityLabels) ||
 		len(value.WarningCodes) != len(sanitized.WarningCodes)
 	if sanitized.Status == RuleInspectionStatusInspected &&
 		(inputInvalid || sanitized.ID == "" ||
 			sanitized.RuleDigest == "" ||
+			sanitized.InspectedAtUnixMilli == 0 ||
 			sanitized.Correlation == nil ||
 			!EnforcementCorrelationComplete(*sanitized.Correlation) ||
 			len(sanitized.Mechanisms) == 0 ||
@@ -150,10 +157,17 @@ func sanitizeInspectedRuleProofPtr(value *InspectedRuleProof) *InspectedRuleProo
 }
 
 func inspectedRuleProofEmpty(value InspectedRuleProof) bool {
-	return value.ID == "" && value.RuleDigest == "" && value.Status == "" &&
+	return value.ID == "" && value.RuleDigest == "" && value.Status == "" && value.InspectedAtUnixMilli == 0 &&
 		value.Correlation == nil && len(value.Mechanisms) == 0 &&
 		len(value.CapabilityLabels) == 0 && value.ReasonCode == "" &&
 		len(value.WarningCodes) == 0
+}
+
+func sanitizePositiveUnixMilli(value int64) int64 {
+	if value <= 0 {
+		return 0
+	}
+	return value
 }
 
 func sanitizeRuleInspectionStatus(value RuleInspectionStatus) RuleInspectionStatus {

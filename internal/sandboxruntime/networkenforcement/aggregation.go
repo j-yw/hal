@@ -71,7 +71,8 @@ func AggregateLiveEnforcementResult(plan Plan, listener *ProxyListenerLifecycleR
 	if strongLifecycle {
 		strongMode = aggregateStrongResultMode(ruleResult)
 		strongCapabilityCompatible = resultModeCanEnforce(strongMode) &&
-			aggregateRuleCapabilityCompatibleWithPlan(input, ruleResult)
+			aggregateRuleCapabilityCompatibleWithPlan(input, ruleResult) &&
+			aggregateProxyCapabilityCompatibleWithPlan(input, listenerResult)
 	}
 	warnings := aggregateResultWarnings(listenerResult, ruleResult)
 	if strongCandidate && (!strongLifecycle || !resultModeCanEnforce(strongMode) || !strongCapabilityCompatible) {
@@ -348,10 +349,27 @@ func aggregateRulesActive(result *RuleLifecycleResult) bool {
 	proof := sanitizeInspectedRuleProofPtr(result.Active.Inspection)
 	return proof != nil &&
 		proof.Status == RuleInspectionStatusInspected &&
+		proof.InspectedAtUnixMilli > 0 &&
 		proof.ReasonCode == LifecycleReasonRuleInspected &&
 		len(proof.WarningCodes) == 0 &&
 		result.Active.Correlation != nil &&
 		EnforcementCorrelationComplete(*result.Active.Correlation)
+}
+
+func aggregateProxyCapabilityCompatibleWithPlan(plan Plan, listener *ProxyListenerLifecycleResult) bool {
+	if plan.Proxy == nil || listener == nil || listener.Active == nil {
+		return false
+	}
+	labels := sanitizeIdentifierList(listener.Active.CapabilityLabels)
+	if (plan.Proxy.HTTP == ProxyRoutingModeRouteViaProxy || plan.Proxy.HTTP == ProxyRoutingModeBlock) &&
+		!aggregateRuleCapabilityHasAnyLabel(labels, "http_request") {
+		return false
+	}
+	if (plan.Proxy.HTTPS == ProxyRoutingModeRouteViaProxy || plan.Proxy.HTTPS == ProxyRoutingModeBlock) &&
+		!aggregateRuleCapabilityHasAnyLabel(labels, "http_connect") {
+		return false
+	}
+	return true
 }
 
 func aggregateRulesLifecycleActive(result *RuleLifecycleResult) bool {
