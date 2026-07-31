@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+mount -t proc -o nosuid,nodev,noexec proc /proc
+mount -t devtmpfs -o nosuid,noexec devtmpfs /dev
+mount -t sysfs -o ro,nosuid,nodev,noexec sysfs /sys
+mount -t tmpfs -o mode=0755,nosuid,nodev,noexec,size=16M tmpfs /run
+mount -t tmpfs -o mode=1777,nosuid,nodev,noexec,size=64M tmpfs /tmp
+mount -t tmpfs -o mode=0700,uid=1000,gid=1000,nosuid,nodev,size=512M tmpfs /workspace
+
+exec /sbin/hal-init \
+	/usr/bin/setpriv \
+	--reuid 1000 \
+	--regid 1000 \
+	--clear-groups \
+	--no-new-privs \
+	/usr/bin/env -i \
+	HOME=/workspace \
+	PATH=/usr/bin:/bin \
+	TMPDIR=/tmp \
+	USER=agent \
+	LOGNAME=agent \
+	/usr/bin/hal-guest-agent

@@ -50,6 +50,13 @@ func TestOSExecProcessRunnerLiveStartsFirecrackerAPISocket(t *testing.T) {
 	if err := firecrackerHostLiveWaitForAPISocket(ctx, socketPath); err != nil {
 		t.Fatalf("Firecracker API socket was not accepted: %v", err)
 	}
+	info, err := os.Lstat(socketPath)
+	if err != nil {
+		t.Fatalf("Lstat(Firecracker API socket) error = %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Fatalf("Firecracker API socket permissions = %o, want %o", got, want)
+	}
 	if err := process.Kill(ctx); err != nil {
 		t.Fatalf("Kill() error = %v, want nil", err)
 	}
