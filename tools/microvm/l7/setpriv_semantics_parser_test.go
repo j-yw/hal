@@ -324,6 +324,52 @@ func TestL7ConfiguredProviderQueryKeepsLeaderUnreapedThroughGroupCleanup(t *test
 	requireL7HelperProcessAbsent(t, descendantPID)
 }
 
+func TestL7ConfiguredProviderQueryReapsLeaderWhenDrainJoinStaysIncomplete(t *testing.T) {
+	originalStart := startL7ConfiguredProviderCommand
+	originalReap := reapL7ConfiguredProviderCommand
+	originalWaitDrain := waitL7ConfiguredProviderOutputDrain
+	leaderPID := 0
+	reapCalls := 0
+	startL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		if err := originalStart(command); err != nil {
+			return err
+		}
+		leaderPID = command.Process.Pid
+		return nil
+	}
+	reapL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		reapCalls++
+		return originalReap(command)
+	}
+	waitL7ConfiguredProviderOutputDrain = func(*l7ConfiguredProviderOutputDrain, time.Time) (error, bool) {
+		return nil, false
+	}
+	t.Cleanup(func() {
+		startL7ConfiguredProviderCommand = originalStart
+		reapL7ConfiguredProviderCommand = originalReap
+		waitL7ConfiguredProviderOutputDrain = originalWaitDrain
+		if reapCalls == 0 && leaderPID > 0 {
+			_ = syscall.Kill(leaderPID, syscall.SIGKILL)
+			var status syscall.WaitStatus
+			_, _ = syscall.Wait4(leaderPID, &status, 0, nil)
+		}
+	})
+
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		5*time.Second,
+		64,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "success",
+	)
+	if !errors.Is(err, errL7ConfiguredProviderQuery) || len(output) != 0 {
+		t.Fatal("configured provider query did not fail closed on incomplete drain proof")
+	}
+	if reapCalls != 1 {
+		t.Fatalf("configured provider leader reap calls = %d, want exactly 1", reapCalls)
+	}
+}
+
 func TestL7ConfiguredProviderQueryBoundsEscapedRetainedPipe(t *testing.T) {
 	started := time.Now()
 	output, err := runL7ConfiguredProviderQuery(
