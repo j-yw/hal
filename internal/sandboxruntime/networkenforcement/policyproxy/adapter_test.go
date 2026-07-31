@@ -1046,6 +1046,55 @@ func TestL6PolicyProxyStartWaitsForStopCleanup(t *testing.T) {
 	stopAdapter(t, adapter)
 }
 
+func TestL6PolicyProxyStopWaitsForUnexpectedServeFailureCleanup(t *testing.T) {
+	adapter := newTestAdapter(t, testAdapterOptions{})
+	startAdapter(t, adapter)
+	request := networkenforcement.ProxyListenerLifecycleRequest{
+		Plan: networkenforcement.NewSanitizedPlan(testPolicy().PlanMetadata()),
+	}
+
+	serverSide, peerSide := net.Pipe()
+	t.Cleanup(func() { _ = peerSide.Close() })
+	blocking := &blockingCloseConn{
+		Conn:    serverSide,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	releaseCleanup := func() {
+		releaseOnce.Do(func() { close(blocking.release) })
+	}
+	t.Cleanup(releaseCleanup)
+	adapter.mu.Lock()
+	adapter.connections[blocking] = struct{}{}
+	listener := adapter.listener
+	adapter.mu.Unlock()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("unexpected Serve failure did not reach owned connection cleanup")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		_, err := adapter.StopProxyListener(context.Background(), request)
+		stopDone <- err
+	}()
+	select {
+	case <-stopDone:
+		releaseCleanup()
+		t.Fatal("Stop returned before unexpected Serve failure cleanup completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseCleanup()
+	if err := <-stopDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestL6PolicyProxyLifecycleRejectsMismatchedPolicySnapshotAndCannotRelabelProof(t *testing.T) {
 	adapter := newTestAdapter(t, testAdapterOptions{})
 	configured := testPolicy().PlanMetadata()
