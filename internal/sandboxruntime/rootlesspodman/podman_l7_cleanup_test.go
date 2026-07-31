@@ -2,10 +2,13 @@ package rootlesspodman_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 )
 
 const l7PodmanExactContainerID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -13,9 +16,11 @@ const l7PodmanExactContainerID = "0123456789abcdef0123456789abcdef0123456789abcd
 var (
 	errL7PodmanExactContainerDeleteFailed      = errors.New("selected L7 Podman exact-container delete failed")
 	errL7PodmanExactContainerAbsenceUnverified = errors.New("selected L7 Podman exact-container absence unverified")
+	errL7PodmanRestartCleanupUncertain         = errors.New("selected L7 Podman restart cleanup ownership unverified")
 )
 
 type l7PodmanCommandRunner func(context.Context, string, ...string) (int, error)
+type l7PodmanOutputRunner func(context.Context, string, ...string) ([]byte, error)
 
 type l7PodmanCleanupFailure struct {
 	safe  error
@@ -74,6 +79,48 @@ func validL7PodmanExactContainerID(value string) bool {
 		}
 	}
 	return true
+}
+
+func removeOwnedL7PodmanRestartContainerWithRunner(ctx context.Context, podmanPath, containerName string, identity rootlesspodman.NetworkTopologyIdentity, run l7PodmanOutputRunner) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	podmanPath = strings.TrimSpace(podmanPath)
+	containerName = strings.TrimSpace(containerName)
+	if ctx.Err() != nil || podmanPath == "" || containerName == "" || run == nil {
+		return "", errL7PodmanRestartCleanupUncertain
+	}
+	output, err := run(ctx, podmanPath, "container", "inspect", containerName)
+	if err != nil {
+		return "", errL7PodmanRestartCleanupUncertain
+	}
+	var payload []struct {
+		ID     string `json:"Id"`
+		Name   string `json:"Name"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	if json.Unmarshal(output, &payload) != nil || len(payload) != 1 || !validL7PodmanExactContainerID(payload[0].ID) || strings.TrimPrefix(payload[0].Name, "/") != containerName {
+		return "", errL7PodmanRestartCleanupUncertain
+	}
+	wantLabels := map[string]string{
+		"dev.jywlabs.hal.runtime":                  rootlesspodman.DriverID,
+		"dev.jywlabs.hal.sandbox.name":             containerName,
+		"dev.jywlabs.hal.runtime.generation":       identity.RuntimeGenerationID,
+		"dev.jywlabs.hal.topology.generation":      identity.TopologyGenerationID,
+		"dev.jywlabs.hal.network-rules.generation": identity.RuleGenerationID,
+	}
+	for label, want := range wantLabels {
+		if want == "" || payload[0].Config.Labels[label] != want {
+			return "", errL7PodmanRestartCleanupUncertain
+		}
+	}
+	exactID := payload[0].ID
+	if _, err := run(ctx, podmanPath, "container", "rm", "--force", exactID); err != nil {
+		return "", errL7PodmanRestartCleanupUncertain
+	}
+	return exactID, nil
 }
 
 func TestL7PodmanExactContainerCleanupReportsDeleteFailureAndStillProvesAbsence(t *testing.T) {
@@ -167,6 +214,75 @@ func TestL7PodmanExactContainerAbsenceUsesOnlyExactExistsQuery(t *testing.T) {
 				if strings.Contains(err.Error(), forbidden) {
 					t.Fatalf("absence proof error leaked %q: %v", forbidden, err)
 				}
+			}
+		})
+	}
+}
+
+func TestL7PodmanRestartFallbackCleanupRequiresExactOwnershipBeforeDelete(t *testing.T) {
+	identity := rootlesspodman.NetworkTopologyIdentity{
+		RuntimeGenerationID:  "runtime-generation-a",
+		TopologyGenerationID: "topology-generation-a",
+		RuleGenerationID:     "rule-generation-a",
+	}
+	containerName := "hal-l7-restart-a"
+	inspectPayload := func(labels map[string]string) []byte {
+		payload, err := json.Marshal([]map[string]any{{
+			"Id": l7PodmanExactContainerID, "Name": "/" + containerName,
+			"Config": map[string]any{"Labels": labels},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	matchingLabels := map[string]string{
+		"dev.jywlabs.hal.runtime":                  rootlesspodman.DriverID,
+		"dev.jywlabs.hal.sandbox.name":             containerName,
+		"dev.jywlabs.hal.runtime.generation":       identity.RuntimeGenerationID,
+		"dev.jywlabs.hal.topology.generation":      identity.TopologyGenerationID,
+		"dev.jywlabs.hal.network-rules.generation": identity.RuleGenerationID,
+	}
+
+	var calls [][]string
+	exactID, err := removeOwnedL7PodmanRestartContainerWithRunner(context.Background(), "/private/podman", containerName, identity, func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(calls) == 1 {
+			return inspectPayload(matchingLabels), nil
+		}
+		return nil, nil
+	})
+	if err != nil || exactID != l7PodmanExactContainerID {
+		t.Fatalf("owned cleanup = (%q, %v)", exactID, err)
+	}
+	wantCalls := [][]string{{"container", "inspect", containerName}, {"container", "rm", "--force", l7PodmanExactContainerID}}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("owned cleanup calls = %#v, want %#v", calls, wantCalls)
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{name: "unrelated runtime", mutate: func(labels map[string]string) { labels["dev.jywlabs.hal.runtime"] = "other" }},
+		{name: "sandbox collision", mutate: func(labels map[string]string) { labels["dev.jywlabs.hal.sandbox.name"] = "other" }},
+		{name: "runtime generation collision", mutate: func(labels map[string]string) { labels["dev.jywlabs.hal.runtime.generation"] = "other" }},
+		{name: "topology generation collision", mutate: func(labels map[string]string) { labels["dev.jywlabs.hal.topology.generation"] = "other" }},
+		{name: "rule generation collision", mutate: func(labels map[string]string) { labels["dev.jywlabs.hal.network-rules.generation"] = "other" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			labels := make(map[string]string, len(matchingLabels))
+			for key, value := range matchingLabels {
+				labels[key] = value
+			}
+			test.mutate(labels)
+			callCount := 0
+			_, err := removeOwnedL7PodmanRestartContainerWithRunner(context.Background(), "podman", containerName, identity, func(context.Context, string, ...string) ([]byte, error) {
+				callCount++
+				return inspectPayload(labels), nil
+			})
+			if !errors.Is(err, errL7PodmanRestartCleanupUncertain) || callCount != 1 {
+				t.Fatalf("collision cleanup = (%v, %d calls), want uncertainty without delete", err, callCount)
 			}
 		})
 	}

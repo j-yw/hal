@@ -299,15 +299,33 @@ func runL7PreparedRestartReconciliation(t *testing.T, image, podmanPath, nsenter
 	t.Helper()
 	journalPath := filepath.Join(t.TempDir(), "restart.json")
 	containerName := "hal-l7-restart-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	restartPlan, _ := restartPlanAndPolicy()
+	cleanupIdentity := restartIdentity(restartPlan)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cleanupRef := containerName
+	cleanupExactID := ""
 	deletePending := true
 	t.Cleanup(func() {
-		if deletePending {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cleanupCancel()
-			_ = exec.CommandContext(cleanupCtx, podmanPath, "rm", "--force", cleanupRef).Run()
+		if !deletePending {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cleanupCancel()
+		if !validL7PodmanExactContainerID(cleanupExactID) {
+			var err error
+			cleanupExactID, err = removeOwnedL7PodmanRestartContainerWithRunner(cleanupCtx, podmanPath, containerName, cleanupIdentity, func(runCtx context.Context, executable string, args ...string) ([]byte, error) {
+				return exec.CommandContext(runCtx, executable, args...).Output()
+			})
+			if err != nil {
+				t.Errorf("restart fallback cleanup uncertain: %v", err)
+				return
+			}
+		} else if err := exec.CommandContext(cleanupCtx, podmanPath, "container", "rm", "--force", cleanupExactID).Run(); err != nil {
+			t.Errorf("restart exact-container cleanup failed")
+			return
+		}
+		if err := proveL7PodmanExactContainerAbsent(cleanupCtx, podmanPath, cleanupExactID); err != nil {
+			t.Errorf("restart exact-container cleanup absence unverified")
 		}
 	})
 	command := exec.CommandContext(ctx, os.Args[0], "-test.run", "^TestL7PreparedLinuxRootlessPodmanRestartChild$", "-test.count=1")
@@ -323,7 +341,7 @@ func runL7PreparedRestartReconciliation(t *testing.T, image, podmanPath, nsenter
 	if json.Unmarshal(payload, &journal) != nil || journal.ProxyPort == 0 || !validL7PodmanExactContainerID(journal.Target.ID) {
 		t.Fatal("restart journal invalid")
 	}
-	cleanupRef = journal.Target.ID
+	cleanupExactID = journal.Target.ID
 	if connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(journal.ProxyPort))), 100*time.Millisecond); err == nil {
 		connection.Close()
 		t.Fatal("restart child listener survived process exit")
