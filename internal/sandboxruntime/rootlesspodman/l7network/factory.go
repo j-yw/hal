@@ -7,7 +7,6 @@ package l7network
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -450,10 +449,3 @@ func safeNFTName(value string) bool {
 	}
 	return true
 }
-
-type compositionError struct{ reason error }
-
-func (e compositionError) Error() string {
-	return fmt.Sprintf("rootless Podman L7 composition failed: %s", e.reason)
-}
-func (e compositionError) Unwrap() error { return e.reason }
