@@ -30,16 +30,16 @@ var _ networkenforcement.ProxyListenerAdapter = (*Adapter)(nil)
 type Adapter struct {
 	config Config
 
-	mu         sync.Mutex
-	server     *http.Server
-	listener   net.Listener
-	endpoint   string
-	cancel     context.CancelFunc
-	done       chan error
-	sem        chan struct{}
-	tunnels    map[net.Conn]struct{}
-	generation uint64
-	stopping   bool
+	mu          sync.Mutex
+	server      *http.Server
+	listener    net.Listener
+	endpoint    string
+	cancel      context.CancelFunc
+	done        chan error
+	sem         chan struct{}
+	connections map[net.Conn]struct{}
+	generation  uint64
+	stopping    bool
 
 	// beforeTunnelTrack is a package-test synchronization seam. Production
 	// construction leaves it nil.
@@ -67,9 +67,9 @@ func New(config Config) (*Adapter, error) {
 		config.DialContext = dialer.DialContext
 	}
 	return &Adapter{
-		config:  config,
-		sem:     make(chan struct{}, config.Limits.MaxConcurrent),
-		tunnels: make(map[net.Conn]struct{}),
+		config:      config,
+		sem:         make(chan struct{}, config.Limits.MaxConcurrent),
+		connections: make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -180,9 +180,9 @@ func (a *Adapter) StopProxyListener(_ context.Context, request networkenforcemen
 	listener := a.listener
 	cancel := a.cancel
 	done := a.done
-	tunnels := make([]net.Conn, 0, len(a.tunnels))
-	for conn := range a.tunnels {
-		tunnels = append(tunnels, conn)
+	connections := make([]net.Conn, 0, len(a.connections))
+	for conn := range a.connections {
+		connections = append(connections, conn)
 	}
 	a.server = nil
 	a.listener = nil
@@ -194,7 +194,7 @@ func (a *Adapter) StopProxyListener(_ context.Context, request networkenforcemen
 	if cancel != nil {
 		cancel()
 	}
-	for _, conn := range tunnels {
+	for _, conn := range connections {
 		_ = conn.Close()
 	}
 	if server != nil {
@@ -221,8 +221,8 @@ func (a *Adapter) StopProxyListener(_ context.Context, request networkenforcemen
 	}
 	a.mu.Lock()
 	if a.generation == generation && a.server == nil {
-		for conn := range a.tunnels {
-			delete(a.tunnels, conn)
+		for conn := range a.connections {
+			delete(a.connections, conn)
 		}
 	}
 	a.mu.Unlock()
@@ -239,10 +239,10 @@ func (a *Adapter) superviseServeExit(generation uint64, server *http.Server, lis
 		return
 	}
 	a.stopping = true
-	tunnels := make([]net.Conn, 0, len(a.tunnels))
-	for conn := range a.tunnels {
-		tunnels = append(tunnels, conn)
-		delete(a.tunnels, conn)
+	connections := make([]net.Conn, 0, len(a.connections))
+	for conn := range a.connections {
+		connections = append(connections, conn)
+		delete(a.connections, conn)
 	}
 	a.server = nil
 	a.listener = nil
@@ -252,7 +252,7 @@ func (a *Adapter) superviseServeExit(generation uint64, server *http.Server, lis
 	a.mu.Unlock()
 
 	cancel()
-	for _, conn := range tunnels {
+	for _, conn := range connections {
 		_ = conn.Close()
 	}
 	_ = listener.Close()
@@ -338,10 +338,10 @@ func (a *Adapter) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		a.serveConnect(w, request, generation)
 		return
 	}
-	a.serveHTTP(w, request)
+	a.serveHTTP(w, request, generation)
 }
 
-func (a *Adapter) serveHTTP(w http.ResponseWriter, request *http.Request) {
+func (a *Adapter) serveHTTP(w http.ResponseWriter, request *http.Request, generation uint64) {
 	if !validForwardRequest(request) {
 		a.emitSyntheticDecision(networkenforcement.PolicyProxyDecisionReasonProxyUnsupported, "")
 		safeHTTPError(w, http.StatusBadRequest)
@@ -403,8 +403,23 @@ func (a *Adapter) serveHTTP(w http.ResponseWriter, request *http.Request) {
 		safeHTTPError(w, http.StatusBadGateway)
 		return
 	}
-	defer upstream.Close()
-	_ = upstream.SetDeadline(time.Now().Add(a.config.Limits.RequestTimeout))
+	if !a.ownConnections(generation, upstream) {
+		_ = upstream.Close()
+		a.emitFinalDecision(result, networkenforcement.PolicyProxyDecisionActionDeny, networkenforcement.PolicyProxyDecisionReasonUpstreamUnavailable, "")
+		safeHTTPError(w, http.StatusServiceUnavailable)
+		return
+	}
+	stopUpstreamOnCancel := context.AfterFunc(request.Context(), func() {
+		_ = upstream.Close()
+	})
+	defer func() {
+		stopUpstreamOnCancel()
+		a.releaseConnections(upstream)
+		_ = upstream.Close()
+	}()
+	if deadline, ok := request.Context().Deadline(); ok {
+		_ = upstream.SetDeadline(deadline)
+	}
 	outbound.URL = cloneURL(outbound.URL)
 	outbound.URL.Scheme = ""
 	outbound.URL.Host = ""
@@ -470,12 +485,9 @@ func sameAuthority(left, right, defaultPort string) bool {
 }
 
 func (a *Adapter) serveConnect(w http.ResponseWriter, request *http.Request, generation uint64) {
-	authority := request.Host
-	if authority == "" {
-		authority = request.RequestURI
-	}
+	authority := request.RequestURI
 	host, _, ok := splitAuthority(authority, "")
-	if !ok || host == "" {
+	if !ok || host == "" || request.Host == "" || !sameAuthority(request.Host, authority, "") {
 		a.emitSyntheticDecision(networkenforcement.PolicyProxyDecisionReasonProxyUnsupported, "")
 		safeHTTPError(w, http.StatusBadRequest)
 		return
@@ -521,7 +533,7 @@ func (a *Adapter) serveConnect(w http.ResponseWriter, request *http.Request, gen
 	if a.beforeTunnelTrack != nil {
 		a.beforeTunnelTrack()
 	}
-	if !a.ownTunnelPair(generation, client, upstream) {
+	if !a.ownConnections(generation, client, upstream) {
 		a.emitFinalDecision(result, networkenforcement.PolicyProxyDecisionActionDeny, networkenforcement.PolicyProxyDecisionReasonUpstreamUnavailable, "")
 		_ = client.Close()
 		_ = upstream.Close()
@@ -529,7 +541,7 @@ func (a *Adapter) serveConnect(w http.ResponseWriter, request *http.Request, gen
 	}
 	a.emitDecision(result)
 	defer func() {
-		a.releaseTunnelPair(client, upstream)
+		a.releaseConnections(client, upstream)
 		_ = client.Close()
 		_ = upstream.Close()
 	}()
@@ -584,22 +596,24 @@ func closeWrite(conn net.Conn) {
 	}
 }
 
-func (a *Adapter) ownTunnelPair(generation uint64, left, right net.Conn) bool {
+func (a *Adapter) ownConnections(generation uint64, connections ...net.Conn) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.stopping || generation != a.generation || a.listener == nil || a.server == nil {
 		return false
 	}
-	a.tunnels[left] = struct{}{}
-	a.tunnels[right] = struct{}{}
+	for _, conn := range connections {
+		a.connections[conn] = struct{}{}
+	}
 	return true
 }
 
-func (a *Adapter) releaseTunnelPair(left, right net.Conn) {
+func (a *Adapter) releaseConnections(connections ...net.Conn) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.tunnels, left)
-	delete(a.tunnels, right)
+	for _, conn := range connections {
+		delete(a.connections, conn)
+	}
 }
 
 func (a *Adapter) emitDecision(result networkenforcement.PolicyProxyServiceDecisionResult) {
