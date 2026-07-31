@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"net/textproto"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -915,19 +914,37 @@ func responseConnectionTokens(header []byte) ([]string, error) {
 	if statusEnd < 0 {
 		return nil, errors.New("missing response status")
 	}
-	fields, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(header[statusEnd+2:]))).ReadMIMEHeader()
-	if err != nil {
-		return nil, err
-	}
 	var tokens []string
-	for _, value := range fields.Values("Connection") {
-		for _, token := range strings.Split(value, ",") {
-			if token = strings.TrimSpace(token); token != "" {
-				tokens = append(tokens, token)
+	connectionField := false
+	for _, line := range bytes.Split(header[statusEnd+2:], []byte("\r\n")) {
+		if len(line) == 0 {
+			break
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			if connectionField {
+				tokens = appendConnectionTokens(tokens, line)
 			}
+			continue
+		}
+		name, value, ok := bytes.Cut(line, []byte(":"))
+		if !ok {
+			return nil, errors.New("malformed response header")
+		}
+		connectionField = bytes.EqualFold(name, []byte("Connection"))
+		if connectionField {
+			tokens = appendConnectionTokens(tokens, value)
 		}
 	}
 	return tokens, nil
+}
+
+func appendConnectionTokens(tokens []string, value []byte) []string {
+	for _, token := range bytes.Split(value, []byte(",")) {
+		if token = bytes.TrimSpace(token); len(token) > 0 {
+			tokens = append(tokens, string(token))
+		}
+	}
+	return tokens
 }
 
 func minInt64(left, right int64) int {

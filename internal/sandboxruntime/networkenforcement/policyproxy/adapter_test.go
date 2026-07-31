@@ -519,6 +519,20 @@ func TestL6PolicyProxyRejectsInterimResponsesAndBoundsHeaderTerminatorExactly(t 
 	left.Close()
 }
 
+func TestL6PolicyProxyScansConnectionTokensWithoutSecondMIMEParse(t *testing.T) {
+	header := []byte("HTTP/1.1 200 OK\r\n" +
+		"Connection: X-First,\r\n" +
+		" X-Second\r\n" +
+		"Connection: X-Third\r\n\r\n")
+	tokens, err := responseConnectionTokens(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(tokens, ","), "X-First,X-Second,X-Third"; got != want {
+		t.Fatalf("connection tokens = %q, want %q", got, want)
+	}
+}
+
 func TestL6PolicyProxyCONNECTAllowAndDenial(t *testing.T) {
 	echo := newTCPEchoFixture(t)
 	var dialCount atomic.Int32

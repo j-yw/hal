@@ -78,6 +78,8 @@ All resolved addresses must pass. A mixed answer fails closed.
 
 - accepted connections, server header bytes, read-header time, idle time, and
   maximum concurrent requests are bounded before handler admission;
+- aggregate limits conservatively account for parsed request and response
+  header working sets, and upstream response headers are MIME-parsed only once;
 - request and response bodies are buffered only up to configured maxima, with
   oversize input rejected before upstream publication;
 - CONNECT tunnels have bounded lifetime and per-direction byte limits;

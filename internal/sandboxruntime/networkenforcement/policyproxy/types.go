@@ -31,6 +31,10 @@ const (
 	maxConcurrentRequests   = 1024
 	maxAggregateBufferBytes = 384 << 20
 	maxConfiguredTimeout    = 10 * time.Minute
+	// Go's MIME header parser accounts for roughly 200 bytes of map overhead
+	// per field. A minimal valid wire field is only four bytes, so reserve 64x
+	// the wire limit for parsed request and response header working sets.
+	parsedHeaderAggregateMultiplier int64 = 64
 )
 
 // ResolverFunc resolves one policy-approved host. Returned addresses are
@@ -92,7 +96,7 @@ func normalizeLimits(input Limits) Limits {
 		out.MaxResolvedAddresses = 16
 	}
 	if out.MaxConcurrent == 0 {
-		out.MaxConcurrent = 64
+		out.MaxConcurrent = 32
 	}
 	if out.ReadHeaderTimeout == 0 {
 		out.ReadHeaderTimeout = 5 * time.Second
@@ -151,9 +155,21 @@ func validLimits(limits Limits) bool {
 }
 
 func validAggregateBufferLimit(limits Limits) bool {
-	perRequest := int64(limits.MaxHeaderBytes)
+	perRequest := int64(0)
 	for _, limit := range []int64{
+		int64(limits.MaxHeaderBytes),
 		limits.MaxResponseHeaderBytes,
+	} {
+		if limit <= 0 || limit > maxAggregateBufferBytes/parsedHeaderAggregateMultiplier {
+			return false
+		}
+		workingSet := limit * parsedHeaderAggregateMultiplier
+		if perRequest > maxAggregateBufferBytes-workingSet {
+			return false
+		}
+		perRequest += workingSet
+	}
+	for _, limit := range []int64{
 		limits.MaxRequestBodyBytes,
 		limits.MaxResponseBodyBytes,
 	} {
