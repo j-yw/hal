@@ -12,6 +12,7 @@ var (
 )
 
 var requiredFeatures = []string{"copy_in", "copy_out", "exec", "readiness"}
+var requiredL7NetworkFeatures = []string{"ipv4", "ipv6", "proxy_bootstrap", "virtio_net"}
 
 var requiredVersions = Versions{
 	Buildroot:   "2026.05.1",
@@ -28,7 +29,8 @@ func ValidateDistributionManifest(manifest DistributionManifest) error {
 		manifest.Architecture != "x86_64" ||
 		!validVersions(manifest.Versions) ||
 		manifest.GuestAgent.Protocol != "guest-agent-v1" ||
-		!equalStrings(manifest.GuestAgent.Features, requiredFeatures) {
+		!equalStrings(manifest.GuestAgent.Features, requiredFeatures) ||
+		!validImageNetworkProfile(manifest.ImageProfile, manifest.GuestNetwork) {
 		return errInvalidDistribution
 	}
 	if len(manifest.Assets) != 2 {
@@ -74,6 +76,7 @@ func ValidateProvenance(provenance Provenance) error {
 		!validVersions(provenance.Versions) ||
 		provenance.GuestAgent.Protocol != "guest-agent-v1" ||
 		!equalStrings(provenance.GuestAgent.Features, requiredFeatures) ||
+		!validImageNetworkProfile(provenance.ImageProfile, provenance.GuestNetwork) ||
 		len(provenance.Outputs) != 2 {
 		return errInvalidProvenance
 	}
@@ -105,9 +108,11 @@ func ValidateProvenanceAgainstManifest(provenance Provenance, manifest Distribut
 		return err
 	}
 	if provenance.Architecture != manifest.Architecture ||
+		provenance.ImageProfile != manifest.ImageProfile ||
 		provenance.Versions != manifest.Versions ||
 		provenance.GuestAgent.Protocol != manifest.GuestAgent.Protocol ||
-		!equalStrings(provenance.GuestAgent.Features, manifest.GuestAgent.Features) {
+		!equalStrings(provenance.GuestAgent.Features, manifest.GuestAgent.Features) ||
+		!equalGuestNetwork(provenance.GuestNetwork, manifest.GuestNetwork) {
 		return errInvalidProvenance
 	}
 
@@ -126,6 +131,26 @@ func ValidateProvenanceAgainstManifest(provenance Provenance, manifest Distribut
 		}
 	}
 	return nil
+}
+
+func validImageNetworkProfile(profile string, network *GuestNetwork) bool {
+	switch profile {
+	case "":
+		return network == nil
+	case ImageProfileL7Network:
+		return network != nil &&
+			network.Mode == GuestNetworkModeStaticProxy &&
+			equalStrings(network.Features, requiredL7NetworkFeatures)
+	default:
+		return false
+	}
+}
+
+func equalGuestNetwork(left, right *GuestNetwork) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Mode == right.Mode && equalStrings(left.Features, right.Features)
 }
 
 // VerifyDependencyLocks compares an exact observed cache inventory to its lock.

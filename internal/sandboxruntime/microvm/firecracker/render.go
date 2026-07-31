@@ -15,11 +15,12 @@ const liveBootRenderOperation = "firecracker_live_boot_render"
 // Log and metrics paths are intentionally omitted here because the validated
 // start argv initializes them once through Firecracker's CLI flags.
 type liveBootConfigFile struct {
-	MachineConfig MachineConfigPayload  `json:"machine-config"`
-	BootSource    BootSourcePayload     `json:"boot-source"`
-	Drives        []RootDrivePayload    `json:"drives"`
-	Vsock         *vsockDevicePayload   `json:"vsock,omitempty"`
-	Entropy       *entropyDevicePayload `json:"entropy,omitempty"`
+	MachineConfig     MachineConfigPayload      `json:"machine-config"`
+	BootSource        BootSourcePayload         `json:"boot-source"`
+	Drives            []RootDrivePayload        `json:"drives"`
+	NetworkInterfaces []networkInterfacePayload `json:"network-interfaces,omitempty"`
+	Vsock             *vsockDevicePayload       `json:"vsock,omitempty"`
+	Entropy           *entropyDevicePayload     `json:"entropy,omitempty"`
 }
 
 type vsockDevicePayload struct {
@@ -76,6 +77,11 @@ func liveBootConfig(config BackendConfig) (liveBootConfigFile, error) {
 	if err != nil {
 		return liveBootConfigFile{}, liveBootRenderPayloadError(err)
 	}
+	networkInterfaces, staticNetwork, err := renderNetworkInterfaces(config)
+	if err != nil {
+		return liveBootConfigFile{}, err
+	}
+	config.StaticNetwork = staticNetwork
 	bootSource, err := RenderBootSourcePayload(config)
 	if err != nil {
 		return liveBootConfigFile{}, liveBootRenderPayloadError(err)
@@ -95,11 +101,12 @@ func liveBootConfig(config BackendConfig) (liveBootConfigFile, error) {
 		return liveBootConfigFile{}, newLiveBootRenderConfigError("paths", "runtime and root drive paths must be unique")
 	}
 	return liveBootConfigFile{
-		MachineConfig: machineConfig,
-		BootSource:    bootSource,
-		Drives:        []RootDrivePayload{rootDrive},
-		Vsock:         renderVsockDevice(config),
-		Entropy:       renderEntropyDevice(config),
+		MachineConfig:     machineConfig,
+		BootSource:        bootSource,
+		Drives:            []RootDrivePayload{rootDrive},
+		NetworkInterfaces: networkInterfaces,
+		Vsock:             renderVsockDevice(config),
+		Entropy:           renderEntropyDevice(config),
 	}, nil
 }
 

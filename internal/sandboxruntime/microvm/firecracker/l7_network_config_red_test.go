@@ -60,7 +60,7 @@ func TestL7FirecrackerNetworkConfigFailsClosedAndRedactsRawValues(t *testing.T) 
 		{name: "unsafe tap", mutate: func(config *BackendConfig) { config.NetworkInterfaces[0].HostDeviceName = "tap secret /tmp/canary" }},
 		{name: "nonlocal mac", mutate: func(config *BackendConfig) { config.NetworkInterfaces[0].GuestMAC = "00:00:00:00:00:02" }},
 		{name: "gateway outside prefix", mutate: func(config *BackendConfig) { config.StaticNetwork.IPv4Gateway = "198.51.100.1" }},
-		{name: "proxy outside gateway", mutate: func(config *BackendConfig) { config.StaticNetwork.ProxyURL = "http://203.0.113.8:19443" }},
+		{name: "private proxy", mutate: func(config *BackendConfig) { config.StaticNetwork.ProxyURL = "http://10.0.0.8:19443" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,7 +75,7 @@ func TestL7FirecrackerNetworkConfigFailsClosedAndRedactsRawValues(t *testing.T) 
 				t.Fatalf("json.Marshal(error) error = %v", marshalErr)
 			}
 			public := err.Error() + " " + string(encoded)
-			for _, forbidden := range []string{"192.0.2", "198.51.100", "203.0.113", "19443", "18080", "tap-l7abc", "/tmp/canary", "02:00:00:00:00:02"} {
+			for _, forbidden := range []string{"192.0.2", "198.51.100", "10.0.0.8", "19443", "18080", "tap-l7abc", "/tmp/canary", "02:00:00:00:00:02"} {
 				if strings.Contains(public, forbidden) {
 					t.Fatalf("public error leaked %q in %q", forbidden, public)
 				}
@@ -118,8 +118,11 @@ func validL7NetworkBackendConfig() BackendConfig {
 		KernelImagePath: "/kernel",
 		RootfsPath:      "/rootfs",
 		ProductionVsock: true,
-		Paths:           PathPlan{VsockSocketPath: "/state/guest.vsock"},
-		NetworkMode:     microvm.NetworkModeL7PolicyProxy,
+		Paths: PathPlan{
+			StateDir: "/state", APISocketPath: "/state/api.sock", ConfigPath: "/state/config.json",
+			LogPath: "/state/firecracker.log", MetricsPath: "/state/firecracker.metrics", VsockSocketPath: "/state/guest.vsock",
+		},
+		NetworkMode: microvm.NetworkModeL7PolicyProxy,
 		NetworkInterfaces: []NetworkInterfaceConfig{{
 			InterfaceID: "net1", HostDeviceName: "tap-l7abc", GuestMAC: "02:00:00:00:00:02",
 		}},

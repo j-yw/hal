@@ -299,6 +299,10 @@ func resolveDistributionFromRoot(
 		Labels: []assets.SafeLabel{"firecracker", "reproducible"},
 		Assets: make([]assets.LaunchAsset, 0, len(manifest.Assets)),
 	}
+	if manifest.ImageProfile == assetbuild.ImageProfileL7Network {
+		descriptor.ID = "l7-network-image"
+		descriptor.Labels = append(descriptor.Labels, "network-profile")
+	}
 	for _, asset := range manifest.Assets {
 		size, digest, err := digestDistributionFile(root, asset.Key)
 		if err != nil {

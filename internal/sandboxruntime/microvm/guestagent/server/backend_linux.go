@@ -474,22 +474,6 @@ func mergeLinuxEnvironment(base, additions []string) ([]string, error) {
 	return normalizeLinuxEnvironment(all, false)
 }
 
-func validLinuxEnvironmentName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for index, char := range name {
-		switch {
-		case char >= 'A' && char <= 'Z':
-		case char == '_':
-		case index > 0 && char >= '0' && char <= '9':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 func openLinuxExecutableRoots(paths []string) ([]linuxExecutableRoot, error) {
 	useDefaults := len(paths) == 0
 	if len(paths) == 0 {

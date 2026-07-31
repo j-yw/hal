@@ -127,6 +127,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"LiveProcessManager":                    true,
 		"LiveProcessRequest":                    true,
 		"MachineConfigPayload":                  true,
+		"NetworkInterfaceConfig":                true,
 		"NewBackend":                            true,
 		"NewGuestReadinessRequest":              true,
 		"NewGuestReadinessResult":               true,
@@ -189,6 +190,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"StartProcess":                          true,
 		"StartOperationPlan":                    true,
 		"StopOperationPlan":                     true,
+		"StaticNetworkBootConfig":               true,
 		"NewProcessLaunchMetadata":              true,
 	}
 	seenExportedNames := map[string]bool{}
