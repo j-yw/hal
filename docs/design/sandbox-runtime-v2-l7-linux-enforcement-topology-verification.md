@@ -51,6 +51,14 @@ evidence. Once a selected gate begins, missing Linux amd64, writable KVM,
 user/network namespace nft capability, pasta, Podman/local image, `/dev/net/tun`,
 Firecracker, or locked L7 assets fails rather than skips.
 
+Both live lanes must attempt a raw packet socket after readiness and require a
+permission failure. The Podman lane must also inspect the created container's
+effective capability/no-new-privileges configuration. The Firecracker lane
+must inspect the live guest-agent capability sets and the locked filesystem's
+absence of setuid/setgid or file-capability reacquisition paths. These runtime
+proofs must correlate to the same topology generation as the inspected rules;
+requested drops and image-manifest labels do not count.
+
 ## Broad and portability gates
 
 ```sh

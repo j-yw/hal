@@ -34,8 +34,11 @@ Every L7 mutation is scoped to a sandbox-owned network namespace:
 
 `pasta` provides a runtime-specific, live-only mapping from a synthetic guest
 address to the exact L6 loopback proxy port. It is not enforcement proof. The
-owned nftables rules remain the authority that prevents every non-proxy egress
-path.
+owned nftables rules mediate IP traffic, while an independently inspected
+runtime control removes raw-packet capability before untrusted work can start.
+Both proofs are required: an `inet` output hook cannot observe `AF_PACKET`
+link-layer sends, and a capability-only control cannot replace the inspected
+default-drop IP policy.
 
 ## Package ownership
 
@@ -51,7 +54,8 @@ path.
   Firecracker.
 - `internal/sandboxruntime/rootlesspodman` owns Podman create/start/exec/stop
   sequencing, explicit pasta arguments, container-label and namespace binding,
-  proxy environment injection, and its per-target topology session.
+  proxy environment injection, inspected raw-packet capability removal, and
+  its per-target topology session.
 - `internal/sandboxruntime/microvm/firecrackerhost` owns the Firecracker
   topology session, TAP lifecycle, namespace-bound process launch, and the
   ordering between topology, Firecracker, guest readiness, and teardown.
@@ -128,6 +132,14 @@ chains are default-drop in the first committed transaction. Canonical rules:
 - reject unexpected accept, jump, goto, NAT, masquerade, extra interface, or
   extra default-route behavior.
 
+The rule adapter must fail closed unless its caller supplies a same-generation
+runtime proof that the workload cannot create raw packet sockets. A requested
+capability drop, static image property, or plan label is not proof. Podman must
+inspect the created container's effective configuration; Firecracker must
+confirm the running guest-agent process has no effective, permitted,
+inheritable, ambient, or recoverable raw-packet capability. The L7 image must
+also contain no setuid/setgid or file-capability path that can reacquire it.
+
 Inspection consumes bounded `nft --json list table` output and compares the
 normalized family, table ownership token, chain hooks/priorities/policies,
 rule order, expressions, verdicts, interface identity, generation comments,
@@ -149,9 +161,11 @@ topology factory performs this transaction:
 2. start and retain one exact L6 proxy generation;
 3. create the stopped container with explicit rootless pasta mapping, no host
    network, no ambient/default network, no port auto-forwarding, no Docker
-   socket, no privilege, and no workload `CAP_NET_ADMIN`;
+   socket, no privilege, no-new-privileges, and no workload `CAP_NET_ADMIN` or
+   `CAP_NET_RAW`;
 4. start only the inert container command; user work remains blocked;
-5. inspect exact container ID/labels plus user/network namespace identity;
+5. inspect exact container ID/labels, user/network namespace identity, and the
+   effective absence of all raw-packet/admin capability paths;
 6. enter that owned namespace through the daemon helper and atomically install
    the output-chain rules;
 7. structurally inspect the rules and probe the exact proxy mapping;
@@ -175,6 +189,13 @@ addresses, routes, and proxy bootstrap before dropping to UID/GID 1000. DHCP
 and guest DNS remain disabled. Required BusyBox networking/probe applets are
 locked by the build. The L5 image, digest, and no-network tests are not edited
 into a networking claim.
+
+Before Firecracker work is admitted, PID 1 must irreversibly remove effective,
+permitted, inheritable, ambient, and bounding capability paths while changing
+to UID/GID 1000 under `no_new_privs`. The built filesystem must be inspected to
+contain no setuid/setgid executable or file capability that can reacquire raw
+packet access. Guest readiness must report only a sanitized pass/fail result
+for that live process state; the static image manifest is not runtime proof.
 
 The Firecracker transaction is:
 
@@ -238,6 +259,8 @@ Before production implementation, failing tests must cover:
 - explicit Podman pasta mapping, no privilege/capability/socket/host-network
   regression, no execution before proof, endpoint non-persistence, proxy-loss
   quarantine, restart reconciliation, and advisory-only projection;
+- raw-packet socket attempts failing in both runtime lanes before user work,
+  with capability state re-inspected after readiness and after restart;
 - one Firecracker NIC, network-enabled L7 image validation, topology-before-
   boot ordering, namespace-bound process start, proxy loss, process failure,
   reverse rollback, and zero-resource teardown;
