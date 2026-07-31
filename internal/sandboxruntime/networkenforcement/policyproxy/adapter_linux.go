@@ -524,13 +524,15 @@ func (a *Adapter) serveConnect(w http.ResponseWriter, request *http.Request, gen
 		safeHTTPError(w, http.StatusForbidden)
 		return
 	}
-	targets, destinationStatus, category := a.resolveTargets(request.Context(), authority, "")
+	connectCtx, cancelConnect := context.WithTimeout(request.Context(), a.config.Limits.ConnectTimeout)
+	defer cancelConnect()
+	targets, destinationStatus, category := a.resolveTargets(connectCtx, authority, "")
 	if destinationStatus != 0 {
 		a.emitResolutionDecision(result, destinationStatus, category)
 		safeHTTPError(w, destinationStatus)
 		return
 	}
-	upstream, err := a.dialTargets(request.Context(), "tcp", targets)
+	upstream, err := a.dialTargets(connectCtx, "tcp", targets)
 	if err != nil {
 		a.emitFinalDecision(result, networkenforcement.PolicyProxyDecisionActionDeny, networkenforcement.PolicyProxyDecisionReasonUpstreamUnavailable, "")
 		safeHTTPError(w, http.StatusBadGateway)
@@ -565,9 +567,10 @@ func (a *Adapter) serveConnect(w http.ResponseWriter, request *http.Request, gen
 		_ = client.Close()
 		_ = upstream.Close()
 	}()
-	deadline := time.Now().Add(a.config.Limits.ConnectTimeout)
-	_ = client.SetDeadline(deadline)
-	_ = upstream.SetDeadline(deadline)
+	if deadline, ok := connectCtx.Deadline(); ok {
+		_ = client.SetDeadline(deadline)
+		_ = upstream.SetDeadline(deadline)
+	}
 	if _, err := io.WriteString(buffered, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		return
 	}
@@ -582,11 +585,11 @@ func (a *Adapter) serveConnect(w http.ResponseWriter, request *http.Request, gen
 	go boundedTunnelCopy(upstream, clientSource, client, a.config.Limits.MaxConnectBytes, copyDone)
 	go boundedTunnelCopy(client, upstream, upstream, a.config.Limits.MaxConnectBytes, copyDone)
 	select {
-	case <-request.Context().Done():
+	case <-connectCtx.Done():
 	case first := <-copyDone:
 		closeWrite(first.destination)
 		select {
-		case <-request.Context().Done():
+		case <-connectCtx.Done():
 		case second := <-copyDone:
 			closeWrite(second.destination)
 		}

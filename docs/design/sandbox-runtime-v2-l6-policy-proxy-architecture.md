@@ -84,6 +84,8 @@ All resolved addresses must pass. A mixed answer fails closed.
 - request and response bodies are buffered only up to configured maxima, with
   oversize input rejected before upstream publication;
 - CONNECT tunnels have bounded lifetime and per-direction byte limits;
+- CONNECT resolution, dialing, and tunnelling share one bounded CONNECT
+  operation context;
 - hop-by-hop and `Proxy-Authorization` headers are removed;
 - outbound HTTP writes one contained origin-form request directly to the
   already validated numeric-address connection, so ambient proxy discovery and
