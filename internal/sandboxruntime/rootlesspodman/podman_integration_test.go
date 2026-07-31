@@ -88,6 +88,9 @@ func TestL7PreparedLinuxRootlessPodmanRawPacketCapabilityProof(t *testing.T) {
 			t.Errorf("selected prepared-Linux L7 exact-container cleanup failed: %v", cleanupErr)
 		}
 	})
+	if !validL7PodmanExactContainerID(exactCreatedContainerID) {
+		t.Fatal("Create() did not return an exact full Podman container ID")
+	}
 	session.mu.Lock()
 	session.proof.RuntimeID = target.Runtime.RuntimeID
 	session.mu.Unlock()
