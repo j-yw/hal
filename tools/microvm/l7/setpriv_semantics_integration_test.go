@@ -3,14 +3,25 @@
 package l7profile
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
+
+const (
+	l7ConfiguredProviderOutputLimit = 16 * 1024
+	l7ConfiguredProviderTimeout     = 5 * time.Second
+)
+
+var errL7ConfiguredProviderQuery = errors.New("configured subordinate ID provider query failed")
 
 func TestL7SetprivLockedKeepCapsSemantics(t *testing.T) {
 	for _, command := range []string{"getsubids", "newgidmap", "newuidmap", "setpriv", "unshare"} {
@@ -132,7 +143,13 @@ func requireL7SubordinateID(t *testing.T, username string, group bool) uint64 {
 	if group {
 		arguments = []string{"-g", username}
 	}
-	output, err := exec.Command("getsubids", arguments...).Output()
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		l7ConfiguredProviderTimeout,
+		l7ConfiguredProviderOutputLimit,
+		"getsubids",
+		arguments...,
+	)
 	if err != nil {
 		t.Fatal("configured subordinate ID provider query failed for the explicit setpriv semantic gate")
 	}
@@ -141,6 +158,54 @@ func requireL7SubordinateID(t *testing.T, username string, group bool) uint64 {
 		t.Fatal("configured subordinate ID provider returned invalid output for the explicit setpriv semantic gate")
 	}
 	return id
+}
+
+type l7BoundedOutput struct {
+	data     []byte
+	limit    int
+	overflow bool
+}
+
+func (output *l7BoundedOutput) Write(data []byte) (int, error) {
+	written := len(data)
+	remaining := output.limit - len(output.data)
+	if remaining <= 0 {
+		output.overflow = output.overflow || written > 0
+		return written, nil
+	}
+	if len(data) > remaining {
+		output.data = append(output.data, data[:remaining]...)
+		output.overflow = true
+		return written, nil
+	}
+	output.data = append(output.data, data...)
+	return written, nil
+}
+
+func runL7ConfiguredProviderQuery(
+	parent context.Context,
+	timeout time.Duration,
+	outputLimit int,
+	executable string,
+	arguments ...string,
+) ([]byte, error) {
+	if timeout <= 0 || outputLimit <= 0 || strings.TrimSpace(executable) == "" {
+		return nil, errL7ConfiguredProviderQuery
+	}
+	queryContext, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	output := &l7BoundedOutput{
+		data:  make([]byte, 0, outputLimit),
+		limit: outputLimit,
+	}
+	command := exec.CommandContext(queryContext, executable, arguments...)
+	command.Stdout = output
+	command.Stderr = io.Discard
+	command.WaitDelay = timeout
+	if err := command.Run(); err != nil || queryContext.Err() != nil || output.overflow {
+		return append([]byte(nil), output.data...), errL7ConfiguredProviderQuery
+	}
+	return append([]byte(nil), output.data...), nil
 }
 
 func parseL7GetSubIDs(output []byte, username string) (uint64, error) {
