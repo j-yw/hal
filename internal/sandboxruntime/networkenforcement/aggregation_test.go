@@ -395,6 +395,7 @@ func aggregationDefaultDenyRuleCapabilityLabels() []string {
 }
 
 func aggregationListenerMetadata(plan Plan, status LifecycleStatus, reason LifecycleReasonCode, operation string) ProxyListenerLifecycleMetadata {
+	correlation := aggregationCorrelation(plan)
 	return ProxyListenerLifecycleMetadata{
 		ID:               "proxy-live-aggregation",
 		PlanID:           plan.ID,
@@ -404,12 +405,14 @@ func aggregationListenerMetadata(plan Plan, status LifecycleStatus, reason Lifec
 		Operations:       []string{operation},
 		PolicySnapshot:   plan.PolicySnapshot,
 		CapabilityLabels: []string{"proxy_active"},
+		Correlation:      &correlation,
 		ReasonCode:       reason,
 	}
 }
 
 func aggregationRuleMetadata(plan Plan, status LifecycleStatus, reason LifecycleReasonCode, operation string, mechanism EnforcementMechanism) RuleLifecycleMetadata {
-	return RuleLifecycleMetadata{
+	correlation := aggregationCorrelation(plan)
+	metadata := RuleLifecycleMetadata{
 		ID:               "rules-aggregation",
 		PlanID:           plan.ID,
 		AdapterID:        "fake-aggregation-rules",
@@ -418,7 +421,34 @@ func aggregationRuleMetadata(plan Plan, status LifecycleStatus, reason Lifecycle
 		Operations:       []string{operation},
 		PolicySnapshot:   plan.PolicySnapshot,
 		CapabilityLabels: aggregationDefaultDenyRuleCapabilityLabels(),
+		Correlation:      &correlation,
 		ReasonCode:       reason,
+	}
+	if status == LifecycleStatusActive {
+		metadata.Inspection = &InspectedRuleProof{
+			ID:               "rule-proof-aggregation",
+			RuleDigest:       "rule-digest-aggregation",
+			Status:           RuleInspectionStatusInspected,
+			Correlation:      &correlation,
+			Mechanisms:       []EnforcementMechanism{mechanism},
+			CapabilityLabels: aggregationDefaultDenyRuleCapabilityLabels(),
+			ReasonCode:       LifecycleReasonRuleInspected,
+		}
+	}
+	return metadata
+}
+
+func aggregationCorrelation(plan Plan) EnforcementCorrelation {
+	return EnforcementCorrelation{
+		SandboxID:            "sandbox-aggregation",
+		ExecutionID:          "execution-aggregation",
+		WorkerID:             "worker-aggregation",
+		RuntimeID:            "runtime-aggregation",
+		PlanID:               plan.ID,
+		PolicySnapshotID:     plan.PolicySnapshot.ID,
+		ProxySessionID:       plan.Proxy.ProxySessionID,
+		TopologyGenerationID: "topology-generation-aggregation",
+		RuleGenerationID:     "rule-generation-aggregation",
 	}
 }
 
