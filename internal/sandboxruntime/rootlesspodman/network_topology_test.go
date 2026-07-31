@@ -537,7 +537,7 @@ func assertExplicitSafePastaCreateArgs(t *testing.T, args []string) {
 	}
 	joined := strings.ToLower(strings.Join(args, "\x00"))
 	for _, forbidden := range []string{
-		"--privileged", "--cap-add", "net_admin", "docker.sock", "podman.sock",
+		"--privileged", "--cap-add", "net_admin", "net_raw", "docker.sock", "podman.sock",
 		"--publish", "--publish-all", "--network=host", "\x00host\x00", "\x00bridge\x00",
 		"--ipv4-only", "--ipv6-only",
 	} {
@@ -545,6 +545,19 @@ func assertExplicitSafePastaCreateArgs(t *testing.T, args []string) {
 			t.Fatalf("Create() args = %#v, contain forbidden topology token %q", args, forbidden)
 		}
 	}
+	if countArg(args, "--cap-drop=ALL") != 1 || !containsArgPair(args, "--security-opt", "no-new-privileges") {
+		t.Fatalf("Create() args = %#v, want one all-capability drop and no-new-privileges", args)
+	}
+}
+
+func countArg(args []string, value string) int {
+	count := 0
+	for _, arg := range args {
+		if arg == value {
+			count++
+		}
+	}
+	return count
 }
 
 func assertAdvisoryActiveNetworkProof(t *testing.T, target *sandboxruntime.Target) {

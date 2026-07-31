@@ -61,6 +61,36 @@ func TestL7PodmanRawPacketVerifierUsesExactInspectAndHostProcEvidence(t *testing
 	}
 }
 
+func TestL7PodmanRawPacketVerifierRunsBeforeLinuxRulesMutationWhenComposed(t *testing.T) {
+	correlation := testRawPacketCorrelation()
+	verifier := newRawPacketVerifier(
+		&rawPacketInspectRunner{outputs: []string{validRawPacketInspectJSON()}},
+		&rawPacketProcessInspector{err: errors.New("seeded private proc failure")},
+		positiveRawPacketTime,
+	)
+	expected, err := linuxrules.NewExpectedRuleSet(linuxrules.RuleSetConfig{
+		Correlation:         correlation,
+		Profile:             linuxrules.RuleProfileWorkloadOutput,
+		Namespace:           linuxrules.NewNamespaceHandle(10, 11),
+		TableName:           "hal_l7_podman",
+		InterfaceName:       "eth0",
+		ProxyAddress:        "192.0.2.10",
+		ProxyPort:           3128,
+		RawPacketIsolation:  verifier,
+		WorkloadIPv6Address: "fd00:7::2",
+		GatewayIPv6Address:  "fd00:7::1",
+		IPv6PrefixBits:      64,
+	})
+	if err != nil {
+		t.Fatalf("NewExpectedRuleSet() unexpected error: %v", err)
+	}
+	executor := &panicLinuxRulesExecutor{}
+	adapter := linuxrules.NewAdapter(executor, linuxrules.AdapterOptions{Now: positiveRawPacketTime})
+	if _, err := adapter.ApplyAndInspect(context.Background(), expected); !errors.Is(err, linuxrules.ErrRawPacketIsolation) {
+		t.Fatalf("ApplyAndInspect() error = %v, want raw-packet proof rejection before mutation", err)
+	}
+}
+
 func TestL7PodmanRawPacketVerifierIgnoresPodmanEffectiveCapsAndFailsOnHostProc(t *testing.T) {
 	t.Run("null EffectiveCaps is not treated as missing proof", func(t *testing.T) {
 		runner := &rawPacketInspectRunner{outputs: []string{validRawPacketInspectJSON(), validRawPacketInspectJSON()}}
@@ -76,6 +106,8 @@ func TestL7PodmanRawPacketVerifierIgnoresPodmanEffectiveCapsAndFailsOnHostProc(t
 		verifier := newRawPacketVerifier(&rawPacketInspectRunner{outputs: []string{validRawPacketInspectJSON()}}, process, positiveRawPacketTime)
 		if _, err := verifier.VerifyRawPacketIsolation(context.Background(), testRawPacketCorrelation()); !errors.Is(err, rootlesspodman.ErrRawPacketIsolationUnverified) {
 			t.Fatalf("VerifyRawPacketIsolation() error = %v, want sanitized fail-closed sentinel", err)
+		} else if errors.Is(err, seeded) {
+			t.Fatalf("VerifyRawPacketIsolation() retained injected private error: %v", err)
 		} else if strings.Contains(err.Error(), "4242") || strings.Contains(err.Error(), "/proc") || strings.Contains(err.Error(), "private") {
 			t.Fatalf("VerifyRawPacketIsolation() leaked injected process error: %v", err)
 		}
@@ -194,8 +226,46 @@ func TestL7PodmanRawPacketVerifierRejectsMalformedOversizedErrorsCorrelationAndT
 	}
 }
 
+func TestL7PodmanRawPacketVerifierRejectsInvalidConstructionWithoutInspecting(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*rootlesspodman.PodmanRawPacketIsolationVerifierOptions)
+	}{
+		{name: "nil runner", mutate: func(options *rootlesspodman.PodmanRawPacketIsolationVerifierOptions) { options.LifecycleRunner = nil }},
+		{name: "unsafe identity", mutate: func(options *rootlesspodman.PodmanRawPacketIsolationVerifierOptions) {
+			options.Identity.RuntimeGenerationID = "/proc/private"
+		}},
+		{name: "target prefix", mutate: func(options *rootlesspodman.PodmanRawPacketIsolationVerifierOptions) { options.Target.ID = "container" }},
+		{name: "wrong runtime driver", mutate: func(options *rootlesspodman.PodmanRawPacketIsolationVerifierOptions) {
+			options.Target.Runtime.Driver = sandboxruntime.DriverSSHMachine
+		}},
+		{name: "negative bound", mutate: func(options *rootlesspodman.PodmanRawPacketIsolationVerifierOptions) { options.MaxInspectBytes = -1 }},
+		{name: "excessive bound", mutate: func(options *rootlesspodman.PodmanRawPacketIsolationVerifierOptions) {
+			options.MaxInspectBytes = 257 << 10
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &rawPacketInspectRunner{}
+			options := validRawPacketVerifierOptions(runner, &rawPacketProcessInspector{panicOnCall: true}, positiveRawPacketTime)
+			tt.mutate(&options)
+			verifier := rootlesspodman.NewPodmanRawPacketIsolationVerifier(options)
+			if _, err := verifier.VerifyRawPacketIsolation(context.Background(), testRawPacketCorrelation()); !errors.Is(err, rootlesspodman.ErrRawPacketIsolationUnverified) {
+				t.Fatalf("VerifyRawPacketIsolation() error = %v, want invalid-construction rejection", err)
+			}
+			if len(runner.requests) != 0 {
+				t.Fatalf("invalid verifier reached Podman inspect: %#v", runner.requests)
+			}
+		})
+	}
+}
+
 func newRawPacketVerifier(runner rootlesspodman.LifecycleCommandRunner, process rootlesspodman.RawPacketProcessInspector, now func() time.Time) *rootlesspodman.PodmanRawPacketIsolationVerifier {
-	return rootlesspodman.NewPodmanRawPacketIsolationVerifier(rootlesspodman.PodmanRawPacketIsolationVerifierOptions{
+	return rootlesspodman.NewPodmanRawPacketIsolationVerifier(validRawPacketVerifierOptions(runner, process, now))
+}
+
+func validRawPacketVerifierOptions(runner rootlesspodman.LifecycleCommandRunner, process rootlesspodman.RawPacketProcessInspector, now func() time.Time) rootlesspodman.PodmanRawPacketIsolationVerifierOptions {
+	return rootlesspodman.PodmanRawPacketIsolationVerifierOptions{
 		LifecycleRunner:  runner,
 		ProcessInspector: process,
 		Identity:         testNetworkTopologyIdentity(),
@@ -205,7 +275,7 @@ func newRawPacketVerifier(runner rootlesspodman.LifecycleCommandRunner, process 
 			},
 		},
 		Now: now,
-	})
+	}
 }
 
 func testRawPacketCorrelation() networkenforcement.EnforcementCorrelation {
@@ -289,6 +359,16 @@ type rawPacketProcessInspector struct {
 	pid         int
 	err         error
 	panicOnCall bool
+}
+
+type panicLinuxRulesExecutor struct{}
+
+func (*panicLinuxRulesExecutor) ApplyBatch(context.Context, linuxrules.NamespaceHandle, []byte) error {
+	panic("linuxrules mutated before raw-packet capability proof")
+}
+
+func (*panicLinuxRulesExecutor) ListTableJSON(context.Context, linuxrules.NamespaceHandle, linuxrules.TableQuery, int64) ([]byte, error) {
+	panic("linuxrules inspected or mutated before raw-packet capability proof")
 }
 
 func (p *rawPacketProcessInspector) VerifyRawPacketProcess(_ context.Context, pid int, _ int64) error {

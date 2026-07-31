@@ -18,8 +18,98 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 )
+
+func TestL7PreparedLinuxRootlessPodmanRawPacketCapabilityProof(t *testing.T) {
+	for _, marker := range []string{
+		"HAL_NETWORK_ENFORCEMENT_LIVE",
+		"HAL_NETWORK_ENFORCEMENT_LIVE_PROXY",
+		"HAL_NETWORK_ENFORCEMENT_LIVE_FIREWALL",
+		"HAL_L7_LINUX_NETWORK_INTEGRATION",
+	} {
+		if os.Getenv(marker) != "1" {
+			t.Fatalf("%s=1 is required for the selected prepared-Linux L7 capability proof", marker)
+		}
+	}
+	image := strings.TrimSpace(os.Getenv("HAL_PODMAN_TEST_IMAGE"))
+	if image == "" {
+		t.Fatal("HAL_PODMAN_TEST_IMAGE must name an already-local image for the selected prepared-Linux L7 capability proof")
+	}
+	podmanPath := strings.TrimSpace(os.Getenv("HAL_PODMAN_PATH"))
+	if podmanPath == "" {
+		var err error
+		podmanPath, err = exec.LookPath(rootlesspodman.DefaultPodmanExecutable)
+		if err != nil {
+			t.Fatal("Podman is required for the selected prepared-Linux L7 capability proof")
+		}
+	}
+	imageCtx, imageCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer imageCancel()
+	if output, err := exec.CommandContext(imageCtx, podmanPath, "image", "exists", image).CombinedOutput(); err != nil {
+		t.Fatalf("selected prepared-Linux L7 image prerequisite failed: %s", podmanIntegrationDetail(output, err))
+	}
+
+	runner := rootlesspodman.DefaultCommandRunner{}
+	session := newFakeNetworkTopologySession(nil)
+	identity := testNetworkTopologyIdentity()
+	driver := rootlesspodman.New(rootlesspodman.Options{
+		LifecycleRunner:       runner,
+		PodmanPath:            podmanPath,
+		Image:                 image,
+		WorkDir:               "/",
+		JobExecutionSupported: true,
+		NetworkTopologyFactory: &fakeNetworkTopologyFactory{preparation: rootlesspodman.NetworkTopologyPreparation{
+			Identity: identity, CreateArgs: testPastaCreateArgs(), Session: session,
+		}},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	containerName := fmt.Sprintf("hal-l7-cap-proof-%d-%d", os.Getpid(), time.Now().UnixNano())
+	target, err := driver.Create(ctx, sandboxruntime.CreateRequest{Name: containerName})
+	if err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+	cleanupTarget := *target
+	deleted := false
+	t.Cleanup(func() {
+		if deleted {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_ = driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget})
+	})
+	session.mu.Lock()
+	session.proof.RuntimeID = target.Runtime.RuntimeID
+	session.mu.Unlock()
+	target, err = driver.Start(ctx, sandboxruntime.LifecycleRequest{Target: *target})
+	if err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	cleanupTarget = *target
+	correlation := networkenforcement.EnforcementCorrelation{
+		SandboxID: identity.SandboxID, ExecutionID: identity.ExecutionID, WorkerID: identity.WorkerID,
+		RuntimeID: identity.RuntimeGenerationID, PlanID: identity.PlanID, PolicySnapshotID: identity.PolicySnapshotID,
+		ProxySessionID: identity.ProxySessionID, ProxyGenerationID: identity.ProxyGenerationID,
+		TopologyGenerationID: identity.TopologyGenerationID, RuleGenerationID: identity.RuleGenerationID,
+	}
+	verifier := rootlesspodman.NewPodmanRawPacketIsolationVerifier(rootlesspodman.PodmanRawPacketIsolationVerifierOptions{
+		LifecycleRunner: runner, PodmanPath: podmanPath, Identity: identity, Target: *target,
+	})
+	proof, err := verifier.VerifyRawPacketIsolation(ctx, correlation)
+	if err != nil {
+		t.Fatalf("VerifyRawPacketIsolation() failed: %v", err)
+	}
+	if !networkenforcement.RawPacketIsolationProofMatches(proof, correlation) {
+		t.Fatalf("VerifyRawPacketIsolation() proof = %#v, want exact live correlation", proof)
+	}
+	if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: *target}); err != nil {
+		t.Fatalf("Delete() failed: %v", err)
+	}
+	deleted = true
+}
 
 func TestPodmanIntegrationLifecycleExecAndCopy(t *testing.T) {
 	image := strings.TrimSpace(os.Getenv("HAL_PODMAN_TEST_IMAGE"))
