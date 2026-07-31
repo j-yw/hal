@@ -223,11 +223,13 @@ func validatePastaCreateArgs(args []string) (netip.Addr, error) {
 		return netip.Addr{}, ErrNetworkTopologyCreateArgsInvalid
 	}
 	options := strings.Split(strings.TrimPrefix(args[1], prefix), ",")
-	if len(options) != 6 ||
+	if len(options) != 10 ||
 		options[0] != "--no-map-gw" ||
 		!strings.HasPrefix(options[1], "--map-host-loopback=") ||
 		options[2] != "-t" || options[3] != "none" ||
-		options[4] != "-u" || options[5] != "none" {
+		options[4] != "-u" || options[5] != "none" ||
+		options[6] != "-T" || options[7] != "none" ||
+		options[8] != "-U" || options[9] != "none" {
 		return netip.Addr{}, ErrNetworkTopologyCreateArgsInvalid
 	}
 	address, err := netip.ParseAddr(strings.TrimPrefix(options[1], "--map-host-loopback="))
