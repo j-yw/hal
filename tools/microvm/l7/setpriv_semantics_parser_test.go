@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -65,6 +66,74 @@ func TestL7SubordinateIDMapUsesOneOuterIDAtNamespaceID1000(t *testing.T) {
 	want := fmt.Sprintf("1000:%d:1", outerID)
 	if got := l7SubordinateIDMap(outerID); got != want {
 		t.Fatal("subordinate ID map must map exactly one outer ID at namespace ID 1000")
+	}
+}
+
+func TestL7ConfiguredProviderQueryAcceptsSuccessfulExit(t *testing.T) {
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		5*time.Second,
+		64,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "success",
+	)
+	if err != nil {
+		t.Fatal("configured provider query rejected a successful bounded child")
+	}
+	if string(output) != "provider-safe-output\n" {
+		t.Fatal("configured provider query returned unexpected successful output")
+	}
+}
+
+func TestL7ConfiguredProviderQueryRejectsExpiredParentBeforeStart(t *testing.T) {
+	originalStart := startL7ConfiguredProviderCommand
+	startCalls := 0
+	startL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		startCalls++
+		return originalStart(command)
+	}
+	t.Cleanup(func() {
+		startL7ConfiguredProviderCommand = originalStart
+	})
+
+	testCases := []struct {
+		name    string
+		context func() (context.Context, context.CancelFunc)
+	}{
+		{
+			name: "canceled",
+			context: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, func() {}
+			},
+		},
+		{
+			name: "deadline expired",
+			context: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := testCase.context()
+			defer cancel()
+			output, err := runL7ConfiguredProviderQuery(
+				ctx,
+				time.Second,
+				64,
+				os.Args[0],
+				"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "success",
+			)
+			if !errors.Is(err, errL7ConfiguredProviderQuery) || len(output) != 0 {
+				t.Fatal("expired parent did not fail with the sanitized provider sentinel")
+			}
+		})
+	}
+	if startCalls != 0 {
+		t.Fatal("expired parent reached the configured provider executable side effect")
 	}
 }
 
@@ -199,6 +268,217 @@ func TestL7ConfiguredProviderQueryKillsRetainedStdoutGroupOnParentCancellation(t
 	}
 }
 
+func TestL7ConfiguredProviderQueryKeepsLeaderUnreapedThroughGroupCleanup(t *testing.T) {
+	originalSignal := signalL7ConfiguredProviderProcessGroup
+	originalMembers := l7ConfiguredProviderProcessGroupHasOtherMembers
+	originalReap := reapL7ConfiguredProviderCommand
+	var reapStarted atomic.Bool
+	var unsafeSignal atomic.Bool
+	var absenceProved atomic.Bool
+	var signalCalls atomic.Int32
+	var reapCalls atomic.Int32
+	signalL7ConfiguredProviderProcessGroup = func(processGroupID int, signal syscall.Signal) error {
+		if reapStarted.Load() {
+			unsafeSignal.Store(true)
+		}
+		signalCalls.Add(1)
+		return originalSignal(processGroupID, signal)
+	}
+	l7ConfiguredProviderProcessGroupHasOtherMembers = func(processGroupID, leaderPID int) (bool, error) {
+		hasMembers, err := originalMembers(processGroupID, leaderPID)
+		if err == nil && !hasMembers && !reapStarted.Load() {
+			absenceProved.Store(true)
+		}
+		return hasMembers, err
+	}
+	reapL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		reapCalls.Add(1)
+		if !absenceProved.Load() {
+			t.Error("configured provider leader reaped before process-group absence proof")
+		}
+		reapStarted.Store(true)
+		return originalReap(command)
+	}
+	t.Cleanup(func() {
+		signalL7ConfiguredProviderProcessGroup = originalSignal
+		l7ConfiguredProviderProcessGroupHasOtherMembers = originalMembers
+		reapL7ConfiguredProviderCommand = originalReap
+	})
+
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		time.Second,
+		256,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "parent-exit-group",
+	)
+	if !errors.Is(err, errL7ConfiguredProviderQuery) {
+		t.Fatal("configured provider query accepted a retained process-group descendant")
+	}
+	parentPID, descendantPID := parseL7HelperProcessIDs(t, output)
+	cleanupL7HelperProcess(t, descendantPID)
+	if signalCalls.Load() == 0 || reapCalls.Load() != 1 || unsafeSignal.Load() || !absenceProved.Load() {
+		t.Fatal("configured provider query did not preserve reuse-safe group cleanup ordering")
+	}
+	requireL7HelperProcessAbsent(t, parentPID)
+	requireL7HelperProcessAbsent(t, descendantPID)
+}
+
+func TestL7ConfiguredProviderQueryReapsLeaderWhenDrainJoinStaysIncomplete(t *testing.T) {
+	originalStart := startL7ConfiguredProviderCommand
+	originalReap := reapL7ConfiguredProviderCommand
+	originalWaitDrain := waitL7ConfiguredProviderOutputDrain
+	leaderPID := 0
+	reapCalls := 0
+	startL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		if err := originalStart(command); err != nil {
+			return err
+		}
+		leaderPID = command.Process.Pid
+		return nil
+	}
+	reapL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		reapCalls++
+		return originalReap(command)
+	}
+	waitL7ConfiguredProviderOutputDrain = func(*l7ConfiguredProviderOutputDrain, time.Time) (error, bool) {
+		return nil, false
+	}
+	t.Cleanup(func() {
+		startL7ConfiguredProviderCommand = originalStart
+		reapL7ConfiguredProviderCommand = originalReap
+		waitL7ConfiguredProviderOutputDrain = originalWaitDrain
+		if reapCalls == 0 && leaderPID > 0 {
+			_ = syscall.Kill(leaderPID, syscall.SIGKILL)
+			var status syscall.WaitStatus
+			_, _ = syscall.Wait4(leaderPID, &status, 0, nil)
+		}
+	})
+
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		5*time.Second,
+		64,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "success",
+	)
+	if !errors.Is(err, errL7ConfiguredProviderQuery) || len(output) > 64 {
+		t.Fatal("configured provider query did not fail closed on incomplete drain proof")
+	}
+	if reapCalls != 1 {
+		t.Fatalf("configured provider leader reap calls = %d, want exactly 1", reapCalls)
+	}
+}
+
+func TestL7ConfiguredProviderQueryArrangesBoundedReapWhenTerminalObservationTimesOut(t *testing.T) {
+	originalStart := startL7ConfiguredProviderCommand
+	originalObserve := observeL7ConfiguredProviderLeaderState
+	originalSignal := signalL7ConfiguredProviderProcessGroup
+	originalReap := reapL7ConfiguredProviderCommand
+	releaseReap := make(chan struct{})
+	reapDone := make(chan struct{})
+	released := false
+	var leaderPID atomic.Int32
+	var reapStarted atomic.Bool
+	var unsafeSignal atomic.Bool
+	var signalCalls atomic.Int32
+	var reapCalls atomic.Int32
+	startL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		if err := originalStart(command); err != nil {
+			return err
+		}
+		leaderPID.Store(int32(command.Process.Pid))
+		return nil
+	}
+	observeL7ConfiguredProviderLeaderState = func(int) (bool, error) {
+		return false, nil
+	}
+	signalL7ConfiguredProviderProcessGroup = func(processGroupID int, signal syscall.Signal) error {
+		if reapStarted.Load() {
+			unsafeSignal.Store(true)
+		}
+		signalCalls.Add(1)
+		return originalSignal(processGroupID, signal)
+	}
+	reapL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		reapCalls.Add(1)
+		reapStarted.Store(true)
+		<-releaseReap
+		err := originalReap(command)
+		close(reapDone)
+		return err
+	}
+	t.Cleanup(func() {
+		if !released {
+			close(releaseReap)
+		}
+		select {
+		case <-reapDone:
+		case <-time.After(time.Second):
+		}
+		startL7ConfiguredProviderCommand = originalStart
+		observeL7ConfiguredProviderLeaderState = originalObserve
+		signalL7ConfiguredProviderProcessGroup = originalSignal
+		reapL7ConfiguredProviderCommand = originalReap
+		if reapCalls.Load() == 0 && leaderPID.Load() > 0 {
+			pid := int(leaderPID.Load())
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			var status syscall.WaitStatus
+			_, _ = syscall.Wait4(pid, &status, 0, nil)
+		}
+	})
+
+	started := time.Now()
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		20*time.Millisecond,
+		64,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "success",
+	)
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatal("configured provider query did not bound its arranged reap wait")
+	}
+	if !errors.Is(err, errL7ConfiguredProviderQuery) || len(output) > 64 {
+		t.Fatal("configured provider query did not fail with the sanitized sentinel")
+	}
+	if signalCalls.Load() == 0 || reapCalls.Load() != 1 || !reapStarted.Load() || unsafeSignal.Load() {
+		t.Fatal("configured provider query did not arrange one reuse-safe reap after signaling")
+	}
+	close(releaseReap)
+	released = true
+	select {
+	case <-reapDone:
+	case <-time.After(time.Second):
+		t.Fatal("configured provider arranged reap did not finish after release")
+	}
+	requireL7HelperProcessAbsent(t, int(leaderPID.Load()))
+}
+
+func TestL7ConfiguredProviderQueryBoundsEscapedRetainedPipe(t *testing.T) {
+	started := time.Now()
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		2*time.Second,
+		1024,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "parent-exit-escaped",
+	)
+	if !errors.Is(err, errL7ConfiguredProviderQuery) {
+		t.Fatal("configured provider query accepted an escaped retained output pipe")
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatal("configured provider query did not bound escaped retained-pipe cleanup")
+	}
+	parentPID, descendantPID := parseL7HelperProcessIDs(t, output)
+	cleanupL7HelperProcess(t, descendantPID)
+	waitForL7HelperProcessAbsent(t, descendantPID)
+	requireL7HelperProcessAbsent(t, parentPID)
+	if strings.Contains(err.Error(), "provider-sensitive") {
+		t.Fatal("configured provider retained-pipe error exposed child output")
+	}
+}
+
 func TestL7ConfiguredProviderHelperProcess(t *testing.T) {
 	mode := ""
 	for index, argument := range os.Args {
@@ -208,6 +488,9 @@ func TestL7ConfiguredProviderHelperProcess(t *testing.T) {
 		}
 	}
 	switch mode {
+	case "success":
+		_, _ = os.Stdout.WriteString("provider-safe-output\n")
+		os.Exit(0)
 	case "oversized":
 		_, _ = os.Stdout.Write(bytes.Repeat([]byte("provider-sensitive-output"), 16))
 		_, _ = os.Stderr.WriteString("provider-sensitive-stderr")
@@ -238,9 +521,34 @@ func TestL7ConfiguredProviderHelperProcess(t *testing.T) {
 			_, _ = os.Stdout.Write(bytes.Repeat([]byte("provider-sensitive-output"), 32))
 		}
 		time.Sleep(time.Minute)
+	case "parent-exit-group", "parent-exit-escaped":
+		descendantMode := "descendant"
+		if mode == "parent-exit-escaped" {
+			descendantMode = "escaped-pipe"
+		}
+		descendant := exec.Command(
+			os.Args[0],
+			"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", descendantMode,
+		)
+		descendant.Stdout = os.Stdout
+		descendant.Stderr = os.Stderr
+		if mode == "parent-exit-escaped" {
+			descendant.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		}
+		if err := descendant.Start(); err != nil {
+			os.Exit(10)
+		}
+		_, _ = os.Stdout.WriteString(fmt.Sprintf("processes:%d:%d\n", os.Getpid(), descendant.Process.Pid))
 	case "descendant":
 		signal.Ignore(syscall.SIGTERM)
 		time.Sleep(time.Minute)
+	case "escaped-pipe":
+		for {
+			if _, err := os.Stdout.Write([]byte(".")); err != nil {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
 	}
 }
 
@@ -288,9 +596,22 @@ func requireL7HelperProcessAbsent(t *testing.T, pid int) {
 	}
 }
 
+func waitForL7HelperProcessAbsent(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("configured provider retained-pipe descendant remained live")
+}
+
 func requireL7HelperProcessGroupAbsent(t *testing.T, processGroupID int) {
 	t.Helper()
-	if err := syscall.Kill(-processGroupID, 0); !errors.Is(err, syscall.ESRCH) {
+	hasMembers, err := scanL7ConfiguredProviderProcessGroup(processGroupID, 0)
+	if err != nil || hasMembers {
 		t.Fatal("configured provider query left its exact helper process group behind")
 	}
 }

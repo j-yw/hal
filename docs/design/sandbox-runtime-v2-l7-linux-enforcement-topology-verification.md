@@ -42,13 +42,23 @@ identity to namespace ID 0 plus exactly one subordinate UID and GID to namespace
 ID 1000 in a disposable user namespace. It then executes the real UID/GID 1000
 and group-clear transition. Provider queries use an absolute operation deadline,
 hard-bounded stdout, discarded stderr, an owned Linux process group, and a small
-fixed cleanup allowance. Timeout, cancellation, overflow, nonzero exit,
-descendant retention, or malformed output fails closed after exact process-group
-termination and bounded pipe drain. It requires all five capability sets to be
-zero, supplementary groups to be empty, `NoNewPrivs` to be active, and keep-caps
-to remain locked off. It does not start Firecracker, modify an image, or run
-guest work. The final-image verifier is run read-only against the fresh
-digest-locked L7 rootfs before the selected Firecracker lane.
+fixed cleanup allowance. A terminal leader is observed with Linux `waitid`
+`WNOWAIT` and remains unreaped while non-leader process-group membership is
+eliminated; the leader is then reaped exactly once, with no later group signal.
+If terminal observation does not complete after group termination, one owned
+`Wait` is still arranged after the final group operation and joined only for the
+fixed cleanup allowance; timeout remains a sanitized failure and cannot cause a
+second wait or a later process-group signal.
+Timeout, cancellation, overflow, nonzero exit, descendant retention, or
+malformed output fails closed after exact process-group termination and bounded
+pipe drain. A provider descendant that explicitly leaves the owned group is
+outside the process-group containment boundary, but an inherited output pipe
+cannot retain the query: the owned read end is closed after the fixed drain
+allowance, the copier is joined, and the query fails closed. It requires all five
+capability sets to be zero, supplementary groups to be empty, `NoNewPrivs` to be
+active, and keep-caps to remain locked off. It does not start Firecracker, modify
+an image, or run guest work. The final-image verifier is run read-only against
+the fresh digest-locked L7 rootfs before the selected Firecracker lane.
 
 ## Selected prepared-Linux gates
 
