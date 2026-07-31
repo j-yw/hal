@@ -75,6 +75,14 @@ func osExecProcessCommand(req firecracker.ProcessRunnerStartRequest) (string, []
 	if len(req.Environment) != 0 {
 		return "", nil, ErrHostProcessEnvironmentUnsupported
 	}
+	if len(req.InheritedFiles) != 0 && len(req.InheritedFiles) != 2 {
+		return "", nil, ErrHostProcessArgumentInvalid
+	}
+	for _, file := range req.InheritedFiles {
+		if file == nil {
+			return "", nil, ErrHostProcessArgumentInvalid
+		}
+	}
 	executable := strings.TrimSpace(req.Executable)
 	if executable == "" {
 		return "", nil, ErrHostProcessExecutableRequired

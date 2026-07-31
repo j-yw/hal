@@ -104,10 +104,8 @@ func startProcessWithInheritedFiles(
 	if err := validateProcessCommandDescriptor(descriptor); err != nil {
 		return ProcessHandleMetadata{}, err
 	}
-	for _, file := range files {
-		if file == nil {
-			return ProcessHandleMetadata{}, newProcessBoundaryError("inheritedFiles", "inherited process file is invalid")
-		}
+	if err := validateProcessInheritedFiles(files); err != nil {
+		return ProcessHandleMetadata{}, err
 	}
 	handle, err := adapter.StartProcess(processContext(ctx), ProcessStartRequest{
 		Descriptor:     descriptor,
@@ -117,6 +115,18 @@ func startProcessWithInheritedFiles(
 		return ProcessHandleMetadata{}, newProcessBoundaryAdapterError("processAdapter", "process start failed", err)
 	}
 	return sanitizeProcessHandleMetadata(handle), nil
+}
+
+func validateProcessInheritedFiles(files []*os.File) error {
+	if len(files) != 0 && len(files) != 2 {
+		return newProcessBoundaryError("inheritedFiles", "exactly two inherited process files are required")
+	}
+	for _, file := range files {
+		if file == nil {
+			return newProcessBoundaryError("inheritedFiles", "inherited process file is invalid")
+		}
+	}
+	return nil
 }
 
 // ProcessCommandDescriptorFromStartPlan converts a pure start operation plan

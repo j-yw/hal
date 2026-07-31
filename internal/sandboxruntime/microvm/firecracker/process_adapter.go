@@ -42,10 +42,8 @@ func (adapter ProcessLaunchAdapter) StartProcess(ctx context.Context, req Proces
 	if err := validateProcessCommandDescriptor(req.Descriptor); err != nil {
 		return ProcessHandleMetadata{}, err
 	}
-	for _, file := range req.InheritedFiles {
-		if file == nil {
-			return ProcessHandleMetadata{}, newProcessBoundaryError("inheritedFiles", "inherited process file is invalid")
-		}
+	if err := validateProcessInheritedFiles(req.InheritedFiles); err != nil {
+		return ProcessHandleMetadata{}, err
 	}
 	ctx = processContext(ctx)
 	if err := ctx.Err(); err != nil {

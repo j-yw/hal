@@ -81,6 +81,24 @@ func TestOSExecProcessRunnerMapsSealedAssetsToChildFDThreeAndFour(t *testing.T) 
 	}
 }
 
+func TestOSExecProcessRunnerRejectsPartialOrExtraInheritedFileSets(t *testing.T) {
+	first := sealedAssetFile(t, "hal-l7-first", []byte("first"))
+	second := sealedAssetFile(t, "hal-l7-second", []byte("second"))
+	third := sealedAssetFile(t, "hal-l7-third", []byte("third"))
+	for _, files := range [][]*os.File{{first}, {first, second, third}} {
+		process, err := NewOSExecProcessRunner().StartHostProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+			Executable:     "firecracker",
+			InheritedFiles: files,
+		})
+		if process != nil {
+			t.Fatalf("process = %#v, want nil", process)
+		}
+		if !errors.Is(err, ErrHostProcessArgumentInvalid) {
+			t.Fatalf("StartHostProcess(%d files) error = %v, want invalid request", len(files), err)
+		}
+	}
+}
+
 func TestOSExecProcessRunnerSealedAssetChildHarness(t *testing.T) {
 	if !hasPrivateUmaskMarker(sealedAssetHarnessMarker) {
 		t.Skip("sealed asset subprocess harness")
