@@ -191,7 +191,8 @@ func validMapping(mapping Mapping) bool {
 	}
 	guestAddress, err := netip.ParseAddr(mapping.GuestProxyAddress)
 	if err != nil || !guestAddress.IsValid() || guestAddress.IsUnspecified() ||
-		guestAddress.IsLoopback() || guestAddress.IsMulticast() || guestAddress.IsLinkLocalUnicast() {
+		guestAddress.IsLoopback() || guestAddress.IsMulticast() || guestAddress.IsLinkLocalUnicast() ||
+		guestAddress.Is4() != hostAddress.Is4() {
 		return false
 	}
 	return mapping.NamespaceInterface != "lo" && interfacePattern.MatchString(mapping.NamespaceInterface)

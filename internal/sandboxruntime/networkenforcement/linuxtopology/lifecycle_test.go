@@ -276,6 +276,7 @@ func TestLinuxTopologyRejectsUnsafeInputsBeforeProcessStart(t *testing.T) {
 		{name: "non loopback endpoint", mutateReq: func(r *StartRequest) { r.Mapping.ProxyEndpoint = "198.51.100.2:80" }, want: ErrInvalidMapping},
 		{name: "missing endpoint port", mutateReq: func(r *StartRequest) { r.Mapping.ProxyEndpoint = "127.0.0.1:0" }, want: ErrInvalidMapping},
 		{name: "unsafe guest address", mutateReq: func(r *StartRequest) { r.Mapping.GuestProxyAddress = "127.0.0.1" }, want: ErrInvalidMapping},
+		{name: "mismatched mapping family", mutateReq: func(r *StartRequest) { r.Mapping.GuestProxyAddress = "2001:db8::2" }, want: ErrInvalidMapping},
 		{name: "unsafe interface", mutateReq: func(r *StartRequest) { r.Mapping.NamespaceInterface = "bad;if" }, want: ErrInvalidMapping},
 		{name: "uncontrolled environment", mutateCfg: func(c *Config) { c.Environment = []string{"PATH=/tmp/unsafe"} }, want: ErrInvalidTools},
 	}
