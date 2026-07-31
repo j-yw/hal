@@ -837,14 +837,21 @@ func readBounded(reader io.Reader, limit int64) ([]byte, bool, error) {
 	if reader == nil {
 		return nil, false, nil
 	}
-	payload, err := io.ReadAll(io.LimitReader(reader, limit+1))
-	if err != nil {
+	if limit < 0 || uint64(limit) >= uint64(^uint(0)>>1) {
+		return nil, false, safeAdapterError("body")
+	}
+	payload := make([]byte, int(limit+bodyOverflowReadAllowance))
+	read, err := io.ReadFull(reader, payload)
+	switch {
+	case err == nil:
+		return nil, true, nil
+	case errors.Is(err, io.EOF):
+		return payload[:0], false, nil
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return payload[:read], false, nil
+	default:
 		return nil, false, err
 	}
-	if int64(len(payload)) > limit {
-		return nil, true, nil
-	}
-	return payload, false, nil
 }
 
 func removeHopHeaders(header http.Header) {

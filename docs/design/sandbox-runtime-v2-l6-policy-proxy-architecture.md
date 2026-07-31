@@ -82,7 +82,8 @@ All resolved addresses must pass. A mixed answer fails closed.
   trailer working sets, including the server's request-header read allowance,
   and upstream response headers are MIME-parsed only once;
 - request and response bodies are buffered only up to configured maxima, with
-  oversize input rejected before upstream publication;
+  one fixed-capacity allocation per body and oversize input rejected before
+  upstream publication;
 - CONNECT tunnels have bounded lifetime and per-direction byte limits;
 - CONNECT resolution, dialing, and tunnelling share one bounded CONNECT
   operation context;

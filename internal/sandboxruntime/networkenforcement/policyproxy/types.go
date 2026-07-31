@@ -38,6 +38,9 @@ const (
 	// consuming a body. Reserve this wire limit independently for request and
 	// response trailer MIME maps.
 	trailerHeaderReadAllowance int64 = 4 << 10
+	// Body readers reserve one byte beyond the configured limit to identify an
+	// oversized payload without growing the backing buffer.
+	bodyOverflowReadAllowance int64 = 1
 	// Go's MIME header parser accounts for roughly 200 bytes of map overhead
 	// per field. A minimal valid wire field is only four bytes, so reserve 64x
 	// the wire limit for parsed header and trailer working sets.
@@ -187,10 +190,14 @@ func validAggregateBufferLimit(limits Limits) bool {
 		limits.MaxRequestBodyBytes,
 		limits.MaxResponseBodyBytes,
 	} {
-		if limit <= 0 || perRequest <= 0 || perRequest > maxAggregateBufferBytes-limit {
+		if limit <= 0 || limit > maxAggregateBufferBytes-bodyOverflowReadAllowance {
 			return false
 		}
-		perRequest += limit
+		bufferLimit := limit + bodyOverflowReadAllowance
+		if perRequest <= 0 || perRequest > maxAggregateBufferBytes-bufferLimit {
+			return false
+		}
+		perRequest += bufferLimit
 	}
 	return limits.MaxConcurrent > 0 &&
 		int64(limits.MaxConcurrent) <= maxAggregateBufferBytes/perRequest
