@@ -49,7 +49,7 @@ func TestLinuxRulesNamespaceCommandEntersOwningUserThenNetworkNamespace(t *testi
 	if command.Path != "/usr/bin/nsenter" {
 		t.Fatalf("command path = %q, want absolute nsenter path", command.Path)
 	}
-	want := []string{"/usr/bin/nsenter", "--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--", "/usr/bin/nft", "--json"}
+	want := []string{"/usr/bin/nsenter", "--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--preserve-credentials", "--", "/usr/bin/nft", "--json"}
 	if len(command.Args) != len(want) {
 		t.Fatalf("command args = %#v, want %#v", command.Args, want)
 	}

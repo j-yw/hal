@@ -3,7 +3,6 @@
 package linuxrules
 
 import (
-	"context"
 	"errors"
 	"testing"
 )

@@ -409,6 +409,8 @@ func assertSafePlanFieldType(t *testing.T, typeName string, field reflect.Struct
 	if typ.Kind() == reflect.Struct {
 		switch typ {
 		case reflect.TypeOf(PolicySnapshotIdentity{}),
+			reflect.TypeOf(EnforcementCorrelation{}),
+			reflect.TypeOf(InspectedRuleProof{}),
 			reflect.TypeOf(AllowlistPlan{}),
 			reflect.TypeOf(CategoryPosturePlan{}),
 			reflect.TypeOf(RawProtocolPlan{}),

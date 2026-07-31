@@ -383,7 +383,14 @@ func aggregationActiveRuleResult(plan Plan, mechanism EnforcementMechanism) Rule
 }
 
 func aggregationDefaultDenyRuleCapabilityLabels() []string {
-	return []string{"default_deny", "private_range_rules", "metadata_endpoint"}
+	return []string{
+		"default_deny",
+		"private_range_rules",
+		"metadata_endpoint",
+		"loopback_rules",
+		"link_local_rules",
+		"raw_protocols",
+	}
 }
 
 func aggregationListenerMetadata(plan Plan, status LifecycleStatus, reason LifecycleReasonCode, operation string) ProxyListenerLifecycleMetadata {

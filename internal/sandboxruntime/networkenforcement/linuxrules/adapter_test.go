@@ -64,6 +64,24 @@ func TestLinuxRulesForwardedTAPProfileInspectsInputAndForwardChains(t *testing.T
 	if strings.Contains(batch, "hook output") {
 		t.Fatalf("forwarded profile unexpectedly used output chain: %s", batch)
 	}
+	establishedRules := 0
+	for _, line := range strings.Split(batch, "\n") {
+		if !strings.Contains(line, "ct state") {
+			continue
+		}
+		establishedRules++
+		for _, required := range []string{"oifname", "saddr", "tcp sport", "ct state established accept"} {
+			if !strings.Contains(line, required) {
+				t.Fatalf("return-state rule is not tuple constrained by %q: %s", required, line)
+			}
+		}
+		if strings.Contains(line, "related") {
+			t.Fatalf("return-state rule accepted unrelated traffic: %s", line)
+		}
+	}
+	if establishedRules != 1 {
+		t.Fatalf("forwarded profile established rules = %d, want one constrained return rule", establishedRules)
+	}
 	if metadata.Inspection == nil {
 		t.Fatalf("forwarded profile omitted inspection proof: %#v", metadata)
 	}
