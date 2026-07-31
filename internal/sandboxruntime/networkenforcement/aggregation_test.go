@@ -24,6 +24,20 @@ func TestLiveEnforcementAggregationRequiresBothActiveSides(t *testing.T) {
 	assertAggregationPayloadSanitized(t, result)
 }
 
+func TestLiveEnforcementAggregationRejectsRuleOnlyRawProtocolLabel(t *testing.T) {
+	plan := aggregationPlan(FirewallIntentModeApply)
+	listener := aggregationActiveListenerResult(plan)
+	rules := aggregationActiveRuleResult(plan, EnforcementMechanismFirewall)
+	rules.Active.Inspection.CapabilityLabels = aggregationDefaultDenyRuleCapabilityLabels()
+
+	result := AggregateLiveEnforcementResult(plan, &listener, &rules)
+
+	assertNoStrongAggregatedEnforcement(t, result)
+	if result.ReasonCode != ResultReasonCapabilityMissing {
+		t.Fatalf("ReasonCode = %q, want %q in %#v", result.ReasonCode, ResultReasonCapabilityMissing, result)
+	}
+}
+
 func TestLiveEnforcementAggregationRequiresDefaultDenyRuleCapabilityProof(t *testing.T) {
 	plan := aggregationPlan(FirewallIntentModeApply)
 	listener := aggregationActiveListenerResult(plan)
