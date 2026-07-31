@@ -27,6 +27,7 @@ func testIdentity(generation string) Identity {
 		PlanID:               "plan-l7",
 		PolicySnapshotID:     "policy-l7",
 		ProxySessionID:       "proxy-l7",
+		ProxyGenerationID:    "proxy-generation-l7",
 		TopologyGenerationID: generation,
 	}
 }
@@ -92,17 +93,18 @@ func (p *fakeProcess) Terminate(ctx context.Context) error {
 func (p *fakeProcess) exit() { p.once.Do(func() { close(p.done) }) }
 
 type fakeStarter struct {
-	mu        sync.Mutex
-	events    []string
-	specs     []ProcessSpec
-	processes map[ProcessRole][]*fakeProcess
-	failRole  ProcessRole
-	failErr   error
-	nextPID   int
+	mu           sync.Mutex
+	events       []string
+	specs        []ProcessSpec
+	processes    map[ProcessRole][]*fakeProcess
+	failRole     ProcessRole
+	failErr      error
+	nextPID      int
+	terminateErr map[ProcessRole]error
 }
 
 func newFakeStarter() *fakeStarter {
-	return &fakeStarter{processes: make(map[ProcessRole][]*fakeProcess), nextPID: 4100}
+	return &fakeStarter{processes: make(map[ProcessRole][]*fakeProcess), terminateErr: make(map[ProcessRole]error), nextPID: 4100}
 }
 
 func (f *fakeStarter) Start(_ context.Context, spec ProcessSpec) (ProcessHandle, error) {
@@ -115,6 +117,7 @@ func (f *fakeStarter) Start(_ context.Context, spec ProcessSpec) (ProcessHandle,
 	}
 	f.nextPID++
 	p := newFakeProcess(f.nextPID, spec.Role, &f.events)
+	p.terminateErr = f.terminateErr[spec.Role]
 	f.processes[spec.Role] = append(f.processes[spec.Role], p)
 	return p, nil
 }
@@ -150,17 +153,19 @@ type fakeRunner struct {
 }
 
 type fakeReachabilityProber struct {
-	mu       sync.Mutex
-	calls    int
-	mappings []Mapping
-	err      error
+	mu         sync.Mutex
+	calls      int
+	mappings   []Mapping
+	identities []Identity
+	err        error
 }
 
-func (f *fakeReachabilityProber) Probe(_ context.Context, _ *NamespaceHandle, mapping Mapping) error {
+func (f *fakeReachabilityProber) Probe(_ context.Context, _ *NamespaceHandle, identity Identity, mapping Mapping) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	f.mappings = append(f.mappings, mapping)
+	f.identities = append(f.identities, identity)
 	return f.err
 }
 
@@ -171,7 +176,19 @@ func (f *fakeRunner) Run(_ context.Context, spec ProcessSpec) ([]byte, error) {
 		*f.events = append(*f.events, "run:"+string(spec.Role))
 	}
 	f.specs = append(f.specs, cloneProcessSpec(spec))
-	return append([]byte(nil), f.output...), f.err
+	output := f.output
+	joined := strings.Join(spec.Args, " ")
+	if string(f.output) == string(goodLinkJSON()) {
+		switch {
+		case strings.Contains(joined, " address show"):
+			output = goodAddressJSON()
+		case strings.Contains(joined, " -4 route show"):
+			output = goodIPv4RouteJSON()
+		case strings.Contains(joined, " -6 route show"):
+			output = goodIPv6RouteJSON()
+		}
+	}
+	return append([]byte(nil), output...), f.err
 }
 
 func goodLinkJSON() []byte {
@@ -179,6 +196,21 @@ func goodLinkJSON() []byte {
 		{"ifindex":1,"ifname":"lo","flags":["LOOPBACK","UP","LOWER_UP"]},
 		{"ifindex":7,"ifname":"halpasta0","flags":["BROADCAST","MULTICAST","UP","LOWER_UP"]}
 	]`)
+}
+
+func goodAddressJSON() []byte {
+	return []byte(`[
+		{"ifindex":1,"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1","prefixlen":8,"scope":"host"},{"family":"inet6","local":"::1","prefixlen":128,"scope":"host"}]},
+		{"ifindex":7,"ifname":"halpasta0","addr_info":[{"family":"inet","local":"192.0.2.10","prefixlen":24,"scope":"global"},{"family":"inet6","local":"2001:db8::10","prefixlen":64,"scope":"global"},{"family":"inet6","local":"fe80::10","prefixlen":64,"scope":"link"}]}
+	]`)
+}
+
+func goodIPv4RouteJSON() []byte {
+	return []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"}]`)
+}
+
+func goodIPv6RouteJSON() []byte {
+	return []byte(`[{"dst":"default","gateway":"2001:db8::1","dev":"halpasta0"},{"dst":"2001:db8::/64","dev":"halpasta0","scope":"link"}]`)
 }
 
 type fakeNamespaces struct {
@@ -286,6 +318,7 @@ func TestLinuxTopologyRejectsUnsafeInputsBeforeProcessStart(t *testing.T) {
 		want      error
 	}{
 		{name: "empty identity", mutateReq: func(r *StartRequest) { r.Identity.PlanID = "" }, want: ErrInvalidIdentity},
+		{name: "empty proxy generation", mutateReq: func(r *StartRequest) { r.Identity.ProxyGenerationID = "" }, want: ErrInvalidIdentity},
 		{name: "unsafe identity", mutateReq: func(r *StartRequest) { r.Identity.SandboxID = "../sandbox" }, want: ErrInvalidIdentity},
 		{name: "duplicate identity", mutateReq: func(r *StartRequest) { r.Identity.PlanID = r.Identity.RuntimeID }, want: ErrInvalidIdentity},
 		{name: "relative tool", mutateCfg: func(c *Config) { c.Tools.Pasta = "bin/pasta" }, want: ErrInvalidTools},
@@ -339,7 +372,10 @@ func TestLinuxTopologyStartsKeeperThenExactPastaMappingAndInspects(t *testing.T)
 	}
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background(), testIdentity("topology-gen-1")) })
 
-	wantEvents := []string{"start:keeper", "open:namespaces", "start:mapping", "open:namespaces", "run:inspection"}
+	wantEvents := []string{
+		"start:keeper", "open:namespaces", "start:mapping", "open:namespaces", "open:namespaces",
+		"run:inspection", "run:inspection", "run:inspection", "run:inspection",
+	}
 	if got := starter.eventSnapshot(); !reflect.DeepEqual(got, wantEvents) {
 		t.Fatalf("events = %#v, want %#v", got, wantEvents)
 	}
@@ -362,8 +398,8 @@ func TestLinuxTopologyStartsKeeperThenExactPastaMappingAndInspects(t *testing.T)
 	wantMappingArgs := []string{
 		"--foreground", "--quiet",
 		"--config-net",
-		"--userns", "/proc/self/fd/3",
-		"--netns", "/proc/self/fd/4",
+		"--userns", "/proc/4101/ns/user",
+		"--netns", "/proc/4101/ns/net",
 		"--map-host-loopback", testGuestIP,
 		"--no-map-gw",
 		"-t", "none", "-u", "none", "-T", "none", "-U", "none",
@@ -372,7 +408,7 @@ func TestLinuxTopologyStartsKeeperThenExactPastaMappingAndInspects(t *testing.T)
 	if mapping.Path != testTools().Pasta || mapping.Role != ProcessRoleMapping || !reflect.DeepEqual(mapping.Args, wantMappingArgs) {
 		t.Fatalf("mapping spec = %#v, want argv %#v", mapping, wantMappingArgs)
 	}
-	if len(mapping.Env) != 0 || len(mapping.ExtraFiles) != 2 {
+	if len(mapping.Env) != 0 || len(mapping.ExtraFiles) != 0 {
 		t.Fatalf("mapping environment/files = %#v", mapping)
 	}
 	joined := strings.Join(mapping.Args, " ")
@@ -382,8 +418,8 @@ func TestLinuxTopologyStartsKeeperThenExactPastaMappingAndInspects(t *testing.T)
 		}
 	}
 
-	if len(runner.specs) != 1 {
-		t.Fatalf("inspection specs = %d, want 1", len(runner.specs))
+	if len(runner.specs) != 4 {
+		t.Fatalf("inspection specs = %d, want 4", len(runner.specs))
 	}
 	inspection := runner.specs[0]
 	wantInspectionArgs := []string{
@@ -398,9 +434,12 @@ func TestLinuxTopologyStartsKeeperThenExactPastaMappingAndInspects(t *testing.T)
 	if len(inspection.ExtraFiles) != 2 || inspection.OutputLimit != 8<<10 {
 		t.Fatalf("inspection files/limit = %#v", inspection)
 	}
+	if len(inspection.Env) != 0 {
+		t.Fatalf("inspection inherited environment: %#v", inspection.Env)
+	}
 
 	metadata := session.Metadata()
-	if metadata.Status != StatusActive || !metadata.Inspected || metadata.Identity != testIdentity("topology-gen-1") {
+	if metadata.Status != StatusPrepared || !metadata.StructuralInspected || !metadata.MappingReachable || metadata.Identity != testIdentity("topology-gen-1") {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 	owned, err := session.NamespaceHandle()
@@ -421,7 +460,8 @@ func TestLinuxTopologyRequiresExactStructuralAndReachabilityProof(t *testing.T) 
 		]},
 		{"ifindex":7,"ifname":"halpasta0","addr_info":[
 			{"family":"inet","local":"192.0.2.10","prefixlen":24,"scope":"global"},
-			{"family":"inet6","local":"2001:db8::10","prefixlen":64,"scope":"global"}
+			{"family":"inet6","local":"2001:db8::10","prefixlen":64,"scope":"global"},
+			{"family":"inet6","local":"fe80::10","prefixlen":64,"scope":"link"}
 		]}
 	]`), testIface) {
 		t.Fatal("exact dual-stack address inspection rejected")
@@ -446,6 +486,21 @@ func TestLinuxTopologyRequiresExactStructuralAndReachabilityProof(t *testing.T) 
 			}
 		})
 	}
+	for name, ipv4 := range map[string][]byte{
+		"duplicate route": []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"}]`),
+		"zero prefix":     []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0"},{"dst":"0.0.0.0/0","dev":"halpasta0","scope":"link"}]`),
+		"bad protocol":    []byte(`[{"dst":"default","gateway":"192.0.2.1","dev":"halpasta0","protocol":"redirect"},{"dst":"192.0.2.0/24","dev":"halpasta0","scope":"link"}]`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if validRouteInspection(ipv4, goodIPv6RouteJSON(), testIface) {
+				t.Fatal("inspection accepted route drift")
+			}
+		})
+	}
+	duplicateAddress := []byte(`[{"ifindex":1,"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1","prefixlen":8,"scope":"host"},{"family":"inet6","local":"::1","prefixlen":128,"scope":"host"}]},{"ifindex":7,"ifname":"halpasta0","addr_info":[{"family":"inet","local":"192.0.2.10","prefixlen":24,"scope":"global"},{"family":"inet6","local":"2001:db8::10","prefixlen":64,"scope":"global"},{"family":"inet6","local":"2001:db8::10","prefixlen":64,"scope":"global"}]}]`)
+	if validAddressInspection(duplicateAddress, testIface) {
+		t.Fatal("inspection accepted duplicate address drift")
+	}
 }
 
 func TestLinuxTopologyReachabilityFailureNeverPublishesActive(t *testing.T) {
@@ -469,6 +524,37 @@ func TestLinuxTopologyReachabilityFailureNeverPublishesActive(t *testing.T) {
 	if prober.calls == 0 {
 		t.Fatal("reachability boundary was not called")
 	}
+	if len(prober.identities) == 0 || prober.identities[0] != testIdentity("topology-gen-probe") {
+		t.Fatalf("probe identity = %#v", prober.identities)
+	}
+}
+
+func TestLinuxTopologyProductionProbeUsesStructuredArgvAndEmptyEnvironment(t *testing.T) {
+	runner := &fakeRunner{}
+	namespaces := newFakeNamespaces(t, nil)
+	handle, err := namespaces.base.Duplicate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	prober := commandReachabilityProber{runner: runner, tools: testTools(), limit: 4096}
+	if err := prober.Probe(context.Background(), handle, testIdentity("topology-gen-probe-argv"), testRequest("topology-gen-probe-argv").Mapping); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.specs) != 1 {
+		t.Fatalf("probe specs = %d, want 1", len(runner.specs))
+	}
+	spec := runner.specs[0]
+	want := []string{
+		"--preserve-credentials", "--user=/proc/self/fd/3", "--net=/proc/self/fd/4",
+		"--", testTools().NC, "-4", "-z", "-w", "2", testGuestIP, "43123",
+	}
+	if spec.Role != ProcessRoleProbe || spec.Path != testTools().Nsenter || !reflect.DeepEqual(spec.Args, want) {
+		t.Fatalf("probe spec = %#v, want argv %#v", spec, want)
+	}
+	if len(spec.Env) != 0 || len(spec.ExtraFiles) != 2 || spec.OutputLimit != 4096 {
+		t.Fatalf("probe live boundary = %#v", spec)
+	}
 }
 
 func TestLinuxTopologyPublicJSONOmitsAllLiveState(t *testing.T) {
@@ -483,7 +569,7 @@ func TestLinuxTopologyPublicJSONOmitsAllLiveState(t *testing.T) {
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background(), testIdentity("topology-gen-json")) })
 
 	values := []any{
-		Config{Enabled: true, Tools: testTools(), Environment: []string{"LANG=C.UTF-8"}},
+		Config{Enabled: true, Tools: testTools(), Environment: []string{"LANG=C.UTF-8"}, StateDir: "/private/state-secret"},
 		testRequest("topology-gen-json"), testTools(), starter.specs[0], starter.specs[1],
 		runner.specs[0], session, session.Metadata(), namespaces.opened[0],
 	}
@@ -496,6 +582,7 @@ func TestLinuxTopologyPublicJSONOmitsAllLiveState(t *testing.T) {
 		for _, leak := range []string{
 			testEndpoint, testGuestIP, testIface, "/opt/hal", "/proc/", "43123",
 			"4101", "device", "inode", "argv", "extraFiles",
+			"state-secret", `"active"`,
 		} {
 			if strings.Contains(text, leak) {
 				t.Fatalf("%T JSON leaked %q: %s", value, leak, text)
@@ -702,6 +789,27 @@ func TestLinuxTopologyStaleOrMismatchedGenerationCannotCleanNewSession(t *testin
 	}
 	if after := len(starter.eventSnapshot()); after != before {
 		t.Fatalf("stale/mismatched cleanup changed events: before=%d after=%d", before, after)
+	}
+}
+
+func TestLinuxTopologySameSessionChangedProxyGenerationIsRejected(t *testing.T) {
+	starter := newFakeStarter()
+	runner := &fakeRunner{output: goodLinkJSON()}
+	namespaces := newFakeNamespaces(t, &starter.events)
+	lifecycle := newTestLifecycle(t, starter, runner, namespaces)
+	request := testRequest("topology-gen-proxy-correlation")
+	if _, err := lifecycle.Start(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background(), request.Identity) })
+	before := starter.startCount()
+	changed := request
+	changed.Identity.ProxyGenerationID = "proxy-generation-other"
+	if _, err := lifecycle.Start(context.Background(), changed); !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("changed proxy generation error = %v, want ErrIdentityMismatch", err)
+	}
+	if got := starter.startCount(); got != before {
+		t.Fatalf("changed proxy generation started processes: before=%d after=%d", before, got)
 	}
 }
 

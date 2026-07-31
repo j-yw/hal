@@ -12,14 +12,16 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type execBoundary struct{}
 
 type execProcess struct {
-	process *os.Process
-	done    chan struct{}
-	once    sync.Once
+	process   *os.Process
+	startTime string
+	done      chan struct{}
+	once      sync.Once
 }
 
 func platformDependencies() (bool, ProcessStarter, CommandRunner, NamespaceOpener) {
@@ -28,7 +30,7 @@ func platformDependencies() (bool, ProcessStarter, CommandRunner, NamespaceOpene
 }
 
 func executableToolPaths(tools ToolPaths) bool {
-	for _, path := range []string{tools.Unshare, tools.Pasta, tools.Nsenter, tools.IP, tools.Keeper} {
+	for _, path := range []string{tools.Unshare, tools.Pasta, tools.Nsenter, tools.IP, tools.NC, tools.Keeper} {
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
 			return false
@@ -37,7 +39,10 @@ func executableToolPaths(tools ToolPaths) bool {
 	return true
 }
 
-func (e *execBoundary) Start(_ context.Context, spec ProcessSpec) (ProcessHandle, error) {
+func (e *execBoundary) Start(ctx context.Context, spec ProcessSpec) (ProcessHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	stdout := newBoundedBuffer(spec.OutputLimit)
 	stderr := newBoundedBuffer(spec.OutputLimit)
 	command := exec.Command(spec.Path, spec.Args...)
@@ -45,15 +50,37 @@ func (e *execBoundary) Start(_ context.Context, spec ProcessSpec) (ProcessHandle
 	command.ExtraFiles = append([]*os.File(nil), spec.ExtraFiles...)
 	command.Stdout = stdout
 	command.Stderr = stderr
+	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if err := command.Start(); err != nil {
 		return nil, err
 	}
-	handle := &execProcess{process: command.Process, done: make(chan struct{})}
+	startTime, err := readProcessStartTime(command.Process.Pid)
+	if err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return nil, err
+	}
+	handle := &execProcess{process: command.Process, startTime: startTime, done: make(chan struct{})}
 	go func() {
 		_ = command.Wait()
 		handle.once.Do(func() { close(handle.done) })
 	}()
 	return handle, nil
+}
+
+func (p *execProcess) ownershipRecord() (privateProcessRecord, bool) {
+	if p == nil || p.process == nil || p.process.Pid <= 0 || p.startTime == "" {
+		return privateProcessRecord{}, false
+	}
+	return privateProcessRecord{PID: p.process.Pid, StartTime: p.startTime}, true
+}
+
+func (p *execProcess) ownershipCurrent() bool {
+	if p == nil || p.process == nil || p.startTime == "" || processDone(p) {
+		return false
+	}
+	current, err := readProcessStartTime(p.process.Pid)
+	return err == nil && current == p.startTime
 }
 
 func (e *execBoundary) Run(ctx context.Context, spec ProcessSpec) ([]byte, error) {
@@ -64,6 +91,7 @@ func (e *execBoundary) Run(ctx context.Context, spec ProcessSpec) ([]byte, error
 	command.ExtraFiles = append([]*os.File(nil), spec.ExtraFiles...)
 	command.Stdout = stdout
 	command.Stderr = stderr
+	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if err := command.Run(); err != nil {
 		return nil, err
 	}
@@ -108,10 +136,12 @@ func (p *execProcess) Terminate(ctx context.Context) error {
 		if err := p.process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return err
 		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		defer timer.Stop()
 		select {
 		case <-p.done:
 			return nil
-		default:
+		case <-timer.C:
 			return ctx.Err()
 		}
 	}

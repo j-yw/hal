@@ -70,7 +70,8 @@ path.
 
 Construction requires safe immutable identity for the sandbox, execution,
 worker, runtime, plan, policy snapshot, proxy session, topology generation,
-and rule generation. Empty, unsafe, duplicate, or mismatched identity fails
+the exact retained proxy generation, and rule generation. Empty, unsafe,
+duplicate, or mismatched identity fails
 before mutation.
 
 Private live state includes namespace FDs and device/inode identity, helper
@@ -98,6 +99,14 @@ planned -> proxy_started -> topology_prepared -> runtime_created
 Apply acknowledgement is not active proof. Only a fresh structural inspection
 of the exact namespace, interface, proxy generation, and nft generation can
 produce `inspected` and then `active`.
+
+The `linuxtopology` package itself stops conservatively at `prepared`. Its safe
+metadata distinguishes `structuralInspected` from `mappingReachable` and never
+publishes `active`: a successful namespace-local probe cannot by itself prove
+that the retained L6 proxy generation is still the listener reached. The
+higher runtime composition must compare the same required proxy generation
+before and after the probe, correlate the exact inspected rule generation, and
+only then publish an aggregate active result.
 
 ## Linux rule adapter
 
@@ -156,6 +165,10 @@ topology factory performs this transaction:
    the output-chain rules;
 7. structurally inspect the rules and probe the exact proxy mapping;
 8. publish active advisory network proof and permit job execution.
+
+The topology sub-step in item 7 produces only prepared structural and mapping
+evidence. Item 8 belongs to the higher composition after it has revalidated
+the exact retained L6 proxy generation and rule proof.
 
 The execution adapter injects `HTTP_PROXY`, `HTTPS_PROXY`, and lowercase
 equivalents from typed live state, clears uncontrolled proxy bypass variables,
@@ -225,6 +238,13 @@ After daemon restart every durable active claim is stale. Reconciliation opens
 only a contained private journal, re-inspects exact ownership, quarantines
 first, and cleans a terminal generation. It never reconstructs active proof
 from labels, names, plans, or old JSON and never deletes a mismatched resource.
+Topology setup holds a private per-sandbox cross-process lock for the whole
+session, uses a `0600` atomic ownership journal under an owned `0700` state
+directory, and retains incomplete rollback state. Helper reconciliation uses
+recorded process start identity plus namespace identity and a stable process
+handle; identity mismatch blocks replacement without signalling or deletion.
+Retired topology-generation tombstones prevent generation reuse across daemon
+restart.
 
 ## Red-first and live acceptance
 

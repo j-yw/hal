@@ -16,18 +16,19 @@ import (
 )
 
 var (
-	ErrDisabled          = errors.New("linux topology lifecycle disabled")
-	ErrUnsupported       = errors.New("linux topology lifecycle unsupported")
-	ErrInvalidIdentity   = errors.New("linux topology invalid identity")
-	ErrInvalidTools      = errors.New("linux topology invalid tools")
-	ErrInvalidMapping    = errors.New("linux topology invalid mapping")
-	ErrStartFailed       = errors.New("linux topology start failed")
-	ErrInspectionFailed  = errors.New("linux topology inspection failed")
-	ErrTopologyCollision = errors.New("linux topology collision")
-	ErrStaleGeneration   = errors.New("linux topology stale generation")
-	ErrIdentityMismatch  = errors.New("linux topology identity mismatch")
-	ErrCleanupIncomplete = errors.New("linux topology cleanup incomplete")
-	ErrStopped           = errors.New("linux topology stopped")
+	ErrDisabled                = errors.New("linux topology lifecycle disabled")
+	ErrUnsupported             = errors.New("linux topology lifecycle unsupported")
+	ErrInvalidIdentity         = errors.New("linux topology invalid identity")
+	ErrInvalidTools            = errors.New("linux topology invalid tools")
+	ErrInvalidMapping          = errors.New("linux topology invalid mapping")
+	ErrStartFailed             = errors.New("linux topology start failed")
+	ErrInspectionFailed        = errors.New("linux topology inspection failed")
+	ErrTopologyCollision       = errors.New("linux topology collision")
+	ErrStaleGeneration         = errors.New("linux topology stale generation")
+	ErrIdentityMismatch        = errors.New("linux topology identity mismatch")
+	ErrCleanupIncomplete       = errors.New("linux topology cleanup incomplete")
+	ErrStaleTopologyUnverified = errors.New("linux topology stale state unverified")
+	ErrStopped                 = errors.New("linux topology stopped")
 )
 
 const (
@@ -46,8 +47,9 @@ var (
 type Status string
 
 const (
-	StatusActive            Status = "active"
+	StatusPrepared          Status = "prepared"
 	StatusLost              Status = "lost"
+	StatusStopping          Status = "stopping"
 	StatusStopped           Status = "stopped"
 	StatusCleanupIncomplete Status = "cleanup_incomplete"
 )
@@ -58,6 +60,7 @@ const (
 	ProcessRoleKeeper     ProcessRole = "keeper"
 	ProcessRoleMapping    ProcessRole = "mapping"
 	ProcessRoleInspection ProcessRole = "inspection"
+	ProcessRoleProbe      ProcessRole = "probe"
 )
 
 type LossReason string
@@ -74,6 +77,7 @@ type Identity struct {
 	PlanID               string `json:"planId"`
 	PolicySnapshotID     string `json:"policySnapshotId"`
 	ProxySessionID       string `json:"proxySessionId"`
+	ProxyGenerationID    string `json:"proxyGenerationId"`
 	TopologyGenerationID string `json:"topologyGenerationId"`
 }
 
@@ -96,6 +100,7 @@ type ToolPaths struct {
 	Pasta   string `json:"-"`
 	Nsenter string `json:"-"`
 	IP      string `json:"-"`
+	NC      string `json:"-"`
 	Keeper  string `json:"-"`
 }
 
@@ -124,25 +129,46 @@ type CommandRunner interface {
 	Run(context.Context, ProcessSpec) ([]byte, error)
 }
 
+// ReachabilityProber proves the exact live guest-address/proxy-port mapping.
+// Implementations must not retain or serialize the live Mapping value.
+type ReachabilityProber interface {
+	Probe(context.Context, *NamespaceHandle, Identity, Mapping) error
+}
+
+type OwnershipStore interface {
+	Acquire(context.Context, Identity) (OwnershipLease, error)
+}
+
+type OwnershipLease interface {
+	Reconcile(context.Context) error
+	Record(context.Context, ProcessHandle, ProcessHandle, *NamespaceHandle) error
+	Retire(Identity) error
+	Release() error
+}
+
 type NamespaceOpener func(int) (*NamespaceHandle, error)
 
 type Config struct {
-	Enabled            bool            `json:"enabled"`
-	Tools              ToolPaths       `json:"-"`
-	Environment        []string        `json:"-"`
-	Starter            ProcessStarter  `json:"-"`
-	Runner             CommandRunner   `json:"-"`
-	OpenNamespaces     NamespaceOpener `json:"-"`
-	CleanupTimeout     time.Duration   `json:"-"`
-	InspectionTimeout  time.Duration   `json:"-"`
-	InspectionInterval time.Duration   `json:"-"`
-	OutputLimit        int64           `json:"-"`
+	Enabled            bool               `json:"enabled"`
+	Tools              ToolPaths          `json:"-"`
+	Environment        []string           `json:"-"`
+	Starter            ProcessStarter     `json:"-"`
+	Runner             CommandRunner      `json:"-"`
+	OpenNamespaces     NamespaceOpener    `json:"-"`
+	Reachability       ReachabilityProber `json:"-"`
+	Ownership          OwnershipStore     `json:"-"`
+	StateDir           string             `json:"-"`
+	CleanupTimeout     time.Duration      `json:"-"`
+	InspectionTimeout  time.Duration      `json:"-"`
+	InspectionInterval time.Duration      `json:"-"`
+	OutputLimit        int64              `json:"-"`
 }
 
 type Metadata struct {
-	Identity  Identity `json:"identity"`
-	Status    Status   `json:"status"`
-	Inspected bool     `json:"inspected,omitempty"`
+	Identity            Identity `json:"identity"`
+	Status              Status   `json:"status"`
+	StructuralInspected bool     `json:"structuralInspected,omitempty"`
+	MappingReachable    bool     `json:"mappingReachable,omitempty"`
 }
 
 type Loss struct {
@@ -159,12 +185,14 @@ func validIdentity(identity Identity) bool {
 		safeIDPattern.MatchString(identity.PlanID) &&
 		safeIDPattern.MatchString(identity.PolicySnapshotID) &&
 		safeIDPattern.MatchString(identity.ProxySessionID) &&
+		safeIDPattern.MatchString(identity.ProxyGenerationID) &&
 		safeIDPattern.MatchString(identity.TopologyGenerationID)) {
 		return false
 	}
 	values := []string{
 		identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.RuntimeID,
-		identity.PlanID, identity.PolicySnapshotID, identity.ProxySessionID, identity.TopologyGenerationID,
+		identity.PlanID, identity.PolicySnapshotID, identity.ProxySessionID, identity.ProxyGenerationID,
+		identity.TopologyGenerationID,
 	}
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
@@ -199,7 +227,7 @@ func validMapping(mapping Mapping) bool {
 }
 
 func validToolPaths(tools ToolPaths) bool {
-	for _, path := range []string{tools.Unshare, tools.Pasta, tools.Nsenter, tools.IP, tools.Keeper} {
+	for _, path := range []string{tools.Unshare, tools.Pasta, tools.Nsenter, tools.IP, tools.NC, tools.Keeper} {
 		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path ||
 			strings.ContainsAny(path, "\x00\r\n") {
 			return false

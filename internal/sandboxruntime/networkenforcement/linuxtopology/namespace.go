@@ -16,6 +16,8 @@ type NamespaceHandle struct {
 	userInfo os.FileInfo
 	netInfo  os.FileInfo
 	closed   bool
+	release  func()
+	released sync.Once
 }
 
 func NewNamespaceHandle(user, network *os.File) (*NamespaceHandle, error) {
@@ -111,6 +113,11 @@ func (h *NamespaceHandle) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
+		h.released.Do(func() {
+			if h.release != nil {
+				h.release()
+			}
+		})
 		return nil
 	}
 	h.closed = true
@@ -123,6 +130,11 @@ func (h *NamespaceHandle) Close() error {
 		result = errors.Join(result, h.network.Close())
 		h.network = nil
 	}
+	h.released.Do(func() {
+		if h.release != nil {
+			h.release()
+		}
+	})
 	return result
 }
 

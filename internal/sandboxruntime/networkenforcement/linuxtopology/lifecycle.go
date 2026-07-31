@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"slices"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -15,6 +15,7 @@ type Lifecycle struct {
 	config     Config
 	supported  bool
 	production bool
+	ownership  OwnershipStore
 	active     map[string]*Session
 	stopped    map[string]Metadata
 }
@@ -30,6 +31,8 @@ type Session struct {
 	losses    chan Loss
 	lossOnce  sync.Once
 	stopping  bool
+	borrows   sync.WaitGroup
+	ownership OwnershipLease
 }
 
 func New(input Config) (*Lifecycle, error) {
@@ -77,10 +80,25 @@ func New(input Config) (*Lifecycle, error) {
 	if config.OpenNamespaces == nil {
 		config.OpenNamespaces = opener
 	}
+	if config.Reachability == nil {
+		config.Reachability = commandReachabilityProber{runner: config.Runner, tools: config.Tools, limit: config.OutputLimit}
+	}
+	if config.Ownership == nil {
+		if defaults && supported {
+			store, err := newFileOwnershipStore(config.StateDir)
+			if err != nil {
+				return nil, ErrInvalidTools
+			}
+			config.Ownership = store
+		} else {
+			config.Ownership = newMemoryOwnershipStore()
+		}
+	}
 	if defaults && supported && !executableToolPaths(config.Tools) {
 		return nil, ErrInvalidTools
 	}
 	lifecycle.config = config
+	lifecycle.ownership = config.Ownership
 	return lifecycle, nil
 }
 
@@ -103,13 +121,17 @@ func (l *Lifecycle) Start(ctx context.Context, request StartRequest) (*Session, 
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if stopped, ok := l.stopped[request.Identity.SandboxID]; ok &&
+		stopped.Identity.TopologyGenerationID == request.Identity.TopologyGenerationID {
+		return nil, ErrStaleGeneration
+	}
 	if current := l.active[request.Identity.SandboxID]; current != nil {
 		current.mu.Lock()
 		sameIdentity := current.identity == request.Identity
 		sameMapping := current.mapping == request.Mapping
 		status := current.metadata.Status
 		current.mu.Unlock()
-		if sameIdentity && sameMapping && status == StatusActive {
+		if sameIdentity && sameMapping && status == StatusPrepared {
 			return current, nil
 		}
 		if current.identity.TopologyGenerationID == request.Identity.TopologyGenerationID {
@@ -117,58 +139,75 @@ func (l *Lifecycle) Start(ctx context.Context, request StartRequest) (*Session, 
 		}
 		return nil, ErrTopologyCollision
 	}
+	lease, err := l.ownership.Acquire(ctx, request.Identity)
+	if err != nil {
+		return nil, sanitizeOwnershipError(err)
+	}
+	if err := lease.Reconcile(ctx); err != nil {
+		_ = lease.Release()
+		if errors.Is(err, ErrStaleGeneration) {
+			return nil, ErrStaleGeneration
+		}
+		return nil, ErrStaleTopologyUnverified
+	}
 
 	keeper, err := l.config.Starter.Start(ctx, l.keeperSpec())
 	if err != nil || keeper == nil || keeper.PID() <= 0 {
+		_ = lease.Release()
 		return nil, ErrStartFailed
+	}
+	if err := lease.Record(ctx, keeper, nil, nil); err != nil {
+		return l.failStart(request, lease, keeper, nil, nil, ErrStartFailed)
 	}
 
 	owned, err := l.openInitialNamespaces(ctx, keeper)
 	if err != nil {
-		if l.rollback(nil, nil, keeper) != nil {
-			return nil, ErrCleanupIncomplete
-		}
-		return nil, ErrStartFailed
+		return l.failStart(request, lease, keeper, nil, nil, ErrStartFailed)
+	}
+	if err := lease.Record(ctx, keeper, nil, owned); err != nil {
+		return l.failStart(request, lease, keeper, nil, owned, ErrStartFailed)
 	}
 
-	files, err := owned.extraFiles()
-	if err != nil {
-		if l.rollback(nil, owned, keeper) != nil {
-			return nil, ErrCleanupIncomplete
-		}
-		return nil, ErrStartFailed
+	if !processIdentityCurrent(keeper) {
+		return l.failStart(request, lease, keeper, nil, owned, ErrStartFailed)
 	}
-	mappingSpec := l.mappingSpec(request.Mapping, files)
+	mappingSpec := l.mappingSpec(request.Mapping, keeper.PID())
 	mapper, startErr := l.config.Starter.Start(ctx, mappingSpec)
-	closeFiles(files)
 	if startErr != nil || mapper == nil || mapper.PID() <= 0 {
-		if l.rollback(nil, owned, keeper) != nil {
-			return nil, ErrCleanupIncomplete
-		}
-		return nil, ErrStartFailed
+		return l.failStart(request, lease, keeper, nil, owned, ErrStartFailed)
 	}
-
-	if err := l.inspect(ctx, keeper, mapper, owned, request.Mapping); err != nil {
-		if l.rollback(mapper, owned, keeper) != nil {
-			return nil, ErrCleanupIncomplete
+	// Persist the mapper before any further fallible validation. A mapper that
+	// survives rollback must always be discoverable by restart reconciliation.
+	if err := lease.Record(ctx, keeper, mapper, owned); err != nil {
+		return l.failStart(request, lease, keeper, mapper, owned, ErrStartFailed)
+	}
+	current, namespaceErr := l.config.OpenNamespaces(keeper.PID())
+	if namespaceErr != nil || !processIdentityCurrent(keeper) || !current.Correlates(owned) {
+		if current != nil {
+			_ = current.Close()
 		}
-		return nil, ErrInspectionFailed
+		return l.failStart(request, lease, keeper, mapper, owned, ErrStartFailed)
+	}
+	_ = current.Close()
+	if err := l.inspect(ctx, keeper, mapper, owned, request.Identity, request.Mapping); err != nil {
+		return l.failStart(request, lease, keeper, mapper, owned, ErrInspectionFailed)
 	}
 	if processDone(keeper) || processDone(mapper) {
-		if l.rollback(mapper, owned, keeper) != nil {
-			return nil, ErrCleanupIncomplete
-		}
-		return nil, ErrStartFailed
+		return l.failStart(request, lease, keeper, mapper, owned, ErrStartFailed)
 	}
 
 	session := &Session{
-		identity:  request.Identity,
-		mapping:   request.Mapping,
-		metadata:  Metadata{Identity: request.Identity, Status: StatusActive, Inspected: true},
+		identity: request.Identity,
+		mapping:  request.Mapping,
+		metadata: Metadata{
+			Identity: request.Identity, Status: StatusPrepared,
+			StructuralInspected: true, MappingReachable: true,
+		},
 		keeper:    keeper,
 		mapper:    mapper,
 		namespace: owned,
 		losses:    make(chan Loss, 1),
+		ownership: lease,
 	}
 	l.active[request.Identity.SandboxID] = session
 	go session.watch(ProcessRoleKeeper, keeper)
@@ -208,15 +247,26 @@ func (l *Lifecycle) Stop(_ context.Context, identity Identity) (Metadata, error)
 
 	session.mu.Lock()
 	session.stopping = true
+	session.metadata.Status = StatusStopping
+	session.metadata.StructuralInspected = false
+	session.metadata.MappingReachable = false
 	mapper := session.mapper
 	owned := session.namespace
 	keeper := session.keeper
 	session.mu.Unlock()
 
-	cleanupErr := l.cleanup(mapper, owned, keeper)
+	cleanupErr := session.waitForBorrows(l.config.CleanupTimeout)
+	if cleanupErr == nil {
+		cleanupErr = l.cleanup(mapper, owned, keeper)
+	}
+	if cleanupErr == nil {
+		cleanupErr = finalizeOwnership(session.ownership, identity)
+	}
 	session.mu.Lock()
 	if cleanupErr != nil {
 		session.metadata.Status = StatusCleanupIncomplete
+		session.metadata.StructuralInspected = false
+		session.metadata.MappingReachable = false
 		metadata := session.metadata
 		session.mu.Unlock()
 		return metadata, ErrCleanupIncomplete
@@ -225,6 +275,8 @@ func (l *Lifecycle) Stop(_ context.Context, identity Identity) (Metadata, error)
 	session.keeper = nil
 	session.namespace = nil
 	session.metadata.Status = StatusStopped
+	session.metadata.StructuralInspected = false
+	session.metadata.MappingReachable = false
 	metadata := session.metadata
 	session.mu.Unlock()
 	delete(l.active, identity.SandboxID)
@@ -245,37 +297,23 @@ func (l *Lifecycle) keeperSpec() ProcessSpec {
 	}
 }
 
-func (l *Lifecycle) mappingSpec(mapping Mapping, files []*os.File) ProcessSpec {
+func (l *Lifecycle) mappingSpec(mapping Mapping, keeperPID int) ProcessSpec {
+	keeperRoot := filepath.Join("/proc", strconv.Itoa(keeperPID), "ns")
 	return ProcessSpec{
 		Role: ProcessRoleMapping,
 		Path: l.config.Tools.Pasta,
 		Args: []string{
 			"--foreground", "--quiet",
-			"--userns", "/proc/self/fd/3",
-			"--netns", "/proc/self/fd/4",
+			"--config-net",
+			"--userns", filepath.Join(keeperRoot, "user"),
+			"--netns", filepath.Join(keeperRoot, "net"),
 			"--map-host-loopback", mapping.GuestProxyAddress,
 			"--no-map-gw",
 			"-t", "none", "-u", "none", "-T", "none", "-U", "none",
 			"-I", mapping.NamespaceInterface,
 		},
 		Env:         append([]string(nil), l.config.Environment...),
-		ExtraFiles:  append([]*os.File(nil), files...),
-		OutputLimit: l.config.OutputLimit,
-	}
-}
-
-func (l *Lifecycle) inspectionSpec(files []*os.File) ProcessSpec {
-	return ProcessSpec{
-		Role: ProcessRoleInspection,
-		Path: l.config.Tools.Nsenter,
-		Args: []string{
-			"--preserve-credentials",
-			"--user=/proc/self/fd/3",
-			"--net=/proc/self/fd/4",
-			"--", l.config.Tools.IP, "-json", "link", "show",
-		},
-		Env:         append([]string(nil), l.config.Environment...),
-		ExtraFiles:  append([]*os.File(nil), files...),
+		ExtraFiles:  nil,
 		OutputLimit: l.config.OutputLimit,
 	}
 }
@@ -299,7 +337,7 @@ func (l *Lifecycle) openInitialNamespaces(ctx context.Context, keeper ProcessHan
 	}
 }
 
-func (l *Lifecycle) inspect(parent context.Context, keeper, mapper ProcessHandle, owned *NamespaceHandle, mapping Mapping) error {
+func (l *Lifecycle) inspect(parent context.Context, keeper, mapper ProcessHandle, owned *NamespaceHandle, identity Identity, mapping Mapping) error {
 	ctx, cancel := context.WithTimeout(parent, l.config.InspectionTimeout)
 	defer cancel()
 	for {
@@ -311,13 +349,29 @@ func (l *Lifecycle) inspect(parent context.Context, keeper, mapper ProcessHandle
 			correlated := current.Correlates(owned)
 			_ = current.Close()
 			if correlated {
-				files, fileErr := owned.extraFiles()
-				if fileErr == nil {
-					output, runErr := l.config.Runner.Run(ctx, l.inspectionSpec(files))
-					closeFiles(files)
-					if runErr == nil && int64(len(output)) <= l.config.OutputLimit && validLinkInspection(output, mapping.NamespaceInterface) {
-						return nil
+				outputs := make([][]byte, 0, 4)
+				valid := true
+				for _, kind := range []inspectionKind{inspectionLinks, inspectionAddresses, inspectionIPv4Routes, inspectionIPv6Routes} {
+					files, fileErr := owned.extraFiles()
+					if fileErr != nil {
+						valid = false
+						break
 					}
+					output, runErr := l.config.Runner.Run(ctx, l.inspectionSpec(kind, files))
+					closeFiles(files)
+					if runErr != nil || int64(len(output)) > l.config.OutputLimit {
+						valid = false
+						break
+					}
+					outputs = append(outputs, output)
+				}
+				if valid && len(outputs) == 4 &&
+					validLinkInspection(outputs[0], mapping.NamespaceInterface) &&
+					validAddressInspection(outputs[1], mapping.NamespaceInterface) &&
+					validRouteInspection(outputs[2], outputs[3], mapping.NamespaceInterface) &&
+					l.config.Reachability.Probe(ctx, owned, identity, mapping) == nil &&
+					!processDone(keeper) && !processDone(mapper) {
+					return nil
 				}
 			}
 		}
@@ -327,45 +381,65 @@ func (l *Lifecycle) inspect(parent context.Context, keeper, mapper ProcessHandle
 	}
 }
 
-func validLinkInspection(output []byte, mappingInterface string) bool {
-	var links []struct {
-		Index int      `json:"ifindex"`
-		Name  string   `json:"ifname"`
-		Flags []string `json:"flags"`
-	}
-	if len(output) == 0 || json.Unmarshal(output, &links) != nil {
-		return false
-	}
-	indices := make(map[int]struct{}, len(links))
-	loopbackOK := false
-	mappingOK := false
-	for _, link := range links {
-		if link.Index <= 0 {
-			return false
-		}
-		if _, duplicate := indices[link.Index]; duplicate {
-			return false
-		}
-		indices[link.Index] = struct{}{}
-		up := slices.Contains(link.Flags, "UP")
-		switch link.Name {
-		case "lo":
-			if loopbackOK || !up || !slices.Contains(link.Flags, "LOOPBACK") {
-				return false
-			}
-			loopbackOK = true
-		case mappingInterface:
-			if mappingOK || !up {
-				return false
-			}
-			mappingOK = true
-		}
-	}
-	return loopbackOK && mappingOK
-}
-
 func (l *Lifecycle) rollback(mapper ProcessHandle, owned *NamespaceHandle, keeper ProcessHandle) error {
 	return l.cleanup(mapper, owned, keeper)
+}
+
+func (l *Lifecycle) failStart(
+	request StartRequest,
+	lease OwnershipLease,
+	keeper, mapper ProcessHandle,
+	owned *NamespaceHandle,
+	primary error,
+) (*Session, error) {
+	var recoveryRecordErr error
+	if mapper != nil {
+		// The initial post-launch record may have failed. Before retaining live
+		// ownership or closing namespace evidence, make one independent bounded
+		// attempt to establish the durable restart-recovery record.
+		recordCtx, cancel := context.WithTimeout(context.Background(), l.config.CleanupTimeout)
+		recoveryRecordErr = lease.Record(recordCtx, keeper, mapper, owned)
+		cancel()
+	}
+	cleanupErr := l.rollback(mapper, owned, keeper)
+	if cleanupErr != nil {
+		cleanupErr = errors.Join(cleanupErr, recoveryRecordErr)
+	}
+	if cleanupErr == nil {
+		cleanupErr = finalizeOwnership(lease, request.Identity)
+	}
+	if cleanupErr == nil {
+		l.stopped[request.Identity.SandboxID] = Metadata{Identity: request.Identity, Status: StatusStopped}
+		return nil, primary
+	}
+	session := &Session{
+		identity: request.Identity, mapping: request.Mapping,
+		metadata: Metadata{Identity: request.Identity, Status: StatusCleanupIncomplete},
+		keeper:   keeper, mapper: mapper, namespace: owned,
+		losses: make(chan Loss, 1), ownership: lease, stopping: true,
+	}
+	l.active[request.Identity.SandboxID] = session
+	return session, ErrCleanupIncomplete
+}
+
+func finalizeOwnership(lease OwnershipLease, identity Identity) error {
+	if err := lease.Retire(identity); err != nil {
+		return err
+	}
+	return lease.Release()
+}
+
+func sanitizeOwnershipError(err error) error {
+	switch {
+	case errors.Is(err, ErrTopologyCollision):
+		return ErrTopologyCollision
+	case errors.Is(err, ErrStaleGeneration):
+		return ErrStaleGeneration
+	case errors.Is(err, ErrInvalidIdentity):
+		return ErrInvalidIdentity
+	default:
+		return ErrCleanupIncomplete
+	}
 }
 
 func (l *Lifecycle) cleanup(mapper ProcessHandle, owned *NamespaceHandle, keeper ProcessHandle) error {
@@ -408,10 +482,34 @@ func (s *Session) NamespaceHandle() (*NamespaceHandle, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.namespace == nil || s.metadata.Status == StatusStopped {
+	if s.namespace == nil || s.stopping || s.metadata.Status != StatusPrepared ||
+		!s.metadata.StructuralInspected || !s.metadata.MappingReachable {
 		return nil, ErrStopped
 	}
-	return s.namespace.Duplicate()
+	s.borrows.Add(1)
+	handle, err := s.namespace.Duplicate()
+	if err != nil {
+		s.borrows.Done()
+		return nil, err
+	}
+	handle.release = s.borrows.Done
+	return handle, nil
+}
+
+func (s *Session) waitForBorrows(timeout time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		s.borrows.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		return ErrCleanupIncomplete
+	}
 }
 
 func (s *Session) watch(role ProcessRole, process ProcessHandle) {
@@ -422,6 +520,8 @@ func (s *Session) watch(role ProcessRole, process ProcessHandle) {
 		return
 	}
 	s.metadata.Status = StatusLost
+	s.metadata.StructuralInspected = false
+	s.metadata.MappingReachable = false
 	loss := Loss{
 		TopologyGenerationID: s.identity.TopologyGenerationID,
 		Component:            role,
@@ -443,6 +543,16 @@ func processDone(process ProcessHandle) bool {
 	default:
 		return false
 	}
+}
+
+func processIdentityCurrent(process ProcessHandle) bool {
+	if processDone(process) {
+		return false
+	}
+	if owned, ok := process.(interface{ ownershipCurrent() bool }); ok {
+		return owned.ownershipCurrent()
+	}
+	return true
 }
 
 func waitInterval(ctx context.Context, interval time.Duration) error {

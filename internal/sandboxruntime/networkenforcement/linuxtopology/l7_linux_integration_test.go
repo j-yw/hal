@@ -5,6 +5,7 @@ package linuxtopology
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,20 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 		return path
 	}
 
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start selected loopback fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	accepted := make(chan struct{}, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = connection.Close()
+			accepted <- struct{}{}
+		}
+	}()
+
 	lifecycle, err := New(Config{
 		Enabled: true,
 		Tools: ToolPaths{
@@ -33,8 +48,10 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 			Pasta:   tool("pasta"),
 			Nsenter: tool("nsenter"),
 			IP:      tool("ip"),
+			NC:      tool("nc"),
 			Keeper:  tool("sleep"),
 		},
+		StateDir:          t.TempDir(),
 		CleanupTimeout:    5 * time.Second,
 		InspectionTimeout: 5 * time.Second,
 		OutputLimit:       64 << 10,
@@ -46,7 +63,7 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 	req := StartRequest{
 		Identity: testIdentity("topology-gen-live"),
 		Mapping: Mapping{
-			ProxyEndpoint:      "127.0.0.1:43123",
+			ProxyEndpoint:      listener.Addr().String(),
 			GuestProxyAddress:  "192.0.2.2",
 			NamespaceInterface: "halpasta0",
 		},
@@ -56,10 +73,26 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 	beforeFDs := openFDCount(t)
 	session, err := lifecycle.Start(ctx, req)
 	if err != nil {
-		t.Fatalf("selected L7 Linux topology start failed: %v", err)
+		probeReached := false
+		select {
+		case <-accepted:
+			probeReached = true
+		default:
+		}
+		metadata := Metadata{}
+		if session != nil {
+			metadata = session.Metadata()
+			_, _ = lifecycle.Stop(context.Background(), req.Identity)
+		}
+		t.Fatalf("selected L7 Linux topology start failed: %v (retained=%t status=%s probeReached=%t)", err, session != nil, metadata.Status, probeReached)
 	}
-	if got := session.Metadata(); got.Status != StatusActive || !got.Inspected {
+	if got := session.Metadata(); got.Status != StatusPrepared || !got.StructuralInspected || !got.MappingReachable {
 		t.Fatalf("selected topology metadata = %#v", got)
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("exact mapping did not reach the owned loopback fixture")
 	}
 	handle, err := session.NamespaceHandle()
 	if err != nil {
