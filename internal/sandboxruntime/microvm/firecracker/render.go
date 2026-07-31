@@ -33,7 +33,12 @@ type vsockDevicePayload struct {
 type entropyDevicePayload struct{}
 
 func renderLiveBootFiles(config BackendConfig) error {
-	_, err := renderLiveBootFilesForStart(config)
+	files, err := renderLiveBootFilesForStart(config)
+	if len(files) > 0 && config.VerifiedL7Assets != nil {
+		if closeErr := config.VerifiedL7Assets.Close(); err == nil && closeErr != nil {
+			return newLiveBootRenderFailure("launchDescriptor", "sealed L7 launch asset cleanup failed", closeErr)
+		}
+	}
 	return err
 }
 

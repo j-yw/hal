@@ -284,6 +284,73 @@ func TestVerifiedL7AssetLeaseSerializesConcurrentValidationAndCleanup(t *testing
 	}
 }
 
+func TestL7VerifiedAssetLeaseClosesOnStartAndAcceptanceFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		starter func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error)
+		waiter  BootAcceptanceWaiter
+	}{
+		{
+			name: "process start failure",
+			starter: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+				return ProcessHandleMetadata{}, errors.New("injected start failure")
+			},
+			waiter: l7AcceptedBootWaiter{},
+		},
+		{
+			name: "boot acceptance failure",
+			starter: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+				return ProcessHandleMetadata{ID: "fc-handle-l7", Source: "starter"}, nil
+			},
+			waiter: l7BootWaiterFunc(func(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error) {
+				return BootAcceptanceResult{}, errors.New("injected acceptance failure")
+			}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := validL7NetworkBackendConfig(t)
+			config.RuntimeID = "runtime-l7-failure"
+			stateDir := filepath.Join(t.TempDir(), "state")
+			config.Paths = PathPlan{
+				StateDir:        stateDir,
+				APISocketPath:   filepath.Join(stateDir, "api.sock"),
+				ConfigPath:      filepath.Join(stateDir, "config.json"),
+				LogPath:         filepath.Join(stateDir, "firecracker.log"),
+				MetricsPath:     filepath.Join(stateDir, "firecracker.metrics"),
+				VsockSocketPath: filepath.Join(stateDir, "guest.vsock"),
+			}
+			files, err := renderLiveBootFilesForStart(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := validFirecrackerStartOperationPlan(t)
+			descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller := firecrackerController{
+				processAdapter:       ProcessLaunchAdapter{Starter: &fakeProcessStarter{start: tt.starter}},
+				bootAcceptanceWaiter: tt.waiter,
+			}
+			if _, err := controller.startLiveProcessWithInheritedFiles(context.Background(), descriptor, config, files); err == nil {
+				t.Fatal("startLiveProcessWithInheritedFiles() error = nil")
+			}
+			for index, file := range files {
+				if _, err := file.Stat(); err == nil {
+					t.Fatalf("lease-held asset %d remained open after failure", index)
+				}
+			}
+		})
+	}
+}
+
+type l7BootWaiterFunc func(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error)
+
+func (waiter l7BootWaiterFunc) WaitForBootAcceptance(ctx context.Context, req BootAcceptanceRequest) (BootAcceptanceResult, error) {
+	return waiter(ctx, req)
+}
+
 func TestL7FirecrackerNetworkConfigFailsClosedAndRedactsRawValues(t *testing.T) {
 	tests := []struct {
 		name   string
