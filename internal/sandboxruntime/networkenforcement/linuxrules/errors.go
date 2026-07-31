@@ -13,6 +13,7 @@ var (
 	ErrQuarantineFailed     = errors.New("linux rule quarantine failed")
 	ErrCleanupFailed        = errors.New("linux rule cleanup failed")
 	ErrStaleGeneration      = errors.New("linux rule generation stale")
+	ErrRawPacketIsolation   = errors.New("linux raw packet isolation unverified")
 )
 
 type operationError struct {
@@ -37,6 +38,7 @@ func safeError(err error) error {
 		ErrQuarantineFailed,
 		ErrCleanupFailed,
 		ErrStaleGeneration,
+		ErrRawPacketIsolation,
 	} {
 		if errors.Is(err, known) {
 			return operationError{err: known}

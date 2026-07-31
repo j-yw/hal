@@ -132,7 +132,10 @@ func mutateInspectionJSON(payload []byte, mutation string) []byte {
 		rule := objects[2].(map[string]any)["rule"].(map[string]any)
 		rule["comment"] = "hal-owner-safe-generation-other-established"
 	case "wrong_mapping_interface":
-		rule := objects[4].(map[string]any)["rule"].(map[string]any)
+		rule := inspectionRuleByCommentSuffix(objects, "-proxy-outbound")
+		if rule == nil {
+			return payload
+		}
 		expressions := rule["expr"].([]any)
 		match := expressions[1].(map[string]any)["match"].(map[string]any)
 		match["right"] = "other-egress0"
@@ -140,6 +143,24 @@ func mutateInspectionJSON(payload []byte, mutation string) []byte {
 	document["nftables"] = objects
 	mutated, _ := json.Marshal(document)
 	return mutated
+}
+
+func inspectionRuleByCommentSuffix(objects []any, suffix string) map[string]any {
+	for _, object := range objects {
+		outer, ok := object.(map[string]any)
+		if !ok {
+			continue
+		}
+		rule, ok := outer["rule"].(map[string]any)
+		if !ok {
+			continue
+		}
+		comment, _ := rule["comment"].(string)
+		if strings.HasSuffix(comment, suffix) {
+			return rule
+		}
+	}
+	return nil
 }
 
 func cloneJSONValue(value any) any {

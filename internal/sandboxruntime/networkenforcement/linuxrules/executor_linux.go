@@ -112,7 +112,7 @@ func (e *productionExecutor) namespaceCommand(ctx context.Context, namespace Nam
 }
 
 func duplicateNamespaceFile(fd int, label string) (*os.File, error) {
-	duplicated, err := unix.Dup(fd)
+	duplicated, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 3)
 	if err != nil {
 		return nil, err
 	}

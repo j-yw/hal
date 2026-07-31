@@ -19,17 +19,17 @@ func expectedInspectionDocument(expected ExpectedRuleSet) inspectionDocument {
 		}},
 	}
 	if expected.profile == RuleProfileWorkloadOutput {
-		objects = append(objects,
-			expectedChainObject(expected, outputChain, "output", false),
-			map[string]any{"rule": expectedRuleObject(expected, outputChain, "proxy", outputProxyExpressions(expected))},
-			map[string]any{"rule": expectedRuleObject(expected, outputChain, "ipv6-nd", neighborDiscoveryExpressions(expected, "oifname"))},
-		)
+		objects = append(objects, expectedChainObject(expected, outputChain, "output", false))
+		objects = append(objects, map[string]any{"rule": expectedRuleObject(expected, outputChain, "proxy", outputProxyExpressions(expected))})
+		objects = append(objects, expectedNeighborDiscoveryObjects(expected, outputChain, "oifname")...)
 		return inspectionDocument{NFTables: objects}
 	}
 	objects = append(objects,
 		expectedChainObject(expected, inputChain, "input", false),
 		expectedChainObject(expected, forwardChain, "forward", false),
-		map[string]any{"rule": expectedRuleObject(expected, inputChain, "ipv6-nd", neighborDiscoveryExpressions(expected, "iifname"))},
+	)
+	objects = append(objects, expectedNeighborDiscoveryObjects(expected, inputChain, "iifname")...)
+	objects = append(objects,
 		map[string]any{"rule": expectedRuleObject(expected, forwardChain, "proxy-outbound", forwardedProxyExpressions(expected))},
 		map[string]any{"rule": expectedRuleObject(expected, forwardChain, "proxy-return", proxyReturnExpressions(expected))},
 	)
@@ -100,12 +100,35 @@ func proxyReturnExpressions(expected ExpectedRuleSet) []any {
 	return expressions
 }
 
-func neighborDiscoveryExpressions(expected ExpectedRuleSet, interfaceKey string) []any {
+func expectedNeighborDiscoveryObjects(expected ExpectedRuleSet, chain, interfaceKey string) []any {
+	objects := make([]any, 0, len(minimalNeighborDiscoveryRules()))
+	for _, rule := range minimalNeighborDiscoveryRules() {
+		objects = append(objects, map[string]any{"rule": expectedRuleObject(expected, chain, rule.role, neighborDiscoveryExpressions(expected, interfaceKey, rule))})
+	}
+	return objects
+}
+
+func neighborDiscoveryExpressions(expected ExpectedRuleSet, interfaceKey string, rule neighborDiscoveryRule) []any {
 	return []any{
 		matchExpression(map[string]any{"meta": map[string]any{"key": interfaceKey}}, expected.interfaceName),
-		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "nexthdr"}}, "icmpv6"),
-		matchExpression(map[string]any{"payload": map[string]any{"protocol": "icmpv6", "field": "type"}}, map[string]any{"set": []any{"nd-neighbor-solicit", "nd-neighbor-advert"}}),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "nexthdr"}}, "ipv6-icmp"),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "hoplimit"}}, float64(255)),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "icmpv6", "field": "type"}}, rule.messageType),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "saddr"}}, neighborAddressExpression(rule.source)),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "ip6", "field": "daddr"}}, neighborAddressExpression(rule.destination)),
+		matchExpression(map[string]any{"payload": map[string]any{"protocol": "icmpv6", "field": "taddr"}}, neighborAddressExpression("fe80::/10")),
 		map[string]any{"accept": nil},
+	}
+}
+
+func neighborAddressExpression(value string) any {
+	switch value {
+	case "fe80::/10":
+		return map[string]any{"prefix": map[string]any{"addr": "fe80::", "len": float64(10)}}
+	case "ff02::1:ff00:0/104":
+		return map[string]any{"prefix": map[string]any{"addr": "ff02::1:ff00:0", "len": float64(104)}}
+	default:
+		return value
 	}
 }
 

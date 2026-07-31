@@ -1,6 +1,7 @@
 package linuxrules
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -51,6 +52,17 @@ type TableQuery struct {
 	name   string
 }
 
+// RawPacketIsolationVerifier is a live-only fail-closed boundary for the
+// workload-output profile. Implementations must mechanically verify that the
+// exact correlated runtime generation cannot create raw packet sockets (for
+// example, CAP_NET_RAW is absent from its effective, permitted, inheritable,
+// bounding, and ambient capability sets).
+// A successful call is intentionally not serialized or projected as rule
+// inspection proof; cross-component composition owns that claim.
+type RawPacketIsolationVerifier interface {
+	VerifyRawPacketIsolation(context.Context, networkenforcement.EnforcementCorrelation) error
+}
+
 // RuleSetConfig contains safe correlation plus private live rule inputs. Raw
 // topology and proxy values are deliberately excluded from JSON.
 type RuleSetConfig struct {
@@ -62,6 +74,7 @@ type RuleSetConfig struct {
 	MappingInterfaceName string                                    `json:"-"`
 	ProxyAddress         string                                    `json:"-"`
 	ProxyPort            uint16                                    `json:"-"`
+	RawPacketIsolation   RawPacketIsolationVerifier                `json:"-"`
 }
 
 // ExpectedRuleSet is a validated, immutable expected-rule model.
@@ -76,6 +89,7 @@ type ExpectedRuleSet struct {
 	proxyPort            uint16
 	ownerToken           string
 	ruleDigest           string
+	rawPacketIsolation   RawPacketIsolationVerifier
 }
 
 func NewExpectedRuleSet(config RuleSetConfig) (ExpectedRuleSet, error) {
@@ -85,12 +99,13 @@ func NewExpectedRuleSet(config RuleSetConfig) (ExpectedRuleSet, error) {
 	if config.Profile == RuleProfileForwardedTAP {
 		mappingValid = validInterfaceName(config.MappingInterfaceName) && config.MappingInterfaceName != config.InterfaceName
 	}
+	rawPacketIsolationValid := config.Profile != RuleProfileWorkloadOutput || config.RawPacketIsolation != nil
 	if !networkenforcement.EnforcementCorrelationComplete(correlation) ||
 		!validRuleProfile(config.Profile) ||
 		!config.Namespace.valid() ||
 		!validNFTIdentifier(config.TableName, 32) ||
 		!validInterfaceName(config.InterfaceName) ||
-		!mappingValid ||
+		!mappingValid || !rawPacketIsolationValid ||
 		addressErr != nil || address.IsUnspecified() || address.IsMulticast() || address.IsLoopback() || isKnownMetadataProxyAddress(address) ||
 		config.ProxyPort == 0 {
 		return ExpectedRuleSet{}, operationError{err: ErrInvalidConfiguration}
@@ -107,6 +122,7 @@ func NewExpectedRuleSet(config RuleSetConfig) (ExpectedRuleSet, error) {
 		proxyAddress:         address.Unmap(),
 		proxyPort:            config.ProxyPort,
 		ownerToken:           ownerToken,
+		rawPacketIsolation:   config.RawPacketIsolation,
 	}
 	rules.ruleDigest = inspectionDigest(expectedInspectionDocument(rules))
 	return rules, nil
@@ -124,7 +140,7 @@ func (r ExpectedRuleSet) valid() bool {
 	return networkenforcement.EnforcementCorrelationComplete(r.correlation) &&
 		validRuleProfile(r.profile) &&
 		r.namespace.valid() && validNFTIdentifier(r.tableName, 32) &&
-		validInterfaceName(r.interfaceName) && validMappingInterface(r) && r.proxyAddress.IsValid() &&
+		validInterfaceName(r.interfaceName) && validMappingInterface(r) && validRawPacketIsolation(r) && r.proxyAddress.IsValid() &&
 		r.proxyPort != 0 && r.ownerToken != "" && r.ruleDigest != ""
 }
 
@@ -155,15 +171,13 @@ func (r ExpectedRuleSet) fullBatch(replace bool) []byte {
 		fmt.Fprintf(&builder, "add rule %s %s %s oifname %s %s daddr %s tcp dport %d accept comment %s\n",
 			tableFamily, r.tableName, outputChain, quoteNFT(r.interfaceName), addressFamily,
 			r.proxyAddress.String(), r.proxyPort, quoteNFT(r.ruleComment("proxy")))
-		fmt.Fprintf(&builder, "add rule %s %s %s oifname %s ip6 nexthdr icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept comment %s\n",
-			tableFamily, r.tableName, outputChain, quoteNFT(r.interfaceName), quoteNFT(r.ruleComment("ipv6-nd")))
+		r.writeNeighborDiscoveryRules(&builder, outputChain, "oifname")
 		return []byte(builder.String())
 	}
 
 	fmt.Fprintf(&builder, "add chain %s %s %s { type filter hook input priority -100; policy drop; }\n", tableFamily, r.tableName, inputChain)
 	fmt.Fprintf(&builder, "add chain %s %s %s { type filter hook forward priority -100; policy drop; }\n", tableFamily, r.tableName, forwardChain)
-	fmt.Fprintf(&builder, "add rule %s %s %s iifname %s ip6 nexthdr icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept comment %s\n",
-		tableFamily, r.tableName, inputChain, quoteNFT(r.interfaceName), quoteNFT(r.ruleComment("ipv6-nd")))
+	r.writeNeighborDiscoveryRules(&builder, inputChain, "iifname")
 	fmt.Fprintf(&builder, "add rule %s %s %s iifname %s oifname %s %s daddr %s tcp dport %d accept comment %s\n",
 		tableFamily, r.tableName, forwardChain, quoteNFT(r.interfaceName), quoteNFT(r.mappingInterfaceName), addressFamily,
 		r.proxyAddress.String(), r.proxyPort, quoteNFT(r.ruleComment("proxy-outbound")))
@@ -171,6 +185,14 @@ func (r ExpectedRuleSet) fullBatch(replace bool) []byte {
 		tableFamily, r.tableName, forwardChain, quoteNFT(r.mappingInterfaceName), quoteNFT(r.interfaceName), addressFamily,
 		r.proxyAddress.String(), r.proxyPort, quoteNFT(r.ruleComment("proxy-return")))
 	return []byte(builder.String())
+}
+
+func (r ExpectedRuleSet) writeNeighborDiscoveryRules(builder *strings.Builder, chain, interfaceKey string) {
+	for _, rule := range minimalNeighborDiscoveryRules() {
+		fmt.Fprintf(builder, "add rule %s %s %s %s %s ip6 nexthdr icmpv6 ip6 hoplimit 255 icmpv6 type %s ip6 saddr %s ip6 daddr %s icmpv6 taddr fe80::/10 accept comment %s\n",
+			tableFamily, r.tableName, chain, interfaceKey, quoteNFT(r.interfaceName),
+			rule.messageType, rule.source, rule.destination, quoteNFT(r.ruleComment(rule.role)))
+	}
 }
 
 func (r ExpectedRuleSet) quarantineBatch() []byte {
@@ -234,6 +256,27 @@ func validMappingInterface(r ExpectedRuleSet) bool {
 		return r.mappingInterfaceName == ""
 	}
 	return validInterfaceName(r.mappingInterfaceName) && r.mappingInterfaceName != r.interfaceName
+}
+
+func validRawPacketIsolation(r ExpectedRuleSet) bool {
+	return r.profile != RuleProfileWorkloadOutput || r.rawPacketIsolation != nil
+}
+
+type neighborDiscoveryRule struct {
+	role        string
+	messageType string
+	source      string
+	destination string
+}
+
+func minimalNeighborDiscoveryRules() []neighborDiscoveryRule {
+	return []neighborDiscoveryRule{
+		{role: "ipv6-nd-solicit-dad", messageType: "nd-neighbor-solicit", source: "::", destination: "ff02::1:ff00:0/104"},
+		{role: "ipv6-nd-solicit-multicast", messageType: "nd-neighbor-solicit", source: "fe80::/10", destination: "ff02::1:ff00:0/104"},
+		{role: "ipv6-nd-solicit-unicast", messageType: "nd-neighbor-solicit", source: "fe80::/10", destination: "fe80::/10"},
+		{role: "ipv6-nd-advert-unicast", messageType: "nd-neighbor-advert", source: "fe80::/10", destination: "fe80::/10"},
+		{role: "ipv6-nd-advert-all-nodes", messageType: "nd-neighbor-advert", source: "fe80::/10", destination: "ff02::1"},
+	}
 }
 
 func isKnownMetadataProxyAddress(address netip.Addr) bool {

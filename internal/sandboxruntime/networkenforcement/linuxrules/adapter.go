@@ -61,6 +61,11 @@ func (a *Adapter) ApplyAndInspect(ctx context.Context, expected ExpectedRuleSet)
 	if a.invalidOptions || a.executor == nil || a.now == nil || !expected.valid() {
 		return failedMetadata(expected, networkenforcement.LifecycleReasonCapabilityMissing), operationError{err: ErrInvalidConfiguration}
 	}
+	if expected.profile == RuleProfileWorkloadOutput {
+		if err := expected.rawPacketIsolation.VerifyRawPacketIsolation(ctx, expected.correlation); err != nil {
+			return failedMetadata(expected, networkenforcement.LifecycleReasonCapabilityMissing), operationError{err: ErrRawPacketIsolation}
+		}
+	}
 	present, owned, err := a.ownership(ctx, expected)
 	if err != nil {
 		return failedMetadata(expected, networkenforcement.LifecycleReasonRuleInspectionFailed), safeError(err)
@@ -190,7 +195,7 @@ func activeMetadata(expected ExpectedRuleSet, inspectedAtUnixMilli int64) networ
 	correlation := expected.correlation
 	labels := []string{
 		"default_deny", "private_range_rules",
-		"metadata_endpoint", "loopback_rules", "link_local_rules", "raw_protocols",
+		"metadata_endpoint", "loopback_rules", "link_local_rules",
 	}
 	proof := networkenforcement.InspectedRuleProof{
 		ID:                   "proof-" + expected.ownerToken,

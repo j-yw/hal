@@ -166,6 +166,67 @@ func TestLinuxRulesWorkloadOutputRequiresIndependentRawPacketIsolation(t *testin
 	}
 }
 
+type allowRawPacketIsolationVerifier struct{}
+
+func (allowRawPacketIsolationVerifier) VerifyRawPacketIsolation(context.Context, networkenforcement.EnforcementCorrelation) error {
+	return nil
+}
+
+type recordingRawPacketIsolationVerifier struct {
+	err         error
+	calls       int
+	correlation networkenforcement.EnforcementCorrelation
+}
+
+func (v *recordingRawPacketIsolationVerifier) VerifyRawPacketIsolation(_ context.Context, correlation networkenforcement.EnforcementCorrelation) error {
+	v.calls++
+	v.correlation = correlation
+	return v.err
+}
+
+func TestLinuxRulesRawPacketIsolationIsCheckedBeforeMutationAndNotProjected(t *testing.T) {
+	expected := testExpectedRuleSet(t, "generation-raw-check")
+	verifier := &recordingRawPacketIsolationVerifier{}
+	expected.rawPacketIsolation = verifier
+	executor := newFakeNFTExecutor(expected)
+
+	metadata, err := NewAdapter(executor, AdapterOptions{}).ApplyAndInspect(context.Background(), expected)
+	if err != nil {
+		t.Fatalf("ApplyAndInspect: %v", err)
+	}
+	if verifier.calls != 1 || verifier.correlation != expected.correlation {
+		t.Fatalf("verifier calls/correlation = %d/%#v, want one exact correlation", verifier.calls, verifier.correlation)
+	}
+	for _, label := range metadata.CapabilityLabels {
+		if label == "raw_protocols" {
+			t.Fatalf("private runtime verifier was projected as rule proof: %#v", metadata)
+		}
+	}
+
+	expected = testExpectedRuleSet(t, "generation-raw-failure")
+	verifier = &recordingRawPacketIsolationVerifier{err: errors.New("seeded private runtime detail")}
+	expected.rawPacketIsolation = verifier
+	executor = newFakeNFTExecutor(expected)
+	metadata, err = NewAdapter(executor, AdapterOptions{}).ApplyAndInspect(context.Background(), expected)
+	if !errors.Is(err, ErrRawPacketIsolation) {
+		t.Fatalf("verifier failure error = %v, want ErrRawPacketIsolation", err)
+	}
+	if len(executor.batches) != 0 || executor.listCalls != 0 {
+		t.Fatalf("verifier failure reached nft executor: batches=%d lists=%d", len(executor.batches), executor.listCalls)
+	}
+	if strings.Contains(err.Error(), "seeded") || metadata.Status == networkenforcement.LifecycleStatusActive {
+		t.Fatalf("verifier failure leaked detail or became active: err=%v metadata=%#v", err, metadata)
+	}
+}
+
+func TestLinuxRulesForwardedTAPMediatesGuestPacketsWithoutHostRawSocketVerifier(t *testing.T) {
+	config := testRuleSetConfig("generation-forwarded-no-verifier", RuleProfileForwardedTAP)
+	config.RawPacketIsolation = nil
+	if _, err := NewExpectedRuleSet(config); err != nil {
+		t.Fatalf("forwarded TAP rules unexpectedly required host raw-packet verifier: %v", err)
+	}
+}
+
 func TestLinuxRulesNeighborDiscoveryIsMinimalLinkLocalForBothProfiles(t *testing.T) {
 	for _, profile := range []RuleProfile{RuleProfileWorkloadOutput, RuleProfileForwardedTAP} {
 		t.Run(string(profile), func(t *testing.T) {
@@ -403,6 +464,20 @@ func TestLinuxRulesCleanupRequiresExactGenerationAndInspectsAbsence(t *testing.T
 	}
 }
 
+func TestLinuxRulesForwardedCleanupQuarantinesExactOwnedGeneration(t *testing.T) {
+	expected := testExpectedRuleSetForProfile(t, "generation-forwarded-cleanup", RuleProfileForwardedTAP)
+	executor := newFakeNFTExecutor(expected)
+	executor.installExpected()
+	adapter := NewAdapter(executor, AdapterOptions{})
+
+	if err := adapter.Cleanup(context.Background(), expected); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if executor.quarantineCalls != 1 || executor.deleteCalls != 1 || executor.present {
+		t.Fatalf("forwarded cleanup quarantine/delete/present = %d/%d/%t, want 1/1/false", executor.quarantineCalls, executor.deleteCalls, executor.present)
+	}
+}
+
 func TestLinuxRulesSerializesConcurrentOperations(t *testing.T) {
 	expected := testExpectedRuleSet(t, "generation-concurrent")
 	executor := newFakeNFTExecutor(expected)
@@ -472,6 +547,8 @@ func testRuleSetConfig(generation string, profile RuleProfile) RuleSetConfig {
 	}
 	if profile == RuleProfileForwardedTAP {
 		config.MappingInterfaceName = "pasta0"
+	} else {
+		config.RawPacketIsolation = allowRawPacketIsolationVerifier{}
 	}
 	return config
 }
