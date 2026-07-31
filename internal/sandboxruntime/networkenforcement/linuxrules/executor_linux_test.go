@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestLinuxRulesProductionExecutorRequiresAbsoluteToolPaths(t *testing.T) {
@@ -60,6 +62,15 @@ func TestLinuxRulesNamespaceCommandEntersOwningUserThenNetworkNamespace(t *testi
 	}
 	if len(command.ExtraFiles) != 2 {
 		t.Fatalf("extra files = %d, want user and network namespace descriptors", len(command.ExtraFiles))
+	}
+	for _, file := range command.ExtraFiles {
+		flags, err := unix.FcntlInt(file.Fd(), unix.F_GETFD, 0)
+		if err != nil {
+			t.Fatalf("read duplicate descriptor flags: %v", err)
+		}
+		if flags&unix.FD_CLOEXEC == 0 {
+			t.Fatal("duplicate namespace descriptor lacks atomic close-on-exec protection")
+		}
 	}
 	if command.Env == nil || len(command.Env) != 0 {
 		t.Fatalf("command environment = %#v, want explicit empty environment", command.Env)

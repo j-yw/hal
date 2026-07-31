@@ -140,6 +140,99 @@ func TestLinuxRulesRequiresOwningUserAndNetworkNamespaces(t *testing.T) {
 	}
 }
 
+func TestLinuxRulesWorkloadOutputRequiresIndependentRawPacketIsolation(t *testing.T) {
+	config := RuleSetConfig{
+		Correlation: networkenforcement.EnforcementCorrelation{
+			SandboxID:            "sandbox-raw-packet",
+			ExecutionID:          "execution-raw-packet",
+			WorkerID:             "worker-raw-packet",
+			RuntimeID:            "runtime-raw-packet",
+			PlanID:               "plan-raw-packet",
+			PolicySnapshotID:     "policy-raw-packet",
+			ProxySessionID:       "proxy-raw-packet",
+			ProxyGenerationID:    "proxy-generation-raw-packet",
+			TopologyGenerationID: "topology-raw-packet",
+			RuleGenerationID:     "rules-raw-packet",
+		},
+		Profile:       RuleProfileWorkloadOutput,
+		Namespace:     NewNamespaceHandle(10, 11),
+		TableName:     "hal_l7_raw_packet",
+		InterfaceName: "eth0",
+		ProxyAddress:  "192.0.2.10",
+		ProxyPort:     3128,
+	}
+	if _, err := NewExpectedRuleSet(config); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("missing raw-packet isolation verifier error = %v, want ErrInvalidConfiguration", err)
+	}
+}
+
+func TestLinuxRulesNeighborDiscoveryIsMinimalLinkLocalForBothProfiles(t *testing.T) {
+	for _, profile := range []RuleProfile{RuleProfileWorkloadOutput, RuleProfileForwardedTAP} {
+		t.Run(string(profile), func(t *testing.T) {
+			expected := testExpectedRuleSetForProfile(t, "generation-nd", profile)
+			batch := string(expected.fullBatch(false))
+			ndLines := make([]string, 0, 5)
+			for _, line := range strings.Split(batch, "\n") {
+				if strings.Contains(line, "icmpv6 type") {
+					ndLines = append(ndLines, line)
+				}
+			}
+			if len(ndLines) != 5 {
+				t.Fatalf("neighbor-discovery rules = %d, want five exact semantic cases: %s", len(ndLines), batch)
+			}
+			joined := strings.Join(ndLines, "\n")
+			for _, required := range []string{
+				"ip6 hoplimit 255",
+				"ip6 saddr",
+				"ip6 daddr",
+				"icmpv6 taddr fe80::/10",
+				"nd-neighbor-solicit",
+				"nd-neighbor-advert",
+			} {
+				if !strings.Contains(joined, required) {
+					t.Fatalf("neighbor-discovery batch missing %q: %s", required, joined)
+				}
+			}
+			if profile == RuleProfileWorkloadOutput && !strings.Contains(joined, `oifname "eth0"`) {
+				t.Fatalf("workload neighbor discovery is not output-interface bound: %s", joined)
+			}
+			if profile == RuleProfileForwardedTAP && !strings.Contains(joined, `iifname "eth0"`) {
+				t.Fatalf("forwarded neighbor discovery is not input-interface bound: %s", joined)
+			}
+
+			inspection := string(expectedInspectionJSON(expected))
+			for _, required := range []string{`"field":"hoplimit"`, `"field":"saddr"`, `"field":"daddr"`, `"field":"taddr"`} {
+				if !strings.Contains(inspection, required) {
+					t.Fatalf("exact inspection model missing %s: %s", required, inspection)
+				}
+			}
+		})
+	}
+}
+
+func TestLinuxRulesProxyDestinationCoversIPv4AndIPv6(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		address string
+		marker  string
+	}{
+		{name: "ipv4", address: "192.0.2.10", marker: "ip daddr 192.0.2.10"},
+		{name: "ipv6", address: "2001:db8::10", marker: "ip6 daddr 2001:db8::10"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := testRuleSetConfig("generation-"+test.name, RuleProfileForwardedTAP)
+			config.ProxyAddress = test.address
+			expected, err := NewExpectedRuleSet(config)
+			if err != nil {
+				t.Fatalf("NewExpectedRuleSet: %v", err)
+			}
+			if batch := string(expected.fullBatch(false)); !strings.Contains(batch, test.marker) {
+				t.Fatalf("proxy batch missing %q: %s", test.marker, batch)
+			}
+		})
+	}
+}
+
 func TestLinuxRulesRejectsLoopbackProxyAddress(t *testing.T) {
 	config := testRuleSetConfig("generation-loopback", RuleProfileWorkloadOutput)
 	config.ProxyAddress = "127.0.0.1"
