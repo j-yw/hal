@@ -1,6 +1,7 @@
 package l7profile
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -62,7 +63,7 @@ func TestL7GuestPrivilegeDropClearsEveryCapabilityPath(t *testing.T) {
 		"--bounding-set=-all",
 		"--inh-caps=-all",
 		"--ambient-caps=-all",
-		"--securebits=-keep_caps",
+		"--securebits=+keep_caps_locked",
 		"--no-new-privs",
 		"--reuid 1000",
 		"--regid 1000",
@@ -73,5 +74,36 @@ func TestL7GuestPrivilegeDropClearsEveryCapabilityPath(t *testing.T) {
 	}
 	if strings.Index(init, "--bounding-set=-all") > strings.Index(init, "--reuid 1000") {
 		t.Fatal("guest init clears the capability bounding set after the UID transition")
+	}
+	for _, invalid := range []string{"--securebits=-keep_caps", "+keep_caps,"} {
+		if strings.Contains(init, invalid) {
+			t.Fatalf("guest init uses invalid keep-caps transition %q", invalid)
+		}
+	}
+}
+
+func TestL7BusyBoxAppletTargetResolverFixtures(t *testing.T) {
+	tests := []struct {
+		name       string
+		applet     string
+		target     string
+		wantAccept bool
+	}{
+		{name: "absolute", applet: "/bin/sh", target: "/bin/busybox", wantAccept: true},
+		{name: "same directory", applet: "/bin/sh", target: "busybox", wantAccept: true},
+		{name: "one parent", applet: "/sbin/ip", target: "../bin/busybox", wantAccept: true},
+		{name: "two parents", applet: "/usr/bin/env", target: "../../bin/busybox", wantAccept: true},
+		{name: "wrong relative depth", applet: "/usr/bin/env", target: "../bin/busybox"},
+		{name: "other absolute", applet: "/bin/sh", target: "/usr/bin/busybox"},
+		{name: "traversal elsewhere", applet: "/bin/sh", target: "../../tmp/busybox"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := exec.Command("bash", "verify-applet-target.sh", tt.applet, tt.target)
+			err := command.Run()
+			if (err == nil) != tt.wantAccept {
+				t.Fatalf("resolver exit error = %v, want accept %t", err, tt.wantAccept)
+			}
+		})
 	}
 }

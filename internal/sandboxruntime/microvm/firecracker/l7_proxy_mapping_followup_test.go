@@ -7,7 +7,7 @@ import (
 )
 
 func TestL7FirecrackerAcceptsDistinctSyntheticProxyAddress(t *testing.T) {
-	config := validL7NetworkBackendConfig()
+	config := validL7NetworkBackendConfig(t)
 	config.StaticNetwork.ProxyURL = "http://198.18.0.1:18080"
 
 	rendered, err := liveBootConfig(config)
