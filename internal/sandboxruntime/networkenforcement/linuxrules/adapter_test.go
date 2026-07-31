@@ -201,7 +201,15 @@ func TestLinuxRulesNeighborDiscoveryIsMinimalLinkLocalForBothProfiles(t *testing
 			}
 
 			inspection := string(expectedInspectionJSON(expected))
-			for _, required := range []string{`"field":"hoplimit"`, `"field":"saddr"`, `"field":"daddr"`, `"field":"taddr"`} {
+			for _, required := range []string{
+				`"field":"hoplimit"`,
+				`"field":"saddr"`,
+				`"field":"daddr"`,
+				`"field":"taddr"`,
+				`"right":"ipv6-icmp"`,
+				`"prefix":{"addr":"fe80::","len":10}`,
+				`"prefix":{"addr":"ff02::1:ff00:0","len":104}`,
+			} {
 				if !strings.Contains(inspection, required) {
 					t.Fatalf("exact inspection model missing %s: %s", required, inspection)
 				}
