@@ -92,7 +92,8 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 	if got := session.Metadata(); got.Status != StatusPrepared || !got.StructuralInspected || !got.MappingReachable {
 		t.Fatalf("selected topology metadata = %#v", got)
 	}
-	keeperPID := session.keeper.PID()
+	trackedKeeper := session.keeper
+	keeperPID := trackedKeeper.PID()
 	keeperStartTime, err := readProcessStartTime(keeperPID)
 	if err != nil || keeperStartTime == "" {
 		t.Fatal("tracked keeper has no current process identity")
@@ -141,7 +142,7 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 	if metadata.Status != StatusStopped {
 		t.Fatalf("cleanup status = %q, want stopped", metadata.Status)
 	}
-	if !processDone(session.keeper) {
+	if !processDone(trackedKeeper) {
 		t.Fatal("tracked keeper remained live after cleanup")
 	}
 	if _, err := readProcessStartTime(keeperPID); !errors.Is(err, fs.ErrNotExist) {

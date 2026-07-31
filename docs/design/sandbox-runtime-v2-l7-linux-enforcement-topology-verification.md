@@ -24,6 +24,17 @@ go test -race -count=1 -timeout=300s \
 
 ## Selected prepared-Linux gates
 
+The owned-namespace topology lane proves exact proxy reachability plus direct
+keeper PID/namespace ownership, prompt reap, and process/namespace/descriptor
+absence after cleanup:
+
+```sh
+go test -count=1 -timeout=90s \
+  -tags='l7_linux_network_integration' \
+  ./internal/sandboxruntime/networkenforcement/linuxtopology \
+  -run '^TestL7PreparedLinuxOwnedNamespacePastaTopology$'
+```
+
 The rootless lane requires the global proxy/firewall markers, an L7 Podman
 marker, and a named already-local image. It performs no pull:
 

@@ -260,13 +260,19 @@ Before mapper launch the journal records a private `mappingArmed` marker plus
 the exact daemon PID/start identity, keeper, and namespace identity. The
 long-running helper is created and reaped by one goroutine locked to its OS
 thread for the full child lifetime, so `Pdeathsig` remains tied to a retained
-creator thread. A restart that still sees the recorded daemon identity alive
-fails closed without retiring or replacing the generation. Creator-thread
-death while the daemon survives can therefore cause only a conservative
-false-negative; daemon death necessarily ends that retained thread and sends
-the uncatchable parent-death signal before lock recovery. A fully recorded
-mapper is still reconciled by exact pidfd/start identity. No old journal is
-converted into prepared or active proof.
+creator thread. The namespace keeper is a direct `unshare` exec without a
+forking wrapper, so the one tracked PID owns the retained namespaces and Hal
+waits for and reaps that exact process during cleanup.
+
+Any restart that sees `mappingArmed` without a fully recorded mapper fails
+closed as `stale_topology_unverified`, regardless of whether the recorded
+creator still appears live. Creator death and `Pdeathsig` delivery are useful
+containment but are not proof that the mapper has exited. Reconciliation does
+not signal the keeper, retire or delete the journal, or permit replacement;
+explicit recovery is required. A same-daemon retained `Session` can still
+clean up or retry its own start failure. A fully recorded mapper is reconciled
+by exact pidfd/start identity. No old journal is converted into prepared or
+active proof.
 
 ## Red-first and live acceptance
 

@@ -292,7 +292,7 @@ func (l *Lifecycle) keeperSpec() ProcessSpec {
 		Role: ProcessRoleKeeper,
 		Path: l.config.Tools.Unshare,
 		Args: []string{
-			"--user", "--map-current-user", "--net", "--fork", "--kill-child=TERM",
+			"--user", "--map-current-user", "--net",
 			"--", l.config.Tools.Keeper, "infinity",
 		},
 		Env:         append([]string(nil), l.config.Environment...),

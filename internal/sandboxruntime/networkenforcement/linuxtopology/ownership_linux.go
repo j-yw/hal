@@ -135,10 +135,7 @@ func (l *fileOwnershipLease) Reconcile(ctx context.Context) error {
 		if journal.Mapper != nil || journal.MappingCreator == nil || journal.Keeper == nil || journal.Namespace == nil {
 			return ErrStaleTopologyUnverified
 		}
-		alive, err := recordedProcessCurrent(*journal.MappingCreator)
-		if err != nil || alive {
-			return ErrStaleTopologyUnverified
-		}
+		return ErrStaleTopologyUnverified
 	} else if journal.MappingCreator != nil {
 		return ErrStaleTopologyUnverified
 	}
@@ -407,20 +404,6 @@ func currentProcessRecord() (*privateProcessRecord, error) {
 		return nil, err
 	}
 	return &privateProcessRecord{PID: pid, StartTime: startTime}, nil
-}
-
-func recordedProcessCurrent(record privateProcessRecord) (bool, error) {
-	if record.PID <= 0 || record.StartTime == "" {
-		return false, ErrStaleTopologyUnverified
-	}
-	startTime, err := readProcessStartTime(record.PID)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return startTime == record.StartTime, nil
 }
 
 func terminateRecordedProcess(ctx context.Context, record privateProcessRecord, namespace *privateNamespaceRecord) error {
