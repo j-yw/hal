@@ -4,8 +4,10 @@ package linuxtopology
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -96,5 +98,77 @@ func TestL7LiveCleanupRegistrationIsImmediateBoundedIdempotentAndExact(t *testin
 	}
 	if len(registrar.errors) != 0 {
 		t.Fatalf("registered cleanup reported errors: %v", registrar.errors)
+	}
+}
+
+func TestL7RetainedFailedStartCleanupIsImmediateBoundedAndSanitized(t *testing.T) {
+	identity := testIdentity("topology-gen-retained-start-cleanup")
+	otherIdentity := testIdentity("topology-gen-other-retained-start-cleanup")
+	testCases := []struct {
+		name     string
+		metadata Metadata
+		err      error
+		wantFail bool
+	}{
+		{
+			name:     "stopped exact identity",
+			metadata: Metadata{Identity: identity, Status: StatusStopped},
+		},
+		{
+			name:     "stop error",
+			err:      errors.New("unsafe cleanup detail credential=secret"),
+			wantFail: true,
+		},
+		{
+			name:     "wrong status",
+			metadata: Metadata{Identity: identity, Status: StatusCleanupIncomplete},
+			wantFail: true,
+		},
+		{
+			name:     "wrong identity",
+			metadata: Metadata{Identity: otherIdentity, Status: StatusStopped},
+			wantFail: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			registrar := &fakeL7LiveCleanupTest{}
+			session := &Session{metadata: Metadata{Identity: identity, Status: StatusCleanupIncomplete}}
+			stopCalls := 0
+			registerL7RetainedStartCleanup(registrar, session, identity, l7RetainedStartCleanupDeps{
+				Timeout: 250 * time.Millisecond,
+				Stop: func(ctx context.Context, got Identity) (Metadata, error) {
+					stopCalls++
+					if got != identity {
+						t.Fatal("retained-start cleanup received the wrong topology identity")
+					}
+					deadline, ok := ctx.Deadline()
+					if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > time.Second {
+						t.Fatal("retained-start cleanup did not receive an independent bounded context")
+					}
+					return testCase.metadata, testCase.err
+				},
+			})
+			if len(registrar.cleanups) != 1 {
+				t.Fatal("retained failed-start cleanup was not registered immediately")
+			}
+			registrar.cleanups[0]()
+			if stopCalls != 1 {
+				t.Fatalf("retained failed-start cleanup calls = %d, want 1", stopCalls)
+			}
+			if testCase.wantFail {
+				if len(registrar.errors) != 1 || registrar.errors[0] != "selected L7 retained-start cleanup retry failed" {
+					t.Fatalf("retained failed-start cleanup errors = %v", registrar.errors)
+				}
+				if strings.Contains(strings.Join(registrar.errors, " "), "credential=secret") {
+					t.Fatal("retained failed-start cleanup exposed unsafe error detail")
+				}
+				return
+			}
+			if len(registrar.errors) != 0 {
+				t.Fatalf("retained failed-start cleanup reported errors: %v", registrar.errors)
+			}
+		})
 	}
 }
