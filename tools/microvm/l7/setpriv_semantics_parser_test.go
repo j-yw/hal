@@ -5,9 +5,15 @@ package l7profile
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -122,6 +128,77 @@ func TestL7ConfiguredProviderQueryRejectsNonzeroExitWithoutStderrDisclosure(t *t
 	}
 }
 
+func TestL7ConfiguredProviderQueryKillsRetainedStdoutGroupOnOverflow(t *testing.T) {
+	const outputLimit = 128
+	started := time.Now()
+	output, err := runL7ConfiguredProviderQuery(
+		context.Background(),
+		300*time.Millisecond,
+		outputLimit,
+		os.Args[0],
+		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "group-overflow",
+	)
+	if err == nil {
+		t.Fatal("configured provider query accepted group-owned oversized stdout")
+	}
+	if len(output) != outputLimit {
+		t.Fatal("configured provider query did not bound group-owned stdout")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatal("configured provider overflow cleanup exceeded the total operation budget")
+	}
+	parentPID, descendantPID := parseL7HelperProcessIDs(t, output)
+	cleanupL7HelperProcess(t, descendantPID)
+	requireL7HelperProcessAbsent(t, parentPID)
+	requireL7HelperProcessAbsent(t, descendantPID)
+	requireL7HelperProcessGroupAbsent(t, parentPID)
+	if strings.Contains(err.Error(), "provider-sensitive") {
+		t.Fatal("configured provider overflow error exposed child output")
+	}
+}
+
+func TestL7ConfiguredProviderQueryKillsRetainedStdoutGroupOnParentCancellation(t *testing.T) {
+	readyPath := filepath.Join(t.TempDir(), "provider-ready")
+	parent, cancel := context.WithCancel(context.Background())
+	type queryResult struct {
+		output []byte
+		err    error
+	}
+	result := make(chan queryResult, 1)
+	go func() {
+		output, err := runL7ConfiguredProviderQuery(
+			parent,
+			2*time.Second,
+			256,
+			os.Args[0],
+			"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "group-cancel", readyPath,
+		)
+		result <- queryResult{output: output, err: err}
+	}()
+
+	processIDs := waitForL7HelperProcessIDs(t, readyPath)
+	cleanupL7HelperProcess(t, processIDs[1])
+	started := time.Now()
+	cancel()
+	got := <-result
+	if got.err == nil {
+		t.Fatal("configured provider query accepted parent cancellation")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatal("configured provider cancellation cleanup exceeded the total operation budget")
+	}
+	parentPID, descendantPID := parseL7HelperProcessIDs(t, got.output)
+	if parentPID != processIDs[0] || descendantPID != processIDs[1] {
+		t.Fatal("configured provider query returned inconsistent sanitized helper metadata")
+	}
+	requireL7HelperProcessAbsent(t, parentPID)
+	requireL7HelperProcessAbsent(t, descendantPID)
+	requireL7HelperProcessGroupAbsent(t, parentPID)
+	if strings.Contains(got.err.Error(), "provider-sensitive") {
+		t.Fatal("configured provider cancellation error exposed child output")
+	}
+}
+
 func TestL7ConfiguredProviderHelperProcess(t *testing.T) {
 	mode := ""
 	for index, argument := range os.Args {
@@ -139,5 +216,81 @@ func TestL7ConfiguredProviderHelperProcess(t *testing.T) {
 	case "nonzero":
 		_, _ = os.Stderr.WriteString("provider-sensitive-stderr")
 		os.Exit(7)
+	case "group-overflow", "group-cancel":
+		descendant := exec.Command(
+			os.Args[0],
+			"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "descendant",
+		)
+		descendant.Stdout = os.Stdout
+		descendant.Stderr = os.Stderr
+		if err := descendant.Start(); err != nil {
+			os.Exit(8)
+		}
+		metadata := fmt.Sprintf("processes:%d:%d\n", os.Getpid(), descendant.Process.Pid)
+		_, _ = os.Stdout.WriteString(metadata)
+		if mode == "group-cancel" && len(os.Args) > 1 {
+			readyPath := os.Args[len(os.Args)-1]
+			if err := os.WriteFile(readyPath, []byte(metadata), 0o600); err != nil {
+				os.Exit(9)
+			}
+		}
+		if mode == "group-overflow" {
+			_, _ = os.Stdout.Write(bytes.Repeat([]byte("provider-sensitive-output"), 32))
+		}
+		time.Sleep(time.Minute)
+	case "descendant":
+		signal.Ignore(syscall.SIGTERM)
+		time.Sleep(time.Minute)
+	}
+}
+
+func parseL7HelperProcessIDs(t *testing.T, output []byte) (int, int) {
+	t.Helper()
+	line := strings.SplitN(string(output), "\n", 2)[0]
+	parts := strings.Split(line, ":")
+	if len(parts) != 3 || parts[0] != "processes" {
+		t.Fatal("configured provider query omitted sanitized helper process metadata")
+	}
+	parentPID, parentErr := strconv.Atoi(parts[1])
+	descendantPID, descendantErr := strconv.Atoi(parts[2])
+	if parentErr != nil || descendantErr != nil || parentPID <= 0 || descendantPID <= 0 {
+		t.Fatal("configured provider query returned invalid sanitized helper process metadata")
+	}
+	return parentPID, descendantPID
+}
+
+func waitForL7HelperProcessIDs(t *testing.T, path string) [2]int {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		metadata, err := os.ReadFile(path)
+		if err == nil {
+			parentPID, descendantPID := parseL7HelperProcessIDs(t, metadata)
+			return [2]int{parentPID, descendantPID}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("configured provider helper did not reach its sanitized readiness boundary")
+	return [2]int{}
+}
+
+func cleanupL7HelperProcess(t *testing.T, pid int) {
+	t.Helper()
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+}
+
+func requireL7HelperProcessAbsent(t *testing.T, pid int) {
+	t.Helper()
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatal("configured provider query left an exact helper process behind")
+	}
+}
+
+func requireL7HelperProcessGroupAbsent(t *testing.T, processGroupID int) {
+	t.Helper()
+	if err := syscall.Kill(-processGroupID, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatal("configured provider query left its exact helper process group behind")
 	}
 }
