@@ -116,6 +116,11 @@ func (a *Adapter) StartProxyListener(ctx context.Context, request networkenforce
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.listener != nil {
+		select {
+		case <-a.done:
+			return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("start")
+		default:
+		}
 		return a.metadata(request, networkenforcement.LifecycleStatusStarting, networkenforcement.LifecycleReasonStarted), nil
 	}
 
@@ -151,9 +156,9 @@ func (a *Adapter) StartProxyListener(ctx context.Context, request networkenforce
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			serveErr = nil
 		}
-		a.superviseServeExit(generation, server, listener, cancel, serveErr)
 		done <- serveErr
 		close(done)
+		a.superviseServeExit(generation, server, listener, cancel, serveErr)
 	}()
 	return a.metadata(request, networkenforcement.LifecycleStatusStarting, networkenforcement.LifecycleReasonStarted), nil
 }
@@ -246,6 +251,9 @@ func (a *Adapter) superviseServeExit(generation uint64, server *http.Server, lis
 	if serveErr == nil {
 		return
 	}
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+
 	a.mu.Lock()
 	if a.generation != generation || a.server != server || a.listener != listener || a.stopping {
 		a.mu.Unlock()

@@ -110,8 +110,8 @@ Lifecycle is transactional:
 - active succeeds only while the exact owned listener and serve loop are live;
 - stop is idempotent and uses an internal bounded cleanup context even if the
   caller is canceled;
-- serve failure clears active proof, cancels request lifetime, and closes owned
-  listeners and tunnels for the same lifecycle generation.
+- serve failure clears active proof and serializes cancellation and owned
+  connection cleanup with start and stop for the same lifecycle generation.
 
 The existing enforcement projection may report active proxy-only
 `networkEnforcement=proxy`. L6 can never report firewall/runtime proof,
