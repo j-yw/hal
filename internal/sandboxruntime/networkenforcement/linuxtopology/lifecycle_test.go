@@ -60,6 +60,7 @@ type fakeProcess struct {
 	terminateCount int
 	cleanupCtxErr  error
 	hadDeadline    bool
+	terminateErr   error
 	events         *[]string
 	role           ProcessRole
 	once           sync.Once
@@ -84,7 +85,7 @@ func (p *fakeProcess) Terminate(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 	p.once.Do(func() { close(p.done) })
-	return nil
+	return p.terminateErr
 }
 
 func (p *fakeProcess) exit() { p.once.Do(func() { close(p.done) }) }
@@ -269,12 +270,14 @@ func TestLinuxTopologyRejectsUnsafeInputsBeforeProcessStart(t *testing.T) {
 	}{
 		{name: "empty identity", mutateReq: func(r *StartRequest) { r.Identity.PlanID = "" }, want: ErrInvalidIdentity},
 		{name: "unsafe identity", mutateReq: func(r *StartRequest) { r.Identity.SandboxID = "../sandbox" }, want: ErrInvalidIdentity},
+		{name: "duplicate identity", mutateReq: func(r *StartRequest) { r.Identity.PlanID = r.Identity.RuntimeID }, want: ErrInvalidIdentity},
 		{name: "relative tool", mutateCfg: func(c *Config) { c.Tools.Pasta = "bin/pasta" }, want: ErrInvalidTools},
 		{name: "unclean tool", mutateCfg: func(c *Config) { c.Tools.IP = "/opt/../tmp/ip" }, want: ErrInvalidTools},
 		{name: "non loopback endpoint", mutateReq: func(r *StartRequest) { r.Mapping.ProxyEndpoint = "198.51.100.2:80" }, want: ErrInvalidMapping},
 		{name: "missing endpoint port", mutateReq: func(r *StartRequest) { r.Mapping.ProxyEndpoint = "127.0.0.1:0" }, want: ErrInvalidMapping},
 		{name: "unsafe guest address", mutateReq: func(r *StartRequest) { r.Mapping.GuestProxyAddress = "127.0.0.1" }, want: ErrInvalidMapping},
 		{name: "unsafe interface", mutateReq: func(r *StartRequest) { r.Mapping.NamespaceInterface = "bad;if" }, want: ErrInvalidMapping},
+		{name: "uncontrolled environment", mutateCfg: func(c *Config) { c.Environment = []string{"PATH=/tmp/unsafe"} }, want: ErrInvalidTools},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -403,6 +406,7 @@ func TestLinuxTopologyPublicJSONOmitsAllLiveState(t *testing.T) {
 	t.Cleanup(func() { _, _ = lifecycle.Stop(context.Background(), testIdentity("topology-gen-json")) })
 
 	values := []any{
+		Config{Enabled: true, Tools: testTools(), Environment: []string{"LANG=C.UTF-8"}},
 		testRequest("topology-gen-json"), testTools(), starter.specs[0], starter.specs[1],
 		runner.specs[0], session, session.Metadata(), namespaces.opened[0],
 	}
@@ -521,6 +525,31 @@ func TestLinuxTopologyStopUsesIndependentBoundedContextAndReverseCleanup(t *test
 	}
 	if !namespaces.allClosed() {
 		t.Fatal("owning namespace handles remained open")
+	}
+}
+
+func TestLinuxTopologyCleanupUncertaintyIsSanitizedAndNotStopped(t *testing.T) {
+	starter := newFakeStarter()
+	runner := &fakeRunner{output: goodLinkJSON()}
+	namespaces := newFakeNamespaces(t, &starter.events)
+	lifecycle := newTestLifecycle(t, starter, runner, namespaces)
+	_, err := lifecycle.Start(context.Background(), testRequest("topology-gen-cleanup"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter.latest(ProcessRoleMapping).terminateErr = errors.New("kill pid=9876 endpoint=127.0.0.1:43123 token=secret")
+
+	metadata, err := lifecycle.Stop(context.Background(), testIdentity("topology-gen-cleanup"))
+	if !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Stop error = %v, want ErrCleanupIncomplete", err)
+	}
+	if metadata.Status != StatusCleanupIncomplete {
+		t.Fatalf("status = %q, want cleanup_incomplete", metadata.Status)
+	}
+	for _, leak := range []string{"9876", testEndpoint, "secret", "kill"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("cleanup error leaked %q: %v", leak, err)
+		}
 	}
 }
 

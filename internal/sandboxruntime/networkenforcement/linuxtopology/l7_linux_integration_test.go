@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -18,7 +19,7 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 		if err != nil {
 			t.Fatalf("selected L7 Linux topology prerequisite %q unavailable: %v", name, err)
 		}
-		path, err = filepathAbs(path)
+		path, err = filepath.Abs(path)
 		if err != nil {
 			t.Fatalf("resolve selected prerequisite %q: %v", name, err)
 		}

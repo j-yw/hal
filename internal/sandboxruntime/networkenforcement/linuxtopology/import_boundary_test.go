@@ -29,8 +29,8 @@ func TestL7LinuxTopologyImportBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.HasPrefix(importPath, "github.com/jywlabs/hal/") {
-				t.Errorf("%s imports out-of-scope repository dependency %q", name, importPath)
+			if strings.Contains(importPath, ".") {
+				t.Errorf("%s imports non-standard or out-of-scope dependency %q", name, importPath)
 			}
 		}
 	}
