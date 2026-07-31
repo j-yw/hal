@@ -197,8 +197,10 @@ type rawPacketInspectMount struct {
 
 func (v *PodmanRawPacketIsolationVerifier) inspectExactContainer(ctx context.Context) (rawPacketContainerInspection, error) {
 	result, err := v.lifecycleRunner.RunLifecycleCommand(ctx, CommandRequest{
-		Operation: OperationInspect,
-		Args:      []string{v.podmanPath, "inspect", "--type", "container", v.target.Runtime.RuntimeID},
+		Operation:      OperationInspect,
+		Args:           []string{v.podmanPath, "inspect", "--type", "container", v.target.Runtime.RuntimeID},
+		MaxStdoutBytes: v.maxInspectBytes,
+		MaxStderrBytes: v.maxInspectBytes,
 	})
 	if err != nil || result.ExitCode != 0 || len(result.Stdout) == 0 || int64(len(result.Stdout)) > v.maxInspectBytes {
 		return rawPacketContainerInspection{}, ErrRawPacketIsolationUnverified
