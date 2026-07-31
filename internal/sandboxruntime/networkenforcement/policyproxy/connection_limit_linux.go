@@ -3,6 +3,7 @@
 package policyproxy
 
 import (
+	"errors"
 	"net"
 	"sync"
 )
@@ -64,4 +65,20 @@ func (c *connectionLimitConn) Close() error {
 	err := c.Conn.Close()
 	c.releaseOnce.Do(c.release)
 	return err
+}
+
+func (c *connectionLimitConn) CloseWrite() error {
+	closeWriter, ok := c.Conn.(interface{ CloseWrite() error })
+	if !ok {
+		return errors.ErrUnsupported
+	}
+	return closeWriter.CloseWrite()
+}
+
+func (c *connectionLimitConn) CloseRead() error {
+	closeReader, ok := c.Conn.(interface{ CloseRead() error })
+	if !ok {
+		return errors.ErrUnsupported
+	}
+	return closeReader.CloseRead()
 }
