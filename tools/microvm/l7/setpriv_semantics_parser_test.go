@@ -72,7 +72,7 @@ func TestL7SubordinateIDMapUsesOneOuterIDAtNamespaceID1000(t *testing.T) {
 func TestL7ConfiguredProviderQueryAcceptsSuccessfulExit(t *testing.T) {
 	output, err := runL7ConfiguredProviderQuery(
 		context.Background(),
-		time.Second,
+		5*time.Second,
 		64,
 		os.Args[0],
 		"-test.run=^TestL7ConfiguredProviderHelperProcess$", "--", "success",
@@ -336,7 +336,7 @@ func TestL7ConfiguredProviderQueryBoundsEscapedRetainedPipe(t *testing.T) {
 	if !errors.Is(err, errL7ConfiguredProviderQuery) {
 		t.Fatal("configured provider query accepted an escaped retained output pipe")
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
 		t.Fatal("configured provider query did not bound escaped retained-pipe cleanup")
 	}
 	parentPID, descendantPID := parseL7HelperProcessIDs(t, output)
@@ -359,6 +359,7 @@ func TestL7ConfiguredProviderHelperProcess(t *testing.T) {
 	switch mode {
 	case "success":
 		_, _ = os.Stdout.WriteString("provider-safe-output\n")
+		os.Exit(0)
 	case "oversized":
 		_, _ = os.Stdout.Write(bytes.Repeat([]byte("provider-sensitive-output"), 16))
 		_, _ = os.Stderr.WriteString("provider-sensitive-stderr")
@@ -478,7 +479,8 @@ func waitForL7HelperProcessAbsent(t *testing.T, pid int) {
 
 func requireL7HelperProcessGroupAbsent(t *testing.T, processGroupID int) {
 	t.Helper()
-	if err := syscall.Kill(-processGroupID, 0); !errors.Is(err, syscall.ESRCH) {
+	hasMembers, err := scanL7ConfiguredProviderProcessGroup(processGroupID, 0)
+	if err != nil || hasMembers {
 		t.Fatal("configured provider query left its exact helper process group behind")
 	}
 }

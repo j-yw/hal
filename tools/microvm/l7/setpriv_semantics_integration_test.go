@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -24,6 +27,19 @@ const (
 )
 
 var errL7ConfiguredProviderQuery = errors.New("configured subordinate ID provider query failed")
+
+var (
+	startL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		return command.Start()
+	}
+	signalL7ConfiguredProviderProcessGroup = func(processGroupID int, signal syscall.Signal) error {
+		return syscall.Kill(-processGroupID, signal)
+	}
+	reapL7ConfiguredProviderCommand = func(command *exec.Cmd) error {
+		return command.Wait()
+	}
+	l7ConfiguredProviderProcessGroupHasOtherMembers = scanL7ConfiguredProviderProcessGroup
+)
 
 func TestL7SetprivLockedKeepCapsSemantics(t *testing.T) {
 	for _, command := range []string{"getsubids", "newgidmap", "newuidmap", "setpriv", "unshare"} {
@@ -163,6 +179,7 @@ func requireL7SubordinateID(t *testing.T, username string, group bool) uint64 {
 }
 
 type l7BoundedOutput struct {
+	mu           sync.Mutex
 	data         []byte
 	limit        int
 	overflow     bool
@@ -186,6 +203,8 @@ func (output *l7BoundedOutput) markOverflow() {
 }
 
 func (output *l7BoundedOutput) Write(data []byte) (int, error) {
+	output.mu.Lock()
+	defer output.mu.Unlock()
 	written := len(data)
 	remaining := output.limit - len(output.data)
 	if remaining <= 0 {
@@ -203,6 +222,60 @@ func (output *l7BoundedOutput) Write(data []byte) (int, error) {
 	return written, nil
 }
 
+func (output *l7BoundedOutput) snapshot() ([]byte, bool) {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	return append([]byte(nil), output.data...), output.overflow
+}
+
+type l7ConfiguredProviderOutputDrain struct {
+	reader    *os.File
+	done      chan error
+	closeOnce sync.Once
+	complete  bool
+	err       error
+}
+
+func newL7ConfiguredProviderOutputDrain(reader *os.File, output io.Writer) *l7ConfiguredProviderOutputDrain {
+	drain := &l7ConfiguredProviderOutputDrain{
+		reader: reader,
+		done:   make(chan error, 1),
+	}
+	go func() {
+		_, err := io.Copy(output, reader)
+		drain.done <- err
+	}()
+	return drain
+}
+
+func (drain *l7ConfiguredProviderOutputDrain) waitUntil(deadline time.Time) (error, bool) {
+	if drain.complete {
+		return drain.err, true
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, false
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case drain.err = <-drain.done:
+		drain.complete = true
+		return drain.err, true
+	case <-timer.C:
+		return nil, false
+	}
+}
+
+func (drain *l7ConfiguredProviderOutputDrain) close() {
+	if drain == nil {
+		return
+	}
+	drain.closeOnce.Do(func() {
+		_ = drain.reader.Close()
+	})
+}
+
 func runL7ConfiguredProviderQuery(
 	parent context.Context,
 	timeout time.Duration,
@@ -213,8 +286,14 @@ func runL7ConfiguredProviderQuery(
 	if parent == nil || timeout <= 0 || outputLimit <= 0 || strings.TrimSpace(executable) == "" {
 		return nil, errL7ConfiguredProviderQuery
 	}
+	if parent.Err() != nil {
+		return nil, errL7ConfiguredProviderQuery
+	}
 	queryContext, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
+	if queryContext.Err() != nil {
+		return nil, errL7ConfiguredProviderQuery
+	}
 	output := newL7BoundedOutput(outputLimit)
 	stderr, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
@@ -223,84 +302,179 @@ func runL7ConfiguredProviderQuery(
 	defer func() {
 		_ = stderr.Close()
 	}()
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		return nil, errL7ConfiguredProviderQuery
+	}
 
 	command := exec.Command(executable, arguments...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.Stdout = output
+	command.Stdout = stdoutWriter
 	command.Stderr = stderr
-	if err := command.Start(); err != nil {
+	if queryContext.Err() != nil {
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
 		return nil, errL7ConfiguredProviderQuery
 	}
-	processGroupID := command.Process.Pid
-	waited := make(chan error, 1)
-	go func() {
-		waited <- command.Wait()
-	}()
-
-	failed := false
-	var waitErr error
-	waitComplete := false
-	select {
-	case waitErr = <-waited:
-		waitComplete = true
-	case <-queryContext.Done():
-		failed = true
-	case <-output.overflowed:
-		failed = true
+	if err := startL7ConfiguredProviderCommand(command); err != nil {
+		_ = stdoutReader.Close()
+		_ = stdoutWriter.Close()
+		return nil, errL7ConfiguredProviderQuery
 	}
+	failed := stdoutWriter.Close() != nil
+	drain := newL7ConfiguredProviderOutputDrain(stdoutReader, output)
+	defer drain.close()
+	processGroupID := command.Process.Pid
+	leaderTerminal, operationFailed := waitL7ConfiguredProviderLeader(queryContext, output.overflowed, processGroupID)
+	failed = failed || operationFailed
 
 	cleanupDeadline := time.Now().Add(l7ConfiguredProviderCleanup)
-	if killErr := syscall.Kill(-processGroupID, syscall.SIGKILL); killErr == nil {
-		if waitComplete {
+	groupSignaled := false
+	if !leaderTerminal {
+		groupSignaled = true
+		if signalErr := signalL7ConfiguredProviderProcessGroup(processGroupID, syscall.SIGKILL); signalErr != nil {
 			failed = true
 		}
-	} else if !errors.Is(killErr, syscall.ESRCH) {
-		failed = true
-	}
-	if !waitComplete {
-		waitErr, waitComplete = waitL7ConfiguredProviderCommand(waited, cleanupDeadline)
-	}
-	if !waitComplete || !waitL7ConfiguredProviderProcessGroup(processGroupID, cleanupDeadline) {
-		failed = true
-	}
-	if !waitComplete {
-		return nil, errL7ConfiguredProviderQuery
-	}
-	if waitErr != nil || queryContext.Err() != nil || output.overflow {
-		failed = true
-	}
-	if failed {
-		return append([]byte(nil), output.data...), errL7ConfiguredProviderQuery
-	}
-	return append([]byte(nil), output.data...), nil
-}
-
-func waitL7ConfiguredProviderCommand(waited <-chan error, deadline time.Time) (error, bool) {
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return nil, false
-	}
-	timer := time.NewTimer(remaining)
-	defer timer.Stop()
-	select {
-	case err := <-waited:
-		return err, true
-	case <-timer.C:
-		return nil, false
-	}
-}
-
-func waitL7ConfiguredProviderProcessGroup(processGroupID int, deadline time.Time) bool {
-	for {
-		err := syscall.Kill(-processGroupID, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return true
+		leaderTerminal = waitL7ConfiguredProviderLeaderTerminal(processGroupID, cleanupDeadline)
+		if !leaderTerminal {
+			failed = true
 		}
-		if time.Now().After(deadline) {
-			return false
+	}
+
+	groupAbsent := false
+	for leaderTerminal && time.Now().Before(cleanupDeadline) {
+		hasOtherMembers, membersErr := l7ConfiguredProviderProcessGroupHasOtherMembers(processGroupID, processGroupID)
+		if membersErr != nil {
+			failed = true
+			break
+		}
+		if !hasOtherMembers {
+			groupAbsent = true
+			break
+		}
+		failed = true
+		if !groupSignaled {
+			groupSignaled = true
+			if signalErr := signalL7ConfiguredProviderProcessGroup(processGroupID, syscall.SIGKILL); signalErr != nil {
+				failed = true
+			}
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+	if !groupAbsent {
+		failed = true
+	}
+
+	drainErr, drainComplete := drain.waitUntil(time.Now().Add(l7ConfiguredProviderCleanup))
+	if !drainComplete {
+		failed = true
+		drain.close()
+		drainErr, drainComplete = drain.waitUntil(time.Now().Add(l7ConfiguredProviderCleanup))
+	}
+	if !drainComplete {
+		return nil, errL7ConfiguredProviderQuery
+	}
+	if drainErr != nil && !errors.Is(drainErr, os.ErrClosed) {
+		failed = true
+	}
+
+	if !leaderTerminal {
+		return nil, errL7ConfiguredProviderQuery
+	}
+	waitErr := reapL7ConfiguredProviderCommand(command)
+	data, overflow := output.snapshot()
+	if waitErr != nil || queryContext.Err() != nil || overflow {
+		failed = true
+	}
+	if failed {
+		return data, errL7ConfiguredProviderQuery
+	}
+	return data, nil
+}
+
+func waitL7ConfiguredProviderLeader(parent context.Context, overflowed <-chan struct{}, leaderPID int) (bool, bool) {
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		terminal, err := observeL7ConfiguredProviderLeaderTerminal(leaderPID)
+		if err != nil {
+			return false, true
+		}
+		if terminal {
+			return true, false
+		}
+		select {
+		case <-parent.Done():
+			return false, true
+		case <-overflowed:
+			return false, true
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitL7ConfiguredProviderLeaderTerminal(leaderPID int, deadline time.Time) bool {
+	for time.Now().Before(deadline) {
+		terminal, err := observeL7ConfiguredProviderLeaderTerminal(leaderPID)
+		if err != nil {
+			return false
+		}
+		if terminal {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return false
+}
+
+func observeL7ConfiguredProviderLeaderTerminal(leaderPID int) (bool, error) {
+	var info unix.Siginfo
+	if err := unix.Waitid(
+		unix.P_PID,
+		leaderPID,
+		&info,
+		unix.WEXITED|unix.WNOHANG|unix.WNOWAIT,
+		nil,
+	); err != nil {
+		return false, err
+	}
+	return info.Signo != 0, nil
+}
+
+func scanL7ConfiguredProviderProcessGroup(processGroupID, leaderPID int) (bool, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		pid, parseErr := strconv.Atoi(entry.Name())
+		if parseErr != nil || pid <= 0 || pid == leaderPID {
+			continue
+		}
+		stat, readErr := os.ReadFile("/proc/" + entry.Name() + "/stat")
+		if readErr != nil {
+			if errors.Is(readErr, os.ErrNotExist) {
+				continue
+			}
+			return false, readErr
+		}
+		closeIndex := strings.LastIndex(string(stat), ") ")
+		if closeIndex < 0 {
+			return false, errL7ConfiguredProviderQuery
+		}
+		fields := strings.Fields(string(stat[closeIndex+2:]))
+		if len(fields) < 3 {
+			return false, errL7ConfiguredProviderQuery
+		}
+		group, groupErr := strconv.Atoi(fields[2])
+		if groupErr != nil {
+			return false, errL7ConfiguredProviderQuery
+		}
+		if group == processGroupID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func parseL7GetSubIDs(output []byte, username string) (uint64, error) {
