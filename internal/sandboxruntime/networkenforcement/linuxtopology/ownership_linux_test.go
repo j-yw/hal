@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -153,7 +154,7 @@ func TestLinuxTopologyLongRunningCreatorThreadIsRetained(t *testing.T) {
 	}
 }
 
-func TestLinuxTopologyArmedMappingJournalBlocksLiveCreatorReconcile(t *testing.T) {
+func TestLinuxTopologyArmedMappingJournalAlwaysFailsClosed(t *testing.T) {
 	sleep, err := exec.LookPath("sleep")
 	if err != nil {
 		t.Fatal(err)
@@ -187,11 +188,12 @@ func TestLinuxTopologyArmedMappingJournalBlocksLiveCreatorReconcile(t *testing.T
 			t.Errorf("terminate armed-journal keeper: %v", err)
 		}
 	}()
-	userFile, err := os.CreateTemp(t.TempDir(), "user-evidence-")
+	keeperNamespaceRoot := filepath.Join("/proc", strconv.Itoa(keeper.PID()), "ns")
+	userFile, err := os.Open(filepath.Join(keeperNamespaceRoot, "user"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	netFile, err := os.CreateTemp(t.TempDir(), "net-evidence-")
+	netFile, err := os.Open(filepath.Join(keeperNamespaceRoot, "net"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,5 +252,41 @@ func TestLinuxTopologyArmedMappingJournalBlocksLiveCreatorReconcile(t *testing.T
 	retired := filepath.Join(newLease.dir, "retired-"+oldIdentity.TopologyGenerationID)
 	if _, err := os.Stat(retired); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("live-creator reconciliation retired generation: %v", err)
+	}
+	if err := newLease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadCreatorIdentity := testIdentity("topology-gen-armed-dead-creator")
+	deadCreatorIdentity.ExecutionID = "execution-armed-dead-creator"
+	deadCreatorIdentity.ProxyGenerationID = "proxy-generation-armed-dead-creator"
+	deadCreatorLease, err := store.acquire(context.Background(), deadCreatorIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := deadCreatorLease.Release(); err != nil {
+			t.Errorf("release dead-creator reconciler: %v", err)
+		}
+	}()
+	journal.MappingCreator = &privateProcessRecord{PID: 1 << 30, StartTime: "1"}
+	payload, err = json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivateAtomic(deadCreatorLease.journalPath, payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := deadCreatorLease.Reconcile(context.Background()); !errors.Is(err, ErrStaleTopologyUnverified) {
+		t.Errorf("dead-creator reconciliation error = %v, want ErrStaleTopologyUnverified", err)
+	}
+	if processDone(keeper) {
+		t.Error("dead-creator reconciliation signalled the armed keeper")
+	}
+	if _, err := os.Stat(deadCreatorLease.journalPath); err != nil {
+		t.Errorf("dead-creator reconciliation removed recovery journal: %v", err)
+	}
+	if _, err := os.Stat(retired); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dead-creator reconciliation retired generation: %v", err)
 	}
 }

@@ -5,10 +5,13 @@ package linuxtopology
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,6 +92,30 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 	if got := session.Metadata(); got.Status != StatusPrepared || !got.StructuralInspected || !got.MappingReachable {
 		t.Fatalf("selected topology metadata = %#v", got)
 	}
+	keeperPID := session.keeper.PID()
+	keeperStartTime, err := readProcessStartTime(keeperPID)
+	if err != nil || keeperStartTime == "" {
+		t.Fatal("tracked keeper has no current process identity")
+	}
+	keeperNamespaces, err := openLinuxNamespaces(keeperPID)
+	if err != nil {
+		t.Fatal("tracked keeper does not own the selected namespaces")
+	}
+	if !keeperNamespaces.Correlates(session.namespace) {
+		_ = keeperNamespaces.Close()
+		t.Fatal("tracked keeper namespace identity does not match the retained topology")
+	}
+	if err := keeperNamespaces.Close(); err != nil {
+		t.Fatal("close tracked keeper namespace probe")
+	}
+	childrenPath := filepath.Join("/proc", strconv.Itoa(keeperPID), "task", strconv.Itoa(keeperPID), "children")
+	children, err := os.ReadFile(childrenPath)
+	if err != nil {
+		t.Fatal("inspect tracked keeper children")
+	}
+	if strings.TrimSpace(string(children)) != "" {
+		t.Fatal("tracked keeper unexpectedly delegates namespace ownership to a child")
+	}
 	select {
 	case <-accepted:
 	case <-time.After(time.Second):
@@ -103,12 +130,28 @@ func TestL7PreparedLinuxOwnedNamespacePastaTopology(t *testing.T) {
 	}
 	_ = handle.Close()
 
+	stopStarted := time.Now()
 	metadata, err := lifecycle.Stop(context.Background(), req.Identity)
 	if err != nil {
 		t.Fatalf("selected L7 Linux topology cleanup failed: %v", err)
 	}
+	if elapsed := time.Since(stopStarted); elapsed >= 2*time.Second {
+		t.Fatal("selected L7 Linux topology cleanup did not promptly reap the tracked keeper")
+	}
 	if metadata.Status != StatusStopped {
 		t.Fatalf("cleanup status = %q, want stopped", metadata.Status)
+	}
+	if !processDone(session.keeper) {
+		t.Fatal("tracked keeper remained live after cleanup")
+	}
+	if _, err := readProcessStartTime(keeperPID); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("tracked keeper process identity remained after cleanup")
+	}
+	if _, err := openLinuxNamespaces(keeperPID); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("tracked keeper namespaces remained after cleanup")
+	}
+	if _, err := os.ReadFile(childrenPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("tracked keeper task remained after cleanup")
 	}
 	if _, err := session.NamespaceHandle(); !errors.Is(err, ErrStopped) {
 		t.Fatalf("namespace handle after cleanup error = %v, want ErrStopped", err)

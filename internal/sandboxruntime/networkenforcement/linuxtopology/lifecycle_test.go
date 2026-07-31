@@ -406,7 +406,7 @@ func TestLinuxTopologyStartsKeeperThenExactPastaMappingAndInspects(t *testing.T)
 	if keeper.Path != testTools().Unshare || keeper.Role != ProcessRoleKeeper {
 		t.Fatalf("keeper = %#v", keeper)
 	}
-	wantKeeperArgs := []string{"--user", "--map-current-user", "--net", "--fork", "--kill-child=TERM", "--", testTools().Keeper, "infinity"}
+	wantKeeperArgs := []string{"--user", "--map-current-user", "--net", "--", testTools().Keeper, "infinity"}
 	if !reflect.DeepEqual(keeper.Args, wantKeeperArgs) {
 		t.Fatalf("keeper argv = %#v, want %#v", keeper.Args, wantKeeperArgs)
 	}
