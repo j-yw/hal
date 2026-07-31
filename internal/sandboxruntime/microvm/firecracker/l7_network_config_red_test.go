@@ -129,6 +129,174 @@ func TestL7FirecrackerRejectsChangedVerifiedAssetsBeforeLiveBootRender(t *testin
 	}
 }
 
+func TestL7VerifiedAssetCopyStopsAtLockedSizePlusOneDuringGrowth(t *testing.T) {
+	verified := verifiedL7DistributionForTest(t)
+	lease, err := verified.AcquireL7AssetLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	descriptor := verified.Descriptor
+	var rootfs assets.LaunchAsset
+	for _, asset := range descriptor.Assets {
+		if asset.Role == assets.AssetRoleRootfs {
+			rootfs = asset
+		}
+	}
+	if rootfs.Source.HostPath == nil || rootfs.Lock.SizeBytes < 1 {
+		t.Fatal("rootfs descriptor is invalid")
+	}
+	material := &l7ProbeLaunchMaterial{
+		paths: map[assets.AssetRole]string{
+			assets.AssetRoleKernel: filepath.Join(t.TempDir(), "kernel"),
+			assets.AssetRoleRootfs: filepath.Join(t.TempDir(), "rootfs"),
+		},
+	}
+	material.write = func(role assets.AssetRole, source io.Reader) error {
+		if role != assets.AssetRoleRootfs {
+			_, copyErr := io.Copy(io.Discard, source)
+			return copyErr
+		}
+		prefix := make([]byte, rootfs.Lock.SizeBytes)
+		if _, readErr := io.ReadFull(source, prefix); readErr != nil {
+			return readErr
+		}
+		file, openErr := os.OpenFile(rootfs.Source.HostPath.Path, os.O_APPEND|os.O_WRONLY, 0)
+		if openErr != nil {
+			return openErr
+		}
+		_, writeErr := file.Write(bytes.Repeat([]byte("x"), 1<<20))
+		closeErr := file.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		trailing, readErr := io.ReadAll(source)
+		material.rootfsBytes = int64(len(prefix) + len(trailing))
+		return readErr
+	}
+	_, _, err = lease.PrepareLaunch(&descriptor, material)
+	if err == nil {
+		t.Fatal("PrepareLaunch() error = nil after same-inode growth")
+	}
+	if got, wantMax := material.rootfsBytes, rootfs.Lock.SizeBytes+1; got > wantMax {
+		t.Fatalf("bytes delivered to launch material = %d, want at most locked size + 1 (%d)", got, wantMax)
+	}
+}
+
+func TestL7VerifiedAssetLeasePreservesCleanupErrorAndRenderPropagatesIt(t *testing.T) {
+	verified := verifiedL7DistributionForTest(t)
+	lease, err := verified.AcquireL7AssetLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := verified.Descriptor
+	closeFailure := errors.New("injected private material close failure")
+	material := &l7ProbeLaunchMaterial{
+		paths: map[assets.AssetRole]string{
+			assets.AssetRoleKernel: filepath.Join(t.TempDir(), "kernel"),
+			assets.AssetRoleRootfs: filepath.Join(t.TempDir(), "rootfs"),
+		},
+		closeErr: closeFailure,
+	}
+	if _, _, err := lease.PrepareLaunch(&descriptor, material); err != nil {
+		t.Fatalf("PrepareLaunch() error = %v", err)
+	}
+	config := validL7NetworkBackendConfig(t)
+	if err := config.VerifiedL7Assets.Close(); err != nil {
+		t.Fatal(err)
+	}
+	profile, ok := verified.L7Profile()
+	if !ok {
+		t.Fatal("verified L7 profile is unavailable")
+	}
+	config.LaunchDescriptor = &descriptor
+	config.VerifiedL7Profile = &profile
+	config.VerifiedL7Assets = lease
+	stateDir := filepath.Join(t.TempDir(), "state")
+	config.Paths = PathPlan{
+		StateDir: stateDir, APISocketPath: filepath.Join(stateDir, "api.sock"),
+		ConfigPath: filepath.Join(stateDir, "config.json"), LogPath: filepath.Join(stateDir, "firecracker.log"),
+		MetricsPath: filepath.Join(stateDir, "firecracker.metrics"), VsockSocketPath: filepath.Join(stateDir, "guest.vsock"),
+	}
+	_, renderErr := renderLiveBootFilesForStart(config)
+	if renderErr == nil || !errors.Is(renderErr, localresolver.ErrFileUnavailable) {
+		t.Fatalf("render error = %v, want propagated sanitized cleanup uncertainty", renderErr)
+	}
+	firstCloseErr := lease.Close()
+	secondCloseErr := lease.Close()
+	if firstCloseErr == nil || secondCloseErr == nil || firstCloseErr != secondCloseErr {
+		t.Fatalf("repeated Close errors = (%v, %v), want the original cached cleanup error", firstCloseErr, secondCloseErr)
+	}
+}
+
+func TestL7StartedProcessIsCleanedWhenParentFileCleanupFails(t *testing.T) {
+	config := validL7NetworkBackendConfig(t)
+	config.RuntimeID = "runtime-l7-cleanup-uncertain"
+	files := make([]*os.File, 2)
+	for index := range files {
+		file, err := os.CreateTemp(t.TempDir(), "closed-inherited-asset-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		files[index] = file
+	}
+	plan := validFirecrackerStartOperationPlan(t)
+	descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &l5VerifiedCleanupProcessManager{}
+	controller := firecrackerController{
+		processAdapter:       ProcessLaunchAdapter{Starter: &fakeProcessStarter{}},
+		bootAcceptanceWaiter: l7AcceptedBootWaiter{},
+		liveProcessManager:   manager,
+	}
+	_, err = controller.startLiveProcessWithInheritedFiles(context.Background(), descriptor, config, files)
+	if err == nil {
+		t.Fatal("start error = nil, want parent-file cleanup uncertainty")
+	}
+	if !manager.cleaned {
+		t.Fatal("started process was not cleaned after parent-file cleanup uncertainty")
+	}
+	for _, forbidden := range []string{"closed-inherited-asset"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("cleanup error leaked unsafe value %q: %v", forbidden, err)
+		}
+	}
+}
+
+type l7ProbeLaunchMaterial struct {
+	paths       map[assets.AssetRole]string
+	write       func(assets.AssetRole, io.Reader) error
+	closeErr    error
+	rootfsBytes int64
+}
+
+func (material *l7ProbeLaunchMaterial) WriteAsset(role assets.AssetRole, source io.Reader) (string, error) {
+	if material.write != nil {
+		if err := material.write(role, source); err != nil {
+			return "", err
+		}
+	} else if _, err := io.Copy(io.Discard, source); err != nil {
+		return "", err
+	}
+	return material.paths[role], nil
+}
+
+func (*l7ProbeLaunchMaterial) Validate() error { return nil }
+
+func (material *l7ProbeLaunchMaterial) Close() error { return material.closeErr }
+
 func TestL7FirecrackerCarriesSealedVerifiedAssetsThroughProcessStart(t *testing.T) {
 	tests := []struct {
 		name   string
