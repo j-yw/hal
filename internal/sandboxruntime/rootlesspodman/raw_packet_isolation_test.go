@@ -145,6 +145,7 @@ func TestL7PodmanRawPacketVerifierRejectsInspectIdentityStateAndConfigDrift(t *t
 		{name: "cap add raw", mutate: func(value map[string]any) { value["HostConfig"].(map[string]any)["CapAdd"] = []any{"CAP_NET_RAW"} }},
 		{name: "cap add admin", mutate: func(value map[string]any) { value["HostConfig"].(map[string]any)["CapAdd"] = []any{"CAP_NET_ADMIN"} }},
 		{name: "missing all-cap drop", mutate: func(value map[string]any) { value["HostConfig"].(map[string]any)["CapDrop"] = []any{} }},
+		{name: "partial cap drop", mutate: func(value map[string]any) { value["HostConfig"].(map[string]any)["CapDrop"] = []any{"CAP_CHOWN"} }},
 		{name: "missing no-new-privileges", mutate: func(value map[string]any) { value["HostConfig"].(map[string]any)["SecurityOpt"] = []any{} }},
 		{name: "Podman socket bind", mutate: func(value map[string]any) {
 			value["HostConfig"].(map[string]any)["Binds"] = []any{"/run/podman/podman.sock:/run/podman/podman.sock"}
@@ -305,7 +306,10 @@ func validRawPacketInspectJSON() string {
 			"dev.jywlabs.hal.network-rules.generation": "rule-generation-a",
 		}},
 		"HostConfig": map[string]any{
-			"Privileged": false, "NetworkMode": "pasta", "CapAdd": []any{}, "CapDrop": []any{"CAP_ALL"},
+			"Privileged": false, "NetworkMode": "pasta", "CapAdd": []any{}, "CapDrop": []any{
+				"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID", "CAP_KILL",
+				"CAP_NET_BIND_SERVICE", "CAP_SETFCAP", "CAP_SETGID", "CAP_SETPCAP", "CAP_SETUID", "CAP_SYS_CHROOT",
+			},
 			"SecurityOpt": []any{"no-new-privileges"}, "Binds": []any{},
 		},
 		"EffectiveCaps": nil,

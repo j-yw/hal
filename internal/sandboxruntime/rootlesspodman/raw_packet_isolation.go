@@ -25,6 +25,20 @@ const (
 	rawPacketProofPrefix         = "raw-packet-proof-"
 )
 
+var requiredPodmanDefaultCapabilityDrops = [...]string{
+	"CAP_CHOWN",
+	"CAP_DAC_OVERRIDE",
+	"CAP_FOWNER",
+	"CAP_FSETID",
+	"CAP_KILL",
+	"CAP_NET_BIND_SERVICE",
+	"CAP_SETFCAP",
+	"CAP_SETGID",
+	"CAP_SETPCAP",
+	"CAP_SETUID",
+	"CAP_SYS_CHROOT",
+}
+
 // ErrRawPacketIsolationUnverified is the redaction-safe fail-closed result for
 // missing, stale, malformed, or mismatched live capability evidence.
 var ErrRawPacketIsolationUnverified = errors.New("rootless Podman raw packet isolation unverified")
@@ -257,6 +271,11 @@ func validRawPacketCapDrop(values []string) bool {
 			return false
 		}
 		seen[value] = true
+	}
+	for _, required := range requiredPodmanDefaultCapabilityDrops {
+		if !seen[required] {
+			return false
+		}
 	}
 	return true
 }
