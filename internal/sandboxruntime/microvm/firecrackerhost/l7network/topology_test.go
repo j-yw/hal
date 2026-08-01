@@ -227,6 +227,35 @@ func TestFirecrackerHostTopologyFailedPrepareCleanupRetriesWithoutVMProof(t *tes
 	}
 }
 
+func TestFirecrackerHostTopologyFailedPrepareRetryRetainsNamespaceLease(t *testing.T) {
+	sequence := &callSequence{}
+	topology := newRetryNamespaceTopology(sequence)
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: newFakeProxy(sequence), Topology: topology,
+		TAP:   &fakeTAP{sequence: sequence, createErr: errors.New("private TAP creation failure")},
+		Rules: &fakeRules{sequence: sequence}, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+	})
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if session == nil || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Prepare() = session %T, error %v; want retained cleanup-incomplete session", session, err)
+	}
+	if topology.lease.closeCalls != 1 || topology.lease.closed {
+		t.Fatalf("first rollback namespace close = calls %d, closed %t; want retained failed handle", topology.lease.closeCalls, topology.lease.closed)
+	}
+	sequence.reset()
+	if err := session.RetryFailedPrepareCleanup(context.Background(), testIdentity()); err != nil {
+		t.Fatalf("RetryFailedPrepareCleanup() = %v", err)
+	}
+	if got := sequence.snapshot(); !reflect.DeepEqual(got, []string{
+		"namespace_close", "topology_stop", "proxy_stop", "journal_remove", "journal_release",
+	}) {
+		t.Fatalf("retry cleanup sequence = %#v", got)
+	}
+	if topology.lease.closeCalls != 2 || !topology.lease.closed {
+		t.Fatalf("retried namespace close = calls %d, closed %t; want exact handle released", topology.lease.closeCalls, topology.lease.closed)
+	}
+}
+
 func TestFirecrackerHostTopologyCurrentSessionClearIsCompareAndSwap(t *testing.T) {
 	coordinator := &Coordinator{}
 	oldSession := &Session{coordinator: coordinator}
@@ -535,6 +564,68 @@ type fakeNamespaceLease struct{ rules linuxrules.NamespaceHandle }
 
 func (l *fakeNamespaceLease) RuleNamespace() linuxrules.NamespaceHandle { return l.rules }
 func (*fakeNamespaceLease) Close() error                                { return nil }
+
+type retryNamespaceTopology struct {
+	sequence *callSequence
+	session  *retryNamespaceSession
+	lease    *retryNamespaceLease
+}
+
+func newRetryNamespaceTopology(sequence *callSequence) *retryNamespaceTopology {
+	lease := &retryNamespaceLease{sequence: sequence, closeFailures: 1}
+	return &retryNamespaceTopology{sequence: sequence, lease: lease,
+		session: &retryNamespaceSession{sequence: sequence, lease: lease}}
+}
+
+func (t *retryNamespaceTopology) Start(_ context.Context, request linuxtopology.StartRequest) (TopologySession, error) {
+	t.sequence.add("topology_start")
+	t.session.identity = request.Identity
+	return t.session, nil
+}
+
+func (t *retryNamespaceTopology) Stop(context.Context, linuxtopology.Identity) (linuxtopology.Metadata, error) {
+	t.sequence.add("topology_stop")
+	if !t.lease.closed {
+		return linuxtopology.Metadata{}, errors.New("private namespace borrow remains open")
+	}
+	return linuxtopology.Metadata{Status: linuxtopology.StatusStopped}, nil
+}
+
+type retryNamespaceSession struct {
+	sequence *callSequence
+	identity linuxtopology.Identity
+	lease    *retryNamespaceLease
+}
+
+func (s *retryNamespaceSession) Metadata() linuxtopology.Metadata {
+	return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusPrepared, StructuralInspected: true, MappingReachable: true}
+}
+
+func (s *retryNamespaceSession) BorrowNamespace() (NamespaceLease, error) {
+	s.sequence.add("topology_borrow")
+	return s.lease, nil
+}
+
+type retryNamespaceLease struct {
+	sequence      *callSequence
+	closeFailures int
+	closeCalls    int
+	closed        bool
+}
+
+func (*retryNamespaceLease) RuleNamespace() linuxrules.NamespaceHandle {
+	return linuxrules.NewNamespaceHandle(10, 11)
+}
+
+func (l *retryNamespaceLease) Close() error {
+	l.sequence.add("namespace_close")
+	l.closeCalls++
+	if l.closeCalls <= l.closeFailures {
+		return errors.New("private namespace close failure")
+	}
+	l.closed = true
+	return nil
+}
 
 type fakeTAP struct {
 	sequence       *callSequence
