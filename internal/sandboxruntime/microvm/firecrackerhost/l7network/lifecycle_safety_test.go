@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"
 )
 
@@ -248,6 +249,28 @@ func TestFirecrackerHostTopologyReconcilerRetainsNamespaceReturnedWithBorrowErro
 	}
 	if got := session.Metadata().Status; got != StatusCleanupIncomplete {
 		t.Fatalf("recovered stale cleanup status = %q, want %q", got, StatusCleanupIncomplete)
+	}
+}
+
+func TestFirecrackerHostTopologyRetainedRecoveryCannotAuthorizeTopologyCleanup(t *testing.T) {
+	sequence := &callSequence{}
+	identity := testIdentity()
+	topology := newFakeTopology(sequence)
+	topology.session.identity = topologyIdentity(identity)
+	coordinator := &Coordinator{options: Options{
+		Enabled: true, Topology: topology, TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true}, CleanupTimeout: time.Second,
+	}}
+	session := &Session{
+		coordinator: coordinator, identity: identity, topologyIdentity: topologyIdentity(identity), topology: topology.session,
+		namespace: &fakeNamespaceLease{rules: linuxrules.NewNamespaceHandle(10, 11)}, retainedCleanup: retainedCleanupReleaseRecoveryHandles,
+		metadata: Metadata{Identity: identity, Status: StatusCleanupIncomplete},
+	}
+	if err := session.CleanupAfterVMQuiesced(context.Background(), identity, testTerminatedVMBinding()); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("CleanupAfterVMQuiesced(retained recovery) = %v, want ErrCleanupIncomplete", err)
+	}
+	if got := sequence.snapshot(); len(got) != 0 {
+		t.Fatalf("retained stale recovery mutated topology: %#v", got)
 	}
 }
 
