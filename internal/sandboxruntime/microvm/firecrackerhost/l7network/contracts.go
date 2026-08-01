@@ -302,11 +302,6 @@ func validIdentity(identity Identity) bool {
 	return true
 }
 
-func validRunningGuestBinding(binding RunningGuestBinding, expected networkenforcement.EnforcementCorrelation) bool {
-	_, ok := snapshotRunningGuestBinding(binding, expected)
-	return ok
-}
-
 func snapshotRunningGuestBinding(binding RunningGuestBinding, expected networkenforcement.EnforcementCorrelation) (runningGuestSnapshot, bool) {
 	if interfaceIsNil(binding) {
 		return runningGuestSnapshot{}, false
