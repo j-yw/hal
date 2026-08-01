@@ -216,6 +216,109 @@ func TestL7ServerOwnedNetworkProofRequirementCannotBeDowngraded(t *testing.T) {
 	}
 }
 
+func TestL7ServerDoesNotCommitProofWhenSuccessResponseExceedsBound(t *testing.T) {
+	backend := &l4FakeBackend{}
+	verifier := &l7FakeIsolationVerifier{result: l7VerifiedIsolationResult()}
+	run := startL4Server(t, Options{
+		Transport:                     newL4BlockingTransport(),
+		Backend:                       backend,
+		IsolationVerifier:             verifier,
+		RequireNetworkProofBeforeWork: true,
+		MaxResponseBytes:              MinimumMaxResponseBytes,
+	})
+	request := guestagent.ReadinessRequest{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationReadiness,
+		IsolationProof: &guestagent.IsolationProofRequest{
+			Generation:          strings.Repeat("a", guestagent.MaxIsolationProofGenerationBytes),
+			RuntimeGeneration:   strings.Repeat("b", guestagent.MaxIsolationProofGenerationBytes),
+			RequireNetworkProof: true,
+		},
+	}
+	response := run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, request)})
+	l4RequireResponseCode(t, response, guestagent.ErrorCodeOversizedResponse)
+
+	execRequest := guestagent.ExecRequest{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationExec,
+		Args:            []string{"tool"},
+		WorkDir:         "/workspace",
+		Stdout:          guestagent.StreamMetadata{MaxBytes: 16},
+		Stderr:          guestagent.StreamMetadata{MaxBytes: 16},
+	}
+	l4RequireResponseCode(t, run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, execRequest)}), guestagent.ErrorCodeServerNotReady)
+	if backend.execCalls.Load() != 0 {
+		t.Fatal("user work reached backend after proof response encoding failed")
+	}
+}
+
+func TestL7ServerOwnedNetworkRequirementReportsNotReadyWithoutProof(t *testing.T) {
+	verifier := &l7FakeIsolationVerifier{result: l7VerifiedIsolationResult()}
+	run := startL4Server(t, Options{
+		Transport:                     newL4BlockingTransport(),
+		Backend:                       &l4FakeBackend{},
+		IsolationVerifier:             verifier,
+		RequireNetworkProofBeforeWork: true,
+	})
+	request := guestagent.ReadinessRequest{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationReadiness,
+	}
+	response := l4DecodeResponse[guestagent.ReadinessResponse](t, run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, request)}))
+	if response.Ready || response.Status != guestagent.ReadinessStatusNotReady {
+		t.Fatalf("required-proof readiness = %#v, want not ready", response)
+	}
+	if verifier.calls != 0 {
+		t.Fatal("proof-less readiness reached verifier")
+	}
+
+	legacy := startL4Server(t, Options{Transport: newL4BlockingTransport(), Backend: &l4FakeBackend{}})
+	legacyResponse := l4DecodeResponse[guestagent.ReadinessResponse](t, legacy.server.Handle(context.Background(), Request{Encoded: l7JSON(t, request)}))
+	if !legacyResponse.Ready || legacyResponse.Status != guestagent.ReadinessStatusReady {
+		t.Fatalf("legacy readiness = %#v, want ready", legacyResponse)
+	}
+}
+
+func TestL7ServerOwnedNetworkRequirementRejectsMissingRuntimeGeneration(t *testing.T) {
+	verifier := &l7FakeIsolationVerifier{result: l7VerifiedIsolationResult()}
+	run := startL4Server(t, Options{
+		Transport:                     newL4BlockingTransport(),
+		Backend:                       &l4FakeBackend{},
+		IsolationVerifier:             verifier,
+		RequireNetworkProofBeforeWork: true,
+	})
+	request := guestagent.ReadinessRequest{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationReadiness,
+		IsolationProof: &guestagent.IsolationProofRequest{
+			Generation: "network-policy-generation-missing-runtime",
+		},
+	}
+	response := run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, request)})
+	var readiness guestagent.ReadinessResponse
+	if err := json.Unmarshal(response.Encoded, &readiness); err != nil {
+		t.Fatal(err)
+	}
+	if readiness.Ready || (readiness.IsolationProof != nil && readiness.IsolationProof.Status == guestagent.IsolationProofStatusVerified) {
+		t.Fatalf("missing-runtime readiness = %#v, want fail closed", readiness)
+	}
+	if verifier.calls != 0 {
+		t.Fatal("missing runtime generation reached verifier")
+	}
+
+	legacyVerifier := &l7FakeIsolationVerifier{result: l7VerifiedIsolationResult()}
+	legacy := startL4Server(t, Options{
+		Transport:                       newL4BlockingTransport(),
+		Backend:                         &l4FakeBackend{},
+		IsolationVerifier:               legacyVerifier,
+		RequireIsolationProofBeforeWork: true,
+	})
+	legacyResponse := l4DecodeResponse[guestagent.ReadinessResponse](t, legacy.server.Handle(context.Background(), Request{Encoded: l7JSON(t, request)}))
+	if !legacyResponse.Ready || legacyResponse.IsolationProof == nil || legacyResponse.IsolationProof.Status != guestagent.IsolationProofStatusVerified {
+		t.Fatalf("legacy process-proof readiness = %#v, want verified", legacyResponse)
+	}
+}
+
 func TestL7ServerOwnedNetworkProofRequirementUpgradesConcurrentWeakRequests(t *testing.T) {
 	verifier := &l7RequestRecordingIsolationVerifier{}
 	options := Options{
@@ -276,24 +379,28 @@ func TestL7ServerConcurrentProofCompletionOrdersControlAdmission(t *testing.T) {
 		startOrder        []string
 		completionOrder   []string
 		wantWorkAdmission bool
+		wantSuccessReady  bool
 	}{
 		{
 			name:              "failed proof completes after success",
 			startOrder:        []string{"failure", "success"},
 			completionOrder:   []string{"success", "failure"},
 			wantWorkAdmission: false,
+			wantSuccessReady:  true,
 		},
 		{
 			name:              "current success completes after failure",
 			startOrder:        []string{"failure", "success"},
 			completionOrder:   []string{"failure", "success"},
 			wantWorkAdmission: true,
+			wantSuccessReady:  true,
 		},
 		{
 			name:              "stale success completes after current failure",
 			startOrder:        []string{"success", "failure"},
 			completionOrder:   []string{"failure", "success"},
 			wantWorkAdmission: false,
+			wantSuccessReady:  false,
 		},
 	}
 	for _, test := range tests {
@@ -343,8 +450,9 @@ func TestL7ServerConcurrentProofCompletionOrdersControlAdmission(t *testing.T) {
 				verifier.release(name)
 				response := l7WaitReadinessResponse(t, responses[name])
 				if name == "success" {
-					if !response.Ready || response.IsolationProof == nil || response.IsolationProof.Network == nil ||
-						response.IsolationProof.Network.Status != guestagent.IsolationProofStatusVerified {
+					verifiedReady := response.Ready && response.IsolationProof != nil && response.IsolationProof.Network != nil &&
+						response.IsolationProof.Network.Status == guestagent.IsolationProofStatusVerified
+					if verifiedReady != test.wantSuccessReady {
 						t.Fatalf("success response = %#v, want verified readiness", response)
 					}
 				} else if response.Ready || response.IsolationProof == nil || response.IsolationProof.Status == guestagent.IsolationProofStatusVerified {
