@@ -40,7 +40,7 @@ func renderNetworkInterfaces(config BackendConfig) ([]networkInterfacePayload, *
 		if !config.ProductionVsock {
 			return nil, nil, newLiveBootRenderConfigError("networkMode", "L7 network mode requires production guest readiness")
 		}
-		if err := validateL7LaunchDescriptor(config.LaunchDescriptor, config.VerifiedL7Profile); err != nil {
+		if err := validateL7LaunchDescriptor(config.LaunchDescriptor, config.VerifiedL7Profile, config.VerifiedL7Assets); err != nil {
 			return nil, nil, err
 		}
 		if len(config.NetworkInterfaces) != 1 {
@@ -145,7 +145,11 @@ func unusableIPv4PointToPointAddress(prefix netip.Prefix, address netip.Addr) bo
 	return address == network || address == broadcast
 }
 
-func validateL7LaunchDescriptor(descriptor *assets.LaunchDescriptor, profile *localresolver.VerifiedL7Profile) error {
+func validateL7LaunchDescriptor(
+	descriptor *assets.LaunchDescriptor,
+	profile *localresolver.VerifiedL7Profile,
+	lease *localresolver.VerifiedL7AssetLease,
+) error {
 	launchAssets, err := firecrackerLaunchDescriptorAssets(descriptor, liveBootRenderOperation)
 	if err != nil {
 		return err
@@ -158,6 +162,9 @@ func validateL7LaunchDescriptor(descriptor *assets.LaunchDescriptor, profile *lo
 		launchAssets.Rootfs.ID != assets.SafeID("rootfs") ||
 		!localresolver.VerifiedL7ProfileMatches(profile, &launchAssets.Descriptor) {
 		return newLiveBootRenderConfigError("launchDescriptor", "verified L7 network image profile is required")
+	}
+	if lease == nil || lease.ConfirmCurrent(&launchAssets.Descriptor) != nil {
+		return newLiveBootRenderConfigError("launchDescriptor", "current verified L7 network image assets are required")
 	}
 	return nil
 }

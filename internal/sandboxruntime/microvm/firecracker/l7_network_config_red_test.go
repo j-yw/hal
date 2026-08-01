@@ -1,13 +1,17 @@
 package firecracker
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
@@ -54,6 +58,562 @@ func TestL7FirecrackerRendersExactlyOneValidatedNetworkInterface(t *testing.T) {
 	}
 }
 
+func TestL7FirecrackerRejectsChangedVerifiedAssetsBeforeLiveBootRender(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "in-place mutation",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				contents[0] ^= 0xff
+				if err := os.WriteFile(path, contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "path replacement",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				contents[0] ^= 0xff
+				replacement := path + ".replacement"
+				if err := os.WriteFile(replacement, contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(replacement, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := validL7NetworkBackendConfig(t)
+			launchAssets, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, liveBootRenderOperation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(t, launchAssets.rootfsPath())
+
+			stateDir := filepath.Join(t.TempDir(), "state")
+			config.Paths = PathPlan{
+				StateDir:        stateDir,
+				APISocketPath:   filepath.Join(stateDir, "api.sock"),
+				ConfigPath:      filepath.Join(stateDir, "config.json"),
+				LogPath:         filepath.Join(stateDir, "firecracker.log"),
+				MetricsPath:     filepath.Join(stateDir, "firecracker.metrics"),
+				VsockSocketPath: filepath.Join(stateDir, "guest.vsock"),
+			}
+			err = renderLiveBootFiles(config)
+			if err == nil || !errors.Is(err, microvm.ErrInvalidConfig) {
+				t.Fatalf("renderLiveBootFiles() error = %v, want invalid config", err)
+			}
+			if _, statErr := os.Stat(config.Paths.ConfigPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("config path stat error = %v, want not-exist", statErr)
+			}
+			if err := config.VerifiedL7Assets.ConfirmCurrent(config.LaunchDescriptor); err == nil {
+				t.Fatal("failed render retained the verified asset lease")
+			}
+		})
+	}
+}
+
+func TestL7VerifiedAssetCopyStopsAtLockedSizePlusOneDuringGrowth(t *testing.T) {
+	verified := verifiedL7DistributionForTest(t)
+	lease, err := verified.AcquireL7AssetLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	descriptor := verified.Descriptor
+	var rootfs assets.LaunchAsset
+	for _, asset := range descriptor.Assets {
+		if asset.Role == assets.AssetRoleRootfs {
+			rootfs = asset
+		}
+	}
+	if rootfs.Source.HostPath == nil || rootfs.Lock.SizeBytes < 1 {
+		t.Fatal("rootfs descriptor is invalid")
+	}
+	material := &l7ProbeLaunchMaterial{
+		paths: map[assets.AssetRole]string{
+			assets.AssetRoleKernel: filepath.Join(t.TempDir(), "kernel"),
+			assets.AssetRoleRootfs: filepath.Join(t.TempDir(), "rootfs"),
+		},
+	}
+	material.write = func(role assets.AssetRole, source io.Reader) error {
+		if role != assets.AssetRoleRootfs {
+			_, copyErr := io.Copy(io.Discard, source)
+			return copyErr
+		}
+		prefix := make([]byte, rootfs.Lock.SizeBytes)
+		if _, readErr := io.ReadFull(source, prefix); readErr != nil {
+			return readErr
+		}
+		file, openErr := os.OpenFile(rootfs.Source.HostPath.Path, os.O_APPEND|os.O_WRONLY, 0)
+		if openErr != nil {
+			return openErr
+		}
+		_, writeErr := file.Write(bytes.Repeat([]byte("x"), 1<<20))
+		closeErr := file.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		trailing, readErr := io.ReadAll(source)
+		material.rootfsBytes = int64(len(prefix) + len(trailing))
+		return readErr
+	}
+	_, _, err = lease.PrepareLaunch(&descriptor, material)
+	if err == nil {
+		t.Fatal("PrepareLaunch() error = nil after same-inode growth")
+	}
+	if got, wantMax := material.rootfsBytes, rootfs.Lock.SizeBytes+1; got > wantMax {
+		t.Fatalf("bytes delivered to launch material = %d, want at most locked size + 1 (%d)", got, wantMax)
+	}
+}
+
+func TestL7VerifiedAssetLeasePreservesCleanupErrorAndRenderPropagatesIt(t *testing.T) {
+	verified := verifiedL7DistributionForTest(t)
+	lease, err := verified.AcquireL7AssetLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := verified.Descriptor
+	firstCloseFailure := &l7FirstCleanupFailure{detail: "private first cleanup detail"}
+	secondCloseFailure := &l7SecondCleanupFailure{detail: "private second cleanup detail"}
+	material := &l7ProbeLaunchMaterial{
+		paths: map[assets.AssetRole]string{
+			assets.AssetRoleKernel: filepath.Join(t.TempDir(), "kernel"),
+			assets.AssetRoleRootfs: filepath.Join(t.TempDir(), "rootfs"),
+		},
+		closeErr: errors.Join(firstCloseFailure, secondCloseFailure),
+	}
+	if _, _, err := lease.PrepareLaunch(&descriptor, material); err != nil {
+		t.Fatalf("PrepareLaunch() error = %v", err)
+	}
+	config := validL7NetworkBackendConfig(t)
+	if err := config.VerifiedL7Assets.Close(); err != nil {
+		t.Fatal(err)
+	}
+	profile, ok := verified.L7Profile()
+	if !ok {
+		t.Fatal("verified L7 profile is unavailable")
+	}
+	config.LaunchDescriptor = &descriptor
+	config.VerifiedL7Profile = &profile
+	config.VerifiedL7Assets = lease
+	stateDir := filepath.Join(t.TempDir(), "state")
+	config.Paths = PathPlan{
+		StateDir: stateDir, APISocketPath: filepath.Join(stateDir, "api.sock"),
+		ConfigPath: filepath.Join(stateDir, "config.json"), LogPath: filepath.Join(stateDir, "firecracker.log"),
+		MetricsPath: filepath.Join(stateDir, "firecracker.metrics"), VsockSocketPath: filepath.Join(stateDir, "guest.vsock"),
+	}
+	_, renderErr := renderLiveBootFilesForStart(config)
+	if renderErr == nil || !errors.Is(renderErr, localresolver.ErrFileUnavailable) {
+		t.Fatalf("render error = %v (mode %q, lease nil %t, material close calls %d), want propagated sanitized cleanup uncertainty", renderErr, config.NetworkMode, config.VerifiedL7Assets == nil, material.closeCalls)
+	}
+	assertL7CleanupCauses(t, renderErr, firstCloseFailure, secondCloseFailure)
+	firstCloseErr := lease.Close()
+	secondCloseErr := lease.Close()
+	if firstCloseErr == nil || secondCloseErr == nil || firstCloseErr != secondCloseErr {
+		t.Fatalf("repeated Close errors = (%v, %v), want the original cached cleanup error", firstCloseErr, secondCloseErr)
+	}
+	assertL7CleanupCauses(t, firstCloseErr, firstCloseFailure, secondCloseFailure)
+	if material.closeCalls != 1 {
+		t.Fatalf("material Close calls = %d, want one without ambiguous retry", material.closeCalls)
+	}
+}
+
+func TestL7StartedProcessIsCleanedWhenParentFileCleanupFails(t *testing.T) {
+	config := validL7NetworkBackendConfig(t)
+	config.RuntimeID = "runtime-l7-cleanup-uncertain"
+	files := make([]*os.File, 2)
+	for index := range files {
+		file, err := os.CreateTemp(t.TempDir(), "closed-inherited-asset-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		files[index] = file
+	}
+	plan := validFirecrackerStartOperationPlan(t)
+	descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &l5VerifiedCleanupProcessManager{}
+	controller := firecrackerController{
+		processAdapter:       ProcessLaunchAdapter{Starter: &fakeProcessStarter{}},
+		bootAcceptanceWaiter: l7AcceptedBootWaiter{},
+		liveProcessManager:   manager,
+	}
+	_, err = controller.startLiveProcessWithInheritedFiles(context.Background(), descriptor, config, files)
+	if err == nil {
+		t.Fatal("start error = nil, want parent-file cleanup uncertainty")
+	}
+	if !manager.cleaned {
+		t.Fatal("started process was not cleaned after parent-file cleanup uncertainty")
+	}
+	var closePathErr *os.PathError
+	if !errors.As(err, &closePathErr) || closePathErr == nil {
+		t.Fatalf("errors.As(start error, *os.PathError) = false, want original close cause")
+	}
+	for _, forbidden := range []string{"closed-inherited-asset"} {
+		if strings.Contains(l7VisibleErrorText(err), forbidden) {
+			t.Fatalf("cleanup error leaked unsafe value %q: %v", forbidden, err)
+		}
+	}
+}
+
+func TestL7InheritedFileCleanupPreservesEverySanitizedCause(t *testing.T) {
+	files := make([]*os.File, 2)
+	for index := range files {
+		file, err := os.CreateTemp(t.TempDir(), "private-inherited-asset-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[index] = file
+	}
+	t.Cleanup(func() {
+		for _, file := range files {
+			if err := file.Close(); err != nil {
+				t.Errorf("Close(%s) error = %v", file.Name(), err)
+			}
+		}
+	})
+	firstCloseFailure := &l7FirstCleanupFailure{detail: "private inherited kernel close detail"}
+	secondCloseFailure := &l7SecondCleanupFailure{detail: "private inherited rootfs close detail"}
+	err := closeProcessInheritedFilesWith(files, func(file *os.File) error {
+		if file == files[0] {
+			return firstCloseFailure
+		}
+		return secondCloseFailure
+	})
+	if err == nil {
+		t.Fatal("closeProcessInheritedFilesWith() error = nil")
+	}
+	assertL7CleanupCauses(t, err, firstCloseFailure, secondCloseFailure)
+	for _, file := range files {
+		if strings.Contains(l7VisibleErrorText(err), file.Name()) {
+			t.Fatalf("inherited cleanup error leaked private path %q: %v", file.Name(), err)
+		}
+	}
+}
+
+type l7FirstCleanupFailure struct{ detail string }
+
+func (err *l7FirstCleanupFailure) Error() string { return err.detail }
+
+type l7SecondCleanupFailure struct{ detail string }
+
+func (err *l7SecondCleanupFailure) Error() string { return err.detail }
+
+func assertL7CleanupCauses(
+	t *testing.T,
+	err error,
+	first *l7FirstCleanupFailure,
+	second *l7SecondCleanupFailure,
+) {
+	t.Helper()
+	if !errors.Is(err, first) || !errors.Is(err, second) {
+		t.Fatalf("cleanup error did not preserve every original errors.Is cause: %v", err)
+	}
+	var firstMatch *l7FirstCleanupFailure
+	var secondMatch *l7SecondCleanupFailure
+	if !errors.As(err, &firstMatch) || firstMatch != first || !errors.As(err, &secondMatch) || secondMatch != second {
+		t.Fatalf("cleanup error did not preserve every original errors.As cause: %v", err)
+	}
+	for _, private := range []string{first.detail, second.detail} {
+		if strings.Contains(l7VisibleErrorText(err), private) {
+			t.Fatalf("cleanup error leaked private cause %q: %v", private, err)
+		}
+	}
+}
+
+func l7VisibleErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := err.Error()
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, child := range wrapped.Unwrap() {
+			text += " " + l7VisibleErrorText(child)
+		}
+	case interface{ Unwrap() error }:
+		text += " " + l7VisibleErrorText(wrapped.Unwrap())
+	}
+	return text
+}
+
+type l7ProbeLaunchMaterial struct {
+	paths       map[assets.AssetRole]string
+	write       func(assets.AssetRole, io.Reader) error
+	closeErr    error
+	closeCalls  int
+	rootfsBytes int64
+}
+
+func (material *l7ProbeLaunchMaterial) WriteAsset(role assets.AssetRole, source io.Reader) (string, error) {
+	if material.write != nil {
+		if err := material.write(role, source); err != nil {
+			return "", err
+		}
+	} else if _, err := io.Copy(io.Discard, source); err != nil {
+		return "", err
+	}
+	return material.paths[role], nil
+}
+
+func (*l7ProbeLaunchMaterial) Validate() error { return nil }
+
+func (material *l7ProbeLaunchMaterial) Close() error {
+	material.closeCalls++
+	return material.closeErr
+}
+
+func TestL7FirecrackerCarriesSealedVerifiedAssetsThroughProcessStart(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "source mutated after preparation",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				contents[0] ^= 0xff
+				if err := os.WriteFile(path, contents, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "source replaced after preparation",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				replacement := path + ".replacement"
+				if err := os.WriteFile(replacement, []byte("untrusted-rootfs!!"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(replacement, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := validL7NetworkBackendConfig(t)
+			config.RuntimeID = "runtime-l7-assets"
+			launchAssets, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, liveBootRenderOperation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalRootfsPath := launchAssets.rootfsPath()
+			stateDir := filepath.Join(t.TempDir(), "state")
+			config.Paths = PathPlan{
+				StateDir:        stateDir,
+				APISocketPath:   filepath.Join(stateDir, "api.sock"),
+				ConfigPath:      filepath.Join(stateDir, "config.json"),
+				LogPath:         filepath.Join(stateDir, "firecracker.log"),
+				MetricsPath:     filepath.Join(stateDir, "firecracker.metrics"),
+				VsockSocketPath: filepath.Join(stateDir, "guest.vsock"),
+			}
+			files, err := renderLiveBootFilesForStart(config)
+			if err != nil {
+				t.Fatalf("renderLiveBootFilesForStart() error = %v", err)
+			}
+			if len(files) != 2 {
+				t.Fatalf("inherited files = %d, want kernel and rootfs", len(files))
+			}
+			renderedConfig, err := os.ReadFile(config.Paths.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{"/proc/self/fd/3", "/proc/self/fd/4"} {
+				if !strings.Contains(string(renderedConfig), path) {
+					t.Fatalf("rendered config does not reference inherited sealed asset %q", path)
+				}
+			}
+
+			tt.mutate(t, originalRootfsPath)
+			starter := &fakeProcessStarter{start: func(_ context.Context, req ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+				if len(req.InheritedFiles) != 2 || req.InheritedFiles[0] != files[0] || req.InheritedFiles[1] != files[1] {
+					t.Fatalf("process inherited files = %#v, want exact lease-held kernel/rootfs", req.InheritedFiles)
+				}
+				for index, want := range [][]byte{[]byte("verified-l7-kernel"), []byte("verified-l7-rootfs")} {
+					if _, err := req.InheritedFiles[index].Seek(0, 0); err != nil {
+						t.Fatal(err)
+					}
+					got, err := io.ReadAll(req.InheritedFiles[index])
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(got, want) {
+						t.Fatalf("inherited asset %d = %q, want verified bytes", index, got)
+					}
+					if _, err := req.InheritedFiles[index].WriteAt([]byte("x"), 0); err == nil {
+						t.Fatalf("sealed asset %d accepted a write", index)
+					}
+				}
+				return ProcessHandleMetadata{ID: "fc-handle-l7", Source: "starter"}, nil
+			}}
+			plan := validFirecrackerStartOperationPlan(t)
+			descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller := firecrackerController{
+				processAdapter:       ProcessLaunchAdapter{Starter: starter},
+				bootAcceptanceWaiter: l7AcceptedBootWaiter{},
+			}
+			if _, err := controller.startLiveProcessWithInheritedFiles(context.Background(), descriptor, config, files); err != nil {
+				t.Fatalf("startLiveProcessWithInheritedFiles() error = %v", err)
+			}
+			if starter.startCalls != 1 {
+				t.Fatalf("process start calls = %d, want 1", starter.startCalls)
+			}
+			if _, err := files[0].Stat(); err == nil {
+				t.Fatal("lease-held asset remained open after process start boundary")
+			}
+		})
+	}
+}
+
+type l7AcceptedBootWaiter struct{}
+
+func (l7AcceptedBootWaiter) WaitForBootAcceptance(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error) {
+	return BootAcceptanceResult{ProcessAccepted: true, APISocketAvailable: true}, nil
+}
+
+func TestVerifiedL7AssetLeaseSerializesConcurrentValidationAndCleanup(t *testing.T) {
+	verified := verifiedL7DistributionForTest(t)
+	lease, err := verified.AcquireL7AssetLease()
+	if err != nil {
+		t.Fatalf("AcquireL7AssetLease() error = %v", err)
+	}
+	descriptor := verified.Descriptor
+
+	const validators = 32
+	var wait sync.WaitGroup
+	errorsSeen := make(chan error, validators)
+	for index := 0; index < validators; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			errorsSeen <- lease.ConfirmCurrent(&descriptor)
+		}()
+	}
+	wait.Wait()
+	close(errorsSeen)
+	for err := range errorsSeen {
+		if err != nil {
+			t.Fatalf("concurrent ConfirmCurrent() error = %v", err)
+		}
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if err := lease.ConfirmCurrent(&descriptor); err == nil {
+		t.Fatal("ConfirmCurrent() after Close error = nil")
+	}
+}
+
+func TestL7VerifiedAssetLeaseClosesOnStartAndAcceptanceFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		starter func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error)
+		waiter  BootAcceptanceWaiter
+	}{
+		{
+			name: "process start failure",
+			starter: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+				return ProcessHandleMetadata{}, errors.New("injected start failure")
+			},
+			waiter: l7AcceptedBootWaiter{},
+		},
+		{
+			name: "boot acceptance failure",
+			starter: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+				return ProcessHandleMetadata{ID: "fc-handle-l7", Source: "starter"}, nil
+			},
+			waiter: l7BootWaiterFunc(func(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error) {
+				return BootAcceptanceResult{}, errors.New("injected acceptance failure")
+			}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := validL7NetworkBackendConfig(t)
+			config.RuntimeID = "runtime-l7-failure"
+			stateDir := filepath.Join(t.TempDir(), "state")
+			config.Paths = PathPlan{
+				StateDir:        stateDir,
+				APISocketPath:   filepath.Join(stateDir, "api.sock"),
+				ConfigPath:      filepath.Join(stateDir, "config.json"),
+				LogPath:         filepath.Join(stateDir, "firecracker.log"),
+				MetricsPath:     filepath.Join(stateDir, "firecracker.metrics"),
+				VsockSocketPath: filepath.Join(stateDir, "guest.vsock"),
+			}
+			files, err := renderLiveBootFilesForStart(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := validFirecrackerStartOperationPlan(t)
+			descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller := firecrackerController{
+				processAdapter:       ProcessLaunchAdapter{Starter: &fakeProcessStarter{start: tt.starter}},
+				bootAcceptanceWaiter: tt.waiter,
+			}
+			if _, err := controller.startLiveProcessWithInheritedFiles(context.Background(), descriptor, config, files); err == nil {
+				t.Fatal("startLiveProcessWithInheritedFiles() error = nil")
+			}
+			for index, file := range files {
+				if _, err := file.Stat(); err == nil {
+					t.Fatalf("lease-held asset %d remained open after failure", index)
+				}
+			}
+		})
+	}
+}
+
+type l7BootWaiterFunc func(context.Context, BootAcceptanceRequest) (BootAcceptanceResult, error)
+
+func (waiter l7BootWaiterFunc) WaitForBootAcceptance(ctx context.Context, req BootAcceptanceRequest) (BootAcceptanceResult, error) {
+	return waiter(ctx, req)
+}
+
 func TestL7FirecrackerNetworkConfigFailsClosedAndRedactsRawValues(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -83,6 +643,7 @@ func TestL7FirecrackerNetworkConfigFailsClosedAndRedactsRawValues(t *testing.T) 
 		{name: "IPv4 broadcast gateway", mutate: func(config *BackendConfig) { config.StaticNetwork.IPv4Gateway = "192.0.2.3" }},
 		{name: "private proxy", mutate: func(config *BackendConfig) { config.StaticNetwork.ProxyURL = "http://10.0.0.8:19443" }},
 		{name: "raw path assets", mutate: func(config *BackendConfig) { config.LaunchDescriptor = nil }},
+		{name: "missing verified asset lease", mutate: func(config *BackendConfig) { config.VerifiedL7Assets = nil }},
 		{name: "exact synthetic relabel without verified bundle", mutate: func(config *BackendConfig) {
 			encoded, err := json.Marshal(config.LaunchDescriptor)
 			if err != nil {
@@ -163,6 +724,15 @@ func validL7NetworkBackendConfig(t *testing.T) BackendConfig {
 	if !ok {
 		t.Fatal("verified L7 distribution did not produce an opaque profile")
 	}
+	lease, err := verified.AcquireL7AssetLease()
+	if err != nil {
+		t.Fatalf("AcquireL7AssetLease() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := lease.Close(); err != nil {
+			t.Errorf("VerifiedL7AssetLease.Close() error = %v", err)
+		}
+	})
 	descriptor := verified.Descriptor
 	return BackendConfig{
 		CPUCount:          1,
@@ -171,6 +741,7 @@ func validL7NetworkBackendConfig(t *testing.T) BackendConfig {
 		RootfsPath:        "/rootfs",
 		LaunchDescriptor:  &descriptor,
 		VerifiedL7Profile: &profile,
+		VerifiedL7Assets:  lease,
 		ProductionVsock:   true,
 		Paths: PathPlan{
 			StateDir: "/state", APISocketPath: "/state/api.sock", ConfigPath: "/state/config.json",

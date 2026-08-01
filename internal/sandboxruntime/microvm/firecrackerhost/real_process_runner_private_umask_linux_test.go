@@ -3,8 +3,10 @@
 package firecrackerhost
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -20,7 +22,130 @@ import (
 const (
 	privateUmaskHarnessMarker = "--hal-private-umask-harness"
 	privateUmaskSocketMarker  = "--hal-private-umask-socket"
+	sealedAssetHarnessMarker  = "--hal-sealed-asset-harness"
 )
+
+func TestOSExecProcessRunnerPassesOnlyExplicitInheritedFiles(t *testing.T) {
+	first, err := os.CreateTemp(t.TempDir(), "kernel-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := os.CreateTemp(t.TempDir(), "rootfs-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	wantErr := errors.New("stop before process start")
+	runner := OSExecProcessRunner{startCommand: func(command *exec.Cmd) error {
+		if len(command.ExtraFiles) != 2 || command.ExtraFiles[0] != first || command.ExtraFiles[1] != second {
+			t.Fatalf("command ExtraFiles = %#v, want exact explicit file set", command.ExtraFiles)
+		}
+		return wantErr
+	}}
+	process, err := runner.StartHostProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+		Executable:     "firecracker",
+		InheritedFiles: []*os.File{first, second},
+	})
+	if process != nil {
+		t.Fatalf("process = %#v, want nil", process)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("StartHostProcess() error = %v, want injected stop", err)
+	}
+}
+
+func TestOSExecProcessRunnerMapsSealedAssetsToChildFDThreeAndFour(t *testing.T) {
+	kernel := sealedAssetFile(t, "hal-l7-kernel", []byte("verified-l7-kernel"))
+	rootfs := sealedAssetFile(t, "hal-l7-rootfs", []byte("verified-l7-rootfs"))
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := NewOSExecProcessRunner().StartHostProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+		Executable: executable,
+		Args: []string{
+			"-test.run=^TestOSExecProcessRunnerSealedAssetChildHarness$",
+			"--",
+			sealedAssetHarnessMarker,
+		},
+		InheritedFiles: []*os.File{kernel, rootfs},
+	})
+	if err != nil {
+		t.Fatalf("StartHostProcess() error = %v", err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := process.Wait(waitCtx); err != nil {
+		t.Fatalf("sealed asset child failed: %v", err)
+	}
+}
+
+func TestOSExecProcessRunnerRejectsPartialOrExtraInheritedFileSets(t *testing.T) {
+	first := sealedAssetFile(t, "hal-l7-first", []byte("first"))
+	second := sealedAssetFile(t, "hal-l7-second", []byte("second"))
+	third := sealedAssetFile(t, "hal-l7-third", []byte("third"))
+	for _, files := range [][]*os.File{{first}, {first, second, third}} {
+		process, err := NewOSExecProcessRunner().StartHostProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+			Executable:     "firecracker",
+			InheritedFiles: files,
+		})
+		if process != nil {
+			t.Fatalf("process = %#v, want nil", process)
+		}
+		if !errors.Is(err, ErrHostProcessArgumentInvalid) {
+			t.Fatalf("StartHostProcess(%d files) error = %v, want invalid request", len(files), err)
+		}
+	}
+}
+
+func TestOSExecProcessRunnerSealedAssetChildHarness(t *testing.T) {
+	if !hasPrivateUmaskMarker(sealedAssetHarnessMarker) {
+		t.Skip("sealed asset subprocess harness")
+	}
+	wantSeals := unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
+	for index, want := range [][]byte{[]byte("verified-l7-kernel"), []byte("verified-l7-rootfs")} {
+		fd := 3 + index
+		seals, err := unix.FcntlInt(uintptr(fd), unix.F_GET_SEALS, 0)
+		if err != nil || seals&wantSeals != wantSeals {
+			t.Fatalf("child fd %d seals = %x, error = %v", fd, seals, err)
+		}
+		got, err := os.ReadFile(fmt.Sprintf("/proc/self/fd/%d", fd))
+		if err != nil {
+			t.Fatalf("read child fd %d: %v", fd, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("child fd %d bytes = %q, want verified asset", fd, got)
+		}
+		file := os.NewFile(uintptr(fd), "sealed-child-asset")
+		if _, err := file.WriteAt([]byte("x"), 0); err == nil {
+			t.Fatalf("child fd %d accepted a write", fd)
+		}
+	}
+	if seals, err := unix.FcntlInt(5, unix.F_GET_SEALS, 0); err == nil && seals&wantSeals == wantSeals {
+		t.Fatal("unexpected third sealed launch asset inherited at child fd 5")
+	}
+}
+
+func sealedAssetFile(t *testing.T, name string, contents []byte) *os.File {
+	t.Helper()
+	fd, err := unix.MemfdCreate(name, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fd), name)
+	t.Cleanup(func() { _ = file.Close() })
+	if _, err := file.Write(contents); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unix.FcntlInt(file.Fd(), unix.F_ADD_SEALS, unix.F_SEAL_WRITE|unix.F_SEAL_GROW|unix.F_SEAL_SHRINK|unix.F_SEAL_SEAL); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
 
 func TestOSExecProcessRunnerFailsClosedWhenFilesystemIsolationFails(t *testing.T) {
 	started := false
@@ -138,4 +263,13 @@ func privateUmaskTestPath(marker string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func hasPrivateUmaskMarker(marker string) bool {
+	for _, value := range os.Args {
+		if value == marker {
+			return true
+		}
+	}
+	return false
 }
