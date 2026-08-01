@@ -50,6 +50,8 @@ type Session struct {
 	proxyStopped     bool
 	journalRemoved   bool
 	journalReleased  bool
+	guestBinding     RunningGuestBinding
+	guestVerifier    RunningGuestRawPacketIsolationVerifier
 }
 
 func New(input Options) (*Coordinator, error) {
@@ -62,7 +64,7 @@ func New(input Options) (*Coordinator, error) {
 		return coordinator, nil
 	}
 	if options.Proxy == nil || options.Topology == nil || options.TAP == nil || options.Rules == nil ||
-		options.RawPacketIsolation == nil || options.CleanupTimeout <= 0 || options.CleanupTimeout > time.Minute {
+		options.CleanupTimeout <= 0 || options.CleanupTimeout > time.Minute {
 		return nil, ErrInvalidConfiguration
 	}
 	if options.Journal == nil {
@@ -164,10 +166,6 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	}
 
 	corr := correlation(request.Identity)
-	rawProof, err := c.options.RawPacketIsolation.VerifyRawPacketIsolation(ctx, corr)
-	if err != nil || !networkenforcement.RawPacketIsolationProofMatches(rawProof, corr) {
-		return c.failPrepare(session, ErrProofMismatch)
-	}
 	if err := c.options.Proxy.Active(ctx, session.plan, session.proxy); err != nil {
 		return c.failPrepare(session, ErrProxyUnavailable)
 	}
@@ -191,8 +189,8 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	if err != nil {
 		return c.failPrepare(session, ErrRuleInspectionFailed)
 	}
-	session.metadata = Metadata{Identity: request.Identity, Status: StatusInspected, StructuralInspected: true,
-		TAPInspected: true, RulesInspected: true, RawPacketIsolationVerified: true, RuleDigest: ruleDigest}
+	session.metadata = Metadata{Identity: request.Identity, Status: StatusHostPrepared, StructuralInspected: true,
+		TAPInspected: true, RulesInspected: true, RuleDigest: ruleDigest}
 	if err := session.save(ctx, journalStageRulesInspected); err != nil {
 		return c.failPrepare(session, ErrCleanupIncomplete)
 	}
@@ -201,9 +199,6 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	}
 	if err := c.options.Proxy.Active(ctx, session.plan, session.proxy); err != nil {
 		return c.failPrepare(session, ErrProxyUnavailable)
-	}
-	if err := session.save(ctx, journalStageInspected); err != nil {
-		return c.failPrepare(session, ErrCleanupIncomplete)
 	}
 	c.current = session
 	go session.watchProxyLoss()
@@ -257,32 +252,82 @@ func (s *Session) Inspect(ctx context.Context, identity Identity) (Metadata, err
 	if s.metadata.Status != StatusInspected || s.quarantined {
 		return s.metadata, ErrProofMismatch
 	}
+	if err := s.inspectReadyGuestAndHost(ctx, s.guestBinding, s.guestVerifier); err != nil {
+		return s.quarantineOnDrift(ctx, err)
+	}
+	return s.metadata, nil
+}
+
+// InspectAfterGuestReady composes the first guest-bound proof only after the
+// outer Firecracker controller has accepted readiness. It then freshly
+// re-inspects every host component in locked order before exposing inspected,
+// active-eligible metadata. StatusActive remains owned by that outer controller.
+func (s *Session) InspectAfterGuestReady(
+	ctx context.Context,
+	identity Identity,
+	binding RunningGuestBinding,
+	verifier RunningGuestRawPacketIsolationVerifier,
+) (Metadata, error) {
+	if s == nil || identity != s.identity || !validIdentity(identity) || interfaceIsNil(verifier) ||
+		!validRunningGuestBinding(binding, correlation(identity)) {
+		return Metadata{}, ErrIdentityMismatch
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.metadata.Status != StatusHostPrepared || s.quarantined {
+		return s.metadata, ErrProofMismatch
+	}
+	if err := s.inspectReadyGuestAndHost(ctx, binding, verifier); err != nil {
+		return s.quarantineOnDrift(ctx, err)
+	}
+	if err := s.save(ctx, journalStageInspected); err != nil {
+		return s.quarantineOnDrift(ctx, ErrCleanupIncomplete)
+	}
+	s.guestBinding = binding
+	s.guestVerifier = verifier
+	s.metadata.Status = StatusInspected
+	s.metadata.RawPacketIsolationVerified = true
+	return s.metadata, nil
+}
+
+func (s *Session) inspectReadyGuestAndHost(
+	ctx context.Context,
+	binding RunningGuestBinding,
+	verifier RunningGuestRawPacketIsolationVerifier,
+) error {
+	corr := correlation(s.identity)
+	if interfaceIsNil(verifier) || !validRunningGuestBinding(binding, corr) {
+		return ErrProofMismatch
+	}
+	request := RunningGuestRawPacketIsolationRequest{
+		Correlation: corr, ReadinessProofID: binding.GuestReadinessProofID(), Binding: binding,
+	}
+	rawProof, err := verifier.VerifyRunningGuestRawPacketIsolation(ctx, request)
+	if err != nil || !networkenforcement.RawPacketIsolationProofMatches(rawProof, corr) ||
+		!validRunningGuestBinding(binding, corr) || binding.GuestReadinessProofID() != request.ReadinessProofID {
+		return ErrProofMismatch
+	}
 	if err := s.coordinator.options.Proxy.Active(ctx, s.plan, s.proxy); err != nil {
-		return s.quarantineOnDrift(ctx, ErrProxyUnavailable)
+		return ErrProxyUnavailable
 	}
 	if err := s.coordinator.options.TAP.Inspect(ctx, s.namespace, s.tap, s.tapSpec); err != nil {
-		return s.quarantineOnDrift(ctx, ErrProofMismatch)
-	}
-	corr := correlation(s.identity)
-	rawProof, err := s.coordinator.options.RawPacketIsolation.VerifyRawPacketIsolation(ctx, corr)
-	if err != nil || !networkenforcement.RawPacketIsolationProofMatches(rawProof, corr) {
-		return s.quarantineOnDrift(ctx, ErrProofMismatch)
+		return ErrProofMismatch
 	}
 	ruleMetadata, err := s.coordinator.options.Rules.Inspect(ctx, s.expectedRules)
 	if err != nil {
-		return s.quarantineOnDrift(ctx, ErrRuleInspectionFailed)
+		return ErrRuleInspectionFailed
 	}
 	digest, err := inspectedRuleDigest(ruleMetadata, corr)
 	if err != nil || digest != s.metadata.RuleDigest {
-		return s.quarantineOnDrift(ctx, ErrProofMismatch)
+		return ErrProofMismatch
 	}
 	if err := s.coordinator.options.TAP.Inspect(ctx, s.namespace, s.tap, s.tapSpec); err != nil {
-		return s.quarantineOnDrift(ctx, ErrProofMismatch)
+		return ErrProofMismatch
 	}
 	if err := s.coordinator.options.Proxy.Active(ctx, s.plan, s.proxy); err != nil {
-		return s.quarantineOnDrift(ctx, ErrProxyUnavailable)
+		return ErrProxyUnavailable
 	}
-	return s.metadata, nil
+	return nil
 }
 
 func (s *Session) quarantineOnDrift(ctx context.Context, primary error) (Metadata, error) {

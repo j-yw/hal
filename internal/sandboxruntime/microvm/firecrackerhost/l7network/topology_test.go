@@ -21,21 +21,20 @@ func TestFirecrackerHostTopologyPreparesExactInspectedGenerationInOrder(t *testi
 	topology := newFakeTopology(sequence)
 	tap := &fakeTAP{sequence: sequence}
 	rules := &fakeRules{sequence: sequence}
-	raw := &fakeRawPacketVerifier{sequence: sequence}
 	journal := &fakeJournalStore{sequence: sequence}
 
 	coordinator := mustCoordinator(t, Options{
 		Enabled: true, Proxy: proxy, Topology: topology, TAP: tap, Rules: rules,
-		RawPacketIsolation: raw, Journal: journal, CleanupTimeout: time.Second,
+		Journal: journal, CleanupTimeout: time.Second,
 	})
 	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 	if err != nil {
 		t.Fatalf("Prepare() unexpected error: %v; sequence=%#v", err, sequence.snapshot())
 	}
 	metadata := session.Metadata()
-	if metadata.Status != StatusInspected || !metadata.StructuralInspected || !metadata.TAPInspected ||
-		!metadata.RulesInspected || !metadata.RawPacketIsolationVerified || metadata.RuleDigest == "" {
-		t.Fatalf("Prepare() metadata = %#v, want sanitized inspected-only proof", metadata)
+	if metadata.Status != StatusHostPrepared || !metadata.StructuralInspected || !metadata.TAPInspected ||
+		!metadata.RulesInspected || metadata.RawPacketIsolationVerified || metadata.RuleDigest == "" {
+		t.Fatalf("Prepare() metadata = %#v, want sanitized host-prepared proof", metadata)
 	}
 	if metadata.Status == StatusActive {
 		t.Fatal("host topology foundation must not publish active proof")
@@ -43,8 +42,8 @@ func TestFirecrackerHostTopologyPreparesExactInspectedGenerationInOrder(t *testi
 	want := []string{
 		"journal_acquire", "journal_save_proxy_starting", "proxy_start", "proxy_endpoint", "proxy_active",
 		"journal_save_topology_starting", "topology_start", "topology_borrow", "journal_save_topology_prepared",
-		"tap_create", "journal_save_tap_created", "tap_inspect", "raw_packet_verify", "proxy_active",
-		"rules_apply_inspect", "journal_save_rules_inspected", "tap_inspect", "proxy_active", "journal_save_inspected",
+		"tap_create", "journal_save_tap_created", "tap_inspect", "proxy_active",
+		"rules_apply_inspect", "journal_save_rules_inspected", "tap_inspect", "proxy_active",
 	}
 	if got := sequence.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("prepare sequence = %#v, want %#v", got, want)
@@ -58,7 +57,7 @@ func TestFirecrackerHostTopologyPreparesExactInspectedGenerationInOrder(t *testi
 	}
 }
 
-func TestFirecrackerHostTopologyRequiresExactRawPacketProofAndQuarantinesDrift(t *testing.T) {
+func TestFirecrackerHostTopologyPostReadinessRequiresExactRawPacketProofAndQuarantinesDrift(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*fakeRawPacketVerifier)
@@ -71,20 +70,24 @@ func TestFirecrackerHostTopologyRequiresExactRawPacketProofAndQuarantinesDrift(t
 			raw := &fakeRawPacketVerifier{sequence: sequence}
 			tc.mutate(raw)
 			coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
-				TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence}, RawPacketIsolation: raw,
+				TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
 				Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
-			_, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+			session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sequence.reset()
+			ready := true
+			binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-existing", ready: &ready}
+			_, err = session.InspectAfterGuestReady(context.Background(), testIdentity(), binding, raw)
 			if !errors.Is(err, ErrProofMismatch) {
-				t.Fatalf("Prepare() error = %v, want ErrProofMismatch", err)
+				t.Fatalf("InspectAfterGuestReady() error = %v, want ErrProofMismatch", err)
 			}
 			if strings.Contains(err.Error(), "4242") || strings.Contains(err.Error(), "secret") {
 				t.Fatalf("Prepare() leaked private verifier detail: %v", err)
 			}
 			got := sequence.snapshot()
-			if contains(got, "rules_apply_inspect") {
-				t.Fatalf("rules applied without raw-packet proof: %#v", got)
-			}
-			assertSubsequence(t, got, []string{"tap_delete", "topology_stop", "proxy_stop"})
+			assertSubsequence(t, got, []string{"guest_raw_packet_verify", "rules_quarantine", "journal_save_quarantined"})
 		})
 	}
 
@@ -94,9 +97,15 @@ func TestFirecrackerHostTopologyRequiresExactRawPacketProofAndQuarantinesDrift(t
 		tap := &fakeTAP{sequence: sequence}
 		rules := &fakeRules{sequence: sequence}
 		coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence), TAP: tap,
-			Rules: rules, RawPacketIsolation: &fakeRawPacketVerifier{sequence: sequence}, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
+			Rules: rules, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
 		session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 		if err != nil {
+			t.Fatal(err)
+		}
+		ready := true
+		binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-inspect", ready: &ready}
+		verifier := &fakeRawPacketVerifier{sequence: sequence}
+		if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding, verifier); err != nil {
 			t.Fatal(err)
 		}
 		sequence.reset()
@@ -104,7 +113,7 @@ func TestFirecrackerHostTopologyRequiresExactRawPacketProofAndQuarantinesDrift(t
 		if _, err := session.Inspect(context.Background(), testIdentity()); !errors.Is(err, ErrProofMismatch) {
 			t.Fatalf("Inspect() error = %v, want ErrProofMismatch", err)
 		}
-		if got := sequence.snapshot(); !reflect.DeepEqual(got, []string{"proxy_active", "tap_inspect", "rules_quarantine", "journal_save_quarantined"}) {
+		if got := sequence.snapshot(); !reflect.DeepEqual(got, []string{"guest_raw_packet_verify", "proxy_active", "tap_inspect", "rules_quarantine", "journal_save_quarantined"}) {
 			t.Fatalf("drift sequence = %#v", got)
 		}
 	})
@@ -114,7 +123,7 @@ func TestFirecrackerHostTopologyProxyLossRevokesAndQuarantinesExactGeneration(t 
 	sequence := &callSequence{}
 	proxy := newFakeProxy(sequence)
 	coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence),
-		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence}, RawPacketIsolation: &fakeRawPacketVerifier{sequence: sequence},
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
 		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
 	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 	if err != nil {
@@ -142,7 +151,7 @@ func TestFirecrackerHostTopologyTwoStageCleanupIsExactRetryableAndPortLast(t *te
 	rules := &fakeRules{sequence: sequence, cleanupFailures: 1}
 	journal := &fakeJournalStore{sequence: sequence}
 	coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: proxy, Topology: topology, TAP: tap, Rules: rules,
-		RawPacketIsolation: &fakeRawPacketVerifier{sequence: sequence}, Journal: journal, CleanupTimeout: time.Second})
+		Journal: journal, CleanupTimeout: time.Second})
 	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 	if err != nil {
 		t.Fatal(err)
@@ -207,7 +216,7 @@ func TestFirecrackerHostTopologyRejectsUnsafeDuplicateOrMismatchedIdentityBefore
 		t.Run(tc.name, func(t *testing.T) {
 			sequence := &callSequence{}
 			coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
-				TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence}, RawPacketIsolation: &fakeRawPacketVerifier{sequence: sequence},
+				TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
 				Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
 			request := PrepareRequest{Identity: testIdentity(), Plan: testPlan()}
 			tc.mutate(&request)
@@ -253,7 +262,7 @@ func TestFirecrackerHostTopologyRollsBackEveryPreparationBoundaryInReverseOrder(
 			proxy, topology, tap, rules := newFakeProxy(sequence), newFakeTopology(sequence), &fakeTAP{sequence: sequence}, &fakeRules{sequence: sequence}
 			tc.mutate(proxy, topology, tap, rules)
 			coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: proxy, Topology: topology, TAP: tap, Rules: rules,
-				RawPacketIsolation: &fakeRawPacketVerifier{sequence: sequence}, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
+				Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
 			_, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 			if err == nil {
 				t.Fatal("Prepare() unexpectedly succeeded")
@@ -271,7 +280,7 @@ func TestFirecrackerHostTopologyRollsBackEveryPreparationBoundaryInReverseOrder(
 func TestFirecrackerHostTopologyMetadataOmitsAllLiveState(t *testing.T) {
 	sequence := &callSequence{}
 	coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
-		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence}, RawPacketIsolation: &fakeRawPacketVerifier{sequence: sequence},
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
 		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
 	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 	if err != nil {
@@ -478,11 +487,12 @@ type fakeRawPacketVerifier struct {
 	mismatch bool
 }
 
-func (v *fakeRawPacketVerifier) VerifyRawPacketIsolation(_ context.Context, correlation networkenforcement.EnforcementCorrelation) (networkenforcement.RawPacketIsolationProof, error) {
-	v.sequence.add("raw_packet_verify")
+func (v *fakeRawPacketVerifier) VerifyRunningGuestRawPacketIsolation(_ context.Context, request RunningGuestRawPacketIsolationRequest) (networkenforcement.RawPacketIsolationProof, error) {
+	v.sequence.add("guest_raw_packet_verify")
 	if v.err != nil {
 		return networkenforcement.RawPacketIsolationProof{}, v.err
 	}
+	correlation := request.Correlation
 	if v.mismatch {
 		correlation.RuleGenerationID = "wrong-generation"
 	}

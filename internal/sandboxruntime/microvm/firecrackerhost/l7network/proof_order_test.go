@@ -36,6 +36,13 @@ func TestFirecrackerHostTopologyPrepareStopsAtHostPreparedWithoutGuestProof(t *t
 	if got := sequence.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Prepare() sequence = %#v, want %#v", got, want)
 	}
+	sequence.reset()
+	if _, err := session.Inspect(context.Background(), testIdentity()); !errors.Is(err, ErrProofMismatch) {
+		t.Fatalf("Inspect() before guest readiness = %v, want ErrProofMismatch", err)
+	}
+	if got := sequence.snapshot(); len(got) != 0 {
+		t.Fatalf("Inspect() before guest readiness performed live work: %#v", got)
+	}
 }
 
 func TestFirecrackerHostTopologyPostReadinessProofIsLiveBoundAndOrdered(t *testing.T) {
@@ -75,6 +82,14 @@ func TestFirecrackerHostTopologyPostReadinessProofIsLiveBoundAndOrdered(t *testi
 	}
 	if got := sequence.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("post-readiness sequence = %#v, want %#v", got, want)
+	}
+	sequence.reset()
+	if _, err := session.Inspect(context.Background(), testIdentity()); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"guest_raw_packet_verify", "proxy_active", "tap_inspect", "rules_inspect", "tap_inspect", "proxy_active"}
+	if got := sequence.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("repeat inspection sequence = %#v, want %#v", got, want)
 	}
 }
 
@@ -157,7 +172,9 @@ func (v *readinessGatedGuestVerifier) VerifyRunningGuestRawPacketIsolation(
 ) (networkenforcement.RawPacketIsolationProof, error) {
 	v.sequence.add("guest_raw_packet_verify")
 	binding, ok := request.Binding.(*fakeRunningGuestBinding)
-	if !ok || binding != v.binding || binding.ready == nil || !*binding.ready {
+	if !ok || binding != v.binding || request.ReadinessProofID != binding.proofID ||
+		!networkenforcement.EnforcementCorrelationsEqual(request.Correlation, binding.correlation) ||
+		binding.ready == nil || !*binding.ready {
 		return networkenforcement.RawPacketIsolationProof{}, errors.New("guest not ready")
 	}
 	correlation := request.Correlation

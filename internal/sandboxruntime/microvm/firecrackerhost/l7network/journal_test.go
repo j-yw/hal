@@ -103,7 +103,7 @@ func TestFirecrackerHostTopologyRestartNeverReconstructsInspectedProof(t *testin
 	}
 	sequence := &callSequence{}
 	coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
-		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence}, RawPacketIsolation: &fakeRawPacketVerifier{sequence: sequence},
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
 		Journal: store})
 	if _, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()}); !errors.Is(err, ErrStaleTopologyUnverified) {
 		t.Fatalf("restart Prepare() = %v", err)

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"reflect"
 	"regexp"
 	"time"
 
@@ -45,6 +46,7 @@ type Status string
 
 const (
 	StatusPrepared          Status = "prepared"
+	StatusHostPrepared      Status = "host_prepared"
 	StatusInspected         Status = "inspected"
 	StatusActive            Status = "active" // reserved for the later runtime coordinator
 	StatusQuarantined       Status = "quarantined"
@@ -120,6 +122,30 @@ type RuleAdapter interface {
 	Cleanup(context.Context, linuxrules.ExpectedRuleSet) error
 }
 
+// RunningGuestBinding is an opaque live-only binding to the exact guest whose
+// readiness was accepted by the outer Firecracker controller. The safe
+// correlation and proof ID let this package reject a stale or substituted
+// binding without exposing its process, transport, or guest details.
+type RunningGuestBinding interface {
+	GuestCorrelation() networkenforcement.EnforcementCorrelation
+	GuestReadinessProofID() string
+}
+
+// RunningGuestRawPacketIsolationRequest keeps the live binding private while
+// carrying only redaction-safe immutable identity beside it.
+type RunningGuestRawPacketIsolationRequest struct {
+	Correlation      networkenforcement.EnforcementCorrelation `json:"correlation"`
+	ReadinessProofID string                                    `json:"readinessProofId"`
+	Binding          RunningGuestBinding                       `json:"-"`
+}
+
+// RunningGuestRawPacketIsolationVerifier must mechanically inspect the exact
+// ready guest represented by request.Binding. Static image properties,
+// requested capability drops, and correlation-only proofs are insufficient.
+type RunningGuestRawPacketIsolationVerifier interface {
+	VerifyRunningGuestRawPacketIsolation(context.Context, RunningGuestRawPacketIsolationRequest) (networkenforcement.RawPacketIsolationProof, error)
+}
+
 type TAPLifecycle interface {
 	CreateConfigure(context.Context, NamespaceLease, tapSpec) (tapState, error)
 	Inspect(context.Context, NamespaceLease, tapState, tapSpec) error
@@ -138,15 +164,14 @@ type JournalLease interface {
 }
 
 type Options struct {
-	Enabled            bool
-	Proxy              ProxyLifecycle
-	Topology           TopologyLifecycle
-	TAP                TAPLifecycle
-	Rules              RuleAdapter
-	RawPacketIsolation linuxrules.RawPacketIsolationVerifier
-	Journal            JournalStore
-	StateDir           string
-	CleanupTimeout     time.Duration
+	Enabled        bool
+	Proxy          ProxyLifecycle
+	Topology       TopologyLifecycle
+	TAP            TAPLifecycle
+	Rules          RuleAdapter
+	Journal        JournalStore
+	StateDir       string
+	CleanupTimeout time.Duration
 }
 
 type tapSpec struct {
@@ -224,6 +249,28 @@ func validIdentity(identity Identity) bool {
 		seen[value] = struct{}{}
 	}
 	return true
+}
+
+func validRunningGuestBinding(binding RunningGuestBinding, expected networkenforcement.EnforcementCorrelation) bool {
+	if interfaceIsNil(binding) {
+		return false
+	}
+	proofID := binding.GuestReadinessProofID()
+	actual := networkenforcement.SanitizeEnforcementCorrelation(binding.GuestCorrelation())
+	return safeIDPattern.MatchString(proofID) && networkenforcement.EnforcementCorrelationsEqual(actual, expected)
+}
+
+func interfaceIsNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func planMatchesIdentity(plan networkenforcement.Plan, identity Identity) bool {
