@@ -13,17 +13,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	l7KernelChildFD = 3
-	l7RootfsChildFD = 4
-)
-
 type sealedL7LaunchMaterial struct {
 	mu        sync.Mutex
 	assets    map[assets.AssetRole]*sealedL7Asset
 	closeFile func(*os.File) error
 	closed    bool
 	closeErr  error
+	childFD   int
 }
 
 type sealedL7Asset struct {
@@ -32,8 +28,11 @@ type sealedL7Asset struct {
 	digest [sha256.Size]byte
 }
 
-func newSealedL7LaunchMaterial(string) (*sealedL7LaunchMaterial, error) {
-	return &sealedL7LaunchMaterial{assets: make(map[assets.AssetRole]*sealedL7Asset, 2)}, nil
+func newSealedL7LaunchMaterial(_ string, childFD int) (*sealedL7LaunchMaterial, error) {
+	if childFD != l7KernelChildFD && childFD != l7NamespaceKernelChildFD {
+		return nil, errUnsafeLiveBootStateEntry
+	}
+	return &sealedL7LaunchMaterial{assets: make(map[assets.AssetRole]*sealedL7Asset, 2), childFD: childFD}, nil
 }
 
 func (material *sealedL7LaunchMaterial) WriteAsset(role assets.AssetRole, source io.Reader) (string, error) {
@@ -50,10 +49,10 @@ func (material *sealedL7LaunchMaterial) WriteAsset(role assets.AssetRole, source
 	switch role {
 	case assets.AssetRoleKernel:
 		name = "hal-l7-kernel"
-		childFD = l7KernelChildFD
+		childFD = material.childFD
 	case assets.AssetRoleRootfs:
 		name = "hal-l7-rootfs"
-		childFD = l7RootfsChildFD
+		childFD = material.childFD + 1
 	default:
 		return "", errUnsafeLiveBootStateEntry
 	}
@@ -216,6 +215,10 @@ func childFDText(fd int) string {
 		return "3"
 	case l7RootfsChildFD:
 		return "4"
+	case l7NamespaceKernelChildFD:
+		return "5"
+	case l7NamespaceRootfsChildFD:
+		return "6"
 	default:
 		return ""
 	}

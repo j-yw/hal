@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
 )
@@ -20,6 +22,8 @@ var (
 	ErrNamespaceProcessCleanupIncomplete    = errors.New("Firecracker namespace process cleanup incomplete")
 	ErrNamespaceProcessUnsupported          = errors.New("Firecracker namespace process unsupported")
 )
+
+const defaultNamespaceProcessCleanupTimeout = 5 * time.Second
 
 const (
 	namespaceProcessUserChildFD    = 3
@@ -63,31 +67,47 @@ type NamespaceProcessRunnerOptions struct {
 	Namespace   NamespaceProcessFileProvider
 	Starter     NamespaceProcessStarter
 	NSenterPath string
+	// CleanupTimeout bounds exact partial-process termination and reap using an
+	// independent context. Zero selects the package default.
+	CleanupTimeout time.Duration
 }
 
 // NamespaceProcessRunner accepts exactly the two sealed L7 asset descriptors,
 // adds exactly one owned user/network descriptor pair, and delegates one
 // deterministic nsenter launch without process-global setns.
 type NamespaceProcessRunner struct {
-	namespace   NamespaceProcessFileProvider
-	starter     NamespaceProcessStarter
-	nsenterPath string
+	namespace      NamespaceProcessFileProvider
+	starter        NamespaceProcessStarter
+	nsenterPath    string
+	cleanupTimeout time.Duration
+	mu             sync.Mutex
+	retained       HostProcess
 }
 
 var _ HostProcessRunner = (*NamespaceProcessRunner)(nil)
 
 func NewNamespaceProcessRunner(options NamespaceProcessRunnerOptions) (*NamespaceProcessRunner, error) {
 	nsenterPath := strings.TrimSpace(options.NSenterPath)
+	cleanupTimeout := options.CleanupTimeout
+	if cleanupTimeout == 0 {
+		cleanupTimeout = defaultNamespaceProcessCleanupTimeout
+	}
 	if interfaceValueIsNil(options.Namespace) || interfaceValueIsNil(options.Starter) ||
-		!filepath.IsAbs(nsenterPath) || filepath.Clean(nsenterPath) != nsenterPath || hasOSExecProcessControl(nsenterPath) {
+		!filepath.IsAbs(nsenterPath) || filepath.Clean(nsenterPath) != nsenterPath || hasOSExecProcessControl(nsenterPath) ||
+		cleanupTimeout <= 0 || cleanupTimeout > time.Minute {
 		return nil, ErrNamespaceProcessInvalidConfiguration
 	}
-	return &NamespaceProcessRunner{namespace: options.Namespace, starter: options.Starter, nsenterPath: nsenterPath}, nil
+	return &NamespaceProcessRunner{namespace: options.Namespace, starter: options.Starter, nsenterPath: nsenterPath, cleanupTimeout: cleanupTimeout}, nil
 }
 
-func (runner *NamespaceProcessRunner) StartHostProcess(ctx context.Context, request firecracker.ProcessRunnerStartRequest) (process HostProcess, retErr error) {
+func (runner *NamespaceProcessRunner) StartHostProcess(ctx context.Context, request firecracker.ProcessRunnerStartRequest) (HostProcess, error) {
 	if runner == nil || interfaceValueIsNil(runner.namespace) || interfaceValueIsNil(runner.starter) {
 		return nil, ErrNamespaceProcessInvalidConfiguration
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if !interfaceValueIsNil(runner.retained) {
+		return nil, ErrNamespaceProcessCleanupIncomplete
 	}
 	if len(request.InheritedFiles) != 2 {
 		return nil, ErrNamespaceProcessAssetsInvalid
@@ -106,12 +126,6 @@ func (runner *NamespaceProcessRunner) StartHostProcess(ctx context.Context, requ
 		closeNamespaceProcessFiles(user, network)
 		return nil, ErrNamespaceProcessNamespaceInvalid
 	}
-	defer func() {
-		if closeNamespaceProcessFiles(user, network) != nil {
-			retErr = errors.Join(retErr, ErrNamespaceProcessCleanupIncomplete)
-		}
-	}()
-
 	wrapperArgs := []string{
 		"--user=/proc/self/fd/3",
 		"--net=/proc/self/fd/4",
@@ -119,7 +133,7 @@ func (runner *NamespaceProcessRunner) StartHostProcess(ctx context.Context, requ
 		executable,
 	}
 	wrapperArgs = append(wrapperArgs, args...)
-	process, err = runner.starter.StartNamespaceProcess(nonNilContext(ctx), NamespaceProcessStartRequest{
+	process, startErr := runner.starter.StartNamespaceProcess(nonNilContext(ctx), NamespaceProcessStartRequest{
 		Executable: runner.nsenterPath,
 		Args:       wrapperArgs,
 		InheritedFiles: []*os.File{
@@ -129,10 +143,60 @@ func (runner *NamespaceProcessRunner) StartHostProcess(ctx context.Context, requ
 			request.InheritedFiles[1],
 		},
 	})
-	if err != nil || interfaceValueIsNil(process) {
-		return process, ErrNamespaceProcessStartFailed
+	closeErr := closeNamespaceProcessFiles(user, network)
+	if startErr == nil && interfaceValueIsNil(process) {
+		startErr = ErrNamespaceProcessStartFailed
 	}
-	return process, nil
+	if startErr == nil && closeErr == nil {
+		return process, nil
+	}
+	primary := error(ErrNamespaceProcessStartFailed)
+	if startErr == nil {
+		primary = ErrNamespaceProcessCleanupIncomplete
+	} else if closeErr != nil {
+		primary = errors.Join(primary, ErrNamespaceProcessCleanupIncomplete)
+	}
+	if !interfaceValueIsNil(process) {
+		if cleanupErr := runner.terminateAndReap(process); cleanupErr != nil {
+			runner.retained = process
+			return nil, errors.Join(primary, ErrNamespaceProcessCleanupIncomplete)
+		}
+	}
+	return nil, primary
+}
+
+// RetryRetainedProcessCleanup retries exact termination for a partial process
+// whose first bounded containment attempt was inconclusive. No new start is
+// admitted until this returns nil.
+func (runner *NamespaceProcessRunner) RetryRetainedProcessCleanup(context.Context) error {
+	if runner == nil {
+		return ErrNamespaceProcessInvalidConfiguration
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if interfaceValueIsNil(runner.retained) {
+		runner.retained = nil
+		return nil
+	}
+	if err := runner.terminateAndReap(runner.retained); err != nil {
+		return ErrNamespaceProcessCleanupIncomplete
+	}
+	runner.retained = nil
+	return nil
+}
+
+func (runner *NamespaceProcessRunner) terminateAndReap(process HostProcess) error {
+	if runner == nil || interfaceValueIsNil(process) {
+		return ErrNamespaceProcessCleanupIncomplete
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runner.cleanupTimeout)
+	defer cancel()
+	killErr := process.Kill(ctx)
+	waitErr := process.Wait(ctx)
+	if killErr != nil || waitErr != nil {
+		return ErrNamespaceProcessCleanupIncomplete
+	}
+	return nil
 }
 
 func validNamespaceProcessFiles(user, network *os.File, assets []*os.File) bool {

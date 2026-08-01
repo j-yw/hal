@@ -2,6 +2,7 @@ package firecracker
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -9,7 +10,7 @@ import (
 func TestL7NamespaceRenderMovesOnlyTwoAssetsToChildFDsFiveAndSix(t *testing.T) {
 	config := validL7NetworkBackendConfig(t)
 	config.RuntimeID = "runtime-l7-namespace-assets"
-	stateDir := t.TempDir()
+	stateDir := filepath.Join(t.TempDir(), "state")
 	config.Paths = PathPlan{
 		StateDir:        stateDir,
 		APISocketPath:   stateDir + "/api.sock",

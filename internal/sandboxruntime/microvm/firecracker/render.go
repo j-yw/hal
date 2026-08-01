@@ -115,7 +115,11 @@ func prepareVerifiedL7LaunchMaterial(config BackendConfig) (BackendConfig, *seal
 	if config.VerifiedL7Assets == nil || config.LaunchDescriptor == nil {
 		return BackendConfig{}, nil, newLiveBootRenderConfigError("launchDescriptor", "verified L7 asset lease is required")
 	}
-	material, err := newSealedL7LaunchMaterial(config.Paths.StateDir)
+	childFD, err := normalizedL7AssetChildFDStart(config.AssetChildFDStart)
+	if err != nil {
+		return BackendConfig{}, nil, err
+	}
+	material, err := newSealedL7LaunchMaterial(config.Paths.StateDir, childFD)
 	if err != nil {
 		return BackendConfig{}, nil, newLiveBootRenderFailure("launchDescriptor", "private L7 launch material preparation failed", err)
 	}
