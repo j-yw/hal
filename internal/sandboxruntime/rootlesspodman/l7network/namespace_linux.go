@@ -73,15 +73,21 @@ func (r *ProductionNamespaceResolver) Resolve(ctx context.Context, request rootl
 		}
 	}()
 	routeArgs := []string{"--json", "-6", "route", "show", "default"}
-	if r.options.InterfaceName != "" { routeArgs = append(routeArgs, "dev", r.options.InterfaceName) }
+	if r.options.InterfaceName != "" {
+		routeArgs = append(routeArgs, "dev", r.options.InterfaceName)
+	}
 	routePayload, err := r.runIP(ctx, user, network, routeArgs...)
 	if err != nil {
 		return NamespaceResolution{}, ErrNamespaceUnverified
 	}
 	interfaceName, err := exactDefaultInterface(routePayload, r.options.InterfaceName)
-	if err != nil { return NamespaceResolution{}, ErrNamespaceUnverified }
+	if err != nil {
+		return NamespaceResolution{}, ErrNamespaceUnverified
+	}
 	addressPayload, err := r.runIP(ctx, user, network, "--json", "address", "show", "dev", interfaceName)
-	if err != nil { return NamespaceResolution{}, ErrNamespaceUnverified }
+	if err != nil {
+		return NamespaceResolution{}, ErrNamespaceUnverified
+	}
 	workload, gateway, prefix, err := parseExactIPv6Link(addressPayload, routePayload, interfaceName)
 	if err != nil {
 		return NamespaceResolution{}, ErrNamespaceUnverified
@@ -218,10 +224,12 @@ type ipRouteRecord struct {
 	Dev     string `json:"dev"`
 }
 
-func exactDefaultInterface(routePayload []byte, configured string) (string,error) {
+func exactDefaultInterface(routePayload []byte, configured string) (string, error) {
 	var routes []ipRouteRecord
-	if json.Unmarshal(routePayload,&routes)!=nil||len(routes)!=1||!safeInterface(routes[0].Dev)||(configured!=""&&routes[0].Dev!=configured){return "",ErrNamespaceUnverified}
-	return routes[0].Dev,nil
+	if json.Unmarshal(routePayload, &routes) != nil || len(routes) != 1 || !safeInterface(routes[0].Dev) || (configured != "" && routes[0].Dev != configured) {
+		return "", ErrNamespaceUnverified
+	}
+	return routes[0].Dev, nil
 }
 
 func parseExactIPv6Link(addressPayload, routePayload []byte, iface string) (string, string, uint8, error) {
