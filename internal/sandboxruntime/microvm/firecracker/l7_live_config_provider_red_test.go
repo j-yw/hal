@@ -3,6 +3,8 @@ package firecracker
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -43,6 +45,9 @@ func TestL7LiveBootConfigOverlayMapsOnlyPrivateLiveFields(t *testing.T) {
 	overlay.StaticNetwork.ProxyURL = "http://198.51.100.9:9"
 	if got.NetworkInterfaces[0].HostDeviceName == "substituted" || got.StaticNetwork.ProxyURL == "http://198.51.100.9:9" {
 		t.Fatal("L7 overlay result aliases mutable provider values")
+	}
+	if err := owned.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -87,7 +92,7 @@ func TestL7LiveBootConfigPlanFailureClosesBackendOwnedLease(t *testing.T) {
 		return ProcessCommandDescriptor{}, errors.New("private plan adapter failure /host/path")
 	}}
 	controller := firecrackerController{
-		baseStateDir:         t.TempDir(),
+		baseStateDir:         firecrackerPathTestBase("l7-provider-plan"),
 		processAdapter:       adapter,
 		bootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
 		liveProcessManager:   fakeLiveBootSafetyHooks{},
@@ -115,7 +120,7 @@ func TestL7LiveBootConfigTypedNilProviderFailsBeforePlanning(t *testing.T) {
 	var provider *recordingL7LiveConfigProvider
 	adapter := &fakeProcessAdapter{}
 	controller := firecrackerController{
-		baseStateDir:         t.TempDir(),
+		baseStateDir:         firecrackerPathTestBase("l7-provider-nil"),
 		processAdapter:       adapter,
 		bootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
 		liveProcessManager:   fakeLiveBootSafetyHooks{},
@@ -134,10 +139,43 @@ func TestL7LiveBootConfigTypedNilProviderFailsBeforePlanning(t *testing.T) {
 	}
 }
 
+func TestL7LiveBootConfigRenderFailureClosesBackendOwnedLease(t *testing.T) {
+	verified := validL7NetworkBackendConfig(t)
+	blockedBase := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blockedBase, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := &recordingL7LiveConfigProvider{overlays: map[string]L7LiveBootConfigOverlay{
+		"rfa": l7LiveOverlayFromConfig("rfa", verified),
+	}}
+	adapter := &fakeProcessAdapter{}
+	controller := firecrackerController{
+		baseStateDir:         blockedBase,
+		processAdapter:       adapter,
+		bootAcceptanceWaiter: fakeLiveBootSafetyHooks{},
+		liveProcessManager:   fakeLiveBootSafetyHooks{},
+		liveStart:            true,
+		productionVsock:      true,
+		productionBridge:     l5ConcurrentStartBridge{},
+		l7LiveConfigProvider: provider,
+	}
+	if _, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart, Config: validMicroVMConfig(), Target: l7LiveConfigTestTarget("rfa"),
+	}); err == nil {
+		t.Fatal("Start() error = nil, want live render failure")
+	}
+	if adapter.prepareCalls != 1 || adapter.startCalls != 0 {
+		t.Fatalf("render failure process calls = prepare %d, start %d", adapter.prepareCalls, adapter.startCalls)
+	}
+	if err := verified.VerifiedL7Assets.ConfirmCurrent(verified.LaunchDescriptor); !errors.Is(err, localresolver.ErrFileUnavailable) {
+		t.Fatalf("render-failed backend lease remained open: %v", err)
+	}
+}
+
 func TestL7LiveBootConfigProviderIsInertOnPlanningOnlyDefault(t *testing.T) {
 	provider := &recordingL7LiveConfigProvider{panicOnCall: true}
 	adapter := &fakeProcessAdapter{}
-	controller := firecrackerController{baseStateDir: t.TempDir(), processAdapter: adapter, l7LiveConfigProvider: provider}
+	controller := firecrackerController{baseStateDir: firecrackerPathTestBase("l7-provider-inert"), processAdapter: adapter, l7LiveConfigProvider: provider}
 	if _, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
 		Operation: microvm.OperationStart, Config: validMicroVMConfig(), Target: l7LiveConfigTestTarget("runtime-default-inert"),
 	}); err != nil {
@@ -191,6 +229,11 @@ func TestL7LiveBootConfigConcurrentRuntimesKeepExactIdentityAndAssets(t *testing
 	}
 	if provider.callCount() != 2 {
 		t.Fatalf("parallel provider calls = %d, want 2", provider.callCount())
+	}
+	for _, runtimeID := range []string{first.RuntimeID, second.RuntimeID} {
+		if err := seen[runtimeID].lease.Close(); err != nil {
+			t.Fatalf("close parallel lease %q: %v", runtimeID, err)
+		}
 	}
 }
 
