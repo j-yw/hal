@@ -64,11 +64,12 @@ func TestFirecrackerHostTopologyPrepareRejectsTypedNilReturnedInterfaces(t *test
 		configure func(*Options, *callSequence)
 		want      []error
 		retained  bool
+		blocked   bool
 		cleanup   []string
 	}{
 		{name: "journal lease", configure: func(o *Options, sequence *callSequence) {
 			o.Journal = &typedNilJournalLeaseStore{sequence: sequence}
-		}, want: []error{ErrCleanupIncomplete}},
+		}, want: []error{ErrCleanupIncomplete}, retained: true, blocked: true},
 		{name: "proxy generation", configure: func(o *Options, sequence *callSequence) {
 			o.Proxy = &typedNilGenerationProxy{sequence: sequence}
 		}, want: []error{ErrProxyUnavailable, ErrCleanupIncomplete}, retained: true},
@@ -93,8 +94,64 @@ func TestFirecrackerHostTopologyPrepareRejectsTypedNilReturnedInterfaces(t *test
 			if tc.retained != (session != nil) {
 				t.Fatalf("Prepare() retained session = %t, want %t", session != nil, tc.retained)
 			}
+			if tc.blocked {
+				identity := alternateIdentity()
+				if _, nextErr := coordinator.Prepare(context.Background(), PrepareRequest{Identity: identity, Plan: planForIdentity(identity)}); !errors.Is(nextErr, ErrTopologyCollision) {
+					t.Fatalf("Prepare(after untracked acquisition) = %v, want ErrTopologyCollision", nextErr)
+				}
+			}
 			assertSubsequence(t, sequence.snapshot(), tc.cleanup)
 		})
+	}
+}
+
+func TestFirecrackerHostTopologyRetainsJournalUntilReleaseRetrySucceeds(t *testing.T) {
+	sequence := &callSequence{}
+	store := &releaseRetryJournalStore{sequence: sequence, firstSaveErr: errors.New("private journal save failure"), firstReleaseFailures: 1}
+	options := validCoordinatorOptions(sequence)
+	options.Journal = store
+	coordinator := mustCoordinator(t, options)
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if session == nil || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Prepare() = session %T, error %v; want retained cleanup-incomplete lease", session, err)
+	}
+	identity := alternateIdentity()
+	if _, nextErr := coordinator.Prepare(context.Background(), PrepareRequest{Identity: identity, Plan: planForIdentity(identity)}); !errors.Is(nextErr, ErrTopologyCollision) {
+		t.Fatalf("Prepare(before release retry) = %v, want ErrTopologyCollision", nextErr)
+	}
+	if err := session.RetryRetainedCleanup(context.Background(), testIdentity()); err != nil {
+		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	}
+	if store.first.releaseCalls != 2 {
+		t.Fatalf("exact journal release calls = %d, want 2", store.first.releaseCalls)
+	}
+	if _, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: identity, Plan: planForIdentity(identity)}); err != nil {
+		t.Fatalf("Prepare(after release retry) = %v", err)
+	}
+}
+
+func TestFirecrackerHostTopologyReconcilerRetainsFailedEarlyRelease(t *testing.T) {
+	sequence := &callSequence{}
+	store := &releaseRetryJournalStore{sequence: sequence, firstLoadErr: errors.New("private journal load failure"), firstReleaseFailures: 1}
+	topology := newFakeTopology(sequence)
+	reconciler, err := NewReconciler(ReconcilerOptions{
+		Recovery: &fakeRecoveryTopology{sequence: sequence, lifecycle: topology},
+		TAP:      &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+		Journal:       store, CleanupTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := reconciler.Recover(context.Background(), testIdentity())
+	if session == nil || !errors.Is(err, ErrStaleTopologyUnverified) || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Recover() = session %T, error %v; want retained stale cleanup", session, err)
+	}
+	if err := session.RetryRetainedCleanup(context.Background(), testIdentity()); err != nil {
+		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	}
+	if store.first.releaseCalls != 2 {
+		t.Fatalf("exact reconciler journal release calls = %d, want 2", store.first.releaseCalls)
 	}
 }
 
@@ -180,6 +237,61 @@ func (s *typedNilJournalLeaseStore) Acquire(context.Context, Identity) (JournalL
 	s.sequence.add("journal_acquire")
 	var lease *fakeJournalLease
 	return lease, nil
+}
+
+type releaseRetryJournalStore struct {
+	sequence             *callSequence
+	firstLoadErr         error
+	firstSaveErr         error
+	firstReleaseFailures int
+	acquires             int
+	first                *releaseRetryJournalLease
+}
+
+func (s *releaseRetryJournalStore) Acquire(context.Context, Identity) (JournalLease, error) {
+	s.sequence.add("journal_acquire")
+	s.acquires++
+	if s.acquires == 1 {
+		s.first = &releaseRetryJournalLease{sequence: s.sequence, loadErr: s.firstLoadErr,
+			saveErr: s.firstSaveErr, releaseFailures: s.firstReleaseFailures}
+		return s.first, nil
+	}
+	return &fakeJournalLease{sequence: s.sequence}, nil
+}
+
+type releaseRetryJournalLease struct {
+	sequence        *callSequence
+	loadErr         error
+	saveErr         error
+	releaseFailures int
+	releaseCalls    int
+}
+
+func (l *releaseRetryJournalLease) Load() (journalRecord, error) {
+	l.sequence.add("journal_load")
+	if l.loadErr != nil {
+		return journalRecord{}, l.loadErr
+	}
+	return journalRecord{}, ErrJournalNotFound
+}
+
+func (l *releaseRetryJournalLease) Save(_ context.Context, record journalRecord) error {
+	l.sequence.add("journal_save_" + string(record.stage))
+	return l.saveErr
+}
+
+func (l *releaseRetryJournalLease) Remove() error {
+	l.sequence.add("journal_remove")
+	return nil
+}
+
+func (l *releaseRetryJournalLease) Release() error {
+	l.sequence.add("journal_release")
+	l.releaseCalls++
+	if l.releaseCalls <= l.releaseFailures {
+		return errors.New("private journal release failure")
+	}
+	return nil
 }
 
 type typedNilGenerationProxy struct{ sequence *callSequence }
