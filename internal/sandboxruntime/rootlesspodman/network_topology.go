@@ -140,6 +140,7 @@ type networkTopologyEntry struct {
 	proof         NetworkTopologyProof
 	active        bool
 	cleaned       bool
+	deleteDone    bool
 	watchStop     chan struct{}
 	watchStart    sync.Once
 	watchStopOnce sync.Once
@@ -482,8 +483,16 @@ func (d *Driver) revokeAndCleanupNetworkTopology(entry *networkTopologyEntry, ta
 	if err := entry.session.Revoke(ctx, request); err != nil {
 		result = errors.Join(result, topologyError(operation, ErrNetworkTopologyRevokeFailed))
 	}
-	if err := runtimeAction(ctx); err != nil {
-		return errors.Join(result, err, topologyError(operation, ErrNetworkTopologyCleanupFailed))
+	if operation != OperationDelete || !entry.deleteDone {
+		if err := runtimeAction(ctx); err != nil {
+			return errors.Join(result, err, topologyError(operation, ErrNetworkTopologyCleanupFailed))
+		}
+		if operation == OperationDelete {
+			// The entry is bound to one exact runtime generation. Retain successful
+			// removal ownership across a transient session cleanup failure so a
+			// retry can finish cleanup without deleting the absent container again.
+			entry.deleteDone = true
+		}
 	}
 	if err := entry.session.Cleanup(ctx, request); err != nil {
 		return errors.Join(result, topologyError(operation, ErrNetworkTopologyCleanupFailed))

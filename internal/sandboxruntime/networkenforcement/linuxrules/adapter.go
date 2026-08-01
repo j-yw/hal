@@ -112,6 +112,66 @@ func (a *Adapter) ApplyAndInspect(ctx context.Context, expected ExpectedRuleSet)
 	return activeMetadata(expected, inspectedAtUnixMilli, rawPacketIsolation), nil
 }
 
+// Inspect re-verifies the exact owned generation without mutating it. The
+// workload-output profile repeats the live raw-packet capability inspection so
+// a stale readiness proof cannot keep an advisory L7 session active.
+func (a *Adapter) Inspect(ctx context.Context, expected ExpectedRuleSet) (networkenforcement.RuleLifecycleMetadata, error) {
+	if a == nil {
+		return failedMetadata(expected, networkenforcement.LifecycleReasonCapabilityMissing), operationError{err: ErrInvalidConfiguration}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.invalidOptions || a.executor == nil || a.now == nil || !expected.valid() {
+		return failedMetadata(expected, networkenforcement.LifecycleReasonCapabilityMissing), operationError{err: ErrInvalidConfiguration}
+	}
+	var rawPacketIsolation *networkenforcement.RawPacketIsolationProof
+	if expected.profile == RuleProfileWorkloadOutput {
+		proof, err := expected.rawPacketIsolation.VerifyRawPacketIsolation(ctx, expected.correlation)
+		if err != nil || !networkenforcement.RawPacketIsolationProofMatches(proof, expected.correlation) {
+			return failedMetadata(expected, networkenforcement.LifecycleReasonCapabilityMissing), operationError{err: ErrRawPacketIsolation}
+		}
+		proof = networkenforcement.SanitizeRawPacketIsolationProof(proof)
+		rawPacketIsolation = &proof
+	}
+	payload, err := a.executor.ListTableJSON(ctx, expected.namespace, expected.query(), a.maxInspectionBytes)
+	if err != nil || inspectExpected(payload, expected, a.maxInspectionBytes) != nil {
+		return failedMetadata(expected, networkenforcement.LifecycleReasonRuleInspectionFailed), operationError{err: ErrInspectionFailed}
+	}
+	inspectedAtUnixMilli := a.now().UnixMilli()
+	if inspectedAtUnixMilli <= 0 {
+		return failedMetadata(expected, networkenforcement.LifecycleReasonRuleInspectionFailed), operationError{err: ErrInspectionFailed}
+	}
+	return activeMetadata(expected, inspectedAtUnixMilli, rawPacketIsolation), nil
+}
+
+// Quarantine atomically replaces only the exact owned generation with its
+// default-drop quarantine and structurally verifies that quarantine before
+// runtime shutdown proceeds.
+func (a *Adapter) Quarantine(ctx context.Context, expected ExpectedRuleSet) error {
+	if a == nil {
+		return operationError{err: ErrInvalidConfiguration}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.invalidOptions || a.executor == nil || !expected.valid() {
+		return operationError{err: ErrInvalidConfiguration}
+	}
+	present, owned, err := a.ownership(ctx, expected)
+	if err != nil {
+		return operationError{err: ErrQuarantineFailed}
+	}
+	if !present {
+		return nil
+	}
+	if !owned {
+		return operationError{err: ErrStaleGeneration}
+	}
+	if err := a.applyBounded(ctx, expected, expected.quarantineBatch(), ErrQuarantineFailed); err != nil {
+		return err
+	}
+	return a.inspectQuarantine(ctx, expected)
+}
+
 func (a *Adapter) Cleanup(ctx context.Context, expected ExpectedRuleSet) error {
 	if a == nil {
 		return operationError{err: ErrInvalidConfiguration}

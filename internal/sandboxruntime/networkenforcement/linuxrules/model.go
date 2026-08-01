@@ -112,7 +112,7 @@ func NewExpectedRuleSet(config RuleSetConfig) (ExpectedRuleSet, error) {
 	}
 	rawPacketIsolationValid := config.Profile != RuleProfileWorkloadOutput || config.RawPacketIsolation != nil
 	configuredIPv6LinkValid := workloadIPv6Err == nil && gatewayIPv6Err == nil &&
-		validConfiguredIPv6Link(workloadIPv6Address, gatewayIPv6Address, config.IPv6PrefixBits) &&
+		validConfiguredIPv6Link(config.Profile, workloadIPv6Address, gatewayIPv6Address, config.IPv6PrefixBits) &&
 		config.AllowIPv6DAD == (config.Profile == RuleProfileForwardedTAP)
 	if !networkenforcement.EnforcementCorrelationComplete(correlation) ||
 		!validRuleProfile(config.Profile) ||
@@ -159,7 +159,7 @@ func (r ExpectedRuleSet) valid() bool {
 		validRuleProfile(r.profile) &&
 		r.namespace.valid() && validNFTIdentifier(r.tableName, 32) &&
 		validInterfaceName(r.interfaceName) && validMappingInterface(r) && validRawPacketIsolation(r) &&
-		validConfiguredIPv6Link(r.workloadIPv6Address, r.gatewayIPv6Address, r.ipv6PrefixBits) &&
+		validConfiguredIPv6Link(r.profile, r.workloadIPv6Address, r.gatewayIPv6Address, r.ipv6PrefixBits) &&
 		r.allowIPv6DAD == (r.profile == RuleProfileForwardedTAP) && r.proxyAddress.IsValid() &&
 		r.proxyPort != 0 && r.ownerToken != "" && r.ruleDigest != ""
 }
@@ -320,9 +320,15 @@ func minimalNeighborDiscoveryRules(expected ExpectedRuleSet) []neighborDiscovery
 	)
 }
 
-func validConfiguredIPv6Link(workload, gateway netip.Addr, prefixBits uint8) bool {
+func validConfiguredIPv6Link(profile RuleProfile, workload, gateway netip.Addr, prefixBits uint8) bool {
 	if prefixBits == 0 || prefixBits > 128 || !validConfiguredIPv6Address(workload) || !validConfiguredIPv6Address(gateway) || workload == gateway {
 		return false
+	}
+	// Rootless pasta uses a link-local next hop for a globally addressed
+	// workload interface. The exact route/interface inspection belongs to the
+	// topology resolver; the rule model admits that canonical IPv6 link shape.
+	if profile == RuleProfileWorkloadOutput && gateway.IsLinkLocalUnicast() && !workload.IsLinkLocalUnicast() {
+		return true
 	}
 	prefix := netip.PrefixFrom(workload, int(prefixBits)).Masked()
 	return prefix.IsValid() && prefix.Contains(gateway)
