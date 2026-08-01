@@ -403,6 +403,140 @@ func TestL7PodmanTopologyDeleteRevokesBeforeRemovalAndCleansAfterRuntimeQuiesce(
 	}
 }
 
+func TestL7PodmanTopologyDeleteCleanupRetryDoesNotRepeatSuccessfulRuntimeDelete(t *testing.T) {
+	sequence := &topologySequence{}
+	session := newFakeNetworkTopologySession(sequence)
+	session.cleanupErr = errors.New("transient cleanup failure from /tmp/private-topology")
+	runner := &topologyCommandRunner{sequence: sequence}
+	driver := newTopologyDriver(runner, session, sequence)
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "hal-l7"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+
+	if err := driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); !errors.Is(err, rootlesspodman.ErrNetworkTopologyCleanupFailed) {
+		t.Fatalf("first Delete() error = %v, want retained cleanup failure", err)
+	} else if strings.Contains(err.Error(), "private-topology") {
+		t.Fatalf("first Delete() error leaked cleanup detail: %v", err)
+	}
+	if got, want := sequence.snapshot()[len(sequence.snapshot())-3:], []string{"revoke", "podman_delete", "cleanup"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("first Delete() sequence = %#v, want %#v", got, want)
+	}
+
+	session.mu.Lock()
+	session.cleanupErr = nil
+	session.mu.Unlock()
+	retryStart := len(sequence.snapshot())
+	if err := driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); err != nil {
+		t.Fatalf("retry Delete() unexpected error: %v", err)
+	}
+	if got, want := sequence.snapshot()[retryStart:], []string{"revoke", "cleanup"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("retry Delete() sequence = %#v, want retained cleanup without Podman delete %#v", got, want)
+	}
+	if got := countOperation(runner.lifecycleOperations(), rootlesspodman.OperationDelete); got != 1 {
+		t.Fatalf("Podman delete calls = %d, want exactly one after successful runtime removal", got)
+	}
+
+	revokeRequests, cleanupRequests := session.topologyRequests()
+	wantRequest := rootlesspodman.NetworkTopologyTargetRequest{Identity: testNetworkTopologyIdentity(), Target: *started}
+	if len(revokeRequests) != 2 || len(cleanupRequests) != 2 {
+		t.Fatalf("retained topology calls = revoke:%d cleanup:%d, want two exact attempts", len(revokeRequests), len(cleanupRequests))
+	}
+	for index, request := range append(revokeRequests, cleanupRequests...) {
+		if !reflect.DeepEqual(request, wantRequest) {
+			t.Fatalf("topology request %d = %#v, want exact identity and target %#v", index, request, wantRequest)
+		}
+	}
+
+	beforeTerminalProbe := runner.lifecycleOperations()
+	if _, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); !errors.Is(err, rootlesspodman.ErrNetworkTopologySessionMissing) {
+		t.Fatalf("Start() after terminal cleanup error = %v, want removed topology entry", err)
+	}
+	if afterTerminalProbe := runner.lifecycleOperations(); !reflect.DeepEqual(afterTerminalProbe, beforeTerminalProbe) {
+		t.Fatalf("terminal entry probe reached Podman: before=%#v after=%#v", beforeTerminalProbe, afterTerminalProbe)
+	}
+}
+
+func TestL7PodmanTopologyDeleteAfterCompletedStopStillRunsRuntimeDelete(t *testing.T) {
+	session := newFakeNetworkTopologySession(nil)
+	session.cleanupErr = errors.New("transient cleanup failure")
+	runner := &topologyCommandRunner{}
+	driver := newTopologyDriver(runner, session, nil)
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "hal-l7"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	if _, err := driver.Stop(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); !errors.Is(err, rootlesspodman.ErrNetworkTopologyCleanupFailed) {
+		t.Fatalf("Stop() error = %v, want retained cleanup failure", err)
+	}
+
+	session.mu.Lock()
+	session.cleanupErr = nil
+	session.mu.Unlock()
+	if err := driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); err != nil {
+		t.Fatalf("Delete() after completed Stop unexpected error: %v", err)
+	}
+	if got, want := runner.lifecycleOperations(), []string{
+		rootlesspodman.OperationCreate,
+		rootlesspodman.OperationStart,
+		rootlesspodman.OperationStop,
+		rootlesspodman.OperationDelete,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("lifecycle operation transition = %#v, want %#v", got, want)
+	}
+}
+
+func TestL7PodmanTopologyGenuineDeleteFailureRemainsRetryable(t *testing.T) {
+	deleteFailure := errors.New("delete failed token=private-delete from /tmp/private-runtime")
+	session := newFakeNetworkTopologySession(nil)
+	runner := &topologyCommandRunner{errByOperation: map[string]error{
+		rootlesspodman.OperationDelete: deleteFailure,
+	}}
+	driver := newTopologyDriver(runner, session, nil)
+	created, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "hal-l7"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	started, err := driver.Start(context.Background(), sandboxruntime.LifecycleRequest{Target: *created})
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+
+	if err := driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); !errors.Is(err, deleteFailure) || !errors.Is(err, rootlesspodman.ErrNetworkTopologyCleanupFailed) {
+		t.Fatalf("first Delete() error = %v, want genuine delete plus cleanup classification", err)
+	} else {
+		for _, forbidden := range []string{"private-delete", "private-runtime"} {
+			if strings.Contains(err.Error(), forbidden) {
+				t.Fatalf("first Delete() error leaked %q: %v", forbidden, err)
+			}
+		}
+	}
+	_, _, _, cleanupCalls, _, _ := session.callState()
+	if cleanupCalls != 0 {
+		t.Fatalf("cleanup calls after failed runtime delete = %d, want retained ownership", cleanupCalls)
+	}
+
+	delete(runner.errByOperation, rootlesspodman.OperationDelete)
+	if err := driver.Delete(context.Background(), sandboxruntime.LifecycleRequest{Target: *started}); err != nil {
+		t.Fatalf("retry Delete() unexpected error: %v", err)
+	}
+	if got := countOperation(runner.lifecycleOperations(), rootlesspodman.OperationDelete); got != 2 {
+		t.Fatalf("Podman delete calls = %d, want failed delete retried", got)
+	}
+	_, _, _, cleanupCalls, _, _ = session.callState()
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls after successful delete retry = %d, want 1", cleanupCalls)
+	}
+}
+
 func TestL7PodmanTopologyStopFailureLeavesQuarantineSessionForRetry(t *testing.T) {
 	sequence := &topologySequence{}
 	session := newFakeNetworkTopologySession(sequence)
@@ -652,6 +786,8 @@ type fakeNetworkTopologySession struct {
 	cleanupCalls          int
 	lastRevokeContextErr  error
 	lastCleanupContextErr error
+	revokeRequests        []rootlesspodman.NetworkTopologyTargetRequest
+	cleanupRequests       []rootlesspodman.NetworkTopologyTargetRequest
 }
 
 func newFakeNetworkTopologySession(sequence *topologySequence) *fakeNetworkTopologySession {
@@ -699,10 +835,11 @@ func (s *fakeNetworkTopologySession) ProxyEnvironment(_ rootlesspodman.NetworkTo
 	return cloneStringMapForTopologyTest(s.proxyEnv)
 }
 
-func (s *fakeNetworkTopologySession) Revoke(ctx context.Context, _ rootlesspodman.NetworkTopologyTargetRequest) error {
+func (s *fakeNetworkTopologySession) Revoke(ctx context.Context, req rootlesspodman.NetworkTopologyTargetRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.revokeCalls++
+	s.revokeRequests = append(s.revokeRequests, req)
 	s.lastRevokeContextErr = ctx.Err()
 	if s.sequence != nil {
 		s.sequence.add("revoke")
@@ -710,15 +847,22 @@ func (s *fakeNetworkTopologySession) Revoke(ctx context.Context, _ rootlesspodma
 	return s.revokeErr
 }
 
-func (s *fakeNetworkTopologySession) Cleanup(ctx context.Context, _ rootlesspodman.NetworkTopologyTargetRequest) error {
+func (s *fakeNetworkTopologySession) Cleanup(ctx context.Context, req rootlesspodman.NetworkTopologyTargetRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupCalls++
+	s.cleanupRequests = append(s.cleanupRequests, req)
 	s.lastCleanupContextErr = ctx.Err()
 	if s.sequence != nil {
 		s.sequence.add("cleanup")
 	}
 	return s.cleanupErr
+}
+
+func (s *fakeNetworkTopologySession) topologyRequests() (revoke, cleanup []rootlesspodman.NetworkTopologyTargetRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]rootlesspodman.NetworkTopologyTargetRequest(nil), s.revokeRequests...), append([]rootlesspodman.NetworkTopologyTargetRequest(nil), s.cleanupRequests...)
 }
 
 func (s *fakeNetworkTopologySession) Loss() <-chan struct{} { return s.loss }
@@ -768,6 +912,16 @@ func (r *topologyCommandRunner) lifecycleOperations() []string {
 		operations = append(operations, req.Operation)
 	}
 	return operations
+}
+
+func countOperation(operations []string, want string) int {
+	count := 0
+	for _, operation := range operations {
+		if operation == want {
+			count++
+		}
+	}
+	return count
 }
 
 type topologySequence struct {
