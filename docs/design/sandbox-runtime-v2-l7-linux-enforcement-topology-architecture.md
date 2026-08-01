@@ -337,9 +337,13 @@ Before production implementation, failing tests must cover:
 Selected prepared-Linux tests use local fixtures and locally available images
 and assets only. Once explicitly selected, a missing required prerequisite is
 a failure/blocker, not a skip. They must prove allowed HTTP and CONNECT plus
-denial of proxy policy violations, cleared-proxy direct egress, TCP/UDP DNS,
-IPv4/IPv6 direct traffic, private/ULA, loopback, link-local, metadata, NAT64,
-UDP, and ICMP. They also prove proof revocation, restart, partial failure, and
+denial of proxy policy violations and cleared-proxy direct egress. Exact rule
+inspection proves the IPv4/IPv6, TCP/UDP DNS, private/ULA, loopback,
+link-local, metadata, NAT64, UDP, and ICMP default-drop shape. Controlled,
+locally reachable TCP and UDP echo fixtures behind the selected pasta host
+mapping prove that direct workload packets receive no delivery or response;
+unreachable documentation addresses are not accepted as behavioral proof.
+The tests also prove proof revocation, restart, partial failure, and
 absence of owned containers, helpers, Firecracker processes, listeners,
 namespaces, TAPs, routes, nft tables, sockets, mounts, locks, and leases.
 

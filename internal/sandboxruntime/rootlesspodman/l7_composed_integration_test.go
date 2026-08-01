@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,8 +53,16 @@ func TestL7PreparedLinuxRootlessPodmanNetworkTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer echoListener.Close()
 	echoDone := make(chan struct{})
+	t.Cleanup(func() {
+		_ = echoListener.Close()
+		select {
+		case <-echoDone:
+		case <-time.After(time.Second):
+			t.Error("controlled TCP fixture did not stop")
+		}
+	})
+	var tcpFixtureDeliveries atomic.Int64
 	go func() {
 		defer close(echoDone)
 		for {
@@ -61,9 +70,51 @@ func TestL7PreparedLinuxRootlessPodmanNetworkTopology(t *testing.T) {
 			if acceptErr != nil {
 				return
 			}
+			tcpFixtureDeliveries.Add(1)
 			go func(c net.Conn) { defer c.Close(); _, _ = io.Copy(c, c) }(connection)
 		}
 	}()
+	udpFixture, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	udpDone := make(chan struct{})
+	t.Cleanup(func() {
+		_ = udpFixture.Close()
+		select {
+		case <-udpDone:
+		case <-time.After(time.Second):
+			t.Error("controlled UDP fixture did not stop")
+		}
+	})
+	var udpFixtureDeliveries atomic.Int64
+	go func() {
+		defer close(udpDone)
+		buffer := make([]byte, 32)
+		for {
+			count, address, readErr := udpFixture.ReadFrom(buffer)
+			if readErr != nil {
+				return
+			}
+			udpFixtureDeliveries.Add(1)
+			_, _ = udpFixture.WriteTo(buffer[:count], address)
+		}
+	}()
+	udpControl, err := net.DialTimeout("udp", udpFixture.LocalAddr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = udpControl.SetDeadline(time.Now().Add(time.Second))
+	if _, err = udpControl.Write([]byte("fixture")); err != nil {
+		_ = udpControl.Close()
+		t.Fatal(err)
+	}
+	udpReply := make([]byte, len("fixture"))
+	if _, err = io.ReadFull(udpControl, udpReply); err != nil || string(udpReply) != "fixture" {
+		_ = udpControl.Close()
+		t.Fatal("controlled UDP fixture is not locally reachable")
+	}
+	_ = udpControl.Close()
 
 	request := networkenforcement.PlanRequest{ID: "l7-plan-a", Source: networkenforcement.PlanSourceRuntime, Operation: "l7_topology",
 		PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{ID: "l7-policy-a", Version: "v1", Preset: networkenforcement.PolicyPresetAllowListed, RuleSetID: "l7-rules-a"},
@@ -107,8 +158,9 @@ func TestL7PreparedLinuxRootlessPodmanNetworkTopology(t *testing.T) {
 	}
 	rules := linuxrules.NewAdapter(executor, linuxrules.AdapterOptions{})
 	identity := rootlesspodman.NetworkTopologyIdentity{SandboxID: "l7-sandbox-a", ExecutionID: "l7-execution-a", WorkerID: "l7-worker-a", RuntimeDriver: rootlesspodman.DriverID, RuntimeGenerationID: "l7-runtime-a", PlanID: plan.ID, PolicySnapshotID: plan.PolicySnapshot.ID, ProxySessionID: plan.Proxy.ProxySessionID, ProxyGenerationID: "l7-proxy-generation-a", TopologyGenerationID: "l7-topology-a", RuleGenerationID: "l7-rule-a"}
+	guestProxyAddress := "169.254.77.2"
 	factory, err := l7network.NewFactory(l7network.FactoryOptions{Identity: identity, Plan: plan, Proxy: proxy, NamespaceResolver: resolver, Rules: rules,
-		RawPacketVerifierFactory: l7network.NewProductionRawPacketVerifierFactory(rootlesspodman.DefaultCommandRunner{}, podmanPath), GuestProxyAddress: "169.254.77.2", TableName: "hal_l7_live_a"})
+		RawPacketVerifierFactory: l7network.NewProductionRawPacketVerifierFactory(rootlesspodman.DefaultCommandRunner{}, podmanPath), GuestProxyAddress: guestProxyAddress, TableName: "hal_l7_live_a"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,12 +204,23 @@ func TestL7PreparedLinuxRootlessPodmanNetworkTopology(t *testing.T) {
 	}
 	runProbe("allowed HTTP", "http", "http://allowed.test/ok")
 	runProbe("allowed CONNECT", "connect", "allowed.test:443")
-	for _, probe := range []struct{ name, mode, target string }{
-		{"direct IPv4", "tcp", "192.0.2.1:80"}, {"direct IPv6", "tcp", "[2001:db8::1]:80"}, {"TCP DNS", "tcp", "192.0.2.53:53"}, {"UDP DNS", "udp", "192.0.2.53:53"},
-		{"private", "tcp", "10.0.0.1:80"}, {"ULA", "tcp", "[fd00::1]:80"}, {"loopback", "tcp", "127.0.0.1:80"}, {"link-local", "tcp", "169.254.1.1:80"},
-		{"metadata", "tcp", "169.254.169.254:80"}, {"NAT64", "tcp", "[64:ff9b::c000:201]:80"}, {"UDP", "udp", "192.0.2.1:9"},
-	} {
-		runProbe(probe.name, probe.mode, probe.target)
+	if tcpFixtureDeliveries.Load() == 0 || udpFixtureDeliveries.Load() == 0 {
+		t.Fatal("controlled local denial fixtures were not reachable before workload probes")
+	}
+	tcpBaseline := tcpFixtureDeliveries.Load()
+	udpBaseline := udpFixtureDeliveries.Load()
+	_, tcpPort, err := net.SplitHostPort(echoListener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, udpPort, err := net.SplitHostPort(udpFixture.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runProbe("controlled mapped direct TCP denial", "tcp", net.JoinHostPort(guestProxyAddress, tcpPort))
+	runProbe("controlled mapped direct UDP denial", "udp", net.JoinHostPort(guestProxyAddress, udpPort))
+	if tcpFixtureDeliveries.Load() != tcpBaseline || udpFixtureDeliveries.Load() != udpBaseline {
+		t.Fatal("default-drop rules allowed delivery to a controlled mapped direct fixture")
 	}
 	runProbe("ICMP", "icmp")
 	runProbe("AF_PACKET raw socket permission", "packet")
