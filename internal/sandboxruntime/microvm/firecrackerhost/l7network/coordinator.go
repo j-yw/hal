@@ -556,7 +556,6 @@ func (s *Session) verifyVMTermination(ctx context.Context, binding TerminatedVMB
 func (s *Session) rollback() error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
 	defer cancel()
-	var result error
 	if s.rulesPresent && !s.rulesRemoved {
 		if !s.quarantined {
 			if err := s.coordinator.options.Rules.Quarantine(ctx, s.expectedRules); err != nil {
@@ -576,7 +575,9 @@ func (s *Session) rollback() error {
 		s.tapRemoved = true
 	}
 	if !interfaceIsNil(s.namespace) {
-		result = errors.Join(result, s.namespace.Close())
+		if err := s.namespace.Close(); err != nil {
+			return ErrCleanupIncomplete
+		}
 		s.namespace = nil
 	}
 	if !interfaceIsNil(s.topology) && !s.topologyRemoved {
@@ -592,7 +593,7 @@ func (s *Session) rollback() error {
 		}
 		s.proxyStopped = true
 	}
-	if result != nil || s.journal.Remove() != nil || s.journal.Release() != nil {
+	if s.journal.Remove() != nil || s.journal.Release() != nil {
 		return ErrCleanupIncomplete
 	}
 	return nil
