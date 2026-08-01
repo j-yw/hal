@@ -180,11 +180,13 @@ func TestL7RuntimeControllerProxyLossAndStopRaceCleansExactRuntimeOnce(t *testin
 type l7RuntimeFakeIntentProvider struct {
 	mu       sync.Mutex
 	requests map[string]l7network.PrepareRequest
+	calls    int
 }
 
 func (provider *l7RuntimeFakeIntentProvider) ResolveL7RuntimeIntent(_ context.Context, runtimeID string) (l7network.PrepareRequest, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
+	provider.calls++
 	request, ok := provider.requests[runtimeID]
 	if !ok {
 		return l7network.PrepareRequest{}, errors.New("missing runtime intent")
@@ -195,6 +197,7 @@ func (provider *l7RuntimeFakeIntentProvider) ResolveL7RuntimeIntent(_ context.Co
 type l7RuntimeFakeTopologyFactory struct {
 	mu       sync.Mutex
 	sessions map[string]*l7RuntimeFakeTopologySession
+	errors   map[string]error
 }
 
 func (factory *l7RuntimeFakeTopologyFactory) PrepareL7RuntimeTopology(_ context.Context, request l7network.PrepareRequest) (l7RuntimeTopologySession, error) {
@@ -205,7 +208,7 @@ func (factory *l7RuntimeFakeTopologyFactory) PrepareL7RuntimeTopology(_ context.
 		return nil, errors.New("missing exact runtime topology")
 	}
 	session.sequence.add(request.Identity.RuntimeGenerationID, "prepare")
-	return session, nil
+	return session, factory.errors[request.Identity.RuntimeGenerationID]
 }
 
 func (factory *l7RuntimeFakeTopologyFactory) session(runtimeID string) *l7RuntimeFakeTopologySession {
@@ -217,6 +220,7 @@ func (factory *l7RuntimeFakeTopologyFactory) session(runtimeID string) *l7Runtim
 type l7RuntimeFakeAssetProvider struct {
 	mu     sync.Mutex
 	assets map[string]l7RuntimeAssets
+	errors map[string]error
 }
 
 func (provider *l7RuntimeFakeAssetProvider) AcquireL7RuntimeAssets(_ context.Context, identity l7network.Identity) (l7RuntimeAssets, error) {
@@ -226,7 +230,7 @@ func (provider *l7RuntimeFakeAssetProvider) AcquireL7RuntimeAssets(_ context.Con
 	if !ok {
 		return l7RuntimeAssets{}, errors.New("missing runtime assets")
 	}
-	return value, nil
+	return value, provider.errors[identity.RuntimeGenerationID]
 }
 
 func (provider *l7RuntimeFakeAssetProvider) asset(runtimeID string) l7RuntimeAssets {
@@ -236,16 +240,27 @@ func (provider *l7RuntimeFakeAssetProvider) asset(runtimeID string) l7RuntimeAss
 }
 
 type l7RuntimeFakeTopologySession struct {
-	mu              sync.Mutex
-	identity        l7network.Identity
-	launch          l7RuntimeLaunch
-	loss            chan l7RuntimeProxyLoss
-	cleaned         chan struct{}
-	sequence        *l7RuntimeCallSequence
-	inspectCalls    int
-	quarantineCalls int
-	cleanupCalls    int
-	cleanedBinding  l7network.TerminatedVMBinding
+	mu                 sync.Mutex
+	identity           l7network.Identity
+	launch             l7RuntimeLaunch
+	loss               chan l7RuntimeProxyLoss
+	cleaned            chan struct{}
+	sequence           *l7RuntimeCallSequence
+	launchErr          error
+	inspectErr         error
+	abortErrors        []error
+	quarantineErrors   []error
+	cleanupErrors      []error
+	inspectMetadata    *l7network.Metadata
+	abortCalls         int
+	inspectCalls       int
+	freshInspectCalls  int
+	quarantineCalls    int
+	cleanupCalls       int
+	cleanedBinding     l7network.TerminatedVMBinding
+	cleanupDeadline    bool
+	quarantineDeadline bool
+	abortDeadline      bool
 }
 
 func newL7RuntimeFakeTopologySession(identity l7network.Identity, sequence *l7RuntimeCallSequence) *l7RuntimeFakeTopologySession {
@@ -267,7 +282,7 @@ func (session *l7RuntimeFakeTopologySession) L7RuntimeLaunch(identity l7network.
 	if session == nil || identity != session.identity {
 		return l7RuntimeLaunch{}, l7network.ErrIdentityMismatch
 	}
-	return session.launch, nil
+	return session.launch, session.launchErr
 }
 
 func (session *l7RuntimeFakeTopologySession) InspectAfterGuestReady(_ context.Context, identity l7network.Identity, binding l7network.RunningGuestBinding) (l7network.Metadata, error) {
@@ -278,30 +293,70 @@ func (session *l7RuntimeFakeTopologySession) InspectAfterGuestReady(_ context.Co
 	}
 	session.inspectCalls++
 	session.sequence.add(identity.RuntimeGenerationID, "inspect")
+	if session.inspectErr != nil {
+		return l7network.Metadata{}, session.inspectErr
+	}
+	if session.inspectMetadata != nil {
+		return *session.inspectMetadata, nil
+	}
 	return l7network.Metadata{Identity: identity, Status: l7network.StatusInspected, RawPacketIsolationVerified: true}, nil
 }
 
-func (session *l7RuntimeFakeTopologySession) Quarantine(_ context.Context, identity l7network.Identity) error {
+func (session *l7RuntimeFakeTopologySession) Inspect(_ context.Context, identity l7network.Identity) (l7network.Metadata, error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if identity != session.identity {
+		return l7network.Metadata{}, l7network.ErrIdentityMismatch
+	}
+	session.freshInspectCalls++
+	if session.inspectErr != nil {
+		return l7network.Metadata{}, session.inspectErr
+	}
+	if session.inspectMetadata != nil {
+		return *session.inspectMetadata, nil
+	}
+	return l7network.Metadata{Identity: identity, Status: l7network.StatusInspected, RawPacketIsolationVerified: true}, nil
+}
+
+func (session *l7RuntimeFakeTopologySession) AbortBeforeVM(ctx context.Context, identity l7network.Identity) error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if identity != session.identity {
 		return l7network.ErrIdentityMismatch
 	}
-	if session.quarantineCalls == 0 {
-		session.quarantineCalls++
-		session.sequence.add(identity.RuntimeGenerationID, "quarantine")
-	}
-	return nil
+	session.abortCalls++
+	_, session.abortDeadline = ctx.Deadline()
+	session.sequence.add(identity.RuntimeGenerationID, "abort")
+	return popL7RuntimeFakeError(&session.abortErrors)
 }
 
-func (session *l7RuntimeFakeTopologySession) CleanupAfterVMQuiesced(_ context.Context, identity l7network.Identity, binding l7network.TerminatedVMBinding) error {
+func (session *l7RuntimeFakeTopologySession) Quarantine(ctx context.Context, identity l7network.Identity) error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if identity != session.identity {
+		return l7network.ErrIdentityMismatch
+	}
+	session.quarantineCalls++
+	_, session.quarantineDeadline = ctx.Deadline()
+	err := popL7RuntimeFakeError(&session.quarantineErrors)
+	if err == nil && session.quarantineCalls == 1 {
+		session.sequence.add(identity.RuntimeGenerationID, "quarantine")
+	}
+	return err
+}
+
+func (session *l7RuntimeFakeTopologySession) CleanupAfterVMQuiesced(ctx context.Context, identity l7network.Identity, binding l7network.TerminatedVMBinding) error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if identity != session.identity || binding == nil || binding.VMCorrelation() != l7RuntimeControllerCorrelation(identity) {
 		return l7network.ErrIdentityMismatch
 	}
 	session.cleanupCalls++
+	_, session.cleanupDeadline = ctx.Deadline()
 	session.cleanedBinding = binding
+	if err := popL7RuntimeFakeError(&session.cleanupErrors); err != nil {
+		return err
+	}
 	session.sequence.add(identity.RuntimeGenerationID, "cleanup")
 	if session.cleanupCalls == 1 {
 		close(session.cleaned)
@@ -325,9 +380,11 @@ func (*l7RuntimeFakeNamespace) DuplicateForNamespaceProcess() (*os.File, *os.Fil
 }
 
 type l7RuntimeFakeFirecrackerFactory struct {
-	mu       sync.Mutex
-	sequence *l7RuntimeCallSequence
-	runtimes map[string]*l7RuntimeFakeFirecrackerRuntime
+	mu        sync.Mutex
+	sequence  *l7RuntimeCallSequence
+	runtimes  map[string]*l7RuntimeFakeFirecrackerRuntime
+	errors    map[string]error
+	configure func(*l7RuntimeFakeFirecrackerRuntime)
 }
 
 func (factory *l7RuntimeFakeFirecrackerFactory) NewL7FirecrackerRuntime(_ context.Context, request l7FirecrackerRuntimeRequest) (l7FirecrackerRuntime, error) {
@@ -338,9 +395,12 @@ func (factory *l7RuntimeFakeFirecrackerFactory) NewL7FirecrackerRuntime(_ contex
 	}
 	runtime := &l7RuntimeFakeFirecrackerRuntime{request: request, sequence: factory.sequence,
 		terminatedBinding: &l7RuntimeFakeTerminatedBinding{correlation: l7RuntimeControllerCorrelation(request.Identity), proofID: "terminated-" + request.Identity.RuntimeGenerationID}}
+	if factory.configure != nil {
+		factory.configure(runtime)
+	}
 	factory.runtimes[request.Identity.RuntimeGenerationID] = runtime
 	factory.sequence.add(request.Identity.RuntimeGenerationID, "build")
-	return runtime, nil
+	return runtime, factory.errors[request.Identity.RuntimeGenerationID]
 }
 
 func (factory *l7RuntimeFakeFirecrackerFactory) runtime(runtimeID string) *l7RuntimeFakeFirecrackerRuntime {
@@ -359,29 +419,61 @@ type l7RuntimeFakeFirecrackerRuntime struct {
 	terminationCalls  int
 	lastStopTarget    sandboxruntime.Target
 	terminatedBinding *l7RuntimeFakeTerminatedBinding
+	startErr          error
+	startTarget       *sandboxruntime.Target
+	claimOnStart      bool
+	skipClaim         bool
+	startNil          bool
+	stopErrors        []error
+	terminationErrors []error
+	inspectErr        error
+	inspectTarget     *sandboxruntime.Target
+	execEntered       chan struct{}
+	execRelease       chan struct{}
+	copyInEntered     chan struct{}
+	copyInRelease     chan struct{}
+	copyOutEntered    chan struct{}
+	copyOutRelease    chan struct{}
+	stopDeadline      bool
 }
 
 func (runtime *l7RuntimeFakeFirecrackerRuntime) Start(ctx context.Context, request microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	overlay, err := runtime.request.LiveConfigProvider.ProvideL7LiveBootConfig(ctx, firecracker.L7LiveBootConfigRequest{RuntimeGenerationID: runtime.request.Identity.RuntimeGenerationID})
-	if err != nil {
-		return nil, err
+	if !runtime.skipClaim && (runtime.claimOnStart || runtime.startErr == nil) {
+		overlay, err := runtime.request.LiveConfigProvider.ProvideL7LiveBootConfig(ctx, firecracker.L7LiveBootConfigRequest{RuntimeGenerationID: runtime.request.Identity.RuntimeGenerationID})
+		if err != nil {
+			return nil, err
+		}
+		runtime.overlay = overlay
 	}
-	runtime.overlay = overlay
 	runtime.startCalls++
 	runtime.sequence.add(runtime.request.Identity.RuntimeGenerationID, "start")
+	if runtime.startTarget != nil {
+		result := cloneL7RuntimeTarget(*runtime.startTarget)
+		return &result, runtime.startErr
+	}
+	if runtime.startErr != nil {
+		return nil, runtime.startErr
+	}
+	if runtime.startNil {
+		return nil, nil
+	}
 	target := request.Target
 	target.Status = string(l7network.StatusInspected)
 	return &target, nil
 }
 
-func (runtime *l7RuntimeFakeFirecrackerRuntime) Stop(_ context.Context, request microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
+func (runtime *l7RuntimeFakeFirecrackerRuntime) Stop(ctx context.Context, request microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	runtime.stopCalls++
+	_, runtime.stopDeadline = ctx.Deadline()
 	runtime.lastStopTarget = request.Target
 	runtime.sequence.add(runtime.request.Identity.RuntimeGenerationID, "stop")
+	if err := popL7RuntimeFakeError(&runtime.stopErrors); err != nil {
+		return nil, err
+	}
 	target := request.Target
 	target.Status = string(l7network.StatusStopped)
 	return &target, nil
@@ -392,20 +484,39 @@ func (runtime *l7RuntimeFakeFirecrackerRuntime) Delete(context.Context, microvm.
 }
 
 func (runtime *l7RuntimeFakeFirecrackerRuntime) Inspect(_ context.Context, request microvm.ControllerInspectRequest) (*sandboxruntime.Target, error) {
+	if runtime.inspectErr != nil {
+		return nil, runtime.inspectErr
+	}
+	if runtime.inspectTarget != nil {
+		result := cloneL7RuntimeTarget(*runtime.inspectTarget)
+		return &result, nil
+	}
 	target := request.Target
 	return &target, nil
 }
 
-func (*l7RuntimeFakeFirecrackerRuntime) Exec(context.Context, microvm.ControllerExecRequest) (*sandboxruntime.ExecResult, error) {
-	return nil, errors.New("unused")
+func (runtime *l7RuntimeFakeFirecrackerRuntime) Exec(context.Context, microvm.ControllerExecRequest) (*sandboxruntime.ExecResult, error) {
+	if runtime.execEntered != nil {
+		close(runtime.execEntered)
+		<-runtime.execRelease
+	}
+	return &sandboxruntime.ExecResult{}, nil
 }
 
-func (*l7RuntimeFakeFirecrackerRuntime) CopyIn(context.Context, microvm.ControllerCopyRequest) error {
-	return errors.New("unused")
+func (runtime *l7RuntimeFakeFirecrackerRuntime) CopyIn(context.Context, microvm.ControllerCopyRequest) error {
+	if runtime.copyInEntered != nil {
+		close(runtime.copyInEntered)
+		<-runtime.copyInRelease
+	}
+	return nil
 }
 
-func (*l7RuntimeFakeFirecrackerRuntime) CopyOut(context.Context, microvm.ControllerCopyRequest) error {
-	return errors.New("unused")
+func (runtime *l7RuntimeFakeFirecrackerRuntime) CopyOut(context.Context, microvm.ControllerCopyRequest) error {
+	if runtime.copyOutEntered != nil {
+		close(runtime.copyOutEntered)
+		<-runtime.copyOutRelease
+	}
+	return nil
 }
 
 func (runtime *l7RuntimeFakeFirecrackerRuntime) RunningGuestBinding(identity l7network.Identity) (l7network.RunningGuestBinding, error) {
@@ -423,7 +534,19 @@ func (runtime *l7RuntimeFakeFirecrackerRuntime) TerminatedVMBinding(identity l7n
 	}
 	runtime.terminationCalls++
 	runtime.sequence.add(identity.RuntimeGenerationID, "termination")
+	if err := popL7RuntimeFakeError(&runtime.terminationErrors); err != nil {
+		return nil, err
+	}
 	return runtime.terminatedBinding, nil
+}
+
+func popL7RuntimeFakeError(queue *[]error) error {
+	if len(*queue) == 0 {
+		return nil
+	}
+	err := (*queue)[0]
+	*queue = (*queue)[1:]
+	return err
 }
 
 type l7RuntimeFakeRunningGuestBinding struct {
