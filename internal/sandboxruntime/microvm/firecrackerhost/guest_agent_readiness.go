@@ -118,7 +118,12 @@ func (probe *GuestAgentReadinessProbe) ProbeGuestReadiness(ctx context.Context, 
 			labels = append(labels, "guest_topology_verified")
 		}
 	}
-	return firecracker.NewGuestReadinessResult(state, probe.transport, labels), nil
+	result := firecracker.NewGuestReadinessResult(state, probe.transport, labels)
+	if response.IsolationProof != nil && response.IsolationProof.Status == guestagent.IsolationProofStatusVerified {
+		result.IsolationProofGeneration = response.IsolationProof.Generation
+		result.IsolationRuntimeGeneration = response.IsolationProof.RuntimeGeneration
+	}
+	return firecracker.SanitizeGuestReadinessResult(result), nil
 }
 
 func (probe *GuestAgentReadinessProbe) clientFor() (GuestAgentReadinessClient, error) {
