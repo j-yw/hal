@@ -203,6 +203,41 @@ func TestFirecrackerHostTopologyTwoStageCleanupIsExactRetryableAndPortLast(t *te
 	}
 }
 
+func TestFirecrackerHostTopologyFailedPrepareCleanupRetriesWithoutVMProof(t *testing.T) {
+	sequence := &callSequence{}
+	proxy := newFakeProxy(sequence)
+	proxy.endpointErr = errors.New("private endpoint failure")
+	proxy.stopFailures = 1
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence),
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+	})
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if session == nil || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Prepare() = session %T, error %v; want retained cleanup-incomplete session", session, err)
+	}
+	if err := session.RetryFailedPrepareCleanup(context.Background(), testIdentity()); err != nil {
+		t.Fatalf("RetryFailedPrepareCleanup() = %v", err)
+	}
+	secondIdentity := alternateIdentity()
+	proxy.endpointErr = nil
+	if _, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: secondIdentity, Plan: planForIdentity(secondIdentity)}); err != nil {
+		t.Fatalf("Prepare(next generation) = %v, want released coordinator", err)
+	}
+}
+
+func TestFirecrackerHostTopologyCurrentSessionClearIsCompareAndSwap(t *testing.T) {
+	coordinator := &Coordinator{}
+	oldSession := &Session{coordinator: coordinator}
+	newSession := &Session{coordinator: coordinator}
+	coordinator.current = newSession
+	coordinator.clearCurrentSession(oldSession)
+	if coordinator.current != newSession {
+		t.Fatal("stale cleanup cleared a newer coordinator session")
+	}
+}
+
 func TestFirecrackerHostTopologyCleanupRejectsBareQuiescenceAssertion(t *testing.T) {
 	sequence := &callSequence{}
 	coordinator := mustCoordinator(t, Options{
@@ -408,6 +443,8 @@ type fakeProxy struct {
 	activeFailAt int
 	activeCalls  int
 	activeHook   func()
+	stopFailures int
+	stopCalls    int
 }
 
 func newFakeProxy(sequence *callSequence) *fakeProxy {
@@ -442,6 +479,10 @@ func (p *fakeProxy) Active(context.Context, networkenforcement.Plan, ProxyGenera
 }
 func (p *fakeProxy) Stop(context.Context, networkenforcement.Plan, ProxyGeneration) error {
 	p.sequence.add("proxy_stop")
+	p.stopCalls++
+	if p.stopCalls <= p.stopFailures {
+		return errors.New("private proxy cleanup failure")
+	}
 	return nil
 }
 
