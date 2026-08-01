@@ -321,7 +321,10 @@ func (s *Session) Cleanup(_ context.Context, request rootlesspodman.NetworkTopol
 			s.rulesCleaned = true
 		}
 	}
-	if s.resolution.Close != nil {
+	// A prepared rule set is namespace-descriptor bound. Preserve those live
+	// handles across transient rule cleanup failures so an exact retry can
+	// inspect and remove the same owned table.
+	if s.resolution.Close != nil && (!s.prepared || s.rulesCleaned) {
 		if err := s.resolution.Close.Close(); err != nil {
 			result = errors.Join(result, ErrCleanupIncomplete)
 		} else {
