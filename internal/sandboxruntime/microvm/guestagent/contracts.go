@@ -31,6 +31,12 @@ const (
 )
 
 const (
+	IsolationProofStatusVerified    IsolationProofStatus = "verified"
+	IsolationProofStatusUnavailable IsolationProofStatus = "unavailable"
+	IsolationProofStatusFailed      IsolationProofStatus = "failed"
+)
+
+const (
 	ErrorCodeUnsupportedProtocolVersion ErrorCode = "unsupported_protocol_version"
 	ErrorCodeUnknownOperation           ErrorCode = "unknown_operation"
 	ErrorCodeOperationMismatch          ErrorCode = "operation_mismatch"
@@ -61,15 +67,16 @@ const (
 )
 
 const (
-	MaxCommandArgs              = 128
-	MaxCommandArgBytes          = 8192
-	MaxEnvironmentEntries       = 256
-	MaxGuestPathBytes           = 4096
-	MaxStreamMetadataBytes      = 4 * 1024 * 1024
-	MaxCopyPayloadMetadataBytes = 64 * 1024 * 1024
-	MaxTimeoutMillis            = 24 * 60 * 60 * 1000
-	MinDeadlineUnixMillis       = 946684800000
-	MaxDeadlineUnixMillis       = 4102444800000
+	MaxCommandArgs                   = 128
+	MaxCommandArgBytes               = 8192
+	MaxEnvironmentEntries            = 256
+	MaxGuestPathBytes                = 4096
+	MaxStreamMetadataBytes           = 4 * 1024 * 1024
+	MaxCopyPayloadMetadataBytes      = 64 * 1024 * 1024
+	MaxTimeoutMillis                 = 24 * 60 * 60 * 1000
+	MinDeadlineUnixMillis            = 946684800000
+	MaxDeadlineUnixMillis            = 4102444800000
+	MaxIsolationProofGenerationBytes = 128
 )
 
 // ProtocolVersion names the guest-agent wire contract version.
@@ -87,6 +94,9 @@ type PayloadEncoding string
 
 // ReadinessStatus is a redaction-safe readiness state label.
 type ReadinessStatus string
+
+// IsolationProofStatus is a redaction-safe live proof state.
+type IsolationProofStatus string
 
 // ErrorCode identifies a stable protocol validation or dispatch failure.
 type ErrorCode string
@@ -129,9 +139,41 @@ type EnvironmentEntry struct {
 // ReadinessRequest asks the guest agent whether it is ready for protocol
 // operations.
 type ReadinessRequest struct {
-	ProtocolVersion ProtocolVersion `json:"protocolVersion"`
-	Operation       Operation       `json:"operation"`
-	Timing          *TimingMetadata `json:"timing,omitempty"`
+	ProtocolVersion ProtocolVersion        `json:"protocolVersion"`
+	Operation       Operation              `json:"operation"`
+	Timing          *TimingMetadata        `json:"timing,omitempty"`
+	IsolationProof  *IsolationProofRequest `json:"isolationProof,omitempty"`
+}
+
+// IsolationProofRequest binds an optional live process proof to this
+// readiness request and, when supplied, to one sanitized runtime generation.
+type IsolationProofRequest struct {
+	Generation          string `json:"generation"`
+	RuntimeGeneration   string `json:"runtimeGeneration,omitempty"`
+	RequireNetworkProof bool   `json:"requireNetworkProof,omitempty"`
+}
+
+// NetworkIsolationProof reports only fixed, sanitized topology outcomes.
+// It intentionally carries no interfaces, addresses, routes, or endpoints.
+type NetworkIsolationProof struct {
+	Status          IsolationProofStatus `json:"status"`
+	SingleInterface bool                 `json:"singleInterface,omitempty"`
+	StaticRoutes    bool                 `json:"staticRoutes,omitempty"`
+	ProxyReachable  bool                 `json:"proxyReachable,omitempty"`
+}
+
+// IsolationProof is the sanitized result of inspecting the exact running
+// guest-agent process and, when available, its injected network verifier.
+type IsolationProof struct {
+	Generation                 string                 `json:"generation"`
+	RuntimeGeneration          string                 `json:"runtimeGeneration,omitempty"`
+	Status                     IsolationProofStatus   `json:"status"`
+	RestrictedIdentity         bool                   `json:"restrictedIdentity,omitempty"`
+	CapabilitiesCleared        bool                   `json:"capabilitiesCleared,omitempty"`
+	NoNewPrivileges            bool                   `json:"noNewPrivileges,omitempty"`
+	SupplementaryGroupsCleared bool                   `json:"supplementaryGroupsCleared,omitempty"`
+	RawPacketSocketDenied      bool                   `json:"rawPacketSocketDenied,omitempty"`
+	Network                    *NetworkIsolationProof `json:"network,omitempty"`
 }
 
 // ReadinessResponse is the guest-agent readiness result.
@@ -141,6 +183,7 @@ type ReadinessResponse struct {
 	Ready           bool            `json:"ready"`
 	Status          ReadinessStatus `json:"status,omitempty"`
 	Error           *ProtocolError  `json:"error,omitempty"`
+	IsolationProof  *IsolationProof `json:"isolationProof,omitempty"`
 }
 
 // ErrorResponse is the generic v1 error envelope used when no successful

@@ -76,6 +76,9 @@ func (server *Server) handleReadiness(ctx context.Context, encoded []byte) Respo
 	}
 	callCtx, cancel := server.contextWithTiming(ctx, request.Timing)
 	defer cancel()
+	if request.IsolationProof != nil {
+		server.setIsolationProven(false)
+	}
 	backendCtx, release, err := server.beginBackendCall(callCtx, false)
 	if err != nil {
 		if errors.Is(err, errServerNotReady) {
@@ -92,6 +95,9 @@ func (server *Server) handleReadiness(ctx context.Context, encoded []byte) Respo
 	}
 	if err := backendCtx.Err(); err != nil {
 		return server.contextErrorResponse(err, guestagent.OperationReadiness)
+	}
+	if request.IsolationProof != nil {
+		return server.isolationReadinessResponse(backendCtx, *request.IsolationProof)
 	}
 	return server.readinessResponse(true)
 }
@@ -393,6 +399,75 @@ func (server *Server) readinessResponse(ready bool) Response {
 	}, guestagent.OperationReadiness)
 }
 
+func (server *Server) isolationReadinessResponse(ctx context.Context, request guestagent.IsolationProofRequest) Response {
+	proof := &guestagent.IsolationProof{
+		Generation:        request.Generation,
+		RuntimeGeneration: request.RuntimeGeneration,
+		Status:            guestagent.IsolationProofStatusFailed,
+		Network: &guestagent.NetworkIsolationProof{
+			Status: guestagent.IsolationProofStatusUnavailable,
+		},
+	}
+	if server.isolationVerifier == nil {
+		return server.readinessResponseWithProof(false, proof)
+	}
+	result, err := server.isolationVerifier.VerifyIsolation(ctx, request)
+	if err != nil || ctx.Err() != nil {
+		return server.readinessResponseWithProof(false, proof)
+	}
+	processVerified := result.RestrictedIdentity && result.CapabilitiesCleared && result.NoNewPrivileges &&
+		result.SupplementaryGroupsCleared && result.RawPacketSocketDenied
+	if !processVerified {
+		return server.readinessResponseWithProof(false, proof)
+	}
+	proof.Status = guestagent.IsolationProofStatusVerified
+	proof.RestrictedIdentity = true
+	proof.CapabilitiesCleared = true
+	proof.NoNewPrivileges = true
+	proof.SupplementaryGroupsCleared = true
+	proof.RawPacketSocketDenied = true
+	if result.Network.Status == guestagent.IsolationProofStatusVerified &&
+		result.Network.SingleInterface && result.Network.StaticRoutes && result.Network.ProxyReachable {
+		proof.Network.Status = guestagent.IsolationProofStatusVerified
+		proof.Network.SingleInterface = true
+		proof.Network.StaticRoutes = true
+		proof.Network.ProxyReachable = true
+	} else if result.Network.Status == guestagent.IsolationProofStatusFailed {
+		proof.Network.Status = guestagent.IsolationProofStatusFailed
+	}
+	if request.RequireNetworkProof && proof.Network.Status != guestagent.IsolationProofStatusVerified {
+		proof.Status = guestagent.IsolationProofStatusFailed
+		proof.RestrictedIdentity = false
+		proof.CapabilitiesCleared = false
+		proof.NoNewPrivileges = false
+		proof.SupplementaryGroupsCleared = false
+		proof.RawPacketSocketDenied = false
+		return server.readinessResponseWithProof(false, proof)
+	}
+	server.setIsolationProven(true)
+	return server.readinessResponseWithProof(true, proof)
+}
+
+func (server *Server) readinessResponseWithProof(ready bool, proof *guestagent.IsolationProof) Response {
+	status := guestagent.ReadinessStatusNotReady
+	if ready {
+		status = guestagent.ReadinessStatusReady
+	}
+	return server.encodeResponse(guestagent.ReadinessResponse{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationReadiness,
+		Ready:           ready,
+		Status:          status,
+		IsolationProof:  proof,
+	}, guestagent.OperationReadiness)
+}
+
+func (server *Server) setIsolationProven(proven bool) {
+	server.mu.Lock()
+	server.isolationProven = proven
+	server.mu.Unlock()
+}
+
 func (server *Server) encodeResponse(value any, operation guestagent.Operation) Response {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -457,6 +532,7 @@ func requestRootFieldsKnown(encoded []byte) bool {
 	for key := range object {
 		switch key {
 		case "protocolVersion", "operation", "timing",
+			"isolationProof",
 			"args", "env", "workDir", "stdin", "stdout", "stderr",
 			"destinationPath", "sourcePath", "payload":
 		default:

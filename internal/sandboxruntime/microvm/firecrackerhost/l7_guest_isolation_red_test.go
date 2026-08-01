@@ -21,6 +21,7 @@ func TestL7GuestAgentReadinessProbeRequiresBoundIsolationProof(t *testing.T) {
 			Generation:                 "topology-generation-1",
 			RuntimeGeneration:          "runtime-generation-1",
 			Status:                     guestagent.IsolationProofStatusVerified,
+			RestrictedIdentity:         true,
 			CapabilitiesCleared:        true,
 			NoNewPrivileges:            true,
 			SupplementaryGroupsCleared: true,
@@ -43,7 +44,7 @@ func TestL7GuestAgentReadinessProbeRequiresBoundIsolationProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeGuestReadiness() error = %v", err)
 	}
-	if result.State != sandboxruntime.RuntimeGuestReadinessStateReady || strings.Join(result.Labels, ",") != "ready,protocol,guest_isolation_verified,guest_network_verified" {
+	if result.State != sandboxruntime.RuntimeGuestReadinessStateReady || strings.Join(result.Labels, ",") != "ready,protocol,guest_isolation_verified,guest_topology_verified" {
 		t.Fatalf("result = %#v, want sanitized L7 proof labels", result)
 	}
 	if client.request.IsolationProof == nil || client.request.IsolationProof.Generation != "topology-generation-1" || client.request.IsolationProof.RuntimeGeneration != "runtime-generation-1" || !client.request.IsolationProof.RequireNetworkProof {
@@ -56,6 +57,7 @@ func TestL7GuestAgentReadinessProbeRejectsMissingPartialAndStaleProof(t *testing
 		Generation:                 "topology-generation-2",
 		RuntimeGeneration:          "runtime-generation-2",
 		Status:                     guestagent.IsolationProofStatusVerified,
+		RestrictedIdentity:         true,
 		CapabilitiesCleared:        true,
 		NoNewPrivileges:            true,
 		SupplementaryGroupsCleared: true,

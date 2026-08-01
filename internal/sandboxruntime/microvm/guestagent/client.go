@@ -89,7 +89,7 @@ func (client *Client) Readiness(ctx context.Context, request ReadinessRequest) (
 	}
 	var response ReadinessResponse
 	if err := client.roundTrip(ctx, OperationReadiness, request.Timing, request, &response, func() error {
-		return ValidateReadinessResponse(response)
+		return ValidateReadinessResponseForRequest(response, request)
 	}); err != nil {
 		return nil, err
 	}

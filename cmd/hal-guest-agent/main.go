@@ -43,9 +43,17 @@ func run() error {
 		_ = listener.Close()
 		return err
 	}
+	isolationVerifier, err := server.NewLinuxIsolationVerifier(server.LinuxIsolationVerifierOptions{})
+	if err != nil {
+		_ = listener.Close()
+		_ = backend.Close(context.Background())
+		return err
+	}
 	agent, err := server.New(server.Options{
-		Transport: transport,
-		Backend:   backend,
+		Transport:                       transport,
+		Backend:                         backend,
+		IsolationVerifier:               isolationVerifier,
+		RequireIsolationProofBeforeWork: len(backendOptions.BaseEnvironment) > 3,
 	})
 	if err != nil {
 		_ = listener.Close()

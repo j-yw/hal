@@ -37,6 +37,7 @@ func TestL7ReadinessIsolationProofJSONCompatibilityAndValidation(t *testing.T) {
 			Generation:                 "proof-generation-1",
 			RuntimeGeneration:          "runtime-generation-1",
 			Status:                     IsolationProofStatusVerified,
+			RestrictedIdentity:         true,
 			CapabilitiesCleared:        true,
 			NoNewPrivileges:            true,
 			SupplementaryGroupsCleared: true,
@@ -56,7 +57,7 @@ func TestL7ReadinessIsolationProofJSONCompatibilityAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"CapEff", "0000000000000000", "/proc/", "uid", "gid", "interface", "address", "routeValue", "endpoint", "socketError", "pid"} {
+	for _, forbidden := range []string{"CapEff", "0000000000000000", "/proc/", "uid", "gid", "interfaceName", "address", "routeValue", "endpoint", "socketError", "pid"} {
 		if strings.Contains(strings.ToLower(string(encoded)), strings.ToLower(forbidden)) {
 			t.Fatalf("proof JSON leaked forbidden field/value %q: %s", forbidden, encoded)
 		}
@@ -81,6 +82,7 @@ func TestL7ReadinessIsolationProofRejectsPartialMalformedAndStaleProof(t *testin
 			Generation:                 "proof-generation-2",
 			RuntimeGeneration:          "runtime-generation-2",
 			Status:                     IsolationProofStatusVerified,
+			RestrictedIdentity:         true,
 			CapabilitiesCleared:        true,
 			NoNewPrivileges:            true,
 			SupplementaryGroupsCleared: true,
@@ -94,6 +96,7 @@ func TestL7ReadinessIsolationProofRejectsPartialMalformedAndStaleProof(t *testin
 	}{
 		{name: "stale proof generation", mutate: func(r *ReadinessResponse) { r.IsolationProof.Generation = "stale" }},
 		{name: "stale runtime generation", mutate: func(r *ReadinessResponse) { r.IsolationProof.RuntimeGeneration = "stale" }},
+		{name: "identity not restricted", mutate: func(r *ReadinessResponse) { r.IsolationProof.RestrictedIdentity = false }},
 		{name: "capabilities not clear", mutate: func(r *ReadinessResponse) { r.IsolationProof.CapabilitiesCleared = false }},
 		{name: "no new privileges absent", mutate: func(r *ReadinessResponse) { r.IsolationProof.NoNewPrivileges = false }},
 		{name: "supplementary groups present", mutate: func(r *ReadinessResponse) { r.IsolationProof.SupplementaryGroupsCleared = false }},

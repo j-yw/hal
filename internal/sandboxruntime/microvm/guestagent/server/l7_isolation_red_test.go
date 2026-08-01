@@ -33,6 +33,7 @@ func TestL7ServerRequiresExactIsolationProofBeforeUserWork(t *testing.T) {
 	order := []string{}
 	backend := &l4FakeBackend{}
 	verifier := &l7FakeIsolationVerifier{order: &order, result: IsolationProofResult{
+		RestrictedIdentity:         true,
 		CapabilitiesCleared:        true,
 		NoNewPrivileges:            true,
 		SupplementaryGroupsCleared: true,
@@ -115,6 +116,27 @@ func TestL7ServerProofFailureIsFailClosedAndRedacted(t *testing.T) {
 	for _, leaked := range []string{"/proc/", "/home/alice", "10.0.0.2", "8080", "ghp_secret"} {
 		if strings.Contains(string(response.Encoded), leaked) {
 			t.Fatalf("response leaked %q: %s", leaked, response.Encoded)
+		}
+	}
+}
+
+func TestL7ServerStrictIsolationProofRequestNeverReachesVerifier(t *testing.T) {
+	tests := []string{
+		`{"protocolVersion":"guest-agent-v1","operation":"readiness","isolationProof":{"generation":"g","unknown":true}}`,
+		`{"protocolVersion":"guest-agent-v1","operation":"readiness","isolationProof":{"generation":"g","generation":"g"}}`,
+		`{"protocolVersion":"guest-agent-v1","operation":"readiness","isolationProof":{"generation":"` + strings.Repeat("a", guestagent.MaxIsolationProofGenerationBytes+1) + `"}}`,
+		`{"protocolVersion":"guest-agent-v1","operation":"readiness","isolationProof":{"generation":"g","requireNetworkProof":null}}`,
+	}
+	for _, body := range tests {
+		verifier := &l7FakeIsolationVerifier{}
+		run := startL4Server(t, Options{Transport: newL4BlockingTransport(), Backend: &l4FakeBackend{}, IsolationVerifier: verifier})
+		response := run.server.Handle(context.Background(), Request{Encoded: []byte(body)})
+		var decoded guestagent.ErrorResponse
+		if err := json.Unmarshal(response.Encoded, &decoded); err != nil || decoded.Error == nil {
+			t.Fatalf("strict response = %s, %v", response.Encoded, err)
+		}
+		if verifier.calls != 0 {
+			t.Fatal("malformed isolation proof request reached verifier")
 		}
 	}
 }
