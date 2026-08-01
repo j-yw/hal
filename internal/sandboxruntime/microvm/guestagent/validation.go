@@ -76,8 +76,17 @@ func validateIsolationProofRequest(operation Operation, request *IsolationProofR
 	if request == nil {
 		return nil
 	}
+	if request.Generation == "" {
+		return newValidationError(ErrorCodeMissingRequiredField, operation, "isolationProof.generation", "isolation proof generation is required")
+	}
+	if len(request.Generation) > MaxIsolationProofGenerationBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "isolationProof.generation", "isolation proof generation exceeds protocol limit")
+	}
 	if !validIsolationGeneration(request.Generation, false) {
 		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.generation", "isolation proof generation is invalid")
+	}
+	if len(request.RuntimeGeneration) > MaxIsolationProofGenerationBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "isolationProof.runtimeGeneration", "isolation proof runtime generation exceeds protocol limit")
 	}
 	if !validIsolationGeneration(request.RuntimeGeneration, true) {
 		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.runtimeGeneration", "isolation proof runtime generation is invalid")
@@ -89,8 +98,17 @@ func validateIsolationProof(operation Operation, proof *IsolationProof) error {
 	if proof == nil {
 		return nil
 	}
+	if proof.Generation == "" {
+		return newValidationError(ErrorCodeMissingRequiredField, operation, "isolationProof.generation", "isolation proof generation is required")
+	}
+	if len(proof.Generation) > MaxIsolationProofGenerationBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "isolationProof.generation", "isolation proof generation exceeds protocol limit")
+	}
 	if !validIsolationGeneration(proof.Generation, false) {
 		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.generation", "isolation proof generation is invalid")
+	}
+	if len(proof.RuntimeGeneration) > MaxIsolationProofGenerationBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "isolationProof.runtimeGeneration", "isolation proof runtime generation exceeds protocol limit")
 	}
 	if !validIsolationGeneration(proof.RuntimeGeneration, true) {
 		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.runtimeGeneration", "isolation proof runtime generation is invalid")
