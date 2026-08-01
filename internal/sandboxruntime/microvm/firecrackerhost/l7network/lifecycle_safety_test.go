@@ -160,10 +160,94 @@ func TestFirecrackerHostTopologyRetainsLeaseReturnedWithAcquireError(t *testing.
 			if err := session.RetryRetainedCleanup(context.Background(), testIdentity()); err != nil {
 				t.Fatalf("RetryRetainedCleanup() = %v", err)
 			}
+			wantStatus := StatusStopped
+			if operation == "recover" {
+				wantStatus = StatusCleanupIncomplete
+			}
+			if got := session.Metadata().Status; got != wantStatus {
+				t.Fatalf("retained cleanup status = %q, want %q", got, wantStatus)
+			}
 			if store.first.releaseCalls != 2 {
 				t.Fatalf("exact journal release calls = %d, want 2", store.first.releaseCalls)
 			}
 		})
+	}
+}
+
+func TestFirecrackerHostTopologyRetainsNamespaceReturnedWithBorrowError(t *testing.T) {
+	sequence := &callSequence{}
+	topology := newRetryNamespaceTopology(sequence)
+	topology.session.borrowErr = errors.New("private namespace borrow failure")
+	options := validCoordinatorOptions(sequence)
+	options.Topology = topology
+	coordinator := mustCoordinator(t, options)
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if session == nil || !errors.Is(err, ErrTopologyPrepareFailed) || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Prepare() = session %T, error %v; want retained partial namespace cleanup", session, err)
+	}
+	if topology.lease.closeCalls != 1 || topology.lease.closed {
+		t.Fatalf("first namespace close = calls %d, closed %t; want retained exact handle", topology.lease.closeCalls, topology.lease.closed)
+	}
+	if err := session.RetryFailedPrepareCleanup(context.Background(), testIdentity()); err != nil {
+		t.Fatalf("RetryFailedPrepareCleanup() = %v", err)
+	}
+	if topology.lease.closeCalls != 2 || !topology.lease.closed {
+		t.Fatalf("retried namespace close = calls %d, closed %t", topology.lease.closeCalls, topology.lease.closed)
+	}
+}
+
+func TestFirecrackerHostTopologyRetainsTAPReturnedWithCreateError(t *testing.T) {
+	sequence := &callSequence{}
+	tap := &fakeTAP{sequence: sequence, createErr: errors.New("private TAP creation failure"), returnStateOnCreateErr: true, deleteFailures: 1}
+	options := validCoordinatorOptions(sequence)
+	options.TAP = tap
+	coordinator := mustCoordinator(t, options)
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if session == nil || !errors.Is(err, ErrTopologyPrepareFailed) || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Prepare() = session %T, error %v; want retained partial TAP cleanup", session, err)
+	}
+	if tap.deleteCalls != 1 || contains(sequence.snapshot(), "topology_stop") {
+		t.Fatalf("first cleanup = TAP deletes %d, sequence %#v; want exact TAP retained before topology stop", tap.deleteCalls, sequence.snapshot())
+	}
+	sequence.reset()
+	if err := session.RetryFailedPrepareCleanup(context.Background(), testIdentity()); err != nil {
+		t.Fatalf("RetryFailedPrepareCleanup() = %v", err)
+	}
+	if tap.deleteCalls != 2 {
+		t.Fatalf("exact TAP delete calls = %d, want 2", tap.deleteCalls)
+	}
+	assertSubsequence(t, sequence.snapshot(), []string{"tap_delete", "topology_stop", "proxy_stop", "journal_remove", "journal_release"})
+}
+
+func TestFirecrackerHostTopologyReconcilerRetainsNamespaceReturnedWithBorrowError(t *testing.T) {
+	sequence := &callSequence{}
+	identity := testIdentity()
+	topology := newRetryNamespaceTopology(sequence)
+	topology.session.borrowErr = errors.New("private namespace borrow failure")
+	store := &releaseRetryJournalStore{sequence: sequence, record: journalRecord{identity: identity, stage: journalStageTAPCreated}}
+	reconciler, err := NewReconciler(ReconcilerOptions{
+		Recovery: &retryNamespaceRecovery{topology: topology}, TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+		Journal:       store, CleanupTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := reconciler.Recover(context.Background(), identity)
+	if session == nil || !errors.Is(err, ErrStaleTopologyUnverified) || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Recover() = session %T, error %v; want retained partial namespace cleanup", session, err)
+	}
+	if topology.lease.closeCalls != 1 || topology.lease.closed || store.first.releaseCalls != 0 {
+		t.Fatalf("first cleanup = namespace calls %d, closed %t, journal calls %d", topology.lease.closeCalls, topology.lease.closed, store.first.releaseCalls)
+	}
+	if err := session.RetryRetainedCleanup(context.Background(), identity); err != nil {
+		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	}
+	if topology.lease.closeCalls != 2 || !topology.lease.closed || store.first.releaseCalls != 1 {
+		t.Fatalf("retry cleanup = namespace calls %d, closed %t, journal calls %d", topology.lease.closeCalls, topology.lease.closed, store.first.releaseCalls)
+	}
+	if got := session.Metadata().Status; got != StatusCleanupIncomplete {
+		t.Fatalf("recovered stale cleanup status = %q, want %q", got, StatusCleanupIncomplete)
 	}
 }
 
@@ -186,6 +270,9 @@ func TestFirecrackerHostTopologyReconcilerRetainsFailedEarlyRelease(t *testing.T
 	}
 	if err := session.RetryRetainedCleanup(context.Background(), testIdentity()); err != nil {
 		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	}
+	if got := session.Metadata().Status; got != StatusCleanupIncomplete {
+		t.Fatalf("recovered stale cleanup status = %q, want %q", got, StatusCleanupIncomplete)
 	}
 	if store.first.releaseCalls != 2 {
 		t.Fatalf("exact reconciler journal release calls = %d, want 2", store.first.releaseCalls)
@@ -220,6 +307,9 @@ func TestFirecrackerHostTopologyReconcilerRetainsBorrowedNamespaceUntilCloseRetr
 	if err := session.RetryRetainedCleanup(context.Background(), identity); err != nil {
 		t.Fatalf("RetryRetainedCleanup() = %v", err)
 	}
+	if got := session.Metadata().Status; got != StatusCleanupIncomplete {
+		t.Fatalf("recovered stale cleanup status = %q, want %q", got, StatusCleanupIncomplete)
+	}
 	if topology.lease.closeCalls != 2 || !topology.lease.closed || store.first.releaseCalls != 1 {
 		t.Fatalf("retry cleanup = namespace calls %d, closed %t, journal calls %d", topology.lease.closeCalls, topology.lease.closed, store.first.releaseCalls)
 	}
@@ -247,6 +337,9 @@ func TestFirecrackerHostTopologyReconcilerRetainsJournalAfterBorrowValidationFai
 	}
 	if err := session.RetryRetainedCleanup(context.Background(), identity); err != nil {
 		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	}
+	if got := session.Metadata().Status; got != StatusCleanupIncomplete {
+		t.Fatalf("recovered stale cleanup status = %q, want %q", got, StatusCleanupIncomplete)
 	}
 	if topology.lease.closeCalls != 1 || !topology.lease.closed || store.first.releaseCalls != 2 {
 		t.Fatalf("cleanup = namespace calls %d, closed %t, journal calls %d", topology.lease.closeCalls, topology.lease.closed, store.first.releaseCalls)

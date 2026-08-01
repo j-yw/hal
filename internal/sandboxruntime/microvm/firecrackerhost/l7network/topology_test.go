@@ -592,9 +592,10 @@ func (t *retryNamespaceTopology) Stop(context.Context, linuxtopology.Identity) (
 }
 
 type retryNamespaceSession struct {
-	sequence *callSequence
-	identity linuxtopology.Identity
-	lease    *retryNamespaceLease
+	sequence  *callSequence
+	identity  linuxtopology.Identity
+	lease     *retryNamespaceLease
+	borrowErr error
 }
 
 func (s *retryNamespaceSession) Metadata() linuxtopology.Metadata {
@@ -603,7 +604,7 @@ func (s *retryNamespaceSession) Metadata() linuxtopology.Metadata {
 
 func (s *retryNamespaceSession) BorrowNamespace() (NamespaceLease, error) {
 	s.sequence.add("topology_borrow")
-	return s.lease, nil
+	return s.lease, s.borrowErr
 }
 
 type retryNamespaceLease struct {
@@ -628,21 +629,26 @@ func (l *retryNamespaceLease) Close() error {
 }
 
 type fakeTAP struct {
-	sequence       *callSequence
-	lastSpec       tapSpec
-	inspectErr     error
-	deleteFailures int
-	deleteCalls    int
-	createErr      error
+	sequence               *callSequence
+	lastSpec               tapSpec
+	inspectErr             error
+	deleteFailures         int
+	deleteCalls            int
+	createErr              error
+	returnStateOnCreateErr bool
 }
 
 func (t *fakeTAP) CreateConfigure(_ context.Context, _ NamespaceLease, spec tapSpec) (tapState, error) {
 	t.sequence.add("tap_create")
+	state := tapState{name: spec.name, generation: spec.generation, fingerprint: spec.fingerprint(), ifIndex: 41}
 	if t.createErr != nil {
+		if t.returnStateOnCreateErr {
+			return state, t.createErr
+		}
 		return tapState{}, t.createErr
 	}
 	t.lastSpec = spec
-	return tapState{name: spec.name, generation: spec.generation, fingerprint: spec.fingerprint(), ifIndex: 41}, nil
+	return state, nil
 }
 func (t *fakeTAP) Inspect(_ context.Context, _ NamespaceLease, _ tapState, spec tapSpec) error {
 	t.sequence.add("tap_inspect")
