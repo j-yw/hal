@@ -16,6 +16,7 @@ func TestL7GuestInitParsesStaticBootstrapAndBuildsFixedCommands(t *testing.T) {
 		t.Fatalf("parseL7NetworkBootConfig() = %#v, %t, %v", config, present, err)
 	}
 	wantCommands := [][]string{
+		{"/sbin/ip", "link", "set", "dev", "eth0", "addrgenmode", "none"},
 		{"/sbin/ip", "link", "set", "dev", "eth0", "up"},
 		{"/sbin/ip", "addr", "add", "192.0.2.2/30", "dev", "eth0"},
 		{"/sbin/ip", "-6", "addr", "add", "fd00:7::2/126", "dev", "eth0"},
