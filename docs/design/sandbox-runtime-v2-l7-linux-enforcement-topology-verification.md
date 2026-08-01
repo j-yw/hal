@@ -15,7 +15,7 @@ go test -count=1 -timeout=180s \
   ./internal/sandboxruntime/microvm/firecracker \
   ./internal/sandboxruntime/microvm/firecrackerhost \
   ./internal/sandboxruntime/microvm/firecrackerhost/l7network \
-  ./cmd -run 'TestL7|TestLinuxRules|TestLinuxTopology'
+  ./cmd -run 'TestL7|TestLinuxRules|TestLinuxTopology|TestFirecrackerHostTopology|TestLinuxTAP|TestProductionProxy'
 
 go test -race -count=1 -timeout=300s \
   ./internal/sandboxruntime/networkenforcement/linuxrules \

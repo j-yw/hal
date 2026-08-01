@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,6 +21,18 @@ func TestL7LinuxEnforcementTopologyFocusedDocsRunHostPackageTests(t *testing.T) 
 	for _, selector := range []string{"TestFirecrackerHostTopology", "TestLinuxTAP", "TestProductionProxy"} {
 		if !strings.Contains(string(payload), selector) {
 			t.Fatalf("L7 verification docs focused selector omits %q host topology tests", selector)
+		}
+	}
+	command := exec.Command("go", "test", "-list", "TestFirecrackerHostTopology|TestLinuxTAP|TestProductionProxy",
+		"./internal/sandboxruntime/microvm/firecrackerhost/l7network")
+	command.Dir = ".."
+	listed, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list documented L7 host selectors: %v", err)
+	}
+	for _, selector := range []string{"TestFirecrackerHostTopology", "TestLinuxTAP", "TestProductionProxy"} {
+		if !strings.Contains(string(listed), selector) {
+			t.Fatalf("documented L7 host selector %q matched no tests: %s", selector, listed)
 		}
 	}
 }
