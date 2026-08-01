@@ -52,6 +52,7 @@ type Session struct {
 	journalReleased  bool
 	guestBinding     RunningGuestBinding
 	guestSnapshot    runningGuestSnapshot
+	prepareFailed    bool
 }
 
 func New(input Options) (*Coordinator, error) {
@@ -210,6 +211,7 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 
 func (c *Coordinator) failPrepare(session *Session, primary error) (*Session, error) {
 	if cleanupErr := session.rollback(); cleanupErr != nil {
+		session.prepareFailed = true
 		session.metadata.Status = StatusCleanupIncomplete
 		c.current = session
 		return session, errors.Join(primary, ErrCleanupIncomplete)
@@ -396,6 +398,7 @@ func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, b
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.metadata.Status == StatusStopped {
+		s.coordinator.clearCurrentSession(s)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
@@ -463,7 +466,40 @@ func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, b
 		s.journalReleased = true
 	}
 	s.metadata = Metadata{Identity: s.identity, Status: StatusStopped}
+	s.coordinator.clearCurrentSession(s)
 	return nil
+}
+
+// RetryFailedPrepareCleanup retries only rollback work retained by Prepare
+// before VM ownership was possible. It never accepts a VM-quiescence claim and
+// cannot be used for a successfully prepared or runtime-owned session.
+func (s *Session) RetryFailedPrepareCleanup(_ context.Context, identity Identity) error {
+	if s == nil || identity != s.identity || !validIdentity(identity) {
+		return ErrIdentityMismatch
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.prepareFailed || s.metadata.Status != StatusCleanupIncomplete {
+		return ErrCleanupIncomplete
+	}
+	if err := s.rollback(); err != nil {
+		return ErrCleanupIncomplete
+	}
+	s.prepareFailed = false
+	s.metadata = Metadata{Identity: s.identity, Status: StatusStopped}
+	s.coordinator.clearCurrentSession(s)
+	return nil
+}
+
+func (c *Coordinator) clearCurrentSession(session *Session) {
+	if c == nil || session == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.current == session {
+		c.current = nil
+	}
 }
 
 func (s *Session) verifyVMTermination(ctx context.Context, binding TerminatedVMBinding) bool {
