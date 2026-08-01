@@ -89,6 +89,7 @@ func TestL7RuntimeControllerParallelRuntimesKeepExactTopologyOwnership(t *testin
 		if result.target == nil || result.target.Status != string(l7network.StatusActive) {
 			t.Fatalf("started target = %#v, want outer active publication", result.target)
 		}
+		sequence.add(result.target.Runtime.RuntimeID, "active")
 	}
 
 	for _, identity := range []l7network.Identity{firstID, secondID} {
@@ -144,6 +145,7 @@ func TestL7RuntimeControllerProxyLossAndStopRaceCleansExactRuntimeOnce(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	sequence.add(identity.RuntimeGenerationID, "active")
 
 	stopResult := make(chan error, 1)
 	go func() {
@@ -154,6 +156,7 @@ func TestL7RuntimeControllerProxyLossAndStopRaceCleansExactRuntimeOnce(t *testin
 	if err := <-stopResult; err != nil {
 		t.Fatal(err)
 	}
+	sequence.add(identity.RuntimeGenerationID, "stopped")
 	select {
 	case <-session.cleaned:
 	case <-time.After(2 * time.Second):
@@ -171,7 +174,7 @@ func TestL7RuntimeControllerProxyLossAndStopRaceCleansExactRuntimeOnce(t *testin
 	if runtime.lastStopTarget.Runtime.RuntimeID != started.Runtime.RuntimeID || session.cleanedBinding != runtime.terminatedBinding {
 		t.Fatal("proxy-loss/stop race cleaned a substituted runtime generation")
 	}
-	sequence.requireOrdered(t, identity.RuntimeGenerationID, "active", "quarantine", "stop", "termination", "cleanup", "stopped")
+	sequence.requireOrdered(t, identity.RuntimeGenerationID, "prepare", "build", "start", "inspect", "active", "quarantine", "stop", "termination", "cleanup", "stopped")
 }
 
 type l7RuntimeFakeIntentProvider struct {
@@ -496,17 +499,17 @@ func l7RuntimeControllerCorrelation(identity l7network.Identity) networkenforcem
 
 func l7RuntimeControllerPlan(identity l7network.Identity) networkenforcement.Plan {
 	return networkenforcement.Plan{
-		ID: identity.PlanID, Source: networkenforcement.PlanSourceConfig, Operation: "run",
-		PolicySnapshot: &networkenforcement.PolicySnapshot{ID: identity.PolicySnapshotID, Preset: networkenforcement.PolicyPresetDenyByDefault},
+		ID: identity.PlanID, Source: networkenforcement.PlanSourceRuntime, Operation: "run",
+		PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{ID: identity.PolicySnapshotID, Preset: networkenforcement.PolicyPresetDenyByDefault},
 		DefaultPosture: networkenforcement.DefaultPostureDenyByDefault,
-		Proxy: &networkenforcement.ProxyPlan{ProxySessionID: identity.ProxySessionID, Mechanism: networkenforcement.EnforcementMechanismProxy,
+		Proxy: &networkenforcement.ProxyRoutingIntent{ProxySessionID: identity.ProxySessionID, Mechanism: networkenforcement.EnforcementMechanismProxy,
 			HTTP: networkenforcement.ProxyRoutingModeRouteViaProxy, HTTPS: networkenforcement.ProxyRoutingModeRouteViaProxy},
-		Firewall: &networkenforcement.FirewallPlan{Mode: networkenforcement.FirewallIntentModeApply, Mechanism: networkenforcement.EnforcementMechanismFirewall},
+		Firewall: &networkenforcement.FirewallIntent{Mode: networkenforcement.FirewallIntentModeApply, Mechanism: networkenforcement.EnforcementMechanismFirewall},
 	}
 }
 
 func l7RuntimeControllerAssets(runtimeID string) l7RuntimeAssets {
-	descriptor := &assets.LaunchDescriptor{ID: "descriptor-" + runtimeID}
+	descriptor := &assets.LaunchDescriptor{ID: assets.SafeID("descriptor-" + runtimeID)}
 	profile := &localresolver.VerifiedL7Profile{}
 	return l7RuntimeAssets{LaunchDescriptor: descriptor, VerifiedL7Profile: profile, VerifiedL7Assets: &localresolver.VerifiedL7AssetLease{}}
 }
