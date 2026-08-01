@@ -101,16 +101,80 @@ func TestLinuxTAPDeleteDoesNotTreatInspectionFailureAsAbsence(t *testing.T) {
 	}
 }
 
+func TestLinuxTAPInspectionRequiresExactRoutePreferredSources(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*fakeNamespaceCommand)
+	}{
+		{name: "missing IPv4 preferred source", mutate: func(c *fakeNamespaceCommand) { c.omitIPv4PreferredSource = true }},
+		{name: "wrong IPv4 preferred source", mutate: func(c *fakeNamespaceCommand) { c.wrongIPv4PreferredSource = true }},
+		{name: "missing IPv6 preferred source", mutate: func(c *fakeNamespaceCommand) { c.omitIPv6PreferredSource = true }},
+		{name: "wrong IPv6 preferred source", mutate: func(c *fakeNamespaceCommand) { c.wrongIPv6PreferredSource = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := &fakeNamespaceCommand{}
+			tap, err := NewLinuxTAP(TAPOptions{IPPath: "/usr/sbin/ip", SysctlPath: "/usr/sbin/sysctl", NsenterPath: "/usr/bin/nsenter", Command: command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := staticTAPSpec(testIdentity(), netip.MustParseAddr("192.0.2.2"), 43123)
+			namespace := &fakeNamespaceLease{rules: linuxrules.NewNamespaceHandle(10, 11)}
+			state, err := tap.CreateConfigure(context.Background(), namespace, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(command)
+			if err := tap.Inspect(context.Background(), namespace, state, spec); !errors.Is(err, ErrProofMismatch) {
+				t.Fatalf("Inspect() = %v, want preferred-source proof mismatch", err)
+			}
+		})
+	}
+}
+
+func TestLinuxTAPInspectionBindsExactKernelTAPIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*fakeNamespaceCommand)
+	}{
+		{name: "wrong link kind", mutate: func(c *fakeNamespaceCommand) { c.linkKind = "veth" }},
+		{name: "changed ifindex", mutate: func(c *fakeNamespaceCommand) { c.linkIndex++ }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := &fakeNamespaceCommand{}
+			tap, err := NewLinuxTAP(TAPOptions{IPPath: "/usr/sbin/ip", SysctlPath: "/usr/sbin/sysctl", NsenterPath: "/usr/bin/nsenter", Command: command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := staticTAPSpec(testIdentity(), netip.MustParseAddr("192.0.2.2"), 43123)
+			namespace := &fakeNamespaceLease{rules: linuxrules.NewNamespaceHandle(10, 11)}
+			state, err := tap.CreateConfigure(context.Background(), namespace, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(command)
+			if err := tap.Inspect(context.Background(), namespace, state, spec); !errors.Is(err, ErrProofMismatch) {
+				t.Fatalf("Inspect() = %v, want exact kernel TAP identity mismatch", err)
+			}
+		})
+	}
+}
+
 type tapCommandCall struct {
 	path string
 	args []string
 }
 type fakeNamespaceCommand struct {
-	calls      []tapCommandCall
-	failAt     int
-	deleted    bool
-	mac        string
-	absenceErr error
+	calls                    []tapCommandCall
+	failAt                   int
+	deleted                  bool
+	mac                      string
+	linkIndex                int
+	linkKind                 string
+	omitIPv4PreferredSource  bool
+	wrongIPv4PreferredSource bool
+	omitIPv6PreferredSource  bool
+	wrongIPv6PreferredSource bool
+	absenceErr               error
 }
 
 func (c *fakeNamespaceCommand) Run(_ context.Context, _ NamespaceLease, command NamespaceCommandRequest, _ int64) ([]byte, error) {
@@ -144,7 +208,16 @@ func (c *fakeNamespaceCommand) Run(_ context.Context, _ NamespaceLease, command 
 			return nil, errors.New("absent")
 		}
 		name := command.Args[len(command.Args)-1]
-		return json.Marshal([]map[string]any{{"ifname": name, "address": c.mac, "flags": []string{"BROADCAST", "UP"}}})
+		if c.linkIndex == 0 {
+			c.linkIndex = 41
+		}
+		kind := c.linkKind
+		if kind == "" {
+			kind = "tun"
+		}
+		return json.Marshal([]map[string]any{{"ifindex": c.linkIndex, "ifname": name, "address": c.mac,
+			"flags": []string{"BROADCAST", "UP"}, "link_type": "ether",
+			"linkinfo": map[string]any{"info_kind": kind, "info_data": map[string]any{"type": "tap"}}}})
 	}
 	if strings.Contains(joined, "-j address show") {
 		name := command.Args[len(command.Args)-1]
@@ -154,10 +227,24 @@ func (c *fakeNamespaceCommand) Run(_ context.Context, _ NamespaceLease, command 
 		}}})
 	}
 	if strings.Contains(joined, "-j -4 route") {
-		return []byte(`[{"dst":"172.31.255.2/32","dev":"` + command.Args[len(command.Args)-1] + `"}]`), nil
+		route := map[string]any{"dst": "172.31.255.2/32", "dev": command.Args[len(command.Args)-1]}
+		if !c.omitIPv4PreferredSource {
+			route["prefsrc"] = "172.31.255.1"
+			if c.wrongIPv4PreferredSource {
+				route["prefsrc"] = "172.31.255.3"
+			}
+		}
+		return json.Marshal([]map[string]any{route})
 	}
 	if strings.Contains(joined, "-j -6 route") {
-		return []byte(`[{"dst":"fd00:6861:6c::2/128","dev":"` + command.Args[len(command.Args)-1] + `"}]`), nil
+		route := map[string]any{"dst": "fd00:6861:6c::2/128", "dev": command.Args[len(command.Args)-1]}
+		if !c.omitIPv6PreferredSource {
+			route["prefsrc"] = "fd00:6861:6c::1"
+			if c.wrongIPv6PreferredSource {
+				route["prefsrc"] = "fd00:6861:6c::3"
+			}
+		}
+		return json.Marshal([]map[string]any{route})
 	}
 	if command.Path == "/usr/sbin/sysctl" && len(command.Args) > 0 && command.Args[0] == "-n" {
 		return []byte("1\n"), nil
