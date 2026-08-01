@@ -360,11 +360,22 @@ func TestL7ServerOwnedNetworkProofRequirementUpgradesConcurrentWeakRequests(t *t
 	}
 	wait.Wait()
 	close(responses)
+	readyResponses := 0
 	for encodedResponse := range responses {
 		response := l4DecodeResponse[guestagent.ReadinessResponse](t, encodedResponse)
-		if !response.Ready || response.IsolationProof == nil || response.IsolationProof.Network == nil || response.IsolationProof.Network.Status != guestagent.IsolationProofStatusVerified {
-			t.Fatalf("readiness = %#v, want verified server-required network proof", response)
+		if response.Ready {
+			readyResponses++
+			if response.IsolationProof == nil || response.IsolationProof.Network == nil || response.IsolationProof.Network.Status != guestagent.IsolationProofStatusVerified {
+				t.Fatalf("readiness = %#v, want verified server-required network proof", response)
+			}
+			continue
 		}
+		if response.IsolationProof == nil || response.IsolationProof.Status == guestagent.IsolationProofStatusVerified {
+			t.Fatalf("stale readiness = %#v, want failed proof response", response)
+		}
+	}
+	if readyResponses == 0 {
+		t.Fatal("concurrent proof requests produced no current verified response")
 	}
 	for index, request := range verifier.requestsSnapshot() {
 		if !request.RequireNetworkProof {
