@@ -30,6 +30,38 @@ configuration preservation, final-rootfs privilege assertions, strict `/30`
 and `/126` point-to-point boot configuration, verified L7 descriptor
 correlation, and request-environment rejection of lowercase proxy names.
 
+The focused Firecracker guest process proof lane is:
+
+```sh
+go test -count=1 -timeout=180s \
+  ./internal/sandboxruntime/microvm/guestagent \
+  ./internal/sandboxruntime/microvm/guestagent/server \
+  ./internal/sandboxruntime/microvm/firecrackerhost \
+  ./cmd/hal-guest-agent
+
+go test -race -count=1 -timeout=240s \
+  ./internal/sandboxruntime/microvm/guestagent \
+  ./internal/sandboxruntime/microvm/guestagent/server \
+  ./internal/sandboxruntime/microvm/firecrackerhost
+
+go test -count=25 -timeout=300s \
+  ./internal/sandboxruntime/microvm/guestagent/server \
+  ./internal/sandboxruntime/microvm/firecrackerhost
+```
+
+These gates lock old/new JSON compatibility, strict unknown/duplicate/size
+handling, request and runtime-generation correlation, partial/stale proof
+rejection, every capability/identity/no-new-privileges/group failure, exact
+raw-packet denial errno semantics, injected-boundary ordering, error redaction,
+pre-proof work rejection, and concurrency/repetition. Non-Linux construction
+fails closed. Default L5 and non-L7 readiness omits the optional fields and
+retains its previous behavior.
+
+The proof reports network status as unavailable unless a fixed injected
+verifier proves the expected single interface, static routes, and exact
+retained proxy reachability. The guest process lane does not itself own those
+expected live values and therefore does not overclaim network proof.
+
 The explicit prepared-host semantic check for the locked keep-caps-off
 sequence is:
 
@@ -61,6 +93,27 @@ capability sets to be zero, supplementary groups to be empty, `NoNewPrivs` to be
 active, and keep-caps to remain locked off. It does not start Firecracker, modify
 an image, or run guest work. The final-image verifier is run read-only against
 the fresh digest-locked L7 rootfs before the selected Firecracker lane.
+
+The selected local live-process proof runs the real guest-agent verifier after
+the production UID/GID 1000, group-clear, capability-clear, and
+no-new-privileges transition in a disposable user namespace. Listing and
+running the exact test are separate gates; once selected, missing tools,
+subordinate-ID mappings, or namespace support is a failure rather than a skip:
+
+```sh
+go test -list '^TestL7GuestAgentLiveProcessIsolationSemantics$' \
+  -tags=l7_guest_isolation_semantics \
+  ./internal/sandboxruntime/microvm/guestagent/server
+
+go test -count=1 -timeout=180s \
+  -tags=l7_guest_isolation_semantics \
+  ./internal/sandboxruntime/microvm/guestagent/server \
+  -run '^TestL7GuestAgentLiveProcessIsolationSemantics$'
+```
+
+This selected test starts no Firecracker process and performs no host
+namespace, TAP, nftables, proxy, or internet operation. It must execute exactly
+one test with zero skips.
 
 ## Selected prepared-Linux gates
 
@@ -124,6 +177,16 @@ git diff --check
 Verify changed Go files with `gofmt`. Compile affected packages on Linux,
 Darwin, FreeBSD, and Windows. Run `golangci-lint` only when installed, and
 record unavailability rather than treating the Make target hint as a pass.
+
+```sh
+for os in linux darwin freebsd windows; do
+  GOOS="$os" GOARCH=amd64 go test -exec=true -count=1 -run '^$' \
+    ./internal/sandboxruntime/microvm/guestagent \
+    ./internal/sandboxruntime/microvm/guestagent/server \
+    ./internal/sandboxruntime/microvm/firecrackerhost \
+    ./cmd/hal-guest-agent
+done
+```
 
 ## Required evidence
 

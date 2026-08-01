@@ -1,7 +1,9 @@
 package guestagent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -123,5 +125,33 @@ func TestL7ReadinessIsolationProofRejectsPartialMalformedAndStaleProof(t *testin
 		if err := ValidateReadinessRequest(candidate); err == nil {
 			t.Fatalf("ValidateReadinessRequest(%q) error = nil, want rejection", generation)
 		}
+	}
+}
+
+func TestL7ClientStrictIsolationProofResponseHandling(t *testing.T) {
+	request := ReadinessRequest{IsolationProof: &IsolationProofRequest{Generation: "generation", RuntimeGeneration: "runtime"}}
+	tests := []struct {
+		name string
+		body string
+		code ErrorCode
+	}{
+		{name: "unknown nested field", body: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready","isolationProof":{"generation":"generation","runtimeGeneration":"runtime","status":"verified","restrictedIdentity":true,"capabilitiesCleared":true,"noNewPrivileges":true,"supplementaryGroupsCleared":true,"rawPacketSocketDenied":true,"unknown":true}}`, code: ErrorCodeMalformedResponse},
+		{name: "duplicate nested field", body: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready","isolationProof":{"generation":"generation","generation":"generation","runtimeGeneration":"runtime","status":"verified","restrictedIdentity":true,"capabilitiesCleared":true,"noNewPrivileges":true,"supplementaryGroupsCleared":true,"rawPacketSocketDenied":true}}`, code: ErrorCodeMalformedResponse},
+		{name: "oversized generation", body: `{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready","isolationProof":{"generation":"` + strings.Repeat("a", MaxIsolationProofGenerationBytes+1) + `","runtimeGeneration":"runtime","status":"verified","restrictedIdentity":true,"capabilitiesCleared":true,"noNewPrivileges":true,"supplementaryGroupsCleared":true,"rawPacketSocketDenied":true}}`, code: ErrorCodeInvalidMetadata},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewClient(ClientOptions{Transport: TransportFunc(func(context.Context, TransportRequest) (TransportResponse, error) {
+				return TransportResponse{Encoded: []byte(tt.body)}, nil
+			})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Readiness(context.Background(), request)
+			var protocolErr *ProtocolError
+			if !errors.As(err, &protocolErr) || protocolErr.Code != tt.code {
+				t.Fatalf("Readiness() error = %v, want %s", err, tt.code)
+			}
+		})
 	}
 }

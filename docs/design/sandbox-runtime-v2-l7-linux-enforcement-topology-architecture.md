@@ -239,6 +239,35 @@ location-relative applet links lexically to exactly `/bin/busybox`, requires a
 regular applet to be the same inode as BusyBox, and proves that no setuid,
 setgid, or file-capability path can reacquire raw-packet access.
 
+The existing `guest-agent-v1` readiness exchange carries this live proof only
+through optional `isolationProof` request and response objects. Legacy v1
+requests and responses remain valid and retain their L5 semantics. An L7 host
+probe supplies a validated topology-proof generation and the sanitized exact
+runtime generation; the response must echo both exactly. Missing, partial,
+failed, stale, or mismatched proof can never upgrade readiness. The proof
+exports only a fixed status and booleans for restricted identity, all
+capability sets cleared, no-new-privileges, supplementary groups cleared, and
+an `AF_PACKET` raw-socket attempt denied specifically by permission. It never
+exports raw proc data, capability encodings, numeric identities, process
+identity, interface or route data, addresses, endpoints, paths, or socket
+errors.
+
+The Linux implementation reads the bounded current-process status, checks the
+current process supplementary-group set, and performs the raw-socket attempt
+inside the running guest agent after the UID/GID 1000 transition. The server
+may require this proof before admitting exec or copy work; that requirement is
+enabled for the L7 proxy-bootstrap command path and remains disabled for
+legacy/L5 construction.
+
+Network proof has a separate fixed result containing only status plus
+`singleInterface`, `staticRoutes`, and `proxyReachable` booleans. A narrow
+injected verifier is the only source of a verified result. This proof lane does
+not itself inspect guest link/address/route state or contact a proxy, because
+the exact expected values and retained proxy generation belong to the later
+Firecracker topology composition. Without that injected verifier, network
+status is `unavailable`; callers that require network proof fail closed. No
+arbitrary command or environment transport is added.
+
 L7 network rendering additionally requires an opaque resolver-owned profile
 proof. Only full distribution-bundle verification (manifest, provenance,
 checksum inventory, and asset locks) can create that proof, and it is bound to
@@ -259,7 +288,8 @@ The Firecracker transaction is:
 6. render exactly one Firecracker network interface with validated live-only
    TAP name/MAC and bounded static guest boot parameters;
 7. start Firecracker inside the owned namespace using a namespace-FD process
-   wrapper, then require API acceptance and the L5 vsock readiness handshake;
+   wrapper, then require API acceptance and the proof-bound guest-agent
+   readiness handshake;
 8. inspect guest link/address/route and proxy reachability, then re-inspect all
    host-side components before publishing active proof.
 
