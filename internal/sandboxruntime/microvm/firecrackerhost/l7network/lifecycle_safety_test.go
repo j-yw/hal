@@ -155,6 +155,67 @@ func TestFirecrackerHostTopologyReconcilerRetainsFailedEarlyRelease(t *testing.T
 	}
 }
 
+func TestFirecrackerHostTopologyReconcilerRetainsBorrowedNamespaceUntilCloseRetry(t *testing.T) {
+	sequence := &callSequence{}
+	identity := testIdentity()
+	topology := newRetryNamespaceTopology(sequence)
+	store := &releaseRetryJournalStore{sequence: sequence, record: journalRecord{
+		identity: identity, stage: journalStageTAPCreated, proxyAddress: "invalid",
+	}}
+	reconciler, err := NewReconciler(ReconcilerOptions{
+		Recovery: &retryNamespaceRecovery{topology: topology}, TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+		Journal:       store, CleanupTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := reconciler.Recover(context.Background(), identity)
+	if session == nil || !errors.Is(err, ErrStaleTopologyUnverified) || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Recover() = session %T, error %v; want retained stale namespace cleanup", session, err)
+	}
+	if topology.lease.closeCalls != 1 || topology.lease.closed {
+		t.Fatalf("first namespace close = calls %d, closed %t; want retained failed handle", topology.lease.closeCalls, topology.lease.closed)
+	}
+	if store.first.releaseCalls != 0 {
+		t.Fatalf("journal released before namespace close = %d calls", store.first.releaseCalls)
+	}
+	if err := session.RetryRetainedCleanup(context.Background(), identity); err != nil {
+		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	}
+	if topology.lease.closeCalls != 2 || !topology.lease.closed || store.first.releaseCalls != 1 {
+		t.Fatalf("retry cleanup = namespace calls %d, closed %t, journal calls %d", topology.lease.closeCalls, topology.lease.closed, store.first.releaseCalls)
+	}
+}
+
+func TestFirecrackerHostTopologyReconcilerRetainsJournalAfterBorrowValidationFailure(t *testing.T) {
+	sequence := &callSequence{}
+	identity := testIdentity()
+	topology := newRetryNamespaceTopology(sequence)
+	topology.lease.closeFailures = 0
+	store := &releaseRetryJournalStore{sequence: sequence, firstReleaseFailures: 1, record: journalRecord{
+		identity: identity, stage: journalStageTAPCreated, proxyAddress: "invalid",
+	}}
+	reconciler, err := NewReconciler(ReconcilerOptions{
+		Recovery: &retryNamespaceRecovery{topology: topology}, TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+		Journal:       store, CleanupTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := reconciler.Recover(context.Background(), identity)
+	if session == nil || !errors.Is(err, ErrStaleTopologyUnverified) || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Recover() = session %T, error %v; want retained stale journal cleanup", session, err)
+	}
+	if err := session.RetryRetainedCleanup(context.Background(), identity); err != nil {
+		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	}
+	if topology.lease.closeCalls != 1 || !topology.lease.closed || store.first.releaseCalls != 2 {
+		t.Fatalf("cleanup = namespace calls %d, closed %t, journal calls %d", topology.lease.closeCalls, topology.lease.closed, store.first.releaseCalls)
+	}
+}
+
 func TestFirecrackerHostTopologyRecoverRejectsTypedNilReturnedInterfaces(t *testing.T) {
 	identity := testIdentity()
 	spec := staticTAPSpec(identity, netip.MustParseAddr("192.0.2.2"), 43123)
@@ -241,6 +302,7 @@ func (s *typedNilJournalLeaseStore) Acquire(context.Context, Identity) (JournalL
 
 type releaseRetryJournalStore struct {
 	sequence             *callSequence
+	record               journalRecord
 	firstLoadErr         error
 	firstSaveErr         error
 	firstReleaseFailures int
@@ -253,7 +315,7 @@ func (s *releaseRetryJournalStore) Acquire(context.Context, Identity) (JournalLe
 	s.acquires++
 	if s.acquires == 1 {
 		s.first = &releaseRetryJournalLease{sequence: s.sequence, loadErr: s.firstLoadErr,
-			saveErr: s.firstSaveErr, releaseFailures: s.firstReleaseFailures}
+			record: s.record, saveErr: s.firstSaveErr, releaseFailures: s.firstReleaseFailures}
 		return s.first, nil
 	}
 	return &fakeJournalLease{sequence: s.sequence}, nil
@@ -261,6 +323,7 @@ func (s *releaseRetryJournalStore) Acquire(context.Context, Identity) (JournalLe
 
 type releaseRetryJournalLease struct {
 	sequence        *callSequence
+	record          journalRecord
 	loadErr         error
 	saveErr         error
 	releaseFailures int
@@ -272,12 +335,22 @@ func (l *releaseRetryJournalLease) Load() (journalRecord, error) {
 	if l.loadErr != nil {
 		return journalRecord{}, l.loadErr
 	}
+	if validIdentity(l.record.identity) {
+		return l.record, nil
+	}
 	return journalRecord{}, ErrJournalNotFound
 }
 
 func (l *releaseRetryJournalLease) Save(_ context.Context, record journalRecord) error {
 	l.sequence.add("journal_save_" + string(record.stage))
 	return l.saveErr
+}
+
+type retryNamespaceRecovery struct{ topology *retryNamespaceTopology }
+
+func (r *retryNamespaceRecovery) Recover(_ context.Context, identity Identity) (TopologyLifecycle, TopologySession, error) {
+	r.topology.session.identity = topologyIdentity(identity)
+	return r.topology, r.topology.session, nil
 }
 
 func (l *releaseRetryJournalLease) Remove() error {
