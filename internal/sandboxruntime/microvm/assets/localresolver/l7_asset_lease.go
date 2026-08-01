@@ -352,7 +352,12 @@ func copyPinnedL7Asset(material L7LaunchMaterialWriter, source *os.File, asset a
 	}
 	path, err := material.WriteAsset(asset.Role, reader)
 	if err != nil {
-		return "", l7LeaseError(ErrorCodeFileUnavailable, "launchMaterial", "private L7 launch material cannot be written", ErrFileUnavailable)
+		return "", l7LeaseError(
+			ErrorCodeFileUnavailable,
+			"launchMaterial",
+			"private L7 launch material cannot be written",
+			sanitizedL7LaunchMaterialWriteCause{cause: err},
+		)
 	}
 	var trailing [1]byte
 	n, readErr := reader.Read(trailing[:])
@@ -364,6 +369,22 @@ func copyPinnedL7Asset(material L7LaunchMaterialWriter, source *os.File, asset a
 		return "", l7LeaseError(ErrorCodeUnsafePath, "launchMaterial", "private L7 launch material path is invalid", ErrUnsafePath)
 	}
 	return path, nil
+}
+
+type sanitizedL7LaunchMaterialWriteCause struct {
+	cause error
+}
+
+func (sanitizedL7LaunchMaterialWriteCause) Error() string {
+	return ErrFileUnavailable.Error()
+}
+
+func (cause sanitizedL7LaunchMaterialWriteCause) Is(target error) bool {
+	return target == ErrFileUnavailable || errors.Is(cause.cause, target)
+}
+
+func (cause sanitizedL7LaunchMaterialWriteCause) As(target any) bool {
+	return errors.As(cause.cause, target)
 }
 
 func verifyPinnedL7Asset(file *os.File, asset assets.LaunchAsset) error {
