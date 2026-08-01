@@ -215,6 +215,47 @@ func TestL7ComposedRootlessPodmanPartialOwnershipAndCleanupRetry(t *testing.T) {
 			t.Fatalf("closer calls = %d, want 2", closer.calls)
 		}
 	})
+
+	t.Run("transient rule cleanup retains namespace for exact retry", func(t *testing.T) {
+		sequence := &sequenceLog{}
+		proxy := newFakeProxy(sequence)
+		closer := &retryCloser{sequence: sequence}
+		resolution := validNamespaceResolution()
+		resolution.Close = closer
+		rules := &fakeRules{sequence: sequence, cleanupFailures: 1}
+		factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{sequence: sequence, result: resolution}, rules))
+		prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+		if _, err := prepared.Session.Activate(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+		if err := prepared.Session.Revoke(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+		sequence.reset()
+		if err := prepared.Session.Cleanup(context.Background(), request); !errors.Is(err, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("first Cleanup() = %v, want ErrCleanupIncomplete", err)
+		}
+		if closer.calls != 0 {
+			t.Fatalf("namespace closed while transient rule cleanup still needs it: %d", closer.calls)
+		}
+		if got, want := sequence.snapshot(), []string{"rules_cleanup", "proxy_stop"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("first cleanup sequence = %#v, want %#v", got, want)
+		}
+		sequence.reset()
+		if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+			t.Fatalf("retry Cleanup() = %v", err)
+		}
+		if closer.calls != 1 || rules.cleanupCalls != 2 {
+			t.Fatalf("retry cleanup calls = rules:%d namespace:%d", rules.cleanupCalls, closer.calls)
+		}
+		if got, want := sequence.snapshot(), []string{"rules_cleanup", "namespace_close"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("retry cleanup sequence = %#v, want %#v", got, want)
+		}
+	})
 }
 
 func TestL7ComposedRootlessPodmanCollisionAndLossBeforeEnvironmentFailClosed(t *testing.T) {
@@ -527,6 +568,8 @@ type fakeRules struct {
 	lastRawPacketVerifier fakeRawPacketVerifier
 	quarantineFailures    int
 	quarantineCalls       int
+	cleanupFailures       int
+	cleanupCalls          int
 }
 
 func (r *fakeRules) ApplyAndInspect(_ context.Context, expected linuxrules.ExpectedRuleSet) (networkenforcement.RuleLifecycleMetadata, error) {
@@ -548,6 +591,10 @@ func (r *fakeRules) Quarantine(context.Context, linuxrules.ExpectedRuleSet) erro
 }
 func (r *fakeRules) Cleanup(context.Context, linuxrules.ExpectedRuleSet) error {
 	r.sequence.add("rules_cleanup")
+	r.cleanupCalls++
+	if r.cleanupCalls <= r.cleanupFailures {
+		return errors.New("private transient cleanup failure")
+	}
 	return nil
 }
 func (r *fakeRules) metadata(expected linuxrules.ExpectedRuleSet) networkenforcement.RuleLifecycleMetadata {

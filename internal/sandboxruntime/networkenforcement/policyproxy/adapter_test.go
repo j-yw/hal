@@ -1205,6 +1205,71 @@ func TestL7PolicyProxyLiveEndpointStopIsExactAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestL7PolicyProxySelectedEndpointRetainsPortUntilExactStop(t *testing.T) {
+	request := networkenforcement.ProxyListenerLifecycleRequest{Plan: networkenforcement.NewSanitizedPlan(testPolicy().PlanMetadata())}
+	for _, test := range []struct {
+		name string
+		stop func(*testing.T, *Adapter, networkenforcement.ProxyListenerLifecycleRequest, LiveEndpoint)
+	}{
+		{name: "generic stop", stop: func(t *testing.T, adapter *Adapter, request networkenforcement.ProxyListenerLifecycleRequest, _ LiveEndpoint) {
+			t.Helper()
+			if _, err := adapter.StopProxyListener(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "unexpected serve loss", stop: func(t *testing.T, adapter *Adapter, _ networkenforcement.ProxyListenerLifecycleRequest, endpoint LiveEndpoint) {
+			t.Helper()
+			adapter.mu.Lock()
+			listener := adapter.listener
+			adapter.mu.Unlock()
+			if listener == nil || listener.Close() != nil {
+				t.Fatal("failed to inject listener loss")
+			}
+			select {
+			case <-endpoint.Loss():
+			case <-time.After(time.Second):
+				t.Fatal("selected endpoint did not report loss")
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := newTestAdapter(t, testAdapterOptions{})
+			startAdapter(t, adapter)
+			endpoint, ok := adapter.LiveEndpoint()
+			if !ok {
+				t.Fatal("selected endpoint unavailable")
+			}
+			test.stop(t, adapter, request, endpoint)
+			if rebound, err := net.Listen("tcp", endpoint.Address()); err == nil {
+				_ = rebound.Close()
+				t.Fatal("selected endpoint port rebound before exact generation release")
+			}
+			if _, err := adapter.StopLiveEndpoint(context.Background(), endpoint, request); err != nil {
+				t.Fatalf("exact generation release failed: %v", err)
+			}
+			rebound, err := net.Listen("tcp", endpoint.Address())
+			if err != nil {
+				t.Fatalf("selected endpoint port remained reserved after exact release: %v", err)
+			}
+			_ = rebound.Close()
+		})
+	}
+}
+
+func TestL6PolicyProxyUnselectedEndpointDoesNotRetainPort(t *testing.T) {
+	adapter := newTestAdapter(t, testAdapterOptions{})
+	endpoint := startAdapter(t, adapter)
+	request := networkenforcement.ProxyListenerLifecycleRequest{Plan: networkenforcement.NewSanitizedPlan(testPolicy().PlanMetadata())}
+	if _, err := adapter.StopProxyListener(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	rebound, err := net.Listen("tcp", endpoint)
+	if err != nil {
+		t.Fatalf("ordinary L6 stop leaked a port reservation: %v", err)
+	}
+	_ = rebound.Close()
+}
+
 func TestL6PolicyProxyStopWaitsForUnexpectedServeFailureCleanup(t *testing.T) {
 	adapter := newTestAdapter(t, testAdapterOptions{})
 	startAdapter(t, adapter)
