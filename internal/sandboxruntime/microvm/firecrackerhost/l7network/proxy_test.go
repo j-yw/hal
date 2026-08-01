@@ -43,6 +43,26 @@ func TestProductionProxyRetainsRecoveryGenerationAfterUncertainStartCleanup(t *t
 	}
 }
 
+func TestFirecrackerHostTopologyRetriesRetainedProductionProxyRecoveryGeneration(t *testing.T) {
+	sequence := &callSequence{}
+	adapter := &uncertainCleanupProxyAdapter{activeCheckFail: true, stopFailures: 1}
+	proxy, err := newProductionProxyWithAdapter(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence),
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: defaultCleanupTimeout,
+	})
+	if _, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()}); !errors.Is(err, ErrProxyUnavailable) || errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Prepare() = %v, want unavailable after resolved rollback", err)
+	}
+	if adapter.stopCalls != 2 {
+		t.Fatalf("Prepare() stop calls = %d, want initial failure plus coordinator rollback retry", adapter.stopCalls)
+	}
+}
+
 type uncertainCleanupProxyAdapter struct {
 	activeCheckFail bool
 	stopFailures    int
