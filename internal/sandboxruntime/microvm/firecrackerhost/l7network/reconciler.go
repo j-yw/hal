@@ -68,7 +68,7 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 			return nil, primary
 		}
 		session.journal = lease
-		return coordinator.releasePrepareJournal(session, primary)
+		return coordinator.releaseRecoveryJournal(session, primary)
 	}
 	if interfaceIsNil(lease) {
 		return coordinator.retainPrepareCleanup(session, retainedCleanupUnavailable, ErrStaleTopologyUnverified)
@@ -76,7 +76,7 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 	session.journal = lease
 	record, err := lease.Load()
 	if err != nil || record.identity != identity || stageOrder(record.stage) < stageOrder(journalStageTAPCreated) {
-		return coordinator.releasePrepareJournal(session, ErrStaleTopologyUnverified)
+		return coordinator.releaseRecoveryJournal(session, ErrStaleTopologyUnverified)
 	}
 	if record.stage == journalStageTopologyRemoved {
 		session.proxyStopped, session.rulesRemoved, session.tapRemoved, session.topologyRemoved = true, true, true, true
@@ -85,14 +85,20 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 	}
 	lifecycle, topology, err := r.options.Recovery.Recover(ctx, identity)
 	if err != nil || interfaceIsNil(lifecycle) || interfaceIsNil(topology) || !topologyMetadataMatches(topology.Metadata(), topologyIdentity(identity)) {
-		return coordinator.releasePrepareJournal(session, ErrStaleTopologyUnverified)
-	}
-	namespace, err := topology.BorrowNamespace()
-	if err != nil || interfaceIsNil(namespace) {
-		return coordinator.releasePrepareJournal(session, ErrStaleTopologyUnverified)
+		return coordinator.releaseRecoveryJournal(session, ErrStaleTopologyUnverified)
 	}
 	coordinator.options.Topology = lifecycle
-	session.topologyIdentity, session.topology, session.namespace = topologyIdentity(identity), topology, namespace
+	session.topologyIdentity, session.topology = topologyIdentity(identity), topology
+	namespace, err := topology.BorrowNamespace()
+	if !interfaceIsNil(namespace) {
+		session.namespace = namespace
+	}
+	if err != nil || interfaceIsNil(namespace) {
+		if !interfaceIsNil(namespace) {
+			return coordinator.releaseRecoveryHandles(session, ErrStaleTopologyUnverified)
+		}
+		return coordinator.releaseRecoveryJournal(session, ErrStaleTopologyUnverified)
+	}
 	proxyAddress, err := netip.ParseAddr(record.proxyAddress)
 	if err != nil || record.proxyPort == 0 {
 		return coordinator.releaseRecoveryHandles(session, ErrStaleTopologyUnverified)
