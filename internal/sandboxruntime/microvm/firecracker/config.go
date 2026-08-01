@@ -6,6 +6,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/localresolver"
 )
 
 const (
@@ -28,19 +29,45 @@ const (
 // BackendConfig is the Firecracker-specific configuration contract derived
 // from the backend-neutral microVM config before live backend behavior exists.
 type BackendConfig struct {
-	BackendID        string                   `json:"backendId,omitempty"`
-	ExecutablePath   string                   `json:"executablePath,omitempty"`
-	JailerPath       *string                  `json:"jailerPath,omitempty"`
-	KernelImagePath  string                   `json:"kernelImagePath,omitempty"`
-	RootfsPath       string                   `json:"rootfsPath,omitempty"`
-	InitrdPath       *string                  `json:"initrdPath,omitempty"`
-	LaunchDescriptor *assets.LaunchDescriptor `json:"-"`
-	CPUCount         int                      `json:"cpuCount,omitempty"`
-	MemoryMiB        int                      `json:"memoryMiB,omitempty"`
-	GuestWorkDir     GuestWorkDirMetadata     `json:"guestWorkDir,omitempty"`
-	RuntimeID        string                   `json:"runtimeId,omitempty"`
-	Paths            PathPlan                 `json:"paths,omitempty"`
-	ProductionVsock  bool                     `json:"productionVsock,omitempty"`
+	BackendID         string                              `json:"backendId,omitempty"`
+	ExecutablePath    string                              `json:"executablePath,omitempty"`
+	JailerPath        *string                             `json:"jailerPath,omitempty"`
+	KernelImagePath   string                              `json:"kernelImagePath,omitempty"`
+	RootfsPath        string                              `json:"rootfsPath,omitempty"`
+	InitrdPath        *string                             `json:"initrdPath,omitempty"`
+	LaunchDescriptor  *assets.LaunchDescriptor            `json:"-"`
+	VerifiedL7Profile *localresolver.VerifiedL7Profile    `json:"-"`
+	VerifiedL7Assets  *localresolver.VerifiedL7AssetLease `json:"-"`
+	CPUCount          int                                 `json:"cpuCount,omitempty"`
+	MemoryMiB         int                                 `json:"memoryMiB,omitempty"`
+	GuestWorkDir      GuestWorkDirMetadata                `json:"guestWorkDir,omitempty"`
+	RuntimeID         string                              `json:"runtimeId,omitempty"`
+	Paths             PathPlan                            `json:"paths,omitempty"`
+	ProductionVsock   bool                                `json:"productionVsock,omitempty"`
+	NetworkMode       microvm.NetworkMode                 `json:"networkMode,omitempty"`
+	NetworkInterfaces []NetworkInterfaceConfig            `json:"-"`
+	StaticNetwork     *StaticNetworkBootConfig            `json:"-"`
+}
+
+// NetworkInterfaceConfig is private live input supplied by the L7 topology
+// owner after it creates a TAP. Raw interface and MAC values are deliberately
+// omitted from JSON and public runtime metadata.
+type NetworkInterfaceConfig struct {
+	InterfaceID    string `json:"-"`
+	HostDeviceName string `json:"-"`
+	GuestMAC       string `json:"-"`
+}
+
+// StaticNetworkBootConfig is private live input used only to render bounded
+// guest boot parameters. Addresses and the proxy endpoint are never public
+// Firecracker metadata.
+type StaticNetworkBootConfig struct {
+	GuestInterfaceName string `json:"-"`
+	IPv4Address        string `json:"-"`
+	IPv4Gateway        string `json:"-"`
+	IPv6Address        string `json:"-"`
+	IPv6Gateway        string `json:"-"`
+	ProxyURL           string `json:"-"`
 }
 
 // GuestWorkDirMetadata carries the guest workdir contract without adding host
@@ -107,6 +134,7 @@ func BackendConfigFromMicroVMConfig(input microvm.Config) (BackendConfig, error)
 			MetricsPath:   DefaultMetricsPath,
 			ConfigPath:    DefaultConfigPath,
 		},
+		NetworkMode: config.NetworkMode,
 	}, nil
 }
 

@@ -27,3 +27,13 @@ func TestL5GuestInitSupervisesAgentProcessGroupAndReapsAllChildren(t *testing.T)
 		}
 	}
 }
+
+func TestL7GuestInitUnsupportedPlatformStubFailsClosed(t *testing.T) {
+	source, err := os.ReadFile("main_other.go")
+	if err != nil {
+		t.Fatalf("ReadFile(main_other.go) error = %v", err)
+	}
+	if !strings.Contains(string(source), "os.Exit(127)") {
+		t.Fatal("unsupported guest-init platform does not fail closed")
+	}
+}

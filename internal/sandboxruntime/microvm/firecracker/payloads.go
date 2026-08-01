@@ -56,6 +56,10 @@ func RenderMachineConfigPayload(config BackendConfig) (MachineConfigPayload, err
 // RenderBootSourcePayload derives the Firecracker boot-source payload without
 // touching host files or requiring a Firecracker binary.
 func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
+	bootArgs, err := productionBootArgs(config)
+	if err != nil {
+		return BootSourcePayload{}, err
+	}
 	if config.LaunchDescriptor != nil {
 		launchAssets, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, PayloadRenderingOperation)
 		if err != nil {
@@ -64,7 +68,7 @@ func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
 		return BootSourcePayload{
 			KernelImagePath: launchAssets.kernelPath(),
 			InitrdPath:      launchAssets.initrdPath(),
-			BootArgs:        productionBootArgs(config),
+			BootArgs:        bootArgs,
 		}, nil
 	}
 	kernelImagePath := strings.TrimSpace(config.KernelImagePath)
@@ -74,15 +78,25 @@ func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
 	return BootSourcePayload{
 		KernelImagePath: kernelImagePath,
 		InitrdPath:      optionalPayloadPath(config.InitrdPath),
-		BootArgs:        productionBootArgs(config),
+		BootArgs:        bootArgs,
 	}, nil
 }
 
-func productionBootArgs(config BackendConfig) string {
-	if config.ProductionVsock {
-		return l5ProductionBootArgs
+func productionBootArgs(config BackendConfig) (string, error) {
+	if !config.ProductionVsock {
+		if mode := strings.TrimSpace(string(config.NetworkMode)); mode != "" && mode != string(microvm.NetworkModeNoLiveNetworking) {
+			return "", newPayloadRenderingError("networkMode", "live networking requires production guest readiness")
+		}
+		return "", nil
 	}
-	return ""
+	_, staticNetwork, err := renderNetworkInterfaces(config)
+	if err != nil {
+		return "", err
+	}
+	if staticNetwork == nil {
+		return l5ProductionBootArgs, nil
+	}
+	return l7ProductionBootArgs(*staticNetwork)
 }
 
 // RenderRootDrivePayload derives the Firecracker root block-device payload

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ func (runner OSExecProcessRunner) StartHostProcess(ctx context.Context, req fire
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
+	cmd.ExtraFiles = append([]*os.File(nil), req.InheritedFiles...)
 
 	startCommand := runner.startCommand
 	if startCommand == nil {
@@ -72,6 +74,14 @@ func (runner OSExecProcessRunner) StartHostProcess(ctx context.Context, req fire
 func osExecProcessCommand(req firecracker.ProcessRunnerStartRequest) (string, []string, error) {
 	if len(req.Environment) != 0 {
 		return "", nil, ErrHostProcessEnvironmentUnsupported
+	}
+	if len(req.InheritedFiles) != 0 && len(req.InheritedFiles) != 2 {
+		return "", nil, ErrHostProcessArgumentInvalid
+	}
+	for _, file := range req.InheritedFiles {
+		if file == nil {
+			return "", nil, ErrHostProcessArgumentInvalid
+		}
 	}
 	executable := strings.TrimSpace(req.Executable)
 	if executable == "" {

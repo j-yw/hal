@@ -222,12 +222,30 @@ and guest DNS remain disabled. Required BusyBox networking/probe applets are
 locked by the build. The L5 image, digest, and no-network tests are not edited
 into a networking claim.
 
-Before Firecracker work is admitted, PID 1 must irreversibly remove effective,
-permitted, inheritable, ambient, and bounding capability paths while changing
-to UID/GID 1000 under `no_new_privs`. The built filesystem must be inspected to
-contain no setuid/setgid executable or file capability that can reacquire raw
-packet access. Guest readiness must report only a sanitized pass/fail result
-for that live process state; the static image manifest is not runtime proof.
+The L7 build accepts only a positive decimal parallelism value no greater than
+64 (and caps the detected default at 64). It rechecks the value inside the
+offline container. Final-image inspection preserves the L5 boot-critical
+kernel, BusyBox, identity, ownership, and mode assertions, adds the L7 network
+applets, rejects setuid/setgid regular files and file capabilities, and locks
+BusyBox to root-owned mode `0755`.
+
+Before Firecracker work is admitted, PID 1 irreversibly clears the capability
+bounding, inheritable, ambient, effective, and permitted paths, sets
+`no_new_privs`, and locks the already-clear keep-caps bit off before the
+UID/GID 1000 transition clears the last two sets. Guest readiness reports only
+a sanitized pass/fail result for that live process state; the static image
+manifest is not runtime proof. Final-image inspection resolves absolute and
+location-relative applet links lexically to exactly `/bin/busybox`, requires a
+regular applet to be the same inode as BusyBox, and proves that no setuid,
+setgid, or file-capability path can reacquire raw-packet access.
+
+L7 network rendering additionally requires an opaque resolver-owned profile
+proof. Only full distribution-bundle verification (manifest, provenance,
+checksum inventory, and asset locks) can create that proof, and it is bound to
+the normalized launch descriptor fingerprint. Descriptor IDs or labels alone,
+including exact synthetic relabeling of generic or L5 descriptors, cannot
+enable L7 networking. Static guest pairs are exactly IPv4 `/30` and IPv6
+`/126`; the prefix-base endpoint is invalid for either guest or gateway.
 
 The Firecracker transaction is:
 

@@ -52,7 +52,12 @@ func validateLaunchDescriptorConfig(descriptor *assets.LaunchDescriptor) error {
 }
 
 func validNetworkMode(mode NetworkMode) bool {
-	return NetworkMode(strings.TrimSpace(string(mode))) == NetworkModeNoLiveNetworking
+	switch NetworkMode(strings.TrimSpace(string(mode))) {
+	case NetworkModeNoLiveNetworking, NetworkModeL7PolicyProxy:
+		return true
+	default:
+		return false
+	}
 }
 
 func newConfigValidationError(field, message string) *OperationError {

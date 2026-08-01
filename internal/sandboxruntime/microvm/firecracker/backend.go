@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
@@ -270,10 +271,11 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	processLaunch := processBoundaryAvailableRuntimeMetadata()
 	var guestReadiness *sandboxruntime.RuntimeGuestReadinessMetadata
 	if c.liveStart {
-		if err := renderLiveBootFiles(config); err != nil {
+		inheritedFiles, err := renderLiveBootFilesForStart(config)
+		if err != nil {
 			return nil, err
 		}
-		liveStart, err := c.startLiveProcess(ctx, operation.ProcessDescriptor, config)
+		liveStart, err := c.startLiveProcessWithInheritedFiles(ctx, operation.ProcessDescriptor, config, inheritedFiles)
 		if err != nil {
 			return nil, err
 		}
@@ -309,8 +311,17 @@ type firecrackerLiveStartResult struct {
 }
 
 func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor ProcessCommandDescriptor, config BackendConfig) (firecrackerLiveStartResult, error) {
+	return c.startLiveProcessWithInheritedFiles(ctx, descriptor, config, nil)
+}
+
+func (c firecrackerController) startLiveProcessWithInheritedFiles(
+	ctx context.Context,
+	descriptor ProcessCommandDescriptor,
+	config BackendConfig,
+	inheritedFiles []*os.File,
+) (firecrackerLiveStartResult, error) {
 	if err := c.rejectActiveProductionVsockSession(config.RuntimeID); err != nil {
-		return firecrackerLiveStartResult{}, err
+		return firecrackerLiveStartResult{}, joinL7StartCleanup(err, cleanupL7StartAssets(config, inheritedFiles))
 	}
 	if c.liveSessions != nil {
 		if active, ok := c.liveSessions.ProofForRuntime(config.RuntimeID); ok && c.productionBridge != nil {
@@ -322,11 +333,25 @@ func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor 
 		}
 		c.liveSessions.InvalidateRuntime(config.RuntimeID)
 	}
-	handle, err := StartProcess(ctx, c.processAdapter, descriptor)
+	handle, err := startProcessWithInheritedFiles(ctx, c.processAdapter, descriptor, inheritedFiles)
+	assetCleanupErr := cleanupL7StartAssets(config, inheritedFiles)
 	if err != nil {
-		return firecrackerLiveStartResult{}, err
+		return firecrackerLiveStartResult{}, joinL7StartCleanup(err, assetCleanupErr)
 	}
 	processProof, terminalVerifiable := liveProcessProofFromHandle(config.RuntimeID, handle)
+	if assetCleanupErr != nil {
+		if c.liveSessions != nil {
+			c.liveSessions.TrackProcess(processProof)
+		}
+		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(
+			ctx,
+			handle,
+			processProof,
+			terminalVerifiable,
+			config.Paths,
+			assetCleanupErr,
+		)
+	}
 	if c.liveSessions != nil {
 		c.liveSessions.TrackProcess(processProof)
 		if !terminalVerifiable {
@@ -357,6 +382,34 @@ func (c firecrackerController) startLiveProcess(ctx context.Context, descriptor 
 		processLaunch:  launch,
 		guestReadiness: guestReadiness,
 	}, nil
+}
+
+func joinL7StartCleanup(primary, cleanupErr error) error {
+	if cleanupErr == nil {
+		return primary
+	}
+	if primary == nil {
+		return cleanupErr
+	}
+	return errors.Join(primary, cleanupErr)
+}
+
+func cleanupL7StartAssets(config BackendConfig, inheritedFiles []*os.File) error {
+	if len(inheritedFiles) == 0 {
+		return nil
+	}
+	cleanupErr := closeProcessInheritedFiles(inheritedFiles)
+	if config.VerifiedL7Assets != nil {
+		cleanupErr = joinL7StartCleanup(cleanupErr, config.VerifiedL7Assets.Close())
+	}
+	if cleanupErr == nil {
+		return nil
+	}
+	return newProcessBoundaryAdapterError(
+		"inheritedFiles",
+		"sealed L7 launch asset cleanup was not confirmed",
+		cleanupErr,
+	)
 }
 
 func (c firecrackerController) rejectActiveProductionVsockSession(runtimeID string) error {

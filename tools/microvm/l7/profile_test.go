@@ -1,0 +1,62 @@
+package l7profile
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestL7ImageProfileLocksMinimalNetworkSupport(t *testing.T) {
+	linux := readProfileFile(t, "linux.config")
+	for _, required := range []string{
+		"CONFIG_NET=y", "CONFIG_PACKET=y", "CONFIG_INET=y", "CONFIG_IPV6=y",
+		"CONFIG_NETDEVICES=y", "CONFIG_VIRTIO_NET=y", "CONFIG_VSOCKETS=y", "CONFIG_VIRTIO_VSOCKETS=y",
+	} {
+		if !linePresent(linux, required) {
+			t.Errorf("linux.config missing %q", required)
+		}
+	}
+	buildroot := readProfileFile(t, "buildroot.config")
+	for _, required := range []string{
+		`BR2_SYSTEM_DHCP=""`, `BR2_ROOTFS_OVERLAY="/src/tools/microvm/l7/rootfs-overlay"`,
+		`BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="/src/tools/microvm/l7/linux.config"`,
+		`BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="/src/tools/microvm/l7/busybox.fragment"`,
+	} {
+		if !linePresent(buildroot, required) {
+			t.Errorf("buildroot.config missing %q", required)
+		}
+	}
+	fragment := readProfileFile(t, "busybox.fragment")
+	for _, required := range []string{"CONFIG_IP=y", "CONFIG_NC=y", "CONFIG_WGET=y"} {
+		if !linePresent(fragment, required) {
+			t.Errorf("busybox.fragment missing %q", required)
+		}
+	}
+}
+
+func TestL7ProfileDoesNotAlterL5NoNetworkContract(t *testing.T) {
+	l5 := readProfileFile(t, "../l5/linux.config")
+	for _, required := range []string{"CONFIG_NET=y", "CONFIG_INET=n", "CONFIG_NETDEVICES=n"} {
+		if !linePresent(l5, required) {
+			t.Fatalf("L5 linux.config no-network contract missing %q", required)
+		}
+	}
+}
+
+func readProfileFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	return string(data)
+}
+
+func linePresent(text, want string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
