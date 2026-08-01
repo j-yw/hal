@@ -218,7 +218,11 @@ L5 deliberately produced a no-network guest. L7 adds a separate reproducible
 profile enabling IPv4, IPv6, network devices, virtio-net, and the minimal
 packet/socket support. PID 1 configures one statically described interface,
 addresses, routes, and proxy bootstrap before dropping to UID/GID 1000. DHCP
-and guest DNS remain disabled. Required BusyBox networking/probe applets are
+and guest DNS remain disabled. Before link-up, PID 1 writes and separately
+reads back Linux IPv6 `addr_gen_mode=1` (`none`); mode `2` (RFC7217 stable
+privacy), every other value, a symlink/non-regular control, partial write,
+overflow, or cancellation fails closed. Required BusyBox networking/probe
+applets are
 locked by the build. The L5 image, digest, and no-network tests are not edited
 into a networking claim.
 
@@ -262,11 +266,19 @@ legacy/L5 construction.
 Network proof has a separate fixed result containing only status plus
 `singleInterface`, `staticRoutes`, and `proxyReachable` booleans. A narrow
 injected verifier is the only source of a verified result. This proof lane does
-not itself inspect guest link/address/route state or contact a proxy, because
-the exact expected values and retained proxy generation belong to the later
-Firecracker topology composition. Without that injected verifier, network
-status is `unavailable`; callers that require network proof fail closed. No
-arbitrary command or environment transport is added.
+not infer guest link/address/route state or proxy identity. The explicit L7
+`cmd/hal-guest-agent` composition injects the production verifier from
+`internal/sandboxruntime/microvm/guestnetwork`, using the same strictly parsed,
+immutable kernel boot arguments that PID 1 used for static configuration. The
+verifier requires exactly one intended non-loopback interface, the exact `/30`
+and `/126` address and route shapes, disabled guest DNS, and bounded reachability
+of the exact validated proxy tuple, then repeats structural inspection to reject
+guest drift. The Firecracker host composition still rechecks the exact retained
+proxy generation around this guest proof; a guest TCP connection alone never
+proves listener generation. Generic and L5 construction inject nothing,
+so network status remains `unavailable`; callers that require network proof fail
+closed. No arbitrary command, environment, or protocol transport is added, and
+raw topology values never enter proof results, errors, logs, or durable state.
 
 L7 network rendering additionally requires an opaque resolver-owned profile
 proof. Only full distribution-bundle verification (manifest, provenance,

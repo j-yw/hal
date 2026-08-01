@@ -5,16 +5,14 @@ package main
 import (
 	"context"
 	"errors"
-	"net/netip"
-	"net/url"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestnetwork"
 	"golang.org/x/sys/unix"
 )
 
@@ -24,16 +22,9 @@ const (
 	requireL7NetworkArgument = "--require-l7-network"
 )
 
-var errInvalidL7NetworkBootstrap = errors.New("L7 guest network bootstrap is invalid")
+var errInvalidL7NetworkBootstrap = guestnetwork.ErrInvalidBootConfig
 
-type l7NetworkBootConfig struct {
-	interfaceName string
-	ipv4Address   string
-	ipv4Gateway   string
-	ipv6Address   string
-	ipv6Gateway   string
-	proxyURL      string
-}
+type l7NetworkBootConfig = guestnetwork.BootConfig
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -104,157 +95,126 @@ func run(arguments []string) int {
 }
 
 func loadL7NetworkBootConfig() (l7NetworkBootConfig, bool, error) {
-	data, err := os.ReadFile("/proc/cmdline")
-	if err != nil {
-		return l7NetworkBootConfig{}, false, errInvalidL7NetworkBootstrap
-	}
-	return parseL7NetworkBootConfig(string(data))
+	return guestnetwork.LoadLinuxBootConfig(context.Background())
 }
 
 func parseL7NetworkBootConfig(commandLine string) (l7NetworkBootConfig, bool, error) {
-	required := []string{
-		"hal_l7_net_if",
-		"hal_l7_ipv4",
-		"hal_l7_ipv4_gateway",
-		"hal_l7_ipv6",
-		"hal_l7_ipv6_gateway",
-		"hal_l7_proxy",
-	}
-	values := make(map[string]string, len(required))
-	present := false
-	for _, field := range strings.Fields(commandLine) {
-		name, value, ok := strings.Cut(field, "=")
-		if !strings.HasPrefix(name, "hal_l7_") {
-			continue
-		}
-		present = true
-		if !ok || value == "" || !stringInList(required, name) {
-			return l7NetworkBootConfig{}, true, errInvalidL7NetworkBootstrap
-		}
-		if _, duplicate := values[name]; duplicate {
-			return l7NetworkBootConfig{}, true, errInvalidL7NetworkBootstrap
-		}
-		values[name] = value
-	}
-	if !present {
-		return l7NetworkBootConfig{}, false, nil
-	}
-	for _, name := range required {
-		if values[name] == "" {
-			return l7NetworkBootConfig{}, true, errInvalidL7NetworkBootstrap
-		}
-	}
-	if !safeGuestInterfaceName(values["hal_l7_net_if"]) {
-		return l7NetworkBootConfig{}, true, errInvalidL7NetworkBootstrap
-	}
-	ipv4, ipv4Gateway, err := parseGuestAddressPair(values["hal_l7_ipv4"], values["hal_l7_ipv4_gateway"], false)
-	if err != nil {
-		return l7NetworkBootConfig{}, true, errInvalidL7NetworkBootstrap
-	}
-	ipv6, ipv6Gateway, err := parseGuestAddressPair(values["hal_l7_ipv6"], values["hal_l7_ipv6_gateway"], true)
-	if err != nil {
-		return l7NetworkBootConfig{}, true, errInvalidL7NetworkBootstrap
-	}
-	proxy, err := parseGuestProxyURL(values["hal_l7_proxy"])
-	if err != nil {
-		return l7NetworkBootConfig{}, true, errInvalidL7NetworkBootstrap
-	}
-	return l7NetworkBootConfig{
-		interfaceName: values["hal_l7_net_if"],
-		ipv4Address:   ipv4.String(),
-		ipv4Gateway:   ipv4Gateway.String(),
-		ipv6Address:   ipv6.String(),
-		ipv6Gateway:   ipv6Gateway.String(),
-		proxyURL:      proxy,
-	}, true, nil
-}
-
-func parseGuestAddressPair(address, gateway string, ipv6 bool) (netip.Prefix, netip.Addr, error) {
-	prefix, err := netip.ParsePrefix(address)
-	if err != nil || prefix.Addr().Is6() != ipv6 || !usableGuestAddress(prefix.Addr()) {
-		return netip.Prefix{}, netip.Addr{}, errInvalidL7NetworkBootstrap
-	}
-	prefix = netip.PrefixFrom(prefix.Addr(), prefix.Bits())
-	parsedGateway, err := netip.ParseAddr(gateway)
-	if err != nil || parsedGateway.Is6() != ipv6 || !usableGuestAddress(parsedGateway) ||
-		!prefix.Contains(parsedGateway) || parsedGateway == prefix.Addr() {
-		return netip.Prefix{}, netip.Addr{}, errInvalidL7NetworkBootstrap
-	}
-	return prefix, parsedGateway, nil
-}
-
-func parseGuestProxyURL(value string) (string, error) {
-	if len(value) > 256 || strings.IndexFunc(value, func(char rune) bool { return char <= ' ' || char == 0x7f }) >= 0 {
-		return "", errInvalidL7NetworkBootstrap
-	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.Opaque != "" ||
-		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errInvalidL7NetworkBootstrap
-	}
-	host, err := netip.ParseAddr(parsed.Hostname())
-	if err != nil || !usableGuestProxyAddress(host) {
-		return "", errInvalidL7NetworkBootstrap
-	}
-	port, err := strconv.Atoi(parsed.Port())
-	if err != nil || port < 1 || port > 65535 {
-		return "", errInvalidL7NetworkBootstrap
-	}
-	hostText := host.String()
-	if host.Is6() {
-		hostText = "[" + hostText + "]"
-	}
-	canonical := "http://" + hostText + ":" + strconv.Itoa(port)
-	if value != canonical {
-		return "", errInvalidL7NetworkBootstrap
-	}
-	return canonical, nil
-}
-
-func usableGuestProxyAddress(address netip.Addr) bool {
-	return usableGuestAddress(address) && !address.IsPrivate()
-}
-
-func usableGuestAddress(address netip.Addr) bool {
-	return address.IsValid() && address.IsGlobalUnicast() && !address.IsLoopback() &&
-		!address.IsLinkLocalUnicast() && !address.IsMulticast() && !address.IsUnspecified()
-}
-
-func safeGuestInterfaceName(value string) bool {
-	if value == "" || value == "." || value == ".." || len(value) > 15 {
-		return false
-	}
-	for _, char := range value {
-		switch {
-		case char >= 'a' && char <= 'z':
-		case char >= 'A' && char <= 'Z':
-		case char >= '0' && char <= '9':
-		case char == '_', char == '-', char == '.':
-		default:
-			return false
-		}
-	}
-	return true
+	return guestnetwork.ParseBootCommandLine(commandLine)
 }
 
 func l7NetworkBootstrapCommands(config l7NetworkBootConfig) [][]string {
 	return [][]string{
-		{"/sbin/ip", "link", "set", "dev", config.interfaceName, "up"},
-		{"/sbin/ip", "addr", "add", config.ipv4Address, "dev", config.interfaceName},
-		{"/sbin/ip", "-6", "addr", "add", config.ipv6Address, "dev", config.interfaceName},
-		{"/sbin/ip", "route", "add", "default", "via", config.ipv4Gateway, "dev", config.interfaceName},
-		{"/sbin/ip", "-6", "route", "add", "default", "via", config.ipv6Gateway, "dev", config.interfaceName},
+		{"/sbin/ip", "link", "set", "dev", config.InterfaceName(), "up"},
+		{"/sbin/ip", "addr", "add", config.IPv4Address(), "dev", config.InterfaceName()},
+		{"/sbin/ip", "-6", "addr", "add", config.IPv6Address(), "dev", config.InterfaceName()},
+		{"/sbin/ip", "route", "add", "default", "via", config.IPv4Gateway(), "dev", config.InterfaceName()},
+		{"/sbin/ip", "-6", "route", "add", "default", "via", config.IPv6Gateway(), "dev", config.InterfaceName()},
 	}
 }
 
 func configureL7GuestNetwork(config l7NetworkBootConfig) error {
+	return configureL7GuestNetworkWithDeps(config, disableL7IPv6AddressGeneration, func(ctx context.Context, command []string) error {
+		return exec.CommandContext(ctx, command[0], command[1:]...).Run()
+	})
+}
+
+func configureL7GuestNetworkWithDeps(
+	config l7NetworkBootConfig,
+	disableAddressGeneration func(context.Context, l7NetworkBootConfig) error,
+	runCommand func(context.Context, []string) error,
+) error {
+	if disableAddressGeneration == nil || runCommand == nil {
+		return errInvalidL7NetworkBootstrap
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), networkCommandTimeout)
+	err := disableAddressGeneration(ctx, config)
+	cancel()
+	if err != nil {
+		return errInvalidL7NetworkBootstrap
+	}
 	for _, command := range l7NetworkBootstrapCommands(config) {
 		ctx, cancel := context.WithTimeout(context.Background(), networkCommandTimeout)
-		err := exec.CommandContext(ctx, command[0], command[1:]...).Run()
+		err := runCommand(ctx, command)
 		cancel()
 		if err != nil {
 			return errInvalidL7NetworkBootstrap
 		}
+	}
+	return nil
+}
+
+func disableL7IPv6AddressGeneration(ctx context.Context, config l7NetworkBootConfig) error {
+	if err := ctx.Err(); err != nil || !config.Valid() {
+		return errInvalidL7NetworkBootstrap
+	}
+	path := "/proc/sys/net/ipv6/conf/" + config.InterfaceName() + "/addr_gen_mode"
+	return writeAndConfirmL7IPv6AddressGenerationMode(ctx, path, openL7NetworkControlFile)
+}
+
+type l7NetworkControlOpener func(string, int) (*os.File, error)
+
+func openL7NetworkControlFile(path string, flags int) (*os.File, error) {
+	fd, err := unix.Open(path, flags|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, errInvalidL7NetworkBootstrap
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errInvalidL7NetworkBootstrap
+	}
+	return file, nil
+}
+
+func writeAndConfirmL7IPv6AddressGenerationMode(ctx context.Context, path string, openFile l7NetworkControlOpener) error {
+	if ctx == nil || openFile == nil || ctx.Err() != nil {
+		return errInvalidL7NetworkBootstrap
+	}
+	writer, err := openFile(path, unix.O_WRONLY|unix.O_NONBLOCK)
+	if err != nil || !regularL7NetworkControl(writer) {
+		if writer != nil {
+			_ = writer.Close()
+		}
+		return errInvalidL7NetworkBootstrap
+	}
+	writeErr := writeExactL7IPv6AddressGenerationMode(writer)
+	closeErr := writer.Close()
+	if writeErr != nil || closeErr != nil || ctx.Err() != nil {
+		return errInvalidL7NetworkBootstrap
+	}
+	reader, err := openFile(path, unix.O_RDONLY|unix.O_NONBLOCK)
+	if err != nil || !regularL7NetworkControl(reader) {
+		if reader != nil {
+			_ = reader.Close()
+		}
+		return errInvalidL7NetworkBootstrap
+	}
+	defer reader.Close()
+	if ctx.Err() != nil {
+		return errInvalidL7NetworkBootstrap
+	}
+	payload, err := io.ReadAll(io.LimitReader(reader, 4))
+	if err != nil || len(payload) > 3 || (string(payload) != "1" && string(payload) != "1\n") || ctx.Err() != nil {
+		return errInvalidL7NetworkBootstrap
+	}
+	return nil
+}
+
+func regularL7NetworkControl(file *os.File) bool {
+	if file == nil {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode().IsRegular()
+}
+
+func writeExactL7IPv6AddressGenerationMode(writer io.Writer) error {
+	if writer == nil {
+		return errInvalidL7NetworkBootstrap
+	}
+	written, err := writer.Write([]byte("1\n"))
+	if err != nil || written != 2 {
+		return errInvalidL7NetworkBootstrap
 	}
 	return nil
 }
@@ -266,20 +226,11 @@ func l7NetworkBootstrapEnvironment(config l7NetworkBootConfig) []string {
 		"TMPDIR=/tmp",
 		"USER=agent",
 		"LOGNAME=agent",
-		"HTTP_PROXY=" + config.proxyURL,
-		"HTTPS_PROXY=" + config.proxyURL,
-		"http_proxy=" + config.proxyURL,
-		"https_proxy=" + config.proxyURL,
+		"HTTP_PROXY=" + config.ProxyURL(),
+		"HTTPS_PROXY=" + config.ProxyURL(),
+		"http_proxy=" + config.ProxyURL(),
+		"https_proxy=" + config.ProxyURL(),
 	}
-}
-
-func stringInList(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func reapChildren(mainPID int) (unix.WaitStatus, bool) {
