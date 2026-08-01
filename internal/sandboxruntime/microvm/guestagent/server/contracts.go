@@ -201,4 +201,9 @@ type Options struct {
 	MaxShutdownTime                 time.Duration
 	IsolationVerifier               IsolationVerifier
 	RequireIsolationProofBeforeWork bool
+	// RequireNetworkProofBeforeWork requires the verified process proof plus
+	// verified network isolation before exec or copy work is admitted. It
+	// implies RequireIsolationProofBeforeWork and cannot be weakened by a
+	// readiness request that omits RequireNetworkProof.
+	RequireNetworkProofBeforeWork bool
 }

@@ -400,6 +400,9 @@ func (server *Server) readinessResponse(ready bool) Response {
 }
 
 func (server *Server) isolationReadinessResponse(ctx context.Context, request guestagent.IsolationProofRequest) Response {
+	if server.requireNetworkProofBeforeWork {
+		request.RequireNetworkProof = true
+	}
 	proof := &guestagent.IsolationProof{
 		Generation:        request.Generation,
 		RuntimeGeneration: request.RuntimeGeneration,

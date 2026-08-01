@@ -65,3 +65,30 @@ func TestL7GuestAgentRejectsPartialOrUnsafeProxyEnvironmentWithoutEcho(t *testin
 		}
 	}
 }
+
+func TestL7GuestAgentUsesExplicitValidatedNetworkProofIntent(t *testing.T) {
+	valid := map[string]string{
+		"HTTP_PROXY":  "http://192.0.2.1:18080",
+		"HTTPS_PROXY": "http://192.0.2.1:18080",
+		"http_proxy":  "http://192.0.2.1:18080",
+		"https_proxy": "http://192.0.2.1:18080",
+	}
+	configuration, err := linuxGuestAgentConfigurationFromLookup(func(name string) (string, bool) {
+		value, ok := valid[name]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatalf("linuxGuestAgentConfigurationFromLookup() error = %v", err)
+	}
+	if !configuration.requireNetworkProofBeforeWork {
+		t.Fatal("validated L7 proxy bootstrap did not require network proof")
+	}
+
+	legacy, err := linuxGuestAgentConfigurationFromLookup(func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("legacy linuxGuestAgentConfigurationFromLookup() error = %v", err)
+	}
+	if legacy.requireNetworkProofBeforeWork {
+		t.Fatal("legacy guest configuration unexpectedly required network proof")
+	}
+}

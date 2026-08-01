@@ -22,6 +22,7 @@ type Server struct {
 	admission                       chan struct{}
 	isolationVerifier               IsolationVerifier
 	requireIsolationProofBeforeWork bool
+	requireNetworkProofBeforeWork   bool
 	isolationProven                 bool
 
 	mu              sync.Mutex
@@ -48,7 +49,8 @@ func New(options Options) (*Server, error) {
 	if !configuredDependency(options.Backend) {
 		return nil, errors.New("guest-agent server backend is required")
 	}
-	if options.RequireIsolationProofBeforeWork && !configuredDependency(options.IsolationVerifier) {
+	requireIsolationProofBeforeWork := options.RequireIsolationProofBeforeWork || options.RequireNetworkProofBeforeWork
+	if requireIsolationProofBeforeWork && !configuredDependency(options.IsolationVerifier) {
 		return nil, errors.New("guest-agent isolation verifier is required")
 	}
 	maxRequestBytes, err := boundedInt64Option(
@@ -113,7 +115,8 @@ func New(options Options) (*Server, error) {
 		maxShutdownTime:                 maxShutdownTime,
 		admission:                       make(chan struct{}, maxConcurrent),
 		isolationVerifier:               options.IsolationVerifier,
-		requireIsolationProofBeforeWork: options.RequireIsolationProofBeforeWork,
+		requireIsolationProofBeforeWork: requireIsolationProofBeforeWork,
+		requireNetworkProofBeforeWork:   options.RequireNetworkProofBeforeWork,
 		state:                           StateNew,
 		operationCtx:                    operationCtx,
 		operationCancel:                 operationCancel,

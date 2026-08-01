@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -155,11 +154,11 @@ func TestL7ServerOwnedNetworkProofRequirementCannotBeDowngraded(t *testing.T) {
 		},
 	}}
 	options := Options{
-		Transport:         newL4BlockingTransport(),
-		Backend:           backend,
-		IsolationVerifier: verifier,
+		Transport:                     newL4BlockingTransport(),
+		Backend:                       backend,
+		IsolationVerifier:             verifier,
+		RequireNetworkProofBeforeWork: true,
 	}
-	l7RequireNetworkProofBeforeWork(t, &options)
 	run := startL4Server(t, options)
 
 	for _, request := range []guestagent.ReadinessRequest{
@@ -186,6 +185,21 @@ func TestL7ServerOwnedNetworkProofRequirementCannotBeDowngraded(t *testing.T) {
 			t.Fatalf("readiness = %#v, want network-proof failure", response)
 		}
 	}
+	verifier.mu.Lock()
+	verifier.result.Network.Status = guestagent.IsolationProofStatusFailed
+	verifier.mu.Unlock()
+	failedRequest := guestagent.ReadinessRequest{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationReadiness,
+		IsolationProof: &guestagent.IsolationProofRequest{
+			Generation:        "network-policy-generation-failed",
+			RuntimeGeneration: "runtime-generation-1",
+		},
+	}
+	failedResponse := l4DecodeResponse[guestagent.ReadinessResponse](t, run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, failedRequest)}))
+	if failedResponse.Ready || failedResponse.IsolationProof == nil || failedResponse.IsolationProof.Status == guestagent.IsolationProofStatusVerified {
+		t.Fatalf("failed readiness = %#v, want network-proof failure", failedResponse)
+	}
 
 	execRequest := guestagent.ExecRequest{
 		ProtocolVersion: guestagent.ProtocolVersionV1,
@@ -204,11 +218,11 @@ func TestL7ServerOwnedNetworkProofRequirementCannotBeDowngraded(t *testing.T) {
 func TestL7ServerOwnedNetworkProofRequirementUpgradesConcurrentWeakRequests(t *testing.T) {
 	verifier := &l7RequestRecordingIsolationVerifier{}
 	options := Options{
-		Transport:         newL4BlockingTransport(),
-		Backend:           &l4FakeBackend{},
-		IsolationVerifier: verifier,
+		Transport:                     newL4BlockingTransport(),
+		Backend:                       &l4FakeBackend{},
+		IsolationVerifier:             verifier,
+		RequireNetworkProofBeforeWork: true,
 	}
-	l7RequireNetworkProofBeforeWork(t, &options)
 	run := startL4Server(t, options)
 
 	requests := []guestagent.ReadinessRequest{
@@ -230,19 +244,20 @@ func TestL7ServerOwnedNetworkProofRequirementUpgradesConcurrentWeakRequests(t *t
 			},
 		},
 	}
-	responses := make(chan guestagent.ReadinessResponse, len(requests))
+	responses := make(chan Response, len(requests))
 	var wait sync.WaitGroup
 	for _, request := range requests {
 		request := request
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			responses <- l4DecodeResponse[guestagent.ReadinessResponse](t, run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, request)}))
+			responses <- run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, request)})
 		}()
 	}
 	wait.Wait()
 	close(responses)
-	for response := range responses {
+	for encodedResponse := range responses {
+		response := l4DecodeResponse[guestagent.ReadinessResponse](t, encodedResponse)
 		if !response.Ready || response.IsolationProof == nil || response.IsolationProof.Network == nil || response.IsolationProof.Network.Status != guestagent.IsolationProofStatusVerified {
 			t.Fatalf("readiness = %#v, want verified server-required network proof", response)
 		}
@@ -251,6 +266,17 @@ func TestL7ServerOwnedNetworkProofRequirementUpgradesConcurrentWeakRequests(t *t
 		if !request.RequireNetworkProof {
 			t.Fatalf("verifier request %d = %#v, want server-required network proof", index, request)
 		}
+	}
+}
+
+func TestL7ServerOwnedNetworkProofRequirementImpliesIsolationVerifier(t *testing.T) {
+	_, err := New(Options{
+		Transport:                     newL4BlockingTransport(),
+		Backend:                       &l4FakeBackend{},
+		RequireNetworkProofBeforeWork: true,
+	})
+	if err == nil || err.Error() != "guest-agent isolation verifier is required" {
+		t.Fatalf("New() error = %v, want isolation verifier requirement", err)
 	}
 }
 
@@ -288,15 +314,6 @@ func (verifier *l7RequestRecordingIsolationVerifier) requestsSnapshot() []guesta
 	verifier.mu.Lock()
 	defer verifier.mu.Unlock()
 	return append([]guestagent.IsolationProofRequest(nil), verifier.requests...)
-}
-
-func l7RequireNetworkProofBeforeWork(t *testing.T, options *Options) {
-	t.Helper()
-	field := reflect.ValueOf(options).Elem().FieldByName("RequireNetworkProofBeforeWork")
-	if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.Bool {
-		t.Fatal("Options.RequireNetworkProofBeforeWork is required")
-	}
-	field.SetBool(true)
 }
 
 func l7JSON(t *testing.T, value any) []byte {
