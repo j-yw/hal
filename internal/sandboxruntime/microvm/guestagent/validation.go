@@ -12,6 +12,9 @@ func ValidateReadinessRequest(request ReadinessRequest) error {
 	if err := validateHeader(request.ProtocolVersion, request.Operation, OperationReadiness); err != nil {
 		return err
 	}
+	if err := validateIsolationProofRequest(request.Operation, request.IsolationProof); err != nil {
+		return err
+	}
 	return validateTiming(request.Operation, request.Timing)
 }
 
@@ -19,16 +22,157 @@ func ValidateReadinessResponse(response ReadinessResponse) error {
 	if err := validateHeader(response.ProtocolVersion, response.Operation, OperationReadiness); err != nil {
 		return err
 	}
-	if response.Status == "" {
-		return nil
+	if response.Status != "" {
+		if !validReadinessStatus(response.Status) {
+			return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status is unsupported")
+		}
+		if response.Ready != (response.Status == ReadinessStatusReady) {
+			return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status contradicts ready")
+		}
+	} else if response.IsolationProof != nil {
+		return newValidationError(ErrorCodeMissingRequiredField, response.Operation, "status", "proof-bearing readiness status is required")
 	}
-	if !validReadinessStatus(response.Status) {
-		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status is unsupported")
+	if err := validateIsolationProof(response.Operation, response.IsolationProof); err != nil {
+		return err
 	}
-	if response.Ready != (response.Status == ReadinessStatusReady) {
-		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "status", "readiness status contradicts ready")
+	if response.IsolationProof != nil && response.IsolationProof.Status == IsolationProofStatusVerified && !response.Ready {
+		return newValidationError(ErrorCodeInvalidMetadata, response.Operation, "isolationProof.status", "verified isolation proof requires ready response")
 	}
 	return nil
+}
+
+// ValidateReadinessResponseForRequest additionally requires an exact proof
+// binding when the readiness request selected the optional L7 proof lane.
+func ValidateReadinessResponseForRequest(response ReadinessResponse, request ReadinessRequest) error {
+	if err := ValidateReadinessRequest(request); err != nil {
+		return err
+	}
+	if err := ValidateReadinessResponse(response); err != nil {
+		return err
+	}
+	if request.IsolationProof == nil {
+		return nil
+	}
+	proof := response.IsolationProof
+	if proof == nil {
+		return newValidationError(ErrorCodeMissingRequiredField, OperationReadiness, "isolationProof", "isolation proof is required")
+	}
+	if proof.Generation != request.IsolationProof.Generation {
+		return newValidationError(ErrorCodeInvalidMetadata, OperationReadiness, "isolationProof.generation", "isolation proof generation does not match request")
+	}
+	if proof.RuntimeGeneration != request.IsolationProof.RuntimeGeneration {
+		return newValidationError(ErrorCodeInvalidMetadata, OperationReadiness, "isolationProof.runtimeGeneration", "isolation proof runtime generation does not match request")
+	}
+	if proof.Status != IsolationProofStatusVerified || !verifiedProcessIsolationProof(*proof) {
+		return newValidationError(ErrorCodeInvalidMetadata, OperationReadiness, "isolationProof.status", "isolation proof is not verified")
+	}
+	if request.IsolationProof.RequireNetworkProof && !verifiedNetworkIsolationProof(proof.Network) {
+		return newValidationError(ErrorCodeInvalidMetadata, OperationReadiness, "isolationProof.network", "network isolation proof is not verified")
+	}
+	return nil
+}
+
+func validateIsolationProofRequest(operation Operation, request *IsolationProofRequest) error {
+	if request == nil {
+		return nil
+	}
+	if request.Generation == "" {
+		return newValidationError(ErrorCodeMissingRequiredField, operation, "isolationProof.generation", "isolation proof generation is required")
+	}
+	if len(request.Generation) > MaxIsolationProofGenerationBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "isolationProof.generation", "isolation proof generation exceeds protocol limit")
+	}
+	if !validIsolationGeneration(request.Generation, false) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.generation", "isolation proof generation is invalid")
+	}
+	if len(request.RuntimeGeneration) > MaxIsolationProofGenerationBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "isolationProof.runtimeGeneration", "isolation proof runtime generation exceeds protocol limit")
+	}
+	if !validIsolationGeneration(request.RuntimeGeneration, true) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.runtimeGeneration", "isolation proof runtime generation is invalid")
+	}
+	return nil
+}
+
+func validateIsolationProof(operation Operation, proof *IsolationProof) error {
+	if proof == nil {
+		return nil
+	}
+	if proof.Generation == "" {
+		return newValidationError(ErrorCodeMissingRequiredField, operation, "isolationProof.generation", "isolation proof generation is required")
+	}
+	if len(proof.Generation) > MaxIsolationProofGenerationBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "isolationProof.generation", "isolation proof generation exceeds protocol limit")
+	}
+	if !validIsolationGeneration(proof.Generation, false) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.generation", "isolation proof generation is invalid")
+	}
+	if len(proof.RuntimeGeneration) > MaxIsolationProofGenerationBytes {
+		return newValidationError(ErrorCodeOversizedPayloadMetadata, operation, "isolationProof.runtimeGeneration", "isolation proof runtime generation exceeds protocol limit")
+	}
+	if !validIsolationGeneration(proof.RuntimeGeneration, true) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.runtimeGeneration", "isolation proof runtime generation is invalid")
+	}
+	if !validIsolationProofStatus(proof.Status) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.status", "isolation proof status is unsupported")
+	}
+	if proof.Status == IsolationProofStatusVerified && !verifiedProcessIsolationProof(*proof) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof", "verified isolation proof is incomplete")
+	}
+	if proof.Status != IsolationProofStatusVerified &&
+		(proof.RestrictedIdentity || proof.CapabilitiesCleared || proof.NoNewPrivileges || proof.SupplementaryGroupsCleared || proof.RawPacketSocketDenied) {
+		return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof", "unverified isolation proof contains partial claims")
+	}
+	if proof.Network != nil {
+		if !validIsolationProofStatus(proof.Network.Status) {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.network.status", "network isolation proof status is unsupported")
+		}
+		if proof.Network.Status == IsolationProofStatusVerified && !verifiedNetworkIsolationProof(proof.Network) {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.network", "verified network isolation proof is incomplete")
+		}
+		if proof.Network.Status != IsolationProofStatusVerified &&
+			(proof.Network.SingleInterface || proof.Network.StaticRoutes || proof.Network.ProxyReachable) {
+			return newValidationError(ErrorCodeInvalidMetadata, operation, "isolationProof.network", "unverified network isolation proof contains partial claims")
+		}
+	}
+	return nil
+}
+
+func verifiedProcessIsolationProof(proof IsolationProof) bool {
+	return proof.RestrictedIdentity && proof.CapabilitiesCleared && proof.NoNewPrivileges &&
+		proof.SupplementaryGroupsCleared && proof.RawPacketSocketDenied
+}
+
+func verifiedNetworkIsolationProof(proof *NetworkIsolationProof) bool {
+	return proof != nil && proof.Status == IsolationProofStatusVerified &&
+		proof.SingleInterface && proof.StaticRoutes && proof.ProxyReachable
+}
+
+func validIsolationProofStatus(status IsolationProofStatus) bool {
+	switch status {
+	case IsolationProofStatusVerified, IsolationProofStatusUnavailable, IsolationProofStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func validIsolationGeneration(value string, optional bool) bool {
+	if value == "" {
+		return optional
+	}
+	if value != strings.TrimSpace(value) || len(value) > MaxIsolationProofGenerationBytes {
+		return false
+	}
+	for _, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9':
+		case char == '-', char == '_', char == '.', char == ':':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateErrorResponse validates the generic v1 error response envelope.

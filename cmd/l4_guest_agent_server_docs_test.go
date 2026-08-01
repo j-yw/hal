@@ -15,6 +15,7 @@ const (
 	l4GuestAgentServerBuildTag        = "l4_guest_agent_server_integration"
 	l4GuestAgentServerLiveTest        = "l4_linux_backend_integration_test.go"
 	l4GuestAgentServerLiveTestName    = "TestL4PreparedLinuxLocalServerE2E"
+	l7GuestIsolationLiveTest          = "l7_isolation_linux_integration_test.go"
 )
 
 func TestL4GuestAgentServerVerificationDocumentation(t *testing.T) {
@@ -78,7 +79,7 @@ func TestL4GuestAgentServerDefaultTestsStayFakeOnly(t *testing.T) {
 	foundDefault := false
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, "_test.go") || name == l4GuestAgentServerLiveTest || name == "import_boundary_test.go" {
+		if entry.IsDir() || !strings.HasSuffix(name, "_test.go") || name == l4GuestAgentServerLiveTest || name == l7GuestIsolationLiveTest || name == "import_boundary_test.go" {
 			continue
 		}
 		foundDefault = true

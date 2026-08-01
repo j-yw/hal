@@ -25,19 +25,25 @@ type GuestAgentReadinessClient interface {
 // GuestAgentReadinessProbeOptions configures the Firecracker guest readiness
 // probe that talks through the versioned guest-agent protocol.
 type GuestAgentReadinessProbeOptions struct {
-	Client    GuestAgentReadinessClient
-	Transport string
-	Labels    []string
-	Timing    *guestagent.TimingMetadata
+	Client                   GuestAgentReadinessClient
+	Transport                string
+	Labels                   []string
+	Timing                   *guestagent.TimingMetadata
+	RequireIsolationProof    bool
+	RequireNetworkProof      bool
+	IsolationProofGeneration string
 }
 
 // GuestAgentReadinessProbe adapts guest-agent readiness responses onto the
 // Firecracker guest readiness probe boundary.
 type GuestAgentReadinessProbe struct {
-	client    GuestAgentReadinessClient
-	transport string
-	labels    []string
-	timing    *guestagent.TimingMetadata
+	client                   GuestAgentReadinessClient
+	transport                string
+	labels                   []string
+	timing                   *guestagent.TimingMetadata
+	requireIsolationProof    bool
+	requireNetworkProof      bool
+	isolationProofGeneration string
 }
 
 var _ GuestReadinessProbe = (*GuestAgentReadinessProbe)(nil)
@@ -50,26 +56,44 @@ func NewGuestAgentReadinessProbe(options GuestAgentReadinessProbeOptions) *Guest
 		transport = defaultGuestAgentReadinessTransport
 	}
 	return &GuestAgentReadinessProbe{
-		client:    options.Client,
-		transport: transport,
-		labels:    append([]string(nil), options.Labels...),
-		timing:    cloneGuestAgentTransportTiming(options.Timing),
+		client:                   options.Client,
+		transport:                transport,
+		labels:                   append([]string(nil), options.Labels...),
+		timing:                   cloneGuestAgentTransportTiming(options.Timing),
+		requireIsolationProof:    options.RequireIsolationProof || options.RequireNetworkProof,
+		requireNetworkProof:      options.RequireNetworkProof,
+		isolationProofGeneration: strings.TrimSpace(options.IsolationProofGeneration),
 	}
 }
 
 // ProbeGuestReadiness asks the guest agent whether protocol operations are
 // ready, returning only sanitized Firecracker readiness metadata.
-func (probe *GuestAgentReadinessProbe) ProbeGuestReadiness(ctx context.Context, _ firecracker.GuestReadinessRequest) (firecracker.GuestReadinessResult, error) {
+func (probe *GuestAgentReadinessProbe) ProbeGuestReadiness(ctx context.Context, firecrackerRequest firecracker.GuestReadinessRequest) (firecracker.GuestReadinessResult, error) {
 	client, err := probe.clientFor()
 	if err != nil {
 		return firecracker.GuestReadinessResult{}, err
 	}
 
-	response, err := client.Readiness(nonNilContext(ctx), guestagent.ReadinessRequest{
+	request := guestagent.ReadinessRequest{
 		ProtocolVersion: guestagent.ProtocolVersionV1,
 		Operation:       guestagent.OperationReadiness,
 		Timing:          probe.timingMetadata(),
-	})
+	}
+	if probe.requireIsolationProof {
+		firecrackerRequest = firecracker.SanitizeGuestReadinessRequest(firecrackerRequest)
+		if firecrackerRequest.RuntimeID == "" {
+			return firecracker.GuestReadinessResult{}, guestagent.NewProtocolError(guestagent.ErrorCodeInvalidMetadata, guestagent.OperationReadiness, "isolationProof.runtimeGeneration", errors.New("guest runtime generation is required"))
+		}
+		request.IsolationProof = &guestagent.IsolationProofRequest{
+			Generation:          probe.isolationProofGeneration,
+			RuntimeGeneration:   firecrackerRequest.RuntimeID,
+			RequireNetworkProof: probe.requireNetworkProof,
+		}
+		if err := guestagent.ValidateReadinessRequest(request); err != nil {
+			return firecracker.GuestReadinessResult{}, err
+		}
+	}
+	response, err := client.Readiness(nonNilContext(ctx), request)
 	if err != nil {
 		return firecracker.GuestReadinessResult{}, guestAgentTransportClientError(ctx, guestagent.OperationReadiness, err)
 	}
@@ -79,7 +103,7 @@ func (probe *GuestAgentReadinessProbe) ProbeGuestReadiness(ctx context.Context, 
 	if response.Error != nil {
 		return firecracker.GuestReadinessResult{}, response.Error
 	}
-	if err := guestagent.ValidateReadinessResponse(*response); err != nil {
+	if err := guestagent.ValidateReadinessResponseForRequest(*response, request); err != nil {
 		return firecracker.GuestReadinessResult{}, err
 	}
 
@@ -87,7 +111,14 @@ func (probe *GuestAgentReadinessProbe) ProbeGuestReadiness(ctx context.Context, 
 	if response.Ready && response.Status != guestagent.ReadinessStatusNotReady {
 		state = sandboxruntime.RuntimeGuestReadinessStateReady
 	}
-	return firecracker.NewGuestReadinessResult(state, probe.transport, probe.readinessLabels()), nil
+	labels := probe.readinessLabels()
+	if request.IsolationProof != nil && response.IsolationProof != nil && response.IsolationProof.Status == guestagent.IsolationProofStatusVerified {
+		labels = append(labels, "guest_isolation_verified")
+		if response.IsolationProof.Network != nil && response.IsolationProof.Network.Status == guestagent.IsolationProofStatusVerified {
+			labels = append(labels, "guest_topology_verified")
+		}
+	}
+	return firecracker.NewGuestReadinessResult(state, probe.transport, labels), nil
 }
 
 func (probe *GuestAgentReadinessProbe) clientFor() (GuestAgentReadinessClient, error) {

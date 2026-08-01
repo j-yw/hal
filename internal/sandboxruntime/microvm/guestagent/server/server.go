@@ -17,9 +17,15 @@ type Server struct {
 	resolver  EnvironmentResolver
 	limits    Limits
 
-	maxOperationTime time.Duration
-	maxShutdownTime  time.Duration
-	admission        chan struct{}
+	maxOperationTime                time.Duration
+	maxShutdownTime                 time.Duration
+	admission                       chan struct{}
+	isolationVerifier               IsolationVerifier
+	requireIsolationProofBeforeWork bool
+	requireNetworkProofBeforeWork   bool
+	isolationProven                 bool
+	proofAttemptSequence            uint64
+	currentProofAttempt             uint64
 
 	mu              sync.Mutex
 	state           State
@@ -44,6 +50,10 @@ func New(options Options) (*Server, error) {
 	}
 	if !configuredDependency(options.Backend) {
 		return nil, errors.New("guest-agent server backend is required")
+	}
+	requireIsolationProofBeforeWork := options.RequireIsolationProofBeforeWork || options.RequireNetworkProofBeforeWork
+	if requireIsolationProofBeforeWork && !configuredDependency(options.IsolationVerifier) {
+		return nil, errors.New("guest-agent isolation verifier is required")
 	}
 	maxRequestBytes, err := boundedInt64Option(
 		"maximum request bytes",
@@ -99,18 +109,21 @@ func New(options Options) (*Server, error) {
 	}
 	operationCtx, operationCancel := context.WithCancel(context.Background())
 	return &Server{
-		transport:        options.Transport,
-		backend:          options.Backend,
-		resolver:         resolver,
-		limits:           Limits{MaxRequestBytes: maxRequestBytes, MaxResponseBytes: maxResponseBytes},
-		maxOperationTime: maxOperationTime,
-		maxShutdownTime:  maxShutdownTime,
-		admission:        make(chan struct{}, maxConcurrent),
-		state:            StateNew,
-		operationCtx:     operationCtx,
-		operationCancel:  operationCancel,
-		transportDone:    make(chan struct{}),
-		cleanupDone:      make(chan struct{}),
+		transport:                       options.Transport,
+		backend:                         options.Backend,
+		resolver:                        resolver,
+		limits:                          Limits{MaxRequestBytes: maxRequestBytes, MaxResponseBytes: maxResponseBytes},
+		maxOperationTime:                maxOperationTime,
+		maxShutdownTime:                 maxShutdownTime,
+		admission:                       make(chan struct{}, maxConcurrent),
+		isolationVerifier:               options.IsolationVerifier,
+		requireIsolationProofBeforeWork: requireIsolationProofBeforeWork,
+		requireNetworkProofBeforeWork:   options.RequireNetworkProofBeforeWork,
+		state:                           StateNew,
+		operationCtx:                    operationCtx,
+		operationCancel:                 operationCancel,
+		transportDone:                   make(chan struct{}),
+		cleanupDone:                     make(chan struct{}),
 	}, nil
 }
 
@@ -319,6 +332,10 @@ func (server *Server) beginBackendCall(ctx context.Context, stateChanging bool) 
 
 	server.mu.Lock()
 	if server.state != StateServing {
+		server.mu.Unlock()
+		return nil, nil, errServerNotReady
+	}
+	if stateChanging && server.requireIsolationProofBeforeWork && !server.isolationProven {
 		server.mu.Unlock()
 		return nil, nil, errServerNotReady
 	}

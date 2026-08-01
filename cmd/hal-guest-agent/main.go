@@ -33,19 +33,27 @@ func run() error {
 		_ = listener.Close()
 		return err
 	}
-	backendOptions, err := linuxBackendOptionsFromLookup(os.LookupEnv)
+	configuration, err := linuxGuestAgentConfigurationFromLookup(os.LookupEnv)
 	if err != nil {
 		_ = listener.Close()
 		return err
 	}
-	backend, err := server.NewLinuxBackend(backendOptions)
+	backend, err := server.NewLinuxBackend(configuration.backend)
 	if err != nil {
 		_ = listener.Close()
+		return err
+	}
+	isolationVerifier, err := server.NewLinuxIsolationVerifier(server.LinuxIsolationVerifierOptions{})
+	if err != nil {
+		_ = listener.Close()
+		_ = backend.Close(context.Background())
 		return err
 	}
 	agent, err := server.New(server.Options{
-		Transport: transport,
-		Backend:   backend,
+		Transport:                     transport,
+		Backend:                       backend,
+		IsolationVerifier:             isolationVerifier,
+		RequireNetworkProofBeforeWork: configuration.requireNetworkProofBeforeWork,
 	})
 	if err != nil {
 		_ = listener.Close()
@@ -63,19 +71,32 @@ func linuxBackendOptions() server.LinuxBackendOptions {
 }
 
 func linuxBackendOptionsFromLookup(lookup func(string) (string, bool)) (server.LinuxBackendOptions, error) {
+	configuration, err := linuxGuestAgentConfigurationFromLookup(lookup)
+	return configuration.backend, err
+}
+
+type linuxGuestAgentConfiguration struct {
+	backend                       server.LinuxBackendOptions
+	requireNetworkProofBeforeWork bool
+}
+
+func linuxGuestAgentConfigurationFromLookup(lookup func(string) (string, bool)) (linuxGuestAgentConfiguration, error) {
 	proxyEnvironment, err := validatedL7ProxyEnvironment(lookup)
 	if err != nil {
-		return server.LinuxBackendOptions{}, err
+		return linuxGuestAgentConfiguration{}, err
 	}
-	return server.LinuxBackendOptions{
-		WorkspaceRoot: "/workspace",
-		GuestRoot:     "/workspace",
-		BaseEnvironment: append([]string{
-			"HOME=/workspace",
-			"PATH=/usr/bin:/bin",
-			"TMPDIR=/tmp",
-		}, proxyEnvironment...),
-		ExecutablePaths: []string{"/usr/bin", "/bin"},
+	return linuxGuestAgentConfiguration{
+		backend: server.LinuxBackendOptions{
+			WorkspaceRoot: "/workspace",
+			GuestRoot:     "/workspace",
+			BaseEnvironment: append([]string{
+				"HOME=/workspace",
+				"PATH=/usr/bin:/bin",
+				"TMPDIR=/tmp",
+			}, proxyEnvironment...),
+			ExecutablePaths: []string{"/usr/bin", "/bin"},
+		},
+		requireNetworkProofBeforeWork: len(proxyEnvironment) != 0,
 	}, nil
 }
 
