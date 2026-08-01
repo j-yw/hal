@@ -121,13 +121,36 @@ func prepareVerifiedL7LaunchMaterial(config BackendConfig) (BackendConfig, *seal
 	}
 	descriptor, profile, err := config.VerifiedL7Assets.PrepareLaunch(config.LaunchDescriptor, material)
 	if err != nil {
-		prepareErr := error(newLiveBootRenderConfigError("launchDescriptor", "current verified L7 network image assets are required"))
+		prepareErr := newLiveBootRenderL7PrepareError(err)
 		prepareErr = joinLiveBootRenderCleanup(prepareErr, material.Close())
 		return BackendConfig{}, nil, prepareErr
 	}
 	config.LaunchDescriptor = &descriptor
 	config.VerifiedL7Profile = &profile
 	return config, material, nil
+}
+
+func newLiveBootRenderL7PrepareError(cause error) error {
+	err := microvm.NewInvalidConfigError(liveBootRenderOperation, sanitizedLiveBootL7PrepareCause{cause: cause})
+	err.Field = "launchDescriptor"
+	err.Message = "current verified L7 network image assets are required"
+	return err
+}
+
+type sanitizedLiveBootL7PrepareCause struct {
+	cause error
+}
+
+func (sanitizedLiveBootL7PrepareCause) Error() string {
+	return microvm.ErrInvalidConfig.Error()
+}
+
+func (cause sanitizedLiveBootL7PrepareCause) Is(target error) bool {
+	return target == microvm.ErrInvalidConfig || errors.Is(cause.cause, target)
+}
+
+func (cause sanitizedLiveBootL7PrepareCause) As(target any) bool {
+	return errors.As(cause.cause, target)
 }
 
 func joinLiveBootRenderCleanup(primary, cleanupErr error) error {
