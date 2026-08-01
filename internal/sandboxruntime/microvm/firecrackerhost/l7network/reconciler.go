@@ -86,19 +86,17 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 	if err != nil || interfaceIsNil(namespace) {
 		return coordinator.releasePrepareJournal(session, ErrStaleTopologyUnverified)
 	}
+	coordinator.options.Topology = lifecycle
+	session.topologyIdentity, session.topology, session.namespace = topologyIdentity(identity), topology, namespace
 	proxyAddress, err := netip.ParseAddr(record.proxyAddress)
 	if err != nil || record.proxyPort == 0 {
-		_ = namespace.Close()
-		_ = lease.Release()
-		return nil, ErrStaleTopologyUnverified
+		return coordinator.releaseRecoveryHandles(session, ErrStaleTopologyUnverified)
 	}
 	spec := staticTAPSpec(identity, proxyAddress, record.proxyPort)
 	tap := tapState{name: record.tapName, generation: identity.TopologyGenerationID,
 		fingerprint: record.tapFingerprint, ifIndex: record.tapIfIndex}
 	if !tap.valid(spec) {
-		_ = namespace.Close()
-		_ = lease.Release()
-		return nil, ErrStaleTopologyUnverified
+		return coordinator.releaseRecoveryHandles(session, ErrStaleTopologyUnverified)
 	}
 	expected, err := linuxrules.NewExpectedRuleSet(linuxrules.RuleSetConfig{Correlation: correlation(identity),
 		Profile: linuxrules.RuleProfileForwardedTAP, Namespace: namespace.RuleNamespace(), TableName: ruleTableName,
@@ -106,12 +104,8 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 		WorkloadIPv6Address: spec.guestIPv6Prefix.Addr().String(), GatewayIPv6Address: spec.gatewayIPv6.String(),
 		IPv6PrefixBits: uint8(spec.guestIPv6Prefix.Bits()), AllowIPv6DAD: true})
 	if err != nil {
-		_ = namespace.Close()
-		_ = lease.Release()
-		return nil, ErrStaleTopologyUnverified
+		return coordinator.releaseRecoveryHandles(session, ErrStaleTopologyUnverified)
 	}
-	coordinator.options.Topology = lifecycle
-	session.topologyIdentity, session.topology, session.namespace = topologyIdentity(identity), topology, namespace
 	session.tapSpec, session.tap, session.expectedRules, session.proxyStopped, session.rulesPresent = spec, tap, expected, true, true
 	switch record.stage {
 	case journalStageQuarantined:

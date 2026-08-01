@@ -61,6 +61,7 @@ const (
 	retainedCleanupNone retainedCleanupMode = iota
 	retainedCleanupRollback
 	retainedCleanupReleaseJournal
+	retainedCleanupReleaseRecoveryHandles
 	retainedCleanupUnavailable
 )
 
@@ -261,6 +262,19 @@ func (c *Coordinator) releasePrepareJournal(session *Session, primary error) (*S
 	}
 	session.journalReleased = true
 	return nil, primary
+}
+
+func (c *Coordinator) releaseRecoveryHandles(session *Session, primary error) (*Session, error) {
+	if session == nil {
+		return nil, errors.Join(primary, ErrCleanupIncomplete)
+	}
+	if !interfaceIsNil(session.namespace) {
+		if err := session.namespace.Close(); err != nil {
+			return c.retainPrepareCleanup(session, retainedCleanupReleaseRecoveryHandles, primary)
+		}
+		session.namespace = nil
+	}
+	return c.releasePrepareJournal(session, primary)
 }
 
 func (s *Session) stopKnownProxyAfterUntrackedPrepare() {
@@ -562,6 +576,18 @@ func (s *Session) retryRetainedCleanupLocked() error {
 		}
 	case retainedCleanupReleaseJournal:
 		if interfaceIsNil(s.journal) || s.journal.Release() != nil {
+			return ErrCleanupIncomplete
+		}
+		s.journalReleased = true
+	case retainedCleanupReleaseRecoveryHandles:
+		if !interfaceIsNil(s.namespace) {
+			if err := s.namespace.Close(); err != nil {
+				return ErrCleanupIncomplete
+			}
+			s.namespace = nil
+		}
+		if interfaceIsNil(s.journal) || s.journal.Release() != nil {
+			s.retainedCleanup = retainedCleanupReleaseJournal
 			return ErrCleanupIncomplete
 		}
 		s.journalReleased = true
