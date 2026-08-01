@@ -279,8 +279,43 @@ func TestL7StartedProcessIsCleanedWhenParentFileCleanupFails(t *testing.T) {
 		t.Fatalf("errors.As(start error, *os.PathError) = false, want original close cause")
 	}
 	for _, forbidden := range []string{"closed-inherited-asset"} {
-		if strings.Contains(err.Error(), forbidden) {
+		if strings.Contains(l7VisibleErrorText(err), forbidden) {
 			t.Fatalf("cleanup error leaked unsafe value %q: %v", forbidden, err)
+		}
+	}
+}
+
+func TestL7InheritedFileCleanupPreservesEverySanitizedCause(t *testing.T) {
+	files := make([]*os.File, 2)
+	for index := range files {
+		file, err := os.CreateTemp(t.TempDir(), "private-inherited-asset-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[index] = file
+	}
+	t.Cleanup(func() {
+		for _, file := range files {
+			if err := file.Close(); err != nil {
+				t.Errorf("Close(%s) error = %v", file.Name(), err)
+			}
+		}
+	})
+	firstCloseFailure := &l7FirstCleanupFailure{detail: "private inherited kernel close detail"}
+	secondCloseFailure := &l7SecondCleanupFailure{detail: "private inherited rootfs close detail"}
+	err := closeProcessInheritedFilesWith(files, func(file *os.File) error {
+		if file == files[0] {
+			return firstCloseFailure
+		}
+		return secondCloseFailure
+	})
+	if err == nil {
+		t.Fatal("closeProcessInheritedFilesWith() error = nil")
+	}
+	assertL7CleanupCauses(t, err, firstCloseFailure, secondCloseFailure)
+	for _, file := range files {
+		if strings.Contains(l7VisibleErrorText(err), file.Name()) {
+			t.Fatalf("inherited cleanup error leaked private path %q: %v", file.Name(), err)
 		}
 	}
 }
@@ -309,10 +344,26 @@ func assertL7CleanupCauses(
 		t.Fatalf("cleanup error did not preserve every original errors.As cause: %v", err)
 	}
 	for _, private := range []string{first.detail, second.detail} {
-		if strings.Contains(err.Error(), private) {
+		if strings.Contains(l7VisibleErrorText(err), private) {
 			t.Fatalf("cleanup error leaked private cause %q: %v", private, err)
 		}
 	}
+}
+
+func l7VisibleErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := err.Error()
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, child := range wrapped.Unwrap() {
+			text += " " + l7VisibleErrorText(child)
+		}
+	case interface{ Unwrap() error }:
+		text += " " + l7VisibleErrorText(wrapped.Unwrap())
+	}
+	return text
 }
 
 type l7ProbeLaunchMaterial struct {

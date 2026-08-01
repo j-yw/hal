@@ -400,3 +400,7 @@ func (err sanitizedLiveBootRenderCause) Error() string {
 func (err sanitizedLiveBootRenderCause) Is(target error) bool {
 	return target != nil && errors.Is(err.cause, target)
 }
+
+func (err sanitizedLiveBootRenderCause) As(target any) bool {
+	return errors.As(err.cause, target)
+}

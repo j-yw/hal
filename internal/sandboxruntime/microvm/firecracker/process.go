@@ -133,16 +133,52 @@ func validateProcessInheritedFiles(files []*os.File) error {
 // its owning call site. A close error is cleanup uncertainty: callers must not
 // retry an ambiguous close or accept a started process as successful.
 func closeProcessInheritedFiles(files []*os.File) error {
-	failed := false
+	return closeProcessInheritedFilesWith(files, func(file *os.File) error {
+		return file.Close()
+	})
+}
+
+func closeProcessInheritedFilesWith(files []*os.File, closeFile func(*os.File) error) error {
+	cleanupCauses := make([]error, 0, len(files))
 	for _, file := range files {
-		if file != nil && file.Close() != nil {
-			failed = true
+		if file != nil {
+			if err := closeFile(file); err != nil {
+				cleanupCauses = append(cleanupCauses, err)
+			}
 		}
 	}
-	if failed {
-		return newProcessBoundaryError("inheritedFiles", "inherited process file cleanup failed")
+	if len(cleanupCauses) > 0 {
+		return newProcessBoundaryAdapterError(
+			"inheritedFiles",
+			"inherited process file cleanup failed",
+			newSanitizedProcessCleanupCause(cleanupCauses...),
+		)
 	}
 	return nil
+}
+
+func newSanitizedProcessCleanupCause(causes ...error) error {
+	joined := errors.Join(causes...)
+	if joined == nil {
+		return nil
+	}
+	return sanitizedProcessCleanupCause{causes: joined}
+}
+
+type sanitizedProcessCleanupCause struct {
+	causes error
+}
+
+func (sanitizedProcessCleanupCause) Error() string {
+	return "inherited process file cleanup failed"
+}
+
+func (cause sanitizedProcessCleanupCause) Is(target error) bool {
+	return errors.Is(cause.causes, target)
+}
+
+func (cause sanitizedProcessCleanupCause) As(target any) bool {
+	return errors.As(cause.causes, target)
 }
 
 // ProcessCommandDescriptorFromStartPlan converts a pure start operation plan
@@ -624,4 +660,8 @@ func (err sanitizedProcessBoundaryAdapterCause) Error() string {
 
 func (err sanitizedProcessBoundaryAdapterCause) Is(target error) bool {
 	return target != nil && errors.Is(err.cause, target)
+}
+
+func (err sanitizedProcessBoundaryAdapterCause) As(target any) bool {
+	return errors.As(err.cause, target)
 }

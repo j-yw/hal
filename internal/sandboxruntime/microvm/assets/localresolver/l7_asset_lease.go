@@ -245,18 +245,31 @@ func (lease *VerifiedL7AssetLease) confirmSourceLocked() (retErr error) {
 		same := retainedErr == nil && currentErr == nil && os.SameFile(retainedInfo, currentInfo)
 		verifyErr := verifyPinnedL7Asset(current, asset)
 		closeErr := current.Close()
-		if !same || verifyErr != nil || closeErr != nil {
-			return l7LeaseError(ErrorCodeAssetLockMismatch, "l7Assets", "verified L7 asset changed", ErrAssetLockMismatch)
+		var currentErrResult error
+		if !same || verifyErr != nil {
+			currentErrResult = l7LeaseError(ErrorCodeAssetLockMismatch, "l7Assets", "verified L7 asset changed", ErrAssetLockMismatch)
+		}
+		if closeErr != nil {
+			currentErrResult = joinL7LeaseCleanup(
+				currentErrResult,
+				newL7AssetCleanupError("verified L7 asset cleanup failed", closeErr),
+			)
+		}
+		if currentErrResult != nil {
+			return currentErrResult
 		}
 	}
 	return nil
 }
 
 func closePinnedL7Asset(file *os.File) error {
-	if file == nil || file.Close() == nil {
+	if file == nil {
 		return nil
 	}
-	return l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset cleanup failed", ErrFileUnavailable)
+	if err := file.Close(); err != nil {
+		return newL7AssetCleanupError("verified L7 asset cleanup failed", err)
+	}
+	return nil
 }
 
 func joinL7LeaseCleanup(primary, cleanupErr error) error {
@@ -274,23 +287,56 @@ func (lease *VerifiedL7AssetLease) closeLocked() error {
 		return lease.cleanupErr
 	}
 	lease.closed = true
-	failed := false
-	if lease.material != nil && lease.material.Close() != nil {
-		failed = true
+	cleanupCauses := make([]error, 0, 4)
+	if lease.material != nil {
+		if err := lease.material.Close(); err != nil {
+			cleanupCauses = append(cleanupCauses, err)
+		}
 	}
 	for _, file := range []*os.File{lease.kernel, lease.rootfs, lease.root} {
-		if file != nil && file.Close() != nil {
-			failed = true
+		if file != nil {
+			if err := file.Close(); err != nil {
+				cleanupCauses = append(cleanupCauses, err)
+			}
 		}
 	}
 	lease.material = nil
 	lease.kernel = nil
 	lease.rootfs = nil
 	lease.root = nil
-	if failed {
-		lease.cleanupErr = l7LeaseError(ErrorCodeFileUnavailable, "l7Assets", "verified L7 asset lease cleanup failed", ErrFileUnavailable)
+	if len(cleanupCauses) > 0 {
+		lease.cleanupErr = newL7AssetCleanupError("verified L7 asset lease cleanup failed", cleanupCauses...)
 	}
 	return lease.cleanupErr
+}
+
+func newL7AssetCleanupError(message string, causes ...error) error {
+	joined := errors.Join(causes...)
+	if joined == nil {
+		return nil
+	}
+	return l7LeaseError(
+		ErrorCodeFileUnavailable,
+		"l7Assets",
+		message,
+		sanitizedL7AssetCleanupCause{causes: joined},
+	)
+}
+
+type sanitizedL7AssetCleanupCause struct {
+	causes error
+}
+
+func (sanitizedL7AssetCleanupCause) Error() string {
+	return ErrFileUnavailable.Error()
+}
+
+func (cause sanitizedL7AssetCleanupCause) Is(target error) bool {
+	return target == ErrFileUnavailable || errors.Is(cause.causes, target)
+}
+
+func (cause sanitizedL7AssetCleanupCause) As(target any) bool {
+	return errors.As(cause.causes, target)
 }
 
 func copyPinnedL7Asset(material L7LaunchMaterialWriter, source *os.File, asset assets.LaunchAsset) (string, error) {

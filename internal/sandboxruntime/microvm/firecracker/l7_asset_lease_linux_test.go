@@ -3,9 +3,7 @@
 package firecracker
 
 import (
-	"errors"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
@@ -37,28 +35,34 @@ func TestSealedL7LaunchMaterialClosePreservesSanitizedOSCause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []*os.File{kernel, rootfs} {
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
+	t.Cleanup(func() {
+		for _, file := range []*os.File{kernel, rootfs} {
+			if err := file.Close(); err != nil {
+				t.Errorf("Close(%s) error = %v", file.Name(), err)
+			}
 		}
-	}
+	})
+	firstCloseFailure := &l7FirstCleanupFailure{detail: "private kernel close detail"}
+	secondCloseFailure := &l7SecondCleanupFailure{detail: "private rootfs close detail"}
+	closeCalls := 0
 	material := &sealedL7LaunchMaterial{assets: map[assets.AssetRole]*sealedL7Asset{
 		assets.AssetRoleKernel: {file: kernel},
 		assets.AssetRoleRootfs: {file: rootfs},
+	}, closeFile: func(file *os.File) error {
+		closeCalls++
+		if file == kernel {
+			return firstCloseFailure
+		}
+		return secondCloseFailure
 	}}
 	firstCloseErr := material.Close()
 	secondCloseErr := material.Close()
 	if firstCloseErr == nil || firstCloseErr != secondCloseErr {
 		t.Fatalf("repeated Close errors = (%v, %v), want one stable cleanup error", firstCloseErr, secondCloseErr)
 	}
-	var pathErr *os.PathError
-	if !errors.As(firstCloseErr, &pathErr) || pathErr == nil {
-		t.Fatalf("errors.As(Close error, *os.PathError) = false, want original OS close cause")
-	}
-	for _, private := range []string{kernel.Name(), rootfs.Name()} {
-		if strings.Contains(firstCloseErr.Error(), private) {
-			t.Fatalf("Close error leaked private path %q: %v", private, firstCloseErr)
-		}
+	assertL7CleanupCauses(t, firstCloseErr, firstCloseFailure, secondCloseFailure)
+	if closeCalls != 2 {
+		t.Fatalf("close calls = %d, want two once-only attempts", closeCalls)
 	}
 }
 

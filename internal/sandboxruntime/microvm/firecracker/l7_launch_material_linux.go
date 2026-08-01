@@ -19,10 +19,11 @@ const (
 )
 
 type sealedL7LaunchMaterial struct {
-	mu       sync.Mutex
-	assets   map[assets.AssetRole]*sealedL7Asset
-	closed   bool
-	closeErr error
+	mu        sync.Mutex
+	assets    map[assets.AssetRole]*sealedL7Asset
+	closeFile func(*os.File) error
+	closed    bool
+	closeErr  error
 }
 
 type sealedL7Asset struct {
@@ -75,7 +76,7 @@ func (material *sealedL7LaunchMaterial) WriteAsset(role assets.AssetRole, source
 	}
 	if err != nil {
 		if closeErr := file.Close(); closeErr != nil {
-			return "", errors.Join(err, errUnsafeLiveBootStateEntry)
+			return "", errors.Join(err, newSanitizedL7LaunchMaterialCleanupError(closeErr))
 		}
 		return "", err
 	}
@@ -166,17 +167,47 @@ func (material *sealedL7LaunchMaterial) Close() error {
 		return material.closeErr
 	}
 	material.closed = true
-	failed := false
+	cleanupCauses := make([]error, 0, 2)
+	closeFile := material.closeFile
+	if closeFile == nil {
+		closeFile = func(file *os.File) error { return file.Close() }
+	}
 	for _, role := range []assets.AssetRole{assets.AssetRoleKernel, assets.AssetRoleRootfs} {
 		entry := material.assets[role]
-		if entry != nil && entry.file != nil && entry.file.Close() != nil {
-			failed = true
+		if entry != nil && entry.file != nil {
+			if err := closeFile(entry.file); err != nil {
+				cleanupCauses = append(cleanupCauses, err)
+			}
 		}
 	}
-	if failed {
-		material.closeErr = errUnsafeLiveBootStateEntry
+	if len(cleanupCauses) > 0 {
+		material.closeErr = newSanitizedL7LaunchMaterialCleanupError(cleanupCauses...)
 	}
 	return material.closeErr
+}
+
+func newSanitizedL7LaunchMaterialCleanupError(causes ...error) error {
+	joined := errors.Join(causes...)
+	if joined == nil {
+		return nil
+	}
+	return sanitizedL7LaunchMaterialCleanupCause{causes: joined}
+}
+
+type sanitizedL7LaunchMaterialCleanupCause struct {
+	causes error
+}
+
+func (sanitizedL7LaunchMaterialCleanupCause) Error() string {
+	return errUnsafeLiveBootStateEntry.Error()
+}
+
+func (cause sanitizedL7LaunchMaterialCleanupCause) Is(target error) bool {
+	return target == errUnsafeLiveBootStateEntry || errors.Is(cause.causes, target)
+}
+
+func (cause sanitizedL7LaunchMaterialCleanupCause) As(target any) bool {
+	return errors.As(cause.causes, target)
 }
 
 func childFDText(fd int) string {
