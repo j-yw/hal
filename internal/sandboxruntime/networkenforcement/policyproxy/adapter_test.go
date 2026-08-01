@@ -1240,14 +1240,14 @@ func TestL7PolicyProxySelectedEndpointRetainsPortUntilExactStop(t *testing.T) {
 				t.Fatal("selected endpoint unavailable")
 			}
 			test.stop(t, adapter, request, endpoint)
-			if rebound, err := net.Listen("tcp", endpoint.Address()); err == nil {
+			if rebound, err := net.Listen(l6TestNetwork, endpoint.Address()); err == nil {
 				_ = rebound.Close()
 				t.Fatal("selected endpoint port rebound before exact generation release")
 			}
 			if _, err := adapter.StopLiveEndpoint(context.Background(), endpoint, request); err != nil {
 				t.Fatalf("exact generation release failed: %v", err)
 			}
-			rebound, err := net.Listen("tcp", endpoint.Address())
+			rebound, err := net.Listen(l6TestNetwork, endpoint.Address())
 			if err != nil {
 				t.Fatalf("selected endpoint port remained reserved after exact release: %v", err)
 			}
@@ -1263,7 +1263,7 @@ func TestL6PolicyProxyUnselectedEndpointDoesNotRetainPort(t *testing.T) {
 	if _, err := adapter.StopProxyListener(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	rebound, err := net.Listen("tcp", endpoint)
+	rebound, err := net.Listen(l6TestNetwork, endpoint)
 	if err != nil {
 		t.Fatalf("ordinary L6 stop leaked a port reservation: %v", err)
 	}

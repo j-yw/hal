@@ -19,6 +19,8 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman/l7network"
 )
 
+const testTCPNetwork = "tcp"
+
 func TestL7ComposedRootlessPodmanActivationCorrelatesProxyNamespaceRawPacketAndRules(t *testing.T) {
 	sequence := &sequenceLog{}
 	proxy := newFakeProxy(sequence)
@@ -121,7 +123,7 @@ func TestL7ComposedRootlessPodmanReleasesSelectedPortOnlyAfterRuleCleanup(t *tes
 		t.Fatal("selected composed endpoint unavailable")
 	}
 	rules.cleanupHook = func() {
-		rebound, bindErr := net.Listen("tcp", endpoint)
+		rebound, bindErr := net.Listen(testTCPNetwork, endpoint)
 		if bindErr == nil {
 			_ = rebound.Close()
 			t.Error("selected endpoint rebound before exact composed proxy stop")
@@ -137,7 +139,7 @@ func TestL7ComposedRootlessPodmanReleasesSelectedPortOnlyAfterRuleCleanup(t *tes
 	if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	rebound, err := net.Listen("tcp", endpoint)
+	rebound, err := net.Listen(testTCPNetwork, endpoint)
 	if err != nil {
 		t.Fatalf("selected endpoint remained reserved after exact composed cleanup: %v", err)
 	}
