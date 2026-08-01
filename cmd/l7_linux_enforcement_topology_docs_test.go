@@ -17,4 +17,9 @@ func TestL7LinuxEnforcementTopologyFocusedDocsRunHostPackageTests(t *testing.T) 
 	if got := strings.Count(string(payload), packageSelector); got < 2 {
 		t.Fatalf("L7 verification docs contain host topology package selector %d times, want focused and race gates", got)
 	}
+	for _, selector := range []string{"TestFirecrackerHostTopology", "TestLinuxTAP", "TestProductionProxy"} {
+		if !strings.Contains(string(payload), selector) {
+			t.Fatalf("L7 verification docs focused selector omits %q host topology tests", selector)
+		}
+	}
 }
