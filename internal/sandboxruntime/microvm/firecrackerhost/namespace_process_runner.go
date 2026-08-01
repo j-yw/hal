@@ -55,14 +55,6 @@ type NamespaceProcessStarter interface {
 	StartNamespaceProcess(context.Context, NamespaceProcessStartRequest) (HostProcess, error)
 }
 
-// OSExecNamespaceProcessStarter is the production adapter for the distinct
-// namespace wrapper contract. It fails closed on non-Linux platforms.
-type OSExecNamespaceProcessStarter struct{}
-
-func NewOSExecNamespaceProcessStarter() OSExecNamespaceProcessStarter {
-	return OSExecNamespaceProcessStarter{}
-}
-
 type NamespaceProcessRunnerOptions struct {
 	Namespace   NamespaceProcessFileProvider
 	Starter     NamespaceProcessStarter
