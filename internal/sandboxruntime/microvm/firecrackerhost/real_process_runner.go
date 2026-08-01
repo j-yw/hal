@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"unicode"
@@ -38,6 +40,51 @@ var _ HostProcessRunner = OSExecProcessRunner{}
 // runner for future explicit adapter injection.
 func NewOSExecProcessRunner() OSExecProcessRunner {
 	return OSExecProcessRunner{}
+}
+
+// StartNamespaceProcess launches the explicit L7 namespace wrapper. Unlike
+// StartHostProcess, this narrow contract requires exactly the fixed
+// user/network/kernel/rootfs descriptor layout.
+func (starter OSExecNamespaceProcessStarter) StartNamespaceProcess(ctx context.Context, request NamespaceProcessStartRequest) (HostProcess, error) {
+	if runtime.GOOS != "linux" {
+		return nil, ErrNamespaceProcessUnsupported
+	}
+	if err := validateNamespaceProcessStartRequest(request); err != nil {
+		return nil, err
+	}
+	command := exec.Command(request.Executable, request.Args...)
+	command.Env = []string{}
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	command.ExtraFiles = append([]*os.File(nil), request.InheritedFiles...)
+	if err := startOSExecCommandWithPrivateUmask(command.Start); err != nil {
+		return nil, ErrNamespaceProcessStartFailed
+	}
+	return newOSExecHostProcess(command), nil
+}
+
+func validateNamespaceProcessStartRequest(request NamespaceProcessStartRequest) error {
+	if !filepathIsCleanAbsolute(request.Executable) || len(request.InheritedFiles) != 4 || len(request.Args) < 4 ||
+		request.Args[0] != "--user=/proc/self/fd/3" || request.Args[1] != "--net=/proc/self/fd/4" ||
+		request.Args[2] != "--" || request.Args[3] == "" {
+		return ErrNamespaceProcessRequestInvalid
+	}
+	for _, arg := range request.Args {
+		if hasOSExecProcessControl(arg) {
+			return ErrNamespaceProcessRequestInvalid
+		}
+	}
+	for _, file := range request.InheritedFiles {
+		if file == nil {
+			return ErrNamespaceProcessRequestInvalid
+		}
+	}
+	return nil
+}
+
+func filepathIsCleanAbsolute(value string) bool {
+	return value != "" && filepath.IsAbs(value) && filepath.Clean(value) == value && !hasOSExecProcessControl(value)
 }
 
 // StartHostProcess starts a Firecracker host process from the raw runner
