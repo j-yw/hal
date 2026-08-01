@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	journalVersion = 1
+	journalVersion = 2
 	journalLimit   = 64 << 10
 )
 
@@ -35,6 +35,7 @@ type diskJournal struct {
 	Stage          journalStage `json:"stage"`
 	TAPName        string       `json:"tapName,omitempty"`
 	TAPFingerprint string       `json:"tapFingerprint,omitempty"`
+	TAPIfIndex     int          `json:"tapIfIndex,omitempty"`
 	RuleDigest     string       `json:"ruleDigest,omitempty"`
 	ProxyAddress   string       `json:"proxyAddress,omitempty"`
 	ProxyPort      uint16       `json:"proxyPort,omitempty"`
@@ -113,7 +114,7 @@ func (l *fileJournalLease) Load() (journalRecord, error) {
 	}
 	l.last = disk.Stage
 	return journalRecord{identity: disk.Identity, stage: disk.Stage, tapName: disk.TAPName,
-		tapFingerprint: disk.TAPFingerprint, ruleDigest: disk.RuleDigest,
+		tapFingerprint: disk.TAPFingerprint, tapIfIndex: disk.TAPIfIndex, ruleDigest: disk.RuleDigest,
 		proxyAddress: disk.ProxyAddress, proxyPort: disk.ProxyPort}, nil
 }
 
@@ -122,7 +123,7 @@ func (l *fileJournalLease) Save(ctx context.Context, record journalRecord) error
 		return ErrCleanupIncomplete
 	}
 	disk := diskJournal{Version: journalVersion, Identity: record.identity, Stage: record.stage,
-		TAPName: record.tapName, TAPFingerprint: record.tapFingerprint, RuleDigest: record.ruleDigest,
+		TAPName: record.tapName, TAPFingerprint: record.tapFingerprint, TAPIfIndex: record.tapIfIndex, RuleDigest: record.ruleDigest,
 		ProxyAddress: record.proxyAddress, ProxyPort: record.proxyPort}
 	if !validJournalDisk(disk) || stageOrder(record.stage) < stageOrder(l.last) {
 		return ErrCleanupIncomplete
@@ -170,13 +171,16 @@ func validJournalDisk(disk diskJournal) bool {
 	if disk.TAPName != "" && !validInterfaceName(disk.TAPName) {
 		return false
 	}
+	if disk.TAPIfIndex < 0 || disk.TAPIfIndex > maxTAPIfIndex {
+		return false
+	}
 	for _, value := range []string{disk.TAPFingerprint, disk.RuleDigest} {
 		if value != "" && !safeIDPattern.MatchString(value) {
 			return false
 		}
 	}
 	if stageOrder(disk.Stage) >= stageOrder(journalStageTAPCreated) && disk.Stage != journalStageTopologyRemoved &&
-		(disk.TAPName == "" || disk.TAPFingerprint == "" || disk.ProxyAddress == "" || disk.ProxyPort == 0) {
+		(disk.TAPName == "" || disk.TAPFingerprint == "" || disk.TAPIfIndex == 0 || disk.ProxyAddress == "" || disk.ProxyPort == 0) {
 		return false
 	}
 	if disk.ProxyAddress != "" {

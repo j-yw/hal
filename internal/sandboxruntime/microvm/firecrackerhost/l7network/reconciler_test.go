@@ -15,7 +15,7 @@ func TestFirecrackerHostTopologyReconcilerQuarantinesBeforeVMStopHandoff(t *test
 	identity := testIdentity()
 	spec := staticTAPSpec(identity, netip.MustParseAddr("192.0.2.2"), 43123)
 	record := journalRecord{identity: identity, stage: journalStageInspected, tapName: spec.name,
-		tapFingerprint: spec.fingerprint(), ruleDigest: "old-rule-digest", proxyAddress: spec.proxyAddress.String(), proxyPort: spec.proxyPort}
+		tapFingerprint: spec.fingerprint(), tapIfIndex: 41, ruleDigest: "old-rule-digest", proxyAddress: spec.proxyAddress.String(), proxyPort: spec.proxyPort}
 	journal := &loadedJournalStore{sequence: sequence, record: record}
 	topology := newFakeTopology(sequence)
 	recovery := &fakeRecoveryTopology{sequence: sequence, lifecycle: topology}
@@ -53,7 +53,7 @@ func TestFirecrackerHostTopologyReconcilerFailsClosedWithoutExactRecoveryProof(t
 	identity := testIdentity()
 	spec := staticTAPSpec(identity, netip.MustParseAddr("192.0.2.2"), 43123)
 	record := journalRecord{identity: identity, stage: journalStageInspected, tapName: spec.name,
-		tapFingerprint: spec.fingerprint(), proxyAddress: spec.proxyAddress.String(), proxyPort: spec.proxyPort}
+		tapFingerprint: spec.fingerprint(), tapIfIndex: 41, proxyAddress: spec.proxyAddress.String(), proxyPort: spec.proxyPort}
 	recovery := &fakeRecoveryTopology{sequence: sequence, err: errors.New("pid=4242 /proc/private mismatch")}
 	reconciler, err := NewReconciler(ReconcilerOptions{Recovery: recovery, TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
 		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},

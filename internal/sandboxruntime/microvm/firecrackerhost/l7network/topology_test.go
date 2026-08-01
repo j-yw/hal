@@ -510,7 +510,7 @@ func (t *fakeTAP) CreateConfigure(_ context.Context, _ NamespaceLease, spec tapS
 		return tapState{}, t.createErr
 	}
 	t.lastSpec = spec
-	return tapState{name: spec.name, generation: spec.generation, fingerprint: spec.fingerprint()}, nil
+	return tapState{name: spec.name, generation: spec.generation, fingerprint: spec.fingerprint(), ifIndex: 41}, nil
 }
 func (t *fakeTAP) Inspect(_ context.Context, _ NamespaceLease, _ tapState, spec tapSpec) error {
 	t.sequence.add("tap_inspect")

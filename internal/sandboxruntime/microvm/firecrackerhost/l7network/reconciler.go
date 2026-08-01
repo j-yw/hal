@@ -88,7 +88,8 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 		return nil, ErrStaleTopologyUnverified
 	}
 	spec := staticTAPSpec(identity, proxyAddress, record.proxyPort)
-	tap := tapState{name: record.tapName, generation: identity.TopologyGenerationID, fingerprint: record.tapFingerprint}
+	tap := tapState{name: record.tapName, generation: identity.TopologyGenerationID,
+		fingerprint: record.tapFingerprint, ifIndex: record.tapIfIndex}
 	if !tap.valid(spec) {
 		_ = namespace.Close()
 		_ = lease.Release()

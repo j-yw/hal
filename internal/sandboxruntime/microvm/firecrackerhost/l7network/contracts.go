@@ -246,10 +246,12 @@ type tapState struct {
 	name        string
 	generation  string
 	fingerprint string
+	ifIndex     int
 }
 
 func (s tapState) valid(spec tapSpec) bool {
-	return s.name != "" && s.name == spec.name && s.generation == spec.generation && s.fingerprint == spec.fingerprint()
+	return s.name != "" && s.name == spec.name && s.generation == spec.generation &&
+		s.fingerprint == spec.fingerprint() && s.ifIndex > 0 && s.ifIndex <= maxTAPIfIndex
 }
 
 type journalStage string
@@ -272,6 +274,7 @@ type journalRecord struct {
 	stage          journalStage
 	tapName        string
 	tapFingerprint string
+	tapIfIndex     int
 	ruleDigest     string
 	proxyAddress   string
 	proxyPort      uint16

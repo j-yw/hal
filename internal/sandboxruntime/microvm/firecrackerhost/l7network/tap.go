@@ -12,6 +12,7 @@ import (
 const (
 	defaultTAPOutputLimit int64 = 64 << 10
 	maxTAPOutputLimit     int64 = 1 << 20
+	maxTAPIfIndex               = 1<<31 - 1
 )
 
 type NamespaceCommandRequest struct {
@@ -91,6 +92,12 @@ func (t *LinuxTAP) CreateConfigure(ctx context.Context, namespace NamespaceLease
 		}
 		if index == 0 {
 			created = true
+			payload, inspectErr := t.run(ctx, namespace, t.options.IPPath, "-d", "-j", "link", "show", "dev", spec.name)
+			ifIndex, inspected := inspectTAPKernelIdentity(payload, spec.name)
+			if inspectErr != nil || !inspected {
+				return fail()
+			}
+			state.ifIndex = ifIndex
 		}
 	}
 	for _, setting := range []string{"net.ipv4.ip_forward=1", "net.ipv6.conf.all.forwarding=1"} {
@@ -108,8 +115,8 @@ func (t *LinuxTAP) Inspect(ctx context.Context, namespace NamespaceLease, state 
 	if !t.valid(namespace, spec) || !state.valid(spec) {
 		return ErrProofMismatch
 	}
-	link, err := t.run(ctx, namespace, t.options.IPPath, "-j", "link", "show", "dev", spec.name)
-	if err != nil || !inspectTAPLink(link, spec) {
+	link, err := t.run(ctx, namespace, t.options.IPPath, "-d", "-j", "link", "show", "dev", spec.name)
+	if err != nil || !inspectTAPLink(link, state, spec) {
 		return ErrProofMismatch
 	}
 	addresses, err := t.run(ctx, namespace, t.options.IPPath, "-j", "address", "show", "dev", spec.name)
@@ -117,10 +124,11 @@ func (t *LinuxTAP) Inspect(ctx context.Context, namespace NamespaceLease, state 
 		return ErrProofMismatch
 	}
 	for _, family := range []struct {
-		flag, destination string
-	}{{"-4", spec.guestIPv4Prefix.Addr().String() + "/32"}, {"-6", spec.guestIPv6Prefix.Addr().String() + "/128"}} {
+		flag, destination, preferredSource string
+	}{{"-4", spec.guestIPv4Prefix.Addr().String() + "/32", spec.gatewayIPv4.String()},
+		{"-6", spec.guestIPv6Prefix.Addr().String() + "/128", spec.gatewayIPv6.String()}} {
 		routes, routeErr := t.run(ctx, namespace, t.options.IPPath, "-j", family.flag, "route", "show", "dev", spec.name)
-		if routeErr != nil || !inspectTAPRoutes(routes, spec.name, family.destination) {
+		if routeErr != nil || !inspectTAPRoutes(routes, spec.name, family.destination, family.preferredSource) {
 			return ErrProofMismatch
 		}
 	}
@@ -169,16 +177,41 @@ func (t *LinuxTAP) run(ctx context.Context, namespace NamespaceLease, path strin
 	return output, nil
 }
 
-func inspectTAPLink(payload []byte, spec tapSpec) bool {
-	var links []struct {
-		Name    string   `json:"ifname"`
-		Address string   `json:"address"`
-		Flags   []string `json:"flags"`
+type tapLinkInspection struct {
+	Index    int      `json:"ifindex"`
+	Name     string   `json:"ifname"`
+	Address  string   `json:"address"`
+	Flags    []string `json:"flags"`
+	LinkType string   `json:"link_type"`
+	LinkInfo struct {
+		Kind string `json:"info_kind"`
+		Data struct {
+			Type string `json:"type"`
+		} `json:"info_data"`
+	} `json:"linkinfo"`
+}
+
+func inspectTAPKernelIdentity(payload []byte, name string) (int, bool) {
+	var links []tapLinkInspection
+	if json.Unmarshal(payload, &links) != nil || len(links) != 1 {
+		return 0, false
 	}
-	if json.Unmarshal(payload, &links) != nil || len(links) != 1 || links[0].Name != spec.name || !strings.EqualFold(links[0].Address, spec.mac) {
+	link := links[0]
+	return link.Index, link.Index > 0 && link.Index <= maxTAPIfIndex && link.Name == name &&
+		link.LinkType == "ether" && link.LinkInfo.Kind == "tun" && link.LinkInfo.Data.Type == "tap"
+}
+
+func inspectTAPLink(payload []byte, state tapState, spec tapSpec) bool {
+	var links []tapLinkInspection
+	if json.Unmarshal(payload, &links) != nil || len(links) != 1 {
 		return false
 	}
-	for _, flag := range links[0].Flags {
+	link := links[0]
+	if index, ok := inspectTAPKernelIdentity(payload, spec.name); !ok || index != state.ifIndex ||
+		!strings.EqualFold(link.Address, spec.mac) {
+		return false
+	}
+	for _, flag := range link.Flags {
 		if flag == "UP" {
 			return true
 		}
@@ -219,18 +252,19 @@ func inspectTAPAddresses(payload []byte, spec tapSpec) bool {
 	return want4 && want6
 }
 
-func inspectTAPRoutes(payload []byte, name, destination string) bool {
+func inspectTAPRoutes(payload []byte, name, destination, preferredSource string) bool {
 	var routes []struct {
 		Destination string `json:"dst"`
 		Device      string `json:"dev"`
 		Gateway     string `json:"gateway"`
+		Preferred   string `json:"prefsrc"`
 		Type        string `json:"type"`
 	}
 	if json.Unmarshal(payload, &routes) != nil || len(routes) != 1 {
 		return false
 	}
 	route := routes[0]
-	if route.Device != name || route.Gateway != "" || route.Destination != destination ||
+	if route.Device != name || route.Gateway != "" || route.Destination != destination || route.Preferred != preferredSource ||
 		(route.Type != "" && route.Type != "unicast") {
 		return false
 	}

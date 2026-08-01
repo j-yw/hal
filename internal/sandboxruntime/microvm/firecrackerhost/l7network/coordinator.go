@@ -534,7 +534,7 @@ func (s *Session) save(ctx context.Context, stage journalStage) error {
 		return ErrCleanupIncomplete
 	}
 	record := journalRecord{identity: s.identity, stage: stage, tapName: s.tap.name,
-		tapFingerprint: s.tap.fingerprint, ruleDigest: s.metadata.RuleDigest}
+		tapFingerprint: s.tap.fingerprint, tapIfIndex: s.tap.ifIndex, ruleDigest: s.metadata.RuleDigest}
 	if s.tapSpec.proxyAddress.IsValid() {
 		record.proxyAddress = s.tapSpec.proxyAddress.String()
 		record.proxyPort = s.tapSpec.proxyPort

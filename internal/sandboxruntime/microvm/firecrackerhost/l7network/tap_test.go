@@ -42,7 +42,7 @@ func TestLinuxTAPUsesOnlyNamespaceBoundStaticConfiguration(t *testing.T) {
 }
 
 func TestLinuxTAPRollsBackEveryPartialCreateFailure(t *testing.T) {
-	for failAt := 1; failAt <= 10; failAt++ {
+	for failAt := 1; failAt <= 11; failAt++ {
 		t.Run(string(rune('a'+failAt-1)), func(t *testing.T) {
 			command := &fakeNamespaceCommand{failAt: failAt}
 			tap, err := NewLinuxTAP(TAPOptions{IPPath: "/usr/sbin/ip", SysctlPath: "/usr/sbin/sysctl", NsenterPath: "/usr/bin/nsenter", Command: command})
@@ -75,12 +75,12 @@ func TestLinuxTAPInspectionRejectsExtraAddressesAndRoutes(t *testing.T) {
 	}
 	extraRoute := []byte(`[{"dst":"172.31.255.2/32","dev":"` + spec.name + `"},` +
 		`{"dst":"169.254.169.254/32","dev":"` + spec.name + `"}]`)
-	if inspectTAPRoutes(extraRoute, spec.name, "172.31.255.2/32") {
+	if inspectTAPRoutes(extraRoute, spec.name, "172.31.255.2/32", spec.gatewayIPv4.String()) {
 		t.Fatal("route inspection accepted an extra metadata route")
 	}
 	duplicateRoute := []byte(`[{"dst":"172.31.255.2/32","dev":"` + spec.name + `"},` +
 		`{"dst":"172.31.255.2/32","dev":"` + spec.name + `"}]`)
-	if inspectTAPRoutes(duplicateRoute, spec.name, "172.31.255.2/32") {
+	if inspectTAPRoutes(duplicateRoute, spec.name, "172.31.255.2/32", spec.gatewayIPv4.String()) {
 		t.Fatal("route inspection accepted a duplicate route")
 	}
 }

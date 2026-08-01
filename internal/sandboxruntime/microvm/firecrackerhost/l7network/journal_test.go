@@ -24,7 +24,7 @@ func TestFirecrackerHostTopologyJournalIsPrivateAtomicAndGenerationOwned(t *test
 		t.Fatalf("state root mode = %v, %v", info, err)
 	}
 	record := journalRecord{identity: testIdentity(), stage: journalStageTAPCreated, tapName: "ht0123456789", tapFingerprint: strings.Repeat("a", 64),
-		proxyAddress: "192.0.2.2", proxyPort: 43123}
+		tapIfIndex: 41, proxyAddress: "192.0.2.2", proxyPort: 43123}
 	if err := lease.Save(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
