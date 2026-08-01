@@ -1,0 +1,518 @@
+package l7network
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net"
+	"net/netip"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"
+)
+
+const (
+	mappingInterfaceName = "pasta0"
+	ruleTableName        = "hal_fc_l7"
+)
+
+type Coordinator struct {
+	mu      sync.Mutex
+	options Options
+	current *Session
+}
+
+type Session struct {
+	mu               sync.Mutex
+	coordinator      *Coordinator
+	identity         Identity
+	plan             networkenforcement.Plan
+	proxy            ProxyGeneration
+	topologyIdentity linuxtopology.Identity
+	topology         TopologySession
+	namespace        NamespaceLease
+	tapSpec          tapSpec
+	tap              tapState
+	expectedRules    linuxrules.ExpectedRuleSet
+	journal          JournalLease
+	metadata         Metadata
+	rulesPresent     bool
+	quarantined      bool
+	rulesRemoved     bool
+	tapRemoved       bool
+	topologyRemoved  bool
+	proxyStopped     bool
+	journalRemoved   bool
+	journalReleased  bool
+}
+
+func New(input Options) (*Coordinator, error) {
+	options := input
+	if options.CleanupTimeout == 0 {
+		options.CleanupTimeout = defaultCleanupTimeout
+	}
+	coordinator := &Coordinator{options: options}
+	if !options.Enabled {
+		return coordinator, nil
+	}
+	if options.Proxy == nil || options.Topology == nil || options.TAP == nil || options.Rules == nil ||
+		options.RawPacketIsolation == nil || options.CleanupTimeout <= 0 || options.CleanupTimeout > time.Minute {
+		return nil, ErrInvalidConfiguration
+	}
+	if options.Journal == nil {
+		journal, err := newFileJournalStore(options.StateDir)
+		if err != nil {
+			return nil, ErrInvalidConfiguration
+		}
+		options.Journal = journal
+		coordinator.options = options
+	}
+	return coordinator, nil
+}
+
+func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Session, error) {
+	if c == nil || !c.options.Enabled {
+		return nil, ErrDisabled
+	}
+	if !validIdentity(request.Identity) || !planMatchesIdentity(request.Plan, request.Identity) {
+		return nil, ErrInvalidIdentity
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, ErrTopologyPrepareFailed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.current != nil {
+		return nil, ErrTopologyCollision
+	}
+
+	lease, err := c.options.Journal.Acquire(ctx, request.Identity)
+	if err != nil {
+		return nil, sanitizeJournalAcquireError(err)
+	}
+	if stale, loadErr := lease.Load(); loadErr == nil {
+		_ = lease.Release()
+		if stale.identity != request.Identity {
+			return nil, ErrInvalidIdentity
+		}
+		return nil, ErrStaleTopologyUnverified
+	} else if !errors.Is(loadErr, ErrJournalNotFound) {
+		_ = lease.Release()
+		return nil, ErrStaleTopologyUnverified
+	}
+
+	session := &Session{coordinator: c, identity: request.Identity, plan: networkenforcement.SanitizePlan(request.Plan),
+		topologyIdentity: topologyIdentity(request.Identity), journal: lease,
+		metadata: Metadata{Identity: request.Identity, Status: StatusPrepared}}
+	if err := session.save(ctx, journalStageProxyStarting); err != nil {
+		_ = lease.Release()
+		return nil, ErrCleanupIncomplete
+	}
+	session.proxy, err = c.options.Proxy.Start(ctx, session.plan)
+	if err != nil || session.proxy == nil || session.proxy.Loss() == nil {
+		return c.failPrepare(session, ErrProxyUnavailable)
+	}
+	endpoint, err := c.options.Proxy.Endpoint(session.proxy)
+	if err != nil {
+		return c.failPrepare(session, ErrProxyUnavailable)
+	}
+	proxyAddress, proxyPort, guestProxyAddress, err := validatedProxyEndpoint(endpoint)
+	if err != nil {
+		return c.failPrepare(session, ErrProxyUnavailable)
+	}
+	if err := c.options.Proxy.Active(ctx, session.plan, session.proxy); err != nil {
+		return c.failPrepare(session, ErrProxyUnavailable)
+	}
+	if err := session.save(ctx, journalStageTopologyStarting); err != nil {
+		return c.failPrepare(session, ErrCleanupIncomplete)
+	}
+	topology, err := c.options.Topology.Start(ctx, linuxtopology.StartRequest{Identity: session.topologyIdentity,
+		Mapping: linuxtopology.Mapping{ProxyEndpoint: endpoint, GuestProxyAddress: guestProxyAddress.String(), NamespaceInterface: mappingInterfaceName}})
+	if err != nil || topology == nil {
+		return c.failPrepare(session, ErrTopologyPrepareFailed)
+	}
+	session.topology = topology
+	if !topologyMetadataMatches(topology.Metadata(), session.topologyIdentity) {
+		return c.failPrepare(session, ErrProofMismatch)
+	}
+	namespace, err := topology.BorrowNamespace()
+	if err != nil || namespace == nil {
+		return c.failPrepare(session, ErrTopologyPrepareFailed)
+	}
+	session.namespace = namespace
+	if err := session.save(ctx, journalStageTopologyPrepared); err != nil {
+		return c.failPrepare(session, ErrCleanupIncomplete)
+	}
+
+	spec := staticTAPSpec(request.Identity, proxyAddress, proxyPort)
+	tap, err := c.options.TAP.CreateConfigure(ctx, namespace, spec)
+	if err != nil || !tap.valid(spec) {
+		return c.failPrepare(session, ErrTopologyPrepareFailed)
+	}
+	session.tapSpec, session.tap = spec, tap
+	if err := session.save(ctx, journalStageTAPCreated); err != nil {
+		return c.failPrepare(session, ErrCleanupIncomplete)
+	}
+	if err := c.options.TAP.Inspect(ctx, namespace, tap, spec); err != nil {
+		return c.failPrepare(session, ErrProofMismatch)
+	}
+
+	corr := correlation(request.Identity)
+	rawProof, err := c.options.RawPacketIsolation.VerifyRawPacketIsolation(ctx, corr)
+	if err != nil || !networkenforcement.RawPacketIsolationProofMatches(rawProof, corr) {
+		return c.failPrepare(session, ErrProofMismatch)
+	}
+	if err := c.options.Proxy.Active(ctx, session.plan, session.proxy); err != nil {
+		return c.failPrepare(session, ErrProxyUnavailable)
+	}
+	expected, err := linuxrules.NewExpectedRuleSet(linuxrules.RuleSetConfig{
+		Correlation: corr, Profile: linuxrules.RuleProfileForwardedTAP, Namespace: namespace.RuleNamespace(),
+		TableName: ruleTableName, InterfaceName: spec.name, MappingInterfaceName: mappingInterfaceName,
+		ProxyAddress: spec.proxyAddress.String(), ProxyPort: spec.proxyPort,
+		WorkloadIPv6Address: spec.guestIPv6Prefix.Addr().String(), GatewayIPv6Address: spec.gatewayIPv6.String(),
+		IPv6PrefixBits: uint8(spec.guestIPv6Prefix.Bits()), AllowIPv6DAD: true,
+	})
+	if err != nil {
+		return c.failPrepare(session, ErrTopologyPrepareFailed)
+	}
+	session.expectedRules = expected
+	ruleMetadata, err := c.options.Rules.ApplyAndInspect(ctx, expected)
+	session.rulesPresent = true
+	if err != nil {
+		return c.failPrepare(session, ErrRuleApplyFailed)
+	}
+	ruleDigest, err := inspectedRuleDigest(ruleMetadata, corr)
+	if err != nil {
+		return c.failPrepare(session, ErrRuleInspectionFailed)
+	}
+	session.metadata = Metadata{Identity: request.Identity, Status: StatusInspected, StructuralInspected: true,
+		TAPInspected: true, RulesInspected: true, RawPacketIsolationVerified: true, RuleDigest: ruleDigest}
+	if err := session.save(ctx, journalStageRulesInspected); err != nil {
+		return c.failPrepare(session, ErrCleanupIncomplete)
+	}
+	if err := c.options.TAP.Inspect(ctx, namespace, tap, spec); err != nil {
+		return c.failPrepare(session, ErrProofMismatch)
+	}
+	if err := c.options.Proxy.Active(ctx, session.plan, session.proxy); err != nil {
+		return c.failPrepare(session, ErrProxyUnavailable)
+	}
+	if err := session.save(ctx, journalStageInspected); err != nil {
+		return c.failPrepare(session, ErrCleanupIncomplete)
+	}
+	c.current = session
+	go session.watchProxyLoss()
+	return session, nil
+}
+
+func (c *Coordinator) failPrepare(session *Session, primary error) (*Session, error) {
+	if cleanupErr := session.rollback(); cleanupErr != nil {
+		session.metadata.Status = StatusCleanupIncomplete
+		c.current = session
+		return session, errors.Join(primary, ErrCleanupIncomplete)
+	}
+	return nil, primary
+}
+
+func (s *Session) Metadata() Metadata {
+	if s == nil {
+		return Metadata{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.metadata
+}
+
+func (s *Session) MarshalJSON() ([]byte, error) { return json.Marshal(s.Metadata()) }
+
+func (s *Session) Loss() <-chan struct{} {
+	if s == nil || s.proxy == nil {
+		return nil
+	}
+	return s.proxy.Loss()
+}
+
+func (s *Session) watchProxyLoss() {
+	loss := s.Loss()
+	if loss == nil {
+		return
+	}
+	<-loss
+	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
+	defer cancel()
+	_ = s.Quarantine(ctx, s.identity)
+}
+
+func (s *Session) Inspect(ctx context.Context, identity Identity) (Metadata, error) {
+	if s == nil || identity != s.identity || !validIdentity(identity) {
+		return Metadata{}, ErrIdentityMismatch
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.metadata.Status != StatusInspected || s.quarantined {
+		return s.metadata, ErrProofMismatch
+	}
+	if err := s.coordinator.options.Proxy.Active(ctx, s.plan, s.proxy); err != nil {
+		return s.quarantineOnDrift(ctx, ErrProxyUnavailable)
+	}
+	if err := s.coordinator.options.TAP.Inspect(ctx, s.namespace, s.tap, s.tapSpec); err != nil {
+		return s.quarantineOnDrift(ctx, ErrProofMismatch)
+	}
+	corr := correlation(s.identity)
+	rawProof, err := s.coordinator.options.RawPacketIsolation.VerifyRawPacketIsolation(ctx, corr)
+	if err != nil || !networkenforcement.RawPacketIsolationProofMatches(rawProof, corr) {
+		return s.quarantineOnDrift(ctx, ErrProofMismatch)
+	}
+	ruleMetadata, err := s.coordinator.options.Rules.Inspect(ctx, s.expectedRules)
+	if err != nil {
+		return s.quarantineOnDrift(ctx, ErrRuleInspectionFailed)
+	}
+	digest, err := inspectedRuleDigest(ruleMetadata, corr)
+	if err != nil || digest != s.metadata.RuleDigest {
+		return s.quarantineOnDrift(ctx, ErrProofMismatch)
+	}
+	if err := s.coordinator.options.TAP.Inspect(ctx, s.namespace, s.tap, s.tapSpec); err != nil {
+		return s.quarantineOnDrift(ctx, ErrProofMismatch)
+	}
+	if err := s.coordinator.options.Proxy.Active(ctx, s.plan, s.proxy); err != nil {
+		return s.quarantineOnDrift(ctx, ErrProxyUnavailable)
+	}
+	return s.metadata, nil
+}
+
+func (s *Session) quarantineOnDrift(ctx context.Context, primary error) (Metadata, error) {
+	if !s.quarantined && s.rulesPresent && !s.rulesRemoved {
+		if err := s.coordinator.options.Rules.Quarantine(ctx, s.expectedRules); err != nil {
+			s.metadata = failedMetadata(s.identity)
+			return s.metadata, errors.Join(primary, ErrQuarantineFailed)
+		}
+		s.quarantined = true
+		s.metadata = Metadata{Identity: s.identity, Status: StatusQuarantined}
+		if err := s.save(ctx, journalStageQuarantined); err != nil {
+			return s.metadata, errors.Join(primary, ErrCleanupIncomplete)
+		}
+	}
+	return s.metadata, primary
+}
+
+func (s *Session) Quarantine(ctx context.Context, identity Identity) error {
+	if s == nil || identity != s.identity || !validIdentity(identity) {
+		return ErrIdentityMismatch
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.metadata.Status == StatusStopped || s.quarantined || !s.rulesPresent || s.rulesRemoved {
+		return nil
+	}
+	if err := s.coordinator.options.Rules.Quarantine(ctx, s.expectedRules); err != nil {
+		s.metadata = failedMetadata(s.identity)
+		return ErrQuarantineFailed
+	}
+	s.quarantined = true
+	s.metadata = Metadata{Identity: s.identity, Status: StatusQuarantined}
+	if err := s.save(ctx, journalStageQuarantined); err != nil {
+		return ErrCleanupIncomplete
+	}
+	return nil
+}
+
+func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, vmQuiesced bool) error {
+	if s == nil || identity != s.identity || !validIdentity(identity) {
+		return ErrIdentityMismatch
+	}
+	if !vmQuiesced {
+		return ErrVMNotQuiesced
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.metadata.Status == StatusStopped {
+		return nil
+	}
+	if s.rulesPresent && !s.quarantined {
+		return ErrQuarantineFailed
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
+	defer cancel()
+	if !s.rulesRemoved && s.rulesPresent {
+		if err := s.coordinator.options.Rules.Cleanup(ctx, s.expectedRules); err != nil {
+			s.metadata = failedMetadata(s.identity)
+			return ErrCleanupIncomplete
+		}
+		s.rulesRemoved = true
+		if err := s.save(ctx, journalStageRulesRemoved); err != nil {
+			return ErrCleanupIncomplete
+		}
+	}
+	if !s.tapRemoved && s.tap.name != "" {
+		if err := s.coordinator.options.TAP.Delete(ctx, s.namespace, s.tap, s.tapSpec); err != nil {
+			s.metadata = failedMetadata(s.identity)
+			return ErrCleanupIncomplete
+		}
+		s.tapRemoved = true
+		if err := s.save(ctx, journalStageTAPRemoved); err != nil {
+			return ErrCleanupIncomplete
+		}
+	}
+	if !s.topologyRemoved {
+		if s.namespace != nil {
+			if err := s.namespace.Close(); err != nil {
+				return ErrCleanupIncomplete
+			}
+			s.namespace = nil
+		}
+		if s.topology != nil {
+			metadata, err := s.coordinator.options.Topology.Stop(ctx, s.topologyIdentity)
+			if err != nil || metadata.Status != linuxtopology.StatusStopped {
+				return ErrCleanupIncomplete
+			}
+		}
+		s.topologyRemoved = true
+		if err := s.save(ctx, journalStageTopologyRemoved); err != nil {
+			return ErrCleanupIncomplete
+		}
+	}
+	if !s.proxyStopped && s.proxy != nil {
+		if err := s.coordinator.options.Proxy.Stop(ctx, s.plan, s.proxy); err != nil {
+			return ErrCleanupIncomplete
+		}
+		s.proxyStopped = true
+	}
+	if !s.journalRemoved {
+		if err := s.journal.Remove(); err != nil {
+			return ErrCleanupIncomplete
+		}
+		s.journalRemoved = true
+	}
+	if !s.journalReleased {
+		if err := s.journal.Release(); err != nil {
+			return ErrCleanupIncomplete
+		}
+		s.journalReleased = true
+	}
+	s.metadata = Metadata{Identity: s.identity, Status: StatusStopped}
+	return nil
+}
+
+func (s *Session) rollback() error {
+	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
+	defer cancel()
+	var result error
+	if s.rulesPresent && !s.rulesRemoved {
+		if !s.quarantined {
+			if err := s.coordinator.options.Rules.Quarantine(ctx, s.expectedRules); err != nil {
+				return ErrCleanupIncomplete
+			}
+			s.quarantined = true
+		}
+		if err := s.coordinator.options.Rules.Cleanup(ctx, s.expectedRules); err != nil {
+			return ErrCleanupIncomplete
+		}
+		s.rulesRemoved = true
+	}
+	if s.tap.name != "" && !s.tapRemoved {
+		if err := s.coordinator.options.TAP.Delete(ctx, s.namespace, s.tap, s.tapSpec); err != nil {
+			return ErrCleanupIncomplete
+		}
+		s.tapRemoved = true
+	}
+	if s.namespace != nil {
+		result = errors.Join(result, s.namespace.Close())
+		s.namespace = nil
+	}
+	if s.topology != nil && !s.topologyRemoved {
+		metadata, err := s.coordinator.options.Topology.Stop(ctx, s.topologyIdentity)
+		if err != nil || metadata.Status != linuxtopology.StatusStopped {
+			return ErrCleanupIncomplete
+		}
+		s.topologyRemoved = true
+	}
+	if s.proxy != nil && !s.proxyStopped {
+		if err := s.coordinator.options.Proxy.Stop(ctx, s.plan, s.proxy); err != nil {
+			return ErrCleanupIncomplete
+		}
+		s.proxyStopped = true
+	}
+	if result != nil || s.journal.Remove() != nil || s.journal.Release() != nil {
+		return ErrCleanupIncomplete
+	}
+	return nil
+}
+
+func (s *Session) save(ctx context.Context, stage journalStage) error {
+	if s.journal == nil {
+		return ErrCleanupIncomplete
+	}
+	record := journalRecord{identity: s.identity, stage: stage, tapName: s.tap.name,
+		tapFingerprint: s.tap.fingerprint, ruleDigest: s.metadata.RuleDigest}
+	if s.tapSpec.proxyAddress.IsValid() {
+		record.proxyAddress = s.tapSpec.proxyAddress.String()
+		record.proxyPort = s.tapSpec.proxyPort
+	}
+	return s.journal.Save(ctx, record)
+}
+
+func staticTAPSpec(identity Identity, proxyAddress netip.Addr, proxyPort uint16) tapSpec {
+	digest := sha256.Sum256([]byte(identity.TopologyGenerationID + "\x00" + identity.RuleGenerationID))
+	name := "ht" + hex.EncodeToString(digest[:])[:10]
+	macBytes := digest[:6]
+	macBytes[0] = (macBytes[0] | 2) & 0xfe
+	mac := net.HardwareAddr(macBytes).String()
+	return tapSpec{generation: identity.TopologyGenerationID, name: name, mac: mac, mappingInterface: mappingInterfaceName,
+		proxyAddress: proxyAddress, proxyPort: proxyPort,
+		guestIPv4Prefix: netip.PrefixFrom(netip.MustParseAddr("172.31.255.2"), 30), gatewayIPv4: netip.MustParseAddr("172.31.255.1"),
+		guestIPv6Prefix: netip.PrefixFrom(netip.MustParseAddr("fd00:6861:6c::2"), 126), gatewayIPv6: netip.MustParseAddr("fd00:6861:6c::1")}
+}
+
+func validatedProxyEndpoint(endpoint string) (netip.Addr, uint16, netip.Addr, error) {
+	host, portText, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return netip.Addr{}, 0, netip.Addr{}, ErrProxyUnavailable
+	}
+	address, addressErr := netip.ParseAddr(host)
+	port, portErr := strconv.ParseUint(portText, 10, 16)
+	if addressErr != nil || portErr != nil || port == 0 || !address.IsLoopback() || address.Zone() != "" {
+		return netip.Addr{}, 0, netip.Addr{}, ErrProxyUnavailable
+	}
+	guest := netip.MustParseAddr("192.0.2.2")
+	if address.Is6() {
+		guest = netip.MustParseAddr("fd00:6861:6c::ffff")
+	}
+	return guest, uint16(port), guest, nil
+}
+
+func topologyMetadataMatches(metadata linuxtopology.Metadata, identity linuxtopology.Identity) bool {
+	return metadata.Identity == identity && metadata.Status == linuxtopology.StatusPrepared &&
+		metadata.StructuralInspected && metadata.MappingReachable
+}
+
+func inspectedRuleDigest(metadata networkenforcement.RuleLifecycleMetadata, expected networkenforcement.EnforcementCorrelation) (string, error) {
+	metadata = networkenforcement.SanitizeRuleLifecycleMetadata(metadata)
+	if metadata.Status != networkenforcement.LifecycleStatusActive || metadata.Correlation == nil ||
+		!networkenforcement.EnforcementCorrelationsEqual(*metadata.Correlation, expected) || metadata.Inspection == nil ||
+		metadata.Inspection.Status != networkenforcement.RuleInspectionStatusInspected || metadata.Inspection.Correlation == nil ||
+		!networkenforcement.EnforcementCorrelationsEqual(*metadata.Inspection.Correlation, expected) ||
+		metadata.Inspection.RuleDigest == "" || len(metadata.WarningCodes) != 0 || len(metadata.Inspection.WarningCodes) != 0 {
+		return "", ErrRuleInspectionFailed
+	}
+	return metadata.Inspection.RuleDigest, nil
+}
+
+func failedMetadata(identity Identity) Metadata {
+	return Metadata{Identity: identity, Status: StatusCleanupIncomplete}
+}
+
+func sanitizeJournalAcquireError(err error) error {
+	switch {
+	case errors.Is(err, ErrTopologyCollision):
+		return ErrTopologyCollision
+	case errors.Is(err, ErrStaleTopologyUnverified):
+		return ErrStaleTopologyUnverified
+	default:
+		return ErrCleanupIncomplete
+	}
+}

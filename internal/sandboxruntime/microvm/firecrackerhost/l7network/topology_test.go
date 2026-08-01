@@ -30,7 +30,7 @@ func TestFirecrackerHostTopologyPreparesExactInspectedGenerationInOrder(t *testi
 	})
 	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 	if err != nil {
-		t.Fatalf("Prepare() unexpected error: %v", err)
+		t.Fatalf("Prepare() unexpected error: %v; sequence=%#v", err, sequence.snapshot())
 	}
 	metadata := session.Metadata()
 	if metadata.Status != StatusInspected || !metadata.StructuralInspected || !metadata.TAPInspected ||
@@ -108,6 +108,30 @@ func TestFirecrackerHostTopologyRequiresExactRawPacketProofAndQuarantinesDrift(t
 			t.Fatalf("drift sequence = %#v", got)
 		}
 	})
+}
+
+func TestFirecrackerHostTopologyProxyLossRevokesAndQuarantinesExactGeneration(t *testing.T) {
+	sequence := &callSequence{}
+	proxy := newFakeProxy(sequence)
+	coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence),
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence}, RawPacketIsolation: &fakeRawPacketVerifier{sequence: sequence},
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sequence.reset()
+	close(proxy.current.loss)
+	deadline := time.Now().Add(time.Second)
+	for session.Metadata().Status != StatusQuarantined && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if session.Metadata().Status != StatusQuarantined {
+		t.Fatalf("proxy loss status = %q", session.Metadata().Status)
+	}
+	if got := sequence.snapshot(); !reflect.DeepEqual(got, []string{"rules_quarantine", "journal_save_quarantined"}) {
+		t.Fatalf("proxy loss sequence = %#v", got)
+	}
 }
 
 func TestFirecrackerHostTopologyTwoStageCleanupIsExactRetryableAndPortLast(t *testing.T) {
@@ -197,6 +221,53 @@ func TestFirecrackerHostTopologyRejectsUnsafeDuplicateOrMismatchedIdentityBefore
 	}
 }
 
+func TestFirecrackerHostTopologyRollsBackEveryPreparationBoundaryInReverseOrder(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*fakeProxy, *fakeTopology, *fakeTAP, *fakeRules)
+		want   []string
+	}{
+		{name: "proxy endpoint", mutate: func(p *fakeProxy, _ *fakeTopology, _ *fakeTAP, _ *fakeRules) {
+			p.endpointErr = errors.New("private endpoint")
+		}, want: []string{"proxy_stop"}},
+		{name: "topology start", mutate: func(_ *fakeProxy, t *fakeTopology, _ *fakeTAP, _ *fakeRules) {
+			t.startErr = errors.New("private namespace")
+		}, want: []string{"proxy_stop"}},
+		{name: "namespace borrow", mutate: func(_ *fakeProxy, t *fakeTopology, _ *fakeTAP, _ *fakeRules) {
+			t.session.borrowErr = errors.New("private fd")
+		}, want: []string{"topology_stop", "proxy_stop"}},
+		{name: "tap create", mutate: func(_ *fakeProxy, _ *fakeTopology, tap *fakeTAP, _ *fakeRules) {
+			tap.createErr = errors.New("private tap")
+		}, want: []string{"topology_stop", "proxy_stop"}},
+		{name: "tap inspect", mutate: func(_ *fakeProxy, _ *fakeTopology, tap *fakeTAP, _ *fakeRules) {
+			tap.inspectErr = errors.New("private route")
+		}, want: []string{"tap_delete", "topology_stop", "proxy_stop"}},
+		{name: "rule apply", mutate: func(_ *fakeProxy, _ *fakeTopology, _ *fakeTAP, rules *fakeRules) {
+			rules.applyErr = errors.New("private nft body")
+		}, want: []string{"rules_quarantine", "rules_cleanup", "tap_delete", "topology_stop", "proxy_stop"}},
+		{name: "final proxy proof", mutate: func(p *fakeProxy, _ *fakeTopology, _ *fakeTAP, _ *fakeRules) { p.activeFailAt = 3 }, want: []string{"rules_quarantine", "rules_cleanup", "tap_delete", "topology_stop", "proxy_stop"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sequence := &callSequence{}
+			proxy, topology, tap, rules := newFakeProxy(sequence), newFakeTopology(sequence), &fakeTAP{sequence: sequence}, &fakeRules{sequence: sequence}
+			tc.mutate(proxy, topology, tap, rules)
+			coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: proxy, Topology: topology, TAP: tap, Rules: rules,
+				RawPacketIsolation: &fakeRawPacketVerifier{sequence: sequence}, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
+			_, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+			if err == nil {
+				t.Fatal("Prepare() unexpectedly succeeded")
+			}
+			for _, forbidden := range []string{"private endpoint", "private namespace", "private fd", "private tap", "private route", "private nft body"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("Prepare() leaked %q: %v", forbidden, err)
+				}
+			}
+			assertSubsequence(t, sequence.snapshot(), tc.want)
+		})
+	}
+}
+
 func TestFirecrackerHostTopologyMetadataOmitsAllLiveState(t *testing.T) {
 	sequence := &callSequence{}
 	coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
@@ -236,9 +307,12 @@ func (g *fakeGeneration) Address() string       { return g.address }
 func (g *fakeGeneration) Loss() <-chan struct{} { return g.loss }
 
 type fakeProxy struct {
-	sequence  *callSequence
-	current   *fakeGeneration
-	activeErr error
+	sequence     *callSequence
+	current      *fakeGeneration
+	activeErr    error
+	endpointErr  error
+	activeFailAt int
+	activeCalls  int
 }
 
 func newFakeProxy(sequence *callSequence) *fakeProxy {
@@ -251,6 +325,9 @@ func (p *fakeProxy) Start(context.Context, networkenforcement.Plan) (ProxyGenera
 }
 func (p *fakeProxy) Endpoint(g ProxyGeneration) (string, error) {
 	p.sequence.add("proxy_endpoint")
+	if p.endpointErr != nil {
+		return "", p.endpointErr
+	}
 	if g != p.current {
 		return "", errors.New("wrong proxy generation")
 	}
@@ -258,6 +335,10 @@ func (p *fakeProxy) Endpoint(g ProxyGeneration) (string, error) {
 }
 func (p *fakeProxy) Active(context.Context, networkenforcement.Plan, ProxyGeneration) error {
 	p.sequence.add("proxy_active")
+	p.activeCalls++
+	if p.activeFailAt > 0 && p.activeCalls == p.activeFailAt {
+		return errors.New("private active generation")
+	}
 	return p.activeErr
 }
 func (p *fakeProxy) Stop(context.Context, networkenforcement.Plan, ProxyGeneration) error {
@@ -268,6 +349,7 @@ func (p *fakeProxy) Stop(context.Context, networkenforcement.Plan, ProxyGenerati
 type fakeTopology struct {
 	sequence *callSequence
 	session  *fakeTopologySession
+	startErr error
 }
 
 func newFakeTopology(sequence *callSequence) *fakeTopology {
@@ -276,6 +358,9 @@ func newFakeTopology(sequence *callSequence) *fakeTopology {
 
 func (t *fakeTopology) Start(_ context.Context, request linuxtopology.StartRequest) (TopologySession, error) {
 	t.sequence.add("topology_start")
+	if t.startErr != nil {
+		return nil, t.startErr
+	}
 	t.session.identity = request.Identity
 	return t.session, nil
 }
@@ -285,8 +370,9 @@ func (t *fakeTopology) Stop(context.Context, linuxtopology.Identity) (linuxtopol
 }
 
 type fakeTopologySession struct {
-	sequence *callSequence
-	identity linuxtopology.Identity
+	sequence  *callSequence
+	identity  linuxtopology.Identity
+	borrowErr error
 }
 
 func (s *fakeTopologySession) Metadata() linuxtopology.Metadata {
@@ -294,6 +380,9 @@ func (s *fakeTopologySession) Metadata() linuxtopology.Metadata {
 }
 func (s *fakeTopologySession) BorrowNamespace() (NamespaceLease, error) {
 	s.sequence.add("topology_borrow")
+	if s.borrowErr != nil {
+		return nil, s.borrowErr
+	}
 	return &fakeNamespaceLease{rules: linuxrules.NewNamespaceHandle(10, 11)}, nil
 }
 
@@ -308,12 +397,16 @@ type fakeTAP struct {
 	inspectErr     error
 	deleteFailures int
 	deleteCalls    int
+	createErr      error
 }
 
 func (t *fakeTAP) CreateConfigure(_ context.Context, _ NamespaceLease, spec tapSpec) (tapState, error) {
 	t.sequence.add("tap_create")
+	if t.createErr != nil {
+		return tapState{}, t.createErr
+	}
 	t.lastSpec = spec
-	return tapState{name: "tap-private0", generation: spec.generation, fingerprint: spec.fingerprint()}, nil
+	return tapState{name: spec.name, generation: spec.generation, fingerprint: spec.fingerprint()}, nil
 }
 func (t *fakeTAP) Inspect(_ context.Context, _ NamespaceLease, _ tapState, spec tapSpec) error {
 	t.sequence.add("tap_inspect")
@@ -335,10 +428,14 @@ type fakeRules struct {
 	lastProfile     linuxrules.RuleProfile
 	cleanupFailures int
 	cleanupCalls    int
+	applyErr        error
 }
 
 func (r *fakeRules) ApplyAndInspect(_ context.Context, expected linuxrules.ExpectedRuleSet) (networkenforcement.RuleLifecycleMetadata, error) {
 	r.sequence.add("rules_apply_inspect")
+	if r.applyErr != nil {
+		return networkenforcement.RuleLifecycleMetadata{}, r.applyErr
+	}
 	return r.metadata(expected), nil
 }
 func (r *fakeRules) Inspect(_ context.Context, expected linuxrules.ExpectedRuleSet) (networkenforcement.RuleLifecycleMetadata, error) {
