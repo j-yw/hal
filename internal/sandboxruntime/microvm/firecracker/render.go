@@ -121,13 +121,17 @@ func prepareVerifiedL7LaunchMaterial(config BackendConfig) (BackendConfig, *seal
 	}
 	descriptor, profile, err := config.VerifiedL7Assets.PrepareLaunch(config.LaunchDescriptor, material)
 	if err != nil {
-		prepareErr := error(newLiveBootRenderConfigError("launchDescriptor", "current verified L7 network image assets are required"))
+		prepareErr := newLiveBootRenderL7PrepareError(err)
 		prepareErr = joinLiveBootRenderCleanup(prepareErr, material.Close())
 		return BackendConfig{}, nil, prepareErr
 	}
 	config.LaunchDescriptor = &descriptor
 	config.VerifiedL7Profile = &profile
 	return config, material, nil
+}
+
+func newLiveBootRenderL7PrepareError(error) error {
+	return newLiveBootRenderConfigError("launchDescriptor", "current verified L7 network image assets are required")
 }
 
 func joinLiveBootRenderCleanup(primary, cleanupErr error) error {
