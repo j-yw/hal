@@ -41,6 +41,25 @@ func TestLinuxTAPUsesOnlyNamespaceBoundStaticConfiguration(t *testing.T) {
 	}
 }
 
+func TestLinuxTAPRejectsTypedNilCommandAndNamespace(t *testing.T) {
+	var command *fakeNamespaceCommand
+	if _, err := NewLinuxTAP(TAPOptions{
+		IPPath: "/usr/sbin/ip", SysctlPath: "/usr/sbin/sysctl", NsenterPath: "/usr/bin/nsenter", Command: command,
+	}); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("NewLinuxTAP(typed nil command) = %v, want ErrInvalidConfiguration", err)
+	}
+	tap, err := NewLinuxTAP(TAPOptions{
+		IPPath: "/usr/sbin/ip", SysctlPath: "/usr/sbin/sysctl", NsenterPath: "/usr/bin/nsenter", Command: &fakeNamespaceCommand{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var namespace *fakeNamespaceLease
+	if _, err := tap.CreateConfigure(context.Background(), namespace, staticTAPSpec(testIdentity(), netip.MustParseAddr("192.0.2.2"), 43123)); !errors.Is(err, ErrTopologyPrepareFailed) {
+		t.Fatalf("CreateConfigure(typed nil namespace) = %v, want ErrTopologyPrepareFailed", err)
+	}
+}
+
 func TestLinuxTAPRollsBackEveryPartialCreateFailure(t *testing.T) {
 	for failAt := 1; failAt <= 11; failAt++ {
 		t.Run(string(rune('a'+failAt-1)), func(t *testing.T) {
