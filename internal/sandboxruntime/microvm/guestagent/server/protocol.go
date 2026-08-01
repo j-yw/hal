@@ -76,8 +76,15 @@ func (server *Server) handleReadiness(ctx context.Context, encoded []byte) Respo
 	}
 	callCtx, cancel := server.contextWithTiming(ctx, request.Timing)
 	defer cancel()
+	proofAttempt := uint64(0)
+	proofAttemptCompleted := false
 	if request.IsolationProof != nil {
-		server.setIsolationProven(false)
+		proofAttempt = server.beginIsolationProofAttempt()
+		defer func() {
+			if !proofAttemptCompleted {
+				server.completeIsolationProofAttempt(proofAttempt, false)
+			}
+		}()
 	}
 	backendCtx, release, err := server.beginBackendCall(callCtx, false)
 	if err != nil {
@@ -97,7 +104,10 @@ func (server *Server) handleReadiness(ctx context.Context, encoded []byte) Respo
 		return server.contextErrorResponse(err, guestagent.OperationReadiness)
 	}
 	if request.IsolationProof != nil {
-		return server.isolationReadinessResponse(backendCtx, *request.IsolationProof)
+		response, verified := server.isolationReadinessResponse(backendCtx, *request.IsolationProof)
+		server.completeIsolationProofAttempt(proofAttempt, verified)
+		proofAttemptCompleted = true
+		return response
 	}
 	return server.readinessResponse(true)
 }
@@ -399,7 +409,7 @@ func (server *Server) readinessResponse(ready bool) Response {
 	}, guestagent.OperationReadiness)
 }
 
-func (server *Server) isolationReadinessResponse(ctx context.Context, request guestagent.IsolationProofRequest) Response {
+func (server *Server) isolationReadinessResponse(ctx context.Context, request guestagent.IsolationProofRequest) (Response, bool) {
 	if server.requireNetworkProofBeforeWork {
 		request.RequireNetworkProof = true
 	}
@@ -412,16 +422,16 @@ func (server *Server) isolationReadinessResponse(ctx context.Context, request gu
 		},
 	}
 	if server.isolationVerifier == nil {
-		return server.readinessResponseWithProof(false, proof)
+		return server.readinessResponseWithProof(false, proof), false
 	}
 	result, err := server.isolationVerifier.VerifyIsolation(ctx, request)
 	if err != nil || ctx.Err() != nil {
-		return server.readinessResponseWithProof(false, proof)
+		return server.readinessResponseWithProof(false, proof), false
 	}
 	processVerified := result.RestrictedIdentity && result.CapabilitiesCleared && result.NoNewPrivileges &&
 		result.SupplementaryGroupsCleared && result.RawPacketSocketDenied
 	if !processVerified {
-		return server.readinessResponseWithProof(false, proof)
+		return server.readinessResponseWithProof(false, proof), false
 	}
 	proof.Status = guestagent.IsolationProofStatusVerified
 	proof.RestrictedIdentity = true
@@ -445,10 +455,9 @@ func (server *Server) isolationReadinessResponse(ctx context.Context, request gu
 		proof.NoNewPrivileges = false
 		proof.SupplementaryGroupsCleared = false
 		proof.RawPacketSocketDenied = false
-		return server.readinessResponseWithProof(false, proof)
+		return server.readinessResponseWithProof(false, proof), false
 	}
-	server.setIsolationProven(true)
-	return server.readinessResponseWithProof(true, proof)
+	return server.readinessResponseWithProof(true, proof), true
 }
 
 func (server *Server) readinessResponseWithProof(ready bool, proof *guestagent.IsolationProof) Response {
@@ -465,10 +474,32 @@ func (server *Server) readinessResponseWithProof(ready bool, proof *guestagent.I
 	}, guestagent.OperationReadiness)
 }
 
-func (server *Server) setIsolationProven(proven bool) {
+func (server *Server) beginIsolationProofAttempt() uint64 {
 	server.mu.Lock()
-	server.isolationProven = proven
-	server.mu.Unlock()
+	defer server.mu.Unlock()
+	server.proofAttemptSequence++
+	if server.proofAttemptSequence == 0 {
+		server.proofAttemptSequence = 1
+	}
+	server.currentProofAttempt = server.proofAttemptSequence
+	server.isolationProven = false
+	return server.currentProofAttempt
+}
+
+func (server *Server) completeIsolationProofAttempt(attempt uint64, proven bool) {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if attempt == 0 {
+		return
+	}
+	if !proven {
+		server.isolationProven = false
+		return
+	}
+	if attempt != server.currentProofAttempt {
+		return
+	}
+	server.isolationProven = true
 }
 
 func (server *Server) encodeResponse(value any, operation guestagent.Operation) Response {

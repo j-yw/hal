@@ -273,18 +273,27 @@ func TestL7ServerOwnedNetworkProofRequirementUpgradesConcurrentWeakRequests(t *t
 func TestL7ServerConcurrentProofCompletionOrdersControlAdmission(t *testing.T) {
 	tests := []struct {
 		name              string
+		startOrder        []string
 		completionOrder   []string
 		wantWorkAdmission bool
 	}{
 		{
 			name:              "failed proof completes after success",
+			startOrder:        []string{"failure", "success"},
 			completionOrder:   []string{"success", "failure"},
 			wantWorkAdmission: false,
 		},
 		{
 			name:              "current success completes after failure",
+			startOrder:        []string{"failure", "success"},
 			completionOrder:   []string{"failure", "success"},
 			wantWorkAdmission: true,
+		},
+		{
+			name:              "stale success completes after current failure",
+			startOrder:        []string{"success", "failure"},
+			completionOrder:   []string{"failure", "success"},
+			wantWorkAdmission: false,
 		},
 	}
 	for _, test := range tests {
@@ -321,7 +330,7 @@ func TestL7ServerConcurrentProofCompletionOrdersControlAdmission(t *testing.T) {
 				"failure": make(chan guestagent.ReadinessResponse, 1),
 				"success": make(chan guestagent.ReadinessResponse, 1),
 			}
-			for _, name := range []string{"failure", "success"} {
+			for _, name := range test.startOrder {
 				name := name
 				go func() {
 					response := run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, requests[name])})

@@ -24,6 +24,8 @@ type Server struct {
 	requireIsolationProofBeforeWork bool
 	requireNetworkProofBeforeWork   bool
 	isolationProven                 bool
+	proofAttemptSequence            uint64
+	currentProofAttempt             uint64
 
 	mu              sync.Mutex
 	state           State
