@@ -58,6 +58,8 @@ func NewLinuxTAP(input TAPOptions) (*LinuxTAP, error) {
 		command, supported := newPlatformNamespaceCommand(options.NsenterPath)
 		tap.options.Command = command
 		tap.unsupported = tap.unsupported || !supported
+	} else if interfaceIsNil(options.Command) {
+		return nil, ErrInvalidConfiguration
 	}
 	return tap, nil
 }
@@ -159,7 +161,7 @@ func (t *LinuxTAP) Delete(ctx context.Context, namespace NamespaceLease, state t
 }
 
 func (t *LinuxTAP) valid(namespace NamespaceLease, spec tapSpec) bool {
-	return t != nil && !t.unsupported && t.options.Command != nil && namespace != nil && validInterfaceName(spec.name) &&
+	return t != nil && !t.unsupported && !interfaceIsNil(t.options.Command) && !interfaceIsNil(namespace) && validInterfaceName(spec.name) &&
 		spec.generation != "" && spec.mappingInterface == mappingInterfaceName && spec.proxyAddress.IsValid() && spec.proxyPort != 0 &&
 		spec.guestIPv4Prefix.IsValid() && spec.guestIPv4Prefix.Bits() == 30 && spec.guestIPv4Prefix.Addr().Is4() &&
 		spec.guestIPv6Prefix.IsValid() && spec.guestIPv6Prefix.Bits() == 126 && spec.guestIPv6Prefix.Addr().Is6() &&

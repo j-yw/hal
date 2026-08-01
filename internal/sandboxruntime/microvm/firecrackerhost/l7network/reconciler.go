@@ -34,7 +34,7 @@ func NewReconciler(input ReconcilerOptions) (*Reconciler, error) {
 	if options.CleanupTimeout == 0 {
 		options.CleanupTimeout = defaultCleanupTimeout
 	}
-	if options.Recovery == nil || options.TAP == nil || options.Rules == nil || interfaceIsNil(options.VMTermination) ||
+	if interfaceIsNil(options.Recovery) || interfaceIsNil(options.TAP) || interfaceIsNil(options.Rules) || interfaceIsNil(options.VMTermination) ||
 		options.CleanupTimeout <= 0 || options.CleanupTimeout > time.Minute {
 		return nil, ErrInvalidConfiguration
 	}
@@ -44,6 +44,8 @@ func NewReconciler(input ReconcilerOptions) (*Reconciler, error) {
 			return nil, ErrInvalidConfiguration
 		}
 		options.Journal = journal
+	} else if interfaceIsNil(options.Journal) {
+		return nil, ErrInvalidConfiguration
 	}
 	return &Reconciler{options: options}, nil
 }
@@ -59,6 +61,9 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 	if err != nil {
 		return nil, sanitizeJournalAcquireError(err)
 	}
+	if interfaceIsNil(lease) {
+		return nil, ErrStaleTopologyUnverified
+	}
 	record, err := lease.Load()
 	if err != nil || record.identity != identity || stageOrder(record.stage) < stageOrder(journalStageTAPCreated) {
 		_ = lease.Release()
@@ -72,12 +77,12 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 			metadata: Metadata{Identity: identity, Status: StatusQuarantined}}, nil
 	}
 	lifecycle, topology, err := r.options.Recovery.Recover(ctx, identity)
-	if err != nil || lifecycle == nil || topology == nil || !topologyMetadataMatches(topology.Metadata(), topologyIdentity(identity)) {
+	if err != nil || interfaceIsNil(lifecycle) || interfaceIsNil(topology) || !topologyMetadataMatches(topology.Metadata(), topologyIdentity(identity)) {
 		_ = lease.Release()
 		return nil, ErrStaleTopologyUnverified
 	}
 	namespace, err := topology.BorrowNamespace()
-	if err != nil || namespace == nil {
+	if err != nil || interfaceIsNil(namespace) {
 		_ = lease.Release()
 		return nil, ErrStaleTopologyUnverified
 	}

@@ -64,7 +64,7 @@ func New(input Options) (*Coordinator, error) {
 	if !options.Enabled {
 		return coordinator, nil
 	}
-	if options.Proxy == nil || options.Topology == nil || options.TAP == nil || options.Rules == nil ||
+	if interfaceIsNil(options.Proxy) || interfaceIsNil(options.Topology) || interfaceIsNil(options.TAP) || interfaceIsNil(options.Rules) ||
 		interfaceIsNil(options.GuestIsolation) || interfaceIsNil(options.VMTermination) ||
 		options.CleanupTimeout <= 0 || options.CleanupTimeout > time.Minute {
 		return nil, ErrInvalidConfiguration
@@ -76,6 +76,8 @@ func New(input Options) (*Coordinator, error) {
 		}
 		options.Journal = journal
 		coordinator.options = options
+	} else if interfaceIsNil(options.Journal) {
+		return nil, ErrInvalidConfiguration
 	}
 	return coordinator, nil
 }
@@ -100,6 +102,9 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	if err != nil {
 		return nil, sanitizeJournalAcquireError(err)
 	}
+	if interfaceIsNil(lease) {
+		return nil, ErrCleanupIncomplete
+	}
 	if stale, loadErr := lease.Load(); loadErr == nil {
 		_ = lease.Release()
 		if stale.identity != request.Identity {
@@ -119,7 +124,14 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 		return nil, ErrCleanupIncomplete
 	}
 	session.proxy, err = c.options.Proxy.Start(ctx, session.plan)
-	if err != nil || session.proxy == nil || session.proxy.Loss() == nil {
+	if err != nil {
+		return c.failPrepare(session, ErrProxyUnavailable)
+	}
+	if interfaceIsNil(session.proxy) {
+		session.proxy = nil
+		return c.retainUntrackedPrepareUncertainty(session, ErrProxyUnavailable)
+	}
+	if session.proxy.Loss() == nil {
 		return c.failPrepare(session, ErrProxyUnavailable)
 	}
 	endpoint, err := c.options.Proxy.Endpoint(session.proxy)
@@ -138,8 +150,12 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	}
 	topology, err := c.options.Topology.Start(ctx, linuxtopology.StartRequest{Identity: session.topologyIdentity,
 		Mapping: linuxtopology.Mapping{ProxyEndpoint: endpoint, GuestProxyAddress: guestProxyAddress.String(), NamespaceInterface: mappingInterfaceName}})
-	if topology != nil {
+	if topology != nil && !interfaceIsNil(topology) {
 		session.topology = topology
+	}
+	if topology != nil && interfaceIsNil(topology) {
+		session.stopKnownProxyAfterUntrackedPrepare()
+		return c.retainUntrackedPrepareUncertainty(session, ErrTopologyPrepareFailed)
 	}
 	if err != nil || topology == nil {
 		return c.failPrepare(session, ErrTopologyPrepareFailed)
@@ -148,7 +164,7 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 		return c.failPrepare(session, ErrProofMismatch)
 	}
 	namespace, err := topology.BorrowNamespace()
-	if err != nil || namespace == nil {
+	if err != nil || interfaceIsNil(namespace) {
 		return c.failPrepare(session, ErrTopologyPrepareFailed)
 	}
 	session.namespace = namespace
@@ -219,6 +235,23 @@ func (c *Coordinator) failPrepare(session *Session, primary error) (*Session, er
 	return nil, primary
 }
 
+func (c *Coordinator) retainUntrackedPrepareUncertainty(session *Session, primary error) (*Session, error) {
+	session.metadata.Status = StatusCleanupIncomplete
+	c.current = session
+	return session, errors.Join(primary, ErrCleanupIncomplete)
+}
+
+func (s *Session) stopKnownProxyAfterUntrackedPrepare() {
+	if s == nil || s.coordinator == nil || interfaceIsNil(s.proxy) || s.proxyStopped {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
+	defer cancel()
+	if s.coordinator.options.Proxy.Stop(ctx, s.plan, s.proxy) == nil {
+		s.proxyStopped = true
+	}
+}
+
 func (s *Session) Metadata() Metadata {
 	if s == nil {
 		return Metadata{}
@@ -231,7 +264,7 @@ func (s *Session) Metadata() Metadata {
 func (s *Session) MarshalJSON() ([]byte, error) { return json.Marshal(s.Metadata()) }
 
 func (s *Session) Loss() <-chan struct{} {
-	if s == nil || s.proxy == nil {
+	if s == nil || interfaceIsNil(s.proxy) {
 		return nil
 	}
 	return s.proxy.Loss()
@@ -430,13 +463,13 @@ func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, b
 		}
 	}
 	if !s.topologyRemoved {
-		if s.namespace != nil {
+		if !interfaceIsNil(s.namespace) {
 			if err := s.namespace.Close(); err != nil {
 				return ErrCleanupIncomplete
 			}
 			s.namespace = nil
 		}
-		if s.topology != nil {
+		if !interfaceIsNil(s.topology) {
 			metadata, err := s.coordinator.options.Topology.Stop(ctx, s.topologyIdentity)
 			if err != nil || metadata.Status != linuxtopology.StatusStopped {
 				return ErrCleanupIncomplete
@@ -447,7 +480,7 @@ func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, b
 			return ErrCleanupIncomplete
 		}
 	}
-	if !s.proxyStopped && s.proxy != nil {
+	if !s.proxyStopped && !interfaceIsNil(s.proxy) {
 		if err := s.coordinator.options.Proxy.Stop(ctx, s.plan, s.proxy); err != nil {
 			return ErrCleanupIncomplete
 		}
@@ -542,18 +575,18 @@ func (s *Session) rollback() error {
 		}
 		s.tapRemoved = true
 	}
-	if s.namespace != nil {
+	if !interfaceIsNil(s.namespace) {
 		result = errors.Join(result, s.namespace.Close())
 		s.namespace = nil
 	}
-	if s.topology != nil && !s.topologyRemoved {
+	if !interfaceIsNil(s.topology) && !s.topologyRemoved {
 		metadata, err := s.coordinator.options.Topology.Stop(ctx, s.topologyIdentity)
 		if err != nil || metadata.Status != linuxtopology.StatusStopped {
 			return ErrCleanupIncomplete
 		}
 		s.topologyRemoved = true
 	}
-	if s.proxy != nil && !s.proxyStopped {
+	if !interfaceIsNil(s.proxy) && !s.proxyStopped {
 		if err := s.coordinator.options.Proxy.Stop(ctx, s.plan, s.proxy); err != nil {
 			return ErrCleanupIncomplete
 		}
@@ -566,7 +599,7 @@ func (s *Session) rollback() error {
 }
 
 func (s *Session) save(ctx context.Context, stage journalStage) error {
-	if s.journal == nil {
+	if interfaceIsNil(s.journal) {
 		return ErrCleanupIncomplete
 	}
 	record := journalRecord{identity: s.identity, stage: stage, tapName: s.tap.name,
