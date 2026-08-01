@@ -63,7 +63,12 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 		metadata: Metadata{Identity: identity, Status: StatusCleanupIncomplete}}
 	lease, err := r.options.Journal.Acquire(ctx, identity)
 	if err != nil {
-		return nil, sanitizeJournalAcquireError(err)
+		primary := sanitizeJournalAcquireError(err)
+		if interfaceIsNil(lease) {
+			return nil, primary
+		}
+		session.journal = lease
+		return coordinator.releasePrepareJournal(session, primary)
 	}
 	if interfaceIsNil(lease) {
 		return coordinator.retainPrepareCleanup(session, retainedCleanupUnavailable, ErrStaleTopologyUnverified)

@@ -112,7 +112,12 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 		topologyIdentity: topologyIdentity(request.Identity), metadata: Metadata{Identity: request.Identity, Status: StatusPrepared}}
 	lease, err := c.options.Journal.Acquire(ctx, request.Identity)
 	if err != nil {
-		return nil, sanitizeJournalAcquireError(err)
+		primary := sanitizeJournalAcquireError(err)
+		if interfaceIsNil(lease) {
+			return nil, primary
+		}
+		session.journal = lease
+		return c.releasePrepareJournal(session, primary)
 	}
 	if interfaceIsNil(lease) {
 		return c.retainPrepareCleanup(session, retainedCleanupUnavailable, ErrCleanupIncomplete)

@@ -21,12 +21,13 @@ const (
 type fileJournalStore struct{ root string }
 
 type fileJournalLease struct {
-	identity Identity
-	dir      string
-	path     string
-	lock     *os.File
-	released bool
-	last     journalStage
+	identity      Identity
+	dir           string
+	path          string
+	lock          *os.File
+	released      bool
+	releaseFailed bool
+	last          journalStage
 }
 
 type diskJournal struct {
@@ -81,17 +82,21 @@ func (s *fileJournalStore) Acquire(ctx context.Context, identity Identity) (Jour
 	retired := filepath.Join(dir, "retired-"+identity.TopologyGenerationID)
 	if marker, err := openPrivateFile(retired, os.O_RDONLY, 0o600); err == nil {
 		_ = marker.Close()
-		_ = lease.Release()
-		return nil, ErrStaleTopologyUnverified
+		return releaseJournalAfterAcquireFailure(lease, ErrStaleTopologyUnverified)
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		_ = lease.Release()
-		return nil, ErrCleanupIncomplete
+		return releaseJournalAfterAcquireFailure(lease, ErrCleanupIncomplete)
 	}
 	if ctx.Err() != nil {
-		_ = lease.Release()
-		return nil, ErrCleanupIncomplete
+		return releaseJournalAfterAcquireFailure(lease, ErrCleanupIncomplete)
 	}
 	return lease, nil
+}
+
+func releaseJournalAfterAcquireFailure(lease *fileJournalLease, primary error) (JournalLease, error) {
+	if err := lease.Release(); err != nil {
+		return lease, errors.Join(primary, ErrCleanupIncomplete)
+	}
+	return nil, primary
 }
 
 func (l *fileJournalLease) Load() (journalRecord, error) {
@@ -157,11 +162,21 @@ func (l *fileJournalLease) Remove() error {
 }
 
 func (l *fileJournalLease) Release() error {
-	if l == nil || l.lock == nil || l.released {
+	if l == nil || l.lock == nil {
+		return nil
+	}
+	if l.releaseFailed {
+		return ErrCleanupIncomplete
+	}
+	if l.released {
 		return nil
 	}
 	l.released = true
-	return errors.Join(unlockFile(l.lock), l.lock.Close())
+	if err := errors.Join(unlockFile(l.lock), l.lock.Close()); err != nil {
+		l.releaseFailed = true
+		return ErrCleanupIncomplete
+	}
+	return nil
 }
 
 func validJournalDisk(disk diskJournal) bool {
