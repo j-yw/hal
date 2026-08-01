@@ -8,11 +8,16 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/policyproxy"
 )
 
+type productionProxyEndpoint interface {
+	Address() string
+	Loss() <-chan struct{}
+}
+
 type productionProxyAdapter interface {
 	networkenforcement.ProxyListenerAdapter
-	LiveEndpoint() (policyproxy.LiveEndpoint, bool)
-	ActiveLiveEndpoint(context.Context, policyproxy.LiveEndpoint, networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error)
-	StopLiveEndpoint(context.Context, policyproxy.LiveEndpoint, networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error)
+	LiveEndpoint() (productionProxyEndpoint, bool)
+	ActiveLiveEndpoint(context.Context, productionProxyEndpoint, networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error)
+	StopLiveEndpoint(context.Context, productionProxyEndpoint, networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error)
 }
 
 // ProductionProxy retains policyproxy.LiveEndpoint verbatim so listener
@@ -23,17 +28,31 @@ type productionProxyAdapter interface {
 type ProductionProxy struct{ adapter productionProxyAdapter }
 
 type productionProxyGeneration struct {
-	endpoint     policyproxy.LiveEndpoint
+	endpoint     productionProxyEndpoint
 	hasEndpoint  bool
 	active       networkenforcement.ProxyListenerLifecycleMetadata
 	recoveryOnly bool
 }
 
-func (g *productionProxyGeneration) Address() string       { return g.endpoint.Address() }
-func (g *productionProxyGeneration) Loss() <-chan struct{} { return g.endpoint.Loss() }
+func (g *productionProxyGeneration) Address() string {
+	if g == nil || !g.hasEndpoint || interfaceIsNil(g.endpoint) {
+		return ""
+	}
+	return g.endpoint.Address()
+}
+
+func (g *productionProxyGeneration) Loss() <-chan struct{} {
+	if g == nil || !g.hasEndpoint || interfaceIsNil(g.endpoint) {
+		return nil
+	}
+	return g.endpoint.Loss()
+}
 
 func NewProductionProxy(adapter *policyproxy.Adapter) (*ProductionProxy, error) {
-	return newProductionProxyWithAdapter(adapter)
+	if adapter == nil {
+		return nil, ErrInvalidConfiguration
+	}
+	return newProductionProxyWithAdapter(productionPolicyProxyAdapter{adapter: adapter})
 }
 
 func newProductionProxyWithAdapter(adapter productionProxyAdapter) (*ProductionProxy, error) {
@@ -44,27 +63,26 @@ func newProductionProxyWithAdapter(adapter productionProxyAdapter) (*ProductionP
 }
 
 func (p *ProductionProxy) Start(ctx context.Context, plan networkenforcement.Plan) (ProxyGeneration, error) {
-	if p == nil || p.adapter == nil {
+	if p == nil || interfaceIsNil(p.adapter) {
 		return nil, ErrProxyUnavailable
 	}
-	result, err := (networkenforcement.ProxyListenerLifecycleRunner{Adapter: p.adapter}).Start(ctx, plan)
+	capture := &productionProxyStartCapture{adapter: p.adapter}
+	result, err := (networkenforcement.ProxyListenerLifecycleRunner{Adapter: capture}).Start(ctx, plan)
 	if err != nil || result.Active == nil || result.Status != networkenforcement.LifecycleStatusActive {
 		if result.Active != nil && proxyCleanupUncertain(result) {
-			return p.recoveryGeneration(*result.Active), errors.Join(ErrProxyUnavailable, ErrCleanupIncomplete)
+			return recoveryProxyGeneration(*result.Active, capture), errors.Join(ErrProxyUnavailable, ErrCleanupIncomplete)
 		}
 		return nil, ErrProxyUnavailable
 	}
-	endpoint, ok := p.adapter.LiveEndpoint()
-	if !ok || endpoint.Loss() == nil {
-		generation := &productionProxyGeneration{endpoint: endpoint, hasEndpoint: ok,
-			active: networkenforcement.SanitizeProxyListenerLifecycleMetadata(*result.Active), recoveryOnly: !ok}
+	generation := recoveryProxyGeneration(*result.Active, capture)
+	if !generation.hasEndpoint || generation.endpoint.Loss() == nil {
 		if stopErr := p.stopGeneration(ctx, plan, generation); stopErr != nil {
 			return generation, errors.Join(ErrProxyUnavailable, ErrCleanupIncomplete)
 		}
 		return nil, ErrProxyUnavailable
 	}
-	return &productionProxyGeneration{endpoint: endpoint, hasEndpoint: true,
-		active: networkenforcement.SanitizeProxyListenerLifecycleMetadata(*result.Active)}, nil
+	generation.recoveryOnly = false
+	return generation, nil
 }
 
 func (p *ProductionProxy) Endpoint(generation ProxyGeneration) (string, error) {
@@ -95,10 +113,18 @@ func (p *ProductionProxy) Stop(ctx context.Context, plan networkenforcement.Plan
 	return p.stopGeneration(ctx, plan, g)
 }
 
-func (p *ProductionProxy) recoveryGeneration(active networkenforcement.ProxyListenerLifecycleMetadata) *productionProxyGeneration {
-	endpoint, ok := p.adapter.LiveEndpoint()
-	return &productionProxyGeneration{endpoint: endpoint, hasEndpoint: ok,
-		active: networkenforcement.SanitizeProxyListenerLifecycleMetadata(active), recoveryOnly: !ok}
+func recoveryProxyGeneration(
+	active networkenforcement.ProxyListenerLifecycleMetadata,
+	capture *productionProxyStartCapture,
+) *productionProxyGeneration {
+	generation := &productionProxyGeneration{
+		active: networkenforcement.SanitizeProxyListenerLifecycleMetadata(active), recoveryOnly: true,
+	}
+	if capture != nil && capture.captured && !interfaceIsNil(capture.endpoint) {
+		generation.endpoint = capture.endpoint
+		generation.hasEndpoint = true
+	}
+	return generation
 }
 
 func (p *ProductionProxy) stopGeneration(
@@ -106,18 +132,122 @@ func (p *ProductionProxy) stopGeneration(
 	plan networkenforcement.Plan,
 	generation *productionProxyGeneration,
 ) error {
-	if generation.hasEndpoint && !generation.recoveryOnly {
-		metadata, err := p.adapter.StopLiveEndpoint(ctx, generation.endpoint, proxyRequest(plan, generation.active))
-		if err != nil || metadata.Status != networkenforcement.LifecycleStatusStopped || len(metadata.WarningCodes) != 0 {
-			return ErrCleanupIncomplete
-		}
-		return nil
+	if !generation.hasEndpoint || interfaceIsNil(generation.endpoint) {
+		return ErrCleanupIncomplete
 	}
-	result, _ := (networkenforcement.ProxyListenerLifecycleRunner{Adapter: p.adapter}).Stop(ctx, plan, &generation.active)
-	if result.Active == nil || result.Status != networkenforcement.LifecycleStatusStopped || proxyCleanupUncertain(result) {
+	metadata, err := p.adapter.StopLiveEndpoint(ctx, generation.endpoint, proxyRequest(plan, generation.active))
+	if err != nil || metadata.Status != networkenforcement.LifecycleStatusStopped || len(metadata.WarningCodes) != 0 {
 		return ErrCleanupIncomplete
 	}
 	return nil
+}
+
+type productionProxyStartCapture struct {
+	adapter  productionProxyAdapter
+	endpoint productionProxyEndpoint
+	captured bool
+}
+
+func (c *productionProxyStartCapture) PrepareProxyListener(
+	ctx context.Context,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	return c.adapter.PrepareProxyListener(ctx, request)
+}
+
+func (c *productionProxyStartCapture) StartProxyListener(
+	ctx context.Context,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	metadata, err := c.adapter.StartProxyListener(ctx, request)
+	if err != nil {
+		return metadata, err
+	}
+	endpoint, ok := c.adapter.LiveEndpoint()
+	if !ok || interfaceIsNil(endpoint) {
+		return metadata, ErrProxyUnavailable
+	}
+	c.endpoint, c.captured = endpoint, true
+	return metadata, nil
+}
+
+func (c *productionProxyStartCapture) ActiveProxyListener(
+	ctx context.Context,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	if !c.captured || interfaceIsNil(c.endpoint) {
+		return networkenforcement.ProxyListenerLifecycleMetadata{}, ErrProxyUnavailable
+	}
+	return c.adapter.ActiveLiveEndpoint(ctx, c.endpoint, request)
+}
+
+func (c *productionProxyStartCapture) StopProxyListener(
+	ctx context.Context,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	if !c.captured || interfaceIsNil(c.endpoint) {
+		return networkenforcement.ProxyListenerLifecycleMetadata{}, ErrCleanupIncomplete
+	}
+	return c.adapter.StopLiveEndpoint(ctx, c.endpoint, request)
+}
+
+type productionPolicyProxyAdapter struct{ adapter *policyproxy.Adapter }
+
+func (a productionPolicyProxyAdapter) PrepareProxyListener(
+	ctx context.Context,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	return a.adapter.PrepareProxyListener(ctx, request)
+}
+
+func (a productionPolicyProxyAdapter) StartProxyListener(
+	ctx context.Context,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	return a.adapter.StartProxyListener(ctx, request)
+}
+
+func (a productionPolicyProxyAdapter) ActiveProxyListener(
+	ctx context.Context,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	return a.adapter.ActiveProxyListener(ctx, request)
+}
+
+func (a productionPolicyProxyAdapter) StopProxyListener(
+	ctx context.Context,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	return a.adapter.StopProxyListener(ctx, request)
+}
+
+func (a productionPolicyProxyAdapter) LiveEndpoint() (productionProxyEndpoint, bool) {
+	endpoint, ok := a.adapter.LiveEndpoint()
+	return endpoint, ok
+}
+
+func (a productionPolicyProxyAdapter) ActiveLiveEndpoint(
+	ctx context.Context,
+	endpoint productionProxyEndpoint,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	exact, ok := endpoint.(policyproxy.LiveEndpoint)
+	if !ok {
+		return networkenforcement.ProxyListenerLifecycleMetadata{}, ErrProxyUnavailable
+	}
+	return a.adapter.ActiveLiveEndpoint(ctx, exact, request)
+}
+
+func (a productionPolicyProxyAdapter) StopLiveEndpoint(
+	ctx context.Context,
+	endpoint productionProxyEndpoint,
+	request networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	exact, ok := endpoint.(policyproxy.LiveEndpoint)
+	if !ok {
+		return networkenforcement.ProxyListenerLifecycleMetadata{}, ErrCleanupIncomplete
+	}
+	return a.adapter.StopLiveEndpoint(ctx, exact, request)
 }
 
 func proxyCleanupUncertain(result networkenforcement.ProxyListenerLifecycleResult) bool {

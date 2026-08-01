@@ -6,19 +6,21 @@ import (
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
-	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/policyproxy"
 )
 
 func TestProductionProxyRetainsRecoveryGenerationAfterUncertainStartCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		activeCheckFail bool
+		lossUnavailable bool
 	}{
 		{name: "active check rollback warning", activeCheckFail: true},
-		{name: "missing exact endpoint rollback warning"},
+		{name: "missing loss signal rollback warning", lossUnavailable: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			adapter := &uncertainCleanupProxyAdapter{activeCheckFail: tc.activeCheckFail, stopFailures: 1}
+			adapter := &uncertainCleanupProxyAdapter{
+				activeCheckFail: tc.activeCheckFail, lossUnavailable: tc.lossUnavailable, stopFailures: 1,
+			}
 			proxy, err := newProductionProxyWithAdapter(adapter)
 			if err != nil {
 				t.Fatal(err)
@@ -80,17 +82,26 @@ func TestProductionProxyStaleRecoveryCannotStopReplacementGeneration(t *testing.
 	if adapter.replacementStopped {
 		t.Fatal("stale recovery stopped replacement listener generation")
 	}
+	if adapter.genericStopCalls != 0 {
+		t.Fatalf("stale recovery used %d plan-only generic stop calls", adapter.genericStopCalls)
+	}
 }
 
 type uncertainCleanupProxyAdapter struct {
 	activeCheckFail    bool
+	lossUnavailable    bool
 	stopFailures       int
 	stopCalls          int
+	genericStopCalls   int
+	currentGeneration  int
 	replacementLive    bool
 	replacementStopped bool
 }
 
-func (a *uncertainCleanupProxyAdapter) startReplacement() { a.replacementLive = true }
+func (a *uncertainCleanupProxyAdapter) startReplacement() {
+	a.currentGeneration++
+	a.replacementLive = true
+}
 
 func (*uncertainCleanupProxyAdapter) PrepareProxyListener(
 	context.Context,
@@ -99,10 +110,13 @@ func (*uncertainCleanupProxyAdapter) PrepareProxyListener(
 	return networkenforcement.ProxyListenerLifecycleMetadata{}, nil
 }
 
-func (*uncertainCleanupProxyAdapter) StartProxyListener(
+func (a *uncertainCleanupProxyAdapter) StartProxyListener(
 	context.Context,
 	networkenforcement.ProxyListenerLifecycleRequest,
 ) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	if a.currentGeneration == 0 {
+		a.currentGeneration = 1
+	}
 	return networkenforcement.ProxyListenerLifecycleMetadata{}, nil
 }
 
@@ -120,32 +134,65 @@ func (a *uncertainCleanupProxyAdapter) StopProxyListener(
 	context.Context,
 	networkenforcement.ProxyListenerLifecycleRequest,
 ) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
-	a.stopCalls++
-	if a.stopCalls <= a.stopFailures {
-		return networkenforcement.ProxyListenerLifecycleMetadata{}, errors.New("private stop failure")
-	}
+	a.genericStopCalls++
 	if a.replacementLive {
 		a.replacementStopped = true
 	}
 	return networkenforcement.ProxyListenerLifecycleMetadata{Status: networkenforcement.LifecycleStatusStopped}, nil
 }
 
-func (*uncertainCleanupProxyAdapter) LiveEndpoint() (policyproxy.LiveEndpoint, bool) {
-	return policyproxy.LiveEndpoint{}, false
+type fakeProductionProxyEndpoint struct {
+	generation int
+	loss       <-chan struct{}
 }
 
-func (*uncertainCleanupProxyAdapter) ActiveLiveEndpoint(
-	context.Context,
-	policyproxy.LiveEndpoint,
-	networkenforcement.ProxyListenerLifecycleRequest,
-) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
-	return networkenforcement.ProxyListenerLifecycleMetadata{}, errors.New("unexpected exact active check")
+func (*fakeProductionProxyEndpoint) Address() string { return "127.0.0.1:43123" }
+func (e *fakeProductionProxyEndpoint) Loss() <-chan struct{} {
+	return e.loss
 }
 
-func (*uncertainCleanupProxyAdapter) StopLiveEndpoint(
-	context.Context,
-	policyproxy.LiveEndpoint,
-	networkenforcement.ProxyListenerLifecycleRequest,
+func (a *uncertainCleanupProxyAdapter) LiveEndpoint() (productionProxyEndpoint, bool) {
+	if a.currentGeneration == 0 {
+		return nil, false
+	}
+	var loss <-chan struct{}
+	if !a.lossUnavailable {
+		loss = make(chan struct{})
+	}
+	return &fakeProductionProxyEndpoint{generation: a.currentGeneration, loss: loss}, true
+}
+
+func (a *uncertainCleanupProxyAdapter) ActiveLiveEndpoint(
+	_ context.Context,
+	endpoint productionProxyEndpoint,
+	_ networkenforcement.ProxyListenerLifecycleRequest,
 ) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
-	return networkenforcement.ProxyListenerLifecycleMetadata{}, errors.New("unexpected exact stop")
+	exact, ok := endpoint.(*fakeProductionProxyEndpoint)
+	if !ok || exact.generation != a.currentGeneration {
+		return networkenforcement.ProxyListenerLifecycleMetadata{}, errors.New("stale generation")
+	}
+	if a.activeCheckFail {
+		return networkenforcement.ProxyListenerLifecycleMetadata{}, errors.New("private active failure")
+	}
+	return networkenforcement.ProxyListenerLifecycleMetadata{Status: networkenforcement.LifecycleStatusActive}, nil
+}
+
+func (a *uncertainCleanupProxyAdapter) StopLiveEndpoint(
+	_ context.Context,
+	endpoint productionProxyEndpoint,
+	_ networkenforcement.ProxyListenerLifecycleRequest,
+) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	a.stopCalls++
+	if a.stopCalls <= a.stopFailures {
+		return networkenforcement.ProxyListenerLifecycleMetadata{}, errors.New("private stop failure")
+	}
+	exact, ok := endpoint.(*fakeProductionProxyEndpoint)
+	if !ok || exact.generation != a.currentGeneration {
+		return networkenforcement.ProxyListenerLifecycleMetadata{}, errors.New("stale generation")
+	}
+	if a.replacementLive {
+		a.replacementStopped = true
+	}
+	a.currentGeneration = 0
+	return networkenforcement.ProxyListenerLifecycleMetadata{Status: networkenforcement.LifecycleStatusStopped}, nil
 }
