@@ -197,13 +197,14 @@ func TestL7VerifiedAssetLeasePreservesCleanupErrorAndRenderPropagatesIt(t *testi
 		t.Fatal(err)
 	}
 	descriptor := verified.Descriptor
-	closeFailure := errors.New("injected private material close failure")
+	firstCloseFailure := &l7FirstCleanupFailure{detail: "private first cleanup detail"}
+	secondCloseFailure := &l7SecondCleanupFailure{detail: "private second cleanup detail"}
 	material := &l7ProbeLaunchMaterial{
 		paths: map[assets.AssetRole]string{
 			assets.AssetRoleKernel: filepath.Join(t.TempDir(), "kernel"),
 			assets.AssetRoleRootfs: filepath.Join(t.TempDir(), "rootfs"),
 		},
-		closeErr: closeFailure,
+		closeErr: errors.Join(firstCloseFailure, secondCloseFailure),
 	}
 	if _, _, err := lease.PrepareLaunch(&descriptor, material); err != nil {
 		t.Fatalf("PrepareLaunch() error = %v", err)
@@ -229,10 +230,15 @@ func TestL7VerifiedAssetLeasePreservesCleanupErrorAndRenderPropagatesIt(t *testi
 	if renderErr == nil || !errors.Is(renderErr, localresolver.ErrFileUnavailable) {
 		t.Fatalf("render error = %v (mode %q, lease nil %t, material close calls %d), want propagated sanitized cleanup uncertainty", renderErr, config.NetworkMode, config.VerifiedL7Assets == nil, material.closeCalls)
 	}
+	assertL7CleanupCauses(t, renderErr, firstCloseFailure, secondCloseFailure)
 	firstCloseErr := lease.Close()
 	secondCloseErr := lease.Close()
 	if firstCloseErr == nil || secondCloseErr == nil || firstCloseErr != secondCloseErr {
 		t.Fatalf("repeated Close errors = (%v, %v), want the original cached cleanup error", firstCloseErr, secondCloseErr)
+	}
+	assertL7CleanupCauses(t, firstCloseErr, firstCloseFailure, secondCloseFailure)
+	if material.closeCalls != 1 {
+		t.Fatalf("material Close calls = %d, want one without ambiguous retry", material.closeCalls)
 	}
 }
 
@@ -268,9 +274,43 @@ func TestL7StartedProcessIsCleanedWhenParentFileCleanupFails(t *testing.T) {
 	if !manager.cleaned {
 		t.Fatal("started process was not cleaned after parent-file cleanup uncertainty")
 	}
+	var closePathErr *os.PathError
+	if !errors.As(err, &closePathErr) || closePathErr == nil {
+		t.Fatalf("errors.As(start error, *os.PathError) = false, want original close cause")
+	}
 	for _, forbidden := range []string{"closed-inherited-asset"} {
 		if strings.Contains(err.Error(), forbidden) {
 			t.Fatalf("cleanup error leaked unsafe value %q: %v", forbidden, err)
+		}
+	}
+}
+
+type l7FirstCleanupFailure struct{ detail string }
+
+func (err *l7FirstCleanupFailure) Error() string { return err.detail }
+
+type l7SecondCleanupFailure struct{ detail string }
+
+func (err *l7SecondCleanupFailure) Error() string { return err.detail }
+
+func assertL7CleanupCauses(
+	t *testing.T,
+	err error,
+	first *l7FirstCleanupFailure,
+	second *l7SecondCleanupFailure,
+) {
+	t.Helper()
+	if !errors.Is(err, first) || !errors.Is(err, second) {
+		t.Fatalf("cleanup error did not preserve every original errors.Is cause: %v", err)
+	}
+	var firstMatch *l7FirstCleanupFailure
+	var secondMatch *l7SecondCleanupFailure
+	if !errors.As(err, &firstMatch) || firstMatch != first || !errors.As(err, &secondMatch) || secondMatch != second {
+		t.Fatalf("cleanup error did not preserve every original errors.As cause: %v", err)
+	}
+	for _, private := range []string{first.detail, second.detail} {
+		if strings.Contains(err.Error(), private) {
+			t.Fatalf("cleanup error leaked private cause %q: %v", private, err)
 		}
 	}
 }
