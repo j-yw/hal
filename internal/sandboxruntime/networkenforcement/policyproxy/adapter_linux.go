@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -43,6 +44,9 @@ type Adapter struct {
 	lossOnce              *sync.Once
 	lastStoppedGeneration uint64
 	lastStoppedAddress    string
+	reservation           *os.File
+	reservationGeneration uint64
+	reservationAddress    string
 	stopping              bool
 
 	// beforeTunnelTrack is a package-test synchronization seam. Production
@@ -125,6 +129,9 @@ func (a *Adapter) StartProxyListener(ctx context.Context, request networkenforce
 		default:
 		}
 		return a.metadata(request, networkenforcement.LifecycleStatusStarting, networkenforcement.LifecycleReasonStarted), nil
+	}
+	if a.reservation != nil {
+		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("start")
 	}
 
 	var listenConfig net.ListenConfig
@@ -211,7 +218,11 @@ func (a *Adapter) stopProxyListener(request networkenforcement.ProxyListenerLife
 	a.mu.Lock()
 	if expected != nil {
 		if expected.generation != 0 && expected.generation == a.lastStoppedGeneration && expected.address != "" && expected.address == a.lastStoppedAddress && a.listener == nil {
+			reservation := a.takeExactReservationLocked(*expected)
 			a.mu.Unlock()
+			if reservation != nil {
+				_ = reservation.Close()
+			}
 			return a.metadata(request, networkenforcement.LifecycleStatusStopped, networkenforcement.LifecycleReasonStopped), nil
 		}
 		if expected.generation == 0 || expected.generation != a.generation || expected.address == "" || expected.address != a.endpoint {
@@ -227,6 +238,10 @@ func (a *Adapter) stopProxyListener(request networkenforcement.ProxyListenerLife
 	done := a.done
 	loss := a.loss
 	lossOnce := a.lossOnce
+	var reservation *os.File
+	if expected != nil {
+		reservation = a.takeExactReservationLocked(*expected)
+	}
 	connections := make([]net.Conn, 0, len(a.connections))
 	for conn := range a.connections {
 		connections = append(connections, conn)
@@ -262,6 +277,9 @@ func (a *Adapter) stopProxyListener(request networkenforcement.ProxyListenerLife
 	if listener != nil {
 		_ = listener.Close()
 	}
+	if reservation != nil {
+		_ = reservation.Close()
+	}
 	if done != nil {
 		timer := time.NewTimer(a.config.Limits.ShutdownTimeout)
 		select {
@@ -293,6 +311,17 @@ func expectedAddress(expected *LiveEndpoint, listener net.Listener) string {
 		return listener.Addr().String()
 	}
 	return ""
+}
+
+func (a *Adapter) takeExactReservationLocked(expected LiveEndpoint) *os.File {
+	if a.reservation == nil || a.reservationGeneration != expected.generation || a.reservationAddress != expected.address {
+		return nil
+	}
+	reservation := a.reservation
+	a.reservation = nil
+	a.reservationGeneration = 0
+	a.reservationAddress = ""
+	return reservation
 }
 
 func (a *Adapter) superviseServeExit(generation uint64, server *http.Server, listener net.Listener, cancel context.CancelFunc, serveErr error) {
@@ -365,8 +394,32 @@ func (a *Adapter) LiveEndpoint() (LiveEndpoint, bool) {
 	case <-a.done:
 		return LiveEndpoint{}, false
 	default:
-		return LiveEndpoint{address: a.endpoint, generation: a.generation, loss: a.loss}, true
 	}
+	if a.reservation == nil {
+		reservation, err := duplicateListenerReservation(a.listener)
+		if err != nil {
+			return LiveEndpoint{}, false
+		}
+		a.reservation = reservation
+		a.reservationGeneration = a.generation
+		a.reservationAddress = a.endpoint
+	}
+	if a.reservationGeneration != a.generation || a.reservationAddress != a.endpoint {
+		return LiveEndpoint{}, false
+	}
+	return LiveEndpoint{address: a.endpoint, generation: a.generation, loss: a.loss}, true
+}
+
+func duplicateListenerReservation(listener net.Listener) (*os.File, error) {
+	limited, ok := listener.(*connectionLimitListener)
+	if !ok || limited == nil {
+		return nil, net.ErrClosed
+	}
+	tcpListener, ok := limited.Listener.(*net.TCPListener)
+	if !ok || tcpListener == nil {
+		return nil, net.ErrClosed
+	}
+	return tcpListener.File()
 }
 
 // ActiveLiveEndpoint checks active state and exact generation identity under

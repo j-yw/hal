@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"reflect"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/policyproxy"
 	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
 	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman/l7network"
 )
@@ -96,6 +98,50 @@ func TestL7ComposedRootlessPodmanRechecksProxyAndQuarantinesBeforeCleanup(t *tes
 	if got, want := sequence.snapshot(), []string{"proxy_active", "rules_quarantine", "rules_cleanup", "namespace_close", "proxy_stop"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("loss cleanup sequence = %#v, want %#v", got, want)
 	}
+}
+
+func TestL7ComposedRootlessPodmanReleasesSelectedPortOnlyAfterRuleCleanup(t *testing.T) {
+	plan := testPlan()
+	adapter, err := policyproxy.New(policyproxy.Config{Policy: networkenforcement.NewPolicyProxyPolicyInput(plan, nil), ListenAddress: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := l7network.NewProductionProxy(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := &fakeRules{}
+	factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{result: validNamespaceResolution()}, rules))
+	prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, ok := adapter.Endpoint()
+	if !ok {
+		t.Fatal("selected composed endpoint unavailable")
+	}
+	rules.cleanupHook = func() {
+		rebound, bindErr := net.Listen("tcp", endpoint)
+		if bindErr == nil {
+			_ = rebound.Close()
+			t.Error("selected endpoint rebound before exact composed proxy stop")
+		}
+	}
+	request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if _, err := prepared.Session.Activate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Revoke(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	rebound, err := net.Listen("tcp", endpoint)
+	if err != nil {
+		t.Fatalf("selected endpoint remained reserved after exact composed cleanup: %v", err)
+	}
+	_ = rebound.Close()
 }
 
 func TestL7ComposedRootlessPodmanRejectsMismatchBeforeMutationAndCleansPartialStart(t *testing.T) {
@@ -570,6 +616,7 @@ type fakeRules struct {
 	quarantineCalls       int
 	cleanupFailures       int
 	cleanupCalls          int
+	cleanupHook           func()
 }
 
 func (r *fakeRules) ApplyAndInspect(_ context.Context, expected linuxrules.ExpectedRuleSet) (networkenforcement.RuleLifecycleMetadata, error) {
@@ -592,6 +639,9 @@ func (r *fakeRules) Quarantine(context.Context, linuxrules.ExpectedRuleSet) erro
 func (r *fakeRules) Cleanup(context.Context, linuxrules.ExpectedRuleSet) error {
 	r.sequence.add("rules_cleanup")
 	r.cleanupCalls++
+	if r.cleanupHook != nil {
+		r.cleanupHook()
+	}
 	if r.cleanupCalls <= r.cleanupFailures {
 		return errors.New("private transient cleanup failure")
 	}
