@@ -201,6 +201,47 @@ func TestFirecrackerHostTopologyTwoStageCleanupIsExactRetryableAndPortLast(t *te
 	}
 }
 
+func TestFirecrackerHostTopologyCleanupRejectsBareQuiescenceAssertion(t *testing.T) {
+	sequence := &callSequence{}
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+	})
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Quarantine(context.Background(), testIdentity()); err != nil {
+		t.Fatal(err)
+	}
+	sequence.reset()
+	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), true); !errors.Is(err, ErrVMNotQuiesced) {
+		t.Fatalf("CleanupAfterVMQuiesced(true) = %v, want authoritative ErrVMNotQuiesced", err)
+	}
+	if got := sequence.snapshot(); len(got) != 0 {
+		t.Fatalf("bare boolean authorized cleanup mutations: %#v", got)
+	}
+}
+
+func TestFirecrackerHostTopologyRetainsPartialTopologySessionForRollback(t *testing.T) {
+	sequence := &callSequence{}
+	topology := newFakeTopology(sequence)
+	topology.startErr = ErrCleanupIncomplete
+	topology.returnSessionOnStartError = true
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: newFakeProxy(sequence), Topology: topology,
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+	})
+	if _, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()}); !errors.Is(err, ErrTopologyPrepareFailed) {
+		t.Fatalf("Prepare() = %v, want ErrTopologyPrepareFailed after resolved rollback", err)
+	}
+	if got := sequence.snapshot(); !contains(got, "topology_stop") {
+		t.Fatalf("partial topology session was not retained for exact rollback: %#v", got)
+	}
+}
+
 func TestFirecrackerHostTopologyRejectsUnsafeDuplicateOrMismatchedIdentityBeforeMutation(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -322,6 +363,7 @@ type fakeProxy struct {
 	endpointErr  error
 	activeFailAt int
 	activeCalls  int
+	activeHook   func()
 }
 
 func newFakeProxy(sequence *callSequence) *fakeProxy {
@@ -345,6 +387,10 @@ func (p *fakeProxy) Endpoint(g ProxyGeneration) (string, error) {
 func (p *fakeProxy) Active(context.Context, networkenforcement.Plan, ProxyGeneration) error {
 	p.sequence.add("proxy_active")
 	p.activeCalls++
+	if p.activeHook != nil {
+		p.activeHook()
+		p.activeHook = nil
+	}
 	if p.activeFailAt > 0 && p.activeCalls == p.activeFailAt {
 		return errors.New("private active generation")
 	}
@@ -356,9 +402,10 @@ func (p *fakeProxy) Stop(context.Context, networkenforcement.Plan, ProxyGenerati
 }
 
 type fakeTopology struct {
-	sequence *callSequence
-	session  *fakeTopologySession
-	startErr error
+	sequence                  *callSequence
+	session                   *fakeTopologySession
+	startErr                  error
+	returnSessionOnStartError bool
 }
 
 func newFakeTopology(sequence *callSequence) *fakeTopology {
@@ -368,6 +415,10 @@ func newFakeTopology(sequence *callSequence) *fakeTopology {
 func (t *fakeTopology) Start(_ context.Context, request linuxtopology.StartRequest) (TopologySession, error) {
 	t.sequence.add("topology_start")
 	if t.startErr != nil {
+		if t.returnSessionOnStartError {
+			t.session.identity = request.Identity
+			return t.session, t.startErr
+		}
 		return nil, t.startErr
 	}
 	t.session.identity = request.Identity

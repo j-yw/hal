@@ -135,6 +135,35 @@ func TestFirecrackerHostTopologyPostReadinessDriftQuarantinesAndMismatchIsInert(
 	}
 }
 
+func TestFirecrackerHostTopologyGuestBindingMutationDuringHostInspectionQuarantines(t *testing.T) {
+	sequence := &callSequence{}
+	proxy := newFakeProxy(sequence)
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence),
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+	})
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sequence.reset()
+	ready := true
+	binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-stable", ready: &ready}
+	proxy.activeHook = func() { binding.proofID = "guest-ready-proof-substituted" }
+	verifier := &readinessGatedGuestVerifier{sequence: sequence, binding: binding}
+	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding, verifier); !errors.Is(err, ErrProofMismatch) {
+		t.Fatalf("InspectAfterGuestReady() = %v, want ErrProofMismatch", err)
+	}
+	if session.Metadata().Status != StatusQuarantined {
+		t.Fatalf("mutated binding status = %q, want quarantined", session.Metadata().Status)
+	}
+	assertSubsequence(t, sequence.snapshot(), []string{
+		"guest_raw_packet_verify", "proxy_active", "tap_inspect", "rules_inspect",
+		"tap_inspect", "proxy_active", "rules_quarantine",
+	})
+}
+
 func prepareHostTopologyForGuestProof(t *testing.T, sequence *callSequence) *Session {
 	t.Helper()
 	coordinator := mustCoordinator(t, Options{

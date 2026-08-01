@@ -64,15 +64,53 @@ func TestLinuxTAPRollsBackEveryPartialCreateFailure(t *testing.T) {
 	}
 }
 
+func TestLinuxTAPInspectionRejectsExtraAddressesAndRoutes(t *testing.T) {
+	spec := staticTAPSpec(testIdentity(), netip.MustParseAddr("192.0.2.2"), 43123)
+	extraAddress := []byte(`[{"ifname":"` + spec.name + `","addr_info":[` +
+		`{"family":"inet","local":"172.31.255.1","prefixlen":30},` +
+		`{"family":"inet6","local":"fd00:6861:6c::1","prefixlen":126},` +
+		`{"family":"inet6","local":"fe80::1234","prefixlen":64}]}]`)
+	if inspectTAPAddresses(extraAddress, spec) {
+		t.Fatal("address inspection accepted an extra link-local address")
+	}
+	extraRoute := []byte(`[{"dst":"172.31.255.2/32","dev":"` + spec.name + `"},` +
+		`{"dst":"169.254.169.254/32","dev":"` + spec.name + `"}]`)
+	if inspectTAPRoutes(extraRoute, spec.name, "172.31.255.2/32") {
+		t.Fatal("route inspection accepted an extra metadata route")
+	}
+	duplicateRoute := []byte(`[{"dst":"172.31.255.2/32","dev":"` + spec.name + `"},` +
+		`{"dst":"172.31.255.2/32","dev":"` + spec.name + `"}]`)
+	if inspectTAPRoutes(duplicateRoute, spec.name, "172.31.255.2/32") {
+		t.Fatal("route inspection accepted a duplicate route")
+	}
+}
+
+func TestLinuxTAPDeleteDoesNotTreatInspectionFailureAsAbsence(t *testing.T) {
+	command := &fakeNamespaceCommand{absenceErr: errors.New("permission denied while checking absence")}
+	tap, err := NewLinuxTAP(TAPOptions{IPPath: "/usr/sbin/ip", SysctlPath: "/usr/sbin/sysctl", NsenterPath: "/usr/bin/nsenter", Command: command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := staticTAPSpec(testIdentity(), netip.MustParseAddr("192.0.2.2"), 43123)
+	state, err := tap.CreateConfigure(context.Background(), &fakeNamespaceLease{rules: linuxrules.NewNamespaceHandle(10, 11)}, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tap.Delete(context.Background(), &fakeNamespaceLease{rules: linuxrules.NewNamespaceHandle(10, 11)}, state, spec); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Delete() = %v, want ErrCleanupIncomplete", err)
+	}
+}
+
 type tapCommandCall struct {
 	path string
 	args []string
 }
 type fakeNamespaceCommand struct {
-	calls   []tapCommandCall
-	failAt  int
-	deleted bool
-	mac     string
+	calls      []tapCommandCall
+	failAt     int
+	deleted    bool
+	mac        string
+	absenceErr error
 }
 
 func (c *fakeNamespaceCommand) Run(_ context.Context, _ NamespaceLease, command NamespaceCommandRequest, _ int64) ([]byte, error) {
@@ -94,6 +132,9 @@ func (c *fakeNamespaceCommand) Run(_ context.Context, _ NamespaceLease, command 
 	}
 	if strings.Contains(joined, "-j link show") {
 		if c.deleted {
+			if c.absenceErr != nil {
+				return nil, c.absenceErr
+			}
 			return nil, errors.New("absent")
 		}
 		name := command.Args[len(command.Args)-1]
