@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"syscall"
 	"time"
 )
 
@@ -28,9 +27,9 @@ func main() {
 	case "udp":
 		err = requireUDPDenied(os.Args[2])
 	case "icmp":
-		err = requireRawDenied(syscall.AF_INET, syscall.IPPROTO_ICMP)
+		err = requireRawIPDenied()
 	case "packet":
-		err = requireRawDenied(syscall.AF_PACKET, int(htons(0x0003)))
+		err = requireRawPacketDenied()
 	default:
 		err = errors.New("unsupported probe")
 	}
@@ -119,17 +118,3 @@ func requireUDPDenied(target string) error {
 	}
 	return errors.New("direct udp unexpectedly replied")
 }
-
-func requireRawDenied(family, protocol int) error {
-	fd, err := syscall.Socket(family, syscall.SOCK_RAW, protocol)
-	if err == syscall.EPERM || err == syscall.EACCES {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	_ = syscall.Close(fd)
-	return errors.New("raw socket unexpectedly opened")
-}
-
-func htons(value uint16) uint16 { return value<<8 | value>>8 }
