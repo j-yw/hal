@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
 )
@@ -269,6 +270,118 @@ func TestL7ServerOwnedNetworkProofRequirementUpgradesConcurrentWeakRequests(t *t
 	}
 }
 
+func TestL7ServerConcurrentProofCompletionOrdersControlAdmission(t *testing.T) {
+	tests := []struct {
+		name              string
+		completionOrder   []string
+		wantWorkAdmission bool
+	}{
+		{
+			name:              "failed proof completes after success",
+			completionOrder:   []string{"success", "failure"},
+			wantWorkAdmission: false,
+		},
+		{
+			name:              "current success completes after failure",
+			completionOrder:   []string{"failure", "success"},
+			wantWorkAdmission: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &l4FakeBackend{}
+			verifier := newL7ProofOrderVerifier()
+			run := startL4Server(t, Options{
+				Transport:                     newL4BlockingTransport(),
+				Backend:                       backend,
+				IsolationVerifier:             verifier,
+				RequireNetworkProofBeforeWork: true,
+			})
+
+			requests := map[string]guestagent.ReadinessRequest{
+				"failure": {
+					ProtocolVersion: guestagent.ProtocolVersionV1,
+					Operation:       guestagent.OperationReadiness,
+					IsolationProof: &guestagent.IsolationProofRequest{
+						Generation:        "proof-failure",
+						RuntimeGeneration: "runtime-generation-concurrent",
+					},
+				},
+				"success": {
+					ProtocolVersion: guestagent.ProtocolVersionV1,
+					Operation:       guestagent.OperationReadiness,
+					IsolationProof: &guestagent.IsolationProofRequest{
+						Generation:          "proof-success",
+						RuntimeGeneration:   "runtime-generation-concurrent",
+						RequireNetworkProof: false,
+					},
+				},
+			}
+			responses := map[string]chan guestagent.ReadinessResponse{
+				"failure": make(chan guestagent.ReadinessResponse, 1),
+				"success": make(chan guestagent.ReadinessResponse, 1),
+			}
+			for _, name := range []string{"failure", "success"} {
+				name := name
+				go func() {
+					response := run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, requests[name])})
+					responses[name] <- l4DecodeResponse[guestagent.ReadinessResponse](t, response)
+				}()
+				verifier.waitEntered(t, name)
+			}
+
+			for _, name := range test.completionOrder {
+				verifier.release(name)
+				response := l7WaitReadinessResponse(t, responses[name])
+				if name == "success" {
+					if !response.Ready || response.IsolationProof == nil || response.IsolationProof.Network == nil ||
+						response.IsolationProof.Network.Status != guestagent.IsolationProofStatusVerified {
+						t.Fatalf("success response = %#v, want verified readiness", response)
+					}
+				} else if response.Ready || response.IsolationProof == nil || response.IsolationProof.Status == guestagent.IsolationProofStatusVerified {
+					t.Fatalf("failure response = %#v, want failed readiness", response)
+				}
+			}
+			for index, request := range verifier.requestsSnapshot() {
+				if !request.RequireNetworkProof {
+					t.Fatalf("verifier request %d = %#v, want server-owned network requirement", index, request)
+				}
+			}
+
+			execRequest := guestagent.ExecRequest{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationExec,
+				Args:            []string{"tool"},
+				WorkDir:         "/workspace",
+				Stdout:          guestagent.StreamMetadata{MaxBytes: 16},
+				Stderr:          guestagent.StreamMetadata{MaxBytes: 16},
+			}
+			copyRequest := guestagent.CopyOutRequest{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationCopyOut,
+				SourcePath:      "/workspace/artifact",
+				Payload: guestagent.PayloadMetadata{
+					MaxBytes: 16,
+					Encoding: guestagent.PayloadEncodingBase64,
+				},
+			}
+			execResponse := run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, execRequest)})
+			copyResponse := run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, copyRequest)})
+			if test.wantWorkAdmission {
+				if backend.execCalls.Load() != 1 || backend.copyOutCalls.Load() != 1 {
+					t.Fatalf("backend work calls = exec:%d copy:%d, want one each", backend.execCalls.Load(), backend.copyOutCalls.Load())
+				}
+				return
+			}
+			l4RequireResponseCode(t, execResponse, guestagent.ErrorCodeServerNotReady)
+			l4RequireResponseCode(t, copyResponse, guestagent.ErrorCodeServerNotReady)
+			if backend.execCalls.Load() != 0 || backend.copyOutCalls.Load() != 0 {
+				t.Fatalf("backend work calls = exec:%d copy:%d, want none after failed proof", backend.execCalls.Load(), backend.copyOutCalls.Load())
+			}
+		})
+	}
+}
+
 func TestL7ServerOwnedNetworkProofRequirementImpliesIsolationVerifier(t *testing.T) {
 	_, err := New(Options{
 		Transport:                     newL4BlockingTransport(),
@@ -283,6 +396,94 @@ func TestL7ServerOwnedNetworkProofRequirementImpliesIsolationVerifier(t *testing
 type l7RequestRecordingIsolationVerifier struct {
 	mu       sync.Mutex
 	requests []guestagent.IsolationProofRequest
+}
+
+type l7ProofOrderVerifier struct {
+	mu       sync.Mutex
+	requests []guestagent.IsolationProofRequest
+	entered  map[string]chan struct{}
+	releases map[string]chan struct{}
+}
+
+func newL7ProofOrderVerifier() *l7ProofOrderVerifier {
+	return &l7ProofOrderVerifier{
+		entered: map[string]chan struct{}{
+			"failure": make(chan struct{}),
+			"success": make(chan struct{}),
+		},
+		releases: map[string]chan struct{}{
+			"failure": make(chan struct{}),
+			"success": make(chan struct{}),
+		},
+	}
+}
+
+func (verifier *l7ProofOrderVerifier) VerifyIsolation(ctx context.Context, request guestagent.IsolationProofRequest) (IsolationProofResult, error) {
+	name := strings.TrimPrefix(request.Generation, "proof-")
+	verifier.mu.Lock()
+	verifier.requests = append(verifier.requests, request)
+	entered := verifier.entered[name]
+	release := verifier.releases[name]
+	verifier.mu.Unlock()
+	if entered == nil || release == nil {
+		return IsolationProofResult{}, errors.New("unexpected proof generation")
+	}
+	close(entered)
+	select {
+	case <-ctx.Done():
+		return IsolationProofResult{}, ctx.Err()
+	case <-release:
+	}
+	if name == "failure" {
+		return IsolationProofResult{}, errors.New("fixed proof failure")
+	}
+	return l7VerifiedIsolationResult(), nil
+}
+
+func (verifier *l7ProofOrderVerifier) waitEntered(t *testing.T, name string) {
+	t.Helper()
+	select {
+	case <-verifier.entered[name]:
+	case <-time.After(time.Second):
+		t.Fatalf("%s proof verifier did not start", name)
+	}
+}
+
+func (verifier *l7ProofOrderVerifier) release(name string) {
+	close(verifier.releases[name])
+}
+
+func (verifier *l7ProofOrderVerifier) requestsSnapshot() []guestagent.IsolationProofRequest {
+	verifier.mu.Lock()
+	defer verifier.mu.Unlock()
+	return append([]guestagent.IsolationProofRequest(nil), verifier.requests...)
+}
+
+func l7VerifiedIsolationResult() IsolationProofResult {
+	return IsolationProofResult{
+		RestrictedIdentity:         true,
+		CapabilitiesCleared:        true,
+		NoNewPrivileges:            true,
+		SupplementaryGroupsCleared: true,
+		RawPacketSocketDenied:      true,
+		Network: NetworkIsolationProofResult{
+			Status:          guestagent.IsolationProofStatusVerified,
+			SingleInterface: true,
+			StaticRoutes:    true,
+			ProxyReachable:  true,
+		},
+	}
+}
+
+func l7WaitReadinessResponse(t *testing.T, responses <-chan guestagent.ReadinessResponse) guestagent.ReadinessResponse {
+	t.Helper()
+	select {
+	case response := <-responses:
+		return response
+	case <-time.After(time.Second):
+		t.Fatal("readiness response did not complete")
+		return guestagent.ReadinessResponse{}
+	}
 }
 
 func (verifier *l7RequestRecordingIsolationVerifier) VerifyIsolation(_ context.Context, request guestagent.IsolationProofRequest) (IsolationProofResult, error) {
