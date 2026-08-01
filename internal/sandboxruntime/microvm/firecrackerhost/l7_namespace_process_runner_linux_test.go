@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"reflect"
 	"testing"
 
@@ -192,6 +193,103 @@ func TestL7NamespaceProcessRunnerReapsStartedProcessWhenNamespaceFileCloseIsUnce
 	}
 	if partial.killCalls != 1 || partial.waitCalls != 1 {
 		t.Fatalf("started process kill/wait = %d/%d, want exact termination and reap", partial.killCalls, partial.waitCalls)
+	}
+}
+
+func TestOSExecNamespaceProcessStarterRejectsCanceledContextBeforeLaunch(t *testing.T) {
+	files := l7NamespaceStarterFiles(t)
+	startCalls := 0
+	starter := OSExecNamespaceProcessStarter{startCommand: func(*exec.Cmd) error {
+		startCalls++
+		return errors.New("start must not be reached")
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	process, err := starter.StartNamespaceProcess(ctx, l7NamespaceStarterRequest(files))
+	if process != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("StartNamespaceProcess(canceled) = %#v, %v, want context cancellation", process, err)
+	}
+	if startCalls != 0 {
+		t.Fatalf("canceled namespace process start calls = %d, want 0", startCalls)
+	}
+}
+
+func TestOSExecNamespaceProcessStarterNormalizesNilContext(t *testing.T) {
+	files := l7NamespaceStarterFiles(t)
+	privateFailure := errors.New("private injected start failure")
+	startCalls := 0
+	starter := OSExecNamespaceProcessStarter{startCommand: func(*exec.Cmd) error {
+		startCalls++
+		return privateFailure
+	}}
+
+	process, err := starter.StartNamespaceProcess(nil, l7NamespaceStarterRequest(files))
+	if process != nil || !errors.Is(err, ErrNamespaceProcessStartFailed) || errors.Is(err, privateFailure) {
+		t.Fatalf("StartNamespaceProcess(nil) = %#v, %v, want sanitized start failure", process, err)
+	}
+	if startCalls != 1 {
+		t.Fatalf("nil-context namespace process start calls = %d, want 1", startCalls)
+	}
+}
+
+func TestOSExecNamespaceProcessStarterRejectsNilAndDuplicateFileHandlesBeforeLaunch(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func([]*os.File) []*os.File
+	}{
+		{name: "nil", mutate: func(files []*os.File) []*os.File {
+			files[2] = nil
+			return files
+		}},
+		{name: "duplicate pointer", mutate: func(files []*os.File) []*os.File {
+			files[3] = files[2]
+			return files
+		}},
+		{name: "duplicate descriptor", mutate: func(files []*os.File) []*os.File {
+			files[3] = os.NewFile(files[2].Fd(), "aliased-rootfs")
+			return files
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := tt.mutate(l7NamespaceStarterFiles(t))
+			startCalls := 0
+			starter := OSExecNamespaceProcessStarter{startCommand: func(*exec.Cmd) error {
+				startCalls++
+				return nil
+			}}
+			process, err := starter.StartNamespaceProcess(context.Background(), l7NamespaceStarterRequest(files))
+			if process != nil || !errors.Is(err, ErrNamespaceProcessRequestInvalid) {
+				t.Fatalf("StartNamespaceProcess(invalid files) = %#v, %v", process, err)
+			}
+			if startCalls != 0 {
+				t.Fatalf("invalid file request start calls = %d, want 0", startCalls)
+			}
+		})
+	}
+}
+
+func l7NamespaceStarterFiles(t *testing.T) []*os.File {
+	t.Helper()
+	return []*os.File{
+		l7OpenProcessFile(t, "user-namespace"),
+		l7OpenProcessFile(t, "network-namespace"),
+		l7OpenProcessFile(t, "kernel"),
+		l7OpenProcessFile(t, "rootfs"),
+	}
+}
+
+func l7NamespaceStarterRequest(files []*os.File) NamespaceProcessStartRequest {
+	return NamespaceProcessStartRequest{
+		Executable: "/usr/bin/nsenter",
+		Args: []string{
+			"--user=/proc/self/fd/3",
+			"--net=/proc/self/fd/4",
+			"--",
+			"/usr/bin/firecracker",
+		},
+		InheritedFiles: files,
 	}
 }
 
