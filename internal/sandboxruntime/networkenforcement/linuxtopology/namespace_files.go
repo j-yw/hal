@@ -17,6 +17,11 @@ type NamespaceFiles struct {
 	closed  bool
 }
 
+// MarshalJSON makes the live-only contract explicit if a containing value is
+// accidentally encoded. Descriptor numbers and kernel identity never cross
+// the process boundary.
+func (*NamespaceFiles) MarshalJSON() ([]byte, error) { return []byte("{}"), nil }
+
 // BorrowFiles duplicates both descriptors atomically from the perspective of
 // the handle. A partial duplicate is always closed before failure returns.
 func (h *NamespaceHandle) BorrowFiles() (*NamespaceFiles, error) {
