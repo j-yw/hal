@@ -71,7 +71,7 @@ func TestFirecrackerHostTopologyPostReadinessRequiresExactRawPacketProofAndQuara
 			tc.mutate(raw)
 			coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
 				TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
-				Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
+				GuestIsolation: raw, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
 			session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 			if err != nil {
 				t.Fatal(err)
@@ -79,7 +79,7 @@ func TestFirecrackerHostTopologyPostReadinessRequiresExactRawPacketProofAndQuara
 			sequence.reset()
 			ready := true
 			binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-existing", ready: &ready}
-			_, err = session.InspectAfterGuestReady(context.Background(), testIdentity(), binding, raw)
+			_, err = session.InspectAfterGuestReady(context.Background(), testIdentity(), binding)
 			if !errors.Is(err, ErrProofMismatch) {
 				t.Fatalf("InspectAfterGuestReady() error = %v, want ErrProofMismatch", err)
 			}
@@ -96,16 +96,16 @@ func TestFirecrackerHostTopologyPostReadinessRequiresExactRawPacketProofAndQuara
 		proxy := newFakeProxy(sequence)
 		tap := &fakeTAP{sequence: sequence}
 		rules := &fakeRules{sequence: sequence}
+		ready := true
+		binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-inspect", ready: &ready}
+		verifier := &fakeRawPacketVerifier{sequence: sequence}
 		coordinator := mustCoordinator(t, Options{Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence), TAP: tap,
-			Rules: rules, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
+			Rules: rules, GuestIsolation: verifier, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second})
 		session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 		if err != nil {
 			t.Fatal(err)
 		}
-		ready := true
-		binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-inspect", ready: &ready}
-		verifier := &fakeRawPacketVerifier{sequence: sequence}
-		if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding, verifier); err != nil {
+		if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding); err != nil {
 			t.Fatal(err)
 		}
 		sequence.reset()
@@ -157,7 +157,7 @@ func TestFirecrackerHostTopologyTwoStageCleanupIsExactRetryableAndPortLast(t *te
 		t.Fatal(err)
 	}
 	sequence.reset()
-	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), false); !errors.Is(err, ErrVMNotQuiesced) {
+	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), nil); !errors.Is(err, ErrVMNotQuiesced) {
 		t.Fatalf("CleanupAfterVMQuiesced(false) = %v", err)
 	}
 	if got := sequence.snapshot(); len(got) != 0 {
@@ -166,19 +166,21 @@ func TestFirecrackerHostTopologyTwoStageCleanupIsExactRetryableAndPortLast(t *te
 	if err := session.Quarantine(context.Background(), testIdentity()); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), true); !errors.Is(err, ErrCleanupIncomplete) {
+	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), testTerminatedVMBinding()); !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatalf("first cleanup = %v, want retryable incomplete", err)
 	}
 	if contains(sequence.snapshot(), "tap_delete") || contains(sequence.snapshot(), "topology_stop") || contains(sequence.snapshot(), "proxy_stop") {
 		t.Fatalf("cleanup advanced beyond failed rule removal: %#v", sequence.snapshot())
 	}
-	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), true); !errors.Is(err, ErrCleanupIncomplete) {
+	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), testTerminatedVMBinding()); !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatalf("second cleanup = %v, want TAP retry", err)
 	}
 	if contains(sequence.snapshot(), "topology_stop") || contains(sequence.snapshot(), "proxy_stop") {
 		t.Fatalf("cleanup advanced beyond failed TAP removal: %#v", sequence.snapshot())
 	}
-	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), true); err != nil {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := session.CleanupAfterVMQuiesced(canceled, testIdentity(), testTerminatedVMBinding()); err != nil {
 		t.Fatalf("third cleanup = %v", err)
 	}
 	assertSubsequence(t, sequence.snapshot(), []string{
@@ -193,7 +195,7 @@ func TestFirecrackerHostTopologyTwoStageCleanupIsExactRetryableAndPortLast(t *te
 	sequence.reset()
 	mismatch := testIdentity()
 	mismatch.RuleGenerationID = "other-rule-generation"
-	if err := session.CleanupAfterVMQuiesced(context.Background(), mismatch, true); !errors.Is(err, ErrIdentityMismatch) {
+	if err := session.CleanupAfterVMQuiesced(context.Background(), mismatch, testTerminatedVMBinding()); !errors.Is(err, ErrIdentityMismatch) {
 		t.Fatalf("mismatched cleanup = %v", err)
 	}
 	if len(sequence.snapshot()) != 0 {
@@ -216,11 +218,53 @@ func TestFirecrackerHostTopologyCleanupRejectsBareQuiescenceAssertion(t *testing
 		t.Fatal(err)
 	}
 	sequence.reset()
-	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), true); !errors.Is(err, ErrVMNotQuiesced) {
-		t.Fatalf("CleanupAfterVMQuiesced(true) = %v, want authoritative ErrVMNotQuiesced", err)
+	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), nil); !errors.Is(err, ErrVMNotQuiesced) {
+		t.Fatalf("CleanupAfterVMQuiesced(nil) = %v, want authoritative ErrVMNotQuiesced", err)
 	}
 	if got := sequence.snapshot(); len(got) != 0 {
 		t.Fatalf("bare boolean authorized cleanup mutations: %#v", got)
+	}
+}
+
+func TestFirecrackerHostTopologyCleanupRequiresExactStoppedAndReapedVMProof(t *testing.T) {
+	tests := []struct {
+		name     string
+		verifier *fakeVMTerminationVerifier
+		binding  TerminatedVMBinding
+	}{
+		{name: "missing binding", verifier: &fakeVMTerminationVerifier{stopped: true, reaped: true}},
+		{name: "verifier failure", verifier: &fakeVMTerminationVerifier{err: errors.New("pid=4242 private process detail")}, binding: testTerminatedVMBinding()},
+		{name: "still running", verifier: &fakeVMTerminationVerifier{reaped: true}, binding: testTerminatedVMBinding()},
+		{name: "not reaped", verifier: &fakeVMTerminationVerifier{stopped: true}, binding: testTerminatedVMBinding()},
+		{name: "wrong generation", verifier: &fakeVMTerminationVerifier{stopped: true, reaped: true, mismatch: true}, binding: testTerminatedVMBinding()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sequence := &callSequence{}
+			coordinator := mustCoordinator(t, Options{
+				Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
+				TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+				VMTermination: tc.verifier, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+			})
+			session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := session.Quarantine(context.Background(), testIdentity()); err != nil {
+				t.Fatal(err)
+			}
+			sequence.reset()
+			err = session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), tc.binding)
+			if !errors.Is(err, ErrVMNotQuiesced) {
+				t.Fatalf("CleanupAfterVMQuiesced() = %v, want ErrVMNotQuiesced", err)
+			}
+			if strings.Contains(err.Error(), "4242") || strings.Contains(err.Error(), "private") {
+				t.Fatalf("cleanup leaked verifier detail: %v", err)
+			}
+			if got := sequence.snapshot(); len(got) != 0 {
+				t.Fatalf("rejected VM proof mutated host topology: %#v", got)
+			}
+		})
 	}
 }
 
@@ -538,17 +582,53 @@ type fakeRawPacketVerifier struct {
 	mismatch bool
 }
 
-func (v *fakeRawPacketVerifier) VerifyRunningGuestRawPacketIsolation(_ context.Context, request RunningGuestRawPacketIsolationRequest) (networkenforcement.RawPacketIsolationProof, error) {
-	v.sequence.add("guest_raw_packet_verify")
+func (v *fakeRawPacketVerifier) VerifyRunningGuestRawPacketIsolation(_ context.Context, request RunningGuestRawPacketIsolationRequest) (RunningGuestRawPacketIsolationProof, error) {
+	if v.sequence != nil {
+		v.sequence.add("guest_raw_packet_verify")
+	}
 	if v.err != nil {
-		return networkenforcement.RawPacketIsolationProof{}, v.err
+		return RunningGuestRawPacketIsolationProof{}, v.err
 	}
 	correlation := request.Correlation
 	if v.mismatch {
 		correlation.RuleGenerationID = "wrong-generation"
 	}
-	return networkenforcement.RawPacketIsolationProof{ID: "raw-proof-a", Status: networkenforcement.RawPacketIsolationStatusVerified,
-		VerifiedAtUnixMilli: 1000, Correlation: &correlation, ReasonCode: networkenforcement.LifecycleReasonRawPacketIsolationVerified}, nil
+	return RunningGuestRawPacketIsolationProof{ReadinessProofID: request.ReadinessProofID,
+		RawPacketProof: networkenforcement.RawPacketIsolationProof{ID: "raw-proof-a", Status: networkenforcement.RawPacketIsolationStatusVerified,
+			VerifiedAtUnixMilli: 1000, Correlation: &correlation, ReasonCode: networkenforcement.LifecycleReasonRawPacketIsolationVerified}}, nil
+}
+
+type fakeTerminatedVMBinding struct {
+	correlation networkenforcement.EnforcementCorrelation
+	proofID     string
+}
+
+func (b *fakeTerminatedVMBinding) VMCorrelation() networkenforcement.EnforcementCorrelation {
+	return b.correlation
+}
+func (b *fakeTerminatedVMBinding) VMTerminationProofID() string { return b.proofID }
+
+type fakeVMTerminationVerifier struct {
+	err      error
+	stopped  bool
+	reaped   bool
+	mismatch bool
+}
+
+func (v *fakeVMTerminationVerifier) VerifyVMTermination(_ context.Context, request VMTerminationRequest) (VMTerminationProof, error) {
+	if v.err != nil {
+		return VMTerminationProof{}, v.err
+	}
+	correlation := request.Correlation
+	if v.mismatch {
+		correlation.RuntimeID = "other-runtime-generation"
+	}
+	return VMTerminationProof{ID: "vm-termination-proof-a", TerminationProofID: request.TerminationProofID,
+		Correlation: correlation, Stopped: v.stopped, Reaped: v.reaped}, nil
+}
+
+func testTerminatedVMBinding() *fakeTerminatedVMBinding {
+	return &fakeTerminatedVMBinding{correlation: testCorrelation(), proofID: "vm-terminated-a"}
 }
 
 type fakeJournalStore struct{ sequence *callSequence }
@@ -607,6 +687,12 @@ func testPlan() networkenforcement.Plan {
 }
 func mustCoordinator(t *testing.T, options Options) *Coordinator {
 	t.Helper()
+	if options.GuestIsolation == nil {
+		options.GuestIsolation = &fakeRawPacketVerifier{}
+	}
+	if options.VMTermination == nil {
+		options.VMTermination = &fakeVMTerminationVerifier{stopped: true, reaped: true}
+	}
 	coordinator, err := New(options)
 	if err != nil {
 		t.Fatal(err)

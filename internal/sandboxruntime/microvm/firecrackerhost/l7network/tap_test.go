@@ -42,7 +42,7 @@ func TestLinuxTAPUsesOnlyNamespaceBoundStaticConfiguration(t *testing.T) {
 }
 
 func TestLinuxTAPRollsBackEveryPartialCreateFailure(t *testing.T) {
-	for failAt := 1; failAt <= 8; failAt++ {
+	for failAt := 1; failAt <= 10; failAt++ {
 		t.Run(string(rune('a'+failAt-1)), func(t *testing.T) {
 			command := &fakeNamespaceCommand{failAt: failAt}
 			tap, err := NewLinuxTAP(TAPOptions{IPPath: "/usr/sbin/ip", SysctlPath: "/usr/sbin/sysctl", NsenterPath: "/usr/bin/nsenter", Command: command})
@@ -130,11 +130,17 @@ func (c *fakeNamespaceCommand) Run(_ context.Context, _ NamespaceLease, command 
 		c.deleted = true
 		return nil, nil
 	}
+	if reflect.DeepEqual(command.Args, []string{"-j", "link", "show"}) {
+		if c.absenceErr != nil {
+			return nil, c.absenceErr
+		}
+		if c.deleted {
+			return []byte(`[]`), nil
+		}
+		return json.Marshal([]map[string]any{{"ifname": "unrelated0"}})
+	}
 	if strings.Contains(joined, "-j link show") {
 		if c.deleted {
-			if c.absenceErr != nil {
-				return nil, c.absenceErr
-			}
 			return nil, errors.New("absent")
 		}
 		name := command.Args[len(command.Args)-1]

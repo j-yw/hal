@@ -47,13 +47,12 @@ func TestFirecrackerHostTopologyPrepareStopsAtHostPreparedWithoutGuestProof(t *t
 
 func TestFirecrackerHostTopologyPostReadinessProofIsLiveBoundAndOrdered(t *testing.T) {
 	sequence := &callSequence{}
-	session := prepareHostTopologyForGuestProof(t, sequence)
-	sequence.reset()
-
 	ready := false
 	binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-a", ready: &ready}
 	verifier := &readinessGatedGuestVerifier{sequence: sequence, binding: binding}
-	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding, verifier); !errors.Is(err, ErrProofMismatch) {
+	session := prepareHostTopologyForGuestProof(t, sequence, verifier)
+	sequence.reset()
+	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding); !errors.Is(err, ErrProofMismatch) {
 		t.Fatalf("InspectAfterGuestReady() before readiness = %v, want ErrProofMismatch", err)
 	}
 	if got := sequence.snapshot(); !reflect.DeepEqual(got, []string{"guest_raw_packet_verify", "rules_quarantine", "journal_save_quarantined"}) {
@@ -64,12 +63,12 @@ func TestFirecrackerHostTopologyPostReadinessProofIsLiveBoundAndOrdered(t *testi
 	}
 
 	sequence = &callSequence{}
-	session = prepareHostTopologyForGuestProof(t, sequence)
-	sequence.reset()
 	ready = true
 	binding = &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-b", ready: &ready}
 	verifier = &readinessGatedGuestVerifier{sequence: sequence, binding: binding}
-	metadata, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding, verifier)
+	session = prepareHostTopologyForGuestProof(t, sequence, verifier)
+	sequence.reset()
+	metadata, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,27 +97,27 @@ func TestFirecrackerHostTopologyPostReadinessDriftQuarantinesAndMismatchIsInert(
 	proxy := newFakeProxy(sequence)
 	tap := &fakeTAP{sequence: sequence}
 	rules := &fakeRules{sequence: sequence}
+	ready := true
+	binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-c", ready: &ready}
+	verifier := &readinessGatedGuestVerifier{sequence: sequence, binding: binding}
 	coordinator := mustCoordinator(t, Options{
 		Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence), TAP: tap, Rules: rules,
-		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+		GuestIsolation: verifier, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
 	})
 	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	sequence.reset()
-	ready := true
-	binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-c", ready: &ready}
-	verifier := &readinessGatedGuestVerifier{sequence: sequence, binding: binding}
 
 	mismatch := testIdentity()
 	mismatch.RuleGenerationID = "other-rule-generation"
-	if _, err := session.InspectAfterGuestReady(context.Background(), mismatch, binding, verifier); !errors.Is(err, ErrIdentityMismatch) {
+	if _, err := session.InspectAfterGuestReady(context.Background(), mismatch, binding); !errors.Is(err, ErrIdentityMismatch) {
 		t.Fatalf("mismatched identity = %v", err)
 	}
 	badBinding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-d", ready: &ready}
 	badBinding.correlation.RuntimeID = "other-runtime-generation"
-	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), badBinding, verifier); !errors.Is(err, ErrIdentityMismatch) {
+	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), badBinding); !errors.Is(err, ErrIdentityMismatch) {
 		t.Fatalf("mismatched binding = %v", err)
 	}
 	if got := sequence.snapshot(); len(got) != 0 {
@@ -126,7 +125,7 @@ func TestFirecrackerHostTopologyPostReadinessDriftQuarantinesAndMismatchIsInert(
 	}
 
 	tap.inspectErr = errors.New("private TAP drift")
-	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding, verifier); !errors.Is(err, ErrProofMismatch) {
+	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding); !errors.Is(err, ErrProofMismatch) {
 		t.Fatalf("drift inspection = %v, want ErrProofMismatch", err)
 	}
 	want := []string{"guest_raw_packet_verify", "proxy_active", "tap_inspect", "rules_quarantine", "journal_save_quarantined"}
@@ -138,21 +137,21 @@ func TestFirecrackerHostTopologyPostReadinessDriftQuarantinesAndMismatchIsInert(
 func TestFirecrackerHostTopologyGuestBindingMutationDuringHostInspectionQuarantines(t *testing.T) {
 	sequence := &callSequence{}
 	proxy := newFakeProxy(sequence)
+	ready := true
+	binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-stable", ready: &ready}
+	verifier := &readinessGatedGuestVerifier{sequence: sequence, binding: binding}
 	coordinator := mustCoordinator(t, Options{
 		Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence),
 		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
-		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+		GuestIsolation: verifier, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
 	})
 	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	sequence.reset()
-	ready := true
-	binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-stable", ready: &ready}
 	proxy.activeHook = func() { binding.proofID = "guest-ready-proof-substituted" }
-	verifier := &readinessGatedGuestVerifier{sequence: sequence, binding: binding}
-	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding, verifier); !errors.Is(err, ErrProofMismatch) {
+	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding); !errors.Is(err, ErrProofMismatch) {
 		t.Fatalf("InspectAfterGuestReady() = %v, want ErrProofMismatch", err)
 	}
 	if session.Metadata().Status != StatusQuarantined {
@@ -164,12 +163,12 @@ func TestFirecrackerHostTopologyGuestBindingMutationDuringHostInspectionQuaranti
 	})
 }
 
-func prepareHostTopologyForGuestProof(t *testing.T, sequence *callSequence) *Session {
+func prepareHostTopologyForGuestProof(t *testing.T, sequence *callSequence, verifier RunningGuestRawPacketIsolationVerifier) *Session {
 	t.Helper()
 	coordinator := mustCoordinator(t, Options{
 		Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
 		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
-		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+		GuestIsolation: verifier, Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
 	})
 	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
 	if err != nil {
@@ -198,18 +197,19 @@ type readinessGatedGuestVerifier struct {
 func (v *readinessGatedGuestVerifier) VerifyRunningGuestRawPacketIsolation(
 	_ context.Context,
 	request RunningGuestRawPacketIsolationRequest,
-) (networkenforcement.RawPacketIsolationProof, error) {
+) (RunningGuestRawPacketIsolationProof, error) {
 	v.sequence.add("guest_raw_packet_verify")
 	binding, ok := request.Binding.(*fakeRunningGuestBinding)
 	if !ok || binding != v.binding || request.ReadinessProofID != binding.proofID ||
 		!networkenforcement.EnforcementCorrelationsEqual(request.Correlation, binding.correlation) ||
 		binding.ready == nil || !*binding.ready {
-		return networkenforcement.RawPacketIsolationProof{}, errors.New("guest not ready")
+		return RunningGuestRawPacketIsolationProof{}, errors.New("guest not ready")
 	}
 	correlation := request.Correlation
-	return networkenforcement.RawPacketIsolationProof{
-		ID: "raw-proof-live-guest", Status: networkenforcement.RawPacketIsolationStatusVerified,
-		VerifiedAtUnixMilli: 1000, Correlation: &correlation,
-		ReasonCode: networkenforcement.LifecycleReasonRawPacketIsolationVerified,
-	}, nil
+	return RunningGuestRawPacketIsolationProof{ReadinessProofID: request.ReadinessProofID,
+		RawPacketProof: networkenforcement.RawPacketIsolationProof{
+			ID: "raw-proof-live-guest", Status: networkenforcement.RawPacketIsolationStatusVerified,
+			VerifiedAtUnixMilli: 1000, Correlation: &correlation,
+			ReasonCode: networkenforcement.LifecycleReasonRawPacketIsolationVerified,
+		}}, nil
 }

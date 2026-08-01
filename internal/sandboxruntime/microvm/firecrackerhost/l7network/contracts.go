@@ -139,11 +139,46 @@ type RunningGuestRawPacketIsolationRequest struct {
 	Binding          RunningGuestBinding                       `json:"-"`
 }
 
+// RunningGuestRawPacketIsolationProof binds the mechanically inspected raw
+// packet result to the exact readiness proof accepted by the controller.
+type RunningGuestRawPacketIsolationProof struct {
+	ReadinessProofID string
+	RawPacketProof   networkenforcement.RawPacketIsolationProof
+}
+
 // RunningGuestRawPacketIsolationVerifier must mechanically inspect the exact
 // ready guest represented by request.Binding. Static image properties,
 // requested capability drops, and correlation-only proofs are insufficient.
 type RunningGuestRawPacketIsolationVerifier interface {
-	VerifyRunningGuestRawPacketIsolation(context.Context, RunningGuestRawPacketIsolationRequest) (networkenforcement.RawPacketIsolationProof, error)
+	VerifyRunningGuestRawPacketIsolation(context.Context, RunningGuestRawPacketIsolationRequest) (RunningGuestRawPacketIsolationProof, error)
+}
+
+// TerminatedVMBinding is an opaque live-only binding to the exact Firecracker
+// generation whose terminal state was observed by the outer controller.
+type TerminatedVMBinding interface {
+	VMCorrelation() networkenforcement.EnforcementCorrelation
+	VMTerminationProofID() string
+}
+
+type VMTerminationRequest struct {
+	Correlation        networkenforcement.EnforcementCorrelation
+	TerminationProofID string
+	Binding            TerminatedVMBinding
+}
+
+// VMTerminationProof is safe evidence that the exact process generation is
+// both stopped and reaped. A stopped-but-unreaped process is not authoritative
+// cleanup permission.
+type VMTerminationProof struct {
+	ID                 string
+	TerminationProofID string
+	Correlation        networkenforcement.EnforcementCorrelation
+	Stopped            bool
+	Reaped             bool
+}
+
+type VMTerminationVerifier interface {
+	VerifyVMTermination(context.Context, VMTerminationRequest) (VMTerminationProof, error)
 }
 
 type TAPLifecycle interface {
@@ -169,9 +204,22 @@ type Options struct {
 	Topology       TopologyLifecycle
 	TAP            TAPLifecycle
 	Rules          RuleAdapter
+	GuestIsolation RunningGuestRawPacketIsolationVerifier
+	VMTermination  VMTerminationVerifier
 	Journal        JournalStore
 	StateDir       string
 	CleanupTimeout time.Duration
+}
+
+type runningGuestSnapshot struct {
+	correlation      networkenforcement.EnforcementCorrelation
+	readinessProofID string
+	rawPacketProofID string
+}
+
+type terminatedVMSnapshot struct {
+	correlation        networkenforcement.EnforcementCorrelation
+	terminationProofID string
 }
 
 type tapSpec struct {
@@ -252,12 +300,32 @@ func validIdentity(identity Identity) bool {
 }
 
 func validRunningGuestBinding(binding RunningGuestBinding, expected networkenforcement.EnforcementCorrelation) bool {
+	_, ok := snapshotRunningGuestBinding(binding, expected)
+	return ok
+}
+
+func snapshotRunningGuestBinding(binding RunningGuestBinding, expected networkenforcement.EnforcementCorrelation) (runningGuestSnapshot, bool) {
 	if interfaceIsNil(binding) {
-		return false
+		return runningGuestSnapshot{}, false
 	}
-	proofID := binding.GuestReadinessProofID()
-	actual := networkenforcement.SanitizeEnforcementCorrelation(binding.GuestCorrelation())
-	return safeIDPattern.MatchString(proofID) && networkenforcement.EnforcementCorrelationsEqual(actual, expected)
+	snapshot := runningGuestSnapshot{
+		correlation:      networkenforcement.SanitizeEnforcementCorrelation(binding.GuestCorrelation()),
+		readinessProofID: binding.GuestReadinessProofID(),
+	}
+	return snapshot, safeIDPattern.MatchString(snapshot.readinessProofID) &&
+		networkenforcement.EnforcementCorrelationsEqual(snapshot.correlation, expected)
+}
+
+func snapshotTerminatedVMBinding(binding TerminatedVMBinding, expected networkenforcement.EnforcementCorrelation) (terminatedVMSnapshot, bool) {
+	if interfaceIsNil(binding) {
+		return terminatedVMSnapshot{}, false
+	}
+	snapshot := terminatedVMSnapshot{
+		correlation:        networkenforcement.SanitizeEnforcementCorrelation(binding.VMCorrelation()),
+		terminationProofID: binding.VMTerminationProofID(),
+	}
+	return snapshot, safeIDPattern.MatchString(snapshot.terminationProofID) &&
+		networkenforcement.EnforcementCorrelationsEqual(snapshot.correlation, expected)
 }
 
 func interfaceIsNil(value any) bool {

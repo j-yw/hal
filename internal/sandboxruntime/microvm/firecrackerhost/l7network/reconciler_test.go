@@ -20,7 +20,8 @@ func TestFirecrackerHostTopologyReconcilerQuarantinesBeforeVMStopHandoff(t *test
 	topology := newFakeTopology(sequence)
 	recovery := &fakeRecoveryTopology{sequence: sequence, lifecycle: topology}
 	reconciler, err := NewReconciler(ReconcilerOptions{Recovery: recovery, TAP: &fakeTAP{sequence: sequence},
-		Rules: &fakeRules{sequence: sequence}, Journal: journal, CleanupTimeout: time.Second})
+		Rules: &fakeRules{sequence: sequence}, VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+		Journal: journal, CleanupTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,13 +36,13 @@ func TestFirecrackerHostTopologyReconcilerQuarantinesBeforeVMStopHandoff(t *test
 		t.Fatalf("recovery sequence = %#v, want %#v", got, want)
 	}
 	sequence.reset()
-	if err := session.CleanupAfterVMQuiesced(context.Background(), identity, false); !errors.Is(err, ErrVMNotQuiesced) {
+	if err := session.CleanupAfterVMQuiesced(context.Background(), identity, nil); !errors.Is(err, ErrVMNotQuiesced) {
 		t.Fatalf("unconfirmed cleanup = %v", err)
 	}
 	if len(sequence.snapshot()) != 0 {
 		t.Fatalf("reconciler mutated before VM confirmation: %#v", sequence.snapshot())
 	}
-	if err := session.CleanupAfterVMQuiesced(context.Background(), identity, true); err != nil {
+	if err := session.CleanupAfterVMQuiesced(context.Background(), identity, testTerminatedVMBinding()); err != nil {
 		t.Fatal(err)
 	}
 	assertSubsequence(t, sequence.snapshot(), []string{"rules_cleanup", "tap_delete", "topology_stop", "journal_remove", "journal_release"})
@@ -55,7 +56,8 @@ func TestFirecrackerHostTopologyReconcilerFailsClosedWithoutExactRecoveryProof(t
 		tapFingerprint: spec.fingerprint(), proxyAddress: spec.proxyAddress.String(), proxyPort: spec.proxyPort}
 	recovery := &fakeRecoveryTopology{sequence: sequence, err: errors.New("pid=4242 /proc/private mismatch")}
 	reconciler, err := NewReconciler(ReconcilerOptions{Recovery: recovery, TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
-		Journal: &loadedJournalStore{sequence: sequence, record: record}})
+		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+		Journal:       &loadedJournalStore{sequence: sequence, record: record}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -51,7 +51,7 @@ type Session struct {
 	journalRemoved   bool
 	journalReleased  bool
 	guestBinding     RunningGuestBinding
-	guestVerifier    RunningGuestRawPacketIsolationVerifier
+	guestSnapshot    runningGuestSnapshot
 }
 
 func New(input Options) (*Coordinator, error) {
@@ -64,6 +64,7 @@ func New(input Options) (*Coordinator, error) {
 		return coordinator, nil
 	}
 	if options.Proxy == nil || options.Topology == nil || options.TAP == nil || options.Rules == nil ||
+		interfaceIsNil(options.GuestIsolation) || interfaceIsNil(options.VMTermination) ||
 		options.CleanupTimeout <= 0 || options.CleanupTimeout > time.Minute {
 		return nil, ErrInvalidConfiguration
 	}
@@ -136,10 +137,12 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	}
 	topology, err := c.options.Topology.Start(ctx, linuxtopology.StartRequest{Identity: session.topologyIdentity,
 		Mapping: linuxtopology.Mapping{ProxyEndpoint: endpoint, GuestProxyAddress: guestProxyAddress.String(), NamespaceInterface: mappingInterfaceName}})
+	if topology != nil {
+		session.topology = topology
+	}
 	if err != nil || topology == nil {
 		return c.failPrepare(session, ErrTopologyPrepareFailed)
 	}
-	session.topology = topology
 	if !topologyMetadataMatches(topology.Metadata(), session.topologyIdentity) {
 		return c.failPrepare(session, ErrProofMismatch)
 	}
@@ -252,9 +255,11 @@ func (s *Session) Inspect(ctx context.Context, identity Identity) (Metadata, err
 	if s.metadata.Status != StatusInspected || s.quarantined {
 		return s.metadata, ErrProofMismatch
 	}
-	if err := s.inspectReadyGuestAndHost(ctx, s.guestBinding, s.guestVerifier); err != nil {
+	snapshot, err := s.inspectReadyGuestAndHost(ctx, s.guestBinding, s.guestSnapshot)
+	if err != nil {
 		return s.quarantineOnDrift(ctx, err)
 	}
+	s.guestSnapshot = snapshot
 	return s.metadata, nil
 }
 
@@ -266,10 +271,11 @@ func (s *Session) InspectAfterGuestReady(
 	ctx context.Context,
 	identity Identity,
 	binding RunningGuestBinding,
-	verifier RunningGuestRawPacketIsolationVerifier,
 ) (Metadata, error) {
-	if s == nil || identity != s.identity || !validIdentity(identity) || interfaceIsNil(verifier) ||
-		!validRunningGuestBinding(binding, correlation(identity)) {
+	if s == nil || identity != s.identity || !validIdentity(identity) || interfaceIsNil(binding) {
+		return Metadata{}, ErrIdentityMismatch
+	}
+	if _, ok := snapshotRunningGuestBinding(binding, correlation(identity)); !ok {
 		return Metadata{}, ErrIdentityMismatch
 	}
 	s.mu.Lock()
@@ -277,14 +283,15 @@ func (s *Session) InspectAfterGuestReady(
 	if s.metadata.Status != StatusHostPrepared || s.quarantined {
 		return s.metadata, ErrProofMismatch
 	}
-	if err := s.inspectReadyGuestAndHost(ctx, binding, verifier); err != nil {
+	snapshot, err := s.inspectReadyGuestAndHost(ctx, binding, runningGuestSnapshot{})
+	if err != nil {
 		return s.quarantineOnDrift(ctx, err)
 	}
 	if err := s.save(ctx, journalStageInspected); err != nil {
 		return s.quarantineOnDrift(ctx, ErrCleanupIncomplete)
 	}
 	s.guestBinding = binding
-	s.guestVerifier = verifier
+	s.guestSnapshot = snapshot
 	s.metadata.Status = StatusInspected
 	s.metadata.RawPacketIsolationVerified = true
 	return s.metadata, nil
@@ -293,41 +300,57 @@ func (s *Session) InspectAfterGuestReady(
 func (s *Session) inspectReadyGuestAndHost(
 	ctx context.Context,
 	binding RunningGuestBinding,
-	verifier RunningGuestRawPacketIsolationVerifier,
-) error {
+	expectedSnapshot runningGuestSnapshot,
+) (runningGuestSnapshot, error) {
 	corr := correlation(s.identity)
-	if interfaceIsNil(verifier) || !validRunningGuestBinding(binding, corr) {
-		return ErrProofMismatch
+	verifier := s.coordinator.options.GuestIsolation
+	before, ok := snapshotRunningGuestBinding(binding, corr)
+	if interfaceIsNil(verifier) || !ok {
+		return runningGuestSnapshot{}, ErrProofMismatch
+	}
+	if expectedSnapshot.readinessProofID != "" &&
+		(before.correlation != expectedSnapshot.correlation || before.readinessProofID != expectedSnapshot.readinessProofID) {
+		return runningGuestSnapshot{}, ErrProofMismatch
 	}
 	request := RunningGuestRawPacketIsolationRequest{
-		Correlation: corr, ReadinessProofID: binding.GuestReadinessProofID(), Binding: binding,
+		Correlation: corr, ReadinessProofID: before.readinessProofID, Binding: binding,
 	}
-	rawProof, err := verifier.VerifyRunningGuestRawPacketIsolation(ctx, request)
-	if err != nil || !networkenforcement.RawPacketIsolationProofMatches(rawProof, corr) ||
-		!validRunningGuestBinding(binding, corr) || binding.GuestReadinessProofID() != request.ReadinessProofID {
-		return ErrProofMismatch
+	verified, err := verifier.VerifyRunningGuestRawPacketIsolation(ctx, request)
+	rawProof := networkenforcement.SanitizeRawPacketIsolationProof(verified.RawPacketProof)
+	if err != nil || verified.ReadinessProofID != before.readinessProofID ||
+		!networkenforcement.RawPacketIsolationProofMatches(rawProof, corr) {
+		return runningGuestSnapshot{}, ErrProofMismatch
+	}
+	before.rawPacketProofID = rawProof.ID
+	if expectedSnapshot.rawPacketProofID != "" && before.rawPacketProofID != expectedSnapshot.rawPacketProofID {
+		return runningGuestSnapshot{}, ErrProofMismatch
 	}
 	if err := s.coordinator.options.Proxy.Active(ctx, s.plan, s.proxy); err != nil {
-		return ErrProxyUnavailable
+		return runningGuestSnapshot{}, ErrProxyUnavailable
 	}
 	if err := s.coordinator.options.TAP.Inspect(ctx, s.namespace, s.tap, s.tapSpec); err != nil {
-		return ErrProofMismatch
+		return runningGuestSnapshot{}, ErrProofMismatch
 	}
 	ruleMetadata, err := s.coordinator.options.Rules.Inspect(ctx, s.expectedRules)
 	if err != nil {
-		return ErrRuleInspectionFailed
+		return runningGuestSnapshot{}, ErrRuleInspectionFailed
 	}
 	digest, err := inspectedRuleDigest(ruleMetadata, corr)
 	if err != nil || digest != s.metadata.RuleDigest {
-		return ErrProofMismatch
+		return runningGuestSnapshot{}, ErrProofMismatch
 	}
 	if err := s.coordinator.options.TAP.Inspect(ctx, s.namespace, s.tap, s.tapSpec); err != nil {
-		return ErrProofMismatch
+		return runningGuestSnapshot{}, ErrProofMismatch
 	}
 	if err := s.coordinator.options.Proxy.Active(ctx, s.plan, s.proxy); err != nil {
-		return ErrProxyUnavailable
+		return runningGuestSnapshot{}, ErrProxyUnavailable
 	}
-	return nil
+	after, ok := snapshotRunningGuestBinding(binding, corr)
+	if !ok || after.correlation != before.correlation || after.readinessProofID != before.readinessProofID {
+		return runningGuestSnapshot{}, ErrProofMismatch
+	}
+	after.rawPacketProofID = before.rawPacketProofID
+	return after, nil
 }
 
 func (s *Session) quarantineOnDrift(ctx context.Context, primary error) (Metadata, error) {
@@ -366,23 +389,23 @@ func (s *Session) Quarantine(ctx context.Context, identity Identity) error {
 	return nil
 }
 
-func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, vmQuiesced bool) error {
+func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, binding TerminatedVMBinding) error {
 	if s == nil || identity != s.identity || !validIdentity(identity) {
 		return ErrIdentityMismatch
-	}
-	if !vmQuiesced {
-		return ErrVMNotQuiesced
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.metadata.Status == StatusStopped {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
+	defer cancel()
+	if !s.verifyVMTermination(ctx, binding) {
+		return ErrVMNotQuiesced
+	}
 	if s.rulesPresent && !s.quarantined {
 		return ErrQuarantineFailed
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
-	defer cancel()
 	if !s.rulesRemoved && s.rulesPresent {
 		if err := s.coordinator.options.Rules.Cleanup(ctx, s.expectedRules); err != nil {
 			s.metadata = failedMetadata(s.identity)
@@ -441,6 +464,24 @@ func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, v
 	}
 	s.metadata = Metadata{Identity: s.identity, Status: StatusStopped}
 	return nil
+}
+
+func (s *Session) verifyVMTermination(ctx context.Context, binding TerminatedVMBinding) bool {
+	verifier := s.coordinator.options.VMTermination
+	corr := correlation(s.identity)
+	before, ok := snapshotTerminatedVMBinding(binding, corr)
+	if interfaceIsNil(verifier) || !ok {
+		return false
+	}
+	proof, err := verifier.VerifyVMTermination(ctx, VMTerminationRequest{
+		Correlation: corr, TerminationProofID: before.terminationProofID, Binding: binding,
+	})
+	if err != nil || !safeIDPattern.MatchString(proof.ID) || proof.TerminationProofID != before.terminationProofID ||
+		!networkenforcement.EnforcementCorrelationsEqual(proof.Correlation, corr) || !proof.Stopped || !proof.Reaped {
+		return false
+	}
+	after, ok := snapshotTerminatedVMBinding(binding, corr)
+	return ok && after == before
 }
 
 func (s *Session) rollback() error {

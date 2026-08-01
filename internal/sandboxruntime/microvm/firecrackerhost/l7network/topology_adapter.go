@@ -30,6 +30,9 @@ func (t *LinuxTopology) Start(ctx context.Context, request linuxtopology.StartRe
 	}
 	session, err := t.lifecycle.Start(ctx, request)
 	if err != nil {
+		if session != nil {
+			return &linuxTopologySession{session: session}, sanitizeTopologyError(err)
+		}
 		return nil, sanitizeTopologyError(err)
 	}
 	return &linuxTopologySession{session: session}, nil

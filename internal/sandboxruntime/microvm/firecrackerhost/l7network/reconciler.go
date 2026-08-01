@@ -21,6 +21,7 @@ type ReconcilerOptions struct {
 	Recovery       RecoveryTopology
 	TAP            TAPLifecycle
 	Rules          RuleAdapter
+	VMTermination  VMTerminationVerifier
 	Journal        JournalStore
 	StateDir       string
 	CleanupTimeout time.Duration
@@ -33,7 +34,7 @@ func NewReconciler(input ReconcilerOptions) (*Reconciler, error) {
 	if options.CleanupTimeout == 0 {
 		options.CleanupTimeout = defaultCleanupTimeout
 	}
-	if options.Recovery == nil || options.TAP == nil || options.Rules == nil ||
+	if options.Recovery == nil || options.TAP == nil || options.Rules == nil || interfaceIsNil(options.VMTermination) ||
 		options.CleanupTimeout <= 0 || options.CleanupTimeout > time.Minute {
 		return nil, ErrInvalidConfiguration
 	}
@@ -65,7 +66,7 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 	}
 	if record.stage == journalStageTopologyRemoved {
 		coordinator := &Coordinator{options: Options{Enabled: true, TAP: r.options.TAP, Rules: r.options.Rules,
-			Journal: r.options.Journal, CleanupTimeout: r.options.CleanupTimeout}}
+			VMTermination: r.options.VMTermination, Journal: r.options.Journal, CleanupTimeout: r.options.CleanupTimeout}}
 		return &Session{coordinator: coordinator, identity: identity, journal: lease, proxyStopped: true,
 			rulesRemoved: true, tapRemoved: true, topologyRemoved: true,
 			metadata: Metadata{Identity: identity, Status: StatusQuarantined}}, nil
@@ -104,7 +105,7 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 		return nil, ErrStaleTopologyUnverified
 	}
 	coordinator := &Coordinator{options: Options{Enabled: true, Topology: lifecycle, TAP: r.options.TAP, Rules: r.options.Rules,
-		Journal: r.options.Journal, CleanupTimeout: r.options.CleanupTimeout}}
+		VMTermination: r.options.VMTermination, Journal: r.options.Journal, CleanupTimeout: r.options.CleanupTimeout}}
 	session := &Session{coordinator: coordinator, identity: identity, topologyIdentity: topologyIdentity(identity), topology: topology,
 		namespace: namespace, tapSpec: spec, tap: tap, expectedRules: expected, journal: lease, proxyStopped: true,
 		metadata: Metadata{Identity: identity, Status: StatusCleanupIncomplete}, rulesPresent: true}

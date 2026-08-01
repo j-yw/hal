@@ -77,9 +77,11 @@ func (t *LinuxTAP) CreateConfigure(ctx context.Context, namespace NamespaceLease
 	}
 	commands := [][]string{
 		{"tuntap", "add", "dev", spec.name, "mode", "tap"},
-		{"link", "set", "dev", spec.name, "address", spec.mac, "up"},
-		{"address", "add", spec.gatewayIPv4.String() + "/" + bits(spec.guestIPv4Prefix), "dev", spec.name},
-		{"-6", "address", "add", spec.gatewayIPv6.String() + "/" + bits(spec.guestIPv6Prefix), "dev", spec.name, "nodad"},
+		{"link", "set", "dev", spec.name, "address", spec.mac},
+		{"link", "set", "dev", spec.name, "addrgenmode", "none"},
+		{"link", "set", "dev", spec.name, "up"},
+		{"address", "add", spec.gatewayIPv4.String() + "/" + bits(spec.guestIPv4Prefix), "dev", spec.name, "noprefixroute"},
+		{"-6", "address", "add", spec.gatewayIPv6.String() + "/" + bits(spec.guestIPv6Prefix), "dev", spec.name, "nodad", "noprefixroute"},
 		{"route", "add", spec.guestIPv4Prefix.Addr().String() + "/32", "dev", spec.name, "src", spec.gatewayIPv4.String()},
 		{"-6", "route", "add", spec.guestIPv6Prefix.Addr().String() + "/128", "dev", spec.name, "src", spec.gatewayIPv6.String()},
 	}
@@ -141,7 +143,8 @@ func (t *LinuxTAP) Delete(ctx context.Context, namespace NamespaceLease, state t
 	if _, err := t.run(ctx, namespace, t.options.IPPath, "link", "delete", "dev", spec.name); err != nil {
 		return ErrCleanupIncomplete
 	}
-	if _, err := t.run(ctx, namespace, t.options.IPPath, "-j", "link", "show", "dev", spec.name); err == nil {
+	output, err := t.run(ctx, namespace, t.options.IPPath, "-j", "link", "show")
+	if err != nil || !inspectTAPAbsent(output, spec.name) {
 		return ErrCleanupIncomplete
 	}
 	return nil
@@ -195,6 +198,9 @@ func inspectTAPAddresses(payload []byte, spec tapSpec) bool {
 	if json.Unmarshal(payload, &links) != nil || len(links) != 1 || links[0].Name != spec.name {
 		return false
 	}
+	if len(links[0].Info) != 2 {
+		return false
+	}
 	want4, want6 := false, false
 	for _, info := range links[0].Info {
 		address, err := netip.ParseAddr(info.Local)
@@ -206,7 +212,6 @@ func inspectTAPAddresses(payload []byte, spec tapSpec) bool {
 			want4 = true
 		case info.Family == "inet6" && address == spec.gatewayIPv6 && info.PrefixLen == 126:
 			want6 = true
-		case info.Family == "inet6" && address.IsLinkLocalUnicast():
 		default:
 			return false
 		}
@@ -221,19 +226,30 @@ func inspectTAPRoutes(payload []byte, name, destination string) bool {
 		Gateway     string `json:"gateway"`
 		Type        string `json:"type"`
 	}
-	if json.Unmarshal(payload, &routes) != nil || len(routes) == 0 {
+	if json.Unmarshal(payload, &routes) != nil || len(routes) != 1 {
 		return false
 	}
-	found := false
-	for _, route := range routes {
-		if route.Device != name || route.Gateway != "" || route.Destination == "default" || route.Type == "unreachable" || route.Type == "blackhole" {
+	route := routes[0]
+	if route.Device != name || route.Gateway != "" || route.Destination != destination ||
+		(route.Type != "" && route.Type != "unicast") {
+		return false
+	}
+	return true
+}
+
+func inspectTAPAbsent(payload []byte, name string) bool {
+	var links []struct {
+		Name string `json:"ifname"`
+	}
+	if json.Unmarshal(payload, &links) != nil {
+		return false
+	}
+	for _, link := range links {
+		if link.Name == "" || link.Name == name {
 			return false
 		}
-		if route.Destination == destination {
-			found = true
-		}
 	}
-	return found
+	return true
 }
 
 func validToolPath(path string) bool {
