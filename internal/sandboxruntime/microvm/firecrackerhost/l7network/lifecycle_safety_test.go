@@ -130,6 +130,43 @@ func TestFirecrackerHostTopologyRetainsJournalUntilReleaseRetrySucceeds(t *testi
 	}
 }
 
+func TestFirecrackerHostTopologyRetainsLeaseReturnedWithAcquireError(t *testing.T) {
+	for _, operation := range []string{"prepare", "recover"} {
+		t.Run(operation, func(t *testing.T) {
+			sequence := &callSequence{}
+			store := &releaseRetryJournalStore{sequence: sequence, acquireErr: errors.New("private journal acquire failure"), firstReleaseFailures: 1}
+			var session *Session
+			var err error
+			if operation == "prepare" {
+				options := validCoordinatorOptions(sequence)
+				options.Journal = store
+				session, err = mustCoordinator(t, options).Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+			} else {
+				topology := newFakeTopology(sequence)
+				reconciler, newErr := NewReconciler(ReconcilerOptions{
+					Recovery: &fakeRecoveryTopology{sequence: sequence, lifecycle: topology},
+					TAP:      &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+					VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+					Journal:       store, CleanupTimeout: time.Second,
+				})
+				if newErr != nil {
+					t.Fatal(newErr)
+				}
+				session, err = reconciler.Recover(context.Background(), testIdentity())
+			}
+			if session == nil || !errors.Is(err, ErrCleanupIncomplete) {
+				t.Fatalf("%s = session %T, error %v; want retained cleanup-incomplete lease", operation, session, err)
+			}
+			if err := session.RetryRetainedCleanup(context.Background(), testIdentity()); err != nil {
+				t.Fatalf("RetryRetainedCleanup() = %v", err)
+			}
+			if store.first.releaseCalls != 2 {
+				t.Fatalf("exact journal release calls = %d, want 2", store.first.releaseCalls)
+			}
+		})
+	}
+}
+
 func TestFirecrackerHostTopologyReconcilerRetainsFailedEarlyRelease(t *testing.T) {
 	sequence := &callSequence{}
 	store := &releaseRetryJournalStore{sequence: sequence, firstLoadErr: errors.New("private journal load failure"), firstReleaseFailures: 1}
@@ -303,6 +340,7 @@ func (s *typedNilJournalLeaseStore) Acquire(context.Context, Identity) (JournalL
 type releaseRetryJournalStore struct {
 	sequence             *callSequence
 	record               journalRecord
+	acquireErr           error
 	firstLoadErr         error
 	firstSaveErr         error
 	firstReleaseFailures int
@@ -316,7 +354,7 @@ func (s *releaseRetryJournalStore) Acquire(context.Context, Identity) (JournalLe
 	if s.acquires == 1 {
 		s.first = &releaseRetryJournalLease{sequence: s.sequence, loadErr: s.firstLoadErr,
 			record: s.record, saveErr: s.firstSaveErr, releaseFailures: s.firstReleaseFailures}
-		return s.first, nil
+		return s.first, s.acquireErr
 	}
 	return &fakeJournalLease{sequence: s.sequence}, nil
 }
