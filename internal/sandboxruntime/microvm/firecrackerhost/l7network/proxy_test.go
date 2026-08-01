@@ -63,11 +63,34 @@ func TestFirecrackerHostTopologyRetriesRetainedProductionProxyRecoveryGeneration
 	}
 }
 
-type uncertainCleanupProxyAdapter struct {
-	activeCheckFail bool
-	stopFailures    int
-	stopCalls       int
+func TestProductionProxyStaleRecoveryCannotStopReplacementGeneration(t *testing.T) {
+	adapter := &uncertainCleanupProxyAdapter{activeCheckFail: true, stopFailures: 1}
+	proxy, err := newProductionProxyWithAdapter(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation, err := proxy.Start(context.Background(), testPlan())
+	if !errors.Is(err, ErrCleanupIncomplete) || generation == nil {
+		t.Fatalf("Start() = generation %T, error %v; want retained uncertain recovery", generation, err)
+	}
+	adapter.startReplacement()
+	if err := proxy.Stop(context.Background(), testPlan(), generation); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("stale recovery Stop() = %v, want cleanup incomplete", err)
+	}
+	if adapter.replacementStopped {
+		t.Fatal("stale recovery stopped replacement listener generation")
+	}
 }
+
+type uncertainCleanupProxyAdapter struct {
+	activeCheckFail    bool
+	stopFailures       int
+	stopCalls          int
+	replacementLive    bool
+	replacementStopped bool
+}
+
+func (a *uncertainCleanupProxyAdapter) startReplacement() { a.replacementLive = true }
 
 func (*uncertainCleanupProxyAdapter) PrepareProxyListener(
 	context.Context,
@@ -100,6 +123,9 @@ func (a *uncertainCleanupProxyAdapter) StopProxyListener(
 	a.stopCalls++
 	if a.stopCalls <= a.stopFailures {
 		return networkenforcement.ProxyListenerLifecycleMetadata{}, errors.New("private stop failure")
+	}
+	if a.replacementLive {
+		a.replacementStopped = true
 	}
 	return networkenforcement.ProxyListenerLifecycleMetadata{Status: networkenforcement.LifecycleStatusStopped}, nil
 }
