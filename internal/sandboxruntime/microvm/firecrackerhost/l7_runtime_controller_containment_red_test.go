@@ -114,6 +114,53 @@ func TestL7RuntimeControllerTreatsEveryStartReturnAsVMPossible(t *testing.T) {
 			if harness.session.quarantineCalls != 1 || !runtime.stopDeadline || !harness.session.cleanupDeadline {
 				t.Fatalf("bounded containment = quarantine:%d stopDeadline:%t cleanupDeadline:%t", harness.session.quarantineCalls, runtime.stopDeadline, harness.session.cleanupDeadline)
 			}
+			slot, ok := runtime.request.LiveConfigProvider.(*l7LiveConfigSlot)
+			if !ok {
+				t.Fatalf("live config provider type = %T, want owned slot", runtime.request.LiveConfigProvider)
+			}
+			if test.name == "unclaimed live config" {
+				if !slot.closed || slot.claimed {
+					t.Fatalf("unclaimed slot state = claimed:%t closed:%t, want false/true", slot.claimed, slot.closed)
+				}
+			} else if slot.closed || !slot.claimed {
+				t.Fatalf("claimed slot state = claimed:%t closed:%t, want true/false", slot.claimed, slot.closed)
+			}
+		})
+	}
+}
+
+func TestL7RuntimeControllerRejectsIncompleteInitialGuestProofAndContains(t *testing.T) {
+	tests := []struct {
+		name             string
+		configureRuntime func(*l7RuntimeFakeFirecrackerRuntime)
+		configureHarness func(*l7RuntimeControllerHarness)
+	}{
+		{name: "nil guest binding", configureRuntime: func(runtime *l7RuntimeFakeFirecrackerRuntime) {
+			runtime.returnNilBinding = true
+		}},
+		{name: "incomplete inspected metadata", configureHarness: func(h *l7RuntimeControllerHarness) {
+			metadata := l7network.Metadata{Identity: h.identity, Status: l7network.StatusInspected, RawPacketIsolationVerified: true}
+			h.session.inspectMetadata = &metadata
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newL7RuntimeControllerHarness(t, "initial-proof-"+safeL7RuntimeTestSuffix(test.name), func(candidate *l7RuntimeFakeFirecrackerRuntime) {
+				if test.configureRuntime != nil {
+					test.configureRuntime(candidate)
+				}
+			})
+			if test.configureHarness != nil {
+				test.configureHarness(harness)
+			}
+			target, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart))
+			if err == nil || target != nil {
+				t.Fatalf("Start(incomplete proof) = %#v, %v, want contained failure", target, err)
+			}
+			runtime := harness.runtimes.runtime(harness.identity.RuntimeGenerationID)
+			if runtime == nil || runtime.stopCalls != 1 || runtime.terminationCalls != 1 || harness.session.cleanupCalls != 1 {
+				t.Fatalf("proof containment = stop:%d termination:%d cleanup:%d, want 1/1/1", runtime.stopCalls, runtime.terminationCalls, harness.session.cleanupCalls)
+			}
 		})
 	}
 }
@@ -224,6 +271,30 @@ func TestL7RuntimeControllerInspectComposesFreshProofAndContainsDrift(t *testing
 	}
 }
 
+func TestL7RuntimeControllerInspectReturnsActiveOnlyAfterFreshRuntimeAndTopologyProof(t *testing.T) {
+	harness := newL7RuntimeControllerHarness(t, "inspect-fresh-success", nil)
+	if _, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := harness.controller.Inspect(context.Background(), microvm.ControllerInspectRequest{
+		Operation: microvm.OperationInspect,
+		Target:    harness.request(microvm.OperationStart).Target,
+	})
+	if err != nil {
+		t.Fatalf("Inspect() error = %v, want nil", err)
+	}
+	if result == nil || result.Status != string(l7network.StatusActive) || !harness.controller.requestMatchesRuntime(*result) {
+		t.Fatalf("Inspect() result = %#v, want exact active target", result)
+	}
+	if harness.session.freshInspectCalls != 1 {
+		t.Fatalf("fresh topology inspect calls = %d, want 1", harness.session.freshInspectCalls)
+	}
+	runtime := harness.runtimes.runtime(harness.identity.RuntimeGenerationID)
+	if runtime == nil || runtime.inspectCalls != 1 {
+		t.Fatalf("fresh runtime inspect calls = %d, want 1", runtime.inspectCalls)
+	}
+}
+
 func TestL7RuntimeControllerHungWorkDoesNotBlockProxyLossContainment(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -290,6 +361,8 @@ func TestL7RuntimeControllerRejectsConflictingTargetIdentityBeforeMutation(t *te
 	}{
 		{name: "target id", mutate: func(target *sandboxruntime.Target) { target.ID = "runtime-other" }},
 		{name: "runtime id", mutate: func(target *sandboxruntime.Target) { target.Runtime.RuntimeID = "runtime-other" }},
+		{name: "target id whitespace", mutate: func(target *sandboxruntime.Target) { target.ID = " " + target.ID }},
+		{name: "runtime id whitespace", mutate: func(target *sandboxruntime.Target) { target.Runtime.RuntimeID += " " }},
 		{name: "provider", mutate: func(target *sandboxruntime.Target) { target.Provider = "provider-other" }},
 		{name: "driver", mutate: func(target *sandboxruntime.Target) { target.Runtime.Driver = sandboxruntime.DriverRootlessPodman }},
 	}
@@ -354,22 +427,46 @@ func TestL7RuntimeControllerValidatesProxyLossChannelAndIdentity(t *testing.T) {
 		})
 	}
 
-	t.Run("exact normal stop result is not loss", func(t *testing.T) {
-		harness := newL7RuntimeControllerHarness(t, "loss-normal-stop", nil)
+	t.Run("stopped while controller active is inconsistent", func(t *testing.T) {
+		harness := newL7RuntimeControllerHarness(t, "loss-active-stopped", nil)
 		if _, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart)); err != nil {
 			t.Fatal(err)
 		}
 		harness.session.publishLoss(l7RuntimeProxyLoss{Metadata: l7network.Metadata{Identity: harness.identity, Status: l7network.StatusStopped}})
 		select {
-		case <-harness.controller.lossDone:
+		case <-harness.session.cleaned:
 		case <-time.After(time.Second):
-			t.Fatal("normal-stop loss watcher did not finish")
+			t.Fatal("active controller trusted an out-of-order stopped loss result")
 		}
 		runtime := harness.runtimes.runtime(harness.identity.RuntimeGenerationID)
-		if runtime.stopCalls != 0 || harness.session.cleanupCalls != 0 {
-			t.Fatalf("normal-stop notification contained runtime: stop=%d cleanup=%d", runtime.stopCalls, harness.session.cleanupCalls)
+		if runtime.stopCalls != 1 || harness.session.cleanupCalls != 1 {
+			t.Fatalf("inconsistent stopped containment = stop:%d cleanup:%d, want 1/1", runtime.stopCalls, harness.session.cleanupCalls)
 		}
 	})
+}
+
+func TestL7RuntimeControllerProxyLossResultValidation(t *testing.T) {
+	identity := l7RuntimeControllerIdentity("loss-shape")
+	tests := []struct {
+		name   string
+		result l7RuntimeProxyLoss
+		valid  bool
+	}{
+		{name: "quarantined", result: l7RuntimeProxyLoss{Metadata: l7network.Metadata{Identity: identity, Status: l7network.StatusQuarantined}}, valid: true},
+		{name: "cleanup incomplete", result: l7RuntimeProxyLoss{Metadata: l7network.Metadata{Identity: identity, Status: l7network.StatusCleanupIncomplete}, Err: l7network.ErrCleanupIncomplete}, valid: true},
+		{name: "wrong identity", result: l7RuntimeProxyLoss{Metadata: l7network.Metadata{Identity: l7RuntimeControllerIdentity("other"), Status: l7network.StatusQuarantined}}},
+		{name: "quarantined with error", result: l7RuntimeProxyLoss{Metadata: l7network.Metadata{Identity: identity, Status: l7network.StatusQuarantined}, Err: l7network.ErrQuarantineFailed}},
+		{name: "incomplete without error", result: l7RuntimeProxyLoss{Metadata: l7network.Metadata{Identity: identity, Status: l7network.StatusCleanupIncomplete}}},
+		{name: "incomplete with private error", result: l7RuntimeProxyLoss{Metadata: l7network.Metadata{Identity: identity, Status: l7network.StatusCleanupIncomplete}, Err: errors.New("private loss detail")}},
+		{name: "stopped", result: l7RuntimeProxyLoss{Metadata: l7network.Metadata{Identity: identity, Status: l7network.StatusStopped}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validL7RuntimeProxyLossResult(test.result, identity); got != test.valid {
+				t.Fatalf("validL7RuntimeProxyLossResult() = %t, want %t", got, test.valid)
+			}
+		})
+	}
 }
 
 type l7RuntimeControllerHarness struct {

@@ -299,7 +299,7 @@ func (session *l7RuntimeFakeTopologySession) InspectAfterGuestReady(_ context.Co
 	if session.inspectMetadata != nil {
 		return *session.inspectMetadata, nil
 	}
-	return l7network.Metadata{Identity: identity, Status: l7network.StatusInspected, RawPacketIsolationVerified: true}, nil
+	return l7RuntimeControllerInspectedMetadata(identity), nil
 }
 
 func (session *l7RuntimeFakeTopologySession) Inspect(_ context.Context, identity l7network.Identity) (l7network.Metadata, error) {
@@ -315,7 +315,7 @@ func (session *l7RuntimeFakeTopologySession) Inspect(_ context.Context, identity
 	if session.inspectMetadata != nil {
 		return *session.inspectMetadata, nil
 	}
-	return l7network.Metadata{Identity: identity, Status: l7network.StatusInspected, RawPacketIsolationVerified: true}, nil
+	return l7RuntimeControllerInspectedMetadata(identity), nil
 }
 
 func (session *l7RuntimeFakeTopologySession) AbortBeforeVM(ctx context.Context, identity l7network.Identity) error {
@@ -428,6 +428,7 @@ type l7RuntimeFakeFirecrackerRuntime struct {
 	terminationErrors []error
 	inspectErr        error
 	inspectTarget     *sandboxruntime.Target
+	inspectCalls      int
 	execEntered       chan struct{}
 	execRelease       chan struct{}
 	copyInEntered     chan struct{}
@@ -435,6 +436,8 @@ type l7RuntimeFakeFirecrackerRuntime struct {
 	copyOutEntered    chan struct{}
 	copyOutRelease    chan struct{}
 	stopDeadline      bool
+	returnNilBinding  bool
+	runningBindingErr error
 }
 
 func (runtime *l7RuntimeFakeFirecrackerRuntime) Start(ctx context.Context, request microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
@@ -484,6 +487,7 @@ func (runtime *l7RuntimeFakeFirecrackerRuntime) Delete(context.Context, microvm.
 }
 
 func (runtime *l7RuntimeFakeFirecrackerRuntime) Inspect(_ context.Context, request microvm.ControllerInspectRequest) (*sandboxruntime.Target, error) {
+	runtime.inspectCalls++
 	if runtime.inspectErr != nil {
 		return nil, runtime.inspectErr
 	}
@@ -523,13 +527,16 @@ func (runtime *l7RuntimeFakeFirecrackerRuntime) RunningGuestBinding(identity l7n
 	if identity != runtime.request.Identity {
 		return nil, l7network.ErrIdentityMismatch
 	}
+	if runtime.returnNilBinding {
+		return nil, runtime.runningBindingErr
+	}
 	return &l7RuntimeFakeRunningGuestBinding{correlation: l7RuntimeControllerCorrelation(identity), proofID: identity.TopologyGenerationID}, nil
 }
 
 func (runtime *l7RuntimeFakeFirecrackerRuntime) TerminatedVMBinding(identity l7network.Identity, _ sandboxruntime.Target) (l7network.TerminatedVMBinding, error) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	if identity != runtime.request.Identity || runtime.stopCalls != 1 {
+	if identity != runtime.request.Identity || runtime.stopCalls < 1 {
 		return nil, l7network.ErrIdentityMismatch
 	}
 	runtime.terminationCalls++
@@ -617,6 +624,14 @@ func l7RuntimeControllerCorrelation(identity l7network.Identity) networkenforcem
 		RuntimeID: identity.RuntimeGenerationID, PlanID: identity.PlanID, PolicySnapshotID: identity.PolicySnapshotID,
 		ProxySessionID: identity.ProxySessionID, ProxyGenerationID: identity.ProxyGenerationID,
 		TopologyGenerationID: identity.TopologyGenerationID, RuleGenerationID: identity.RuleGenerationID,
+	}
+}
+
+func l7RuntimeControllerInspectedMetadata(identity l7network.Identity) l7network.Metadata {
+	return l7network.Metadata{
+		Identity: identity, Status: l7network.StatusInspected,
+		StructuralInspected: true, TAPInspected: true, RulesInspected: true,
+		RawPacketIsolationVerified: true, RuleDigest: "rule-digest-" + identity.RuntimeGenerationID,
 	}
 }
 

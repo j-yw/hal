@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
@@ -15,6 +16,8 @@ import (
 )
 
 var errL7RuntimeController = errors.New("Firecracker L7 runtime controller failed")
+
+const l7RuntimeControllerCleanupTimeout = 5 * time.Second
 
 type l7RuntimeIntentProvider interface {
 	ResolveL7RuntimeIntent(context.Context, string) (l7network.PrepareRequest, error)
@@ -27,6 +30,8 @@ type l7RuntimeTopologyFactory interface {
 type l7RuntimeTopologySession interface {
 	L7RuntimeLaunch(l7network.Identity) (l7RuntimeLaunch, error)
 	InspectAfterGuestReady(context.Context, l7network.Identity, l7network.RunningGuestBinding) (l7network.Metadata, error)
+	Inspect(context.Context, l7network.Identity) (l7network.Metadata, error)
+	AbortBeforeVM(context.Context, l7network.Identity) error
 	Quarantine(context.Context, l7network.Identity) error
 	CleanupAfterVMQuiesced(context.Context, l7network.Identity, l7network.TerminatedVMBinding) error
 	L7RuntimeProxyLoss() <-chan l7RuntimeProxyLoss
@@ -153,6 +158,26 @@ type l7RuntimeController struct {
 	runtime             l7FirecrackerRuntime
 	target              *sandboxruntime.Target
 	lossDone            chan struct{}
+	preVMCleanup        *l7RuntimePreVMCleanup
+	vmCleanup           *l7RuntimeVMCleanup
+}
+
+type l7RuntimePreVMCleanup struct {
+	session        l7RuntimeTopologySession
+	assets         *l7LiveConfigSlot
+	sessionPending bool
+	assetsPending  bool
+}
+
+type l7RuntimeVMCleanup struct {
+	target              sandboxruntime.Target
+	assets              *l7LiveConfigSlot
+	assetsPending       bool
+	quarantineConfirmed bool
+	stopConfirmed       bool
+	stoppedTarget       *sandboxruntime.Target
+	terminatedBinding   l7network.TerminatedVMBinding
+	topologyCleanupDone bool
 }
 
 func (controller *l7RuntimeController) Start(ctx context.Context, request microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
@@ -170,33 +195,80 @@ func (controller *l7RuntimeController) Start(ctx context.Context, request microv
 		controller.state = l7RuntimeStateFailed
 		return nil, errL7RuntimeController
 	}
-	started, err := prepared.runtime.Start(nonNilContext(ctx), request)
-	if err != nil || started == nil || !prepared.slot.claimedByRuntime() {
-		cleanupErr := prepared.slot.closeIfUnclaimed()
-		controller.state = l7RuntimeStateFailed
-		controller.quarantinePreparedSession()
-		return nil, sanitizeL7RuntimeControllerErrors(err, cleanupErr)
-	}
+	// Ownership becomes VM-possible before invoking Start. Every return from
+	// that handoff, including nil/error combinations, must therefore cross the
+	// exact stop/reap and topology-cleanup boundary.
 	controller.runtime = prepared.runtime
+	controller.vmCleanup = &l7RuntimeVMCleanup{
+		target:        cloneL7RuntimeTarget(request.Target),
+		assets:        prepared.slot,
+		assetsPending: true,
+	}
+	started, err := prepared.runtime.Start(nonNilContext(ctx), request)
+	claimed := prepared.slot.claimedByRuntime()
+	validStarted := controller.requestMatchesRuntimePointer(started)
+	if validStarted {
+		controller.vmCleanup.target = cloneL7RuntimeTarget(*started)
+	}
+	if err != nil || !validStarted || !claimed {
+		_, cleanupErr := controller.containVMOwnedRuntimeLocked()
+		if cleanupErr != nil {
+			controller.state = l7RuntimeStateFailed
+		}
+		return nil, sanitizeL7RuntimeControllerErrors(err, cleanupErr, invalidL7RuntimeStartResult(validStarted, claimed))
+	}
 	binding, err := controller.runtime.RunningGuestBinding(controller.identity)
 	if err != nil || interfaceValueIsNil(binding) {
-		_, cleanupErr := controller.stopAndCleanupStartedRuntimeLocked(*started)
-		controller.state = l7RuntimeStateFailed
-		return nil, sanitizeL7RuntimeControllerErrors(err, cleanupErr)
+		_, cleanupErr := controller.containVMOwnedRuntimeLocked()
+		if cleanupErr != nil {
+			controller.state = l7RuntimeStateFailed
+		}
+		return nil, sanitizeL7RuntimeControllerErrors(err, cleanupErr, nilL7RuntimeRunningBinding(binding))
 	}
 	metadata, err := controller.session.InspectAfterGuestReady(nonNilContext(ctx), controller.identity, binding)
-	if err != nil || metadata.Identity != controller.identity || metadata.Status != l7network.StatusInspected || !metadata.RawPacketIsolationVerified {
-		_, cleanupErr := controller.stopAndCleanupStartedRuntimeLocked(*started)
-		controller.state = l7RuntimeStateFailed
-		return nil, sanitizeL7RuntimeControllerErrors(err, cleanupErr)
+	if err != nil || !validL7RuntimeInspectedMetadata(metadata, controller.identity) {
+		_, cleanupErr := controller.containVMOwnedRuntimeLocked()
+		if cleanupErr != nil {
+			controller.state = l7RuntimeStateFailed
+		}
+		return nil, sanitizeL7RuntimeControllerErrors(err, cleanupErr, invalidL7RuntimeInspectedMetadata(metadata, controller.identity))
+	}
+	loss := controller.session.L7RuntimeProxyLoss()
+	if loss == nil {
+		_, cleanupErr := controller.containVMOwnedRuntimeLocked()
+		if cleanupErr != nil {
+			controller.state = l7RuntimeStateFailed
+		}
+		return nil, sanitizeL7RuntimeControllerErrors(errL7RuntimeController, cleanupErr)
 	}
 	active := cloneL7RuntimeTarget(*started)
 	active.Status = string(l7network.StatusActive)
 	controller.target = &active
 	controller.state = l7RuntimeStateActive
-	controller.startLossWatcherLocked()
+	controller.startLossWatcherLocked(loss)
 	result := cloneL7RuntimeTarget(active)
 	return &result, nil
+}
+
+func invalidL7RuntimeStartResult(validStarted, claimed bool) error {
+	if !validStarted || !claimed {
+		return errL7RuntimeController
+	}
+	return nil
+}
+
+func nilL7RuntimeRunningBinding(binding l7network.RunningGuestBinding) error {
+	if interfaceValueIsNil(binding) {
+		return errL7RuntimeController
+	}
+	return nil
+}
+
+func invalidL7RuntimeInspectedMetadata(metadata l7network.Metadata, identity l7network.Identity) error {
+	if !validL7RuntimeInspectedMetadata(metadata, identity) {
+		return errL7RuntimeController
+	}
+	return nil
 }
 
 type l7PreparedRuntime struct {
@@ -210,23 +282,26 @@ func (controller *l7RuntimeController) prepareRuntimeLocked(ctx context.Context,
 		return l7PreparedRuntime{}, errL7RuntimeController
 	}
 	session, err := controller.dependencies.Topology.PrepareL7RuntimeTopology(ctx, intent)
-	if err != nil || interfaceValueIsNil(session) {
-		if !interfaceValueIsNil(session) {
-			controller.identity, controller.session = intent.Identity, session
-		}
-		return l7PreparedRuntime{}, errL7RuntimeController
+	if !interfaceValueIsNil(session) {
+		controller.identity, controller.session = intent.Identity, session
 	}
-	controller.identity, controller.session = intent.Identity, session
+	if err != nil || interfaceValueIsNil(session) {
+		var cleanupErr error
+		if !interfaceValueIsNil(session) {
+			cleanupErr = controller.beginPreVMCleanupLocked(session, nil)
+		}
+		return l7PreparedRuntime{}, sanitizeL7RuntimeControllerErrors(err, cleanupErr, nilL7RuntimeTopologySession(session))
+	}
 	launch, err := session.L7RuntimeLaunch(intent.Identity)
 	if err != nil || !validL7RuntimeLaunch(launch, intent.Identity) {
-		controller.quarantinePreparedSession()
-		return l7PreparedRuntime{}, errL7RuntimeController
+		cleanupErr := controller.beginPreVMCleanupLocked(session, nil)
+		return l7PreparedRuntime{}, sanitizeL7RuntimeControllerErrors(err, cleanupErr, invalidL7RuntimeLaunchError(launch, intent.Identity))
 	}
 	resolvedAssets, err := controller.dependencies.Assets.AcquireL7RuntimeAssets(ctx, intent.Identity)
+	assetSlot := l7RuntimeAssetCleanupSlot(controller.runtimeGenerationID, resolvedAssets)
 	if err != nil || !validL7RuntimeAssets(resolvedAssets) {
-		closeErr := closeL7RuntimeAssets(resolvedAssets)
-		controller.quarantinePreparedSession()
-		return l7PreparedRuntime{}, sanitizeL7RuntimeControllerErrors(err, closeErr)
+		cleanupErr := controller.beginPreVMCleanupLocked(session, assetSlot)
+		return l7PreparedRuntime{}, sanitizeL7RuntimeControllerErrors(err, cleanupErr, invalidL7RuntimeAssetsError(resolvedAssets))
 	}
 	overlay := firecracker.L7LiveBootConfigOverlay{
 		RuntimeGenerationID: intent.Identity.RuntimeGenerationID,
@@ -251,11 +326,91 @@ func (controller *l7RuntimeController) prepareRuntimeLocked(ctx context.Context,
 		LiveConfigProvider: slot, Namespace: launch.Namespace,
 	})
 	if err != nil || interfaceValueIsNil(runtime) {
-		closeErr := slot.closeIfUnclaimed()
-		controller.quarantinePreparedSession()
-		return l7PreparedRuntime{}, sanitizeL7RuntimeControllerErrors(err, closeErr)
+		cleanupErr := controller.beginPreVMCleanupLocked(session, slot)
+		return l7PreparedRuntime{}, sanitizeL7RuntimeControllerErrors(err, cleanupErr, nilL7RuntimeFirecracker(runtime))
 	}
 	return l7PreparedRuntime{runtime: runtime, slot: slot}, nil
+}
+
+func nilL7RuntimeTopologySession(session l7RuntimeTopologySession) error {
+	if interfaceValueIsNil(session) {
+		return errL7RuntimeController
+	}
+	return nil
+}
+
+func invalidL7RuntimeLaunchError(launch l7RuntimeLaunch, identity l7network.Identity) error {
+	if !validL7RuntimeLaunch(launch, identity) {
+		return errL7RuntimeController
+	}
+	return nil
+}
+
+func invalidL7RuntimeAssetsError(value l7RuntimeAssets) error {
+	if !validL7RuntimeAssets(value) {
+		return errL7RuntimeController
+	}
+	return nil
+}
+
+func nilL7RuntimeFirecracker(runtime l7FirecrackerRuntime) error {
+	if interfaceValueIsNil(runtime) {
+		return errL7RuntimeController
+	}
+	return nil
+}
+
+func l7RuntimeAssetCleanupSlot(runtimeGenerationID string, value l7RuntimeAssets) *l7LiveConfigSlot {
+	if value.VerifiedL7Assets == nil {
+		return nil
+	}
+	return &l7LiveConfigSlot{
+		runtimeGenerationID: runtimeGenerationID,
+		overlay:             firecracker.L7LiveBootConfigOverlay{VerifiedL7Assets: value.VerifiedL7Assets},
+	}
+}
+
+func (controller *l7RuntimeController) beginPreVMCleanupLocked(session l7RuntimeTopologySession, assets *l7LiveConfigSlot) error {
+	cleanup := &l7RuntimePreVMCleanup{
+		session:        session,
+		assets:         assets,
+		sessionPending: !interfaceValueIsNil(session),
+		assetsPending:  assets != nil,
+	}
+	controller.preVMCleanup = cleanup
+	return controller.retryPreVMCleanupLocked()
+}
+
+func (controller *l7RuntimeController) retryPreVMCleanupLocked() error {
+	if controller == nil || controller.preVMCleanup == nil {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), l7RuntimeControllerCleanupTimeout)
+	defer cancel()
+	cleanup := controller.preVMCleanup
+	var failures []error
+	// Assets were acquired after topology preparation, so release them first
+	// while still attempting topology rollback even if release is uncertain.
+	if cleanup.assetsPending {
+		if err := cleanup.assets.closeIfUnclaimed(); err != nil {
+			failures = append(failures, err)
+		} else {
+			cleanup.assetsPending = false
+		}
+	}
+	if cleanup.sessionPending {
+		if err := cleanup.session.AbortBeforeVM(cleanupCtx, controller.identity); err != nil {
+			failures = append(failures, err)
+		} else {
+			cleanup.sessionPending = false
+		}
+	}
+	if cleanup.assetsPending || cleanup.sessionPending {
+		return sanitizeL7RuntimeControllerErrors(append(failures, errL7RuntimeController)...)
+	}
+	controller.preVMCleanup = nil
+	controller.session = nil
+	return nil
 }
 
 func (controller *l7RuntimeController) Stop(_ context.Context, request microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
@@ -271,10 +426,22 @@ func (controller *l7RuntimeController) Stop(_ context.Context, request microvm.C
 		result := cloneL7RuntimeTarget(*controller.target)
 		return &result, nil
 	}
-	if controller.state != l7RuntimeStateActive || controller.target == nil {
+	if controller.preVMCleanup != nil {
+		if err := controller.retryPreVMCleanupLocked(); err != nil {
+			controller.state = l7RuntimeStateFailed
+			return nil, errL7RuntimeController
+		}
+		result := cloneL7RuntimeTarget(request.Target)
+		result.Status = string(l7network.StatusStopped)
+		controller.target = &result
+		controller.state = l7RuntimeStateStopped
+		returned := cloneL7RuntimeTarget(result)
+		return &returned, nil
+	}
+	if controller.vmCleanup == nil || controller.runtime == nil || controller.session == nil {
 		return nil, errL7RuntimeController
 	}
-	stopped, err := controller.stopAndCleanupStartedRuntimeLocked(*controller.target)
+	stopped, err := controller.containVMOwnedRuntimeLocked()
 	if err != nil {
 		controller.state = l7RuntimeStateFailed
 		return nil, errL7RuntimeController
@@ -282,33 +449,91 @@ func (controller *l7RuntimeController) Stop(_ context.Context, request microvm.C
 	return stopped, nil
 }
 
-func (controller *l7RuntimeController) stopAndCleanupStartedRuntimeLocked(target sandboxruntime.Target) (*sandboxruntime.Target, error) {
+func (controller *l7RuntimeController) containVMOwnedRuntimeLocked() (*sandboxruntime.Target, error) {
+	if controller == nil || controller.vmCleanup == nil || interfaceValueIsNil(controller.runtime) || interfaceValueIsNil(controller.session) {
+		return nil, errL7RuntimeController
+	}
 	controller.state = l7RuntimeStateStopping
-	cleanupCtx := context.Background()
-	quarantineErr := controller.session.Quarantine(cleanupCtx, controller.identity)
-	stopped, stopErr := controller.runtime.Stop(cleanupCtx, microvm.ControllerLifecycleRequest{
-		Operation: microvm.OperationStop,
-		Target:    cloneL7RuntimeTarget(target),
-	})
-	if stopErr != nil || stopped == nil {
-		return nil, sanitizeL7RuntimeControllerErrors(quarantineErr, stopErr)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), l7RuntimeControllerCleanupTimeout)
+	defer cancel()
+	cleanup := controller.vmCleanup
+	var failures []error
+
+	if cleanup.assetsPending {
+		if err := cleanup.assets.closeIfUnclaimed(); err != nil {
+			failures = append(failures, err)
+		} else {
+			cleanup.assetsPending = false
+		}
 	}
-	binding, bindingErr := controller.runtime.TerminatedVMBinding(controller.identity, *stopped)
-	var topologyCleanupErr error
-	if bindingErr == nil && !interfaceValueIsNil(binding) {
-		topologyCleanupErr = controller.session.CleanupAfterVMQuiesced(cleanupCtx, controller.identity, binding)
-	} else if bindingErr == nil {
-		bindingErr = errL7RuntimeController
+	if !cleanup.quarantineConfirmed {
+		if err := controller.session.Quarantine(cleanupCtx, controller.identity); err != nil {
+			failures = append(failures, err)
+		} else {
+			cleanup.quarantineConfirmed = true
+		}
 	}
-	if err := sanitizeL7RuntimeControllerErrors(quarantineErr, bindingErr, topologyCleanupErr); err != nil {
-		return nil, err
+	if !cleanup.stopConfirmed {
+		stopped, stopErr := controller.runtime.Stop(cleanupCtx, microvm.ControllerLifecycleRequest{
+			Operation: microvm.OperationStop,
+			Target:    cloneL7RuntimeTarget(cleanup.target),
+		})
+		if stopped != nil && controller.requestMatchesRuntime(*stopped) && stopErr == nil {
+			value := cloneL7RuntimeTarget(*stopped)
+			cleanup.stoppedTarget = &value
+			cleanup.stopConfirmed = true
+		}
+		if stopErr != nil || stopped == nil || !controller.requestMatchesRuntimePointer(stopped) {
+			failures = append(failures, sanitizeL7RuntimeControllerErrors(stopErr, invalidL7RuntimeStoppedTarget(stopped, controller)))
+		}
 	}
-	result := cloneL7RuntimeTarget(*stopped)
+	if interfaceValueIsNil(cleanup.terminatedBinding) {
+		terminationTarget := cleanup.target
+		if cleanup.stoppedTarget != nil {
+			terminationTarget = *cleanup.stoppedTarget
+		}
+		binding, bindingErr := controller.runtime.TerminatedVMBinding(controller.identity, cloneL7RuntimeTarget(terminationTarget))
+		if bindingErr == nil && !interfaceValueIsNil(binding) {
+			cleanup.terminatedBinding = binding
+		} else {
+			failures = append(failures, sanitizeL7RuntimeControllerErrors(bindingErr, nilL7RuntimeTerminatedBinding(binding)))
+		}
+	}
+	if cleanup.quarantineConfirmed && !interfaceValueIsNil(cleanup.terminatedBinding) && !cleanup.topologyCleanupDone {
+		if err := controller.session.CleanupAfterVMQuiesced(cleanupCtx, controller.identity, cleanup.terminatedBinding); err != nil {
+			failures = append(failures, err)
+		} else {
+			cleanup.topologyCleanupDone = true
+		}
+	}
+	if cleanup.assetsPending || !cleanup.quarantineConfirmed || interfaceValueIsNil(cleanup.terminatedBinding) || !cleanup.topologyCleanupDone {
+		controller.state = l7RuntimeStateFailed
+		return nil, sanitizeL7RuntimeControllerErrors(append(failures, errL7RuntimeController)...)
+	}
+	result := cloneL7RuntimeTarget(cleanup.target)
+	if cleanup.stoppedTarget != nil {
+		result = cloneL7RuntimeTarget(*cleanup.stoppedTarget)
+	}
 	result.Status = string(l7network.StatusStopped)
 	controller.target = &result
 	controller.state = l7RuntimeStateStopped
+	controller.vmCleanup = nil
 	returned := cloneL7RuntimeTarget(result)
 	return &returned, nil
+}
+
+func invalidL7RuntimeStoppedTarget(target *sandboxruntime.Target, controller *l7RuntimeController) error {
+	if target == nil || controller == nil || !controller.requestMatchesRuntime(*target) {
+		return errL7RuntimeController
+	}
+	return nil
+}
+
+func nilL7RuntimeTerminatedBinding(binding l7network.TerminatedVMBinding) error {
+	if interfaceValueIsNil(binding) {
+		return errL7RuntimeController
+	}
+	return nil
 }
 
 func (controller *l7RuntimeController) Delete(ctx context.Context, request microvm.ControllerLifecycleRequest) error {
@@ -320,8 +545,8 @@ func (controller *l7RuntimeController) Delete(ctx context.Context, request micro
 	if !controller.requestMatchesRuntime(request.Target) || controller.runtime == nil {
 		return errL7RuntimeController
 	}
-	if controller.state == l7RuntimeStateActive && controller.target != nil {
-		if _, err := controller.stopAndCleanupStartedRuntimeLocked(*controller.target); err != nil {
+	if controller.state == l7RuntimeStateActive || (controller.vmCleanup != nil && controller.state != l7RuntimeStateStopped) {
+		if _, err := controller.containVMOwnedRuntimeLocked(); err != nil {
 			controller.state = l7RuntimeStateFailed
 			return errL7RuntimeController
 		}
@@ -349,11 +574,27 @@ func (controller *l7RuntimeController) Inspect(ctx context.Context, request micr
 	}
 	request.Target = cloneL7RuntimeTarget(*controller.target)
 	result, err := controller.runtime.Inspect(nonNilContext(ctx), request)
-	if err != nil || result == nil {
+	if controller.state == l7RuntimeStateStopped {
+		if err != nil || !controller.requestMatchesRuntimePointer(result) {
+			return nil, errL7RuntimeController
+		}
+		cloned := cloneL7RuntimeTarget(*result)
+		cloned.Status = string(l7network.StatusStopped)
+		return &cloned, nil
+	}
+	if controller.state != l7RuntimeStateActive || err != nil || !controller.requestMatchesRuntimePointer(result) {
+		if controller.vmCleanup != nil {
+			_, _ = controller.containVMOwnedRuntimeLocked()
+		}
+		return nil, errL7RuntimeController
+	}
+	metadata, topologyErr := controller.session.Inspect(nonNilContext(ctx), controller.identity)
+	if topologyErr != nil || !validL7RuntimeInspectedMetadata(metadata, controller.identity) {
+		_, _ = controller.containVMOwnedRuntimeLocked()
 		return nil, errL7RuntimeController
 	}
 	cloned := cloneL7RuntimeTarget(*result)
-	cloned.Status = controller.target.Status
+	cloned.Status = string(l7network.StatusActive)
 	return &cloned, nil
 }
 
@@ -362,12 +603,14 @@ func (controller *l7RuntimeController) Exec(ctx context.Context, request microvm
 		return nil, errL7RuntimeController
 	}
 	controller.opMu.Lock()
-	defer controller.opMu.Unlock()
 	if controller.state != l7RuntimeStateActive || controller.runtime == nil || controller.target == nil || !controller.requestMatchesRuntime(request.Target) {
+		controller.opMu.Unlock()
 		return nil, errL7RuntimeController
 	}
+	runtime := controller.runtime
 	request.Target = cloneL7RuntimeTarget(*controller.target)
-	return controller.runtime.Exec(nonNilContext(ctx), request)
+	controller.opMu.Unlock()
+	return runtime.Exec(nonNilContext(ctx), request)
 }
 
 func (controller *l7RuntimeController) CopyIn(ctx context.Context, request microvm.ControllerCopyRequest) error {
@@ -375,12 +618,14 @@ func (controller *l7RuntimeController) CopyIn(ctx context.Context, request micro
 		return errL7RuntimeController
 	}
 	controller.opMu.Lock()
-	defer controller.opMu.Unlock()
 	if controller.state != l7RuntimeStateActive || controller.runtime == nil || controller.target == nil || !controller.requestMatchesRuntime(request.Target) {
+		controller.opMu.Unlock()
 		return errL7RuntimeController
 	}
+	runtime := controller.runtime
 	request.Target = cloneL7RuntimeTarget(*controller.target)
-	return controller.runtime.CopyIn(nonNilContext(ctx), request)
+	controller.opMu.Unlock()
+	return runtime.CopyIn(nonNilContext(ctx), request)
 }
 
 func (controller *l7RuntimeController) CopyOut(ctx context.Context, request microvm.ControllerCopyRequest) error {
@@ -388,57 +633,66 @@ func (controller *l7RuntimeController) CopyOut(ctx context.Context, request micr
 		return errL7RuntimeController
 	}
 	controller.opMu.Lock()
-	defer controller.opMu.Unlock()
 	if controller.state != l7RuntimeStateActive || controller.runtime == nil || controller.target == nil || !controller.requestMatchesRuntime(request.Target) {
+		controller.opMu.Unlock()
 		return errL7RuntimeController
 	}
+	runtime := controller.runtime
 	request.Target = cloneL7RuntimeTarget(*controller.target)
-	return controller.runtime.CopyOut(nonNilContext(ctx), request)
+	controller.opMu.Unlock()
+	return runtime.CopyOut(nonNilContext(ctx), request)
 }
 
-func (controller *l7RuntimeController) startLossWatcherLocked() {
-	if controller.lossDone != nil || controller.session == nil {
-		return
-	}
-	loss := controller.session.L7RuntimeProxyLoss()
-	if loss == nil {
+func (controller *l7RuntimeController) startLossWatcherLocked(loss <-chan l7RuntimeProxyLoss) {
+	if controller.lossDone != nil || controller.session == nil || loss == nil {
 		return
 	}
 	controller.lossDone = make(chan struct{})
 	go func() {
 		defer close(controller.lossDone)
 		result, ok := <-loss
-		if !ok {
-			return
-		}
 		controller.opMu.Lock()
 		defer controller.opMu.Unlock()
 		if controller.state != l7RuntimeStateActive || controller.target == nil {
 			return
 		}
-		if result.Metadata.Status == l7network.StatusStopped {
+		// A valid result says the session has already attempted quarantine; an
+		// invalid/closed result is even less trustworthy. Either way, an active
+		// controller must revoke work and complete exact VM containment.
+		if !ok || !validL7RuntimeProxyLossResult(result, controller.identity) {
+			_, _ = controller.containVMOwnedRuntimeLocked()
 			return
 		}
-		_, _ = controller.stopAndCleanupStartedRuntimeLocked(*controller.target)
+		_, _ = controller.containVMOwnedRuntimeLocked()
 	}()
 }
 
-func (controller *l7RuntimeController) quarantinePreparedSession() {
-	if controller == nil || interfaceValueIsNil(controller.session) {
-		return
+func validL7RuntimeProxyLossResult(result l7RuntimeProxyLoss, identity l7network.Identity) bool {
+	if result.Metadata.Identity != identity {
+		return false
 	}
-	_ = controller.session.Quarantine(context.Background(), controller.identity)
+	switch result.Metadata.Status {
+	case l7network.StatusQuarantined:
+		return result.Err == nil
+	case l7network.StatusCleanupIncomplete:
+		return errors.Is(result.Err, l7network.ErrCleanupIncomplete) || errors.Is(result.Err, l7network.ErrQuarantineFailed)
+	default:
+		return false
+	}
 }
 
 func (controller *l7RuntimeController) requestMatchesRuntime(target sandboxruntime.Target) bool {
 	if controller == nil {
 		return false
 	}
-	runtimeID := strings.TrimSpace(target.Runtime.RuntimeID)
-	if runtimeID == "" {
-		runtimeID = strings.TrimSpace(target.ID)
-	}
-	return runtimeID == controller.runtimeGenerationID
+	return target.ID == controller.runtimeGenerationID &&
+		target.Runtime.RuntimeID == controller.runtimeGenerationID &&
+		target.Provider == firecracker.BackendID &&
+		target.Runtime.Driver == sandboxruntime.DriverMicroVM
+}
+
+func (controller *l7RuntimeController) requestMatchesRuntimePointer(target *sandboxruntime.Target) bool {
+	return target != nil && controller.requestMatchesRuntime(*target)
 }
 
 type l7LiveConfigSlot struct {
@@ -485,8 +739,11 @@ func (slot *l7LiveConfigSlot) closeIfUnclaimed() error {
 	if slot.claimed || slot.closed {
 		return nil
 	}
+	if err := closeL7RuntimeAssets(l7RuntimeAssets{VerifiedL7Assets: slot.overlay.VerifiedL7Assets}); err != nil {
+		return err
+	}
 	slot.closed = true
-	return closeL7RuntimeAssets(l7RuntimeAssets{VerifiedL7Assets: slot.overlay.VerifiedL7Assets})
+	return nil
 }
 
 func validL7RuntimeLaunch(launch l7RuntimeLaunch, identity l7network.Identity) bool {
@@ -501,6 +758,12 @@ func validL7RuntimeLaunch(launch l7RuntimeLaunch, identity l7network.Identity) b
 
 func validL7RuntimeAssets(value l7RuntimeAssets) bool {
 	return value.LaunchDescriptor != nil && value.VerifiedL7Profile != nil && value.VerifiedL7Assets != nil
+}
+
+func validL7RuntimeInspectedMetadata(metadata l7network.Metadata, identity l7network.Identity) bool {
+	return metadata.Identity == identity && metadata.Status == l7network.StatusInspected &&
+		metadata.StructuralInspected && metadata.TAPInspected && metadata.RulesInspected &&
+		metadata.RawPacketIsolationVerified && strings.TrimSpace(metadata.RuleDigest) != ""
 }
 
 func closeL7RuntimeAssets(value l7RuntimeAssets) error {
