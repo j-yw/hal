@@ -138,6 +138,63 @@ func TestL7NamespaceProcessRunnerClosesOnlyOwnedNamespaceFilesOnStartFailure(t *
 	}
 }
 
+func TestL7NamespaceProcessRunnerReapsPartialProcessBeforeReturningStartError(t *testing.T) {
+	user := l7OpenProcessFile(t, "user-namespace")
+	network := l7OpenProcessFile(t, "network-namespace")
+	kernel := l7OpenProcessFile(t, "kernel")
+	rootfs := l7OpenProcessFile(t, "rootfs")
+	partial := &l7NamespaceHostProcess{}
+	runner, err := NewNamespaceProcessRunner(NamespaceProcessRunnerOptions{
+		Namespace: &l7NamespaceFileProvider{user: user, network: network},
+		Starter: &l7NamespaceProcessStarter{start: func(context.Context, NamespaceProcessStartRequest) (HostProcess, error) {
+			return partial, errors.New("pid=4242 private partial start")
+		}},
+		NSenterPath: "/usr/bin/nsenter",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := runner.StartHostProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+		Executable: "/usr/bin/firecracker", InheritedFiles: []*os.File{kernel, rootfs},
+	})
+	if process != nil || !errors.Is(err, ErrNamespaceProcessStartFailed) {
+		t.Fatalf("StartHostProcess() = %#v, %v, want contained start failure", process, err)
+	}
+	if partial.killCalls != 1 || partial.waitCalls != 1 {
+		t.Fatalf("partial process kill/wait = %d/%d, want exact termination and reap", partial.killCalls, partial.waitCalls)
+	}
+}
+
+func TestL7NamespaceProcessRunnerReapsStartedProcessWhenNamespaceFileCloseIsUncertain(t *testing.T) {
+	user := l7OpenProcessFile(t, "user-namespace")
+	network := l7OpenProcessFile(t, "network-namespace")
+	kernel := l7OpenProcessFile(t, "kernel")
+	rootfs := l7OpenProcessFile(t, "rootfs")
+	partial := &l7NamespaceHostProcess{}
+	runner, err := NewNamespaceProcessRunner(NamespaceProcessRunnerOptions{
+		Namespace: &l7NamespaceFileProvider{user: user, network: network},
+		Starter: &l7NamespaceProcessStarter{start: func(_ context.Context, request NamespaceProcessStartRequest) (HostProcess, error) {
+			if err := request.InheritedFiles[0].Close(); err != nil {
+				t.Fatal(err)
+			}
+			return partial, nil
+		}},
+		NSenterPath: "/usr/bin/nsenter",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := runner.StartHostProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
+		Executable: "/usr/bin/firecracker", InheritedFiles: []*os.File{kernel, rootfs},
+	})
+	if process != nil || !errors.Is(err, ErrNamespaceProcessCleanupIncomplete) {
+		t.Fatalf("StartHostProcess() = %#v, %v, want contained close uncertainty", process, err)
+	}
+	if partial.killCalls != 1 || partial.waitCalls != 1 {
+		t.Fatalf("started process kill/wait = %d/%d, want exact termination and reap", partial.killCalls, partial.waitCalls)
+	}
+}
+
 func l7OpenProcessFile(t *testing.T, name string) *os.File {
 	t.Helper()
 	file, err := os.CreateTemp(t.TempDir(), name)
@@ -172,8 +229,17 @@ func (starter *l7NamespaceProcessStarter) StartNamespaceProcess(ctx context.Cont
 	return starter.start(ctx, request)
 }
 
-type l7NamespaceHostProcess struct{}
+type l7NamespaceHostProcess struct {
+	waitCalls int
+	killCalls int
+}
 
-func (*l7NamespaceHostProcess) Wait(context.Context) error                  { return nil }
+func (process *l7NamespaceHostProcess) Wait(context.Context) error {
+	process.waitCalls++
+	return nil
+}
 func (*l7NamespaceHostProcess) Signal(context.Context, ProcessSignal) error { return nil }
-func (*l7NamespaceHostProcess) Kill(context.Context) error                  { return nil }
+func (process *l7NamespaceHostProcess) Kill(context.Context) error {
+	process.killCalls++
+	return nil
+}
