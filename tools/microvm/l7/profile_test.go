@@ -43,6 +43,27 @@ func TestL7ProfileDoesNotAlterL5NoNetworkContract(t *testing.T) {
 	}
 }
 
+func TestL7ImageProfileLocksRegularEmptyResolverConfiguration(t *testing.T) {
+	postBuild := readProfileFile(t, "post-build.sh")
+	for _, required := range []string{
+		`rm -f -- "$target/etc/resolv.conf"`,
+		`install -D -m 0644 /dev/null "$target/etc/resolv.conf"`,
+	} {
+		if !strings.Contains(postBuild, required) {
+			t.Fatalf("post-build.sh missing resolver lock %q", required)
+		}
+	}
+	verify := readProfileFile(t, "verify-final-image.sh")
+	for _, required := range []string{
+		"require_entry /etc/resolv.conf regular 0644 0 0",
+		"grep -Eq 'Size:[[:space:]]+0([[:space:]]|$)'",
+	} {
+		if !strings.Contains(verify, required) {
+			t.Fatalf("verify-final-image.sh missing resolver proof %q", required)
+		}
+	}
+}
+
 func readProfileFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

@@ -4,6 +4,8 @@ set -eu
 target=$1
 install -D -m 0755 /build/guest-bin/hal-guest-agent "$target/usr/bin/hal-guest-agent"
 install -D -m 0755 /build/guest-bin/hal-init "$target/sbin/hal-init"
+rm -f -- "$target/etc/resolv.conf"
+install -D -m 0644 /dev/null "$target/etc/resolv.conf"
 chmod 0755 "$target/bin/busybox"
 ln -snf /bin/busybox "$target/bin/sh"
 test -x "$target/sbin/ip"

@@ -38,16 +38,19 @@ The focused Firecracker guest process proof lane is:
 go test -count=1 -timeout=180s \
   ./internal/sandboxruntime/microvm/guestagent \
   ./internal/sandboxruntime/microvm/guestagent/server \
+  ./internal/sandboxruntime/microvm/guestnetwork \
   ./internal/sandboxruntime/microvm/firecrackerhost \
   ./cmd/hal-guest-agent
 
 go test -race -count=1 -timeout=240s \
   ./internal/sandboxruntime/microvm/guestagent \
   ./internal/sandboxruntime/microvm/guestagent/server \
+  ./internal/sandboxruntime/microvm/guestnetwork \
   ./internal/sandboxruntime/microvm/firecrackerhost
 
 go test -count=25 -timeout=300s \
   ./internal/sandboxruntime/microvm/guestagent/server \
+  ./internal/sandboxruntime/microvm/guestnetwork \
   ./internal/sandboxruntime/microvm/firecrackerhost
 ```
 
@@ -59,10 +62,12 @@ pre-proof work rejection, and concurrency/repetition. Non-Linux construction
 fails closed. Default L5 and non-L7 readiness omits the optional fields and
 retains its previous behavior.
 
-The proof reports network status as unavailable unless a fixed injected
-verifier proves the expected single interface, static routes, and exact
-retained proxy reachability. The guest process lane does not itself own those
-expected live values and therefore does not overclaim network proof.
+The proof reports network status as unavailable unless the explicit L7 command
+composition injects the production guest-network verifier. That verifier
+reuses only the validated immutable kernel boot expectation, verifies the exact
+single-interface/static-route shape and disabled resolver state, then probes the
+exact proxy tuple with bounded cancellation. The generic guest process lane
+does not infer those values and therefore does not overclaim network proof.
 
 The explicit prepared-host semantic check for the locked keep-caps-off
 sequence is:
@@ -185,6 +190,7 @@ for os in linux darwin freebsd windows; do
   GOOS="$os" GOARCH=amd64 go test -exec=true -count=1 -run '^$' \
     ./internal/sandboxruntime/microvm/guestagent \
     ./internal/sandboxruntime/microvm/guestagent/server \
+    ./internal/sandboxruntime/microvm/guestnetwork \
     ./internal/sandboxruntime/microvm/firecrackerhost \
     ./cmd/hal-guest-agent
 done

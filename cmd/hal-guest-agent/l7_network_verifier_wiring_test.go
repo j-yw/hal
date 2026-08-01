@@ -24,7 +24,7 @@ func TestL7GuestAgentInjectsNetworkVerifierOnlyForMatchingSealedBootState(t *tes
 		context.Background(),
 		configuration,
 		func(context.Context) (guestnetwork.BootConfig, bool, error) { return boot, true, nil },
-		func(options server.LinuxNetworkIsolationVerifierOptions) (server.NetworkIsolationVerifier, error) {
+		func(options guestnetwork.LinuxNetworkIsolationVerifierOptions) (server.NetworkIsolationVerifier, error) {
 			constructed++
 			if options.BootConfig.ProxyURL() != boot.ProxyURL() {
 				t.Fatal("network verifier received mismatched boot state")
@@ -43,7 +43,7 @@ func TestL7GuestAgentInjectsNetworkVerifierOnlyForMatchingSealedBootState(t *tes
 			t.Fatal("legacy path read L7 boot state")
 			return guestnetwork.BootConfig{}, false, nil
 		},
-		func(server.LinuxNetworkIsolationVerifierOptions) (server.NetworkIsolationVerifier, error) {
+		func(guestnetwork.LinuxNetworkIsolationVerifierOptions) (server.NetworkIsolationVerifier, error) {
 			t.Fatal("legacy path constructed network verifier")
 			return nil, nil
 		},
@@ -70,7 +70,7 @@ func TestL7GuestAgentRejectsMissingMismatchedOrFailedBootStateWithoutEcho(t *tes
 			return guestnetwork.BootConfig{}, false, secret
 		},
 	} {
-		_, err := linuxIsolationVerifierForConfiguration(context.Background(), configuration, loader, server.NewLinuxNetworkIsolationVerifier)
+		_, err := linuxIsolationVerifierForConfiguration(context.Background(), configuration, loader, guestnetwork.NewLinuxNetworkIsolationVerifier)
 		if err == nil {
 			t.Fatal("linuxIsolationVerifierForConfiguration() error = nil, want fail closed")
 		}

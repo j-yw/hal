@@ -14,6 +14,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/vsock"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestnetwork"
 )
 
 func main() {
@@ -43,7 +44,9 @@ func run() error {
 		_ = listener.Close()
 		return err
 	}
-	isolationVerifier, err := server.NewLinuxIsolationVerifier(server.LinuxIsolationVerifierOptions{})
+	isolationVerifier, err := linuxIsolationVerifierForConfiguration(
+		context.Background(), configuration, guestnetwork.LoadLinuxBootConfig, guestnetwork.NewLinuxNetworkIsolationVerifier,
+	)
 	if err != nil {
 		_ = listener.Close()
 		_ = backend.Close(context.Background())
@@ -78,6 +81,7 @@ func linuxBackendOptionsFromLookup(lookup func(string) (string, bool)) (server.L
 type linuxGuestAgentConfiguration struct {
 	backend                       server.LinuxBackendOptions
 	requireNetworkProofBeforeWork bool
+	proxyURL                      string
 }
 
 func linuxGuestAgentConfigurationFromLookup(lookup func(string) (string, bool)) (linuxGuestAgentConfiguration, error) {
@@ -97,7 +101,40 @@ func linuxGuestAgentConfigurationFromLookup(lookup func(string) (string, bool)) 
 			ExecutablePaths: []string{"/usr/bin", "/bin"},
 		},
 		requireNetworkProofBeforeWork: len(proxyEnvironment) != 0,
+		proxyURL:                      proxyURLFromEnvironment(proxyEnvironment),
 	}, nil
+}
+
+func linuxIsolationVerifierForConfiguration(
+	ctx context.Context,
+	configuration linuxGuestAgentConfiguration,
+	loadBoot func(context.Context) (guestnetwork.BootConfig, bool, error),
+	newNetworkVerifier func(guestnetwork.LinuxNetworkIsolationVerifierOptions) (server.NetworkIsolationVerifier, error),
+) (server.IsolationVerifier, error) {
+	if !configuration.requireNetworkProofBeforeWork {
+		return server.NewLinuxIsolationVerifier(server.LinuxIsolationVerifierOptions{})
+	}
+	if loadBoot == nil || newNetworkVerifier == nil || configuration.proxyURL == "" {
+		return nil, errors.New("guest network proof bootstrap is invalid")
+	}
+	boot, present, err := loadBoot(ctx)
+	if err != nil || !present || !boot.Valid() || boot.ProxyURL() != configuration.proxyURL {
+		return nil, errors.New("guest network proof bootstrap is invalid")
+	}
+	networkVerifier, err := newNetworkVerifier(guestnetwork.LinuxNetworkIsolationVerifierOptions{BootConfig: boot})
+	if err != nil {
+		return nil, errors.New("guest network proof bootstrap is invalid")
+	}
+	return server.NewLinuxIsolationVerifier(server.LinuxIsolationVerifierOptions{NetworkVerifier: networkVerifier})
+}
+
+func proxyURLFromEnvironment(environment []string) string {
+	for _, value := range environment {
+		if strings.HasPrefix(value, "HTTP_PROXY=") {
+			return strings.TrimPrefix(value, "HTTP_PROXY=")
+		}
+	}
+	return ""
 }
 
 func validatedL7ProxyEnvironment(lookup func(string) (string, bool)) ([]string, error) {

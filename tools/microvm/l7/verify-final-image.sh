@@ -30,6 +30,9 @@ for path in /sbin/init /sbin/hal-init /usr/bin/hal-guest-agent /bin/busybox /usr
 	require_entry "$path" regular 0755 0 0
 done
 require_entry /workspace directory 0700 1000 1000
+require_entry /etc/resolv.conf regular 0644 0 0
+debugfs -R 'stat /etc/resolv.conf' "$image" >"$scratch/resolver.stat" 2>/dev/null
+grep -Eq 'Size:[[:space:]]+0([[:space:]]|$)' "$scratch/resolver.stat"
 
 debugfs -R 'stat /bin/busybox' "$image" >"$scratch/busybox.stat" 2>/dev/null
 busybox_inode=$(awk '/^Inode:/ {print $2; exit}' "$scratch/busybox.stat")

@@ -1,6 +1,7 @@
 package guestnetwork
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,10 @@ func TestParseBootCommandLineReturnsCanonicalSealedExpectation(t *testing.T) {
 		config.IPv6Gateway() != "fd00:7::1" || config.ProxyURL() != "http://198.18.0.1:18080" {
 		t.Fatalf("unexpected canonical boot expectation: %#v", config)
 	}
+	payload, err := json.Marshal(config)
+	if err != nil || string(payload) != "{}" {
+		t.Fatalf("BootConfig JSON = %q, %v, want data-minimized object", payload, err)
+	}
 }
 
 func TestParseBootCommandLineFailsClosedOnPartialDuplicateOrNonPointToPointInput(t *testing.T) {
@@ -28,6 +33,9 @@ func TestParseBootCommandLineFailsClosedOnPartialDuplicateOrNonPointToPointInput
 		strings.Replace(validBootCommandLine, "fd00:7::2/126", "fd00:7::2/64", 1),
 		strings.Replace(validBootCommandLine, "hal_l7_ipv4=192.0.2.2/30", "hal_l7_ipv4=192.0.2.0/30", 1),
 		strings.Replace(validBootCommandLine, "hal_l7_ipv6=fd00:7::2/126", "hal_l7_ipv6=fd00:7::/126", 1),
+		strings.Replace(validBootCommandLine, "fd00:7::2/126", "fd00:7::2%eth0/126", 1),
+		strings.Replace(validBootCommandLine, "fd00:7::1", "fd00:7::1%eth0", 1),
+		strings.Replace(validBootCommandLine, "http://198.18.0.1:18080", "http://[2001:db8::1%25eth0]:18080", 1),
 	} {
 		_, present, err := ParseBootCommandLine(commandLine)
 		if err == nil || !present {
