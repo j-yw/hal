@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -139,6 +140,163 @@ func TestL7ServerStrictIsolationProofRequestNeverReachesVerifier(t *testing.T) {
 			t.Fatal("malformed isolation proof request reached verifier")
 		}
 	}
+}
+
+func TestL7ServerOwnedNetworkProofRequirementCannotBeDowngraded(t *testing.T) {
+	backend := &l4FakeBackend{}
+	verifier := &l7FakeIsolationVerifier{result: IsolationProofResult{
+		RestrictedIdentity:         true,
+		CapabilitiesCleared:        true,
+		NoNewPrivileges:            true,
+		SupplementaryGroupsCleared: true,
+		RawPacketSocketDenied:      true,
+		Network: NetworkIsolationProofResult{
+			Status: guestagent.IsolationProofStatusUnavailable,
+		},
+	}}
+	options := Options{
+		Transport:         newL4BlockingTransport(),
+		Backend:           backend,
+		IsolationVerifier: verifier,
+	}
+	l7RequireNetworkProofBeforeWork(t, &options)
+	run := startL4Server(t, options)
+
+	for _, request := range []guestagent.ReadinessRequest{
+		{
+			ProtocolVersion: guestagent.ProtocolVersionV1,
+			Operation:       guestagent.OperationReadiness,
+			IsolationProof: &guestagent.IsolationProofRequest{
+				Generation:        "network-policy-generation-1",
+				RuntimeGeneration: "runtime-generation-1",
+			},
+		},
+		{
+			ProtocolVersion: guestagent.ProtocolVersionV1,
+			Operation:       guestagent.OperationReadiness,
+			IsolationProof: &guestagent.IsolationProofRequest{
+				Generation:          "network-policy-generation-2",
+				RuntimeGeneration:   "runtime-generation-1",
+				RequireNetworkProof: false,
+			},
+		},
+	} {
+		response := l4DecodeResponse[guestagent.ReadinessResponse](t, run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, request)}))
+		if response.Ready || response.IsolationProof == nil || response.IsolationProof.Status == guestagent.IsolationProofStatusVerified {
+			t.Fatalf("readiness = %#v, want network-proof failure", response)
+		}
+	}
+
+	execRequest := guestagent.ExecRequest{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationExec,
+		Args:            []string{"tool"},
+		WorkDir:         "/workspace",
+		Stdout:          guestagent.StreamMetadata{MaxBytes: 16},
+		Stderr:          guestagent.StreamMetadata{MaxBytes: 16},
+	}
+	l4RequireResponseCode(t, run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, execRequest)}), guestagent.ErrorCodeServerNotReady)
+	if backend.execCalls.Load() != 0 {
+		t.Fatal("user work reached backend without verified network proof")
+	}
+}
+
+func TestL7ServerOwnedNetworkProofRequirementUpgradesConcurrentWeakRequests(t *testing.T) {
+	verifier := &l7RequestRecordingIsolationVerifier{}
+	options := Options{
+		Transport:         newL4BlockingTransport(),
+		Backend:           &l4FakeBackend{},
+		IsolationVerifier: verifier,
+	}
+	l7RequireNetworkProofBeforeWork(t, &options)
+	run := startL4Server(t, options)
+
+	requests := []guestagent.ReadinessRequest{
+		{
+			ProtocolVersion: guestagent.ProtocolVersionV1,
+			Operation:       guestagent.OperationReadiness,
+			IsolationProof: &guestagent.IsolationProofRequest{
+				Generation:        "network-policy-generation-3",
+				RuntimeGeneration: "runtime-generation-2",
+			},
+		},
+		{
+			ProtocolVersion: guestagent.ProtocolVersionV1,
+			Operation:       guestagent.OperationReadiness,
+			IsolationProof: &guestagent.IsolationProofRequest{
+				Generation:          "network-policy-generation-4",
+				RuntimeGeneration:   "runtime-generation-2",
+				RequireNetworkProof: true,
+			},
+		},
+	}
+	responses := make(chan guestagent.ReadinessResponse, len(requests))
+	var wait sync.WaitGroup
+	for _, request := range requests {
+		request := request
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			responses <- l4DecodeResponse[guestagent.ReadinessResponse](t, run.server.Handle(context.Background(), Request{Encoded: l7JSON(t, request)}))
+		}()
+	}
+	wait.Wait()
+	close(responses)
+	for response := range responses {
+		if !response.Ready || response.IsolationProof == nil || response.IsolationProof.Network == nil || response.IsolationProof.Network.Status != guestagent.IsolationProofStatusVerified {
+			t.Fatalf("readiness = %#v, want verified server-required network proof", response)
+		}
+	}
+	for index, request := range verifier.requestsSnapshot() {
+		if !request.RequireNetworkProof {
+			t.Fatalf("verifier request %d = %#v, want server-required network proof", index, request)
+		}
+	}
+}
+
+type l7RequestRecordingIsolationVerifier struct {
+	mu       sync.Mutex
+	requests []guestagent.IsolationProofRequest
+}
+
+func (verifier *l7RequestRecordingIsolationVerifier) VerifyIsolation(_ context.Context, request guestagent.IsolationProofRequest) (IsolationProofResult, error) {
+	verifier.mu.Lock()
+	verifier.requests = append(verifier.requests, request)
+	verifier.mu.Unlock()
+	result := IsolationProofResult{
+		RestrictedIdentity:         true,
+		CapabilitiesCleared:        true,
+		NoNewPrivileges:            true,
+		SupplementaryGroupsCleared: true,
+		RawPacketSocketDenied:      true,
+		Network: NetworkIsolationProofResult{
+			Status: guestagent.IsolationProofStatusUnavailable,
+		},
+	}
+	if request.RequireNetworkProof {
+		result.Network = NetworkIsolationProofResult{
+			Status:          guestagent.IsolationProofStatusVerified,
+			SingleInterface: true,
+			StaticRoutes:    true,
+			ProxyReachable:  true,
+		}
+	}
+	return result, nil
+}
+
+func (verifier *l7RequestRecordingIsolationVerifier) requestsSnapshot() []guestagent.IsolationProofRequest {
+	verifier.mu.Lock()
+	defer verifier.mu.Unlock()
+	return append([]guestagent.IsolationProofRequest(nil), verifier.requests...)
+}
+
+func l7RequireNetworkProofBeforeWork(t *testing.T, options *Options) {
+	t.Helper()
+	field := reflect.ValueOf(options).Elem().FieldByName("RequireNetworkProofBeforeWork")
+	if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.Bool {
+		t.Fatal("Options.RequireNetworkProofBeforeWork is required")
+	}
+	field.SetBool(true)
 }
 
 func l7JSON(t *testing.T, value any) []byte {
