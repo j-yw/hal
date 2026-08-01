@@ -52,8 +52,17 @@ type Session struct {
 	journalReleased  bool
 	guestBinding     RunningGuestBinding
 	guestSnapshot    runningGuestSnapshot
-	prepareFailed    bool
+	retainedCleanup  retainedCleanupMode
 }
+
+type retainedCleanupMode uint8
+
+const (
+	retainedCleanupNone retainedCleanupMode = iota
+	retainedCleanupRollback
+	retainedCleanupReleaseJournal
+	retainedCleanupUnavailable
+)
 
 func New(input Options) (*Coordinator, error) {
 	options := input
@@ -98,30 +107,27 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 		return nil, ErrTopologyCollision
 	}
 
+	session := &Session{coordinator: c, identity: request.Identity, plan: networkenforcement.SanitizePlan(request.Plan),
+		topologyIdentity: topologyIdentity(request.Identity), metadata: Metadata{Identity: request.Identity, Status: StatusPrepared}}
 	lease, err := c.options.Journal.Acquire(ctx, request.Identity)
 	if err != nil {
 		return nil, sanitizeJournalAcquireError(err)
 	}
 	if interfaceIsNil(lease) {
-		return nil, ErrCleanupIncomplete
+		return c.retainPrepareCleanup(session, retainedCleanupUnavailable, ErrCleanupIncomplete)
 	}
+	session.journal = lease
 	if stale, loadErr := lease.Load(); loadErr == nil {
-		_ = lease.Release()
 		if stale.identity != request.Identity {
-			return nil, ErrInvalidIdentity
+			return c.releasePrepareJournal(session, ErrInvalidIdentity)
 		}
-		return nil, ErrStaleTopologyUnverified
+		return c.releasePrepareJournal(session, ErrStaleTopologyUnverified)
 	} else if !errors.Is(loadErr, ErrJournalNotFound) {
-		_ = lease.Release()
-		return nil, ErrStaleTopologyUnverified
+		return c.releasePrepareJournal(session, ErrStaleTopologyUnverified)
 	}
 
-	session := &Session{coordinator: c, identity: request.Identity, plan: networkenforcement.SanitizePlan(request.Plan),
-		topologyIdentity: topologyIdentity(request.Identity), journal: lease,
-		metadata: Metadata{Identity: request.Identity, Status: StatusPrepared}}
 	if err := session.save(ctx, journalStageProxyStarting); err != nil {
-		_ = lease.Release()
-		return nil, ErrCleanupIncomplete
+		return c.releasePrepareJournal(session, ErrCleanupIncomplete)
 	}
 	session.proxy, err = c.options.Proxy.Start(ctx, session.plan)
 	if err != nil {
@@ -227,18 +233,34 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 
 func (c *Coordinator) failPrepare(session *Session, primary error) (*Session, error) {
 	if cleanupErr := session.rollback(); cleanupErr != nil {
-		session.prepareFailed = true
-		session.metadata.Status = StatusCleanupIncomplete
-		c.current = session
-		return session, errors.Join(primary, ErrCleanupIncomplete)
+		return c.retainPrepareCleanup(session, retainedCleanupRollback, primary)
 	}
 	return nil, primary
 }
 
 func (c *Coordinator) retainUntrackedPrepareUncertainty(session *Session, primary error) (*Session, error) {
+	return c.retainPrepareCleanup(session, retainedCleanupUnavailable, primary)
+}
+
+func (c *Coordinator) retainPrepareCleanup(session *Session, mode retainedCleanupMode, primary error) (*Session, error) {
+	session.retainedCleanup = mode
 	session.metadata.Status = StatusCleanupIncomplete
 	c.current = session
 	return session, errors.Join(primary, ErrCleanupIncomplete)
+}
+
+func (c *Coordinator) releasePrepareJournal(session *Session, primary error) (*Session, error) {
+	if session == nil {
+		return nil, errors.Join(primary, ErrCleanupIncomplete)
+	}
+	if interfaceIsNil(session.journal) {
+		return c.retainPrepareCleanup(session, retainedCleanupUnavailable, primary)
+	}
+	if err := session.journal.Release(); err != nil {
+		return c.retainPrepareCleanup(session, retainedCleanupReleaseJournal, primary)
+	}
+	session.journalReleased = true
+	return nil, primary
 }
 
 func (s *Session) stopKnownProxyAfterUntrackedPrepare() {
@@ -512,13 +534,41 @@ func (s *Session) RetryFailedPrepareCleanup(_ context.Context, identity Identity
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.prepareFailed || s.metadata.Status != StatusCleanupIncomplete {
+	if s.retainedCleanup != retainedCleanupRollback {
 		return ErrCleanupIncomplete
 	}
-	if err := s.rollback(); err != nil {
+	return s.retryRetainedCleanupLocked()
+}
+
+// RetryRetainedCleanup retries only the exact cleanup operation retained by a
+// failed pre-VM preparation or recovery boundary.
+func (s *Session) RetryRetainedCleanup(_ context.Context, identity Identity) error {
+	if s == nil || identity != s.identity || !validIdentity(identity) {
+		return ErrIdentityMismatch
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.retryRetainedCleanupLocked()
+}
+
+func (s *Session) retryRetainedCleanupLocked() error {
+	if s.metadata.Status != StatusCleanupIncomplete {
 		return ErrCleanupIncomplete
 	}
-	s.prepareFailed = false
+	switch s.retainedCleanup {
+	case retainedCleanupRollback:
+		if err := s.rollback(); err != nil {
+			return ErrCleanupIncomplete
+		}
+	case retainedCleanupReleaseJournal:
+		if interfaceIsNil(s.journal) || s.journal.Release() != nil {
+			return ErrCleanupIncomplete
+		}
+		s.journalReleased = true
+	default:
+		return ErrCleanupIncomplete
+	}
+	s.retainedCleanup = retainedCleanupNone
 	s.metadata = Metadata{Identity: s.identity, Status: StatusStopped}
 	s.coordinator.clearCurrentSession(s)
 	return nil

@@ -57,34 +57,34 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 	if r == nil || !validIdentity(identity) {
 		return nil, ErrInvalidIdentity
 	}
+	coordinator := &Coordinator{options: Options{Enabled: true, TAP: r.options.TAP, Rules: r.options.Rules,
+		VMTermination: r.options.VMTermination, Journal: r.options.Journal, CleanupTimeout: r.options.CleanupTimeout}}
+	session := &Session{coordinator: coordinator, identity: identity,
+		metadata: Metadata{Identity: identity, Status: StatusCleanupIncomplete}}
 	lease, err := r.options.Journal.Acquire(ctx, identity)
 	if err != nil {
 		return nil, sanitizeJournalAcquireError(err)
 	}
 	if interfaceIsNil(lease) {
-		return nil, ErrStaleTopologyUnverified
+		return coordinator.retainPrepareCleanup(session, retainedCleanupUnavailable, ErrStaleTopologyUnverified)
 	}
+	session.journal = lease
 	record, err := lease.Load()
 	if err != nil || record.identity != identity || stageOrder(record.stage) < stageOrder(journalStageTAPCreated) {
-		_ = lease.Release()
-		return nil, ErrStaleTopologyUnverified
+		return coordinator.releasePrepareJournal(session, ErrStaleTopologyUnverified)
 	}
 	if record.stage == journalStageTopologyRemoved {
-		coordinator := &Coordinator{options: Options{Enabled: true, TAP: r.options.TAP, Rules: r.options.Rules,
-			VMTermination: r.options.VMTermination, Journal: r.options.Journal, CleanupTimeout: r.options.CleanupTimeout}}
-		return &Session{coordinator: coordinator, identity: identity, journal: lease, proxyStopped: true,
-			rulesRemoved: true, tapRemoved: true, topologyRemoved: true,
-			metadata: Metadata{Identity: identity, Status: StatusQuarantined}}, nil
+		session.proxyStopped, session.rulesRemoved, session.tapRemoved, session.topologyRemoved = true, true, true, true
+		session.metadata.Status = StatusQuarantined
+		return session, nil
 	}
 	lifecycle, topology, err := r.options.Recovery.Recover(ctx, identity)
 	if err != nil || interfaceIsNil(lifecycle) || interfaceIsNil(topology) || !topologyMetadataMatches(topology.Metadata(), topologyIdentity(identity)) {
-		_ = lease.Release()
-		return nil, ErrStaleTopologyUnverified
+		return coordinator.releasePrepareJournal(session, ErrStaleTopologyUnverified)
 	}
 	namespace, err := topology.BorrowNamespace()
 	if err != nil || interfaceIsNil(namespace) {
-		_ = lease.Release()
-		return nil, ErrStaleTopologyUnverified
+		return coordinator.releasePrepareJournal(session, ErrStaleTopologyUnverified)
 	}
 	proxyAddress, err := netip.ParseAddr(record.proxyAddress)
 	if err != nil || record.proxyPort == 0 {
@@ -110,11 +110,9 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 		_ = lease.Release()
 		return nil, ErrStaleTopologyUnverified
 	}
-	coordinator := &Coordinator{options: Options{Enabled: true, Topology: lifecycle, TAP: r.options.TAP, Rules: r.options.Rules,
-		VMTermination: r.options.VMTermination, Journal: r.options.Journal, CleanupTimeout: r.options.CleanupTimeout}}
-	session := &Session{coordinator: coordinator, identity: identity, topologyIdentity: topologyIdentity(identity), topology: topology,
-		namespace: namespace, tapSpec: spec, tap: tap, expectedRules: expected, journal: lease, proxyStopped: true,
-		metadata: Metadata{Identity: identity, Status: StatusCleanupIncomplete}, rulesPresent: true}
+	coordinator.options.Topology = lifecycle
+	session.topologyIdentity, session.topology, session.namespace = topologyIdentity(identity), topology, namespace
+	session.tapSpec, session.tap, session.expectedRules, session.proxyStopped, session.rulesPresent = spec, tap, expected, true, true
 	switch record.stage {
 	case journalStageQuarantined:
 		session.quarantined = true
