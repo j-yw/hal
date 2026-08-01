@@ -2,11 +2,15 @@ package l7network
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
 )
 
@@ -149,6 +153,68 @@ func TestFirecrackerHostTopologyProxyLossPublishesExactlyOnceForRepeatedSignals(
 	}
 }
 
+func TestFirecrackerHostTopologyNormalCleanupPublishesStoppedProxyResultWithoutDeadlock(t *testing.T) {
+	sequence := &callSequence{}
+	proxy := &closingStopProxy{fakeProxy: newFakeProxy(sequence)}
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence),
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+		Journal:       &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+	})
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notification := session.Loss()
+	if err := session.Quarantine(context.Background(), testIdentity()); err != nil {
+		t.Fatal(err)
+	}
+	cleanupDone := make(chan error, 1)
+	go func() {
+		cleanupDone <- session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), testTerminatedVMBinding())
+	}()
+	select {
+	case err := <-cleanupDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("normal cleanup deadlocked with proxy loss watcher")
+	}
+	select {
+	case result, ok := <-notification:
+		if !ok {
+			t.Fatal("Session.Loss() closed without normal-stop result")
+		}
+		assertProxyLossResult(t, any(result), StatusStopped, nil)
+	case <-time.After(time.Second):
+		t.Fatal("proxy loss watcher leaked after normal Proxy.Stop")
+	}
+	if _, ok := <-notification; ok {
+		t.Fatal("normal cleanup published more than one proxy result")
+	}
+	if err := session.CleanupAfterVMQuiesced(context.Background(), testIdentity(), testTerminatedVMBinding()); err != nil {
+		t.Fatal(err)
+	}
+	if proxy.stopCalls != 1 {
+		t.Fatalf("Proxy.Stop calls = %d, want exactly one", proxy.stopCalls)
+	}
+}
+
+type closingStopProxy struct {
+	*fakeProxy
+	closeOnce sync.Once
+}
+
+func (p *closingStopProxy) Stop(ctx context.Context, plan networkenforcement.Plan, generation ProxyGeneration) error {
+	err := p.fakeProxy.Stop(ctx, plan, generation)
+	if err == nil {
+		p.closeOnce.Do(func() { close(p.current.loss) })
+	}
+	return err
+}
+
 type proxyLossResultView interface {
 	Metadata() Metadata
 	Err() error
@@ -165,6 +231,17 @@ func assertProxyLossResult(t *testing.T, raw any, wantStatus Status, wantErr err
 	}
 	if err := result.Err(); !errors.Is(err, wantErr) || (wantErr == nil && err != nil) {
 		t.Fatalf("Session.Loss() error = %v, want %v", err, wantErr)
+	} else if wantErr != nil && err.Error() != wantErr.Error() {
+		t.Fatalf("Session.Loss() error = %q, want sanitized sentinel %q", err, wantErr)
+	}
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unsafe := range []string{"private", "/host/path", "adapter failure"} {
+		if strings.Contains(string(payload), unsafe) {
+			t.Fatalf("Session.Loss() JSON leaked %q in %s", unsafe, payload)
+		}
 	}
 }
 

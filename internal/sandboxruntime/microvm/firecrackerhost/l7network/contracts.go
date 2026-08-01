@@ -80,6 +80,26 @@ type Metadata struct {
 	RuleDigest                 string   `json:"ruleDigest,omitempty"`
 }
 
+// ProxyLossResult is the live-only outcome published after the session-owned
+// proxy loss watcher has completed its quarantine attempt. Err returns only a
+// package sentinel, never an adapter error.
+type ProxyLossResult struct {
+	metadata Metadata
+	err      error
+}
+
+func (r ProxyLossResult) Metadata() Metadata { return r.metadata }
+
+func (r ProxyLossResult) Err() error { return r.err }
+
+func (r ProxyLossResult) MarshalJSON() ([]byte, error) {
+	type resultJSON struct {
+		Metadata  Metadata `json:"metadata"`
+		ErrorCode string   `json:"errorCode,omitempty"`
+	}
+	return json.Marshal(resultJSON{Metadata: r.metadata, ErrorCode: proxyLossErrorCode(r.err)})
+}
+
 type PrepareRequest struct {
 	Identity Identity                `json:"identity"`
 	Plan     networkenforcement.Plan `json:"plan"`
