@@ -28,6 +28,9 @@ func TestL6ProductionPolicyProxyIsNotActivatedByDefaultPaths(t *testing.T) {
 			if strings.HasPrefix(filepath.ToSlash(rel), "internal/sandboxruntime/rootlesspodman/l7network/") {
 				return nil
 			}
+			if strings.HasPrefix(filepath.ToSlash(rel), "internal/sandboxruntime/microvm/firecrackerhost/l7network/") {
+				return nil
+			}
 			payload, err := os.ReadFile(path)
 			if err != nil {
 				return err

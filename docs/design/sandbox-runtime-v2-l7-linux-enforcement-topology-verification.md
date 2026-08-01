@@ -14,14 +14,16 @@ go test -count=1 -timeout=180s \
   ./internal/sandboxruntime/rootlesspodman/l7network \
   ./internal/sandboxruntime/microvm/firecracker \
   ./internal/sandboxruntime/microvm/firecrackerhost \
-  ./cmd -run 'TestL7|TestLinuxRules|TestLinuxTopology'
+  ./internal/sandboxruntime/microvm/firecrackerhost/l7network \
+  ./cmd -run 'TestL7|TestLinuxRules|TestLinuxTopology|TestFirecrackerHostTopology|TestLinuxTAP|TestProductionProxy'
 
 go test -race -count=1 -timeout=300s \
   ./internal/sandboxruntime/networkenforcement/linuxrules \
   ./internal/sandboxruntime/networkenforcement/linuxtopology \
   ./internal/sandboxruntime/rootlesspodman \
   ./internal/sandboxruntime/rootlesspodman/l7network \
-  ./internal/sandboxruntime/microvm/firecrackerhost
+  ./internal/sandboxruntime/microvm/firecrackerhost \
+  ./internal/sandboxruntime/microvm/firecrackerhost/l7network
 ```
 
 The fake-only Firecracker profile gate includes bounded `HAL_L7_JOBS`
