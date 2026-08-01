@@ -12,6 +12,6 @@ func newPlatformNamespaceCommand(string) (NamespaceCommandBoundary, bool) {
 
 func tapPlatformSupported() bool { return false }
 
-func (unsupportedNamespaceCommand) Run(context.Context, NamespaceLease, namespaceCommand, int64) ([]byte, error) {
+func (unsupportedNamespaceCommand) Run(context.Context, NamespaceLease, NamespaceCommandRequest, int64) ([]byte, error) {
 	return nil, ErrUnsupported
 }

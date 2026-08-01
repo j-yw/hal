@@ -51,6 +51,9 @@ func (s *fileJournalStore) Acquire(ctx context.Context, identity Identity) (Jour
 	if s == nil || !validIdentity(identity) {
 		return nil, ErrInvalidIdentity
 	}
+	if !journalPlatformSupported() {
+		return nil, ErrUnsupported
+	}
 	if err := ensurePrivateDir(s.root); err != nil {
 		return nil, ErrCleanupIncomplete
 	}

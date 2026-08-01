@@ -10,6 +10,8 @@ import (
 
 var errLockContended = errors.New("host topology lock contended")
 
+func journalPlatformSupported() bool { return true }
+
 func lockFile(file *os.File) error {
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {

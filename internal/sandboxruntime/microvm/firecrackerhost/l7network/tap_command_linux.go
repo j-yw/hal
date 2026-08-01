@@ -20,14 +20,14 @@ func newPlatformNamespaceCommand(nsenterPath string) (NamespaceCommandBoundary, 
 
 func tapPlatformSupported() bool { return true }
 
-func (r *osNamespaceCommand) Run(ctx context.Context, namespace NamespaceLease, request namespaceCommand, limit int64) ([]byte, error) {
+func (r *osNamespaceCommand) Run(ctx context.Context, namespace NamespaceLease, request NamespaceCommandRequest, limit int64) ([]byte, error) {
 	provider, ok := namespace.(interface {
 		commandFiles() *linuxtopology.NamespaceFiles
 	})
-	if !ok || provider.commandFiles() == nil || !validToolPath(request.path) || limit <= 0 || limit > maxTAPOutputLimit {
+	if !ok || provider.commandFiles() == nil || !validToolPath(request.Path) || limit <= 0 || limit > maxTAPOutputLimit {
 		return nil, ErrTopologyPrepareFailed
 	}
-	for _, arg := range request.args {
+	for _, arg := range request.Args {
 		if strings.ContainsAny(arg, "\x00\r\n") {
 			return nil, ErrTopologyPrepareFailed
 		}
@@ -38,8 +38,8 @@ func (r *osNamespaceCommand) Run(ctx context.Context, namespace NamespaceLease, 
 	}
 	defer user.Close()
 	defer network.Close()
-	args := []string{"--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--", request.path}
-	args = append(args, request.args...)
+	args := []string{"--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--", request.Path}
+	args = append(args, request.Args...)
 	command := exec.CommandContext(ctx, r.nsenterPath, args...)
 	command.Env = []string{"LANG=C", "LC_ALL=C"}
 	command.ExtraFiles = []*os.File{user, network}

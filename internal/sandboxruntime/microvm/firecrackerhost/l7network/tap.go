@@ -14,16 +14,16 @@ const (
 	maxTAPOutputLimit     int64 = 1 << 20
 )
 
-type namespaceCommand struct {
-	path string
-	args []string
+type NamespaceCommandRequest struct {
+	Path string   `json:"-"`
+	Args []string `json:"-"`
 }
 
 // NamespaceCommandBoundary is the only injected command boundary used by the
 // TAP implementation. Namespace entry is descriptor-bound; request values are
 // private and never included in returned errors.
 type NamespaceCommandBoundary interface {
-	Run(context.Context, NamespaceLease, namespaceCommand, int64) ([]byte, error)
+	Run(context.Context, NamespaceLease, NamespaceCommandRequest, int64) ([]byte, error)
 }
 
 type TAPOptions struct {
@@ -159,7 +159,7 @@ func (t *LinuxTAP) valid(namespace NamespaceLease, spec tapSpec) bool {
 }
 
 func (t *LinuxTAP) run(ctx context.Context, namespace NamespaceLease, path string, args ...string) ([]byte, error) {
-	output, err := t.options.Command.Run(ctx, namespace, namespaceCommand{path: path, args: append([]string(nil), args...)}, t.options.OutputLimit)
+	output, err := t.options.Command.Run(ctx, namespace, NamespaceCommandRequest{Path: path, Args: append([]string(nil), args...)}, t.options.OutputLimit)
 	if err != nil || int64(len(output)) > t.options.OutputLimit {
 		return nil, ErrTopologyPrepareFailed
 	}

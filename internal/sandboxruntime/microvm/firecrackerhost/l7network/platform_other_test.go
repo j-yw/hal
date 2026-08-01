@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -22,17 +23,21 @@ func TestFirecrackerHostTopologyProductionBoundariesFailClosedOffLinux(t *testin
 	if _, err := tap.CreateConfigure(context.Background(), &fakeNamespaceLease{rules: linuxrules.NewNamespaceHandle(10, 11)}, spec); !errors.Is(err, ErrTopologyPrepareFailed) {
 		t.Fatalf("CreateConfigure() = %v", err)
 	}
-	store, err := newFileJournalStore(filepath.Join(t.TempDir(), "topology"))
+	root := filepath.Join(t.TempDir(), "topology")
+	store, err := newFileJournalStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Acquire(context.Background(), testIdentity()); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("journal Acquire() = %v, want ErrUnsupported", err)
 	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("non-Linux journal mutated state: %v", err)
+	}
 }
 
 type panicNamespaceCommand struct{}
 
-func (panicNamespaceCommand) Run(context.Context, NamespaceLease, namespaceCommand, int64) ([]byte, error) {
+func (panicNamespaceCommand) Run(context.Context, NamespaceLease, NamespaceCommandRequest, int64) ([]byte, error) {
 	panic("non-Linux command invoked")
 }

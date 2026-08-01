@@ -75,16 +75,16 @@ type fakeNamespaceCommand struct {
 	mac     string
 }
 
-func (c *fakeNamespaceCommand) Run(_ context.Context, _ NamespaceLease, command namespaceCommand, _ int64) ([]byte, error) {
-	c.calls = append(c.calls, tapCommandCall{path: command.path, args: append([]string(nil), command.args...)})
+func (c *fakeNamespaceCommand) Run(_ context.Context, _ NamespaceLease, command NamespaceCommandRequest, _ int64) ([]byte, error) {
+	c.calls = append(c.calls, tapCommandCall{path: command.Path, args: append([]string(nil), command.Args...)})
 	if c.failAt > 0 && len(c.calls) == c.failAt {
 		return nil, errors.New("raw private command failure")
 	}
-	joined := strings.Join(command.args, " ")
+	joined := strings.Join(command.Args, " ")
 	if strings.Contains(joined, "link set") {
-		for i, arg := range command.args {
-			if arg == "address" && i+1 < len(command.args) {
-				c.mac = command.args[i+1]
+		for i, arg := range command.Args {
+			if arg == "address" && i+1 < len(command.Args) {
+				c.mac = command.Args[i+1]
 			}
 		}
 	}
@@ -96,23 +96,23 @@ func (c *fakeNamespaceCommand) Run(_ context.Context, _ NamespaceLease, command 
 		if c.deleted {
 			return nil, errors.New("absent")
 		}
-		name := command.args[len(command.args)-1]
+		name := command.Args[len(command.Args)-1]
 		return json.Marshal([]map[string]any{{"ifname": name, "address": c.mac, "flags": []string{"BROADCAST", "UP"}}})
 	}
 	if strings.Contains(joined, "-j address show") {
-		name := command.args[len(command.args)-1]
+		name := command.Args[len(command.Args)-1]
 		return json.Marshal([]map[string]any{{"ifname": name, "addr_info": []map[string]any{
 			{"family": "inet", "local": "172.31.255.1", "prefixlen": 30},
 			{"family": "inet6", "local": "fd00:6861:6c::1", "prefixlen": 126},
 		}}})
 	}
 	if strings.Contains(joined, "-j -4 route") {
-		return []byte(`[{"dst":"172.31.255.2/32","dev":"` + command.args[len(command.args)-1] + `"}]`), nil
+		return []byte(`[{"dst":"172.31.255.2/32","dev":"` + command.Args[len(command.Args)-1] + `"}]`), nil
 	}
 	if strings.Contains(joined, "-j -6 route") {
-		return []byte(`[{"dst":"fd00:6861:6c::2/128","dev":"` + command.args[len(command.args)-1] + `"}]`), nil
+		return []byte(`[{"dst":"fd00:6861:6c::2/128","dev":"` + command.Args[len(command.Args)-1] + `"}]`), nil
 	}
-	if command.path == "/usr/sbin/sysctl" && len(command.args) > 0 && command.args[0] == "-n" {
+	if command.Path == "/usr/sbin/sysctl" && len(command.Args) > 0 && command.Args[0] == "-n" {
 		return []byte("1\n"), nil
 	}
 	return nil, nil
