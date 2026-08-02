@@ -373,11 +373,13 @@ func (r *Resolver) authorizationForChallenge(ctx context.Context, spec requestSp
 		realm := parameters["realm"]
 		service := parameters["service"]
 		scope := parameters["scope"]
+		serviceAllowed := service == canonicalService(spec.reference) ||
+			(policy.Service != "" && service == policy.Service)
 		realmURL, parseErr := url.Parse(realm)
 		realmOrigin, originErr := originForURL(realm)
 		if parseErr != nil || originErr != nil || realmURL.User != nil || realmURL.Fragment != "" ||
 			realmOrigin != policy.Origin || realmURL.Scheme != "https" ||
-			service != policy.Service || service != canonicalService(spec.reference) ||
+			!serviceAllowed ||
 			scope != canonicalScope(spec.reference) {
 			return "", coded(ErrorCodeAuthenticationChallengeInvalid, nil)
 		}

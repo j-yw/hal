@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxtemplate"
 	"github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"
@@ -158,8 +159,32 @@ func TestOCIResolverRechecksCancellationBeforeReturningEvidence(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Resolve() error = %v, want context.Canceled", err)
 	}
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) || resolveErr.Code != acquisition.ResolveErrorCodeRequestCanceled {
+		t.Fatalf("Resolve() code = %v, want request_canceled", err)
+	}
 	if result.Template.Metadata.ID != "" || result.Lock.Status != "" {
 		t.Fatalf("canceled resolver returned evidence: %#v", result)
+	}
+}
+
+func TestOCIResolverClassifiesExpiredDeadlineWithoutConstruction(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(1, 0))
+	defer cancel()
+	result, err := acquisition.NewOCIResolver(&fakeOCIArtifactResolver{
+		fixtures: map[string]acquisition.OCIArtifactResolveResult{},
+	}).Resolve(ctx, acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind:      acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{Kind: sandboxtemplate.ReferenceKindOCIArtifact, Ref: "registry.example/repo:tag"},
+		},
+	})
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) || resolveErr.Code != acquisition.ResolveErrorCodeRequestTimeout || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Resolve() error = %v, want request_timeout wrapping deadline", err)
+	}
+	if result.Template.Metadata.ID != "" || result.Lock.Status != "" {
+		t.Fatalf("expired resolver returned evidence: %#v", result)
 	}
 }
 

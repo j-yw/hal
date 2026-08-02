@@ -62,11 +62,7 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return ResolveResult{}, &ResolveError{
-			Code:    ResolveErrorCodeInvalidSource,
-			Message: "template resolution was canceled",
-			Err:     err,
-		}
+		return ResolveResult{}, canceledResolutionError(err)
 	}
 	if request.Source.Kind != SourceKindOCIArtifact {
 		return ResolveResult{}, unsupportedSourceError()
@@ -87,11 +83,10 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 	})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ResolveResult{}, &ResolveError{
-				Code:    ResolveErrorCodeInvalidSource,
-				Message: "template resolution was canceled",
-				Err:     ctxErr,
-			}
+			return ResolveResult{}, canceledResolutionError(ctxErr)
+		}
+		if code, ok := safeOCIArtifactResolveErrorCode(err); ok {
+			return ResolveResult{}, &ResolveError{Code: code, Err: err}
 		}
 		return ResolveResult{}, resolverUnavailableError()
 	}
@@ -134,11 +129,54 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 	}, nil
 }
 
+type safeOCIArtifactResolveError interface {
+	SafeCode() string
+}
+
+func safeOCIArtifactResolveErrorCode(err error) (ResolveErrorCode, bool) {
+	var coded safeOCIArtifactResolveError
+	if !errors.As(err, &coded) {
+		return "", false
+	}
+	code := ResolveErrorCode(coded.SafeCode())
+	switch code {
+	case "invalid_reference",
+		"request_canceled",
+		"request_timeout",
+		"registry_unavailable",
+		"address_rejected",
+		"authentication_failed",
+		"authentication_challenge_invalid",
+		"authentication_response_oversize",
+		"response_headers_oversize",
+		"response_headers_invalid",
+		"redirect_rejected",
+		"manifest_oversize",
+		"manifest_media_type_unsupported",
+		"manifest_invalid",
+		"manifest_digest_mismatch",
+		"tag_mutated",
+		"artifact_type_unsupported",
+		"layer_count_invalid",
+		"layer_media_type_unsupported",
+		"layer_oversize",
+		"layer_digest_mismatch",
+		"cache_invalid",
+		"cache_publish_failed":
+		return code, true
+	default:
+		return "", false
+	}
+}
+
 func canceledResolutionError(err error) *ResolveError {
+	code := ResolveErrorCodeRequestCanceled
+	if errors.Is(err, context.DeadlineExceeded) {
+		code = ResolveErrorCodeRequestTimeout
+	}
 	return &ResolveError{
-		Code:    ResolveErrorCodeInvalidSource,
-		Message: "template resolution was canceled",
-		Err:     err,
+		Code: code,
+		Err:  err,
 	}
 }
 

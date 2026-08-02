@@ -98,6 +98,7 @@ Stable safe failure codes are:
 - `request_canceled`;
 - `request_timeout`;
 - `registry_unavailable`;
+- `address_rejected`;
 - `authentication_failed`;
 - `authentication_challenge_invalid`;
 - `authentication_response_oversize`;

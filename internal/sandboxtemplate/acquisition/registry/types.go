@@ -74,6 +74,15 @@ func (e *Error) Unwrap() error {
 	return e.Err
 }
 
+// SafeCode exposes only the fixed registry failure classification to the
+// transport-neutral acquisition adapter. It never includes request input.
+func (e *Error) SafeCode() string {
+	if e == nil {
+		return ""
+	}
+	return string(e.Code)
+}
+
 func coded(code ErrorCode, err error) *Error {
 	return &Error{Code: code, Err: err}
 }

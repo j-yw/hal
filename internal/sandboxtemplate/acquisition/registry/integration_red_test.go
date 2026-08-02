@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,19 +64,18 @@ func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
 		t.Fatalf("NewProductionClient() error = %v", err)
 	}
 	resolver, err := registry.NewResolver(registry.Options{
-		Client:                     productionClient,
-		AllowedRegistryOrigins:     []string{origin},
-		Cache:                      registry.NewFileCache(cacheRoot),
-		CredentialProvider:         &recordingCredentialProvider{credential: registry.Credential{Username: "fixture-user", Password: "fixture-password"}},
-		PreemptiveBasicAuthOrigins: []string{origin},
+		Client:                 productionClient,
+		AllowedRegistryOrigins: []string{origin},
+		Cache:                  registry.NewFileCache(cacheRoot),
+		CredentialProvider:     &recordingCredentialProvider{credential: registry.Credential{Username: "fixture-user", Password: "fixture-password"}},
 	})
 	if err != nil {
 		t.Fatalf("NewResolver() error = %v", err)
 	}
 	reference := strings.TrimPrefix(origin, "https://") + "/hal/template:latest"
 	workflow := selection.NewWorkflow(acquisition.NewOCIResolver(resolver))
-	for i := 0; i < 2; i++ {
-		result, err := workflow.Select(context.Background(), selection.Request{
+	selectStrict := func() (selection.Result, error) {
+		return workflow.Select(context.Background(), selection.Request{
 			Source: acquisition.TemplateSource{
 				Kind: acquisition.SourceKindOCIArtifact,
 				Reference: &sandboxtemplate.ImmutableRef{
@@ -85,6 +85,9 @@ func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
 			},
 			TrustMode: acquisition.TrustPolicyModeStrict,
 		})
+	}
+	for i := 0; i < 2; i++ {
+		result, err := selectStrict()
 		if err != nil {
 			t.Fatalf("strict local selection %d: %v", i, err)
 		}
@@ -95,6 +98,9 @@ func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
 		}
 		if result.ManifestDigest == nil || "sha256:"+result.ManifestDigest.Value != fixture.manifestDigest {
 			t.Fatalf("strict local selection %d manifest digest = %#v", i, result.ManifestDigest)
+		}
+		if result.Lock.Document.Digest == nil || "sha256:"+result.Lock.Document.Digest.Value != fixture.layerDigest {
+			t.Fatalf("strict local selection %d document digest = %#v", i, result.Lock.Document.Digest)
 		}
 		if result.Template.Metadata.Reference == nil || result.Template.Metadata.Reference.Ref != "" ||
 			result.Template.Metadata.Reference.Digest == nil || result.Template.Metadata.Reference.Digest.Value != result.ManifestDigest.Value {
@@ -130,38 +136,47 @@ func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
 
 	t.Run("tag mutation", func(t *testing.T) {
 		local.setMode(registryModeTagMutation)
-		_, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest(reference))
-		requireRegistryErrorCode(t, err, registry.ErrorCodeTagMutated)
+		_, err := selectStrict()
+		requireStrictSelectionErrorCode(t, err, registry.ErrorCodeTagMutated)
 		local.setMode(registryModeNormal)
 	})
 	t.Run("auth", func(t *testing.T) {
 		local.setMode(registryModeAuthFailure)
-		_, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest(reference))
-		requireRegistryErrorCode(t, err, registry.ErrorCodeAuthenticationFailed)
+		_, err := selectStrict()
+		requireStrictSelectionErrorCode(t, err, registry.ErrorCodeAuthenticationFailed)
 		local.setMode(registryModeNormal)
 	})
 	t.Run("digest", func(t *testing.T) {
 		local.setMode(registryModeDigestMismatch)
-		_, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest(reference))
-		requireRegistryErrorCode(t, err, registry.ErrorCodeManifestDigestMismatch)
+		_, err := selectStrict()
+		requireStrictSelectionErrorCode(t, err, registry.ErrorCodeManifestDigestMismatch)
 		local.setMode(registryModeNormal)
 	})
 	t.Run("media", func(t *testing.T) {
 		local.setMode(registryModeMediaMismatch)
-		_, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest(reference))
-		requireRegistryErrorCode(t, err, registry.ErrorCodeManifestMediaTypeUnsupported)
+		_, err := selectStrict()
+		requireStrictSelectionErrorCode(t, err, registry.ErrorCodeManifestMediaTypeUnsupported)
 		local.setMode(registryModeNormal)
 	})
 	t.Run("size", func(t *testing.T) {
 		local.setMode(registryModeOversize)
-		_, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest(reference))
-		requireRegistryErrorCode(t, err, registry.ErrorCodeManifestOversize)
+		_, err := selectStrict()
+		requireStrictSelectionErrorCode(t, err, registry.ErrorCodeManifestOversize)
 		local.setMode(registryModeNormal)
 	})
 
 	if cleaned {
 		t.Fatal("cleanup ran before integration assertions completed")
 	}
+}
+
+func requireStrictSelectionErrorCode(t *testing.T, err error, code registry.ErrorCode) {
+	t.Helper()
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) || string(resolveErr.Code) != string(code) {
+		t.Fatalf("strict selection error = %v, want %s", err, code)
+	}
+	requireRegistryErrorCode(t, err, code)
 }
 
 type registryMode string

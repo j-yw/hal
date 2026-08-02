@@ -40,6 +40,8 @@ type ResolveErrorCode string
 
 const (
 	ResolveErrorCodeResolverUnavailable ResolveErrorCode = "resolver_unavailable"
+	ResolveErrorCodeRequestCanceled     ResolveErrorCode = "request_canceled"
+	ResolveErrorCodeRequestTimeout      ResolveErrorCode = "request_timeout"
 	ResolveErrorCodeUnsupportedSource   ResolveErrorCode = "unsupported_source"
 	ResolveErrorCodeInvalidSource       ResolveErrorCode = "invalid_source"
 	ResolveErrorCodeReadFailed          ResolveErrorCode = "read_failed"
