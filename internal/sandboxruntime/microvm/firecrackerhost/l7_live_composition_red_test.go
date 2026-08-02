@@ -198,6 +198,8 @@ func TestL7PreparedLinuxE2ECleanupIsAuditableAndPreservesFailedRecovery(t *testi
 		"preserving L7 recovery state",
 		"if cleanupFailures == nil",
 		"preserveRecoveryState = true",
+		"deleteConfirmed := false",
+		"cleanupPending && !deleteConfirmed",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("prepared Linux E2E lacks auditable cleanup marker %q", required)
@@ -205,10 +207,12 @@ func TestL7PreparedLinuxE2ECleanupIsAuditableAndPreservesFailedRecovery(t *testi
 	}
 	disarm := strings.Index(source, "cleanupPending = false")
 	proxyAudit := strings.Index(source, "if _, active := adapter.Endpoint()")
+	deleteBoundary := strings.LastIndex(source, "if err := driver.Delete(")
 	stateAudit := strings.Index(source, "entries, err := os.ReadDir(stateRoot)")
-	if disarm < 0 || proxyAudit < 0 || stateAudit < 0 || disarm < proxyAudit || disarm < stateAudit {
-		t.Fatalf("prepared Linux E2E disarms fallback cleanup before post-delete audits: disarm=%d proxy=%d state=%d",
-			disarm, proxyAudit, stateAudit)
+	if disarm < 0 || proxyAudit < 0 || deleteBoundary < 0 || stateAudit < 0 ||
+		proxyAudit > deleteBoundary || deleteBoundary > stateAudit || disarm < stateAudit {
+		t.Fatalf("prepared Linux E2E cleanup ordering = proxy:%d delete:%d state:%d disarm:%d; want live audit before delete and evidence audit before disarm",
+			proxyAudit, deleteBoundary, stateAudit, disarm)
 	}
 }
 
