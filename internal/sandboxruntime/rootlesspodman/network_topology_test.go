@@ -689,7 +689,7 @@ func testPastaCreateArgs() []string {
 }
 
 func testPastaCreateArgsFor(guestAddress string) []string {
-	return []string{"--network", "pasta:--no-map-gw,--address=192.0.2.3/24,--gateway=192.0.2.1,--address=fd00:6861:6c::2/64,--gateway=fd00:6861:6c::1,--map-host-loopback=" + guestAddress + ",-t,none,-u,none,-T,none,-U,none"}
+	return []string{"--network", "pasta:--no-map-gw,--address=192.0.2.3/24,--gateway=192.0.2.1,--address=fd00:6861:6c::2/64,--gateway=fe80::1,--map-host-loopback=" + guestAddress + ",-t,none,-u,none,-T,none,-U,none"}
 }
 
 func proxyEnvironment(endpoint string) map[string]string {
