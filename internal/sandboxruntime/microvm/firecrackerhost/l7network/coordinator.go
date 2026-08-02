@@ -247,8 +247,10 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	if err := c.options.Proxy.Active(ctx, session.plan, session.proxy); err != nil {
 		return c.failPrepare(session, ErrProxyUnavailable)
 	}
+	if err := session.armEnforcementLossWatcher(); err != nil {
+		return c.failPrepare(session, err)
+	}
 	c.current = session
-	go session.watchEnforcementLoss()
 	return session, nil
 }
 
@@ -340,8 +342,23 @@ func (s *Session) Loss() <-chan ProxyLossResult {
 	return s.loss
 }
 
-func (s *Session) watchEnforcementLoss() {
+func (s *Session) armEnforcementLossWatcher() error {
 	if s == nil || s.proxyLoss == nil || s.topologyLoss == nil {
+		return ErrTopologyPrepareFailed
+	}
+	// The unbuffered acknowledgement transfers channel ownership to the
+	// watcher before Prepare publishes the session. Buffered or closed loss
+	// signals that predate the handoff are returned to Prepare for rollback.
+	armed := make(chan error)
+	go s.watchEnforcementLoss(armed)
+	return <-armed
+}
+
+func (s *Session) watchEnforcementLoss(armed chan<- error) {
+	pending := s.pendingEnforcementLoss()
+	armed <- pending
+	close(armed)
+	if pending != nil {
 		return
 	}
 	select {
@@ -356,6 +373,20 @@ func (s *Session) watchEnforcementLoss() {
 		s.loss <- result
 		close(s.loss)
 	})
+}
+
+func (s *Session) pendingEnforcementLoss() error {
+	select {
+	case <-s.proxyLoss:
+		return ErrProxyUnavailable
+	default:
+	}
+	select {
+	case <-s.topologyLoss:
+		return ErrTopologyPrepareFailed
+	default:
+		return nil
+	}
 }
 
 func sanitizeProxyLossError(err error) error {
