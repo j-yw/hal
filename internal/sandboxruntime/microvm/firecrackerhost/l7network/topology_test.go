@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestnetwork"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"
@@ -54,6 +55,29 @@ func TestFirecrackerHostTopologyPreparesExactInspectedGenerationInOrder(t *testi
 	}
 	if rules.lastProfile != linuxrules.RuleProfileForwardedTAP || rules.lastCorrelation != testCorrelation() {
 		t.Fatalf("rules profile/correlation = %q %#v", rules.lastProfile, rules.lastCorrelation)
+	}
+}
+
+func TestFirecrackerHostTopologyIPv6ProxyMappingMatchesGuestBootContract(t *testing.T) {
+	proxyAddress, proxyPort, guestAddress, err := validatedProxyEndpoint("[::1]:43123")
+	if err != nil || proxyAddress != guestAddress || proxyPort != 43123 {
+		t.Fatalf("validatedProxyEndpoint(IPv6) = %v, %d, %v, %v", proxyAddress, proxyPort, guestAddress, err)
+	}
+	spec := staticTAPSpec(testIdentity(), proxyAddress, proxyPort)
+	session := preparedLaunchHandoffSession(testIdentity(), spec, &fakeProcessNamespaceLease{})
+	descriptor, err := session.LaunchDescriptor(testIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ipv4, ipv4Gateway, ipv6, ipv6Gateway, proxyURL, ok := descriptor.StaticNetwork()
+	if !ok {
+		t.Fatal("IPv6 proxy mapping did not produce a static launch handoff")
+	}
+	commandLine := "hal_l7_net_if=eth0 hal_l7_ipv4=" + ipv4 + " hal_l7_ipv4_gateway=" + ipv4Gateway +
+		" hal_l7_ipv6=" + ipv6 + " hal_l7_ipv6_gateway=" + ipv6Gateway + " hal_l7_proxy=" + proxyURL
+	boot, present, err := guestnetwork.ParseBootCommandLine(commandLine)
+	if err != nil || !present || boot.ProxyURL() != proxyURL {
+		t.Fatalf("guest rejected host-generated IPv6 proxy handoff: present=%t error=%v", present, err)
 	}
 }
 

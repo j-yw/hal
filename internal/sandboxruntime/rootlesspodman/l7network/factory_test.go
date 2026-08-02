@@ -102,6 +102,106 @@ func TestL7ComposedRootlessPodmanRechecksProxyAndQuarantinesBeforeCleanup(t *tes
 	}
 }
 
+func TestL7ComposedRootlessPodmanPreparedActivationFailureRollsBackForRetry(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		wantError error
+		fail      func(*fakeProxy, *fakeRules)
+	}{
+		{
+			name:      "final proxy proof",
+			wantError: l7network.ErrProxyUnavailable,
+			fail: func(proxy *fakeProxy, _ *fakeRules) {
+				proxy.activeErrors = []error{nil, nil, errors.New("private final proxy failure")}
+			},
+		},
+		{
+			name:      "rule proof conversion",
+			wantError: l7network.ErrRuleProofUnverified,
+			fail: func(_ *fakeProxy, rules *fakeRules) {
+				rules.mutateMetadata = func(metadata *networkenforcement.RuleLifecycleMetadata) {
+					metadata.Status = networkenforcement.LifecycleStatusFailed
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sequence := &sequenceLog{}
+			proxy := newFakeProxy(sequence)
+			closer := &retryCloser{sequence: sequence}
+			resolution := validNamespaceResolution()
+			resolution.Close = closer
+			rules := &fakeRules{sequence: sequence}
+			factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{sequence: sequence, result: resolution}, rules))
+			prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+			test.fail(proxy, rules)
+			if _, err := prepared.Session.Activate(context.Background(), request); !errors.Is(err, test.wantError) || errors.Is(err, l7network.ErrCleanupIncomplete) {
+				t.Fatalf("Activate() = %v, want clean %v rollback", err, test.wantError)
+			}
+			if rules.cleanupCalls != 1 || closer.calls != 1 {
+				t.Fatalf("activation rollback calls = rules:%d namespace:%d, want one each", rules.cleanupCalls, closer.calls)
+			}
+			got := sequence.snapshot()
+			if len(got) < 2 || !reflect.DeepEqual(got[len(got)-2:], []string{"rules_cleanup", "namespace_close"}) {
+				t.Fatalf("activation rollback order = %#v", got)
+			}
+			if environment := prepared.Session.ProxyEnvironment(request); environment != nil {
+				t.Fatalf("failed activation exposed proxy environment: %#v", environment)
+			}
+
+			proxy.activeErrors = nil
+			rules.mutateMetadata = nil
+			if _, err := prepared.Session.Activate(context.Background(), request); err != nil {
+				t.Fatalf("Activate() retry = %v", err)
+			}
+			if err := prepared.Session.Revoke(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+			if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+			if rules.cleanupCalls != 2 || closer.calls != 2 {
+				t.Fatalf("final cleanup calls = rules:%d namespace:%d, want two total", rules.cleanupCalls, closer.calls)
+			}
+		})
+	}
+}
+
+func TestL7ComposedRootlessPodmanRejectsMismatchedRevokeBeforeMutation(t *testing.T) {
+	proxy := newFakeProxy(&sequenceLog{})
+	rules := &fakeRules{}
+	factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{result: validNamespaceResolution()}, rules))
+	prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if _, err := prepared.Session.Activate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	mismatch := request
+	mismatch.Identity.RuleGenerationID = "other-rule-generation"
+	if err := prepared.Session.Revoke(context.Background(), mismatch); !errors.Is(err, l7network.ErrIdentityMismatch) {
+		t.Fatalf("Revoke(mismatch) = %v, want ErrIdentityMismatch", err)
+	}
+	if environment := prepared.Session.ProxyEnvironment(request); len(environment) != 4 {
+		t.Fatalf("mismatched revoke mutated active environment: %#v", environment)
+	}
+	if _, err := prepared.Session.Inspect(context.Background(), request); err != nil {
+		t.Fatalf("Inspect() after mismatched revoke = %v", err)
+	}
+	if err := prepared.Session.Revoke(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestL7ComposedRootlessPodmanReleasesSelectedPortOnlyAfterRuleCleanup(t *testing.T) {
 	plan := testPlan()
 	adapter, err := policyproxy.New(policyproxy.Config{Policy: networkenforcement.NewPolicyProxyPolicyInput(plan, nil), ListenAddress: "127.0.0.1:0"})
@@ -627,12 +727,13 @@ func (e *fakeEndpoint) Address() string       { return e.address }
 func (e *fakeEndpoint) Loss() <-chan struct{} { return e.loss }
 
 type fakeProxy struct {
-	sequence    *sequenceLog
-	endpoint    *fakeEndpoint
-	activeErr   error
-	endpointErr error
-	startErr    error
-	stopErr     error
+	sequence     *sequenceLog
+	endpoint     *fakeEndpoint
+	activeErr    error
+	activeErrors []error
+	endpointErr  error
+	startErr     error
+	stopErr      error
 }
 
 func newFakeProxy(sequence *sequenceLog) *fakeProxy {
@@ -651,6 +752,11 @@ func (p *fakeProxy) Endpoint(l7network.ProxyGeneration) (string, error) {
 }
 func (p *fakeProxy) Active(context.Context, networkenforcement.Plan, l7network.ProxyGeneration) error {
 	p.sequence.add("proxy_active")
+	if len(p.activeErrors) != 0 {
+		err := p.activeErrors[0]
+		p.activeErrors = p.activeErrors[1:]
+		return err
+	}
 	return p.activeErr
 }
 func (p *fakeProxy) Stop(context.Context, networkenforcement.Plan, l7network.ProxyGeneration) error {
@@ -728,11 +834,16 @@ type fakeRules struct {
 	cleanupFailures       int
 	cleanupCalls          int
 	cleanupHook           func()
+	mutateMetadata        func(*networkenforcement.RuleLifecycleMetadata)
 }
 
 func (r *fakeRules) ApplyAndInspect(_ context.Context, expected linuxrules.ExpectedRuleSet) (networkenforcement.RuleLifecycleMetadata, error) {
 	r.sequence.add("rules_apply_inspect")
-	return r.metadata(expected), nil
+	metadata := r.metadata(expected)
+	if r.mutateMetadata != nil {
+		r.mutateMetadata(&metadata)
+	}
+	return metadata, nil
 }
 func (r *fakeRules) Inspect(_ context.Context, expected linuxrules.ExpectedRuleSet) (networkenforcement.RuleLifecycleMetadata, error) {
 	r.sequence.add("rules_inspect")
