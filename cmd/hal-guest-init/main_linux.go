@@ -90,6 +90,12 @@ func run(arguments []string) int {
 		case <-deadline:
 			_ = unix.Kill(-childPID, unix.SIGKILL)
 			deadline = nil
+			status, exited := waitForMainChild(childPID, unix.Wait4)
+			stopTimer(timer)
+			if !exited {
+				return 1
+			}
+			return waitStatusExitCode(status)
 		}
 	}
 }
@@ -251,6 +257,27 @@ func reapChildren(mainPID int) (unix.WaitStatus, bool) {
 			continue
 		default:
 			return mainStatus, mainExited
+		}
+	}
+}
+
+func waitForMainChild(
+	mainPID int,
+	wait func(int, *unix.WaitStatus, int, *unix.Rusage) (int, error),
+) (unix.WaitStatus, bool) {
+	if mainPID <= 0 || wait == nil {
+		return 0, false
+	}
+	for {
+		var status unix.WaitStatus
+		pid, err := wait(mainPID, &status, 0, nil)
+		switch {
+		case pid == mainPID:
+			return status, true
+		case errors.Is(err, unix.EINTR):
+			continue
+		default:
+			return 0, false
 		}
 	}
 }
