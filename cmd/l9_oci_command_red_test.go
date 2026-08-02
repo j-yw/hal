@@ -932,6 +932,68 @@ func TestL9ActualPathsPassSelectionEvidenceIntoProvisioning(t *testing.T) {
 	})
 }
 
+func TestL9ScheduledWorkerTargetCarriesSelectedTemplateConstruction(t *testing.T) {
+	const (
+		templateDigest = "8989898989898989898989898989898989898989898989898989898989898989"
+		imageDigest    = "9090909090909090909090909090909090909090909090909090909090909090"
+	)
+	selected := l9CommandSelectionResultWithRuntimeImage(templateDigest, imageDigest)
+	selected.RuntimeDriver = sandboxruntime.DriverRootlessPodman
+	selected.IsolationLevel = sandbox.SandboxIsolationLevelContainer
+	selected.Template.Runtime.Driver = sandboxruntime.DriverRootlessPodman
+	selected.Template.Runtime.IsolationLevel = sandbox.SandboxIsolationLevelContainer
+	lock := selectedTemplateConstructionLock(&selected)
+	host := autoSandboxSchedulerLeaseHost("worker-l9-selected", "worker l9 selected")
+
+	for _, purpose := range []string{
+		sandbox.SandboxLeasePurposeRun,
+		sandbox.SandboxLeasePurposeAuto,
+		sandbox.SandboxLeasePurposeFactory,
+	} {
+		t.Run(purpose, func(t *testing.T) {
+			target, err := resolveSandboxCommandExecutionTarget(
+				context.Background(),
+				sandboxCommandTargetRequest{
+					Purpose: purpose, SandboxHostID: host.ID, SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+					Branch: "feature/l9", TemplateRuntimeDriver: selected.RuntimeDriver,
+					TemplateIsolationLevel: selected.IsolationLevel, TemplateRuntimeImage: selected.RuntimeImage,
+					TemplateLock: lock,
+				},
+				sandboxCommandTargetDeps{listHosts: func() ([]*sandbox.SandboxHost, error) {
+					return []*sandbox.SandboxHost{host}, nil
+				}},
+				sandboxCommandScheduledTargetRequest{
+					Purpose: purpose, SandboxHostID: host.ID, SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+					Branch: "feature/l9", RunID: "l9-scheduled-" + purpose,
+				},
+				sandboxCommandScheduledTargetDeps{
+					listHosts:  func() ([]*sandbox.SandboxHost, error) { return []*sandbox.SandboxHost{host}, nil },
+					listLeases: func() ([]*sandbox.SandboxLease, error) { return nil, nil },
+					now:        func() time.Time { return time.Unix(1, 0) },
+					acquireLease: func(req sandbox.SandboxLeaseAcquireRequest, ttl time.Duration) (*sandbox.SandboxLease, error) {
+						return &sandbox.SandboxLease{
+							ID: req.ID, ResourceKey: req.ResourceKey, Purpose: req.Purpose, RunID: req.RunID,
+							Status: sandbox.SandboxLeaseStatusActive, AcquiredAt: time.Unix(1, 0), ExpiresAt: time.Unix(1, 0).Add(ttl),
+						}, nil
+					},
+				},
+			)
+			if err != nil {
+				t.Fatalf("resolve scheduled %s target: %v", purpose, err)
+			}
+			if target == nil || target.Runtime == nil ||
+				target.Runtime.Driver != selected.RuntimeDriver ||
+				target.Runtime.IsolationLevel != selected.IsolationLevel ||
+				target.Runtime.Image != selected.RuntimeImage ||
+				target.Runtime.TemplateLock == nil ||
+				target.Runtime.TemplateLock.RuntimeImage == nil ||
+				target.Runtime.TemplateLock.RuntimeImage.DigestValue != imageDigest {
+				t.Fatalf("scheduled %s target lost selected construction: %#v", purpose, target)
+			}
+		})
+	}
+}
+
 func TestL9ActualPathsRejectRuntimeReportedImageMismatchBeforeProviderAndProjection(t *testing.T) {
 	const (
 		templateDigest = "1212121212121212121212121212121212121212121212121212121212121212"

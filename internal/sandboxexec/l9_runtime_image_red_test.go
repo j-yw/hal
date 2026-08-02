@@ -221,6 +221,68 @@ func TestL9CreatedRuntimeIsCleanedAfterObservedImageMismatch(t *testing.T) {
 	}
 }
 
+func TestL9LifecycleAcknowledgementsDeferImageDecisionToFreshInspect(t *testing.T) {
+	const selectedImage = "registry.test/hal/runtime:stable@sha256:7878787878787878787878787878787878787878787878787878787878787878"
+	for _, createRuntime := range []bool{false, true} {
+		name := "existing"
+		if createRuntime {
+			name = "created"
+		}
+		t.Run(name, func(t *testing.T) {
+			target := l9SelectedRuntimeImageTarget("runtime-l9-ack-"+name, selectedImage, sandbox.StatusStopped)
+			if createRuntime {
+				target.Host = &sandbox.SandboxHost{ID: "worker-l9", Name: "worker-l9", Kind: sandbox.SandboxHostKindWorker}
+				target.Runtime.WorkerID = "worker-l9"
+				target.Runtime.RuntimeID = ""
+			}
+			readyCalled := false
+			driver := &recordingRuntimeDriver{
+				id: sandboxruntime.DriverRootlessPodman,
+				create: func(_ context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+					return &sandboxruntime.Target{
+						ID: "container-l9-ack", Name: req.Name, Status: sandbox.StatusStopped,
+						Runtime: sandboxruntime.RuntimeState{
+							Driver: sandboxruntime.DriverRootlessPodman, RuntimeID: "container-l9-ack",
+							IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+						},
+					}, nil
+				},
+				start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+					started := req.Target
+					started.Status = sandbox.StatusRunning
+					started.Runtime.Image = ""
+					return &started, nil
+				},
+				inspect: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+					observed := req.Target
+					observed.Status = sandbox.StatusRunning
+					observed.Runtime.Image = selectedImage
+					return &observed, nil
+				},
+			}
+
+			_, err := Run(context.Background(), CommandRequest{SandboxName: target.Name, Command: []string{"true"}}, Dependencies{
+				SelectedRuntimeImage: selectedImage,
+				ResolveTarget:        func(context.Context, TargetRequest) (*sandbox.SandboxState, error) { return target, nil },
+				ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+					return driver, nil
+				},
+				OnTargetReady: func(context.Context, *sandbox.SandboxState) error {
+					readyCalled = true
+					return nil
+				},
+				RunCommand: func(context.Context, RunContext, CommandRequest) error { return nil },
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v, want fresh inspect to authorize image", err)
+			}
+			if !readyCalled {
+				t.Fatal("fresh matching image inspection did not authorize readiness")
+			}
+		})
+	}
+}
+
 func l9SelectedRuntimeImageTarget(name, image, status string) *sandbox.SandboxState {
 	const digest = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 	return &sandbox.SandboxState{

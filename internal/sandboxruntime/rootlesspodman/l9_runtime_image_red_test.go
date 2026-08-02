@@ -68,6 +68,31 @@ func TestL9CreateFailureRedactsExplicitRuntimeImage(t *testing.T) {
 	}
 }
 
+func TestL9InspectDoesNotBackfillMissingImageFromRequestedTarget(t *testing.T) {
+	const selectedImage = "registry.test/hal/runtime:stable@sha256:5656565656565656565656565656565656565656565656565656565656565656"
+	runner := &fakeCommandRunner{
+		resultByOperation: map[string]rootlesspodman.CommandResult{
+			rootlesspodman.OperationInspect: {
+				Stdout: `[{"Id":"runtime-l9","Name":"runtime-l9","State":{"Status":"running"}}]`,
+			},
+		},
+	}
+	driver := rootlesspodman.New(rootlesspodman.Options{LifecycleRunner: runner})
+
+	inspected, err := driver.Inspect(context.Background(), sandboxruntime.InspectRequest{Target: sandboxruntime.Target{
+		ID: "runtime-l9", Name: "runtime-l9",
+		Runtime: sandboxruntime.RuntimeState{
+			Driver: sandboxruntime.DriverRootlessPodman, RuntimeID: "runtime-l9", Image: selectedImage,
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if inspected.Runtime.Image != "" {
+		t.Fatalf("Inspect() runtime image = %q, want missing independent evidence", inspected.Runtime.Image)
+	}
+}
+
 func setL9CreateRequestImage(t *testing.T, req *sandboxruntime.CreateRequest, image string) {
 	t.Helper()
 	field := reflect.ValueOf(req).Elem().FieldByName("Image")
