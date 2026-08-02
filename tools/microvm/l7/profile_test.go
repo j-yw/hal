@@ -34,6 +34,23 @@ func TestL7ImageProfileLocksMinimalNetworkSupport(t *testing.T) {
 	}
 }
 
+func TestL7ImageProfileDisablesAutomaticSITInterface(t *testing.T) {
+	linux := readProfileFile(t, "linux.config")
+	if !linePresent(linux, "CONFIG_IPV6_SIT=n") {
+		t.Fatal("linux.config must disable the automatic SIT tunnel interface")
+	}
+
+	container := readProfileFile(t, "build-in-container.sh")
+	for _, marker := range []string{
+		`grep -Fxq 'CONFIG_IPV6_SIT=n' "$profile_root/linux.config"`,
+		`grep -Fxq '# CONFIG_IPV6_SIT is not set' "$kernel_config"`,
+	} {
+		if !strings.Contains(container, marker) {
+			t.Fatalf("build-in-container.sh missing SIT interface guard %q", marker)
+		}
+	}
+}
+
 func TestL7ProfileDoesNotAlterL5NoNetworkContract(t *testing.T) {
 	l5 := readProfileFile(t, "../l5/linux.config")
 	for _, required := range []string{"CONFIG_NET=y", "CONFIG_INET=n", "CONFIG_NETDEVICES=n"} {
