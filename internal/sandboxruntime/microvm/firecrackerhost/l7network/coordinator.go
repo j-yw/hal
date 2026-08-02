@@ -52,6 +52,7 @@ type Session struct {
 	journalReleased  bool
 	guestBinding     RunningGuestBinding
 	guestSnapshot    runningGuestSnapshot
+	preVMAbort       bool
 	retainedCleanup  retainedCleanupMode
 	proxyLoss        <-chan struct{}
 	topologyLoss     <-chan linuxtopology.Loss
@@ -247,6 +248,10 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	if err := c.options.Proxy.Active(ctx, session.plan, session.proxy); err != nil {
 		return c.failPrepare(session, ErrProxyUnavailable)
 	}
+	// Only a session prepared in this process may use the pre-VM rollback
+	// boundary. Reconciled sessions keep the zero value and require exact VM
+	// termination proof before cleanup.
+	session.preVMAbort = true
 	if err := session.armEnforcementLossWatcher(); err != nil {
 		return c.failPrepare(session, err)
 	}
@@ -464,6 +469,9 @@ func (s *Session) InspectAfterGuestReady(
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A validated running-guest binding crosses the VM-ownership boundary even
+	// when the following inspection fails and quarantines the session.
+	s.preVMAbort = false
 	if s.metadata.Status != StatusHostPrepared || s.quarantined {
 		return s.metadata, ErrProofMismatch
 	}
@@ -592,7 +600,9 @@ func (s *Session) AbortBeforeVM(_ context.Context, identity Identity) error {
 		s.coordinator.clearCurrentSession(s)
 		return nil
 	}
-	if s.metadata.Status != StatusHostPrepared || !interfaceIsNil(s.guestBinding) {
+	preVMStatus := s.metadata.Status == StatusHostPrepared || s.metadata.Status == StatusQuarantined ||
+		s.metadata.Status == StatusCleanupIncomplete
+	if !s.preVMAbort || !preVMStatus || !interfaceIsNil(s.guestBinding) {
 		s.mu.Unlock()
 		return ErrCleanupIncomplete
 	}
@@ -603,6 +613,7 @@ func (s *Session) AbortBeforeVM(_ context.Context, identity Identity) error {
 		return ErrCleanupIncomplete
 	}
 	s.metadata = Metadata{Identity: s.identity, Status: StatusStopped}
+	s.preVMAbort = false
 	s.mu.Unlock()
 	s.coordinator.clearCurrentSession(s)
 	return nil
