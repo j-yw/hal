@@ -38,7 +38,7 @@ func (r *osNamespaceCommand) Run(ctx context.Context, namespace NamespaceLease, 
 	}
 	defer user.Close()
 	defer network.Close()
-	args := []string{"--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--", request.Path}
+	args := []string{"--preserve-credentials", "--keep-caps", "--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--", request.Path}
 	args = append(args, request.Args...)
 	command := exec.CommandContext(ctx, r.nsenterPath, args...)
 	command.Env = []string{"LANG=C", "LC_ALL=C"}
