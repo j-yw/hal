@@ -114,13 +114,16 @@ higher runtime composition must compare the same required proxy generation
 before and after the probe, correlate the exact inspected rule generation, and
 only then publish an aggregate active result.
 
-Topology inspection disables ambient route copying and correlates every
-accepted route with normalized address evidence from the exact interface.
-Each family has one default route. IPv4 has one connected route for its
-observed prefix; IPv6 has one link-local connected route and has a global
-connected route only when its exact address evidence does not declare
-`noprefixroute`. Extra gateway, connected, metadata, or duplicate route shapes
-fail closed.
+Topology construction disables ambient address and route inference by passing
+fixed synthetic dual-stack namespace addresses and gateways to `pasta` while
+retaining `--no-copy-routes`. The addresses are live-only private topology
+state, are identical across otherwise isolated namespaces, and do not come
+from host interfaces or routing tables. Inspection correlates every accepted
+route with normalized address evidence from the exact interface. Each family
+has one default route. IPv4 has one connected route for its observed prefix;
+IPv6 has one link-local connected route and has a global connected route only
+when its exact address evidence does not declare `noprefixroute`. Extra
+gateway, connected, metadata, or duplicate route shapes fail closed.
 
 ## Linux rule adapter
 
