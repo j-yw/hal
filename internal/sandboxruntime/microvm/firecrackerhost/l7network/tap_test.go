@@ -104,6 +104,40 @@ func TestLinuxTAPInspectionRejectsExtraAddressesAndRoutes(t *testing.T) {
 	}
 }
 
+func TestInspectTAPRoutesAcceptsDeviceScopedKernelHostRouteJSON(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		payload           string
+		destination       string
+		preferredSource   string
+		wrongDeviceOutput string
+	}{
+		{
+			name:              "ipv4",
+			payload:           `[{"dst":"172.31.255.2","scope":"link","prefsrc":"172.31.255.1","flags":["linkdown"]}]`,
+			destination:       "172.31.255.2/32",
+			preferredSource:   "172.31.255.1",
+			wrongDeviceOutput: `[{"dst":"172.31.255.2","dev":"other0","scope":"link","prefsrc":"172.31.255.1"}]`,
+		},
+		{
+			name:              "ipv6",
+			payload:           `[{"dst":"fd00:6861:6c::2","prefsrc":"fd00:6861:6c::1"}]`,
+			destination:       "fd00:6861:6c::2/128",
+			preferredSource:   "fd00:6861:6c::1",
+			wrongDeviceOutput: `[{"dst":"fd00:6861:6c::2","dev":"other0","prefsrc":"fd00:6861:6c::1"}]`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if !inspectTAPRoutes([]byte(test.payload), "hltap0", test.destination, test.preferredSource) {
+				t.Fatal("device-scoped kernel host route JSON was rejected")
+			}
+			if inspectTAPRoutes([]byte(test.wrongDeviceOutput), "hltap0", test.destination, test.preferredSource) {
+				t.Fatal("route inspection accepted an explicitly different device")
+			}
+		})
+	}
+}
+
 func TestLinuxTAPDeleteDoesNotTreatInspectionFailureAsAbsence(t *testing.T) {
 	command := &fakeNamespaceCommand{absenceErr: errors.New("permission denied while checking absence")}
 	tap, err := NewLinuxTAP(TAPOptions{IPPath: "/usr/sbin/ip", SysctlPath: "/usr/sbin/sysctl", NsenterPath: "/usr/bin/nsenter", Command: command})
