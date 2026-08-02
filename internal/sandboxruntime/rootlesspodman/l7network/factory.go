@@ -233,9 +233,7 @@ func (s *Session) Activate(ctx context.Context, request rootlesspodman.NetworkTo
 	if err != nil || resolution.Close == nil {
 		if resolution.Close != nil {
 			s.resolution = resolution
-			if closeErr := resolution.Close.Close(); closeErr == nil {
-				s.resolution.Close = nil
-			}
+			return rootlesspodman.NetworkTopologyProof{}, s.failUnpreparedActivation(ErrNamespaceUnverified)
 		}
 		return rootlesspodman.NetworkTopologyProof{}, ErrNamespaceUnverified
 	}
@@ -243,7 +241,7 @@ func (s *Session) Activate(ctx context.Context, request rootlesspodman.NetworkTo
 	correlation := correlationFromIdentity(s.identity)
 	rawPacketVerifier, err := s.rawPacketVerifierFactory(request)
 	if err != nil || rawPacketVerifier == nil {
-		return rootlesspodman.NetworkTopologyProof{}, ErrNamespaceUnverified
+		return rootlesspodman.NetworkTopologyProof{}, s.failUnpreparedActivation(ErrNamespaceUnverified)
 	}
 	expected, err := linuxrules.NewExpectedRuleSet(linuxrules.RuleSetConfig{
 		Correlation: correlation, Profile: linuxrules.RuleProfileWorkloadOutput,
@@ -253,7 +251,7 @@ func (s *Session) Activate(ctx context.Context, request rootlesspodman.NetworkTo
 		IPv6PrefixBits: resolution.IPv6PrefixBits,
 	})
 	if err != nil {
-		return rootlesspodman.NetworkTopologyProof{}, ErrNamespaceUnverified
+		return rootlesspodman.NetworkTopologyProof{}, s.failUnpreparedActivation(ErrNamespaceUnverified)
 	}
 	s.expected = expected
 	s.prepared = true
@@ -274,6 +272,17 @@ func (s *Session) Activate(ctx context.Context, request rootlesspodman.NetworkTo
 	s.proof = proof
 	s.active = true
 	return proof, nil
+}
+
+func (s *Session) failUnpreparedActivation(primary error) error {
+	if s.resolution.Close == nil {
+		return primary
+	}
+	if err := s.resolution.Close.Close(); err != nil {
+		return errors.Join(primary, ErrCleanupIncomplete)
+	}
+	s.resolution = NamespaceResolution{}
+	return primary
 }
 
 func (s *Session) Inspect(ctx context.Context, request rootlesspodman.NetworkTopologyTargetRequest) (rootlesspodman.NetworkTopologyProof, error) {
