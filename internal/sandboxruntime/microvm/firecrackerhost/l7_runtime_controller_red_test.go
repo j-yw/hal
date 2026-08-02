@@ -41,7 +41,6 @@ func TestL7RuntimeControllerParallelRuntimesKeepExactTopologyOwnership(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	firstController, err := registry.Controller(firstID.RuntimeGenerationID)
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +49,8 @@ func TestL7RuntimeControllerParallelRuntimesKeepExactTopologyOwnership(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	registerL7RuntimeControllerTestCleanup(t, firstController, firstSession)
+	registerL7RuntimeControllerTestCleanup(t, secondController, secondSession)
 	if firstController == secondController {
 		t.Fatal("parallel runtime generations shared one outer controller")
 	}
@@ -146,6 +147,7 @@ func TestL7RuntimeControllerProxyLossAndStopRaceCleansExactRuntimeOnce(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	registerL7RuntimeControllerTestCleanup(t, controller, session)
 	started, err := controller.Start(context.Background(), l7RuntimeControllerLifecycleRequest(microvm.OperationStart, identity.RuntimeGenerationID))
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +252,7 @@ type l7RuntimeFakeTopologySession struct {
 	identity           l7network.Identity
 	launch             l7RuntimeLaunch
 	loss               chan l7RuntimeProxyLoss
+	lossCloseOnce      sync.Once
 	cleaned            chan struct{}
 	sequence           *l7RuntimeCallSequence
 	launchErr          error
@@ -376,7 +379,14 @@ func (session *l7RuntimeFakeTopologySession) L7RuntimeProxyLoss() <-chan l7Runti
 
 func (session *l7RuntimeFakeTopologySession) publishLoss(result l7RuntimeProxyLoss) {
 	session.loss <- result
-	close(session.loss)
+	session.closeLoss()
+}
+
+func (session *l7RuntimeFakeTopologySession) closeLoss() {
+	if session == nil || session.loss == nil {
+		return
+	}
+	session.lossCloseOnce.Do(func() { close(session.loss) })
 }
 
 type l7RuntimeFakeNamespace struct{ runtimeID string }

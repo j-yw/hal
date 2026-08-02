@@ -411,7 +411,7 @@ func TestL7RuntimeControllerValidatesProxyLossChannelAndIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.result == nil {
-				close(harness.session.loss)
+				harness.session.closeLoss()
 			} else {
 				result := *test.result
 				if result.Metadata.Identity == (l7network.Identity{}) {
@@ -515,10 +515,37 @@ func newL7RuntimeControllerHarness(t *testing.T, suffix string, configure func(*
 	if !ok {
 		t.Fatalf("Controller() type = %T, want *l7RuntimeController", controllerValue)
 	}
+	registerL7RuntimeControllerTestCleanup(t, controller, session)
 	return &l7RuntimeControllerHarness{
 		identity: identity, intents: intents, topologies: topologies, session: session,
 		assets: assetProvider, runtimes: runtimes, controller: controller,
 	}
+}
+
+func registerL7RuntimeControllerTestCleanup(
+	t *testing.T,
+	controllerValue microvm.Controller,
+	session *l7RuntimeFakeTopologySession,
+) {
+	t.Helper()
+	controller, ok := controllerValue.(*l7RuntimeController)
+	if !ok {
+		t.Fatalf("controller cleanup type = %T, want *l7RuntimeController", controllerValue)
+	}
+	t.Cleanup(func() {
+		session.closeLoss()
+		controller.opMu.Lock()
+		done := controller.lossDone
+		controller.opMu.Unlock()
+		if done == nil {
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("L7 runtime controller loss watcher did not finish during cleanup")
+		}
+	})
 }
 
 func (h *l7RuntimeControllerHarness) request(operation string) microvm.ControllerLifecycleRequest {

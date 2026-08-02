@@ -248,7 +248,8 @@ func TestOSExecNamespaceProcessStarterRejectsNilAndDuplicateFileHandlesBeforeLau
 			return files
 		}},
 		{name: "duplicate descriptor", mutate: func(files []*os.File) []*os.File {
-			files[3] = os.NewFile(files[2].Fd(), "aliased-rootfs")
+			alias := *files[2]
+			files[3] = &alias
 			return files
 		}},
 	}
