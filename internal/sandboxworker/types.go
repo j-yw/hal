@@ -234,6 +234,7 @@ type RuntimeTarget struct {
 // CreateRequest describes a worker-backed target creation request.
 type CreateRequest struct {
 	Name     string            `json:"name"`
+	Image    string            `json:"image,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
 	Security SecurityPolicy    `json:"security,omitempty"`
 }

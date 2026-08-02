@@ -99,6 +99,7 @@ type runSandboxExecutionResult struct {
 }
 
 type runSandboxExecutionHooks struct {
+	ValidateTarget    func(*sandbox.SandboxState) error
 	OnTargetReady     func(*sandbox.SandboxState) error
 	OnWorkerJobUpdate func(*sandboxexecution.WorkerJobReference) error
 }
@@ -436,6 +437,9 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		commandOut = &capturedJSON
 	}
 	execResult, execErr := deps.execute(ctx, req, commandOut, errOut, runSandboxExecutionHooks{
+		ValidateTarget: func(target *sandbox.SandboxState) error {
+			return validateSelectedTemplateConstructionTarget(req.TemplateSelection, target)
+		},
 		OnTargetReady: func(ready *sandbox.SandboxState) error {
 			if err := bindSandboxTemplateSelectionToTarget(&req, ready); err != nil {
 				return err
@@ -831,12 +835,19 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 		SetupStdout: prepOut,
 		SetupStderr: prepOut,
 	}, sandboxexec.Dependencies{
+		SelectedRuntimeImage: templateSelectionRuntimeImage(req.TemplateSelection),
 		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
 			target, err := deps.resolveRunSandboxTarget(ctx, req, prepOut)
 			if err == nil {
 				selectedTarget = target
 			}
 			return target, err
+		},
+		ValidateTarget: func(_ context.Context, target *sandbox.SandboxState) error {
+			if hooks.ValidateTarget == nil {
+				return nil
+			}
+			return hooks.ValidateTarget(target)
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			driver, handled, err := deps.resolveRunSandboxRuntimeDriver(req, target, selectedTarget)

@@ -228,14 +228,10 @@ func bindSelectedTemplateToSandboxTarget(selected *selection.Result, executionID
 	if selected == nil {
 		return nil, nil
 	}
-	if target == nil || target.Runtime == nil {
+	if err := validateSelectedTemplateConstructionTarget(selected, target); err != nil {
 		return nil, errors.New("selection_rejected")
 	}
-	expected := selectedTemplateConstructionLock(selected)
 	actual := sandbox.SanitizeSandboxTemplateLockMetadata(target.Runtime.TemplateLock)
-	if expected == nil || actual == nil || !reflect.DeepEqual(expected, actual) {
-		return nil, errors.New("selection_rejected")
-	}
 	binding, err := selection.Bind(*selected, selection.BindingRequest{
 		ExecutionID:    executionID,
 		SandboxID:      target.ID,
@@ -253,6 +249,24 @@ func bindSelectedTemplateToSandboxTarget(selected *selection.Result, executionID
 		return nil, errors.New("selection_rejected")
 	}
 	return actual, nil
+}
+
+func validateSelectedTemplateConstructionTarget(selected *selection.Result, target *sandbox.SandboxState) error {
+	if selected == nil {
+		return nil
+	}
+	if target == nil || target.Runtime == nil {
+		return errors.New("selection_rejected")
+	}
+	expected := selectedTemplateConstructionLock(selected)
+	actual := sandbox.SanitizeSandboxTemplateLockMetadata(target.Runtime.TemplateLock)
+	if expected == nil || actual == nil || !reflect.DeepEqual(expected, actual) ||
+		strings.TrimSpace(target.Runtime.Driver) != strings.TrimSpace(selected.RuntimeDriver) ||
+		strings.TrimSpace(target.Runtime.IsolationLevel) != strings.TrimSpace(selected.IsolationLevel) ||
+		(strings.TrimSpace(selected.RuntimeImage) != "" && strings.TrimSpace(target.Runtime.Image) != strings.TrimSpace(selected.RuntimeImage)) {
+		return errors.New("selection_rejected")
+	}
+	return nil
 }
 
 func selectedTemplateConstructionLock(selected *selection.Result) *sandbox.SandboxTemplateLockMetadata {

@@ -89,7 +89,8 @@ func TestL9RunningTargetRequiresObservedRuntimeImageBeforeReady(t *testing.T) {
 		SandboxName: target.Name,
 		Command:     []string{"true"},
 	}, Dependencies{
-		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) { return target, nil },
+		SelectedRuntimeImage: selectedImage,
+		ResolveTarget:        func(context.Context, TargetRequest) (*sandbox.SandboxState, error) { return target, nil },
 		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			return driver, nil
 		},
@@ -104,6 +105,9 @@ func TestL9RunningTargetRequiresObservedRuntimeImageBeforeReady(t *testing.T) {
 	}
 	if readyCalled {
 		t.Fatal("target readiness persisted before runtime image observation")
+	}
+	if driver.deleteCalled {
+		t.Fatal("executor cleaned a running runtime it did not create")
 	}
 }
 
@@ -137,7 +141,8 @@ func TestL9StartedTargetRejectsMissingOrMismatchedObservedRuntimeImage(t *testin
 				SandboxName: target.Name,
 				Command:     []string{"true"},
 			}, Dependencies{
-				ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) { return target, nil },
+				SelectedRuntimeImage: selectedImage,
+				ResolveTarget:        func(context.Context, TargetRequest) (*sandbox.SandboxState, error) { return target, nil },
 				ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
 					return driver, nil
 				},
@@ -153,7 +158,66 @@ func TestL9StartedTargetRejectsMissingOrMismatchedObservedRuntimeImage(t *testin
 			if readyCalled {
 				t.Fatal("target readiness persisted for unverified runtime image")
 			}
+			if driver.deleteCalled {
+				t.Fatal("executor cleaned a stopped runtime it did not create")
+			}
 		})
+	}
+}
+
+func TestL9CreatedRuntimeIsCleanedAfterObservedImageMismatch(t *testing.T) {
+	const selectedImage = "registry.test/hal/runtime:stable@sha256:3434343434343434343434343434343434343434343434343434343434343434"
+	target := l9SelectedRuntimeImageTarget("runtime-l9-created", selectedImage, sandbox.StatusStopped)
+	target.Runtime.RuntimeID = ""
+	target.Host = &sandbox.SandboxHost{ID: "worker-l9", Name: "worker-l9", Kind: sandbox.SandboxHostKindWorker}
+	target.Runtime.WorkerID = "worker-l9"
+	deleteCalls := 0
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		create: func(_ context.Context, req sandboxruntime.CreateRequest) (*sandboxruntime.Target, error) {
+			return &sandboxruntime.Target{
+				ID:     "container-l9-created",
+				Name:   req.Name,
+				Status: sandbox.StatusStopped,
+				Runtime: sandboxruntime.RuntimeState{
+					Driver:    sandboxruntime.DriverRootlessPodman,
+					RuntimeID: "container-l9-created",
+					Image:     selectedImage,
+				},
+			}, nil
+		},
+		start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+			started := req.Target
+			started.Status = sandbox.StatusRunning
+			return &started, nil
+		},
+		inspect: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+			observed := req.Target
+			observed.Runtime.Image = ""
+			return &observed, nil
+		},
+		delete: func(_ context.Context, req sandboxruntime.LifecycleRequest) error {
+			deleteCalls++
+			if req.Target.Runtime.RuntimeID != "container-l9-created" {
+				t.Fatalf("cleanup runtime ID = %q, want created runtime", req.Target.Runtime.RuntimeID)
+			}
+			return nil
+		},
+	}
+
+	_, err := Run(context.Background(), CommandRequest{SandboxName: target.Name, Command: []string{"true"}}, Dependencies{
+		SelectedRuntimeImage: selectedImage,
+		ResolveTarget:        func(context.Context, TargetRequest) (*sandbox.SandboxState, error) { return target, nil },
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error { return nil },
+	})
+	if err == nil || err.Error() != "selection_rejected" {
+		t.Fatalf("Run() error = %v, want selection_rejected", err)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("cleanup calls = %d, want exactly 1", deleteCalls)
 	}
 }
 

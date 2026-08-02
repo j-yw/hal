@@ -395,12 +395,16 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		SetupStderr: req.RemoteOutput,
 	}
 	_, execErr := sandboxexec.Run(ctx, commandReq, sandboxexec.Dependencies{
+		SelectedRuntimeImage: templateSelectionRuntimeImage(req.TemplateSelection),
 		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
 			resolved, err := resolveFactorySandboxTarget(ctx, req, &record, provisionRepo, deps)
 			if err == nil {
 				selectedTarget = cloneFactorySandboxSelectedTarget(resolved)
 			}
 			return resolved, err
+		},
+		ValidateTarget: func(_ context.Context, target *sandbox.SandboxState) error {
+			return validateSelectedTemplateConstructionTarget(req.TemplateSelection, target)
 		},
 		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
 			if _, err := bindSelectedTemplateToSandboxTarget(req.TemplateSelection, record.RunID, ready); err != nil {
@@ -749,7 +753,9 @@ func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutor
 	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
 		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
 	}
-	record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+	if req.TemplateSelection == nil {
+		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+	}
 	return target, nil
 }
 

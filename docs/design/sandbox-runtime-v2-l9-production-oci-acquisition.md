@@ -191,6 +191,15 @@ operations. A missing or different observed image fails before provider
 preparation, readiness persistence, or trusted-template projection. L9 does
 not itself pull the runtime-image blob.
 
+The selected image remains separate from observed runtime state while crossing
+the command, executor, local runtime, and worker protocol boundaries. Runtime
+creation receives the digest-pinned reference explicitly. After create/start,
+the executor requires a fresh driver inspection to report the same image before
+calling target-readiness hooks. Missing, different, or unavailable inspection
+evidence returns a stable failure, omits unverified trust projection, and cleans
+only a runtime created by that execution. Explicit-image adapter failures keep
+the caller reference out of rendered errors.
+
 ## 4. Redaction and containment rules
 
 Requests may contain a registry-qualified reference and credentials only in
@@ -341,6 +350,7 @@ go test -count=1 ./internal/sandboxtemplate/acquisition ./internal/sandboxtempla
 go test -race -count=1 ./internal/sandboxtemplate/acquisition ./internal/sandboxtemplate/acquisition/registry
 go test -tags=template_oci_integration -count=1 -timeout=180s ./internal/sandboxtemplate/acquisition/registry -run '^TestOCIRegistryIntegrationStrictTrust$'
 go test -count=1 ./cmd -run 'TestL9'
+go test -count=1 ./internal/sandboxexec ./internal/sandboxruntime/rootlesspodman ./internal/sandboxworker -run '^TestL9'
 ```
 
 Broad gates follow the Linux-completion architecture, including full tests,

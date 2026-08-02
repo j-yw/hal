@@ -2,7 +2,9 @@ package rootlesspodman_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -39,6 +41,30 @@ func TestL9CreateUsesRequestedDigestPinnedRuntimeImage(t *testing.T) {
 	}
 	if created.Runtime.Image != selectedImage {
 		t.Fatalf("created runtime image = %q, want selected digest-pinned image", created.Runtime.Image)
+	}
+}
+
+func TestL9CreateFailureRedactsExplicitRuntimeImage(t *testing.T) {
+	const selectedImage = "registry.test/private/runtime:stable@sha256:1212121212121212121212121212121212121212121212121212121212121212"
+	runnerErr := errors.New("runtime image unavailable")
+	runner := &fakeCommandRunner{
+		resultByOperation: map[string]rootlesspodman.CommandResult{
+			rootlesspodman.OperationCreate: {
+				ExitCode: 125,
+				Stderr:   "image " + selectedImage + " is unavailable",
+			},
+		},
+		errByOperation: map[string]error{rootlesspodman.OperationCreate: runnerErr},
+	}
+	driver := rootlesspodman.New(rootlesspodman.Options{LifecycleRunner: runner})
+	req := sandboxruntime.CreateRequest{Name: "runtime-l9", Image: selectedImage}
+
+	_, err := driver.Create(context.Background(), req)
+	if err == nil || !errors.Is(err, runnerErr) {
+		t.Fatalf("Create() error = %v, want wrapped runner error", err)
+	}
+	if strings.Contains(err.Error(), selectedImage) || strings.Contains(err.Error(), "registry.test") || strings.Contains(err.Error(), "private/runtime") {
+		t.Fatalf("Create() error leaked explicit runtime image: %q", err)
 	}
 }
 

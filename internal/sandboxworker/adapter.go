@@ -118,8 +118,9 @@ func (driver *ClientDriver) Create(ctx context.Context, req sandboxruntime.Creat
 		return nil, err
 	}
 	target, err := client.Create(ctx, driverID, CreateRequest{
-		Name: strings.TrimSpace(req.Name),
-		Env:  cloneStringMap(req.Env),
+		Name:  strings.TrimSpace(req.Name),
+		Image: strings.TrimSpace(req.Image),
+		Env:   cloneStringMap(req.Env),
 	})
 	return driver.runtimeTargetFromWorkerResponse(OperationCreate, target, err)
 }

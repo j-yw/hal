@@ -72,6 +72,7 @@ func TestL9OCIArchitectureLocksFocusedCommands(t *testing.T) {
 		"go test -race -count=1 ./internal/sandboxtemplate/acquisition ./internal/sandboxtemplate/acquisition/registry",
 		"go test -tags=template_oci_integration -count=1 -timeout=180s ./internal/sandboxtemplate/acquisition/registry -run '^TestOCIRegistryIntegrationStrictTrust$'",
 		"go test -count=1 ./cmd -run 'TestL9'",
+		"go test -count=1 ./internal/sandboxexec ./internal/sandboxruntime/rootlesspodman ./internal/sandboxworker -run '^TestL9'",
 	} {
 		if !strings.Contains(text, command) {
 			t.Errorf("L9 architecture note missing focused command %q", command)
