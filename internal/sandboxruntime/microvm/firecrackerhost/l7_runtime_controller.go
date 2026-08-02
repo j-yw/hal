@@ -19,9 +19,14 @@ var errL7RuntimeController = errors.New("Firecracker L7 runtime controller faile
 
 const l7RuntimeControllerCleanupTimeout = 5 * time.Second
 
-type l7RuntimeIntentProvider interface {
+// L7RuntimeIntentResolver supplies one immutable, runtime-bound topology
+// request to the explicit L7 live composition. Implementations must not
+// persist live endpoint data in the request.
+type L7RuntimeIntentResolver interface {
 	ResolveL7RuntimeIntent(context.Context, string) (l7network.PrepareRequest, error)
 }
+
+type l7RuntimeIntentProvider = L7RuntimeIntentResolver
 
 type l7RuntimeTopologyFactory interface {
 	PrepareL7RuntimeTopology(context.Context, l7network.PrepareRequest) (l7RuntimeTopologySession, error)
@@ -37,9 +42,14 @@ type l7RuntimeTopologySession interface {
 	L7RuntimeProxyLoss() <-chan l7RuntimeProxyLoss
 }
 
-type l7RuntimeAssetProvider interface {
-	AcquireL7RuntimeAssets(context.Context, l7network.Identity) (l7RuntimeAssets, error)
+// L7RuntimeAssetResolver acquires one verified descriptor/profile/lease set
+// for the exact runtime generation. Ownership transfers only through the
+// successful live-config handoff.
+type L7RuntimeAssetResolver interface {
+	AcquireL7RuntimeAssets(context.Context, l7network.Identity) (L7RuntimeAssets, error)
 }
+
+type l7RuntimeAssetProvider = L7RuntimeAssetResolver
 
 type l7FirecrackerRuntimeFactory interface {
 	NewL7FirecrackerRuntime(context.Context, l7FirecrackerRuntimeRequest) (l7FirecrackerRuntime, error)
@@ -58,13 +68,17 @@ type l7RuntimeControllerDependencies struct {
 	Firecracker l7FirecrackerRuntimeFactory
 }
 
-type l7RuntimeAssets struct {
+// L7RuntimeAssets is the live-only verified launch material accepted by the
+// explicit L7 controller. JSON deliberately exposes none of its contents.
+type L7RuntimeAssets struct {
 	LaunchDescriptor  *assets.LaunchDescriptor
 	VerifiedL7Profile *localresolver.VerifiedL7Profile
 	VerifiedL7Assets  *localresolver.VerifiedL7AssetLease
 }
 
-func (l7RuntimeAssets) MarshalJSON() ([]byte, error) { return []byte("{}"), nil }
+func (L7RuntimeAssets) MarshalJSON() ([]byte, error) { return []byte("{}"), nil }
+
+type l7RuntimeAssets = L7RuntimeAssets
 
 type l7RuntimeLaunch struct {
 	InterfaceID          string

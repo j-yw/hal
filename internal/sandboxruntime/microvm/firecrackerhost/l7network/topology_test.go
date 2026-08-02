@@ -227,6 +227,54 @@ func TestFirecrackerHostTopologyFailedPrepareCleanupRetriesWithoutVMProof(t *tes
 	}
 }
 
+func TestFirecrackerHostTopologyAbortBeforeVMRetriesRetainedPrepareCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configure  func(*Options, *callSequence)
+		afterAbort func(*Options)
+	}{
+		{name: "rollback", configure: func(options *Options, sequence *callSequence) {
+			proxy := newFakeProxy(sequence)
+			proxy.endpointErr = errors.New("private endpoint failure")
+			proxy.stopFailures = 1
+			options.Proxy = proxy
+		}, afterAbort: func(options *Options) {
+			options.Proxy.(*fakeProxy).endpointErr = nil
+		}},
+		{name: "journal release", configure: func(options *Options, sequence *callSequence) {
+			options.Journal = &releaseRetryJournalStore{
+				sequence: sequence, firstSaveErr: errors.New("private journal save failure"), firstReleaseFailures: 1,
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sequence := &callSequence{}
+			options := validCoordinatorOptions(sequence)
+			tc.configure(&options, sequence)
+			coordinator := mustCoordinator(t, options)
+			session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+			if session == nil || !errors.Is(err, ErrCleanupIncomplete) {
+				t.Fatalf("Prepare() = session %T, error %v; want retained cleanup", session, err)
+			}
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := session.AbortBeforeVM(canceled, testIdentity()); err != nil {
+				t.Fatalf("AbortBeforeVM(retained) = %v", err)
+			}
+			if got := session.Metadata().Status; got != StatusStopped {
+				t.Fatalf("AbortBeforeVM status = %q, want %q", got, StatusStopped)
+			}
+			if tc.afterAbort != nil {
+				tc.afterAbort(&options)
+			}
+			next := alternateIdentity()
+			if _, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: next, Plan: planForIdentity(next)}); err != nil {
+				t.Fatalf("Prepare(after retained abort) = %v", err)
+			}
+		})
+	}
+}
+
 func TestFirecrackerHostTopologyFailedPrepareRetryRetainsNamespaceLease(t *testing.T) {
 	sequence := &callSequence{}
 	topology := newRetryNamespaceTopology(sequence)

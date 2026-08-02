@@ -54,13 +54,24 @@ type ProductionVsockBridge struct {
 }
 
 type productionVsockSession struct {
-	runtimeID    string
-	handleID     string
-	handleSource string
-	generation   string
-	identity     vsockSocketIdentity
-	wire         *firecrackerVsockTransport
-	transport    *GuestAgentTransport
+	runtimeID                string
+	handleID                 string
+	handleSource             string
+	generation               string
+	isolationProofGeneration string
+	isolationRuntimeID       string
+	identity                 vsockSocketIdentity
+	wire                     *firecrackerVsockTransport
+	readiness                GuestAgentReadinessClient
+	transport                *GuestAgentTransport
+}
+
+type productionVsockL7Proof struct {
+	runtimeID                string
+	handleID                 string
+	handleSource             string
+	bridgeGeneration         string
+	isolationProofGeneration string
 }
 
 var _ firecracker.ProductionVsockBridge = (*ProductionVsockBridge)(nil)
@@ -144,7 +155,12 @@ func (bridge *ProductionVsockBridge) ActivateSession(ctx context.Context, req fi
 				return firecracker.GuestReadinessResult{}, "", readinessErr
 			case readinessErr == nil && response != nil && response.Ready && response.Status == guestagent.ReadinessStatusReady:
 				guestTransport := NewGuestAgentTransport(GuestAgentTransportOptions{Client: client})
-				generation := bridge.activate(req.RuntimeID, identity.handle, wire, guestTransport)
+				proofGeneration, proofRuntimeID := "", ""
+				if response.IsolationProof != nil {
+					proofGeneration = response.IsolationProof.Generation
+					proofRuntimeID = response.IsolationProof.RuntimeGeneration
+				}
+				generation := bridge.activate(req.RuntimeID, identity.handle, wire, client, guestTransport, proofGeneration, proofRuntimeID)
 				go bridge.invalidateAfterExit(req.RuntimeID, identity.handle.ID, generation, identity.done)
 				result := firecracker.NewGuestReadinessResult(
 					sandboxruntime.RuntimeGuestReadinessStateReady,
@@ -215,7 +231,15 @@ func transientProductionVsockError(err error) bool {
 		errors.Is(err, errFirecrackerVsockGuestPortUnavailable)
 }
 
-func (bridge *ProductionVsockBridge) activate(runtimeID string, handle firecracker.ProcessHandleMetadata, wire *firecrackerVsockTransport, transport *GuestAgentTransport) string {
+func (bridge *ProductionVsockBridge) activate(
+	runtimeID string,
+	handle firecracker.ProcessHandleMetadata,
+	wire *firecrackerVsockTransport,
+	readiness GuestAgentReadinessClient,
+	transport *GuestAgentTransport,
+	isolationProofGeneration string,
+	isolationRuntimeID string,
+) string {
 	bridge.mu.Lock()
 	defer bridge.mu.Unlock()
 	bridge.next++
@@ -225,9 +249,57 @@ func (bridge *ProductionVsockBridge) activate(runtimeID string, handle firecrack
 	}
 	bridge.sessions[runtimeID] = &productionVsockSession{
 		runtimeID: runtimeID, handleID: handle.ID, handleSource: handle.Source, generation: generation,
-		identity: wire.socketIdentity, wire: wire, transport: transport,
+		isolationProofGeneration: strings.TrimSpace(isolationProofGeneration), isolationRuntimeID: strings.TrimSpace(isolationRuntimeID),
+		identity: wire.socketIdentity, wire: wire, readiness: readiness, transport: transport,
 	}
 	return generation
+}
+
+// refreshL7Proof repeats the exact proof-required readiness exchange across
+// the still-active process/socket session. Only opaque generations leave this
+// boundary; raw guest, socket, process, and topology values remain private.
+func (bridge *ProductionVsockBridge) refreshL7Proof(
+	ctx context.Context,
+	target sandboxruntime.Target,
+	expectedTopologyGeneration string,
+) (productionVsockL7Proof, error) {
+	if bridge == nil || !bridge.requireIsolationProof || !bridge.requireNetworkProof ||
+		strings.TrimSpace(expectedTopologyGeneration) == "" || bridge.isolationProofGeneration != strings.TrimSpace(expectedTopologyGeneration) {
+		return productionVsockL7Proof{}, errL7RuntimeController
+	}
+	session := bridge.sessionForTarget(target)
+	if session == nil || session.readiness == nil ||
+		session.isolationProofGeneration != bridge.isolationProofGeneration ||
+		session.isolationRuntimeID != session.runtimeID ||
+		!bridge.SessionActive(firecracker.ProductionVsockSessionRequest{
+			Handle: firecracker.ProcessHandleMetadata{ID: session.handleID, Source: session.handleSource}, RuntimeID: session.runtimeID,
+		}, session.generation) {
+		return productionVsockL7Proof{}, errL7RuntimeController
+	}
+	request, err := bridge.readinessRequest(session.runtimeID)
+	if err != nil {
+		return productionVsockL7Proof{}, errL7RuntimeController
+	}
+	response, err := session.readiness.Readiness(nonNilContext(ctx), request)
+	if err != nil || response == nil || response.Error != nil ||
+		guestagent.ValidateReadinessResponseForRequest(*response, request) != nil ||
+		!response.Ready || response.Status != guestagent.ReadinessStatusReady || response.IsolationProof == nil ||
+		response.IsolationProof.Status != guestagent.IsolationProofStatusVerified ||
+		response.IsolationProof.Generation != session.isolationProofGeneration ||
+		response.IsolationProof.RuntimeGeneration != session.isolationRuntimeID ||
+		response.IsolationProof.Network == nil ||
+		response.IsolationProof.Network.Status != guestagent.IsolationProofStatusVerified {
+		return productionVsockL7Proof{}, errL7RuntimeController
+	}
+	if !bridge.SessionActive(firecracker.ProductionVsockSessionRequest{
+		Handle: firecracker.ProcessHandleMetadata{ID: session.handleID, Source: session.handleSource}, RuntimeID: session.runtimeID,
+	}, session.generation) {
+		return productionVsockL7Proof{}, errL7RuntimeController
+	}
+	return productionVsockL7Proof{
+		runtimeID: session.runtimeID, handleID: session.handleID, handleSource: session.handleSource,
+		bridgeGeneration: session.generation, isolationProofGeneration: session.isolationProofGeneration,
+	}, nil
 }
 
 func fixedGeneration(value uint64) string {
