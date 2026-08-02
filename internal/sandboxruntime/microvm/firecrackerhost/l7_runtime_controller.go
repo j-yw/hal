@@ -565,8 +565,31 @@ func (controller *l7RuntimeController) Delete(ctx context.Context, request micro
 	}
 	controller.opMu.Lock()
 	defer controller.opMu.Unlock()
-	if !controller.requestMatchesRuntime(request.Target) || controller.runtime == nil {
+	if !controller.requestMatchesRuntime(request.Target) {
 		return errL7RuntimeController
+	}
+	if controller.state == l7RuntimeStateDeleted {
+		return nil
+	}
+	if controller.preVMCleanup != nil {
+		if controller.runtime != nil || controller.vmCleanup != nil || controller.target != nil {
+			return errL7RuntimeController
+		}
+		if err := controller.retryPreVMCleanupLocked(); err != nil {
+			controller.state = l7RuntimeStateFailed
+			return errL7RuntimeController
+		}
+		result := cloneL7RuntimeTarget(request.Target)
+		result.Status = string(l7network.StatusStopped)
+		controller.target = &result
+		controller.state = l7RuntimeStateStopped
+	}
+	if controller.runtime == nil {
+		if controller.state != l7RuntimeStateStopped || controller.target == nil {
+			return errL7RuntimeController
+		}
+		controller.state = l7RuntimeStateDeleted
+		return nil
 	}
 	if controller.state == l7RuntimeStateActive || (controller.vmCleanup != nil && controller.state != l7RuntimeStateStopped) {
 		if _, err := controller.containVMOwnedRuntimeLocked(); err != nil {
