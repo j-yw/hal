@@ -104,13 +104,14 @@ func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (
 		Stderr:    req.Stderr,
 	})
 	if err != nil {
+		var cleanupErr error
 		if entry != nil {
-			d.cleanupUnregisteredTopology(entry.identity, entry.session, sandboxruntime.Target{})
+			cleanupErr = d.cleanupUnregisteredTopology(entry.identity, entry.session, sandboxruntime.Target{})
 		}
 		if explicitImage != "" {
-			return nil, &explicitRuntimeImageOperationError{err: err}
+			return nil, errors.Join(&explicitRuntimeImageOperationError{err: err}, cleanupErr)
 		}
-		return nil, err
+		return nil, errors.Join(err, cleanupErr)
 	}
 
 	runtimeID := firstOutputField(result.Stdout)
@@ -139,8 +140,8 @@ func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (
 				Operation: OperationDelete,
 				Args:      d.deleteArgs(runtimeID),
 			})
-			d.cleanupUnregisteredTopology(entry.identity, entry.session, target)
-			return nil, errors.Join(err, deleteErr)
+			cleanupErr := d.cleanupUnregisteredTopology(entry.identity, entry.session, target)
+			return nil, errors.Join(err, deleteErr, cleanupErr)
 		}
 	}
 	return &target, nil

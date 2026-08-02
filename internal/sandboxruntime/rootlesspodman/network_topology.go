@@ -146,16 +146,35 @@ type networkTopologyEntry struct {
 	watchStopOnce sync.Once
 }
 
+type pendingNetworkTopologyCleanup struct {
+	mu       sync.Mutex
+	identity NetworkTopologyIdentity
+	session  NetworkTopologySession
+	target   sandboxruntime.Target
+	cleaned  bool
+}
+
+type networkTopologyFactoryCleanupRetrier interface {
+	RetryNetworkTopologyCleanup(context.Context) error
+}
+
 func (d *Driver) prepareNetworkTopology(ctx context.Context, name string) (*networkTopologyEntry, []string, error) {
 	if d == nil || d.networkTopologyFactory == nil {
 		return nil, nil, nil
 	}
+	if err := d.RetryNetworkTopologyCleanup(ctx); err != nil {
+		return nil, nil, topologyError(OperationCreate, ErrNetworkTopologyCleanupFailed)
+	}
 	preparation, err := d.networkTopologyFactory.PrepareNetworkTopology(ctx, NetworkTopologyPrepareRequest{SandboxName: name})
 	if err != nil {
+		var cleanupErr error
 		if preparation.Session != nil {
-			d.cleanupUnregisteredTopology(preparation.Identity, preparation.Session, sandboxruntime.Target{})
+			cleanupErr = d.cleanupUnregisteredTopology(preparation.Identity, preparation.Session, sandboxruntime.Target{})
 		}
-		return nil, nil, topologyError(OperationCreate, ErrNetworkTopologyPrepareFailed)
+		if retryErr := d.RetryNetworkTopologyCleanup(ctx); retryErr != nil {
+			cleanupErr = errors.Join(cleanupErr, retryErr)
+		}
+		return nil, nil, errors.Join(topologyError(OperationCreate, ErrNetworkTopologyPrepareFailed), cleanupErr)
 	}
 	entry := &networkTopologyEntry{
 		identity:  preparation.Identity,
@@ -168,10 +187,11 @@ func (d *Driver) prepareNetworkTopology(ctx context.Context, name string) (*netw
 	}
 	proxyAddress, validationErr := validateNetworkTopologyPreparation(preparation, loss)
 	if validationErr != nil {
+		var cleanupErr error
 		if preparation.Session != nil {
-			d.cleanupUnregisteredTopology(preparation.Identity, preparation.Session, sandboxruntime.Target{})
+			cleanupErr = d.cleanupUnregisteredTopology(preparation.Identity, preparation.Session, sandboxruntime.Target{})
 		}
-		return nil, nil, validationErr
+		return nil, nil, errors.Join(validationErr, cleanupErr)
 	}
 	entry.proxyAddress = proxyAddress
 	entry.loss = loss
@@ -529,10 +549,68 @@ func (d *Driver) removeNetworkTopologyEntry(entry *networkTopologyEntry, target 
 	d.networkTopologyMu.Unlock()
 }
 
-func (d *Driver) cleanupUnregisteredTopology(identity NetworkTopologyIdentity, session NetworkTopologySession, target sandboxruntime.Target) {
+func (d *Driver) cleanupUnregisteredTopology(identity NetworkTopologyIdentity, session NetworkTopologySession, target sandboxruntime.Target) error {
+	pending := &pendingNetworkTopologyCleanup{identity: identity, session: session, target: target}
+	if err := d.cleanupPendingNetworkTopology(pending); err != nil {
+		d.networkTopologyMu.Lock()
+		if d.pendingNetworkTopologyCleanup == nil {
+			d.pendingNetworkTopologyCleanup = make(map[*pendingNetworkTopologyCleanup]struct{})
+		}
+		d.pendingNetworkTopologyCleanup[pending] = struct{}{}
+		d.networkTopologyMu.Unlock()
+		return topologyError(OperationCreate, ErrNetworkTopologyCleanupFailed)
+	}
+	return nil
+}
+
+func (d *Driver) cleanupPendingNetworkTopology(pending *pendingNetworkTopologyCleanup) error {
+	if d == nil || pending == nil || pending.session == nil {
+		return ErrNetworkTopologyCleanupFailed
+	}
+	pending.mu.Lock()
+	defer pending.mu.Unlock()
+	if pending.cleaned {
+		return nil
+	}
 	ctx, cancel := d.networkTopologyCleanupContext()
 	defer cancel()
-	_ = session.Cleanup(ctx, NetworkTopologyTargetRequest{Identity: identity, Target: target})
+	if err := pending.session.Cleanup(ctx, NetworkTopologyTargetRequest{Identity: pending.identity, Target: pending.target}); err != nil {
+		return err
+	}
+	pending.cleaned = true
+	return nil
+}
+
+// RetryNetworkTopologyCleanup retries exact cleanup for partial factory and
+// unregistered session generations before any replacement topology is created.
+func (d *Driver) RetryNetworkTopologyCleanup(context.Context) error {
+	if d == nil {
+		return topologyError(OperationCreate, ErrNetworkTopologyCleanupFailed)
+	}
+	var result error
+	if retrier, ok := d.networkTopologyFactory.(networkTopologyFactoryCleanupRetrier); ok {
+		ctx, cancel := d.networkTopologyCleanupContext()
+		if err := retrier.RetryNetworkTopologyCleanup(ctx); err != nil {
+			result = errors.Join(result, topologyError(OperationCreate, ErrNetworkTopologyCleanupFailed))
+		}
+		cancel()
+	}
+	d.networkTopologyMu.Lock()
+	pending := make([]*pendingNetworkTopologyCleanup, 0, len(d.pendingNetworkTopologyCleanup))
+	for item := range d.pendingNetworkTopologyCleanup {
+		pending = append(pending, item)
+	}
+	d.networkTopologyMu.Unlock()
+	for _, item := range pending {
+		if err := d.cleanupPendingNetworkTopology(item); err != nil {
+			result = errors.Join(result, topologyError(OperationCreate, ErrNetworkTopologyCleanupFailed))
+			continue
+		}
+		d.networkTopologyMu.Lock()
+		delete(d.pendingNetworkTopologyCleanup, item)
+		d.networkTopologyMu.Unlock()
+	}
+	return result
 }
 
 func (d *Driver) networkTopologyCleanupContext() (context.Context, context.CancelFunc) {

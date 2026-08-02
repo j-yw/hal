@@ -85,9 +85,10 @@ type FactoryOptions struct {
 }
 
 type Factory struct {
-	mu      sync.Mutex
-	options FactoryOptions
-	current *Session
+	mu                sync.Mutex
+	options           FactoryOptions
+	current           *Session
+	partialGeneration ProxyGeneration
 }
 
 func NewFactory(options FactoryOptions) (*Factory, error) {
@@ -112,13 +113,16 @@ func (f *Factory) PrepareNetworkTopology(ctx context.Context, request rootlesspo
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.retryPartialCleanupLocked(); err != nil {
+		return rootlesspodman.NetworkTopologyPreparation{}, err
+	}
 	if f.current != nil {
 		return rootlesspodman.NetworkTopologyPreparation{}, ErrTopologyCollision
 	}
 	generation, err := f.options.Proxy.Start(ctx, f.options.Plan)
 	if err != nil || generation == nil || generation.Loss() == nil {
 		if generation != nil {
-			if stopErr := f.stopPartial(generation); stopErr != nil {
+			if stopErr := f.stopOrRetainPartial(generation); stopErr != nil {
 				return rootlesspodman.NetworkTopologyPreparation{}, errors.Join(ErrProxyUnavailable, ErrCleanupIncomplete)
 			}
 		}
@@ -126,14 +130,14 @@ func (f *Factory) PrepareNetworkTopology(ctx context.Context, request rootlesspo
 	}
 	endpoint, err := f.options.Proxy.Endpoint(generation)
 	if err != nil {
-		if f.stopPartial(generation) != nil {
+		if f.stopOrRetainPartial(generation) != nil {
 			return rootlesspodman.NetworkTopologyPreparation{}, errors.Join(ErrProxyUnavailable, ErrCleanupIncomplete)
 		}
 		return rootlesspodman.NetworkTopologyPreparation{}, ErrProxyUnavailable
 	}
 	_, port, err := validatedEndpoint(endpoint, f.options.GuestProxyAddress)
 	if err != nil {
-		if f.stopPartial(generation) != nil {
+		if f.stopOrRetainPartial(generation) != nil {
 			return rootlesspodman.NetworkTopologyPreparation{}, errors.Join(ErrProxyUnavailable, ErrCleanupIncomplete)
 		}
 		return rootlesspodman.NetworkTopologyPreparation{}, ErrProxyUnavailable
@@ -150,6 +154,37 @@ func (f *Factory) PrepareNetworkTopology(ctx context.Context, request rootlesspo
 		CreateArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=" + f.options.GuestProxyAddress + ",-t,none,-u,none,-T,none,-U,none"},
 		Session:    session,
 	}, nil
+}
+
+// RetryNetworkTopologyCleanup retries exact cleanup of a partial listener
+// generation that could not be stopped while preparation was failing. The
+// generation remains retained until Stop confirms cleanup.
+func (f *Factory) RetryNetworkTopologyCleanup(context.Context) error {
+	if f == nil {
+		return ErrInvalidConfiguration
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.retryPartialCleanupLocked()
+}
+
+func (f *Factory) stopOrRetainPartial(generation ProxyGeneration) error {
+	if err := f.stopPartial(generation); err != nil {
+		f.partialGeneration = generation
+		return ErrCleanupIncomplete
+	}
+	return nil
+}
+
+func (f *Factory) retryPartialCleanupLocked() error {
+	if f.partialGeneration == nil {
+		return nil
+	}
+	if err := f.stopPartial(f.partialGeneration); err != nil {
+		return ErrCleanupIncomplete
+	}
+	f.partialGeneration = nil
+	return nil
 }
 
 func (f *Factory) stopPartial(generation ProxyGeneration) error {

@@ -46,6 +46,7 @@ type Driver struct {
 	networkTopologyCleanupTimeout time.Duration
 	networkTopologyMu             sync.Mutex
 	networkTopologySessions       map[string]*networkTopologyEntry
+	pendingNetworkTopologyCleanup map[*pendingNetworkTopologyCleanup]struct{}
 }
 
 func New(opts Options) *Driver {
