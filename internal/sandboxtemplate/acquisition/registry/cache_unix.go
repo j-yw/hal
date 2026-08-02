@@ -209,10 +209,38 @@ func (c *FileCache) Store(ctx context.Context, entry CacheEntry) error {
 		return coded(ErrorCodeCachePublishFailed, err)
 	}
 	cleanup = false
+	if err := ctx.Err(); err != nil {
+		return rollbackCachePublication(root, tempDir, finalName, err)
+	}
 	if err := root.Sync(); err != nil {
-		return coded(ErrorCodeCachePublishFailed, err)
+		return rollbackCachePublication(root, tempDir, finalName, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return rollbackCachePublication(root, tempDir, finalName, err)
 	}
 	return nil
+}
+
+func rollbackCachePublication(root, entry *os.File, finalName string, cause error) error {
+	var rollbackErr error
+	for _, name := range []string{"metadata.json", "layer"} {
+		if err := unix.Unlinkat(int(entry.Fd()), name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+	}
+	if err := unix.Unlinkat(int(root.Fd()), finalName, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
+		rollbackErr = errors.Join(rollbackErr, err)
+	}
+	if err := root.Sync(); err != nil {
+		rollbackErr = errors.Join(rollbackErr, err)
+	}
+	if rollbackErr != nil {
+		return coded(ErrorCodeCachePublishFailed, errors.Join(cause, rollbackErr))
+	}
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		return requestContextError(cause)
+	}
+	return coded(ErrorCodeCachePublishFailed, cause)
 }
 
 func cacheEntryName(manifestDigest string) string {
@@ -406,7 +434,7 @@ type fetchCall struct {
 	err    error
 }
 
-func (g *fetchGroup) do(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, error) {
+func (g *fetchGroup) do(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, func(), error) {
 	g.mu.Lock()
 	if g.calls == nil {
 		g.calls = make(map[string]*fetchCall)
@@ -424,10 +452,15 @@ func (g *fetchGroup) do(ctx context.Context, key string, fn func(context.Context
 	select {
 	case <-call.done:
 		g.releaseOwner(key, call, false)
-		return append([]byte(nil), call.data...), call.err
+		if call.err != nil {
+			return append([]byte(nil), call.data...), nil, call.err
+		}
+		return append([]byte(nil), call.data...), sync.OnceFunc(func() {
+			g.forget(key, call)
+		}), nil
 	case <-ctx.Done():
 		g.releaseOwner(key, call, true)
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
 }
 
@@ -457,9 +490,9 @@ func (g *fetchGroup) releaseOwner(key string, call *fetchCall, canceled bool) {
 	}
 }
 
-func (g *fetchGroup) forget(key string) {
+func (g *fetchGroup) forget(key string, expected *fetchCall) {
 	g.mu.Lock()
-	if call := g.calls[key]; call != nil {
+	if call := g.calls[key]; call != nil && call == expected {
 		call.cancel()
 		delete(g.calls, key)
 	}

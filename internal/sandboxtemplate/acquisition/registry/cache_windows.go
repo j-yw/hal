@@ -72,7 +72,7 @@ type fetchCall struct {
 	err    error
 }
 
-func (g *fetchGroup) do(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, error) {
+func (g *fetchGroup) do(ctx context.Context, key string, fn func(context.Context) ([]byte, error)) ([]byte, func(), error) {
 	g.mu.Lock()
 	if g.calls == nil {
 		g.calls = make(map[string]*fetchCall)
@@ -90,10 +90,15 @@ func (g *fetchGroup) do(ctx context.Context, key string, fn func(context.Context
 	select {
 	case <-call.done:
 		g.releaseOwner(key, call, false)
-		return append([]byte(nil), call.data...), call.err
+		if call.err != nil {
+			return append([]byte(nil), call.data...), nil, call.err
+		}
+		return append([]byte(nil), call.data...), sync.OnceFunc(func() {
+			g.forget(key, call)
+		}), nil
 	case <-ctx.Done():
 		g.releaseOwner(key, call, true)
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
 }
 
@@ -123,9 +128,9 @@ func (g *fetchGroup) releaseOwner(key string, call *fetchCall, canceled bool) {
 	}
 }
 
-func (g *fetchGroup) forget(key string) {
+func (g *fetchGroup) forget(key string, expected *fetchCall) {
 	g.mu.Lock()
-	if call := g.calls[key]; call != nil {
+	if call := g.calls[key]; call != nil && call == expected {
 		call.cancel()
 		delete(g.calls, key)
 	}

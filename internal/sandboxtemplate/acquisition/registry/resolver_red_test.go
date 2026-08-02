@@ -305,7 +305,7 @@ func TestL9RegistryResolverDeadlineDuringSharedLayerFetchIsRequestTimeout(t *tes
 	requireRegistryErrorCode(t, err, registry.ErrorCodeRequestTimeout)
 }
 
-func TestL9RegistryResolverRechecksCancellationAfterCachePublicationWork(t *testing.T) {
+func TestL9RegistryResolverPropagatesCancellationFromCachePublication(t *testing.T) {
 	fixture := newRegistryFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cache := &cancelingRegistryCache{cancel: cancel}
@@ -567,10 +567,10 @@ func (*cancelingRegistryCache) Load(context.Context, registry.CacheLookup) ([]by
 	return nil, false, nil
 }
 
-func (c *cancelingRegistryCache) Store(context.Context, registry.CacheEntry) error {
+func (c *cancelingRegistryCache) Store(ctx context.Context, _ registry.CacheEntry) error {
 	c.stores++
 	c.cancel()
-	return nil
+	return ctx.Err()
 }
 
 func registryDigest(data []byte) string {

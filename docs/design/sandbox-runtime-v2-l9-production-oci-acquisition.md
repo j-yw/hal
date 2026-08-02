@@ -247,8 +247,13 @@ and syncs the parent directory; incomplete entries are never hits.
 ## 5. Crash, retry, cancellation, and cleanup semantics
 
 Context cancellation stops network and token requests and returns
-`request_canceled`; an adapter deadline returns `request_timeout`. Both are
-sanitized failures and publish neither cache state nor selection evidence.
+`request_canceled`; an adapter deadline returns `request_timeout`. A request
+that returns either sanitized failure publishes neither cache state nor
+selection evidence. File-cache publication checks cancellation before and
+after atomic rename and durable parent sync, rolling back an entry if it
+observes cancellation through that boundary. A successful cache publication
+is the resolution commit point; cancellation arriving after that commit loses
+the race and the resolution returns its verified selection evidence.
 
 A mutable tag is resolved to manifest bytes, verified against the response
 digest when present, and captured as an immutable digest. The template blob is

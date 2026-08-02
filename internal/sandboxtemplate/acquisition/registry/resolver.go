@@ -44,12 +44,12 @@ func (r *Resolver) ResolveOCIArtifact(ctx context.Context, request acquisition.O
 	if err != nil {
 		return acquisition.OCIArtifactResolveResult{}, err
 	}
-	layerBytes, cacheHit, err := r.resolveLayer(ctx, reference, first)
+	layerBytes, cacheHit, releaseFetch, err := r.resolveLayer(ctx, reference, first)
 	if err != nil {
 		return acquisition.OCIArtifactResolveResult{}, err
 	}
-	if !cacheHit {
-		defer r.fetches.forget(first.digest)
+	if releaseFetch != nil {
+		defer releaseFetch()
 	}
 	if reference.tagged {
 		second, resolveErr := r.resolveManifest(ctx, reference)
@@ -60,6 +60,7 @@ func (r *Resolver) ResolveOCIArtifact(ctx context.Context, request acquisition.O
 			return acquisition.OCIArtifactResolveResult{}, coded(ErrorCodeTagMutated, nil)
 		}
 	}
+	cacheCommitted := false
 	if r.cache != nil && !cacheHit {
 		if err := r.cache.Store(ctx, CacheEntry{
 			ManifestDigest: first.digest,
@@ -69,8 +70,13 @@ func (r *Resolver) ResolveOCIArtifact(ctx context.Context, request acquisition.O
 		}); err != nil {
 			return acquisition.OCIArtifactResolveResult{}, normalizeRegistryError(ctx, err)
 		}
+		cacheCommitted = true
 	}
-	if err := ctx.Err(); err != nil {
+	// A successful Store is the cache publication linearization point. Store
+	// implementations must observe cancellation through that point or roll back;
+	// once it returns success, publication and selection complete together.
+	if !cacheCommitted && ctx.Err() != nil {
+		err := ctx.Err()
 		return acquisition.OCIArtifactResolveResult{}, requestContextError(err)
 	}
 	format := sandboxtemplate.FormatYAML
@@ -118,7 +124,7 @@ func (r *Resolver) resolveManifest(ctx context.Context, reference parsedReferenc
 	}
 	body, err := readBoundedBody(response, r.maxManifestBytes, ErrorCodeManifestOversize)
 	if err != nil {
-		return resolvedManifest{}, err
+		return resolvedManifest{}, normalizeRegistryError(ctx, err)
 	}
 	measured := digestString(body)
 	if reference.digest != "" && measured != reference.digest {
@@ -141,7 +147,7 @@ func (r *Resolver) resolveManifest(ctx context.Context, reference parsedReferenc
 	}, nil
 }
 
-func (r *Resolver) resolveLayer(ctx context.Context, reference parsedReference, manifest resolvedManifest) ([]byte, bool, error) {
+func (r *Resolver) resolveLayer(ctx context.Context, reference parsedReference, manifest resolvedManifest) ([]byte, bool, func(), error) {
 	lookup := CacheLookup{
 		ManifestDigest: manifest.digest,
 		LayerDigest:    manifest.layer.Digest,
@@ -151,17 +157,17 @@ func (r *Resolver) resolveLayer(ctx context.Context, reference parsedReference, 
 	if r.cache != nil {
 		data, hit, err := r.cache.Load(ctx, lookup)
 		if err != nil {
-			return nil, false, normalizeRegistryError(ctx, err)
+			return nil, false, nil, normalizeRegistryError(ctx, err)
 		}
 		if hit {
-			return data, true, nil
+			return data, true, nil, nil
 		}
 	}
-	data, err := r.fetches.do(ctx, manifest.digest, func(fetchCtx context.Context) ([]byte, error) {
+	data, releaseFetch, err := r.fetches.do(ctx, manifest.digest, func(fetchCtx context.Context) ([]byte, error) {
 		if r.cache != nil {
 			cached, hit, cacheErr := r.cache.Load(fetchCtx, lookup)
 			if cacheErr != nil {
-				return nil, normalizeRegistryError(ctx, cacheErr)
+				return nil, normalizeRegistryError(fetchCtx, cacheErr)
 			}
 			if hit {
 				return cached, nil
@@ -169,7 +175,10 @@ func (r *Resolver) resolveLayer(ctx context.Context, reference parsedReference, 
 		}
 		return r.fetchLayer(fetchCtx, reference, manifest.layer)
 	})
-	return data, false, err
+	if err != nil {
+		return nil, false, nil, normalizeRegistryError(ctx, err)
+	}
+	return data, false, releaseFetch, nil
 }
 
 func (r *Resolver) fetchLayer(ctx context.Context, reference parsedReference, layer descriptor) ([]byte, error) {
@@ -200,7 +209,7 @@ func (r *Resolver) fetchLayer(ctx context.Context, reference parsedReference, la
 	}
 	data, err := readBoundedBody(response, r.maxLayerBytes, ErrorCodeLayerOversize)
 	if err != nil {
-		return nil, err
+		return nil, normalizeRegistryError(ctx, err)
 	}
 	if int64(len(data)) != layer.Size {
 		return nil, coded(ErrorCodeLayerDigestMismatch, nil)
@@ -433,7 +442,7 @@ func (r *Resolver) fetchBearerToken(ctx context.Context, realm *url.URL, service
 	}
 	body, err := readBoundedBody(response, r.maxTokenBytes, ErrorCodeAuthenticationResponseOversize)
 	if err != nil {
-		return "", err
+		return "", normalizeRegistryError(ctx, err)
 	}
 	var tokenResponse struct {
 		Token       string `json:"token"`
@@ -663,6 +672,9 @@ func cloneDigestMetadata(digest *sandboxtemplate.DigestMetadata) *sandboxtemplat
 }
 
 func normalizeRegistryError(ctx context.Context, err error) error {
+	if ctx != nil && ctx.Err() != nil {
+		return requestContextError(ctx.Err())
+	}
 	var registryErr *Error
 	if errors.As(err, &registryErr) {
 		return registryErr
