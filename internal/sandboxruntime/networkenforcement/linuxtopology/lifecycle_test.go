@@ -938,3 +938,81 @@ func TestLinuxTopologyConcurrentStartAndStopAreIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestLinuxTopologyStopDoesNotBlockUnrelatedSandboxes(t *testing.T) {
+	starter := newFakeStarter()
+	runner := &fakeRunner{output: goodLinkJSON()}
+	namespaces := newFakeNamespaces(t, &starter.events)
+	lifecycle := newTestLifecycle(t, starter, runner, namespaces)
+	lifecycle.config.CleanupTimeout = 2 * time.Second
+
+	firstRequest := testRequest("topology-gen-independent-first")
+	firstRequest.Identity.SandboxID = "sandbox-l7-first"
+	firstSession, err := lifecycle.Start(context.Background(), firstRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRequest := testRequest("topology-gen-independent-second")
+	secondRequest.Identity.SandboxID = "sandbox-l7-second"
+	if _, err := lifecycle.Start(context.Background(), secondRequest); err != nil {
+		t.Fatal(err)
+	}
+
+	borrowed, err := firstSession.NamespaceHandle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	type stopResult struct {
+		metadata Metadata
+		err      error
+	}
+	firstResult := make(chan stopResult, 1)
+	go func() {
+		metadata, stopErr := lifecycle.Stop(context.Background(), firstRequest.Identity)
+		firstResult <- stopResult{metadata: metadata, err: stopErr}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for firstSession.Metadata().Status != StatusStopping && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if firstSession.Metadata().Status != StatusStopping {
+		_ = borrowed.Close()
+		t.Fatal("first stop did not begin")
+	}
+
+	secondResult := make(chan stopResult, 1)
+	go func() {
+		metadata, stopErr := lifecycle.Stop(context.Background(), secondRequest.Identity)
+		secondResult <- stopResult{metadata: metadata, err: stopErr}
+	}()
+	select {
+	case result := <-secondResult:
+		if result.err != nil || result.metadata.Status != StatusStopped {
+			_ = borrowed.Close()
+			t.Fatalf("unrelated Stop = %#v, %v, want stopped", result.metadata, result.err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		_ = borrowed.Close()
+		<-firstResult
+		<-secondResult
+		t.Fatal("unrelated Stop blocked behind another sandbox's namespace transfer")
+	}
+
+	select {
+	case result := <-firstResult:
+		_ = borrowed.Close()
+		t.Fatalf("first Stop returned before its transferred handle closed: %v", result.err)
+	default:
+	}
+	if err := borrowed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-firstResult:
+		if result.err != nil || result.metadata.Status != StatusStopped {
+			t.Fatalf("first Stop = %#v, %v, want stopped", result.metadata, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first Stop did not continue after its transferred handle closed")
+	}
+}
