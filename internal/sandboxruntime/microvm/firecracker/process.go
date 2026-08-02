@@ -48,6 +48,7 @@ type ProcessCommandDescriptor struct {
 	Action      OperationAction                `json:"action"`
 	Executable  OperationPathReference         `json:"executable"`
 	Argv        []string                       `json:"-"`
+	EnablePCI   bool                           `json:"enablePCI,omitempty"`
 	Environment []OperationEnvironmentMetadata `json:"environment"`
 	Paths       []OperationPathReference       `json:"paths"`
 	Payloads    []OperationPayloadReference    `json:"payloads"`
@@ -114,7 +115,7 @@ func ProcessCommandDescriptorFromStartPlan(plan StartOperationPlan) (ProcessComm
 	if err := validateProcessPathReferences(paths); err != nil {
 		return ProcessCommandDescriptor{}, err
 	}
-	if err := validateProcessStartArgv(plan.Argv, plan.Executable, paths); err != nil {
+	if err := validateProcessStartArgv(plan.Argv, plan.Executable, paths, plan.EnablePCI); err != nil {
 		return ProcessCommandDescriptor{}, err
 	}
 	if err := validateProcessPayloadReferences(plan.Payloads); err != nil {
@@ -125,6 +126,7 @@ func ProcessCommandDescriptorFromStartPlan(plan StartOperationPlan) (ProcessComm
 		Action:      plan.Action,
 		Executable:  plan.Executable,
 		Argv:        cloneStringSlice(plan.Argv),
+		EnablePCI:   plan.EnablePCI,
 		Environment: cloneOperationEnvironment(plan.Environment),
 		Paths:       cloneOperationPathReferences(paths),
 		Payloads:    cloneOperationPayloadReferences(plan.Payloads),
@@ -161,7 +163,7 @@ func validateProcessCommandDescriptor(descriptor ProcessCommandDescriptor) error
 	if err := validateProcessPathReferences(descriptor.Paths); err != nil {
 		return err
 	}
-	if err := validateProcessStartArgv(descriptor.Argv, descriptor.Executable, descriptor.Paths); err != nil {
+	if err := validateProcessStartArgv(descriptor.Argv, descriptor.Executable, descriptor.Paths, descriptor.EnablePCI); err != nil {
 		return err
 	}
 	if len(descriptor.Environment) != 0 {
@@ -178,6 +180,7 @@ func validateProcessCommandDescriptorMatchesPlan(descriptor ProcessCommandDescri
 	if descriptor.Action != expected.Action ||
 		descriptor.Executable != expected.Executable ||
 		!equalStringSlices(descriptor.Argv, expected.Argv) ||
+		descriptor.EnablePCI != expected.EnablePCI ||
 		!equalOperationEnvironment(descriptor.Environment, expected.Environment) ||
 		!equalOperationPathReferences(descriptor.Paths, expected.Paths) ||
 		!equalOperationPayloadReferences(descriptor.Payloads, expected.Payloads) {
@@ -220,8 +223,8 @@ func validateProcessPathReference(ref OperationPathReference, role OperationPath
 	return nil
 }
 
-func validateProcessStartArgv(argv []string, executable OperationPathReference, paths []OperationPathReference) error {
-	want, err := processStartArgv(executable, paths)
+func validateProcessStartArgv(argv []string, executable OperationPathReference, paths []OperationPathReference, enablePCI bool) error {
+	want, err := processStartArgvWithPCI(executable, paths, enablePCI)
 	if err != nil {
 		return err
 	}
@@ -237,6 +240,10 @@ func validateProcessStartArgv(argv []string, executable OperationPathReference, 
 }
 
 func processStartArgv(executable OperationPathReference, paths []OperationPathReference) ([]string, error) {
+	return processStartArgvWithPCI(executable, paths, false)
+}
+
+func processStartArgvWithPCI(executable OperationPathReference, paths []OperationPathReference, enablePCI bool) ([]string, error) {
 	byRole := operationPathReferenceByRole(paths)
 	apiSocket, ok := byRole[OperationPathRoleAPISocket]
 	if !ok {
@@ -254,13 +261,19 @@ func processStartArgv(executable OperationPathReference, paths []OperationPathRe
 	if !ok {
 		return nil, newProcessBoundaryError("metricsPath", "path role is required")
 	}
-	return []string{
+	argv := []string{
 		executable.Path,
+	}
+	if enablePCI {
+		argv = append(argv, "--enable-pci")
+	}
+	argv = append(argv,
 		"--api-sock", apiSocket.Path,
 		"--config-file", config.Path,
 		"--log-path", logPath.Path,
 		"--metrics-path", metrics.Path,
-	}, nil
+	)
+	return argv, nil
 }
 
 func validateProcessPayloadReferences(payloads []OperationPayloadReference) error {
@@ -324,17 +337,22 @@ func processCommandArgumentSummary(descriptor ProcessCommandDescriptor) []Operat
 		return []OperationArgumentSummary{}
 	}
 	byRole := operationPathReferenceByRole(descriptor.Paths)
-	return []OperationArgumentSummary{
+	argv := []OperationArgumentSummary{
 		{PathRole: descriptor.Executable.Role},
-		{Value: "--api-sock"},
-		{PathRole: byRole[OperationPathRoleAPISocket].Role},
-		{Value: "--config-file"},
-		{PathRole: byRole[OperationPathRoleConfig].Role},
-		{Value: "--log-path"},
-		{PathRole: byRole[OperationPathRoleLog].Role},
-		{Value: "--metrics-path"},
-		{PathRole: byRole[OperationPathRoleMetrics].Role},
 	}
+	if descriptor.EnablePCI {
+		argv = append(argv, OperationArgumentSummary{Value: "--enable-pci"})
+	}
+	return append(argv,
+		OperationArgumentSummary{Value: "--api-sock"},
+		OperationArgumentSummary{PathRole: byRole[OperationPathRoleAPISocket].Role},
+		OperationArgumentSummary{Value: "--config-file"},
+		OperationArgumentSummary{PathRole: byRole[OperationPathRoleConfig].Role},
+		OperationArgumentSummary{Value: "--log-path"},
+		OperationArgumentSummary{PathRole: byRole[OperationPathRoleLog].Role},
+		OperationArgumentSummary{Value: "--metrics-path"},
+		OperationArgumentSummary{PathRole: byRole[OperationPathRoleMetrics].Role},
+	)
 }
 
 func operationPathReferenceByRole(paths []OperationPathReference) map[OperationPathRole]OperationPathReference {

@@ -15,6 +15,26 @@ type GuestTransport interface {
 	CopyOut(context.Context, GuestCopyRequest) error
 }
 
+// ProductionVsockSessionRequest binds a host-owned vsock bridge to one exact
+// accepted Firecracker process and its private host-side UDS. SocketPath is a
+// process-boundary value and must never be copied to durable target metadata.
+type ProductionVsockSessionRequest struct {
+	Handle     ProcessHandleMetadata `json:"-"`
+	RuntimeID  string                `json:"-"`
+	SocketPath string                `json:"-"`
+}
+
+// ProductionVsockBridge is the host-owned L5 composition boundary. Unlike the
+// compatibility GuestReadinessWaiter and GuestTransport injections, it owns
+// post-launch socket validation, peer-process correlation, guest readiness,
+// per-start generation, operation routing, and invalidation.
+type ProductionVsockBridge interface {
+	GuestTransport
+	ActivateSession(context.Context, ProductionVsockSessionRequest) (GuestReadinessResult, string, error)
+	SessionActive(ProductionVsockSessionRequest, string) bool
+	InvalidateSession(ProductionVsockSessionRequest, string)
+}
+
 // GuestCopyPublicationError marks a copy-in result for which the destination
 // is visible but crash durability is not proven. Callers must not treat this
 // outcome as an ordinary retry-safe transport failure.

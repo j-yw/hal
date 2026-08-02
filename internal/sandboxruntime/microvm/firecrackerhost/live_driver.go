@@ -30,6 +30,7 @@ type LiveDriverOptions struct {
 	GuestTimeout           time.Duration
 	GuestPollInterval      time.Duration
 	CleanupFilesystem      CleanupFilesystem
+	ProductionVsock        bool
 }
 
 // NewLiveDriver constructs an explicitly live-start-capable Firecracker
@@ -68,6 +69,12 @@ func newLiveBackendOptions(options LiveDriverOptions) (microvm.Config, firecrack
 	if options.BootAcceptancePoller == nil {
 		return microvm.Config{}, firecracker.BackendOptions{}, newLiveDriverConfigError("bootAcceptancePoller", "boot acceptance poller is required")
 	}
+	if options.ProductionVsock && (options.GuestReadinessProbe != nil || options.GuestTransport != nil) {
+		return microvm.Config{}, firecracker.BackendOptions{}, newLiveDriverConfigError(
+			"productionVsock",
+			"production vsock owns guest readiness and transport composition",
+		)
+	}
 
 	lifecycle := NewProcessLifecycleManager(liveDriverHostProcessRunner(options), liveDriverLifecycleOptions(options)...)
 	adapter := NewAdapter(liveDriverAdapterOptions(options, lifecycle)...)
@@ -79,8 +86,14 @@ func newLiveBackendOptions(options LiveDriverOptions) (microvm.Config, firecrack
 		LiveProcessManager:   adapter,
 		LiveStart:            true,
 		GuestTransport:       options.GuestTransport,
+		ProductionVsock:      options.ProductionVsock,
 	}
-	if options.GuestReadinessProbe != nil {
+	if options.ProductionVsock {
+		backendOptions.GuestTransport = nil
+		backendOptions.ProductionBridge = NewProductionVsockBridge(ProductionVsockBridgeOptions{
+			Lifecycle: lifecycle, Timeout: options.GuestTimeout, PollInterval: options.GuestPollInterval,
+		})
+	} else if options.GuestReadinessProbe != nil {
 		backendOptions.GuestReadinessWaiter = adapter
 	}
 	return config, backendOptions, nil
@@ -124,10 +137,14 @@ func liveDriverNetworkEnforcement(options LiveDriverOptions) *microvm.NetworkEnf
 }
 
 func liveDriverLifecycleOptions(options LiveDriverOptions) []ProcessLifecycleOption {
-	if options.CleanupFilesystem == nil {
-		return nil
+	var result []ProcessLifecycleOption
+	if options.CleanupFilesystem != nil {
+		result = append(result, WithProcessLifecycleCleanupFilesystem(options.CleanupFilesystem))
 	}
-	return []ProcessLifecycleOption{WithProcessLifecycleCleanupFilesystem(options.CleanupFilesystem)}
+	if options.ProductionVsock {
+		result = append(result, withProcessLifecycleProductionVsock())
+	}
+	return result
 }
 
 func liveDriverAdapterOptions(options LiveDriverOptions, lifecycle *ProcessLifecycleManager) []Option {

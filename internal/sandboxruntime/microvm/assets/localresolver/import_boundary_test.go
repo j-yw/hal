@@ -219,6 +219,12 @@ func localResolverProductionImportBoundaryMessage(fileName, importPath string) s
 	if importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets" {
 		return ""
 	}
+	if importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/build" {
+		return ""
+	}
+	if importPath == "golang.org/x/sys/unix" {
+		return ""
+	}
 	return fmt.Sprintf("package %s file %s imports unapproved dependency %q; local asset resolver must stay isolated from command, runtime, network, and factory behavior", localResolverPackagePath, fileName, importPath)
 }
 

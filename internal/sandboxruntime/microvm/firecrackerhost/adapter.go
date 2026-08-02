@@ -67,6 +67,16 @@ type Adapter struct {
 	cleanup             LiveProcessCleanup
 }
 
+// LiveProcessTerminated delegates positive terminal-state verification to the
+// injected process cleanup owner. Missing verification fails closed.
+func (adapter *Adapter) LiveProcessTerminated(req firecracker.LiveProcessRequest) bool {
+	if adapter == nil || adapter.cleanup == nil {
+		return false
+	}
+	verifier, ok := adapter.cleanup.(firecracker.LiveProcessTerminalVerifier)
+	return ok && verifier.LiveProcessTerminated(req)
+}
+
 // Option configures a host adapter dependency.
 type Option func(*Adapter)
 

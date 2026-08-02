@@ -21,6 +21,8 @@ const (
 	ErrorCodeFileUnavailable     ErrorCode = "file_unavailable"
 	ErrorCodeSymlinkRejected     ErrorCode = "symlink_rejected"
 	ErrorCodeUnsupportedFileType ErrorCode = "unsupported_file_type"
+	ErrorCodeManifestInvalid     ErrorCode = "manifest_invalid"
+	ErrorCodeAssetLockMismatch   ErrorCode = "asset_lock_mismatch"
 )
 
 var (
@@ -29,6 +31,8 @@ var (
 	ErrFileUnavailable     = errors.New("local asset file is unavailable")
 	ErrSymlinkRejected     = errors.New("local asset symlink is rejected")
 	ErrUnsupportedFileType = errors.New("local asset file type is unsupported")
+	ErrManifestInvalid     = errors.New("distribution manifest is invalid")
+	ErrAssetLockMismatch   = errors.New("distribution asset lock mismatch")
 )
 
 // ErrorCode identifies a sanitized local asset resolver failure.
@@ -378,7 +382,9 @@ func normalizeErrorCode(code ErrorCode) ErrorCode {
 		ErrorCodeUnsafePath,
 		ErrorCodeFileUnavailable,
 		ErrorCodeSymlinkRejected,
-		ErrorCodeUnsupportedFileType:
+		ErrorCodeUnsupportedFileType,
+		ErrorCodeManifestInvalid,
+		ErrorCodeAssetLockMismatch:
 		return code
 	default:
 		return ErrorCodeInvalidRequest

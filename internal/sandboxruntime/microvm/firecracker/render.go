@@ -15,10 +15,19 @@ const liveBootRenderOperation = "firecracker_live_boot_render"
 // Log and metrics paths are intentionally omitted here because the validated
 // start argv initializes them once through Firecracker's CLI flags.
 type liveBootConfigFile struct {
-	MachineConfig MachineConfigPayload `json:"machine-config"`
-	BootSource    BootSourcePayload    `json:"boot-source"`
-	Drives        []RootDrivePayload   `json:"drives"`
+	MachineConfig MachineConfigPayload  `json:"machine-config"`
+	BootSource    BootSourcePayload     `json:"boot-source"`
+	Drives        []RootDrivePayload    `json:"drives"`
+	Vsock         *vsockDevicePayload   `json:"vsock,omitempty"`
+	Entropy       *entropyDevicePayload `json:"entropy,omitempty"`
 }
+
+type vsockDevicePayload struct {
+	GuestCID uint32 `json:"guest_cid"`
+	UDSPath  string `json:"uds_path"`
+}
+
+type entropyDevicePayload struct{}
 
 func renderLiveBootFiles(config BackendConfig) error {
 	if config.LaunchDescriptor != nil {
@@ -30,6 +39,7 @@ func renderLiveBootFiles(config BackendConfig) error {
 	if err != nil {
 		return err
 	}
+	config.Paths = paths
 	rendered, err := liveBootConfig(config)
 	if err != nil {
 		return err
@@ -42,6 +52,9 @@ func renderLiveBootFiles(config BackendConfig) error {
 
 	if err := ensureLiveBootStateDir(paths.StateDir); err != nil {
 		return err
+	}
+	if config.ProductionVsock {
+		return renderProductionLiveBootFiles(paths, encoded)
 	}
 	if err := writeLiveBootFile(paths.ConfigPath, encoded, "configPath", "boot config write failed"); err != nil {
 		return err
@@ -56,6 +69,9 @@ func renderLiveBootFiles(config BackendConfig) error {
 }
 
 func liveBootConfig(config BackendConfig) (liveBootConfigFile, error) {
+	if config.ProductionVsock && strings.TrimSpace(config.Paths.VsockSocketPath) == "" {
+		return liveBootConfigFile{}, newLiveBootRenderConfigError("vsockSocketPath", "vsock socket path is required")
+	}
 	machineConfig, err := RenderMachineConfigPayload(config)
 	if err != nil {
 		return liveBootConfigFile{}, liveBootRenderPayloadError(err)
@@ -68,11 +84,37 @@ func liveBootConfig(config BackendConfig) (liveBootConfigFile, error) {
 	if err != nil {
 		return liveBootConfigFile{}, liveBootRenderPayloadError(err)
 	}
+	if config.ProductionVsock && hasDuplicateLiveBootPath(
+		filepath.Clean(config.Paths.APISocketPath),
+		filepath.Clean(config.Paths.VsockSocketPath),
+		filepath.Clean(config.Paths.ConfigPath),
+		filepath.Clean(config.Paths.LogPath),
+		filepath.Clean(config.Paths.MetricsPath),
+		filepath.Clean(rootDrive.PathOnHost),
+	) {
+		return liveBootConfigFile{}, newLiveBootRenderConfigError("paths", "runtime and root drive paths must be unique")
+	}
 	return liveBootConfigFile{
 		MachineConfig: machineConfig,
 		BootSource:    bootSource,
 		Drives:        []RootDrivePayload{rootDrive},
+		Vsock:         renderVsockDevice(config),
+		Entropy:       renderEntropyDevice(config),
 	}, nil
+}
+
+func renderEntropyDevice(config BackendConfig) *entropyDevicePayload {
+	if !config.ProductionVsock {
+		return nil
+	}
+	return &entropyDevicePayload{}
+}
+
+func renderVsockDevice(config BackendConfig) *vsockDevicePayload {
+	if !config.ProductionVsock {
+		return nil
+	}
+	return &vsockDevicePayload{GuestCID: l5GuestCID, UDSPath: config.Paths.VsockSocketPath}
 }
 
 func validateLiveBootRenderPaths(paths PathPlan) (PathPlan, error) {
@@ -103,16 +145,31 @@ func validateLiveBootRenderPaths(paths PathPlan) (PathPlan, error) {
 	if err != nil {
 		return PathPlan{}, err
 	}
-	if hasDuplicateLiveBootPath(configPath, logPath, metricsPath) {
+	vsockSocketPath := ""
+	if strings.TrimSpace(paths.VsockSocketPath) != "" {
+		vsockSocketPath, err = cleanLiveBootStateFilePath(paths.VsockSocketPath, stateDir, "vsockSocketPath")
+		if err != nil {
+			return PathPlan{}, err
+		}
+		if !validFirecrackerAPISocketPath(vsockSocketPath) {
+			return PathPlan{}, newLiveBootRenderConfigError("vsockSocketPath", "vsock socket path exceeds the Unix socket path limit")
+		}
+	}
+	allPaths := []string{apiSocketPath, configPath, logPath, metricsPath}
+	if vsockSocketPath != "" {
+		allPaths = append(allPaths, vsockSocketPath)
+	}
+	if hasDuplicateLiveBootPath(allPaths...) {
 		return PathPlan{}, newLiveBootRenderConfigError("paths", "support file paths must be unique")
 	}
 
 	return PathPlan{
-		StateDir:      stateDir,
-		APISocketPath: apiSocketPath,
-		ConfigPath:    configPath,
-		LogPath:       logPath,
-		MetricsPath:   metricsPath,
+		StateDir:        stateDir,
+		APISocketPath:   apiSocketPath,
+		ConfigPath:      configPath,
+		LogPath:         logPath,
+		MetricsPath:     metricsPath,
+		VsockSocketPath: vsockSocketPath,
 	}, nil
 }
 
@@ -164,7 +221,7 @@ func ensureLiveBootStateDir(path string) error {
 	info, err := os.Lstat(path)
 	switch {
 	case err == nil:
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
 			return newLiveBootRenderConfigError("stateDir", "state directory is invalid")
 		}
 		return nil
@@ -178,7 +235,7 @@ func ensureLiveBootStateDir(path string) error {
 	if err != nil {
 		return newLiveBootRenderFailure("stateDir", "state directory inspection failed", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		return newLiveBootRenderConfigError("stateDir", "state directory is invalid")
 	}
 	return nil
