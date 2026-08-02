@@ -21,18 +21,25 @@ type Lifecycle struct {
 }
 
 type Session struct {
-	mu        sync.Mutex
-	identity  Identity
-	mapping   Mapping
-	metadata  Metadata
-	keeper    ProcessHandle
-	mapper    ProcessHandle
-	namespace *NamespaceHandle
-	losses    chan Loss
-	lossOnce  sync.Once
-	stopping  bool
-	borrows   sync.WaitGroup
-	ownership OwnershipLease
+	mu          sync.Mutex
+	identity    Identity
+	mapping     Mapping
+	metadata    Metadata
+	keeper      ProcessHandle
+	mapper      ProcessHandle
+	namespace   *NamespaceHandle
+	losses      chan Loss
+	lossOnce    sync.Once
+	stopping    bool
+	stopAttempt *lifecycleStopAttempt
+	borrows     sync.WaitGroup
+	ownership   OwnershipLease
+}
+
+type lifecycleStopAttempt struct {
+	done     chan struct{}
+	metadata Metadata
+	err      error
 }
 
 func New(input Config) (*Lifecycle, error) {
@@ -230,25 +237,36 @@ func (l *Lifecycle) Stop(_ context.Context, identity Identity) (Metadata, error)
 	}
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	session := l.active[identity.SandboxID]
 	if session == nil {
 		if stopped, ok := l.stopped[identity.SandboxID]; ok {
+			l.mu.Unlock()
 			if stopped.Identity == identity {
 				return stopped, nil
 			}
 			return Metadata{}, ErrStaleGeneration
 		}
+		l.mu.Unlock()
 		return Metadata{}, ErrStaleGeneration
 	}
 	if session.identity.TopologyGenerationID != identity.TopologyGenerationID {
+		l.mu.Unlock()
 		return Metadata{}, ErrStaleGeneration
 	}
 	if session.identity != identity {
+		l.mu.Unlock()
 		return Metadata{}, ErrIdentityMismatch
 	}
 
 	session.mu.Lock()
+	if current := session.stopAttempt; current != nil {
+		session.mu.Unlock()
+		l.mu.Unlock()
+		<-current.done
+		return current.metadata, current.err
+	}
+	attempt := &lifecycleStopAttempt{done: make(chan struct{})}
+	session.stopAttempt = attempt
 	session.stopping = true
 	session.metadata.Status = StatusStopping
 	session.metadata.StructuralInspected = false
@@ -257,6 +275,7 @@ func (l *Lifecycle) Stop(_ context.Context, identity Identity) (Metadata, error)
 	owned := session.namespace
 	keeper := session.keeper
 	session.mu.Unlock()
+	l.mu.Unlock()
 
 	cleanupErr := session.waitForBorrows(l.config.CleanupTimeout)
 	if cleanupErr == nil {
@@ -265,13 +284,19 @@ func (l *Lifecycle) Stop(_ context.Context, identity Identity) (Metadata, error)
 	if cleanupErr == nil {
 		cleanupErr = finalizeOwnership(session.ownership, identity)
 	}
+	l.mu.Lock()
 	session.mu.Lock()
 	if cleanupErr != nil {
 		session.metadata.Status = StatusCleanupIncomplete
 		session.metadata.StructuralInspected = false
 		session.metadata.MappingReachable = false
 		metadata := session.metadata
+		attempt.metadata = metadata
+		attempt.err = ErrCleanupIncomplete
+		session.stopAttempt = nil
+		close(attempt.done)
 		session.mu.Unlock()
+		l.mu.Unlock()
 		return metadata, ErrCleanupIncomplete
 	}
 	session.mapper = nil
@@ -281,9 +306,13 @@ func (l *Lifecycle) Stop(_ context.Context, identity Identity) (Metadata, error)
 	session.metadata.StructuralInspected = false
 	session.metadata.MappingReachable = false
 	metadata := session.metadata
-	session.mu.Unlock()
 	delete(l.active, identity.SandboxID)
 	l.stopped[identity.SandboxID] = metadata
+	attempt.metadata = metadata
+	session.stopAttempt = nil
+	close(attempt.done)
+	session.mu.Unlock()
+	l.mu.Unlock()
 	return metadata, nil
 }
 
