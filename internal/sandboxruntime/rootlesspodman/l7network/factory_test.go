@@ -109,6 +109,13 @@ func TestL7ComposedRootlessPodmanPreparedActivationFailureRollsBackForRetry(t *t
 		fail      func(*fakeProxy, *fakeRules)
 	}{
 		{
+			name:      "pre-rule proxy proof",
+			wantError: l7network.ErrProxyUnavailable,
+			fail: func(proxy *fakeProxy, _ *fakeRules) {
+				proxy.activeErrors = []error{nil, errors.New("private pre-rule proxy failure")}
+			},
+		},
+		{
 			name:      "final proxy proof",
 			wantError: l7network.ErrProxyUnavailable,
 			fail: func(proxy *fakeProxy, _ *fakeRules) {
