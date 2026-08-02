@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func TestL5GuestInitSupervisesAgentProcessGroupAndReapsAllChildren(t *testing.T)
 		"unix.Kill(-childPID",
 		"terminationGrace",
 		"unix.SIGKILL",
-		"waitForMainChild(childPID, unix.Wait4)",
+		"waitForKilledChildren(reapContext, childPID, unix.Wait4)",
 	} {
 		if !strings.Contains(string(source), marker) {
 			t.Errorf("guest PID1 supervisor missing %q", marker)
@@ -31,29 +32,53 @@ func TestL5GuestInitSupervisesAgentProcessGroupAndReapsAllChildren(t *testing.T)
 	}
 }
 
-func TestL7GuestInitReapsKilledMainChildWithoutSignalNotification(t *testing.T) {
+func TestL7GuestInitReapsKilledProcessTreeWithoutSignalNotification(t *testing.T) {
 	const mainPID = 101
+	const descendantPID = 202
 	wantStatus := unix.WaitStatus(unix.SIGKILL)
 	waitCalls := 0
-	status, exited := waitForMainChild(mainPID, func(pid int, status *unix.WaitStatus, options int, _ *unix.Rusage) (int, error) {
+	status, exited := waitForKilledChildren(context.Background(), mainPID, func(pid int, status *unix.WaitStatus, options int, _ *unix.Rusage) (int, error) {
 		waitCalls++
-		if pid != mainPID {
-			t.Fatalf("Wait4 pid = %d, want exact main child", pid)
+		if pid != -1 {
+			t.Fatalf("Wait4 pid = %d, want all children", pid)
 		}
-		if options != 0 {
-			t.Fatalf("Wait4 options = %d, want blocking wait", options)
+		if options != unix.WNOHANG {
+			t.Fatalf("Wait4 options = %d, want nonblocking reap", options)
 		}
-		if waitCalls == 1 {
+		switch waitCalls {
+		case 1:
 			return -1, unix.EINTR
+		case 2:
+			*status = wantStatus
+			return mainPID, nil
+		case 3:
+			*status = wantStatus
+			return descendantPID, nil
+		default:
+			return -1, unix.ECHILD
 		}
-		*status = wantStatus
-		return mainPID, nil
 	})
 	if !exited || status != wantStatus {
-		t.Fatalf("waitForMainChild() = %v, %t, want killed child status", status, exited)
+		t.Fatalf("waitForKilledChildren() = %v, %t, want killed main child status", status, exited)
 	}
-	if waitCalls != 2 {
-		t.Fatalf("Wait4 calls = %d, want EINTR retry and reap", waitCalls)
+	if waitCalls != 4 {
+		t.Fatalf("Wait4 calls = %d, want EINTR retry, main, descendant, and ECHILD", waitCalls)
+	}
+}
+
+func TestL7GuestInitKilledProcessTreeReapHonorsFinalDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	waitCalls := 0
+	status, exited := waitForKilledChildren(ctx, 303, func(int, *unix.WaitStatus, int, *unix.Rusage) (int, error) {
+		waitCalls++
+		return 0, nil
+	})
+	if exited || status != 0 {
+		t.Fatalf("waitForKilledChildren() = %v, %t, want bounded failure", status, exited)
+	}
+	if waitCalls != 1 {
+		t.Fatalf("Wait4 calls = %d, want one nonblocking attempt before deadline", waitCalls)
 	}
 }
 
