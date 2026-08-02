@@ -85,9 +85,10 @@ func (starter OSExecNamespaceProcessStarter) StartNamespaceProcess(ctx context.C
 }
 
 func validateNamespaceProcessStartRequest(request NamespaceProcessStartRequest) error {
-	if !filepathIsCleanAbsolute(request.Executable) || len(request.InheritedFiles) != 4 || len(request.Args) < 4 ||
-		request.Args[0] != "--user=/proc/self/fd/3" || request.Args[1] != "--net=/proc/self/fd/4" ||
-		request.Args[2] != "--" || request.Args[3] == "" {
+	if !filepathIsCleanAbsolute(request.Executable) || len(request.InheritedFiles) != 4 || len(request.Args) < 6 ||
+		request.Args[0] != "--preserve-credentials" || request.Args[1] != "--keep-caps" ||
+		request.Args[2] != "--user=/proc/self/fd/3" || request.Args[3] != "--net=/proc/self/fd/4" ||
+		request.Args[4] != "--" || request.Args[5] == "" {
 		return ErrNamespaceProcessRequestInvalid
 	}
 	for _, arg := range request.Args {

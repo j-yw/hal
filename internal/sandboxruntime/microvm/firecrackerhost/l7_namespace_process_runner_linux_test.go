@@ -288,6 +288,8 @@ func l7NamespaceStarterRequest(files []*os.File) NamespaceProcessStartRequest {
 	return NamespaceProcessStartRequest{
 		Executable: "/usr/bin/nsenter",
 		Args: []string{
+			"--preserve-credentials",
+			"--keep-caps",
 			"--user=/proc/self/fd/3",
 			"--net=/proc/self/fd/4",
 			"--",

@@ -114,6 +114,8 @@ func (runner *NamespaceProcessRunner) StartHostProcess(ctx context.Context, requ
 		return nil, ErrNamespaceProcessNamespaceInvalid
 	}
 	wrapperArgs := []string{
+		"--preserve-credentials",
+		"--keep-caps",
 		"--user=/proc/self/fd/3",
 		"--net=/proc/self/fd/4",
 		"--",
