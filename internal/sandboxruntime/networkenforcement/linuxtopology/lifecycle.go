@@ -18,6 +18,12 @@ type Lifecycle struct {
 	ownership  OwnershipStore
 	active     map[string]*Session
 	stopped    map[string]Metadata
+	operations map[string]*sandboxOperationLock
+}
+
+type sandboxOperationLock struct {
+	mu         sync.Mutex
+	references int
 }
 
 type Session struct {
@@ -59,9 +65,10 @@ func New(input Config) (*Lifecycle, error) {
 	config.Environment = append([]string(nil), config.Environment...)
 
 	lifecycle := &Lifecycle{
-		config:  config,
-		active:  make(map[string]*Session),
-		stopped: make(map[string]Metadata),
+		config:     config,
+		active:     make(map[string]*Session),
+		stopped:    make(map[string]Metadata),
+		operations: make(map[string]*sandboxOperationLock),
 	}
 	if !config.Enabled {
 		return lifecycle, nil
@@ -125,11 +132,13 @@ func (l *Lifecycle) Start(ctx context.Context, request StartRequest) (*Session, 
 	if err := ctx.Err(); err != nil {
 		return nil, ErrStartFailed
 	}
+	releaseOperation := l.acquireSandboxOperation(request.Identity.SandboxID)
+	defer releaseOperation()
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if stopped, ok := l.stopped[request.Identity.SandboxID]; ok &&
 		stopped.Identity.TopologyGenerationID == request.Identity.TopologyGenerationID {
+		l.mu.Unlock()
 		return nil, ErrStaleGeneration
 	}
 	if current := l.active[request.Identity.SandboxID]; current != nil {
@@ -139,13 +148,17 @@ func (l *Lifecycle) Start(ctx context.Context, request StartRequest) (*Session, 
 		status := current.metadata.Status
 		current.mu.Unlock()
 		if sameIdentity && sameMapping && status == StatusPrepared {
+			l.mu.Unlock()
 			return current, nil
 		}
 		if current.identity.TopologyGenerationID == request.Identity.TopologyGenerationID {
+			l.mu.Unlock()
 			return nil, ErrIdentityMismatch
 		}
+		l.mu.Unlock()
 		return nil, ErrTopologyCollision
 	}
+	l.mu.Unlock()
 	lease, err := l.ownership.Acquire(ctx, request.Identity)
 	if err != nil {
 		return nil, sanitizeOwnershipError(err)
@@ -219,7 +232,9 @@ func (l *Lifecycle) Start(ctx context.Context, request StartRequest) (*Session, 
 		losses:    make(chan Loss, 1),
 		ownership: lease,
 	}
+	l.mu.Lock()
 	l.active[request.Identity.SandboxID] = session
+	l.mu.Unlock()
 	go session.watch(ProcessRoleKeeper, keeper)
 	go session.watch(ProcessRoleMapping, mapper)
 	return session, nil
@@ -235,6 +250,8 @@ func (l *Lifecycle) Stop(_ context.Context, identity Identity) (Metadata, error)
 	if !validIdentity(identity) {
 		return Metadata{}, ErrInvalidIdentity
 	}
+	releaseOperation := l.acquireSandboxOperation(identity.SandboxID)
+	defer releaseOperation()
 
 	l.mu.Lock()
 	session := l.active[identity.SandboxID]
@@ -450,7 +467,9 @@ func (l *Lifecycle) failStart(
 		cleanupErr = finalizeOwnership(lease, request.Identity)
 	}
 	if cleanupErr == nil {
+		l.mu.Lock()
 		l.stopped[request.Identity.SandboxID] = Metadata{Identity: request.Identity, Status: StatusStopped}
+		l.mu.Unlock()
 		return nil, primary
 	}
 	session := &Session{
@@ -459,8 +478,32 @@ func (l *Lifecycle) failStart(
 		keeper:   keeper, mapper: mapper, namespace: owned,
 		losses: make(chan Loss, 1), ownership: lease, stopping: true,
 	}
+	l.mu.Lock()
 	l.active[request.Identity.SandboxID] = session
+	l.mu.Unlock()
 	return session, ErrCleanupIncomplete
+}
+
+func (l *Lifecycle) acquireSandboxOperation(sandboxID string) func() {
+	l.mu.Lock()
+	operation := l.operations[sandboxID]
+	if operation == nil {
+		operation = &sandboxOperationLock{}
+		l.operations[sandboxID] = operation
+	}
+	operation.references++
+	l.mu.Unlock()
+
+	operation.mu.Lock()
+	return func() {
+		operation.mu.Unlock()
+		l.mu.Lock()
+		operation.references--
+		if operation.references == 0 && l.operations[sandboxID] == operation {
+			delete(l.operations, sandboxID)
+		}
+		l.mu.Unlock()
+	}
 }
 
 func finalizeOwnership(lease OwnershipLease, identity Identity) error {
