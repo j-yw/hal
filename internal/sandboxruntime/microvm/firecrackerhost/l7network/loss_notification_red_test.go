@@ -152,6 +152,55 @@ func TestFirecrackerHostTopologyRejectsTopologyWithoutLossSignal(t *testing.T) {
 	}
 }
 
+func TestFirecrackerHostTopologyRejectsLossPendingBeforePreparedPublication(t *testing.T) {
+	tests := []struct {
+		name    string
+		trigger func(*fakeProxy, *fakeTopology)
+		wantErr error
+	}{
+		{
+			name: "proxy generation",
+			trigger: func(proxy *fakeProxy, _ *fakeTopology) {
+				close(proxy.current.loss)
+			},
+			wantErr: ErrProxyUnavailable,
+		},
+		{
+			name: "topology generation",
+			trigger: func(_ *fakeProxy, topology *fakeTopology) {
+				topology.session.losses <- linuxtopology.Loss{
+					TopologyGenerationID: testIdentity().TopologyGenerationID,
+					Component:            linuxtopology.ProcessRoleKeeper,
+					Reason:               linuxtopology.LossReasonProcessExited,
+				}
+			},
+			wantErr: ErrTopologyPrepareFailed,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sequence := &callSequence{}
+			proxy := newFakeProxy(sequence)
+			topology := newFakeTopology(sequence)
+			test.trigger(proxy, topology)
+			coordinator := mustCoordinator(t, Options{
+				Enabled: true, Proxy: proxy, Topology: topology,
+				TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+				Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+			})
+			session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+			if session != nil || !errors.Is(err, test.wantErr) {
+				t.Fatalf("Prepare() = session %T, error %v, want no session and %v", session, err, test.wantErr)
+			}
+			if got := sequence.snapshot(); !contains(got, "rules_quarantine") || !contains(got, "rules_cleanup") ||
+				!contains(got, "topology_stop") || !contains(got, "proxy_stop") {
+				t.Fatalf("pending loss did not roll back exact resources: %#v", got)
+			}
+		})
+	}
+}
+
 func TestFirecrackerHostTopologyProxyLossPublishesSanitizedQuarantineFailure(t *testing.T) {
 	sequence := &callSequence{}
 	proxy := newFakeProxy(sequence)
