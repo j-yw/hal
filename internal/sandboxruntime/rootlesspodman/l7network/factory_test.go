@@ -280,6 +280,51 @@ func TestL7ComposedRootlessPodmanPartialOwnershipAndCleanupRetry(t *testing.T) {
 		}
 	})
 
+	t.Run("reactivation cannot replace retained namespace cleanup", func(t *testing.T) {
+		sequence := &sequenceLog{}
+		proxy := newFakeProxy(sequence)
+		firstCloser := &retryCloser{sequence: sequence}
+		secondCloser := &retryCloser{sequence: sequence}
+		resolution := validNamespaceResolution()
+		resolution.Close = firstCloser
+		resolver := &fakeNamespaceResolver{sequence: sequence, result: resolution}
+		verifierCalls := 0
+		factory := mustFactory(t, l7network.FactoryOptions{
+			Identity: testIdentity(), Plan: testPlan(), Proxy: proxy,
+			NamespaceResolver: resolver, Rules: &fakeRules{sequence: sequence},
+			RawPacketVerifierFactory: func(rootlesspodman.NetworkTopologyTargetRequest) (linuxrules.RawPacketIsolationVerifier, error) {
+				verifierCalls++
+				if verifierCalls == 1 {
+					return nil, errors.New("private verifier failure")
+				}
+				return fakeRawPacketVerifier{}, nil
+			},
+			GuestProxyAddress: "169.254.77.2", TableName: "hal_l7_a",
+		})
+		prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+		t.Cleanup(func() { _ = prepared.Session.Cleanup(context.Background(), request) })
+		if _, err := prepared.Session.Activate(context.Background(), request); !errors.Is(err, l7network.ErrNamespaceUnverified) {
+			t.Fatalf("first Activate() = %v, want ErrNamespaceUnverified", err)
+		}
+		resolver.result.Close = secondCloser
+		if _, err := prepared.Session.Activate(context.Background(), request); !errors.Is(err, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("second Activate() = %v, want ErrCleanupIncomplete", err)
+		}
+		if verifierCalls != 1 {
+			t.Fatalf("verifier calls = %d, want 1 before retained cleanup", verifierCalls)
+		}
+		if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+			t.Fatalf("Cleanup() = %v", err)
+		}
+		if firstCloser.calls != 1 || secondCloser.calls != 0 {
+			t.Fatalf("namespace closes = first:%d second:%d, want retained first only", firstCloser.calls, secondCloser.calls)
+		}
+	})
+
 	t.Run("transient rule cleanup retains namespace for exact retry", func(t *testing.T) {
 		sequence := &sequenceLog{}
 		proxy := newFakeProxy(sequence)
