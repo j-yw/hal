@@ -281,6 +281,7 @@ func TestL5ProductionVsockBridgeRetriesClosedPreAckGuestPort(t *testing.T) {
 	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
 	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
 	var accepts atomic.Int32
+	resetObserved := make(chan error, 1)
 	go func() {
 		for attempt := 0; attempt < 2; attempt++ {
 			conn, err := listener.Accept()
@@ -288,12 +289,15 @@ func TestL5ProductionVsockBridgeRetriesClosedPreAckGuestPort(t *testing.T) {
 				return
 			}
 			accepts.Add(1)
-			reader := bufio.NewReader(conn)
-			_, _ = reader.ReadString('\n')
 			if attempt == 0 {
+				buffer := make([]byte, 1)
+				_, readErr := io.ReadFull(conn, buffer)
+				resetObserved <- readErr
 				_ = conn.Close()
 				continue
 			}
+			reader := bufio.NewReader(conn)
+			_, _ = reader.ReadString('\n')
 			_, _ = io.WriteString(conn, "OK 1073741824\n")
 			_, _ = frame.Read(reader, 1024)
 			_ = frame.Write(conn, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024)
@@ -304,8 +308,11 @@ func TestL5ProductionVsockBridgeRetriesClosedPreAckGuestPort(t *testing.T) {
 	result, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
 		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
 	})
+	if resetErr := <-resetObserved; resetErr != nil {
+		t.Fatalf("observe pre-ack reset: %v", resetErr)
+	}
 	if err != nil {
-		t.Fatalf("ActivateSession() error = %v, want retry after a closed pre-ack guest port", err)
+		t.Fatalf("ActivateSession() error = %v, want retry after a reset pre-ack guest port", err)
 	}
 	if result.State != sandboxruntime.RuntimeGuestReadinessStateReady {
 		t.Fatalf("readiness state = %q, want ready", result.State)
