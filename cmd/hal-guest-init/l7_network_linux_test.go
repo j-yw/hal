@@ -25,7 +25,7 @@ func TestL7GuestInitParsesStaticBootstrapAndBuildsFixedCommands(t *testing.T) {
 	wantCommands := [][]string{
 		{"/sbin/ip", "link", "set", "dev", "eth0", "up"},
 		{"/sbin/ip", "addr", "add", "192.0.2.2/30", "dev", "eth0"},
-		{"/sbin/ip", "-6", "addr", "add", "fd00:7::2/126", "dev", "eth0"},
+		{"/sbin/ip", "-6", "addr", "add", "fd00:7::2/126", "dev", "eth0", "nodad"},
 		{"/sbin/ip", "route", "add", "default", "via", "192.0.2.1", "dev", "eth0"},
 		{"/sbin/ip", "-6", "route", "add", "default", "via", "fd00:7::1", "dev", "eth0"},
 	}

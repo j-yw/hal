@@ -258,7 +258,7 @@ func exactL7NetworkSnapshot(t *testing.T) linuxNetworkSnapshot {
 		routes: []linuxNetworkRoute{
 			{interfaceName: "eth0", destination: netip.MustParsePrefix("192.0.2.0/30"), flags: 0x1},
 			{interfaceName: "eth0", destination: netip.MustParsePrefix("0.0.0.0/0"), gateway: netip.MustParseAddr("192.0.2.1"), flags: 0x3},
-			{interfaceName: "eth0", destination: netip.MustParsePrefix("fd00:7::/126"), flags: 0x00400001, metric: 256},
+			{interfaceName: "eth0", destination: netip.MustParsePrefix("fd00:7::/126"), flags: 0x1, metric: 256},
 			{interfaceName: "eth0", destination: netip.MustParsePrefix("::/0"), gateway: netip.MustParseAddr("fd00:7::1"), flags: 0x3, metric: 1024},
 			{interfaceName: "eth0", destination: netip.MustParsePrefix("fd00:7::2/128"), flags: 0x80200001},
 			{interfaceName: "eth0", destination: netip.MustParsePrefix("ff00::/8"), flags: 0x1, metric: 256},
