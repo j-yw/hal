@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/base64"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +16,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/sandboxtemplate"
+	"github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"
 	"github.com/jywlabs/hal/internal/sandboxtemplate/acquisition/registry"
+	"github.com/jywlabs/hal/internal/sandboxtemplate/selection"
 )
 
 func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
@@ -71,13 +73,33 @@ func TestOCIRegistryIntegrationStrictTrust(t *testing.T) {
 		t.Fatalf("NewResolver() error = %v", err)
 	}
 	reference := strings.TrimPrefix(origin, "https://") + "/hal/template:latest"
+	workflow := selection.NewWorkflow(acquisition.NewOCIResolver(resolver))
 	for i := 0; i < 2; i++ {
-		result, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest(reference))
+		result, err := workflow.Select(context.Background(), selection.Request{
+			Source: acquisition.TemplateSource{
+				Kind: acquisition.SourceKindOCIArtifact,
+				Reference: &sandboxtemplate.ImmutableRef{
+					Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+					Ref:  reference,
+				},
+			},
+			TrustMode: acquisition.TrustPolicyModeStrict,
+		})
 		if err != nil {
-			t.Fatalf("strict local selection %d: %v (cause %v)", i, err, errors.Unwrap(err))
+			t.Fatalf("strict local selection %d: %v", i, err)
 		}
-		requireDigest(t, result.TemplateArtifactDigest, fixture.manifestDigest)
-		requireDigest(t, result.DocumentDigest, fixture.layerDigest)
+		if result.Trust.Mode != acquisition.TrustPolicyModeStrict ||
+			result.Trust.Decision != acquisition.TrustPolicyDecisionTrusted ||
+			result.Trust.Enforcement == nil || !result.Trust.Enforcement.StrictlyEnforced {
+			t.Fatalf("strict local selection %d trust = %#v", i, result.Trust)
+		}
+		if result.ManifestDigest == nil || "sha256:"+result.ManifestDigest.Value != fixture.manifestDigest {
+			t.Fatalf("strict local selection %d manifest digest = %#v", i, result.ManifestDigest)
+		}
+		if result.Template.Metadata.Reference == nil || result.Template.Metadata.Reference.Ref != "" ||
+			result.Template.Metadata.Reference.Digest == nil || result.Template.Metadata.Reference.Digest.Value != result.ManifestDigest.Value {
+			t.Fatalf("strict local selection %d did not bind immutable template identity", i)
+		}
 	}
 	local.mu.Lock()
 	if local.blobGets != 1 {

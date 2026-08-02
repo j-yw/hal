@@ -12,6 +12,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandboxtemplate"
 	"github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"
+	"github.com/jywlabs/hal/internal/sandboxtemplate/acquisition/registry"
 )
 
 func TestOCIResolverUsesInjectedFixtureAndLocksImmutableDigests(t *testing.T) {
@@ -318,14 +319,55 @@ func TestOCITransientMeasuredBytesAreNeverJSONVisible(t *testing.T) {
 	}
 }
 
+func TestOCIResolverPreservesValidatedSafeArtifactFailureCode(t *testing.T) {
+	const sourceRef = "registry.test/hal/template:latest"
+	resolver := acquisition.NewOCIResolver(&fakeOCIArtifactResolver{
+		err: &registry.Error{Code: registry.ErrorCodeManifestOversize},
+	})
+	_, err := resolver.Resolve(context.Background(), acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind:      acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{Kind: sandboxtemplate.ReferenceKindOCIArtifact, Ref: sourceRef},
+		},
+	})
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) || resolveErr.Code != acquisition.ResolveErrorCode(registry.ErrorCodeManifestOversize) {
+		t.Fatalf("Resolve() error = %v, want manifest_oversize", err)
+	}
+}
+
+func TestOCIResolverRejectsUnknownArtifactFailureCodeWithoutLeakingIt(t *testing.T) {
+	const sensitiveCode = "token=ghp_l9_failure_code"
+	resolver := acquisition.NewOCIResolver(&fakeOCIArtifactResolver{
+		err: &registry.Error{Code: registry.ErrorCode(sensitiveCode)},
+	})
+	_, err := resolver.Resolve(context.Background(), acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind:      acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{Kind: sandboxtemplate.ReferenceKindOCIArtifact, Ref: "registry.test/hal/template:latest"},
+		},
+	})
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) || resolveErr.Code != acquisition.ResolveErrorCodeResolverUnavailable {
+		t.Fatalf("Resolve() error = %v, want resolver_unavailable", err)
+	}
+	if strings.Contains(err.Error(), sensitiveCode) {
+		t.Fatal("Resolve() error leaked an unrecognized artifact failure code")
+	}
+}
+
 type fakeOCIArtifactResolver struct {
 	fixtures map[string]acquisition.OCIArtifactResolveResult
 	calls    []acquisition.OCIArtifactResolveRequest
 	cancel   context.CancelFunc
+	err      error
 }
 
 func (f *fakeOCIArtifactResolver) ResolveOCIArtifact(_ context.Context, request acquisition.OCIArtifactResolveRequest) (acquisition.OCIArtifactResolveResult, error) {
 	f.calls = append(f.calls, request)
+	if f.err != nil {
+		return acquisition.OCIArtifactResolveResult{}, f.err
+	}
 	if f.cancel != nil {
 		f.cancel()
 	}

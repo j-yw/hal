@@ -214,11 +214,13 @@ func TestL9DialPolicyRejectsNonPublicDestinationsAndDNSRebinding(t *testing.T) {
 func TestL9DialPolicyRejectsEveryForbiddenAddressClass(t *testing.T) {
 	for _, raw := range []string{
 		"0.0.0.0",
+		"0.0.0.1",
 		"127.0.0.1",
 		"10.0.0.1",
 		"172.16.0.1",
 		"192.168.0.1",
 		"169.254.169.254",
+		"192.88.99.1",
 		"224.0.0.1",
 		"::",
 		"::1",

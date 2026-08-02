@@ -52,7 +52,7 @@ func TestL9BearerAuthUsesExactRealmServiceScopeAndOriginCredentialPair(t *testin
 		AllowedTokenOrigins: map[string]registry.TokenOriginPolicy{
 			registryOrigin: {
 				Origin:  tokenOrigin,
-				Service: "registry.example",
+				Service: "configured-registry-service",
 			},
 		},
 		CredentialProvider: credentials,
@@ -70,6 +70,47 @@ func TestL9BearerAuthUsesExactRealmServiceScopeAndOriginCredentialPair(t *testin
 		if call.RegistryOrigin != registryOrigin || call.TokenOrigin != tokenOrigin {
 			t.Fatalf("credential lookup pair = %#v, want exact registry/token origins", call)
 		}
+	}
+}
+
+func TestL9BearerAuthAcceptsExactConfiguredService(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	const (
+		tokenOrigin       = "https://tokens.example"
+		configuredService = "configured-registry-service"
+	)
+	client := fakeHTTPDoer(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "registry.example":
+			if request.Header.Get("Authorization") == "Bearer fixture-token" {
+				if strings.Contains(request.URL.Path, "/blobs/") {
+					return registryResponse(http.StatusOK, registry.MediaTypeTemplateYAML, fixture.template, nil), nil
+				}
+				return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, fixture.manifest, nil), nil
+			}
+			return registryResponse(http.StatusUnauthorized, "", nil, map[string]string{
+				"WWW-Authenticate": `Bearer realm="` + tokenOrigin + `/token",service="` + configuredService + `",scope="repository:hal/template:pull"`,
+			}), nil
+		case "tokens.example":
+			return registryResponse(http.StatusOK, "application/json", []byte(`{"token":"fixture-token"}`), nil), nil
+		default:
+			t.Fatalf("unexpected origin %q", request.URL.Host)
+			return nil, nil
+		}
+	})
+	resolver, err := registry.NewResolver(registry.Options{
+		Client:                 client,
+		AllowedRegistryOrigins: []string{registryOrigin},
+		AllowedTokenOrigins: map[string]registry.TokenOriginPolicy{
+			registryOrigin: {Origin: tokenOrigin, Service: configuredService},
+		},
+		CredentialProvider: &recordingCredentialProvider{},
+	})
+	if err != nil {
+		t.Fatalf("NewResolver() error = %v", err)
+	}
+	if _, err := resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest")); err != nil {
+		t.Fatalf("ResolveOCIArtifact() error = %v", err)
 	}
 }
 
