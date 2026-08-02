@@ -1,7 +1,10 @@
 package l7profile
 
 import (
+	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -54,6 +57,56 @@ func TestL7BuildPreservesL5BootCriticalAndFilesystemGates(t *testing.T) {
 		if !strings.Contains(verification, marker) {
 			t.Errorf("verify-final-image.sh missing final-image marker %q", marker)
 		}
+	}
+}
+
+func TestL7BuildNormalizesBuildrootExt4AliasBeforeInspection(t *testing.T) {
+	container := readProfileFile(t, "build-in-container.sh")
+	ordered := []string{
+		`rootfs_alias="$buildroot_output/images/rootfs.ext4"`,
+		`rootfs_payload="$buildroot_output/images/rootfs.ext2"`,
+		`[[ -L "$rootfs_alias" ]]`,
+		`[[ "$(readlink -- "$rootfs_alias")" == rootfs.ext2 ]]`,
+		`[[ -f "$rootfs_payload" && ! -L "$rootfs_payload" ]]`,
+		`install -d -m 0700 -- "$rootfs_stage_dir"`,
+		`install -m 0644 -- "$rootfs_payload" "$rootfs_stage"`,
+		`[[ -f "$rootfs_stage" && ! -L "$rootfs_stage" ]]`,
+		`e2fsck -fn "$rootfs_stage"`,
+		`"$profile_root/verify-final-image.sh" "$rootfs_stage"`,
+		`install -m 0644 -- "$rootfs_stage" /export/rootfs.ext4`,
+		`[[ -f /export/rootfs.ext4 && ! -L /export/rootfs.ext4 ]]`,
+	}
+	previous := -1
+	for _, marker := range ordered {
+		index := strings.Index(container, marker)
+		if index < 0 {
+			t.Fatalf("build-in-container.sh missing rootfs normalization marker %q", marker)
+		}
+		if index <= previous {
+			t.Fatalf("build-in-container.sh marker %q is out of fail-closed order", marker)
+		}
+		previous = index
+	}
+	if strings.Contains(container, `"$profile_root/verify-final-image.sh" "$buildroot_output/images/rootfs.ext4"`) {
+		t.Fatal("build-in-container.sh passes Buildroot's symlink alias directly to the final-image verifier")
+	}
+}
+
+func TestL7FinalImageVerifierRejectsSymlinkInput(t *testing.T) {
+	root := t.TempDir()
+	payload := filepath.Join(root, "rootfs.ext2")
+	if err := os.WriteFile(payload, []byte("not-an-ext-image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "rootfs.ext4")
+	if err := os.Symlink("rootfs.ext2", alias); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("bash", "verify-final-image.sh", alias)
+	err := command.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("verify-final-image.sh symlink exit = %v, want 2", err)
 	}
 }
 
