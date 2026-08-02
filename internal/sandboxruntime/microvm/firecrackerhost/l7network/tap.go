@@ -266,11 +266,24 @@ func inspectTAPRoutes(payload []byte, name, destination, preferredSource string)
 		return false
 	}
 	route := routes[0]
-	if route.Device != name || route.Gateway != "" || route.Destination != destination || route.Preferred != preferredSource ||
+	if (route.Device != "" && route.Device != name) || route.Gateway != "" || !tapHostRouteDestinationMatches(route.Destination, destination) || route.Preferred != preferredSource ||
 		(route.Type != "" && route.Type != "unicast") {
 		return false
 	}
 	return true
+}
+
+func tapHostRouteDestinationMatches(got, want string) bool {
+	wantPrefix, err := netip.ParsePrefix(want)
+	if err != nil || wantPrefix.Bits() != wantPrefix.Addr().BitLen() {
+		return false
+	}
+	if strings.Contains(got, "/") {
+		gotPrefix, err := netip.ParsePrefix(got)
+		return err == nil && gotPrefix == wantPrefix
+	}
+	gotAddress, err := netip.ParseAddr(got)
+	return err == nil && gotAddress == wantPrefix.Addr()
 }
 
 func inspectTAPAbsent(payload []byte, name string) bool {
