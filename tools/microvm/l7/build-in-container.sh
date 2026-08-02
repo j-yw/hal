@@ -44,6 +44,7 @@ grep -Fxq 'CONFIG_X86_MPPARSE=n' "$profile_root/linux.config"
 grep -Fxq 'CONFIG_VIRTIO_MMIO=n' "$profile_root/linux.config"
 grep -Fxq 'CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=n' "$profile_root/linux.config"
 grep -Fxq '# CONFIG_DEVTMPFS_MOUNT is not set' "$profile_root/linux.config"
+grep -Fxq 'CONFIG_IPV6_SIT=n' "$profile_root/linux.config"
 
 for required in \
 	CONFIG_NET=y CONFIG_PACKET=y CONFIG_INET=y CONFIG_IPV6=y \
@@ -105,6 +106,7 @@ for required in \
 	CONFIG_NETDEVICES=y CONFIG_VIRTIO_NET=y CONFIG_VSOCKETS=y CONFIG_VIRTIO_VSOCKETS=y; do
 	grep -Fxq "$required" "$kernel_config"
 done
+grep -Fxq '# CONFIG_IPV6_SIT is not set' "$kernel_config"
 busybox_config=$(find "$buildroot_output/build" -maxdepth 2 -path '*/busybox-1.38.0/.config' -print -quit)
 test -n "$busybox_config"
 for required in \
