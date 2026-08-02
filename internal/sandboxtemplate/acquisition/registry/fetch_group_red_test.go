@@ -109,3 +109,51 @@ func TestL9FetchGroupCancelsSharedFetchAfterAllOwnersCancel(t *testing.T) {
 		t.Fatalf("fetches = %d, want one", fetches.Load())
 	}
 }
+
+func TestL9FetchGroupStaleReleaseCannotCancelNewGeneration(t *testing.T) {
+	group := &fetchGroup{}
+	key := "sha256:fixture"
+	if _, err := group.do(context.Background(), key, func(context.Context) ([]byte, error) {
+		return []byte("old-generation"), nil
+	}); err != nil {
+		t.Fatalf("old generation error = %v", err)
+	}
+
+	// Two callers that completed against the old generation can currently leave
+	// two digest-only deferred releases behind. The first retires the old call;
+	// the second must not be able to retire a replacement call with the same key.
+	staleRelease := func() { group.forget(key) }
+	staleRelease()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	canceled := make(chan struct{})
+	newDone := make(chan error, 1)
+	go func() {
+		data, err := group.do(context.Background(), key, func(ctx context.Context) ([]byte, error) {
+			close(started)
+			select {
+			case <-release:
+				return []byte("new-generation"), nil
+			case <-ctx.Done():
+				close(canceled)
+				return nil, ctx.Err()
+			}
+		})
+		if err == nil && string(data) != "new-generation" {
+			err = errors.New("new generation returned different bytes")
+		}
+		newDone <- err
+	}()
+	<-started
+	staleRelease()
+	select {
+	case <-canceled:
+		t.Fatal("stale release canceled the new fetch generation")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-newDone; err != nil {
+		t.Fatalf("new generation error = %v", err)
+	}
+}

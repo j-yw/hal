@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxtemplate"
 	"github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"
@@ -281,6 +282,27 @@ func TestL9RegistryResolverCancellationAndDeadlineHaveDistinctCodes(t *testing.T
 			_ = fixture
 		})
 	}
+}
+
+func TestL9RegistryResolverDeadlineDuringSharedLayerFetchIsRequestTimeout(t *testing.T) {
+	fixture := newRegistryFixture(t)
+	client := fakeHTTPDoer(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Path, "/manifests/") {
+			return registryResponse(http.StatusOK, registry.MediaTypeOCIManifest, fixture.manifest, nil), nil
+		}
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})
+	resolver, err := registry.NewResolver(registry.Options{
+		Client:                 client,
+		AllowedRegistryOrigins: []string{registryOrigin},
+		RequestTimeout:         20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewResolver() error = %v", err)
+	}
+	_, err = resolver.ResolveOCIArtifact(context.Background(), tagRequest("registry.example/hal/template:latest"))
+	requireRegistryErrorCode(t, err, registry.ErrorCodeRequestTimeout)
 }
 
 func TestL9RegistryResolverRechecksCancellationAfterCachePublicationWork(t *testing.T) {
