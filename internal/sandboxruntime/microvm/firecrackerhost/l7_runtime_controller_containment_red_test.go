@@ -38,6 +38,36 @@ func TestL7RuntimeControllerPartialPrepareFailureRetainsExactAbortForRetry(t *te
 	}
 }
 
+func TestL7RuntimeControllerRetriesAfterCompletePreVMCleanup(t *testing.T) {
+	harness := newL7RuntimeControllerHarness(t, "complete-pre-vm-retry", nil)
+	harness.topologies.errors[harness.identity.RuntimeGenerationID] = errors.New("private initial topology failure")
+
+	if target, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart)); err == nil || target != nil {
+		t.Fatalf("first Start() = %#v, %v, want sanitized failure", target, err)
+	}
+	if harness.session.abortCalls != 1 || harness.controller.preVMCleanup != nil {
+		t.Fatalf("first cleanup = aborts:%d retained:%t, want complete rollback", harness.session.abortCalls, harness.controller.preVMCleanup != nil)
+	}
+	if harness.runtimes.runtime(harness.identity.RuntimeGenerationID) != nil {
+		t.Fatal("failed topology preparation constructed a Firecracker runtime")
+	}
+
+	retrySession := newL7RuntimeFakeTopologySession(harness.identity, harness.session.sequence)
+	t.Cleanup(retrySession.closeLoss)
+	harness.topologies.mu.Lock()
+	harness.topologies.sessions[harness.identity.RuntimeGenerationID] = retrySession
+	delete(harness.topologies.errors, harness.identity.RuntimeGenerationID)
+	harness.topologies.mu.Unlock()
+
+	started, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart))
+	if err != nil || started == nil || started.Status != string(l7network.StatusActive) {
+		t.Fatalf("retry Start() = %#v, %v, want active", started, err)
+	}
+	if retrySession.abortCalls != 0 || retrySession.inspectCalls != 1 {
+		t.Fatalf("retry session calls = abort:%d inspect:%d, want 0/1", retrySession.abortCalls, retrySession.inspectCalls)
+	}
+}
+
 func TestL7RuntimeControllerPreVMFailuresAbortExactPreparedTopology(t *testing.T) {
 	tests := []struct {
 		name      string
