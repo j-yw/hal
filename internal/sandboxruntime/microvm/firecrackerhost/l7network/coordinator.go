@@ -346,24 +346,40 @@ func (s *Session) armEnforcementLossWatcher() error {
 	if s == nil || s.proxyLoss == nil || s.topologyLoss == nil {
 		return ErrTopologyPrepareFailed
 	}
-	// The unbuffered acknowledgement transfers channel ownership to the
-	// watcher before Prepare publishes the session. Buffered or closed loss
-	// signals that predate the handoff are returned to Prepare for rollback.
+	// The unbuffered acknowledgement is one case in the watcher's loss
+	// select. Its rendezvous is the publication linearization point: an
+	// earlier loss is returned to Prepare, while a later loss is contained by
+	// the same watcher after publication.
 	armed := make(chan error)
 	go s.watchEnforcementLoss(armed)
 	return <-armed
 }
 
 func (s *Session) watchEnforcementLoss(armed chan<- error) {
-	pending := s.pendingEnforcementLoss()
 	if hook := s.coordinator.options.beforeLossArm; hook != nil {
 		hook()
 	}
-	armed <- pending
-	close(armed)
-	if pending != nil {
+	if pending := s.pendingEnforcementLoss(); pending != nil {
+		armed <- pending
+		close(armed)
 		return
 	}
+	select {
+	case <-s.proxyLoss:
+		armed <- ErrProxyUnavailable
+		close(armed)
+		return
+	case <-s.topologyLoss:
+		armed <- ErrTopologyPrepareFailed
+		close(armed)
+		return
+	case armed <- nil:
+		close(armed)
+	}
+	s.containEnforcementLoss()
+}
+
+func (s *Session) containEnforcementLoss() {
 	select {
 	case <-s.proxyLoss:
 	case <-s.topologyLoss:
