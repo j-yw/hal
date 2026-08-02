@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestL5GuestInitSupervisesAgentProcessGroupAndReapsAllChildren(t *testing.T) {
@@ -21,10 +23,37 @@ func TestL5GuestInitSupervisesAgentProcessGroupAndReapsAllChildren(t *testing.T)
 		"unix.Kill(-childPID",
 		"terminationGrace",
 		"unix.SIGKILL",
+		"waitForMainChild(childPID, unix.Wait4)",
 	} {
 		if !strings.Contains(string(source), marker) {
 			t.Errorf("guest PID1 supervisor missing %q", marker)
 		}
+	}
+}
+
+func TestL7GuestInitReapsKilledMainChildWithoutSignalNotification(t *testing.T) {
+	const mainPID = 101
+	wantStatus := unix.WaitStatus(unix.SIGKILL)
+	waitCalls := 0
+	status, exited := waitForMainChild(mainPID, func(pid int, status *unix.WaitStatus, options int, _ *unix.Rusage) (int, error) {
+		waitCalls++
+		if pid != mainPID {
+			t.Fatalf("Wait4 pid = %d, want exact main child", pid)
+		}
+		if options != 0 {
+			t.Fatalf("Wait4 options = %d, want blocking wait", options)
+		}
+		if waitCalls == 1 {
+			return -1, unix.EINTR
+		}
+		*status = wantStatus
+		return mainPID, nil
+	})
+	if !exited || status != wantStatus {
+		t.Fatalf("waitForMainChild() = %v, %t, want killed child status", status, exited)
+	}
+	if waitCalls != 2 {
+		t.Fatalf("Wait4 calls = %d, want EINTR retry and reap", waitCalls)
 	}
 }
 
