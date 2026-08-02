@@ -32,6 +32,7 @@ func TestL7ProductionVsockBridgeBindsReadinessToExactIsolationProof(t *testing.T
 	})
 	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
 	requests := make(chan guestagent.ReadinessRequest, 2)
+	serverErrors := make(chan error, 2)
 	go func() {
 		for attempt := 0; attempt < 2; attempt++ {
 			conn, err := listener.Accept()
@@ -68,7 +69,7 @@ func TestL7ProductionVsockBridgeBindsReadinessToExactIsolationProof(t *testing.T
 				},
 			}
 			encoded, _ := json.Marshal(response)
-			_ = frame.Write(conn, encoded, 4096)
+			serverErrors <- l5WriteBridgeResponse(conn, encoded, 4096)
 			_ = conn.Close()
 		}
 	}()
@@ -78,6 +79,9 @@ func TestL7ProductionVsockBridgeBindsReadinessToExactIsolationProof(t *testing.T
 	})
 	if err != nil {
 		t.Fatalf("ActivateSession() error = %v", err)
+	}
+	if serverErr := <-serverErrors; serverErr != nil {
+		t.Fatalf("serve initial readiness: %v", serverErr)
 	}
 	request := <-requests
 	if request.IsolationProof == nil || request.IsolationProof.Generation != "topology-generation-vsock" ||
@@ -97,6 +101,9 @@ func TestL7ProductionVsockBridgeBindsReadinessToExactIsolationProof(t *testing.T
 	proof, err := fixture.bridge.refreshL7Proof(context.Background(), target, "topology-generation-vsock")
 	if err != nil {
 		t.Fatalf("refreshL7Proof() error = %v", err)
+	}
+	if serverErr := <-serverErrors; serverErr != nil {
+		t.Fatalf("serve refreshed readiness: %v", serverErr)
 	}
 	if proof.runtimeID != "fc-production-test" || proof.handleID != fixture.handle.ID ||
 		proof.handleSource != fixture.handle.Source || proof.bridgeGeneration == "" ||
@@ -118,12 +125,18 @@ func TestL7ProductionVsockProofRefreshIsRaceSafeWithSessionInvalidation(t *testi
 		IsolationProofGeneration: "topology-generation-race",
 	})
 	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
-	go l7ServeProofRequiredReadiness(listener, "topology-generation-race", "fc-production-test")
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- l7ServeProofRequiredReadiness(listener, "topology-generation-race", "fc-production-test")
+	}()
 	_, generation, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
 		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
 	})
 	if err != nil {
 		t.Fatalf("ActivateSession() error = %v", err)
+	}
+	if serverErr := <-serverDone; serverErr != nil {
+		t.Fatalf("serve proof readiness: %v", serverErr)
 	}
 
 	client := &l7ConcurrentReadinessClient{
@@ -191,19 +204,28 @@ func (client *l7ConcurrentReadinessClient) Readiness(ctx context.Context, reques
 	return l7ProofRequiredReadinessResponse(request.IsolationProof.Generation, request.IsolationProof.RuntimeGeneration), nil
 }
 
-func l7ServeProofRequiredReadiness(listener net.Listener, topologyGeneration, runtimeGeneration string) {
+func l7ServeProofRequiredReadiness(listener net.Listener, topologyGeneration, runtimeGeneration string) error {
 	connection, err := listener.Accept()
 	if err != nil {
-		return
+		return err
 	}
 	defer connection.Close()
 	reader := bufio.NewReader(connection)
-	_, _ = reader.ReadString('\n')
-	_, _ = io.WriteString(connection, "OK 1073741824\n")
-	_, _ = frame.Read(reader, 4096)
+	if _, err := reader.ReadString('\n'); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(connection, "OK 1073741824\n"); err != nil {
+		return err
+	}
+	if _, err := frame.Read(reader, 4096); err != nil {
+		return err
+	}
 	response := l7ProofRequiredReadinessResponse(topologyGeneration, runtimeGeneration)
-	encoded, _ := json.Marshal(response)
-	_ = frame.Write(connection, encoded, 4096)
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	return l5WriteBridgeResponse(connection, encoded, 4096)
 }
 
 func l7ProofRequiredReadinessResponse(topologyGeneration, runtimeGeneration string) *guestagent.ReadinessResponse {
@@ -360,13 +382,17 @@ func TestL5ProductionVsockBridgeRejectsMalformedAckWithoutRetry(t *testing.T) {
 func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
 	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
-	go l5ServeReadyBridge(listener)
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- l5ServeReadyBridge(listener) }()
 
 	result, generation, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
 		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
 	})
 	if err != nil {
 		t.Fatalf("ActivateSession() error = %v", err)
+	}
+	if serverErr := <-serverDone; serverErr != nil {
+		t.Fatalf("serve readiness: %v", serverErr)
 	}
 	if result.Transport != "vsock" || strings.Join(result.Labels, ",") != "ready,protocol_v1,runtime_bound,probe_ok" {
 		t.Fatalf("readiness = %#v, want canonical vsock labels", result)
@@ -396,7 +422,7 @@ func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	if !fixture.bridge.SessionActive(req, generation) {
 		t.Fatal("forged process ID source invalidated the legitimate generation")
 	}
-	close(fixture.process.done)
+	fixture.process.stop()
 	deadline := time.Now().Add(time.Second)
 	for fixture.bridge.SessionActive(req, generation) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -465,6 +491,7 @@ func newL5ProductionBridgeFixture(t *testing.T, pid int) l5ProductionBridgeFixtu
 		t.Fatal(err)
 	}
 	process := &l5IdentityProcess{pid: pid, done: make(chan struct{})}
+	t.Cleanup(process.stop)
 	manager := NewProcessLifecycleManager(l5SingleProcessRunner{process: process})
 	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
 		Executable: "firecracker",
@@ -487,8 +514,9 @@ func newL5ProductionBridgeFixture(t *testing.T, pid int) l5ProductionBridgeFixtu
 }
 
 type l5IdentityProcess struct {
-	pid  int
-	done chan struct{}
+	pid      int
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 func (*l5IdentityProcess) Wait(ctx context.Context) error {
@@ -499,6 +527,10 @@ func (*l5IdentityProcess) Signal(context.Context, ProcessSignal) error { return 
 func (*l5IdentityProcess) Kill(context.Context) error                  { return nil }
 func (process *l5IdentityProcess) HostPID() int                        { return process.pid }
 func (process *l5IdentityProcess) Done() <-chan struct{}               { return process.done }
+
+func (process *l5IdentityProcess) stop() {
+	process.stopOnce.Do(func() { close(process.done) })
+}
 
 func l5ListenBridgeSocket(t *testing.T, path string) net.Listener {
 	t.Helper()
@@ -514,15 +546,39 @@ func l5ListenBridgeSocket(t *testing.T, path string) net.Listener {
 	return listener
 }
 
-func l5ServeReadyBridge(listener net.Listener) {
+func l5ServeReadyBridge(listener net.Listener) error {
 	conn, err := listener.Accept()
 	if err != nil {
-		return
+		return err
 	}
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
-	_, _ = reader.ReadString('\n')
-	_, _ = io.WriteString(conn, "OK 1073741824\n")
-	_, _ = frame.Read(reader, 1024)
-	_ = frame.Write(conn, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024)
+	if _, err := reader.ReadString('\n'); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(conn, "OK 1073741824\n"); err != nil {
+		return err
+	}
+	if _, err := frame.Read(reader, 1024); err != nil {
+		return err
+	}
+	return l5WriteBridgeResponse(conn, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024)
+}
+
+func l5WriteBridgeResponse(conn net.Conn, encoded []byte, limit int64) error {
+	if err := frame.Write(conn, encoded, limit); err != nil {
+		return err
+	}
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return errors.New("bridge connection is not Unix")
+	}
+	if err := unixConn.CloseWrite(); err != nil {
+		return err
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		return err
+	}
+	_, err := io.Copy(io.Discard, conn)
+	return err
 }

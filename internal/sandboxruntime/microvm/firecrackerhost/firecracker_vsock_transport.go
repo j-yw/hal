@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
@@ -139,9 +140,9 @@ func (transport *firecrackerVsockTransport) RoundTrip(ctx context.Context, reque
 		cause := err
 		// Firecracker closes the host-side UDS connection without an
 		// acknowledgement when the guest has not yet bound the requested port.
-		// That exact empty pre-ack EOF is safe to retry while the tracked VMM is
-		// alive. Partial or malformed acknowledgements remain fail-closed.
-		if len(ack) == 0 && errors.Is(err, io.EOF) {
+		// That exact empty pre-ack close is safe to retry while the tracked VMM
+		// is alive. Partial or malformed acknowledgements remain fail-closed.
+		if len(ack) == 0 && (errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)) {
 			cause = vsockGuestPortUnavailableError{cause: err}
 		}
 		return guestagent.TransportResponse{}, transportFailure(request.Operation, ctx, cause)
