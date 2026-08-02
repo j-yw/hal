@@ -22,7 +22,7 @@ func TestLinuxRulesProductionExecutorRequiresAbsoluteToolPaths(t *testing.T) {
 	}
 }
 
-func TestLinuxRulesNamespaceCommandEntersOwningUserThenNetworkNamespace(t *testing.T) {
+func TestLinuxRulesNamespaceCommandRetainsOwningNamespaceCapabilities(t *testing.T) {
 	userNamespace, err := os.Open("/proc/self/ns/user")
 	if err != nil {
 		t.Fatalf("open user namespace: %v", err)
@@ -51,7 +51,7 @@ func TestLinuxRulesNamespaceCommandEntersOwningUserThenNetworkNamespace(t *testi
 	if command.Path != "/usr/bin/nsenter" {
 		t.Fatalf("command path = %q, want absolute nsenter path", command.Path)
 	}
-	want := []string{"/usr/bin/nsenter", "--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--preserve-credentials", "--", "/usr/bin/nft", "--json"}
+	want := []string{"/usr/bin/nsenter", "--preserve-credentials", "--keep-caps", "--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--", "/usr/bin/nft", "--json"}
 	if len(command.Args) != len(want) {
 		t.Fatalf("command args = %#v, want %#v", command.Args, want)
 	}
