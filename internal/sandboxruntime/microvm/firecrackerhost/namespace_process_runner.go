@@ -25,13 +25,6 @@ var (
 
 const defaultNamespaceProcessCleanupTimeout = 5 * time.Second
 
-const (
-	namespaceProcessUserChildFD    = 3
-	namespaceProcessNetworkChildFD = 4
-	namespaceProcessKernelChildFD  = 5
-	namespaceProcessRootfsChildFD  = 6
-)
-
 // NamespaceProcessFileProvider creates one independently owned user/network
 // namespace descriptor pair for one process launch. Implementations must not
 // return their retained session descriptors directly.
@@ -115,7 +108,9 @@ func (runner *NamespaceProcessRunner) StartHostProcess(ctx context.Context, requ
 	}
 	user, network, err := runner.namespace.DuplicateForNamespaceProcess()
 	if err != nil || !validNamespaceProcessFiles(user, network, request.InheritedFiles) {
-		closeNamespaceProcessFiles(user, network)
+		if closeErr := closeNamespaceProcessFiles(user, network); closeErr != nil {
+			return nil, errors.Join(ErrNamespaceProcessNamespaceInvalid, ErrNamespaceProcessCleanupIncomplete)
+		}
 		return nil, ErrNamespaceProcessNamespaceInvalid
 	}
 	wrapperArgs := []string{

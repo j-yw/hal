@@ -96,8 +96,13 @@ func TestL7RuntimeControllerParallelRuntimesKeepExactTopologyOwnership(t *testin
 		runtime := runtimes.runtime(identity.RuntimeGenerationID)
 		session := topologies.session(identity.RuntimeGenerationID)
 		provided := assetProvider.asset(identity.RuntimeGenerationID)
-		if runtime == nil || session == nil {
+		if runtime == nil {
 			t.Fatalf("runtime/session %q was not constructed", identity.RuntimeGenerationID)
+			continue
+		}
+		if session == nil {
+			t.Fatalf("runtime/session %q was not constructed", identity.RuntimeGenerationID)
+			continue
 		}
 		if runtime.request.Identity != identity || runtime.request.Namespace != session.launch.Namespace ||
 			runtime.request.TopologyGenerationID != identity.TopologyGenerationID {
@@ -166,6 +171,7 @@ func TestL7RuntimeControllerProxyLossAndStopRaceCleansExactRuntimeOnce(t *testin
 	runtime := runtimes.runtime(identity.RuntimeGenerationID)
 	if runtime == nil {
 		t.Fatal("Firecracker runtime was not constructed")
+		return
 	}
 	if runtime.stopCalls != 1 || runtime.terminationCalls != 1 || session.quarantineCalls != 1 || session.cleanupCalls != 1 {
 		t.Fatalf("race calls = stop %d termination %d quarantine %d cleanup %d, want exactly 1 each",

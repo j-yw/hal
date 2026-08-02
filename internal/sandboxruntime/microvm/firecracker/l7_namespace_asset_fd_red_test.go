@@ -25,7 +25,11 @@ func TestL7NamespaceRenderMovesOnlyTwoAssetsToChildFDsFiveAndSix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderLiveBootFilesForStart() error = %v", err)
 	}
-	defer closeProcessInheritedFiles(files)
+	defer func() {
+		if closeErr := closeProcessInheritedFiles(files); closeErr != nil {
+			t.Errorf("closeProcessInheritedFiles() error = %v", closeErr)
+		}
+	}()
 	if len(files) != 2 {
 		t.Fatalf("inherited files = %d, want exactly two assets", len(files))
 	}

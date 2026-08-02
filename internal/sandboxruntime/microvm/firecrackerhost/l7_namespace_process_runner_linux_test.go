@@ -224,6 +224,7 @@ func TestOSExecNamespaceProcessStarterNormalizesNilContext(t *testing.T) {
 		return privateFailure
 	}}
 
+	//nolint:staticcheck // This compatibility test deliberately exercises nil-context normalization.
 	process, err := starter.StartNamespaceProcess(nil, l7NamespaceStarterRequest(files))
 	if process != nil || !errors.Is(err, ErrNamespaceProcessStartFailed) || errors.Is(err, privateFailure) {
 		t.Fatalf("StartNamespaceProcess(nil) = %#v, %v, want sanitized start failure", process, err)
