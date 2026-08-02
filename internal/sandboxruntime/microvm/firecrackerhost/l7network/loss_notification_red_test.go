@@ -247,6 +247,86 @@ func TestFirecrackerHostTopologyRejectsLossDuringWatcherArmHandoff(t *testing.T)
 	}
 }
 
+func TestFirecrackerHostTopologyAbortBeforeVMCleansQuarantinedLoss(t *testing.T) {
+	for _, mode := range []string{"proxy", "topology"} {
+		t.Run(mode, func(t *testing.T) {
+			sequence := &callSequence{}
+			proxy := newFakeProxy(sequence)
+			topology := newFakeTopology(sequence)
+			coordinator := mustCoordinator(t, Options{
+				Enabled: true, Proxy: proxy, Topology: topology,
+				TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+				Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+			})
+			session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "proxy":
+				close(proxy.current.loss)
+			case "topology":
+				topology.session.losses <- linuxtopology.Loss{
+					TopologyGenerationID: testIdentity().TopologyGenerationID,
+					Component:            linuxtopology.ProcessRoleKeeper,
+					Reason:               linuxtopology.LossReasonProcessExited,
+				}
+			}
+			select {
+			case result := <-session.Loss():
+				assertProxyLossResult(t, any(result), StatusQuarantined, nil)
+			case <-time.After(time.Second):
+				t.Fatal("enforcement loss did not finish pre-VM quarantine")
+			}
+			sequence.reset()
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := session.AbortBeforeVM(canceled, testIdentity()); err != nil {
+				t.Fatalf("AbortBeforeVM(quarantined loss) = %v", err)
+			}
+			if got := session.Metadata().Status; got != StatusStopped {
+				t.Fatalf("AbortBeforeVM(quarantined loss) status = %q, want %q", got, StatusStopped)
+			}
+			if got, want := sequence.snapshot(), []string{
+				"rules_cleanup", "tap_delete", "topology_stop", "proxy_stop", "journal_remove", "journal_release",
+			}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("AbortBeforeVM(quarantined loss) sequence = %#v, want %#v", got, want)
+			}
+			proxy.current = &fakeGeneration{address: "127.0.0.1:43123", loss: make(chan struct{})}
+			next := alternateIdentity()
+			if _, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: next, Plan: planForIdentity(next)}); err != nil {
+				t.Fatalf("Prepare(after quarantined loss abort) = %v, want released coordinator", err)
+			}
+		})
+	}
+}
+
+func TestFirecrackerHostTopologyAbortBeforeVMRejectsGuestOwnedQuarantine(t *testing.T) {
+	sequence := &callSequence{}
+	verifier := &fakeRawPacketVerifier{sequence: sequence, err: errors.New("private guest verification failure")}
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: newFakeProxy(sequence), Topology: newFakeTopology(sequence),
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence}, GuestIsolation: verifier,
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+	})
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := true
+	binding := &fakeRunningGuestBinding{correlation: testCorrelation(), proofID: "guest-ready-proof-owned", ready: &ready}
+	if _, err := session.InspectAfterGuestReady(context.Background(), testIdentity(), binding); err == nil {
+		t.Fatal("InspectAfterGuestReady() unexpectedly accepted failed guest verification")
+	}
+	sequence.reset()
+	if err := session.AbortBeforeVM(context.Background(), testIdentity()); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("AbortBeforeVM(guest-owned quarantine) = %v, want ErrCleanupIncomplete", err)
+	}
+	if got := sequence.snapshot(); len(got) != 0 {
+		t.Fatalf("AbortBeforeVM(guest-owned quarantine) mutated resources: %#v", got)
+	}
+}
+
 func TestFirecrackerHostTopologyProxyLossPublishesSanitizedQuarantineFailure(t *testing.T) {
 	sequence := &callSequence{}
 	proxy := newFakeProxy(sequence)

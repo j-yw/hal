@@ -36,6 +36,12 @@ func TestFirecrackerHostTopologyReconcilerQuarantinesBeforeVMStopHandoff(t *test
 		t.Fatalf("recovery sequence = %#v, want %#v", got, want)
 	}
 	sequence.reset()
+	if err := session.AbortBeforeVM(context.Background(), identity); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("AbortBeforeVM(recovered quarantine) = %v, want ErrCleanupIncomplete", err)
+	}
+	if len(sequence.snapshot()) != 0 {
+		t.Fatalf("AbortBeforeVM(recovered quarantine) mutated resources: %#v", sequence.snapshot())
+	}
 	if err := session.CleanupAfterVMQuiesced(context.Background(), identity, nil); !errors.Is(err, ErrVMNotQuiesced) {
 		t.Fatalf("unconfirmed cleanup = %v", err)
 	}
