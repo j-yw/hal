@@ -24,6 +24,8 @@ func TestL7NamespaceProcessRunnerMapsNamespaceAndAssetFilesDeterministically(t *
 			t.Fatalf("wrapper executable = %q", request.Executable)
 		}
 		wantArgs := []string{
+			"--preserve-credentials",
+			"--keep-caps",
 			"--user=/proc/self/fd/3",
 			"--net=/proc/self/fd/4",
 			"--",
