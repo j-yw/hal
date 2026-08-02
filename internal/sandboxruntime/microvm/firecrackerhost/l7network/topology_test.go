@@ -656,7 +656,7 @@ type retryNamespaceTopology struct {
 func newRetryNamespaceTopology(sequence *callSequence) *retryNamespaceTopology {
 	lease := &retryNamespaceLease{sequence: sequence, closeFailures: 1}
 	return &retryNamespaceTopology{sequence: sequence, lease: lease,
-		session: &retryNamespaceSession{sequence: sequence, lease: lease}}
+		session: &retryNamespaceSession{sequence: sequence, lease: lease, losses: make(chan linuxtopology.Loss, 1)}}
 }
 
 func (t *retryNamespaceTopology) Start(_ context.Context, request linuxtopology.StartRequest) (TopologySession, error) {
@@ -678,11 +678,14 @@ type retryNamespaceSession struct {
 	identity  linuxtopology.Identity
 	lease     *retryNamespaceLease
 	borrowErr error
+	losses    chan linuxtopology.Loss
 }
 
 func (s *retryNamespaceSession) Metadata() linuxtopology.Metadata {
 	return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusPrepared, StructuralInspected: true, MappingReachable: true}
 }
+
+func (s *retryNamespaceSession) Losses() <-chan linuxtopology.Loss { return s.losses }
 
 func (s *retryNamespaceSession) BorrowNamespace() (NamespaceLease, error) {
 	s.sequence.add("topology_borrow")

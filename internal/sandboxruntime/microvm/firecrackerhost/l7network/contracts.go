@@ -120,6 +120,9 @@ type ProxyLifecycle interface {
 type TopologySession interface {
 	Metadata() linuxtopology.Metadata
 	BorrowNamespace() (NamespaceLease, error)
+	// Losses reports loss of an exact topology-owned process generation. A
+	// prepared Firecracker topology must provide this live signal.
+	Losses() <-chan linuxtopology.Loss
 }
 
 type TopologyLifecycle interface {

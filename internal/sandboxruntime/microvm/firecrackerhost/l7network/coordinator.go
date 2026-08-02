@@ -53,6 +53,8 @@ type Session struct {
 	guestBinding     RunningGuestBinding
 	guestSnapshot    runningGuestSnapshot
 	retainedCleanup  retainedCleanupMode
+	proxyLoss        <-chan struct{}
+	topologyLoss     <-chan linuxtopology.Loss
 	loss             chan ProxyLossResult
 	lossPublish      sync.Once
 }
@@ -147,7 +149,8 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 		session.proxy = nil
 		return c.retainUntrackedPrepareUncertainty(session, ErrProxyUnavailable)
 	}
-	if session.proxy.Loss() == nil {
+	session.proxyLoss = session.proxy.Loss()
+	if session.proxyLoss == nil {
 		return c.failPrepare(session, ErrProxyUnavailable)
 	}
 	endpoint, err := c.options.Proxy.Endpoint(session.proxy)
@@ -178,6 +181,10 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	}
 	if !topologyMetadataMatches(topology.Metadata(), session.topologyIdentity) {
 		return c.failPrepare(session, ErrProofMismatch)
+	}
+	session.topologyLoss = topology.Losses()
+	if session.topologyLoss == nil {
+		return c.failPrepare(session, ErrTopologyPrepareFailed)
 	}
 	namespace, err := topology.BorrowNamespace()
 	if !interfaceIsNil(namespace) {
@@ -241,7 +248,7 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 		return c.failPrepare(session, ErrProxyUnavailable)
 	}
 	c.current = session
-	go session.watchProxyLoss()
+	go session.watchEnforcementLoss()
 	return session, nil
 }
 
@@ -333,15 +340,14 @@ func (s *Session) Loss() <-chan ProxyLossResult {
 	return s.loss
 }
 
-func (s *Session) watchProxyLoss() {
-	if s == nil || interfaceIsNil(s.proxy) {
+func (s *Session) watchEnforcementLoss() {
+	if s == nil || s.proxyLoss == nil || s.topologyLoss == nil {
 		return
 	}
-	loss := s.proxy.Loss()
-	if loss == nil {
-		return
+	select {
+	case <-s.proxyLoss:
+	case <-s.topologyLoss:
 	}
-	<-loss
 	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
 	defer cancel()
 	err := sanitizeProxyLossError(s.Quarantine(ctx, s.identity))

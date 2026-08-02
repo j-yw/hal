@@ -215,9 +215,9 @@ equivalents from typed live state, clears uncontrolled proxy bypass variables,
 and never persists the endpoint. Removing those variables cannot restore
 direct egress because nftables remains default-drop.
 
-On stop, cancel or proxy loss, proof is revoked first. The runtime is stopped
-or frozen before rules are removed. Releasing the proxy port while an active
-mapping could reach a future listener is forbidden.
+On stop, cancel, proxy loss, or topology keeper/mapper loss, proof is revoked
+first. The runtime is stopped or frozen before rules are removed. Releasing the
+proxy port while an active mapping could reach a future listener is forbidden.
 
 ## Firecracker topology and guest profile
 

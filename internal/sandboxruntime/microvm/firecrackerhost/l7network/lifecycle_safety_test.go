@@ -577,7 +577,7 @@ type typedNilNamespaceTopology struct{ sequence *callSequence }
 
 func (t *typedNilNamespaceTopology) Start(_ context.Context, request linuxtopology.StartRequest) (TopologySession, error) {
 	t.sequence.add("topology_start")
-	return &typedNilBorrowSession{sequence: t.sequence, identity: request.Identity}, nil
+	return &typedNilBorrowSession{sequence: t.sequence, identity: request.Identity, losses: make(chan linuxtopology.Loss, 1)}, nil
 }
 func (t *typedNilNamespaceTopology) Stop(context.Context, linuxtopology.Identity) (linuxtopology.Metadata, error) {
 	t.sequence.add("topology_stop")
@@ -587,11 +587,13 @@ func (t *typedNilNamespaceTopology) Stop(context.Context, linuxtopology.Identity
 type typedNilBorrowSession struct {
 	sequence *callSequence
 	identity linuxtopology.Identity
+	losses   chan linuxtopology.Loss
 }
 
 func (s *typedNilBorrowSession) Metadata() linuxtopology.Metadata {
 	return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusPrepared, StructuralInspected: true, MappingReachable: true}
 }
+func (s *typedNilBorrowSession) Losses() <-chan linuxtopology.Loss { return s.losses }
 func (s *typedNilBorrowSession) BorrowNamespace() (NamespaceLease, error) {
 	s.sequence.add("topology_borrow")
 	var lease *fakeNamespaceLease
@@ -620,7 +622,11 @@ func (r *typedNilRecoveryResult) Recover(_ context.Context, identity Identity) (
 		var value *fakeTopology
 		lifecycle = value
 	}
-	var session TopologySession = &typedNilBorrowSession{sequence: r.sequence, identity: topologyIdentity(identity)}
+	var session TopologySession = &typedNilBorrowSession{
+		sequence: r.sequence,
+		identity: topologyIdentity(identity),
+		losses:   make(chan linuxtopology.Loss, 1),
+	}
 	if r.sessionNil {
 		var value *typedNilBorrowSession
 		session = value

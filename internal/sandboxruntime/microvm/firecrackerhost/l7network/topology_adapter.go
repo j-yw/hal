@@ -57,6 +57,13 @@ func (s *linuxTopologySession) Metadata() linuxtopology.Metadata {
 	return s.session.Metadata()
 }
 
+func (s *linuxTopologySession) Losses() <-chan linuxtopology.Loss {
+	if s == nil || s.session == nil {
+		return nil
+	}
+	return s.session.Losses()
+}
+
 func (s *linuxTopologySession) BorrowNamespace() (NamespaceLease, error) {
 	if s == nil || s.session == nil {
 		return nil, ErrTopologyPrepareFailed
