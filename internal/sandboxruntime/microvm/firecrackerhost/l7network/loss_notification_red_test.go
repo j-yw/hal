@@ -201,6 +201,52 @@ func TestFirecrackerHostTopologyRejectsLossPendingBeforePreparedPublication(t *t
 	}
 }
 
+func TestFirecrackerHostTopologyRejectsLossDuringWatcherArmHandoff(t *testing.T) {
+	sequence := &callSequence{}
+	proxy := newFakeProxy(sequence)
+	armSampled := make(chan struct{})
+	releaseArm := make(chan struct{})
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: proxy, Topology: newFakeTopology(sequence),
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+		beforeLossArm: func() {
+			close(armSampled)
+			<-releaseArm
+		},
+	})
+
+	type prepareResult struct {
+		session *Session
+		err     error
+	}
+	result := make(chan prepareResult, 1)
+	go func() {
+		session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+		result <- prepareResult{session: session, err: err}
+	}()
+	select {
+	case <-armSampled:
+	case <-time.After(time.Second):
+		t.Fatal("loss watcher did not reach its final arm handoff")
+	}
+	close(proxy.current.loss)
+	close(releaseArm)
+
+	select {
+	case prepared := <-result:
+		if prepared.session != nil || !errors.Is(prepared.err, ErrProxyUnavailable) {
+			t.Fatalf("Prepare() = session %T, error %v, want no session and ErrProxyUnavailable", prepared.session, prepared.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Prepare() did not resolve loss during watcher arm handoff")
+	}
+	if got := sequence.snapshot(); !contains(got, "rules_quarantine") || !contains(got, "rules_cleanup") ||
+		!contains(got, "topology_stop") || !contains(got, "proxy_stop") {
+		t.Fatalf("handoff loss did not roll back exact resources: %#v", got)
+	}
+}
+
 func TestFirecrackerHostTopologyProxyLossPublishesSanitizedQuarantineFailure(t *testing.T) {
 	sequence := &callSequence{}
 	proxy := newFakeProxy(sequence)

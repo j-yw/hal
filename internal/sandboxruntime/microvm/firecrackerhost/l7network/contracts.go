@@ -232,6 +232,7 @@ type Options struct {
 	Journal        JournalStore
 	StateDir       string
 	CleanupTimeout time.Duration
+	beforeLossArm  func()
 }
 
 type runningGuestSnapshot struct {

@@ -356,6 +356,9 @@ func (s *Session) armEnforcementLossWatcher() error {
 
 func (s *Session) watchEnforcementLoss(armed chan<- error) {
 	pending := s.pendingEnforcementLoss()
+	if hook := s.coordinator.options.beforeLossArm; hook != nil {
+		hook()
+	}
 	armed <- pending
 	close(armed)
 	if pending != nil {
