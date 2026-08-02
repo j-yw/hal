@@ -66,6 +66,29 @@ func TestL7GuestInitReapsKilledProcessTreeWithoutSignalNotification(t *testing.T
 	}
 }
 
+func TestL7GuestInitRetainsKilledMainStatusWhenDrainProofRacesDeadline(t *testing.T) {
+	const mainPID = 303
+	wantStatus := unix.WaitStatus(unix.SIGKILL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waitCalls := 0
+	status, exited := waitForKilledChildren(ctx, mainPID, func(_ int, status *unix.WaitStatus, _ int, _ *unix.Rusage) (int, error) {
+		waitCalls++
+		if waitCalls == 1 {
+			*status = wantStatus
+			return mainPID, nil
+		}
+		cancel()
+		return -1, unix.ECHILD
+	})
+	if !exited || status != wantStatus {
+		t.Fatalf("waitForKilledChildren() = %v, %t, want killed main child after complete drain proof", status, exited)
+	}
+	if waitCalls != 2 {
+		t.Fatalf("Wait4 calls = %d, want main and ECHILD", waitCalls)
+	}
+}
+
 func TestL7GuestInitKilledProcessTreeReapHonorsFinalDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
