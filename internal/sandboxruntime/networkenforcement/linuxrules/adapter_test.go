@@ -110,10 +110,13 @@ func TestLinuxRulesInspectionAcceptsNFTCanonicalEstablishedStateMembership(t *te
 	payload := expectedInspectionJSON(expected)
 	equality := []byte(`"left":{"ct":{"key":"state"}},"op":"==","right":"established"`)
 	membership := []byte(`"left":{"ct":{"key":"state"}},"op":"in","right":"established"`)
-	if bytes.Count(payload, equality) != 1 {
+	switch {
+	case bytes.Count(payload, equality) == 1 && bytes.Count(payload, membership) == 0:
+		payload = bytes.Replace(payload, equality, membership, 1)
+	case bytes.Count(payload, equality) == 0 && bytes.Count(payload, membership) == 1:
+	default:
 		t.Fatal("expected inspection document did not contain one established-state expression")
 	}
-	payload = bytes.Replace(payload, equality, membership, 1)
 	if err := inspectExpected(payload, expected, defaultMaxInspectionBytes); err != nil {
 		t.Fatalf("nft-canonical established-state inspection failed: %v", err)
 	}

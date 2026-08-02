@@ -94,7 +94,7 @@ func proxyReturnExpressions(expected ExpectedRuleSet) []any {
 		matchExpression(map[string]any{"meta": map[string]any{"key": "oifname"}}, expected.interfaceName),
 		matchExpression(map[string]any{"payload": map[string]any{"protocol": protocol, "field": "saddr"}}, expected.proxyAddress.String()),
 		matchExpression(map[string]any{"payload": map[string]any{"protocol": "tcp", "field": "sport"}}, float64(expected.proxyPort)),
-		matchExpression(map[string]any{"ct": map[string]any{"key": "state"}}, "established"),
+		membershipExpression(map[string]any{"ct": map[string]any{"key": "state"}}, "established"),
 		map[string]any{"accept": nil},
 	}
 	return expressions
@@ -123,6 +123,10 @@ func neighborDiscoveryExpressions(expected ExpectedRuleSet, interfaceKey string,
 
 func matchExpression(left, right any) map[string]any {
 	return map[string]any{"match": map[string]any{"op": "==", "left": left, "right": right}}
+}
+
+func membershipExpression(left, right any) map[string]any {
+	return map[string]any{"match": map[string]any{"op": "in", "left": left, "right": right}}
 }
 
 func expectedInspectionJSON(expected ExpectedRuleSet) []byte {
