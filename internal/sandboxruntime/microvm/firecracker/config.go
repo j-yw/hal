@@ -47,6 +47,10 @@ type BackendConfig struct {
 	NetworkMode       microvm.NetworkMode                 `json:"networkMode,omitempty"`
 	NetworkInterfaces []NetworkInterfaceConfig            `json:"-"`
 	StaticNetwork     *StaticNetworkBootConfig            `json:"-"`
+	// AssetChildFDStart is live-only and may be 5 only for the explicit L7
+	// namespace wrapper. Zero preserves the ordinary kernel/rootfs mapping at
+	// child descriptors 3 and 4.
+	AssetChildFDStart int `json:"-"`
 }
 
 // NetworkInterfaceConfig is private live input supplied by the L7 topology

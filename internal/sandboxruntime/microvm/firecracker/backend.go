@@ -11,6 +11,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/localresolver"
 )
 
 const (
@@ -55,6 +56,7 @@ type BackendOptions struct {
 	LiveStart            bool
 	ProductionVsock      bool
 	ProductionBridge     ProductionVsockBridge
+	L7LiveConfigProvider L7LiveBootConfigProvider
 }
 
 // BootAcceptanceWaiter is the injected host-side readiness boundary for an
@@ -113,6 +115,7 @@ type Backend struct {
 	liveStart            bool
 	productionVsock      bool
 	productionBridge     ProductionVsockBridge
+	l7LiveConfigProvider L7LiveBootConfigProvider
 	liveSessions         *liveSessionRegistry
 }
 
@@ -129,6 +132,7 @@ func NewBackend(options BackendOptions) *Backend {
 		liveStart:            options.LiveStart,
 		productionVsock:      options.ProductionVsock,
 		productionBridge:     options.ProductionBridge,
+		l7LiveConfigProvider: options.L7LiveConfigProvider,
 	}
 	if options.ProductionVsock {
 		backend.liveSessions = newLiveSessionRegistry()
@@ -200,6 +204,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	var networkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata
 	var productionVsock bool
 	var productionBridge ProductionVsockBridge
+	var l7LiveConfigProvider L7LiveBootConfigProvider
 	var liveSessions *liveSessionRegistry
 	if b != nil {
 		baseStateDir = b.baseStateDir
@@ -211,6 +216,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		networkEnforcement = b.runtimeNetworkEnforcementMetadata()
 		productionVsock = b.productionVsock
 		productionBridge = b.productionBridge
+		l7LiveConfigProvider = b.l7LiveConfigProvider
 		liveSessions = b.liveSessions
 	}
 	return firecrackerController{
@@ -224,6 +230,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		liveStart:            b != nil && b.liveStart,
 		productionVsock:      productionVsock,
 		productionBridge:     productionBridge,
+		l7LiveConfigProvider: l7LiveConfigProvider,
 		liveSessions:         liveSessions,
 	}, nil
 }
@@ -239,16 +246,32 @@ type firecrackerController struct {
 	liveStart            bool
 	productionVsock      bool
 	productionBridge     ProductionVsockBridge
+	l7LiveConfigProvider L7LiveBootConfigProvider
 	liveSessions         *liveSessionRegistry
 }
 
-func (c firecrackerController) Start(ctx context.Context, req microvm.ControllerLifecycleRequest) (*sandboxruntime.Target, error) {
+func (c firecrackerController) Start(ctx context.Context, req microvm.ControllerLifecycleRequest) (_ *sandboxruntime.Target, retErr error) {
 	if err := c.validateLiveBootContract(); err != nil {
 		return nil, err
 	}
 	config, err := c.startBackendConfig(req.Config, req.Target)
 	if err != nil {
 		return nil, err
+	}
+	var pendingL7Lease *localresolver.VerifiedL7AssetLease
+	if c.liveStart && c.l7LiveConfigProvider != nil {
+		config, pendingL7Lease, err = prepareL7LiveBootConfig(ctx, c.l7LiveConfigProvider, config)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if pendingL7Lease == nil {
+				return
+			}
+			if cleanupErr := closeBackendOwnedL7Lease(pendingL7Lease); cleanupErr != nil {
+				retErr = joinL7StartCleanup(retErr, cleanupErr)
+			}
+		}()
 	}
 	releaseLifecycle, err := c.reserveLiveLifecycle(config.RuntimeID)
 	if err != nil {
@@ -275,6 +298,7 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 		if err != nil {
 			return nil, err
 		}
+		pendingL7Lease = nil
 		liveStart, err := c.startLiveProcessWithInheritedFiles(ctx, operation.ProcessDescriptor, config, inheritedFiles)
 		if err != nil {
 			return nil, err
@@ -300,6 +324,10 @@ func (c firecrackerController) validateLiveBootContract() error {
 		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
 	case c.productionVsock && c.productionBridge == nil:
 		return newLiveBootContractError("productionVsockBridge", "production vsock requires a host-owned bridge")
+	case c.l7LiveConfigProvider != nil && liveConfigProviderIsNil(c.l7LiveConfigProvider):
+		return newLiveBootContractError("l7LiveConfigProvider", "L7 live config provider is unavailable")
+	case c.l7LiveConfigProvider != nil && !c.productionVsock:
+		return newLiveBootContractError("l7LiveConfigProvider", "L7 live config requires production vsock")
 	default:
 		return nil
 	}

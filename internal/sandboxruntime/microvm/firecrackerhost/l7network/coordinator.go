@@ -53,6 +53,8 @@ type Session struct {
 	guestBinding     RunningGuestBinding
 	guestSnapshot    runningGuestSnapshot
 	retainedCleanup  retainedCleanupMode
+	loss             chan ProxyLossResult
+	lossPublish      sync.Once
 }
 
 type retainedCleanupMode uint8
@@ -110,7 +112,8 @@ func (c *Coordinator) Prepare(ctx context.Context, request PrepareRequest) (*Ses
 	}
 
 	session := &Session{coordinator: c, identity: request.Identity, plan: networkenforcement.SanitizePlan(request.Plan),
-		topologyIdentity: topologyIdentity(request.Identity), metadata: Metadata{Identity: request.Identity, Status: StatusPrepared}}
+		topologyIdentity: topologyIdentity(request.Identity), metadata: Metadata{Identity: request.Identity, Status: StatusPrepared},
+		loss: make(chan ProxyLossResult, 1)}
 	lease, err := c.options.Journal.Acquire(ctx, request.Identity)
 	if err != nil {
 		primary := sanitizeJournalAcquireError(err)
@@ -323,22 +326,52 @@ func (s *Session) Metadata() Metadata {
 
 func (s *Session) MarshalJSON() ([]byte, error) { return json.Marshal(s.Metadata()) }
 
-func (s *Session) Loss() <-chan struct{} {
-	if s == nil || interfaceIsNil(s.proxy) {
+func (s *Session) Loss() <-chan ProxyLossResult {
+	if s == nil {
 		return nil
 	}
-	return s.proxy.Loss()
+	return s.loss
 }
 
 func (s *Session) watchProxyLoss() {
-	loss := s.Loss()
+	if s == nil || interfaceIsNil(s.proxy) {
+		return
+	}
+	loss := s.proxy.Loss()
 	if loss == nil {
 		return
 	}
 	<-loss
 	ctx, cancel := context.WithTimeout(context.Background(), s.coordinator.options.CleanupTimeout)
 	defer cancel()
-	_ = s.Quarantine(ctx, s.identity)
+	err := sanitizeProxyLossError(s.Quarantine(ctx, s.identity))
+	result := ProxyLossResult{metadata: s.Metadata(), err: err}
+	s.lossPublish.Do(func() {
+		s.loss <- result
+		close(s.loss)
+	})
+}
+
+func sanitizeProxyLossError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrCleanupIncomplete):
+		return ErrCleanupIncomplete
+	default:
+		return ErrQuarantineFailed
+	}
+}
+
+func proxyLossErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrCleanupIncomplete):
+		return "cleanup_incomplete"
+	case errors.Is(err, ErrQuarantineFailed):
+		return "quarantine_failed"
+	default:
+		return ""
+	}
 }
 
 func (s *Session) Inspect(ctx context.Context, identity Identity) (Metadata, error) {

@@ -3,6 +3,7 @@ package l7network
 import (
 	"context"
 	"errors"
+	"os"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"
@@ -84,6 +85,17 @@ func (l *linuxNamespaceLease) commandFiles() *linuxtopology.NamespaceFiles {
 		return nil
 	}
 	return l.files
+}
+
+func (l *linuxNamespaceLease) DuplicateForNamespaceProcess() (*os.File, *os.File, error) {
+	if l == nil || l.files == nil {
+		return nil, nil, ErrTopologyPrepareFailed
+	}
+	user, network, err := l.files.DuplicateForCommand()
+	if err != nil {
+		return nil, nil, ErrTopologyPrepareFailed
+	}
+	return user, network, nil
 }
 
 func (l *linuxNamespaceLease) Close() error {

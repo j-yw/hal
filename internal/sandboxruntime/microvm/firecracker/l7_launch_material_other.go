@@ -10,7 +10,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
 )
 
-func newSealedL7LaunchMaterial(string) (*sealedL7LaunchMaterial, error) {
+func newSealedL7LaunchMaterial(string, int) (*sealedL7LaunchMaterial, error) {
 	return nil, errors.New("sealed L7 launch material requires Linux")
 }
 

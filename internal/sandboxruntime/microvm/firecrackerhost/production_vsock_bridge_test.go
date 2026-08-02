@@ -3,6 +3,7 @@ package firecrackerhost
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -14,8 +15,76 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/frame"
 )
+
+func TestL7ProductionVsockBridgeBindsReadinessToExactIsolationProof(t *testing.T) {
+	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
+	fixture.bridge = NewProductionVsockBridge(ProductionVsockBridgeOptions{
+		Lifecycle:                fixture.bridge.lifecycle,
+		Timeout:                  time.Second,
+		PollInterval:             time.Millisecond,
+		RequireIsolationProof:    true,
+		RequireNetworkProof:      true,
+		IsolationProofGeneration: "topology-generation-vsock",
+	})
+	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
+	requests := make(chan guestagent.ReadinessRequest, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		_, _ = reader.ReadString('\n')
+		_, _ = io.WriteString(conn, "OK 1073741824\n")
+		payload, _ := frame.Read(reader, 4096)
+		var request guestagent.ReadinessRequest
+		_ = json.Unmarshal(payload, &request)
+		requests <- request
+		response := guestagent.ReadinessResponse{
+			ProtocolVersion: guestagent.ProtocolVersionV1,
+			Operation:       guestagent.OperationReadiness,
+			Ready:           true,
+			Status:          guestagent.ReadinessStatusReady,
+			IsolationProof: &guestagent.IsolationProof{
+				Generation:                 "topology-generation-vsock",
+				RuntimeGeneration:          "fc-production-test",
+				Status:                     guestagent.IsolationProofStatusVerified,
+				RestrictedIdentity:         true,
+				CapabilitiesCleared:        true,
+				NoNewPrivileges:            true,
+				SupplementaryGroupsCleared: true,
+				RawPacketSocketDenied:      true,
+				Network: &guestagent.NetworkIsolationProof{
+					Status:          guestagent.IsolationProofStatusVerified,
+					SingleInterface: true,
+					StaticRoutes:    true,
+					ProxyReachable:  true,
+				},
+			},
+		}
+		encoded, _ := json.Marshal(response)
+		_ = frame.Write(conn, encoded, 4096)
+	}()
+
+	result, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
+	})
+	if err != nil {
+		t.Fatalf("ActivateSession() error = %v", err)
+	}
+	request := <-requests
+	if request.IsolationProof == nil || request.IsolationProof.Generation != "topology-generation-vsock" ||
+		request.IsolationProof.RuntimeGeneration != "fc-production-test" || !request.IsolationProof.RequireNetworkProof {
+		t.Fatalf("readiness request = %#v, want exact L7 proof binding", request)
+	}
+	if result.IsolationProofGeneration != "topology-generation-vsock" || result.IsolationRuntimeGeneration != "fc-production-test" {
+		t.Fatalf("readiness result = %#v, want exact accepted response binding", result)
+	}
+}
 
 func TestL5ProductionVsockSessionInvalidationDistinguishesCallerCancellation(t *testing.T) {
 	t.Parallel()

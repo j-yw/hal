@@ -19,12 +19,15 @@ type GuestReadinessRequest struct {
 	RuntimeID string                `json:"runtimeId,omitempty"`
 }
 
-// GuestReadinessResult is the Firecracker backend readiness result shape. It
-// carries only shared readiness state, a safe transport label, and safe labels.
+// GuestReadinessResult is the Firecracker backend readiness result shape. Its
+// durable surface carries only shared readiness state, a safe transport label,
+// and safe labels. Live proof bindings are intentionally excluded from JSON.
 type GuestReadinessResult struct {
-	State     sandboxruntime.RuntimeGuestReadinessState `json:"state,omitempty"`
-	Transport string                                    `json:"transport,omitempty"`
-	Labels    []string                                  `json:"labels,omitempty"`
+	State                      sandboxruntime.RuntimeGuestReadinessState `json:"state,omitempty"`
+	Transport                  string                                    `json:"transport,omitempty"`
+	Labels                     []string                                  `json:"labels,omitempty"`
+	IsolationProofGeneration   string                                    `json:"-"`
+	IsolationRuntimeGeneration string                                    `json:"-"`
 }
 
 // NewGuestReadinessRequest builds a sanitized guest readiness request.
@@ -59,11 +62,18 @@ func SanitizeGuestReadinessResult(result GuestReadinessResult) GuestReadinessRes
 	if metadata == nil {
 		return GuestReadinessResult{}
 	}
-	return GuestReadinessResult{
+	sanitized := GuestReadinessResult{
 		State:     metadata.State,
 		Transport: metadata.Transport,
 		Labels:    cloneStringSlice(metadata.Labels),
 	}
+	proofGeneration := safeFirecrackerMetadataToken(result.IsolationProofGeneration)
+	runtimeGeneration := safeFirecrackerMetadataToken(result.IsolationRuntimeGeneration)
+	if proofGeneration != "" && runtimeGeneration != "" {
+		sanitized.IsolationProofGeneration = proofGeneration
+		sanitized.IsolationRuntimeGeneration = runtimeGeneration
+	}
+	return sanitized
 }
 
 // RuntimeMetadata converts the Firecracker readiness result into the shared

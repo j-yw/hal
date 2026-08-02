@@ -13,10 +13,14 @@ import (
 )
 
 const (
-	maxL7InterfaceIDBytes = 64
-	maxLinuxInterfaceName = 15
-	maxL7ProxyURLBytes    = 256
-	maxL7BootArgsBytes    = 1024
+	maxL7InterfaceIDBytes    = 64
+	maxLinuxInterfaceName    = 15
+	maxL7ProxyURLBytes       = 256
+	maxL7BootArgsBytes       = 1024
+	l7KernelChildFD          = 3
+	l7RootfsChildFD          = 4
+	l7NamespaceKernelChildFD = 5
+	l7NamespaceRootfsChildFD = 6
 )
 
 type networkInterfacePayload struct {
@@ -32,11 +36,14 @@ func renderNetworkInterfaces(config BackendConfig) ([]networkInterfacePayload, *
 	}
 	switch mode {
 	case microvm.NetworkModeNoLiveNetworking:
-		if len(config.NetworkInterfaces) != 0 || config.StaticNetwork != nil {
+		if len(config.NetworkInterfaces) != 0 || config.StaticNetwork != nil || config.AssetChildFDStart != 0 {
 			return nil, nil, newLiveBootRenderConfigError("networkMode", "network configuration requires explicit L7 network mode")
 		}
 		return nil, nil, nil
 	case microvm.NetworkModeL7PolicyProxy:
+		if _, err := normalizedL7AssetChildFDStart(config.AssetChildFDStart); err != nil {
+			return nil, nil, err
+		}
 		if !config.ProductionVsock {
 			return nil, nil, newLiveBootRenderConfigError("networkMode", "L7 network mode requires production guest readiness")
 		}
@@ -61,6 +68,16 @@ func renderNetworkInterfaces(config BackendConfig) ([]networkInterfacePayload, *
 	default:
 		return nil, nil, newLiveBootRenderConfigError("networkMode", "network mode is unsupported")
 	}
+}
+
+func normalizedL7AssetChildFDStart(value int) (int, error) {
+	if value == 0 {
+		return l7KernelChildFD, nil
+	}
+	if value != l7KernelChildFD && value != l7NamespaceKernelChildFD {
+		return 0, newLiveBootRenderConfigError("assetChildFDStart", "L7 asset child descriptor mapping is invalid")
+	}
+	return value, nil
 }
 
 func normalizeNetworkInterface(input NetworkInterfaceConfig) (networkInterfacePayload, error) {

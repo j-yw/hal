@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"unicode"
@@ -32,12 +34,82 @@ type OSExecProcessRunner struct {
 	startCommand func(*exec.Cmd) error
 }
 
+// OSExecNamespaceProcessStarter is the production adapter for the distinct
+// namespace wrapper contract. It fails closed on non-Linux platforms.
+type OSExecNamespaceProcessStarter struct {
+	startCommand func(*exec.Cmd) error
+}
+
 var _ HostProcessRunner = OSExecProcessRunner{}
 
 // NewOSExecProcessRunner constructs the real os/exec-backed host process
 // runner for future explicit adapter injection.
 func NewOSExecProcessRunner() OSExecProcessRunner {
 	return OSExecProcessRunner{}
+}
+
+func NewOSExecNamespaceProcessStarter() OSExecNamespaceProcessStarter {
+	return OSExecNamespaceProcessStarter{}
+}
+
+// StartNamespaceProcess launches the explicit L7 namespace wrapper. Unlike
+// StartHostProcess, this narrow contract requires exactly the fixed
+// user/network/kernel/rootfs descriptor layout.
+func (starter OSExecNamespaceProcessStarter) StartNamespaceProcess(ctx context.Context, request NamespaceProcessStartRequest) (HostProcess, error) {
+	if runtime.GOOS != "linux" {
+		return nil, ErrNamespaceProcessUnsupported
+	}
+	ctx = nonNilContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validateNamespaceProcessStartRequest(request); err != nil {
+		return nil, err
+	}
+	command := exec.Command(request.Executable, request.Args...)
+	command.Env = []string{}
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	command.ExtraFiles = append([]*os.File(nil), request.InheritedFiles...)
+	startCommand := starter.startCommand
+	if startCommand == nil {
+		startCommand = func(command *exec.Cmd) error {
+			return startOSExecCommandWithPrivateUmask(command.Start)
+		}
+	}
+	if err := startCommand(command); err != nil {
+		return nil, ErrNamespaceProcessStartFailed
+	}
+	return newOSExecHostProcess(command), nil
+}
+
+func validateNamespaceProcessStartRequest(request NamespaceProcessStartRequest) error {
+	if !filepathIsCleanAbsolute(request.Executable) || len(request.InheritedFiles) != 4 || len(request.Args) < 4 ||
+		request.Args[0] != "--user=/proc/self/fd/3" || request.Args[1] != "--net=/proc/self/fd/4" ||
+		request.Args[2] != "--" || request.Args[3] == "" {
+		return ErrNamespaceProcessRequestInvalid
+	}
+	for _, arg := range request.Args {
+		if hasOSExecProcessControl(arg) {
+			return ErrNamespaceProcessRequestInvalid
+		}
+	}
+	seen := make(map[uintptr]struct{}, len(request.InheritedFiles))
+	for _, file := range request.InheritedFiles {
+		if file == nil || file.Fd() <= 2 {
+			return ErrNamespaceProcessRequestInvalid
+		}
+		if _, duplicate := seen[file.Fd()]; duplicate {
+			return ErrNamespaceProcessRequestInvalid
+		}
+		seen[file.Fd()] = struct{}{}
+	}
+	return nil
+}
+
+func filepathIsCleanAbsolute(value string) bool {
+	return value != "" && filepath.IsAbs(value) && filepath.Clean(value) == value && !hasOSExecProcessControl(value)
 }
 
 // StartHostProcess starts a Firecracker host process from the raw runner

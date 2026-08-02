@@ -26,21 +26,27 @@ const (
 // lifecycle manager is mandatory because raw PID and socket paths are resolved
 // only from the process generation tracked at launch.
 type ProductionVsockBridgeOptions struct {
-	Lifecycle     *ProcessLifecycleManager
-	Timeout       time.Duration
-	PollInterval  time.Duration
-	GuestPort     uint32
-	OperationTime time.Duration
+	Lifecycle                *ProcessLifecycleManager
+	Timeout                  time.Duration
+	PollInterval             time.Duration
+	GuestPort                uint32
+	OperationTime            time.Duration
+	RequireIsolationProof    bool
+	RequireNetworkProof      bool
+	IsolationProofGeneration string
 }
 
 // ProductionVsockBridge owns live Firecracker UDS sessions. No socket path,
 // host PID, or inode leaves this in-memory boundary.
 type ProductionVsockBridge struct {
-	lifecycle     *ProcessLifecycleManager
-	timeout       time.Duration
-	pollInterval  time.Duration
-	guestPort     uint32
-	operationTime time.Duration
+	lifecycle                *ProcessLifecycleManager
+	timeout                  time.Duration
+	pollInterval             time.Duration
+	guestPort                uint32
+	operationTime            time.Duration
+	requireIsolationProof    bool
+	requireNetworkProof      bool
+	isolationProofGeneration string
 
 	mu       sync.RWMutex
 	next     uint64
@@ -75,7 +81,10 @@ func NewProductionVsockBridge(options ProductionVsockBridgeOptions) *ProductionV
 	return &ProductionVsockBridge{
 		lifecycle: options.Lifecycle, timeout: timeout, pollInterval: interval,
 		guestPort: port, operationTime: options.OperationTime,
-		sessions: make(map[string]*productionVsockSession),
+		requireIsolationProof:    options.RequireIsolationProof || options.RequireNetworkProof,
+		requireNetworkProof:      options.RequireNetworkProof,
+		isolationProofGeneration: strings.TrimSpace(options.IsolationProofGeneration),
+		sessions:                 make(map[string]*productionVsockSession),
 	}
 }
 
@@ -125,7 +134,11 @@ func (bridge *ProductionVsockBridge) ActivateSession(ctx context.Context, req fi
 			if clientErr != nil {
 				return firecracker.GuestReadinessResult{}, "", clientErr
 			}
-			response, readinessErr := client.Readiness(ctx, guestagent.ReadinessRequest{})
+			readinessRequest, requestErr := bridge.readinessRequest(req.RuntimeID)
+			if requestErr != nil {
+				return firecracker.GuestReadinessResult{}, "", requestErr
+			}
+			response, readinessErr := client.Readiness(ctx, readinessRequest)
 			switch {
 			case readinessErr != nil && !transientProductionVsockError(readinessErr):
 				return firecracker.GuestReadinessResult{}, "", readinessErr
@@ -133,11 +146,16 @@ func (bridge *ProductionVsockBridge) ActivateSession(ctx context.Context, req fi
 				guestTransport := NewGuestAgentTransport(GuestAgentTransportOptions{Client: client})
 				generation := bridge.activate(req.RuntimeID, identity.handle, wire, guestTransport)
 				go bridge.invalidateAfterExit(req.RuntimeID, identity.handle.ID, generation, identity.done)
-				return firecracker.NewGuestReadinessResult(
+				result := firecracker.NewGuestReadinessResult(
 					sandboxruntime.RuntimeGuestReadinessStateReady,
 					"vsock",
 					[]string{"protocol_v1", "runtime_bound", "probe_ok"},
-				), generation, nil
+				)
+				if response.IsolationProof != nil && response.IsolationProof.Status == guestagent.IsolationProofStatusVerified {
+					result.IsolationProofGeneration = response.IsolationProof.Generation
+					result.IsolationRuntimeGeneration = response.IsolationProof.RuntimeGeneration
+				}
+				return firecracker.SanitizeGuestReadinessResult(result), generation, nil
 			}
 		}
 		timer := time.NewTimer(bridge.pollInterval)
@@ -155,6 +173,24 @@ func (bridge *ProductionVsockBridge) ActivateSession(ctx context.Context, req fi
 		case <-timer.C:
 		}
 	}
+}
+
+func (bridge *ProductionVsockBridge) readinessRequest(runtimeID string) (guestagent.ReadinessRequest, error) {
+	request := guestagent.ReadinessRequest{}
+	if bridge == nil || !bridge.requireIsolationProof {
+		return request, nil
+	}
+	request.ProtocolVersion = guestagent.ProtocolVersionV1
+	request.Operation = guestagent.OperationReadiness
+	request.IsolationProof = &guestagent.IsolationProofRequest{
+		Generation:          bridge.isolationProofGeneration,
+		RuntimeGeneration:   strings.TrimSpace(runtimeID),
+		RequireNetworkProof: bridge.requireNetworkProof,
+	}
+	if err := guestagent.ValidateReadinessRequest(request); err != nil {
+		return guestagent.ReadinessRequest{}, errors.New("Firecracker L7 readiness proof binding is invalid")
+	}
+	return request, nil
 }
 
 func secureFirecrackerVsockSocket(path string) error {

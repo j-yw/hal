@@ -61,12 +61,14 @@ func TestGuestReadinessRequestSanitizesUnsafeInputs(t *testing.T) {
 
 func TestGuestReadinessResultShapeAndRuntimeMetadataAreSanitized(t *testing.T) {
 	resultType := reflect.TypeOf(GuestReadinessResult{})
-	if resultType.NumField() != 3 {
-		t.Fatalf("GuestReadinessResult field count = %d, want state, transport, and labels only", resultType.NumField())
+	if resultType.NumField() != 5 {
+		t.Fatalf("GuestReadinessResult field count = %d, want three durable fields and two live-only proof binding fields", resultType.NumField())
 	}
 	assertGuestReadinessField(t, resultType, "State", reflect.TypeOf(sandboxruntime.RuntimeGuestReadinessState("")), `json:"state,omitempty"`)
 	assertGuestReadinessField(t, resultType, "Transport", reflect.TypeOf(""), `json:"transport,omitempty"`)
 	assertGuestReadinessField(t, resultType, "Labels", reflect.TypeOf([]string{}), `json:"labels,omitempty"`)
+	assertGuestReadinessField(t, resultType, "IsolationProofGeneration", reflect.TypeOf(""), `json:"-"`)
+	assertGuestReadinessField(t, resultType, "IsolationRuntimeGeneration", reflect.TypeOf(""), `json:"-"`)
 
 	result := NewGuestReadinessResult(
 		sandboxruntime.RuntimeGuestReadinessStateReady,

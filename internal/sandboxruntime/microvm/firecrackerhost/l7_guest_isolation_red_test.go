@@ -47,6 +47,9 @@ func TestL7GuestAgentReadinessProbeRequiresBoundIsolationProof(t *testing.T) {
 	if result.State != sandboxruntime.RuntimeGuestReadinessStateReady || strings.Join(result.Labels, ",") != "ready,protocol,guest_isolation_verified,guest_topology_verified" {
 		t.Fatalf("result = %#v, want sanitized L7 proof labels", result)
 	}
+	if result.IsolationProofGeneration != "topology-generation-1" || result.IsolationRuntimeGeneration != "runtime-generation-1" {
+		t.Fatalf("result proof binding = %#v, want exact validated response generations", result)
+	}
 	if client.request.IsolationProof == nil || client.request.IsolationProof.Generation != "topology-generation-1" || client.request.IsolationProof.RuntimeGeneration != "runtime-generation-1" || !client.request.IsolationProof.RequireNetworkProof {
 		t.Fatalf("readiness request = %#v, want exact proof binding", client.request)
 	}
