@@ -7,8 +7,9 @@ Linux-completion plan. The locked issue comments `5068151561`, `5068157402`,
 and `5068162708`, together with
 `sandbox-runtime-v2-linux-completion-architecture.md`, remain authoritative.
 
-The exact stacked base is
-`880ee698c48df9d6e62a2a472414d8f4c7ce0bfb`. L6 supplies a real loopback
+The original L7 branch point was
+`880ee698c48df9d6e62a2a472414d8f4c7ce0bfb`; the final reconciled integration
+base is `f287d962a20a2808d957518110f65f39d6a5dd39`. L6 supplies a real loopback
 HTTP/CONNECT proxy and proxy-only lifecycle proof. L7 makes that proxy
 reachable from rootless Podman and Firecracker, installs and inspects owned
 Linux rules, correlates the live components, and cleans them transactionally.
