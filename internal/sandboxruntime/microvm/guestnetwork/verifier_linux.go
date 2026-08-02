@@ -119,7 +119,7 @@ func exactLinuxNetworkSnapshot(snapshot linuxNetworkSnapshot, boot BootConfig) b
 	wantedRoutes := []linuxNetworkRoute{
 		{interfaceName: boot.InterfaceName(), destination: boot.IPv4Prefix().Masked(), flags: 0x1},
 		{interfaceName: boot.InterfaceName(), destination: netip.MustParsePrefix("0.0.0.0/0"), gateway: boot.IPv4GatewayAddr(), flags: 0x3},
-		{interfaceName: boot.InterfaceName(), destination: boot.IPv6Prefix().Masked(), flags: 0x00400001, metric: 256},
+		{interfaceName: boot.InterfaceName(), destination: boot.IPv6Prefix().Masked(), flags: 0x1, metric: 256},
 		{interfaceName: boot.InterfaceName(), destination: netip.MustParsePrefix("::/0"), gateway: boot.IPv6GatewayAddr(), flags: 0x3, metric: 1024},
 		{interfaceName: boot.InterfaceName(), destination: netip.PrefixFrom(boot.IPv6Prefix().Addr(), 128), flags: 0x80200001},
 		{interfaceName: boot.InterfaceName(), destination: netip.MustParsePrefix("ff00::/8"), flags: 0x1, metric: 256},

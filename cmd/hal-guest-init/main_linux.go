@@ -116,7 +116,7 @@ func l7NetworkBootstrapCommands(config l7NetworkBootConfig) [][]string {
 	return [][]string{
 		{"/sbin/ip", "link", "set", "dev", config.InterfaceName(), "up"},
 		{"/sbin/ip", "addr", "add", config.IPv4Address(), "dev", config.InterfaceName()},
-		{"/sbin/ip", "-6", "addr", "add", config.IPv6Address(), "dev", config.InterfaceName()},
+		{"/sbin/ip", "-6", "addr", "add", config.IPv6Address(), "dev", config.InterfaceName(), "nodad"},
 		{"/sbin/ip", "route", "add", "default", "via", config.IPv4Gateway(), "dev", config.InterfaceName()},
 		{"/sbin/ip", "-6", "route", "add", "default", "via", config.IPv6Gateway(), "dev", config.InterfaceName()},
 	}
