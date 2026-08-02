@@ -13,7 +13,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"
 )
 
-func TestOSNamespaceCommandPreservesMappedUserCredentials(t *testing.T) {
+func TestOSNamespaceCommandPreservesMappedUserCredentialsAndCapabilities(t *testing.T) {
 	root := t.TempDir()
 	user, err := os.OpenFile(filepath.Join(root, "user"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -57,6 +57,7 @@ func TestOSNamespaceCommandPreservesMappedUserCredentials(t *testing.T) {
 	got := strings.Fields(string(output))
 	want := []string{
 		"--preserve-credentials",
+		"--keep-caps",
 		"--user=/proc/self/fd/3",
 		"--net=/proc/self/fd/4",
 		"--",
