@@ -2,6 +2,7 @@ package sandboxexec
 
 import (
 	"context"
+	"errors"
 	"io"
 	"reflect"
 	"testing"
@@ -69,5 +70,114 @@ func TestL9ExecutorPassesSelectedRuntimeImageIntoCreate(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestL9RunningTargetRequiresObservedRuntimeImageBeforeReady(t *testing.T) {
+	const selectedImage = "registry.test/hal/runtime:stable@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	target := l9SelectedRuntimeImageTarget("runtime-l9-running", selectedImage, sandbox.StatusRunning)
+	inspectErr := errors.New("inspect unavailable")
+	readyCalled := false
+	driver := &recordingRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		inspect: func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+			return nil, inspectErr
+		},
+	}
+
+	_, err := Run(context.Background(), CommandRequest{
+		SandboxName: target.Name,
+		Command:     []string{"true"},
+	}, Dependencies{
+		ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) { return target, nil },
+		ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		OnTargetReady: func(context.Context, *sandbox.SandboxState) error {
+			readyCalled = true
+			return nil
+		},
+		RunCommand: func(context.Context, RunContext, CommandRequest) error { return nil },
+	})
+	if err == nil || !errors.Is(err, inspectErr) {
+		t.Fatalf("Run() error = %v, want observed-image inspect failure", err)
+	}
+	if readyCalled {
+		t.Fatal("target readiness persisted before runtime image observation")
+	}
+}
+
+func TestL9StartedTargetRejectsMissingOrMismatchedObservedRuntimeImage(t *testing.T) {
+	const selectedImage = "registry.test/hal/runtime:stable@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for _, tt := range []struct {
+		name     string
+		observed string
+	}{
+		{name: "missing"},
+		{name: "mismatched", observed: "registry.test/hal/runtime:stable@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target := l9SelectedRuntimeImageTarget("runtime-l9-"+tt.name, selectedImage, sandbox.StatusStopped)
+			readyCalled := false
+			driver := &recordingRuntimeDriver{
+				id: sandboxruntime.DriverRootlessPodman,
+				start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+					started := req.Target
+					started.Status = sandbox.StatusRunning
+					return &started, nil
+				},
+				inspect: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+					observed := req.Target
+					observed.Runtime.Image = tt.observed
+					return &observed, nil
+				},
+			}
+
+			_, err := Run(context.Background(), CommandRequest{
+				SandboxName: target.Name,
+				Command:     []string{"true"},
+			}, Dependencies{
+				ResolveTarget: func(context.Context, TargetRequest) (*sandbox.SandboxState, error) { return target, nil },
+				ResolveDriver: func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error) {
+					return driver, nil
+				},
+				OnTargetReady: func(context.Context, *sandbox.SandboxState) error {
+					readyCalled = true
+					return nil
+				},
+				RunCommand: func(context.Context, RunContext, CommandRequest) error { return nil },
+			})
+			if err == nil || err.Error() != "selection_rejected" {
+				t.Fatalf("Run() error = %v, want selection_rejected", err)
+			}
+			if readyCalled {
+				t.Fatal("target readiness persisted for unverified runtime image")
+			}
+		})
+	}
+}
+
+func l9SelectedRuntimeImageTarget(name, image, status string) *sandbox.SandboxState {
+	const digest = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	return &sandbox.SandboxState{
+		ID:       "target-" + name,
+		Name:     name,
+		Provider: "local",
+		Status:   status,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandboxruntime.DriverRootlessPodman,
+			RuntimeID:      "runtime-" + name,
+			Image:          image,
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+			TemplateLock: &sandbox.SandboxTemplateLockMetadata{
+				RuntimeImage: &sandbox.SandboxTemplateLockEntryMetadata{
+					SourceKind:      "runtime_image",
+					ReferenceKind:   "oci_image",
+					Status:          "locked",
+					DigestAlgorithm: "sha256",
+					DigestValue:     digest,
+				},
+			},
+		},
 	}
 }

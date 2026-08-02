@@ -2040,6 +2040,7 @@ type recordingRuntimeDriver struct {
 	copyInCalled bool
 	create       func(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error)
 	start        func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
+	inspect      func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error)
 	delete       func(context.Context, sandboxruntime.LifecycleRequest) error
 	exec         func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
 	copyIn       func(context.Context, sandboxruntime.CopyRequest) error
@@ -2082,7 +2083,10 @@ func (r *recordingRuntimeDriver) Delete(ctx context.Context, req sandboxruntime.
 	return nil
 }
 
-func (r *recordingRuntimeDriver) Inspect(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+func (r *recordingRuntimeDriver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	if r.inspect != nil {
+		return r.inspect(ctx, req)
+	}
 	return nil, nil
 }
 
