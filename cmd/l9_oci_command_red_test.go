@@ -1046,6 +1046,9 @@ func TestL9ActualPathsRejectRuntimeReportedImageMismatchBeforeProviderAndProject
 					start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
 						return mismatchedRuntimeTarget(req.Target), nil
 					},
+					inspect: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+						return mismatchedRuntimeTarget(req.Target), nil
+					},
 				}, nil
 			},
 			resolveProvider:     func(string) (sandbox.Provider, error) { panic("provider constructed after image mismatch") },
@@ -1097,6 +1100,9 @@ func TestL9ActualPathsRejectRuntimeReportedImageMismatchBeforeProviderAndProject
 					start: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
 						return mismatchedRuntimeTarget(req.Target), nil
 					},
+					inspect: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+						return mismatchedRuntimeTarget(req.Target), nil
+					},
 				}, nil
 			},
 			resolveProvider:     func(string) (sandbox.Provider, error) { panic("provider constructed after image mismatch") },
@@ -1144,6 +1150,9 @@ func TestL9ActualPathsRejectRuntimeReportedImageMismatchBeforeProviderAndProject
 				return fakeFactorySandboxRuntimeDriver{
 					id: "microvm",
 					startFn: func(_ context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
+						return mismatchedRuntimeTarget(req.Target), nil
+					},
+					inspectFn: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
 						return mismatchedRuntimeTarget(req.Target), nil
 					},
 				}, nil

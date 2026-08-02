@@ -381,7 +381,10 @@ func applyInspectOutput(target *sandboxruntime.Target, output string) error {
 	if name := strings.TrimPrefix(strings.TrimSpace(entry.Name), "/"); name != "" {
 		target.Name = name
 	}
-	if image := firstNonEmpty(entry.ImageName, entry.Config.Image, entry.Image, target.Runtime.Image); image != "" {
+	// Inspection is an observation boundary. Never retain a requested image
+	// when Podman omits image identity from its own response.
+	target.Runtime.Image = ""
+	if image := firstNonEmpty(entry.ImageName, entry.Config.Image, entry.Image); image != "" {
 		target.Runtime.Image = image
 	}
 	if status := normalizePodmanStatus(entry.State.Status, entry.State.Running); status != "" {

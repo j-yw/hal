@@ -16,16 +16,20 @@ import (
 const sandboxCommandLeaseTTL = 30 * time.Minute
 
 type sandboxCommandScheduledTargetRequest struct {
-	Purpose               string
-	SandboxName           string
-	SandboxHostID         string
-	SandboxRuntime        string
-	ProjectDir            string
-	Repository            string
-	Branch                string
-	RunID                 string
-	Workspace             *sandbox.SandboxWorkspace
-	RequireWorkerRootless bool
+	Purpose                string
+	SandboxName            string
+	SandboxHostID          string
+	SandboxRuntime         string
+	ProjectDir             string
+	Repository             string
+	Branch                 string
+	RunID                  string
+	Workspace              *sandbox.SandboxWorkspace
+	RequireWorkerRootless  bool
+	TemplateRuntimeDriver  string
+	TemplateIsolationLevel string
+	TemplateRuntimeImage   string
+	TemplateLock           *sandbox.SandboxTemplateLockMetadata
 }
 
 type sandboxCommandScheduledTargetDeps struct {
@@ -80,6 +84,10 @@ func classifySandboxCommandExecutionRoute(
 	scheduledReq sandboxCommandScheduledTargetRequest,
 	scheduledDeps sandboxCommandScheduledTargetDeps,
 ) (bool, sandboxCommandTargetDeps, sandboxCommandScheduledTargetRequest, sandboxCommandScheduledTargetDeps) {
+	scheduledReq.TemplateRuntimeDriver = strings.TrimSpace(targetReq.TemplateRuntimeDriver)
+	scheduledReq.TemplateIsolationLevel = strings.TrimSpace(targetReq.TemplateIsolationLevel)
+	scheduledReq.TemplateRuntimeImage = strings.TrimSpace(targetReq.TemplateRuntimeImage)
+	scheduledReq.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(targetReq.TemplateLock)
 	runtimeDriver := strings.TrimSpace(targetReq.SandboxRuntime)
 	hostID := strings.TrimSpace(targetReq.SandboxHostID)
 	// Only worker-backed rootless targets may be synthesized by the scheduler.
@@ -188,6 +196,9 @@ func resolveSandboxCommandScheduledTarget(req sandboxCommandScheduledTargetReque
 	}
 
 	target := sandboxCommandStateFromSchedulerResult(req, result)
+	if err := applySandboxCommandScheduledTemplateConstruction(target, req); err != nil {
+		return nil, err
+	}
 	if err := validateSandboxCommandWorkerRuntime(sandboxtarget.Result{
 		Host:    target.Host,
 		Runtime: sandboxRuntimeStateForTargetSelection(target.Runtime),
@@ -209,6 +220,35 @@ func resolveSandboxCommandScheduledTarget(req sandboxCommandScheduledTargetReque
 	}
 
 	return target, nil
+}
+
+func applySandboxCommandScheduledTemplateConstruction(
+	target *sandbox.SandboxState,
+	req sandboxCommandScheduledTargetRequest,
+) error {
+	driver := strings.TrimSpace(req.TemplateRuntimeDriver)
+	isolation := strings.TrimSpace(req.TemplateIsolationLevel)
+	image := strings.TrimSpace(req.TemplateRuntimeImage)
+	lock := sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock)
+	if driver == "" && isolation == "" && image == "" && lock == nil {
+		return nil
+	}
+	if target == nil || target.Runtime == nil || lock == nil {
+		return errors.New("selection_rejected")
+	}
+	if driver == "" || strings.TrimSpace(target.Runtime.Driver) != driver ||
+		isolation == "" || strings.TrimSpace(target.Runtime.IsolationLevel) != isolation {
+		return errors.New("selection_rejected")
+	}
+	cachedImage := strings.TrimSpace(target.Runtime.Image)
+	if image != "" && cachedImage != "" && cachedImage != image {
+		return errors.New("selection_rejected")
+	}
+	target.Runtime.Driver = driver
+	target.Runtime.IsolationLevel = isolation
+	target.Runtime.Image = image
+	target.Runtime.TemplateLock = lock
+	return nil
 }
 
 func validateSandboxCommandScheduledWorkerRootlessTarget(target *sandbox.SandboxState) error {

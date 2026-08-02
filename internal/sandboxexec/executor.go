@@ -254,19 +254,10 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 			}
 			return nil, phaseError(PhaseProvisionTarget, target, runtimeDriverID(driver), fmt.Errorf("created sandbox target is required"))
 		}
-		if requireRuntimeImageObservation && strings.TrimSpace(created.Runtime.Image) != expectedRuntimeImage {
-			cleanupTarget := mergeRuntimeTarget(runtimeTarget, *created)
-			selectionErr := errors.New("selection_rejected")
-			if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
-				Target: cleanupTarget,
-				Stdout: req.SetupStdout,
-				Stderr: req.SetupStderr,
-			}); cleanupErr != nil {
-				selectionErr = errors.Join(selectionErr, fmt.Errorf("delete newly created sandbox target after provision failure: %w", cleanupErr))
-			}
-			return nil, phaseError(PhaseProvisionTarget, nil, runtimeDriverID(driver), selectionErr)
-		}
 		runtimeTarget = mergeRuntimeTarget(runtimeTarget, *created)
+		if requireRuntimeImageObservation {
+			runtimeTarget.Runtime.Image = expectedRuntimeImage
+		}
 		runtimeTarget, err = correlateRuntimeTargetTemplateLock(runtimeTarget, trustedTemplateLock)
 		target = applyRuntimeTargetToSandboxState(target, runtimeTarget, trustedTemplateLock)
 		if err != nil {
@@ -295,23 +286,11 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		if startErr == nil && started == nil {
 			startErr = fmt.Errorf("started sandbox target is required")
 		}
-		if startErr == nil && requireRuntimeImageObservation && strings.TrimSpace(started.Runtime.Image) != expectedRuntimeImage {
-			selectionErr := errors.New("selection_rejected")
-			if createdInRun {
-				if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
-					Target: runtimeTarget,
-					Stdout: req.SetupStdout,
-					Stderr: req.SetupStderr,
-				}); cleanupErr != nil {
-					selectionErr = errors.Join(selectionErr, fmt.Errorf("delete newly created sandbox target after start failure: %w", cleanupErr))
-				}
-			}
-			return nil, phaseError(PhaseStartTarget, nil, runtimeDriverID(driver), selectionErr)
-		}
 		if startErr != nil {
 			if requireRuntimeImageObservation {
 				if started != nil {
 					runtimeTarget = mergeRuntimeTarget(runtimeTarget, *started)
+					runtimeTarget.Runtime.Image = expectedRuntimeImage
 				}
 				if createdInRun {
 					if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
@@ -342,7 +321,13 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 			}
 			return nil, phaseError(PhaseStartTarget, target, runtimeDriverID(driver), startErr)
 		}
-		runtimeTarget, err = correlateRuntimeTargetTemplateLock(*started, trustedTemplateLock)
+		if requireRuntimeImageObservation {
+			runtimeTarget = mergeRuntimeTarget(runtimeTarget, *started)
+			runtimeTarget.Runtime.Image = expectedRuntimeImage
+		} else {
+			runtimeTarget = *started
+		}
+		runtimeTarget, err = correlateRuntimeTargetTemplateLock(runtimeTarget, trustedTemplateLock)
 		target = applyRuntimeTargetToSandboxState(target, runtimeTarget, trustedTemplateLock)
 		if err != nil {
 			if createdInRun {

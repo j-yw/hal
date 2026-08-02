@@ -198,7 +198,11 @@ the executor requires a fresh driver inspection to report the same image before
 calling target-readiness hooks. Missing, different, or unavailable inspection
 evidence returns a stable failure, omits unverified trust projection, and cleans
 only a runtime created by that execution. Explicit-image adapter failures keep
-the caller reference out of rendered errors.
+the caller reference out of rendered errors. Create and start responses are
+lifecycle acknowledgements, not independent image evidence. Scheduler-selected
+worker targets carry the same sanitized construction lock and digest-pinned
+image into creation; incompatible cached runtime metadata fails with
+`selection_rejected` instead of being overwritten.
 
 ## 4. Redaction and containment rules
 
