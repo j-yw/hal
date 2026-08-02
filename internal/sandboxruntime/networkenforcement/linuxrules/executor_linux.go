@@ -97,9 +97,10 @@ func (e *productionExecutor) namespaceCommand(ctx context.Context, namespace Nam
 		return nil, nil, errors.New("namespace descriptor unavailable")
 	}
 	commandArgs := []string{
+		"--preserve-credentials",
+		"--keep-caps",
 		"--user=/proc/self/fd/3",
 		"--net=/proc/self/fd/4",
-		"--preserve-credentials",
 		"--",
 		e.nftPath,
 	}
