@@ -206,7 +206,16 @@ func (controller *l7RuntimeController) Start(ctx context.Context, request microv
 	controller.state = l7RuntimeStateStarting
 	prepared, err := controller.prepareRuntimeLocked(nonNilContext(ctx), request)
 	if err != nil {
-		controller.state = l7RuntimeStateFailed
+		if controller.preVMCleanup != nil {
+			controller.state = l7RuntimeStateFailed
+		} else {
+			controller.state = l7RuntimeStateIdle
+			controller.identity = l7network.Identity{}
+			controller.session = nil
+			controller.runtime = nil
+			controller.target = nil
+			controller.vmCleanup = nil
+		}
 		return nil, errL7RuntimeController
 	}
 	// Ownership becomes VM-possible before invoking Start. Every return from
