@@ -151,7 +151,7 @@ func (f *Factory) PrepareNetworkTopology(ctx context.Context, request rootlesspo
 	f.current = session
 	return rootlesspodman.NetworkTopologyPreparation{
 		Identity:   f.options.Identity,
-		CreateArgs: []string{"--network", "pasta:--no-map-gw,--map-host-loopback=" + f.options.GuestProxyAddress + ",-t,none,-u,none,-T,none,-U,none"},
+		CreateArgs: []string{"--network", "pasta:--no-map-gw,--address=192.0.2.3/24,--gateway=192.0.2.1,--address=fd00:6861:6c::2/64,--gateway=fe80::1,--map-host-loopback=" + f.options.GuestProxyAddress + ",-t,none,-u,none,-T,none,-U,none"},
 		Session:    session,
 	}, nil
 }

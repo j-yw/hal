@@ -244,16 +244,18 @@ func validatePastaCreateArgs(args []string) (netip.Addr, error) {
 		return netip.Addr{}, ErrNetworkTopologyCreateArgsInvalid
 	}
 	options := strings.Split(strings.TrimPrefix(args[1], prefix), ",")
-	if len(options) != 10 ||
+	if len(options) != 14 ||
 		options[0] != "--no-map-gw" ||
-		!strings.HasPrefix(options[1], "--map-host-loopback=") ||
-		options[2] != "-t" || options[3] != "none" ||
-		options[4] != "-u" || options[5] != "none" ||
-		options[6] != "-T" || options[7] != "none" ||
-		options[8] != "-U" || options[9] != "none" {
+		options[1] != "--address=192.0.2.3/24" || options[2] != "--gateway=192.0.2.1" ||
+		options[3] != "--address=fd00:6861:6c::2/64" || options[4] != "--gateway=fe80::1" ||
+		!strings.HasPrefix(options[5], "--map-host-loopback=") ||
+		options[6] != "-t" || options[7] != "none" ||
+		options[8] != "-u" || options[9] != "none" ||
+		options[10] != "-T" || options[11] != "none" ||
+		options[12] != "-U" || options[13] != "none" {
 		return netip.Addr{}, ErrNetworkTopologyCreateArgsInvalid
 	}
-	address, err := netip.ParseAddr(strings.TrimPrefix(options[1], "--map-host-loopback="))
+	address, err := netip.ParseAddr(strings.TrimPrefix(options[5], "--map-host-loopback="))
 	if err != nil || address.Zone() != "" || address.IsUnspecified() || address.IsLoopback() || address.IsMulticast() {
 		return netip.Addr{}, ErrNetworkTopologyCreateArgsInvalid
 	}

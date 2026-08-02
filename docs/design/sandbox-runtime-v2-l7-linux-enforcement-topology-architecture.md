@@ -118,12 +118,15 @@ Topology construction disables ambient address and route inference by passing
 fixed synthetic dual-stack namespace addresses and gateways to `pasta` while
 retaining `--no-copy-routes`. The addresses are live-only private topology
 state, are identical across otherwise isolated namespaces, and do not come
-from host interfaces or routing tables. Inspection correlates every accepted
-route with normalized address evidence from the exact interface. Each family
-has one default route. IPv4 has one connected route for its observed prefix;
-IPv6 has one link-local connected route and has a global connected route only
-when its exact address evidence does not declare `noprefixroute`. Extra
-gateway, connected, metadata, or duplicate route shapes fail closed.
+from host interfaces or routing tables. The rootless Podman composition fixes
+its IPv6 gateway to a link-local address so its live namespace resolver can
+prove the intended `pasta` route shape independently of host IPv6 routing.
+Inspection correlates every accepted route with normalized address evidence
+from the exact interface. Each family has one default route. IPv4 has one
+connected route for its observed prefix; IPv6 has one link-local connected
+route and has a global connected route only when its exact address evidence
+does not declare `noprefixroute`. Extra gateway, connected, metadata, or
+duplicate route shapes fail closed.
 
 ## Linux rule adapter
 
