@@ -517,6 +517,41 @@ func (s *Session) Quarantine(ctx context.Context, identity Identity) error {
 	return nil
 }
 
+// AbortBeforeVM reverses a successfully prepared topology only while no guest
+// binding has crossed the VM-ownership boundary. It also retries a retained
+// prepare rollback. Cleanup uses the session's independent bounded context;
+// caller cancellation cannot leave a prepared mapping active by itself.
+func (s *Session) AbortBeforeVM(_ context.Context, identity Identity) error {
+	if s == nil || identity != s.identity || !validIdentity(identity) {
+		return ErrIdentityMismatch
+	}
+	s.mu.Lock()
+	if s.retainedCleanup != retainedCleanupNone {
+		err := s.retryRetainedCleanupLocked()
+		s.mu.Unlock()
+		return err
+	}
+	if s.metadata.Status == StatusStopped {
+		s.mu.Unlock()
+		s.coordinator.clearCurrentSession(s)
+		return nil
+	}
+	if s.metadata.Status != StatusHostPrepared || !interfaceIsNil(s.guestBinding) {
+		s.mu.Unlock()
+		return ErrCleanupIncomplete
+	}
+	if err := s.rollback(); err != nil {
+		s.retainedCleanup = retainedCleanupRollback
+		s.metadata = Metadata{Identity: s.identity, Status: StatusCleanupIncomplete}
+		s.mu.Unlock()
+		return ErrCleanupIncomplete
+	}
+	s.metadata = Metadata{Identity: s.identity, Status: StatusStopped}
+	s.mu.Unlock()
+	s.coordinator.clearCurrentSession(s)
+	return nil
+}
+
 func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, binding TerminatedVMBinding) error {
 	if s == nil || identity != s.identity || !validIdentity(identity) {
 		return ErrIdentityMismatch
@@ -645,7 +680,7 @@ func (s *Session) retryRetainedCleanupLocked() error {
 		}
 		s.journalReleased = true
 		s.retainedCleanup = retainedCleanupUnavailable
-		return nil
+		return ErrCleanupIncomplete
 	case retainedCleanupReleaseRecoveryHandles:
 		if !interfaceIsNil(s.namespace) {
 			if err := s.namespace.Close(); err != nil {
@@ -659,7 +694,7 @@ func (s *Session) retryRetainedCleanupLocked() error {
 		}
 		s.journalReleased = true
 		s.retainedCleanup = retainedCleanupUnavailable
-		return nil
+		return ErrCleanupIncomplete
 	default:
 		return ErrCleanupIncomplete
 	}

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,44 +31,46 @@ func TestL7ProductionVsockBridgeBindsReadinessToExactIsolationProof(t *testing.T
 		IsolationProofGeneration: "topology-generation-vsock",
 	})
 	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
-	requests := make(chan guestagent.ReadinessRequest, 1)
+	requests := make(chan guestagent.ReadinessRequest, 2)
 	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		reader := bufio.NewReader(conn)
-		_, _ = reader.ReadString('\n')
-		_, _ = io.WriteString(conn, "OK 1073741824\n")
-		payload, _ := frame.Read(reader, 4096)
-		var request guestagent.ReadinessRequest
-		_ = json.Unmarshal(payload, &request)
-		requests <- request
-		response := guestagent.ReadinessResponse{
-			ProtocolVersion: guestagent.ProtocolVersionV1,
-			Operation:       guestagent.OperationReadiness,
-			Ready:           true,
-			Status:          guestagent.ReadinessStatusReady,
-			IsolationProof: &guestagent.IsolationProof{
-				Generation:                 "topology-generation-vsock",
-				RuntimeGeneration:          "fc-production-test",
-				Status:                     guestagent.IsolationProofStatusVerified,
-				RestrictedIdentity:         true,
-				CapabilitiesCleared:        true,
-				NoNewPrivileges:            true,
-				SupplementaryGroupsCleared: true,
-				RawPacketSocketDenied:      true,
-				Network: &guestagent.NetworkIsolationProof{
-					Status:          guestagent.IsolationProofStatusVerified,
-					SingleInterface: true,
-					StaticRoutes:    true,
-					ProxyReachable:  true,
+		for attempt := 0; attempt < 2; attempt++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			reader := bufio.NewReader(conn)
+			_, _ = reader.ReadString('\n')
+			_, _ = io.WriteString(conn, "OK 1073741824\n")
+			payload, _ := frame.Read(reader, 4096)
+			var request guestagent.ReadinessRequest
+			_ = json.Unmarshal(payload, &request)
+			requests <- request
+			response := guestagent.ReadinessResponse{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationReadiness,
+				Ready:           true,
+				Status:          guestagent.ReadinessStatusReady,
+				IsolationProof: &guestagent.IsolationProof{
+					Generation:                 "topology-generation-vsock",
+					RuntimeGeneration:          "fc-production-test",
+					Status:                     guestagent.IsolationProofStatusVerified,
+					RestrictedIdentity:         true,
+					CapabilitiesCleared:        true,
+					NoNewPrivileges:            true,
+					SupplementaryGroupsCleared: true,
+					RawPacketSocketDenied:      true,
+					Network: &guestagent.NetworkIsolationProof{
+						Status:          guestagent.IsolationProofStatusVerified,
+						SingleInterface: true,
+						StaticRoutes:    true,
+						ProxyReachable:  true,
+					},
 				},
-			},
+			}
+			encoded, _ := json.Marshal(response)
+			_ = frame.Write(conn, encoded, 4096)
+			_ = conn.Close()
 		}
-		encoded, _ := json.Marshal(response)
-		_ = frame.Write(conn, encoded, 4096)
 	}()
 
 	result, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
@@ -83,6 +86,142 @@ func TestL7ProductionVsockBridgeBindsReadinessToExactIsolationProof(t *testing.T
 	}
 	if result.IsolationProofGeneration != "topology-generation-vsock" || result.IsolationRuntimeGeneration != "fc-production-test" {
 		t.Fatalf("readiness result = %#v, want exact accepted response binding", result)
+	}
+	target := sandboxruntime.Target{ID: "fc-production-test", Runtime: sandboxruntime.RuntimeState{
+		RuntimeID: "fc-production-test", Metadata: &sandboxruntime.RuntimeMetadata{
+			ProcessLaunch: &sandboxruntime.RuntimeProcessLaunchMetadata{
+				ProcessID: fixture.handle.ID, ProcessIDSource: fixture.handle.Source,
+			},
+		},
+	}}
+	proof, err := fixture.bridge.refreshL7Proof(context.Background(), target, "topology-generation-vsock")
+	if err != nil {
+		t.Fatalf("refreshL7Proof() error = %v", err)
+	}
+	if proof.runtimeID != "fc-production-test" || proof.handleID != fixture.handle.ID ||
+		proof.handleSource != fixture.handle.Source || proof.bridgeGeneration == "" ||
+		proof.isolationProofGeneration != "topology-generation-vsock" {
+		t.Fatalf("refresh proof = %#v, want exact opaque session binding", proof)
+	}
+	refreshed := <-requests
+	if refreshed.IsolationProof == nil || refreshed.IsolationProof.Generation != "topology-generation-vsock" ||
+		refreshed.IsolationProof.RuntimeGeneration != "fc-production-test" || !refreshed.IsolationProof.RequireNetworkProof {
+		t.Fatalf("fresh readiness request = %#v, want exact proof binding", refreshed)
+	}
+}
+
+func TestL7ProductionVsockProofRefreshIsRaceSafeWithSessionInvalidation(t *testing.T) {
+	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
+	fixture.bridge = NewProductionVsockBridge(ProductionVsockBridgeOptions{
+		Lifecycle: fixture.bridge.lifecycle, Timeout: time.Second, PollInterval: time.Millisecond,
+		RequireIsolationProof: true, RequireNetworkProof: true,
+		IsolationProofGeneration: "topology-generation-race",
+	})
+	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
+	go l7ServeProofRequiredReadiness(listener, "topology-generation-race", "fc-production-test")
+	_, generation, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
+	})
+	if err != nil {
+		t.Fatalf("ActivateSession() error = %v", err)
+	}
+
+	client := &l7ConcurrentReadinessClient{
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	fixture.bridge.mu.Lock()
+	fixture.bridge.sessions["fc-production-test"].readiness = client
+	fixture.bridge.mu.Unlock()
+	target := sandboxruntime.Target{ID: "fc-production-test", Runtime: sandboxruntime.RuntimeState{
+		RuntimeID: "fc-production-test", Metadata: &sandboxruntime.RuntimeMetadata{
+			ProcessLaunch: &sandboxruntime.RuntimeProcessLaunchMetadata{
+				ProcessID: fixture.handle.ID, ProcessIDSource: fixture.handle.Source,
+			},
+		},
+	}}
+
+	const refreshers = 16
+	errorsSeen := make(chan error, refreshers)
+	var wait sync.WaitGroup
+	for range refreshers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, refreshErr := fixture.bridge.refreshL7Proof(context.Background(), target, "topology-generation-race")
+			errorsSeen <- refreshErr
+		}()
+	}
+	select {
+	case <-client.entered:
+	case <-time.After(time.Second):
+		t.Fatal("proof refresh did not reach readiness boundary")
+	}
+	fixture.bridge.InvalidateSession(firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-production-test",
+	}, generation)
+	close(client.release)
+	wait.Wait()
+	close(errorsSeen)
+	for refreshErr := range errorsSeen {
+		if refreshErr != nil && !errors.Is(refreshErr, errL7RuntimeController) {
+			t.Fatalf("concurrent refresh error = %T %v, want stable L7 containment error", refreshErr, refreshErr)
+		}
+	}
+	if fixture.bridge.session("fc-production-test") != nil {
+		t.Fatal("invalidated proof session remained available")
+	}
+}
+
+type l7ConcurrentReadinessClient struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (client *l7ConcurrentReadinessClient) Readiness(ctx context.Context, request guestagent.ReadinessRequest) (*guestagent.ReadinessResponse, error) {
+	select {
+	case client.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-client.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return l7ProofRequiredReadinessResponse(request.IsolationProof.Generation, request.IsolationProof.RuntimeGeneration), nil
+}
+
+func l7ServeProofRequiredReadiness(listener net.Listener, topologyGeneration, runtimeGeneration string) {
+	connection, err := listener.Accept()
+	if err != nil {
+		return
+	}
+	defer connection.Close()
+	reader := bufio.NewReader(connection)
+	_, _ = reader.ReadString('\n')
+	_, _ = io.WriteString(connection, "OK 1073741824\n")
+	_, _ = frame.Read(reader, 4096)
+	response := l7ProofRequiredReadinessResponse(topologyGeneration, runtimeGeneration)
+	encoded, _ := json.Marshal(response)
+	_ = frame.Write(connection, encoded, 4096)
+}
+
+func l7ProofRequiredReadinessResponse(topologyGeneration, runtimeGeneration string) *guestagent.ReadinessResponse {
+	return &guestagent.ReadinessResponse{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationReadiness,
+		Ready:           true,
+		Status:          guestagent.ReadinessStatusReady,
+		IsolationProof: &guestagent.IsolationProof{
+			Generation: topologyGeneration, RuntimeGeneration: runtimeGeneration,
+			Status:             guestagent.IsolationProofStatusVerified,
+			RestrictedIdentity: true, CapabilitiesCleared: true, NoNewPrivileges: true,
+			SupplementaryGroupsCleared: true, RawPacketSocketDenied: true,
+			Network: &guestagent.NetworkIsolationProof{
+				Status:          guestagent.IsolationProofStatusVerified,
+				SingleInterface: true, StaticRoutes: true, ProxyReachable: true,
+			},
+		},
 	}
 }
 
