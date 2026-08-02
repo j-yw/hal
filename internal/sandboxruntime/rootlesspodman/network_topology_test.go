@@ -208,6 +208,41 @@ func TestL7PodmanTopologyAcceptsBoundedDualStackPastaMapping(t *testing.T) {
 	}
 }
 
+func TestL7PodmanTopologyRetainsUnregisteredSessionCleanupAuthority(t *testing.T) {
+	session := newFakeNetworkTopologySession(nil)
+	session.cleanupErr = errors.New("private transient cleanup failure")
+	identity := testNetworkTopologyIdentity()
+	identity.TopologyGenerationID = "https://unsafe.example/generation"
+	driver := rootlesspodman.New(rootlesspodman.Options{
+		LifecycleRunner: &topologyCommandRunner{},
+		NetworkTopologyFactory: &fakeNetworkTopologyFactory{preparation: rootlesspodman.NetworkTopologyPreparation{
+			Identity: identity, CreateArgs: testPastaCreateArgs(), Session: session,
+		}},
+	})
+
+	if _, err := driver.Create(context.Background(), sandboxruntime.CreateRequest{Name: "hal-l7"}); err == nil {
+		t.Fatal("Create() error = nil, want fail-closed topology validation")
+	}
+	_, _, _, cleanupCalls, _, _ := session.callState()
+	if cleanupCalls != 1 {
+		t.Fatalf("initial unregistered cleanup calls = %d, want 1", cleanupCalls)
+	}
+	retrier, ok := any(driver).(interface {
+		RetryNetworkTopologyCleanup(context.Context) error
+	})
+	if !ok {
+		t.Fatal("driver discarded unregistered topology cleanup authority")
+	}
+	session.cleanupErr = nil
+	if err := retrier.RetryNetworkTopologyCleanup(context.Background()); err != nil {
+		t.Fatalf("RetryNetworkTopologyCleanup() error = %v", err)
+	}
+	_, _, _, cleanupCalls, _, _ = session.callState()
+	if cleanupCalls != 2 {
+		t.Fatalf("retained unregistered cleanup calls = %d, want 2", cleanupCalls)
+	}
+}
+
 func TestL7PodmanTopologyActivationFailureRollsBackInReverseOrder(t *testing.T) {
 	sequence := &topologySequence{}
 	session := newFakeNetworkTopologySession(sequence)

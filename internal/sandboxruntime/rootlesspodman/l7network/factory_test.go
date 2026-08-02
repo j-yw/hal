@@ -214,6 +214,22 @@ func TestL7ComposedRootlessPodmanPartialOwnershipAndCleanupRetry(t *testing.T) {
 		if got, want := sequence.snapshot(), []string{"proxy_start", "proxy_stop"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("partial proxy sequence = %#v, want %#v", got, want)
 		}
+		retrier, ok := factory.(interface {
+			RetryNetworkTopologyCleanup(context.Context) error
+		})
+		if !ok {
+			t.Fatal("factory discarded partial proxy cleanup authority")
+		}
+		if retryErr := retrier.RetryNetworkTopologyCleanup(context.Background()); !errors.Is(retryErr, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("first retained cleanup retry = %v, want ErrCleanupIncomplete", retryErr)
+		}
+		proxy.stopErr = nil
+		if retryErr := retrier.RetryNetworkTopologyCleanup(context.Background()); retryErr != nil {
+			t.Fatalf("second retained cleanup retry = %v", retryErr)
+		}
+		if got, want := sequence.snapshot(), []string{"proxy_start", "proxy_stop", "proxy_stop", "proxy_stop"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("retained partial proxy sequence = %#v, want %#v", got, want)
+		}
 	})
 
 	t.Run("partial namespace is closed", func(t *testing.T) {
