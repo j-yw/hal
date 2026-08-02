@@ -595,7 +595,10 @@ type fakeTopology struct {
 }
 
 func newFakeTopology(sequence *callSequence) *fakeTopology {
-	return &fakeTopology{sequence: sequence, session: &fakeTopologySession{sequence: sequence}}
+	return &fakeTopology{sequence: sequence, session: &fakeTopologySession{
+		sequence: sequence,
+		losses:   make(chan linuxtopology.Loss, 1),
+	}}
 }
 
 func (t *fakeTopology) Start(_ context.Context, request linuxtopology.StartRequest) (TopologySession, error) {
@@ -619,6 +622,7 @@ type fakeTopologySession struct {
 	sequence  *callSequence
 	identity  linuxtopology.Identity
 	borrowErr error
+	losses    chan linuxtopology.Loss
 }
 
 func (s *fakeTopologySession) Metadata() linuxtopology.Metadata {
@@ -630,6 +634,12 @@ func (s *fakeTopologySession) BorrowNamespace() (NamespaceLease, error) {
 		return nil, s.borrowErr
 	}
 	return &fakeNamespaceLease{rules: linuxrules.NewNamespaceHandle(10, 11)}, nil
+}
+func (s *fakeTopologySession) Losses() <-chan linuxtopology.Loss {
+	if s == nil {
+		return nil
+	}
+	return s.losses
 }
 
 type fakeNamespaceLease struct{ rules linuxrules.NamespaceHandle }

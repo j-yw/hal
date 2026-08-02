@@ -12,6 +12,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"
 )
 
 func TestFirecrackerHostTopologyPublishesProxyLossOnlyAfterQuarantine(t *testing.T) {
@@ -77,6 +78,77 @@ func TestFirecrackerHostTopologyPublishesProxyLossOnlyAfterQuarantine(t *testing
 				t.Fatalf("proxy loss sequence = %#v, want %#v", got, want)
 			}
 		})
+	}
+}
+
+func TestFirecrackerHostTopologyPublishesTopologyLossOnlyAfterQuarantine(t *testing.T) {
+	sequence := &callSequence{}
+	topology := newFakeTopology(sequence)
+	rules := &gatedQuarantineRules{
+		fakeRules: &fakeRules{sequence: sequence},
+		started:   make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: newFakeProxy(sequence), Topology: topology,
+		TAP: &fakeTAP{sequence: sequence}, Rules: rules,
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+	})
+	session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notification := session.Loss()
+	sequence.reset()
+
+	go func() {
+		topology.session.losses <- linuxtopology.Loss{
+			TopologyGenerationID: testIdentity().TopologyGenerationID,
+			Component:            linuxtopology.ProcessRoleMapping,
+			Reason:               linuxtopology.LossReasonProcessExited,
+		}
+	}()
+
+	select {
+	case <-rules.started:
+	case <-time.After(time.Second):
+		t.Fatal("topology loss was not consumed by the session quarantine owner")
+	}
+	select {
+	case <-notification:
+		t.Fatal("Session.Loss() published before topology-loss quarantine completed")
+	default:
+	}
+
+	close(rules.release)
+	select {
+	case result, ok := <-notification:
+		if !ok {
+			t.Fatal("Session.Loss() closed without a topology-loss quarantine result")
+		}
+		assertProxyLossResult(t, any(result), StatusQuarantined, nil)
+	case <-time.After(time.Second):
+		t.Fatal("Session.Loss() did not publish topology-loss quarantine completion")
+	}
+	if got, want := sequence.snapshot(), []string{"rules_quarantine", "journal_save_quarantined"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("topology loss sequence = %#v, want %#v", got, want)
+	}
+}
+
+func TestFirecrackerHostTopologyRejectsTopologyWithoutLossSignal(t *testing.T) {
+	sequence := &callSequence{}
+	topology := newFakeTopology(sequence)
+	topology.session.losses = nil
+	coordinator := mustCoordinator(t, Options{
+		Enabled: true, Proxy: newFakeProxy(sequence), Topology: topology,
+		TAP: &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		Journal: &fakeJournalStore{sequence: sequence}, CleanupTimeout: time.Second,
+	})
+	if session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()}); session != nil || !errors.Is(err, ErrTopologyPrepareFailed) {
+		t.Fatalf("Prepare() = session %T, error %v, want no session and ErrTopologyPrepareFailed", session, err)
+	}
+	if got := sequence.snapshot(); !contains(got, "topology_stop") || !contains(got, "proxy_stop") {
+		t.Fatalf("missing topology loss signal did not roll back exact resources: %#v", got)
 	}
 }
 
