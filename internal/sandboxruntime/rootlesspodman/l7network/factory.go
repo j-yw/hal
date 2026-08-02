@@ -256,7 +256,7 @@ func (s *Session) Activate(ctx context.Context, request rootlesspodman.NetworkTo
 	s.expected = expected
 	s.prepared = true
 	if err := s.proxy.Active(ctx, s.plan, s.generation); err != nil {
-		return rootlesspodman.NetworkTopologyProof{}, ErrProxyUnavailable
+		return rootlesspodman.NetworkTopologyProof{}, s.failPreparedActivation(ErrProxyUnavailable)
 	}
 	metadata, err := s.rules.ApplyAndInspect(ctx, expected)
 	if err != nil {
