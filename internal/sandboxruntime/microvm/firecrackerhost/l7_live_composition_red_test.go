@@ -197,10 +197,18 @@ func TestL7PreparedLinuxE2ECleanupIsAuditableAndPreservesFailedRecovery(t *testi
 		"cleanupFailures = errors.Join",
 		"preserving L7 recovery state",
 		"if cleanupFailures == nil",
+		"preserveRecoveryState = true",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("prepared Linux E2E lacks auditable cleanup marker %q", required)
 		}
+	}
+	disarm := strings.Index(source, "cleanupPending = false")
+	proxyAudit := strings.Index(source, "if _, active := adapter.Endpoint()")
+	stateAudit := strings.Index(source, "entries, err := os.ReadDir(stateRoot)")
+	if disarm < 0 || proxyAudit < 0 || stateAudit < 0 || disarm < proxyAudit || disarm < stateAudit {
+		t.Fatalf("prepared Linux E2E disarms fallback cleanup before post-delete audits: disarm=%d proxy=%d state=%d",
+			disarm, proxyAudit, stateAudit)
 	}
 }
 
