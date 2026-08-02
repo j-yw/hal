@@ -17,8 +17,9 @@ func (service *Service) CreateResponse(ctx context.Context, requestID, driverID 
 	}
 
 	target, err := driver.Create(ctx, sandboxruntime.CreateRequest{
-		Name: req.Name,
-		Env:  cloneStringMap(req.Env),
+		Name:  req.Name,
+		Image: strings.TrimSpace(req.Image),
+		Env:   cloneStringMap(req.Env),
 	})
 	if err != nil {
 		return lifecycleErrorResponse(ctx, requestID, OperationCreate, err)

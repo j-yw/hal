@@ -2546,6 +2546,7 @@ type fakeRunSandboxRuntimeDriver struct {
 	id      string
 	create  func(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error)
 	start   func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
+	inspect func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error)
 	exec    func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
 	copyIn  func(context.Context, sandboxruntime.CopyRequest) error
 	copyOut func(context.Context, sandboxruntime.CopyRequest) error
@@ -2590,8 +2591,11 @@ func (fakeRunSandboxRuntimeDriver) Delete(context.Context, sandboxruntime.Lifecy
 	return nil
 }
 
-func (fakeRunSandboxRuntimeDriver) Inspect(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
-	return nil, nil
+func (f fakeRunSandboxRuntimeDriver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	if f.inspect != nil {
+		return f.inspect(ctx, req)
+	}
+	return &req.Target, nil
 }
 
 func (f fakeRunSandboxRuntimeDriver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {

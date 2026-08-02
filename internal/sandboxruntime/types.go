@@ -304,6 +304,7 @@ type ConnectionInfo struct {
 // CreateRequest describes a target provisioning request.
 type CreateRequest struct {
 	Name   string
+	Image  string
 	Env    map[string]string
 	Stdout io.Writer
 	Stderr io.Writer

@@ -41,6 +41,21 @@ type OperationError struct {
 	Err       error
 }
 
+type explicitRuntimeImageOperationError struct {
+	err error
+}
+
+func (e *explicitRuntimeImageOperationError) Error() string {
+	return "rootless_podman create failed: explicit runtime image unavailable"
+}
+
+func (e *explicitRuntimeImageOperationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 func (e *OperationError) Error() string {
 	if e == nil {
 		return ""
@@ -67,13 +82,18 @@ func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (
 	if name == "" {
 		return nil, operationError(OperationCreate, CommandResult{}, ErrTargetNameRequired)
 	}
+	explicitImage := strings.TrimSpace(req.Image)
+	image := explicitImage
+	if image == "" {
+		image = d.image
+	}
 	entry, topologyArgs, err := d.prepareNetworkTopology(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	createArgs := d.createArgs(name)
+	createArgs := d.createArgs(name, image)
 	if entry != nil {
-		createArgs = d.createArgsWithNetworkTopology(name, topologyArgs, &entry.identity)
+		createArgs = d.createArgsWithNetworkTopologyImage(name, image, topologyArgs, &entry.identity)
 	}
 
 	result, err := d.runLifecycleCommand(ctx, CommandRequest{
@@ -86,6 +106,9 @@ func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (
 	if err != nil {
 		if entry != nil {
 			d.cleanupUnregisteredTopology(entry.identity, entry.session, sandboxruntime.Target{})
+		}
+		if explicitImage != "" {
+			return nil, &explicitRuntimeImageOperationError{err: err}
 		}
 		return nil, err
 	}
@@ -102,7 +125,7 @@ func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (
 		Runtime: sandboxruntime.RuntimeState{
 			Driver:         DriverID,
 			RuntimeID:      runtimeID,
-			Image:          d.image,
+			Image:          image,
 			IsolationLevel: IsolationLevel,
 		},
 	}
@@ -263,8 +286,8 @@ func (d *Driver) lifecycleRunnerFor(operation string) (LifecycleCommandRunner, e
 	return d.lifecycleRunner, nil
 }
 
-func (d *Driver) createArgs(name string) []string {
-	return d.createArgsWithNetworkTopology(name, nil, nil)
+func (d *Driver) createArgs(name, image string) []string {
+	return d.createArgsWithNetworkTopologyImage(name, image, nil, nil)
 }
 
 func (d *Driver) startArgs(ref string) []string {
@@ -408,7 +431,10 @@ func applyInspectOutput(target *sandboxruntime.Target, output string) error {
 	if name := strings.TrimPrefix(strings.TrimSpace(entry.Name), "/"); name != "" {
 		target.Name = name
 	}
-	if image := firstNonEmpty(entry.ImageName, entry.Config.Image, entry.Image, target.Runtime.Image); image != "" {
+	// Inspection is an observation boundary. Never retain a requested image
+	// when Podman omits image identity from its own response.
+	target.Runtime.Image = ""
+	if image := firstNonEmpty(entry.ImageName, entry.Config.Image, entry.Image); image != "" {
 		target.Runtime.Image = image
 	}
 	if status := normalizePodmanStatus(entry.State.Status, entry.State.Running); status != "" {

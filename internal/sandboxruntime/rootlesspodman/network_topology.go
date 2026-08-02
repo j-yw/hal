@@ -622,6 +622,10 @@ func (d *Driver) projectCurrentNetworkTopologyProof(target *sandboxruntime.Targe
 }
 
 func (d *Driver) createArgsWithNetworkTopology(name string, createArgs []string, identity *NetworkTopologyIdentity) []string {
+	return d.createArgsWithNetworkTopologyImage(name, d.image, createArgs, identity)
+}
+
+func (d *Driver) createArgsWithNetworkTopologyImage(name, image string, createArgs []string, identity *NetworkTopologyIdentity) []string {
 	args := []string{
 		d.podmanPath,
 		"create",
@@ -644,7 +648,7 @@ func (d *Driver) createArgsWithNetworkTopology(name string, createArgs []string,
 	return append(args,
 		"--security-opt", "no-new-privileges",
 		"--workdir", d.workDir,
-		d.image,
+		image,
 		"sleep", "infinity",
 	)
 }

@@ -89,36 +89,43 @@ func TestProjectTemplateProvenanceProjectsLocalLockJSONFields(t *testing.T) {
 func TestProjectTemplateProvenanceProjectsOCIResolverLocksWithoutUnsafeRefs(t *testing.T) {
 	sourceRef := "fixture-user:super-secret-password@ghcr.io/acme/templates/codex-go:1.2.0?token=ghp_fixturetoken&api_key=sk-live-template"
 	document := ociFixtureTemplateYAML()
-	templateArtifactDigest := testDigest(strings.Repeat("a", 64))
-	runtimeImageDigest := testDigest(strings.Repeat("b", 64))
-	sourceArtifactDigest := testDigest(strings.Repeat("c", 64))
-	documentDigest := testDigest(strings.Repeat("d", 64))
+	manifestBytes := []byte(`{"schemaVersion":2}`)
+	runtimeProof := []byte("runtime proof")
+	sourceProof := []byte("source proof")
+	templateArtifactDigest := testDigestForBytes(manifestBytes)
+	runtimeImageDigest := testDigestForBytes(runtimeProof)
+	sourceArtifactDigest := testDigestForBytes(sourceProof)
+	documentDigest := testDigestForBytes([]byte(document))
 	fake := &fakeOCIArtifactResolver{
 		fixtures: map[string]acquisition.OCIArtifactResolveResult{
 			sourceRef: {
 				TemplateBytes:          []byte(document),
+				ArtifactManifestBytes:  manifestBytes,
 				Format:                 sandboxtemplate.FormatYAML,
 				DocumentDigest:         documentDigest,
 				TemplateArtifactDigest: templateArtifactDigest,
 				SizeBytes:              int64(len(document)),
 				ReferenceDigests: []acquisition.ReferenceDigestProof{
 					{
-						Field:  "metadata.reference",
-						Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
-						Ref:    "ghcr.io/acme/templates/codex-go:1.2.0",
-						Digest: templateArtifactDigest,
+						Field:         "metadata.reference",
+						Kind:          sandboxtemplate.ReferenceKindOCIArtifact,
+						Ref:           "ghcr.io/acme/templates/codex-go:1.2.0",
+						Digest:        templateArtifactDigest,
+						VerifiedBytes: manifestBytes,
 					},
 					{
-						Field:  "runtime.image",
-						Kind:   sandboxtemplate.ReferenceKindOCIImage,
-						Ref:    "ghcr.io/acme/go-agent:1.2.0",
-						Digest: runtimeImageDigest,
+						Field:         "runtime.image",
+						Kind:          sandboxtemplate.ReferenceKindOCIImage,
+						Ref:           "ghcr.io/acme/go-agent:1.2.0",
+						Digest:        runtimeImageDigest,
+						VerifiedBytes: runtimeProof,
 					},
 					{
-						Field:  "workspace.ref",
-						Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
-						Ref:    "ghcr.io/acme/sources/repo:20260703",
-						Digest: sourceArtifactDigest,
+						Field:         "workspace.ref",
+						Kind:          sandboxtemplate.ReferenceKindOCIArtifact,
+						Ref:           "ghcr.io/acme/sources/repo:20260703",
+						Digest:        sourceArtifactDigest,
+						VerifiedBytes: sourceProof,
 					},
 				},
 			},
@@ -150,13 +157,13 @@ func TestProjectTemplateProvenanceProjectsOCIResolverLocksWithoutUnsafeRefs(t *t
 	if projection.Document.SourceKind != "oci_artifact" || projection.Document.ReferenceKind != "oci_artifact" {
 		t.Fatalf("document source/reference = %q/%q, want oci_artifact/oci_artifact", projection.Document.SourceKind, projection.Document.ReferenceKind)
 	}
-	if got := projection.TemplateReference.DigestValue; got != strings.Repeat("a", 64) {
+	if got := projection.TemplateReference.DigestValue; got != templateArtifactDigest.Value {
 		t.Fatalf("template reference digest = %q, want template artifact digest", got)
 	}
-	if got := projection.RuntimeImage.DigestValue; got != strings.Repeat("b", 64) {
+	if got := projection.RuntimeImage.DigestValue; got != runtimeImageDigest.Value {
 		t.Fatalf("runtime image digest = %q, want fixture digest", got)
 	}
-	if got := projection.SourceArtifact.DigestValue; got != strings.Repeat("c", 64) {
+	if got := projection.SourceArtifact.DigestValue; got != sourceArtifactDigest.Value {
 		t.Fatalf("source artifact digest = %q, want fixture digest", got)
 	}
 

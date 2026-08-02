@@ -65,22 +65,24 @@ hal run [iterations] [flags]
 ### Options
 
 ```
-  -b, --base string              Base branch for creating the PRD branch (default: current branch, or HEAD when detached)
-      --dry-run                  Show what would execute without running
-  -e, --engine string            Engine to use (claude, codex, pi) (default "codex")
-  -h, --help                     help for run
-  -i, --iterations int           Maximum iterations to run (default 10)
-      --json                     Output machine-readable JSON result
-      --retries int              Max retries per iteration on failure (default 3)
-      --retry-delay duration     Base retry delay (default 5s)
-      --sandbox                  Run inside a sandbox
-      --sandbox-apply            explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree
-      --sandbox-host string      Cached sandbox host ID for target selection
-      --sandbox-name string      Sandbox name for --sandbox execution
-      --sandbox-runtime string   Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
-      --sandbox-sync-out         Collect sandbox sync-out metadata without applying to the host worktree
-  -s, --story string             Run specific story by ID (e.g., US-001)
-      --timeout duration         Per-engine session timeout override (e.g., 30m, 1h)
+  -b, --base string                     Base branch for creating the PRD branch (default: current branch, or HEAD when detached)
+      --dry-run                         Show what would execute without running
+  -e, --engine string                   Engine to use (claude, codex, pi) (default "codex")
+  -h, --help                            help for run
+  -i, --iterations int                  Maximum iterations to run (default 10)
+      --json                            Output machine-readable JSON result
+      --retries int                     Max retries per iteration on failure (default 3)
+      --retry-delay duration            Base retry delay (default 5s)
+      --sandbox                         Run inside a sandbox
+      --sandbox-apply                   explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree
+      --sandbox-host string             Cached sandbox host ID for target selection
+      --sandbox-name string             Sandbox name for --sandbox execution
+      --sandbox-runtime string          Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
+      --sandbox-sync-out                Collect sandbox sync-out metadata without applying to the host worktree
+      --sandbox-template string         OCI sandbox template reference to select before runtime construction
+      --sandbox-template-trust string   Sandbox template trust mode (strict or advisory) (default "strict")
+  -s, --story string                    Run specific story by ID (e.g., US-001)
+      --timeout duration                Per-engine session timeout override (e.g., 30m, 1h)
 ```
 
 ### SEE ALSO
