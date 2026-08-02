@@ -31,6 +31,14 @@ validation in both host/container scripts, L5 boot-critical source/effective
 configuration preservation, final-rootfs privilege assertions, strict `/30`
 and `/126` point-to-point boot configuration, verified L7 descriptor
 correlation, and request-environment rejection of lowercase proxy names.
+It also locks private regular-file staging before filesystem inspection, exact
+Buildroot ext4-alias validation, non-symlink export, and the unchanged
+final-image symlink rejection boundary:
+
+```sh
+go test -count=1 ./tools/microvm/l7 \
+  -run 'TestL7(BuildNormalizesBuildrootExt4AliasBeforeInspection|FinalImageVerifierRejectsSymlinkInput|BuildPreservesL5BootCriticalAndFilesystemGates)$'
+```
 
 The focused Firecracker guest process proof lane is:
 

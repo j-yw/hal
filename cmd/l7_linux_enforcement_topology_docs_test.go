@@ -36,3 +36,20 @@ func TestL7LinuxEnforcementTopologyFocusedDocsRunHostPackageTests(t *testing.T) 
 		}
 	}
 }
+
+func TestL7LinuxEnforcementTopologyDocsLockRootfsAliasNormalization(t *testing.T) {
+	path := filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l7-linux-enforcement-topology-verification.md")
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"private regular-file staging",
+		"non-symlink export",
+		"TestL7(BuildNormalizesBuildrootExt4AliasBeforeInspection|FinalImageVerifierRejectsSymlinkInput|BuildPreservesL5BootCriticalAndFilesystemGates)",
+	} {
+		if !strings.Contains(string(payload), marker) {
+			t.Fatalf("L7 verification docs omit rootfs normalization marker %q", marker)
+		}
+	}
+}

@@ -116,11 +116,24 @@ done
 ! grep -Eq '^CONFIG_DEVTMPFS_MOUNT=(y|m)$' "$kernel_config"
 
 test -f "$buildroot_output/images/vmlinux"
-test -f "$buildroot_output/images/rootfs.ext4"
-PATH="$buildroot_output/host/sbin:$PATH" e2fsck -fn "$buildroot_output/images/rootfs.ext4"
-PATH="$buildroot_output/host/sbin:$PATH" "$profile_root/verify-final-image.sh" "$buildroot_output/images/rootfs.ext4"
-install -m 0644 "$buildroot_output/images/vmlinux" /export/vmlinux
-install -m 0644 "$buildroot_output/images/rootfs.ext4" /export/rootfs.ext4
+rootfs_alias="$buildroot_output/images/rootfs.ext4"
+rootfs_payload="$buildroot_output/images/rootfs.ext2"
+rootfs_stage_dir=/build/verified-rootfs
+rootfs_stage="$rootfs_stage_dir/rootfs.ext4"
+[[ -L "$rootfs_alias" ]]
+[[ "$(readlink -- "$rootfs_alias")" == rootfs.ext2 ]]
+[[ -f "$rootfs_payload" && ! -L "$rootfs_payload" ]]
+[[ ! -e "$rootfs_stage_dir" && ! -L "$rootfs_stage_dir" ]]
+install -d -m 0700 -- "$rootfs_stage_dir"
+[[ -d "$rootfs_stage_dir" && ! -L "$rootfs_stage_dir" ]]
+[[ "$(stat -c '%a' -- "$rootfs_stage_dir")" == 700 ]]
+install -m 0644 -- "$rootfs_payload" "$rootfs_stage"
+[[ -f "$rootfs_stage" && ! -L "$rootfs_stage" ]]
+PATH="$buildroot_output/host/sbin:$PATH" e2fsck -fn "$rootfs_stage"
+PATH="$buildroot_output/host/sbin:$PATH" "$profile_root/verify-final-image.sh" "$rootfs_stage"
+install -m 0644 -- "$buildroot_output/images/vmlinux" /export/vmlinux
+install -m 0644 -- "$rootfs_stage" /export/rootfs.ext4
+[[ -f /export/rootfs.ext4 && ! -L /export/rootfs.ext4 ]]
 
 python3 - "$SOURCE_REVISION" "$SOURCE_TREE" "$SOURCE_DATE_EPOCH" <<'PY'
 import hashlib

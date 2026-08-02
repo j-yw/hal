@@ -226,6 +226,15 @@ applets are
 locked by the build. The L5 image, digest, and no-network tests are not edited
 into a networking claim.
 
+The pinned Buildroot release emits its ext4 variant as `rootfs.ext4` pointing
+to the regular `rootfs.ext2` payload. That internal alias is accepted only when
+it is an exact relative symlink to `rootfs.ext2` and the payload is a regular,
+non-symlink file. The build copies the payload into a private mode-`0700`
+staging directory, asserts that the staged `rootfs.ext4` is regular and
+non-symlink, and runs filesystem plus final-image inspection there before any
+caller-visible export. The verifier and installed distribution continue to
+reject symlinks; only the pinned internal Buildroot alias is normalized.
+
 The L7 build accepts only a positive decimal parallelism value no greater than
 64 (and caps the detected default at 64). It rechecks the value inside the
 offline container. Final-image inspection preserves the L5 boot-critical
