@@ -18,6 +18,8 @@ import (
 
 const (
 	terminationGrace         = 5 * time.Second
+	forceStopReapTimeout     = 5 * time.Second
+	forceStopReapPoll        = 10 * time.Millisecond
 	networkCommandTimeout    = 5 * time.Second
 	requireL7NetworkArgument = "--require-l7-network"
 )
@@ -90,7 +92,9 @@ func run(arguments []string) int {
 		case <-deadline:
 			_ = unix.Kill(-childPID, unix.SIGKILL)
 			deadline = nil
-			status, exited := waitForMainChild(childPID, unix.Wait4)
+			reapContext, cancelReap := context.WithTimeout(context.Background(), forceStopReapTimeout)
+			status, exited := waitForKilledChildren(reapContext, childPID, unix.Wait4)
+			cancelReap()
 			stopTimer(timer)
 			if !exited {
 				return 1
@@ -261,21 +265,46 @@ func reapChildren(mainPID int) (unix.WaitStatus, bool) {
 	}
 }
 
-func waitForMainChild(
+func waitForKilledChildren(
+	ctx context.Context,
 	mainPID int,
 	wait func(int, *unix.WaitStatus, int, *unix.Rusage) (int, error),
 ) (unix.WaitStatus, bool) {
-	if mainPID <= 0 || wait == nil {
+	if ctx == nil || mainPID <= 0 || wait == nil {
 		return 0, false
 	}
+	var mainStatus unix.WaitStatus
+	mainExited := false
 	for {
-		var status unix.WaitStatus
-		pid, err := wait(mainPID, &status, 0, nil)
+		var childStatus unix.WaitStatus
+		pid, err := wait(-1, &childStatus, unix.WNOHANG, nil)
 		switch {
-		case pid == mainPID:
-			return status, true
+		case pid > 0 && err == nil:
+			if pid == mainPID {
+				mainStatus = childStatus
+				mainExited = true
+			}
+			if ctx.Err() != nil {
+				return 0, false
+			}
 		case errors.Is(err, unix.EINTR):
+			if ctx.Err() != nil {
+				return 0, false
+			}
 			continue
+		case errors.Is(err, unix.ECHILD):
+			if ctx.Err() != nil {
+				return 0, false
+			}
+			return mainStatus, mainExited
+		case pid == 0 && err == nil:
+			timer := time.NewTimer(forceStopReapPoll)
+			select {
+			case <-ctx.Done():
+				stopTimer(timer)
+				return 0, false
+			case <-timer.C:
+			}
 		default:
 			return 0, false
 		}
