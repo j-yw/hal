@@ -260,14 +260,14 @@ func (s *Session) Activate(ctx context.Context, request rootlesspodman.NetworkTo
 	}
 	metadata, err := s.rules.ApplyAndInspect(ctx, expected)
 	if err != nil {
-		return rootlesspodman.NetworkTopologyProof{}, ErrRuleProofUnverified
+		return rootlesspodman.NetworkTopologyProof{}, s.failPreparedActivation(ErrRuleProofUnverified)
 	}
 	if err := s.proxy.Active(ctx, s.plan, s.generation); err != nil {
-		return rootlesspodman.NetworkTopologyProof{}, ErrProxyUnavailable
+		return rootlesspodman.NetworkTopologyProof{}, s.failPreparedActivation(ErrProxyUnavailable)
 	}
 	proof, err := proofFromMetadata(s.identity, request, metadata)
 	if err != nil {
-		return rootlesspodman.NetworkTopologyProof{}, err
+		return rootlesspodman.NetworkTopologyProof{}, s.failPreparedActivation(err)
 	}
 	s.proof = proof
 	s.active = true
@@ -281,6 +281,36 @@ func (s *Session) failUnpreparedActivation(primary error) error {
 	if err := s.resolution.Close.Close(); err != nil {
 		return errors.Join(primary, ErrCleanupIncomplete)
 	}
+	s.resolution = NamespaceResolution{}
+	return primary
+}
+
+func (s *Session) failPreparedActivation(primary error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), s.cleanupTimeout)
+	defer cancel()
+	var cleanupErr error
+	if !s.rulesCleaned {
+		if err := s.rules.Cleanup(ctx, s.expected); err != nil {
+			cleanupErr = errors.Join(cleanupErr, ErrCleanupIncomplete)
+		} else {
+			s.rulesCleaned = true
+		}
+	}
+	if s.rulesCleaned && s.resolution.Close != nil {
+		if err := s.resolution.Close.Close(); err != nil {
+			cleanupErr = errors.Join(cleanupErr, ErrCleanupIncomplete)
+		} else {
+			s.resolution.Close = nil
+		}
+	}
+	if cleanupErr != nil {
+		return errors.Join(primary, cleanupErr)
+	}
+	s.active = false
+	s.proof = rootlesspodman.NetworkTopologyProof{}
+	s.prepared = false
+	s.rulesCleaned = false
+	s.expected = linuxrules.ExpectedRuleSet{}
 	s.resolution = NamespaceResolution{}
 	return primary
 }
@@ -332,11 +362,11 @@ func (s *Session) ProxyEnvironment(request rootlesspodman.NetworkTopologyTargetR
 func (s *Session) Revoke(ctx context.Context, request rootlesspodman.NetworkTopologyTargetRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.active = false
-	s.proof = rootlesspodman.NetworkTopologyProof{}
 	if s.cleaned || !s.matches(request) {
 		return ErrIdentityMismatch
 	}
+	s.active = false
+	s.proof = rootlesspodman.NetworkTopologyProof{}
 	if !s.prepared || s.quarantined {
 		return nil
 	}

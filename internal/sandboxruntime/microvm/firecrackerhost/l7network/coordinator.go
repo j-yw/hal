@@ -816,7 +816,7 @@ func validatedProxyEndpoint(endpoint string) (netip.Addr, uint16, netip.Addr, er
 	}
 	guest := netip.MustParseAddr("192.0.2.2")
 	if address.Is6() {
-		guest = netip.MustParseAddr("fd00:6861:6c::ffff")
+		guest = netip.MustParseAddr("2001:db8::2")
 	}
 	return guest, uint16(port), guest, nil
 }
