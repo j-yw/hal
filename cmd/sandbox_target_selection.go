@@ -23,6 +23,10 @@ type sandboxCommandTargetRequest struct {
 	Repository                string
 	Branch                    string
 	ProvisionRepository       string
+	TemplateRuntimeDriver     string
+	TemplateIsolationLevel    string
+	TemplateRuntimeImage      string
+	TemplateLock              *sandbox.SandboxTemplateLockMetadata
 	LoadContext               string
 	Out                       io.Writer
 	WrapProvisionFailure      bool
@@ -109,11 +113,15 @@ func resolveSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRe
 		provisionRepo = result.Provisioning.Repository
 	}
 	target, err := deps.provision(ctx, factorySandboxProvisionRequest{
-		ProjectDir: req.ProjectDir,
-		Name:       result.Provisioning.SandboxName,
-		BranchName: result.Provisioning.Branch,
-		Repo:       provisionRepo,
-		Out:        req.Out,
+		ProjectDir:             req.ProjectDir,
+		Name:                   result.Provisioning.SandboxName,
+		BranchName:             result.Provisioning.Branch,
+		Repo:                   provisionRepo,
+		TemplateRuntimeDriver:  req.TemplateRuntimeDriver,
+		TemplateIsolationLevel: req.TemplateIsolationLevel,
+		TemplateRuntimeImage:   req.TemplateRuntimeImage,
+		TemplateLock:           sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock),
+		Out:                    req.Out,
 	})
 	if err != nil {
 		if req.WrapProvisionFailure {
@@ -260,11 +268,15 @@ func sandboxCommandLoadContext(req sandboxCommandTargetRequest) string {
 
 func provisionSandboxCommandTarget(ctx context.Context, req sandboxCommandTargetRequest, deps sandboxCommandTargetDeps, name, branchName, repo string) (*sandbox.SandboxState, error) {
 	target, err := deps.provision(ctx, factorySandboxProvisionRequest{
-		ProjectDir: req.ProjectDir,
-		Name:       name,
-		BranchName: branchName,
-		Repo:       repo,
-		Out:        req.Out,
+		ProjectDir:             req.ProjectDir,
+		Name:                   name,
+		BranchName:             branchName,
+		Repo:                   repo,
+		TemplateRuntimeDriver:  req.TemplateRuntimeDriver,
+		TemplateIsolationLevel: req.TemplateIsolationLevel,
+		TemplateRuntimeImage:   req.TemplateRuntimeImage,
+		TemplateLock:           sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock),
+		Out:                    req.Out,
 	})
 	if err != nil {
 		if req.WrapProvisionFailure {
@@ -283,12 +295,17 @@ func applySandboxCommandSelectedMetadata(target *sandbox.SandboxState, result sa
 		target.Host = cloneSandboxHost(result.Host)
 	}
 	if result.Runtime != nil {
+		var templateLock *sandbox.SandboxTemplateLockMetadata
+		if target.Runtime != nil {
+			templateLock = sandbox.SanitizeSandboxTemplateLockMetadata(target.Runtime.TemplateLock)
+		}
 		target.Runtime = &sandbox.SandboxRuntimeState{
 			Driver:         result.Runtime.Driver,
 			IsolationLevel: result.Runtime.IsolationLevel,
 			RuntimeID:      result.Runtime.RuntimeID,
 			Image:          result.Runtime.Image,
 			WorkerID:       result.Runtime.WorkerID,
+			TemplateLock:   templateLock,
 		}
 	}
 	if result.SecurityReadinessGate != nil {

@@ -21,24 +21,26 @@ import (
 )
 
 var (
-	autoDryRunFlag         bool
-	autoResumeFlag         bool
-	autoNoCIFlag           bool
-	autoSkipPRFlag         bool
-	autoNoReviewFlag       bool
-	autoModeFlag           string
-	autoReviewStreakFlag   int
-	autoReviewMaxFlag      int
-	autoReportFlag         string
-	autoEngineFlag         string
-	autoBaseFlag           string
-	autoJSONFlag           bool
-	autoSandboxFlag        bool
-	autoSandboxNameFlag    string
-	autoSandboxHostFlag    string
-	autoSandboxRuntimeFlag string
-	autoSandboxSyncOutFlag bool
-	autoSandboxApplyFlag   bool
+	autoDryRunFlag               bool
+	autoResumeFlag               bool
+	autoNoCIFlag                 bool
+	autoSkipPRFlag               bool
+	autoNoReviewFlag             bool
+	autoModeFlag                 string
+	autoReviewStreakFlag         int
+	autoReviewMaxFlag            int
+	autoReportFlag               string
+	autoEngineFlag               string
+	autoBaseFlag                 string
+	autoJSONFlag                 bool
+	autoSandboxFlag              bool
+	autoSandboxNameFlag          string
+	autoSandboxHostFlag          string
+	autoSandboxRuntimeFlag       string
+	autoSandboxTemplateFlag      string
+	autoSandboxTemplateTrustFlag string
+	autoSandboxSyncOutFlag       bool
+	autoSandboxApplyFlag         bool
 )
 
 const (
@@ -263,6 +265,8 @@ func init() {
 	autoCmd.Flags().StringVar(&autoSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
 	autoCmd.Flags().StringVar(&autoSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
 	autoCmd.Flags().StringVar(&autoSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
+	autoCmd.Flags().StringVar(&autoSandboxTemplateFlag, sandboxTemplateFlagName, "", "OCI sandbox template reference to select before runtime construction")
+	autoCmd.Flags().StringVar(&autoSandboxTemplateTrustFlag, sandboxTemplateTrustFlagName, defaultSandboxTemplateTrustMode, "Sandbox template trust mode (strict or advisory)")
 	autoCmd.Flags().BoolVar(&autoSandboxSyncOutFlag, sandboxSyncOutFlagName, false, "Collect sandbox sync-out metadata without applying to the host worktree")
 	autoCmd.Flags().BoolVar(&autoSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree")
 	rootCmd.AddCommand(autoCmd)
@@ -298,6 +302,8 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	sandboxName := autoSandboxNameFlag
 	sandboxHost := autoSandboxHostFlag
 	sandboxRuntime := autoSandboxRuntimeFlag
+	sandboxTemplate := autoSandboxTemplateFlag
+	sandboxTemplateTrust := autoSandboxTemplateTrustFlag
 	sandboxSyncOut := autoSandboxSyncOutFlag
 	sandboxApply := autoSandboxApplyFlag
 
@@ -316,6 +322,8 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 	sandboxNameChanged := strings.TrimSpace(autoSandboxNameFlag) != ""
 	sandboxHostChanged := strings.TrimSpace(autoSandboxHostFlag) != ""
 	sandboxRuntimeChanged := strings.TrimSpace(autoSandboxRuntimeFlag) != ""
+	sandboxTemplateChanged := strings.TrimSpace(autoSandboxTemplateFlag) != ""
+	sandboxTemplateTrustChanged := false
 	sandboxSyncOutChanged := false
 	sandboxApplyChanged := false
 
@@ -453,6 +461,22 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 			sandboxRuntime = value
 			sandboxRuntimeChanged = cmd.Flags().Changed(sandboxRuntimeFlagName)
 		}
+		if cmd.Flags().Lookup(sandboxTemplateFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxTemplateFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxTemplate = value
+			sandboxTemplateChanged = cmd.Flags().Changed(sandboxTemplateFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxTemplateTrustFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxTemplateTrustFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxTemplateTrust = value
+			sandboxTemplateTrustChanged = cmd.Flags().Changed(sandboxTemplateTrustFlagName)
+		}
 		if cmd.Flags().Lookup(sandboxSyncOutFlagName) != nil {
 			value, err := cmd.Flags().GetBool(sandboxSyncOutFlagName)
 			if err != nil {
@@ -516,6 +540,15 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 		})
 	}
 	if err == nil {
+		_, err = validateSandboxTemplateFlagValues(sandboxTemplateFlagValues{
+			Sandbox:          sandboxMode,
+			Reference:        sandboxTemplate,
+			ReferenceChanged: sandboxTemplateChanged,
+			TrustMode:        sandboxTemplateTrust,
+			TrustChanged:     sandboxTemplateTrustChanged,
+		})
+	}
+	if err == nil {
 		err = validateSandboxSyncOutFlagsRequireSandbox(sandboxMode, sandboxSyncOutFlagValues{
 			SyncOutChanged: sandboxSyncOutChanged,
 			ApplyChanged:   sandboxApplyChanged,
@@ -549,40 +582,44 @@ func runAutoWithDir(cmd *cobra.Command, args []string, dir string) error {
 
 	if sandboxMode {
 		return runAutoSandboxWithWriter(ctx, cmd, args, dir, autoSandboxOptions{
-			DryRun:                dryRun,
-			DryRunChanged:         dryRunChanged,
-			Resume:                resume,
-			ResumeChanged:         resumeChanged,
-			NoCI:                  noCI,
-			NoCIChanged:           noCIChanged,
-			SkipPR:                skipPR,
-			SkipPRChanged:         skipPRChanged,
-			NoReview:              noReview,
-			NoReviewChanged:       noReviewChanged,
-			Mode:                  mode,
-			ModeChanged:           modeChanged,
-			ReviewStreak:          reviewStreak,
-			ReviewStreakChanged:   reviewStreakChanged,
-			ReviewMax:             reviewMax,
-			ReviewMaxChanged:      reviewMaxChanged,
-			Report:                reportPath,
-			ReportChanged:         reportChanged,
-			Engine:                engineName,
-			EngineChanged:         engineChanged,
-			Base:                  baseBranch,
-			BaseChanged:           baseChanged,
-			JSON:                  jsonMode,
-			JSONChanged:           jsonChanged,
-			SandboxName:           sandboxName,
-			SandboxNameChanged:    sandboxNameChanged,
-			SandboxHostID:         sandboxHost,
-			SandboxHostChanged:    sandboxHostChanged,
-			SandboxRuntime:        sandboxRuntime,
-			SandboxRuntimeChanged: sandboxRuntimeChanged,
-			SandboxSyncOut:        sandboxSyncOut,
-			SandboxSyncOutChanged: sandboxSyncOutChanged,
-			SandboxApply:          sandboxApply,
-			SandboxApplyChanged:   sandboxApplyChanged,
+			DryRun:                      dryRun,
+			DryRunChanged:               dryRunChanged,
+			Resume:                      resume,
+			ResumeChanged:               resumeChanged,
+			NoCI:                        noCI,
+			NoCIChanged:                 noCIChanged,
+			SkipPR:                      skipPR,
+			SkipPRChanged:               skipPRChanged,
+			NoReview:                    noReview,
+			NoReviewChanged:             noReviewChanged,
+			Mode:                        mode,
+			ModeChanged:                 modeChanged,
+			ReviewStreak:                reviewStreak,
+			ReviewStreakChanged:         reviewStreakChanged,
+			ReviewMax:                   reviewMax,
+			ReviewMaxChanged:            reviewMaxChanged,
+			Report:                      reportPath,
+			ReportChanged:               reportChanged,
+			Engine:                      engineName,
+			EngineChanged:               engineChanged,
+			Base:                        baseBranch,
+			BaseChanged:                 baseChanged,
+			JSON:                        jsonMode,
+			JSONChanged:                 jsonChanged,
+			SandboxName:                 sandboxName,
+			SandboxNameChanged:          sandboxNameChanged,
+			SandboxHostID:               sandboxHost,
+			SandboxHostChanged:          sandboxHostChanged,
+			SandboxRuntime:              sandboxRuntime,
+			SandboxRuntimeChanged:       sandboxRuntimeChanged,
+			SandboxTemplate:             sandboxTemplate,
+			SandboxTemplateChanged:      sandboxTemplateChanged,
+			SandboxTemplateTrust:        sandboxTemplateTrust,
+			SandboxTemplateTrustChanged: sandboxTemplateTrustChanged,
+			SandboxSyncOut:              sandboxSyncOut,
+			SandboxSyncOutChanged:       sandboxSyncOutChanged,
+			SandboxApply:                sandboxApply,
+			SandboxApplyChanged:         sandboxApplyChanged,
 		}, out, errOut, defaultAutoSandboxDeps)
 	}
 

@@ -41,12 +41,14 @@ var (
 	runJSONFlag bool
 
 	// Sandbox execution
-	runSandboxFlag        bool
-	runSandboxNameFlag    string
-	runSandboxHostFlag    string
-	runSandboxRuntimeFlag string
-	runSandboxSyncOutFlag bool
-	runSandboxApplyFlag   bool
+	runSandboxFlag              bool
+	runSandboxNameFlag          string
+	runSandboxHostFlag          string
+	runSandboxRuntimeFlag       string
+	runSandboxTemplateFlag      string
+	runSandboxTemplateTrustFlag string
+	runSandboxSyncOutFlag       bool
+	runSandboxApplyFlag         bool
 )
 
 // RunResult is the machine-readable output of hal run --json.
@@ -161,6 +163,8 @@ func init() {
 	runCmd.Flags().StringVar(&runSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
 	runCmd.Flags().StringVar(&runSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
 	runCmd.Flags().StringVar(&runSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
+	runCmd.Flags().StringVar(&runSandboxTemplateFlag, sandboxTemplateFlagName, "", "OCI sandbox template reference to select before runtime construction")
+	runCmd.Flags().StringVar(&runSandboxTemplateTrustFlag, sandboxTemplateTrustFlagName, defaultSandboxTemplateTrustMode, "Sandbox template trust mode (strict or advisory)")
 	runCmd.Flags().BoolVar(&runSandboxSyncOutFlag, sandboxSyncOutFlagName, false, "Collect sandbox sync-out metadata without applying to the host worktree")
 	runCmd.Flags().BoolVar(&runSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree")
 
@@ -208,6 +212,10 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	sandboxHostChanged := strings.TrimSpace(runSandboxHostFlag) != ""
 	sandboxRuntime := runSandboxRuntimeFlag
 	sandboxRuntimeChanged := strings.TrimSpace(runSandboxRuntimeFlag) != ""
+	sandboxTemplate := runSandboxTemplateFlag
+	sandboxTemplateChanged := strings.TrimSpace(runSandboxTemplateFlag) != ""
+	sandboxTemplateTrust := runSandboxTemplateTrustFlag
+	sandboxTemplateTrustChanged := false
 	sandboxSyncOut := runSandboxSyncOutFlag
 	sandboxSyncOutChanged := false
 	sandboxApply := runSandboxApplyFlag
@@ -331,6 +339,22 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			sandboxRuntime = value
 			sandboxRuntimeChanged = flags.Changed(sandboxRuntimeFlagName)
 		}
+		if flags.Lookup(sandboxTemplateFlagName) != nil {
+			value, err := flags.GetString(sandboxTemplateFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxTemplate = value
+			sandboxTemplateChanged = flags.Changed(sandboxTemplateFlagName)
+		}
+		if flags.Lookup(sandboxTemplateTrustFlagName) != nil {
+			value, err := flags.GetString(sandboxTemplateTrustFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxTemplateTrust = value
+			sandboxTemplateTrustChanged = flags.Changed(sandboxTemplateTrustFlagName)
+		}
 
 		if flags.Lookup(sandboxSyncOutFlagName) != nil {
 			value, err := flags.GetBool(sandboxSyncOutFlagName)
@@ -395,6 +419,15 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		})
 	}
 	if err == nil {
+		_, err = validateSandboxTemplateFlagValues(sandboxTemplateFlagValues{
+			Sandbox:          sandboxMode,
+			Reference:        sandboxTemplate,
+			ReferenceChanged: sandboxTemplateChanged,
+			TrustMode:        sandboxTemplateTrust,
+			TrustChanged:     sandboxTemplateTrustChanged,
+		})
+	}
+	if err == nil {
 		err = validateSandboxSyncOutFlagsRequireSandbox(sandboxMode, sandboxSyncOutFlagValues{
 			SyncOutChanged: sandboxSyncOutChanged,
 			ApplyChanged:   sandboxApplyChanged,
@@ -415,34 +448,38 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 			ctx = cmd.Context()
 		}
 		return runRunSandboxWithWriter(ctx, cmd, args, runSandboxOptions{
-			Engine:                engineName,
-			EngineChanged:         engineChanged,
-			IterationsFlag:        iterationsFlag,
-			IterationsChanged:     iterationsChanged,
-			Base:                  baseFlag,
-			BaseChanged:           baseChanged,
-			Retries:               retries,
-			RetriesChanged:        retriesChanged,
-			RetryDelay:            delay,
-			RetryDelayChanged:     delayChanged,
-			Timeout:               timeoutOverride,
-			TimeoutChanged:        timeoutChanged,
-			DryRun:                dryRun,
-			DryRunChanged:         dryRunChanged,
-			Story:                 story,
-			StoryChanged:          storyChanged,
-			JSON:                  jsonMode,
-			JSONChanged:           jsonChanged,
-			SandboxName:           sandboxName,
-			SandboxNameChanged:    sandboxNameChanged,
-			SandboxHostID:         sandboxHost,
-			SandboxHostChanged:    sandboxHostChanged,
-			SandboxRuntime:        sandboxRuntime,
-			SandboxRuntimeChanged: sandboxRuntimeChanged,
-			SandboxSyncOut:        sandboxSyncOut,
-			SandboxSyncOutChanged: sandboxSyncOutChanged,
-			SandboxApply:          sandboxApply,
-			SandboxApplyChanged:   sandboxApplyChanged,
+			Engine:                      engineName,
+			EngineChanged:               engineChanged,
+			IterationsFlag:              iterationsFlag,
+			IterationsChanged:           iterationsChanged,
+			Base:                        baseFlag,
+			BaseChanged:                 baseChanged,
+			Retries:                     retries,
+			RetriesChanged:              retriesChanged,
+			RetryDelay:                  delay,
+			RetryDelayChanged:           delayChanged,
+			Timeout:                     timeoutOverride,
+			TimeoutChanged:              timeoutChanged,
+			DryRun:                      dryRun,
+			DryRunChanged:               dryRunChanged,
+			Story:                       story,
+			StoryChanged:                storyChanged,
+			JSON:                        jsonMode,
+			JSONChanged:                 jsonChanged,
+			SandboxName:                 sandboxName,
+			SandboxNameChanged:          sandboxNameChanged,
+			SandboxHostID:               sandboxHost,
+			SandboxHostChanged:          sandboxHostChanged,
+			SandboxRuntime:              sandboxRuntime,
+			SandboxRuntimeChanged:       sandboxRuntimeChanged,
+			SandboxTemplate:             sandboxTemplate,
+			SandboxTemplateChanged:      sandboxTemplateChanged,
+			SandboxTemplateTrust:        sandboxTemplateTrust,
+			SandboxTemplateTrustChanged: sandboxTemplateTrustChanged,
+			SandboxSyncOut:              sandboxSyncOut,
+			SandboxSyncOutChanged:       sandboxSyncOutChanged,
+			SandboxApply:                sandboxApply,
+			SandboxApplyChanged:         sandboxApplyChanged,
 		}, out, errOut, defaultRunSandboxDeps)
 	}
 

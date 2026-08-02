@@ -36,19 +36,21 @@ hal factory run [prd-path] [flags]
 ### Options
 
 ```
-      --base string              Target base branch for follow-up review or CI
-      --ci-policy string         CI policy for factory runs (required, skip-if-unavailable, disabled)
-  -h, --help                     help for run
-      --json                     Output machine-readable JSON (factory-run-v1 contract)
-      --no-ci                    Alias for --ci-policy disabled
-      --publish string           Host publish policy after factory execution (none, push, pr)
-      --publish-from string      Publish runner after factory execution (host, sandbox, auto) (default "host")
-      --report string            Start from an analysis report path
-      --sandbox                  Run the factory executor in a managed sandbox
-      --sandbox-host string      Cached sandbox host ID for target selection
-      --sandbox-name string      Sandbox name for --sandbox execution
-      --sandbox-runtime string   Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
-      --secret-env stringArray   Required environment variable secret for the run (repeatable)
+      --base string                     Target base branch for follow-up review or CI
+      --ci-policy string                CI policy for factory runs (required, skip-if-unavailable, disabled)
+  -h, --help                            help for run
+      --json                            Output machine-readable JSON (factory-run-v1 contract)
+      --no-ci                           Alias for --ci-policy disabled
+      --publish string                  Host publish policy after factory execution (none, push, pr)
+      --publish-from string             Publish runner after factory execution (host, sandbox, auto) (default "host")
+      --report string                   Start from an analysis report path
+      --sandbox                         Run the factory executor in a managed sandbox
+      --sandbox-host string             Cached sandbox host ID for target selection
+      --sandbox-name string             Sandbox name for --sandbox execution
+      --sandbox-runtime string          Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
+      --sandbox-template string         OCI sandbox template reference to select before runtime construction
+      --sandbox-template-trust string   Sandbox template trust mode (strict or advisory) (default "strict")
+      --secret-env stringArray          Required environment variable secret for the run (repeatable)
 ```
 
 ### SEE ALSO

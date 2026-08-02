@@ -2,47 +2,58 @@ package acquisition_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxtemplate"
 	"github.com/jywlabs/hal/internal/sandboxtemplate/acquisition"
+	"github.com/jywlabs/hal/internal/sandboxtemplate/acquisition/registry"
 )
 
 func TestOCIResolverUsesInjectedFixtureAndLocksImmutableDigests(t *testing.T) {
 	sourceRef := "fixture-user:super-secret-password@ghcr.io/acme/templates/codex-go:1.2.0?token=ghp_fixturetoken&api_key=sk-live-template"
 	document := ociFixtureTemplateYAML()
-	templateArtifactDigest := testDigest(strings.Repeat("a", 64))
-	runtimeImageDigest := testDigest(strings.Repeat("b", 64))
-	sourceArtifactDigest := testDigest(strings.Repeat("c", 64))
-	documentDigest := testDigest(strings.Repeat("d", 64))
+	manifestBytes := []byte(`{"schemaVersion":2}`)
+	runtimeImageProof := []byte("verified runtime image manifest")
+	sourceArtifactProof := []byte("verified source artifact manifest")
+	templateArtifactDigest := testDigestForBytes(manifestBytes)
+	runtimeImageDigest := testDigestForBytes(runtimeImageProof)
+	sourceArtifactDigest := testDigestForBytes(sourceArtifactProof)
+	documentDigest := testDigestForBytes([]byte(document))
 	fixture := acquisition.OCIArtifactResolveResult{
 		TemplateBytes:          []byte(document),
+		ArtifactManifestBytes:  manifestBytes,
 		Format:                 sandboxtemplate.FormatYAML,
 		DocumentDigest:         documentDigest,
 		TemplateArtifactDigest: templateArtifactDigest,
 		SizeBytes:              int64(len(document)),
 		ReferenceDigests: []acquisition.ReferenceDigestProof{
 			{
-				Field:  "metadata.reference",
-				Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
-				Ref:    "ghcr.io/acme/templates/codex-go:1.2.0",
-				Digest: templateArtifactDigest,
+				Field:         "metadata.reference",
+				Kind:          sandboxtemplate.ReferenceKindOCIArtifact,
+				Ref:           "ghcr.io/acme/templates/codex-go:1.2.0",
+				Digest:        templateArtifactDigest,
+				VerifiedBytes: manifestBytes,
 			},
 			{
-				Field:  "runtime.image",
-				Kind:   sandboxtemplate.ReferenceKindOCIImage,
-				Ref:    "ghcr.io/acme/go-agent:1.2.0",
-				Digest: runtimeImageDigest,
+				Field:         "runtime.image",
+				Kind:          sandboxtemplate.ReferenceKindOCIImage,
+				Ref:           "ghcr.io/acme/go-agent:1.2.0",
+				Digest:        runtimeImageDigest,
+				VerifiedBytes: runtimeImageProof,
 			},
 			{
-				Field:  "workspace.ref",
-				Kind:   sandboxtemplate.ReferenceKindOCIArtifact,
-				Ref:    "ghcr.io/acme/sources/repo:20260703",
-				Digest: sourceArtifactDigest,
+				Field:         "workspace.ref",
+				Kind:          sandboxtemplate.ReferenceKindOCIArtifact,
+				Ref:           "ghcr.io/acme/sources/repo:20260703",
+				Digest:        sourceArtifactDigest,
+				VerifiedBytes: sourceArtifactProof,
 			},
 		},
 	}
@@ -130,14 +141,63 @@ func TestUnsupportedSourceKindReturnsStableSanitizedError(t *testing.T) {
 	assertAcquisitionErrorOmitsFragments(t, err, "oci_index?token", "ghp_fixturetoken", "password=hunter2")
 }
 
+func TestOCIResolverRechecksCancellationBeforeReturningEvidence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := &fakeOCIArtifactResolver{
+		fixtures: map[string]acquisition.OCIArtifactResolveResult{"registry.example/repo:tag": {}},
+		cancel:   cancel,
+	}
+	result, err := acquisition.NewOCIResolver(fake).Resolve(ctx, acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind: acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{
+				Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+				Ref:  "registry.example/repo:tag",
+			},
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Resolve() error = %v, want context.Canceled", err)
+	}
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) || resolveErr.Code != acquisition.ResolveErrorCodeRequestCanceled {
+		t.Fatalf("Resolve() code = %v, want request_canceled", err)
+	}
+	if result.Template.Metadata.ID != "" || result.Lock.Status != "" {
+		t.Fatalf("canceled resolver returned evidence: %#v", result)
+	}
+}
+
+func TestOCIResolverClassifiesExpiredDeadlineWithoutConstruction(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(1, 0))
+	defer cancel()
+	result, err := acquisition.NewOCIResolver(&fakeOCIArtifactResolver{
+		fixtures: map[string]acquisition.OCIArtifactResolveResult{},
+	}).Resolve(ctx, acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind:      acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{Kind: sandboxtemplate.ReferenceKindOCIArtifact, Ref: "registry.example/repo:tag"},
+		},
+	})
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) || resolveErr.Code != acquisition.ResolveErrorCodeRequestTimeout || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Resolve() error = %v, want request_timeout wrapping deadline", err)
+	}
+	if result.Template.Metadata.ID != "" || result.Lock.Status != "" {
+		t.Fatalf("expired resolver returned evidence: %#v", result)
+	}
+}
+
 func TestInMemoryOCIArtifactResolverLeavesUnprovenMutableRefsUnresolved(t *testing.T) {
 	sourceRef := "ghcr.io/acme/templates/codex-go:1.2.0"
 	document := ociFixtureTemplateYAML()
-	templateArtifactDigest := testDigest(strings.Repeat("e", 64))
-	documentDigest := testDigest(strings.Repeat("f", 64))
+	manifestBytes := []byte(`{"schemaVersion":2}`)
+	templateArtifactDigest := testDigestForBytes(manifestBytes)
+	documentDigest := testDigestForBytes([]byte(document))
 	fake := acquisition.NewInMemoryOCIArtifactResolver(map[string]acquisition.OCIArtifactResolveResult{
 		sourceRef: {
 			TemplateBytes:          []byte(document),
+			ArtifactManifestBytes:  manifestBytes,
 			Format:                 sandboxtemplate.FormatYAML,
 			DocumentDigest:         documentDigest,
 			TemplateArtifactDigest: templateArtifactDigest,
@@ -173,13 +233,169 @@ func TestInMemoryOCIArtifactResolverLeavesUnprovenMutableRefsUnresolved(t *testi
 	assertMutableReferenceUnresolved(t, result.Lock, "workspace.ref")
 }
 
+func TestOCIResolverRejectsInjectedDigestMetadataThatDoesNotMatchBytes(t *testing.T) {
+	document := ociFixtureTemplateYAML()
+	sourceRef := "registry.test/acme/templates/codex-go:1.2.0"
+	resolver := acquisition.NewOCIResolver(acquisition.NewInMemoryOCIArtifactResolver(map[string]acquisition.OCIArtifactResolveResult{
+		sourceRef: {
+			TemplateBytes:  []byte(document),
+			Format:         sandboxtemplate.FormatYAML,
+			DocumentDigest: testDigest(strings.Repeat("a", 64)),
+		},
+	}))
+
+	_, err := resolver.Resolve(context.Background(), acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind: acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{
+				Kind: sandboxtemplate.ReferenceKindOCIArtifact,
+				Ref:  sourceRef,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("Resolve() error = nil, want measured digest mismatch")
+	}
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) {
+		t.Fatalf("Resolve() error = %T, want *ResolveError", err)
+	}
+	if resolveErr.Code != acquisition.ResolveErrorCodeDigestMismatch {
+		t.Fatalf("Resolve() code = %q, want %q", resolveErr.Code, acquisition.ResolveErrorCodeDigestMismatch)
+	}
+}
+
+func TestOCIResolverRejectsArtifactAndReferenceProofDigestsWithoutMatchingBytes(t *testing.T) {
+	document := ociFixtureTemplateYAML()
+	sourceRef := "registry.test/acme/templates/codex-go:1.2.0"
+	tests := []struct {
+		name   string
+		result acquisition.OCIArtifactResolveResult
+	}{
+		{
+			name: "artifact digest",
+			result: acquisition.OCIArtifactResolveResult{
+				TemplateBytes:          []byte(document),
+				DocumentDigest:         testDigestForBytes([]byte(document)),
+				ArtifactManifestBytes:  []byte(`{"schemaVersion":2}`),
+				TemplateArtifactDigest: testDigest(strings.Repeat("a", 64)),
+			},
+		},
+		{
+			name: "reference proof",
+			result: acquisition.OCIArtifactResolveResult{
+				TemplateBytes:          []byte(document),
+				DocumentDigest:         testDigestForBytes([]byte(document)),
+				ArtifactManifestBytes:  []byte(`{"schemaVersion":2}`),
+				TemplateArtifactDigest: testDigestForBytes([]byte(`{"schemaVersion":2}`)),
+				ReferenceDigests: []acquisition.ReferenceDigestProof{{
+					Field:         "runtime.image",
+					Kind:          sandboxtemplate.ReferenceKindOCIImage,
+					Digest:        testDigest(strings.Repeat("b", 64)),
+					VerifiedBytes: []byte("different proof bytes"),
+				}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := acquisition.NewOCIResolver(acquisition.NewInMemoryOCIArtifactResolver(map[string]acquisition.OCIArtifactResolveResult{
+				sourceRef: tt.result,
+			}))
+			_, err := resolver.Resolve(context.Background(), acquisition.ResolveRequest{
+				Source: acquisition.TemplateSource{
+					Kind:      acquisition.SourceKindOCIArtifact,
+					Reference: &sandboxtemplate.ImmutableRef{Kind: sandboxtemplate.ReferenceKindOCIArtifact, Ref: sourceRef},
+				},
+			})
+			if err == nil {
+				t.Fatal("Resolve() error = nil, want digest mismatch")
+			}
+			var resolveErr *acquisition.ResolveError
+			if !errors.As(err, &resolveErr) || resolveErr.Code != acquisition.ResolveErrorCodeDigestMismatch {
+				t.Fatalf("Resolve() error = %v, want digest_mismatch", err)
+			}
+		})
+	}
+}
+
+func TestOCITransientMeasuredBytesAreNeverJSONVisible(t *testing.T) {
+	manifestCanary := []byte("manifest-token-ghp_l9_secret")
+	proofCanary := []byte("proof-password-super-secret")
+	value := acquisition.OCIArtifactResolveResult{
+		ArtifactManifestBytes: manifestCanary,
+		ReferenceDigests: []acquisition.ReferenceDigestProof{{
+			VerifiedBytes: proofCanary,
+		}},
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		string(manifestCanary),
+		string(proofCanary),
+		"artifactManifestBytes",
+		"verifiedBytes",
+	} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("transient OCI evidence leaked %q in %s", forbidden, data)
+		}
+	}
+}
+
+func TestOCIResolverPreservesValidatedSafeArtifactFailureCode(t *testing.T) {
+	const sourceRef = "registry.test/hal/template:latest"
+	resolver := acquisition.NewOCIResolver(&fakeOCIArtifactResolver{
+		err: &registry.Error{Code: registry.ErrorCodeManifestOversize},
+	})
+	_, err := resolver.Resolve(context.Background(), acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind:      acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{Kind: sandboxtemplate.ReferenceKindOCIArtifact, Ref: sourceRef},
+		},
+	})
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) || resolveErr.Code != acquisition.ResolveErrorCode(registry.ErrorCodeManifestOversize) {
+		t.Fatalf("Resolve() error = %v, want manifest_oversize", err)
+	}
+}
+
+func TestOCIResolverRejectsUnknownArtifactFailureCodeWithoutLeakingIt(t *testing.T) {
+	const sensitiveCode = "token=ghp_l9_failure_code"
+	resolver := acquisition.NewOCIResolver(&fakeOCIArtifactResolver{
+		err: &registry.Error{Code: registry.ErrorCode(sensitiveCode)},
+	})
+	_, err := resolver.Resolve(context.Background(), acquisition.ResolveRequest{
+		Source: acquisition.TemplateSource{
+			Kind:      acquisition.SourceKindOCIArtifact,
+			Reference: &sandboxtemplate.ImmutableRef{Kind: sandboxtemplate.ReferenceKindOCIArtifact, Ref: "registry.test/hal/template:latest"},
+		},
+	})
+	var resolveErr *acquisition.ResolveError
+	if !errors.As(err, &resolveErr) || resolveErr.Code != acquisition.ResolveErrorCodeResolverUnavailable {
+		t.Fatalf("Resolve() error = %v, want resolver_unavailable", err)
+	}
+	if strings.Contains(err.Error(), sensitiveCode) {
+		t.Fatal("Resolve() error leaked an unrecognized artifact failure code")
+	}
+}
+
 type fakeOCIArtifactResolver struct {
 	fixtures map[string]acquisition.OCIArtifactResolveResult
 	calls    []acquisition.OCIArtifactResolveRequest
+	cancel   context.CancelFunc
+	err      error
 }
 
 func (f *fakeOCIArtifactResolver) ResolveOCIArtifact(_ context.Context, request acquisition.OCIArtifactResolveRequest) (acquisition.OCIArtifactResolveResult, error) {
 	f.calls = append(f.calls, request)
+	if f.err != nil {
+		return acquisition.OCIArtifactResolveResult{}, f.err
+	}
+	if f.cancel != nil {
+		f.cancel()
+	}
 	result, ok := f.fixtures[request.Reference.Ref]
 	if !ok {
 		return acquisition.OCIArtifactResolveResult{}, errors.New("fixture artifact is missing")
@@ -293,6 +509,11 @@ func testDigest(value string) *sandboxtemplate.DigestMetadata {
 		Algorithm: sandboxtemplate.DigestAlgorithmSHA256,
 		Value:     value,
 	}
+}
+
+func testDigestForBytes(data []byte) *sandboxtemplate.DigestMetadata {
+	sum := sha256.Sum256(data)
+	return testDigest(hex.EncodeToString(sum[:]))
 }
 
 func ociFixtureTemplateYAML() string {

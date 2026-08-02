@@ -345,6 +345,7 @@ func TestSandboxDryRunPreviewRedactsUnsafeStaticIntent(t *testing.T) {
 				"ghp_l1_preview_mode_secret_123456789",
 			},
 		},
+		sandboxTemplateSelectionResult{},
 		"",
 	)
 	payload, err := marshalSandboxDryRunPreview(preview)
