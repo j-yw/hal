@@ -274,6 +274,27 @@ func TestFirecrackerHostTopologyRetainedRecoveryCannotAuthorizeTopologyCleanup(t
 	}
 }
 
+func TestFirecrackerHostTopologyAbortBeforeVMCannotReportRecoveredStateClean(t *testing.T) {
+	sequence := &callSequence{}
+	identity := testIdentity()
+	session := &Session{
+		coordinator: &Coordinator{}, identity: identity,
+		journal:         &fakeJournalLease{sequence: sequence},
+		retainedCleanup: retainedCleanupReleaseRecoveryJournal,
+		metadata:        Metadata{Identity: identity, Status: StatusCleanupIncomplete},
+	}
+
+	if err := session.AbortBeforeVM(context.Background(), identity); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("AbortBeforeVM(recovered state) = %v, want ErrCleanupIncomplete", err)
+	}
+	if got := session.Metadata().Status; got != StatusCleanupIncomplete {
+		t.Fatalf("AbortBeforeVM(recovered state) status = %q, want %q", got, StatusCleanupIncomplete)
+	}
+	if got := sequence.snapshot(); len(got) != 1 || got[0] != "journal_release" {
+		t.Fatalf("AbortBeforeVM(recovered state) sequence = %#v, want exact journal release only", got)
+	}
+}
+
 func TestFirecrackerHostTopologyReconcilerRetainsFailedEarlyRelease(t *testing.T) {
 	sequence := &callSequence{}
 	store := &releaseRetryJournalStore{sequence: sequence, firstLoadErr: errors.New("private journal load failure"), firstReleaseFailures: 1}

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm"
@@ -152,6 +153,57 @@ func TestL7ProcessTrackerRequiresAttemptedUnambiguousNoProcessProof(t *testing.T
 	}
 }
 
+func TestL7TerminatedBindingRetriesRetainedNamespaceProcessCleanup(t *testing.T) {
+	identity := l7RuntimeControllerIdentity("retained-process")
+	process := &l7CompositionRetryCleanupProcess{killFailures: 1}
+	runner := &NamespaceProcessRunner{retained: process, cleanupTimeout: time.Second}
+	lifecycle := NewProcessLifecycleManager(runner)
+	tracker := &l7ProcessTracker{lifecycle: lifecycle, attempted: true, uncertain: true}
+	runtime := &productionL7FirecrackerRuntime{
+		identity: identity, lifecycle: lifecycle, tracker: tracker,
+	}
+
+	if binding, err := runtime.TerminatedVMBinding(identity, sandboxruntime.Target{}); binding != nil || err == nil {
+		t.Fatalf("TerminatedVMBinding(first retained cleanup) = %T, %v; want retained failure", binding, err)
+	}
+	if binding, err := runtime.TerminatedVMBinding(identity, sandboxruntime.Target{}); binding == nil || err != nil {
+		t.Fatalf("TerminatedVMBinding(retry) = %T, %v; want exact no-process proof", binding, err)
+	}
+	if process.killCalls != 2 || process.waitCalls != 2 || runner.retained != nil {
+		t.Fatalf("retained cleanup = kills:%d waits:%d retained:%T; want two exact attempts and release",
+			process.killCalls, process.waitCalls, runner.retained)
+	}
+	if !tracker.absenceConfirmed() {
+		t.Fatal("successful retained cleanup did not establish process absence")
+	}
+}
+
+func TestL7PreparedLinuxE2ECleanupIsAuditableAndPreservesFailedRecovery(t *testing.T) {
+	payload, err := os.ReadFile("l7_prepared_linux_e2e_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(payload)
+	for _, forbidden := range []string{
+		"t.Cleanup(func() { _ = os.RemoveAll(root) })",
+		"stopped, _ := driver.Stop",
+		"_ = driver.Delete",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("prepared Linux E2E silently discards cleanup evidence: %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"cleanupFailures = errors.Join",
+		"preserving L7 recovery state",
+		"if cleanupFailures == nil",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("prepared Linux E2E lacks auditable cleanup marker %q", required)
+		}
+	}
+}
+
 func TestL7FirecrackerFactoryComposesNamespaceAndProofRequiredVsockWithoutStarting(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux-only explicit composition")
@@ -246,6 +298,28 @@ type l7CompositionStartErrorRunner struct{ err error }
 
 func (runner l7CompositionStartErrorRunner) StartHostProcess(context.Context, firecracker.ProcessRunnerStartRequest) (HostProcess, error) {
 	return nil, runner.err
+}
+
+type l7CompositionRetryCleanupProcess struct {
+	killCalls    int
+	waitCalls    int
+	killFailures int
+}
+
+func (*l7CompositionRetryCleanupProcess) Signal(context.Context, ProcessSignal) error { return nil }
+
+func (process *l7CompositionRetryCleanupProcess) Kill(context.Context) error {
+	process.killCalls++
+	if process.killFailures > 0 {
+		process.killFailures--
+		return errors.New("private retained cleanup failure")
+	}
+	return nil
+}
+
+func (process *l7CompositionRetryCleanupProcess) Wait(context.Context) error {
+	process.waitCalls++
+	return nil
 }
 
 type l7CompositionNamespaceProvider struct{ calls int }
