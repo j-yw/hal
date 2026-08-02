@@ -53,6 +53,7 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	var cleanupDriver *microvm.Driver
 	var cleanupTarget *sandboxruntime.Target
 	cleanupPending := false
+	preserveRecoveryState := false
 	t.Cleanup(func() {
 		var cleanupFailures error
 		if cleanupPending && cleanupDriver != nil && cleanupTarget != nil {
@@ -76,7 +77,7 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 				cleanupFailures = errors.Join(cleanupFailures, errors.New("L7 cleanup delete failed"))
 			}
 		}
-		if cleanupFailures == nil {
+		if cleanupFailures == nil && !preserveRecoveryState {
 			if err := os.RemoveAll(root); err != nil {
 				cleanupFailures = errors.Join(cleanupFailures, errors.New("L7 cleanup root removal failed"))
 			}
@@ -216,14 +217,16 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: *stopped}); err != nil {
 		t.Fatal("delete contained L7 Firecracker target failed")
 	}
-	cleanupPending = false
 	if _, active := adapter.Endpoint(); active {
+		preserveRecoveryState = true
 		t.Fatal("L7 policy proxy remained active after exact cleanup")
 	}
 	entries, err := os.ReadDir(stateRoot)
 	if err != nil || len(entries) != 0 {
+		preserveRecoveryState = true
 		t.Fatal("L7 Firecracker private runtime state remained after delete")
 	}
+	cleanupPending = false
 }
 
 type l7PreparedFirecrackerPrerequisites struct {
