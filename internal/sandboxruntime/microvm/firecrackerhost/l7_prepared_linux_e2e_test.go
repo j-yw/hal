@@ -53,10 +53,11 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	var cleanupDriver *microvm.Driver
 	var cleanupTarget *sandboxruntime.Target
 	cleanupPending := false
+	deleteConfirmed := false
 	preserveRecoveryState := false
 	t.Cleanup(func() {
 		var cleanupFailures error
-		if cleanupPending && cleanupDriver != nil && cleanupTarget != nil {
+		if cleanupPending && !deleteConfirmed && cleanupDriver != nil && cleanupTarget != nil {
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), l7PreparedOperationTimeout)
 			stopped, stopErr := cleanupDriver.Stop(stopCtx, sandboxruntime.LifecycleRequest{Target: *cleanupTarget})
 			stopCancel()
@@ -214,13 +215,14 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	stopped := waitForL7PreparedContainedTarget(t, driver, *cleanupTarget)
 	cleanupCopy = *stopped
 	cleanupTarget = &cleanupCopy
+	if _, active := adapter.Endpoint(); active {
+		preserveRecoveryState = true
+		t.Fatal("L7 policy proxy remained active before final runtime deletion")
+	}
 	if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: *stopped}); err != nil {
 		t.Fatal("delete contained L7 Firecracker target failed")
 	}
-	if _, active := adapter.Endpoint(); active {
-		preserveRecoveryState = true
-		t.Fatal("L7 policy proxy remained active after exact cleanup")
-	}
+	deleteConfirmed = true
 	entries, err := os.ReadDir(stateRoot)
 	if err != nil || len(entries) != 0 {
 		preserveRecoveryState = true
