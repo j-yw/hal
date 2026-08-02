@@ -158,12 +158,15 @@ func TestFirecrackerHostTopologyRetainsLeaseReturnedWithAcquireError(t *testing.
 			if session == nil || !errors.Is(err, ErrCleanupIncomplete) {
 				t.Fatalf("%s = session %T, error %v; want retained cleanup-incomplete lease", operation, session, err)
 			}
-			if err := session.RetryRetainedCleanup(context.Background(), testIdentity()); err != nil {
-				t.Fatalf("RetryRetainedCleanup() = %v", err)
-			}
+			retryErr := session.RetryRetainedCleanup(context.Background(), testIdentity())
 			wantStatus := StatusStopped
 			if operation == "recover" {
 				wantStatus = StatusCleanupIncomplete
+				if !errors.Is(retryErr, ErrCleanupIncomplete) {
+					t.Fatalf("RetryRetainedCleanup(recover) = %v, want ErrCleanupIncomplete", retryErr)
+				}
+			} else if retryErr != nil {
+				t.Fatalf("RetryRetainedCleanup(prepare) = %v", retryErr)
 			}
 			if got := session.Metadata().Status; got != wantStatus {
 				t.Fatalf("retained cleanup status = %q, want %q", got, wantStatus)
@@ -241,8 +244,8 @@ func TestFirecrackerHostTopologyReconcilerRetainsNamespaceReturnedWithBorrowErro
 	if topology.lease.closeCalls != 1 || topology.lease.closed || store.first.releaseCalls != 0 {
 		t.Fatalf("first cleanup = namespace calls %d, closed %t, journal calls %d", topology.lease.closeCalls, topology.lease.closed, store.first.releaseCalls)
 	}
-	if err := session.RetryRetainedCleanup(context.Background(), identity); err != nil {
-		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	if err := session.RetryRetainedCleanup(context.Background(), identity); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("RetryRetainedCleanup() = %v, want ErrCleanupIncomplete", err)
 	}
 	if topology.lease.closeCalls != 2 || !topology.lease.closed || store.first.releaseCalls != 1 {
 		t.Fatalf("retry cleanup = namespace calls %d, closed %t, journal calls %d", topology.lease.closeCalls, topology.lease.closed, store.first.releaseCalls)
@@ -312,8 +315,8 @@ func TestFirecrackerHostTopologyReconcilerRetainsFailedEarlyRelease(t *testing.T
 	if session == nil || !errors.Is(err, ErrStaleTopologyUnverified) || !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatalf("Recover() = session %T, error %v; want retained stale cleanup", session, err)
 	}
-	if err := session.RetryRetainedCleanup(context.Background(), testIdentity()); err != nil {
-		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	if err := session.RetryRetainedCleanup(context.Background(), testIdentity()); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("RetryRetainedCleanup() = %v, want ErrCleanupIncomplete", err)
 	}
 	if got := session.Metadata().Status; got != StatusCleanupIncomplete {
 		t.Fatalf("recovered stale cleanup status = %q, want %q", got, StatusCleanupIncomplete)
@@ -348,8 +351,8 @@ func TestFirecrackerHostTopologyReconcilerRetainsBorrowedNamespaceUntilCloseRetr
 	if store.first.releaseCalls != 0 {
 		t.Fatalf("journal released before namespace close = %d calls", store.first.releaseCalls)
 	}
-	if err := session.RetryRetainedCleanup(context.Background(), identity); err != nil {
-		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	if err := session.RetryRetainedCleanup(context.Background(), identity); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("RetryRetainedCleanup() = %v, want ErrCleanupIncomplete", err)
 	}
 	if got := session.Metadata().Status; got != StatusCleanupIncomplete {
 		t.Fatalf("recovered stale cleanup status = %q, want %q", got, StatusCleanupIncomplete)
@@ -379,8 +382,8 @@ func TestFirecrackerHostTopologyReconcilerRetainsJournalAfterBorrowValidationFai
 	if session == nil || !errors.Is(err, ErrStaleTopologyUnverified) || !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatalf("Recover() = session %T, error %v; want retained stale journal cleanup", session, err)
 	}
-	if err := session.RetryRetainedCleanup(context.Background(), identity); err != nil {
-		t.Fatalf("RetryRetainedCleanup() = %v", err)
+	if err := session.RetryRetainedCleanup(context.Background(), identity); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("RetryRetainedCleanup() = %v, want ErrCleanupIncomplete", err)
 	}
 	if got := session.Metadata().Status; got != StatusCleanupIncomplete {
 		t.Fatalf("recovered stale cleanup status = %q, want %q", got, StatusCleanupIncomplete)

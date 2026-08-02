@@ -291,6 +291,10 @@ type l7ProcessTracker struct {
 	uncertain bool
 }
 
+type l7RetainedProcessCleaner interface {
+	RetryRetainedProcessCleanup(context.Context) error
+}
+
 func (tracker *l7ProcessTracker) StartProcess(
 	ctx context.Context,
 	request firecracker.ProcessRunnerStartRequest,
@@ -331,6 +335,27 @@ func (tracker *l7ProcessTracker) absenceConfirmed() bool {
 	defer tracker.mu.Unlock()
 	return tracker.attempted && strings.TrimSpace(tracker.handle.ID) == "" &&
 		strings.TrimSpace(tracker.handle.Source) == "" && !tracker.uncertain
+}
+
+func (tracker *l7ProcessTracker) retryUncertainProcessCleanup(ctx context.Context) error {
+	if tracker == nil || tracker.lifecycle == nil {
+		return errL7RuntimeController
+	}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if !tracker.uncertain {
+		return nil
+	}
+	cleaner, ok := tracker.lifecycle.runner.(l7RetainedProcessCleaner)
+	if !ok || interfaceValueIsNil(cleaner) || strings.TrimSpace(tracker.handle.ID) != "" ||
+		strings.TrimSpace(tracker.handle.Source) != "" {
+		return errL7RuntimeController
+	}
+	if err := cleaner.RetryRetainedProcessCleanup(nonNilContext(ctx)); err != nil {
+		return errL7RuntimeController
+	}
+	tracker.uncertain = false
+	return nil
 }
 
 type productionL7FirecrackerRuntime struct {
@@ -425,6 +450,9 @@ func (runtime *productionL7FirecrackerRuntime) TerminatedVMBinding(
 	_ sandboxruntime.Target,
 ) (l7network.TerminatedVMBinding, error) {
 	if runtime == nil || runtime.lifecycle == nil || runtime.tracker == nil || identity != runtime.identity {
+		return nil, errL7RuntimeController
+	}
+	if err := runtime.tracker.retryUncertainProcessCleanup(context.Background()); err != nil {
 		return nil, errL7RuntimeController
 	}
 	handle, ok := runtime.tracker.snapshot()

@@ -50,7 +50,41 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal("create private L7 acceptance root failed")
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	var cleanupDriver *microvm.Driver
+	var cleanupTarget *sandboxruntime.Target
+	cleanupPending := false
+	t.Cleanup(func() {
+		var cleanupFailures error
+		if cleanupPending && cleanupDriver != nil && cleanupTarget != nil {
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), l7PreparedOperationTimeout)
+			stopped, stopErr := cleanupDriver.Stop(stopCtx, sandboxruntime.LifecycleRequest{Target: *cleanupTarget})
+			stopCancel()
+			if stopErr != nil {
+				cleanupFailures = errors.Join(cleanupFailures, errors.New("L7 cleanup stop failed"))
+			}
+			if stopped == nil {
+				cleanupFailures = errors.Join(cleanupFailures, errors.New("L7 cleanup stop proof missing"))
+			} else {
+				copy := *stopped
+				cleanupTarget = &copy
+			}
+
+			deleteCtx, deleteCancel := context.WithTimeout(context.Background(), l7PreparedOperationTimeout)
+			deleteErr := cleanupDriver.Delete(deleteCtx, sandboxruntime.LifecycleRequest{Target: *cleanupTarget})
+			deleteCancel()
+			if deleteErr != nil {
+				cleanupFailures = errors.Join(cleanupFailures, errors.New("L7 cleanup delete failed"))
+			}
+		}
+		if cleanupFailures == nil {
+			if err := os.RemoveAll(root); err != nil {
+				cleanupFailures = errors.Join(cleanupFailures, errors.New("L7 cleanup root removal failed"))
+			}
+		}
+		if cleanupFailures != nil {
+			t.Error("L7 E2E cleanup failed; preserving L7 recovery state")
+		}
+	})
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal("secure private L7 acceptance root failed")
 	}
@@ -130,6 +164,7 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal("construct explicit production L7 Firecracker driver failed")
 	}
+	cleanupDriver = driver
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
@@ -137,20 +172,9 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal("create L7 Firecracker target failed")
 	}
-	cleanupTarget := *target
-	cleanupPending := true
-	t.Cleanup(func() {
-		if !cleanupPending {
-			return
-		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), l7PreparedOperationTimeout)
-		defer cleanupCancel()
-		stopped, _ := driver.Stop(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget})
-		if stopped != nil {
-			cleanupTarget = *stopped
-		}
-		_ = driver.Delete(cleanupCtx, sandboxruntime.LifecycleRequest{Target: cleanupTarget})
-	})
+	cleanupCopy := *target
+	cleanupTarget = &cleanupCopy
+	cleanupPending = true
 	if target.ID == "" || target.ID != target.Runtime.RuntimeID || target.Provider != "firecracker" ||
 		target.Runtime.Driver != sandboxruntime.DriverMicroVM {
 		t.Fatal("created L7 Firecracker target identity is not exact")
@@ -160,7 +184,8 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal("start complete L7 Firecracker topology failed")
 	}
-	cleanupTarget = *started
+	cleanupCopy = *started
+	cleanupTarget = &cleanupCopy
 	if started.Status != string(l7network.StatusActive) || started.Runtime.Metadata == nil ||
 		started.Runtime.Metadata.GuestReadiness == nil ||
 		started.Runtime.Metadata.GuestReadiness.State != sandboxruntime.RuntimeGuestReadinessStateReady {
@@ -170,7 +195,8 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	if err != nil || inspected == nil || inspected.Status != string(l7network.StatusActive) {
 		t.Fatal("fresh L7 Firecracker host and guest proof inspection failed")
 	}
-	cleanupTarget = *inspected
+	cleanupCopy = *inspected
+	cleanupTarget = &cleanupCopy
 	result, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
 		Target: *inspected, Args: []string{"/bin/busybox", "true"},
 	})
@@ -184,8 +210,9 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	if _, err := (networkenforcement.ProxyListenerLifecycleRunner{Adapter: adapter}).Stop(ctx, plan, nil); err != nil {
 		t.Fatal("inject exact L7 proxy generation loss failed")
 	}
-	stopped := waitForL7PreparedContainedTarget(t, driver, cleanupTarget)
-	cleanupTarget = *stopped
+	stopped := waitForL7PreparedContainedTarget(t, driver, *cleanupTarget)
+	cleanupCopy = *stopped
+	cleanupTarget = &cleanupCopy
 	if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: *stopped}); err != nil {
 		t.Fatal("delete contained L7 Firecracker target failed")
 	}

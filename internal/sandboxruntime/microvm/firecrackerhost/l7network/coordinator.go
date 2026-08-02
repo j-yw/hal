@@ -680,7 +680,7 @@ func (s *Session) retryRetainedCleanupLocked() error {
 		}
 		s.journalReleased = true
 		s.retainedCleanup = retainedCleanupUnavailable
-		return nil
+		return ErrCleanupIncomplete
 	case retainedCleanupReleaseRecoveryHandles:
 		if !interfaceIsNil(s.namespace) {
 			if err := s.namespace.Close(); err != nil {
@@ -694,7 +694,7 @@ func (s *Session) retryRetainedCleanupLocked() error {
 		}
 		s.journalReleased = true
 		s.retainedCleanup = retainedCleanupUnavailable
-		return nil
+		return ErrCleanupIncomplete
 	default:
 		return ErrCleanupIncomplete
 	}
