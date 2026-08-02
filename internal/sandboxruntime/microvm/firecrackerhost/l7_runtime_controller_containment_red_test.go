@@ -38,6 +38,91 @@ func TestL7RuntimeControllerPartialPrepareFailureRetainsExactAbortForRetry(t *te
 	}
 }
 
+func TestL7RuntimeControllerDeletesStoppedPreVMControllerIdempotently(t *testing.T) {
+	harness := newL7RuntimeControllerHarness(t, "delete-stopped-pre-vm", nil)
+	harness.topologies.errors[harness.identity.RuntimeGenerationID] = errors.New("private partial topology failure")
+	harness.session.abortErrors = []error{errors.New("private rollback failure"), nil}
+
+	if target, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart)); err == nil || target != nil {
+		t.Fatalf("Start(partial topology) = %#v, %v, want sanitized failure", target, err)
+	}
+	if stopped, err := harness.controller.Stop(context.Background(), harness.request(microvm.OperationStop)); err != nil || stopped == nil {
+		t.Fatalf("Stop(retained pre-VM cleanup) = %#v, %v, want stopped", stopped, err)
+	}
+	if err := harness.controller.Delete(context.Background(), harness.request(microvm.OperationDelete)); err != nil {
+		t.Fatalf("Delete(stopped pre-VM controller) error = %v, want nil", err)
+	}
+	if err := harness.controller.Delete(context.Background(), harness.request(microvm.OperationDelete)); err != nil {
+		t.Fatalf("Delete(repeated pre-VM controller) error = %v, want nil", err)
+	}
+	if harness.controller.state != l7RuntimeStateDeleted || harness.controller.target == nil ||
+		harness.controller.target.Status != string(l7network.StatusStopped) {
+		t.Fatalf("deleted pre-VM state = %q, target %#v, want retained stopped tombstone", harness.controller.state, harness.controller.target)
+	}
+	if harness.controller.preVMCleanup != nil || harness.runtimes.runtime(harness.identity.RuntimeGenerationID) != nil {
+		t.Fatal("deleted pre-VM controller retained cleanup or constructed a Firecracker runtime")
+	}
+	if target, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart)); err == nil || target != nil {
+		t.Fatalf("Start(deleted generation) = %#v, %v, want tombstone rejection", target, err)
+	}
+}
+
+func TestL7RuntimeControllerDeleteRetriesRetainedPreVMCleanup(t *testing.T) {
+	harness := newL7RuntimeControllerHarness(t, "delete-retry-pre-vm", nil)
+	harness.topologies.errors[harness.identity.RuntimeGenerationID] = errors.New("private partial topology failure")
+	harness.session.abortErrors = []error{
+		errors.New("private initial rollback failure"),
+		errors.New("private delete retry failure"),
+		nil,
+	}
+
+	if target, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart)); err == nil || target != nil {
+		t.Fatalf("Start(partial topology) = %#v, %v, want sanitized failure", target, err)
+	}
+	if err := harness.controller.Delete(context.Background(), harness.request(microvm.OperationDelete)); err == nil {
+		t.Fatal("Delete(first retained cleanup) error = nil, want fail-closed retry")
+	}
+	if harness.controller.state != l7RuntimeStateFailed || harness.controller.preVMCleanup == nil || harness.controller.target != nil {
+		t.Fatalf("failed Delete state = %q, cleanup:%t target:%#v, want retained authority", harness.controller.state, harness.controller.preVMCleanup != nil, harness.controller.target)
+	}
+	if err := harness.controller.Delete(context.Background(), harness.request(microvm.OperationDelete)); err != nil {
+		t.Fatalf("Delete(successful retained cleanup retry) error = %v, want nil", err)
+	}
+	if harness.session.abortCalls != 3 || harness.controller.state != l7RuntimeStateDeleted ||
+		harness.controller.preVMCleanup != nil || harness.controller.target == nil {
+		t.Fatalf("Delete retry = aborts:%d state:%q cleanup:%t target:%#v, want 3/deleted/false/tombstone",
+			harness.session.abortCalls, harness.controller.state, harness.controller.preVMCleanup != nil, harness.controller.target)
+	}
+	if harness.runtimes.runtime(harness.identity.RuntimeGenerationID) != nil {
+		t.Fatal("Delete-only pre-VM cleanup constructed a Firecracker runtime")
+	}
+}
+
+func TestL7RuntimeControllerDeletesVMBackedControllerIdempotently(t *testing.T) {
+	var runtime *l7RuntimeFakeFirecrackerRuntime
+	harness := newL7RuntimeControllerHarness(t, "delete-vm-idempotent", func(candidate *l7RuntimeFakeFirecrackerRuntime) {
+		runtime = candidate
+	})
+	if _, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.controller.Stop(context.Background(), harness.request(microvm.OperationStop)); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.controller.Delete(context.Background(), harness.request(microvm.OperationDelete)); err != nil {
+		t.Fatalf("Delete(VM-backed controller) error = %v, want nil", err)
+	}
+	if err := harness.controller.Delete(context.Background(), harness.request(microvm.OperationDelete)); err != nil {
+		t.Fatalf("Delete(repeated VM-backed controller) error = %v, want nil", err)
+	}
+	if runtime == nil {
+		t.Fatal("VM-backed controller did not construct a runtime")
+	}
+	if runtime.deleteCalls != 1 || harness.controller.state != l7RuntimeStateDeleted {
+		t.Fatalf("VM Delete calls/state = %d/%q, want 1/deleted", runtime.deleteCalls, harness.controller.state)
+	}
+}
+
 func TestL7RuntimeControllerRetriesAfterCompletePreVMCleanup(t *testing.T) {
 	harness := newL7RuntimeControllerHarness(t, "complete-pre-vm-retry", nil)
 	harness.topologies.errors[harness.identity.RuntimeGenerationID] = errors.New("private initial topology failure")

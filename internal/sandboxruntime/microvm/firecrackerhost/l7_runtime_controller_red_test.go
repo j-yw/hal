@@ -432,6 +432,7 @@ type l7RuntimeFakeFirecrackerRuntime struct {
 	overlay           firecracker.L7LiveBootConfigOverlay
 	startCalls        int
 	stopCalls         int
+	deleteCalls       int
 	terminationCalls  int
 	lastStopTarget    sandboxruntime.Target
 	terminatedBinding *l7RuntimeFakeTerminatedBinding
@@ -499,6 +500,9 @@ func (runtime *l7RuntimeFakeFirecrackerRuntime) Stop(ctx context.Context, reques
 }
 
 func (runtime *l7RuntimeFakeFirecrackerRuntime) Delete(context.Context, microvm.ControllerLifecycleRequest) error {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.deleteCalls++
 	return nil
 }
 
