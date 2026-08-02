@@ -163,6 +163,40 @@ type fakeReachabilityProber struct {
 	err        error
 }
 
+type blockingOwnershipStore struct {
+	base           *memoryOwnershipStore
+	blockedSandbox string
+	entered        chan struct{}
+	release        chan struct{}
+	releaseOnce    sync.Once
+}
+
+func newBlockingOwnershipStore(blockedSandbox string) *blockingOwnershipStore {
+	return &blockingOwnershipStore{
+		base: newMemoryOwnershipStore(), blockedSandbox: blockedSandbox,
+		entered: make(chan struct{}, 1), release: make(chan struct{}),
+	}
+}
+
+func (s *blockingOwnershipStore) Acquire(ctx context.Context, identity Identity) (OwnershipLease, error) {
+	if identity.SandboxID == s.blockedSandbox {
+		select {
+		case s.entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.base.Acquire(ctx, identity)
+}
+
+func (s *blockingOwnershipStore) unblock() {
+	s.releaseOnce.Do(func() { close(s.release) })
+}
+
 func (f *fakeReachabilityProber) Probe(_ context.Context, _ *NamespaceHandle, identity Identity, mapping Mapping) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1014,5 +1048,149 @@ func TestLinuxTopologyStopDoesNotBlockUnrelatedSandboxes(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("first Stop did not continue after its transferred handle closed")
+	}
+}
+
+func TestLinuxTopologyStartDoesNotBlockUnrelatedSandboxes(t *testing.T) {
+	starter := newFakeStarter()
+	runner := &fakeRunner{output: goodLinkJSON()}
+	namespaces := newFakeNamespaces(t, nil)
+	firstRequest := testRequest("topology-gen-independent-start-first")
+	firstRequest.Identity.SandboxID = "sandbox-l7-start-first"
+	secondRequest := testRequest("topology-gen-independent-start-second")
+	secondRequest.Identity.SandboxID = "sandbox-l7-start-second"
+	ownership := newBlockingOwnershipStore(firstRequest.Identity.SandboxID)
+	t.Cleanup(ownership.unblock)
+	lifecycle, err := New(Config{
+		Enabled: true, Tools: testTools(), Starter: starter, Runner: runner,
+		OpenNamespaces: namespaces.Open, Reachability: &fakeReachabilityProber{}, Ownership: ownership,
+		CleanupTimeout: 2 * time.Second, InspectionTimeout: 250 * time.Millisecond,
+		InspectionInterval: time.Millisecond, OutputLimit: 8 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type startResult struct {
+		session *Session
+		err     error
+	}
+	firstResult := make(chan startResult, 1)
+	go func() {
+		session, startErr := lifecycle.Start(context.Background(), firstRequest)
+		firstResult <- startResult{session: session, err: startErr}
+	}()
+	select {
+	case <-ownership.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first Start did not reach blocked ownership acquisition")
+	}
+
+	secondResult := make(chan startResult, 1)
+	go func() {
+		session, startErr := lifecycle.Start(context.Background(), secondRequest)
+		secondResult <- startResult{session: session, err: startErr}
+	}()
+	var second startResult
+	select {
+	case second = <-secondResult:
+		if second.err != nil || second.session == nil {
+			ownership.unblock()
+			t.Fatalf("unrelated Start = %#v, %v", second.session, second.err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		ownership.unblock()
+		first := <-firstResult
+		second = <-secondResult
+		if first.session != nil {
+			_, _ = lifecycle.Stop(context.Background(), firstRequest.Identity)
+		}
+		if second.session != nil {
+			_, _ = lifecycle.Stop(context.Background(), secondRequest.Identity)
+		}
+		t.Fatal("unrelated Start blocked behind another sandbox's ownership acquisition")
+	}
+	select {
+	case result := <-firstResult:
+		t.Fatalf("first Start returned while ownership acquisition remained blocked: %v", result.err)
+	default:
+	}
+	ownership.unblock()
+	var first startResult
+	select {
+	case first = <-firstResult:
+		if first.err != nil || first.session == nil {
+			t.Fatalf("first Start = %#v, %v", first.session, first.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first Start did not continue after ownership acquisition")
+	}
+	if _, err := lifecycle.Stop(context.Background(), firstRequest.Identity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lifecycle.Stop(context.Background(), secondRequest.Identity); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLinuxTopologyStopWaitsForSameSandboxStartAndContainsIt(t *testing.T) {
+	starter := newFakeStarter()
+	runner := &fakeRunner{output: goodLinkJSON()}
+	namespaces := newFakeNamespaces(t, nil)
+	request := testRequest("topology-gen-start-stop")
+	ownership := newBlockingOwnershipStore(request.Identity.SandboxID)
+	t.Cleanup(ownership.unblock)
+	lifecycle, err := New(Config{
+		Enabled: true, Tools: testTools(), Starter: starter, Runner: runner,
+		OpenNamespaces: namespaces.Open, Reachability: &fakeReachabilityProber{}, Ownership: ownership,
+		CleanupTimeout: 2 * time.Second, InspectionTimeout: 250 * time.Millisecond,
+		InspectionInterval: time.Millisecond, OutputLimit: 8 << 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startResult := make(chan error, 1)
+	go func() {
+		_, startErr := lifecycle.Start(context.Background(), request)
+		startResult <- startErr
+	}()
+	select {
+	case <-ownership.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Start did not reach blocked ownership acquisition")
+	}
+	stopResult := make(chan error, 1)
+	go func() {
+		metadata, stopErr := lifecycle.Stop(context.Background(), request.Identity)
+		if stopErr == nil && metadata.Status != StatusStopped {
+			stopErr = errors.New("Stop returned without stopped metadata")
+		}
+		stopResult <- stopErr
+	}()
+	select {
+	case stopErr := <-stopResult:
+		t.Fatalf("Stop returned before in-flight Start completed: %v", stopErr)
+	case <-time.After(50 * time.Millisecond):
+	}
+	ownership.unblock()
+	select {
+	case startErr := <-startResult:
+		if startErr != nil {
+			t.Fatal(startErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not complete after ownership acquisition")
+	}
+	select {
+	case stopErr := <-stopResult:
+		if stopErr != nil {
+			t.Fatal(stopErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not contain the completed in-flight Start")
+	}
+	for _, role := range []ProcessRole{ProcessRoleMapping, ProcessRoleKeeper} {
+		if got := starter.latest(role).terminateCount; got != 1 {
+			t.Fatalf("%s terminate count = %d, want 1", role, got)
+		}
 	}
 }
