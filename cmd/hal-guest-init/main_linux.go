@@ -293,9 +293,6 @@ func waitForKilledChildren(
 			}
 			continue
 		case errors.Is(err, unix.ECHILD):
-			if ctx.Err() != nil {
-				return 0, false
-			}
 			return mainStatus, mainExited
 		case pid == 0 && err == nil:
 			timer := time.NewTimer(forceStopReapPoll)
