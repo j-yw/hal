@@ -1339,6 +1339,7 @@ func microVMNetworkEnforcementTestPlanRequest() networkenforcement.PlanRequest {
 			MetadataEndpoint:  networkenforcement.PostureBlock,
 			HTTP:              networkenforcement.ProxyRoutingModeRouteViaProxy,
 			HTTPS:             networkenforcement.ProxyRoutingModeBlock,
+			ProxySessionID:    "microvm-proxy-session",
 			ProxyMechanism:    networkenforcement.EnforcementMechanismProxy,
 			FirewallMode:      networkenforcement.FirewallIntentModeApply,
 			FirewallMechanism: networkenforcement.EnforcementMechanismFirewall,

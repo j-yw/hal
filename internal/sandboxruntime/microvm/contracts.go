@@ -22,7 +22,11 @@ const (
 
 const (
 	NetworkModeNoLiveNetworking NetworkMode = "no_live_networking"
-	DefaultNetworkMode          NetworkMode = NetworkModeNoLiveNetworking
+	// NetworkModeL7PolicyProxy is the explicit backend-neutral opt-in for an
+	// L7-owned static guest link whose only usable egress is the policy proxy.
+	// The mode is intent only; it does not claim that topology or rules are live.
+	NetworkModeL7PolicyProxy NetworkMode = "l7_policy_proxy"
+	DefaultNetworkMode       NetworkMode = NetworkModeNoLiveNetworking
 )
 
 const (

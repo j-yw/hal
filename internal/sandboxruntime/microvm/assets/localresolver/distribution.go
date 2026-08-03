@@ -41,6 +41,8 @@ type VerifiedDistribution struct {
 	Manifest   assetbuild.DistributionManifest
 	Provenance assetbuild.Provenance
 	Descriptor assets.LaunchDescriptor
+	l7Profile  VerifiedL7Profile
+	rootDir    string
 }
 
 // ResolveDistribution verifies the manifest and installed launch assets, then
@@ -95,11 +97,16 @@ func VerifyDistributionBundle(request DistributionRequest) (VerifiedDistribution
 	if err != nil {
 		return VerifiedDistribution{}, err
 	}
-	return VerifiedDistribution{
+	verified := VerifiedDistribution{
 		Manifest:   manifest,
 		Provenance: provenance,
 		Descriptor: descriptor,
-	}, nil
+		rootDir:    cleanRoot,
+	}
+	if manifest.ImageProfile == assetbuild.ImageProfileL7Network {
+		verified.l7Profile = newVerifiedL7Profile(descriptor)
+	}
+	return verified, nil
 }
 
 func openRequestedDistributionRoot(raw string) (*os.File, string, error) {
@@ -298,6 +305,10 @@ func resolveDistributionFromRoot(
 		ID:     "l5-image",
 		Labels: []assets.SafeLabel{"firecracker", "reproducible"},
 		Assets: make([]assets.LaunchAsset, 0, len(manifest.Assets)),
+	}
+	if manifest.ImageProfile == assetbuild.ImageProfileL7Network {
+		descriptor.ID = "l7-network-image"
+		descriptor.Labels = append(descriptor.Labels, "network-profile")
 	}
 	for _, asset := range manifest.Assets {
 		size, digest, err := digestDistributionFile(root, asset.Key)

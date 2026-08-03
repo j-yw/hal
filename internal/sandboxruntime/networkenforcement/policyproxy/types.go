@@ -85,6 +85,19 @@ type Config struct {
 	Limits       Limits
 }
 
+// LiveEndpoint is an opaque, live-only handle to one exact listener
+// generation. Its address and generation token are deliberately omitted from
+// JSON and durable metadata.
+type LiveEndpoint struct {
+	address    string
+	generation uint64
+	loss       <-chan struct{}
+}
+
+func (e LiveEndpoint) Address() string { return e.address }
+
+func (e LiveEndpoint) Loss() <-chan struct{} { return e.loss }
+
 func normalizeLimits(input Limits) Limits {
 	out := input
 	if out.MaxHeaderBytes == 0 {

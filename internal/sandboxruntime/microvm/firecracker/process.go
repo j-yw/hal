@@ -3,6 +3,7 @@ package firecracker
 import (
 	"context"
 	"errors"
+	"os"
 	"regexp"
 	"strings"
 
@@ -39,7 +40,8 @@ type ProcessStartCommandRequest struct {
 // descriptor. The descriptor carries raw argv only across this injected
 // boundary.
 type ProcessStartRequest struct {
-	Descriptor ProcessCommandDescriptor `json:"descriptor"`
+	Descriptor     ProcessCommandDescriptor `json:"descriptor"`
+	InheritedFiles []*os.File               `json:"-"`
 }
 
 // ProcessCommandDescriptor is the process-boundary command shape. Argv keeps
@@ -84,17 +86,99 @@ func PrepareStartCommand(ctx context.Context, adapter ProcessAdapter, plan Start
 // StartProcess delegates Firecracker process start to an injected adapter.
 // This function validates the descriptor before crossing the adapter boundary.
 func StartProcess(ctx context.Context, adapter ProcessAdapter, descriptor ProcessCommandDescriptor) (ProcessHandleMetadata, error) {
+	return startProcessWithInheritedFiles(ctx, adapter, descriptor, nil)
+}
+
+// startProcessWithInheritedFiles delegates process start while keeping the
+// supplied private files out of descriptors and durable metadata. Ownership
+// remains with the caller; the adapter may only borrow them for process start.
+func startProcessWithInheritedFiles(
+	ctx context.Context,
+	adapter ProcessAdapter,
+	descriptor ProcessCommandDescriptor,
+	files []*os.File,
+) (ProcessHandleMetadata, error) {
 	if adapter == nil {
 		return ProcessHandleMetadata{}, newProcessBoundaryError("processAdapter", "process adapter is required")
 	}
 	if err := validateProcessCommandDescriptor(descriptor); err != nil {
 		return ProcessHandleMetadata{}, err
 	}
-	handle, err := adapter.StartProcess(processContext(ctx), ProcessStartRequest{Descriptor: descriptor})
+	if err := validateProcessInheritedFiles(files); err != nil {
+		return ProcessHandleMetadata{}, err
+	}
+	handle, err := adapter.StartProcess(processContext(ctx), ProcessStartRequest{
+		Descriptor:     descriptor,
+		InheritedFiles: append([]*os.File(nil), files...),
+	})
 	if err != nil {
 		return ProcessHandleMetadata{}, newProcessBoundaryAdapterError("processAdapter", "process start failed", err)
 	}
 	return sanitizeProcessHandleMetadata(handle), nil
+}
+
+func validateProcessInheritedFiles(files []*os.File) error {
+	if len(files) != 0 && len(files) != 2 {
+		return newProcessBoundaryError("inheritedFiles", "exactly two inherited process files are required")
+	}
+	for _, file := range files {
+		if file == nil {
+			return newProcessBoundaryError("inheritedFiles", "inherited process file is invalid")
+		}
+	}
+	return nil
+}
+
+// closeProcessInheritedFiles releases a start-owned file set exactly once at
+// its owning call site. A close error is cleanup uncertainty: callers must not
+// retry an ambiguous close or accept a started process as successful.
+func closeProcessInheritedFiles(files []*os.File) error {
+	return closeProcessInheritedFilesWith(files, func(file *os.File) error {
+		return file.Close()
+	})
+}
+
+func closeProcessInheritedFilesWith(files []*os.File, closeFile func(*os.File) error) error {
+	cleanupCauses := make([]error, 0, len(files))
+	for _, file := range files {
+		if file != nil {
+			if err := closeFile(file); err != nil {
+				cleanupCauses = append(cleanupCauses, err)
+			}
+		}
+	}
+	if len(cleanupCauses) > 0 {
+		return newProcessBoundaryAdapterError(
+			"inheritedFiles",
+			"inherited process file cleanup failed",
+			newSanitizedProcessCleanupCause(cleanupCauses...),
+		)
+	}
+	return nil
+}
+
+func newSanitizedProcessCleanupCause(causes ...error) error {
+	joined := errors.Join(causes...)
+	if joined == nil {
+		return nil
+	}
+	return sanitizedProcessCleanupCause{causes: joined}
+}
+
+type sanitizedProcessCleanupCause struct {
+	causes error
+}
+
+func (sanitizedProcessCleanupCause) Error() string {
+	return "inherited process file cleanup failed"
+}
+
+func (cause sanitizedProcessCleanupCause) Is(target error) bool {
+	return errors.Is(cause.causes, target)
+}
+
+func (cause sanitizedProcessCleanupCause) As(target any) bool {
+	return errors.As(cause.causes, target)
 }
 
 // ProcessCommandDescriptorFromStartPlan converts a pure start operation plan
@@ -576,4 +660,8 @@ func (err sanitizedProcessBoundaryAdapterCause) Error() string {
 
 func (err sanitizedProcessBoundaryAdapterCause) Is(target error) bool {
 	return target != nil && errors.Is(err.cause, target)
+}
+
+func (err sanitizedProcessBoundaryAdapterCause) As(target any) bool {
+	return errors.As(err.cause, target)
 }

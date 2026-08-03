@@ -38,3 +38,13 @@ func (*Adapter) StopProxyListener(context.Context, networkenforcement.ProxyListe
 func (*Adapter) Endpoint() (string, bool) {
 	return "", false
 }
+
+func (*Adapter) LiveEndpoint() (LiveEndpoint, bool) { return LiveEndpoint{}, false }
+
+func (*Adapter) ActiveLiveEndpoint(context.Context, LiveEndpoint, networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	return networkenforcement.ProxyListenerLifecycleMetadata{}, ErrUnsupported
+}
+
+func (*Adapter) StopLiveEndpoint(context.Context, LiveEndpoint, networkenforcement.ProxyListenerLifecycleRequest) (networkenforcement.ProxyListenerLifecycleMetadata, error) {
+	return networkenforcement.ProxyListenerLifecycleMetadata{}, ErrUnsupported
+}

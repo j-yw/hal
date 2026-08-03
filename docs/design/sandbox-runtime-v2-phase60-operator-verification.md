@@ -103,6 +103,12 @@ The composed microVM live E2E gate requires these environment marker names:
 - `HAL_CREDENTIAL_DELIVERY_LIVE`
 - `HAL_TEMPLATE_TRUST_LIVE`
 
+The separately selected L7 Firecracker network-image prerequisite check also
+uses these marker names:
+
+- `HAL_L7_DISTRIBUTION_DIR`
+- `HAL_L7_LINUX_NETWORK_INTEGRATION`
+
 Standalone Firecracker checks also recognize these optional Firecracker marker
 names:
 

@@ -24,18 +24,24 @@ const (
 type LifecycleReasonCode string
 
 const (
-	LifecycleReasonPrepared           LifecycleReasonCode = "prepared"
-	LifecycleReasonStarted            LifecycleReasonCode = "started"
-	LifecycleReasonApplied            LifecycleReasonCode = "applied"
-	LifecycleReasonActive             LifecycleReasonCode = "active"
-	LifecycleReasonStopped            LifecycleReasonCode = "stopped"
-	LifecycleReasonSkipped            LifecycleReasonCode = "skipped"
-	LifecycleReasonAdapterUnsupported LifecycleReasonCode = "adapter_unsupported"
-	LifecycleReasonAdapterFailed      LifecycleReasonCode = "adapter_failed"
-	LifecycleReasonCapabilityMissing  LifecycleReasonCode = "capability_missing"
-	LifecycleReasonCleanupFailed      LifecycleReasonCode = "cleanup_failed"
-	LifecycleReasonRollbackFailed     LifecycleReasonCode = "rollback_failed"
-	LifecycleReasonActiveCheckFailed  LifecycleReasonCode = "active_check_failed"
+	LifecycleReasonPrepared                   LifecycleReasonCode = "prepared"
+	LifecycleReasonStarted                    LifecycleReasonCode = "started"
+	LifecycleReasonApplied                    LifecycleReasonCode = "applied"
+	LifecycleReasonActive                     LifecycleReasonCode = "active"
+	LifecycleReasonStopped                    LifecycleReasonCode = "stopped"
+	LifecycleReasonSkipped                    LifecycleReasonCode = "skipped"
+	LifecycleReasonAdapterUnsupported         LifecycleReasonCode = "adapter_unsupported"
+	LifecycleReasonAdapterFailed              LifecycleReasonCode = "adapter_failed"
+	LifecycleReasonCapabilityMissing          LifecycleReasonCode = "capability_missing"
+	LifecycleReasonCleanupFailed              LifecycleReasonCode = "cleanup_failed"
+	LifecycleReasonRollbackFailed             LifecycleReasonCode = "rollback_failed"
+	LifecycleReasonActiveCheckFailed          LifecycleReasonCode = "active_check_failed"
+	LifecycleReasonRuleInspected              LifecycleReasonCode = "rule_inspected"
+	LifecycleReasonRawPacketIsolationVerified LifecycleReasonCode = "raw_packet_isolation_verified"
+	LifecycleReasonProofMismatch              LifecycleReasonCode = "proof_mismatch"
+	LifecycleReasonRuleInspectionFailed       LifecycleReasonCode = "rule_inspection_failed"
+	LifecycleReasonQuarantineFailed           LifecycleReasonCode = "quarantine_failed"
+	LifecycleReasonCleanupIncomplete          LifecycleReasonCode = "cleanup_incomplete"
 )
 
 // LifecycleWarningCode is a sanitized warning label for lifecycle metadata.
@@ -49,6 +55,9 @@ const (
 	LifecycleWarningUnsupportedMechanism  LifecycleWarningCode = "unsupported_mechanism"
 	LifecycleWarningSanitizedAdapterError LifecycleWarningCode = "sanitized_adapter_error"
 	LifecycleWarningMetadataOnlyFallback  LifecycleWarningCode = "metadata_only_fallback"
+	LifecycleWarningProofMismatch         LifecycleWarningCode = "proof_mismatch"
+	LifecycleWarningRuleInspectionFailed  LifecycleWarningCode = "rule_inspection_failed"
+	LifecycleWarningQuarantineFailed      LifecycleWarningCode = "quarantine_failed"
 )
 
 // LiveLifecycleMetadata is the public redaction-safe live enforcement lifecycle
@@ -81,6 +90,7 @@ type ProxyListenerLifecycleMetadata struct {
 	Operations       []string                `json:"operations,omitempty"`
 	PolicySnapshot   *PolicySnapshotIdentity `json:"policySnapshot,omitempty"`
 	CapabilityLabels []string                `json:"capabilityLabels,omitempty"`
+	Correlation      *EnforcementCorrelation `json:"correlation,omitempty"`
 	ReasonCode       LifecycleReasonCode     `json:"reasonCode,omitempty"`
 	WarningCodes     []LifecycleWarningCode  `json:"warningCodes,omitempty"`
 }
@@ -89,16 +99,19 @@ type ProxyListenerLifecycleMetadata struct {
 // exposing rule bodies, command lines, addresses, ports, process handles, or
 // credentials.
 type RuleLifecycleMetadata struct {
-	ID               string                  `json:"id,omitempty"`
-	PlanID           string                  `json:"planId,omitempty"`
-	AdapterID        string                  `json:"adapterId,omitempty"`
-	Status           LifecycleStatus         `json:"status,omitempty"`
-	Mechanisms       []EnforcementMechanism  `json:"mechanisms,omitempty"`
-	Operations       []string                `json:"operations,omitempty"`
-	PolicySnapshot   *PolicySnapshotIdentity `json:"policySnapshot,omitempty"`
-	CapabilityLabels []string                `json:"capabilityLabels,omitempty"`
-	ReasonCode       LifecycleReasonCode     `json:"reasonCode,omitempty"`
-	WarningCodes     []LifecycleWarningCode  `json:"warningCodes,omitempty"`
+	ID                 string                   `json:"id,omitempty"`
+	PlanID             string                   `json:"planId,omitempty"`
+	AdapterID          string                   `json:"adapterId,omitempty"`
+	Status             LifecycleStatus          `json:"status,omitempty"`
+	Mechanisms         []EnforcementMechanism   `json:"mechanisms,omitempty"`
+	Operations         []string                 `json:"operations,omitempty"`
+	PolicySnapshot     *PolicySnapshotIdentity  `json:"policySnapshot,omitempty"`
+	CapabilityLabels   []string                 `json:"capabilityLabels,omitempty"`
+	Correlation        *EnforcementCorrelation  `json:"correlation,omitempty"`
+	Inspection         *InspectedRuleProof      `json:"inspection,omitempty"`
+	LinkLayerIsolation *RawPacketIsolationProof `json:"linkLayerIsolation,omitempty"`
+	ReasonCode         LifecycleReasonCode      `json:"reasonCode,omitempty"`
+	WarningCodes       []LifecycleWarningCode   `json:"warningCodes,omitempty"`
 }
 
 // SanitizeLiveLifecycleMetadata returns a redaction-safe lifecycle metadata
@@ -130,6 +143,7 @@ func SanitizeProxyListenerLifecycleMetadata(metadata ProxyListenerLifecycleMetad
 		Operations:       sanitizeIdentifierList(metadata.Operations),
 		PolicySnapshot:   sanitizePolicySnapshotIdentityPtr(metadata.PolicySnapshot),
 		CapabilityLabels: sanitizeIdentifierList(metadata.CapabilityLabels),
+		Correlation:      sanitizeEnforcementCorrelationPtr(metadata.Correlation),
 		ReasonCode:       sanitizeLifecycleReasonCode(metadata.ReasonCode),
 		WarningCodes:     sanitizeLifecycleWarningCodeList(metadata.WarningCodes),
 	}
@@ -137,16 +151,19 @@ func SanitizeProxyListenerLifecycleMetadata(metadata ProxyListenerLifecycleMetad
 
 func SanitizeRuleLifecycleMetadata(metadata RuleLifecycleMetadata) RuleLifecycleMetadata {
 	return RuleLifecycleMetadata{
-		ID:               sanitizeIdentifier(metadata.ID),
-		PlanID:           sanitizeIdentifier(metadata.PlanID),
-		AdapterID:        sanitizeIdentifier(metadata.AdapterID),
-		Status:           sanitizeLifecycleStatus(metadata.Status),
-		Mechanisms:       sanitizeEnforcementMechanismList(metadata.Mechanisms),
-		Operations:       sanitizeIdentifierList(metadata.Operations),
-		PolicySnapshot:   sanitizePolicySnapshotIdentityPtr(metadata.PolicySnapshot),
-		CapabilityLabels: sanitizeIdentifierList(metadata.CapabilityLabels),
-		ReasonCode:       sanitizeLifecycleReasonCode(metadata.ReasonCode),
-		WarningCodes:     sanitizeLifecycleWarningCodeList(metadata.WarningCodes),
+		ID:                 sanitizeIdentifier(metadata.ID),
+		PlanID:             sanitizeIdentifier(metadata.PlanID),
+		AdapterID:          sanitizeIdentifier(metadata.AdapterID),
+		Status:             sanitizeLifecycleStatus(metadata.Status),
+		Mechanisms:         sanitizeEnforcementMechanismList(metadata.Mechanisms),
+		Operations:         sanitizeIdentifierList(metadata.Operations),
+		PolicySnapshot:     sanitizePolicySnapshotIdentityPtr(metadata.PolicySnapshot),
+		CapabilityLabels:   sanitizeIdentifierList(metadata.CapabilityLabels),
+		Correlation:        sanitizeEnforcementCorrelationPtr(metadata.Correlation),
+		Inspection:         sanitizeInspectedRuleProofPtr(metadata.Inspection),
+		LinkLayerIsolation: sanitizeRawPacketIsolationProofPtr(metadata.LinkLayerIsolation),
+		ReasonCode:         sanitizeLifecycleReasonCode(metadata.ReasonCode),
+		WarningCodes:       sanitizeLifecycleWarningCodeList(metadata.WarningCodes),
 	}
 }
 
@@ -205,6 +222,7 @@ func proxyListenerLifecycleMetadataEmpty(metadata ProxyListenerLifecycleMetadata
 		len(metadata.Operations) == 0 &&
 		metadata.PolicySnapshot == nil &&
 		len(metadata.CapabilityLabels) == 0 &&
+		metadata.Correlation == nil &&
 		metadata.ReasonCode == "" &&
 		len(metadata.WarningCodes) == 0
 }
@@ -218,6 +236,9 @@ func ruleLifecycleMetadataEmpty(metadata RuleLifecycleMetadata) bool {
 		len(metadata.Operations) == 0 &&
 		metadata.PolicySnapshot == nil &&
 		len(metadata.CapabilityLabels) == 0 &&
+		metadata.Correlation == nil &&
+		metadata.Inspection == nil &&
+		metadata.LinkLayerIsolation == nil &&
 		metadata.ReasonCode == "" &&
 		len(metadata.WarningCodes) == 0
 }
@@ -256,7 +277,13 @@ func sanitizeLifecycleReasonCode(value LifecycleReasonCode) LifecycleReasonCode 
 		LifecycleReasonCapabilityMissing,
 		LifecycleReasonCleanupFailed,
 		LifecycleReasonRollbackFailed,
-		LifecycleReasonActiveCheckFailed:
+		LifecycleReasonActiveCheckFailed,
+		LifecycleReasonRuleInspected,
+		LifecycleReasonRawPacketIsolationVerified,
+		LifecycleReasonProofMismatch,
+		LifecycleReasonRuleInspectionFailed,
+		LifecycleReasonQuarantineFailed,
+		LifecycleReasonCleanupIncomplete:
 		return normalized
 	default:
 		return ""
@@ -272,7 +299,10 @@ func sanitizeLifecycleWarningCode(value LifecycleWarningCode) LifecycleWarningCo
 		LifecycleWarningPartialLifecycle,
 		LifecycleWarningUnsupportedMechanism,
 		LifecycleWarningSanitizedAdapterError,
-		LifecycleWarningMetadataOnlyFallback:
+		LifecycleWarningMetadataOnlyFallback,
+		LifecycleWarningProofMismatch,
+		LifecycleWarningRuleInspectionFailed,
+		LifecycleWarningQuarantineFailed:
 		return normalized
 	default:
 		return ""

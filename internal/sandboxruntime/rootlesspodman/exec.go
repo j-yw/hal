@@ -123,10 +123,14 @@ func (d *Driver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*san
 	if err != nil {
 		return nil, operationError(OperationExec, CommandResult{}, err)
 	}
+	execEnv, err := d.topologyExecEnvironment(ctx, req.Target, req.Env)
+	if err != nil {
+		return nil, err
+	}
 	commandRequest := CommandRequest{
 		Operation: OperationExec,
-		Args:      d.execArgs(ref, commandArgs, req.Env, req.WorkDir, req.Stdin != nil),
-		Env:       cloneStringMap(req.Env),
+		Args:      d.execArgs(ref, commandArgs, execEnv, req.WorkDir, req.Stdin != nil),
+		Env:       execEnv,
 		Stdin:     req.Stdin,
 		Stdout:    req.Stdout,
 		Stderr:    req.Stderr,

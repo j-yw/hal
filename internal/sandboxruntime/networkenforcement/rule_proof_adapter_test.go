@@ -159,10 +159,10 @@ func TestRuleProofAdaptersRepresentFirewallAndRuntimeLifecycle(t *testing.T) {
 
 			listener := aggregationActiveListenerResult(plan)
 			result := AggregateLiveEnforcementResult(plan, &listener, &applied)
-			assertStrongAggregatedEnforcement(t, result, tt.wantMode, []EnforcementMechanism{
-				EnforcementMechanismProxy,
-				tt.mechanism,
-			})
+			assertNoStrongAggregatedEnforcement(t, result)
+			if result.ReasonCode != ResultReasonCapabilityMissing {
+				t.Fatalf("plan-derived proof aggregate = %#v, want capability_missing", result)
+			}
 		})
 	}
 }

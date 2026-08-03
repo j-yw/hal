@@ -3,19 +3,266 @@ package firecrackerhost
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/frame"
 )
+
+const l5ProductionBridgeTestTimeout = 10 * time.Second
+
+func TestL7ProductionVsockBridgeBindsReadinessToExactIsolationProof(t *testing.T) {
+	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
+	fixture.bridge = NewProductionVsockBridge(ProductionVsockBridgeOptions{
+		Lifecycle:                fixture.bridge.lifecycle,
+		Timeout:                  l5ProductionBridgeTestTimeout,
+		PollInterval:             time.Millisecond,
+		RequireIsolationProof:    true,
+		RequireNetworkProof:      true,
+		IsolationProofGeneration: "topology-generation-vsock",
+	})
+	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
+	requests := make(chan guestagent.ReadinessRequest, 2)
+	serverRelease := make(chan struct{}, 2)
+	serverErrors := make(chan error, 2)
+	go func() {
+		for attempt := 0; attempt < 2; attempt++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			reader := bufio.NewReader(conn)
+			_, _ = reader.ReadString('\n')
+			_, _ = io.WriteString(conn, "OK 1073741824\n")
+			payload, _ := frame.Read(reader, 4096)
+			var request guestagent.ReadinessRequest
+			_ = json.Unmarshal(payload, &request)
+			requests <- request
+			response := guestagent.ReadinessResponse{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationReadiness,
+				Ready:           true,
+				Status:          guestagent.ReadinessStatusReady,
+				IsolationProof: &guestagent.IsolationProof{
+					Generation:                 "topology-generation-vsock",
+					RuntimeGeneration:          "fc-production-test",
+					Status:                     guestagent.IsolationProofStatusVerified,
+					RestrictedIdentity:         true,
+					CapabilitiesCleared:        true,
+					NoNewPrivileges:            true,
+					SupplementaryGroupsCleared: true,
+					RawPacketSocketDenied:      true,
+					Network: &guestagent.NetworkIsolationProof{
+						Status:          guestagent.IsolationProofStatusVerified,
+						SingleInterface: true,
+						StaticRoutes:    true,
+						ProxyReachable:  true,
+					},
+				},
+			}
+			encoded, _ := json.Marshal(response)
+			serverErrors <- l5WriteBridgeResponseAndWait(conn, encoded, 4096, serverRelease)
+			_ = conn.Close()
+		}
+	}()
+
+	result, generation, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
+	})
+	serverRelease <- struct{}{}
+	if err != nil {
+		t.Fatalf("ActivateSession() error = %v", err)
+	}
+	if serverErr := <-serverErrors; serverErr != nil {
+		t.Fatalf("serve initial readiness: %v", serverErr)
+	}
+	request := <-requests
+	if request.IsolationProof == nil || request.IsolationProof.Generation != "topology-generation-vsock" ||
+		request.IsolationProof.RuntimeGeneration != "fc-production-test" || !request.IsolationProof.RequireNetworkProof {
+		t.Fatalf("readiness request = %#v, want exact L7 proof binding", request)
+	}
+	if result.IsolationProofGeneration != "topology-generation-vsock" || result.IsolationRuntimeGeneration != "fc-production-test" {
+		t.Fatalf("readiness result = %#v, want exact accepted response binding", result)
+	}
+	target := sandboxruntime.Target{ID: "fc-production-test", Runtime: sandboxruntime.RuntimeState{
+		RuntimeID: "fc-production-test", Metadata: &sandboxruntime.RuntimeMetadata{
+			ProcessLaunch: &sandboxruntime.RuntimeProcessLaunchMetadata{
+				ProcessID: fixture.handle.ID, ProcessIDSource: fixture.handle.Source,
+			},
+		},
+	}}
+	if !fixture.bridge.SessionActive(firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-production-test",
+	}, generation) {
+		t.Fatal("activated proof session is not active before refresh")
+	}
+	proof, err := fixture.bridge.refreshL7Proof(context.Background(), target, "topology-generation-vsock")
+	serverRelease <- struct{}{}
+	if err != nil {
+		t.Fatalf("refreshL7Proof() error = %v", err)
+	}
+	if serverErr := <-serverErrors; serverErr != nil {
+		t.Fatalf("serve refreshed readiness: %v", serverErr)
+	}
+	if proof.runtimeID != "fc-production-test" || proof.handleID != fixture.handle.ID ||
+		proof.handleSource != fixture.handle.Source || proof.bridgeGeneration == "" ||
+		proof.isolationProofGeneration != "topology-generation-vsock" {
+		t.Fatalf("refresh proof = %#v, want exact opaque session binding", proof)
+	}
+	refreshed := <-requests
+	if refreshed.IsolationProof == nil || refreshed.IsolationProof.Generation != "topology-generation-vsock" ||
+		refreshed.IsolationProof.RuntimeGeneration != "fc-production-test" || !refreshed.IsolationProof.RequireNetworkProof {
+		t.Fatalf("fresh readiness request = %#v, want exact proof binding", refreshed)
+	}
+}
+
+func TestL7ProductionVsockProofRefreshIsRaceSafeWithSessionInvalidation(t *testing.T) {
+	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
+	fixture.bridge = NewProductionVsockBridge(ProductionVsockBridgeOptions{
+		Lifecycle: fixture.bridge.lifecycle, Timeout: l5ProductionBridgeTestTimeout, PollInterval: time.Millisecond,
+		RequireIsolationProof: true, RequireNetworkProof: true,
+		IsolationProofGeneration: "topology-generation-race",
+	})
+	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
+	serverRelease := make(chan struct{}, 1)
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- l7ServeProofRequiredReadiness(listener, "topology-generation-race", "fc-production-test", serverRelease)
+	}()
+	_, generation, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
+	})
+	serverRelease <- struct{}{}
+	if err != nil {
+		t.Fatalf("ActivateSession() error = %v", err)
+	}
+	if serverErr := <-serverDone; serverErr != nil {
+		t.Fatalf("serve proof readiness: %v", serverErr)
+	}
+
+	client := &l7ConcurrentReadinessClient{
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	fixture.bridge.mu.Lock()
+	fixture.bridge.sessions["fc-production-test"].readiness = client
+	fixture.bridge.mu.Unlock()
+	target := sandboxruntime.Target{ID: "fc-production-test", Runtime: sandboxruntime.RuntimeState{
+		RuntimeID: "fc-production-test", Metadata: &sandboxruntime.RuntimeMetadata{
+			ProcessLaunch: &sandboxruntime.RuntimeProcessLaunchMetadata{
+				ProcessID: fixture.handle.ID, ProcessIDSource: fixture.handle.Source,
+			},
+		},
+	}}
+
+	const refreshers = 16
+	errorsSeen := make(chan error, refreshers)
+	var wait sync.WaitGroup
+	for range refreshers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, refreshErr := fixture.bridge.refreshL7Proof(context.Background(), target, "topology-generation-race")
+			errorsSeen <- refreshErr
+		}()
+	}
+	select {
+	case <-client.entered:
+	case <-time.After(time.Second):
+		t.Fatal("proof refresh did not reach readiness boundary")
+	}
+	fixture.bridge.InvalidateSession(firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: "fc-production-test",
+	}, generation)
+	close(client.release)
+	wait.Wait()
+	close(errorsSeen)
+	for refreshErr := range errorsSeen {
+		if refreshErr != nil && !errors.Is(refreshErr, errL7RuntimeController) {
+			t.Fatalf("concurrent refresh error = %T %v, want stable L7 containment error", refreshErr, refreshErr)
+		}
+	}
+	if fixture.bridge.session("fc-production-test") != nil {
+		t.Fatal("invalidated proof session remained available")
+	}
+}
+
+type l7ConcurrentReadinessClient struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (client *l7ConcurrentReadinessClient) Readiness(ctx context.Context, request guestagent.ReadinessRequest) (*guestagent.ReadinessResponse, error) {
+	select {
+	case client.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-client.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return l7ProofRequiredReadinessResponse(request.IsolationProof.Generation, request.IsolationProof.RuntimeGeneration), nil
+}
+
+func l7ServeProofRequiredReadiness(
+	listener net.Listener,
+	topologyGeneration string,
+	runtimeGeneration string,
+	release <-chan struct{},
+) error {
+	connection, err := listener.Accept()
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	reader := bufio.NewReader(connection)
+	if _, err := reader.ReadString('\n'); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(connection, "OK 1073741824\n"); err != nil {
+		return err
+	}
+	if _, err := frame.Read(reader, 4096); err != nil {
+		return err
+	}
+	response := l7ProofRequiredReadinessResponse(topologyGeneration, runtimeGeneration)
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	return l5WriteBridgeResponseAndWait(connection, encoded, 4096, release)
+}
+
+func l7ProofRequiredReadinessResponse(topologyGeneration, runtimeGeneration string) *guestagent.ReadinessResponse {
+	return &guestagent.ReadinessResponse{
+		ProtocolVersion: guestagent.ProtocolVersionV1,
+		Operation:       guestagent.OperationReadiness,
+		Ready:           true,
+		Status:          guestagent.ReadinessStatusReady,
+		IsolationProof: &guestagent.IsolationProof{
+			Generation: topologyGeneration, RuntimeGeneration: runtimeGeneration,
+			Status:             guestagent.IsolationProofStatusVerified,
+			RestrictedIdentity: true, CapabilitiesCleared: true, NoNewPrivileges: true,
+			SupplementaryGroupsCleared: true, RawPacketSocketDenied: true,
+			Network: &guestagent.NetworkIsolationProof{
+				Status:          guestagent.IsolationProofStatusVerified,
+				SingleInterface: true, StaticRoutes: true, ProxyReachable: true,
+			},
+		},
+	}
+}
 
 func TestL5ProductionVsockSessionInvalidationDistinguishesCallerCancellation(t *testing.T) {
 	t.Parallel()
@@ -73,6 +320,7 @@ func TestL5ProductionVsockBridgeRetriesClosedPreAckGuestPort(t *testing.T) {
 	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
 	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
 	var accepts atomic.Int32
+	resetObserved := make(chan error, 1)
 	go func() {
 		for attempt := 0; attempt < 2; attempt++ {
 			conn, err := listener.Accept()
@@ -80,12 +328,15 @@ func TestL5ProductionVsockBridgeRetriesClosedPreAckGuestPort(t *testing.T) {
 				return
 			}
 			accepts.Add(1)
-			reader := bufio.NewReader(conn)
-			_, _ = reader.ReadString('\n')
 			if attempt == 0 {
+				buffer := make([]byte, 1)
+				_, readErr := io.ReadFull(conn, buffer)
+				resetObserved <- readErr
 				_ = conn.Close()
 				continue
 			}
+			reader := bufio.NewReader(conn)
+			_, _ = reader.ReadString('\n')
 			_, _ = io.WriteString(conn, "OK 1073741824\n")
 			_, _ = frame.Read(reader, 1024)
 			_ = frame.Write(conn, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024)
@@ -97,7 +348,10 @@ func TestL5ProductionVsockBridgeRetriesClosedPreAckGuestPort(t *testing.T) {
 		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
 	})
 	if err != nil {
-		t.Fatalf("ActivateSession() error = %v, want retry after a closed pre-ack guest port", err)
+		t.Fatalf("ActivateSession() error = %v, want retry after a reset pre-ack guest port", err)
+	}
+	if resetErr := <-resetObserved; resetErr != nil {
+		t.Fatalf("observe pre-ack reset: %v", resetErr)
 	}
 	if result.State != sandboxruntime.RuntimeGuestReadinessStateReady {
 		t.Fatalf("readiness state = %q, want ready", result.State)
@@ -111,22 +365,34 @@ func TestL5ProductionVsockBridgeRejectsMalformedAckWithoutRetry(t *testing.T) {
 	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
 	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
 	var accepts atomic.Int32
+	serverRelease := make(chan struct{}, 1)
+	serverDone := make(chan error, 1)
 	go func() {
 		conn, err := listener.Accept()
 		if err != nil {
+			serverDone <- err
 			return
 		}
 		accepts.Add(1)
 		defer conn.Close()
 		reader := bufio.NewReader(conn)
-		_, _ = reader.ReadString('\n')
-		_, _ = io.WriteString(conn, "NOT-AN-ACK\n")
+		if _, err := reader.ReadString('\n'); err != nil {
+			serverDone <- err
+			return
+		}
+		_, writeErr := io.WriteString(conn, "NOT-AN-ACK\n")
+		<-serverRelease
+		serverDone <- writeErr
 	}()
 
 	started := time.Now()
 	_, _, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
 		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
 	})
+	serverRelease <- struct{}{}
+	if serverErr := <-serverDone; serverErr != nil {
+		t.Fatalf("serve malformed acknowledgement: %v", serverErr)
+	}
 	if err == nil {
 		t.Fatal("ActivateSession() error = nil, want malformed acknowledgement failure")
 	}
@@ -145,13 +411,19 @@ func TestL5ProductionVsockBridgeRejectsMalformedAckWithoutRetry(t *testing.T) {
 func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
 	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
-	go l5ServeReadyBridge(listener)
+	serverRelease := make(chan struct{}, 1)
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- l5ServeReadyBridge(listener, serverRelease) }()
 
 	result, generation, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
 		Handle: fixture.handle, RuntimeID: "fc-production-test", SocketPath: fixture.paths.VsockSocketPath,
 	})
+	serverRelease <- struct{}{}
 	if err != nil {
 		t.Fatalf("ActivateSession() error = %v", err)
+	}
+	if serverErr := <-serverDone; serverErr != nil {
+		t.Fatalf("serve readiness: %v", serverErr)
 	}
 	if result.Transport != "vsock" || strings.Join(result.Labels, ",") != "ready,protocol_v1,runtime_bound,probe_ok" {
 		t.Fatalf("readiness = %#v, want canonical vsock labels", result)
@@ -181,7 +453,7 @@ func TestL5ProductionVsockBridgeNaturalExitInvalidatesGeneration(t *testing.T) {
 	if !fixture.bridge.SessionActive(req, generation) {
 		t.Fatal("forged process ID source invalidated the legitimate generation")
 	}
-	close(fixture.process.done)
+	fixture.process.stop()
 	deadline := time.Now().Add(time.Second)
 	for fixture.bridge.SessionActive(req, generation) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -250,6 +522,7 @@ func newL5ProductionBridgeFixture(t *testing.T, pid int) l5ProductionBridgeFixtu
 		t.Fatal(err)
 	}
 	process := &l5IdentityProcess{pid: pid, done: make(chan struct{})}
+	t.Cleanup(process.stop)
 	manager := NewProcessLifecycleManager(l5SingleProcessRunner{process: process})
 	handle, err := manager.StartProcess(context.Background(), firecracker.ProcessRunnerStartRequest{
 		Executable: "firecracker",
@@ -265,15 +538,16 @@ func newL5ProductionBridgeFixture(t *testing.T, pid int) l5ProductionBridgeFixtu
 	}
 	return l5ProductionBridgeFixture{
 		bridge: NewProductionVsockBridge(ProductionVsockBridgeOptions{
-			Lifecycle: manager, Timeout: time.Second, PollInterval: time.Millisecond,
+			Lifecycle: manager, Timeout: l5ProductionBridgeTestTimeout, PollInterval: time.Millisecond,
 		}),
 		process: process, handle: handle, paths: paths,
 	}
 }
 
 type l5IdentityProcess struct {
-	pid  int
-	done chan struct{}
+	pid      int
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 func (*l5IdentityProcess) Wait(ctx context.Context) error {
@@ -284,6 +558,10 @@ func (*l5IdentityProcess) Signal(context.Context, ProcessSignal) error { return 
 func (*l5IdentityProcess) Kill(context.Context) error                  { return nil }
 func (process *l5IdentityProcess) HostPID() int                        { return process.pid }
 func (process *l5IdentityProcess) Done() <-chan struct{}               { return process.done }
+
+func (process *l5IdentityProcess) stop() {
+	process.stopOnce.Do(func() { close(process.done) })
+}
 
 func l5ListenBridgeSocket(t *testing.T, path string) net.Listener {
 	t.Helper()
@@ -299,15 +577,29 @@ func l5ListenBridgeSocket(t *testing.T, path string) net.Listener {
 	return listener
 }
 
-func l5ServeReadyBridge(listener net.Listener) {
+func l5ServeReadyBridge(listener net.Listener, release <-chan struct{}) error {
 	conn, err := listener.Accept()
 	if err != nil {
-		return
+		return err
 	}
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
-	_, _ = reader.ReadString('\n')
-	_, _ = io.WriteString(conn, "OK 1073741824\n")
-	_, _ = frame.Read(reader, 1024)
-	_ = frame.Write(conn, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024)
+	if _, err := reader.ReadString('\n'); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(conn, "OK 1073741824\n"); err != nil {
+		return err
+	}
+	if _, err := frame.Read(reader, 1024); err != nil {
+		return err
+	}
+	return l5WriteBridgeResponseAndWait(conn, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024, release)
+}
+
+func l5WriteBridgeResponseAndWait(conn net.Conn, encoded []byte, limit int64, release <-chan struct{}) error {
+	if err := frame.Write(conn, encoded, limit); err != nil {
+		return err
+	}
+	<-release
+	return nil
 }

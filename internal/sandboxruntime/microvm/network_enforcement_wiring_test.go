@@ -39,7 +39,7 @@ func TestGatedNetworkEnforcementPlanningRoutesThroughRuntimeContracts(t *testing
 		metadata.Result.EnforcementMode != string(networkenforcement.ResultModeProxyFirewall) ||
 		metadata.Result.Capability == nil ||
 		!metadata.Result.Capability.SupportsDefaultDenyPosture {
-		t.Fatalf("NetworkEnforcement.Result = %#v, want networkenforcement dual-proof result", metadata.Result)
+		t.Fatalf("NetworkEnforcement.Result = %#v, orchestration = %#v, want networkenforcement dual-proof result", metadata.Result, metadata.Orchestration)
 	}
 	if metadata.Orchestration.Status != string(networkenforcement.LifecycleStatusActive) ||
 		metadata.Orchestration.Proxy == nil ||
@@ -178,6 +178,7 @@ func (listener *recordingMicroVMLiveProxyListener) StopProxyListener(_ context.C
 
 func (listener *recordingMicroVMLiveProxyListener) metadata(req networkenforcement.ProxyListenerLifecycleRequest, status networkenforcement.LifecycleStatus, reason networkenforcement.LifecycleReasonCode) networkenforcement.ProxyListenerLifecycleMetadata {
 	plan := req.Plan.Plan()
+	correlation := microVMLiveEnforcementCorrelation(plan)
 	return networkenforcement.ProxyListenerLifecycleMetadata{
 		ID:             "microvm-live-proxy-proof",
 		PlanID:         plan.ID,
@@ -186,7 +187,12 @@ func (listener *recordingMicroVMLiveProxyListener) metadata(req networkenforceme
 		Mechanisms:     []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismProxy},
 		Operations:     []string{listener.calls[len(listener.calls)-1], "listen 127.0.0.1:8080", "/tmp/proxy.sock", "token=secret"},
 		PolicySnapshot: plan.PolicySnapshot,
-		ReasonCode:     reason,
+		CapabilityLabels: []string{
+			"http_request",
+			"http_connect",
+		},
+		Correlation: &correlation,
+		ReasonCode:  reason,
 	}
 }
 
@@ -218,7 +224,8 @@ func (rules *recordingMicroVMLiveRuleProof) RunRuleProofStep(_ context.Context, 
 		mechanism = req.Mechanism
 	}
 	plan := req.Plan.Plan()
-	return networkenforcement.RuleLifecycleMetadata{
+	correlation := microVMLiveEnforcementCorrelation(plan)
+	metadata := networkenforcement.RuleLifecycleMetadata{
 		ID:             "microvm-live-rules-proof",
 		PlanID:         plan.ID,
 		AdapterID:      "microvm-live-rules",
@@ -226,6 +233,7 @@ func (rules *recordingMicroVMLiveRuleProof) RunRuleProofStep(_ context.Context, 
 		Mechanisms:     []networkenforcement.EnforcementMechanism{mechanism},
 		Operations:     []string{req.Operation, "iptables -A OUTPUT -d 127.0.0.1 --dport 443 token=secret"},
 		PolicySnapshot: plan.PolicySnapshot,
+		Correlation:    &correlation,
 		CapabilityLabels: []string{
 			"default_deny",
 			"domain_rules",
@@ -234,7 +242,48 @@ func (rules *recordingMicroVMLiveRuleProof) RunRuleProofStep(_ context.Context, 
 			"process-handle-1234",
 		},
 		ReasonCode: reason,
-	}, nil
+	}
+	if status == networkenforcement.LifecycleStatusActive {
+		metadata.Inspection = &networkenforcement.InspectedRuleProof{
+			ID:                   "microvm-live-inspection",
+			RuleDigest:           "microvm-live-rule-digest",
+			Status:               networkenforcement.RuleInspectionStatusInspected,
+			InspectedAtUnixMilli: 1735689600000,
+			Correlation:          &correlation,
+			Mechanisms:           []networkenforcement.EnforcementMechanism{mechanism},
+			CapabilityLabels: []string{
+				"default_deny",
+				"domain_rules",
+				"private_range_rules",
+				"metadata_endpoint",
+			},
+			ReasonCode: networkenforcement.LifecycleReasonRuleInspected,
+		}
+	}
+	return metadata, nil
+}
+
+func microVMLiveEnforcementCorrelation(plan networkenforcement.Plan) networkenforcement.EnforcementCorrelation {
+	proxySessionID := ""
+	if plan.Proxy != nil {
+		proxySessionID = plan.Proxy.ProxySessionID
+	}
+	policySnapshotID := ""
+	if plan.PolicySnapshot != nil {
+		policySnapshotID = plan.PolicySnapshot.ID
+	}
+	return networkenforcement.EnforcementCorrelation{
+		SandboxID:            "microvm-live-sandbox",
+		ExecutionID:          "microvm-live-execution",
+		WorkerID:             "microvm-live-worker",
+		RuntimeID:            "microvm-live-runtime",
+		PlanID:               plan.ID,
+		PolicySnapshotID:     policySnapshotID,
+		ProxySessionID:       proxySessionID,
+		ProxyGenerationID:    "microvm-live-proxy-generation",
+		TopologyGenerationID: "microvm-live-topology-generation",
+		RuleGenerationID:     "microvm-live-rule-generation",
+	}
 }
 
 func assertMicroVMLiveProxyListenerCalls(t *testing.T, got, want []string) {

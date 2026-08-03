@@ -2,6 +2,11 @@ package build
 
 const SchemaVersionV1 = "hal-microvm-image-v1"
 
+const (
+	ImageProfileL7Network       = "l7-firecracker-network-v1"
+	GuestNetworkModeStaticProxy = "static_proxy"
+)
+
 // Versions records the exact source/tool versions that define an L5 image.
 type Versions struct {
 	Buildroot   string `json:"buildroot"`
@@ -18,6 +23,13 @@ type GuestAgent struct {
 	Features []string `json:"features"`
 }
 
+// GuestNetwork contains only safe image capability labels. It never carries
+// addresses, interfaces, routes, endpoints, or boot parameters.
+type GuestNetwork struct {
+	Mode     string   `json:"mode"`
+	Features []string `json:"features"`
+}
+
 // DistributionAsset identifies one relative installed artifact.
 type DistributionAsset struct {
 	Key       string `json:"key"`
@@ -30,9 +42,11 @@ type DistributionAsset struct {
 // DistributionManifest is the path-free install/distribution contract.
 type DistributionManifest struct {
 	SchemaVersion string              `json:"schemaVersion"`
+	ImageProfile  string              `json:"imageProfile,omitempty"`
 	Architecture  string              `json:"architecture"`
 	Versions      Versions            `json:"versions"`
 	GuestAgent    GuestAgent          `json:"guestAgent"`
+	GuestNetwork  *GuestNetwork       `json:"guestNetwork,omitempty"`
 	Assets        []DistributionAsset `json:"assets"`
 }
 
@@ -47,15 +61,17 @@ type Output struct {
 
 // Provenance contains only deterministic, path-free build facts.
 type Provenance struct {
-	SchemaVersion    string     `json:"schemaVersion"`
-	SourceRevision   string     `json:"sourceRevision"`
-	SourceTree       string     `json:"sourceTree"`
-	SourceDateEpoch  int64      `json:"sourceDateEpoch"`
-	BuildImageDigest string     `json:"buildImageDigest"`
-	Architecture     string     `json:"architecture"`
-	Versions         Versions   `json:"versions"`
-	GuestAgent       GuestAgent `json:"guestAgent"`
-	Outputs          []Output   `json:"outputs"`
+	SchemaVersion    string        `json:"schemaVersion"`
+	ImageProfile     string        `json:"imageProfile,omitempty"`
+	SourceRevision   string        `json:"sourceRevision"`
+	SourceTree       string        `json:"sourceTree"`
+	SourceDateEpoch  int64         `json:"sourceDateEpoch"`
+	BuildImageDigest string        `json:"buildImageDigest"`
+	Architecture     string        `json:"architecture"`
+	Versions         Versions      `json:"versions"`
+	GuestAgent       GuestAgent    `json:"guestAgent"`
+	GuestNetwork     *GuestNetwork `json:"guestNetwork,omitempty"`
+	Outputs          []Output      `json:"outputs"`
 }
 
 // DependencyLock is one immutable fetch input.

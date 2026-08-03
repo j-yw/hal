@@ -80,6 +80,54 @@ type Backend interface {
 	Close(context.Context) error
 }
 
+// IsolationVerifier inspects the exact running guest-agent process. It may
+// delegate topology checks only through a separately injected fixed verifier.
+type IsolationVerifier interface {
+	VerifyIsolation(context.Context, guestagent.IsolationProofRequest) (IsolationProofResult, error)
+}
+
+// IsolationProofResult contains only fixed proof outcomes; the server owns
+// request-generation binding and never accepts it from an implementation.
+type IsolationProofResult struct {
+	RestrictedIdentity         bool
+	CapabilitiesCleared        bool
+	NoNewPrivileges            bool
+	SupplementaryGroupsCleared bool
+	RawPacketSocketDenied      bool
+	Network                    NetworkIsolationProofResult
+}
+
+// NetworkIsolationProofResult is returned by a narrow injected topology
+// verifier without carrying interface, route, proxy, or endpoint details.
+type NetworkIsolationProofResult struct {
+	Status          guestagent.IsolationProofStatus
+	SingleInterface bool
+	StaticRoutes    bool
+	ProxyReachable  bool
+}
+
+// NetworkIsolationVerifier is the later-composition hook for fixed, bounded
+// guest topology and exact proxy reachability verification.
+type NetworkIsolationVerifier interface {
+	VerifyNetworkIsolation(context.Context) (NetworkIsolationProofResult, error)
+}
+
+// LinuxProcessIsolationBoundary exposes only the three bounded operations
+// needed to prove the current guest-agent process state.
+type LinuxProcessIsolationBoundary interface {
+	ReadSelfStatus(context.Context, int64) ([]byte, error)
+	SupplementaryGroups(context.Context) ([]int, error)
+	AttemptRawPacketSocket(context.Context) error
+}
+
+// LinuxIsolationVerifierOptions configure the production Linux proof adapter.
+// ProcessBoundary exists for deterministic tests; nil selects the live local
+// process implementation. NetworkVerifier is a narrow later-composition hook.
+type LinuxIsolationVerifierOptions struct {
+	ProcessBoundary LinuxProcessIsolationBoundary
+	NetworkVerifier NetworkIsolationVerifier
+}
+
 // EnvironmentResolver resolves one value in memory for an exec request.
 type EnvironmentResolver interface {
 	Resolve(context.Context, guestagent.EnvironmentEntry) (string, error)
@@ -143,12 +191,19 @@ type LinuxBackendOptions struct {
 
 // Options configure a guest-agent server.
 type Options struct {
-	Transport           Transport
-	Backend             Backend
-	EnvironmentResolver EnvironmentResolver
-	MaxRequestBytes     int64
-	MaxResponseBytes    int64
-	MaxConcurrent       int
-	MaxOperationTime    time.Duration
-	MaxShutdownTime     time.Duration
+	Transport                       Transport
+	Backend                         Backend
+	EnvironmentResolver             EnvironmentResolver
+	MaxRequestBytes                 int64
+	MaxResponseBytes                int64
+	MaxConcurrent                   int
+	MaxOperationTime                time.Duration
+	MaxShutdownTime                 time.Duration
+	IsolationVerifier               IsolationVerifier
+	RequireIsolationProofBeforeWork bool
+	// RequireNetworkProofBeforeWork requires the verified process proof plus
+	// verified network isolation before exec or copy work is admitted. It
+	// implies RequireIsolationProofBeforeWork and cannot be weakened by a
+	// readiness request that omits RequireNetworkProof.
+	RequireNetworkProofBeforeWork bool
 }

@@ -14,6 +14,10 @@ import (
 
 const execCancellationTimeout = 10 * time.Second
 
+// ErrCommandOutputLimitExceeded is the redaction-safe result when a command
+// produces more output than its request permits.
+var ErrCommandOutputLimitExceeded = errors.New("rootless Podman command output limit exceeded")
+
 // DefaultCommandRunner executes the Podman argv constructed by Driver methods.
 // Tests normally inject fake runners instead, so normal unit tests do not
 // require Podman to be installed.
@@ -38,6 +42,9 @@ func runDefaultCommand(ctx context.Context, req CommandRequest) (CommandResult, 
 	if len(req.Args) == 0 || strings.TrimSpace(req.Args[0]) == "" {
 		return CommandResult{ExitCode: -1}, fmt.Errorf("podman command args are required")
 	}
+	if !validCommandOutputLimits(req) {
+		return CommandResult{ExitCode: -1}, fmt.Errorf("podman command output limits are invalid")
+	}
 	cmd := exec.CommandContext(ctx, req.Args[0], req.Args[1:]...)
 	if trimmedWorkDir := strings.TrimSpace(req.WorkDir); trimmedWorkDir != "" {
 		cmd.Dir = trimmedWorkDir
@@ -47,8 +54,10 @@ func runDefaultCommand(ctx context.Context, req CommandRequest) (CommandResult, 
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = commandWriter(req.Stdout, &stdout)
-	cmd.Stderr = commandWriter(req.Stderr, &stderr)
+	stdoutWriter := newBoundedCommandWriter(commandWriter(req.Stdout, &stdout), req.MaxStdoutBytes)
+	stderrWriter := newBoundedCommandWriter(commandWriter(req.Stderr, &stderr), req.MaxStderrBytes)
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 
 	err := cmd.Run()
 	result := CommandResult{
@@ -59,6 +68,9 @@ func runDefaultCommand(ctx context.Context, req CommandRequest) (CommandResult, 
 	if err != nil && ctx.Err() != nil {
 		return result, ctx.Err()
 	}
+	if stdoutWriter.exceeded || stderrWriter.exceeded {
+		return result, ErrCommandOutputLimitExceeded
+	}
 	return result, err
 }
 
@@ -68,6 +80,9 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 	}
 	if len(req.Args) == 0 || strings.TrimSpace(req.Args[0]) == "" {
 		return CommandResult{ExitCode: -1}, fmt.Errorf("podman command args are required")
+	}
+	if !validCommandOutputLimits(req) {
+		return CommandResult{ExitCode: -1}, fmt.Errorf("podman command output limits are invalid")
 	}
 	if err := ctx.Err(); err != nil {
 		return CommandResult{ExitCode: -1}, err
@@ -83,8 +98,10 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = execCommandWriter(req.Stdout, &stdout)
-	cmd.Stderr = execCommandWriter(req.Stderr, &stderr)
+	stdoutWriter := newBoundedCommandWriter(execCommandWriter(req.Stdout, &stdout), req.MaxStdoutBytes)
+	stderrWriter := newBoundedCommandWriter(execCommandWriter(req.Stderr, &stderr), req.MaxStderrBytes)
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 
 	if err := cmd.Start(); err != nil {
 		return CommandResult{ExitCode: commandExitCode(err)}, err
@@ -114,6 +131,9 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 	}
 	if ctx.Err() != nil {
 		return result, errors.Join(ctx.Err(), cancellationErr)
+	}
+	if stdoutWriter.exceeded || stderrWriter.exceeded {
+		return result, ErrCommandOutputLimitExceeded
 	}
 	return result, err
 }
@@ -165,6 +185,37 @@ func execCommandWriter(dst io.Writer, capture *bytes.Buffer) io.Writer {
 		return dst
 	}
 	return capture
+}
+
+type boundedCommandWriter struct {
+	destination io.Writer
+	remaining   int64
+	limited     bool
+	exceeded    bool
+}
+
+func newBoundedCommandWriter(destination io.Writer, maxBytes int64) *boundedCommandWriter {
+	return &boundedCommandWriter{
+		destination: destination,
+		remaining:   maxBytes,
+		limited:     maxBytes > 0,
+	}
+}
+
+func (w *boundedCommandWriter) Write(payload []byte) (int, error) {
+	if w.limited && int64(len(payload)) > w.remaining {
+		w.exceeded = true
+		return 0, ErrCommandOutputLimitExceeded
+	}
+	n, err := w.destination.Write(payload)
+	if w.limited {
+		w.remaining -= int64(n)
+	}
+	return n, err
+}
+
+func validCommandOutputLimits(req CommandRequest) bool {
+	return req.MaxStdoutBytes >= 0 && req.MaxStderrBytes >= 0
 }
 
 func commandExitCode(err error) int {
