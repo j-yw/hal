@@ -27,6 +27,7 @@ func TestL8CredentialDeliveryArchitecture(t *testing.T) {
 		"AuthenticatedWorkerPrincipal",
 		"CredentialAdmissionAuthorizer",
 		"CredentialAdmissionGrant",
+		"credential_admission_denied",
 		"Source reference IDs are identity, never authorization",
 		"raw same-UID socket client cannot obtain",
 		"VMADDR_CID_HOST",

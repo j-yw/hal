@@ -287,6 +287,7 @@ Stable failure codes include:
 - `credential_revision_stale`;
 - `credential_expired`;
 - `credential_memory_unlocked`;
+- `credential_admission_denied`;
 - `credential_source_unavailable`;
 - `credential_worker_protocol_unsupported`;
 - `credential_network_proof_unavailable`;
