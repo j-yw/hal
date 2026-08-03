@@ -51,8 +51,9 @@ Guards must prove:
   access to the owner-only worker socket are explicitly inside the trusted host
   control-plane boundary, not falsely claimed as isolated;
 - D0 locks the complete `sandboxworker-v1`/`sandboxjob-v1` and guest-v1 Go
-  field/type/JSON-tag schemas plus existing custom JSON methods, and rejects
-  new JSON or text marshal/unmarshal methods, against hidden or renamed intent;
+  field/type/JSON-tag schemas, underlying named scalar wire types, plus existing
+  custom JSON methods, and rejects new JSON or text marshal/unmarshal methods,
+  against hidden or renamed intent;
   the closure includes every nested root `sandboxruntime` DTO and custom method
   reachable through worker-v1 status, capability, target, security, and
   credential metadata; the first D1

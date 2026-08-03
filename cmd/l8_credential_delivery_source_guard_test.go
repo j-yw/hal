@@ -753,6 +753,70 @@ func l8V1StructSchema(t *testing.T, fileSet *token.FileSet, structure *ast.Struc
 	return fields
 }
 
+func TestL8CredentialDeliverySourceGuardsV1NamedWireTypesCannotCarryProductionIntent(t *testing.T) {
+	checks := []struct {
+		path  string
+		types map[string]string
+	}{
+		{
+			path: filepath.Join("..", "internal", "sandboxruntime", "guest_readiness.go"),
+			types: map[string]string{
+				"RuntimeGuestReadinessState": "string",
+			},
+		},
+		{
+			path: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "contracts.go"),
+			types: map[string]string{
+				"EnvironmentSource":    "string",
+				"ErrorCode":            "string",
+				"IsolationProofStatus": "string",
+				"Operation":            "string",
+				"PayloadEncoding":      "string",
+				"ProtocolVersion":      "string",
+				"ReadinessStatus":      "string",
+			},
+		},
+	}
+
+	for _, check := range checks {
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, check.path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse v1 named wire types %s: %v", filepath.ToSlash(check.path), err)
+		}
+		found := make(map[string]bool, len(check.types))
+		for _, declaration := range parsed.Decls {
+			generic, ok := declaration.(*ast.GenDecl)
+			if !ok || generic.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range generic.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				want, locked := check.types[typeSpec.Name.Name]
+				if !locked {
+					continue
+				}
+				var rendered bytes.Buffer
+				if err := format.Node(&rendered, fileSet, typeSpec.Type); err != nil {
+					t.Fatalf("render v1 named wire type %s: %v", typeSpec.Name.Name, err)
+				}
+				if got := rendered.String(); got != want {
+					t.Fatalf("v1 named wire type %s in %s changed: got %q, want %q", typeSpec.Name.Name, filepath.ToSlash(check.path), got, want)
+				}
+				found[typeSpec.Name.Name] = true
+			}
+		}
+		for name := range check.types {
+			if !found[name] {
+				t.Fatalf("v1 named wire type guard did not find %s in %s", name, filepath.ToSlash(check.path))
+			}
+		}
+	}
+}
+
 func TestL8CredentialDeliverySourceGuardsV1CustomJSONMethodsCannotCarryProductionIntent(t *testing.T) {
 	// Hash the go/format AST for the pre-L8 sanitizing marshalers. Locking
 	// only struct fields would still let later JSON or encoding.TextMarshaler
@@ -767,7 +831,7 @@ func TestL8CredentialDeliverySourceGuardsV1CustomJSONMethodsCannotCarryProductio
 			root: filepath.Join("..", "internal", "sandboxruntime"),
 			locked: l8LockedV1TypeNames(
 				"RuntimeCredentialDeliveryMetadata", "RuntimeCredentialDeliveryProofSummary",
-				"RuntimeGuestReadinessMetadata", "RuntimeMetadata", "RuntimeNetworkEnforcementCapability",
+				"RuntimeGuestReadinessMetadata", "RuntimeGuestReadinessState", "RuntimeMetadata", "RuntimeNetworkEnforcementCapability",
 				"RuntimeNetworkEnforcementLifecycleMetadata", "RuntimeNetworkEnforcementMetadata",
 				"RuntimeNetworkEnforcementOrchestrationMetadata", "RuntimeNetworkEnforcementPlanMetadata",
 				"RuntimeNetworkEnforcementResultMetadata", "RuntimeOperationArgument",
@@ -814,9 +878,11 @@ func TestL8CredentialDeliverySourceGuardsV1CustomJSONMethodsCannotCarryProductio
 			root: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent"),
 			locked: l8LockedV1TypeNames(
 				"CopyInRequest", "CopyInResponse", "CopyOutRequest", "CopyOutResponse",
-				"EnvironmentEntry", "ErrorResponse", "ExecRequest", "ExecResponse", "IsolationProof",
-				"IsolationProofRequest", "NetworkIsolationProof", "PayloadMetadata", "ProtocolError",
-				"ReadinessRequest", "ReadinessResponse", "StreamMetadata", "TimingMetadata",
+				"EnvironmentEntry", "EnvironmentSource", "ErrorCode", "ErrorResponse", "ExecRequest",
+				"ExecResponse", "IsolationProof", "IsolationProofRequest", "IsolationProofStatus",
+				"NetworkIsolationProof", "Operation", "PayloadEncoding", "PayloadMetadata", "ProtocolError",
+				"ProtocolVersion", "ReadinessRequest", "ReadinessResponse", "ReadinessStatus",
+				"StreamMetadata", "TimingMetadata",
 			),
 			want: map[string]string{
 				"ProtocolError.MarshalJSON": "7037ea101057d523716bdbdc5ab246cb74250a2d27cfd170b32e375a6ac35ca9",
