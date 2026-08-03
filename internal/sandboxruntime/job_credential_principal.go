@@ -2,58 +2,87 @@ package sandboxruntime
 
 type authenticatedWorkerPrincipalSeal struct{}
 
+// AuthenticatedWorkerPrincipalAuthority is an owned live handle. All live
+// data is behind private owner-checked state, so only the constructor-owned
+// handle is operational.
 type AuthenticatedWorkerPrincipalAuthority struct {
+	identity authenticatedWorkerPrincipalAuthorityOwner
+	state    *authenticatedWorkerPrincipalAuthorityState
+}
+
+type authenticatedWorkerPrincipalAuthorityOwner struct{ _ byte }
+
+type authenticatedWorkerPrincipalAuthorityState struct {
+	owner      *authenticatedWorkerPrincipalAuthorityOwner
 	id         string
 	generation string
 	seal       *authenticatedWorkerPrincipalSeal
 }
 
 type authenticatedWorkerPrincipal struct {
+	identity authenticatedWorkerPrincipalOwner
+	state    *authenticatedWorkerPrincipalState
+}
+
+type authenticatedWorkerPrincipalOwner struct{ _ byte }
+
+type authenticatedWorkerPrincipalState struct {
+	owner               *authenticatedWorkerPrincipalOwner
 	id                  string
 	uid                 uint32
 	gid                 uint32
-	authority           *AuthenticatedWorkerPrincipalAuthority
+	authority           *authenticatedWorkerPrincipalAuthorityState
 	authorityID         string
 	authorityGeneration string
 	seal                *authenticatedWorkerPrincipalSeal
-	self                *authenticatedWorkerPrincipal
 }
 
 func NewAuthenticatedWorkerPrincipalAuthority(id, generation string) (*AuthenticatedWorkerPrincipalAuthority, error) {
 	if !validJobCredentialSafeID(id) || !validJobCredentialSafeID(generation) {
 		return nil, ErrAuthenticatedWorkerPrincipal
 	}
-	return &AuthenticatedWorkerPrincipalAuthority{
+	authority := &AuthenticatedWorkerPrincipalAuthority{}
+	authority.state = &authenticatedWorkerPrincipalAuthorityState{
+		owner:      &authority.identity,
 		id:         id,
 		generation: generation,
 		seal:       &authenticatedWorkerPrincipalSeal{},
-	}, nil
+	}
+	return authority, nil
 }
 
 func (authority *AuthenticatedWorkerPrincipalAuthority) IssueAuthenticatedWorkerPrincipal(id string, uid, gid uint32) (AuthenticatedWorkerPrincipal, error) {
-	if authority == nil || authority.seal == nil || !validJobCredentialSafeID(authority.id) || !validJobCredentialSafeID(authority.generation) || !validJobCredentialSafeID(id) {
+	state, ok := loadAuthenticatedWorkerPrincipalAuthorityState(authority)
+	if !ok || !validJobCredentialSafeID(id) {
 		return nil, ErrAuthenticatedWorkerPrincipal
 	}
-	principal := &authenticatedWorkerPrincipal{
+	principal := &authenticatedWorkerPrincipal{}
+	principal.state = &authenticatedWorkerPrincipalState{
+		owner:               &principal.identity,
 		id:                  id,
 		uid:                 uid,
 		gid:                 gid,
-		authority:           authority,
-		authorityID:         authority.id,
-		authorityGeneration: authority.generation,
-		seal:                authority.seal,
+		authority:           state,
+		authorityID:         state.id,
+		authorityGeneration: state.generation,
+		seal:                state.seal,
 	}
-	principal.self = principal
 	return principal, nil
 }
 
 func (authority *AuthenticatedWorkerPrincipalAuthority) ValidateAuthenticatedWorkerPrincipal(principal AuthenticatedWorkerPrincipal) error {
-	if authority == nil || authority.seal == nil || principal == nil {
+	authorityState, ok := loadAuthenticatedWorkerPrincipalAuthorityState(authority)
+	if !ok || principal == nil {
 		return ErrAuthenticatedWorkerPrincipal
 	}
 	issued, ok := principal.(*authenticatedWorkerPrincipal)
-	if !ok || issued == nil || issued.self != issued || issued.authority != authority || issued.seal != authority.seal ||
-		issued.id == "" || issued.authorityID != authority.id || issued.authorityGeneration != authority.generation {
+	if !ok || issued == nil {
+		return ErrAuthenticatedWorkerPrincipal
+	}
+	principalState, ok := loadAuthenticatedWorkerPrincipalState(issued)
+	if !ok || principalState.authority != authorityState ||
+		principalState.seal != authorityState.seal || !validJobCredentialSafeID(principalState.id) ||
+		principalState.authorityID != authorityState.id || principalState.authorityGeneration != authorityState.generation {
 		return ErrAuthenticatedWorkerPrincipal
 	}
 	return nil
@@ -62,36 +91,55 @@ func (authority *AuthenticatedWorkerPrincipalAuthority) ValidateAuthenticatedWor
 func (*authenticatedWorkerPrincipal) IsAuthenticatedWorkerPrincipal() {}
 
 func (principal *authenticatedWorkerPrincipal) ID() string {
-	if principal == nil {
+	state, ok := loadAuthenticatedWorkerPrincipalState(principal)
+	if !ok {
 		return ""
 	}
-	return principal.id
+	return state.id
 }
 
 func (principal *authenticatedWorkerPrincipal) UID() uint32 {
-	if principal == nil {
+	state, ok := loadAuthenticatedWorkerPrincipalState(principal)
+	if !ok {
 		return 0
 	}
-	return principal.uid
+	return state.uid
 }
 
 func (principal *authenticatedWorkerPrincipal) GID() uint32 {
-	if principal == nil {
+	state, ok := loadAuthenticatedWorkerPrincipalState(principal)
+	if !ok {
 		return 0
 	}
-	return principal.gid
+	return state.gid
 }
 
 func (principal *authenticatedWorkerPrincipal) AuthorityID() string {
-	if principal == nil {
+	state, ok := loadAuthenticatedWorkerPrincipalState(principal)
+	if !ok {
 		return ""
 	}
-	return principal.authorityID
+	return state.authorityID
 }
 
 func (principal *authenticatedWorkerPrincipal) AuthorityGeneration() string {
-	if principal == nil {
+	state, ok := loadAuthenticatedWorkerPrincipalState(principal)
+	if !ok {
 		return ""
 	}
-	return principal.authorityGeneration
+	return state.authorityGeneration
+}
+
+func loadAuthenticatedWorkerPrincipalAuthorityState(authority *AuthenticatedWorkerPrincipalAuthority) (*authenticatedWorkerPrincipalAuthorityState, bool) {
+	if authority == nil || authority.state == nil || authority.state.owner != &authority.identity {
+		return nil, false
+	}
+	return authority.state, true
+}
+
+func loadAuthenticatedWorkerPrincipalState(principal *authenticatedWorkerPrincipal) (*authenticatedWorkerPrincipalState, bool) {
+	if principal == nil || principal.state == nil || principal.state.owner != &principal.identity {
+		return nil, false
+	}
+	return principal.state, true
 }

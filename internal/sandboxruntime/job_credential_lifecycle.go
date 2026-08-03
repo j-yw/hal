@@ -19,6 +19,14 @@ type jobCredentialLifecycleOptions struct {
 }
 
 type JobCredentialLifecycle struct {
+	identity jobCredentialLifecycleOwner
+	state    *jobCredentialLifecycleState
+}
+
+type jobCredentialLifecycleOwner struct{ _ byte }
+
+type jobCredentialLifecycleState struct {
+	owner        *jobCredentialLifecycleOwner
 	mu           sync.Mutex
 	identity     JobCredentialIdentity
 	state        JobCredentialState
@@ -37,25 +45,29 @@ func newJobCredentialLifecycleWithOptions(identity JobCredentialIdentity, option
 	if !validJobCredentialIdentity(identity) {
 		return nil, ErrJobCredentialIdentityMismatch
 	}
-	return &JobCredentialLifecycle{
+	lifecycle := &JobCredentialLifecycle{}
+	lifecycle.state = &jobCredentialLifecycleState{
+		owner:        &lifecycle.identity,
 		identity:     cloneJobCredentialIdentity(identity),
 		beforeCommit: options.beforeCommit,
-	}, nil
+	}
+	return lifecycle, nil
 }
 
 func (lifecycle *JobCredentialLifecycle) BeginPrepare(identity JobCredentialIdentity) error {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return ErrJobCredentialTransition
 	}
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	if !validJobCredentialIdentity(identity) || !sameJobCredentialIdentity(lifecycle.identity, identity) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if !validJobCredentialIdentity(identity) || !sameJobCredentialIdentity(live.identity, identity) {
 		return ErrJobCredentialIdentityMismatch
 	}
-	switch lifecycle.state {
+	switch live.state {
 	case "":
-		lifecycle.state = JobCredentialStatePreparing
-		lifecycle.version++
+		live.state = JobCredentialStatePreparing
+		live.version++
 		return nil
 	case JobCredentialStatePreparing:
 		return nil
@@ -64,56 +76,58 @@ func (lifecycle *JobCredentialLifecycle) BeginPrepare(identity JobCredentialIden
 	}
 }
 
-func (lifecycle *JobCredentialLifecycle) Activate(proof JobCredentialActiveProof) error {
-	if lifecycle == nil {
+func (lifecycle *JobCredentialLifecycle) Activate(proof JobCredentialActiveProof, observedAt time.Time) error {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return ErrJobCredentialTransition
 	}
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	if lifecycle.state == JobCredentialStateActive && sameJobCredentialActiveProof(lifecycle.activeProof, proof) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.state == JobCredentialStateActive && sameJobCredentialActiveProof(live.activeProof, proof) {
+		if err := ValidateJobCredentialActiveProof(proof, live.identity, live.revision, observedAt); err != nil {
+			live.enterRevokingLocked()
+			return err
+		}
 		return nil
 	}
-	if lifecycle.state == JobCredentialStateActive {
+	if live.state == JobCredentialStateActive {
 		var err error
 		if !validJobCredentialActiveProof(proof) {
 			err = ErrJobCredentialProofInvalid
-		} else if proof.identityDigest() != jobCredentialIdentityDigest(lifecycle.identity) {
+		} else if proof.identityDigest() != jobCredentialIdentityDigest(live.identity) {
 			err = ErrJobCredentialIdentityMismatch
 		} else {
 			err = ErrJobCredentialReplayRejected
 		}
-		lifecycle.enterRevokingLocked()
+		live.enterRevokingLocked()
 		return err
 	}
-	if lifecycle.state != JobCredentialStatePreparing {
+	if live.state != JobCredentialStatePreparing {
 		return ErrJobCredentialTransition
 	}
-	if !validJobCredentialActiveProof(proof) {
-		lifecycle.enterRevokingLocked()
-		return ErrJobCredentialProofInvalid
-	}
-	if err := lifecycle.validateActiveCandidateLocked(proof, proof.revision()); err != nil {
-		lifecycle.enterRevokingLocked()
+	if err := ValidateJobCredentialActiveProof(proof, live.identity, proof.revision(), observedAt); err != nil {
+		live.enterRevokingLocked()
 		return err
 	}
-	lifecycle.activeProof = proof
-	lifecycle.cleanupProof = JobCredentialCleanupProof{}
-	lifecycle.revision = proof.revision()
-	lifecycle.state = JobCredentialStateActive
-	lifecycle.version++
+	live.activeProof = proof
+	live.cleanupProof = JobCredentialCleanupProof{}
+	live.revision = proof.revision()
+	live.state = JobCredentialStateActive
+	live.version++
 	return nil
 }
 
 func (lifecycle *JobCredentialLifecycle) BeginRenew() error {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return ErrJobCredentialTransition
 	}
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	switch lifecycle.state {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	switch live.state {
 	case JobCredentialStateActive:
-		lifecycle.state = JobCredentialStateRenewing
-		lifecycle.version++
+		live.state = JobCredentialStateRenewing
+		live.version++
 		return nil
 	case JobCredentialStateExpired:
 		return ErrJobCredentialExpired
@@ -122,140 +136,148 @@ func (lifecycle *JobCredentialLifecycle) BeginRenew() error {
 	}
 }
 
-func (lifecycle *JobCredentialLifecycle) Renew(proof JobCredentialActiveProof) error {
-	if lifecycle == nil {
+func (lifecycle *JobCredentialLifecycle) Renew(proof JobCredentialActiveProof, observedAt time.Time) error {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return ErrJobCredentialTransition
 	}
-	lifecycle.mu.Lock()
-	if lifecycle.state != JobCredentialStateRenewing {
-		lifecycle.mu.Unlock()
+	live.mu.Lock()
+	if live.state != JobCredentialStateRenewing {
+		live.mu.Unlock()
 		return ErrJobCredentialTransition
 	}
-	if sameJobCredentialActiveProof(lifecycle.activeProof, proof) {
-		lifecycle.enterRevokingLocked()
-		lifecycle.mu.Unlock()
+	if sameJobCredentialActiveProof(live.activeProof, proof) {
+		live.enterRevokingLocked()
+		live.mu.Unlock()
 		return ErrJobCredentialReplayRejected
 	}
-	if err := lifecycle.validateActiveCandidateLocked(proof, lifecycle.revision+1); err != nil {
-		lifecycle.enterRevokingLocked()
-		lifecycle.mu.Unlock()
+	if err := ValidateJobCredentialActiveProof(proof, live.identity, live.revision+1, observedAt); err != nil {
+		live.enterRevokingLocked()
+		live.mu.Unlock()
 		return err
 	}
-	previousIssuedAt, previousExpiresAt := lifecycle.activeProof.times()
+	previousIssuedAt, previousExpiresAt := live.activeProof.times()
 	issuedAt, expiresAt := proof.times()
 	if !issuedAt.After(previousIssuedAt) || !expiresAt.After(previousExpiresAt) {
-		lifecycle.enterRevokingLocked()
-		lifecycle.mu.Unlock()
+		live.enterRevokingLocked()
+		live.mu.Unlock()
 		return ErrJobCredentialRevisionStale
 	}
-	version := lifecycle.version
-	hook := lifecycle.beforeCommit
-	lifecycle.mu.Unlock()
+	version := live.version
+	hook := live.beforeCommit
+	live.mu.Unlock()
 
 	if hook != nil {
 		hook(jobCredentialLifecycleTransitionRenew)
 	}
 
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	if lifecycle.version != version || lifecycle.state != JobCredentialStateRenewing {
-		if lifecycle.state == JobCredentialStateActive && sameJobCredentialActiveProof(lifecycle.activeProof, proof) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.version != version || live.state != JobCredentialStateRenewing {
+		if live.state == JobCredentialStateActive && sameJobCredentialActiveProof(live.activeProof, proof) {
+			if err := ValidateJobCredentialActiveProof(proof, live.identity, live.revision, observedAt); err != nil {
+				live.enterRevokingLocked()
+				return err
+			}
 			return nil
 		}
-		if lifecycle.state == JobCredentialStateExpired {
+		if live.state == JobCredentialStateExpired {
 			return ErrJobCredentialExpired
 		}
 		return ErrJobCredentialTransition
 	}
-	if err := lifecycle.validateActiveCandidateLocked(proof, lifecycle.revision+1); err != nil {
-		lifecycle.enterRevokingLocked()
+	if err := ValidateJobCredentialActiveProof(proof, live.identity, live.revision+1, observedAt); err != nil {
+		live.enterRevokingLocked()
 		return err
 	}
-	previousIssuedAt, previousExpiresAt = lifecycle.activeProof.times()
+	previousIssuedAt, previousExpiresAt = live.activeProof.times()
 	issuedAt, expiresAt = proof.times()
 	if !issuedAt.After(previousIssuedAt) || !expiresAt.After(previousExpiresAt) {
-		lifecycle.enterRevokingLocked()
+		live.enterRevokingLocked()
 		return ErrJobCredentialRevisionStale
 	}
-	lifecycle.activeProof = proof
-	lifecycle.revision = proof.revision()
-	lifecycle.state = JobCredentialStateActive
-	lifecycle.version++
+	live.activeProof = proof
+	live.revision = proof.revision()
+	live.state = JobCredentialStateActive
+	live.version++
 	return nil
 }
 
 func (lifecycle *JobCredentialLifecycle) Expire(observedAt time.Time) error {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return ErrJobCredentialTransition
 	}
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	if lifecycle.state == JobCredentialStateExpired {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.state == JobCredentialStateExpired {
 		return nil
 	}
-	if lifecycle.state != JobCredentialStateActive {
+	if live.state != JobCredentialStateActive {
 		return ErrJobCredentialTransition
 	}
-	if err := ValidateJobCredentialActiveProof(lifecycle.activeProof, lifecycle.identity, lifecycle.revision, observedAt); err != ErrJobCredentialExpired {
+	if err := ValidateJobCredentialActiveProof(live.activeProof, live.identity, live.revision, observedAt); err != ErrJobCredentialExpired {
 		return ErrJobCredentialTransition
 	}
-	lifecycle.activeProof = JobCredentialActiveProof{}
-	lifecycle.state = JobCredentialStateExpired
-	lifecycle.version++
+	live.activeProof = JobCredentialActiveProof{}
+	live.state = JobCredentialStateExpired
+	live.version++
 	return nil
 }
 
 func (lifecycle *JobCredentialLifecycle) BeginRevoke() error {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return ErrJobCredentialTransition
 	}
-	lifecycle.mu.Lock()
-	switch lifecycle.state {
+	live.mu.Lock()
+	switch live.state {
 	case JobCredentialStateRevoking, JobCredentialStateCleanupIncomplete, JobCredentialStateRevoked:
-		lifecycle.mu.Unlock()
+		live.mu.Unlock()
 		return nil
 	case JobCredentialStatePreparing, JobCredentialStateActive, JobCredentialStateRenewing, JobCredentialStateExpired:
 	default:
-		lifecycle.mu.Unlock()
+		live.mu.Unlock()
 		return ErrJobCredentialTransition
 	}
-	version := lifecycle.version
-	hook := lifecycle.beforeCommit
-	lifecycle.mu.Unlock()
+	version := live.version
+	hook := live.beforeCommit
+	live.mu.Unlock()
 
 	if hook != nil {
 		hook(jobCredentialLifecycleTransitionBeginRevoke)
 	}
 
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	if lifecycle.version != version {
-		switch lifecycle.state {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.version != version {
+		switch live.state {
 		case JobCredentialStateRevoking, JobCredentialStateCleanupIncomplete, JobCredentialStateRevoked:
 			return nil
 		default:
 			return ErrJobCredentialTransition
 		}
 	}
-	lifecycle.enterRevokingLocked()
+	live.enterRevokingLocked()
 	return nil
 }
 
 func (lifecycle *JobCredentialLifecycle) ObserveLoss(loss JobCredentialLoss) error {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return ErrJobCredentialTransition
 	}
-	lifecycle.mu.Lock()
-	if lifecycle.state == JobCredentialStateRevoked {
-		lifecycle.mu.Unlock()
+	live.mu.Lock()
+	if live.state == JobCredentialStateRevoked {
+		live.mu.Unlock()
 		return nil
 	}
-	expectedRevision := lifecycle.revision
+	expectedRevision := live.revision
 	if expectedRevision == 0 {
 		expectedRevision = 1
 	}
 	var validationErr error
-	if !validJobCredentialIdentity(loss.Identity) || !sameJobCredentialIdentity(lifecycle.identity, loss.Identity) {
+	if !validJobCredentialIdentity(loss.Identity) || !sameJobCredentialIdentity(live.identity, loss.Identity) {
 		validationErr = ErrJobCredentialIdentityMismatch
 	} else if loss.Revision != expectedRevision {
 		validationErr = ErrJobCredentialRevisionStale
@@ -263,184 +285,183 @@ func (lifecycle *JobCredentialLifecycle) ObserveLoss(loss JobCredentialLoss) err
 		validationErr = ErrJobCredentialProofInvalid
 	}
 	if validationErr != nil {
-		if lifecycle.state != JobCredentialStateRevoking && lifecycle.state != JobCredentialStateCleanupIncomplete {
-			lifecycle.enterRevokingLocked()
-			if lifecycle.revision == 0 {
-				lifecycle.revision = expectedRevision
+		if live.state != JobCredentialStateRevoking && live.state != JobCredentialStateCleanupIncomplete {
+			live.enterRevokingLocked()
+			if live.revision == 0 {
+				live.revision = expectedRevision
 			}
 		}
-		lifecycle.mu.Unlock()
+		live.mu.Unlock()
 		return validationErr
 	}
-	if lifecycle.state == JobCredentialStateRevoking || lifecycle.state == JobCredentialStateCleanupIncomplete {
-		lifecycle.mu.Unlock()
+	if live.state == JobCredentialStateRevoking || live.state == JobCredentialStateCleanupIncomplete {
+		live.mu.Unlock()
 		return nil
 	}
-	switch lifecycle.state {
+	switch live.state {
 	case JobCredentialStatePreparing, JobCredentialStateActive, JobCredentialStateRenewing, JobCredentialStateExpired:
 	default:
-		lifecycle.mu.Unlock()
+		live.mu.Unlock()
 		return ErrJobCredentialTransition
 	}
-	version := lifecycle.version
-	hook := lifecycle.beforeCommit
-	lifecycle.mu.Unlock()
+	version := live.version
+	hook := live.beforeCommit
+	live.mu.Unlock()
 
 	if hook != nil {
 		hook(jobCredentialLifecycleTransitionObserveLoss)
 	}
 
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	if lifecycle.version != version {
-		if lifecycle.state == JobCredentialStateRevoking || lifecycle.state == JobCredentialStateCleanupIncomplete || lifecycle.state == JobCredentialStateRevoked {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.version != version {
+		if live.state == JobCredentialStateRevoking || live.state == JobCredentialStateCleanupIncomplete || live.state == JobCredentialStateRevoked {
 			return nil
 		}
 		return ErrJobCredentialTransition
 	}
-	lifecycle.enterRevokingLocked()
-	if lifecycle.revision == 0 {
-		lifecycle.revision = expectedRevision
+	live.enterRevokingLocked()
+	if live.revision == 0 {
+		live.revision = expectedRevision
 	}
 	return nil
 }
 
 func (lifecycle *JobCredentialLifecycle) Revoke(proof JobCredentialCleanupProof, observedAt time.Time) (JobCredentialCleanupProof, error) {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return JobCredentialCleanupProof{}, ErrJobCredentialTransition
 	}
-	lifecycle.mu.Lock()
-	if lifecycle.state == JobCredentialStateRevoked {
-		result, err := lifecycle.reinspectRevokedLocked(proof, observedAt)
-		lifecycle.mu.Unlock()
+	live.mu.Lock()
+	if live.state == JobCredentialStateRevoked {
+		result, err := live.reinspectRevokedLocked(proof, observedAt)
+		live.mu.Unlock()
 		return result, err
 	}
-	if lifecycle.state != JobCredentialStateRevoking && lifecycle.state != JobCredentialStateCleanupIncomplete {
-		lifecycle.mu.Unlock()
+	if live.state != JobCredentialStateRevoking && live.state != JobCredentialStateCleanupIncomplete {
+		live.mu.Unlock()
 		return JobCredentialCleanupProof{}, ErrJobCredentialTransition
 	}
-	expectedRevision := lifecycle.revision
+	expectedRevision := live.revision
 	if expectedRevision < 2 {
 		expectedRevision = 2
 	}
-	if err := ValidateJobCredentialCleanupProof(proof, lifecycle.identity, expectedRevision, observedAt); err != nil {
-		lifecycle.revision = expectedRevision
-		lifecycle.enterCleanupIncompleteLocked()
-		lifecycle.mu.Unlock()
+	if err := ValidateJobCredentialCleanupProof(proof, live.identity, expectedRevision, observedAt); err != nil {
+		live.revision = expectedRevision
+		live.enterCleanupIncompleteLocked()
+		live.mu.Unlock()
 		return JobCredentialCleanupProof{}, err
 	}
-	version := lifecycle.version
-	hook := lifecycle.beforeCommit
-	lifecycle.mu.Unlock()
+	version := live.version
+	hook := live.beforeCommit
+	live.mu.Unlock()
 
 	if hook != nil {
 		hook(jobCredentialLifecycleTransitionRevoke)
 	}
 
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	if lifecycle.version != version || (lifecycle.state != JobCredentialStateRevoking && lifecycle.state != JobCredentialStateCleanupIncomplete) {
-		if lifecycle.state == JobCredentialStateRevoked {
-			return lifecycle.reinspectRevokedLocked(proof, observedAt)
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.version != version || (live.state != JobCredentialStateRevoking && live.state != JobCredentialStateCleanupIncomplete) {
+		if live.state == JobCredentialStateRevoked {
+			return live.reinspectRevokedLocked(proof, observedAt)
 		}
 		return JobCredentialCleanupProof{}, ErrJobCredentialTransition
 	}
-	expectedRevision = lifecycle.revision
+	expectedRevision = live.revision
 	if expectedRevision < 2 {
 		expectedRevision = 2
 	}
-	if err := ValidateJobCredentialCleanupProof(proof, lifecycle.identity, expectedRevision, observedAt); err != nil {
-		lifecycle.revision = expectedRevision
-		lifecycle.enterCleanupIncompleteLocked()
+	if err := ValidateJobCredentialCleanupProof(proof, live.identity, expectedRevision, observedAt); err != nil {
+		live.revision = expectedRevision
+		live.enterCleanupIncompleteLocked()
 		return JobCredentialCleanupProof{}, err
 	}
-	lifecycle.cleanupProof = proof
-	lifecycle.activeProof = JobCredentialActiveProof{}
-	lifecycle.revision = expectedRevision
-	lifecycle.state = JobCredentialStateRevoked
-	lifecycle.version++
+	live.cleanupProof = proof
+	live.activeProof = JobCredentialActiveProof{}
+	live.revision = expectedRevision
+	live.state = JobCredentialStateRevoked
+	live.version++
 	return proof, nil
 }
 
 func (lifecycle *JobCredentialLifecycle) State() JobCredentialState {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return ""
 	}
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	return lifecycle.state
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	return live.state
 }
 
 func (lifecycle *JobCredentialLifecycle) Revision() uint64 {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return 0
 	}
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	return lifecycle.revision
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	return live.revision
 }
 
 func (lifecycle *JobCredentialLifecycle) HasActiveProof() bool {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return false
 	}
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	return lifecycle.state == JobCredentialStateActive || lifecycle.state == JobCredentialStateRenewing
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	return live.state == JobCredentialStateActive || live.state == JobCredentialStateRenewing
 }
 
 func (lifecycle *JobCredentialLifecycle) HasCleanupProof() bool {
-	if lifecycle == nil {
+	live, ok := loadJobCredentialLifecycleState(lifecycle)
+	if !ok {
 		return false
 	}
-	lifecycle.mu.Lock()
-	defer lifecycle.mu.Unlock()
-	return lifecycle.state == JobCredentialStateRevoked && validJobCredentialCleanupProof(lifecycle.cleanupProof)
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	return live.state == JobCredentialStateRevoked && validJobCredentialCleanupProof(live.cleanupProof)
 }
 
-func (lifecycle *JobCredentialLifecycle) validateActiveCandidateLocked(proof JobCredentialActiveProof, revision uint64) error {
-	if !validJobCredentialActiveProof(proof) {
-		return ErrJobCredentialProofInvalid
-	}
-	if proof.identityDigest() != jobCredentialIdentityDigest(lifecycle.identity) {
-		return ErrJobCredentialIdentityMismatch
-	}
-	if proof.revision() != revision {
-		return ErrJobCredentialRevisionStale
-	}
-	return nil
-}
-
-func (lifecycle *JobCredentialLifecycle) enterRevokingLocked() {
-	changed := lifecycle.state != JobCredentialStateRevoking || validJobCredentialActiveProof(lifecycle.activeProof)
-	lifecycle.activeProof = JobCredentialActiveProof{}
-	lifecycle.cleanupProof = JobCredentialCleanupProof{}
-	lifecycle.state = JobCredentialStateRevoking
+func (live *jobCredentialLifecycleState) enterRevokingLocked() {
+	changed := live.state != JobCredentialStateRevoking || validJobCredentialActiveProof(live.activeProof)
+	live.activeProof = JobCredentialActiveProof{}
+	live.cleanupProof = JobCredentialCleanupProof{}
+	live.state = JobCredentialStateRevoking
 	if changed {
-		lifecycle.version++
+		live.version++
 	}
 }
 
-func (lifecycle *JobCredentialLifecycle) enterCleanupIncompleteLocked() {
-	if lifecycle.state != JobCredentialStateCleanupIncomplete {
-		lifecycle.state = JobCredentialStateCleanupIncomplete
-		lifecycle.activeProof = JobCredentialActiveProof{}
-		lifecycle.cleanupProof = JobCredentialCleanupProof{}
-		lifecycle.version++
+func (live *jobCredentialLifecycleState) enterCleanupIncompleteLocked() {
+	if live.state != JobCredentialStateCleanupIncomplete {
+		live.state = JobCredentialStateCleanupIncomplete
+		live.activeProof = JobCredentialActiveProof{}
+		live.cleanupProof = JobCredentialCleanupProof{}
+		live.version++
 	}
 }
 
-func (lifecycle *JobCredentialLifecycle) reinspectRevokedLocked(proof JobCredentialCleanupProof, observedAt time.Time) (JobCredentialCleanupProof, error) {
-	if err := ValidateJobCredentialCleanupProof(proof, lifecycle.identity, lifecycle.revision, observedAt); err != nil {
+func (live *jobCredentialLifecycleState) reinspectRevokedLocked(proof JobCredentialCleanupProof, observedAt time.Time) (JobCredentialCleanupProof, error) {
+	if err := ValidateJobCredentialCleanupProof(proof, live.identity, live.revision, observedAt); err != nil {
 		return JobCredentialCleanupProof{}, err
 	}
-	if sameJobCredentialCleanupProof(lifecycle.cleanupProof, proof) {
-		return lifecycle.cleanupProof, nil
+	if sameJobCredentialCleanupProof(live.cleanupProof, proof) {
+		return live.cleanupProof, nil
 	}
 	_, inspectedAt := proof.times()
-	_, durableInspectedAt := lifecycle.cleanupProof.times()
+	_, durableInspectedAt := live.cleanupProof.times()
 	if inspectedAt.After(durableInspectedAt) {
-		return lifecycle.cleanupProof, nil
+		return live.cleanupProof, nil
 	}
 	return JobCredentialCleanupProof{}, ErrJobCredentialReplayRejected
+}
+
+func loadJobCredentialLifecycleState(lifecycle *JobCredentialLifecycle) (*jobCredentialLifecycleState, bool) {
+	if lifecycle == nil || lifecycle.state == nil || lifecycle.state.owner != &lifecycle.identity {
+		return nil, false
+	}
+	return lifecycle.state, true
 }

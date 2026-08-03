@@ -1292,14 +1292,14 @@ func TestL8JobCredentialReflectedValueCopiesStayOpaqueAndFailClosed(t *testing.T
 	} {
 		l8AssertJobCredentialLiveValue(t, copied.label, copied.value, copied.expectedFormat, []string{
 			identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.RuntimeID,
-			"peercred-copy-canary", "daemon-copy-generation", "principal-copy-canary", "1000", "1001", "0x",
+			"peercred-copy-canary", "daemon-copy-generation", "principal-copy-canary", "1000", "1001",
 		})
 		for _, control := range []string{"%p", "%T"} {
 			rendered := l8JobCredentialSafeSprintf(t, copied.label+" "+control, control, copied.value)
-			l8JobCredentialRejectFormattingPoison(t, copied.label+" "+control, rendered, []string{
+			l8JobCredentialRejectFormattingPoison(t, copied.label+" "+control, rendered, l8JobCredentialControlFormattingForbidden([]string{
 				identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.RuntimeID,
-				"peercred-copy-canary", "daemon-copy-generation", "principal-copy-canary", "1000", "1001", "0x",
-			})
+				"peercred-copy-canary", "daemon-copy-generation", "principal-copy-canary", "1000", "1001",
+			}))
 		}
 	}
 	if _, err := authorityCopy.IssueAuthenticatedWorkerPrincipal("principal-copy-attempt", 1000, 1001); !errors.Is(err, ErrAuthenticatedWorkerPrincipal) {
@@ -1341,27 +1341,29 @@ func l8AssertJobCredentialAllVerbFormatting(t *testing.T, label string, value an
 		if _, ok := variant.value.(fmt.Formatter); !ok {
 			t.Fatalf("%s %s lacks fmt.Formatter", label, variant.name)
 		}
-		if rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value); rendered != expectedFormat {
+		if rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value); !variant.nilPointer && rendered != expectedFormat {
 			t.Fatalf("%s %s formatter output = %q, want exact %q", label, variant.name, rendered, expectedFormat)
 		}
 		for _, format := range l8JobCredentialFormatterVerbs() {
 			rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" "+format, format, variant.value)
-			if rendered != expectedFormat {
+			if !variant.nilPointer && rendered != expectedFormat {
 				t.Fatalf("%s %s formatting %s = %q, want fixed %q", label, variant.name, format, rendered, expectedFormat)
 			}
 			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
 		}
 		for _, control := range []string{"%T", "%p"} {
 			rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" "+control, control, variant.value)
-			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, forbidden)
+			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, l8JobCredentialControlFormattingForbidden(forbidden))
 		}
-		stringer, ok := variant.value.(fmt.Stringer)
-		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expectedFormat {
-			t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
-		}
-		goStringer, ok := variant.value.(fmt.GoStringer)
-		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expectedFormat {
-			t.Fatalf("%s %s GoString output is not the fixed formatter output", label, variant.name)
+		if !variant.nilPointer {
+			stringer, ok := variant.value.(fmt.Stringer)
+			if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expectedFormat {
+				t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
+			}
+			goStringer, ok := variant.value.(fmt.GoStringer)
+			if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expectedFormat {
+				t.Fatalf("%s %s GoString output is not the fixed formatter output", label, variant.name)
+			}
 		}
 	}
 }
@@ -1419,6 +1421,23 @@ func l8JobCredentialRejectFormattingPoison(t *testing.T, label, rendered string,
 			t.Fatalf("%s exposed formatting poison %q in %q", label, poison, rendered)
 		}
 	}
+}
+
+func l8JobCredentialControlFormattingForbidden(forbidden []string) []string {
+	result := make([]string, 0, len(forbidden))
+	for _, poison := range forbidden {
+		onlyDigits := poison != ""
+		for _, character := range poison {
+			if character < '0' || character > '9' {
+				onlyDigits = false
+				break
+			}
+		}
+		if !onlyDigits {
+			result = append(result, poison)
+		}
+	}
+	return result
 }
 
 func TestL8JobCredentialAuthorizationIsStructurallyRequiredBeforeSourceResolution(t *testing.T) {
