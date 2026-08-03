@@ -87,8 +87,11 @@ identity, or live endpoint.
 Every Hal-owned secret copy uses mutable owned bytes. Warning-free production
 ingress is a worker-daemon-owned `LiveSecretSource` that fills a fixed-capacity
 anonymous locked mapping directly with Linux `keyctl_read` from a host-admin
-registered user/session-keyring entry. The safe job reference selects an opaque
-registry entry, never a key serial or value. The implementation sizes and reads
+registered user/session-keyring entry. The safe job reference identifies an
+opaque registry entry, never a key serial or value, and never authorizes its
+use. The entry is reachable only after the separate admission grant below
+authorizes the server-authenticated caller and exact job intent. The
+implementation sizes and reads
 directly into the owned mapping, rejects replacement/revocation/permission
 races, and never returns a Go `string` or a freely copyable `[]byte`. Access is
 callback-scoped through a noncopyable borrowed view whose only operations copy
@@ -138,11 +141,11 @@ absence cannot be proved, the public state is `unknown` with reason
   callback-scoped borrowed views, overwrite, unlock/unmap, dumpability startup
   checks, and platform fail-closed behavior.
 - `internal/credentialsource` owns the byte-native source implementation and
-  host-admin source-registry implementation. The first production source is
-  Linux keyring v1 through direct syscalls into `credentialmemory`; non-Linux,
-  environment, file, subprocess, and command-callback sources are
-  compatibility-only. Tests may inject a mutable byte fixture source that is
-  unreachable from production composition.
+  host-admin source/admission-grant registry implementation. The first
+  production source is Linux keyring v1 through direct syscalls into
+  `credentialmemory`; non-Linux, environment, file, subprocess, and
+  command-callback sources are compatibility-only. Tests may inject a mutable
+  byte fixture source that is unreachable from production composition.
 - `internal/credentialproxy` owns the static service registry, one-job ticket
   store, verified upstream HTTP client, request transformation, and safe live
   proof. It may depend on L7 network-enforcement contracts but not on `cmd`,
@@ -165,12 +168,13 @@ absence cannot be proved, the public state is `unknown` with reason
 - `internal/sandboxruntime/microvm/firecrackerhost` owns v2 transport
   correlation, host HTTP activation, the host SSH relay, and the concrete L8
   runtime wrapper.
-- `internal/sandboxworker` owns use of an injected neutral source-registry
-  interface plus prepare/renew/loss/revoke ordering around a durable job. It
-  imports only the neutral interface from `internal/sandboxruntime`; `cmd`
-  injects the `internal/credentialsource` implementation. The worker sees safe
-  source references, not concrete keyring, Firecracker, proxy, mount, SSH, or
-  factory implementations.
+- `internal/sandboxworker` owns use of injected neutral source-registry and
+  credential-admission-authorizer interfaces plus prepare/renew/loss/revoke
+  ordering around a durable job. It imports only the neutral interfaces from
+  `internal/sandboxruntime`; `cmd` injects the `internal/credentialsource`
+  implementation. The worker sees safe source and admission-grant references,
+  not concrete keyring, Firecracker, proxy, mount, SSH, or factory
+  implementations.
 - `cmd` constructs explicit dependencies and renders sanitized status. It does
   not implement a second broker, proxy, guest protocol, relay, or lifecycle.
 
@@ -198,13 +202,54 @@ type JobCredentialSession interface {
 ```
 
 `JobCredentialPrepareRequest` carries exact safe identity, a sanitized plan,
-explicit binding metadata, and a worker-local `LiveSecretSource` selected from
-safe source references. The source is never serializable. Command-to-worker
-requests carry only safe reference IDs; the command never transports raw bytes,
-a callback, a live endpoint, or a capability that could outlive it. This makes
-job admission and recovery independent of command-process lifetime.
+explicit binding metadata, the accepted admission-grant identity/revision, and
+a worker-local `LiveSecretSource` selected from authorized safe source
+references. The source is never serializable. Command-to-worker requests carry
+only safe source-reference and admission-grant IDs; neither kind of ID is a
+bearer capability. The command never transports raw bytes, a callback, a live
+endpoint, or a reusable authorization secret. This makes job admission and
+recovery independent of command-process lifetime.
 `ExecBinding` contains only ephemeral capabilities needed by the exact exec;
 it is not copied into the durable `Job`.
+
+### Admission authorization precedes source resolution
+
+Source reference IDs are identity, never authorization. Before lookup, sizing,
+or `keyctl_read`, the worker passes a server-derived
+`AuthenticatedWorkerPrincipal` and the exact credential request to a
+daemon-owned `CredentialAdmissionAuthorizer`. The principal comes only from an
+authenticated connection context established by production transport code; no
+request JSON field can name, replace, or weaken it. Unix `SO_PEERCRED` is one
+input, but matching the daemon UID alone is insufficient for the production
+credential lane. A production authenticator must additionally bind the
+connection to an administrator-approved Hal admission identity; an unavailable
+or UID-only authenticator fails closed before v2 credential dispatch.
+
+The host-admin grant registry is immutable for a daemon generation. Each
+`CredentialAdmissionGrant` binds one safe grant ID and revision to the exact
+authenticated principal, registered host/runtime and immutable template or
+workspace policy identities, normalized credential plan, allowed source
+reference set, service IDs, delivery modes, and binding declarations. The
+repository, template payload, project configuration, command request, guest,
+and workload cannot create or alter a grant or supply the authenticated
+principal. Repository-controlled configuration may request a source reference,
+but only the intersection with the separately administered grant is eligible.
+Unknown grants, nonmatching principals or policy identity, extra references,
+weaker modes, and changed bindings fail with a generic
+`credential_admission_denied` result. Grants are not enumerable through worker
+status, errors, or logs.
+
+The safe grant ID/revision and server-derived principal ID join the plan,
+source references, modes, host/runtime/template/workspace identity, submission
+identity, and daemon generation in the private request key and idempotency
+digest. Durable v2 state stores only those safe identities for recovery. A
+restart proceeds only if the same immutable grant revision still authorizes the
+stored server-derived principal and exact intent; it never trusts a new caller
+assertion or falls back to a different source. D1 locks the neutral
+authentication/authorization contracts and denial tests before any v2
+dispatcher or live source can exist; D6 provides the explicit production
+composition and proves that a raw same-UID socket client cannot obtain a
+credential admission principal.
 
 `JobCredentialActiveProof` and `JobCredentialCleanupProof` are distinct sealed
 contracts. Active proof requires live resources and cannot contain cleanup
@@ -265,9 +310,12 @@ envelope remains unchanged; v2 uses distinct operations `job_start_v2`,
 distinct payload fields. It never adds fields to `job_start` or its
 `sandboxjob-v1` payload. V2 has a required
 `productionCredentialsRequested` boolean, required safe source references and
-binding declarations when the boolean is true, and no raw value, live callback,
-ticket, socket, endpoint, or host path. The production-intent bit, normalized
-plan identity, source-reference IDs, and binding modes participate in both the
+binding declarations plus one safe, non-authoritative admission-grant ID when
+the boolean is true, and no raw value, live callback, ticket, socket, endpoint,
+or host path. The server attaches its authenticated principal before
+validation; the request cannot supply that principal. The production-intent
+bit, normalized plan identity, admission-grant ID/revision, authenticated
+principal ID, source-reference IDs, and binding modes participate in both the
 submission idempotency digest and private request-key material. A retry that
 changes any of them conflicts instead of reusing an uncredentialed job.
 
@@ -283,14 +331,17 @@ malformed. The client never strips credential fields, retries a v1 operation,
 or treats an error as admission. Existing jobs with no production intent remain
 on byte-compatible v1 operations.
 
-The durable v2 job stores safe credential intent and source-reference
-identities for restart reconciliation, never a secret, keyring serial, or
-transient exec binding. At daemon startup the host administrator maps each safe
-reference to an exact keyring identity; requests cannot add or replace entries.
-A worker must resolve every requested source locally, revalidate ownership and
-permissions, and prepare credentials before it acknowledges runnable admission.
-Missing/replaced/revoked source, unsupported v2, client loss, or daemon restart
-fails closed; it cannot silently create a normal v1 exec.
+The durable v2 job stores safe credential intent, the accepted admission-grant
+identity/revision, server-derived principal ID, and source-reference identities
+for restart reconciliation, never a secret, keyring serial, or transient exec
+binding. At daemon startup the host administrator maps each safe reference to
+an exact keyring identity and maps each admission grant to an exact principal
+and allowed job intent; requests cannot add or replace either registry. A
+worker must authorize the complete request, then resolve every allowed source
+locally, revalidate ownership and permissions, and prepare credentials before
+it acknowledges runnable admission. Missing/replaced/revoked source, denied or
+changed grant, unsupported v2, client loss, or daemon restart fails closed; it
+cannot silently create a normal v1 exec.
 
 ## Guest-agent v2
 
@@ -777,6 +828,11 @@ compatible where existing contracts require it.
   anonymous locked mapping ownership, page-lock success/failure, full-capacity
   overwrite, unmap, process startup dumpability, string/JSON/log exclusion, and
   cancellation.
+- Red tests for server-derived authenticated principals and immutable
+  admission-grant authorization before source resolution, including raw
+  same-UID clients, caller-supplied principal/grant substitution, unauthorized
+  source/plan/binding/template/workspace intent, grant revision/restart races,
+  non-enumeration, and request-key correlation.
 - Lock distinct `job_*_v2` operations and strict `sandboxjob-v2`,
   request-key/idempotency credential identity, unknown-field rejection, exact
   old-daemon failure, and no v1 retry.

@@ -39,6 +39,11 @@ Guards must prove:
   file while retaining a default-disabled construction test;
 - command and factory paths cannot transport raw credential bytes, callbacks,
   endpoints, or tickets in worker requests;
+- source-reference and admission-grant IDs remain non-authoritative safe
+  identity; production v2 authorization uses a server-derived authenticated
+  principal plus immutable host-admin grant before source resolution, rejects
+  UID-only/raw same-UID clients, and cannot be selected or weakened by
+  repository-controlled fields;
 - D0 locks the complete `sandboxworker-v1`/`sandboxjob-v1` and guest-v1 Go
   field/type/JSON-tag schemas against embedded or renamed intent; the first D1
   red/green checkpoint must make the worker decoder reject unknown,
@@ -51,7 +56,9 @@ Guards must prove:
   exists, its constructor tests and import guards must prove that fixture
   endpoints are defined only in `_test.go` and cannot enter production
   composition; and
-- live test markers remain behind their exact build tags.
+- every file that declares either selected prepared-Linux test remains behind
+  the exact L8 build tag even if the tag literal is otherwise absent, and all
+  other live test markers remain behind their exact build tags.
 
 ## Focused fake-only gates
 
@@ -76,6 +83,10 @@ Required focused areas are:
   string/environment/file/subprocess/factory ingress, page-lock
   success/failure, full-capacity overwrite, unlock/unmap, borrowed-view sink
   bounds, daemon-start dumpability, cancellation, and non-stringability;
+- authenticated connection-principal derivation stronger than UID alone,
+  host-admin grant/source ACL intersection before lookup, same-UID raw-client
+  denial, principal/grant/source/plan/binding/template/workspace correlation,
+  non-enumeration, revision/restart races, and repository override rejection;
 - `sandboxjob-v1` compatibility, distinct `job_*_v2` operations, strict `sandboxjob-v2`,
   credential-aware idempotency/request keys,
   unknown/duplicate/trailing JSON rejection, exact legacy unsupported-operation

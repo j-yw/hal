@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"go/ast"
 	"go/build/constraint"
@@ -66,24 +67,22 @@ func TestL8CredentialDeliverySourceGuardsMetadataLayersRemainLiveBehaviorFree(t 
 }
 
 func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImports(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read command package: %v", err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
+	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		path := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
 		source := readL8CredentialDeliveryFile(t, path)
 		parsed, err := parser.ParseFile(token.NewFileSet(), path, source, parser.ImportsOnly)
 		if err != nil {
-			t.Fatalf("parse command production file %s: %v", path, err)
+			return fmt.Errorf("parse command production file %s: %w", filepath.ToSlash(path), err)
 		}
 		for _, spec := range parsed.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
-				t.Fatalf("unquote command import in %s: %v", path, err)
+				return fmt.Errorf("unquote command import in %s: %w", filepath.ToSlash(path), err)
 			}
 			for _, forbidden := range []string{
 				"github.com/jywlabs/hal/internal/credentialmemory",
@@ -93,7 +92,7 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server/credentialclient",
 			} {
 				if importPath == forbidden || strings.HasPrefix(importPath, forbidden+"/") {
-					t.Fatalf("command production file %s prematurely imports L8 live package %q", path, importPath)
+					t.Errorf("command production file %s prematurely imports L8 live package %q", filepath.ToSlash(path), importPath)
 				}
 			}
 		}
@@ -105,9 +104,13 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 			"guest-agent-v2",
 		} {
 			if strings.Contains(source, marker) {
-				t.Fatalf("command production file %s prematurely contains L8 live constructor marker %q", path, marker)
+				t.Errorf("command production file %s prematurely contains L8 live constructor marker %q", filepath.ToSlash(path), marker)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk command production files: %v", err)
 	}
 }
 
@@ -119,6 +122,30 @@ func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t 
 		{
 			path: filepath.Join("..", "internal", "sandboxworker", "types.go"),
 			schemas: map[string][]string{
+				"Capabilities": {
+					`ProtocolVersion|string|json:"protocolVersion,omitempty"`,
+					`WorkerID|string|json:"workerId"`,
+					`SupportedOperations|[]string|json:"supportedOperations,omitempty"`,
+					`RuntimeDrivers|[]RuntimeDriver|json:"runtimeDrivers,omitempty"`,
+					`Security|SecurityPolicy|json:"security"`,
+					`Metadata|*sandboxruntime.RuntimeMetadata|json:"metadata,omitempty"`,
+				},
+				"CreateRequest": {
+					`Name|string|json:"name"`,
+					`Image|string|json:"image,omitempty"`,
+					`Env|map[string]string|json:"env,omitempty"`,
+					`Security|SecurityPolicy|json:"security,omitempty"`,
+				},
+				"Error": {
+					`Code|string|json:"code"`,
+					`Message|string|json:"message"`,
+				},
+				"InspectRequest": {
+					`Target|Target|json:"target"`,
+				},
+				"LifecycleRequest": {
+					`Target|Target|json:"target"`,
+				},
 				"Request": {
 					`ProtocolVersion|string|json:"protocolVersion,omitempty"`,
 					`RequestID|string|json:"requestId,omitempty"`,
@@ -152,11 +179,74 @@ func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t 
 					`JobLogs|*JobLogsResponse|json:"jobLogs,omitempty"`,
 					`Error|*Error|json:"error,omitempty"`,
 				},
+				"RuntimeDriver": {
+					`ID|string|json:"id"`,
+					`HostKind|string|json:"hostKind"`,
+					`IsolationLevel|string|json:"isolationLevel"`,
+					`Operations|[]string|json:"operations,omitempty"`,
+					`Security|SecurityPolicy|json:"security"`,
+					`NetworkEnforcement|*sandboxruntime.RuntimeNetworkEnforcementMetadata|json:"networkEnforcement,omitempty"`,
+					`Metadata|*sandboxruntime.RuntimeMetadata|json:"metadata,omitempty"`,
+				},
+				"RuntimeTarget": {
+					`Driver|string|json:"driver"`,
+					`RuntimeID|string|json:"runtimeId,omitempty"`,
+					`Image|string|json:"image,omitempty"`,
+					`WorkerID|string|json:"workerId,omitempty"`,
+					`IsolationLevel|string|json:"isolationLevel,omitempty"`,
+					`Metadata|*sandboxruntime.RuntimeMetadata|json:"metadata,omitempty"`,
+				},
+				"SecurityControls": {
+					`NetworkPolicy|string|json:"networkPolicy,omitempty"`,
+					`NetworkEnforcement|string|json:"networkEnforcement,omitempty"`,
+					`NetworkEnforcementCapability|*sandboxruntime.RuntimeNetworkEnforcementCapability|json:"networkEnforcementCapability,omitempty"`,
+					`CredentialModes|[]string|json:"credentialModes,omitempty"`,
+					`CredentialDelivery|*sandboxruntime.RuntimeCredentialDeliveryMetadata|json:"credentialDelivery,omitempty"`,
+					`IsolationLevel|string|json:"isolationLevel,omitempty"`,
+					`CredentialProxyMode|bool|json:"credentialProxyMode,omitempty"`,
+				},
+				"SecurityPolicy": {
+					`Requested|SecurityControls|json:"requested"`,
+					`Enforced|SecurityControls|json:"enforced"`,
+					`NetworkEnforcement|*sandboxruntime.RuntimeNetworkEnforcementMetadata|json:"networkEnforcement,omitempty"`,
+				},
+				"Status": {
+					`ProtocolVersion|string|json:"protocolVersion,omitempty"`,
+					`WorkerID|string|json:"workerId"`,
+					`HostKind|string|json:"hostKind"`,
+					`SocketPath|string|json:"socketPath,omitempty"`,
+					`SupportedRuntimeDrivers|[]string|json:"supportedRuntimeDrivers,omitempty"`,
+					`Health|WorkerHealth|json:"health"`,
+					`Capacity|WorkerCapacity|json:"capacity"`,
+					`Security|SecurityPolicy|json:"security"`,
+					`Metadata|*sandboxruntime.RuntimeMetadata|json:"metadata,omitempty"`,
+				},
+				"Target": {
+					`ID|string|json:"id,omitempty"`,
+					`Name|string|json:"name"`,
+					`Status|string|json:"status,omitempty"`,
+					`Runtime|RuntimeTarget|json:"runtime"`,
+					`Labels|map[string]string|json:"labels,omitempty"`,
+				},
+				"WorkerCapacity": {
+					`MaxConcurrentSandboxes|int|json:"maxConcurrentSandboxes"`,
+					`ActiveSandboxes|int|json:"activeSandboxes"`,
+				},
+				"WorkerHealth": {
+					`Status|string|json:"status"`,
+					`Message|string|json:"message,omitempty"`,
+				},
 			},
 		},
 		{
 			path: filepath.Join("..", "internal", "sandboxworker", "exec.go"),
 			schemas: map[string][]string{
+				"ExecOutputPayload": {
+					`Data|string|json:"data"`,
+					`SizeBytes|int64|json:"sizeBytes"`,
+					`LimitBytes|int64|json:"limitBytes"`,
+					`Truncated|bool|json:"truncated"`,
+				},
 				"ExecRequest": {
 					`OperationID|string|json:"operationId"`,
 					`Target|Target|json:"target"`,
@@ -166,6 +256,56 @@ func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t 
 					`Stdin|*ExecStdinPayload|json:"stdin,omitempty"`,
 					`StdoutLimitBytes|int64|json:"stdoutLimitBytes"`,
 					`StderrLimitBytes|int64|json:"stderrLimitBytes"`,
+				},
+				"ExecResponse": {
+					`ExitCode|int|json:"exitCode"`,
+					`Stdout|ExecOutputPayload|json:"stdout"`,
+					`Stderr|ExecOutputPayload|json:"stderr"`,
+					`Error|*Error|json:"error,omitempty"`,
+				},
+				"ExecStdinPayload": {
+					`Data|string|json:"data"`,
+					`Encoding|string|json:"encoding"`,
+					`SizeBytes|int64|json:"sizeBytes"`,
+					`LimitBytes|int64|json:"limitBytes"`,
+				},
+			},
+		},
+		{
+			path: filepath.Join("..", "internal", "sandboxworker", "copy.go"),
+			schemas: map[string][]string{
+				"CopyFilePayload": {
+					`Data|string|json:"data"`,
+					`Encoding|string|json:"encoding"`,
+					`SizeBytes|int64|json:"sizeBytes"`,
+					`LimitBytes|int64|json:"limitBytes"`,
+				},
+				"CopyInRequest": {
+					`OperationID|string|json:"operationId"`,
+					`Target|Target|json:"target"`,
+					`Source|CopyPathMetadata|json:"source"`,
+					`RemoteDestinationPath|string|json:"remoteDestinationPath"`,
+					`Payload|CopyFilePayload|json:"payload"`,
+				},
+				"CopyInResponse": {
+					`Status|string|json:"status"`,
+					`Error|*Error|json:"error,omitempty"`,
+				},
+				"CopyOutRequest": {
+					`OperationID|string|json:"operationId"`,
+					`Target|Target|json:"target"`,
+					`RemoteSourcePath|string|json:"remoteSourcePath"`,
+					`Destination|CopyPathMetadata|json:"destination"`,
+					`MaxPayloadBytes|int64|json:"maxPayloadBytes"`,
+				},
+				"CopyOutResponse": {
+					`Payload|*CopyFilePayload|json:"payload,omitempty"`,
+					`Truncated|bool|json:"truncated"`,
+					`LimitExceeded|bool|json:"limitExceeded"`,
+					`Error|*Error|json:"error,omitempty"`,
+				},
+				"CopyPathMetadata": {
+					`DisplayPath|string|json:"displayPath"`,
 				},
 			},
 		},
@@ -240,6 +380,35 @@ func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t 
 					`Name|string|json:"name"`,
 					`Source|EnvironmentSource|json:"source,omitempty"`,
 				},
+				"IsolationProof": {
+					`Generation|string|json:"generation"`,
+					`RuntimeGeneration|string|json:"runtimeGeneration,omitempty"`,
+					`Status|IsolationProofStatus|json:"status"`,
+					`RestrictedIdentity|bool|json:"restrictedIdentity,omitempty"`,
+					`CapabilitiesCleared|bool|json:"capabilitiesCleared,omitempty"`,
+					`NoNewPrivileges|bool|json:"noNewPrivileges,omitempty"`,
+					`SupplementaryGroupsCleared|bool|json:"supplementaryGroupsCleared,omitempty"`,
+					`RawPacketSocketDenied|bool|json:"rawPacketSocketDenied,omitempty"`,
+					`Network|*NetworkIsolationProof|json:"network,omitempty"`,
+				},
+				"IsolationProofRequest": {
+					`Generation|string|json:"generation"`,
+					`RuntimeGeneration|string|json:"runtimeGeneration,omitempty"`,
+					`RequireNetworkProof|bool|json:"requireNetworkProof,omitempty"`,
+				},
+				"NetworkIsolationProof": {
+					`Status|IsolationProofStatus|json:"status"`,
+					`SingleInterface|bool|json:"singleInterface,omitempty"`,
+					`StaticRoutes|bool|json:"staticRoutes,omitempty"`,
+					`ProxyReachable|bool|json:"proxyReachable,omitempty"`,
+				},
+				"PayloadMetadata": {
+					`SizeBytes|int64|json:"sizeBytes,omitempty"`,
+					`MaxBytes|int64|json:"maxBytes,omitempty"`,
+					`Digest|string|json:"digest,omitempty"`,
+					`Encoding|PayloadEncoding|json:"encoding,omitempty"`,
+					`Data|string|json:"data,omitempty"`,
+				},
 				"ReadinessRequest": {
 					`ProtocolVersion|ProtocolVersion|json:"protocolVersion"`,
 					`Operation|Operation|json:"operation"`,
@@ -253,6 +422,17 @@ func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t 
 					`Status|ReadinessStatus|json:"status,omitempty"`,
 					`Error|*ProtocolError|json:"error,omitempty"`,
 					`IsolationProof|*IsolationProof|json:"isolationProof,omitempty"`,
+				},
+				"StreamMetadata": {
+					`SizeBytes|int64|json:"sizeBytes,omitempty"`,
+					`MaxBytes|int64|json:"maxBytes,omitempty"`,
+					`Truncated|bool|json:"truncated,omitempty"`,
+					`Data|string|json:"data,omitempty"`,
+					`Encoding|PayloadEncoding|json:"encoding,omitempty"`,
+				},
+				"TimingMetadata": {
+					`TimeoutMillis|int64|json:"timeoutMillis,omitempty"`,
+					`DeadlineUnixMillis|int64|json:"deadlineUnixMillis,omitempty"`,
 				},
 				"ErrorResponse": {
 					`ProtocolVersion|ProtocolVersion|json:"protocolVersion"`,
@@ -303,6 +483,18 @@ func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t 
 					`Operation|Operation|json:"operation"`,
 					`Payload|PayloadMetadata|json:"payload"`,
 					`Error|*ProtocolError|json:"error,omitempty"`,
+				},
+			},
+		},
+		{
+			path: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "errors.go"),
+			schemas: map[string][]string{
+				"ProtocolError": {
+					`Code|ErrorCode|json:"code"`,
+					`Operation|Operation|json:"operation,omitempty"`,
+					`Field|string|json:"field,omitempty"`,
+					`Message|string|json:"message,omitempty"`,
+					`Err|error|json:"-"`,
 				},
 			},
 		},
@@ -367,8 +559,120 @@ func l8V1StructSchema(t *testing.T, fileSet *token.FileSet, structure *ast.Struc
 	return fields
 }
 
+func TestL8CredentialDeliverySourceGuardsV1CustomJSONMethodsCannotCarryProductionIntent(t *testing.T) {
+	// Hash the go/format AST for the three pre-L8 sanitizing marshalers. Locking
+	// only struct fields would still let a later custom marshaler emit hidden
+	// production intent without changing a field, type, or JSON tag.
+	checks := []struct {
+		root   string
+		locked map[string]bool
+		want   map[string]string
+	}{
+		{
+			root: filepath.Join("..", "internal", "sandboxworker"),
+			locked: l8LockedV1TypeNames(
+				"Capabilities", "CopyFilePayload", "CopyInRequest", "CopyInResponse",
+				"CopyOutRequest", "CopyOutResponse", "CopyPathMetadata", "CreateRequest",
+				"Error", "ExecOutputPayload", "ExecRequest", "ExecResponse", "ExecStdinPayload",
+				"InspectRequest", "Job", "JobCancelRequest", "JobLogRecord", "JobLogsRequest",
+				"JobLogsResponse", "JobResolveRequest", "JobStartRequest", "JobStatusRequest",
+				"LifecycleRequest", "Request", "Response", "RuntimeDriver", "RuntimeTarget",
+				"SecurityControls", "SecurityPolicy", "Status", "Target", "WorkerCapacity", "WorkerHealth",
+			),
+			want: map[string]string{
+				"SecurityControls.MarshalJSON": "529c63c25e4c005ced4217d60c6626b7e564fdde7597bae2b7d1039b36492443",
+				"SecurityPolicy.MarshalJSON":   "9ee8505ea508b183ffc91369b1a20341c0387cd55f575740eaf4e077ce478a82",
+			},
+		},
+		{
+			root: filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent"),
+			locked: l8LockedV1TypeNames(
+				"CopyInRequest", "CopyInResponse", "CopyOutRequest", "CopyOutResponse",
+				"EnvironmentEntry", "ErrorResponse", "ExecRequest", "ExecResponse", "IsolationProof",
+				"IsolationProofRequest", "NetworkIsolationProof", "PayloadMetadata", "ProtocolError",
+				"ReadinessRequest", "ReadinessResponse", "StreamMetadata", "TimingMetadata",
+			),
+			want: map[string]string{
+				"ProtocolError.MarshalJSON": "7037ea101057d523716bdbdc5ab246cb74250a2d27cfd170b32e375a6ac35ca9",
+			},
+		},
+	}
+
+	for _, check := range checks {
+		got := make(map[string]string)
+		err := filepath.WalkDir(check.root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			fileSet := token.NewFileSet()
+			parsed, err := parser.ParseFile(fileSet, path, nil, 0)
+			if err != nil {
+				return err
+			}
+			for _, declaration := range parsed.Decls {
+				method, ok := declaration.(*ast.FuncDecl)
+				if !ok || method.Recv == nil || (method.Name.Name != "MarshalJSON" && method.Name.Name != "UnmarshalJSON") {
+					continue
+				}
+				receiver := l8V1ReceiverName(method)
+				if !check.locked[receiver] {
+					continue
+				}
+				var rendered bytes.Buffer
+				if err := format.Node(&rendered, fileSet, method); err != nil {
+					return err
+				}
+				digest := sha256.Sum256(rendered.Bytes())
+				got[receiver+"."+method.Name.Name] = fmt.Sprintf("%x", digest)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan v1 custom JSON methods in %s: %v", filepath.ToSlash(check.root), err)
+		}
+		if len(got) != len(check.want) {
+			t.Fatalf("v1 custom JSON method count in %s changed: got %v, want %v", filepath.ToSlash(check.root), got, check.want)
+		}
+		for method, wantDigest := range check.want {
+			if gotDigest := got[method]; gotDigest != wantDigest {
+				t.Fatalf("v1 custom JSON method %s in %s changed: got %q, want %q", method, filepath.ToSlash(check.root), gotDigest, wantDigest)
+			}
+		}
+	}
+}
+
+func l8LockedV1TypeNames(names ...string) map[string]bool {
+	locked := make(map[string]bool, len(names))
+	for _, name := range names {
+		locked[name] = true
+	}
+	return locked
+}
+
+func l8V1ReceiverName(method *ast.FuncDecl) string {
+	if method == nil || method.Recv == nil || len(method.Recv.List) != 1 {
+		return ""
+	}
+	typeExpression := method.Recv.List[0].Type
+	if pointer, ok := typeExpression.(*ast.StarExpr); ok {
+		typeExpression = pointer.X
+	}
+	identifier, _ := typeExpression.(*ast.Ident)
+	if identifier == nil {
+		return ""
+	}
+	return identifier.Name
+}
+
 func TestL8CredentialDeliverySourceGuardsLiveMarkerIsolation(t *testing.T) {
 	liveTag := "l8_production_" + "credential_" + "delivery_live"
+	selectedLiveTests := map[string]bool{
+		"TestL8PreparedLinuxCredentialDeliveryPrerequisites": true,
+		"TestL8PreparedLinuxCredentialDeliveryE2E":           true,
+	}
 	for _, root := range []string{"cmd", "internal", "tools"} {
 		err := filepath.WalkDir(filepath.Join("..", root), func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
@@ -381,7 +685,18 @@ func TestL8CredentialDeliverySourceGuardsLiveMarkerIsolation(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if !strings.Contains(string(source), liveTag) {
+			requireExactTag := strings.Contains(string(source), liveTag)
+			parsed, err := parser.ParseFile(token.NewFileSet(), path, source, 0)
+			if err != nil {
+				return err
+			}
+			for _, declaration := range parsed.Decls {
+				function, ok := declaration.(*ast.FuncDecl)
+				if ok && selectedLiveTests[function.Name.Name] {
+					requireExactTag = true
+				}
+			}
+			if !requireExactTag {
 				return nil
 			}
 			rel, err := filepath.Rel("..", path)

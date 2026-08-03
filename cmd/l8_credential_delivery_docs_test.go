@@ -24,6 +24,11 @@ func TestL8CredentialDeliveryArchitecture(t *testing.T) {
 		"job_start_v2",
 		"LiveSecretSource",
 		"keyctl_read",
+		"AuthenticatedWorkerPrincipal",
+		"CredentialAdmissionAuthorizer",
+		"CredentialAdmissionGrant",
+		"Source reference IDs are identity, never authorization",
+		"raw same-UID socket client cannot obtain",
 		"VMADDR_CID_HOST",
 		"signed ephemeral X25519 handshake",
 		"applicationroute.Handler",
@@ -97,6 +102,9 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 		"post-admission in-memory binding without RPC/job",
 		"`cgroup.kill`/zero-population proof",
 		"mandatory key and algorithm/flag allowlists",
+		"server-derived authenticated",
+		"UID-only/raw same-UID clients",
+		"every file that declares either selected prepared-Linux test",
 	} {
 		if !strings.Contains(doc, required) {
 			t.Fatalf("L8 credential-delivery verification omits %q", required)
