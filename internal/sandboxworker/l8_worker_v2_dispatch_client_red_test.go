@@ -17,6 +17,14 @@ func TestL8WorkerV2RequestValidationDispatchesOnlyTheMatchingPayload(t *testing.
 	status := JobStatusRequestV2{ContractVersion: JobContractVersionV2, JobID: "job-primary"}
 	logs := JobLogsRequestV2{ContractVersion: JobContractVersionV2, JobID: "job-primary", Cursor: 0, LimitBytes: DefaultJobLogRecordBytes}
 	cancel := JobCancelRequestV2{ContractVersion: JobContractVersionV2, JobID: "job-primary"}
+	v1Start := JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "submission-v1-valid",
+		Exec:            l8WorkerV2ExecRequest(),
+	}
+	if err := v1Start.Validate(); err != nil {
+		t.Fatalf("valid v1 mismatch fixture: %v", err)
+	}
 
 	tests := []struct {
 		name string
@@ -37,7 +45,7 @@ func TestL8WorkerV2RequestValidationDispatchesOnlyTheMatchingPayload(t *testing.
 	}
 
 	invalid := []Request{
-		{ProtocolVersion: ProtocolVersion, RequestID: "request-invalid-v2-payload", Operation: OperationJobStartV2, DriverID: RuntimeDriverMicroVM, JobStart: &JobStartRequest{}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request-invalid-v2-payload", Operation: OperationJobStartV2, DriverID: RuntimeDriverMicroVM, JobStart: &v1Start},
 		{ProtocolVersion: ProtocolVersion, RequestID: "request-invalid-v1-operation", Operation: OperationJobStart, DriverID: RuntimeDriverMicroVM, JobStartV2: &start},
 		{ProtocolVersion: ProtocolVersion, RequestID: "request-invalid-ambiguous-start", Operation: OperationJobStartV2, DriverID: RuntimeDriverMicroVM, JobStartV2: &start, JobStatusV2: &status},
 		{ProtocolVersion: ProtocolVersion, RequestID: "request-invalid-ambiguous-status", Operation: OperationJobStatusV2, JobStartV2: &start, JobStatusV2: &status},
@@ -50,33 +58,7 @@ func TestL8WorkerV2RequestValidationDispatchesOnlyTheMatchingPayload(t *testing.
 }
 
 func TestL8WorkerV2ClientTreatsUnsupportedAsTerminalForAllFiveOperationsWithoutFallback(t *testing.T) {
-	start := l8WorkerV2StartRequest()
-	job := l8WorkerV2QueuedJob()
-	tests := []struct {
-		operation string
-		invoke    func(*Client) error
-	}{
-		{operation: OperationJobStartV2, invoke: func(client *Client) error {
-			_, err := client.JobStartV2(context.Background(), RuntimeDriverMicroVM, start)
-			return err
-		}},
-		{operation: OperationJobResolveV2, invoke: func(client *Client) error {
-			_, err := client.JobResolveV2(context.Background(), JobResolveRequestV2{ContractVersion: JobContractVersionV2, SubmissionID: start.SubmissionID})
-			return err
-		}},
-		{operation: OperationJobStatusV2, invoke: func(client *Client) error {
-			_, err := client.JobStatusV2(context.Background(), JobStatusRequestV2{ContractVersion: JobContractVersionV2, JobID: job.ID})
-			return err
-		}},
-		{operation: OperationJobLogsV2, invoke: func(client *Client) error {
-			_, err := client.JobLogsV2(context.Background(), JobLogsRequestV2{ContractVersion: JobContractVersionV2, JobID: job.ID, LimitBytes: DefaultJobLogRecordBytes})
-			return err
-		}},
-		{operation: OperationJobCancelV2, invoke: func(client *Client) error {
-			_, err := client.JobCancelV2(context.Background(), JobCancelRequestV2{ContractVersion: JobContractVersionV2, JobID: job.ID})
-			return err
-		}},
-	}
+	tests := l8WorkerV2ClientOperationCases()
 	responders := []struct {
 		name string
 		make func(Request) Response
@@ -114,6 +96,39 @@ func TestL8WorkerV2ClientTreatsUnsupportedAsTerminalForAllFiveOperationsWithoutF
 				}
 			})
 		}
+	}
+}
+
+type l8WorkerV2ClientOperationCase struct {
+	operation   string
+	v1Operation string
+	invoke      func(*Client) error
+}
+
+func l8WorkerV2ClientOperationCases() []l8WorkerV2ClientOperationCase {
+	start := l8WorkerV2StartRequest()
+	job := l8WorkerV2QueuedJob()
+	return []l8WorkerV2ClientOperationCase{
+		{operation: OperationJobStartV2, v1Operation: OperationJobStart, invoke: func(client *Client) error {
+			_, err := client.JobStartV2(context.Background(), RuntimeDriverMicroVM, start)
+			return err
+		}},
+		{operation: OperationJobResolveV2, v1Operation: OperationJobResolve, invoke: func(client *Client) error {
+			_, err := client.JobResolveV2(context.Background(), JobResolveRequestV2{ContractVersion: JobContractVersionV2, SubmissionID: start.SubmissionID})
+			return err
+		}},
+		{operation: OperationJobStatusV2, v1Operation: OperationJobStatus, invoke: func(client *Client) error {
+			_, err := client.JobStatusV2(context.Background(), JobStatusRequestV2{ContractVersion: JobContractVersionV2, JobID: job.ID})
+			return err
+		}},
+		{operation: OperationJobLogsV2, v1Operation: OperationJobLogs, invoke: func(client *Client) error {
+			_, err := client.JobLogsV2(context.Background(), JobLogsRequestV2{ContractVersion: JobContractVersionV2, JobID: job.ID, LimitBytes: DefaultJobLogRecordBytes})
+			return err
+		}},
+		{operation: OperationJobCancelV2, v1Operation: OperationJobCancel, invoke: func(client *Client) error {
+			_, err := client.JobCancelV2(context.Background(), JobCancelRequestV2{ContractVersion: JobContractVersionV2, JobID: job.ID})
+			return err
+		}},
 	}
 }
 
@@ -235,110 +250,156 @@ func TestL8WorkerV2ClientUsesEveryDistinctOperationWithoutMutatingIntent(t *test
 }
 
 func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testing.T) {
-	start := l8WorkerV2StartRequest()
-	tests := []struct {
+	v1Job := l8WorkerV1ValidQueuedJob(t)
+	responders := []struct {
+		name string
+		make func(Request) Response
+	}{
+		{name: "legacy daemon", make: l8LegacyUnsupportedV2Response},
+		{name: "new daemon", make: l8NewUnsupportedV2Response},
+	}
+	mutations := []struct {
 		name            string
-		response        func(Request) Response
+		mutate          func(Response, Request) Response
 		wantUnsupported bool
 	}{
-		{
-			name: "exact legacy daemon envelope",
-			response: func(req Request) Response {
-				return Response{
-					ProtocolVersion: ProtocolVersion,
-					RequestID:       req.RequestID,
-					Operation:       OperationProtocolError,
-					OK:              false,
-					Error: &Error{
-						Code:    ErrorCodeMalformedRequest,
-						Message: `malformed worker request: worker request operation "job_start_v2" is unsupported`,
-					},
-				}
-			},
-			wantUnsupported: true,
-		},
-		{
-			name: "exact new daemon envelope",
-			response: func(req Request) Response {
-				return Response{
-					ProtocolVersion: ProtocolVersion,
-					RequestID:       req.RequestID,
-					Operation:       OperationJobStartV2,
-					OK:              false,
-					Error: &Error{
-						Code:    ErrorCodeUnsupportedOp,
-						Message: `worker operation "job_start_v2" is not supported by this worker service`,
-					},
-				}
-			},
-			wantUnsupported: true,
-		},
-		{
-			name: "legacy wrong request id",
-			response: func(req Request) Response {
-				resp := l8LegacyUnsupportedV2Response(req)
-				resp.RequestID = "request-neighbor"
-				return resp
-			},
-		},
-		{
-			name: "legacy wrong message",
-			response: func(req Request) Response {
-				resp := l8LegacyUnsupportedV2Response(req)
-				resp.Error.Message = "malformed worker request"
-				return resp
-			},
-		},
-		{
-			name: "new daemon wrong operation",
-			response: func(req Request) Response {
-				resp := l8NewUnsupportedV2Response(req)
-				resp.Operation = OperationJobStatusV2
-				return resp
-			},
-		},
-		{
-			name: "v1 success is not admission",
-			response: func(req Request) Response {
-				job := Job{ContractVersion: JobContractVersion}
-				return Response{ProtocolVersion: ProtocolVersion, RequestID: req.RequestID, Operation: OperationJobStart, OK: true, Job: &job}
-			},
-		},
+		{name: "exact", mutate: func(response Response, _ Request) Response { return response }, wantUnsupported: true},
+		{name: "wrong request id", mutate: func(response Response, _ Request) Response {
+			response.RequestID = "request-neighbor"
+			return response
+		}},
+		{name: "wrong operation", mutate: func(response Response, request Request) Response {
+			if response.Operation == request.Operation {
+				response.Operation = OperationProtocolError
+			} else {
+				response.Operation = request.Operation
+			}
+			return response
+		}},
+		{name: "wrong code", mutate: func(response Response, _ Request) Response {
+			response.Error.Code = ErrorCodeInternal
+			return response
+		}},
+		{name: "wrong message", mutate: func(response Response, _ Request) Response {
+			response.Error.Message = "worker protocol is unavailable"
+			return response
+		}},
+		{name: "wrong protocol", mutate: func(response Response, _ Request) Response {
+			response.ProtocolVersion = "sandboxworker-neighbor"
+			return response
+		}},
+		{name: "wrong ok", mutate: func(response Response, _ Request) Response {
+			response.OK = true
+			return response
+		}},
+		{name: "unexpected payload", mutate: func(response Response, _ Request) Response {
+			response.Job = &v1Job
+			return response
+		}},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, operation := range l8WorkerV2ClientOperationCases() {
+		for _, responder := range responders {
+			for _, mutation := range mutations {
+				t.Run(operation.operation+"/"+responder.name+"/"+mutation.name, func(t *testing.T) {
+					calls := 0
+					var captured []Request
+					client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, request Request) (Response, error) {
+						calls++
+						captured = append(captured, request)
+						return mutation.mutate(responder.make(request), request), nil
+					})})
+					if err != nil {
+						t.Fatal(err)
+					}
+					invokeErr := operation.invoke(client)
+					if mutation.wantUnsupported {
+						if !errors.Is(invokeErr, ErrCredentialWorkerProtocolUnsupported) {
+							t.Fatalf("error = %v, want terminal credential worker protocol unsupported", invokeErr)
+						}
+					} else if invokeErr == nil || errors.Is(invokeErr, ErrCredentialWorkerProtocolUnsupported) {
+						t.Fatalf("mismatched response error = %v, want malformed non-admission error", invokeErr)
+					}
+					l8AssertWorkerV2SingleAttemptWithoutFallback(t, calls, captured, operation.operation)
+				})
+			}
+		}
+
+		t.Run(operation.operation+"/valid v1 success is not admission", func(t *testing.T) {
 			calls := 0
-			var captured Request
-			client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, req Request) (Response, error) {
+			var captured []Request
+			client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, request Request) (Response, error) {
 				calls++
-				captured = req
-				return tt.response(req), nil
+				captured = append(captured, request)
+				return l8WorkerV1ValidSuccessResponse(t, operation.v1Operation, request.RequestID, v1Job), nil
 			})})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = client.JobStartV2(context.Background(), RuntimeDriverMicroVM, start)
-			if tt.wantUnsupported {
-				if !errors.Is(err, ErrCredentialWorkerProtocolUnsupported) {
-					t.Fatalf("error = %v, want terminal credential worker protocol unsupported", err)
-				}
-			} else {
-				if err == nil || errors.Is(err, ErrCredentialWorkerProtocolUnsupported) {
-					t.Fatalf("mismatched response error = %v, want malformed non-admission error", err)
-				}
+			invokeErr := operation.invoke(client)
+			if invokeErr == nil || errors.Is(invokeErr, ErrCredentialWorkerProtocolUnsupported) {
+				t.Fatalf("valid v1 success error = %v, want malformed non-admission error", invokeErr)
 			}
-			if calls != 1 {
-				t.Fatalf("v2 client attempts = %d, want exactly one with no v1 retry", calls)
-			}
-			if captured.Operation != OperationJobStartV2 || captured.JobStartV2 == nil || captured.JobStart != nil {
-				t.Fatalf("v2 client downgraded or stripped request: %#v", captured)
-			}
-			if !captured.JobStartV2.ProductionCredentialsRequested || captured.JobStartV2.AdmissionGrantID != start.AdmissionGrantID || !reflect.DeepEqual(captured.JobStartV2.Bindings, start.Bindings) {
-				t.Fatalf("v2 client stripped credential intent: %#v", captured.JobStartV2)
-			}
+			l8AssertWorkerV2SingleAttemptWithoutFallback(t, calls, captured, operation.operation)
 		})
 	}
+}
+
+func l8AssertWorkerV2SingleAttemptWithoutFallback(t *testing.T, calls int, captured []Request, operation string) {
+	t.Helper()
+	if calls != 1 || len(captured) != 1 {
+		t.Fatalf("transport calls = %d and captures = %d, want exactly one V2 attempt", calls, len(captured))
+	}
+	request := captured[0]
+	if request.Operation != operation || !l8WorkerV2RequestHasOnlyMatchingPayload(request) {
+		t.Fatalf("request = %#v, want exact %s V2 payload", request, operation)
+	}
+	if request.JobStart != nil || request.JobResolve != nil || request.JobStatus != nil || request.JobLogs != nil || request.JobCancel != nil {
+		t.Fatalf("request populated a v1 fallback payload: %#v", request)
+	}
+}
+
+func l8WorkerV1ValidQueuedJob(t *testing.T) Job {
+	t.Helper()
+	job := Job{
+		ContractVersion: JobContractVersion,
+		ID:              "job-v1-valid",
+		SubmissionKey:   jobSubmissionKey("submission-v1-valid"),
+		WorkerID:        "worker-v1-valid",
+		HostID:          "host-v1-valid",
+		RuntimeDriver:   RuntimeDriverMicroVM,
+		RuntimeID:       "runtime-v1-valid",
+		State:           JobStateQueued,
+		SubmittedAt:     time.Date(2026, time.August, 3, 2, 3, 4, 0, time.UTC),
+	}
+	if err := job.Validate(); err != nil {
+		t.Fatalf("valid v1 success fixture: %v", err)
+	}
+	return job
+}
+
+func l8WorkerV1ValidSuccessResponse(t *testing.T, operation, requestID string, job Job) Response {
+	t.Helper()
+	response := Response{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       requestID,
+		Operation:       operation,
+		OK:              true,
+	}
+	if operation == OperationJobLogs {
+		logs := JobLogsResponse{
+			ContractVersion: JobContractVersion,
+			JobID:           job.ID,
+			NextCursor:      0,
+		}
+		if err := logs.Validate(); err != nil {
+			t.Fatalf("valid v1 log success fixture: %v", err)
+		}
+		response.JobLogs = &logs
+		return response
+	}
+	response.Job = &job
+	return response
 }
 
 func TestL8WorkerV2ClientRejectsCredentialIdentityResponseMismatch(t *testing.T) {
@@ -347,16 +408,31 @@ func TestL8WorkerV2ClientRejectsCredentialIdentityResponseMismatch(t *testing.T)
 		name   string
 		mutate func(*JobCredentialIntentV2)
 	}{
-		{name: "production intent", mutate: func(intent *JobCredentialIntentV2) { intent.ProductionCredentialsRequested = false }},
+		{name: "production intent", mutate: func(intent *JobCredentialIntentV2) {
+			intent.ProductionCredentialsRequested = false
+			intent.PlanID = ""
+			intent.AdmissionGrantID = ""
+			intent.AdmissionGrantRevision = 0
+			intent.TemplatePolicyID = ""
+			intent.WorkspacePolicyID = ""
+			intent.SourceReferenceIDs = nil
+			intent.Bindings = nil
+		}},
 		{name: "plan", mutate: func(intent *JobCredentialIntentV2) { intent.PlanID = "plan-neighbor" }},
 		{name: "grant", mutate: func(intent *JobCredentialIntentV2) { intent.AdmissionGrantID = "grant-neighbor" }},
 		{name: "revision", mutate: func(intent *JobCredentialIntentV2) { intent.AdmissionGrantRevision++ }},
-		{name: "source", mutate: func(intent *JobCredentialIntentV2) { intent.SourceReferenceIDs[0] = "source-neighbor" }},
+		{name: "template policy", mutate: func(intent *JobCredentialIntentV2) { intent.TemplatePolicyID = "template-neighbor" }},
+		{name: "workspace policy", mutate: func(intent *JobCredentialIntentV2) { intent.WorkspacePolicyID = "workspace-neighbor" }},
+		{name: "source reference and linked binding", mutate: func(intent *JobCredentialIntentV2) {
+			intent.SourceReferenceIDs[0] = "source-neighbor"
+			intent.Bindings[0].SourceReferenceID = "source-neighbor"
+		}},
 		{name: "binding", mutate: func(intent *JobCredentialIntentV2) { intent.Bindings[0].BindingID = "binding-neighbor" }},
 		{name: "mode", mutate: func(intent *JobCredentialIntentV2) {
 			intent.Bindings[0].Mode = CredentialModeSSHAgent
 			intent.Bindings[0].ServiceID = ""
 		}},
+		{name: "service", mutate: func(intent *JobCredentialIntentV2) { intent.Bindings[0].ServiceID = "service-neighbor" }},
 	}
 	for _, tt := range mutations {
 		t.Run(tt.name, func(t *testing.T) {
@@ -364,6 +440,9 @@ func TestL8WorkerV2ClientRejectsCredentialIdentityResponseMismatch(t *testing.T)
 			intent := l8CloneWorkerV2Intent(job.CredentialIntent)
 			tt.mutate(&intent)
 			job.CredentialIntent = intent
+			if err := job.Validate(); err != nil {
+				t.Fatalf("internally valid mutated response fixture: %v", err)
+			}
 			client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, req Request) (Response, error) {
 				return Response{ProtocolVersion: ProtocolVersion, RequestID: req.RequestID, Operation: req.Operation, OK: true, JobV2: &job}, nil
 			})})

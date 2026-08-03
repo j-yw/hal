@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/format"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
-	pathpkg "path"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,161 +52,98 @@ func TestL8WorkerV2SourceGuardsRejectSecretAndLiveAuthoritySurfaces(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowedV2Files := map[string]bool{
-		"client.go":          true,
-		"handler.go":         true,
-		"job_helpers.go":     true,
-		"job_manager_v2.go":  true,
-		"job_service_v2.go":  true,
-		"job_store_v2.go":    true,
-		"job_v2_client.go":   true,
-		"job_v2_helpers.go":  true,
-		"job_v2_service.go":  true,
-		"job_v2_types.go":    true,
-		"protocol_decode.go": true,
-		"server.go":          true,
-		"types.go":           true,
-	}
-	v2Markers := []string{
-		"JobContractVersionV2",
-		"OperationJobStartV2",
-		"OperationJobResolveV2",
-		"OperationJobStatusV2",
-		"OperationJobLogsV2",
-		"OperationJobCancelV2",
-		"JobStartRequestV2",
-		"JobResolveRequestV2",
-		"JobStatusRequestV2",
-		"JobLogsRequestV2",
-		"JobCancelRequestV2",
-		"JobCredentialIntentV2",
-		"JobCredentialBindingV2",
-		"JobLogsResponseV2",
-		"JobV2",
-		`json:"jobStartV2`,
-		`json:"jobResolveV2`,
-		`json:"jobStatusV2`,
-		`json:"jobLogsV2`,
-		`json:"jobCancelV2`,
-		`json:"jobV2`,
-	}
 	sources := make(map[string]string)
 	for _, path := range files {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		source := l8ReadWorkerSource(t, path)
-		sources[path] = source
-		containsV2 := false
-		for _, marker := range v2Markers {
-			if strings.Contains(source, marker) {
-				containsV2 = true
-				break
-			}
+		matched, matchErr := build.Default.MatchFile(".", path)
+		if matchErr != nil {
+			t.Fatalf("match production file %s: %v", path, matchErr)
 		}
-		if containsV2 && !allowedV2Files[path] {
-			t.Fatalf("production file %s contains worker-v2 declarations/references outside the exact allowlist", path)
+		if !matched {
+			continue
 		}
+		sources[path] = l8ReadWorkerSource(t, path)
 	}
-	scopedSources, scopedImports, err := l8WorkerV2PackageScope(sources)
-	if err != nil {
-		t.Fatalf("scope worker-v2 production declarations: %v", err)
-	}
-	for path, scopedSource := range scopedSources {
-		if !allowedV2Files[path] {
-			t.Fatalf("worker-v2 declaration closure reaches production file %s outside the exact allowlist", path)
-		}
-		for _, forbidden := range []string{
-			`json:"value`,
-			`json:"secret`,
-			`json:"callback`,
-			`json:"ticket`,
-			`json:"socket`,
-			`json:"endpoint`,
-			`json:"hostPath`,
-			`json:"path`,
-			`json:"keySerial`,
-			`json:"execBinding`,
-			`json:"authenticatedPrincipal`,
-			"RawValue",
-			"SecretValue",
-			"Callback",
-			"Ticket",
-			"Socket",
-			"Endpoint",
-			"HostPath",
-			"KeySerial",
-			"LiveSecretSource",
-			"JobCredentialExecBinding",
-			"keyctl_read",
-			"tls.Conn",
-			"net.Listen",
-			"os/exec",
-		} {
-			if strings.Contains(scopedSource, forbidden) {
-				t.Fatalf("v2 protocol production file %s contains forbidden live/secret marker %q", path, forbidden)
-			}
-		}
-		for _, importPath := range scopedImports[path] {
-			for _, forbidden := range []string{
-				"github.com/jywlabs/hal/internal/credentialmemory",
-				"github.com/jywlabs/hal/internal/credentialsource",
-				"github.com/jywlabs/hal/internal/credentialproxy",
-				"github.com/jywlabs/hal/internal/factory",
-				"crypto/tls",
-				"net",
-				"net/http",
-				"os/exec",
-			} {
-				if importPath == forbidden || strings.HasPrefix(importPath, forbidden+"/") {
-					t.Fatalf("v2 protocol production file %s imports live/provider dependency %q", path, importPath)
-				}
-			}
-		}
+	if err := l8AuditWorkerV2Sources(sources, l8WorkerV2ProductionGuardPolicy()); err != nil {
+		t.Fatal(err)
 	}
 }
 
-type l8WorkerV2SourceFile struct {
-	path            string
-	fileSet         *token.FileSet
-	parsed          *ast.File
-	imports         map[string]string
-	alwaysImports   []string
-	declarationRefs []*l8WorkerV2SourceDeclaration
+type l8WorkerV2GuardPolicy struct {
+	dedicated map[string]bool
+	mixed     map[string]bool
 }
 
-type l8WorkerV2SourceDeclaration struct {
-	file        *l8WorkerV2SourceFile
-	declaration ast.Decl
+func l8WorkerV2ProductionGuardPolicy() l8WorkerV2GuardPolicy {
+	return l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{
+			"job_manager_v2.go": true,
+			"job_service_v2.go": true,
+			"job_store_v2.go":   true,
+			"job_v2_client.go":  true,
+			"job_v2_helpers.go": true,
+			"job_v2_service.go": true,
+			"job_v2_types.go":   true,
+		},
+		mixed: map[string]bool{
+			"client.go":          true,
+			"handler.go":         true,
+			"job_helpers.go":     true,
+			"protocol_decode.go": true,
+			"server.go":          true,
+			"types.go":           true,
+		},
+	}
 }
 
-func l8WorkerV2PackageScope(sources map[string]string) (map[string]string, map[string][]string, error) {
+func (policy l8WorkerV2GuardPolicy) allows(path string) bool {
+	base := filepath.Base(path)
+	return policy.dedicated[base] || policy.mixed[base]
+}
+
+type l8WorkerV2ParsedFile struct {
+	path          string
+	fileSet       *token.FileSet
+	parsed        *ast.File
+	imports       map[string]string
+	alwaysImports []string
+}
+
+type l8WorkerV2GuardScope struct {
+	file *l8WorkerV2ParsedFile
+	node ast.Node
+}
+
+func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPolicy) error {
 	paths := make([]string, 0, len(sources))
-	for sourcePath := range sources {
-		paths = append(paths, sourcePath)
+	for path := range sources {
+		paths = append(paths, path)
 	}
 	sort.Strings(paths)
 
-	declarationsByName := make(map[string][]*l8WorkerV2SourceDeclaration)
-	declarations := make([]*l8WorkerV2SourceDeclaration, 0)
-	for _, sourcePath := range paths {
-		fileSet := token.NewFileSet()
-		parsed, err := parser.ParseFile(fileSet, sourcePath, sources[sourcePath], 0)
+	fileSet := token.NewFileSet()
+	parsedFiles := make([]*l8WorkerV2ParsedFile, 0, len(paths))
+	filesByAST := make(map[*ast.File]*l8WorkerV2ParsedFile, len(paths))
+	var roots []l8WorkerV2GuardScope
+	for _, path := range paths {
+		parsed, err := parser.ParseFile(fileSet, path, sources[path], 0)
 		if err != nil {
-			return nil, nil, fmt.Errorf("parse %s: %w", sourcePath, err)
+			return fmt.Errorf("parse %s: %w", path, err)
 		}
-		file := &l8WorkerV2SourceFile{
-			path:    sourcePath,
+		file := &l8WorkerV2ParsedFile{
+			path:    path,
 			fileSet: fileSet,
 			parsed:  parsed,
 			imports: make(map[string]string, len(parsed.Imports)),
 		}
 		for _, spec := range parsed.Imports {
-			importPath, unquoteErr := strconv.Unquote(spec.Path.Value)
-			if unquoteErr != nil {
-				return nil, nil, fmt.Errorf("unquote import in %s: %w", sourcePath, unquoteErr)
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return fmt.Errorf("unquote import in %s: %w", path, err)
 			}
-			name := pathpkg.Base(importPath)
+			name := filepath.Base(importPath)
 			if spec.Name != nil {
 				name = spec.Name.Name
 			}
@@ -215,111 +153,422 @@ func l8WorkerV2PackageScope(sources map[string]string) (map[string]string, map[s
 			}
 			file.imports[name] = importPath
 		}
-		for _, declaration := range parsed.Decls {
-			if declaration, ok := declaration.(*ast.GenDecl); ok && declaration.Tok == token.IMPORT {
+		parsedFiles = append(parsedFiles, file)
+		filesByAST[parsed] = file
+
+		base := filepath.Base(path)
+		containsV2 := l8WorkerV2ASTContainsMarker(parsed)
+		if containsV2 && !policy.allows(path) {
+			return fmt.Errorf("production file %s contains worker-v2 declarations/references outside the exact allowlist", path)
+		}
+		switch {
+		case policy.dedicated[base]:
+			for _, declaration := range parsed.Decls {
+				if generated, ok := declaration.(*ast.GenDecl); ok && generated.Tok == token.IMPORT {
+					continue
+				}
+				for _, unit := range l8WorkerV2DeclarationUnits(declaration) {
+					roots = append(roots, l8WorkerV2GuardScope{file: file, node: unit})
+				}
+			}
+		case policy.mixed[base] && containsV2:
+			for _, declaration := range parsed.Decls {
+				for _, node := range l8WorkerV2MixedDeclarationScopes(declaration) {
+					roots = append(roots, l8WorkerV2GuardScope{file: file, node: node})
+				}
+			}
+		}
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+
+	info := &types.Info{
+		Types:      make(map[ast.Expr]types.TypeAndValue),
+		Defs:       make(map[*ast.Ident]types.Object),
+		Uses:       make(map[*ast.Ident]types.Object),
+		Selections: make(map[*ast.SelectorExpr]*types.Selection),
+	}
+	astFiles := make([]*ast.File, 0, len(parsedFiles))
+	for _, file := range parsedFiles {
+		astFiles = append(astFiles, file.parsed)
+	}
+	var typeImporter types.Importer = importer.Default()
+	for _, file := range parsedFiles {
+		allImports := append(append([]string(nil), file.alwaysImports...), l8WorkerV2ImportValues(file.imports)...)
+		for _, importPath := range allImports {
+			if strings.HasPrefix(importPath, "github.com/jywlabs/hal/") {
+				typeImporter = importer.ForCompiler(fileSet, "source", nil)
+				break
+			}
+		}
+	}
+	config := types.Config{Importer: typeImporter}
+	checkedPackage, err := config.Check("github.com/jywlabs/hal/internal/sandboxworker", fileSet, astFiles, info)
+	if err != nil {
+		return fmt.Errorf("type-check worker-v2 guard sources: %w", err)
+	}
+
+	objects := make(map[types.Object]l8WorkerV2GuardScope)
+	for _, file := range parsedFiles {
+		for _, declaration := range file.parsed.Decls {
+			switch typed := declaration.(type) {
+			case *ast.FuncDecl:
+				if object := info.Defs[typed.Name]; object != nil {
+					objects[object] = l8WorkerV2GuardScope{file: file, node: typed}
+				}
+			case *ast.GenDecl:
+				if typed.Tok == token.IMPORT {
+					continue
+				}
+				for _, spec := range typed.Specs {
+					switch value := spec.(type) {
+					case *ast.TypeSpec:
+						if object := info.Defs[value.Name]; object != nil {
+							objects[object] = l8WorkerV2GuardScope{file: file, node: value}
+						}
+					case *ast.ValueSpec:
+						for _, name := range value.Names {
+							if object := info.Defs[name]; object != nil {
+								objects[object] = l8WorkerV2GuardScope{file: file, node: value}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	selected := make(map[ast.Node]bool)
+	queue := make([]l8WorkerV2GuardScope, 0, len(roots))
+	selectScope := func(scope l8WorkerV2GuardScope) error {
+		if scope.node == nil || selected[scope.node] {
+			return nil
+		}
+		if !policy.allows(scope.file.path) {
+			return fmt.Errorf("worker-v2 declaration closure reaches production file %s outside the exact allowlist", scope.file.path)
+		}
+		selected[scope.node] = true
+		queue = append(queue, scope)
+		return nil
+	}
+	for _, root := range roots {
+		if err := selectScope(root); err != nil {
+			return err
+		}
+	}
+
+	for len(queue) > 0 {
+		scope := queue[0]
+		queue = queue[1:]
+		if err := l8InspectWorkerV2Scope(scope, info); err != nil {
+			return err
+		}
+		if err := l8RejectWorkerV2ForbiddenSurface(scope); err != nil {
+			return err
+		}
+		var closureErr error
+		ast.Inspect(scope.node, func(node ast.Node) bool {
+			if closureErr != nil {
+				return false
+			}
+			identifier, ok := node.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			object := info.Uses[identifier]
+			if object == nil || object.Pkg() != checkedPackage {
+				return true
+			}
+			referenced, ok := objects[object]
+			if !ok {
+				return true
+			}
+			for _, narrowed := range l8WorkerV2ReferencedDeclarationScopes(referenced) {
+				if err := selectScope(narrowed); err != nil {
+					closureErr = err
+					return false
+				}
+			}
+			return true
+		})
+		if closureErr != nil {
+			return closureErr
+		}
+	}
+	return nil
+}
+
+func l8WorkerV2ImportValues(imports map[string]string) []string {
+	values := make([]string, 0, len(imports))
+	for _, importPath := range imports {
+		values = append(values, importPath)
+	}
+	return values
+}
+
+func l8WorkerV2MixedDeclarationScopes(declaration ast.Decl) []ast.Node {
+	switch typed := declaration.(type) {
+	case *ast.GenDecl:
+		if typed.Tok == token.IMPORT {
+			return nil
+		}
+		var scopes []ast.Node
+		for _, spec := range typed.Specs {
+			if !l8WorkerV2ASTContainsMarker(spec) {
 				continue
 			}
-			for _, unit := range l8WorkerV2DeclarationUnits(declaration) {
-				reference := &l8WorkerV2SourceDeclaration{file: file, declaration: unit}
-				file.declarationRefs = append(file.declarationRefs, reference)
-				declarations = append(declarations, reference)
-				for _, name := range l8WorkerV2DeclaredNames(unit) {
-					declarationsByName[name] = append(declarationsByName[name], reference)
-				}
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || strings.Contains(strings.ToLower(typeSpec.Name.Name), "v2") {
+				scopes = append(scopes, spec)
+				continue
 			}
-		}
-	}
-
-	selected := make(map[*l8WorkerV2SourceDeclaration]ast.Node)
-	queue := make([]*l8WorkerV2SourceDeclaration, 0)
-	selectDeclaration := func(declaration *l8WorkerV2SourceDeclaration, scopedNode ast.Node) {
-		if selected[declaration] != nil || scopedNode == nil {
-			return
-		}
-		selected[declaration] = scopedNode
-		queue = append(queue, declaration)
-	}
-	for _, declaration := range declarations {
-		selectDeclaration(declaration, l8WorkerV2RootScope(declaration.declaration))
-	}
-	for len(queue) > 0 {
-		declaration := queue[0]
-		queue = queue[1:]
-		scopedNode := selected[declaration]
-		importIdentifiers := make(map[token.Pos]bool)
-		ast.Inspect(scopedNode, func(node ast.Node) bool {
-			selector, ok := node.(*ast.SelectorExpr)
+			structType, ok := typeSpec.Type.(*ast.StructType)
 			if !ok {
-				return true
+				scopes = append(scopes, spec)
+				continue
 			}
-			qualifier, isIdentifier := selector.X.(*ast.Ident)
-			if !isIdentifier {
-				return true
-			}
-			if _, isImport := declaration.file.imports[qualifier.Name]; isImport {
-				importIdentifiers[qualifier.Pos()] = true
-				importIdentifiers[selector.Sel.Pos()] = true
-			}
-			return true
-		})
-		ast.Inspect(scopedNode, func(node ast.Node) bool {
-			identifier, ok := node.(*ast.Ident)
-			if !ok || importIdentifiers[identifier.Pos()] {
-				return true
-			}
-			for _, referenced := range declarationsByName[identifier.Name] {
-				referencedScope := l8WorkerV2RootScope(referenced.declaration)
-				if referencedScope == nil {
-					referencedScope = referenced.declaration
+			for _, field := range structType.Fields.List {
+				if l8WorkerV2ASTContainsMarker(field) {
+					scopes = append(scopes, field)
 				}
-				selectDeclaration(referenced, referencedScope)
 			}
-			return true
-		})
+		}
+		return scopes
+	case *ast.FuncDecl:
+		if l8WorkerV2FunctionSignatureContainsMarker(typed) {
+			return []ast.Node{typed}
+		}
+		return l8WorkerV2MixedFunctionBodyScopes(typed.Body)
+	default:
+		return nil
 	}
+}
 
-	scopedSources := make(map[string]string)
-	scopedImports := make(map[string][]string)
-	buffers := make(map[string]*bytes.Buffer)
-	usedImports := make(map[string]map[string]bool)
-	for _, declaration := range declarations {
-		scopedNode := selected[declaration]
-		if scopedNode == nil {
+func l8WorkerV2FunctionSignatureContainsMarker(function *ast.FuncDecl) bool {
+	if function == nil {
+		return false
+	}
+	cloned := *function
+	cloned.Body = nil
+	return l8WorkerV2ASTContainsMarker(&cloned)
+}
+
+func l8WorkerV2MixedFunctionBodyScopes(body *ast.BlockStmt) []ast.Node {
+	if body == nil || !l8WorkerV2ASTContainsMarker(body) {
+		return nil
+	}
+	var scopes []ast.Node
+	foundV2Switch := false
+	for _, statement := range body.List {
+		var switchBody *ast.BlockStmt
+		var switchTag ast.Node
+		switch typed := statement.(type) {
+		case *ast.SwitchStmt:
+			switchBody = typed.Body
+			switchTag = typed.Tag
+		case *ast.TypeSwitchStmt:
+			switchBody = typed.Body
+			switchTag = typed.Assign
+		}
+		if switchBody == nil {
 			continue
 		}
-		if buffers[declaration.file.path] == nil {
-			buffers[declaration.file.path] = &bytes.Buffer{}
-			usedImports[declaration.file.path] = make(map[string]bool)
-			for _, importPath := range declaration.file.alwaysImports {
-				usedImports[declaration.file.path][importPath] = true
+		var matchingCases []ast.Node
+		for _, item := range switchBody.List {
+			clause, ok := item.(*ast.CaseClause)
+			if ok && l8WorkerV2CaseListContainsMarker(clause) {
+				matchingCases = append(matchingCases, clause)
 			}
 		}
-		ast.Inspect(scopedNode, func(node ast.Node) bool {
-			selector, ok := node.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			qualifier, ok := selector.X.(*ast.Ident)
-			if ok {
-				if importPath, exists := declaration.file.imports[qualifier.Name]; exists {
-					usedImports[declaration.file.path][importPath] = true
-				}
-			}
+		if len(matchingCases) == 0 {
+			continue
+		}
+		foundV2Switch = true
+		if switchTag != nil {
+			scopes = append(scopes, switchTag)
+		}
+		scopes = append(scopes, matchingCases...)
+	}
+	if !foundV2Switch {
+		return []ast.Node{body}
+	}
+	for _, statement := range body.List {
+		switch statement.(type) {
+		case *ast.SwitchStmt, *ast.TypeSwitchStmt:
+			continue
+		default:
+			scopes = append(scopes, statement)
+		}
+	}
+	return scopes
+}
+
+func l8WorkerV2CaseListContainsMarker(clause *ast.CaseClause) bool {
+	if clause == nil {
+		return false
+	}
+	for _, expression := range clause.List {
+		if l8WorkerV2ASTContainsMarker(expression) {
 			return true
-		})
-		if err := format.Node(buffers[declaration.file.path], declaration.file.fileSet, scopedNode); err != nil {
-			return nil, nil, fmt.Errorf("render declaration in %s: %w", declaration.file.path, err)
 		}
-		buffers[declaration.file.path].WriteByte('\n')
 	}
-	for sourcePath, buffer := range buffers {
-		scopedSources[sourcePath] = buffer.String()
-		for importPath := range usedImports[sourcePath] {
-			scopedImports[sourcePath] = append(scopedImports[sourcePath], importPath)
+	return false
+}
+
+func l8WorkerV2ReferencedDeclarationScopes(scope l8WorkerV2GuardScope) []l8WorkerV2GuardScope {
+	typeSpec, ok := scope.node.(*ast.TypeSpec)
+	if !ok || strings.Contains(strings.ToLower(typeSpec.Name.Name), "v2") {
+		return []l8WorkerV2GuardScope{scope}
+	}
+	structType, ok := typeSpec.Type.(*ast.StructType)
+	if !ok || !l8WorkerV2ASTContainsMarker(structType) {
+		return []l8WorkerV2GuardScope{scope}
+	}
+	var result []l8WorkerV2GuardScope
+	for _, field := range structType.Fields.List {
+		if l8WorkerV2ASTContainsMarker(field) {
+			result = append(result, l8WorkerV2GuardScope{file: scope.file, node: field})
 		}
-		sort.Strings(scopedImports[sourcePath])
 	}
-	return scopedSources, scopedImports, nil
+	return result
+}
+
+func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info) error {
+	var inspectionErr error
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		if inspectionErr != nil {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		kind := l8WorkerV2DynamicCallKind(call.Fun, info)
+		if kind != "" {
+			inspectionErr = fmt.Errorf("worker-v2 production path in %s uses forbidden %s dispatch", scope.file.path, kind)
+			return false
+		}
+		return true
+	})
+	return inspectionErr
+}
+
+func l8WorkerV2DynamicCallKind(expression ast.Expr, info *types.Info) string {
+	for {
+		switch typed := expression.(type) {
+		case *ast.ParenExpr:
+			expression = typed.X
+		case *ast.IndexExpr:
+			expression = typed.X
+		case *ast.IndexListExpr:
+			expression = typed.X
+		default:
+			goto unwrapped
+		}
+	}
+
+unwrapped:
+	switch typed := expression.(type) {
+	case *ast.Ident:
+		switch info.Uses[typed].(type) {
+		case *types.Builtin, *types.Func, *types.TypeName:
+			return ""
+		}
+	case *ast.SelectorExpr:
+		if selection := info.Selections[typed]; selection != nil {
+			receiver := selection.Recv()
+			if pointer, ok := receiver.(*types.Pointer); ok {
+				receiver = pointer.Elem()
+			}
+			if _, ok := receiver.Underlying().(*types.Interface); ok {
+				return "interface"
+			}
+			if _, ok := selection.Obj().(*types.Func); ok {
+				return ""
+			}
+		} else if _, ok := info.Uses[typed.Sel].(*types.Func); ok {
+			return ""
+		}
+	}
+	if _, ok := info.TypeOf(expression).Underlying().(*types.Signature); ok {
+		return "function-value"
+	}
+	return ""
+}
+
+func l8RejectWorkerV2ForbiddenSurface(scope l8WorkerV2GuardScope) error {
+	buffer := &bytes.Buffer{}
+	if err := format.Node(buffer, scope.file.fileSet, scope.node); err != nil {
+		return fmt.Errorf("render worker-v2 declaration in %s: %w", scope.file.path, err)
+	}
+	source := buffer.String()
+	for _, forbidden := range []string{
+		`json:"value`,
+		`json:"secret`,
+		`json:"callback`,
+		`json:"ticket`,
+		`json:"socket`,
+		`json:"endpoint`,
+		`json:"hostPath`,
+		`json:"path`,
+		`json:"keySerial`,
+		`json:"execBinding`,
+		`json:"authenticatedPrincipal`,
+		"RawValue",
+		"SecretValue",
+		"Callback",
+		"Ticket",
+		"Socket",
+		"Endpoint",
+		"HostPath",
+		"KeySerial",
+		"LiveSecretSource",
+		"JobCredentialExecBinding",
+		"keyctl_read",
+		"tls.Conn",
+		"net.Listen",
+		"os/exec",
+	} {
+		if strings.Contains(source, forbidden) {
+			return fmt.Errorf("v2 protocol production file %s contains forbidden live/secret marker %q", scope.file.path, forbidden)
+		}
+	}
+
+	usedImports := make(map[string]bool)
+	for _, importPath := range scope.file.alwaysImports {
+		usedImports[importPath] = true
+	}
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		qualifier, ok := selector.X.(*ast.Ident)
+		if ok {
+			if importPath, exists := scope.file.imports[qualifier.Name]; exists {
+				usedImports[importPath] = true
+			}
+		}
+		return true
+	})
+	for importPath := range usedImports {
+		for _, forbidden := range []string{
+			"github.com/jywlabs/hal/internal/credentialmemory",
+			"github.com/jywlabs/hal/internal/credentialsource",
+			"github.com/jywlabs/hal/internal/credentialproxy",
+			"github.com/jywlabs/hal/internal/factory",
+			"crypto/tls",
+			"net",
+			"net/http",
+			"os/exec",
+		} {
+			if importPath == forbidden || strings.HasPrefix(importPath, forbidden+"/") {
+				return fmt.Errorf("v2 protocol production file %s imports live/provider dependency %q", scope.file.path, importPath)
+			}
+		}
+	}
+	return nil
 }
 
 func l8WorkerV2DeclarationUnits(declaration ast.Decl) []ast.Decl {
@@ -338,65 +587,10 @@ func l8WorkerV2DeclarationUnits(declaration ast.Decl) []ast.Decl {
 	return units
 }
 
-func l8WorkerV2RootScope(declaration ast.Decl) ast.Node {
-	if !l8WorkerV2ASTContainsMarker(declaration) {
-		return nil
-	}
-	generated, ok := declaration.(*ast.GenDecl)
-	if !ok || len(generated.Specs) != 1 {
-		return declaration
-	}
-	typeSpec, ok := generated.Specs[0].(*ast.TypeSpec)
-	if !ok || strings.Contains(strings.ToLower(typeSpec.Name.Name), "v2") {
-		return declaration
-	}
-	structType, ok := typeSpec.Type.(*ast.StructType)
-	if !ok {
-		return declaration
-	}
-	fields := make([]*ast.Field, 0, len(structType.Fields.List))
-	for _, field := range structType.Fields.List {
-		if l8WorkerV2ASTContainsMarker(field) {
-			fields = append(fields, field)
-		}
-	}
-	if len(fields) == 0 {
-		return declaration
-	}
-	clonedFields := *structType.Fields
-	clonedFields.List = fields
-	clonedStruct := *structType
-	clonedStruct.Fields = &clonedFields
-	clonedTypeSpec := *typeSpec
-	clonedTypeSpec.Type = &clonedStruct
-	clonedDeclaration := *generated
-	clonedDeclaration.Specs = []ast.Spec{&clonedTypeSpec}
-	return &clonedDeclaration
-}
-
-func l8WorkerV2DeclaredNames(declaration ast.Decl) []string {
-	switch typed := declaration.(type) {
-	case *ast.FuncDecl:
-		return []string{typed.Name.Name}
-	case *ast.GenDecl:
-		var names []string
-		for _, spec := range typed.Specs {
-			switch value := spec.(type) {
-			case *ast.TypeSpec:
-				names = append(names, value.Name.Name)
-			case *ast.ValueSpec:
-				for _, name := range value.Names {
-					names = append(names, name.Name)
-				}
-			}
-		}
-		return names
-	default:
-		return nil
-	}
-}
-
 func l8WorkerV2ASTContainsMarker(node ast.Node) bool {
+	if node == nil {
+		return false
+	}
 	found := false
 	ast.Inspect(node, func(candidate ast.Node) bool {
 		if found {
@@ -413,84 +607,122 @@ func l8WorkerV2ASTContainsMarker(node ast.Node) bool {
 	return found
 }
 
-func TestL8WorkerV2MixedFileGuardIncludesTransitiveHelpersAndTheirImports(t *testing.T) {
-	generatedHelper := "hide" + strings.ReplaceAll(t.Name(), "/", "")
-	sources := map[string]string{"generated_fixture.go": `package sandboxworker
+func TestL8WorkerV2GuardMixedFunctionsAreNarrowAndTransitive(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"client.go": true}}
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"client.go": `package sandboxworker
 import httpalias "net/http"
-func JobStartV2Fixture() { ` + generatedHelper + `() }
-func ` + generatedHelper + `() { _, _ = httpalias.Get("https://authority.example.invalid") }
-func unrelatedV1() {}`}
-	scoped, imports, err := l8WorkerV2PackageScope(sources)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(scoped["generated_fixture.go"], generatedHelper) || !strings.Contains(scoped["generated_fixture.go"], "httpalias.Get") {
-		t.Fatalf("mixed-file scope omitted transitively called helper:\n%s", scoped["generated_fixture.go"])
-	}
-	if !reflect.DeepEqual(imports["generated_fixture.go"], []string{"net/http"}) {
-		t.Fatalf("mixed-file scoped imports = %v, want forbidden transitive import", imports)
-	}
+func JobStartV2Fixture() {}
+func unrelatedV1() { _, _ = httpalias.Get("https://legacy.example.invalid") }`,
+	}, policy)
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"client.go": `package sandboxworker
+import httpalias "net/http"
+func JobStartV2Fixture() { liveHelper() }
+func liveHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+	}, policy, "net/http")
 }
 
-func TestL8WorkerV2PackageGuardFollowsFunctionValueReferences(t *testing.T) {
-	generatedHelper := "functionValue" + strings.ReplaceAll(t.Name(), "/", "")
-	sources := map[string]string{"function_value_fixture.go": `package sandboxworker
-import tlsalias "crypto/tls"
-func JobLogsV2Fixture() { fn := ` + generatedHelper + `; fn() }
-func ` + generatedHelper + `() { _ = tlsalias.VersionTLS13 }`}
-	scoped, imports, err := l8WorkerV2PackageScope(sources)
-	if err != nil {
-		t.Fatal(err)
+func TestL8WorkerV2GuardMixedSwitchesInspectOnlyReachedV2Cases(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"handler.go": true}}
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"handler.go": `package sandboxworker
+import httpalias "net/http"
+func dispatch(operation string) {
+	switch operation {
+	case "job_start_v2":
+		safeHelper()
+	case "job_start":
+		_, _ = httpalias.Get("https://legacy.example.invalid")
 	}
-	if !strings.Contains(scoped["function_value_fixture.go"], generatedHelper) || !strings.Contains(scoped["function_value_fixture.go"], "tlsalias.VersionTLS13") {
-		t.Fatalf("package scope omitted function-value helper:\n%s", scoped["function_value_fixture.go"])
+}
+func safeHelper() {}`,
+	}, policy)
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"handler.go": `package sandboxworker
+import httpalias "net/http"
+func dispatch(operation string) {
+	switch operation {
+	case "job_start_v2":
+		_, _ = httpalias.Get("https://authority.example.invalid")
+	case "job_start":
 	}
-	if !reflect.DeepEqual(imports["function_value_fixture.go"], []string{"crypto/tls"}) {
-		t.Fatalf("function-value scoped imports = %v, want forbidden helper import", imports)
-	}
+}`,
+	}, policy, "net/http")
 }
 
-func TestL8WorkerV2PackageGuardDoesNotOvercloseMixedEnvelopeSiblings(t *testing.T) {
-	sources := map[string]string{
-		"types.go": `package sandboxworker
-type Request struct {
-	V1 *LegacyRequest ` + "`json:\"v1,omitempty\"`" + `
-	V2 *JobStartRequestV2 ` + "`json:\"v2,omitempty\"`" + `
-}
-type JobStartRequestV2 struct { ContractVersion string }`,
-		"job_types.go": `package sandboxworker
-type LegacyRequest struct { SecretValue string }`,
+func TestL8WorkerV2GuardResolvesExactReceiverMethodObjects(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{"job_v2_fixture.go": true},
+		mixed:     map[string]bool{"shared.go": true},
 	}
-	scoped, _, err := l8WorkerV2PackageScope(sources)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(scoped["types.go"], "LegacyRequest") || scoped["job_types.go"] != "" {
-		t.Fatalf("mixed V2 envelope overclosed through unrelated V1 sibling: types=%q legacy=%q", scoped["types.go"], scoped["job_types.go"])
-	}
-	if !strings.Contains(scoped["types.go"], "JobStartRequestV2") {
-		t.Fatalf("mixed V2 envelope omitted V2 field/type: %q", scoped["types.go"])
-	}
-}
-
-func TestL8WorkerV2PackageGuardIncludesCrossFileHelpersAndTheirImports(t *testing.T) {
-	generatedHelper := "crossFile" + strings.ReplaceAll(t.Name(), "/", "")
-	sources := map[string]string{
-		"v2_root.go": `package sandboxworker
-func JobStatusV2Fixture() { ` + generatedHelper + `() }`,
-		"shared_helper.go": `package sandboxworker
+	shared := `package sandboxworker
 import execalias "os/exec"
-func ` + generatedHelper + `() { _ = execalias.Command("forbidden-live-helper") }`,
+type safeReceiver struct{}
+func (safeReceiver) dispatch() {}
+type unsafeReceiver struct{}
+func (unsafeReceiver) dispatch() { _ = execalias.Command("forbidden-live-helper") }`
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+func JobStartV2Fixture() { safeReceiver{}.dispatch() }`,
+		"shared.go": shared,
+	}, policy)
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+func JobStartV2Fixture() { unsafeReceiver{}.dispatch() }`,
+		"shared.go": shared,
+	}, policy, "os/exec")
+}
+
+func TestL8WorkerV2GuardRejectsInterfaceAndFunctionValueDispatch(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{"job_v2_fixture.go": true},
+		mixed:     map[string]bool{"shared.go": true},
 	}
-	scoped, imports, err := l8WorkerV2PackageScope(sources)
-	if err != nil {
-		t.Fatal(err)
+	shared := `package sandboxworker
+type dispatcher interface { dispatch() }
+type concreteDispatcher struct{}
+func (concreteDispatcher) dispatch() {}`
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+func JobStartV2Fixture() { concreteDispatcher{}.dispatch() }`,
+		"shared.go": shared,
+	}, policy)
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+func JobStartV2Fixture(value dispatcher) { value.dispatch() }`,
+		"shared.go": shared,
+	}, policy, "interface dispatch")
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+func JobLogsV2Fixture() { fn := crossFileHelper; fn() }`,
+		"shared.go": `package sandboxworker
+func crossFileHelper() {}`,
+	}, policy, "function-value dispatch")
+}
+
+func TestL8WorkerV2GuardRequiresEveryReachedFileOnExactAllowlist(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+func JobStatusV2Fixture() { crossFileHelper() }`,
+		"unlisted_helper.go": `package sandboxworker
+func crossFileHelper() {}`,
+	}, policy, "outside the exact allowlist")
+}
+
+func l8AssertWorkerV2GuardAllows(t *testing.T, sources map[string]string, policy l8WorkerV2GuardPolicy) {
+	t.Helper()
+	if err := l8AuditWorkerV2Sources(sources, policy); err != nil {
+		t.Fatalf("guard rejected safe fixture: %v", err)
 	}
-	if !strings.Contains(scoped["shared_helper.go"], generatedHelper) || !strings.Contains(scoped["shared_helper.go"], "execalias.Command") {
-		t.Fatalf("package scope omitted cross-file helper:\n%s", scoped["shared_helper.go"])
-	}
-	if !reflect.DeepEqual(imports["shared_helper.go"], []string{"os/exec"}) {
-		t.Fatalf("cross-file scoped imports = %v, want forbidden helper import", imports)
+}
+
+func l8AssertWorkerV2GuardRejects(t *testing.T, sources map[string]string, policy l8WorkerV2GuardPolicy, want string) {
+	t.Helper()
+	err := l8AuditWorkerV2Sources(sources, policy)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("guard error = %v, want rejection containing %q", err, want)
 	}
 }
 

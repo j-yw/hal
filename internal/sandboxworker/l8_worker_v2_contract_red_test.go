@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestL8WorkerV2OperationsAndPayloadFieldsAreDistinctFromV1(t *testing.T) {
@@ -526,26 +527,38 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 	if err := state.Validate(); err != nil {
 		t.Fatalf("valid private durable v2 state: %v", err)
 	}
+	wantPrivateSchema := []string{
+		`JobV2|sandboxworker.JobV2|`,
+		`RequestKey|string|json:"requestKey"`,
+		`PrincipalID|string|json:"principalId"`,
+	}
+	privateType := reflect.TypeOf(state)
+	gotPrivateSchema := make([]string, 0, privateType.NumField())
+	for index := 0; index < privateType.NumField(); index++ {
+		field := privateType.Field(index)
+		gotPrivateSchema = append(gotPrivateSchema, field.Name+"|"+field.Type.String()+"|"+string(field.Tag))
+	}
+	if !reflect.DeepEqual(gotPrivateSchema, wantPrivateSchema) {
+		t.Fatalf("storedJobStateV2 schema = %q, want exact private wrapper %q", gotPrivateSchema, wantPrivateSchema)
+	}
 	for _, tt := range []struct {
-		name      string
-		principal string
+		name   string
+		mutate func(*storedJobStateV2)
 	}{
-		{name: "missing", principal: ""},
-		{name: "raw looking", principal: "/run/user/1000/peer"},
-		{name: "oversized", principal: strings.Repeat("p", 193)},
+		{name: "missing request key", mutate: func(candidate *storedJobStateV2) { candidate.RequestKey = "" }},
+		{name: "raw looking request key", mutate: func(candidate *storedJobStateV2) { candidate.RequestKey = "token=raw-request" }},
+		{name: "oversized request key", mutate: func(candidate *storedJobStateV2) { candidate.RequestKey = strings.Repeat("r", 193) }},
+		{name: "missing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "" }},
+		{name: "raw looking principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "/run/user/1000/peer" }},
+		{name: "oversized principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = strings.Repeat("p", 193) }},
 	} {
-		t.Run("rejects "+tt.name+" principal", func(t *testing.T) {
+		t.Run("rejects "+tt.name, func(t *testing.T) {
 			candidate := state
-			candidate.PrincipalID = tt.principal
+			tt.mutate(&candidate)
 			if err := candidate.Validate(); err == nil {
-				t.Fatal("private durable v2 state accepted unsafe principal identity")
+				t.Fatal("private durable v2 state accepted unsafe required identity")
 			}
 		})
-	}
-	typ := reflect.TypeOf(state)
-	field, ok := typ.FieldByName("PrincipalID")
-	if !ok || field.Type.Kind() != reflect.String || field.Tag.Get("json") != "principalId" {
-		t.Fatalf("storedJobStateV2 PrincipalID field = %#v, want private durable string json:\"principalId\"", field)
 	}
 	payload, err := json.Marshal(state)
 	if err != nil {
@@ -554,21 +567,56 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 	if !strings.Contains(string(payload), `"principalId":"`+principalID+`"`) {
 		t.Fatalf("private durable v2 state omits principal identity: %s", payload)
 	}
+	if !strings.Contains(string(payload), `"requestKey":"`+requestKey+`"`) {
+		t.Fatalf("private durable v2 state omits request identity: %s", payload)
+	}
 
-	privateDir := t.TempDir()
-	path := privateDir + "/job-v2.json"
-	if err := writePrivateFileAtomic(privateDir, "job-v2.json", append(payload, '\n')); err != nil {
-		t.Fatal(err)
+	stateDir := t.TempDir() + "/jobs-v2"
+	store, err := newJobStoreV2(stateDir)
+	if err != nil {
+		t.Fatalf("new v2 job store: %v", err)
 	}
-	var restarted storedJobStateV2
-	if err := decodePrivateJSONFile(path, &restarted, 64<<10); err != nil {
-		t.Fatalf("reload private durable v2 state: %v", err)
+	if err := store.save(state); err != nil {
+		t.Fatalf("save private durable v2 state through store: %v", err)
 	}
-	if err := restarted.Validate(); err != nil {
-		t.Fatalf("validate reloaded private durable v2 state: %v", err)
+	restartedStore, err := newJobStoreV2(stateDir)
+	if err != nil {
+		t.Fatalf("reopen v2 job store: %v", err)
 	}
-	if restarted.PrincipalID != principalID || !reflect.DeepEqual(restarted.JobV2, state.JobV2) || restarted.RequestKey != state.RequestKey {
-		t.Fatalf("private durable v2 restart round trip = %#v, want principal and exact safe job identity", restarted)
+	restarted, err := restartedStore.load(job.ID)
+	if err != nil {
+		t.Fatalf("load private durable v2 state after reopen: %v", err)
+	}
+	l8AssertWorkerV2PrivateStateIdentity(t, restarted, state)
+	listed, err := restartedStore.list()
+	if err != nil {
+		t.Fatalf("list private durable v2 state after reopen: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("listed private durable v2 states = %d, want 1", len(listed))
+	}
+	l8AssertWorkerV2PrivateStateIdentity(t, listed[0], state)
+
+	restartAt := job.SubmittedAt.Add(time.Minute)
+	reconciled, err := reconcileJobStoreV2AtStartup(restartedStore, restartAt)
+	if err != nil {
+		t.Fatalf("consume private durable v2 state during startup reconciliation: %v", err)
+	}
+	if len(reconciled) != 1 {
+		t.Fatalf("reconciled private durable v2 states = %d, want 1", len(reconciled))
+	}
+	if reconciled[0].State != JobStateInterrupted || reconciled[0].FailureCode != "daemon_restarted_before_start" || reconciled[0].FinishedAt == nil || !reconciled[0].FinishedAt.Equal(restartAt) {
+		t.Fatalf("startup reconciliation did not consume queued v2 state: %#v", reconciled[0].JobV2)
+	}
+	if reconciled[0].PrincipalID != principalID || reconciled[0].RequestKey != requestKey {
+		t.Fatalf("startup reconciliation lost private v2 identity: %#v", reconciled[0])
+	}
+	persistedReconciliation, err := restartedStore.load(job.ID)
+	if err != nil {
+		t.Fatalf("reload reconciled private durable v2 state: %v", err)
+	}
+	if !reflect.DeepEqual(persistedReconciliation, reconciled[0]) {
+		t.Fatalf("startup reconciliation was not durably persisted: got %#v want %#v", persistedReconciliation, reconciled[0])
 	}
 
 	publicValues := []any{
@@ -585,6 +633,40 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 		if strings.Contains(lowerJSON, "principal") || strings.Contains(lowerJSON, "peeruid") || strings.Contains(lowerJSON, "peergid") || strings.Contains(string(publicJSON), principalID) {
 			t.Fatalf("public/wire v2 value %d exposed private principal: %s", index, publicJSON)
 		}
+	}
+}
+
+func TestL8WorkerV2PublicContractsRemainPrincipalFree(t *testing.T) {
+	publicTypes := []reflect.Type{
+		reflect.TypeOf(JobCredentialBindingV2{}),
+		reflect.TypeOf(JobCredentialIntentV2{}),
+		reflect.TypeOf(JobStartRequestV2{}),
+		reflect.TypeOf(JobResolveRequestV2{}),
+		reflect.TypeOf(JobStatusRequestV2{}),
+		reflect.TypeOf(JobLogsRequestV2{}),
+		reflect.TypeOf(JobCancelRequestV2{}),
+		reflect.TypeOf(JobLogsResponseV2{}),
+		reflect.TypeOf(JobV2{}),
+		reflect.TypeOf(Request{}),
+		reflect.TypeOf(Response{}),
+	}
+	for _, typ := range publicTypes {
+		t.Run(typ.Name(), func(t *testing.T) {
+			for index := 0; index < typ.NumField(); index++ {
+				field := typ.Field(index)
+				fieldIdentity := strings.ToLower(field.Name + " " + string(field.Tag))
+				if strings.Contains(fieldIdentity, "principal") || strings.Contains(fieldIdentity, "peeruid") || strings.Contains(fieldIdentity, "peergid") {
+					t.Fatalf("public V2 contract %s exposes private principal field %s %s", typ.Name(), field.Name, field.Tag)
+				}
+			}
+		})
+	}
+}
+
+func l8AssertWorkerV2PrivateStateIdentity(t *testing.T, got, want storedJobStateV2) {
+	t.Helper()
+	if got.PrincipalID != want.PrincipalID || got.RequestKey != want.RequestKey || !reflect.DeepEqual(got.JobV2, want.JobV2) {
+		t.Fatalf("private durable v2 state = %#v, want exact safe job/request/principal identity %#v", got, want)
 	}
 }
 
