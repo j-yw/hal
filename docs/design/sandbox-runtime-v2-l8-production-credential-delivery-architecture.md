@@ -79,10 +79,13 @@ proof-reference types remain compatibility projections. They do not receive a
 raw value or an opaque live handle and cannot authorize production delivery.
 
 Raw values exist only inside explicitly live, non-JSON objects. No live object
-implements JSON or text marshaling. Errors expose stable codes and field or
-record positions only. Formatting, logging, reflection helpers, panic output,
-and test failure output must not stringify a secret, ticket, key blob, socket
-identity, or live endpoint.
+can serialize to JSON or text; designated live boundary types implement only
+fail-closed marshal methods that return a stable denial without inspecting
+their bodies. Safe `String`/`GoString` formatting likewise cannot traverse a
+live body. Errors expose stable codes and field or record positions only.
+Formatting, logging, reflection helpers, panic output, and test failure output
+must not stringify a secret, ticket, key blob, socket identity, live body, or
+live endpoint.
 
 Every Hal-owned secret copy uses mutable owned bytes. Warning-free production
 ingress is a worker-daemon-owned `LiveSecretSource` that fills a fixed-capacity
@@ -456,14 +459,32 @@ limits. Generic L6 HTTP and CONNECT remain byte-compatible for nonreserved
 requests. The reserved prefix always fails locally when the L8 handler is
 absent; it can never fall through to the generic forward proxy.
 
-`policyproxy.Config` receives at most one neutral
-`applicationroute.Handler`. L6 owns parse, prefix dispatch, connection bounds,
-and stop ordering; L8 owns request authorization and upstream behavior. A
-second handler or overlapping prefix is a construction error. The handler is
-started before the listener becomes ready, loses readiness with the L7 session,
-and is closed and awaited before the listener reports stopped. The neutral
-contract contains bounded request/response streams and safe metadata only, so
-`policyproxy` and `credentialproxy` never import one another.
+The neutral `applicationroute.Registry` registers singular leaf route handlers
+and may deterministically order multiple leaves only when their prefixes do not
+overlap. The Registry itself is the single composed `applicationroute.Handler`:
+it returns sorted defensive copies of every registered definition, while L6
+matches the parsed reserved path against those definitions and supplies the
+exact selected route ID when handling the request. D1 does not add a path to
+the live request or perform HTTP prefix parsing. The L6 `policyproxy.Config` D3
+seam still receives at most one optional composed handler, so presenting the
+Registry there does not widen L6 into a multiple-handler configuration surface.
+A second Config handler, duplicate route ID, or overlapping Registry prefix is
+a construction error. L6 owns parse, prefix selection, actual byte counting,
+connection bounds, and stop ordering; L8 owns request authorization and
+upstream behavior. D1 validates positive limit metadata, nonnegative
+request/response counts, and overflow-safe comparisons. Enforcement as bytes
+are read remains the L6/D3 handler and connection responsibility; neutral route
+limits are not required to equal any service catalog's fixed production limits.
+
+The composed handler is started before the listener becomes ready, loses
+readiness with the L7 session, and is closed and awaited before the listener
+reports stopped. A failed start stops admission and closes the failing handler
+then every previously started handler in reverse order. Any failed close leaves
+the Registry non-admitting in `cleanup_incomplete`; it cannot claim `closed`
+until a later `Close` retries every unconfirmed handler and all closes succeed.
+Raw start, close, and rollback causes are dropped in favor of stable sanitized
+errors. The neutral contract contains bounded request/response streams and safe
+metadata only, so `policyproxy` and `credentialproxy` never import one another.
 
 ### Static service registry
 
@@ -490,7 +511,7 @@ live dialer:
 
 | service ID | production consumer | local request | upstream transform |
 | --- | --- | --- | --- |
-| `azure-openai-responses-v1` | Hal's `internal/engine/pi` adapter using Pi provider `azure-openai-responses` | exact deployment-prefixed Responses route above; ticket carried only in one `api-key` | map the exact local route to the sealed upstream path and replace the ticket with borrowed source bytes in `api-key`; JSON request and JSON/event-stream response only |
+| `azure-openai-responses-v1` | Hal's `internal/engine/pi` adapter using Pi provider `azure-openai-responses` | exact deployment-prefixed Responses route above with sealed `api-version`; ticket carried only in one `api-key` | map the exact local route to upstream `POST /openai/v1/responses` and replace the ticket with borrowed source bytes in `api-key`; JSON request and JSON/event-stream response only |
 
 The host-admin entry fixes one upstream authority, TLS name/root policy,
 deployment/path prefix, and API version for the daemon generation. Hal's Pi
@@ -515,6 +536,14 @@ destroyed before cleanup. The binding is available only inside the exact job
 cgroup and mount namespace. Direct Pi `xai`, generic OpenAI-compatible, and
 other providers are unsupported by this first entry and cannot count as L8
 proof.
+
+This split follows the installed Pi coding agent 0.82.1 behavior: Pi normalizes
+the Azure Responses base to `/openai/v1`, its bundled Responses client appends
+`/responses`, and its Azure deployment endpoint set does not include the
+Responses operation. Consequently the local reserved route remains
+deployment-prefixed and query-sealed for Hal admission, but the sealed upstream
+path template is exactly `/openai/v1/responses`; Hal must not transform it to a
+deployment-prefixed upstream Responses path.
 
 The sealed invocation intentionally does not set `--no-context-files` or
 `--no-skills`: repository instructions and text-only skills are explicit
@@ -862,8 +891,9 @@ compatible where existing contracts require it.
 - Lock distinct `job_*_v2` operations and strict `sandboxjob-v2`,
   request-key/idempotency credential identity, unknown-field rejection, exact
   old-daemon failure, and no v1 retry.
-- Lock the neutral reserved application-route handler and collision/lifecycle
-  semantics before either L6 or L8 implementation imports it.
+- Lock the neutral reserved application-route handler, live stream
+  non-serialization, safe positive metadata/bounds, and collision/lifecycle
+  cleanup-retry semantics before either L6 or L8 implementation imports it.
 - Lock the initial host-owned HTTP service catalog before a live dialer exists.
 
 ### D2 — guest v2 and privileged-helper contracts
@@ -884,8 +914,8 @@ compatible where existing contracts require it.
   deployment/version registry before network behavior.
 - Implement the Pi Azure Responses hardening flags, clean environment, sealed
   model, post-admission transient runtime binding, exact deployment-prefixed
-  request framing, and destination/TLS/raw-HTTP/1.1 hardening with local
-  verified-TLS fixtures.
+  local request framing mapped to upstream `/openai/v1/responses`, and
+  destination/TLS/raw-HTTP/1.1 hardening with local verified-TLS fixtures.
 - Integrate the optional route into L6 and prove generic HTTP/CONNECT unchanged.
 
 ### D4 — guest tmpfs

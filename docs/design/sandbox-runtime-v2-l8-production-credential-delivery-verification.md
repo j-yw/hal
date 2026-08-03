@@ -84,7 +84,9 @@ tools/microvm/l8/verify-focused.sh
 ```
 
 The wrapper is the gate; running a skip-blind `go test -run` command by itself
-does not satisfy the selector-presence requirement.
+does not satisfy the selector-presence requirement. The D1
+`applicationroute` package participates in selector discovery, the focused
+run, the race run, and the `-count=25` repeated run.
 
 Required focused areas are:
 
@@ -109,10 +111,13 @@ Required focused areas are:
   old-server error envelope, host-CID validation, signed X25519 transcript,
   AEAD sequence/replay/tamper/unauthorized-host negatives, no fallback, strict
   frames, and cross-job negatives;
-- neutral route dispatch/collision/close ordering, exact deployment-prefixed
-  reserved HTTP framing, fixed ticket encoding/lease/request/concurrency and
-  body/response/SSE/idle limits, initial Pi Azure Responses clean-environment
-  flags and sealed model, disabled extension/prompt-template/theme/session
+- neutral leaf-route registration and composed Registry definition/dispatch
+  separation, collision/cleanup-retry ordering, live request and response
+  non-serialization, safe metadata bounds, exact deployment-prefixed
+  reserved HTTP framing mapped to upstream `/openai/v1/responses`, fixed ticket
+  encoding/lease/request/concurrency and body/response/SSE/idle limits,
+  initial Pi Azure Responses clean-environment flags and sealed model, disabled
+  extension/prompt-template/theme/session
   discovery, explicit text-only context/skill workspace policy,
   post-admission in-memory binding without RPC/job mutation, service catalog,
   HMAC digest, raw HTTP/1.1 mutable auth emission,
@@ -238,6 +243,13 @@ request and return a bounded response that Pi consumes successfully. A host
 Pi, adapter-only request generator, copied test double, inherited provider
 variables, direct Pi `xai`, arbitrary base URLs, and `--api-key` are negative
 cases.
+
+The Pi 0.82.1 compatibility probe also locks the path split independently of
+the fixture: the agent normalizes the Azure Responses base to `/openai/v1`, the
+bundled Responses client appends `/responses`, and the Azure deployment
+endpoint set excludes the Responses operation. The fixture must therefore
+observe upstream `POST /openai/v1/responses`; only Hal's reserved local route is
+deployment-prefixed and carries the exact sealed `api-version` query.
 
 Negative cases cover missing/wrong Node or Pi version/tree digest, wrong
 deployment/version/model, Pi ambient configuration

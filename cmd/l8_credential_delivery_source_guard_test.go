@@ -1149,6 +1149,9 @@ func TestL8CredentialDeliverySourceGuardsVerificationScriptsEnforcePresenceAndNo
 			t.Errorf("L8 focused verifier omits %q", required)
 		}
 	}
+	if got, want := strings.Count(focused, "./internal/sandboxruntime/networkenforcement/applicationroute"), 4; got != want {
+		t.Errorf("L8 focused verifier applicationroute selector occurrences = %d, want %d (presence, focused, race, repeated)", got, want)
+	}
 
 	live := readL8CredentialDeliveryFile(t, livePath)
 	liveTag := "l8_production_" + "credential_" + "delivery_live"
