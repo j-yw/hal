@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -578,132 +578,235 @@ func TestL8JobCredentialLifecycleFailureCancelLossAndReplayTransitions(t *testin
 	})
 }
 
-func TestL8JobCredentialLifecycleConcurrentTransitionsConvergeSafely(t *testing.T) {
+func TestL8JobCredentialLifecycleDefaultConstructorHasNoObservableHookState(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 3, 20, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
-	renewal := l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute))
+	lifecycle, err := NewJobCredentialLifecycle(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for methodIndex := 0; methodIndex < reflect.TypeOf(lifecycle).NumMethod(); methodIndex++ {
+		name := reflect.TypeOf(lifecycle).Method(methodIndex).Name
+		if strings.Contains(strings.ToLower(name), "hook") || strings.Contains(strings.ToLower(name), "pause") || strings.Contains(strings.ToLower(name), "option") {
+			t.Fatalf("default lifecycle exposes test seam method %s", name)
+		}
+	}
+	active := l8ActiveProof(t, identity, 1, now, now.Add(time.Minute))
+	renewed := l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute))
+	result := l8AwaitLifecycleTransition(t, l8StartLifecycleTransition(func() l8LifecycleTransitionResult {
+		if err := lifecycle.BeginPrepare(identity); err != nil {
+			return l8LifecycleTransitionResult{err: err}
+		}
+		if err := lifecycle.Activate(active); err != nil {
+			return l8LifecycleTransitionResult{err: err}
+		}
+		if err := lifecycle.BeginRenew(); err != nil {
+			return l8LifecycleTransitionResult{err: err}
+		}
+		return l8LifecycleTransitionResult{err: lifecycle.Renew(renewed)}
+	}))
+	if result.err != nil {
+		t.Fatalf("default constructor transition requires hook state: %v", result.err)
+	}
+	if lifecycle.State() != JobCredentialStateActive || !lifecycle.HasActiveProof() || lifecycle.Revision() != 2 {
+		t.Fatalf("default constructor state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
+	}
+}
 
+func TestL8JobCredentialLifecycleForcedRenewInterleavingsCannotResurrect(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 21, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	renewal := l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute))
+	t.Run("invalid transition never reaches hook", func(t *testing.T) {
+		pause := newL8LifecyclePause(jobCredentialLifecycleTransitionRenew)
+		defer pause.releaseNow()
+		lifecycle := l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit)
+		pause.arm()
+		if err := lifecycle.Renew(renewal); !errors.Is(err, ErrJobCredentialTransition) {
+			t.Fatalf("invalid renew error = %v, want transition rejection", err)
+		}
+		if pause.claimed.Load() {
+			t.Fatal("lifecycle hook ran before transition validation")
+		}
+	})
 	for _, tt := range []struct {
-		name        string
-		setup       func(*JobCredentialLifecycle) error
-		left        func(*JobCredentialLifecycle) l8LifecycleTransitionResult
-		right       func(*JobCredentialLifecycle) l8LifecycleTransitionResult
-		minRevision uint64
-		maxRevision uint64
+		name      string
+		contender func(*JobCredentialLifecycle) error
 	}{
-		{
-			name:  "renew versus loss",
-			setup: func(lifecycle *JobCredentialLifecycle) error { return lifecycle.BeginRenew() },
-			left: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
-				return l8LifecycleTransitionResult{err: lifecycle.Renew(renewal)}
-			},
-			right: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
-				return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{Identity: identity, Revision: 1, Code: JobCredentialFailureGuestHelperUnavailable})}
-			},
-			minRevision: 1,
-			maxRevision: 2,
-		},
-		{
-			name:  "renew versus begin revoke",
-			setup: func(lifecycle *JobCredentialLifecycle) error { return lifecycle.BeginRenew() },
-			left: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
-				return l8LifecycleTransitionResult{err: lifecycle.Renew(renewal)}
-			},
-			right: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
-				return l8LifecycleTransitionResult{err: lifecycle.BeginRevoke()}
-			},
-			minRevision: 1,
-			maxRevision: 2,
-		},
-		{
-			name:  "loss versus cancellation revoke",
-			setup: func(*JobCredentialLifecycle) error { return nil },
-			left: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
-				return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{Identity: identity, Revision: 1, Code: JobCredentialFailureGuestHelperUnavailable})}
-			},
-			right: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
-				return l8LifecycleTransitionResult{err: lifecycle.BeginRevoke()}
-			},
-			minRevision: 1,
-			maxRevision: 1,
-		},
+		{name: "loss commits while renew paused", contender: func(lifecycle *JobCredentialLifecycle) error {
+			return lifecycle.ObserveLoss(JobCredentialLoss{Identity: identity, Revision: 1, Code: JobCredentialFailureGuestHelperUnavailable})
+		}},
+		{name: "begin revoke commits while renew paused", contender: func(lifecycle *JobCredentialLifecycle) error {
+			return lifecycle.BeginRevoke()
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			lifecycle := l8ActiveLifecycle(t, identity, 1, now)
-			if err := tt.setup(lifecycle); err != nil {
+			pause := newL8LifecyclePause(jobCredentialLifecycleTransitionRenew)
+			defer pause.releaseNow()
+			lifecycle := l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit)
+			if err := lifecycle.BeginRenew(); err != nil {
 				t.Fatal(err)
 			}
-			results := l8RunConcurrentLifecycleTransitions(t,
-				func() l8LifecycleTransitionResult { return tt.left(lifecycle) },
-				func() l8LifecycleTransitionResult { return tt.right(lifecycle) },
-			)
-			for _, result := range results {
-				l8AssertSafeLifecycleTransitionError(t, result.err, identity)
+			pause.arm()
+			pausedRenew := l8StartLifecycleTransition(func() l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.Renew(renewal)}
+			})
+			pause.waitUntilEntered(t)
+			if lifecycle.State() != JobCredentialStateRenewing || !lifecycle.HasActiveProof() || lifecycle.Revision() != 1 {
+				t.Fatalf("paused renew committed early state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
 			}
-			if got := lifecycle.State(); got != JobCredentialStateRevoking {
-				t.Fatalf("concurrent state = %q, want revoking", got)
+			contender := l8AwaitLifecycleTransition(t, l8StartLifecycleTransition(func() l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: tt.contender(lifecycle)}
+			}))
+			if contender.err != nil {
+				t.Fatalf("revoking contender did not complete while renew hook was paused: %v", contender.err)
 			}
-			if lifecycle.HasActiveProof() {
-				t.Fatal("concurrent transition resurrected or retained active proof")
+			if lifecycle.State() != JobCredentialStateRevoking || lifecycle.HasActiveProof() || lifecycle.Revision() != 1 {
+				t.Fatalf("pre-resume state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
 			}
-			if revision := lifecycle.Revision(); revision < tt.minRevision || revision > tt.maxRevision {
-				t.Fatalf("concurrent revision = %d, want monotonic range [%d,%d]", revision, tt.minRevision, tt.maxRevision)
+			pause.releaseNow()
+			renewResult := l8AwaitLifecycleTransition(t, pausedRenew)
+			if renewResult.err == nil {
+				t.Fatal("renew committed a previously validated result after revocation won")
+			}
+			l8AssertSafeLifecycleTransitionError(t, renewResult.err, identity)
+			if lifecycle.State() != JobCredentialStateRevoking || lifecycle.HasActiveProof() || lifecycle.Revision() != 1 {
+				t.Fatalf("post-resume state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
 			}
 		})
 	}
+}
 
-	t.Run("cleanup versus conflicting retry", func(t *testing.T) {
-		lifecycle := l8ActiveLifecycle(t, identity, 1, now)
-		if err := lifecycle.BeginRevoke(); err != nil {
-			t.Fatal(err)
-		}
-		if err := l8RevokeError(lifecycle, l8CleanupProof(t, identity, 1, now.Add(time.Second)), now.Add(time.Second)); !errors.Is(err, ErrJobCredentialRevisionStale) {
-			t.Fatalf("seed cleanup incomplete: %v", err)
-		}
-		revokedAt := now.Add(2 * time.Second)
-		inspectedAt := now.Add(3 * time.Second)
-		leftProof := l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-concurrent-left")
-		rightProof := l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-concurrent-right")
-		results := l8RunConcurrentLifecycleTransitions(t,
-			func() l8LifecycleTransitionResult {
-				proof, err := lifecycle.Revoke(leftProof, inspectedAt)
+func TestL8JobCredentialLifecycleForcedCleanupInterleavingsRetainExactWinner(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 22, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	revokedAt := now.Add(2 * time.Second)
+	inspectedAt := now.Add(3 * time.Second)
+	for _, tt := range []struct {
+		name                  string
+		contender             func(*JobCredentialLifecycle) l8LifecycleTransitionResult
+		contenderWins         bool
+		wantContenderError    error
+		contenderDurableProof JobCredentialCleanupProof
+	}{
+		{name: "stale cleanup loses to paused exact cleanup", contender: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+			proof, err := lifecycle.Revoke(l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-stale-observation"), inspectedAt.Add(MaxJobCredentialCleanupObservationAge+time.Nanosecond))
+			return l8LifecycleTransitionResult{proof: proof, err: err}
+		}, wantContenderError: ErrJobCredentialProofStale},
+		{name: "conflicting cleanup commits before paused exact cleanup", contenderWins: true, contenderDurableProof: l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-conflicting-winner"), contender: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+			proof := l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-conflicting-winner")
+			durable, err := lifecycle.Revoke(proof, inspectedAt)
+			return l8LifecycleTransitionResult{proof: durable, err: err}
+		}},
+		{name: "loss completes before paused exact cleanup", contender: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+			return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{Identity: identity, Revision: 2, Code: JobCredentialFailureGuestHelperUnavailable})}
+		}},
+		{name: "begin revoke completes before paused exact cleanup", contender: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+			return l8LifecycleTransitionResult{err: lifecycle.BeginRevoke()}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pause := newL8LifecyclePause(jobCredentialLifecycleTransitionRevoke)
+			defer pause.releaseNow()
+			lifecycle := l8HookedCleanupIncompleteLifecycle(t, identity, now, pause.beforeCommit)
+			exact := l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-paused-exact")
+			pause.arm()
+			pausedCleanup := l8StartLifecycleTransition(func() l8LifecycleTransitionResult {
+				proof, err := lifecycle.Revoke(exact, inspectedAt)
 				return l8LifecycleTransitionResult{proof: proof, err: err}
-			},
-			func() l8LifecycleTransitionResult {
-				proof, err := lifecycle.Revoke(rightProof, inspectedAt)
-				return l8LifecycleTransitionResult{proof: proof, err: err}
-			},
-		)
-		var durable JobCredentialCleanupProof
-		successes := 0
-		for _, result := range results {
-			l8AssertSafeLifecycleTransitionError(t, result.err, identity)
-			if result.err == nil {
-				successes++
-				durable = result.proof
-			} else if !errors.Is(result.err, ErrJobCredentialReplayRejected) {
-				t.Fatalf("conflicting cleanup error = %v, want replay rejection", result.err)
+			})
+			pause.waitUntilEntered(t)
+			if lifecycle.State() != JobCredentialStateCleanupIncomplete || lifecycle.HasActiveProof() || lifecycle.Revision() != 2 {
+				t.Fatalf("paused cleanup committed early state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
 			}
-		}
-		if successes != 1 {
-			t.Fatalf("successful conflicting cleanup retries = %d, want exactly one", successes)
-		}
-		if !reflect.DeepEqual(durable, leftProof) && !reflect.DeepEqual(durable, rightProof) {
-			t.Fatal("successful cleanup retry did not return either exact admitted proof")
-		}
-		if lifecycle.State() != JobCredentialStateRevoked || lifecycle.HasActiveProof() || lifecycle.Revision() != 2 {
-			t.Fatalf("cleanup convergence state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
-		}
-		freshInspectedAt := inspectedAt.Add(time.Second)
-		fresh := l8CleanupProofWithTimes(t, identity, 2, revokedAt, freshInspectedAt, "cleanup-concurrent-reinspection")
-		stable, err := lifecycle.Revoke(fresh, freshInspectedAt)
-		if err != nil {
-			t.Fatalf("post-concurrency reinspection: %v", err)
-		}
-		if !reflect.DeepEqual(stable, durable) {
-			t.Fatal("cleanup concurrency changed the exact durable proof")
-		}
-	})
+			contender := l8AwaitLifecycleTransition(t, l8StartLifecycleTransition(func() l8LifecycleTransitionResult {
+				return tt.contender(lifecycle)
+			}))
+			if tt.wantContenderError != nil {
+				if !errors.Is(contender.err, tt.wantContenderError) || contender.err.Error() != tt.wantContenderError.Error() {
+					t.Fatalf("contender error = %v, want %v", contender.err, tt.wantContenderError)
+				}
+			} else if contender.err != nil {
+				t.Fatalf("contender did not complete while cleanup hook was paused: %v", contender.err)
+			}
+			pause.releaseNow()
+			pausedResult := l8AwaitLifecycleTransition(t, pausedCleanup)
+			var durable JobCredentialCleanupProof
+			if tt.contenderWins {
+				if !reflect.DeepEqual(contender.proof, tt.contenderDurableProof) {
+					t.Fatal("conflicting contender did not return its exact admitted proof")
+				}
+				if !errors.Is(pausedResult.err, ErrJobCredentialReplayRejected) {
+					t.Fatalf("paused stale commit error = %v, want replay rejection", pausedResult.err)
+				}
+				l8AssertSafeLifecycleTransitionError(t, pausedResult.err, identity)
+				durable = tt.contenderDurableProof
+			} else {
+				if pausedResult.err != nil {
+					t.Fatalf("exact cleanup after contender: %v", pausedResult.err)
+				}
+				if !reflect.DeepEqual(pausedResult.proof, exact) {
+					t.Fatal("exact cleanup did not retain its admitted proof")
+				}
+				durable = exact
+			}
+			if lifecycle.State() != JobCredentialStateRevoked || lifecycle.HasActiveProof() || lifecycle.Revision() != 2 {
+				t.Fatalf("cleanup convergence state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
+			}
+			freshInspectedAt := inspectedAt.Add(time.Second)
+			fresh := l8CleanupProofWithTimes(t, identity, 2, revokedAt, freshInspectedAt, "cleanup-forced-reinspection")
+			stable, err := lifecycle.Revoke(fresh, freshInspectedAt)
+			if err != nil {
+				t.Fatalf("post-interleaving reinspection: %v", err)
+			}
+			if !reflect.DeepEqual(stable, durable) {
+				t.Fatal("post-interleaving reinspection did not return exact durable winner")
+			}
+		})
+	}
+}
+
+func TestL8JobCredentialLifecycleForcedLossAndCancellationConverge(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 23, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	loss := func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+		return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{Identity: identity, Revision: 1, Code: JobCredentialFailureGuestHelperUnavailable})}
+	}
+	revoke := func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+		return l8LifecycleTransitionResult{err: lifecycle.BeginRevoke()}
+	}
+	for _, tt := range []struct {
+		name      string
+		pause     jobCredentialLifecycleTransition
+		paused    func(*JobCredentialLifecycle) l8LifecycleTransitionResult
+		contender func(*JobCredentialLifecycle) l8LifecycleTransitionResult
+	}{
+		{name: "paused loss revalidates after cancellation revoke", pause: jobCredentialLifecycleTransitionObserveLoss, paused: loss, contender: revoke},
+		{name: "paused cancellation revoke revalidates after loss", pause: jobCredentialLifecycleTransitionBeginRevoke, paused: revoke, contender: loss},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pause := newL8LifecyclePause(tt.pause)
+			defer pause.releaseNow()
+			lifecycle := l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit)
+			pause.arm()
+			pausedResult := l8StartLifecycleTransition(func() l8LifecycleTransitionResult { return tt.paused(lifecycle) })
+			pause.waitUntilEntered(t)
+			if lifecycle.State() != JobCredentialStateActive || !lifecycle.HasActiveProof() || lifecycle.Revision() != 1 {
+				t.Fatalf("paused loss/cancel committed early state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
+			}
+			contender := l8AwaitLifecycleTransition(t, l8StartLifecycleTransition(func() l8LifecycleTransitionResult { return tt.contender(lifecycle) }))
+			l8AssertSafeLifecycleTransitionError(t, contender.err, identity)
+			if contender.err != nil {
+				t.Fatalf("contender failed before paused transition resumed: %v", contender.err)
+			}
+			pause.releaseNow()
+			paused := l8AwaitLifecycleTransition(t, pausedResult)
+			l8AssertSafeLifecycleTransitionError(t, paused.err, identity)
+			if lifecycle.State() != JobCredentialStateRevoking || lifecycle.HasActiveProof() || lifecycle.Revision() != 1 {
+				t.Fatalf("loss/cancel convergence state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
+			}
+		})
+	}
 }
 
 func TestL8JobCredentialFullIdentityRequiresEveryFieldAndExactCorrelation(t *testing.T) {
@@ -1133,62 +1236,102 @@ type l8LifecycleTransitionResult struct {
 	err   error
 }
 
-func l8RunConcurrentLifecycleTransitions(t *testing.T, left, right func() l8LifecycleTransitionResult) [2]l8LifecycleTransitionResult {
-	t.Helper()
-	start := make(chan struct{})
-	startClosed := false
-	defer func() {
-		if !startClosed {
-			close(start)
-		}
-	}()
-	ready := make(chan struct{}, 2)
-	results := make(chan struct {
-		index  int
-		result l8LifecycleTransitionResult
-	}, 2)
-	var completed sync.WaitGroup
-	completed.Add(2)
-	launch := func(index int, transition func() l8LifecycleTransitionResult) {
-		go func() {
-			defer completed.Done()
-			ready <- struct{}{}
-			<-start
-			results <- struct {
-				index  int
-				result l8LifecycleTransitionResult
-			}{index: index, result: transition()}
-		}()
+type l8LifecyclePause struct {
+	transition jobCredentialLifecycleTransition
+	entered    chan struct{}
+	release    chan struct{}
+	claimed    atomic.Bool
+	released   atomic.Bool
+	armed      atomic.Bool
+}
+
+func newL8LifecyclePause(transition jobCredentialLifecycleTransition) *l8LifecyclePause {
+	return &l8LifecyclePause{
+		transition: transition,
+		entered:    make(chan struct{}),
+		release:    make(chan struct{}),
 	}
-	launch(0, left)
-	launch(1, right)
+}
+
+func (pause *l8LifecyclePause) beforeCommit(transition jobCredentialLifecycleTransition) {
+	if !pause.armed.Load() || transition != pause.transition || !pause.claimed.CompareAndSwap(false, true) {
+		return
+	}
+	close(pause.entered)
+	<-pause.release
+}
+
+func (pause *l8LifecyclePause) arm() {
+	pause.armed.Store(true)
+}
+
+func (pause *l8LifecyclePause) waitUntilEntered(t *testing.T) {
+	t.Helper()
 	timer := time.NewTimer(2 * time.Second)
 	defer timer.Stop()
-	for count := 0; count < 2; count++ {
-		select {
-		case <-ready:
-		case <-timer.C:
-			t.Fatal("timed out waiting for lifecycle transition start barrier")
-		}
-	}
-	close(start)
-	startClosed = true
-	done := make(chan struct{})
-	go func() {
-		completed.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-pause.entered:
 	case <-timer.C:
-		t.Fatal("timed out waiting for concurrent lifecycle transitions")
+		t.Fatal("timed out waiting for lifecycle transition validation hook")
 	}
-	var ordered [2]l8LifecycleTransitionResult
-	for count := 0; count < 2; count++ {
-		value := <-results
-		ordered[value.index] = value.result
+}
+
+func (pause *l8LifecyclePause) releaseNow() {
+	if pause.released.CompareAndSwap(false, true) {
+		close(pause.release)
 	}
-	return ordered
+}
+
+func l8StartLifecycleTransition(transition func() l8LifecycleTransitionResult) <-chan l8LifecycleTransitionResult {
+	result := make(chan l8LifecycleTransitionResult, 1)
+	go func() {
+		result <- transition()
+	}()
+	return result
+}
+
+func l8AwaitLifecycleTransition(t *testing.T, result <-chan l8LifecycleTransitionResult) l8LifecycleTransitionResult {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case value := <-result:
+		return value
+	case <-timer.C:
+		t.Fatal("timed out waiting for deterministic lifecycle transition")
+		return l8LifecycleTransitionResult{}
+	}
+}
+
+func l8HookedActiveLifecycle(t *testing.T, identity JobCredentialIdentity, revision uint64, now time.Time, beforeCommit func(jobCredentialLifecycleTransition)) *JobCredentialLifecycle {
+	t.Helper()
+	lifecycle, err := newJobCredentialLifecycleWithOptions(identity, jobCredentialLifecycleOptions{beforeCommit: beforeCommit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.BeginPrepare(identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.Activate(l8ActiveProof(t, identity, revision, now, now.Add(time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	return lifecycle
+}
+
+func l8HookedCleanupIncompleteLifecycle(t *testing.T, identity JobCredentialIdentity, now time.Time, beforeCommit func(jobCredentialLifecycleTransition)) *JobCredentialLifecycle {
+	t.Helper()
+	lifecycle := l8HookedActiveLifecycle(t, identity, 1, now, beforeCommit)
+	if err := lifecycle.BeginRevoke(); err != nil {
+		t.Fatal(err)
+	}
+	inspectedAt := now.Add(time.Second)
+	if err := l8RevokeError(lifecycle, l8CleanupProof(t, identity, 1, inspectedAt), inspectedAt); !errors.Is(err, ErrJobCredentialRevisionStale) {
+		t.Fatalf("seed cleanup incomplete: %v", err)
+	}
+	if lifecycle.State() != JobCredentialStateCleanupIncomplete || lifecycle.HasActiveProof() || lifecycle.Revision() != 2 {
+		t.Fatalf("cleanup-incomplete setup state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
+	}
+	return lifecycle
 }
 
 func l8AssertSafeLifecycleTransitionError(t *testing.T, err error, identity JobCredentialIdentity) {

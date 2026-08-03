@@ -36,6 +36,15 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 			packageTypeExpressions[packageKey][name] = expression
 		}
 	}
+	rootPackageKey := filepath.Clean(".") + "\x00credentialsource"
+	rootTypeExpressions := packageTypeExpressions[rootPackageKey]
+	validatedSafeMetadataTypes := map[string]bool{}
+	if len(rootTypeExpressions) > 0 {
+		for _, issue := range l8CredentialSourceSafeMetadataSchemaIssues(rootTypeExpressions, l8CredentialSourceSafeMetadataSchemas()) {
+			t.Errorf("production credential source safe metadata schema %s", issue)
+		}
+		validatedSafeMetadataTypes = l8CredentialSourceValidatedSafeMetadataTypes(rootTypeExpressions, l8CredentialSourceSafeMetadataSchemas())
+	}
 	denialMethods := map[string]map[string]bool{
 		"Registry":                   {},
 		"RegistryConfig":             {},
@@ -56,7 +65,7 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 		rootPackage := filepath.Clean(filepath.Dir(productionPath)) == "." && file.Name.Name == "credentialsource"
 		safeMetadataTypes := map[string]bool{}
 		if rootPackage {
-			safeMetadataTypes = l8CredentialSourceSafeMetadataTypes()
+			safeMetadataTypes = validatedSafeMetadataTypes
 		}
 		for _, spec := range file.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
@@ -100,6 +109,9 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 				t.Errorf("production credential source %s contains forbidden ingress/marshal marker %q", productionPath, marker)
 			}
 		}
+		for _, issue := range l8CredentialSourceRawHolderIssues(file, typeExpressions, safeMetadataTypes) {
+			t.Errorf("production credential source %s %s", productionPath, issue)
+		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch typed := node.(type) {
 			case *ast.TypeSpec:
@@ -108,15 +120,8 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 					return true
 				}
 				for _, field := range structure.Fields.List {
-					fieldName := "<embedded>"
-					if len(field.Names) > 0 {
-						fieldName = field.Names[0].Name
-					}
 					if len(field.Names) > 0 && field.Names[0].IsExported() {
 						t.Errorf("production credential source %s type %s exposes live/config field %s", productionPath, typed.Name.Name, field.Names[0].Name)
-					}
-					if !safeMetadataTypes[typed.Name.Name] && l8CredentialSourceRawType(field.Type, typeExpressions, safeMetadataTypes, map[string]bool{}) {
-						t.Errorf("production credential source %s live holder %s retains raw byte/string field %s", productionPath, typed.Name.Name, fieldName)
 					}
 				}
 			case *ast.FuncDecl:
@@ -230,15 +235,8 @@ func TestL8CredentialSourceAllLiveHoldersRejectRawAliasAndNestedState(t *testing
 	for _, tt := range []struct {
 		name       string
 		source     string
-		allowSafe  bool
 		wantIssues int
 	}{
-		{name: "safe sealed metadata", allowSafe: true, source: `package fixture
-type KeyIdentity struct{ description string }
-type SourceRegistration struct{ identity KeyIdentity }
-type RegistryConfig struct{ sources []SourceRegistration }
-type Registry struct{ config RegistryConfig }
-`},
 		{name: "registry raw alias", source: `package fixture
 type credentialBytes []byte
 type Registry struct{ retained credentialBytes }
@@ -261,11 +259,101 @@ type RegistryConfig struct{ payload []byte }
 				t.Fatal(err)
 			}
 			typeExpressions := l8CredentialSourceTypeExpressions(file)
-			safeMetadataTypes := map[string]bool{}
-			if tt.allowSafe {
-				safeMetadataTypes = l8CredentialSourceSafeMetadataTypes()
+			if issues := l8CredentialSourceRawHolderIssues(file, typeExpressions, nil); len(issues) != tt.wantIssues {
+				t.Fatalf("raw holder issues = %v, want %d", issues, tt.wantIssues)
 			}
-			if issues := l8CredentialSourceRawHolderIssues(file, typeExpressions, safeMetadataTypes); len(issues) != tt.wantIssues {
+		})
+	}
+}
+
+func TestL8CredentialSourceSafeMetadataSchemasAreExactAndOrderIndependent(t *testing.T) {
+	file := l8ParseCredentialSourceSafeMetadataFixture(t)
+	typeExpressions := l8CredentialSourceTypeExpressions(file)
+	schemas := l8CredentialSourceSafeMetadataSchemas()
+	if issues := l8CredentialSourceSafeMetadataSchemaIssues(typeExpressions, schemas); len(issues) != 0 {
+		t.Fatalf("valid safe metadata schema issues = %v", issues)
+	}
+	validated := l8CredentialSourceValidatedSafeMetadataTypes(typeExpressions, schemas)
+	if len(validated) != len(schemas) {
+		t.Fatalf("validated safe metadata types = %v, want every exact schema", validated)
+	}
+	if issues := l8CredentialSourceRawHolderIssues(file, typeExpressions, validated); len(issues) != 0 {
+		t.Fatalf("valid safe metadata raw holder issues = %v", issues)
+	}
+
+	for typeName := range schemas {
+		for _, mutation := range []struct {
+			name   string
+			mutate func(*ast.StructType)
+		}{
+			{name: "missing field", mutate: func(structure *ast.StructType) {
+				structure.Fields.List = structure.Fields.List[1:]
+			}},
+			{name: "extra field", mutate: func(structure *ast.StructType) {
+				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("unexpected", ast.NewIdent("bool")))
+			}},
+			{name: "duplicate field", mutate: func(structure *ast.StructType) {
+				first := structure.Fields.List[0]
+				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField(first.Names[0].Name, first.Type))
+			}},
+			{name: "unexpected string", mutate: func(structure *ast.StructType) {
+				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("retained", ast.NewIdent("string")))
+			}},
+			{name: "unexpected bytes", mutate: func(structure *ast.StructType) {
+				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("retained", &ast.ArrayType{Elt: ast.NewIdent("byte")}))
+			}},
+			{name: "unexpected raw alias", mutate: func(structure *ast.StructType) {
+				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("retained", ast.NewIdent("rawAlias")))
+			}},
+			{name: "unexpected nested raw state", mutate: func(structure *ast.StructType) {
+				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("retained", ast.NewIdent("nestedRaw")))
+			}},
+			{name: "expected field type alias", mutate: func(structure *ast.StructType) {
+				structure.Fields.List[0].Type = ast.NewIdent("safeAlias")
+			}},
+		} {
+			t.Run(typeName+"/"+mutation.name, func(t *testing.T) {
+				mutatedFile := l8ParseCredentialSourceSafeMetadataFixture(t)
+				typeSpec := l8CredentialSourceFixtureTypeSpec(t, mutatedFile, typeName)
+				structure, ok := typeSpec.Type.(*ast.StructType)
+				if !ok {
+					t.Fatalf("%s is not a struct", typeName)
+				}
+				mutation.mutate(structure)
+				mutatedTypes := l8CredentialSourceTypeExpressions(mutatedFile)
+				issues := l8CredentialSourceSafeMetadataSchemaIssues(mutatedTypes, schemas)
+				if len(issues) == 0 {
+					t.Fatalf("exact schema accepted %s mutation of %s", mutation.name, typeName)
+				}
+				if l8CredentialSourceValidatedSafeMetadataTypes(mutatedTypes, schemas)[typeName] {
+					t.Fatalf("mutated %s retained safe-metadata exemption", typeName)
+				}
+			})
+		}
+	}
+}
+
+func TestL8CredentialSourceRejectsPackageMutableRawStateOnly(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		source     string
+		wantIssues int
+	}{
+		{name: "package string", source: "package fixture\nvar retained string\n", wantIssues: 1},
+		{name: "package inferred string", source: "package fixture\nvar retained = \"secret\"\n", wantIssues: 1},
+		{name: "package bytes", source: "package fixture\nvar retained []byte\n", wantIssues: 1},
+		{name: "package raw alias", source: "package fixture\ntype rawAlias string\nvar retained rawAlias\n", wantIssues: 1},
+		{name: "package nested raw", source: "package fixture\ntype nestedRaw struct{ value string }\nvar retained nestedRaw\n", wantIssues: 2},
+		{name: "safe constant", source: "package fixture\nconst safeCode = \"credential_source_denied\"\n"},
+		{name: "function local transient", source: "package fixture\nfunc transient(){ value := make([]byte, 32); _ = value }\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), tt.name+".go", tt.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			typeExpressions := l8CredentialSourceTypeExpressions(file)
+			if issues := l8CredentialSourceRawHolderIssues(file, typeExpressions, nil); len(issues) != tt.wantIssues {
 				t.Fatalf("raw holder issues = %v, want %d", issues, tt.wantIssues)
 			}
 		})
@@ -313,23 +401,67 @@ func l8CredentialSourcePackageKey(productionPath string, file *ast.File) string 
 
 func l8CredentialSourceRawHolderIssues(file *ast.File, typeExpressions map[string]ast.Expr, safeMetadataTypes map[string]bool) []string {
 	var issues []string
-	ast.Inspect(file, func(node ast.Node) bool {
-		typeSpec, ok := node.(*ast.TypeSpec)
-		if !ok || safeMetadataTypes[typeSpec.Name.Name] {
-			return true
-		}
-		structure, ok := typeSpec.Type.(*ast.StructType)
+	for _, declaration := range file.Decls {
+		generic, ok := declaration.(*ast.GenDecl)
 		if !ok {
-			return true
+			continue
 		}
-		for _, field := range structure.Fields.List {
-			if l8CredentialSourceRawType(field.Type, typeExpressions, safeMetadataTypes, map[string]bool{}) {
-				issues = append(issues, typeSpec.Name.Name)
+		switch generic.Tok {
+		case token.TYPE:
+			for _, spec := range generic.Specs {
+				typeSpec := spec.(*ast.TypeSpec)
+				if safeMetadataTypes[typeSpec.Name.Name] {
+					continue
+				}
+				structure, ok := typeSpec.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				for _, field := range structure.Fields.List {
+					if l8CredentialSourceRawType(field.Type, typeExpressions, safeMetadataTypes, map[string]bool{}) {
+						issues = append(issues, "live holder "+typeSpec.Name.Name+" retains raw state")
+					}
+				}
+			}
+		case token.VAR:
+			for _, spec := range generic.Specs {
+				valueSpec := spec.(*ast.ValueSpec)
+				raw := valueSpec.Type != nil && l8CredentialSourceRawType(valueSpec.Type, typeExpressions, nil, map[string]bool{})
+				if !raw {
+					for _, value := range valueSpec.Values {
+						if l8CredentialSourceRawValue(value, typeExpressions) {
+							raw = true
+							break
+						}
+					}
+				}
+				if raw {
+					issues = append(issues, "package variable retains mutable raw state")
+				}
 			}
 		}
-		return true
-	})
+	}
 	return issues
+}
+
+func l8CredentialSourceRawValue(expression ast.Expr, typeExpressions map[string]ast.Expr) bool {
+	switch typed := expression.(type) {
+	case *ast.BasicLit:
+		return typed.Kind == token.STRING
+	case *ast.CompositeLit:
+		return l8CredentialSourceRawType(typed.Type, typeExpressions, nil, map[string]bool{})
+	case *ast.UnaryExpr:
+		return l8CredentialSourceRawValue(typed.X, typeExpressions)
+	case *ast.ParenExpr:
+		return l8CredentialSourceRawValue(typed.X, typeExpressions)
+	case *ast.CallExpr:
+		if identifier, ok := typed.Fun.(*ast.Ident); ok && (identifier.Name == "make" || identifier.Name == "new") && len(typed.Args) > 0 {
+			return l8CredentialSourceRawType(typed.Args[0], typeExpressions, nil, map[string]bool{})
+		}
+		return l8CredentialSourceRawType(typed.Fun, typeExpressions, nil, map[string]bool{})
+	default:
+		return false
+	}
 }
 
 func l8CredentialSourceForbiddenSelectorIssues(file *ast.File) []string {
@@ -380,25 +512,26 @@ func l8CredentialSourceForbiddenSelectorIssues(file *ast.File) []string {
 }
 
 func TestL8CredentialSourceRawAliasAndNestedLiveStateDetection(t *testing.T) {
-	typeExpressions := map[string]ast.Expr{
-		"rawAlias": ast.NewIdent("string"),
-		"rawBytes": &ast.ArrayType{Elt: ast.NewIdent("byte")},
-		"nested": &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
-			{Names: []*ast.Ident{ast.NewIdent("payload")}, Type: ast.NewIdent("rawAlias")},
-		}}},
-		"nestedMap": &ast.MapType{Key: ast.NewIdent("string"), Value: ast.NewIdent("rawBytes")},
-		"safeWrapper": &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
-			{Names: []*ast.Ident{ast.NewIdent("source")}, Type: ast.NewIdent("SourceRegistration")},
-		}}},
-	}
+	file := l8ParseCredentialSourceSafeMetadataFixture(t)
+	typeExpressions := l8CredentialSourceTypeExpressions(file)
+	typeExpressions["rawAlias"] = ast.NewIdent("string")
+	typeExpressions["rawBytes"] = &ast.ArrayType{Elt: ast.NewIdent("byte")}
+	typeExpressions["nested"] = &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+		{Names: []*ast.Ident{ast.NewIdent("payload")}, Type: ast.NewIdent("rawAlias")},
+	}}}
+	typeExpressions["nestedMap"] = &ast.MapType{Key: ast.NewIdent("string"), Value: ast.NewIdent("rawBytes")}
+	typeExpressions["safeWrapper"] = &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+		{Names: []*ast.Ident{ast.NewIdent("source")}, Type: ast.NewIdent("SourceRegistration")},
+	}}}
+	validatedSafeMetadataTypes := l8CredentialSourceValidatedSafeMetadataTypes(typeExpressions, l8CredentialSourceSafeMetadataSchemas())
 
 	for _, name := range []string{"rawAlias", "rawBytes", "nested", "nestedMap"} {
-		if !l8CredentialSourceRawType(ast.NewIdent(name), typeExpressions, l8CredentialSourceSafeMetadataTypes(), map[string]bool{}) {
+		if !l8CredentialSourceRawType(ast.NewIdent(name), typeExpressions, validatedSafeMetadataTypes, map[string]bool{}) {
 			t.Errorf("raw live state detector permits alias/nested bypass %s", name)
 		}
 	}
 	for _, expression := range []ast.Expr{ast.NewIdent("SourceRegistration"), ast.NewIdent("safeWrapper")} {
-		if l8CredentialSourceRawType(expression, typeExpressions, l8CredentialSourceSafeMetadataTypes(), map[string]bool{}) {
+		if l8CredentialSourceRawType(expression, typeExpressions, validatedSafeMetadataTypes, map[string]bool{}) {
 			t.Errorf("raw live state detector rejects sealed safe metadata %T", expression)
 		}
 	}
@@ -415,11 +548,177 @@ func l8CredentialSourceReceiverName(expression ast.Expr) string {
 	}
 }
 
-func l8CredentialSourceSafeMetadataTypes() map[string]bool {
-	return map[string]bool{
-		"KeyIdentity": true, "KeyDescriptor": true, "SourceRegistration": true,
-		"AdmissionGrantRegistration": true, "RegistryConfig": true,
+func l8CredentialSourceSafeMetadataSchemas() map[string]map[string]string {
+	return map[string]map[string]string{
+		"KeyIdentity": {
+			"serial": "int32", "keyType": "string", "ownerUID": "uint32", "ownerGID": "uint32",
+			"permissions": "KeyPermission", "description": "string",
+		},
+		"KeyDescriptor": {
+			"keyType": "string", "ownerUID": "uint32", "ownerGID": "uint32",
+			"permissions": "KeyPermission", "description": "string",
+		},
+		"SourceRegistration": {
+			"referenceID": "string", "identity": "KeyIdentity",
+		},
+		"AdmissionGrantRegistration": {
+			"authority":          "*sandboxruntime.AuthenticatedWorkerPrincipalAuthority",
+			"principal":          "sandboxruntime.AuthenticatedWorkerPrincipal",
+			"request":            "sandboxruntime.JobCredentialAdmissionRequest",
+			"sourceReferenceIDs": "[]string",
+		},
+		"RegistryConfig": {
+			"authority": "*sandboxruntime.AuthenticatedWorkerPrincipalAuthority",
+			"ownerUID":  "uint32",
+			"ownerGID":  "uint32",
+			"sources":   "[]SourceRegistration",
+			"grants":    "[]AdmissionGrantRegistration",
+		},
 	}
+}
+
+func l8CredentialSourceSafeMetadataSchemaIssues(typeExpressions map[string]ast.Expr, schemas map[string]map[string]string) []string {
+	var issues []string
+	for typeName, schema := range schemas {
+		expression, ok := typeExpressions[typeName]
+		if !ok {
+			issues = append(issues, typeName+" is missing")
+			continue
+		}
+		structure, ok := expression.(*ast.StructType)
+		if !ok {
+			issues = append(issues, typeName+" is not an exact struct schema")
+			continue
+		}
+		actual := map[string]string{}
+		for _, field := range structure.Fields.List {
+			if len(field.Names) != 1 {
+				issues = append(issues, typeName+" contains embedded or grouped fields")
+				continue
+			}
+			fieldName := field.Names[0].Name
+			if _, exists := actual[fieldName]; exists {
+				issues = append(issues, typeName+" duplicates field "+fieldName)
+				continue
+			}
+			actual[fieldName] = l8CredentialSourceTypeString(field.Type)
+		}
+		for fieldName, expectedType := range schema {
+			actualType, exists := actual[fieldName]
+			if !exists {
+				issues = append(issues, typeName+" is missing field "+fieldName)
+				continue
+			}
+			if actualType != expectedType {
+				issues = append(issues, typeName+" field "+fieldName+" has type "+actualType+", want "+expectedType)
+			}
+		}
+		for fieldName := range actual {
+			if _, expected := schema[fieldName]; !expected {
+				issues = append(issues, typeName+" contains unexpected field "+fieldName)
+			}
+		}
+		if len(actual) != len(schema) {
+			issues = append(issues, typeName+" field count differs from exact schema")
+		}
+	}
+	return issues
+}
+
+func l8CredentialSourceValidatedSafeMetadataTypes(typeExpressions map[string]ast.Expr, schemas map[string]map[string]string) map[string]bool {
+	validated := map[string]bool{}
+	for typeName, schema := range schemas {
+		if len(l8CredentialSourceSafeMetadataSchemaIssues(typeExpressions, map[string]map[string]string{typeName: schema})) == 0 {
+			validated[typeName] = true
+		}
+	}
+	return validated
+}
+
+func l8CredentialSourceTypeString(expression ast.Expr) string {
+	switch typed := expression.(type) {
+	case *ast.Ident:
+		return typed.Name
+	case *ast.SelectorExpr:
+		return l8CredentialSourceTypeString(typed.X) + "." + typed.Sel.Name
+	case *ast.StarExpr:
+		return "*" + l8CredentialSourceTypeString(typed.X)
+	case *ast.ArrayType:
+		if typed.Len != nil {
+			return "[array]" + l8CredentialSourceTypeString(typed.Elt)
+		}
+		return "[]" + l8CredentialSourceTypeString(typed.Elt)
+	case *ast.MapType:
+		return "map[" + l8CredentialSourceTypeString(typed.Key) + "]" + l8CredentialSourceTypeString(typed.Value)
+	case *ast.ParenExpr:
+		return l8CredentialSourceTypeString(typed.X)
+	default:
+		return "<unexpected>"
+	}
+}
+
+func l8ParseCredentialSourceSafeMetadataFixture(t *testing.T) *ast.File {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "safe_metadata.go", `package credentialsource
+import sandboxruntime "github.com/jywlabs/hal/internal/sandboxruntime"
+type KeyPermission uint32
+type safeAlias = int32
+type KeyIdentity struct {
+	description string
+	permissions KeyPermission
+	ownerGID uint32
+	serial int32
+	ownerUID uint32
+	keyType string
+}
+type KeyDescriptor struct {
+	description string
+	ownerGID uint32
+	permissions KeyPermission
+	keyType string
+	ownerUID uint32
+}
+type SourceRegistration struct { identity KeyIdentity; referenceID string }
+type AdmissionGrantRegistration struct {
+	sourceReferenceIDs []string
+	request sandboxruntime.JobCredentialAdmissionRequest
+	authority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
+	principal sandboxruntime.AuthenticatedWorkerPrincipal
+}
+type RegistryConfig struct {
+	grants []AdmissionGrantRegistration
+	ownerGID uint32
+	sources []SourceRegistration
+	authority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
+	ownerUID uint32
+}
+`, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+func l8CredentialSourceFixtureTypeSpec(t *testing.T, file *ast.File, typeName string) *ast.TypeSpec {
+	t.Helper()
+	for _, declaration := range file.Decls {
+		generic, ok := declaration.(*ast.GenDecl)
+		if !ok || generic.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range generic.Specs {
+			typeSpec := spec.(*ast.TypeSpec)
+			if typeSpec.Name.Name == typeName {
+				return typeSpec
+			}
+		}
+	}
+	t.Fatalf("fixture type %s not found", typeName)
+	return nil
+}
+
+func l8CredentialSourceFixtureField(name string, expression ast.Expr) *ast.Field {
+	return &ast.Field{Names: []*ast.Ident{ast.NewIdent(name)}, Type: expression}
 }
 
 func l8CredentialSourceRawType(expression ast.Expr, typeExpressions map[string]ast.Expr, safeMetadataTypes map[string]bool, seen map[string]bool) bool {

@@ -77,6 +77,7 @@ run_l8_no_skip race go test -race -count=1 -json -timeout=360s \
   ./internal/credentialmemory \
   ./internal/credentialsource \
   ./internal/credentialproxy \
+  ./internal/sandboxruntime \
   ./internal/sandboxruntime/microvm/guestagent/... \
   ./internal/sandboxruntime/microvm/firecrackerhost \
   ./internal/sandboxworker \
@@ -86,5 +87,6 @@ run_l8_no_skip repeated go test -count=25 -json -timeout=420s \
   ./internal/credentialmemory \
   ./internal/credentialsource \
   ./internal/credentialproxy \
+  ./internal/sandboxruntime \
   ./internal/sandboxruntime/microvm/guestagent/server/... \
   ./internal/sandboxworker -run '^TestL8'
