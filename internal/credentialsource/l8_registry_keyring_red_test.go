@@ -755,28 +755,32 @@ func TestL8CredentialSourceLiveStateAndConfigurationCannotLeakThroughSerializati
 		t.Fatal(err)
 	}
 
-	for label, value := range map[string]any{
-		"registry":            registry,
-		"authorization":       authorization,
-		"live source":         source,
-		"registry config":     config,
-		"source registration": registration,
-		"grant registration":  grant,
-		"key identity":        identity,
-		"key descriptor":      descriptor,
+	for _, liveValue := range []struct {
+		label          string
+		value          any
+		expectedFormat string
+	}{
+		{label: "registry", value: registry, expectedFormat: "<credentialsource.Registry>"},
+		{label: "authorization", value: authorization, expectedFormat: "<credentialsource.registryAuthorization>"},
+		{label: "live source", value: source, expectedFormat: "<credentialsource.keyringLiveSecretSource>"},
+		{label: "registry config", value: config, expectedFormat: "<credentialsource.RegistryConfig>"},
+		{label: "source registration", value: registration, expectedFormat: "<credentialsource.SourceRegistration>"},
+		{label: "grant registration", value: grant, expectedFormat: "<credentialsource.AdmissionGrantRegistration>"},
+		{label: "key identity", value: identity, expectedFormat: "<credentialsource.KeyIdentity>"},
+		{label: "key descriptor", value: descriptor, expectedFormat: "<credentialsource.KeyDescriptor>"},
 	} {
-		l8AssertCredentialSourceLiveValue(t, label, value, []string{
+		l8AssertCredentialSourceLiveValue(t, liveValue.label, liveValue.value, liveValue.expectedFormat, []string{
 			"41", "42", "43", "1001", "1002", "hal-primary", "hal-secondary", "hal-ungranted",
 			"source-primary", "source-secondary", "source-ungranted", "grant-primary",
 			"principal-owner", "peercred-owner", "daemon-generation-1", "runtime-generation-1",
 		})
-		typeOfValue := reflect.TypeOf(value)
+		typeOfValue := reflect.TypeOf(liveValue.value)
 		if typeOfValue.Kind() == reflect.Pointer {
 			typeOfValue = typeOfValue.Elem()
 		}
 		for fieldIndex := 0; fieldIndex < typeOfValue.NumField(); fieldIndex++ {
 			if field := typeOfValue.Field(fieldIndex); field.IsExported() {
-				t.Fatalf("%s exposes live field %s", label, field.Name)
+				t.Fatalf("%s exposes live field %s", liveValue.label, field.Name)
 			}
 		}
 	}
@@ -812,7 +816,7 @@ func TestL8CredentialSourceLiveStateAndConfigurationCannotLeakThroughSerializati
 	}
 }
 
-func l8AssertCredentialSourceLiveValue(t *testing.T, label string, value any, forbidden []string) {
+func l8AssertCredentialSourceLiveValue(t *testing.T, label string, value any, expectedFormat string, forbidden []string) {
 	t.Helper()
 	jsonCodec, ok := value.(json.Marshaler)
 	if !ok {
@@ -831,31 +835,22 @@ func l8AssertCredentialSourceLiveValue(t *testing.T, label string, value any, fo
 	if encoded, err := textCodec.MarshalText(); encoded != nil || !errors.Is(err, ErrCredentialSourceSerialization) || err.Error() != ErrCredentialSourceSerialization.Error() {
 		t.Fatalf("%s text codec did not return stable denial", label)
 	}
-	l8AssertCredentialSourceAllVerbFormatting(t, label, value, forbidden)
+	l8AssertCredentialSourceAllVerbFormatting(t, label, value, expectedFormat, forbidden)
 }
 
-func l8AssertCredentialSourceAllVerbFormatting(t *testing.T, label string, value any, forbidden []string) {
+func l8AssertCredentialSourceAllVerbFormatting(t *testing.T, label string, value any, expectedFormat string, forbidden []string) {
 	t.Helper()
-	stableNonNil := ""
 	for _, variant := range l8CredentialSourceFormattingVariants(value) {
 		if _, ok := variant.value.(fmt.Formatter); !ok {
 			t.Fatalf("%s %s lacks fmt.Formatter", label, variant.name)
 		}
-		expected := l8CredentialSourceSafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value)
-		if expected == "" {
-			t.Fatalf("%s %s formatter returned empty fixed output", label, variant.name)
-		}
-		if !variant.nilPointer {
-			if stableNonNil == "" {
-				stableNonNil = expected
-			} else if expected != stableNonNil {
-				t.Fatalf("%s non-nil value/pointer formatter output drifted: %q != %q", label, expected, stableNonNil)
-			}
+		if rendered := l8CredentialSourceSafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value); rendered != expectedFormat {
+			t.Fatalf("%s %s formatter output = %q, want exact %q", label, variant.name, rendered, expectedFormat)
 		}
 		for _, format := range l8CredentialSourceFormatterVerbs() {
 			rendered := l8CredentialSourceSafeSprintf(t, label+" "+variant.name+" "+format, format, variant.value)
-			if rendered != expected {
-				t.Fatalf("%s %s formatting %s = %q, want fixed %q", label, variant.name, format, rendered, expected)
+			if rendered != expectedFormat {
+				t.Fatalf("%s %s formatting %s = %q, want fixed %q", label, variant.name, format, rendered, expectedFormat)
 			}
 			l8CredentialSourceRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
 		}
@@ -864,11 +859,11 @@ func l8AssertCredentialSourceAllVerbFormatting(t *testing.T, label string, value
 			l8CredentialSourceRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, forbidden)
 		}
 		stringer, ok := variant.value.(fmt.Stringer)
-		if !ok || l8CredentialSourceSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expected {
+		if !ok || l8CredentialSourceSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expectedFormat {
 			t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
 		}
 		goStringer, ok := variant.value.(fmt.GoStringer)
-		if !ok || l8CredentialSourceSafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expected {
+		if !ok || l8CredentialSourceSafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expectedFormat {
 			t.Fatalf("%s %s GoString output is not the fixed formatter output", label, variant.name)
 		}
 	}

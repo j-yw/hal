@@ -380,7 +380,7 @@ func TestL8CredentialMemoryBorrowIsSinkOnlyBoundedAndExpires(t *testing.T) {
 	if err := retained.CopyTo(context.Background(), target); !errors.Is(err, ErrBorrowedViewExpired) {
 		t.Fatalf("retained borrowed view error = %v, want expired", err)
 	}
-	assertL8CredentialMemoryLiveValue(t, "borrowed view", retained, string(canary))
+	assertL8CredentialMemoryLiveValue(t, "borrowed view", retained, "<credentialmemory.borrowedView>", string(canary))
 
 	typeOfView := reflect.TypeOf((*BorrowedView)(nil)).Elem()
 	for _, forbidden := range []string{"Bytes", "String", "GoString", "Format", "MarshalJSON", "MarshalText"} {
@@ -403,7 +403,7 @@ func TestL8CredentialMemoryLiveStateCannotSerializeOrFormatRawState(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertL8CredentialMemoryLiveValue(t, "locked mapping", mapping, canary)
+	assertL8CredentialMemoryLiveValue(t, "locked mapping", mapping, "<credentialmemory.LockedMapping>", canary)
 
 	typeOfMapping := reflect.TypeOf(mapping).Elem()
 	for fieldIndex := 0; fieldIndex < typeOfMapping.NumField(); fieldIndex++ {
@@ -417,7 +417,7 @@ func TestL8CredentialMemoryLiveStateCannotSerializeOrFormatRawState(t *testing.T
 	}
 }
 
-func assertL8CredentialMemoryLiveValue(t *testing.T, label string, value any, canary string) {
+func assertL8CredentialMemoryLiveValue(t *testing.T, label string, value any, expectedFormat, canary string) {
 	t.Helper()
 	jsonCodec, ok := value.(json.Marshaler)
 	if !ok {
@@ -436,31 +436,22 @@ func assertL8CredentialMemoryLiveValue(t *testing.T, label string, value any, ca
 	if encoded, err := textCodec.MarshalText(); encoded != nil || !errors.Is(err, ErrCredentialMemorySerialization) || err.Error() != ErrCredentialMemorySerialization.Error() {
 		t.Fatalf("%s text codec did not return the stable denial", label)
 	}
-	l8AssertCredentialMemoryAllVerbFormatting(t, label, value, []string{canary, "[108 56"})
+	l8AssertCredentialMemoryAllVerbFormatting(t, label, value, expectedFormat, []string{canary, "[108 56"})
 }
 
-func l8AssertCredentialMemoryAllVerbFormatting(t *testing.T, label string, value any, forbidden []string) {
+func l8AssertCredentialMemoryAllVerbFormatting(t *testing.T, label string, value any, expectedFormat string, forbidden []string) {
 	t.Helper()
-	stableNonNil := ""
 	for _, variant := range l8CredentialMemoryFormattingVariants(value) {
 		if _, ok := variant.value.(fmt.Formatter); !ok {
 			t.Fatalf("%s %s lacks fmt.Formatter", label, variant.name)
 		}
-		expected := l8CredentialMemorySafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value)
-		if expected == "" {
-			t.Fatalf("%s %s formatter returned empty fixed output", label, variant.name)
-		}
-		if !variant.nilPointer {
-			if stableNonNil == "" {
-				stableNonNil = expected
-			} else if expected != stableNonNil {
-				t.Fatalf("%s non-nil value/pointer formatter output drifted: %q != %q", label, expected, stableNonNil)
-			}
+		if rendered := l8CredentialMemorySafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value); rendered != expectedFormat {
+			t.Fatalf("%s %s formatter output = %q, want exact %q", label, variant.name, rendered, expectedFormat)
 		}
 		for _, format := range l8CredentialMemoryFormatterVerbs() {
 			rendered := l8CredentialMemorySafeSprintf(t, label+" "+variant.name+" "+format, format, variant.value)
-			if rendered != expected {
-				t.Fatalf("%s %s formatting %s = %q, want fixed %q", label, variant.name, format, rendered, expected)
+			if rendered != expectedFormat {
+				t.Fatalf("%s %s formatting %s = %q, want fixed %q", label, variant.name, format, rendered, expectedFormat)
 			}
 			l8CredentialMemoryRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
 		}
@@ -469,11 +460,11 @@ func l8AssertCredentialMemoryAllVerbFormatting(t *testing.T, label string, value
 			l8CredentialMemoryRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, forbidden)
 		}
 		stringer, ok := variant.value.(fmt.Stringer)
-		if !ok || l8CredentialMemorySafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expected {
+		if !ok || l8CredentialMemorySafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expectedFormat {
 			t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
 		}
 		goStringer, ok := variant.value.(fmt.GoStringer)
-		if !ok || l8CredentialMemorySafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expected {
+		if !ok || l8CredentialMemorySafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expectedFormat {
 			t.Fatalf("%s %s GoString output is not the fixed formatter output", label, variant.name)
 		}
 	}

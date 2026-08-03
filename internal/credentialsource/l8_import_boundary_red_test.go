@@ -44,6 +44,7 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 		"registryAuthorization":      {},
 		"keyringLiveSecretSource":    {},
 	}
+	formatLiterals := l8CredentialSourceFormatLiterals()
 	for _, productionPath := range productionFiles {
 		set := token.NewFileSet()
 		file, err := parser.ParseFile(set, productionPath, nil, 0)
@@ -115,7 +116,11 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 				if typed.Recv != nil {
 					receiver = l8CredentialSourceReceiverName(typed.Recv.List[0].Type)
 				}
-				for _, issue := range l8CredentialSourceFmtSelectorIssues(typed, fmtAliases, rootPackage && typed.Name.Name == "Format" && denialMethods[receiver] != nil) {
+				requiredFormat := ""
+				if rootPackage && typed.Name.Name == "Format" && denialMethods[receiver] != nil {
+					requiredFormat = formatLiterals[receiver]
+				}
+				for _, issue := range l8CredentialSourceFmtSelectorIssues(typed, fmtAliases, requiredFormat) {
 					t.Errorf("production credential source %s %s", productionPath, issue)
 				}
 				if typed.Recv == nil {
@@ -1344,36 +1349,79 @@ func l8CredentialSourceForbiddenSelectorIssues(file *ast.File) []string {
 }
 
 func TestL8CredentialSourceFmtUsageIsRestrictedToExactFormatMethods(t *testing.T) {
+	for receiver, requiredFormat := range l8CredentialSourceFormatLiterals() {
+		t.Run("exact "+receiver, func(t *testing.T) {
+			source := "package fixture\nimport safeformat \"fmt\"\ntype " + receiver + " struct{}\nfunc (" + receiver + ") Format(state safeformat.State, verb rune) { safeformat.Fprint(state, " + strconv.Quote(requiredFormat) + ") }\n"
+			l8CredentialSourceAssertFmtFixture(t, source, requiredFormat, false, false)
+		})
+	}
+
 	for _, tt := range []struct {
-		name       string
-		source     string
-		approved   bool
-		wantIssues int
+		name           string
+		source         string
+		requiredFormat string
+		wantDotImport  bool
 	}{
-		{name: "fixed formatter write", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credential-source>\") }\n", approved: true},
-		{name: "generic formatting in formatter", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { _ = safeformat.Sprintf(\"%v\", verb) }\n", approved: true, wantIssues: 1},
-		{name: "formatting outside formatter", source: "package fixture\nimport safeformat \"fmt\"\nfunc render(value any) string { return safeformat.Sprint(value) }\n", wantIssues: 1},
+		{name: "generic formatting in formatter", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprintf(state, \"%v\", verb) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "sprint in formatter", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { _ = safeformat.Sprint(verb) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "formatting outside formatter", source: "package fixture\nimport safeformat \"fmt\"\nfunc render(value any) string { return safeformat.Sprint(value) }\n"},
+		{name: "wrong fixed literal", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.RegistryConfig>\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "package payload", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, safeformat.Stringer(nil)) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "captured payload", source: "package fixture\nimport safeformat \"fmt\"\nvar captured = \"raw\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, captured) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "raw identifier payload", source: "package fixture\nimport safeformat \"fmt\"\nvar rawIdentifier any\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, rawIdentifier) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "helper payload", source: "package fixture\nimport safeformat \"fmt\"\nfunc fixed() string { return \"fixed\" }\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, fixed()) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "receiver payload", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (registry Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, registry) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "wrong destination", source: "package fixture\nimport safeformat \"fmt\"\nvar other safeformat.State\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(other, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "extra argument", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\", verb) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "variadic argument", source: "package fixture\nimport safeformat \"fmt\"\nvar parts []any\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, parts...) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "concatenated payload", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.\" + \"Registry>\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "multiple calls", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\"); safeformat.Fprint(state, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "import alias shadowed by receiver", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (safeformat Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "state shadowed in closure", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { func(state safeformat.State) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }(state) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "dot import", source: "package fixture\nimport . \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state State, verb rune) { Fprint(state, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>", wantDotImport: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", tt.source, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			aliases, dotImport := l8CredentialSourceImportAliases(file, "fmt")
-			if dotImport {
-				t.Fatal("unexpected dot import in fixture")
-			}
-			var issues []string
-			for _, declaration := range file.Decls {
-				function, ok := declaration.(*ast.FuncDecl)
-				if ok {
-					issues = append(issues, l8CredentialSourceFmtSelectorIssues(function, aliases, tt.approved && function.Name.Name == "Format")...)
-				}
-			}
-			if len(issues) != tt.wantIssues {
-				t.Fatalf("fmt selector issues = %v, want %d", issues, tt.wantIssues)
-			}
+			l8CredentialSourceAssertFmtFixture(t, tt.source, tt.requiredFormat, tt.wantDotImport, true)
 		})
+	}
+}
+
+func l8CredentialSourceAssertFmtFixture(t *testing.T, source, requiredFormat string, wantDotImport, wantIssue bool) {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliases, dotImport := l8CredentialSourceImportAliases(file, "fmt")
+	if dotImport != wantDotImport {
+		t.Fatalf("fmt dot import = %t, want %t", dotImport, wantDotImport)
+	}
+	var issues []string
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok {
+			approved := ""
+			if function.Name.Name == "Format" {
+				approved = requiredFormat
+			}
+			issues = append(issues, l8CredentialSourceFmtSelectorIssues(function, aliases, approved)...)
+		}
+	}
+	if wantIssue == (len(issues) == 0 && !dotImport) {
+		t.Fatalf("fmt issues = %v, dot import = %t, want issue %t", issues, dotImport, wantIssue)
+	}
+}
+
+func l8CredentialSourceFormatLiterals() map[string]string {
+	return map[string]string{
+		"Registry":                   "<credentialsource.Registry>",
+		"RegistryConfig":             "<credentialsource.RegistryConfig>",
+		"SourceRegistration":         "<credentialsource.SourceRegistration>",
+		"AdmissionGrantRegistration": "<credentialsource.AdmissionGrantRegistration>",
+		"KeyIdentity":                "<credentialsource.KeyIdentity>",
+		"KeyDescriptor":              "<credentialsource.KeyDescriptor>",
+		"registryAuthorization":      "<credentialsource.registryAuthorization>",
+		"keyringLiveSecretSource":    "<credentialsource.keyringLiveSecretSource>",
 	}
 }
 
@@ -1400,7 +1448,7 @@ func l8CredentialSourceImportAliases(file *ast.File, wantedPath string) (map[str
 	return aliases, dotImport
 }
 
-func l8CredentialSourceFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[string]bool, approvedFormat bool) []string {
+func l8CredentialSourceFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[string]bool, requiredFormat string) []string {
 	if function.Body == nil {
 		return nil
 	}
@@ -1414,12 +1462,78 @@ func l8CredentialSourceFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[
 		if !ok || !fmtAliases[identifier.Name] {
 			return true
 		}
-		if !approvedFormat || selector.Sel.Name != "Fprint" {
+		if requiredFormat == "" {
 			issues = append(issues, "uses fmt."+selector.Sel.Name+" outside the narrow fixed-output formatter boundary")
 		}
 		return true
 	})
+	if requiredFormat != "" && !l8CredentialSourceExactFormatMethod(function, fmtAliases, requiredFormat) {
+		issues = append(issues, "Format method is not the exact single fixed-literal fmt.Fprint boundary")
+	}
 	return issues
+}
+
+func l8CredentialSourceExactFormatMethod(function *ast.FuncDecl, fmtAliases map[string]bool, requiredFormat string) bool {
+	if function.Type.Results != nil && len(function.Type.Results.List) != 0 || function.Type.Params == nil || len(function.Type.Params.List) != 2 {
+		return false
+	}
+	stateField, verbField := function.Type.Params.List[0], function.Type.Params.List[1]
+	if len(stateField.Names) != 1 || len(verbField.Names) != 1 {
+		return false
+	}
+	stateType, ok := stateField.Type.(*ast.SelectorExpr)
+	if !ok || stateType.Sel.Name != "State" {
+		return false
+	}
+	fmtIdentifier, ok := stateType.X.(*ast.Ident)
+	if !ok || !fmtAliases[fmtIdentifier.Name] {
+		return false
+	}
+	verbType, ok := verbField.Type.(*ast.Ident)
+	if !ok || verbType.Name != "rune" {
+		return false
+	}
+	for _, name := range []string{stateField.Names[0].Name, verbField.Names[0].Name, l8CredentialSourceReceiverIdentifier(function)} {
+		if name != "" && fmtAliases[name] {
+			return false
+		}
+	}
+	if len(function.Body.List) != 1 {
+		return false
+	}
+	expression, ok := function.Body.List[0].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expression.X.(*ast.CallExpr)
+	if !ok || call.Ellipsis.IsValid() || len(call.Args) != 2 {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Fprint" {
+		return false
+	}
+	qualifier, ok := selector.X.(*ast.Ident)
+	if !ok || !fmtAliases[qualifier.Name] || qualifier.Obj != nil {
+		return false
+	}
+	destination, ok := call.Args[0].(*ast.Ident)
+	if !ok || destination.Name != stateField.Names[0].Name || destination.Obj != stateField.Names[0].Obj {
+		return false
+	}
+	payload, ok := call.Args[1].(*ast.BasicLit)
+	if !ok || payload.Kind != token.STRING {
+		return false
+	}
+	literal, err := strconv.Unquote(payload.Value)
+	return err == nil && literal == requiredFormat
+}
+
+func l8CredentialSourceReceiverIdentifier(function *ast.FuncDecl) string {
+	if function.Recv == nil || len(function.Recv.List) != 1 || len(function.Recv.List[0].Names) != 1 {
+		return ""
+	}
+	return function.Recv.List[0].Names[0].Name
 }
 
 func l8CredentialSourceReceiverName(expression ast.Expr) string {

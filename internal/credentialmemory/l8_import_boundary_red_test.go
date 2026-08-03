@@ -24,6 +24,7 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 		"LockedMapping": {},
 		"borrowedView":  {},
 	}
+	formatLiterals := l8CredentialMemoryFormatLiterals()
 	for _, productionPath := range productionFiles {
 		source, err := os.ReadFile(productionPath)
 		if err != nil {
@@ -80,7 +81,11 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 				if typed.Recv != nil {
 					receiver = l8CredentialMemoryReceiverName(typed.Recv.List[0].Type)
 				}
-				for _, issue := range l8CredentialMemoryFmtSelectorIssues(typed, fmtAliases, rootPackage && typed.Name.Name == "Format" && denialMethods[receiver] != nil) {
+				requiredFormat := ""
+				if rootPackage && typed.Name.Name == "Format" && denialMethods[receiver] != nil {
+					requiredFormat = formatLiterals[receiver]
+				}
+				for _, issue := range l8CredentialMemoryFmtSelectorIssues(typed, fmtAliases, requiredFormat) {
 					t.Errorf("production credential memory %s %s", productionPath, issue)
 				}
 				if typed.Recv == nil {
@@ -249,36 +254,73 @@ func l8CredentialMemoryForbiddenSelectorIssues(file *ast.File) []string {
 }
 
 func TestL8CredentialMemoryFmtUsageIsRestrictedToExactFormatMethods(t *testing.T) {
+	for receiver, requiredFormat := range l8CredentialMemoryFormatLiterals() {
+		t.Run("exact "+receiver, func(t *testing.T) {
+			source := "package fixture\nimport safeformat \"fmt\"\ntype " + receiver + " struct{}\nfunc (" + receiver + ") Format(state safeformat.State, verb rune) { safeformat.Fprint(state, " + strconv.Quote(requiredFormat) + ") }\n"
+			l8CredentialMemoryAssertFmtFixture(t, source, requiredFormat, false, false)
+		})
+	}
+
 	for _, tt := range []struct {
-		name       string
-		source     string
-		approved   bool
-		wantIssues int
+		name           string
+		source         string
+		requiredFormat string
+		wantDotImport  bool
 	}{
-		{name: "fixed formatter write", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credential-memory>\") }\n", approved: true},
-		{name: "generic formatting in formatter", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { _ = safeformat.Sprintf(\"%v\", verb) }\n", approved: true, wantIssues: 1},
-		{name: "formatting outside formatter", source: "package fixture\nimport safeformat \"fmt\"\nfunc render(value any) string { return safeformat.Sprint(value) }\n", wantIssues: 1},
+		{name: "generic formatting in formatter", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprintf(state, \"%v\", verb) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "sprint in formatter", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { _ = safeformat.Sprint(verb) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "formatting outside formatter", source: "package fixture\nimport safeformat \"fmt\"\nfunc render(value any) string { return safeformat.Sprint(value) }\n"},
+		{name: "wrong fixed literal", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.borrowedView>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "package payload", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, safeformat.Stringer(nil)) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "captured payload", source: "package fixture\nimport safeformat \"fmt\"\nvar captured = \"raw\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, captured) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "raw identifier payload", source: "package fixture\nimport safeformat \"fmt\"\nvar rawIdentifier any\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, rawIdentifier) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "helper payload", source: "package fixture\nimport safeformat \"fmt\"\nfunc fixed() string { return \"fixed\" }\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, fixed()) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "receiver payload", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (mapping LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, mapping) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "wrong destination", source: "package fixture\nimport safeformat \"fmt\"\nvar other safeformat.State\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(other, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "extra argument", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\", verb) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "variadic argument", source: "package fixture\nimport safeformat \"fmt\"\nvar parts []any\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, parts...) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "concatenated payload", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.\" + \"LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "multiple calls", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\"); safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "import alias shadowed by receiver", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (safeformat LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "state shadowed in closure", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { func(state safeformat.State) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }(state) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "dot import", source: "package fixture\nimport . \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state State, verb rune) { Fprint(state, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>", wantDotImport: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", tt.source, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			aliases, dotImport := l8CredentialMemoryImportAliases(file, "fmt")
-			if dotImport {
-				t.Fatal("unexpected dot import in fixture")
-			}
-			var issues []string
-			for _, declaration := range file.Decls {
-				function, ok := declaration.(*ast.FuncDecl)
-				if ok {
-					issues = append(issues, l8CredentialMemoryFmtSelectorIssues(function, aliases, tt.approved && function.Name.Name == "Format")...)
-				}
-			}
-			if len(issues) != tt.wantIssues {
-				t.Fatalf("fmt selector issues = %v, want %d", issues, tt.wantIssues)
-			}
+			l8CredentialMemoryAssertFmtFixture(t, tt.source, tt.requiredFormat, tt.wantDotImport, true)
 		})
+	}
+}
+
+func l8CredentialMemoryAssertFmtFixture(t *testing.T, source, requiredFormat string, wantDotImport, wantIssue bool) {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliases, dotImport := l8CredentialMemoryImportAliases(file, "fmt")
+	if dotImport != wantDotImport {
+		t.Fatalf("fmt dot import = %t, want %t", dotImport, wantDotImport)
+	}
+	var issues []string
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok {
+			approved := ""
+			if function.Name.Name == "Format" {
+				approved = requiredFormat
+			}
+			issues = append(issues, l8CredentialMemoryFmtSelectorIssues(function, aliases, approved)...)
+		}
+	}
+	if wantIssue == (len(issues) == 0 && !dotImport) {
+		t.Fatalf("fmt issues = %v, dot import = %t, want issue %t", issues, dotImport, wantIssue)
+	}
+}
+
+func l8CredentialMemoryFormatLiterals() map[string]string {
+	return map[string]string{
+		"LockedMapping": "<credentialmemory.LockedMapping>",
+		"borrowedView":  "<credentialmemory.borrowedView>",
 	}
 }
 
@@ -305,7 +347,7 @@ func l8CredentialMemoryImportAliases(file *ast.File, wantedPath string) (map[str
 	return aliases, dotImport
 }
 
-func l8CredentialMemoryFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[string]bool, approvedFormat bool) []string {
+func l8CredentialMemoryFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[string]bool, requiredFormat string) []string {
 	if function.Body == nil {
 		return nil
 	}
@@ -319,12 +361,78 @@ func l8CredentialMemoryFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[
 		if !ok || !fmtAliases[identifier.Name] {
 			return true
 		}
-		if !approvedFormat || selector.Sel.Name != "Fprint" {
+		if requiredFormat == "" {
 			issues = append(issues, "uses fmt."+selector.Sel.Name+" outside the narrow fixed-output formatter boundary")
 		}
 		return true
 	})
+	if requiredFormat != "" && !l8CredentialMemoryExactFormatMethod(function, fmtAliases, requiredFormat) {
+		issues = append(issues, "Format method is not the exact single fixed-literal fmt.Fprint boundary")
+	}
 	return issues
+}
+
+func l8CredentialMemoryExactFormatMethod(function *ast.FuncDecl, fmtAliases map[string]bool, requiredFormat string) bool {
+	if function.Type.Results != nil && len(function.Type.Results.List) != 0 || function.Type.Params == nil || len(function.Type.Params.List) != 2 {
+		return false
+	}
+	stateField, verbField := function.Type.Params.List[0], function.Type.Params.List[1]
+	if len(stateField.Names) != 1 || len(verbField.Names) != 1 {
+		return false
+	}
+	stateType, ok := stateField.Type.(*ast.SelectorExpr)
+	if !ok || stateType.Sel.Name != "State" {
+		return false
+	}
+	fmtIdentifier, ok := stateType.X.(*ast.Ident)
+	if !ok || !fmtAliases[fmtIdentifier.Name] {
+		return false
+	}
+	verbType, ok := verbField.Type.(*ast.Ident)
+	if !ok || verbType.Name != "rune" {
+		return false
+	}
+	for _, name := range []string{stateField.Names[0].Name, verbField.Names[0].Name, l8CredentialMemoryReceiverIdentifier(function)} {
+		if name != "" && fmtAliases[name] {
+			return false
+		}
+	}
+	if len(function.Body.List) != 1 {
+		return false
+	}
+	expression, ok := function.Body.List[0].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expression.X.(*ast.CallExpr)
+	if !ok || call.Ellipsis.IsValid() || len(call.Args) != 2 {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Fprint" {
+		return false
+	}
+	qualifier, ok := selector.X.(*ast.Ident)
+	if !ok || !fmtAliases[qualifier.Name] || qualifier.Obj != nil {
+		return false
+	}
+	destination, ok := call.Args[0].(*ast.Ident)
+	if !ok || destination.Name != stateField.Names[0].Name || destination.Obj != stateField.Names[0].Obj {
+		return false
+	}
+	payload, ok := call.Args[1].(*ast.BasicLit)
+	if !ok || payload.Kind != token.STRING {
+		return false
+	}
+	literal, err := strconv.Unquote(payload.Value)
+	return err == nil && literal == requiredFormat
+}
+
+func l8CredentialMemoryReceiverIdentifier(function *ast.FuncDecl) string {
+	if function.Recv == nil || len(function.Recv.List) != 1 || len(function.Recv.List[0].Names) != 1 {
+		return ""
+	}
+	return function.Recv.List[0].Names[0].Name
 }
 
 func l8CredentialMemoryReceiverName(expression ast.Expr) string {

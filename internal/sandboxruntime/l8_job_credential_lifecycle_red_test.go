@@ -103,13 +103,15 @@ func TestL8JobCredentialLossRejectsNeighborAndStaleWatchers(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 2, 30, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
 	for _, tt := range []struct {
-		name    string
-		loss    JobCredentialLoss
-		wantErr error
+		name      string
+		loss      JobCredentialLoss
+		wantErr   error
+		wantState JobCredentialState
 	}{
 		{
-			name: "same job current revision",
-			loss: JobCredentialLoss{Identity: identity, Revision: 3, Code: JobCredentialFailureGuestHelperUnavailable},
+			name:      "same job current revision",
+			loss:      JobCredentialLoss{Identity: identity, Revision: 3, Code: JobCredentialFailureGuestHelperUnavailable},
+			wantState: JobCredentialStateRevoking,
 		},
 		{
 			name: "neighbor job",
@@ -118,12 +120,14 @@ func TestL8JobCredentialLossRejectsNeighborAndStaleWatchers(t *testing.T) {
 				neighbor.WorkerJobID = "job-neighbor"
 				return JobCredentialLoss{Identity: neighbor, Revision: 3, Code: JobCredentialFailureGuestHelperUnavailable}
 			}(),
-			wantErr: ErrJobCredentialIdentityMismatch,
+			wantErr:   ErrJobCredentialIdentityMismatch,
+			wantState: JobCredentialStateRevoking,
 		},
 		{
-			name:    "stale watcher revision",
-			loss:    JobCredentialLoss{Identity: identity, Revision: 2, Code: JobCredentialFailureGuestHelperUnavailable},
-			wantErr: ErrJobCredentialRevisionStale,
+			name:      "stale watcher revision",
+			loss:      JobCredentialLoss{Identity: identity, Revision: 2, Code: JobCredentialFailureGuestHelperUnavailable},
+			wantErr:   ErrJobCredentialRevisionStale,
+			wantState: JobCredentialStateRevoking,
 		},
 		{
 			name: "stale runtime generation",
@@ -132,7 +136,8 @@ func TestL8JobCredentialLossRejectsNeighborAndStaleWatchers(t *testing.T) {
 				stale.RuntimeGeneration = "runtime-generation-stale"
 				return JobCredentialLoss{Identity: stale, Revision: 3, Code: JobCredentialFailureGuestHelperUnavailable}
 			}(),
-			wantErr: ErrJobCredentialIdentityMismatch,
+			wantErr:   ErrJobCredentialIdentityMismatch,
+			wantState: JobCredentialStateRevoking,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -143,16 +148,22 @@ func TestL8JobCredentialLossRejectsNeighborAndStaleWatchers(t *testing.T) {
 			if err := lifecycle.BeginPrepare(identity); err != nil {
 				t.Fatal(err)
 			}
-			if err := lifecycle.Activate(l8ActiveProof(t, identity, 3, now, now.Add(time.Minute))); err != nil {
+			active := l8ActiveProof(t, identity, 3, now, now.Add(time.Minute))
+			if err := lifecycle.Activate(active); err != nil {
 				t.Fatal(err)
 			}
 			err = lifecycle.ObserveLoss(tt.loss)
 			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("loss error classification mismatch for %s", tt.name)
+				t.Fatalf("loss error = %v, want %v", err, tt.wantErr)
 			}
-			wantState := JobCredentialStateRevoking
-			if got := lifecycle.State(); got != wantState {
-				t.Fatalf("state = %q, want %q", got, wantState)
+			if got := lifecycle.State(); got != tt.wantState {
+				t.Fatalf("state = %q, want %q", got, tt.wantState)
+			}
+			if lifecycle.HasActiveProof() {
+				t.Fatal("loss did not discard the active proof")
+			}
+			if got := lifecycle.Revision(); got != 3 {
+				t.Fatalf("revision = %d, want exact prior revision 3", got)
 			}
 		})
 	}
@@ -691,10 +702,8 @@ func TestL8JobCredentialLifecycleInvalidHookablePathsNeverReachHook(t *testing.T
 				})}
 			},
 			wantErr:      ErrJobCredentialIdentityMismatch,
-			wantState:    JobCredentialStateActive,
-			wantActive:   true,
+			wantState:    JobCredentialStateRevoking,
 			wantRevision: 1,
-			verifyActive: true,
 		},
 		{
 			name:       "begin revoke after durable revocation is a no-op",
@@ -1112,14 +1121,18 @@ func TestL8JobCredentialLiveStateIsOpaqueAndExplicitlyDeniesSerialization(t *tes
 		principal.AuthorityID() != "peercred-issuer-canary" || principal.AuthorityGeneration() != "daemon-generation-canary" {
 		t.Fatal("authenticated principal accessors did not return its sealed provenance")
 	}
-	for label, value := range map[string]any{
-		"lifecycle":     lifecycle,
-		"active proof":  active,
-		"cleanup proof": cleanup,
-		"authority":     authority,
-		"principal":     principal,
+	for _, liveValue := range []struct {
+		label          string
+		value          any
+		expectedFormat string
+	}{
+		{label: "lifecycle", value: lifecycle, expectedFormat: "<sandboxruntime.JobCredentialLifecycle>"},
+		{label: "active proof", value: active, expectedFormat: "<sandboxruntime.JobCredentialActiveProof>"},
+		{label: "cleanup proof", value: cleanup, expectedFormat: "<sandboxruntime.JobCredentialCleanupProof>"},
+		{label: "authority", value: authority, expectedFormat: "<sandboxruntime.AuthenticatedWorkerPrincipalAuthority>"},
+		{label: "principal", value: principal, expectedFormat: "<sandboxruntime.authenticatedWorkerPrincipal>"},
 	} {
-		l8AssertJobCredentialLiveValue(t, label, value, []string{
+		l8AssertJobCredentialLiveValue(t, liveValue.label, liveValue.value, liveValue.expectedFormat, []string{
 			identity.SandboxID,
 			identity.ExecutionID,
 			identity.HostID,
@@ -1152,7 +1165,7 @@ func TestL8JobCredentialLiveStateIsOpaqueAndExplicitlyDeniesSerialization(t *tes
 	}
 }
 
-func l8AssertJobCredentialLiveValue(t *testing.T, label string, value any, forbidden []string) {
+func l8AssertJobCredentialLiveValue(t *testing.T, label string, value any, expectedFormat string, forbidden []string) {
 	t.Helper()
 	jsonCodec, ok := value.(json.Marshaler)
 	if !ok {
@@ -1171,31 +1184,22 @@ func l8AssertJobCredentialLiveValue(t *testing.T, label string, value any, forbi
 	if encoded, err := textCodec.MarshalText(); encoded != nil || !errors.Is(err, ErrJobCredentialSerialization) || err.Error() != ErrJobCredentialSerialization.Error() {
 		t.Fatalf("%s text codec did not return stable serialization denial", label)
 	}
-	l8AssertJobCredentialAllVerbFormatting(t, label, value, forbidden)
+	l8AssertJobCredentialAllVerbFormatting(t, label, value, expectedFormat, forbidden)
 }
 
-func l8AssertJobCredentialAllVerbFormatting(t *testing.T, label string, value any, forbidden []string) {
+func l8AssertJobCredentialAllVerbFormatting(t *testing.T, label string, value any, expectedFormat string, forbidden []string) {
 	t.Helper()
-	stableNonNil := ""
 	for _, variant := range l8JobCredentialFormattingVariants(value) {
 		if _, ok := variant.value.(fmt.Formatter); !ok {
 			t.Fatalf("%s %s lacks fmt.Formatter", label, variant.name)
 		}
-		expected := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value)
-		if expected == "" {
-			t.Fatalf("%s %s formatter returned empty fixed output", label, variant.name)
-		}
-		if !variant.nilPointer {
-			if stableNonNil == "" {
-				stableNonNil = expected
-			} else if expected != stableNonNil {
-				t.Fatalf("%s non-nil value/pointer formatter output drifted: %q != %q", label, expected, stableNonNil)
-			}
+		if rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value); rendered != expectedFormat {
+			t.Fatalf("%s %s formatter output = %q, want exact %q", label, variant.name, rendered, expectedFormat)
 		}
 		for _, format := range l8JobCredentialFormatterVerbs() {
 			rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" "+format, format, variant.value)
-			if rendered != expected {
-				t.Fatalf("%s %s formatting %s = %q, want fixed %q", label, variant.name, format, rendered, expected)
+			if rendered != expectedFormat {
+				t.Fatalf("%s %s formatting %s = %q, want fixed %q", label, variant.name, format, rendered, expectedFormat)
 			}
 			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
 		}
@@ -1204,11 +1208,11 @@ func l8AssertJobCredentialAllVerbFormatting(t *testing.T, label string, value an
 			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, forbidden)
 		}
 		stringer, ok := variant.value.(fmt.Stringer)
-		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expected {
+		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expectedFormat {
 			t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
 		}
 		goStringer, ok := variant.value.(fmt.GoStringer)
-		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expected {
+		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expectedFormat {
 			t.Fatalf("%s %s GoString output is not the fixed formatter output", label, variant.name)
 		}
 	}
