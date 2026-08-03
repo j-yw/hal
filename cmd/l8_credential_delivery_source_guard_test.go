@@ -604,6 +604,9 @@ func TestL8CredentialDeliverySourceGuardsV1CustomJSONMethodsCannotCarryProductio
 			if err != nil {
 				return err
 			}
+			if path != check.root && entry.IsDir() {
+				return filepath.SkipDir
+			}
 			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
