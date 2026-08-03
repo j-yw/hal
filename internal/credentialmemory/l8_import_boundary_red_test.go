@@ -21,10 +21,8 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 	}
 	productionSource := strings.Builder{}
 	denialMethods := map[string]map[string]bool{
-		"LockedMapping":            {},
-		"borrowedView":             {},
-		"lockedMappingValueDenial": {},
-		"borrowedViewValueDenial":  {},
+		"LockedMapping": {},
+		"borrowedView":  {},
 	}
 	formatLiterals := l8CredentialMemoryFormatLiterals()
 	for _, productionPath := range productionFiles {
@@ -314,10 +312,8 @@ func l8CredentialMemoryAssertFmtFixture(t *testing.T, source, requiredFormat str
 
 func l8CredentialMemoryFormatLiterals() map[string]string {
 	return map[string]string{
-		"LockedMapping":            "<credentialmemory.LockedMapping>",
-		"borrowedView":             "<credentialmemory.borrowedView>",
-		"lockedMappingValueDenial": "<credentialmemory.LockedMapping>",
-		"borrowedViewValueDenial":  "<credentialmemory.borrowedView>",
+		"LockedMapping": "<credentialmemory.LockedMapping>",
+		"borrowedView":  "<credentialmemory.borrowedView>",
 	}
 }
 

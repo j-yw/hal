@@ -581,6 +581,27 @@ func TestL8CredentialMemoryLockedMappingValueCopiesDenyFormattingAndSerializatio
 	}
 }
 
+func TestL8CredentialMemoryNilPointersStayPoisonFreeThroughFormatAndJSON(t *testing.T) {
+	for _, fixture := range []struct {
+		name  string
+		value any
+	}{
+		{name: "locked mapping", value: (*LockedMapping)(nil)},
+		{name: "borrowed view", value: (*borrowedView)(nil)},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			for _, format := range l8CredentialMemoryFormatterVerbs() {
+				rendered := l8CredentialMemorySafeSprintf(t, "nil "+fixture.name+" "+format, format, fixture.value)
+				l8CredentialMemoryRejectFormattingPoison(t, "nil "+fixture.name+" "+format, rendered, []string{"l8-live", "canary", "[108 56"})
+			}
+			encoded, err := json.Marshal(fixture.value)
+			if err != nil || string(encoded) != "null" {
+				t.Fatalf("nil %s JSON = %q, %v; want safe null", fixture.name, encoded, err)
+			}
+		})
+	}
+}
+
 func TestL8CredentialMemoryLockedMappingValueCopiesCannotOperate(t *testing.T) {
 	for _, fixture := range []struct {
 		name  string
@@ -697,6 +718,16 @@ func l8AssertCredentialMemoryAllVerbFormatting(t *testing.T, label string, value
 	for _, variant := range l8CredentialMemoryFormattingVariants(value) {
 		if _, ok := variant.value.(fmt.Formatter); !ok {
 			t.Fatalf("%s %s lacks fmt.Formatter", label, variant.name)
+		}
+		if variant.nilPointer {
+			// A nil pointer contains no live state. Exercise it only through fmt's
+			// panic-contained entrypoint; direct value-receiver method calls would
+			// dereference nil before the denial method can run.
+			for _, format := range l8CredentialMemoryFormatterVerbs() {
+				rendered := l8CredentialMemorySafeSprintf(t, label+" "+variant.name+" "+format, format, variant.value)
+				l8CredentialMemoryRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
+			}
+			continue
 		}
 		if rendered := l8CredentialMemorySafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value); rendered != expectedFormat {
 			t.Fatalf("%s %s formatter output = %q, want exact %q", label, variant.name, rendered, expectedFormat)
