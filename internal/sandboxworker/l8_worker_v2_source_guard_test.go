@@ -116,6 +116,13 @@ type l8WorkerV2GuardScope struct {
 	node ast.Node
 }
 
+type l8WorkerV2SemanticUnit struct {
+	scope       l8WorkerV2GuardScope
+	definitions []types.Object
+	uses        []types.Object
+	tainted     bool
+}
+
 func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPolicy) error {
 	paths := make([]string, 0, len(sources))
 	for path := range sources {
@@ -208,6 +215,7 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 	if err != nil {
 		return fmt.Errorf("type-check worker-v2 guard sources: %w", err)
 	}
+	roots = append(roots, l8WorkerV2SemanticRoots(parsedFiles, info)...)
 
 	objects := make(map[types.Object]l8WorkerV2GuardScope)
 	for _, file := range parsedFiles {
@@ -297,6 +305,105 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 		}
 	}
 	return nil
+}
+
+func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info) []l8WorkerV2GuardScope {
+	var units []l8WorkerV2SemanticUnit
+	for _, file := range files {
+		for _, declaration := range file.parsed.Decls {
+			for _, node := range l8WorkerV2SemanticDeclarationUnits(declaration) {
+				unit := l8WorkerV2SemanticUnit{
+					scope:   l8WorkerV2GuardScope{file: file, node: node},
+					tainted: l8WorkerV2ASTContainsMarker(node),
+				}
+				ast.Inspect(node, func(candidate ast.Node) bool {
+					identifier, ok := candidate.(*ast.Ident)
+					if !ok {
+						return true
+					}
+					if object := info.Defs[identifier]; object != nil {
+						unit.definitions = append(unit.definitions, object)
+					}
+					if object := info.Uses[identifier]; object != nil {
+						unit.uses = append(unit.uses, object)
+					}
+					return true
+				})
+				units = append(units, unit)
+			}
+		}
+	}
+
+	taintedObjects := make(map[types.Object]bool)
+	addDefinitions := func(unit l8WorkerV2SemanticUnit) {
+		for _, object := range unit.definitions {
+			taintedObjects[object] = true
+		}
+	}
+	for _, unit := range units {
+		if unit.tainted {
+			addDefinitions(unit)
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for index := range units {
+			if units[index].tainted {
+				continue
+			}
+			for _, object := range units[index].uses {
+				if !taintedObjects[object] {
+					continue
+				}
+				units[index].tainted = true
+				addDefinitions(units[index])
+				changed = true
+				break
+			}
+		}
+	}
+
+	var roots []l8WorkerV2GuardScope
+	for _, unit := range units {
+		if unit.tainted {
+			roots = append(roots, unit.scope)
+		}
+	}
+	return roots
+}
+
+func l8WorkerV2SemanticDeclarationUnits(declaration ast.Decl) []ast.Node {
+	switch typed := declaration.(type) {
+	case *ast.FuncDecl:
+		return []ast.Node{typed}
+	case *ast.GenDecl:
+		if typed.Tok == token.IMPORT {
+			return nil
+		}
+		var units []ast.Node
+		for _, spec := range typed.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || l8WorkerV2ASTContainsMarker(typeSpec.Name) {
+				units = append(units, spec)
+				continue
+			}
+			switch value := typeSpec.Type.(type) {
+			case *ast.StructType:
+				for _, field := range value.Fields.List {
+					units = append(units, field)
+				}
+			case *ast.InterfaceType:
+				for _, field := range value.Methods.List {
+					units = append(units, field)
+				}
+			default:
+				units = append(units, spec)
+			}
+		}
+		return units
+	default:
+		return nil
+	}
 }
 
 func l8WorkerV2ImportValues(imports map[string]string) []string {
@@ -527,6 +634,7 @@ func l8RejectWorkerV2ForbiddenSurface(scope l8WorkerV2GuardScope) error {
 			"net",
 			"net/http",
 			"os/exec",
+			"reflect",
 		} {
 			if importPath == forbidden || strings.HasPrefix(importPath, forbidden+"/") {
 				return fmt.Errorf("v2 protocol production file %s imports live/provider dependency %q", scope.file.path, importPath)
@@ -586,6 +694,75 @@ import httpalias "net/http"
 func JobStartV2Fixture() { liveHelper() }
 func liveHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
 	}, policy, "net/http")
+}
+
+func TestL8WorkerV2GuardSemanticAliasesTaintConsumers(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"aliases.go":   true,
+		"handler.go":   true,
+		"shared.go":    true,
+	}}
+	contracts := `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"
+type JobStartRequestV2 struct{}`
+	aliases := `package sandboxworker
+const selectedOperation = OperationJobStartV2
+const routedOperation = selectedOperation
+type selectedRequest = JobStartRequestV2
+type routedRequest = selectedRequest`
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"contracts.go": contracts,
+		"aliases.go":   aliases,
+		"handler.go": `package sandboxworker
+import httpalias "net/http"
+func dispatch(operation string, request routedRequest) {
+	switch operation {
+	case routedOperation:
+		safeHelper(request)
+	}
+}
+func unrelatedLegacyDispatch() { _, _ = httpalias.Get("https://legacy.example.invalid") }`,
+		"shared.go": `package sandboxworker
+func safeHelper(routedRequest) {}`,
+	}, policy)
+
+	for _, fixture := range []struct {
+		name    string
+		handler string
+	}{
+		{name: "const alias chain", handler: `package sandboxworker
+func dispatch(operation string) {
+	switch operation {
+	case routedOperation:
+		forbiddenHelper()
+	}
+}`},
+		{name: "type alias chain", handler: `package sandboxworker
+func dispatch(request routedRequest) { forbiddenHelperWithRequest(request) }`},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"contracts.go": contracts,
+				"aliases.go":   aliases,
+				"handler.go":   fixture.handler,
+				"shared.go": `package sandboxworker
+import httpalias "net/http"
+func forbiddenHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }
+func forbiddenHelperWithRequest(routedRequest) { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+			}, policy, "net/http")
+		})
+	}
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"contracts.go": contracts,
+		"aliases.go":   aliases,
+		"unlisted_handler.go": `package sandboxworker
+func dispatch(operation string) {
+	if operation == routedOperation {}
+}`,
+	}, policy, "outside the exact allowlist")
 }
 
 func TestL8WorkerV2GuardMixedSwitchesAuditCompleteReachableControlFlow(t *testing.T) {
@@ -734,6 +911,38 @@ func JobLogsV2Fixture() { fn := crossFileHelper; fn() }`,
 		"shared.go": `package sandboxworker
 func crossFileHelper() {}`,
 	}, policy, "function-value dispatch")
+}
+
+func TestL8WorkerV2GuardRejectsReflectiveDispatch(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	fixtures := []struct {
+		name   string
+		source string
+	}{
+		{name: "aliased function call", source: `package sandboxworker
+import reflectalias "reflect"
+func JobStartV2Fixture(function any) { reflectalias.ValueOf(function).Call(nil) }`},
+		{name: "aliased method call slice", source: `package sandboxworker
+import reflectalias "reflect"
+func JobStatusV2Fixture(value any) { reflectalias.ValueOf(value).MethodByName("dispatch").CallSlice(nil) }`},
+		{name: "dot imported call", source: `package sandboxworker
+import . "reflect"
+func JobLogsV2Fixture(function any) { ValueOf(function).Call(nil) }`},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": fixture.source,
+			}, policy, "reflect")
+		})
+	}
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+type concreteReflectControl struct{}
+func (concreteReflectControl) dispatch() {}
+func JobCancelV2Fixture() { concreteReflectControl{}.dispatch() }`,
+	}, policy)
 }
 
 func TestL8WorkerV2GuardRequiresEveryReachedFileOnExactAllowlist(t *testing.T) {

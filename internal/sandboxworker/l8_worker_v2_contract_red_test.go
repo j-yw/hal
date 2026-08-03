@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestL8WorkerV2OperationsAndPayloadFieldsAreDistinctFromV1(t *testing.T) {
@@ -169,19 +171,41 @@ func TestL8WorkerV2PayloadJSONSchemasAreExact(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := make([]string, 0, tt.typeOf.NumField())
-			for index := 0; index < tt.typeOf.NumField(); index++ {
-				field := tt.typeOf.Field(index)
-				if field.Tag.Get("json") == "" {
-					continue
-				}
-				got = append(got, field.Name+"|"+field.Type.String()+"|"+string(field.Tag))
-			}
+			got := l8WorkerV2ExportedSchema(tt.typeOf)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("%s JSON schema = %q, want %q", tt.name, got, tt.want)
 			}
 		})
 	}
+}
+
+func TestL8WorkerV2ExactSchemaHelperIncludesUntaggedExportedFields(t *testing.T) {
+	type schemaFixture struct {
+		Tagged            string `json:"tagged"`
+		DefaultSerialized string
+		IgnoredByJSON     string `json:"-"`
+		private           string
+	}
+	want := []string{
+		`Tagged|string|json:"tagged"`,
+		`DefaultSerialized|string|`,
+		`IgnoredByJSON|string|json:"-"`,
+	}
+	if got := l8WorkerV2ExportedSchema(reflect.TypeOf(schemaFixture{})); !reflect.DeepEqual(got, want) {
+		t.Fatalf("exact exported schema helper = %q, want %q", got, want)
+	}
+}
+
+func l8WorkerV2ExportedSchema(typ reflect.Type) []string {
+	fields := make([]string, 0, typ.NumField())
+	for index := 0; index < typ.NumField(); index++ {
+		field := typ.Field(index)
+		if !field.IsExported() {
+			continue
+		}
+		fields = append(fields, field.Name+"|"+field.Type.String()+"|"+string(field.Tag))
+	}
+	return fields
 }
 
 func TestL8WorkerV2ProductionCredentialIntentValidationFailsClosed(t *testing.T) {
@@ -342,6 +366,116 @@ func TestL8WorkerV2IdentityKeysAreExactOpaqueLowercaseHex(t *testing.T) {
 	}
 }
 
+func TestL8WorkerV2PrivateRequestKeyIncludesCanonicalExecIdentity(t *testing.T) {
+	base := l8WorkerV2StartRequest()
+	base.Exec = ExecRequest{
+		OperationID: "exec-identity",
+		Target: Target{
+			ID:     " target-primary ",
+			Name:   " sandbox-primary ",
+			Status: " ready ",
+			Labels: map[string]string{"purpose": "test", "tier": "worker"},
+			Runtime: RuntimeTarget{
+				Driver:         " microvm ",
+				RuntimeID:      " runtime-primary ",
+				Image:          " image-primary ",
+				WorkerID:       " worker-primary ",
+				IsolationLevel: IsolationLevelVM,
+				Metadata: &sandboxruntime.RuntimeMetadata{
+					Backend:          "firecracker",
+					CapabilityLabels: []string{"credential_safe", "offline"},
+					PathRoles:        []string{"workspace"},
+				},
+			},
+		},
+		Args:    []string{"pi", "--offline", "task"},
+		Env:     map[string]string{"HAL_PROFILE": "test", "LANG": "C"},
+		WorkDir: " workspace ",
+		Stdin: &ExecStdinPayload{
+			Data:       "c2FmZQ==",
+			Encoding:   CopyPayloadEncodingBase64,
+			SizeBytes:  4,
+			LimitBytes: 16,
+		},
+		StdoutLimitBytes: 2048,
+		StderrLimitBytes: 4096,
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid full V2 exec identity fixture: %v", err)
+	}
+	baseKey, err := jobRequestKeyV2(" microvm ", "principal-owner", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	equivalent := l8CloneWorkerV2StartRequest(base)
+	equivalent.Exec.WorkDir = "workspace"
+	equivalent.Exec.Target.ID = "target-primary"
+	equivalent.Exec.Target.Name = "sandbox-primary"
+	equivalent.Exec.Target.Status = "ready"
+	equivalent.Exec.Target.Labels = map[string]string{"tier": "worker", "purpose": "test"}
+	equivalent.Exec.Target.Runtime.Driver = "microvm"
+	equivalent.Exec.Target.Runtime.RuntimeID = "runtime-primary"
+	equivalent.Exec.Target.Runtime.Image = "image-primary"
+	equivalent.Exec.Target.Runtime.WorkerID = "worker-primary"
+	equivalent.Exec.Env = map[string]string{"LANG": "C", "HAL_PROFILE": "test"}
+	equivalentKey, err := jobRequestKeyV2("microvm", "principal-owner", equivalent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equivalentKey != baseKey {
+		t.Fatalf("canonical whitespace/map ordering changed private request key: got %q want %q", equivalentKey, baseKey)
+	}
+
+	mutations := []struct {
+		name   string
+		driver string
+		mutate func(*JobStartRequestV2)
+	}{
+		{name: "outer driver", driver: RuntimeDriverRootlessPodman, mutate: func(*JobStartRequestV2) {}},
+		{name: "operation id", mutate: func(req *JobStartRequestV2) { req.Exec.OperationID = "exec-neighbor" }},
+		{name: "workdir", mutate: func(req *JobStartRequestV2) { req.Exec.WorkDir = "workspace-neighbor" }},
+		{name: "args", mutate: func(req *JobStartRequestV2) { req.Exec.Args[2] = "task-neighbor" }},
+		{name: "env", mutate: func(req *JobStartRequestV2) { req.Exec.Env["HAL_PROFILE"] = "neighbor" }},
+		{name: "stdin data", mutate: func(req *JobStartRequestV2) { req.Exec.Stdin.Data = "dGVzdA==" }},
+		{name: "stdin limit", mutate: func(req *JobStartRequestV2) { req.Exec.Stdin.LimitBytes++ }},
+		{name: "target id", mutate: func(req *JobStartRequestV2) { req.Exec.Target.ID = "target-neighbor" }},
+		{name: "target name", mutate: func(req *JobStartRequestV2) { req.Exec.Target.Name = "sandbox-neighbor" }},
+		{name: "target status", mutate: func(req *JobStartRequestV2) { req.Exec.Target.Status = "running" }},
+		{name: "target labels", mutate: func(req *JobStartRequestV2) { req.Exec.Target.Labels["tier"] = "neighbor" }},
+		{name: "runtime driver", mutate: func(req *JobStartRequestV2) { req.Exec.Target.Runtime.Driver = RuntimeDriverRootlessPodman }},
+		{name: "runtime id", mutate: func(req *JobStartRequestV2) { req.Exec.Target.Runtime.RuntimeID = "runtime-neighbor" }},
+		{name: "runtime image", mutate: func(req *JobStartRequestV2) { req.Exec.Target.Runtime.Image = "image-neighbor" }},
+		{name: "runtime worker", mutate: func(req *JobStartRequestV2) { req.Exec.Target.Runtime.WorkerID = "worker-neighbor" }},
+		{name: "runtime isolation", mutate: func(req *JobStartRequestV2) { req.Exec.Target.Runtime.IsolationLevel = IsolationLevelContainer }},
+		{name: "runtime metadata", mutate: func(req *JobStartRequestV2) {
+			req.Exec.Target.Runtime.Metadata = &sandboxruntime.RuntimeMetadata{Backend: "rootless_podman"}
+		}},
+		{name: "stdout limit", mutate: func(req *JobStartRequestV2) { req.Exec.StdoutLimitBytes++ }},
+		{name: "stderr limit", mutate: func(req *JobStartRequestV2) { req.Exec.StderrLimitBytes++ }},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			candidate := l8CloneWorkerV2StartRequest(base)
+			mutation.mutate(&candidate)
+			if err := candidate.Validate(); err != nil {
+				t.Fatalf("valid changed exec identity fixture: %v", err)
+			}
+			driver := mutation.driver
+			if driver == "" {
+				driver = " microvm "
+			}
+			key, keyErr := jobRequestKeyV2(driver, "principal-owner", candidate)
+			if keyErr != nil {
+				t.Fatal(keyErr)
+			}
+			if key == baseKey {
+				t.Fatal("private request key ignored changed canonical exec identity")
+			}
+		})
+	}
+}
+
 func TestL8WorkerV2ReusesExistingExecLogAndIdentityBounds(t *testing.T) {
 	start := l8WorkerV2StartRequest()
 	start.Exec.StdoutLimitBytes = MaxExecStdoutCaptureBytes + 1
@@ -419,6 +553,7 @@ func TestL8WorkerV2CredentialIntentChangesBothSubmissionAndPrivateRequestIdentit
 		principal string
 		mutate    func(*JobStartRequestV2)
 	}{
+		{name: "submission", principal: "principal-owner", mutate: func(req *JobStartRequestV2) { req.SubmissionID = "submission-neighbor" }},
 		{name: "production intent", principal: "principal-owner", mutate: func(req *JobStartRequestV2) {
 			req.ProductionCredentialsRequested = false
 			req.PlanID = ""

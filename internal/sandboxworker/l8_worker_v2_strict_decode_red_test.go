@@ -13,6 +13,15 @@ func TestL8WorkerOuterRequestDecoderIsStrictForV1AndV2BeforeDispatch(t *testing.
 	server := &Server{maxRequestBytes: defaultMaxRequestBytes}
 	v1 := `{"protocolVersion":"sandboxworker-v1","requestId":"request-v1","operation":"job_status","jobStatus":{"contractVersion":"sandboxjob-v1","jobId":"job-primary"}}`
 	v2 := l8WorkerV2StartJSON(t)
+	noIntentV2 := l8WorkerV2NoCredentialStartJSON(t)
+	missingRequiredBool := strings.Replace(noIntentV2, `,"productionCredentialsRequested":false`, "", 1)
+	if missingRequiredBool == noIntentV2 {
+		t.Fatal("explicit-false V2 fixture did not contain required productionCredentialsRequested")
+	}
+	nullRequiredBool := strings.Replace(noIntentV2, `"productionCredentialsRequested":false`, `"productionCredentialsRequested":null`, 1)
+	if nullRequiredBool == noIntentV2 {
+		t.Fatal("explicit-false V2 fixture could not be changed to null required boolean")
+	}
 
 	tests := []struct {
 		name string
@@ -29,6 +38,8 @@ func TestL8WorkerOuterRequestDecoderIsStrictForV1AndV2BeforeDispatch(t *testing.
 		{name: "v2 unknown payload", raw: strings.Replace(v2, `"productionCredentialsRequested":true`, `"productionCredentialsRequested":true,"unknown":true`, 1)},
 		{name: "v2 duplicate required boolean", raw: strings.Replace(v2, `"productionCredentialsRequested":true`, `"productionCredentialsRequested":true,"productionCredentialsRequested":true`, 1)},
 		{name: "v2 missing required boolean", raw: strings.Replace(v2, `"productionCredentialsRequested":true,`, "", 1)},
+		{name: "v2 no-intent missing required boolean", raw: missingRequiredBool},
+		{name: "v2 no-intent null required boolean", raw: nullRequiredBool},
 		{name: "v2 string boolean", raw: strings.Replace(v2, `"productionCredentialsRequested":true`, `"productionCredentialsRequested":"true"`, 1)},
 		{name: "v2 decimal revision", raw: strings.Replace(v2, `"admissionGrantRevision":9`, `"admissionGrantRevision":9.0`, 1)},
 		{name: "v2 exponent revision", raw: strings.Replace(v2, `"admissionGrantRevision":9`, `"admissionGrantRevision":9e0`, 1)},
@@ -61,11 +72,42 @@ func TestL8WorkerOuterRequestDecoderIsStrictForV1AndV2BeforeDispatch(t *testing.
 		})
 	}
 
-	for _, valid := range []string{v1, v1 + " \n\t", v2, v2 + " \n\t"} {
+	for _, valid := range []string{v1, v1 + " \n\t", v2, v2 + " \n\t", noIntentV2, noIntentV2 + " \n\t"} {
 		if _, errorResp := server.readRequest(strings.NewReader(valid)); errorResp != nil {
 			t.Fatalf("canonical single request rejected: %#v", errorResp)
 		}
 	}
+}
+
+func l8WorkerV2NoCredentialStartJSON(t *testing.T) string {
+	t.Helper()
+	req := l8WorkerV2StartRequest()
+	req.ProductionCredentialsRequested = false
+	req.PlanID = ""
+	req.AdmissionGrantID = ""
+	req.AdmissionGrantRevision = 0
+	req.TemplatePolicyID = ""
+	req.WorkspacePolicyID = ""
+	req.SourceReferenceIDs = nil
+	req.Bindings = nil
+	if err := req.Validate(); err != nil {
+		t.Fatalf("programmatic explicit-false V2 request: %v", err)
+	}
+	envelope := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "request-v2-no-intent",
+		Operation:       OperationJobStartV2,
+		DriverID:        RuntimeDriverMicroVM,
+		JobStartV2:      &req,
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"productionCredentialsRequested":false`) {
+		t.Fatalf("canonical no-intent V2 request omitted explicit required boolean: %s", payload)
+	}
+	return string(payload)
 }
 
 func TestL8WorkerOuterRequestDecoderEnforcesExistingByteLimit(t *testing.T) {
