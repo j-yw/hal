@@ -43,6 +43,30 @@ func TestL7GuestInitParsesStaticBootstrapAndBuildsFixedCommands(t *testing.T) {
 	}
 }
 
+func TestL7GuestInitDisablesDADBeforePlainIPv6Address(t *testing.T) {
+	source, err := os.ReadFile("main_linux.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, `"/accept_dad"`) {
+		t.Fatal("L7 guest bootstrap does not configure the sealed IPv6 DAD control")
+	}
+	if strings.Contains(text, `"nodad"`) {
+		t.Fatal("L7 guest bootstrap still uses the rejected ip-address nodad flag")
+	}
+
+	config, present, err := parseL7NetworkBootConfig("hal_l7_net_if=eth0 hal_l7_ipv4=192.0.2.2/30 hal_l7_ipv4_gateway=192.0.2.1 " +
+		"hal_l7_ipv6=fd00:7::2/126 hal_l7_ipv6_gateway=fd00:7::1 hal_l7_proxy=http://198.18.0.1:18080")
+	if err != nil || !present {
+		t.Fatal("test boot config is invalid")
+	}
+	commands := l7NetworkBootstrapCommands(config)
+	if got := commands[2]; !reflect.DeepEqual(got, []string{"/sbin/ip", "-6", "addr", "add", "fd00:7::2/126", "dev", "eth0"}) {
+		t.Fatalf("IPv6 address command = %#v, want plain add after verified DAD disable", got)
+	}
+}
+
 func TestL7GuestInitDisablesAutomaticIPv6BeforeAnyNetworkCommand(t *testing.T) {
 	config, present, err := parseL7NetworkBootConfig("hal_l7_net_if=eth0 hal_l7_ipv4=192.0.2.2/30 hal_l7_ipv4_gateway=192.0.2.1 " +
 		"hal_l7_ipv6=fd00:7::2/126 hal_l7_ipv6_gateway=fd00:7::1 hal_l7_proxy=http://198.18.0.1:18080")
