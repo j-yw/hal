@@ -2,6 +2,7 @@ package applicationroute
 
 import (
 	"context"
+	"io"
 	"reflect"
 	"sort"
 	"strings"
@@ -31,7 +32,14 @@ type routeEntry struct {
 	definition Definition
 }
 
+// Registry is a lightweight handle to live application-route state. Keeping
+// synchronization behind an unexported pointer makes copied handles safe to
+// reject from serialization and formatting without copying locks or counters.
 type Registry struct {
+	state *registryState
+}
+
+type registryState struct {
 	mu          sync.Mutex
 	condition   *sync.Cond
 	state       RegistryState
@@ -40,9 +48,17 @@ type Registry struct {
 	dispatches  sync.WaitGroup
 }
 
+type trackedResponseBody struct {
+	body        io.ReadCloser
+	closeOnce   sync.Once
+	releaseOnce sync.Once
+	release     func()
+}
+
 func NewRegistry(handlers ...Handler) (*Registry, error) {
-	registry := &Registry{state: RegistryStateUnstarted}
-	registry.condition = sync.NewCond(&registry.mu)
+	shared := &registryState{state: RegistryStateUnstarted}
+	shared.condition = sync.NewCond(&shared.mu)
+	registry := &Registry{state: shared}
 	for _, handler := range handlers {
 		if err := registry.Register(handler); err != nil {
 			return nil, err
@@ -52,12 +68,13 @@ func NewRegistry(handlers ...Handler) (*Registry, error) {
 }
 
 func (registry *Registry) Register(handler Handler) error {
-	if registry == nil {
+	shared := registry.sharedState()
+	if shared == nil {
 		return ErrRegistryClosed
 	}
-	registry.mu.Lock()
-	stateErr := registry.registrationErrorLocked()
-	registry.mu.Unlock()
+	shared.mu.Lock()
+	stateErr := shared.registrationErrorLocked()
+	shared.mu.Unlock()
 	if stateErr != nil {
 		return stateErr
 	}
@@ -69,28 +86,29 @@ func (registry *Registry) Register(handler Handler) error {
 		return ErrInvalidRoute
 	}
 
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if stateErr := registry.registrationErrorLocked(); stateErr != nil {
+	shared.mu.Lock()
+	defer shared.mu.Unlock()
+	if stateErr := shared.registrationErrorLocked(); stateErr != nil {
 		return stateErr
 	}
-	for _, existing := range registry.entries {
+	for _, existing := range shared.entries {
 		if existing.definition.ID == definition.ID || prefixesOverlap(existing.definition.Prefix, definition.Prefix) {
 			return ErrRouteCollision
 		}
 	}
-	registry.entries = append(registry.entries, routeEntry{handler: handler, definition: definition})
+	shared.entries = append(shared.entries, routeEntry{handler: handler, definition: definition})
 	return nil
 }
 
 func (registry *Registry) RouteIDs() []RouteID {
-	if registry == nil {
+	shared := registry.sharedState()
+	if shared == nil {
 		return nil
 	}
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	ids := make([]RouteID, len(registry.entries))
-	for index, entry := range registry.entries {
+	shared.mu.Lock()
+	defer shared.mu.Unlock()
+	ids := make([]RouteID, len(shared.entries))
+	for index, entry := range shared.entries {
 		ids[index] = entry.definition.ID
 	}
 	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
@@ -98,67 +116,69 @@ func (registry *Registry) RouteIDs() []RouteID {
 }
 
 func (registry *Registry) Start(ctx context.Context) error {
-	if registry == nil {
+	shared := registry.sharedState()
+	if shared == nil {
 		return ErrRegistryClosed
 	}
-	registry.mu.Lock()
-	switch registry.state {
+	shared.mu.Lock()
+	switch shared.state {
 	case RegistryStateUnstarted:
-		registry.state = RegistryStateStarting
+		shared.state = RegistryStateStarting
 	case RegistryStateStarting, RegistryStateStarted:
-		registry.mu.Unlock()
+		shared.mu.Unlock()
 		return ErrRegistryStarted
 	default:
-		registry.mu.Unlock()
+		shared.mu.Unlock()
 		return ErrRegistryClosed
 	}
-	entries := append([]routeEntry(nil), registry.entries...)
-	registry.mu.Unlock()
+	entries := append([]routeEntry(nil), shared.entries...)
+	shared.mu.Unlock()
 
 	for index, entry := range entries {
 		if err := entry.handler.Start(ctx); err != nil {
-			registry.mu.Lock()
-			registry.state = RegistryStateClosing
-			registry.unconfirmed = make([]bool, len(entries))
+			shared.mu.Lock()
+			shared.state = RegistryStateClosing
+			shared.unconfirmed = make([]bool, len(entries))
 			for closeIndex := 0; closeIndex <= index; closeIndex++ {
-				registry.unconfirmed[closeIndex] = true
+				shared.unconfirmed[closeIndex] = true
 			}
-			registry.mu.Unlock()
+			shared.mu.Unlock()
 
-			failed := registry.closeUnconfirmed(ctx, entries)
-			registry.finishClose(failed)
+			failed := shared.closeUnconfirmed(ctx, entries)
+			shared.finishClose(failed)
 			return ErrHandlerStart
 		}
 	}
 
-	registry.mu.Lock()
-	registry.unconfirmed = make([]bool, len(entries))
-	for index := range registry.unconfirmed {
-		registry.unconfirmed[index] = true
+	shared.mu.Lock()
+	shared.unconfirmed = make([]bool, len(entries))
+	for index := range shared.unconfirmed {
+		shared.unconfirmed[index] = true
 	}
-	registry.state = RegistryStateStarted
-	registry.condition.Broadcast()
-	registry.mu.Unlock()
+	shared.state = RegistryStateStarted
+	shared.condition.Broadcast()
+	shared.mu.Unlock()
 	return nil
 }
 
 func (registry *Registry) Dispatch(ctx context.Context, id RouteID, request Request) (Response, error) {
-	if registry == nil {
+	shared := registry.sharedState()
+	if shared == nil {
 		return Response{}, ErrRegistryClosed
 	}
-	registry.mu.Lock()
-	switch registry.state {
+	shared.mu.Lock()
+	switch shared.state {
 	case RegistryStateUnstarted, RegistryStateStarting:
-		registry.mu.Unlock()
+		shared.mu.Unlock()
 		return Response{}, ErrRegistryNotStarted
 	case RegistryStateStarted:
 	default:
-		registry.mu.Unlock()
+		shared.mu.Unlock()
 		return Response{}, ErrRegistryClosed
 	}
 	var selected routeEntry
 	found := false
-	for _, entry := range registry.entries {
+	for _, entry := range shared.entries {
 		if entry.definition.ID == id {
 			selected = entry
 			found = true
@@ -166,27 +186,37 @@ func (registry *Registry) Dispatch(ctx context.Context, id RouteID, request Requ
 		}
 	}
 	if !found {
-		registry.mu.Unlock()
+		shared.mu.Unlock()
 		return Response{}, ErrUnknownRoute
 	}
 	if err := ValidateRequestBounds(selected.definition.Limits, request); err != nil {
-		registry.mu.Unlock()
+		shared.mu.Unlock()
 		return Response{}, err
 	}
-	registry.dispatches.Add(1)
-	registry.mu.Unlock()
-	defer registry.dispatches.Done()
+	shared.dispatches.Add(1)
+	shared.mu.Unlock()
+
+	transferred := false
+	defer func() {
+		if !transferred {
+			shared.dispatches.Done()
+		}
+	}()
 
 	response, err := selected.handler.Handle(ctx, request)
 	if err != nil {
+		closeDiscardedResponseBody(response.Body)
 		return Response{}, ErrHandlerDispatch
 	}
 	if err := ValidateResponseBounds(selected.definition.Limits, response); err != nil {
-		if response.Body != nil {
-			_ = response.Body.Close()
-		}
+		closeDiscardedResponseBody(response.Body)
 		return Response{}, err
 	}
+	if response.Body == nil {
+		return response, nil
+	}
+	response.Body = newTrackedResponseBody(response.Body, shared.dispatches.Done)
+	transferred = true
 	return response, nil
 }
 
@@ -194,31 +224,35 @@ func (registry *Registry) Close(ctx context.Context) error {
 	if registry == nil {
 		return nil
 	}
-	registry.mu.Lock()
-	for registry.state == RegistryStateStarting || registry.state == RegistryStateClosing {
-		registry.condition.Wait()
-	}
-	switch registry.state {
-	case RegistryStateClosed:
-		registry.mu.Unlock()
-		return nil
-	case RegistryStateUnstarted:
-		registry.state = RegistryStateClosed
-		registry.condition.Broadcast()
-		registry.mu.Unlock()
-		return nil
-	case RegistryStateStarted, RegistryStateCleanupIncomplete:
-		registry.state = RegistryStateClosing
-	default:
-		registry.mu.Unlock()
+	shared := registry.state
+	if shared == nil {
 		return ErrRegistryClosed
 	}
-	entries := append([]routeEntry(nil), registry.entries...)
-	registry.mu.Unlock()
+	shared.mu.Lock()
+	for shared.state == RegistryStateStarting || shared.state == RegistryStateClosing {
+		shared.condition.Wait()
+	}
+	switch shared.state {
+	case RegistryStateClosed:
+		shared.mu.Unlock()
+		return nil
+	case RegistryStateUnstarted:
+		shared.state = RegistryStateClosed
+		shared.condition.Broadcast()
+		shared.mu.Unlock()
+		return nil
+	case RegistryStateStarted, RegistryStateCleanupIncomplete:
+		shared.state = RegistryStateClosing
+	default:
+		shared.mu.Unlock()
+		return ErrRegistryClosed
+	}
+	entries := append([]routeEntry(nil), shared.entries...)
+	shared.mu.Unlock()
 
-	registry.dispatches.Wait()
-	failed := registry.closeUnconfirmed(ctx, entries)
-	registry.finishClose(failed)
+	shared.dispatches.Wait()
+	failed := shared.closeUnconfirmed(ctx, entries)
+	shared.finishClose(failed)
 	if failed {
 		return ErrHandlerClose
 	}
@@ -229,17 +263,28 @@ func (registry *Registry) State() RegistryState {
 	if registry == nil {
 		return RegistryStateClosed
 	}
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
+	shared := registry.state
+	if shared == nil {
+		return ""
+	}
+	shared.mu.Lock()
+	defer shared.mu.Unlock()
+	return shared.state
+}
+
+func (registry *Registry) sharedState() *registryState {
+	if registry == nil {
+		return nil
+	}
 	return registry.state
 }
 
-func (registry *Registry) closeUnconfirmed(ctx context.Context, entries []routeEntry) bool {
+func (shared *registryState) closeUnconfirmed(ctx context.Context, entries []routeEntry) bool {
 	failed := false
 	for index := len(entries) - 1; index >= 0; index-- {
-		registry.mu.Lock()
-		needsClose := index < len(registry.unconfirmed) && registry.unconfirmed[index]
-		registry.mu.Unlock()
+		shared.mu.Lock()
+		needsClose := index < len(shared.unconfirmed) && shared.unconfirmed[index]
+		shared.mu.Unlock()
 		if !needsClose {
 			continue
 		}
@@ -247,30 +292,26 @@ func (registry *Registry) closeUnconfirmed(ctx context.Context, entries []routeE
 			failed = true
 			continue
 		}
-		registry.mu.Lock()
-		registry.unconfirmed[index] = false
-		registry.mu.Unlock()
+		shared.mu.Lock()
+		shared.unconfirmed[index] = false
+		shared.mu.Unlock()
 	}
 	return failed
 }
 
-func (registry *Registry) finishClose(failed bool) {
-	registry.mu.Lock()
+func (shared *registryState) finishClose(failed bool) {
+	shared.mu.Lock()
 	if failed {
-		registry.state = RegistryStateCleanupIncomplete
+		shared.state = RegistryStateCleanupIncomplete
 	} else {
-		registry.state = RegistryStateClosed
+		shared.state = RegistryStateClosed
 	}
-	registry.condition.Broadcast()
-	registry.mu.Unlock()
+	shared.condition.Broadcast()
+	shared.mu.Unlock()
 }
 
-func prefixesOverlap(left, right string) bool {
-	return strings.HasPrefix(left, right) || strings.HasPrefix(right, left)
-}
-
-func (registry *Registry) registrationErrorLocked() error {
-	switch registry.state {
+func (shared *registryState) registrationErrorLocked() error {
+	switch shared.state {
 	case RegistryStateUnstarted:
 		return nil
 	case RegistryStateStarting, RegistryStateStarted:
@@ -278,6 +319,40 @@ func (registry *Registry) registrationErrorLocked() error {
 	default:
 		return ErrRegistryClosed
 	}
+}
+
+func newTrackedResponseBody(body io.ReadCloser, release func()) *trackedResponseBody {
+	return &trackedResponseBody{body: body, release: release}
+}
+
+func (body *trackedResponseBody) Read(buffer []byte) (int, error) {
+	count, err := body.body.Read(buffer)
+	if err != nil {
+		body.releaseOwnership()
+	}
+	return count, err
+}
+
+func (body *trackedResponseBody) Close() error {
+	body.closeOnce.Do(func() {
+		_ = body.body.Close()
+	})
+	body.releaseOwnership()
+	return nil
+}
+
+func (body *trackedResponseBody) releaseOwnership() {
+	body.releaseOnce.Do(body.release)
+}
+
+func closeDiscardedResponseBody(body io.ReadCloser) {
+	if body != nil {
+		_ = body.Close()
+	}
+}
+
+func prefixesOverlap(left, right string) bool {
+	return strings.HasPrefix(left, right) || strings.HasPrefix(right, left)
 }
 
 func nilHandler(handler Handler) bool {
@@ -293,7 +368,8 @@ func nilHandler(handler Handler) bool {
 	}
 }
 
-func (*Registry) MarshalJSON() ([]byte, error) { return nil, ErrLiveRouteStateNotSerializable }
-func (*Registry) MarshalText() ([]byte, error) { return nil, ErrLiveRouteStateNotSerializable }
-func (*Registry) String() string               { return "applicationroute.Registry{live}" }
-func (*Registry) GoString() string             { return "applicationroute.Registry{live}" }
+func (Registry) MarshalJSON() ([]byte, error) { return nil, ErrLiveRouteStateNotSerializable }
+func (Registry) MarshalText() ([]byte, error) { return nil, ErrLiveRouteStateNotSerializable }
+func (Registry) Error() string                { return "applicationroute.Registry{live}" }
+func (Registry) String() string               { return "applicationroute.Registry{live}" }
+func (Registry) GoString() string             { return "applicationroute.Registry{live}" }

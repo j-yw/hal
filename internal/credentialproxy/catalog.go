@@ -105,6 +105,10 @@ type ServiceDefinition struct {
 }
 
 type StaticServiceCatalog struct {
+	state *staticServiceCatalogState
+}
+
+type staticServiceCatalogState struct {
 	generation string
 	owner      CatalogOwner
 	services   map[ServiceID]ServiceDefinition
@@ -180,7 +184,7 @@ func NewStaticServiceCatalog(generation string, owner CatalogOwner, definitions 
 		return nil, ErrCatalogEmpty
 	}
 
-	catalog := &StaticServiceCatalog{
+	state := &staticServiceCatalogState{
 		generation: generation,
 		owner:      owner,
 		services:   make(map[ServiceID]ServiceDefinition, len(definitions)),
@@ -191,16 +195,16 @@ func NewStaticServiceCatalog(generation string, owner CatalogOwner, definitions 
 			return nil, ErrInvalidServiceDefinition
 		}
 		id := definition.ServiceID()
-		if _, exists := catalog.services[id]; exists {
+		if _, exists := state.services[id]; exists {
 			return nil, ErrServiceCollision
 		}
-		catalog.services[id] = cloneServiceDefinition(definition)
-		catalog.serviceIDs = append(catalog.serviceIDs, id)
+		state.services[id] = cloneServiceDefinition(definition)
+		state.serviceIDs = append(state.serviceIDs, id)
 	}
-	sort.Slice(catalog.serviceIDs, func(left, right int) bool {
-		return catalog.serviceIDs[left] < catalog.serviceIDs[right]
+	sort.Slice(state.serviceIDs, func(left, right int) bool {
+		return state.serviceIDs[left] < state.serviceIDs[right]
 	})
-	return catalog, nil
+	return &StaticServiceCatalog{state: state}, nil
 }
 
 func ValidateServiceDefinition(definition ServiceDefinition) error {
@@ -237,24 +241,24 @@ func ValidateCatalogServiceReference(reference CatalogServiceReference) error {
 }
 
 func (catalog *StaticServiceCatalog) Generation() string {
-	if catalog == nil {
+	if catalog == nil || catalog.state == nil {
 		return ""
 	}
-	return catalog.generation
+	return catalog.state.generation
 }
 
 func (catalog *StaticServiceCatalog) ServiceIDs() []ServiceID {
-	if catalog == nil {
+	if catalog == nil || catalog.state == nil {
 		return nil
 	}
-	return append([]ServiceID(nil), catalog.serviceIDs...)
+	return append([]ServiceID(nil), catalog.state.serviceIDs...)
 }
 
 func (catalog *StaticServiceCatalog) Lookup(id ServiceID) (ServiceDefinition, error) {
-	if catalog == nil {
+	if catalog == nil || catalog.state == nil {
 		return ServiceDefinition{}, ErrServiceUnknown
 	}
-	definition, ok := catalog.services[id]
+	definition, ok := catalog.state.services[id]
 	if !ok {
 		return ServiceDefinition{}, ErrServiceUnknown
 	}
@@ -262,13 +266,13 @@ func (catalog *StaticServiceCatalog) Lookup(id ServiceID) (ServiceDefinition, er
 }
 
 func (catalog *StaticServiceCatalog) SafeReference(id ServiceID) (CatalogServiceReference, error) {
-	if catalog == nil {
+	if catalog == nil || catalog.state == nil {
 		return CatalogServiceReference{}, ErrServiceUnknown
 	}
-	if _, ok := catalog.services[id]; !ok {
+	if _, ok := catalog.state.services[id]; !ok {
 		return CatalogServiceReference{}, ErrServiceUnknown
 	}
-	return CatalogServiceReference{ServiceID: id, CatalogGeneration: catalog.generation}, nil
+	return CatalogServiceReference{ServiceID: id, CatalogGeneration: catalog.state.generation}, nil
 }
 
 func (definition ServiceDefinition) ServiceID() ServiceID    { return definition.serviceID }
@@ -375,16 +379,19 @@ func (SealedInvocationPolicy) String() string {
 }
 func (policy SealedInvocationPolicy) GoString() string { return policy.String() }
 
-func (*StaticServiceCatalog) MarshalJSON() ([]byte, error) {
+func (StaticServiceCatalog) MarshalJSON() ([]byte, error) {
 	return nil, ErrLiveCatalogStateNotSerializable
 }
-func (*StaticServiceCatalog) MarshalText() ([]byte, error) {
+func (StaticServiceCatalog) MarshalText() ([]byte, error) {
 	return nil, ErrLiveCatalogStateNotSerializable
 }
-func (*StaticServiceCatalog) String() string {
+func (StaticServiceCatalog) Error() string {
 	return "credentialproxy.StaticServiceCatalog{sealed:true}"
 }
-func (catalog *StaticServiceCatalog) GoString() string { return catalog.String() }
+func (StaticServiceCatalog) String() string {
+	return "credentialproxy.StaticServiceCatalog{sealed:true}"
+}
+func (catalog StaticServiceCatalog) GoString() string { return catalog.String() }
 
 func newAzureOpenAIResponsesInvocationPolicy(deployment string) SealedInvocationPolicy {
 	return SealedInvocationPolicy{
