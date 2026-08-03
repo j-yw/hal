@@ -357,6 +357,11 @@ func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t 
 					`JobStatus|*JobStatusRequest|json:"jobStatus,omitempty"`,
 					`JobLogs|*JobLogsRequest|json:"jobLogs,omitempty"`,
 					`JobCancel|*JobCancelRequest|json:"jobCancel,omitempty"`,
+					`JobStartV2|*JobStartRequestV2|json:"jobStartV2,omitempty"`,
+					`JobResolveV2|*JobResolveRequestV2|json:"jobResolveV2,omitempty"`,
+					`JobStatusV2|*JobStatusRequestV2|json:"jobStatusV2,omitempty"`,
+					`JobLogsV2|*JobLogsRequestV2|json:"jobLogsV2,omitempty"`,
+					`JobCancelV2|*JobCancelRequestV2|json:"jobCancelV2,omitempty"`,
 				},
 				"Response": {
 					`ProtocolVersion|string|json:"protocolVersion,omitempty"`,
@@ -372,6 +377,8 @@ func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t 
 					`Job|*Job|json:"job,omitempty"`,
 					`JobLogs|*JobLogsResponse|json:"jobLogs,omitempty"`,
 					`Error|*Error|json:"error,omitempty"`,
+					`JobV2|*JobV2|json:"jobV2,omitempty"`,
+					`JobLogsV2|*JobLogsResponseV2|json:"jobLogsV2,omitempty"`,
 				},
 				"RuntimeDriver": {
 					`ID|string|json:"id"`,
