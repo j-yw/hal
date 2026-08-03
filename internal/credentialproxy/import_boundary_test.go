@@ -103,7 +103,7 @@ func TestL8CredentialProxyCatalogProductionSourceHasNoLiveOrFixtureBehavior(t *t
 }
 
 func TestL8CredentialProxyCatalogMarshalMethodsOnlyDenyLiveTypes(t *testing.T) {
-	allowedReceivers := map[string]bool{
+	liveDenialReceivers := map[string]bool{
 		"ServiceDefinition":      true,
 		"SealedInvocationPolicy": true,
 		"SealedTLSPolicy":        true,
@@ -121,8 +121,12 @@ func TestL8CredentialProxyCatalogMarshalMethodsOnlyDenyLiveTypes(t *testing.T) {
 			}
 			receiver := catalogReceiverTypeName(function.Recv.List[0].Type)
 			switch function.Name.Name {
-			case "MarshalJSON", "MarshalText":
-				if !allowedReceivers[receiver] {
+			case "MarshalJSON":
+				if !liveDenialReceivers[receiver] && receiver != "CatalogServiceReference" {
+					t.Errorf("production catalog file %s defines %s on unapproved receiver %s", path, function.Name.Name, receiver)
+				}
+			case "MarshalText":
+				if !liveDenialReceivers[receiver] {
 					t.Errorf("production catalog file %s defines %s on unapproved receiver %s", path, function.Name.Name, receiver)
 				}
 			case "UnmarshalJSON", "UnmarshalText", "GobEncode", "GobDecode", "MarshalYAML", "UnmarshalYAML":

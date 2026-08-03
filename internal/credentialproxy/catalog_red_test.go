@@ -93,23 +93,38 @@ func TestL8CredentialProxyCatalogIsHostOwnedImmutableAndDeterministic(t *testing
 	definition.authority = l8FixtureReplacementAuthority
 	definition.methods[0] = "DELETE"
 	definition.tls.alpn[0] = "h2"
+	definition.requestContentTypes[0] = "text/plain"
+	definition.responseContentTypes[0] = "text/html"
+	definition.consumer.arguments[0] = "--api-key"
+	definition.consumer.transientEnvironmentKeys[0] = "RAW_SECRET"
+	definition.consumer.clearedEnvironmentKeys[0] = "MUTATED_PROVIDER_KEY"
 	got, err := catalog.Lookup(ServiceIDAzureOpenAIResponsesV1)
 	if err != nil {
 		t.Fatalf("Lookup() error = %v", err)
 	}
-	if got.SealedAuthority() != l8FixtureAuthority || !reflect.DeepEqual(got.AllowedMethods(), []string{"POST"}) || !reflect.DeepEqual(got.SealedTLS().ALPN(), []string{"http/1.1"}) {
-		t.Fatalf("Lookup() returned mutable construction state")
-	}
+	assertL8FixtureDefinitionSlices(t, got)
 	methods := got.AllowedMethods()
 	methods[0] = "PATCH"
 	alpn := got.SealedTLS().ALPN()
 	alpn[0] = "h2"
+	requestTypes := got.RequestContentTypes()
+	requestTypes[0] = "text/plain"
+	responseTypes := got.ResponseContentTypes()
+	responseTypes[0] = "text/html"
+	arguments := got.SealedInvocationPolicy().Arguments()
+	arguments[0] = "--api-key"
+	transientKeys := got.SealedInvocationPolicy().TransientEnvironmentKeys()
+	transientKeys[0] = "RAW_SECRET"
+	clearedKeys := got.SealedInvocationPolicy().ClearedEnvironmentKeys()
+	wantClearedKeys := append([]string(nil), clearedKeys...)
+	clearedKeys[0] = "MUTATED_PROVIDER_KEY"
 	again, err := catalog.Lookup(ServiceIDAzureOpenAIResponsesV1)
 	if err != nil {
 		t.Fatalf("second Lookup() error = %v", err)
 	}
-	if again.SealedAuthority() != l8FixtureAuthority || !reflect.DeepEqual(again.AllowedMethods(), []string{"POST"}) || !reflect.DeepEqual(again.SealedTLS().ALPN(), []string{"http/1.1"}) {
-		t.Fatalf("second Lookup() returned caller-mutated state")
+	assertL8FixtureDefinitionSlices(t, again)
+	if got := again.SealedInvocationPolicy().ClearedEnvironmentKeys(); !reflect.DeepEqual(got, wantClearedKeys) {
+		t.Fatalf("cleared environment keys after caller mutation = %#v, want %#v", got, wantClearedKeys)
 	}
 
 	ids := catalog.ServiceIDs()
@@ -221,28 +236,82 @@ func TestL8CredentialProxyCatalogNormalizationValidationAndSanitizedErrors(t *te
 
 func TestL8CredentialProxyCatalogValidationRejectsPolicyWeakening(t *testing.T) {
 	valid := l8FixtureAzureDefinition(t)
+	if got, want := ErrInvalidServiceDefinition.Error(), "credential proxy service definition invalid"; got != want {
+		t.Fatalf("ErrInvalidServiceDefinition = %q, want %q", got, want)
+	}
 	tests := []struct {
 		name   string
 		mutate func(*ServiceDefinition)
 	}{
 		{name: "authority contains scheme", mutate: func(got *ServiceDefinition) { got.authority = l8FixtureUnsafeAuthority }},
+		{name: "authority contains port", mutate: func(got *ServiceDefinition) { got.authority = "azure-fixture.invalid:443" }},
+		{name: "authority contains userinfo", mutate: func(got *ServiceDefinition) { got.authority = "user:raw-secret@azure-fixture.invalid" }},
+		{name: "authority contains slash", mutate: func(got *ServiceDefinition) { got.authority = "azure-fixture.invalid/private" }},
+		{name: "authority contains backslash", mutate: func(got *ServiceDefinition) { got.authority = `azure-fixture.invalid\private` }},
+		{name: "authority contains query", mutate: func(got *ServiceDefinition) { got.authority = "azure-fixture.invalid?token=raw-secret" }},
+		{name: "authority contains fragment", mutate: func(got *ServiceDefinition) { got.authority = "azure-fixture.invalid#private" }},
+		{name: "authority contains control", mutate: func(got *ServiceDefinition) { got.authority = "azure-fixture.invalid\nraw-secret" }},
+		{name: "authority contains whitespace", mutate: func(got *ServiceDefinition) { got.authority = "azure fixture.invalid" }},
+		{name: "authority has trailing dot", mutate: func(got *ServiceDefinition) { got.authority = "azure-fixture.invalid." }},
+		{name: "authority has noncanonical case", mutate: func(got *ServiceDefinition) { got.authority = "AZURE-FIXTURE.INVALID" }},
 		{name: "missing TLS name", mutate: func(got *ServiceDefinition) { got.tls.serverName = "" }},
+		{name: "TLS name wildcard", mutate: func(got *ServiceDefinition) { got.tls.serverName = "*.azure-fixture.invalid" }},
+		{name: "TLS name contains port", mutate: func(got *ServiceDefinition) { got.tls.serverName = "tls.azure-fixture.invalid:443" }},
+		{name: "TLS name contains slash", mutate: func(got *ServiceDefinition) { got.tls.serverName = "tls.azure-fixture.invalid/private" }},
+		{name: "TLS name contains control", mutate: func(got *ServiceDefinition) { got.tls.serverName = "tls.azure-fixture.invalid\nraw-secret" }},
+		{name: "TLS name has trailing dot", mutate: func(got *ServiceDefinition) { got.tls.serverName = "tls.azure-fixture.invalid." }},
+		{name: "TLS name has noncanonical case", mutate: func(got *ServiceDefinition) { got.tls.serverName = "TLS.AZURE-FIXTURE.INVALID" }},
+		{name: "missing TLS root policy", mutate: func(got *ServiceDefinition) { got.tls.rootPolicy = "" }},
+		{name: "unknown TLS root policy", mutate: func(got *ServiceDefinition) { got.tls.rootPolicy = TLSRootPolicy("project_roots") }},
+		{name: "zero port", mutate: func(got *ServiceDefinition) { got.port = 0 }},
 		{name: "plaintext port", mutate: func(got *ServiceDefinition) { got.port = 80 }},
+		{name: "alternate TLS port", mutate: func(got *ServiceDefinition) { got.port = 8443 }},
+		{name: "missing ALPN", mutate: func(got *ServiceDefinition) { got.tls.alpn = nil }},
 		{name: "HTTP2 ALPN", mutate: func(got *ServiceDefinition) { got.tls.alpn = []string{"h2"} }},
+		{name: "additional ALPN", mutate: func(got *ServiceDefinition) { got.tls.alpn = []string{"http/1.1", "h2"} }},
 		{name: "unsafe deployment", mutate: func(got *ServiceDefinition) { got.deployment = "../other" }},
 		{name: "unsafe API version", mutate: func(got *ServiceDefinition) { got.apiVersion = "v1&next=other" }},
+		{name: "missing method", mutate: func(got *ServiceDefinition) { got.methods = nil }},
+		{name: "noncanonical method", mutate: func(got *ServiceDefinition) { got.methods = []string{"post"} }},
 		{name: "additional method", mutate: func(got *ServiceDefinition) { got.methods = []string{"POST", "GET"} }},
-		{name: "path override", mutate: func(got *ServiceDefinition) { got.localPathTemplate = "/project/override" }},
+		{name: "local path override", mutate: func(got *ServiceDefinition) { got.localPathTemplate = "/project/override" }},
+		{name: "upstream path override", mutate: func(got *ServiceDefinition) { got.upstreamPathTemplate = "/project/override" }},
+		{name: "query key override", mutate: func(got *ServiceDefinition) { got.queryKey = "version" }},
 		{name: "ticket header override", mutate: func(got *ServiceDefinition) { got.ticketHeader = "authorization" }},
-		{name: "content override", mutate: func(got *ServiceDefinition) { got.responseContentTypes = []string{"text/html"} }},
+		{name: "upstream auth header override", mutate: func(got *ServiceDefinition) { got.upstreamAuthenticationHeader = "authorization" }},
+		{name: "auth transform override", mutate: func(got *ServiceDefinition) { got.authenticationTransform = AuthenticationTransform("forward_ticket") }},
+		{name: "missing request content", mutate: func(got *ServiceDefinition) { got.requestContentTypes = nil }},
+		{name: "request content override", mutate: func(got *ServiceDefinition) { got.requestContentTypes = []string{"text/plain"} }},
+		{name: "additional request content", mutate: func(got *ServiceDefinition) { got.requestContentTypes = []string{"application/json", "text/plain"} }},
+		{name: "missing response content", mutate: func(got *ServiceDefinition) { got.responseContentTypes = nil }},
+		{name: "response content override", mutate: func(got *ServiceDefinition) { got.responseContentTypes = []string{"text/html"} }},
+		{name: "missing event stream content", mutate: func(got *ServiceDefinition) { got.responseContentTypes = []string{"application/json"} }},
+		{name: "additional response content", mutate: func(got *ServiceDefinition) {
+			got.responseContentTypes = []string{"application/json", "text/event-stream", "text/plain"}
+		}},
 		{name: "redirects enabled", mutate: func(got *ServiceDefinition) { got.redirectPolicy = RedirectPolicyFollow }},
+		{name: "request header zero", mutate: func(got *ServiceDefinition) { got.limits.MaxRequestHeaderBytes = 0 }},
+		{name: "request header negative", mutate: func(got *ServiceDefinition) { got.limits.MaxRequestHeaderBytes = -1 }},
 		{name: "request header raised", mutate: func(got *ServiceDefinition) { got.limits.MaxRequestHeaderBytes++ }},
+		{name: "request body zero", mutate: func(got *ServiceDefinition) { got.limits.MaxRequestBodyBytes = 0 }},
+		{name: "request body negative", mutate: func(got *ServiceDefinition) { got.limits.MaxRequestBodyBytes = -1 }},
 		{name: "request body raised", mutate: func(got *ServiceDefinition) { got.limits.MaxRequestBodyBytes++ }},
+		{name: "response header zero", mutate: func(got *ServiceDefinition) { got.limits.MaxResponseHeaderBytes = 0 }},
+		{name: "response header negative", mutate: func(got *ServiceDefinition) { got.limits.MaxResponseHeaderBytes = -1 }},
 		{name: "response header raised", mutate: func(got *ServiceDefinition) { got.limits.MaxResponseHeaderBytes++ }},
+		{name: "response body zero", mutate: func(got *ServiceDefinition) { got.limits.MaxResponseBodyBytes = 0 }},
+		{name: "response body negative", mutate: func(got *ServiceDefinition) { got.limits.MaxResponseBodyBytes = -1 }},
 		{name: "response body raised", mutate: func(got *ServiceDefinition) { got.limits.MaxResponseBodyBytes++ }},
+		{name: "SSE event zero", mutate: func(got *ServiceDefinition) { got.limits.MaxSSEEventBytes = 0 }},
+		{name: "SSE event negative", mutate: func(got *ServiceDefinition) { got.limits.MaxSSEEventBytes = -1 }},
 		{name: "SSE event raised", mutate: func(got *ServiceDefinition) { got.limits.MaxSSEEventBytes++ }},
+		{name: "idle zero", mutate: func(got *ServiceDefinition) { got.limits.ReadIdleTimeout = 0 }},
+		{name: "idle negative", mutate: func(got *ServiceDefinition) { got.limits.ReadIdleTimeout = -1 }},
 		{name: "idle raised", mutate: func(got *ServiceDefinition) { got.limits.ReadIdleTimeout++ }},
+		{name: "requests per connection zero", mutate: func(got *ServiceDefinition) { got.limits.MaxRequestsPerConnection = 0 }},
+		{name: "requests per connection negative", mutate: func(got *ServiceDefinition) { got.limits.MaxRequestsPerConnection = -1 }},
 		{name: "multiple requests", mutate: func(got *ServiceDefinition) { got.limits.MaxRequestsPerConnection = 2 }},
+		{name: "negative retries", mutate: func(got *ServiceDefinition) { got.limits.MaxRetries = -1 }},
 		{name: "retry enabled", mutate: func(got *ServiceDefinition) { got.limits.MaxRetries = 1 }},
 	}
 	for _, tt := range tests {
@@ -252,6 +321,12 @@ func TestL8CredentialProxyCatalogValidationRejectsPolicyWeakening(t *testing.T) 
 			err := ValidateServiceDefinition(got)
 			if !errors.Is(err, ErrInvalidServiceDefinition) {
 				t.Fatalf("ValidateServiceDefinition() error = %v, want ErrInvalidServiceDefinition", err)
+			}
+			if got := err.Error(); got != ErrInvalidServiceDefinition.Error() {
+				t.Fatalf("ValidateServiceDefinition() error text = %q, want stable %q", got, ErrInvalidServiceDefinition.Error())
+			}
+			if unwrapped := errors.Unwrap(err); unwrapped != nil {
+				t.Fatalf("ValidateServiceDefinition() unwrap = %v, want nil", unwrapped)
 			}
 			assertCredentialProxyCatalogErrorSafe(t, err)
 		})
@@ -334,6 +409,9 @@ func TestL8CredentialProxyCatalogLiveDefinitionCannotBecomeDurable(t *testing.T)
 	if got, want := reference, (CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "catalog-generation-01"}); got != want {
 		t.Fatalf("SafeReference() = %#v, want %#v", got, want)
 	}
+	if err := ValidateCatalogServiceReference(reference); err != nil {
+		t.Fatalf("ValidateCatalogServiceReference(safe) error = %v", err)
+	}
 	referenceJSON, err := json.Marshal(reference)
 	if err != nil {
 		t.Fatalf("json.Marshal(CatalogServiceReference) error = %v", err)
@@ -346,6 +424,69 @@ func TestL8CredentialProxyCatalogLiveDefinitionCannotBecomeDurable(t *testing.T)
 	typ := reflect.TypeOf(CatalogServiceReference{})
 	if typ.NumField() != 2 {
 		t.Fatalf("CatalogServiceReference fields = %d, want exactly service ID and catalog generation", typ.NumField())
+	}
+}
+
+func TestL8CredentialProxyCatalogServiceReferenceRejectsUnsafeDirectLiterals(t *testing.T) {
+	if got, want := ErrInvalidCatalogServiceReference.Error(), "credential proxy catalog service reference invalid"; got != want {
+		t.Fatalf("ErrInvalidCatalogServiceReference = %q, want %q", got, want)
+	}
+	tests := []struct {
+		name      string
+		reference CatalogServiceReference
+	}{
+		{name: "missing service ID", reference: CatalogServiceReference{CatalogGeneration: "catalog-generation-01"}},
+		{name: "missing generation", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1}},
+		{name: "service endpoint", reference: CatalogServiceReference{ServiceID: "https://user:raw-secret@unsafe.invalid", CatalogGeneration: "catalog-generation-01"}},
+		{name: "service hostname", reference: CatalogServiceReference{ServiceID: "unsafe.invalid", CatalogGeneration: "catalog-generation-01"}},
+		{name: "service path", reference: CatalogServiceReference{ServiceID: "../private/service", CatalogGeneration: "catalog-generation-01"}},
+		{name: "service secret assignment", reference: CatalogServiceReference{ServiceID: "token=raw-secret", CatalogGeneration: "catalog-generation-01"}},
+		{name: "service whitespace", reference: CatalogServiceReference{ServiceID: "unsafe service", CatalogGeneration: "catalog-generation-01"}},
+		{name: "service control", reference: CatalogServiceReference{ServiceID: "unsafe\nraw-secret", CatalogGeneration: "catalog-generation-01"}},
+		{name: "service uppercase", reference: CatalogServiceReference{ServiceID: "Azure-OpenAI-Responses-v1", CatalogGeneration: "catalog-generation-01"}},
+		{name: "service leading hyphen", reference: CatalogServiceReference{ServiceID: "-unsafe-service", CatalogGeneration: "catalog-generation-01"}},
+		{name: "service trailing hyphen", reference: CatalogServiceReference{ServiceID: "unsafe-service-", CatalogGeneration: "catalog-generation-01"}},
+		{name: "service oversized", reference: CatalogServiceReference{ServiceID: ServiceID(strings.Repeat("a", 129)), CatalogGeneration: "catalog-generation-01"}},
+		{name: "generation endpoint", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "https://unsafe.invalid/raw-secret"}},
+		{name: "generation hostname", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "unsafe.invalid"}},
+		{name: "generation path", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "/Users/alice/private"}},
+		{name: "generation secret assignment", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "api-key=raw-secret"}},
+		{name: "generation whitespace", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "catalog generation"}},
+		{name: "generation control", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "catalog\traw-secret"}},
+		{name: "generation uppercase", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "Catalog-Generation-01"}},
+		{name: "generation leading hyphen", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "-catalog-generation"}},
+		{name: "generation trailing hyphen", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: "catalog-generation-"}},
+		{name: "generation oversized", reference: CatalogServiceReference{ServiceID: ServiceIDAzureOpenAIResponsesV1, CatalogGeneration: strings.Repeat("g", 129)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCatalogServiceReference(tt.reference)
+			if err != ErrInvalidCatalogServiceReference {
+				t.Fatalf("ValidateCatalogServiceReference() error = %v, want stable sentinel", err)
+			}
+			if errors.Unwrap(err) != nil {
+				t.Fatalf("ValidateCatalogServiceReference() unwrap = %v, want nil", errors.Unwrap(err))
+			}
+
+			payload, marshalErr := json.Marshal(tt.reference)
+			if !errors.Is(marshalErr, ErrInvalidCatalogServiceReference) {
+				t.Fatalf("json.Marshal(unsafe reference) = %q, %v, want ErrInvalidCatalogServiceReference", payload, marshalErr)
+			}
+			marshaler, ok := any(tt.reference).(json.Marshaler)
+			if !ok {
+				t.Fatal("CatalogServiceReference does not implement validating json.Marshaler")
+			}
+			payload, marshalErr = marshaler.MarshalJSON()
+			if len(payload) != 0 || marshalErr != ErrInvalidCatalogServiceReference {
+				t.Fatalf("MarshalJSON(unsafe reference) = %q, %v, want empty payload and stable sentinel", payload, marshalErr)
+			}
+			assertCredentialProxyCatalogTextOmitsSealedValues(t, marshalErr.Error())
+			for _, raw := range []string{string(tt.reference.ServiceID), tt.reference.CatalogGeneration} {
+				if raw != "" && strings.Contains(marshalErr.Error(), raw) {
+					t.Fatalf("reference error %q contains raw rejected value %q", marshalErr, raw)
+				}
+			}
+		})
 	}
 }
 
@@ -374,6 +515,9 @@ func TestL8CredentialProxyPiSealedInvocationPolicyIsCleanAndWorkspaceExplicit(t 
 	if policy.InheritHostEnvironment() {
 		t.Fatal("InheritHostEnvironment() = true, want clean fixed guest baseline")
 	}
+	if got := policy.EnvironmentPolicy(); got != EnvironmentPolicyFixedAllowlist {
+		t.Fatalf("EnvironmentPolicy() = %q, want fixed allowlist", got)
+	}
 	if !policy.RequireOwnedEmptyCodingAgentDir() {
 		t.Fatal("RequireOwnedEmptyCodingAgentDir() = false, want private empty PI_CODING_AGENT_DIR")
 	}
@@ -396,8 +540,8 @@ func TestL8CredentialProxyPiSealedInvocationPolicyIsCleanAndWorkspaceExplicit(t 
 		"AZURE_OPENAI_API_KEY",
 		"AZURE_OPENAI_API_VERSION",
 		"AZURE_OPENAI_BASE_URL",
-		"AZURE_OPENAI_DEPLOYMENT",
-		"AZURE_OPENAI_RESOURCE",
+		"AZURE_OPENAI_DEPLOYMENT_NAME_MAP",
+		"AZURE_OPENAI_RESOURCE_NAME",
 		"HTTP_PROXY",
 		"HTTPS_PROXY",
 		"NO_PROXY",
@@ -406,6 +550,11 @@ func TestL8CredentialProxyPiSealedInvocationPolicyIsCleanAndWorkspaceExplicit(t 
 	} {
 		if !containsString(cleared, required) {
 			t.Errorf("cleared environment keys %#v omit %q", cleared, required)
+		}
+	}
+	for _, obsolete := range []string{"AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_RESOURCE"} {
+		if containsString(cleared, obsolete) {
+			t.Errorf("cleared environment keys include obsolete Pi variable %q: %#v", obsolete, cleared)
 		}
 	}
 	if !sort.StringsAreSorted(cleared) || hasDuplicateStrings(cleared) {
@@ -453,6 +602,52 @@ func cloneL8FixtureServiceDefinition(input ServiceDefinition) ServiceDefinition 
 	out.consumer.transientEnvironmentKeys = append([]string(nil), input.consumer.transientEnvironmentKeys...)
 	out.consumer.clearedEnvironmentKeys = append([]string(nil), input.consumer.clearedEnvironmentKeys...)
 	return out
+}
+
+func assertL8FixtureDefinitionSlices(t *testing.T, definition ServiceDefinition) {
+	t.Helper()
+	if definition.SealedAuthority() != l8FixtureAuthority {
+		t.Fatalf("SealedAuthority() = %q, want immutable fixture authority", definition.SealedAuthority())
+	}
+	checks := []struct {
+		name string
+		got  []string
+		want []string
+	}{
+		{name: "TLS ALPN", got: definition.SealedTLS().ALPN(), want: []string{"http/1.1"}},
+		{name: "methods", got: definition.AllowedMethods(), want: []string{"POST"}},
+		{name: "request content types", got: definition.RequestContentTypes(), want: []string{"application/json"}},
+		{name: "response content types", got: definition.ResponseContentTypes(), want: []string{"application/json", "text/event-stream"}},
+		{
+			name: "Pi arguments",
+			got:  definition.SealedInvocationPolicy().Arguments(),
+			want: []string{
+				"--provider", "azure-openai-responses",
+				"--model", l8FixtureDeployment,
+				"--offline",
+				"--no-extensions",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--no-session",
+			},
+		},
+		{
+			name: "transient environment keys",
+			got:  definition.SealedInvocationPolicy().TransientEnvironmentKeys(),
+			want: []string{"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_VERSION", "AZURE_OPENAI_BASE_URL", "PI_CODING_AGENT_DIR"},
+		},
+	}
+	for _, check := range checks {
+		if !reflect.DeepEqual(check.got, check.want) {
+			t.Errorf("%s = %#v, want %#v", check.name, check.got, check.want)
+		}
+	}
+	cleared := definition.SealedInvocationPolicy().ClearedEnvironmentKeys()
+	for _, forbidden := range []string{"MUTATED_PROVIDER_KEY", "RAW_SECRET"} {
+		if containsString(cleared, forbidden) {
+			t.Errorf("cleared environment keys contain caller mutation %q: %#v", forbidden, cleared)
+		}
+	}
 }
 
 func containsString(values []string, want string) bool {

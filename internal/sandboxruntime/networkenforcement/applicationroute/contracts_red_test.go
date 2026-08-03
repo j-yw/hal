@@ -129,6 +129,53 @@ func TestL8ApplicationRouteDefinitionValidationRejectsUnsafeOrUnboundedRoutes(t 
 	}
 }
 
+func TestL8ApplicationRouteRegistryRejectsReversePrefixOverlap(t *testing.T) {
+	child := newFakeApplicationRouteHandler(
+		"child",
+		RouteID("credential-http-v1-child"),
+		CredentialHTTPV1Prefix+"child/",
+	)
+	registry, err := NewRegistry(child)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	parent := newFakeApplicationRouteHandler("parent", RouteCredentialHTTPV1, CredentialHTTPV1Prefix)
+	err = registry.Register(parent)
+	if !errors.Is(err, ErrRouteCollision) {
+		t.Fatalf("Register(parent over child) error = %v, want ErrRouteCollision", err)
+	}
+	assertApplicationRouteErrorSafe(t, err)
+	if got, want := registry.RouteIDs(), []RouteID{"credential-http-v1-child"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("RouteIDs() after reverse collision = %#v, want %#v", got, want)
+	}
+}
+
+func TestL8ApplicationRouteRegistryRejectsNilAndInvalidHandlers(t *testing.T) {
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	if err := registry.Register(nil); !errors.Is(err, ErrHandlerRequired) {
+		t.Fatalf("Register(nil) error = %v, want ErrHandlerRequired", err)
+	}
+	invalid := newFakeApplicationRouteHandler("invalid", RouteID("unsafe route/raw-secret"), "/project/raw-secret/")
+	if err := registry.Register(invalid); !errors.Is(err, ErrInvalidRoute) {
+		t.Fatalf("Register(invalid) error = %v, want ErrInvalidRoute", err)
+	} else {
+		assertApplicationRouteErrorSafe(t, err)
+	}
+	if got := registry.RouteIDs(); len(got) != 0 {
+		t.Fatalf("RouteIDs() after invalid handlers = %#v, want empty", got)
+	}
+	constructed, err := NewRegistry(nil)
+	if !errors.Is(err, ErrHandlerRequired) {
+		t.Fatalf("NewRegistry(nil) error = %v, want ErrHandlerRequired", err)
+	}
+	if constructed != nil {
+		t.Fatalf("NewRegistry(nil) registry = %#v, want nil", constructed)
+	}
+}
+
 func TestL8ApplicationRouteRegistryRegistrationAndCollisionAreDeterministic(t *testing.T) {
 	first := newFakeApplicationRouteHandler("first", RouteCredentialHTTPV1, CredentialHTTPV1Prefix)
 	registry, err := NewRegistry(first)
@@ -163,6 +210,18 @@ func TestL8ApplicationRouteRegistryRegistrationAndCollisionAreDeterministic(t *t
 				t.Fatalf("RouteIDs() after collision = %#v, want %#v", got, want)
 			}
 		})
+	}
+	sibling := newFakeApplicationRouteHandler(
+		"sibling",
+		RouteID("credential-http-v1-sibling"),
+		"/.well-known/hal/credential-http/v1-sibling/",
+	)
+	if err := registry.Register(sibling); err != nil {
+		t.Fatalf("Register(nonoverlapping sibling) error = %v", err)
+	}
+	wantIDs := []RouteID{RouteCredentialHTTPV1, "credential-http-v1-sibling"}
+	if got := registry.RouteIDs(); !reflect.DeepEqual(got, wantIDs) {
+		t.Fatalf("RouteIDs() after sibling = %#v, want %#v", got, wantIDs)
 	}
 }
 
@@ -218,7 +277,8 @@ func TestL8ApplicationRouteRegistryStartCloseAndRollbackOrdering(t *testing.T) {
 	events = nil
 	first = newHandler("first", RouteCredentialHTTPV1, CredentialHTTPV1Prefix)
 	second = newHandler("second", RouteID("reserved-two"), "/.well-known/hal/application/two/")
-	second.startErr = errors.New("listen https://user:secret@private.example.test/token")
+	rawStartErr := errors.New("listen https://user:secret@private.example.test/token")
+	second.startErr = rawStartErr
 	third := newHandler("third", RouteID("reserved-three"), "/.well-known/hal/application/three/")
 	registry, err = NewRegistry(first, second, third)
 	if err != nil {
@@ -228,9 +288,101 @@ func TestL8ApplicationRouteRegistryStartCloseAndRollbackOrdering(t *testing.T) {
 	if !errors.Is(err, ErrHandlerStart) {
 		t.Fatalf("Start() error = %v, want ErrHandlerStart", err)
 	}
+	if errors.Is(err, rawStartErr) {
+		t.Fatal("Start() error unwraps raw handler start failure")
+	}
 	assertApplicationRouteErrorSafe(t, err)
-	if got, want := events, []string{"start:first", "start:second", "close:first"}; !reflect.DeepEqual(got, want) {
+	if got, want := events, []string{"start:first", "start:second", "close:second", "close:first"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("failed start events = %#v, want %#v", got, want)
+	}
+	if got := registry.State(); got != RegistryStateClosed {
+		t.Fatalf("State() after failed Start = %q, want %q", got, RegistryStateClosed)
+	}
+	if _, dispatchErr := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, Request{}); !errors.Is(dispatchErr, ErrRegistryClosed) {
+		t.Fatalf("Dispatch() after failed Start error = %v, want ErrRegistryClosed", dispatchErr)
+	}
+}
+
+func TestL8ApplicationRouteRegistryFailedStartAwaitsFailingHandlerClose(t *testing.T) {
+	first := newFakeApplicationRouteHandler("first", RouteCredentialHTTPV1, CredentialHTTPV1Prefix)
+	failing := newFakeApplicationRouteHandler("failing", RouteID("reserved-failing"), "/.well-known/hal/application/failing/")
+	failing.startErr = errors.New("start token=raw-start-secret at https://private.example.test")
+	failing.closeEntered = make(chan struct{})
+	failing.closeRelease = make(chan struct{})
+	registry, err := NewRegistry(first, failing)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- registry.Start(context.Background()) }()
+	<-failing.closeEntered
+	select {
+	case err := <-startDone:
+		t.Fatalf("Start() returned before failing handler Close completed: %v", err)
+	default:
+	}
+	if _, dispatchErr := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, Request{}); !errors.Is(dispatchErr, ErrRegistryClosed) {
+		t.Fatalf("Dispatch() during failed-Start rollback error = %v, want ErrRegistryClosed", dispatchErr)
+	}
+	close(failing.closeRelease)
+	if err := <-startDone; !errors.Is(err, ErrHandlerStart) {
+		t.Fatalf("Start() error = %v, want ErrHandlerStart", err)
+	}
+	if got := registry.State(); got != RegistryStateClosed {
+		t.Fatalf("State() after rollback = %q, want %q", got, RegistryStateClosed)
+	}
+}
+
+func TestL8ApplicationRouteRegistryRollbackContinuesAndDropsRawCauses(t *testing.T) {
+	var events []string
+	var eventMu sync.Mutex
+	newHandler := func(name string, id RouteID, prefix string) *fakeApplicationRouteHandler {
+		handler := newFakeApplicationRouteHandler(name, id, prefix)
+		handler.events, handler.eventMu = &events, &eventMu
+		return handler
+	}
+	first := newHandler("first", RouteCredentialHTTPV1, CredentialHTTPV1Prefix)
+	second := newHandler("second", RouteID("reserved-two"), "/.well-known/hal/application/two/")
+	failing := newHandler("failing", RouteID("reserved-failing"), "/.well-known/hal/application/failing/")
+	rawStartErr := errors.New("start api-key=raw-start-secret host=private.example.test")
+	rawFailingCloseErr := errors.New("rollback failing token=raw-failing-close /Users/alice/private")
+	rawSecondCloseErr := errors.New("rollback second token=raw-second-close https://private.example.test")
+	rawFirstCloseErr := errors.New("rollback first token=raw-first-close /tmp/private.sock")
+	failing.startErr = rawStartErr
+	failing.closeErr = rawFailingCloseErr
+	second.closeErr = rawSecondCloseErr
+	first.closeErr = rawFirstCloseErr
+
+	registry, err := NewRegistry(first, second, failing)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	err = registry.Start(context.Background())
+	if !errors.Is(err, ErrHandlerStart) {
+		t.Fatalf("Start() error = %v, want ErrHandlerStart", err)
+	}
+	for _, raw := range []error{rawStartErr, rawFailingCloseErr, rawSecondCloseErr, rawFirstCloseErr} {
+		if errors.Is(err, raw) {
+			t.Fatalf("Start() error unwraps raw cause %v", raw)
+		}
+	}
+	assertApplicationRouteErrorSafe(t, err)
+	if got, want := events, []string{
+		"start:first",
+		"start:second",
+		"start:failing",
+		"close:failing",
+		"close:second",
+		"close:first",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rollback events = %#v, want %#v", got, want)
+	}
+	if got := registry.State(); got != RegistryStateClosed {
+		t.Fatalf("State() after rollback failures = %q, want %q", got, RegistryStateClosed)
+	}
+	if _, dispatchErr := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, Request{}); !errors.Is(dispatchErr, ErrRegistryClosed) {
+		t.Fatalf("Dispatch() after rollback failures error = %v, want ErrRegistryClosed", dispatchErr)
 	}
 }
 
@@ -262,10 +414,12 @@ func TestL8ApplicationRouteRegistryCloseContinuesInReverseOrderAndSanitizes(t *t
 	var eventMu sync.Mutex
 	first := newFakeApplicationRouteHandler("first", RouteCredentialHTTPV1, CredentialHTTPV1Prefix)
 	first.events, first.eventMu = &events, &eventMu
-	first.closeErr = errors.New("close api-key=first-secret at https://first.private.invalid")
+	rawFirstCloseErr := errors.New("close api-key=first-secret at https://first.private.invalid")
+	first.closeErr = rawFirstCloseErr
 	second := newFakeApplicationRouteHandler("second", RouteID("reserved-two"), "/.well-known/hal/application/two/")
 	second.events, second.eventMu = &events, &eventMu
-	second.closeErr = errors.New("close token=second-secret at /Users/alice/private.sock")
+	rawSecondCloseErr := errors.New("close token=second-secret at /Users/alice/private.sock")
+	second.closeErr = rawSecondCloseErr
 
 	registry, err := NewRegistry(first, second)
 	if err != nil {
@@ -277,6 +431,11 @@ func TestL8ApplicationRouteRegistryCloseContinuesInReverseOrderAndSanitizes(t *t
 	err = registry.Close(context.Background())
 	if !errors.Is(err, ErrHandlerClose) {
 		t.Fatalf("Close() error = %v, want ErrHandlerClose", err)
+	}
+	for _, raw := range []error{rawFirstCloseErr, rawSecondCloseErr} {
+		if errors.Is(err, raw) {
+			t.Fatalf("Close() error unwraps raw cause %v", raw)
+		}
 	}
 	assertApplicationRouteErrorSafe(t, err)
 	if got, want := events, []string{"start:first", "start:second", "close:second", "close:first"}; !reflect.DeepEqual(got, want) {
@@ -415,6 +574,33 @@ func TestL8ApplicationRouteHandlerErrorsAreSanitized(t *testing.T) {
 	assertApplicationRouteErrorSafe(t, err)
 }
 
+func TestL8ApplicationRouteSanitizedErrorContractIsStable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "handler required", err: ErrHandlerRequired, want: "application route handler is required"},
+		{name: "invalid route", err: ErrInvalidRoute, want: "application route invalid"},
+		{name: "route collision", err: ErrRouteCollision, want: "application route collision"},
+		{name: "handler start", err: ErrHandlerStart, want: "application route handler start failed"},
+		{name: "handler close", err: ErrHandlerClose, want: "application route handler close failed"},
+		{name: "handler dispatch", err: ErrHandlerDispatch, want: "application route handler dispatch failed"},
+		{name: "registry closed", err: ErrRegistryClosed, want: "application route registry closed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Fatalf("error text = %q, want %q", got, tt.want)
+			}
+			if errors.Unwrap(tt.err) != nil {
+				t.Fatalf("sentinel unwrap = %v, want nil", errors.Unwrap(tt.err))
+			}
+			assertApplicationRouteErrorSafe(t, tt.err)
+		})
+	}
+}
+
 type fakeApplicationRouteHandler struct {
 	name      string
 	def       Definition
@@ -430,6 +616,8 @@ type fakeApplicationRouteHandler struct {
 
 	handleEntered  chan struct{}
 	handleRelease  chan struct{}
+	closeEntered   chan struct{}
+	closeRelease   chan struct{}
 	closeSawActive bool
 }
 
@@ -487,6 +675,10 @@ func (handler *fakeApplicationRouteHandler) Close(context.Context) error {
 	handler.closeSawActive = handler.active != 0
 	handler.mu.Unlock()
 	handler.record("close:" + handler.name)
+	if handler.closeEntered != nil {
+		close(handler.closeEntered)
+		<-handler.closeRelease
+	}
 	return handler.closeErr
 }
 
