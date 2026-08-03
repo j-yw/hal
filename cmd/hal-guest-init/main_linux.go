@@ -91,7 +91,6 @@ func run(arguments []string) int {
 			}
 		case <-deadline:
 			_ = unix.Kill(-childPID, unix.SIGKILL)
-			deadline = nil
 			reapContext, cancelReap := context.WithTimeout(context.Background(), forceStopReapTimeout)
 			status, exited := waitForKilledChildren(reapContext, childPID, unix.Wait4)
 			cancelReap()
