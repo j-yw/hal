@@ -50,12 +50,14 @@ type BorrowedView interface {
 }
 
 type LockedMapping struct {
-	state *lockedMappingState
+	identity lockedMappingIdentity
+	state    *lockedMappingState
 }
 
 type lockedMappingState struct {
 	mu            sync.Mutex
 	cond          *sync.Cond
+	owner         *lockedMappingIdentity
 	ops           memoryOps
 	region        []byte
 	length        int
@@ -65,11 +67,21 @@ type lockedMappingState struct {
 }
 
 type borrowedView struct {
-	mu     sync.Mutex
-	owner  *lockedMappingState
-	length int
-	active bool
+	identity borrowedViewIdentity
+	lease    *borrowedViewLease
 }
+
+type borrowedViewLease struct {
+	mu        sync.Mutex
+	canonical *borrowedViewIdentity
+	owner     *lockedMappingState
+	length    int
+	active    bool
+}
+
+type lockedMappingIdentity struct{ marker byte }
+
+type borrowedViewIdentity struct{ marker byte }
 
 type memoryOps interface {
 	MapAnonymous(int) ([]byte, error)
@@ -110,7 +122,9 @@ func newLockedMapping(capacity int, ops memoryOps) (*LockedMapping, error) {
 		phase:  LockedMappingStateUnavailable,
 	}
 	state.cond = sync.NewCond(&state.mu)
-	return &LockedMapping{state: state}, nil
+	mapping := &LockedMapping{state: state}
+	state.owner = &mapping.identity
+	return mapping, nil
 }
 
 func (mapping *LockedMapping) State() LockedMappingState {
@@ -224,7 +238,13 @@ func (mapping *LockedMapping) Borrow(ctx context.Context, callback func(Borrowed
 	}
 	state.phase = LockedMappingStateBorrowing
 	state.active = true
-	view := &borrowedView{owner: state, length: state.length, active: true}
+	view := &borrowedView{}
+	view.lease = &borrowedViewLease{
+		canonical: &view.identity,
+		owner:     state,
+		length:    state.length,
+		active:    true,
+	}
 	state.mu.Unlock()
 
 	defer func() {
@@ -248,9 +268,12 @@ func (mapping *LockedMapping) Borrow(ctx context.Context, callback func(Borrowed
 }
 
 func (mapping *LockedMapping) Destroy() error {
+	if mapping == nil || mapping.state == nil {
+		return nil
+	}
 	state := mapping.mappingState()
 	if state == nil {
-		return nil
+		return ErrCredentialMemoryDestroyed
 	}
 	state.mu.Lock()
 	for state.phase == LockedMappingStateDestroying {
@@ -291,24 +314,26 @@ func (mapping *LockedMapping) Destroy() error {
 }
 
 func (view *borrowedView) Len() int {
-	if view == nil {
+	lease := view.borrowedLease()
+	if lease == nil {
 		return 0
 	}
-	view.mu.Lock()
-	defer view.mu.Unlock()
-	if !view.active {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if !lease.active {
 		return 0
 	}
-	return view.length
+	return lease.length
 }
 
 func (view *borrowedView) CopyTo(ctx context.Context, target *LockedMapping) error {
-	if view == nil {
+	lease := view.borrowedLease()
+	if lease == nil {
 		return ErrBorrowedViewExpired
 	}
-	view.mu.Lock()
-	defer view.mu.Unlock()
-	if !view.active || view.owner == nil {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if !lease.active || lease.owner == nil {
 		return ErrBorrowedViewExpired
 	}
 	if ctx == nil {
@@ -320,8 +345,8 @@ func (view *borrowedView) CopyTo(ctx context.Context, target *LockedMapping) err
 	if target == nil {
 		return ErrCredentialMemoryUnavailable
 	}
-	owner := view.owner
-	length := view.length
+	owner := lease.owner
+	length := lease.length
 	return target.Load(ctx, func(dst []byte) (int, error) {
 		copy(dst, owner.region[:length])
 		return length, nil
@@ -329,12 +354,13 @@ func (view *borrowedView) CopyTo(ctx context.Context, target *LockedMapping) err
 }
 
 func (view *borrowedView) WriteTo(ctx context.Context, sink CredentialSink) error {
-	if view == nil {
+	lease := view.borrowedLease()
+	if lease == nil {
 		return ErrBorrowedViewExpired
 	}
-	view.mu.Lock()
-	defer view.mu.Unlock()
-	if !view.active || view.owner == nil {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if !lease.active || lease.owner == nil {
 		return ErrBorrowedViewExpired
 	}
 	if ctx == nil {
@@ -346,28 +372,39 @@ func (view *borrowedView) WriteTo(ctx context.Context, sink CredentialSink) erro
 	if sink == nil {
 		return ErrCredentialSinkWrite
 	}
-	if sink.MaxCredentialBytes() < view.length {
+	if sink.MaxCredentialBytes() < lease.length {
 		return ErrCredentialSinkLimitExceeded
 	}
-	if err := sink.WriteCredential(view.owner.region[:view.length]); err != nil {
+	if err := sink.WriteCredential(lease.owner.region[:lease.length]); err != nil {
 		return classifySinkError(err)
 	}
 	return nil
 }
 
 func (view *borrowedView) expire() {
-	view.mu.Lock()
-	view.active = false
-	view.owner = nil
-	view.length = 0
-	view.mu.Unlock()
+	lease := view.borrowedLease()
+	if lease == nil {
+		return
+	}
+	lease.mu.Lock()
+	lease.active = false
+	lease.owner = nil
+	lease.length = 0
+	lease.mu.Unlock()
 }
 
 func (mapping *LockedMapping) mappingState() *lockedMappingState {
-	if mapping == nil {
+	if mapping == nil || mapping.state == nil || mapping.state.owner != &mapping.identity {
 		return nil
 	}
 	return mapping.state
+}
+
+func (view *borrowedView) borrowedLease() *borrowedViewLease {
+	if view == nil || view.lease == nil || view.lease.canonical != &view.identity {
+		return nil
+	}
+	return view.lease
 }
 
 func wipeCredentialRegion(region []byte) {
@@ -422,42 +459,42 @@ func hardenCredentialProcess(ops processSecurityOps) error {
 	return nil
 }
 
-func (*LockedMapping) String() string {
+func (LockedMapping) String() string {
 	return "<credentialmemory.LockedMapping>"
 }
 
-func (*LockedMapping) GoString() string {
+func (LockedMapping) GoString() string {
 	return "<credentialmemory.LockedMapping>"
 }
 
-func (*LockedMapping) MarshalJSON() ([]byte, error) {
+func (LockedMapping) MarshalJSON() ([]byte, error) {
 	return nil, ErrCredentialMemorySerialization
 }
 
-func (*LockedMapping) MarshalText() ([]byte, error) {
+func (LockedMapping) MarshalText() ([]byte, error) {
 	return nil, ErrCredentialMemorySerialization
 }
 
-func (*LockedMapping) Format(state fmt.State, verb rune) {
+func (LockedMapping) Format(state fmt.State, verb rune) {
 	fmt.Fprint(state, "<credentialmemory.LockedMapping>")
 }
 
-func (*borrowedView) String() string {
+func (borrowedView) String() string {
 	return "<credentialmemory.borrowedView>"
 }
 
-func (*borrowedView) GoString() string {
+func (borrowedView) GoString() string {
 	return "<credentialmemory.borrowedView>"
 }
 
-func (*borrowedView) MarshalJSON() ([]byte, error) {
+func (borrowedView) MarshalJSON() ([]byte, error) {
 	return nil, ErrCredentialMemorySerialization
 }
 
-func (*borrowedView) MarshalText() ([]byte, error) {
+func (borrowedView) MarshalText() ([]byte, error) {
 	return nil, ErrCredentialMemorySerialization
 }
 
-func (*borrowedView) Format(state fmt.State, verb rune) {
+func (borrowedView) Format(state fmt.State, verb rune) {
 	fmt.Fprint(state, "<credentialmemory.borrowedView>")
 }
