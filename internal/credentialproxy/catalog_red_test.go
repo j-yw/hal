@@ -491,6 +491,8 @@ func TestL8CredentialProxyCatalogLiveDefinitionCannotBecomeDurable(t *testing.T)
 		t.Fatalf("MarshalText(ServiceDefinition) = %q, %v, want empty payload and stable denial", textPayload, err)
 	}
 	for _, rendered := range []string{
+		fmt.Sprintf("%s", definition),
+		fmt.Sprintf("%q", definition),
 		fmt.Sprintf("%v", definition),
 		fmt.Sprintf("%+v", definition),
 		fmt.Sprintf("%#v", definition),
@@ -717,7 +719,14 @@ func TestL8CredentialProxyPiSealedInvocationPolicyIsCleanAndWorkspaceExplicit(t 
 	}
 
 	// Policy is live sealed state too: formatting cannot reveal model/deployment.
-	for _, rendered := range []string{fmt.Sprintf("%v", policy), fmt.Sprintf("%#v", policy), policy.String()} {
+	for _, rendered := range []string{
+		fmt.Sprintf("%s", policy),
+		fmt.Sprintf("%q", policy),
+		fmt.Sprintf("%v", policy),
+		fmt.Sprintf("%+v", policy),
+		fmt.Sprintf("%#v", policy),
+		policy.String(),
+	} {
 		assertCredentialProxyCatalogTextOmitsSealedValues(t, rendered)
 	}
 }
@@ -866,7 +875,13 @@ func assertL8LiveCatalogValueDenied(t *testing.T, label string, value any) {
 	if _, ok := value.(fmt.GoStringer); !ok {
 		t.Fatalf("%s does not implement safe fmt.GoStringer", label)
 	}
-	for _, rendered := range []string{fmt.Sprintf("%v", value), fmt.Sprintf("%+v", value), fmt.Sprintf("%#v", value)} {
+	for _, rendered := range []string{
+		fmt.Sprintf("%s", value),
+		fmt.Sprintf("%q", value),
+		fmt.Sprintf("%v", value),
+		fmt.Sprintf("%+v", value),
+		fmt.Sprintf("%#v", value),
+	} {
 		assertCredentialProxyCatalogTextOmitsSealedValues(t, rendered)
 	}
 }

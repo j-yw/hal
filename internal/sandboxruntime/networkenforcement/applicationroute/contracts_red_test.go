@@ -1182,11 +1182,13 @@ func assertL8ApplicationRouteLiveValueDenied(t *testing.T, label string, value a
 	for _, rendered := range []string{
 		stringer.String(),
 		goStringer.GoString(),
+		fmt.Sprintf("%s", value),
+		fmt.Sprintf("%q", value),
 		fmt.Sprintf("%v", value),
 		fmt.Sprintf("%+v", value),
 		fmt.Sprintf("%#v", value),
 	} {
-		for _, unsafe := range []string{
+		for unsafeIndex, unsafe := range []string{
 			"request-body=raw-ticket",
 			"response-body=raw-secret",
 			"handler-state=raw-secret",
@@ -1194,7 +1196,7 @@ func assertL8ApplicationRouteLiveValueDenied(t *testing.T, label string, value a
 			"https://",
 		} {
 			if strings.Contains(rendered, unsafe) {
-				t.Fatalf("safe %s rendering %q contains live value %q", label, rendered, unsafe)
+				t.Fatalf("safe %s rendering contains unsafe marker %d", label, unsafeIndex)
 			}
 		}
 	}
@@ -1206,7 +1208,7 @@ func assertApplicationRouteErrorSafe(t *testing.T, err error) {
 		t.Fatal("error = nil, want sanitized error")
 	}
 	text := err.Error()
-	for _, unsafe := range []string{
+	for unsafeIndex, unsafe := range []string{
 		"raw-ticket",
 		"secret",
 		"private.example.test",
@@ -1216,7 +1218,7 @@ func assertApplicationRouteErrorSafe(t *testing.T, err error) {
 		"https://",
 	} {
 		if strings.Contains(text, unsafe) {
-			t.Fatalf("error %q contains unsafe value %q", text, unsafe)
+			t.Fatalf("application route error contains unsafe marker %d", unsafeIndex)
 		}
 	}
 }
@@ -1224,30 +1226,32 @@ func assertApplicationRouteErrorSafe(t *testing.T, err error) {
 func assertApplicationRouteStableErrorDropsRawCauses(t *testing.T, err, stable error, rawCauses ...error) {
 	t.Helper()
 	if err == nil {
-		t.Fatalf("error = nil, want stable error %v", stable)
+		t.Fatal("error = nil, want stable sentinel")
 	}
-	if !errors.Is(err, stable) {
-		t.Fatalf("error = %v, want stable error %v", err, stable)
+	if err != stable {
+		t.Error("error is not the exact stable sentinel")
 	}
 	if err.Error() != stable.Error() {
-		t.Errorf("error text = %q, want exact stable text %q", err.Error(), stable.Error())
+		t.Error("error text differs from the stable sentinel")
 	}
 	assertApplicationRouteErrorSafe(t, err)
-	for _, raw := range rawCauses {
+	for rawIndex, raw := range rawCauses {
 		if raw == nil {
 			continue
 		}
 		if errors.Is(err, raw) {
-			t.Errorf("stable error unwraps raw cause %q", raw.Error())
+			t.Errorf("stable error unwraps raw cause %d", rawIndex)
 		}
 		for format, rendered := range map[string]string{
 			"Error": err.Error(),
+			"%s":    fmt.Sprintf("%s", err),
+			"%q":    fmt.Sprintf("%q", err),
 			"%v":    fmt.Sprintf("%v", err),
 			"%+v":   fmt.Sprintf("%+v", err),
 			"%#v":   fmt.Sprintf("%#v", err),
 		} {
 			if strings.Contains(rendered, raw.Error()) {
-				t.Errorf("stable error rendering %s contains raw cause text %q: %q", format, raw.Error(), rendered)
+				t.Errorf("stable error rendering %s contains raw cause %d", format, rawIndex)
 			}
 		}
 	}

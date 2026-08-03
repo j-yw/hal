@@ -139,6 +139,44 @@ func TestL8CredentialProxyPackageProductionSourceHasNoFixtureOrOverrideMaterial(
 }
 
 func TestL8CredentialProxyPackageFixtureGuardRejectsSemanticBypassesWithoutSubstringFalsePositives(t *testing.T) {
+	conventionalTestOnlyTokens := []string{
+		"fixture", "fixtures",
+		"test", "tests", "testing", "testkit", "testsupport", "testhelper",
+		"testfixture", "testfixtures", "testdata", "testutil", "testutils", "testonly",
+		"fake", "fakes", "mock", "mocks", "stub", "stubs",
+		"sample", "samples", "example", "examples", "demo", "demos",
+	}
+	if got, want := len(credentialProxyConventionalTestOnlyTokens), len(conventionalTestOnlyTokens); got != want {
+		t.Fatalf("conventional test-only token count = %d, want %d", got, want)
+	}
+	for _, semantic := range conventionalTestOnlyTokens {
+		t.Run("conventional semantic "+semantic, func(t *testing.T) {
+			if _, ok := credentialProxyConventionalTestOnlyTokens[semantic]; !ok {
+				t.Fatalf("central conventional test-only set omits %q", semantic)
+			}
+			camel := strings.ToUpper(semantic[:1]) + semantic[1:]
+			for _, name := range []string{semantic, "azure_" + semantic + "_catalog", "NewAzure" + camel + "Catalog"} {
+				if got := credentialProxyTestOnlySemanticName(name); got == "" {
+					t.Errorf("credentialProxyTestOnlySemanticName(%q) = empty, want %q rejection", name, semantic)
+				}
+			}
+			path := filepath.Join("live", semantic, "catalog.go")
+			if got := credentialProxyTestOnlyPathSegment(path); got == "" {
+				t.Errorf("credentialProxyTestOnlyPathSegment(%q) = empty, want %q rejection", path, semantic)
+			}
+			filename := "azure_" + semantic + "_catalog.go"
+			if got := credentialProxyTestOnlyProductionFilename(filepath.Join("live", filename)); got == "" {
+				t.Errorf("credentialProxyTestOnlyProductionFilename(%q) = empty, want %q rejection", filename, semantic)
+			}
+			source := "package live\ntype NewAzure" + camel + "Catalog struct{}\n"
+			if got, err := credentialProxyProductionFixtureIdentifier("live.go", []byte(source)); err != nil {
+				t.Fatalf("credentialProxyProductionFixtureIdentifier() error: %v", err)
+			} else if got == "" {
+				t.Errorf("credentialProxyProductionFixtureIdentifier() = empty, want %q rejection", semantic)
+			}
+		})
+	}
+
 	for _, path := range []string{
 		"fixture/catalog.go",
 		"fixtures/catalog.go",
@@ -210,6 +248,8 @@ func TestL8CredentialProxyPackageFixtureGuardRejectsSemanticBypassesWithoutSubst
 		"package live\ntype AzureTestRegistry struct{}\n",
 		"package live\ntype mockTLSAuthority struct{}\n",
 		"package live\ntype FixturePolicyCatalog struct{}\n",
+		"package live\ntype NewAzureCatalogForTesting struct{}\n",
+		"package live\ntype NewAzureStubCatalog struct{}\n",
 	} {
 		if got, err := credentialProxyProductionFixtureIdentifier("live.go", []byte(source)); err != nil {
 			t.Fatalf("credentialProxyProductionFixtureIdentifier() error: %v", err)
@@ -427,31 +467,32 @@ func credentialProxyProductionFixtureIdentifier(path string, source []byte) (str
 
 func credentialProxyTestOnlySemanticName(name string) string {
 	tokens := credentialProxySemanticTokens(name)
-	if len(tokens) == 0 {
-		return ""
-	}
-	exact := strings.Join(tokens, "")
-	switch exact {
-	case "fixture", "fixtures", "testfixture", "testfixtures", "testdata", "testutil", "testutils", "testonly", "fake", "fakes", "mock", "mocks":
-		return exact
-	}
-
-	var testOnlyToken string
 	for index, token := range tokens {
-		switch token {
-		case "fixture":
+		if _, testOnly := credentialProxyConventionalTestOnlyTokens[token]; !testOnly {
+			continue
+		}
+		if token == "fixture" {
 			// FixturePolicy and FixtureDocumentation are legitimate production
 			// vocabulary. Requiring the suffix to end the identifier prevents it
 			// from exempting names such as FixturePolicyCatalog.
 			if index+1 == len(tokens)-1 && (tokens[index+1] == "policy" || tokens[index+1] == "documentation") {
 				continue
 			}
-			testOnlyToken = token
-		case "fixtures", "test", "tests", "fake", "fakes", "mock", "mocks":
-			testOnlyToken = token
 		}
+		return token
 	}
-	return testOnlyToken
+	return ""
+}
+
+// credentialProxyConventionalTestOnlyTokens is the shared vocabulary for
+// directory, filename, and parsed Go identifier guards. Keep exceptions in
+// credentialProxyTestOnlySemanticName narrow and architecture-specific.
+var credentialProxyConventionalTestOnlyTokens = map[string]struct{}{
+	"fixture": {}, "fixtures": {},
+	"test": {}, "tests": {}, "testing": {}, "testkit": {}, "testsupport": {}, "testhelper": {},
+	"testfixture": {}, "testfixtures": {}, "testdata": {}, "testutil": {}, "testutils": {}, "testonly": {},
+	"fake": {}, "fakes": {}, "mock": {}, "mocks": {}, "stub": {}, "stubs": {},
+	"sample": {}, "samples": {}, "example": {}, "examples": {}, "demo": {}, "demos": {},
 }
 
 func credentialProxySemanticTokens(name string) []string {
