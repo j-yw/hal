@@ -25,7 +25,7 @@ func TestL7GuestInitParsesStaticBootstrapAndBuildsFixedCommands(t *testing.T) {
 	wantCommands := [][]string{
 		{"/sbin/ip", "link", "set", "dev", "eth0", "up"},
 		{"/sbin/ip", "addr", "add", "192.0.2.2/30", "dev", "eth0"},
-		{"/sbin/ip", "-6", "addr", "add", "fd00:7::2/126", "dev", "eth0", "nodad"},
+		{"/sbin/ip", "-6", "addr", "add", "fd00:7::2/126", "dev", "eth0"},
 		{"/sbin/ip", "route", "add", "default", "via", "192.0.2.1", "dev", "eth0"},
 		{"/sbin/ip", "-6", "route", "add", "default", "via", "fd00:7::1", "dev", "eth0"},
 	}
@@ -76,7 +76,7 @@ func TestL7GuestInitDisablesAutomaticIPv6BeforeAnyNetworkCommand(t *testing.T) {
 	order := []string{}
 	err = configureL7GuestNetworkWithDeps(
 		config,
-		func(context.Context, l7NetworkBootConfig) error { order = append(order, "disable_addrgen"); return nil },
+		func(context.Context, l7NetworkBootConfig) error { order = append(order, "configure_ipv6"); return nil },
 		func(_ context.Context, command []string) error {
 			order = append(order, strings.Join(command, " "))
 			return nil
@@ -85,8 +85,52 @@ func TestL7GuestInitDisablesAutomaticIPv6BeforeAnyNetworkCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(order) != 6 || order[0] != "disable_addrgen" || !strings.Contains(order[1], " link set ") {
+	if len(order) != 6 || order[0] != "configure_ipv6" || !strings.Contains(order[1], " link set ") {
 		t.Fatalf("network bootstrap order = %#v", order)
+	}
+}
+
+func TestL7GuestInitConfiguresIPv6ControlsInOrder(t *testing.T) {
+	config, present, err := parseL7NetworkBootConfig("hal_l7_net_if=eth0 hal_l7_ipv4=192.0.2.2/30 hal_l7_ipv4_gateway=192.0.2.1 " +
+		"hal_l7_ipv6=fd00:7::2/126 hal_l7_ipv6_gateway=fd00:7::1 hal_l7_proxy=http://198.18.0.1:18080")
+	if err != nil || !present {
+		t.Fatal("test boot config is invalid")
+	}
+	directory := t.TempDir()
+	controls := map[string]string{
+		"addr_gen_mode": filepath.Join(directory, "addr_gen_mode"),
+		"accept_dad":    filepath.Join(directory, "accept_dad"),
+	}
+	for _, path := range controls {
+		if err := os.WriteFile(path, []byte("9\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var order []string
+	opener := func(path string, flags int) (*os.File, error) {
+		name := filepath.Base(path)
+		control, ok := controls[name]
+		if !ok {
+			return nil, errors.New("unexpected control")
+		}
+		operation := "read"
+		if flags&unix.O_WRONLY != 0 {
+			operation = "write"
+		}
+		order = append(order, name+":"+operation)
+		return os.OpenFile(control, flags&^(unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOFOLLOW), 0)
+	}
+	if err := configureL7IPv6StaticAddressingWithOpener(context.Background(), config, opener); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"addr_gen_mode:write", "addr_gen_mode:read", "accept_dad:write", "accept_dad:read"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("IPv6 control order = %#v, want %#v", order, want)
+	}
+	for name, want := range map[string]string{"addr_gen_mode": "1\n", "accept_dad": "0\n"} {
+		payload, err := os.ReadFile(controls[name])
+		if err != nil || string(payload) != want {
+			t.Fatalf("%s = %q, %v, want %q", name, payload, err, want)
+		}
 	}
 }
 
@@ -114,6 +158,21 @@ func TestL7GuestInitWritesAndConfirmsNoIPv6AutomaticAddressMode(t *testing.T) {
 		} else if strings.Contains(err.Error(), directory) {
 			t.Fatalf("error leaked path: %v", err)
 		}
+	}
+}
+
+func TestL7GuestInitWritesAndConfirmsNoIPv6DuplicateAddressDetection(t *testing.T) {
+	directory := t.TempDir()
+	control := filepath.Join(directory, "accept_dad")
+	if err := os.WriteFile(control, []byte("1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAndConfirmL7IPv6DuplicateAddressDetection(context.Background(), control, openL7NetworkControlFile); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(control)
+	if err != nil || string(payload) != "0\n" {
+		t.Fatalf("accept_dad = %q, %v, want Linux mode 0 (disabled)", payload, err)
 	}
 }
 
@@ -172,6 +231,9 @@ func TestL7GuestInitRequiresExactAddressModeWrite(t *testing.T) {
 		if err == nil || strings.Contains(err.Error(), "secret") {
 			t.Fatalf("writeExactL7IPv6AddressGenerationMode() error = %v", err)
 		}
+	}
+	if err := writeExactL7IPv6ControlValue(io.Discard, '9'); err == nil {
+		t.Fatal("unsupported IPv6 control value accepted")
 	}
 }
 

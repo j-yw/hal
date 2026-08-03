@@ -116,28 +116,28 @@ func l7NetworkBootstrapCommands(config l7NetworkBootConfig) [][]string {
 	return [][]string{
 		{"/sbin/ip", "link", "set", "dev", config.InterfaceName(), "up"},
 		{"/sbin/ip", "addr", "add", config.IPv4Address(), "dev", config.InterfaceName()},
-		{"/sbin/ip", "-6", "addr", "add", config.IPv6Address(), "dev", config.InterfaceName(), "nodad"},
+		{"/sbin/ip", "-6", "addr", "add", config.IPv6Address(), "dev", config.InterfaceName()},
 		{"/sbin/ip", "route", "add", "default", "via", config.IPv4Gateway(), "dev", config.InterfaceName()},
 		{"/sbin/ip", "-6", "route", "add", "default", "via", config.IPv6Gateway(), "dev", config.InterfaceName()},
 	}
 }
 
 func configureL7GuestNetwork(config l7NetworkBootConfig) error {
-	return configureL7GuestNetworkWithDeps(config, disableL7IPv6AddressGeneration, func(ctx context.Context, command []string) error {
+	return configureL7GuestNetworkWithDeps(config, configureL7IPv6StaticAddressing, func(ctx context.Context, command []string) error {
 		return exec.CommandContext(ctx, command[0], command[1:]...).Run()
 	})
 }
 
 func configureL7GuestNetworkWithDeps(
 	config l7NetworkBootConfig,
-	disableAddressGeneration func(context.Context, l7NetworkBootConfig) error,
+	configureIPv6Addressing func(context.Context, l7NetworkBootConfig) error,
 	runCommand func(context.Context, []string) error,
 ) error {
-	if disableAddressGeneration == nil || runCommand == nil {
+	if configureIPv6Addressing == nil || runCommand == nil {
 		return errInvalidL7NetworkBootstrap
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), networkCommandTimeout)
-	err := disableAddressGeneration(ctx, config)
+	err := configureIPv6Addressing(ctx, config)
 	cancel()
 	if err != nil {
 		return errInvalidL7NetworkBootstrap
@@ -153,12 +153,22 @@ func configureL7GuestNetworkWithDeps(
 	return nil
 }
 
-func disableL7IPv6AddressGeneration(ctx context.Context, config l7NetworkBootConfig) error {
-	if err := ctx.Err(); err != nil || !config.Valid() {
+func configureL7IPv6StaticAddressing(ctx context.Context, config l7NetworkBootConfig) error {
+	return configureL7IPv6StaticAddressingWithOpener(ctx, config, openL7NetworkControlFile)
+}
+
+func configureL7IPv6StaticAddressingWithOpener(ctx context.Context, config l7NetworkBootConfig, openFile l7NetworkControlOpener) error {
+	if ctx == nil || openFile == nil || ctx.Err() != nil || !config.Valid() {
 		return errInvalidL7NetworkBootstrap
 	}
-	path := "/proc/sys/net/ipv6/conf/" + config.InterfaceName() + "/addr_gen_mode"
-	return writeAndConfirmL7IPv6AddressGenerationMode(ctx, path, openL7NetworkControlFile)
+	basePath := "/proc/sys/net/ipv6/conf/" + config.InterfaceName()
+	if err := writeAndConfirmL7IPv6AddressGenerationMode(ctx, basePath+"/addr_gen_mode", openFile); err != nil {
+		return errInvalidL7NetworkBootstrap
+	}
+	if err := writeAndConfirmL7IPv6DuplicateAddressDetection(ctx, basePath+"/accept_dad", openFile); err != nil {
+		return errInvalidL7NetworkBootstrap
+	}
+	return nil
 }
 
 type l7NetworkControlOpener func(string, int) (*os.File, error)
@@ -177,7 +187,15 @@ func openL7NetworkControlFile(path string, flags int) (*os.File, error) {
 }
 
 func writeAndConfirmL7IPv6AddressGenerationMode(ctx context.Context, path string, openFile l7NetworkControlOpener) error {
-	if ctx == nil || openFile == nil || ctx.Err() != nil {
+	return writeAndConfirmL7IPv6ControlValue(ctx, path, '1', openFile)
+}
+
+func writeAndConfirmL7IPv6DuplicateAddressDetection(ctx context.Context, path string, openFile l7NetworkControlOpener) error {
+	return writeAndConfirmL7IPv6ControlValue(ctx, path, '0', openFile)
+}
+
+func writeAndConfirmL7IPv6ControlValue(ctx context.Context, path string, value byte, openFile l7NetworkControlOpener) error {
+	if ctx == nil || openFile == nil || ctx.Err() != nil || (value != '0' && value != '1') {
 		return errInvalidL7NetworkBootstrap
 	}
 	writer, err := openFile(path, unix.O_WRONLY|unix.O_NONBLOCK)
@@ -187,7 +205,7 @@ func writeAndConfirmL7IPv6AddressGenerationMode(ctx context.Context, path string
 		}
 		return errInvalidL7NetworkBootstrap
 	}
-	writeErr := writeExactL7IPv6AddressGenerationMode(writer)
+	writeErr := writeExactL7IPv6ControlValue(writer, value)
 	closeErr := writer.Close()
 	if writeErr != nil || closeErr != nil || ctx.Err() != nil {
 		return errInvalidL7NetworkBootstrap
@@ -204,7 +222,8 @@ func writeAndConfirmL7IPv6AddressGenerationMode(ctx context.Context, path string
 		return errInvalidL7NetworkBootstrap
 	}
 	payload, err := io.ReadAll(io.LimitReader(reader, 4))
-	if err != nil || len(payload) > 3 || (string(payload) != "1" && string(payload) != "1\n") || ctx.Err() != nil {
+	want := string([]byte{value})
+	if err != nil || len(payload) > 3 || (string(payload) != want && string(payload) != want+"\n") || ctx.Err() != nil {
 		return errInvalidL7NetworkBootstrap
 	}
 	return nil
@@ -219,10 +238,14 @@ func regularL7NetworkControl(file *os.File) bool {
 }
 
 func writeExactL7IPv6AddressGenerationMode(writer io.Writer) error {
-	if writer == nil {
+	return writeExactL7IPv6ControlValue(writer, '1')
+}
+
+func writeExactL7IPv6ControlValue(writer io.Writer, value byte) error {
+	if writer == nil || (value != '0' && value != '1') {
 		return errInvalidL7NetworkBootstrap
 	}
-	written, err := writer.Write([]byte("1\n"))
+	written, err := writer.Write([]byte{value, '\n'})
 	if err != nil || written != 2 {
 		return errInvalidL7NetworkBootstrap
 	}

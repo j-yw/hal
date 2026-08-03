@@ -226,10 +226,10 @@ profile enabling IPv4, IPv6, network devices, virtio-net, and the minimal
 packet/socket support. PID 1 configures one statically described interface,
 addresses, routes, and proxy bootstrap before dropping to UID/GID 1000. DHCP
 and guest DNS remain disabled. Before link-up, PID 1 writes and separately
-reads back Linux IPv6 `addr_gen_mode=1` (`none`); mode `2` (RFC7217 stable
-privacy), every other value, a symlink/non-regular control, partial write,
-overflow, or cancellation fails closed. Required BusyBox networking/probe
-applets are
+reads back Linux IPv6 `addr_gen_mode=1` (`none`) and `accept_dad=0`, then uses a
+plain static IPv6 address add; mode `2` (RFC7217 stable privacy), enabled DAD,
+every other value, a symlink/non-regular control, partial write, overflow, or
+cancellation fails closed. Required BusyBox networking/probe applets are
 locked by the build. The L5 image, digest, and no-network tests are not edited
 into a networking claim.
 
