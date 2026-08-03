@@ -16,8 +16,8 @@ import (
 )
 
 func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.T) {
-	registry, keyctl, _ := l8Registry(t)
-	principal, request := l8AuthorizedRequest()
+	registry, keyctl, _, authority, principal := l8Registry(t)
+	request := l8AdmissionRequest()
 	authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, request)
 	if err != nil {
 		t.Fatalf("authorize: %v", err)
@@ -32,90 +32,67 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 		t.Fatalf("source resolution read keyring before use: %v", keyctl.calls)
 	}
 
-	denials := []struct {
+	type admissionDenial struct {
 		name   string
 		mutate func(*testing.T, sandboxruntime.AuthenticatedWorkerPrincipal, *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal
-	}{
+	}
+	denials := []admissionDenial{
 		{name: "missing principal", mutate: func(_ *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			return sandboxruntime.AuthenticatedWorkerPrincipal{}
+			var zero sandboxruntime.AuthenticatedWorkerPrincipal
+			return zero
 		}},
 		{name: "wrong uid", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			return l8Principal(t, "principal-owner", 1002, 1002, "peercred-owner", "daemon-generation-1")
+			return l8Principal(t, authority, "principal-owner", 1002, 1002)
 		}},
 		{name: "wrong gid", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			return l8Principal(t, "principal-owner", 1001, 1003, "peercred-owner", "daemon-generation-1")
+			return l8Principal(t, authority, "principal-owner", 1001, 1003)
 		}},
 		{name: "authenticated principal substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			return l8Principal(t, "caller-controlled", 1001, 1002, "peercred-owner", "daemon-generation-1")
-		}},
-		{name: "request principal assertion", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.Identity.PrincipalID = "caller-controlled"
-			return p
+			return l8Principal(t, authority, "caller-controlled", 1001, 1002)
 		}},
 		{name: "issuer substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			return l8Principal(t, "principal-owner", 1001, 1002, "caller-issuer", "daemon-generation-1")
+			other := l8PrincipalAuthority(t, "caller-issuer", "daemon-generation-1")
+			return l8Principal(t, other, "principal-owner", 1001, 1002)
 		}},
 		{name: "issuer generation substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			return l8Principal(t, "principal-owner", 1001, 1002, "peercred-owner", "daemon-generation-neighbor")
+			other := l8PrincipalAuthority(t, "peercred-owner", "daemon-generation-neighbor")
+			return l8Principal(t, other, "principal-owner", 1001, 1002)
 		}},
-		{name: "grant substitution", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.GrantID = "grant-neighbor"
-			return p
+		{name: "identical visible issuer from different authority", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			other := l8PrincipalAuthority(t, "peercred-owner", "daemon-generation-1")
+			return l8Principal(t, other, "principal-owner", 1001, 1002)
 		}},
-		{name: "request embedded grant assertion", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.Identity.AdmissionGrantID = "grant-primary"
-			r.Identity.AdmissionGrantRevision = r.GrantRevision
-			return p
-		}},
-		{name: "grant revision", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.GrantRevision++
-			return p
-		}},
-		{name: "source", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.SourceReferenceIDs = []string{"source-neighbor"}
-			return p
-		}},
-		{name: "plan", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.PlanID = "plan-neighbor"
-			return p
-		}},
-		{name: "request embedded plan assertion", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.Identity.PlanID = "plan-primary"
-			return p
-		}},
-		{name: "binding", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.Bindings[0].ID = "binding-neighbor"
-			return p
-		}},
-		{name: "request embedded binding assertion", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.Identity.BindingIDs = []string{"binding-primary"}
-			r.Identity.DeliveryModes = []sandboxruntime.JobCredentialDeliveryMode{sandboxruntime.JobCredentialDeliveryModeHTTPProxy}
-			return p
-		}},
-		{name: "mode", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.Bindings[0].Mode = sandboxruntime.JobCredentialDeliveryModeFileTmpfs
-			return p
-		}},
-		{name: "template", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.TemplatePolicyID = "template-neighbor"
-			return p
-		}},
-		{name: "workspace", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.WorkspacePolicyID = "workspace-neighbor"
-			return p
-		}},
-		{name: "host", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.Identity.HostID = "host-neighbor"
-			return p
-		}},
-		{name: "runtime", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
-			r.Identity.RuntimeGeneration = "runtime-neighbor"
-			return p
-		}},
+	}
+	for _, identityMutation := range l8AdmissionIdentityMutations() {
+		mutation := identityMutation
+		denials = append(denials,
+			admissionDenial{name: "missing identity " + mutation.name, mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+				mutation.clear(&r.Identity)
+				return p
+			}},
+			admissionDenial{name: "mismatched identity " + mutation.name, mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+				mutation.mutate(&r.Identity)
+				return p
+			}},
+		)
+	}
+	for _, requestMutation := range l8AdmissionRequestMutations() {
+		mutation := requestMutation
+		denials = append(denials,
+			admissionDenial{name: "missing request " + mutation.name, mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+				mutation.clear(r)
+				return p
+			}},
+			admissionDenial{name: "mismatched request " + mutation.name, mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+				mutation.mutate(r)
+				return p
+			}},
+		)
 	}
 	for _, tt := range denials {
 		t.Run(tt.name, func(t *testing.T) {
-			p, r := l8AuthorizedRequest()
+			p := l8Principal(t, authority, "principal-owner", 1001, 1002)
+			r := l8AdmissionRequest()
 			p = tt.mutate(t, p, &r)
 			before := len(keyctl.calls)
 			_, err := registry.AuthorizeJobCredentials(context.Background(), p, r)
@@ -135,8 +112,8 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 }
 
 func TestL8CredentialSourceDirectKeyctlSizeReadAndLockedBorrow(t *testing.T) {
-	registry, keyctl, memoryOps := l8Registry(t)
-	principal, request := l8AuthorizedRequest()
+	registry, keyctl, memoryOps, _, principal := l8Registry(t)
+	request := l8AdmissionRequest()
 	authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, request)
 	if err != nil {
 		t.Fatal(err)
@@ -154,11 +131,11 @@ func TestL8CredentialSourceDirectKeyctlSizeReadAndLockedBorrow(t *testing.T) {
 	if sink.count != 1 || sink.size != len(canary) || sink.digest != sha256.Sum256(canary) {
 		t.Fatal("sink did not receive exact keyring payload")
 	}
-	wantCalls := []string{"describe", "size", "describe", "read", "describe"}
+	wantCalls := []string{"describe_size", "describe", "read_size", "describe_size", "describe", "read", "describe_size", "describe"}
 	if !reflect.DeepEqual(keyctl.calls, wantCalls) {
 		t.Fatalf("keyctl calls = %v, want %v", keyctl.calls, wantCalls)
 	}
-	if wantSerials := []int32{41, 41, 41, 41, 41}; !reflect.DeepEqual(keyctl.serials, wantSerials) {
+	if wantSerials := []int32{41, 41, 41, 41, 41, 41, 41, 41}; !reflect.DeepEqual(keyctl.serials, wantSerials) {
 		t.Fatalf("keyctl serials = %v, want exact registered serial %v", keyctl.serials, wantSerials)
 	}
 	if !memoryOps.locked || !memoryOps.unlocked || !memoryOps.unmapped {
@@ -208,15 +185,75 @@ func TestL8CredentialSourceKeyIdentityUsesExactRealDescriptorAndImmutablePermiss
 		{name: "wrong type", serial: 41, keyType: "logon", permissions: permissions, description: "hal-primary"},
 		{name: "empty description", serial: 41, keyType: "user", permissions: permissions},
 		{name: "missing exact read permission", serial: 41, keyType: "user", permissions: permissions &^ KeyPermissionUserRead, description: "hal-primary"},
-		{name: "write authority", serial: 41, keyType: "user", permissions: permissions | KeyPermissionAnyWrite, description: "hal-primary"},
-		{name: "setattr authority", serial: 41, keyType: "user", permissions: permissions | KeyPermissionAnySetAttribute, description: "hal-primary"},
-		{name: "link authority", serial: 41, keyType: "user", permissions: permissions | KeyPermissionAnyLink, description: "hal-primary"},
-		{name: "unexpected search authority", serial: 41, keyType: "user", permissions: permissions | KeyPermissionPossessorSearch, description: "hal-primary"},
+		{name: "possessor authority", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x01000000), description: "hal-primary"},
+		{name: "group authority", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00000100), description: "hal-primary"},
+		{name: "other authority", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00000001), description: "hal-primary"},
+		{name: "possessor write", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x04000000), description: "hal-primary"},
+		{name: "user write", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00040000), description: "hal-primary"},
+		{name: "group write", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00000400), description: "hal-primary"},
+		{name: "other write", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00000004), description: "hal-primary"},
+		{name: "possessor setattr", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x20000000), description: "hal-primary"},
+		{name: "user setattr", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00200000), description: "hal-primary"},
+		{name: "group setattr", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00002000), description: "hal-primary"},
+		{name: "other setattr", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00000020), description: "hal-primary"},
+		{name: "possessor link", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x10000000), description: "hal-primary"},
+		{name: "user link", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00100000), description: "hal-primary"},
+		{name: "group link", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00001000), description: "hal-primary"},
+		{name: "other link", serial: 41, keyType: "user", permissions: permissions | KeyPermission(0x00000010), description: "hal-primary"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := NewKeyIdentity(tt.serial, tt.keyType, 1001, 1002, tt.permissions, tt.description)
 			if !errors.Is(err, ErrCredentialSourceRegistration) || err.Error() != ErrCredentialSourceRegistration.Error() {
 				t.Fatalf("invalid key identity error = %v, want registration failure", err)
+			}
+		})
+	}
+}
+
+func TestL8CredentialSourceParsesBoundedCanonicalRawKeyctlDescriptor(t *testing.T) {
+	if MaxKeyctlDescribeBytes < len("user;1001;1002;00030000;hal-primary\x00") || MaxKeyctlDescribeBytes > 64<<10 {
+		t.Fatalf("MaxKeyctlDescribeBytes = %d, want finite descriptor bound", MaxKeyctlDescribeBytes)
+	}
+	parsed, err := parseKeyctlDescribe([]byte("user;1001;1002;00030000;hal-primary\x00"))
+	if err != nil {
+		t.Fatalf("parse canonical descriptor: %v", err)
+	}
+	expected, err := NewKeyDescriptor("user", 1001, 1002, KeyPermission(0x00030000), "hal-primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keyDescriptorsEqual(parsed, expected) {
+		t.Fatal("canonical raw descriptor did not preserve exact type/UID/GID/permissions/description")
+	}
+
+	oversized := append([]byte("user;1001;1002;00030000;"), make([]byte, MaxKeyctlDescribeBytes)...)
+	oversized = append(oversized, 0)
+	for _, tt := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "empty", raw: nil},
+		{name: "oversized", raw: oversized},
+		{name: "missing nul", raw: []byte("user;1001;1002;00030000;hal-primary")},
+		{name: "trailing after nul", raw: []byte("user;1001;1002;00030000;hal-primary\x00trailing")},
+		{name: "truncated fields", raw: []byte("user;1001;1002;00030000\x00")},
+		{name: "empty type", raw: []byte(";1001;1002;00030000;hal-primary\x00")},
+		{name: "wrong type", raw: []byte("logon;1001;1002;00030000;hal-primary\x00")},
+		{name: "negative uid", raw: []byte("user;-1;1002;00030000;hal-primary\x00")},
+		{name: "nondigit uid", raw: []byte("user;owner;1002;00030000;hal-primary\x00")},
+		{name: "overflow uid", raw: []byte("user;4294967296;1002;00030000;hal-primary\x00")},
+		{name: "negative gid", raw: []byte("user;1001;-1;00030000;hal-primary\x00")},
+		{name: "nondigit gid", raw: []byte("user;1001;group;00030000;hal-primary\x00")},
+		{name: "overflow gid", raw: []byte("user;1001;4294967296;00030000;hal-primary\x00")},
+		{name: "nonhex permissions", raw: []byte("user;1001;1002;permission;hal-primary\x00")},
+		{name: "short permissions", raw: []byte("user;1001;1002;30000;hal-primary\x00")},
+		{name: "overflow permissions", raw: []byte("user;1001;1002;100030000;hal-primary\x00")},
+		{name: "empty description", raw: []byte("user;1001;1002;00030000;\x00")},
+		{name: "unsafe description", raw: []byte("user;1001;1002;00030000;../hal-primary\x00")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := parseKeyctlDescribe(tt.raw); !errors.Is(err, ErrCredentialSourceDescriptor) || err.Error() != ErrCredentialSourceDescriptor.Error() {
+				t.Fatalf("descriptor parse error = %v, want stable descriptor denial", err)
 			}
 		})
 	}
@@ -240,8 +277,24 @@ func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClo
 		{name: "description replacement after read", mutate: func(k *l8Keyctl) { k.descriptionAtInspect = 3 }},
 		{name: "owner uid change", mutate: func(k *l8Keyctl) { k.ownerUIDAtInspect = 3 }},
 		{name: "owner gid change", mutate: func(k *l8Keyctl) { k.ownerGIDAtInspect = 3 }},
-		{name: "describe failure", mutate: func(k *l8Keyctl) {
-			k.inspectErr = errors.New("backend-private describe serial 41 /raw/keyring l8-race-canary")
+		{name: "describe size failure", mutate: func(k *l8Keyctl) {
+			k.describeSizeErr = errors.New("backend-private describe size serial 41 /raw/keyring l8-race-canary")
+		}},
+		{name: "describe read failure", mutate: func(k *l8Keyctl) {
+			k.describeErr = errors.New("backend-private describe serial 41 /raw/keyring l8-race-canary")
+		}},
+		{name: "zero describe size", mutate: func(k *l8Keyctl) { k.forceDescribeReportedSize = true }},
+		{name: "negative describe size", mutate: func(k *l8Keyctl) {
+			k.forceDescribeReportedSize = true
+			k.describeReportedSize = -1
+		}},
+		{name: "oversized describe size", mutate: func(k *l8Keyctl) {
+			k.forceDescribeReportedSize = true
+			k.describeReportedSize = MaxKeyctlDescribeBytes + 1
+		}},
+		{name: "short describe", mutate: func(k *l8Keyctl) { k.shortDescribe = true }},
+		{name: "malformed describe", mutate: func(k *l8Keyctl) {
+			k.rawDescriptorOverride = []byte("user;1001;1002;00030000;missing-nul")
 		}},
 		{name: "revoked during size", mutate: func(k *l8Keyctl) {
 			k.sizeErr = errors.New("backend-private key serial 41 revoked at /raw/keyring l8-race-canary")
@@ -258,12 +311,12 @@ func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClo
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			registry, keyctl, memoryOps := l8Registry(t)
+			registry, keyctl, memoryOps, _, principal := l8Registry(t)
 			keyctl.value = []byte("l8-race-canary")
 			if tt.mutate != nil {
 				tt.mutate(keyctl)
 			}
-			principal, request := l8AuthorizedRequest()
+			request := l8AdmissionRequest()
 			authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, request)
 			if err != nil {
 				t.Fatal(err)
@@ -298,7 +351,7 @@ func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClo
 			if !errors.Is(err, context.Canceled) && err.Error() != ErrCredentialSourceUnavailable.Error() {
 				t.Fatal("source failure did not return the stable generic source-unavailable message")
 			}
-			for _, raw := range []error{keyctl.inspectErr, keyctl.sizeErr, keyctl.readErr} {
+			for _, raw := range []error{keyctl.describeSizeErr, keyctl.describeErr, keyctl.sizeErr, keyctl.readErr} {
 				if raw != nil && errors.Is(err, raw) {
 					t.Fatal("source failure unwrapped a raw backend cause")
 				}
@@ -310,15 +363,69 @@ func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClo
 	}
 }
 
+func TestL8CredentialSourceCancellationCheckpointsStopBeforeNextKeyctlBoundary(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		cancelCall string
+		occurrence int
+		wantCalls  []string
+	}{
+		{name: "after initial describe", cancelCall: "describe", occurrence: 1, wantCalls: []string{"describe_size", "describe"}},
+		{name: "after secret size", cancelCall: "read_size", occurrence: 1, wantCalls: []string{"describe_size", "describe", "read_size"}},
+		{name: "after pre-read reinspection", cancelCall: "describe", occurrence: 2, wantCalls: []string{"describe_size", "describe", "read_size", "describe_size", "describe"}},
+		{name: "after secret read before final reinspection", cancelCall: "read", occurrence: 1, wantCalls: []string{"describe_size", "describe", "read_size", "describe_size", "describe", "read"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, keyctl, memoryOps, _, principal := l8Registry(t)
+			request := l8AdmissionRequest()
+			authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := registry.ResolveAuthorizedSource(context.Background(), authorization, "source-primary")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			seen := 0
+			keyctl.afterCall = func(call string) {
+				if call != tt.cancelCall {
+					return
+				}
+				seen++
+				if seen == tt.occurrence {
+					cancel()
+				}
+			}
+			keyctl.value = []byte("l8-cancel-checkpoint-canary")
+			sink := &l8SecretSink{limit: 64}
+			err = source.FillSecret(ctx, sink)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("checkpoint error = %v, want canceled", err)
+			}
+			if !reflect.DeepEqual(keyctl.calls, tt.wantCalls) {
+				t.Fatalf("keyctl calls = %v, want bounded prefix %v", keyctl.calls, tt.wantCalls)
+			}
+			if sink.count != 0 {
+				t.Fatal("canceled checkpoint exposed credential bytes to sink")
+			}
+			if memoryOps.unmapped && !l8AllZero(memoryOps.unmapSnapshot) {
+				t.Fatal("canceled checkpoint retained credential bytes in mapping")
+			}
+		})
+	}
+}
+
 func TestL8CredentialSourceGrantRevisionAndDaemonGenerationCannotReplay(t *testing.T) {
-	registry, _, _ := l8Registry(t)
-	principal, request := l8AuthorizedRequest()
+	registry, _, _, _, principal := l8Registry(t)
+	request := l8AdmissionRequest()
 	authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	restarted, _, _ := l8RegistryWithGeneration(t, "daemon-generation-2")
+	restarted, _, _, _, _ := l8RegistryWithGeneration(t, "daemon-generation-2")
 	if _, err := restarted.ResolveAuthorizedSource(context.Background(), authorization, "source-primary"); !errors.Is(err, ErrCredentialAdmissionDenied) {
 		t.Fatalf("pre-restart authorization error = %v, want admission denied", err)
 	}
@@ -330,8 +437,8 @@ func TestL8CredentialSourceGrantRevisionAndDaemonGenerationCannotReplay(t *testi
 }
 
 func TestL8CredentialSourceAuthorizationIsRegistryBoundUntamperableAndAnExactSetIntersection(t *testing.T) {
-	registry, keyctl, _ := l8Registry(t)
-	principal, request := l8AuthorizedRequest()
+	registry, keyctl, _, _, principal := l8Registry(t)
+	request := l8AdmissionRequest()
 	authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, request)
 	if err != nil {
 		t.Fatal(err)
@@ -371,7 +478,7 @@ func TestL8CredentialSourceAuthorizationIsRegistryBoundUntamperableAndAnExactSet
 		})
 	}
 
-	restarted, _, _ := l8RegistryWithGeneration(t, "daemon-generation-1")
+	restarted, _, _, _, _ := l8RegistryWithGeneration(t, "daemon-generation-1")
 	if _, err := restarted.ResolveAuthorizedSource(context.Background(), authorization, "source-primary"); !errors.Is(err, ErrCredentialAdmissionDenied) {
 		t.Fatalf("cross-registry authorization error = %v, want admission denied", err)
 	}
@@ -395,7 +502,9 @@ func TestL8CredentialSourceAuthorizationIsRegistryBoundUntamperableAndAnExactSet
 }
 
 func TestL8CredentialSourceRegistryCopiesConfigurationDeeply(t *testing.T) {
-	principal, request := l8AuthorizedRequest()
+	authority := l8PrincipalAuthority(t, "peercred-owner", "daemon-generation-1")
+	principal := l8Principal(t, authority, "principal-owner", 1001, 1002)
+	request := l8AdmissionRequest()
 	keyIdentity := l8KeyIdentity(t, 41, principal.UID(), principal.GID(), "hal-primary")
 	primary, err := NewSourceRegistration("source-primary", keyIdentity)
 	if err != nil {
@@ -407,12 +516,12 @@ func TestL8CredentialSourceRegistryCopiesConfigurationDeeply(t *testing.T) {
 	grantRequest := request
 	grantRequest.SourceReferenceIDs = sourceReferences
 	grantRequest.Bindings = bindings
-	grant, err := NewAdmissionGrantRegistration(principal, grantRequest, sourceReferences)
+	grant, err := NewAdmissionGrantRegistration(authority, principal, grantRequest, sourceReferences)
 	if err != nil {
 		t.Fatal(err)
 	}
 	grants := []AdmissionGrantRegistration{grant}
-	config, err := NewRegistryConfig("daemon-generation-1", principal.UID(), principal.GID(), sources, grants)
+	config, err := NewRegistryConfig(authority, principal.UID(), principal.GID(), sources, grants)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +545,7 @@ func TestL8CredentialSourceRegistryCopiesConfigurationDeeply(t *testing.T) {
 	}
 	mutatedRequest := request
 	mutatedRequest.GrantID = "mutated-grant"
-	grants[0], err = NewAdmissionGrantRegistration(principal, mutatedRequest, []string{"mutated-source"})
+	grants[0], err = NewAdmissionGrantRegistration(authority, principal, mutatedRequest, []string{"mutated-source"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,8 +601,8 @@ func TestL8CredentialSourceRegistryDoesNotExposeEnumerationOrMutation(t *testing
 }
 
 func TestL8CredentialSourceLiveStateAndConfigurationCannotLeakThroughSerializationOrFormatting(t *testing.T) {
-	registry, _, _ := l8Registry(t)
-	principal, request := l8AuthorizedRequest()
+	registry, _, _, authority, principal := l8Registry(t)
+	request := l8AdmissionRequest()
 	authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, request)
 	if err != nil {
 		t.Fatal(err)
@@ -511,11 +620,11 @@ func TestL8CredentialSourceLiveStateAndConfigurationCannotLeakThroughSerializati
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := NewAdmissionGrantRegistration(principal, request, []string{"source-primary"})
+	grant, err := NewAdmissionGrantRegistration(authority, principal, request, []string{"source-primary"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := NewRegistryConfig("daemon-generation-1", principal.UID(), principal.GID(), []SourceRegistration{registration}, []AdmissionGrantRegistration{grant})
+	config, err := NewRegistryConfig(authority, principal.UID(), principal.GID(), []SourceRegistration{registration}, []AdmissionGrantRegistration{grant})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,10 +658,19 @@ func TestL8CredentialSourceLiveStateAndConfigurationCannotLeakThroughSerializati
 	requestType := reflect.TypeOf(request)
 	for fieldIndex := 0; fieldIndex < requestType.NumField(); fieldIndex++ {
 		fieldName := strings.ToLower(requestType.Field(fieldIndex).Name)
-		for _, forbidden := range []string{"principal", "issuer", "uid", "gid", "serial", "secretvalue", "endpoint", "socket", "hostname", "authority", "token", "credentialvalue"} {
+		for _, forbidden := range []string{"principal", "issuer", "uid", "gid", "serial", "secretvalue", "endpoint", "socket", "hostname", "authority", "seal", "token", "credentialvalue"} {
 			if strings.Contains(fieldName, forbidden) {
 				t.Fatalf("admission request exposes raw/live field %s", requestType.Field(fieldIndex).Name)
 			}
+		}
+	}
+	encodedRequest, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal safe admission request: %v", err)
+	}
+	for _, forbidden := range []string{"principal", "authority", "issuer", "seal", "uid", "gid"} {
+		if strings.Contains(strings.ToLower(string(encodedRequest)), forbidden) {
+			t.Fatalf("admission request JSON can supply forbidden %s claim: %s", forbidden, encodedRequest)
 		}
 	}
 
@@ -613,15 +731,16 @@ func l8AssertCredentialSourceLiveValue(t *testing.T, label string, value any, fo
 	}
 }
 
-func l8Registry(t *testing.T) (*Registry, *l8Keyctl, *l8LockedMapping) {
+func l8Registry(t *testing.T) (*Registry, *l8Keyctl, *l8LockedMapping, *sandboxruntime.AuthenticatedWorkerPrincipalAuthority, sandboxruntime.AuthenticatedWorkerPrincipal) {
 	t.Helper()
 	return l8RegistryWithGeneration(t, "daemon-generation-1")
 }
 
-func l8RegistryWithGeneration(t *testing.T, daemonGeneration string) (*Registry, *l8Keyctl, *l8LockedMapping) {
+func l8RegistryWithGeneration(t *testing.T, daemonGeneration string) (*Registry, *l8Keyctl, *l8LockedMapping, *sandboxruntime.AuthenticatedWorkerPrincipalAuthority, sandboxruntime.AuthenticatedWorkerPrincipal) {
 	t.Helper()
-	_, request := l8AuthorizedRequest()
-	principal := l8Principal(t, "principal-owner", 1001, 1002, "peercred-owner", daemonGeneration)
+	request := l8AdmissionRequest()
+	authority := l8PrincipalAuthority(t, "peercred-owner", daemonGeneration)
+	principal := l8Principal(t, authority, "principal-owner", 1001, 1002)
 	primaryKey := l8KeyIdentity(t, 41, principal.UID(), principal.GID(), "hal-primary")
 	secondaryKey := l8KeyIdentity(t, 43, principal.UID(), principal.GID(), "hal-secondary")
 	ungrantedKey := l8KeyIdentity(t, 42, principal.UID(), principal.GID(), "hal-ungranted")
@@ -637,12 +756,12 @@ func l8RegistryWithGeneration(t *testing.T, daemonGeneration string) (*Registry,
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := NewAdmissionGrantRegistration(principal, request, []string{"source-primary", "source-secondary"})
+	grant, err := NewAdmissionGrantRegistration(authority, principal, request, []string{"source-primary", "source-secondary"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	config, err := NewRegistryConfig(
-		daemonGeneration,
+		authority,
 		principal.UID(),
 		principal.GID(),
 		[]SourceRegistration{primarySource, secondarySource, ungrantedSource},
@@ -663,31 +782,34 @@ func l8RegistryWithGeneration(t *testing.T, daemonGeneration string) (*Registry,
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}
-	return registry, keyctl, memoryOps
+	return registry, keyctl, memoryOps, authority, principal
 }
 
-func l8AuthorizedRequest() (sandboxruntime.AuthenticatedWorkerPrincipal, sandboxruntime.JobCredentialAdmissionRequest) {
+func l8AdmissionRequest() sandboxruntime.JobCredentialAdmissionRequest {
 	now := time.Date(2026, time.August, 3, 4, 0, 0, 0, time.UTC)
-	principal, err := sandboxruntime.NewAuthenticatedWorkerPrincipal("principal-owner", 1001, 1002, "peercred-owner", "daemon-generation-1")
-	if err != nil {
-		panic(err)
-	}
 	request := sandboxruntime.JobCredentialAdmissionRequest{
-		Identity: sandboxruntime.JobCredentialIdentity{
-			SandboxID:               "sandbox-1",
-			ExecutionID:             "execution-1",
-			WorkerID:                "worker-1",
-			HostID:                  "host-owner",
-			RuntimeDriver:           "microvm",
-			RuntimeID:               "runtime-1",
-			RuntimeGeneration:       "runtime-generation-1",
-			NetworkPolicyGeneration: "network-policy-generation-1",
-			ProxyGeneration:         "proxy-generation-1",
-			TopologyGeneration:      "topology-generation-1",
-			RuleGeneration:          "rule-generation-1",
-			WorkerJobID:             "job-1",
-			SubmissionID:            "submission-1",
-			IssuedAt:                now,
+		Identity: sandboxruntime.JobCredentialAdmissionIdentity{
+			SandboxID:                    "sandbox-1",
+			ExecutionID:                  "execution-1",
+			WorkerID:                     "worker-1",
+			HostID:                       "host-owner",
+			RuntimeDriver:                "microvm",
+			RuntimeID:                    "runtime-1",
+			RuntimeGeneration:            "runtime-generation-1",
+			FirecrackerProcessGeneration: "process-generation-1",
+			VsockGeneration:              "vsock-generation-1",
+			WorkerJobID:                  "job-1",
+			SubmissionID:                 "submission-1",
+			PlanID:                       "plan-primary",
+			ActivationGeneration:         "activation-generation-1",
+			CredentialGeneration:         "credential-generation-1",
+			NetworkPlanID:                "network-plan-1",
+			PolicySnapshotID:             "policy-snapshot-1",
+			ProxySessionID:               "proxy-session-1",
+			ProxyGenerationID:            "proxy-generation-1",
+			TopologyGenerationID:         "topology-generation-1",
+			RuleGenerationID:             "rule-generation-1",
+			IssuedAt:                     now,
 		},
 		GrantID:            "grant-primary",
 		GrantRevision:      9,
@@ -702,22 +824,143 @@ func l8AuthorizedRequest() (sandboxruntime.AuthenticatedWorkerPrincipal, sandbox
 			ServiceID:         "azure-openai-responses-v1",
 		}},
 	}
-	return principal, request
+	return request
 }
 
-func l8Principal(t *testing.T, id string, uid, gid uint32, issuerID, issuerGeneration string) sandboxruntime.AuthenticatedWorkerPrincipal {
+type l8AdmissionIdentityMutation struct {
+	name   string
+	clear  func(*sandboxruntime.JobCredentialAdmissionIdentity)
+	mutate func(*sandboxruntime.JobCredentialAdmissionIdentity)
+}
+
+type l8AdmissionRequestMutation struct {
+	name   string
+	clear  func(*sandboxruntime.JobCredentialAdmissionRequest)
+	mutate func(*sandboxruntime.JobCredentialAdmissionRequest)
+}
+
+func l8AdmissionRequestMutations() []l8AdmissionRequestMutation {
+	stringField := func(name string, selectField func(*sandboxruntime.JobCredentialAdmissionRequest) *string) l8AdmissionRequestMutation {
+		return l8AdmissionRequestMutation{
+			name:   name,
+			clear:  func(value *sandboxruntime.JobCredentialAdmissionRequest) { *selectField(value) = "" },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionRequest) { *selectField(value) += "-neighbor" },
+		}
+	}
+	return []l8AdmissionRequestMutation{
+		stringField("grant_id", func(value *sandboxruntime.JobCredentialAdmissionRequest) *string { return &value.GrantID }),
+		{
+			name:   "grant_revision",
+			clear:  func(value *sandboxruntime.JobCredentialAdmissionRequest) { value.GrantRevision = 0 },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionRequest) { value.GrantRevision++ },
+		},
+		stringField("plan_id", func(value *sandboxruntime.JobCredentialAdmissionRequest) *string { return &value.PlanID }),
+		stringField("template_policy_id", func(value *sandboxruntime.JobCredentialAdmissionRequest) *string { return &value.TemplatePolicyID }),
+		stringField("workspace_policy_id", func(value *sandboxruntime.JobCredentialAdmissionRequest) *string { return &value.WorkspacePolicyID }),
+		{
+			name:  "source_reference_ids",
+			clear: func(value *sandboxruntime.JobCredentialAdmissionRequest) { value.SourceReferenceIDs = nil },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionRequest) {
+				value.SourceReferenceIDs = []string{"source-neighbor"}
+			},
+		},
+		{
+			name:  "bindings",
+			clear: func(value *sandboxruntime.JobCredentialAdmissionRequest) { value.Bindings = nil },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionRequest) {
+				value.Bindings = append(value.Bindings, value.Bindings[0])
+			},
+		},
+		{
+			name:   "binding_id",
+			clear:  func(value *sandboxruntime.JobCredentialAdmissionRequest) { value.Bindings[0].ID = "" },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionRequest) { value.Bindings[0].ID = "binding-neighbor" },
+		},
+		{
+			name:  "binding_mode",
+			clear: func(value *sandboxruntime.JobCredentialAdmissionRequest) { value.Bindings[0].Mode = "" },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionRequest) {
+				value.Bindings[0].Mode = sandboxruntime.JobCredentialDeliveryModeFileTmpfs
+			},
+		},
+		{
+			name:  "binding_source_reference_id",
+			clear: func(value *sandboxruntime.JobCredentialAdmissionRequest) { value.Bindings[0].SourceReferenceID = "" },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionRequest) {
+				value.Bindings[0].SourceReferenceID = "source-neighbor"
+			},
+		},
+		{
+			name:  "binding_service_id",
+			clear: func(value *sandboxruntime.JobCredentialAdmissionRequest) { value.Bindings[0].ServiceID = "" },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionRequest) {
+				value.Bindings[0].ServiceID = "service-neighbor"
+			},
+		},
+	}
+}
+
+func l8AdmissionIdentityMutations() []l8AdmissionIdentityMutation {
+	stringField := func(name string, selectField func(*sandboxruntime.JobCredentialAdmissionIdentity) *string) l8AdmissionIdentityMutation {
+		return l8AdmissionIdentityMutation{
+			name:   name,
+			clear:  func(value *sandboxruntime.JobCredentialAdmissionIdentity) { *selectField(value) = "" },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionIdentity) { *selectField(value) += "-neighbor" },
+		}
+	}
+	return []l8AdmissionIdentityMutation{
+		stringField("sandbox_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.SandboxID }),
+		stringField("execution_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.ExecutionID }),
+		stringField("worker_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.WorkerID }),
+		stringField("host_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.HostID }),
+		stringField("runtime_driver", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.RuntimeDriver }),
+		stringField("runtime_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.RuntimeID }),
+		stringField("runtime_generation", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.RuntimeGeneration }),
+		stringField("firecracker_process_generation", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string {
+			return &value.FirecrackerProcessGeneration
+		}),
+		stringField("vsock_generation", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.VsockGeneration }),
+		stringField("worker_job_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.WorkerJobID }),
+		stringField("submission_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.SubmissionID }),
+		stringField("plan_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.PlanID }),
+		stringField("activation_generation", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.ActivationGeneration }),
+		stringField("credential_generation", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.CredentialGeneration }),
+		stringField("network_plan_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.NetworkPlanID }),
+		stringField("policy_snapshot_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.PolicySnapshotID }),
+		stringField("proxy_session_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.ProxySessionID }),
+		stringField("proxy_generation_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.ProxyGenerationID }),
+		stringField("topology_generation_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.TopologyGenerationID }),
+		stringField("rule_generation_id", func(value *sandboxruntime.JobCredentialAdmissionIdentity) *string { return &value.RuleGenerationID }),
+		{
+			name:  "issued_at",
+			clear: func(value *sandboxruntime.JobCredentialAdmissionIdentity) { value.IssuedAt = time.Time{} },
+			mutate: func(value *sandboxruntime.JobCredentialAdmissionIdentity) {
+				value.IssuedAt = value.IssuedAt.Add(time.Second)
+			},
+		},
+	}
+}
+
+func l8PrincipalAuthority(t *testing.T, id, generation string) *sandboxruntime.AuthenticatedWorkerPrincipalAuthority {
 	t.Helper()
-	principal, err := sandboxruntime.NewAuthenticatedWorkerPrincipal(id, uid, gid, issuerID, issuerGeneration)
+	authority, err := sandboxruntime.NewAuthenticatedWorkerPrincipalAuthority(id, generation)
 	if err != nil {
-		t.Fatalf("new authenticated principal: %v", err)
+		t.Fatalf("new authenticated principal authority: %v", err)
+	}
+	return authority
+}
+
+func l8Principal(t *testing.T, authority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority, id string, uid, gid uint32) sandboxruntime.AuthenticatedWorkerPrincipal {
+	t.Helper()
+	principal, err := authority.IssueAuthenticatedWorkerPrincipal(id, uid, gid)
+	if err != nil {
+		t.Fatalf("issue authenticated principal: %v", err)
 	}
 	return principal
 }
 
 func l8ImmutableKeyPermissions() KeyPermission {
-	return KeyPermissionPossessorView |
-		KeyPermissionPossessorRead |
-		KeyPermissionUserView |
+	return KeyPermissionUserView |
 		KeyPermissionUserRead
 }
 
@@ -742,30 +985,38 @@ func l8KeyDescriptor(t *testing.T, uid, gid uint32, description string) l8KeyDes
 }
 
 type l8Keyctl struct {
-	calls                []string
-	serials              []int32
-	descriptor           l8KeyDescriptorFixture
-	value                []byte
-	reportedSize         int
-	inspectErr           error
-	sizeErr              error
-	readErr              error
-	shortRead            bool
-	inspectCount         int
-	replaceAtInspect     int
-	permissionAtInspect  int
-	typeAtInspect        int
-	descriptionAtInspect int
-	ownerUIDAtInspect    int
-	ownerGIDAtInspect    int
+	calls                     []string
+	serials                   []int32
+	descriptor                l8KeyDescriptorFixture
+	pendingDescriptor         []byte
+	rawDescriptorOverride     []byte
+	value                     []byte
+	reportedSize              int
+	describeReportedSize      int
+	forceDescribeReportedSize bool
+	describeSizeErr           error
+	describeErr               error
+	shortDescribe             bool
+	sizeErr                   error
+	readErr                   error
+	shortRead                 bool
+	afterCall                 func(string)
+	inspectCount              int
+	replaceAtInspect          int
+	permissionAtInspect       int
+	typeAtInspect             int
+	descriptionAtInspect      int
+	ownerUIDAtInspect         int
+	ownerGIDAtInspect         int
 }
 
-func (keyctl *l8Keyctl) Describe(_ context.Context, serial int32) (KeyDescriptor, error) {
-	keyctl.calls = append(keyctl.calls, "describe")
+func (keyctl *l8Keyctl) DescribeSize(_ context.Context, serial int32) (int, error) {
+	keyctl.calls = append(keyctl.calls, "describe_size")
 	keyctl.serials = append(keyctl.serials, serial)
+	defer keyctl.finishCall("describe_size")
 	keyctl.inspectCount++
-	if keyctl.inspectErr != nil {
-		return KeyDescriptor{}, keyctl.inspectErr
+	if keyctl.describeSizeErr != nil {
+		return 0, keyctl.describeSizeErr
 	}
 	descriptor := keyctl.descriptor
 	if keyctl.replaceAtInspect == keyctl.inspectCount {
@@ -786,18 +1037,34 @@ func (keyctl *l8Keyctl) Describe(_ context.Context, serial int32) (KeyDescriptor
 	if keyctl.ownerGIDAtInspect == keyctl.inspectCount {
 		descriptor.ownerGID++
 	}
-	return NewKeyDescriptor(
-		descriptor.keyType,
-		descriptor.ownerUID,
-		descriptor.ownerGID,
-		descriptor.permissions,
-		descriptor.description,
-	)
+	keyctl.pendingDescriptor = l8RawKeyDescriptor(descriptor)
+	if keyctl.rawDescriptorOverride != nil {
+		keyctl.pendingDescriptor = append([]byte(nil), keyctl.rawDescriptorOverride...)
+	}
+	if keyctl.forceDescribeReportedSize {
+		return keyctl.describeReportedSize, nil
+	}
+	return len(keyctl.pendingDescriptor), nil
+}
+
+func (keyctl *l8Keyctl) DescribeInto(_ context.Context, serial int32, dst []byte) (int, error) {
+	keyctl.calls = append(keyctl.calls, "describe")
+	keyctl.serials = append(keyctl.serials, serial)
+	defer keyctl.finishCall("describe")
+	if keyctl.describeErr != nil {
+		return 0, keyctl.describeErr
+	}
+	copy(dst, keyctl.pendingDescriptor)
+	if keyctl.shortDescribe && len(keyctl.pendingDescriptor) > 0 {
+		return len(keyctl.pendingDescriptor) - 1, nil
+	}
+	return len(keyctl.pendingDescriptor), nil
 }
 
 func (keyctl *l8Keyctl) ReadSize(_ context.Context, serial int32) (int, error) {
-	keyctl.calls = append(keyctl.calls, "size")
+	keyctl.calls = append(keyctl.calls, "read_size")
 	keyctl.serials = append(keyctl.serials, serial)
+	defer keyctl.finishCall("read_size")
 	if keyctl.sizeErr != nil {
 		return 0, keyctl.sizeErr
 	}
@@ -810,6 +1077,7 @@ func (keyctl *l8Keyctl) ReadSize(_ context.Context, serial int32) (int, error) {
 func (keyctl *l8Keyctl) ReadInto(_ context.Context, serial int32, dst []byte) (int, error) {
 	keyctl.calls = append(keyctl.calls, "read")
 	keyctl.serials = append(keyctl.serials, serial)
+	defer keyctl.finishCall("read")
 	if keyctl.readErr != nil {
 		return 0, keyctl.readErr
 	}
@@ -818,6 +1086,12 @@ func (keyctl *l8Keyctl) ReadInto(_ context.Context, serial int32, dst []byte) (i
 		return len(keyctl.value) - 1, nil
 	}
 	return len(keyctl.value), nil
+}
+
+func (keyctl *l8Keyctl) finishCall(name string) {
+	if keyctl.afterCall != nil {
+		keyctl.afterCall(name)
+	}
 }
 
 type l8LockedMapping struct {
@@ -907,6 +1181,10 @@ type l8KeyDescriptorFixture struct {
 	ownerGID    uint32
 	permissions KeyPermission
 	description string
+}
+
+func l8RawKeyDescriptor(descriptor l8KeyDescriptorFixture) []byte {
+	return []byte(fmt.Sprintf("%s;%d;%d;%08x;%s\x00", descriptor.keyType, descriptor.ownerUID, descriptor.ownerGID, uint32(descriptor.permissions), descriptor.description))
 }
 
 func l8AllZero(value []byte) bool {

@@ -44,15 +44,27 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 			}
 			if importPath == "encoding/json" || importPath == "encoding/gob" || importPath == "encoding/xml" ||
 				importPath == "fmt" || importPath == "log" || importPath == "log/slog" ||
-				importPath == "net" || importPath == "net/http" || importPath == "os/exec" ||
+				importPath == "net" || strings.HasPrefix(importPath, "net/") ||
+				importPath == "os" || importPath == "os/exec" || importPath == "io" || importPath == "io/fs" ||
+				importPath == "path/filepath" || importPath == "syscall" ||
 				strings.HasPrefix(importPath, "github.com/jywlabs/hal/cmd") ||
 				strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/factory") ||
-				strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/credentialdelivery") {
+				strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/credentialdelivery") ||
+				strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/credentialsource") ||
+				strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/sandboxruntime") ||
+				strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/sandboxworker") ||
+				strings.Contains(importPath, "/internal/provider") || strings.Contains(importPath, "/internal/process") ||
+				strings.Contains(importPath, "/internal/workspace") || strings.Contains(importPath, "/internal/sandboxexecution") {
 				t.Errorf("production credential memory %s imports forbidden package %q", entry.Name(), importPath)
 			}
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch typed := node.(type) {
+			case *ast.SelectorExpr:
+				identifier, ok := typed.X.(*ast.Ident)
+				if ok && identifier.Name == "errors" && typed.Sel.Name == "Join" {
+					t.Errorf("production credential memory %s uses forbidden raw-error composition errors.Join", entry.Name())
+				}
 			case *ast.StructType:
 				for _, field := range typed.Fields.List {
 					if len(field.Names) == 0 || !field.Names[0].IsExported() || !l8CredentialMemoryRawType(field.Type) {
@@ -66,7 +78,7 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 				}
 				receiver := l8CredentialMemoryReceiverName(typed.Recv.List[0].Type)
 				switch typed.Name.Name {
-				case "MarshalBinary", "GobEncode", "Bytes", "Value":
+				case "Unwrap", "MarshalBinary", "GobEncode", "Bytes", "Value":
 					t.Errorf("production credential memory %s defines forbidden live-state method %s", entry.Name(), typed.Name.Name)
 				case "String", "GoString", "MarshalJSON", "MarshalText":
 					allowed, ok := denialMethods[receiver]
@@ -96,6 +108,13 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 	} {
 		if !strings.Contains(productionSource.String(), required) {
 			t.Errorf("production credential memory omits direct fail-closed OS marker %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"os.Write(", "os.WriteFile(", "io.Writer", "errors.Join(",
+	} {
+		if strings.Contains(productionSource.String(), forbidden) {
+			t.Errorf("production credential memory contains forbidden raw write/composition marker %q", forbidden)
 		}
 	}
 }

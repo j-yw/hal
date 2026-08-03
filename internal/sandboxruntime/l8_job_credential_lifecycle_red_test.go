@@ -217,6 +217,134 @@ func TestL8JobCredentialProofsAreDisjointCorrelatedAndCurrent(t *testing.T) {
 	}
 }
 
+func TestL8JobCredentialActiveProofLifetimeBoundsAndTemporalValidation(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 2, 15, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	if MaxJobCredentialLifetime <= 0 || MaxJobCredentialLifetime > 24*time.Hour {
+		t.Fatalf("MaxJobCredentialLifetime = %s, want finite positive bound no larger than 24h", MaxJobCredentialLifetime)
+	}
+	validAtMaximum, err := NewJobCredentialActiveProof(JobCredentialActiveProofInput{
+		ProofID:   "active-proof-maximum",
+		Identity:  identity,
+		Revision:  1,
+		IssuedAt:  now,
+		ExpiresAt: now.Add(MaxJobCredentialLifetime),
+	})
+	if err != nil {
+		t.Fatalf("exact maximum lifetime: %v", err)
+	}
+	if err := ValidateJobCredentialActiveProof(validAtMaximum, identity, 1, now); err != nil {
+		t.Fatalf("validate exact maximum lifetime: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name      string
+		issuedAt  time.Time
+		expiresAt time.Time
+	}{
+		{name: "zero issued", expiresAt: now.Add(time.Minute)},
+		{name: "zero expiry", issuedAt: now},
+		{name: "equal issued and expiry", issuedAt: now, expiresAt: now},
+		{name: "expiry before issued", issuedAt: now, expiresAt: now.Add(-time.Nanosecond)},
+		{name: "over maximum", issuedAt: now, expiresAt: now.Add(MaxJobCredentialLifetime + time.Nanosecond)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewJobCredentialActiveProof(JobCredentialActiveProofInput{
+				ProofID:   "active-proof-invalid-time",
+				Identity:  identity,
+				Revision:  1,
+				IssuedAt:  tt.issuedAt,
+				ExpiresAt: tt.expiresAt,
+			}); !errors.Is(err, ErrJobCredentialProofInvalid) {
+				t.Fatalf("temporal proof error = %v, want invalid proof", err)
+			}
+		})
+	}
+
+	futureIdentity := l8JobCredentialIdentity(now.Add(time.Second))
+	future := l8ActiveProof(t, futureIdentity, 1, now.Add(time.Second), now.Add(time.Minute))
+	if err := ValidateJobCredentialActiveProof(future, futureIdentity, 1, now); !errors.Is(err, ErrJobCredentialProofInvalid) {
+		t.Fatalf("future proof validation = %v, want invalid proof", err)
+	}
+	expired := l8ActiveProof(t, identity, 1, now, now.Add(time.Minute))
+	if err := ValidateJobCredentialActiveProof(expired, identity, 1, now.Add(time.Minute)); !errors.Is(err, ErrJobCredentialExpired) {
+		t.Fatalf("proof at exact expiry = %v, want expired", err)
+	}
+}
+
+func TestL8JobCredentialCleanupProofConflictsAndRetryRequireReinspection(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 2, 25, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+
+	if _, err := NewJobCredentialCleanupProof(JobCredentialCleanupProofInput{
+		ProofID:            "cleanup-proof-inverted",
+		Identity:           identity,
+		Revision:           2,
+		RevokedAt:          now.Add(2 * time.Second),
+		AbsenceInspectedAt: now.Add(time.Second),
+		AuthorityAbsent:    true,
+		ResourcesAbsent:    true,
+	}); !errors.Is(err, ErrJobCredentialProofInvalid) {
+		t.Fatalf("inspection-before-revocation error = %v, want invalid proof", err)
+	}
+
+	t.Run("identity mismatch and stale proof enter cleanup incomplete then retry", func(t *testing.T) {
+		for _, tt := range []struct {
+			name  string
+			proof JobCredentialCleanupProof
+			want  error
+		}{
+			{name: "stale revision", proof: l8CleanupProof(t, identity, 1, now.Add(time.Second)), want: ErrJobCredentialRevisionStale},
+			{name: "neighbor identity", proof: func() JobCredentialCleanupProof {
+				neighbor := identity
+				neighbor.ExecutionID = "execution-neighbor"
+				return l8CleanupProof(t, neighbor, 2, now.Add(time.Second))
+			}(), want: ErrJobCredentialIdentityMismatch},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+				if err := lifecycle.BeginRevoke(); err != nil {
+					t.Fatal(err)
+				}
+				if err := lifecycle.Revoke(tt.proof); !errors.Is(err, tt.want) {
+					t.Fatalf("cleanup error = %v, want %v", err, tt.want)
+				}
+				if got := lifecycle.State(); got != JobCredentialStateCleanupIncomplete {
+					t.Fatalf("state = %q, want cleanup_incomplete", got)
+				}
+				reinspected := l8CleanupProofWithID(t, identity, 2, now.Add(3*time.Second), "cleanup-proof-reinspected")
+				if err := lifecycle.Revoke(reinspected); err != nil {
+					t.Fatalf("cleanup retry: %v", err)
+				}
+				if got := lifecycle.State(); got != JobCredentialStateRevoked {
+					t.Fatalf("state = %q, want revoked after reinspection", got)
+				}
+			})
+		}
+	})
+
+	t.Run("exact repeat is idempotent but conflicting repeat is replay", func(t *testing.T) {
+		lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+		if err := lifecycle.BeginRevoke(); err != nil {
+			t.Fatal(err)
+		}
+		cleanup := l8CleanupProofWithID(t, identity, 2, now.Add(time.Second), "cleanup-proof-final")
+		if err := lifecycle.Revoke(cleanup); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.Revoke(cleanup); err != nil {
+			t.Fatalf("exact repeated cleanup is not idempotent: %v", err)
+		}
+		conflicting := l8CleanupProofWithID(t, identity, 2, now.Add(2*time.Second), "cleanup-proof-conflict")
+		if err := lifecycle.Revoke(conflicting); !errors.Is(err, ErrJobCredentialReplayRejected) {
+			t.Fatalf("conflicting repeated cleanup = %v, want replay rejected", err)
+		}
+		if got := lifecycle.State(); got != JobCredentialStateRevoked {
+			t.Fatalf("conflicting repeat changed terminal state to %q", got)
+		}
+	})
+}
+
 func TestL8JobCredentialLifecycleIdempotenceAndConflicts(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 3, 0, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
@@ -384,41 +512,36 @@ func TestL8JobCredentialLifecycleFailureCancelLossAndReplayTransitions(t *testin
 	})
 }
 
-func TestL8JobCredentialHTTPIdentityRequiresEveryL7GenerationAndExactCorrelation(t *testing.T) {
+func TestL8JobCredentialFullIdentityRequiresEveryFieldAndExactCorrelation(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 3, 25, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
 	active := l8ActiveProof(t, identity, 1, now, now.Add(time.Minute))
-	for _, tt := range []struct {
-		name   string
-		mutate func(*JobCredentialIdentity)
-	}{
-		{name: "policy", mutate: func(value *JobCredentialIdentity) { value.NetworkPolicyGeneration = "network-policy-other" }},
-		{name: "proxy", mutate: func(value *JobCredentialIdentity) { value.ProxyGeneration = "proxy-other" }},
-		{name: "topology", mutate: func(value *JobCredentialIdentity) { value.TopologyGeneration = "topology-other" }},
-		{name: "rules", mutate: func(value *JobCredentialIdentity) { value.RuleGeneration = "rules-other" }},
-	} {
+	cleanup := l8CleanupProof(t, identity, 2, now.Add(time.Second))
+	for _, tt := range l8JobCredentialIdentityMutations() {
 		t.Run(tt.name, func(t *testing.T) {
-			mismatched := identity
-			tt.mutate(&mismatched)
-			if err := ValidateJobCredentialActiveProof(active, mismatched, 1, now); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
-				t.Fatalf("mismatched L7 generation error = %v, want identity mismatch", err)
-			}
-		})
-	}
-	for _, tt := range []struct {
-		name  string
-		clear func(*JobCredentialIdentity)
-	}{
-		{name: "policy", clear: func(value *JobCredentialIdentity) { value.NetworkPolicyGeneration = "" }},
-		{name: "proxy", clear: func(value *JobCredentialIdentity) { value.ProxyGeneration = "" }},
-		{name: "topology", clear: func(value *JobCredentialIdentity) { value.TopologyGeneration = "" }},
-		{name: "rules", clear: func(value *JobCredentialIdentity) { value.RuleGeneration = "" }},
-	} {
-		t.Run("missing_"+tt.name, func(t *testing.T) {
 			partial := identity
 			tt.clear(&partial)
 			if _, err := NewJobCredentialLifecycle(partial); err == nil {
-				t.Fatal("partial HTTP/L7 identity was accepted")
+				t.Fatal("partial full credential identity was accepted")
+			}
+
+			mismatched := identity
+			tt.mutate(&mismatched)
+			if err := ValidateJobCredentialActiveProof(active, mismatched, 1, now); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+				t.Fatalf("active proof accepted mismatched %s: %v", tt.name, err)
+			}
+			if err := ValidateJobCredentialCleanupProof(cleanup, mismatched, 2); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+				t.Fatalf("cleanup proof accepted mismatched %s: %v", tt.name, err)
+			}
+			lifecycle, err := NewJobCredentialLifecycle(identity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := lifecycle.BeginPrepare(identity); err != nil {
+				t.Fatal(err)
+			}
+			if err := lifecycle.BeginPrepare(mismatched); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+				t.Fatalf("lifecycle accepted mismatched %s: %v", tt.name, err)
 			}
 		})
 	}
@@ -471,30 +594,87 @@ func TestL8JobCredentialRenewAndCleanupProofsRequireMonotonicAbsenceEvidence(t *
 	}
 }
 
+func TestL8JobCredentialAuthenticatedWorkerPrincipalRequiresExactAuthorityCapability(t *testing.T) {
+	authority, err := NewAuthenticatedWorkerPrincipalAuthority("peercred-authority", "daemon-generation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := authority.IssueAuthenticatedWorkerPrincipal("principal-owner", 1001, 1002)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.ValidateAuthenticatedWorkerPrincipal(principal); err != nil {
+		t.Fatalf("exact issued principal: %v", err)
+	}
+
+	copyOfAuthority := *authority
+	principalFromCopy, err := copyOfAuthority.IssueAuthenticatedWorkerPrincipal("principal-owner", 1001, 1002)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identicalVisibleAuthority, err := NewAuthenticatedWorkerPrincipalAuthority("peercred-authority", "daemon-generation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principalFromOther, err := identicalVisibleAuthority.IssueAuthenticatedWorkerPrincipal("principal-owner", 1001, 1002)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuedConcrete, ok := principal.(*authenticatedWorkerPrincipal)
+	if !ok {
+		t.Fatalf("principal concrete type = %T, want opaque authority-owned principal", principal)
+	}
+	copyOfPrincipal := *issuedConcrete
+	var zeroPrincipal AuthenticatedWorkerPrincipal
+	for _, tt := range []struct {
+		name      string
+		principal AuthenticatedWorkerPrincipal
+	}{
+		{name: "zero", principal: zeroPrincipal},
+		{name: "copied principal", principal: &copyOfPrincipal},
+		{name: "copied authority", principal: principalFromCopy},
+		{name: "identical visible different authority", principal: principalFromOther},
+		{name: "forged interface", principal: l8ForgedAuthenticatedWorkerPrincipal{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := authority.ValidateAuthenticatedWorkerPrincipal(tt.principal); !errors.Is(err, ErrAuthenticatedWorkerPrincipal) {
+				t.Fatalf("principal validation error = %v, want authority rejection", err)
+			}
+		})
+	}
+
+	var nilAuthority *AuthenticatedWorkerPrincipalAuthority
+	if _, err := nilAuthority.IssueAuthenticatedWorkerPrincipal("principal-owner", 1001, 1002); !errors.Is(err, ErrAuthenticatedWorkerPrincipal) {
+		t.Fatalf("nil authority issue error = %v, want authority rejection", err)
+	}
+}
+
 func TestL8JobCredentialLiveStateIsOpaqueAndExplicitlyDeniesSerialization(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 3, 45, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
 	lifecycle := l8ActiveLifecycle(t, identity, 1, now)
 	active := l8ActiveProof(t, identity, 1, now, now.Add(time.Minute))
 	cleanup := l8CleanupProof(t, identity, 2, now.Add(time.Second))
-	principal, err := NewAuthenticatedWorkerPrincipal(
-		"principal-live-canary",
-		1000,
-		1001,
+	authority, err := NewAuthenticatedWorkerPrincipalAuthority(
 		"peercred-issuer-canary",
 		"daemon-generation-canary",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	principal, err := authority.IssueAuthenticatedWorkerPrincipal("principal-live-canary", 1000, 1001)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if principal.ID() != "principal-live-canary" || principal.UID() != 1000 || principal.GID() != 1001 ||
-		principal.IssuerID() != "peercred-issuer-canary" || principal.IssuerGeneration() != "daemon-generation-canary" {
+		principal.AuthorityID() != "peercred-issuer-canary" || principal.AuthorityGeneration() != "daemon-generation-canary" {
 		t.Fatal("authenticated principal accessors did not return its sealed provenance")
 	}
 	for label, value := range map[string]any{
 		"lifecycle":     lifecycle,
 		"active proof":  active,
 		"cleanup proof": cleanup,
+		"authority":     authority,
 		"principal":     principal,
 	} {
 		l8AssertJobCredentialLiveValue(t, label, value, []string{
@@ -503,7 +683,8 @@ func TestL8JobCredentialLiveStateIsOpaqueAndExplicitlyDeniesSerialization(t *tes
 			identity.HostID,
 			identity.WorkerJobID,
 			identity.RuntimeGeneration,
-			identity.ProxyGeneration,
+			identity.ProxySessionID,
+			identity.ProxyGenerationID,
 			identity.AdmissionGrantID,
 			identity.PrincipalID,
 			identity.BindingIDs[0],
@@ -516,7 +697,7 @@ func TestL8JobCredentialLiveStateIsOpaqueAndExplicitlyDeniesSerialization(t *tes
 			"1001",
 		})
 	}
-	for _, value := range []any{lifecycle, active, cleanup, principal} {
+	for _, value := range []any{lifecycle, active, cleanup, authority, principal} {
 		typeOfValue := reflect.TypeOf(value)
 		if typeOfValue.Kind() == reflect.Pointer {
 			typeOfValue = typeOfValue.Elem()
@@ -616,16 +797,80 @@ func l8JobCredentialIdentity(now time.Time) JobCredentialIdentity {
 		PlanID:                       "plan-1",
 		ActivationGeneration:         "activation-generation-1",
 		CredentialGeneration:         "credential-generation-1",
-		NetworkPolicyGeneration:      "network-policy-generation-1",
-		ProxyGeneration:              "proxy-generation-1",
-		TopologyGeneration:           "topology-generation-1",
-		RuleGeneration:               "rule-generation-1",
+		NetworkPlanID:                "network-plan-1",
+		PolicySnapshotID:             "policy-snapshot-1",
+		ProxySessionID:               "proxy-session-1",
+		ProxyGenerationID:            "proxy-generation-1",
+		TopologyGenerationID:         "topology-generation-1",
+		RuleGenerationID:             "rule-generation-1",
 		AdmissionGrantID:             "grant-1",
 		AdmissionGrantRevision:       4,
 		PrincipalID:                  "principal-1",
 		BindingIDs:                   []string{"binding-http"},
 		DeliveryModes:                []JobCredentialDeliveryMode{JobCredentialDeliveryModeHTTPProxy},
 		IssuedAt:                     now,
+	}
+}
+
+type l8JobCredentialIdentityMutation struct {
+	name   string
+	clear  func(*JobCredentialIdentity)
+	mutate func(*JobCredentialIdentity)
+}
+
+func l8JobCredentialIdentityMutations() []l8JobCredentialIdentityMutation {
+	stringField := func(name string, selectField func(*JobCredentialIdentity) *string) l8JobCredentialIdentityMutation {
+		return l8JobCredentialIdentityMutation{
+			name:   name,
+			clear:  func(value *JobCredentialIdentity) { *selectField(value) = "" },
+			mutate: func(value *JobCredentialIdentity) { *selectField(value) += "-neighbor" },
+		}
+	}
+	return []l8JobCredentialIdentityMutation{
+		stringField("sandbox_id", func(value *JobCredentialIdentity) *string { return &value.SandboxID }),
+		stringField("execution_id", func(value *JobCredentialIdentity) *string { return &value.ExecutionID }),
+		stringField("worker_id", func(value *JobCredentialIdentity) *string { return &value.WorkerID }),
+		stringField("host_id", func(value *JobCredentialIdentity) *string { return &value.HostID }),
+		stringField("runtime_driver", func(value *JobCredentialIdentity) *string { return &value.RuntimeDriver }),
+		stringField("runtime_id", func(value *JobCredentialIdentity) *string { return &value.RuntimeID }),
+		stringField("runtime_generation", func(value *JobCredentialIdentity) *string { return &value.RuntimeGeneration }),
+		stringField("firecracker_process_generation", func(value *JobCredentialIdentity) *string { return &value.FirecrackerProcessGeneration }),
+		stringField("vsock_generation", func(value *JobCredentialIdentity) *string { return &value.VsockGeneration }),
+		stringField("worker_job_id", func(value *JobCredentialIdentity) *string { return &value.WorkerJobID }),
+		stringField("submission_id", func(value *JobCredentialIdentity) *string { return &value.SubmissionID }),
+		stringField("plan_id", func(value *JobCredentialIdentity) *string { return &value.PlanID }),
+		stringField("activation_generation", func(value *JobCredentialIdentity) *string { return &value.ActivationGeneration }),
+		stringField("credential_generation", func(value *JobCredentialIdentity) *string { return &value.CredentialGeneration }),
+		stringField("network_plan_id", func(value *JobCredentialIdentity) *string { return &value.NetworkPlanID }),
+		stringField("policy_snapshot_id", func(value *JobCredentialIdentity) *string { return &value.PolicySnapshotID }),
+		stringField("proxy_session_id", func(value *JobCredentialIdentity) *string { return &value.ProxySessionID }),
+		stringField("proxy_generation_id", func(value *JobCredentialIdentity) *string { return &value.ProxyGenerationID }),
+		stringField("topology_generation_id", func(value *JobCredentialIdentity) *string { return &value.TopologyGenerationID }),
+		stringField("rule_generation_id", func(value *JobCredentialIdentity) *string { return &value.RuleGenerationID }),
+		stringField("admission_grant_id", func(value *JobCredentialIdentity) *string { return &value.AdmissionGrantID }),
+		{
+			name:   "admission_grant_revision",
+			clear:  func(value *JobCredentialIdentity) { value.AdmissionGrantRevision = 0 },
+			mutate: func(value *JobCredentialIdentity) { value.AdmissionGrantRevision++ },
+		},
+		stringField("principal_id", func(value *JobCredentialIdentity) *string { return &value.PrincipalID }),
+		{
+			name:   "binding_ids",
+			clear:  func(value *JobCredentialIdentity) { value.BindingIDs = nil },
+			mutate: func(value *JobCredentialIdentity) { value.BindingIDs = []string{"binding-neighbor"} },
+		},
+		{
+			name:  "delivery_modes",
+			clear: func(value *JobCredentialIdentity) { value.DeliveryModes = nil },
+			mutate: func(value *JobCredentialIdentity) {
+				value.DeliveryModes = []JobCredentialDeliveryMode{JobCredentialDeliveryModeFileTmpfs}
+			},
+		},
+		{
+			name:   "issued_at",
+			clear:  func(value *JobCredentialIdentity) { value.IssuedAt = time.Time{} },
+			mutate: func(value *JobCredentialIdentity) { value.IssuedAt = value.IssuedAt.Add(time.Second) },
+		},
 	}
 }
 
@@ -660,9 +905,13 @@ func l8ActiveLifecycle(t *testing.T, identity JobCredentialIdentity, revision ui
 }
 
 func l8CleanupProof(t *testing.T, identity JobCredentialIdentity, revision uint64, inspectedAt time.Time) JobCredentialCleanupProof {
+	return l8CleanupProofWithID(t, identity, revision, inspectedAt, "cleanup-proof-1")
+}
+
+func l8CleanupProofWithID(t *testing.T, identity JobCredentialIdentity, revision uint64, inspectedAt time.Time, proofID string) JobCredentialCleanupProof {
 	t.Helper()
 	proof, err := NewJobCredentialCleanupProof(JobCredentialCleanupProofInput{
-		ProofID:            "cleanup-proof-1",
+		ProofID:            proofID,
 		Identity:           identity,
 		Revision:           revision,
 		RevokedAt:          inspectedAt.Add(-time.Nanosecond),
@@ -677,6 +926,17 @@ func l8CleanupProof(t *testing.T, identity JobCredentialIdentity, revision uint6
 }
 
 type l8FakeCredentialAuthorizer struct{}
+
+type l8ForgedAuthenticatedWorkerPrincipal struct{}
+
+func (l8ForgedAuthenticatedWorkerPrincipal) IsAuthenticatedWorkerPrincipal() {}
+func (l8ForgedAuthenticatedWorkerPrincipal) ID() string                      { return "principal-owner" }
+func (l8ForgedAuthenticatedWorkerPrincipal) UID() uint32                     { return 1001 }
+func (l8ForgedAuthenticatedWorkerPrincipal) GID() uint32                     { return 1002 }
+func (l8ForgedAuthenticatedWorkerPrincipal) AuthorityID() string             { return "peercred-authority" }
+func (l8ForgedAuthenticatedWorkerPrincipal) AuthorityGeneration() string {
+	return "daemon-generation-1"
+}
 
 func (*l8FakeCredentialAuthorizer) AuthorizeJobCredentials(context.Context, AuthenticatedWorkerPrincipal, JobCredentialAdmissionRequest) (CredentialAdmissionAuthorization, error) {
 	return nil, nil

@@ -11,7 +11,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+const l8MemoryTestDeadline = 2 * time.Second
 
 func TestL8CredentialMemoryOwnsLocksAndDestroysFullCapacity(t *testing.T) {
 	ops := &l8MemoryOps{}
@@ -146,12 +149,14 @@ func TestL8CredentialMemoryConcurrentLoadAndBorrowAreRejected(t *testing.T) {
 	go func() {
 		loadDone <- mapping.Load(context.Background(), func(dst []byte) (int, error) {
 			close(loadStarted)
-			<-releaseLoad
+			if err := l8AwaitMemorySignal(releaseLoad, "release concurrent load"); err != nil {
+				return 0, err
+			}
 			copy(dst, []byte("concurrent"))
 			return len("concurrent"), nil
 		})
 	}()
-	<-loadStarted
+	l8ReceiveMemoryTest(t, loadStarted, "load callback start")
 	if err := mapping.Load(context.Background(), func([]byte) (int, error) { return 0, nil }); !errors.Is(err, ErrCredentialMemoryBusy) {
 		t.Fatal("concurrent load did not fail closed")
 	}
@@ -159,7 +164,7 @@ func TestL8CredentialMemoryConcurrentLoadAndBorrowAreRejected(t *testing.T) {
 		t.Fatal("borrow during load did not fail closed")
 	}
 	close(releaseLoad)
-	if err := <-loadDone; err != nil {
+	if err := l8ReceiveMemoryTest(t, loadDone, "concurrent load completion"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -183,30 +188,24 @@ func TestL8CredentialMemoryDestroyWaitsForAcceptedBorrow(t *testing.T) {
 	go func() {
 		borrowDone <- mapping.Borrow(context.Background(), func(view BorrowedView) error {
 			close(borrowStarted)
-			<-releaseBorrow
+			if err := l8AwaitMemorySignal(releaseBorrow, "release accepted borrow"); err != nil {
+				return err
+			}
 			return view.WriteTo(context.Background(), sink)
 		})
 	}()
-	<-borrowStarted
+	l8ReceiveMemoryTest(t, borrowStarted, "borrow callback start")
 	if err := mapping.Borrow(context.Background(), func(BorrowedView) error { return nil }); !errors.Is(err, ErrCredentialMemoryBusy) {
 		t.Fatal("second concurrent borrow did not fail closed")
 	}
 	if err := mapping.Load(context.Background(), func([]byte) (int, error) { return 0, nil }); !errors.Is(err, ErrCredentialMemoryBusy) {
 		t.Fatal("load during accepted borrow did not fail closed")
 	}
-	destroyStarted := make(chan struct{})
 	destroyDone := make(chan error, 1)
 	go func() {
-		close(destroyStarted)
 		destroyDone <- mapping.Destroy()
 	}()
-	<-destroyStarted
-	for attempts := 0; mapping.State() != LockedMappingStateDestroying && attempts < 10_000; attempts++ {
-		runtime.Gosched()
-	}
-	if got := mapping.State(); got != LockedMappingStateDestroying {
-		t.Fatalf("mapping state = %q, want destroying while accepted borrow drains", got)
-	}
+	l8AwaitMemoryState(t, mapping, LockedMappingStateDestroying)
 	if err := mapping.Borrow(context.Background(), func(BorrowedView) error { return nil }); !errors.Is(err, ErrCredentialMemoryDestroyed) {
 		t.Fatal("destroying mapping accepted a new borrow")
 	}
@@ -216,10 +215,10 @@ func TestL8CredentialMemoryDestroyWaitsForAcceptedBorrow(t *testing.T) {
 	default:
 	}
 	close(releaseBorrow)
-	if err := <-borrowDone; err != nil {
+	if err := l8ReceiveMemoryTest(t, borrowDone, "accepted borrow completion"); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-destroyDone; err != nil {
+	if err := l8ReceiveMemoryTest(t, destroyDone, "destroy after borrow completion"); err != nil {
 		t.Fatal(err)
 	}
 	if sink.count != 1 {
@@ -230,6 +229,62 @@ func TestL8CredentialMemoryDestroyWaitsForAcceptedBorrow(t *testing.T) {
 	}
 	if !allL8Zero(ops.unlockSnapshot) || !allL8Zero(ops.unmapSnapshot) {
 		t.Fatal("destroy after borrow did not wipe before unlock/unmap")
+	}
+}
+
+func TestL8CredentialMemoryDestroyWaitsForAcceptedLoadWithoutEarlyWipe(t *testing.T) {
+	ops := &l8MemoryOps{}
+	mapping, err := newLockedMapping(32, ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadStarted := make(chan struct{})
+	releaseLoad := make(chan struct{})
+	loadDone := make(chan error, 1)
+	canary := []byte("accepted-load-window")
+	go func() {
+		loadDone <- mapping.Load(context.Background(), func(dst []byte) (int, error) {
+			copy(dst, canary)
+			close(loadStarted)
+			if err := l8AwaitMemorySignal(releaseLoad, "release accepted load"); err != nil {
+				return 0, err
+			}
+			if !reflect.DeepEqual(dst[:len(canary)], canary) {
+				return 0, errors.New("mapping was wiped during accepted load")
+			}
+			return len(canary), nil
+		})
+	}()
+	l8ReceiveMemoryTest(t, loadStarted, "accepted load callback start")
+	destroyDone := make(chan error, 1)
+	go func() { destroyDone <- mapping.Destroy() }()
+	l8AwaitMemoryState(t, mapping, LockedMappingStateDestroying)
+	if err := mapping.Load(context.Background(), func([]byte) (int, error) { return 0, nil }); !errors.Is(err, ErrCredentialMemoryDestroyed) {
+		t.Fatal("destroying mapping accepted a new load")
+	}
+	if err := mapping.Borrow(context.Background(), func(BorrowedView) error { return nil }); !errors.Is(err, ErrCredentialMemoryDestroyed) {
+		t.Fatal("destroying mapping accepted a new borrow")
+	}
+	if got := ops.calls; !reflect.DeepEqual(got, []string{"map", "lock"}) {
+		t.Fatalf("destroy touched memory while accepted load was active: %v", got)
+	}
+	if !reflect.DeepEqual(ops.region[:len(canary)], canary) {
+		t.Fatal("destroy wiped active load memory before callback return")
+	}
+	select {
+	case err := <-destroyDone:
+		t.Fatalf("destroy completed during accepted load: %v", err)
+	default:
+	}
+	close(releaseLoad)
+	if err := l8ReceiveMemoryTest(t, loadDone, "accepted load completion"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l8ReceiveMemoryTest(t, destroyDone, "destroy after load completion"); err != nil {
+		t.Fatal(err)
+	}
+	if !allL8Zero(ops.unlockSnapshot) || !allL8Zero(ops.unmapSnapshot) {
+		t.Fatal("destroy after accepted load did not wipe before unlock/unmap")
 	}
 }
 
@@ -253,6 +308,24 @@ func TestL8CredentialMemoryPageLockFailureFailsClosed(t *testing.T) {
 	}
 	if !allL8Zero(ops.unmapSnapshot) {
 		t.Fatal("partial page-lock failure did not overwrite the full mapping before unmap")
+	}
+}
+
+func TestL8CredentialMemoryAnonymousMapFailureFailsClosedWithoutCleanupCalls(t *testing.T) {
+	raw := errors.New("memory-map-private /raw/mmap l8-map-cause")
+	ops := &l8MemoryOps{mapErr: raw}
+	mapping, err := newLockedMapping(32, ops)
+	if mapping != nil {
+		t.Fatal("map failure returned a mapping")
+	}
+	if !errors.Is(err, ErrCredentialMemoryUnavailable) || errors.Is(err, raw) || err.Error() != ErrCredentialMemoryUnavailable.Error() {
+		t.Fatalf("map failure = %v, want stable non-unwrapping unavailable error", err)
+	}
+	if got, want := ops.calls, []string{"map"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("map failure calls = %v, want %v", got, want)
+	}
+	if ops.region != nil || ops.unlockSnapshot != nil || ops.unmapSnapshot != nil {
+		t.Fatal("map failure attempted cleanup against a nonexistent mapping")
 	}
 }
 
@@ -510,9 +583,52 @@ func TestL8CredentialMemoryProcessStartupDisablesCoreAndDumpability(t *testing.T
 	}
 }
 
+func l8ReceiveMemoryTest[T any](t *testing.T, channel <-chan T, label string) T {
+	t.Helper()
+	timer := time.NewTimer(l8MemoryTestDeadline)
+	defer timer.Stop()
+	select {
+	case value := <-channel:
+		return value
+	case <-timer.C:
+		t.Fatalf("timed out waiting for %s", label)
+		var zero T
+		return zero
+	}
+}
+
+func l8AwaitMemorySignal(channel <-chan struct{}, label string) error {
+	timer := time.NewTimer(l8MemoryTestDeadline)
+	defer timer.Stop()
+	select {
+	case <-channel:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for %s", label)
+	}
+}
+
+func l8AwaitMemoryState(t *testing.T, mapping *LockedMapping, want LockedMappingState) {
+	t.Helper()
+	timer := time.NewTimer(l8MemoryTestDeadline)
+	defer timer.Stop()
+	for {
+		if got := mapping.State(); got == want {
+			return
+		}
+		select {
+		case <-timer.C:
+			t.Fatalf("mapping state = %q, want %q before deadline", mapping.State(), want)
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
 type l8MemoryOps struct {
 	calls          []string
 	region         []byte
+	mapErr         error
 	lockErr        error
 	lockDirty      []byte
 	unlockErr      error
@@ -523,6 +639,9 @@ type l8MemoryOps struct {
 
 func (ops *l8MemoryOps) MapAnonymous(capacity int) ([]byte, error) {
 	ops.calls = append(ops.calls, "map")
+	if ops.mapErr != nil {
+		return nil, ops.mapErr
+	}
 	ops.region = make([]byte, capacity)
 	return ops.region, nil
 }
