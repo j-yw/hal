@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -21,7 +22,7 @@ func TestL8CredentialProxyCatalogValueFormsDenyLiveInspection(t *testing.T) {
 	for _, tt := range forms {
 		t.Run(tt.name, func(t *testing.T) {
 			catalog, err := NewStaticServiceCatalog(
-				"catalog-generation-01",
+				"raw-catalog-secret",
 				CatalogOwnerHostAdmin,
 				l8FixtureAzureDefinition(t),
 			)
@@ -64,7 +65,46 @@ func assertCredentialProxyCatalogFormDenied(t *testing.T, value any) {
 	} else {
 		assertCredentialProxyCatalogTextOmitsSealedValues(t, stringer.GoString())
 	}
-	for _, format := range []string{"%s", "%q", "%v", "%+v", "%#v"} {
-		assertCredentialProxyCatalogTextOmitsSealedValues(t, fmt.Sprintf(format, value))
+	if _, ok := value.(fmt.Formatter); !ok {
+		t.Errorf("%T does not implement safe fmt.Formatter rendering", value)
+	}
+	for _, format := range credentialProxyCatalogPoisonFormats() {
+		rendered := fmt.Sprintf(format, value)
+		assertCredentialProxyCatalogTextOmitsSealedValues(t, rendered)
+		if strings.Contains(rendered, "raw-catalog-secret") {
+			t.Errorf("fmt.Sprintf(%q, %T) traversed poison catalog state: %q", format, value, rendered)
+		}
+		if want := "credentialproxy.StaticServiceCatalog{sealed:true}"; rendered != want {
+			t.Errorf("fmt.Sprintf(%q, %T) = %q, want %q", format, value, rendered, want)
+		}
+	}
+}
+
+func TestL8CredentialProxyCatalogNilPointerFormattingStaysSafe(t *testing.T) {
+	var pointer *StaticServiceCatalog
+	forms := []struct {
+		name  string
+		value any
+	}{
+		{name: "pointer", value: pointer},
+		{name: "pointer interface", value: any(pointer)},
+	}
+	for _, form := range forms {
+		t.Run(form.name, func(t *testing.T) {
+			for _, format := range credentialProxyCatalogPoisonFormats() {
+				if got := fmt.Sprintf(format, form.value); got != "<nil>" {
+					t.Errorf("fmt.Sprintf(%q, nil *StaticServiceCatalog) = %q, want safe nil rendering", format, got)
+				}
+			}
+		})
+	}
+}
+
+func credentialProxyCatalogPoisonFormats() []string {
+	return []string{
+		"%t", "%b", "%c", "%d", "%o", "%O", "%U",
+		"%e", "%E", "%f", "%F", "%g", "%G", "%x", "%X",
+		"%s", "%q", "%v", "%+v", "%#v",
+		"%+d", "%#d", "% d", "%-20d", "%020d", "%.8d", "%[1]d",
 	}
 }

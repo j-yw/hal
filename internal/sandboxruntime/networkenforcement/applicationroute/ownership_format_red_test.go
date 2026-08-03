@@ -114,6 +114,84 @@ func TestL8ApplicationRouteRegistryDrainsAcceptedResponseBodyOwnership(t *testin
 	}
 }
 
+func TestL8ApplicationRouteRegistryRetainsResponseOwnershipAfterTransientReadError(t *testing.T) {
+	transientErr := errors.New("transient response read error")
+	tests := []struct {
+		name         string
+		releaseByEOF bool
+	}{
+		{name: "later eof", releaseByEOF: true},
+		{name: "explicit body close"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := &transientApplicationRouteBody{transientErr: transientErr}
+			handler := newOwnedApplicationRouteHandler(Response{
+				Metadata: ResponseMetadata{StatusCode: 200, ContentType: "application/json"},
+				Body:     body,
+			}, nil)
+			registry, err := NewRegistry(handler)
+			if err != nil {
+				t.Fatalf("NewRegistry() error = %v", err)
+			}
+			if err := registry.Start(context.Background()); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+
+			response, err := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, validOwnedApplicationRouteRequest())
+			if err != nil {
+				t.Fatalf("Dispatch() error = %v", err)
+			}
+			t.Cleanup(func() {
+				_ = response.Body.Close()
+				handler.releaseClose()
+			})
+
+			if count, readErr := response.Body.Read(make([]byte, 1)); count != 0 || !errors.Is(readErr, transientErr) {
+				t.Fatalf("first response body Read() = %d, %v, want transient non-EOF error", count, readErr)
+			}
+
+			closeResult := make(chan error, 1)
+			go func() { closeResult <- registry.Close(context.Background()) }()
+			waitForApplicationRouteState(t, registry, RegistryStateClosing)
+			assertApplicationRouteCloseBlocked(t, handler, closeResult, "transient read error")
+
+			buffer := make([]byte, 1)
+			if count, readErr := response.Body.Read(buffer); count != 1 || readErr != nil || buffer[0] != 'x' {
+				t.Fatalf("second response body Read() = %d, %v, %q, want usable body data", count, readErr, buffer[:count])
+			}
+			assertApplicationRouteCloseBlocked(t, handler, closeResult, "successful read after transient error")
+
+			if tt.releaseByEOF {
+				if count, readErr := response.Body.Read(buffer); count != 0 || !errors.Is(readErr, io.EOF) {
+					t.Fatalf("third response body Read() = %d, %v, want EOF", count, readErr)
+				}
+			} else if closeErr := response.Body.Close(); closeErr != nil {
+				t.Fatalf("response body Close() error = %v", closeErr)
+			}
+
+			select {
+			case <-handler.closeEntered:
+			case <-time.After(time.Second):
+				t.Fatal("handler Close did not enter after EOF or explicit body Close")
+			}
+			handler.releaseClose()
+			if closeErr := <-closeResult; closeErr != nil {
+				t.Fatalf("Registry.Close() error = %v", closeErr)
+			}
+			if tt.releaseByEOF {
+				if closeErr := response.Body.Close(); closeErr != nil {
+					t.Fatalf("response body Close() after EOF error = %v", closeErr)
+				}
+			}
+			if got := body.closeCallCount(); got != 1 {
+				t.Fatalf("underlying response body Close calls = %d, want exactly 1", got)
+			}
+		})
+	}
+}
+
 func TestL8ApplicationRouteRegistryReleasesNilResponseBodySynchronously(t *testing.T) {
 	handler := newOwnedApplicationRouteHandler(Response{
 		Metadata: ResponseMetadata{StatusCode: 204, ContentType: "application/json"},
@@ -254,16 +332,70 @@ func assertApplicationRouteRegistryFormDenied(t *testing.T, value any, poison *p
 	} else {
 		assertApplicationRouteRegistryRenderedSafe(t, stringer.GoString())
 	}
-	for _, format := range []string{"%s", "%q", "%v", "%+v", "%#v"} {
+	if _, ok := value.(fmt.Formatter); !ok {
+		t.Errorf("%T does not implement safe fmt.Formatter rendering", value)
+	}
+	for _, format := range applicationRoutePoisonFormats() {
 		rendered, panicked := formatApplicationRouteRegistryWithoutPanic(format, value)
 		if panicked != nil {
 			t.Errorf("fmt.Sprintf(%q, %T) traversed poison state: %v", format, value, panicked)
 			continue
 		}
 		assertApplicationRouteRegistryRenderedSafe(t, rendered)
+		if want := "applicationroute.Registry{live}"; rendered != want {
+			t.Errorf("fmt.Sprintf(%q, %T) = %q, want %q", format, value, rendered, want)
+		}
 	}
 	if poison.invoked {
 		t.Error("Registry live inspection traversed poison handler state")
+	}
+}
+
+func TestL8ApplicationRouteRegistryNilPointerFormattingStaysSafe(t *testing.T) {
+	var pointer *Registry
+	forms := []struct {
+		name  string
+		value any
+	}{
+		{name: "pointer", value: pointer},
+		{name: "pointer interface", value: any(pointer)},
+	}
+	for _, form := range forms {
+		t.Run(form.name, func(t *testing.T) {
+			for _, format := range applicationRoutePoisonFormats() {
+				if got := fmt.Sprintf(format, form.value); got != "<nil>" {
+					t.Errorf("fmt.Sprintf(%q, nil *Registry) = %q, want safe nil rendering", format, got)
+				}
+			}
+		})
+	}
+}
+
+func applicationRoutePoisonFormats() []string {
+	return []string{
+		"%t", "%b", "%c", "%d", "%o", "%O", "%U",
+		"%e", "%E", "%f", "%F", "%g", "%G", "%x", "%X",
+		"%s", "%q", "%v", "%+v", "%#v",
+		"%+d", "%#d", "% d", "%-20d", "%020d", "%.8d", "%[1]d",
+	}
+}
+
+func assertApplicationRouteCloseBlocked(
+	t *testing.T,
+	handler *ownedApplicationRouteHandler,
+	closeResult <-chan error,
+	after string,
+) {
+	t.Helper()
+	select {
+	case <-handler.closeEntered:
+		t.Errorf("handler Close entered after %s, before response body EOF or Close", after)
+	case <-time.After(20 * time.Millisecond):
+	}
+	select {
+	case closeErr := <-closeResult:
+		t.Errorf("Registry.Close() returned after %s, before response body EOF or Close: %v", after, closeErr)
+	default:
 	}
 }
 
@@ -349,6 +481,42 @@ type ownedApplicationRouteBody struct {
 
 	mu         sync.Mutex
 	closeCalls int
+}
+
+type transientApplicationRouteBody struct {
+	transientErr error
+
+	mu         sync.Mutex
+	readCalls  int
+	closeCalls int
+}
+
+func (body *transientApplicationRouteBody) Read(buffer []byte) (int, error) {
+	body.mu.Lock()
+	defer body.mu.Unlock()
+	body.readCalls++
+	switch body.readCalls {
+	case 1:
+		return 0, body.transientErr
+	case 2:
+		buffer[0] = 'x'
+		return 1, nil
+	default:
+		return 0, io.EOF
+	}
+}
+
+func (body *transientApplicationRouteBody) Close() error {
+	body.mu.Lock()
+	defer body.mu.Unlock()
+	body.closeCalls++
+	return nil
+}
+
+func (body *transientApplicationRouteBody) closeCallCount() int {
+	body.mu.Lock()
+	defer body.mu.Unlock()
+	return body.closeCalls
 }
 
 func newOwnedApplicationRouteBody(blockRead bool, closeErr error) *ownedApplicationRouteBody {
