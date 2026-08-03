@@ -46,7 +46,19 @@ for selector in "${selectors[@]}"; do
   fi
 done
 
-go test -count=1 -timeout=240s \
+run_l8_no_skip() {
+  local label="$1"
+  shift
+  if ! "$@" | awk '
+      index($0, "\"Action\":\"skip\"") { skipped++ }
+      END { if (skipped != 0) exit 1 }
+    '; then
+    echo "${label} L8 tests failed or skipped" >&2
+    exit 1
+  fi
+}
+
+run_l8_no_skip focused go test -count=1 -json -timeout=240s \
   ./internal/credentialmemory \
   ./internal/credentialsource \
   ./internal/credentialproxy \
@@ -61,7 +73,7 @@ go test -count=1 -timeout=240s \
   ./internal/sandboxexecution \
   ./cmd -run '^TestL8'
 
-go test -race -count=1 -timeout=360s \
+run_l8_no_skip race go test -race -count=1 -json -timeout=360s \
   ./internal/credentialmemory \
   ./internal/credentialsource \
   ./internal/credentialproxy \
@@ -70,7 +82,7 @@ go test -race -count=1 -timeout=360s \
   ./internal/sandboxworker \
   ./internal/sandboxexecution -run '^TestL8'
 
-go test -count=25 -timeout=420s \
+run_l8_no_skip repeated go test -count=25 -json -timeout=420s \
   ./internal/credentialmemory \
   ./internal/credentialsource \
   ./internal/credentialproxy \

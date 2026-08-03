@@ -120,6 +120,200 @@ func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t 
 		schemas map[string][]string
 	}{
 		{
+			path: filepath.Join("..", "internal", "sandboxruntime", "types.go"),
+			schemas: map[string][]string{
+				"RuntimeCredentialDeliveryMetadata": {
+					`ID|string|json:"id,omitempty"`,
+					`RequestID|string|json:"requestId,omitempty"`,
+					`PlanID|string|json:"planId,omitempty"`,
+					`ActivationID|string|json:"activationId,omitempty"`,
+					`RequestedModes|[]string|json:"requestedModes,omitempty"`,
+					`ActiveModes|[]string|json:"activeModes,omitempty"`,
+					`ActiveProofs|[]RuntimeCredentialDeliveryProofSummary|json:"activeProofs,omitempty"`,
+					`Status|string|json:"status,omitempty"`,
+					`ReasonCode|string|json:"reasonCode,omitempty"`,
+					`WarningCount|int|json:"warningCount,omitempty"`,
+					`ErrorCount|int|json:"errorCount,omitempty"`,
+				},
+				"RuntimeCredentialDeliveryProofSummary": {
+					`ProofID|string|json:"proofId"`,
+					`BindingID|string|json:"bindingId,omitempty"`,
+					`DeliveryMode|string|json:"deliveryMode"`,
+					`Status|string|json:"status,omitempty"`,
+					`Source|string|json:"source,omitempty"`,
+				},
+				"RuntimeGuestReadinessMetadata": {
+					`State|RuntimeGuestReadinessState|json:"state,omitempty"`,
+					`Transport|string|json:"transport,omitempty"`,
+					`Labels|[]string|json:"labels,omitempty"`,
+				},
+				"RuntimeMetadata": {
+					`Backend|string|json:"backend,omitempty"`,
+					`CapabilityLabels|[]string|json:"capabilityLabels,omitempty"`,
+					`PathRoles|[]string|json:"pathRoles,omitempty"`,
+					`OperationPlan|*RuntimeOperationPlan|json:"operationPlan,omitempty"`,
+					`ProcessLaunch|*RuntimeProcessLaunchMetadata|json:"processLaunch,omitempty"`,
+					`GuestReadiness|*RuntimeGuestReadinessMetadata|json:"guestReadiness,omitempty"`,
+					`NetworkEnforcement|*RuntimeNetworkEnforcementMetadata|json:"networkEnforcement,omitempty"`,
+					`CredentialDelivery|*RuntimeCredentialDeliveryMetadata|json:"credentialDelivery,omitempty"`,
+					`TemplateLock|*RuntimeTemplateLockMetadata|json:"templateLock,omitempty"`,
+					`TemplateStatus|*RuntimeTemplateStatusMetadata|json:"templateStatus,omitempty"`,
+				},
+				"RuntimeNetworkEnforcementCapability": {
+					`Supported|bool|json:"supported,omitempty"`,
+					`Modes|[]string|json:"modes,omitempty"`,
+					`SupportsDomainRules|bool|json:"supportsDomainRules,omitempty"`,
+					`SupportsEndpointRules|bool|json:"supportsEndpointRules,omitempty"`,
+					`SupportsPrivateRangeRules|bool|json:"supportsPrivateRangeRules,omitempty"`,
+					`SupportsMetadataEndpoint|bool|json:"supportsMetadataEndpoint,omitempty"`,
+					`SupportsLoopbackRules|bool|json:"supportsLoopbackRules,omitempty"`,
+					`SupportsLinkLocalRules|bool|json:"supportsLinkLocalRules,omitempty"`,
+					`SupportsDefaultDenyPosture|bool|json:"supportsDefaultDenyPosture,omitempty"`,
+				},
+				"RuntimeNetworkEnforcementLifecycleMetadata": {
+					`ID|string|json:"id,omitempty"`,
+					`PlanID|string|json:"planId,omitempty"`,
+					`AdapterID|string|json:"adapterId,omitempty"`,
+					`Status|string|json:"status,omitempty"`,
+					`Mechanisms|[]string|json:"mechanisms,omitempty"`,
+					`Operations|[]string|json:"operations,omitempty"`,
+					`PolicySnapshotID|string|json:"policySnapshotId,omitempty"`,
+					`PolicyPreset|string|json:"policyPreset,omitempty"`,
+					`CapabilityLabels|[]string|json:"capabilityLabels,omitempty"`,
+					`ReasonCode|string|json:"reasonCode,omitempty"`,
+					`WarningCodes|[]string|json:"warningCodes,omitempty"`,
+				},
+				"RuntimeNetworkEnforcementMetadata": {
+					`Plan|*RuntimeNetworkEnforcementPlanMetadata|json:"plan,omitempty"`,
+					`Orchestration|*RuntimeNetworkEnforcementOrchestrationMetadata|json:"orchestration,omitempty"`,
+					`Result|*RuntimeNetworkEnforcementResultMetadata|json:"result,omitempty"`,
+				},
+				"RuntimeNetworkEnforcementOrchestrationMetadata": {
+					`PlanID|string|json:"planId,omitempty"`,
+					`AdapterID|string|json:"adapterId,omitempty"`,
+					`Status|string|json:"status,omitempty"`,
+					`Mechanisms|[]string|json:"mechanisms,omitempty"`,
+					`Operations|[]string|json:"operations,omitempty"`,
+					`PolicySnapshotID|string|json:"policySnapshotId,omitempty"`,
+					`PolicyPreset|string|json:"policyPreset,omitempty"`,
+					`Proxy|*RuntimeNetworkEnforcementLifecycleMetadata|json:"proxy,omitempty"`,
+					`Rules|[]RuntimeNetworkEnforcementLifecycleMetadata|json:"rules,omitempty"`,
+					`CapabilityLabels|[]string|json:"capabilityLabels,omitempty"`,
+					`ReasonCode|string|json:"reasonCode,omitempty"`,
+					`WarningCodes|[]string|json:"warningCodes,omitempty"`,
+				},
+				"RuntimeNetworkEnforcementPlanMetadata": {
+					`ID|string|json:"id,omitempty"`,
+					`Source|string|json:"source,omitempty"`,
+					`Operation|string|json:"operation,omitempty"`,
+					`PolicySnapshotID|string|json:"policySnapshotId,omitempty"`,
+					`PolicyPreset|string|json:"policyPreset,omitempty"`,
+					`DefaultPosture|string|json:"defaultPosture,omitempty"`,
+					`Mechanisms|[]string|json:"mechanisms,omitempty"`,
+					`Operations|[]string|json:"operations,omitempty"`,
+				},
+				"RuntimeNetworkEnforcementResultMetadata": {
+					`PlanID|string|json:"planId,omitempty"`,
+					`AdapterID|string|json:"adapterId,omitempty"`,
+					`Outcome|string|json:"outcome,omitempty"`,
+					`EnforcementMode|string|json:"enforcementMode,omitempty"`,
+					`Mechanisms|[]string|json:"mechanisms,omitempty"`,
+					`Operations|[]string|json:"operations,omitempty"`,
+					`PolicySnapshotID|string|json:"policySnapshotId,omitempty"`,
+					`PolicyPreset|string|json:"policyPreset,omitempty"`,
+					`Capability|*RuntimeNetworkEnforcementCapability|json:"capability,omitempty"`,
+					`ReasonCode|string|json:"reasonCode,omitempty"`,
+					`WarningCodes|[]string|json:"warningCodes,omitempty"`,
+				},
+				"RuntimeOperationArgument": {
+					`Value|string|json:"value,omitempty"`,
+					`PathRole|string|json:"pathRole,omitempty"`,
+				},
+				"RuntimeOperationEnvironment": {
+					`Name|string|json:"name,omitempty"`,
+					`Source|string|json:"source,omitempty"`,
+				},
+				"RuntimeOperationPayload": {
+					`Role|string|json:"role,omitempty"`,
+					`APIPath|string|json:"apiPath,omitempty"`,
+					`Assets|[]RuntimeOperationPayloadAsset|json:"assets,omitempty"`,
+				},
+				"RuntimeOperationPayloadAsset": {
+					`AssetRole|string|json:"assetRole,omitempty"`,
+					`ID|string|json:"id,omitempty"`,
+					`Labels|[]string|json:"labels,omitempty"`,
+					`Digest|*RuntimeOperationPayloadDigest|json:"digest,omitempty"`,
+				},
+				"RuntimeOperationPayloadDigest": {
+					`Algorithm|string|json:"algorithm,omitempty"`,
+					`Value|string|json:"value,omitempty"`,
+				},
+				"RuntimeOperationPlan": {
+					`Action|string|json:"action,omitempty"`,
+					`Environment|[]RuntimeOperationEnvironment|json:"environment,omitempty"`,
+					`PathRoles|[]string|json:"pathRoles,omitempty"`,
+					`Payloads|[]RuntimeOperationPayload|json:"payloads,omitempty"`,
+					`ProcessDescriptor|*RuntimeProcessDescriptor|json:"processDescriptor,omitempty"`,
+				},
+				"RuntimeProcessDescriptor": {
+					`Action|string|json:"action,omitempty"`,
+					`ExecutableRole|string|json:"executableRole,omitempty"`,
+					`Argv|[]RuntimeOperationArgument|json:"argv"`,
+					`Environment|[]RuntimeOperationEnvironment|json:"environment"`,
+					`PathRoles|[]string|json:"pathRoles"`,
+					`Payloads|[]RuntimeOperationPayload|json:"payloads"`,
+				},
+				"RuntimeProcessLaunchMetadata": {
+					`State|string|json:"state,omitempty"`,
+					`Labels|[]string|json:"labels,omitempty"`,
+					`ProcessID|string|json:"processId,omitempty"`,
+					`ProcessIDSource|string|json:"processIdSource,omitempty"`,
+				},
+				"RuntimeTemplateStatusMetadata": {
+					`LockStatus|string|json:"lockStatus,omitempty"`,
+					`TrustMode|string|json:"trustMode,omitempty"`,
+					`TrustDecision|string|json:"trustDecision,omitempty"`,
+					`ProvenanceLabels|[]string|json:"provenanceLabels,omitempty"`,
+					`ReasonCodes|[]string|json:"reasonCodes,omitempty"`,
+				},
+			},
+		},
+		{
+			path: filepath.Join("..", "internal", "sandboxruntime", "template_lock.go"),
+			schemas: map[string][]string{
+				"RuntimeTemplateLockEntryMetadata": {
+					`SourceKind|string|json:"sourceKind,omitempty"`,
+					`ReferenceKind|string|json:"referenceKind,omitempty"`,
+					`Status|string|json:"status,omitempty"`,
+					`DigestAlgorithm|string|json:"digestAlgorithm,omitempty"`,
+					`DigestValue|string|json:"digestValue,omitempty"`,
+					`SizeBytes|int64|json:"sizeBytes,omitempty"`,
+					`LockedAt|string|json:"lockedAt,omitempty"`,
+					`WarningCodes|[]string|json:"warningCodes,omitempty"`,
+					`ReasonCode|string|json:"reasonCode,omitempty"`,
+				},
+				"RuntimeTemplateLockMetadata": {
+					`Document|*RuntimeTemplateLockEntryMetadata|json:"document,omitempty"`,
+					`TemplateReference|*RuntimeTemplateLockEntryMetadata|json:"templateReference,omitempty"`,
+					`RuntimeImage|*RuntimeTemplateLockEntryMetadata|json:"runtimeImage,omitempty"`,
+					`SourceArtifact|*RuntimeTemplateLockEntryMetadata|json:"sourceArtifact,omitempty"`,
+					`TrustPolicy|*RuntimeTemplateTrustPolicyMetadata|json:"trustPolicy,omitempty"`,
+				},
+				"RuntimeTemplateTrustPolicyMetadata": {
+					`Mode|string|json:"mode,omitempty"`,
+					`Decision|string|json:"decision,omitempty"`,
+					`SourceKind|string|json:"sourceKind,omitempty"`,
+					`ReferenceKind|string|json:"referenceKind,omitempty"`,
+					`Status|string|json:"status,omitempty"`,
+					`DigestAlgorithm|string|json:"digestAlgorithm,omitempty"`,
+					`DigestValue|string|json:"digestValue,omitempty"`,
+					`WarningCodes|[]string|json:"warningCodes,omitempty"`,
+					`ErrorCodes|[]string|json:"errorCodes,omitempty"`,
+					`ReasonCodes|[]string|json:"reasonCodes,omitempty"`,
+				},
+			},
+		},
+		{
 			path: filepath.Join("..", "internal", "sandboxworker", "types.go"),
 			schemas: map[string][]string{
 				"Capabilities": {
@@ -560,14 +754,46 @@ func l8V1StructSchema(t *testing.T, fileSet *token.FileSet, structure *ast.Struc
 }
 
 func TestL8CredentialDeliverySourceGuardsV1CustomJSONMethodsCannotCarryProductionIntent(t *testing.T) {
-	// Hash the go/format AST for the three pre-L8 sanitizing marshalers. Locking
-	// only struct fields would still let a later custom marshaler emit hidden
-	// production intent without changing a field, type, or JSON tag.
+	// Hash the go/format AST for the pre-L8 sanitizing marshalers. Locking
+	// only struct fields would still let later JSON or encoding.TextMarshaler
+	// methods emit hidden production intent without changing a field, type, or
+	// JSON tag.
 	checks := []struct {
 		root   string
 		locked map[string]bool
 		want   map[string]string
 	}{
+		{
+			root: filepath.Join("..", "internal", "sandboxruntime"),
+			locked: l8LockedV1TypeNames(
+				"RuntimeCredentialDeliveryMetadata", "RuntimeCredentialDeliveryProofSummary",
+				"RuntimeGuestReadinessMetadata", "RuntimeMetadata", "RuntimeNetworkEnforcementCapability",
+				"RuntimeNetworkEnforcementLifecycleMetadata", "RuntimeNetworkEnforcementMetadata",
+				"RuntimeNetworkEnforcementOrchestrationMetadata", "RuntimeNetworkEnforcementPlanMetadata",
+				"RuntimeNetworkEnforcementResultMetadata", "RuntimeOperationArgument",
+				"RuntimeOperationEnvironment", "RuntimeOperationPayload", "RuntimeOperationPayloadAsset",
+				"RuntimeOperationPayloadDigest", "RuntimeOperationPlan", "RuntimeProcessDescriptor",
+				"RuntimeProcessLaunchMetadata", "RuntimeTemplateLockEntryMetadata",
+				"RuntimeTemplateLockMetadata", "RuntimeTemplateStatusMetadata",
+				"RuntimeTemplateTrustPolicyMetadata",
+			),
+			want: map[string]string{
+				"RuntimeCredentialDeliveryMetadata.MarshalJSON":              "8f05764ea9c6cc8f8634998dfd379975a23735675bc970f79e82ac620c0168fd",
+				"RuntimeCredentialDeliveryMetadata.UnmarshalJSON":            "d89a4e54ea98a7072ddf98163ca04149b63e0ebf19e52ff12e15d3b0fe2e9a32",
+				"RuntimeMetadata.MarshalJSON":                                "2aea5101af541fd2fc6294218e15a730308cedf3aebecc7f3c001516c702aac7",
+				"RuntimeMetadata.UnmarshalJSON":                              "9f94ef9f6e1a699dc22e89e8966cffb497d9a0bdf3fc66c4f61c349e12755298",
+				"RuntimeNetworkEnforcementCapability.MarshalJSON":            "0c5fa7070f20ef28bc35831fe9d19cb8d9b00a587f719ba8a78bacdfcaaefe54",
+				"RuntimeNetworkEnforcementLifecycleMetadata.MarshalJSON":     "a1813cbac961549d6aefc337e6202cf636d7ef0dd1ff7171e301fea9cf144814",
+				"RuntimeNetworkEnforcementMetadata.MarshalJSON":              "0a81082a2000b70e6662a1b38eb4b64ec2c66b970e1ad0587b835912dc5bacbc",
+				"RuntimeNetworkEnforcementOrchestrationMetadata.MarshalJSON": "4f3223639b2d455b385a684b679bdb8abef0a127f4d45e31e74faebd6c772079",
+				"RuntimeNetworkEnforcementPlanMetadata.MarshalJSON":          "1893e8e01cef3e5400711c269d0ba2bb262617621c8cd4b09d3859e621ef3405",
+				"RuntimeNetworkEnforcementResultMetadata.MarshalJSON":        "03fbda3657b0e30947f3f8cb7932caec3e0a695cca34881bf962f8ff549e359a",
+				"RuntimeTemplateLockMetadata.MarshalJSON":                    "614ace00fe1128008edab8f076c956996813264d4262ceeb720665ad19fff26d",
+				"RuntimeTemplateLockMetadata.UnmarshalJSON":                  "5c426f9978b5bf0f25f47fc95ff0fb067774204c06c290f9bec4e5fcc9ec5df5",
+				"RuntimeTemplateStatusMetadata.MarshalJSON":                  "bbd05f5550bd185ebef9c026e17fe763b37c68ddefe2304f8cc229bbb0df2698",
+				"RuntimeTemplateStatusMetadata.UnmarshalJSON":                "3b2e5c4ad6b46766b86bfba2ab77855a0e284a2a70542755757a962e6ca7a09a",
+			},
+		},
 		{
 			root: filepath.Join("..", "internal", "sandboxworker"),
 			locked: l8LockedV1TypeNames(
@@ -617,7 +843,7 @@ func TestL8CredentialDeliverySourceGuardsV1CustomJSONMethodsCannotCarryProductio
 			}
 			for _, declaration := range parsed.Decls {
 				method, ok := declaration.(*ast.FuncDecl)
-				if !ok || method.Recv == nil || (method.Name.Name != "MarshalJSON" && method.Name.Name != "UnmarshalJSON") {
+				if !ok || method.Recv == nil || !l8V1CustomSerializationMethod(method.Name.Name) {
 					continue
 				}
 				receiver := l8V1ReceiverName(method)
@@ -644,6 +870,15 @@ func TestL8CredentialDeliverySourceGuardsV1CustomJSONMethodsCannotCarryProductio
 				t.Fatalf("v1 custom JSON method %s in %s changed: got %q, want %q", method, filepath.ToSlash(check.root), gotDigest, wantDigest)
 			}
 		}
+	}
+}
+
+func l8V1CustomSerializationMethod(name string) bool {
+	switch name {
+	case "MarshalJSON", "UnmarshalJSON", "MarshalText", "UnmarshalText":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -838,9 +1073,11 @@ func TestL8CredentialDeliverySourceGuardsVerificationScriptsEnforcePresenceAndNo
 	for _, required := range []string{
 		"go test -list '^TestL8'",
 		"matched no named L8 test",
-		"go test -count=1 -timeout=240s",
-		"go test -race -count=1 -timeout=360s",
-		"go test -count=25 -timeout=420s",
+		"go test -count=1 -json -timeout=240s",
+		"go test -race -count=1 -json -timeout=360s",
+		"go test -count=25 -json -timeout=420s",
+		`\"Action\":\"skip\"`,
+		"L8 tests failed or skipped",
 	} {
 		if !strings.Contains(focused, required) {
 			t.Errorf("L8 focused verifier omits %q", required)

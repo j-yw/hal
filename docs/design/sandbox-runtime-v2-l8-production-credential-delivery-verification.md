@@ -35,17 +35,27 @@ Guards must prove:
   remain metadata-only;
 - every current `cmd` production file, including all `sandboxd*.go`
   composition files, stays free of premature L8 live imports and constructors;
-  D6 replaces this blanket guard with one explicit allowlisted L8 composition
-  file while retaining a default-disabled construction test;
+  D4 replaces the blanket only for exact guest-asset entrypoints needed to
+  compose the guest agent/init/helper, with per-file import and constructor
+  allowlists while root command and `sandboxd*.go` files remain forbidden; D6
+  then permits one explicit root L8 composition file. Every transition retains
+  default-disabled construction tests and rejects L8 imports or constructors in
+  every non-allowlisted command file;
 - command and factory paths cannot transport raw credential bytes, callbacks,
   endpoints, or tickets in worker requests;
 - source-reference and admission-grant IDs remain non-authoritative safe
   identity; production v2 authorization uses a server-derived authenticated
-  principal plus immutable host-admin grant before source resolution, rejects
-  UID-only/raw same-UID clients, and cannot be selected or weakened by
-  repository-controlled fields;
+  owner UID/GID principal plus immutable host-admin grant before source
+  resolution, rejects missing/mismatched peers, and cannot be selected or
+  weakened by repository-controlled fields; same-UID host processes with
+  access to the owner-only worker socket are explicitly inside the trusted host
+  control-plane boundary, not falsely claimed as isolated;
 - D0 locks the complete `sandboxworker-v1`/`sandboxjob-v1` and guest-v1 Go
-  field/type/JSON-tag schemas against embedded or renamed intent; the first D1
+  field/type/JSON-tag schemas plus existing custom JSON methods, and rejects
+  new JSON or text marshal/unmarshal methods, against hidden or renamed intent;
+  the closure includes every nested root `sandboxruntime` DTO and custom method
+  reachable through worker-v1 status, capability, target, security, and
+  credential metadata; the first D1
   red/green checkpoint must make the worker decoder reject unknown,
   duplicate, and trailing JSON before any v2 dispatch is added, so v1 cannot
   accept or ignore production credential intent;
@@ -65,7 +75,8 @@ Guards must prove:
 The exact package set grows as D1-D6 land. The authoritative wrapper first
 runs `go test -list '^TestL8'` for every selector and fails if any selector
 matches no named L8 test; only then does it run the focused, race, and repeated
-commands below:
+commands below as JSON streams, waits for every child, and rejects every skip
+event:
 
 ```sh
 tools/microvm/l8/verify-focused.sh
@@ -83,10 +94,12 @@ Required focused areas are:
   string/environment/file/subprocess/factory ingress, page-lock
   success/failure, full-capacity overwrite, unlock/unmap, borrowed-view sink
   bounds, daemon-start dumpability, cancellation, and non-stringability;
-- authenticated connection-principal derivation stronger than UID alone,
-  host-admin grant/source ACL intersection before lookup, same-UID raw-client
-  denial, principal/grant/source/plan/binding/template/workspace correlation,
-  non-enumeration, revision/restart races, and repository override rejection;
+- authenticated connection-principal derivation from the exact socket peer
+  UID/GID, host-admin grant/source ACL intersection before lookup,
+  missing/wrong-peer denial,
+  principal/grant/source/plan/binding/template/workspace correlation,
+  non-enumeration, revision/restart races, repository override rejection, and
+  an explicit trusted same-UID host control-plane boundary;
 - `sandboxjob-v1` compatibility, distinct `job_*_v2` operations, strict `sandboxjob-v2`,
   credential-aware idempotency/request keys,
   unknown/duplicate/trailing JSON rejection, exact legacy unsupported-operation
@@ -98,8 +111,10 @@ Required focused areas are:
 - neutral route dispatch/collision/close ordering, exact deployment-prefixed
   reserved HTTP framing, fixed ticket encoding/lease/request/concurrency and
   body/response/SSE/idle limits, initial Pi Azure Responses clean-environment
-  flags and sealed model, post-admission in-memory binding without RPC/job
-  mutation, service catalog, HMAC digest, raw HTTP/1.1 mutable auth emission,
+  flags and sealed model, disabled extension/prompt-template/theme/session
+  discovery, explicit text-only context/skill workspace policy,
+  post-admission in-memory binding without RPC/job mutation, service catalog,
+  HMAC digest, raw HTTP/1.1 mutable auth emission,
   destination/TLS policy, redirects, header control, L7 proof races, and generic
   CONNECT noninterference;
 - dedicated agent/workload identities, non-dumpable/protected-proc agent,

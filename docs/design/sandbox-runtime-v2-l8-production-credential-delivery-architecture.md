@@ -220,10 +220,16 @@ or `keyctl_read`, the worker passes a server-derived
 daemon-owned `CredentialAdmissionAuthorizer`. The principal comes only from an
 authenticated connection context established by production transport code; no
 request JSON field can name, replace, or weaken it. Unix `SO_PEERCRED` is one
-input, but matching the daemon UID alone is insufficient for the production
-credential lane. A production authenticator must additionally bind the
-connection to an administrator-approved Hal admission identity; an unavailable
-or UID-only authenticator fails closed before v2 credential dispatch.
+input and the existing owner-only socket plus exact peer UID/GID check is the
+concrete Linux bootstrap. The L8 host control-plane trust boundary includes the
+daemon owner and every same-UID process that can open that socket; L8 does not
+claim isolation from a malicious process already running as that trusted host
+identity. Untrusted repository/workload code must never execute in that host
+identity before admission and runs only in the sandbox afterward. A missing or
+mismatched peer identity fails closed before v2 credential dispatch. Stronger
+same-UID local multi-tenant authentication would require an external privileged
+issuer or kernel identity boundary and is an explicit future hardening layer,
+not an invented L8 claim.
 
 The host-admin grant registry is immutable for a daemon generation. Each
 `CredentialAdmissionGrant` binds one safe grant ID and revision to the exact
@@ -248,8 +254,9 @@ stored server-derived principal and exact intent; it never trusts a new caller
 assertion or falls back to a different source. D1 locks the neutral
 authentication/authorization contracts and denial tests before any v2
 dispatcher or live source can exist; D6 provides the explicit production
-composition and proves that a raw same-UID socket client cannot obtain a
-credential admission principal.
+composition and proves that missing/wrong-UID/wrong-GID peers and any
+caller-supplied principal fail while the exact owner principal remains bound to
+the host-admin grant.
 
 `JobCredentialActiveProof` and `JobCredentialCleanupProof` are distinct sealed
 contracts. Active proof requires live resources and cannot contain cleanup
@@ -495,7 +502,8 @@ guest baseline plus these three values, rather than inheriting host/project
 provider variables; clears resource, deployment-map, base, key, proxy, and
 other provider credential variables; and starts Pi with exact sealed
 `--provider azure-openai-responses`, `--model <sealed-deployment>`, `--offline`,
-`--no-extensions`, `--no-session`, and no `--api-key`. It also points
+`--no-extensions`, `--no-prompt-templates`, `--no-themes`, `--no-session`, and
+no `--api-key`. It also points
 `PI_CODING_AGENT_DIR` at an owned empty private directory so ambient model and
 provider configuration cannot replace the catalog. These are an endpoint, safe
 version, and opaque job capability, not a raw credential, and they are never
@@ -507,6 +515,19 @@ destroyed before cleanup. The binding is available only inside the exact job
 cgroup and mount namespace. Direct Pi `xai`, generic OpenAI-compatible, and
 other providers are unsupported by this first entry and cannot count as L8
 proof.
+
+The sealed invocation intentionally does not set `--no-context-files` or
+`--no-skills`: repository instructions and text-only skills are explicit
+workspace inputs needed for Hal's agent task, not provider configuration or
+credential authority. The admission grant binds the exact workspace policy,
+and neither input can change the command-line provider/model, sealed local
+route, clean provider environment, network policy, or credential bindings.
+Executable Pi extensions, prompt-template discovery, theme discovery, session
+reuse, and ambient Pi configuration are disabled. D3 negative tests seed
+project and global provider settings, executable extensions, prompt templates,
+themes, sessions, and conflicting model/base/key variables and prove that none
+can alter the sealed route or consumer; context/skill text remains ordinary
+sandboxed workload input.
 
 The production adapter is acceptance-tested against the fixture registry
 without contacting Azure or any billed service. Tagged tests use a separate
@@ -688,18 +709,21 @@ proof. Cleanup proves host listener/connection and guest socket absence.
 
 The L2 worker job lifecycle becomes:
 
-1. validate request and persist the queued job plus safe credential intent;
-2. persist credential state `preparing`;
-3. call optional `JobCredentialRuntime.PrepareJobCredentials` and mechanically
+1. derive the peer principal, strictly decode/validate the request, and
+   authorize its complete grant/source/plan/binding/host/runtime/template/workspace
+   intent without resolving a source;
+2. persist the queued job plus safe authorized credential intent;
+3. persist credential state `preparing`;
+4. call optional `JobCredentialRuntime.PrepareJobCredentials` and mechanically
    inspect its exact proof;
-4. persist only the sanitized active proof reference;
-5. execute with the opaque transient binding;
-6. renew from the heartbeat path and concurrently watch loss;
-7. on expiry/loss, cancel and prove cgroup zero population or stop/reap the
+5. persist only the sanitized active proof reference;
+6. execute with the opaque transient binding;
+7. renew from the heartbeat path and concurrently watch loss;
+8. on expiry/loss, cancel and prove cgroup zero population or stop/reap the
    entire runtime;
-8. revoke and prove cleanup on success, failure, cancel, timeout, daemon close,
+9. revoke and prove cleanup on success, failure, cancel, timeout, daemon close,
    state-write failure, or runtime loss; and
-9. only then persist terminal job outcome and release admission.
+10. only then persist terminal job outcome and release admission.
 
 A nil lifecycle dependency preserves existing jobs with no live L8 intent. A
 request for production L8 modes with a nil or unsupported dependency fails
@@ -830,8 +854,9 @@ compatible where existing contracts require it.
   overwrite, unmap, process startup dumpability, string/JSON/log exclusion, and
   cancellation.
 - Red tests for server-derived authenticated principals and immutable
-  admission-grant authorization before source resolution, including raw
-  same-UID clients, caller-supplied principal/grant substitution, unauthorized
+  admission-grant authorization before source resolution, including
+  missing/wrong-UID/wrong-GID peers, caller-supplied principal/grant
+  substitution, unauthorized
   source/plan/binding/template/workspace intent, grant revision/restart races,
   non-enumeration, and request-key correlation.
 - Lock distinct `job_*_v2` operations and strict `sandboxjob-v2`,
@@ -865,6 +890,11 @@ compatible where existing contracts require it.
 
 ### D4 — guest tmpfs
 
+- Replace the D0 recursive command blanket only for the exact
+  `hal-guest-agent`, `hal-guest-init`, and `hal-guest-credential-helper`
+  composition files that this slice needs. Lock their allowed L8 imports and
+  constructors file by file; keep every root command and `sandboxd*.go` path
+  forbidden until D6 and every other command file forbidden throughout L8.
 - Implement the PID1 child, protected proc, agent pidfd/socketpair, helper
   pivot/fd/seccomp exec/cgroup boundary, and namespace/tmpfs behavior through
   injected syscall fakes first.
