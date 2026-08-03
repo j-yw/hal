@@ -426,14 +426,14 @@ unwrapped:
 		}
 	case *ast.SelectorExpr:
 		if selection := info.Selections[typed]; selection != nil {
-			receiver := selection.Recv()
-			if pointer, ok := receiver.(*types.Pointer); ok {
-				receiver = pointer.Elem()
-			}
-			if _, ok := receiver.Underlying().(*types.Interface); ok {
+			if l8WorkerV2IsInterfaceType(selection.Recv()) {
 				return "interface"
 			}
-			if _, ok := selection.Obj().(*types.Func); ok {
+			if method, ok := selection.Obj().(*types.Func); ok {
+				signature, _ := method.Type().(*types.Signature)
+				if signature != nil && signature.Recv() != nil && l8WorkerV2IsInterfaceType(signature.Recv().Type()) {
+					return "interface"
+				}
 				return ""
 			}
 		} else if _, ok := info.Uses[typed.Sel].(*types.Func); ok {
@@ -444,6 +444,22 @@ unwrapped:
 		return "function-value"
 	}
 	return ""
+}
+
+func l8WorkerV2IsInterfaceType(typ types.Type) bool {
+	for typ != nil {
+		if pointer, ok := typ.(*types.Pointer); ok {
+			typ = pointer.Elem()
+			continue
+		}
+		if pointer, ok := typ.Underlying().(*types.Pointer); ok {
+			typ = pointer.Elem()
+			continue
+		}
+		_, ok := typ.Underlying().(*types.Interface)
+		return ok
+	}
+	return false
 }
 
 func l8RejectWorkerV2ForbiddenSurface(scope l8WorkerV2GuardScope) error {
@@ -674,10 +690,17 @@ func TestL8WorkerV2GuardRejectsInterfaceAndFunctionValueDispatch(t *testing.T) {
 	shared := `package sandboxworker
 type dispatcher interface { dispatch() }
 type concreteDispatcher struct{}
-func (concreteDispatcher) dispatch() {}`
+func (concreteDispatcher) dispatch() {}
+type embeddedInterfaceDispatcher struct { dispatcher }
+type embeddedConcreteDispatcher struct { concreteDispatcher }`
 	l8AssertWorkerV2GuardAllows(t, map[string]string{
 		"job_v2_fixture.go": `package sandboxworker
-func JobStartV2Fixture() { concreteDispatcher{}.dispatch() }`,
+func JobStartV2Fixture() { concreteDispatcher{}.dispatch() }
+func JobResolveV2Fixture(value embeddedConcreteDispatcher, pointer *embeddedConcreteDispatcher) {
+	value.dispatch()
+	pointer.dispatch()
+}
+func JobStatusV2Fixture(value concreteDispatcher) { concreteDispatcher.dispatch(value) }`,
 		"shared.go": shared,
 	}, policy)
 	l8AssertWorkerV2GuardRejects(t, map[string]string{
@@ -685,6 +708,26 @@ func JobStartV2Fixture() { concreteDispatcher{}.dispatch() }`,
 func JobStartV2Fixture(value dispatcher) { value.dispatch() }`,
 		"shared.go": shared,
 	}, policy, "interface dispatch")
+	for _, fixture := range []struct {
+		name   string
+		source string
+	}{
+		{name: "promoted interface method on value", source: `package sandboxworker
+func JobResolveV2Fixture(value embeddedInterfaceDispatcher) { value.dispatch() }`},
+		{name: "promoted interface method on pointer", source: `package sandboxworker
+func JobStatusV2Fixture(value *embeddedInterfaceDispatcher) { value.dispatch() }`},
+		{name: "promoted interface method expression", source: `package sandboxworker
+func JobLogsV2Fixture(value embeddedInterfaceDispatcher) { embeddedInterfaceDispatcher.dispatch(value) }`},
+		{name: "type parameter interface dispatch", source: `package sandboxworker
+func JobCancelV2Fixture[T dispatcher](value T) { value.dispatch() }`},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": fixture.source,
+				"shared.go":         shared,
+			}, policy, "interface dispatch")
+		})
+	}
 	l8AssertWorkerV2GuardRejects(t, map[string]string{
 		"job_v2_fixture.go": `package sandboxworker
 func JobLogsV2Fixture() { fn := crossFileHelper; fn() }`,
