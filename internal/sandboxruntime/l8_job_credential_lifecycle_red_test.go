@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -34,7 +35,7 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 					return l.Renew(l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute)))
 				},
 				func(l *JobCredentialLifecycle) error { return l.BeginRevoke() },
-				func(l *JobCredentialLifecycle) error { return l.Revoke(cleanup) },
+				func(l *JobCredentialLifecycle) error { return l8RevokeError(l, cleanup, now.Add(2*time.Second)) },
 			},
 			wantState: JobCredentialStateRevoked,
 		},
@@ -43,7 +44,7 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 			steps: []func(*JobCredentialLifecycle) error{
 				func(l *JobCredentialLifecycle) error { return l.BeginPrepare(identity) },
 				func(l *JobCredentialLifecycle) error { return l.Activate(active) },
-				func(l *JobCredentialLifecycle) error { return l.Revoke(cleanup) },
+				func(l *JobCredentialLifecycle) error { return l8RevokeError(l, cleanup, now.Add(2*time.Second)) },
 			},
 			wantState: JobCredentialStateActive,
 			wantErr:   ErrJobCredentialTransition,
@@ -190,7 +191,7 @@ func TestL8JobCredentialProofsAreDisjointCorrelatedAndCurrent(t *testing.T) {
 	if err := ValidateJobCredentialActiveProof(active, identity, 7, now.Add(30*time.Second)); err != nil {
 		t.Fatalf("valid active proof: %v", err)
 	}
-	if err := ValidateJobCredentialCleanupProof(cleanup, identity, 8); err != nil {
+	if err := ValidateJobCredentialCleanupProof(cleanup, identity, 8, now.Add(time.Second)); err != nil {
 		t.Fatalf("valid cleanup proof: %v", err)
 	}
 	if ActiveProofKind(active) == CleanupProofKind(cleanup) {
@@ -272,6 +273,44 @@ func TestL8JobCredentialActiveProofLifetimeBoundsAndTemporalValidation(t *testin
 	}
 }
 
+func TestL8JobCredentialCleanupProofRequiresExplicitCurrentObservation(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 2, 20, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	inspectedAt := now.Add(time.Second)
+	proof := l8CleanupProof(t, identity, 2, inspectedAt)
+	if MaxJobCredentialCleanupObservationAge <= 0 || MaxJobCredentialCleanupObservationAge > 5*time.Minute {
+		t.Fatalf("MaxJobCredentialCleanupObservationAge = %s, want finite positive bound no larger than five minutes", MaxJobCredentialCleanupObservationAge)
+	}
+	for _, tt := range []struct {
+		name       string
+		observedAt time.Time
+		want       error
+	}{
+		{name: "zero observation", want: ErrJobCredentialProofInvalid},
+		{name: "future inspection", observedAt: inspectedAt.Add(-time.Nanosecond), want: ErrJobCredentialProofInvalid},
+		{name: "exact inspection", observedAt: inspectedAt},
+		{name: "exact currentness boundary", observedAt: inspectedAt.Add(MaxJobCredentialCleanupObservationAge)},
+		{name: "stale after boundary", observedAt: inspectedAt.Add(MaxJobCredentialCleanupObservationAge + time.Nanosecond), want: ErrJobCredentialProofStale},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateJobCredentialCleanupProof(proof, identity, 2, tt.observedAt)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("cleanup observation error = %v, want %v", err, tt.want)
+			}
+			if err != nil {
+				if err.Error() != tt.want.Error() {
+					t.Fatalf("cleanup observation error = %q, want stable %q", err, tt.want)
+				}
+				for _, forbidden := range []string{"cleanup-proof-1", inspectedAt.Format(time.RFC3339Nano), tt.observedAt.Format(time.RFC3339Nano)} {
+					if forbidden != "" && strings.Contains(err.Error(), forbidden) {
+						t.Fatalf("cleanup observation error exposed proof/time detail %q", forbidden)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestL8JobCredentialCleanupProofConflictsAndRetryRequireReinspection(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 2, 25, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
@@ -306,14 +345,14 @@ func TestL8JobCredentialCleanupProofConflictsAndRetryRequireReinspection(t *test
 				if err := lifecycle.BeginRevoke(); err != nil {
 					t.Fatal(err)
 				}
-				if err := lifecycle.Revoke(tt.proof); !errors.Is(err, tt.want) {
+				if err := l8RevokeError(lifecycle, tt.proof, now.Add(time.Second)); !errors.Is(err, tt.want) {
 					t.Fatalf("cleanup error = %v, want %v", err, tt.want)
 				}
 				if got := lifecycle.State(); got != JobCredentialStateCleanupIncomplete {
 					t.Fatalf("state = %q, want cleanup_incomplete", got)
 				}
 				reinspected := l8CleanupProofWithID(t, identity, 2, now.Add(3*time.Second), "cleanup-proof-reinspected")
-				if err := lifecycle.Revoke(reinspected); err != nil {
+				if err := l8RevokeError(lifecycle, reinspected, now.Add(3*time.Second)); err != nil {
 					t.Fatalf("cleanup retry: %v", err)
 				}
 				if got := lifecycle.State(); got != JobCredentialStateRevoked {
@@ -323,24 +362,45 @@ func TestL8JobCredentialCleanupProofConflictsAndRetryRequireReinspection(t *test
 		}
 	})
 
-	t.Run("exact repeat is idempotent but conflicting repeat is replay", func(t *testing.T) {
+	t.Run("durable proof is stable but every repeated result requires current reinspection", func(t *testing.T) {
 		lifecycle := l8ActiveLifecycle(t, identity, 1, now)
 		if err := lifecycle.BeginRevoke(); err != nil {
 			t.Fatal(err)
 		}
-		cleanup := l8CleanupProofWithID(t, identity, 2, now.Add(time.Second), "cleanup-proof-final")
-		if err := lifecycle.Revoke(cleanup); err != nil {
+		revokedAt := now.Add(time.Second)
+		inspectedAt := now.Add(2 * time.Second)
+		cleanup := l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-proof-final")
+		durable, err := lifecycle.Revoke(cleanup, inspectedAt)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := lifecycle.Revoke(cleanup); err != nil {
-			t.Fatalf("exact repeated cleanup is not idempotent: %v", err)
+		if !reflect.DeepEqual(durable, cleanup) {
+			t.Fatal("initial revoke did not return its exact durable cleanup proof")
 		}
-		conflicting := l8CleanupProofWithID(t, identity, 2, now.Add(2*time.Second), "cleanup-proof-conflict")
-		if err := lifecycle.Revoke(conflicting); !errors.Is(err, ErrJobCredentialReplayRejected) {
+
+		conflicting := l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-proof-conflict")
+		if _, err := lifecycle.Revoke(conflicting, inspectedAt); !errors.Is(err, ErrJobCredentialReplayRejected) {
 			t.Fatalf("conflicting repeated cleanup = %v, want replay rejected", err)
+		} else if err.Error() != ErrJobCredentialReplayRejected.Error() {
+			t.Fatalf("conflicting repeated cleanup error = %q, want stable replay denial", err)
+		}
+		staleObservation := inspectedAt.Add(MaxJobCredentialCleanupObservationAge + time.Nanosecond)
+		if staleResult, err := lifecycle.Revoke(cleanup, staleObservation); !errors.Is(err, ErrJobCredentialProofStale) || !reflect.DeepEqual(staleResult, JobCredentialCleanupProof{}) {
+			t.Fatalf("stale identical proof result/error = %#v/%v, want no result and stale", staleResult, err)
+		} else if err.Error() != ErrJobCredentialProofStale.Error() {
+			t.Fatalf("stale identical proof error = %q, want stable stale denial", err)
+		}
+		freshInspection := staleObservation
+		fresh := l8CleanupProofWithTimes(t, identity, 2, revokedAt, freshInspection, "cleanup-proof-fresh-inspection")
+		idempotent, err := lifecycle.Revoke(fresh, freshInspection)
+		if err != nil {
+			t.Fatalf("fresh cleanup reinspection: %v", err)
+		}
+		if !reflect.DeepEqual(idempotent, durable) {
+			t.Fatal("fresh reinspection rewrote the exact durable cleanup proof")
 		}
 		if got := lifecycle.State(); got != JobCredentialStateRevoked {
-			t.Fatalf("conflicting repeat changed terminal state to %q", got)
+			t.Fatalf("repeated cleanup changed terminal state to %q", got)
 		}
 	})
 }
@@ -383,11 +443,17 @@ func TestL8JobCredentialLifecycleIdempotenceAndConflicts(t *testing.T) {
 	if lifecycle.HasActiveProof() {
 		t.Fatal("begin revoke retained active authority")
 	}
-	if err := lifecycle.Revoke(cleanup); err != nil {
+	durable, err := lifecycle.Revoke(cleanup, now.Add(time.Second))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.Revoke(cleanup); err != nil {
-		t.Fatalf("same revoke is not idempotent: %v", err)
+	fresh := l8CleanupProofWithTimes(t, identity, 2, now.Add(time.Second-time.Nanosecond), now.Add(2*time.Second), "cleanup-proof-idempotent-reinspection")
+	idempotent, err := lifecycle.Revoke(fresh, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("reinspected revoke is not idempotent: %v", err)
+	}
+	if !reflect.DeepEqual(idempotent, durable) {
+		t.Fatal("reinspected revoke changed the exact durable cleanup proof")
 	}
 	if lifecycle.HasActiveProof() {
 		t.Fatal("revoked lifecycle retained active proof")
@@ -435,7 +501,7 @@ func TestL8JobCredentialLifecycleFailureCancelLossAndReplayTransitions(t *testin
 		if err := lifecycle.BeginRevoke(); err != nil {
 			t.Fatal(err)
 		}
-		if err := lifecycle.Revoke(JobCredentialCleanupProof{}); err == nil {
+		if err := l8RevokeError(lifecycle, JobCredentialCleanupProof{}, now); err == nil {
 			t.Fatal("zero cleanup proof was accepted")
 		}
 		if got := lifecycle.State(); got != JobCredentialStateCleanupIncomplete {
@@ -512,6 +578,134 @@ func TestL8JobCredentialLifecycleFailureCancelLossAndReplayTransitions(t *testin
 	})
 }
 
+func TestL8JobCredentialLifecycleConcurrentTransitionsConvergeSafely(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 20, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	renewal := l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute))
+
+	for _, tt := range []struct {
+		name        string
+		setup       func(*JobCredentialLifecycle) error
+		left        func(*JobCredentialLifecycle) l8LifecycleTransitionResult
+		right       func(*JobCredentialLifecycle) l8LifecycleTransitionResult
+		minRevision uint64
+		maxRevision uint64
+	}{
+		{
+			name:  "renew versus loss",
+			setup: func(lifecycle *JobCredentialLifecycle) error { return lifecycle.BeginRenew() },
+			left: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.Renew(renewal)}
+			},
+			right: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{Identity: identity, Revision: 1, Code: JobCredentialFailureGuestHelperUnavailable})}
+			},
+			minRevision: 1,
+			maxRevision: 2,
+		},
+		{
+			name:  "renew versus begin revoke",
+			setup: func(lifecycle *JobCredentialLifecycle) error { return lifecycle.BeginRenew() },
+			left: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.Renew(renewal)}
+			},
+			right: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.BeginRevoke()}
+			},
+			minRevision: 1,
+			maxRevision: 2,
+		},
+		{
+			name:  "loss versus cancellation revoke",
+			setup: func(*JobCredentialLifecycle) error { return nil },
+			left: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{Identity: identity, Revision: 1, Code: JobCredentialFailureGuestHelperUnavailable})}
+			},
+			right: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.BeginRevoke()}
+			},
+			minRevision: 1,
+			maxRevision: 1,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+			if err := tt.setup(lifecycle); err != nil {
+				t.Fatal(err)
+			}
+			results := l8RunConcurrentLifecycleTransitions(t,
+				func() l8LifecycleTransitionResult { return tt.left(lifecycle) },
+				func() l8LifecycleTransitionResult { return tt.right(lifecycle) },
+			)
+			for _, result := range results {
+				l8AssertSafeLifecycleTransitionError(t, result.err, identity)
+			}
+			if got := lifecycle.State(); got != JobCredentialStateRevoking {
+				t.Fatalf("concurrent state = %q, want revoking", got)
+			}
+			if lifecycle.HasActiveProof() {
+				t.Fatal("concurrent transition resurrected or retained active proof")
+			}
+			if revision := lifecycle.Revision(); revision < tt.minRevision || revision > tt.maxRevision {
+				t.Fatalf("concurrent revision = %d, want monotonic range [%d,%d]", revision, tt.minRevision, tt.maxRevision)
+			}
+		})
+	}
+
+	t.Run("cleanup versus conflicting retry", func(t *testing.T) {
+		lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+		if err := lifecycle.BeginRevoke(); err != nil {
+			t.Fatal(err)
+		}
+		if err := l8RevokeError(lifecycle, l8CleanupProof(t, identity, 1, now.Add(time.Second)), now.Add(time.Second)); !errors.Is(err, ErrJobCredentialRevisionStale) {
+			t.Fatalf("seed cleanup incomplete: %v", err)
+		}
+		revokedAt := now.Add(2 * time.Second)
+		inspectedAt := now.Add(3 * time.Second)
+		leftProof := l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-concurrent-left")
+		rightProof := l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-concurrent-right")
+		results := l8RunConcurrentLifecycleTransitions(t,
+			func() l8LifecycleTransitionResult {
+				proof, err := lifecycle.Revoke(leftProof, inspectedAt)
+				return l8LifecycleTransitionResult{proof: proof, err: err}
+			},
+			func() l8LifecycleTransitionResult {
+				proof, err := lifecycle.Revoke(rightProof, inspectedAt)
+				return l8LifecycleTransitionResult{proof: proof, err: err}
+			},
+		)
+		var durable JobCredentialCleanupProof
+		successes := 0
+		for _, result := range results {
+			l8AssertSafeLifecycleTransitionError(t, result.err, identity)
+			if result.err == nil {
+				successes++
+				durable = result.proof
+			} else if !errors.Is(result.err, ErrJobCredentialReplayRejected) {
+				t.Fatalf("conflicting cleanup error = %v, want replay rejection", result.err)
+			}
+		}
+		if successes != 1 {
+			t.Fatalf("successful conflicting cleanup retries = %d, want exactly one", successes)
+		}
+		if !reflect.DeepEqual(durable, leftProof) && !reflect.DeepEqual(durable, rightProof) {
+			t.Fatal("successful cleanup retry did not return either exact admitted proof")
+		}
+		if lifecycle.State() != JobCredentialStateRevoked || lifecycle.HasActiveProof() || lifecycle.Revision() != 2 {
+			t.Fatalf("cleanup convergence state=%q active=%t revision=%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision())
+		}
+		freshInspectedAt := inspectedAt.Add(time.Second)
+		fresh := l8CleanupProofWithTimes(t, identity, 2, revokedAt, freshInspectedAt, "cleanup-concurrent-reinspection")
+		stable, err := lifecycle.Revoke(fresh, freshInspectedAt)
+		if err != nil {
+			t.Fatalf("post-concurrency reinspection: %v", err)
+		}
+		if !reflect.DeepEqual(stable, durable) {
+			t.Fatal("cleanup concurrency changed the exact durable proof")
+		}
+	})
+}
+
 func TestL8JobCredentialFullIdentityRequiresEveryFieldAndExactCorrelation(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 3, 25, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
@@ -530,7 +724,7 @@ func TestL8JobCredentialFullIdentityRequiresEveryFieldAndExactCorrelation(t *tes
 			if err := ValidateJobCredentialActiveProof(active, mismatched, 1, now); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
 				t.Fatalf("active proof accepted mismatched %s: %v", tt.name, err)
 			}
-			if err := ValidateJobCredentialCleanupProof(cleanup, mismatched, 2); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+			if err := ValidateJobCredentialCleanupProof(cleanup, mismatched, 2, now.Add(time.Second)); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
 				t.Fatalf("cleanup proof accepted mismatched %s: %v", tt.name, err)
 			}
 			lifecycle, err := NewJobCredentialLifecycle(identity)
@@ -909,12 +1103,16 @@ func l8CleanupProof(t *testing.T, identity JobCredentialIdentity, revision uint6
 }
 
 func l8CleanupProofWithID(t *testing.T, identity JobCredentialIdentity, revision uint64, inspectedAt time.Time, proofID string) JobCredentialCleanupProof {
+	return l8CleanupProofWithTimes(t, identity, revision, inspectedAt.Add(-time.Nanosecond), inspectedAt, proofID)
+}
+
+func l8CleanupProofWithTimes(t *testing.T, identity JobCredentialIdentity, revision uint64, revokedAt, inspectedAt time.Time, proofID string) JobCredentialCleanupProof {
 	t.Helper()
 	proof, err := NewJobCredentialCleanupProof(JobCredentialCleanupProofInput{
 		ProofID:            proofID,
 		Identity:           identity,
 		Revision:           revision,
-		RevokedAt:          inspectedAt.Add(-time.Nanosecond),
+		RevokedAt:          revokedAt,
 		AbsenceInspectedAt: inspectedAt,
 		AuthorityAbsent:    true,
 		ResourcesAbsent:    true,
@@ -923,6 +1121,103 @@ func l8CleanupProofWithID(t *testing.T, identity JobCredentialIdentity, revision
 		t.Fatalf("new cleanup proof: %v", err)
 	}
 	return proof
+}
+
+func l8RevokeError(lifecycle *JobCredentialLifecycle, proof JobCredentialCleanupProof, observedAt time.Time) error {
+	_, err := lifecycle.Revoke(proof, observedAt)
+	return err
+}
+
+type l8LifecycleTransitionResult struct {
+	proof JobCredentialCleanupProof
+	err   error
+}
+
+func l8RunConcurrentLifecycleTransitions(t *testing.T, left, right func() l8LifecycleTransitionResult) [2]l8LifecycleTransitionResult {
+	t.Helper()
+	start := make(chan struct{})
+	startClosed := false
+	defer func() {
+		if !startClosed {
+			close(start)
+		}
+	}()
+	ready := make(chan struct{}, 2)
+	results := make(chan struct {
+		index  int
+		result l8LifecycleTransitionResult
+	}, 2)
+	var completed sync.WaitGroup
+	completed.Add(2)
+	launch := func(index int, transition func() l8LifecycleTransitionResult) {
+		go func() {
+			defer completed.Done()
+			ready <- struct{}{}
+			<-start
+			results <- struct {
+				index  int
+				result l8LifecycleTransitionResult
+			}{index: index, result: transition()}
+		}()
+	}
+	launch(0, left)
+	launch(1, right)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for count := 0; count < 2; count++ {
+		select {
+		case <-ready:
+		case <-timer.C:
+			t.Fatal("timed out waiting for lifecycle transition start barrier")
+		}
+	}
+	close(start)
+	startClosed = true
+	done := make(chan struct{})
+	go func() {
+		completed.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-timer.C:
+		t.Fatal("timed out waiting for concurrent lifecycle transitions")
+	}
+	var ordered [2]l8LifecycleTransitionResult
+	for count := 0; count < 2; count++ {
+		value := <-results
+		ordered[value.index] = value.result
+	}
+	return ordered
+}
+
+func l8AssertSafeLifecycleTransitionError(t *testing.T, err error, identity JobCredentialIdentity) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	stable := false
+	for _, allowed := range []error{
+		ErrJobCredentialTransition, ErrJobCredentialExpired, ErrJobCredentialIdentityMismatch,
+		ErrJobCredentialRevisionStale, ErrJobCredentialReplayRejected, ErrJobCredentialProofInvalid,
+		ErrJobCredentialProofStale,
+	} {
+		if errors.Is(err, allowed) && err.Error() == allowed.Error() {
+			stable = true
+			break
+		}
+	}
+	if !stable {
+		t.Fatalf("concurrent lifecycle returned non-stable error %q", err)
+	}
+	for _, forbidden := range []string{
+		identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.HostID,
+		identity.RuntimeID, identity.WorkerJobID, identity.SubmissionID, identity.PrincipalID,
+	} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("concurrent lifecycle error exposed identity %q", forbidden)
+		}
+	}
 }
 
 type l8FakeCredentialAuthorizer struct{}

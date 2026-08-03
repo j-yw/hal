@@ -4,39 +4,39 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
+	"path"
+	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 )
 
 func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
-	entries, err := os.ReadDir(".")
+	productionFiles, err := l8CredentialMemoryProductionFiles(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	production := 0
 	productionSource := strings.Builder{}
 	denialMethods := map[string]map[string]bool{
 		"LockedMapping": {},
 		"borrowedView":  {},
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
-		}
-		production++
-		source, err := os.ReadFile(entry.Name())
+	for _, productionPath := range productionFiles {
+		source, err := os.ReadFile(productionPath)
 		if err != nil {
 			t.Fatal(err)
 		}
 		productionSource.Write(source)
 		productionSource.WriteByte('\n')
 		set := token.NewFileSet()
-		file, err := parser.ParseFile(set, entry.Name(), nil, 0)
+		file, err := parser.ParseFile(set, productionPath, nil, 0)
 		if err != nil {
-			t.Fatalf("parse %s: %v", entry.Name(), err)
+			t.Fatalf("parse %s: %v", productionPath, err)
 		}
+		rootPackage := filepath.Clean(filepath.Dir(productionPath)) == "." && file.Name.Name == "credentialmemory"
 		for _, spec := range file.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
@@ -55,22 +55,20 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 				strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/sandboxworker") ||
 				strings.Contains(importPath, "/internal/provider") || strings.Contains(importPath, "/internal/process") ||
 				strings.Contains(importPath, "/internal/workspace") || strings.Contains(importPath, "/internal/sandboxexecution") {
-				t.Errorf("production credential memory %s imports forbidden package %q", entry.Name(), importPath)
+				t.Errorf("production credential memory %s imports forbidden package %q", productionPath, importPath)
 			}
+		}
+		for _, issue := range l8CredentialMemoryForbiddenSelectorIssues(file) {
+			t.Errorf("production credential memory %s %s", productionPath, issue)
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch typed := node.(type) {
-			case *ast.SelectorExpr:
-				identifier, ok := typed.X.(*ast.Ident)
-				if ok && identifier.Name == "errors" && typed.Sel.Name == "Join" {
-					t.Errorf("production credential memory %s uses forbidden raw-error composition errors.Join", entry.Name())
-				}
 			case *ast.StructType:
 				for _, field := range typed.Fields.List {
 					if len(field.Names) == 0 || !field.Names[0].IsExported() || !l8CredentialMemoryRawType(field.Type) {
 						continue
 					}
-					t.Errorf("production credential memory %s exposes raw live field %s", entry.Name(), field.Names[0].Name)
+					t.Errorf("production credential memory %s exposes raw live field %s", productionPath, field.Names[0].Name)
 				}
 			case *ast.FuncDecl:
 				if typed.Recv == nil {
@@ -79,11 +77,11 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 				receiver := l8CredentialMemoryReceiverName(typed.Recv.List[0].Type)
 				switch typed.Name.Name {
 				case "Unwrap", "MarshalBinary", "GobEncode", "Bytes", "Value":
-					t.Errorf("production credential memory %s defines forbidden live-state method %s", entry.Name(), typed.Name.Name)
+					t.Errorf("production credential memory %s defines forbidden live-state method %s", productionPath, typed.Name.Name)
 				case "String", "GoString", "MarshalJSON", "MarshalText":
 					allowed, ok := denialMethods[receiver]
-					if !ok {
-						t.Errorf("production credential memory %s defines formatting/codec method %s on unexpected receiver %s", entry.Name(), typed.Name.Name, receiver)
+					if !ok || !rootPackage {
+						t.Errorf("production credential memory %s defines formatting/codec method %s on unexpected receiver %s", productionPath, typed.Name.Name, receiver)
 						return true
 					}
 					allowed[typed.Name.Name] = true
@@ -92,7 +90,7 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 			return true
 		})
 	}
-	if production == 0 {
+	if len(productionFiles) == 0 {
 		t.Fatal("L8 credential memory production package does not exist")
 	}
 	for receiver, found := range denialMethods {
@@ -117,6 +115,120 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 			t.Errorf("production credential memory contains forbidden raw write/composition marker %q", forbidden)
 		}
 	}
+}
+
+func TestL8CredentialMemoryRecursiveProductionDiscoveryAndAliasGuards(t *testing.T) {
+	root := t.TempDir()
+	fixtures := map[string]string{
+		"root.go":                    "package credentialmemory\ntype rootMarker struct{}\n",
+		"nested/live.go":             "package nested\nimport e \"errors\"\nvar _ = e.Join\n",
+		"nested/deeper/live.go":      "package deeper\ntype marker struct{}\n",
+		"nested/deeper/live_test.go": "package deeper\nimport e \"errors\"\nvar _ = e.Join\n",
+	}
+	for relativePath, source := range fixtures {
+		fullPath := filepath.Join(root, filepath.FromSlash(relativePath))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	productionFiles, err := l8CredentialMemoryProductionFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var relative []string
+	for _, productionPath := range productionFiles {
+		value, err := filepath.Rel(root, productionPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		relative = append(relative, filepath.ToSlash(value))
+	}
+	want := []string{"nested/deeper/live.go", "nested/live.go", "root.go"}
+	if !reflect.DeepEqual(relative, want) {
+		t.Fatalf("recursive production files = %v, want %v", relative, want)
+	}
+	nested, err := parser.ParseFile(token.NewFileSet(), productionFiles[1], nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := l8CredentialMemoryForbiddenSelectorIssues(nested); len(issues) != 1 {
+		t.Fatalf("nested production alias issues = %v, want one errors.Join denial", issues)
+	}
+
+	for _, tt := range []struct {
+		name       string
+		source     string
+		wantIssues int
+	}{
+		{name: "errors alias", source: "package fixture\nimport privateerrors \"errors\"\nvar _ = privateerrors.Join\n", wantIssues: 1},
+		{name: "errors dot import", source: "package fixture\nimport . \"errors\"\nvar _ = Join\n", wantIssues: 1},
+		{name: "allowed errors selector", source: "package fixture\nimport e \"errors\"\nvar _ = e.Is\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), tt.name+".go", tt.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if issues := l8CredentialMemoryForbiddenSelectorIssues(file); len(issues) != tt.wantIssues {
+				t.Fatalf("issues = %v, want %d", issues, tt.wantIssues)
+			}
+		})
+	}
+}
+
+func l8CredentialMemoryProductionFiles(root string) ([]string, error) {
+	var productionFiles []string
+	err := filepath.WalkDir(root, func(productionPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if productionPath != root && (entry.Name() == "testdata" || strings.HasPrefix(entry.Name(), ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go") {
+			productionFiles = append(productionFiles, productionPath)
+		}
+		return nil
+	})
+	return productionFiles, err
+}
+
+func l8CredentialMemoryForbiddenSelectorIssues(file *ast.File) []string {
+	aliases := map[string]string{}
+	var issues []string
+	for _, spec := range file.Imports {
+		importPath, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		localName := path.Base(importPath)
+		if spec.Name != nil {
+			localName = spec.Name.Name
+		}
+		if localName == "." && importPath == "errors" {
+			issues = append(issues, "uses forbidden dot import of errors")
+			continue
+		}
+		aliases[localName] = importPath
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		identifier, ok := selector.X.(*ast.Ident)
+		if ok && aliases[identifier.Name] == "errors" && selector.Sel.Name == "Join" {
+			issues = append(issues, "uses forbidden raw-error composition errors.Join")
+		}
+		return true
+	})
+	return issues
 }
 
 func l8CredentialMemoryReceiverName(expression ast.Expr) string {

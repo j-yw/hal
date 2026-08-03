@@ -144,6 +144,11 @@ func TestL8CredentialSourceDirectKeyctlSizeReadAndLockedBorrow(t *testing.T) {
 	if !l8AllZero(memoryOps.unlockSnapshot) || len(memoryOps.unlockSnapshot) != 64 {
 		t.Fatal("keyring mapping was not overwritten across full capacity before unlock")
 	}
+	for _, descriptorBuffer := range keyctl.describeBuffers {
+		if !l8AllZero(descriptorBuffer) {
+			t.Fatal("keyctl descriptor buffer was not zeroized after identity inspection")
+		}
+	}
 }
 
 func TestL8CredentialSourceKeyIdentityUsesExactRealDescriptorAndImmutablePermissions(t *testing.T) {
@@ -306,6 +311,11 @@ func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClo
 			k.readErr = errors.New("backend-private permission for source-primary grant-primary serial 41 l8-race-canary")
 		}},
 		{name: "oversized size", mutate: func(k *l8Keyctl) { k.reportedSize = MaxProductionSecretBytes + 1 }},
+		{name: "zero read size", mutate: func(k *l8Keyctl) { k.forceReportedSize = true }},
+		{name: "negative read size", mutate: func(k *l8Keyctl) {
+			k.forceReportedSize = true
+			k.reportedSize = -1
+		}},
 		{name: "short read", mutate: func(k *l8Keyctl) { k.shortRead = true }},
 		{name: "canceled", ctx: func() context.Context { ctx, cancel := context.WithCancel(context.Background()); cancel(); return ctx }},
 	}
@@ -340,6 +350,11 @@ func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClo
 			if memoryOps.unmapped && !l8AllZero(memoryOps.unmapSnapshot) {
 				t.Fatal("failed source unmapped nonzero credential memory")
 			}
+			for _, descriptorBuffer := range keyctl.describeBuffers {
+				if !l8AllZero(descriptorBuffer) {
+					t.Fatal("failed source retained a raw keyctl descriptor buffer")
+				}
+			}
 			for _, forbidden := range []string{"l8-race-canary", "backend-private", "/raw/keyring", "serial 41", "source-primary", "grant-primary"} {
 				if strings.Contains(err.Error(), forbidden) {
 					t.Fatal("source error exposed sensitive backend detail")
@@ -363,17 +378,119 @@ func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClo
 	}
 }
 
+func TestL8CredentialSourceVariableLengthSyscallCountsFailClosedAndWipe(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		mutate      func(*l8Keyctl)
+		wantMapping bool
+	}{
+		{
+			name: "positive describe size followed by larger count",
+			mutate: func(keyctl *l8Keyctl) {
+				keyctl.forceDescribeReportedSize = true
+				keyctl.describeReportedSize = 8
+			},
+		},
+		{
+			name: "describe count zero",
+			mutate: func(keyctl *l8Keyctl) {
+				keyctl.forceDescribeIntoN = true
+			},
+		},
+		{
+			name: "describe count negative",
+			mutate: func(keyctl *l8Keyctl) {
+				keyctl.forceDescribeIntoN = true
+				keyctl.describeIntoN = -1
+			},
+		},
+		{
+			name: "describe count over destination",
+			mutate: func(keyctl *l8Keyctl) {
+				keyctl.forceDescribeIntoN = true
+				keyctl.describeIntoN = MaxKeyctlDescribeBytes + 1
+			},
+		},
+		{
+			name: "positive read size followed by larger count",
+			mutate: func(keyctl *l8Keyctl) {
+				keyctl.forceReportedSize = true
+				keyctl.reportedSize = 4
+			},
+			wantMapping: true,
+		},
+		{
+			name: "read count zero",
+			mutate: func(keyctl *l8Keyctl) {
+				keyctl.forceReadIntoN = true
+			},
+			wantMapping: true,
+		},
+		{
+			name: "read count negative",
+			mutate: func(keyctl *l8Keyctl) {
+				keyctl.forceReadIntoN = true
+				keyctl.readIntoN = -1
+			},
+			wantMapping: true,
+		},
+		{
+			name: "read count over destination",
+			mutate: func(keyctl *l8Keyctl) {
+				keyctl.forceReadIntoN = true
+				keyctl.readIntoN = MaxProductionSecretBytes + 1
+			},
+			wantMapping: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, keyctl, memoryOps, _, principal := l8Registry(t)
+			keyctl.value = []byte("variable-length-canary")
+			tt.mutate(keyctl)
+			authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, l8AdmissionRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := registry.ResolveAuthorizedSource(context.Background(), authorization, "source-primary")
+			if err != nil {
+				t.Fatal(err)
+			}
+			sink := &l8SecretSink{limit: MaxProductionSecretBytes}
+			err = source.FillSecret(context.Background(), sink)
+			if !errors.Is(err, ErrCredentialSourceUnavailable) || err.Error() != ErrCredentialSourceUnavailable.Error() {
+				t.Fatalf("variable-length syscall error = %v, want stable unavailable", err)
+			}
+			if sink.count != 0 {
+				t.Fatal("variable-length syscall race delivered bytes to sink")
+			}
+			if memoryOps.unmapped != tt.wantMapping {
+				t.Fatalf("mapping cleanup = %t, want %t", memoryOps.unmapped, tt.wantMapping)
+			}
+			if memoryOps.unmapped && (!l8AllZero(memoryOps.unlockSnapshot) || !l8AllZero(memoryOps.unmapSnapshot)) {
+				t.Fatal("variable-length syscall race did not wipe mapping before cleanup")
+			}
+			for _, descriptorBuffer := range keyctl.describeBuffers {
+				if !l8AllZero(descriptorBuffer) {
+					t.Fatal("variable-length syscall race retained descriptor bytes")
+				}
+			}
+		})
+	}
+}
+
 func TestL8CredentialSourceCancellationCheckpointsStopBeforeNextKeyctlBoundary(t *testing.T) {
 	for _, tt := range []struct {
-		name       string
-		cancelCall string
-		occurrence int
-		wantCalls  []string
+		name        string
+		cancelCall  string
+		occurrence  int
+		wantCalls   []string
+		wantMapping bool
 	}{
 		{name: "after initial describe", cancelCall: "describe", occurrence: 1, wantCalls: []string{"describe_size", "describe"}},
 		{name: "after secret size", cancelCall: "read_size", occurrence: 1, wantCalls: []string{"describe_size", "describe", "read_size"}},
-		{name: "after pre-read reinspection", cancelCall: "describe", occurrence: 2, wantCalls: []string{"describe_size", "describe", "read_size", "describe_size", "describe"}},
-		{name: "after secret read before final reinspection", cancelCall: "read", occurrence: 1, wantCalls: []string{"describe_size", "describe", "read_size", "describe_size", "describe", "read"}},
+		{name: "after pre-read reinspection", cancelCall: "describe", occurrence: 2, wantCalls: []string{"describe_size", "describe", "read_size", "describe_size", "describe"}, wantMapping: true},
+		{name: "after secret read before final reinspection", cancelCall: "read", occurrence: 1, wantCalls: []string{"describe_size", "describe", "read_size", "describe_size", "describe", "read"}, wantMapping: true},
+		{name: "after final reinspection before sink", cancelCall: "describe", occurrence: 3, wantCalls: []string{"describe_size", "describe", "read_size", "describe_size", "describe", "read", "describe_size", "describe"}, wantMapping: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			registry, keyctl, memoryOps, _, principal := l8Registry(t)
@@ -410,8 +527,16 @@ func TestL8CredentialSourceCancellationCheckpointsStopBeforeNextKeyctlBoundary(t
 			if sink.count != 0 {
 				t.Fatal("canceled checkpoint exposed credential bytes to sink")
 			}
-			if memoryOps.unmapped && !l8AllZero(memoryOps.unmapSnapshot) {
-				t.Fatal("canceled checkpoint retained credential bytes in mapping")
+			if memoryOps.unmapped != tt.wantMapping {
+				t.Fatalf("canceled checkpoint mapping cleanup = %t, want %t", memoryOps.unmapped, tt.wantMapping)
+			}
+			if memoryOps.unmapped && (!l8AllZero(memoryOps.unlockSnapshot) || !l8AllZero(memoryOps.unmapSnapshot)) {
+				t.Fatal("canceled checkpoint retained credential bytes in mapping cleanup")
+			}
+			for _, descriptorBuffer := range keyctl.describeBuffers {
+				if !l8AllZero(descriptorBuffer) {
+					t.Fatal("canceled checkpoint retained descriptor bytes")
+				}
 			}
 		})
 	}
@@ -989,11 +1114,17 @@ type l8Keyctl struct {
 	serials                   []int32
 	descriptor                l8KeyDescriptorFixture
 	pendingDescriptor         []byte
+	describeBuffers           [][]byte
 	rawDescriptorOverride     []byte
 	value                     []byte
 	reportedSize              int
+	forceReportedSize         bool
 	describeReportedSize      int
 	forceDescribeReportedSize bool
+	describeIntoN             int
+	forceDescribeIntoN        bool
+	readIntoN                 int
+	forceReadIntoN            bool
 	describeSizeErr           error
 	describeErr               error
 	shortDescribe             bool
@@ -1051,10 +1182,14 @@ func (keyctl *l8Keyctl) DescribeInto(_ context.Context, serial int32, dst []byte
 	keyctl.calls = append(keyctl.calls, "describe")
 	keyctl.serials = append(keyctl.serials, serial)
 	defer keyctl.finishCall("describe")
+	keyctl.describeBuffers = append(keyctl.describeBuffers, dst)
+	copy(dst, keyctl.pendingDescriptor)
 	if keyctl.describeErr != nil {
 		return 0, keyctl.describeErr
 	}
-	copy(dst, keyctl.pendingDescriptor)
+	if keyctl.forceDescribeIntoN {
+		return keyctl.describeIntoN, nil
+	}
 	if keyctl.shortDescribe && len(keyctl.pendingDescriptor) > 0 {
 		return len(keyctl.pendingDescriptor) - 1, nil
 	}
@@ -1068,7 +1203,7 @@ func (keyctl *l8Keyctl) ReadSize(_ context.Context, serial int32) (int, error) {
 	if keyctl.sizeErr != nil {
 		return 0, keyctl.sizeErr
 	}
-	if keyctl.reportedSize != 0 {
+	if keyctl.forceReportedSize || keyctl.reportedSize != 0 {
 		return keyctl.reportedSize, nil
 	}
 	return len(keyctl.value), nil
@@ -1078,10 +1213,13 @@ func (keyctl *l8Keyctl) ReadInto(_ context.Context, serial int32, dst []byte) (i
 	keyctl.calls = append(keyctl.calls, "read")
 	keyctl.serials = append(keyctl.serials, serial)
 	defer keyctl.finishCall("read")
+	copy(dst, keyctl.value)
 	if keyctl.readErr != nil {
 		return 0, keyctl.readErr
 	}
-	copy(dst, keyctl.value)
+	if keyctl.forceReadIntoN {
+		return keyctl.readIntoN, nil
+	}
 	if keyctl.shortRead && len(keyctl.value) > 0 {
 		return len(keyctl.value) - 1, nil
 	}
