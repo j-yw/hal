@@ -37,16 +37,110 @@ func TestL8WorkerV2RequestValidationDispatchesOnlyTheMatchingPayload(t *testing.
 	}
 
 	invalid := []Request{
-		{ProtocolVersion: ProtocolVersion, Operation: OperationJobStartV2, DriverID: RuntimeDriverMicroVM, JobStart: &JobStartRequest{}},
-		{ProtocolVersion: ProtocolVersion, Operation: OperationJobStart, DriverID: RuntimeDriverMicroVM, JobStartV2: &start},
-		{ProtocolVersion: ProtocolVersion, Operation: OperationJobStartV2, DriverID: RuntimeDriverMicroVM, JobStartV2: &start, JobStatusV2: &status},
-		{ProtocolVersion: ProtocolVersion, Operation: OperationJobStatusV2, JobStartV2: &start, JobStatusV2: &status},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request-invalid-v2-payload", Operation: OperationJobStartV2, DriverID: RuntimeDriverMicroVM, JobStart: &JobStartRequest{}},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request-invalid-v1-operation", Operation: OperationJobStart, DriverID: RuntimeDriverMicroVM, JobStartV2: &start},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request-invalid-ambiguous-start", Operation: OperationJobStartV2, DriverID: RuntimeDriverMicroVM, JobStartV2: &start, JobStatusV2: &status},
+		{ProtocolVersion: ProtocolVersion, RequestID: "request-invalid-ambiguous-status", Operation: OperationJobStatusV2, JobStartV2: &start, JobStatusV2: &status},
 	}
 	for index, req := range invalid {
 		if err := req.Validate(); err == nil {
 			t.Fatalf("mismatched or ambiguous payload %d was accepted", index)
 		}
 	}
+}
+
+func TestL8WorkerV2ClientTreatsUnsupportedAsTerminalForAllFiveOperationsWithoutFallback(t *testing.T) {
+	start := l8WorkerV2StartRequest()
+	job := l8WorkerV2QueuedJob()
+	tests := []struct {
+		operation string
+		invoke    func(*Client) error
+	}{
+		{operation: OperationJobStartV2, invoke: func(client *Client) error {
+			_, err := client.JobStartV2(context.Background(), RuntimeDriverMicroVM, start)
+			return err
+		}},
+		{operation: OperationJobResolveV2, invoke: func(client *Client) error {
+			_, err := client.JobResolveV2(context.Background(), JobResolveRequestV2{ContractVersion: JobContractVersionV2, SubmissionID: start.SubmissionID})
+			return err
+		}},
+		{operation: OperationJobStatusV2, invoke: func(client *Client) error {
+			_, err := client.JobStatusV2(context.Background(), JobStatusRequestV2{ContractVersion: JobContractVersionV2, JobID: job.ID})
+			return err
+		}},
+		{operation: OperationJobLogsV2, invoke: func(client *Client) error {
+			_, err := client.JobLogsV2(context.Background(), JobLogsRequestV2{ContractVersion: JobContractVersionV2, JobID: job.ID, LimitBytes: DefaultJobLogRecordBytes})
+			return err
+		}},
+		{operation: OperationJobCancelV2, invoke: func(client *Client) error {
+			_, err := client.JobCancelV2(context.Background(), JobCancelRequestV2{ContractVersion: JobContractVersionV2, JobID: job.ID})
+			return err
+		}},
+	}
+	responders := []struct {
+		name string
+		make func(Request) Response
+	}{
+		{name: "legacy daemon", make: l8LegacyUnsupportedV2Response},
+		{name: "new daemon", make: l8NewUnsupportedV2Response},
+	}
+	for _, tt := range tests {
+		for _, responder := range responders {
+			t.Run(tt.operation+"/"+responder.name, func(t *testing.T) {
+				calls := 0
+				var captured Request
+				client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, req Request) (Response, error) {
+					calls++
+					captured = req
+					return responder.make(req), nil
+				})})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := tt.invoke(client); !errors.Is(err, ErrCredentialWorkerProtocolUnsupported) {
+					t.Fatalf("%s error = %v, want terminal credential worker protocol unsupported", tt.operation, err)
+				}
+				if calls != 1 {
+					t.Fatalf("%s calls = %d, want one v2 attempt and no fallback", tt.operation, calls)
+				}
+				if captured.Operation != tt.operation {
+					t.Fatalf("captured operation = %q, want %q", captured.Operation, tt.operation)
+				}
+				if !l8WorkerV2RequestHasOnlyMatchingPayload(captured) {
+					t.Fatalf("%s request did not contain exactly its matching v2 payload: %#v", tt.operation, captured)
+				}
+				if captured.JobStart != nil || captured.JobResolve != nil || captured.JobStatus != nil || captured.JobLogs != nil || captured.JobCancel != nil {
+					t.Fatalf("%s request populated a v1 fallback payload: %#v", tt.operation, captured)
+				}
+			})
+		}
+	}
+}
+
+func l8WorkerV2RequestHasOnlyMatchingPayload(req Request) bool {
+	v2Payloads := []bool{
+		req.JobStartV2 != nil,
+		req.JobResolveV2 != nil,
+		req.JobStatusV2 != nil,
+		req.JobLogsV2 != nil,
+		req.JobCancelV2 != nil,
+	}
+	wantIndex, knownOperation := map[string]int{
+		OperationJobStartV2:   0,
+		OperationJobResolveV2: 1,
+		OperationJobStatusV2:  2,
+		OperationJobLogsV2:    3,
+		OperationJobCancelV2:  4,
+	}[req.Operation]
+	if !knownOperation {
+		return false
+	}
+	for index, populated := range v2Payloads {
+		if populated != (index == wantIndex) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestL8WorkerV2FakeDispatcherRoutesAllFiveOperations(t *testing.T) {
@@ -291,7 +385,7 @@ func l8LegacyUnsupportedV2Response(req Request) Response {
 		OK:              false,
 		Error: &Error{
 			Code:    ErrorCodeMalformedRequest,
-			Message: `malformed worker request: worker request operation "job_start_v2" is unsupported`,
+			Message: `malformed worker request: worker request operation "` + req.Operation + `" is unsupported`,
 		},
 	}
 }
@@ -304,12 +398,13 @@ func l8NewUnsupportedV2Response(req Request) Response {
 		OK:              false,
 		Error: &Error{
 			Code:    ErrorCodeUnsupportedOp,
-			Message: `worker operation "job_start_v2" is not supported by this worker service`,
+			Message: `worker operation "` + req.Operation + `" is not supported by this worker service`,
 		},
 	}
 }
 
 func l8WorkerV2QueuedJob() JobV2 {
+	request := l8WorkerV2StartRequest()
 	intent := JobCredentialIntentV2{
 		ProductionCredentialsRequested: true,
 		PlanID:                         "plan-primary",
@@ -328,7 +423,7 @@ func l8WorkerV2QueuedJob() JobV2 {
 	return JobV2{
 		ContractVersion:  JobContractVersionV2,
 		ID:               "job-primary",
-		SubmissionKey:    "submission-v2-safe-digest",
+		SubmissionKey:    jobSubmissionKeyV2("principal-owner", request),
 		WorkerID:         "worker-primary",
 		HostID:           "host-primary",
 		RuntimeDriver:    RuntimeDriverMicroVM,

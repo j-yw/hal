@@ -1,8 +1,11 @@
 package sandboxworker
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -215,6 +218,9 @@ func TestL8WorkerV2ProductionCredentialIntentValidationFailsClosed(t *testing.T)
 		{name: "missing workspace policy", mutate: func(req *JobStartRequestV2) { req.WorkspacePolicyID = "" }},
 		{name: "missing sources", mutate: func(req *JobStartRequestV2) { req.SourceReferenceIDs = nil }},
 		{name: "duplicate sources", mutate: func(req *JobStartRequestV2) { req.SourceReferenceIDs = []string{"source-primary", "source-primary"} }},
+		{name: "unbound listed source", mutate: func(req *JobStartRequestV2) {
+			req.SourceReferenceIDs = append(req.SourceReferenceIDs, "source-unbound")
+		}},
 		{name: "missing bindings", mutate: func(req *JobStartRequestV2) { req.Bindings = nil }},
 		{name: "missing binding id", mutate: func(req *JobStartRequestV2) { req.Bindings[0].BindingID = "" }},
 		{name: "missing binding source", mutate: func(req *JobStartRequestV2) { req.Bindings[0].SourceReferenceID = "" }},
@@ -237,8 +243,16 @@ func TestL8WorkerV2ProductionCredentialIntentValidationFailsClosed(t *testing.T)
 		}},
 		{name: "raw looking plan", mutate: func(req *JobStartRequestV2) { req.PlanID = "/home/operator/plan" }},
 		{name: "oversized safe identity", mutate: func(req *JobStartRequestV2) { req.PlanID = strings.Repeat("a", 193) }},
-		{name: "raw looking source", mutate: func(req *JobStartRequestV2) { req.SourceReferenceIDs[0] = "https://secret.example/value" }},
+		{name: "raw looking grant", mutate: func(req *JobStartRequestV2) { req.AdmissionGrantID = "token=raw-grant" }},
+		{name: "raw looking template policy", mutate: func(req *JobStartRequestV2) { req.TemplatePolicyID = "https://policy.example/template" }},
+		{name: "raw looking workspace policy", mutate: func(req *JobStartRequestV2) { req.WorkspacePolicyID = "/home/operator/workspace-policy" }},
+		{name: "raw looking submission", mutate: func(req *JobStartRequestV2) { req.SubmissionID = "/home/operator/submission" }},
+		{name: "raw looking source", mutate: func(req *JobStartRequestV2) {
+			req.SourceReferenceIDs[0] = "https://secret.example/value"
+			req.Bindings[0].SourceReferenceID = req.SourceReferenceIDs[0]
+		}},
 		{name: "raw looking binding", mutate: func(req *JobStartRequestV2) { req.Bindings[0].BindingID = "token=raw-canary" }},
+		{name: "raw looking service", mutate: func(req *JobStartRequestV2) { req.Bindings[0].ServiceID = "https://service.example/route" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -248,6 +262,82 @@ func TestL8WorkerV2ProductionCredentialIntentValidationFailsClosed(t *testing.T)
 				t.Fatal("unsafe or incomplete production credential intent was accepted")
 			}
 		})
+	}
+}
+
+func TestL8WorkerV2IdentityKeysAreExactOpaqueLowercaseHex(t *testing.T) {
+	principalID := l8GeneratedWorkerV2SafeID(t, "principal")
+	req := l8WorkerV2StartRequest()
+	req.SubmissionID = l8GeneratedWorkerV2SafeID(t, "submission")
+	req.PlanID = l8GeneratedWorkerV2SafeID(t, "plan")
+	req.AdmissionGrantID = l8GeneratedWorkerV2SafeID(t, "grant")
+	req.TemplatePolicyID = l8GeneratedWorkerV2SafeID(t, "template")
+	req.WorkspacePolicyID = l8GeneratedWorkerV2SafeID(t, "workspace")
+	req.SourceReferenceIDs[0] = l8GeneratedWorkerV2SafeID(t, "source")
+	req.Bindings[0].BindingID = l8GeneratedWorkerV2SafeID(t, "binding")
+	req.Bindings[0].SourceReferenceID = req.SourceReferenceIDs[0]
+	req.Bindings[0].ServiceID = l8GeneratedWorkerV2SafeID(t, "service")
+	req.Exec.OperationID = l8GeneratedWorkerV2SafeID(t, "operation")
+	req.Exec.Target.Name = l8GeneratedWorkerV2SafeID(t, "target")
+	req.Exec.Target.Runtime.RuntimeID = l8GeneratedWorkerV2SafeID(t, "runtime")
+	secondSource := l8GeneratedWorkerV2SafeID(t, "source-secondary")
+	secondBinding := JobCredentialBindingV2{
+		BindingID:         l8GeneratedWorkerV2SafeID(t, "binding-secondary"),
+		SourceReferenceID: secondSource,
+		Mode:              CredentialModeSSHAgent,
+	}
+	req.SourceReferenceIDs = append(req.SourceReferenceIDs, secondSource)
+	req.Bindings = append(req.Bindings, secondBinding)
+	if err := req.Validate(); err != nil {
+		t.Fatalf("generated multi-source fixture: %v", err)
+	}
+
+	submissionKey := jobSubmissionKeyV2(principalID, req)
+	requestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shapes := []struct {
+		name    string
+		value   string
+		pattern string
+	}{
+		{name: "submission", value: submissionKey, pattern: `^submission-v2-[0-9a-f]{64}$`},
+		{name: "request", value: requestKey, pattern: `^request-v2-[0-9a-f]{64}$`},
+	}
+	for _, shape := range shapes {
+		if !regexp.MustCompile(shape.pattern).MatchString(shape.value) {
+			t.Fatalf("%s key = %q, want exact normalized lowercase-hex shape %s", shape.name, shape.value, shape.pattern)
+		}
+		for _, raw := range []string{
+			principalID,
+			req.SubmissionID,
+			req.PlanID,
+			req.AdmissionGrantID,
+			req.TemplatePolicyID,
+			req.WorkspacePolicyID,
+			req.SourceReferenceIDs[0],
+			req.Bindings[0].BindingID,
+			req.Bindings[0].ServiceID,
+			req.Exec.OperationID,
+			req.Exec.Target.Name,
+			req.Exec.Target.Runtime.RuntimeID,
+		} {
+			if strings.Contains(shape.value, raw) {
+				t.Fatalf("%s key exposes raw identity %q: %q", shape.name, raw, shape.value)
+			}
+		}
+	}
+	reordered := l8CloneWorkerV2StartRequest(req)
+	reordered.SourceReferenceIDs[0], reordered.SourceReferenceIDs[1] = reordered.SourceReferenceIDs[1], reordered.SourceReferenceIDs[0]
+	reordered.Bindings[0], reordered.Bindings[1] = reordered.Bindings[1], reordered.Bindings[0]
+	reorderedSubmissionKey := jobSubmissionKeyV2(principalID, reordered)
+	reorderedRequestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reorderedSubmissionKey != submissionKey || reorderedRequestKey != requestKey {
+		t.Fatalf("equivalent reordered intent changed normalized keys: submission=%q request=%q", reorderedSubmissionKey, reorderedRequestKey)
 	}
 }
 
@@ -419,6 +509,85 @@ func TestL8WorkerV2DurableJobJSONContainsOnlySafeCredentialIdentity(t *testing.T
 	}
 }
 
+func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T) {
+	principalID := l8GeneratedWorkerV2SafeID(t, "principal")
+	request := l8WorkerV2StartRequest()
+	requestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := l8WorkerV2QueuedJob()
+	job.SubmissionKey = jobSubmissionKeyV2(principalID, request)
+	state := storedJobStateV2{
+		JobV2:       job,
+		RequestKey:  requestKey,
+		PrincipalID: principalID,
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("valid private durable v2 state: %v", err)
+	}
+	for _, tt := range []struct {
+		name      string
+		principal string
+	}{
+		{name: "missing", principal: ""},
+		{name: "raw looking", principal: "/run/user/1000/peer"},
+		{name: "oversized", principal: strings.Repeat("p", 193)},
+	} {
+		t.Run("rejects "+tt.name+" principal", func(t *testing.T) {
+			candidate := state
+			candidate.PrincipalID = tt.principal
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("private durable v2 state accepted unsafe principal identity")
+			}
+		})
+	}
+	typ := reflect.TypeOf(state)
+	field, ok := typ.FieldByName("PrincipalID")
+	if !ok || field.Type.Kind() != reflect.String || field.Tag.Get("json") != "principalId" {
+		t.Fatalf("storedJobStateV2 PrincipalID field = %#v, want private durable string json:\"principalId\"", field)
+	}
+	payload, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"principalId":"`+principalID+`"`) {
+		t.Fatalf("private durable v2 state omits principal identity: %s", payload)
+	}
+
+	privateDir := t.TempDir()
+	path := privateDir + "/job-v2.json"
+	if err := writePrivateFileAtomic(privateDir, "job-v2.json", append(payload, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	var restarted storedJobStateV2
+	if err := decodePrivateJSONFile(path, &restarted, 64<<10); err != nil {
+		t.Fatalf("reload private durable v2 state: %v", err)
+	}
+	if err := restarted.Validate(); err != nil {
+		t.Fatalf("validate reloaded private durable v2 state: %v", err)
+	}
+	if restarted.PrincipalID != principalID || !reflect.DeepEqual(restarted.JobV2, state.JobV2) || restarted.RequestKey != state.RequestKey {
+		t.Fatalf("private durable v2 restart round trip = %#v, want principal and exact safe job identity", restarted)
+	}
+
+	publicValues := []any{
+		state.JobV2,
+		Request{ProtocolVersion: ProtocolVersion, RequestID: "request-v2", Operation: OperationJobStartV2, DriverID: RuntimeDriverMicroVM, JobStartV2: &request},
+		Response{ProtocolVersion: ProtocolVersion, RequestID: "request-v2", Operation: OperationJobStatusV2, OK: true, JobV2: &state.JobV2},
+	}
+	for index, value := range publicValues {
+		publicJSON, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		lowerJSON := strings.ToLower(string(publicJSON))
+		if strings.Contains(lowerJSON, "principal") || strings.Contains(lowerJSON, "peeruid") || strings.Contains(lowerJSON, "peergid") || strings.Contains(string(publicJSON), principalID) {
+			t.Fatalf("public/wire v2 value %d exposed private principal: %s", index, publicJSON)
+		}
+	}
+}
+
 func l8WorkerV2StartRequest() JobStartRequestV2 {
 	return JobStartRequestV2{
 		ContractVersion:                JobContractVersionV2,
@@ -462,4 +631,10 @@ func l8CloneWorkerV2StartRequest(req JobStartRequestV2) JobStartRequestV2 {
 	req.SourceReferenceIDs = append([]string(nil), req.SourceReferenceIDs...)
 	req.Bindings = append([]JobCredentialBindingV2(nil), req.Bindings...)
 	return req
+}
+
+func l8GeneratedWorkerV2SafeID(t *testing.T, domain string) string {
+	t.Helper()
+	digest := sha256.Sum256([]byte(t.Name() + "\x00" + domain))
+	return domain + "-" + hex.EncodeToString(digest[:12])
 }
