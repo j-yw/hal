@@ -152,16 +152,14 @@ func TestL8ApplicationRouteRegistryRetainsResponseOwnershipAfterTransientReadErr
 				t.Fatalf("first response body Read() = %d, %v, want transient non-EOF error", count, readErr)
 			}
 
-			closeResult := make(chan error, 1)
-			go func() { closeResult <- registry.Close(context.Background()) }()
-			waitForApplicationRouteState(t, registry, RegistryStateClosing)
-			assertApplicationRouteCloseBlocked(t, handler, closeResult, "transient read error")
-
 			buffer := make([]byte, 1)
 			if count, readErr := response.Body.Read(buffer); count != 1 || readErr != nil || buffer[0] != 'x' {
 				t.Fatalf("second response body Read() = %d, %v, %q, want usable body data", count, readErr, buffer[:count])
 			}
-			assertApplicationRouteCloseBlocked(t, handler, closeResult, "successful read after transient error")
+
+			closeResult := make(chan error, 1)
+			go func() { closeResult <- registry.Close(context.Background()) }()
+			waitForApplicationRouteState(t, registry, RegistryStateClosing)
 
 			if tt.releaseByEOF {
 				if count, readErr := response.Body.Read(buffer); count != 0 || !errors.Is(readErr, io.EOF) {
@@ -187,6 +185,79 @@ func TestL8ApplicationRouteRegistryRetainsResponseOwnershipAfterTransientReadErr
 			}
 			if got := body.closeCallCount(); got != 1 {
 				t.Fatalf("underlying response body Close calls = %d, want exactly 1", got)
+			}
+		})
+	}
+}
+
+func TestL8TrackedResponseBodyReleasesOnlyOnExactEOFOrClose(t *testing.T) {
+	tests := []struct {
+		name         string
+		releaseByEOF bool
+	}{
+		{name: "exact eof", releaseByEOF: true},
+		{name: "explicit close"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			poisonErr := &poisonApplicationRouteEOFError{}
+			underlying := &trackedApplicationRouteBodyWitness{poisonErr: poisonErr}
+			releaseEvents := make(chan struct{}, 2)
+			releaseCount := 0
+			body := newTrackedResponseBody(underlying, func() {
+				releaseCount++
+				releaseEvents <- struct{}{}
+			})
+
+			if count, readErr := body.Read(make([]byte, 1)); count != 0 || readErr != poisonErr {
+				t.Fatalf("transient Read() = %d, %v, want exact poison error", count, readErr)
+			}
+			if got := poisonErr.isCallCount(); got != 0 {
+				t.Fatalf("poison error Is calls = %d, want 0; tracked body must compare exact EOF", got)
+			}
+			assertTrackedApplicationRouteReleaseUntouched(t, releaseCount, releaseEvents, "transient read")
+
+			buffer := make([]byte, 1)
+			if count, readErr := body.Read(buffer); count != 1 || readErr != nil || buffer[0] != 'x' {
+				t.Fatalf("successful Read() = %d, %v, %q, want one byte", count, readErr, buffer[:count])
+			}
+			assertTrackedApplicationRouteReleaseUntouched(t, releaseCount, releaseEvents, "successful read")
+
+			if tt.releaseByEOF {
+				if count, readErr := body.Read(buffer); count != 0 || readErr != io.EOF {
+					t.Fatalf("terminal Read() = %d, %v, want exact io.EOF", count, readErr)
+				}
+				if count, readErr := body.Read(buffer); count != 0 || readErr != io.EOF {
+					t.Fatalf("repeated terminal Read() = %d, %v, want exact io.EOF", count, readErr)
+				}
+			} else if closeErr := body.Close(); closeErr != nil {
+				t.Fatalf("Close() error = %v", closeErr)
+			}
+			if releaseCount != 1 {
+				t.Fatalf("release callbacks = %d, want exactly 1", releaseCount)
+			}
+			select {
+			case <-releaseEvents:
+			default:
+				t.Fatal("release callback did not synchronously publish its witness")
+			}
+			select {
+			case <-releaseEvents:
+				t.Fatal("release callback published more than once")
+			default:
+			}
+
+			if closeErr := body.Close(); closeErr != nil {
+				t.Fatalf("first final Close() error = %v", closeErr)
+			}
+			if closeErr := body.Close(); closeErr != nil {
+				t.Fatalf("second final Close() error = %v", closeErr)
+			}
+			if releaseCount != 1 {
+				t.Fatalf("release callbacks after repeated Close = %d, want exactly 1", releaseCount)
+			}
+			if got := underlying.closeCallCount(); got != 1 {
+				t.Fatalf("underlying Close calls = %d, want exactly 1", got)
 			}
 		})
 	}
@@ -380,25 +451,6 @@ func applicationRoutePoisonFormats() []string {
 	}
 }
 
-func assertApplicationRouteCloseBlocked(
-	t *testing.T,
-	handler *ownedApplicationRouteHandler,
-	closeResult <-chan error,
-	after string,
-) {
-	t.Helper()
-	select {
-	case <-handler.closeEntered:
-		t.Errorf("handler Close entered after %s, before response body EOF or Close", after)
-	case <-time.After(20 * time.Millisecond):
-	}
-	select {
-	case closeErr := <-closeResult:
-		t.Errorf("Registry.Close() returned after %s, before response body EOF or Close: %v", after, closeErr)
-	default:
-	}
-}
-
 func formatApplicationRouteRegistryWithoutPanic(format string, value any) (rendered string, panicked any) {
 	defer func() { panicked = recover() }()
 	return fmt.Sprintf(format, value), nil
@@ -489,6 +541,72 @@ type transientApplicationRouteBody struct {
 	mu         sync.Mutex
 	readCalls  int
 	closeCalls int
+}
+
+type poisonApplicationRouteEOFError struct {
+	mu      sync.Mutex
+	isCalls int
+}
+
+func (*poisonApplicationRouteEOFError) Error() string { return "transient non-EOF read error" }
+func (err *poisonApplicationRouteEOFError) Is(target error) bool {
+	err.mu.Lock()
+	err.isCalls++
+	err.mu.Unlock()
+	return target == io.EOF
+}
+func (err *poisonApplicationRouteEOFError) isCallCount() int {
+	err.mu.Lock()
+	defer err.mu.Unlock()
+	return err.isCalls
+}
+
+type trackedApplicationRouteBodyWitness struct {
+	poisonErr error
+
+	mu         sync.Mutex
+	readCalls  int
+	closeCalls int
+}
+
+func (body *trackedApplicationRouteBodyWitness) Read(buffer []byte) (int, error) {
+	body.mu.Lock()
+	defer body.mu.Unlock()
+	body.readCalls++
+	switch body.readCalls {
+	case 1:
+		return 0, body.poisonErr
+	case 2:
+		buffer[0] = 'x'
+		return 1, nil
+	default:
+		return 0, io.EOF
+	}
+}
+
+func (body *trackedApplicationRouteBodyWitness) Close() error {
+	body.mu.Lock()
+	defer body.mu.Unlock()
+	body.closeCalls++
+	return nil
+}
+
+func (body *trackedApplicationRouteBodyWitness) closeCallCount() int {
+	body.mu.Lock()
+	defer body.mu.Unlock()
+	return body.closeCalls
+}
+
+func assertTrackedApplicationRouteReleaseUntouched(t *testing.T, releaseCount int, releaseEvents <-chan struct{}, after string) {
+	t.Helper()
+	if releaseCount != 0 {
+		t.Fatalf("release callbacks after %s = %d, want 0", after, releaseCount)
+	}
+	select {
+	case <-releaseEvents:
+		t.Fatalf("release callback fired after %s", after)
+	default:
+	}
 }
 
 func (body *transientApplicationRouteBody) Read(buffer []byte) (int, error) {
