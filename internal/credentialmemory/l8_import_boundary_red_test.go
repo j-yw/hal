@@ -42,7 +42,6 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 		if fmtDotImport {
 			t.Errorf("production credential memory %s uses forbidden dot import of fmt", productionPath)
 		}
-		hasApprovedFormat := false
 		for _, spec := range file.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
@@ -67,6 +66,9 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 		for _, issue := range l8CredentialMemoryForbiddenSelectorIssues(file) {
 			t.Errorf("production credential memory %s %s", productionPath, issue)
 		}
+		for _, issue := range l8CredentialMemoryFmtFileIssues(file, fmtAliases, rootPackage, formatLiterals) {
+			t.Errorf("production credential memory %s %s", productionPath, issue)
+		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch typed := node.(type) {
 			case *ast.StructType:
@@ -81,13 +83,6 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 				if typed.Recv != nil {
 					receiver = l8CredentialMemoryReceiverName(typed.Recv.List[0].Type)
 				}
-				requiredFormat := ""
-				if rootPackage && typed.Name.Name == "Format" && denialMethods[receiver] != nil {
-					requiredFormat = formatLiterals[receiver]
-				}
-				for _, issue := range l8CredentialMemoryFmtSelectorIssues(typed, fmtAliases, requiredFormat) {
-					t.Errorf("production credential memory %s %s", productionPath, issue)
-				}
 				if typed.Recv == nil {
 					return true
 				}
@@ -101,16 +96,10 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 						return true
 					}
 					allowed[typed.Name.Name] = true
-					if typed.Name.Name == "Format" {
-						hasApprovedFormat = true
-					}
 				}
 			}
 			return true
 		})
-		if len(fmtAliases) != 0 && !hasApprovedFormat {
-			t.Errorf("production credential memory %s imports fmt outside an exact approved Format method", productionPath)
-		}
 	}
 	if len(productionFiles) == 0 {
 		t.Fatal("L8 credential memory production package does not exist")
@@ -283,6 +272,13 @@ func TestL8CredentialMemoryFmtUsageIsRestrictedToExactFormatMethods(t *testing.T
 		{name: "multiple calls", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\"); safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
 		{name: "import alias shadowed by receiver", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (safeformat LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
 		{name: "state shadowed in closure", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { func(state safeformat.State) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }(state) }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "package capture beside exact format", source: "package fixture\nimport safeformat \"fmt\"\nvar write = safeformat.Fprint\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "indirect package capture use beside exact format", source: "package fixture\nimport safeformat \"fmt\"\nvar write = safeformat.Fprint\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\nfunc helper(state safeformat.State) { write(state, \"helper\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "grouped package captures beside exact format", source: "package fixture\nimport safeformat \"fmt\"\nvar (\nwrite = safeformat.Fprint\nrender = safeformat.Sprint\n)\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "cross function fmt use beside exact format", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\nfunc helper(state safeformat.State) { safeformat.Fprint(state, \"helper\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "function local capture beside exact format", source: "package fixture\nimport safeformat \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\nfunc helper() { write := safeformat.Fprint; _ = write }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "function alias type beside exact format", source: "package fixture\nimport safeformat \"fmt\"\ntype formatter func(safeformat.State, ...any) (int, error)\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>"},
+		{name: "blank import", source: "package fixture\nimport _ \"fmt\"\ntype LockedMapping struct{}\n", requiredFormat: "<credentialmemory.LockedMapping>"},
 		{name: "dot import", source: "package fixture\nimport . \"fmt\"\ntype LockedMapping struct{}\nfunc (LockedMapping) Format(state State, verb rune) { Fprint(state, \"<credentialmemory.LockedMapping>\") }\n", requiredFormat: "<credentialmemory.LockedMapping>", wantDotImport: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -301,17 +297,14 @@ func l8CredentialMemoryAssertFmtFixture(t *testing.T, source, requiredFormat str
 	if dotImport != wantDotImport {
 		t.Fatalf("fmt dot import = %t, want %t", dotImport, wantDotImport)
 	}
-	var issues []string
+	formatLiterals := map[string]string{}
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
-		if ok {
-			approved := ""
-			if function.Name.Name == "Format" {
-				approved = requiredFormat
-			}
-			issues = append(issues, l8CredentialMemoryFmtSelectorIssues(function, aliases, approved)...)
+		if ok && function.Name.Name == "Format" && function.Recv != nil {
+			formatLiterals[l8CredentialMemoryReceiverName(function.Recv.List[0].Type)] = requiredFormat
 		}
 	}
+	issues := l8CredentialMemoryFmtFileIssues(file, aliases, true, formatLiterals)
 	if wantIssue == (len(issues) == 0 && !dotImport) {
 		t.Fatalf("fmt issues = %v, dot import = %t, want issue %t", issues, dotImport, wantIssue)
 	}
@@ -339,7 +332,6 @@ func l8CredentialMemoryImportAliases(file *ast.File, wantedPath string) (map[str
 		switch alias {
 		case ".":
 			dotImport = true
-		case "_":
 		default:
 			aliases[alias] = true
 		}
@@ -347,12 +339,31 @@ func l8CredentialMemoryImportAliases(file *ast.File, wantedPath string) (map[str
 	return aliases, dotImport
 }
 
-func l8CredentialMemoryFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[string]bool, requiredFormat string) []string {
-	if function.Body == nil {
-		return nil
-	}
+func l8CredentialMemoryFmtFileIssues(file *ast.File, fmtAliases map[string]bool, rootPackage bool, formatLiterals map[string]string) []string {
 	var issues []string
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	allowedSelectors := map[*ast.SelectorExpr]bool{}
+	approvedAliases := map[string]bool{}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "Format" || function.Recv == nil || !rootPackage {
+			continue
+		}
+		receiver := l8CredentialMemoryReceiverName(function.Recv.List[0].Type)
+		requiredFormat := formatLiterals[receiver]
+		if requiredFormat == "" {
+			continue
+		}
+		if !l8CredentialMemoryExactFormatMethod(function, fmtAliases, requiredFormat) {
+			issues = append(issues, "Format method on "+receiver+" is not the exact single fixed-literal fmt.Fprint boundary")
+			continue
+		}
+		stateSelector := function.Type.Params.List[0].Type.(*ast.SelectorExpr)
+		call := function.Body.List[0].(*ast.ExprStmt).X.(*ast.CallExpr)
+		allowedSelectors[stateSelector] = true
+		allowedSelectors[call.Fun.(*ast.SelectorExpr)] = true
+		approvedAliases[stateSelector.X.(*ast.Ident).Name] = true
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
 		selector, ok := node.(*ast.SelectorExpr)
 		if !ok {
 			return true
@@ -361,13 +372,15 @@ func l8CredentialMemoryFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[
 		if !ok || !fmtAliases[identifier.Name] {
 			return true
 		}
-		if requiredFormat == "" {
-			issues = append(issues, "uses fmt."+selector.Sel.Name+" outside the narrow fixed-output formatter boundary")
+		if !allowedSelectors[selector] {
+			issues = append(issues, "uses fmt."+selector.Sel.Name+" outside an exact approved Format signature/body")
 		}
 		return true
 	})
-	if requiredFormat != "" && !l8CredentialMemoryExactFormatMethod(function, fmtAliases, requiredFormat) {
-		issues = append(issues, "Format method is not the exact single fixed-literal fmt.Fprint boundary")
+	for alias := range fmtAliases {
+		if !approvedAliases[alias] {
+			issues = append(issues, "imports fmt outside an exact approved Format method")
+		}
 	}
 	return issues
 }
@@ -385,7 +398,7 @@ func l8CredentialMemoryExactFormatMethod(function *ast.FuncDecl, fmtAliases map[
 		return false
 	}
 	fmtIdentifier, ok := stateType.X.(*ast.Ident)
-	if !ok || !fmtAliases[fmtIdentifier.Name] {
+	if !ok || !fmtAliases[fmtIdentifier.Name] || fmtIdentifier.Obj != nil {
 		return false
 	}
 	verbType, ok := verbField.Type.(*ast.Ident)
@@ -413,7 +426,7 @@ func l8CredentialMemoryExactFormatMethod(function *ast.FuncDecl, fmtAliases map[
 		return false
 	}
 	qualifier, ok := selector.X.(*ast.Ident)
-	if !ok || !fmtAliases[qualifier.Name] || qualifier.Obj != nil {
+	if !ok || !fmtAliases[qualifier.Name] || qualifier.Name != fmtIdentifier.Name || qualifier.Obj != nil {
 		return false
 	}
 	destination, ok := call.Args[0].(*ast.Ident)

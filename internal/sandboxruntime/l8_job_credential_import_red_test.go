@@ -42,7 +42,6 @@ func TestL8JobCredentialLiveHandlesUseOnlySafeFormattingAndDenialCodecs(t *testi
 		if allowedLiveFile && fmtDotImport {
 			t.Errorf("neutral job credential contract %s uses forbidden dot import of fmt", path)
 		}
-		hasApprovedFormat := false
 		for _, spec := range file.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
@@ -57,6 +56,11 @@ func TestL8JobCredentialLiveHandlesUseOnlySafeFormattingAndDenialCodecs(t *testi
 		}
 		for _, issue := range l8JobCredentialRawErrorCompositionIssues(file) {
 			t.Errorf("sandboxruntime production file %s %s", path, issue)
+		}
+		if allowedLiveFile {
+			for _, issue := range l8JobCredentialFmtFileIssues(file, fmtAliases, formatLiterals) {
+				t.Errorf("neutral job credential contract %s %s", path, issue)
+			}
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch typed := node.(type) {
@@ -75,15 +79,6 @@ func TestL8JobCredentialLiveHandlesUseOnlySafeFormattingAndDenialCodecs(t *testi
 				if typed.Recv != nil {
 					receiver = l8ReceiverName(typed.Recv.List[0].Type)
 				}
-				requiredFormat := ""
-				if allowedLiveFile && typed.Name.Name == "Format" && denialMethods[receiver] != nil {
-					requiredFormat = formatLiterals[receiver]
-				}
-				if allowedLiveFile {
-					for _, issue := range l8JobCredentialFmtSelectorIssues(typed, fmtAliases, requiredFormat) {
-						t.Errorf("neutral job credential contract %s %s", path, issue)
-					}
-				}
 				if typed.Recv == nil || !allowedLiveFile {
 					return true
 				}
@@ -97,16 +92,10 @@ func TestL8JobCredentialLiveHandlesUseOnlySafeFormattingAndDenialCodecs(t *testi
 						return true
 					}
 					allowed[typed.Name.Name] = true
-					if typed.Name.Name == "Format" {
-						hasApprovedFormat = true
-					}
 				}
 			}
 			return true
 		})
-		if allowedLiveFile && len(fmtAliases) != 0 && !hasApprovedFormat {
-			t.Errorf("neutral job credential contract %s imports fmt outside an exact approved Format method", path)
-		}
 	}
 	if liveProduction == 0 {
 		t.Fatal("L8 neutral job credential production contracts do not exist")
@@ -249,6 +238,13 @@ func TestL8JobCredentialFmtUsageIsRestrictedToExactFormatMethods(t *testing.T) {
 		{name: "multiple calls", source: "package fixture\nimport safeformat \"fmt\"\ntype JobCredentialLifecycle struct{}\nfunc (JobCredentialLifecycle) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\"); safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
 		{name: "import alias shadowed by receiver", source: "package fixture\nimport safeformat \"fmt\"\ntype JobCredentialLifecycle struct{}\nfunc (safeformat JobCredentialLifecycle) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
 		{name: "state shadowed in closure", source: "package fixture\nimport safeformat \"fmt\"\ntype JobCredentialLifecycle struct{}\nfunc (JobCredentialLifecycle) Format(state safeformat.State, verb rune) { func(state safeformat.State) { safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }(state) }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
+		{name: "package capture beside exact format", source: "package fixture\nimport safeformat \"fmt\"\nvar write = safeformat.Fprint\ntype JobCredentialLifecycle struct{}\nfunc (JobCredentialLifecycle) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
+		{name: "indirect package capture use beside exact format", source: "package fixture\nimport safeformat \"fmt\"\nvar write = safeformat.Fprint\ntype JobCredentialLifecycle struct{}\nfunc (JobCredentialLifecycle) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }\nfunc helper(state safeformat.State) { write(state, \"helper\") }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
+		{name: "grouped package captures beside exact format", source: "package fixture\nimport safeformat \"fmt\"\nvar (\nwrite = safeformat.Fprint\nrender = safeformat.Sprint\n)\ntype JobCredentialLifecycle struct{}\nfunc (JobCredentialLifecycle) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
+		{name: "cross function fmt use beside exact format", source: "package fixture\nimport safeformat \"fmt\"\ntype JobCredentialLifecycle struct{}\nfunc (JobCredentialLifecycle) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }\nfunc helper(state safeformat.State) { safeformat.Fprint(state, \"helper\") }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
+		{name: "function local capture beside exact format", source: "package fixture\nimport safeformat \"fmt\"\ntype JobCredentialLifecycle struct{}\nfunc (JobCredentialLifecycle) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }\nfunc helper() { write := safeformat.Fprint; _ = write }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
+		{name: "function alias type beside exact format", source: "package fixture\nimport safeformat \"fmt\"\ntype formatter func(safeformat.State, ...any) (int, error)\ntype JobCredentialLifecycle struct{}\nfunc (JobCredentialLifecycle) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
+		{name: "blank import", source: "package fixture\nimport _ \"fmt\"\ntype JobCredentialLifecycle struct{}\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>"},
 		{name: "dot import", source: "package fixture\nimport . \"fmt\"\ntype JobCredentialLifecycle struct{}\nfunc (JobCredentialLifecycle) Format(state State, verb rune) { Fprint(state, \"<sandboxruntime.JobCredentialLifecycle>\") }\n", requiredFormat: "<sandboxruntime.JobCredentialLifecycle>", wantDotImport: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -267,17 +263,14 @@ func l8JobCredentialAssertFmtFixture(t *testing.T, source, requiredFormat string
 	if dotImport != wantDotImport {
 		t.Fatalf("fmt dot import = %t, want %t", dotImport, wantDotImport)
 	}
-	var issues []string
+	formatLiterals := map[string]string{}
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
-		if ok {
-			approved := ""
-			if function.Name.Name == "Format" {
-				approved = requiredFormat
-			}
-			issues = append(issues, l8JobCredentialFmtSelectorIssues(function, aliases, approved)...)
+		if ok && function.Name.Name == "Format" && function.Recv != nil {
+			formatLiterals[l8ReceiverName(function.Recv.List[0].Type)] = requiredFormat
 		}
 	}
+	issues := l8JobCredentialFmtFileIssues(file, aliases, formatLiterals)
 	if wantIssue == (len(issues) == 0 && !dotImport) {
 		t.Fatalf("fmt issues = %v, dot import = %t, want issue %t", issues, dotImport, wantIssue)
 	}
@@ -308,7 +301,6 @@ func l8JobCredentialImportAliases(file *ast.File, wantedPath string) (map[string
 		switch alias {
 		case ".":
 			dotImport = true
-		case "_":
 		default:
 			aliases[alias] = true
 		}
@@ -316,12 +308,31 @@ func l8JobCredentialImportAliases(file *ast.File, wantedPath string) (map[string
 	return aliases, dotImport
 }
 
-func l8JobCredentialFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[string]bool, requiredFormat string) []string {
-	if function.Body == nil {
-		return nil
-	}
+func l8JobCredentialFmtFileIssues(file *ast.File, fmtAliases map[string]bool, formatLiterals map[string]string) []string {
 	var issues []string
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	allowedSelectors := map[*ast.SelectorExpr]bool{}
+	approvedAliases := map[string]bool{}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "Format" || function.Recv == nil {
+			continue
+		}
+		receiver := l8ReceiverName(function.Recv.List[0].Type)
+		requiredFormat := formatLiterals[receiver]
+		if requiredFormat == "" {
+			continue
+		}
+		if !l8JobCredentialExactFormatMethod(function, fmtAliases, requiredFormat) {
+			issues = append(issues, "Format method on "+receiver+" is not the exact single fixed-literal fmt.Fprint boundary")
+			continue
+		}
+		stateSelector := function.Type.Params.List[0].Type.(*ast.SelectorExpr)
+		call := function.Body.List[0].(*ast.ExprStmt).X.(*ast.CallExpr)
+		allowedSelectors[stateSelector] = true
+		allowedSelectors[call.Fun.(*ast.SelectorExpr)] = true
+		approvedAliases[stateSelector.X.(*ast.Ident).Name] = true
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
 		selector, ok := node.(*ast.SelectorExpr)
 		if !ok {
 			return true
@@ -330,13 +341,15 @@ func l8JobCredentialFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[str
 		if !ok || !fmtAliases[identifier.Name] {
 			return true
 		}
-		if requiredFormat == "" {
-			issues = append(issues, "uses fmt."+selector.Sel.Name+" outside the narrow fixed-output formatter boundary")
+		if !allowedSelectors[selector] {
+			issues = append(issues, "uses fmt."+selector.Sel.Name+" outside an exact approved Format signature/body")
 		}
 		return true
 	})
-	if requiredFormat != "" && !l8JobCredentialExactFormatMethod(function, fmtAliases, requiredFormat) {
-		issues = append(issues, "Format method is not the exact single fixed-literal fmt.Fprint boundary")
+	for alias := range fmtAliases {
+		if !approvedAliases[alias] {
+			issues = append(issues, "imports fmt outside an exact approved Format method")
+		}
 	}
 	return issues
 }
@@ -354,7 +367,7 @@ func l8JobCredentialExactFormatMethod(function *ast.FuncDecl, fmtAliases map[str
 		return false
 	}
 	fmtIdentifier, ok := stateType.X.(*ast.Ident)
-	if !ok || !fmtAliases[fmtIdentifier.Name] {
+	if !ok || !fmtAliases[fmtIdentifier.Name] || fmtIdentifier.Obj != nil {
 		return false
 	}
 	verbType, ok := verbField.Type.(*ast.Ident)
@@ -382,7 +395,7 @@ func l8JobCredentialExactFormatMethod(function *ast.FuncDecl, fmtAliases map[str
 		return false
 	}
 	qualifier, ok := selector.X.(*ast.Ident)
-	if !ok || !fmtAliases[qualifier.Name] || qualifier.Obj != nil {
+	if !ok || !fmtAliases[qualifier.Name] || qualifier.Name != fmtIdentifier.Name || qualifier.Obj != nil {
 		return false
 	}
 	destination, ok := call.Args[0].(*ast.Ident)

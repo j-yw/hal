@@ -56,7 +56,6 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 		if fmtDotImport {
 			t.Errorf("production credential source %s uses forbidden dot import of fmt", productionPath)
 		}
-		hasApprovedFormat := false
 		for _, spec := range file.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
@@ -83,6 +82,9 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 			}
 		}
 		for _, issue := range l8CredentialSourceForbiddenSelectorIssues(file) {
+			t.Errorf("production credential source %s %s", productionPath, issue)
+		}
+		for _, issue := range l8CredentialSourceFmtFileIssues(file, fmtAliases, rootPackage, formatLiterals) {
 			t.Errorf("production credential source %s %s", productionPath, issue)
 		}
 		source, err := os.ReadFile(filepath.Clean(productionPath))
@@ -116,13 +118,6 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 				if typed.Recv != nil {
 					receiver = l8CredentialSourceReceiverName(typed.Recv.List[0].Type)
 				}
-				requiredFormat := ""
-				if rootPackage && typed.Name.Name == "Format" && denialMethods[receiver] != nil {
-					requiredFormat = formatLiterals[receiver]
-				}
-				for _, issue := range l8CredentialSourceFmtSelectorIssues(typed, fmtAliases, requiredFormat) {
-					t.Errorf("production credential source %s %s", productionPath, issue)
-				}
 				if typed.Recv == nil {
 					return true
 				}
@@ -136,16 +131,10 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 						return true
 					}
 					allowed[typed.Name.Name] = true
-					if typed.Name.Name == "Format" {
-						hasApprovedFormat = true
-					}
 				}
 			}
 			return true
 		})
-		if len(fmtAliases) != 0 && !hasApprovedFormat {
-			t.Errorf("production credential source %s imports fmt outside an exact approved Format method", productionPath)
-		}
 	}
 	if len(productionFiles) == 0 {
 		t.Fatal("L8 credential source production package does not exist")
@@ -1378,6 +1367,13 @@ func TestL8CredentialSourceFmtUsageIsRestrictedToExactFormatMethods(t *testing.T
 		{name: "multiple calls", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\"); safeformat.Fprint(state, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>"},
 		{name: "import alias shadowed by receiver", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (safeformat Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>"},
 		{name: "state shadowed in closure", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { func(state safeformat.State) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }(state) }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "package capture beside exact format", source: "package fixture\nimport safeformat \"fmt\"\nvar write = safeformat.Fprint\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "indirect package capture use beside exact format", source: "package fixture\nimport safeformat \"fmt\"\nvar write = safeformat.Fprint\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }\nfunc helper(state safeformat.State) { write(state, \"helper\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "grouped package captures beside exact format", source: "package fixture\nimport safeformat \"fmt\"\nvar (\nwrite = safeformat.Fprint\nrender = safeformat.Sprint\n)\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "cross function fmt use beside exact format", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }\nfunc helper(state safeformat.State) { safeformat.Fprint(state, \"helper\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "function local capture beside exact format", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }\nfunc helper() { write := safeformat.Fprint; _ = write }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "function alias type beside exact format", source: "package fixture\nimport safeformat \"fmt\"\ntype formatter func(safeformat.State, ...any) (int, error)\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>"},
+		{name: "blank import", source: "package fixture\nimport _ \"fmt\"\ntype Registry struct{}\n", requiredFormat: "<credentialsource.Registry>"},
 		{name: "dot import", source: "package fixture\nimport . \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state State, verb rune) { Fprint(state, \"<credentialsource.Registry>\") }\n", requiredFormat: "<credentialsource.Registry>", wantDotImport: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1396,17 +1392,14 @@ func l8CredentialSourceAssertFmtFixture(t *testing.T, source, requiredFormat str
 	if dotImport != wantDotImport {
 		t.Fatalf("fmt dot import = %t, want %t", dotImport, wantDotImport)
 	}
-	var issues []string
+	formatLiterals := map[string]string{}
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
-		if ok {
-			approved := ""
-			if function.Name.Name == "Format" {
-				approved = requiredFormat
-			}
-			issues = append(issues, l8CredentialSourceFmtSelectorIssues(function, aliases, approved)...)
+		if ok && function.Name.Name == "Format" && function.Recv != nil {
+			formatLiterals[l8CredentialSourceReceiverName(function.Recv.List[0].Type)] = requiredFormat
 		}
 	}
+	issues := l8CredentialSourceFmtFileIssues(file, aliases, true, formatLiterals)
 	if wantIssue == (len(issues) == 0 && !dotImport) {
 		t.Fatalf("fmt issues = %v, dot import = %t, want issue %t", issues, dotImport, wantIssue)
 	}
@@ -1440,7 +1433,6 @@ func l8CredentialSourceImportAliases(file *ast.File, wantedPath string) (map[str
 		switch alias {
 		case ".":
 			dotImport = true
-		case "_":
 		default:
 			aliases[alias] = true
 		}
@@ -1448,12 +1440,31 @@ func l8CredentialSourceImportAliases(file *ast.File, wantedPath string) (map[str
 	return aliases, dotImport
 }
 
-func l8CredentialSourceFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[string]bool, requiredFormat string) []string {
-	if function.Body == nil {
-		return nil
-	}
+func l8CredentialSourceFmtFileIssues(file *ast.File, fmtAliases map[string]bool, rootPackage bool, formatLiterals map[string]string) []string {
 	var issues []string
-	ast.Inspect(function.Body, func(node ast.Node) bool {
+	allowedSelectors := map[*ast.SelectorExpr]bool{}
+	approvedAliases := map[string]bool{}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "Format" || function.Recv == nil || !rootPackage {
+			continue
+		}
+		receiver := l8CredentialSourceReceiverName(function.Recv.List[0].Type)
+		requiredFormat := formatLiterals[receiver]
+		if requiredFormat == "" {
+			continue
+		}
+		if !l8CredentialSourceExactFormatMethod(function, fmtAliases, requiredFormat) {
+			issues = append(issues, "Format method on "+receiver+" is not the exact single fixed-literal fmt.Fprint boundary")
+			continue
+		}
+		stateSelector := function.Type.Params.List[0].Type.(*ast.SelectorExpr)
+		call := function.Body.List[0].(*ast.ExprStmt).X.(*ast.CallExpr)
+		allowedSelectors[stateSelector] = true
+		allowedSelectors[call.Fun.(*ast.SelectorExpr)] = true
+		approvedAliases[stateSelector.X.(*ast.Ident).Name] = true
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
 		selector, ok := node.(*ast.SelectorExpr)
 		if !ok {
 			return true
@@ -1462,13 +1473,15 @@ func l8CredentialSourceFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[
 		if !ok || !fmtAliases[identifier.Name] {
 			return true
 		}
-		if requiredFormat == "" {
-			issues = append(issues, "uses fmt."+selector.Sel.Name+" outside the narrow fixed-output formatter boundary")
+		if !allowedSelectors[selector] {
+			issues = append(issues, "uses fmt."+selector.Sel.Name+" outside an exact approved Format signature/body")
 		}
 		return true
 	})
-	if requiredFormat != "" && !l8CredentialSourceExactFormatMethod(function, fmtAliases, requiredFormat) {
-		issues = append(issues, "Format method is not the exact single fixed-literal fmt.Fprint boundary")
+	for alias := range fmtAliases {
+		if !approvedAliases[alias] {
+			issues = append(issues, "imports fmt outside an exact approved Format method")
+		}
 	}
 	return issues
 }
@@ -1486,7 +1499,7 @@ func l8CredentialSourceExactFormatMethod(function *ast.FuncDecl, fmtAliases map[
 		return false
 	}
 	fmtIdentifier, ok := stateType.X.(*ast.Ident)
-	if !ok || !fmtAliases[fmtIdentifier.Name] {
+	if !ok || !fmtAliases[fmtIdentifier.Name] || fmtIdentifier.Obj != nil {
 		return false
 	}
 	verbType, ok := verbField.Type.(*ast.Ident)
@@ -1514,7 +1527,7 @@ func l8CredentialSourceExactFormatMethod(function *ast.FuncDecl, fmtAliases map[
 		return false
 	}
 	qualifier, ok := selector.X.(*ast.Ident)
-	if !ok || !fmtAliases[qualifier.Name] || qualifier.Obj != nil {
+	if !ok || !fmtAliases[qualifier.Name] || qualifier.Name != fmtIdentifier.Name || qualifier.Obj != nil {
 		return false
 	}
 	destination, ok := call.Args[0].(*ast.Ident)

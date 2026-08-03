@@ -156,6 +156,9 @@ func TestL8JobCredentialLossRejectsNeighborAndStaleWatchers(t *testing.T) {
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("loss error = %v, want %v", err, tt.wantErr)
 			}
+			if tt.wantErr != nil && err.Error() != tt.wantErr.Error() {
+				t.Fatalf("loss error text = %q, want exact stable %q", err, tt.wantErr)
+			}
 			if got := lifecycle.State(); got != tt.wantState {
 				t.Fatalf("state = %q, want %q", got, tt.wantState)
 			}
@@ -697,6 +700,42 @@ func TestL8JobCredentialLifecycleInvalidHookablePathsNeverReachHook(t *testing.T
 				neighbor.WorkerJobID = "job-neighbor"
 				return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{
 					Identity: neighbor,
+					Revision: 1,
+					Code:     JobCredentialFailureGuestHelperUnavailable,
+				})}
+			},
+			wantErr:      ErrJobCredentialIdentityMismatch,
+			wantState:    JobCredentialStateRevoking,
+			wantRevision: 1,
+		},
+		{
+			name:       "observe loss from stale watcher revision",
+			transition: jobCredentialLifecycleTransitionObserveLoss,
+			setup: func(t *testing.T, pause *l8LifecyclePause) (*JobCredentialLifecycle, JobCredentialCleanupProof) {
+				return l8HookedActiveLifecycle(t, identity, 2, now, pause.beforeCommit), JobCredentialCleanupProof{}
+			},
+			invoke: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{
+					Identity: identity,
+					Revision: 1,
+					Code:     JobCredentialFailureGuestHelperUnavailable,
+				})}
+			},
+			wantErr:      ErrJobCredentialRevisionStale,
+			wantState:    JobCredentialStateRevoking,
+			wantRevision: 2,
+		},
+		{
+			name:       "observe loss for stale runtime generation",
+			transition: jobCredentialLifecycleTransitionObserveLoss,
+			setup: func(t *testing.T, pause *l8LifecyclePause) (*JobCredentialLifecycle, JobCredentialCleanupProof) {
+				return l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit), JobCredentialCleanupProof{}
+			},
+			invoke: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				stale := identity
+				stale.RuntimeGeneration = "runtime-generation-stale"
+				return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{
+					Identity: stale,
 					Revision: 1,
 					Code:     JobCredentialFailureGuestHelperUnavailable,
 				})}
