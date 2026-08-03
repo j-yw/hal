@@ -298,7 +298,7 @@ func TestL8ApplicationRouteRegistryRegistrationAndCollisionAreDeterministic(t *t
 
 	tests := []struct {
 		name    string
-		handler Handler
+		handler RouteHandler
 	}{
 		{
 			name:    "same id and prefix",
@@ -953,7 +953,7 @@ type poisonApplicationRouteHandler struct {
 	invoked bool
 }
 
-var _ Handler = (*poisonApplicationRouteHandler)(nil)
+var _ RouteHandler = (*poisonApplicationRouteHandler)(nil)
 
 func newPoisonApplicationRouteHandler() *poisonApplicationRouteHandler {
 	return &poisonApplicationRouteHandler{
@@ -1057,7 +1057,7 @@ func (body *poisonApplicationRouteBody) Format(fmt.State, rune) {
 	body.fail("Format")
 }
 
-var _ Handler = (*fakeApplicationRouteHandler)(nil)
+var _ RouteHandler = (*fakeApplicationRouteHandler)(nil)
 
 func newFakeApplicationRouteHandler(name string, id RouteID, prefix string) *fakeApplicationRouteHandler {
 	return &fakeApplicationRouteHandler{
