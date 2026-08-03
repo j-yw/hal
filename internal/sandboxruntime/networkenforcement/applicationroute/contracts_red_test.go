@@ -226,6 +226,19 @@ func TestL8ApplicationRouteLiveRequestAndResponseCannotSerializeOrInspectBodies(
 	}
 }
 
+func TestL8ApplicationRouteLiveRegistryCannotSerializeOrInspectHandlers(t *testing.T) {
+	handler := newPoisonApplicationRouteHandler()
+	registry, err := NewRegistry(handler)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	handler.armed = true
+	assertL8ApplicationRouteLiveValueDenied(t, "registry", registry)
+	if handler.invoked {
+		t.Fatal("safe live Registry rendering invoked a handler definition, lifecycle, dispatch, marshal, or formatting method")
+	}
+}
+
 func TestL8ApplicationRouteRegistryRejectsReversePrefixOverlap(t *testing.T) {
 	child := newFakeApplicationRouteHandler(
 		"child",
@@ -510,6 +523,83 @@ func TestL8ApplicationRouteRegistryRollbackContinuesAndDropsRawCauses(t *testing
 	}
 }
 
+func TestL8ApplicationRouteRegistryRollbackRetriesOnlyMixedUnconfirmedHandlers(t *testing.T) {
+	var events []string
+	var eventMu sync.Mutex
+	newHandler := func(name string, id RouteID, prefix string) *fakeApplicationRouteHandler {
+		handler := newFakeApplicationRouteHandler(name, id, prefix)
+		handler.events, handler.eventMu = &events, &eventMu
+		return handler
+	}
+	first := newHandler("first", RouteCredentialHTTPV1, CredentialHTTPV1Prefix)
+	second := newHandler("second", RouteID("reserved-two"), "/.well-known/hal/application/two/")
+	failing := newHandler("failing", RouteID("reserved-failing"), "/.well-known/hal/application/failing/")
+	rawStartErr := errors.New("start api-key=raw-start-secret host=private.example.test")
+	rawSecondCloseErr := errors.New("rollback token=raw-second-close https://private.example.test")
+	failing.startErr = rawStartErr
+	second.closeErr = rawSecondCloseErr
+
+	registry, err := NewRegistry(first, second, failing)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	err = registry.Start(context.Background())
+	if !errors.Is(err, ErrHandlerStart) {
+		t.Fatalf("Start() error = %v, want ErrHandlerStart", err)
+	}
+	for _, raw := range []error{rawStartErr, rawSecondCloseErr} {
+		if errors.Is(err, raw) {
+			t.Fatalf("Start() error unwraps raw cause %v", raw)
+		}
+	}
+	if got, want := events, []string{
+		"start:first", "start:second", "start:failing",
+		"close:failing", "close:second", "close:first",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mixed rollback events = %#v, want %#v", got, want)
+	}
+	if got := registry.State(); got != RegistryStateCleanupIncomplete {
+		t.Fatalf("State() after mixed rollback = %q, want %q", got, RegistryStateCleanupIncomplete)
+	}
+	late := newFakeApplicationRouteHandler("late", RouteID("reserved-late"), "/.well-known/hal/application/late/")
+	if err := registry.Start(context.Background()); !errors.Is(err, ErrRegistryClosed) {
+		t.Fatalf("Start() during cleanup-incomplete error = %v, want ErrRegistryClosed", err)
+	}
+	if err := registry.Register(late); !errors.Is(err, ErrRegistryClosed) {
+		t.Fatalf("Register() during cleanup-incomplete error = %v, want ErrRegistryClosed", err)
+	}
+	if err := registry.Close(context.Background()); !errors.Is(err, ErrHandlerClose) {
+		t.Fatalf("Close() while mixed rollback remains unconfirmed error = %v, want ErrHandlerClose", err)
+	} else if errors.Is(err, rawSecondCloseErr) {
+		t.Fatal("Close() retry error unwraps raw partial rollback cause")
+	}
+	if got := registry.State(); got != RegistryStateCleanupIncomplete {
+		t.Fatalf("State() after failed cleanup retry = %q, want %q", got, RegistryStateCleanupIncomplete)
+	}
+	if err := registry.Start(context.Background()); !errors.Is(err, ErrRegistryClosed) {
+		t.Fatalf("Start() after failed cleanup retry error = %v, want ErrRegistryClosed", err)
+	}
+	if err := registry.Register(late); !errors.Is(err, ErrRegistryClosed) {
+		t.Fatalf("Register() after failed cleanup retry error = %v, want ErrRegistryClosed", err)
+	}
+
+	second.closeErr = nil
+	if err := registry.Close(context.Background()); err != nil {
+		t.Fatalf("Close() mixed rollback retry error = %v", err)
+	}
+	if got, want := events, []string{
+		"start:first", "start:second", "start:failing",
+		"close:failing", "close:second", "close:first",
+		"close:second",
+		"close:second",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mixed rollback retry events = %#v, want only unconfirmed handler retried: %#v", got, want)
+	}
+	if got := registry.State(); got != RegistryStateClosed {
+		t.Fatalf("State() after mixed rollback cleanup = %q, want %q", got, RegistryStateClosed)
+	}
+}
+
 func TestL8ApplicationRouteRegistryRejectsLateRegistrationAndRestart(t *testing.T) {
 	registry, err := NewRegistry(newFakeApplicationRouteHandler("first", RouteCredentialHTTPV1, CredentialHTTPV1Prefix))
 	if err != nil {
@@ -517,6 +607,9 @@ func TestL8ApplicationRouteRegistryRejectsLateRegistrationAndRestart(t *testing.
 	}
 	if err := registry.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
+	}
+	if err := registry.Start(context.Background()); !errors.Is(err, ErrRegistryStarted) {
+		t.Fatalf("second Start() while active error = %v, want ErrRegistryStarted", err)
 	}
 	late := newFakeApplicationRouteHandler("late", RouteID("reserved-late"), "/.well-known/hal/application/late/")
 	if err := registry.Register(late); !errors.Is(err, ErrRegistryStarted) {
@@ -585,6 +678,66 @@ func TestL8ApplicationRouteRegistryCloseContinuesInReverseOrderAndSanitizes(t *t
 	}
 	if got := registry.State(); got != RegistryStateClosed {
 		t.Fatalf("State() after successful Close retry = %q, want %q", got, RegistryStateClosed)
+	}
+}
+
+func TestL8ApplicationRouteRegistryCloseRetriesOnlyMixedUnconfirmedHandlers(t *testing.T) {
+	var events []string
+	var eventMu sync.Mutex
+	newHandler := func(name string, id RouteID, prefix string) *fakeApplicationRouteHandler {
+		handler := newFakeApplicationRouteHandler(name, id, prefix)
+		handler.events, handler.eventMu = &events, &eventMu
+		return handler
+	}
+	first := newHandler("first", RouteCredentialHTTPV1, CredentialHTTPV1Prefix)
+	second := newHandler("second", RouteID("reserved-two"), "/.well-known/hal/application/two/")
+	third := newHandler("third", RouteID("reserved-three"), "/.well-known/hal/application/three/")
+	rawSecondCloseErr := errors.New("close token=raw-second-secret at https://private.example.test")
+	second.closeErr = rawSecondCloseErr
+	registry, err := NewRegistry(first, second, third)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	if err := registry.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	err = registry.Close(context.Background())
+	if !errors.Is(err, ErrHandlerClose) {
+		t.Fatalf("Close() error = %v, want ErrHandlerClose", err)
+	}
+	if errors.Is(err, rawSecondCloseErr) {
+		t.Fatal("Close() error unwraps raw partial-close cause")
+	}
+	if got, want := events, []string{
+		"start:first", "start:second", "start:third",
+		"close:third", "close:second", "close:first",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mixed Close events = %#v, want %#v", got, want)
+	}
+	if got := registry.State(); got != RegistryStateCleanupIncomplete {
+		t.Fatalf("State() after mixed Close = %q, want %q", got, RegistryStateCleanupIncomplete)
+	}
+	late := newFakeApplicationRouteHandler("late", RouteID("reserved-late"), "/.well-known/hal/application/late/")
+	if err := registry.Start(context.Background()); !errors.Is(err, ErrRegistryClosed) {
+		t.Fatalf("Start() during Close cleanup-incomplete error = %v, want ErrRegistryClosed", err)
+	}
+	if err := registry.Register(late); !errors.Is(err, ErrRegistryClosed) {
+		t.Fatalf("Register() during Close cleanup-incomplete error = %v, want ErrRegistryClosed", err)
+	}
+
+	second.closeErr = nil
+	if err := registry.Close(context.Background()); err != nil {
+		t.Fatalf("Close() mixed cleanup retry error = %v", err)
+	}
+	if got, want := events, []string{
+		"start:first", "start:second", "start:third",
+		"close:third", "close:second", "close:first",
+		"close:second",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mixed Close retry events = %#v, want only unconfirmed handler retried: %#v", got, want)
+	}
+	if got := registry.State(); got != RegistryStateClosed {
+		t.Fatalf("State() after mixed Close cleanup = %q, want %q", got, RegistryStateClosed)
 	}
 }
 
@@ -788,6 +941,73 @@ type poisonApplicationRouteBody struct {
 	invoked bool
 }
 
+type poisonApplicationRouteHandler struct {
+	def     Definition
+	raw     string
+	armed   bool
+	invoked bool
+}
+
+var _ Handler = (*poisonApplicationRouteHandler)(nil)
+
+func newPoisonApplicationRouteHandler() *poisonApplicationRouteHandler {
+	return &poisonApplicationRouteHandler{
+		def: newFakeApplicationRouteHandler(
+			"poison",
+			RouteID("poison-handler"),
+			"/.well-known/hal/application/poison/",
+		).def,
+		raw: "handler-state=raw-secret https://private.example.test/handler",
+	}
+}
+
+func (handler *poisonApplicationRouteHandler) fail(method string) {
+	handler.invoked = true
+	panic("application route Registry traversed handler " + method)
+}
+
+func (handler *poisonApplicationRouteHandler) Definition() Definition {
+	if handler.armed {
+		handler.fail("Definition")
+	}
+	return handler.def
+}
+
+func (handler *poisonApplicationRouteHandler) Start(context.Context) error {
+	handler.fail("Start")
+	return nil
+}
+
+func (handler *poisonApplicationRouteHandler) Handle(context.Context, Request) (Response, error) {
+	handler.fail("Handle")
+	return Response{}, nil
+}
+
+func (handler *poisonApplicationRouteHandler) Close(context.Context) error {
+	handler.fail("Close")
+	return nil
+}
+
+func (handler *poisonApplicationRouteHandler) MarshalJSON() ([]byte, error) {
+	handler.fail("MarshalJSON")
+	return nil, nil
+}
+
+func (handler *poisonApplicationRouteHandler) MarshalText() ([]byte, error) {
+	handler.fail("MarshalText")
+	return nil, nil
+}
+
+func (handler *poisonApplicationRouteHandler) String() string {
+	handler.fail("String")
+	return handler.raw
+}
+
+func (handler *poisonApplicationRouteHandler) GoString() string {
+	handler.fail("GoString")
+	return handler.raw
+}
+
 func (body *poisonApplicationRouteBody) fail(method string) {
 	body.invoked = true
 	panic("application route body " + method + " method was invoked")
@@ -977,6 +1197,7 @@ func assertL8ApplicationRouteLiveValueDenied(t *testing.T, label string, value a
 		for _, unsafe := range []string{
 			"request-body=raw-ticket",
 			"response-body=raw-secret",
+			"handler-state=raw-secret",
 			"private.example.test",
 			"https://",
 		} {

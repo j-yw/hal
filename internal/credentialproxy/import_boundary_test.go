@@ -90,6 +90,9 @@ func TestL8CredentialProxyCatalogProductionSourceHasNoLiveBehavior(t *testing.T)
 
 func TestL8CredentialProxyPackageProductionSourceHasNoFixtureOrOverrideMaterial(t *testing.T) {
 	for _, path := range credentialProxyProductionFiles(t) {
+		if segment := credentialProxyTestOnlyPathSegment(path); segment != "" {
+			t.Errorf("production credentialproxy file %s is hidden under test-only directory segment %q", path, segment)
+		}
 		source, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("ReadFile(%s) error: %v", path, err)
@@ -120,6 +123,112 @@ func TestL8CredentialProxyPackageProductionSourceHasNoFixtureOrOverrideMaterial(
 			if strings.Contains(text, overrideMarker) {
 				t.Errorf("production credentialproxy file %s contains project/template/request override marker %q", path, overrideMarker)
 			}
+		}
+		fixtureIdentifier, err := credentialProxyProductionFixtureIdentifier(path, source)
+		if err != nil {
+			t.Fatalf("inspect fixture identifiers in %s: %v", path, err)
+		}
+		if fixtureIdentifier != "" {
+			t.Errorf("production credentialproxy file %s declares or references test-only fixture identifier %q", path, fixtureIdentifier)
+		}
+	}
+}
+
+func TestL8CredentialProxyPackageFixtureGuardRejectsSemanticBypassesWithoutSubstringFalsePositives(t *testing.T) {
+	for _, path := range []string{
+		"fixture/catalog.go",
+		"fixtures/catalog.go",
+		"live/testfixture/catalog.go",
+		"live/testfixtures/catalog.go",
+		"live/testdata/catalog.go",
+		"live/testutil/catalog.go",
+		"live/testutils/catalog.go",
+		"live/testonly/catalog.go",
+		"live/fake/catalog.go",
+		"live/fakes/catalog.go",
+		"live/mock/catalog.go",
+		"live/mocks/catalog.go",
+	} {
+		if got := credentialProxyTestOnlyPathSegment(path); got == "" {
+			t.Errorf("credentialProxyTestOnlyPathSegment(%q) = empty, want exact test-only directory rejection", path)
+		}
+	}
+	for _, path := range []string{
+		"fixturepolicy/catalog.go",
+		"live/fakeproof/catalog.go",
+		"live/mockpolicy/catalog.go",
+		"live/catalog_fixture_policy.go",
+		"live/catalog.go",
+	} {
+		if got := credentialProxyTestOnlyPathSegment(path); got != "" {
+			t.Errorf("credentialProxyTestOnlyPathSegment(%q) = %q, want legitimate production path allowed", path, got)
+		}
+	}
+
+	markers := strings.Join(credentialProxyProductionFixtureIdentifiers(), "\n")
+	for _, marker := range []string{
+		"Fixture", "fixture", "Fixtures", "fixtures",
+		"NewFixture", "newFixture", "NewFixtures", "newFixtures",
+		"TestFixture", "testFixture", "FixtureRegistry", "fixtureRegistry",
+		"FixtureCatalog", "fixtureCatalog", "NewTestCatalog", "newTestCatalog",
+	} {
+		if !strings.Contains(markers, marker) {
+			t.Errorf("production fixture marker guard omits semantic bypass %q", marker)
+		}
+	}
+	for _, source := range []string{
+		"package live\nfunc fixture () {}\n",
+		"package live\nfunc NewFixture () {}\n",
+		"package live\ntype FixtureRegistry struct{}\n",
+		"package live\nvar newTestCatalog = func() {}\n",
+	} {
+		if got, err := credentialProxyProductionFixtureIdentifier("live.go", []byte(source)); err != nil {
+			t.Fatalf("credentialProxyProductionFixtureIdentifier() error: %v", err)
+		} else if got == "" {
+			t.Errorf("credentialProxyProductionFixtureIdentifier(%q) = empty, want semantic fixture identifier rejection", source)
+		}
+	}
+	allowedSource := "package live\n// NewFixture is test-only and unavailable here.\ntype FixturePolicy struct{}\nconst fixtureDocumentation = \"NewFixture\"\n"
+	if got, err := credentialProxyProductionFixtureIdentifier("live.go", []byte(allowedSource)); err != nil {
+		t.Fatalf("credentialProxyProductionFixtureIdentifier(allowed) error: %v", err)
+	} else if got != "" {
+		t.Errorf("credentialProxyProductionFixtureIdentifier(allowed) = %q, want comments and documentation strings allowed", got)
+	}
+}
+
+func TestL8CredentialProxyPackageProductionFileDiscoveryIsRecursive(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "live", "provider")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	rootProduction := filepath.Join(root, "catalog.go")
+	nestedProduction := filepath.Join(nested, "route.go")
+	nestedTest := filepath.Join(nested, "route_test.go")
+	for path, source := range map[string]string{
+		rootProduction:   "package credentialproxy\n",
+		nestedProduction: "package provider\n",
+		nestedTest:       "package provider\n",
+	} {
+		if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error: %v", path, err)
+		}
+	}
+
+	paths, err := credentialProxyProductionFilesUnder(root)
+	if err != nil {
+		t.Fatalf("credentialProxyProductionFilesUnder() error: %v", err)
+	}
+	want := map[string]bool{
+		filepath.Clean(rootProduction):   true,
+		filepath.Clean(nestedProduction): true,
+	}
+	if len(paths) != len(want) {
+		t.Fatalf("recursive production files = %#v, want exactly root and nested production files", paths)
+	}
+	for _, path := range paths {
+		if !want[path] {
+			t.Errorf("recursive production files contain unexpected path %s", path)
 		}
 	}
 }
@@ -197,20 +306,90 @@ func credentialProxyCatalogProductionFiles(t *testing.T) []string {
 
 func credentialProxyProductionFiles(t *testing.T) []string {
 	t.Helper()
-	matches, err := filepath.Glob("*.go")
+	paths, err := credentialProxyProductionFilesUnder(".")
 	if err != nil {
-		t.Fatalf("Glob() error: %v", err)
-	}
-	paths := make([]string, 0, len(matches))
-	for _, path := range matches {
-		if !strings.HasSuffix(path, "_test.go") {
-			paths = append(paths, path)
-		}
+		t.Fatalf("WalkDir() error: %v", err)
 	}
 	if len(paths) == 0 {
 		t.Fatal("credentialproxy has no production files; D1 implementation is missing")
 	}
 	return paths
+}
+
+func credentialProxyProductionFilesUnder(root string) ([]string, error) {
+	paths := make([]string, 0)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		paths = append(paths, filepath.Clean(path))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
+
+func credentialProxyTestOnlyPathSegment(path string) string {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(path)), "/")
+	if len(parts) > 0 {
+		parts = parts[:len(parts)-1]
+	}
+	for _, part := range parts {
+		switch strings.ToLower(part) {
+		case "fixture", "fixtures",
+			"testfixture", "testfixtures", "testdata", "testutil", "testutils", "testonly",
+			"fake", "fakes", "mock", "mocks":
+			return part
+		}
+	}
+	return ""
+}
+
+func credentialProxyProductionFixtureIdentifiers() []string {
+	return []string{
+		"Fixture",
+		"fixture",
+		"Fixtures",
+		"fixtures",
+		"NewFixture",
+		"newFixture",
+		"NewFixtures",
+		"newFixtures",
+		"TestFixture",
+		"testFixture",
+		"FixtureRegistry",
+		"fixtureRegistry",
+		"FixtureCatalog",
+		"fixtureCatalog",
+		"NewTestCatalog",
+		"newTestCatalog",
+	}
+}
+
+func credentialProxyProductionFixtureIdentifier(path string, source []byte) (string, error) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, source, 0)
+	if err != nil {
+		return "", err
+	}
+	forbidden := make(map[string]bool)
+	for _, identifier := range credentialProxyProductionFixtureIdentifiers() {
+		forbidden[identifier] = true
+	}
+	var found string
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		identifier, ok := node.(*ast.Ident)
+		if ok && forbidden[identifier.Name] {
+			found = identifier.Name
+			return false
+		}
+		return found == ""
+	})
+	return found, nil
 }
 
 func credentialProxyCatalogForbiddenSourceMarkers() []string {
