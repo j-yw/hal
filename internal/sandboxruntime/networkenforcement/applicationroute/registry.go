@@ -2,7 +2,6 @@ package applicationroute
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -329,7 +328,7 @@ func newTrackedResponseBody(body io.ReadCloser, release func()) *trackedResponse
 
 func (body *trackedResponseBody) Read(buffer []byte) (int, error) {
 	count, err := body.body.Read(buffer)
-	if errors.Is(err, io.EOF) {
+	if err == io.EOF {
 		body.releaseOwnership()
 	}
 	return count, err
