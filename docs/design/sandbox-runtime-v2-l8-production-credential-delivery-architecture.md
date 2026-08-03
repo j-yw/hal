@@ -459,18 +459,22 @@ limits. Generic L6 HTTP and CONNECT remain byte-compatible for nonreserved
 requests. The reserved prefix always fails locally when the L8 handler is
 absent; it can never fall through to the generic forward proxy.
 
-The neutral `applicationroute.Registry` may deterministically order multiple
-handlers only when their prefixes do not overlap. The L6 `policyproxy.Config`
-D3 seam still receives at most one optional composed route handler; presenting
-the Registry there as one `applicationroute.Handler` does not widen L6 into a
-multiple-handler configuration surface. A second Config handler, duplicate
-route ID, or overlapping Registry prefix is a construction error. L6 owns
-parse, prefix dispatch, actual byte counting, connection bounds, and stop
-ordering; L8 owns request authorization and upstream behavior. D1 validates
-positive limit metadata, nonnegative request/response counts, and overflow-safe
-comparisons. Enforcement as bytes are read remains the L6/D3 handler and
-connection responsibility; neutral route limits are not required to equal any
-service catalog's fixed production limits.
+The neutral `applicationroute.Registry` registers singular leaf route handlers
+and may deterministically order multiple leaves only when their prefixes do not
+overlap. The Registry itself is the single composed `applicationroute.Handler`:
+it returns sorted defensive copies of every registered definition, while L6
+matches the parsed reserved path against those definitions and supplies the
+exact selected route ID when handling the request. D1 does not add a path to
+the live request or perform HTTP prefix parsing. The L6 `policyproxy.Config` D3
+seam still receives at most one optional composed handler, so presenting the
+Registry there does not widen L6 into a multiple-handler configuration surface.
+A second Config handler, duplicate route ID, or overlapping Registry prefix is
+a construction error. L6 owns parse, prefix selection, actual byte counting,
+connection bounds, and stop ordering; L8 owns request authorization and
+upstream behavior. D1 validates positive limit metadata, nonnegative
+request/response counts, and overflow-safe comparisons. Enforcement as bytes
+are read remains the L6/D3 handler and connection responsibility; neutral route
+limits are not required to equal any service catalog's fixed production limits.
 
 The composed handler is started before the listener becomes ready, loses
 readiness with the L7 session, and is closed and awaited before the listener

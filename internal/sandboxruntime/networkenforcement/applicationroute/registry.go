@@ -10,10 +10,22 @@ import (
 	"sync"
 )
 
-type Handler interface {
+// RouteHandler is one registered application route. Registry owns leaf
+// lifecycle and dispatch; callers compose leaves only through Registry.
+type RouteHandler interface {
 	Definition() Definition
 	Start(context.Context) error
 	Handle(context.Context, Request) (Response, error)
+	Close(context.Context) error
+}
+
+// Handler is the single composed application-route seam consumed by L6.
+// L6 matches a parsed reserved path against Definitions and supplies the exact
+// selected route ID to Handle.
+type Handler interface {
+	Definitions() []Definition
+	Start(context.Context) error
+	Handle(context.Context, RouteID, Request) (Response, error)
 	Close(context.Context) error
 }
 
@@ -29,7 +41,7 @@ const (
 )
 
 type routeEntry struct {
-	handler    Handler
+	handler    RouteHandler
 	definition Definition
 }
 
@@ -39,6 +51,8 @@ type routeEntry struct {
 type Registry struct {
 	state *registryState
 }
+
+var _ Handler = (*Registry)(nil)
 
 type registryState struct {
 	mu          sync.Mutex
@@ -56,7 +70,7 @@ type trackedResponseBody struct {
 	release     func()
 }
 
-func NewRegistry(handlers ...Handler) (*Registry, error) {
+func NewRegistry(handlers ...RouteHandler) (*Registry, error) {
 	shared := &registryState{state: RegistryStateUnstarted}
 	shared.condition = sync.NewCond(&shared.mu)
 	registry := &Registry{state: shared}
@@ -68,7 +82,7 @@ func NewRegistry(handlers ...Handler) (*Registry, error) {
 	return registry, nil
 }
 
-func (registry *Registry) Register(handler Handler) error {
+func (registry *Registry) Register(handler RouteHandler) error {
 	shared := registry.sharedState()
 	if shared == nil {
 		return ErrRegistryClosed
@@ -102,18 +116,32 @@ func (registry *Registry) Register(handler Handler) error {
 }
 
 func (registry *Registry) RouteIDs() []RouteID {
+	definitions := registry.Definitions()
+	ids := make([]RouteID, len(definitions))
+	for index, definition := range definitions {
+		ids[index] = definition.ID
+	}
+	return ids
+}
+
+func (registry *Registry) Definitions() []Definition {
 	shared := registry.sharedState()
 	if shared == nil {
 		return nil
 	}
 	shared.mu.Lock()
 	defer shared.mu.Unlock()
-	ids := make([]RouteID, len(shared.entries))
+	definitions := make([]Definition, len(shared.entries))
 	for index, entry := range shared.entries {
-		ids[index] = entry.definition.ID
+		definitions[index] = entry.definition
 	}
-	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
-	return ids
+	sort.Slice(definitions, func(left, right int) bool {
+		if definitions[left].ID != definitions[right].ID {
+			return definitions[left].ID < definitions[right].ID
+		}
+		return definitions[left].Prefix < definitions[right].Prefix
+	})
+	return definitions
 }
 
 func (registry *Registry) Start(ctx context.Context) error {
@@ -162,7 +190,7 @@ func (registry *Registry) Start(ctx context.Context) error {
 	return nil
 }
 
-func (registry *Registry) Dispatch(ctx context.Context, id RouteID, request Request) (Response, error) {
+func (registry *Registry) Handle(ctx context.Context, id RouteID, request Request) (Response, error) {
 	shared := registry.sharedState()
 	if shared == nil {
 		return Response{}, ErrRegistryClosed
@@ -219,6 +247,11 @@ func (registry *Registry) Dispatch(ctx context.Context, id RouteID, request Requ
 	response.Body = newTrackedResponseBody(response.Body, shared.dispatches.Done)
 	transferred = true
 	return response, nil
+}
+
+// Dispatch is the compatibility spelling for composed exact-route handling.
+func (registry *Registry) Dispatch(ctx context.Context, id RouteID, request Request) (Response, error) {
+	return registry.Handle(ctx, id, request)
 }
 
 func (registry *Registry) Close(ctx context.Context) error {
@@ -356,7 +389,7 @@ func prefixesOverlap(left, right string) bool {
 	return strings.HasPrefix(left, right) || strings.HasPrefix(right, left)
 }
 
-func nilHandler(handler Handler) bool {
+func nilHandler(handler RouteHandler) bool {
 	if handler == nil {
 		return true
 	}

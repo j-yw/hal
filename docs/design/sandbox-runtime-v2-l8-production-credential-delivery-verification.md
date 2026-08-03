@@ -111,8 +111,9 @@ Required focused areas are:
   old-server error envelope, host-CID validation, signed X25519 transcript,
   AEAD sequence/replay/tamper/unauthorized-host negatives, no fallback, strict
   frames, and cross-job negatives;
-- neutral route dispatch/collision/cleanup-retry ordering, live request and
-  response non-serialization, safe metadata bounds, exact deployment-prefixed
+- neutral leaf-route registration and composed Registry definition/dispatch
+  separation, collision/cleanup-retry ordering, live request and response
+  non-serialization, safe metadata bounds, exact deployment-prefixed
   reserved HTTP framing mapped to upstream `/openai/v1/responses`, fixed ticket
   encoding/lease/request/concurrency and body/response/SSE/idle limits,
   initial Pi Azure Responses clean-environment flags and sealed model, disabled
