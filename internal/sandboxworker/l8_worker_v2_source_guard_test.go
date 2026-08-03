@@ -195,6 +195,7 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 		Defs:       make(map[*ast.Ident]types.Object),
 		Uses:       make(map[*ast.Ident]types.Object),
 		Selections: make(map[*ast.SelectorExpr]*types.Selection),
+		Instances:  make(map[*ast.Ident]types.Instance),
 	}
 	astFiles := make([]*ast.File, 0, len(parsedFiles))
 	for _, file := range parsedFiles {
@@ -236,9 +237,11 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 							objects[object] = l8WorkerV2GuardScope{file: file, node: value}
 						}
 					case *ast.ValueSpec:
-						for _, name := range value.Names {
-							if object := info.Defs[name]; object != nil {
-								objects[object] = l8WorkerV2GuardScope{file: file, node: value}
+						for _, unit := range l8WorkerV2ValueSpecSemanticUnits(value) {
+							for _, name := range unit.Names {
+								if object := info.Defs[name]; object != nil {
+									objects[object] = l8WorkerV2GuardScope{file: file, node: unit}
+								}
 							}
 						}
 					}
@@ -382,6 +385,12 @@ func l8WorkerV2SemanticDeclarationUnits(declaration ast.Decl) []ast.Node {
 		}
 		var units []ast.Node
 		for _, spec := range typed.Specs {
+			if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+				for _, unit := range l8WorkerV2ValueSpecSemanticUnits(valueSpec) {
+					units = append(units, unit)
+				}
+				continue
+			}
 			typeSpec, ok := spec.(*ast.TypeSpec)
 			if !ok || l8WorkerV2ASTContainsMarker(typeSpec.Name) {
 				units = append(units, spec)
@@ -406,6 +415,24 @@ func l8WorkerV2SemanticDeclarationUnits(declaration ast.Decl) []ast.Node {
 	}
 }
 
+func l8WorkerV2ValueSpecSemanticUnits(spec *ast.ValueSpec) []*ast.ValueSpec {
+	if len(spec.Names) == 0 || len(spec.Names) != len(spec.Values) {
+		// A single RHS may produce multiple values. Likewise, an explicit type
+		// applies to every name in a declaration without initializers. Keep those
+		// declarations whole so one V2 dependency cannot be hidden in a sibling.
+		return []*ast.ValueSpec{spec}
+	}
+
+	units := make([]*ast.ValueSpec, 0, len(spec.Names))
+	for index, name := range spec.Names {
+		unit := *spec
+		unit.Names = []*ast.Ident{name}
+		unit.Values = []ast.Expr{spec.Values[index]}
+		units = append(units, &unit)
+	}
+	return units
+}
+
 func l8WorkerV2ImportValues(imports map[string]string) []string {
 	values := make([]string, 0, len(imports))
 	for _, importPath := range imports {
@@ -422,6 +449,14 @@ func l8WorkerV2MixedDeclarationScopes(declaration ast.Decl) []ast.Node {
 		}
 		var scopes []ast.Node
 		for _, spec := range typed.Specs {
+			if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+				for _, unit := range l8WorkerV2ValueSpecSemanticUnits(valueSpec) {
+					if l8WorkerV2ASTContainsMarker(unit) {
+						scopes = append(scopes, unit)
+					}
+				}
+				continue
+			}
 			if !l8WorkerV2ASTContainsMarker(spec) {
 				continue
 			}
@@ -516,8 +551,14 @@ func l8WorkerV2DynamicCallKind(expression ast.Expr, info *types.Info) string {
 		case *ast.ParenExpr:
 			expression = typed.X
 		case *ast.IndexExpr:
+			if !l8WorkerV2IsGenericInstantiation(typed, typed.X, info) {
+				return "function-value"
+			}
 			expression = typed.X
 		case *ast.IndexListExpr:
+			if !l8WorkerV2IsGenericInstantiation(typed, typed.X, info) {
+				return "function-value"
+			}
 			expression = typed.X
 		default:
 			goto unwrapped
@@ -551,6 +592,28 @@ unwrapped:
 		return "function-value"
 	}
 	return ""
+}
+
+func l8WorkerV2IsGenericInstantiation(indexed ast.Expr, base ast.Expr, info *types.Info) bool {
+	// Type information distinguishes a semantic generic instantiation from an
+	// ordinary map, slice, or array lookup whose result happens to be callable.
+	if _, ok := info.Types[indexed]; !ok {
+		return false
+	}
+	for {
+		switch typed := base.(type) {
+		case *ast.ParenExpr:
+			base = typed.X
+		case *ast.Ident:
+			_, ok := info.Instances[typed]
+			return ok
+		case *ast.SelectorExpr:
+			_, ok := info.Instances[typed.Sel]
+			return ok
+		default:
+			return false
+		}
+	}
 }
 
 func l8WorkerV2IsInterfaceType(typ types.Type) bool {
@@ -708,7 +771,7 @@ const OperationJobStartV2 = "job_start_v2"
 type JobStartRequestV2 struct{}`
 	aliases := `package sandboxworker
 const selectedOperation = OperationJobStartV2
-const routedOperation = selectedOperation
+const routedOperation, legacyOperation = selectedOperation, "job_start"
 type selectedRequest = JobStartRequestV2
 type routedRequest = selectedRequest`
 
@@ -723,7 +786,10 @@ func dispatch(operation string, request routedRequest) {
 		safeHelper(request)
 	}
 }
-func unrelatedLegacyDispatch() { _, _ = httpalias.Get("https://legacy.example.invalid") }`,
+func unrelatedLegacyDispatch() {
+	_ = legacyOperation
+	_, _ = httpalias.Get("https://legacy.example.invalid")
+}`,
 		"shared.go": `package sandboxworker
 func safeHelper(routedRequest) {}`,
 	}, policy)
@@ -763,6 +829,75 @@ func dispatch(operation string) {
 	if operation == routedOperation {}
 }`,
 	}, policy, "outside the exact allowlist")
+}
+
+func TestL8WorkerV2GuardGroupedValueSpecsRemainSemanticallyPrecise(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"aliases.go":   true,
+		"handler.go":   true,
+		"shared.go":    true,
+	}}
+	contracts := `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"`
+	aliases := `package sandboxworker
+const routedOperation, legacyOperation = OperationJobStartV2, "job_start"`
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"contracts.go": contracts,
+		"aliases.go":   aliases,
+		"handler.go": `package sandboxworker
+func JobStartHandler(operation string) {
+	if operation == routedOperation { safeRoutedHelper() }
+}
+func legacyHandler(operation string) {
+	if operation == legacyOperation { forbiddenLegacyHelper() }
+}`,
+		"shared.go": `package sandboxworker
+import httpalias "net/http"
+func safeRoutedHelper() {}
+func forbiddenLegacyHelper() { _, _ = httpalias.Get("https://legacy.example.invalid") }`,
+	}, policy)
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"contracts.go": contracts,
+		"aliases.go":   aliases,
+		"handler.go": `package sandboxworker
+func JobStartHandler(operation string) {
+	if operation == routedOperation { forbiddenRoutedHelper() }
+}`,
+		"shared.go": `package sandboxworker
+import httpalias "net/http"
+func forbiddenRoutedHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+	}, policy, "net/http")
+
+	for _, fixture := range []struct {
+		name    string
+		aliases string
+	}{
+		{name: "one RHS returning multiple values", aliases: `package sandboxworker
+var routedOperation, legacyOperation = groupedOperations()
+func groupedOperations() (string, string) { return OperationJobStartV2, "job_start" }`},
+		{name: "one explicit type for uninitialized names", aliases: `package sandboxworker
+type routedOperationType = JobOperationV2
+var routedOperation, legacyOperation routedOperationType`},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			fixtureContracts := contracts
+			if strings.Contains(fixture.aliases, "JobOperationV2") {
+				fixtureContracts += "\ntype JobOperationV2 string"
+			}
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"contracts.go": fixtureContracts,
+				"aliases.go":   fixture.aliases,
+				"handler.go": `package sandboxworker
+func legacyHandler() { _ = legacyOperation; forbiddenHelper() }`,
+				"shared.go": `package sandboxworker
+import httpalias "net/http"
+func forbiddenHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+			}, policy, "net/http")
+		})
+	}
 }
 
 func TestL8WorkerV2GuardMixedSwitchesAuditCompleteReachableControlFlow(t *testing.T) {
@@ -869,10 +1004,16 @@ type dispatcher interface { dispatch() }
 type concreteDispatcher struct{}
 func (concreteDispatcher) dispatch() {}
 type embeddedInterfaceDispatcher struct { dispatcher }
-type embeddedConcreteDispatcher struct { concreteDispatcher }`
+type embeddedConcreteDispatcher struct { concreteDispatcher }
+func genericDispatch[T any]() {}
+func genericDispatchPair[A, B any]() {}`
 	l8AssertWorkerV2GuardAllows(t, map[string]string{
 		"job_v2_fixture.go": `package sandboxworker
-func JobStartV2Fixture() { concreteDispatcher{}.dispatch() }
+func JobStartV2Fixture() {
+	concreteDispatcher{}.dispatch()
+	genericDispatch[int]()
+	genericDispatchPair[int, string]()
+}
 func JobResolveV2Fixture(value embeddedConcreteDispatcher, pointer *embeddedConcreteDispatcher) {
 	value.dispatch()
 	pointer.dispatch()
@@ -911,6 +1052,51 @@ func JobLogsV2Fixture() { fn := crossFileHelper; fn() }`,
 		"shared.go": `package sandboxworker
 func crossFileHelper() {}`,
 	}, policy, "function-value dispatch")
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+func JobCancelV2Fixture() { genericForbidden[int]() }`,
+		"shared.go": `package sandboxworker
+import httpalias "net/http"
+func genericForbidden[T any]() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+	}, policy, "net/http")
+}
+
+func TestL8WorkerV2GuardRejectsIndexedFunctionValues(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	fixtures := []struct {
+		name   string
+		source string
+	}{
+		{name: "map index", source: `package sandboxworker
+func indexedHelper() {}
+func JobStartV2Fixture(key string) { map[string]func(){"run": indexedHelper}[key]() }`},
+		{name: "slice index", source: `package sandboxworker
+func indexedHelper() {}
+func JobResolveV2Fixture(index int) { []func(){indexedHelper}[index]() }`},
+		{name: "array index", source: `package sandboxworker
+func indexedHelper() {}
+func JobStatusV2Fixture(index int) { [1]func(){indexedHelper}[index]() }`},
+		{name: "map alias index", source: `package sandboxworker
+type functionMapAlias = map[string]func()
+func JobLogsV2Fixture(functions functionMapAlias, key string) { functions[key]() }`},
+		{name: "slice defined type index", source: `package sandboxworker
+type functionSlice []func()
+func JobCancelV2Fixture(functions functionSlice, index int) { functions[index]() }`},
+		{name: "array defined type index", source: `package sandboxworker
+type functionArray [1]func()
+func JobStatusV2Fixture(functions functionArray, index int) { functions[index]() }`},
+		{name: "indexed method value", source: `package sandboxworker
+type indexedReceiver struct{}
+func (indexedReceiver) dispatch() {}
+func JobStartV2Fixture(value indexedReceiver) { []func(){value.dispatch}[0]() }`},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": fixture.source,
+			}, policy, "function-value dispatch")
+		})
+	}
 }
 
 func TestL8WorkerV2GuardRejectsReflectiveDispatch(t *testing.T) {
