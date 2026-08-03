@@ -137,8 +137,8 @@ absence cannot be proved, the public state is `unknown` with reason
 - `internal/credentialmemory` owns noncopyable anonymous locked mappings,
   callback-scoped borrowed views, overwrite, unlock/unmap, dumpability startup
   checks, and platform fail-closed behavior.
-- `internal/credentialsource` owns the byte-native worker-daemon source
-  boundary and host-admin source registry. The first production source is
+- `internal/credentialsource` owns the byte-native source implementation and
+  host-admin source-registry implementation. The first production source is
   Linux keyring v1 through direct syscalls into `credentialmemory`; non-Linux,
   environment, file, subprocess, and command-callback sources are
   compatibility-only. Tests may inject a mutable byte fixture source that is
@@ -165,10 +165,12 @@ absence cannot be proved, the public state is `unknown` with reason
 - `internal/sandboxruntime/microvm/firecrackerhost` owns v2 transport
   correlation, host HTTP activation, the host SSH relay, and the concrete L8
   runtime wrapper.
-- `internal/sandboxworker` owns the byte-native source registry plus
-  prepare/renew/loss/revoke ordering around a durable job. It sees the neutral
-  runtime interface and safe source references, not concrete Firecracker,
-  proxy, mount, SSH, or factory implementations.
+- `internal/sandboxworker` owns use of an injected neutral source-registry
+  interface plus prepare/renew/loss/revoke ordering around a durable job. It
+  imports only the neutral interface from `internal/sandboxruntime`; `cmd`
+  injects the `internal/credentialsource` implementation. The worker sees safe
+  source references, not concrete keyring, Firecracker, proxy, mount, SSH, or
+  factory implementations.
 - `cmd` constructs explicit dependencies and renders sanitized status. It does
   not implement a second broker, proxy, guest protocol, relay, or lifecycle.
 
@@ -375,6 +377,17 @@ durable. The workload sends a one-job ticket as the sole `api-key` header. The
 handler strips it, selects the sealed definition, and makes its own separately
 verified upstream TLS request. It never forwards the local authority, ticket,
 or reserved prefix upstream.
+
+An L8 Firecracker runtime/listener generation is exclusively leased to one
+credential-aware worker job from prepare through cleanup. While that lease is
+active, every other job and every v1 exec is rejected for that runtime; L8 does
+not multiplex credential-aware jobs over one guest address or L7 listener.
+Arrival on the exact listener therefore supplies the runtime/job attribution
+that is rechecked with the ticket. A ticket replayed through another job's
+runtime/listener generation has no matching activation or digest and fails
+before source access. Processes within the admitted job intentionally share
+that job's authority; the neighboring-job guarantee is not based on pretending
+that a bearer ticket identifies individual processes inside one job.
 
 The route accepts HTTP/1.1 only, one request per connection, a declared bounded
 `Content-Length`, no transfer coding, no trailers, no upgrade, no hop-by-hop
@@ -669,15 +682,37 @@ or L7 distributions, descriptors, or digests into a new capability claim.
 
 The L8 builder preserves the complete L7 kernel/network configuration and adds
 only the kernel/userland support mechanically required by the locked L8 guest
-behavior. It compiles the exact source commit's guest agent and init, records
-the parent profile identity in safe provenance, runs final-image inspection,
-and performs two independent offline builds with byte comparison. Host paths,
-build endpoints, credentials, and secret material never enter provenance or
-artifacts.
+behavior. In addition to the exact source commit's guest agent, init, and
+credential helper, it builds Buildroot's musl target `nodejs` 22.22.0 and
+installs `@earendil-works/pi-coding-agent` 0.82.1 as `/usr/bin/pi`. The L8
+source lock records the Node source archive, Pi package, its exact
+`npm-shrinkwrap.json`, and every transitive npm archive by filename, size, and
+SHA-256. Installation uses the verified cache under `--network=none`; floating
+semver resolution, an online `npm install`, a host Pi tree, and an unrecorded
+native or optional package are forbidden. The package is installed from a
+clean offline dependency tree with lifecycle scripts disabled unless an exact
+script and its outputs are separately locked.
 
-Prepared acceptance boots only the fresh digest-locked L8 distribution. Small
-HTTP and SSH protocol probes are compiled by the test harness, copied into the
-guest workspace through the existing bounded copy contract before activation,
+The builder records the parent profile identity and the Node/Pi versions and
+tree digests in safe provenance, runs final-image inspection, and performs two
+independent offline builds with byte comparison. The L8 rootfs size is raised
+by a fixed profile value sufficient for the locked runtime/package tree; it is
+not host-derived. Host paths, build endpoints, credentials, and secret material
+never enter provenance or artifacts. Final-image inspection uses debugfs to
+prove regular root-owned, non-setuid `/usr/bin/node` and `/usr/bin/pi`, the
+locked Pi package manifest/dependency-tree digest, no package-manager cache,
+and no credential/config/session material. It never executes rootfs content on
+the host.
+
+Prepared acceptance boots only the fresh digest-locked L8 distribution. It
+first executes the image's exact `/usr/bin/node` and `/usr/bin/pi --version`
+through credential-aware v2 and requires the locked versions. The HTTP-only
+and all-modes cases then execute that exact guest `/usr/bin/pi` process with the
+sealed clean environment and arguments against the owned TLS fixture, and the
+fixture must observe the expected real Pi Azure Responses request. A host Pi,
+adapter-only request generator, or copied Pi test double cannot satisfy the
+gate. Small file and SSH protocol probes may be compiled by the test harness,
+copied into the guest workspace through the existing bounded copy contract,
 and executed through v2 with the exact job binding. They are not installed in
 the production image and are not accepted as proof without the live L8 runtime,
 guest, network, and cleanup correlations.
@@ -800,6 +835,8 @@ compatible where existing contracts require it.
 - Run each mode alone, all modes together, neighboring-job negatives, every
   terminal/failure/restart path, durable canary scans, and zero-resource
   cleanup against the exact phase head.
+- Prove the locked Node/Pi files in the fresh image and execute the exact guest
+  Pi Azure Responses consumer against the owned local TLS fixture.
 - Run focused/race/repetition, full repository, docs, build, lint when
   installed, cross-platform compilation, and independent Hal/manual reviews.
 

@@ -33,55 +33,39 @@ Guards must prove:
 
 - `internal/credentialdelivery` and `internal/sandbox/credential_proxy*.go`
   remain metadata-only;
-- default L5/L7 runtime and worker constructors cannot import or construct L8
-  live adapters;
+- every current `cmd` production file, including all `sandboxd*.go`
+  composition files, stays free of premature L8 live imports and constructors;
+  D6 replaces this blanket guard with one explicit allowlisted L8 composition
+  file while retaining a default-disabled construction test;
 - command and factory paths cannot transport raw credential bytes, callbacks,
   endpoints, or tickets in worker requests;
-- `sandboxjob-v1` cannot accept or ignore production credential intent;
+- D0 locks the complete `sandboxworker-v1`/`sandboxjob-v1` and guest-v1 Go
+  field/type/JSON-tag schemas against embedded or renamed intent; the first D1
+  red/green checkpoint must make the worker decoder reject unknown,
+  duplicate, and trailing JSON before any v2 dispatch is added, so v1 cannot
+  accept or ignore production credential intent;
 - v1 guest behavior and no-credential JSON remain compatible;
 - handoff, simulation, env, and legacy activation cannot project L8 live
   proof;
-- test-only service registries and live fixtures cannot enter production
+- D0 fixture-name and test-import barriers remain intact; once the D1 catalog
+  exists, its constructor tests and import guards must prove that fixture
+  endpoints are defined only in `_test.go` and cannot enter production
   composition; and
 - live test markers remain behind their exact build tags.
 
 ## Focused fake-only gates
 
-The exact package set grows as D1-D6 land, but every final selector must match
-at least one named L8 test:
+The exact package set grows as D1-D6 land. The authoritative wrapper first
+runs `go test -list '^TestL8'` for every selector and fails if any selector
+matches no named L8 test; only then does it run the focused, race, and repeated
+commands below:
 
 ```sh
-go test -count=1 -timeout=240s \
-  ./internal/credentialmemory \
-  ./internal/credentialsource \
-  ./internal/credentialproxy \
-  ./internal/credentialdelivery \
-  ./internal/factory \
-  ./internal/sandboxruntime \
-  ./internal/sandboxruntime/networkenforcement/applicationroute \
-  ./internal/sandboxruntime/microvm/guestagent \
-  ./internal/sandboxruntime/microvm/guestagent/server/... \
-  ./internal/sandboxruntime/microvm/firecrackerhost \
-  ./internal/sandboxworker \
-  ./internal/sandboxexecution \
-  ./cmd -run '^TestL8'
-
-go test -race -count=1 -timeout=360s \
-  ./internal/credentialmemory \
-  ./internal/credentialsource \
-  ./internal/credentialproxy \
-  ./internal/sandboxruntime/microvm/guestagent/... \
-  ./internal/sandboxruntime/microvm/firecrackerhost \
-  ./internal/sandboxworker \
-  ./internal/sandboxexecution -run '^TestL8'
-
-go test -count=25 -timeout=420s \
-  ./internal/credentialmemory \
-  ./internal/credentialsource \
-  ./internal/credentialproxy \
-  ./internal/sandboxruntime/microvm/guestagent/server/... \
-  ./internal/sandboxworker -run '^TestL8'
+tools/microvm/l8/verify-focused.sh
 ```
+
+The wrapper is the gate; running a skip-blind `go test -run` command by itself
+does not satisfy the selector-presence requirement.
 
 Required focused areas are:
 
@@ -146,6 +130,9 @@ tools/microvm/l8/verify-reproducible.sh \
 ```
 
 The final-image verifier proves the exact v2 guest agent/init/helper binaries,
+musl target Node 22.22.0, `@earendil-works/pi-coding-agent` 0.82.1 and its
+locked dependency-tree digest, root-owned non-setuid `/usr/bin/node` and
+`/usr/bin/pi`, and absence of npm cache/config/session material. It also proves
 dedicated agent UID/GID 998 and workload UID/GID 1000, PID1 helper launch before
 agent privilege drop, protected proc, exact helper capability/pivot/seccomp
 policy, empty agent/workload capability sets, controller-public-key boot input
@@ -163,6 +150,8 @@ Before the selected E2E begins, a separate no-skip prerequisite test proves:
 - Linux amd64, writable KVM, pinned Firecracker, writable TUN, and working
   vsock;
 - the exact fresh digest-locked L8 distribution;
+- the final-image Node/Pi files and provenance match the L8 source lock, and
+  live guest execution reports the exact locked Node and Pi versions;
 - L7 namespace, nftables, pasta, local topology, and active-inspection
   prerequisites;
 - mount namespaces, normal tmpfs mount/unmount, boot-time cgroup-v2 delegation,
@@ -177,35 +166,35 @@ Before the selected E2E begins, a separate no-skip prerequisite test proves:
   keyrings, followed by revocation/removal proof.
 
 ```sh
-go test -race -count=1 -timeout=5m \
-  -tags='firecracker_live network_enforcement_live l7_linux_network_integration l8_production_credential_delivery_live' \
-  ./internal/sandboxruntime/microvm/firecrackerhost \
-  -run '^TestL8PreparedLinuxCredentialDeliveryPrerequisites$'
+tools/microvm/l8/verify-selected-live.sh prerequisites
 ```
 
+The wrapper hardcodes build tags `firecracker_live`,
+`network_enforcement_live`, `l7_linux_network_integration`, and
+`l8_production_credential_delivery_live`, and selects exactly
+`TestL8PreparedLinuxCredentialDeliveryPrerequisites` for this gate.
 Missing or inadequate prerequisites fail. They never call `t.Skip` after the
-test is selected.
+test is selected. The wrapper captures `go test -json`, waits for the child,
+rejects every skip event, and requires exactly one run and pass event for the
+selected top-level test.
 
 ## Selected prepared-Linux E2E
 
-List and run are separate gates so the build expression and exact test name
-are auditable:
+Discovery and execution remain separate inside the authoritative wrapper so
+the build expression and exact test name are auditable:
 
 ```sh
-go test -list '^TestL8PreparedLinuxCredentialDeliveryE2E$' \
-  -tags='firecracker_live network_enforcement_live l7_linux_network_integration l8_production_credential_delivery_live' \
-  ./internal/sandboxruntime/microvm/firecrackerhost \
-  | grep -qx 'TestL8PreparedLinuxCredentialDeliveryE2E'
-
-go test -race -count=1 -timeout=20m \
-  -tags='firecracker_live network_enforcement_live l7_linux_network_integration l8_production_credential_delivery_live' \
-  ./internal/sandboxruntime/microvm/firecrackerhost \
-  -run '^TestL8PreparedLinuxCredentialDeliveryE2E$'
+tools/microvm/l8/verify-selected-live.sh e2e
 ```
 
+This mode selects exactly `TestL8PreparedLinuxCredentialDeliveryE2E` under the
+same four build tags.
 The one selected test contains subtests for HTTP only, file only, SSH only,
 all three together, and the required failure/recovery matrix. Every subtest
-uses a fresh sandbox/runtime/job generation.
+uses a fresh sandbox/runtime/job generation. The wrapper rejects every JSON
+skip event and requires the top-level test plus `http_only`, `file_tmpfs_only`,
+`ssh_agent_only`, `all_modes`, and `failure_recovery_matrix` to pass exactly
+once after the child process finishes.
 
 ### HTTP fixture
 
@@ -214,12 +203,17 @@ locally assigned address that production classification treats as globally
 unicast. A test-only trusted CA and sealed fixture service entry are injected
 through test constructors; production destination checks are not weakened.
 The upstream verifies the expected transformed canary and TLS server identity.
-The exact production Pi binding generates the reserved base URL, sealed API
-version, and ticket environment from a clean allowlist against the compatible
-fixture entry without a billed call; inherited provider variables, direct Pi
-`xai`, arbitrary base URLs, and `--api-key` are negative cases.
+The exact production Pi binding starts the locked `/usr/bin/pi` inside the
+fresh guest and generates the reserved base URL, sealed API version, and ticket
+environment from a clean allowlist against the compatible fixture entry
+without a billed call. The fixture must observe the real Pi Azure Responses
+request and return a bounded response that Pi consumes successfully. A host
+Pi, adapter-only request generator, copied test double, inherited provider
+variables, direct Pi `xai`, arbitrary base URLs, and `--api-key` are negative
+cases.
 
-Negative cases cover wrong deployment/version/model, Pi ambient configuration
+Negative cases cover missing/wrong Node or Pi version/tree digest, wrong
+deployment/version/model, Pi ambient configuration
 and missing hardening flags, pre-admission or serialized ticket injection,
 malformed/expired/hard-expired/over-count/concurrent tickets, bad roots/server
 identity, plaintext downgrade, redirect, authority mismatch, userinfo,

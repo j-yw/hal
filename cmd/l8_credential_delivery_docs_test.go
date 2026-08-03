@@ -28,10 +28,14 @@ func TestL8CredentialDeliveryArchitecture(t *testing.T) {
 		"signed ephemeral X25519 handshake",
 		"applicationroute.Handler",
 		"azure-openai-responses-v1",
+		"exclusively leased to one",
 		"deployments/<sealed-deployment>/responses?api-version=<sealed-version>",
 		"43 unpadded base64url characters",
 		"hard lifetime is 35 minutes",
 		"dedicated UID/GID 998",
+		"musl target `nodejs` 22.22.0",
+		"@earendil-works/pi-coding-agent` 0.82.1",
+		"/usr/bin/pi --version",
 		"Seccomp is not claimed to inspect pathname strings",
 		"hal-guest-credential-helper",
 		"CAP_SYS_ADMIN",
@@ -71,6 +75,8 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 	for _, required := range []string{
 		"TestL8CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)",
 		"tools/microvm/l8/verify-reproducible.sh",
+		"tools/microvm/l8/verify-focused.sh",
+		"tools/microvm/l8/verify-selected-live.sh",
 		"TestL8PreparedLinuxCredentialDeliveryPrerequisites",
 		"TestL8PreparedLinuxCredentialDeliveryE2E",
 		liveTag,
@@ -81,6 +87,7 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 		"make build",
 		"git diff --check",
 		"A selected live test that skips is a failure",
+		"rejects every skip event",
 		"no internet route",
 		"strict `sandboxjob-v2`",
 		"initial Pi Azure Responses clean-environment",
@@ -106,6 +113,15 @@ func TestL8CredentialDeliveryDefaultGuards(t *testing.T) {
 		filepath.Join("..", "internal", "sandboxworker", "server.go"),
 		filepath.Join("..", "internal", "factory", "secret_broker.go"),
 		filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost", "l7_live_composition.go"),
+	}
+	sandboxdFiles, err := filepath.Glob("sandboxd*.go")
+	if err != nil {
+		t.Fatalf("glob sandboxd production composition: %v", err)
+	}
+	for _, path := range sandboxdFiles {
+		if !strings.HasSuffix(path, "_test.go") {
+			targets = append(targets, path)
+		}
 	}
 	for _, path := range targets {
 		source := readL8CredentialDeliveryFile(t, path)
