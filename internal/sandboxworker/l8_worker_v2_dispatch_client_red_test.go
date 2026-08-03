@@ -260,15 +260,15 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 	}
 	mutations := []struct {
 		name            string
-		mutate          func(Response, Request) Response
+		mutate          func(*testing.T, Response, Request) Response
 		wantUnsupported bool
 	}{
-		{name: "exact", mutate: func(response Response, _ Request) Response { return response }, wantUnsupported: true},
-		{name: "wrong request id", mutate: func(response Response, _ Request) Response {
+		{name: "exact", mutate: func(_ *testing.T, response Response, _ Request) Response { return response }, wantUnsupported: true},
+		{name: "wrong request id", mutate: func(_ *testing.T, response Response, _ Request) Response {
 			response.RequestID = "request-neighbor"
 			return response
 		}},
-		{name: "wrong operation", mutate: func(response Response, request Request) Response {
+		{name: "wrong operation", mutate: func(_ *testing.T, response Response, request Request) Response {
 			if response.Operation == request.Operation {
 				response.Operation = OperationProtocolError
 			} else {
@@ -276,26 +276,27 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 			}
 			return response
 		}},
-		{name: "wrong code", mutate: func(response Response, _ Request) Response {
+		{name: "wrong code", mutate: func(_ *testing.T, response Response, _ Request) Response {
 			response.Error.Code = ErrorCodeInternal
 			return response
 		}},
-		{name: "wrong message", mutate: func(response Response, _ Request) Response {
+		{name: "wrong message", mutate: func(_ *testing.T, response Response, _ Request) Response {
 			response.Error.Message = "worker protocol is unavailable"
 			return response
 		}},
-		{name: "wrong protocol", mutate: func(response Response, _ Request) Response {
+		{name: "wrong protocol", mutate: func(_ *testing.T, response Response, _ Request) Response {
 			response.ProtocolVersion = "sandboxworker-neighbor"
 			return response
 		}},
-		{name: "wrong ok", mutate: func(response Response, _ Request) Response {
+		{name: "wrong ok", mutate: func(_ *testing.T, response Response, _ Request) Response {
 			response.OK = true
 			return response
 		}},
-		{name: "unexpected payload", mutate: func(response Response, _ Request) Response {
+		{name: "unexpected v1 payload", mutate: func(_ *testing.T, response Response, _ Request) Response {
 			response.Job = &v1Job
 			return response
 		}},
+		{name: "operation matching v2 payload", mutate: l8WorkerV2AttachValidMatchingResponsePayload},
 	}
 
 	for _, operation := range l8WorkerV2ClientOperationCases() {
@@ -307,7 +308,9 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 					client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, request Request) (Response, error) {
 						calls++
 						captured = append(captured, request)
-						return mutation.mutate(responder.make(request), request), nil
+						response := responder.make(request)
+						l8AssertWorkerV2UnsupportedResponsePayloadFree(t, response)
+						return mutation.mutate(t, response, request), nil
 					})})
 					if err != nil {
 						t.Fatal(err)
@@ -342,6 +345,46 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 			}
 			l8AssertWorkerV2SingleAttemptWithoutFallback(t, calls, captured, operation.operation)
 		})
+	}
+}
+
+func l8WorkerV2AttachValidMatchingResponsePayload(t *testing.T, response Response, request Request) Response {
+	t.Helper()
+	switch request.Operation {
+	case OperationJobLogsV2:
+		payload := JobLogsResponseV2{
+			ContractVersion: JobContractVersionV2,
+			JobID:           request.JobLogsV2.JobID,
+			NextCursor:      request.JobLogsV2.Cursor,
+		}
+		if err := payload.Validate(); err != nil {
+			t.Fatalf("valid matching V2 logs payload fixture: %v", err)
+		}
+		response.JobLogsV2 = &payload
+	case OperationJobStartV2, OperationJobResolveV2, OperationJobStatusV2, OperationJobCancelV2:
+		job := l8WorkerV2QueuedJob()
+		if err := job.Validate(); err != nil {
+			t.Fatalf("valid matching V2 job payload fixture: %v", err)
+		}
+		response.JobV2 = &job
+	default:
+		t.Fatalf("matching V2 payload fixture received unknown operation %q", request.Operation)
+	}
+	return response
+}
+
+func l8AssertWorkerV2UnsupportedResponsePayloadFree(t *testing.T, response Response) {
+	t.Helper()
+	value := reflect.ValueOf(response)
+	typ := value.Type()
+	for index := 0; index < value.NumField(); index++ {
+		field := typ.Field(index)
+		if field.Name == "Error" || field.Type.Kind() != reflect.Ptr {
+			continue
+		}
+		if !value.Field(index).IsNil() {
+			t.Fatalf("exact unsupported response populated payload field %s: %#v", field.Name, response)
+		}
 	}
 }
 
@@ -402,6 +445,79 @@ func l8WorkerV1ValidSuccessResponse(t *testing.T, operation, requestID string, j
 	return response
 }
 
+func TestL8WorkerV2ClientAcceptsEquivalentReorderedCredentialIdentity(t *testing.T) {
+	start := l8WorkerV2StartRequest()
+	start.SourceReferenceIDs = append(start.SourceReferenceIDs, "source-secondary", "source-tertiary")
+	start.Bindings = append(start.Bindings,
+		JobCredentialBindingV2{
+			BindingID:         "binding-secondary",
+			SourceReferenceID: "source-secondary",
+			Mode:              CredentialModeFileTmpfs,
+		},
+		JobCredentialBindingV2{
+			BindingID:         "binding-tertiary",
+			SourceReferenceID: "source-tertiary",
+			Mode:              CredentialModeSSHAgent,
+		},
+	)
+	if err := start.Validate(); err != nil {
+		t.Fatalf("valid multi-source V2 request fixture: %v", err)
+	}
+	originalRequest := l8CloneWorkerV2StartRequest(start)
+
+	job := l8WorkerV2QueuedJob()
+	job.SubmissionKey = jobSubmissionKeyV2("principal-owner", start)
+	job.CredentialIntent = JobCredentialIntentV2{
+		ProductionCredentialsRequested: start.ProductionCredentialsRequested,
+		PlanID:                         start.PlanID,
+		AdmissionGrantID:               start.AdmissionGrantID,
+		AdmissionGrantRevision:         start.AdmissionGrantRevision,
+		TemplatePolicyID:               start.TemplatePolicyID,
+		WorkspacePolicyID:              start.WorkspacePolicyID,
+		SourceReferenceIDs:             append([]string(nil), start.SourceReferenceIDs...),
+		Bindings:                       append([]JobCredentialBindingV2(nil), start.Bindings...),
+	}
+	job.CredentialIntent.SourceReferenceIDs = []string{"source-secondary", "source-primary", "source-tertiary"}
+	job.CredentialIntent.Bindings = []JobCredentialBindingV2{
+		start.Bindings[2],
+		start.Bindings[0],
+		start.Bindings[1],
+	}
+	if err := job.Validate(); err != nil {
+		t.Fatalf("valid independently reordered V2 response fixture: %v", err)
+	}
+	originalResponse := l8CloneWorkerV2Job(job)
+
+	client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, request Request) (Response, error) {
+		if request.JobStartV2 == nil || !reflect.DeepEqual(*request.JobStartV2, originalRequest) {
+			t.Fatalf("multi-source V2 request mutated before transport: %#v", request.JobStartV2)
+		}
+		return Response{
+			ProtocolVersion: ProtocolVersion,
+			RequestID:       request.RequestID,
+			Operation:       request.Operation,
+			OK:              true,
+			JobV2:           &job,
+		}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.JobStartV2(context.Background(), RuntimeDriverMicroVM, start)
+	if err != nil {
+		t.Fatalf("semantically equivalent reordered credential identity: %v", err)
+	}
+	if result == nil || result.ID != job.ID {
+		t.Fatalf("accepted reordered V2 response = %#v, want job %q", result, job.ID)
+	}
+	if !reflect.DeepEqual(start, originalRequest) {
+		t.Fatalf("V2 client mutated original multi-source request: got %#v want %#v", start, originalRequest)
+	}
+	if !reflect.DeepEqual(job, originalResponse) {
+		t.Fatalf("V2 client mutated original reordered response: got %#v want %#v", job, originalResponse)
+	}
+}
+
 func TestL8WorkerV2ClientRejectsCredentialIdentityResponseMismatch(t *testing.T) {
 	start := l8WorkerV2StartRequest()
 	mutations := []struct {
@@ -454,6 +570,11 @@ func TestL8WorkerV2ClientRejectsCredentialIdentityResponseMismatch(t *testing.T)
 			}
 		})
 	}
+}
+
+func l8CloneWorkerV2Job(job JobV2) JobV2 {
+	job.CredentialIntent = l8CloneWorkerV2Intent(job.CredentialIntent)
+	return job
 }
 
 func l8LegacyUnsupportedV2Response(req Request) Response {

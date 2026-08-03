@@ -358,62 +358,11 @@ func l8WorkerV2MixedFunctionBodyScopes(body *ast.BlockStmt) []ast.Node {
 	if body == nil || !l8WorkerV2ASTContainsMarker(body) {
 		return nil
 	}
-	var scopes []ast.Node
-	foundV2Switch := false
-	for _, statement := range body.List {
-		var switchBody *ast.BlockStmt
-		var switchTag ast.Node
-		switch typed := statement.(type) {
-		case *ast.SwitchStmt:
-			switchBody = typed.Body
-			switchTag = typed.Tag
-		case *ast.TypeSwitchStmt:
-			switchBody = typed.Body
-			switchTag = typed.Assign
-		}
-		if switchBody == nil {
-			continue
-		}
-		var matchingCases []ast.Node
-		for _, item := range switchBody.List {
-			clause, ok := item.(*ast.CaseClause)
-			if ok && l8WorkerV2CaseListContainsMarker(clause) {
-				matchingCases = append(matchingCases, clause)
-			}
-		}
-		if len(matchingCases) == 0 {
-			continue
-		}
-		foundV2Switch = true
-		if switchTag != nil {
-			scopes = append(scopes, switchTag)
-		}
-		scopes = append(scopes, matchingCases...)
-	}
-	if !foundV2Switch {
-		return []ast.Node{body}
-	}
-	for _, statement := range body.List {
-		switch statement.(type) {
-		case *ast.SwitchStmt, *ast.TypeSwitchStmt:
-			continue
-		default:
-			scopes = append(scopes, statement)
-		}
-	}
-	return scopes
-}
-
-func l8WorkerV2CaseListContainsMarker(clause *ast.CaseClause) bool {
-	if clause == nil {
-		return false
-	}
-	for _, expression := range clause.List {
-		if l8WorkerV2ASTContainsMarker(expression) {
-			return true
-		}
-	}
-	return false
+	// Mixed dispatch functions are intentionally audited as one control-flow
+	// unit. Case-only slicing misses switch initializers, fallthrough targets,
+	// and later switches reached after a V2 branch. Unrelated legacy sibling
+	// functions remain outside the object-identity closure.
+	return []ast.Node{body}
 }
 
 func l8WorkerV2ReferencedDeclarationScopes(scope l8WorkerV2GuardScope) []l8WorkerV2GuardScope {
@@ -623,7 +572,7 @@ func liveHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`
 	}, policy, "net/http")
 }
 
-func TestL8WorkerV2GuardMixedSwitchesInspectOnlyReachedV2Cases(t *testing.T) {
+func TestL8WorkerV2GuardMixedSwitchesAuditCompleteReachableControlFlow(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"handler.go": true}}
 	l8AssertWorkerV2GuardAllows(t, map[string]string{
 		"handler.go": `package sandboxworker
@@ -632,20 +581,63 @@ func dispatch(operation string) {
 	switch operation {
 	case "job_start_v2":
 		safeHelper()
-	case "job_start":
-		_, _ = httpalias.Get("https://legacy.example.invalid")
 	}
 }
-func safeHelper() {}`,
+func safeHelper() {}
+func unrelatedLegacyDispatch() { _, _ = httpalias.Get("https://legacy.example.invalid") }`,
 	}, policy)
+
+	initializers := []struct {
+		name   string
+		source string
+	}{
+		{name: "value switch init", source: `package sandboxworker
+import httpalias "net/http"
+func forbiddenInit() int { _, _ = httpalias.Get("https://authority.example.invalid"); return 1 }
+func dispatch(operation string) {
+	switch initialized := forbiddenInit(); operation {
+	case "job_start_v2": _ = initialized
+	}
+}`},
+		{name: "type switch init", source: `package sandboxworker
+import httpalias "net/http"
+type JobStartV2Fixture struct{}
+func forbiddenInit() int { _, _ = httpalias.Get("https://authority.example.invalid"); return 1 }
+func dispatch(value any) {
+	switch initialized := forbiddenInit(); value.(type) {
+	case JobStartV2Fixture: _ = initialized
+	}
+}`},
+	}
+	for _, fixture := range initializers {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{"handler.go": fixture.source}, policy, "net/http")
+		})
+	}
+
 	l8AssertWorkerV2GuardRejects(t, map[string]string{
 		"handler.go": `package sandboxworker
 import httpalias "net/http"
 func dispatch(operation string) {
 	switch operation {
 	case "job_start_v2":
-		_, _ = httpalias.Get("https://authority.example.invalid")
+		fallthrough
 	case "job_start":
+		_, _ = httpalias.Get("https://authority.example.invalid")
+	}
+}`,
+	}, policy, "net/http")
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"handler.go": `package sandboxworker
+import httpalias "net/http"
+func dispatch(operation, phase string) {
+	switch operation {
+	case "job_start_v2":
+	}
+	switch phase {
+	case "legacy_phase":
+		_, _ = httpalias.Get("https://authority.example.invalid")
 	}
 }`,
 	}, policy, "net/http")
