@@ -548,6 +548,115 @@ func TestL8CredentialMemoryBorrowWaitsForConcurrentAliasUseBeforeSharedExpiry(t 
 	}
 }
 
+func TestL8CredentialMemoryBorrowedViewSinkCanReenterSafeOperations(t *testing.T) {
+	source, err := newLockedMapping(64, &l8MemoryOps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := newLockedMapping(64, &l8MemoryOps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canary := []byte("l8-reentrant-view-canary")
+	if err := source.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, canary)
+		return len(canary), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	borrowDone := make(chan error, 1)
+	go func() {
+		borrowDone <- source.Borrow(context.Background(), func(view BorrowedView) error {
+			sink := &l8ReentrantMemorySink{
+				view:   view,
+				target: target,
+				limit:  len(canary),
+			}
+			if err := view.WriteTo(context.Background(), sink); err != nil {
+				return err
+			}
+			if sink.length != len(canary) || sink.count != 1 {
+				return errors.New("reentrant sink did not complete both safe view operations")
+			}
+			return nil
+		})
+	}()
+	if err := l8ReceiveMemoryTest(t, borrowDone, "reentrant borrowed-view sink"); err != nil {
+		t.Fatal(err)
+	}
+
+	verified := &l8BoundedSink{limit: len(canary)}
+	if err := target.Borrow(context.Background(), func(view BorrowedView) error {
+		return view.WriteTo(context.Background(), verified)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if verified.count != 1 || verified.size != len(canary) || verified.digest != sha256.Sum256(canary) {
+		t.Fatal("reentrant safe CopyTo did not preserve the credential value")
+	}
+	if err := source.Destroy(); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Destroy(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestL8CredentialMemoryRecursiveReflectTraversalCannotReachLiveRegion(t *testing.T) {
+	mapping, err := newLockedMapping(64, &l8MemoryOps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canary := []byte("l8-reflect-region-canary")
+	if err := mapping.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, canary)
+		return len(canary), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if exposures := l8CredentialMemoryRecursiveReflectExposures(mapping, canary); len(exposures) != 0 {
+		t.Errorf("LockedMapping reflection reached/formatted live bytes: %v", exposures)
+	}
+	if err := mapping.Borrow(context.Background(), func(view BorrowedView) error {
+		if exposures := l8CredentialMemoryRecursiveReflectExposures(view, canary); len(exposures) != 0 {
+			t.Errorf("borrowedView reflection reached/formatted live bytes: %v", exposures)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, fixture := range []struct {
+		name  string
+		value any
+	}{
+		{name: "LockedMapping", value: LockedMapping{}},
+		{name: "borrowedView", value: borrowedView{}},
+	} {
+		t.Run(fixture.name+" wrapper", func(t *testing.T) {
+			typeOf := reflect.TypeOf(fixture.value)
+			accessors := 0
+			for index := 0; index < typeOf.NumField(); index++ {
+				field := typeOf.Field(index)
+				switch field.Type.Kind() {
+				case reflect.Func:
+					accessors++
+				case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.UnsafePointer:
+					t.Errorf("%s field %s keeps reflect-traversable live state as %s", fixture.name, field.Name, field.Type.Kind())
+				}
+			}
+			if accessors != 1 {
+				t.Errorf("%s closure-backed accessors = %d, want 1", fixture.name, accessors)
+			}
+		})
+	}
+	if err := mapping.Destroy(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestL8CredentialMemoryLockedMappingValueCopiesDenyFormattingAndSerialization(t *testing.T) {
 	mapping, err := newLockedMapping(64, &l8MemoryOps{})
 	if err != nil {
@@ -1029,11 +1138,29 @@ type l8BlockingMemorySink struct {
 	release chan struct{}
 }
 
+type l8ReentrantMemorySink struct {
+	view   BorrowedView
+	target *LockedMapping
+	limit  int
+	length int
+	count  int
+}
+
 func (sink *l8BlockingMemorySink) MaxCredentialBytes() int { return sink.limit }
 
 func (sink *l8BlockingMemorySink) WriteCredential([]byte) error {
 	close(sink.started)
 	return l8AwaitMemorySignal(sink.release, "release copied view sink")
+}
+
+func (sink *l8ReentrantMemorySink) MaxCredentialBytes() int {
+	sink.length = sink.view.Len()
+	return sink.limit
+}
+
+func (sink *l8ReentrantMemorySink) WriteCredential([]byte) error {
+	sink.count++
+	return sink.view.CopyTo(context.Background(), sink.target)
 }
 
 func (sink *l8BoundedSink) MaxCredentialBytes() int { return sink.limit }
@@ -1077,4 +1204,73 @@ func allL8Zero(value []byte) bool {
 		}
 	}
 	return true
+}
+
+func l8CredentialMemoryRecursiveReflectExposures(root any, canary []byte) []string {
+	var renderings []string
+	l8CredentialMemoryWalkReflect(reflect.ValueOf(root), 0, make(map[l8CredentialMemoryReflectVisit]bool), &renderings)
+	plain := string(canary)
+	hex := fmt.Sprintf("%x", canary)
+	var exposures []string
+	for _, rendered := range renderings {
+		if strings.Contains(rendered, plain) || strings.Contains(rendered, hex) {
+			exposures = append(exposures, rendered)
+		}
+	}
+	return exposures
+}
+
+type l8CredentialMemoryReflectVisit struct {
+	typeOf  reflect.Type
+	pointer uintptr
+}
+
+func l8CredentialMemoryWalkReflect(value reflect.Value, depth int, seen map[l8CredentialMemoryReflectVisit]bool, renderings *[]string) {
+	if !value.IsValid() || depth > 16 {
+		return
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if !value.IsNil() {
+			l8CredentialMemoryWalkReflect(value.Elem(), depth+1, seen, renderings)
+		}
+	case reflect.Pointer:
+		if value.IsNil() {
+			return
+		}
+		visit := l8CredentialMemoryReflectVisit{typeOf: value.Type(), pointer: value.Pointer()}
+		if seen[visit] {
+			return
+		}
+		seen[visit] = true
+		l8CredentialMemoryWalkReflect(value.Elem(), depth+1, seen, renderings)
+	case reflect.Struct:
+		for index := 0; index < value.NumField(); index++ {
+			l8CredentialMemoryWalkReflect(value.Field(index), depth+1, seen, renderings)
+		}
+	case reflect.Array, reflect.Slice:
+		if value.Kind() == reflect.Slice && value.IsNil() {
+			return
+		}
+		if value.Type().Elem().Kind() == reflect.Uint8 {
+			bytes := make([]byte, value.Len())
+			for index := 0; index < value.Len(); index++ {
+				bytes[index] = byte(value.Index(index).Uint())
+			}
+			*renderings = append(*renderings, string(bytes), fmt.Sprintf("%v", bytes), fmt.Sprintf("%x", bytes))
+			return
+		}
+		for index := 0; index < value.Len(); index++ {
+			l8CredentialMemoryWalkReflect(value.Index(index), depth+1, seen, renderings)
+		}
+	case reflect.Map:
+		if value.IsNil() {
+			return
+		}
+		iterator := value.MapRange()
+		for iterator.Next() {
+			l8CredentialMemoryWalkReflect(iterator.Key(), depth+1, seen, renderings)
+			l8CredentialMemoryWalkReflect(iterator.Value(), depth+1, seen, renderings)
+		}
+	}
 }
