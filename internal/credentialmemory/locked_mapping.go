@@ -51,13 +51,12 @@ type BorrowedView interface {
 
 type LockedMapping struct {
 	identity lockedMappingIdentity
-	state    *lockedMappingState
+	state    lockedMappingStateAccessor
 }
 
 type lockedMappingState struct {
 	mu            sync.Mutex
 	cond          *sync.Cond
-	owner         *lockedMappingIdentity
 	ops           memoryOps
 	region        []byte
 	length        int
@@ -68,20 +67,25 @@ type lockedMappingState struct {
 
 type borrowedView struct {
 	identity borrowedViewIdentity
-	lease    *borrowedViewLease
+	lease    borrowedViewLeaseAccessor
 }
 
 type borrowedViewLease struct {
-	mu        sync.Mutex
-	canonical *borrowedViewIdentity
-	owner     *lockedMappingState
-	length    int
-	active    bool
+	mu       sync.Mutex
+	cond     *sync.Cond
+	owner    *lockedMappingState
+	length   int
+	active   bool
+	inFlight int
 }
 
 type lockedMappingIdentity struct{ marker byte }
 
 type borrowedViewIdentity struct{ marker byte }
+
+type lockedMappingStateAccessor func(*lockedMappingIdentity) *lockedMappingState
+
+type borrowedViewLeaseAccessor func(*borrowedViewIdentity) *borrowedViewLease
 
 type memoryOps interface {
 	MapAnonymous(int) ([]byte, error)
@@ -122,8 +126,14 @@ func newLockedMapping(capacity int, ops memoryOps) (*LockedMapping, error) {
 		phase:  LockedMappingStateUnavailable,
 	}
 	state.cond = sync.NewCond(&state.mu)
-	mapping := &LockedMapping{state: state}
-	state.owner = &mapping.identity
+	mapping := &LockedMapping{}
+	canonical := &mapping.identity
+	mapping.state = func(candidate *lockedMappingIdentity) *lockedMappingState {
+		if candidate != canonical {
+			return nil
+		}
+		return state
+	}
 	return mapping, nil
 }
 
@@ -239,11 +249,18 @@ func (mapping *LockedMapping) Borrow(ctx context.Context, callback func(Borrowed
 	state.phase = LockedMappingStateBorrowing
 	state.active = true
 	view := &borrowedView{}
-	view.lease = &borrowedViewLease{
-		canonical: &view.identity,
-		owner:     state,
-		length:    state.length,
-		active:    true,
+	lease := &borrowedViewLease{
+		owner:  state,
+		length: state.length,
+		active: true,
+	}
+	lease.cond = sync.NewCond(&lease.mu)
+	canonical := &view.identity
+	view.lease = func(candidate *borrowedViewIdentity) *borrowedViewLease {
+		if candidate != canonical {
+			return nil
+		}
+		return lease
 	}
 	state.mu.Unlock()
 
@@ -327,15 +344,11 @@ func (view *borrowedView) Len() int {
 }
 
 func (view *borrowedView) CopyTo(ctx context.Context, target *LockedMapping) error {
-	lease := view.borrowedLease()
+	lease, owner, length := view.beginUse()
 	if lease == nil {
 		return ErrBorrowedViewExpired
 	}
-	lease.mu.Lock()
-	defer lease.mu.Unlock()
-	if !lease.active || lease.owner == nil {
-		return ErrBorrowedViewExpired
-	}
+	defer lease.endUse()
 	if ctx == nil {
 		return ErrCredentialMemoryLoad
 	}
@@ -345,8 +358,6 @@ func (view *borrowedView) CopyTo(ctx context.Context, target *LockedMapping) err
 	if target == nil {
 		return ErrCredentialMemoryUnavailable
 	}
-	owner := lease.owner
-	length := lease.length
 	return target.Load(ctx, func(dst []byte) (int, error) {
 		copy(dst, owner.region[:length])
 		return length, nil
@@ -354,15 +365,11 @@ func (view *borrowedView) CopyTo(ctx context.Context, target *LockedMapping) err
 }
 
 func (view *borrowedView) WriteTo(ctx context.Context, sink CredentialSink) error {
-	lease := view.borrowedLease()
+	lease, owner, length := view.beginUse()
 	if lease == nil {
 		return ErrBorrowedViewExpired
 	}
-	lease.mu.Lock()
-	defer lease.mu.Unlock()
-	if !lease.active || lease.owner == nil {
-		return ErrBorrowedViewExpired
-	}
+	defer lease.endUse()
 	if ctx == nil {
 		return ErrCredentialSinkWrite
 	}
@@ -372,10 +379,10 @@ func (view *borrowedView) WriteTo(ctx context.Context, sink CredentialSink) erro
 	if sink == nil {
 		return ErrCredentialSinkWrite
 	}
-	if sink.MaxCredentialBytes() < lease.length {
+	if sink.MaxCredentialBytes() < length {
 		return ErrCredentialSinkLimitExceeded
 	}
-	if err := sink.WriteCredential(lease.owner.region[:lease.length]); err != nil {
+	if err := sink.WriteCredential(owner.region[:length]); err != nil {
 		return classifySinkError(err)
 	}
 	return nil
@@ -388,23 +395,52 @@ func (view *borrowedView) expire() {
 	}
 	lease.mu.Lock()
 	lease.active = false
+	for lease.inFlight > 0 {
+		lease.cond.Wait()
+	}
 	lease.owner = nil
 	lease.length = 0
 	lease.mu.Unlock()
 }
 
 func (mapping *LockedMapping) mappingState() *lockedMappingState {
-	if mapping == nil || mapping.state == nil || mapping.state.owner != &mapping.identity {
+	if mapping == nil || mapping.state == nil {
 		return nil
 	}
-	return mapping.state
+	return mapping.state(&mapping.identity)
 }
 
 func (view *borrowedView) borrowedLease() *borrowedViewLease {
-	if view == nil || view.lease == nil || view.lease.canonical != &view.identity {
+	if view == nil || view.lease == nil {
 		return nil
 	}
-	return view.lease
+	return view.lease(&view.identity)
+}
+
+func (view *borrowedView) beginUse() (*borrowedViewLease, *lockedMappingState, int) {
+	lease := view.borrowedLease()
+	if lease == nil {
+		return nil, nil, 0
+	}
+	lease.mu.Lock()
+	if !lease.active || lease.owner == nil {
+		lease.mu.Unlock()
+		return nil, nil, 0
+	}
+	lease.inFlight++
+	owner := lease.owner
+	length := lease.length
+	lease.mu.Unlock()
+	return lease, owner, length
+}
+
+func (lease *borrowedViewLease) endUse() {
+	lease.mu.Lock()
+	lease.inFlight--
+	if lease.inFlight == 0 {
+		lease.cond.Broadcast()
+	}
+	lease.mu.Unlock()
 }
 
 func wipeCredentialRegion(region []byte) {
