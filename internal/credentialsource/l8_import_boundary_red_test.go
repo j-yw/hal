@@ -51,6 +51,11 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 			t.Fatalf("parse %s: %v", productionPath, err)
 		}
 		rootPackage := filepath.Clean(filepath.Dir(productionPath)) == "." && file.Name.Name == "credentialsource"
+		fmtAliases, fmtDotImport := l8CredentialSourceImportAliases(file, "fmt")
+		if fmtDotImport {
+			t.Errorf("production credential source %s uses forbidden dot import of fmt", productionPath)
+		}
+		hasApprovedFormat := false
 		for _, spec := range file.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
@@ -60,7 +65,7 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 				importPath == "bytes" || importPath == "bufio" ||
 				importPath == "net" || strings.HasPrefix(importPath, "net/") || importPath == "syscall" || importPath == "unsafe" ||
 				importPath == "encoding/json" || importPath == "encoding/gob" || importPath == "encoding/xml" ||
-				importPath == "fmt" || importPath == "log" || importPath == "log/slog" ||
+				importPath == "log" || importPath == "log/slog" ||
 				strings.Contains(importPath, "/cmd") || strings.Contains(importPath, "/internal/sandboxworker") ||
 				(strings.Contains(importPath, "/internal/sandboxruntime/") && importPath != "github.com/jywlabs/hal/internal/sandboxruntime") ||
 				strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/factory") ||
@@ -106,24 +111,36 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 					}
 				}
 			case *ast.FuncDecl:
+				receiver := ""
+				if typed.Recv != nil {
+					receiver = l8CredentialSourceReceiverName(typed.Recv.List[0].Type)
+				}
+				for _, issue := range l8CredentialSourceFmtSelectorIssues(typed, fmtAliases, rootPackage && typed.Name.Name == "Format" && denialMethods[receiver] != nil) {
+					t.Errorf("production credential source %s %s", productionPath, issue)
+				}
 				if typed.Recv == nil {
 					return true
 				}
-				receiver := l8CredentialSourceReceiverName(typed.Recv.List[0].Type)
 				switch typed.Name.Name {
 				case "Unwrap", "MarshalBinary", "GobEncode", "Bytes", "Value":
 					t.Errorf("production credential source %s defines forbidden live/raw method %s on %s", productionPath, typed.Name.Name, receiver)
-				case "String", "GoString", "MarshalJSON", "MarshalText":
+				case "String", "GoString", "MarshalJSON", "MarshalText", "Format":
 					allowed, ok := denialMethods[receiver]
 					if !ok || !rootPackage {
 						t.Errorf("production credential source %s defines formatting/codec method %s on unexpected receiver %s", productionPath, typed.Name.Name, receiver)
 						return true
 					}
 					allowed[typed.Name.Name] = true
+					if typed.Name.Name == "Format" {
+						hasApprovedFormat = true
+					}
 				}
 			}
 			return true
 		})
+		if len(fmtAliases) != 0 && !hasApprovedFormat {
+			t.Errorf("production credential source %s imports fmt outside an exact approved Format method", productionPath)
+		}
 	}
 	if len(productionFiles) == 0 {
 		t.Fatal("L8 credential source production package does not exist")
@@ -135,7 +152,7 @@ func TestL8CredentialSourceImportAndIngressBoundaries(t *testing.T) {
 		t.Fatal("L8 credential source does not use direct Linux keyctl syscalls")
 	}
 	for receiver, found := range denialMethods {
-		for _, required := range []string{"String", "GoString", "MarshalJSON", "MarshalText"} {
+		for _, required := range []string{"String", "GoString", "MarshalJSON", "MarshalText", "Format"} {
 			if !found[required] {
 				t.Errorf("production credential source %s omits safe/denial method %s", receiver, required)
 			}
@@ -244,81 +261,49 @@ type RegistryConfig struct{ payload []byte }
 }
 
 func TestL8CredentialSourceSafeMetadataSchemasAreExactAndOrderIndependent(t *testing.T) {
-	file := l8ParseCredentialSourceSafeMetadataFixture(t)
-	typeExpressions := l8CredentialSourceTypeExpressions(file)
-	schemas := l8CredentialSourceSafeMetadataSchemas()
-	if issues := l8CredentialSourceSafeMetadataSchemaIssues(typeExpressions, schemas); len(issues) != 0 {
-		t.Fatalf("valid safe metadata schema issues = %v", issues)
-	}
-	validated := l8CredentialSourceValidatedSafeMetadataTypes(typeExpressions, schemas)
-	if len(validated) != len(schemas) {
-		t.Fatalf("validated safe metadata types = %v, want every exact schema", validated)
-	}
-	packagePath := "l8-safe-metadata-self-test"
-	localPackage := types.NewPackage(packagePath, "credentialsource")
-	rawStructure := types.NewStruct([]*types.Var{types.NewVar(token.NoPos, localPackage, "retained", types.Typ[types.String])}, nil)
-	localSafeType := types.NewNamed(types.NewTypeName(token.NoPos, localPackage, "RegistryConfig", nil), rawStructure, nil)
-	if l8CredentialSourceTypedRawType(localSafeType, packagePath, validated, nil, map[types.Type]bool{}) {
-		t.Fatal("exact validated local safe metadata did not receive typed global exemption")
-	}
-	if !l8CredentialSourceTypedRawType(localSafeType, packagePath, nil, nil, map[types.Type]bool{}) {
-		t.Fatal("unvalidated local safe metadata name bypassed typed global guard")
-	}
-	externalPackage := types.NewPackage("external-safe-metadata-self-test", "credentialsource")
-	externalLookalike := types.NewNamed(types.NewTypeName(token.NoPos, externalPackage, "RegistryConfig", nil), rawStructure, nil)
-	if !l8CredentialSourceTypedRawType(externalLookalike, packagePath, validated, nil, map[types.Type]bool{}) {
-		t.Fatal("external safe metadata lookalike bypassed typed global guard")
+	exact := l8CredentialSourceSafeMetadataFixture()
+	validated, issues := l8CredentialSourceFixtureSafeMetadata(t, exact)
+	if len(issues) != 0 || len(validated) != len(l8CredentialSourceSafeMetadataSchemas()) {
+		t.Fatalf("exact semantic safe metadata = %v, issues = %v", validated, issues)
 	}
 
-	for typeName := range schemas {
-		for _, mutation := range []struct {
-			name   string
-			mutate func(*ast.StructType)
-		}{
-			{name: "missing field", mutate: func(structure *ast.StructType) {
-				structure.Fields.List = structure.Fields.List[1:]
-			}},
-			{name: "extra field", mutate: func(structure *ast.StructType) {
-				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("unexpected", ast.NewIdent("bool")))
-			}},
-			{name: "duplicate field", mutate: func(structure *ast.StructType) {
-				first := structure.Fields.List[0]
-				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField(first.Names[0].Name, first.Type))
-			}},
-			{name: "unexpected string", mutate: func(structure *ast.StructType) {
-				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("retained", ast.NewIdent("string")))
-			}},
-			{name: "unexpected bytes", mutate: func(structure *ast.StructType) {
-				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("retained", &ast.ArrayType{Elt: ast.NewIdent("byte")}))
-			}},
-			{name: "unexpected raw alias", mutate: func(structure *ast.StructType) {
-				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("retained", ast.NewIdent("rawAlias")))
-			}},
-			{name: "unexpected nested raw state", mutate: func(structure *ast.StructType) {
-				structure.Fields.List = append(structure.Fields.List, l8CredentialSourceFixtureField("retained", ast.NewIdent("nestedRaw")))
-			}},
-			{name: "expected field type alias", mutate: func(structure *ast.StructType) {
-				structure.Fields.List[0].Type = ast.NewIdent("safeAlias")
-			}},
-		} {
-			t.Run(typeName+"/"+mutation.name, func(t *testing.T) {
-				mutatedFile := l8ParseCredentialSourceSafeMetadataFixture(t)
-				typeSpec := l8CredentialSourceFixtureTypeSpec(t, mutatedFile, typeName)
-				structure, ok := typeSpec.Type.(*ast.StructType)
-				if !ok {
-					t.Fatalf("%s is not a struct", typeName)
-				}
-				mutation.mutate(structure)
-				mutatedTypes := l8CredentialSourceTypeExpressions(mutatedFile)
-				issues := l8CredentialSourceSafeMetadataSchemaIssues(mutatedTypes, schemas)
-				if len(issues) == 0 {
-					t.Fatalf("exact schema accepted %s mutation of %s", mutation.name, typeName)
-				}
-				if l8CredentialSourceValidatedSafeMetadataTypes(mutatedTypes, schemas)[typeName] {
-					t.Fatalf("mutated %s retained safe-metadata exemption", typeName)
-				}
-			})
-		}
+	aliasSpelling := strings.Replace(exact, "import sandboxruntime ", "import runtimecontract ", 1)
+	aliasSpelling = strings.ReplaceAll(aliasSpelling, "sandboxruntime.", "runtimecontract.")
+	validated, issues = l8CredentialSourceFixtureSafeMetadata(t, aliasSpelling)
+	if len(issues) != 0 || len(validated) != len(l8CredentialSourceSafeMetadataSchemas()) {
+		t.Fatalf("exact imported contracts under alternate alias rejected: %v, %v", validated, issues)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		source string
+	}{
+		{name: "shadowed predeclared string", source: strings.Replace(exact, "type KeyPermission uint32", "type string struct{ retained []byte }\ntype KeyPermission uint32", 1)},
+		{name: "aliased key permission", source: strings.Replace(exact, "type KeyPermission uint32", "type KeyPermission = uint32", 1)},
+		{name: "lookalike key permission", source: strings.Replace(exact, "type KeyPermission uint32", "type KeyPermission string", 1)},
+		{name: "aliased builtin field", source: strings.Replace(exact, "type KeyPermission uint32", "type safeString = string\ntype KeyPermission uint32", 1)},
+		{name: "aliased local field", source: strings.Replace(exact, "type KeyPermission uint32", "type identityAlias = KeyIdentity\ntype KeyPermission uint32", 1)},
+		{name: "aliased imported field", source: strings.Replace(exact, "type KeyPermission uint32", "type requestAlias = sandboxruntime.JobCredentialAdmissionRequest\ntype KeyPermission uint32", 1)},
+		{name: "fake sandboxruntime package", source: strings.Replace(exact, l8CredentialSourceSandboxruntimeImportPath, "example.com/fake/sandboxruntime", 1)},
+		{name: "unresolved external field", source: strings.Replace(exact, "sandboxruntime.JobCredentialAdmissionRequest", "sandboxruntime.DoesNotExist", 1)},
+		{name: "mutated field", source: strings.Replace(exact, "serial int32", "serial uint32", 1)},
+		{name: "extra field", source: strings.Replace(exact, "serial int32", "serial int32\n\tretained []byte", 1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := tt.source
+			switch tt.name {
+			case "aliased builtin field":
+				source = strings.Replace(source, "keyType string", "keyType safeString", 1)
+			case "aliased local field":
+				source = strings.Replace(source, "identity KeyIdentity", "identity identityAlias", 1)
+			case "aliased imported field":
+				source = strings.Replace(source, "request sandboxruntime.JobCredentialAdmissionRequest", "request requestAlias", 1)
+			}
+			validated, issues := l8CredentialSourceFixtureSafeMetadata(t, source)
+			if len(issues) == 0 || len(validated) != 0 {
+				t.Fatalf("semantic spoof retained exemption %v with issues %v", validated, issues)
+			}
+		})
 	}
 }
 
@@ -352,8 +337,16 @@ var retained = clone([]byte(seed))
 		{name: "package external byte buffer", source: "package fixture\nimport \"bytes\"\nvar retained bytes.Buffer\n", wantIssues: 1},
 		{name: "package external string builder", source: "package fixture\nimport \"strings\"\nvar retained *strings.Builder\n", wantIssues: 1},
 		{name: "unresolved module global fails closed", source: "package fixture\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nvar retained sandboxruntime.JobCredentialState\n", wantIssues: 1},
+		{name: "uninitialized error", source: "package fixture\nvar retained error\n", wantIssues: 1},
+		{name: "error alias", source: "package fixture\ntype errorAlias = error\nvar retained errorAlias\n", wantIssues: 1},
+		{name: "uninitialized interface", source: "package fixture\nvar retained any\n", wantIssues: 1},
+		{name: "uninitialized function", source: "package fixture\nvar retained func()\n", wantIssues: 1},
+		{name: "function alias", source: "package fixture\ntype callback = func(uint64) bool\nvar retained callback\n", wantIssues: 1},
+		{name: "closure initializer", source: "package fixture\nvar retained = func() {}\n", wantIssues: 1},
 		{name: "safe constant", source: "package fixture\nconst safeCode = \"credential_source_denied\"\n"},
 		{name: "safe explicit sentinel error", source: "package fixture\nimport \"errors\"\nvar errValue error = errors.New(\"credential source unavailable\")\n"},
+		{name: "safe inferred sentinel error", source: "package fixture\nimport stableerrors \"errors\"\nvar errValue = stableerrors.New(\"credential source unavailable\")\n"},
+		{name: "sentinel through error alias", source: "package fixture\nimport \"errors\"\ntype errorAlias = error\nvar errValue errorAlias = errors.New(\"credential source unavailable\")\n", wantIssues: 1},
 		{name: "dynamic sentinel error string", source: "package fixture\nimport \"errors\"\nfunc build() string { return \"secret\" }\nvar errValue error = errors.New(build())\n", wantIssues: 1},
 		{name: "safe nonraw globals", source: `package fixture
 import (
@@ -367,8 +360,8 @@ var state counters
 var sentinel = errors.New("credential source unavailable")
 var gate sync.Mutex
 var once sync.Once
-var callback func(uint64) bool
 `},
+		{name: "ordinary function declaration", source: "package fixture\nfunc callback(uint64) bool { return true }\n"},
 		{name: "function local transient", source: "package fixture\nfunc transient(){ text := \"secret\"; value := make([]byte, 32); _, _ = text, value }\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -468,6 +461,11 @@ type Registry struct{ deps registryDeps }
 	if analysis := l8CredentialSourceFixtureAnalysis(t, map[string]string{"exact.go": exactOperational}); len(analysis.issues) != 0 {
 		t.Fatalf("exact operational seams rejected: %v", analysis.issues)
 	}
+	alternateAlias := strings.Replace(exactOperational, "sandboxruntime \"", "runtimecontract \"", 1)
+	alternateAlias = strings.ReplaceAll(alternateAlias, "sandboxruntime.", "runtimecontract.")
+	if analysis := l8CredentialSourceFixtureAnalysis(t, map[string]string{"exact.go": alternateAlias}); len(analysis.issues) != 0 {
+		t.Fatalf("semantic operational seam rejected exact imported type under alternate alias: %v", analysis.issues)
+	}
 
 	if analysis := l8CredentialSourceFixtureAnalysis(t, map[string]string{"safe.go": `package fixture
 import "sync"
@@ -519,6 +517,29 @@ type unsafeHolder struct{ unresolved sandboxruntime.DoesNotExist }
 			name:   "mutated locked mapping callback",
 			source: strings.Replace(exactOperational, "newLockedMapping func(int) (lockedSecretMapping, error)", "newLockedMapping func(int, func([]byte)) (lockedSecretMapping, error)", 1),
 			want:   []string{"registryDeps field newLockedMapping"},
+		},
+		{
+			name:   "aliased keyctl interface",
+			source: strings.Replace(exactOperational, "type keyctlReader interface {", "type keyctlReader = keyctlReaderAlias\ntype keyctlReaderAlias interface {", 1),
+			want:   []string{"keyctlReader is missing or aliases another type"},
+		},
+		{
+			name:   "fake context package",
+			source: strings.Replace(exactOperational, "\"context\"", "context \"example.com/fake/context\"", 1),
+			want:   []string{"keyctlReader method DescribeSize"},
+		},
+		{
+			name:   "fake sandboxruntime package",
+			source: strings.Replace(exactOperational, l8CredentialSourceSandboxruntimeImportPath, "example.com/fake/sandboxruntime", 1),
+			want:   []string{"lockedSecretBorrowedView method WriteTo"},
+		},
+		{
+			name: "aliased sandboxruntime sink",
+			source: strings.Replace(
+				strings.Replace(exactOperational, "type keyctlReader interface {", "type sinkAlias = sandboxruntime.JobCredentialSecretSink\ntype keyctlReader interface {", 1),
+				"WriteTo(context.Context, sandboxruntime.JobCredentialSecretSink)", "WriteTo(context.Context, sinkAlias)", 1,
+			),
+			want: []string{"lockedSecretBorrowedView method WriteTo"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -585,21 +606,6 @@ func l8CredentialSourceProductionFiles(root string) ([]string, error) {
 		return nil
 	})
 	return productionFiles, err
-}
-
-func l8CredentialSourceTypeExpressions(file *ast.File) map[string]ast.Expr {
-	typeExpressions := map[string]ast.Expr{}
-	for _, declaration := range file.Decls {
-		generic, ok := declaration.(*ast.GenDecl)
-		if !ok || generic.Tok != token.TYPE {
-			continue
-		}
-		for _, spec := range generic.Specs {
-			typeSpec := spec.(*ast.TypeSpec)
-			typeExpressions[typeSpec.Name.Name] = typeSpec.Type
-		}
-	}
-	return typeExpressions
 }
 
 type l8CredentialSourceBuildTarget struct {
@@ -712,7 +718,6 @@ func (analysis *l8CredentialSourceTypedAnalysis) addIssue(contextName, issue str
 func l8CredentialSourceAnalyzeTypedPackage(contextName string, groupIndex int, packageName string, productionPaths []string, workingDir string, analysis *l8CredentialSourceTypedAnalysis) error {
 	set := token.NewFileSet()
 	var files []*ast.File
-	typeExpressions := map[string]ast.Expr{}
 	filePaths := map[*ast.File]string{}
 	for _, productionPath := range productionPaths {
 		file, err := parser.ParseFile(set, productionPath, nil, 0)
@@ -721,9 +726,6 @@ func l8CredentialSourceAnalyzeTypedPackage(contextName string, groupIndex int, p
 		}
 		files = append(files, file)
 		filePaths[file] = productionPath
-		for name, expression := range l8CredentialSourceTypeExpressions(file) {
-			typeExpressions[name] = expression
-		}
 	}
 
 	packagePath := fmt.Sprintf("l8-credential-source-guard/%s/%d", contextName, groupIndex)
@@ -742,7 +744,10 @@ func l8CredentialSourceAnalyzeTypedPackage(contextName string, groupIndex int, p
 		DisableUnusedImportCheck: true,
 		Error:                    func(err error) { typeErrors = append(typeErrors, err) },
 	}
-	_, _ = config.Check(packagePath, set, files, info)
+	typedPackage, _ := config.Check(packagePath, set, files, info)
+	if typedPackage == nil {
+		return fmt.Errorf("type-check %s package declarations: package unavailable", contextName)
+	}
 	for _, typeErr := range typeErrors {
 		if !l8CredentialSourceExpectedUnresolvedTypeError(typeErr, files, fallbackImporter.unresolved) {
 			return fmt.Errorf("type-check %s package declarations: %w", contextName, typeErr)
@@ -756,12 +761,13 @@ func l8CredentialSourceAnalyzeTypedPackage(contextName string, groupIndex int, p
 	}
 	rootCredentialSource := filepath.Clean(packageDir) == filepath.Clean(workingDir) && packageName == "credentialsource"
 	if rootCredentialSource {
-		for _, issue := range l8CredentialSourceSafeMetadataSchemaIssues(typeExpressions, l8CredentialSourceSafeMetadataSchemas()) {
+		var safeMetadataIssues []string
+		safeMetadataTypes, safeMetadataIssues = l8CredentialSourceSemanticSafeMetadata(typedPackage)
+		for _, issue := range safeMetadataIssues {
 			analysis.addIssue(contextName, "safe metadata schema "+issue)
 		}
-		safeMetadataTypes = l8CredentialSourceValidatedSafeMetadataTypes(typeExpressions, l8CredentialSourceSafeMetadataSchemas())
 	}
-	operationalSafeFields, operationalSafeTypes, operationalIssues := l8CredentialSourceExactOperationalSeams(typeExpressions)
+	operationalSafeFields, operationalSafeTypes, operationalIssues := l8CredentialSourceExactOperationalSeams(typedPackage)
 	for _, issue := range operationalIssues {
 		analysis.addIssue(contextName, filepath.ToSlash(filepath.Dir(productionPaths[0]))+" operational seam "+issue)
 	}
@@ -785,6 +791,8 @@ func l8CredentialSourceAnalyzeTypedPackage(contextName string, groupIndex int, p
 							analysis.addIssue(contextName, filepath.ToSlash(productionPath)+" package variable "+name.Name+" could not be analyzed")
 							continue
 						}
+						safeSentinel := object.Type() == types.Universe.Lookup("error").Type() &&
+							l8CredentialSourceSafeSentinelErrorInitializer(file, valueSpec, name)
 						raw := l8CredentialSourceTypedRawType(object.Type(), packagePath, safeMetadataTypes, nil, map[types.Type]bool{})
 						if initializerType, present, analyzed := l8CredentialSourceTypedInitializerType(info, valueSpec, name); present {
 							if !analyzed {
@@ -792,10 +800,9 @@ func l8CredentialSourceAnalyzeTypedPackage(contextName string, groupIndex int, p
 								continue
 							}
 							raw = raw || l8CredentialSourceTypedRawType(initializerType, packagePath, safeMetadataTypes, nil, map[types.Type]bool{})
-							if types.Identical(object.Type(), types.Universe.Lookup("error").Type()) &&
-								!l8CredentialSourceSafeSentinelErrorInitializer(file, valueSpec, name) {
-								raw = true
-							}
+						}
+						if safeSentinel {
+							raw = false
 						}
 						if raw {
 							analysis.addIssue(contextName, filepath.ToSlash(productionPath)+" package variable "+name.Name+" retains mutable raw state")
@@ -834,50 +841,56 @@ func l8CredentialSourceAnalyzeTypedPackage(contextName string, groupIndex int, p
 	return nil
 }
 
-func l8CredentialSourceExactOperationalSeams(typeExpressions map[string]ast.Expr) (map[string]bool, map[string]bool, []string) {
+func l8CredentialSourceExactOperationalSeams(typedPackage *types.Package) (map[string]bool, map[string]bool, []string) {
 	safeFields := map[string]bool{}
 	safeTypes := map[string]bool{}
 	requiredNames := []string{"keyctlReader", "lockedSecretBorrowedView", "lockedSecretMapping", "registryDeps"}
 	present := false
 	for _, name := range requiredNames {
-		present = present || typeExpressions[name] != nil
+		present = present || typedPackage.Scope().Lookup(name) != nil
 	}
 	if !present {
 		return safeFields, safeTypes, nil
 	}
 
 	var issues []string
-	issues = append(issues, l8CredentialSourceInterfaceSchemaIssues(typeExpressions, "keyctlReader", map[string]string{
+	issues = append(issues, l8CredentialSourceSemanticInterfaceSchemaIssues(typedPackage, "keyctlReader", map[string]string{
 		"DescribeSize": "func(context.Context,int32)(int,error)",
 		"DescribeInto": "func(context.Context,int32,[]byte)(int,error)",
 		"ReadSize":     "func(context.Context,int32)(int,error)",
 		"ReadInto":     "func(context.Context,int32,[]byte)(int,error)",
 	})...)
-	issues = append(issues, l8CredentialSourceInterfaceSchemaIssues(typeExpressions, "lockedSecretBorrowedView", map[string]string{
-		"WriteTo": "func(context.Context,sandboxruntime.JobCredentialSecretSink)(error)",
+	issues = append(issues, l8CredentialSourceSemanticInterfaceSchemaIssues(typedPackage, "lockedSecretBorrowedView", map[string]string{
+		"WriteTo": "func(context.Context," + l8CredentialSourceSandboxruntimeImportPath + ".JobCredentialSecretSink)(error)",
 	})...)
-	issues = append(issues, l8CredentialSourceInterfaceSchemaIssues(typeExpressions, "lockedSecretMapping", map[string]string{
+	issues = append(issues, l8CredentialSourceSemanticInterfaceSchemaIssues(typedPackage, "lockedSecretMapping", map[string]string{
 		"Load":    "func(context.Context,func([]byte)(int,error))(error)",
-		"Borrow":  "func(context.Context,func(lockedSecretBorrowedView)(error))(error)",
+		"Borrow":  "func(context.Context,func(local:lockedSecretBorrowedView)(error))(error)",
 		"Destroy": "func()(error)",
 	})...)
-	issues = append(issues, l8CredentialSourceSafeMetadataSchemaIssues(typeExpressions, map[string]map[string]string{
+	issues = append(issues, l8CredentialSourceSemanticStructSchemaIssues(typedPackage, map[string]map[string]string{
 		"registryDeps": {
-			"keyctl":           "keyctlReader",
-			"newLockedMapping": "func(int)(lockedSecretMapping,error)",
+			"keyctl":           "local:keyctlReader",
+			"newLockedMapping": "func(int)(local:lockedSecretMapping,error)",
 		},
 	})...)
-	registry, ok := typeExpressions["Registry"].(*ast.StructType)
+	registry, ok := l8CredentialSourceLocalNamedType(typedPackage, "Registry")
 	if !ok {
 		issues = append(issues, "Registry is not an exact struct holder for registryDeps")
 	} else {
+		structure, structureOK := registry.Underlying().(*types.Struct)
 		matchedDeps := false
-		for _, field := range registry.Fields.List {
-			if len(field.Names) == 1 && field.Names[0].Name == "deps" && l8CredentialSourceTypeString(field.Type) == "registryDeps" {
-				matchedDeps = true
+		if structureOK {
+			for fieldIndex := 0; fieldIndex < structure.NumFields(); fieldIndex++ {
+				field := structure.Field(fieldIndex)
+				if !field.Anonymous() && field.Name() == "deps" && l8CredentialSourceSemanticTypeString(field.Type(), typedPackage.Path()) == "local:registryDeps" {
+					matchedDeps = true
+				}
 			}
 		}
-		if !matchedDeps {
+		if !structureOK {
+			issues = append(issues, "Registry is not an exact struct holder for registryDeps")
+		} else if !matchedDeps {
 			issues = append(issues, "Registry is missing exact deps registryDeps field")
 		}
 	}
@@ -890,33 +903,24 @@ func l8CredentialSourceExactOperationalSeams(typeExpressions map[string]ast.Expr
 	return safeFields, safeTypes, issues
 }
 
-func l8CredentialSourceInterfaceSchemaIssues(typeExpressions map[string]ast.Expr, typeName string, expected map[string]string) []string {
-	expression, ok := typeExpressions[typeName]
+func l8CredentialSourceSemanticInterfaceSchemaIssues(typedPackage *types.Package, typeName string, expected map[string]string) []string {
+	named, ok := l8CredentialSourceLocalNamedType(typedPackage, typeName)
 	if !ok {
-		return []string{typeName + " is missing"}
+		return []string{typeName + " is missing or aliases another type"}
 	}
-	contract, ok := expression.(*ast.InterfaceType)
+	contract, ok := named.Underlying().(*types.Interface)
 	if !ok {
 		return []string{typeName + " is not an exact interface schema"}
 	}
+	contract.Complete()
 	actual := map[string]string{}
 	var issues []string
-	for _, method := range contract.Methods.List {
-		if len(method.Names) != 1 {
-			issues = append(issues, typeName+" contains embedded or grouped methods")
-			continue
-		}
-		methodName := method.Names[0].Name
-		if _, duplicate := actual[methodName]; duplicate {
-			issues = append(issues, typeName+" duplicates method "+methodName)
-			continue
-		}
-		functionType, ok := method.Type.(*ast.FuncType)
-		if !ok {
-			issues = append(issues, typeName+" method "+methodName+" is not a function")
-			continue
-		}
-		actual[methodName] = l8CredentialSourceFunctionTypeString(functionType)
+	if contract.NumEmbeddeds() != 0 {
+		issues = append(issues, typeName+" contains embedded interfaces")
+	}
+	for methodIndex := 0; methodIndex < contract.NumExplicitMethods(); methodIndex++ {
+		method := contract.ExplicitMethod(methodIndex)
+		actual[method.Name()] = l8CredentialSourceSemanticTypeString(method.Type(), typedPackage.Path())
 	}
 	for methodName, expectedSignature := range expected {
 		actualSignature, exists := actual[methodName]
@@ -939,37 +943,89 @@ func l8CredentialSourceInterfaceSchemaIssues(typeExpressions map[string]ast.Expr
 	return issues
 }
 
-func l8CredentialSourceFunctionTypeString(functionType *ast.FuncType) string {
-	if functionType.TypeParams != nil {
-		return "func[generic]"
+func l8CredentialSourceSemanticTypeString(valueType types.Type, localPackagePath string) string {
+	switch typed := valueType.(type) {
+	case *types.Alias:
+		return "<alias:" + typed.Obj().Name() + ">"
+	case *types.Basic:
+		return typed.Name()
+	case *types.Named:
+		object := typed.Obj()
+		if object == nil {
+			return "<unnamed>"
+		}
+		if object.Pkg() == nil {
+			return object.Name()
+		}
+		if object.Pkg().Path() == localPackagePath {
+			return "local:" + object.Name()
+		}
+		return object.Pkg().Path() + "." + object.Name()
+	case *types.Pointer:
+		return "*" + l8CredentialSourceSemanticTypeString(typed.Elem(), localPackagePath)
+	case *types.Slice:
+		return "[]" + l8CredentialSourceSemanticTypeString(typed.Elem(), localPackagePath)
+	case *types.Array:
+		return fmt.Sprintf("[%d]%s", typed.Len(), l8CredentialSourceSemanticTypeString(typed.Elem(), localPackagePath))
+	case *types.Map:
+		return "map[" + l8CredentialSourceSemanticTypeString(typed.Key(), localPackagePath) + "]" + l8CredentialSourceSemanticTypeString(typed.Elem(), localPackagePath)
+	case *types.Chan:
+		return "chan " + l8CredentialSourceSemanticTypeString(typed.Elem(), localPackagePath)
+	case *types.Signature:
+		if typed.TypeParams() != nil && typed.TypeParams().Len() != 0 {
+			return "func[generic]"
+		}
+		prefix := "func("
+		if typed.Variadic() {
+			prefix = "func[variadic]("
+		}
+		return prefix + l8CredentialSourceSemanticTupleString(typed.Params(), localPackagePath) + ")(" +
+			l8CredentialSourceSemanticTupleString(typed.Results(), localPackagePath) + ")"
+	case *types.Interface:
+		return "<interface>"
+	case *types.Struct:
+		return "<struct>"
+	case *types.Tuple:
+		return l8CredentialSourceSemanticTupleString(typed, localPackagePath)
+	default:
+		return "<invalid>"
 	}
-	return "func(" + strings.Join(l8CredentialSourceFieldTypeStrings(functionType.Params), ",") + ")(" +
-		strings.Join(l8CredentialSourceFieldTypeStrings(functionType.Results), ",") + ")"
 }
 
-func l8CredentialSourceFieldTypeStrings(fields *ast.FieldList) []string {
-	if fields == nil {
-		return nil
+func l8CredentialSourceSemanticTupleString(tuple *types.Tuple, localPackagePath string) string {
+	if tuple == nil {
+		return ""
 	}
-	var values []string
-	for _, field := range fields.List {
-		count := len(field.Names)
-		if count == 0 {
-			count = 1
-		}
-		for index := 0; index < count; index++ {
-			values = append(values, l8CredentialSourceTypeString(field.Type))
-		}
+	values := make([]string, 0, tuple.Len())
+	for index := 0; index < tuple.Len(); index++ {
+		values = append(values, l8CredentialSourceSemanticTypeString(tuple.At(index).Type(), localPackagePath))
 	}
-	return values
+	return strings.Join(values, ",")
+}
+
+func l8CredentialSourceLocalNamedType(typedPackage *types.Package, name string) (*types.Named, bool) {
+	object, ok := typedPackage.Scope().Lookup(name).(*types.TypeName)
+	if !ok || object.IsAlias() {
+		return nil, false
+	}
+	named, ok := object.Type().(*types.Named)
+	return named, ok && named.Obj() == object && object.Pkg() == typedPackage
 }
 
 type l8CredentialSourceFallbackImporter struct {
-	primary    types.Importer
-	unresolved map[string]bool
+	primary        types.Importer
+	unresolved     map[string]bool
+	sandboxruntime *types.Package
 }
 
 func (fallback *l8CredentialSourceFallbackImporter) Import(importPath string) (*types.Package, error) {
+	if importPath == l8CredentialSourceSandboxruntimeImportPath {
+		fallback.unresolved[importPath] = true
+		if fallback.sandboxruntime == nil {
+			fallback.sandboxruntime = l8CredentialSourceSandboxruntimeContractPackage()
+		}
+		return fallback.sandboxruntime, nil
+	}
 	imported, err := fallback.primary.Import(importPath)
 	if err == nil {
 		return imported, nil
@@ -978,6 +1034,40 @@ func (fallback *l8CredentialSourceFallbackImporter) Import(importPath string) (*
 	placeholder := types.NewPackage(importPath, path.Base(importPath))
 	placeholder.MarkComplete()
 	return placeholder, nil
+}
+
+const l8CredentialSourceSandboxruntimeImportPath = "github.com/jywlabs/hal/internal/sandboxruntime"
+
+func l8CredentialSourceSandboxruntimeContractPackage() *types.Package {
+	contract := types.NewPackage(l8CredentialSourceSandboxruntimeImportPath, "sandboxruntime")
+	interfaceNames := map[string]bool{
+		"AuthenticatedWorkerPrincipal":       true,
+		"AuthorizedCredentialSourceRegistry": true,
+		"CredentialAdmissionAuthorization":   true,
+		"CredentialAdmissionAuthorizer":      true,
+		"JobCredentialSecretSink":            true,
+	}
+	for _, name := range []string{
+		"AuthenticatedWorkerPrincipal",
+		"AuthenticatedWorkerPrincipalAuthority",
+		"AuthorizedCredentialSourceRegistry",
+		"CredentialAdmissionAuthorization",
+		"CredentialAdmissionAuthorizer",
+		"JobCredentialAdmissionIdentity",
+		"JobCredentialAdmissionRequest",
+		"JobCredentialBindingRequest",
+		"JobCredentialSecretSink",
+	} {
+		object := types.NewTypeName(token.NoPos, contract, name, nil)
+		underlying := types.Type(types.NewStruct(nil, nil))
+		if interfaceNames[name] {
+			underlying = types.NewInterfaceType(nil, nil).Complete()
+		}
+		types.NewNamed(object, underlying, nil)
+		contract.Scope().Insert(object)
+	}
+	contract.MarkComplete()
+	return contract
 }
 
 func l8CredentialSourceExpectedUnresolvedTypeError(typeErr error, files []*ast.File, unresolved map[string]bool) bool {
@@ -1087,6 +1177,9 @@ func l8CredentialSourceSafeSentinelErrorInitializer(file *ast.File, valueSpec *a
 }
 
 func l8CredentialSourceTypedRawType(valueType types.Type, packagePath string, safeMetadataTypes, safeOperationalTypes map[string]bool, seen map[types.Type]bool) bool {
+	if _, aliased := valueType.(*types.Alias); aliased {
+		return true
+	}
 	valueType = types.Unalias(valueType)
 	if seen[valueType] {
 		return false
@@ -1130,10 +1223,9 @@ func l8CredentialSourceTypedRawType(valueType types.Type, packagePath string, sa
 		}
 		return false
 	case *types.Interface:
-		return !types.Identical(typed, types.Universe.Lookup("error").Type().Underlying())
+		return true
 	case *types.Signature:
-		return l8CredentialSourceTypedRawType(typed.Params(), packagePath, safeMetadataTypes, safeOperationalTypes, seen) ||
-			l8CredentialSourceTypedRawType(typed.Results(), packagePath, safeMetadataTypes, safeOperationalTypes, seen)
+		return true
 	case *types.Named:
 		object := typed.Obj()
 		if object != nil && object.Pkg() != nil && object.Pkg().Path() == packagePath && (safeMetadataTypes[object.Name()] || safeOperationalTypes[object.Name()]) {
@@ -1146,6 +1238,9 @@ func l8CredentialSourceTypedRawType(valueType types.Type, packagePath string, sa
 }
 
 func l8CredentialSourceTypedRawFieldType(valueType types.Type, packagePath string, safeMetadataTypes, safeOperationalTypes map[string]bool, seen map[types.Type]bool) bool {
+	if _, aliased := valueType.(*types.Alias); aliased {
+		return true
+	}
 	valueType = types.Unalias(valueType)
 	if seen[valueType] {
 		return false
@@ -1248,6 +1343,85 @@ func l8CredentialSourceForbiddenSelectorIssues(file *ast.File) []string {
 	return issues
 }
 
+func TestL8CredentialSourceFmtUsageIsRestrictedToExactFormatMethods(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		source     string
+		approved   bool
+		wantIssues int
+	}{
+		{name: "fixed formatter write", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { safeformat.Fprint(state, \"<credential-source>\") }\n", approved: true},
+		{name: "generic formatting in formatter", source: "package fixture\nimport safeformat \"fmt\"\ntype Registry struct{}\nfunc (Registry) Format(state safeformat.State, verb rune) { _ = safeformat.Sprintf(\"%v\", verb) }\n", approved: true, wantIssues: 1},
+		{name: "formatting outside formatter", source: "package fixture\nimport safeformat \"fmt\"\nfunc render(value any) string { return safeformat.Sprint(value) }\n", wantIssues: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", tt.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			aliases, dotImport := l8CredentialSourceImportAliases(file, "fmt")
+			if dotImport {
+				t.Fatal("unexpected dot import in fixture")
+			}
+			var issues []string
+			for _, declaration := range file.Decls {
+				function, ok := declaration.(*ast.FuncDecl)
+				if ok {
+					issues = append(issues, l8CredentialSourceFmtSelectorIssues(function, aliases, tt.approved && function.Name.Name == "Format")...)
+				}
+			}
+			if len(issues) != tt.wantIssues {
+				t.Fatalf("fmt selector issues = %v, want %d", issues, tt.wantIssues)
+			}
+		})
+	}
+}
+
+func l8CredentialSourceImportAliases(file *ast.File, wantedPath string) (map[string]bool, bool) {
+	aliases := map[string]bool{}
+	dotImport := false
+	for _, spec := range file.Imports {
+		importPath, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || importPath != wantedPath {
+			continue
+		}
+		alias := path.Base(importPath)
+		if spec.Name != nil {
+			alias = spec.Name.Name
+		}
+		switch alias {
+		case ".":
+			dotImport = true
+		case "_":
+		default:
+			aliases[alias] = true
+		}
+	}
+	return aliases, dotImport
+}
+
+func l8CredentialSourceFmtSelectorIssues(function *ast.FuncDecl, fmtAliases map[string]bool, approvedFormat bool) []string {
+	if function.Body == nil {
+		return nil
+	}
+	var issues []string
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		identifier, ok := selector.X.(*ast.Ident)
+		if !ok || !fmtAliases[identifier.Name] {
+			return true
+		}
+		if !approvedFormat || selector.Sel.Name != "Fprint" {
+			issues = append(issues, "uses fmt."+selector.Sel.Name+" outside the narrow fixed-output formatter boundary")
+		}
+		return true
+	})
+	return issues
+}
+
 func l8CredentialSourceReceiverName(expression ast.Expr) string {
 	switch typed := expression.(type) {
 	case *ast.Ident:
@@ -1263,56 +1437,69 @@ func l8CredentialSourceSafeMetadataSchemas() map[string]map[string]string {
 	return map[string]map[string]string{
 		"KeyIdentity": {
 			"serial": "int32", "keyType": "string", "ownerUID": "uint32", "ownerGID": "uint32",
-			"permissions": "KeyPermission", "description": "string",
+			"permissions": "local:KeyPermission", "description": "string",
 		},
 		"KeyDescriptor": {
 			"keyType": "string", "ownerUID": "uint32", "ownerGID": "uint32",
-			"permissions": "KeyPermission", "description": "string",
+			"permissions": "local:KeyPermission", "description": "string",
 		},
 		"SourceRegistration": {
-			"referenceID": "string", "identity": "KeyIdentity",
+			"referenceID": "string", "identity": "local:KeyIdentity",
 		},
 		"AdmissionGrantRegistration": {
-			"authority":          "*sandboxruntime.AuthenticatedWorkerPrincipalAuthority",
-			"principal":          "sandboxruntime.AuthenticatedWorkerPrincipal",
-			"request":            "sandboxruntime.JobCredentialAdmissionRequest",
+			"authority":          "*" + l8CredentialSourceSandboxruntimeImportPath + ".AuthenticatedWorkerPrincipalAuthority",
+			"principal":          l8CredentialSourceSandboxruntimeImportPath + ".AuthenticatedWorkerPrincipal",
+			"request":            l8CredentialSourceSandboxruntimeImportPath + ".JobCredentialAdmissionRequest",
 			"sourceReferenceIDs": "[]string",
 		},
 		"RegistryConfig": {
-			"authority": "*sandboxruntime.AuthenticatedWorkerPrincipalAuthority",
+			"authority": "*" + l8CredentialSourceSandboxruntimeImportPath + ".AuthenticatedWorkerPrincipalAuthority",
 			"ownerUID":  "uint32",
 			"ownerGID":  "uint32",
-			"sources":   "[]SourceRegistration",
-			"grants":    "[]AdmissionGrantRegistration",
+			"sources":   "[]local:SourceRegistration",
+			"grants":    "[]local:AdmissionGrantRegistration",
 		},
 	}
 }
 
-func l8CredentialSourceSafeMetadataSchemaIssues(typeExpressions map[string]ast.Expr, schemas map[string]map[string]string) []string {
+func l8CredentialSourceSemanticSafeMetadata(typedPackage *types.Package) (map[string]bool, []string) {
+	validated := map[string]bool{}
+	var issues []string
+	permission, ok := l8CredentialSourceLocalNamedType(typedPackage, "KeyPermission")
+	if !ok || permission.NumMethods() != 0 || !types.Identical(permission.Underlying(), types.Typ[types.Uint32]) {
+		issues = append(issues, "KeyPermission is not the exact local uint32 metadata type")
+	}
+	issues = append(issues, l8CredentialSourceSemanticStructSchemaIssues(typedPackage, l8CredentialSourceSafeMetadataSchemas())...)
+	if len(issues) == 0 {
+		for typeName := range l8CredentialSourceSafeMetadataSchemas() {
+			validated[typeName] = true
+		}
+	}
+	sort.Strings(issues)
+	return validated, issues
+}
+
+func l8CredentialSourceSemanticStructSchemaIssues(typedPackage *types.Package, schemas map[string]map[string]string) []string {
 	var issues []string
 	for typeName, schema := range schemas {
-		expression, ok := typeExpressions[typeName]
+		named, ok := l8CredentialSourceLocalNamedType(typedPackage, typeName)
 		if !ok {
-			issues = append(issues, typeName+" is missing")
+			issues = append(issues, typeName+" is missing or aliases another type")
 			continue
 		}
-		structure, ok := expression.(*ast.StructType)
+		structure, ok := named.Underlying().(*types.Struct)
 		if !ok {
 			issues = append(issues, typeName+" is not an exact struct schema")
 			continue
 		}
 		actual := map[string]string{}
-		for _, field := range structure.Fields.List {
-			if len(field.Names) != 1 {
-				issues = append(issues, typeName+" contains embedded or grouped fields")
+		for fieldIndex := 0; fieldIndex < structure.NumFields(); fieldIndex++ {
+			field := structure.Field(fieldIndex)
+			if field.Anonymous() {
+				issues = append(issues, typeName+" contains embedded field "+field.Name())
 				continue
 			}
-			fieldName := field.Names[0].Name
-			if _, exists := actual[fieldName]; exists {
-				issues = append(issues, typeName+" duplicates field "+fieldName)
-				continue
-			}
-			actual[fieldName] = l8CredentialSourceTypeString(field.Type)
+			actual[field.Name()] = l8CredentialSourceSemanticTypeString(field.Type(), typedPackage.Path())
 		}
 		for fieldName, expectedType := range schema {
 			actualType, exists := actual[fieldName]
@@ -1333,51 +1520,14 @@ func l8CredentialSourceSafeMetadataSchemaIssues(typeExpressions map[string]ast.E
 			issues = append(issues, typeName+" field count differs from exact schema")
 		}
 	}
+	sort.Strings(issues)
 	return issues
 }
 
-func l8CredentialSourceValidatedSafeMetadataTypes(typeExpressions map[string]ast.Expr, schemas map[string]map[string]string) map[string]bool {
-	validated := map[string]bool{}
-	for typeName, schema := range schemas {
-		if len(l8CredentialSourceSafeMetadataSchemaIssues(typeExpressions, map[string]map[string]string{typeName: schema})) == 0 {
-			validated[typeName] = true
-		}
-	}
-	return validated
-}
-
-func l8CredentialSourceTypeString(expression ast.Expr) string {
-	switch typed := expression.(type) {
-	case *ast.Ident:
-		return typed.Name
-	case *ast.SelectorExpr:
-		return l8CredentialSourceTypeString(typed.X) + "." + typed.Sel.Name
-	case *ast.StarExpr:
-		return "*" + l8CredentialSourceTypeString(typed.X)
-	case *ast.ArrayType:
-		if typed.Len != nil {
-			return "[array]" + l8CredentialSourceTypeString(typed.Elt)
-		}
-		return "[]" + l8CredentialSourceTypeString(typed.Elt)
-	case *ast.MapType:
-		return "map[" + l8CredentialSourceTypeString(typed.Key) + "]" + l8CredentialSourceTypeString(typed.Value)
-	case *ast.FuncType:
-		return l8CredentialSourceFunctionTypeString(typed)
-	case *ast.Ellipsis:
-		return "..." + l8CredentialSourceTypeString(typed.Elt)
-	case *ast.ParenExpr:
-		return l8CredentialSourceTypeString(typed.X)
-	default:
-		return "<unexpected>"
-	}
-}
-
-func l8ParseCredentialSourceSafeMetadataFixture(t *testing.T) *ast.File {
-	t.Helper()
-	file, err := parser.ParseFile(token.NewFileSet(), "safe_metadata.go", `package credentialsource
+func l8CredentialSourceSafeMetadataFixture() string {
+	return `package credentialsource
 import sandboxruntime "github.com/jywlabs/hal/internal/sandboxruntime"
 type KeyPermission uint32
-type safeAlias = int32
 type KeyIdentity struct {
 	description string
 	permissions KeyPermission
@@ -1407,31 +1557,31 @@ type RegistryConfig struct {
 	authority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
 	ownerUID uint32
 }
-`, 0)
+`
+}
+
+func l8CredentialSourceFixtureSafeMetadata(t *testing.T, source string) (map[string]bool, []string) {
+	t.Helper()
+	set := token.NewFileSet()
+	file, err := parser.ParseFile(set, "safe_metadata.go", source, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return file
-}
-
-func l8CredentialSourceFixtureTypeSpec(t *testing.T, file *ast.File, typeName string) *ast.TypeSpec {
-	t.Helper()
-	for _, declaration := range file.Decls {
-		generic, ok := declaration.(*ast.GenDecl)
-		if !ok || generic.Tok != token.TYPE {
-			continue
-		}
-		for _, spec := range generic.Specs {
-			typeSpec := spec.(*ast.TypeSpec)
-			if typeSpec.Name.Name == typeName {
-				return typeSpec
-			}
+	fallback := &l8CredentialSourceFallbackImporter{primary: importer.Default(), unresolved: map[string]bool{}}
+	var typeErrors []error
+	typedPackage, _ := (&types.Config{
+		Importer:                 fallback,
+		IgnoreFuncBodies:         true,
+		DisableUnusedImportCheck: true,
+		Error:                    func(err error) { typeErrors = append(typeErrors, err) },
+	}).Check("l8-safe-metadata-self-test", set, []*ast.File{file}, nil)
+	for _, typeErr := range typeErrors {
+		if !l8CredentialSourceExpectedUnresolvedTypeError(typeErr, []*ast.File{file}, fallback.unresolved) {
+			t.Fatalf("type-check semantic metadata fixture: %v", typeErr)
 		}
 	}
-	t.Fatalf("fixture type %s not found", typeName)
-	return nil
-}
-
-func l8CredentialSourceFixtureField(name string, expression ast.Expr) *ast.Field {
-	return &ast.Field{Names: []*ast.Ident{ast.NewIdent(name)}, Type: expression}
+	if typedPackage == nil {
+		t.Fatal("semantic metadata fixture package unavailable")
+	}
+	return l8CredentialSourceSemanticSafeMetadata(typedPackage)
 }

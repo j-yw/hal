@@ -1171,28 +1171,100 @@ func l8AssertJobCredentialLiveValue(t *testing.T, label string, value any, forbi
 	if encoded, err := textCodec.MarshalText(); encoded != nil || !errors.Is(err, ErrJobCredentialSerialization) || err.Error() != ErrJobCredentialSerialization.Error() {
 		t.Fatalf("%s text codec did not return stable serialization denial", label)
 	}
-	stringer, ok := value.(fmt.Stringer)
-	if !ok {
-		t.Fatalf("%s lacks safe String formatting", label)
-	}
-	goStringer, ok := value.(fmt.GoStringer)
-	if !ok {
-		t.Fatalf("%s lacks safe GoString formatting", label)
-	}
-	for format, rendered := range map[string]string{
-		"String":   stringer.String(),
-		"GoString": goStringer.GoString(),
-		"%v":       fmt.Sprintf("%v", value),
-		"%+v":      fmt.Sprintf("%+v", value),
-		"%#v":      fmt.Sprintf("%#v", value),
-	} {
-		if rendered == "" {
-			t.Fatalf("%s %s formatting was empty", label, format)
+	l8AssertJobCredentialAllVerbFormatting(t, label, value, forbidden)
+}
+
+func l8AssertJobCredentialAllVerbFormatting(t *testing.T, label string, value any, forbidden []string) {
+	t.Helper()
+	stableNonNil := ""
+	for _, variant := range l8JobCredentialFormattingVariants(value) {
+		if _, ok := variant.value.(fmt.Formatter); !ok {
+			t.Fatalf("%s %s lacks fmt.Formatter", label, variant.name)
 		}
-		for _, raw := range forbidden {
-			if raw != "" && strings.Contains(rendered, raw) {
-				t.Fatalf("%s %s formatting exposed %q", label, format, raw)
+		expected := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value)
+		if expected == "" {
+			t.Fatalf("%s %s formatter returned empty fixed output", label, variant.name)
+		}
+		if !variant.nilPointer {
+			if stableNonNil == "" {
+				stableNonNil = expected
+			} else if expected != stableNonNil {
+				t.Fatalf("%s non-nil value/pointer formatter output drifted: %q != %q", label, expected, stableNonNil)
 			}
+		}
+		for _, format := range l8JobCredentialFormatterVerbs() {
+			rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" "+format, format, variant.value)
+			if rendered != expected {
+				t.Fatalf("%s %s formatting %s = %q, want fixed %q", label, variant.name, format, rendered, expected)
+			}
+			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
+		}
+		for _, control := range []string{"%T", "%p"} {
+			rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" "+control, control, variant.value)
+			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, forbidden)
+		}
+		stringer, ok := variant.value.(fmt.Stringer)
+		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expected {
+			t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
+		}
+		goStringer, ok := variant.value.(fmt.GoStringer)
+		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expected {
+			t.Fatalf("%s %s GoString output is not the fixed formatter output", label, variant.name)
+		}
+	}
+}
+
+type l8JobCredentialFormattingVariant struct {
+	name       string
+	value      any
+	nilPointer bool
+}
+
+func l8JobCredentialFormattingVariants(value any) []l8JobCredentialFormattingVariant {
+	valueOf := reflect.ValueOf(value)
+	variants := []l8JobCredentialFormattingVariant{{name: "interface", value: value}}
+	if valueOf.Kind() == reflect.Pointer {
+		variants = append(variants, l8JobCredentialFormattingVariant{name: "nil-pointer", value: reflect.Zero(valueOf.Type()).Interface(), nilPointer: true})
+		return variants
+	}
+	pointer := reflect.New(valueOf.Type())
+	pointer.Elem().Set(valueOf)
+	variants = append(variants, l8JobCredentialFormattingVariant{name: "pointer", value: pointer.Interface()})
+	return variants
+}
+
+func l8JobCredentialFormatterVerbs() []string {
+	return []string{
+		"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%o", "%O", "%b", "%U",
+		"%e", "%E", "%f", "%F", "%g", "%G", "%c", "%t", "% 32v", "%-32v", "%032v", "%.3v", "%+32.3v", "%#q",
+	}
+}
+
+func l8JobCredentialSafeSprintf(t *testing.T, label, format string, value any) (rendered string) {
+	t.Helper()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("%s panicked: %v", label, recovered)
+		}
+	}()
+	return fmt.Sprintf(format, value)
+}
+
+func l8JobCredentialSafeFormatCall(t *testing.T, label string, format func() string) (rendered string) {
+	t.Helper()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("%s panicked: %v", label, recovered)
+		}
+	}()
+	return format()
+}
+
+func l8JobCredentialRejectFormattingPoison(t *testing.T, label, rendered string, forbidden []string) {
+	t.Helper()
+	for _, poison := range forbidden {
+		if poison != "" && strings.Contains(rendered, poison) {
+			t.Fatalf("%s exposed formatting poison %q in %q", label, poison, rendered)
 		}
 	}
 }
