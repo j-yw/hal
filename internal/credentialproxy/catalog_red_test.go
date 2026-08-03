@@ -38,7 +38,7 @@ func TestL8CredentialProxyInitialCatalogLocksAzureResponsesPolicy(t *testing.T) 
 	if got, want := definition.LocalPathTemplate(), "/.well-known/hal/credential-http/v1/azure-openai-responses-v1/deployments/{deployment}/responses"; got != want {
 		t.Fatalf("LocalPathTemplate() = %q, want %q", got, want)
 	}
-	if got, want := definition.UpstreamPathTemplate(), "/openai/deployments/{deployment}/responses"; got != want {
+	if got, want := definition.UpstreamPathTemplate(), "/openai/v1/responses"; got != want {
 		t.Fatalf("UpstreamPathTemplate() = %q, want %q", got, want)
 	}
 	if definition.QueryKey() != "api-version" || definition.TicketHeader() != "api-key" || definition.UpstreamAuthenticationHeader() != "api-key" {
@@ -204,6 +204,19 @@ func TestL8CredentialProxyCatalogRejectsCollisionsAndUnknownServices(t *testing.
 	if _, err := catalog.SafeReference(ServiceID("unknown")); !errors.Is(err, ErrServiceUnknown) {
 		t.Fatalf("SafeReference(unknown) error = %v, want ErrServiceUnknown", err)
 	}
+	rawServiceID := ServiceID("https://user:raw-secret@private.example.test/service")
+	if _, err := catalog.Lookup(rawServiceID); !errors.Is(err, ErrServiceUnknown) {
+		t.Fatalf("Lookup(raw-looking service ID) error = %v, want ErrServiceUnknown", err)
+	} else {
+		assertCredentialProxyCatalogErrorSafe(t, err)
+		assertCredentialProxyCatalogRejectedValueOmitted(t, err, string(rawServiceID))
+	}
+	if _, err := catalog.SafeReference(rawServiceID); !errors.Is(err, ErrServiceUnknown) {
+		t.Fatalf("SafeReference(raw-looking service ID) error = %v, want ErrServiceUnknown", err)
+	} else {
+		assertCredentialProxyCatalogErrorSafe(t, err)
+		assertCredentialProxyCatalogRejectedValueOmitted(t, err, string(rawServiceID))
+	}
 }
 
 func TestL8CredentialProxyCatalogNormalizationValidationAndSanitizedErrors(t *testing.T) {
@@ -232,6 +245,120 @@ func TestL8CredentialProxyCatalogNormalizationValidationAndSanitizedErrors(t *te
 		t.Fatalf("ValidateServiceDefinition() error = %v, want ErrInvalidServiceDefinition", err)
 	}
 	assertCredentialProxyCatalogErrorSafe(t, err)
+}
+
+func TestL8CredentialProxyCatalogConstructorsFailClosedOnUnsafeInputsAndPolicyWeakening(t *testing.T) {
+	valid := l8FixtureAzureDefinition(t)
+	type catalogConstructorTest struct {
+		name       string
+		generation string
+		owner      CatalogOwner
+		definition ServiceDefinition
+		want       error
+		raw        string
+	}
+	tests := []catalogConstructorTest{
+		{
+			name:       "unsafe generation",
+			generation: "https://user:raw-secret@private.example.test/generation",
+			owner:      CatalogOwnerHostAdmin,
+			definition: valid,
+			want:       ErrCatalogGenerationRequired,
+			raw:        "raw-secret",
+		},
+		{
+			name:       "invalid owner",
+			generation: "catalog-generation-01",
+			owner:      CatalogOwner("project/raw-secret"),
+			definition: valid,
+			want:       ErrCatalogOwnerRequired,
+			raw:        "project/raw-secret",
+		},
+	}
+	invalidDefinition := cloneL8FixtureServiceDefinition(valid)
+	invalidDefinition.authority = l8FixtureUnsafeAuthority
+	tests = append(tests, catalogConstructorTest{
+		name:       "invalid definition",
+		generation: "catalog-generation-01",
+		owner:      CatalogOwnerHostAdmin,
+		definition: invalidDefinition,
+		want:       ErrInvalidServiceDefinition,
+		raw:        "raw-catalog-secret",
+	})
+
+	weakenedArguments := cloneL8FixtureServiceDefinition(valid)
+	weakenedArguments.consumer.arguments = append(weakenedArguments.consumer.arguments, "--api-key", "raw-secret")
+	weakenedTransientEnvironment := cloneL8FixtureServiceDefinition(valid)
+	weakenedTransientEnvironment.consumer.transientEnvironmentKeys = append(
+		weakenedTransientEnvironment.consumer.transientEnvironmentKeys,
+		"OPENAI_API_KEY",
+	)
+	weakenedClearing := cloneL8FixtureServiceDefinition(valid)
+	weakenedClearing.consumer.clearedEnvironmentKeys = []string{"AZURE_OPENAI_API_KEY"}
+	for _, weakened := range []struct {
+		name       string
+		definition ServiceDefinition
+		raw        string
+	}{
+		{name: "consumer arguments", definition: weakenedArguments, raw: "raw-secret"},
+		{name: "transient provider environment", definition: weakenedTransientEnvironment, raw: "OPENAI_API_KEY"},
+		{name: "provider clearing", definition: weakenedClearing},
+	} {
+		tests = append(tests, catalogConstructorTest{
+			name:       "weakened invocation policy " + weakened.name,
+			generation: "catalog-generation-01",
+			owner:      CatalogOwnerHostAdmin,
+			definition: weakened.definition,
+			want:       ErrInvalidServiceDefinition,
+			raw:        weakened.raw,
+		})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog, err := NewStaticServiceCatalog(tt.generation, tt.owner, tt.definition)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("NewStaticServiceCatalog() error = %v, want %v", err, tt.want)
+			}
+			if catalog != nil {
+				t.Fatalf("NewStaticServiceCatalog() catalog = %#v, want nil", catalog)
+			}
+			assertCredentialProxyCatalogErrorSafe(t, err)
+			assertCredentialProxyCatalogRejectedValueOmitted(t, err, tt.raw)
+		})
+	}
+
+	azureInputTests := []struct {
+		name       string
+		authority  string
+		deployment string
+		apiVersion string
+		raw        string
+	}{
+		{name: "missing authority", deployment: l8FixtureDeployment, apiVersion: l8FixtureAPIVersion},
+		{name: "unsafe authority", authority: "https://user:raw-secret@private.example.test/path", deployment: l8FixtureDeployment, apiVersion: l8FixtureAPIVersion, raw: "raw-secret"},
+		{name: "missing deployment", authority: l8FixtureAuthority, apiVersion: l8FixtureAPIVersion},
+		{name: "unsafe deployment", authority: l8FixtureAuthority, deployment: "../raw-secret/deployment", apiVersion: l8FixtureAPIVersion, raw: "raw-secret"},
+		{name: "missing API version", authority: l8FixtureAuthority, deployment: l8FixtureDeployment},
+		{name: "unsafe API version", authority: l8FixtureAuthority, deployment: l8FixtureDeployment, apiVersion: "2026-01-01&api-key=raw-secret", raw: "raw-secret"},
+	}
+	for _, tt := range azureInputTests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewAzureOpenAIResponsesV1Definition(
+				tt.authority,
+				443,
+				l8FixtureTLSServerName,
+				TLSRootPolicySystem,
+				tt.deployment,
+				tt.apiVersion,
+			)
+			if err != ErrInvalidServiceDefinition {
+				t.Fatalf("NewAzureOpenAIResponsesV1Definition() error = %v, want stable ErrInvalidServiceDefinition", err)
+			}
+			assertCredentialProxyCatalogErrorSafe(t, err)
+			assertCredentialProxyCatalogRejectedValueOmitted(t, err, tt.raw)
+		})
+	}
 }
 
 func TestL8CredentialProxyCatalogValidationRejectsPolicyWeakening(t *testing.T) {
@@ -490,6 +617,34 @@ func TestL8CredentialProxyCatalogServiceReferenceRejectsUnsafeDirectLiterals(t *
 	}
 }
 
+func TestL8CredentialProxyCatalogSanitizedErrorContractIsStable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "catalog generation required", err: ErrCatalogGenerationRequired, want: "credential proxy catalog generation is required"},
+		{name: "catalog owner required", err: ErrCatalogOwnerRequired, want: "credential proxy catalog owner is required"},
+		{name: "catalog empty", err: ErrCatalogEmpty, want: "credential proxy catalog is empty"},
+		{name: "service collision", err: ErrServiceCollision, want: "credential proxy service collision"},
+		{name: "service unknown", err: ErrServiceUnknown, want: "credential proxy service unknown"},
+		{name: "invalid service definition", err: ErrInvalidServiceDefinition, want: "credential proxy service definition invalid"},
+		{name: "live catalog state serialization", err: ErrLiveCatalogStateNotSerializable, want: "credential proxy live catalog state is not serializable"},
+		{name: "invalid catalog service reference", err: ErrInvalidCatalogServiceReference, want: "credential proxy catalog service reference invalid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Fatalf("error text = %q, want %q", got, tt.want)
+			}
+			if errors.Unwrap(tt.err) != nil {
+				t.Fatalf("sentinel unwrap = %v, want nil", errors.Unwrap(tt.err))
+			}
+			assertCredentialProxyCatalogErrorSafe(t, tt.err)
+		})
+	}
+}
+
 func TestL8CredentialProxyPiSealedInvocationPolicyIsCleanAndWorkspaceExplicit(t *testing.T) {
 	policy := l8FixtureAzureDefinition(t).SealedInvocationPolicy()
 	if policy.Provider() != "azure-openai-responses" || policy.Model() != l8FixtureDeployment {
@@ -719,7 +874,7 @@ func assertL8LiveCatalogValueDenied(t *testing.T, label string, value any) {
 func credentialProxyCatalogProductionSource(t *testing.T) string {
 	t.Helper()
 	var source strings.Builder
-	for _, path := range credentialProxyCatalogProductionFiles(t) {
+	for _, path := range credentialProxyProductionFiles(t) {
 		payload, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("ReadFile(%s) error: %v", path, err)
@@ -737,10 +892,18 @@ func assertCredentialProxyCatalogErrorSafe(t *testing.T, err error) {
 	assertCredentialProxyCatalogTextOmitsSealedValues(t, err.Error())
 }
 
+func assertCredentialProxyCatalogRejectedValueOmitted(t *testing.T, err error, raw string) {
+	t.Helper()
+	if raw != "" && strings.Contains(err.Error(), raw) {
+		t.Fatalf("catalog error %q contains rejected raw value %q", err, raw)
+	}
+}
+
 func assertCredentialProxyCatalogTextOmitsSealedValues(t *testing.T, text string) {
 	t.Helper()
 	for _, unsafe := range []string{
 		"raw-catalog-secret",
+		"raw-secret",
 		"user:",
 		l8FixtureAuthority,
 		l8FixtureTLSServerName,
@@ -748,6 +911,7 @@ func assertCredentialProxyCatalogTextOmitsSealedValues(t *testing.T, text string
 		l8FixtureAPIVersion,
 		l8FixtureUnsafeAuthority,
 		"https://",
+		"api-key=",
 		"/private",
 	} {
 		if strings.Contains(text, unsafe) {

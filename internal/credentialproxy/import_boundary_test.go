@@ -73,7 +73,7 @@ func TestL8CredentialProxyCatalogImportGuardRejectsLiveDependencies(t *testing.T
 	}
 }
 
-func TestL8CredentialProxyCatalogProductionSourceHasNoLiveOrFixtureBehavior(t *testing.T) {
+func TestL8CredentialProxyCatalogProductionSourceHasNoLiveBehavior(t *testing.T) {
 	for _, path := range credentialProxyCatalogProductionFiles(t) {
 		source, err := os.ReadFile(path)
 		if err != nil {
@@ -85,6 +85,16 @@ func TestL8CredentialProxyCatalogProductionSourceHasNoLiveOrFixtureBehavior(t *t
 				t.Errorf("production credential catalog file %s contains forbidden marker %q", path, marker)
 			}
 		}
+	}
+}
+
+func TestL8CredentialProxyPackageProductionSourceHasNoFixtureOrOverrideMaterial(t *testing.T) {
+	for _, path := range credentialProxyProductionFiles(t) {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error: %v", path, err)
+		}
+		text := string(source)
 		for _, endpointMarker := range []string{
 			".example.com",
 			".example.test",
@@ -96,7 +106,19 @@ func TestL8CredentialProxyCatalogProductionSourceHasNoLiveOrFixtureBehavior(t *t
 			"BEGIN CERTIFICATE",
 		} {
 			if strings.Contains(text, endpointMarker) {
-				t.Errorf("production credential catalog file %s contains endpoint/TLS fixture marker %q; fixtures belong in _test.go", path, endpointMarker)
+				t.Errorf("production credentialproxy file %s contains endpoint/TLS fixture marker %q; fixtures belong in _test.go", path, endpointMarker)
+			}
+		}
+		for _, overrideMarker := range []string{
+			"ProjectOverrides",
+			"ProjectOverride",
+			"ServiceOverride",
+			"CatalogOwnerProject",
+			"TemplateOverride",
+			"RequestOverride",
+		} {
+			if strings.Contains(text, overrideMarker) {
+				t.Errorf("production credentialproxy file %s contains project/template/request override marker %q", path, overrideMarker)
 			}
 		}
 	}
@@ -169,6 +191,24 @@ func credentialProxyCatalogProductionFiles(t *testing.T) []string {
 	}
 	if len(paths) == 0 {
 		t.Fatal("credentialproxy has no production files; D1 static catalog implementation is missing")
+	}
+	return paths
+}
+
+func credentialProxyProductionFiles(t *testing.T) []string {
+	t.Helper()
+	matches, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("Glob() error: %v", err)
+	}
+	paths := make([]string, 0, len(matches))
+	for _, path := range matches {
+		if !strings.HasSuffix(path, "_test.go") {
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) == 0 {
+		t.Fatal("credentialproxy has no production files; D1 implementation is missing")
 	}
 	return paths
 }

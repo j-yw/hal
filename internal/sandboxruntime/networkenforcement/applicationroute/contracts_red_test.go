@@ -2,13 +2,16 @@ package applicationroute
 
 import (
 	"context"
+	"encoding"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestL8ApplicationRouteReservedContractsAndBounds(t *testing.T) {
@@ -23,11 +26,11 @@ func TestL8ApplicationRouteReservedContractsAndBounds(t *testing.T) {
 		ID:     RouteCredentialHTTPV1,
 		Prefix: CredentialHTTPV1Prefix,
 		Limits: StreamLimits{
-			MaxRequestHeaderBytes:  32 << 10,
-			MaxRequestBodyBytes:    16 << 20,
-			MaxResponseHeaderBytes: 32 << 10,
-			MaxResponseBodyBytes:   64 << 20,
-			MaxEventBytes:          2 << 20,
+			MaxRequestHeaderBytes:  7 << 10,
+			MaxRequestBodyBytes:    3 << 20,
+			MaxResponseHeaderBytes: 9 << 10,
+			MaxResponseBodyBytes:   5 << 20,
+			MaxEventBytes:          256 << 10,
 		},
 	}
 	if err := ValidateDefinition(definition); err != nil {
@@ -111,10 +114,15 @@ func TestL8ApplicationRouteDefinitionValidationRejectsUnsafeOrUnboundedRoutes(t 
 		{name: "missing prefix", mutate: func(got *Definition) { got.Prefix = "" }},
 		{name: "noncanonical prefix", mutate: func(got *Definition) { got.Prefix = "/other/" }},
 		{name: "unbounded request headers", mutate: func(got *Definition) { got.Limits.MaxRequestHeaderBytes = 0 }},
+		{name: "negative request headers", mutate: func(got *Definition) { got.Limits.MaxRequestHeaderBytes = -1 }},
 		{name: "unbounded request body", mutate: func(got *Definition) { got.Limits.MaxRequestBodyBytes = 0 }},
+		{name: "negative request body", mutate: func(got *Definition) { got.Limits.MaxRequestBodyBytes = -1 }},
 		{name: "unbounded response headers", mutate: func(got *Definition) { got.Limits.MaxResponseHeaderBytes = 0 }},
+		{name: "negative response headers", mutate: func(got *Definition) { got.Limits.MaxResponseHeaderBytes = -1 }},
 		{name: "unbounded response body", mutate: func(got *Definition) { got.Limits.MaxResponseBodyBytes = 0 }},
+		{name: "negative response body", mutate: func(got *Definition) { got.Limits.MaxResponseBodyBytes = -1 }},
 		{name: "unbounded event", mutate: func(got *Definition) { got.Limits.MaxEventBytes = 0 }},
+		{name: "negative event", mutate: func(got *Definition) { got.Limits.MaxEventBytes = -1 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,6 +134,95 @@ func TestL8ApplicationRouteDefinitionValidationRejectsUnsafeOrUnboundedRoutes(t 
 			}
 			assertApplicationRouteErrorSafe(t, err)
 		})
+	}
+}
+
+func TestL8ApplicationRouteMetadataRejectsUnderflowAndMaximumSignedOverflowInputs(t *testing.T) {
+	limits := StreamLimits{
+		MaxRequestHeaderBytes:  1,
+		MaxRequestBodyBytes:    1,
+		MaxResponseHeaderBytes: 1,
+		MaxResponseBodyBytes:   1,
+		MaxEventBytes:          1,
+	}
+	requestTests := []struct {
+		name   string
+		mutate func(*RequestMetadata)
+	}{
+		{name: "negative request header bytes", mutate: func(got *RequestMetadata) { got.HeaderBytes = -1 }},
+		{name: "negative request content length", mutate: func(got *RequestMetadata) { got.ContentLength = -1 }},
+	}
+	for _, tt := range requestTests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := Request{Metadata: RequestMetadata{Method: "POST", ContentType: "application/json"}}
+			tt.mutate(&request.Metadata)
+			err := ValidateRequestBounds(limits, request)
+			if !errors.Is(err, ErrStreamBounds) {
+				t.Fatalf("ValidateRequestBounds() error = %v, want ErrStreamBounds", err)
+			}
+			assertApplicationRouteErrorSafe(t, err)
+		})
+	}
+
+	responseTests := []struct {
+		name   string
+		mutate func(*ResponseMetadata)
+	}{
+		{name: "negative response header bytes", mutate: func(got *ResponseMetadata) { got.HeaderBytes = -1 }},
+		{name: "negative response content length", mutate: func(got *ResponseMetadata) { got.ContentLength = -1 }},
+		{name: "negative event bytes", mutate: func(got *ResponseMetadata) { got.MaxEventBytes = -1 }},
+	}
+	for _, tt := range responseTests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := Response{Metadata: ResponseMetadata{StatusCode: 200, ContentType: "application/json"}}
+			tt.mutate(&response.Metadata)
+			err := ValidateResponseBounds(limits, response)
+			if !errors.Is(err, ErrStreamBounds) {
+				t.Fatalf("ValidateResponseBounds() error = %v, want ErrStreamBounds", err)
+			}
+			assertApplicationRouteErrorSafe(t, err)
+		})
+	}
+
+	// Exercise the maximum value of whatever signed count representation the
+	// neutral contract selects. Validation must reject it against a small limit
+	// through direct comparisons, without limit+1 or aggregate arithmetic that
+	// can wrap.
+	for _, fieldName := range []string{"HeaderBytes", "ContentLength"} {
+		t.Run("maximum request "+fieldName, func(t *testing.T) {
+			request := Request{Metadata: RequestMetadata{Method: "POST", ContentType: "application/json"}}
+			setApplicationRouteSignedFieldMax(t, &request.Metadata, fieldName)
+			if err := ValidateRequestBounds(limits, request); !errors.Is(err, ErrStreamBounds) {
+				t.Fatalf("ValidateRequestBounds(maximum %s) error = %v, want ErrStreamBounds", fieldName, err)
+			}
+		})
+	}
+	for _, fieldName := range []string{"HeaderBytes", "ContentLength", "MaxEventBytes"} {
+		t.Run("maximum response "+fieldName, func(t *testing.T) {
+			response := Response{Metadata: ResponseMetadata{StatusCode: 200, ContentType: "text/event-stream", Streaming: true}}
+			setApplicationRouteSignedFieldMax(t, &response.Metadata, fieldName)
+			if err := ValidateResponseBounds(limits, response); !errors.Is(err, ErrStreamBounds) {
+				t.Fatalf("ValidateResponseBounds(maximum %s) error = %v, want ErrStreamBounds", fieldName, err)
+			}
+		})
+	}
+}
+
+func TestL8ApplicationRouteLiveRequestAndResponseCannotSerializeOrInspectBodies(t *testing.T) {
+	requestBody := &poisonApplicationRouteBody{raw: "request-body=raw-ticket https://private.example.test/request"}
+	responseBody := &poisonApplicationRouteBody{raw: "response-body=raw-secret https://private.example.test/response"}
+	request := Request{
+		Metadata: RequestMetadata{Method: "POST", ContentType: "application/json", HeaderBytes: 10, ContentLength: 12},
+		Body:     requestBody,
+	}
+	response := Response{
+		Metadata: ResponseMetadata{StatusCode: 200, ContentType: "application/json", HeaderBytes: 10, ContentLength: 13},
+		Body:     responseBody,
+	}
+	assertL8ApplicationRouteLiveValueDenied(t, "request", request)
+	assertL8ApplicationRouteLiveValueDenied(t, "response", response)
+	if requestBody.invoked || responseBody.invoked {
+		t.Fatal("safe live request/response rendering invoked a body read, close, marshal, or formatting method")
 	}
 }
 
@@ -378,11 +475,38 @@ func TestL8ApplicationRouteRegistryRollbackContinuesAndDropsRawCauses(t *testing
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("rollback events = %#v, want %#v", got, want)
 	}
-	if got := registry.State(); got != RegistryStateClosed {
-		t.Fatalf("State() after rollback failures = %q, want %q", got, RegistryStateClosed)
+	if got := registry.State(); got != RegistryStateCleanupIncomplete {
+		t.Fatalf("State() after rollback failures = %q, want %q", got, RegistryStateCleanupIncomplete)
 	}
 	if _, dispatchErr := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, Request{}); !errors.Is(dispatchErr, ErrRegistryClosed) {
 		t.Fatalf("Dispatch() after rollback failures error = %v, want ErrRegistryClosed", dispatchErr)
+	}
+
+	// A failed Close never proves a handler stopped. Clear the injected
+	// failures and require a later Close to retry every unconfirmed handler in
+	// reverse order before the registry can claim Closed.
+	failing.closeErr = nil
+	second.closeErr = nil
+	first.closeErr = nil
+	if retryErr := registry.Close(context.Background()); retryErr != nil {
+		t.Fatalf("Close() cleanup retry error = %v", retryErr)
+	}
+	wantAfterRetry := []string{
+		"start:first",
+		"start:second",
+		"start:failing",
+		"close:failing",
+		"close:second",
+		"close:first",
+		"close:failing",
+		"close:second",
+		"close:first",
+	}
+	if !reflect.DeepEqual(events, wantAfterRetry) {
+		t.Fatalf("rollback retry events = %#v, want %#v", events, wantAfterRetry)
+	}
+	if got := registry.State(); got != RegistryStateClosed {
+		t.Fatalf("State() after successful rollback retry = %q, want %q", got, RegistryStateClosed)
 	}
 }
 
@@ -440,6 +564,27 @@ func TestL8ApplicationRouteRegistryCloseContinuesInReverseOrderAndSanitizes(t *t
 	assertApplicationRouteErrorSafe(t, err)
 	if got, want := events, []string{"start:first", "start:second", "close:second", "close:first"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("close failure events = %#v, want %#v", got, want)
+	}
+	if got := registry.State(); got != RegistryStateCleanupIncomplete {
+		t.Fatalf("State() after Close failures = %q, want %q", got, RegistryStateCleanupIncomplete)
+	}
+	if _, dispatchErr := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, Request{}); !errors.Is(dispatchErr, ErrRegistryClosed) {
+		t.Fatalf("Dispatch() during cleanup-incomplete state error = %v, want ErrRegistryClosed", dispatchErr)
+	}
+	first.closeErr = nil
+	second.closeErr = nil
+	if err := registry.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry error = %v", err)
+	}
+	if got, want := events, []string{
+		"start:first", "start:second",
+		"close:second", "close:first",
+		"close:second", "close:first",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("close retry events = %#v, want %#v", got, want)
+	}
+	if got := registry.State(); got != RegistryStateClosed {
+		t.Fatalf("State() after successful Close retry = %q, want %q", got, RegistryStateClosed)
 	}
 }
 
@@ -518,6 +663,15 @@ func TestL8ApplicationRouteRegistryConcurrentDispatchFailsClosed(t *testing.T) {
 	if _, err := registry.Dispatch(context.Background(), RouteID("unknown"), newRequest()); !errors.Is(err, ErrUnknownRoute) {
 		t.Fatalf("Dispatch() unknown route error = %v, want ErrUnknownRoute", err)
 	}
+	rawRouteID := RouteID("https://user:raw-ticket@private.example.test/secret")
+	if _, err := registry.Dispatch(context.Background(), rawRouteID, newRequest()); !errors.Is(err, ErrUnknownRoute) {
+		t.Fatalf("Dispatch(raw-looking unknown route) error = %v, want ErrUnknownRoute", err)
+	} else {
+		assertApplicationRouteErrorSafe(t, err)
+		if strings.Contains(err.Error(), string(rawRouteID)) {
+			t.Fatalf("Dispatch(raw-looking unknown route) error %q contains rejected route ID", err)
+		}
+	}
 
 	const calls = 64
 	errs := make(chan error, calls)
@@ -575,6 +729,9 @@ func TestL8ApplicationRouteHandlerErrorsAreSanitized(t *testing.T) {
 }
 
 func TestL8ApplicationRouteSanitizedErrorContractIsStable(t *testing.T) {
+	if got, want := string(RegistryStateCleanupIncomplete), "cleanup_incomplete"; got != want {
+		t.Fatalf("RegistryStateCleanupIncomplete = %q, want %q", got, want)
+	}
 	tests := []struct {
 		name string
 		err  error
@@ -586,7 +743,12 @@ func TestL8ApplicationRouteSanitizedErrorContractIsStable(t *testing.T) {
 		{name: "handler start", err: ErrHandlerStart, want: "application route handler start failed"},
 		{name: "handler close", err: ErrHandlerClose, want: "application route handler close failed"},
 		{name: "handler dispatch", err: ErrHandlerDispatch, want: "application route handler dispatch failed"},
+		{name: "stream bounds", err: ErrStreamBounds, want: "application route stream bounds exceeded"},
+		{name: "registry not started", err: ErrRegistryNotStarted, want: "application route registry not started"},
+		{name: "registry started", err: ErrRegistryStarted, want: "application route registry already started"},
 		{name: "registry closed", err: ErrRegistryClosed, want: "application route registry closed"},
+		{name: "unknown route", err: ErrUnknownRoute, want: "application route unknown"},
+		{name: "live state serialization", err: ErrLiveRouteStateNotSerializable, want: "application route live state is not serializable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -621,6 +783,46 @@ type fakeApplicationRouteHandler struct {
 	closeSawActive bool
 }
 
+type poisonApplicationRouteBody struct {
+	raw     string
+	invoked bool
+}
+
+func (body *poisonApplicationRouteBody) fail(method string) {
+	body.invoked = true
+	panic("application route body " + method + " method was invoked")
+}
+
+func (body *poisonApplicationRouteBody) Read([]byte) (int, error) {
+	body.fail("Read")
+	return 0, io.EOF
+}
+
+func (body *poisonApplicationRouteBody) Close() error {
+	body.fail("Close")
+	return nil
+}
+
+func (body *poisonApplicationRouteBody) MarshalJSON() ([]byte, error) {
+	body.fail("MarshalJSON")
+	return nil, nil
+}
+
+func (body *poisonApplicationRouteBody) MarshalText() ([]byte, error) {
+	body.fail("MarshalText")
+	return nil, nil
+}
+
+func (body *poisonApplicationRouteBody) String() string {
+	body.fail("String")
+	return body.raw
+}
+
+func (body *poisonApplicationRouteBody) GoString() string {
+	body.fail("GoString")
+	return body.raw
+}
+
 var _ Handler = (*fakeApplicationRouteHandler)(nil)
 
 func newFakeApplicationRouteHandler(name string, id RouteID, prefix string) *fakeApplicationRouteHandler {
@@ -630,11 +832,11 @@ func newFakeApplicationRouteHandler(name string, id RouteID, prefix string) *fak
 			ID:     id,
 			Prefix: prefix,
 			Limits: StreamLimits{
-				MaxRequestHeaderBytes:  32 << 10,
-				MaxRequestBodyBytes:    16 << 20,
-				MaxResponseHeaderBytes: 32 << 10,
-				MaxResponseBodyBytes:   64 << 20,
-				MaxEventBytes:          2 << 20,
+				MaxRequestHeaderBytes:  7 << 10,
+				MaxRequestBodyBytes:    3 << 20,
+				MaxResponseHeaderBytes: 9 << 10,
+				MaxResponseBodyBytes:   5 << 20,
+				MaxEventBytes:          256 << 10,
 			},
 		},
 	}
@@ -684,11 +886,12 @@ func (handler *fakeApplicationRouteHandler) Close(context.Context) error {
 
 func waitForApplicationRouteState(t *testing.T, registry *Registry, want RegistryState) {
 	t.Helper()
-	for i := 0; i < 10000; i++ {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
 		if registry.State() == want {
 			return
 		}
-		runtime.Gosched()
+		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("State() = %q, want %q", registry.State(), want)
 }
@@ -706,6 +909,82 @@ func (handler *fakeApplicationRouteHandler) record(event string) {
 	handler.eventMu.Lock()
 	defer handler.eventMu.Unlock()
 	*handler.events = append(*handler.events, event)
+}
+
+func setApplicationRouteSignedFieldMax(t *testing.T, target any, fieldName string) {
+	t.Helper()
+	value := reflect.ValueOf(target)
+	if value.Kind() != reflect.Pointer || value.IsNil() || value.Elem().Kind() != reflect.Struct {
+		t.Fatalf("target for %s = %T, want non-nil pointer to struct", fieldName, target)
+	}
+	field := value.Elem().FieldByName(fieldName)
+	if !field.IsValid() || !field.CanSet() {
+		t.Fatalf("field %s on %T is not settable", fieldName, target)
+	}
+	switch field.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		bits := field.Type().Bits()
+		maximum := int64(^uint64(0) >> 1)
+		if bits < 64 {
+			maximum = 1<<(bits-1) - 1
+		}
+		field.SetInt(maximum)
+	default:
+		t.Fatalf("field %s on %T kind = %s, want signed integer", fieldName, target, field.Kind())
+	}
+}
+
+func assertL8ApplicationRouteLiveValueDenied(t *testing.T, label string, value any) {
+	t.Helper()
+	if got, want := ErrLiveRouteStateNotSerializable.Error(), "application route live state is not serializable"; got != want {
+		t.Fatalf("ErrLiveRouteStateNotSerializable = %q, want %q", got, want)
+	}
+	payload, err := json.Marshal(value)
+	if len(payload) != 0 || !errors.Is(err, ErrLiveRouteStateNotSerializable) {
+		t.Fatalf("json.Marshal(%s) = %q, %v, want empty payload and stable denial", label, payload, err)
+	}
+	jsonMarshaler, ok := value.(json.Marshaler)
+	if !ok {
+		t.Fatalf("%s does not implement fail-closed json.Marshaler", label)
+	}
+	payload, err = jsonMarshaler.MarshalJSON()
+	if len(payload) != 0 || err != ErrLiveRouteStateNotSerializable {
+		t.Fatalf("MarshalJSON(%s) = %q, %v, want empty payload and stable denial", label, payload, err)
+	}
+	textMarshaler, ok := value.(encoding.TextMarshaler)
+	if !ok {
+		t.Fatalf("%s does not implement fail-closed encoding.TextMarshaler", label)
+	}
+	payload, err = textMarshaler.MarshalText()
+	if len(payload) != 0 || err != ErrLiveRouteStateNotSerializable {
+		t.Fatalf("MarshalText(%s) = %q, %v, want empty payload and stable denial", label, payload, err)
+	}
+	stringer, ok := value.(fmt.Stringer)
+	if !ok {
+		t.Fatalf("%s does not implement safe fmt.Stringer", label)
+	}
+	goStringer, ok := value.(fmt.GoStringer)
+	if !ok {
+		t.Fatalf("%s does not implement safe fmt.GoStringer", label)
+	}
+	for _, rendered := range []string{
+		stringer.String(),
+		goStringer.GoString(),
+		fmt.Sprintf("%v", value),
+		fmt.Sprintf("%+v", value),
+		fmt.Sprintf("%#v", value),
+	} {
+		for _, unsafe := range []string{
+			"request-body=raw-ticket",
+			"response-body=raw-secret",
+			"private.example.test",
+			"https://",
+		} {
+			if strings.Contains(rendered, unsafe) {
+				t.Fatalf("safe %s rendering %q contains live value %q", label, rendered, unsafe)
+			}
+		}
+	}
 }
 
 func assertApplicationRouteErrorSafe(t *testing.T, err error) {
