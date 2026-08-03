@@ -4,6 +4,7 @@ package credentialproxy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -392,6 +393,9 @@ func (StaticServiceCatalog) String() string {
 	return "credentialproxy.StaticServiceCatalog{sealed:true}"
 }
 func (catalog StaticServiceCatalog) GoString() string { return catalog.String() }
+func (StaticServiceCatalog) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("credentialproxy.StaticServiceCatalog{sealed:true}"))
+}
 
 func newAzureOpenAIResponsesInvocationPolicy(deployment string) SealedInvocationPolicy {
 	return SealedInvocationPolicy{

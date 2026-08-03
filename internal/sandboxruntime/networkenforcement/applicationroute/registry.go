@@ -2,6 +2,8 @@ package applicationroute
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"sort"
@@ -327,7 +329,7 @@ func newTrackedResponseBody(body io.ReadCloser, release func()) *trackedResponse
 
 func (body *trackedResponseBody) Read(buffer []byte) (int, error) {
 	count, err := body.body.Read(buffer)
-	if err != nil {
+	if errors.Is(err, io.EOF) {
 		body.releaseOwnership()
 	}
 	return count, err
@@ -373,3 +375,6 @@ func (Registry) MarshalText() ([]byte, error) { return nil, ErrLiveRouteStateNot
 func (Registry) Error() string                { return "applicationroute.Registry{live}" }
 func (Registry) String() string               { return "applicationroute.Registry{live}" }
 func (Registry) GoString() string             { return "applicationroute.Registry{live}" }
+func (Registry) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("applicationroute.Registry{live}"))
+}
