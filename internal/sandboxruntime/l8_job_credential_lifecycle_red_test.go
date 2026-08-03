@@ -2,8 +2,12 @@ package sandboxruntime
 
 import (
 	"context"
+	"encoding"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,7 +27,7 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 		{
 			name: "prepare activate renew revoke",
 			steps: []func(*JobCredentialLifecycle) error{
-				func(l *JobCredentialLifecycle) error { return l.BeginPrepare() },
+				func(l *JobCredentialLifecycle) error { return l.BeginPrepare(identity) },
 				func(l *JobCredentialLifecycle) error { return l.Activate(active) },
 				func(l *JobCredentialLifecycle) error { return l.BeginRenew() },
 				func(l *JobCredentialLifecycle) error {
@@ -37,7 +41,7 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 		{
 			name: "cleanup without begin revoke",
 			steps: []func(*JobCredentialLifecycle) error{
-				func(l *JobCredentialLifecycle) error { return l.BeginPrepare() },
+				func(l *JobCredentialLifecycle) error { return l.BeginPrepare(identity) },
 				func(l *JobCredentialLifecycle) error { return l.Activate(active) },
 				func(l *JobCredentialLifecycle) error { return l.Revoke(cleanup) },
 			},
@@ -47,7 +51,7 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 		{
 			name: "renew cannot resurrect expired",
 			steps: []func(*JobCredentialLifecycle) error{
-				func(l *JobCredentialLifecycle) error { return l.BeginPrepare() },
+				func(l *JobCredentialLifecycle) error { return l.BeginPrepare(identity) },
 				func(l *JobCredentialLifecycle) error { return l.Activate(active) },
 				func(l *JobCredentialLifecycle) error { return l.Expire(now.Add(2 * time.Minute)) },
 				func(l *JobCredentialLifecycle) error { return l.BeginRenew() },
@@ -58,7 +62,7 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 		{
 			name: "loss removes active state immediately",
 			steps: []func(*JobCredentialLifecycle) error{
-				func(l *JobCredentialLifecycle) error { return l.BeginPrepare() },
+				func(l *JobCredentialLifecycle) error { return l.BeginPrepare(identity) },
 				func(l *JobCredentialLifecycle) error { return l.Activate(active) },
 				func(l *JobCredentialLifecycle) error {
 					return l.ObserveLoss(JobCredentialLoss{
@@ -135,7 +139,7 @@ func TestL8JobCredentialLossRejectsNeighborAndStaleWatchers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := lifecycle.BeginPrepare(); err != nil {
+			if err := lifecycle.BeginPrepare(identity); err != nil {
 				t.Fatal(err)
 			}
 			if err := lifecycle.Activate(l8ActiveProof(t, identity, 3, now, now.Add(time.Minute))); err != nil {
@@ -145,10 +149,7 @@ func TestL8JobCredentialLossRejectsNeighborAndStaleWatchers(t *testing.T) {
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("loss error classification mismatch for %s", tt.name)
 			}
-			wantState := JobCredentialStateActive
-			if tt.wantErr == nil {
-				wantState = JobCredentialStateRevoking
-			}
+			wantState := JobCredentialStateRevoking
 			if got := lifecycle.State(); got != wantState {
 				t.Fatalf("state = %q, want %q", got, wantState)
 			}
@@ -172,7 +173,7 @@ func TestL8JobCredentialIdentityAndProofOwnSliceInputs(t *testing.T) {
 	if err := ValidateJobCredentialActiveProof(proof, expected, 1, now); err != nil {
 		t.Fatal("active proof retained caller-owned identity slices")
 	}
-	if err := lifecycle.BeginPrepare(); err != nil {
+	if err := lifecycle.BeginPrepare(expected); err != nil {
 		t.Fatal(err)
 	}
 	if err := lifecycle.Activate(l8ActiveProof(t, expected, 1, now, now.Add(time.Minute))); err != nil {
@@ -225,11 +226,16 @@ func TestL8JobCredentialLifecycleIdempotenceAndConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.BeginPrepare(); err != nil {
+	if err := lifecycle.BeginPrepare(identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.BeginPrepare(); err != nil {
+	if err := lifecycle.BeginPrepare(identity); err != nil {
 		t.Fatalf("same prepare is not idempotent: %v", err)
+	}
+	conflictingIdentity := identity
+	conflictingIdentity.RuntimeGeneration = "runtime-generation-2"
+	if err := lifecycle.BeginPrepare(conflictingIdentity); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+		t.Fatalf("conflicting prepare error = %v, want identity mismatch", err)
 	}
 	if err := lifecycle.Activate(active); err != nil {
 		t.Fatal(err)
@@ -238,11 +244,9 @@ func TestL8JobCredentialLifecycleIdempotenceAndConflicts(t *testing.T) {
 		t.Fatalf("same active proof is not idempotent: %v", err)
 	}
 
-	conflictingIdentity := identity
-	conflictingIdentity.RuntimeGeneration = "runtime-generation-2"
 	conflicting := l8ActiveProof(t, conflictingIdentity, 1, now, now.Add(time.Minute))
 	if err := lifecycle.Activate(conflicting); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
-		t.Fatalf("conflicting prepare error = %v, want identity mismatch", err)
+		t.Fatalf("conflicting active proof error = %v, want identity mismatch", err)
 	}
 
 	if err := lifecycle.BeginRevoke(); err != nil {
@@ -265,6 +269,161 @@ func TestL8JobCredentialLifecycleIdempotenceAndConflicts(t *testing.T) {
 	}
 }
 
+func TestL8JobCredentialLifecycleFailureCancelLossAndReplayTransitions(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 15, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+
+	t.Run("prepare failure requires revoke", func(t *testing.T) {
+		lifecycle, err := NewJobCredentialLifecycle(identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.BeginPrepare(identity); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.Activate(JobCredentialActiveProof{}); err == nil {
+			t.Fatal("zero active proof was accepted")
+		}
+		if got := lifecycle.State(); got != JobCredentialStateRevoking {
+			t.Fatalf("state = %q, want revoking after partial prepare failure", got)
+		}
+	})
+
+	t.Run("renew failure requires revoke", func(t *testing.T) {
+		lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+		if err := lifecycle.BeginRenew(); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.Renew(JobCredentialActiveProof{}); err == nil {
+			t.Fatal("zero renewal proof was accepted")
+		}
+		if got := lifecycle.State(); got != JobCredentialStateRevoking {
+			t.Fatalf("state = %q, want revoking after renew failure", got)
+		}
+	})
+
+	t.Run("cleanup failure is durable", func(t *testing.T) {
+		lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+		if err := lifecycle.BeginRevoke(); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.Revoke(JobCredentialCleanupProof{}); err == nil {
+			t.Fatal("zero cleanup proof was accepted")
+		}
+		if got := lifecycle.State(); got != JobCredentialStateCleanupIncomplete {
+			t.Fatalf("state = %q, want cleanup_incomplete after failed cleanup proof", got)
+		}
+	})
+
+	for _, state := range []string{"preparing", "renewing"} {
+		t.Run("cancel from "+state, func(t *testing.T) {
+			var lifecycle *JobCredentialLifecycle
+			if state == "preparing" {
+				var err error
+				lifecycle, err = NewJobCredentialLifecycle(identity)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := lifecycle.BeginPrepare(identity); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				lifecycle = l8ActiveLifecycle(t, identity, 1, now)
+				if err := lifecycle.BeginRenew(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := lifecycle.BeginRevoke(); err != nil {
+				t.Fatal(err)
+			}
+			if got := lifecycle.State(); got != JobCredentialStateRevoking {
+				t.Fatalf("state = %q, want revoking", got)
+			}
+		})
+	}
+
+	for _, state := range []string{"preparing", "renewing"} {
+		t.Run("loss from "+state, func(t *testing.T) {
+			var lifecycle *JobCredentialLifecycle
+			if state == "preparing" {
+				var err error
+				lifecycle, err = NewJobCredentialLifecycle(identity)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := lifecycle.BeginPrepare(identity); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				lifecycle = l8ActiveLifecycle(t, identity, 1, now)
+				if err := lifecycle.BeginRenew(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := lifecycle.ObserveLoss(JobCredentialLoss{Identity: identity, Revision: 1, Code: JobCredentialFailureGuestHelperUnavailable}); err != nil {
+				t.Fatal(err)
+			}
+			if got := lifecycle.State(); got != JobCredentialStateRevoking {
+				t.Fatalf("state = %q, want revoking", got)
+			}
+		})
+	}
+
+	t.Run("accepted proof replay revokes", func(t *testing.T) {
+		lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+		if err := lifecycle.BeginRenew(); err != nil {
+			t.Fatal(err)
+		}
+		replayed := l8ActiveProof(t, identity, 1, now, now.Add(time.Minute))
+		if err := lifecycle.Renew(replayed); !errors.Is(err, ErrJobCredentialReplayRejected) {
+			t.Fatalf("replayed proof error = %v, want replay rejected", err)
+		}
+		if got := lifecycle.State(); got != JobCredentialStateRevoking {
+			t.Fatalf("state = %q, want revoking", got)
+		}
+	})
+}
+
+func TestL8JobCredentialHTTPIdentityRequiresEveryL7GenerationAndExactCorrelation(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 25, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	active := l8ActiveProof(t, identity, 1, now, now.Add(time.Minute))
+	for _, tt := range []struct {
+		name   string
+		mutate func(*JobCredentialIdentity)
+	}{
+		{name: "policy", mutate: func(value *JobCredentialIdentity) { value.NetworkPolicyGeneration = "network-policy-other" }},
+		{name: "proxy", mutate: func(value *JobCredentialIdentity) { value.ProxyGeneration = "proxy-other" }},
+		{name: "topology", mutate: func(value *JobCredentialIdentity) { value.TopologyGeneration = "topology-other" }},
+		{name: "rules", mutate: func(value *JobCredentialIdentity) { value.RuleGeneration = "rules-other" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mismatched := identity
+			tt.mutate(&mismatched)
+			if err := ValidateJobCredentialActiveProof(active, mismatched, 1, now); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+				t.Fatalf("mismatched L7 generation error = %v, want identity mismatch", err)
+			}
+		})
+	}
+	for _, tt := range []struct {
+		name  string
+		clear func(*JobCredentialIdentity)
+	}{
+		{name: "policy", clear: func(value *JobCredentialIdentity) { value.NetworkPolicyGeneration = "" }},
+		{name: "proxy", clear: func(value *JobCredentialIdentity) { value.ProxyGeneration = "" }},
+		{name: "topology", clear: func(value *JobCredentialIdentity) { value.TopologyGeneration = "" }},
+		{name: "rules", clear: func(value *JobCredentialIdentity) { value.RuleGeneration = "" }},
+	} {
+		t.Run("missing_"+tt.name, func(t *testing.T) {
+			partial := identity
+			tt.clear(&partial)
+			if _, err := NewJobCredentialLifecycle(partial); err == nil {
+				t.Fatal("partial HTTP/L7 identity was accepted")
+			}
+		})
+	}
+}
+
 func TestL8JobCredentialRenewAndCleanupProofsRequireMonotonicAbsenceEvidence(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 3, 30, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
@@ -273,7 +432,7 @@ func TestL8JobCredentialRenewAndCleanupProofsRequireMonotonicAbsenceEvidence(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.BeginPrepare(); err != nil {
+	if err := lifecycle.BeginPrepare(identity); err != nil {
 		t.Fatal(err)
 	}
 	if err := lifecycle.Activate(active); err != nil {
@@ -312,6 +471,109 @@ func TestL8JobCredentialRenewAndCleanupProofsRequireMonotonicAbsenceEvidence(t *
 	}
 }
 
+func TestL8JobCredentialLiveStateIsOpaqueAndExplicitlyDeniesSerialization(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 45, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+	active := l8ActiveProof(t, identity, 1, now, now.Add(time.Minute))
+	cleanup := l8CleanupProof(t, identity, 2, now.Add(time.Second))
+	principal, err := NewAuthenticatedWorkerPrincipal(
+		"principal-live-canary",
+		1000,
+		1001,
+		"peercred-issuer-canary",
+		"daemon-generation-canary",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.ID() != "principal-live-canary" || principal.UID() != 1000 || principal.GID() != 1001 ||
+		principal.IssuerID() != "peercred-issuer-canary" || principal.IssuerGeneration() != "daemon-generation-canary" {
+		t.Fatal("authenticated principal accessors did not return its sealed provenance")
+	}
+	for label, value := range map[string]any{
+		"lifecycle":     lifecycle,
+		"active proof":  active,
+		"cleanup proof": cleanup,
+		"principal":     principal,
+	} {
+		l8AssertJobCredentialLiveValue(t, label, value, []string{
+			identity.SandboxID,
+			identity.ExecutionID,
+			identity.HostID,
+			identity.WorkerJobID,
+			identity.RuntimeGeneration,
+			identity.ProxyGeneration,
+			identity.AdmissionGrantID,
+			identity.PrincipalID,
+			identity.BindingIDs[0],
+			"active-proof-1",
+			"cleanup-proof-1",
+			"principal-live-canary",
+			"peercred-issuer-canary",
+			"daemon-generation-canary",
+			"1000",
+			"1001",
+		})
+	}
+	for _, value := range []any{lifecycle, active, cleanup, principal} {
+		typeOfValue := reflect.TypeOf(value)
+		if typeOfValue.Kind() == reflect.Pointer {
+			typeOfValue = typeOfValue.Elem()
+		}
+		for fieldIndex := 0; fieldIndex < typeOfValue.NumField(); fieldIndex++ {
+			if field := typeOfValue.Field(fieldIndex); field.IsExported() {
+				t.Fatalf("%s exposes live field %s", typeOfValue, field.Name)
+			}
+		}
+	}
+}
+
+func l8AssertJobCredentialLiveValue(t *testing.T, label string, value any, forbidden []string) {
+	t.Helper()
+	jsonCodec, ok := value.(json.Marshaler)
+	if !ok {
+		t.Fatalf("%s does not explicitly deny JSON marshaling", label)
+	}
+	if encoded, err := jsonCodec.MarshalJSON(); encoded != nil || !errors.Is(err, ErrJobCredentialSerialization) || err.Error() != ErrJobCredentialSerialization.Error() {
+		t.Fatalf("%s JSON codec did not return stable serialization denial", label)
+	}
+	if encoded, err := json.Marshal(value); encoded != nil || !errors.Is(err, ErrJobCredentialSerialization) {
+		t.Fatalf("%s was serializable through encoding/json", label)
+	}
+	textCodec, ok := value.(encoding.TextMarshaler)
+	if !ok {
+		t.Fatalf("%s does not explicitly deny text marshaling", label)
+	}
+	if encoded, err := textCodec.MarshalText(); encoded != nil || !errors.Is(err, ErrJobCredentialSerialization) || err.Error() != ErrJobCredentialSerialization.Error() {
+		t.Fatalf("%s text codec did not return stable serialization denial", label)
+	}
+	stringer, ok := value.(fmt.Stringer)
+	if !ok {
+		t.Fatalf("%s lacks safe String formatting", label)
+	}
+	goStringer, ok := value.(fmt.GoStringer)
+	if !ok {
+		t.Fatalf("%s lacks safe GoString formatting", label)
+	}
+	for format, rendered := range map[string]string{
+		"String":   stringer.String(),
+		"GoString": goStringer.GoString(),
+		"%v":       fmt.Sprintf("%v", value),
+		"%+v":      fmt.Sprintf("%+v", value),
+		"%#v":      fmt.Sprintf("%#v", value),
+	} {
+		if rendered == "" {
+			t.Fatalf("%s %s formatting was empty", label, format)
+		}
+		for _, raw := range forbidden {
+			if raw != "" && strings.Contains(rendered, raw) {
+				t.Fatalf("%s %s formatting exposed %q", label, format, raw)
+			}
+		}
+	}
+}
+
 func TestL8JobCredentialAuthorizationIsStructurallyRequiredBeforeSourceResolution(t *testing.T) {
 	authorizerType := reflect.TypeOf((*CredentialAdmissionAuthorizer)(nil)).Elem()
 	registryType := reflect.TypeOf((*AuthorizedCredentialSourceRegistry)(nil)).Elem()
@@ -319,7 +581,7 @@ func TestL8JobCredentialAuthorizationIsStructurallyRequiredBeforeSourceResolutio
 	if !ok {
 		t.Fatal("authorized source registry lacks ResolveAuthorizedSource")
 	}
-	authorizationType := reflect.TypeOf(CredentialAdmissionAuthorization{})
+	authorizationType := reflect.TypeOf((*CredentialAdmissionAuthorization)(nil)).Elem()
 	foundAuthorization := false
 	for i := 0; i < method.Type.NumIn(); i++ {
 		if method.Type.In(i) == authorizationType {
@@ -354,6 +616,10 @@ func l8JobCredentialIdentity(now time.Time) JobCredentialIdentity {
 		PlanID:                       "plan-1",
 		ActivationGeneration:         "activation-generation-1",
 		CredentialGeneration:         "credential-generation-1",
+		NetworkPolicyGeneration:      "network-policy-generation-1",
+		ProxyGeneration:              "proxy-generation-1",
+		TopologyGeneration:           "topology-generation-1",
+		RuleGeneration:               "rule-generation-1",
 		AdmissionGrantID:             "grant-1",
 		AdmissionGrantRevision:       4,
 		PrincipalID:                  "principal-1",
@@ -366,7 +632,7 @@ func l8JobCredentialIdentity(now time.Time) JobCredentialIdentity {
 func l8ActiveProof(t *testing.T, identity JobCredentialIdentity, revision uint64, issuedAt, expiresAt time.Time) JobCredentialActiveProof {
 	t.Helper()
 	proof, err := NewJobCredentialActiveProof(JobCredentialActiveProofInput{
-		ProofID:   "active-proof-1",
+		ProofID:   fmt.Sprintf("active-proof-%d", revision),
 		Identity:  identity,
 		Revision:  revision,
 		IssuedAt:  issuedAt,
@@ -376,6 +642,21 @@ func l8ActiveProof(t *testing.T, identity JobCredentialIdentity, revision uint64
 		t.Fatalf("new active proof: %v", err)
 	}
 	return proof
+}
+
+func l8ActiveLifecycle(t *testing.T, identity JobCredentialIdentity, revision uint64, now time.Time) *JobCredentialLifecycle {
+	t.Helper()
+	lifecycle, err := NewJobCredentialLifecycle(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.BeginPrepare(identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.Activate(l8ActiveProof(t, identity, revision, now, now.Add(time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	return lifecycle
 }
 
 func l8CleanupProof(t *testing.T, identity JobCredentialIdentity, revision uint64, inspectedAt time.Time) JobCredentialCleanupProof {
@@ -398,7 +679,7 @@ func l8CleanupProof(t *testing.T, identity JobCredentialIdentity, revision uint6
 type l8FakeCredentialAuthorizer struct{}
 
 func (*l8FakeCredentialAuthorizer) AuthorizeJobCredentials(context.Context, AuthenticatedWorkerPrincipal, JobCredentialAdmissionRequest) (CredentialAdmissionAuthorization, error) {
-	return CredentialAdmissionAuthorization{}, nil
+	return nil, nil
 }
 
 type l8FakeAuthorizedSourceRegistry struct{}

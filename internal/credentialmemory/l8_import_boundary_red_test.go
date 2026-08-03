@@ -17,6 +17,10 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 	}
 	production := 0
 	productionSource := strings.Builder{}
+	denialMethods := map[string]map[string]bool{
+		"LockedMapping": {},
+		"borrowedView":  {},
+	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
@@ -48,19 +52,43 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 			}
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
-			function, ok := node.(*ast.FuncDecl)
-			if !ok || function.Recv == nil {
-				return true
-			}
-			switch function.Name.Name {
-			case "String", "GoString", "MarshalJSON", "MarshalText", "MarshalBinary", "GobEncode":
-				t.Errorf("production credential memory %s defines forbidden formatting/marshal method %s", entry.Name(), function.Name.Name)
+			switch typed := node.(type) {
+			case *ast.StructType:
+				for _, field := range typed.Fields.List {
+					if len(field.Names) == 0 || !field.Names[0].IsExported() || !l8CredentialMemoryRawType(field.Type) {
+						continue
+					}
+					t.Errorf("production credential memory %s exposes raw live field %s", entry.Name(), field.Names[0].Name)
+				}
+			case *ast.FuncDecl:
+				if typed.Recv == nil {
+					return true
+				}
+				receiver := l8CredentialMemoryReceiverName(typed.Recv.List[0].Type)
+				switch typed.Name.Name {
+				case "MarshalBinary", "GobEncode", "Bytes", "Value":
+					t.Errorf("production credential memory %s defines forbidden live-state method %s", entry.Name(), typed.Name.Name)
+				case "String", "GoString", "MarshalJSON", "MarshalText":
+					allowed, ok := denialMethods[receiver]
+					if !ok {
+						t.Errorf("production credential memory %s defines formatting/codec method %s on unexpected receiver %s", entry.Name(), typed.Name.Name, receiver)
+						return true
+					}
+					allowed[typed.Name.Name] = true
+				}
 			}
 			return true
 		})
 	}
 	if production == 0 {
 		t.Fatal("L8 credential memory production package does not exist")
+	}
+	for receiver, found := range denialMethods {
+		for _, required := range []string{"String", "GoString", "MarshalJSON", "MarshalText"} {
+			if !found[required] {
+				t.Errorf("production credential memory %s omits required safe/denial method %s", receiver, required)
+			}
+		}
 	}
 	for _, required := range []string{
 		"unix.Mmap(", "unix.MAP_ANON", "unix.MAP_PRIVATE", "unix.Mlock(",
@@ -69,5 +97,30 @@ func TestL8CredentialMemoryImportAndFormattingBoundaries(t *testing.T) {
 		if !strings.Contains(productionSource.String(), required) {
 			t.Errorf("production credential memory omits direct fail-closed OS marker %q", required)
 		}
+	}
+}
+
+func l8CredentialMemoryReceiverName(expression ast.Expr) string {
+	switch typed := expression.(type) {
+	case *ast.Ident:
+		return typed.Name
+	case *ast.StarExpr:
+		return l8CredentialMemoryReceiverName(typed.X)
+	default:
+		return ""
+	}
+}
+
+func l8CredentialMemoryRawType(expression ast.Expr) bool {
+	switch typed := expression.(type) {
+	case *ast.Ident:
+		return typed.Name == "string"
+	case *ast.ArrayType:
+		identifier, ok := typed.Elt.(*ast.Ident)
+		return ok && identifier.Name == "byte"
+	case *ast.StarExpr:
+		return l8CredentialMemoryRawType(typed.X)
+	default:
+		return false
 	}
 }

@@ -2,10 +2,13 @@ package credentialmemory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -52,6 +55,181 @@ func TestL8CredentialMemoryProductionConstructorsDoNotExposeSyscallInjection(t *
 	hardener := reflect.TypeOf(HardenCredentialProcess)
 	if got := hardener.NumIn(); got != 0 {
 		t.Fatalf("HardenCredentialProcess accepts %d inputs; want no injectable operations", got)
+	}
+}
+
+func TestL8CredentialMemoryCapacityAndReaderBoundsFailClosed(t *testing.T) {
+	if MaxLockedMappingBytes <= 0 || MaxLockedMappingBytes > 64<<20 {
+		t.Fatalf("MaxLockedMappingBytes = %d, want finite positive bound no larger than 64 MiB", MaxLockedMappingBytes)
+	}
+	for _, capacity := range []int{0, -1, MaxLockedMappingBytes + 1} {
+		mapping, err := NewLockedMapping(capacity)
+		if mapping != nil || !errors.Is(err, ErrCredentialMemoryCapacity) {
+			t.Fatalf("capacity %d did not fail closed", capacity)
+		}
+		if err.Error() != ErrCredentialMemoryCapacity.Error() {
+			t.Fatal("capacity failure did not use the stable generic message")
+		}
+	}
+
+	for _, reported := range []int{-1, 17} {
+		t.Run(fmt.Sprintf("reader_n_%d", reported), func(t *testing.T) {
+			ops := &l8MemoryOps{}
+			mapping, err := newLockedMapping(16, ops)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = mapping.Load(context.Background(), func(dst []byte) (int, error) {
+				copy(dst, []byte("bounded-canary"))
+				return reported, nil
+			})
+			if !errors.Is(err, ErrCredentialMemoryLoad) || err.Error() != ErrCredentialMemoryLoad.Error() {
+				t.Fatal("invalid reader length did not return stable load failure")
+			}
+			if !allL8Zero(ops.region) {
+				t.Fatal("invalid reader length retained bytes")
+			}
+			if err := mapping.Destroy(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestL8CredentialMemoryBorrowBeforeLoadAndSecondLoadFailClosed(t *testing.T) {
+	ops := &l8MemoryOps{}
+	mapping, err := newLockedMapping(32, ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mapping.Destroy() })
+	if err := mapping.Borrow(context.Background(), func(BorrowedView) error { return nil }); !errors.Is(err, ErrCredentialMemoryUnavailable) {
+		t.Fatal("borrow-before-load did not fail closed")
+	}
+	first := []byte("first-load")
+	if err := mapping.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, first)
+		return len(first), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondReaderCalled := false
+	err = mapping.Load(context.Background(), func(dst []byte) (int, error) {
+		secondReaderCalled = true
+		copy(dst, []byte("second"))
+		return len("second"), nil
+	})
+	if !errors.Is(err, ErrCredentialMemoryAlreadyLoaded) || secondReaderCalled {
+		t.Fatal("second load was not rejected before exposing the existing mapping")
+	}
+	sink := &l8BoundedSink{limit: 32}
+	if err := mapping.Borrow(context.Background(), func(view BorrowedView) error {
+		return view.WriteTo(context.Background(), sink)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if sink.count != 1 || sink.size != len(first) || sink.digest != sha256.Sum256(first) {
+		t.Fatal("rejected second load changed the first owned value")
+	}
+}
+
+func TestL8CredentialMemoryConcurrentLoadAndBorrowAreRejected(t *testing.T) {
+	ops := &l8MemoryOps{}
+	mapping, err := newLockedMapping(32, ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mapping.Destroy() })
+	loadStarted := make(chan struct{})
+	releaseLoad := make(chan struct{})
+	loadDone := make(chan error, 1)
+	go func() {
+		loadDone <- mapping.Load(context.Background(), func(dst []byte) (int, error) {
+			close(loadStarted)
+			<-releaseLoad
+			copy(dst, []byte("concurrent"))
+			return len("concurrent"), nil
+		})
+	}()
+	<-loadStarted
+	if err := mapping.Load(context.Background(), func([]byte) (int, error) { return 0, nil }); !errors.Is(err, ErrCredentialMemoryBusy) {
+		t.Fatal("concurrent load did not fail closed")
+	}
+	if err := mapping.Borrow(context.Background(), func(BorrowedView) error { return nil }); !errors.Is(err, ErrCredentialMemoryBusy) {
+		t.Fatal("borrow during load did not fail closed")
+	}
+	close(releaseLoad)
+	if err := <-loadDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestL8CredentialMemoryDestroyWaitsForAcceptedBorrow(t *testing.T) {
+	ops := &l8MemoryOps{}
+	mapping, err := newLockedMapping(32, ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mapping.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, []byte("borrow-window"))
+		return len("borrow-window"), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	borrowStarted := make(chan struct{})
+	releaseBorrow := make(chan struct{})
+	borrowDone := make(chan error, 1)
+	sink := &l8BoundedSink{limit: 32}
+	go func() {
+		borrowDone <- mapping.Borrow(context.Background(), func(view BorrowedView) error {
+			close(borrowStarted)
+			<-releaseBorrow
+			return view.WriteTo(context.Background(), sink)
+		})
+	}()
+	<-borrowStarted
+	if err := mapping.Borrow(context.Background(), func(BorrowedView) error { return nil }); !errors.Is(err, ErrCredentialMemoryBusy) {
+		t.Fatal("second concurrent borrow did not fail closed")
+	}
+	if err := mapping.Load(context.Background(), func([]byte) (int, error) { return 0, nil }); !errors.Is(err, ErrCredentialMemoryBusy) {
+		t.Fatal("load during accepted borrow did not fail closed")
+	}
+	destroyStarted := make(chan struct{})
+	destroyDone := make(chan error, 1)
+	go func() {
+		close(destroyStarted)
+		destroyDone <- mapping.Destroy()
+	}()
+	<-destroyStarted
+	for attempts := 0; mapping.State() != LockedMappingStateDestroying && attempts < 10_000; attempts++ {
+		runtime.Gosched()
+	}
+	if got := mapping.State(); got != LockedMappingStateDestroying {
+		t.Fatalf("mapping state = %q, want destroying while accepted borrow drains", got)
+	}
+	if err := mapping.Borrow(context.Background(), func(BorrowedView) error { return nil }); !errors.Is(err, ErrCredentialMemoryDestroyed) {
+		t.Fatal("destroying mapping accepted a new borrow")
+	}
+	select {
+	case <-destroyDone:
+		t.Fatal("destroy completed while an accepted borrow was active")
+	default:
+	}
+	close(releaseBorrow)
+	if err := <-borrowDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-destroyDone; err != nil {
+		t.Fatal(err)
+	}
+	if sink.count != 1 {
+		t.Fatal("accepted borrow did not drain through its approved sink")
+	}
+	if err := mapping.Borrow(context.Background(), func(BorrowedView) error { return nil }); !errors.Is(err, ErrCredentialMemoryDestroyed) {
+		t.Fatal("destroyed mapping accepted a new borrow")
+	}
+	if !allL8Zero(ops.unlockSnapshot) || !allL8Zero(ops.unmapSnapshot) {
+		t.Fatal("destroy after borrow did not wipe before unlock/unmap")
 	}
 }
 
@@ -112,14 +290,14 @@ func TestL8CredentialMemoryBorrowIsSinkOnlyBoundedAndExpires(t *testing.T) {
 		if err := view.WriteTo(context.Background(), bounded); err != nil {
 			t.Fatalf("write to bounded sink: %v", err)
 		}
-		if !reflect.DeepEqual(bounded.got, canary) {
-			t.Fatal("bounded sink did not receive the exact borrowed value")
+		if bounded.count != 1 || bounded.size != len(canary) || bounded.digest != sha256.Sum256(canary) {
+			t.Fatal("bounded checking sink did not observe the exact borrowed value")
 		}
 		tooSmall := &l8BoundedSink{limit: len(canary) - 1}
 		if err := view.WriteTo(context.Background(), tooSmall); !errors.Is(err, ErrCredentialSinkLimitExceeded) {
 			t.Fatalf("short sink error = %v, want limit exceeded", err)
 		}
-		if len(tooSmall.got) != 0 {
+		if tooSmall.count != 0 {
 			t.Fatal("short sink received partial credential bytes")
 		}
 		return nil
@@ -129,6 +307,7 @@ func TestL8CredentialMemoryBorrowIsSinkOnlyBoundedAndExpires(t *testing.T) {
 	if err := retained.CopyTo(context.Background(), target); !errors.Is(err, ErrBorrowedViewExpired) {
 		t.Fatalf("retained borrowed view error = %v, want expired", err)
 	}
+	assertL8CredentialMemoryLiveValue(t, "borrowed view", retained, string(canary))
 
 	typeOfView := reflect.TypeOf((*BorrowedView)(nil)).Elem()
 	for _, forbidden := range []string{"Bytes", "String", "GoString", "MarshalJSON", "MarshalText"} {
@@ -136,12 +315,71 @@ func TestL8CredentialMemoryBorrowIsSinkOnlyBoundedAndExpires(t *testing.T) {
 			t.Fatalf("borrowed view exposes forbidden method %s", forbidden)
 		}
 	}
-	for label, rendered := range map[string]string{
-		"format": fmt.Sprintf("%v", retained),
-		"json":   string(l8MarshalJSON(t, retained)),
+}
+
+func TestL8CredentialMemoryLiveStateCannotSerializeOrFormatRawState(t *testing.T) {
+	ops := &l8MemoryOps{}
+	mapping, err := newLockedMapping(48, ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canary := "l8-live-memory-canary"
+	if err := mapping.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, canary)
+		return len(canary), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertL8CredentialMemoryLiveValue(t, "locked mapping", mapping, canary)
+
+	typeOfMapping := reflect.TypeOf(mapping).Elem()
+	for fieldIndex := 0; fieldIndex < typeOfMapping.NumField(); fieldIndex++ {
+		field := typeOfMapping.Field(fieldIndex)
+		if field.IsExported() {
+			t.Fatalf("LockedMapping exposes live field %s", field.Name)
+		}
+	}
+	if err := mapping.Destroy(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertL8CredentialMemoryLiveValue(t *testing.T, label string, value any, canary string) {
+	t.Helper()
+	jsonCodec, ok := value.(json.Marshaler)
+	if !ok {
+		t.Fatalf("%s does not explicitly deny JSON marshaling", label)
+	}
+	if encoded, err := jsonCodec.MarshalJSON(); encoded != nil || !errors.Is(err, ErrCredentialMemorySerialization) || err.Error() != ErrCredentialMemorySerialization.Error() {
+		t.Fatalf("%s JSON codec did not return the stable denial", label)
+	}
+	if encoded, err := json.Marshal(value); encoded != nil || !errors.Is(err, ErrCredentialMemorySerialization) {
+		t.Fatalf("%s was serializable through encoding/json", label)
+	}
+	textCodec, ok := value.(encoding.TextMarshaler)
+	if !ok {
+		t.Fatalf("%s does not explicitly deny text marshaling", label)
+	}
+	if encoded, err := textCodec.MarshalText(); encoded != nil || !errors.Is(err, ErrCredentialMemorySerialization) || err.Error() != ErrCredentialMemorySerialization.Error() {
+		t.Fatalf("%s text codec did not return the stable denial", label)
+	}
+	stringer, ok := value.(fmt.Stringer)
+	if !ok {
+		t.Fatalf("%s lacks safe String formatting", label)
+	}
+	goStringer, ok := value.(fmt.GoStringer)
+	if !ok {
+		t.Fatalf("%s lacks safe GoString formatting", label)
+	}
+	for format, rendered := range map[string]string{
+		"String":   stringer.String(),
+		"GoString": goStringer.GoString(),
+		"%v":       fmt.Sprintf("%v", value),
+		"%+v":      fmt.Sprintf("%+v", value),
+		"%#v":      fmt.Sprintf("%#v", value),
 	} {
-		if strings.Contains(rendered, string(canary)) {
-			t.Fatalf("%s rendered raw borrowed credential", label)
+		if rendered == "" || strings.Contains(rendered, canary) || strings.Contains(rendered, "[108 56") {
+			t.Fatalf("%s %s formatting exposed live state: %q", label, format, rendered)
 		}
 	}
 }
@@ -308,14 +546,20 @@ func (ops *l8MemoryOps) Unmap(region []byte) error {
 }
 
 type l8BoundedSink struct {
-	limit int
-	got   []byte
+	limit  int
+	count  int
+	size   int
+	digest [sha256.Size]byte
 }
 
 func (sink *l8BoundedSink) MaxCredentialBytes() int { return sink.limit }
 
 func (sink *l8BoundedSink) WriteCredential(value []byte) error {
-	sink.got = append([]byte(nil), value...)
+	// This approved test sink receives one callback-scoped byte window, checks
+	// it immediately, and retains only length/digest metadata.
+	sink.count++
+	sink.size = len(value)
+	sink.digest = sha256.Sum256(value)
 	return nil
 }
 
@@ -349,13 +593,4 @@ func allL8Zero(value []byte) bool {
 		}
 	}
 	return true
-}
-
-func l8MarshalJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return []byte(err.Error())
-	}
-	return encoded
 }

@@ -2,7 +2,11 @@ package credentialsource
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -30,58 +34,92 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 
 	denials := []struct {
 		name   string
-		mutate func(*sandboxruntime.AuthenticatedWorkerPrincipal, *sandboxruntime.JobCredentialAdmissionRequest)
+		mutate func(*testing.T, sandboxruntime.AuthenticatedWorkerPrincipal, *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal
 	}{
-		{name: "missing principal", mutate: func(p *sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) {
-			*p = sandboxruntime.AuthenticatedWorkerPrincipal{}
+		{name: "missing principal", mutate: func(_ *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			return sandboxruntime.AuthenticatedWorkerPrincipal{}
 		}},
-		{name: "wrong uid", mutate: func(p *sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) {
-			p.UID++
+		{name: "wrong uid", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			return l8Principal(t, "principal-owner", 1002, 1002, "peercred-owner", "daemon-generation-1")
 		}},
-		{name: "wrong gid", mutate: func(p *sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) {
-			p.GID++
+		{name: "wrong gid", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			return l8Principal(t, "principal-owner", 1001, 1003, "peercred-owner", "daemon-generation-1")
 		}},
-		{name: "caller principal substitution", mutate: func(p *sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) {
-			p.ID = "caller-controlled"
+		{name: "authenticated principal substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			return l8Principal(t, "caller-controlled", 1001, 1002, "peercred-owner", "daemon-generation-1")
 		}},
-		{name: "grant substitution", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "request principal assertion", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			r.Identity.PrincipalID = "caller-controlled"
+			return p
+		}},
+		{name: "issuer substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			return l8Principal(t, "principal-owner", 1001, 1002, "caller-issuer", "daemon-generation-1")
+		}},
+		{name: "issuer generation substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			return l8Principal(t, "principal-owner", 1001, 1002, "peercred-owner", "daemon-generation-neighbor")
+		}},
+		{name: "grant substitution", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.GrantID = "grant-neighbor"
+			return p
 		}},
-		{name: "grant revision", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "request embedded grant assertion", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			r.Identity.AdmissionGrantID = "grant-primary"
+			r.Identity.AdmissionGrantRevision = r.GrantRevision
+			return p
+		}},
+		{name: "grant revision", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.GrantRevision++
+			return p
 		}},
-		{name: "source", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "source", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.SourceReferenceIDs = []string{"source-neighbor"}
+			return p
 		}},
-		{name: "plan", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "plan", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.PlanID = "plan-neighbor"
+			return p
 		}},
-		{name: "binding", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "request embedded plan assertion", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			r.Identity.PlanID = "plan-primary"
+			return p
+		}},
+		{name: "binding", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.Bindings[0].ID = "binding-neighbor"
+			return p
 		}},
-		{name: "mode", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "request embedded binding assertion", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			r.Identity.BindingIDs = []string{"binding-primary"}
+			r.Identity.DeliveryModes = []sandboxruntime.JobCredentialDeliveryMode{sandboxruntime.JobCredentialDeliveryModeHTTPProxy}
+			return p
+		}},
+		{name: "mode", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.Bindings[0].Mode = sandboxruntime.JobCredentialDeliveryModeFileTmpfs
+			return p
 		}},
-		{name: "template", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "template", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.TemplatePolicyID = "template-neighbor"
+			return p
 		}},
-		{name: "workspace", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "workspace", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.WorkspacePolicyID = "workspace-neighbor"
+			return p
 		}},
-		{name: "host", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "host", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.Identity.HostID = "host-neighbor"
+			return p
 		}},
-		{name: "runtime", mutate: func(_ *sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) {
+		{name: "runtime", mutate: func(_ *testing.T, p sandboxruntime.AuthenticatedWorkerPrincipal, r *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			r.Identity.RuntimeGeneration = "runtime-neighbor"
+			return p
 		}},
 	}
 	for _, tt := range denials {
 		t.Run(tt.name, func(t *testing.T) {
 			p, r := l8AuthorizedRequest()
-			tt.mutate(&p, &r)
+			p = tt.mutate(t, p, &r)
 			before := len(keyctl.calls)
 			_, err := registry.AuthorizeJobCredentials(context.Background(), p, r)
-			if !errors.Is(err, ErrCredentialAdmissionDenied) {
+			if !errors.Is(err, ErrCredentialAdmissionDenied) || err.Error() != ErrCredentialAdmissionDenied.Error() {
 				t.Fatalf("error = %v, want admission denied", err)
 			}
 			if len(keyctl.calls) != before {
@@ -113,12 +151,15 @@ func TestL8CredentialSourceDirectKeyctlSizeReadAndLockedBorrow(t *testing.T) {
 	if err := source.FillSecret(context.Background(), sink); err != nil {
 		t.Fatalf("fill secret: %v", err)
 	}
-	if !reflect.DeepEqual(sink.value, canary) {
+	if sink.count != 1 || sink.size != len(canary) || sink.digest != sha256.Sum256(canary) {
 		t.Fatal("sink did not receive exact keyring payload")
 	}
-	wantCalls := []string{"inspect", "size", "inspect", "read", "inspect"}
+	wantCalls := []string{"describe", "size", "describe", "read", "describe"}
 	if !reflect.DeepEqual(keyctl.calls, wantCalls) {
 		t.Fatalf("keyctl calls = %v, want %v", keyctl.calls, wantCalls)
+	}
+	if wantSerials := []int32{41, 41, 41, 41, 41}; !reflect.DeepEqual(keyctl.serials, wantSerials) {
+		t.Fatalf("keyctl serials = %v, want exact registered serial %v", keyctl.serials, wantSerials)
 	}
 	if !memoryOps.locked || !memoryOps.unlocked || !memoryOps.unmapped {
 		t.Fatalf("memory lifecycle incomplete: locked=%t unlocked=%t unmapped=%t", memoryOps.locked, memoryOps.unlocked, memoryOps.unmapped)
@@ -128,17 +169,80 @@ func TestL8CredentialSourceDirectKeyctlSizeReadAndLockedBorrow(t *testing.T) {
 	}
 }
 
+func TestL8CredentialSourceKeyIdentityUsesExactRealDescriptorAndImmutablePermissions(t *testing.T) {
+	permissions := l8ImmutableKeyPermissions()
+	identity, err := NewKeyIdentity(41, "user", 1001, 1002, permissions, "hal-primary")
+	if err != nil {
+		t.Fatalf("valid registered key identity: %v", err)
+	}
+	descriptor, err := NewKeyDescriptor("user", 1001, 1002, permissions, "hal-primary")
+	if err != nil {
+		t.Fatalf("valid key descriptor: %v", err)
+	}
+	for label, value := range map[string]any{"key identity": identity, "key descriptor": descriptor} {
+		typeOfValue := reflect.TypeOf(value)
+		if _, ok := typeOfValue.FieldByName("Generation"); ok {
+			t.Fatalf("%s models a synthetic payload generation", label)
+		}
+		for fieldIndex := 0; fieldIndex < typeOfValue.NumField(); fieldIndex++ {
+			if field := typeOfValue.Field(fieldIndex); field.IsExported() {
+				t.Fatalf("%s exposes live key field %s", label, field.Name)
+			}
+		}
+	}
+	descriptorType := reflect.TypeOf(descriptor)
+	for fieldIndex := 0; fieldIndex < descriptorType.NumField(); fieldIndex++ {
+		if strings.Contains(strings.ToLower(descriptorType.Field(fieldIndex).Name), "serial") {
+			t.Fatal("KEYCTL_DESCRIBE result invents a serial instead of correlating the registered syscall argument")
+		}
+	}
+
+	for _, tt := range []struct {
+		name        string
+		serial      int32
+		keyType     string
+		permissions KeyPermission
+		description string
+	}{
+		{name: "zero serial", keyType: "user", permissions: permissions, description: "hal-primary"},
+		{name: "wrong type", serial: 41, keyType: "logon", permissions: permissions, description: "hal-primary"},
+		{name: "empty description", serial: 41, keyType: "user", permissions: permissions},
+		{name: "missing exact read permission", serial: 41, keyType: "user", permissions: permissions &^ KeyPermissionUserRead, description: "hal-primary"},
+		{name: "write authority", serial: 41, keyType: "user", permissions: permissions | KeyPermissionAnyWrite, description: "hal-primary"},
+		{name: "setattr authority", serial: 41, keyType: "user", permissions: permissions | KeyPermissionAnySetAttribute, description: "hal-primary"},
+		{name: "link authority", serial: 41, keyType: "user", permissions: permissions | KeyPermissionAnyLink, description: "hal-primary"},
+		{name: "unexpected search authority", serial: 41, keyType: "user", permissions: permissions | KeyPermissionPossessorSearch, description: "hal-primary"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewKeyIdentity(tt.serial, tt.keyType, 1001, 1002, tt.permissions, tt.description)
+			if !errors.Is(err, ErrCredentialSourceRegistration) || err.Error() != ErrCredentialSourceRegistration.Error() {
+				t.Fatalf("invalid key identity error = %v, want registration failure", err)
+			}
+		})
+	}
+}
+
 func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClosed(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*l8Keyctl)
 		ctx    func() context.Context
 	}{
+		{name: "replacement before size", mutate: func(k *l8Keyctl) { k.replaceAtInspect = 1 }},
 		{name: "replacement after size", mutate: func(k *l8Keyctl) { k.replaceAtInspect = 2 }},
 		{name: "replacement after read", mutate: func(k *l8Keyctl) { k.replaceAtInspect = 3 }},
+		{name: "permission invalid before size", mutate: func(k *l8Keyctl) { k.permissionAtInspect = 1 }},
+		{name: "permission change after size", mutate: func(k *l8Keyctl) { k.permissionAtInspect = 2 }},
 		{name: "permission change", mutate: func(k *l8Keyctl) { k.permissionAtInspect = 3 }},
+		{name: "type replacement before size", mutate: func(k *l8Keyctl) { k.typeAtInspect = 1 }},
+		{name: "type replacement after read", mutate: func(k *l8Keyctl) { k.typeAtInspect = 3 }},
+		{name: "description replacement after size", mutate: func(k *l8Keyctl) { k.descriptionAtInspect = 2 }},
+		{name: "description replacement after read", mutate: func(k *l8Keyctl) { k.descriptionAtInspect = 3 }},
 		{name: "owner uid change", mutate: func(k *l8Keyctl) { k.ownerUIDAtInspect = 3 }},
 		{name: "owner gid change", mutate: func(k *l8Keyctl) { k.ownerGIDAtInspect = 3 }},
+		{name: "describe failure", mutate: func(k *l8Keyctl) {
+			k.inspectErr = errors.New("backend-private describe serial 41 /raw/keyring l8-race-canary")
+		}},
 		{name: "revoked during size", mutate: func(k *l8Keyctl) {
 			k.sizeErr = errors.New("backend-private key serial 41 revoked at /raw/keyring l8-race-canary")
 		}},
@@ -177,7 +281,7 @@ func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClo
 			if err == nil {
 				t.Fatal("source race/failure unexpectedly succeeded")
 			}
-			if len(sink.value) != 0 {
+			if sink.count != 0 {
 				t.Fatal("failed source delivered partial credential bytes")
 			}
 			if memoryOps.unmapped && !l8AllZero(memoryOps.unmapSnapshot) {
@@ -193,6 +297,14 @@ func TestL8CredentialSourceReplacementRevocationPermissionAndCancellationFailClo
 			}
 			if !errors.Is(err, context.Canceled) && err.Error() != ErrCredentialSourceUnavailable.Error() {
 				t.Fatal("source failure did not return the stable generic source-unavailable message")
+			}
+			for _, raw := range []error{keyctl.inspectErr, keyctl.sizeErr, keyctl.readErr} {
+				if raw != nil && errors.Is(err, raw) {
+					t.Fatal("source failure unwrapped a raw backend cause")
+				}
+			}
+			if errors.Is(err, context.Canceled) && len(keyctl.calls) != 0 {
+				t.Fatalf("pre-canceled source touched keyctl: %v", keyctl.calls)
 			}
 		})
 	}
@@ -217,37 +329,98 @@ func TestL8CredentialSourceGrantRevisionAndDaemonGenerationCannotReplay(t *testi
 	}
 }
 
+func TestL8CredentialSourceAuthorizationIsRegistryBoundUntamperableAndAnExactSetIntersection(t *testing.T) {
+	registry, keyctl, _ := l8Registry(t)
+	principal, request := l8AuthorizedRequest()
+	authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, ok := authorization.(*registryAuthorization)
+	if !ok {
+		t.Fatalf("authorization concrete type = %T, want registry-owned sealed authorization", authorization)
+	}
+	copied := *issued
+	var zero sandboxruntime.CredentialAdmissionAuthorization
+	for _, tt := range []struct {
+		name          string
+		authorization sandboxruntime.CredentialAdmissionAuthorization
+		referenceID   string
+	}{
+		{name: "nil", authorization: zero, referenceID: "source-primary"},
+		{name: "zero", authorization: &registryAuthorization{}, referenceID: "source-primary"},
+		{name: "copied or tampered", authorization: &copied, referenceID: "source-primary"},
+		{name: "grant allowed but not requested", authorization: authorization, referenceID: "source-secondary"},
+		{name: "registered but not grant authorized", authorization: authorization, referenceID: "source-ungranted"},
+		{name: "unknown", authorization: authorization, referenceID: "source-unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			before := len(keyctl.calls)
+			_, err := registry.ResolveAuthorizedSource(context.Background(), tt.authorization, tt.referenceID)
+			if !errors.Is(err, ErrCredentialAdmissionDenied) || err.Error() != ErrCredentialAdmissionDenied.Error() {
+				t.Fatalf("resolve error = %v, want admission denied", err)
+			}
+			for _, private := range []string{tt.referenceID, "source-primary", "source-secondary", "source-ungranted", "grant-primary", "principal-owner"} {
+				if private != "" && strings.Contains(err.Error(), private) {
+					t.Fatalf("resolve denial enumerated private registry identity %q", private)
+				}
+			}
+			if len(keyctl.calls) != before {
+				t.Fatalf("denied source was inspected/read: %v", keyctl.calls[before:])
+			}
+		})
+	}
+
+	restarted, _, _ := l8RegistryWithGeneration(t, "daemon-generation-1")
+	if _, err := restarted.ResolveAuthorizedSource(context.Background(), authorization, "source-primary"); !errors.Is(err, ErrCredentialAdmissionDenied) {
+		t.Fatalf("cross-registry authorization error = %v, want admission denied", err)
+	}
+
+	extraRequest := request
+	extraRequest.SourceReferenceIDs = []string{"source-primary", "source-ungranted"}
+	extraRequest.Bindings = append([]sandboxruntime.JobCredentialBindingRequest(nil), request.Bindings...)
+	extraRequest.Bindings = append(extraRequest.Bindings, sandboxruntime.JobCredentialBindingRequest{
+		ID:                "binding-ungranted",
+		Mode:              sandboxruntime.JobCredentialDeliveryModeHTTPProxy,
+		SourceReferenceID: "source-ungranted",
+		ServiceID:         "azure-openai-responses-v1",
+	})
+	before := len(keyctl.calls)
+	if _, err := registry.AuthorizeJobCredentials(context.Background(), principal, extraRequest); !errors.Is(err, ErrCredentialAdmissionDenied) {
+		t.Fatalf("request/grant set expansion error = %v, want admission denied", err)
+	}
+	if len(keyctl.calls) != before {
+		t.Fatal("request/grant set expansion inspected a source before denial")
+	}
+}
+
 func TestL8CredentialSourceRegistryCopiesConfigurationDeeply(t *testing.T) {
 	principal, request := l8AuthorizedRequest()
-	keyIdentity := KeyIdentity{Serial: 41, OwnerUID: principal.UID, OwnerGID: principal.GID, Permissions: OwnerReadPermission, Generation: 7}
-	sources := []SourceRegistration{{ReferenceID: "source-primary", Key: keyIdentity}}
+	keyIdentity := l8KeyIdentity(t, 41, principal.UID(), principal.GID(), "hal-primary")
+	primary, err := NewSourceRegistration("source-primary", keyIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := []SourceRegistration{primary}
 	sourceReferences := append([]string(nil), request.SourceReferenceIDs...)
 	bindings := append([]sandboxruntime.JobCredentialBindingRequest(nil), request.Bindings...)
-	grants := []AdmissionGrantRegistration{{
-		GrantID:            request.GrantID,
-		Revision:           request.GrantRevision,
-		Principal:          principal,
-		HostID:             request.Identity.HostID,
-		RuntimeDriver:      request.Identity.RuntimeDriver,
-		RuntimeID:          request.Identity.RuntimeID,
-		RuntimeGeneration:  request.Identity.RuntimeGeneration,
-		TemplatePolicyID:   request.TemplatePolicyID,
-		WorkspacePolicyID:  request.WorkspacePolicyID,
-		PlanID:             request.PlanID,
-		SourceReferenceIDs: sourceReferences,
-		Bindings:           bindings,
-	}}
-	keyctl := &l8Keyctl{identity: keyIdentity}
+	grantRequest := request
+	grantRequest.SourceReferenceIDs = sourceReferences
+	grantRequest.Bindings = bindings
+	grant, err := NewAdmissionGrantRegistration(principal, grantRequest, sourceReferences)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := []AdmissionGrantRegistration{grant}
+	config, err := NewRegistryConfig("daemon-generation-1", principal.UID(), principal.GID(), sources, grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyctl := &l8Keyctl{descriptor: l8KeyDescriptor(t, principal.UID(), principal.GID(), "hal-primary")}
 	memoryOps := &l8LockedMapping{region: make([]byte, 64), locked: true}
-	registry, err := newRegistry(RegistryConfig{
-		DaemonGeneration: "daemon-generation-1",
-		OwnerUID:         principal.UID,
-		OwnerGID:         principal.GID,
-		Sources:          sources,
-		Grants:           grants,
-	}, registryDeps{
-		Keyctl: keyctl,
-		NewLockedMapping: func(capacity int) (lockedSecretMapping, error) {
+	registry, err := newRegistry(config, registryDeps{
+		keyctl: keyctl,
+		newLockedMapping: func(capacity int) (lockedSecretMapping, error) {
 			memoryOps.region = make([]byte, capacity)
 			return memoryOps, nil
 		},
@@ -256,10 +429,17 @@ func TestL8CredentialSourceRegistryCopiesConfigurationDeeply(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sources[0].ReferenceID = "mutated-source"
-	sources[0].Key.Generation++
-	grants[0].GrantID = "mutated-grant"
-	grants[0].Principal.ID = "mutated-principal"
+	mutatedIdentity := l8KeyIdentity(t, 99, principal.UID(), principal.GID(), "hal-mutated")
+	sources[0], err = NewSourceRegistration("mutated-source", mutatedIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutatedRequest := request
+	mutatedRequest.GrantID = "mutated-grant"
+	grants[0], err = NewAdmissionGrantRegistration(principal, mutatedRequest, []string{"mutated-source"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	sourceReferences[0] = "mutated-source"
 	bindings[0].ID = "mutated-binding"
 	bindings[0].SourceReferenceID = "mutated-source"
@@ -284,13 +464,153 @@ func TestL8CredentialSourceRegistryDoesNotExposeEnumerationOrMutation(t *testing
 		t.Fatalf("NewRegistry accepts %d inputs; want immutable config only", got)
 	}
 	typeOfRegistry := reflect.TypeOf((*Registry)(nil))
-	for _, forbidden := range []string{"List", "ListSources", "ListGrants", "Sources", "Grants", "Register", "Replace", "Update", "Delete"} {
-		if _, ok := typeOfRegistry.MethodByName(forbidden); ok {
-			t.Fatalf("registry exposes forbidden enumeration/mutation method %s", forbidden)
+	wantMethods := map[string]bool{
+		"AuthorizeJobCredentials": true,
+		"ResolveAuthorizedSource": true,
+		"String":                  true,
+		"GoString":                true,
+		"MarshalJSON":             true,
+		"MarshalText":             true,
+	}
+	if typeOfRegistry.NumMethod() != len(wantMethods) {
+		t.Fatalf("Registry exposes %d public methods, want exact allowlist %v", typeOfRegistry.NumMethod(), reflect.ValueOf(wantMethods).MapKeys())
+	}
+	for methodIndex := 0; methodIndex < typeOfRegistry.NumMethod(); methodIndex++ {
+		method := typeOfRegistry.Method(methodIndex)
+		if !wantMethods[method.Name] {
+			t.Fatalf("Registry exposes unapproved public method %s", method.Name)
+		}
+	}
+	registryStruct := typeOfRegistry.Elem()
+	for fieldIndex := 0; fieldIndex < registryStruct.NumField(); fieldIndex++ {
+		if field := registryStruct.Field(fieldIndex); field.IsExported() {
+			t.Fatalf("Registry exposes live field %s", field.Name)
 		}
 	}
 	var _ sandboxruntime.CredentialAdmissionAuthorizer = (*Registry)(nil)
 	var _ sandboxruntime.AuthorizedCredentialSourceRegistry = (*Registry)(nil)
+}
+
+func TestL8CredentialSourceLiveStateAndConfigurationCannotLeakThroughSerializationOrFormatting(t *testing.T) {
+	registry, _, _ := l8Registry(t)
+	principal, request := l8AuthorizedRequest()
+	authorization, err := registry.AuthorizeJobCredentials(context.Background(), principal, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := registry.ResolveAuthorizedSource(context.Background(), authorization, "source-primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := l8KeyIdentity(t, 41, principal.UID(), principal.GID(), "hal-primary")
+	descriptor, err := NewKeyDescriptor("user", principal.UID(), principal.GID(), l8ImmutableKeyPermissions(), "hal-primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration, err := NewSourceRegistration("source-primary", identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := NewAdmissionGrantRegistration(principal, request, []string{"source-primary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := NewRegistryConfig("daemon-generation-1", principal.UID(), principal.GID(), []SourceRegistration{registration}, []AdmissionGrantRegistration{grant})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for label, value := range map[string]any{
+		"registry":            registry,
+		"authorization":       authorization,
+		"live source":         source,
+		"registry config":     config,
+		"source registration": registration,
+		"grant registration":  grant,
+		"key identity":        identity,
+		"key descriptor":      descriptor,
+	} {
+		l8AssertCredentialSourceLiveValue(t, label, value, []string{
+			"41", "42", "43", "1001", "1002", "hal-primary", "hal-secondary", "hal-ungranted",
+			"source-primary", "source-secondary", "source-ungranted", "grant-primary",
+			"principal-owner", "peercred-owner", "daemon-generation-1", "runtime-generation-1",
+		})
+		typeOfValue := reflect.TypeOf(value)
+		if typeOfValue.Kind() == reflect.Pointer {
+			typeOfValue = typeOfValue.Elem()
+		}
+		for fieldIndex := 0; fieldIndex < typeOfValue.NumField(); fieldIndex++ {
+			if field := typeOfValue.Field(fieldIndex); field.IsExported() {
+				t.Fatalf("%s exposes live field %s", label, field.Name)
+			}
+		}
+	}
+
+	requestType := reflect.TypeOf(request)
+	for fieldIndex := 0; fieldIndex < requestType.NumField(); fieldIndex++ {
+		fieldName := strings.ToLower(requestType.Field(fieldIndex).Name)
+		for _, forbidden := range []string{"principal", "issuer", "uid", "gid", "serial", "secretvalue", "endpoint", "socket", "hostname", "authority", "token", "credentialvalue"} {
+			if strings.Contains(fieldName, forbidden) {
+				t.Fatalf("admission request exposes raw/live field %s", requestType.Field(fieldIndex).Name)
+			}
+		}
+	}
+
+	sinkType := reflect.TypeOf((*sandboxruntime.JobCredentialSecretSink)(nil)).Elem()
+	wantSinkMethods := map[string]bool{"MaxCredentialBytes": true, "WriteCredential": true}
+	if sinkType.NumMethod() != len(wantSinkMethods) {
+		t.Fatalf("approved sink exposes %d methods, want exact bounded callback interface", sinkType.NumMethod())
+	}
+	for methodIndex := 0; methodIndex < sinkType.NumMethod(); methodIndex++ {
+		if method := sinkType.Method(methodIndex); !wantSinkMethods[method.Name] {
+			t.Fatalf("approved sink exposes raw retrieval method %s", method.Name)
+		}
+	}
+}
+
+func l8AssertCredentialSourceLiveValue(t *testing.T, label string, value any, forbidden []string) {
+	t.Helper()
+	jsonCodec, ok := value.(json.Marshaler)
+	if !ok {
+		t.Fatalf("%s does not explicitly deny JSON marshaling", label)
+	}
+	if encoded, err := jsonCodec.MarshalJSON(); encoded != nil || !errors.Is(err, ErrCredentialSourceSerialization) || err.Error() != ErrCredentialSourceSerialization.Error() {
+		t.Fatalf("%s JSON codec did not return stable denial", label)
+	}
+	if encoded, err := json.Marshal(value); encoded != nil || !errors.Is(err, ErrCredentialSourceSerialization) {
+		t.Fatalf("%s was serializable through encoding/json", label)
+	}
+	textCodec, ok := value.(encoding.TextMarshaler)
+	if !ok {
+		t.Fatalf("%s does not explicitly deny text marshaling", label)
+	}
+	if encoded, err := textCodec.MarshalText(); encoded != nil || !errors.Is(err, ErrCredentialSourceSerialization) || err.Error() != ErrCredentialSourceSerialization.Error() {
+		t.Fatalf("%s text codec did not return stable denial", label)
+	}
+	stringer, ok := value.(fmt.Stringer)
+	if !ok {
+		t.Fatalf("%s lacks safe String formatting", label)
+	}
+	goStringer, ok := value.(fmt.GoStringer)
+	if !ok {
+		t.Fatalf("%s lacks safe GoString formatting", label)
+	}
+	for format, rendered := range map[string]string{
+		"String":   stringer.String(),
+		"GoString": goStringer.GoString(),
+		"%v":       fmt.Sprintf("%v", value),
+		"%+v":      fmt.Sprintf("%+v", value),
+		"%#v":      fmt.Sprintf("%#v", value),
+	} {
+		if rendered == "" {
+			t.Fatalf("%s %s formatting was empty", label, format)
+		}
+		for _, raw := range forbidden {
+			if strings.Contains(rendered, raw) {
+				t.Fatalf("%s %s formatting exposed %q", label, format, raw)
+			}
+		}
+	}
 }
 
 func l8Registry(t *testing.T) (*Registry, *l8Keyctl, *l8LockedMapping) {
@@ -300,35 +620,42 @@ func l8Registry(t *testing.T) (*Registry, *l8Keyctl, *l8LockedMapping) {
 
 func l8RegistryWithGeneration(t *testing.T, daemonGeneration string) (*Registry, *l8Keyctl, *l8LockedMapping) {
 	t.Helper()
-	principal, request := l8AuthorizedRequest()
-	principal.DaemonGeneration = daemonGeneration
-	keyctl := &l8Keyctl{identity: KeyIdentity{Serial: 41, OwnerUID: principal.UID, OwnerGID: principal.GID, Permissions: OwnerReadPermission, Generation: 7}}
+	_, request := l8AuthorizedRequest()
+	principal := l8Principal(t, "principal-owner", 1001, 1002, "peercred-owner", daemonGeneration)
+	primaryKey := l8KeyIdentity(t, 41, principal.UID(), principal.GID(), "hal-primary")
+	secondaryKey := l8KeyIdentity(t, 43, principal.UID(), principal.GID(), "hal-secondary")
+	ungrantedKey := l8KeyIdentity(t, 42, principal.UID(), principal.GID(), "hal-ungranted")
+	primarySource, err := NewSourceRegistration("source-primary", primaryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondarySource, err := NewSourceRegistration("source-secondary", secondaryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ungrantedSource, err := NewSourceRegistration("source-ungranted", ungrantedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := NewAdmissionGrantRegistration(principal, request, []string{"source-primary", "source-secondary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := NewRegistryConfig(
+		daemonGeneration,
+		principal.UID(),
+		principal.GID(),
+		[]SourceRegistration{primarySource, secondarySource, ungrantedSource},
+		[]AdmissionGrantRegistration{grant},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyctl := &l8Keyctl{descriptor: l8KeyDescriptor(t, principal.UID(), principal.GID(), "hal-primary")}
 	memoryOps := &l8LockedMapping{region: make([]byte, 64), locked: true}
-	registry, err := newRegistry(RegistryConfig{
-		DaemonGeneration: daemonGeneration,
-		OwnerUID:         principal.UID,
-		OwnerGID:         principal.GID,
-		Sources: []SourceRegistration{{
-			ReferenceID: "source-primary",
-			Key:         keyctl.identity,
-		}},
-		Grants: []AdmissionGrantRegistration{{
-			GrantID:            request.GrantID,
-			Revision:           request.GrantRevision,
-			Principal:          principal,
-			HostID:             request.Identity.HostID,
-			RuntimeDriver:      request.Identity.RuntimeDriver,
-			RuntimeID:          request.Identity.RuntimeID,
-			RuntimeGeneration:  request.Identity.RuntimeGeneration,
-			TemplatePolicyID:   request.TemplatePolicyID,
-			WorkspacePolicyID:  request.WorkspacePolicyID,
-			PlanID:             request.PlanID,
-			SourceReferenceIDs: append([]string(nil), request.SourceReferenceIDs...),
-			Bindings:           append([]sandboxruntime.JobCredentialBindingRequest(nil), request.Bindings...),
-		}},
-	}, registryDeps{
-		Keyctl: keyctl,
-		NewLockedMapping: func(capacity int) (lockedSecretMapping, error) {
+	registry, err := newRegistry(config, registryDeps{
+		keyctl: keyctl,
+		newLockedMapping: func(capacity int) (lockedSecretMapping, error) {
 			memoryOps.region = make([]byte, capacity)
 			return memoryOps, nil
 		},
@@ -341,24 +668,26 @@ func l8RegistryWithGeneration(t *testing.T, daemonGeneration string) (*Registry,
 
 func l8AuthorizedRequest() (sandboxruntime.AuthenticatedWorkerPrincipal, sandboxruntime.JobCredentialAdmissionRequest) {
 	now := time.Date(2026, time.August, 3, 4, 0, 0, 0, time.UTC)
-	principal := sandboxruntime.AuthenticatedWorkerPrincipal{
-		ID:               "principal-owner",
-		UID:              1001,
-		GID:              1002,
-		DaemonGeneration: "daemon-generation-1",
+	principal, err := sandboxruntime.NewAuthenticatedWorkerPrincipal("principal-owner", 1001, 1002, "peercred-owner", "daemon-generation-1")
+	if err != nil {
+		panic(err)
 	}
 	request := sandboxruntime.JobCredentialAdmissionRequest{
 		Identity: sandboxruntime.JobCredentialIdentity{
-			SandboxID:         "sandbox-1",
-			ExecutionID:       "execution-1",
-			WorkerID:          "worker-1",
-			HostID:            "host-owner",
-			RuntimeDriver:     "microvm",
-			RuntimeID:         "runtime-1",
-			RuntimeGeneration: "runtime-generation-1",
-			WorkerJobID:       "job-1",
-			SubmissionID:      "submission-1",
-			IssuedAt:          now,
+			SandboxID:               "sandbox-1",
+			ExecutionID:             "execution-1",
+			WorkerID:                "worker-1",
+			HostID:                  "host-owner",
+			RuntimeDriver:           "microvm",
+			RuntimeID:               "runtime-1",
+			RuntimeGeneration:       "runtime-generation-1",
+			NetworkPolicyGeneration: "network-policy-generation-1",
+			ProxyGeneration:         "proxy-generation-1",
+			TopologyGeneration:      "topology-generation-1",
+			RuleGeneration:          "rule-generation-1",
+			WorkerJobID:             "job-1",
+			SubmissionID:            "submission-1",
+			IssuedAt:                now,
 		},
 		GrantID:            "grant-primary",
 		GrantRevision:      9,
@@ -376,42 +705,99 @@ func l8AuthorizedRequest() (sandboxruntime.AuthenticatedWorkerPrincipal, sandbox
 	return principal, request
 }
 
-type l8Keyctl struct {
-	calls               []string
-	identity            KeyIdentity
-	value               []byte
-	reportedSize        int
-	sizeErr             error
-	readErr             error
-	shortRead           bool
-	inspectCount        int
-	replaceAtInspect    int
-	permissionAtInspect int
-	ownerUIDAtInspect   int
-	ownerGIDAtInspect   int
+func l8Principal(t *testing.T, id string, uid, gid uint32, issuerID, issuerGeneration string) sandboxruntime.AuthenticatedWorkerPrincipal {
+	t.Helper()
+	principal, err := sandboxruntime.NewAuthenticatedWorkerPrincipal(id, uid, gid, issuerID, issuerGeneration)
+	if err != nil {
+		t.Fatalf("new authenticated principal: %v", err)
+	}
+	return principal
 }
 
-func (keyctl *l8Keyctl) Inspect(_ context.Context, _ int32) (KeyIdentity, error) {
-	keyctl.calls = append(keyctl.calls, "inspect")
+func l8ImmutableKeyPermissions() KeyPermission {
+	return KeyPermissionPossessorView |
+		KeyPermissionPossessorRead |
+		KeyPermissionUserView |
+		KeyPermissionUserRead
+}
+
+func l8KeyIdentity(t *testing.T, serial int32, uid, gid uint32, description string) KeyIdentity {
+	t.Helper()
+	identity, err := NewKeyIdentity(serial, "user", uid, gid, l8ImmutableKeyPermissions(), description)
+	if err != nil {
+		t.Fatalf("new key identity: %v", err)
+	}
+	return identity
+}
+
+func l8KeyDescriptor(t *testing.T, uid, gid uint32, description string) l8KeyDescriptorFixture {
+	t.Helper()
+	return l8KeyDescriptorFixture{
+		keyType:     "user",
+		ownerUID:    uid,
+		ownerGID:    gid,
+		permissions: l8ImmutableKeyPermissions(),
+		description: description,
+	}
+}
+
+type l8Keyctl struct {
+	calls                []string
+	serials              []int32
+	descriptor           l8KeyDescriptorFixture
+	value                []byte
+	reportedSize         int
+	inspectErr           error
+	sizeErr              error
+	readErr              error
+	shortRead            bool
+	inspectCount         int
+	replaceAtInspect     int
+	permissionAtInspect  int
+	typeAtInspect        int
+	descriptionAtInspect int
+	ownerUIDAtInspect    int
+	ownerGIDAtInspect    int
+}
+
+func (keyctl *l8Keyctl) Describe(_ context.Context, serial int32) (KeyDescriptor, error) {
+	keyctl.calls = append(keyctl.calls, "describe")
+	keyctl.serials = append(keyctl.serials, serial)
 	keyctl.inspectCount++
-	identity := keyctl.identity
+	if keyctl.inspectErr != nil {
+		return KeyDescriptor{}, keyctl.inspectErr
+	}
+	descriptor := keyctl.descriptor
 	if keyctl.replaceAtInspect == keyctl.inspectCount {
-		identity.Generation++
+		descriptor.description = "hal-replaced"
 	}
 	if keyctl.permissionAtInspect == keyctl.inspectCount {
-		identity.Permissions = 0
+		descriptor.permissions |= KeyPermissionUserWrite
+	}
+	if keyctl.typeAtInspect == keyctl.inspectCount {
+		descriptor.keyType = "logon"
+	}
+	if keyctl.descriptionAtInspect == keyctl.inspectCount {
+		descriptor.description = "hal-description-neighbor"
 	}
 	if keyctl.ownerUIDAtInspect == keyctl.inspectCount {
-		identity.OwnerUID++
+		descriptor.ownerUID++
 	}
 	if keyctl.ownerGIDAtInspect == keyctl.inspectCount {
-		identity.OwnerGID++
+		descriptor.ownerGID++
 	}
-	return identity, nil
+	return NewKeyDescriptor(
+		descriptor.keyType,
+		descriptor.ownerUID,
+		descriptor.ownerGID,
+		descriptor.permissions,
+		descriptor.description,
+	)
 }
 
-func (keyctl *l8Keyctl) ReadSize(_ context.Context, _ int32) (int, error) {
+func (keyctl *l8Keyctl) ReadSize(_ context.Context, serial int32) (int, error) {
 	keyctl.calls = append(keyctl.calls, "size")
+	keyctl.serials = append(keyctl.serials, serial)
 	if keyctl.sizeErr != nil {
 		return 0, keyctl.sizeErr
 	}
@@ -421,8 +807,9 @@ func (keyctl *l8Keyctl) ReadSize(_ context.Context, _ int32) (int, error) {
 	return len(keyctl.value), nil
 }
 
-func (keyctl *l8Keyctl) ReadInto(_ context.Context, _ int32, dst []byte) (int, error) {
+func (keyctl *l8Keyctl) ReadInto(_ context.Context, serial int32, dst []byte) (int, error) {
 	keyctl.calls = append(keyctl.calls, "read")
+	keyctl.serials = append(keyctl.serials, serial)
 	if keyctl.readErr != nil {
 		return 0, keyctl.readErr
 	}
@@ -458,14 +845,32 @@ func (mapping *l8LockedMapping) Load(ctx context.Context, reader func([]byte) (i
 	return nil
 }
 
-func (mapping *l8LockedMapping) WriteTo(ctx context.Context, sink sandboxruntime.JobCredentialSecretSink) error {
+func (mapping *l8LockedMapping) Borrow(ctx context.Context, callback func(lockedSecretBorrowedView) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if sink.MaxCredentialBytes() < mapping.length {
+	view := &l8CredentialBorrowedView{mapping: mapping, active: true}
+	err := callback(view)
+	view.active = false
+	return err
+}
+
+type l8CredentialBorrowedView struct {
+	mapping *l8LockedMapping
+	active  bool
+}
+
+func (view *l8CredentialBorrowedView) WriteTo(ctx context.Context, sink sandboxruntime.JobCredentialSecretSink) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !view.active {
+		return errors.New("expired test view")
+	}
+	if sink.MaxCredentialBytes() < view.mapping.length {
 		return errors.New("sink capacity exceeded")
 	}
-	return sink.WriteCredential(mapping.region[:mapping.length])
+	return sink.WriteCredential(view.mapping.region[:view.mapping.length])
 }
 
 func (mapping *l8LockedMapping) Destroy() error {
@@ -480,14 +885,28 @@ func (mapping *l8LockedMapping) Destroy() error {
 }
 
 type l8SecretSink struct {
-	limit int
-	value []byte
+	limit  int
+	count  int
+	size   int
+	digest [sha256.Size]byte
 }
 
 func (sink *l8SecretSink) MaxCredentialBytes() int { return sink.limit }
 func (sink *l8SecretSink) WriteCredential(value []byte) error {
-	sink.value = append([]byte(nil), value...)
+	// The callback-scoped window is inspected immediately. The sink retains no
+	// credential bytes, only non-reversible test evidence.
+	sink.count++
+	sink.size = len(value)
+	sink.digest = sha256.Sum256(value)
 	return nil
+}
+
+type l8KeyDescriptorFixture struct {
+	keyType     string
+	ownerUID    uint32
+	ownerGID    uint32
+	permissions KeyPermission
+	description string
 }
 
 func l8AllZero(value []byte) bool {
