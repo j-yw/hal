@@ -104,11 +104,12 @@ func (policy l8WorkerV2GuardPolicy) allows(path string) bool {
 }
 
 type l8WorkerV2ParsedFile struct {
-	path          string
-	fileSet       *token.FileSet
-	parsed        *ast.File
-	imports       map[string]string
-	alwaysImports []string
+	path           string
+	fileSet        *token.FileSet
+	parsed         *ast.File
+	imports        map[string]string
+	alwaysImports  []string
+	valueSpecUnits map[*ast.ValueSpec][]*ast.ValueSpec
 }
 
 type l8WorkerV2GuardScope struct {
@@ -139,11 +140,16 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 		if err != nil {
 			return fmt.Errorf("parse %s: %w", path, err)
 		}
+		valueSpecUnits, err := l8WorkerV2NormalizeValueSpecUnits(parsed)
+		if err != nil {
+			return fmt.Errorf("normalize value declarations in %s: %w", path, err)
+		}
 		file := &l8WorkerV2ParsedFile{
-			path:    path,
-			fileSet: fileSet,
-			parsed:  parsed,
-			imports: make(map[string]string, len(parsed.Imports)),
+			path:           path,
+			fileSet:        fileSet,
+			parsed:         parsed,
+			imports:        make(map[string]string, len(parsed.Imports)),
+			valueSpecUnits: valueSpecUnits,
 		}
 		for _, spec := range parsed.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
@@ -180,7 +186,7 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 			}
 		case policy.mixed[base] && containsV2:
 			for _, declaration := range parsed.Decls {
-				for _, node := range l8WorkerV2MixedDeclarationScopes(declaration) {
+				for _, node := range l8WorkerV2MixedDeclarationScopes(declaration, file.valueSpecUnits) {
 					roots = append(roots, l8WorkerV2GuardScope{file: file, node: node})
 				}
 			}
@@ -237,7 +243,7 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 							objects[object] = l8WorkerV2GuardScope{file: file, node: value}
 						}
 					case *ast.ValueSpec:
-						for _, unit := range l8WorkerV2ValueSpecSemanticUnits(value) {
+						for _, unit := range file.valueSpecUnits[value] {
 							for _, name := range unit.Names {
 								if object := info.Defs[name]; object != nil {
 									objects[object] = l8WorkerV2GuardScope{file: file, node: unit}
@@ -314,7 +320,7 @@ func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info) []
 	var units []l8WorkerV2SemanticUnit
 	for _, file := range files {
 		for _, declaration := range file.parsed.Decls {
-			for _, node := range l8WorkerV2SemanticDeclarationUnits(declaration) {
+			for _, node := range l8WorkerV2SemanticDeclarationUnits(declaration, file.valueSpecUnits) {
 				unit := l8WorkerV2SemanticUnit{
 					scope:   l8WorkerV2GuardScope{file: file, node: node},
 					tainted: l8WorkerV2ASTContainsMarker(node),
@@ -375,7 +381,7 @@ func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info) []
 	return roots
 }
 
-func l8WorkerV2SemanticDeclarationUnits(declaration ast.Decl) []ast.Node {
+func l8WorkerV2SemanticDeclarationUnits(declaration ast.Decl, valueSpecUnits map[*ast.ValueSpec][]*ast.ValueSpec) []ast.Node {
 	switch typed := declaration.(type) {
 	case *ast.FuncDecl:
 		return []ast.Node{typed}
@@ -386,7 +392,7 @@ func l8WorkerV2SemanticDeclarationUnits(declaration ast.Decl) []ast.Node {
 		var units []ast.Node
 		for _, spec := range typed.Specs {
 			if valueSpec, ok := spec.(*ast.ValueSpec); ok {
-				for _, unit := range l8WorkerV2ValueSpecSemanticUnits(valueSpec) {
+				for _, unit := range valueSpecUnits[valueSpec] {
 					units = append(units, unit)
 				}
 				continue
@@ -415,7 +421,46 @@ func l8WorkerV2SemanticDeclarationUnits(declaration ast.Decl) []ast.Node {
 	}
 }
 
-func l8WorkerV2ValueSpecSemanticUnits(spec *ast.ValueSpec) []*ast.ValueSpec {
+func l8WorkerV2NormalizeValueSpecUnits(file *ast.File) (map[*ast.ValueSpec][]*ast.ValueSpec, error) {
+	unitsBySpec := make(map[*ast.ValueSpec][]*ast.ValueSpec)
+	for _, declaration := range file.Decls {
+		generated, ok := declaration.(*ast.GenDecl)
+		if !ok || generated.Tok == token.IMPORT {
+			continue
+		}
+
+		var inheritedValues []ast.Expr
+		var inheritedType ast.Expr
+		for _, rawSpec := range generated.Specs {
+			spec, ok := rawSpec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			effective := spec
+			if generated.Tok == token.CONST {
+				switch {
+				case len(spec.Values) > 0:
+					inheritedValues = spec.Values
+					inheritedType = spec.Type
+				case len(inheritedValues) == 0:
+					return nil, fmt.Errorf("const declaration omits values before a preceding expression list")
+				default:
+					clone := *spec
+					clone.Type = inheritedType
+					clone.Values = append([]ast.Expr(nil), inheritedValues...)
+					effective = &clone
+				}
+				if len(effective.Names) == 0 || len(effective.Names) != len(effective.Values) {
+					return nil, fmt.Errorf("const declaration has ambiguous name/value cardinality")
+				}
+			}
+			unitsBySpec[spec] = l8WorkerV2SplitValueSpecSemanticUnits(effective)
+		}
+	}
+	return unitsBySpec, nil
+}
+
+func l8WorkerV2SplitValueSpecSemanticUnits(spec *ast.ValueSpec) []*ast.ValueSpec {
 	if len(spec.Names) == 0 || len(spec.Names) != len(spec.Values) {
 		// A single RHS may produce multiple values. Likewise, an explicit type
 		// applies to every name in a declaration without initializers. Keep those
@@ -441,7 +486,7 @@ func l8WorkerV2ImportValues(imports map[string]string) []string {
 	return values
 }
 
-func l8WorkerV2MixedDeclarationScopes(declaration ast.Decl) []ast.Node {
+func l8WorkerV2MixedDeclarationScopes(declaration ast.Decl, valueSpecUnits map[*ast.ValueSpec][]*ast.ValueSpec) []ast.Node {
 	switch typed := declaration.(type) {
 	case *ast.GenDecl:
 		if typed.Tok == token.IMPORT {
@@ -450,7 +495,7 @@ func l8WorkerV2MixedDeclarationScopes(declaration ast.Decl) []ast.Node {
 		var scopes []ast.Node
 		for _, spec := range typed.Specs {
 			if valueSpec, ok := spec.(*ast.ValueSpec); ok {
-				for _, unit := range l8WorkerV2ValueSpecSemanticUnits(valueSpec) {
+				for _, unit := range valueSpecUnits[valueSpec] {
 					if l8WorkerV2ASTContainsMarker(unit) {
 						scopes = append(scopes, unit)
 					}
@@ -896,6 +941,138 @@ func legacyHandler() { _ = legacyOperation; forbiddenHelper() }`,
 import httpalias "net/http"
 func forbiddenHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
 			}, policy, "net/http")
+		})
+	}
+}
+
+func TestL8WorkerV2GuardNormalizesImplicitConstValues(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"aliases.go":   true,
+		"handler.go":   true,
+		"shared.go":    true,
+	}}
+	contracts := `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"
+type JobOperationV2 string`
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"contracts.go": contracts,
+		"aliases.go": `package sandboxworker
+const (
+	routedOperation = OperationJobStartV2
+	hiddenOperation
+	chainedOperation
+)`,
+		"handler.go": `package sandboxworker
+func dispatch(operation string) {
+	if operation == chainedOperation { forbiddenRoutedHelper() }
+}`,
+		"shared.go": `package sandboxworker
+import httpalias "net/http"
+func forbiddenRoutedHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+	}, policy, "net/http")
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"contracts.go": contracts,
+		"aliases.go": `package sandboxworker
+const (
+	routedOperation JobOperationV2 = "job_start"
+	hiddenOperation
+)`,
+		"handler.go": `package sandboxworker
+func dispatch(operation JobOperationV2) {
+	if operation == hiddenOperation { forbiddenRoutedHelper() }
+}`,
+		"shared.go": `package sandboxworker
+import httpalias "net/http"
+func forbiddenRoutedHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+	}, policy, "net/http")
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"contracts.go": contracts,
+		"aliases.go": `package sandboxworker
+const (
+	routedOperation = OperationJobStartV2
+	hiddenRoutedOperation
+	legacyOperation = "job_start"
+	hiddenLegacyOperation
+)`,
+		"handler.go": `package sandboxworker
+func routedHandler(operation string) {
+	if operation == hiddenRoutedOperation { safeRoutedHelper() }
+}
+func legacyHandler(operation string) {
+	if operation == hiddenLegacyOperation { forbiddenLegacyHelper() }
+}`,
+		"shared.go": `package sandboxworker
+import httpalias "net/http"
+func safeRoutedHelper() {}
+func forbiddenLegacyHelper() { _, _ = httpalias.Get("https://legacy.example.invalid") }`,
+	}, policy)
+
+	multiNameAliases := `package sandboxworker
+const (
+	routedOperation, legacyOperation = OperationJobStartV2, "job_start"
+	hiddenRoutedOperation, hiddenLegacyOperation
+)`
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"contracts.go": contracts,
+		"aliases.go":   multiNameAliases,
+		"handler.go": `package sandboxworker
+func routedHandler(operation string) {
+	if operation == hiddenRoutedOperation { safeRoutedHelper() }
+}
+func legacyHandler(operation string) {
+	if operation == hiddenLegacyOperation { forbiddenLegacyHelper() }
+}`,
+		"shared.go": `package sandboxworker
+import httpalias "net/http"
+func safeRoutedHelper() {}
+func forbiddenLegacyHelper() { _, _ = httpalias.Get("https://legacy.example.invalid") }`,
+	}, policy)
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"contracts.go": contracts,
+		"aliases.go":   multiNameAliases,
+		"handler.go": `package sandboxworker
+func routedHandler(operation string) {
+	if operation == hiddenRoutedOperation { forbiddenRoutedHelper() }
+}`,
+		"shared.go": `package sandboxworker
+import httpalias "net/http"
+func forbiddenRoutedHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+	}, policy, "net/http")
+
+	for _, fixture := range []struct {
+		name    string
+		aliases string
+		want    string
+	}{
+		{
+			name: "implicit values before an expression list",
+			aliases: `package sandboxworker
+const (
+	hiddenOperation
+	routedOperation = OperationJobStartV2
+)`,
+			want: "before a preceding expression list",
+		},
+		{
+			name: "inherited cardinality mismatch",
+			aliases: `package sandboxworker
+const (
+	routedOperation, legacyOperation = OperationJobStartV2, "job_start"
+	ambiguousOperation
+)`,
+			want: "ambiguous name/value cardinality",
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"contracts.go": contracts,
+				"aliases.go":   fixture.aliases,
+			}, policy, fixture.want)
 		})
 	}
 }
