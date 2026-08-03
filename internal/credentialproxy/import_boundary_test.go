@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 func TestL8CredentialProxyCatalogImportBoundaryIsDataOnly(t *testing.T) {
@@ -93,6 +94,9 @@ func TestL8CredentialProxyPackageProductionSourceHasNoFixtureOrOverrideMaterial(
 		if segment := credentialProxyTestOnlyPathSegment(path); segment != "" {
 			t.Errorf("production credentialproxy file %s is hidden under test-only directory segment %q", path, segment)
 		}
+		if filename := credentialProxyTestOnlyProductionFilename(path); filename != "" {
+			t.Errorf("production credentialproxy filename %q describes test-only fixture material; fixtures belong in _test.go", filename)
+		}
 		source, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("ReadFile(%s) error: %v", path, err)
@@ -138,6 +142,9 @@ func TestL8CredentialProxyPackageFixtureGuardRejectsSemanticBypassesWithoutSubst
 	for _, path := range []string{
 		"fixture/catalog.go",
 		"fixtures/catalog.go",
+		"live/azure_fixture_catalog/catalog.go",
+		"live/AzureTestRegistry/catalog.go",
+		"live/newAzureFixtureEndpoint/catalog.go",
 		"live/testfixture/catalog.go",
 		"live/testfixtures/catalog.go",
 		"live/testdata/catalog.go",
@@ -157,6 +164,8 @@ func TestL8CredentialProxyPackageFixtureGuardRejectsSemanticBypassesWithoutSubst
 		"fixturepolicy/catalog.go",
 		"live/fakeproof/catalog.go",
 		"live/mockpolicy/catalog.go",
+		"live/contest_registry/catalog.go",
+		"live/latest_service_catalog/catalog.go",
 		"live/catalog_fixture_policy.go",
 		"live/catalog.go",
 	} {
@@ -165,15 +174,29 @@ func TestL8CredentialProxyPackageFixtureGuardRejectsSemanticBypassesWithoutSubst
 		}
 	}
 
-	markers := strings.Join(credentialProxyProductionFixtureIdentifiers(), "\n")
-	for _, marker := range []string{
-		"Fixture", "fixture", "Fixtures", "fixtures",
-		"NewFixture", "newFixture", "NewFixtures", "newFixtures",
-		"TestFixture", "testFixture", "FixtureRegistry", "fixtureRegistry",
-		"FixtureCatalog", "fixtureCatalog", "NewTestCatalog", "newTestCatalog",
+	for _, filename := range []string{
+		"fixture.go",
+		"fixture_catalog.go",
+		"azure_fixture_metadata.go",
+		"azure_test_registry.go",
+		"new_fixture_endpoint.go",
+		"mock_tls_authority.go",
 	} {
-		if !strings.Contains(markers, marker) {
-			t.Errorf("production fixture marker guard omits semantic bypass %q", marker)
+		if got := credentialProxyTestOnlyProductionFilename(filepath.Join("live", filename)); got == "" {
+			t.Errorf("credentialProxyTestOnlyProductionFilename(%q) = empty, want compound filename rejection", filename)
+		}
+	}
+	for _, filename := range []string{
+		"fixture_policy.go",
+		"catalog_fixture_policy.go",
+		"fixture_documentation.go",
+		"azure_openai_responses.go",
+		"service_catalog.go",
+		"application_route.go",
+		"fakeproof.go",
+	} {
+		if got := credentialProxyTestOnlyProductionFilename(filepath.Join("live", filename)); got != "" {
+			t.Errorf("credentialProxyTestOnlyProductionFilename(%q) = %q, want legitimate production filename allowed", filename, got)
 		}
 	}
 	for _, source := range []string{
@@ -181,6 +204,12 @@ func TestL8CredentialProxyPackageFixtureGuardRejectsSemanticBypassesWithoutSubst
 		"package live\nfunc NewFixture () {}\n",
 		"package live\ntype FixtureRegistry struct{}\n",
 		"package live\nvar newTestCatalog = func() {}\n",
+		"package live\ntype NewAzureFixtureCatalog struct{}\n",
+		"package live\ntype AzureFixtureMetadata struct{}\n",
+		"package live\nfunc newFixtureEndpoint() {}\n",
+		"package live\ntype AzureTestRegistry struct{}\n",
+		"package live\ntype mockTLSAuthority struct{}\n",
+		"package live\ntype FixturePolicyCatalog struct{}\n",
 	} {
 		if got, err := credentialProxyProductionFixtureIdentifier("live.go", []byte(source)); err != nil {
 			t.Fatalf("credentialProxyProductionFixtureIdentifier() error: %v", err)
@@ -188,11 +217,34 @@ func TestL8CredentialProxyPackageFixtureGuardRejectsSemanticBypassesWithoutSubst
 			t.Errorf("credentialProxyProductionFixtureIdentifier(%q) = empty, want semantic fixture identifier rejection", source)
 		}
 	}
-	allowedSource := "package live\n// NewFixture is test-only and unavailable here.\ntype FixturePolicy struct{}\nconst fixtureDocumentation = \"NewFixture\"\n"
+	allowedSource := `package live
+// NewAzureFixtureCatalog is test-only and unavailable here.
+type FixturePolicy struct{}
+type CatalogFixturePolicy struct{}
+type AzureOpenAIResponsesV1Definition struct{}
+type StaticServiceCatalog struct{}
+type ContestRegistry struct{}
+type LatestServiceCatalog struct{}
+type MockingbirdPolicy struct{}
+const fixtureDocumentation = "NewFixture"
+const fakeproof = "documentation"
+`
 	if got, err := credentialProxyProductionFixtureIdentifier("live.go", []byte(allowedSource)); err != nil {
 		t.Fatalf("credentialProxyProductionFixtureIdentifier(allowed) error: %v", err)
 	} else if got != "" {
 		t.Errorf("credentialProxyProductionFixtureIdentifier(allowed) = %q, want comments and documentation strings allowed", got)
+	}
+
+	for name, want := range map[string][]string{
+		"NewAzureFixtureCatalog": {"new", "azure", "fixture", "catalog"},
+		"newFixtureEndpoint":     {"new", "fixture", "endpoint"},
+		"AzureTestRegistry":      {"azure", "test", "registry"},
+		"fixture_catalog.go":     {"fixture", "catalog", "go"},
+		"TLSTestAuthority":       {"tls", "test", "authority"},
+	} {
+		if got := credentialProxySemanticTokens(name); !equalCredentialProxyTokens(got, want) {
+			t.Errorf("credentialProxySemanticTokens(%q) = %#v, want %#v", name, got, want)
+		}
 	}
 }
 
@@ -340,35 +392,20 @@ func credentialProxyTestOnlyPathSegment(path string) string {
 		parts = parts[:len(parts)-1]
 	}
 	for _, part := range parts {
-		switch strings.ToLower(part) {
-		case "fixture", "fixtures",
-			"testfixture", "testfixtures", "testdata", "testutil", "testutils", "testonly",
-			"fake", "fakes", "mock", "mocks":
+		if credentialProxyTestOnlySemanticName(part) != "" {
 			return part
 		}
 	}
 	return ""
 }
 
-func credentialProxyProductionFixtureIdentifiers() []string {
-	return []string{
-		"Fixture",
-		"fixture",
-		"Fixtures",
-		"fixtures",
-		"NewFixture",
-		"newFixture",
-		"NewFixtures",
-		"newFixtures",
-		"TestFixture",
-		"testFixture",
-		"FixtureRegistry",
-		"fixtureRegistry",
-		"FixtureCatalog",
-		"fixtureCatalog",
-		"NewTestCatalog",
-		"newTestCatalog",
+func credentialProxyTestOnlyProductionFilename(path string) string {
+	name := filepath.Base(path)
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	if credentialProxyTestOnlySemanticName(name) != "" {
+		return filepath.Base(path)
 	}
+	return ""
 }
 
 func credentialProxyProductionFixtureIdentifier(path string, source []byte) (string, error) {
@@ -376,20 +413,87 @@ func credentialProxyProductionFixtureIdentifier(path string, source []byte) (str
 	if err != nil {
 		return "", err
 	}
-	forbidden := make(map[string]bool)
-	for _, identifier := range credentialProxyProductionFixtureIdentifiers() {
-		forbidden[identifier] = true
-	}
 	var found string
 	ast.Inspect(parsed, func(node ast.Node) bool {
 		identifier, ok := node.(*ast.Ident)
-		if ok && forbidden[identifier.Name] {
+		if ok && credentialProxyTestOnlySemanticName(identifier.Name) != "" {
 			found = identifier.Name
 			return false
 		}
 		return found == ""
 	})
 	return found, nil
+}
+
+func credentialProxyTestOnlySemanticName(name string) string {
+	tokens := credentialProxySemanticTokens(name)
+	if len(tokens) == 0 {
+		return ""
+	}
+	exact := strings.Join(tokens, "")
+	switch exact {
+	case "fixture", "fixtures", "testfixture", "testfixtures", "testdata", "testutil", "testutils", "testonly", "fake", "fakes", "mock", "mocks":
+		return exact
+	}
+
+	var testOnlyToken string
+	for index, token := range tokens {
+		switch token {
+		case "fixture":
+			// FixturePolicy and FixtureDocumentation are legitimate production
+			// vocabulary. Requiring the suffix to end the identifier prevents it
+			// from exempting names such as FixturePolicyCatalog.
+			if index+1 == len(tokens)-1 && (tokens[index+1] == "policy" || tokens[index+1] == "documentation") {
+				continue
+			}
+			testOnlyToken = token
+		case "fixtures", "test", "tests", "fake", "fakes", "mock", "mocks":
+			testOnlyToken = token
+		}
+	}
+	return testOnlyToken
+}
+
+func credentialProxySemanticTokens(name string) []string {
+	runes := []rune(name)
+	tokens := make([]string, 0)
+	start := -1
+	flush := func(end int) {
+		if start >= 0 && end > start {
+			tokens = append(tokens, strings.ToLower(string(runes[start:end])))
+		}
+		start = -1
+	}
+	for index, current := range runes {
+		if !unicode.IsLetter(current) && !unicode.IsDigit(current) {
+			flush(index)
+			continue
+		}
+		if start < 0 {
+			start = index
+			continue
+		}
+		previous := runes[index-1]
+		nextIsLower := index+1 < len(runes) && unicode.IsLower(runes[index+1])
+		if unicode.IsUpper(current) && (unicode.IsLower(previous) || unicode.IsDigit(previous) || unicode.IsUpper(previous) && nextIsLower) {
+			flush(index)
+			start = index
+		}
+	}
+	flush(len(runes))
+	return tokens
+}
+
+func equalCredentialProxyTokens(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func credentialProxyCatalogForbiddenSourceMarkers() []string {

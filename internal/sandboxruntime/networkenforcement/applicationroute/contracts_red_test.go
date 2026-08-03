@@ -544,14 +544,7 @@ func TestL8ApplicationRouteRegistryRollbackRetriesOnlyMixedUnconfirmedHandlers(t
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
 	err = registry.Start(context.Background())
-	if !errors.Is(err, ErrHandlerStart) {
-		t.Fatalf("Start() error = %v, want ErrHandlerStart", err)
-	}
-	for _, raw := range []error{rawStartErr, rawSecondCloseErr} {
-		if errors.Is(err, raw) {
-			t.Fatalf("Start() error unwraps raw cause %v", raw)
-		}
-	}
+	assertApplicationRouteStableErrorDropsRawCauses(t, err, ErrHandlerStart, rawStartErr, rawSecondCloseErr)
 	if got, want := events, []string{
 		"start:first", "start:second", "start:failing",
 		"close:failing", "close:second", "close:first",
@@ -568,11 +561,8 @@ func TestL8ApplicationRouteRegistryRollbackRetriesOnlyMixedUnconfirmedHandlers(t
 	if err := registry.Register(late); !errors.Is(err, ErrRegistryClosed) {
 		t.Fatalf("Register() during cleanup-incomplete error = %v, want ErrRegistryClosed", err)
 	}
-	if err := registry.Close(context.Background()); !errors.Is(err, ErrHandlerClose) {
-		t.Fatalf("Close() while mixed rollback remains unconfirmed error = %v, want ErrHandlerClose", err)
-	} else if errors.Is(err, rawSecondCloseErr) {
-		t.Fatal("Close() retry error unwraps raw partial rollback cause")
-	}
+	retryErr := registry.Close(context.Background())
+	assertApplicationRouteStableErrorDropsRawCauses(t, retryErr, ErrHandlerClose, rawSecondCloseErr)
 	if got := registry.State(); got != RegistryStateCleanupIncomplete {
 		t.Fatalf("State() after failed cleanup retry = %q, want %q", got, RegistryStateCleanupIncomplete)
 	}
@@ -702,12 +692,7 @@ func TestL8ApplicationRouteRegistryCloseRetriesOnlyMixedUnconfirmedHandlers(t *t
 		t.Fatalf("Start() error = %v", err)
 	}
 	err = registry.Close(context.Background())
-	if !errors.Is(err, ErrHandlerClose) {
-		t.Fatalf("Close() error = %v, want ErrHandlerClose", err)
-	}
-	if errors.Is(err, rawSecondCloseErr) {
-		t.Fatal("Close() error unwraps raw partial-close cause")
-	}
+	assertApplicationRouteStableErrorDropsRawCauses(t, err, ErrHandlerClose, rawSecondCloseErr)
 	if got, want := events, []string{
 		"start:first", "start:second", "start:third",
 		"close:third", "close:second", "close:first",
@@ -725,6 +710,12 @@ func TestL8ApplicationRouteRegistryCloseRetriesOnlyMixedUnconfirmedHandlers(t *t
 		t.Fatalf("Register() during Close cleanup-incomplete error = %v, want ErrRegistryClosed", err)
 	}
 
+	retryErr := registry.Close(context.Background())
+	assertApplicationRouteStableErrorDropsRawCauses(t, retryErr, ErrHandlerClose, rawSecondCloseErr)
+	if got := registry.State(); got != RegistryStateCleanupIncomplete {
+		t.Fatalf("State() after repeated mixed Close failure = %q, want %q", got, RegistryStateCleanupIncomplete)
+	}
+
 	second.closeErr = nil
 	if err := registry.Close(context.Background()); err != nil {
 		t.Fatalf("Close() mixed cleanup retry error = %v", err)
@@ -732,6 +723,7 @@ func TestL8ApplicationRouteRegistryCloseRetriesOnlyMixedUnconfirmedHandlers(t *t
 	if got, want := events, []string{
 		"start:first", "start:second", "start:third",
 		"close:third", "close:second", "close:first",
+		"close:second",
 		"close:second",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("mixed Close retry events = %#v, want only unconfirmed handler retried: %#v", got, want)
@@ -1225,6 +1217,38 @@ func assertApplicationRouteErrorSafe(t *testing.T, err error) {
 	} {
 		if strings.Contains(text, unsafe) {
 			t.Fatalf("error %q contains unsafe value %q", text, unsafe)
+		}
+	}
+}
+
+func assertApplicationRouteStableErrorDropsRawCauses(t *testing.T, err, stable error, rawCauses ...error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("error = nil, want stable error %v", stable)
+	}
+	if !errors.Is(err, stable) {
+		t.Fatalf("error = %v, want stable error %v", err, stable)
+	}
+	if err.Error() != stable.Error() {
+		t.Errorf("error text = %q, want exact stable text %q", err.Error(), stable.Error())
+	}
+	assertApplicationRouteErrorSafe(t, err)
+	for _, raw := range rawCauses {
+		if raw == nil {
+			continue
+		}
+		if errors.Is(err, raw) {
+			t.Errorf("stable error unwraps raw cause %q", raw.Error())
+		}
+		for format, rendered := range map[string]string{
+			"Error": err.Error(),
+			"%v":    fmt.Sprintf("%v", err),
+			"%+v":   fmt.Sprintf("%+v", err),
+			"%#v":   fmt.Sprintf("%#v", err),
+		} {
+			if strings.Contains(rendered, raw.Error()) {
+				t.Errorf("stable error rendering %s contains raw cause text %q: %q", format, raw.Error(), rendered)
+			}
 		}
 	}
 }
