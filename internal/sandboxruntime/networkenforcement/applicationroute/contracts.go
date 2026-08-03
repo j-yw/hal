@@ -4,6 +4,7 @@ package applicationroute
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 )
@@ -147,8 +148,14 @@ func (Request) MarshalJSON() ([]byte, error) { return nil, ErrLiveRouteStateNotS
 func (Request) MarshalText() ([]byte, error) { return nil, ErrLiveRouteStateNotSerializable }
 func (Request) String() string               { return "applicationroute.Request{live}" }
 func (Request) GoString() string             { return "applicationroute.Request{live}" }
+func (Request) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("applicationroute.Request{live}"))
+}
 
 func (Response) MarshalJSON() ([]byte, error) { return nil, ErrLiveRouteStateNotSerializable }
 func (Response) MarshalText() ([]byte, error) { return nil, ErrLiveRouteStateNotSerializable }
 func (Response) String() string               { return "applicationroute.Response{live}" }
 func (Response) GoString() string             { return "applicationroute.Response{live}" }
+func (Response) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("applicationroute.Response{live}"))
+}

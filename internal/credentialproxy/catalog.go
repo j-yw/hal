@@ -359,6 +359,13 @@ func (definition ServiceDefinition) String() string {
 	return "credentialproxy.ServiceDefinition{sealed:true}"
 }
 func (definition ServiceDefinition) GoString() string { return definition.String() }
+func (definition ServiceDefinition) Format(state fmt.State, _ rune) {
+	output := "credentialproxy.ServiceDefinition{sealed:true}"
+	if definition.serviceID == ServiceIDAzureOpenAIResponsesV1 {
+		output = "credentialproxy.ServiceDefinition{serviceId:azure-openai-responses-v1,sealed:true}"
+	}
+	_, _ = state.Write([]byte(output))
+}
 
 func (SealedTLSPolicy) MarshalJSON() ([]byte, error) {
 	return nil, ErrLiveCatalogStateNotSerializable
@@ -368,6 +375,9 @@ func (SealedTLSPolicy) MarshalText() ([]byte, error) {
 }
 func (SealedTLSPolicy) String() string          { return "credentialproxy.SealedTLSPolicy{sealed:true}" }
 func (policy SealedTLSPolicy) GoString() string { return policy.String() }
+func (SealedTLSPolicy) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("credentialproxy.SealedTLSPolicy{sealed:true}"))
+}
 
 func (SealedInvocationPolicy) MarshalJSON() ([]byte, error) {
 	return nil, ErrLiveCatalogStateNotSerializable
@@ -379,6 +389,9 @@ func (SealedInvocationPolicy) String() string {
 	return "credentialproxy.SealedInvocationPolicy{sealed:true}"
 }
 func (policy SealedInvocationPolicy) GoString() string { return policy.String() }
+func (SealedInvocationPolicy) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("credentialproxy.SealedInvocationPolicy{sealed:true}"))
+}
 
 func (StaticServiceCatalog) MarshalJSON() ([]byte, error) {
 	return nil, ErrLiveCatalogStateNotSerializable
