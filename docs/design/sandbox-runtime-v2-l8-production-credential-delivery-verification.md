@@ -19,12 +19,14 @@ A selected live test that skips is a failure, not a pass.
 The design gate locks package ownership, lifecycle states, separate
 active/cleanup proof kinds, failure codes, strict worker and guest protocol v2,
 no-downgrade behavior, the neutral L6 route seam, exact non-MITM HTTP protocol,
-initial Pi service/consumer, byte-native daemon source, anonymous locked memory,
-privileged helper/cgroup cleanup, restricted SSH relay, finalization/recovery
-ordering, and the L10 handoff:
+initial Pi service/consumer and numeric limits, Linux-keyring byte source,
+anonymous locked memory, authenticated v2 vsock, dedicated guest identities,
+fd-confined privileged helper/cgroup cleanup, restricted SSH relay,
+finalization/recovery ordering, and the L10 handoff:
 
 ```sh
-go test -count=1 ./cmd -run '^TestL8CredentialDelivery(Architecture|Verification|DefaultGuards)$'
+go test -count=1 ./cmd \
+  -run '^TestL8CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)$'
 ```
 
 Guards must prove:
@@ -85,28 +87,37 @@ Required focused areas are:
 
 - lifecycle transition tables, idempotence, correlation, replay, revision,
   expiry, loss, mutually exclusive active/cleanup proofs, and cleanup ordering;
-- byte-native source admission, no string/environment/factory ingress,
-  page-lock success/failure, full-capacity overwrite, unlock/unmap, callback
+- safe-reference-to-keyring registry admission, direct syscall read into locked
+  memory, replacement/revocation/permission races, no
+  string/environment/file/subprocess/factory ingress, page-lock
+  success/failure, full-capacity overwrite, unlock/unmap, borrowed-view sink
   bounds, daemon-start dumpability, cancellation, and non-stringability;
-- `sandboxjob-v1` compatibility, strict `sandboxjob-v2`, credential-aware
-  idempotency/request keys, unknown/duplicate/trailing JSON rejection,
-  unsupported-v2 failure, no v1 retry, and client-loss recovery;
+- `sandboxjob-v1` compatibility, distinct `job_*_v2` operations, strict `sandboxjob-v2`,
+  credential-aware idempotency/request keys,
+  unknown/duplicate/trailing JSON rejection, exact legacy unsupported-operation
+  envelope, unsupported-v2 failure, no v1 retry, and client-loss recovery;
 - guest-v1 compatibility, exact guest-v2 negotiation including only the bounded
-  old-server error envelope, no fallback, strict frames, replay, and cross-job
-  negatives;
-- neutral route dispatch/collision/close ordering, exact reserved HTTP framing,
-  initial Pi Azure Responses binding, service catalog, ticket digest and
-  capacity/expiry, raw HTTP/1.1 mutable auth emission, destination/TLS policy,
-  redirects, header control, body/response bounds, L7 proof races, and generic
+  old-server error envelope, host-CID validation, signed X25519 transcript,
+  AEAD sequence/replay/tamper/unauthorized-host negatives, no fallback, strict
+  frames, and cross-job negatives;
+- neutral route dispatch/collision/close ordering, exact deployment-prefixed
+  reserved HTTP framing, fixed ticket encoding/lease/request/concurrency and
+  body/response/SSE/idle limits, initial Pi Azure Responses clean-environment
+  flags and sealed model, post-admission in-memory binding without RPC/job
+  mutation, service catalog, HMAC digest, raw HTTP/1.1 mutable auth emission,
+  destination/TLS policy, redirects, header control, L7 proof races, and generic
   CONNECT noninterference;
-- helper boot/authentication/capability/seccomp loss behavior, cgroup race-free
-  placement, tmpfs namespace/mount/openat2 behavior, ownership, linkage, path
-  races, partial prepare, file-generation policy, `setsid` escape,
+- dedicated agent/workload identities, non-dumpable/protected-proc agent,
+  exact-PID/UID/GID/pidfd helper IPC, fd-root/pivot/seccomp loss behavior,
+  cgroup race-free placement, tmpfs namespace/mount/openat2 behavior,
+  ownership, linkage, path races, partial prepare, fixed resource limits,
+  file-generation policy, `setsid` escape,
   `cgroup.kill`/zero-population proof, normal unmount, keeper reap, whole-VM
   fallback, and restart cleanup;
-- neutral SSH codec, mandatory key and algorithm/flag allowlists, filtered
-  enumeration, per-connection host-agent identity, relay generation, stream
-  bounds, loss, and absence proof;
+- neutral SSH codec, authenticated relay subkey, SCM_RIGHTS handoff,
+  backpressure, mandatory key and algorithm/flag allowlists, filtered
+  enumeration, per-connection host-agent identity, exact relay limits, loss,
+  and absence proof;
 - Firecracker process/vsock/network/credential generation composition;
 - worker prepare-before-exec, heartbeat renewal, loss cancellation,
   revoke-before-terminal behavior, state-write failures, daemon close, and
@@ -135,13 +146,15 @@ tools/microvm/l8/verify-reproducible.sh \
 ```
 
 The final-image verifier proves the exact v2 guest agent/init/helper binaries,
-fixed workload identity, PID1 helper launch before agent privilege drop, exact
-helper capability/seccomp policy, empty workload capability sets, L7 network
-profile, absence of setuid/setgid/file capabilities, private filesystem modes,
-required tmpfs/mount namespace and cgroup-v2/`cgroup.kill` kernel support, and
-absence of embedded secret/test keys. Test probes are copied into the workspace
-through the existing bounded guest copy contract; they are not installed in the
-production image and cannot manufacture proof.
+dedicated agent UID/GID 998 and workload UID/GID 1000, PID1 helper launch before
+agent privilege drop, protected proc, exact helper capability/pivot/seccomp
+policy, empty agent/workload capability sets, controller-public-key boot input
+without private material, L7 network profile, absence of
+setuid/setgid/file capabilities, private filesystem modes, required
+tmpfs/fd-mount/pidfd/mount namespace and cgroup-v2/`cgroup.kill` kernel support,
+and absence of embedded secret/test keys. Test probes are copied into the
+workspace through the existing bounded guest copy contract; they are not
+installed in the production image and cannot manufacture proof.
 
 ## Prepared-Linux prerequisite gate
 
@@ -156,12 +169,16 @@ Before the selected E2E begins, a separate no-skip prerequisite test proves:
   race-free job placement, `cgroup.kill`, and `populated 0` inspection;
 - sufficient `RLIMIT_MEMLOCK`, successful page locking, no active swap,
   disabled core dumps, and non-dumpable live helpers;
-- local `ssh-agent`/`ssh-keygen` tooling for an owned disposable agent; and
-- owned local verified-TLS HTTP fixtures and resolver namespace with no internet route.
+- an owned session-keyring entry readable only by the worker identity, direct
+  keyctl access without a subprocess, and cleanup of the owned test key;
+- local `ssh-agent`/`ssh-keygen` tooling for an owned disposable agent;
+- owned local verified-TLS HTTP fixtures and resolver namespace with no internet route; and
+- an owned controller signing key and credential value in private test
+  keyrings, followed by revocation/removal proof.
 
 ```sh
 go test -race -count=1 -timeout=5m \
-  -tags='firecracker_live network_enforcement_live l7_linux_network_integration credential_delivery_live' \
+  -tags='firecracker_live network_enforcement_live l7_linux_network_integration l8_production_credential_delivery_live' \
   ./internal/sandboxruntime/microvm/firecrackerhost \
   -run '^TestL8PreparedLinuxCredentialDeliveryPrerequisites$'
 ```
@@ -176,12 +193,12 @@ are auditable:
 
 ```sh
 go test -list '^TestL8PreparedLinuxCredentialDeliveryE2E$' \
-  -tags='firecracker_live network_enforcement_live l7_linux_network_integration credential_delivery_live' \
+  -tags='firecracker_live network_enforcement_live l7_linux_network_integration l8_production_credential_delivery_live' \
   ./internal/sandboxruntime/microvm/firecrackerhost \
   | grep -qx 'TestL8PreparedLinuxCredentialDeliveryE2E'
 
 go test -race -count=1 -timeout=20m \
-  -tags='firecracker_live network_enforcement_live l7_linux_network_integration credential_delivery_live' \
+  -tags='firecracker_live network_enforcement_live l7_linux_network_integration l8_production_credential_delivery_live' \
   ./internal/sandboxruntime/microvm/firecrackerhost \
   -run '^TestL8PreparedLinuxCredentialDeliveryE2E$'
 ```
@@ -197,33 +214,42 @@ locally assigned address that production classification treats as globally
 unicast. A test-only trusted CA and sealed fixture service entry are injected
 through test constructors; production destination checks are not weakened.
 The upstream verifies the expected transformed canary and TLS server identity.
-The exact production Pi binding generates the reserved base URL and ticket
-environment against the compatible fixture entry without a billed call; direct
-Pi `xai`, arbitrary base URLs, and `--api-key` are negative cases.
+The exact production Pi binding generates the reserved base URL, sealed API
+version, and ticket environment from a clean allowlist against the compatible
+fixture entry without a billed call; inherited provider variables, direct Pi
+`xai`, arbitrary base URLs, and `--api-key` are negative cases.
 
-Negative cases cover bad roots/server identity, plaintext downgrade, redirect,
-authority mismatch, userinfo, client authorization, duplicate controlled
-headers, unsupported method/path, request/response overflow, mixed unsafe DNS,
-NAT64 unsafe translation, ticket replay in a second job/runtime, L7 loss before
-lookup, and L7 loss between lookup and upstream write. A CONNECT echo fixture
-proves opaque bytes and zero credential lookup/injection.
+Negative cases cover wrong deployment/version/model, Pi ambient configuration
+and missing hardening flags, pre-admission or serialized ticket injection,
+malformed/expired/hard-expired/over-count/concurrent tickets, bad roots/server
+identity, plaintext downgrade, redirect, authority mismatch, userinfo,
+competing/duplicate authentication headers, unsupported method/path,
+request/response/event/idle overflow, mixed unsafe DNS, NAT64 unsafe
+translation, ticket replay in a second job/runtime, L7 loss before lookup, and
+L7 loss between lookup and upstream write. A CONNECT echo fixture proves opaque
+bytes and zero credential lookup/injection.
 
 ### Tmpfs fixture
 
-The intended v2 job reads its file through a copied workspace probe. Neighbor
-job, v1 exec, stale generation, traversal, symlink/hardlink, and post-revoke
-reads fail. Live inspection proves the private mount namespace, tmpfs type and
-flags, file mode/owner/link count, bounded contents, helper privilege boundary,
-race-free cgroup membership, normal unmount, keeper reap, zero population, and
-absence after cleanup. A copied child calls `setsid`, retains a descriptor, and
-must still die through `cgroup.kill`; forced cgroup-inspection failure must stop
-and reap the entire microVM.
+The intended v2 job reads its file through a copied workspace probe. Same-UID
+agent attacks are impossible because the workload has a distinct UID; forged
+SCM credentials/PID/nonce, proc/ptrace/process-memory/pidfd-getfd access,
+neighbor job, v1 exec, stale generation, traversal, symlink/hardlink, and
+post-revoke reads fail. Live inspection proves the private mount namespace,
+tmpfs type and flags, file mode/owner/link count, bounded contents, helper
+privilege/root/fd/seccomp boundary, race-free cgroup membership, normal unmount,
+keeper reap, zero population, and absence after cleanup. A copied child calls
+`setsid`, retains a descriptor, and must still die through `cgroup.kill`; forced
+cgroup-inspection failure must stop and reap the entire microVM.
 
 ### SSH fixture
 
-An owned disposable host agent receives one allowed and one forbidden generated
-test key. A copied guest workspace probe lists only the allowed identity and
-signs only an allowed challenge/algorithm through the job relay. Empty policy,
+Before mode subtests, an unauthorized host-side vsock peer, wrong CID fixture,
+wrong signing key/generation, transcript replay, bad AEAD tag, and sequence gap
+must all fail before guest mutation. An owned disposable host agent receives
+one allowed and one forbidden generated test key. A copied guest workspace
+probe lists only the allowed identity and signs only an allowed
+challenge/algorithm through the job relay. Empty policy,
 the forbidden key/flag, agent-peer replacement, neighbor job, stale capability,
 v1 exec, and forbidden agent operations fail. Loss and cleanup prove host
 connection/listener and guest socket absence. Private key bytes never enter the
@@ -239,9 +265,9 @@ success or begin artifacts while cleanup is incomplete.
 
 After every case, scan durable state and inspect live resources. All owned
 containers, Firecracker processes, helpers, listeners, connections,
-namespaces, mounts, keepers, cgroups, sockets, rules, routes, locks, leases, tickets,
-buffers, and sessions must be absent. Historical or unrelated resources are
-observed but never removed without exact ownership proof.
+namespaces, mounts, keepers, cgroups, sockets, rules, routes, locks, leases,
+tickets, buffers, and sessions must be absent. Historical or unrelated
+resources are observed but never removed without exact ownership proof.
 
 ## Broad and portability gates
 

@@ -44,7 +44,8 @@ L8 is complete only when a prepared-Linux run proves all of the following:
   the same sandbox, execution, worker, runtime, network, and job generations.
 
 A selected live test that skips is a failure. Tests use local fixtures and
-already available L7 assets only. They do not access the internet or a billed
+cached offline L7 parent inputs, but they boot only the freshly built,
+digest-locked L8 guest artifact. They do not access the internet or a billed
 provider.
 
 ## Security properties
@@ -85,14 +86,19 @@ identity, or live endpoint.
 
 Every Hal-owned secret copy uses mutable owned bytes. Warning-free production
 ingress is a worker-daemon-owned `LiveSecretSource` that fills a fixed-capacity
-anonymous locked mapping directly from an inherited sealed descriptor or a
-bounded credential-agent stream. It never returns a Go `string` or a freely
-copyable `[]byte`. Access is callback-scoped through a noncopyable borrowed
-view; the owner overwrites the full capacity before unlock and unmap on every
-return path. The worker starts non-dumpable with core limits disabled before it
-opens the source or accepts jobs. Existing `ResolvedRunSecret.Value string`,
-factory broker strings, environment reads, and command-process callbacks remain
-compatibility ingress and cannot satisfy a warning-free L8 proof.
+anonymous locked mapping directly with Linux `keyctl_read` from a host-admin
+registered user/session-keyring entry. The safe job reference selects an opaque
+registry entry, never a key serial or value. The implementation sizes and reads
+directly into the owned mapping, rejects replacement/revocation/permission
+races, and never returns a Go `string` or a freely copyable `[]byte`. Access is
+callback-scoped through a noncopyable borrowed view whose only operations copy
+into another owned locked mapping or write to an approved bounded sink; it has
+no `Bytes`, string, formatting, or marshal method. The owner overwrites the full
+capacity before unlock and unmap on every return path. The worker starts
+non-dumpable with core limits disabled before it opens the source or accepts
+jobs. Existing `ResolvedRunSecret.Value string`, factory broker strings,
+environment/file reads, command-process callbacks, and keyctl command output
+remain compatibility ingress and cannot satisfy a warning-free L8 proof.
 
 Physical zeroization cannot be promised by Go, the kernel, firmware, or an
 external provider. The precise claim is that the strict path does not
@@ -132,9 +138,11 @@ absence cannot be proved, the public state is `unknown` with reason
   callback-scoped borrowed views, overwrite, unlock/unmap, dumpability startup
   checks, and platform fail-closed behavior.
 - `internal/credentialsource` owns the byte-native worker-daemon source
-  boundary and host-admin source registry. Production sources are inherited
-  sealed descriptors or bounded authenticated agent streams; environment and
-  command callbacks are compatibility-only.
+  boundary and host-admin source registry. The first production source is
+  Linux keyring v1 through direct syscalls into `credentialmemory`; non-Linux,
+  environment, file, subprocess, and command-callback sources are
+  compatibility-only. Tests may inject a mutable byte fixture source that is
+  unreachable from production composition.
 - `internal/credentialproxy` owns the static service registry, one-job ticket
   store, verified upstream HTTP client, request transformation, and safe live
   proof. It may depend on L7 network-enforcement contracts but not on `cmd`,
@@ -249,7 +257,11 @@ server, filesystem, mount tool, SSH agent, guest, or runtime.
 ## Worker job protocol v2
 
 Production credential intent crosses the command-to-worker boundary only as
-safe metadata in `sandboxjob-v2`. V2 has a required
+safe metadata in `sandboxjob-v2`. The existing outer `sandboxworker-v1`
+envelope remains unchanged; v2 uses distinct operations `job_start_v2`,
+`job_resolve_v2`, `job_status_v2`, `job_logs_v2`, and `job_cancel_v2` with
+distinct payload fields. It never adds fields to `job_start` or its
+`sandboxjob-v1` payload. V2 has a required
 `productionCredentialsRequested` boolean, required safe source references and
 binding declarations when the boolean is true, and no raw value, live callback,
 ticket, socket, endpoint, or host path. The production-intent bit, normalized
@@ -257,19 +269,26 @@ plan identity, source-reference IDs, and binding modes participate in both the
 submission idempotency digest and private request-key material. A retry that
 changes any of them conflicts instead of reusing an uncredentialed job.
 
-The worker protocol envelope and `sandboxjob-v2` payload are decoded with
+All outer envelopes and the `sandboxjob-v2` payloads are decoded with
 unknown-field rejection, exactly one JSON value, canonical scalar validation,
-duplicate-key rejection before unmarshal, and the existing byte limits. A v1
-daemon returns only a sanitized unsupported-operation/version error. A v2
-client never strips credential fields, retries `sandboxjob-v1`, or treats an
-unknown response as admission. Existing jobs with no production intent remain
-on byte-compatible v1 operations until explicitly migrated.
+duplicate-key rejection before unmarshal, and the existing byte limits. A
+pre-L8 daemon sees the distinct operation before any mutation and returns its
+bounded `protocol_error`/`malformed_request` unsupported-operation response. A
+v2 client may accept that exact legacy envelope, or the new daemon's exact
+`unsupported_operation` response for the matching request ID and v2 operation,
+only as terminal proof that L8 is unavailable. Every other response mismatch is
+malformed. The client never strips credential fields, retries a v1 operation,
+or treats an error as admission. Existing jobs with no production intent remain
+on byte-compatible v1 operations.
 
-The durable job stores safe credential intent and source-reference identities
-for restart reconciliation, never a secret or transient exec binding. A worker
-must resolve every requested source locally and prepare credentials before it
-acknowledges runnable admission. Missing source, unsupported v2, client loss,
-or daemon restart fails closed; it cannot silently create a normal v1 exec.
+The durable v2 job stores safe credential intent and source-reference
+identities for restart reconciliation, never a secret, keyring serial, or
+transient exec binding. At daemon startup the host administrator maps each safe
+reference to an exact keyring identity; requests cannot add or replace entries.
+A worker must resolve every requested source locally, revalidate ownership and
+permissions, and prepare credentials before it acknowledges runnable admission.
+Missing/replaced/revoked source, unsupported v2, client loss, or daemon restart
+fails closed; it cannot silently create a normal v1 exec.
 
 ## Guest-agent v2
 
@@ -303,7 +322,28 @@ aggregate and per-binding bounds, cannot marshal through generic diagnostic
 paths, and are destroyed after the guest takes ownership. SSH private keys are
 never a protocol payload.
 
-V2 exec is admitted only into the exact prepared job namespace. V1 exec and a
+V2 uses a dedicated persistent vsock port, not the v1 one-request-per-connection
+listener. The accept boundary retains and validates `SockaddrVM`: the peer CID
+must be `VMADDR_CID_HOST`, and the expected guest CID/port, Firecracker process,
+runtime, vsock, boot, and image generations must match before a handshake. Peer
+CID alone is not authentication because another host process could connect.
+
+The worker daemon owns an Ed25519 controller identity in a separate sealed
+Linux-keyring entry. Firecracker passes only its public key and safe key
+generation in runtime-owned boot configuration; project/template/job input
+cannot replace them. Before any untrusted exec, host and guest perform a
+signed ephemeral X25519 handshake over the CID-checked stream. The transcript
+covers both ephemeral keys, a guest boot nonce, controller-key generation,
+guest CID and port, image digest, and every runtime/process/vsock generation.
+HKDF derives directional AEAD keys. Every later frame has a monotonic
+direction-specific sequence number and authenticated identity tuple; replay,
+gap, wrap, bad tag, unexpected peer, reconnect, or transcript mismatch revokes
+the session. Raw file payload and transient exec binding frames are encrypted.
+Private controller keys never cross the protocol, and public boot material is
+not a credential-delivery proof.
+
+V2 exec is admitted only into the exact prepared job namespace on that
+authenticated persistent session. V1 exec and a
 v2 exec with a missing, stale, or neighboring binding cannot see L8 files or
 sockets. Losing the authenticated v2 session revokes every job generation
 owned by that session and notifies the host loss watcher.
@@ -317,16 +357,24 @@ CONNECT, install a guest CA, terminate arbitrary workload TLS, or inject a
 header into a CONNECT stream. A credential ticket presented to generic CONNECT
 fails closed and performs no secret lookup.
 
-Credential-bearing HTTP uses the origin-form route
-`/.well-known/hal/credential-http/v1/<service-id>/<service-path>` on the same
-L7-proven listener/topology. Its request authority must exactly match the
-runtime-generated guest mapping for that listener; absolute-form requests,
-CONNECT, userinfo, and any other authority cannot reach it. The mapping is
-carried only in the transient exec binding and is never durable. The workload
-sends a one-job ticket in the sealed catalog entry's ingress header and a safe
-service ID in the route. The handler strips the ticket, selects the sealed
-definition, and makes its own separately verified upstream TLS request. It
-never forwards the local authority or reserved prefix upstream.
+Credential-bearing HTTP uses one exact initial origin-form route on the same
+L7-proven listener/topology:
+
+```text
+POST /.well-known/hal/credential-http/v1/azure-openai-responses-v1/
+     deployments/<sealed-deployment>/responses?api-version=<sealed-version>
+```
+
+The two displayed lines are one URI. The deployment is the catalog's canonical
+safe model/deployment token and the version is an exact catalog constant; no
+other segment, query key, encoding, or value is admitted. The request authority
+must exactly match the runtime-generated guest mapping for that listener;
+absolute-form requests, CONNECT, userinfo, and any other authority cannot reach
+it. The mapping is carried only in the transient exec binding and is never
+durable. The workload sends a one-job ticket as the sole `api-key` header. The
+handler strips it, selects the sealed definition, and makes its own separately
+verified upstream TLS request. It never forwards the local authority, ticket,
+or reserved prefix upstream.
 
 The route accepts HTTP/1.1 only, one request per connection, a declared bounded
 `Content-Length`, no transfer coding, no trailers, no upgrade, no hop-by-hop
@@ -370,16 +418,27 @@ live dialer:
 
 | service ID | production consumer | local request | upstream transform |
 | --- | --- | --- | --- |
-| `azure-openai-responses-v1` | Hal's `internal/engine/pi` adapter using Pi provider `azure-openai-responses` | `POST` to catalog-relative `/responses`, optional sealed `api-version` query, ticket carried only in `api-key` | replace the ticket with the borrowed source bytes in `api-key`; JSON request and JSON/event-stream response only |
+| `azure-openai-responses-v1` | Hal's `internal/engine/pi` adapter using Pi provider `azure-openai-responses` | exact deployment-prefixed Responses route above; ticket carried only in one `api-key` | map the exact local route to the sealed upstream path and replace the ticket with borrowed source bytes in `api-key`; JSON request and JSON/event-stream response only |
 
 The host-admin entry fixes one upstream authority, TLS name/root policy,
 deployment/path prefix, and API version for the daemon generation. Hal's Pi
 adapter supplies the reserved local base URL as transient
 `AZURE_OPENAI_BASE_URL` and the job ticket as transient
-`AZURE_OPENAI_API_KEY`, clears upstream resource/base/key variables, and starts
-Pi without `--api-key`. These are an endpoint and opaque job capability, not a
-raw credential, and they are never added to the durable job environment,
-manifest, logs, or status. The binding is available only inside the exact job
+`AZURE_OPENAI_API_KEY`, and supplies the catalog's sealed
+`AZURE_OPENAI_API_VERSION`. It constructs the exec environment from the fixed
+guest baseline plus these three values, rather than inheriting host/project
+provider variables; clears resource, deployment-map, base, key, proxy, and
+other provider credential variables; and starts Pi with exact sealed
+`--provider azure-openai-responses`, `--model <sealed-deployment>`, `--offline`,
+`--no-extensions`, `--no-session`, and no `--api-key`. It also points
+`PI_CODING_AGENT_DIR` at an owned empty private directory so ambient model and
+provider configuration cannot replace the catalog. These are an endpoint, safe
+version, and opaque job capability, not a raw credential, and they are never
+added to the serialized RPC exec, original request, durable job environment,
+manifest, logs, or status. After v2 admission and active-proof inspection, the
+worker clones the safe baseline and adds the three values only to the in-memory
+`JobCredentialExecBinding` immediately before runtime `Exec`; that object is
+destroyed before cleanup. The binding is available only inside the exact job
 cgroup and mount namespace. Direct Pi `xai`, generic OpenAI-compatible, and
 other providers are unsupported by this first entry and cannot count as L8
 proof.
@@ -392,16 +451,26 @@ allowed.
 
 ### Tickets and request path
 
-A ticket is cryptographically random, one job, one service, one binding, one
-activation generation, and short lived. Stores retain only a keyed digest and
-constant-time comparison material. Tickets are bounded in count, request use,
-concurrency, and lifetime. They are invalidated before cleanup begins and
-cannot be renewed after loss or expiry.
+A ticket is exactly 32 cryptographically random bytes encoded as
+43 unpadded base64url characters. It is one job, service, binding, activation,
+catalog, and L7 proof generation. Stores retain only an HMAC-SHA-256 digest
+under a daemon-generation key and compare digests in constant time. Its sliding
+lease is 60 seconds, worker renewal occurs no later than every 20 seconds,
+maximum clock skew is 5 seconds, and hard lifetime is 35 minutes. Each ticket
+permits at most 4 concurrent requests and 4096 total requests. It is invalidated
+before cleanup begins and cannot be renewed after loss, expiry, hard lifetime, or
+revocation.
+
+The initial catalog fixes: 32 KiB request headers, 16 MiB JSON body, 32 KiB
+response headers, 64 MiB total response, 2 MiB per SSE event, 5 minute read
+idle, one request per connection, no retry by the proxy, and HTTP/1.1 ALPN only.
+Values are construction constants, not project or job settings. Overflow or
+timeout closes the upstream and returns only a safe reason code.
 
 For every request the proxy:
 
-1. validates framing, method, path, headers, body bounds, ticket, and exact job
-   correlation without reading a secret;
+1. validates framing, exact method/path/query, headers, bounds, ticket, sealed
+   deployment/version, and exact job correlation without reading a secret;
 2. re-inspects the exact active L7 listener, topology, and rule generations;
 3. resolves all upstream DNS answers and rejects the entire result if any
    answer is private, metadata, loopback, link-local, special-use, or an unsafe
@@ -410,7 +479,8 @@ For every request the proxy:
 5. verifies TLS with the sealed server name and trusted roots, with no
    `InsecureSkipVerify` or plaintext downgrade;
 6. revalidates ticket and L7 proof immediately before secret access;
-7. obtains a borrowed locked view from the daemon-owned byte source, constructs
+7. revalidates the JSON body model/deployment equals the sealed catalog token,
+   obtains a borrowed locked view from the daemon-owned byte source, constructs
    the authentication line in a second bounded locked mapping, writes a sealed
    HTTP/1.1 request directly through `tls.Conn`, then overwrites both mappings;
    and
@@ -426,26 +496,44 @@ response payload, and raw TLS/DNS errors do not enter decisions or diagnostics.
 
 ## File-on-tmpfs delivery
 
-The completed L5 guest agent is UID/GID 1000 with an empty capability bounding
-set and `no_new_privs`; L8 never raises or restores its privilege. Before
-dropping that agent, PID1 starts `hal-guest-credential-helper` on one end of an
-inherited `SOCK_SEQPACKET` socketpair. The helper bounding set is exactly
+The L8 image separates its service and workload identities. PID1 runs the guest
+agent as dedicated UID/GID 998 and every workload as UID/GID 1000. The L8
+isolation verifier takes the expected service identity explicitly; completed L5
+images and their UID/GID-1000 verifier remain byte-compatible. Both identities
+have empty capability sets and `no_new_privs`, and L8 never raises or restores
+their privilege. Before dropping the agent, PID1 starts
+`hal-guest-credential-helper` on one end of an inherited `SOCK_SEQPACKET`
+socketpair. The helper bounding set is exactly
 `CAP_SYS_ADMIN`, `CAP_SETUID`, `CAP_SETGID`, `CAP_SETPCAP`, and `CAP_CHOWN`:
 namespace/mount ownership, final child identity/capability drop, and file
-ownership only. PID1 removes every other bounding/ambient capability. Seccomp
-permits the fixed mount/cgroup/process/file operations and `AF_UNIX` relay
-sockets while denying network/vsock families, device opens, module/keyring
-operations, ptrace, and paths outside its fixed credential and cgroup roots.
+ownership only. PID1 removes every other bounding/ambient capability.
 
-The socketpair has no filesystem name, both ends are close-on-exec, and the
-helper enables per-message credentials. It accepts only the inherited peer,
-UID/GID 1000, the boot/session nonce established before privilege drop, strict
-credential-protocol frames, and monotonic job generations. The unprivileged
-guest agent owns no helper listener and passes file bytes through bounded
-mutable locked frames without strings, generic marshalers, or logs. Workloads
-never inherit either control FD. Helper loss invalidates readiness and every
-active proof; it is not restarted in-place. The host stops and reaps that
-microVM before recovery may prove absence.
+PID1 gives the helper a private mount namespace, preopened fixed credential and
+cgroup roots, and a minimal root containing only those mounts and required
+runtime objects. The helper pivots into it before serving. Its seccomp profile
+denies unrestricted `open`, `mount`, and pathname mutation, permits only the
+fd-oriented mount API plus `openat2` beneath the fixed dirfds with
+no-symlink/no-magic-link/no-cross-mount resolution, and allows `AF_UNIX` relay
+sockets while denying network/vsock families, device opens, module/keyring
+operations, ptrace/process-memory/pidfd-getfd/perf/BPF access, and arbitrary
+namespace entry. Seccomp is not claimed to inspect pathname strings; root
+confinement, fixed dirfds, protocol validation, and fd reinspection provide the
+path boundary.
+
+The socketpair has no filesystem name and both ends become close-on-exec after
+the intended handoff. PID1 records the guest-agent PID in a pidfd. The helper
+enables per-message credentials and requires every frame's SCM PID/UID/GID to
+match that still-live pidfd and UID/GID 998, plus the boot/session nonce
+established before privilege drop, strict credential-protocol frame, and
+monotonic job generation. The guest agent is non-dumpable; PID1 mounts proc with
+protected visibility before workload admission. Workload seccomp denies
+ptrace, process-memory, pidfd-getfd, kcmp, perf, and BPF primitives. The
+unprivileged guest agent owns no helper listener and passes file bytes through
+bounded mutable locked frames without strings, generic marshalers, or logs.
+Workloads never inherit either control FD or nonce. Helper or agent identity
+loss invalidates readiness and every active proof; neither is restarted
+in-place. The host stops and reaps that microVM before recovery may prove
+absence.
 
 Every credential-bearing job gets a private mount namespace used by its v2
 exec operations. Preparation:
@@ -499,9 +587,16 @@ guest, file, environment value, manifest, or protocol payload.
 
 The relay uses a separate runtime/job-bound vsock stream; the existing framed
 one-request/one-response guest control transport is not reused for a persistent
-SSH-agent stream. The v2 control plane mints and revokes the opaque relay
-capability. A guest Unix socket exists only inside the job's private mount
-namespace and is exposed to that job's v2 exec as transient `SSH_AUTH_SOCK`.
+SSH-agent stream. The stream performs the same CID check and signed v2
+handshake, then derives a relay-specific AEAD subkey. The helper creates and
+accepts the guest Unix socket inside the job mount namespace, passes each
+accepted connected FD plus exact job identity to the dedicated-UID guest agent
+over authenticated `SCM_RIGHTS`, and closes its duplicate. The agent pumps only
+the neutral bounded SSH codec between that FD and the authenticated host relay;
+neither side accepts a second request on a connection until its response is
+complete. Backpressure pauses reads rather than allocating unbounded queues.
+The v2 control plane mints and revokes the opaque relay capability. The guest
+socket is exposed to that job's v2 exec as transient `SSH_AUTH_SOCK`.
 
 The host relay binds exact runtime, Firecracker process, vsock, job,
 activation, and relay generations. Each binding requires a nonempty immutable
@@ -512,7 +607,12 @@ filters enumeration to allowed key blobs, and rejects signing for every other
 key or algorithm. It permits only filtered identity enumeration and signing.
 Add, remove, remove-all, lock, unlock, extension, and unknown messages fail
 closed. Frames, keys, signatures, concurrent streams, operations, and duration
-are bounded.
+are bounded: 4 connections, 1 outstanding request per connection, 256 KiB per
+frame, 4096 operations per activation, 5 minute idle, and the same 35 minute
+hard lifetime as the job ticket. The helper permits at most 16 credential
+bindings, 64 KiB per file, 1 MiB aggregate file payload, and a 4 MiB tmpfs per
+job. These fixed limits may be lowered by a sealed catalog but never raised by
+a project, job, guest, or provider.
 
 The relay never logs host or guest socket paths, public-key blobs, signature
 payloads, comments, request bytes, or raw agent errors. Relay or v2 session
@@ -638,11 +738,13 @@ compatible where existing contracts require it.
 
 - Red tests for lifecycle transitions, correlation, replay, idempotence,
   expiry, loss, mutually exclusive active/cleanup proofs, and cleanup ordering.
-- Red tests for byte-native daemon sources, anonymous locked mapping ownership,
-  page-lock success/failure, full-capacity overwrite, unmap, process startup
-  dumpability, string/JSON/log exclusion, and cancellation.
-- Lock strict `sandboxjob-v2`, request-key/idempotency credential identity,
-  unknown-field rejection, unsupported-v2 failure, and no v1 retry.
+- Red tests for Linux-keyring source registration/direct reads and races,
+  anonymous locked mapping ownership, page-lock success/failure, full-capacity
+  overwrite, unmap, process startup dumpability, string/JSON/log exclusion, and
+  cancellation.
+- Lock distinct `job_*_v2` operations and strict `sandboxjob-v2`,
+  request-key/idempotency credential identity, unknown-field rejection, exact
+  old-daemon failure, and no v1 retry.
 - Lock the neutral reserved application-route handler and collision/lifecycle
   semantics before either L6 or L8 implementation imports it.
 - Lock the initial host-owned HTTP service catalog before a live dialer exists.
@@ -650,30 +752,38 @@ compatible where existing contracts require it.
 ### D2 — guest v2 and privileged-helper contracts
 
 - Preserve v1 byte/behavior compatibility.
-- Reject v2-to-v1 downgrade, unknown fields, replay, stale revisions, cross-job
-  identity, overflows, and malformed private payloads.
-- Lock the neutral lifecycle/SSH codec, inherited socketpair authentication,
-  helper capability boundary, cgroup-v2 placement/kill proof, and stop-VM
-  fallback before live helper or guest-agent behavior.
+- Reject v2-to-v1 downgrade, wrong host CID/key/generation, handshake/frame
+  replay or tamper, unknown fields, stale revisions, cross-job identity,
+  overflows, and malformed private payloads.
+- Lock the neutral lifecycle/SSH codec, signed ephemeral v2 handshake,
+  dedicated service/workload identities, exact-PID socketpair authentication,
+  helper fd-root/capability/seccomp boundary, cgroup-v2 placement/kill proof,
+  numeric resource limits, and stop-VM fallback before live helper or
+  guest-agent behavior.
 
 ### D3 — HTTP credential route
 
-- Implement ticket store and sealed registry before network behavior.
-- Implement the Pi Azure Responses adapter, exact reserved request framing, and
-  destination/TLS/raw-HTTP/1.1 hardening with local verified-TLS fixtures.
+- Implement the exact ticket format/lease/limits, HMAC store, and sealed
+  deployment/version registry before network behavior.
+- Implement the Pi Azure Responses hardening flags, clean environment, sealed
+  model, post-admission transient runtime binding, exact deployment-prefixed
+  request framing, and destination/TLS/raw-HTTP/1.1 hardening with local
+  verified-TLS fixtures.
 - Integrate the optional route into L6 and prove generic HTTP/CONNECT unchanged.
 
 ### D4 — guest tmpfs
 
-- Implement the PID1 child, helper exec/cgroup boundary, and namespace/tmpfs
-  behavior through injected syscall fakes first.
+- Implement the PID1 child, protected proc, agent pidfd/socketpair, helper
+  pivot/fd/seccomp exec/cgroup boundary, and namespace/tmpfs behavior through
+  injected syscall fakes first.
 - Cover namespace/mount flags, path traversal and replacement races, partial
   prepare, open-descriptor rotation, `setsid` escape, cgroup kill/zero-populated
   proof, teardown retry, helper loss, whole-VM fallback, and orphan recovery.
 
 ### D5 — SSH relay
 
-- Lock operation and mandatory key/algorithm allowlists before host/guest
+- Lock AEAD relay subkeys, SCM_RIGHTS handoff, backpressure, numeric limits,
+  operation policy, and mandatory key/algorithm allowlists before host/guest
   streams.
 - Cover replay, generation mismatch, per-connection agent peer revalidation,
   filtered enumeration, key/flag rejection, bounds, loss, and cleanup.

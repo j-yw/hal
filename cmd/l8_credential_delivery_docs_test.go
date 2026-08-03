@@ -20,9 +20,19 @@ func TestL8CredentialDeliveryArchitecture(t *testing.T) {
 		"5068162708",
 		"guest-agent-v2",
 		"sandboxjob-v2",
+		"sandboxworker-v1",
+		"job_start_v2",
 		"LiveSecretSource",
+		"keyctl_read",
+		"VMADDR_CID_HOST",
+		"signed ephemeral X25519 handshake",
 		"applicationroute.Handler",
 		"azure-openai-responses-v1",
+		"deployments/<sealed-deployment>/responses?api-version=<sealed-version>",
+		"43 unpadded base64url characters",
+		"hard lifetime is 35 minutes",
+		"dedicated UID/GID 998",
+		"Seccomp is not claimed to inspect pathname strings",
 		"hal-guest-credential-helper",
 		"CAP_SYS_ADMIN",
 		"cgroup.kill",
@@ -57,9 +67,9 @@ func TestL8CredentialDeliveryArchitecture(t *testing.T) {
 
 func TestL8CredentialDeliveryVerification(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialVerificationDoc))
-	liveTag := "credential_" + "delivery_live"
+	liveTag := "l8_production_" + "credential_" + "delivery_live"
 	for _, required := range []string{
-		"TestL8CredentialDelivery(Architecture|Verification|DefaultGuards)",
+		"TestL8CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)",
 		"tools/microvm/l8/verify-reproducible.sh",
 		"TestL8PreparedLinuxCredentialDeliveryPrerequisites",
 		"TestL8PreparedLinuxCredentialDeliveryE2E",
@@ -73,7 +83,11 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 		"A selected live test that skips is a failure",
 		"no internet route",
 		"strict `sandboxjob-v2`",
-		"initial Pi Azure Responses binding",
+		"initial Pi Azure Responses clean-environment",
+		"direct syscall read into locked",
+		"distinct `job_*_v2` operations",
+		"unauthorized-host negatives",
+		"post-admission in-memory binding without RPC/job",
 		"`cgroup.kill`/zero-population proof",
 		"mandatory key and algorithm/flag allowlists",
 	} {
