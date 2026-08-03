@@ -351,6 +351,70 @@ func TestL8JobCredentialActivationAndRenewRequireCurrentObservation(t *testing.T
 	}
 }
 
+func TestL8JobCredentialRenewRequiresCurrentHeldAuthority(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 2, 18, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+
+	t.Run("expired current proof cannot be replaced by valid renewal", func(t *testing.T) {
+		lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+		if err := lifecycle.BeginRenew(); err != nil {
+			t.Fatal(err)
+		}
+		observedAt := now.Add(2 * time.Minute)
+		renewal := l8ActiveProof(t, identity, 2, now.Add(90*time.Second), now.Add(4*time.Minute))
+		if err := lifecycle.Renew(renewal, observedAt); !errors.Is(err, ErrJobCredentialExpired) || err.Error() != ErrJobCredentialExpired.Error() {
+			t.Fatalf("renewal over expired current proof = %v, want exact expired error", err)
+		}
+		if lifecycle.State() != JobCredentialStateRevoking || lifecycle.HasActiveProof() {
+			t.Fatalf("expired-current renewal state=%q active=%t, want revoking/false", lifecycle.State(), lifecycle.HasActiveProof())
+		}
+	})
+
+	t.Run("current proof is revalidated after optimistic hook", func(t *testing.T) {
+		observedAt := now.Add(30 * time.Second)
+		var lifecycle *JobCredentialLifecycle
+		hookCalled := false
+		var err error
+		lifecycle, err = newJobCredentialLifecycleWithOptions(identity, jobCredentialLifecycleOptions{
+			beforeCommit: func(transition jobCredentialLifecycleTransition) {
+				if transition != jobCredentialLifecycleTransitionRenew {
+					return
+				}
+				hookCalled = true
+				live, ok := loadJobCredentialLifecycleState(lifecycle)
+				if !ok {
+					t.Fatal("renew hook could not access canonical lifecycle state")
+				}
+				live.mu.Lock()
+				live.activeProof = l8ActiveProof(t, identity, 1, now, observedAt)
+				live.mu.Unlock()
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.BeginPrepare(identity); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.Activate(l8ActiveProof(t, identity, 1, now, now.Add(time.Minute)), now); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.BeginRenew(); err != nil {
+			t.Fatal(err)
+		}
+		renewal := l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute))
+		if err := lifecycle.Renew(renewal, observedAt); !errors.Is(err, ErrJobCredentialExpired) || err.Error() != ErrJobCredentialExpired.Error() {
+			t.Fatalf("post-hook current-proof renewal = %v, want exact expired error", err)
+		}
+		if !hookCalled {
+			t.Fatal("renew hook was not called")
+		}
+		if lifecycle.State() != JobCredentialStateRevoking || lifecycle.HasActiveProof() {
+			t.Fatalf("post-hook expired-current state=%q active=%t, want revoking/false", lifecycle.State(), lifecycle.HasActiveProof())
+		}
+	})
+}
+
 func TestL8JobCredentialCleanupProofRequiresExplicitCurrentObservation(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 2, 20, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
@@ -1313,6 +1377,42 @@ func TestL8JobCredentialReflectedValueCopiesStayOpaqueAndFailClosed(t *testing.T
 	}
 }
 
+func TestL8JobCredentialNestedReflectCannotReachPrivateLiveState(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 48, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+	authority, err := NewAuthenticatedWorkerPrincipalAuthority("peercred-reflect-canary", "daemon-reflect-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := authority.IssueAuthenticatedWorkerPrincipal("principal-reflect-canary", 424242001, 424242002)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, handle := range []struct {
+		label string
+		value any
+	}{
+		{label: "lifecycle", value: lifecycle},
+		{label: "authority", value: authority},
+		{label: "principal", value: principal},
+	} {
+		l8AssertJobCredentialNestedReflectOpaque(t, handle.label, handle.value, []string{
+			identity.SandboxID, identity.ExecutionID, identity.HostID, identity.WorkerID,
+			identity.WorkerJobID, identity.RuntimeID, identity.RuntimeGeneration,
+			identity.ProxySessionID, identity.ProxyGenerationID, identity.AdmissionGrantID,
+			identity.PrincipalID, identity.BindingIDs[0], "active-proof-1",
+			"peercred-reflect-canary", "daemon-reflect-generation", "principal-reflect-canary",
+		}, []uint64{424242001, 424242002})
+	}
+	if lifecycle.State() != JobCredentialStateActive || !lifecycle.HasActiveProof() {
+		t.Fatal("nested reflection changed the original lifecycle")
+	}
+	if err := authority.ValidateAuthenticatedWorkerPrincipal(principal); err != nil {
+		t.Fatalf("nested reflection changed the original authority/principal: %v", err)
+	}
+}
+
 func l8AssertJobCredentialLiveValue(t *testing.T, label string, value any, expectedFormat string, forbidden []string) {
 	t.Helper()
 	jsonCodec, ok := value.(json.Marshaler)
@@ -1438,6 +1538,62 @@ func l8JobCredentialControlFormattingForbidden(forbidden []string) []string {
 		}
 	}
 	return result
+}
+
+func l8AssertJobCredentialNestedReflectOpaque(t *testing.T, label string, handle any, forbiddenStrings []string, forbiddenUnsigned []uint64) {
+	t.Helper()
+	packagePath := reflect.TypeOf(JobCredentialLifecycle{}).PkgPath()
+	type visit struct {
+		typeName string
+		pointer  uintptr
+	}
+	seen := make(map[visit]struct{})
+	var walk func(reflect.Value, string)
+	walk = func(value reflect.Value, path string) {
+		if !value.IsValid() {
+			return
+		}
+		rendered := fmt.Sprintf("%v|%+v|%#v", value, value, value)
+		l8JobCredentialRejectFormattingPoison(t, label+" "+path, rendered, forbiddenStrings)
+		switch value.Kind() {
+		case reflect.Interface:
+			if !value.IsNil() {
+				walk(value.Elem(), path+".interface")
+			}
+		case reflect.Pointer:
+			if value.IsNil() {
+				return
+			}
+			key := visit{typeName: value.Type().String(), pointer: value.Pointer()}
+			if _, ok := seen[key]; ok {
+				return
+			}
+			seen[key] = struct{}{}
+			walk(value.Elem(), path+".pointer")
+		case reflect.Struct:
+			if pkg := value.Type().PkgPath(); pkg != "" && pkg != packagePath {
+				return
+			}
+			for index := 0; index < value.NumField(); index++ {
+				walk(value.Field(index), fmt.Sprintf("%s.%s", path, value.Type().Field(index).Name))
+			}
+		case reflect.Slice, reflect.Array:
+			for index := 0; index < value.Len(); index++ {
+				walk(value.Index(index), fmt.Sprintf("%s[%d]", path, index))
+			}
+		case reflect.String:
+			l8JobCredentialRejectFormattingPoison(t, label+" "+path+" string", value.String(), forbiddenStrings)
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			for _, forbidden := range forbiddenUnsigned {
+				if value.Uint() == forbidden {
+					t.Fatalf("%s %s exposed private unsigned value %d", label, path, forbidden)
+				}
+			}
+		case reflect.Func:
+			return
+		}
+	}
+	walk(reflect.ValueOf(handle), "handle")
 }
 
 func TestL8JobCredentialAuthorizationIsStructurallyRequiredBeforeSourceResolution(t *testing.T) {
