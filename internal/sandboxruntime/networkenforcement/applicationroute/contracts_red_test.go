@@ -745,13 +745,17 @@ func TestL8ApplicationRouteRegistryCloseStopsAdmissionAndDrainsAcceptedDispatch(
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	dispatchDone := make(chan error, 1)
+	type dispatchResult struct {
+		response Response
+		err      error
+	}
+	dispatchDone := make(chan dispatchResult, 1)
 	go func() {
-		_, err := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, Request{
+		response, err := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, Request{
 			Metadata: RequestMetadata{Method: "POST", ContentType: "application/json", ContentLength: 2},
 			Body:     strings.NewReader("{}"),
 		})
-		dispatchDone <- err
+		dispatchDone <- dispatchResult{response: response, err: err}
 	}()
 	<-handler.handleEntered
 
@@ -772,8 +776,14 @@ func TestL8ApplicationRouteRegistryCloseStopsAdmissionAndDrainsAcceptedDispatch(
 	}
 
 	close(handler.handleRelease)
-	if err := <-dispatchDone; err != nil {
-		t.Fatalf("accepted Dispatch() error = %v", err)
+	result := <-dispatchDone
+	if result.err != nil {
+		t.Fatalf("accepted Dispatch() error = %v", result.err)
+	}
+	if result.response.Body != nil {
+		if err := result.response.Body.Close(); err != nil {
+			t.Fatalf("accepted response Body.Close() error = %v", err)
+		}
 	}
 	if err := <-closeDone; err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -825,7 +835,10 @@ func TestL8ApplicationRouteRegistryConcurrentDispatchFailsClosed(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, newRequest())
+			response, err := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, newRequest())
+			if err == nil && response.Body != nil {
+				err = response.Body.Close()
+			}
 			errs <- err
 		}()
 	}
