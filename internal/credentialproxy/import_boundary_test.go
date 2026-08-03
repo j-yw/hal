@@ -49,6 +49,9 @@ func TestL8CredentialProxyCatalogImportGuardRejectsLiveDependencies(t *testing.T
 		{path: "github.com/jywlabs/hal/internal/credentialsource", reason: "raw secret implementation"},
 		{path: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/policyproxy", reason: "network implementation"},
 		{path: "github.com/Azure/azure-sdk-for-go/sdk/azidentity", reason: "cloud SDK"},
+		{path: "math", reason: "exact allowlist"},
+		{path: "example.com/unknown/module", reason: "exact allowlist"},
+		{path: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/applicationroute/bypass", reason: "network implementation"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -59,7 +62,6 @@ func TestL8CredentialProxyCatalogImportGuardRejectsLiveDependencies(t *testing.T
 	}
 
 	for _, allowed := range []string{
-		"encoding",
 		"encoding/json",
 		"errors",
 		"fmt",
@@ -570,6 +572,11 @@ func credentialProxyCatalogForbiddenSourceMarkers() []string {
 
 func forbiddenCredentialProxyCatalogImport(importPath string) string {
 	switch importPath {
+	case "encoding/json", "errors", "fmt", "sort", "strings", "time",
+		"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/applicationroute":
+		return ""
+	}
+	switch importPath {
 	case "net", "net/http", "net/url", "net/http/httputil", "crypto/tls":
 		return "network implementation"
 	case "os", "os/exec", "syscall", "plugin", "path/filepath":
@@ -591,9 +598,6 @@ func forbiddenCredentialProxyCatalogImport(importPath string) string {
 		strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/credentialmemory") {
 		return "raw secret implementation"
 	}
-	if importPath == "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/applicationroute" {
-		return ""
-	}
 	if strings.HasPrefix(importPath, "github.com/jywlabs/hal/internal/sandboxruntime") ||
 		strings.HasPrefix(importPath, "golang.org/x/net") {
 		return "network implementation"
@@ -602,7 +606,7 @@ func forbiddenCredentialProxyCatalogImport(importPath string) string {
 	if strings.Contains(lower, "azure-sdk") || strings.Contains(lower, "aws-sdk") || strings.Contains(lower, "google.golang.org/api") {
 		return "cloud SDK"
 	}
-	return ""
+	return "dependency is not in the exact allowlist"
 }
 
 func catalogReceiverTypeName(expression ast.Expr) string {

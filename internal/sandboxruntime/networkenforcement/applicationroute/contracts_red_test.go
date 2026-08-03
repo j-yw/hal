@@ -1048,6 +1048,15 @@ func (body *poisonApplicationRouteBody) GoString() string {
 	return body.raw
 }
 
+func (body *poisonApplicationRouteBody) Error() string {
+	body.fail("Error")
+	return body.raw
+}
+
+func (body *poisonApplicationRouteBody) Format(fmt.State, rune) {
+	body.fail("Format")
+}
+
 var _ Handler = (*fakeApplicationRouteHandler)(nil)
 
 func newFakeApplicationRouteHandler(name string, id RouteID, prefix string) *fakeApplicationRouteHandler {

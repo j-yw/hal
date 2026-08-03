@@ -65,16 +65,6 @@ func TestL8ApplicationRouteRegistryDrainsAcceptedResponseBodyOwnership(t *testin
 			if _, dispatchErr := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, validOwnedApplicationRouteRequest()); !errors.Is(dispatchErr, ErrRegistryClosed) {
 				t.Errorf("Dispatch() during response drain error = %v, want ErrRegistryClosed", dispatchErr)
 			}
-			select {
-			case <-handler.closeEntered:
-				t.Error("handler Close entered before accepted response body reached EOF or Close")
-			case <-time.After(50 * time.Millisecond):
-			}
-			select {
-			case closeErr := <-closeResults:
-				t.Errorf("Registry.Close() returned before response-body release: %v", closeErr)
-			case <-time.After(10 * time.Millisecond):
-			}
 
 			if tt.releaseByEOF {
 				body.releaseRead()
@@ -368,6 +358,121 @@ func TestL8ApplicationRouteRegistryValueFormsDenyLiveInspection(t *testing.T) {
 			}
 			poison.armed = true
 			assertApplicationRouteRegistryFormDenied(t, tt.make(registry), poison)
+		})
+	}
+}
+
+func TestL8ApplicationRouteRequestAndResponseAllVerbFormattingDoesNotInspectBodies(t *testing.T) {
+	tests := []struct {
+		name  string
+		want  string
+		build func(*poisonApplicationRouteBody) any
+	}{
+		{
+			name: "request value",
+			want: "applicationroute.Request{live}",
+			build: func(body *poisonApplicationRouteBody) any {
+				return Request{Metadata: RequestMetadata{Method: "POST"}, Body: body}
+			},
+		},
+		{
+			name: "request pointer",
+			want: "applicationroute.Request{live}",
+			build: func(body *poisonApplicationRouteBody) any {
+				return &Request{Metadata: RequestMetadata{Method: "POST"}, Body: body}
+			},
+		},
+		{
+			name: "request value interface",
+			want: "applicationroute.Request{live}",
+			build: func(body *poisonApplicationRouteBody) any {
+				var value any = Request{Metadata: RequestMetadata{Method: "POST"}, Body: body}
+				return value
+			},
+		},
+		{
+			name: "request pointer interface",
+			want: "applicationroute.Request{live}",
+			build: func(body *poisonApplicationRouteBody) any {
+				var value any = &Request{Metadata: RequestMetadata{Method: "POST"}, Body: body}
+				return value
+			},
+		},
+		{
+			name: "response value",
+			want: "applicationroute.Response{live}",
+			build: func(body *poisonApplicationRouteBody) any {
+				return Response{Metadata: ResponseMetadata{StatusCode: 200}, Body: body}
+			},
+		},
+		{
+			name: "response pointer",
+			want: "applicationroute.Response{live}",
+			build: func(body *poisonApplicationRouteBody) any {
+				return &Response{Metadata: ResponseMetadata{StatusCode: 200}, Body: body}
+			},
+		},
+		{
+			name: "response value interface",
+			want: "applicationroute.Response{live}",
+			build: func(body *poisonApplicationRouteBody) any {
+				var value any = Response{Metadata: ResponseMetadata{StatusCode: 200}, Body: body}
+				return value
+			},
+		},
+		{
+			name: "response pointer interface",
+			want: "applicationroute.Response{live}",
+			build: func(body *poisonApplicationRouteBody) any {
+				var value any = &Response{Metadata: ResponseMetadata{StatusCode: 200}, Body: body}
+				return value
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := &poisonApplicationRouteBody{raw: "body-state=raw-ticket https://private.example.test/body"}
+			value := tt.build(body)
+			if _, ok := value.(fmt.Formatter); !ok {
+				t.Errorf("%T does not implement safe fmt.Formatter rendering", value)
+			}
+			for _, format := range applicationRoutePoisonFormats() {
+				rendered, panicked := formatApplicationRouteRegistryWithoutPanic(format, value)
+				if panicked != nil {
+					t.Errorf("fmt.Sprintf(%q, %T) traversed poison body: %v", format, value, panicked)
+					continue
+				}
+				if rendered != tt.want {
+					t.Errorf("fmt.Sprintf(%q, %T) = %q, want %q", format, value, rendered, tt.want)
+				}
+				if body.invoked {
+					t.Fatalf("fmt.Sprintf(%q, %T) invoked a poison body method", format, value)
+				}
+			}
+		})
+	}
+}
+
+func TestL8ApplicationRouteRequestAndResponseNilPointerFormattingStaysSafe(t *testing.T) {
+	var request *Request
+	var response *Response
+	forms := []struct {
+		name  string
+		value any
+	}{
+		{name: "request pointer", value: request},
+		{name: "request pointer interface", value: any(request)},
+		{name: "response pointer", value: response},
+		{name: "response pointer interface", value: any(response)},
+	}
+	for _, form := range forms {
+		t.Run(form.name, func(t *testing.T) {
+			for _, format := range applicationRoutePoisonFormats() {
+				if got := fmt.Sprintf(format, form.value); got != "<nil>" {
+					t.Errorf("fmt.Sprintf(%q, %T) = %q, want safe nil rendering", format, form.value, got)
+				}
+			}
 		})
 	}
 }

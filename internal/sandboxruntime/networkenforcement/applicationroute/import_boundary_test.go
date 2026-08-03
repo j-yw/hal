@@ -47,6 +47,9 @@ func TestL8ApplicationRouteImportGuardRejectsLiveAndCoupledDependencies(t *testi
 		{path: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/policyproxy", reason: "policy proxy implementation"},
 		{path: "github.com/jywlabs/hal/internal/sandboxruntime/microvm", reason: "concrete runtime"},
 		{path: "github.com/Azure/azure-sdk-for-go/sdk/azidentity", reason: "cloud SDK"},
+		{path: "math", reason: "exact allowlist"},
+		{path: "example.com/unknown/module", reason: "exact allowlist"},
+		{path: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/applicationroute/bypass", reason: "concrete runtime"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -56,7 +59,7 @@ func TestL8ApplicationRouteImportGuardRejectsLiveAndCoupledDependencies(t *testi
 		})
 	}
 
-	for _, allowed := range []string{"context", "errors", "fmt", "io", "sort", "strings", "sync"} {
+	for _, allowed := range []string{"context", "errors", "fmt", "io", "reflect", "sort", "strings", "sync"} {
 		if got := forbiddenApplicationRouteImport(allowed); got != "" {
 			t.Fatalf("forbiddenApplicationRouteImport(%q) = %q, want allowed", allowed, got)
 		}
@@ -129,6 +132,10 @@ func applicationRouteProductionFiles(t *testing.T) []string {
 
 func forbiddenApplicationRouteImport(importPath string) string {
 	switch importPath {
+	case "context", "errors", "fmt", "io", "reflect", "sort", "strings", "sync":
+		return ""
+	}
+	switch importPath {
 	case "net", "net/http", "net/url", "net/http/httputil", "crypto/tls":
 		return "network implementation"
 	case "os", "os/exec", "syscall", "plugin", "path/filepath":
@@ -155,5 +162,5 @@ func forbiddenApplicationRouteImport(importPath string) string {
 	if strings.Contains(lower, "azure-sdk") || strings.Contains(lower, "aws-sdk") || strings.Contains(lower, "google.golang.org/api") {
 		return "cloud SDK"
 	}
-	return ""
+	return "dependency is not in the exact allowlist"
 }

@@ -100,6 +100,90 @@ func TestL8CredentialProxyCatalogNilPointerFormattingStaysSafe(t *testing.T) {
 	}
 }
 
+func TestL8CredentialProxySealedValuesUseFixedAllVerbFormatting(t *testing.T) {
+	tlsPolicy := SealedTLSPolicy{
+		serverName: "sealed-tls-name.private.example.test",
+		rootPolicy: TLSRootPolicy("sealed-root-policy"),
+		alpn:       []string{"sealed-alpn"},
+	}
+	invocationPolicy := SealedInvocationPolicy{
+		provider:                 "sealed-provider",
+		model:                    "sealed-model",
+		arguments:                []string{"--model", "sealed-deployment"},
+		environmentPolicy:        EnvironmentPolicy("sealed-environment-policy"),
+		transientEnvironmentKeys: []string{"SEALED_TRANSIENT_ENV"},
+		clearedEnvironmentKeys:   []string{"SEALED_CLEARED_ENV"},
+	}
+	definition := ServiceDefinition{
+		serviceID:  ServiceIDAzureOpenAIResponsesV1,
+		authority:  "sealed-authority.private.example.test",
+		tls:        tlsPolicy,
+		deployment: "sealed-deployment",
+		apiVersion: "sealed-api-version",
+		consumer:   invocationPolicy,
+	}
+
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{name: "service definition value", value: definition, want: "credentialproxy.ServiceDefinition{serviceId:azure-openai-responses-v1,sealed:true}"},
+		{name: "service definition pointer", value: &definition, want: "credentialproxy.ServiceDefinition{serviceId:azure-openai-responses-v1,sealed:true}"},
+		{name: "service definition value interface", value: any(definition), want: "credentialproxy.ServiceDefinition{serviceId:azure-openai-responses-v1,sealed:true}"},
+		{name: "service definition pointer interface", value: any(&definition), want: "credentialproxy.ServiceDefinition{serviceId:azure-openai-responses-v1,sealed:true}"},
+		{name: "TLS policy value", value: tlsPolicy, want: "credentialproxy.SealedTLSPolicy{sealed:true}"},
+		{name: "TLS policy pointer", value: &tlsPolicy, want: "credentialproxy.SealedTLSPolicy{sealed:true}"},
+		{name: "TLS policy value interface", value: any(tlsPolicy), want: "credentialproxy.SealedTLSPolicy{sealed:true}"},
+		{name: "TLS policy pointer interface", value: any(&tlsPolicy), want: "credentialproxy.SealedTLSPolicy{sealed:true}"},
+		{name: "invocation policy value", value: invocationPolicy, want: "credentialproxy.SealedInvocationPolicy{sealed:true}"},
+		{name: "invocation policy pointer", value: &invocationPolicy, want: "credentialproxy.SealedInvocationPolicy{sealed:true}"},
+		{name: "invocation policy value interface", value: any(invocationPolicy), want: "credentialproxy.SealedInvocationPolicy{sealed:true}"},
+		{name: "invocation policy pointer interface", value: any(&invocationPolicy), want: "credentialproxy.SealedInvocationPolicy{sealed:true}"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, ok := tt.value.(fmt.Formatter); !ok {
+				t.Errorf("%T does not implement safe fmt.Formatter rendering", tt.value)
+			}
+			for _, format := range credentialProxyCatalogPoisonFormats() {
+				rendered := fmt.Sprintf(format, tt.value)
+				assertCredentialProxyCatalogTextOmitsSealedValues(t, rendered)
+				if rendered != tt.want {
+					t.Errorf("fmt.Sprintf(%q, %T) = %q, want %q", format, tt.value, rendered, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestL8CredentialProxySealedValueNilPointerFormattingStaysSafe(t *testing.T) {
+	var definition *ServiceDefinition
+	var tlsPolicy *SealedTLSPolicy
+	var invocationPolicy *SealedInvocationPolicy
+	forms := []struct {
+		name  string
+		value any
+	}{
+		{name: "service definition pointer", value: definition},
+		{name: "service definition pointer interface", value: any(definition)},
+		{name: "TLS policy pointer", value: tlsPolicy},
+		{name: "TLS policy pointer interface", value: any(tlsPolicy)},
+		{name: "invocation policy pointer", value: invocationPolicy},
+		{name: "invocation policy pointer interface", value: any(invocationPolicy)},
+	}
+	for _, form := range forms {
+		t.Run(form.name, func(t *testing.T) {
+			for _, format := range credentialProxyCatalogPoisonFormats() {
+				if got := fmt.Sprintf(format, form.value); got != "<nil>" {
+					t.Errorf("fmt.Sprintf(%q, %T) = %q, want safe nil rendering", format, form.value, got)
+				}
+			}
+		})
+	}
+}
+
 func credentialProxyCatalogPoisonFormats() []string {
 	return []string{
 		"%t", "%b", "%c", "%d", "%o", "%O", "%U",
