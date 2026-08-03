@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/build"
+	"go/constant"
 	"go/format"
 	"go/importer"
 	"go/parser"
@@ -192,10 +193,6 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 			}
 		}
 	}
-	if len(roots) == 0 {
-		return nil
-	}
-
 	info := &types.Info{
 		Types:      make(map[ast.Expr]types.TypeAndValue),
 		Defs:       make(map[*ast.Ident]types.Object),
@@ -223,6 +220,9 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 		return fmt.Errorf("type-check worker-v2 guard sources: %w", err)
 	}
 	roots = append(roots, l8WorkerV2SemanticRoots(parsedFiles, info)...)
+	if len(roots) == 0 {
+		return nil
+	}
 
 	objects := make(map[types.Object]l8WorkerV2GuardScope)
 	for _, file := range parsedFiles {
@@ -323,7 +323,7 @@ func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info) []
 			for _, node := range l8WorkerV2SemanticDeclarationUnits(declaration, file.valueSpecUnits) {
 				unit := l8WorkerV2SemanticUnit{
 					scope:   l8WorkerV2GuardScope{file: file, node: node},
-					tainted: l8WorkerV2ASTContainsMarker(node),
+					tainted: l8WorkerV2ASTContainsMarker(node) || l8WorkerV2ContainsExactOperationConstant(node, info),
 				}
 				ast.Inspect(node, func(candidate ast.Node) bool {
 					identifier, ok := candidate.(*ast.Ident)
@@ -379,6 +379,46 @@ func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info) []
 		}
 	}
 	return roots
+}
+
+func l8WorkerV2ContainsExactOperationConstant(node ast.Node, info *types.Info) bool {
+	if node == nil || info == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		if found {
+			return false
+		}
+		if expression, ok := candidate.(ast.Expr); ok {
+			found = l8WorkerV2IsExactOperationConstant(info.Types[expression].Value)
+		}
+		identifier, ok := candidate.(*ast.Ident)
+		if !ok || found {
+			return !found
+		}
+		for _, object := range []types.Object{info.Defs[identifier], info.Uses[identifier]} {
+			value, ok := object.(*types.Const)
+			if ok && l8WorkerV2IsExactOperationConstant(value.Val()) {
+				found = true
+				break
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+func l8WorkerV2IsExactOperationConstant(value constant.Value) bool {
+	if value == nil || value.Kind() != constant.String {
+		return false
+	}
+	switch constant.StringVal(value) {
+	case "job_start_v2", "job_resolve_v2", "job_status_v2", "job_logs_v2", "job_cancel_v2":
+		return true
+	default:
+		return false
+	}
 }
 
 func l8WorkerV2SemanticDeclarationUnits(declaration ast.Decl, valueSpecUnits map[*ast.ValueSpec][]*ast.ValueSpec) []ast.Node {
@@ -874,6 +914,128 @@ func dispatch(operation string) {
 	if operation == routedOperation {}
 }`,
 	}, policy, "outside the exact allowlist")
+}
+
+func TestL8WorkerV2GuardRecognizesExactOperationConstantValues(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"aliases.go":   true,
+		"handler.go":   true,
+		"shared.go":    true,
+	}}
+	contracts := `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"`
+	for _, fixture := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "start escaped literal", definition: `const hiddenOperation = "job_start_v\u0032"`},
+		{name: "resolve concatenation", definition: `const hiddenOperation = "job_" + "resolve_" + "v" + "2"`},
+		{name: "status parenthesized conversion", definition: `const hiddenOperation = string((("job_status_" + "v" + "2")))`},
+		{name: "logs alias conversion", definition: "type operationAlias = string\nconst hiddenOperation = operationAlias((\"job_logs_\" + \"v\" + \"2\"))"},
+		{name: "cancel named conversion", definition: "type operationValue string\nconst hiddenOperation = operationValue(\"job_cancel_\" + string('v') + string('2'))"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"contracts.go": contracts,
+				"aliases.go":   "package sandboxworker\n" + fixture.definition,
+				"handler.go": `package sandboxworker
+func dispatch(operation string) {
+	if operation == string(hiddenOperation) { forbiddenRoutedHelper() }
+}`,
+				"shared.go": `package sandboxworker
+import httpalias "net/http"
+func forbiddenRoutedHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+			}, policy, "net/http")
+		})
+	}
+}
+
+func TestL8WorkerV2GuardConstantValueTaintClosesChainsAndUnlistedRoots(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"aliases.go":   true,
+		"chain.go":     true,
+		"handler.go":   true,
+		"shared.go":    true,
+	}}
+	contracts := `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"`
+	shared := `package sandboxworker
+import httpalias "net/http"
+func forbiddenRoutedHelper() { _, _ = httpalias.Get("https://authority.example.invalid") }`
+
+	t.Run("cross-file alias chain", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"contracts.go": contracts,
+			"aliases.go": `package sandboxworker
+const hiddenRoot = "job_resolve_" + "v" + "2"`,
+			"chain.go": `package sandboxworker
+const hiddenAlias = ((hiddenRoot))`,
+			"handler.go": `package sandboxworker
+func dispatch(operation string) {
+	if operation == hiddenAlias { forbiddenRoutedHelper() }
+}`,
+			"shared.go": shared,
+		}, policy, "net/http")
+	})
+
+	t.Run("inherited constant", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"contracts.go": contracts,
+			"aliases.go": `package sandboxworker
+const (
+	hiddenRoot = "job_cancel_" + "v" + "2"
+	hiddenInherited
+)`,
+			"handler.go": `package sandboxworker
+func dispatch(operation string) {
+	if operation == hiddenInherited { forbiddenRoutedHelper() }
+}`,
+			"shared.go": shared,
+		}, policy, "net/http")
+	})
+
+	t.Run("unlisted semantic root", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"contracts.go": contracts,
+			"unlisted.go": `package sandboxworker
+const hiddenOperation = "job_logs_v\u0032"`,
+		}, policy, "outside the exact allowlist")
+	})
+
+	t.Run("unlisted semantic root without visible root", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"unlisted.go": `package sandboxworker
+const hiddenOperation = "job_start_" + "v" + "2"`,
+		}, policy, "outside the exact allowlist")
+	})
+}
+
+func TestL8WorkerV2GuardExactOperationValuesDoNotOvertaintV1Siblings(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"aliases.go":   true,
+		"handler.go":   true,
+		"shared.go":    true,
+	}}
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"contracts.go": `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"`,
+		"aliases.go": `package sandboxworker
+const hiddenRoutedOperation, hiddenLegacyOperation = "job_status_" + "v" + "2", string(("job_" + "status"))`,
+		"handler.go": `package sandboxworker
+func routedHandler(operation string) {
+	if operation == hiddenRoutedOperation { safeRoutedHelper() }
+}
+func legacyHandler(operation string) {
+	if operation == hiddenLegacyOperation { forbiddenLegacyHelper() }
+}`,
+		"shared.go": `package sandboxworker
+import httpalias "net/http"
+func safeRoutedHelper() {}
+func forbiddenLegacyHelper() { _, _ = httpalias.Get("https://legacy.example.invalid") }`,
+	}, policy)
 }
 
 func TestL8WorkerV2GuardGroupedValueSpecsRemainSemanticallyPrecise(t *testing.T) {
