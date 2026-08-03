@@ -1123,6 +1123,37 @@ func TestL8CredentialDeliverySourceGuardsFixtureConstructorsStayInTests(t *testi
 }
 
 func TestL8CredentialDeliverySourceGuardsLifecycleTestSeamStaysUnexportedAndIsolated(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "exact named", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity) (*JobCredentialLifecycle, error) {}", want: true},
+		{name: "exact unnamed", source: "func NewJobCredentialLifecycle(JobCredentialIdentity) (*JobCredentialLifecycle, error) {}", want: true},
+		{name: "variadic identity", source: "func NewJobCredentialLifecycle(identity ...JobCredentialIdentity) (*JobCredentialLifecycle, error) {}"},
+		{name: "options argument", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity, options any) (*JobCredentialLifecycle, error) {}"},
+		{name: "callback argument", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity, hook func()) (*JobCredentialLifecycle, error) {}"},
+		{name: "generic", source: "func NewJobCredentialLifecycle[T any](identity JobCredentialIdentity) (*JobCredentialLifecycle, error) {}"},
+		{name: "method", source: "func (factory lifecycleFactory) NewJobCredentialLifecycle(identity JobCredentialIdentity) (*JobCredentialLifecycle, error) {}"},
+		{name: "value lifecycle output", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity) (JobCredentialLifecycle, error) {}"},
+		{name: "extra output", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity) (*JobCredentialLifecycle, error, bool) {}"},
+		{name: "wrong error output", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity) (*JobCredentialLifecycle, string) {}"},
+	} {
+		t.Run("constructor signature "+tt.name, func(t *testing.T) {
+			parsed, err := parser.ParseFile(token.NewFileSet(), "constructor.go", "package sandboxruntime\n"+tt.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			declaration, ok := parsed.Decls[0].(*ast.FuncDecl)
+			if !ok {
+				t.Fatal("constructor fixture is not a function")
+			}
+			if got := l8JobCredentialLifecycleConstructorHasExactSignature(declaration); got != tt.want {
+				t.Fatalf("exact constructor signature = %t, want %t", got, tt.want)
+			}
+		})
+	}
+
 	exactSeamNames := map[string]bool{
 		"jobCredentialLifecycleTransition":            true,
 		"jobCredentialLifecycleOptions":               true,
@@ -1174,6 +1205,9 @@ func TestL8CredentialDeliverySourceGuardsLifecycleTestSeamStaysUnexportedAndIsol
 			for _, declaration := range parsed.Decls {
 				switch typed := declaration.(type) {
 				case *ast.FuncDecl:
+					if typed.Name.Name == "NewJobCredentialLifecycle" && !l8JobCredentialLifecycleConstructorHasExactSignature(typed) {
+						t.Errorf("public lifecycle constructor in %s must remain exact func(JobCredentialIdentity) (*JobCredentialLifecycle, error)", filepath.ToSlash(sourcePath))
+					}
 					if typed.Name.Name == "newJobCredentialLifecycleWithOptions" && typed.Name.IsExported() {
 						t.Errorf("lifecycle options constructor is exported in %s", filepath.ToSlash(sourcePath))
 					}
@@ -1217,6 +1251,32 @@ func TestL8CredentialDeliverySourceGuardsLifecycleTestSeamStaysUnexportedAndIsol
 			}
 		}
 	}
+}
+
+func l8JobCredentialLifecycleConstructorHasExactSignature(declaration *ast.FuncDecl) bool {
+	if declaration.Recv != nil || declaration.Type.TypeParams != nil || declaration.Type.Params == nil || len(declaration.Type.Params.List) != 1 {
+		return false
+	}
+	parameter := declaration.Type.Params.List[0]
+	parameterType, ok := parameter.Type.(*ast.Ident)
+	if !ok || parameterType.Name != "JobCredentialIdentity" || len(parameter.Names) > 1 {
+		return false
+	}
+	if declaration.Type.Results == nil || len(declaration.Type.Results.List) != 2 {
+		return false
+	}
+	lifecycleResult := declaration.Type.Results.List[0]
+	pointer, ok := lifecycleResult.Type.(*ast.StarExpr)
+	if !ok || len(lifecycleResult.Names) > 1 {
+		return false
+	}
+	lifecycleType, ok := pointer.X.(*ast.Ident)
+	if !ok || lifecycleType.Name != "JobCredentialLifecycle" {
+		return false
+	}
+	errorResult := declaration.Type.Results.List[1]
+	errorType, ok := errorResult.Type.(*ast.Ident)
+	return ok && errorType.Name == "error" && len(errorResult.Names) <= 1
 }
 
 func TestL8CredentialDeliverySourceGuardsVerificationScriptsEnforcePresenceAndNoSkip(t *testing.T) {

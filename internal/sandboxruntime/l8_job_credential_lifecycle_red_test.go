@@ -579,6 +579,17 @@ func TestL8JobCredentialLifecycleFailureCancelLossAndReplayTransitions(t *testin
 }
 
 func TestL8JobCredentialLifecycleDefaultConstructorHasNoObservableHookState(t *testing.T) {
+	constructorType := reflect.TypeOf(NewJobCredentialLifecycle)
+	wantIdentityType := reflect.TypeOf(JobCredentialIdentity{})
+	wantLifecycleType := reflect.TypeOf((*JobCredentialLifecycle)(nil))
+	wantErrorType := reflect.TypeOf((*error)(nil)).Elem()
+	if constructorType.IsVariadic() || constructorType.NumIn() != 1 || constructorType.In(0) != wantIdentityType {
+		t.Fatalf("NewJobCredentialLifecycle inputs = %s, want exact nonvariadic func(JobCredentialIdentity)", constructorType)
+	}
+	if constructorType.NumOut() != 2 || constructorType.Out(0) != wantLifecycleType || constructorType.Out(1) != wantErrorType {
+		t.Fatalf("NewJobCredentialLifecycle outputs = %s, want exact (*JobCredentialLifecycle, error)", constructorType)
+	}
+
 	now := time.Date(2026, time.August, 3, 3, 20, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
 	lifecycle, err := NewJobCredentialLifecycle(identity)
@@ -613,22 +624,156 @@ func TestL8JobCredentialLifecycleDefaultConstructorHasNoObservableHookState(t *t
 	}
 }
 
+func TestL8JobCredentialLifecycleInvalidHookablePathsNeverReachHook(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 20, 30, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	active := l8ActiveProof(t, identity, 1, now, now.Add(time.Minute))
+	revokedAt := now.Add(time.Second)
+	inspectedAt := now.Add(2 * time.Second)
+	cleanup := l8CleanupProofWithTimes(t, identity, 2, revokedAt, inspectedAt, "cleanup-invalid-path")
+
+	tests := []struct {
+		name          string
+		transition    jobCredentialLifecycleTransition
+		setup         func(*testing.T, *l8LifecyclePause) (*JobCredentialLifecycle, JobCredentialCleanupProof)
+		invoke        func(*JobCredentialLifecycle) l8LifecycleTransitionResult
+		wantErr       error
+		wantState     JobCredentialState
+		wantActive    bool
+		wantRevision  uint64
+		verifyActive  bool
+		verifyCleanup bool
+	}{
+		{
+			name:       "renew without begin renew",
+			transition: jobCredentialLifecycleTransitionRenew,
+			setup: func(t *testing.T, pause *l8LifecyclePause) (*JobCredentialLifecycle, JobCredentialCleanupProof) {
+				return l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit), JobCredentialCleanupProof{}
+			},
+			invoke: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.Renew(l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute)))}
+			},
+			wantErr:      ErrJobCredentialTransition,
+			wantState:    JobCredentialStateActive,
+			wantActive:   true,
+			wantRevision: 1,
+			verifyActive: true,
+		},
+		{
+			name:       "revoke without begin revoke",
+			transition: jobCredentialLifecycleTransitionRevoke,
+			setup: func(t *testing.T, pause *l8LifecyclePause) (*JobCredentialLifecycle, JobCredentialCleanupProof) {
+				return l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit), JobCredentialCleanupProof{}
+			},
+			invoke: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				proof, err := lifecycle.Revoke(cleanup, inspectedAt)
+				return l8LifecycleTransitionResult{proof: proof, err: err}
+			},
+			wantErr:      ErrJobCredentialTransition,
+			wantState:    JobCredentialStateActive,
+			wantActive:   true,
+			wantRevision: 1,
+			verifyActive: true,
+		},
+		{
+			name:       "observe loss for neighbor identity",
+			transition: jobCredentialLifecycleTransitionObserveLoss,
+			setup: func(t *testing.T, pause *l8LifecyclePause) (*JobCredentialLifecycle, JobCredentialCleanupProof) {
+				return l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit), JobCredentialCleanupProof{}
+			},
+			invoke: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				neighbor := identity
+				neighbor.WorkerJobID = "job-neighbor"
+				return l8LifecycleTransitionResult{err: lifecycle.ObserveLoss(JobCredentialLoss{
+					Identity: neighbor,
+					Revision: 1,
+					Code:     JobCredentialFailureGuestHelperUnavailable,
+				})}
+			},
+			wantErr:      ErrJobCredentialIdentityMismatch,
+			wantState:    JobCredentialStateActive,
+			wantActive:   true,
+			wantRevision: 1,
+			verifyActive: true,
+		},
+		{
+			name:       "begin revoke after durable revocation is a no-op",
+			transition: jobCredentialLifecycleTransitionBeginRevoke,
+			setup: func(t *testing.T, pause *l8LifecyclePause) (*JobCredentialLifecycle, JobCredentialCleanupProof) {
+				lifecycle := l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit)
+				if err := lifecycle.BeginRevoke(); err != nil {
+					t.Fatal(err)
+				}
+				durable, err := lifecycle.Revoke(cleanup, inspectedAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(durable, cleanup) {
+					t.Fatal("revoked setup did not retain its exact cleanup proof")
+				}
+				return lifecycle, durable
+			},
+			invoke: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
+				return l8LifecycleTransitionResult{err: lifecycle.BeginRevoke()}
+			},
+			wantState:     JobCredentialStateRevoked,
+			wantRevision:  2,
+			verifyCleanup: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pause := newL8LifecyclePause(tt.transition)
+			defer pause.releaseNow()
+			lifecycle, durableCleanup := tt.setup(t, pause)
+			pause.arm()
+			result := l8AwaitLifecycleTransitionWithoutHook(t, pause, l8StartLifecycleTransition(func() l8LifecycleTransitionResult {
+				return tt.invoke(lifecycle)
+			}))
+			if tt.wantErr != nil {
+				if !errors.Is(result.err, tt.wantErr) || result.err.Error() != tt.wantErr.Error() {
+					t.Fatalf("invalid transition error = %v, want exact %v", result.err, tt.wantErr)
+				}
+			} else if result.err != nil {
+				t.Fatalf("noncommitting transition error = %v, want nil", result.err)
+			}
+			if !reflect.DeepEqual(result.proof, JobCredentialCleanupProof{}) {
+				t.Fatal("invalid/noncommitting transition returned cleanup proof state")
+			}
+			if pause.claimed.Load() {
+				t.Fatal("lifecycle hook ran before transition validation or on a no-op")
+			}
+			if lifecycle.State() != tt.wantState || lifecycle.HasActiveProof() != tt.wantActive || lifecycle.Revision() != tt.wantRevision {
+				t.Fatalf("post-transition state=%q active=%t revision=%d, want %q/%t/%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision(), tt.wantState, tt.wantActive, tt.wantRevision)
+			}
+			if tt.verifyActive {
+				if err := lifecycle.Activate(active); err != nil {
+					t.Fatalf("invalid transition changed exact active proof: %v", err)
+				}
+				if lifecycle.State() != tt.wantState || !lifecycle.HasActiveProof() || lifecycle.Revision() != tt.wantRevision {
+					t.Fatal("exact active proof verification changed lifecycle state")
+				}
+			}
+			if tt.verifyCleanup {
+				freshInspectedAt := inspectedAt.Add(time.Second)
+				fresh := l8CleanupProofWithTimes(t, identity, 2, revokedAt, freshInspectedAt, "cleanup-invalid-path-reinspection")
+				stable, err := lifecycle.Revoke(fresh, freshInspectedAt)
+				if err != nil {
+					t.Fatalf("reinspect durable cleanup proof: %v", err)
+				}
+				if !reflect.DeepEqual(stable, durableCleanup) {
+					t.Fatal("noncommitting begin revoke changed exact durable cleanup proof")
+				}
+			}
+		})
+	}
+}
+
 func TestL8JobCredentialLifecycleForcedRenewInterleavingsCannotResurrect(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 3, 21, 0, 0, time.UTC)
 	identity := l8JobCredentialIdentity(now)
 	renewal := l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute))
-	t.Run("invalid transition never reaches hook", func(t *testing.T) {
-		pause := newL8LifecyclePause(jobCredentialLifecycleTransitionRenew)
-		defer pause.releaseNow()
-		lifecycle := l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit)
-		pause.arm()
-		if err := lifecycle.Renew(renewal); !errors.Is(err, ErrJobCredentialTransition) {
-			t.Fatalf("invalid renew error = %v, want transition rejection", err)
-		}
-		if pause.claimed.Load() {
-			t.Fatal("lifecycle hook ran before transition validation")
-		}
-	})
 	for _, tt := range []struct {
 		name      string
 		contender func(*JobCredentialLifecycle) error
@@ -1299,6 +1444,25 @@ func l8AwaitLifecycleTransition(t *testing.T, result <-chan l8LifecycleTransitio
 		return value
 	case <-timer.C:
 		t.Fatal("timed out waiting for deterministic lifecycle transition")
+		return l8LifecycleTransitionResult{}
+	}
+}
+
+func l8AwaitLifecycleTransitionWithoutHook(t *testing.T, pause *l8LifecyclePause, result <-chan l8LifecycleTransitionResult) l8LifecycleTransitionResult {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case value := <-result:
+		return value
+	case <-pause.entered:
+		pause.releaseNow()
+		value := l8AwaitLifecycleTransition(t, result)
+		t.Fatalf("invalid/noncommitting lifecycle path reached hook before returning %v", value.err)
+		return l8LifecycleTransitionResult{}
+	case <-timer.C:
+		pause.releaseNow()
+		t.Fatal("timed out waiting for lifecycle rejection/no-op")
 		return l8LifecycleTransitionResult{}
 	}
 }
