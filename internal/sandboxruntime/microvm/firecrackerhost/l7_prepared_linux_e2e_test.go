@@ -200,7 +200,7 @@ func TestL7PreparedLinuxFirecrackerNetworkTopologyE2E(t *testing.T) {
 	cleanupCopy = *inspected
 	cleanupTarget = &cleanupCopy
 	result, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
-		Target: *inspected, Args: []string{"/bin/busybox", "true"},
+		Target: *inspected, Args: []string{"/bin/busybox", "true"}, WorkDir: config.GuestWorkDir,
 	})
 	if err != nil || result == nil || result.ExitCode != 0 {
 		t.Fatal("proof-gated L7 Firecracker guest work failed")
