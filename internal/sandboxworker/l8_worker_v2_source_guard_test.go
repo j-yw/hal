@@ -214,7 +214,7 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 			}
 		}
 	}
-	config := types.Config{Importer: typeImporter}
+	config := types.Config{Importer: l8WorkerV2GuardImporter{fallback: typeImporter}}
 	checkedPackage, err := config.Check("github.com/jywlabs/hal/internal/sandboxworker", fileSet, astFiles, info)
 	if err != nil {
 		return fmt.Errorf("type-check worker-v2 guard sources: %w", err)
@@ -526,6 +526,49 @@ func l8WorkerV2ImportValues(imports map[string]string) []string {
 	return values
 }
 
+type l8WorkerV2GuardImporter struct {
+	fallback types.Importer
+}
+
+func (value l8WorkerV2GuardImporter) Import(path string) (*types.Package, error) {
+	if path == "golang.org/x/sys/unix" {
+		return l8WorkerV2UnixFixturePackage(), nil
+	}
+	return value.fallback.Import(path)
+}
+
+func l8WorkerV2UnixFixturePackage() *types.Package {
+	pkg := types.NewPackage("golang.org/x/sys/unix", "unix")
+	scope := pkg.Scope()
+	empty := types.NewSignatureType(nil, nil, nil, types.NewTuple(), types.NewTuple(), false)
+	for _, name := range []string{
+		"RawSyscall", "RawSyscall6", "Syscall", "Syscall6", "Socket", "Connect",
+		"Mmap", "Mlock", "Munlock", "Munmap", "Exec", "Kill", "Mount", "Unshare", "Setns",
+	} {
+		scope.Insert(types.NewFunc(token.NoPos, pkg, name, empty))
+	}
+	errorType := types.Universe.Lookup("error").Type()
+	flockParameters := types.NewTuple(
+		types.NewParam(token.NoPos, pkg, "fd", types.Typ[types.Int]),
+		types.NewParam(token.NoPos, pkg, "how", types.Typ[types.Int]),
+	)
+	flockResults := types.NewTuple(types.NewParam(token.NoPos, pkg, "err", errorType))
+	scope.Insert(types.NewFunc(token.NoPos, pkg, "Flock", types.NewSignatureType(nil, nil, nil, flockParameters, flockResults, false)))
+	statFields := []*types.Var{
+		types.NewField(token.NoPos, pkg, "Uid", types.Typ[types.Uint32], false),
+		types.NewField(token.NoPos, pkg, "Gid", types.Typ[types.Uint32], false),
+		types.NewField(token.NoPos, pkg, "Mode", types.Typ[types.Uint32], false),
+	}
+	statName := types.NewTypeName(token.NoPos, pkg, "Stat_t", nil)
+	types.NewNamed(statName, types.NewStruct(statFields, nil), nil)
+	scope.Insert(statName)
+	for index, name := range []string{"LOCK_SH", "LOCK_EX", "LOCK_NB", "LOCK_UN"} {
+		scope.Insert(types.NewConst(token.NoPos, pkg, name, types.Typ[types.UntypedInt], constant.MakeInt64(int64(index+1))))
+	}
+	pkg.MarkComplete()
+	return pkg
+}
+
 func l8WorkerV2MixedDeclarationScopes(declaration ast.Decl, valueSpecUnits map[*ast.ValueSpec][]*ast.ValueSpec) []ast.Node {
 	switch typed := declaration.(type) {
 	case *ast.GenDecl:
@@ -611,6 +654,9 @@ func l8WorkerV2ReferencedDeclarationScopes(scope l8WorkerV2GuardScope) []l8Worke
 }
 
 func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info) error {
+	if err := l8RejectWorkerV2SemanticExternalSurfaces(scope, info); err != nil {
+		return err
+	}
 	var inspectionErr error
 	ast.Inspect(scope.node, func(node ast.Node) bool {
 		if inspectionErr != nil {
@@ -628,6 +674,148 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info) error 
 		return true
 	})
 	return inspectionErr
+}
+
+func l8RejectWorkerV2SemanticExternalSurfaces(scope l8WorkerV2GuardScope, info *types.Info) error {
+	selectorIdentifiers := make(map[*ast.Ident]bool)
+	directCallSelectors := make(map[*ast.SelectorExpr]bool)
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		if selector, ok := node.(*ast.SelectorExpr); ok {
+			selectorIdentifiers[selector.Sel] = true
+		}
+		if call, ok := node.(*ast.CallExpr); ok {
+			if selector := l8WorkerV2CalledSelector(call.Fun); selector != nil {
+				directCallSelectors[selector] = true
+			}
+		}
+		return true
+	})
+
+	var inspectionErr error
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		if inspectionErr != nil {
+			return false
+		}
+		var surface string
+		switch typed := node.(type) {
+		case *ast.SelectorExpr:
+			if selection := info.Selections[typed]; selection != nil {
+				surface = l8WorkerV2ForbiddenSelectionSurface(selection, directCallSelectors[typed])
+			} else {
+				surface = l8WorkerV2ForbiddenObjectSurface(info.Uses[typed.Sel])
+			}
+		case *ast.Ident:
+			if selectorIdentifiers[typed] {
+				return true
+			}
+			surface = l8WorkerV2ForbiddenObjectSurface(info.Uses[typed])
+		}
+		if surface != "" {
+			inspectionErr = fmt.Errorf("worker-v2 production path in %s uses forbidden external live surface %q", scope.file.path, surface)
+			return false
+		}
+		return true
+	})
+	return inspectionErr
+}
+
+func l8WorkerV2CalledSelector(expression ast.Expr) *ast.SelectorExpr {
+	for {
+		switch typed := expression.(type) {
+		case *ast.ParenExpr:
+			expression = typed.X
+		case *ast.IndexExpr:
+			expression = typed.X
+		case *ast.IndexListExpr:
+			expression = typed.X
+		case *ast.SelectorExpr:
+			return typed
+		default:
+			return nil
+		}
+	}
+}
+
+func l8WorkerV2ForbiddenSelectionSurface(selection *types.Selection, directCall bool) string {
+	if selection == nil {
+		return ""
+	}
+	if !directCall && l8WorkerV2SelectionUsesInterface(selection) {
+		return "interface method-value"
+	}
+	receiver := l8WorkerV2NamedTypeObject(selection.Recv())
+	if receiver != nil && receiver.Pkg() != nil {
+		path := receiver.Pkg().Path()
+		if path == "os" && (receiver.Name() == "Process" || receiver.Name() == "ProcessState") {
+			return path + "." + selection.Obj().Name()
+		}
+		if selection.Kind() == types.FieldVal && l8WorkerV2RawSyscallPackage(path) && receiver.Name() == "Stat_t" {
+			return ""
+		}
+	}
+	return l8WorkerV2ForbiddenObjectSurface(selection.Obj())
+}
+
+func l8WorkerV2NamedTypeObject(typ types.Type) *types.TypeName {
+	if typ == nil {
+		return nil
+	}
+	typ = types.Unalias(typ)
+	if pointer, ok := typ.(*types.Pointer); ok {
+		typ = types.Unalias(pointer.Elem())
+	}
+	named, ok := typ.(*types.Named)
+	if !ok {
+		return nil
+	}
+	return named.Obj()
+}
+
+func l8WorkerV2ForbiddenObjectSurface(object types.Object) string {
+	if object == nil || object.Pkg() == nil {
+		return ""
+	}
+	path := object.Pkg().Path()
+	name := object.Name()
+	switch {
+	case path == "unsafe", path == "plugin":
+		return path + "." + name
+	case l8WorkerV2RawSyscallPackage(path):
+		if l8WorkerV2AllowedRawSyscallObject(name) {
+			return ""
+		}
+		return path + "." + name
+	case path == "os" && l8WorkerV2ForbiddenOSObject(name):
+		return path + "." + name
+	default:
+		return ""
+	}
+}
+
+func l8WorkerV2RawSyscallPackage(path string) bool {
+	return path == "syscall" || path == "golang.org/x/sys/unix"
+}
+
+func l8WorkerV2AllowedRawSyscallObject(name string) bool {
+	switch name {
+	case "Flock", "Stat_t", "LOCK_SH", "LOCK_EX", "LOCK_NB", "LOCK_UN", "EINTR", "EAGAIN", "EWOULDBLOCK":
+		return true
+	default:
+		return false
+	}
+}
+
+func l8WorkerV2ForbiddenOSObject(name string) bool {
+	switch name {
+	case "Args", "Stdin", "Stdout", "Stderr", "Interrupt", "Kill",
+		"Process", "ProcessState", "ProcAttr", "Signal", "StartProcess", "FindProcess", "Exit",
+		"Getenv", "LookupEnv", "Environ", "ExpandEnv", "Setenv", "Unsetenv", "Clearenv",
+		"Getpid", "Getppid", "Getuid", "Geteuid", "Getgid", "Getegid", "Getgroups",
+		"Executable", "Hostname", "UserHomeDir", "UserCacheDir", "UserConfigDir", "Pipe", "NewFile":
+		return true
+	default:
+		return false
+	}
 }
 
 func l8WorkerV2DynamicCallKind(expression ast.Expr, info *types.Info) string {
@@ -659,14 +847,10 @@ unwrapped:
 		}
 	case *ast.SelectorExpr:
 		if selection := info.Selections[typed]; selection != nil {
-			if l8WorkerV2IsInterfaceType(selection.Recv()) {
+			if l8WorkerV2SelectionUsesInterface(selection) {
 				return "interface"
 			}
-			if method, ok := selection.Obj().(*types.Func); ok {
-				signature, _ := method.Type().(*types.Signature)
-				if signature != nil && signature.Recv() != nil && l8WorkerV2IsInterfaceType(signature.Recv().Type()) {
-					return "interface"
-				}
+			if _, ok := selection.Obj().(*types.Func); ok {
 				return ""
 			}
 		} else if _, ok := info.Uses[typed.Sel].(*types.Func); ok {
@@ -677,6 +861,21 @@ unwrapped:
 		return "function-value"
 	}
 	return ""
+}
+
+func l8WorkerV2SelectionUsesInterface(selection *types.Selection) bool {
+	if selection == nil {
+		return false
+	}
+	if l8WorkerV2IsInterfaceType(selection.Recv()) {
+		return true
+	}
+	method, ok := selection.Obj().(*types.Func)
+	if !ok {
+		return false
+	}
+	signature, _ := method.Type().(*types.Signature)
+	return signature != nil && signature.Recv() != nil && l8WorkerV2IsInterfaceType(signature.Recv().Type())
 }
 
 func l8WorkerV2IsGenericInstantiation(indexed ast.Expr, base ast.Expr, info *types.Info) bool {
@@ -782,7 +981,14 @@ func l8RejectWorkerV2ForbiddenSurface(scope l8WorkerV2GuardScope) error {
 			"net",
 			"net/http",
 			"os/exec",
+			"os/signal",
+			"plugin",
 			"reflect",
+			"runtime",
+			"runtime/debug",
+			"runtime/pprof",
+			"runtime/trace",
+			"unsafe",
 		} {
 			if importPath == forbidden || strings.HasPrefix(importPath, forbidden+"/") {
 				return fmt.Errorf("v2 protocol production file %s imports live/provider dependency %q", scope.file.path, importPath)
@@ -1365,6 +1571,17 @@ func JobStatusV2Fixture(value concreteDispatcher) { concreteDispatcher.dispatch(
 func JobStartV2Fixture(value dispatcher) { value.dispatch() }`,
 		"shared.go": shared,
 	}, policy, "interface dispatch")
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+type processTerminator interface { Kill() error }
+func JobStartV2Fixture(value processTerminator) { terminate := value.Kill; _ = terminate }`,
+		"shared.go": shared,
+	}, policy, "interface method-value")
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+func JobStartV2Fixture(value embeddedInterfaceDispatcher) { dispatch := value.dispatch; _ = dispatch }`,
+		"shared.go": shared,
+	}, policy, "interface method-value")
 	for _, fixture := range []struct {
 		name   string
 		source string
@@ -1467,6 +1684,385 @@ func JobLogsV2Fixture(function any) { ValueOf(function).Call(nil) }`},
 type concreteReflectControl struct{}
 func (concreteReflectControl) dispatch() {}
 func JobCancelV2Fixture() { concreteReflectControl{}.dispatch() }`,
+	}, policy)
+}
+
+func TestL8WorkerV2GuardRejectsSemanticProcessAndRawSyscallSurfaces(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	fixtures := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "renamed os start process capture",
+			source: `package sandboxworker
+import processapi "os"
+func JobStartV2Fixture() { start := processapi.StartProcess; _ = start }`,
+			want: "os.StartProcess",
+		},
+		{
+			name: "dot imported os exit",
+			source: `package sandboxworker
+import . "os"
+func JobResolveV2Fixture() { Exit(1) }`,
+			want: "os.Exit",
+		},
+		{
+			name: "os find process capture",
+			source: `package sandboxworker
+import processapi "os"
+func JobStatusV2Fixture() { find := processapi.FindProcess; _ = find }`,
+			want: "os.FindProcess",
+		},
+		{
+			name: "os process kill method expression",
+			source: `package sandboxworker
+import processapi "os"
+func JobLogsV2Fixture() { kill := (*processapi.Process).Kill; _ = kill }`,
+			want: "os.Kill",
+		},
+		{
+			name: "os process signal method expression",
+			source: `package sandboxworker
+import processapi "os"
+func JobCancelV2Fixture() { signal := (*processapi.Process).Signal; _ = signal }`,
+			want: "os.Signal",
+		},
+		{
+			name: "os process wait method expression",
+			source: `package sandboxworker
+import processapi "os"
+func JobStartV2Fixture() { wait := (*processapi.Process).Wait; _ = wait }`,
+			want: "os.Wait",
+		},
+		{
+			name: "os process release method expression",
+			source: `package sandboxworker
+import processapi "os"
+func JobResolveV2Fixture() { release := (*processapi.Process).Release; _ = release }`,
+			want: "os.Release",
+		},
+		{
+			name: "os process interface method value",
+			source: `package sandboxworker
+import processapi "os"
+type hiddenWaiter interface { Wait() (*processapi.ProcessState, error) }
+func JobStatusV2Fixture(process hiddenWaiter) { wait := process.Wait; _ = wait }`,
+			want: "os.ProcessState",
+		},
+		{
+			name: "os environment capture",
+			source: `package sandboxworker
+import environment "os"
+func JobLogsV2Fixture() { lookup := environment.LookupEnv; _ = lookup }`,
+			want: "os.LookupEnv",
+		},
+		{
+			name: "renamed syscall raw syscall capture",
+			source: `package sandboxworker
+import kernel "syscall"
+func JobCancelV2Fixture() { call := kernel.RawSyscall; _ = call }`,
+			want: "syscall.RawSyscall",
+		},
+		{
+			name: "syscall syscall capture",
+			source: `package sandboxworker
+import kernel "syscall"
+func JobCancelV2Fixture() { call := kernel.Syscall; _ = call }`,
+			want: "syscall.Syscall",
+		},
+		{
+			name: "syscall raw syscall six capture",
+			source: `package sandboxworker
+import kernel "syscall"
+func JobCancelV2Fixture() { call := kernel.RawSyscall6; _ = call }`,
+			want: "syscall.RawSyscall6",
+		},
+		{
+			name: "syscall syscall six capture",
+			source: `package sandboxworker
+import kernel "syscall"
+func JobCancelV2Fixture() { call := kernel.Syscall6; _ = call }`,
+			want: "syscall.Syscall6",
+		},
+		{
+			name: "dot imported syscall fork exec",
+			source: `package sandboxworker
+import . "syscall"
+func JobStartV2Fixture() { start := ForkExec; _ = start }`,
+			want: "syscall.ForkExec",
+		},
+		{
+			name: "syscall network primitive",
+			source: `package sandboxworker
+import kernel "syscall"
+func JobResolveV2Fixture() { socket := kernel.Socket; _ = socket }`,
+			want: "syscall.Socket",
+		},
+		{
+			name: "syscall memory primitive",
+			source: `package sandboxworker
+import kernel "syscall"
+func JobStatusV2Fixture() { mapping := kernel.Mmap; _ = mapping }`,
+			want: "syscall.Mmap",
+		},
+		{
+			name: "syscall exec primitive",
+			source: `package sandboxworker
+import kernel "syscall"
+func JobStatusV2Fixture() { execute := kernel.Exec; _ = execute }`,
+			want: "syscall.Exec",
+		},
+		{
+			name: "syscall kill primitive",
+			source: `package sandboxworker
+import kernel "syscall"
+func JobStatusV2Fixture() { signal := kernel.Kill; _ = signal }`,
+			want: "syscall.Kill",
+		},
+		{
+			name: "renamed unix raw syscall capture",
+			source: `package sandboxworker
+import kernel "golang.org/x/sys/unix"
+func JobLogsV2Fixture() { call := kernel.RawSyscall; _ = call }`,
+			want: "golang.org/x/sys/unix.RawSyscall",
+		},
+		{
+			name: "unix syscall capture",
+			source: `package sandboxworker
+import kernel "golang.org/x/sys/unix"
+func JobLogsV2Fixture() { call := kernel.Syscall; _ = call }`,
+			want: "golang.org/x/sys/unix.Syscall",
+		},
+		{
+			name: "unix raw syscall six capture",
+			source: `package sandboxworker
+import kernel "golang.org/x/sys/unix"
+func JobLogsV2Fixture() { call := kernel.RawSyscall6; _ = call }`,
+			want: "golang.org/x/sys/unix.RawSyscall6",
+		},
+		{
+			name: "unix network primitive",
+			source: `package sandboxworker
+import kernel "golang.org/x/sys/unix"
+func JobCancelV2Fixture() { socket := kernel.Socket; _ = socket }`,
+			want: "golang.org/x/sys/unix.Socket",
+		},
+		{
+			name: "unix memory primitive",
+			source: `package sandboxworker
+import kernel "golang.org/x/sys/unix"
+func JobStartV2Fixture() { mapping := kernel.Mmap; _ = mapping }`,
+			want: "golang.org/x/sys/unix.Mmap",
+		},
+		{
+			name: "unix exec primitive",
+			source: `package sandboxworker
+import kernel "golang.org/x/sys/unix"
+func JobStartV2Fixture() { execute := kernel.Exec; _ = execute }`,
+			want: "golang.org/x/sys/unix.Exec",
+		},
+		{
+			name: "unix kill primitive",
+			source: `package sandboxworker
+import kernel "golang.org/x/sys/unix"
+func JobStartV2Fixture() { signal := kernel.Kill; _ = signal }`,
+			want: "golang.org/x/sys/unix.Kill",
+		},
+		{
+			name: "unix namespace mount primitive",
+			source: `package sandboxworker
+import kernel "golang.org/x/sys/unix"
+func JobStartV2Fixture() { mount := kernel.Mount; _ = mount }`,
+			want: "golang.org/x/sys/unix.Mount",
+		},
+		{
+			name: "unsafe pointer conversion",
+			source: `package sandboxworker
+import memory "unsafe"
+func JobResolveV2Fixture() { _ = memory.Pointer(nil) }`,
+			want: "unsafe.Pointer",
+		},
+		{
+			name: "dot imported unsafe size",
+			source: `package sandboxworker
+import . "unsafe"
+func JobStatusV2Fixture(value int) { _ = Sizeof(value) }`,
+			want: "unsafe.Sizeof",
+		},
+		{
+			name: "blank unsafe linkname escape",
+			source: `package sandboxworker
+import _ "unsafe"
+//go:linkname hiddenProcessStart runtime.fork
+func hiddenProcessStart()
+func JobStatusV2Fixture() { hiddenProcessStart() }`,
+			want: "unsafe",
+		},
+		{
+			name: "plugin open capture",
+			source: `package sandboxworker
+import dynamiccode "plugin"
+func JobLogsV2Fixture() { open := dynamiccode.Open; _ = open }`,
+			want: "plugin.Open",
+		},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": fixture.source,
+			}, policy, fixture.want)
+		})
+	}
+}
+
+func TestL8WorkerV2GuardRejectsImportOnlyDynamicRuntimeSurfaces(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	fixtures := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "blank unsafe import",
+			source: `package sandboxworker
+import _ "unsafe"
+func JobStartV2Fixture() {}`,
+			want: "unsafe",
+		},
+		{
+			name: "blank plugin import",
+			source: `package sandboxworker
+import _ "plugin"
+func JobResolveV2Fixture() {}`,
+			want: "plugin",
+		},
+		{
+			name: "blank signal import",
+			source: `package sandboxworker
+import _ "os/signal"
+func JobStatusV2Fixture() {}`,
+			want: "os/signal",
+		},
+		{
+			name: "renamed signal import",
+			source: `package sandboxworker
+import notifications "os/signal"
+func JobLogsV2Fixture() { stop := notifications.Stop; _ = stop }`,
+			want: "os/signal",
+		},
+		{
+			name: "renamed runtime import",
+			source: `package sandboxworker
+import processruntime "runtime"
+func JobCancelV2Fixture() { exit := processruntime.Goexit; _ = exit }`,
+			want: "runtime",
+		},
+		{
+			name: "dot runtime debug import",
+			source: `package sandboxworker
+import . "runtime/debug"
+func JobStartV2Fixture() { SetTraceback("all") }`,
+			want: "runtime/debug",
+		},
+		{
+			name: "blank runtime pprof import",
+			source: `package sandboxworker
+import _ "runtime/pprof"
+func JobResolveV2Fixture() {}`,
+			want: "runtime/pprof",
+		},
+		{
+			name: "blank runtime trace import",
+			source: `package sandboxworker
+import _ "runtime/trace"
+func JobStatusV2Fixture() {}`,
+			want: "runtime/trace",
+		},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": fixture.source,
+			}, policy, fixture.want)
+		})
+	}
+}
+
+func TestL8WorkerV2GuardClosesSemanticExternalSurfaceDependencies(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"handler.go": true,
+		"helper.go":  true,
+		"capture.go": true,
+	}}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"handler.go": `package sandboxworker
+func JobStartV2Fixture() { hiddenHelper() }`,
+		"helper.go": `package sandboxworker
+func hiddenHelper() { _ = hiddenKernelCall }`,
+		"capture.go": `package sandboxworker
+import kernel "syscall"
+var hiddenKernelCall = kernel.RawSyscall`,
+	}, policy, "syscall.RawSyscall")
+}
+
+func TestL8WorkerV2GuardAllowsExactDurableStoreFileAndLockSurfaces(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{
+		"job_v2_store.go":      true,
+		"job_v2_unix_store.go": true,
+	}}
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_store.go": `package sandboxworker
+import (
+	filesystem "os"
+	kernel "syscall"
+)
+const semanticGuardDocumentation = "os.StartProcess syscall.RawSyscall unsafe.Pointer plugin.Open"
+func JobStartV2Store(path string, owner *kernel.Stat_t) error {
+	_ = semanticGuardDocumentation
+	_ = owner.Uid
+	file, err := filesystem.OpenFile(path, filesystem.O_CREATE|filesystem.O_RDWR, 0o600)
+	if err != nil { return err }
+	defer file.Close()
+	if err := kernel.Flock(int(file.Fd()), kernel.LOCK_EX|kernel.LOCK_NB); err != nil && err != kernel.EINTR { return err }
+	if err := file.Sync(); err != nil { return err }
+	if err := kernel.Flock(int(file.Fd()), kernel.LOCK_UN); err != nil { return err }
+	if _, err := filesystem.ReadFile(path); err != nil { return err }
+	if err := filesystem.Rename(path, path+".json"); err != nil { return err }
+	return filesystem.Remove(path+".json")
+}`,
+		"job_v2_unix_store.go": `package sandboxworker
+import kernel "golang.org/x/sys/unix"
+func JobResolveV2Store(fd int, owner *kernel.Stat_t) error {
+	_ = owner.Uid
+	if err := kernel.Flock(fd, kernel.LOCK_EX|kernel.LOCK_NB); err != nil { return err }
+	return kernel.Flock(fd, kernel.LOCK_UN)
+}`,
+	}, policy)
+}
+
+func TestL8WorkerV2GuardKeepsSemanticLiveSurfaceChecksOutOfV1Siblings(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"mixed.go": true}}
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"mixed.go": `package sandboxworker
+import (
+	processapi "os"
+	notifications "os/signal"
+	kernel "syscall"
+	dynamiccode "plugin"
+	processruntime "runtime"
+	memory "unsafe"
+)
+func JobStartV2Fixture() {}
+func unrelatedV1() {
+	_ = processapi.Exit
+	_ = notifications.Stop
+	_ = kernel.RawSyscall
+	_ = dynamiccode.Open
+	_ = processruntime.Gosched
+	_ = memory.Pointer(nil)
+}`,
 	}, policy)
 }
 
