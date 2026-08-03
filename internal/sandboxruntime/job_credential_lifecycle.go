@@ -20,13 +20,14 @@ type jobCredentialLifecycleOptions struct {
 
 type JobCredentialLifecycle struct {
 	identity jobCredentialLifecycleOwner
-	state    *jobCredentialLifecycleState
+	access   jobCredentialLifecycleStateAccess
 }
 
 type jobCredentialLifecycleOwner struct{ _ byte }
 
+type jobCredentialLifecycleStateAccess func(*jobCredentialLifecycleOwner) *jobCredentialLifecycleState
+
 type jobCredentialLifecycleState struct {
-	owner        *jobCredentialLifecycleOwner
 	mu           sync.Mutex
 	identity     JobCredentialIdentity
 	state        JobCredentialState
@@ -46,10 +47,16 @@ func newJobCredentialLifecycleWithOptions(identity JobCredentialIdentity, option
 		return nil, ErrJobCredentialIdentityMismatch
 	}
 	lifecycle := &JobCredentialLifecycle{}
-	lifecycle.state = &jobCredentialLifecycleState{
-		owner:        &lifecycle.identity,
+	owner := &lifecycle.identity
+	live := &jobCredentialLifecycleState{
 		identity:     cloneJobCredentialIdentity(identity),
 		beforeCommit: options.beforeCommit,
+	}
+	lifecycle.access = func(candidate *jobCredentialLifecycleOwner) *jobCredentialLifecycleState {
+		if candidate != owner {
+			return nil
+		}
+		return live
 	}
 	return lifecycle, nil
 }
@@ -146,6 +153,11 @@ func (lifecycle *JobCredentialLifecycle) Renew(proof JobCredentialActiveProof, o
 		live.mu.Unlock()
 		return ErrJobCredentialTransition
 	}
+	if err := ValidateJobCredentialActiveProof(live.activeProof, live.identity, live.revision, observedAt); err != nil {
+		live.enterRevokingLocked()
+		live.mu.Unlock()
+		return err
+	}
 	if sameJobCredentialActiveProof(live.activeProof, proof) {
 		live.enterRevokingLocked()
 		live.mu.Unlock()
@@ -175,6 +187,10 @@ func (lifecycle *JobCredentialLifecycle) Renew(proof JobCredentialActiveProof, o
 	defer live.mu.Unlock()
 	if live.version != version || live.state != JobCredentialStateRenewing {
 		if live.state == JobCredentialStateActive && sameJobCredentialActiveProof(live.activeProof, proof) {
+			if err := ValidateJobCredentialActiveProof(live.activeProof, live.identity, live.revision, observedAt); err != nil {
+				live.enterRevokingLocked()
+				return err
+			}
 			if err := ValidateJobCredentialActiveProof(proof, live.identity, live.revision, observedAt); err != nil {
 				live.enterRevokingLocked()
 				return err
@@ -185,6 +201,10 @@ func (lifecycle *JobCredentialLifecycle) Renew(proof JobCredentialActiveProof, o
 			return ErrJobCredentialExpired
 		}
 		return ErrJobCredentialTransition
+	}
+	if err := ValidateJobCredentialActiveProof(live.activeProof, live.identity, live.revision, observedAt); err != nil {
+		live.enterRevokingLocked()
+		return err
 	}
 	if err := ValidateJobCredentialActiveProof(proof, live.identity, live.revision+1, observedAt); err != nil {
 		live.enterRevokingLocked()
@@ -460,8 +480,9 @@ func (live *jobCredentialLifecycleState) reinspectRevokedLocked(proof JobCredent
 }
 
 func loadJobCredentialLifecycleState(lifecycle *JobCredentialLifecycle) (*jobCredentialLifecycleState, bool) {
-	if lifecycle == nil || lifecycle.state == nil || lifecycle.state.owner != &lifecycle.identity {
+	if lifecycle == nil || lifecycle.access == nil {
 		return nil, false
 	}
-	return lifecycle.state, true
+	live := lifecycle.access(&lifecycle.identity)
+	return live, live != nil
 }

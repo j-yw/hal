@@ -7,13 +7,14 @@ type authenticatedWorkerPrincipalSeal struct{}
 // handle is operational.
 type AuthenticatedWorkerPrincipalAuthority struct {
 	identity authenticatedWorkerPrincipalAuthorityOwner
-	state    *authenticatedWorkerPrincipalAuthorityState
+	access   authenticatedWorkerPrincipalAuthorityStateAccess
 }
 
 type authenticatedWorkerPrincipalAuthorityOwner struct{ _ byte }
 
+type authenticatedWorkerPrincipalAuthorityStateAccess func(*authenticatedWorkerPrincipalAuthorityOwner) *authenticatedWorkerPrincipalAuthorityState
+
 type authenticatedWorkerPrincipalAuthorityState struct {
-	owner      *authenticatedWorkerPrincipalAuthorityOwner
 	id         string
 	generation string
 	seal       *authenticatedWorkerPrincipalSeal
@@ -21,13 +22,14 @@ type authenticatedWorkerPrincipalAuthorityState struct {
 
 type authenticatedWorkerPrincipal struct {
 	identity authenticatedWorkerPrincipalOwner
-	state    *authenticatedWorkerPrincipalState
+	access   authenticatedWorkerPrincipalStateAccess
 }
 
 type authenticatedWorkerPrincipalOwner struct{ _ byte }
 
+type authenticatedWorkerPrincipalStateAccess func(*authenticatedWorkerPrincipalOwner) *authenticatedWorkerPrincipalState
+
 type authenticatedWorkerPrincipalState struct {
-	owner               *authenticatedWorkerPrincipalOwner
 	id                  string
 	uid                 uint32
 	gid                 uint32
@@ -42,11 +44,17 @@ func NewAuthenticatedWorkerPrincipalAuthority(id, generation string) (*Authentic
 		return nil, ErrAuthenticatedWorkerPrincipal
 	}
 	authority := &AuthenticatedWorkerPrincipalAuthority{}
-	authority.state = &authenticatedWorkerPrincipalAuthorityState{
-		owner:      &authority.identity,
+	owner := &authority.identity
+	live := &authenticatedWorkerPrincipalAuthorityState{
 		id:         id,
 		generation: generation,
 		seal:       &authenticatedWorkerPrincipalSeal{},
+	}
+	authority.access = func(candidate *authenticatedWorkerPrincipalAuthorityOwner) *authenticatedWorkerPrincipalAuthorityState {
+		if candidate != owner {
+			return nil
+		}
+		return live
 	}
 	return authority, nil
 }
@@ -57,8 +65,8 @@ func (authority *AuthenticatedWorkerPrincipalAuthority) IssueAuthenticatedWorker
 		return nil, ErrAuthenticatedWorkerPrincipal
 	}
 	principal := &authenticatedWorkerPrincipal{}
-	principal.state = &authenticatedWorkerPrincipalState{
-		owner:               &principal.identity,
+	owner := &principal.identity
+	live := &authenticatedWorkerPrincipalState{
 		id:                  id,
 		uid:                 uid,
 		gid:                 gid,
@@ -66,6 +74,12 @@ func (authority *AuthenticatedWorkerPrincipalAuthority) IssueAuthenticatedWorker
 		authorityID:         state.id,
 		authorityGeneration: state.generation,
 		seal:                state.seal,
+	}
+	principal.access = func(candidate *authenticatedWorkerPrincipalOwner) *authenticatedWorkerPrincipalState {
+		if candidate != owner {
+			return nil
+		}
+		return live
 	}
 	return principal, nil
 }
@@ -131,15 +145,17 @@ func (principal *authenticatedWorkerPrincipal) AuthorityGeneration() string {
 }
 
 func loadAuthenticatedWorkerPrincipalAuthorityState(authority *AuthenticatedWorkerPrincipalAuthority) (*authenticatedWorkerPrincipalAuthorityState, bool) {
-	if authority == nil || authority.state == nil || authority.state.owner != &authority.identity {
+	if authority == nil || authority.access == nil {
 		return nil, false
 	}
-	return authority.state, true
+	live := authority.access(&authority.identity)
+	return live, live != nil
 }
 
 func loadAuthenticatedWorkerPrincipalState(principal *authenticatedWorkerPrincipal) (*authenticatedWorkerPrincipalState, bool) {
-	if principal == nil || principal.state == nil || principal.state.owner != &principal.identity {
+	if principal == nil || principal.access == nil {
 		return nil, false
 	}
-	return principal.state, true
+	live := principal.access(&principal.identity)
+	return live, live != nil
 }
