@@ -1157,6 +1157,52 @@ func forbiddenRoutedHelper() { _, _ = httpalias.Get("https://authority.example.i
 	}
 }
 
+func TestL8WorkerV2GuardRecognizesRuntimeBuiltExactOperationValues(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"aliases.go":   true,
+		"handler.go":   true,
+		"shared.go":    true,
+	}}
+	contracts := `package sandboxworker
+type JobStartRequestV2 struct{}`
+	for _, fixture := range []struct {
+		name       string
+		definition string
+	}{
+		{
+			name:       "byte slice conversion",
+			definition: `var hiddenOperation = string([]byte{106, 111, 98, 95, 115, 116, 97, 114, 116, 95, 118, 50})`,
+		},
+		{
+			name: "local builder wrapper",
+			definition: `func hiddenOperation() string {
+	return string([]rune{106, 111, 98, 95, 114, 101, 115, 111, 108, 118, 101, 95, 118, 50})
+}`,
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			operation := "hiddenOperation"
+			if strings.Contains(fixture.definition, "func hiddenOperation") {
+				operation += "()"
+			}
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"contracts.go": contracts,
+				"aliases.go":   "package sandboxworker\n" + fixture.definition,
+				"handler.go": `package sandboxworker
+func dispatch(operation string) hiddenSchema {
+	if operation == ` + operation + ` { forbiddenRoutedHelper() }
+	return hiddenSchema{}
+}`,
+				"shared.go": `package sandboxworker
+import processapi "os"
+type hiddenSchema struct { Value string ` + "`json:\"value\"`" + ` }
+func forbiddenRoutedHelper() { _, _ = processapi.StartProcess("worker", nil, nil) }`,
+			}, policy, `json:"value`)
+		})
+	}
+}
+
 func TestL8WorkerV2GuardConstantValueTaintClosesChainsAndUnlistedRoots(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"contracts.go": true,
@@ -1617,6 +1663,102 @@ func genericForbidden[T any]() { _, _ = httpalias.Get("https://authority.example
 	}, policy, "net/http")
 }
 
+func TestL8WorkerV2GuardRejectsImplicitInterfaceCallbacks(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{"job_v2_fixture.go": true},
+		mixed:     map[string]bool{"shared.go": true},
+	}
+	shared := `package sandboxworker
+import (
+	formatting "fmt"
+	processapi "os"
+)
+type implicitRenderer struct{}
+func (implicitRenderer) String() string {
+	_, _ = processapi.StartProcess("worker", nil, nil)
+	return ""
+}
+func renderThroughWrapper(value any) string { return formatting.Sprint(value) }`
+	for _, fixture := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "renamed fmt import invokes Stringer",
+			source: `package sandboxworker
+import formatting "fmt"
+func JobStartV2Fixture() { _ = formatting.Sprint(implicitRenderer{}) }`,
+		},
+		{
+			name: "local any wrapper invokes Stringer",
+			source: `package sandboxworker
+func JobResolveV2Fixture() { _ = renderThroughWrapper(implicitRenderer{}) }`,
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": fixture.source,
+				"shared.go":         shared,
+			}, policy, "implicit interface callback")
+		})
+	}
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import formatting "fmt"
+func JobStatusV2Fixture() { _ = formatting.Sprint("safe") }`,
+	}, policy)
+}
+
+func TestL8WorkerV2GuardAuditsPackageInitializers(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"handler.go": true,
+		"init.go":    true,
+	}}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"handler.go": `package sandboxworker
+func JobStartV2Fixture() {}`,
+		"init.go": `package sandboxworker
+import httpalias "net/http"
+func init() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
+	}, policy, "net/http")
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"handler.go": `package sandboxworker
+func JobResolveV2Fixture() {}`,
+		"unlisted_init.go": `package sandboxworker
+func init() {}`,
+	}, policy, "outside the exact allowlist")
+}
+
+func TestL8WorkerV2GuardRejectsReachedBodylessDeclarations(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	for _, fixture := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "bodyless function",
+			source: `package sandboxworker
+func hiddenLiveImplementation()
+func JobStartV2Fixture() { hiddenLiveImplementation() }`,
+		},
+		{
+			name: "bodyless method",
+			source: `package sandboxworker
+type hiddenLiveReceiver struct{}
+func (hiddenLiveReceiver) dispatch()
+func JobResolveV2Fixture() { hiddenLiveReceiver{}.dispatch() }`,
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": fixture.source,
+			}, policy, "bodyless declaration")
+		})
+	}
+}
+
 func TestL8WorkerV2GuardRejectsIndexedFunctionValues(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
 	fixtures := []struct {
@@ -1915,6 +2057,98 @@ func JobLogsV2Fixture() { open := dynamiccode.Open; _ = open }`,
 			}, policy, fixture.want)
 		})
 	}
+}
+
+func TestL8WorkerV2GuardRejectsProcessGlobalDirectoryAndFatalSurfaces(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	fixtures := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "os chdir",
+			source: `package sandboxworker
+import processapi "os"
+func JobStartV2Fixture() { _ = processapi.Chdir("work") }`,
+			want: "os.Chdir",
+		},
+		{
+			name: "os file chdir",
+			source: `package sandboxworker
+import processapi "os"
+func JobResolveV2Fixture(file *processapi.File) { _ = file.Chdir() }`,
+			want: "os.Chdir",
+		},
+		{
+			name: "log fatal",
+			source: `package sandboxworker
+import logging "log"
+func JobStatusV2Fixture() { logging.Fatal("stop") }`,
+			want: "log.Fatal",
+		},
+		{
+			name: "log fatalf",
+			source: `package sandboxworker
+import logging "log"
+func JobLogsV2Fixture() { logging.Fatalf("stop: %s", "now") }`,
+			want: "log.Fatalf",
+		},
+		{
+			name: "log fatalln",
+			source: `package sandboxworker
+import logging "log"
+func JobCancelV2Fixture() { logging.Fatalln("stop") }`,
+			want: "log.Fatalln",
+		},
+		{
+			name: "logger fatal method",
+			source: `package sandboxworker
+import logging "log"
+func JobStartV2Fixture(logger *logging.Logger) { logger.Fatal("stop") }`,
+			want: "log.Fatal",
+		},
+		{
+			name: "logger fatalf method expression",
+			source: `package sandboxworker
+import logging "log"
+func JobResolveV2Fixture() { fatal := (*logging.Logger).Fatalf; _ = fatal }`,
+			want: "log.Fatalf",
+		},
+		{
+			name: "logger fatalln method",
+			source: `package sandboxworker
+import logging "log"
+func JobStatusV2Fixture(logger *logging.Logger) { logger.Fatalln("stop") }`,
+			want: "log.Fatalln",
+		},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": fixture.source,
+			}, policy, fixture.want)
+		})
+	}
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import (
+	logging "log"
+	filesystem "os"
+	kernel "syscall"
+)
+func JobStartV2Store(path string, owner *kernel.Stat_t) error {
+	logging.Print("opening durable state")
+	_ = owner.Uid
+	file, err := filesystem.OpenFile(path, filesystem.O_CREATE|filesystem.O_RDWR, 0o600)
+	if err != nil { return err }
+	defer file.Close()
+	if err := kernel.Flock(int(file.Fd()), kernel.LOCK_EX|kernel.LOCK_NB); err != nil { return err }
+	if err := file.Sync(); err != nil { return err }
+	return kernel.Flock(int(file.Fd()), kernel.LOCK_UN)
+}`,
+	}, policy)
 }
 
 func TestL8WorkerV2GuardRejectsImportOnlyDynamicRuntimeSurfaces(t *testing.T) {
