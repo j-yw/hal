@@ -2769,6 +2769,50 @@ func init() {}`,
 	}, policy)
 }
 
+func TestL8WorkerV2GuardAuditsUnlistedExecutedInitializers(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"handler.go": true}}
+	v2Root := `package sandboxworker
+func JobStartV2Fixture() {}`
+
+	t.Run("direct init body", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"handler.go": v2Root,
+			"unlisted_init.go": `package sandboxworker
+import processapi "os"
+func init() { processapi.Exit(1) }`,
+		}, policy, "os.Exit")
+	})
+
+	t.Run("evaluated multi-name package variable", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"handler.go": v2Root,
+			"unlisted_state.go": `package sandboxworker
+import processapi "os"
+var initializedProcess, initializedProcessErr = processapi.StartProcess("worker", nil, nil)`,
+		}, policy, "os.StartProcess")
+	})
+
+	t.Run("initializer helper dependency", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"handler.go": v2Root,
+			"unlisted_state.go": `package sandboxworker
+import processapi "os"
+var initializedProcess = startInitializedProcess()
+func startInitializedProcess() *processapi.Process {
+	process, _ := processapi.StartProcess("worker", nil, nil)
+	return process
+}`,
+		}, policy, "os.StartProcess")
+	})
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"handler.go": v2Root,
+		"unlisted_state.go": `package sandboxworker
+import processapi "os"
+var deferredProcess = func() { processapi.Exit(1) }`,
+	}, policy)
+}
+
 func TestL8WorkerV2GuardAuditsPackageVariableInitializers(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{
 		dedicated: map[string]bool{"state.go": true},
