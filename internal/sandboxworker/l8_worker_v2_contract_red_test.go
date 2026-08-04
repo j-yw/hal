@@ -1099,7 +1099,7 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 	if len(reconciled) != 1 {
 		t.Fatalf("reconciled private durable v2 states = %d, want 1", len(reconciled))
 	}
-	if reconciled[0].State != JobStateInterrupted || reconciled[0].FailureCode != "daemon_restarted_before_start" || reconciled[0].FinishedAt == nil || !reconciled[0].FinishedAt.Equal(restartAt) {
+	if reconciled[0].JobV2.State != JobStateInterrupted || reconciled[0].JobV2.FailureCode != "daemon_restarted_before_start" || reconciled[0].JobV2.FinishedAt == nil || !reconciled[0].JobV2.FinishedAt.Equal(restartAt) {
 		t.Fatalf("startup reconciliation did not consume queued v2 state: %#v", reconciled[0].JobV2)
 	}
 	if reconciled[0].PrincipalID != principalID || reconciled[0].RequestKey != requestKey || reconciled[0].DaemonGeneration != l8WorkerV2DaemonGeneration {
