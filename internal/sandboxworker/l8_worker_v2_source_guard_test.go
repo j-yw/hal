@@ -225,10 +225,10 @@ func TestL8WorkerV2GuardClientTransportFixtureIgnoresMarkerSpoofing(t *testing.T
 // *JobStartRequestV2 *JobResolveRequestV2 *JobStatusRequestV2
 // *JobLogsRequestV2 *JobCancelRequestV2 *JobV2 *JobLogsResponseV2
 type Request struct {
-	JobCancel *JobCancelRequest ` + "`json:\"jobCancel,omitempty\"`" + `
+	JobCancel       *JobCancelRequest  ` + "`json:\"jobCancel,omitempty\"`" + `
 }
 type Response struct {
-	Error *Error ` + "`json:\"error,omitempty\"`" + `
+	Error           *Error           ` + "`json:\"error,omitempty\"`" + `
 }`,
 	}
 	l8WorkerV2AddExactClientTransportSeamFixture(t, sources)
@@ -238,6 +238,22 @@ type Response struct {
 	}
 	if !complete {
 		t.Fatal("comment markers suppressed the exact V2 envelope fixture")
+	}
+}
+
+func TestL8WorkerV2GuardOuterEnvelopeFixtureStateRejectsWrongFields(t *testing.T) {
+	source := `package sandboxworker
+const markerSpoof = "*JobResolveRequestV2 *JobStatusRequestV2 *JobLogsRequestV2 *JobCancelRequestV2 *JobV2 *JobLogsResponseV2"
+type Request struct {
+	WrongName *JobStartRequestV2 ` + "`json:\"jobStartV2,omitempty\"`" + `
+}
+type Response struct{}`
+	hasV2, complete, err := l8WorkerV2OuterEnvelopeFixtureState(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasV2 || complete {
+		t.Fatalf("wrong V2 envelope field state = hasV2 %t complete %t, want partial", hasV2, complete)
 	}
 }
 
@@ -306,30 +322,16 @@ func l8WorkerV2OuterEnvelopeFixtureState(source string) (bool, bool, error) {
 
 func l8WorkerV2AddExactClientTransportSeamFixture(t *testing.T, sources map[string]string) {
 	t.Helper()
-	typesSource := sources["types.go"]
-	v2FieldMarkers := []string{
-		"*JobStartRequestV2",
-		"*JobResolveRequestV2",
-		"*JobStatusRequestV2",
-		"*JobLogsRequestV2",
-		"*JobCancelRequestV2",
-		"*JobV2",
-		"*JobLogsResponseV2",
+	hasV2Fields, completeV2Fields, err := l8WorkerV2OuterEnvelopeFixtureState(sources["types.go"])
+	if err != nil {
+		t.Fatalf("inspect real outer envelope fixture: %v", err)
 	}
-	hasV2Fields := false
-	for _, marker := range v2FieldMarkers {
-		if strings.Contains(typesSource, marker) {
-			hasV2Fields = true
-			break
+	if !completeV2Fields {
+		_, hasV2Types := sources["job_v2_types.go"]
+		_, hasV2Client := sources["job_v2_client.go"]
+		if hasV2Fields || hasV2Types || hasV2Client {
+			t.Fatal("real V2 outer envelope is partial")
 		}
-	}
-	if hasV2Fields {
-		for _, marker := range v2FieldMarkers {
-			if !strings.Contains(typesSource, marker) {
-				t.Fatalf("real V2 outer envelope is partial; missing %s", marker)
-			}
-		}
-	} else {
 		requestTail := "\tJobCancel       *JobCancelRequest  `json:\"jobCancel,omitempty\"`\n}"
 		if !strings.Contains(sources["types.go"], requestTail) {
 			t.Fatal("real Request envelope shape changed; update the exact V2 field fixture")
@@ -340,6 +342,10 @@ func l8WorkerV2AddExactClientTransportSeamFixture(t *testing.T, sources map[stri
 			t.Fatal("real Response envelope shape changed; update the exact V2 field fixture")
 		}
 		sources["types.go"] = strings.Replace(sources["types.go"], responseTail, "\tError           *Error              `json:\"error,omitempty\"`\n\tJobV2           *JobV2              `json:\"jobV2,omitempty\"`\n\tJobLogsV2       *JobLogsResponseV2  `json:\"jobLogsV2,omitempty\"`\n}", 1)
+		_, completeV2Fields, err = l8WorkerV2OuterEnvelopeFixtureState(sources["types.go"])
+		if err != nil || !completeV2Fields {
+			t.Fatalf("synthesize exact V2 outer envelope fixture: complete=%t err=%v", completeV2Fields, err)
+		}
 	}
 	if _, exists := sources["job_v2_types.go"]; !exists {
 		sources["job_v2_types.go"] = `package sandboxworker
