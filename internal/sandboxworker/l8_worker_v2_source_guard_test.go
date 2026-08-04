@@ -811,6 +811,12 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		ctx = context.Background()
 	}
 `
+	clientAcquisitionErrorBlock := `	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("open worker connection failed")
+	}
+`
+	storeAcquisitionErrorBlock := "\tif err != nil { return storedJobStateV2{}, errors.New(\"stored job state could not be opened\") }\n"
 	existingJSONWriterSources := l8CloneWorkerV2GuardSources(sources)
 	l8AssertWorkerV2GuardAllows(t, existingJSONWriterSources, policy)
 
@@ -846,6 +852,16 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 		})
 	}
+
+	t.Run("store defers cleanup between no-op and duplicate safe acquisition error branches", func(t *testing.T) {
+		mutated := l8CloneWorkerV2GuardSources(sources)
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeAcquisitionErrorBlock, "\tif err != nil { _ = len(\"\") }\n", 1)
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()\n", "\tdefer reader.Close()\n"+storeAcquisitionErrorBlock, 1)
+		if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
+			t.Fatal("store acquisition error branch mutation did not change the positive fixture")
+		}
+		l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+	})
 
 	for _, tt := range []struct {
 		name   string
@@ -904,6 +920,19 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 				return strings.Replace(source, "\tvar response Response", "\tif true { return Response{}, errors.New(\"client response decoding disabled\") }\n\tvar response Response", 1)
 			},
 		},
+		{
+			name: "client defers cleanup between no-op and duplicate safe acquisition error branches",
+			mutate: func(source string) string {
+				source = strings.Replace(source, clientAcquisitionErrorBlock, "\tif err != nil {\n\t\t_ = request.Operation\n\t}\n", 1)
+				return strings.Replace(source, "\tdefer connection.Close()\n", "\tdefer connection.Close()\n"+clientAcquisitionErrorBlock, 1)
+			},
+		},
+		{
+			name: "client response decode is unreachable after default-only switch",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tvar response Response", "\tswitch {\n\tdefault:\n\t\treturn Response{}, errors.New(\"client response decoding disabled\")\n\t}\n\tvar response Response", 1)
+			},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
@@ -928,6 +957,12 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			replace: "\tif true { return Request{}, &Response{} }\n\tvar request Request",
 		},
 		{
+			name:    "server request decode is unreachable after default-only switch",
+			path:    "server.go",
+			old:     "\tvar request Request",
+			replace: "\tswitch {\n\tdefault:\n\t\treturn Request{}, &Response{}\n\t}\n\tvar request Request",
+		},
+		{
 			name:    "store acquisition is unreachable after unconditional error return",
 			path:    "job_store_v2.go",
 			old:     "\treader, err := openStoredJobStateV2(jobID)",
@@ -938,6 +973,12 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			path:    "job_store_v2.go",
 			old:     "\tvar state storedJobStateV2",
 			replace: "\tif true { return storedJobStateV2{}, errors.New(\"stored job decoding disabled\") }\n\tvar state storedJobStateV2",
+		},
+		{
+			name:    "store decode is unreachable after default-only switch",
+			path:    "job_store_v2.go",
+			old:     "\tvar state storedJobStateV2",
+			replace: "\tswitch {\n\tdefault:\n\t\treturn storedJobStateV2{}, errors.New(\"stored job decoding disabled\")\n\t}\n\tvar state storedJobStateV2",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
