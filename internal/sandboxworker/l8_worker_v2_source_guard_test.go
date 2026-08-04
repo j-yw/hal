@@ -563,8 +563,8 @@ func newJobStoreV2(root string) (*jobStoreV2, error) {
 	}
 }
 
-func TestL8WorkerV2GuardLocksSharedSafeJobIDVocabulary(t *testing.T) {
-	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2.go": true}}
+func TestL8WorkerV2GuardLocksLegacySafeJobIDVocabulary(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{}
 	jobTypes := `package sandboxworker
 import "regexp"
 var jobSafeIDPattern = regexp.MustCompile(` + "`^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$`" + `)
@@ -573,8 +573,7 @@ func validJobSafeID(value string) bool {
 	return value != "" && value != "." && value != ".." && jobSafeIDPattern.MatchString(value)
 }`
 	jobTypes = strings.Replace(jobTypes, `import "regexp"`, "import (\n\t\"regexp\"\n\t\"strings\"\n)", 1)
-	root := "package sandboxworker\nfunc JobStartV2Fixture(value string) bool { return validJobSafeID(value) }"
-	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_types.go": jobTypes, "job_v2.go": root}, policy)
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_types.go": jobTypes}, policy)
 
 	for _, tt := range []struct {
 		name   string
@@ -618,7 +617,7 @@ func validJobSafeID(value string) bool {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			l8AssertWorkerV2GuardRejects(t, map[string]string{"job_types.go": tt.mutate(jobTypes), "job_v2.go": root}, policy, tt.want)
+			l8AssertWorkerV2GuardRejects(t, map[string]string{"job_types.go": tt.mutate(jobTypes)}, policy, tt.want)
 		})
 	}
 }
@@ -1527,6 +1526,7 @@ func TestL8WorkerV2GuardLocksExactDecoderCallerComposition(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{
 		dedicated: map[string]bool{
 			"job_store_v2.go":    true,
+			"job_v2_types.go":    true,
 			"protocol_decode.go": true,
 		},
 		mixed: map[string]bool{
@@ -1545,6 +1545,15 @@ type Response struct { JobV2 *JobV2; Nested *callerNestedValue }
 type storedJobStateV2 struct { JobV2 JobV2; Nested *callerNestedValue }
 func (state storedJobStateV2) Validate() error { return nil }
 func (request Request) WithDefaults() Request { return request }`,
+		"job_v2_types.go": `package sandboxworker
+import "errors"
+func validWorkerV2SafeID(value string) bool { return value != "" }
+func validJobSafeID(value string) bool { return value != "" }
+func validWorkerV2JobID(value string) bool { return validWorkerV2SafeID(value) && validJobSafeID(value) }
+func validateWorkerV2JobID(jobID string) error {
+	if !validWorkerV2JobID(jobID) { return errors.New("worker job jobId is invalid") }
+	return nil
+}`,
 		"protocol_decode.go": `package sandboxworker
 import "io"
 func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error { return nil }
@@ -1631,9 +1640,8 @@ import (
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func validJobSafeID(value string) bool { return value != "" }
 func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
-	if store == nil || !validJobSafeID(jobID) {
+	if store == nil || !validWorkerV2JobID(jobID) {
 		return nil, errors.New("stored job state is unavailable")
 	}
 	path := filepath.Join(store.root, jobID+".json")
@@ -1655,6 +1663,51 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 }`,
 	}
 	l8AssertWorkerV2GuardAllows(t, sources, policy)
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(map[string]string)
+		want   string
+	}{
+		{
+			name: "shared V2 job ID predicate omits durable filename safety",
+			mutate: func(mutated map[string]string) {
+				mutated["job_v2_types.go"] = strings.Replace(mutated["job_v2_types.go"], "return validWorkerV2SafeID(value) && validJobSafeID(value)", "return validWorkerV2SafeID(value)", 1)
+			},
+			want: "exact V2-safe and durable-filename-safe intersection",
+		},
+		{
+			name: "shared V2 job ID predicate omits V2 vocabulary",
+			mutate: func(mutated map[string]string) {
+				mutated["job_v2_types.go"] = strings.Replace(mutated["job_v2_types.go"], "return validWorkerV2SafeID(value) && validJobSafeID(value)", "return validJobSafeID(value)", 1)
+			},
+			want: "exact V2-safe and durable-filename-safe intersection",
+		},
+		{
+			name: "V2 job ID contract bypasses shared predicate",
+			mutate: func(mutated map[string]string) {
+				mutated["job_v2_types.go"] = strings.Replace(mutated["job_v2_types.go"], "if !validWorkerV2JobID(jobID)", "if !validWorkerV2SafeID(jobID)", 1)
+			},
+			want: "validateWorkerV2JobID must call shared validWorkerV2JobID",
+		},
+		{
+			name: "V2 job ID contract dispatches through helper",
+			mutate: func(mutated map[string]string) {
+				mutated["job_v2_types.go"] = strings.Replace(mutated["job_v2_types.go"], "if !validWorkerV2JobID(jobID)", "if !validateWorkerV2JobIDThroughHelper(jobID)", 1)
+				mutated["job_v2_types.go"] += "\nfunc validateWorkerV2JobIDThroughHelper(value string) bool { return validWorkerV2JobID(value) }\n"
+			},
+			want: "validateWorkerV2JobID must call shared validWorkerV2JobID",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			tt.mutate(mutated)
+			if mutated["job_v2_types.go"] == sources["job_v2_types.go"] {
+				t.Fatal("shared V2 job ID predicate mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, tt.want)
+		})
+	}
 
 	storeValidation := "\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n"
 	storeCorrelation := "\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n"
@@ -2516,10 +2569,9 @@ func (reviewReturningReceiver) value() int { return 1 }
 			},
 		},
 		{
-			name: "store opener substitutes private worker v2 id vocabulary",
+			name: "store opener substitutes broad worker v2 id vocabulary",
 			mutate: func(source string) string {
-				source = strings.Replace(source, "validJobSafeID(jobID)", "validWorkerV2SafeID(jobID)", 1)
-				return source + "\nfunc validWorkerV2SafeID(value string) bool { return value != \"\" }\n"
+				return strings.Replace(source, "validWorkerV2JobID(jobID)", "validWorkerV2SafeID(jobID)", 1)
 			},
 		},
 	} {
@@ -2593,7 +2645,7 @@ func openStoredJobStateV2FromRoot(root, jobID string) (storedJobReaderV2, error)
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			const safeOpener = `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
-	if store == nil || !validJobSafeID(jobID) {
+	if store == nil || !validWorkerV2JobID(jobID) {
 		return nil, errors.New("stored job state is unavailable")
 	}
 	path := filepath.Join(store.root, jobID+".json")
@@ -3406,6 +3458,7 @@ func TestL8WorkerV2GuardRejectsCallerWholeValueEscapesAndCleanupBypasses(t *test
 	policy := l8WorkerV2GuardPolicy{
 		dedicated: map[string]bool{
 			"job_store_v2.go":    true,
+			"job_v2_types.go":    true,
 			"protocol_decode.go": true,
 		},
 		mixed: map[string]bool{
@@ -3424,6 +3477,15 @@ type Response struct { JobV2 *JobV2; Nested *callerNestedValue }
 type storedJobStateV2 struct { JobV2 JobV2; Nested *callerNestedValue }
 func (state storedJobStateV2) Validate() error { return nil }
 func (request Request) WithDefaults() Request { return request }`,
+		"job_v2_types.go": `package sandboxworker
+import "errors"
+func validWorkerV2SafeID(value string) bool { return value != "" }
+func validJobSafeID(value string) bool { return value != "" }
+func validWorkerV2JobID(value string) bool { return validWorkerV2SafeID(value) && validJobSafeID(value) }
+func validateWorkerV2JobID(jobID string) error {
+	if !validWorkerV2JobID(jobID) { return errors.New("worker job jobId is invalid") }
+	return nil
+}`,
 		"protocol_decode.go": `package sandboxworker
 import "io"
 func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error { return nil }
@@ -3510,9 +3572,8 @@ import (
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func validJobSafeID(value string) bool { return value != "" }
 func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
-	if store == nil || !validJobSafeID(jobID) {
+	if store == nil || !validWorkerV2JobID(jobID) {
 		return nil, errors.New("stored job state is unavailable")
 	}
 	path := filepath.Join(store.root, jobID+".json")
@@ -4504,6 +4565,9 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 	if err := l8WorkerV2ValidateLockedJobSafeIDPattern(parsedFiles, info); err != nil {
 		return err
 	}
+	if err := l8WorkerV2ValidateSharedWorkerV2JobIDPredicate(parsedFiles, info); err != nil {
+		return err
+	}
 	if err := l8WorkerV2ValidateDecoderCallerComposition(parsedFiles, info); err != nil {
 		return err
 	}
@@ -4953,6 +5017,112 @@ func l8WorkerV2ExactCloneStringSliceDeclaration(scope l8WorkerV2GuardScope) bool
 	functionScope := scope
 	functionScope.node = function
 	return l8WorkerV2DeclarationDigest(functionScope) == "5e5191e546220bd082abfad063fa46fb08dc29df27693ea45d116588a7fb657d"
+}
+
+func l8WorkerV2ValidateSharedWorkerV2JobIDPredicate(files []*l8WorkerV2ParsedFile, info *types.Info) error {
+	var predicate, contract *ast.FuncDecl
+	var predicateFile *l8WorkerV2ParsedFile
+	for _, file := range files {
+		for _, declaration := range file.parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			switch function.Name.Name {
+			case "validWorkerV2JobID":
+				predicate, predicateFile = function, file
+			case "validateWorkerV2JobID":
+				contract = function
+			}
+		}
+	}
+	if predicate == nil && contract == nil {
+		return nil
+	}
+	if predicate == nil || contract == nil || predicateFile == nil || filepath.Base(predicateFile.path) != "job_v2_types.go" {
+		return fmt.Errorf("worker V2 job contract must use job_v2_types.go validWorkerV2JobID")
+	}
+	predicateParameters := l8WorkerV2FunctionParameterObjects(predicate, info)
+	predicateSignature, _ := info.Defs[predicate.Name].Type().(*types.Signature)
+	if len(predicateParameters) != 1 || predicateSignature == nil || predicateSignature.Results().Len() != 1 ||
+		!types.Identical(predicateParameters[0].Type(), types.Universe.Lookup("string").Type()) ||
+		!types.Identical(predicateSignature.Results().At(0).Type(), types.Universe.Lookup("bool").Type()) ||
+		!l8WorkerV2ExactWorkerV2JobIDPredicateBody(predicate, predicateParameters[0], info) {
+		return fmt.Errorf("validWorkerV2JobID must remain the exact V2-safe and durable-filename-safe intersection")
+	}
+	if !l8WorkerV2ExactWorkerV2JobIDPredicateCaller(contract, predicate, info) {
+		return fmt.Errorf("validateWorkerV2JobID must call shared validWorkerV2JobID")
+	}
+	return nil
+}
+
+func l8WorkerV2ExactWorkerV2JobIDPredicateBody(function *ast.FuncDecl, value types.Object, info *types.Info) bool {
+	if function == nil || function.Body == nil || len(function.Body.List) != 1 {
+		return false
+	}
+	returned, ok := function.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return false
+	}
+	intersection, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.BinaryExpr)
+	if !ok || intersection.Op != token.LAND {
+		return false
+	}
+	left, leftOK := l8WorkerV2UnparenExpression(intersection.X).(*ast.CallExpr)
+	right, rightOK := l8WorkerV2UnparenExpression(intersection.Y).(*ast.CallExpr)
+	if !leftOK || !rightOK {
+		return false
+	}
+	leftV2 := l8WorkerV2IsExactPackageFunctionCall(left, "validWorkerV2SafeID", []types.Object{value}, info)
+	rightV2 := l8WorkerV2IsExactPackageFunctionCall(right, "validWorkerV2SafeID", []types.Object{value}, info)
+	leftDurable := l8WorkerV2IsExactPackageFunctionCall(left, "validJobSafeID", []types.Object{value}, info)
+	rightDurable := l8WorkerV2IsExactPackageFunctionCall(right, "validJobSafeID", []types.Object{value}, info)
+	return leftV2 && rightDurable || leftDurable && rightV2
+}
+
+func l8WorkerV2ExactWorkerV2JobIDPredicateCaller(function, predicate *ast.FuncDecl, info *types.Info) bool {
+	if function == nil || predicate == nil || function.Body == nil {
+		return false
+	}
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	predicateObject := info.Defs[predicate.Name]
+	if len(parameters) != 1 || !types.Identical(parameters[0].Type(), types.Universe.Lookup("string").Type()) || predicateObject == nil {
+		return false
+	}
+	calls := 0
+	exact := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || l8WorkerV2CalledObject(call.Fun, info) != predicateObject {
+			return true
+		}
+		calls++
+		exact = len(call.Args) == 1 && l8WorkerV2ExpressionObject(call.Args[0], info) == parameters[0]
+		return true
+	})
+	if calls != 1 || !exact {
+		return false
+	}
+	if function.Recv != nil || function.Body == nil || len(function.Body.List) != 2 {
+		return false
+	}
+	conditional, ok := function.Body.List[0].(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 {
+		return false
+	}
+	negated, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.UnaryExpr)
+	if !ok || negated.Op != token.NOT {
+		return false
+	}
+	call, ok := l8WorkerV2UnparenExpression(negated.X).(*ast.CallExpr)
+	if !ok || l8WorkerV2CalledObject(call.Fun, info) != predicateObject || len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != parameters[0] {
+		return false
+	}
+	failed, ok := conditional.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(failed.Results) != 1 || !types.AssignableTo(info.TypeOf(failed.Results[0]), types.Universe.Lookup("error").Type()) {
+		return false
+	}
+	return l8WorkerV2IsBareReturn(function.Body.List[1], nil, info)
 }
 
 func l8WorkerV2ValidateLockedJobSafeIDPattern(files []*l8WorkerV2ParsedFile, info *types.Info) error {
@@ -8740,7 +8910,7 @@ func l8WorkerV2ExactStoredJobOpenerInputGuard(statement ast.Stmt, store, jobID t
 		return false
 	}
 	call, ok := l8WorkerV2UnparenExpression(negated.X).(*ast.CallExpr)
-	return ok && l8WorkerV2IsExactPackageFunctionCall(call, "validJobSafeID", []types.Object{jobID}, info)
+	return ok && l8WorkerV2IsExactPackageFunctionCall(call, "validWorkerV2JobID", []types.Object{jobID}, info)
 }
 
 func l8WorkerV2ExactStoredJobFileInspection(statement ast.Stmt, statInfo, statErr types.Object, info *types.Info) ([]*ast.CallExpr, bool) {
