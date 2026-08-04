@@ -2576,6 +2576,99 @@ func JobStatusV2Fixture(request safeAliasRequest) {
 	}, policy)
 }
 
+func TestL8WorkerV2GuardTracksBoundedOperationStorageFlow(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	fixtures := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "helper return alias",
+			source: `package sandboxworker
+import text "strings"
+type request struct{ Operation string }
+func selectCurrent(req request) (string, bool) { return req.Operation, true }
+func JobStartV2Fixture(req request) {
+	current, ok := selectCurrent(req)
+	_ = ok
+	if current == text.Join([]string{"job_start_", "v", "2"}, "") {}
+}`,
+		},
+		{
+			name: "tuple component to explicit target",
+			source: `package sandboxworker
+import text "strings"
+func runtimePair() (string, error) {
+	return text.Join([]string{"job_start_", "v", "2"}, ""), nil
+}
+func JobStartV2Fixture() {
+	operation, err := runtimePair()
+	_, _ = operation, err
+}`,
+		},
+		{
+			name: "differently named field storage",
+			source: `package sandboxworker
+import text "strings"
+type request struct{ Operation string }
+type holder struct{ Current string }
+func JobStartV2Fixture(req request) {
+	var state holder
+	state.Current = req.Operation
+	switch state.Current {
+	case text.Join([]string{"job_start_", "v", "2"}, ""):
+	}
+}`,
+		},
+		{
+			name: "indexed slice storage",
+			source: `package sandboxworker
+import text "strings"
+type request struct{ Operation string }
+func JobStartV2Fixture(req request) {
+	values := make([]string, 1)
+	values[0] = req.Operation
+	if values[0] == text.Join([]string{"job_start_", "v", "2"}, "") {}
+}`,
+		},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{"job_v2_fixture.go": fixture.source}, policy, "runtime operation assembly")
+		})
+	}
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import text "strings"
+type request struct{ Operation string }
+func JobResolveV2Fixture(req request) {
+	safe, current := "safe", req.Operation
+	_ = safe
+	switch current {
+	case text.Join([]string{"job_resolve_", "v", "2"}, ""):
+	}
+}`,
+	}, policy, "runtime operation assembly")
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+type request struct{ Operation string }
+type holder struct{ Current string }
+func selectCurrent(req request) (string, bool) { return req.Operation, true }
+func runtimePair(req request) (string, error) { return req.Operation, nil }
+func JobStatusV2Fixture(req request) {
+	current, ok := selectCurrent(req)
+	payload, err := runtimePair(req)
+	var state holder
+	state.Current = req.Operation
+	values := make([]string, 1)
+	values[0] = req.Operation
+	_, _, _, _, _ = current, ok, payload, err, values
+}`,
+	}, policy)
+}
+
 func TestL8WorkerV2GuardConstantValueTaintClosesChainsAndUnlistedRoots(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"contracts.go": true,
