@@ -11959,14 +11959,74 @@ func TestL8WorkerV2SourceGuardsPrincipalCannotBeDecodedFromJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sources := make(map[string]string)
 	for _, path := range files {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		source := l8ReadWorkerSource(t, path)
+		sources[path] = l8ReadWorkerSource(t, path)
+	}
+	if err := l8AuditWorkerV2PrivateJSONIdentityTags(sources); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestL8WorkerV2PrivateJSONIdentityExceptionsAreExact(t *testing.T) {
+	allowed := map[string]string{
+		"job_v2_helpers.go": `package sandboxworker
+type jobRequestIdentityV2 struct {
+	DriverID string ` + "`json:\"driverId\"`" + `
+	PrincipalID string ` + "`json:\"principalId\"`" + `
+	DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + `
+}`,
+		"job_store_v2.go": `package sandboxworker
+type storedJobStateV2 struct {
+	PrincipalID string ` + "`json:\"principalId\"`" + `
+	DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + `
+}`,
+	}
+	if err := l8AuditWorkerV2PrivateJSONIdentityTags(allowed); err != nil {
+		t.Fatalf("exact private identity exceptions were rejected: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		path     string
+		typeName string
+		field    string
+		tag      string
+		extra    string
+	}{
+		{name: "hash identity in wrong file", path: "job_v2_types.go", typeName: "jobRequestIdentityV2", field: "PrincipalID", tag: "principalId"},
+		{name: "hash identity on wrong type", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2Alias", field: "PrincipalID", tag: "principalId"},
+		{name: "hash identity on exported type", path: "job_v2_helpers.go", typeName: "JobRequestIdentityV2", field: "PrincipalID", tag: "principalId"},
+		{name: "hash identity with wrong field", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "AuthenticatedPrincipal", tag: "principalId"},
+		{name: "hash identity with wrong tag", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "PrincipalID", tag: "principalID"},
+		{name: "daemon identity with wrong field", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "Generation", tag: "daemonGeneration"},
+		{name: "daemon identity with wrong tag", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "DaemonGeneration", tag: "daemon_generation"},
+		{name: "extra public response surface", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "PrincipalID", tag: "principalId", extra: "\ntype Response struct { PrincipalID string `json:\"principalId\"` }\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := "package sandboxworker\ntype " + tt.typeName + " struct { " + tt.field + " string `json:\"" + tt.tag + "\"` }\n" + tt.extra
+			err := l8AuditWorkerV2PrivateJSONIdentityTags(map[string]string{tt.path: source})
+			if err == nil || !strings.Contains(err.Error(), "private server identity") {
+				t.Fatalf("identity tag audit error = %v, want private server identity rejection", err)
+			}
+		})
+	}
+}
+
+func l8AuditWorkerV2PrivateJSONIdentityTags(sources map[string]string) error {
+	paths := make([]string, 0, len(sources))
+	for path := range sources {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		source := sources[path]
 		parsed, parseErr := parser.ParseFile(token.NewFileSet(), path, source, 0)
 		if parseErr != nil {
-			t.Fatalf("parse %s: %v", path, parseErr)
+			return fmt.Errorf("parse %s: %w", path, parseErr)
 		}
 		for _, declaration := range parsed.Decls {
 			generated, ok := declaration.(*ast.GenDecl)
@@ -11988,24 +12048,28 @@ func TestL8WorkerV2SourceGuardsPrincipalCannotBeDecodedFromJSON(t *testing.T) {
 					}
 					tag, unquoteErr := strconv.Unquote(field.Tag.Value)
 					if unquoteErr != nil {
-						t.Fatalf("unquote field tag in %s: %v", path, unquoteErr)
+						return fmt.Errorf("unquote field tag in %s: %w", path, unquoteErr)
 					}
-					jsonTag := strings.ToLower(reflectStructTagJSON(tag))
-					if strings.Contains(jsonTag, "peeruid") || strings.Contains(jsonTag, "peergid") {
-						t.Fatalf("production field in %s exposes peer credential through JSON tag %q", path, jsonTag)
+					jsonTag := reflectStructTagJSON(tag)
+					normalizedTag := strings.ToLower(jsonTag)
+					if strings.Contains(normalizedTag, "peeruid") || strings.Contains(normalizedTag, "peergid") {
+						return fmt.Errorf("production field in %s exposes peer credential through JSON tag %q", path, jsonTag)
 					}
 					privateDurableIdentity := filepath.Base(path) == "job_store_v2.go" && typeSpec.Name.Name == "storedJobStateV2" && len(field.Names) == 1 &&
-						(jsonTag == "principalid" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemongeneration" && field.Names[0].Name == "DaemonGeneration")
-					if privateDurableIdentity {
+						(jsonTag == "principalId" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemonGeneration" && field.Names[0].Name == "DaemonGeneration")
+					privateHashIdentity := filepath.Base(path) == "job_v2_helpers.go" && typeSpec.Name.Name == "jobRequestIdentityV2" && len(field.Names) == 1 &&
+						(jsonTag == "principalId" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemonGeneration" && field.Names[0].Name == "DaemonGeneration")
+					if privateDurableIdentity || privateHashIdentity {
 						continue
 					}
-					if strings.Contains(jsonTag, "principal") || strings.Contains(jsonTag, "daemongeneration") {
-						t.Fatalf("production field in %s exposes private server identity outside storedJobStateV2 through JSON tag %q", path, jsonTag)
+					if strings.Contains(normalizedTag, "principal") || strings.Contains(normalizedTag, "daemongeneration") || strings.Contains(normalizedTag, "daemon_generation") {
+						return fmt.Errorf("production field in %s exposes private server identity outside exact private identity types through JSON tag %q", path, jsonTag)
 					}
 				}
 			}
 		}
 	}
+	return nil
 }
 
 func reflectStructTagJSON(tag string) string {
