@@ -7653,8 +7653,47 @@ func l8WorkerV2IsNilExpression(expression ast.Expr, info *types.Info) bool {
 	return l8WorkerV2ExpressionObject(expression, info) == types.Universe.Lookup("nil")
 }
 
+func l8WorkerV2DirectAddressedObject(expression ast.Expr, info *types.Info) types.Object {
+	unary, ok := l8WorkerV2UnparenExpression(expression).(*ast.UnaryExpr)
+	if !ok || unary.Op != token.AND {
+		return nil
+	}
+	return l8WorkerV2ExpressionObject(unary.X, info)
+}
+
+func l8WorkerV2ObjectHasPointerType(object types.Object) bool {
+	if object == nil || object.Type() == nil {
+		return false
+	}
+	_, ok := object.Type().Underlying().(*types.Pointer)
+	return ok
+}
+
+func l8WorkerV2ResolveImmutablePointerTarget(object types.Object, aliases map[types.Object]types.Object, mutable map[types.Object]bool) types.Object {
+	visited := make(map[types.Object]bool)
+	traversed := false
+	for object != nil && !visited[object] {
+		if mutable[object] {
+			return nil
+		}
+		visited[object] = true
+		target, ok := aliases[object]
+		if !ok {
+			if traversed {
+				return object
+			}
+			return nil
+		}
+		object = target
+		traversed = true
+	}
+	return nil
+}
+
 func l8WorkerV2ValidateDecoderCallerComposition(files []*l8WorkerV2ParsedFile, info *types.Info) error {
 	declared := make(map[string]bool)
+	pointerAliases := make(map[types.Object]types.Object)
+	mutablePointers := make(map[types.Object]bool)
 	terminalAnalysis := &l8WorkerV2TerminalAnalysis{
 		declarations:   make(map[*types.Func]*ast.FuncDecl),
 		memo:           make(map[*types.Func]bool),
@@ -7686,6 +7725,9 @@ func l8WorkerV2ValidateDecoderCallerComposition(files []*l8WorkerV2ParsedFile, i
 			switch node := node.(type) {
 			case *ast.AssignStmt:
 				for index, left := range node.Lhs {
+					if _, indirect := l8WorkerV2UnparenExpression(left).(*ast.StarExpr); indirect {
+						continue
+					}
 					object := l8WorkerV2ExpressionObject(left, info)
 					if object == nil {
 						continue
@@ -7693,7 +7735,11 @@ func l8WorkerV2ValidateDecoderCallerComposition(files []*l8WorkerV2ParsedFile, i
 					identifier, isIdentifier := l8WorkerV2UnparenExpression(left).(*ast.Ident)
 					newDefinition := node.Tok == token.DEFINE && isIdentifier && info.Defs[identifier] == object
 					if newDefinition && index < len(node.Rhs) {
-						if literal, ok := l8WorkerV2UnparenExpression(node.Rhs[index]).(*ast.FuncLit); ok {
+						if addressed := l8WorkerV2DirectAddressedObject(node.Rhs[index], info); addressed != nil && l8WorkerV2ObjectHasPointerType(object) {
+							pointerAliases[object] = addressed
+						} else if alias := l8WorkerV2ExpressionObject(node.Rhs[index], info); alias != nil && l8WorkerV2ObjectHasPointerType(object) && l8WorkerV2ObjectHasPointerType(alias) {
+							pointerAliases[object] = alias
+						} else if literal, ok := l8WorkerV2UnparenExpression(node.Rhs[index]).(*ast.FuncLit); ok {
 							terminalAnalysis.localLiterals[object] = literal
 						} else if alias := l8WorkerV2ExpressionObject(node.Rhs[index], info); alias != nil {
 							terminalAnalysis.literalAliases[object] = alias
@@ -7702,7 +7748,11 @@ func l8WorkerV2ValidateDecoderCallerComposition(files []*l8WorkerV2ParsedFile, i
 					if newDefinition {
 						continue
 					}
-					terminalAnalysis.mutableLocals[object] = true
+					if l8WorkerV2ObjectHasPointerType(object) {
+						mutablePointers[object] = true
+					} else {
+						terminalAnalysis.mutableLocals[object] = true
+					}
 				}
 			case *ast.ValueSpec:
 				for index, name := range node.Names {
@@ -7713,17 +7763,38 @@ func l8WorkerV2ValidateDecoderCallerComposition(files []*l8WorkerV2ParsedFile, i
 					if object == nil {
 						continue
 					}
-					if literal, ok := l8WorkerV2UnparenExpression(node.Values[index]).(*ast.FuncLit); ok {
+					if addressed := l8WorkerV2DirectAddressedObject(node.Values[index], info); addressed != nil && l8WorkerV2ObjectHasPointerType(object) {
+						pointerAliases[object] = addressed
+					} else if alias := l8WorkerV2ExpressionObject(node.Values[index], info); alias != nil && l8WorkerV2ObjectHasPointerType(object) && l8WorkerV2ObjectHasPointerType(alias) {
+						pointerAliases[object] = alias
+					} else if literal, ok := l8WorkerV2UnparenExpression(node.Values[index]).(*ast.FuncLit); ok {
 						terminalAnalysis.localLiterals[object] = literal
 					} else if alias := l8WorkerV2ExpressionObject(node.Values[index], info); alias != nil {
 						terminalAnalysis.literalAliases[object] = alias
 					}
 				}
-			case *ast.UnaryExpr:
-				if node.Op == token.AND {
-					if object := l8WorkerV2ExpressionObject(node.X, info); object != nil {
-						terminalAnalysis.mutableLocals[object] = true
-					}
+			}
+			return true
+		})
+	}
+	for _, file := range files {
+		ast.Inspect(file.parsed, func(node ast.Node) bool {
+			assignment, ok := node.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for _, left := range assignment.Lhs {
+				star, ok := l8WorkerV2UnparenExpression(left).(*ast.StarExpr)
+				if !ok {
+					continue
+				}
+				target := l8WorkerV2DirectAddressedObject(star.X, info)
+				if target == nil {
+					pointer := l8WorkerV2ExpressionObject(star.X, info)
+					target = l8WorkerV2ResolveImmutablePointerTarget(pointer, pointerAliases, mutablePointers)
+				}
+				if target != nil {
+					terminalAnalysis.mutableLocals[target] = true
 				}
 			}
 			return true
