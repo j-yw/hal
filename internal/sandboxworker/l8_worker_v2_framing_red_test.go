@@ -319,13 +319,24 @@ func l8WorkerV2StartRawUnixResponder(t *testing.T, response func(Request) ([]byt
 	}
 	requestEOF := make(chan struct{})
 	done := make(chan error, 1)
+	terminated := make(chan struct{})
+	var connectionMu sync.Mutex
+	var acceptedConnection *net.UnixConn
+	stopping := false
 	go func() {
+		defer close(terminated)
 		defer listener.Close()
 		connection, err := listener.AcceptUnix()
 		if err != nil {
 			done <- err
 			return
 		}
+		connectionMu.Lock()
+		acceptedConnection = connection
+		if stopping {
+			connection.Close()
+		}
+		connectionMu.Unlock()
 		defer connection.Close()
 		raw, err := io.ReadAll(connection)
 		if err != nil {
@@ -349,12 +360,30 @@ func l8WorkerV2StartRawUnixResponder(t *testing.T, response func(Request) ([]byt
 		}
 		done <- nil
 	}()
+	t.Cleanup(func() {
+		listener.Close()
+		connectionMu.Lock()
+		stopping = true
+		if acceptedConnection != nil {
+			acceptedConnection.Close()
+		}
+		connectionMu.Unlock()
+		select {
+		case <-terminated:
+		case <-time.After(2 * time.Second):
+			t.Error("raw Unix responder did not terminate during cleanup")
+		}
+	})
 	return socketPath, requestEOF, done
 }
 
 func l8WorkerV2SocketPath(t *testing.T) string {
 	t.Helper()
-	directory, err := os.MkdirTemp("", "hal-worker-l8-")
+	resolvedTempDir, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(temp dir) error: %v", err)
+	}
+	directory, err := os.MkdirTemp(resolvedTempDir, "hal-worker-l8-")
 	if err != nil {
 		t.Fatalf("MkdirTemp(socket dir) error: %v", err)
 	}
