@@ -6754,7 +6754,8 @@ func l8WorkerV2StaticallyUnconditionalTerminal(statement ast.Stmt, info *types.I
 	case *ast.ExprStmt:
 		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.X, info, analysis)
 	case *ast.AssignStmt:
-		return l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(statement.Rhs, info, analysis)
+		return l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(statement.Lhs, info, analysis) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(statement.Rhs, info, analysis)
 	case *ast.DeclStmt:
 		declaration, ok := statement.Decl.(*ast.GenDecl)
 		if !ok {
@@ -6783,6 +6784,10 @@ func l8WorkerV2StaticallyUnconditionalTerminal(statement ast.Stmt, info *types.I
 	case *ast.SwitchStmt:
 		if (statement.Init != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Init, info, analysis, returnIsTerminal)) ||
 			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.Tag, info, analysis) {
+			return true
+		}
+		if expression := l8WorkerV2FirstEvaluatedSwitchCaseExpression(statement); expression != nil &&
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression, info, analysis) {
 			return true
 		}
 		return l8WorkerV2AllCaseClausesStaticallyTerminal(statement.Body, info, analysis, returnIsTerminal)
@@ -6857,6 +6862,19 @@ func l8WorkerV2AllCaseClausesStaticallyTerminal(body *ast.BlockStmt, info *types
 		}
 	}
 	return defaultFound
+}
+
+func l8WorkerV2FirstEvaluatedSwitchCaseExpression(statement *ast.SwitchStmt) ast.Expr {
+	if statement == nil || statement.Body == nil {
+		return nil
+	}
+	for _, rawClause := range statement.Body.List {
+		clause, ok := rawClause.(*ast.CaseClause)
+		if ok && len(clause.List) > 0 {
+			return clause.List[0]
+		}
+	}
+	return nil
 }
 
 func l8WorkerV2ClauseStatementListStaticallyTerminal(statements []ast.Stmt, info *types.Info, analysis *l8WorkerV2TerminalAnalysis, returnIsTerminal bool) bool {
@@ -7119,6 +7137,10 @@ func l8WorkerV2StatementHasReachableReturnEscape(statement ast.Stmt, info *types
 			}
 		}
 		if l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.Tag, info, analysis) {
+			return false
+		}
+		if expression := l8WorkerV2FirstEvaluatedSwitchCaseExpression(statement); expression != nil &&
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression, info, analysis) {
 			return false
 		}
 		for _, rawClause := range statement.Body.List {
