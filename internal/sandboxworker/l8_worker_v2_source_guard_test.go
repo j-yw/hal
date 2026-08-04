@@ -1871,6 +1871,18 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			},
 		},
 		{
+			name: "client signals done channel before deferred close",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\t}()\n\tdefer close(done)", "\t}()\n\tdone <- struct{}{}\n\tdefer close(done)", 1)
+			},
+		},
+		{
+			name: "client ranges done channel before watcher and deferred close",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdone := make(chan struct{})", "\tdone := make(chan struct{})\n\tfor range done {}", 1)
+			},
+		},
+		{
 			name: "client exposes connection before cleanup defer",
 			mutate: func(mutated map[string]string) {
 				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdefer connection.Close()", "\tif exposed, ok := connection.(error); ok { return Response{}, exposed }\n\tdefer connection.Close()", 1)
