@@ -111,6 +111,9 @@ type JobV2 struct{ ID string }`,
 }
 
 func l8WorkerV2AddD1CDeclarationFixture(sources map[string]string) {
+	if _, exists := sources["job_v2_types.go"]; exists {
+		return
+	}
 	sources["job_v2_types.go"] = `package sandboxworker
 type JobStartRequestV2 struct{}`
 }
@@ -196,7 +199,11 @@ func TestL8WorkerV2GuardClientTransportFixturePreservesExistingV2Production(t *t
 	sources := map[string]string{
 		"types.go": `package sandboxworker
 type Request struct {
-	JobCancelV2 *JobCancelRequestV2 ` + "`json:\"jobCancelV2,omitempty\"`" + `
+	JobStartV2   *JobStartRequestV2   ` + "`json:\"jobStartV2,omitempty\"`" + `
+	JobResolveV2 *JobResolveRequestV2 ` + "`json:\"jobResolveV2,omitempty\"`" + `
+	JobStatusV2  *JobStatusRequestV2  ` + "`json:\"jobStatusV2,omitempty\"`" + `
+	JobLogsV2    *JobLogsRequestV2    ` + "`json:\"jobLogsV2,omitempty\"`" + `
+	JobCancelV2  *JobCancelRequestV2  ` + "`json:\"jobCancelV2,omitempty\"`" + `
 }
 type Response struct {
 	JobV2     *JobV2             ` + "`json:\"jobV2,omitempty\"`" + `
@@ -214,25 +221,59 @@ type Response struct {
 
 func l8WorkerV2AddExactClientTransportSeamFixture(t *testing.T, sources map[string]string) {
 	t.Helper()
-	requestTail := "\tJobCancel       *JobCancelRequest  `json:\"jobCancel,omitempty\"`\n}"
-	if !strings.Contains(sources["types.go"], requestTail) {
-		t.Fatal("real Request envelope shape changed; update the exact V2 field fixture")
+	typesSource := sources["types.go"]
+	v2FieldMarkers := []string{
+		"*JobStartRequestV2",
+		"*JobResolveRequestV2",
+		"*JobStatusRequestV2",
+		"*JobLogsRequestV2",
+		"*JobCancelRequestV2",
+		"*JobV2",
+		"*JobLogsResponseV2",
 	}
-	sources["types.go"] = strings.Replace(sources["types.go"], requestTail, "\tJobCancel       *JobCancelRequest  `json:\"jobCancel,omitempty\"`\n\tJobStartV2      *JobStartRequestV2 `json:\"jobStartV2,omitempty\"`\n}", 1)
-	responseTail := "\tError           *Error           `json:\"error,omitempty\"`\n}"
-	if !strings.Contains(sources["types.go"], responseTail) {
-		t.Fatal("real Response envelope shape changed; update the exact V2 field fixture")
+	hasV2Fields := false
+	for _, marker := range v2FieldMarkers {
+		if strings.Contains(typesSource, marker) {
+			hasV2Fields = true
+			break
+		}
 	}
-	sources["types.go"] = strings.Replace(sources["types.go"], responseTail, "\tError           *Error           `json:\"error,omitempty\"`\n\tJobV2           *JobV2           `json:\"jobV2,omitempty\"`\n}", 1)
-	sources["job_v2_types.go"] = `package sandboxworker
+	if hasV2Fields {
+		for _, marker := range v2FieldMarkers {
+			if !strings.Contains(typesSource, marker) {
+				t.Fatalf("real V2 outer envelope is partial; missing %s", marker)
+			}
+		}
+	} else {
+		requestTail := "\tJobCancel       *JobCancelRequest  `json:\"jobCancel,omitempty\"`\n}"
+		if !strings.Contains(sources["types.go"], requestTail) {
+			t.Fatal("real Request envelope shape changed; update the exact V2 field fixture")
+		}
+		sources["types.go"] = strings.Replace(sources["types.go"], requestTail, "\tJobCancel       *JobCancelRequest    `json:\"jobCancel,omitempty\"`\n\tJobStartV2      *JobStartRequestV2   `json:\"jobStartV2,omitempty\"`\n\tJobResolveV2    *JobResolveRequestV2 `json:\"jobResolveV2,omitempty\"`\n\tJobStatusV2     *JobStatusRequestV2  `json:\"jobStatusV2,omitempty\"`\n\tJobLogsV2       *JobLogsRequestV2    `json:\"jobLogsV2,omitempty\"`\n\tJobCancelV2     *JobCancelRequestV2  `json:\"jobCancelV2,omitempty\"`\n}", 1)
+		responseTail := "\tError           *Error           `json:\"error,omitempty\"`\n}"
+		if !strings.Contains(sources["types.go"], responseTail) {
+			t.Fatal("real Response envelope shape changed; update the exact V2 field fixture")
+		}
+		sources["types.go"] = strings.Replace(sources["types.go"], responseTail, "\tError           *Error              `json:\"error,omitempty\"`\n\tJobV2           *JobV2              `json:\"jobV2,omitempty\"`\n\tJobLogsV2       *JobLogsResponseV2  `json:\"jobLogsV2,omitempty\"`\n}", 1)
+	}
+	if _, exists := sources["job_v2_types.go"]; !exists {
+		sources["job_v2_types.go"] = `package sandboxworker
 type JobStartRequestV2 struct{ Exec ExecRequest }
 func (request JobStartRequestV2) Validate() error { return request.Exec.Validate() }
+type JobResolveRequestV2 struct{}
+type JobStatusRequestV2 struct{}
+type JobLogsRequestV2 struct{}
+type JobCancelRequestV2 struct{}
+type JobLogsResponseV2 struct{}
 type JobV2 struct{ ID string }`
-	sources["job_v2_client.go"] = `package sandboxworker
+	}
+	if _, exists := sources["job_v2_client.go"]; !exists {
+		sources["job_v2_client.go"] = `package sandboxworker
 import "context"
 func (client *Client) roundTripV2(ctx context.Context, request Request) (Response, error) {
 	return client.roundTrip(ctx, request)
 }`
+	}
 }
 
 func TestL8WorkerV2GuardAllowsExactBoundedStrictDecoderSeam(t *testing.T) {
