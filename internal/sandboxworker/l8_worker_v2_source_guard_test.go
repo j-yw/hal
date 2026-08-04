@@ -369,8 +369,7 @@ func (client *Client) roundTripV2(ctx context.Context, request Request) (Respons
 
 func TestL8WorkerV2GuardAllowsExactBoundedStrictDecoderSeam(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"protocol_decode.go": true}}
-	l8AssertWorkerV2GuardAllows(t, map[string]string{
-		"protocol_decode.go": `package sandboxworker
+	requestDecoderSource := `package sandboxworker
 	import (
 		"bytes"
 		"encoding/json"
@@ -414,8 +413,15 @@ func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) 
 	}
 	return nil
 }
-`,
-	}, policy)
+`
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": requestDecoderSource}, policy)
+	methodBoundedReader := strings.Replace(requestDecoderSource,
+		"func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error {\n\traw, err := readWorkerJSONBoundedV2(reader, maxBytes)",
+		"type boundedReaderV2 struct{}\nfunc (boundedReaderV2) readWorkerJSONBoundedV2(reader io.Reader, maxBytes int64) ([]byte, error) { return nil, nil }\nfunc decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error {\n\traw, err := (boundedReaderV2{}).readWorkerJSONBoundedV2(reader, maxBytes)", 1)
+	if methodBoundedReader == requestDecoderSource {
+		t.Fatal("method-shaped bounded reader mutation did not change the positive fixture")
+	}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": methodBoundedReader}, policy, "bounded strict JSON decoding")
 	l8AssertWorkerV2GuardAllows(t, map[string]string{
 		"protocol_decode.go": `package sandboxworker
 	import (
@@ -939,6 +945,32 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 				return strings.Replace(source, "\tvar response Response", "\tfor {}\n\tvar response Response", 1)
 			},
 		},
+		{
+			name: "client response decode is unreachable after labeled unconditional loop",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tvar response Response", "blocked:\n\tfor { continue blocked }\n\tvar response Response", 1)
+			},
+		},
+		{
+			name: "client response decode is unreachable after builtin panic",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tvar response Response", "\tpanic(\"client response decoding disabled\")\n\tvar response Response", 1)
+			},
+		},
+		{
+			name: "client response decode is unreachable after direct nonreturning helper",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewBlockForever()\n\tvar response Response", 1)
+				return source + "\nfunc reviewBlockForever() { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after assigned nonreturning helper",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\tblocked := reviewBlockForeverValue()\n\t_ = blocked\n\tvar response Response", 1)
+				return source + "\nfunc reviewBlockForeverValue() int { select {} }\n"
+			},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
@@ -1014,6 +1046,16 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 		})
 	}
+
+	t.Run("store uses method-shaped acquisition with matching name", func(t *testing.T) {
+		mutated := l8CloneWorkerV2GuardSources(sources)
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\treader, err := openStoredJobStateV2(jobID)", "\treader, err := store.openStoredJobStateV2(jobID)", 1)
+		mutated["job_store_v2.go"] += "\nfunc (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }\n"
+		if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
+			t.Fatal("method-shaped store acquisition mutation did not change the positive fixture")
+		}
+		l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+	})
 
 	for _, tt := range []struct {
 		name   string

@@ -384,7 +384,7 @@ func TestL8WorkerV2PrivateRequestKeyIncludesCanonicalExecIdentity(t *testing.T) 
 				Metadata: &sandboxruntime.RuntimeMetadata{
 					Backend:          "firecracker",
 					CapabilityLabels: []string{"credential_safe", "offline"},
-					PathRoles:        []string{"workspace"},
+					PathRoles:        []string{"workspace", "artifacts"},
 				},
 			},
 		},
@@ -418,6 +418,8 @@ func TestL8WorkerV2PrivateRequestKeyIncludesCanonicalExecIdentity(t *testing.T) 
 	equivalent.Exec.Target.Runtime.RuntimeID = "runtime-primary"
 	equivalent.Exec.Target.Runtime.Image = "image-primary"
 	equivalent.Exec.Target.Runtime.WorkerID = "worker-primary"
+	equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[0], equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[1] = equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[1], equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[0]
+	equivalent.Exec.Target.Runtime.Metadata.PathRoles[0], equivalent.Exec.Target.Runtime.Metadata.PathRoles[1] = equivalent.Exec.Target.Runtime.Metadata.PathRoles[1], equivalent.Exec.Target.Runtime.Metadata.PathRoles[0]
 	equivalent.Exec.Env = map[string]string{"LANG": "C", "HAL_PROFILE": "test"}
 	equivalentKey, err := jobRequestKeyV2("microvm", "principal-owner", equivalent)
 	if err != nil {
@@ -450,6 +452,12 @@ func TestL8WorkerV2PrivateRequestKeyIncludesCanonicalExecIdentity(t *testing.T) 
 		{name: "runtime isolation", mutate: func(req *JobStartRequestV2) { req.Exec.Target.Runtime.IsolationLevel = IsolationLevelContainer }},
 		{name: "runtime metadata", mutate: func(req *JobStartRequestV2) {
 			req.Exec.Target.Runtime.Metadata = &sandboxruntime.RuntimeMetadata{Backend: "rootless_podman"}
+		}},
+		{name: "runtime capability labels", mutate: func(req *JobStartRequestV2) {
+			req.Exec.Target.Runtime.Metadata.CapabilityLabels[0] = "credential_neighbor"
+		}},
+		{name: "runtime path roles", mutate: func(req *JobStartRequestV2) {
+			req.Exec.Target.Runtime.Metadata.PathRoles[0] = "workspace_neighbor"
 		}},
 		{name: "stdout limit", mutate: func(req *JobStartRequestV2) { req.Exec.StdoutLimitBytes++ }},
 		{name: "stderr limit", mutate: func(req *JobStartRequestV2) { req.Exec.StderrLimitBytes++ }},
@@ -537,6 +545,12 @@ func TestL8WorkerV2PrivateRequestKeyCanonicalizationDoesNotMutateInput(t *testin
 	}
 	equivalent.SourceReferenceIDs[0], equivalent.SourceReferenceIDs[1] = equivalent.SourceReferenceIDs[1], equivalent.SourceReferenceIDs[0]
 	equivalent.Bindings[0], equivalent.Bindings[1] = equivalent.Bindings[1], equivalent.Bindings[0]
+	equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[0], equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[1] = equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[1], equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[0]
+	equivalent.Exec.Target.Runtime.Metadata.PathRoles[0], equivalent.Exec.Target.Runtime.Metadata.PathRoles[1] = equivalent.Exec.Target.Runtime.Metadata.PathRoles[1], equivalent.Exec.Target.Runtime.Metadata.PathRoles[0]
+	equivalentBefore, err := json.Marshal(equivalent)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	key, err := jobRequestKeyV2(" microvm ", " principal-owner ", request)
 	if err != nil {
@@ -552,6 +566,13 @@ func TestL8WorkerV2PrivateRequestKeyCanonicalizationDoesNotMutateInput(t *testin
 	canonicalKey, err := jobRequestKeyV2("microvm", "principal-owner", equivalent)
 	if err != nil {
 		t.Fatal(err)
+	}
+	equivalentAfter, err := json.Marshal(equivalent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(equivalentAfter, equivalentBefore) {
+		t.Fatalf("private request key canonicalization mutated reordered caller input:\n before: %s\n  after: %s", equivalentBefore, equivalentAfter)
 	}
 	if key != canonicalKey {
 		t.Fatalf("private request key did not preserve canonical equivalence: got %q want %q", key, canonicalKey)
