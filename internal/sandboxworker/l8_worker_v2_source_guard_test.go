@@ -788,6 +788,9 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reviewReassignedLocal()
 	switch true { case true: case reviewSkippedForeverBool(): }
 	switch true { case true, reviewSkippedForeverBool(): }
+	reviewNormalAssignment := 0
+	reviewNormalAssignment = 1
+	_ = reviewNormalAssignment
 	var response Response`, 1)
 	possiblyReturningHelper["client.go"] += `
 func reviewSkippedForeverBool() bool { select {} }
@@ -1185,6 +1188,20 @@ func (reviewReturningReceiver) value() int { return 1 }
 			mutate: func(source string) string {
 				source = strings.Replace(source, "\tvar response Response", "\treviewSwitchThenReturn()\n\tvar response Response", 1)
 				return source + "\nfunc reviewSwitchThenReturn() { switch true { case reviewSwitchBlocks(): }; return }\nfunc reviewSwitchBlocks() bool { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after assignment lhs operand",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewBlockingSlice()[0] = 1\n\tvar response Response", 1)
+				return source + "\nfunc reviewBlockingSlice() []int { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after helper assignment lhs operand",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewAssignThenReturn()\n\tvar response Response", 1)
+				return source + "\nfunc reviewAssignThenReturn() { reviewBlockingSlice()[0] = 1; return }\nfunc reviewBlockingSlice() []int { select {} }\n"
 			},
 		},
 	} {
