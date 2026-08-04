@@ -1389,6 +1389,70 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		})
 	}
 
+	for _, tt := range []struct {
+		name     string
+		path     string
+		old      string
+		replace  string
+		jobValue bool
+	}{
+		{
+			name:    "server replaces receiver before configured limit use",
+			path:    "server.go",
+			old:     "\tvar request Request",
+			replace: "\tserver = &Server{maxRequestBytes: 1}\n\tvar request Request",
+		},
+		{
+			name:    "client rewrites request field through field pointer",
+			path:    "client.go",
+			old:     "\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+			replace: "\tfieldAlias := &request.Operation\n\t*fieldAlias = \"neighbor\"\n\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+		},
+		{
+			name:    "server rewrites decoded request field through field pointer",
+			path:    "server.go",
+			old:     "\treturn request, nil",
+			replace: "\tfieldAlias := &request.Operation\n\t*fieldAlias = \"neighbor\"\n\treturn request, nil",
+		},
+		{
+			name:     "store rewrites decoded nested job field through field pointer",
+			path:     "job_store_v2.go",
+			old:      "\treturn state, nil",
+			replace:  "\tfieldAlias := &state.JobV2.Value\n\t*fieldAlias = \"neighbor\"\n\treturn state, nil",
+			jobValue: true,
+		},
+		{
+			name:    "store replaces job identity through pointer alias before open",
+			path:    "job_store_v2.go",
+			old:     "\treader, err := openStoredJobStateV2(jobID)",
+			replace: "\tjobIDAlias := &jobID\n\t*jobIDAlias = \"job-neighbor\"\n\treader, err := openStoredJobStateV2(jobID)",
+		},
+		{
+			name:    "server directly reads decoder input before decode",
+			path:    "server.go",
+			old:     "\tvar request Request",
+			replace: "\tvar scratch [1]byte\n\t_, _ = reader.Read(scratch[:])\n\tvar request Request",
+		},
+		{
+			name:    "client directly reads connection before response decode",
+			path:    "client.go",
+			old:     "\tvar response Response",
+			replace: "\tvar scratch [1]byte\n\t_, _ = connection.Read(scratch[:])\n\tvar response Response",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			if tt.jobValue {
+				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct{}", "type JobV2 struct { Value string }", 1)
+			}
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			if mutated[tt.path] == sources[tt.path] {
+				t.Fatal("receiver, field-pointer, or job identity mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
 	otherWrapperOutput := l8CloneWorkerV2GuardSources(sources)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "var output Response", "var output Response\n\tvar other Response", 1)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "return output, nil", "return other, nil", 1)
