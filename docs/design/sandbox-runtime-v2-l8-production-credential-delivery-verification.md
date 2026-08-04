@@ -121,10 +121,13 @@ Required focused areas are:
   deterministic vector, HKDF-SHA-256 labels, AES-256-GCM 52-byte headers,
   Finished sequence zero, application sequence one, replay/gap/cap/tamper and
   unauthorized-host negatives, reconnect rejection, no fallback, strict frames,
-  exact concrete control unions and `0x13` private `HL8B` records, both
-  root/source mode-dependent network validators, root/child/session digest
-  conformance, canonical `sha256-` guest-image mapping, authenticated
-  preflight-to-complete identity construction, and cross-job negatives;
+  exact concrete control request/response/error unions, binding/exec schemas,
+  `0x13` private `HL8B` records, and direction-constrained `0x14` binary `HL8S`
+  stdin/stdout/stderr streaming, both root/source mode-dependent network
+  validators, root/child/session digest conformance, canonical `sha256-`
+  guest-image mapping, authenticated preflight-to-complete identity
+  construction, generated-only lowercase `http_proxy`/`https_proxy` values
+  fixed to the proved L7 base, and cross-job negatives;
 - neutral leaf-route registration and composed Registry definition/dispatch
   separation, collision/cleanup-retry ordering, live request and response
   non-serialization, safe metadata bounds, exact deployment-prefixed
@@ -150,17 +153,22 @@ Required focused areas are:
   `cgroup.kill`/zero-population proof, normal unmount, keeper reap, whole-VM
   fallback, exact numeric helper/job/FD/process/cleanup limits, atomic
   prepare-begin/file/commit correlation, domain-separated bootstrap/manifest/
-  transaction digests, exact enum and ExecPlan codecs, nested relative-path
-  encoding, rollback, and restart cleanup;
+  transaction digests, exact enum, typed response-union and ExecPlan codecs,
+  nested relative-path encoding, opaque `0x17` exec-private transfer,
+  backpressured `0x18` exec streams, terminal output digests, rollback, and
+  restart cleanup;
 - neutral SSH codec, authenticated relay subkey, SCM_RIGHTS handoff,
   backpressure, mandatory key and algorithm/flag allowlists, filtered
   enumeration, per-connection host-agent identity, exact relay limits, loss,
   and absence proof;
 - Firecracker process/vsock/network/credential generation composition;
-- worker authenticated preflight-before-lifecycle, source-resolution only after
-  preflight, prepare-before-exec, heartbeat renewal, loss cancellation,
-  revoke-before-terminal behavior, state-write failures, daemon close, and
-  restart reconciliation;
+- worker durable seed-before-preflight ordering, the exact preflight return and
+  ownership matrix, immediate continuously latched loss watching, complete
+  identity persistence before source resolution, proof-bearing idempotent
+  abort, prepare-before-exec, heartbeat renewal, loss cancellation,
+  revoke-before-terminal behavior, state-write failures, daemon close,
+  seed-only crash stop/reap, complete-identity recovery, and restart
+  reconciliation;
 - L3 finalization ordering with optional `CredentialCleanup` nil for
   compatibility, required before artifacts for live intent, and the existing
   post-publication sync-out recovery exception; and

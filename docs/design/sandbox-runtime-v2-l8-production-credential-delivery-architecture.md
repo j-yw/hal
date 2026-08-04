@@ -193,13 +193,19 @@ metadata-only guards are not relaxed to make room for live code.
 
 ## Neutral runtime lifecycle
 
-The optional root runtime boundary has this shape; exact Go names may change
-without weakening the semantics:
+The optional root runtime boundary has these exact Go shapes:
 
 ```go
 type JobCredentialRuntime interface {
-	PrepareJobCredentials(context.Context, JobCredentialPrepareRequest) (JobCredentialSession, error)
+	PreflightJobCredentials(context.Context, JobCredentialIdentitySeed) (JobCredentialRuntimePreflight, error)
 	RecoverJobCredentials(context.Context, JobCredentialRecoveryRequest) (JobCredentialCleanupProof, error)
+}
+
+type JobCredentialRuntimePreflight interface {
+	Identity() JobCredentialIdentity
+	PrepareJobCredentials(context.Context, JobCredentialPrepareRequest) (JobCredentialSession, error)
+	Abort(context.Context) (JobCredentialCleanupProof, error)
+	Loss() <-chan JobCredentialLoss
 }
 
 type JobCredentialSession interface {
@@ -211,8 +217,9 @@ type JobCredentialSession interface {
 }
 ```
 
-`JobCredentialPrepareRequest` carries exact safe identity, a sanitized plan,
-explicit binding metadata, the accepted admission-grant identity/revision, and
+`JobCredentialPrepareRequest` carries an exact complete safe identity, a
+sanitized plan, explicit binding metadata, the accepted admission-grant
+identity/revision, and
 a worker-local `LiveSecretSource` selected from authorized safe source
 references. The source is never serializable. Command-to-worker requests carry
 only safe source-reference and admission-grant IDs; neither kind of ID is a
@@ -249,37 +256,71 @@ control session and exposes:
   successful `JobCredentialSession`; and
 - `Loss`, which closes preparation on authenticated-session/helper loss.
 
-The neutral signatures are fixed:
+The pure root identity API is exact:
 
 ```go
-type JobCredentialRuntime interface {
-	PreflightJobCredentials(context.Context, JobCredentialIdentitySeed) (JobCredentialRuntimePreflight, error)
-	RecoverJobCredentials(context.Context, JobCredentialRecoveryRequest) (JobCredentialCleanupProof, error)
-}
-
-type JobCredentialRuntimePreflight interface {
-	Identity() JobCredentialIdentity
-	PrepareJobCredentials(context.Context, JobCredentialPrepareRequest) (JobCredentialSession, error)
-	Abort(context.Context) error
-	Loss() <-chan JobCredentialLoss
-}
+func ValidateJobCredentialIdentitySeed(JobCredentialIdentitySeed) error
+func CompleteJobCredentialIdentity(JobCredentialIdentitySeed, string, string) (JobCredentialIdentity, error)
+func ValidateJobCredentialIdentityCompletion(JobCredentialIdentitySeed, JobCredentialIdentity) error
+func ValidateJobCredentialIdentity(JobCredentialIdentity) error
+func JobCredentialIdentityDigest(JobCredentialIdentity) ([32]byte, error)
 ```
 
-`ValidateJobCredentialIdentitySeed` requires every seed field, applies the same
-mode-dependent network rules as the complete validator, and deep-copies ordered
-bindings. Neither seed nor preflight is a durable/status JSON contract.
+The two strings passed to `CompleteJobCredentialIdentity` are the authenticated
+guest-session and helper generations in that order. The seed validator requires
+every seed field and applies the same mode-dependent network rules as the
+complete validator without mutating its input. Completion validates the seed,
+deep-copies ordered binding/mode slices, adds only those two generations, and
+validates the result. Completion validation independently compares every seed
+field and ordered slice before accepting both added generations. `Identity()`
+returns a defensive deep copy. `GuestSessionGeneration` is exactly 43
+unpadded-base64url characters that decode to 32 bytes; helper generation uses
+the safe-ID grammar. There is deliberately no seed digest: a seed is not a
+proof, wire identity, authorization token, or bearer capability, and only the
+complete identity has the canonical digest below.
 
-The root validator rejects any preflight result that changes a seed field,
-omits either generation, or returns an invalid complete identity. The worker
-constructs `JobCredentialLifecycle` only after this validation and calls
-`BeginPrepare` with the same complete identity. A successful prepare transfers
-the preflight session into the returned `JobCredentialSession`; every other
-path calls `Abort` exactly once before terminal persistence. Recovery remains
-on `JobCredentialRuntime` because it starts from a previously persisted
-complete identity. A nil preflight dependency preserves only jobs with no live
-L8 intent and can never fabricate generation fields. Preflight abort/loss that
-cannot prove its authenticated session and helper state closed escalates to
-D6's exact whole-VM stop/reap path; it never yields an active credential proof.
+The worker persists the validated, privately cloned seed with the queued job
+before calling preflight. The seed is safe durable recovery input but is never
+public status, a proof, or a command-result JSON field; the preflight handle is
+never durable. Preflight receives no live source and cannot create a credential
+job, read a credential value, or publish an active proof. Its only valid return
+is a non-nil, non-typed-nil handle with nil error. Any error must return a nil
+handle after closing its attempted host session; the worker nevertheless
+stops/reaps the exact runtime before terminal persistence. A non-nil handle
+with error or a nil/typed-nil handle with nil error is a contract violation and
+also forces exact stop/reap.
+
+On successful return, the worker starts the preflight `Loss()` watcher before
+calling `Identity`, validation, persistence, source resolution, or prepare.
+Loss is a terminal, latched, exactly-once value. It remains observable until
+ownership transfers, so no nonblocking receive may consume and discard it.
+The worker validates completion, persists the complete identity, constructs
+the lifecycle, and calls `BeginPrepare` before resolving the authorized live
+source handles.
+
+`PrepareJobCredentials` has an exact ownership matrix. A non-nil,
+non-typed-nil `JobCredentialSession` with nil error atomically transfers all
+prepared state to that session. The preflight and session loss channels expose
+the same terminal latch; the worker transfers its watcher without a gap or
+duplicate event. A nil/typed-nil session, any non-nil error, or a session plus
+error leaves ownership with preflight and requires `Abort`. Once transfer
+occurs, an invalid active proof requires `JobCredentialSession.Revoke`, not
+preflight abort.
+
+`Abort` is idempotent before transfer and returns the same valid complete-
+identity `JobCredentialCleanupProof` after proving session/helper/job-resource
+absence. When `BeginPrepare` has succeeded, the worker uses that proof to drive
+the preparing lifecycle through revoke before terminal persistence. If the
+preflight identity itself cannot be validated, no cleanup proof can validate
+against it: abort is still attempted, then exact runtime stop/reap supplies the
+absence evidence. After transfer, `Abort` returns
+`ErrJobCredentialTransition` without touching session-owned state. Abort/loss
+that cannot produce valid absence proof escalates to D6's exact whole-VM
+stop/reap path. A daemon crash before complete-identity persistence is recovered
+by unconditionally stopping/reaping the exact runtime named by the durable seed;
+after complete persistence, ordinary `RecoverJobCredentials` proves cleanup.
+A nil preflight dependency preserves only jobs with no live L8 intent and can
+never fabricate generation fields.
 
 The guest-session generation is the unpadded base64url session ID derived only
 after the authenticated handshake; it identifies but does not independently
@@ -688,12 +729,13 @@ Frame types are `0x01 guest_finished` guest-to-controller,
 `0x02 controller_finished` controller-to-guest, `0x10 control_request`
 controller-to-guest, `0x11 control_response` and `0x12 control_event`
 guest-to-controller, and `0x13 control_private` controller-to-guest. On the
-relay, `0x20 relay_request` is guest-to-controller and `0x21 relay_response` is
-controller-to-guest; `0x7f close_notify` is valid in either direction.
-`0x13` carries one binary `HL8B` record only; it never multiplexes JSON into
-`0x10` or another type. Magic, version, zero flags, channel/type/direction,
-session ID, expected sequence, and length are validated before allocation or
-AEAD open.
+control channel, `0x14 control_stream` is direction-constrained by its inner
+stream kind. On the relay, `0x20 relay_request` is guest-to-controller and
+`0x21 relay_response` is controller-to-guest; `0x7f close_notify` is valid in
+either direction. `0x13` carries one binary `HL8B` record only; it never
+multiplexes JSON into `0x10` or another type. `0x14` carries one binary `HL8S`
+record only. Magic, version, zero flags, channel/type/direction, session ID,
+expected sequence, and length are validated before allocation or AEAD open.
 
 Finished plaintexts are these exact 32-byte HMACs, encrypted with the matching
 direction at sequence 0 and compared in constant time after GCM succeeds:
@@ -855,8 +897,30 @@ Every request has this root field order:
 Every response has the same first four fields followed by `ok`. Success has one
 operation-specific `body` and omits `error`; failure has no `body` and one
 `error` with exact field order `code`, optional `field`, and `message`. Error
-codes/messages are fixed safe catalogs and never wrap a cause. The 16-byte
-request ID is nonzero. The 32-byte digest is unpadded base64url and is the base
+codes/messages are the closed pairs below and never wrap a cause:
+
+```text
+malformed_request     "credential request is malformed"
+unknown_operation     "credential operation is unsupported"
+request_conflict      "credential request conflicts with prior state"
+identity_mismatch     "credential identity does not match"
+revision_stale        "credential revision is stale"
+expired               "credential request is expired"
+resource_limit        "credential request exceeds a fixed limit"
+prepare_failed        "credential preparation failed"
+renew_failed          "credential renewal failed"
+revoke_failed         "credential revocation failed"
+exec_failed           "credential execution failed"
+helper_unavailable    "credential helper is unavailable"
+cleanup_incomplete    "credential cleanup is incomplete"
+```
+
+Only `malformed_request` may include `field`, which is a static schema field
+path produced by the concrete decoder and never input text or a value; every
+other code omits it. The exact envelope orders are
+`protocolVersion,operation,requestId,identityDigest,ok,body` for success and
+`protocolVersion,operation,requestId,identityDigest,ok,error` for failure. The
+16-byte request ID is nonzero. The 32-byte digest is unpadded base64url and is the base
 session ID itself for readiness or the exact
 `GuestCredentialSessionIdentity` digest for job operations. Responses echo
 operation, request ID, and digest byte-for-byte.
@@ -892,68 +956,121 @@ jobIdentityDigest)`. It is live-only; durable proof tokens commit to the root
 job-identity digest and safe session generation, never the raw wrapper or
 session keys.
 
-The exact operation bodies are:
+Operation strings are exactly `readiness`, `credential_prepare`,
+`credential_renew`, `credential_revoke`, and `exec`. Their concrete body field
+orders and types are fixed below. Angle-bracket names denote the concrete
+objects defined immediately afterward, not generic JSON values:
 
 ```text
 readiness request:
-  requiredCapabilities: ordered array of
-    credential_lifecycle, credential_exec_binding, helper_exact_pid,
-    file_tmpfs, ssh_agent
-  expectedServiceUID: 998
-  expectedServiceGID: 998
-  expectedWorkloadUID: 1000
-  expectedWorkloadGID: 1000
-  helperProtocol: "guest-helper-v1"
-
+  {requiredCapabilities:[string], expectedServiceUID:uint32,
+   expectedServiceGID:uint32, expectedWorkloadUID:uint32,
+   expectedWorkloadGID:uint32, helperProtocol:string}
 readiness success:
-  capabilities: exact ordered echo
-  serviceUID/serviceGID: 998/998
-  workloadUID/workloadGID: 1000/1000
-  helperProtocol: "guest-helper-v1"
-  guestSessionGeneration: safe ID derived from sessionID
-  helperGeneration: authenticated safe ID
+  {capabilities:[string], serviceUID:uint32, serviceGID:uint32,
+   workloadUID:uint32, workloadGID:uint32, helperProtocol:string,
+   guestSessionGeneration:string, helperGeneration:string}
 
 credential_prepare request:
-  identity: JobIdentity
-  revision: 1
-  expiresAtUnixNano: positive int64 within the 35-minute hard limit
-  bindings: exact ordered binding manifest
-  privateRecordCount/privateAggregateBytes: bounded nonnegative integers
-
+  {identity:<JobIdentity>, revision:uint64, expiresAtUnixNano:int64,
+   bindings:[<BindingManifest>], privateRecordCount:uint32,
+   privateAggregateBytes:uint64}
 credential_prepare success:
-  revision/expiresAtUnixNano: exact echo
-  activeProofId: safe ID
-  execBindingId: safe opaque ID
-  bindingProofs: ordered exact {bindingId,mode,proofId} array
+  {revision:uint64, expiresAtUnixNano:int64, activeProofId:string,
+   execBindingId:string, bindingProofs:[<BindingProof>]}
 
 credential_renew request:
-  identity, next revision, new expiresAtUnixNano, priorProofId
+  {identity:<JobIdentity>, revision:uint64, expiresAtUnixNano:int64,
+   priorProofId:string}
 credential_renew success:
-  revision/expiresAtUnixNano exact echo, replacementActiveProofId
+  {revision:uint64, expiresAtUnixNano:int64,
+   replacementActiveProofId:string}
 
 credential_revoke request:
-  identity, current revision, reason enum
+  {identity:<JobIdentity>, revision:uint64, reason:string}
 credential_revoke success:
-  revision exact echo, cleanupProofId, authorityAbsent=true,
-  resourcesAbsent=true, cleanupDisposition="cleanup_complete"
+  {revision:uint64, cleanupProofId:string, authorityAbsent:bool,
+   resourcesAbsent:bool, cleanupDisposition:string}
 
 exec request:
-  identity, active revision, execBindingId, bounded ExecPlan metadata,
-  privateRecordCount/privateAggregateBytes
+  {identity:<JobIdentity>, revision:uint64, execBindingId:string,
+   plan:<ExecPlan>, privateRecordCount:uint32,
+   privateAggregateBytes:uint64}
 exec success:
-  revision exact echo, exitCode, bounded stdout/stderr metadata
+  {revision:uint64, exitCode:int32, stdinBytes:uint64,
+   stdoutBytes:uint64, stdoutSha256:string, stdoutTruncated:bool,
+   stderrBytes:uint64, stderrSha256:string, stderrTruncated:bool}
 ```
 
-Prepare revision starts at one; renew is exactly prior plus one. Revoke uses the
-current accepted revision. Repeating the same request ID plus identical
-canonical bytes is idempotent; reusing an ID with different bytes, changing any
+Readiness capabilities are exactly this order:
+`credential_lifecycle,credential_exec_binding,helper_exact_pid,file_tmpfs,ssh_agent`.
+The request uses service UID/GID 998, workload UID/GID 1000, and helper protocol
+`guest-helper-v1`; success echoes those values, derives the 43-character guest
+session generation from `sessionID`, and returns the authenticated helper safe
+ID.
+
+`JobIdentity` uses the field order listed above, with every scalar represented
+as its declared JSON string/integer type and `bindings` as ordered concrete
+`{"bindingId":string,"mode":string}` objects. A `BindingManifest` is one of
+three concrete objects, each with exactly the shown field order:
+
+```text
+HTTP: {bindingId:string, mode:"http_proxy", serviceId:string}
+file: {bindingId:string, mode:"file_tmpfs", targetPath:string,
+       declaredFileBytes:uint32, fileSha256:string}
+SSH:  {bindingId:string, mode:"ssh_agent", sshPolicyId:string,
+       sshPolicyRevision:uint64}
+```
+
+File SHA-256 is exactly 64 lowercase hexadecimal characters. Target-path rules
+are the helper rules below. The SSH policy ID/revision select only immutable
+host-admin policy and expose no fingerprint. A `BindingProof` is exactly
+`{"bindingId":string,"mode":string,"proofId":string}` and appears in manifest
+order with one entry per binding.
+
+Prepare revision is exactly 1. Renew revision is exactly prior plus one. Revoke
+uses the current revision and reason `requested`, `expired`, `session_loss`,
+`source_revoked`, `worker_cancel`, or `daemon_shutdown`. Revoke success requires
+both booleans true and `cleanupDisposition="cleanup_complete"`. All proof and
+binding IDs use the safe-ID grammar. Expiries are positive signed Unix
+nanoseconds inside both the 35-minute session limit and root lifetime.
+
+`ExecPlan` is exactly:
+
+```text
+{args:[string], env:[<Environment>], workDir:string,
+ stdinMaxBytes:uint32, stdoutMaxBytes:uint32, stderrMaxBytes:uint32,
+ timing:<Timing>}
+
+Environment = {name:string, source:string, value:string}
+Timing timeout = {kind:"timeout_millis", value:int64}
+Timing deadline = {kind:"deadline_unix_millis", value:int64}
+```
+
+Arguments, environment, path, stream, aggregate, and timing bounds match the
+binary helper `ExecPlan` below. Environment source is `literal`, `inherited`,
+or `generated`; `secret` is forbidden. Values contain no credential binding.
+Only generated entries may use the lowercase names `http_proxy` and
+`https_proxy`, and both must equal the exact already-proved L7 proxy base URL;
+all other names use `[A-Z_][A-Z0-9_]*`. Neither JSON nor helper `ExecPlan`
+contains stdin bytes.
+
+Exec success is emitted only after the three stream EOF rules below and child
+exit. Exit code is nonnegative. Byte counts and truncation flags exactly match
+the streamed data; each SHA-256 string is 64 lowercase hexadecimal characters,
+including SHA-256 of empty output when the count is zero. The response contains
+no stdout/stderr content.
+
+Repeating the same request ID plus identical canonical bytes is idempotent;
+reusing an ID with different bytes, changing any
 identity field, stale/gapped revision, expiry outside the job/session window,
 or a response mismatch closes and revokes the session. Readiness has no job and
 cannot authorize prepare by itself.
 
 Prepare private-record count equals the number of file bindings, zero through
-16, with aggregate at most 1 MiB. Exec private-record count is zero or one and
-aggregate at most 64 KiB. Renew, revoke, readiness, and every response require
+16, with aggregate at most 1 MiB. Exec private-record count is exactly one when
+the plan contains HTTP (including mixed mode) and zero otherwise; aggregate is
+at most 64 KiB. Renew, revoke, readiness, and every response require
 both private fields absent and accept no private record.
 
 Sensitive data uses an encrypted binary private record inside `HL8F`, never a
@@ -974,6 +1091,24 @@ aggregate/count exactly match the preceding control request. Digests, request
 ID, identity, index, order, count, and length validate before a sink receives
 bytes. Any mismatch aborts the request and wipes every owned buffer.
 
+Kind 2 contains this exact mutable binary payload:
+
+```text
+httpBindingCount:u16
+for each HTTP binding in manifest order:
+  bindingIndex:u16 | serviceID:token | localBaseURL:blob16 |
+  ticket:blob16 | apiVersion:token
+```
+
+The count is 1..16 and equals the HTTP bindings. `localBaseURL` is canonical
+ASCII, 1..512 bytes, and matches the runtime-owned reserved listener authority
+and deployment-prefixed path. Ticket is exactly the 43-byte unpadded-base64url
+job capability. API version and service ID use the token grammar and must match
+the sealed catalog. The record contains no upstream endpoint or raw source
+credential. The guest agent treats it as opaque mutable bytes; only the
+authenticated helper decodes it to construct the three selected transient
+environment values, then wipes it.
+
 Every `HL8B` record is the entire plaintext of one `0x13 control_private`
 frame, controller-to-guest on the control session. Exactly the count declared
 by the preceding `0x10 control_request` follows it at consecutive secure
@@ -982,6 +1117,32 @@ are ordered by binding index; the optional exec-binding record has index zero.
 Zero declared records forbid `0x13`. Missing, extra, reordered, interleaved, or
 wrong-request private frames close and revoke the session before any sink sees
 bytes.
+
+Exec stream bytes use one `0x14 control_stream` frame per binary `HL8S`
+plaintext record:
+
+```text
+magic[4]="HL8S" | version:u8=1 | streamKind:u8 | flags:u16_be
+requestID:[16]byte | identityDigest:[32]byte | offset:u64_be
+payloadLength:u32_be | payloadSHA256:[32]byte | mutable payload
+```
+
+The fixed header is 100 bytes. Stream kind is 1 stdin, 2 stdout, or 3 stderr.
+Flags are zero or exactly 1 (`EOF`). Non-EOF payload is 1..64 KiB and its
+SHA-256 must match; EOF has zero payload, the SHA-256 of empty bytes, and the
+next contiguous offset. Stdin is controller-to-guest only; stdout/stderr are
+guest-to-controller only. Offsets begin at zero and advance without gap or
+overlap. Aggregate bytes cannot exceed the matching declared stream maximum.
+
+Exactly one stdin EOF and one stdout/stderr EOF belong to the outstanding exec
+request. No new control request may interleave, although the three stream kinds
+may interleave at ordinary monotonically increasing secure-frame sequences.
+The controller sends an immediate zero-offset stdin EOF when input is empty.
+The guest emits stdout/stderr EOF only after the helper closes those pipes and
+emits the JSON exec response only after both EOF records and child exit. Output
+beyond a declared maximum is drained under the fixed process limit, not sent,
+and sets the matching truncation flag. Every owned chunk buffer is wiped after
+authenticated write/read on success and every failure path.
 
 V2 exec is admitted only into the exact prepared job namespace on that
 authenticated persistent session. V1 exec and a
@@ -1274,12 +1435,17 @@ Packet type numbers, directions, sequence starts, and bodies are fixed:
                        priorProofID:token
 0x14 revoke            agent -> helper, revision:u64 | reason:u8
 0x15 exec              agent -> helper, revision:u64 | execBindingID:token |
+                       privateBindingLength:u32 | privateBindingSHA256:[32]byte |
                        bounded binary ExecPlan
 0x16 ssh_accepted_fd   helper -> agent, revision:u64 | bindingIndex:u16 |
                        connectionOrdinal:u8 | relayCapabilityDigest:[32]byte
+0x17 exec_private      agent -> helper, revision:u64 | privateBindingLength:u32 |
+                       privateBindingSHA256:[32]byte | mutable private binding
+0x18 exec_stream       either direction, revision:u64 | streamKind:u8 |
+                       flags:u8 | reserved:u16=0 | offset:u64 |
+                       payloadLength:u32 | payloadSHA256:[32]byte | mutable payload
 0x20 response          helper -> agent, requestType:u8 | disposition:u8 |
-                       revision:u64 | proofID:optional-token |
-                       failureCode:u8
+                       revision:u64 | failureCode:u8 | typed result union
 0x21 event             helper -> agent, eventCode:u8 | revision:u64 |
                        eventID:token
 0x7f close_notify      either direction, reasonCode:u8
@@ -1302,15 +1468,33 @@ close reason: 1 normal, 2 protocol_error, 3 identity_drift, 4 expired,
               5 helper_loss, 6 shutdown
 ```
 
-`accepted` is valid for prepare, renew, and exec. Prepare/renew accepted
-responses require a proof ID; exec requires it absent. `cleanup_complete` is
-valid only for revoke and requires a proof ID. `rejected`, `cleanup_retry`, and
-`stop_vm_required` require no proof ID and a nonzero failure code; successful
-dispositions require failure code zero. Every `optional-token` is encoded as
-`uint16_be(0)` when absent and otherwise uses the ordinary 1..128-byte token
-encoding. Response `requestType` is exactly `0x12` for the logical prepare
-transaction, `0x13` renew, `0x14` revoke, or `0x15` exec; all other values are
-invalid.
+Response `requestType` is exactly `0x12` for the logical prepare transaction,
+`0x13` renew, `0x14` revoke, or `0x15` exec. After the common fields, a
+successful response has exactly one request-type result:
+
+```text
+prepare accepted:
+  expiresAtUnixNano:i64 | activeProofID:token | execBindingID:token |
+  bindingProofCount:u16 |
+  each manifest-ordered bindingID:token | mode:u8 | proofID:token
+renew accepted:
+  expiresAtUnixNano:i64 | replacementActiveProofID:token
+revoke cleanup_complete:
+  cleanupProofID:token | authorityAbsent:u8=1 | resourcesAbsent:u8=1
+exec accepted:
+  exitCode:i32 | stdinBytes:u64 | stdoutBytes:u64 | stdoutSHA256:[32]byte |
+  stdoutTruncated:u8 | stderrBytes:u64 | stderrSHA256:[32]byte |
+  stderrTruncated:u8
+```
+
+Prepare proof count equals the manifest and every identity/mode/proof is exact.
+Exec byte counts, digests, and zero/one truncation flags match the `0x18`
+streams. `accepted` is valid only for prepare, renew, and exec;
+`cleanup_complete` only for revoke. These successful dispositions require
+failure code zero. `rejected`, `cleanup_retry`, and `stop_vm_required` have no
+trailing result bytes and require a nonzero failure code. Unknown request types,
+disposition/type combinations, trailing bytes, and noncanonical booleans fail
+before state mutation.
 
 The ordered manifest record is:
 
@@ -1333,7 +1517,7 @@ The `ExecPlan` body is encoded exactly in this order:
 argumentCount:u16
 arguments[argumentCount]: blob16
 environmentCount:u16
-environment[environmentCount]: name:blob16 | value:blob16
+environment[environmentCount]: name:blob16 | source:u8 | value:blob16
 workDirectory:blob16
 stdinMode:u8 | stdoutMode:u8 | stderrMode:u8
 stdinMaxBytes:u32 | stdoutMaxBytes:u32 | stderrMaxBytes:u32
@@ -1342,12 +1526,15 @@ timingKind:u8 | timingValue:i64
 
 `blob16` is `uint16_be(length) || bytes`. Argument count is 1..128; each
 argument is valid UTF-8, at most 8192 bytes, contains no NUL/control byte, and
-argument zero is not blank. Environment count is 0..256. Each unique name is
-1..128 ASCII bytes matching `[A-Z_][A-Z0-9_]*`; each value is 0..8192 bytes
-without NUL. The work directory is 1..4096-byte canonical absolute UTF-8 and
-passes the frozen v1 guest-path rules. All three modes are exactly 1 (`pipe`)
-and every maximum is 1..4 MiB. The three inspected pipe descriptors carry the
-stream bytes; stdin bytes never appear again in `ExecPlan`.
+argument zero is not blank. Environment count is 0..256. Source is 1 literal,
+2 inherited, or 3 generated; secret/zero/unknown values are forbidden. Each
+unique ordinary name is 1..128 ASCII bytes matching `[A-Z_][A-Z0-9_]*` and each
+value is 0..8192 bytes without NUL. Only source 3 may instead name exact
+lowercase `http_proxy` or `https_proxy`, with the value fixed to the already-
+proved L7 proxy base URL. The work directory is 1..4096-byte canonical absolute
+UTF-8 and passes the frozen v1 guest-path rules. All three modes are exactly 1
+(`pipe`) and every maximum is 1..4 MiB. The three inspected pipe descriptors
+carry the stream bytes; stdin bytes never appear again in `ExecPlan`.
 
 `timingKind` is 1 (`timeout_millis`) or 2 (`deadline_unix_millis`). Its signed
 value is positive and must satisfy the frozen L4 timing bounds plus the current
@@ -1433,6 +1620,26 @@ entire canonical transaction at fresh packet sequences with the same request
 ID and logical digest. A cached identical success re-emits the prior safe
 result without mutation; changed content under that ID is terminal. No other
 request may interleave before the terminal response.
+
+Exec is one separate logical transaction. `0x15` declares zero private bytes
+and an all-zero private digest when the manifest has no HTTP mode. Otherwise it
+declares 1..64 KiB and the SHA-256 of the exact host `HL8B` kind-2 payload; one
+`0x17 exec_private` with the same request ID, identity digest, revision,
+length, and digest follows immediately. The helper holds the child start gate
+and the three inspected pipes until that payload authenticates and decodes. A
+missing, extra, reordered, changed, or zero/nonzero-mismatched private packet
+aborts exec, wipes the payload, closes the pipes/pidfd, and cannot launch.
+
+After the child gate opens, each `0x18 exec_stream` maps one-for-one to the
+correlated host `HL8S` record. Its stream kind, EOF flag, offset, length, digest,
+direction, and aggregate obey the same rules; agent-to-helper carries stdin and
+helper-to-agent carries stdout/stderr. Only one mutable chunk per direction is
+outstanding, so a blocked receiver backpressures the pipe instead of allocating
+a queue. The terminal exec response is emitted only after stdin closure, both
+output EOF packets, child exit/reap, and stream metadata reconciliation. Loss,
+cancel, timeout, or malformed stream closes pipes, kills/reaps under the exact
+cgroup policy, wipes chunks/private binding, and returns failure only when the
+authenticated IPC remains usable.
 
 The decoder validates header, exact datagram length, credentials, descriptor
 kinds/counts, sequence, identity, revision, and body bounds before touching
@@ -1649,27 +1856,45 @@ The L2 worker job lifecycle becomes:
 1. derive the peer principal, strictly decode/validate the request, and
    authorize its complete grant/source/plan/binding/host/runtime/template/workspace
    intent without resolving a source;
-2. persist the queued job plus safe authorized credential intent;
-3. call optional `JobCredentialRuntime.PreflightJobCredentials` with the
-   validated identity seed and no live source, validate its exact complete
-   identity, create the lifecycle, and begin preparation;
-4. persist credential state `preparing` with only the complete safe identity;
-5. resolve only the authorized source set into transient live sources;
-6. call `JobCredentialRuntimePreflight.PrepareJobCredentials` on the same
-   authenticated session and mechanically inspect its exact proof;
-7. persist only the sanitized active proof reference;
-8. execute with the opaque transient binding;
-9. renew from the heartbeat path and concurrently watch loss;
-10. on expiry/loss, cancel and prove cgroup zero population or stop/reap the
+2. construct, validate, privately clone, and persist the queued job plus safe
+   authorized intent and exact identity seed before any runtime preflight;
+3. call optional `JobCredentialRuntime.PreflightJobCredentials` with that seed
+   and no live source; an error, typed nil, or other return-contract violation
+   forces exact runtime stop/reap before terminal persistence;
+4. on the sole valid non-nil-handle/nil-error return, immediately start the
+   latched preflight-loss watcher, obtain its defensively copied identity,
+   validate every seed field and both authenticated guest generations, and
+   persist the complete safe identity;
+5. create the lifecycle, call `BeginPrepare`, and persist credential state
+   `preparing` before source lookup;
+6. resolve only the authorized source set into transient live sources;
+7. call `JobCredentialRuntimePreflight.PrepareJobCredentials` on the same
+   authenticated session and apply the exact ownership matrix: failure remains
+   preflight-owned and requires proof-bearing `Abort`, while success transfers
+   ownership and the terminal loss latch without a gap;
+8. mechanically inspect the exact active proof; invalid post-transfer proof
+   requires session `Revoke`, then persist only a sanitized valid proof
+   reference;
+9. execute with the opaque transient binding;
+10. renew from the heartbeat path and continuously watch the transferred loss
+    latch;
+11. on expiry/loss, cancel and prove cgroup zero population or stop/reap the
    entire runtime;
-11. revoke and prove cleanup on success, failure, cancel, timeout, daemon close,
+12. revoke and prove cleanup on success, failure, cancel, timeout, daemon close,
    state-write failure, or runtime loss; and
-12. only then persist terminal job outcome and release admission.
+13. only then persist terminal job outcome and release admission.
 
-Any failure after step 3 and before successful ownership transfer in step 6
-calls `JobCredentialRuntimePreflight.Abort` exactly once and watches its loss
-channel while aborting. It never resolves a source before authenticated guest
-preflight succeeds.
+Any failure after the valid return in step 4 and before successful ownership
+transfer in step 7 calls idempotent `JobCredentialRuntimePreflight.Abort` and
+validates its complete-identity cleanup proof. After `BeginPrepare`, that proof,
+not the return of a void close operation, drives preparing lifecycle
+revoke/cleanup. Before `BeginPrepare`, including invalid preflight identity,
+abort is best-effort and exact stop/reap is mandatory because no lifecycle-
+correlated cleanup proof can be accepted. The already-started loss watcher
+remains active while aborting. A missing, invalid, or incomplete absence proof
+also escalates to exact runtime stop/reap. It never resolves a source before
+authenticated guest preflight, identity validation, complete-identity
+persistence, and `BeginPrepare` succeed.
 
 A nil lifecycle dependency preserves existing jobs with no live L8 intent. A
 request for production L8 modes with a nil or unsupported dependency fails
@@ -1691,9 +1916,13 @@ Worker restart reconciliation runs before accepting new jobs. Every durable
 nonterminal credential reference is reconciled through the runtime. In-memory
 tickets and buffers are already unusable after process death; reconciliation
 does not reconstruct a secret or resume an exec. It reinspects and removes
-owned guest/runtime resources. If the guest cannot be reauthenticated, the
-runtime is stopped or quarantined and process termination is proved before
-cleanup can complete.
+owned guest/runtime resources. A job with a durable seed but no complete
+identity is never passed to ordinary credential recovery: the worker uses the
+seed's exact runtime identity to stop/reap the runtime and proves process
+absence before cleanup. A job with a complete identity calls
+`RecoverJobCredentials`; failure to reauthenticate or produce valid absence
+proof similarly stops/reaps or quarantines the exact runtime, and process
+termination is proved before cleanup can complete.
 
 ## L8 guest asset profile
 
