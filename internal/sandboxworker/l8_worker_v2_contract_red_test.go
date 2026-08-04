@@ -520,6 +520,7 @@ func TestL8WorkerV2JobRejectsMalformedOpaqueSubmissionKeys(t *testing.T) {
 		name string
 		key  string
 	}{
+		{name: "missing", key: ""},
 		{name: "short digest", key: "submission-v2-" + strings.Repeat("0", 63)},
 		{name: "non-hex digest", key: "submission-v2-" + strings.Repeat("g", 64)},
 		{name: "uppercase digest", key: "submission-v2-" + strings.Repeat("A", 64)},
@@ -1014,6 +1015,7 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 		name   string
 		mutate func(*storedJobStateV2)
 	}{
+		{name: "missing submission key", mutate: func(candidate *storedJobStateV2) { candidate.JobV2.SubmissionKey = "" }},
 		{name: "missing request key", mutate: func(candidate *storedJobStateV2) { candidate.RequestKey = "" }},
 		{name: "raw looking request key", mutate: func(candidate *storedJobStateV2) { candidate.RequestKey = "token=raw-request" }},
 		{name: "oversized request key", mutate: func(candidate *storedJobStateV2) { candidate.RequestKey = strings.Repeat("r", 193) }},
