@@ -6512,7 +6512,7 @@ func l8WorkerV2ExactReceiverRootedStoredJobOpener(file *l8WorkerV2ParsedFile, me
 	}
 	pathObject := l8WorkerV2ExpressionObject(pathAssignment.Lhs[0], info)
 	joinCall, ok := l8WorkerV2UnparenExpression(pathAssignment.Rhs[0]).(*ast.CallExpr)
-	if pathObject == nil || !l8WorkerV2IsExactPackageCall(joinCall, "path/filepath", "Join", 2, info) ||
+	if !ok || pathObject == nil || !l8WorkerV2IsExactPackageCall(joinCall, "path/filepath", "Join", 2, info) ||
 		!l8WorkerV2ExactSelectorRoot(joinCall.Args[0], receiver, "root", info) ||
 		!l8WorkerV2ExactStoredJobFilename(joinCall.Args[1], parameters[0], info) {
 		return nil, false
@@ -6524,7 +6524,7 @@ func l8WorkerV2ExactReceiverRootedStoredJobOpener(file *l8WorkerV2ParsedFile, me
 	statInfo := l8WorkerV2ExpressionObject(statAssignment.Lhs[0], info)
 	statErr := l8WorkerV2ExpressionObject(statAssignment.Lhs[1], info)
 	statCall, ok := l8WorkerV2UnparenExpression(statAssignment.Rhs[0]).(*ast.CallExpr)
-	if statInfo == nil || statErr == nil || !l8WorkerV2IsExactPackageCall(statCall, "os", "Lstat", 1, info) || l8WorkerV2ExpressionObject(statCall.Args[0], info) != pathObject {
+	if !ok || statInfo == nil || statErr == nil || !l8WorkerV2IsExactPackageCall(statCall, "os", "Lstat", 1, info) || l8WorkerV2ExpressionObject(statCall.Args[0], info) != pathObject {
 		return nil, false
 	}
 	inspectionCalls, exactInspection := l8WorkerV2ExactStoredJobFileInspection(opener.Body.List[3], statInfo, statErr, info)
