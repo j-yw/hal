@@ -632,8 +632,8 @@ func TestL8WorkerV2JSONPreflightRequiresProductionFlagOnlyAtCredentialSchemaPath
 		`{"JobStartV2":{"ProductionCredentialsRequested":false}}`,
 		`{"JOBV2":{"CredentialIntent":{"ProductionCredentialsRequested":false}}}`,
 	} {
-		if err := validateWorkerJSONPreflightV2(raw); err != nil {
-			t.Fatalf("preflight rejected case-insensitive credential schema spelling accepted by typed JSON decode: %v", err)
+		if err := validateWorkerJSONPreflightV2(raw); err == nil {
+			t.Fatalf("preflight accepted an unclassifiable noncanonical credential schema: %s", raw)
 		}
 	}
 }

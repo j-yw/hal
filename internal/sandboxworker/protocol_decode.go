@@ -533,7 +533,13 @@ func workerJSONPreflightTypedContextV2(context workerJSONPreflightContextV2) boo
 }
 
 func (parser *workerJSONPreflightV2) validateRootCanonicalKeys(typedDocument, response, storedState bool, jobV2Key, jobV2Token string) error {
+	if parser.noncanonicalTypedKey {
+		return errors.New("worker JSON typed object key is noncanonical")
+	}
 	if !typedDocument {
+		if jobV2Key != "" {
+			return errors.New("worker JSON root schema is ambiguous")
+		}
 		return nil
 	}
 	if response && storedState {
@@ -544,9 +550,6 @@ func (parser *workerJSONPreflightV2) validateRootCanonicalKeys(typedDocument, re
 		expectedJobV2Key = "JobV2"
 	}
 	if jobV2Key != "" && (jobV2Key != expectedJobV2Key || jobV2Token != `"`+expectedJobV2Key+`"`) {
-		return errors.New("worker JSON typed object key is noncanonical")
-	}
-	if parser.noncanonicalTypedKey {
 		return errors.New("worker JSON typed object key is noncanonical")
 	}
 	return nil
