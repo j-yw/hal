@@ -2090,6 +2090,27 @@ func JobResolveV2Fixture() { _ = formatting.Sprint(struct{ Value string }{Value:
 	}, policy)
 }
 
+func TestL8WorkerV2GuardRejectsCallbacksInVariadicSliceExpansion(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{"job_v2_fixture.go": true},
+		mixed:     map[string]bool{"shared.go": true},
+	}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import formatting "fmt"
+func JobStatusV2Fixture() {
+	_ = formatting.Sprint([]any{variadicRenderer{}}...)
+}`,
+		"shared.go": `package sandboxworker
+import processapi "os"
+type variadicRenderer struct{}
+func (variadicRenderer) String() string {
+	_, _ = processapi.StartProcess("worker", nil, nil)
+	return ""
+}`,
+	}, policy, "implicit interface callback")
+}
+
 func TestL8WorkerV2GuardAuditsPackageInitializers(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"handler.go": true,
