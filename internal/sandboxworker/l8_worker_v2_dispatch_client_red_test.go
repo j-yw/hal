@@ -634,6 +634,7 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 		name                   string
 		mutate                 func(*testing.T, Response, Request) Response
 		wantUnsupported        bool
+		wantMalformed          bool
 		wantPayloadCorrelation bool
 	}{
 		{name: "exact", mutate: func(_ *testing.T, response Response, _ Request) Response { return response }, wantUnsupported: true},
@@ -641,6 +642,10 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 			response.RequestID = "request-neighbor"
 			return response
 		}},
+		{name: "missing or empty request id", mutate: func(_ *testing.T, response Response, _ Request) Response {
+			response.RequestID = ""
+			return response
+		}, wantMalformed: true},
 		{name: "wrong operation", mutate: func(_ *testing.T, response Response, request Request) Response {
 			if response.Operation == request.Operation {
 				response.Operation = OperationProtocolError
@@ -677,6 +682,7 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 			name                   string
 			mutate                 func(*testing.T, Response, Request) Response
 			wantUnsupported        bool
+			wantMalformed          bool
 			wantPayloadCorrelation bool
 		}{
 			name: "unexpected " + fixture.name,
@@ -717,6 +723,12 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 						}
 					} else if invokeErr == nil || errors.Is(invokeErr, ErrCredentialWorkerProtocolUnsupported) {
 						t.Fatalf("mismatched response error = %v, want malformed non-admission error", invokeErr)
+					}
+					if mutation.wantMalformed {
+						var malformed *ClientError
+						if !errors.As(invokeErr, &malformed) || malformed.Code != ErrorCodeMalformedRequest {
+							t.Fatalf("missing response request id error = %v, want malformed client response", invokeErr)
+						}
 					}
 					l8AssertWorkerV2SingleAttemptWithoutFallback(t, calls, captured, operation.operation)
 				})
