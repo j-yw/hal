@@ -5470,9 +5470,6 @@ func l8WorkerV2ObjectHasNoWholeValueEscapes(function *ast.FuncDecl, object types
 		}
 		switch statement := node.(type) {
 		case *ast.CallExpr:
-			if _, closure := l8WorkerV2UnparenExpression(statement.Fun).(*ast.FuncLit); closure {
-				return true
-			}
 			if callSet[statement] {
 				return false
 			}
@@ -5504,24 +5501,23 @@ func l8WorkerV2ObjectHasNoWholeValueEscapes(function *ast.FuncDecl, object types
 				}
 			}
 		case *ast.AssignStmt:
-			for index, right := range statement.Rhs {
+			if l8WorkerV2AssignmentDefinesAllowedAssertionAlias(statement, object, assertionSet, info) {
+				return true
+			}
+			for _, right := range statement.Rhs {
 				if !l8WorkerV2ExpressionCarriesWholeObject(right, object, aliases, info) {
 					continue
 				}
-				if len(statement.Lhs) != len(statement.Rhs) || !l8WorkerV2IsLocalWholeValueAliasTarget(function, statement.Lhs[index], info) {
-					valid = false
-					return false
-				}
+				valid = false
+				return false
 			}
 		case *ast.ValueSpec:
-			for index, right := range statement.Values {
+			for _, right := range statement.Values {
 				if !l8WorkerV2ExpressionCarriesWholeObject(right, object, aliases, info) {
 					continue
 				}
-				if len(statement.Names) != len(statement.Values) || !l8WorkerV2IsLocalWholeValueAliasTarget(function, statement.Names[index], info) {
-					valid = false
-					return false
-				}
+				valid = false
+				return false
 			}
 		case *ast.CompositeLit:
 			if l8WorkerV2NodeReferencesObjectSet(statement, object, aliases, info) {
@@ -5532,6 +5528,22 @@ func l8WorkerV2ObjectHasNoWholeValueEscapes(function *ast.FuncDecl, object types
 		return true
 	})
 	return valid
+}
+
+func l8WorkerV2AssignmentDefinesAllowedAssertionAlias(assignment *ast.AssignStmt, object types.Object, assertions map[*ast.TypeAssertExpr]bool, info *types.Info) bool {
+	if assignment == nil || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || l8WorkerV2ExpressionObject(assignment.Rhs[0], info) != object {
+		return false
+	}
+	alias := l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+	if alias == nil {
+		return false
+	}
+	for assertion := range assertions {
+		if l8WorkerV2ExpressionObject(assertion.X, info) == alias {
+			return true
+		}
+	}
+	return false
 }
 
 func l8WorkerV2ExpressionCarriesWholeObject(expression ast.Expr, object types.Object, aliases map[types.Object]bool, info *types.Info) bool {
@@ -5557,18 +5569,6 @@ func l8WorkerV2CallCarriesWholeObject(call *ast.CallExpr, object types.Object, a
 		}
 	}
 	return false
-}
-
-func l8WorkerV2IsLocalWholeValueAliasTarget(function *ast.FuncDecl, expression ast.Expr, info *types.Info) bool {
-	identifier, ok := l8WorkerV2UnparenExpression(expression).(*ast.Ident)
-	if !ok {
-		return false
-	}
-	if identifier.Name == "_" {
-		return true
-	}
-	object := l8WorkerV2ExpressionObject(identifier, info)
-	return object != nil && object.Pos() >= function.Body.Pos() && object.Pos() <= function.Body.End()
 }
 
 func l8WorkerV2IsExactFinalObjectReturn(function *ast.FuncDecl, returned *ast.ReturnStmt, object types.Object, info *types.Info) bool {
