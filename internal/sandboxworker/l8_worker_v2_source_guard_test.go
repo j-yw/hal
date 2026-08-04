@@ -225,9 +225,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"time"
 )
 type JobV2 struct { ID string }
-type Response struct { JobV2 *JobV2 }
+type Response struct {
+	JobV2      *JobV2
+	SubmittedAt time.Time
+}
 func (Response) Validate() error { return nil }
 func decodeWorkerResponse(reader io.Reader, output *Response) error {
 	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
@@ -358,6 +362,38 @@ import (
 type nestedJobStartV2Value struct { Value string }
 func (*nestedJobStartV2Value) UnmarshalJSON([]byte) error { return nil }
 type JobStartRequestV2 struct { Nested nestedJobStartV2Value }
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`,
+		"nested_text_unmarshal_callback": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+)
+type nestedJobStartV2Label string
+func (*nestedJobStartV2Label) UnmarshalText([]byte) error { return nil }
+type JobStartRequestV2 struct { Labels []nestedJobStartV2Label }
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`,
+		"nested_interface_callback": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+)
+type JobStartRequestV2 struct { Dynamic any }
 func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
 	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
 	decoder.DisallowUnknownFields()
@@ -2674,14 +2710,68 @@ func l8WorkerV2IsExactStrictDecodeOutputPointer(typ types.Type) bool {
 	if !ok {
 		return false
 	}
-	methods := types.NewMethodSet(typ)
-	for index := 0; index < methods.Len(); index++ {
-		switch methods.At(index).Obj().Name() {
-		case "UnmarshalJSON", "UnmarshalText":
-			return false
+	return !l8WorkerV2TypeMayInvokeJSONDecodeCallback(typ, make(map[types.Type]bool))
+}
+
+func l8WorkerV2TypeMayInvokeJSONDecodeCallback(typ types.Type, seen map[types.Type]bool) bool {
+	if typ == nil {
+		return false
+	}
+	resolved := types.Unalias(typ)
+	if seen[resolved] {
+		return false
+	}
+	seen[resolved] = true
+	if l8WorkerV2IsAllowedStandardJSONDecodeType(resolved) {
+		return false
+	}
+	if l8WorkerV2IsInterfaceType(resolved) || l8WorkerV2HasUnsafeJSONDecodeMethod(resolved) {
+		return true
+	}
+	switch underlying := resolved.Underlying().(type) {
+	case *types.Array:
+		return l8WorkerV2TypeMayInvokeJSONDecodeCallback(underlying.Elem(), seen)
+	case *types.Slice:
+		return l8WorkerV2TypeMayInvokeJSONDecodeCallback(underlying.Elem(), seen)
+	case *types.Map:
+		return l8WorkerV2TypeMayInvokeJSONDecodeCallback(underlying.Key(), seen) ||
+			l8WorkerV2TypeMayInvokeJSONDecodeCallback(underlying.Elem(), seen)
+	case *types.Pointer:
+		return l8WorkerV2TypeMayInvokeJSONDecodeCallback(underlying.Elem(), seen)
+	case *types.Struct:
+		for index := 0; index < underlying.NumFields(); index++ {
+			if l8WorkerV2TypeMayInvokeJSONDecodeCallback(underlying.Field(index).Type(), seen) {
+				return true
+			}
 		}
 	}
-	return true
+	return false
+}
+
+func l8WorkerV2HasUnsafeJSONDecodeMethod(typ types.Type) bool {
+	candidates := []types.Type{typ}
+	if _, pointer := types.Unalias(typ).(*types.Pointer); !pointer {
+		candidates = append(candidates, types.NewPointer(typ))
+	}
+	for _, candidate := range candidates {
+		methods := types.NewMethodSet(candidate)
+		for index := 0; index < methods.Len(); index++ {
+			switch methods.At(index).Obj().Name() {
+			case "UnmarshalJSON", "UnmarshalText":
+				return !l8WorkerV2IsAllowedStandardJSONDecodeType(typ)
+			}
+		}
+	}
+	return false
+}
+
+func l8WorkerV2IsAllowedStandardJSONDecodeType(typ types.Type) bool {
+	resolved := types.Unalias(typ)
+	if pointer, ok := resolved.(*types.Pointer); ok {
+		resolved = types.Unalias(pointer.Elem())
+	}
+	named, ok := resolved.(*types.Named)
+	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "time" && named.Obj().Name() == "Time"
 }
 
 func l8WorkerV2IsExactStrictDecoderCall(scope l8WorkerV2GuardScope, candidate, constructor, limit *ast.CallExpr, decoder types.Object, info *types.Info) bool {
