@@ -2155,6 +2155,15 @@ func legacyDispatch(request runtimeRequest) {
 			}, policy, "runtime operation assembly")
 		})
 	}
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import text "strings"
+type Operation string
+func JobResolveV2Fixture(op Operation) {
+	if op == Operation(text.Join([]string{"job_resolve_", "v", "2"}, "")) {}
+}`,
+	}, policy, "runtime operation assembly")
 }
 
 func TestL8WorkerV2GuardRejectsRuntimeOperationMatchAliases(t *testing.T) {
