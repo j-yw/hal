@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -130,6 +131,8 @@ type workerJSONPreflightContextV2 uint8
 
 const (
 	workerJSONPreflightGenericV2 workerJSONPreflightContextV2 = iota
+	workerJSONPreflightTypedObjectV2
+	workerJSONPreflightStringMapV2
 	workerJSONPreflightRootV2
 	workerJSONPreflightJobV2
 	workerJSONPreflightProductionFlagV2
@@ -154,7 +157,7 @@ func (parser *workerJSONPreflightV2) parseValue(context workerJSONPreflightConte
 	case '{':
 		return parser.parseObject(context)
 	case '[':
-		return parser.parseArray()
+		return parser.parseArray(context)
 	case '"':
 		_, err := parser.parseString()
 		return err
@@ -178,6 +181,7 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 	parser.offset++
 	parser.skipSpace()
 	seen := make(map[string]bool)
+	seenFolded := make(map[string]bool)
 	productionFlagSeen := false
 	if parser.consume('}') {
 		if requiredProductionFlag {
@@ -194,6 +198,13 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 			return errors.New("worker JSON contains duplicate object key")
 		}
 		seen[key] = true
+		if workerJSONPreflightTypedContextV2(context) {
+			folded := workerJSONPreflightFoldKeyV2(key)
+			if seenFolded[folded] {
+				return errors.New("worker JSON contains duplicate object key")
+			}
+			seenFolded[folded] = true
+		}
 		parser.skipSpace()
 		if !parser.consume(':') {
 			return errors.New("worker JSON object separator is invalid")
@@ -225,7 +236,7 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 	}
 }
 
-func (parser *workerJSONPreflightV2) parseArray() error {
+func (parser *workerJSONPreflightV2) parseArray(context workerJSONPreflightContextV2) error {
 	if err := parser.enterContainer(); err != nil {
 		return err
 	}
@@ -236,7 +247,7 @@ func (parser *workerJSONPreflightV2) parseArray() error {
 		return nil
 	}
 	for {
-		if err := parser.parseValue(workerJSONPreflightGenericV2); err != nil {
+		if err := parser.parseValue(context); err != nil {
 			return err
 		}
 		parser.skipSpace()
@@ -270,9 +281,39 @@ func workerJSONPreflightChildContextV2(context workerJSONPreflightContextV2, key
 		return workerJSONPreflightJobV2
 	case context == workerJSONPreflightJobV2 && strings.EqualFold(key, "credentialIntent"):
 		return workerJSONPreflightProductionFlagV2
+	case workerJSONPreflightTypedContextV2(context) && (strings.EqualFold(key, "env") || strings.EqualFold(key, "labels")):
+		return workerJSONPreflightStringMapV2
+	case workerJSONPreflightTypedContextV2(context):
+		return workerJSONPreflightTypedObjectV2
 	default:
 		return workerJSONPreflightGenericV2
 	}
+}
+
+func workerJSONPreflightTypedContextV2(context workerJSONPreflightContextV2) bool {
+	switch context {
+	case workerJSONPreflightTypedObjectV2,
+		workerJSONPreflightRootV2,
+		workerJSONPreflightJobV2,
+		workerJSONPreflightProductionFlagV2:
+		return true
+	default:
+		return false
+	}
+}
+
+func workerJSONPreflightFoldKeyV2(value string) string {
+	var folded strings.Builder
+	for _, current := range value {
+		representative := current
+		for candidate := unicode.SimpleFold(current); candidate != current; candidate = unicode.SimpleFold(candidate) {
+			if candidate < representative {
+				representative = candidate
+			}
+		}
+		folded.WriteRune(representative)
+	}
+	return folded.String()
 }
 
 func (parser *workerJSONPreflightV2) parseString() (string, error) {
