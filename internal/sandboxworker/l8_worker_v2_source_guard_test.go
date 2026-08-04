@@ -91,12 +91,28 @@ func TestL8WorkerV2GuardAddingD1CDeclarationsPreservesRealV1Production(t *testin
 			sources[path] = l8ReadWorkerSource(t, path)
 		}
 	}
-	sources["job_v2_types.go"] = `package sandboxworker
-type JobStartRequestV2 struct{}`
+	l8WorkerV2AddD1CDeclarationFixture(sources)
 
 	if err := l8AuditWorkerV2Sources(sources, l8WorkerV2ProductionGuardPolicy()); err != nil {
 		t.Fatalf("guard rejected unchanged real V1 production after adding an allowed D1C declaration: %v", err)
 	}
+}
+
+func TestL8WorkerV2GuardDeclarationFixturePreservesExistingV2Types(t *testing.T) {
+	sources := map[string]string{
+		"job_v2_types.go": `package sandboxworker
+type JobStartRequestV2 struct{}
+type JobV2 struct{ ID string }`,
+	}
+	l8WorkerV2AddD1CDeclarationFixture(sources)
+	if !strings.Contains(sources["job_v2_types.go"], "type JobV2 struct") {
+		t.Fatal("D1C declaration fixture replaced existing V2 production declarations")
+	}
+}
+
+func l8WorkerV2AddD1CDeclarationFixture(sources map[string]string) {
+	sources["job_v2_types.go"] = `package sandboxworker
+type JobStartRequestV2 struct{}`
 }
 
 func TestL8WorkerV2GuardAllowsExactExistingClientTransportSeam(t *testing.T) {
@@ -117,25 +133,7 @@ func TestL8WorkerV2GuardAllowsExactExistingClientTransportSeam(t *testing.T) {
 			sources[path] = l8ReadWorkerSource(t, path)
 		}
 	}
-	requestTail := "\tJobCancel       *JobCancelRequest  `json:\"jobCancel,omitempty\"`\n}"
-	if !strings.Contains(sources["types.go"], requestTail) {
-		t.Fatal("real Request envelope shape changed; update the exact V2 field fixture")
-	}
-	sources["types.go"] = strings.Replace(sources["types.go"], requestTail, "\tJobCancel       *JobCancelRequest  `json:\"jobCancel,omitempty\"`\n\tJobStartV2      *JobStartRequestV2 `json:\"jobStartV2,omitempty\"`\n}", 1)
-	responseTail := "\tError           *Error           `json:\"error,omitempty\"`\n}"
-	if !strings.Contains(sources["types.go"], responseTail) {
-		t.Fatal("real Response envelope shape changed; update the exact V2 field fixture")
-	}
-	sources["types.go"] = strings.Replace(sources["types.go"], responseTail, "\tError           *Error           `json:\"error,omitempty\"`\n\tJobV2           *JobV2           `json:\"jobV2,omitempty\"`\n}", 1)
-	sources["job_v2_types.go"] = `package sandboxworker
-type JobStartRequestV2 struct{ Exec ExecRequest }
-func (request JobStartRequestV2) Validate() error { return request.Exec.Validate() }
-type JobV2 struct{ ID string }`
-	sources["job_v2_client.go"] = `package sandboxworker
-import "context"
-func (client *Client) roundTripV2(ctx context.Context, request Request) (Response, error) {
-	return client.roundTrip(ctx, request)
-}`
+	l8WorkerV2AddExactClientTransportSeamFixture(t, sources)
 	l8AssertWorkerV2GuardAllows(t, sources, l8WorkerV2ProductionGuardPolicy())
 
 	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
@@ -192,6 +190,49 @@ func (ExecRequest) Validate() error {
 	return nil
 }`,
 	}, l8WorkerV2ProductionGuardPolicy(), "outside the exact allowlist")
+}
+
+func TestL8WorkerV2GuardClientTransportFixturePreservesExistingV2Production(t *testing.T) {
+	sources := map[string]string{
+		"types.go": `package sandboxworker
+type Request struct {
+	JobCancelV2 *JobCancelRequestV2 ` + "`json:\"jobCancelV2,omitempty\"`" + `
+}
+type Response struct {
+	JobV2     *JobV2             ` + "`json:\"jobV2,omitempty\"`" + `
+	JobLogsV2 *JobLogsResponseV2 ` + "`json:\"jobLogsV2,omitempty\"`" + `
+}`,
+		"job_v2_types.go":  "package sandboxworker\ntype JobStartRequestV2 struct{}\ntype JobV2 struct{}",
+		"job_v2_client.go": "package sandboxworker\nconst existingV2Client = true",
+	}
+	wantTypes, wantClient := sources["job_v2_types.go"], sources["job_v2_client.go"]
+	l8WorkerV2AddExactClientTransportSeamFixture(t, sources)
+	if sources["job_v2_types.go"] != wantTypes || sources["job_v2_client.go"] != wantClient {
+		t.Fatal("client transport fixture replaced existing V2 production files")
+	}
+}
+
+func l8WorkerV2AddExactClientTransportSeamFixture(t *testing.T, sources map[string]string) {
+	t.Helper()
+	requestTail := "\tJobCancel       *JobCancelRequest  `json:\"jobCancel,omitempty\"`\n}"
+	if !strings.Contains(sources["types.go"], requestTail) {
+		t.Fatal("real Request envelope shape changed; update the exact V2 field fixture")
+	}
+	sources["types.go"] = strings.Replace(sources["types.go"], requestTail, "\tJobCancel       *JobCancelRequest  `json:\"jobCancel,omitempty\"`\n\tJobStartV2      *JobStartRequestV2 `json:\"jobStartV2,omitempty\"`\n}", 1)
+	responseTail := "\tError           *Error           `json:\"error,omitempty\"`\n}"
+	if !strings.Contains(sources["types.go"], responseTail) {
+		t.Fatal("real Response envelope shape changed; update the exact V2 field fixture")
+	}
+	sources["types.go"] = strings.Replace(sources["types.go"], responseTail, "\tError           *Error           `json:\"error,omitempty\"`\n\tJobV2           *JobV2           `json:\"jobV2,omitempty\"`\n}", 1)
+	sources["job_v2_types.go"] = `package sandboxworker
+type JobStartRequestV2 struct{ Exec ExecRequest }
+func (request JobStartRequestV2) Validate() error { return request.Exec.Validate() }
+type JobV2 struct{ ID string }`
+	sources["job_v2_client.go"] = `package sandboxworker
+import "context"
+func (client *Client) roundTripV2(ctx context.Context, request Request) (Response, error) {
+	return client.roundTrip(ctx, request)
+}`
 }
 
 func TestL8WorkerV2GuardAllowsExactBoundedStrictDecoderSeam(t *testing.T) {
