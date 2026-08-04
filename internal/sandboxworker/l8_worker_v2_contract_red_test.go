@@ -1230,6 +1230,86 @@ func TestL8WorkerV2PublicContractsRemainPrivateServerIdentityFree(t *testing.T) 
 	}
 }
 
+func TestL8WorkerV2StoreJobIDVocabularyIsContractAndPersistenceConsistent(t *testing.T) {
+	principalID := l8GeneratedWorkerV2SafeID(t, "principal")
+	request := l8WorkerV2StartRequest()
+	requestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, l8WorkerV2DaemonGeneration, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := storedJobStateV2{
+		JobV2:            l8WorkerV2QueuedJob(),
+		RequestKey:       requestKey,
+		PrincipalID:      principalID,
+		DaemonGeneration: l8WorkerV2DaemonGeneration,
+	}
+	base.JobV2.SubmissionKey = jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, request)
+
+	for _, jobID := range []string{
+		"job-primary",
+		"J",
+		"job_01",
+		"job.01",
+		"j" + strings.Repeat("a", 127),
+	} {
+		t.Run("accepted "+jobID, func(t *testing.T) {
+			state := base
+			state.JobV2.ID = jobID
+			if err := state.Validate(); err != nil {
+				t.Fatalf("contract rejected accepted V2 job ID %q: %v", jobID, err)
+			}
+			store, err := newJobStoreV2(filepath.Join(t.TempDir(), "jobs-v2"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.save(state); err != nil {
+				t.Fatalf("save rejected accepted V2 job ID %q: %v", jobID, err)
+			}
+			loaded, err := store.load(jobID)
+			if err != nil {
+				t.Fatalf("load rejected saved V2 job ID %q: %v", jobID, err)
+			}
+			if !reflect.DeepEqual(loaded, state) {
+				t.Fatalf("loaded V2 job ID %q state = %#v, want %#v", jobID, loaded, state)
+			}
+			listed, err := store.list()
+			if err != nil {
+				t.Fatalf("list rejected saved V2 job ID %q: %v", jobID, err)
+			}
+			if len(listed) != 1 || !reflect.DeepEqual(listed[0], state) {
+				t.Fatalf("listed V2 job ID %q states = %#v, want exact saved state", jobID, listed)
+			}
+		})
+	}
+
+	for _, jobID := range []string{".", "_", "-", ".leading"} {
+		t.Run("rejected "+jobID, func(t *testing.T) {
+			state := base
+			state.JobV2.ID = jobID
+			if err := state.JobV2.Validate(); err == nil {
+				t.Errorf("JobV2 contract accepted store-incompatible job ID %q", jobID)
+			}
+			if err := state.Validate(); err == nil {
+				t.Errorf("durable-state contract accepted store-incompatible job ID %q", jobID)
+			}
+			store, err := newJobStoreV2(filepath.Join(t.TempDir(), "jobs-v2"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.save(state); err == nil {
+				t.Errorf("store persisted contract-invalid job ID %q", jobID)
+			}
+			entries, err := os.ReadDir(store.root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("contract-invalid job ID %q left durable entries: %#v", jobID, entries)
+			}
+		})
+	}
+}
+
 func l8AssertWorkerV2PrivateStateIdentity(t *testing.T, got, want storedJobStateV2) {
 	t.Helper()
 	if got.PrincipalID != want.PrincipalID || got.DaemonGeneration != want.DaemonGeneration || got.RequestKey != want.RequestKey || !reflect.DeepEqual(got.JobV2, want.JobV2) {
