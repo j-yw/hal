@@ -756,8 +756,16 @@ import (
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
+func validWorkerV2SafeID(value string) bool { return value != "" }
 func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	if store == nil || !validWorkerV2SafeID(jobID) {
+		return nil, errors.New("stored job state is unavailable")
+	}
 	path := filepath.Join(store.root, jobID+".json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > maxStoredJobStateV2Bytes {
+		return nil, errors.New("stored job state is unavailable")
+	}
 	return os.Open(path)
 }
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
@@ -1379,6 +1387,7 @@ func (reviewReturningReceiver) value() int { return 1 }
 	t.Run("store uses package-level root-blind acquisition with matching name", func(t *testing.T) {
 		mutated := l8CloneWorkerV2GuardSources(sources)
 		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "func (store *jobStoreV2) openStoredJobStateV2(jobID string)", "func openStoredJobStateV2(jobID string)", 1)
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "store == nil || ", "", 1)
 		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "store.root", "globalJobStoreV2Root", 1)
 		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "store.openStoredJobStateV2(jobID)", "openStoredJobStateV2(jobID)", 1)
 		mutated["job_store_v2.go"] += "\nvar globalJobStoreV2Root string\n"
@@ -1460,11 +1469,45 @@ func openStoredJobStateV2FromRoot(root, jobID string) (storedJobReaderV2, error)
 }
 `,
 		},
+		{
+			name: "store opener replaces receiver root through a package global",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	root := store.root
+	root = globalJobStoreV2Root
+	path := filepath.Join(root, jobID+".json")
+	return os.Open(path)
+}`,
+			helper: "\nvar globalJobStoreV2Root string\n",
+		},
+		{
+			name: "store opener replaces exact job identity",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	jobID = "job-neighbor"
+	path := filepath.Join(store.root, jobID+".json")
+	return os.Open(path)
+}`,
+		},
+		{
+			name: "store opener escapes derived path before open",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	path := filepath.Join(store.root, jobID+".json")
+	escapedStoredJobPathV2 = path
+	return os.Open(path)
+}`,
+			helper: "\nvar escapedStoredJobPathV2 string\n",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			const safeOpener = `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	if store == nil || !validWorkerV2SafeID(jobID) {
+		return nil, errors.New("stored job state is unavailable")
+	}
 	path := filepath.Join(store.root, jobID+".json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > maxStoredJobStateV2Bytes {
+		return nil, errors.New("stored job state is unavailable")
+	}
 	return os.Open(path)
 }`
 			mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], safeOpener, tt.replacement, 1) + tt.helper
@@ -2373,8 +2416,16 @@ import (
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
+func validWorkerV2SafeID(value string) bool { return value != "" }
 func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	if store == nil || !validWorkerV2SafeID(jobID) {
+		return nil, errors.New("stored job state is unavailable")
+	}
 	path := filepath.Join(store.root, jobID+".json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > maxStoredJobStateV2Bytes {
+		return nil, errors.New("stored job state is unavailable")
+	}
 	return os.Open(path)
 }
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
@@ -5093,16 +5144,22 @@ func l8WorkerV2AllowedExactCodecResourceLifecycleCall(scope l8WorkerV2GuardScope
 		calls, _, _, exact := l8WorkerV2ExactClientConnectionLifecycle(function, connection, parameters[0], encodeCall, info)
 		return exact && l8WorkerV2CallInSet(candidate, calls)
 	case "job_store_v2.go":
-		if function.Name.Name != "load" {
+		switch function.Name.Name {
+		case "load":
+			decoderCall := l8WorkerV2SingleTypedDecoderCall(function, info)
+			if decoderCall == nil || len(decoderCall.Args) != 3 {
+				return false
+			}
+			reader := l8WorkerV2ExpressionObject(decoderCall.Args[0], info)
+			closeCall, _, exact := l8WorkerV2ExactDeferredReaderClose(function, reader, decoderCall, info)
+			return exact && candidate == closeCall
+		case "openStoredJobStateV2":
+			method, _ := info.Defs[function.Name].(*types.Func)
+			calls, exact := l8WorkerV2ExactReceiverRootedStoredJobOpener(scope.file, method, info)
+			return exact && l8WorkerV2CallInSet(candidate, calls)
+		default:
 			return false
 		}
-		decoderCall := l8WorkerV2SingleTypedDecoderCall(function, info)
-		if decoderCall == nil || len(decoderCall.Args) != 3 {
-			return false
-		}
-		reader := l8WorkerV2ExpressionObject(decoderCall.Args[0], info)
-		closeCall, _, exact := l8WorkerV2ExactDeferredReaderClose(function, reader, decoderCall, info)
-		return exact && candidate == closeCall
 	default:
 		return false
 	}
@@ -5306,7 +5363,7 @@ func l8WorkerV2ExactStoreStateDecoderCall(scope l8WorkerV2GuardScope, call *ast.
 		l8WorkerV2ObjectHasNoReassignments(function, parameters[0], info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, parameters[0], []*ast.CallExpr{acquireCall}, nil, false, info) &&
 		l8WorkerV2ObjectIsAcquiredCallResult(function, reader, "", parameters[0], info) &&
-		l8WorkerV2IsExactStoredJobOpenCall(function, acquireCall, receiver, parameters[0], info) &&
+		l8WorkerV2IsExactStoredJobOpenCall(scope.file, function, acquireCall, receiver, parameters[0], info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, reader, info) && l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
 		l8WorkerV2ObjectOnlyConsumedByExactCalls(function, reader, []*ast.CallExpr{readerClose, call}, info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, reader, []*ast.CallExpr{readerClose, call}, nil, false, info) &&
@@ -6393,8 +6450,8 @@ func l8WorkerV2ObjectIsAcquiredCallResult(function *ast.FuncDecl, object types.O
 	return matches == 1
 }
 
-func l8WorkerV2IsExactStoredJobOpenCall(function *ast.FuncDecl, call *ast.CallExpr, store, jobID types.Object, info *types.Info) bool {
-	if function == nil || call == nil || store == nil || jobID == nil || len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != jobID {
+func l8WorkerV2IsExactStoredJobOpenCall(file *l8WorkerV2ParsedFile, load *ast.FuncDecl, call *ast.CallExpr, store, jobID types.Object, info *types.Info) bool {
+	if file == nil || load == nil || call == nil || store == nil || jobID == nil || len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != jobID {
 		return false
 	}
 	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
@@ -6413,8 +6470,246 @@ func l8WorkerV2IsExactStoredJobOpenCall(function *ast.FuncDecl, call *ast.CallEx
 		return false
 	}
 	readerType := method.Pkg().Scope().Lookup("storedJobReaderV2")
+	_, exactOpener := l8WorkerV2ExactReceiverRootedStoredJobOpener(file, method, info)
 	return readerType != nil && types.Identical(signature.Results().At(0).Type(), readerType.Type()) &&
-		l8WorkerV2MethodReferencedOnlyByCall(function, method, selector, info)
+		l8WorkerV2MethodReferencedOnlyByCall(load, method, selector, info) &&
+		exactOpener
+}
+
+func l8WorkerV2ExactReceiverRootedStoredJobOpener(file *l8WorkerV2ParsedFile, method *types.Func, info *types.Info) ([]*ast.CallExpr, bool) {
+	if file == nil || file.parsed == nil || method == nil {
+		return nil, false
+	}
+	var opener *ast.FuncDecl
+	for _, declaration := range file.parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || info.Defs[function.Name] != method {
+			continue
+		}
+		if opener != nil {
+			return nil, false
+		}
+		opener = function
+	}
+	if opener == nil || opener.Body == nil || len(opener.Body.List) != 5 {
+		return nil, false
+	}
+	receiver := l8WorkerV2ExactReceiverObject(opener, "jobStoreV2", true, info)
+	parameters := l8WorkerV2FunctionParameterObjects(opener, info)
+	if receiver == nil || len(parameters) != 1 || !l8WorkerV2ExactStoredJobOpenerInputGuard(opener.Body.List[0], receiver, parameters[0], info) {
+		return nil, false
+	}
+	pathAssignment, ok := opener.Body.List[1].(*ast.AssignStmt)
+	if !ok || pathAssignment.Tok != token.DEFINE || len(pathAssignment.Lhs) != 1 || len(pathAssignment.Rhs) != 1 {
+		return nil, false
+	}
+	pathObject := l8WorkerV2ExpressionObject(pathAssignment.Lhs[0], info)
+	joinCall, ok := l8WorkerV2UnparenExpression(pathAssignment.Rhs[0]).(*ast.CallExpr)
+	if pathObject == nil || !l8WorkerV2IsExactPackageCall(joinCall, "path/filepath", "Join", 2, info) ||
+		!l8WorkerV2ExactSelectorRoot(joinCall.Args[0], receiver, "root", info) ||
+		!l8WorkerV2ExactStoredJobFilename(joinCall.Args[1], parameters[0], info) {
+		return nil, false
+	}
+	statAssignment, ok := opener.Body.List[2].(*ast.AssignStmt)
+	if !ok || statAssignment.Tok != token.DEFINE || len(statAssignment.Lhs) != 2 || len(statAssignment.Rhs) != 1 {
+		return nil, false
+	}
+	statInfo := l8WorkerV2ExpressionObject(statAssignment.Lhs[0], info)
+	statErr := l8WorkerV2ExpressionObject(statAssignment.Lhs[1], info)
+	statCall, ok := l8WorkerV2UnparenExpression(statAssignment.Rhs[0]).(*ast.CallExpr)
+	if statInfo == nil || statErr == nil || !l8WorkerV2IsExactPackageCall(statCall, "os", "Lstat", 1, info) || l8WorkerV2ExpressionObject(statCall.Args[0], info) != pathObject {
+		return nil, false
+	}
+	inspectionCalls, exactInspection := l8WorkerV2ExactStoredJobFileInspection(opener.Body.List[3], statInfo, statErr, info)
+	if !exactInspection {
+		return nil, false
+	}
+	returned, ok := opener.Body.List[4].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return nil, false
+	}
+	openCall, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2IsExactPackageCall(openCall, "os", "Open", 1, info) || l8WorkerV2ExpressionObject(openCall.Args[0], info) != pathObject {
+		return nil, false
+	}
+	return inspectionCalls, true
+}
+
+func l8WorkerV2ExactStoredJobOpenerInputGuard(statement ast.Stmt, store, jobID types.Object, info *types.Info) bool {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 || !l8WorkerV2IsNilAndExactErrorReturn(conditional.Body.List[0], "stored job state is unavailable", info) {
+		return false
+	}
+	either, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.BinaryExpr)
+	if !ok || either.Op != token.LOR || !l8WorkerV2ExactObjectNilComparison(either.X, store, token.EQL, info) {
+		return false
+	}
+	negated, ok := l8WorkerV2UnparenExpression(either.Y).(*ast.UnaryExpr)
+	if !ok || negated.Op != token.NOT {
+		return false
+	}
+	call, ok := l8WorkerV2UnparenExpression(negated.X).(*ast.CallExpr)
+	return ok && l8WorkerV2IsExactPackageFunctionCall(call, "validWorkerV2SafeID", []types.Object{jobID}, info)
+}
+
+func l8WorkerV2ExactStoredJobFileInspection(statement ast.Stmt, statInfo, statErr types.Object, info *types.Info) ([]*ast.CallExpr, bool) {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 || !l8WorkerV2IsNilAndExactErrorReturn(conditional.Body.List[0], "stored job state is unavailable", info) {
+		return nil, false
+	}
+	terms := l8WorkerV2FlattenBinaryExpressions(conditional.Cond, token.LOR)
+	if len(terms) != 6 || !l8WorkerV2ExactObjectNilComparison(terms[0], statErr, token.NEQ, info) {
+		return nil, false
+	}
+	regularMode, regular := l8WorkerV2ExactNegatedFileInfoRegular(terms[1], statInfo, info)
+	symlinkMode, symlink := l8WorkerV2ExactFileInfoModeMaskComparison(terms[2], statInfo, "ModeSymlink", token.NEQ, 0, info)
+	permissionMode, permission := l8WorkerV2ExactFileInfoModeMethodComparison(terms[3], statInfo, "Perm", token.NEQ, 0o600, info)
+	nonemptySize, nonempty := l8WorkerV2ExactFileInfoIntegerComparison(terms[4], statInfo, "Size", token.LEQ, 0, info)
+	boundedSize, bounded := l8WorkerV2ExactFileInfoPackageConstantComparison(terms[5], statInfo, "Size", token.GTR, "maxStoredJobStateV2Bytes", 64<<10, info)
+	if !regular || !symlink || !permission || !nonempty || !bounded {
+		return nil, false
+	}
+	return []*ast.CallExpr{regularMode, symlinkMode, permissionMode, nonemptySize, boundedSize}, true
+}
+
+func l8WorkerV2FlattenBinaryExpressions(expression ast.Expr, operation token.Token) []ast.Expr {
+	binary, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || binary.Op != operation {
+		return []ast.Expr{expression}
+	}
+	left := l8WorkerV2FlattenBinaryExpressions(binary.X, operation)
+	return append(left, l8WorkerV2FlattenBinaryExpressions(binary.Y, operation)...)
+}
+
+func l8WorkerV2ExactNegatedFileInfoRegular(expression ast.Expr, statInfo types.Object, info *types.Info) (*ast.CallExpr, bool) {
+	negated, ok := l8WorkerV2UnparenExpression(expression).(*ast.UnaryExpr)
+	if !ok || negated.Op != token.NOT {
+		return nil, false
+	}
+	regularCall, ok := l8WorkerV2UnparenExpression(negated.X).(*ast.CallExpr)
+	if !ok || len(regularCall.Args) != 0 {
+		return nil, false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(regularCall.Fun).(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "IsRegular" {
+		return nil, false
+	}
+	modeCall, ok := l8WorkerV2UnparenExpression(selector.X).(*ast.CallExpr)
+	if !ok || !l8WorkerV2ExactObjectMethodCall(modeCall, statInfo, "Mode", nil, info) {
+		return nil, false
+	}
+	called := l8WorkerV2CalledObject(regularCall.Fun, info)
+	return modeCall, called != nil && called.Pkg() != nil && called.Pkg().Path() == "io/fs" && called.Name() == "IsRegular"
+}
+
+func l8WorkerV2ExactFileInfoModeMaskComparison(expression ast.Expr, statInfo types.Object, maskName string, operation token.Token, value int64, info *types.Info) (*ast.CallExpr, bool) {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || !l8WorkerV2ExactIntegerConstant(comparison.Y, value, info) {
+		return nil, false
+	}
+	masked, ok := l8WorkerV2UnparenExpression(comparison.X).(*ast.BinaryExpr)
+	if !ok || masked.Op != token.AND {
+		return nil, false
+	}
+	modeCall, ok := l8WorkerV2UnparenExpression(masked.X).(*ast.CallExpr)
+	mask := l8WorkerV2ExpressionObject(masked.Y, info)
+	return modeCall, ok && l8WorkerV2ExactObjectMethodCall(modeCall, statInfo, "Mode", nil, info) &&
+		mask != nil && mask.Pkg() != nil && mask.Pkg().Path() == "os" && mask.Name() == maskName
+}
+
+func l8WorkerV2ExactFileInfoModeMethodComparison(expression ast.Expr, statInfo types.Object, method string, operation token.Token, value int64, info *types.Info) (*ast.CallExpr, bool) {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || !l8WorkerV2ExactIntegerConstant(comparison.Y, value, info) {
+		return nil, false
+	}
+	methodCall, ok := l8WorkerV2UnparenExpression(comparison.X).(*ast.CallExpr)
+	if !ok || len(methodCall.Args) != 0 {
+		return nil, false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(methodCall.Fun).(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != method {
+		return nil, false
+	}
+	modeCall, ok := l8WorkerV2UnparenExpression(selector.X).(*ast.CallExpr)
+	if !ok || !l8WorkerV2ExactObjectMethodCall(modeCall, statInfo, "Mode", nil, info) {
+		return nil, false
+	}
+	called := l8WorkerV2CalledObject(methodCall.Fun, info)
+	return modeCall, called != nil && called.Pkg() != nil && called.Pkg().Path() == "io/fs" && called.Name() == method
+}
+
+func l8WorkerV2ExactFileInfoIntegerComparison(expression ast.Expr, statInfo types.Object, method string, operation token.Token, value int64, info *types.Info) (*ast.CallExpr, bool) {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || !l8WorkerV2ExactIntegerConstant(comparison.Y, value, info) {
+		return nil, false
+	}
+	call, ok := l8WorkerV2UnparenExpression(comparison.X).(*ast.CallExpr)
+	return call, ok && l8WorkerV2ExactObjectMethodCall(call, statInfo, method, nil, info)
+}
+
+func l8WorkerV2ExactFileInfoPackageConstantComparison(expression ast.Expr, statInfo types.Object, method string, operation token.Token, constantName string, value int64, info *types.Info) (*ast.CallExpr, bool) {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || !l8WorkerV2ExactPackageInt64Constant(comparison.Y, constantName, value, info) {
+		return nil, false
+	}
+	call, ok := l8WorkerV2UnparenExpression(comparison.X).(*ast.CallExpr)
+	return call, ok && l8WorkerV2ExactObjectMethodCall(call, statInfo, method, nil, info)
+}
+
+func l8WorkerV2ExactIntegerConstant(expression ast.Expr, value int64, info *types.Info) bool {
+	constantValue := info.Types[expression].Value
+	if constantValue == nil {
+		return false
+	}
+	got, exact := constant.Int64Val(constantValue)
+	return exact && got == value
+}
+
+func l8WorkerV2ExactObjectNilComparison(expression ast.Expr, object types.Object, operation token.Token, info *types.Info) bool {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	return ok && comparison.Op == operation && l8WorkerV2ExpressionObject(comparison.X, info) == object && l8WorkerV2IsNilExpression(comparison.Y, info)
+}
+
+func l8WorkerV2IsNilAndExactErrorReturn(statement ast.Stmt, message string, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 || !l8WorkerV2IsNilExpression(returned.Results[0], info) {
+		return false
+	}
+	call, ok := l8WorkerV2UnparenExpression(returned.Results[1]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2IsExactPackageCall(call, "errors", "New", 1, info) {
+		return false
+	}
+	value := info.Types[call.Args[0]].Value
+	return value != nil && value.Kind() == constant.String && constant.StringVal(value) == message
+}
+
+func l8WorkerV2IsExactPackageFunctionCall(call *ast.CallExpr, name string, arguments []types.Object, info *types.Info) bool {
+	if call == nil || call.Ellipsis.IsValid() || len(call.Args) != len(arguments) || !l8WorkerV2IsExactPackageFunctionObject(l8WorkerV2CalledObject(call.Fun, info), name) {
+		return false
+	}
+	for index, argument := range arguments {
+		if l8WorkerV2ExpressionObject(call.Args[index], info) != argument {
+			return false
+		}
+	}
+	return true
+}
+
+func l8WorkerV2IsExactPackageCall(call *ast.CallExpr, packagePath, name string, argumentCount int, info *types.Info) bool {
+	if call == nil || call.Ellipsis.IsValid() || len(call.Args) != argumentCount {
+		return false
+	}
+	function, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
+	return ok && function.Pkg() != nil && function.Pkg().Path() == packagePath && function.Name() == name
+}
+
+func l8WorkerV2ExactStoredJobFilename(expression ast.Expr, jobID types.Object, info *types.Info) bool {
+	joined, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || joined.Op != token.ADD || l8WorkerV2ExpressionObject(joined.X, info) != jobID {
+		return false
+	}
+	value := info.Types[joined.Y].Value
+	return value != nil && value.Kind() == constant.String && constant.StringVal(value) == ".json"
 }
 
 func l8WorkerV2IsExactJobStoreV2Pointer(typ types.Type) bool {
