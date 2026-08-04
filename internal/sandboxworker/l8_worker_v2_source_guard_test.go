@@ -204,7 +204,8 @@ import (
 	"io"
 )
 type JobStartRequestV2 struct { Value string }
-func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+type Request struct { JobStartV2 *JobStartRequestV2 }
+func decodeWorkerRequest(reader io.Reader, output *Request) error {
 	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil {
@@ -213,6 +214,28 @@ func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error 
 	var trailing struct{}
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return errors.New("worker v2 request contains trailing JSON")
+	}
+	return nil
+}`,
+	}, policy)
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"protocol_decode.go": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+)
+type JobV2 struct { ID string }
+type Response struct { JobV2 *JobV2 }
+func decodeWorkerResponse(reader io.Reader, output *Response) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil {
+		return err
+	}
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("worker v2 response contains trailing JSON")
 	}
 	return nil
 }`,
