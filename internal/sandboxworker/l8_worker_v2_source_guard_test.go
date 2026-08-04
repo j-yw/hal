@@ -2576,6 +2576,27 @@ func JobStatusV2Fixture(request safeAliasRequest) {
 	}, policy)
 }
 
+func TestL8WorkerV2GuardRecognizesOperationTypeAliasesBeforeUnaliasing(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import text "strings"
+type Operation = string
+func JobStartV2Fixture(current Operation) {
+	if current == text.Join([]string{"job_start_", "v", "2"}, "") {}
+}`,
+	}, policy, "runtime operation assembly")
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import text "strings"
+type Payload = string
+func JobResolveV2Fixture(current Payload) {
+	if current == text.Join([]string{"job_resolve_", "v", "2"}, "") {}
+}`,
+	}, policy)
+}
+
 func TestL8WorkerV2GuardTracksBoundedOperationStorageFlow(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
 	fixtures := []struct {
