@@ -421,7 +421,7 @@ func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) 
 	if methodBoundedReader == requestDecoderSource {
 		t.Fatal("method-shaped bounded reader mutation did not change the positive fixture")
 	}
-	l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": methodBoundedReader}, policy, "bounded strict JSON decoding")
+	l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": methodBoundedReader}, policy, "implicit interface callback")
 	l8AssertWorkerV2GuardAllows(t, map[string]string{
 		"protocol_decode.go": `package sandboxworker
 	import (
@@ -765,6 +765,10 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 }`,
 	}
 	l8AssertWorkerV2GuardAllows(t, sources, policy)
+	possiblyReturningHelper := l8CloneWorkerV2GuardSources(sources)
+	possiblyReturningHelper["client.go"] = strings.Replace(possiblyReturningHelper["client.go"], "\tvar response Response", "\treviewMayReturn(true)\n\treviewLoopMayReturn()\n\tvar response Response", 1)
+	possiblyReturningHelper["client.go"] += "\nfunc reviewMayReturn(shouldReturn bool) { if shouldReturn { return }; select {} }\nfunc reviewLoopMayReturn() { for { break } }\n"
+	l8AssertWorkerV2GuardAllows(t, possiblyReturningHelper, policy)
 	clientHalfCloseBlock := `	halfCloser, ok := connection.(interface{ CloseWrite() error })
 	if !ok {
 		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
@@ -969,6 +973,20 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			mutate: func(source string) string {
 				source = strings.Replace(source, "\tvar response Response", "\tblocked := reviewBlockForeverValue()\n\t_ = blocked\n\tvar response Response", 1)
 				return source + "\nfunc reviewBlockForeverValue() int { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after if initializer helper",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\tif blocked := reviewBlockForeverIfValue(); blocked > 0 {}\n\tvar response Response", 1)
+				return source + "\nfunc reviewBlockForeverIfValue() int { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after range operand helper",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\tfor range reviewBlockForeverValues() {}\n\tvar response Response", 1)
+				return source + "\nfunc reviewBlockForeverValues() []int { select {} }\n"
 			},
 		},
 	} {
@@ -2647,6 +2665,13 @@ type l8WorkerV2GuardScope struct {
 	file                  *l8WorkerV2ParsedFile
 	node                  ast.Node
 	initializerEvaluation bool
+	terminalAnalysis      *l8WorkerV2TerminalAnalysis
+}
+
+type l8WorkerV2TerminalAnalysis struct {
+	declarations map[*types.Func]*ast.FuncDecl
+	memo         map[*types.Func]bool
+	visiting     map[*types.Func]bool
 }
 
 type l8WorkerV2SemanticUnit struct {
@@ -4772,7 +4797,7 @@ func l8WorkerV2ExactServerRequestDecoderCall(scope l8WorkerV2GuardScope, call *a
 	output := l8WorkerV2AddressedObject(call.Args[2], "Request", info)
 	return output != nil && l8WorkerV2ExpressionObject(call.Args[0], info) == reader &&
 		l8WorkerV2ExactSelectorRoot(call.Args[1], receiver, "maxRequestBytes", info) &&
-		l8WorkerV2NoUnconditionalTerminalBefore(function, call, info) &&
+		l8WorkerV2NoUnconditionalTerminalBefore(function, call, info, scope.terminalAnalysis) &&
 		l8WorkerV2ObjectHasNoReassignments(function, receiver, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, reader, info) &&
 		l8WorkerV2ObjectOnlyConsumedByExactCalls(function, reader, []*ast.CallExpr{call}, info) &&
@@ -4810,8 +4835,8 @@ func l8WorkerV2ExactUnixResponseDecoderCall(scope l8WorkerV2GuardScope, call *as
 	halfCloseAssertion := l8WorkerV2ExactClientConnectionHalfCloseAssertion(function, connection, info)
 	connectionCalls := append(append([]*ast.CallExpr(nil), connectionLifecycleCalls...), encodeCall, call)
 	if connection == nil || encodedConnection != connection || acquireCall == nil || acquireErr == nil || output == nil ||
-		!l8WorkerV2NoUnconditionalTerminalBefore(function, acquireCall, info) ||
-		!l8WorkerV2NoUnconditionalTerminalBefore(function, call, info) ||
+		!l8WorkerV2NoUnconditionalTerminalBefore(function, acquireCall, info, scope.terminalAnalysis) ||
+		!l8WorkerV2NoUnconditionalTerminalBefore(function, call, info, scope.terminalAnalysis) ||
 		!exactEncode || !exactLifecycle || len(lifecycleCalls) == 0 || !l8WorkerV2ObjectHasNoReassignments(function, receiver, info) ||
 		!l8WorkerV2ObjectHasNoReassignments(function, request, info) ||
 		!l8WorkerV2ObjectHasNoWholeValueEscapes(function, request, []*ast.CallExpr{encodeCall}, nil, false, info) ||
@@ -4861,12 +4886,13 @@ func l8WorkerV2ExactStoreStateDecoderCall(scope l8WorkerV2GuardScope, call *ast.
 	acquireCall, acquireErr := l8WorkerV2TopLevelAcquisitionForObject(function, reader, info)
 	return receiver != nil && len(parameters) == 1 && reader != nil && output != nil &&
 		exactReaderClose && acquireCall != nil && acquireErr != nil &&
-		l8WorkerV2NoUnconditionalTerminalBefore(function, acquireCall, info) &&
-		l8WorkerV2NoUnconditionalTerminalBefore(function, call, info) &&
+		l8WorkerV2NoUnconditionalTerminalBefore(function, acquireCall, info, scope.terminalAnalysis) &&
+		l8WorkerV2NoUnconditionalTerminalBefore(function, call, info, scope.terminalAnalysis) &&
 		l8WorkerV2ObjectHasNoReassignments(function, receiver, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, parameters[0], info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, parameters[0], []*ast.CallExpr{acquireCall}, nil, false, info) &&
 		l8WorkerV2ObjectIsAcquiredCallResult(function, reader, "openStoredJobStateV2", parameters[0], info) &&
+		l8WorkerV2IsExactStoredJobOpenCall(acquireCall, parameters[0], info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, reader, info) && l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
 		l8WorkerV2ObjectOnlyConsumedByExactCalls(function, reader, []*ast.CallExpr{readerClose, call}, info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, reader, []*ast.CallExpr{readerClose, call}, nil, false, info) &&
@@ -5942,7 +5968,7 @@ func l8WorkerV2ObjectIsAcquiredCallResult(function *ast.FuncDecl, object types.O
 			continue
 		}
 		called := l8WorkerV2CalledObject(call.Fun, info)
-		if callee != "" && (called == nil || called.Name() != callee) {
+		if callee != "" && !l8WorkerV2IsExactPackageFunctionObject(called, callee) {
 			continue
 		}
 		if exactArgument != nil && (len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != exactArgument) {
@@ -5951,6 +5977,33 @@ func l8WorkerV2ObjectIsAcquiredCallResult(function *ast.FuncDecl, object types.O
 		matches++
 	}
 	return matches == 1
+}
+
+func l8WorkerV2IsExactStoredJobOpenCall(call *ast.CallExpr, jobID types.Object, info *types.Info) bool {
+	if call == nil || jobID == nil || len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != jobID {
+		return false
+	}
+	function, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
+	if !ok || !l8WorkerV2IsExactPackageFunctionObject(function, "openStoredJobStateV2") {
+		return false
+	}
+	signature, ok := function.Type().(*types.Signature)
+	if !ok || signature.Recv() != nil || signature.TypeParams() != nil || signature.Params().Len() != 1 || signature.Results().Len() != 2 ||
+		!types.Identical(signature.Params().At(0).Type(), types.Universe.Lookup("string").Type()) ||
+		!types.Identical(signature.Results().At(1).Type(), types.Universe.Lookup("error").Type()) {
+		return false
+	}
+	readerType := function.Pkg().Scope().Lookup("storedJobReaderV2")
+	return readerType != nil && types.Identical(signature.Results().At(0).Type(), readerType.Type())
+}
+
+func l8WorkerV2IsExactPackageFunctionObject(object types.Object, name string) bool {
+	function, ok := object.(*types.Func)
+	if !ok || function.Pkg() == nil || function.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" || function.Name() != name {
+		return false
+	}
+	signature, ok := function.Type().(*types.Signature)
+	return ok && signature.Recv() == nil && function.Pkg().Scope().Lookup(name) == function
 }
 
 func l8WorkerV2ExactThreeStatementResponseWrapper(function *ast.FuncDecl, call *ast.CallExpr, output types.Object, info *types.Info) bool {
@@ -6449,7 +6502,7 @@ func l8WorkerV2ObjectUseCount(function *ast.FuncDecl, object types.Object, info 
 	return uses
 }
 
-func l8WorkerV2NoUnconditionalTerminalBefore(function *ast.FuncDecl, target ast.Node, info *types.Info) bool {
+func l8WorkerV2NoUnconditionalTerminalBefore(function *ast.FuncDecl, target ast.Node, info *types.Info, analysis *l8WorkerV2TerminalAnalysis) bool {
 	if function == nil || function.Body == nil || target == nil {
 		return false
 	}
@@ -6457,73 +6510,120 @@ func l8WorkerV2NoUnconditionalTerminalBefore(function *ast.FuncDecl, target ast.
 		if statement.Pos() >= target.Pos() {
 			continue
 		}
-		if l8WorkerV2StaticallyUnconditionalTerminal(statement, info) {
+		if l8WorkerV2StaticallyUnconditionalTerminal(statement, info, analysis, true) {
 			return false
 		}
 	}
 	return true
 }
 
-func l8WorkerV2StaticallyUnconditionalTerminal(statement ast.Stmt, info *types.Info) bool {
+func l8WorkerV2StaticallyUnconditionalTerminal(statement ast.Stmt, info *types.Info, analysis *l8WorkerV2TerminalAnalysis, returnIsTerminal bool) bool {
 	switch statement := statement.(type) {
 	case *ast.ReturnStmt:
-		return true
+		return returnIsTerminal
+	case *ast.LabeledStmt:
+		return l8WorkerV2StaticallyUnconditionalTerminal(statement.Stmt, info, analysis, returnIsTerminal)
 	case *ast.BlockStmt:
-		return l8WorkerV2StatementListStaticallyTerminal(statement.List, info)
+		return l8WorkerV2StatementListStaticallyTerminal(statement.List, info, analysis, returnIsTerminal)
+	case *ast.ExprStmt:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.X, info, analysis)
+	case *ast.AssignStmt:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(statement.Rhs, info, analysis)
+	case *ast.DeclStmt:
+		declaration, ok := statement.Decl.(*ast.GenDecl)
+		if !ok {
+			return false
+		}
+		for _, specification := range declaration.Specs {
+			value, ok := specification.(*ast.ValueSpec)
+			if ok && l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(value.Values, info, analysis) {
+				return true
+			}
+		}
+		return false
 	case *ast.IfStmt:
+		if (statement.Init != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Init, info, analysis, returnIsTerminal)) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.Cond, info, analysis) {
+			return true
+		}
 		value := info.Types[statement.Cond].Value
 		if value != nil && value.Kind() == constant.Bool && constant.BoolVal(value) {
-			return l8WorkerV2StaticallyUnconditionalTerminal(statement.Body, info)
+			return l8WorkerV2StaticallyUnconditionalTerminal(statement.Body, info, analysis, returnIsTerminal)
 		}
 		if value != nil && value.Kind() == constant.Bool {
-			return statement.Else != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Else, info)
+			return statement.Else != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Else, info, analysis, returnIsTerminal)
 		}
-		return statement.Else != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Body, info) && l8WorkerV2StaticallyUnconditionalTerminal(statement.Else, info)
+		return statement.Else != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Body, info, analysis, returnIsTerminal) && l8WorkerV2StaticallyUnconditionalTerminal(statement.Else, info, analysis, returnIsTerminal)
 	case *ast.SwitchStmt:
-		return l8WorkerV2AllCaseClausesStaticallyTerminal(statement.Body, info)
+		if (statement.Init != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Init, info, analysis, returnIsTerminal)) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.Tag, info, analysis) {
+			return true
+		}
+		return l8WorkerV2AllCaseClausesStaticallyTerminal(statement.Body, info, analysis, returnIsTerminal)
 	case *ast.TypeSwitchStmt:
-		return l8WorkerV2AllCaseClausesStaticallyTerminal(statement.Body, info)
+		if (statement.Init != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Init, info, analysis, returnIsTerminal)) ||
+			(statement.Assign != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Assign, info, analysis, returnIsTerminal)) {
+			return true
+		}
+		return l8WorkerV2AllCaseClausesStaticallyTerminal(statement.Body, info, analysis, returnIsTerminal)
 	case *ast.SelectStmt:
 		if statement.Body == nil || len(statement.Body.List) == 0 {
 			return true
 		}
 		for _, rawClause := range statement.Body.List {
 			clause, ok := rawClause.(*ast.CommClause)
-			if !ok || !l8WorkerV2ClauseStatementListStaticallyTerminal(clause.Body, info) {
+			if !ok {
+				return false
+			}
+			if clause.Comm != nil && l8WorkerV2StaticallyUnconditionalTerminal(clause.Comm, info, analysis, returnIsTerminal) {
+				return true
+			}
+			if !l8WorkerV2ClauseStatementListStaticallyTerminal(clause.Body, info, analysis, returnIsTerminal) {
 				return false
 			}
 		}
 		return true
 	case *ast.ForStmt:
+		if (statement.Init != nil && l8WorkerV2StaticallyUnconditionalTerminal(statement.Init, info, analysis, returnIsTerminal)) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.Cond, info, analysis) {
+			return true
+		}
 		if statement.Cond != nil {
 			value := info.Types[statement.Cond].Value
 			if value == nil || value.Kind() != constant.Bool || !constant.BoolVal(value) {
 				return false
 			}
 		}
-		return true
+		return !l8WorkerV2StatementMayExitEnclosingClause(statement.Body)
+	case *ast.RangeStmt:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.X, info, analysis)
+	case *ast.SendStmt:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.Chan, info, analysis) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.Value, info, analysis)
+	case *ast.IncDecStmt:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(statement.X, info, analysis)
 	default:
 		return false
 	}
 }
 
-func l8WorkerV2StatementListStaticallyTerminal(statements []ast.Stmt, info *types.Info) bool {
+func l8WorkerV2StatementListStaticallyTerminal(statements []ast.Stmt, info *types.Info, analysis *l8WorkerV2TerminalAnalysis, returnIsTerminal bool) bool {
 	for _, statement := range statements {
-		if l8WorkerV2StaticallyUnconditionalTerminal(statement, info) {
+		if l8WorkerV2StaticallyUnconditionalTerminal(statement, info, analysis, returnIsTerminal) {
 			return true
 		}
 	}
 	return false
 }
 
-func l8WorkerV2AllCaseClausesStaticallyTerminal(body *ast.BlockStmt, info *types.Info) bool {
+func l8WorkerV2AllCaseClausesStaticallyTerminal(body *ast.BlockStmt, info *types.Info, analysis *l8WorkerV2TerminalAnalysis, returnIsTerminal bool) bool {
 	if body == nil || len(body.List) == 0 {
 		return false
 	}
 	defaultFound := false
 	for _, rawClause := range body.List {
 		clause, ok := rawClause.(*ast.CaseClause)
-		if !ok || !l8WorkerV2ClauseStatementListStaticallyTerminal(clause.Body, info) {
+		if !ok || !l8WorkerV2ClauseStatementListStaticallyTerminal(clause.Body, info, analysis, returnIsTerminal) {
 			return false
 		}
 		if len(clause.List) == 0 {
@@ -6533,16 +6633,142 @@ func l8WorkerV2AllCaseClausesStaticallyTerminal(body *ast.BlockStmt, info *types
 	return defaultFound
 }
 
-func l8WorkerV2ClauseStatementListStaticallyTerminal(statements []ast.Stmt, info *types.Info) bool {
+func l8WorkerV2ClauseStatementListStaticallyTerminal(statements []ast.Stmt, info *types.Info, analysis *l8WorkerV2TerminalAnalysis, returnIsTerminal bool) bool {
 	for _, statement := range statements {
 		if l8WorkerV2StatementMayExitEnclosingClause(statement) {
 			return false
 		}
-		if l8WorkerV2StaticallyUnconditionalTerminal(statement, info) {
+		if l8WorkerV2StaticallyUnconditionalTerminal(statement, info, analysis, returnIsTerminal) {
 			return true
 		}
 	}
 	return false
+}
+
+func l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(expressions []ast.Expr, info *types.Info, analysis *l8WorkerV2TerminalAnalysis) bool {
+	for _, expression := range expressions {
+		if l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression, info, analysis) {
+			return true
+		}
+	}
+	return false
+}
+
+func l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression ast.Expr, info *types.Info, analysis *l8WorkerV2TerminalAnalysis) bool {
+	if expression == nil {
+		return false
+	}
+	switch expression := expression.(type) {
+	case *ast.ParenExpr:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis)
+	case *ast.CallExpr:
+		if l8WorkerV2CallOperandsCannotReturn(expression, info, analysis) {
+			return true
+		}
+		if l8WorkerV2CalledObject(expression.Fun, info) == types.Universe.Lookup("panic") {
+			return true
+		}
+		return l8WorkerV2DirectSamePackageFunctionCannotReturn(expression, info, analysis)
+	case *ast.BinaryExpr:
+		if l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis) {
+			return true
+		}
+		return expression.Op != token.LAND && expression.Op != token.LOR && l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.Y, info, analysis)
+	case *ast.UnaryExpr:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis)
+	case *ast.SelectorExpr:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis)
+	case *ast.IndexExpr:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.Index, info, analysis)
+	case *ast.IndexListExpr:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(expression.Indices, info, analysis)
+	case *ast.SliceExpr:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.Low, info, analysis) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.High, info, analysis) ||
+			l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.Max, info, analysis)
+	case *ast.TypeAssertExpr:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis)
+	case *ast.StarExpr:
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis)
+	case *ast.CompositeLit:
+		for _, element := range expression.Elts {
+			switch element := element.(type) {
+			case *ast.KeyValueExpr:
+				if l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(element.Key, info, analysis) ||
+					l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(element.Value, info, analysis) {
+					return true
+				}
+			case ast.Expr:
+				if l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(element, info, analysis) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func l8WorkerV2CallOperandsCannotReturn(call *ast.CallExpr, info *types.Info, analysis *l8WorkerV2TerminalAnalysis) bool {
+	if call == nil {
+		return false
+	}
+	if l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(call.Fun, info, analysis) {
+		return true
+	}
+	return l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(call.Args, info, analysis)
+}
+
+func l8WorkerV2DirectSamePackageFunctionCannotReturn(call *ast.CallExpr, info *types.Info, analysis *l8WorkerV2TerminalAnalysis) bool {
+	if call == nil || analysis == nil {
+		return false
+	}
+	function, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
+	if !ok || function.Pkg() == nil || function.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" {
+		return false
+	}
+	signature, ok := function.Type().(*types.Signature)
+	declaration := analysis.declarations[function]
+	if !ok || signature.Recv() != nil || declaration == nil || declaration.Body == nil || analysis.visiting[function] {
+		return false
+	}
+	if terminal, known := analysis.memo[function]; known {
+		return terminal
+	}
+	if l8WorkerV2FunctionHasConservativeReturnEscape(declaration, info) {
+		analysis.memo[function] = false
+		return false
+	}
+	analysis.visiting[function] = true
+	terminal := l8WorkerV2StatementListStaticallyTerminal(declaration.Body.List, info, analysis, false)
+	delete(analysis.visiting, function)
+	analysis.memo[function] = terminal
+	return terminal
+}
+
+func l8WorkerV2FunctionHasConservativeReturnEscape(function *ast.FuncDecl, info *types.Info) bool {
+	found := false
+	if function == nil || function.Body == nil {
+		return false
+	}
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		switch typed := node.(type) {
+		case *ast.ReturnStmt, *ast.DeferStmt:
+			found = true
+		case *ast.CallExpr:
+			found = l8WorkerV2CalledObject(typed.Fun, info) == types.Universe.Lookup("recover")
+		}
+		return !found
+	})
+	return found
 }
 
 func l8WorkerV2StatementMayExitEnclosingClause(statement ast.Stmt) bool {
@@ -6662,10 +6888,21 @@ func l8WorkerV2IsNilExpression(expression ast.Expr, info *types.Info) bool {
 
 func l8WorkerV2ValidateDecoderCallerComposition(files []*l8WorkerV2ParsedFile, info *types.Info) error {
 	declared := make(map[string]bool)
+	terminalAnalysis := &l8WorkerV2TerminalAnalysis{
+		declarations: make(map[*types.Func]*ast.FuncDecl),
+		memo:         make(map[*types.Func]bool),
+		visiting:     make(map[*types.Func]bool),
+	}
 	for _, file := range files {
 		for _, declaration := range file.parsed.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
-			if !ok || function.Recv != nil {
+			if !ok {
+				continue
+			}
+			if object, ok := info.Defs[function.Name].(*types.Func); ok {
+				terminalAnalysis.declarations[object] = function
+			}
+			if function.Recv != nil {
 				continue
 			}
 			switch function.Name.Name {
@@ -6687,7 +6924,7 @@ func l8WorkerV2ValidateDecoderCallerComposition(files []*l8WorkerV2ParsedFile, i
 			if l8WorkerV2FunctionHasGoto(function) {
 				return fmt.Errorf("worker-v2 production path in %s declaration %s violates exact decoder caller composition", file.path, function.Name.Name)
 			}
-			scope := l8WorkerV2GuardScope{file: file, node: function}
+			scope := l8WorkerV2GuardScope{file: file, node: function, terminalAnalysis: terminalAnalysis}
 			exactCalls := 0
 			ast.Inspect(function.Body, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
@@ -6846,7 +7083,7 @@ func l8WorkerV2ExactBoundedRawStrictDecoder(scope l8WorkerV2GuardScope, info *ty
 	raw := l8WorkerV2ExpressionObject(readAssignment.Lhs[0], info)
 	readErr := l8WorkerV2ExpressionObject(readAssignment.Lhs[1], info)
 	boundedRead, ok := l8WorkerV2UnparenExpression(readAssignment.Rhs[0]).(*ast.CallExpr)
-	if raw == nil || readErr == nil || !ok || !l8WorkerV2IsExactLocalFunctionCall(boundedRead, "readWorkerJSONBoundedV2", 2, info) || l8WorkerV2ExpressionObject(boundedRead.Args[0], info) != reader || l8WorkerV2ExpressionObject(boundedRead.Args[1], info) != limit {
+	if raw == nil || readErr == nil || !ok || !l8WorkerV2IsExactBoundedJSONReadCall(boundedRead, reader, limit, info) {
 		return zero, false
 	}
 	if !l8WorkerV2ExactErrorReturnIf(function.Body.List[1], readErr, info) || !l8WorkerV2ExactPreflightIf(scope, function.Body.List[2], raw, info) {
@@ -7105,12 +7342,23 @@ func l8WorkerV2IsConstantErrorsNewCall(call *ast.CallExpr, info *types.Info) boo
 	return object != nil && object.Pkg() != nil && object.Pkg().Path() == "errors" && object.Name() == "New" && value != nil && value.Kind() == constant.String
 }
 
-func l8WorkerV2IsExactLocalFunctionCall(call *ast.CallExpr, name string, arguments int, info *types.Info) bool {
-	if call == nil || len(call.Args) != arguments {
+func l8WorkerV2IsExactBoundedJSONReadCall(call *ast.CallExpr, reader, limit types.Object, info *types.Info) bool {
+	if call == nil || len(call.Args) != 2 || l8WorkerV2ExpressionObject(call.Args[0], info) != reader || l8WorkerV2ExpressionObject(call.Args[1], info) != limit {
 		return false
 	}
-	object := l8WorkerV2CalledObject(call.Fun, info)
-	return object != nil && object.Pkg() != nil && object.Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" && object.Name() == name
+	function, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
+	if !ok || !l8WorkerV2IsExactPackageFunctionObject(function, "readWorkerJSONBoundedV2") {
+		return false
+	}
+	signature, ok := function.Type().(*types.Signature)
+	if !ok || signature.Recv() != nil || signature.TypeParams() != nil || signature.Params().Len() != 2 || signature.Results().Len() != 2 ||
+		!l8WorkerV2IsExactIOReader(signature.Params().At(0).Type()) ||
+		!types.Identical(signature.Params().At(1).Type(), types.Universe.Lookup("int64").Type()) ||
+		!types.Identical(signature.Results().At(1).Type(), types.Universe.Lookup("error").Type()) {
+		return false
+	}
+	bytesType, ok := types.Unalias(signature.Results().At(0).Type()).(*types.Slice)
+	return ok && types.Identical(bytesType.Elem(), types.Universe.Lookup("byte").Type())
 }
 
 func l8WorkerV2ExactObjectIntegerComparison(expression ast.Expr, object types.Object, operation token.Token, value int64, info *types.Info) bool {
