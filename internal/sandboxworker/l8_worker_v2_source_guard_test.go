@@ -621,6 +621,118 @@ func decodeJobResolveV2() { _ = formatting.Sprint(callbackRenderer{}) }`,
 	}, policy, "implicit interface callback")
 }
 
+func TestL8WorkerV2GuardLocksExactDecoderCallerComposition(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{
+			"job_store_v2.go":    true,
+			"protocol_decode.go": true,
+		},
+		mixed: map[string]bool{
+			"client.go": true,
+			"server.go": true,
+			"types.go":  true,
+		},
+	}
+	sources := map[string]string{
+		"types.go": `package sandboxworker
+type JobStartRequestV2 struct{}
+type JobV2 struct{}
+type Request struct { JobStartV2 *JobStartRequestV2 }
+type Response struct { JobV2 *JobV2 }
+type storedJobStateV2 struct { JobV2 JobV2 }`,
+		"protocol_decode.go": `package sandboxworker
+import "io"
+func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error { return nil }
+func decodeWorkerResponseInto(reader io.Reader, maxBytes int64, output *Response) error { return nil }
+func decodeStoredJobStateV2Into(reader io.Reader, maxBytes int64, output *storedJobStateV2) error { return nil }
+func decodeWorkerResponse(reader io.Reader) (Response, error) {
+	var output Response
+	if err := decodeWorkerResponseInto(reader, defaultMaxResponseBytes, &output); err != nil { return Response{}, err }
+	return output, nil
+}`,
+		"server.go": `package sandboxworker
+import "io"
+const configuredMaxRequestBytesV2 int64 = 8 << 20
+type Server struct { maxRequestBytes int64 }
+func configuredServerV2() *Server { return &Server{maxRequestBytes: configuredMaxRequestBytesV2} }
+func (server *Server) readRequest(reader io.Reader) (Request, *Response) {
+	var request Request
+	if err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil { return Request{}, &Response{} }
+	return request, nil
+}`,
+		"client.go": `package sandboxworker
+import (
+	"context"
+	"io"
+)
+const defaultMaxResponseBytes int64 = 1 << 20
+type unixSocketClientTransport struct { maxResponseBytes int64 }
+func (transport unixSocketClientTransport) RoundTrip(_ context.Context, _ Request) (Response, error) {
+	var connection io.Reader
+	maxResponseBytes := transport.maxResponseBytes
+	if maxResponseBytes <= 0 { maxResponseBytes = defaultMaxResponseBytes }
+	var response Response
+	if err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil { return Response{}, err }
+	return response, nil
+}`,
+		"job_store_v2.go": `package sandboxworker
+import "io"
+const maxStoredJobStateV2Bytes int64 = 64 << 10
+type jobStoreV2 struct{}
+func (store *jobStoreV2) load(reader io.Reader) (storedJobStateV2, error) {
+	var state storedJobStateV2
+	if err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, err }
+	return state, nil
+}`,
+	}
+	l8AssertWorkerV2GuardAllows(t, sources, policy)
+
+	tests := []struct {
+		name    string
+		path    string
+		old     string
+		replace string
+	}{
+		{name: "server hardcoded limit", path: "server.go", old: "server.maxRequestBytes, &request", replace: "int64(1 << 20), &request"},
+		{name: "server transformed limit", path: "server.go", old: "server.maxRequestBytes, &request", replace: "server.maxRequestBytes-1, &request"},
+		{name: "client pretruncated reader", path: "client.go", old: "decodeWorkerResponseInto(connection, maxResponseBytes, &response)", replace: "decodeWorkerResponseInto(io.LimitReader(connection, maxResponseBytes), maxResponseBytes, &response)"},
+		{name: "client hardcoded limit", path: "client.go", old: "connection, maxResponseBytes, &response", replace: "connection, int64(1 << 20), &response"},
+		{name: "client transformed limit", path: "client.go", old: "connection, maxResponseBytes, &response", replace: "connection, maxResponseBytes-1, &response"},
+		{name: "response wrapper hardcoded limit", path: "protocol_decode.go", old: "reader, defaultMaxResponseBytes, &output", replace: "reader, int64(1 << 20), &output"},
+		{name: "store hardcoded limit", path: "job_store_v2.go", old: "reader, maxStoredJobStateV2Bytes, &state", replace: "reader, int64(64 << 10), &state"},
+		{name: "store transformed limit", path: "job_store_v2.go", old: "reader, maxStoredJobStateV2Bytes, &state", replace: "reader, maxStoredJobStateV2Bytes-1, &state"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name   string
+		path   string
+		callee string
+	}{
+		{name: "server helper bypass", path: "server.go", callee: "decodeWorkerRequestInto"},
+		{name: "client helper bypass", path: "client.go", callee: "decodeWorkerResponseInto"},
+		{name: "store helper bypass", path: "job_store_v2.go", callee: "decodeStoredJobStateV2Into"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			helper := "call" + strings.TrimPrefix(tt.callee, "decode")
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.callee+"(", helper+"(", 1)
+			mutated[tt.path] += "\nfunc " + helper + "(reader io.Reader, maxBytes int64, output " + map[string]string{
+				"decodeWorkerRequestInto":    "*Request",
+				"decodeWorkerResponseInto":   "*Response",
+				"decodeStoredJobStateV2Into": "*storedJobStateV2",
+			}[tt.callee] + ") error { return " + tt.callee + "(reader, maxBytes, output) }\n"
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+}
+
 func TestL8WorkerV2GuardLocksExactBoundedRawPreflightSeam(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{
 		"job_store_v2.go":    true,
@@ -653,6 +765,14 @@ func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) 
 	return nil
 }`
 	l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": requestSource}, policy)
+	overflowSafeSource := strings.Replace(requestSource,
+		`"io"`,
+		`"io"
+	"math"`, 1)
+	overflowSafeSource = strings.Replace(overflowSafeSource,
+		"maxBytes <= 0 || maxBytes > 1<<20",
+		"maxBytes <= 0 || maxBytes == math.MaxInt64", 1)
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": overflowSafeSource}, policy)
 
 	privateSource := strings.NewReplacer(
 		`type JobStartRequestV2 struct { Value string }
@@ -681,6 +801,8 @@ type Request struct { JobStartV2 *JobStartRequestV2 }`,
 		{name: "oversized read", path: "protocol_decode.go", source: strings.Replace(requestSource, "maxBytes+1", "maxBytes+2", 1)},
 		{name: "mismatched accepted threshold", path: "protocol_decode.go", source: strings.Replace(requestSource, "int64(len(raw)) > maxBytes", "int64(len(raw)) > maxBytes+1", 1)},
 		{name: "missing dynamic limit validation", path: "protocol_decode.go", source: strings.Replace(requestSource, "\tif maxBytes <= 0 || maxBytes > 1<<20 { return errors.New(\"worker request limit is invalid\") }\n", "", 1)},
+		{name: "missing max int overflow rejection", path: "protocol_decode.go", source: strings.Replace(overflowSafeSource, "maxBytes <= 0 || maxBytes == math.MaxInt64", "maxBytes <= 0", 1)},
+		{name: "wrong overflow sentinel", path: "protocol_decode.go", source: strings.Replace(overflowSafeSource, "math.MaxInt64", "math.MaxInt64-1", 1)},
 		{name: "wrong function", path: "protocol_decode.go", source: strings.Replace(requestSource, "decodeWorkerRequestInto", "decodeWorkerPayloadInto", 1)},
 		{name: "wrong output", path: "protocol_decode.go", source: strings.NewReplacer("type Request struct", "type RequestV2 struct", "output *Request", "output *RequestV2").Replace(requestSource)},
 		{name: "wrong file", path: "job_store_v2.go", source: requestSource},
@@ -785,6 +907,11 @@ func encodeWorkerResponse(writer io.Writer, response Response) error {
 		source string
 	}{
 		{name: "adjacent runtime metadata", path: "job_v2_helpers.go", source: strings.Replace(keySource, "RuntimeMetadata", "RuntimeTemplateStatusMetadata", 1)},
+		{name: "swapped canonical identity bindings", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: driverID, PrincipalID: principalID, Request: request", "DriverID: principalID, PrincipalID: driverID, Request: request", 1)},
+		{name: "wrong driver identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: driverID", "DriverID: principalID", 1)},
+		{name: "missing driver identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: driverID, ", "", 1)},
+		{name: "wrong request identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "Request: request", "Request: JobStartRequestV2{}", 1)},
+		{name: "unkeyed canonical identity", path: "job_v2_helpers.go", source: strings.Replace(keySource, "jobRequestIdentityV2{DriverID: driverID, PrincipalID: principalID, Request: request}", "jobRequestIdentityV2{driverID, principalID, request}", 1)},
 		{name: "missing request driver identity", path: "job_v2_helpers.go", source: strings.NewReplacer("\t\tDriverID string `json:\"driverId\"`\n", "", "DriverID: driverID, ", "").Replace(keySource)},
 		{name: "missing request principal identity", path: "job_v2_helpers.go", source: strings.NewReplacer("\t\tPrincipalID string `json:\"principalId\"`\n", "", "PrincipalID: principalID, ", "").Replace(keySource)},
 		{name: "wrong canonical request field", path: "job_v2_helpers.go", source: strings.Replace(keySource, "Request JobStartRequestV2 `json:\"request\"`", "Request any `json:\"request\"`", 1)},
