@@ -832,6 +832,60 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 
 	for _, tt := range []struct {
 		name   string
+		mutate func(string) string
+	}{
+		{name: "missing mandatory half-close", mutate: func(source string) string {
+			return strings.Replace(source, clientHalfCloseBlock, "", 1)
+		}},
+		{name: "half-close before request encode", mutate: func(source string) string {
+			source = strings.Replace(source, clientHalfCloseBlock, "", 1)
+			return strings.Replace(source, clientEncodeBlock, clientHalfCloseBlock+clientEncodeBlock, 1)
+		}},
+		{name: "response decode before half-close", mutate: func(source string) string {
+			source = strings.Replace(source, clientHalfCloseBlock, "", 1)
+			return strings.Replace(source, "\treturn response, nil\n}", clientHalfCloseBlock+"\treturn response, nil\n}", 1)
+		}},
+		{name: "unsupported half-close check after close", mutate: func(source string) string {
+			source = strings.Replace(source, clientUnsupportedHalfCloseBlock, "", 1)
+			return strings.Replace(source, "\tmaxResponseBytes := transport.maxResponseBytes", clientUnsupportedHalfCloseBlock+"\tmaxResponseBytes := transport.maxResponseBytes", 1)
+		}},
+		{name: "unsupported half-close panics", mutate: func(source string) string {
+			return strings.Replace(source, "halfCloser, ok := connection.(interface{ CloseWrite() error })\n\tif !ok {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}", "halfCloser := connection.(interface{ CloseWrite() error })", 1)
+		}},
+		{name: "ignored half-close error", mutate: func(source string) string {
+			return strings.Replace(source, "\tif err := halfCloser.CloseWrite(); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}\n", "\t_ = halfCloser.CloseWrite()\n", 1)
+		}},
+		{name: "half-close twice", mutate: func(source string) string {
+			return strings.Replace(source, "\tmaxResponseBytes := transport.maxResponseBytes", "\t_ = halfCloser.CloseWrite()\n\tmaxResponseBytes := transport.maxResponseBytes", 1)
+		}},
+		{name: "half-close on different acquired object", mutate: func(source string) string {
+			return strings.Replace(source, "halfCloser, ok := connection.(interface{ CloseWrite() error })", "otherConnection := connection\n\thalfCloser, ok := otherConnection.(interface{ CloseWrite() error })", 1)
+		}},
+		{name: "unsupported half-close omits context precedence", mutate: func(source string) string {
+			return strings.Replace(source, "\tif !ok {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }", "\tif !ok {", 1)
+		}},
+		{name: "failed half-close omits context precedence", mutate: func(source string) string {
+			return strings.Replace(source, "\tif err := halfCloser.CloseWrite(); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }", "\tif err := halfCloser.CloseWrite(); err != nil {", 1)
+		}},
+		{name: "failed half-close exposes raw error", mutate: func(source string) string {
+			return strings.Replace(source, "\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}\n\tmaxResponseBytes", "\t\treturn Response{}, err\n\t}\n\tmaxResponseBytes", 1)
+		}},
+		{name: "failed half-close uses variable error text", mutate: func(source string) string {
+			return strings.Replace(source, "errors.New(\"write worker request framing failed\")", "errors.New(\"write worker request framing failed: \" + request.Operation)", 2)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated["client.go"] = tt.mutate(mutated["client.go"])
+			if mutated["client.go"] == sources["client.go"] {
+				t.Fatal("client half-close mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "client half-close composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name   string
 		mutate func(map[string]string)
 	}{
 		{
@@ -888,60 +942,6 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	}
 
 	for _, tt := range []struct {
-		name   string
-		mutate func(string) string
-	}{
-		{name: "missing mandatory half-close", mutate: func(source string) string {
-			return strings.Replace(source, clientHalfCloseBlock, "", 1)
-		}},
-		{name: "half-close before request encode", mutate: func(source string) string {
-			source = strings.Replace(source, clientHalfCloseBlock, "", 1)
-			return strings.Replace(source, clientEncodeBlock, clientHalfCloseBlock+clientEncodeBlock, 1)
-		}},
-		{name: "response decode before half-close", mutate: func(source string) string {
-			source = strings.Replace(source, clientHalfCloseBlock, "", 1)
-			return strings.Replace(source, "\treturn response, nil\n}", clientHalfCloseBlock+"\treturn response, nil\n}", 1)
-		}},
-		{name: "unsupported half-close check after close", mutate: func(source string) string {
-			source = strings.Replace(source, clientUnsupportedHalfCloseBlock, "", 1)
-			return strings.Replace(source, "\tmaxResponseBytes := transport.maxResponseBytes", clientUnsupportedHalfCloseBlock+"\tmaxResponseBytes := transport.maxResponseBytes", 1)
-		}},
-		{name: "unsupported half-close panics", mutate: func(source string) string {
-			return strings.Replace(source, "halfCloser, ok := connection.(interface{ CloseWrite() error })\n\tif !ok {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}", "halfCloser := connection.(interface{ CloseWrite() error })", 1)
-		}},
-		{name: "ignored half-close error", mutate: func(source string) string {
-			return strings.Replace(source, "\tif err := halfCloser.CloseWrite(); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}\n", "\t_ = halfCloser.CloseWrite()\n", 1)
-		}},
-		{name: "half-close twice", mutate: func(source string) string {
-			return strings.Replace(source, "\tmaxResponseBytes := transport.maxResponseBytes", "\t_ = halfCloser.CloseWrite()\n\tmaxResponseBytes := transport.maxResponseBytes", 1)
-		}},
-		{name: "half-close on different acquired object", mutate: func(source string) string {
-			return strings.Replace(source, "halfCloser, ok := connection.(interface{ CloseWrite() error })", "otherConnection := connection\n\thalfCloser, ok := otherConnection.(interface{ CloseWrite() error })", 1)
-		}},
-		{name: "unsupported half-close omits context precedence", mutate: func(source string) string {
-			return strings.Replace(source, "\tif !ok {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }", "\tif !ok {", 1)
-		}},
-		{name: "failed half-close omits context precedence", mutate: func(source string) string {
-			return strings.Replace(source, "\tif err := halfCloser.CloseWrite(); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }", "\tif err := halfCloser.CloseWrite(); err != nil {", 1)
-		}},
-		{name: "failed half-close exposes raw error", mutate: func(source string) string {
-			return strings.Replace(source, "\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}\n\tmaxResponseBytes", "\t\treturn Response{}, err\n\t}\n\tmaxResponseBytes", 1)
-		}},
-		{name: "failed half-close uses variable error text", mutate: func(source string) string {
-			return strings.Replace(source, "errors.New(\"write worker request framing failed\")", "errors.New(\"write worker request framing failed: \" + request.Operation)", 2)
-		}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			mutated := l8CloneWorkerV2GuardSources(sources)
-			mutated["client.go"] = tt.mutate(mutated["client.go"])
-			if mutated["client.go"] == sources["client.go"] {
-				t.Fatal("client half-close mutation did not change the positive fixture")
-			}
-			l8AssertWorkerV2GuardRejects(t, mutated, policy, "client half-close composition")
-		})
-	}
-
-	for _, tt := range []struct {
 		name    string
 		path    string
 		old     string
@@ -954,7 +954,7 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		{name: "store uses different acquired reader", path: "job_store_v2.go", old: "var state storedJobStateV2", replace: "otherReader := reader\n\tvar state storedJobStateV2"},
 		{name: "store opens neighbor identity", path: "job_store_v2.go", old: "openStoredJobStateV2(jobID)", replace: "openStoredJobStateV2(\"job-neighbor\")"},
 		{name: "client reassigns acquired connection", path: "client.go", old: "\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {", replace: "\tconnection = rewrapResponseConnection(connection)\n\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {"},
-		{name: "store reassigns acquired reader", path: "job_store_v2.go", old: "\tvar state storedJobStateV2", replace: "\treader = io.LimitReader(reader, maxStoredJobStateV2Bytes)\n\tvar state storedJobStateV2"},
+		{name: "store reassigns acquired reader", path: "job_store_v2.go", old: "\tvar state storedJobStateV2", replace: "\treader = reader\n\tvar state storedJobStateV2"},
 		{name: "server resets decoded request", path: "server.go", old: "\treturn request, nil", replace: "\trequest = Request{}\n\treturn request, nil"},
 		{name: "client resets decoded response", path: "client.go", old: "\treturn response, nil", replace: "\tresponse = Response{}\n\treturn response, nil"},
 		{name: "store resets decoded state", path: "job_store_v2.go", old: "\treturn state, nil", replace: "\tstate = storedJobStateV2{}\n\treturn state, nil"},
@@ -1081,7 +1081,7 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
 			if tt.name == "store replaces acquired reader through pointer aliases" {
-				mutated[tt.path] += "\nfunc rewrapStoredJobReader(reader io.Reader) io.Reader { return reader }\n"
+				mutated[tt.path] += "\nfunc rewrapStoredJobReader(reader storedJobReaderV2) storedJobReaderV2 { return reader }\n"
 			}
 			if mutated[tt.path] == sources[tt.path] {
 				t.Fatal("pointer-alias mutation did not change the positive fixture")
