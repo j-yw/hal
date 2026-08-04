@@ -190,6 +190,12 @@ func TestL8WorkerV2ResponseValidationRejectsSmuggledPayloads(t *testing.T) {
 			{name: "V1 job payload", mutate: func(response *Response) { response.Job = &v1Job }},
 			{name: "V1 logs payload", mutate: func(response *Response) { response.JobLogs = &v1Logs }},
 		}
+		for _, fixture := range l8WorkerV2ValidNonJobResponsePointerFixtures(t) {
+			mutations = append(mutations, struct {
+				name   string
+				mutate func(*Response)
+			}{name: fixture.name, mutate: fixture.attach})
+		}
 		for _, mutation := range mutations {
 			t.Run(operation+"/"+mutation.name, func(t *testing.T) {
 				candidate := matching
@@ -210,6 +216,52 @@ func TestL8WorkerV2ResponseValidationRejectsSmuggledPayloads(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+type l8WorkerV2ResponsePointerFixture struct {
+	name   string
+	attach func(*Response)
+}
+
+func l8WorkerV2ValidNonJobResponsePointerFixtures(t *testing.T) []l8WorkerV2ResponsePointerFixture {
+	t.Helper()
+	status := Status{
+		WorkerID: "worker-valid",
+		HostKind: HostKindLocal,
+		Health:   WorkerHealth{Status: HealthStatusHealthy},
+	}
+	if err := status.Validate(); err != nil {
+		t.Fatalf("valid smuggled status fixture: %v", err)
+	}
+	capabilities := Capabilities{
+		WorkerID: "worker-valid",
+	}
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("valid smuggled capabilities fixture: %v", err)
+	}
+	target := Target{
+		Name: "sandbox-valid",
+		Runtime: RuntimeTarget{
+			Driver: RuntimeDriverMicroVM,
+		},
+	}
+	if err := target.Validate(); err != nil {
+		t.Fatalf("valid smuggled target fixture: %v", err)
+	}
+	return []l8WorkerV2ResponsePointerFixture{
+		{name: "status payload", attach: func(response *Response) {
+			copy := status
+			response.Status = &copy
+		}},
+		{name: "capabilities payload", attach: func(response *Response) {
+			copy := capabilities
+			response.Capabilities = &copy
+		}},
+		{name: "target payload", attach: func(response *Response) {
+			copy := target
+			response.Target = &copy
+		}},
 	}
 }
 
@@ -579,9 +631,10 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 		{name: "new daemon", make: l8NewUnsupportedV2Response},
 	}
 	mutations := []struct {
-		name            string
-		mutate          func(*testing.T, Response, Request) Response
-		wantUnsupported bool
+		name                   string
+		mutate                 func(*testing.T, Response, Request) Response
+		wantUnsupported        bool
+		wantPayloadCorrelation bool
 	}{
 		{name: "exact", mutate: func(_ *testing.T, response Response, _ Request) Response { return response }, wantUnsupported: true},
 		{name: "wrong request id", mutate: func(_ *testing.T, response Response, _ Request) Response {
@@ -618,6 +671,22 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 		}},
 		{name: "operation matching v2 payload", mutate: l8WorkerV2AttachValidMatchingResponsePayload},
 	}
+	for _, fixture := range l8WorkerV2ValidNonJobResponsePointerFixtures(t) {
+		fixture := fixture
+		mutations = append(mutations, struct {
+			name                   string
+			mutate                 func(*testing.T, Response, Request) Response
+			wantUnsupported        bool
+			wantPayloadCorrelation bool
+		}{
+			name: "unexpected " + fixture.name,
+			mutate: func(_ *testing.T, response Response, _ Request) Response {
+				fixture.attach(&response)
+				return response
+			},
+			wantPayloadCorrelation: true,
+		})
+	}
 
 	for _, operation := range l8WorkerV2ClientOperationCases() {
 		for _, responder := range responders {
@@ -630,7 +699,13 @@ func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testin
 						captured = append(captured, request)
 						response := responder.make(request)
 						l8AssertWorkerV2UnsupportedResponsePayloadFree(t, response)
-						return mutation.mutate(t, response, request), nil
+						candidate := mutation.mutate(t, response, request)
+						if mutation.wantPayloadCorrelation {
+							if validationErr := candidate.Validate(); validationErr == nil {
+								t.Errorf("exact unsupported response accepted an unexpected legacy payload")
+							}
+						}
+						return candidate, nil
 					})})
 					if err != nil {
 						t.Fatal(err)
