@@ -696,6 +696,9 @@ type unixSocketClientTransport struct { maxResponseBytes int64 }
 type workerResponseConnection interface { io.Reader; io.Writer; Close() error; SetDeadline(time.Time) error }
 func openResponseReader() (workerResponseConnection, error) { return nil, nil }
 func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, request Request) (Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	connection, err := openResponseReader()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
@@ -794,6 +797,10 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		_ = connection.SetDeadline(deadline)
 	}
 `
+	clientContextNormalizationBlock := `	if ctx == nil {
+		ctx = context.Background()
+	}
+`
 	existingJSONWriterSources := l8CloneWorkerV2GuardSources(sources)
 	l8AssertWorkerV2GuardAllows(t, existingJSONWriterSources, policy)
 
@@ -826,6 +833,46 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			name: "client normalizes nil context after acquisition",
+			mutate: func(source string) string {
+				source = strings.Replace(source, clientContextNormalizationBlock, "", 1)
+				return strings.Replace(source, "\tconnection, err := openResponseReader()\n", "\tconnection, err := openResponseReader()\n"+clientContextNormalizationBlock, 1)
+			},
+		},
+		{
+			name: "client replaces normalized context later",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tdefer close(done)\n", "\tdefer close(done)\n\tctx = context.Background()\n", 1)
+			},
+		},
+		{
+			name: "client omits nil context normalization",
+			mutate: func(source string) string {
+				return strings.Replace(source, clientContextNormalizationBlock, "", 1)
+			},
+		},
+		{
+			name: "client substitutes non-Background context",
+			mutate: func(source string) string {
+				return strings.Replace(source, "ctx = context.Background()", "ctx = context.TODO()", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated["client.go"] = tt.mutate(mutated["client.go"])
+			if mutated["client.go"] == sources["client.go"] {
+				t.Fatal("client context normalization mutation did not change the positive fixture")
+			}
 			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 		})
 	}
