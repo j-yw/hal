@@ -2157,6 +2157,37 @@ func legacyDispatch(request runtimeRequest) {
 	}
 }
 
+func TestL8WorkerV2GuardRejectsRuntimeOperationMatchAliases(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	for _, fixture := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "comparison alias",
+			body: `if current == text.Join([]string{"job_start_", "v", "2"}, "") {}`,
+		},
+		{
+			name: "switch alias",
+			body: `switch current {
+	case text.Join([]string{"job_resolve_", "v", "2"}, ""):
+	}`,
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": `package sandboxworker
+import text "strings"
+type runtimeAliasRequest struct { Operation string }
+func JobStartV2Fixture(request runtimeAliasRequest) {
+	current := request.Operation
+	` + fixture.body + `
+}`,
+			}, policy, "runtime operation assembly")
+		})
+	}
+}
+
 func TestL8WorkerV2GuardConstantValueTaintClosesChainsAndUnlistedRoots(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"contracts.go": true,
