@@ -441,6 +441,26 @@ func TestL8WorkerStrictDecodersRejectUnclassifiablePartialAliasesBeforeDecode(t 
 			t.Fatalf("partial durable-state alias reached typed decode: %#v", output)
 		}
 	})
+
+	t.Run("mixed envelope and durable markers", func(t *testing.T) {
+		raw := `{"operation":"job_status_v2","JobV2":` + string(jobPayload) + `,"principalId":"principal-primary"}`
+
+		response := Response{RequestID: "preflight-sentinel"}
+		if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &response); err == nil {
+			t.Fatal("response decoder accepted mixed envelope and durable-state markers")
+		}
+		if response.RequestID != "preflight-sentinel" || response.Operation != "" || response.JobV2 != nil {
+			t.Fatalf("mixed root reached response decode: %#v", response)
+		}
+
+		state := storedJobStateV2{PrincipalID: "preflight-sentinel"}
+		if err := decodeStoredJobStateV2Into(strings.NewReader(raw), maxStoredJobStateV2Bytes, &state); err == nil {
+			t.Fatal("durable-state decoder accepted mixed envelope and durable-state markers")
+		}
+		if state.PrincipalID != "preflight-sentinel" || state.JobV2.ID != "" {
+			t.Fatalf("mixed root reached durable-state decode: %#v", state)
+		}
+	})
 }
 
 func TestL8WorkerStrictRequestDecoderPreservesDistinctCaseSensitiveStringMapKeys(t *testing.T) {
