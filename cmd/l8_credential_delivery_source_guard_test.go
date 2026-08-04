@@ -1122,6 +1122,163 @@ func TestL8CredentialDeliverySourceGuardsFixtureConstructorsStayInTests(t *testi
 	}
 }
 
+func TestL8CredentialDeliverySourceGuardsLifecycleTestSeamStaysUnexportedAndIsolated(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "exact named", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity) (*JobCredentialLifecycle, error) {}", want: true},
+		{name: "exact unnamed", source: "func NewJobCredentialLifecycle(JobCredentialIdentity) (*JobCredentialLifecycle, error) {}", want: true},
+		{name: "variadic identity", source: "func NewJobCredentialLifecycle(identity ...JobCredentialIdentity) (*JobCredentialLifecycle, error) {}"},
+		{name: "options argument", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity, options any) (*JobCredentialLifecycle, error) {}"},
+		{name: "callback argument", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity, hook func()) (*JobCredentialLifecycle, error) {}"},
+		{name: "generic", source: "func NewJobCredentialLifecycle[T any](identity JobCredentialIdentity) (*JobCredentialLifecycle, error) {}"},
+		{name: "method", source: "func (factory lifecycleFactory) NewJobCredentialLifecycle(identity JobCredentialIdentity) (*JobCredentialLifecycle, error) {}"},
+		{name: "value lifecycle output", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity) (JobCredentialLifecycle, error) {}"},
+		{name: "extra output", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity) (*JobCredentialLifecycle, error, bool) {}"},
+		{name: "wrong error output", source: "func NewJobCredentialLifecycle(identity JobCredentialIdentity) (*JobCredentialLifecycle, string) {}"},
+	} {
+		t.Run("constructor signature "+tt.name, func(t *testing.T) {
+			parsed, err := parser.ParseFile(token.NewFileSet(), "constructor.go", "package sandboxruntime\n"+tt.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			declaration, ok := parsed.Decls[0].(*ast.FuncDecl)
+			if !ok {
+				t.Fatal("constructor fixture is not a function")
+			}
+			if got := l8JobCredentialLifecycleConstructorHasExactSignature(declaration); got != tt.want {
+				t.Fatalf("exact constructor signature = %t, want %t", got, tt.want)
+			}
+		})
+	}
+
+	exactSeamNames := map[string]bool{
+		"jobCredentialLifecycleTransition":            true,
+		"jobCredentialLifecycleOptions":               true,
+		"newJobCredentialLifecycleWithOptions":        true,
+		"jobCredentialLifecycleTransitionRenew":       true,
+		"jobCredentialLifecycleTransitionRevoke":      true,
+		"jobCredentialLifecycleTransitionObserveLoss": true,
+		"jobCredentialLifecycleTransitionBeginRevoke": true,
+	}
+	seen := map[string]bool{}
+	rootRuntimeDir := filepath.Clean(filepath.Join("..", "internal", "sandboxruntime"))
+	for _, root := range []string{filepath.Join("..", "internal"), "."} {
+		err := filepath.WalkDir(root, func(sourcePath string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || !strings.HasSuffix(sourcePath, ".go") || strings.HasSuffix(sourcePath, "_test.go") {
+				return nil
+			}
+			parsed, err := parser.ParseFile(token.NewFileSet(), sourcePath, nil, 0)
+			if err != nil {
+				return err
+			}
+			inRootRuntime := filepath.Clean(filepath.Dir(sourcePath)) == rootRuntimeDir && parsed.Name.Name == "sandboxruntime"
+			ast.Inspect(parsed, func(node ast.Node) bool {
+				identifier, ok := node.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				if exactSeamNames[identifier.Name] {
+					if !inRootRuntime {
+						t.Errorf("production file %s references isolated lifecycle test seam %s", filepath.ToSlash(sourcePath), identifier.Name)
+					} else {
+						seen[identifier.Name] = true
+					}
+					return true
+				}
+				lower := strings.ToLower(identifier.Name)
+				if inRootRuntime && (strings.Contains(lower, "jobcredentiallifecycletransition") ||
+					(strings.Contains(lower, "jobcredentiallifecycle") &&
+						(strings.Contains(lower, "hook") || strings.Contains(lower, "option") || strings.Contains(lower, "test") || strings.Contains(lower, "beforecommit")))) {
+					t.Errorf("production lifecycle adds unapproved test seam identifier %s in %s", identifier.Name, filepath.ToSlash(sourcePath))
+				}
+				return true
+			})
+			if !inRootRuntime {
+				return nil
+			}
+			for _, declaration := range parsed.Decls {
+				switch typed := declaration.(type) {
+				case *ast.FuncDecl:
+					if typed.Name.Name == "NewJobCredentialLifecycle" && !l8JobCredentialLifecycleConstructorHasExactSignature(typed) {
+						t.Errorf("public lifecycle constructor in %s must remain exact func(JobCredentialIdentity) (*JobCredentialLifecycle, error)", filepath.ToSlash(sourcePath))
+					}
+					if typed.Name.Name == "newJobCredentialLifecycleWithOptions" && typed.Name.IsExported() {
+						t.Errorf("lifecycle options constructor is exported in %s", filepath.ToSlash(sourcePath))
+					}
+				case *ast.GenDecl:
+					for _, spec := range typed.Specs {
+						typeSpec, ok := spec.(*ast.TypeSpec)
+						if !ok || typeSpec.Name.Name != "jobCredentialLifecycleOptions" {
+							continue
+						}
+						if typeSpec.Name.IsExported() {
+							t.Errorf("lifecycle test options are exported in %s", filepath.ToSlash(sourcePath))
+						}
+						structure, ok := typeSpec.Type.(*ast.StructType)
+						if !ok || len(structure.Fields.List) != 1 || len(structure.Fields.List[0].Names) != 1 || structure.Fields.List[0].Names[0].Name != "beforeCommit" {
+							t.Errorf("lifecycle test options in %s must contain only unexported beforeCommit", filepath.ToSlash(sourcePath))
+							continue
+						}
+						field := structure.Fields.List[0]
+						functionType, ok := field.Type.(*ast.FuncType)
+						if !ok || functionType.Params == nil || len(functionType.Params.List) != 1 || functionType.Results != nil {
+							t.Errorf("lifecycle beforeCommit seam in %s must be a one-way transition callback", filepath.ToSlash(sourcePath))
+							continue
+						}
+						parameter, ok := functionType.Params.List[0].Type.(*ast.Ident)
+						if !ok || parameter.Name != "jobCredentialLifecycleTransition" || field.Names[0].IsExported() {
+							t.Errorf("lifecycle beforeCommit seam in %s has an unapproved signature", filepath.ToSlash(sourcePath))
+						}
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk lifecycle test seam scope %s: %v", root, err)
+		}
+	}
+	if len(seen) > 0 {
+		for name := range exactSeamNames {
+			if !seen[name] {
+				t.Errorf("partial lifecycle test seam omits exact identifier %s", name)
+			}
+		}
+	}
+}
+
+func l8JobCredentialLifecycleConstructorHasExactSignature(declaration *ast.FuncDecl) bool {
+	if declaration.Recv != nil || declaration.Type.TypeParams != nil || declaration.Type.Params == nil || len(declaration.Type.Params.List) != 1 {
+		return false
+	}
+	parameter := declaration.Type.Params.List[0]
+	parameterType, ok := parameter.Type.(*ast.Ident)
+	if !ok || parameterType.Name != "JobCredentialIdentity" || len(parameter.Names) > 1 {
+		return false
+	}
+	if declaration.Type.Results == nil || len(declaration.Type.Results.List) != 2 {
+		return false
+	}
+	lifecycleResult := declaration.Type.Results.List[0]
+	pointer, ok := lifecycleResult.Type.(*ast.StarExpr)
+	if !ok || len(lifecycleResult.Names) > 1 {
+		return false
+	}
+	lifecycleType, ok := pointer.X.(*ast.Ident)
+	if !ok || lifecycleType.Name != "JobCredentialLifecycle" {
+		return false
+	}
+	errorResult := declaration.Type.Results.List[1]
+	errorType, ok := errorResult.Type.(*ast.Ident)
+	return ok && errorType.Name == "error" && len(errorResult.Names) <= 1
+}
+
 func TestL8CredentialDeliverySourceGuardsVerificationScriptsEnforcePresenceAndNoSkip(t *testing.T) {
 	focusedPath := filepath.Join("..", "tools", "microvm", "l8", "verify-focused.sh")
 	livePath := filepath.Join("..", "tools", "microvm", "l8", "verify-selected-live.sh")
@@ -1151,6 +1308,20 @@ func TestL8CredentialDeliverySourceGuardsVerificationScriptsEnforcePresenceAndNo
 	}
 	if got, want := strings.Count(focused, "./internal/sandboxruntime/networkenforcement/applicationroute"), 4; got != want {
 		t.Errorf("L8 focused verifier applicationroute selector occurrences = %d, want %d (presence, focused, race, repeated)", got, want)
+	}
+	for _, section := range []string{"run_l8_no_skip race", "run_l8_no_skip repeated"} {
+		start := strings.Index(focused, section)
+		if start < 0 {
+			t.Fatalf("L8 focused verifier omits %s section", section)
+		}
+		end := strings.Index(focused[start+len(section):], "run_l8_no_skip ")
+		body := focused[start:]
+		if end >= 0 {
+			body = focused[start : start+len(section)+end]
+		}
+		if !strings.Contains(body, "./internal/sandboxruntime \\") {
+			t.Errorf("L8 focused verifier %s section omits root lifecycle selector", section)
+		}
 	}
 
 	live := readL8CredentialDeliveryFile(t, livePath)
