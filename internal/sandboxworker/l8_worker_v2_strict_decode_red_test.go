@@ -399,6 +399,50 @@ func TestL8WorkerStrictDecodersRejectCrossRootJobV2CaseFoldAliasesBeforeDecode(t
 	})
 }
 
+func TestL8WorkerStrictDecodersRejectUnclassifiablePartialAliasesBeforeDecode(t *testing.T) {
+	startPayload, err := json.Marshal(l8WorkerV2StartRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobPayload, err := json.Marshal(l8WorkerV2QueuedJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("request", func(t *testing.T) {
+		output := Request{RequestID: "preflight-sentinel"}
+		raw := `{"JobStartV2":` + string(startPayload) + `}`
+		if err := decodeWorkerRequestInto(strings.NewReader(raw), defaultMaxRequestBytes, &output); err == nil {
+			t.Fatal("request decoder accepted a partial noncanonical typed root")
+		}
+		if output.RequestID != "preflight-sentinel" || output.JobStartV2 != nil {
+			t.Fatalf("partial request alias reached typed decode: %#v", output)
+		}
+	})
+
+	t.Run("response", func(t *testing.T) {
+		output := Response{RequestID: "preflight-sentinel"}
+		raw := `{"JobV2":` + string(jobPayload) + `}`
+		if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &output); err == nil {
+			t.Fatal("response decoder accepted an unclassifiable durable-root alias")
+		}
+		if output.RequestID != "preflight-sentinel" || output.JobV2 != nil {
+			t.Fatalf("partial response alias reached typed decode: %#v", output)
+		}
+	})
+
+	t.Run("durable state", func(t *testing.T) {
+		output := storedJobStateV2{PrincipalID: "preflight-sentinel"}
+		raw := `{"jobV2":` + string(jobPayload) + `}`
+		if err := decodeStoredJobStateV2Into(strings.NewReader(raw), maxStoredJobStateV2Bytes, &output); err == nil {
+			t.Fatal("durable-state decoder accepted an unclassifiable response-root alias")
+		}
+		if output.PrincipalID != "preflight-sentinel" || output.JobV2.ID != "" {
+			t.Fatalf("partial durable-state alias reached typed decode: %#v", output)
+		}
+	})
+}
+
 func TestL8WorkerStrictRequestDecoderPreservesDistinctCaseSensitiveStringMapKeys(t *testing.T) {
 	start := l8WorkerV2StartRequest()
 	start.Exec.Env = map[string]string{
