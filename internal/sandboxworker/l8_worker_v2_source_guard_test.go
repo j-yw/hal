@@ -1960,6 +1960,12 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			},
 		},
 		{
+			name: "client adds comparison-only done channel goroutine",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdone := make(chan struct{})", "\tdone := make(chan struct{})\n\tgo func() {\n\t\tif done != nil {\n\t\t\tfor {}\n\t\t}\n\t}()", 1)
+			},
+		},
+		{
 			name: "client exposes connection before cleanup defer",
 			mutate: func(mutated map[string]string) {
 				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdefer connection.Close()", "\tif exposed, ok := connection.(error); ok { return Response{}, exposed }\n\tdefer connection.Close()", 1)
@@ -2260,6 +2266,10 @@ func encodeWorkerResponse(writer io.Writer, response Response) error {
 		path   string
 		source string
 	}{
+		{name: "canonical identity parameters swapped before initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "identity := jobRequestIdentityV2", "driverID, principalID = principalID, driverID\n\t\tidentity := jobRequestIdentityV2", 1)},
+		{name: "nested request metadata cleared before identity initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "identity := jobRequestIdentityV2", "request.Exec.Metadata = nil\n\t\tidentity := jobRequestIdentityV2", 1)},
+		{name: "shared request metadata mutated after identity initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "payload, err := json.Marshal(identity)", "request.Exec.Metadata.Backend = \"mutated\"\n\t\tpayload, err := json.Marshal(identity)", 1)},
+		{name: "marshaled identity payload mutated before digest", path: "job_v2_helpers.go", source: strings.Replace(keySource, "digest := sha256.Sum256(payload)", "payload[0] = '{'\n\t\tdigest := sha256.Sum256(payload)", 1)},
 		{name: "canonical identity fields swapped after initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "payload, err := json.Marshal(identity)", "identity.DriverID, identity.PrincipalID = identity.PrincipalID, identity.DriverID\n\t\tpayload, err := json.Marshal(identity)", 1)},
 		{name: "canonical identity fields swapped through pointer alias", path: "job_v2_helpers.go", source: strings.Replace(keySource, "payload, err := json.Marshal(identity)", "identityAlias := &identity\n\t\tidentityAlias.DriverID, identityAlias.PrincipalID = identityAlias.PrincipalID, identityAlias.DriverID\n\t\tpayload, err := json.Marshal(identity)", 1)},
 		{name: "adjacent runtime metadata", path: "job_v2_helpers.go", source: strings.Replace(keySource, "RuntimeMetadata", "RuntimeTemplateStatusMetadata", 1)},
