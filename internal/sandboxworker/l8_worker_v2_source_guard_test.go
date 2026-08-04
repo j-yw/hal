@@ -5249,8 +5249,8 @@ func l8WorkerV2ExactStoreStateDecoderCall(scope l8WorkerV2GuardScope, call *ast.
 		l8WorkerV2ObjectHasNoReassignments(function, receiver, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, parameters[0], info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, parameters[0], []*ast.CallExpr{acquireCall}, nil, false, info) &&
-		l8WorkerV2ObjectIsAcquiredCallResult(function, reader, "openStoredJobStateV2", parameters[0], info) &&
-		l8WorkerV2IsExactStoredJobOpenCall(acquireCall, parameters[0], info) &&
+		l8WorkerV2ObjectIsAcquiredCallResult(function, reader, "", parameters[0], info) &&
+		l8WorkerV2IsExactStoredJobOpenCall(function, acquireCall, receiver, parameters[0], info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, reader, info) && l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
 		l8WorkerV2ObjectOnlyConsumedByExactCalls(function, reader, []*ast.CallExpr{readerClose, call}, info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, reader, []*ast.CallExpr{readerClose, call}, nil, false, info) &&
@@ -6337,22 +6337,63 @@ func l8WorkerV2ObjectIsAcquiredCallResult(function *ast.FuncDecl, object types.O
 	return matches == 1
 }
 
-func l8WorkerV2IsExactStoredJobOpenCall(call *ast.CallExpr, jobID types.Object, info *types.Info) bool {
-	if call == nil || jobID == nil || len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != jobID {
+func l8WorkerV2IsExactStoredJobOpenCall(function *ast.FuncDecl, call *ast.CallExpr, store, jobID types.Object, info *types.Info) bool {
+	if function == nil || call == nil || store == nil || jobID == nil || len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != jobID {
 		return false
 	}
-	function, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
-	if !ok || !l8WorkerV2IsExactPackageFunctionObject(function, "openStoredJobStateV2") {
+	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	if !ok || l8WorkerV2ExpressionObject(selector.X, info) != store {
 		return false
 	}
-	signature, ok := function.Type().(*types.Signature)
-	if !ok || signature.Recv() != nil || signature.TypeParams() != nil || signature.Params().Len() != 1 || signature.Results().Len() != 2 ||
+	selection := info.Selections[selector]
+	method, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
+	if !ok || selection == nil || selection.Kind() != types.MethodVal || selection.Obj() != method || method.Name() != "openStoredJobStateV2" || method.Pkg() == nil || method.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" {
+		return false
+	}
+	signature, ok := method.Type().(*types.Signature)
+	if !ok || !l8WorkerV2IsExactJobStoreV2Pointer(signature.Recv().Type()) || signature.TypeParams() != nil || signature.RecvTypeParams() != nil || signature.Params().Len() != 1 || signature.Results().Len() != 2 ||
 		!types.Identical(signature.Params().At(0).Type(), types.Universe.Lookup("string").Type()) ||
 		!types.Identical(signature.Results().At(1).Type(), types.Universe.Lookup("error").Type()) {
 		return false
 	}
-	readerType := function.Pkg().Scope().Lookup("storedJobReaderV2")
-	return readerType != nil && types.Identical(signature.Results().At(0).Type(), readerType.Type())
+	readerType := method.Pkg().Scope().Lookup("storedJobReaderV2")
+	return readerType != nil && types.Identical(signature.Results().At(0).Type(), readerType.Type()) &&
+		l8WorkerV2MethodReferencedOnlyByCall(function, method, selector, info)
+}
+
+func l8WorkerV2IsExactJobStoreV2Pointer(typ types.Type) bool {
+	pointer, ok := types.Unalias(typ).(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := types.Unalias(pointer.Elem()).(*types.Named)
+	return ok && named.TypeArgs().Len() == 0 && named.Obj() != nil && named.Obj().Pkg() != nil &&
+		named.Obj().Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" && named.Obj().Name() == "jobStoreV2"
+}
+
+func l8WorkerV2MethodReferencedOnlyByCall(function *ast.FuncDecl, method *types.Func, allowed *ast.SelectorExpr, info *types.Info) bool {
+	if function == nil || function.Body == nil || method == nil || allowed == nil {
+		return false
+	}
+	references := 0
+	valid := true
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !valid {
+			return false
+		}
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		selection := info.Selections[selector]
+		if selection == nil || selection.Obj() != method {
+			return true
+		}
+		references++
+		valid = selector == allowed
+		return valid
+	})
+	return valid && references == 1
 }
 
 func l8WorkerV2IsExactPackageFunctionObject(object types.Object, name string) bool {
