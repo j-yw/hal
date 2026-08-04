@@ -7,9 +7,11 @@ This note verifies issue #49 L8 against
 produces live, job-scoped HTTP, tmpfs-file, and SSH-agent activation evidence.
 It does not select the strict default; L10 consumes the resulting proof.
 
-Default tests are fake-only. They do not open listeners, resolve or dial
-destinations, read host agents, create mounts or namespaces, start a runtime,
-access KVM, or read raw configured secrets. Live behavior is isolated behind
+Default tests are fake-only except for exact isolated local Unix-socket
+protocol tests. Those deterministic framing tests are not live-tagged; they do
+not open IP or external listeners, resolve or dial destinations, read host
+agents, create mounts or namespaces, start a provider/runtime, access KVM, or
+read raw configured secrets. All other live behavior is isolated behind
 explicit build tags and prepared-host opt-in markers.
 
 A selected live test that skips is a failure, not a pass.
@@ -106,7 +108,11 @@ Required focused areas are:
 - `sandboxjob-v1` compatibility, distinct `job_*_v2` operations, strict `sandboxjob-v2`,
   credential-aware idempotency/request keys,
   unknown/duplicate/trailing JSON rejection, exact legacy unsupported-operation
-  envelope, unsupported-v2 failure, no v1 retry, and client-loss recovery;
+  envelope, one-request/one-response Unix connections framed by request-sender
+  write-half-close/EOF, mandatory successful official-client half-close before
+  response decoding, no dispatch before EOF, prompt missing-half-close cleanup
+  on peer close or server cancellation, unsupported-v2 failure, no v1 retry, and
+  client-loss recovery;
 - guest-v1 compatibility, exact guest-v2 negotiation including only the bounded
   old-server error envelope, host-CID validation, signed X25519 transcript,
   AEAD sequence/replay/tamper/unauthorized-host negatives, no fallback, strict

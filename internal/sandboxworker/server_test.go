@@ -430,6 +430,9 @@ func roundTripWorkerRequest(t *testing.T, socketPath string, req Request) Respon
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		t.Fatalf("Encode(request) error: %v", err)
 	}
+	if err := conn.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite(request) error: %v", err)
+	}
 
 	var resp Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
