@@ -390,6 +390,389 @@ func TestL8CredentialMemoryBorrowIsSinkOnlyBoundedAndExpires(t *testing.T) {
 	}
 }
 
+func TestL8CredentialMemoryBorrowedViewCopiesShareExpiry(t *testing.T) {
+	sourceOps := &l8MemoryOps{}
+	source, err := newLockedMapping(64, sourceOps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Destroy() })
+	canary := []byte("l8-borrow-copy-canary")
+	if err := source.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, canary)
+		return len(canary), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var shallow borrowedView
+	var reflected borrowedView
+	callbackTargets := make([]*LockedMapping, 2)
+	for index := range callbackTargets {
+		callbackTargets[index], err = newLockedMapping(64, &l8MemoryOps{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = callbackTargets[index].Destroy() })
+	}
+	if err := source.Borrow(context.Background(), func(view BorrowedView) error {
+		concrete, ok := view.(*borrowedView)
+		if !ok {
+			return errors.New("borrowed view has unexpected implementation")
+		}
+		shallow = *concrete
+		clone := reflect.New(reflect.TypeOf(*concrete)).Elem()
+		clone.Set(reflect.ValueOf(*concrete))
+		reflected = clone.Interface().(borrowedView)
+		for index, copied := range []*borrowedView{&shallow, &reflected} {
+			if got := copied.Len(); got != 0 {
+				t.Errorf("callback-active copied view[%d] length = %d, want invalid", index, got)
+			}
+			if copyErr := copied.CopyTo(context.Background(), callbackTargets[index]); !errors.Is(copyErr, ErrBorrowedViewExpired) {
+				t.Errorf("callback-active copied view[%d] CopyTo = %v, want expired", index, copyErr)
+			}
+			sink := &l8BoundedSink{limit: len(canary)}
+			if writeErr := copied.WriteTo(context.Background(), sink); !errors.Is(writeErr, ErrBorrowedViewExpired) {
+				t.Errorf("callback-active copied view[%d] WriteTo = %v, want expired", index, writeErr)
+			}
+			if sink.count != 0 {
+				t.Errorf("callback-active copied view[%d] reached the sink", index)
+			}
+		}
+		originalSink := &l8BoundedSink{limit: len(canary)}
+		if writeErr := concrete.WriteTo(context.Background(), originalSink); writeErr != nil || originalSink.count != 1 {
+			t.Errorf("canonical callback view failed after copied-view rejection: error=%v count=%d", writeErr, originalSink.count)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, fixture := range []struct {
+		name string
+		view *borrowedView
+	}{
+		{name: "shallow", view: &shallow},
+		{name: "safe reflection", view: &reflected},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			if got := fixture.view.Len(); got != 0 {
+				t.Errorf("expired copied view length = %d, want 0", got)
+			}
+			target, targetErr := newLockedMapping(64, &l8MemoryOps{})
+			if targetErr != nil {
+				t.Fatal(targetErr)
+			}
+			t.Cleanup(func() { _ = target.Destroy() })
+			if copyErr := fixture.view.CopyTo(context.Background(), target); !errors.Is(copyErr, ErrBorrowedViewExpired) {
+				t.Errorf("expired copied view CopyTo error = %v, want expired", copyErr)
+			}
+			sink := &l8BoundedSink{limit: len(canary)}
+			if writeErr := fixture.view.WriteTo(context.Background(), sink); !errors.Is(writeErr, ErrBorrowedViewExpired) {
+				t.Errorf("expired copied view WriteTo error = %v, want expired", writeErr)
+			}
+			if sink.count != 0 {
+				t.Error("expired copied view reached the sink")
+			}
+		})
+	}
+}
+
+func TestL8CredentialMemoryBorrowWaitsForConcurrentAliasUseBeforeSharedExpiry(t *testing.T) {
+	source, err := newLockedMapping(64, &l8MemoryOps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Destroy() })
+	if err := source.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, []byte("l8-concurrent-copy-canary"))
+		return len("l8-concurrent-copy-canary"), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := &l8BlockingMemorySink{
+		limit:   64,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	callbackReturned := make(chan struct{})
+	writeDone := make(chan error, 1)
+	borrowDone := make(chan error, 1)
+	var escaped BorrowedView
+	go func() {
+		borrowDone <- source.Borrow(context.Background(), func(view BorrowedView) error {
+			escaped = view
+			go func() {
+				writeDone <- escaped.WriteTo(context.Background(), sink)
+			}()
+			if err := l8AwaitMemorySignal(sink.started, "copied view sink start"); err != nil {
+				return err
+			}
+			close(callbackReturned)
+			return nil
+		})
+	}()
+	l8ReceiveMemoryTest(t, callbackReturned, "copied view callback return")
+
+	earlyReturn := false
+	timer := time.NewTimer(100 * time.Millisecond)
+	select {
+	case err := <-borrowDone:
+		earlyReturn = true
+		if err != nil {
+			t.Errorf("borrow returned early with error: %v", err)
+		}
+	case <-timer.C:
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	close(sink.release)
+	if err := l8ReceiveMemoryTest(t, writeDone, "copied view sink completion"); err != nil {
+		t.Fatal(err)
+	}
+	if !earlyReturn {
+		if err := l8ReceiveMemoryTest(t, borrowDone, "borrow after copied view drain"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if earlyReturn {
+		t.Fatal("borrow returned before an accepted aliased-view sink operation drained")
+	}
+	if got := escaped.Len(); got != 0 {
+		t.Fatalf("concurrently drained copied view length = %d, want expired", got)
+	}
+}
+
+func TestL8CredentialMemoryBorrowedViewSinkCanReenterSafeOperations(t *testing.T) {
+	source, err := newLockedMapping(64, &l8MemoryOps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := newLockedMapping(64, &l8MemoryOps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canary := []byte("l8-reentrant-view-canary")
+	if err := source.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, canary)
+		return len(canary), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	borrowDone := make(chan error, 1)
+	go func() {
+		borrowDone <- source.Borrow(context.Background(), func(view BorrowedView) error {
+			sink := &l8ReentrantMemorySink{
+				view:   view,
+				target: target,
+				limit:  len(canary),
+			}
+			if err := view.WriteTo(context.Background(), sink); err != nil {
+				return err
+			}
+			if sink.length != len(canary) || sink.count != 1 {
+				return errors.New("reentrant sink did not complete both safe view operations")
+			}
+			return nil
+		})
+	}()
+	if err := l8ReceiveMemoryTest(t, borrowDone, "reentrant borrowed-view sink"); err != nil {
+		t.Fatal(err)
+	}
+
+	verified := &l8BoundedSink{limit: len(canary)}
+	if err := target.Borrow(context.Background(), func(view BorrowedView) error {
+		return view.WriteTo(context.Background(), verified)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if verified.count != 1 || verified.size != len(canary) || verified.digest != sha256.Sum256(canary) {
+		t.Fatal("reentrant safe CopyTo did not preserve the credential value")
+	}
+	if err := source.Destroy(); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Destroy(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestL8CredentialMemoryRecursiveReflectTraversalCannotReachLiveRegion(t *testing.T) {
+	mapping, err := newLockedMapping(64, &l8MemoryOps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canary := []byte("l8-reflect-region-canary")
+	if err := mapping.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, canary)
+		return len(canary), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if exposures := l8CredentialMemoryRecursiveReflectExposures(mapping, canary); len(exposures) != 0 {
+		t.Errorf("LockedMapping reflection reached/formatted live bytes: %v", exposures)
+	}
+	if err := mapping.Borrow(context.Background(), func(view BorrowedView) error {
+		if exposures := l8CredentialMemoryRecursiveReflectExposures(view, canary); len(exposures) != 0 {
+			t.Errorf("borrowedView reflection reached/formatted live bytes: %v", exposures)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, fixture := range []struct {
+		name  string
+		value any
+	}{
+		{name: "LockedMapping", value: LockedMapping{}},
+		{name: "borrowedView", value: borrowedView{}},
+	} {
+		t.Run(fixture.name+" wrapper", func(t *testing.T) {
+			typeOf := reflect.TypeOf(fixture.value)
+			accessors := 0
+			for index := 0; index < typeOf.NumField(); index++ {
+				field := typeOf.Field(index)
+				switch field.Type.Kind() {
+				case reflect.Func:
+					accessors++
+				case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.UnsafePointer:
+					t.Errorf("%s field %s keeps reflect-traversable live state as %s", fixture.name, field.Name, field.Type.Kind())
+				}
+			}
+			if accessors != 1 {
+				t.Errorf("%s closure-backed accessors = %d, want 1", fixture.name, accessors)
+			}
+		})
+	}
+	if err := mapping.Destroy(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestL8CredentialMemoryLockedMappingValueCopiesDenyFormattingAndSerialization(t *testing.T) {
+	mapping, err := newLockedMapping(64, &l8MemoryOps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mapping.Destroy() })
+	canary := "l8-mapping-copy-canary"
+	if err := mapping.Load(context.Background(), func(dst []byte) (int, error) {
+		copy(dst, canary)
+		return len(canary), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dereferenced := *mapping
+	reflectedValue := reflect.New(reflect.TypeOf(*mapping)).Elem()
+	reflectedValue.Set(reflect.ValueOf(*mapping))
+	reflected := reflectedValue.Interface().(LockedMapping)
+	for _, fixture := range []struct {
+		name  string
+		value LockedMapping
+	}{
+		{name: "dereferenced", value: dereferenced},
+		{name: "safe reflection", value: reflected},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			assertL8CredentialMemoryLiveValue(t, "locked mapping value copy", fixture.value, "<credentialmemory.LockedMapping>", canary)
+			reflectedText := reflect.ValueOf(fixture.value).String()
+			l8CredentialMemoryRejectFormattingPoison(t, "locked mapping reflected value", reflectedText, []string{canary, "0x"})
+		})
+	}
+}
+
+func TestL8CredentialMemoryNilPointersStayPoisonFreeThroughFormatAndJSON(t *testing.T) {
+	for _, fixture := range []struct {
+		name  string
+		value any
+	}{
+		{name: "locked mapping", value: (*LockedMapping)(nil)},
+		{name: "borrowed view", value: (*borrowedView)(nil)},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			for _, format := range l8CredentialMemoryFormatterVerbs() {
+				rendered := l8CredentialMemorySafeSprintf(t, "nil "+fixture.name+" "+format, format, fixture.value)
+				l8CredentialMemoryRejectFormattingPoison(t, "nil "+fixture.name+" "+format, rendered, []string{"l8-live", "canary", "[108 56"})
+			}
+			encoded, err := json.Marshal(fixture.value)
+			if err != nil || string(encoded) != "null" {
+				t.Fatalf("nil %s JSON = %q, %v; want safe null", fixture.name, encoded, err)
+			}
+		})
+	}
+}
+
+func TestL8CredentialMemoryLockedMappingValueCopiesCannotOperate(t *testing.T) {
+	for _, fixture := range []struct {
+		name  string
+		clone func(*LockedMapping) LockedMapping
+	}{
+		{name: "dereferenced", clone: func(mapping *LockedMapping) LockedMapping { return *mapping }},
+		{name: "safe reflection", clone: func(mapping *LockedMapping) LockedMapping {
+			value := reflect.New(reflect.TypeOf(*mapping)).Elem()
+			value.Set(reflect.ValueOf(*mapping))
+			return value.Interface().(LockedMapping)
+		}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			mapping, err := newLockedMapping(64, &l8MemoryOps{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = mapping.Destroy() })
+			canary := []byte("l8-invalid-copy-canary")
+			if err := mapping.Load(context.Background(), func(dst []byte) (int, error) {
+				copy(dst, canary)
+				return len(canary), nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			copied := fixture.clone(mapping)
+			copiedHandle := &copied
+			if got := copiedHandle.State(); got != LockedMappingStateDestroyed {
+				t.Errorf("copied handle state = %q, want destroyed", got)
+			}
+			readerCalled := false
+			if loadErr := copiedHandle.Load(context.Background(), func([]byte) (int, error) {
+				readerCalled = true
+				return 0, nil
+			}); !errors.Is(loadErr, ErrCredentialMemoryDestroyed) || readerCalled {
+				t.Errorf("copied handle Load = %v, reader called = %t", loadErr, readerCalled)
+			}
+			borrowCalled := false
+			if borrowErr := copiedHandle.Borrow(context.Background(), func(BorrowedView) error {
+				borrowCalled = true
+				return nil
+			}); !errors.Is(borrowErr, ErrCredentialMemoryDestroyed) || borrowCalled {
+				t.Errorf("copied handle Borrow = %v, callback called = %t", borrowErr, borrowCalled)
+			}
+			if destroyErr := copiedHandle.Destroy(); !errors.Is(destroyErr, ErrCredentialMemoryDestroyed) {
+				t.Errorf("copied handle Destroy = %v, want destroyed", destroyErr)
+			}
+
+			sink := &l8BoundedSink{limit: len(canary)}
+			if err := mapping.Borrow(context.Background(), func(view BorrowedView) error {
+				return view.WriteTo(context.Background(), sink)
+			}); err != nil {
+				t.Fatalf("canonical mapping was damaged by copied handle: %v", err)
+			}
+			if sink.count != 1 || sink.digest != sha256.Sum256(canary) {
+				t.Fatal("canonical mapping value changed after copied-handle rejection")
+			}
+		})
+	}
+}
+
 func TestL8CredentialMemoryLiveStateCannotSerializeOrFormatRawState(t *testing.T) {
 	ops := &l8MemoryOps{}
 	mapping, err := newLockedMapping(48, ops)
@@ -444,6 +827,16 @@ func l8AssertCredentialMemoryAllVerbFormatting(t *testing.T, label string, value
 	for _, variant := range l8CredentialMemoryFormattingVariants(value) {
 		if _, ok := variant.value.(fmt.Formatter); !ok {
 			t.Fatalf("%s %s lacks fmt.Formatter", label, variant.name)
+		}
+		if variant.nilPointer {
+			// A nil pointer contains no live state. Exercise it only through fmt's
+			// panic-contained entrypoint; direct value-receiver method calls would
+			// dereference nil before the denial method can run.
+			for _, format := range l8CredentialMemoryFormatterVerbs() {
+				rendered := l8CredentialMemorySafeSprintf(t, label+" "+variant.name+" "+format, format, variant.value)
+				l8CredentialMemoryRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
+			}
+			continue
 		}
 		if rendered := l8CredentialMemorySafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value); rendered != expectedFormat {
 			t.Fatalf("%s %s formatter output = %q, want exact %q", label, variant.name, rendered, expectedFormat)
@@ -739,6 +1132,37 @@ type l8BoundedSink struct {
 	digest [sha256.Size]byte
 }
 
+type l8BlockingMemorySink struct {
+	limit   int
+	started chan struct{}
+	release chan struct{}
+}
+
+type l8ReentrantMemorySink struct {
+	view   BorrowedView
+	target *LockedMapping
+	limit  int
+	length int
+	count  int
+}
+
+func (sink *l8BlockingMemorySink) MaxCredentialBytes() int { return sink.limit }
+
+func (sink *l8BlockingMemorySink) WriteCredential([]byte) error {
+	close(sink.started)
+	return l8AwaitMemorySignal(sink.release, "release copied view sink")
+}
+
+func (sink *l8ReentrantMemorySink) MaxCredentialBytes() int {
+	sink.length = sink.view.Len()
+	return sink.limit
+}
+
+func (sink *l8ReentrantMemorySink) WriteCredential([]byte) error {
+	sink.count++
+	return sink.view.CopyTo(context.Background(), sink.target)
+}
+
 func (sink *l8BoundedSink) MaxCredentialBytes() int { return sink.limit }
 
 func (sink *l8BoundedSink) WriteCredential(value []byte) error {
@@ -780,4 +1204,73 @@ func allL8Zero(value []byte) bool {
 		}
 	}
 	return true
+}
+
+func l8CredentialMemoryRecursiveReflectExposures(root any, canary []byte) []string {
+	var renderings []string
+	l8CredentialMemoryWalkReflect(reflect.ValueOf(root), 0, make(map[l8CredentialMemoryReflectVisit]bool), &renderings)
+	plain := string(canary)
+	hex := fmt.Sprintf("%x", canary)
+	var exposures []string
+	for _, rendered := range renderings {
+		if strings.Contains(rendered, plain) || strings.Contains(rendered, hex) {
+			exposures = append(exposures, rendered)
+		}
+	}
+	return exposures
+}
+
+type l8CredentialMemoryReflectVisit struct {
+	typeOf  reflect.Type
+	pointer uintptr
+}
+
+func l8CredentialMemoryWalkReflect(value reflect.Value, depth int, seen map[l8CredentialMemoryReflectVisit]bool, renderings *[]string) {
+	if !value.IsValid() || depth > 16 {
+		return
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if !value.IsNil() {
+			l8CredentialMemoryWalkReflect(value.Elem(), depth+1, seen, renderings)
+		}
+	case reflect.Pointer:
+		if value.IsNil() {
+			return
+		}
+		visit := l8CredentialMemoryReflectVisit{typeOf: value.Type(), pointer: value.Pointer()}
+		if seen[visit] {
+			return
+		}
+		seen[visit] = true
+		l8CredentialMemoryWalkReflect(value.Elem(), depth+1, seen, renderings)
+	case reflect.Struct:
+		for index := 0; index < value.NumField(); index++ {
+			l8CredentialMemoryWalkReflect(value.Field(index), depth+1, seen, renderings)
+		}
+	case reflect.Array, reflect.Slice:
+		if value.Kind() == reflect.Slice && value.IsNil() {
+			return
+		}
+		if value.Type().Elem().Kind() == reflect.Uint8 {
+			bytes := make([]byte, value.Len())
+			for index := 0; index < value.Len(); index++ {
+				bytes[index] = byte(value.Index(index).Uint())
+			}
+			*renderings = append(*renderings, string(bytes), fmt.Sprintf("%v", bytes), fmt.Sprintf("%x", bytes))
+			return
+		}
+		for index := 0; index < value.Len(); index++ {
+			l8CredentialMemoryWalkReflect(value.Index(index), depth+1, seen, renderings)
+		}
+	case reflect.Map:
+		if value.IsNil() {
+			return
+		}
+		iterator := value.MapRange()
+		for iterator.Next() {
+			l8CredentialMemoryWalkReflect(iterator.Key(), depth+1, seen, renderings)
+			l8CredentialMemoryWalkReflect(iterator.Value(), depth+1, seen, renderings)
+		}
+	}
 }
