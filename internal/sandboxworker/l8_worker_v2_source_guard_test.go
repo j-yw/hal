@@ -994,6 +994,129 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		})
 	}
 
+	for _, tt := range []struct {
+		name    string
+		path    string
+		old     string
+		replace string
+	}{
+		{
+			name:    "server returns success before unreachable decoder",
+			path:    "server.go",
+			old:     "\tif err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil { return Request{}, &Response{} }\n\treturn request, nil",
+			replace: "\treturn request, nil\n\tif err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil { return Request{}, &Response{} }\n\treturn Request{}, &Response{}",
+		},
+		{
+			name:    "client returns success before unreachable decoder",
+			path:    "client.go",
+			old:     "\tif err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"read worker response failed\")\n\t}\n\treturn response, nil",
+			replace: "\treturn response, nil\n\tif err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"read worker response failed\")\n\t}\n\treturn Response{}, errors.New(\"unreachable worker response\")",
+		},
+		{
+			name:    "store returns success before unreachable decoder",
+			path:    "job_store_v2.go",
+			old:     "\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
+			replace: "\treturn state, nil\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn storedJobStateV2{}, errors.New(\"unreachable stored job state\")",
+		},
+		{
+			name:    "server decoder is unreachable under false branch",
+			path:    "server.go",
+			old:     "\tif err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil { return Request{}, &Response{} }",
+			replace: "\tif false {\n\t\tif err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil { return Request{}, &Response{} }\n\t}",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			if mutated[tt.path] == sources[tt.path] {
+				t.Fatal("decoder dominance mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name   string
+		before string
+		alias  string
+	}{
+		{
+			name:   "client clears context through pointer aliases before acquisition branch",
+			before: "\tconnection, err := openResponseReader()",
+			alias:  "\tctxAlias := &ctx\n\tctxAlias2 := ctxAlias\n\t*ctxAlias2 = nil\n",
+		},
+		{
+			name:   "client clears context through pointer aliases before encode branch",
+			before: "\tif err := encodeWorkerRequest(connection, request); err != nil {",
+			alias:  "\tctxAlias := &ctx\n\tctxAlias2 := ctxAlias\n\t*ctxAlias2 = nil\n",
+		},
+		{
+			name:   "client clears context through pointer aliases before unsupported half-close branch",
+			before: "\thalfCloser, ok := connection.(interface{ CloseWrite() error })",
+			alias:  "\tctxAlias := &ctx\n\tctxAlias2 := ctxAlias\n\t*ctxAlias2 = nil\n",
+		},
+		{
+			name:   "client clears context through pointer aliases before failed half-close branch",
+			before: "\tif err := halfCloser.CloseWrite(); err != nil {",
+			alias:  "\tctxAlias := &ctx\n\tctxAlias2 := ctxAlias\n\t*ctxAlias2 = nil\n",
+		},
+		{
+			name:   "client clears context through pointer aliases before decode branch",
+			before: "\tif err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {",
+			alias:  "\tctxAlias := &ctx\n\tctxAlias2 := ctxAlias\n\t*ctxAlias2 = nil\n",
+		},
+		{
+			name:   "client clears acquisition error through pointer aliases before branch",
+			before: "\tif err != nil {",
+			alias:  "\terrAlias := &err\n\terrAlias2 := errAlias\n\t*errAlias2 = nil\n",
+		},
+		{
+			name:   "client forces successful half-close assertion through pointer aliases",
+			before: "\tif !ok {",
+			alias:  "\tokAlias := &ok\n\tokAlias2 := okAlias\n\t*okAlias2 = true\n",
+		},
+		{
+			name:   "client clears half-closer through pointer aliases before close",
+			before: "\tif err := halfCloser.CloseWrite(); err != nil {",
+			alias:  "\thalfCloserAlias := &halfCloser\n\thalfCloserAlias2 := halfCloserAlias\n\t*halfCloserAlias2 = nil\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated["client.go"] = strings.Replace(mutated["client.go"], tt.before, tt.alias+tt.before, 1)
+			if mutated["client.go"] == sources["client.go"] {
+				t.Fatal("client safe-branch alias mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	t.Run("client returns success before unreachable encode half-close and decode", func(t *testing.T) {
+		mutated := l8CloneWorkerV2GuardSources(sources)
+		mutated["client.go"] = strings.Replace(mutated["client.go"], "\tvar response Response\n", "", 1)
+		mutated["client.go"] = strings.Replace(mutated["client.go"], "\treturn response, nil\n}", "\treturn Response{}, errors.New(\"unreachable worker response\")\n}", 1)
+		mutated["client.go"] = strings.Replace(mutated["client.go"], "\tif err := encodeWorkerRequest(connection, request); err != nil {", "\tvar response Response\n\treturn response, nil\n\tif err := encodeWorkerRequest(connection, request); err != nil {", 1)
+		if mutated["client.go"] == sources["client.go"] {
+			t.Fatal("client early-success mutation did not change the positive fixture")
+		}
+		l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+	})
+
+	t.Run("no-op named request encoder helper", func(t *testing.T) {
+		mutated := l8CloneWorkerV2GuardSources(existingJSONWriterSources)
+		mutated["client.go"] = strings.Replace(mutated["client.go"], "\t\"encoding/json\"\n", "", 1)
+		mutated["client.go"] = strings.Replace(mutated["client.go"], `	if err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request failed")
+	}
+`, clientEncodeBlock, 1)
+		mutated["client.go"] += "\nfunc encodeWorkerRequest(writer io.Writer, request Request) error { return nil }\n"
+		if mutated["client.go"] == existingJSONWriterSources["client.go"] {
+			t.Fatal("no-op request encoder mutation did not change the direct encoder fixture")
+		}
+		l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+	})
+
 	otherWrapperOutput := l8CloneWorkerV2GuardSources(sources)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "var output Response", "var output Response\n\tvar other Response", 1)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "return output, nil", "return other, nil", 1)
