@@ -780,6 +780,7 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reviewReturnBeforeRecursion(true)
 	reviewConditionalReturnBeforeTerminal(true)
 	reviewReachableDeferRecover()
+	reviewDeferredRecoverThenPanic()
 	var response Response`, 1)
 	possiblyReturningHelper["client.go"] += `
 func reviewSkippedForeverBool() bool { select {} }
@@ -795,6 +796,7 @@ func reviewRecoveringRecursiveDecoy(recurse bool) { defer func() { _ = recover()
 func reviewReturnBeforeRecursion(stop bool) { if stop { return }; reviewReturnBeforeRecursion(stop) }
 func reviewConditionalReturnBeforeTerminal(stop bool) { if stop { return }; select {} }
 func reviewReachableDeferRecover() { defer func() { _ = recover() }() }
+func reviewDeferredRecoverThenPanic() { defer func() { _ = recover() }(); panic("recovered") }
 `
 	l8AssertWorkerV2GuardAllows(t, possiblyReturningHelper, policy)
 	clientHalfCloseBlock := `	halfCloser, ok := connection.(interface{ CloseWrite() error })
@@ -1099,6 +1101,39 @@ func reviewReachableDeferRecover() { defer func() { _ = recover() }() }
 			mutate: func(source string) string {
 				source = strings.Replace(source, "\tvar response Response", "\treviewSelectThenDeferRecover()\n\tvar response Response", 1)
 				return source + "\nfunc reviewSelectThenDeferRecover() { select {}; defer func() { _ = recover() }() }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after benign defer before select",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewBenignDeferThenSelect()\n\tvar response Response", 1)
+				return source + "\nfunc reviewBenignDeferThenSelect() { defer func() {}(); select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after benign defer before recursion",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewBenignDeferThenRecurse()\n\tvar response Response", 1)
+				return source + "\nfunc reviewKnownNoRecover() {}\nfunc reviewBenignDeferThenRecurse() { defer reviewKnownNoRecover(); reviewBenignDeferThenRecurse() }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after concrete receiver method",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\t(reviewConcreteBlocker{}).block()\n\tvar response Response", 1)
+				return source + "\ntype reviewConcreteBlocker struct{}\nfunc (reviewConcreteBlocker) block() { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after direct iife",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tvar response Response", "\tfunc() { select {} }()\n\tvar response Response", 1)
+			},
+		},
+		{
+			name: "client response decode is unreachable after immutable local function",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tvar response Response", "\treviewLocalBlock := func() { select {} }\n\treviewLocalBlock()\n\tvar response Response", 1)
 			},
 		},
 	} {
