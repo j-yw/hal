@@ -763,11 +763,11 @@ func TestL8WorkerV2NoCredentialIntentRequiresExactAbsence(t *testing.T) {
 			t.Fatalf("no-credential v2 request rejected %s submission identity: %v", allowed.name, err)
 		}
 	}
-	for _, submissionID := range []string{strings.Repeat("s", 129), "submission:neighbor"} {
+	for _, invalid := range l8WorkerV2InvalidCrossPhaseSafeIDCases() {
 		candidate := l8CloneWorkerV2StartRequest(req)
-		candidate.SubmissionID = submissionID
+		candidate.SubmissionID = invalid.value
 		if err := candidate.Validate(); err == nil {
-			t.Fatal("no-credential v2 request accepted an out-of-vocabulary submission identity")
+			t.Fatalf("no-credential v2 request accepted %s submission identity", invalid.name)
 		}
 	}
 
@@ -968,6 +968,10 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 		{name: "129 byte principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = strings.Repeat("p", 129) }},
 		{name: "193 byte principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = strings.Repeat("p", 193) }},
 		{name: "colon bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal:neighbor" }},
+		{name: "whitespace bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal neighbor" }},
+		{name: "at sign bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal@neighbor" }},
+		{name: "plus bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal+neighbor" }},
+		{name: "unicode bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal-邻居" }},
 	} {
 		t.Run("rejects "+tt.name, func(t *testing.T) {
 			candidate := state

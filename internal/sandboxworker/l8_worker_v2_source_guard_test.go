@@ -781,6 +781,11 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reviewConditionalReturnBeforeTerminal(true)
 	reviewReachableDeferRecover()
 	reviewDeferredRecoverThenPanic()
+	_ = func() int { return 1 }()
+	_ = (reviewReturningReceiver{}).value()
+	reviewReassignedLocal := func() { select {} }
+	reviewReassignedLocal = func() {}
+	reviewReassignedLocal()
 	var response Response`, 1)
 	possiblyReturningHelper["client.go"] += `
 func reviewSkippedForeverBool() bool { select {} }
@@ -797,6 +802,8 @@ func reviewReturnBeforeRecursion(stop bool) { if stop { return }; reviewReturnBe
 func reviewConditionalReturnBeforeTerminal(stop bool) { if stop { return }; select {} }
 func reviewReachableDeferRecover() { defer func() { _ = recover() }() }
 func reviewDeferredRecoverThenPanic() { defer func() { _ = recover() }(); panic("recovered") }
+type reviewReturningReceiver struct{}
+func (reviewReturningReceiver) value() int { return 1 }
 `
 	l8AssertWorkerV2GuardAllows(t, possiblyReturningHelper, policy)
 	clientHalfCloseBlock := `	halfCloser, ok := connection.(interface{ CloseWrite() error })
@@ -1115,6 +1122,20 @@ func reviewDeferredRecoverThenPanic() { defer func() { _ = recover() }(); panic(
 			mutate: func(source string) string {
 				source = strings.Replace(source, "\tvar response Response", "\treviewBenignDeferThenRecurse()\n\tvar response Response", 1)
 				return source + "\nfunc reviewKnownNoRecover() {}\nfunc reviewBenignDeferThenRecurse() { defer reviewKnownNoRecover(); reviewBenignDeferThenRecurse() }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after recover defer before select",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewRecoverDeferThenSelect()\n\tvar response Response", 1)
+				return source + "\nfunc reviewRecoverDeferThenSelect() { defer func() { _ = recover() }(); select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after recover defer before recursion",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewRecoverDeferThenRecurse()\n\tvar response Response", 1)
+				return source + "\nfunc reviewRecoverDeferThenRecurse() { defer func() { _ = recover() }(); reviewRecoverDeferThenRecurse() }\n"
 			},
 		},
 		{
