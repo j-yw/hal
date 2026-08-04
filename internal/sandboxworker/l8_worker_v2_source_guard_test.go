@@ -349,6 +349,23 @@ func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error 
 	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
 	return nil
 }`,
+		"nested_custom_unmarshal_callback": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+)
+type nestedJobStartV2Value struct { Value string }
+func (*nestedJobStartV2Value) UnmarshalJSON([]byte) error { return nil }
+type JobStartRequestV2 struct { Nested nestedJobStartV2Value }
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": source}, policy, "implicit interface callback")
