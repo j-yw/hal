@@ -161,9 +161,14 @@ absence cannot be proved, the public state is `unknown` with reason
   interfaces used by `internal/sandboxworker`.
 - `internal/sandboxruntime/microvm/guestagent` owns versioned v2 wire contracts
   and a v2 client while preserving v1 byte and behavior compatibility.
-- `cmd/hal-guest-credential-helper` is the narrowly privileged PID1 child that
-  owns per-job cgroups, mount namespaces, credential files, the restricted
-  guest SSH endpoint, and credential-aware exec entry.
+- `cmd/hal-guest-credential-helper` is the narrow process entrypoint and PID1
+  bootstrap adapter. It contains no independently testable privilege or
+  lifecycle policy.
+- `internal/sandboxruntime/microvm/guestagent/credentialhelper` owns the
+  testable privileged service policy for per-job cgroups, mount namespaces,
+  credential files, the restricted guest SSH endpoint, credential-aware exec,
+  and cleanup outcomes. D2 keeps it contract/fake-only; D4 adds the Linux
+  implementation behind those boundaries.
 - `internal/sandboxruntime/microvm/guestagent/credentialprotocol` owns the
   shared data-only credential lifecycle and SSH-agent wire codecs.
 - `internal/sandboxruntime/microvm/guestagent/server/credentialclient` owns the
@@ -376,15 +381,63 @@ V2 adds exact operations:
 - `credential_revoke`; and
 - `exec` with an opaque job credential binding.
 
-The host sends `guest-agent-v2` directly. The v2 client may accept a
-`guest-agent-v1` envelope only when it is the exact bounded
-`unsupported_protocol_version` error for the matching request ID and operation;
-that response is terminal. Every other response-version mismatch is malformed.
-No v1 readiness proof, retry, environment fallback, or compatibility handoff
-can satisfy L8.
+The three guest ports are fixed production constants and cannot be selected by
+project, template, job, guest, provider, or command input:
+
+```text
+GuestAgentV1Port = 1024
+GuestAgentV2ControlPort = 1025
+GuestAgentV2SSHRelayPort = 1026
+```
+
+Port 1024 and every v1 request, response, client, listener, frame, and
+one-request connection remain byte- and behavior-compatible. V2 never connects
+to port 1024. On port 1025 it opens one persistent stream and first writes this
+exact two-field compatibility preface as one length-framed JSON object:
+
+```json
+{"protocolVersion":"guest-agent-v2","operation":"readiness"}
+```
+
+The preface and response each have a 512-byte compatibility limit. They reject
+unknown, duplicate, trailing, null, noncanonical, or missing fields. An old
+server response is accepted only when it is byte-for-byte the canonical JSON
+encoding of the frozen v1 unsupported-version envelope below:
+
+```json
+{"protocolVersion":"guest-agent-v1","operation":"readiness","error":{"code":"unsupported_protocol_version","operation":"readiness","field":"protocolVersion","message":"guest agent protocol version is unsupported"}}
+```
+
+This exception uses same-stream positional correlation with the one in-flight
+`readiness` preface: no request ID exists in the frozen v1 envelope. It is a
+terminal `credential_protocol_unsupported` result, never admission. An absent
+port-1025 listener, any other v1 envelope, any near-miss field, a response on a
+new stream, or any v2 negotiation failure is terminal and cannot trigger a v1
+readiness request, retry, downgrade, environment fallback, or compatibility
+handoff. Once the preface succeeds as v2, every encrypted application request
+and response has an exact echoed request ID.
 
 Each lifecycle request carries the full identity and generation tuple, a
-monotonic revision, bounded expiry, and exact mode/binding declarations.
+monotonic revision, bounded expiry, and exact ordered mode/binding
+declarations. The child `credentialprotocol.JobIdentity` is a data-only wire
+mirror mapped losslessly at the Firecracker host boundary; it does not import
+the root `sandboxruntime` package. The signed handshake binds a base guest
+session identity containing the boot nonce and generation, controller signing
+key generation, expected CID, fixed channel port, image digest/generation,
+runtime ID/generation, Firecracker process generation, and vsock generation.
+`GuestCredentialSessionIdentity` then contains that base session ID, the exact
+job identity, and helper-session generation. Every application request, proof,
+and helper packet binds its canonical digest; no post-handshake field is
+pretended to have been present in the earlier signed transcript.
+
+The network fields are mode-dependent rather than filled with sentinel IDs.
+HTTP-proxy mode requires the complete network tuple: network plan, policy
+snapshot, proxy session, proxy generation, topology generation, and rule
+generation. Mixed mode has the same requirement when any binding is HTTP.
+Conversely, file-only and SSH-only modes require that tuple to be absent.
+Changing this validation is an intentional D2 correction to the D1 neutral
+contract and must retain order-sensitive binding/mode correlation.
+
 Responses echo request identity and return safe proof or cleanup IDs only.
 Unknown or duplicate fields, noncanonical scalars, oversized arrays or frames,
 stale revision, cross-job identity, replay, and malformed payloads fail before
@@ -414,6 +467,219 @@ gap, wrap, bad tag, unexpected peer, reconnect, or transcript mismatch revokes
 the session. Raw file payload and transient exec binding frames are encrypted.
 Private controller keys never cross the protocol, and public boot material is
 not a credential-delivery proof.
+
+### Normative guest-session wire contract
+
+Handshake suite `0x0001` is X25519, pure Ed25519, SHA-256,
+HKDF-SHA-256, HMAC-SHA-256, and AES-256-GCM using the Go standard-library
+implementations. A strict prepared-Linux proof additionally requires hardware
+AES acceleration visible to the guest. This avoids extending D2 with a second
+cryptographic dependency or making a timing claim that the portable Go GCM
+implementation cannot support. Go cryptographic objects may retain internal
+copies that expose no destruction API; the physical-zeroization disclaimer
+above applies, while every Hal-owned mutable input, derived byte buffer, and
+plaintext buffer is still overwritten and logically released.
+
+The handshake order is exact:
+
+1. plaintext `GuestHello`;
+2. plaintext signed `ControllerAuth`;
+3. encrypted guest-to-controller `Finished` at sequence 0;
+4. encrypted controller-to-guest `Finished` at sequence 0; and
+5. application records begin at sequence 1 independently in each direction.
+
+No application decode, dispatch, helper call, or mutation occurs until both
+Finished messages validate. A pre-authentication failure closes the stream and
+emits no plaintext alert. The handshake and Finished deadline is 5 seconds.
+
+Each plaintext handshake record is `uint32_be(innerLength) || inner`.
+`innerLength` is 1 through 4096; zero, overflow, truncation, and trailing bytes
+are rejected before allocation. The common inner header is:
+
+```text
+offset  size  field
+0       4     ASCII "HL8H"
+4       1     wire version 1
+5       1     type: 1 GuestHello, 2 ControllerAuth
+6       2     reserved zero, big-endian
+```
+
+Every variable token is `uint16_be(length) || ASCII bytes`, length 1 through
+128, matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}` exactly, with no trimming,
+Unicode, normalization, defaulting, or case folding. Job-identity fields retain
+their narrower neutral safe-ID validator.
+
+`GuestHello` appends:
+
+```text
+suite:u16_be = 1
+channel:u8 = 1 control, 2 ssh-relay
+reserved:u8 = 0
+guestX25519Public:[32]byte
+guestBootNonce:[32]byte
+guestCID:u32_be
+guestPort:u32_be
+controllerKeyGeneration:token
+runtimeID:token
+runtimeGeneration:token
+firecrackerProcessGeneration:token
+vsockGeneration:token
+bootGeneration:token
+imageGeneration:token
+imageSHA256:[32]byte
+```
+
+The fixed local guest CID is 3. On accept, the guest also retains the separate
+peer `SockaddrVM` and requires its CID to be `VMADDR_CID_HOST`; it queries and
+validates the local CID/port rather than confusing the peer's ephemeral port
+with the fixed local port. Channel 1 requires port 1025. Channel 2 requires port
+1026 and appends `jobGeneration`, `activationGeneration`, and
+`relayGeneration` tokens. The relay performs a separate handshake; it never
+reuses control keys.
+
+The unsigned `ControllerAuth` appends suite 1, the matching channel, a zero
+reserved byte, and the 32-byte controller ephemeral X25519 public key. Its wire
+form then appends the 64-byte Ed25519 signature. Let `guestInner` and
+`controllerUnsignedInner` be the exact inner records, without outer lengths or
+the signature, and let `opaque16(s)` mean `uint16_be(len(s)) || ASCII(s)`:
+
+```text
+transcript =
+    opaque16("hal/l8/guest-session/transcript/v1") ||
+    uint32_be(len(guestInner)) || guestInner ||
+    uint32_be(len(controllerUnsignedInner)) || controllerUnsignedInner
+
+TH = SHA256(transcript)
+
+signatureInput =
+    opaque16("hal/l8/guest-session/controller-signature/v1") || TH
+```
+
+The guest verifies pure Ed25519 over `signatureInput` with the exact pinned
+32-byte controller public key and matching generation from runtime-owned boot
+configuration. X25519 shares are exactly 32 bytes; malformed and low-order
+shares and every ECDH failure are terminal. Derivation is:
+
+```text
+SS = X25519(localEphemeralPrivate, peerEphemeralPublic)
+sessionID = SHA256(opaque16("hal/l8/guest-session/id/v1") || TH)
+PRK = HKDF-Extract(SHA-256, secret=SS, salt=TH)
+```
+
+HKDF Expand info is one raw ASCII label below, without a length prefix or NUL:
+
+```text
+hal/l8/guest-session/<channel>/controller-to-guest/key/v1
+hal/l8/guest-session/<channel>/guest-to-controller/key/v1
+hal/l8/guest-session/<channel>/controller-to-guest/nonce-prefix/v1
+hal/l8/guest-session/<channel>/guest-to-controller/nonce-prefix/v1
+hal/l8/guest-session/<channel>/controller-to-guest/finished-key/v1
+hal/l8/guest-session/<channel>/guest-to-controller/finished-key/v1
+```
+
+`<channel>` is exactly `control` or `ssh-relay`. Keys and Finished keys are 32
+bytes; nonce prefixes are 4 bytes. The secure record header and wire form are:
+
+```text
+offset  size  field
+0       4     ASCII "HL8F"
+4       1     wire version 1
+5       1     frame type
+6       2     flags zero, big-endian
+8       8     sequence, uint64 big-endian
+16      4     ciphertextLength, uint32 big-endian, includes 16-byte tag
+20      32    sessionID
+
+wire = header[52] || ciphertextAndTag[ciphertextLength]
+AAD = ASCII("hal/l8/guest-session/frame-aad/v1\x00") || header[52]
+nonce = derivedNoncePrefix[4] || uint64_be(sequence)
+```
+
+Frame types are `0x01 guest_finished` guest-to-controller,
+`0x02 controller_finished` controller-to-guest, `0x10 control_request`
+controller-to-guest, `0x11 control_response` and `0x12 control_event`
+guest-to-controller, `0x20 relay_request` guest-to-controller on the relay,
+`0x21 relay_response` controller-to-guest on the relay, and
+`0x7f close_notify` in either direction. Magic, version, zero flags,
+channel/type/direction, session ID, expected sequence, and length are validated
+before allocation or AEAD open.
+
+Finished plaintexts are these exact 32-byte HMACs, encrypted with the matching
+direction at sequence 0 and compared in constant time after GCM succeeds:
+
+```text
+guestVerify = HMAC-SHA256(
+    guestToControllerFinishedKey,
+    opaque16("hal/l8/guest-session/<channel>/guest-finished/v1") || TH || sessionID)
+
+controllerVerify = HMAC-SHA256(
+    controllerToGuestFinishedKey,
+    opaque16("hal/l8/guest-session/<channel>/controller-finished/v1") || TH || sessionID)
+```
+
+Application control plaintext is at most 2 MiB and relay plaintext is at most
+256 KiB; ciphertext adds exactly the 16-byte GCM tag. Private file payloads
+remain separately typed and bounded to 64 KiB per binding and 1 MiB aggregate.
+Every encrypted control request carries a 16-byte random request ID rendered in
+JSON as exactly 22 unpadded base64url characters, its canonical job/session
+identity digest, operation, and body. Responses echo the same request ID and
+identity digest. Safe JSON control uses strict known-field decoding and a
+canonical fixed-field re-encoding for idempotency; raw file payload and opaque
+exec bindings use separate binary private records and never generic JSON,
+base64, formatting, or errors.
+
+Each direction has an independent `uint64` counter. Finished consumes zero;
+the first application record is one. Receipt must equal the next expected
+value: lower is replay and higher is a gap. Counters advance only after
+authentication and semantic validation, and writers are serialized. The hard
+per-direction cap is `2^32` total encrypted records, legal sequences zero
+through `2^32-1`; the session closes before another record. Replay, gap,
+duplicate, cap/wrap attempt, bad tag, wrong direction/type, partial write,
+truncation, decode failure, or post-handshake identity drift closes and revokes
+the session before payload mutation.
+
+There is no resumption or transparent reconnect. While one session is active,
+a second connection for the same generation is rejected before handshake and
+cannot invalidate or perturb the active session. After EOF, timeout,
+Firecracker process or socket replacement, generation drift, or authentication
+failure, the failed session becomes permanently non-admitting, logically
+releases session material, notifies the loss watcher, and revokes every job
+generation it owned. A reconnect under that same generation is terminal; a
+later job requires a new runtime/session generation rather than reconstructing
+live state.
+
+The D2 implementation locks one deterministic suite-1 control vector. It uses
+the RFC 7748 Alice/Bob X25519 private/public pairs beginning
+`77076d0a.../8520f009...` and `5dab087e.../de9edb7d...`, RFC 8032 Ed25519 seed
+`9d61b19d...` and public key `d75a9801...`, boot nonce bytes `00..1f`, CID 3,
+port 1025, image SHA-256
+`5756b67946a36d1e78ce0b3ae6f1131ead840b828d41b334de1594a7c8a00687`,
+and the tokens `controller-key-gen-1`, `runtime-1`, `runtime-gen-1`,
+`process-gen-1`, `vsock-gen-1`, `boot-gen-1`, and `image-gen-1`. The required
+intermediate/output values are:
+
+```text
+SS = 4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742
+TH = 5ca9d78096d266d650caef23a7619548039feffcd6ef4d4636d8e330c3c9591a
+signature = f40a8509d1881897bfd0838d2008290d71287a45ab92a811450e71a74b26243766c6e1a62de2a1a13064cbd8c8f512cd9be8dd49ed840c4fe765468eb5d27600
+sessionID = 8bb2532307629fb19302a9e5ee11490e8c9f2265f030bcc46a13391dc9759efb
+PRK = ba5a837774445109cd4be8509cbc19261278240efe08f5882e8f32c2b926c2a4
+controller-to-guest key = 1dc71db6479a93a9fa784b8aa4e6fa94997fb7d9dbbc7ac549087bc06e04c9b1
+guest-to-controller key = 2a0ca1e4bf700414c0af68a90d46086a3dc075a314f4a3d0349f1066f775e52f
+controller-to-guest nonce prefix = 525309e4
+guest-to-controller nonce prefix = 3737cc07
+controller-to-guest Finished key = 6296f230589ee300af728605d996be1d5deb7724c6f0a1fbbb59e34b2325df07
+guest-to-controller Finished key = 538a2ed25a05b640e8aa35b1e7ca989d428949e8198030232866d139ad762e6f
+guestVerify = 7869fb8ddfac62aaa8a8a59febda424eb1d31834e2ba89d433ba69ef17c763f2
+controllerVerify = 4489107525a59d2174bfed691601ce21f6389420f3151cdc26c65f23f9c797dd
+```
+
+Tests lock the full GuestHello, ControllerAuth, both Finished frames, and the
+sequence-1 application ciphertext—not only these abbreviated display values—
+and independently recompute them from the normative encoding above. Each
+transcript identity, signature, X25519 share, Finished tag, sequence, session
+ID, header field, length boundary, and reconnect state has a mutation-negative
+test.
 
 V2 exec is admitted only into the exact prepared job namespace on that
 authenticated persistent session. V1 exec and a
@@ -632,6 +898,69 @@ socketpair. The helper bounding set is exactly
 namespace/mount ownership, final child identity/capability drop, and file
 ownership only. PID1 removes every other bounding/ambient capability.
 
+The D2 bootstrap contract resolves process-identity ordering explicitly. PID1
+creates the seqpacket socketpair, a 32-byte random boot nonce, and a start-gate
+pipe; it starts the helper first. It then creates the guest agent with
+`clone3(CLONE_PIDFD)` behind the gate. From PID1 credentials, the helper accepts
+one bootstrap datagram with exactly one `SCM_RIGHTS` descriptor containing that
+pidfd and records the reported agent PID plus UID/GID 998. Only after the helper
+reinspects the live pidfd and acknowledges does PID1 release the start gate.
+The helper requires exact PID 1, UID 0, and GID 0 credentials for bootstrap.
+Every later agent packet must contain exactly one `SCM_CREDENTIALS` record
+matching the recorded PID/UID/GID and still-live pidfd. `MSG_TRUNC`,
+`MSG_CTRUNC`, missing or duplicate credentials, unexpected rights, extra file
+descriptors, stale boot/helper/job generation, replay, sequence gap, and
+sequence wrap fail closed.
+
+Inherited descriptor numbers are fixed. The helper receives control socket 3,
+credential-root `O_PATH` directory 4, delegated cgroup-v2 `O_PATH` directory 5,
+and minimal-root `O_PATH` directory 6. The agent receives control socket 3 and
+the start-gate read end 4. All unrelated descriptors are closed; intended
+descriptors become close-on-exec after bootstrap, and no workload inherits a
+control, root, namespace, pidfd, or nonce descriptor.
+
+The neutral helper packet codec is one seqpacket datagram with a fixed header:
+
+```text
+magic[4] = "HL8P" | version:u8 = 1 | type:u8 | flags:u16_be = 0
+sequence:u64_be | requestID:[16]byte | bodyLength:u32_be
+guestCredentialIdentityDigest:[32]byte | bootNonce:[32]byte | body
+```
+
+The fixed header is 100 bytes. Body length must equal the remaining datagram
+and is at most 256 KiB; the private credential payload inside a typed body is
+still at most 64 KiB. Independent direction counters start at zero for the
+PID1 bootstrap/acknowledgement and at one for the first authenticated agent
+request/response. Packet types are bootstrap, bootstrap acknowledgement,
+agent hello, prepare, renew, revoke, exec, SSH accepted-FD handoff, response,
+event, and close. Each type has an exact ancillary-data cardinality; only
+bootstrap carries the agent pidfd and only SSH handoff carries one accepted
+Unix-stream FD. The decoder validates header, exact datagram length,
+credentials, descriptor kinds/counts, sequence, identity, revision, and body
+bounds before touching helper state.
+
+Safe lifecycle and SSH metadata use fixed binary codecs in
+`credentialprotocol`; sensitive bodies decode directly into caller-owned
+mutable locked sinks. No interface returns live body content as `string` or an
+owned raw `[]byte`, and neither the v1 frame codec nor generic JSON,
+`fmt`, reflection, panic, or error paths may traverse it. Full capacity is
+overwritten on success, error, cancellation, truncation, authentication
+failure, partial write, and cleanup.
+
+The helper starts with precisely the five capabilities above in both permitted
+and effective sets; its bounding set contains only those five, and inheritable
+and ambient sets are empty. It locks `SECBIT_NOROOT`,
+`SECBIT_NO_SETUID_FIXUP`, and `SECBIT_NO_CAP_AMBIENT_RAISE` with their locked
+bits before serving. The workload child has an empty bounding, permitted,
+effective, inheritable, and ambient set, no supplementary groups, UID/GID 1000,
+and `no_new_privs` before exec. D2 represents the permitted helper operations
+as an exact syscall-and-argument policy. D4's seccomp implementation may allow
+namespace entry only through the helper-owned fixed namespace descriptor and
+may allow filesystem/cgroup/mount operations only through revalidated fixed
+dirfds. It rejects arbitrary `setns`, networking/vsock, unrestricted path
+opens, device/module/keyring operations, `ptrace`, `process_vm_*`,
+`pidfd_getfd`, `kcmp`, perf, and BPF.
+
 PID1 gives the helper a private mount namespace, preopened fixed credential and
 cgroup roots, and a minimal root containing only those mounts and required
 runtime objects. The helper pivots into it before serving. Its seccomp profile
@@ -686,7 +1015,10 @@ microVM to be stopped) and a new credential generation to prepare before
 another exec.
 
 Every credential-aware v2 exec enters through the helper. The helper uses
-race-free cgroup placement before the workload can execute, enters the exact
+`clone3(CLONE_INTO_CGROUP | CLONE_PIDFD)` with the revalidated exact cgroup
+directory FD for race-free placement before the workload can execute. There is
+no successful spawn-then-write-`cgroup.procs` fallback. The placed child remains
+behind an internal start gate while it enters the exact
 mount namespace, sets UID/GID 1000 with no supplementary groups, clears every
 capability, applies `no_new_privs`, then launches the existing bounded
 stdin/stdout/stderr supervision contract. Direct unprivileged-agent exec cannot
@@ -704,10 +1036,56 @@ is unavailable, cleanup stops and reaps the entire microVM; without that proof
 the result is `credential_cleanup_incomplete`.
 Lazy unmount is not successful cleanup proof.
 
+The guest/helper cleanup result is exactly one of `cleanup_complete`,
+`retry_required`, or `stop_vm_required`. A retry for the same identity and
+revision is idempotent and resumes from reinspection rather than recreating a
+resource. `cleanup_complete` requires every ordered absence check above.
+`retry_required` means owned guest cleanup can still be retried within its
+bounded deadline. `stop_vm_required` is emitted for lost helper identity,
+unavailable cgroup placement/kill/inspection, unknown mount ownership, normal
+unmount failure after bounded retries, or any condition the guest cannot prove
+absent. The helper can never convert `stop_vm_required` into success: the host
+must stop and reap the exact Firecracker process and inspect host-owned
+resources before a root cleanup proof exists.
+
 ## SSH-agent relay
 
 SSH private keys remain in the host agent. L8 never copies a private key into a
 guest, file, environment value, manifest, or protocol payload.
+
+D2 locks the neutral SSH-agent codec before D5 opens a live socket. Every
+message is `uint32_be(payloadLength) || payload`, length 1 through 256 KiB,
+with no truncation, trailing byte, concatenated frame, or allocation before the
+length check. The only accepted client messages are
+`SSH_AGENTC_REQUEST_IDENTITIES` (11) with no body and
+`SSH_AGENTC_SIGN_REQUEST` (13) with exact SSH strings for public-key blob and
+challenge followed by one `uint32_be` flags field. The only emitted response
+types are `SSH_AGENT_IDENTITIES_ANSWER` (12), `SSH_AGENT_SIGN_RESPONSE` (14),
+and `SSH_AGENT_FAILURE` (5). Add/remove/remove-all, smartcard, lock/unlock,
+extension, protocol-v1, unknown types, unknown flags, and trailing fields
+receive failure without contacting the host agent.
+
+Durable policy identifies public keys only as the OpenSSH-style
+`SHA256:` prefix plus unpadded base64 of SHA-256 over the exact public-key blob.
+Enumeration preserves host-agent order after filtering and rewrites comments
+to empty strings. Supported key/signature policy is exact: `ssh-ed25519` and
+`ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`, or
+`ecdsa-sha2-nistp521` require flags zero; `ssh-rsa` requires exactly
+`SSH_AGENT_RSA_SHA2_256` (2) or `SSH_AGENT_RSA_SHA2_512` (4), never zero,
+their combination, or SHA-1. Security-key, certificate, DSA, legacy RSA, and
+unknown algorithms are unsupported in L8. A sign response must be a canonical
+SSH signature string whose algorithm exactly matches the admitted request
+policy. Key blobs, comments, challenges, signatures, frames, and raw agent
+errors are ephemeral and never logged or persisted; owned mutable frame and
+challenge buffers are wiped after each response.
+
+The codec state machine allows one outstanding request per connection, four
+connections per job, 4096 operations per activation, a five-minute idle
+timeout, and a 35-minute hard lifetime. It applies backpressure before reading
+a second request. D2 tests exact-bound and plus-one cases, malformed nested SSH
+strings/counts, forbidden operations, algorithm/flag mismatch, filtered stable
+ordering, and buffer destruction. It contains no Unix listener, vsock stream,
+`SCM_RIGHTS`, host-agent dial, or relay pump.
 
 The relay uses a separate runtime/job-bound vsock stream; the existing framed
 one-request/one-response guest control transport is not reused for a persistent
@@ -906,6 +1284,16 @@ compatible where existing contracts require it.
 - Lock the initial host-owned HTTP service catalog before a live dialer exists.
 
 ### D2 — guest v2 and privileged-helper contracts
+
+D2 owns immutable contracts, strict codecs, cryptographic/session state
+machines, validators, fakeable helper/cgroup policy, source/import guards, and
+negative tests. D4 owns live helper/PID1/agent composition, syscalls,
+namespaces, tmpfs, cgroups, workload launch, and guest cleanup retries.
+D5 owns live SSH-agent sockets, descriptor passing, host-agent validation, and
+relay pumping. D6 owns whole-VM stop/reap fallback, Firecracker host
+composition, worker/runtime proof projection, and final host absence evidence.
+D2 must not resolve a source, mount, launch, open a live socket, contact an
+agent, stop a VM, add HTTP behavior, or wire a production command.
 
 - Preserve v1 byte/behavior compatibility.
 - Reject v2-to-v1 downgrade, wrong host CID/key/generation, handshake/frame
