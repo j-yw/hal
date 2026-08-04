@@ -421,11 +421,15 @@ func TestL8WorkerV1ClientsAcceptEmptyLegacyResponseIDForAllFiveOperations(t *tes
 	}
 	for _, tt := range tests {
 		t.Run(tt.operation, func(t *testing.T) {
+			responseJob := job
+			if tt.operation == OperationJobStart {
+				responseJob.RuntimeID = fixtures.startV1.Exec.Target.Runtime.RuntimeID
+			}
 			client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, request Request) (Response, error) {
 				if request.Operation != tt.operation {
 					t.Fatalf("client operation = %q, want %q", request.Operation, tt.operation)
 				}
-				return l8WorkerV1ValidSuccessResponse(t, tt.operation, "", job), nil
+				return l8WorkerV1ValidSuccessResponse(t, tt.operation, "", responseJob), nil
 			})})
 			if err != nil {
 				t.Fatal(err)
