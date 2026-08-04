@@ -1187,6 +1187,18 @@ func (reviewReturningReceiver) value() int { return 1 }
 			},
 		},
 		{
+			name: "client response decode is unreachable when immutable local address is taken before call",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tvar response Response", "\treviewLocalBlock := func() { select {} }\n\t_ = &reviewLocalBlock\n\treviewLocalBlock()\n\tvar response Response", 1)
+			},
+		},
+		{
+			name: "client response decode is unreachable when immutable local address is taken after call",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tvar response Response", "\treviewLocalBlock := func() { select {} }\n\treviewLocalBlock()\n\t_ = &reviewLocalBlock\n\tvar response Response", 1)
+			},
+		},
+		{
 			name: "client response decode is unreachable after immutable local function alias chain",
 			mutate: func(source string) string {
 				return strings.Replace(source, "\tvar response Response", "\treviewLocalBlock := func() { select {} }\n\treviewLocalAlias := reviewLocalBlock\n\treviewLocalAlias2 := reviewLocalAlias\n\treviewLocalAlias2()\n\tvar response Response", 1)
