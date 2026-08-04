@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"regexp"
 	"strconv"
@@ -15,9 +14,9 @@ import (
 )
 
 const (
-	defaultClientDialTimeout  = 5 * time.Second
-	defaultMaxResponseBytes   = 1 << 20
-	maxClientErrorDetailBytes = 512
+	defaultClientDialTimeout        = 5 * time.Second
+	defaultMaxResponseBytes   int64 = 1 << 20
+	maxClientErrorDetailBytes       = 512
 )
 
 var (
@@ -316,6 +315,12 @@ func (client *Client) roundTrip(ctx context.Context, req Request) (Response, err
 	if err != nil {
 		return Response{}, clientContextOrTransportError(req.Operation, err)
 	}
+	if isWorkerV2Operation(req.Operation) && resp.ProtocolVersion != ProtocolVersion {
+		return Response{}, malformedClientResponseError(req.Operation, "worker V2 response protocolVersion did not match request")
+	}
+	if exactCredentialWorkerProtocolUnsupported(req, resp) {
+		return Response{}, ErrCredentialWorkerProtocolUnsupported
+	}
 	resp = resp.WithDefaults()
 	if err := validateClientResponse(req, resp); err != nil {
 		return Response{}, err
@@ -351,14 +356,22 @@ func validateClientResponse(req Request, resp Response) error {
 	if err := resp.Validate(); err != nil {
 		return malformedClientResponseError(req.Operation, fmt.Sprintf("malformed worker response: %v", err))
 	}
+	if isWorkerV2Operation(req.Operation) && resp.RequestID == "" {
+		return malformedClientResponseError(req.Operation, "worker V2 response requestId is required")
+	}
 	if resp.RequestID != "" && resp.RequestID != req.RequestID {
 		return malformedClientResponseError(req.Operation, "worker response requestId did not match request")
 	}
 	if resp.OK && resp.Operation != req.Operation {
 		return malformedClientResponseError(req.Operation, "worker response operation did not match request")
 	}
-	if !resp.OK && resp.Operation != req.Operation && resp.Operation != OperationProtocolError {
-		return malformedClientResponseError(req.Operation, "worker error response operation did not match request")
+	if !resp.OK {
+		if isWorkerV2Operation(req.Operation) && resp.Operation != req.Operation {
+			return malformedClientResponseError(req.Operation, "worker V2 error response operation did not match request")
+		}
+		if !isWorkerV2Operation(req.Operation) && resp.Operation != req.Operation && resp.Operation != OperationProtocolError {
+			return malformedClientResponseError(req.Operation, "worker error response operation did not match request")
+		}
 	}
 	if err := validateClientIOResponseLimits(req, resp); err != nil {
 		return malformedClientResponseError(req.Operation, fmt.Sprintf("malformed worker response: %v", err))
@@ -677,50 +690,60 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, req Re
 	if dialer.Timeout <= 0 {
 		dialer.Timeout = defaultClientDialTimeout
 	}
-	conn, err := dialer.DialContext(ctx, "unix", socketPath)
+	connection, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, fmt.Errorf("connect unix worker socket: %s", sanitizeProtocolErrorDetail(err.Error()))
+		return Response{}, errors.New("open worker connection failed")
 	}
-	defer conn.Close()
+	defer connection.Close()
 
 	done := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = conn.Close()
+			_ = connection.Close()
 		case <-done:
 		}
 	}()
 	defer close(done)
 
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
+		_ = connection.SetDeadline(deadline)
 	}
-	if err := json.NewEncoder(conn).Encode(req.WithDefaults()); err != nil {
+	if err := json.NewEncoder(connection).Encode(req.WithDefaults()); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, fmt.Errorf("write worker request: %s", sanitizeProtocolErrorDetail(err.Error()))
+		return Response{}, errors.New("write worker request failed")
 	}
-	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
-		_ = closer.CloseWrite()
+	halfCloser, ok := connection.(interface{ CloseWrite() error })
+	if !ok {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Response{}, ctxErr
+		}
+		return Response{}, errors.New("write worker request framing failed")
+	}
+	if err := halfCloser.CloseWrite(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Response{}, ctxErr
+		}
+		return Response{}, errors.New("write worker request framing failed")
 	}
 
 	maxResponseBytes := transport.maxResponseBytes
 	if maxResponseBytes <= 0 {
 		maxResponseBytes = defaultMaxResponseBytes
 	}
-	var resp Response
-	if err := json.NewDecoder(io.LimitReader(conn, maxResponseBytes)).Decode(&resp); err != nil {
+	var response Response
+	if err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, fmt.Errorf("read worker response: %s", sanitizeProtocolErrorDetail(err.Error()))
+		return Response{}, errors.New("read worker response failed")
 	}
-	return resp, nil
+	return response, nil
 }
 
 func sanitizeProtocolErrorDetail(detail string) string {

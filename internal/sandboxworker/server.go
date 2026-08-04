@@ -2,7 +2,6 @@ package sandboxworker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -210,8 +209,7 @@ func (server *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 func (server *Server) readRequest(r io.Reader) (Request, *Response) {
 	var req Request
-	decoder := json.NewDecoder(io.LimitReader(r, server.maxRequestBytes))
-	if err := decoder.Decode(&req); err != nil {
+	if err := decodeWorkerRequestInto(r, server.maxRequestBytes, &req); err != nil {
 		resp := protocolErrorResponse("", OperationProtocolError, ErrorCodeMalformedRequest, "malformed worker request")
 		return Request{}, &resp
 	}
@@ -225,7 +223,7 @@ func (server *Server) readRequest(r io.Reader) (Request, *Response) {
 }
 
 func (server *Server) writeResponse(w io.Writer, resp Response) {
-	_ = json.NewEncoder(w).Encode(resp.WithDefaults())
+	_ = encodeWorkerResponse(w, resp.WithDefaults())
 }
 
 func normalizeHandlerResponse(req Request, resp Response) Response {
