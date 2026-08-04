@@ -774,6 +774,15 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		return Response{}, errors.New("write worker request failed")
 	}
 `
+	clientDecodeBlock := `	var response Response
+	if err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("read worker response failed")
+	}
+`
+	clientResponseLimitBlock := `	maxResponseBytes := transport.maxResponseBytes
+	if maxResponseBytes <= 0 { maxResponseBytes = defaultMaxResponseBytes }
+`
 	clientHelperEncodeBlock := `	if err := encodeWorkerRequest(connection, request); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
 		return Response{}, errors.New("write worker request failed")
@@ -834,6 +843,85 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			name: "client uses alternate acquisition while decoy open is audited",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tconnection, err := openResponseReader()\n", `	alternateConnection, alternateErr := openAlternateResponseReader()
+	if alternateErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("open alternate worker connection failed")
+	}
+	_, err := openResponseReader()
+`, 1)
+				source = strings.NewReplacer(
+					"connection.Close()", "alternateConnection.Close()",
+					"connection.SetDeadline", "alternateConnection.SetDeadline",
+					"json.NewEncoder(connection)", "json.NewEncoder(alternateConnection)",
+					"connection.(interface", "alternateConnection.(interface",
+					"decodeWorkerResponseInto(connection", "decodeWorkerResponseInto(alternateConnection",
+				).Replace(source)
+				return source + "\nfunc openAlternateResponseReader() (workerResponseConnection, error) { return nil, nil }\n"
+			},
+		},
+		{
+			name: "client decodes before half-close with later response sentinel",
+			mutate: func(source string) string {
+				source = strings.Replace(source, clientDecodeBlock, "", 1)
+				source = strings.Replace(source, clientResponseLimitBlock, "", 1)
+				source = strings.Replace(source, clientHalfCloseBlock, clientResponseLimitBlock+clientDecodeBlock+clientHalfCloseBlock+"\tvar sentinel Response\n\tobserveResponseSentinel(nil, 0, &sentinel)\n", 1)
+				return source + "\nfunc observeResponseSentinel(io.Reader, int64, *Response) {}\n"
+			},
+		},
+		{
+			name: "client acquisition is unreachable after unconditional error return",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tconnection, err := openResponseReader()", "\tif true { return Response{}, errors.New(\"client protocol disabled\") }\n\tconnection, err := openResponseReader()", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated["client.go"] = tt.mutate(mutated["client.go"])
+			if mutated["client.go"] == sources["client.go"] {
+				t.Fatal("client acquisition, framing, or reachability mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name    string
+		path    string
+		old     string
+		replace string
+	}{
+		{
+			name:    "server request decode is unreachable after unconditional return",
+			path:    "server.go",
+			old:     "\tvar request Request",
+			replace: "\tif true { return Request{}, &Response{} }\n\tvar request Request",
+		},
+		{
+			name:    "store acquisition is unreachable after unconditional error return",
+			path:    "job_store_v2.go",
+			old:     "\treader, err := openStoredJobStateV2(jobID)",
+			replace: "\tif true { return storedJobStateV2{}, errors.New(\"stored job loading disabled\") }\n\treader, err := openStoredJobStateV2(jobID)",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			if mutated[tt.path] == sources[tt.path] {
+				t.Fatalf("%s reachability mutation did not change the positive fixture", tt.path)
+			}
 			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 		})
 	}
@@ -2083,6 +2171,8 @@ func encodeWorkerResponse(writer io.Writer, response Response) error {
 		path   string
 		source string
 	}{
+		{name: "canonical identity fields swapped after initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "payload, err := json.Marshal(identity)", "identity.DriverID, identity.PrincipalID = identity.PrincipalID, identity.DriverID\n\t\tpayload, err := json.Marshal(identity)", 1)},
+		{name: "canonical identity fields swapped through pointer alias", path: "job_v2_helpers.go", source: strings.Replace(keySource, "payload, err := json.Marshal(identity)", "identityAlias := &identity\n\t\tidentityAlias.DriverID, identityAlias.PrincipalID = identityAlias.PrincipalID, identityAlias.DriverID\n\t\tpayload, err := json.Marshal(identity)", 1)},
 		{name: "adjacent runtime metadata", path: "job_v2_helpers.go", source: strings.Replace(keySource, "RuntimeMetadata", "RuntimeTemplateStatusMetadata", 1)},
 		{name: "swapped canonical identity bindings", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: driverID, PrincipalID: principalID, Request: request", "DriverID: principalID, PrincipalID: driverID, Request: request", 1)},
 		{name: "wrong driver identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: driverID", "DriverID: principalID", 1)},
