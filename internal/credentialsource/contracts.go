@@ -10,6 +10,7 @@ import (
 const (
 	MaxKeyctlDescribeBytes   = 4096
 	MaxProductionSecretBytes = 64 << 10
+	maxRegistryEntries       = 64
 )
 
 var (
@@ -116,7 +117,7 @@ func NewSourceRegistration(referenceID string, identity KeyIdentity) (SourceRegi
 
 func NewAdmissionGrantRegistration(authority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority, principal sandboxruntime.AuthenticatedWorkerPrincipal, request sandboxruntime.JobCredentialAdmissionRequest, sourceReferenceIDs []string) (AdmissionGrantRegistration, error) {
 	if authority == nil || authority.ValidateAuthenticatedWorkerPrincipal(principal) != nil || !validAdmissionRequest(request) ||
-		len(sourceReferenceIDs) == 0 || len(sourceReferenceIDs) > 64 || !validUniqueIDs(sourceReferenceIDs) {
+		len(sourceReferenceIDs) == 0 || len(sourceReferenceIDs) > maxRegistryEntries || !validUniqueIDs(sourceReferenceIDs) {
 		return AdmissionGrantRegistration{}, ErrCredentialSourceRegistration
 	}
 	return AdmissionGrantRegistration{
@@ -126,6 +127,9 @@ func NewAdmissionGrantRegistration(authority *sandboxruntime.AuthenticatedWorker
 }
 
 func NewRegistryConfig(authority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority, ownerUID, ownerGID uint32, sources []SourceRegistration, grants []AdmissionGrantRegistration) (RegistryConfig, error) {
+	if authority == nil || !validRegistryConfigCardinality(sources, grants) {
+		return RegistryConfig{}, ErrCredentialSourceRegistration
+	}
 	config := RegistryConfig{authority: authority, ownerUID: encodeUint32(ownerUID), ownerGID: encodeUint32(ownerGID), sources: append([]SourceRegistration(nil), sources...), grants: cloneAdmissionGrants(grants)}
 	if !validRegistryConfig(config) {
 		return RegistryConfig{}, ErrCredentialSourceRegistration
@@ -157,15 +161,15 @@ func validSafeID(value string) bool {
 }
 
 func validUniqueIDs(values []string) bool {
-	for index, value := range values {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
 		if !validSafeID(value) {
 			return false
 		}
-		for previous := 0; previous < index; previous++ {
-			if values[previous] == value {
-				return false
-			}
+		if _, duplicate := seen[value]; duplicate {
+			return false
 		}
+		seen[value] = struct{}{}
 	}
 	return true
 }
@@ -181,21 +185,29 @@ func validAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRequest)
 		request.GrantID, request.PlanID, request.TemplatePolicyID, request.WorkspacePolicyID,
 	}
 	if !validIDs(identities) || identity.IssuedAt.IsZero() || request.GrantRevision == 0 ||
-		request.PlanID != identity.PlanID || len(request.SourceReferenceIDs) == 0 || len(request.SourceReferenceIDs) > 64 ||
-		!validUniqueIDs(request.SourceReferenceIDs) || len(request.Bindings) == 0 || len(request.Bindings) > 64 {
+		request.PlanID != identity.PlanID || len(request.SourceReferenceIDs) == 0 || len(request.SourceReferenceIDs) > maxRegistryEntries ||
+		!validUniqueIDs(request.SourceReferenceIDs) || len(request.Bindings) == 0 || len(request.Bindings) > maxRegistryEntries {
 		return false
 	}
-	for index, binding := range request.Bindings {
-		if !validSafeID(binding.ID) || !validSafeID(binding.SourceReferenceID) || !containsID(request.SourceReferenceIDs, binding.SourceReferenceID) ||
+	sourceReferenceIDs := make(map[string]struct{}, len(request.SourceReferenceIDs))
+	for _, referenceID := range request.SourceReferenceIDs {
+		sourceReferenceIDs[referenceID] = struct{}{}
+	}
+	bindingIDs := make(map[string]struct{}, len(request.Bindings))
+	for _, binding := range request.Bindings {
+		_, sourceRegistered := sourceReferenceIDs[binding.SourceReferenceID]
+		if !validSafeID(binding.ID) || !validSafeID(binding.SourceReferenceID) ||
 			!validDeliveryMode(binding.Mode) || binding.Mode == sandboxruntime.JobCredentialDeliveryModeHTTPProxy && !validSafeID(binding.ServiceID) ||
 			binding.Mode != sandboxruntime.JobCredentialDeliveryModeHTTPProxy && binding.ServiceID != "" {
 			return false
 		}
-		for previous := 0; previous < index; previous++ {
-			if request.Bindings[previous].ID == binding.ID {
-				return false
-			}
+		if !sourceRegistered {
+			return false
 		}
+		if _, duplicate := bindingIDs[binding.ID]; duplicate {
+			return false
+		}
+		bindingIDs[binding.ID] = struct{}{}
 	}
 	return true
 }
@@ -219,37 +231,46 @@ func validDeliveryMode(mode sandboxruntime.JobCredentialDeliveryMode) bool {
 }
 
 func validRegistryConfig(config RegistryConfig) bool {
-	if config.authority == nil || len(config.sources) == 0 || len(config.sources) > 64 || len(config.grants) == 0 {
+	if config.authority == nil || !validRegistryConfigCardinality(config.sources, config.grants) {
 		return false
 	}
-	for index, source := range config.sources {
+	sourceReferenceIDs := make(map[string]struct{}, len(config.sources))
+	sourceSerials := make(map[int32]struct{}, len(config.sources))
+	for _, source := range config.sources {
 		if !validSafeDigest(source.referenceID) || !validKeyIdentity(source.identity) || source.identity.ownerUID != config.ownerUID || source.identity.ownerGID != config.ownerGID {
 			return false
 		}
-		for previous := 0; previous < index; previous++ {
-			if config.sources[previous].referenceID == source.referenceID || config.sources[previous].identity.serial == source.identity.serial {
-				return false
-			}
+		if _, duplicate := sourceReferenceIDs[source.referenceID]; duplicate {
+			return false
 		}
+		if _, duplicate := sourceSerials[source.identity.serial]; duplicate {
+			return false
+		}
+		sourceReferenceIDs[source.referenceID] = struct{}{}
+		sourceSerials[source.identity.serial] = struct{}{}
 	}
-	for index, grant := range config.grants {
+	grantIDs := make(map[string]struct{}, len(config.grants))
+	for _, grant := range config.grants {
 		if grant.authority != config.authority || config.authority.ValidateAuthenticatedWorkerPrincipal(grant.principal) != nil ||
 			encodeUint32(grant.principal.UID()) != config.ownerUID || encodeUint32(grant.principal.GID()) != config.ownerGID || !validSealedAdmissionRequest(grant.request) ||
-			len(grant.sourceReferenceIDs) == 0 || len(grant.sourceReferenceIDs) > 64 || !validUniqueDigests(grant.sourceReferenceIDs) {
+			len(grant.sourceReferenceIDs) == 0 || len(grant.sourceReferenceIDs) > maxRegistryEntries || !validUniqueDigests(grant.sourceReferenceIDs) {
 			return false
 		}
 		for _, referenceID := range grant.sourceReferenceIDs {
-			if sourceIndexStored(config.sources, referenceID) < 0 {
+			if _, registered := sourceReferenceIDs[referenceID]; !registered {
 				return false
 			}
 		}
-		for previous := 0; previous < index; previous++ {
-			if config.grants[previous].request.GrantID == grant.request.GrantID {
-				return false
-			}
+		if _, duplicate := grantIDs[grant.request.GrantID]; duplicate {
+			return false
 		}
+		grantIDs[grant.request.GrantID] = struct{}{}
 	}
 	return true
+}
+
+func validRegistryConfigCardinality(sources []SourceRegistration, grants []AdmissionGrantRegistration) bool {
+	return len(sources) > 0 && len(sources) <= maxRegistryEntries && len(grants) > 0 && len(grants) <= maxRegistryEntries
 }
 
 func cloneAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.JobCredentialAdmissionRequest {
@@ -354,15 +375,15 @@ func validDigests(values []string) bool {
 }
 
 func validUniqueDigests(values []string) bool {
-	if !validDigests(values) {
-		return false
-	}
-	for index, value := range values {
-		for previous := 0; previous < index; previous++ {
-			if values[previous] == value {
-				return false
-			}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if !validSafeDigest(value) {
+			return false
 		}
+		if _, duplicate := seen[value]; duplicate {
+			return false
+		}
+		seen[value] = struct{}{}
 	}
 	return true
 }

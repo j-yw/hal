@@ -54,6 +54,9 @@ type credentialMemoryMapping []*credentialmemory.LockedMapping
 type credentialMemoryBorrowedView []credentialmemory.BorrowedView
 
 func newRegistry(config RegistryConfig, deps registryDeps) (*Registry, error) {
+	if !validRegistryConfigCardinality(config.sources, config.grants) {
+		return nil, ErrCredentialSourceRegistration
+	}
 	config = cloneRegistryConfig(config)
 	if !validRegistryConfig(config) || deps.keyctl == nil || deps.newLockedMapping == nil {
 		return nil, ErrCredentialSourceRegistration
