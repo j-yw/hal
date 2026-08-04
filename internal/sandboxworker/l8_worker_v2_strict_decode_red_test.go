@@ -339,6 +339,66 @@ func TestL8WorkerStrictDurableStateDecoderRejectsLoneUnicodeCaseFoldAliasBeforeD
 	}
 }
 
+func TestL8WorkerStrictDecodersRejectCrossRootJobV2CaseFoldAliasesBeforeDecode(t *testing.T) {
+	t.Run("response rejects durable root spelling", func(t *testing.T) {
+		job := l8WorkerV2QueuedJob()
+		response := Response{
+			ProtocolVersion: ProtocolVersion,
+			RequestID:       "job_status_v2-cross-root-alias",
+			Operation:       OperationJobStatusV2,
+			OK:              true,
+			JobV2:           &job,
+		}
+		payload, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var canonicalOutput Response
+		if err := decodeWorkerResponseInto(bytes.NewReader(payload), defaultMaxResponseBytes, &canonicalOutput); err != nil {
+			t.Fatalf("response decoder rejected canonical jobV2 root: %v", err)
+		}
+		raw := strings.Replace(string(payload), `"jobV2":`, `"JobV2":`, 1)
+		if raw == string(payload) {
+			t.Fatal("canonical response did not contain jobV2 root")
+		}
+		output := Response{RequestID: "preflight-sentinel"}
+		if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &output); err == nil {
+			t.Fatal("response decoder accepted durable-state JobV2 root spelling")
+		}
+		if output.RequestID != "preflight-sentinel" || output.JobV2 != nil {
+			t.Fatalf("cross-root response alias reached typed decode: %#v", output)
+		}
+	})
+
+	t.Run("durable state rejects response root spelling", func(t *testing.T) {
+		state := storedJobStateV2{
+			JobV2:            l8WorkerV2QueuedJob(),
+			RequestKey:       "request-v2-" + strings.Repeat("0", 64),
+			PrincipalID:      "principal-primary",
+			DaemonGeneration: l8WorkerV2DaemonGeneration,
+		}
+		payload, err := encodeStoredJobStateV2(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var canonicalOutput storedJobStateV2
+		if err := decodeStoredJobStateV2Into(bytes.NewReader(payload), maxStoredJobStateV2Bytes, &canonicalOutput); err != nil {
+			t.Fatalf("durable-state decoder rejected canonical JobV2 root: %v", err)
+		}
+		raw := strings.Replace(string(payload), `"JobV2":`, `"jobV2":`, 1)
+		if raw == string(payload) {
+			t.Fatal("canonical durable state did not contain JobV2 root")
+		}
+		output := storedJobStateV2{PrincipalID: "preflight-sentinel"}
+		if err := decodeStoredJobStateV2Into(strings.NewReader(raw), maxStoredJobStateV2Bytes, &output); err == nil {
+			t.Fatal("durable-state decoder accepted response jobV2 root spelling")
+		}
+		if output.PrincipalID != "preflight-sentinel" || output.JobV2.ID != "" {
+			t.Fatalf("cross-root durable-state alias reached typed decode: %#v", output)
+		}
+	})
+}
+
 func TestL8WorkerStrictRequestDecoderPreservesDistinctCaseSensitiveStringMapKeys(t *testing.T) {
 	start := l8WorkerV2StartRequest()
 	start.Exec.Env = map[string]string{
