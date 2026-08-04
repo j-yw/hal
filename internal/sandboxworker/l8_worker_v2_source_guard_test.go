@@ -461,6 +461,25 @@ func decodeWorkerResponse(reader io.Reader, output *Response) error {
 			l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": source}, policy)
 		})
 	}
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"protocol_decode.go": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+)
+type Request struct { Metadata *sandboxruntime.RuntimeTemplateStatusMetadata }
+func decodeWorkerRequest(reader io.Reader, output *Request) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`,
+	}, policy, "implicit interface callback")
 }
 
 func TestL8WorkerV2GuardAllowsSafeMixedEnvelopeFieldsAndTypedClient(t *testing.T) {
@@ -2768,7 +2787,7 @@ func l8WorkerV2TypeMayInvokeJSONDecodeCallback(typ types.Type, seen map[types.Ty
 		return false
 	}
 	seen[resolved] = true
-	if l8WorkerV2IsAllowedStandardJSONDecodeType(resolved) {
+	if l8WorkerV2IsAllowedAuditedJSONDecodeType(resolved) {
 		return false
 	}
 	if l8WorkerV2IsInterfaceType(resolved) || l8WorkerV2HasUnsafeJSONDecodeMethod(resolved) {
@@ -2804,20 +2823,30 @@ func l8WorkerV2HasUnsafeJSONDecodeMethod(typ types.Type) bool {
 		for index := 0; index < methods.Len(); index++ {
 			switch methods.At(index).Obj().Name() {
 			case "UnmarshalJSON", "UnmarshalText":
-				return !l8WorkerV2IsAllowedStandardJSONDecodeType(typ)
+				return !l8WorkerV2IsAllowedAuditedJSONDecodeType(typ)
 			}
 		}
 	}
 	return false
 }
 
-func l8WorkerV2IsAllowedStandardJSONDecodeType(typ types.Type) bool {
+func l8WorkerV2IsAllowedAuditedJSONDecodeType(typ types.Type) bool {
 	resolved := types.Unalias(typ)
 	if pointer, ok := resolved.(*types.Pointer); ok {
 		resolved = types.Unalias(pointer.Elem())
 	}
 	named, ok := resolved.(*types.Named)
-	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "time" && named.Obj().Name() == "Time"
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return false
+	}
+	packagePath, name := named.Obj().Pkg().Path(), named.Obj().Name()
+	if packagePath == "time" && name == "Time" {
+		return true
+	}
+	// The unchanged V1 outer envelopes contain RuntimeMetadata. Its sanitizing
+	// JSON methods are AST-hash locked by the L8 command source guard, so this is
+	// the only repository-owned custom decoder allowed through the V2 seam.
+	return packagePath == "github.com/jywlabs/hal/internal/sandboxruntime" && name == "RuntimeMetadata"
 }
 
 func l8WorkerV2IsExactStrictDecoderCall(scope l8WorkerV2GuardScope, candidate, constructor, limit *ast.CallExpr, decoder types.Object, info *types.Info) bool {
