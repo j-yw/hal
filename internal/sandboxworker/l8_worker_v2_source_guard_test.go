@@ -901,6 +901,99 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		})
 	}
 
+	for _, tt := range []struct {
+		name    string
+		path    string
+		old     string
+		replace string
+	}{
+		{
+			name:    "server resets decoded request through pointer aliases",
+			path:    "server.go",
+			old:     "\treturn request, nil",
+			replace: "\trequestAlias := &request\n\trequestAlias2 := requestAlias\n\t*requestAlias2 = Request{}\n\treturn request, nil",
+		},
+		{
+			name:    "client resets decoded response through pointer aliases",
+			path:    "client.go",
+			old:     "\treturn response, nil",
+			replace: "\tresponseAlias := &response\n\tresponseAlias2 := responseAlias\n\t*responseAlias2 = Response{}\n\treturn response, nil",
+		},
+		{
+			name:    "store resets decoded state through pointer aliases",
+			path:    "job_store_v2.go",
+			old:     "\treturn state, nil",
+			replace: "\tstateAlias := &state\n\tstateAlias2 := stateAlias\n\t*stateAlias2 = storedJobStateV2{}\n\treturn state, nil",
+		},
+		{
+			name:    "server replaces configured limit through pointer aliases",
+			path:    "server.go",
+			old:     "\tvar request Request",
+			replace: "\tmaxRequestBytesAlias := &server.maxRequestBytes\n\tmaxRequestBytesAlias2 := maxRequestBytesAlias\n\t*maxRequestBytesAlias2 = 1\n\tvar request Request",
+		},
+		{
+			name:    "client replaces post-default limit through pointer aliases",
+			path:    "client.go",
+			old:     "\tvar response Response",
+			replace: "\tmaxResponseBytesAlias := &maxResponseBytes\n\tmaxResponseBytesAlias2 := maxResponseBytesAlias\n\t*maxResponseBytesAlias2 = 1\n\tvar response Response",
+		},
+		{
+			name:    "client replaces acquired connection through pointer aliases",
+			path:    "client.go",
+			old:     "\tif err := encodeWorkerRequest(connection, request); err != nil {",
+			replace: "\treplacementConnection, _ := openResponseReader()\n\tconnectionAlias := &connection\n\tconnectionAlias2 := connectionAlias\n\t*connectionAlias2 = replacementConnection\n\tif err := encodeWorkerRequest(connection, request); err != nil {",
+		},
+		{
+			name:    "store replaces acquired reader through pointer aliases",
+			path:    "job_store_v2.go",
+			old:     "\tvar state storedJobStateV2",
+			replace: "\treaderAlias := &reader\n\treaderAlias2 := readerAlias\n\t*readerAlias2 = rewrapStoredJobReader(reader)\n\tvar state storedJobStateV2",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			if tt.name == "store replaces acquired reader through pointer aliases" {
+				mutated[tt.path] += "\nfunc rewrapStoredJobReader(reader io.Reader) io.Reader { return reader }\n"
+			}
+			if mutated[tt.path] == sources[tt.path] {
+				t.Fatal("pointer-alias mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name    string
+		old     string
+		replace string
+	}{
+		{
+			name:    "direct JSON request encoder exposes raw error",
+			old:     "return Response{}, errors.New(\"write worker request failed\")",
+			replace: "return Response{}, err",
+		},
+		{
+			name:    "direct JSON request encoder omits context precedence",
+			old:     "if err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }",
+			replace: "if err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+		},
+		{
+			name:    "direct JSON request encoder uses variable error text",
+			old:     "errors.New(\"write worker request failed\")",
+			replace: "errors.New(\"write worker request failed: \" + request.Operation)",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(existingJSONWriterSources)
+			mutated["client.go"] = strings.Replace(mutated["client.go"], tt.old, tt.replace, 1)
+			if mutated["client.go"] == existingJSONWriterSources["client.go"] {
+				t.Fatal("direct JSON encoder mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
 	otherWrapperOutput := l8CloneWorkerV2GuardSources(sources)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "var output Response", "var output Response\n\tvar other Response", 1)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "return output, nil", "return other, nil", 1)
