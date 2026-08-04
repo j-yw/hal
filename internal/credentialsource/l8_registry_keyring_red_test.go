@@ -50,6 +50,9 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 		{name: "authenticated principal substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			return l8Principal(t, authority, "caller-controlled", 1001, 1002)
 		}},
+		{name: "reissued principal with identical visible fields from same authority", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			return l8Principal(t, authority, "principal-owner", 1001, 1002)
+		}},
 		{name: "issuer substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			other := l8PrincipalAuthority(t, "caller-issuer", "daemon-generation-1")
 			return l8Principal(t, other, "principal-owner", 1001, 1002)
@@ -91,7 +94,7 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 	}
 	for _, tt := range denials {
 		t.Run(tt.name, func(t *testing.T) {
-			p := l8Principal(t, authority, "principal-owner", 1001, 1002)
+			p := principal
 			r := l8AdmissionRequest()
 			p = tt.mutate(t, p, &r)
 			before := len(keyctl.calls)
@@ -106,6 +109,55 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 				if strings.Contains(err.Error(), forbidden) {
 					t.Fatalf("denial enumerated private registry identity %q", forbidden)
 				}
+			}
+		})
+	}
+}
+
+func TestL8CredentialSourceRegistryConfigEnforcesEntryBounds(t *testing.T) {
+	authority := l8PrincipalAuthority(t, "peercred-owner", "daemon-generation-1")
+	principal := l8Principal(t, authority, "principal-owner", 1001, 1002)
+	source, err := NewSourceRegistration("source-primary", l8KeyIdentity(t, 41, principal.UID(), principal.GID(), "hal-primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := make([]AdmissionGrantRegistration, 65)
+	for index := range grants {
+		request := l8AdmissionRequest()
+		request.GrantID = fmt.Sprintf("grant-%d", index)
+		grants[index], err = NewAdmissionGrantRegistration(authority, principal, request, []string{"source-primary"})
+		if err != nil {
+			t.Fatalf("new grant %d: %v", index, err)
+		}
+	}
+	sources := []SourceRegistration{source}
+	for index := 1; index < 65; index++ {
+		registration, registrationErr := NewSourceRegistration(
+			fmt.Sprintf("source-%d", index),
+			l8KeyIdentity(t, int32(41+index), principal.UID(), principal.GID(), fmt.Sprintf("hal-%d", index)),
+		)
+		if registrationErr != nil {
+			t.Fatalf("new source %d: %v", index, registrationErr)
+		}
+		sources = append(sources, registration)
+	}
+
+	if _, err := NewRegistryConfig(authority, principal.UID(), principal.GID(), sources[:64], grants[:64]); err != nil {
+		t.Fatalf("maximum bounded registry config rejected: %v", err)
+	}
+	for _, tt := range []struct {
+		name    string
+		sources []SourceRegistration
+		grants  []AdmissionGrantRegistration
+	}{
+		{name: "zero sources", grants: grants[:1]},
+		{name: "oversized sources", sources: sources, grants: grants[:1]},
+		{name: "zero grants", sources: sources[:1]},
+		{name: "oversized grants", sources: sources[:1], grants: grants},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewRegistryConfig(authority, principal.UID(), principal.GID(), tt.sources, tt.grants); !errors.Is(err, ErrCredentialSourceRegistration) {
+				t.Fatalf("registry config boundary error = %v, want registration rejected", err)
 			}
 		})
 	}
@@ -854,10 +906,10 @@ func l8AssertCredentialSourceAllVerbFormatting(t *testing.T, label string, value
 			}
 			l8CredentialSourceRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
 		}
-		for _, control := range []string{"%T", "%p"} {
-			rendered := l8CredentialSourceSafeSprintf(t, label+" "+variant.name+" "+control, control, variant.value)
-			l8CredentialSourceRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, forbidden)
-		}
+		renderedType := l8CredentialSourceSafeSprintf(t, label+" "+variant.name+" %T", "%T", variant.value)
+		l8CredentialSourceRejectFormattingPoison(t, label+" "+variant.name+" %T", renderedType, forbidden)
+		renderedPointer := l8CredentialSourceSafeSprintf(t, label+" "+variant.name+" %p", "%p", variant.value)
+		l8CredentialSourceRejectPointerFormattingPoison(t, label+" "+variant.name+" %p", renderedPointer, forbidden)
 		stringer, ok := variant.value.(fmt.Stringer)
 		if !ok || l8CredentialSourceSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expectedFormat {
 			t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
@@ -922,6 +974,31 @@ func l8CredentialSourceRejectFormattingPoison(t *testing.T, label, rendered stri
 			t.Fatalf("%s exposed formatting poison %q in %q", label, poison, rendered)
 		}
 	}
+}
+
+func l8CredentialSourceRejectPointerFormattingPoison(t *testing.T, label, rendered string, forbidden []string) {
+	t.Helper()
+	// fmt handles %p before fmt.Formatter. Allocator addresses are non-secret
+	// hexadecimal values, so a short numeric canary can occur by coincidence.
+	// Keep deterministic semantic identity checks without making address layout
+	// part of the credential redaction contract.
+	for _, poison := range forbidden {
+		if poison != "" && !l8CredentialSourceAllDecimal(poison) && strings.Contains(rendered, poison) {
+			t.Fatalf("%s exposed formatting poison %q in %q", label, poison, rendered)
+		}
+	}
+}
+
+func l8CredentialSourceAllDecimal(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func l8Registry(t *testing.T) (*Registry, *l8Keyctl, *l8LockedMapping, *sandboxruntime.AuthenticatedWorkerPrincipalAuthority, sandboxruntime.AuthenticatedWorkerPrincipal) {
