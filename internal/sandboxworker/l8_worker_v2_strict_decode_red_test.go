@@ -4,10 +4,46 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"math"
 	"strings"
 	"testing"
 )
+
+func TestL8WorkerV2BoundedJSONReaderPreservesFullPositiveInt64Range(t *testing.T) {
+	raw := []byte(`{"operation":"status"}`)
+	got, err := readWorkerJSONBoundedV2(bytes.NewReader(raw), math.MaxInt64)
+	if err != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("MaxInt64 bounded read = %q, %v; want exact small payload", got, err)
+	}
+	large := bytes.Repeat([]byte{'x'}, (1<<20)+1)
+	got, err = readWorkerJSONBoundedV2(bytes.NewReader(large), int64(len(large)))
+	if err != nil || !bytes.Equal(got, large) {
+		t.Fatalf("configured read above 1 MiB length = %d, %v; want exact %d-byte payload", len(got), err, len(large))
+	}
+	got, err = readWorkerJSONBoundedV2(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("exact-limit EOF read = %q, %v; want success", got, err)
+	}
+	if _, err := readWorkerJSONBoundedV2(bytes.NewReader(append(append([]byte(nil), raw...), '!')), int64(len(raw))); err == nil {
+		t.Fatal("one byte beyond the exact limit was accepted")
+	}
+
+	probeFailure := errors.New("probe failure")
+	reader := io.MultiReader(bytes.NewReader(raw), l8WorkerV2ProbeErrorReader{err: probeFailure})
+	if _, err := readWorkerJSONBoundedV2(reader, int64(len(raw))); !errors.Is(err, probeFailure) {
+		t.Fatalf("probe error = %v, want wrapped probe failure", err)
+	}
+}
+
+type l8WorkerV2ProbeErrorReader struct {
+	err error
+}
+
+func (reader l8WorkerV2ProbeErrorReader) Read([]byte) (int, error) {
+	return 0, reader.err
+}
 
 func TestL8WorkerOuterRequestDecoderIsStrictForV1AndV2BeforeDispatch(t *testing.T) {
 	server := &Server{maxRequestBytes: defaultMaxRequestBytes}
