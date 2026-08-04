@@ -1494,6 +1494,67 @@ func forbiddenLegacyHelper() { _, _ = httpalias.Get("https://legacy.example.inva
 	}, policy)
 }
 
+func TestL8WorkerV2GuardRejectsUnboundedRuntimeOperationAssembly(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"aliases.go":   true,
+	}}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"contracts.go": `package sandboxworker
+type JobStartRequestV2 struct{}`,
+		"aliases.go": `package sandboxworker
+var hiddenOperation = string([]byte{9223372036854775807: 50})`,
+	}, policy, "runtime operation assembly")
+}
+
+func TestL8WorkerV2GuardRejectsDirectStdlibRuntimeOperationAssembly(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"contracts.go": true}}
+	contracts := `package sandboxworker
+type JobStartRequestV2 struct{}`
+	for _, fixture := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "strings join",
+			source: `package sandboxworker
+import text "strings"
+var hiddenOperation = text.Join([]string{"job", "_start_", "v", "2"}, "")`,
+		},
+		{
+			name: "fmt sprintf",
+			source: `package sandboxworker
+import formatting "fmt"
+var hiddenOperation = formatting.Sprintf("%s%c%d", "job_status_", 'v', 2)`,
+		},
+		{
+			name: "strings repeat",
+			source: `package sandboxworker
+import text "strings"
+var hiddenOperation = "job_logs_" + text.Repeat("v", 1) + string([]byte{50})`,
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"contracts.go": contracts,
+				"unlisted.go":  fixture.source,
+			}, policy, "outside the exact allowlist")
+		})
+	}
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"contracts.go": `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"
+func JobStartV2Fixture() string { return OperationJobStartV2 }`,
+		"legacy.go": `package sandboxworker
+import text "strings"
+func unrelatedLegacyText(parts []string) string { return text.Join(parts, "") }`,
+	}, l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"legacy.go":    true,
+	}})
+}
+
 func TestL8WorkerV2GuardConstantValueTaintClosesChainsAndUnlistedRoots(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"contracts.go": true,
@@ -2002,6 +2063,33 @@ func JobStatusV2Fixture() { _ = formatting.Sprint("safe", inertRenderer{}) }`,
 	}, policy)
 }
 
+func TestL8WorkerV2GuardRejectsPromotedCallbacksOnAnonymousValues(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{"job_v2_fixture.go": true},
+		mixed:     map[string]bool{"shared.go": true},
+	}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import formatting "fmt"
+func JobStartV2Fixture() {
+	_ = formatting.Sprint(struct{ promotedRenderer }{})
+}`,
+		"shared.go": `package sandboxworker
+import processapi "os"
+type promotedRenderer struct{}
+func (promotedRenderer) String() string {
+	_, _ = processapi.StartProcess("worker", nil, nil)
+	return ""
+}`,
+	}, policy, "implicit interface callback")
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import formatting "fmt"
+func JobResolveV2Fixture() { _ = formatting.Sprint(struct{ Value string }{Value: "safe"}) }`,
+	}, policy)
+}
+
 func TestL8WorkerV2GuardAuditsPackageInitializers(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"handler.go": true,
@@ -2021,6 +2109,65 @@ func JobResolveV2Fixture() {}`,
 		"unlisted_init.go": `package sandboxworker
 func init() {}`,
 	}, policy, "outside the exact allowlist")
+}
+
+func TestL8WorkerV2GuardAuditsPackageVariableInitializers(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"handler.go": true,
+		"state.go":   true,
+	}}
+	t.Run("reachable initializer", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"handler.go": `package sandboxworker
+func JobStartV2Fixture() {}`,
+			"state.go": `package sandboxworker
+import httpalias "net/http"
+var initializedState = forbiddenInitializer()
+func forbiddenInitializer() string {
+	_, _ = httpalias.Get("https://authority.example.invalid")
+	return ""
+}`,
+		}, policy, "net/http")
+	})
+
+	t.Run("unlisted initializer", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"handler.go": `package sandboxworker
+func JobResolveV2Fixture() {}`,
+			"unlisted_state.go": `package sandboxworker
+var initializedState = safeInitializer()
+func safeInitializer() string { return "safe" }`,
+		}, policy, "outside the exact allowlist")
+	})
+
+	t.Run("grouped initializer", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"handler.go": `package sandboxworker
+func JobStatusV2Fixture() {}`,
+			"state.go": `package sandboxworker
+import httpalias "net/http"
+var (
+	safeState = "safe"
+	firstState, secondState = "safe", forbiddenGroupedInitializer()
+)
+func forbiddenGroupedInitializer() string {
+	_, _ = httpalias.Get("https://authority.example.invalid")
+	return ""
+}`,
+		}, policy, "net/http")
+	})
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"handler.go": `package sandboxworker
+func JobLogsV2Fixture() {}`,
+		"state.go": `package sandboxworker
+var (
+	safeState = "safe"
+	firstState, secondState = "safe", safeGroupedInitializer()
+	uninitializedState string
+)
+func safeGroupedInitializer() string { return "safe" }`,
+	}, policy)
 }
 
 func TestL8WorkerV2GuardRejectsReachedBodylessDeclarations(t *testing.T) {
