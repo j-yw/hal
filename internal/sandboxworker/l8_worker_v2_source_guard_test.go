@@ -333,6 +333,22 @@ func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error 
 	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
 	return nil
 }`,
+		"custom_unmarshal_callback": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+)
+type JobStartRequestV2 struct { Value string }
+func (*JobStartRequestV2) UnmarshalJSON([]byte) error { return nil }
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": source}, policy, "implicit interface callback")
@@ -433,21 +449,21 @@ type l8WorkerV2GuardPolicy struct {
 func l8WorkerV2ProductionGuardPolicy() l8WorkerV2GuardPolicy {
 	return l8WorkerV2GuardPolicy{
 		dedicated: map[string]bool{
-			"job_manager_v2.go": true,
-			"job_service_v2.go": true,
-			"job_store_v2.go":   true,
-			"job_v2_client.go":  true,
-			"job_v2_helpers.go": true,
-			"job_v2_service.go": true,
-			"job_v2_types.go":   true,
+			"job_manager_v2.go":  true,
+			"job_service_v2.go":  true,
+			"job_store_v2.go":    true,
+			"job_v2_client.go":   true,
+			"job_v2_helpers.go":  true,
+			"job_v2_service.go":  true,
+			"job_v2_types.go":    true,
+			"protocol_decode.go": true,
 		},
 		mixed: map[string]bool{
-			"client.go":          true,
-			"handler.go":         true,
-			"job_helpers.go":     true,
-			"protocol_decode.go": true,
-			"server.go":          true,
-			"types.go":           true,
+			"client.go":      true,
+			"handler.go":     true,
+			"job_helpers.go": true,
+			"server.go":      true,
+			"types.go":       true,
 		},
 	}
 }
@@ -2470,7 +2486,7 @@ func l8WorkerV2AllowedBoundedStrictDecoderCall(scope l8WorkerV2GuardScope, candi
 		return false
 	}
 	candidateName := candidateObject.Pkg().Path() + "." + candidateObject.Name()
-	if candidateName != "io.LimitReader" && candidateName != "encoding/json.NewDecoder" {
+	if candidateName != "io.LimitReader" && candidateName != "encoding/json.NewDecoder" && candidateName != "encoding/json.Decode" {
 		return false
 	}
 	type decoderPair struct {
@@ -2511,7 +2527,7 @@ func l8WorkerV2AllowedBoundedStrictDecoderCall(scope l8WorkerV2GuardScope, candi
 		if decoderObject == nil || !l8WorkerV2ScopeUsesExactStrictDecoder(scope, pair.newDecoder, pair.limit, decoderObject, info) {
 			continue
 		}
-		if candidate == pair.newDecoder || candidate == pair.limit {
+		if l8WorkerV2IsExactStrictDecoderCall(scope, candidate, pair.newDecoder, pair.limit, decoderObject, info) {
 			return true
 		}
 	}
@@ -2614,7 +2630,7 @@ func l8WorkerV2ExactDecoderParameters(function *ast.FuncDecl, limit *ast.CallExp
 	if len(parameters) != 2 || len(function.Type.Results.List) != 1 || len(function.Type.Results.List[0].Names) != 0 {
 		return nil, false
 	}
-	if !l8WorkerV2IsExactIOReader(parameters[0].Type()) || l8WorkerV2ExpressionObject(limit.Args[0], info) != parameters[0] || !l8WorkerV2IsExactV2StructPointer(parameters[1].Type()) {
+	if !l8WorkerV2IsExactIOReader(parameters[0].Type()) || l8WorkerV2ExpressionObject(limit.Args[0], info) != parameters[0] || !l8WorkerV2IsExactStrictDecodeOutputPointer(parameters[1].Type()) {
 		return nil, false
 	}
 	resultType := info.TypeOf(function.Type.Results.List[0].Type)
@@ -2624,17 +2640,44 @@ func l8WorkerV2ExactDecoderParameters(function *ast.FuncDecl, limit *ast.CallExp
 	return parameters[1], true
 }
 
-func l8WorkerV2IsExactV2StructPointer(typ types.Type) bool {
+func l8WorkerV2IsExactStrictDecodeOutputPointer(typ types.Type) bool {
 	pointer, ok := types.Unalias(typ).(*types.Pointer)
 	if !ok {
 		return false
 	}
 	named, ok := types.Unalias(pointer.Elem()).(*types.Named)
-	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" || !strings.HasSuffix(named.Obj().Name(), "V2") {
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" {
+		return false
+	}
+	name := named.Obj().Name()
+	if name != "Request" && name != "Response" && !strings.HasSuffix(name, "V2") {
 		return false
 	}
 	_, ok = named.Underlying().(*types.Struct)
-	return ok
+	if !ok {
+		return false
+	}
+	methods := types.NewMethodSet(typ)
+	for index := 0; index < methods.Len(); index++ {
+		switch methods.At(index).Obj().Name() {
+		case "UnmarshalJSON", "UnmarshalText":
+			return false
+		}
+	}
+	return true
+}
+
+func l8WorkerV2IsExactStrictDecoderCall(scope l8WorkerV2GuardScope, candidate, constructor, limit *ast.CallExpr, decoder types.Object, info *types.Info) bool {
+	if candidate == constructor || candidate == limit {
+		return true
+	}
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || function.Body == nil || len(function.Body.List) != 6 {
+		return false
+	}
+	_, _, primary, primaryOK := l8WorkerV2ExactDecodeIf(function.Body.List[2], decoder, info)
+	_, _, trailing, trailingOK := l8WorkerV2ExactDecodeIf(function.Body.List[4], decoder, info)
+	return primaryOK && trailingOK && (candidate == primary || candidate == trailing)
 }
 
 func l8WorkerV2ExactPrimaryDecodeIf(statement ast.Stmt, decoder, output types.Object, info *types.Info) bool {
