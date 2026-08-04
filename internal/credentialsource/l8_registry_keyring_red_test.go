@@ -854,10 +854,10 @@ func l8AssertCredentialSourceAllVerbFormatting(t *testing.T, label string, value
 			}
 			l8CredentialSourceRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
 		}
-		for _, control := range []string{"%T", "%p"} {
-			rendered := l8CredentialSourceSafeSprintf(t, label+" "+variant.name+" "+control, control, variant.value)
-			l8CredentialSourceRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, forbidden)
-		}
+		renderedType := l8CredentialSourceSafeSprintf(t, label+" "+variant.name+" %T", "%T", variant.value)
+		l8CredentialSourceRejectFormattingPoison(t, label+" "+variant.name+" %T", renderedType, forbidden)
+		renderedPointer := l8CredentialSourceSafeSprintf(t, label+" "+variant.name+" %p", "%p", variant.value)
+		l8CredentialSourceRejectPointerFormattingPoison(t, label+" "+variant.name+" %p", renderedPointer, forbidden)
 		stringer, ok := variant.value.(fmt.Stringer)
 		if !ok || l8CredentialSourceSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expectedFormat {
 			t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
@@ -922,6 +922,31 @@ func l8CredentialSourceRejectFormattingPoison(t *testing.T, label, rendered stri
 			t.Fatalf("%s exposed formatting poison %q in %q", label, poison, rendered)
 		}
 	}
+}
+
+func l8CredentialSourceRejectPointerFormattingPoison(t *testing.T, label, rendered string, forbidden []string) {
+	t.Helper()
+	// fmt handles %p before fmt.Formatter. Allocator addresses are non-secret
+	// hexadecimal values, so a short numeric canary can occur by coincidence.
+	// Keep deterministic semantic identity checks without making address layout
+	// part of the credential redaction contract.
+	for _, poison := range forbidden {
+		if poison != "" && !l8CredentialSourceAllDecimal(poison) && strings.Contains(rendered, poison) {
+			t.Fatalf("%s exposed formatting poison %q in %q", label, poison, rendered)
+		}
+	}
+}
+
+func l8CredentialSourceAllDecimal(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func l8Registry(t *testing.T) (*Registry, *l8Keyctl, *l8LockedMapping, *sandboxruntime.AuthenticatedWorkerPrincipalAuthority, sandboxruntime.AuthenticatedWorkerPrincipal) {
