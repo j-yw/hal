@@ -118,7 +118,7 @@ func (store *jobStoreV2) save(state storedJobStateV2) error {
 }
 
 func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
-	if store == nil || !validJobSafeID(jobID) {
+	if store == nil || !validWorkerV2JobID(jobID) {
 		return nil, errors.New("stored job state is unavailable")
 	}
 	path := filepath.Join(store.root, jobID+".json")

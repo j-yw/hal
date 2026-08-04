@@ -340,8 +340,12 @@ func validWorkerV2SafeID(value string) bool {
 	return true
 }
 
+func validWorkerV2JobID(value string) bool {
+	return validWorkerV2SafeID(value) && validJobSafeID(value)
+}
+
 func validateWorkerV2JobID(jobID string) error {
-	if !validJobSafeID(jobID) {
+	if !validWorkerV2JobID(jobID) {
 		return fmt.Errorf("worker job jobId is invalid")
 	}
 	return nil

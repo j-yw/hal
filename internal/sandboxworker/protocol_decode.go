@@ -138,10 +138,211 @@ const (
 	workerJSONPreflightProductionFlagV2
 )
 
+// workerJSONPreflightCanonicalTagsV2 is the audited union of JSON tags reachable
+// from worker requests, responses, and private V2 job state. The root-only
+// jobV2/JobV2 fold collision is classified separately after the root is read.
+var workerJSONPreflightCanonicalTagsV2 = map[string]string{
+	"action":                         "action",
+	"activationid":                   "activationId",
+	"activemodes":                    "activeModes",
+	"activeproofs":                   "activeProofs",
+	"activesandboxes":                "activeSandboxes",
+	"adapterid":                      "adapterId",
+	"admissiongrantid":               "admissionGrantId",
+	"admissiongrantrevision":         "admissionGrantRevision",
+	"algorithm":                      "algorithm",
+	"apipath":                        "apiPath",
+	"args":                           "args",
+	"argv":                           "argv",
+	"assetrole":                      "assetRole",
+	"assets":                         "assets",
+	"backend":                        "backend",
+	"bindingid":                      "bindingId",
+	"bindings":                       "bindings",
+	"cancelrequested":                "cancelRequested",
+	"capabilities":                   "capabilities",
+	"capability":                     "capability",
+	"capabilitylabels":               "capabilityLabels",
+	"capacity":                       "capacity",
+	"code":                           "code",
+	"contractversion":                "contractVersion",
+	"copyin":                         "copyIn",
+	"copyout":                        "copyOut",
+	"create":                         "create",
+	"credentialdelivery":             "credentialDelivery",
+	"credentialintent":               "credentialIntent",
+	"credentialmodes":                "credentialModes",
+	"credentialproxymode":            "credentialProxyMode",
+	"cursor":                         "cursor",
+	"daemongeneration":               "daemonGeneration",
+	"data":                           "data",
+	"decision":                       "decision",
+	"defaultposture":                 "defaultPosture",
+	"deliverymode":                   "deliveryMode",
+	"destination":                    "destination",
+	"digest":                         "digest",
+	"digestalgorithm":                "digestAlgorithm",
+	"digestvalue":                    "digestValue",
+	"displaypath":                    "displayPath",
+	"document":                       "document",
+	"driver":                         "driver",
+	"driverid":                       "driverId",
+	"encoding":                       "encoding",
+	"enforced":                       "enforced",
+	"enforcementmode":                "enforcementMode",
+	"env":                            "env",
+	"environment":                    "environment",
+	"error":                          "error",
+	"errorcodes":                     "errorCodes",
+	"errorcount":                     "errorCount",
+	"exec":                           "exec",
+	"executablerole":                 "executableRole",
+	"exitcode":                       "exitCode",
+	"failurecode":                    "failureCode",
+	"finishedat":                     "finishedAt",
+	"guestreadiness":                 "guestReadiness",
+	"health":                         "health",
+	"heartbeatat":                    "heartbeatAt",
+	"hostid":                         "hostId",
+	"hostkind":                       "hostKind",
+	"id":                             "id",
+	"image":                          "image",
+	"inspect":                        "inspect",
+	"isolationlevel":                 "isolationLevel",
+	"job":                            "job",
+	"jobcancel":                      "jobCancel",
+	"jobcancelv2":                    "jobCancelV2",
+	"jobid":                          "jobId",
+	"joblogs":                        "jobLogs",
+	"joblogsv2":                      "jobLogsV2",
+	"jobresolve":                     "jobResolve",
+	"jobresolvev2":                   "jobResolveV2",
+	"jobstart":                       "jobStart",
+	"jobstartv2":                     "jobStartV2",
+	"jobstatus":                      "jobStatus",
+	"jobstatusv2":                    "jobStatusV2",
+	"labels":                         "labels",
+	"lifecycle":                      "lifecycle",
+	"limitbytes":                     "limitBytes",
+	"limitexceeded":                  "limitExceeded",
+	"lockstatus":                     "lockStatus",
+	"lockedat":                       "lockedAt",
+	"logcursor":                      "logCursor",
+	"logtruncated":                   "logTruncated",
+	"maxconcurrentsandboxes":         "maxConcurrentSandboxes",
+	"maxpayloadbytes":                "maxPayloadBytes",
+	"mechanisms":                     "mechanisms",
+	"message":                        "message",
+	"metadata":                       "metadata",
+	"mode":                           "mode",
+	"modes":                          "modes",
+	"name":                           "name",
+	"networkenforcement":             "networkEnforcement",
+	"networkenforcementcapability":   "networkEnforcementCapability",
+	"networkpolicy":                  "networkPolicy",
+	"nextcursor":                     "nextCursor",
+	"ok":                             "ok",
+	"oldestcursor":                   "oldestCursor",
+	"operation":                      "operation",
+	"operationid":                    "operationId",
+	"operationplan":                  "operationPlan",
+	"operations":                     "operations",
+	"orchestration":                  "orchestration",
+	"outcome":                        "outcome",
+	"pathrole":                       "pathRole",
+	"pathroles":                      "pathRoles",
+	"payload":                        "payload",
+	"payloads":                       "payloads",
+	"plan":                           "plan",
+	"planid":                         "planId",
+	"policypreset":                   "policyPreset",
+	"policysnapshotid":               "policySnapshotId",
+	"principalid":                    "principalId",
+	"processdescriptor":              "processDescriptor",
+	"processid":                      "processId",
+	"processidsource":                "processIdSource",
+	"processlaunch":                  "processLaunch",
+	"productioncredentialsrequested": "productionCredentialsRequested",
+	"proofid":                        "proofId",
+	"protocolversion":                "protocolVersion",
+	"provenancelabels":               "provenanceLabels",
+	"proxy":                          "proxy",
+	"reasoncode":                     "reasonCode",
+	"reasoncodes":                    "reasonCodes",
+	"records":                        "records",
+	"referencekind":                  "referenceKind",
+	"remotedestinationpath":          "remoteDestinationPath",
+	"remotesourcepath":               "remoteSourcePath",
+	"request":                        "request",
+	"requestid":                      "requestId",
+	"requestkey":                     "requestKey",
+	"requested":                      "requested",
+	"requestedmodes":                 "requestedModes",
+	"result":                         "result",
+	"role":                           "role",
+	"rules":                          "rules",
+	"runtime":                        "runtime",
+	"runtimedriver":                  "runtimeDriver",
+	"runtimedrivers":                 "runtimeDrivers",
+	"runtimeid":                      "runtimeId",
+	"runtimeimage":                   "runtimeImage",
+	"security":                       "security",
+	"serviceid":                      "serviceId",
+	"sizebytes":                      "sizeBytes",
+	"socketpath":                     "socketPath",
+	"source":                         "source",
+	"sourceartifact":                 "sourceArtifact",
+	"sourcekind":                     "sourceKind",
+	"sourcereferenceid":              "sourceReferenceId",
+	"sourcereferenceids":             "sourceReferenceIds",
+	"startedat":                      "startedAt",
+	"state":                          "state",
+	"status":                         "status",
+	"stderr":                         "stderr",
+	"stderrlimitbytes":               "stderrLimitBytes",
+	"stderrtruncated":                "stderrTruncated",
+	"stdin":                          "stdin",
+	"stdout":                         "stdout",
+	"stdoutlimitbytes":               "stdoutLimitBytes",
+	"stdouttruncated":                "stdoutTruncated",
+	"stream":                         "stream",
+	"submissionid":                   "submissionId",
+	"submissionkey":                  "submissionKey",
+	"submittedat":                    "submittedAt",
+	"supported":                      "supported",
+	"supportedoperations":            "supportedOperations",
+	"supportedruntimedrivers":        "supportedRuntimeDrivers",
+	"supportsdefaultdenyposture":     "supportsDefaultDenyPosture",
+	"supportsdomainrules":            "supportsDomainRules",
+	"supportsendpointrules":          "supportsEnd" + "pointRules",
+	"supportslinklocalrules":         "supportsLinkLocalRules",
+	"supportsloopbackrules":          "supportsLoopbackRules",
+	"supportsmetadataendpoint":       "supportsMetadataEnd" + "point",
+	"supportsprivaterangerules":      "supportsPrivateRangeRules",
+	"target":                         "target",
+	"templatelock":                   "templateLock",
+	"templatepolicyid":               "templatePolicyId",
+	"templatereference":              "templateReference",
+	"templatestatus":                 "templateStatus",
+	"timestamp":                      "timestamp",
+	"transport":                      "transport",
+	"truncated":                      "truncated",
+	"trustdecision":                  "trustDecision",
+	"trustmode":                      "trustMode",
+	"trustpolicy":                    "trustPolicy",
+	"value":                          "value",
+	"warningcodes":                   "warningCodes",
+	"warningcount":                   "warningCount",
+	"workdir":                        "workDir",
+	"workerid":                       "workerId",
+	"workspacepolicyid":              "workspacePolicyId",
+}
+
 type workerJSONPreflightV2 struct {
-	raw    string
-	offset int
-	depth  int
+	raw                  string
+	offset               int
+	depth                int
+	noncanonicalTypedKey bool
 }
 
 func (parser *workerJSONPreflightV2) parseValue(context workerJSONPreflightContextV2) error {
@@ -183,6 +384,11 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 	seen := make(map[string]bool)
 	seenFolded := make(map[string]bool)
 	productionFlagSeen := false
+	rootTypedDocument := false
+	rootResponse := false
+	rootStoredState := false
+	rootJobV2Key := ""
+	rootJobV2Token := ""
 	if parser.consume('}') {
 		if requiredProductionFlag {
 			return errors.New("worker JSON productionCredentialsRequested is required")
@@ -190,10 +396,13 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 		return nil
 	}
 	for {
+		parser.skipSpace()
+		keyStart := parser.offset
 		key, err := parser.parseString()
 		if err != nil {
 			return err
 		}
+		keyToken := parser.raw[keyStart:parser.offset]
 		if seen[key] {
 			return errors.New("worker JSON contains duplicate object key")
 		}
@@ -204,6 +413,24 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 				return errors.New("worker JSON contains duplicate object key")
 			}
 			seenFolded[folded] = true
+			if context == workerJSONPreflightRootV2 && folded == "jobv2" {
+				rootJobV2Key = key
+				rootJobV2Token = keyToken
+			} else if canonical, known := workerJSONPreflightCanonicalTagsV2[folded]; known && (key != canonical || keyToken != `"`+canonical+`"`) {
+				parser.noncanonicalTypedKey = true
+			}
+			if context == workerJSONPreflightRootV2 {
+				switch folded {
+				case "protocolversion", "requestid", "operation":
+					rootTypedDocument = true
+				case "ok":
+					rootTypedDocument = true
+					rootResponse = true
+				case "requestkey", "principalid", "daemongeneration":
+					rootTypedDocument = true
+					rootStoredState = true
+				}
+			}
 		}
 		parser.skipSpace()
 		if !parser.consume(':') {
@@ -226,6 +453,9 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 		if parser.consume('}') {
 			if requiredProductionFlag && !productionFlagSeen {
 				return errors.New("worker JSON productionCredentialsRequested is required")
+			}
+			if context == workerJSONPreflightRootV2 {
+				return parser.validateRootCanonicalKeys(rootTypedDocument, rootResponse, rootStoredState, rootJobV2Key, rootJobV2Token)
 			}
 			return nil
 		}
@@ -302,6 +532,26 @@ func workerJSONPreflightTypedContextV2(context workerJSONPreflightContextV2) boo
 	}
 }
 
+func (parser *workerJSONPreflightV2) validateRootCanonicalKeys(typedDocument, response, storedState bool, jobV2Key, jobV2Token string) error {
+	if !typedDocument {
+		return nil
+	}
+	if response && storedState {
+		return errors.New("worker JSON root schema is ambiguous")
+	}
+	expectedJobV2Key := "jobV2"
+	if storedState {
+		expectedJobV2Key = "JobV2"
+	}
+	if jobV2Key != "" && (jobV2Key != expectedJobV2Key || jobV2Token != `"`+expectedJobV2Key+`"`) {
+		return errors.New("worker JSON typed object key is noncanonical")
+	}
+	if parser.noncanonicalTypedKey {
+		return errors.New("worker JSON typed object key is noncanonical")
+	}
+	return nil
+}
+
 func workerJSONPreflightFoldKeyV2(value string) string {
 	var folded strings.Builder
 	for _, current := range value {
@@ -311,7 +561,7 @@ func workerJSONPreflightFoldKeyV2(value string) string {
 				representative = candidate
 			}
 		}
-		folded.WriteRune(representative)
+		folded.WriteRune(unicode.ToLower(representative))
 	}
 	return folded.String()
 }
