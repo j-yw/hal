@@ -2447,6 +2447,55 @@ func unrelatedLegacyText(parts []string) string { return text.Join(parts, "") }`
 	}})
 }
 
+func TestL8WorkerV2GuardRecoversBoundedStaticPrecisionAndSliceIdentifiers(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"contracts.go": true}}
+	v2Root := `package sandboxworker
+type JobStartRequestV2 struct{}`
+	fixtures := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "fixed string precision",
+			source: `package sandboxworker
+import formatting "fmt"
+var hiddenOperation = formatting.Sprintf("%s_%s_%.2s", "job", "start", string([]byte{118, 50, 120}))`,
+		},
+		{
+			name: "package string slice identifier",
+			source: `package sandboxworker
+import text "strings"
+var fragments = []string{"job", "start", string([]byte{118, 50})}
+var hiddenOperation = text.Join(fragments, "_")`,
+		},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"contracts.go": v2Root,
+				"unlisted.go":  fixture.source,
+			}, policy, "outside the exact allowlist")
+		})
+	}
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"contracts.go": v2Root,
+		"unlisted.go": `package sandboxworker
+import (
+	formatting "fmt"
+	text "strings"
+)
+var dynamicPrecision = 2
+var unrelatedDynamicFormat = formatting.Sprintf("%.*s", dynamicPrecision, "legacy")
+var unrelatedIndexedFormat = formatting.Sprintf("%[1]s", "legacy")
+var unrelatedOversizedFormat = formatting.Sprintf("%999s", "legacy")
+var legacyFragments = []string{"job", "start"}
+var unrelatedLegacyJoin = text.Join(legacyFragments, "_")
+var oversizedFragments = []string{"", "", "", "", "", "", "", "", "", "", "", "", "", "", "legacy"}
+var unrelatedOversizedJoin = text.Join(oversizedFragments, "")`,
+	}, policy)
+}
+
 func TestL8WorkerV2GuardRejectsIndexDerivedOperationDefinitions(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"contracts.go": true,
