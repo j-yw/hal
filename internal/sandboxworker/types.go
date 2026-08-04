@@ -82,40 +82,47 @@ const (
 // worker. Operation-specific payloads stay command-agnostic and use worker
 // package types rather than command-layer durable records.
 type Request struct {
-	ProtocolVersion string             `json:"protocolVersion,omitempty"`
-	RequestID       string             `json:"requestId,omitempty"`
-	Operation       string             `json:"operation"`
-	DriverID        string             `json:"driverId,omitempty"`
-	Target          *Target            `json:"target,omitempty"`
-	Create          *CreateRequest     `json:"create,omitempty"`
-	Lifecycle       *LifecycleRequest  `json:"lifecycle,omitempty"`
-	Inspect         *InspectRequest    `json:"inspect,omitempty"`
-	Exec            *ExecRequest       `json:"exec,omitempty"`
-	CopyIn          *CopyInRequest     `json:"copyIn,omitempty"`
-	CopyOut         *CopyOutRequest    `json:"copyOut,omitempty"`
-	JobStart        *JobStartRequest   `json:"jobStart,omitempty"`
-	JobResolve      *JobResolveRequest `json:"jobResolve,omitempty"`
-	JobStatus       *JobStatusRequest  `json:"jobStatus,omitempty"`
-	JobLogs         *JobLogsRequest    `json:"jobLogs,omitempty"`
-	JobCancel       *JobCancelRequest  `json:"jobCancel,omitempty"`
+	ProtocolVersion string               `json:"protocolVersion,omitempty"`
+	RequestID       string               `json:"requestId,omitempty"`
+	Operation       string               `json:"operation"`
+	DriverID        string               `json:"driverId,omitempty"`
+	Target          *Target              `json:"target,omitempty"`
+	Create          *CreateRequest       `json:"create,omitempty"`
+	Lifecycle       *LifecycleRequest    `json:"lifecycle,omitempty"`
+	Inspect         *InspectRequest      `json:"inspect,omitempty"`
+	Exec            *ExecRequest         `json:"exec,omitempty"`
+	CopyIn          *CopyInRequest       `json:"copyIn,omitempty"`
+	CopyOut         *CopyOutRequest      `json:"copyOut,omitempty"`
+	JobStart        *JobStartRequest     `json:"jobStart,omitempty"`
+	JobResolve      *JobResolveRequest   `json:"jobResolve,omitempty"`
+	JobStatus       *JobStatusRequest    `json:"jobStatus,omitempty"`
+	JobLogs         *JobLogsRequest      `json:"jobLogs,omitempty"`
+	JobCancel       *JobCancelRequest    `json:"jobCancel,omitempty"`
+	JobStartV2      *JobStartRequestV2   `json:"jobStartV2,omitempty"`
+	JobResolveV2    *JobResolveRequestV2 `json:"jobResolveV2,omitempty"`
+	JobStatusV2     *JobStatusRequestV2  `json:"jobStatusV2,omitempty"`
+	JobLogsV2       *JobLogsRequestV2    `json:"jobLogsV2,omitempty"`
+	JobCancelV2     *JobCancelRequestV2  `json:"jobCancelV2,omitempty"`
 }
 
 // Response is the versioned protocol envelope returned by a local sandbox
 // worker.
 type Response struct {
-	ProtocolVersion string           `json:"protocolVersion,omitempty"`
-	RequestID       string           `json:"requestId,omitempty"`
-	Operation       string           `json:"operation"`
-	OK              bool             `json:"ok"`
-	Status          *Status          `json:"status,omitempty"`
-	Capabilities    *Capabilities    `json:"capabilities,omitempty"`
-	Target          *Target          `json:"target,omitempty"`
-	Exec            *ExecResponse    `json:"exec,omitempty"`
-	CopyIn          *CopyInResponse  `json:"copyIn,omitempty"`
-	CopyOut         *CopyOutResponse `json:"copyOut,omitempty"`
-	Job             *Job             `json:"job,omitempty"`
-	JobLogs         *JobLogsResponse `json:"jobLogs,omitempty"`
-	Error           *Error           `json:"error,omitempty"`
+	ProtocolVersion string             `json:"protocolVersion,omitempty"`
+	RequestID       string             `json:"requestId,omitempty"`
+	Operation       string             `json:"operation"`
+	OK              bool               `json:"ok"`
+	Status          *Status            `json:"status,omitempty"`
+	Capabilities    *Capabilities      `json:"capabilities,omitempty"`
+	Target          *Target            `json:"target,omitempty"`
+	Exec            *ExecResponse      `json:"exec,omitempty"`
+	CopyIn          *CopyInResponse    `json:"copyIn,omitempty"`
+	CopyOut         *CopyOutResponse   `json:"copyOut,omitempty"`
+	Job             *Job               `json:"job,omitempty"`
+	JobLogs         *JobLogsResponse   `json:"jobLogs,omitempty"`
+	Error           *Error             `json:"error,omitempty"`
+	JobV2           *JobV2             `json:"jobV2,omitempty"`
+	JobLogsV2       *JobLogsResponseV2 `json:"jobLogsV2,omitempty"`
 }
 
 // Error is a structured protocol error safe for local protocol responses.
@@ -266,6 +273,9 @@ func (req Request) Validate() error {
 	if !validOperation(req.Operation) {
 		return fmt.Errorf("worker request operation %q is unsupported", req.Operation)
 	}
+	if err := validateWorkerV2RequestPayloads(req); err != nil {
+		return err
+	}
 	switch req.Operation {
 	case OperationCreate:
 		if strings.TrimSpace(req.DriverID) == "" {
@@ -343,6 +353,19 @@ func (req Request) Validate() error {
 			return fmt.Errorf("worker request jobCancel payload is required for %s", req.Operation)
 		}
 		return req.JobCancel.Validate()
+	case OperationJobStartV2:
+		if strings.TrimSpace(req.DriverID) == "" {
+			return fmt.Errorf("worker request driverId is required for %s", req.Operation)
+		}
+		return req.JobStartV2.Validate()
+	case OperationJobResolveV2:
+		return req.JobResolveV2.Validate()
+	case OperationJobStatusV2:
+		return req.JobStatusV2.Validate()
+	case OperationJobLogsV2:
+		return req.JobLogsV2.Validate()
+	case OperationJobCancelV2:
+		return req.JobCancelV2.Validate()
 	default:
 		return nil
 	}
@@ -375,6 +398,14 @@ func (resp Response) Validate() error {
 	if resp.Error != nil {
 		if err := resp.Error.Validate(); err != nil {
 			return fmt.Errorf("worker response error: %w", err)
+		}
+	}
+	if !isWorkerV2Operation(resp.Operation) && (resp.JobV2 != nil || resp.JobLogsV2 != nil) {
+		return fmt.Errorf("worker response contains a V2 payload for non-V2 operation")
+	}
+	if isWorkerV2Operation(resp.Operation) {
+		if err := validateWorkerV2ResponsePayloads(resp); err != nil {
+			return err
 		}
 	}
 	if resp.Status != nil {
@@ -433,6 +464,19 @@ func (resp Response) Validate() error {
 		if err := resp.JobLogs.Validate(); err != nil {
 			return fmt.Errorf("worker response jobLogs: %w", err)
 		}
+	}
+	if resp.JobV2 != nil {
+		if err := resp.JobV2.Validate(); err != nil {
+			return fmt.Errorf("worker response jobV2: %w", err)
+		}
+	}
+	if resp.JobLogsV2 != nil {
+		if err := resp.JobLogsV2.Validate(); err != nil {
+			return fmt.Errorf("worker response jobLogsV2: %w", err)
+		}
+	}
+	if !resp.OK && (resp.Status != nil || resp.Capabilities != nil || resp.Target != nil || resp.Exec != nil || resp.CopyIn != nil || resp.CopyOut != nil || resp.Job != nil || resp.JobLogs != nil || resp.JobV2 != nil || resp.JobLogsV2 != nil) {
+		return fmt.Errorf("worker error response cannot include a payload")
 	}
 	if resp.OK && resp.Operation == OperationExec && resp.Exec == nil {
 		return fmt.Errorf("worker response exec payload is required when ok is true")
@@ -827,11 +871,76 @@ func validOperation(operation string) bool {
 		OperationJobResolve,
 		OperationJobStatus,
 		OperationJobLogs,
-		OperationJobCancel:
+		OperationJobCancel,
+		OperationJobStartV2,
+		OperationJobResolveV2,
+		OperationJobStatusV2,
+		OperationJobLogsV2,
+		OperationJobCancelV2:
 		return true
 	default:
 		return false
 	}
+}
+
+func isWorkerV2Operation(operation string) bool {
+	switch operation {
+	case OperationJobStartV2, OperationJobResolveV2, OperationJobStatusV2, OperationJobLogsV2, OperationJobCancelV2:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateWorkerV2RequestPayloads(request Request) error {
+	if !isWorkerV2Operation(request.Operation) {
+		if request.JobStartV2 != nil || request.JobResolveV2 != nil || request.JobStatusV2 != nil || request.JobLogsV2 != nil || request.JobCancelV2 != nil {
+			return fmt.Errorf("worker request contains a V2 payload for non-V2 operation")
+		}
+		return nil
+	}
+	if request.Target != nil || request.Create != nil || request.Lifecycle != nil || request.Inspect != nil || request.Exec != nil || request.CopyIn != nil || request.CopyOut != nil || request.JobStart != nil || request.JobResolve != nil || request.JobStatus != nil || request.JobLogs != nil || request.JobCancel != nil {
+		return fmt.Errorf("worker V2 request contains a non-V2 payload")
+	}
+	valid := false
+	switch request.Operation {
+	case OperationJobStartV2:
+		valid = request.JobStartV2 != nil && request.JobResolveV2 == nil && request.JobStatusV2 == nil && request.JobLogsV2 == nil && request.JobCancelV2 == nil
+	case OperationJobResolveV2:
+		valid = request.JobStartV2 == nil && request.JobResolveV2 != nil && request.JobStatusV2 == nil && request.JobLogsV2 == nil && request.JobCancelV2 == nil
+	case OperationJobStatusV2:
+		valid = request.JobStartV2 == nil && request.JobResolveV2 == nil && request.JobStatusV2 != nil && request.JobLogsV2 == nil && request.JobCancelV2 == nil
+	case OperationJobLogsV2:
+		valid = request.JobStartV2 == nil && request.JobResolveV2 == nil && request.JobStatusV2 == nil && request.JobLogsV2 != nil && request.JobCancelV2 == nil
+	case OperationJobCancelV2:
+		valid = request.JobStartV2 == nil && request.JobResolveV2 == nil && request.JobStatusV2 == nil && request.JobLogsV2 == nil && request.JobCancelV2 != nil
+	}
+	if !valid {
+		return fmt.Errorf("worker V2 request payload does not match operation")
+	}
+	return nil
+}
+
+func validateWorkerV2ResponsePayloads(response Response) error {
+	if response.Status != nil || response.Capabilities != nil || response.Target != nil || response.Exec != nil || response.CopyIn != nil || response.CopyOut != nil || response.Job != nil || response.JobLogs != nil {
+		return fmt.Errorf("worker V2 response contains a non-V2 payload")
+	}
+	if !response.OK {
+		if response.JobV2 != nil || response.JobLogsV2 != nil {
+			return fmt.Errorf("worker V2 error response contains a payload")
+		}
+		return nil
+	}
+	if response.Operation == OperationJobLogsV2 {
+		if response.JobV2 != nil || response.JobLogsV2 == nil {
+			return fmt.Errorf("worker V2 response payload does not match operation")
+		}
+		return nil
+	}
+	if response.JobV2 == nil || response.JobLogsV2 != nil {
+		return fmt.Errorf("worker V2 response payload does not match operation")
+	}
+	return nil
 }
 
 func validResponseOperation(operation string) bool {

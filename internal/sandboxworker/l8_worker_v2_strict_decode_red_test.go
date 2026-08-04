@@ -127,6 +127,380 @@ func TestL8WorkerOuterRequestDecoderIsStrictForV1AndV2BeforeDispatch(t *testing.
 	}
 }
 
+func TestL8WorkerStrictRequestDecoderRejectsCaseFoldedTypedAliasesBeforeAdmission(t *testing.T) {
+	canonical := l8WorkerV2StartJSON(t)
+	tests := []struct {
+		name      string
+		canonical string
+		alias     string
+	}{
+		{name: "outer driver identity", canonical: `"driverId":"microvm"`, alias: `"DriverId":"microvm"`},
+		{name: "job start submission identity", canonical: `"submissionId":"submission-primary"`, alias: `"SubmissionId":"submission-primary"`},
+		{name: "job start credential plan identity", canonical: `"planId":"plan-primary"`, alias: `"PlanId":"plan-primary"`},
+		{name: "credential binding identity", canonical: `"bindingId":"binding-primary"`, alias: `"BindingId":"binding-primary"`},
+		{name: "nested exec operation identity", canonical: `"operationId":"exec-primary"`, alias: `"OperationId":"exec-primary"`},
+		{name: "nested target name", canonical: `"name":"sandbox-primary"`, alias: `"Name":"sandbox-primary"`},
+		{name: "nested runtime identity", canonical: `"runtimeId":"runtime-primary"`, alias: `"RuntimeId":"runtime-primary"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := strings.Replace(canonical, tt.canonical, tt.canonical+","+tt.alias, 1)
+			if raw == canonical {
+				t.Fatalf("canonical request did not contain typed field %s", tt.canonical)
+			}
+			output := Request{RequestID: "preflight-sentinel"}
+			if err := decodeWorkerRequestInto(strings.NewReader(raw), defaultMaxRequestBytes, &output); err == nil {
+				t.Fatal("request decoder accepted case-folded typed alias")
+			}
+			if output.RequestID != "preflight-sentinel" || output.JobStartV2 != nil {
+				t.Fatalf("case-folded request alias reached typed decode: %#v", output)
+			}
+			called := false
+			server := &Server{
+				maxRequestBytes: defaultMaxRequestBytes,
+				handler: RequestHandlerFunc(func(context.Context, Request) Response {
+					called = true
+					return Response{}
+				}),
+			}
+			decoded, errorResp := server.readRequest(strings.NewReader(raw))
+			if errorResp == nil {
+				server.handler.HandleRequest(context.Background(), decoded)
+			}
+			if errorResp == nil || errorResp.Error == nil || errorResp.Error.Code != ErrorCodeMalformedRequest {
+				t.Fatalf("case-folded typed alias response = %#v, want malformed_request", errorResp)
+			}
+			if called {
+				t.Fatal("case-folded typed alias reached admission")
+			}
+		})
+	}
+}
+
+func TestL8WorkerStrictRequestDecoderRejectsLoneNoncanonicalTypedAliasesBeforeAdmission(t *testing.T) {
+	canonical := l8WorkerV2StartJSON(t)
+	var canonicalOutput Request
+	if err := decodeWorkerRequestInto(strings.NewReader(canonical), defaultMaxRequestBytes, &canonicalOutput); err != nil {
+		t.Fatalf("request decoder rejected exact canonical tags: %v", err)
+	}
+	for _, tt := range []struct {
+		name      string
+		canonical string
+		alias     string
+	}{
+		{name: "outer driver identity", canonical: `"driverId":"microvm"`, alias: `"DriverId":"microvm"`},
+		{name: "nested binding identity", canonical: `"bindingId":"binding-primary"`, alias: `"BindingId":"binding-primary"`},
+		{name: "unicode simple-fold submission identity", canonical: `"submissionId":"submission-primary"`, alias: `"ſubmissionId":"submission-primary"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := strings.Replace(canonical, tt.canonical, tt.alias, 1)
+			if raw == canonical {
+				t.Fatalf("canonical request did not contain typed field %s", tt.canonical)
+			}
+			output := Request{RequestID: "preflight-sentinel"}
+			if err := decodeWorkerRequestInto(strings.NewReader(raw), defaultMaxRequestBytes, &output); err == nil {
+				t.Fatal("request decoder accepted lone noncanonical typed alias")
+			}
+			if output.RequestID != "preflight-sentinel" || output.JobStartV2 != nil {
+				t.Fatalf("lone noncanonical request alias reached typed decode: %#v", output)
+			}
+			called := false
+			server := &Server{
+				maxRequestBytes: defaultMaxRequestBytes,
+				handler: RequestHandlerFunc(func(context.Context, Request) Response {
+					called = true
+					return Response{}
+				}),
+			}
+			decoded, errorResp := server.readRequest(strings.NewReader(raw))
+			if errorResp == nil {
+				server.handler.HandleRequest(context.Background(), decoded)
+			}
+			if errorResp == nil || errorResp.Error == nil || errorResp.Error.Code != ErrorCodeMalformedRequest {
+				t.Fatalf("lone noncanonical typed alias response = %#v, want malformed_request", errorResp)
+			}
+			if called {
+				t.Fatal("lone noncanonical typed alias reached admission")
+			}
+		})
+	}
+}
+
+func TestL8WorkerStrictResponseDecoderRejectsCaseFoldedTypedAliasBeforeDecode(t *testing.T) {
+	job := l8WorkerV2QueuedJob()
+	response := Response{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "job_status_v2-case-alias",
+		Operation:       OperationJobStatusV2,
+		OK:              true,
+		JobV2:           &job,
+	}
+	payload, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := `"workerId":"worker-primary"`
+	raw := strings.Replace(string(payload), canonical, canonical+`,"WorkerId":"worker-primary"`, 1)
+	if raw == string(payload) {
+		t.Fatal("canonical response did not contain worker identity")
+	}
+	output := Response{RequestID: "preflight-sentinel"}
+	if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &output); err == nil {
+		t.Fatal("response decoder accepted case-folded JobV2 worker identity alias")
+	}
+	if output.RequestID != "preflight-sentinel" || output.JobV2 != nil {
+		t.Fatalf("case-folded response alias reached typed decode: %#v", output)
+	}
+}
+
+func TestL8WorkerStrictResponseDecoderRejectsLoneUnicodeCaseFoldAliasBeforeDecode(t *testing.T) {
+	job := l8WorkerV2QueuedJob()
+	response := Response{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "job_status_v2-lone-case-alias",
+		Operation:       OperationJobStatusV2,
+		OK:              true,
+		JobV2:           &job,
+	}
+	payload, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var canonicalOutput Response
+	if err := decodeWorkerResponseInto(bytes.NewReader(payload), defaultMaxResponseBytes, &canonicalOutput); err != nil {
+		t.Fatalf("response decoder rejected exact canonical tags: %v", err)
+	}
+	canonical := `"workerId":"worker-primary"`
+	raw := strings.Replace(string(payload), canonical, `"worKerId":"worker-primary"`, 1)
+	if raw == string(payload) {
+		t.Fatal("canonical response did not contain worker identity")
+	}
+	output := Response{RequestID: "preflight-sentinel"}
+	if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &output); err == nil {
+		t.Fatal("response decoder accepted lone Unicode case-fold JobV2 worker identity alias")
+	}
+	if output.RequestID != "preflight-sentinel" || output.JobV2 != nil {
+		t.Fatalf("lone Unicode response alias reached typed decode: %#v", output)
+	}
+}
+
+func TestL8WorkerStrictDurableStateDecoderRejectsCaseFoldedJobIdentityAliasBeforeDecode(t *testing.T) {
+	state := storedJobStateV2{
+		JobV2:            l8WorkerV2QueuedJob(),
+		RequestKey:       "request-v2-" + strings.Repeat("0", 64),
+		PrincipalID:      "principal-primary",
+		DaemonGeneration: l8WorkerV2DaemonGeneration,
+	}
+	payload, err := encodeStoredJobStateV2(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := `"jobId":"job-primary"`
+	raw := strings.Replace(string(payload), canonical, canonical+`,"JobId":"job-primary"`, 1)
+	if raw == string(payload) {
+		t.Fatal("canonical durable state did not contain JobV2 identity")
+	}
+	output := storedJobStateV2{PrincipalID: "preflight-sentinel"}
+	if err := decodeStoredJobStateV2Into(strings.NewReader(raw), maxStoredJobStateV2Bytes, &output); err == nil {
+		t.Fatal("durable state decoder accepted case-folded JobV2 identity alias")
+	}
+	if output.PrincipalID != "preflight-sentinel" || output.JobV2.ID != "" {
+		t.Fatalf("case-folded durable-state alias reached typed decode: %#v", output)
+	}
+}
+
+func TestL8WorkerStrictDurableStateDecoderRejectsLoneUnicodeCaseFoldAliasBeforeDecode(t *testing.T) {
+	state := storedJobStateV2{
+		JobV2:            l8WorkerV2QueuedJob(),
+		RequestKey:       "request-v2-" + strings.Repeat("0", 64),
+		PrincipalID:      "principal-primary",
+		DaemonGeneration: l8WorkerV2DaemonGeneration,
+	}
+	payload, err := encodeStoredJobStateV2(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var canonicalOutput storedJobStateV2
+	if err := decodeStoredJobStateV2Into(bytes.NewReader(payload), maxStoredJobStateV2Bytes, &canonicalOutput); err != nil {
+		t.Fatalf("durable-state decoder rejected exact canonical tags: %v", err)
+	}
+	canonical := `"requestKey":"` + state.RequestKey + `"`
+	raw := strings.Replace(string(payload), canonical, `"requeſtKey":"`+state.RequestKey+`"`, 1)
+	if raw == string(payload) {
+		t.Fatal("canonical durable state did not contain request identity")
+	}
+	output := storedJobStateV2{PrincipalID: "preflight-sentinel"}
+	if err := decodeStoredJobStateV2Into(strings.NewReader(raw), maxStoredJobStateV2Bytes, &output); err == nil {
+		t.Fatal("durable state decoder accepted lone Unicode case-fold request identity alias")
+	}
+	if output.PrincipalID != "preflight-sentinel" || output.JobV2.ID != "" {
+		t.Fatalf("lone Unicode durable-state alias reached typed decode: %#v", output)
+	}
+}
+
+func TestL8WorkerStrictDecodersRejectCrossRootJobV2CaseFoldAliasesBeforeDecode(t *testing.T) {
+	t.Run("response rejects durable root spelling", func(t *testing.T) {
+		job := l8WorkerV2QueuedJob()
+		response := Response{
+			ProtocolVersion: ProtocolVersion,
+			RequestID:       "job_status_v2-cross-root-alias",
+			Operation:       OperationJobStatusV2,
+			OK:              true,
+			JobV2:           &job,
+		}
+		payload, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var canonicalOutput Response
+		if err := decodeWorkerResponseInto(bytes.NewReader(payload), defaultMaxResponseBytes, &canonicalOutput); err != nil {
+			t.Fatalf("response decoder rejected canonical jobV2 root: %v", err)
+		}
+		raw := strings.Replace(string(payload), `"jobV2":`, `"JobV2":`, 1)
+		if raw == string(payload) {
+			t.Fatal("canonical response did not contain jobV2 root")
+		}
+		output := Response{RequestID: "preflight-sentinel"}
+		if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &output); err == nil {
+			t.Fatal("response decoder accepted durable-state JobV2 root spelling")
+		}
+		if output.RequestID != "preflight-sentinel" || output.JobV2 != nil {
+			t.Fatalf("cross-root response alias reached typed decode: %#v", output)
+		}
+	})
+
+	t.Run("durable state rejects response root spelling", func(t *testing.T) {
+		state := storedJobStateV2{
+			JobV2:            l8WorkerV2QueuedJob(),
+			RequestKey:       "request-v2-" + strings.Repeat("0", 64),
+			PrincipalID:      "principal-primary",
+			DaemonGeneration: l8WorkerV2DaemonGeneration,
+		}
+		payload, err := encodeStoredJobStateV2(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var canonicalOutput storedJobStateV2
+		if err := decodeStoredJobStateV2Into(bytes.NewReader(payload), maxStoredJobStateV2Bytes, &canonicalOutput); err != nil {
+			t.Fatalf("durable-state decoder rejected canonical JobV2 root: %v", err)
+		}
+		raw := strings.Replace(string(payload), `"JobV2":`, `"jobV2":`, 1)
+		if raw == string(payload) {
+			t.Fatal("canonical durable state did not contain JobV2 root")
+		}
+		output := storedJobStateV2{PrincipalID: "preflight-sentinel"}
+		if err := decodeStoredJobStateV2Into(strings.NewReader(raw), maxStoredJobStateV2Bytes, &output); err == nil {
+			t.Fatal("durable-state decoder accepted response jobV2 root spelling")
+		}
+		if output.PrincipalID != "preflight-sentinel" || output.JobV2.ID != "" {
+			t.Fatalf("cross-root durable-state alias reached typed decode: %#v", output)
+		}
+	})
+}
+
+func TestL8WorkerStrictDecodersRejectUnclassifiablePartialAliasesBeforeDecode(t *testing.T) {
+	startPayload, err := json.Marshal(l8WorkerV2StartRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobPayload, err := json.Marshal(l8WorkerV2QueuedJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("request", func(t *testing.T) {
+		output := Request{RequestID: "preflight-sentinel"}
+		raw := `{"JobStartV2":` + string(startPayload) + `}`
+		if err := decodeWorkerRequestInto(strings.NewReader(raw), defaultMaxRequestBytes, &output); err == nil {
+			t.Fatal("request decoder accepted a partial noncanonical typed root")
+		}
+		if output.RequestID != "preflight-sentinel" || output.JobStartV2 != nil {
+			t.Fatalf("partial request alias reached typed decode: %#v", output)
+		}
+	})
+
+	t.Run("response", func(t *testing.T) {
+		output := Response{RequestID: "preflight-sentinel"}
+		raw := `{"JobV2":` + string(jobPayload) + `}`
+		if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &output); err == nil {
+			t.Fatal("response decoder accepted an unclassifiable durable-root alias")
+		}
+		if output.RequestID != "preflight-sentinel" || output.JobV2 != nil {
+			t.Fatalf("partial response alias reached typed decode: %#v", output)
+		}
+	})
+
+	t.Run("durable state", func(t *testing.T) {
+		output := storedJobStateV2{PrincipalID: "preflight-sentinel"}
+		raw := `{"jobV2":` + string(jobPayload) + `}`
+		if err := decodeStoredJobStateV2Into(strings.NewReader(raw), maxStoredJobStateV2Bytes, &output); err == nil {
+			t.Fatal("durable-state decoder accepted an unclassifiable response-root alias")
+		}
+		if output.PrincipalID != "preflight-sentinel" || output.JobV2.ID != "" {
+			t.Fatalf("partial durable-state alias reached typed decode: %#v", output)
+		}
+	})
+
+	t.Run("mixed envelope and durable markers", func(t *testing.T) {
+		raw := `{"operation":"job_status_v2","JobV2":` + string(jobPayload) + `,"principalId":"principal-primary"}`
+
+		response := Response{RequestID: "preflight-sentinel"}
+		if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &response); err == nil {
+			t.Fatal("response decoder accepted mixed envelope and durable-state markers")
+		}
+		if response.RequestID != "preflight-sentinel" || response.Operation != "" || response.JobV2 != nil {
+			t.Fatalf("mixed root reached response decode: %#v", response)
+		}
+
+		state := storedJobStateV2{PrincipalID: "preflight-sentinel"}
+		if err := decodeStoredJobStateV2Into(strings.NewReader(raw), maxStoredJobStateV2Bytes, &state); err == nil {
+			t.Fatal("durable-state decoder accepted mixed envelope and durable-state markers")
+		}
+		if state.PrincipalID != "preflight-sentinel" || state.JobV2.ID != "" {
+			t.Fatalf("mixed root reached durable-state decode: %#v", state)
+		}
+	})
+}
+
+func TestL8WorkerStrictRequestDecoderPreservesDistinctCaseSensitiveStringMapKeys(t *testing.T) {
+	start := l8WorkerV2StartRequest()
+	start.Exec.Env = map[string]string{
+		"SAFE": "upper-env", "safe": "lower-env",
+		"K": "ascii-k-env", "K": "kelvin-env",
+		"S": "ascii-s-env", "ſ": "long-s-env",
+	}
+	start.Exec.Target.Labels = map[string]string{
+		"SAFE": "upper-label", "safe": "lower-label",
+		"K": "ascii-k-label", "K": "kelvin-label",
+		"S": "ascii-s-label", "ſ": "long-s-label",
+	}
+	request := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "request-v2-case-sensitive-maps",
+		Operation:       OperationJobStartV2,
+		DriverID:        RuntimeDriverMicroVM,
+		JobStartV2:      &start,
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{maxRequestBytes: defaultMaxRequestBytes}
+	decoded, errorResp := server.readRequest(bytes.NewReader(payload))
+	if errorResp != nil {
+		t.Fatalf("strict request decoder rejected distinct case-sensitive map keys: %#v", errorResp)
+	}
+	if decoded.JobStartV2 == nil || decoded.JobStartV2.Exec.Env["SAFE"] != "upper-env" || decoded.JobStartV2.Exec.Env["safe"] != "lower-env" ||
+		decoded.JobStartV2.Exec.Env["K"] != "ascii-k-env" || decoded.JobStartV2.Exec.Env["K"] != "kelvin-env" ||
+		decoded.JobStartV2.Exec.Env["S"] != "ascii-s-env" || decoded.JobStartV2.Exec.Env["ſ"] != "long-s-env" ||
+		decoded.JobStartV2.Exec.Target.Labels["SAFE"] != "upper-label" || decoded.JobStartV2.Exec.Target.Labels["safe"] != "lower-label" ||
+		decoded.JobStartV2.Exec.Target.Labels["K"] != "ascii-k-label" || decoded.JobStartV2.Exec.Target.Labels["K"] != "kelvin-label" ||
+		decoded.JobStartV2.Exec.Target.Labels["S"] != "ascii-s-label" || decoded.JobStartV2.Exec.Target.Labels["ſ"] != "long-s-label" {
+		t.Fatalf("strict request decoder collapsed case-sensitive map keys: %#v", decoded.JobStartV2)
+	}
+}
+
 func TestL8WorkerStrictRequestDecoderAcceptsAllFiveExactV1Operations(t *testing.T) {
 	fixtures := l8WorkerV2RequestPayloadFixturesForTest(t)
 	server := &Server{maxRequestBytes: defaultMaxRequestBytes}
@@ -278,8 +652,8 @@ func TestL8WorkerV2JSONPreflightRequiresProductionFlagOnlyAtCredentialSchemaPath
 		`{"JobStartV2":{"ProductionCredentialsRequested":false}}`,
 		`{"JOBV2":{"CredentialIntent":{"ProductionCredentialsRequested":false}}}`,
 	} {
-		if err := validateWorkerJSONPreflightV2(raw); err != nil {
-			t.Fatalf("preflight rejected case-insensitive credential schema spelling accepted by typed JSON decode: %v", err)
+		if err := validateWorkerJSONPreflightV2(raw); err == nil {
+			t.Fatalf("preflight accepted an unclassifiable noncanonical credential schema: %s", raw)
 		}
 	}
 }
@@ -421,11 +795,15 @@ func TestL8WorkerV1ClientsAcceptEmptyLegacyResponseIDForAllFiveOperations(t *tes
 	}
 	for _, tt := range tests {
 		t.Run(tt.operation, func(t *testing.T) {
+			responseJob := job
+			if tt.operation == OperationJobStart {
+				responseJob.RuntimeID = fixtures.startV1.Exec.Target.Runtime.RuntimeID
+			}
 			client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, request Request) (Response, error) {
 				if request.Operation != tt.operation {
 					t.Fatalf("client operation = %q, want %q", request.Operation, tt.operation)
 				}
-				return l8WorkerV1ValidSuccessResponse(t, tt.operation, "", job), nil
+				return l8WorkerV1ValidSuccessResponse(t, tt.operation, "", responseJob), nil
 			})})
 			if err != nil {
 				t.Fatal(err)
