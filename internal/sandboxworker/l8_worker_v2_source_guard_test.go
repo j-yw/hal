@@ -252,11 +252,12 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 	if len(roots) == 0 {
 		return nil
 	}
-	roots = append(roots, l8WorkerV2RuntimeOperationAssemblyRoots(parsedFiles, info)...)
-	// Initializers execute before any request can reach a V2 handler. Once the
-	// package contains V2-relevant production, every explicit init function and
-	// package variable initializer is therefore reachable process-global code.
-	roots = append(roots, l8WorkerV2PackageInitializerRoots(parsedFiles)...)
+	roots = append(roots, l8WorkerV2RuntimeOperationAssemblyRoots(parsedFiles, info, policy)...)
+	// Initializers in exact D1C-only files execute before any request can reach a
+	// V2 handler and are therefore reachable process-global code. Mixed and
+	// unlisted V1 initializers are selected only through the semantic dependency
+	// closure; globally rooting them would make adding D1C break unchanged V1.
+	roots = append(roots, l8WorkerV2PackageInitializerRoots(parsedFiles, policy)...)
 
 	objects := make(map[types.Object]l8WorkerV2GuardScope)
 	for _, file := range parsedFiles {
@@ -418,12 +419,13 @@ func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info) []
 	return roots
 }
 
-func l8WorkerV2RuntimeOperationAssemblyRoots(files []*l8WorkerV2ParsedFile, info *types.Info) []l8WorkerV2GuardScope {
+func l8WorkerV2RuntimeOperationAssemblyRoots(files []*l8WorkerV2ParsedFile, info *types.Info, policy l8WorkerV2GuardPolicy) []l8WorkerV2GuardScope {
 	var roots []l8WorkerV2GuardScope
 	for _, file := range files {
 		for _, declaration := range file.parsed.Decls {
 			for _, node := range l8WorkerV2SemanticDeclarationUnits(declaration, file.valueSpecUnits) {
-				if l8WorkerV2ContainsIdentifiedRuntimeOperationAssembly(node, info) {
+				invalid, recoverableV2 := l8WorkerV2ContainsInvalidOperationValue(node, info)
+				if invalid && (recoverableV2 || policy.dedicated[filepath.Base(file.path)]) {
 					roots = append(roots, l8WorkerV2GuardScope{file: file, node: node})
 				}
 			}
@@ -432,9 +434,12 @@ func l8WorkerV2RuntimeOperationAssemblyRoots(files []*l8WorkerV2ParsedFile, info
 	return roots
 }
 
-func l8WorkerV2PackageInitializerRoots(files []*l8WorkerV2ParsedFile) []l8WorkerV2GuardScope {
+func l8WorkerV2PackageInitializerRoots(files []*l8WorkerV2ParsedFile, policy l8WorkerV2GuardPolicy) []l8WorkerV2GuardScope {
 	var roots []l8WorkerV2GuardScope
 	for _, file := range files {
+		if !policy.dedicated[filepath.Base(file.path)] {
+			continue
+		}
 		for _, declaration := range file.parsed.Decls {
 			if generated, ok := declaration.(*ast.GenDecl); ok && generated.Tok == token.VAR {
 				for _, rawSpec := range generated.Specs {
@@ -459,56 +464,148 @@ func l8WorkerV2PackageInitializerRoots(files []*l8WorkerV2ParsedFile) []l8Worker
 	return roots
 }
 
-func l8WorkerV2IdentifiesOperationFlow(node ast.Node, info *types.Info) bool {
+func l8WorkerV2ContainsInvalidOperationValue(node ast.Node, info *types.Info) (bool, bool) {
 	if node == nil || info == nil {
-		return false
+		return false, false
 	}
-	found := false
-	ast.Inspect(node, func(candidate ast.Node) bool {
-		if found {
-			return false
+	// Arbitrary runtime string construction is undecidable. The guard therefore
+	// enforces a structural invariant at identifiable operation definitions,
+	// assignments, request fields, comparisons, switch cases, and returns: D1C
+	// values must remain compile-time constants. Exact D1C files and units in the
+	// V2 dependency closure fail closed on unknown runtime values. Outside that
+	// scope, only statically recoverable V2 construction becomes a new root, so
+	// unchanged V1 operation helpers are not swept into the D1C allowlist.
+	invalid := false
+	recoverableV2 := false
+	inspectValue := func(expression ast.Expr) {
+		if expression == nil || !l8WorkerV2IsStringType(info.TypeOf(expression)) {
+			return
 		}
-		identifier, ok := candidate.(*ast.Ident)
-		if !ok {
-			return true
+		if info.Types[expression].Value != nil {
+			return
 		}
-		object := info.Defs[identifier]
-		found = object != nil && strings.Contains(strings.ToLower(object.Name()), "operation")
-		return !found
-	})
-	return found
-}
-
-func l8WorkerV2ContainsIdentifiedRuntimeOperationAssembly(node ast.Node, info *types.Info) bool {
-	if l8WorkerV2IdentifiesOperationFlow(node, info) && l8WorkerV2ContainsRuntimeStringAssembly(node, info) {
-		return true
+		invalid = true
+		if value, known := l8WorkerV2StaticString(expression, info); known && l8WorkerV2IsExactOperationString(value) {
+			recoverableV2 = true
+		}
 	}
-	found := false
-	ast.Inspect(node, func(candidate ast.Node) bool {
-		if found {
+	if function, ok := node.(*ast.FuncDecl); ok && l8WorkerV2FunctionIdentifiesOperationReturn(function, info) {
+		ast.Inspect(function.Body, func(candidate ast.Node) bool {
+			if literal, ok := candidate.(*ast.FuncLit); ok && literal != nil {
+				return false
+			}
+			returned, ok := candidate.(*ast.ReturnStmt)
+			if !ok {
+				return true
+			}
+			for _, expression := range returned.Results {
+				inspectValue(expression)
+			}
 			return false
-		}
+		})
+	}
+	ast.Inspect(node, func(candidate ast.Node) bool {
 		switch typed := candidate.(type) {
+		case *ast.ValueSpec:
+			for index, name := range typed.Names {
+				rightIndex := l8WorkerV2PairedExpressionIndex(index, len(typed.Values))
+				if rightIndex >= 0 && l8WorkerV2IsOperationTarget(name, info) {
+					inspectValue(typed.Values[rightIndex])
+				}
+			}
 		case *ast.AssignStmt:
 			for index, left := range typed.Lhs {
-				rightIndex := index
-				if rightIndex >= len(typed.Rhs) {
-					rightIndex = len(typed.Rhs) - 1
-				}
-				if rightIndex >= 0 && l8WorkerV2IsOperationTarget(left, info) && l8WorkerV2ContainsRuntimeStringAssembly(typed.Rhs[rightIndex], info) {
-					found = true
-					return false
+				rightIndex := l8WorkerV2PairedExpressionIndex(index, len(typed.Rhs))
+				if rightIndex >= 0 && l8WorkerV2IsOperationTarget(left, info) {
+					inspectValue(typed.Rhs[rightIndex])
 				}
 			}
 		case *ast.KeyValueExpr:
-			if l8WorkerV2IsOperationTarget(typed.Key, info) && l8WorkerV2ContainsRuntimeStringAssembly(typed.Value, info) {
-				found = true
-				return false
+			identifier, ok := typed.Key.(*ast.Ident)
+			if ok && l8WorkerV2ObjectIdentifiesOperationField(info.Uses[identifier]) {
+				inspectValue(typed.Value)
+			}
+		case *ast.CompositeLit:
+			literalType := info.TypeOf(typed)
+			if literalType == nil {
+				break
+			}
+			structType, ok := types.Unalias(literalType).Underlying().(*types.Struct)
+			if !ok {
+				break
+			}
+			for index, rawElement := range typed.Elts {
+				if _, keyed := rawElement.(*ast.KeyValueExpr); keyed || index >= structType.NumFields() {
+					continue
+				}
+				expression, ok := rawElement.(ast.Expr)
+				if ok && l8WorkerV2ObjectIdentifiesOperationField(structType.Field(index)) {
+					inspectValue(expression)
+				}
+			}
+		case *ast.BinaryExpr:
+			if typed.Op != token.EQL && typed.Op != token.NEQ {
+				break
+			}
+			leftOperation := l8WorkerV2IsOperationTarget(typed.X, info)
+			rightOperation := l8WorkerV2IsOperationTarget(typed.Y, info)
+			switch {
+			case leftOperation && rightOperation && info.Types[typed.X].Value != nil:
+				inspectValue(typed.X)
+			case leftOperation && rightOperation:
+				inspectValue(typed.Y)
+			case leftOperation:
+				inspectValue(typed.Y)
+			case rightOperation:
+				inspectValue(typed.X)
+			}
+		case *ast.SwitchStmt:
+			if typed.Tag == nil || !l8WorkerV2IsOperationTarget(typed.Tag, info) {
+				break
+			}
+			for _, statement := range typed.Body.List {
+				clause, ok := statement.(*ast.CaseClause)
+				if !ok {
+					continue
+				}
+				for _, expression := range clause.List {
+					inspectValue(expression)
+				}
 			}
 		}
 		return true
 	})
-	return found
+	return invalid, recoverableV2
+}
+
+func l8WorkerV2PairedExpressionIndex(index, expressionCount int) int {
+	if expressionCount == 0 {
+		return -1
+	}
+	if index < expressionCount {
+		return index
+	}
+	return expressionCount - 1
+}
+
+func l8WorkerV2FunctionIdentifiesOperationReturn(function *ast.FuncDecl, info *types.Info) bool {
+	if function == nil || function.Type == nil || function.Type.Results == nil {
+		return false
+	}
+	if l8WorkerV2ObjectIdentifiesOperation(info.Defs[function.Name]) {
+		return true
+	}
+	for _, result := range function.Type.Results.List {
+		for _, name := range result.Names {
+			if l8WorkerV2IsOperationTarget(name, info) {
+				return true
+			}
+		}
+		if identifier, ok := result.Type.(*ast.Ident); ok && l8WorkerV2ObjectIdentifiesOperation(info.Uses[identifier]) {
+			return true
+		}
+	}
+	return false
 }
 
 func l8WorkerV2IsOperationTarget(expression ast.Expr, info *types.Info) bool {
@@ -518,44 +615,35 @@ func l8WorkerV2IsOperationTarget(expression ast.Expr, info *types.Info) bool {
 			expression = typed.X
 		case *ast.StarExpr:
 			expression = typed.X
+		case *ast.IndexExpr:
+			expression = typed.X
+		case *ast.IndexListExpr:
+			expression = typed.X
 		case *ast.SelectorExpr:
-			return strings.EqualFold(typed.Sel.Name, "operation")
+			object := info.Uses[typed.Sel]
+			if variable, ok := object.(*types.Var); ok && variable.IsField() {
+				return l8WorkerV2ObjectIdentifiesOperationField(object)
+			}
+			return l8WorkerV2ObjectIdentifiesOperation(object)
 		case *ast.Ident:
 			object := info.Defs[typed]
 			if object == nil {
 				object = info.Uses[typed]
 			}
-			return object != nil && strings.Contains(strings.ToLower(object.Name()), "operation")
+			return l8WorkerV2ObjectIdentifiesOperation(object)
 		default:
 			return false
 		}
 	}
 }
 
-func l8WorkerV2ContainsRuntimeStringAssembly(node ast.Node, info *types.Info) bool {
-	if node == nil || info == nil {
-		return false
-	}
-	// Runtime string construction is undecidable in general. This deliberately
-	// fail-closed rule applies only where object definitions identify operation
-	// flow. V2 operation identifiers must be locked constants there; unrelated
-	// V1/string helpers remain outside this architectural invariant.
-	found := false
-	ast.Inspect(node, func(candidate ast.Node) bool {
-		if found {
-			return false
-		}
-		call, ok := candidate.(*ast.CallExpr)
-		if !ok || !l8WorkerV2IsStringType(info.TypeOf(call)) || info.Types[call].Value != nil {
-			return true
-		}
-		if value, known := l8WorkerV2StaticString(call, info); known && !l8WorkerV2IsExactOperationString(value) {
-			return true
-		}
-		found = true
-		return false
-	})
-	return found
+func l8WorkerV2ObjectIdentifiesOperation(object types.Object) bool {
+	return object != nil && strings.Contains(strings.ToLower(object.Name()), "operation")
+}
+
+func l8WorkerV2ObjectIdentifiesOperationField(object types.Object) bool {
+	variable, ok := object.(*types.Var)
+	return ok && variable.IsField() && strings.EqualFold(variable.Name(), "operation")
 }
 
 func l8WorkerV2IsStringType(typ types.Type) bool {
@@ -617,14 +705,229 @@ func l8WorkerV2StaticString(expression ast.Expr, info *types.Info) (string, bool
 		if !leftOK || !rightOK {
 			return "", false
 		}
-		return left + right, true
-	case *ast.CallExpr:
-		if len(typed.Args) != 1 || !l8WorkerV2IsStringConversion(typed.Fun, info) {
+		if len(left) > l8WorkerV2MaxExactOperationLength-len(right) {
 			return "", false
 		}
-		return l8WorkerV2StaticCodePoints(typed.Args[0], info)
+		return left + right, true
+	case *ast.IndexExpr:
+		return l8WorkerV2StaticIndexedString(typed, info)
+	case *ast.CallExpr:
+		if len(typed.Args) == 1 && l8WorkerV2IsStringConversion(typed.Fun, info) {
+			return l8WorkerV2StaticCodePoints(typed.Args[0], info)
+		}
+		return l8WorkerV2StaticStandardLibraryString(typed, info)
 	default:
 		return "", false
+	}
+}
+
+func l8WorkerV2StaticIndexedString(indexed *ast.IndexExpr, info *types.Info) (string, bool) {
+	if indexed == nil {
+		return "", false
+	}
+	indexValue := info.Types[indexed.Index].Value
+	if indexValue == nil {
+		return "", false
+	}
+	literal, ok := l8WorkerV2UnparenExpression(indexed.X).(*ast.CompositeLit)
+	if !ok {
+		return "", false
+	}
+	typ := info.TypeOf(literal)
+	if typ == nil {
+		return "", false
+	}
+	switch types.Unalias(typ).Underlying().(type) {
+	case *types.Map:
+		for _, rawElement := range literal.Elts {
+			keyed, ok := rawElement.(*ast.KeyValueExpr)
+			if !ok {
+				return "", false
+			}
+			keyValue := info.Types[keyed.Key].Value
+			if keyValue != nil && constant.Compare(keyValue, token.EQL, indexValue) {
+				return l8WorkerV2StaticString(keyed.Value, info)
+			}
+		}
+		return "", false
+	case *types.Array, *types.Slice:
+		index, exact := constant.Int64Val(indexValue)
+		if !exact || index < 0 || index >= int64(l8WorkerV2MaxExactOperationLength) {
+			return "", false
+		}
+		nextIndex := int64(0)
+		for _, rawElement := range literal.Elts {
+			elementIndex := nextIndex
+			if keyed, ok := rawElement.(*ast.KeyValueExpr); ok {
+				value := info.Types[keyed.Key].Value
+				if value == nil {
+					return "", false
+				}
+				var keyExact bool
+				elementIndex, keyExact = constant.Int64Val(value)
+				if !keyExact {
+					return "", false
+				}
+				rawElement = keyed.Value
+			}
+			if elementIndex == index {
+				expression, ok := rawElement.(ast.Expr)
+				if !ok {
+					return "", false
+				}
+				return l8WorkerV2StaticString(expression, info)
+			}
+			nextIndex = elementIndex + 1
+		}
+	}
+	return "", false
+}
+
+func l8WorkerV2StaticStandardLibraryString(call *ast.CallExpr, info *types.Info) (string, bool) {
+	object := l8WorkerV2CalledObject(call.Fun, info)
+	if object == nil || object.Pkg() == nil {
+		return "", false
+	}
+	switch object.Pkg().Path() + "." + object.Name() {
+	case "strings.Join":
+		if len(call.Args) != 2 {
+			return "", false
+		}
+		parts, ok := l8WorkerV2StaticStringSlice(call.Args[0], info)
+		if !ok {
+			return "", false
+		}
+		separator, ok := l8WorkerV2StaticString(call.Args[1], info)
+		if !ok {
+			return "", false
+		}
+		length := len(separator) * max(0, len(parts)-1)
+		for _, part := range parts {
+			length += len(part)
+			if length > l8WorkerV2MaxExactOperationLength {
+				return "", false
+			}
+		}
+		return strings.Join(parts, separator), true
+	case "strings.Repeat":
+		if len(call.Args) != 2 {
+			return "", false
+		}
+		value, ok := l8WorkerV2StaticString(call.Args[0], info)
+		countValue := info.Types[call.Args[1]].Value
+		if countValue == nil {
+			return "", false
+		}
+		count, exact := constant.Int64Val(countValue)
+		if !ok || !exact || count < 0 || count > int64(l8WorkerV2MaxExactOperationLength) {
+			return "", false
+		}
+		if count != 0 && len(value) > l8WorkerV2MaxExactOperationLength/int(count) {
+			return "", false
+		}
+		return strings.Repeat(value, int(count)), true
+	case "fmt.Sprintf":
+		return l8WorkerV2StaticSprintf(call, info)
+	default:
+		return "", false
+	}
+}
+
+func l8WorkerV2StaticStringSlice(expression ast.Expr, info *types.Info) ([]string, bool) {
+	literal, ok := l8WorkerV2UnparenExpression(expression).(*ast.CompositeLit)
+	if !ok || len(literal.Elts) > l8WorkerV2MaxExactOperationLength {
+		return nil, false
+	}
+	values := make([]string, 0, len(literal.Elts))
+	for _, rawElement := range literal.Elts {
+		if _, keyed := rawElement.(*ast.KeyValueExpr); keyed {
+			return nil, false
+		}
+		element, ok := rawElement.(ast.Expr)
+		if !ok {
+			return nil, false
+		}
+		value, ok := l8WorkerV2StaticString(element, info)
+		if !ok {
+			return nil, false
+		}
+		values = append(values, value)
+	}
+	return values, true
+}
+
+func l8WorkerV2StaticSprintf(call *ast.CallExpr, info *types.Info) (string, bool) {
+	if len(call.Args) == 0 {
+		return "", false
+	}
+	formatValue, ok := l8WorkerV2StaticString(call.Args[0], info)
+	if !ok || len(formatValue) > l8WorkerV2MaxExactOperationLength {
+		return "", false
+	}
+	var result strings.Builder
+	argumentIndex := 1
+	for index := 0; index < len(formatValue); index++ {
+		if formatValue[index] != '%' {
+			result.WriteByte(formatValue[index])
+			continue
+		}
+		index++
+		if index >= len(formatValue) {
+			return "", false
+		}
+		if formatValue[index] == '%' {
+			result.WriteByte('%')
+			continue
+		}
+		if argumentIndex >= len(call.Args) {
+			return "", false
+		}
+		argument := call.Args[argumentIndex]
+		argumentIndex++
+		switch formatValue[index] {
+		case 's':
+			value, exact := l8WorkerV2StaticString(argument, info)
+			if !exact {
+				return "", false
+			}
+			result.WriteString(value)
+		case 'c', 'd':
+			constantValue := info.Types[argument].Value
+			if constantValue == nil {
+				return "", false
+			}
+			value, exact := constant.Int64Val(constantValue)
+			if !exact {
+				return "", false
+			}
+			if formatValue[index] == 'c' {
+				if value < 0 || value > 0x10ffff {
+					return "", false
+				}
+				result.WriteRune(rune(value))
+			} else {
+				result.WriteString(strconv.FormatInt(value, 10))
+			}
+		default:
+			return "", false
+		}
+		if result.Len() > l8WorkerV2MaxExactOperationLength {
+			return "", false
+		}
+	}
+	if argumentIndex != len(call.Args) {
+		return "", false
+	}
+	return result.String(), true
+}
+
+func l8WorkerV2UnparenExpression(expression ast.Expr) ast.Expr {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			return expression
+		}
+		expression = parenthesized.X
 	}
 }
 
@@ -986,7 +1289,7 @@ func l8WorkerV2ReferencedDeclarationScopes(scope l8WorkerV2GuardScope) []l8Worke
 }
 
 func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info) error {
-	if l8WorkerV2ContainsIdentifiedRuntimeOperationAssembly(scope.node, info) {
+	if invalid, _ := l8WorkerV2ContainsInvalidOperationValue(scope.node, info); invalid {
 		return fmt.Errorf("worker-v2 production path in %s uses forbidden runtime operation assembly; operation identifiers must use locked constants", scope.file.path)
 	}
 	if err := l8RejectWorkerV2SemanticExternalSurfaces(scope, info); err != nil {
@@ -1110,13 +1413,35 @@ func l8WorkerV2CalledObject(expression ast.Expr, info *types.Info) types.Object 
 }
 
 func l8WorkerV2InterfaceCapableArgument(typ types.Type) bool {
-	if typ == nil {
+	return l8WorkerV2TypeMayInvokeFormattingCallback(typ, make(map[types.Type]bool))
+}
+
+func l8WorkerV2TypeMayInvokeFormattingCallback(typ types.Type, seen map[types.Type]bool) bool {
+	if typ == nil || seen[typ] {
 		return false
 	}
-	if l8WorkerV2IsInterfaceType(typ) {
+	seen[typ] = true
+	if l8WorkerV2IsInterfaceType(typ) || types.NewMethodSet(typ).Len() > 0 {
 		return true
 	}
-	return types.NewMethodSet(typ).Len() > 0
+	switch underlying := types.Unalias(typ).Underlying().(type) {
+	case *types.Array:
+		return l8WorkerV2TypeMayInvokeFormattingCallback(underlying.Elem(), seen)
+	case *types.Slice:
+		return l8WorkerV2TypeMayInvokeFormattingCallback(underlying.Elem(), seen)
+	case *types.Map:
+		return l8WorkerV2TypeMayInvokeFormattingCallback(underlying.Key(), seen) ||
+			l8WorkerV2TypeMayInvokeFormattingCallback(underlying.Elem(), seen)
+	case *types.Pointer:
+		return l8WorkerV2TypeMayInvokeFormattingCallback(underlying.Elem(), seen)
+	case *types.Struct:
+		for index := 0; index < underlying.NumFields(); index++ {
+			if l8WorkerV2TypeMayInvokeFormattingCallback(underlying.Field(index).Type(), seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func l8RejectWorkerV2SemanticExternalSurfaces(scope l8WorkerV2GuardScope, info *types.Info) error {
@@ -1680,10 +2005,10 @@ func forbiddenLegacyHelper() { _, _ = httpalias.Get("https://legacy.example.inva
 }
 
 func TestL8WorkerV2GuardRejectsUnboundedRuntimeOperationAssembly(t *testing.T) {
-	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
-		"contracts.go": true,
-		"aliases.go":   true,
-	}}
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{"aliases.go": true},
+		mixed:     map[string]bool{"contracts.go": true},
+	}
 	l8AssertWorkerV2GuardRejects(t, map[string]string{
 		"contracts.go": `package sandboxworker
 type JobStartRequestV2 struct{}`,
@@ -2424,10 +2749,10 @@ func JobLogsV2Fixture() {
 }
 
 func TestL8WorkerV2GuardAuditsPackageInitializers(t *testing.T) {
-	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
-		"handler.go": true,
-		"init.go":    true,
-	}}
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{"init.go": true},
+		mixed:     map[string]bool{"handler.go": true},
+	}
 	l8AssertWorkerV2GuardRejects(t, map[string]string{
 		"handler.go": `package sandboxworker
 func JobStartV2Fixture() {}`,
@@ -2436,19 +2761,19 @@ import httpalias "net/http"
 func init() { _, _ = httpalias.Get("https://authority.example.invalid") }`,
 	}, policy, "net/http")
 
-	l8AssertWorkerV2GuardRejects(t, map[string]string{
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
 		"handler.go": `package sandboxworker
 func JobResolveV2Fixture() {}`,
 		"unlisted_init.go": `package sandboxworker
 func init() {}`,
-	}, policy, "outside the exact allowlist")
+	}, policy)
 }
 
 func TestL8WorkerV2GuardAuditsPackageVariableInitializers(t *testing.T) {
-	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
-		"handler.go": true,
-		"state.go":   true,
-	}}
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{"state.go": true},
+		mixed:     map[string]bool{"handler.go": true},
+	}
 	t.Run("reachable initializer", func(t *testing.T) {
 		l8AssertWorkerV2GuardRejects(t, map[string]string{
 			"handler.go": `package sandboxworker
@@ -2464,13 +2789,13 @@ func forbiddenInitializer() string {
 	})
 
 	t.Run("unlisted initializer", func(t *testing.T) {
-		l8AssertWorkerV2GuardRejects(t, map[string]string{
+		l8AssertWorkerV2GuardAllows(t, map[string]string{
 			"handler.go": `package sandboxworker
 func JobResolveV2Fixture() {}`,
 			"unlisted_state.go": `package sandboxworker
 var initializedState = safeInitializer()
 func safeInitializer() string { return "safe" }`,
-		}, policy, "outside the exact allowlist")
+		}, policy)
 	})
 
 	t.Run("grouped initializer", func(t *testing.T) {
