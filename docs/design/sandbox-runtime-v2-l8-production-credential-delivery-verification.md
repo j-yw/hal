@@ -7,9 +7,11 @@ This note verifies issue #49 L8 against
 produces live, job-scoped HTTP, tmpfs-file, and SSH-agent activation evidence.
 It does not select the strict default; L10 consumes the resulting proof.
 
-Default tests are fake-only. They do not open listeners, resolve or dial
-destinations, read host agents, create mounts or namespaces, start a runtime,
-access KVM, or read raw configured secrets. Live behavior is isolated behind
+Default tests are fake-only except for exact isolated local Unix-socket
+protocol tests. Those deterministic framing tests are not live-tagged; they do
+not open IP or external listeners, resolve or dial destinations, read host
+agents, create mounts or namespaces, start a provider/runtime, access KVM, or
+read raw configured secrets. All other live behavior is isolated behind
 explicit build tags and prepared-host opt-in markers.
 
 A selected live test that skips is a failure, not a pass.

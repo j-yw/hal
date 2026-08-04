@@ -151,7 +151,7 @@ func TestL8WorkerV2OfficialUnixClientHalfClosesRequestBeforeReadingResponse(t *t
 
 func TestL8WorkerV2OfficialUnixClientOmitsMalformedResponseCanaryFromError(t *testing.T) {
 	const canary = "opaque-canary"
-	socketPath, _, serverDone := l8WorkerV2StartRawUnixResponder(t, func(request Request) ([]byte, error) {
+	socketPath, requestEOF, serverDone := l8WorkerV2StartRawUnixResponder(t, func(request Request) ([]byte, error) {
 		response, err := json.Marshal(l8WorkerV2FramingStatusResponse(request))
 		if err != nil {
 			return nil, err
@@ -168,10 +168,18 @@ func TestL8WorkerV2OfficialUnixClientOmitsMalformedResponseCanaryFromError(t *te
 	if err == nil {
 		t.Fatal("client accepted a response with an unknown canary field")
 	}
+	if !strings.Contains(err.Error(), "read worker response failed") {
+		t.Fatalf("client error = %q, want stable safe response-decode category", err)
+	}
 	if strings.Contains(err.Error(), "ticket") || strings.Contains(err.Error(), canary) {
 		t.Fatalf("client error leaked malformed response field/value: %q", err)
 	}
-	l8WorkerV2AwaitRawServerDone(t, serverDone)
+	select {
+	case <-requestEOF:
+	default:
+		t.Fatal("malformed responder did not observe request EOF")
+	}
+	l8WorkerV2AwaitRawServerSuccess(t, serverDone)
 }
 
 func TestL8WorkerV2ConfiguredCodecLimitsPreserveFullPositiveRange(t *testing.T) {
@@ -372,6 +380,18 @@ func l8WorkerV2AwaitRawServerDone(t *testing.T, done <-chan error) {
 	select {
 	case err := <-done:
 		if err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("Unix server error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Unix server did not promptly stop")
+	}
+}
+
+func l8WorkerV2AwaitRawServerSuccess(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
 			t.Fatalf("Unix server error: %v", err)
 		}
 	case <-time.After(2 * time.Second):

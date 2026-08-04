@@ -757,6 +757,11 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		return Response{}, errors.New("write worker request failed")
 	}
 `
+	clientUnsupportedHalfCloseBlock := `	if !ok {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request framing failed")
+	}
+`
 
 	tests := []struct {
 		name    string
@@ -806,6 +811,10 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			source = strings.Replace(source, clientHalfCloseBlock, "", 1)
 			return strings.Replace(source, "\treturn response, nil\n}", clientHalfCloseBlock+"\treturn response, nil\n}", 1)
 		}},
+		{name: "unsupported half-close check after close", mutate: func(source string) string {
+			source = strings.Replace(source, clientUnsupportedHalfCloseBlock, "", 1)
+			return strings.Replace(source, "\tmaxResponseBytes := transport.maxResponseBytes", clientUnsupportedHalfCloseBlock+"\tmaxResponseBytes := transport.maxResponseBytes", 1)
+		}},
 		{name: "unsupported half-close panics", mutate: func(source string) string {
 			return strings.Replace(source, "halfCloser, ok := connection.(interface{ CloseWrite() error })\n\tif !ok {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}", "halfCloser := connection.(interface{ CloseWrite() error })", 1)
 		}},
@@ -853,6 +862,15 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		{name: "store decodes throwaway state", path: "job_store_v2.go", old: "var state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state)", replace: "var decoded storedJobStateV2\n\tvar state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &decoded)"},
 		{name: "store uses different acquired reader", path: "job_store_v2.go", old: "var state storedJobStateV2", replace: "otherReader := reader\n\tvar state storedJobStateV2"},
 		{name: "store opens neighbor identity", path: "job_store_v2.go", old: "openStoredJobStateV2(jobID)", replace: "openStoredJobStateV2(\"job-neighbor\")"},
+		{name: "client reassigns acquired connection", path: "client.go", old: "\tif err := encodeWorkerRequest(connection, request); err != nil {", replace: "\tconnection = rewrapResponseConnection(connection)\n\tif err := encodeWorkerRequest(connection, request); err != nil {"},
+		{name: "store reassigns acquired reader", path: "job_store_v2.go", old: "\tvar state storedJobStateV2", replace: "\treader = io.LimitReader(reader, maxStoredJobStateV2Bytes)\n\tvar state storedJobStateV2"},
+		{name: "server resets decoded request", path: "server.go", old: "\treturn request, nil", replace: "\trequest = Request{}\n\treturn request, nil"},
+		{name: "client resets decoded response", path: "client.go", old: "\treturn response, nil", replace: "\tresponse = Response{}\n\treturn response, nil"},
+		{name: "store resets decoded state", path: "job_store_v2.go", old: "\treturn state, nil", replace: "\tstate = storedJobStateV2{}\n\treturn state, nil"},
+		{name: "server adds second nil-error success", path: "server.go", old: "\treturn request, nil", replace: "\tif false { return Request{}, nil }\n\treturn request, nil"},
+		{name: "client adds second nil-error success", path: "client.go", old: "\treturn response, nil", replace: "\tif false { return Response{}, nil }\n\treturn response, nil"},
+		{name: "store adds second nil-error success", path: "job_store_v2.go", old: "\treturn state, nil", replace: "\tif false { return storedJobStateV2{}, nil }\n\treturn state, nil"},
+		{name: "response wrapper resets decoded output", path: "protocol_decode.go", old: "\treturn output, nil", replace: "\toutput = Response{}\n\treturn output, nil"},
 		{name: "client exposes raw codec error", path: "client.go", old: "return Response{}, errors.New(\"read worker response failed\")", replace: "return Response{}, err"},
 		{name: "client exposes raw connection error", path: "client.go", old: "return Response{}, errors.New(\"open worker connection failed\")", replace: "return Response{}, err"},
 		{name: "client exposes raw request encoder error", path: "client.go", old: "return Response{}, errors.New(\"write worker request failed\")", replace: "return Response{}, err"},
@@ -869,6 +887,8 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 				mutated[tt.path] = strings.Replace(mutated[tt.path], "decodeWorkerResponseInto(connection,", "decodeWorkerResponseInto(otherConnection,", 1)
 			case "store uses different acquired reader":
 				mutated[tt.path] = strings.Replace(mutated[tt.path], "decodeStoredJobStateV2Into(reader,", "decodeStoredJobStateV2Into(otherReader,", 1)
+			case "client reassigns acquired connection":
+				mutated[tt.path] += "\nfunc rewrapResponseConnection(connection workerResponseConnection) workerResponseConnection { return connection }\n"
 			}
 			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 		})
