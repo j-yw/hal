@@ -1161,6 +1161,110 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 	})
 
+	for _, tt := range []struct {
+		name    string
+		path    string
+		old     string
+		replace string
+		want    string
+	}{
+		{
+			name:    "client IIFE resets decoded response through capture",
+			path:    "client.go",
+			old:     "\treturn response, nil",
+			replace: "\tfunc() { response = Response{} }()\n\treturn response, nil",
+			want:    "decoder caller composition",
+		},
+		{
+			name:    "client IIFE clears acquired connection through capture",
+			path:    "client.go",
+			old:     "\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+			replace: "\tfunc() { connection = nil }()\n\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+			want:    "decoder caller composition",
+		},
+		{
+			name:    "client IIFE clears context through capture",
+			path:    "client.go",
+			old:     "\tconnection, err := openResponseReader()",
+			replace: "\tfunc() { ctx = nil }()\n\tconnection, err := openResponseReader()",
+			want:    "decoder caller composition",
+		},
+		{
+			name:    "client IIFE clears acquisition error through capture",
+			path:    "client.go",
+			old:     "\tif err != nil {",
+			replace: "\tfunc() { err = nil }()\n\tif err != nil {",
+			want:    "decoder caller composition",
+		},
+		{
+			name:    "client IIFE forces successful half-close assertion through capture",
+			path:    "client.go",
+			old:     "\tif !ok {",
+			replace: "\tfunc() { ok = true }()\n\tif !ok {",
+			want:    "client half-close composition",
+		},
+		{
+			name:    "client IIFE clears half-closer through capture",
+			path:    "client.go",
+			old:     "\tif err := halfCloser.CloseWrite(); err != nil {",
+			replace: "\tfunc() { halfCloser = nil }()\n\tif err := halfCloser.CloseWrite(); err != nil {",
+			want:    "client half-close composition",
+		},
+		{
+			name:    "server IIFE replaces configured limit through capture",
+			path:    "server.go",
+			old:     "\tvar request Request",
+			replace: "\tfunc() { server.maxRequestBytes = 1 }()\n\tvar request Request",
+			want:    "decoder caller composition",
+		},
+		{
+			name:    "server clears reader before decode",
+			path:    "server.go",
+			old:     "\tvar request Request",
+			replace: "\treader = nil\n\tvar request Request",
+			want:    "decoder caller composition",
+		},
+		{
+			name:    "store replaces job identity before open",
+			path:    "job_store_v2.go",
+			old:     "\treader, err := openStoredJobStateV2(jobID)",
+			replace: "\tjobID = \"job-neighbor\"\n\treader, err := openStoredJobStateV2(jobID)",
+			want:    "decoder caller composition",
+		},
+		{
+			name:    "client resets request before direct JSON encode",
+			path:    "client.go",
+			old:     "\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+			replace: "\trequest = Request{}\n\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+			want:    "decoder caller composition",
+		},
+		{
+			name:    "client replaces receiver response limit before initialization",
+			path:    "client.go",
+			old:     "\tmaxResponseBytes := transport.maxResponseBytes",
+			replace: "\ttransport.maxResponseBytes = 1\n\tmaxResponseBytes := transport.maxResponseBytes",
+			want:    "decoder caller composition",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			if mutated[tt.path] == sources[tt.path] {
+				t.Fatal("captured or direct input mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, tt.want)
+		})
+	}
+
+	t.Run("client local captured response mutator", func(t *testing.T) {
+		mutated := l8CloneWorkerV2GuardSources(sources)
+		mutated["client.go"] = strings.Replace(mutated["client.go"], "\treturn response, nil", "\tmutateResponse := func() { response = Response{} }\n\tmutateResponse()\n\treturn response, nil", 1)
+		if mutated["client.go"] == sources["client.go"] {
+			t.Fatal("local captured response mutator did not change the positive fixture")
+		}
+		l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+	})
+
 	otherWrapperOutput := l8CloneWorkerV2GuardSources(sources)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "var output Response", "var output Response\n\tvar other Response", 1)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "return output, nil", "return other, nil", 1)
