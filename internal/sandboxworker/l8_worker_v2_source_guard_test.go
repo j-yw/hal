@@ -1538,11 +1538,12 @@ func TestL8WorkerV2GuardLocksExactDecoderCallerComposition(t *testing.T) {
 	sources := map[string]string{
 		"types.go": `package sandboxworker
 type JobStartRequestV2 struct{}
-type JobV2 struct{}
+type JobV2 struct { ID string }
 type callerNestedValue struct { Value string }
 type Request struct { Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }
 type Response struct { JobV2 *JobV2; Nested *callerNestedValue }
 type storedJobStateV2 struct { JobV2 JobV2; Nested *callerNestedValue }
+func (state storedJobStateV2) Validate() error { return nil }
 func (request Request) WithDefaults() Request { return request }`,
 		"protocol_decode.go": `package sandboxworker
 import "io"
@@ -1648,10 +1649,128 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	defer reader.Close()
 	var state storedJobStateV2
 	if err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
+	if err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
+	if state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New("stored job state is malformed") }
 	return state, nil
 }`,
 	}
 	l8AssertWorkerV2GuardAllows(t, sources, policy)
+
+	storeValidation := "\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n"
+	storeCorrelation := "\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n"
+	for _, tt := range []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{
+			name: "store omits decoded state validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "", 1)
+			},
+		},
+		{
+			name: "store ignores decoded state validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\t_ = state.Validate()\n", 1)
+			},
+		},
+		{
+			name: "store validates after identity correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation+storeCorrelation, storeCorrelation+storeValidation, 1)
+			},
+		},
+		{
+			name: "store validates copied receiver",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\totherState := state\n\tif err := otherState.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n", 1)
+			},
+		},
+		{
+			name: "store dispatches validation through helper",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "state.Validate()", "validateStoredJobStateV2(state)", 1)
+				mutated["job_store_v2.go"] += "\nfunc validateStoredJobStateV2(state storedJobStateV2) error { return state.Validate() }\n"
+			},
+		},
+		{
+			name: "store dispatches validation through interface",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "state.Validate()", "storedJobStateValidatorV2(state).Validate()", 1)
+				mutated["job_store_v2.go"] += "\ntype storedJobStateValidatorV2 interface { Validate() error }\n"
+			},
+		},
+		{
+			name: "store omits embedded job identity correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeCorrelation, "", 1)
+			},
+		},
+		{
+			name: "store inverts embedded job identity correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "state.JobV2.ID != jobID", "state.JobV2.ID == jobID", 1)
+			},
+		},
+		{
+			name: "store correlates copied decoded object",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeCorrelation, "\totherState := state\n\tif otherState.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n", 1)
+			},
+		},
+		{
+			name: "store correlates copied requested identity",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeCorrelation, "\totherJobID := jobID\n\tif state.JobV2.ID != otherJobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n", 1)
+			},
+		},
+		{
+			name: "store normalizes embedded identity before correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "state.JobV2.ID != jobID", "normalizeStoredJobIDV2(state.JobV2.ID) != jobID", 1)
+				mutated["job_store_v2.go"] += "\nfunc normalizeStoredJobIDV2(value string) string { return value }\n"
+			},
+		},
+		{
+			name: "store assigns embedded identity before correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeCorrelation, "\tstate.JobV2.ID = jobID\n"+storeCorrelation, 1)
+			},
+		},
+		{
+			name: "store returns alternate success before validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\tif jobID != \"\" { return state, nil }\n"+storeValidation, 1)
+			},
+		},
+		{
+			name: "store branches around validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\tif jobID != \"\" {\n"+storeValidation+"\t}\n", 1)
+			},
+		},
+		{
+			name: "store goto bypasses validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation+storeCorrelation, "\tgoto correlated\n"+storeValidation+"correlated:\n"+storeCorrelation, 1)
+			},
+		},
+		{
+			name: "store exposes raw validation error",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\tif err := state.Validate(); err != nil { return storedJobStateV2{}, err }\n", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			tt.mutate(mutated)
+			if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
+				t.Fatal("validated store-load mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
 
 	validatedServerSources := l8CloneWorkerV2GuardSources(sources)
 	validatedServerSources["types.go"] = strings.Replace(validatedServerSources["types.go"],
@@ -2844,8 +2963,8 @@ func openStoredJobStateV2FromRoot(root, jobID string) (storedJobReaderV2, error)
 		{
 			name:    "store returns success before unreachable decoder",
 			path:    "job_store_v2.go",
-			old:     "\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
-			replace: "\treturn state, nil\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn storedJobStateV2{}, errors.New(\"unreachable stored job state\")",
+			old:     "\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
+			replace: "\treturn state, nil\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn storedJobStateV2{}, errors.New(\"unreachable stored job state\")",
 		},
 		{
 			name:    "server decoder is unreachable under false branch",
@@ -3121,7 +3240,7 @@ func openStoredJobStateV2FromRoot(root, jobID string) (storedJobReaderV2, error)
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			if tt.jobValue {
-				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct{}", "type JobV2 struct { Value string }", 1)
+				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct { ID string }", "type JobV2 struct { ID string; Value string }", 1)
 			}
 			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
 			if mutated[tt.path] == sources[tt.path] {
@@ -3146,8 +3265,8 @@ func openStoredJobStateV2FromRoot(root, jobID string) (storedJobReaderV2, error)
 		{
 			name:    "store goto bypasses exact decoder",
 			path:    "job_store_v2.go",
-			old:     "\tvar state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
-			replace: "\tvar state storedJobStateV2\n\tgoto decoded\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n decoded:\n\t;\n\treturn state, nil",
+			old:     "\tvar state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
+			replace: "\tvar state storedJobStateV2\n\tgoto decoded\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n decoded:\n\t;\n\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
 		},
 		{
 			name:    "client goto bypasses required half-close",
@@ -3232,7 +3351,7 @@ func openStoredJobStateV2FromRoot(root, jobID string) (storedJobReaderV2, error)
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			if tt.jobValue {
-				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct{}", "type JobV2 struct { Value string }", 1)
+				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct { ID string }", "type JobV2 struct { ID string; Value string }", 1)
 			}
 			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
 			if mutated[tt.path] == sources[tt.path] {
@@ -3298,11 +3417,12 @@ func TestL8WorkerV2GuardRejectsCallerWholeValueEscapesAndCleanupBypasses(t *test
 	sources := map[string]string{
 		"types.go": `package sandboxworker
 type JobStartRequestV2 struct{}
-type JobV2 struct{}
+type JobV2 struct { ID string }
 type callerNestedValue struct { Value string }
 type Request struct { Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }
 type Response struct { JobV2 *JobV2; Nested *callerNestedValue }
 type storedJobStateV2 struct { JobV2 JobV2; Nested *callerNestedValue }
+func (state storedJobStateV2) Validate() error { return nil }
 func (request Request) WithDefaults() Request { return request }`,
 		"protocol_decode.go": `package sandboxworker
 import "io"
@@ -3408,6 +3528,8 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	defer reader.Close()
 	var state storedJobStateV2
 	if err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
+	if err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
+	if state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New("stored job state is malformed") }
 	return state, nil
 }`,
 	}
@@ -7320,8 +7442,10 @@ func l8WorkerV2ExactStoreStateDecoderCall(scope l8WorkerV2GuardScope, call *ast.
 	output := l8WorkerV2AddressedObject(call.Args[2], "storedJobStateV2", info)
 	readerClose, acquisitionErrorBranch, exactReaderClose := l8WorkerV2ExactDeferredReaderClose(function, reader, call, info)
 	acquireCall, acquireErr := l8WorkerV2TopLevelAcquisitionForObject(function, reader, info)
+	validationCall, exactStateFlow := l8WorkerV2ExactValidatedCorrelatedStoreFlow(function, output, parameters, call, acquireCall, acquisitionErrorBranch, readerClose, info)
 	return receiver != nil && len(parameters) == 1 && reader != nil && output != nil &&
 		exactReaderClose && acquireCall != nil && acquireErr != nil &&
+		exactStateFlow && validationCall != nil &&
 		l8WorkerV2NoUnconditionalTerminalBefore(function, acquireCall, info, scope.terminalAnalysis) &&
 		l8WorkerV2NoUnconditionalTerminalBefore(function, call, info, scope.terminalAnalysis) &&
 		l8WorkerV2ObjectHasNoReassignments(function, receiver, info) &&
@@ -7332,10 +7456,112 @@ func l8WorkerV2ExactStoreStateDecoderCall(scope l8WorkerV2GuardScope, call *ast.
 		l8WorkerV2ObjectHasNoReassignments(function, reader, info) && l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
 		l8WorkerV2ObjectOnlyConsumedByExactCalls(function, reader, []*ast.CallExpr{readerClose, call}, info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, reader, []*ast.CallExpr{readerClose, call}, nil, false, info) &&
-		l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call}, nil, true, info) &&
+		l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call, validationCall}, nil, true, info) &&
 		l8WorkerV2ExactPackageInt64Constant(call.Args[1], "maxStoredJobStateV2Bytes", 64<<10, info) &&
-		l8WorkerV2ExactTopLevelSuccessAfterCall(function, output, call, info) &&
 		l8WorkerV2ExactStoreSafeBranches(function, call, acquireErr, acquisitionErrorBranch, info)
+}
+
+func l8WorkerV2ExactValidatedCorrelatedStoreFlow(function *ast.FuncDecl, state types.Object, parameters []types.Object, codecCall, acquireCall *ast.CallExpr, acquisitionErrorBranch *ast.IfStmt, readerClose *ast.CallExpr, info *types.Info) (*ast.CallExpr, bool) {
+	if function == nil || function.Body == nil || state == nil || len(parameters) != 1 || codecCall == nil || acquireCall == nil || acquisitionErrorBranch == nil || readerClose == nil || len(function.Body.List) != 8 {
+		return nil, false
+	}
+	statements := function.Body.List
+	if !(statements[0].Pos() <= acquireCall.Pos() && acquireCall.End() <= statements[0].End()) || statements[1] != acquisitionErrorBranch {
+		return nil, false
+	}
+	deferred, ok := statements[2].(*ast.DeferStmt)
+	if !ok || deferred.Call != readerClose || l8WorkerV2ExpressionObjectFromSingleVarDeclarationStatement(statements[3], info) != state {
+		return nil, false
+	}
+	codecConditional := l8WorkerV2TopLevelIfContainingCall(function, codecCall)
+	if codecConditional == nil || statements[4] != codecConditional || !l8WorkerV2ExactCallConstantStateErrorBranch(function, codecCall, "stored job state is malformed", info) {
+		return nil, false
+	}
+	validationCall, ok := l8WorkerV2ExactStoredStateValidationBranch(statements[5], state, info)
+	if !ok || !l8WorkerV2ExactStoredStateIdentityBranch(statements[6], state, parameters[0], info) {
+		return nil, false
+	}
+	returned, ok := statements[7].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 || l8WorkerV2ExpressionObject(returned.Results[0], info) != state || !l8WorkerV2IsNilExpression(returned.Results[1], info) ||
+		!l8WorkerV2FunctionReturnsObject(function, state, info) || l8WorkerV2ObjectUseCount(function, state, info) != 4 || l8WorkerV2ObjectUseCount(function, parameters[0], info) != 2 {
+		return nil, false
+	}
+	return validationCall, true
+}
+
+func l8WorkerV2ExpressionObjectFromSingleVarDeclarationStatement(statement ast.Stmt, info *types.Info) types.Object {
+	declaration, ok := statement.(*ast.DeclStmt)
+	if !ok {
+		return nil
+	}
+	return l8WorkerV2ExpressionObjectFromSingleVarDeclaration(declaration, info)
+}
+
+func l8WorkerV2ExactStoredStateValidationBranch(statement ast.Stmt, state types.Object, info *types.Info) (*ast.CallExpr, bool) {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init == nil || conditional.Else != nil || len(conditional.Body.List) != 1 {
+		return nil, false
+	}
+	assignment, ok := conditional.Init.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return nil, false
+	}
+	errObject := l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if errObject == nil || !ok || !l8WorkerV2ExactConcreteStoredStateValidateCall(call, state, info) ||
+		!l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) ||
+		!l8WorkerV2IsZeroStructAndConstantErrorReturn(conditional.Body.List[0], "storedJobStateV2", "stored job state is malformed", info) {
+		return nil, false
+	}
+	return call, true
+}
+
+func l8WorkerV2ExactConcreteStoredStateValidateCall(call *ast.CallExpr, state types.Object, info *types.Info) bool {
+	if !l8WorkerV2ExactObjectMethodCall(call, state, "Validate", nil, info) {
+		return false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	selection := info.Selections[selector]
+	if selection == nil || selection.Obj() == nil {
+		return false
+	}
+	method, ok := selection.Obj().(*types.Func)
+	if !ok || selection.Kind() != types.MethodVal || method.Pkg() == nil || method.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" {
+		return false
+	}
+	signature, ok := method.Type().(*types.Signature)
+	return ok && signature.Recv() != nil && l8WorkerV2IsExactNamedStruct(signature.Recv().Type(), "storedJobStateV2") &&
+		signature.Params().Len() == 0 && signature.Results().Len() == 1 && types.Identical(signature.Results().At(0).Type(), types.Universe.Lookup("error").Type())
+}
+
+func l8WorkerV2ExactStoredStateIdentityBranch(statement ast.Stmt, state, jobID types.Object, info *types.Info) bool {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 {
+		return false
+	}
+	comparison, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.BinaryExpr)
+	if !ok || comparison.Op != token.NEQ || l8WorkerV2ExpressionObject(comparison.Y, info) != jobID || !l8WorkerV2ExactStoredStateJobIDSelector(comparison.X, state, info) {
+		return false
+	}
+	return l8WorkerV2IsZeroStructAndConstantErrorReturn(conditional.Body.List[0], "storedJobStateV2", "stored job state is malformed", info)
+}
+
+func l8WorkerV2ExactStoredStateJobIDSelector(expression ast.Expr, state types.Object, info *types.Info) bool {
+	idSelector, ok := l8WorkerV2UnparenExpression(expression).(*ast.SelectorExpr)
+	if !ok || idSelector.Sel.Name != "ID" {
+		return false
+	}
+	jobSelector, ok := l8WorkerV2UnparenExpression(idSelector.X).(*ast.SelectorExpr)
+	if !ok || jobSelector.Sel.Name != "JobV2" || l8WorkerV2ExpressionObject(jobSelector.X, info) != state {
+		return false
+	}
+	jobField, jobOK := info.Uses[jobSelector.Sel].(*types.Var)
+	idField, idOK := info.Uses[idSelector.Sel].(*types.Var)
+	return jobOK && jobField.IsField() && l8WorkerV2IsExactNamedStruct(jobField.Type(), "JobV2") &&
+		idOK && idField.IsField() && types.Identical(idField.Type(), types.Universe.Lookup("string").Type())
 }
 
 func l8WorkerV2ExactClientConnectionLifecycle(function *ast.FuncDecl, connection, ctx types.Object, encodeCall *ast.CallExpr, info *types.Info) ([]*ast.CallExpr, []*ast.CallExpr, *ast.IfStmt, bool) {
