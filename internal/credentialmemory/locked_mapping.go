@@ -79,9 +79,9 @@ type borrowedViewLease struct {
 	inFlight int
 }
 
-type lockedMappingIdentity struct{ marker byte }
+type lockedMappingIdentity struct{ _ byte }
 
-type borrowedViewIdentity struct{ marker byte }
+type borrowedViewIdentity struct{ _ byte }
 
 type lockedMappingStateAccessor func(*lockedMappingIdentity) *lockedMappingState
 
