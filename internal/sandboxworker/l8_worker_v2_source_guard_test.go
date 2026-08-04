@@ -195,6 +195,880 @@ func (ExecRequest) Validate() error {
 	}, l8WorkerV2ProductionGuardPolicy(), "outside the exact allowlist")
 }
 
+func TestL8WorkerV2GuardLocksOnlyExactSharedEnvelopeValidateDeclarations(t *testing.T) {
+	source := l8ReadWorkerSource(t, "types.go")
+	parseMethods := func(t *testing.T, value string) map[string]l8WorkerV2GuardScope {
+		t.Helper()
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, "types.go", value, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file := &l8WorkerV2ParsedFile{path: "types.go", fileSet: fileSet, parsed: parsed}
+		methods := make(map[string]l8WorkerV2GuardScope, 2)
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Name.Name != "Validate" || function.Recv == nil || len(function.Recv.List) != 1 {
+				continue
+			}
+			receiver := function.Recv.List[0].Type
+			if pointer, ok := receiver.(*ast.StarExpr); ok {
+				receiver = pointer.X
+			}
+			identifier, ok := receiver.(*ast.Ident)
+			if ok && (identifier.Name == "Request" || identifier.Name == "Response") {
+				methods[identifier.Name] = l8WorkerV2GuardScope{file: file, node: function}
+			}
+		}
+		return methods
+	}
+
+	methods := parseMethods(t, source)
+	for _, receiver := range []string{"Request", "Response"} {
+		scope, ok := methods[receiver]
+		if !ok {
+			t.Fatalf("types.go %s.Validate was not found", receiver)
+		}
+		if !l8WorkerV2LockedV1CompatibilityDeclaration(scope) {
+			t.Errorf("exact %s.Validate declaration was not locked", receiver)
+		}
+		bodyScope := scope
+		bodyScope.node = scope.node.(*ast.FuncDecl).Body
+		if !l8WorkerV2LockedV1CompatibilityDeclaration(bodyScope) {
+			t.Errorf("exact %s.Validate mixed body did not inherit its declaration lock", receiver)
+		}
+		mutated := *scope.node.(*ast.FuncDecl)
+		mutatedBody := *mutated.Body
+		mutatedBody.List = append(append([]ast.Stmt(nil), mutatedBody.List...), &ast.ExprStmt{X: &ast.BasicLit{Kind: token.STRING, Value: `"drift"`}})
+		mutated.Body = &mutatedBody
+		mutatedScope := scope
+		mutatedScope.node = &mutated
+		if l8WorkerV2LockedV1CompatibilityDeclaration(mutatedScope) {
+			t.Errorf("%s.Validate body drift retained its declaration lock", receiver)
+		}
+	}
+
+	if !strings.Contains(source, "validateWorkerV2RequestPayloads") || !strings.Contains(source, "validateWorkerV2ResponsePayloads") {
+		return
+	}
+	requestValidOperation := `	if !validOperation(req.Operation) {
+		return fmt.Errorf("worker request operation %q is unsupported", req.Operation)
+	}
+`
+	requestPayloadValidation := `	if err := validateWorkerV2RequestPayloads(req); err != nil {
+		return err
+	}
+`
+	responseNonV2Check := `	if !isWorkerV2Operation(resp.Operation) && (resp.JobV2 != nil || resp.JobLogsV2 != nil) {
+		return fmt.Errorf("worker response contains a V2 payload for non-V2 operation")
+	}
+`
+	responsePayloadValidation := `	if isWorkerV2Operation(resp.Operation) {
+		if err := validateWorkerV2ResponsePayloads(resp); err != nil {
+			return err
+		}
+	}
+`
+	for _, mutation := range []struct {
+		name     string
+		receiver string
+		old      string
+		replace  string
+	}{
+		{name: "request V2 payload validation drift", receiver: "Request", old: "validateWorkerV2RequestPayloads(req)", replace: "validateWorkerV2RequestPayloads(Request{})"},
+		{name: "request V2 dispatch drift", receiver: "Request", old: "return req.JobStartV2.Validate()", replace: "return req.JobResolveV2.Validate()"},
+		{name: "request V2 validation order drift", receiver: "Request", old: requestValidOperation + requestPayloadValidation, replace: requestPayloadValidation + requestValidOperation},
+		{name: "response V2 payload validation drift", receiver: "Response", old: "validateWorkerV2ResponsePayloads(resp)", replace: "validateWorkerV2ResponsePayloads(Response{})"},
+		{name: "response V2 dispatch drift", receiver: "Response", old: "if resp.JobV2 != nil {", replace: "if resp.JobV2 == nil {"},
+		{name: "response V2 validation order drift", receiver: "Response", old: responseNonV2Check + responsePayloadValidation, replace: responsePayloadValidation + responseNonV2Check},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := strings.Replace(source, mutation.old, mutation.replace, 1)
+			if mutated == source {
+				t.Fatal("D1C Validate mutation did not change types.go")
+			}
+			mutatedScope, ok := parseMethods(t, mutated)[mutation.receiver]
+			if !ok {
+				t.Fatalf("mutated %s.Validate was not found", mutation.receiver)
+			}
+			if l8WorkerV2LockedV1CompatibilityDeclaration(mutatedScope) {
+				t.Errorf("%s retained exact D1C declaration lock", mutation.name)
+			}
+		})
+	}
+}
+
+type l8WorkerV2ExactFunctionMutation struct {
+	name        string
+	old         string
+	replace     string
+	mutatedName string
+}
+
+func l8ParseWorkerV2ExactFunctionScope(t *testing.T, path, source, name string) l8WorkerV2GuardScope {
+	t.Helper()
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, path, source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: path, fileSet: fileSet, parsed: parsed}
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == name {
+			return l8WorkerV2GuardScope{file: file, node: function}
+		}
+	}
+	t.Fatalf("%s %s was not found", path, name)
+	return l8WorkerV2GuardScope{}
+}
+
+func l8AssertWorkerV2ExactFunctionLockAndMutations(t *testing.T, path, source, functionName, neighboringName string, mutations []l8WorkerV2ExactFunctionMutation) {
+	t.Helper()
+	scope := l8ParseWorkerV2ExactFunctionScope(t, path, source, functionName)
+	if !l8WorkerV2AllowedCompatibilityDeclaration(scope) || !l8WorkerV2LockedV1CompatibilityDeclaration(scope) {
+		t.Fatalf("exact %s declaration was not allowed and locked", functionName)
+	}
+	bodyScope := scope
+	bodyScope.node = scope.node.(*ast.FuncDecl).Body
+	if !l8WorkerV2LockedV1CompatibilityDeclaration(bodyScope) {
+		t.Fatalf("exact %s body did not inherit its owner lock", functionName)
+	}
+	neighboring := l8ParseWorkerV2ExactFunctionScope(t, path, source, neighboringName)
+	if l8WorkerV2AllowedCompatibilityDeclaration(neighboring) || l8WorkerV2LockedV1CompatibilityDeclaration(neighboring) {
+		t.Errorf("neighboring %s borrowed %s compatibility", neighboringName, functionName)
+	}
+
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := strings.Replace(source, mutation.old, mutation.replace, 1)
+			if mutated == source {
+				t.Fatalf("%s mutation did not change %s", functionName, path)
+			}
+			mutatedName := functionName
+			if mutation.mutatedName != "" {
+				mutatedName = mutation.mutatedName
+			}
+			mutatedScope := l8ParseWorkerV2ExactFunctionScope(t, path, mutated, mutatedName)
+			if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) || l8WorkerV2LockedV1CompatibilityDeclaration(mutatedScope) {
+				t.Errorf("%s retained %s compatibility", mutation.name, functionName)
+			}
+		})
+	}
+}
+
+func TestL8WorkerV2GuardLocksOnlyExactProtocolErrorResponse(t *testing.T) {
+	source := l8ReadWorkerSource(t, "server.go")
+	clamp := `	if !validOperation(operation) {
+		operation = OperationProtocolError
+	}
+`
+	l8AssertWorkerV2ExactFunctionLockAndMutations(t, "server.go", source, "protocolErrorResponse", "normalizeHandlerResponse", []l8WorkerV2ExactFunctionMutation{
+		{name: "valid-operation clamp removed", old: clamp, replace: ""},
+		{name: "valid-operation clamp inverted", old: "if !validOperation(operation)", replace: "if validOperation(operation)"},
+		{name: "protocol-error fallback replaced", old: "operation = OperationProtocolError", replace: `operation = "neighbor"`},
+		{name: "message sanitization bypassed", old: "Message: sanitizeProtocolErrorDetail(message)", replace: "Message: strings.TrimSpace(message)"},
+		{name: "V2 marker added", old: "\toperation = strings.TrimSpace(operation)", replace: "\t_ = \"JobStartV2Fixture\"\n\toperation = strings.TrimSpace(operation)"},
+	})
+}
+
+func TestL8WorkerV2GuardLocksOnlyExactContextErrorResponse(t *testing.T) {
+	source := l8ReadWorkerSource(t, "handler.go")
+	timeoutReturn := `return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeRequestTimeout, "worker request timed out"), true`
+	canceledReturn := `return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeRequestCanceled, "worker request canceled"), true`
+	l8AssertWorkerV2ExactFunctionLockAndMutations(t, "handler.go", source, "contextErrorResponse", "HandleRequest", []l8WorkerV2ExactFunctionMutation{
+		{name: "ctx Err removed", old: "err := ctx.Err()", replace: "var err error"},
+		{name: "DeadlineExceeded classification changed", old: "errors.Is(err, context.DeadlineExceeded)", replace: "errors.Is(err, context.Canceled)"},
+		{name: "Canceled classification changed", old: "errors.Is(err, context.Canceled)", replace: "errors.Is(err, context.DeadlineExceeded)"},
+		{name: "errors Is replaced", old: "errors.Is(err, context.DeadlineExceeded)", replace: "err == context.DeadlineExceeded"},
+		{name: "timeout error code changed", old: "ErrorCodeRequestTimeout", replace: "ErrorCodeRequestCanceled"},
+		{name: "canceled error code changed", old: "ErrorCodeRequestCanceled", replace: "ErrorCodeRequestTimeout"},
+		{name: "timeout operation changed", old: timeoutReturn, replace: strings.Replace(timeoutReturn, "req.Operation", "OperationProtocolError", 1)},
+		{name: "canceled operation changed", old: canceledReturn, replace: strings.Replace(canceledReturn, "req.Operation", "OperationProtocolError", 1)},
+		{name: "protocol error sanitizer helper bypassed", old: timeoutReturn, replace: `return Response{Operation: req.Operation, Error: &Error{Code: ErrorCodeRequestTimeout, Message: "worker request timed out"}}, true`},
+		{name: "V2 marker added", old: "\tif ctx == nil {", replace: "\t_ = \"JobStartV2Fixture\"\n\tif ctx == nil {"},
+	})
+}
+
+func TestL8WorkerV2GuardLocksOnlyExactUnsupportedOperationResponse(t *testing.T) {
+	source := l8ReadWorkerSource(t, "handler.go")
+	invalidBranch := `	if !validOperation(operation) {
+		return protocolErrorResponse(req.RequestID, OperationProtocolError, ErrorCodeMalformedRequest, fmt.Sprintf("malformed worker request: worker request operation %q is unsupported", req.Operation))
+	}
+`
+	validReturn := `return protocolErrorResponse(req.RequestID, operation, ErrorCodeUnsupportedOp, fmt.Sprintf("worker operation %q is not supported by this worker service", operation))`
+	l8AssertWorkerV2ExactFunctionLockAndMutations(t, "handler.go", source, "unsupportedOperationResponse", "HandleRequest", []l8WorkerV2ExactFunctionMutation{
+		{name: "operation trim removed", old: "operation := strings.TrimSpace(req.Operation)", replace: "operation := req.Operation"},
+		{name: "validOperation inverted", old: "if !validOperation(operation)", replace: "if validOperation(operation)"},
+		{name: "validOperation clamp removed", old: invalidBranch, replace: ""},
+		{name: "invalid fallback operation changed", old: "OperationProtocolError, ErrorCodeMalformedRequest", replace: "operation, ErrorCodeMalformedRequest"},
+		{name: "invalid fallback code changed", old: "OperationProtocolError, ErrorCodeMalformedRequest", replace: "OperationProtocolError, ErrorCodeUnsupportedOp"},
+		{name: "invalid fallback message changed", old: "malformed worker request: worker request operation %q is unsupported", replace: "malformed worker operation %q"},
+		{name: "valid response operation changed", old: validReturn, replace: strings.Replace(validReturn, "req.RequestID, operation", "req.RequestID, OperationProtocolError", 1)},
+		{name: "valid response code changed", old: "operation, ErrorCodeUnsupportedOp", replace: "operation, ErrorCodeMalformedRequest"},
+		{name: "valid response message changed", old: "worker operation %q is not supported by this worker service", replace: "worker operation %q is unsupported"},
+		{name: "protocol error helper bypassed", old: validReturn, replace: "return Response{Operation: operation, OK: false}"},
+		{name: "V2 marker added", old: "\toperation := strings.TrimSpace(req.Operation)", replace: "\t_ = \"JobStartV2Fixture\"\n\toperation := strings.TrimSpace(req.Operation)"},
+	})
+}
+
+func TestL8WorkerV2GuardLocksOnlyExactCloneStringMap(t *testing.T) {
+	source := l8ReadWorkerSource(t, "lifecycle.go")
+	l8AssertWorkerV2ExactFunctionLockAndMutations(t, "lifecycle.go", source, "cloneStringMap", "workerTargetFromRuntimeTarget", []l8WorkerV2ExactFunctionMutation{
+		{name: "alias returned", old: "\treturn clone\n}", replace: "\treturn values\n}"},
+		{name: "fresh allocation removed", old: "clone := make(map[string]string, len(values))", replace: "clone := values"},
+		{name: "copy omitted", old: "\t\tclone[key] = value", replace: "\t\t_, _ = key, value"},
+		{name: "key transformed", old: "clone[key] = value", replace: "clone[key+\"-changed\"] = value"},
+		{name: "value transformed", old: "clone[key] = value", replace: "clone[key] = value + \"-changed\""},
+		{name: "input mutated", old: "\t\tclone[key] = value", replace: "\t\tvalues[key] = value\n\t\tclone[key] = value"},
+		{name: "helper delegated", old: "\tif len(values) == 0 {", replace: "\t_ = delegatedCloneStringMap(values)\n\tif len(values) == 0 {"},
+		{name: "closure escaped", old: "\treturn clone\n}", replace: "\tescape := func() map[string]string { return clone }\n\t_ = escape\n\treturn clone\n}"},
+		{name: "V2 marker added", old: "\tif len(values) == 0 {", replace: "\t_ = \"JobStartV2Fixture\"\n\tif len(values) == 0 {"},
+		{name: "name drifted", old: "func cloneStringMap(", replace: "func cloneStringMapping(", mutatedName: "cloneStringMapping"},
+		{name: "signature drifted", old: "values map[string]string) map[string]string", replace: "values map[string]string, extra bool) map[string]string"},
+		{name: "body drifted", old: "\treturn clone\n}", replace: "\t_ = len(clone)\n\treturn clone\n}"},
+	})
+}
+
+func TestL8WorkerV2GuardLocksOnlyExactCloneStringSlice(t *testing.T) {
+	source := l8ReadWorkerSource(t, "service.go")
+	l8AssertWorkerV2ExactFunctionLockAndMutations(t, "service.go", source, "cloneStringSlice", "stringSliceContains", []l8WorkerV2ExactFunctionMutation{
+		{name: "alias returned", old: "\tclone := append([]string(nil), values...)\n\treturn clone", replace: "\tclone := append([]string(nil), values...)\n\t_ = clone\n\treturn values"},
+		{name: "fresh copy omitted", old: "clone := append([]string(nil), values...)", replace: "clone := values"},
+		{name: "partial copy", old: "append([]string(nil), values...)", replace: "append([]string(nil), values[:len(values)/2]...)"},
+		{name: "copy transformed", old: "append([]string(nil), values...)", replace: "append([]string{\"changed\"}, values...)"},
+		{name: "input mutated", old: "\tclone := append", replace: "\tvalues[0] = \"changed\"\n\tclone := append"},
+		{name: "helper delegated", old: "\tif len(values) == 0 {", replace: "\t_ = delegatedCloneStringSlice(values)\n\tif len(values) == 0 {"},
+		{name: "closure escaped", old: "\tclone := append([]string(nil), values...)\n\treturn clone", replace: "\tclone := append([]string(nil), values...)\n\tescape := func() []string { return clone }\n\t_ = escape\n\treturn clone"},
+		{name: "V2 marker added", old: "\tif len(values) == 0 {", replace: "\t_ = \"JobStartV2Fixture\"\n\tif len(values) == 0 {"},
+		{name: "name drifted", old: "func cloneStringSlice(", replace: "func cloneStrings(", mutatedName: "cloneStrings"},
+		{name: "signature drifted", old: "func cloneStringSlice(values []string) []string", replace: "func cloneStringSlice(values []string, extra bool) []string"},
+		{name: "body drifted", old: "\tclone := append([]string(nil), values...)\n\treturn clone", replace: "\tclone := append([]string(nil), values...)\n\t_ = len(clone)\n\treturn clone"},
+	})
+}
+
+func TestL8WorkerV2GuardAllowsExactUnchangedV1AdapterCorrelationMethods(t *testing.T) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "adapter.go", l8ReadWorkerSource(t, "adapter.go"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: "adapter.go", fileSet: fileSet, parsed: parsed}
+	wanted := map[string]bool{"JobStart": true, "JobResolve": true, "JobStatus": true, "JobLogs": true}
+	found := make(map[string]bool, len(wanted))
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || !wanted[function.Name.Name] || function.Recv == nil || len(function.Recv.List) != 1 {
+			continue
+		}
+		receiver, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		receiverName, ok := receiver.X.(*ast.Ident)
+		if !ok || receiverName.Name != "ClientDriver" {
+			continue
+		}
+		found[function.Name.Name] = true
+		scope := l8WorkerV2GuardScope{file: file, node: function}
+		if !l8WorkerV2AllowedCompatibilityDeclaration(scope) || !l8WorkerV2LockedV1CompatibilityDeclaration(scope) {
+			t.Errorf("exact unchanged ClientDriver.%s compatibility declaration was not locked", function.Name.Name)
+		}
+
+		for _, mutation := range []struct {
+			name       string
+			expression ast.Expr
+		}{
+			{name: "hash drift", expression: &ast.BasicLit{Kind: token.STRING, Value: `"hash drift"`}},
+			{name: "V2 marker", expression: &ast.Ident{Name: "JobStartV2Fixture"}},
+		} {
+			mutatedFunction := *function
+			mutatedBody := *function.Body
+			mutatedBody.List = append(append([]ast.Stmt(nil), function.Body.List...), &ast.ExprStmt{X: mutation.expression})
+			mutatedFunction.Body = &mutatedBody
+			mutatedScope := l8WorkerV2GuardScope{file: file, node: &mutatedFunction}
+			if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) || l8WorkerV2LockedV1CompatibilityDeclaration(mutatedScope) {
+				t.Errorf("ClientDriver.%s mutation %q retained compatibility allowance", function.Name.Name, mutation.name)
+			}
+		}
+	}
+	for name := range wanted {
+		if !found[name] {
+			t.Errorf("exact unchanged ClientDriver.%s declaration was not found", name)
+		}
+	}
+}
+
+func TestL8WorkerV2GuardAllowsOnlyExactJobStoreRootMetadataReceiver(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_store_v2.go": true}}
+	source := `package sandboxworker
+import (
+	"errors"
+	"os"
+	"path/filepath"
+)
+type jobStoreV2 struct { root string }
+func newJobStoreV2(root string) (*jobStoreV2, error) {
+	cleaned := filepath.Clean(root)
+	if !filepath.IsAbs(cleaned) || cleaned == string(filepath.Separator) {
+		return nil, errors.New("job v2 state root is invalid")
+	}
+	if err := os.MkdirAll(cleaned, 0o700); err != nil {
+		return nil, errors.New("job v2 state root could not be created")
+	}
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil || !filepath.IsAbs(resolved) || resolved == string(filepath.Separator) {
+		return nil, errors.New("job v2 state root is invalid")
+	}
+	cleaned = resolved
+	info, err := os.Lstat(cleaned)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("job v2 state root is invalid")
+	}
+	if err := os.Chmod(cleaned, 0o700); err != nil {
+		return nil, errors.New("job v2 state root could not be secured")
+	}
+	return &jobStoreV2{root: cleaned}, nil
+}`
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_store_v2.go": source}, policy)
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			name: "metadata receiver reassigned",
+			mutate: func(value string) string {
+				value = strings.Replace(value, "type jobStoreV2 struct { root string }", "type jobStoreV2 struct { root string }\nvar replacementInfo os.FileInfo", 1)
+				return strings.Replace(value, "\tinfo, err := os.Lstat(cleaned)", "\tinfo, err := os.Lstat(cleaned)\n\tinfo = replacementInfo", 1)
+			},
+		},
+		{
+			name: "IsDir receiver substituted",
+			mutate: func(value string) string {
+				return strings.Replace(value, "\tif err != nil || !info.IsDir()", "\tcheckedInfo := info\n\tif err != nil || !checkedInfo.IsDir()", 1)
+			},
+		},
+		{
+			name: "Mode receiver substituted",
+			mutate: func(value string) string {
+				value = strings.Replace(value, "\tif err != nil || !info.IsDir()", "\tcheckedInfo := info\n\tif err != nil || !info.IsDir()", 1)
+				return strings.Replace(value, "info.Mode()", "checkedInfo.Mode()", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{"job_store_v2.go": tt.mutate(source)}, policy, "interface dispatch")
+		})
+	}
+}
+
+func TestL8WorkerV2GuardLocksSharedSafeJobIDVocabulary(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2.go": true}}
+	jobTypes := `package sandboxworker
+import "regexp"
+var jobSafeIDPattern = regexp.MustCompile(` + "`^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$`" + `)
+func validJobSafeID(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && value != "." && value != ".." && jobSafeIDPattern.MatchString(value)
+}`
+	jobTypes = strings.Replace(jobTypes, `import "regexp"`, "import (\n\t\"regexp\"\n\t\"strings\"\n)", 1)
+	root := "package sandboxworker\nfunc JobStartV2Fixture(value string) bool { return validJobSafeID(value) }"
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_types.go": jobTypes, "job_v2.go": root}, policy)
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) string
+		want   string
+	}{
+		{
+			name: "regex admits slash",
+			mutate: func(value string) string {
+				return strings.Replace(value, "[A-Za-z0-9._:-]", "[A-Za-z0-9._:/-]", 1)
+			},
+			want: "slash-free safe ID vocabulary",
+		},
+		{
+			name: "validator body drifts",
+			mutate: func(value string) string {
+				return strings.Replace(value, `value != ".."`, `value != "unsafe"`, 1)
+			},
+			want: "validJobSafeID must remain locked",
+		},
+		{
+			name: "validator gains V2 marker",
+			mutate: func(value string) string {
+				return strings.Replace(value, "\tvalue = strings.TrimSpace(value)", "\t_ = \"JobStartV2Fixture\"\n\tvalue = strings.TrimSpace(value)", 1)
+			},
+			want: "outside the exact allowlist",
+		},
+		{
+			name: "pattern reassigned after declaration",
+			mutate: func(value string) string {
+				return value + "\nfunc replaceSafeIDPattern() { jobSafeIDPattern = regexp.MustCompile(`.*`) }\n"
+			},
+			want: "mutates locked jobSafeIDPattern",
+		},
+		{
+			name: "pattern address escapes to helper",
+			mutate: func(value string) string {
+				return value + "\nfunc captureSafeIDPattern(**regexp.Regexp) {}\nfunc leakSafeIDPattern() { captureSafeIDPattern(&jobSafeIDPattern) }\n"
+			},
+			want: "escapes locked jobSafeIDPattern",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{"job_types.go": tt.mutate(jobTypes), "job_v2.go": root}, policy, tt.want)
+		})
+	}
+}
+
+func TestL8WorkerV2GuardAllowsOnlyExactReconciliationJobStates(t *testing.T) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "job_types.go", l8ReadWorkerSource(t, "job_types.go"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: "job_types.go", fileSet: fileSet, parsed: parsed}
+	wanted := map[string]bool{"JobStateQueued": true, "JobStateInterrupted": true}
+	found := make(map[string]bool, len(wanted))
+	for _, declaration := range parsed.Decls {
+		generated, ok := declaration.(*ast.GenDecl)
+		if !ok || generated.Tok != token.CONST {
+			continue
+		}
+		for _, rawSpec := range generated.Specs {
+			spec, ok := rawSpec.(*ast.ValueSpec)
+			if !ok || len(spec.Names) != 1 {
+				continue
+			}
+			scope := l8WorkerV2GuardScope{file: file, node: spec}
+			if wanted[spec.Names[0].Name] {
+				found[spec.Names[0].Name] = true
+				if !l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+					t.Errorf("exact %s reconciliation state was not allowed", spec.Names[0].Name)
+				}
+				mutatedValue := *spec
+				mutatedValue.Values = []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: `"drifted"`}}
+				mutatedScope := scope
+				mutatedScope.node = &mutatedValue
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s value drift retained compatibility allowance", spec.Names[0].Name)
+				}
+				mutatedMarker := *spec
+				mutatedMarker.Names = []*ast.Ident{{Name: spec.Names[0].Name + "V2"}}
+				mutatedScope.node = &mutatedMarker
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s V2 marker retained compatibility allowance", spec.Names[0].Name)
+				}
+			}
+			if spec.Names[0].Name == "JobStateRunning" && l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+				t.Error("unrelated JobStateRunning was admitted to reconciliation compatibility")
+			}
+		}
+	}
+	for name := range wanted {
+		if !found[name] {
+			t.Errorf("exact %s reconciliation state was not found", name)
+		}
+	}
+}
+
+func TestL8WorkerV2GuardAllowsOnlyExactJobLogReadBounds(t *testing.T) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "job_types.go", l8ReadWorkerSource(t, "job_types.go"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: "job_types.go", fileSet: fileSet, parsed: parsed}
+	wanted := map[string]bool{
+		"DefaultJobLogRecordBytes": true,
+		"DefaultJobLogReadBytes":   true,
+	}
+	found := make(map[string]bool, len(wanted))
+	for _, declaration := range parsed.Decls {
+		generated, ok := declaration.(*ast.GenDecl)
+		if !ok || generated.Tok != token.CONST {
+			continue
+		}
+		for _, rawSpec := range generated.Specs {
+			spec, ok := rawSpec.(*ast.ValueSpec)
+			if !ok || len(spec.Names) != 1 {
+				continue
+			}
+			scope := l8WorkerV2GuardScope{file: file, node: spec}
+			if wanted[spec.Names[0].Name] {
+				found[spec.Names[0].Name] = true
+				if !l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+					t.Errorf("exact %s job log read bound was not allowed", spec.Names[0].Name)
+				}
+
+				mutatedValue := *spec
+				mutatedValue.Values = []ast.Expr{&ast.BinaryExpr{
+					X:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+					Op: token.SHL,
+					Y:  &ast.BasicLit{Kind: token.INT, Value: "10"},
+				}}
+				mutatedScope := scope
+				mutatedScope.node = &mutatedValue
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s value drift retained compatibility allowance", spec.Names[0].Name)
+				}
+
+				mutatedType := *spec
+				mutatedType.Type = &ast.Ident{Name: "uint64"}
+				mutatedScope.node = &mutatedType
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s type drift retained compatibility allowance", spec.Names[0].Name)
+				}
+
+				mutatedMarker := *spec
+				mutatedMarker.Names = []*ast.Ident{{Name: spec.Names[0].Name + "V2"}}
+				mutatedScope.node = &mutatedMarker
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s V2 marker retained compatibility allowance", spec.Names[0].Name)
+				}
+			}
+			if spec.Names[0].Name == "DefaultJobLogRetentionBytes" && l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+				t.Error("neighboring DefaultJobLogRetentionBytes was admitted to job log read compatibility")
+			}
+		}
+	}
+	for name := range wanted {
+		if !found[name] {
+			t.Errorf("exact %s job log read bound was not found", name)
+		}
+	}
+}
+
+func TestL8WorkerV2GuardAllowsOnlyExactJobLogStreams(t *testing.T) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "job_types.go", l8ReadWorkerSource(t, "job_types.go"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: "job_types.go", fileSet: fileSet, parsed: parsed}
+	wanted := map[string]bool{
+		"JobLogStreamStdout": true,
+		"JobLogStreamStderr": true,
+	}
+	found := make(map[string]bool, len(wanted))
+	for _, declaration := range parsed.Decls {
+		generated, ok := declaration.(*ast.GenDecl)
+		if !ok || generated.Tok != token.CONST {
+			continue
+		}
+		for _, rawSpec := range generated.Specs {
+			spec, ok := rawSpec.(*ast.ValueSpec)
+			if !ok || len(spec.Names) != 1 {
+				continue
+			}
+			scope := l8WorkerV2GuardScope{file: file, node: spec}
+			if wanted[spec.Names[0].Name] {
+				found[spec.Names[0].Name] = true
+				if !l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+					t.Errorf("exact %s job log stream was not allowed", spec.Names[0].Name)
+				}
+
+				mutatedValue := *spec
+				mutatedValue.Values = []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: `"other"`}}
+				mutatedScope := scope
+				mutatedScope.node = &mutatedValue
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s value drift retained compatibility allowance", spec.Names[0].Name)
+				}
+
+				mutatedMarker := *spec
+				mutatedMarker.Names = []*ast.Ident{{Name: spec.Names[0].Name + "V2"}}
+				mutatedScope.node = &mutatedMarker
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s V2 marker retained compatibility allowance", spec.Names[0].Name)
+				}
+			}
+			if spec.Names[0].Name == "JobStateRunning" && l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+				t.Error("neighboring JobStateRunning was admitted to job log stream compatibility")
+			}
+		}
+	}
+	for name := range wanted {
+		if !found[name] {
+			t.Errorf("exact %s job log stream was not found", name)
+		}
+	}
+}
+
+func TestL8WorkerV2GuardAllowsOnlyExactExecIOBounds(t *testing.T) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "io_validation.go", l8ReadWorkerSource(t, "io_validation.go"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: "io_validation.go", fileSet: fileSet, parsed: parsed}
+	wanted := map[string]bool{
+		"MaxExecStdinBytes":         true,
+		"MaxExecStdoutCaptureBytes": true,
+		"MaxExecStderrCaptureBytes": true,
+	}
+	found := make(map[string]bool, len(wanted))
+	for _, declaration := range parsed.Decls {
+		generated, ok := declaration.(*ast.GenDecl)
+		if !ok || generated.Tok != token.CONST {
+			continue
+		}
+		for _, rawSpec := range generated.Specs {
+			spec, ok := rawSpec.(*ast.ValueSpec)
+			if !ok || len(spec.Names) != 1 {
+				continue
+			}
+			scope := l8WorkerV2GuardScope{file: file, node: spec}
+			if wanted[spec.Names[0].Name] {
+				found[spec.Names[0].Name] = true
+				if !l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+					t.Errorf("exact %s execution I/O bound was not allowed", spec.Names[0].Name)
+				}
+
+				mutatedValue := *spec
+				mutatedValue.Values = []ast.Expr{&ast.BinaryExpr{
+					X:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+					Op: token.SHL,
+					Y:  &ast.BasicLit{Kind: token.INT, Value: "10"},
+				}}
+				mutatedScope := scope
+				mutatedScope.node = &mutatedValue
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s value drift retained compatibility allowance", spec.Names[0].Name)
+				}
+
+				mutatedType := *spec
+				mutatedType.Type = &ast.Ident{Name: "uint64"}
+				mutatedScope.node = &mutatedType
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s type drift retained compatibility allowance", spec.Names[0].Name)
+				}
+
+				mutatedMarker := *spec
+				mutatedMarker.Names = []*ast.Ident{{Name: spec.Names[0].Name + "V2"}}
+				mutatedScope.node = &mutatedMarker
+				if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+					t.Errorf("%s V2 marker retained compatibility allowance", spec.Names[0].Name)
+				}
+			}
+			if (spec.Names[0].Name == "MaxCopyInPayloadBytes" || spec.Names[0].Name == "MaxCopyOutPayloadBytes") && l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+				t.Errorf("neighboring %s was admitted to execution I/O compatibility", spec.Names[0].Name)
+			}
+		}
+	}
+	for name := range wanted {
+		if !found[name] {
+			t.Errorf("exact %s execution I/O bound was not found", name)
+		}
+	}
+}
+
+func TestL8WorkerV2GuardAllowsOnlyExactBase64CopyPayloadEncoding(t *testing.T) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "copy.go", l8ReadWorkerSource(t, "copy.go"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: "copy.go", fileSet: fileSet, parsed: parsed}
+	var encoding *ast.ValueSpec
+	var request *ast.TypeSpec
+	var neighboring []*ast.ValueSpec
+	for _, declaration := range parsed.Decls {
+		generated, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, rawSpec := range generated.Specs {
+			switch spec := rawSpec.(type) {
+			case *ast.ValueSpec:
+				if len(spec.Names) != 1 {
+					continue
+				}
+				switch spec.Names[0].Name {
+				case "CopyPayloadEncodingBase64":
+					encoding = spec
+				case "CopyStatusCompleted", "CopyStatusFailed":
+					neighboring = append(neighboring, spec)
+				}
+			case *ast.TypeSpec:
+				if spec.Name.Name == "CopyInRequest" {
+					request = spec
+				}
+			}
+		}
+	}
+	if encoding == nil || request == nil || len(neighboring) != 2 {
+		t.Fatal("exact copy payload encoding or neighboring copy declarations were not found")
+	}
+	scope := l8WorkerV2GuardScope{file: file, node: encoding}
+	if !l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+		t.Fatal("exact CopyPayloadEncodingBase64 compatibility declaration was not allowed")
+	}
+
+	mutatedValue := *encoding
+	mutatedValue.Values = []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: `"raw"`}}
+	mutatedScope := scope
+	mutatedScope.node = &mutatedValue
+	if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+		t.Error("CopyPayloadEncodingBase64 value drift retained compatibility allowance")
+	}
+
+	mutatedMarker := *encoding
+	mutatedMarker.Names = []*ast.Ident{{Name: "CopyPayloadEncodingBase64V2"}}
+	mutatedScope.node = &mutatedMarker
+	if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+		t.Error("CopyPayloadEncodingBase64 V2 marker retained compatibility allowance")
+	}
+
+	for _, spec := range neighboring {
+		if l8WorkerV2AllowedCompatibilityDeclaration(l8WorkerV2GuardScope{file: file, node: spec}) {
+			t.Errorf("neighboring %s was admitted to copy payload compatibility", spec.Names[0].Name)
+		}
+	}
+	if l8WorkerV2AllowedCompatibilityDeclaration(l8WorkerV2GuardScope{file: file, node: request}) {
+		t.Error("neighboring CopyInRequest type was admitted to copy payload compatibility")
+	}
+}
+
+func TestL8WorkerV2GuardAllowsOnlyExactSharedJobLogRecord(t *testing.T) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "job_types.go", l8ReadWorkerSource(t, "job_types.go"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: "job_types.go", fileSet: fileSet, parsed: parsed}
+	var record, neighboring *ast.TypeSpec
+	for _, declaration := range parsed.Decls {
+		generated, ok := declaration.(*ast.GenDecl)
+		if !ok || generated.Tok != token.TYPE {
+			continue
+		}
+		for _, rawSpec := range generated.Specs {
+			spec, ok := rawSpec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			switch spec.Name.Name {
+			case "JobLogRecord":
+				record = spec
+			case "Job":
+				neighboring = spec
+			}
+		}
+	}
+	if record == nil || neighboring == nil {
+		t.Fatal("exact JobLogRecord or neighboring Job declaration was not found")
+	}
+	scope := l8WorkerV2GuardScope{file: file, node: record}
+	if !l8WorkerV2AllowedCompatibilityDeclaration(scope) {
+		t.Fatal("exact JobLogRecord compatibility declaration was not allowed")
+	}
+	mutatedSchema := *record
+	structure := *record.Type.(*ast.StructType)
+	fields := *structure.Fields
+	fields.List = append([]*ast.Field(nil), fields.List...)
+	first := *fields.List[0]
+	first.Type = &ast.Ident{Name: "string"}
+	fields.List[0] = &first
+	structure.Fields = &fields
+	mutatedSchema.Type = &structure
+	mutatedScope := scope
+	mutatedScope.node = &mutatedSchema
+	if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+		t.Error("JobLogRecord schema drift retained compatibility allowance")
+	}
+	mutatedMarker := *record
+	mutatedMarker.Name = &ast.Ident{Name: "JobLogRecordV2"}
+	mutatedScope.node = &mutatedMarker
+	if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) {
+		t.Error("JobLogRecord V2 marker retained compatibility allowance")
+	}
+	neighboringScope := l8WorkerV2GuardScope{file: file, node: neighboring}
+	if l8WorkerV2AllowedCompatibilityDeclaration(neighboringScope) {
+		t.Error("neighboring Job declaration was admitted to compatibility")
+	}
+}
+
+func TestL8WorkerV2GuardAllowsOnlyExactJobStoreDirectoryEntries(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_store_v2.go": true}}
+	source := `package sandboxworker
+import (
+	"errors"
+	"os"
+	"path/filepath"
+)
+type JobV2 struct { ID string }
+type storedJobStateV2 struct { JobV2 JobV2 }
+type jobStoreV2 struct { root string }
+func (store *jobStoreV2) load(string) (storedJobStateV2, error) { return storedJobStateV2{}, nil }
+func (store *jobStoreV2) list() ([]storedJobStateV2, error) {
+	if store == nil {
+		return nil, errors.New("job v2 store is unavailable")
+	}
+	entries, err := os.ReadDir(store.root)
+	if err != nil {
+		return nil, errors.New("job v2 state root could not be read")
+	}
+	states := make([]storedJobStateV2, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		jobID := entry.Name()[:len(entry.Name())-len(".json")]
+		state, err := store.load(jobID)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	for index := 1; index < len(states); index++ {
+		for current := index; current > 0 && states[current].JobV2.ID < states[current-1].JobV2.ID; current-- {
+			states[current], states[current-1] = states[current-1], states[current]
+		}
+	}
+	return states, nil
+}`
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_store_v2.go": source}, policy)
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			name: "entry reassigned",
+			mutate: func(value string) string {
+				value = strings.Replace(value, "type jobStoreV2 struct { root string }", "type jobStoreV2 struct { root string }\nvar replacementEntry os.DirEntry", 1)
+				return strings.Replace(value, "\tfor _, entry := range entries {", "\tfor _, entry := range entries {\n\t\tentry = replacementEntry", 1)
+			},
+		},
+		{
+			name: "Type receiver substituted",
+			mutate: func(value string) string {
+				return strings.Replace(value, "\t\tif !entry.Type()", "\t\tcheckedEntry := entry\n\t\tif !checkedEntry.Type()", 1)
+			},
+		},
+		{
+			name: "Name receiver substituted",
+			mutate: func(value string) string {
+				value = strings.Replace(value, "\t\tif !entry.Type()", "\t\tcheckedEntry := entry\n\t\tif !entry.Type()", 1)
+				return strings.Replace(value, "filepath.Ext(entry.Name())", "filepath.Ext(checkedEntry.Name())", 1)
+			},
+		},
+		{
+			name: "regular JSON filtering altered",
+			mutate: func(value string) string {
+				return strings.Replace(value, `filepath.Ext(entry.Name()) != ".json"`, `filepath.Ext(entry.Name()) != ".state"`, 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{"job_store_v2.go": tt.mutate(source)}, policy, "interface dispatch")
+		})
+	}
+}
+
 func TestL8WorkerV2GuardClientTransportFixturePreservesExistingV2Production(t *testing.T) {
 	sources := map[string]string{
 		"types.go": `package sandboxworker
@@ -664,11 +1538,12 @@ func TestL8WorkerV2GuardLocksExactDecoderCallerComposition(t *testing.T) {
 	sources := map[string]string{
 		"types.go": `package sandboxworker
 type JobStartRequestV2 struct{}
-type JobV2 struct{}
+type JobV2 struct { ID string }
 type callerNestedValue struct { Value string }
 type Request struct { Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }
 type Response struct { JobV2 *JobV2; Nested *callerNestedValue }
 type storedJobStateV2 struct { JobV2 JobV2; Nested *callerNestedValue }
+func (state storedJobStateV2) Validate() error { return nil }
 func (request Request) WithDefaults() Request { return request }`,
 		"protocol_decode.go": `package sandboxworker
 import "io"
@@ -750,21 +1625,245 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, reques
 import (
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 )
 const maxStoredJobStateV2Bytes int64 = 64 << 10
-type jobStoreV2 struct{}
+type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
+func validJobSafeID(value string) bool { return value != "" }
+func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	if store == nil || !validJobSafeID(jobID) {
+		return nil, errors.New("stored job state is unavailable")
+	}
+	path := filepath.Join(store.root, jobID+".json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > maxStoredJobStateV2Bytes {
+		return nil, errors.New("stored job state is unavailable")
+	}
+	return os.Open(path)
+}
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
-	reader, err := openStoredJobStateV2(jobID)
+	reader, err := store.openStoredJobStateV2(jobID)
 	if err != nil { return storedJobStateV2{}, errors.New("stored job state could not be opened") }
 	defer reader.Close()
 	var state storedJobStateV2
 	if err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
+	if err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
+	if state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New("stored job state is malformed") }
 	return state, nil
 }`,
 	}
 	l8AssertWorkerV2GuardAllows(t, sources, policy)
+
+	storeValidation := "\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n"
+	storeCorrelation := "\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n"
+	for _, tt := range []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{
+			name: "store omits decoded state validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "", 1)
+			},
+		},
+		{
+			name: "store ignores decoded state validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\t_ = state.Validate()\n", 1)
+			},
+		},
+		{
+			name: "store validates after identity correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation+storeCorrelation, storeCorrelation+storeValidation, 1)
+			},
+		},
+		{
+			name: "store validates copied receiver",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\totherState := state\n\tif err := otherState.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n", 1)
+			},
+		},
+		{
+			name: "store dispatches validation through helper",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "state.Validate()", "validateStoredJobStateV2(state)", 1)
+				mutated["job_store_v2.go"] += "\nfunc validateStoredJobStateV2(state storedJobStateV2) error { return state.Validate() }\n"
+			},
+		},
+		{
+			name: "store dispatches validation through interface",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "state.Validate()", "storedJobStateValidatorV2(state).Validate()", 1)
+				mutated["job_store_v2.go"] += "\ntype storedJobStateValidatorV2 interface { Validate() error }\n"
+			},
+		},
+		{
+			name: "store omits embedded job identity correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeCorrelation, "", 1)
+			},
+		},
+		{
+			name: "store inverts embedded job identity correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "state.JobV2.ID != jobID", "state.JobV2.ID == jobID", 1)
+			},
+		},
+		{
+			name: "store correlates copied decoded object",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeCorrelation, "\totherState := state\n\tif otherState.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n", 1)
+			},
+		},
+		{
+			name: "store correlates copied requested identity",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeCorrelation, "\totherJobID := jobID\n\tif state.JobV2.ID != otherJobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n", 1)
+			},
+		},
+		{
+			name: "store normalizes embedded identity before correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "state.JobV2.ID != jobID", "normalizeStoredJobIDV2(state.JobV2.ID) != jobID", 1)
+				mutated["job_store_v2.go"] += "\nfunc normalizeStoredJobIDV2(value string) string { return value }\n"
+			},
+		},
+		{
+			name: "store assigns embedded identity before correlation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeCorrelation, "\tstate.JobV2.ID = jobID\n"+storeCorrelation, 1)
+			},
+		},
+		{
+			name: "store returns alternate success before validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\tif jobID != \"\" { return state, nil }\n"+storeValidation, 1)
+			},
+		},
+		{
+			name: "store branches around validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\tif jobID != \"\" {\n"+storeValidation+"\t}\n", 1)
+			},
+		},
+		{
+			name: "store goto bypasses validation",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation+storeCorrelation, "\tgoto correlated\n"+storeValidation+"correlated:\n"+storeCorrelation, 1)
+			},
+		},
+		{
+			name: "store exposes raw validation error",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], storeValidation, "\tif err := state.Validate(); err != nil { return storedJobStateV2{}, err }\n", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			tt.mutate(mutated)
+			if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
+				t.Fatal("validated store-load mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	validatedServerSources := l8CloneWorkerV2GuardSources(sources)
+	validatedServerSources["types.go"] = strings.Replace(validatedServerSources["types.go"],
+		"type Request struct { Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }",
+		"type Request struct { RequestID string; Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }", 1)
+	validatedServerSources["types.go"] += "\nfunc (request Request) Validate() error { return nil }\n"
+	validatedServerSources["server.go"] = `package sandboxworker
+import (
+	"fmt"
+	"io"
+)
+const configuredMaxRequestBytesV2 int64 = 8 << 20
+const OperationProtocolError = "protocol_error"
+const ErrorCodeMalformedRequest = "malformed_request"
+type Server struct { maxRequestBytes int64 }
+func configuredServerV2() *Server { return &Server{maxRequestBytes: configuredMaxRequestBytesV2} }
+func protocolErrorResponse(requestID, operation, code, message string) Response { return Response{} }
+func (server *Server) readRequest(reader io.Reader) (Request, *Response) {
+	var request Request
+	if err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil {
+		response := protocolErrorResponse("", OperationProtocolError, ErrorCodeMalformedRequest, "malformed worker request")
+		return Request{}, &response
+	}
+	request = request.WithDefaults()
+	if err := request.Validate(); err != nil {
+		response := protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeMalformedRequest, fmt.Sprintf("malformed worker request: %v", err))
+		return request, &response
+	}
+	return request, nil
+}`
+	l8AssertWorkerV2GuardAllows(t, validatedServerSources, policy)
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{
+			name: "validated server substitutes decoder limit",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "decodeWorkerRequestInto(reader, server.maxRequestBytes, &request)", "decodeWorkerRequestInto(reader, configuredMaxRequestBytesV2, &request)", 1)
+			},
+		},
+		{
+			name: "validated server skips defaults",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "\trequest = request.WithDefaults()\n", "", 1)
+			},
+		},
+		{
+			name: "validated server validates pointer alias",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "request.Validate()", "(&request).Validate()", 1)
+			},
+		},
+		{
+			name: "validated server changes validation error format",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "malformed worker request: %v", "worker request validation failed: %v", 1)
+			},
+		},
+		{
+			name: "validated server changes validation error code",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "request.Operation, ErrorCodeMalformedRequest, fmt.Sprintf", "request.Operation, OperationProtocolError, fmt.Sprintf", 1)
+			},
+		},
+		{
+			name: "validated server uses decoded request ID on decode failure",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "protocolErrorResponse(\"\", OperationProtocolError", "protocolErrorResponse(request.RequestID, OperationProtocolError", 1)
+			},
+		},
+		{
+			name: "validated server smuggles decoded request",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] += "\nvar leakedValidatedRequest Request\n"
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "\trequest = request.WithDefaults()", "\tleakedValidatedRequest = request\n\trequest = request.WithDefaults()", 1)
+			},
+		},
+		{
+			name: "validated server returns before validation",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "\tif err := request.Validate()", "\tif request.RequestID == \"early\" { return request, nil }\n\tif err := request.Validate()", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(validatedServerSources)
+			tt.mutate(mutated)
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
 	possiblyReturningHelper := l8CloneWorkerV2GuardSources(sources)
 	possiblyReturningHelper["client.go"] = strings.Replace(possiblyReturningHelper["client.go"], "\tvar response Response", `	_ = false && reviewSkippedForeverBool()
 	_ = true || reviewSkippedForeverBool()
@@ -1339,8 +2438,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store acquisition is unreachable after unconditional error return",
 			path:    "job_store_v2.go",
-			old:     "\treader, err := openStoredJobStateV2(jobID)",
-			replace: "\tif true { return storedJobStateV2{}, errors.New(\"stored job loading disabled\") }\n\treader, err := openStoredJobStateV2(jobID)",
+			old:     "\treader, err := store.openStoredJobStateV2(jobID)",
+			replace: "\tif true { return storedJobStateV2{}, errors.New(\"stored job loading disabled\") }\n\treader, err := store.openStoredJobStateV2(jobID)",
 		},
 		{
 			name:    "store decode is unreachable after unconditional error return",
@@ -1371,15 +2470,146 @@ func (reviewReturningReceiver) value() int { return 1 }
 		})
 	}
 
-	t.Run("store uses method-shaped acquisition with matching name", func(t *testing.T) {
+	t.Run("store uses package-level root-blind acquisition with matching name", func(t *testing.T) {
 		mutated := l8CloneWorkerV2GuardSources(sources)
-		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\treader, err := openStoredJobStateV2(jobID)", "\treader, err := store.openStoredJobStateV2(jobID)", 1)
-		mutated["job_store_v2.go"] += "\nfunc (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }\n"
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "func (store *jobStoreV2) openStoredJobStateV2(jobID string)", "func openStoredJobStateV2(jobID string)", 1)
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "store == nil || ", "", 1)
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "store.root", "globalJobStoreV2Root", 1)
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "store.openStoredJobStateV2(jobID)", "openStoredJobStateV2(jobID)", 1)
+		mutated["job_store_v2.go"] += "\nvar globalJobStoreV2Root string\n"
 		if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
-			t.Fatal("method-shaped store acquisition mutation did not change the positive fixture")
+			t.Fatal("package-level store acquisition mutation did not change the positive fixture")
 		}
 		l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 	})
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			name: "store opens through a different receiver object",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\treader, err := store.openStoredJobStateV2(jobID)", "\totherStore := store\n\treader, err := otherStore.openStoredJobStateV2(jobID)", 1)
+			},
+		},
+		{
+			name: "store opener accepts an extra parameter",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "openStoredJobStateV2(jobID string)", "openStoredJobStateV2(jobID string, rootOverride string)", 1)
+				return strings.Replace(source, "store.openStoredJobStateV2(jobID)", "store.openStoredJobStateV2(jobID, \"\")", 1)
+			},
+		},
+		{
+			name: "store opener belongs to a generic receiver",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "type jobStoreV2 struct { root string }", "type jobStoreV2[T any] struct { root string }", 1)
+				source = strings.Replace(source, "func (store *jobStoreV2) openStoredJobStateV2", "func (store *jobStoreV2[T]) openStoredJobStateV2", 1)
+				return strings.Replace(source, "func (store *jobStoreV2) load", "func (store *jobStoreV2[T]) load", 1)
+			},
+		},
+		{
+			name: "store opener method value escapes before acquisition",
+			mutate: func(source string) string {
+				source += "\ntype storedJobOpenerV2 func(string) (storedJobReaderV2, error)\nvar escapedStoredJobOpenerV2 storedJobOpenerV2\n"
+				return strings.Replace(source, "\treader, err := store.openStoredJobStateV2(jobID)", "\tescapedStoredJobOpenerV2 = store.openStoredJobStateV2\n\treader, err := store.openStoredJobStateV2(jobID)", 1)
+			},
+		},
+		{
+			name: "store opener substitutes private worker v2 id vocabulary",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "validJobSafeID(jobID)", "validWorkerV2SafeID(jobID)", 1)
+				return source + "\nfunc validWorkerV2SafeID(value string) bool { return value != \"\" }\n"
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated["job_store_v2.go"] = tt.mutate(mutated["job_store_v2.go"])
+			if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
+				t.Fatal("store opener mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name        string
+		replacement string
+		helper      string
+	}{
+		{
+			name: "store opener references receiver but delegates to package global root helper",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	_ = store.root
+	return openGlobalStoredJobStateV2(jobID)
+}`,
+			helper: `
+var globalJobStoreV2Root string
+func openGlobalStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	return os.Open(filepath.Join(globalJobStoreV2Root, jobID+".json"))
+}
+`,
+		},
+		{
+			name: "store opener delegates receiver root and job identity through package helper",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	return openStoredJobStateV2FromRoot(store.root, jobID)
+}`,
+			helper: `
+func openStoredJobStateV2FromRoot(root, jobID string) (storedJobReaderV2, error) {
+	return os.Open(filepath.Join(root, jobID+".json"))
+}
+`,
+		},
+		{
+			name: "store opener replaces receiver root through a package global",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	root := store.root
+	root = globalJobStoreV2Root
+	path := filepath.Join(root, jobID+".json")
+	return os.Open(path)
+}`,
+			helper: "\nvar globalJobStoreV2Root string\n",
+		},
+		{
+			name: "store opener replaces exact job identity",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	jobID = "job-neighbor"
+	path := filepath.Join(store.root, jobID+".json")
+	return os.Open(path)
+}`,
+		},
+		{
+			name: "store opener escapes derived path before open",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	path := filepath.Join(store.root, jobID+".json")
+	escapedStoredJobPathV2 = path
+	return os.Open(path)
+}`,
+			helper: "\nvar escapedStoredJobPathV2 string\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			const safeOpener = `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	if store == nil || !validJobSafeID(jobID) {
+		return nil, errors.New("stored job state is unavailable")
+	}
+	path := filepath.Join(store.root, jobID+".json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > maxStoredJobStateV2Bytes {
+		return nil, errors.New("stored job state is unavailable")
+	}
+	return os.Open(path)
+}`
+			mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], safeOpener, tt.replacement, 1) + tt.helper
+			if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
+				t.Fatal("store opener implementation mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
 
 	for _, tt := range []struct {
 		name   string
@@ -1518,7 +2748,7 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name: "store defers close on replacement reader",
 			mutate: func(mutated map[string]string) {
-				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\treplacementReader, _ := openStoredJobStateV2(jobID)\n\tdefer replacementReader.Close()", 1)
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\treplacementReader, _ := store.openStoredJobStateV2(jobID)\n\tdefer replacementReader.Close()", 1)
 			},
 		},
 	} {
@@ -1543,7 +2773,7 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{name: "client uses different acquired reader", path: "client.go", old: "maxResponseBytes := transport.maxResponseBytes", replace: "otherConnection := connection\n\tmaxResponseBytes := transport.maxResponseBytes"},
 		{name: "store decodes throwaway state", path: "job_store_v2.go", old: "var state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state)", replace: "var decoded storedJobStateV2\n\tvar state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &decoded)"},
 		{name: "store uses different acquired reader", path: "job_store_v2.go", old: "var state storedJobStateV2", replace: "otherReader := reader\n\tvar state storedJobStateV2"},
-		{name: "store opens neighbor identity", path: "job_store_v2.go", old: "openStoredJobStateV2(jobID)", replace: "openStoredJobStateV2(\"job-neighbor\")"},
+		{name: "store opens neighbor identity", path: "job_store_v2.go", old: "store.openStoredJobStateV2(jobID)", replace: "store.openStoredJobStateV2(\"job-neighbor\")"},
 		{name: "client reassigns acquired connection", path: "client.go", old: "\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {", replace: "\tconnection = rewrapResponseConnection(connection)\n\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {"},
 		{name: "store reassigns acquired reader", path: "job_store_v2.go", old: "\tvar state storedJobStateV2", replace: "\treader = reader\n\tvar state storedJobStateV2"},
 		{name: "server resets decoded request", path: "server.go", old: "\treturn request, nil", replace: "\trequest = Request{}\n\treturn request, nil"},
@@ -1733,8 +2963,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store returns success before unreachable decoder",
 			path:    "job_store_v2.go",
-			old:     "\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
-			replace: "\treturn state, nil\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn storedJobStateV2{}, errors.New(\"unreachable stored job state\")",
+			old:     "\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
+			replace: "\treturn state, nil\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn storedJobStateV2{}, errors.New(\"unreachable stored job state\")",
 		},
 		{
 			name:    "server decoder is unreachable under false branch",
@@ -1905,8 +3135,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store replaces job identity before open",
 			path:    "job_store_v2.go",
-			old:     "\treader, err := openStoredJobStateV2(jobID)",
-			replace: "\tjobID = \"job-neighbor\"\n\treader, err := openStoredJobStateV2(jobID)",
+			old:     "\treader, err := store.openStoredJobStateV2(jobID)",
+			replace: "\tjobID = \"job-neighbor\"\n\treader, err := store.openStoredJobStateV2(jobID)",
 			want:    "decoder caller composition",
 		},
 		{
@@ -1991,8 +3221,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store replaces receiver before open",
 			path:    "job_store_v2.go",
-			old:     "\treader, err := openStoredJobStateV2(jobID)",
-			replace: "\tstore = &jobStoreV2{}\n\treader, err := openStoredJobStateV2(jobID)",
+			old:     "\treader, err := store.openStoredJobStateV2(jobID)",
+			replace: "\tstore = &jobStoreV2{}\n\treader, err := store.openStoredJobStateV2(jobID)",
 		},
 		{
 			name:    "server preconsumes bounded reader before exact decoder",
@@ -2010,7 +3240,7 @@ func (reviewReturningReceiver) value() int { return 1 }
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			if tt.jobValue {
-				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct{}", "type JobV2 struct { Value string }", 1)
+				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct { ID string }", "type JobV2 struct { ID string; Value string }", 1)
 			}
 			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
 			if mutated[tt.path] == sources[tt.path] {
@@ -2035,8 +3265,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store goto bypasses exact decoder",
 			path:    "job_store_v2.go",
-			old:     "\tvar state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
-			replace: "\tvar state storedJobStateV2\n\tgoto decoded\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n decoded:\n\t;\n\treturn state, nil",
+			old:     "\tvar state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
+			replace: "\tvar state storedJobStateV2\n\tgoto decoded\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n decoded:\n\t;\n\tif err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\tif state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
 		},
 		{
 			name:    "client goto bypasses required half-close",
@@ -2102,8 +3332,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store replaces job identity through pointer alias before open",
 			path:    "job_store_v2.go",
-			old:     "\treader, err := openStoredJobStateV2(jobID)",
-			replace: "\tjobIDAlias := &jobID\n\t*jobIDAlias = \"job-neighbor\"\n\treader, err := openStoredJobStateV2(jobID)",
+			old:     "\treader, err := store.openStoredJobStateV2(jobID)",
+			replace: "\tjobIDAlias := &jobID\n\t*jobIDAlias = \"job-neighbor\"\n\treader, err := store.openStoredJobStateV2(jobID)",
 		},
 		{
 			name:    "server directly reads decoder input before decode",
@@ -2121,7 +3351,7 @@ func (reviewReturningReceiver) value() int { return 1 }
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			if tt.jobValue {
-				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct{}", "type JobV2 struct { Value string }", 1)
+				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct { ID string }", "type JobV2 struct { ID string; Value string }", 1)
 			}
 			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
 			if mutated[tt.path] == sources[tt.path] {
@@ -2187,11 +3417,12 @@ func TestL8WorkerV2GuardRejectsCallerWholeValueEscapesAndCleanupBypasses(t *test
 	sources := map[string]string{
 		"types.go": `package sandboxworker
 type JobStartRequestV2 struct{}
-type JobV2 struct{}
+type JobV2 struct { ID string }
 type callerNestedValue struct { Value string }
 type Request struct { Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }
 type Response struct { JobV2 *JobV2; Nested *callerNestedValue }
 type storedJobStateV2 struct { JobV2 JobV2; Nested *callerNestedValue }
+func (state storedJobStateV2) Validate() error { return nil }
 func (request Request) WithDefaults() Request { return request }`,
 		"protocol_decode.go": `package sandboxworker
 import "io"
@@ -2273,17 +3504,32 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, reques
 import (
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 )
 const maxStoredJobStateV2Bytes int64 = 64 << 10
-type jobStoreV2 struct{}
+type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
+func validJobSafeID(value string) bool { return value != "" }
+func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	if store == nil || !validJobSafeID(jobID) {
+		return nil, errors.New("stored job state is unavailable")
+	}
+	path := filepath.Join(store.root, jobID+".json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 || info.Size() <= 0 || info.Size() > maxStoredJobStateV2Bytes {
+		return nil, errors.New("stored job state is unavailable")
+	}
+	return os.Open(path)
+}
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
-	reader, err := openStoredJobStateV2(jobID)
+	reader, err := store.openStoredJobStateV2(jobID)
 	if err != nil { return storedJobStateV2{}, errors.New("stored job state could not be opened") }
 	defer reader.Close()
 	var state storedJobStateV2
 	if err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
+	if err := state.Validate(); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
+	if state.JobV2.ID != jobID { return storedJobStateV2{}, errors.New("stored job state is malformed") }
 	return state, nil
 }`,
 	}
@@ -2588,6 +3834,84 @@ func validateWorkerJSONPreflightV2(raw string) error {
 	l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": mutableScanner}, policy, "implicit interface callback")
 }
 
+func TestL8WorkerV2GuardResolvesOnlyOriginalBoundedDecoderBodyOwner(t *testing.T) {
+	source := `package sandboxworker
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+)
+type JobStartRequestV2 struct { Value string }
+type Request struct { JobStartV2 *JobStartRequestV2 }
+func validateWorkerJSONPreflightV2(raw string) error {
+	if len(raw) == 0 { return errors.New("worker request is empty") }
+	return nil
+}
+func readWorkerJSONBoundedV2(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 { return nil, errors.New("worker JSON limit is invalid") }
+	limited := &io.LimitedReader{R: reader, N: maxBytes}
+	raw, err := io.ReadAll(limited)
+	if err != nil { return nil, err }
+	if limited.N == 0 {
+		var probe [1]byte
+		n, probeErr := io.ReadFull(reader, probe[:])
+		if n > 0 { return nil, errors.New("worker JSON exceeds limit") }
+		if n == 0 && probeErr == io.EOF { return raw, nil }
+		if probeErr != nil { return nil, probeErr }
+		return nil, errors.New("worker JSON probe made no progress")
+	}
+	return raw, nil
+}
+func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error {
+	raw, err := readWorkerJSONBoundedV2(reader, maxBytes)
+	if err != nil { return err }
+	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"protocol_decode.go": true}}
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": source}, policy)
+
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "protocol_decode.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: "protocol_decode.go", fileSet: fileSet, parsed: parsed}
+	var function *ast.FuncDecl
+	for _, declaration := range parsed.Decls {
+		candidate, ok := declaration.(*ast.FuncDecl)
+		if ok && candidate.Name.Name == "decodeWorkerRequestInto" {
+			function = candidate
+			break
+		}
+	}
+	if function == nil || function.Body == nil {
+		t.Fatal("decodeWorkerRequestInto fixture was not found")
+	}
+	bodyScope := l8WorkerV2GuardScope{file: file, node: function.Body}
+	if owner := l8WorkerV2ScopeFunction(bodyScope); owner != function {
+		t.Fatal("original mixed body scope did not resolve its exact owning function")
+	}
+	detached := *function.Body
+	detachedScope := bodyScope
+	detachedScope.node = &detached
+	if owner := l8WorkerV2ScopeFunction(detachedScope); owner != nil {
+		t.Error("detached block borrowed bounded decoder function ownership")
+	}
+	alternate := function.Body.List[1].(*ast.IfStmt).Body
+	alternateScope := bodyScope
+	alternateScope.node = alternate
+	if owner := l8WorkerV2ScopeFunction(alternateScope); owner != nil {
+		t.Error("alternate nested block borrowed bounded decoder function ownership")
+	}
+}
+
 func TestL8WorkerV2GuardAllowsOnlyExactAuditedJSONMarshalSeams(t *testing.T) {
 	keyPolicy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{
 		"job_store_v2.go":    true,
@@ -2655,6 +3979,32 @@ func encodeWorkerResponse(writer io.Writer, response Response) error {
 	return encoder.Encode(response)
 }`
 	l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": responseEncodeSource}, keyPolicy)
+
+	productResponseEncodeSource := `package sandboxworker
+import (
+	"encoding/json"
+	"io"
+	"time"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+)
+type SecurityControls struct { CredentialModes []string }
+type SecurityPolicy struct { Requested SecurityControls; Enforced SecurityControls }
+func (SecurityPolicy) MarshalJSON() ([]byte, error) { return []byte("{}"), nil }
+type RuntimeDriver struct {
+	Security SecurityPolicy
+	NetworkEnforcement *sandboxruntime.RuntimeNetworkEnforcementMetadata
+}
+type Capabilities struct { RuntimeDrivers []RuntimeDriver }
+type JobV2 struct { SubmittedAt time.Time }
+type Response struct { Capabilities *Capabilities; JobV2 *JobV2 }
+func encodeWorkerResponse(writer io.Writer, response Response) error {
+	encoder := json.NewEncoder(writer)
+	return encoder.Encode(response)
+}`
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": productResponseEncodeSource}, keyPolicy)
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"protocol_decode.go": strings.ReplaceAll(productResponseEncodeSource, "SecurityPolicy", "AdjacentSecurityPolicy"),
+	}, keyPolicy, "implicit interface callback")
 
 	marshalTests := []struct {
 		name   string
@@ -2831,6 +4181,54 @@ func decodeWorkerResponse(reader io.Reader) (Response, error) {
 			l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": source}, policy)
 		})
 	}
+
+	credentialDeliveryRequest := `package sandboxworker
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+)
+type SecurityControls struct { CredentialDelivery *sandboxruntime.RuntimeCredentialDeliveryMetadata }
+type SecurityPolicy struct { Requested SecurityControls; Enforced SecurityControls }
+type CreateRequest struct { Security SecurityPolicy }
+type JobStartRequestV2 struct { Value string }
+type Request struct { Create *CreateRequest; JobStartV2 *JobStartRequestV2 }
+func validateWorkerJSONPreflightV2(raw string) error {
+	if len(raw) == 0 { return errors.New("worker request is empty") }
+	return nil
+}
+func readWorkerJSONBoundedV2(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 { return nil, errors.New("worker JSON limit is invalid") }
+	limited := &io.LimitedReader{R: reader, N: maxBytes}
+	raw, err := io.ReadAll(limited)
+	if err != nil { return nil, err }
+	if limited.N == 0 {
+		var probe [1]byte
+		n, probeErr := io.ReadFull(reader, probe[:])
+		if n > 0 { return nil, errors.New("worker JSON exceeds limit") }
+		if n == 0 && probeErr == io.EOF { return raw, nil }
+		if probeErr != nil { return nil, probeErr }
+		return nil, errors.New("worker JSON probe made no progress")
+	}
+	return raw, nil
+}
+func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error {
+	raw, err := readWorkerJSONBoundedV2(reader, maxBytes)
+	if err != nil { return err }
+	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": credentialDeliveryRequest}, policy)
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"protocol_decode.go": strings.Replace(credentialDeliveryRequest, "RuntimeCredentialDeliveryMetadata", "RuntimeTemplateStatusMetadata", 1),
+	}, policy, "implicit interface callback")
 
 	l8AssertWorkerV2GuardRejects(t, map[string]string{
 		"protocol_decode.go": `package sandboxworker
@@ -3103,6 +4501,9 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 	if err != nil {
 		return fmt.Errorf("type-check worker-v2 guard sources: %w", err)
 	}
+	if err := l8WorkerV2ValidateLockedJobSafeIDPattern(parsedFiles, info); err != nil {
+		return err
+	}
 	if err := l8WorkerV2ValidateDecoderCallerComposition(parsedFiles, info); err != nil {
 		return err
 	}
@@ -3260,31 +4661,412 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 }
 
 func l8WorkerV2AllowedCompatibilityDeclaration(scope l8WorkerV2GuardScope) bool {
-	if filepath.Base(scope.file.path) != "exec.go" {
+	if scope.file == nil || l8WorkerV2ASTContainsMarker(scope.node) {
 		return false
 	}
+	base := filepath.Base(scope.file.path)
 	switch typed := scope.node.(type) {
 	case *ast.TypeSpec:
-		return typed.Name.Name == "ExecRequest" && l8WorkerV2DeclarationDigest(scope) == "44d05fedce4c14a73f3a0436d59bc7d6dd829c1b937c393755ee8a37717e87b8"
+		return (base == "exec.go" && typed.Name.Name == "ExecRequest" && l8WorkerV2DeclarationDigest(scope) == "44d05fedce4c14a73f3a0436d59bc7d6dd829c1b937c393755ee8a37717e87b8") ||
+			(base == "job_types.go" && typed.Name.Name == "JobLogRecord" && l8WorkerV2DeclarationDigest(scope) == "e300e3d5068a94fcc65f4de568af3e9f255fa375446a845478e494ec4701118f")
+	case *ast.ValueSpec:
+		if len(typed.Names) != 1 {
+			return false
+		}
+		switch base {
+		case "copy.go":
+			return l8WorkerV2ExactCopyPayloadEncodingCompatibilityValueSpec(scope, typed)
+		case "job_types.go":
+			if typed.Names[0].Name == "jobSafeIDPattern" {
+				return l8WorkerV2DeclarationDigest(scope) == "c72fbbd1ae11d49364d94955cdf87d14d06c7b0be301f6bcd8cee4175e368d90"
+			}
+			return l8WorkerV2ExactJobStateCompatibilityValueSpec(scope, typed) ||
+				l8WorkerV2ExactJobLogReadBoundCompatibilityValueSpec(scope, typed) ||
+				l8WorkerV2ExactJobLogStreamCompatibilityValueSpec(scope, typed)
+		case "io_validation.go":
+			return l8WorkerV2ExactExecIOCompatibilityValueSpec(scope, typed)
+		default:
+			return false
+		}
 	case *ast.FuncDecl:
-		if typed.Name.Name != "Validate" || typed.Recv == nil || len(typed.Recv.List) != 1 {
+		if base == "job_types.go" {
+			return typed.Recv == nil && typed.Name.Name == "validJobSafeID" && l8WorkerV2DeclarationDigest(scope) == "e5afa35c7ad24f5080524219ee64bdc54e6bf7d0a899801ed3e5adf63f405e2b"
+		}
+		if base == "lifecycle.go" {
+			return l8WorkerV2ExactCloneStringMapDeclaration(scope)
+		}
+		if base == "service.go" {
+			return l8WorkerV2ExactCloneStringSliceDeclaration(scope)
+		}
+		if base == "handler.go" {
+			return l8WorkerV2ExactContextErrorResponseDeclaration(scope) || l8WorkerV2ExactUnsupportedOperationResponseDeclaration(scope)
+		}
+		if base == "server.go" {
+			return l8WorkerV2ExactProtocolErrorResponseDeclaration(scope)
+		}
+		if typed.Recv == nil || len(typed.Recv.List) != 1 {
 			return false
 		}
 		receiver := typed.Recv.List[0].Type
-		if pointer, ok := receiver.(*ast.StarExpr); ok {
-			receiver = pointer.X
-		}
-		identifier, ok := receiver.(*ast.Ident)
-		if !ok {
+		switch base {
+		case "adapter.go":
+			return l8WorkerV2ExactUnchangedV1AdapterFunction(scope, map[string]string{
+				"JobStart":   "18fb46722415171c696fc431c12b62bd351526e7585883adc70ee7627dd3fc6e",
+				"JobResolve": "9edcec736a1ee847cbc18615b6bcae6358e208801493fa38450b855bdb95b06e",
+				"JobStatus":  "32a9a882db30ba0cb9ba96ae22e01d9bd894f71d9015b640e0dd57aa8615e661",
+				"JobLogs":    "d9b5326e747bd3154d11b9c6485d9685c22984bf13ddcae7adb6fab1d9348e43",
+			})
+		case "exec.go":
+			if typed.Name.Name != "Validate" {
+				return false
+			}
+			if pointer, ok := receiver.(*ast.StarExpr); ok {
+				receiver = pointer.X
+			}
+			identifier, ok := receiver.(*ast.Ident)
+			if !ok {
+				return false
+			}
+			return identifier.Name == "ExecRequest" && l8WorkerV2DeclarationDigest(scope) == "682ec7b9a175527065baef078c937c7031a3cd64a8776e7c16440aec938a75c1"
+		default:
 			return false
 		}
-		return identifier.Name == "ExecRequest" && l8WorkerV2DeclarationDigest(scope) == "682ec7b9a175527065baef078c937c7031a3cd64a8776e7c16440aec938a75c1"
 	}
 	return false
 }
 
+func l8WorkerV2ExactJobStateCompatibilityValueSpec(scope l8WorkerV2GuardScope, spec *ast.ValueSpec) bool {
+	if spec == nil || len(spec.Names) != 1 || len(spec.Values) != 1 {
+		return false
+	}
+	literal, ok := l8WorkerV2UnparenExpression(spec.Values[0]).(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(literal.Value)
+	if err != nil {
+		return false
+	}
+	expected := map[string]struct {
+		value  string
+		digest string
+	}{
+		"JobStateQueued": {
+			value:  "queued",
+			digest: "2e9eb73ad85f559e235f931e71f5a6b6418fe4f54fff0997c5b45a68c90c08a3",
+		},
+		"JobStateInterrupted": {
+			value:  "interrupted",
+			digest: "e05392db80772bdbe6ace097faccf1b9f3982b8d1419b03acc3c3e85c9d24c18",
+		},
+	}[spec.Names[0].Name]
+	return expected.value != "" && value == expected.value && l8WorkerV2DeclarationDigest(scope) == expected.digest
+}
+
+func l8WorkerV2ExactJobLogReadBoundCompatibilityValueSpec(scope l8WorkerV2GuardScope, spec *ast.ValueSpec) bool {
+	if spec == nil || len(spec.Names) != 1 || len(spec.Values) != 1 {
+		return false
+	}
+	explicitType, ok := l8WorkerV2UnparenExpression(spec.Type).(*ast.Ident)
+	if !ok || explicitType.Name != "int64" {
+		return false
+	}
+	shift, ok := l8WorkerV2UnparenExpression(spec.Values[0]).(*ast.BinaryExpr)
+	if !ok || shift.Op != token.SHL {
+		return false
+	}
+	left, leftOK := l8WorkerV2UnparenExpression(shift.X).(*ast.BasicLit)
+	right, rightOK := l8WorkerV2UnparenExpression(shift.Y).(*ast.BasicLit)
+	if !leftOK || !rightOK || left.Kind != token.INT || right.Kind != token.INT || right.Value != "10" {
+		return false
+	}
+	expected := map[string]struct {
+		left   string
+		digest string
+	}{
+		"DefaultJobLogRecordBytes": {
+			left:   "32",
+			digest: "1f80201c85f5f591eab355bd06dd09b5ab11a1166177f5489a0e574e4a2f3430",
+		},
+		"DefaultJobLogReadBytes": {
+			left:   "64",
+			digest: "b6667869725bc0dac12bc31879d3d133e77d2e61df4964bc9ef1b387a29dbee1",
+		},
+	}[spec.Names[0].Name]
+	return expected.left != "" && left.Value == expected.left && l8WorkerV2DeclarationDigest(scope) == expected.digest
+}
+
+func l8WorkerV2ExactJobLogStreamCompatibilityValueSpec(scope l8WorkerV2GuardScope, spec *ast.ValueSpec) bool {
+	if spec == nil || len(spec.Names) != 1 || spec.Type != nil || len(spec.Values) != 1 {
+		return false
+	}
+	literal, ok := l8WorkerV2UnparenExpression(spec.Values[0]).(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(literal.Value)
+	if err != nil {
+		return false
+	}
+	expected := map[string]struct {
+		value  string
+		digest string
+	}{
+		"JobLogStreamStdout": {
+			value:  "stdout",
+			digest: "cbbf1d266fd55faa186b9e5748924a2cb1e79edddadeac6bf82fe8f36bf193c5",
+		},
+		"JobLogStreamStderr": {
+			value:  "stderr",
+			digest: "15f1431b7d7428bc3eb8f01a964cafe565710879e6522262c93d8e162f3731c7",
+		},
+	}[spec.Names[0].Name]
+	return expected.value != "" && value == expected.value && l8WorkerV2DeclarationDigest(scope) == expected.digest
+}
+
+func l8WorkerV2ExactExecIOCompatibilityValueSpec(scope l8WorkerV2GuardScope, spec *ast.ValueSpec) bool {
+	if spec == nil || len(spec.Names) != 1 || len(spec.Values) != 1 {
+		return false
+	}
+	explicitType, ok := l8WorkerV2UnparenExpression(spec.Type).(*ast.Ident)
+	if !ok || explicitType.Name != "int64" {
+		return false
+	}
+	shift, ok := l8WorkerV2UnparenExpression(spec.Values[0]).(*ast.BinaryExpr)
+	if !ok || shift.Op != token.SHL {
+		return false
+	}
+	left, leftOK := l8WorkerV2UnparenExpression(shift.X).(*ast.BasicLit)
+	right, rightOK := l8WorkerV2UnparenExpression(shift.Y).(*ast.BasicLit)
+	if !leftOK || !rightOK || left.Kind != token.INT || right.Kind != token.INT || right.Value != "10" {
+		return false
+	}
+	expected := map[string]struct {
+		left   string
+		digest string
+	}{
+		"MaxExecStdinBytes": {
+			left:   "512",
+			digest: "30641c61cce60eb5d889267b40890b1b245ddcf7c998636c2db5ba5f7e6554d8",
+		},
+		"MaxExecStdoutCaptureBytes": {
+			left:   "256",
+			digest: "b93ddab8eefbdcb044fa58433881a1e2f161fca39b6f29a6b525b57ecf68f76a",
+		},
+		"MaxExecStderrCaptureBytes": {
+			left:   "256",
+			digest: "aa972ad6dcf0b04786eec10f26767577a23530b38a98641f3beba2ecb7bcd6e2",
+		},
+	}[spec.Names[0].Name]
+	return expected.left != "" && left.Value == expected.left && l8WorkerV2DeclarationDigest(scope) == expected.digest
+}
+
+func l8WorkerV2ExactCopyPayloadEncodingCompatibilityValueSpec(scope l8WorkerV2GuardScope, spec *ast.ValueSpec) bool {
+	if spec == nil || len(spec.Names) != 1 || spec.Names[0].Name != "CopyPayloadEncodingBase64" || spec.Type != nil || len(spec.Values) != 1 {
+		return false
+	}
+	literal, ok := l8WorkerV2UnparenExpression(spec.Values[0]).(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(literal.Value)
+	return err == nil && value == "base64" && l8WorkerV2DeclarationDigest(scope) == "bc89eb1397815a5e8a14dc93a0a53e75c1e4613c8e064674320c2191bf84210b"
+}
+
+func l8WorkerV2ExactUnchangedV1AdapterFunction(scope l8WorkerV2GuardScope, expectedDigests map[string]string) bool {
+	if scope.file == nil || filepath.Base(scope.file.path) != "adapter.go" || l8WorkerV2ASTContainsMarker(scope.node) {
+		return false
+	}
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || function.Recv == nil || len(function.Recv.List) != 1 {
+		return false
+	}
+	pointer, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	receiver, ok := pointer.X.(*ast.Ident)
+	expected := expectedDigests[function.Name.Name]
+	return ok && receiver.Name == "ClientDriver" && expected != "" && l8WorkerV2DeclarationDigest(scope) == expected
+}
+
+func l8WorkerV2ExactProtocolErrorResponseDeclaration(scope l8WorkerV2GuardScope) bool {
+	if scope.file == nil || filepath.Base(scope.file.path) != "server.go" {
+		return false
+	}
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || function.Recv != nil || function.Name.Name != "protocolErrorResponse" {
+		return false
+	}
+	functionScope := scope
+	functionScope.node = function
+	return l8WorkerV2DeclarationDigest(functionScope) == "e2daa2da3364db8167acfc8857d91c25169fdd78c8fde936a33c1242f67ee409"
+}
+
+func l8WorkerV2ExactContextErrorResponseDeclaration(scope l8WorkerV2GuardScope) bool {
+	if scope.file == nil || filepath.Base(scope.file.path) != "handler.go" {
+		return false
+	}
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || function.Recv != nil || function.Name.Name != "contextErrorResponse" {
+		return false
+	}
+	functionScope := scope
+	functionScope.node = function
+	return l8WorkerV2DeclarationDigest(functionScope) == "f61365cf01593a6f281fe452067d77cc58ba402d52854e813cf9afdfab8f1636"
+}
+
+func l8WorkerV2ExactUnsupportedOperationResponseDeclaration(scope l8WorkerV2GuardScope) bool {
+	if scope.file == nil || filepath.Base(scope.file.path) != "handler.go" {
+		return false
+	}
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || function.Recv != nil || function.Name.Name != "unsupportedOperationResponse" {
+		return false
+	}
+	functionScope := scope
+	functionScope.node = function
+	return l8WorkerV2DeclarationDigest(functionScope) == "df489c0d1fec70c69bf439cace449205f97766dc4b5e5180e7f8769c0cda4339"
+}
+
+func l8WorkerV2ExactCloneStringMapDeclaration(scope l8WorkerV2GuardScope) bool {
+	if scope.file == nil || filepath.Base(scope.file.path) != "lifecycle.go" {
+		return false
+	}
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || function.Recv != nil || function.Name.Name != "cloneStringMap" {
+		return false
+	}
+	functionScope := scope
+	functionScope.node = function
+	return l8WorkerV2DeclarationDigest(functionScope) == "2bef17c9f5fa5a5e400405f12bd9a343afa40a3adc851c5297e3a37c7bd85b5d"
+}
+
+func l8WorkerV2ExactCloneStringSliceDeclaration(scope l8WorkerV2GuardScope) bool {
+	if scope.file == nil || filepath.Base(scope.file.path) != "service.go" {
+		return false
+	}
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || function.Recv != nil || function.Name.Name != "cloneStringSlice" {
+		return false
+	}
+	functionScope := scope
+	functionScope.node = function
+	return l8WorkerV2DeclarationDigest(functionScope) == "5e5191e546220bd082abfad063fa46fb08dc29df27693ea45d116588a7fb657d"
+}
+
+func l8WorkerV2ValidateLockedJobSafeIDPattern(files []*l8WorkerV2ParsedFile, info *types.Info) error {
+	var pattern types.Object
+	var validator *ast.FuncDecl
+	for _, file := range files {
+		if filepath.Base(file.path) != "job_types.go" {
+			continue
+		}
+		for _, declaration := range file.parsed.Decls {
+			if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil && function.Name.Name == "validJobSafeID" {
+				scope := l8WorkerV2GuardScope{file: file, node: function}
+				if l8WorkerV2DeclarationDigest(scope) == "e5afa35c7ad24f5080524219ee64bdc54e6bf7d0a899801ed3e5adf63f405e2b" {
+					validator = function
+				}
+			}
+			generated, ok := declaration.(*ast.GenDecl)
+			if !ok || generated.Tok != token.VAR {
+				continue
+			}
+			for _, rawSpec := range generated.Specs {
+				spec, ok := rawSpec.(*ast.ValueSpec)
+				if !ok || len(spec.Names) != 1 || spec.Names[0].Name != "jobSafeIDPattern" {
+					continue
+				}
+				scope := l8WorkerV2GuardScope{file: file, node: spec}
+				if l8WorkerV2DeclarationDigest(scope) != "c72fbbd1ae11d49364d94955cdf87d14d06c7b0be301f6bcd8cee4175e368d90" {
+					return fmt.Errorf("job_types.go jobSafeIDPattern must remain the locked slash-free safe ID vocabulary")
+				}
+				pattern = info.Defs[spec.Names[0]]
+			}
+		}
+	}
+	if pattern == nil {
+		return nil
+	}
+	if validator == nil {
+		return fmt.Errorf("job_types.go validJobSafeID must remain locked to the slash-free safe ID vocabulary")
+	}
+	for _, file := range files {
+		parents := make(map[ast.Node]ast.Node)
+		var stack []ast.Node
+		ast.Inspect(file.parsed, func(node ast.Node) bool {
+			if node == nil {
+				stack = stack[:len(stack)-1]
+				return false
+			}
+			if len(stack) > 0 {
+				parents[node] = stack[len(stack)-1]
+			}
+			stack = append(stack, node)
+			return true
+		})
+		var mutation ast.Node
+		ast.Inspect(file.parsed, func(node ast.Node) bool {
+			if mutation != nil {
+				return false
+			}
+			switch typed := node.(type) {
+			case *ast.AssignStmt:
+				for _, target := range typed.Lhs {
+					if l8WorkerV2ExpressionObject(target, info) == pattern {
+						mutation = typed
+						return true
+					}
+				}
+			case *ast.IncDecStmt:
+				if l8WorkerV2ExpressionObject(typed.X, info) == pattern {
+					mutation = typed
+					return true
+				}
+			}
+			return true
+		})
+		if mutation != nil {
+			return fmt.Errorf("production file %s mutates locked jobSafeIDPattern", file.path)
+		}
+		var unsafeUse *ast.Ident
+		ast.Inspect(file.parsed, func(node ast.Node) bool {
+			if unsafeUse != nil {
+				return false
+			}
+			identifier, ok := node.(*ast.Ident)
+			if !ok || info.Uses[identifier] != pattern {
+				return true
+			}
+			selector, ok := parents[identifier].(*ast.SelectorExpr)
+			if !ok || selector.X != identifier || selector.Sel.Name != "MatchString" || identifier.Pos() < validator.Pos() || identifier.End() > validator.End() {
+				unsafeUse = identifier
+				return false
+			}
+			call, ok := parents[selector].(*ast.CallExpr)
+			selection := info.Selections[selector]
+			if !ok || call.Fun != selector || len(call.Args) != 1 || selection == nil || selection.Obj() == nil || selection.Obj().Pkg() == nil || selection.Obj().Pkg().Path() != "regexp" || selection.Obj().Name() != "MatchString" {
+				unsafeUse = identifier
+				return false
+			}
+			return true
+		})
+		if unsafeUse != nil {
+			return fmt.Errorf("production file %s escapes locked jobSafeIDPattern outside validJobSafeID.MatchString", file.path)
+		}
+	}
+	return nil
+}
+
 func l8WorkerV2LockedV1CompatibilityDeclaration(scope l8WorkerV2GuardScope) bool {
-	if scope.file == nil || scope.file.parsed == nil || l8WorkerV2ASTContainsMarker(scope.node) {
+	if scope.file == nil || scope.file.parsed == nil {
+		return false
+	}
+	if l8WorkerV2ExactSharedEnvelopeValidateDeclaration(scope) {
+		return true
+	}
+	if l8WorkerV2ASTContainsMarker(scope.node) {
 		return false
 	}
 	base := filepath.Base(scope.file.path)
@@ -3299,29 +5081,53 @@ func l8WorkerV2LockedV1CompatibilityDeclaration(scope l8WorkerV2GuardScope) bool
 			"validateClientIOResponseLimits": "7a13178e2ab04e6ed902ac00706ab8dd16e51374ff7fe7412e84f65b76c44021",
 		}[function.Name.Name]
 		return expected != "" && l8WorkerV2DeclarationDigest(scope) == expected
-	case "types.go":
-		function, ok := scope.node.(*ast.FuncDecl)
-		if !ok || function.Name.Name != "Validate" || function.Recv == nil || len(function.Recv.List) != 1 {
-			return false
-		}
-		receiver := function.Recv.List[0].Type
-		if pointer, ok := receiver.(*ast.StarExpr); ok {
-			receiver = pointer.X
-		}
-		identifier, ok := receiver.(*ast.Ident)
-		if !ok {
-			return false
-		}
-		expected := map[string]string{
-			"Request":  "805caa08835f7aaf31c17b78e4ecfd81b93f4be514c6b63f3493b91af2224ac8",
-			"Response": "bb78d61280818156524648c118d69a31f0c89975b83736d957e119e0a0874451",
-		}[identifier.Name]
-		return expected != "" && l8WorkerV2DeclarationDigest(scope) == expected
 	case "exec.go":
 		return l8WorkerV2AllowedCompatibilityDeclaration(scope)
+	case "adapter.go":
+		return l8WorkerV2AllowedCompatibilityDeclaration(scope)
+	case "server.go":
+		return l8WorkerV2ExactProtocolErrorResponseDeclaration(scope)
+	case "handler.go":
+		return l8WorkerV2ExactContextErrorResponseDeclaration(scope) || l8WorkerV2ExactUnsupportedOperationResponseDeclaration(scope)
+	case "lifecycle.go":
+		return l8WorkerV2ExactCloneStringMapDeclaration(scope)
+	case "service.go":
+		return l8WorkerV2ExactCloneStringSliceDeclaration(scope)
 	default:
 		return false
 	}
+}
+
+func l8WorkerV2ExactSharedEnvelopeValidateDeclaration(scope l8WorkerV2GuardScope) bool {
+	if scope.file == nil || filepath.Base(scope.file.path) != "types.go" {
+		return false
+	}
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || function.Name.Name != "Validate" || function.Recv == nil || len(function.Recv.List) != 1 {
+		return false
+	}
+	receiver := function.Recv.List[0].Type
+	if pointer, ok := receiver.(*ast.StarExpr); ok {
+		receiver = pointer.X
+	}
+	identifier, ok := receiver.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	functionScope := scope
+	functionScope.node = function
+	digest := l8WorkerV2DeclarationDigest(functionScope)
+	expected := map[string]map[string]bool{
+		"Request": {
+			"805caa08835f7aaf31c17b78e4ecfd81b93f4be514c6b63f3493b91af2224ac8": true,
+			"72e3f45e385e7c594dc95cb790503ec1bf129c822bc74ade0a2d8bfee793f1e7": true,
+		},
+		"Response": {
+			"bb78d61280818156524648c118d69a31f0c89975b83736d957e119e0a0874451": true,
+			"6d442afc8f65ea84cf15836a21f45f7b36d367ff4a0ee3b7b3dc7736bc66814a": true,
+		},
+	}[identifier.Name]
+	return expected[digest]
 }
 
 func l8WorkerV2DeclarationDigest(scope l8WorkerV2GuardScope) string {
@@ -3409,7 +5215,13 @@ func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info, an
 	var units []l8WorkerV2SemanticUnit
 	for _, file := range files {
 		for _, declaration := range file.parsed.Decls {
-			for _, node := range l8WorkerV2SemanticDeclarationUnits(declaration, file.valueSpecUnits) {
+			semanticNodes := l8WorkerV2SemanticDeclarationUnits(declaration, file.valueSpecUnits)
+			if function, ok := declaration.(*ast.FuncDecl); ok {
+				if prefix := l8WorkerV2ExactEarlyV2HandlerPrefix(function); prefix != nil {
+					semanticNodes = []ast.Node{prefix}
+				}
+			}
+			for _, node := range semanticNodes {
 				unit := l8WorkerV2SemanticUnit{
 					scope:   l8WorkerV2GuardScope{file: file, node: node},
 					tainted: l8WorkerV2ASTContainsMarker(node) || l8WorkerV2ContainsExactOperationConstant(node, info, analysis),
@@ -3434,6 +5246,13 @@ func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info, an
 
 	taintedObjects := make(map[types.Object]bool)
 	addDefinitions := func(unit l8WorkerV2SemanticUnit) {
+		if function, ok := unit.scope.node.(*ast.FuncDecl); ok && !l8WorkerV2FunctionSignatureContainsMarker(function) && !l8WorkerV2FunctionReturnsExactV2Operation(function, info, analysis) {
+			// Audit shared V1 functions whose bodies gain V2 branches without
+			// sweeping every unchanged V1 caller into the V2 declaration closure.
+			// Explicit V2 signatures and exact V2 operation identities still
+			// propagate through aliases and callers.
+			return
+		}
 		for _, object := range unit.definitions {
 			taintedObjects[object] = true
 		}
@@ -3468,6 +5287,14 @@ func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info, an
 		}
 	}
 	return roots
+}
+
+func l8WorkerV2FunctionReturnsExactV2Operation(function *ast.FuncDecl, info *types.Info, analysis *l8WorkerV2OperationAnalysis) bool {
+	if function == nil || info == nil || analysis == nil {
+		return false
+	}
+	object, ok := info.Defs[function.Name].(*types.Func)
+	return ok && len(analysis.results[object]) > 0
 }
 
 func l8WorkerV2RuntimeOperationAssemblyRoots(files []*l8WorkerV2ParsedFile, info *types.Info, policy l8WorkerV2GuardPolicy, analysis *l8WorkerV2OperationAnalysis) []l8WorkerV2GuardScope {
@@ -4721,7 +6548,7 @@ func l8WorkerV2MixedDeclarationScopes(declaration ast.Decl, valueSpecUnits map[*
 		if l8WorkerV2FunctionSignatureContainsMarker(typed) {
 			return []ast.Node{typed}
 		}
-		return l8WorkerV2MixedFunctionBodyScopes(typed.Body)
+		return l8WorkerV2MixedFunctionBodyScopes(typed)
 	default:
 		return nil
 	}
@@ -4736,7 +6563,11 @@ func l8WorkerV2FunctionSignatureContainsMarker(function *ast.FuncDecl) bool {
 	return l8WorkerV2ASTContainsMarker(&cloned)
 }
 
-func l8WorkerV2MixedFunctionBodyScopes(body *ast.BlockStmt) []ast.Node {
+func l8WorkerV2MixedFunctionBodyScopes(function *ast.FuncDecl) []ast.Node {
+	if prefix := l8WorkerV2ExactEarlyV2HandlerPrefix(function); prefix != nil {
+		return []ast.Node{prefix}
+	}
+	body := function.Body
 	if body == nil || !l8WorkerV2ASTContainsMarker(body) {
 		return nil
 	}
@@ -4745,6 +6576,102 @@ func l8WorkerV2MixedFunctionBodyScopes(body *ast.BlockStmt) []ast.Node {
 	// and later switches reached after a V2 branch. Unrelated legacy sibling
 	// functions remain outside the object-identity closure.
 	return []ast.Node{body}
+}
+
+func l8WorkerV2ExactEarlyV2HandlerPrefix(function *ast.FuncDecl) *ast.BlockStmt {
+	if function == nil || function.Name.Name != "HandleRequest" || function.Recv == nil || len(function.Recv.List) != 1 || function.Body == nil || len(function.Body.List) < 4 {
+		return nil
+	}
+	receiver, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return nil
+	}
+	receiverName, ok := receiver.X.(*ast.Ident)
+	if !ok || receiverName.Name != "Service" {
+		return nil
+	}
+	requestParameter := false
+	if function.Type.Params != nil {
+		for _, field := range function.Type.Params.List {
+			typeName, ok := field.Type.(*ast.Ident)
+			if !ok || typeName.Name != "Request" {
+				continue
+			}
+			for _, name := range field.Names {
+				requestParameter = requestParameter || name.Name == "req"
+			}
+		}
+	}
+	if !requestParameter || function.Type.Results == nil || len(function.Type.Results.List) != 1 {
+		return nil
+	}
+	resultName, resultNamed := function.Type.Results.List[0].Type.(*ast.Ident)
+	if !resultNamed || resultName.Name != "Response" {
+		return nil
+	}
+	conditional, ok := function.Body.List[2].(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 {
+		return nil
+	}
+	conditionCall, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.CallExpr)
+	if !ok || len(conditionCall.Args) != 1 {
+		return nil
+	}
+	conditionName, named := l8WorkerV2UnparenExpression(conditionCall.Fun).(*ast.Ident)
+	if !named || conditionName.Name != "isWorkerV2Operation" {
+		return nil
+	}
+	operation, ok := l8WorkerV2UnparenExpression(conditionCall.Args[0]).(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	request, rooted := l8WorkerV2UnparenExpression(operation.X).(*ast.Ident)
+	if !rooted || operation.Sel.Name != "Operation" || request.Name != "req" {
+		return nil
+	}
+	returned, ok := conditional.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return nil
+	}
+	responseCall, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.CallExpr)
+	if !ok || len(responseCall.Args) != 1 {
+		return nil
+	}
+	responseName, named := l8WorkerV2UnparenExpression(responseCall.Fun).(*ast.Ident)
+	responseRequest, requestNamed := l8WorkerV2UnparenExpression(responseCall.Args[0]).(*ast.Ident)
+	if !named || responseName.Name != "unsupportedOperationResponse" || !requestNamed || responseRequest.Name != request.Name {
+		return nil
+	}
+	unsafeControlTransfer := false
+	for _, statement := range function.Body.List[:3] {
+		ast.Inspect(statement, func(node ast.Node) bool {
+			switch node.(type) {
+			case *ast.BranchStmt, *ast.LabeledStmt:
+				unsafeControlTransfer = true
+			}
+			return !unsafeControlTransfer
+		})
+	}
+	if unsafeControlTransfer {
+		return nil
+	}
+	for _, statement := range function.Body.List[3:] {
+		if l8WorkerV2ASTContainsMarker(statement) {
+			return nil
+		}
+	}
+	prefix := &ast.BlockStmt{
+		Lbrace: function.Body.Lbrace,
+		List:   append([]ast.Stmt(nil), function.Body.List[:3]...),
+		Rbrace: conditional.Body.Rbrace,
+	}
+	lockedFunction := *function
+	lockedFunction.Body = prefix
+	buffer := &bytes.Buffer{}
+	if format.Node(buffer, token.NewFileSet(), &lockedFunction) != nil || fmt.Sprintf("%x", sha256.Sum256(buffer.Bytes())) != "a0a6b45b6111952466e209e4f0551e746cc5418e1de9a97e785da93d9697b2eb" {
+		return nil
+	}
+	return prefix
 }
 
 func l8WorkerV2ReferencedDeclarationScopes(scope l8WorkerV2GuardScope) []l8WorkerV2GuardScope {
@@ -4797,7 +6724,7 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 			inspectionErr = fmt.Errorf("worker-v2 production path in %s declaration %s violates exact decoder caller composition", scope.file.path, scopeName)
 			return false
 		}
-		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) {
+		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) && !l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info) {
 			scopeName := "declaration"
 			if function, ok := scope.node.(*ast.FuncDecl); ok {
 				scopeName = function.Name.Name
@@ -4814,7 +6741,7 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 		if kind == "function-value" && scope.initializerEvaluation && staticFunctionAliases[l8WorkerV2CalledObject(call.Fun, info)] != nil {
 			kind = ""
 		}
-		if kind == "interface" && (l8WorkerV2AllowedExactClientTransportCall(scope, call, info) || l8WorkerV2AllowedExactClientContextErrCall(scope, call, info) || l8WorkerV2AllowedExactClientErrorStringCall(scope, call, info) || l8WorkerV2AllowedExactCodecResourceLifecycleCall(scope, call, info)) {
+		if kind == "interface" && (l8WorkerV2AllowedExactClientTransportCall(scope, call, info) || l8WorkerV2AllowedExactClientContextErrCall(scope, call, info) || l8WorkerV2AllowedExactClientErrorStringCall(scope, call, info) || l8WorkerV2AllowedExactCodecResourceLifecycleCall(scope, call, info) || l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) || l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info)) {
 			kind = ""
 		}
 		if kind != "" {
@@ -4836,8 +6763,8 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 }
 
 func l8WorkerV2AllowedExactClientRoundTripFormatting(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
-	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || !l8WorkerV2ExactClientCompatibilityFunction(scope) || len(call.Args) != 2 {
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || !l8WorkerV2ExactClientCompatibilityFunction(scope) || len(call.Args) != 2 {
 		return false
 	}
 	object := l8WorkerV2CalledObject(call.Fun, info)
@@ -4853,9 +6780,23 @@ func l8WorkerV2AllowedExactClientRoundTripFormatting(scope l8WorkerV2GuardScope,
 		(function.Name.Name == "validateClientResponse" && format == "malformed worker response: %v")
 }
 
-func l8WorkerV2AllowedExactClientContextClassification(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+func l8WorkerV2AllowedExactServerRequestValidationFormatting(scope l8WorkerV2GuardScope, candidate *ast.CallExpr, info *types.Info) bool {
 	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || !l8WorkerV2ExactClientCompatibilityFunction(scope) || (function.Name.Name != "clientContextError" && function.Name.Name != "clientContextOrTransportError") || len(call.Args) != 2 {
+	if !ok || filepath.Base(scope.file.path) != "server.go" || function.Name.Name != "readRequest" {
+		return false
+	}
+	decoderCall := l8WorkerV2SingleTypedDecoderCall(function, info)
+	if decoderCall == nil || len(decoderCall.Args) != 3 {
+		return false
+	}
+	output := l8WorkerV2AddressedObject(decoderCall.Args[2], "Request", info)
+	formatCall, exact := l8WorkerV2ExactValidatedServerRequestFlow(function, decoderCall, output, info)
+	return exact && candidate == formatCall
+}
+
+func l8WorkerV2AllowedExactClientContextClassification(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || !l8WorkerV2ExactClientCompatibilityFunction(scope) || (function.Name.Name != "clientContextError" && function.Name.Name != "clientContextOrTransportError") || len(call.Args) != 2 {
 		return false
 	}
 	object := l8WorkerV2CalledObject(call.Fun, info)
@@ -4875,8 +6816,8 @@ func l8WorkerV2AllowedExactClientContextClassification(scope l8WorkerV2GuardScop
 }
 
 func l8WorkerV2AllowedExactClientTransportCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
-	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || !l8WorkerV2ExactClientCompatibilityFunction(scope) || function.Name.Name != "roundTrip" || function.Recv == nil || len(function.Recv.List) != 1 {
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || !l8WorkerV2ExactClientCompatibilityFunction(scope) || function.Name.Name != "roundTrip" || function.Recv == nil || len(function.Recv.List) != 1 {
 		return false
 	}
 	receiverPointer, ok := function.Recv.List[0].Type.(*ast.StarExpr)
@@ -4915,8 +6856,8 @@ func l8WorkerV2AllowedExactClientTransportCall(scope l8WorkerV2GuardScope, call 
 }
 
 func l8WorkerV2AllowedExactClientContextErrCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
-	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || !l8WorkerV2ExactClientCompatibilityFunction(scope) || function.Name.Name != "roundTrip" || function.Type.Params == nil {
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || !l8WorkerV2ExactClientCompatibilityFunction(scope) || function.Name.Name != "roundTrip" || function.Type.Params == nil {
 		return false
 	}
 	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
@@ -4942,8 +6883,8 @@ func l8WorkerV2AllowedExactClientContextErrCall(scope l8WorkerV2GuardScope, call
 }
 
 func l8WorkerV2AllowedExactClientErrorStringCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
-	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || !l8WorkerV2ExactClientCompatibilityFunction(scope) || function.Name.Name != "clientContextOrTransportError" || len(call.Args) != 0 {
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || !l8WorkerV2ExactClientCompatibilityFunction(scope) || function.Name.Name != "clientContextOrTransportError" || len(call.Args) != 0 {
 		return false
 	}
 	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
@@ -4959,17 +6900,150 @@ func l8WorkerV2AllowedExactClientErrorStringCall(scope l8WorkerV2GuardScope, cal
 }
 
 func l8WorkerV2ExactClientCompatibilityFunction(scope l8WorkerV2GuardScope) bool {
-	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || filepath.Base(scope.file.path) != "client.go" {
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || filepath.Base(scope.file.path) != "client.go" {
 		return false
 	}
-	expected := map[string]string{
-		"roundTrip":                     "c458a12ddce44baa17ec4cbddc28d06abb30af3d1c1be1f00047e57f337c522e",
-		"validateClientResponse":        "9230b6eb87b32c32cae9180b5bb5113cf2ee5a5b5dc11f49b70e66f93cfe2a50",
-		"clientContextOrTransportError": "82eec74cfdb14ab39ff71baeb26254ec76a6ef1be1d9e44a6134dd874389dd32",
-		"clientContextError":            "087527510258465c4a4d7435f9d33af13edb0c785e94017452316edd9ed947bf",
+	functionScope := scope
+	functionScope.node = function
+	digest := l8WorkerV2DeclarationDigest(functionScope)
+	expected := map[string]map[string]bool{
+		"roundTrip": {
+			"c458a12ddce44baa17ec4cbddc28d06abb30af3d1c1be1f00047e57f337c522e": true,
+			"f10b9bf6c8b469192b5a6b5f7da76bb9816807a59938fbef184d3f4e19033060": true,
+		},
+		"validateClientResponse": {
+			"9230b6eb87b32c32cae9180b5bb5113cf2ee5a5b5dc11f49b70e66f93cfe2a50": true,
+			"ae498ad65d6d8f863e7e863db76c06a53678f9677afae8642f14cdbda219ca90": true,
+		},
+		"clientContextOrTransportError": {
+			"82eec74cfdb14ab39ff71baeb26254ec76a6ef1be1d9e44a6134dd874389dd32": true,
+		},
+		"clientContextError": {
+			"087527510258465c4a4d7435f9d33af13edb0c785e94017452316edd9ed947bf": true,
+		},
 	}[function.Name.Name]
-	return expected != "" && l8WorkerV2DeclarationDigest(scope) == expected
+	return expected[digest]
+}
+
+func l8WorkerV2ScopeFunction(scope l8WorkerV2GuardScope) *ast.FuncDecl {
+	if function, ok := scope.node.(*ast.FuncDecl); ok {
+		return function
+	}
+	body, ok := scope.node.(*ast.BlockStmt)
+	if !ok || scope.file == nil || scope.file.parsed == nil {
+		return nil
+	}
+	for _, declaration := range scope.file.parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Body == body {
+			return function
+		}
+	}
+	return nil
+}
+
+func l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope l8WorkerV2GuardScope, candidate *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "job_store_v2.go" || function.Name.Name != "newJobStoreV2" || function.Body == nil || candidate == nil ||
+		l8WorkerV2DeclarationDigest(scope) != "3823c715d5ec3efd9abdb75d0bf3182e299102108cd70101538dff8f86b9ac14" {
+		return false
+	}
+	var metadata types.Object
+	for _, statement := range function.Body.List {
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 {
+			continue
+		}
+		lstat, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+		if !ok || !l8WorkerV2IsExactPackageCall(lstat, "os", "Lstat", 1, info) {
+			continue
+		}
+		metadata = l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+		break
+	}
+	if metadata == nil || !l8WorkerV2ObjectHasNoReassignments(function, metadata, info) {
+		return false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(candidate.Fun).(*ast.SelectorExpr)
+	if !ok || len(candidate.Args) != 0 || l8WorkerV2ExpressionObject(selector.X, info) != metadata || (selector.Sel.Name != "IsDir" && selector.Sel.Name != "Mode") {
+		return false
+	}
+	selection := info.Selections[selector]
+	return selection != nil && selection.Obj() != nil && selection.Obj().Pkg() != nil && selection.Obj().Pkg().Path() == "io/fs" && selection.Obj().Name() == selector.Sel.Name
+}
+
+func l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope l8WorkerV2GuardScope, candidate *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "job_store_v2.go" || function.Name.Name != "list" || function.Body == nil || candidate == nil ||
+		l8WorkerV2DeclarationDigest(scope) != "af3b8e138578ee05b9168daa47ccc462a7d49ef15c1fa83b8dcfdedfa32b6015" {
+		return false
+	}
+	var entries, entry types.Object
+	var entryRange *ast.RangeStmt
+	for _, statement := range function.Body.List {
+		if assignment, ok := statement.(*ast.AssignStmt); ok && assignment.Tok == token.DEFINE && len(assignment.Lhs) == 2 && len(assignment.Rhs) == 1 {
+			readDir, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+			if ok && l8WorkerV2IsExactPackageCall(readDir, "os", "ReadDir", 1, info) {
+				entries = l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+			}
+		}
+		ranged, ok := statement.(*ast.RangeStmt)
+		if ok && entries != nil && l8WorkerV2ExpressionObject(ranged.X, info) == entries && ranged.Tok == token.DEFINE && ranged.Value != nil {
+			entry = l8WorkerV2ExpressionObject(ranged.Value, info)
+			entryRange = ranged
+		}
+	}
+	if entries == nil || entry == nil || entryRange == nil || !l8WorkerV2ObjectHasNoReassignments(function, entries, info) || !l8WorkerV2RangeObjectHasNoReassignments(function, entry, entryRange, info) {
+		return false
+	}
+	var metadataCalls []*ast.CallExpr
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) != 0 {
+			return true
+		}
+		selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+		if !ok || l8WorkerV2ExpressionObject(selector.X, info) != entry || (selector.Sel.Name != "Type" && selector.Sel.Name != "Name") {
+			return true
+		}
+		selection := info.Selections[selector]
+		if selection != nil && selection.Obj() != nil && selection.Obj().Pkg() != nil && selection.Obj().Pkg().Path() == "io/fs" && selection.Obj().Name() == selector.Sel.Name {
+			metadataCalls = append(metadataCalls, call)
+		}
+		return true
+	})
+	return l8WorkerV2CallInSet(candidate, metadataCalls) && l8WorkerV2ObjectHasNoWholeValueEscapes(function, entry, metadataCalls, nil, false, info)
+}
+
+func l8WorkerV2RangeObjectHasNoReassignments(function *ast.FuncDecl, object types.Object, allowed *ast.RangeStmt, info *types.Info) bool {
+	valid := function != nil && function.Body != nil && object != nil && allowed != nil
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !valid {
+			return false
+		}
+		switch statement := node.(type) {
+		case *ast.AssignStmt:
+			for _, target := range statement.Lhs {
+				if l8WorkerV2ExpressionObject(target, info) == object {
+					valid = false
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			if l8WorkerV2ExpressionObject(statement.X, info) == object {
+				valid = false
+				return false
+			}
+		case *ast.RangeStmt:
+			if statement != allowed && (l8WorkerV2ExpressionObject(statement.Key, info) == object || l8WorkerV2ExpressionObject(statement.Value, info) == object) {
+				valid = false
+				return false
+			}
+		}
+		return true
+	})
+	return valid
 }
 
 func l8WorkerV2AllowedExactCodecResourceLifecycleCall(scope l8WorkerV2GuardScope, candidate *ast.CallExpr, info *types.Info) bool {
@@ -4994,16 +7068,22 @@ func l8WorkerV2AllowedExactCodecResourceLifecycleCall(scope l8WorkerV2GuardScope
 		calls, _, _, exact := l8WorkerV2ExactClientConnectionLifecycle(function, connection, parameters[0], encodeCall, info)
 		return exact && l8WorkerV2CallInSet(candidate, calls)
 	case "job_store_v2.go":
-		if function.Name.Name != "load" {
+		switch function.Name.Name {
+		case "load":
+			decoderCall := l8WorkerV2SingleTypedDecoderCall(function, info)
+			if decoderCall == nil || len(decoderCall.Args) != 3 {
+				return false
+			}
+			reader := l8WorkerV2ExpressionObject(decoderCall.Args[0], info)
+			closeCall, _, exact := l8WorkerV2ExactDeferredReaderClose(function, reader, decoderCall, info)
+			return exact && candidate == closeCall
+		case "openStoredJobStateV2":
+			method, _ := info.Defs[function.Name].(*types.Func)
+			calls, exact := l8WorkerV2ExactReceiverRootedStoredJobOpener(scope.file, method, info)
+			return exact && l8WorkerV2CallInSet(candidate, calls)
+		default:
 			return false
 		}
-		decoderCall := l8WorkerV2SingleTypedDecoderCall(function, info)
-		if decoderCall == nil || len(decoderCall.Args) != 3 {
-			return false
-		}
-		reader := l8WorkerV2ExpressionObject(decoderCall.Args[0], info)
-		closeCall, _, exact := l8WorkerV2ExactDeferredReaderClose(function, reader, decoderCall, info)
-		return exact && candidate == closeCall
 	default:
 		return false
 	}
@@ -5110,7 +7190,7 @@ func l8WorkerV2ExactServerRequestDecoderCall(scope l8WorkerV2GuardScope, call *a
 	}
 	reader := parameters[0]
 	output := l8WorkerV2AddressedObject(call.Args[2], "Request", info)
-	return output != nil && l8WorkerV2ExpressionObject(call.Args[0], info) == reader &&
+	common := output != nil && l8WorkerV2ExpressionObject(call.Args[0], info) == reader &&
 		l8WorkerV2ExactSelectorRoot(call.Args[1], receiver, "maxRequestBytes", info) &&
 		l8WorkerV2NoUnconditionalTerminalBefore(function, call, info, scope.terminalAnalysis) &&
 		l8WorkerV2ObjectHasNoReassignments(function, receiver, info) &&
@@ -5119,9 +7199,172 @@ func l8WorkerV2ExactServerRequestDecoderCall(scope l8WorkerV2GuardScope, call *a
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, reader, []*ast.CallExpr{call}, nil, false, info) &&
 		l8WorkerV2SelectorHasNoMutations(function, receiver, "maxRequestBytes", info) &&
 		l8WorkerV2ExactTopLevelCodecConditional(function, call, info) &&
-		l8WorkerV2ExactTopLevelSuccessAfterCall(function, output, call, info) &&
-		l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
+		l8WorkerV2ExactTopLevelSuccessAfterCall(function, output, call, info)
+	if !common {
+		return false
+	}
+	minimal := l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call}, nil, true, info)
+	_, validated := l8WorkerV2ExactValidatedServerRequestFlow(function, call, output, info)
+	return minimal || validated
+}
+
+func l8WorkerV2ExactValidatedServerRequestFlow(function *ast.FuncDecl, decoderCall *ast.CallExpr, request types.Object, info *types.Info) (*ast.CallExpr, bool) {
+	if function == nil || function.Body == nil || decoderCall == nil || request == nil || len(function.Body.List) != 5 {
+		return nil, false
+	}
+	declaration, ok := function.Body.List[0].(*ast.DeclStmt)
+	if !ok || l8WorkerV2ExpressionObjectFromSingleVarDeclaration(declaration, info) != request {
+		return nil, false
+	}
+	decodeFailure, ok := function.Body.List[1].(*ast.IfStmt)
+	if !ok || !l8WorkerV2IfInitializerCalls(decodeFailure, decoderCall, info) || decodeFailure.Else != nil || len(decodeFailure.Body.List) != 2 {
+		return nil, false
+	}
+	decodeErr := l8WorkerV2IfInitializerErrorObject(decodeFailure, decoderCall, info)
+	if decodeErr == nil || !l8WorkerV2IsErrorComparison(decodeFailure.Cond, decodeErr, nil, info) {
+		return nil, false
+	}
+	decodeResponse, exactResponse := l8WorkerV2ExactProtocolErrorResponseDefinition(decodeFailure.Body.List[0], []l8WorkerV2ExactProtocolErrorArgument{
+		{constantString: stringPointer("")},
+		{packageConstant: "OperationProtocolError"},
+		{packageConstant: "ErrorCodeMalformedRequest"},
+		{constantString: stringPointer("malformed worker request")},
+	}, info)
+	if !exactResponse || !l8WorkerV2IsZeroStructAndAddressedObjectReturn(decodeFailure.Body.List[1], "Request", decodeResponse, info) {
+		return nil, false
+	}
+	defaults, ok := function.Body.List[2].(*ast.AssignStmt)
+	if !ok || defaults.Tok != token.ASSIGN || len(defaults.Lhs) != 1 || len(defaults.Rhs) != 1 || l8WorkerV2ExpressionObject(defaults.Lhs[0], info) != request {
+		return nil, false
+	}
+	defaultsCall, ok := l8WorkerV2UnparenExpression(defaults.Rhs[0]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2ExactObjectMethodCall(defaultsCall, request, "WithDefaults", nil, info) {
+		return nil, false
+	}
+	validation, ok := function.Body.List[3].(*ast.IfStmt)
+	if !ok || validation.Else != nil || len(validation.Body.List) != 2 {
+		return nil, false
+	}
+	validateCall, validateErr := l8WorkerV2ExactRequestValidationInitializer(validation, request, info)
+	if validateCall == nil || validateErr == nil || !l8WorkerV2IsErrorComparison(validation.Cond, validateErr, nil, info) {
+		return nil, false
+	}
+	formatCall := l8WorkerV2ExactMalformedRequestFormatCall(validation.Body.List[0], validateErr, info)
+	if formatCall == nil {
+		return nil, false
+	}
+	validationResponse, exactValidationResponse := l8WorkerV2ExactProtocolErrorResponseDefinition(validation.Body.List[0], []l8WorkerV2ExactProtocolErrorArgument{
+		{selectorRoot: request, selectorField: "RequestID"},
+		{selectorRoot: request, selectorField: "Operation"},
+		{packageConstant: "ErrorCodeMalformedRequest"},
+		{expression: formatCall},
+	}, info)
+	if !exactValidationResponse || !l8WorkerV2IsObjectAndAddressedObjectReturn(validation.Body.List[1], request, validationResponse, info) {
+		return nil, false
+	}
+	returned, ok := function.Body.List[4].(*ast.ReturnStmt)
+	return formatCall, ok && len(returned.Results) == 2 && l8WorkerV2ExpressionObject(returned.Results[0], info) == request && l8WorkerV2IsNilExpression(returned.Results[1], info)
+}
+
+type l8WorkerV2ExactProtocolErrorArgument struct {
+	constantString  *string
+	packageConstant string
+	selectorRoot    types.Object
+	selectorField   string
+	expression      ast.Expr
+}
+
+func stringPointer(value string) *string {
+	return &value
+}
+
+func l8WorkerV2ExactProtocolErrorResponseDefinition(statement ast.Stmt, arguments []l8WorkerV2ExactProtocolErrorArgument, info *types.Info) (types.Object, bool) {
+	assignment, ok := statement.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return nil, false
+	}
+	response := l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if response == nil || !ok || !l8WorkerV2IsExactNamedStruct(response.Type(), "Response") || call.Ellipsis.IsValid() || len(call.Args) != len(arguments) ||
+		!l8WorkerV2IsExactPackageFunctionObject(l8WorkerV2CalledObject(call.Fun, info), "protocolErrorResponse") {
+		return nil, false
+	}
+	for index, expected := range arguments {
+		argument := call.Args[index]
+		switch {
+		case expected.constantString != nil:
+			value := info.Types[argument].Value
+			if value == nil || value.Kind() != constant.String || constant.StringVal(value) != *expected.constantString {
+				return nil, false
+			}
+		case expected.packageConstant != "":
+			object, ok := l8WorkerV2ExpressionObject(argument, info).(*types.Const)
+			if !ok || object.Pkg() == nil || object.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" || object.Name() != expected.packageConstant || object.Pkg().Scope().Lookup(expected.packageConstant) != object {
+				return nil, false
+			}
+		case expected.selectorRoot != nil:
+			if !l8WorkerV2ExactSelectorRoot(argument, expected.selectorRoot, expected.selectorField, info) {
+				return nil, false
+			}
+		case expected.expression != nil:
+			if l8WorkerV2UnparenExpression(argument) != l8WorkerV2UnparenExpression(expected.expression) {
+				return nil, false
+			}
+		default:
+			return nil, false
+		}
+	}
+	return response, true
+}
+
+func l8WorkerV2IsZeroStructAndAddressedObjectReturn(statement ast.Stmt, structName string, object types.Object, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 || l8WorkerV2DirectAddressedObject(returned.Results[1], info) != object {
+		return false
+	}
+	literal, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.CompositeLit)
+	return ok && len(literal.Elts) == 0 && l8WorkerV2IsExactNamedStruct(info.TypeOf(literal), structName)
+}
+
+func l8WorkerV2ExactRequestValidationInitializer(conditional *ast.IfStmt, request types.Object, info *types.Info) (*ast.CallExpr, types.Object) {
+	if conditional == nil || conditional.Init == nil {
+		return nil, nil
+	}
+	assignment, ok := conditional.Init.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return nil, nil
+	}
+	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2ExactObjectMethodCall(call, request, "Validate", nil, info) {
+		return nil, nil
+	}
+	return call, l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+}
+
+func l8WorkerV2ExactMalformedRequestFormatCall(statement ast.Stmt, validationErr types.Object, info *types.Info) *ast.CallExpr {
+	assignment, ok := statement.(*ast.AssignStmt)
+	if !ok || len(assignment.Rhs) != 1 {
+		return nil
+	}
+	responseCall, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if !ok || len(responseCall.Args) != 4 {
+		return nil
+	}
+	formatCall, ok := l8WorkerV2UnparenExpression(responseCall.Args[3]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2IsExactPackageCall(formatCall, "fmt", "Sprintf", 2, info) || l8WorkerV2ExpressionObject(formatCall.Args[1], info) != validationErr {
+		return nil
+	}
+	formatValue := info.Types[formatCall.Args[0]].Value
+	if formatValue == nil || formatValue.Kind() != constant.String || constant.StringVal(formatValue) != "malformed worker request: %v" {
+		return nil
+	}
+	return formatCall
+}
+
+func l8WorkerV2IsObjectAndAddressedObjectReturn(statement ast.Stmt, first, second types.Object, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	return ok && len(returned.Results) == 2 && l8WorkerV2ExpressionObject(returned.Results[0], info) == first && l8WorkerV2DirectAddressedObject(returned.Results[1], info) == second
 }
 
 func l8WorkerV2ExactUnixResponseDecoderCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
@@ -5199,22 +7442,126 @@ func l8WorkerV2ExactStoreStateDecoderCall(scope l8WorkerV2GuardScope, call *ast.
 	output := l8WorkerV2AddressedObject(call.Args[2], "storedJobStateV2", info)
 	readerClose, acquisitionErrorBranch, exactReaderClose := l8WorkerV2ExactDeferredReaderClose(function, reader, call, info)
 	acquireCall, acquireErr := l8WorkerV2TopLevelAcquisitionForObject(function, reader, info)
+	validationCall, exactStateFlow := l8WorkerV2ExactValidatedCorrelatedStoreFlow(function, output, parameters, call, acquireCall, acquisitionErrorBranch, readerClose, info)
 	return receiver != nil && len(parameters) == 1 && reader != nil && output != nil &&
 		exactReaderClose && acquireCall != nil && acquireErr != nil &&
+		exactStateFlow && validationCall != nil &&
 		l8WorkerV2NoUnconditionalTerminalBefore(function, acquireCall, info, scope.terminalAnalysis) &&
 		l8WorkerV2NoUnconditionalTerminalBefore(function, call, info, scope.terminalAnalysis) &&
 		l8WorkerV2ObjectHasNoReassignments(function, receiver, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, parameters[0], info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, parameters[0], []*ast.CallExpr{acquireCall}, nil, false, info) &&
-		l8WorkerV2ObjectIsAcquiredCallResult(function, reader, "openStoredJobStateV2", parameters[0], info) &&
-		l8WorkerV2IsExactStoredJobOpenCall(acquireCall, parameters[0], info) &&
+		l8WorkerV2ObjectIsAcquiredCallResult(function, reader, "", parameters[0], info) &&
+		l8WorkerV2IsExactStoredJobOpenCall(scope.file, function, acquireCall, receiver, parameters[0], info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, reader, info) && l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
 		l8WorkerV2ObjectOnlyConsumedByExactCalls(function, reader, []*ast.CallExpr{readerClose, call}, info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, reader, []*ast.CallExpr{readerClose, call}, nil, false, info) &&
-		l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call}, nil, true, info) &&
+		l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call, validationCall}, nil, true, info) &&
 		l8WorkerV2ExactPackageInt64Constant(call.Args[1], "maxStoredJobStateV2Bytes", 64<<10, info) &&
-		l8WorkerV2ExactTopLevelSuccessAfterCall(function, output, call, info) &&
 		l8WorkerV2ExactStoreSafeBranches(function, call, acquireErr, acquisitionErrorBranch, info)
+}
+
+func l8WorkerV2ExactValidatedCorrelatedStoreFlow(function *ast.FuncDecl, state types.Object, parameters []types.Object, codecCall, acquireCall *ast.CallExpr, acquisitionErrorBranch *ast.IfStmt, readerClose *ast.CallExpr, info *types.Info) (*ast.CallExpr, bool) {
+	if function == nil || function.Body == nil || state == nil || len(parameters) != 1 || codecCall == nil || acquireCall == nil || acquisitionErrorBranch == nil || readerClose == nil || len(function.Body.List) != 8 {
+		return nil, false
+	}
+	statements := function.Body.List
+	if !(statements[0].Pos() <= acquireCall.Pos() && acquireCall.End() <= statements[0].End()) || statements[1] != acquisitionErrorBranch {
+		return nil, false
+	}
+	deferred, ok := statements[2].(*ast.DeferStmt)
+	if !ok || deferred.Call != readerClose || l8WorkerV2ExpressionObjectFromSingleVarDeclarationStatement(statements[3], info) != state {
+		return nil, false
+	}
+	codecConditional := l8WorkerV2TopLevelIfContainingCall(function, codecCall)
+	if codecConditional == nil || statements[4] != codecConditional || !l8WorkerV2ExactCallConstantStateErrorBranch(function, codecCall, "stored job state is malformed", info) {
+		return nil, false
+	}
+	validationCall, ok := l8WorkerV2ExactStoredStateValidationBranch(statements[5], state, info)
+	if !ok || !l8WorkerV2ExactStoredStateIdentityBranch(statements[6], state, parameters[0], info) {
+		return nil, false
+	}
+	returned, ok := statements[7].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 || l8WorkerV2ExpressionObject(returned.Results[0], info) != state || !l8WorkerV2IsNilExpression(returned.Results[1], info) ||
+		!l8WorkerV2FunctionReturnsObject(function, state, info) || l8WorkerV2ObjectUseCount(function, state, info) != 4 || l8WorkerV2ObjectUseCount(function, parameters[0], info) != 2 {
+		return nil, false
+	}
+	return validationCall, true
+}
+
+func l8WorkerV2ExpressionObjectFromSingleVarDeclarationStatement(statement ast.Stmt, info *types.Info) types.Object {
+	declaration, ok := statement.(*ast.DeclStmt)
+	if !ok {
+		return nil
+	}
+	return l8WorkerV2ExpressionObjectFromSingleVarDeclaration(declaration, info)
+}
+
+func l8WorkerV2ExactStoredStateValidationBranch(statement ast.Stmt, state types.Object, info *types.Info) (*ast.CallExpr, bool) {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init == nil || conditional.Else != nil || len(conditional.Body.List) != 1 {
+		return nil, false
+	}
+	assignment, ok := conditional.Init.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return nil, false
+	}
+	errObject := l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if errObject == nil || !ok || !l8WorkerV2ExactConcreteStoredStateValidateCall(call, state, info) ||
+		!l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) ||
+		!l8WorkerV2IsZeroStructAndConstantErrorReturn(conditional.Body.List[0], "storedJobStateV2", "stored job state is malformed", info) {
+		return nil, false
+	}
+	return call, true
+}
+
+func l8WorkerV2ExactConcreteStoredStateValidateCall(call *ast.CallExpr, state types.Object, info *types.Info) bool {
+	if !l8WorkerV2ExactObjectMethodCall(call, state, "Validate", nil, info) {
+		return false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	selection := info.Selections[selector]
+	if selection == nil || selection.Obj() == nil {
+		return false
+	}
+	method, ok := selection.Obj().(*types.Func)
+	if !ok || selection.Kind() != types.MethodVal || method.Pkg() == nil || method.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" {
+		return false
+	}
+	signature, ok := method.Type().(*types.Signature)
+	return ok && signature.Recv() != nil && l8WorkerV2IsExactNamedStruct(signature.Recv().Type(), "storedJobStateV2") &&
+		signature.Params().Len() == 0 && signature.Results().Len() == 1 && types.Identical(signature.Results().At(0).Type(), types.Universe.Lookup("error").Type())
+}
+
+func l8WorkerV2ExactStoredStateIdentityBranch(statement ast.Stmt, state, jobID types.Object, info *types.Info) bool {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 {
+		return false
+	}
+	comparison, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.BinaryExpr)
+	if !ok || comparison.Op != token.NEQ || l8WorkerV2ExpressionObject(comparison.Y, info) != jobID || !l8WorkerV2ExactStoredStateJobIDSelector(comparison.X, state, info) {
+		return false
+	}
+	return l8WorkerV2IsZeroStructAndConstantErrorReturn(conditional.Body.List[0], "storedJobStateV2", "stored job state is malformed", info)
+}
+
+func l8WorkerV2ExactStoredStateJobIDSelector(expression ast.Expr, state types.Object, info *types.Info) bool {
+	idSelector, ok := l8WorkerV2UnparenExpression(expression).(*ast.SelectorExpr)
+	if !ok || idSelector.Sel.Name != "ID" {
+		return false
+	}
+	jobSelector, ok := l8WorkerV2UnparenExpression(idSelector.X).(*ast.SelectorExpr)
+	if !ok || jobSelector.Sel.Name != "JobV2" || l8WorkerV2ExpressionObject(jobSelector.X, info) != state {
+		return false
+	}
+	jobField, jobOK := info.Uses[jobSelector.Sel].(*types.Var)
+	idField, idOK := info.Uses[idSelector.Sel].(*types.Var)
+	return jobOK && jobField.IsField() && l8WorkerV2IsExactNamedStruct(jobField.Type(), "JobV2") &&
+		idOK && idField.IsField() && types.Identical(idField.Type(), types.Universe.Lookup("string").Type())
 }
 
 func l8WorkerV2ExactClientConnectionLifecycle(function *ast.FuncDecl, connection, ctx types.Object, encodeCall *ast.CallExpr, info *types.Info) ([]*ast.CallExpr, []*ast.CallExpr, *ast.IfStmt, bool) {
@@ -6294,22 +8641,301 @@ func l8WorkerV2ObjectIsAcquiredCallResult(function *ast.FuncDecl, object types.O
 	return matches == 1
 }
 
-func l8WorkerV2IsExactStoredJobOpenCall(call *ast.CallExpr, jobID types.Object, info *types.Info) bool {
-	if call == nil || jobID == nil || len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != jobID {
+func l8WorkerV2IsExactStoredJobOpenCall(file *l8WorkerV2ParsedFile, load *ast.FuncDecl, call *ast.CallExpr, store, jobID types.Object, info *types.Info) bool {
+	if file == nil || load == nil || call == nil || store == nil || jobID == nil || len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != jobID {
 		return false
 	}
-	function, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
-	if !ok || !l8WorkerV2IsExactPackageFunctionObject(function, "openStoredJobStateV2") {
+	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	if !ok || l8WorkerV2ExpressionObject(selector.X, info) != store {
 		return false
 	}
-	signature, ok := function.Type().(*types.Signature)
-	if !ok || signature.Recv() != nil || signature.TypeParams() != nil || signature.Params().Len() != 1 || signature.Results().Len() != 2 ||
+	selection := info.Selections[selector]
+	method, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
+	if !ok || selection == nil || selection.Kind() != types.MethodVal || selection.Obj() != method || method.Name() != "openStoredJobStateV2" || method.Pkg() == nil || method.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" {
+		return false
+	}
+	signature, ok := method.Type().(*types.Signature)
+	if !ok || !l8WorkerV2IsExactJobStoreV2Pointer(signature.Recv().Type()) || signature.TypeParams() != nil || signature.RecvTypeParams() != nil || signature.Params().Len() != 1 || signature.Results().Len() != 2 ||
 		!types.Identical(signature.Params().At(0).Type(), types.Universe.Lookup("string").Type()) ||
 		!types.Identical(signature.Results().At(1).Type(), types.Universe.Lookup("error").Type()) {
 		return false
 	}
-	readerType := function.Pkg().Scope().Lookup("storedJobReaderV2")
-	return readerType != nil && types.Identical(signature.Results().At(0).Type(), readerType.Type())
+	readerType := method.Pkg().Scope().Lookup("storedJobReaderV2")
+	_, exactOpener := l8WorkerV2ExactReceiverRootedStoredJobOpener(file, method, info)
+	return readerType != nil && types.Identical(signature.Results().At(0).Type(), readerType.Type()) &&
+		l8WorkerV2MethodReferencedOnlyByCall(load, method, selector, info) &&
+		exactOpener
+}
+
+func l8WorkerV2ExactReceiverRootedStoredJobOpener(file *l8WorkerV2ParsedFile, method *types.Func, info *types.Info) ([]*ast.CallExpr, bool) {
+	if file == nil || file.parsed == nil || method == nil {
+		return nil, false
+	}
+	var opener *ast.FuncDecl
+	for _, declaration := range file.parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || info.Defs[function.Name] != method {
+			continue
+		}
+		if opener != nil {
+			return nil, false
+		}
+		opener = function
+	}
+	if opener == nil || opener.Body == nil || len(opener.Body.List) != 5 {
+		return nil, false
+	}
+	receiver := l8WorkerV2ExactReceiverObject(opener, "jobStoreV2", true, info)
+	parameters := l8WorkerV2FunctionParameterObjects(opener, info)
+	if receiver == nil || len(parameters) != 1 || !l8WorkerV2ExactStoredJobOpenerInputGuard(opener.Body.List[0], receiver, parameters[0], info) {
+		return nil, false
+	}
+	pathAssignment, ok := opener.Body.List[1].(*ast.AssignStmt)
+	if !ok || pathAssignment.Tok != token.DEFINE || len(pathAssignment.Lhs) != 1 || len(pathAssignment.Rhs) != 1 {
+		return nil, false
+	}
+	pathObject := l8WorkerV2ExpressionObject(pathAssignment.Lhs[0], info)
+	joinCall, ok := l8WorkerV2UnparenExpression(pathAssignment.Rhs[0]).(*ast.CallExpr)
+	if !ok || pathObject == nil || !l8WorkerV2IsExactPackageCall(joinCall, "path/filepath", "Join", 2, info) ||
+		!l8WorkerV2ExactSelectorRoot(joinCall.Args[0], receiver, "root", info) ||
+		!l8WorkerV2ExactStoredJobFilename(joinCall.Args[1], parameters[0], info) {
+		return nil, false
+	}
+	statAssignment, ok := opener.Body.List[2].(*ast.AssignStmt)
+	if !ok || statAssignment.Tok != token.DEFINE || len(statAssignment.Lhs) != 2 || len(statAssignment.Rhs) != 1 {
+		return nil, false
+	}
+	statInfo := l8WorkerV2ExpressionObject(statAssignment.Lhs[0], info)
+	statErr := l8WorkerV2ExpressionObject(statAssignment.Lhs[1], info)
+	statCall, ok := l8WorkerV2UnparenExpression(statAssignment.Rhs[0]).(*ast.CallExpr)
+	if !ok || statInfo == nil || statErr == nil || !l8WorkerV2IsExactPackageCall(statCall, "os", "Lstat", 1, info) || l8WorkerV2ExpressionObject(statCall.Args[0], info) != pathObject {
+		return nil, false
+	}
+	inspectionCalls, exactInspection := l8WorkerV2ExactStoredJobFileInspection(opener.Body.List[3], statInfo, statErr, info)
+	if !exactInspection {
+		return nil, false
+	}
+	returned, ok := opener.Body.List[4].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return nil, false
+	}
+	openCall, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2IsExactPackageCall(openCall, "os", "Open", 1, info) || l8WorkerV2ExpressionObject(openCall.Args[0], info) != pathObject {
+		return nil, false
+	}
+	return inspectionCalls, true
+}
+
+func l8WorkerV2ExactStoredJobOpenerInputGuard(statement ast.Stmt, store, jobID types.Object, info *types.Info) bool {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 || !l8WorkerV2IsNilAndExactErrorReturn(conditional.Body.List[0], "stored job state is unavailable", info) {
+		return false
+	}
+	either, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.BinaryExpr)
+	if !ok || either.Op != token.LOR || !l8WorkerV2ExactObjectNilComparison(either.X, store, token.EQL, info) {
+		return false
+	}
+	negated, ok := l8WorkerV2UnparenExpression(either.Y).(*ast.UnaryExpr)
+	if !ok || negated.Op != token.NOT {
+		return false
+	}
+	call, ok := l8WorkerV2UnparenExpression(negated.X).(*ast.CallExpr)
+	return ok && l8WorkerV2IsExactPackageFunctionCall(call, "validJobSafeID", []types.Object{jobID}, info)
+}
+
+func l8WorkerV2ExactStoredJobFileInspection(statement ast.Stmt, statInfo, statErr types.Object, info *types.Info) ([]*ast.CallExpr, bool) {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 || !l8WorkerV2IsNilAndExactErrorReturn(conditional.Body.List[0], "stored job state is unavailable", info) {
+		return nil, false
+	}
+	terms := l8WorkerV2FlattenBinaryExpressions(conditional.Cond, token.LOR)
+	if len(terms) != 6 || !l8WorkerV2ExactObjectNilComparison(terms[0], statErr, token.NEQ, info) {
+		return nil, false
+	}
+	regularMode, regular := l8WorkerV2ExactNegatedFileInfoRegular(terms[1], statInfo, info)
+	symlinkMode, symlink := l8WorkerV2ExactFileInfoModeMaskComparison(terms[2], statInfo, "ModeSymlink", token.NEQ, 0, info)
+	permissionMode, permission := l8WorkerV2ExactFileInfoModeMethodComparison(terms[3], statInfo, "Perm", token.NEQ, 0o600, info)
+	nonemptySize, nonempty := l8WorkerV2ExactFileInfoIntegerComparison(terms[4], statInfo, "Size", token.LEQ, 0, info)
+	boundedSize, bounded := l8WorkerV2ExactFileInfoPackageConstantComparison(terms[5], statInfo, "Size", token.GTR, "maxStoredJobStateV2Bytes", 64<<10, info)
+	if !regular || !symlink || !permission || !nonempty || !bounded {
+		return nil, false
+	}
+	return []*ast.CallExpr{regularMode, symlinkMode, permissionMode, nonemptySize, boundedSize}, true
+}
+
+func l8WorkerV2FlattenBinaryExpressions(expression ast.Expr, operation token.Token) []ast.Expr {
+	binary, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || binary.Op != operation {
+		return []ast.Expr{expression}
+	}
+	left := l8WorkerV2FlattenBinaryExpressions(binary.X, operation)
+	return append(left, l8WorkerV2FlattenBinaryExpressions(binary.Y, operation)...)
+}
+
+func l8WorkerV2ExactNegatedFileInfoRegular(expression ast.Expr, statInfo types.Object, info *types.Info) (*ast.CallExpr, bool) {
+	negated, ok := l8WorkerV2UnparenExpression(expression).(*ast.UnaryExpr)
+	if !ok || negated.Op != token.NOT {
+		return nil, false
+	}
+	regularCall, ok := l8WorkerV2UnparenExpression(negated.X).(*ast.CallExpr)
+	if !ok || len(regularCall.Args) != 0 {
+		return nil, false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(regularCall.Fun).(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "IsRegular" {
+		return nil, false
+	}
+	modeCall, ok := l8WorkerV2UnparenExpression(selector.X).(*ast.CallExpr)
+	if !ok || !l8WorkerV2ExactObjectMethodCall(modeCall, statInfo, "Mode", nil, info) {
+		return nil, false
+	}
+	called := l8WorkerV2CalledObject(regularCall.Fun, info)
+	return modeCall, called != nil && called.Pkg() != nil && called.Pkg().Path() == "io/fs" && called.Name() == "IsRegular"
+}
+
+func l8WorkerV2ExactFileInfoModeMaskComparison(expression ast.Expr, statInfo types.Object, maskName string, operation token.Token, value int64, info *types.Info) (*ast.CallExpr, bool) {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || !l8WorkerV2ExactIntegerConstant(comparison.Y, value, info) {
+		return nil, false
+	}
+	masked, ok := l8WorkerV2UnparenExpression(comparison.X).(*ast.BinaryExpr)
+	if !ok || masked.Op != token.AND {
+		return nil, false
+	}
+	modeCall, ok := l8WorkerV2UnparenExpression(masked.X).(*ast.CallExpr)
+	mask := l8WorkerV2ExpressionObject(masked.Y, info)
+	return modeCall, ok && l8WorkerV2ExactObjectMethodCall(modeCall, statInfo, "Mode", nil, info) &&
+		mask != nil && mask.Pkg() != nil && mask.Pkg().Path() == "os" && mask.Name() == maskName
+}
+
+func l8WorkerV2ExactFileInfoModeMethodComparison(expression ast.Expr, statInfo types.Object, method string, operation token.Token, value int64, info *types.Info) (*ast.CallExpr, bool) {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || !l8WorkerV2ExactIntegerConstant(comparison.Y, value, info) {
+		return nil, false
+	}
+	methodCall, ok := l8WorkerV2UnparenExpression(comparison.X).(*ast.CallExpr)
+	if !ok || len(methodCall.Args) != 0 {
+		return nil, false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(methodCall.Fun).(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != method {
+		return nil, false
+	}
+	modeCall, ok := l8WorkerV2UnparenExpression(selector.X).(*ast.CallExpr)
+	if !ok || !l8WorkerV2ExactObjectMethodCall(modeCall, statInfo, "Mode", nil, info) {
+		return nil, false
+	}
+	called := l8WorkerV2CalledObject(methodCall.Fun, info)
+	return modeCall, called != nil && called.Pkg() != nil && called.Pkg().Path() == "io/fs" && called.Name() == method
+}
+
+func l8WorkerV2ExactFileInfoIntegerComparison(expression ast.Expr, statInfo types.Object, method string, operation token.Token, value int64, info *types.Info) (*ast.CallExpr, bool) {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || !l8WorkerV2ExactIntegerConstant(comparison.Y, value, info) {
+		return nil, false
+	}
+	call, ok := l8WorkerV2UnparenExpression(comparison.X).(*ast.CallExpr)
+	return call, ok && l8WorkerV2ExactObjectMethodCall(call, statInfo, method, nil, info)
+}
+
+func l8WorkerV2ExactFileInfoPackageConstantComparison(expression ast.Expr, statInfo types.Object, method string, operation token.Token, constantName string, value int64, info *types.Info) (*ast.CallExpr, bool) {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || !l8WorkerV2ExactPackageInt64Constant(comparison.Y, constantName, value, info) {
+		return nil, false
+	}
+	call, ok := l8WorkerV2UnparenExpression(comparison.X).(*ast.CallExpr)
+	return call, ok && l8WorkerV2ExactObjectMethodCall(call, statInfo, method, nil, info)
+}
+
+func l8WorkerV2ExactIntegerConstant(expression ast.Expr, value int64, info *types.Info) bool {
+	constantValue := info.Types[expression].Value
+	if constantValue == nil {
+		return false
+	}
+	got, exact := constant.Int64Val(constantValue)
+	return exact && got == value
+}
+
+func l8WorkerV2ExactObjectNilComparison(expression ast.Expr, object types.Object, operation token.Token, info *types.Info) bool {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	return ok && comparison.Op == operation && l8WorkerV2ExpressionObject(comparison.X, info) == object && l8WorkerV2IsNilExpression(comparison.Y, info)
+}
+
+func l8WorkerV2IsNilAndExactErrorReturn(statement ast.Stmt, message string, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 || !l8WorkerV2IsNilExpression(returned.Results[0], info) {
+		return false
+	}
+	call, ok := l8WorkerV2UnparenExpression(returned.Results[1]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2IsExactPackageCall(call, "errors", "New", 1, info) {
+		return false
+	}
+	value := info.Types[call.Args[0]].Value
+	return value != nil && value.Kind() == constant.String && constant.StringVal(value) == message
+}
+
+func l8WorkerV2IsExactPackageFunctionCall(call *ast.CallExpr, name string, arguments []types.Object, info *types.Info) bool {
+	if call == nil || call.Ellipsis.IsValid() || len(call.Args) != len(arguments) || !l8WorkerV2IsExactPackageFunctionObject(l8WorkerV2CalledObject(call.Fun, info), name) {
+		return false
+	}
+	for index, argument := range arguments {
+		if l8WorkerV2ExpressionObject(call.Args[index], info) != argument {
+			return false
+		}
+	}
+	return true
+}
+
+func l8WorkerV2IsExactPackageCall(call *ast.CallExpr, packagePath, name string, argumentCount int, info *types.Info) bool {
+	if call == nil || call.Ellipsis.IsValid() || len(call.Args) != argumentCount {
+		return false
+	}
+	function, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
+	return ok && function.Pkg() != nil && function.Pkg().Path() == packagePath && function.Name() == name
+}
+
+func l8WorkerV2ExactStoredJobFilename(expression ast.Expr, jobID types.Object, info *types.Info) bool {
+	joined, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || joined.Op != token.ADD || l8WorkerV2ExpressionObject(joined.X, info) != jobID {
+		return false
+	}
+	value := info.Types[joined.Y].Value
+	return value != nil && value.Kind() == constant.String && constant.StringVal(value) == ".json"
+}
+
+func l8WorkerV2IsExactJobStoreV2Pointer(typ types.Type) bool {
+	pointer, ok := types.Unalias(typ).(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := types.Unalias(pointer.Elem()).(*types.Named)
+	return ok && named.TypeArgs().Len() == 0 && named.Obj() != nil && named.Obj().Pkg() != nil &&
+		named.Obj().Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" && named.Obj().Name() == "jobStoreV2"
+}
+
+func l8WorkerV2MethodReferencedOnlyByCall(function *ast.FuncDecl, method *types.Func, allowed *ast.SelectorExpr, info *types.Info) bool {
+	if function == nil || function.Body == nil || method == nil || allowed == nil {
+		return false
+	}
+	references := 0
+	valid := true
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !valid {
+			return false
+		}
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		selection := info.Selections[selector]
+		if selection == nil || selection.Obj() != method {
+			return true
+		}
+		references++
+		valid = selector == allowed
+		return valid
+	})
+	return valid && references == 1
 }
 
 func l8WorkerV2IsExactPackageFunctionObject(object types.Object, name string) bool {
@@ -7957,8 +10583,8 @@ func l8WorkerV2ExactBoundedJSONReader(scope l8WorkerV2GuardScope, info *types.In
 
 func l8WorkerV2ExactBoundedRawStrictDecoder(scope l8WorkerV2GuardScope, info *types.Info) (l8WorkerV2BoundedRawStrictDecoder, bool) {
 	var zero l8WorkerV2BoundedRawStrictDecoder
-	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || function.Body == nil || len(function.Body.List) != 9 {
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || function.Body == nil || len(function.Body.List) != 9 {
 		return zero, false
 	}
 	reader, limit, output, ok := l8WorkerV2ExactRawDecoderParameters(function, info)
@@ -8412,10 +11038,10 @@ func l8WorkerV2IsAllowedAuditedJSONDecodeType(typ types.Type) bool {
 	if packagePath == "time" && name == "Time" {
 		return true
 	}
-	// The unchanged V1 outer envelopes contain RuntimeMetadata. Its sanitizing
-	// JSON methods are AST-hash locked by the L8 command source guard, so this is
-	// the only repository-owned custom decoder allowed through the V2 seam.
-	return packagePath == "github.com/jywlabs/hal/internal/sandboxruntime" && name == "RuntimeMetadata"
+	// The unchanged V1 outer envelopes contain these sanitizing runtime metadata
+	// types. Their JSON methods are AST-hash locked by L8 command source guards;
+	// adjacent repository-owned custom decoders remain forbidden.
+	return packagePath == "github.com/jywlabs/hal/internal/sandboxruntime" && (name == "RuntimeMetadata" || name == "RuntimeCredentialDeliveryMetadata")
 }
 
 func l8WorkerV2AllowedExactJSONMarshalCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
@@ -8850,9 +11476,15 @@ func l8WorkerV2IsAllowedAuditedJSONEncodeType(typ types.Type) bool {
 	if packagePath == "time" && name == "Time" {
 		return true
 	}
-	// RuntimeMetadata's sanitizing JSON methods are AST-hash locked by the L8
-	// command source guard. No adjacent repository-owned marshaler is allowed.
-	return packagePath == "github.com/jywlabs/hal/internal/sandboxruntime" && name == "RuntimeMetadata"
+	// SecurityPolicy's sanitizing marshaler is exact-hash locked by the L8
+	// credential-delivery command source guard. Adjacent worker marshalers are
+	// not admitted here.
+	if packagePath == "github.com/jywlabs/hal/internal/sandboxworker" && name == "SecurityPolicy" {
+		return true
+	}
+	// These runtime metadata sanitizers are exact-hash locked by L8 command
+	// source guards. No adjacent repository-owned marshaler is allowed.
+	return packagePath == "github.com/jywlabs/hal/internal/sandboxruntime" && (name == "RuntimeMetadata" || name == "RuntimeNetworkEnforcementMetadata")
 }
 
 func l8WorkerV2ExactPrimaryDecodeIf(statement ast.Stmt, decoder, output types.Object, info *types.Info) bool {
@@ -11428,6 +14060,143 @@ var hiddenKernelCall = kernel.RawSyscall`,
 	}, policy, "syscall.RawSyscall")
 }
 
+func TestL8WorkerV2GuardSemanticSlicingKeepsDirectV2FlowsTainted(t *testing.T) {
+	t.Run("V2 named helper taints innocuous wrapper", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"job_v2.go": `package sandboxworker
+func authorizeJobV2() {}`,
+			"unlisted.go": `package sandboxworker
+func innocuousWrapper() { authorizeJobV2() }`,
+		}, l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2.go": true}}, "outside the exact allowlist")
+	})
+
+	t.Run("exact V2 operation identity taints innocuous wrapper", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"job_v2.go": `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"
+func selectedOperation() string { return OperationJobStartV2 }`,
+			"unlisted.go": `package sandboxworker
+func innocuousOperationWrapper() string { return selectedOperation() }`,
+		}, l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2.go": true}}, "outside the exact allowlist")
+	})
+
+	t.Run("direct V2 field selector remains rooted", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"types.go": `package sandboxworker
+type JobStartRequestV2 struct{}
+type Request struct { JobStartV2 *JobStartRequestV2 }`,
+			"unlisted.go": `package sandboxworker
+func directFieldSelector(request Request) { _ = request.JobStartV2 }`,
+		}, l8WorkerV2GuardPolicy{mixed: map[string]bool{"types.go": true}}, "outside the exact allowlist")
+	})
+
+	t.Run("whole envelope forward flow reaches generic helper", func(t *testing.T) {
+		l8AssertWorkerV2GuardRejects(t, map[string]string{
+			"job_v2.go": `package sandboxworker
+func JobStartV2Root(request Request) { genericUnsafeEnvelope(request) }`,
+			"types.go": `package sandboxworker
+type JobStartRequestV2 struct{}
+type Request struct { JobStartV2 *JobStartRequestV2 }`,
+			"unlisted.go": `package sandboxworker
+func genericUnsafeEnvelope(Request) {}`,
+		}, l8WorkerV2GuardPolicy{
+			dedicated: map[string]bool{"job_v2.go": true},
+			mixed:     map[string]bool{"types.go": true},
+		}, "outside the exact allowlist")
+	})
+
+	t.Run("generic shared V2 body does not sweep unchanged V1 callers", func(t *testing.T) {
+		l8AssertWorkerV2GuardAllows(t, map[string]string{
+			"types.go": `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"
+func validOperation(operation string) bool { return operation == OperationJobStartV2 }`,
+			"legacy.go": `package sandboxworker
+func unchangedV1Caller(operation string) bool { return validOperation(operation) }`,
+		}, l8WorkerV2GuardPolicy{mixed: map[string]bool{"types.go": true}})
+	})
+}
+
+func TestL8WorkerV2GuardSlicesOnlyExactEarlyTerminalV2HandlerBranch(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"handler.go": true}}
+	handler := `package sandboxworker
+import "context"
+const OperationStatus = "status"
+const ErrorCodeInternal = "internal"
+type Request struct { RequestID string; Operation string }
+type Response struct{}
+type Service struct{}
+func isWorkerV2Operation(operation string) bool { return operation == "job_start_v2" }
+func unsupportedOperationResponse(Request) Response { return Response{} }
+func protocolErrorResponse(string, string, string, string) Response { return Response{} }
+func contextErrorResponse(context.Context, Request) (Response, bool) { return Response{}, false }
+func (service *Service) HandleRequest(ctx context.Context, req Request) Response {
+	if service == nil {
+		return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeInternal, "worker service is not configured")
+	}
+	if resp, ok := contextErrorResponse(ctx, req); ok {
+		return resp
+	}
+	if isWorkerV2Operation(req.Operation) {
+		return unsupportedOperationResponse(req)
+	}
+	return legacyHandler(req)
+}`
+	legacy := "package sandboxworker\nfunc legacyHandler(Request) Response { return Response{} }"
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"handler.go": handler, "legacy.go": legacy}, policy)
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) string
+		want   string
+	}{
+		{
+			name: "V2 marker in suffix",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\treturn legacyHandler(req)", "\tif isWorkerV2Operation(req.Operation) { return legacyHandler(req) }\n\treturn legacyHandler(req)", 1)
+			},
+		},
+		{
+			name: "missing return",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\t\treturn unsupportedOperationResponse(req)", "\t\t_ = unsupportedOperationResponse(req)", 1)
+			},
+		},
+		{
+			name: "else branch",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\t}\n\treturn legacyHandler(req)", "\t} else {\n\t\treturn legacyHandler(req)\n\t}\n\treturn legacyHandler(req)", 1)
+			},
+		},
+		{
+			name: "prefix goto and label",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tif service == nil {", "\tif service == nil { goto legacyPrefix\nlegacyPrefix:", 1)
+			},
+		},
+		{
+			name: "operation reassignment",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tif resp, ok := contextErrorResponse(ctx, req); ok {\n\t\treturn resp\n\t}", "\treq.Operation = OperationStatus", 1)
+			},
+		},
+		{
+			name: "predicate shadowing",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tif resp, ok := contextErrorResponse(ctx, req); ok {\n\t\treturn resp\n\t}", "\tisWorkerV2Operation := func(string) bool { return false }", 1)
+			},
+			want: "function-value dispatch",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			want := tt.want
+			if want == "" {
+				want = "outside the exact allowlist"
+			}
+			l8AssertWorkerV2GuardRejects(t, map[string]string{"handler.go": tt.mutate(handler), "legacy.go": legacy}, policy, want)
+		})
+	}
+}
+
 func TestL8WorkerV2GuardAllowsExactDurableStoreFileAndLockSurfaces(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{
 		"job_v2_store.go":      true,
@@ -11517,14 +14286,74 @@ func TestL8WorkerV2SourceGuardsPrincipalCannotBeDecodedFromJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sources := make(map[string]string)
 	for _, path := range files {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		source := l8ReadWorkerSource(t, path)
+		sources[path] = l8ReadWorkerSource(t, path)
+	}
+	if err := l8AuditWorkerV2PrivateJSONIdentityTags(sources); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestL8WorkerV2PrivateJSONIdentityExceptionsAreExact(t *testing.T) {
+	allowed := map[string]string{
+		"job_v2_helpers.go": `package sandboxworker
+type jobRequestIdentityV2 struct {
+	DriverID string ` + "`json:\"driverId\"`" + `
+	PrincipalID string ` + "`json:\"principalId\"`" + `
+	DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + `
+}`,
+		"job_store_v2.go": `package sandboxworker
+type storedJobStateV2 struct {
+	PrincipalID string ` + "`json:\"principalId\"`" + `
+	DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + `
+}`,
+	}
+	if err := l8AuditWorkerV2PrivateJSONIdentityTags(allowed); err != nil {
+		t.Fatalf("exact private identity exceptions were rejected: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		path     string
+		typeName string
+		field    string
+		tag      string
+		extra    string
+	}{
+		{name: "hash identity in wrong file", path: "job_v2_types.go", typeName: "jobRequestIdentityV2", field: "PrincipalID", tag: "principalId"},
+		{name: "hash identity on wrong type", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2Alias", field: "PrincipalID", tag: "principalId"},
+		{name: "hash identity on exported type", path: "job_v2_helpers.go", typeName: "JobRequestIdentityV2", field: "PrincipalID", tag: "principalId"},
+		{name: "hash identity with wrong field", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "AuthenticatedPrincipal", tag: "principalId"},
+		{name: "hash identity with wrong tag", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "PrincipalID", tag: "principalID"},
+		{name: "daemon identity with wrong field", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "Generation", tag: "daemonGeneration"},
+		{name: "daemon identity with wrong tag", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "DaemonGeneration", tag: "daemon_generation"},
+		{name: "extra public response surface", path: "job_v2_helpers.go", typeName: "jobRequestIdentityV2", field: "PrincipalID", tag: "principalId", extra: "\ntype Response struct { PrincipalID string `json:\"principalId\"` }\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := "package sandboxworker\ntype " + tt.typeName + " struct { " + tt.field + " string `json:\"" + tt.tag + "\"` }\n" + tt.extra
+			err := l8AuditWorkerV2PrivateJSONIdentityTags(map[string]string{tt.path: source})
+			if err == nil || !strings.Contains(err.Error(), "private server identity") {
+				t.Fatalf("identity tag audit error = %v, want private server identity rejection", err)
+			}
+		})
+	}
+}
+
+func l8AuditWorkerV2PrivateJSONIdentityTags(sources map[string]string) error {
+	paths := make([]string, 0, len(sources))
+	for path := range sources {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		source := sources[path]
 		parsed, parseErr := parser.ParseFile(token.NewFileSet(), path, source, 0)
 		if parseErr != nil {
-			t.Fatalf("parse %s: %v", path, parseErr)
+			return fmt.Errorf("parse %s: %w", path, parseErr)
 		}
 		for _, declaration := range parsed.Decls {
 			generated, ok := declaration.(*ast.GenDecl)
@@ -11546,24 +14375,28 @@ func TestL8WorkerV2SourceGuardsPrincipalCannotBeDecodedFromJSON(t *testing.T) {
 					}
 					tag, unquoteErr := strconv.Unquote(field.Tag.Value)
 					if unquoteErr != nil {
-						t.Fatalf("unquote field tag in %s: %v", path, unquoteErr)
+						return fmt.Errorf("unquote field tag in %s: %w", path, unquoteErr)
 					}
-					jsonTag := strings.ToLower(reflectStructTagJSON(tag))
-					if strings.Contains(jsonTag, "peeruid") || strings.Contains(jsonTag, "peergid") {
-						t.Fatalf("production field in %s exposes peer credential through JSON tag %q", path, jsonTag)
+					jsonTag := reflectStructTagJSON(tag)
+					normalizedTag := strings.ToLower(jsonTag)
+					if strings.Contains(normalizedTag, "peeruid") || strings.Contains(normalizedTag, "peergid") {
+						return fmt.Errorf("production field in %s exposes peer credential through JSON tag %q", path, jsonTag)
 					}
 					privateDurableIdentity := filepath.Base(path) == "job_store_v2.go" && typeSpec.Name.Name == "storedJobStateV2" && len(field.Names) == 1 &&
-						(jsonTag == "principalid" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemongeneration" && field.Names[0].Name == "DaemonGeneration")
-					if privateDurableIdentity {
+						(jsonTag == "principalId" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemonGeneration" && field.Names[0].Name == "DaemonGeneration")
+					privateHashIdentity := filepath.Base(path) == "job_v2_helpers.go" && typeSpec.Name.Name == "jobRequestIdentityV2" && len(field.Names) == 1 &&
+						(jsonTag == "principalId" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemonGeneration" && field.Names[0].Name == "DaemonGeneration")
+					if privateDurableIdentity || privateHashIdentity {
 						continue
 					}
-					if strings.Contains(jsonTag, "principal") || strings.Contains(jsonTag, "daemongeneration") {
-						t.Fatalf("production field in %s exposes private server identity outside storedJobStateV2 through JSON tag %q", path, jsonTag)
+					if strings.Contains(normalizedTag, "principal") || strings.Contains(normalizedTag, "daemongeneration") || strings.Contains(normalizedTag, "daemon_generation") {
+						return fmt.Errorf("production field in %s exposes private server identity outside exact private identity types through JSON tag %q", path, jsonTag)
 					}
 				}
 			}
 		}
 	}
+	return nil
 }
 
 func reflectStructTagJSON(tag string) string {
