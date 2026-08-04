@@ -200,15 +200,71 @@ func TestL8WorkerV2GuardAllowsExactBoundedStrictDecoderSeam(t *testing.T) {
 		"protocol_decode.go": `package sandboxworker
 import (
 	"encoding/json"
+	"errors"
 	"io"
 )
 type JobStartRequestV2 struct { Value string }
 func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
 	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(output)
+	if err := decoder.Decode(output); err != nil {
+		return err
+	}
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("worker v2 request contains trailing JSON")
+	}
+	return nil
 }`,
 	}, policy)
+
+	for name, source := range map[string]string{
+		"decode_before_strictness": `package sandboxworker
+import (
+	"encoding/json"
+	"io"
+)
+type JobStartRequestV2 struct { Value string }
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	if err := decoder.Decode(output); err != nil { return err }
+	decoder.DisallowUnknownFields()
+	return nil
+}`,
+		"unreachable_strictness": `package sandboxworker
+import (
+	"encoding/json"
+	"io"
+)
+type JobStartRequestV2 struct { Value string }
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	if err := decoder.Decode(output); err != nil { return err }
+	return nil
+	decoder.DisallowUnknownFields()
+	return nil
+}`,
+		"extra_decode": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+)
+type JobStartRequestV2 struct { Value string }
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	_ = decoder.Decode(&trailing)
+	return nil
+}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": source}, policy, "implicit interface callback")
+		})
+	}
 
 	l8AssertWorkerV2GuardRejects(t, map[string]string{
 		"protocol_decode.go": `package sandboxworker
