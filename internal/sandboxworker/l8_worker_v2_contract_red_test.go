@@ -307,13 +307,7 @@ func TestL8WorkerV2CredentialIdentitiesUseCrossPhaseSafeIDVocabulary(t *testing.
 		{name: "binding", mutate: func(req *JobStartRequestV2, value string) { req.Bindings[0].BindingID = value }},
 		{name: "service", mutate: func(req *JobStartRequestV2, value string) { req.Bindings[0].ServiceID = value }},
 	}
-	invalid := []struct {
-		name  string
-		value string
-	}{
-		{name: "129 bytes", value: strings.Repeat("a", 129)},
-		{name: "colon bearing", value: "credential:neighbor"},
-	}
+	invalid := l8WorkerV2InvalidCrossPhaseSafeIDCases()
 	for _, field := range fields {
 		for _, value := range invalid {
 			t.Run(field.name+" rejects "+value.name, func(t *testing.T) {
@@ -370,6 +364,48 @@ func TestL8WorkerV2CredentialIdentitiesUseCrossPhaseSafeIDVocabulary(t *testing.
 	}
 }
 
+func TestL8WorkerV2DurableCredentialIntentUsesCrossPhaseSafeIDVocabulary(t *testing.T) {
+	fields := []struct {
+		name   string
+		mutate func(*JobCredentialIntentV2, string)
+	}{
+		{name: "plan", mutate: func(intent *JobCredentialIntentV2, value string) { intent.PlanID = value }},
+		{name: "grant", mutate: func(intent *JobCredentialIntentV2, value string) { intent.AdmissionGrantID = value }},
+		{name: "template policy", mutate: func(intent *JobCredentialIntentV2, value string) { intent.TemplatePolicyID = value }},
+		{name: "workspace policy", mutate: func(intent *JobCredentialIntentV2, value string) { intent.WorkspacePolicyID = value }},
+		{name: "source reference", mutate: func(intent *JobCredentialIntentV2, value string) {
+			intent.SourceReferenceIDs[0] = value
+			intent.Bindings[0].SourceReferenceID = value
+		}},
+		{name: "binding", mutate: func(intent *JobCredentialIntentV2, value string) { intent.Bindings[0].BindingID = value }},
+		{name: "service", mutate: func(intent *JobCredentialIntentV2, value string) { intent.Bindings[0].ServiceID = value }},
+	}
+	for _, field := range fields {
+		for _, invalid := range l8WorkerV2InvalidCrossPhaseSafeIDCases() {
+			t.Run(field.name+" rejects "+invalid.name, func(t *testing.T) {
+				job := l8WorkerV2QueuedJob()
+				intent := l8CloneWorkerV2Intent(job.CredentialIntent)
+				field.mutate(&intent, invalid.value)
+				job.CredentialIntent = intent
+				if err := job.Validate(); err == nil {
+					t.Fatalf("durable v2 credential %s accepted %s safe ID", field.name, invalid.name)
+				}
+			})
+		}
+		for _, allowed := range l8WorkerV2CrossPhaseSafeIDCases() {
+			t.Run(field.name+" accepts "+allowed.name, func(t *testing.T) {
+				job := l8WorkerV2QueuedJob()
+				intent := l8CloneWorkerV2Intent(job.CredentialIntent)
+				field.mutate(&intent, allowed.value)
+				job.CredentialIntent = intent
+				if err := job.Validate(); err != nil {
+					t.Fatalf("durable v2 credential %s rejected allowed %s safe ID: %v", field.name, allowed.name, err)
+				}
+			})
+		}
+	}
+}
+
 type l8WorkerV2SafeIDCase struct {
 	name  string
 	value string
@@ -382,6 +418,17 @@ func l8WorkerV2CrossPhaseSafeIDCases() []l8WorkerV2SafeIDCase {
 		{name: "single underscore", value: "_"},
 		{name: "single hyphen", value: "-"},
 		{name: "leading punctuation and uppercase", value: "._-Upper9"},
+	}
+}
+
+func l8WorkerV2InvalidCrossPhaseSafeIDCases() []l8WorkerV2SafeIDCase {
+	return []l8WorkerV2SafeIDCase{
+		{name: "129 bytes", value: strings.Repeat("a", 129)},
+		{name: "colon bearing", value: "credential:neighbor"},
+		{name: "whitespace bearing", value: "credential neighbor"},
+		{name: "at sign bearing", value: "credential@neighbor"},
+		{name: "plus bearing", value: "credential+neighbor"},
+		{name: "unicode bearing", value: "credential-邻居"},
 	}
 }
 
