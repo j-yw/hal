@@ -274,6 +274,40 @@ func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error 
 	if err := decoder.Decode(&trailing); err != io.EOF { return decoder.Decode(output) }
 	return nil
 }`,
+		"different_output_parameter": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+)
+type JobStartRequestV2 struct { Value string }
+func decodeJobStartRequestV2(reader io.Reader, output, replacement *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(replacement); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`,
+		"constructor_reassigns_output": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+)
+type JobStartRequestV2 struct { Value string }
+func replaceJobStartV2Output(reader io.Reader, output **JobStartRequestV2) io.Reader {
+	*output = &JobStartRequestV2{Value: "replacement"}
+	return reader
+}
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(replaceJobStartV2Output(reader, &output), 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": source}, policy, "implicit interface callback")
