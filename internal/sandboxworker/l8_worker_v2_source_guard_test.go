@@ -72,6 +72,32 @@ func TestL8WorkerV2SourceGuardsRejectSecretAndLiveAuthoritySurfaces(t *testing.T
 	}
 }
 
+func TestL8WorkerV2GuardAddingD1CDeclarationsPreservesRealV1Production(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := make(map[string]string)
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		matched, matchErr := build.Default.MatchFile(".", path)
+		if matchErr != nil {
+			t.Fatalf("match production file %s: %v", path, matchErr)
+		}
+		if matched {
+			sources[path] = l8ReadWorkerSource(t, path)
+		}
+	}
+	sources["job_v2_types.go"] = `package sandboxworker
+type JobStartRequestV2 struct{}`
+
+	if err := l8AuditWorkerV2Sources(sources, l8WorkerV2ProductionGuardPolicy()); err != nil {
+		t.Fatalf("guard rejected unchanged real V1 production after adding an allowed D1C declaration: %v", err)
+	}
+}
+
 type l8WorkerV2GuardPolicy struct {
 	dedicated map[string]bool
 	mixed     map[string]bool
@@ -1714,6 +1740,86 @@ func unrelatedLegacyText(parts []string) string { return text.Join(parts, "") }`
 	}})
 }
 
+func TestL8WorkerV2GuardRejectsIndexDerivedOperationDefinitions(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"state.go":     true,
+	}}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"contracts.go": `package sandboxworker
+type JobStartRequestV2 struct{}`,
+		"state.go": `package sandboxworker
+var hiddenOperation = map[int]string{
+	0: "job_start_" + string([]byte{118, 50}),
+}[0]`,
+	}, policy, "runtime operation assembly")
+}
+
+func TestL8WorkerV2GuardRejectsPositionalOperationFieldAssembly(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"state.go":     true,
+	}}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"contracts.go": `package sandboxworker
+type JobResolveRequestV2 struct{}`,
+		"state.go": `package sandboxworker
+import text "strings"
+type runtimeRequest struct {
+	Operation string
+	Payload   string
+}
+var hiddenRequest = runtimeRequest{
+	text.Join([]string{"job", "_resolve_", "v", "2"}, ""),
+	"safe",
+}`,
+	}, policy, "runtime operation assembly")
+}
+
+func TestL8WorkerV2GuardRejectsRuntimeOperationMatchExpressions(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
+		"contracts.go": true,
+		"handler.go":   true,
+		"shared.go":    true,
+	}}
+	contracts := `package sandboxworker
+type JobStatusRequestV2 struct{}`
+	shared := `package sandboxworker
+import processapi "os"
+type runtimeRequest struct { Operation string }
+func forbiddenMatchedHelper() { _, _ = processapi.StartProcess("worker", nil, nil) }`
+	for _, fixture := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "comparison operand",
+			body: `if request.Operation == text.Join([]string{"job_status_", "v", "2"}, "") {
+		forbiddenMatchedHelper()
+	}`,
+		},
+		{
+			name: "switch case",
+			body: `switch request.Operation {
+	case text.Join([]string{"job_logs_", "v", "2"}, ""):
+		forbiddenMatchedHelper()
+	}`,
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"contracts.go": contracts,
+				"handler.go": `package sandboxworker
+import text "strings"
+func legacyDispatch(request runtimeRequest) {
+	` + fixture.body + `
+}`,
+				"shared.go": shared,
+			}, policy, "runtime operation assembly")
+		})
+	}
+}
+
 func TestL8WorkerV2GuardConstantValueTaintClosesChainsAndUnlistedRoots(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"contracts.go": true,
@@ -2268,6 +2374,53 @@ func (variadicRenderer) String() string {
 	return ""
 }`,
 	}, policy, "implicit interface callback")
+}
+
+func TestL8WorkerV2GuardRejectsCallbacksNestedInFormattingContainers(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{"job_v2_fixture.go": true},
+		mixed:     map[string]bool{"shared.go": true},
+	}
+	shared := `package sandboxworker
+import processapi "os"
+type containerRenderer struct{}
+func (containerRenderer) String() string {
+	_, _ = processapi.StartProcess("worker", nil, nil)
+	return ""
+}`
+	for _, fixture := range []struct {
+		name     string
+		argument string
+	}{
+		{name: "slice element", argument: `[]containerRenderer{{}}`},
+		{name: "array element", argument: `[1]containerRenderer{{}}`},
+		{name: "map value", argument: `map[string]containerRenderer{"value": containerRenderer{}}`},
+		{name: "pointer field", argument: `&struct{ Value containerRenderer }{}`},
+		{name: "struct field", argument: `struct{ Value containerRenderer }{}`},
+		{name: "interface slice element", argument: `[]any{containerRenderer{}}`},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			l8AssertWorkerV2GuardRejects(t, map[string]string{
+				"job_v2_fixture.go": `package sandboxworker
+import formatting "fmt"
+func JobCancelV2Fixture() { _ = formatting.Sprint(` + fixture.argument + `) }`,
+				"shared.go": shared,
+			}, policy, "implicit interface callback")
+		})
+	}
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import formatting "fmt"
+type inertCycle struct { Next *inertCycle }
+func JobLogsV2Fixture() {
+	_ = formatting.Sprint(
+		[]struct{ Value string }{{Value: "safe"}},
+		map[string]int{"safe": 1},
+		&inertCycle{},
+	)
+}`,
+	}, policy)
 }
 
 func TestL8WorkerV2GuardAuditsPackageInitializers(t *testing.T) {
