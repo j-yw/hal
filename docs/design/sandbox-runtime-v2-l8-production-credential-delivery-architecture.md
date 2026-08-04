@@ -241,9 +241,32 @@ suffix; uppercase, `sha256:`, base64, abbreviated, or alternate-algorithm forms
 are invalid.
 
 The complete identity is acquired through an explicit two-stage neutral seam;
-it is never synthesized before guest authentication. `JobCredentialIdentitySeed`
-contains every complete-identity field except `GuestSessionGeneration` and
-`GuestHelperGeneration`. `JobCredentialRuntime.PreflightJobCredentials`
+it is never synthesized before guest authentication. The seed type is exact:
+
+```go
+type JobCredentialIdentitySeed struct {
+	SandboxID, ExecutionID, WorkerID, HostID                 string
+	RuntimeDriver, RuntimeID, RuntimeGeneration              string
+	FirecrackerProcessGeneration, VsockGeneration            string
+	WorkerJobID, SubmissionID, PlanID                        string
+	ActivationGeneration, CredentialGeneration               string
+	NetworkPlanID, PolicySnapshotID                          string
+	ProxySessionID, ProxyGenerationID                        string
+	TopologyGenerationID, RuleGenerationID                   string
+	AdmissionGrantID, PrincipalID                            string
+	TemplatePolicyID, WorkspacePolicyID                      string
+	ControllerKeyGeneration, GuestBootGeneration             string
+	GuestImageGeneration, GuestImageDigest                   string
+	AdmissionGrantRevision                                   uint64
+	BindingIDs                                               []string
+	DeliveryModes                                            []JobCredentialDeliveryMode
+	IssuedAt                                                 time.Time
+}
+```
+
+`JobCredentialIdentity` has those fields in that order plus
+`GuestSessionGeneration` and `GuestHelperGeneration` immediately after
+`GuestImageDigest`. `JobCredentialRuntime.PreflightJobCredentials`
 accepts only a validated seed and returns one opaque, nonserializable
 `JobCredentialRuntimePreflight`. That preflight retains the exact authenticated
 control session and exposes:
@@ -260,6 +283,7 @@ The pure root identity API is exact:
 
 ```go
 func ValidateJobCredentialIdentitySeed(JobCredentialIdentitySeed) error
+func CloneJobCredentialIdentitySeed(JobCredentialIdentitySeed) (JobCredentialIdentitySeed, error)
 func CompleteJobCredentialIdentity(JobCredentialIdentitySeed, string, string) (JobCredentialIdentity, error)
 func ValidateJobCredentialIdentityCompletion(JobCredentialIdentitySeed, JobCredentialIdentity) error
 func ValidateJobCredentialIdentity(JobCredentialIdentity) error
@@ -269,7 +293,9 @@ func JobCredentialIdentityDigest(JobCredentialIdentity) ([32]byte, error)
 The two strings passed to `CompleteJobCredentialIdentity` are the authenticated
 guest-session and helper generations in that order. The seed validator requires
 every seed field and applies the same mode-dependent network rules as the
-complete validator without mutating its input. Completion validates the seed,
+complete validator without mutating its input. The clone helper validates and
+returns a field-for-field value with fresh ordered binding/mode slices; callers
+never duplicate this root-owned cloning logic. Completion validates the seed,
 deep-copies ordered binding/mode slices, adds only those two generations, and
 validates the result. Completion validation independently compares every seed
 field and ordered slice before accepting both added generations. `Identity()`
@@ -280,10 +306,41 @@ proof, wire identity, authorization token, or bearer capability, and only the
 complete identity has the canonical digest below.
 
 The worker persists the validated, privately cloned seed with the queued job
-before calling preflight. The seed is safe durable recovery input but is never
-public status, a proof, or a command-result JSON field; the preflight handle is
-never durable. Preflight receives no live source and cannot create a credential
-job, read a credential value, or publish an active proof. Its only valid return
+before calling preflight. The durable representation is the package-private
+`sandboxworker.storedJobStateV2.CredentialState` field with JSON tag
+`credentialState,omitempty`; it is never added to public `JobV2`:
+
+```go
+type storedJobCredentialStateV2 struct {
+	ContractVersion string                                `json:"contractVersion"`
+	Seed            storedJobCredentialIdentitySeedV1     `json:"seed"`
+	Identity        *storedJobCredentialIdentityV1        `json:"identity,omitempty"`
+	Revision        uint64                                `json:"revision"`
+}
+```
+
+`ContractVersion` is exactly `sandboxjob-credential-private-v1`. The two
+private DTOs use the exact lower-camel JSON field order of the canonical
+`JobIdentity` below; the seed omits only `guestSessionGeneration` and
+`guestHelperGeneration`. They have no exported conversion outside
+`internal/sandboxworker`. Conversion calls the root validators and clone helper,
+strict decoding rejects unknown/duplicate/trailing fields, and every load/save/
+list path returns fresh slices. `CredentialState` is nil for no-live-intent
+jobs. With live intent it is first atomically saved with seed, nil identity,
+and revision zero. After preflight validation, the same record atomically adds
+the complete identity while retaining the seed; activation/renewal atomically
+updates revision. It is removed only in the same or a later durable write after
+valid cleanup proof. A crash at any earlier write therefore retains enough
+private correlation for seed-only stop/reap or complete-identity recovery.
+The existing 64 KiB stored-record cap includes this field; exceeding it fails
+before preflight, and tests lock maximum and plus-one encodings. Store/status/
+logs/command-result sanitizers and public JSON tests prove `credentialState`,
+`seed`, and complete private identity never appear outside the owner-only store.
+
+The seed is safe durable recovery input but is never public status, a proof, or
+a command-result JSON field; the preflight handle is never durable. Preflight
+receives no live source and cannot create a credential job, read a credential
+value, or publish an active proof. Its only valid return
 is a non-nil, non-typed-nil handle with nil error. Any error must return a nil
 handle after closing its attempted host session; the worker nevertheless
 stops/reaps the exact runtime before terminal persistence. A non-nil handle
@@ -292,7 +349,15 @@ also forces exact stop/reap.
 
 On successful return, the worker starts the preflight `Loss()` watcher before
 calling `Identity`, validation, persistence, source resolution, or prepare.
-Loss is a terminal, latched, exactly-once value. It remains observable until
+The preflight channel emits exactly one value then closes; one worker-owned
+goroutine receives it and stores an in-memory terminal latch, so closed-channel
+zero values and competing consumers cannot lose or duplicate it. Its identity
+is the defensive `Identity()` value, revision is exactly one, and its code is
+only `credential_identity_mismatch`, `credential_expired`, or
+`credential_guest_helper_unavailable`. Before `BeginPrepare`, any latched loss
+requires abort followed by exact stop/reap; it is never applied to a nonexistent
+lifecycle. After `BeginPrepare`, the worker first applies it through
+`ObserveLoss` and then cleans up. The same latch remains observable until
 ownership transfers, so no nonblocking receive may consume and discard it.
 The worker validates completion, persists the complete identity, constructs
 the lifecycle, and calls `BeginPrepare` before resolving the authorized live
@@ -307,14 +372,31 @@ error leaves ownership with preflight and requires `Abort`. Once transfer
 occurs, an invalid active proof requires `JobCredentialSession.Revoke`, not
 preflight abort.
 
+Preflight owns an internal atomic state `open`, `preparing`, `transferred`, or
+`aborted`. `PrepareJobCredentials` and `Abort` linearize on that state. Prepare
+may publish a session only by changing `preparing` to `transferred`; if abort or
+loss wins first it returns nil session plus `ErrJobCredentialTransition` after
+creating no state. If transfer wins, abort returns that error and touches
+nothing. Loss is latched before making the same ownership decision and is then
+handled by the winning owner. No prepared resource can exist between owners.
+
 `Abort` is idempotent before transfer and returns the same valid complete-
 identity `JobCredentialCleanupProof` after proving session/helper/job-resource
-absence. When `BeginPrepare` has succeeded, the worker uses that proof to drive
-the preparing lifecycle through revoke before terminal persistence. If the
+absence. After a successful `BeginPrepare`, its root proof revision is exactly
+two: the worker calls `BeginRevoke`, validates the proof at an injected
+observation time not before `AbsenceInspectedAt` and no more than
+`MaxJobCredentialCleanupObservationAge` later, then calls lifecycle `Revoke`.
+`RevokedAt` is not before identity issue time and `AbsenceInspectedAt` is not
+before `RevokedAt`. Repeated abort on the same live handle returns the identical
+proof for immediate idempotent completion; a stale proof is never refreshed by
+that handle and instead forces stop/reap or ordinary recovery reinspection.
+If the
 preflight identity itself cannot be validated, no cleanup proof can validate
 against it: abort is still attempted, then exact runtime stop/reap supplies the
 absence evidence. After transfer, `Abort` returns
-`ErrJobCredentialTransition` without touching session-owned state. Abort/loss
+`ErrJobCredentialTransition` without touching session-owned state. Guest/helper
+revision one is preparation correlation; it maps to root cleanup revision two
+when a begun preparing lifecycle aborts. Abort/loss
 that cannot produce valid absence proof escalates to D6's exact whole-VM
 stop/reap path. A daemon crash before complete-identity persistence is recovered
 by unconditionally stopping/reaping the exact runtime named by the durable seed;
@@ -917,7 +999,33 @@ cleanup_incomplete    "credential cleanup is incomplete"
 
 Only `malformed_request` may include `field`, which is a static schema field
 path produced by the concrete decoder and never input text or a value; every
-other code omits it. The exact envelope orders are
+other code omits it. The operation/code matrix is closed:
+
+```text
+readiness:          malformed_request, request_conflict, identity_mismatch,
+                    helper_unavailable
+credential_prepare: malformed_request, request_conflict, identity_mismatch,
+                    revision_stale, expired, resource_limit, prepare_failed,
+                    helper_unavailable, cleanup_incomplete
+credential_renew:   malformed_request, request_conflict, identity_mismatch,
+                    revision_stale, expired, renew_failed, helper_unavailable
+credential_revoke:  malformed_request, request_conflict, identity_mismatch,
+                    revision_stale, revoke_failed, helper_unavailable,
+                    cleanup_incomplete
+exec:               malformed_request, request_conflict, identity_mismatch,
+                    revision_stale, expired, resource_limit, exec_failed,
+                    helper_unavailable
+safe unknown token: unknown_operation only
+```
+
+A known operation with any other code is invalid. Root decoding first accepts
+only a 1..64-byte lowercase token matching `[a-z][a-z0-9_]*`. A syntactically
+safe but unknown token is not body-decoded and receives the concrete
+unknown-operation failure struct echoing that token. An unsafe/unreadable
+operation closes the session without response because it cannot be safely
+echoed. The five known request unions remain closed.
+
+The exact envelope orders are
 `protocolVersion,operation,requestId,identityDigest,ok,body` for success and
 `protocolVersion,operation,requestId,identityDigest,ok,error` for failure. The
 16-byte request ID is nonzero. The 32-byte digest is unpadded base64url and is the base
@@ -995,11 +1103,12 @@ credential_revoke success:
 exec request:
   {identity:<JobIdentity>, revision:uint64, execBindingId:string,
    plan:<ExecPlan>, privateRecordCount:uint32,
-   privateAggregateBytes:uint64}
+   privateAggregateBytes:uint64, privateAggregateSha256:string}
 exec success:
-  {revision:uint64, exitCode:int32, stdinBytes:uint64,
+  {revision:uint64, exitCode:int32, stdinBytes:uint64, stdinSha256:string,
    stdoutBytes:uint64, stdoutSha256:string, stdoutTruncated:bool,
-   stderrBytes:uint64, stderrSha256:string, stderrTruncated:bool}
+   stderrBytes:uint64, stderrSha256:string, stderrTruncated:bool,
+   execTransactionSha256:string}
 ```
 
 Readiness capabilities are exactly this order:
@@ -1026,7 +1135,19 @@ File SHA-256 is exactly 64 lowercase hexadecimal characters. Target-path rules
 are the helper rules below. The SSH policy ID/revision select only immutable
 host-admin policy and expose no fingerprint. A `BindingProof` is exactly
 `{"bindingId":string,"mode":string,"proofId":string}` and appears in manifest
-order with one entry per binding.
+order with one entry per binding. Every `JobIdentity` JSON key is always
+present. For file/SSH-only jobs the network tuple
+`networkPlanId,policySnapshotId,proxySessionId,proxyGenerationId,topologyGenerationId,ruleGenerationId`
+is six empty strings and its digest therefore encodes six zero lengths. A job
+with HTTP, including mixed mode, requires all six nonempty safe IDs. Omission,
+`null`, or a partly populated tuple is invalid. Both root and child validators
+apply this identical rule.
+
+The initial production catalog permits at most one HTTP binding in a job. File
+bindings may use the remaining binding slots, and SSH has its separately
+bounded policy. A second HTTP binding fails admission before source resolution;
+this version therefore needs no repository-selected binding index and the one
+HTTP binding unambiguously supplies the single Pi environment trio.
 
 Prepare revision is exactly 1. Renew revision is exactly prior plus one. Revoke
 uses the current revision and reason `requested`, `expired`, `session_loss`,
@@ -1050,27 +1171,36 @@ Timing deadline = {kind:"deadline_unix_millis", value:int64}
 Arguments, environment, path, stream, aggregate, and timing bounds match the
 binary helper `ExecPlan` below. Environment source is `literal`, `inherited`,
 or `generated`; `secret` is forbidden. Values contain no credential binding.
-Only generated entries may use the lowercase names `http_proxy` and
-`https_proxy`, and both must equal the exact already-proved L7 proxy base URL;
-all other names use `[A-Z_][A-Z0-9_]*`. Neither JSON nor helper `ExecPlan`
-contains stdin bytes.
+Only generated entries may use the four names `HTTP_PROXY`, `HTTPS_PROXY`,
+`http_proxy`, and `https_proxy`; all four are present exactly once and equal the
+same already-proved L7 proxy base URL. Every other name uses
+`[A-Z_][A-Z0-9_]*`. The three protected Pi names
+`AZURE_OPENAI_BASE_URL`, `AZURE_OPENAI_API_KEY`, and
+`AZURE_OPENAI_API_VERSION` are forbidden in `ExecPlan`; the helper constructs
+them only from the authenticated private binding. Neither JSON nor helper
+`ExecPlan` contains stdin bytes.
 
 Exec success is emitted only after the three stream EOF rules below and child
 exit. Exit code is nonnegative. Byte counts and truncation flags exactly match
 the streamed data; each SHA-256 string is 64 lowercase hexadecimal characters,
-including SHA-256 of empty output when the count is zero. The response contains
-no stdout/stderr content.
+including SHA-256 of empty input/output when the count is zero. The response
+contains no stdin/stdout/stderr content.
 
-Repeating the same request ID plus identical canonical bytes is idempotent;
-reusing an ID with different bytes, changing any
+Repeating the same request ID plus identical canonical bytes is idempotent. For
+exec, "canonical bytes" means the complete control/private/stdin logical
+transaction and its helper-computed transaction digest, not merely the JSON
+request or initial `0x15` body; reusing an ID with different bytes, changing any
 identity field, stale/gapped revision, expiry outside the job/session window,
 or a response mismatch closes and revokes the session. Readiness has no job and
 cannot authorize prepare by itself.
 
 Prepare private-record count equals the number of file bindings, zero through
 16, with aggregate at most 1 MiB. Exec private-record count is exactly one when
-the plan contains HTTP (including mixed mode) and zero otherwise; aggregate is
-at most 64 KiB. Renew, revoke, readiness, and every response require
+the prepared manifest contains its permitted single HTTP binding and zero
+otherwise; aggregate is at most 64 KiB. `privateAggregateSha256` is the SHA-256
+of the exact kind-2 `HL8B` plaintext payload, or SHA-256 of empty bytes when
+count is zero; its lowercase hex form must match before helper dispatch. Renew,
+revoke, readiness, and every response require
 both private fields absent and accept no private record.
 
 Sensitive data uses an encrypted binary private record inside `HL8F`, never a
@@ -1100,9 +1230,11 @@ for each HTTP binding in manifest order:
   ticket:blob16 | apiVersion:token
 ```
 
-The count is 1..16 and equals the HTTP bindings. `localBaseURL` is canonical
-ASCII, 1..512 bytes, and matches the runtime-owned reserved listener authority
-and deployment-prefixed path. Ticket is exactly the 43-byte unpadded-base64url
+The count is exactly one and equals the sole HTTP binding. `localBaseURL` is
+canonical ASCII, 1..512 bytes, and exactly
+`http://<runtime-owned-authority>/.well-known/hal/credential-http/v1/azure-openai-responses-v1/deployments/<sealed-deployment>`
+with no trailing slash, `/responses`, query, fragment, or userinfo. Ticket is
+exactly the 43-byte unpadded-base64url
 job capability. API version and service ID use the token grammar and must match
 the sealed catalog. The record contains no upstream endpoint or raw source
 credential. The guest agent treats it as opaque mutable bytes; only the
@@ -1197,15 +1329,58 @@ limits. Generic L6 HTTP and CONNECT remain byte-compatible for nonreserved
 requests. The reserved prefix always fails locally when the L8 handler is
 absent; it can never fall through to the generic forward proxy.
 
+D2 extends the already-merged neutral route request before D3. The exact live,
+nonserializable shapes are:
+
+```go
+type RequestTarget struct {
+	Authority string
+	Path      string
+	RawQuery  string
+}
+
+type RequestHeaderValues interface {
+	Names() []string
+	ValueCount(name string) int
+	CopyValue(name string, index int, destination []byte) (int, error)
+}
+
+type Request struct {
+	Metadata RequestMetadata
+	Target   RequestTarget
+	Headers  RequestHeaderValues
+	Body     io.Reader
+}
+```
+
+L6 supplies an origin-form canonical ASCII path, canonical raw query without
+`?`, and canonical authority without userinfo; path and query are each at most
+4096 bytes and authority at most 512. `Names` returns a sorted defensive copy of
+unique lowercase canonical header names, at most 128 names and 256 bytes each;
+`ValueCount` preserves duplicates. `CopyValue` accepts only a listed name and
+index, writes no partial value, returns only the exact byte count on success,
+and overwrites the whole caller-owned destination on every failure. A value is
+at most the route's header bound. Implementations never return a header value as
+`string` or owned `[]byte`, and request formatting/JSON/text/error paths expose
+none of target, names, values, or body. D3 copies only the sole 43-byte
+`api-key` value into locked mutable storage; it uses names/counts to reject
+duplicate or competing authentication/authority headers before source access.
+Nil/typed-nil header access, invalid canonical target, a name/value mismatch,
+or a route prefix that does not match `Target.Path` fails dispatch.
+
 The neutral `applicationroute.Registry` registers singular leaf route handlers
 and may deterministically order multiple leaves only when their prefixes do not
 overlap. The Registry itself is the single composed `applicationroute.Handler`:
 it returns sorted defensive copies of every registered definition, while L6
 matches the parsed reserved path against those definitions and supplies the
-exact selected route ID when handling the request. D1 does not add a path to
-the live request or perform HTTP prefix parsing. The L6 `policyproxy.Config` D3
-seam still receives at most one optional composed handler, so presenting the
-Registry there does not widen L6 into a multiple-handler configuration surface.
+exact selected route ID plus the D2 `RequestTarget` and header accessor when
+handling the request. D1 intentionally added no target data; D2 adds only this
+bounded live seam and still performs no HTTP parsing itself. The L6
+`policyproxy.Config` D3 field is exactly
+`ApplicationRoutes applicationroute.Handler`. Nil means disabled; typed nil is
+a construction error. There is one field and no slice, callback, or second
+handler, so presenting the Registry there does not widen L6 into a
+multiple-handler configuration surface.
 A second Config handler, duplicate route ID, or overlapping Registry prefix is
 a construction error. L6 owns parse, prefix selection, actual byte counting,
 connection bounds, and stop ordering; L8 owns request authorization and
@@ -1275,13 +1450,16 @@ cgroup and mount namespace. Direct Pi `xai`, generic OpenAI-compatible, and
 other providers are unsupported by this first entry and cannot count as L8
 proof.
 
-This split follows the installed Pi coding agent 0.82.1 behavior: Pi normalizes
-the Azure Responses base to `/openai/v1`, its bundled Responses client appends
-`/responses`, and its Azure deployment endpoint set does not include the
-Responses operation. Consequently the local reserved route remains
-deployment-prefixed and query-sealed for Hal admission, but the sealed upstream
-path template is exactly `/openai/v1/responses`; Hal must not transform it to a
-deployment-prefixed upstream Responses path.
+This split follows the installed Pi coding agent 0.82.1 behavior precisely.
+Its Azure adapter rewrites only recognized Azure host suffixes with an empty,
+`/`, `/openai`, or `/openai/v1/responses` path to `/openai/v1`; it preserves
+Hal's runtime-local reserved base unchanged. The bundled Responses client then
+appends `/responses` and the Azure client appends the sealed `api-version`
+query. The Azure deployment endpoint set does not include Responses, so it does
+not insert another deployment segment. Therefore the injected local base ends
+exactly at `/deployments/<sealed-deployment>`, the observed local request is the
+deployment-prefixed route above, and Hal's proxy alone transforms that route to
+the sealed upstream `/openai/v1/responses` path.
 
 The sealed invocation intentionally does not set `--no-context-files` or
 `--no-skills`: repository instructions and text-only skills are explicit
@@ -1297,8 +1475,12 @@ can alter the sealed route or consumer; context/skill text remains ordinary
 sandboxed workload input.
 
 The production adapter is acceptance-tested against the fixture registry
-without contacting Azure or any billed service. Tagged tests use a separate
-fixture-only endpoint constructor that cannot enter production composition.
+without contacting Azure or any billed service. Tagged tests use exactly
+`credentialproxy/fixturetest.NewOwnedAzureResponsesCatalog`, defined only in
+the `internal/credentialproxy/fixturetest` package behind the L8 live build tag.
+Source guards allow that package only from `_test.go`, reject it from every
+production import graph, and reject any fixture catalog passed to the command or
+daemon constructor. No other fixture endpoint constructor exists.
 Unknown and empty catalogs fail closed; no arbitrary-public-host fallback is
 allowed.
 
@@ -1482,19 +1664,27 @@ renew accepted:
 revoke cleanup_complete:
   cleanupProofID:token | authorityAbsent:u8=1 | resourcesAbsent:u8=1
 exec accepted:
-  exitCode:i32 | stdinBytes:u64 | stdoutBytes:u64 | stdoutSHA256:[32]byte |
-  stdoutTruncated:u8 | stderrBytes:u64 | stderrSHA256:[32]byte |
-  stderrTruncated:u8
+  exitCode:i32 | stdinBytes:u64 | stdinSHA256:[32]byte |
+  stdoutBytes:u64 | stdoutSHA256:[32]byte | stdoutTruncated:u8 |
+  stderrBytes:u64 | stderrSHA256:[32]byte | stderrTruncated:u8 |
+  execTransactionSHA256:[32]byte
 ```
 
 Prepare proof count equals the manifest and every identity/mode/proof is exact.
-Exec byte counts, digests, and zero/one truncation flags match the `0x18`
-streams. `accepted` is valid only for prepare, renew, and exec;
+Exec byte counts, all four digests, and zero/one truncation flags match the
+`0x15`/`0x17`/`0x18` transaction and streams. `accepted` is valid only for
+prepare, renew, and exec;
 `cleanup_complete` only for revoke. These successful dispositions require
 failure code zero. `rejected`, `cleanup_retry`, and `stop_vm_required` have no
 trailing result bytes and require a nonzero failure code. Unknown request types,
 disposition/type combinations, trailing bytes, and noncanonical booleans fail
 before state mutation.
+
+The wire-to-neutral cleanup mapping is closed: disposition
+`cleanup_complete` maps to neutral `cleanup_complete`, wire `cleanup_retry`
+maps to neutral `retry_required`, and wire `stop_vm_required` maps to neutral
+`stop_vm_required`. `accepted` and `rejected` are never cleanup results. No
+other spelling, default, or success inference is permitted.
 
 The ordered manifest record is:
 
@@ -1530,11 +1720,13 @@ argument zero is not blank. Environment count is 0..256. Source is 1 literal,
 2 inherited, or 3 generated; secret/zero/unknown values are forbidden. Each
 unique ordinary name is 1..128 ASCII bytes matching `[A-Z_][A-Z0-9_]*` and each
 value is 0..8192 bytes without NUL. Only source 3 may instead name exact
-lowercase `http_proxy` or `https_proxy`, with the value fixed to the already-
-proved L7 proxy base URL. The work directory is 1..4096-byte canonical absolute
+`HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, or `https_proxy`; all four occur
+exactly once with the same value fixed to the already-proved L7 proxy base URL.
+The three protected Pi names are forbidden in the binary plan just as they are
+in JSON. The work directory is 1..4096-byte canonical absolute
 UTF-8 and passes the frozen v1 guest-path rules. All three modes are exactly 1
-(`pipe`) and every maximum is 1..4 MiB. The three inspected pipe descriptors
-carry the stream bytes; stdin bytes never appear again in `ExecPlan`.
+(`pipe`) and every maximum is 1..4 MiB. No pipe descriptor crosses the helper
+control socket; stdin bytes never appear in `ExecPlan`.
 
 `timingKind` is 1 (`timeout_millis`) or 2 (`deadline_unix_millis`). Its signed
 value is positive and must satisfy the frozen L4 timing bounds plus the current
@@ -1566,13 +1758,33 @@ transactionSHA256 = SHA256(
   int64_be(expiryUnixNano) || manifestSHA256 || uint16_be(fileCount) ||
   for each file in ascending binding index:
     uint16_be(bindingIndex) || uint32_be(fileLength) || fileSHA256)
+
+stdinSHA256 = SHA256(concatenated stdin payload bytes)
+
+stdinTranscriptSHA256 = SHA256(
+  opaque16("hal/l8/guest-helper/stdin-transcript/v1") ||
+  uint32_be(stdinRecordCount) ||
+  for each stdin record, including the final EOF, in offset order:
+    flags:u8 || uint64_be(offset) || uint32_be(payloadLength) ||
+    payloadSHA256 || payload)
+
+execTransactionSHA256 = SHA256(
+  opaque16("hal/l8/guest-helper/exec-transaction/v1") ||
+  guestCredentialIdentityDigest || uint64_be(revision) ||
+  uint32_be(execBodyLength) || exact canonical 0x15 body ||
+  uint32_be(privateBindingLength) || privateBindingSHA256 ||
+  uint64_be(stdinBytes) || stdinSHA256 || stdinTranscriptSHA256)
 ```
 
 The single ancillary pidfd and kernel credentials are verified independently;
 unstable numeric FD values never enter `bootstrapSHA256`. Every file's bytes
 must hash to its declared digest before `transactionSHA256` is accepted. The
-request ID is an independent idempotency key and does not enter the logical
-transaction digest.
+request ID is an independent idempotency key and does not enter either logical
+transaction digest. `stdinSHA256` hashes stream content only, including the
+ordinary SHA-256 of empty input. `stdinTranscriptSHA256` additionally binds
+chunk boundaries, offsets, per-chunk digests, content, and the unique EOF, so a
+rechunked replay is not identical. The exact canonical `0x15` body already
+binds the exec plan, private length/digest, revision, and exec binding ID.
 
 Ready, bootstrap, bootstrap-ack, and both hello packets require an all-zero
 request ID and all-zero job identity digest. `helper_ready` alone has an
@@ -1585,9 +1797,8 @@ only its safe reason.
 
 Both endpoints require exactly one kernel-supplied credentials record on every
 packet. Ancillary rights cardinality is zero except bootstrap (exactly one live
-pidfd), exec (exactly three pipe endpoints for stdin-read, stdout-write, and
-stderr-write, with type/access reinspection), and SSH handoff (exactly one
-connected `AF_UNIX` `SOCK_STREAM`). `MSG_TRUNC` or `MSG_CTRUNC` rejects the
+pidfd) and SSH handoff (exactly one connected `AF_UNIX` `SOCK_STREAM`). Exec
+packets carry no rights. `MSG_TRUNC` or `MSG_CTRUNC` rejects the
 entire packet and closes all received rights. Direction counters are continuous
 across PID1-to-agent handoff: inbound PID1 bootstrap is helper receive sequence
 0, agent hello is receive sequence 1, and the first job request is sequence 2;
@@ -1625,21 +1836,55 @@ Exec is one separate logical transaction. `0x15` declares zero private bytes
 and an all-zero private digest when the manifest has no HTTP mode. Otherwise it
 declares 1..64 KiB and the SHA-256 of the exact host `HL8B` kind-2 payload; one
 `0x17 exec_private` with the same request ID, identity digest, revision,
-length, and digest follows immediately. The helper holds the child start gate
-and the three inspected pipes until that payload authenticates and decodes. A
-missing, extra, reordered, changed, or zero/nonzero-mismatched private packet
-aborts exec, wipes the payload, closes the pipes/pidfd, and cannot launch.
+length, and digest follows immediately. No child, pipe, gate, or pidfd exists
+while the helper authenticates and decodes that payload. A missing, extra,
+reordered, changed, or zero/nonzero-mismatched private packet aborts exec, wipes
+the payload, and cannot leave an orphan because process creation has not begun.
+Only after private authentication does the helper create all three pipe pairs,
+keeping the parent-side stdin-write, stdout-read, and stderr-read endpoints and
+placing the child-side stdin-read, stdout-write, and stderr-write endpoints
+behind its internal start gate. It then uses
+`clone3(CLONE_INTO_CGROUP | CLONE_PIDFD)` and releases the gate only after every
+post-clone identity, namespace, capability, descriptor, and exec check passes.
+Any failure after clone but before gate release closes the child-side endpoints,
+kills and reaps the exact pidfd/cgroup child, proves zero population, wipes the
+private buffer, and only then returns a safe failure.
 
 After the child gate opens, each `0x18 exec_stream` maps one-for-one to the
 correlated host `HL8S` record. Its stream kind, EOF flag, offset, length, digest,
 direction, and aggregate obey the same rules; agent-to-helper carries stdin and
-helper-to-agent carries stdout/stderr. Only one mutable chunk per direction is
-outstanding, so a blocked receiver backpressures the pipe instead of allocating
-a queue. The terminal exec response is emitted only after stdin closure, both
-output EOF packets, child exit/reap, and stream metadata reconciliation. Loss,
+helper-to-agent carries stdout/stderr. The helper concurrently forwards stdin
+while draining stdout and stderr; it never waits for stdin EOF before reading
+either output pipe. One bounded mutable chunk per stream may be outstanding,
+and a single serialized packet writer preserves the helper send sequence, so a
+blocked receiver backpressures only the corresponding pipe instead of creating
+an unbounded queue or deadlocking another stream. The terminal exec response is
+emitted only after stdin closure, both output EOF packets, child exit/reap, and
+stream metadata reconciliation. It contains the independently recomputed
+`stdinSHA256` and `execTransactionSHA256`. Loss,
 cancel, timeout, or malformed stream closes pipes, kills/reaps under the exact
 cgroup policy, wipes chunks/private binding, and returns failure only when the
 authenticated IPC remains usable.
+
+The helper retains exactly one non-evicting terminal exec-cache slot for each
+of the activation's at most 4096 launch attempts, keyed by request ID and
+storing only the transaction digest and safe terminal response. Capacity is
+charged before launch; exhaustion rejects a new ID without mutation. A
+duplicate request while the original is active is a terminal conflict. After a
+lost terminal response, the agent replays `0x15`, optional
+`0x17`, and every stdin `0x18` record at fresh packet sequences with the same
+request ID. The helper enters comparison-only mode: it creates no pipes or
+child, consumes and authenticates the complete private/input transaction,
+recomputes its digest, and re-emits the cached response only on an exact match.
+A changed plan, private record, chunking, content, EOF, identity, or revision
+closes and revokes the session. A canonically framed semantic rejection enters
+the same no-launch drain mode, consumes the declared private/input transaction
+through its unique EOF, and caches its safe failure only after the complete
+digest exists. Authentication/framing failure, loss, cancellation, or timeout
+before that point closes the session without a reusable response. Only a
+complete cached failure replays under the same rule; no same-ID path may launch
+twice. Entries are never evicted or reused and are wiped on activation
+revoke/loss/expiry.
 
 The decoder validates header, exact datagram length, credentials, descriptor
 kinds/counts, sequence, identity, revision, and body bounds before touching

@@ -126,12 +126,14 @@ Required focused areas are:
   stdin/stdout/stderr streaming, both root/source mode-dependent network
   validators, root/child/session digest conformance, canonical `sha256-`
   guest-image mapping, authenticated preflight-to-complete identity
-  construction, generated-only lowercase `http_proxy`/`https_proxy` values
-  fixed to the proved L7 base, and cross-job negatives;
+  construction, private versioned seed/complete-identity persistence and clone
+  rules, generated-only `HTTP_PROXY`/`HTTPS_PROXY`/`http_proxy`/`https_proxy`
+  values fixed to the proved L7 base, and cross-job negatives;
 - neutral leaf-route registration and composed Registry definition/dispatch
   separation, collision/cleanup-retry ordering, live request and response
   non-serialization, safe metadata bounds, exact deployment-prefixed
-  reserved HTTP framing mapped to upstream `/openai/v1/responses`, fixed ticket
+  reserved HTTP target/header-value seam and framing mapped to upstream
+  `/openai/v1/responses`, fixed ticket
   encoding/lease/request/concurrency and body/response/SSE/idle limits,
   initial Pi Azure Responses clean-environment flags and sealed model, disabled
   extension/prompt-template/theme/session
@@ -155,8 +157,9 @@ Required focused areas are:
   prepare-begin/file/commit correlation, domain-separated bootstrap/manifest/
   transaction digests, exact enum, typed response-union and ExecPlan codecs,
   nested relative-path encoding, opaque `0x17` exec-private transfer,
-  backpressured `0x18` exec streams, terminal output digests, rollback, and
-  restart cleanup;
+  rights-free exec requests, concurrently backpressured `0x18` exec streams,
+  terminal input/output/transaction digests, comparison-only replay without a
+  second launch, rollback, and restart cleanup;
 - neutral SSH codec, authenticated relay subkey, SCM_RIGHTS handoff,
   backpressure, mandatory key and algorithm/flag allowlists, filtered
   enumeration, per-connection host-agent identity, exact relay limits, loss,
@@ -278,11 +281,13 @@ variables, direct Pi `xai`, arbitrary base URLs, and `--api-key` are negative
 cases.
 
 The Pi 0.82.1 compatibility probe also locks the path split independently of
-the fixture: the agent normalizes the Azure Responses base to `/openai/v1`, the
-bundled Responses client appends `/responses`, and the Azure deployment
-endpoint set excludes the Responses operation. The fixture must therefore
-observe upstream `POST /openai/v1/responses`; only Hal's reserved local route is
-deployment-prefixed and carries the exact sealed `api-version` query.
+the fixture: Pi preserves Hal's runtime-local reserved base, which ends exactly
+at `/deployments/<sealed-deployment>` with no trailing slash, `/responses`, or
+query. The bundled Responses client appends `/responses`; the Azure client
+appends the sealed `api-version` query; and its deployment endpoint set excludes
+Responses, so it inserts no second deployment segment. Hal's reserved local
+route is therefore deployment-prefixed and queried exactly once, while Hal's
+proxy transforms it to upstream `POST /openai/v1/responses`.
 
 Negative cases cover missing/wrong Node or Pi version/tree digest, wrong
 deployment/version/model, Pi ambient configuration
