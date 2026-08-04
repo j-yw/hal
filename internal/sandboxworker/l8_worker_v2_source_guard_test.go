@@ -2516,14 +2516,15 @@ func TestL8WorkerV2GuardAllowsOnlyExactAuditedJSONMarshalSeams(t *testing.T) {
 	type jobRequestIdentityV2 struct {
 		DriverID string ` + "`json:\"driverId\"`" + `
 		PrincipalID string ` + "`json:\"principalId\"`" + `
+		DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + `
 		Request JobStartRequestV2 ` + "`json:\"request\"`" + `
 	}
-	func canonicalJobRequestIdentityInputsV2(driverID, principalID string, request JobStartRequestV2) (string, string, JobStartRequestV2) {
-		return driverID, principalID, request
+	func canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration string, request JobStartRequestV2) (string, string, string, JobStartRequestV2) {
+		return driverID, principalID, daemonGeneration, request
 	}
-	func jobRequestKeyV2(driverID, principalID string, request JobStartRequestV2) (string, error) {
-		canonicalDriverID, canonicalPrincipalID, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, request)
-		identity := jobRequestIdentityV2{DriverID: canonicalDriverID, PrincipalID: canonicalPrincipalID, Request: canonicalRequest}
+	func jobRequestKeyV2(driverID, principalID, daemonGeneration string, request JobStartRequestV2) (string, error) {
+		canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)
+		identity := jobRequestIdentityV2{DriverID: canonicalDriverID, PrincipalID: canonicalPrincipalID, DaemonGeneration: canonicalDaemonGeneration, Request: canonicalRequest}
 		payload, err := json.Marshal(identity)
 		if err != nil { return "", err }
 		digest := sha256.Sum256(payload)
@@ -2544,7 +2545,7 @@ import (
 	"time"
 )
 type JobV2 struct { SubmittedAt time.Time ` + "`json:\"submittedAt\"`" + ` }
-type storedJobStateV2 struct { JobV2 JobV2; RequestKey string ` + "`json:\"requestKey\"`" + `; PrincipalID string ` + "`json:\"principalId\"`" + ` }
+type storedJobStateV2 struct { JobV2 JobV2; RequestKey string ` + "`json:\"requestKey\"`" + `; PrincipalID string ` + "`json:\"principalId\"`" + `; DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + ` }
 	func encodeStoredJobStateV2(state storedJobStateV2) ([]byte, error) { return json.Marshal(state) }`
 	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_store_v2.go": storeSource}, keyPolicy)
 	aliasedStoreSource := strings.Replace(storeSource, "type JobV2 struct { SubmittedAt time.Time", "type auditedTimeV2 = time.Time\ntype JobV2 struct { SubmittedAt auditedTimeV2", 1)
@@ -2569,9 +2570,9 @@ func encodeWorkerResponse(writer io.Writer, response Response) error {
 		path   string
 		source string
 	}{
-		{name: "canonical identity parameters swapped before initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "canonicalDriverID, canonicalPrincipalID, canonicalRequest :=", "driverID, principalID = principalID, driverID\n\t\tcanonicalDriverID, canonicalPrincipalID, canonicalRequest :=", 1)},
-		{name: "nested request metadata cleared before identity initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "canonicalDriverID, canonicalPrincipalID, canonicalRequest :=", "request.Exec.Metadata = nil\n\t\tcanonicalDriverID, canonicalPrincipalID, canonicalRequest :=", 1)},
-		{name: "unrelated statement before canonicalization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "canonicalDriverID, canonicalPrincipalID, canonicalRequest :=", "_ = 0\n\t\tcanonicalDriverID, canonicalPrincipalID, canonicalRequest :=", 1)},
+		{name: "canonical identity parameters swapped before initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest :=", "driverID, principalID = principalID, driverID\n\t\tcanonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest :=", 1)},
+		{name: "nested request metadata cleared before identity initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest :=", "request.Exec.Metadata = nil\n\t\tcanonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest :=", 1)},
+		{name: "unrelated statement before canonicalization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest :=", "_ = 0\n\t\tcanonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest :=", 1)},
 		{name: "unrelated statement between identity and marshal", path: "job_v2_helpers.go", source: strings.Replace(keySource, "payload, err := json.Marshal(identity)", "_ = 0\n\t\tpayload, err := json.Marshal(identity)", 1)},
 		{name: "shared request metadata mutated after identity initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "payload, err := json.Marshal(identity)", "canonicalRequest.Exec.Metadata.Backend = \"mutated\"\n\t\tpayload, err := json.Marshal(identity)", 1)},
 		{name: "marshaled identity payload mutated before digest", path: "job_v2_helpers.go", source: strings.Replace(keySource, "digest := sha256.Sum256(payload)", "payload[0] = '{'\n\t\tdigest := sha256.Sum256(payload)", 1)},
@@ -2579,16 +2580,18 @@ func encodeWorkerResponse(writer io.Writer, response Response) error {
 		{name: "canonical identity fields swapped after initialization", path: "job_v2_helpers.go", source: strings.Replace(keySource, "payload, err := json.Marshal(identity)", "identity.DriverID, identity.PrincipalID = identity.PrincipalID, identity.DriverID\n\t\tpayload, err := json.Marshal(identity)", 1)},
 		{name: "canonical identity fields swapped through pointer alias", path: "job_v2_helpers.go", source: strings.Replace(keySource, "payload, err := json.Marshal(identity)", "identityAlias := &identity\n\t\tidentityAlias.DriverID, identityAlias.PrincipalID = identityAlias.PrincipalID, identityAlias.DriverID\n\t\tpayload, err := json.Marshal(identity)", 1)},
 		{name: "adjacent runtime metadata", path: "job_v2_helpers.go", source: strings.Replace(keySource, "RuntimeMetadata", "RuntimeTemplateStatusMetadata", 1)},
-		{name: "swapped canonicalization inputs", path: "job_v2_helpers.go", source: strings.Replace(keySource, "canonicalJobRequestIdentityInputsV2(driverID, principalID, request)", "canonicalJobRequestIdentityInputsV2(principalID, driverID, request)", 1)},
-		{name: "swapped canonical identity bindings", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: canonicalDriverID, PrincipalID: canonicalPrincipalID, Request: canonicalRequest", "DriverID: canonicalPrincipalID, PrincipalID: canonicalDriverID, Request: canonicalRequest", 1)},
+		{name: "swapped canonicalization inputs", path: "job_v2_helpers.go", source: strings.Replace(keySource, "canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)", "canonicalJobRequestIdentityInputsV2(principalID, driverID, daemonGeneration, request)", 1)},
+		{name: "swapped canonical identity bindings", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: canonicalDriverID, PrincipalID: canonicalPrincipalID, DaemonGeneration: canonicalDaemonGeneration, Request: canonicalRequest", "DriverID: canonicalPrincipalID, PrincipalID: canonicalDriverID, DaemonGeneration: canonicalDaemonGeneration, Request: canonicalRequest", 1)},
 		{name: "wrong driver identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: canonicalDriverID", "DriverID: canonicalPrincipalID + canonicalDriverID[:0]", 1)},
 		{name: "wrong principal identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "PrincipalID: canonicalPrincipalID", "PrincipalID: canonicalDriverID + canonicalPrincipalID[:0]", 1)},
 		{name: "constant principal identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "PrincipalID: canonicalPrincipalID", `PrincipalID: "principal-fixed" + canonicalPrincipalID[:0]`, 1)},
-		{name: "missing driver identity binding", path: "job_v2_helpers.go", source: strings.NewReplacer("canonicalDriverID, canonicalPrincipalID, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, request)", "canonicalDriverID, canonicalPrincipalID, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, request)\n\t\t_ = canonicalDriverID", "DriverID: canonicalDriverID, ", "").Replace(keySource)},
+		{name: "wrong daemon generation identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DaemonGeneration: canonicalDaemonGeneration", "DaemonGeneration: canonicalPrincipalID + canonicalDaemonGeneration[:0]", 1)},
+		{name: "missing driver identity binding", path: "job_v2_helpers.go", source: strings.NewReplacer("canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)", "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)\n\t\t_ = canonicalDriverID", "DriverID: canonicalDriverID, ", "").Replace(keySource)},
 		{name: "wrong request identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "Request: canonicalRequest", "Request: JobStartRequestV2{Exec: canonicalRequest.Exec}", 1)},
-		{name: "unkeyed canonical identity", path: "job_v2_helpers.go", source: strings.Replace(keySource, "jobRequestIdentityV2{DriverID: canonicalDriverID, PrincipalID: canonicalPrincipalID, Request: canonicalRequest}", "jobRequestIdentityV2{canonicalDriverID, canonicalPrincipalID, canonicalRequest}", 1)},
-		{name: "missing request driver identity", path: "job_v2_helpers.go", source: strings.NewReplacer("\t\tDriverID string `json:\"driverId\"`\n", "", "canonicalDriverID, canonicalPrincipalID, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, request)", "canonicalDriverID, canonicalPrincipalID, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, request)\n\t\t_ = canonicalDriverID", "DriverID: canonicalDriverID, ", "").Replace(keySource)},
-		{name: "missing request principal identity", path: "job_v2_helpers.go", source: strings.NewReplacer("\t\tPrincipalID string `json:\"principalId\"`\n", "", "canonicalDriverID, canonicalPrincipalID, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, request)", "canonicalDriverID, canonicalPrincipalID, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, request)\n\t\t_ = canonicalPrincipalID", "PrincipalID: canonicalPrincipalID, ", "").Replace(keySource)},
+		{name: "unkeyed canonical identity", path: "job_v2_helpers.go", source: strings.Replace(keySource, "jobRequestIdentityV2{DriverID: canonicalDriverID, PrincipalID: canonicalPrincipalID, DaemonGeneration: canonicalDaemonGeneration, Request: canonicalRequest}", "jobRequestIdentityV2{canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest}", 1)},
+		{name: "missing request driver identity", path: "job_v2_helpers.go", source: strings.NewReplacer("\t\tDriverID string `json:\"driverId\"`\n", "", "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)", "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)\n\t\t_ = canonicalDriverID", "DriverID: canonicalDriverID, ", "").Replace(keySource)},
+		{name: "missing request principal identity", path: "job_v2_helpers.go", source: strings.NewReplacer("\t\tPrincipalID string `json:\"principalId\"`\n", "", "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)", "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)\n\t\t_ = canonicalPrincipalID", "PrincipalID: canonicalPrincipalID, ", "").Replace(keySource)},
+		{name: "missing request daemon generation identity", path: "job_v2_helpers.go", source: strings.NewReplacer("\t\tDaemonGeneration string `json:\"daemonGeneration\"`\n", "", "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)", "canonicalDriverID, canonicalPrincipalID, canonicalDaemonGeneration, canonicalRequest := canonicalJobRequestIdentityInputsV2(driverID, principalID, daemonGeneration, request)\n\t\t_ = canonicalDaemonGeneration", "DaemonGeneration: canonicalDaemonGeneration, ", "").Replace(keySource)},
 		{name: "wrong canonical request field", path: "job_v2_helpers.go", source: strings.Replace(keySource, "Request JobStartRequestV2 `json:\"request\"`", "Request any `json:\"request\"`", 1)},
 		{name: "nested custom marshal", path: "job_v2_helpers.go", source: `package sandboxworker
 import "encoding/json"
@@ -2611,6 +2614,7 @@ func jobRequestKeyV2(request JobStartRequestV2) ([]byte, error) { return json.Ma
 		{name: "wrong store function", path: "job_store_v2.go", source: strings.Replace(storeSource, "encodeStoredJobStateV2", "encodeStoredJobSnapshotV2", 1)},
 		{name: "wrong store file", path: "job_v2_service.go", source: storeSource},
 		{name: "missing stored principal", path: "job_store_v2.go", source: strings.Replace(storeSource, "; PrincipalID string `json:\"principalId\"`", "", 1)},
+		{name: "missing stored daemon generation", path: "job_store_v2.go", source: strings.Replace(storeSource, "; DaemonGeneration string `json:\"daemonGeneration\"`", "", 1)},
 		{name: "wrong stored request key tag", path: "job_store_v2.go", source: strings.Replace(storeSource, `json:"requestKey"`, `json:"requestIdentity"`, 1)},
 		{name: "wrong response encoder file", path: "job_v2_service.go", source: responseEncodeSource},
 		{name: "wrong response encoder function", path: "protocol_decode.go", source: strings.Replace(responseEncodeSource, "encodeWorkerResponse", "encodeWorkerSnapshot", 1)},
@@ -8187,12 +8191,13 @@ func l8WorkerV2IsExactNamedStruct(typ types.Type, name string) bool {
 
 func l8WorkerV2IsExactJobRequestIdentitySchema(typ types.Type) bool {
 	structure, ok := l8WorkerV2ExactNamedStructUnderlying(typ, "jobRequestIdentityV2")
-	if !ok || structure.NumFields() != 3 {
+	if !ok || structure.NumFields() != 4 {
 		return false
 	}
 	return l8WorkerV2IsExactStructField(structure, 0, "DriverID", types.Universe.Lookup("string").Type(), `json:"driverId"`) &&
 		l8WorkerV2IsExactStructField(structure, 1, "PrincipalID", types.Universe.Lookup("string").Type(), `json:"principalId"`) &&
-		l8WorkerV2IsExactNamedStructField(structure, 2, "Request", "JobStartRequestV2", `json:"request"`)
+		l8WorkerV2IsExactStructField(structure, 2, "DaemonGeneration", types.Universe.Lookup("string").Type(), `json:"daemonGeneration"`) &&
+		l8WorkerV2IsExactNamedStructField(structure, 3, "Request", "JobStartRequestV2", `json:"request"`)
 }
 
 func l8WorkerV2ExactJobRequestIdentityInitializer(scope l8WorkerV2GuardScope, marshal *ast.CallExpr, info *types.Info) bool {
@@ -8201,7 +8206,7 @@ func l8WorkerV2ExactJobRequestIdentityInitializer(scope l8WorkerV2GuardScope, ma
 		return false
 	}
 	parameters := l8WorkerV2FunctionParameterObjects(function, info)
-	if len(parameters) != 3 || !types.Identical(parameters[0].Type(), types.Universe.Lookup("string").Type()) || !types.Identical(parameters[1].Type(), types.Universe.Lookup("string").Type()) || !l8WorkerV2IsExactNamedStruct(parameters[2].Type(), "JobStartRequestV2") {
+	if len(parameters) != 4 || !types.Identical(parameters[0].Type(), types.Universe.Lookup("string").Type()) || !types.Identical(parameters[1].Type(), types.Universe.Lookup("string").Type()) || !types.Identical(parameters[2].Type(), types.Universe.Lookup("string").Type()) || !l8WorkerV2IsExactNamedStruct(parameters[3].Type(), "JobStartRequestV2") {
 		return false
 	}
 	identity := l8WorkerV2ExpressionObject(marshal.Args[0], info)
@@ -8239,13 +8244,16 @@ func l8WorkerV2ExactJobRequestIdentityInitializer(scope l8WorkerV2GuardScope, ma
 		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, parameters[0], []*ast.Ident{canonicalUses[0]}, info) &&
 		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, parameters[1], []*ast.Ident{canonicalUses[1]}, info) &&
 		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, parameters[2], []*ast.Ident{canonicalUses[2]}, info) &&
+		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, parameters[3], []*ast.Ident{canonicalUses[3]}, info) &&
 		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, canonicalObjects[0], []*ast.Ident{bindings["DriverID"]}, info) &&
 		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, canonicalObjects[1], []*ast.Ident{bindings["PrincipalID"]}, info) &&
-		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, canonicalObjects[2], []*ast.Ident{bindings["Request"]}, info) &&
+		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, canonicalObjects[2], []*ast.Ident{bindings["DaemonGeneration"]}, info) &&
+		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, canonicalObjects[3], []*ast.Ident{bindings["Request"]}, info) &&
 		l8WorkerV2ObjectUsedOnlyAtIdentifiers(function, identity, []*ast.Ident{marshalIdentity}, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, canonicalObjects[0], info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, canonicalObjects[1], info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, canonicalObjects[2], info) &&
+		l8WorkerV2ObjectHasNoReassignments(function, canonicalObjects[3], info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, identity, info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, identity, []*ast.CallExpr{marshal}, nil, false, info) &&
 		l8WorkerV2ExactIdentityMarshalDigestPipeline(function, marshal, info)
@@ -8253,11 +8261,11 @@ func l8WorkerV2ExactJobRequestIdentityInitializer(scope l8WorkerV2GuardScope, ma
 
 func l8WorkerV2ExactCanonicalIdentityInputsCall(scope l8WorkerV2GuardScope, statement ast.Stmt, parameters []types.Object, info *types.Info) ([]types.Object, []*ast.Ident, bool) {
 	assignment, ok := statement.(*ast.AssignStmt)
-	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 3 || len(assignment.Rhs) != 1 || len(parameters) != 3 {
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 4 || len(assignment.Rhs) != 1 || len(parameters) != 4 {
 		return nil, nil, false
 	}
 	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
-	if !ok || len(call.Args) != 3 {
+	if !ok || len(call.Args) != 4 {
 		return nil, nil, false
 	}
 	called, ok := l8WorkerV2CalledObject(call.Fun, info).(*types.Func)
@@ -8265,13 +8273,15 @@ func l8WorkerV2ExactCanonicalIdentityInputsCall(scope l8WorkerV2GuardScope, stat
 		return nil, nil, false
 	}
 	signature, ok := called.Type().(*types.Signature)
-	if !ok || signature.Recv() != nil || signature.TypeParams() != nil || signature.Variadic() || signature.Params().Len() != 3 || signature.Results().Len() != 3 ||
+	if !ok || signature.Recv() != nil || signature.TypeParams() != nil || signature.Variadic() || signature.Params().Len() != 4 || signature.Results().Len() != 4 ||
 		!types.Identical(signature.Params().At(0).Type(), types.Universe.Lookup("string").Type()) ||
 		!types.Identical(signature.Params().At(1).Type(), types.Universe.Lookup("string").Type()) ||
-		!l8WorkerV2IsExactNamedStruct(signature.Params().At(2).Type(), "JobStartRequestV2") ||
+		!types.Identical(signature.Params().At(2).Type(), types.Universe.Lookup("string").Type()) ||
+		!l8WorkerV2IsExactNamedStruct(signature.Params().At(3).Type(), "JobStartRequestV2") ||
 		!types.Identical(signature.Results().At(0).Type(), types.Universe.Lookup("string").Type()) ||
 		!types.Identical(signature.Results().At(1).Type(), types.Universe.Lookup("string").Type()) ||
-		!l8WorkerV2IsExactNamedStruct(signature.Results().At(2).Type(), "JobStartRequestV2") {
+		!types.Identical(signature.Results().At(2).Type(), types.Universe.Lookup("string").Type()) ||
+		!l8WorkerV2IsExactNamedStruct(signature.Results().At(3).Type(), "JobStartRequestV2") {
 		return nil, nil, false
 	}
 	declaredInGuardedFile := false
@@ -8285,8 +8295,8 @@ func l8WorkerV2ExactCanonicalIdentityInputsCall(scope l8WorkerV2GuardScope, stat
 	if !declaredInGuardedFile {
 		return nil, nil, false
 	}
-	canonicalObjects := make([]types.Object, 3)
-	parameterUses := make([]*ast.Ident, 3)
+	canonicalObjects := make([]types.Object, 4)
+	parameterUses := make([]*ast.Ident, 4)
 	for index := range parameters {
 		argument, argumentIsIdentifier := l8WorkerV2UnparenExpression(call.Args[index]).(*ast.Ident)
 		canonicalObjects[index] = l8WorkerV2ExpressionObject(assignment.Lhs[index], info)
@@ -8299,13 +8309,14 @@ func l8WorkerV2ExactCanonicalIdentityInputsCall(scope l8WorkerV2GuardScope, stat
 }
 
 func l8WorkerV2ExactIdentityLiteralBindings(literal *ast.CompositeLit, parameters []types.Object, info *types.Info) (map[string]*ast.Ident, bool) {
-	if literal == nil || len(literal.Elts) != 3 || len(parameters) != 3 {
+	if literal == nil || len(literal.Elts) != 4 || len(parameters) != 4 {
 		return nil, false
 	}
 	want := map[string]types.Object{
-		"DriverID":    parameters[0],
-		"PrincipalID": parameters[1],
-		"Request":     parameters[2],
+		"DriverID":         parameters[0],
+		"PrincipalID":      parameters[1],
+		"DaemonGeneration": parameters[2],
+		"Request":          parameters[3],
 	}
 	bindings := make(map[string]*ast.Ident, len(want))
 	for _, element := range literal.Elts {
@@ -8423,12 +8434,13 @@ func l8WorkerV2ExactEmptyStringAndObjectReturn(statement ast.Stmt, object types.
 
 func l8WorkerV2IsExactStoredJobStateSchema(typ types.Type) bool {
 	structure, ok := l8WorkerV2ExactNamedStructUnderlying(typ, "storedJobStateV2")
-	if !ok || structure.NumFields() != 3 {
+	if !ok || structure.NumFields() != 4 {
 		return false
 	}
 	return l8WorkerV2IsExactNamedStructField(structure, 0, "JobV2", "JobV2", "") &&
 		l8WorkerV2IsExactStructField(structure, 1, "RequestKey", types.Universe.Lookup("string").Type(), `json:"requestKey"`) &&
-		l8WorkerV2IsExactStructField(structure, 2, "PrincipalID", types.Universe.Lookup("string").Type(), `json:"principalId"`)
+		l8WorkerV2IsExactStructField(structure, 2, "PrincipalID", types.Universe.Lookup("string").Type(), `json:"principalId"`) &&
+		l8WorkerV2IsExactStructField(structure, 3, "DaemonGeneration", types.Universe.Lookup("string").Type(), `json:"daemonGeneration"`)
 }
 
 func l8WorkerV2ExactNamedStructUnderlying(typ types.Type, name string) (*types.Struct, bool) {
@@ -11216,14 +11228,14 @@ func TestL8WorkerV2SourceGuardsPrincipalCannotBeDecodedFromJSON(t *testing.T) {
 					if strings.Contains(jsonTag, "peeruid") || strings.Contains(jsonTag, "peergid") {
 						t.Fatalf("production field in %s exposes peer credential through JSON tag %q", path, jsonTag)
 					}
-					if !strings.Contains(jsonTag, "principal") {
+					privateDurableIdentity := filepath.Base(path) == "job_store_v2.go" && typeSpec.Name.Name == "storedJobStateV2" && len(field.Names) == 1 &&
+						(jsonTag == "principalid" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemongeneration" && field.Names[0].Name == "DaemonGeneration")
+					if privateDurableIdentity {
 						continue
 					}
-					privateDurablePrincipal := filepath.Base(path) == "job_store_v2.go" && typeSpec.Name.Name == "storedJobStateV2" && jsonTag == "principalid"
-					if privateDurablePrincipal && len(field.Names) == 1 && field.Names[0].Name == "PrincipalID" {
-						continue
+					if strings.Contains(jsonTag, "principal") || strings.Contains(jsonTag, "daemongeneration") {
+						t.Fatalf("production field in %s exposes private server identity outside storedJobStateV2 through JSON tag %q", path, jsonTag)
 					}
-					t.Fatalf("production field in %s exposes server-derived principal outside storedJobStateV2 through JSON tag %q", path, jsonTag)
 				}
 			}
 		}

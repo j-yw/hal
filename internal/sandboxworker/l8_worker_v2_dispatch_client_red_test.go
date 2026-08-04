@@ -313,7 +313,7 @@ func TestL8WorkerV2ClientResolveValidatesOnlyAvailableOpaqueSubmissionIdentity(t
 	// credential intent needed to recompute the V2 submission key. The client can
 	// therefore validate only the opaque key's required domain and shape.
 	validOpaque := l8WorkerV2QueuedJob()
-	validOpaque.SubmissionKey = jobSubmissionKeyV2("principal-neighbor", start)
+	validOpaque.SubmissionKey = jobSubmissionKeyV2("principal-neighbor", l8WorkerV2DaemonGeneration, start)
 	if err := validOpaque.Validate(); err != nil {
 		t.Fatalf("valid opaque resolve response fixture: %v", err)
 	}
@@ -327,6 +327,10 @@ func TestL8WorkerV2ClientResolveValidatesOnlyAvailableOpaqueSubmissionIdentity(t
 	}{
 		{name: "missing", key: ""},
 		{name: "wrong domain", key: "request-v2-" + strings.Repeat("0", 64)},
+		{name: "short digest", key: "submission-v2-" + strings.Repeat("0", 63)},
+		{name: "non-hex digest", key: "submission-v2-" + strings.Repeat("g", 64)},
+		{name: "uppercase digest", key: "submission-v2-" + strings.Repeat("A", 64)},
+		{name: "oversized digest", key: "submission-v2-" + strings.Repeat("0", 65)},
 	} {
 		t.Run(invalid.name, func(t *testing.T) {
 			job := l8WorkerV2QueuedJob()
@@ -907,7 +911,7 @@ func TestL8WorkerV2ClientAcceptsEquivalentReorderedCredentialIdentity(t *testing
 	originalRequest := l8CloneWorkerV2StartRequest(start)
 
 	job := l8WorkerV2QueuedJob()
-	job.SubmissionKey = jobSubmissionKeyV2("principal-owner", start)
+	job.SubmissionKey = jobSubmissionKeyV2("principal-owner", l8WorkerV2DaemonGeneration, start)
 	job.CredentialIntent = JobCredentialIntentV2{
 		ProductionCredentialsRequested: start.ProductionCredentialsRequested,
 		PlanID:                         start.PlanID,
@@ -1064,7 +1068,7 @@ func l8WorkerV2QueuedJob() JobV2 {
 	return JobV2{
 		ContractVersion:  JobContractVersionV2,
 		ID:               "job-primary",
-		SubmissionKey:    jobSubmissionKeyV2("principal-owner", request),
+		SubmissionKey:    jobSubmissionKeyV2("principal-owner", l8WorkerV2DaemonGeneration, request),
 		WorkerID:         "worker-primary",
 		HostID:           "host-primary",
 		RuntimeDriver:    RuntimeDriverMicroVM,

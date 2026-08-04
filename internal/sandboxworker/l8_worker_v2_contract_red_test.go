@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
@@ -422,14 +423,20 @@ func l8WorkerV2CrossPhaseSafeIDCases() []l8WorkerV2SafeIDCase {
 }
 
 func l8WorkerV2InvalidCrossPhaseSafeIDCases() []l8WorkerV2SafeIDCase {
-	return []l8WorkerV2SafeIDCase{
+	cases := []l8WorkerV2SafeIDCase{
 		{name: "129 bytes", value: strings.Repeat("a", 129)},
-		{name: "colon bearing", value: "credential:neighbor"},
-		{name: "whitespace bearing", value: "credential neighbor"},
-		{name: "at sign bearing", value: "credential@neighbor"},
-		{name: "plus bearing", value: "credential+neighbor"},
-		{name: "unicode bearing", value: "credential-邻居"},
+		{name: "representative non-ASCII", value: "credential-邻居"},
 	}
+	for value := 0; value < 128; value++ {
+		if value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value == '-' || value == '_' || value == '.' {
+			continue
+		}
+		cases = append(cases, l8WorkerV2SafeIDCase{
+			name:  fmt.Sprintf("forbidden ASCII byte 0x%02x", value),
+			value: "credential" + string(rune(value)) + "neighbor",
+		})
+	}
+	return cases
 }
 
 func TestL8WorkerV2IdentityKeysAreExactOpaqueLowercaseHex(t *testing.T) {
@@ -459,8 +466,8 @@ func TestL8WorkerV2IdentityKeysAreExactOpaqueLowercaseHex(t *testing.T) {
 		t.Fatalf("generated multi-source fixture: %v", err)
 	}
 
-	submissionKey := jobSubmissionKeyV2(principalID, req)
-	requestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, req)
+	submissionKey := jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, req)
+	requestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, l8WorkerV2DaemonGeneration, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,13 +505,33 @@ func TestL8WorkerV2IdentityKeysAreExactOpaqueLowercaseHex(t *testing.T) {
 	reordered := l8CloneWorkerV2StartRequest(req)
 	reordered.SourceReferenceIDs[0], reordered.SourceReferenceIDs[1] = reordered.SourceReferenceIDs[1], reordered.SourceReferenceIDs[0]
 	reordered.Bindings[0], reordered.Bindings[1] = reordered.Bindings[1], reordered.Bindings[0]
-	reorderedSubmissionKey := jobSubmissionKeyV2(principalID, reordered)
-	reorderedRequestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, reordered)
+	reorderedSubmissionKey := jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, reordered)
+	reorderedRequestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, l8WorkerV2DaemonGeneration, reordered)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reorderedSubmissionKey != submissionKey || reorderedRequestKey != requestKey {
 		t.Fatalf("equivalent reordered intent changed normalized keys: submission=%q request=%q", reorderedSubmissionKey, reorderedRequestKey)
+	}
+}
+
+func TestL8WorkerV2JobRejectsMalformedOpaqueSubmissionKeys(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		key  string
+	}{
+		{name: "short digest", key: "submission-v2-" + strings.Repeat("0", 63)},
+		{name: "non-hex digest", key: "submission-v2-" + strings.Repeat("g", 64)},
+		{name: "uppercase digest", key: "submission-v2-" + strings.Repeat("A", 64)},
+		{name: "oversized digest", key: "submission-v2-" + strings.Repeat("0", 65)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			job := l8WorkerV2QueuedJob()
+			job.SubmissionKey = tt.key
+			if err := job.Validate(); err == nil {
+				t.Fatal("JobV2 accepted malformed submission-v2 key")
+			}
+		})
 	}
 }
 
@@ -545,7 +572,7 @@ func TestL8WorkerV2PrivateRequestKeyIncludesCanonicalExecIdentity(t *testing.T) 
 	if err := base.Validate(); err != nil {
 		t.Fatalf("valid full V2 exec identity fixture: %v", err)
 	}
-	baseKey, err := jobRequestKeyV2(" microvm ", "principal-owner", base)
+	baseKey, err := jobRequestKeyV2(" microvm ", "principal-owner", " "+l8WorkerV2DaemonGeneration+" ", base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +590,7 @@ func TestL8WorkerV2PrivateRequestKeyIncludesCanonicalExecIdentity(t *testing.T) 
 	equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[0], equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[1] = equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[1], equivalent.Exec.Target.Runtime.Metadata.CapabilityLabels[0]
 	equivalent.Exec.Target.Runtime.Metadata.PathRoles[0], equivalent.Exec.Target.Runtime.Metadata.PathRoles[1] = equivalent.Exec.Target.Runtime.Metadata.PathRoles[1], equivalent.Exec.Target.Runtime.Metadata.PathRoles[0]
 	equivalent.Exec.Env = map[string]string{"LANG": "C", "HAL_PROFILE": "test"}
-	equivalentKey, err := jobRequestKeyV2("microvm", "principal-owner", equivalent)
+	equivalentKey, err := jobRequestKeyV2("microvm", "principal-owner", l8WorkerV2DaemonGeneration, equivalent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +642,7 @@ func TestL8WorkerV2PrivateRequestKeyIncludesCanonicalExecIdentity(t *testing.T) 
 			if driver == "" {
 				driver = " microvm "
 			}
-			key, keyErr := jobRequestKeyV2(driver, "principal-owner", candidate)
+			key, keyErr := jobRequestKeyV2(driver, "principal-owner", l8WorkerV2DaemonGeneration, candidate)
 			if keyErr != nil {
 				t.Fatal(keyErr)
 			}
@@ -694,7 +721,7 @@ func TestL8WorkerV2PrivateRequestKeyCanonicalizationDoesNotMutateInput(t *testin
 		t.Fatal(err)
 	}
 
-	key, err := jobRequestKeyV2(" microvm ", " principal-owner ", request)
+	key, err := jobRequestKeyV2(" microvm ", " principal-owner ", " "+l8WorkerV2DaemonGeneration+" ", request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +732,7 @@ func TestL8WorkerV2PrivateRequestKeyCanonicalizationDoesNotMutateInput(t *testin
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("private request key canonicalization mutated caller input:\n before: %s\n  after: %s", before, after)
 	}
-	canonicalKey, err := jobRequestKeyV2("microvm", "principal-owner", equivalent)
+	canonicalKey, err := jobRequestKeyV2("microvm", "principal-owner", l8WorkerV2DaemonGeneration, equivalent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,8 +820,8 @@ func TestL8WorkerV2NoCredentialIntentRequiresExactAbsence(t *testing.T) {
 
 func TestL8WorkerV2CredentialIntentChangesBothSubmissionAndPrivateRequestIdentity(t *testing.T) {
 	base := l8WorkerV2StartRequest()
-	baseSubmission := jobSubmissionKeyV2("principal-owner", base)
-	baseRequest, err := jobRequestKeyV2(RuntimeDriverMicroVM, "principal-owner", base)
+	baseSubmission := jobSubmissionKeyV2("principal-owner", l8WorkerV2DaemonGeneration, base)
+	baseRequest, err := jobRequestKeyV2(RuntimeDriverMicroVM, "principal-owner", l8WorkerV2DaemonGeneration, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -802,11 +829,11 @@ func TestL8WorkerV2CredentialIntentChangesBothSubmissionAndPrivateRequestIdentit
 		t.Fatalf("v2 identities are not domain-separated: submission=%q request=%q", baseSubmission, baseRequest)
 	}
 	replay := l8CloneWorkerV2StartRequest(base)
-	replayRequest, err := jobRequestKeyV2(RuntimeDriverMicroVM, "principal-owner", replay)
+	replayRequest, err := jobRequestKeyV2(RuntimeDriverMicroVM, "principal-owner", l8WorkerV2DaemonGeneration, replay)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := jobSubmissionKeyV2("principal-owner", replay); got != baseSubmission || replayRequest != baseRequest {
+	if got := jobSubmissionKeyV2("principal-owner", l8WorkerV2DaemonGeneration, replay); got != baseSubmission || replayRequest != baseRequest {
 		t.Fatalf("exact replay changed idempotency identity: submission=%q request=%q", got, replayRequest)
 	}
 
@@ -847,10 +874,10 @@ func TestL8WorkerV2CredentialIntentChangesBothSubmissionAndPrivateRequestIdentit
 		t.Run(tt.name, func(t *testing.T) {
 			candidate := l8CloneWorkerV2StartRequest(base)
 			tt.mutate(&candidate)
-			if got := jobSubmissionKeyV2(tt.principal, candidate); got == baseSubmission {
+			if got := jobSubmissionKeyV2(tt.principal, l8WorkerV2DaemonGeneration, candidate); got == baseSubmission {
 				t.Fatalf("submission identity ignored changed %s", tt.name)
 			}
-			gotRequest, keyErr := jobRequestKeyV2(RuntimeDriverMicroVM, tt.principal, candidate)
+			gotRequest, keyErr := jobRequestKeyV2(RuntimeDriverMicroVM, tt.principal, l8WorkerV2DaemonGeneration, candidate)
 			if keyErr != nil {
 				t.Fatal(keyErr)
 			}
@@ -858,6 +885,18 @@ func TestL8WorkerV2CredentialIntentChangesBothSubmissionAndPrivateRequestIdentit
 				t.Fatalf("private request identity ignored changed %s", tt.name)
 			}
 		})
+	}
+
+	neighborGeneration := "daemon-generation-neighbor"
+	if got := jobSubmissionKeyV2("principal-owner", neighborGeneration, base); got == baseSubmission {
+		t.Fatal("submission identity ignored changed daemon generation")
+	}
+	neighborRequest, err := jobRequestKeyV2(RuntimeDriverMicroVM, "principal-owner", neighborGeneration, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if neighborRequest == baseRequest {
+		t.Fatal("private request identity ignored changed daemon generation")
 	}
 }
 
@@ -901,25 +940,27 @@ func TestL8WorkerV2DurableJobJSONContainsOnlySafeCredentialIdentity(t *testing.T
 	typ := reflect.TypeOf(job)
 	for index := 0; index < typ.NumField(); index++ {
 		field := typ.Field(index)
-		if strings.Contains(strings.ToLower(string(field.Tag)), "principal") {
-			t.Fatalf("server-derived principal became a JobV2 JSON field: %s %s", field.Name, field.Tag)
+		fieldIdentity := strings.ToLower(field.Name + " " + string(field.Tag))
+		if strings.Contains(fieldIdentity, "principal") || strings.Contains(fieldIdentity, "daemongeneration") {
+			t.Fatalf("private server identity became a JobV2 JSON field: %s %s", field.Name, field.Tag)
 		}
 	}
 }
 
-func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T) {
+func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) {
 	principalID := l8GeneratedWorkerV2SafeID(t, "principal")
 	request := l8WorkerV2StartRequest()
-	requestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, request)
+	requestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, l8WorkerV2DaemonGeneration, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	job := l8WorkerV2QueuedJob()
-	job.SubmissionKey = jobSubmissionKeyV2(principalID, request)
+	job.SubmissionKey = jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, request)
 	state := storedJobStateV2{
-		JobV2:       job,
-		RequestKey:  requestKey,
-		PrincipalID: principalID,
+		JobV2:            job,
+		RequestKey:       requestKey,
+		PrincipalID:      principalID,
+		DaemonGeneration: l8WorkerV2DaemonGeneration,
 	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("valid private durable v2 state: %v", err)
@@ -928,6 +969,22 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 		`JobV2|sandboxworker.JobV2|`,
 		`RequestKey|string|json:"requestKey"`,
 		`PrincipalID|string|json:"principalId"`,
+		`DaemonGeneration|string|json:"daemonGeneration"`,
+	}
+	for _, allowed := range l8WorkerV2CrossPhaseSafeIDCases() {
+		t.Run("accepts daemon generation "+allowed.name, func(t *testing.T) {
+			candidate := state
+			candidate.DaemonGeneration = allowed.value
+			candidate.JobV2.SubmissionKey = jobSubmissionKeyV2(principalID, allowed.value, request)
+			requestKey, keyErr := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, allowed.value, request)
+			if keyErr != nil {
+				t.Fatal(keyErr)
+			}
+			candidate.RequestKey = requestKey
+			if err := candidate.Validate(); err != nil {
+				t.Fatalf("private durable v2 state rejected allowed daemon generation %s: %v", allowed.name, err)
+			}
+		})
 	}
 	privateType := reflect.TypeOf(state)
 	gotPrivateSchema := make([]string, 0, privateType.NumField())
@@ -942,8 +999,8 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 		t.Run("accepts principal "+allowed.name, func(t *testing.T) {
 			candidate := state
 			candidate.PrincipalID = allowed.value
-			candidate.JobV2.SubmissionKey = jobSubmissionKeyV2(allowed.value, request)
-			requestKey, keyErr := jobRequestKeyV2(RuntimeDriverMicroVM, allowed.value, request)
+			candidate.JobV2.SubmissionKey = jobSubmissionKeyV2(allowed.value, l8WorkerV2DaemonGeneration, request)
+			requestKey, keyErr := jobRequestKeyV2(RuntimeDriverMicroVM, allowed.value, l8WorkerV2DaemonGeneration, request)
 			if keyErr != nil {
 				t.Fatal(keyErr)
 			}
@@ -964,20 +1021,31 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 		{name: "non hex request key", mutate: func(candidate *storedJobStateV2) { candidate.RequestKey = "request-v2-" + strings.Repeat("g", 64) }},
 		{name: "short request key", mutate: func(candidate *storedJobStateV2) { candidate.RequestKey = "request-v2-" + strings.Repeat("0", 63) }},
 		{name: "missing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "" }},
-		{name: "raw looking principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "/run/user/1000/peer" }},
 		{name: "129 byte principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = strings.Repeat("p", 129) }},
-		{name: "193 byte principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = strings.Repeat("p", 193) }},
-		{name: "colon bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal:neighbor" }},
-		{name: "whitespace bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal neighbor" }},
-		{name: "at sign bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal@neighbor" }},
-		{name: "plus bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal+neighbor" }},
-		{name: "unicode bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal-邻居" }},
+		{name: "missing daemon generation", mutate: func(candidate *storedJobStateV2) { candidate.DaemonGeneration = "" }},
+		{name: "129 byte daemon generation", mutate: func(candidate *storedJobStateV2) { candidate.DaemonGeneration = strings.Repeat("d", 129) }},
 	} {
 		t.Run("rejects "+tt.name, func(t *testing.T) {
 			candidate := state
 			tt.mutate(&candidate)
 			if err := candidate.Validate(); err == nil {
 				t.Fatal("private durable v2 state accepted unsafe required identity")
+			}
+		})
+	}
+	for _, invalid := range l8WorkerV2InvalidCrossPhaseSafeIDCases() {
+		t.Run("rejects principal "+invalid.name, func(t *testing.T) {
+			candidate := state
+			candidate.PrincipalID = invalid.value
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("private durable v2 state accepted unsafe principal")
+			}
+		})
+		t.Run("rejects daemon generation "+invalid.name, func(t *testing.T) {
+			candidate := state
+			candidate.DaemonGeneration = invalid.value
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("private durable v2 state accepted unsafe daemon generation")
 			}
 		})
 	}
@@ -990,6 +1058,9 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 	}
 	if !strings.Contains(string(payload), `"requestKey":"`+requestKey+`"`) {
 		t.Fatalf("private durable v2 state omits request identity: %s", payload)
+	}
+	if !strings.Contains(string(payload), `"daemonGeneration":"`+l8WorkerV2DaemonGeneration+`"`) {
+		t.Fatalf("private durable v2 state omits daemon generation: %s", payload)
 	}
 
 	stateDir := t.TempDir() + "/jobs-v2"
@@ -1029,7 +1100,7 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 	if reconciled[0].State != JobStateInterrupted || reconciled[0].FailureCode != "daemon_restarted_before_start" || reconciled[0].FinishedAt == nil || !reconciled[0].FinishedAt.Equal(restartAt) {
 		t.Fatalf("startup reconciliation did not consume queued v2 state: %#v", reconciled[0].JobV2)
 	}
-	if reconciled[0].PrincipalID != principalID || reconciled[0].RequestKey != requestKey {
+	if reconciled[0].PrincipalID != principalID || reconciled[0].RequestKey != requestKey || reconciled[0].DaemonGeneration != l8WorkerV2DaemonGeneration {
 		t.Fatalf("startup reconciliation lost private v2 identity: %#v", reconciled[0])
 	}
 	persistedReconciliation, err := restartedStore.load(job.ID)
@@ -1051,13 +1122,13 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 			t.Fatal(marshalErr)
 		}
 		lowerJSON := strings.ToLower(string(publicJSON))
-		if strings.Contains(lowerJSON, "principal") || strings.Contains(lowerJSON, "peeruid") || strings.Contains(lowerJSON, "peergid") || strings.Contains(string(publicJSON), principalID) {
-			t.Fatalf("public/wire v2 value %d exposed private principal: %s", index, publicJSON)
+		if strings.Contains(lowerJSON, "principal") || strings.Contains(lowerJSON, "peeruid") || strings.Contains(lowerJSON, "peergid") || strings.Contains(lowerJSON, "daemongeneration") || strings.Contains(string(publicJSON), principalID) || strings.Contains(string(publicJSON), l8WorkerV2DaemonGeneration) {
+			t.Fatalf("public/wire v2 value %d exposed private server identity: %s", index, publicJSON)
 		}
 	}
 }
 
-func TestL8WorkerV2PublicContractsRemainPrincipalFree(t *testing.T) {
+func TestL8WorkerV2PublicContractsRemainPrivateServerIdentityFree(t *testing.T) {
 	publicTypes := []reflect.Type{
 		reflect.TypeOf(JobCredentialBindingV2{}),
 		reflect.TypeOf(JobCredentialIntentV2{}),
@@ -1076,8 +1147,8 @@ func TestL8WorkerV2PublicContractsRemainPrincipalFree(t *testing.T) {
 			for index := 0; index < typ.NumField(); index++ {
 				field := typ.Field(index)
 				fieldIdentity := strings.ToLower(field.Name + " " + string(field.Tag))
-				if strings.Contains(fieldIdentity, "principal") || strings.Contains(fieldIdentity, "peeruid") || strings.Contains(fieldIdentity, "peergid") {
-					t.Fatalf("public V2 contract %s exposes private principal field %s %s", typ.Name(), field.Name, field.Tag)
+				if strings.Contains(fieldIdentity, "principal") || strings.Contains(fieldIdentity, "peeruid") || strings.Contains(fieldIdentity, "peergid") || strings.Contains(fieldIdentity, "daemongeneration") {
+					t.Fatalf("public V2 contract %s exposes private server identity field %s %s", typ.Name(), field.Name, field.Tag)
 				}
 			}
 		})
@@ -1086,10 +1157,12 @@ func TestL8WorkerV2PublicContractsRemainPrincipalFree(t *testing.T) {
 
 func l8AssertWorkerV2PrivateStateIdentity(t *testing.T, got, want storedJobStateV2) {
 	t.Helper()
-	if got.PrincipalID != want.PrincipalID || got.RequestKey != want.RequestKey || !reflect.DeepEqual(got.JobV2, want.JobV2) {
-		t.Fatalf("private durable v2 state = %#v, want exact safe job/request/principal identity %#v", got, want)
+	if got.PrincipalID != want.PrincipalID || got.DaemonGeneration != want.DaemonGeneration || got.RequestKey != want.RequestKey || !reflect.DeepEqual(got.JobV2, want.JobV2) {
+		t.Fatalf("private durable v2 state = %#v, want exact safe job/request/principal/generation identity %#v", got, want)
 	}
 }
+
+const l8WorkerV2DaemonGeneration = "daemon-generation-primary"
 
 func l8WorkerV2StartRequest() JobStartRequestV2 {
 	return JobStartRequestV2{

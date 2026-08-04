@@ -115,6 +115,35 @@ func TestL8WorkerOuterRequestDecoderIsStrictForV1AndV2BeforeDispatch(t *testing.
 	}
 }
 
+func TestL8WorkerStrictRequestDecoderAcceptsAllFiveExactV1Operations(t *testing.T) {
+	fixtures := l8WorkerV2RequestPayloadFixturesForTest(t)
+	server := &Server{maxRequestBytes: defaultMaxRequestBytes}
+	for index, operation := range fixtures.v1Names() {
+		t.Run(operation, func(t *testing.T) {
+			request := Request{
+				ProtocolVersion: ProtocolVersion,
+				RequestID:       "request-v1-" + operation,
+				Operation:       operation,
+			}
+			if operation == OperationJobStart {
+				request.DriverID = RuntimeDriverMicroVM
+			}
+			fixtures.setV1Payload(&request, index)
+			payload, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, errorResp := server.readRequest(bytes.NewReader(payload))
+			if errorResp != nil {
+				t.Fatalf("strict request decoder rejected exact V1 %s: %#v", operation, errorResp)
+			}
+			if decoded.Operation != operation {
+				t.Fatalf("decoded operation = %q, want %q", decoded.Operation, operation)
+			}
+		})
+	}
+}
+
 func l8WorkerV2NoCredentialStartJSON(t *testing.T) string {
 	t.Helper()
 	req := l8WorkerV2StartRequest()
@@ -186,6 +215,85 @@ func TestL8WorkerClientResponseDecoderRejectsUnknownDuplicateTrailingAndNoncanon
 	}
 	if decoded.Operation != OperationJobStatusV2 || decoded.JobV2 == nil {
 		t.Fatalf("decoded response = %#v", decoded)
+	}
+}
+
+func TestL8WorkerStrictResponseDecoderAcceptsExactV1JobLogAndError(t *testing.T) {
+	job := l8WorkerV1ValidQueuedJob(t)
+	responses := []struct {
+		name     string
+		response Response
+	}{
+		{name: "job", response: l8WorkerV1ValidSuccessResponse(t, OperationJobStatus, "request-v1-job", job)},
+		{name: "log", response: l8WorkerV1ValidSuccessResponse(t, OperationJobLogs, "request-v1-log", job)},
+		{name: "error", response: Response{
+			ProtocolVersion: ProtocolVersion,
+			RequestID:       "request-v1-error",
+			Operation:       OperationJobCancel,
+			OK:              false,
+			Error:           &Error{Code: ErrorCodeInternal, Message: "bounded v1 error"},
+		}},
+	}
+	for _, tt := range responses {
+		t.Run(tt.name, func(t *testing.T) {
+			payload, err := json.Marshal(tt.response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := decodeWorkerResponse(bytes.NewReader(payload))
+			if err != nil {
+				t.Fatalf("strict response decoder rejected exact V1 %s response: %v", tt.name, err)
+			}
+			if decoded.Operation != tt.response.Operation || decoded.OK != tt.response.OK {
+				t.Fatalf("decoded response = %#v, want operation=%q ok=%t", decoded, tt.response.Operation, tt.response.OK)
+			}
+		})
+	}
+}
+
+func TestL8WorkerV1ClientsAcceptEmptyLegacyResponseIDForAllFiveOperations(t *testing.T) {
+	fixtures := l8WorkerV2RequestPayloadFixturesForTest(t)
+	job := l8WorkerV1ValidQueuedJob(t)
+	tests := []struct {
+		operation string
+		invoke    func(*Client) error
+	}{
+		{operation: OperationJobStart, invoke: func(client *Client) error {
+			_, err := client.JobStart(context.Background(), RuntimeDriverMicroVM, fixtures.startV1)
+			return err
+		}},
+		{operation: OperationJobResolve, invoke: func(client *Client) error {
+			_, err := client.JobResolve(context.Background(), fixtures.resolveV1)
+			return err
+		}},
+		{operation: OperationJobStatus, invoke: func(client *Client) error {
+			_, err := client.JobStatus(context.Background(), fixtures.statusV1)
+			return err
+		}},
+		{operation: OperationJobLogs, invoke: func(client *Client) error {
+			_, err := client.JobLogs(context.Background(), fixtures.logsV1)
+			return err
+		}},
+		{operation: OperationJobCancel, invoke: func(client *Client) error {
+			_, err := client.JobCancel(context.Background(), fixtures.cancelV1)
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.operation, func(t *testing.T) {
+			client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, request Request) (Response, error) {
+				if request.Operation != tt.operation {
+					t.Fatalf("client operation = %q, want %q", request.Operation, tt.operation)
+				}
+				return l8WorkerV1ValidSuccessResponse(t, tt.operation, "", job), nil
+			})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tt.invoke(client); err != nil {
+				t.Fatalf("V1 client rejected legacy empty response ID: %v", err)
+			}
+		})
 	}
 }
 
