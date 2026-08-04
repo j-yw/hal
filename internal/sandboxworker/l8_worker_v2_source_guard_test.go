@@ -659,9 +659,10 @@ func TestL8WorkerV2GuardLocksExactDecoderCallerComposition(t *testing.T) {
 		"types.go": `package sandboxworker
 type JobStartRequestV2 struct{}
 type JobV2 struct{}
-type Request struct { Operation string; JobStartV2 *JobStartRequestV2 }
-type Response struct { JobV2 *JobV2 }
-type storedJobStateV2 struct { JobV2 JobV2 }
+type callerNestedValue struct { Value string }
+type Request struct { Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }
+type Response struct { JobV2 *JobV2; Nested *callerNestedValue }
+type storedJobStateV2 struct { JobV2 JobV2; Nested *callerNestedValue }
 func (request Request) WithDefaults() Request { return request }`,
 		"protocol_decode.go": `package sandboxworker
 import "io"
@@ -1644,9 +1645,10 @@ func TestL8WorkerV2GuardRejectsCallerWholeValueEscapesAndCleanupBypasses(t *test
 		"types.go": `package sandboxworker
 type JobStartRequestV2 struct{}
 type JobV2 struct{}
-type Request struct { Operation string; JobStartV2 *JobStartRequestV2 }
-type Response struct { JobV2 *JobV2 }
-type storedJobStateV2 struct { JobV2 JobV2 }
+type callerNestedValue struct { Value string }
+type Request struct { Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }
+type Response struct { JobV2 *JobV2; Nested *callerNestedValue }
+type storedJobStateV2 struct { JobV2 JobV2; Nested *callerNestedValue }
 func (request Request) WithDefaults() Request { return request }`,
 		"protocol_decode.go": `package sandboxworker
 import "io"
@@ -1832,6 +1834,65 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			mutate: func(mutated map[string]string) {
 				mutated["job_store_v2.go"] += "\nvar leakedReaders = make(chan storedJobReaderV2, 1)\n"
 				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\tleakedReaders <- reader\n\tdefer reader.Close()", 1)
+			},
+		},
+		{
+			name: "client request escapes through IIFE parameter",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] += "\nvar leakedIIFERequest Request\n"
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tif err := json.NewEncoder", "\tfunc(value Request) { leakedIIFERequest = value }(request)\n\tif err := json.NewEncoder", 1)
+			},
+		},
+		{
+			name: "client request escapes through goroutine parameter",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] += "\nvar leakedGoroutineRequest Request\n"
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tif err := json.NewEncoder", "\tgo func(value Request) { leakedGoroutineRequest = value }(request)\n\tif err := json.NewEncoder", 1)
+			},
+		},
+		{
+			name: "client response escapes through IIFE parameter",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] += "\nvar leakedIIFEResponse Response\n"
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\treturn response, nil", "\tfunc(value Response) { leakedIIFEResponse = value }(response)\n\treturn response, nil", 1)
+			},
+		},
+		{
+			name: "client connection escapes through IIFE parameter",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] += "\nvar leakedIIFEConnection workerResponseConnection\n"
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdefer connection.Close()", "\tdefer connection.Close()\n\tfunc(value workerResponseConnection) { leakedIIFEConnection = value }(connection)", 1)
+			},
+		},
+		{
+			name: "server request escapes through IIFE parameter",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] += "\nvar leakedIIFEServerRequest Request\n"
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "\treturn request, nil", "\tfunc(value Request) { leakedIIFEServerRequest = value }(request)\n\treturn request, nil", 1)
+			},
+		},
+		{
+			name: "client request shallow copy mutates nested pointer",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tif err := json.NewEncoder", "\trequestAlias := request\n\trequestAlias.Nested.Value = \"mutated\"\n\tif err := json.NewEncoder", 1)
+			},
+		},
+		{
+			name: "client response shallow copy mutates nested pointer",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\treturn response, nil", "\tresponseAlias := response\n\tresponseAlias.Nested.Value = \"mutated\"\n\treturn response, nil", 1)
+			},
+		},
+		{
+			name: "store state shallow copy mutates nested pointer",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\treturn state, nil", "\tstateAlias := state\n\tstateAlias.Nested.Value = \"mutated\"\n\treturn state, nil", 1)
+			},
+		},
+		{
+			name: "server request shallow copy mutates nested pointer",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "\treturn request, nil", "\trequestAlias := request\n\trequestAlias.Nested.Value = \"mutated\"\n\treturn request, nil", 1)
 			},
 		},
 	} {
