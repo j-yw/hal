@@ -2483,7 +2483,7 @@ func l8WorkerV2AllowedBoundedStrictDecoderCall(scope l8WorkerV2GuardScope, candi
 	})
 	for _, pair := range pairs {
 		decoderObject := l8WorkerV2AssignedObjectForValue(scope, pair.newDecoder, info)
-		if decoderObject == nil || !l8WorkerV2ScopeUsesExactStrictDecoder(scope, pair.newDecoder, decoderObject, info) {
+		if decoderObject == nil || !l8WorkerV2ScopeUsesExactStrictDecoder(scope, pair.newDecoder, pair.limit, decoderObject, info) {
 			continue
 		}
 		if candidate == pair.newDecoder || candidate == pair.limit {
@@ -2527,9 +2527,13 @@ func l8WorkerV2AssignedObjectForValue(scope l8WorkerV2GuardScope, value ast.Expr
 	return result
 }
 
-func l8WorkerV2ScopeUsesExactStrictDecoder(scope l8WorkerV2GuardScope, constructor ast.Expr, decoder types.Object, info *types.Info) bool {
+func l8WorkerV2ScopeUsesExactStrictDecoder(scope l8WorkerV2GuardScope, constructor ast.Expr, limit *ast.CallExpr, decoder types.Object, info *types.Info) bool {
 	function, ok := scope.node.(*ast.FuncDecl)
 	if !ok || function.Body == nil || len(function.Body.List) != 6 {
+		return false
+	}
+	output, ok := l8WorkerV2ExactDecoderParameters(function, limit, info)
+	if !ok {
 		return false
 	}
 	assignment, ok := function.Body.List[0].(*ast.AssignStmt)
@@ -2544,7 +2548,7 @@ func l8WorkerV2ScopeUsesExactStrictDecoder(scope l8WorkerV2GuardScope, construct
 	if !ok || len(strictCall.Args) != 0 {
 		return false
 	}
-	if !l8WorkerV2ExactPrimaryDecodeIf(function.Body.List[2], function, decoder, info) {
+	if !l8WorkerV2ExactPrimaryDecodeIf(function.Body.List[2], decoder, output, info) {
 		return false
 	}
 	trailingObject, ok := l8WorkerV2ExactTrailingDeclaration(function.Body.List[3], info)
@@ -2570,13 +2574,51 @@ func l8WorkerV2DecoderMethodCall(expression ast.Expr, decoder types.Object, meth
 	return call, true
 }
 
-func l8WorkerV2ExactPrimaryDecodeIf(statement ast.Stmt, function *ast.FuncDecl, decoder types.Object, info *types.Info) bool {
+func l8WorkerV2ExactDecoderParameters(function *ast.FuncDecl, limit *ast.CallExpr, info *types.Info) (types.Object, bool) {
+	if function == nil || function.Recv != nil || function.Type.TypeParams != nil || function.Type.Params == nil || function.Type.Results == nil || len(limit.Args) != 2 {
+		return nil, false
+	}
+	var parameters []types.Object
+	for _, field := range function.Type.Params.List {
+		for _, name := range field.Names {
+			if object := info.Defs[name]; object != nil {
+				parameters = append(parameters, object)
+			}
+		}
+	}
+	if len(parameters) != 2 || len(function.Type.Results.List) != 1 || len(function.Type.Results.List[0].Names) != 0 {
+		return nil, false
+	}
+	if !l8WorkerV2IsExactIOReader(parameters[0].Type()) || l8WorkerV2ExpressionObject(limit.Args[0], info) != parameters[0] || !l8WorkerV2IsExactV2StructPointer(parameters[1].Type()) {
+		return nil, false
+	}
+	resultType := info.TypeOf(function.Type.Results.List[0].Type)
+	if resultType != types.Universe.Lookup("error").Type() {
+		return nil, false
+	}
+	return parameters[1], true
+}
+
+func l8WorkerV2IsExactV2StructPointer(typ types.Type) bool {
+	pointer, ok := types.Unalias(typ).(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := types.Unalias(pointer.Elem()).(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" || !strings.HasSuffix(named.Obj().Name(), "V2") {
+		return false
+	}
+	_, ok = named.Underlying().(*types.Struct)
+	return ok
+}
+
+func l8WorkerV2ExactPrimaryDecodeIf(statement ast.Stmt, decoder, output types.Object, info *types.Info) bool {
 	conditional, errObject, decodeCall, ok := l8WorkerV2ExactDecodeIf(statement, decoder, info)
 	if !ok || len(decodeCall.Args) != 1 {
 		return false
 	}
 	argument, ok := l8WorkerV2UnparenExpression(decodeCall.Args[0]).(*ast.Ident)
-	if !ok || !l8WorkerV2IsFunctionParameter(function, info.Uses[argument], info) {
+	if !ok || info.Uses[argument] != output {
 		return false
 	}
 	if !l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) {
@@ -2641,20 +2683,6 @@ func l8WorkerV2ExactDecodeIf(statement ast.Stmt, decoder types.Object, info *typ
 		return nil, nil, nil, false
 	}
 	return conditional, errObject, decodeCall, true
-}
-
-func l8WorkerV2IsFunctionParameter(function *ast.FuncDecl, object types.Object, info *types.Info) bool {
-	if function == nil || function.Type.Params == nil || object == nil {
-		return false
-	}
-	for _, field := range function.Type.Params.List {
-		for _, name := range field.Names {
-			if info.Defs[name] == object {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func l8WorkerV2IsErrorComparison(expression ast.Expr, errObject, expected types.Object, info *types.Info) bool {
