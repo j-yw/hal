@@ -1139,6 +1139,20 @@ func (reviewReturningReceiver) value() int { return 1 }
 			},
 		},
 		{
+			name: "client response decode is unreachable after ordinary recover before select",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewOrdinaryRecoverThenSelect()\n\tvar response Response", 1)
+				return source + "\nfunc reviewOrdinaryRecoverThenSelect() { _ = recover(); select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after goroutine recover before select",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewGoroutineRecoverThenSelect()\n\tvar response Response", 1)
+				return source + "\nfunc reviewGoroutineRecoverThenSelect() { go recover(); select {} }\n"
+			},
+		},
+		{
 			name: "client response decode is unreachable after concrete receiver method",
 			mutate: func(source string) string {
 				source = strings.Replace(source, "\tvar response Response", "\t(reviewConcreteBlocker{}).block()\n\tvar response Response", 1)
