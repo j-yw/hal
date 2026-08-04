@@ -3256,6 +3256,43 @@ var deferredProcess = func() { processapi.Exit(1) }`,
 	}, policy)
 }
 
+func TestL8WorkerV2GuardDistinguishesStoredAndInvokedNamedInitializers(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"handler.go": true}}
+	v2Root := `package sandboxworker
+func JobStartV2Fixture() {}`
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"handler.go": v2Root,
+		"unlisted_state.go": `package sandboxworker
+import processapi "os"
+var deferredProcess = stopProcessLater
+func stopProcessLater() { processapi.Exit(1) }`,
+	}, policy)
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"handler.go": v2Root,
+		"unlisted_state.go": `package sandboxworker
+import processapi "os"
+var initializedState = startProcessNow()
+func startProcessNow() int {
+	processapi.Exit(1)
+	return 0
+}`,
+	}, policy, "os.Exit")
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"handler.go": v2Root,
+		"unlisted_state.go": `package sandboxworker
+import processapi "os"
+var processInitializer = startProcessThroughAlias
+var initializedState = processInitializer()
+func startProcessThroughAlias() int {
+	processapi.Exit(1)
+	return 0
+}`,
+	}, policy, "os.Exit")
+}
+
 func TestL8WorkerV2GuardAuditsPackageVariableInitializers(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{
 		dedicated: map[string]bool{"state.go": true},
