@@ -947,8 +947,8 @@ func TestClientConnectionFailureIsSanitized(t *testing.T) {
 			t.Fatalf("connection error leaked unsafe detail %q in %q", unsafe, message)
 		}
 	}
-	if !strings.Contains(message, "[redacted-path]") {
-		t.Fatalf("connection error = %q, want redacted path marker", message)
+	if !strings.Contains(message, "open worker connection failed") {
+		t.Fatalf("connection error = %q, want generic connection failure marker", message)
 	}
 }
 
