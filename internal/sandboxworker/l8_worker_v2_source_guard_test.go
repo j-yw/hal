@@ -786,6 +786,8 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reviewReassignedLocal := func() { select {} }
 	reviewReassignedLocal = func() {}
 	reviewReassignedLocal()
+	switch true { case true: case reviewSkippedForeverBool(): }
+	switch true { case true, reviewSkippedForeverBool(): }
 	var response Response`, 1)
 	possiblyReturningHelper["client.go"] += `
 func reviewSkippedForeverBool() bool { select {} }
@@ -1169,6 +1171,20 @@ func (reviewReturningReceiver) value() int { return 1 }
 			name: "client response decode is unreachable after immutable local function",
 			mutate: func(source string) string {
 				return strings.Replace(source, "\tvar response Response", "\treviewLocalBlock := func() { select {} }\n\treviewLocalBlock()\n\tvar response Response", 1)
+			},
+		},
+		{
+			name: "client response decode is unreachable after first switch case expression",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\tswitch true { case reviewSwitchBlocks(): }\n\tvar response Response", 1)
+				return source + "\nfunc reviewSwitchBlocks() bool { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after helper switch case expression",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewSwitchThenReturn()\n\tvar response Response", 1)
+				return source + "\nfunc reviewSwitchThenReturn() { switch true { case reviewSwitchBlocks(): }; return }\nfunc reviewSwitchBlocks() bool { select {} }\n"
 			},
 		},
 	} {
