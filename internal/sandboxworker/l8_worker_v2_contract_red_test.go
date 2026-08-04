@@ -4,7 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -1099,7 +1102,7 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 	if len(reconciled) != 1 {
 		t.Fatalf("reconciled private durable v2 states = %d, want 1", len(reconciled))
 	}
-	if reconciled[0].State != JobStateInterrupted || reconciled[0].FailureCode != "daemon_restarted_before_start" || reconciled[0].FinishedAt == nil || !reconciled[0].FinishedAt.Equal(restartAt) {
+	if reconciled[0].JobV2.State != JobStateInterrupted || reconciled[0].JobV2.FailureCode != "daemon_restarted_before_start" || reconciled[0].JobV2.FinishedAt == nil || !reconciled[0].JobV2.FinishedAt.Equal(restartAt) {
 		t.Fatalf("startup reconciliation did not consume queued v2 state: %#v", reconciled[0].JobV2)
 	}
 	if reconciled[0].PrincipalID != principalID || reconciled[0].RequestKey != requestKey || reconciled[0].DaemonGeneration != l8WorkerV2DaemonGeneration {
@@ -1127,6 +1130,76 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 		if strings.Contains(lowerJSON, "principal") || strings.Contains(lowerJSON, "peeruid") || strings.Contains(lowerJSON, "peergid") || strings.Contains(lowerJSON, "daemongeneration") || strings.Contains(string(publicJSON), principalID) || strings.Contains(string(publicJSON), l8WorkerV2DaemonGeneration) {
 			t.Fatalf("public/wire v2 value %d exposed private server identity: %s", index, publicJSON)
 		}
+	}
+}
+
+func TestL8WorkerV2StoreRejectsInvalidOrMismatchedDurableStateBeforeReconciliation(t *testing.T) {
+	principalID := l8GeneratedWorkerV2SafeID(t, "principal")
+	request := l8WorkerV2StartRequest()
+	requestKey, err := jobRequestKeyV2(RuntimeDriverMicroVM, principalID, l8WorkerV2DaemonGeneration, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validState := storedJobStateV2{
+		JobV2:            l8WorkerV2QueuedJob(),
+		RequestKey:       requestKey,
+		PrincipalID:      principalID,
+		DaemonGeneration: l8WorkerV2DaemonGeneration,
+	}
+	validState.JobV2.SubmissionKey = jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, request)
+	if err := validState.Validate(); err != nil {
+		t.Fatalf("valid private durable v2 state: %v", err)
+	}
+
+	for _, test := range []struct {
+		name        string
+		requestedID string
+		mutate      func(*storedJobStateV2)
+		crossJobID  string
+	}{
+		{
+			name:        "invalid private identity",
+			requestedID: validState.JobV2.ID,
+			mutate: func(state *storedJobStateV2) {
+				state.PrincipalID = ""
+			},
+		},
+		{
+			name:        "filename and embedded job identity differ",
+			requestedID: "job-file-primary",
+			mutate:      func(*storedJobStateV2) {},
+			crossJobID:  validState.JobV2.ID,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := newJobStoreV2(filepath.Join(t.TempDir(), "jobs-v2"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate := validState
+			test.mutate(&candidate)
+			payload, err := encodeStoredJobStateV2(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(store.root, test.requestedID+".json"), payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := store.load(test.requestedID); err == nil || err.Error() != "stored job state is malformed" {
+				t.Fatalf("load malformed private durable state error = %v, want generic malformed-state rejection", err)
+			}
+			if test.crossJobID == "" {
+				return
+			}
+			if _, err := reconcileJobStoreV2AtStartup(store, validState.JobV2.SubmittedAt.Add(time.Minute)); err == nil {
+				t.Fatal("startup reconciliation accepted a filename/embedded job identity mismatch")
+			}
+			_, statErr := os.Lstat(filepath.Join(store.root, test.crossJobID+".json"))
+			if !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("startup reconciliation created a cross-job durable state: %v", statErr)
+			}
+		})
 	}
 }
 
