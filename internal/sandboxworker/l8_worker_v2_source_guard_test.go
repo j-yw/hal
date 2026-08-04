@@ -414,11 +414,7 @@ func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) 
 	}
 	return nil
 }
-func decodeWorkerRequest(reader io.Reader, maxBytes int64) (Request, error) {
-	var output Request
-	if err := decodeWorkerRequestInto(reader, maxBytes, &output); err != nil { return Request{}, err }
-	return output, nil
-}`,
+`,
 	}, policy)
 	l8AssertWorkerV2GuardAllows(t, map[string]string{
 		"protocol_decode.go": `package sandboxworker
@@ -762,6 +758,16 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		return Response{}, errors.New("write worker request framing failed")
 	}
 `
+	existingJSONWriterSources := l8CloneWorkerV2GuardSources(sources)
+	existingJSONWriterSources["types.go"] += "\nfunc (request Request) WithDefaults() Request { return request }\n"
+	existingJSONWriterSources["client.go"] = strings.Replace(existingJSONWriterSources["client.go"], "\t\"errors\"", "\t\"encoding/json\"\n\t\"errors\"", 1)
+	existingJSONWriterSources["client.go"] = strings.Replace(existingJSONWriterSources["client.go"], "func encodeWorkerRequest(writer io.Writer, request Request) error { return nil }\n", "", 1)
+	existingJSONWriterSources["client.go"] = strings.Replace(existingJSONWriterSources["client.go"], clientEncodeBlock, `	if err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request failed")
+	}
+`, 1)
+	l8AssertWorkerV2GuardAllows(t, existingJSONWriterSources, policy)
 
 	tests := []struct {
 		name    string
@@ -1220,11 +1226,7 @@ func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) 
 	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
 	return nil
 }
-func decodeWorkerRequest(reader io.Reader, maxBytes int64) (Request, error) {
-	var output Request
-	if err := decodeWorkerRequestInto(reader, maxBytes, &output); err != nil { return Request{}, err }
-	return output, nil
-}`,
+`,
 		"response": `package sandboxworker
 	import (
 		"bytes"
@@ -1535,6 +1537,12 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 	checkedPackage, err := config.Check("github.com/jywlabs/hal/internal/sandboxworker", fileSet, astFiles, info)
 	if err != nil {
 		return fmt.Errorf("type-check worker-v2 guard sources: %w", err)
+	}
+	if err := l8WorkerV2ValidateClientHalfCloseComposition(parsedFiles, info); err != nil {
+		return err
+	}
+	if err := l8WorkerV2ValidateDecoderCallerComposition(parsedFiles, info); err != nil {
+		return err
 	}
 	operationAnalysis := l8WorkerV2BuildOperationAnalysis(parsedFiles, info)
 	semanticRoots := l8WorkerV2SemanticRoots(parsedFiles, info, operationAnalysis)
@@ -2247,8 +2255,8 @@ func l8WorkerV2ContainsInvalidOperationValue(scope l8WorkerV2GuardScope, info *t
 				if _, keyed := rawElement.(*ast.KeyValueExpr); keyed || index >= structType.NumFields() {
 					continue
 				}
-				expression, ok := rawElement.(ast.Expr)
-				if ok && l8WorkerV2ObjectIdentifiesOperationField(structType.Field(index)) && !l8WorkerV2OperationValueAt(expression, 0, info, operationAliases, analysis) {
+				expression := rawElement
+				if l8WorkerV2ObjectIdentifiesOperationField(structType.Field(index)) && !l8WorkerV2OperationValueAt(expression, 0, info, operationAliases, analysis) {
 					inspectValueAt(expression, 0, make(map[*types.Func]bool), 0)
 				}
 			}
@@ -2553,11 +2561,7 @@ func l8WorkerV2StaticIndexedString(indexed *ast.IndexExpr, info *types.Info, ana
 				rawElement = keyed.Value
 			}
 			if elementIndex == index {
-				expression, ok := rawElement.(ast.Expr)
-				if !ok {
-					return "", false
-				}
-				return l8WorkerV2StaticString(expression, info, analysis)
+				return l8WorkerV2StaticString(rawElement, info, analysis)
 			}
 			nextIndex = elementIndex + 1
 		}
@@ -2690,11 +2694,7 @@ func l8WorkerV2StaticStringSliceResolved(expression ast.Expr, info *types.Info, 
 		if index < 0 || index >= int64(l8WorkerV2MaxExactOperationLength) || (length >= 0 && index >= length) {
 			return nil, false
 		}
-		element, ok := rawElement.(ast.Expr)
-		if !ok {
-			return nil, false
-		}
-		value, ok := l8WorkerV2StaticString(element, info, analysis)
+		value, ok := l8WorkerV2StaticString(rawElement, info, analysis)
 		if !ok {
 			return nil, false
 		}
@@ -2920,10 +2920,7 @@ unwrapped:
 		if index >= int64(l8WorkerV2MaxExactOperationLength) {
 			return "", false
 		}
-		expression, ok := rawElement.(ast.Expr)
-		if !ok {
-			return "", false
-		}
+		expression := rawElement
 		value := info.Types[expression].Value
 		if value == nil || value.Kind() != constant.Int {
 			return "", false
@@ -3227,6 +3224,14 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 		if !ok {
 			return true
 		}
+		if l8WorkerV2IsTypedDecoderInnerCall(call, info) && !l8WorkerV2AllowedExactDecoderCallerCall(scope, call, info) {
+			scopeName := "declaration"
+			if function, ok := scope.node.(*ast.FuncDecl); ok {
+				scopeName = function.Name.Name
+			}
+			inspectionErr = fmt.Errorf("worker-v2 production path in %s declaration %s violates exact decoder caller composition", scope.file.path, scopeName)
+			return false
+		}
 		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) {
 			scopeName := "declaration"
 			if function, ok := scope.node.(*ast.FuncDecl); ok {
@@ -3410,60 +3415,914 @@ func l8WorkerV2IsExactClientTransportInterface(typ types.Type) bool {
 	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" && named.Obj().Name() == "ClientTransport"
 }
 
+func l8WorkerV2IsTypedDecoderInnerCall(call *ast.CallExpr, info *types.Info) bool {
+	object := l8WorkerV2CalledObject(call.Fun, info)
+	if object == nil || object.Pkg() == nil || object.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" {
+		return false
+	}
+	switch object.Name() {
+	case "decodeWorkerRequestInto", "decodeWorkerResponseInto", "decodeStoredJobStateV2Into":
+		return true
+	default:
+		return false
+	}
+}
+
+func l8WorkerV2AllowedExactDecoderCallerCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+	object := l8WorkerV2CalledObject(call.Fun, info)
+	if object == nil || len(call.Args) != 3 {
+		return false
+	}
+	switch object.Name() {
+	case "decodeWorkerRequestInto":
+		return l8WorkerV2ExactServerRequestDecoderCall(scope, call, info)
+	case "decodeWorkerResponseInto":
+		return l8WorkerV2ExactUnixResponseDecoderCall(scope, call, info) || l8WorkerV2ExactBehavioralResponseDecoderCall(scope, call, info)
+	case "decodeStoredJobStateV2Into":
+		return l8WorkerV2ExactStoreStateDecoderCall(scope, call, info)
+	default:
+		return false
+	}
+}
+
+func l8WorkerV2ExactServerRequestDecoderCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "server.go" || function.Name.Name != "readRequest" {
+		return false
+	}
+	receiver := l8WorkerV2ExactReceiverObject(function, "Server", true, info)
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if receiver == nil || len(parameters) != 1 || !l8WorkerV2IsExactIOReader(parameters[0].Type()) || !l8WorkerV2ExactRequestErrorResponseResults(function, info) {
+		return false
+	}
+	output := l8WorkerV2AddressedObject(call.Args[2], "Request", info)
+	return output != nil && l8WorkerV2ExpressionObject(call.Args[0], info) == parameters[0] &&
+		l8WorkerV2ExactSelectorRoot(call.Args[1], receiver, "maxRequestBytes", info) &&
+		l8WorkerV2FunctionReturnsObject(function, output, info) &&
+		l8WorkerV2ObjectHasNoReassignments(function, output, info)
+}
+
+func l8WorkerV2ExactUnixResponseDecoderCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "client.go" || function.Name.Name != "RoundTrip" {
+		return false
+	}
+	receiver := l8WorkerV2ExactReceiverObject(function, "unixSocketClientTransport", false, info)
+	if receiver == nil || !l8WorkerV2ExactRoundTripSignature(function, info) || !l8WorkerV2IsExactObjectExpression(call.Args[0], info) {
+		return false
+	}
+	connection := l8WorkerV2ExpressionObject(call.Args[0], info)
+	output := l8WorkerV2AddressedObject(call.Args[2], "Response", info)
+	if connection == nil || output == nil || !l8WorkerV2ObjectIsAcquiredCallResult(function, connection, "", nil, info) ||
+		!l8WorkerV2ObjectHasNoReassignments(function, connection, info) || !l8WorkerV2ObjectHasNoReassignments(function, output, info) ||
+		!l8WorkerV2FunctionReturnsObject(function, output, info) ||
+		!l8WorkerV2ExactClientCodecErrorBranch(function, call, info) ||
+		!l8WorkerV2ExactSyntheticClientSafeBranches(function, info) {
+		return false
+	}
+	limit := l8WorkerV2ExpressionObject(call.Args[1], info)
+	return limit != nil && l8WorkerV2ExactPostDefaultLimit(function, call, receiver, limit, info)
+}
+
+func l8WorkerV2ExactBehavioralResponseDecoderCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "protocol_decode.go" || function.Name.Name != "decodeWorkerResponse" || function.Recv != nil || function.Body == nil || len(function.Body.List) != 3 {
+		return false
+	}
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if len(parameters) != 1 || !l8WorkerV2IsExactIOReader(parameters[0].Type()) || !l8WorkerV2ExactResponseErrorResults(function, info) {
+		return false
+	}
+	output := l8WorkerV2AddressedObject(call.Args[2], "Response", info)
+	return output != nil && l8WorkerV2ExpressionObject(call.Args[0], info) == parameters[0] &&
+		l8WorkerV2ExactPackageInt64Constant(call.Args[1], "defaultMaxResponseBytes", 1<<20, info) &&
+		l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
+		l8WorkerV2ExactThreeStatementResponseWrapper(function, call, output, info)
+}
+
+func l8WorkerV2ExactStoreStateDecoderCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "job_store_v2.go" || function.Name.Name != "load" || l8WorkerV2ExactReceiverObject(function, "jobStoreV2", true, info) == nil || !l8WorkerV2ExactStoreLoadSignature(function, info) {
+		return false
+	}
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	reader := l8WorkerV2ExpressionObject(call.Args[0], info)
+	output := l8WorkerV2AddressedObject(call.Args[2], "storedJobStateV2", info)
+	return len(parameters) == 1 && reader != nil && output != nil &&
+		l8WorkerV2ObjectIsAcquiredCallResult(function, reader, "openStoredJobStateV2", parameters[0], info) &&
+		l8WorkerV2ObjectHasNoReassignments(function, reader, info) && l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
+		l8WorkerV2ExactPackageInt64Constant(call.Args[1], "maxStoredJobStateV2Bytes", 64<<10, info) &&
+		l8WorkerV2FunctionReturnsObject(function, output, info) &&
+		l8WorkerV2ExactStoreSafeBranches(function, call, info)
+}
+
+func l8WorkerV2ExactReceiverObject(function *ast.FuncDecl, name string, pointer bool, info *types.Info) types.Object {
+	if function == nil || function.Recv == nil || len(function.Recv.List) != 1 || len(function.Recv.List[0].Names) != 1 {
+		return nil
+	}
+	receiver := info.Defs[function.Recv.List[0].Names[0]]
+	if receiver == nil {
+		return nil
+	}
+	typ := types.Unalias(receiver.Type())
+	if pointer {
+		resolved, ok := typ.(*types.Pointer)
+		if !ok {
+			return nil
+		}
+		typ = types.Unalias(resolved.Elem())
+	}
+	named, ok := typ.(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" || named.Obj().Name() != name {
+		return nil
+	}
+	return receiver
+}
+
+func l8WorkerV2ExactRequestErrorResponseResults(function *ast.FuncDecl, info *types.Info) bool {
+	signature, ok := info.Defs[function.Name].Type().(*types.Signature)
+	return ok && signature.Results().Len() == 2 && l8WorkerV2IsExactNamedStruct(signature.Results().At(0).Type(), "Request") && l8WorkerV2IsExactNamedStructPointer(signature.Results().At(1).Type(), "Response")
+}
+
+func l8WorkerV2ExactRoundTripSignature(function *ast.FuncDecl, info *types.Info) bool {
+	signature, ok := info.Defs[function.Name].Type().(*types.Signature)
+	if !ok || signature.Params().Len() != 2 || signature.Results().Len() != 2 || !l8WorkerV2IsExactNamedStruct(signature.Params().At(1).Type(), "Request") || !l8WorkerV2IsExactNamedStruct(signature.Results().At(0).Type(), "Response") || !types.Identical(signature.Results().At(1).Type(), types.Universe.Lookup("error").Type()) {
+		return false
+	}
+	named, ok := types.Unalias(signature.Params().At(0).Type()).(*types.Named)
+	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "context" && named.Obj().Name() == "Context"
+}
+
+func l8WorkerV2ExactResponseErrorResults(function *ast.FuncDecl, info *types.Info) bool {
+	signature, ok := info.Defs[function.Name].Type().(*types.Signature)
+	return ok && signature.Params().Len() == 1 && signature.Results().Len() == 2 && l8WorkerV2IsExactNamedStruct(signature.Results().At(0).Type(), "Response") && types.Identical(signature.Results().At(1).Type(), types.Universe.Lookup("error").Type())
+}
+
+func l8WorkerV2ExactStoreLoadSignature(function *ast.FuncDecl, info *types.Info) bool {
+	signature, ok := info.Defs[function.Name].Type().(*types.Signature)
+	return ok && signature.Params().Len() == 1 && types.Identical(signature.Params().At(0).Type(), types.Universe.Lookup("string").Type()) && signature.Results().Len() == 2 && l8WorkerV2IsExactNamedStruct(signature.Results().At(0).Type(), "storedJobStateV2") && types.Identical(signature.Results().At(1).Type(), types.Universe.Lookup("error").Type())
+}
+
+func l8WorkerV2AddressedObject(expression ast.Expr, name string, info *types.Info) types.Object {
+	address, ok := l8WorkerV2UnparenExpression(expression).(*ast.UnaryExpr)
+	if !ok || address.Op != token.AND || !l8WorkerV2IsExactNamedStruct(info.TypeOf(address.X), name) {
+		return nil
+	}
+	return l8WorkerV2ExpressionObject(address.X, info)
+}
+
+func l8WorkerV2FunctionReturnsObject(function *ast.FuncDecl, object types.Object, info *types.Info) bool {
+	if function == nil || function.Body == nil || object == nil {
+		return false
+	}
+	nilErrorReturns, exactReturns := 0, 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		returned, ok := node.(*ast.ReturnStmt)
+		if !ok || len(returned.Results) != 2 || !l8WorkerV2IsNilExpression(returned.Results[1], info) {
+			return true
+		}
+		nilErrorReturns++
+		if l8WorkerV2ExpressionObject(returned.Results[0], info) == object {
+			exactReturns++
+		}
+		return true
+	})
+	return nilErrorReturns == 1 && exactReturns == 1
+}
+
+func l8WorkerV2ObjectHasNoReassignments(function *ast.FuncDecl, object types.Object, info *types.Info) bool {
+	if function == nil || function.Body == nil || object == nil {
+		return false
+	}
+	valid := true
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !valid {
+			return false
+		}
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		switch statement := node.(type) {
+		case *ast.AssignStmt:
+			for _, left := range statement.Lhs {
+				if l8WorkerV2ExpressionObject(left, info) != object {
+					continue
+				}
+				identifier, _ := l8WorkerV2UnparenExpression(left).(*ast.Ident)
+				if identifier == nil || info.Defs[identifier] != object {
+					valid = false
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			if l8WorkerV2ExpressionObject(statement.X, info) == object {
+				valid = false
+				return false
+			}
+		case *ast.RangeStmt:
+			if l8WorkerV2ExpressionObject(statement.Key, info) == object || l8WorkerV2ExpressionObject(statement.Value, info) == object {
+				valid = false
+				return false
+			}
+		}
+		return true
+	})
+	return valid
+}
+
+func l8WorkerV2ObjectIsAcquiredCallResult(function *ast.FuncDecl, object types.Object, callee string, exactArgument types.Object, info *types.Info) bool {
+	if function == nil || function.Body == nil || object == nil {
+		return false
+	}
+	matches := 0
+	for _, statement := range function.Body.List {
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) < 1 || len(assignment.Rhs) != 1 || l8WorkerV2ExpressionObject(assignment.Lhs[0], info) != object {
+			continue
+		}
+		call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		called := l8WorkerV2CalledObject(call.Fun, info)
+		if callee != "" && (called == nil || called.Name() != callee) {
+			continue
+		}
+		if exactArgument != nil && (len(call.Args) != 1 || l8WorkerV2ExpressionObject(call.Args[0], info) != exactArgument) {
+			continue
+		}
+		matches++
+	}
+	return matches == 1
+}
+
+func l8WorkerV2ExactThreeStatementResponseWrapper(function *ast.FuncDecl, call *ast.CallExpr, output types.Object, info *types.Info) bool {
+	if function == nil || function.Body == nil || len(function.Body.List) != 3 || output == nil {
+		return false
+	}
+	declaration, ok := function.Body.List[0].(*ast.DeclStmt)
+	if !ok || l8WorkerV2ExpressionObjectFromSingleVarDeclaration(declaration, info) != output {
+		return false
+	}
+	conditional, ok := function.Body.List[1].(*ast.IfStmt)
+	if !ok || !l8WorkerV2IfInitializerCalls(conditional, call, info) || len(conditional.Body.List) != 1 {
+		return false
+	}
+	errObject := l8WorkerV2IfInitializerErrorObject(conditional, call, info)
+	if errObject == nil || !l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) || !l8WorkerV2IsZeroStructAndObjectReturn(conditional.Body.List[0], "Response", errObject, info) {
+		return false
+	}
+	returned, ok := function.Body.List[2].(*ast.ReturnStmt)
+	return ok && len(returned.Results) == 2 && l8WorkerV2ExpressionObject(returned.Results[0], info) == output && l8WorkerV2IsNilExpression(returned.Results[1], info)
+}
+
+func l8WorkerV2ExpressionObjectFromSingleVarDeclaration(statement *ast.DeclStmt, info *types.Info) types.Object {
+	if statement == nil {
+		return nil
+	}
+	declaration, ok := statement.Decl.(*ast.GenDecl)
+	if !ok || declaration.Tok != token.VAR || len(declaration.Specs) != 1 {
+		return nil
+	}
+	spec, ok := declaration.Specs[0].(*ast.ValueSpec)
+	if !ok || len(spec.Names) != 1 || len(spec.Values) != 0 {
+		return nil
+	}
+	return info.Defs[spec.Names[0]]
+}
+
+func l8WorkerV2IsZeroStructAndObjectReturn(statement ast.Stmt, structName string, object types.Object, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 || l8WorkerV2ExpressionObject(returned.Results[1], info) != object {
+		return false
+	}
+	literal, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.CompositeLit)
+	return ok && len(literal.Elts) == 0 && l8WorkerV2IsExactNamedStruct(info.TypeOf(literal), structName)
+}
+
+func l8WorkerV2IsExactObjectExpression(expression ast.Expr, info *types.Info) bool {
+	_, ok := l8WorkerV2UnparenExpression(expression).(*ast.Ident)
+	return ok && l8WorkerV2ExpressionObject(expression, info) != nil
+}
+
+func l8WorkerV2ExactPackageInt64Constant(expression ast.Expr, name string, value int64, info *types.Info) bool {
+	object, ok := l8WorkerV2ExpressionObject(expression, info).(*types.Const)
+	if !ok || object.Pkg() == nil || object.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" || object.Name() != name || !types.Identical(object.Type(), types.Universe.Lookup("int64").Type()) {
+		return false
+	}
+	got, exact := constant.Int64Val(object.Val())
+	return exact && got == value
+}
+
+func l8WorkerV2ExactPostDefaultLimit(function *ast.FuncDecl, call *ast.CallExpr, receiver, limit types.Object, info *types.Info) bool {
+	initializations, defaults, writes := 0, 0, 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, left := range assignment.Lhs {
+			if l8WorkerV2ExpressionObject(left, info) == limit {
+				writes++
+			}
+		}
+		if assignment.Pos() >= call.Pos() || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || l8WorkerV2ExpressionObject(assignment.Lhs[0], info) != limit {
+			return true
+		}
+		if assignment.Tok == token.DEFINE && l8WorkerV2ExactSelectorRoot(assignment.Rhs[0], receiver, "maxResponseBytes", info) {
+			initializations++
+		}
+		return true
+	})
+	for _, statement := range function.Body.List {
+		conditional, ok := statement.(*ast.IfStmt)
+		if !ok || conditional.Pos() >= call.Pos() || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 || !l8WorkerV2ExactObjectIntegerComparison(conditional.Cond, limit, token.LEQ, 0, info) {
+			continue
+		}
+		assignment, ok := conditional.Body.List[0].(*ast.AssignStmt)
+		if ok && assignment.Tok == token.ASSIGN && len(assignment.Lhs) == 1 && len(assignment.Rhs) == 1 && l8WorkerV2ExpressionObject(assignment.Lhs[0], info) == limit && l8WorkerV2ExactPackageInt64Constant(assignment.Rhs[0], "defaultMaxResponseBytes", 1<<20, info) {
+			defaults++
+		}
+	}
+	return initializations == 1 && defaults == 1 && writes == 2
+}
+
+func l8WorkerV2ValidateClientHalfCloseComposition(files []*l8WorkerV2ParsedFile, info *types.Info) error {
+	responseInnerDeclared := false
+	for _, file := range files {
+		for _, declaration := range file.parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if ok && function.Recv == nil && function.Name.Name == "decodeWorkerResponseInto" {
+				responseInnerDeclared = true
+			}
+		}
+	}
+	if !responseInnerDeclared {
+		return nil
+	}
+	for _, file := range files {
+		if filepath.Base(file.path) != "client.go" {
+			continue
+		}
+		for _, declaration := range file.parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil || function.Name.Name != "RoundTrip" || !l8WorkerV2ReceiverNamed(function, "unixSocketClientTransport", info) {
+				continue
+			}
+			if !l8WorkerV2ExactClientHalfCloseComposition(function, info) {
+				return fmt.Errorf("worker-v2 production path in %s declaration %s violates exact client half-close composition", file.path, function.Name.Name)
+			}
+		}
+	}
+	return nil
+}
+
+func l8WorkerV2ExactClientHalfCloseComposition(function *ast.FuncDecl, info *types.Info) bool {
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if len(parameters) < 2 || function.Body == nil {
+		return false
+	}
+	ctx, request := parameters[0], parameters[1]
+	var connection, halfCloser, okObject types.Object
+	var acquirePos, encodePos, assertionPos, closePos, decodePos token.Pos
+	closeCalls := 0
+	var unsupported *ast.IfStmt
+	var closeConditional *ast.IfStmt
+	_, exactJSONEncode, _ := l8WorkerV2ExactClientRequestEncoderCalls(function, info)
+
+	for _, statement := range function.Body.List {
+		if assignment, ok := statement.(*ast.AssignStmt); ok && assignment.Tok == token.DEFINE && len(assignment.Lhs) >= 1 && len(assignment.Rhs) == 1 {
+			if call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr); ok && acquirePos == token.NoPos && len(assignment.Lhs) >= 2 {
+				connection = l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+				acquirePos = call.Pos()
+			}
+			if len(assignment.Lhs) == 2 {
+				assertion, asserted := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.TypeAssertExpr)
+				if asserted && connection != nil && l8WorkerV2ExpressionObject(assertion.X, info) == connection && l8WorkerV2IsExactCloseWriteInterface(assertion.Type, info) {
+					halfCloser = l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+					okObject = l8WorkerV2ExpressionObject(assignment.Lhs[1], info)
+					assertionPos = assignment.Pos()
+				}
+			}
+		}
+		conditional, ok := statement.(*ast.IfStmt)
+		if ok && okObject != nil && l8WorkerV2ExactNegatedObject(conditional.Cond, okObject, info) {
+			unsupported = conditional
+		}
+	}
+	if connection == nil || halfCloser == nil || okObject == nil || acquirePos == token.NoPos {
+		return false
+	}
+
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		called := l8WorkerV2CalledObject(call.Fun, info)
+		if called != nil && called.Name() == "encodeWorkerRequest" && len(call.Args) == 2 && l8WorkerV2ExpressionObject(call.Args[0], info) == connection && l8WorkerV2ExpressionObject(call.Args[1], info) == request {
+			encodePos = call.Pos()
+		}
+		if call == exactJSONEncode {
+			encodePos = call.Pos()
+		}
+		if len(call.Args) == 3 && l8WorkerV2AddressedObject(call.Args[2], "Response", info) != nil {
+			decodePos = call.Pos()
+		}
+		selector, selected := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+		if selected && selector.Sel.Name == "CloseWrite" {
+			closeCalls++
+			if l8WorkerV2ExpressionObject(selector.X, info) == halfCloser {
+				closePos = call.Pos()
+			}
+		}
+		return true
+	})
+	for _, statement := range function.Body.List {
+		conditional, ok := statement.(*ast.IfStmt)
+		if !ok || conditional.Init == nil {
+			continue
+		}
+		ast.Inspect(conditional.Init, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if ok && call.Pos() == closePos {
+				closeConditional = conditional
+			}
+			return true
+		})
+	}
+	if unsupported == nil {
+		return false
+	}
+	return acquirePos < encodePos && encodePos < assertionPos && assertionPos < unsupported.Pos() && unsupported.End() < closePos && closePos < decodePos && closeCalls == 1 &&
+		l8WorkerV2ExactContextThenConstantResponseError(unsupported.Body, ctx, "write worker request framing failed", info) &&
+		closeConditional != nil && l8WorkerV2ExactCloseWriteErrorConditional(closeConditional, halfCloser, ctx, info)
+}
+
+func l8WorkerV2ExactClientRequestEncoderCalls(function *ast.FuncDecl, info *types.Info) (*ast.CallExpr, *ast.CallExpr, bool) {
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if function == nil || function.Body == nil || len(parameters) < 2 {
+		return nil, nil, false
+	}
+	request := parameters[1]
+	for _, statement := range function.Body.List {
+		conditional, ok := statement.(*ast.IfStmt)
+		if !ok || conditional.Init == nil {
+			continue
+		}
+		assignment, ok := conditional.Init.(*ast.AssignStmt)
+		if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+			continue
+		}
+		encodeCall, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+		if !ok || len(encodeCall.Args) != 1 {
+			continue
+		}
+		encodeSelector, ok := l8WorkerV2UnparenExpression(encodeCall.Fun).(*ast.SelectorExpr)
+		if !ok || encodeSelector.Sel.Name != "Encode" {
+			continue
+		}
+		selection := info.Selections[encodeSelector]
+		if selection == nil || selection.Obj() == nil || selection.Obj().Pkg() == nil || selection.Obj().Pkg().Path() != "encoding/json" || selection.Obj().Name() != "Encode" {
+			continue
+		}
+		newEncoder, ok := l8WorkerV2UnparenExpression(encodeSelector.X).(*ast.CallExpr)
+		if !ok || !l8WorkerV2IsPackageCall(newEncoder, "encoding/json", "NewEncoder", 1, info) {
+			continue
+		}
+		connection := l8WorkerV2ExpressionObject(newEncoder.Args[0], info)
+		if connection == nil || !l8WorkerV2ObjectIsAcquiredCallResult(function, connection, "", nil, info) {
+			continue
+		}
+		withDefaults, ok := l8WorkerV2UnparenExpression(encodeCall.Args[0]).(*ast.CallExpr)
+		if !ok || len(withDefaults.Args) != 0 {
+			continue
+		}
+		defaultsSelector, ok := l8WorkerV2UnparenExpression(withDefaults.Fun).(*ast.SelectorExpr)
+		if !ok || defaultsSelector.Sel.Name != "WithDefaults" || l8WorkerV2ExpressionObject(defaultsSelector.X, info) != request {
+			continue
+		}
+		return newEncoder, encodeCall, true
+	}
+	return nil, nil, false
+}
+
+func l8WorkerV2IsExactCloseWriteInterface(expression ast.Expr, info *types.Info) bool {
+	interfaceType, ok := types.Unalias(info.TypeOf(expression)).(*types.Interface)
+	if !ok {
+		return false
+	}
+	interfaceType.Complete()
+	if interfaceType.NumMethods() != 1 {
+		return false
+	}
+	method := interfaceType.Method(0)
+	signature, ok := method.Type().(*types.Signature)
+	return ok && method.Name() == "CloseWrite" && signature.Params().Len() == 0 && signature.Results().Len() == 1 &&
+		types.Identical(signature.Results().At(0).Type(), types.Universe.Lookup("error").Type())
+}
+
+func l8WorkerV2ExactNegatedObject(expression ast.Expr, object types.Object, info *types.Info) bool {
+	negation, ok := l8WorkerV2UnparenExpression(expression).(*ast.UnaryExpr)
+	return ok && negation.Op == token.NOT && l8WorkerV2ExpressionObject(negation.X, info) == object
+}
+
+func l8WorkerV2ExactCloseWriteErrorConditional(conditional *ast.IfStmt, halfCloser, ctx types.Object, info *types.Info) bool {
+	if conditional == nil || conditional.Else != nil || conditional.Init == nil {
+		return false
+	}
+	assignment, ok := conditional.Init.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return false
+	}
+	errObject := l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	selector, selected := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	return errObject != nil && selected && selector.Sel.Name == "CloseWrite" && l8WorkerV2ExpressionObject(selector.X, info) == halfCloser &&
+		l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) &&
+		l8WorkerV2ExactContextThenConstantResponseError(conditional.Body, ctx, "write worker request framing failed", info)
+}
+
+func l8WorkerV2ExactContextThenConstantResponseError(block *ast.BlockStmt, ctx types.Object, message string, info *types.Info) bool {
+	if block == nil || len(block.List) != 2 || ctx == nil {
+		return false
+	}
+	conditional, ok := block.List[0].(*ast.IfStmt)
+	if !ok || conditional.Init == nil || conditional.Else != nil || len(conditional.Body.List) != 1 {
+		return false
+	}
+	assignment, ok := conditional.Init.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return false
+	}
+	ctxErr := l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	selector, selected := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	if ctxErr == nil || !ok || !selected || selector.Sel.Name != "Err" || len(call.Args) != 0 || l8WorkerV2ExpressionObject(selector.X, info) != ctx ||
+		!l8WorkerV2IsErrorComparison(conditional.Cond, ctxErr, nil, info) || !l8WorkerV2IsZeroStructAndObjectReturn(conditional.Body.List[0], "Response", ctxErr, info) {
+		return false
+	}
+	return l8WorkerV2IsZeroStructAndConstantErrorReturn(block.List[1], "Response", message, info)
+}
+
+func l8WorkerV2IsZeroStructAndConstantErrorReturn(statement ast.Stmt, structName, message string, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 {
+		return false
+	}
+	literal, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.CompositeLit)
+	if !ok || len(literal.Elts) != 0 || !l8WorkerV2IsExactNamedStruct(info.TypeOf(literal), structName) {
+		return false
+	}
+	call, ok := l8WorkerV2UnparenExpression(returned.Results[1]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2IsConstantErrorsNewCall(call, info) {
+		return false
+	}
+	value := info.Types[call.Args[0]].Value
+	return value != nil && constant.StringVal(value) == message
+}
+
+func l8WorkerV2ExactClientCodecErrorBranch(function *ast.FuncDecl, call *ast.CallExpr, info *types.Info) bool {
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	return len(parameters) == 2 && l8WorkerV2ExactCallContextErrorBranch(function, call, parameters[0], "read worker response failed", info)
+}
+
+func l8WorkerV2ExactSyntheticClientSafeBranches(function *ast.FuncDecl, info *types.Info) bool {
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if len(parameters) != 2 {
+		return false
+	}
+	ctx := parameters[0]
+	openCall, openErr := l8WorkerV2TopLevelAcquisition(function, "openResponseReader", info)
+	if openCall != nil && (openErr == nil || !l8WorkerV2ExactObjectContextErrorBranch(function, openErr, ctx, "open worker connection failed", info)) {
+		return false
+	}
+	encodeCall := l8WorkerV2FindCall(function, "encodeWorkerRequest", info)
+	return encodeCall == nil || l8WorkerV2ExactCallContextErrorBranch(function, encodeCall, ctx, "write worker request failed", info)
+}
+
+func l8WorkerV2ExactStoreSafeBranches(function *ast.FuncDecl, codecCall *ast.CallExpr, info *types.Info) bool {
+	_, openErr := l8WorkerV2TopLevelAcquisition(function, "openStoredJobStateV2", info)
+	if openErr == nil || !l8WorkerV2ExactObjectConstantStateErrorBranch(function, openErr, "stored job state could not be opened", info) {
+		return false
+	}
+	return l8WorkerV2ExactCallConstantStateErrorBranch(function, codecCall, "stored job state is malformed", info)
+}
+
+func l8WorkerV2FindCall(function *ast.FuncDecl, name string, info *types.Info) *ast.CallExpr {
+	var found *ast.CallExpr
+	if function == nil || function.Body == nil {
+		return nil
+	}
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		object := l8WorkerV2CalledObject(call.Fun, info)
+		if object != nil && object.Name() == name {
+			if found != nil {
+				found = nil
+				return false
+			}
+			found = call
+		}
+		return true
+	})
+	return found
+}
+
+func l8WorkerV2TopLevelAcquisition(function *ast.FuncDecl, name string, info *types.Info) (*ast.CallExpr, types.Object) {
+	if function == nil || function.Body == nil {
+		return nil, nil
+	}
+	for _, statement := range function.Body.List {
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 {
+			continue
+		}
+		call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		object := l8WorkerV2CalledObject(call.Fun, info)
+		if object != nil && object.Name() == name {
+			return call, l8WorkerV2ExpressionObject(assignment.Lhs[1], info)
+		}
+	}
+	return nil, nil
+}
+
+func l8WorkerV2ExactCallContextErrorBranch(function *ast.FuncDecl, call *ast.CallExpr, ctx types.Object, message string, info *types.Info) bool {
+	conditional := l8WorkerV2TopLevelIfContainingCall(function, call)
+	if conditional == nil {
+		return false
+	}
+	errObject := l8WorkerV2IfInitializerErrorObject(conditional, call, info)
+	return errObject != nil && l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) &&
+		l8WorkerV2ExactContextThenConstantResponseError(conditional.Body, ctx, message, info)
+}
+
+func l8WorkerV2ExactObjectContextErrorBranch(function *ast.FuncDecl, errObject, ctx types.Object, message string, info *types.Info) bool {
+	for _, statement := range function.Body.List {
+		conditional, ok := statement.(*ast.IfStmt)
+		if ok && conditional.Init == nil && l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) &&
+			l8WorkerV2ExactContextThenConstantResponseError(conditional.Body, ctx, message, info) {
+			return true
+		}
+	}
+	return false
+}
+
+func l8WorkerV2ExactObjectConstantStateErrorBranch(function *ast.FuncDecl, errObject types.Object, message string, info *types.Info) bool {
+	for _, statement := range function.Body.List {
+		conditional, ok := statement.(*ast.IfStmt)
+		if ok && conditional.Init == nil && conditional.Else == nil && len(conditional.Body.List) == 1 &&
+			l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) &&
+			l8WorkerV2IsZeroStructAndConstantErrorReturn(conditional.Body.List[0], "storedJobStateV2", message, info) {
+			return true
+		}
+	}
+	return false
+}
+
+func l8WorkerV2ExactCallConstantStateErrorBranch(function *ast.FuncDecl, call *ast.CallExpr, message string, info *types.Info) bool {
+	conditional := l8WorkerV2TopLevelIfContainingCall(function, call)
+	if conditional == nil || conditional.Else != nil || len(conditional.Body.List) != 1 {
+		return false
+	}
+	errObject := l8WorkerV2IfInitializerErrorObject(conditional, call, info)
+	return errObject != nil && l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) &&
+		l8WorkerV2IsZeroStructAndConstantErrorReturn(conditional.Body.List[0], "storedJobStateV2", message, info)
+}
+
+func l8WorkerV2TopLevelIfContainingCall(function *ast.FuncDecl, target *ast.CallExpr) *ast.IfStmt {
+	if function == nil || function.Body == nil || target == nil {
+		return nil
+	}
+	for _, statement := range function.Body.List {
+		conditional, ok := statement.(*ast.IfStmt)
+		if !ok {
+			continue
+		}
+		found := false
+		if conditional.Init == nil {
+			continue
+		}
+		ast.Inspect(conditional.Init, func(node ast.Node) bool {
+			if node == target {
+				found = true
+				return false
+			}
+			return true
+		})
+		if found {
+			return conditional
+		}
+	}
+	return nil
+}
+
+func l8WorkerV2IfInitializerCalls(conditional *ast.IfStmt, target *ast.CallExpr, info *types.Info) bool {
+	return l8WorkerV2IfInitializerErrorObject(conditional, target, info) != nil
+}
+
+func l8WorkerV2IfInitializerErrorObject(conditional *ast.IfStmt, target *ast.CallExpr, info *types.Info) types.Object {
+	if conditional == nil || conditional.Init == nil || target == nil {
+		return nil
+	}
+	assignment, ok := conditional.Init.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return nil
+	}
+	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if !ok || call != target {
+		return nil
+	}
+	return l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+}
+
+func l8WorkerV2IsNilExpression(expression ast.Expr, info *types.Info) bool {
+	return l8WorkerV2ExpressionObject(expression, info) == types.Universe.Lookup("nil")
+}
+
+func l8WorkerV2ValidateDecoderCallerComposition(files []*l8WorkerV2ParsedFile, info *types.Info) error {
+	declared := make(map[string]bool)
+	for _, file := range files {
+		for _, declaration := range file.parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv != nil {
+				continue
+			}
+			switch function.Name.Name {
+			case "decodeWorkerRequestInto", "decodeWorkerResponseInto", "decodeStoredJobStateV2Into":
+				declared[function.Name.Name] = true
+			}
+		}
+	}
+	for _, file := range files {
+		for _, declaration := range file.parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+			expected := l8WorkerV2DecoderBoundaryInnerName(file.path, function, info)
+			if expected == "" || !declared[expected] {
+				continue
+			}
+			scope := l8WorkerV2GuardScope{file: file, node: function}
+			exactCalls := 0
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				object := l8WorkerV2CalledObject(call.Fun, info)
+				if object != nil && object.Pkg() != nil && object.Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" && object.Name() == expected && l8WorkerV2AllowedExactDecoderCallerCall(scope, call, info) {
+					exactCalls++
+				}
+				return true
+			})
+			if exactCalls != 1 {
+				return fmt.Errorf("worker-v2 production path in %s declaration %s violates exact decoder caller composition", file.path, function.Name.Name)
+			}
+		}
+	}
+	return nil
+}
+
+func l8WorkerV2DecoderBoundaryInnerName(path string, function *ast.FuncDecl, info *types.Info) string {
+	switch filepath.Base(path) {
+	case "server.go":
+		if function.Name.Name == "readRequest" && l8WorkerV2ReceiverNamed(function, "Server", info) {
+			return "decodeWorkerRequestInto"
+		}
+	case "client.go":
+		if function.Name.Name == "RoundTrip" && l8WorkerV2ReceiverNamed(function, "unixSocketClientTransport", info) {
+			return "decodeWorkerResponseInto"
+		}
+	case "job_store_v2.go":
+		if function.Name.Name == "load" && l8WorkerV2ReceiverNamed(function, "jobStoreV2", info) {
+			return "decodeStoredJobStateV2Into"
+		}
+	case "protocol_decode.go":
+		if function.Name.Name == "decodeWorkerResponse" && function.Recv == nil {
+			return "decodeWorkerResponseInto"
+		}
+	}
+	return ""
+}
+
+func l8WorkerV2ReceiverNamed(function *ast.FuncDecl, name string, info *types.Info) bool {
+	if function.Recv == nil || len(function.Recv.List) != 1 || len(function.Recv.List[0].Names) != 1 {
+		return false
+	}
+	receiver := info.Defs[function.Recv.List[0].Names[0]]
+	if receiver == nil {
+		return false
+	}
+	typ := types.Unalias(receiver.Type())
+	if pointer, ok := typ.(*types.Pointer); ok {
+		typ = types.Unalias(pointer.Elem())
+	}
+	named, ok := typ.(*types.Named)
+	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" && named.Obj().Name() == name
+}
+
 func l8WorkerV2AllowedBoundedStrictDecoderCall(scope l8WorkerV2GuardScope, candidate *ast.CallExpr, info *types.Info) bool {
 	if filepath.Base(scope.file.path) != "protocol_decode.go" || candidate == nil {
 		return false
 	}
-	shape, ok := l8WorkerV2ExactBoundedRawStrictDecoder(scope, info)
-	if !ok {
-		return false
+	if bounded, ok := l8WorkerV2ExactBoundedJSONReader(scope, info); ok {
+		return candidate == bounded.readAll || candidate == bounded.readFull
 	}
-	return candidate == shape.readAll || candidate == shape.limitReader || candidate == shape.newReader ||
-		candidate == shape.newDecoder || candidate == shape.primaryDecode || candidate == shape.trailingDecode
+	shape, ok := l8WorkerV2ExactBoundedRawStrictDecoder(scope, info)
+	return ok && (candidate == shape.newReader || candidate == shape.newDecoder || candidate == shape.primaryDecode || candidate == shape.trailingDecode)
 }
 
 type l8WorkerV2BoundedRawStrictDecoder struct {
-	readAll        *ast.CallExpr
-	limitReader    *ast.CallExpr
+	boundedRead    *ast.CallExpr
 	newReader      *ast.CallExpr
 	newDecoder     *ast.CallExpr
 	primaryDecode  *ast.CallExpr
 	trailingDecode *ast.CallExpr
 }
 
-func l8WorkerV2ExactBoundedRawStrictDecoder(scope l8WorkerV2GuardScope, info *types.Info) (l8WorkerV2BoundedRawStrictDecoder, bool) {
-	var zero l8WorkerV2BoundedRawStrictDecoder
-	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || function.Body == nil || len(function.Body.List) != 11 {
-		return zero, false
-	}
-	reader, limit, output, ok := l8WorkerV2ExactRawDecoderParameters(function, info)
-	if !ok || !l8WorkerV2ExactDynamicLimitValidation(function.Body.List[0], limit, info) {
-		return zero, false
-	}
+type l8WorkerV2BoundedJSONReader struct {
+	readAll  *ast.CallExpr
+	readFull *ast.CallExpr
+}
 
-	readAssignment, ok := function.Body.List[1].(*ast.AssignStmt)
+func l8WorkerV2ExactBoundedJSONReader(scope l8WorkerV2GuardScope, info *types.Info) (l8WorkerV2BoundedJSONReader, bool) {
+	var zero l8WorkerV2BoundedJSONReader
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "protocol_decode.go" || function.Name.Name != "readWorkerJSONBoundedV2" || function.Recv != nil || function.Body == nil || len(function.Body.List) != 6 {
+		return zero, false
+	}
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if len(parameters) != 2 || !l8WorkerV2IsExactIOReader(parameters[0].Type()) || !types.Identical(parameters[1].Type(), types.Universe.Lookup("int64").Type()) || !l8WorkerV2ExactBytesErrorResults(function, info) {
+		return zero, false
+	}
+	reader, limit := parameters[0], parameters[1]
+	if !l8WorkerV2ExactPositiveLimitValidation(function.Body.List[0], limit, info) {
+		return zero, false
+	}
+	limitedAssignment, ok := function.Body.List[1].(*ast.AssignStmt)
+	if !ok || limitedAssignment.Tok != token.DEFINE || len(limitedAssignment.Lhs) != 1 || len(limitedAssignment.Rhs) != 1 {
+		return zero, false
+	}
+	limited := l8WorkerV2ExpressionObject(limitedAssignment.Lhs[0], info)
+	limitedPointer, ok := l8WorkerV2UnparenExpression(limitedAssignment.Rhs[0]).(*ast.UnaryExpr)
+	if limited == nil || !ok || limitedPointer.Op != token.AND || !l8WorkerV2ExactLimitedReaderLiteral(limitedPointer.X, reader, limit, info) {
+		return zero, false
+	}
+	readAssignment, ok := function.Body.List[2].(*ast.AssignStmt)
 	if !ok || readAssignment.Tok != token.DEFINE || len(readAssignment.Lhs) != 2 || len(readAssignment.Rhs) != 1 {
 		return zero, false
 	}
 	raw := l8WorkerV2ExpressionObject(readAssignment.Lhs[0], info)
 	readErr := l8WorkerV2ExpressionObject(readAssignment.Lhs[1], info)
 	readAll, ok := l8WorkerV2UnparenExpression(readAssignment.Rhs[0]).(*ast.CallExpr)
-	if raw == nil || readErr == nil || !l8WorkerV2IsPackageCall(readAll, "io", "ReadAll", 1, info) {
+	if raw == nil || readErr == nil || !ok || !l8WorkerV2IsPackageCall(readAll, "io", "ReadAll", 1, info) || l8WorkerV2ExpressionObject(readAll.Args[0], info) != limited || !l8WorkerV2ExactNilErrorReturnIf(function.Body.List[3], readErr, info) {
 		return zero, false
 	}
-	limitReader, ok := l8WorkerV2UnparenExpression(readAll.Args[0]).(*ast.CallExpr)
-	if !ok || !l8WorkerV2IsPackageCall(limitReader, "io", "LimitReader", 2, info) || l8WorkerV2ExpressionObject(limitReader.Args[0], info) != reader || !l8WorkerV2IsExactLimitPlusOne(limitReader.Args[1], limit, info) {
+	readFull, ok := l8WorkerV2ExactLimitProbe(function.Body.List[4], reader, limited, raw, info)
+	if !ok || !l8WorkerV2IsBareTwoValueReturn(function.Body.List[5], raw, nil, info) {
 		return zero, false
 	}
-	if !l8WorkerV2ExactErrorReturnIf(function.Body.List[2], readErr, info) || !l8WorkerV2ExactRawOversizeIf(function.Body.List[3], raw, limit, info) {
-		return zero, false
-	}
-	if !l8WorkerV2ExactPreflightIf(scope, function.Body.List[4], raw, info) {
-		return zero, false
-	}
+	return l8WorkerV2BoundedJSONReader{readAll: readAll, readFull: readFull}, true
+}
 
-	decoderAssignment, ok := function.Body.List[5].(*ast.AssignStmt)
+func l8WorkerV2ExactBoundedRawStrictDecoder(scope l8WorkerV2GuardScope, info *types.Info) (l8WorkerV2BoundedRawStrictDecoder, bool) {
+	var zero l8WorkerV2BoundedRawStrictDecoder
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || function.Body == nil || len(function.Body.List) != 9 {
+		return zero, false
+	}
+	reader, limit, output, ok := l8WorkerV2ExactRawDecoderParameters(function, info)
+	if !ok {
+		return zero, false
+	}
+	readAssignment, ok := function.Body.List[0].(*ast.AssignStmt)
+	if !ok || readAssignment.Tok != token.DEFINE || len(readAssignment.Lhs) != 2 || len(readAssignment.Rhs) != 1 {
+		return zero, false
+	}
+	raw := l8WorkerV2ExpressionObject(readAssignment.Lhs[0], info)
+	readErr := l8WorkerV2ExpressionObject(readAssignment.Lhs[1], info)
+	boundedRead, ok := l8WorkerV2UnparenExpression(readAssignment.Rhs[0]).(*ast.CallExpr)
+	if raw == nil || readErr == nil || !ok || !l8WorkerV2IsExactLocalFunctionCall(boundedRead, "readWorkerJSONBoundedV2", 2, info) || l8WorkerV2ExpressionObject(boundedRead.Args[0], info) != reader || l8WorkerV2ExpressionObject(boundedRead.Args[1], info) != limit {
+		return zero, false
+	}
+	if !l8WorkerV2ExactErrorReturnIf(function.Body.List[1], readErr, info) || !l8WorkerV2ExactPreflightIf(scope, function.Body.List[2], raw, info) {
+		return zero, false
+	}
+	decoderAssignment, ok := function.Body.List[3].(*ast.AssignStmt)
 	if !ok || decoderAssignment.Tok != token.DEFINE || len(decoderAssignment.Lhs) != 1 || len(decoderAssignment.Rhs) != 1 {
 		return zero, false
 	}
@@ -3476,25 +4335,25 @@ func l8WorkerV2ExactBoundedRawStrictDecoder(scope l8WorkerV2GuardScope, info *ty
 	if !ok || !l8WorkerV2IsPackageCall(newReader, "bytes", "NewReader", 1, info) || l8WorkerV2ExpressionObject(newReader.Args[0], info) != raw {
 		return zero, false
 	}
-	strictStatement, ok := function.Body.List[6].(*ast.ExprStmt)
+	strictStatement, ok := function.Body.List[4].(*ast.ExprStmt)
 	if !ok {
 		return zero, false
 	}
 	strictCall, ok := l8WorkerV2DecoderMethodCall(strictStatement.X, decoder, "DisallowUnknownFields", info)
-	if !ok || len(strictCall.Args) != 0 || !l8WorkerV2ExactPrimaryDecodeIf(function.Body.List[7], decoder, output, info) {
+	if !ok || len(strictCall.Args) != 0 || !l8WorkerV2ExactPrimaryDecodeIf(function.Body.List[5], decoder, output, info) {
 		return zero, false
 	}
-	trailing, ok := l8WorkerV2ExactTrailingDeclaration(function.Body.List[8], info)
-	if !ok || !l8WorkerV2ExactTrailingDecodeIf(function.Body.List[9], decoder, trailing, info) || !l8WorkerV2IsBareReturn(function.Body.List[10], nil, info) {
+	trailing, ok := l8WorkerV2ExactTrailingDeclaration(function.Body.List[6], info)
+	if !ok || !l8WorkerV2ExactTrailingDecodeIf(function.Body.List[7], decoder, trailing, info) || !l8WorkerV2IsBareReturn(function.Body.List[8], nil, info) {
 		return zero, false
 	}
-	_, _, primaryDecode, primaryOK := l8WorkerV2ExactDecodeIf(function.Body.List[7], decoder, info)
-	_, _, trailingDecode, trailingOK := l8WorkerV2ExactDecodeIf(function.Body.List[9], decoder, info)
+	_, _, primaryDecode, primaryOK := l8WorkerV2ExactDecodeIf(function.Body.List[5], decoder, info)
+	_, _, trailingDecode, trailingOK := l8WorkerV2ExactDecodeIf(function.Body.List[7], decoder, info)
 	if !primaryOK || !trailingOK {
 		return zero, false
 	}
 	return l8WorkerV2BoundedRawStrictDecoder{
-		readAll: readAll, limitReader: limitReader, newReader: newReader, newDecoder: newDecoder,
+		boundedRead: boundedRead, newReader: newReader, newDecoder: newDecoder,
 		primaryDecode: primaryDecode, trailingDecode: trailingDecode,
 	}, true
 }
@@ -3540,16 +4399,188 @@ func l8WorkerV2IsExactNamedStructPointer(typ types.Type, name string) bool {
 	return ok
 }
 
-func l8WorkerV2ExactDynamicLimitValidation(statement ast.Stmt, limit types.Object, info *types.Info) bool {
+func l8WorkerV2FunctionParameterObjects(function *ast.FuncDecl, info *types.Info) []types.Object {
+	if function == nil || function.Type.Params == nil {
+		return nil
+	}
+	var parameters []types.Object
+	for _, field := range function.Type.Params.List {
+		for _, name := range field.Names {
+			parameters = append(parameters, info.Defs[name])
+		}
+	}
+	return parameters
+}
+
+func l8WorkerV2ExactBytesErrorResults(function *ast.FuncDecl, info *types.Info) bool {
+	if function.Type.Results == nil || len(function.Type.Results.List) != 2 {
+		return false
+	}
+	bytesType, ok := types.Unalias(info.TypeOf(function.Type.Results.List[0].Type)).(*types.Slice)
+	return ok && types.Identical(bytesType.Elem(), types.Universe.Lookup("byte").Type()) && types.Identical(info.TypeOf(function.Type.Results.List[1].Type), types.Universe.Lookup("error").Type())
+}
+
+func l8WorkerV2ExactPositiveLimitValidation(statement ast.Stmt, limit types.Object, info *types.Info) bool {
 	conditional, ok := statement.(*ast.IfStmt)
-	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 || !l8WorkerV2IsConstantErrorsNewReturn(conditional.Body.List[0], info) {
+	return ok && conditional.Init == nil && conditional.Else == nil && len(conditional.Body.List) == 1 &&
+		l8WorkerV2ExactObjectIntegerComparison(conditional.Cond, limit, token.LEQ, 0, info) && l8WorkerV2IsNilAndConstantErrorReturn(conditional.Body.List[0], info)
+}
+
+func l8WorkerV2ExactLimitedReaderLiteral(expression ast.Expr, reader, limit types.Object, info *types.Info) bool {
+	literal, ok := l8WorkerV2UnparenExpression(expression).(*ast.CompositeLit)
+	if !ok || len(literal.Elts) != 2 {
 		return false
 	}
-	or, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.BinaryExpr)
-	if !ok || or.Op != token.LOR {
+	named, ok := types.Unalias(info.TypeOf(literal)).(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "io" || named.Obj().Name() != "LimitedReader" {
 		return false
 	}
-	return l8WorkerV2ExactObjectIntegerComparison(or.X, limit, token.LEQ, 0, info) && l8WorkerV2ExactObjectIntegerComparison(or.Y, limit, token.GTR, 1<<20, info)
+	return l8WorkerV2ExactKeyedObjectElement(literal.Elts[0], "R", reader, info) && l8WorkerV2ExactKeyedObjectElement(literal.Elts[1], "N", limit, info)
+}
+
+func l8WorkerV2ExactKeyedObjectElement(expression ast.Expr, key string, value types.Object, info *types.Info) bool {
+	pair, ok := expression.(*ast.KeyValueExpr)
+	if !ok || l8WorkerV2ExpressionObject(pair.Value, info) != value {
+		return false
+	}
+	identifier, ok := l8WorkerV2UnparenExpression(pair.Key).(*ast.Ident)
+	return ok && identifier.Name == key
+}
+
+func l8WorkerV2ExactLimitProbe(statement ast.Stmt, reader, limited, raw types.Object, info *types.Info) (*ast.CallExpr, bool) {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 6 || !l8WorkerV2ExactSelectorIntegerComparison(conditional.Cond, limited, "N", token.EQL, 0, info) {
+		return nil, false
+	}
+	declaration, ok := conditional.Body.List[0].(*ast.DeclStmt)
+	if !ok {
+		return nil, false
+	}
+	generated, ok := declaration.Decl.(*ast.GenDecl)
+	if !ok || generated.Tok != token.VAR || len(generated.Specs) != 1 {
+		return nil, false
+	}
+	spec, ok := generated.Specs[0].(*ast.ValueSpec)
+	if !ok || len(spec.Names) != 1 || len(spec.Values) != 0 {
+		return nil, false
+	}
+	probe := info.Defs[spec.Names[0]]
+	if probe == nil {
+		return nil, false
+	}
+	array, ok := types.Unalias(probe.Type()).(*types.Array)
+	if !ok || array.Len() != 1 || !types.Identical(array.Elem(), types.Universe.Lookup("byte").Type()) {
+		return nil, false
+	}
+	assignment, ok := conditional.Body.List[1].(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 {
+		return nil, false
+	}
+	n, probeErr := l8WorkerV2ExpressionObject(assignment.Lhs[0], info), l8WorkerV2ExpressionObject(assignment.Lhs[1], info)
+	readFull, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if n == nil || probeErr == nil || !ok || !l8WorkerV2IsPackageCall(readFull, "io", "ReadFull", 2, info) || l8WorkerV2ExpressionObject(readFull.Args[0], info) != reader || !l8WorkerV2ExactWholeSliceOf(readFull.Args[1], probe, info) {
+		return nil, false
+	}
+	if !l8WorkerV2ExactIntegerErrorIf(conditional.Body.List[2], n, token.GTR, 0, info) || !l8WorkerV2ExactProbeEOFIf(conditional.Body.List[3], n, probeErr, raw, info) || !l8WorkerV2ExactProbeErrorIf(conditional.Body.List[4], probeErr, info) || !l8WorkerV2IsNilAndConstantErrorReturn(conditional.Body.List[5], info) {
+		return nil, false
+	}
+	return readFull, true
+}
+
+func l8WorkerV2ExactSelectorIntegerComparison(expression ast.Expr, root types.Object, field string, operation token.Token, value int64, info *types.Info) bool {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || !l8WorkerV2ExactSelectorRoot(comparison.X, root, field, info) {
+		return false
+	}
+	constantValue := info.Types[comparison.Y].Value
+	if constantValue == nil {
+		return false
+	}
+	got, exact := constant.Int64Val(constantValue)
+	return exact && got == value
+}
+
+func l8WorkerV2ExactSelectorRoot(expression ast.Expr, root types.Object, field string, info *types.Info) bool {
+	selector, ok := l8WorkerV2UnparenExpression(expression).(*ast.SelectorExpr)
+	return ok && selector.Sel.Name == field && l8WorkerV2ExpressionObject(selector.X, info) == root
+}
+
+func l8WorkerV2ExactWholeSliceOf(expression ast.Expr, object types.Object, info *types.Info) bool {
+	slice, ok := l8WorkerV2UnparenExpression(expression).(*ast.SliceExpr)
+	return ok && slice.Low == nil && slice.High == nil && slice.Max == nil && l8WorkerV2ExpressionObject(slice.X, info) == object
+}
+
+func l8WorkerV2ExactIntegerErrorIf(statement ast.Stmt, object types.Object, operation token.Token, value int64, info *types.Info) bool {
+	conditional, ok := statement.(*ast.IfStmt)
+	return ok && conditional.Init == nil && conditional.Else == nil && len(conditional.Body.List) == 1 &&
+		l8WorkerV2ExactObjectIntegerComparison(conditional.Cond, object, operation, value, info) && l8WorkerV2IsNilAndConstantErrorReturn(conditional.Body.List[0], info)
+}
+
+func l8WorkerV2ExactProbeEOFIf(statement ast.Stmt, n, probeErr, raw types.Object, info *types.Info) bool {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 || !l8WorkerV2IsBareTwoValueReturn(conditional.Body.List[0], raw, nil, info) {
+		return false
+	}
+	and, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.BinaryExpr)
+	return ok && and.Op == token.LAND && l8WorkerV2ExactObjectIntegerComparison(and.X, n, token.EQL, 0, info) && l8WorkerV2ExactObjectComparison(and.Y, probeErr, token.EQL, "io", "EOF", info)
+}
+
+func l8WorkerV2ExactProbeErrorIf(statement ast.Stmt, probeErr types.Object, info *types.Info) bool {
+	conditional, ok := statement.(*ast.IfStmt)
+	return ok && conditional.Init == nil && conditional.Else == nil && len(conditional.Body.List) == 1 && l8WorkerV2IsErrorComparison(conditional.Cond, probeErr, nil, info) && l8WorkerV2IsNilAndObjectReturn(conditional.Body.List[0], probeErr, info)
+}
+
+func l8WorkerV2ExactObjectComparison(expression ast.Expr, left types.Object, operation token.Token, packagePath, name string, info *types.Info) bool {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != operation || l8WorkerV2ExpressionObject(comparison.X, info) != left {
+		return false
+	}
+	right := l8WorkerV2ExpressionObject(comparison.Y, info)
+	return right != nil && right.Pkg() != nil && right.Pkg().Path() == packagePath && right.Name() == name
+}
+
+func l8WorkerV2IsBareTwoValueReturn(statement ast.Stmt, first, second types.Object, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	return ok && len(returned.Results) == 2 && l8WorkerV2ExpressionMatchesObject(returned.Results[0], first, info) && l8WorkerV2ExpressionMatchesObject(returned.Results[1], second, info)
+}
+
+func l8WorkerV2ExpressionMatchesObject(expression ast.Expr, expected types.Object, info *types.Info) bool {
+	object := l8WorkerV2ExpressionObject(expression, info)
+	if expected == nil {
+		return object == types.Universe.Lookup("nil")
+	}
+	return object == expected
+}
+
+func l8WorkerV2IsNilAndObjectReturn(statement ast.Stmt, object types.Object, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	return ok && len(returned.Results) == 2 && l8WorkerV2ExpressionObject(returned.Results[0], info) == types.Universe.Lookup("nil") && l8WorkerV2ExpressionObject(returned.Results[1], info) == object
+}
+
+func l8WorkerV2IsNilAndConstantErrorReturn(statement ast.Stmt, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 || l8WorkerV2ExpressionObject(returned.Results[0], info) != types.Universe.Lookup("nil") {
+		return false
+	}
+	call, ok := l8WorkerV2UnparenExpression(returned.Results[1]).(*ast.CallExpr)
+	return ok && l8WorkerV2IsConstantErrorsNewCall(call, info)
+}
+
+func l8WorkerV2IsConstantErrorsNewCall(call *ast.CallExpr, info *types.Info) bool {
+	if call == nil || len(call.Args) != 1 {
+		return false
+	}
+	object := l8WorkerV2CalledObject(call.Fun, info)
+	value := info.Types[call.Args[0]].Value
+	return object != nil && object.Pkg() != nil && object.Pkg().Path() == "errors" && object.Name() == "New" && value != nil && value.Kind() == constant.String
+}
+
+func l8WorkerV2IsExactLocalFunctionCall(call *ast.CallExpr, name string, arguments int, info *types.Info) bool {
+	if call == nil || len(call.Args) != arguments {
+		return false
+	}
+	object := l8WorkerV2CalledObject(call.Fun, info)
+	return object != nil && object.Pkg() != nil && object.Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" && object.Name() == name
 }
 
 func l8WorkerV2ExactObjectIntegerComparison(expression ast.Expr, object types.Object, operation token.Token, value int64, info *types.Info) bool {
@@ -3565,48 +4596,16 @@ func l8WorkerV2ExactObjectIntegerComparison(expression ast.Expr, object types.Ob
 	return exact && got == value
 }
 
-func l8WorkerV2IsExactLimitPlusOne(expression ast.Expr, limit types.Object, info *types.Info) bool {
-	addition, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
-	if !ok || addition.Op != token.ADD || l8WorkerV2ExpressionObject(addition.X, info) != limit {
-		return false
-	}
-	constantValue := info.Types[addition.Y].Value
-	if constantValue == nil {
-		return false
-	}
-	value, exact := constant.Int64Val(constantValue)
-	return exact && value == 1
-}
-
 func l8WorkerV2ExactErrorReturnIf(statement ast.Stmt, errObject types.Object, info *types.Info) bool {
 	conditional, ok := statement.(*ast.IfStmt)
 	return ok && conditional.Init == nil && conditional.Else == nil && len(conditional.Body.List) == 1 &&
 		l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) && l8WorkerV2IsBareReturn(conditional.Body.List[0], errObject, info)
 }
 
-func l8WorkerV2ExactRawOversizeIf(statement ast.Stmt, raw, limit types.Object, info *types.Info) bool {
+func l8WorkerV2ExactNilErrorReturnIf(statement ast.Stmt, errObject types.Object, info *types.Info) bool {
 	conditional, ok := statement.(*ast.IfStmt)
-	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 || !l8WorkerV2IsConstantErrorsNewReturn(conditional.Body.List[0], info) {
-		return false
-	}
-	comparison, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.BinaryExpr)
-	if !ok || comparison.Op != token.GTR || l8WorkerV2ExpressionObject(comparison.Y, info) != limit {
-		return false
-	}
-	conversion, ok := l8WorkerV2UnparenExpression(comparison.X).(*ast.CallExpr)
-	if !ok || len(conversion.Args) != 1 {
-		return false
-	}
-	conversionName, ok := l8WorkerV2UnparenExpression(conversion.Fun).(*ast.Ident)
-	if !ok || info.Uses[conversionName] != types.Universe.Lookup("int64") {
-		return false
-	}
-	length, ok := l8WorkerV2UnparenExpression(conversion.Args[0]).(*ast.CallExpr)
-	if !ok || len(length.Args) != 1 {
-		return false
-	}
-	lengthName, ok := l8WorkerV2UnparenExpression(length.Fun).(*ast.Ident)
-	return ok && info.Uses[lengthName] == types.Universe.Lookup("len") && l8WorkerV2ExpressionObject(length.Args[0], info) == raw
+	return ok && conditional.Init == nil && conditional.Else == nil && len(conditional.Body.List) == 1 &&
+		l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) && l8WorkerV2IsNilAndObjectReturn(conditional.Body.List[0], errObject, info)
 }
 
 func l8WorkerV2ExactPreflightIf(scope l8WorkerV2GuardScope, statement ast.Stmt, raw types.Object, info *types.Info) bool {
@@ -3665,66 +4664,6 @@ func l8WorkerV2IsExactIOReader(typ types.Type) bool {
 	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "io" && named.Obj().Name() == "Reader"
 }
 
-func l8WorkerV2AssignedObjectForValue(scope l8WorkerV2GuardScope, value ast.Expr, info *types.Info) types.Object {
-	var result types.Object
-	l8WorkerV2InspectScopeAST(scope, func(node ast.Node) bool {
-		if result != nil {
-			return false
-		}
-		switch typed := node.(type) {
-		case *ast.AssignStmt:
-			for index, expression := range typed.Rhs {
-				if expression != value || index >= len(typed.Lhs) {
-					continue
-				}
-				result = l8WorkerV2ExpressionObject(typed.Lhs[index], info)
-				return false
-			}
-		case *ast.ValueSpec:
-			for index, expression := range typed.Values {
-				if expression != value || index >= len(typed.Names) {
-					continue
-				}
-				result = info.Defs[typed.Names[index]]
-				return false
-			}
-		}
-		return true
-	})
-	return result
-}
-
-func l8WorkerV2ScopeUsesExactStrictDecoder(scope l8WorkerV2GuardScope, constructor ast.Expr, limit *ast.CallExpr, decoder types.Object, info *types.Info) bool {
-	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || function.Body == nil || len(function.Body.List) != 6 {
-		return false
-	}
-	output, ok := l8WorkerV2ExactDecoderParameters(function, limit, info)
-	if !ok {
-		return false
-	}
-	assignment, ok := function.Body.List[0].(*ast.AssignStmt)
-	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || assignment.Rhs[0] != constructor || l8WorkerV2ExpressionObject(assignment.Lhs[0], info) != decoder {
-		return false
-	}
-	strictStatement, ok := function.Body.List[1].(*ast.ExprStmt)
-	if !ok {
-		return false
-	}
-	strictCall, ok := l8WorkerV2DecoderMethodCall(strictStatement.X, decoder, "DisallowUnknownFields", info)
-	if !ok || len(strictCall.Args) != 0 {
-		return false
-	}
-	if !l8WorkerV2ExactPrimaryDecodeIf(function.Body.List[2], decoder, output, info) {
-		return false
-	}
-	trailingObject, ok := l8WorkerV2ExactTrailingDeclaration(function.Body.List[3], info)
-	if !ok || !l8WorkerV2ExactTrailingDecodeIf(function.Body.List[4], decoder, trailingObject, info) {
-		return false
-	}
-	return l8WorkerV2IsBareReturn(function.Body.List[5], nil, info)
-}
-
 func l8WorkerV2DecoderMethodCall(expression ast.Expr, decoder types.Object, methodName string, info *types.Info) (*ast.CallExpr, bool) {
 	call, ok := l8WorkerV2UnparenExpression(expression).(*ast.CallExpr)
 	if !ok {
@@ -3739,51 +4678,6 @@ func l8WorkerV2DecoderMethodCall(expression ast.Expr, decoder types.Object, meth
 		return nil, false
 	}
 	return call, true
-}
-
-func l8WorkerV2ExactDecoderParameters(function *ast.FuncDecl, limit *ast.CallExpr, info *types.Info) (types.Object, bool) {
-	if function == nil || function.Recv != nil || function.Type.TypeParams != nil || function.Type.Params == nil || function.Type.Results == nil || len(limit.Args) != 2 {
-		return nil, false
-	}
-	var parameters []types.Object
-	for _, field := range function.Type.Params.List {
-		for _, name := range field.Names {
-			if object := info.Defs[name]; object != nil {
-				parameters = append(parameters, object)
-			}
-		}
-	}
-	if len(parameters) != 2 || len(function.Type.Results.List) != 1 || len(function.Type.Results.List[0].Names) != 0 {
-		return nil, false
-	}
-	if !l8WorkerV2IsExactIOReader(parameters[0].Type()) || l8WorkerV2ExpressionObject(limit.Args[0], info) != parameters[0] || !l8WorkerV2IsExactStrictDecodeOutputPointer(parameters[1].Type()) {
-		return nil, false
-	}
-	resultType := info.TypeOf(function.Type.Results.List[0].Type)
-	if resultType != types.Universe.Lookup("error").Type() {
-		return nil, false
-	}
-	return parameters[1], true
-}
-
-func l8WorkerV2IsExactStrictDecodeOutputPointer(typ types.Type) bool {
-	pointer, ok := types.Unalias(typ).(*types.Pointer)
-	if !ok {
-		return false
-	}
-	named, ok := types.Unalias(pointer.Elem()).(*types.Named)
-	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" {
-		return false
-	}
-	name := named.Obj().Name()
-	if name != "Request" && name != "Response" && !strings.HasSuffix(name, "V2") {
-		return false
-	}
-	_, ok = named.Underlying().(*types.Struct)
-	if !ok {
-		return false
-	}
-	return !l8WorkerV2TypeMayInvokeJSONDecodeCallback(typ, make(map[types.Type]bool))
 }
 
 func l8WorkerV2TypeMayInvokeJSONDecodeCallback(typ types.Type, seen map[types.Type]bool) bool {
@@ -3879,7 +4773,7 @@ func l8WorkerV2AllowedExactJSONMarshalCall(scope l8WorkerV2GuardScope, call *ast
 	exactSchema := false
 	switch requiredType {
 	case "jobRequestIdentityV2":
-		exactSchema = l8WorkerV2IsExactJobRequestIdentitySchema(argumentType)
+		exactSchema = l8WorkerV2IsExactJobRequestIdentitySchema(argumentType) && l8WorkerV2ExactJobRequestIdentityInitializer(scope, call, info)
 	case "storedJobStateV2":
 		exactSchema = l8WorkerV2IsExactStoredJobStateSchema(argumentType)
 	}
@@ -3889,6 +4783,12 @@ func l8WorkerV2AllowedExactJSONMarshalCall(scope l8WorkerV2GuardScope, call *ast
 
 func l8WorkerV2AllowedExactJSONEncoderCall(scope l8WorkerV2GuardScope, candidate *ast.CallExpr, info *types.Info) bool {
 	function, ok := scope.node.(*ast.FuncDecl)
+	if ok && filepath.Base(scope.file.path) == "client.go" && function.Name.Name == "RoundTrip" && l8WorkerV2ReceiverNamed(function, "unixSocketClientTransport", info) {
+		newEncoder, encodeCall, exact := l8WorkerV2ExactClientRequestEncoderCalls(function, info)
+		if exact && (candidate == newEncoder || candidate == encodeCall) {
+			return true
+		}
+	}
 	if !ok || filepath.Base(scope.file.path) != "protocol_decode.go" || function.Name.Name != "encodeWorkerResponse" || function.Recv != nil || function.Body == nil || len(function.Body.List) != 2 {
 		return false
 	}
@@ -3956,6 +4856,58 @@ func l8WorkerV2IsExactJobRequestIdentitySchema(typ types.Type) bool {
 		l8WorkerV2IsExactNamedStructField(structure, 2, "Request", "JobStartRequestV2", `json:"request"`)
 }
 
+func l8WorkerV2ExactJobRequestIdentityInitializer(scope l8WorkerV2GuardScope, marshal *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || function.Name.Name != "jobRequestKeyV2" || function.Recv != nil || len(marshal.Args) != 1 {
+		return false
+	}
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if len(parameters) != 3 || !types.Identical(parameters[0].Type(), types.Universe.Lookup("string").Type()) || !types.Identical(parameters[1].Type(), types.Universe.Lookup("string").Type()) || !l8WorkerV2IsExactNamedStruct(parameters[2].Type(), "JobStartRequestV2") {
+		return false
+	}
+	identity := l8WorkerV2ExpressionObject(marshal.Args[0], info)
+	if identity == nil {
+		return false
+	}
+	matches := 0
+	for _, statement := range function.Body.List {
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || l8WorkerV2ExpressionObject(assignment.Lhs[0], info) != identity {
+			continue
+		}
+		literal, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CompositeLit)
+		if ok && l8WorkerV2IsExactNamedStruct(info.TypeOf(literal), "jobRequestIdentityV2") && l8WorkerV2ExactIdentityLiteralBindings(literal, parameters, info) {
+			matches++
+		}
+	}
+	return matches == 1
+}
+
+func l8WorkerV2ExactIdentityLiteralBindings(literal *ast.CompositeLit, parameters []types.Object, info *types.Info) bool {
+	if literal == nil || len(literal.Elts) != 3 || len(parameters) != 3 {
+		return false
+	}
+	want := map[string]types.Object{
+		"DriverID":    parameters[0],
+		"PrincipalID": parameters[1],
+		"Request":     parameters[2],
+	}
+	seen := make(map[string]bool, len(want))
+	for _, element := range literal.Elts {
+		pair, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			return false
+		}
+		key, ok := l8WorkerV2UnparenExpression(pair.Key).(*ast.Ident)
+		expected, exists := want[key.Name]
+		if !ok || !exists || seen[key.Name] || l8WorkerV2ExpressionObject(pair.Value, info) != expected {
+			return false
+		}
+		seen[key.Name] = true
+	}
+	return len(seen) == len(want)
+}
+
 func l8WorkerV2IsExactStoredJobStateSchema(typ types.Type) bool {
 	structure, ok := l8WorkerV2ExactNamedStructUnderlying(typ, "storedJobStateV2")
 	if !ok || structure.NumFields() != 3 {
@@ -3983,37 +4935,6 @@ func l8WorkerV2IsExactStructField(structure *types.Struct, index int, name strin
 func l8WorkerV2IsExactNamedStructField(structure *types.Struct, index int, name, typeName, tag string) bool {
 	field := structure.Field(index)
 	return field.Name() == name && !field.Embedded() && l8WorkerV2IsExactNamedStruct(field.Type(), typeName) && structure.Tag(index) == tag
-}
-
-func l8WorkerV2TypeContainsExactNamed(typ types.Type, name string, seen map[types.Type]bool) bool {
-	if typ == nil {
-		return false
-	}
-	resolved := types.Unalias(typ)
-	if seen[resolved] {
-		return false
-	}
-	seen[resolved] = true
-	if named, ok := resolved.(*types.Named); ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" && named.Obj().Name() == name {
-		return true
-	}
-	switch underlying := resolved.Underlying().(type) {
-	case *types.Array:
-		return l8WorkerV2TypeContainsExactNamed(underlying.Elem(), name, seen)
-	case *types.Slice:
-		return l8WorkerV2TypeContainsExactNamed(underlying.Elem(), name, seen)
-	case *types.Map:
-		return l8WorkerV2TypeContainsExactNamed(underlying.Key(), name, seen) || l8WorkerV2TypeContainsExactNamed(underlying.Elem(), name, seen)
-	case *types.Pointer:
-		return l8WorkerV2TypeContainsExactNamed(underlying.Elem(), name, seen)
-	case *types.Struct:
-		for index := 0; index < underlying.NumFields(); index++ {
-			if l8WorkerV2TypeContainsExactNamed(underlying.Field(index).Type(), name, seen) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func l8WorkerV2TypeMayInvokeJSONEncodeCallback(typ types.Type, seen map[types.Type]bool) bool {
@@ -4083,19 +5004,6 @@ func l8WorkerV2IsAllowedAuditedJSONEncodeType(typ types.Type) bool {
 	// RuntimeMetadata's sanitizing JSON methods are AST-hash locked by the L8
 	// command source guard. No adjacent repository-owned marshaler is allowed.
 	return packagePath == "github.com/jywlabs/hal/internal/sandboxruntime" && name == "RuntimeMetadata"
-}
-
-func l8WorkerV2IsExactStrictDecoderCall(scope l8WorkerV2GuardScope, candidate, constructor, limit *ast.CallExpr, decoder types.Object, info *types.Info) bool {
-	if candidate == constructor || candidate == limit {
-		return true
-	}
-	function, ok := scope.node.(*ast.FuncDecl)
-	if !ok || function.Body == nil || len(function.Body.List) != 6 {
-		return false
-	}
-	_, _, primary, primaryOK := l8WorkerV2ExactDecodeIf(function.Body.List[2], decoder, info)
-	_, _, trailing, trailingOK := l8WorkerV2ExactDecodeIf(function.Body.List[4], decoder, info)
-	return primaryOK && trailingOK && (candidate == primary || candidate == trailing)
 }
 
 func l8WorkerV2ExactPrimaryDecodeIf(statement ast.Stmt, decoder, output types.Object, info *types.Info) bool {
@@ -4293,8 +5201,8 @@ func l8WorkerV2VariadicExpansionMayCallback(argument ast.Expr, info *types.Info)
 		if keyed, ok := rawElement.(*ast.KeyValueExpr); ok {
 			rawElement = keyed.Value
 		}
-		expression, ok := rawElement.(ast.Expr)
-		if !ok || l8WorkerV2InterfaceCapableArgument(info.TypeOf(expression)) {
+		expression := rawElement
+		if l8WorkerV2InterfaceCapableArgument(info.TypeOf(expression)) {
 			return true
 		}
 	}
