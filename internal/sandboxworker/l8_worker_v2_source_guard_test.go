@@ -778,6 +778,38 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 }`,
 	}
 	l8AssertWorkerV2GuardAllows(t, sources, policy)
+
+	validatedServerSources := l8CloneWorkerV2GuardSources(sources)
+	validatedServerSources["types.go"] = strings.Replace(validatedServerSources["types.go"],
+		"type Request struct { Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }",
+		"type Request struct { RequestID string; Operation string; JobStartV2 *JobStartRequestV2; Nested *callerNestedValue }", 1)
+	validatedServerSources["types.go"] += "\nfunc (request Request) Validate() error { return nil }\n"
+	validatedServerSources["server.go"] = `package sandboxworker
+import (
+	"fmt"
+	"io"
+)
+const configuredMaxRequestBytesV2 int64 = 8 << 20
+const OperationProtocolError = "protocol_error"
+const ErrorCodeMalformedRequest = "malformed_request"
+type Server struct { maxRequestBytes int64 }
+func configuredServerV2() *Server { return &Server{maxRequestBytes: configuredMaxRequestBytesV2} }
+func protocolErrorResponse(requestID, operation, code, message string) Response { return Response{} }
+func (server *Server) readRequest(reader io.Reader) (Request, *Response) {
+	var request Request
+	if err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil {
+		response := protocolErrorResponse("", OperationProtocolError, ErrorCodeMalformedRequest, "malformed worker request")
+		return Request{}, &response
+	}
+	request = request.WithDefaults()
+	if err := request.Validate(); err != nil {
+		response := protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeMalformedRequest, fmt.Sprintf("malformed worker request: %v", err))
+		return request, &response
+	}
+	return request, nil
+}`
+	l8AssertWorkerV2GuardAllows(t, validatedServerSources, policy)
+
 	possiblyReturningHelper := l8CloneWorkerV2GuardSources(sources)
 	possiblyReturningHelper["client.go"] = strings.Replace(possiblyReturningHelper["client.go"], "\tvar response Response", `	_ = false && reviewSkippedForeverBool()
 	_ = true || reviewSkippedForeverBool()
