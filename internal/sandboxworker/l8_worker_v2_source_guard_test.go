@@ -754,9 +754,9 @@ import (
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct{}
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
+func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
-	reader, err := openStoredJobStateV2(jobID)
+	reader, err := store.openStoredJobStateV2(jobID)
 	if err != nil { return storedJobStateV2{}, errors.New("stored job state could not be opened") }
 	defer reader.Close()
 	var state storedJobStateV2
@@ -1339,8 +1339,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store acquisition is unreachable after unconditional error return",
 			path:    "job_store_v2.go",
-			old:     "\treader, err := openStoredJobStateV2(jobID)",
-			replace: "\tif true { return storedJobStateV2{}, errors.New(\"stored job loading disabled\") }\n\treader, err := openStoredJobStateV2(jobID)",
+			old:     "\treader, err := store.openStoredJobStateV2(jobID)",
+			replace: "\tif true { return storedJobStateV2{}, errors.New(\"stored job loading disabled\") }\n\treader, err := store.openStoredJobStateV2(jobID)",
 		},
 		{
 			name:    "store decode is unreachable after unconditional error return",
@@ -1371,15 +1371,58 @@ func (reviewReturningReceiver) value() int { return 1 }
 		})
 	}
 
-	t.Run("store uses method-shaped acquisition with matching name", func(t *testing.T) {
+	t.Run("store uses package-level root-blind acquisition with matching name", func(t *testing.T) {
 		mutated := l8CloneWorkerV2GuardSources(sources)
-		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\treader, err := openStoredJobStateV2(jobID)", "\treader, err := store.openStoredJobStateV2(jobID)", 1)
-		mutated["job_store_v2.go"] += "\nfunc (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }\n"
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "func (store *jobStoreV2) openStoredJobStateV2(jobID string)", "func openStoredJobStateV2(jobID string)", 1)
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "store.openStoredJobStateV2(jobID)", "openStoredJobStateV2(jobID)", 1)
 		if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
-			t.Fatal("method-shaped store acquisition mutation did not change the positive fixture")
+			t.Fatal("package-level store acquisition mutation did not change the positive fixture")
 		}
 		l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 	})
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			name: "store opens through a different receiver object",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\treader, err := store.openStoredJobStateV2(jobID)", "\totherStore := store\n\treader, err := otherStore.openStoredJobStateV2(jobID)", 1)
+			},
+		},
+		{
+			name: "store opener accepts an extra parameter",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "openStoredJobStateV2(jobID string)", "openStoredJobStateV2(jobID string, rootOverride string)", 1)
+				return strings.Replace(source, "store.openStoredJobStateV2(jobID)", "store.openStoredJobStateV2(jobID, \"\")", 1)
+			},
+		},
+		{
+			name: "store opener belongs to a generic receiver",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "type jobStoreV2 struct{}", "type jobStoreV2[T any] struct{}", 1)
+				source = strings.Replace(source, "func (store *jobStoreV2) openStoredJobStateV2", "func (store *jobStoreV2[T]) openStoredJobStateV2", 1)
+				return strings.Replace(source, "func (store *jobStoreV2) load", "func (store *jobStoreV2[T]) load", 1)
+			},
+		},
+		{
+			name: "store opener method value escapes before acquisition",
+			mutate: func(source string) string {
+				source += "\ntype storedJobOpenerV2 func(string) (storedJobReaderV2, error)\nvar escapedStoredJobOpenerV2 storedJobOpenerV2\n"
+				return strings.Replace(source, "\treader, err := store.openStoredJobStateV2(jobID)", "\tescapedStoredJobOpenerV2 = store.openStoredJobStateV2\n\treader, err := store.openStoredJobStateV2(jobID)", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated["job_store_v2.go"] = tt.mutate(mutated["job_store_v2.go"])
+			if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
+				t.Fatal("store opener mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
 
 	for _, tt := range []struct {
 		name   string
@@ -1518,7 +1561,7 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name: "store defers close on replacement reader",
 			mutate: func(mutated map[string]string) {
-				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\treplacementReader, _ := openStoredJobStateV2(jobID)\n\tdefer replacementReader.Close()", 1)
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\treplacementReader, _ := store.openStoredJobStateV2(jobID)\n\tdefer replacementReader.Close()", 1)
 			},
 		},
 	} {
@@ -1543,7 +1586,7 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{name: "client uses different acquired reader", path: "client.go", old: "maxResponseBytes := transport.maxResponseBytes", replace: "otherConnection := connection\n\tmaxResponseBytes := transport.maxResponseBytes"},
 		{name: "store decodes throwaway state", path: "job_store_v2.go", old: "var state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state)", replace: "var decoded storedJobStateV2\n\tvar state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &decoded)"},
 		{name: "store uses different acquired reader", path: "job_store_v2.go", old: "var state storedJobStateV2", replace: "otherReader := reader\n\tvar state storedJobStateV2"},
-		{name: "store opens neighbor identity", path: "job_store_v2.go", old: "openStoredJobStateV2(jobID)", replace: "openStoredJobStateV2(\"job-neighbor\")"},
+		{name: "store opens neighbor identity", path: "job_store_v2.go", old: "store.openStoredJobStateV2(jobID)", replace: "store.openStoredJobStateV2(\"job-neighbor\")"},
 		{name: "client reassigns acquired connection", path: "client.go", old: "\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {", replace: "\tconnection = rewrapResponseConnection(connection)\n\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {"},
 		{name: "store reassigns acquired reader", path: "job_store_v2.go", old: "\tvar state storedJobStateV2", replace: "\treader = reader\n\tvar state storedJobStateV2"},
 		{name: "server resets decoded request", path: "server.go", old: "\treturn request, nil", replace: "\trequest = Request{}\n\treturn request, nil"},
@@ -1905,8 +1948,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store replaces job identity before open",
 			path:    "job_store_v2.go",
-			old:     "\treader, err := openStoredJobStateV2(jobID)",
-			replace: "\tjobID = \"job-neighbor\"\n\treader, err := openStoredJobStateV2(jobID)",
+			old:     "\treader, err := store.openStoredJobStateV2(jobID)",
+			replace: "\tjobID = \"job-neighbor\"\n\treader, err := store.openStoredJobStateV2(jobID)",
 			want:    "decoder caller composition",
 		},
 		{
@@ -1991,8 +2034,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store replaces receiver before open",
 			path:    "job_store_v2.go",
-			old:     "\treader, err := openStoredJobStateV2(jobID)",
-			replace: "\tstore = &jobStoreV2{}\n\treader, err := openStoredJobStateV2(jobID)",
+			old:     "\treader, err := store.openStoredJobStateV2(jobID)",
+			replace: "\tstore = &jobStoreV2{}\n\treader, err := store.openStoredJobStateV2(jobID)",
 		},
 		{
 			name:    "server preconsumes bounded reader before exact decoder",
@@ -2102,8 +2145,8 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name:    "store replaces job identity through pointer alias before open",
 			path:    "job_store_v2.go",
-			old:     "\treader, err := openStoredJobStateV2(jobID)",
-			replace: "\tjobIDAlias := &jobID\n\t*jobIDAlias = \"job-neighbor\"\n\treader, err := openStoredJobStateV2(jobID)",
+			old:     "\treader, err := store.openStoredJobStateV2(jobID)",
+			replace: "\tjobIDAlias := &jobID\n\t*jobIDAlias = \"job-neighbor\"\n\treader, err := store.openStoredJobStateV2(jobID)",
 		},
 		{
 			name:    "server directly reads decoder input before decode",
@@ -2277,9 +2320,9 @@ import (
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct{}
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
+func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
-	reader, err := openStoredJobStateV2(jobID)
+	reader, err := store.openStoredJobStateV2(jobID)
 	if err != nil { return storedJobStateV2{}, errors.New("stored job state could not be opened") }
 	defer reader.Close()
 	var state storedJobStateV2
