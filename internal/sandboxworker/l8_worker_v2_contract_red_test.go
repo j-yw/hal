@@ -661,6 +661,13 @@ func TestL8WorkerV2NoCredentialIntentRequiresExactAbsence(t *testing.T) {
 	if err := req.Validate(); err != nil {
 		t.Fatalf("explicit no-credential v2 request: %v", err)
 	}
+	for _, submissionID := range []string{strings.Repeat("s", 129), "submission:neighbor"} {
+		candidate := l8CloneWorkerV2StartRequest(req)
+		candidate.SubmissionID = submissionID
+		if err := candidate.Validate(); err == nil {
+			t.Fatal("no-credential v2 request accepted an out-of-vocabulary submission identity")
+		}
+	}
 
 	mutations := []func(*JobStartRequestV2){
 		func(value *JobStartRequestV2) { value.PlanID = "plan-smuggled" },
@@ -839,6 +846,7 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 		{name: "missing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "" }},
 		{name: "raw looking principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "/run/user/1000/peer" }},
 		{name: "129 byte principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = strings.Repeat("p", 129) }},
+		{name: "193 byte principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = strings.Repeat("p", 193) }},
 		{name: "colon bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal:neighbor" }},
 	} {
 		t.Run("rejects "+tt.name, func(t *testing.T) {
