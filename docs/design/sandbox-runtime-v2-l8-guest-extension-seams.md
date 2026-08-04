@@ -424,10 +424,13 @@ command. D6 adds the only explicit composition package and functions:
 
 ```go
 type GuestOptions struct {
-	HelperCore       credentialhelper.Core
-	HelperSSH        credentialhelper.ExtensionRegistration
-	ClientSSH        credentialclient.ExtensionRegistration
-	// Other sealed D6 transport/policy dependencies are explicit fields.
+	HelperCore      credentialhelper.Core
+	HelperTransport credentialhelper.Transport
+	HelperPolicy    credentialhelper.Policy
+	HelperSSH       credentialhelper.ExtensionRegistration
+	ClientTransport credentialclient.Transport
+	ClientPolicy    credentialclient.Policy
+	ClientSSH       credentialclient.ExtensionRegistration
 }
 
 func NewGuest(GuestOptions) (*Guest, error)

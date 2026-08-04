@@ -18,6 +18,8 @@ func TestL8CredentialDeliveryArchitecture(t *testing.T) {
 		"5068151561",
 		"5068157402",
 		"5068162708",
+		"sandbox-runtime-v2-l8-helper-syscall-policy.md",
+		"sandbox-runtime-v2-l8-guest-extension-seams.md",
 		"guest-agent-v2",
 		"sandboxjob-v2",
 		"sandboxworker-v1",

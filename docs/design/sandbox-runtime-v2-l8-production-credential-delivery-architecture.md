@@ -9,6 +9,13 @@ completed L7 topology and enforcement proof and consumes L2/L3 durable job and
 recovery ownership plus L4/L5 guest execution. It does not weaken or replace
 any of those proofs.
 
+Two D2 supplements are normative parts of this architecture:
+`sandbox-runtime-v2-l8-helper-syscall-policy.md` freezes the helper's exact
+syscall/argument boundary, and
+`sandbox-runtime-v2-l8-guest-extension-seams.md` freezes the D4/D5 package,
+registry, host-agent, composition, and image-profile ownership seams. A later
+slice may implement those contracts but may not reinterpret them locally.
+
 L8 owns production credential activation in this order:
 
 1. an explicit application-level HTTP credential proxy;
@@ -170,11 +177,15 @@ absence cannot be proved, the public state is `unknown` with reason
   testable privileged service policy for per-job cgroups, mount namespaces,
   credential files, the restricted guest SSH endpoint, credential-aware exec,
   and cleanup outcomes. D2 keeps it contract/fake-only; D4 adds the Linux
-  implementation behind those boundaries.
+  implementation behind those boundaries. Its immutable extension registry,
+  D4 Linux child, D5 SSH child, typed-nil rules, and D6 composition junction are
+  the exact APIs in the extension-seam supplement; no package-global or
+  side-effect registration exists.
 - `internal/sandboxruntime/microvm/guestagent/credentialprotocol` owns the
   shared data-only credential lifecycle and SSH-agent wire codecs.
 - `internal/sandboxruntime/microvm/guestagent/server/credentialclient` owns the
-  unprivileged guest-agent client for the helper's authenticated local IPC.
+  unprivileged guest-agent client for the helper's authenticated local IPC and
+  the matching immutable D5 extension registry from that supplement.
 - `internal/sandboxruntime/microvm/firecrackerhost` owns v2 transport
   correlation, host HTTP activation, the host SSH relay, and the concrete L8
   runtime wrapper.
@@ -2176,6 +2187,14 @@ behavior and must exist in the immutable booted image. L8 therefore emits a
 distinct reproducible guest profile and descriptor. It does not rewrite the L5
 or L7 distributions, descriptors, or digests into a new capability claim.
 
+Ownership and sequencing are exact in the extension-seam supplement. D2 owns
+the opaque profile contracts and guards; D4 and D5 land guest behavior without
+an image claim; D6 requires the opaque verified L8 profile in explicit
+composition; and D7 alone creates `tools/microvm/l8`, locks its sources and
+profile inputs, performs the two offline builds, issues the verified profile,
+and runs prepared-Linux acceptance. No D4/D5 branch edits L5/L7 image inputs or
+creates a competing profile.
+
 The L8 builder preserves the complete L7 kernel/network configuration and adds
 only the kernel/userland support mechanically required by the locked L8 guest
 behavior. In addition to the exact source commit's guest agent, init, and
@@ -2325,11 +2344,13 @@ agent, stop a VM, add HTTP behavior, or wire a production command.
 
 ### D4 — guest tmpfs
 
-- Replace the D0 recursive command blanket only for the exact
-  `hal-guest-agent`, `hal-guest-init`, and `hal-guest-credential-helper`
-  composition files that this slice needs. Lock their allowed L8 imports and
-  constructors file by file; keep every root command and `sandboxd*.go` path
-  forbidden until D6 and every other command file forbidden throughout L8.
+- Add the Linux helper core behind D2's exact interfaces and lock its production
+  imports and constructors file by file. D4 changes no command constructor and
+  does not import the D5 SSH children. The exact `hal-guest-agent`,
+  `hal-guest-init`, and `hal-guest-credential-helper` production composition
+  files remain guarded until D6 assembles the matching immutable helper/client
+  extension sets; every root command and `sandboxd*.go` path remains forbidden
+  until that same junction.
 - Implement the PID1 child, protected proc, agent pidfd/socketpair, helper
   pivot/fd/seccomp exec/cgroup boundary, and namespace/tmpfs behavior through
   injected syscall fakes first.
@@ -2342,12 +2363,19 @@ agent, stop a VM, add HTTP behavior, or wire a production command.
 - Implement live AEAD relay subkeys, SCM_RIGHTS handoff, clocks, streams, and
   backpressure under D2's already locked numeric limits, operation policy, and
   mandatory key/algorithm allowlists.
+- Implement the daemon-owned immutable host-agent live registry through the
+  extension supplement's exact config/policy identity and per-connection peer
+  verification APIs; never persist or project its entry, path, peer, or key
+  selectors.
 - Cover replay, generation mismatch, per-connection agent peer revalidation,
   filtered enumeration, key/flag rejection, bounds, loss, and cleanup.
 
 ### D6 — Firecracker and worker lifecycle
 
 - Compose v2, HTTP, tmpfs, relay, process/vsock, and L7 generations.
+- Own the sole production `guestagent/l8composition` junction and exact guest
+  command wiring; validate matching helper/client extension descriptors before
+  releasing the agent start gate, with no implicit/default registration.
 - Wire prepare/renew/loss/revoke around worker exec and recovery.
 - Add the optional finalization cleanup checkpoint, existing post-publication
   sync-out ordering, and conservative active-versus-cleanup projections.
