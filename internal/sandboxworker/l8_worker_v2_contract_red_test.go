@@ -336,6 +336,22 @@ func TestL8WorkerV2CredentialIdentitiesUseCrossPhaseSafeIDVocabulary(t *testing.
 			})
 		}
 	}
+	for _, value := range invalid {
+		t.Run("resolve submission rejects "+value.name, func(t *testing.T) {
+			request := JobResolveRequestV2{ContractVersion: JobContractVersionV2, SubmissionID: value.value}
+			if err := request.Validate(); err == nil {
+				t.Fatalf("v2 resolve accepted %s submission safe ID", value.name)
+			}
+		})
+	}
+	for _, allowed := range l8WorkerV2CrossPhaseSafeIDCases() {
+		t.Run("resolve submission accepts "+allowed.name, func(t *testing.T) {
+			request := JobResolveRequestV2{ContractVersion: JobContractVersionV2, SubmissionID: allowed.value}
+			if err := request.Validate(); err != nil {
+				t.Fatalf("v2 resolve rejected allowed %s submission safe ID: %v", allowed.name, err)
+			}
+		})
+	}
 
 	legacy := JobStartRequest{
 		ContractVersion: JobContractVersion,
@@ -345,6 +361,12 @@ func TestL8WorkerV2CredentialIdentitiesUseCrossPhaseSafeIDVocabulary(t *testing.
 	legacy.Exec.Target.Runtime.RuntimeID = "runtime:legacy"
 	if err := legacy.Validate(); err != nil {
 		t.Fatalf("stricter v2 credential vocabulary changed legacy v1 192-byte/colon job/runtime IDs: %v", err)
+	}
+	if err := (JobResolveRequest{ContractVersion: JobContractVersion, SubmissionID: "submission:legacy"}).Validate(); err != nil {
+		t.Fatalf("stricter v2 submission vocabulary changed legacy v1 resolve identity: %v", err)
+	}
+	if err := (JobStatusRequest{ContractVersion: JobContractVersion, JobID: strings.Repeat("j", 192)}).Validate(); err != nil {
+		t.Fatalf("stricter v2 submission vocabulary changed legacy v1 status identity: %v", err)
 	}
 }
 

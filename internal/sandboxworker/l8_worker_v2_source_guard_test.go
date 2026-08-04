@@ -777,6 +777,9 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reviewConditionalRecursive(false)
 	reviewMutualMayReturnA(false)
 	reviewRecoveringRecursiveDecoy(false)
+	reviewReturnBeforeRecursion(true)
+	reviewConditionalReturnBeforeTerminal(true)
+	reviewReachableDeferRecover()
 	var response Response`, 1)
 	possiblyReturningHelper["client.go"] += `
 func reviewSkippedForeverBool() bool { select {} }
@@ -789,6 +792,9 @@ func reviewConditionalRecursive(recurse bool) { if recurse { reviewConditionalRe
 func reviewMutualMayReturnA(recurse bool) { if recurse { reviewMutualMayReturnB(false) } }
 func reviewMutualMayReturnB(recurse bool) { if recurse { reviewMutualMayReturnA(false) } }
 func reviewRecoveringRecursiveDecoy(recurse bool) { defer func() { _ = recover() }(); if recurse { reviewRecoveringRecursiveDecoy(false) } }
+func reviewReturnBeforeRecursion(stop bool) { if stop { return }; reviewReturnBeforeRecursion(stop) }
+func reviewConditionalReturnBeforeTerminal(stop bool) { if stop { return }; select {} }
+func reviewReachableDeferRecover() { defer func() { _ = recover() }() }
 `
 	l8AssertWorkerV2GuardAllows(t, possiblyReturningHelper, policy)
 	clientHalfCloseBlock := `	halfCloser, ok := connection.(interface{ CloseWrite() error })
@@ -1058,6 +1064,41 @@ func reviewRecoveringRecursiveDecoy(recurse bool) { defer func() { _ = recover()
 			mutate: func(source string) string {
 				source = strings.Replace(source, "\tvar response Response", "\t_ = reviewReturnBlocks()\n\tvar response Response", 1)
 				return source + "\nfunc reviewReturnBlocks() int { return reviewBlockForeverValue() }\nfunc reviewBlockForeverValue() int { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after recursion before return",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewRecursiveThenReturn()\n\tvar response Response", 1)
+				return source + "\nfunc reviewRecursiveThenReturn() { reviewRecursiveThenReturn(); return }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after mutual recursion before return",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewMutualThenReturnA()\n\tvar response Response", 1)
+				return source + "\nfunc reviewMutualThenReturnA() { reviewMutualThenReturnB(); return }\nfunc reviewMutualThenReturnB() { reviewMutualThenReturnA(); return }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after select before return",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewSelectThenReturn()\n\tvar response Response", 1)
+				return source + "\nfunc reviewSelectThenReturn() { select {}; return }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after panic before return",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewPanicThenReturn()\n\tvar response Response", 1)
+				return source + "\nfunc reviewPanicThenReturn() { panic(\"blocked\"); return }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable before defer recover",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewSelectThenDeferRecover()\n\tvar response Response", 1)
+				return source + "\nfunc reviewSelectThenDeferRecover() { select {}; defer func() { _ = recover() }() }\n"
 			},
 		},
 	} {
