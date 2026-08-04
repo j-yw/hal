@@ -380,16 +380,16 @@ func TestL8WorkerV2GuardAllowsExactBoundedStrictDecoderSeam(t *testing.T) {
 type JobStartRequestV2 struct { Value string }
 type Request struct { JobStartV2 *JobStartRequestV2 }
 func (Request) Validate() error { return nil }
-func validateWorkerJSONPreflightV2(raw []byte) error {
+func validateWorkerJSONPreflightV2(raw string) error {
 	if len(raw) == 0 { return errors.New("worker request is empty") }
 	return nil
 }
-func decodeWorkerRequest(reader io.Reader, maxBytes int64, output *Request) error {
+func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error {
 	if maxBytes <= 0 || maxBytes > 1<<20 { return errors.New("worker request limit is invalid") }
 	raw, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if err != nil { return err }
 	if int64(len(raw)) > maxBytes { return errors.New("worker request exceeds limit") }
-	if err := validateWorkerJSONPreflightV2(raw); err != nil { return err }
+	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil {
@@ -400,6 +400,11 @@ func decodeWorkerRequest(reader io.Reader, maxBytes int64, output *Request) erro
 		return errors.New("worker request contains trailing JSON")
 	}
 	return nil
+}
+func decodeWorkerRequest(reader io.Reader, maxBytes int64) (Request, error) {
+	var output Request
+	if err := decodeWorkerRequestInto(reader, maxBytes, &output); err != nil { return Request{}, err }
+	return output, nil
 }`,
 	}, policy)
 	l8AssertWorkerV2GuardAllows(t, map[string]string{
@@ -417,16 +422,16 @@ type Response struct {
 	SubmittedAt time.Time
 }
 func (Response) Validate() error { return nil }
-func validateWorkerJSONPreflightV2(raw []byte) error {
+func validateWorkerJSONPreflightV2(raw string) error {
 	if len(raw) == 0 { return errors.New("worker response is empty") }
 	return nil
 }
-func decodeWorkerResponse(reader io.Reader, maxBytes int64, output *Response) error {
+func decodeWorkerResponseInto(reader io.Reader, maxBytes int64, output *Response) error {
 	if maxBytes <= 0 || maxBytes > 1<<20 { return errors.New("worker response limit is invalid") }
 	raw, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if err != nil { return err }
 	if int64(len(raw)) > maxBytes { return errors.New("worker response exceeds limit") }
-	if err := validateWorkerJSONPreflightV2(raw); err != nil { return err }
+	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil {
@@ -437,6 +442,12 @@ func decodeWorkerResponse(reader io.Reader, maxBytes int64, output *Response) er
 		return errors.New("worker response contains trailing JSON")
 	}
 	return nil
+}
+const defaultMaxResponseBytesV2 int64 = 1<<20
+func decodeWorkerResponse(reader io.Reader) (Response, error) {
+	var output Response
+	if err := decodeWorkerResponseInto(reader, defaultMaxResponseBytesV2, &output); err != nil { return Response{}, err }
+	return output, nil
 }`,
 	}, policy)
 
@@ -624,16 +635,16 @@ import (
 )
 type JobStartRequestV2 struct { Value string }
 type Request struct { JobStartV2 *JobStartRequestV2 }
-func validateWorkerJSONPreflightV2(raw []byte) error {
+func validateWorkerJSONPreflightV2(raw string) error {
 	if len(raw) == 0 { return errors.New("worker request is empty") }
 	return nil
 }
-func decodeWorkerRequest(reader io.Reader, maxBytes int64, output *Request) error {
+func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error {
 	if maxBytes <= 0 || maxBytes > 1<<20 { return errors.New("worker request limit is invalid") }
 	raw, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if err != nil { return err }
 	if int64(len(raw)) > maxBytes { return errors.New("worker request exceeds limit") }
-	if err := validateWorkerJSONPreflightV2(raw); err != nil { return err }
+	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil { return err }
@@ -647,30 +658,30 @@ func decodeWorkerRequest(reader io.Reader, maxBytes int64, output *Request) erro
 		`type JobStartRequestV2 struct { Value string }
 type Request struct { JobStartV2 *JobStartRequestV2 }`,
 		`type storedJobStateV2 struct { SubmittedAt time.Time `+"`json:\"submittedAt\"`"+` }`,
-		`func decodeWorkerRequest(reader io.Reader, maxBytes int64, output *Request) error`,
-		`func decodeStoredJobStateV2(reader io.Reader, maxBytes int64, output *storedJobStateV2) error`,
+		`func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error`,
+		`func decodeStoredJobStateV2Into(reader io.Reader, maxBytes int64, output *storedJobStateV2) error`,
 	).Replace(requestSource)
 	privateSource = strings.Replace(privateSource, `"io"`, `"io"
 	"time"`, 1)
 	l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": privateSource}, policy)
 
-	latePreflight := strings.Replace(requestSource, "\tif err := validateWorkerJSONPreflightV2(raw); err != nil { return err }\n", "", 1)
-	latePreflight = strings.Replace(latePreflight, "\tif err := decoder.Decode(&trailing); err != io.EOF { return errors.New(\"trailing JSON\") }\n\treturn nil\n}", "\tif err := decoder.Decode(&trailing); err != io.EOF { return errors.New(\"trailing JSON\") }\n\tif err := validateWorkerJSONPreflightV2(raw); err != nil { return err }\n\treturn nil\n}", 1)
+	latePreflight := strings.Replace(requestSource, "\tif err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }\n", "", 1)
+	latePreflight = strings.Replace(latePreflight, "\tif err := decoder.Decode(&trailing); err != io.EOF { return errors.New(\"trailing JSON\") }\n\treturn nil\n}", "\tif err := decoder.Decode(&trailing); err != io.EOF { return errors.New(\"trailing JSON\") }\n\tif err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }\n\treturn nil\n}", 1)
 	tests := []struct {
 		name   string
 		path   string
 		source string
 	}{
-		{name: "omitted preflight", path: "protocol_decode.go", source: strings.Replace(requestSource, "\tif err := validateWorkerJSONPreflightV2(raw); err != nil { return err }\n", "", 1)},
+		{name: "omitted preflight", path: "protocol_decode.go", source: strings.Replace(requestSource, "\tif err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }\n", "", 1)},
 		{name: "late preflight", path: "protocol_decode.go", source: latePreflight},
-		{name: "wrong scanner buffer", path: "protocol_decode.go", source: strings.Replace(requestSource, "\tif err := validateWorkerJSONPreflightV2(raw); err != nil { return err }", "\tother := append([]byte(nil), raw...)\n\tif err := validateWorkerJSONPreflightV2(other); err != nil { return err }", 1)},
+		{name: "wrong scanner buffer", path: "protocol_decode.go", source: strings.Replace(requestSource, "\tif err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }", "\tother := append([]byte(nil), raw...)\n\tif err := validateWorkerJSONPreflightV2(string(other)); err != nil { return err }", 1)},
 		{name: "wrong decoder buffer", path: "protocol_decode.go", source: strings.Replace(requestSource, "\tdecoder := json.NewDecoder(bytes.NewReader(raw))", "\tdecoder := json.NewDecoder(bytes.NewReader(append([]byte(nil), raw...)))", 1)},
 		{name: "unbounded read", path: "protocol_decode.go", source: strings.Replace(requestSource, "io.ReadAll(io.LimitReader(reader, maxBytes+1))", "io.ReadAll(reader)", 1)},
 		{name: "missing sentinel byte", path: "protocol_decode.go", source: strings.Replace(requestSource, "maxBytes+1", "maxBytes", 1)},
 		{name: "oversized read", path: "protocol_decode.go", source: strings.Replace(requestSource, "maxBytes+1", "maxBytes+2", 1)},
 		{name: "mismatched accepted threshold", path: "protocol_decode.go", source: strings.Replace(requestSource, "int64(len(raw)) > maxBytes", "int64(len(raw)) > maxBytes+1", 1)},
 		{name: "missing dynamic limit validation", path: "protocol_decode.go", source: strings.Replace(requestSource, "\tif maxBytes <= 0 || maxBytes > 1<<20 { return errors.New(\"worker request limit is invalid\") }\n", "", 1)},
-		{name: "wrong function", path: "protocol_decode.go", source: strings.Replace(requestSource, "decodeWorkerRequest", "decodeWorkerPayload", 1)},
+		{name: "wrong function", path: "protocol_decode.go", source: strings.Replace(requestSource, "decodeWorkerRequestInto", "decodeWorkerPayloadInto", 1)},
 		{name: "wrong output", path: "protocol_decode.go", source: strings.NewReplacer("type Request struct", "type RequestV2 struct", "output *Request", "output *RequestV2").Replace(requestSource)},
 		{name: "wrong file", path: "job_store_v2.go", source: requestSource},
 		{name: "raw reassignment", path: "protocol_decode.go", source: strings.Replace(requestSource, "\tdecoder :=", "\traw = append(raw[:0], raw...)\n\tdecoder :=", 1)},
@@ -684,13 +695,13 @@ type Request struct { JobStartV2 *JobStartRequestV2 }`,
 	callbackScanner := strings.Replace(requestSource, `"io"`, `"io"
 	"fmt"`, 1)
 	callbackScanner = strings.Replace(callbackScanner,
-		`func validateWorkerJSONPreflightV2(raw []byte) error {
+		`func validateWorkerJSONPreflightV2(raw string) error {
 	if len(raw) == 0 { return errors.New("worker request is empty") }
 	return nil
 }`,
 		`type preflightRendererV2 struct{}
 func (preflightRendererV2) String() string { return "" }
-func validateWorkerJSONPreflightV2(raw []byte) error {
+func validateWorkerJSONPreflightV2(raw string) error {
 	_ = raw
 	_ = fmt.Sprint(preflightRendererV2{})
 	return nil
@@ -698,26 +709,40 @@ func validateWorkerJSONPreflightV2(raw []byte) error {
 		1,
 	)
 	l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": callbackScanner}, policy, "implicit interface callback")
+
+	mutableScanner := strings.Replace(requestSource, "func validateWorkerJSONPreflightV2(raw string) error", "func validateWorkerJSONPreflightV2(raw []byte) error", 1)
+	mutableScanner = strings.Replace(mutableScanner, "validateWorkerJSONPreflightV2(string(raw))", "validateWorkerJSONPreflightV2(raw)", 1)
+	mutableScanner = strings.Replace(mutableScanner, "\tif len(raw) == 0", "\tif len(raw) > 0 { raw[0] = '{' }\n\tif len(raw) == 0", 1)
+	l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": mutableScanner}, policy, "implicit interface callback")
 }
 
 func TestL8WorkerV2GuardAllowsOnlyExactAuditedJSONMarshalSeams(t *testing.T) {
 	keyPolicy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{
-		"job_store_v2.go":   true,
-		"job_v2_helpers.go": true,
-		"job_v2_service.go": true,
+		"job_store_v2.go":    true,
+		"job_v2_helpers.go":  true,
+		"job_v2_service.go":  true,
+		"protocol_decode.go": true,
 	}}
 	keySource := `package sandboxworker
-import (
-	"crypto/sha256"
-	"encoding/json"
-	"github.com/jywlabs/hal/internal/sandboxruntime"
-)
-type ExecRequest struct { Metadata *sandboxruntime.RuntimeMetadata ` + "`json:\"metadata,omitempty\"`" + ` }
-type JobStartRequestV2 struct { Exec ExecRequest ` + "`json:\"exec\"`" + ` }
-func jobRequestKeyV2(request JobStartRequestV2) ([32]byte, error) {
-	payload, err := json.Marshal(request)
-	if err != nil { return [32]byte{}, err }
-	return sha256.Sum256(payload), nil
+	import (
+		"crypto/sha256"
+		"encoding/hex"
+		"encoding/json"
+		"github.com/jywlabs/hal/internal/sandboxruntime"
+	)
+	type ExecRequest struct { Metadata *sandboxruntime.RuntimeMetadata ` + "`json:\"metadata,omitempty\"`" + ` }
+	type JobStartRequestV2 struct { Exec ExecRequest ` + "`json:\"exec\"`" + ` }
+	type jobRequestIdentityV2 struct {
+		DriverID string ` + "`json:\"driverId\"`" + `
+		PrincipalID string ` + "`json:\"principalId\"`" + `
+		Request JobStartRequestV2 ` + "`json:\"request\"`" + `
+	}
+	func jobRequestKeyV2(driverID, principalID string, request JobStartRequestV2) (string, error) {
+		identity := jobRequestIdentityV2{DriverID: driverID, PrincipalID: principalID, Request: request}
+		payload, err := json.Marshal(identity)
+		if err != nil { return "", err }
+		digest := sha256.Sum256(payload)
+		return "request-v2-" + hex.EncodeToString(digest[:]), nil
 	}`
 	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_v2_helpers.go": keySource}, keyPolicy)
 	aliasedKeySource := strings.NewReplacer(
@@ -739,6 +764,20 @@ type storedJobStateV2 struct { JobV2 JobV2; RequestKey string ` + "`json:\"reque
 	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_store_v2.go": storeSource}, keyPolicy)
 	aliasedStoreSource := strings.Replace(storeSource, "type JobV2 struct { SubmittedAt time.Time", "type auditedTimeV2 = time.Time\ntype JobV2 struct { SubmittedAt auditedTimeV2", 1)
 	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_store_v2.go": aliasedStoreSource}, keyPolicy)
+
+	responseEncodeSource := `package sandboxworker
+import (
+	"encoding/json"
+	"io"
+	"time"
+)
+type JobV2 struct { SubmittedAt time.Time ` + "`json:\"submittedAt\"`" + ` }
+type Response struct { JobV2 *JobV2 ` + "`json:\"jobV2,omitempty\"`" + ` }
+func encodeWorkerResponse(writer io.Writer, response Response) error {
+	encoder := json.NewEncoder(writer)
+	return encoder.Encode(response)
+}`
+	l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": responseEncodeSource}, keyPolicy)
 
 	marshalTests := []struct {
 		name   string
@@ -766,6 +805,8 @@ func jobRequestKeyV2(request JobStartRequestV2) ([]byte, error) { return json.Ma
 		{name: "wrong key function", path: "job_v2_helpers.go", source: strings.Replace(keySource, "jobRequestKeyV2", "encodeJobRequestV2", 1)},
 		{name: "wrong store function", path: "job_store_v2.go", source: strings.Replace(storeSource, "encodeStoredJobStateV2", "encodeStoredJobSnapshotV2", 1)},
 		{name: "wrong store file", path: "job_v2_service.go", source: storeSource},
+		{name: "wrong response encoder file", path: "job_v2_service.go", source: responseEncodeSource},
+		{name: "wrong response encoder function", path: "protocol_decode.go", source: strings.Replace(responseEncodeSource, "encodeWorkerResponse", "encodeWorkerSnapshot", 1)},
 	}
 	for _, tt := range marshalTests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -775,6 +816,20 @@ func jobRequestKeyV2(request JobStartRequestV2) ([]byte, error) { return json.Ma
 
 	unmarshalSource := strings.Replace(storeSource, `func encodeStoredJobStateV2(state storedJobStateV2) ([]byte, error) { return json.Marshal(state) }`, `func decodeStoredJobStateV2(raw []byte, state *storedJobStateV2) error { return json.Unmarshal(raw, state) }`, 1)
 	l8AssertWorkerV2GuardRejects(t, map[string]string{"job_store_v2.go": unmarshalSource}, keyPolicy, "implicit interface callback")
+
+	for name, field := range map[string]string{
+		"store nested marshal":   `Value storedCallbackV2`,
+		"store nested interface": `Value any`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			callbackDeclaration := ""
+			if strings.Contains(field, "storedCallbackV2") {
+				callbackDeclaration = "type storedCallbackV2 struct{}\nfunc (storedCallbackV2) MarshalJSON() ([]byte, error) { return nil, nil }\n"
+			}
+			source := "package sandboxworker\nimport \"encoding/json\"\n" + callbackDeclaration + "type JobV2 struct { " + field + " }\ntype storedJobStateV2 struct { JobV2 JobV2 }\nfunc encodeStoredJobStateV2(state storedJobStateV2) ([]byte, error) { return json.Marshal(state) }"
+			l8AssertWorkerV2GuardRejects(t, map[string]string{"job_store_v2.go": source}, keyPolicy, "implicit interface callback")
+		})
+	}
 }
 
 func TestL8WorkerV2GuardAllowsAuditedRuntimeMetadataInOuterStrictDecoders(t *testing.T) {
@@ -792,22 +847,27 @@ type RuntimeTarget struct { Metadata *sandboxruntime.RuntimeMetadata }
 type Target struct { Runtime RuntimeTarget }
 type JobStartRequestV2 struct { Target Target }
 type Request struct { JobStartV2 *JobStartRequestV2 }
-func validateWorkerJSONPreflightV2(raw []byte) error {
+func validateWorkerJSONPreflightV2(raw string) error {
 	if len(raw) == 0 { return errors.New("worker request is empty") }
 	return nil
 }
-func decodeWorkerRequest(reader io.Reader, maxBytes int64, output *Request) error {
+func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error {
 	if maxBytes <= 0 || maxBytes > 1<<20 { return errors.New("worker request limit is invalid") }
 	raw, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if err != nil { return err }
 	if int64(len(raw)) > maxBytes { return errors.New("worker request exceeds limit") }
-	if err := validateWorkerJSONPreflightV2(raw); err != nil { return err }
+	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil { return err }
 	var trailing struct{}
 	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
 	return nil
+}
+func decodeWorkerRequest(reader io.Reader, maxBytes int64) (Request, error) {
+	var output Request
+	if err := decodeWorkerRequestInto(reader, maxBytes, &output); err != nil { return Request{}, err }
+	return output, nil
 }`,
 		"response": `package sandboxworker
 	import (
@@ -819,22 +879,28 @@ func decodeWorkerRequest(reader io.Reader, maxBytes int64, output *Request) erro
 )
 type Status struct { Metadata *sandboxruntime.RuntimeMetadata }
 type Response struct { Status *Status }
-func validateWorkerJSONPreflightV2(raw []byte) error {
+func validateWorkerJSONPreflightV2(raw string) error {
 	if len(raw) == 0 { return errors.New("worker response is empty") }
 	return nil
 }
-func decodeWorkerResponse(reader io.Reader, maxBytes int64, output *Response) error {
+func decodeWorkerResponseInto(reader io.Reader, maxBytes int64, output *Response) error {
 	if maxBytes <= 0 || maxBytes > 1<<20 { return errors.New("worker response limit is invalid") }
 	raw, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if err != nil { return err }
 	if int64(len(raw)) > maxBytes { return errors.New("worker response exceeds limit") }
-	if err := validateWorkerJSONPreflightV2(raw); err != nil { return err }
+	if err := validateWorkerJSONPreflightV2(string(raw)); err != nil { return err }
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil { return err }
 	var trailing struct{}
 	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
 	return nil
+}
+const defaultMaxResponseBytesV2 int64 = 1<<20
+func decodeWorkerResponse(reader io.Reader) (Response, error) {
+	var output Response
+	if err := decodeWorkerResponseInto(reader, defaultMaxResponseBytesV2, &output); err != nil { return Response{}, err }
+	return output, nil
 }`,
 	} {
 		t.Run(name, func(t *testing.T) {
