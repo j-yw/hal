@@ -121,9 +121,10 @@ Required focused areas are:
   deterministic vector, HKDF-SHA-256 labels, AES-256-GCM 52-byte headers,
   Finished sequence zero, application sequence one, replay/gap/cap/tamper and
   unauthorized-host negatives, reconnect rejection, no fallback, strict frames,
-  exact concrete control unions and private `HL8B` records, both root/source
-  mode-dependent network validators, root/child/session digest conformance, and
-  cross-job negatives;
+  exact concrete control unions and `0x13` private `HL8B` records, both
+  root/source mode-dependent network validators, root/child/session digest
+  conformance, canonical `sha256-` guest-image mapping, authenticated
+  preflight-to-complete identity construction, and cross-job negatives;
 - neutral leaf-route registration and composed Registry definition/dispatch
   separation, collision/cleanup-retry ordering, live request and response
   non-serialization, safe metadata bounds, exact deployment-prefixed
@@ -148,13 +149,16 @@ Required focused areas are:
   file-generation policy, `setsid` escape,
   `cgroup.kill`/zero-population proof, normal unmount, keeper reap, whole-VM
   fallback, exact numeric helper/job/FD/process/cleanup limits, atomic
-  prepare-begin/file/commit rollback, and restart cleanup;
+  prepare-begin/file/commit correlation, domain-separated bootstrap/manifest/
+  transaction digests, exact enum and ExecPlan codecs, nested relative-path
+  encoding, rollback, and restart cleanup;
 - neutral SSH codec, authenticated relay subkey, SCM_RIGHTS handoff,
   backpressure, mandatory key and algorithm/flag allowlists, filtered
   enumeration, per-connection host-agent identity, exact relay limits, loss,
   and absence proof;
 - Firecracker process/vsock/network/credential generation composition;
-- worker prepare-before-exec, heartbeat renewal, loss cancellation,
+- worker authenticated preflight-before-lifecycle, source-resolution only after
+  preflight, prepare-before-exec, heartbeat renewal, loss cancellation,
   revoke-before-terminal behavior, state-write failures, daemon close, and
   restart reconciliation;
 - L3 finalization ordering with optional `CredentialCleanup` nil for

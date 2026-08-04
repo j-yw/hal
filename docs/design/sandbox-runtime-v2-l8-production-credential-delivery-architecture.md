@@ -228,9 +228,63 @@ D1 fields, `JobCredentialIdentity` and its canonical proof digest bind required
 `GuestBootGeneration`, `GuestImageGeneration`, `GuestImageDigest`,
 `GuestSessionGeneration`, and `GuestHelperGeneration` safe fields. The
 admission request and accepted grant carry the same template/workspace values.
-The guest-session generation is derived only after the authenticated handshake;
-it identifies but does not authorize that session. The helper generation is
-accepted only from authenticated readiness. Raw boot nonce, session keys,
+`GuestImageDigest` is exactly the ASCII prefix `sha256-` followed by exactly 64
+lowercase hexadecimal characters. The handshake carries the decoded 32-byte
+suffix; uppercase, `sha256:`, base64, abbreviated, or alternate-algorithm forms
+are invalid.
+
+The complete identity is acquired through an explicit two-stage neutral seam;
+it is never synthesized before guest authentication. `JobCredentialIdentitySeed`
+contains every complete-identity field except `GuestSessionGeneration` and
+`GuestHelperGeneration`. `JobCredentialRuntime.PreflightJobCredentials`
+accepts only a validated seed and returns one opaque, nonserializable
+`JobCredentialRuntimePreflight`. That preflight retains the exact authenticated
+control session and exposes:
+
+- `Identity() JobCredentialIdentity`, which must equal the seed field-for-field
+  and add only the two nonempty guest generations;
+- `PrepareJobCredentials`, which is the only preparation call and uses that
+  same authenticated session;
+- `Abort`, which closes a preflight that did not transfer ownership to a
+  successful `JobCredentialSession`; and
+- `Loss`, which closes preparation on authenticated-session/helper loss.
+
+The neutral signatures are fixed:
+
+```go
+type JobCredentialRuntime interface {
+	PreflightJobCredentials(context.Context, JobCredentialIdentitySeed) (JobCredentialRuntimePreflight, error)
+	RecoverJobCredentials(context.Context, JobCredentialRecoveryRequest) (JobCredentialCleanupProof, error)
+}
+
+type JobCredentialRuntimePreflight interface {
+	Identity() JobCredentialIdentity
+	PrepareJobCredentials(context.Context, JobCredentialPrepareRequest) (JobCredentialSession, error)
+	Abort(context.Context) error
+	Loss() <-chan JobCredentialLoss
+}
+```
+
+`ValidateJobCredentialIdentitySeed` requires every seed field, applies the same
+mode-dependent network rules as the complete validator, and deep-copies ordered
+bindings. Neither seed nor preflight is a durable/status JSON contract.
+
+The root validator rejects any preflight result that changes a seed field,
+omits either generation, or returns an invalid complete identity. The worker
+constructs `JobCredentialLifecycle` only after this validation and calls
+`BeginPrepare` with the same complete identity. A successful prepare transfers
+the preflight session into the returned `JobCredentialSession`; every other
+path calls `Abort` exactly once before terminal persistence. Recovery remains
+on `JobCredentialRuntime` because it starts from a previously persisted
+complete identity. A nil preflight dependency preserves only jobs with no live
+L8 intent and can never fabricate generation fields. Preflight abort/loss that
+cannot prove its authenticated session and helper state closed escalates to
+D6's exact whole-VM stop/reap path; it never yields an active credential proof.
+
+The guest-session generation is the unpadded base64url session ID derived only
+after the authenticated handshake; it identifies but does not independently
+authorize that session. The helper generation is accepted only from
+authenticated readiness on that session. Raw boot nonce, session keys,
 private/public keys, helper nonce, CID, ports, and live handles do not enter the
 neutral identity or durable/status projection. Root active and cleanup proof
 tokens commit to every added field, and the Firecracker adapter proves lossless
@@ -561,6 +615,9 @@ imageGeneration:token
 imageSHA256:[32]byte
 ```
 
+`imageSHA256` is exactly the 32 decoded bytes of the complete identity's
+`GuestImageDigest` `sha256-` suffix.
+
 The fixed local guest CID is 3. On accept, the guest also retains the separate
 peer `SockaddrVM` and requires its CID to be `VMADDR_CID_HOST`; it queries and
 validates the local CID/port rather than confusing the peer's ephemeral port
@@ -630,11 +687,13 @@ nonce = derivedNoncePrefix[4] || uint64_be(sequence)
 Frame types are `0x01 guest_finished` guest-to-controller,
 `0x02 controller_finished` controller-to-guest, `0x10 control_request`
 controller-to-guest, `0x11 control_response` and `0x12 control_event`
-guest-to-controller, `0x20 relay_request` guest-to-controller on the relay,
-`0x21 relay_response` controller-to-guest on the relay, and
-`0x7f close_notify` in either direction. Magic, version, zero flags,
-channel/type/direction, session ID, expected sequence, and length are validated
-before allocation or AEAD open.
+guest-to-controller, and `0x13 control_private` controller-to-guest. On the
+relay, `0x20 relay_request` is guest-to-controller and `0x21 relay_response` is
+controller-to-guest; `0x7f close_notify` is valid in either direction.
+`0x13` carries one binary `HL8B` record only; it never multiplexes JSON into
+`0x10` or another type. Magic, version, zero flags, channel/type/direction,
+session ID, expected sequence, and length are validated before allocation or
+AEAD open.
 
 Finished plaintexts are these exact 32-byte HMACs, encrypted with the matching
 direction at sequence 0 and compared in constant time after GCM succeeds:
@@ -820,9 +879,10 @@ admissionGrantRevision, issuedAtUnixNano, bindings
 The digest is SHA-256 over eight-byte big-endian length plus bytes for every
 string above through `guestHelperGeneration`, then big-endian `uint64`
 admission revision, big-endian `uint64(issuedAtUnixNano)`, big-endian binding
-count, and the same length-plus-bytes encoding for each ordered binding ID then
-mode. The root and child expose validated digest functions and conformance tests
-prove equality; no package copies an undocumented digest variant.
+count as `uint64_be`, and the same length-plus-bytes encoding for each ordered
+binding ID then mode. The root and child expose validated digest functions;
+conformance tests prove equality, and no package copies an undocumented digest
+variant.
 
 `GuestCredentialSessionIdentity` is exactly the current 32-byte session ID plus
 that validated `JobIdentity`. Its `JobIdentity.guestSessionGeneration` must be
@@ -913,6 +973,15 @@ index zero and the same zero/one chunk rule. Payload is at most 64 KiB and the
 aggregate/count exactly match the preceding control request. Digests, request
 ID, identity, index, order, count, and length validate before a sink receives
 bytes. Any mismatch aborts the request and wipes every owned buffer.
+
+Every `HL8B` record is the entire plaintext of one `0x13 control_private`
+frame, controller-to-guest on the control session. Exactly the count declared
+by the preceding `0x10 control_request` follows it at consecutive secure
+sequences and before any response or unrelated application frame. File records
+are ordered by binding index; the optional exec-binding record has index zero.
+Zero declared records forbid `0x13`. Missing, extra, reordered, interleaved, or
+wrong-request private frames close and revoke the session before any sink sees
+bytes.
 
 V2 exec is admitted only into the exact prepared job namespace on that
 authenticated persistent session. V1 exec and a
@@ -1210,31 +1279,113 @@ Packet type numbers, directions, sequence starts, and bodies are fixed:
                        connectionOrdinal:u8 | relayCapabilityDigest:[32]byte
 0x20 response          helper -> agent, requestType:u8 | disposition:u8 |
                        revision:u64 | proofID:optional-token |
-                       failureCode:optional-token
+                       failureCode:u8
 0x21 event             helper -> agent, eventCode:u8 | revision:u64 |
                        eventID:token
-0x7f close_notify      either direction, reasonCode:token
+0x7f close_notify      either direction, reasonCode:u8
 ```
+
+Numeric body catalogs are closed and reject zero or unknown values except
+`failureCode=0` on success:
+
+```text
+revoke reason: 1 requested, 2 expired, 3 session_loss, 4 source_revoked,
+               5 worker_cancel, 6 daemon_shutdown
+response disposition: 1 accepted, 2 rejected, 3 cleanup_complete,
+                      4 cleanup_retry, 5 stop_vm_required
+failure code: 0 none, 1 malformed, 2 identity_mismatch, 3 revision_stale,
+              4 expired, 5 resource_limit, 6 prepare_failed, 7 renew_failed,
+              8 revoke_failed, 9 exec_failed, 10 cleanup_incomplete,
+              11 helper_unavailable
+event code: 1 expired, 2 session_loss, 3 source_revoked, 4 cleanup_required
+close reason: 1 normal, 2 protocol_error, 3 identity_drift, 4 expired,
+              5 helper_loss, 6 shutdown
+```
+
+`accepted` is valid for prepare, renew, and exec. Prepare/renew accepted
+responses require a proof ID; exec requires it absent. `cleanup_complete` is
+valid only for revoke and requires a proof ID. `rejected`, `cleanup_retry`, and
+`stop_vm_required` require no proof ID and a nonzero failure code; successful
+dispositions require failure code zero. Every `optional-token` is encoded as
+`uint16_be(0)` when absent and otherwise uses the ordinary 1..128-byte token
+encoding. Response `requestType` is exactly `0x12` for the logical prepare
+transaction, `0x13` renew, `0x14` revoke, or `0x15` exec; all other values are
+invalid.
 
 The ordered manifest record is:
 
 ```text
-bindingID:token | mode:u8 | targetName:optional-token | declaredFileBytes:u32 | fileSHA256:[32]byte
+bindingID:token | mode:u8 | targetPath:optional-relative-path | declaredFileBytes:u32 | fileSHA256:[32]byte
 ```
 
 Modes are 1 HTTP, 2 file-tmpfs, and 3 SSH-agent. Only file mode has a target,
 nonzero declared bytes, and nonzero digest; the others encode the optional
-token as length zero and both numeric/digest fields as zero. There are at most
-16 unique bindings, 64 KiB per file, and 1 MiB aggregate. `ExecPlan` is an
-explicit fixed union over the existing L4 bounds: 1..128 argument blobs of at
-most 8192 bytes without NUL, at most 256 environment name/value records, one
-canonical guest work directory of at most 4096 bytes, stdin/stdout/stderr
-bounds, and one timeout or deadline. The combined encoded argument,
-environment, work-directory, and I/O metadata is at most 64 KiB so the exec body
-fits its 72 KiB helper bound; this L8 aggregate may be stricter than v1 without
-changing v1. Direct credential-bearing environment names/values are forbidden;
-the helper constructs selected credential bindings only from its prepared live
-state.
+relative path as length zero and both numeric/digest fields as zero. A relative
+path is `uint16_be(length) || ASCII bytes`, length 1..4096, with forward-slash
+separated components of 1..255 bytes. It rejects a leading/trailing slash,
+empty, `.` or `..` components, backslash, NUL/control bytes, and any alternate
+encoding; joining and cleaning it must return the identical relative bytes.
+There are at most 16 unique bindings, 64 KiB per file, and 1 MiB aggregate.
+
+The `ExecPlan` body is encoded exactly in this order:
+
+```text
+argumentCount:u16
+arguments[argumentCount]: blob16
+environmentCount:u16
+environment[environmentCount]: name:blob16 | value:blob16
+workDirectory:blob16
+stdinMode:u8 | stdoutMode:u8 | stderrMode:u8
+stdinMaxBytes:u32 | stdoutMaxBytes:u32 | stderrMaxBytes:u32
+timingKind:u8 | timingValue:i64
+```
+
+`blob16` is `uint16_be(length) || bytes`. Argument count is 1..128; each
+argument is valid UTF-8, at most 8192 bytes, contains no NUL/control byte, and
+argument zero is not blank. Environment count is 0..256. Each unique name is
+1..128 ASCII bytes matching `[A-Z_][A-Z0-9_]*`; each value is 0..8192 bytes
+without NUL. The work directory is 1..4096-byte canonical absolute UTF-8 and
+passes the frozen v1 guest-path rules. All three modes are exactly 1 (`pipe`)
+and every maximum is 1..4 MiB. The three inspected pipe descriptors carry the
+stream bytes; stdin bytes never appear again in `ExecPlan`.
+
+`timingKind` is 1 (`timeout_millis`) or 2 (`deadline_unix_millis`). Its signed
+value is positive and must satisfy the frozen L4 timing bounds plus the current
+35-minute job/session hard expiry. No zero/unused bytes or alternate union
+encoding exist. The complete encoded `ExecPlan`, including counts and lengths,
+is at most 64 KiB so the exec body fits its 72 KiB helper bound; this L8
+aggregate may be stricter than v1 without changing v1. Direct
+credential-bearing environment names/values are forbidden; the helper
+constructs selected credential bindings only from its prepared live state.
+
+The helper hashes have exact domain-separated encodings. Let
+`bootstrapHeader` be the exact 100-byte `0x02` header (including zero request
+ID/identity digest, sequence zero, body length, and boot nonce),
+`bootstrapBody` its canonical body, and `manifestBytes` the concatenation of
+the ordered encoded manifest records:
+
+```text
+bootstrapSHA256 = SHA256(
+  opaque16("hal/l8/guest-helper/bootstrap/v1") ||
+  bootstrapHeader || bootstrapBody)
+
+manifestSHA256 = SHA256(
+  opaque16("hal/l8/guest-helper/manifest/v1") ||
+  uint16_be(bindingCount) || manifestBytes)
+
+transactionSHA256 = SHA256(
+  opaque16("hal/l8/guest-helper/prepare-transaction/v1") ||
+  guestCredentialIdentityDigest || uint64_be(revision) ||
+  int64_be(expiryUnixNano) || manifestSHA256 || uint16_be(fileCount) ||
+  for each file in ascending binding index:
+    uint16_be(bindingIndex) || uint32_be(fileLength) || fileSHA256)
+```
+
+The single ancillary pidfd and kernel credentials are verified independently;
+unstable numeric FD values never enter `bootstrapSHA256`. Every file's bytes
+must hash to its declared digest before `transactionSHA256` is accepted. The
+request ID is an independent idempotency key and does not enter the logical
+transaction digest.
 
 Ready, bootstrap, bootstrap-ack, and both hello packets require an all-zero
 request ID and all-zero job identity digest. `helper_ready` alone has an
@@ -1254,8 +1405,10 @@ entire packet and closes all received rights. Direction counters are continuous
 across PID1-to-agent handoff: inbound PID1 bootstrap is helper receive sequence
 0, agent hello is receive sequence 1, and the first job request is sequence 2;
 helper ready/ack/hello-ack are send sequences 0/1/2 and its first job response
-is sequence 3. Later packets increment exactly by one only after full semantic
-acceptance.
+is sequence 3. Later packets increment exactly by one after authentication,
+canonical decode, and either a state transition or a committed safe rejection;
+authentication, framing, credential, descriptor, or sequence failure closes
+the IPC and cannot continue at the same counter.
 
 Preparation is an atomic `prepare_begin`, then exactly one `prepare_file` for
 each file binding in ascending manifest index, then `prepare_commit`
@@ -1267,6 +1420,19 @@ unpublished transaction, wipe every buffer, close staging descriptors, and
 remove exact owned staging state. Retrying the identical request ID and
 canonical transaction digest is idempotent; reuse with different bytes is a
 terminal correlation failure.
+
+All packets in one prepare transaction carry the same nonzero request ID,
+identity digest, and revision and count as one logical outstanding request.
+There is no intermediate response. The one terminal `0x20 response` echoes
+`requestType=0x12` (`prepare_commit`), including when an earlier transaction
+packet has a safe semantic failure. An authenticated, canonically decoded
+semantic failure aborts staging and emits exactly one safe failure response
+when the IPC remains usable; an authentication/framing failure closes it
+without a response. After a lost success response, the agent retransmits the
+entire canonical transaction at fresh packet sequences with the same request
+ID and logical digest. A cached identical success re-emits the prior safe
+result without mutation; changed content under that ID is terminal. No other
+request may interleave before the terminal response.
 
 The decoder validates header, exact datagram length, credentials, descriptor
 kinds/counts, sequence, identity, revision, and body bounds before touching
@@ -1484,17 +1650,26 @@ The L2 worker job lifecycle becomes:
    authorize its complete grant/source/plan/binding/host/runtime/template/workspace
    intent without resolving a source;
 2. persist the queued job plus safe authorized credential intent;
-3. persist credential state `preparing`;
-4. call optional `JobCredentialRuntime.PrepareJobCredentials` and mechanically
-   inspect its exact proof;
-5. persist only the sanitized active proof reference;
-6. execute with the opaque transient binding;
-7. renew from the heartbeat path and concurrently watch loss;
-8. on expiry/loss, cancel and prove cgroup zero population or stop/reap the
+3. call optional `JobCredentialRuntime.PreflightJobCredentials` with the
+   validated identity seed and no live source, validate its exact complete
+   identity, create the lifecycle, and begin preparation;
+4. persist credential state `preparing` with only the complete safe identity;
+5. resolve only the authorized source set into transient live sources;
+6. call `JobCredentialRuntimePreflight.PrepareJobCredentials` on the same
+   authenticated session and mechanically inspect its exact proof;
+7. persist only the sanitized active proof reference;
+8. execute with the opaque transient binding;
+9. renew from the heartbeat path and concurrently watch loss;
+10. on expiry/loss, cancel and prove cgroup zero population or stop/reap the
    entire runtime;
-9. revoke and prove cleanup on success, failure, cancel, timeout, daemon close,
+11. revoke and prove cleanup on success, failure, cancel, timeout, daemon close,
    state-write failure, or runtime loss; and
-10. only then persist terminal job outcome and release admission.
+12. only then persist terminal job outcome and release admission.
+
+Any failure after step 3 and before successful ownership transfer in step 6
+calls `JobCredentialRuntimePreflight.Abort` exactly once and watches its loss
+channel while aborting. It never resolves a source before authenticated guest
+preflight succeeds.
 
 A nil lifecycle dependency preserves existing jobs with no live L8 intent. A
 request for production L8 modes with a nil or unsupported dependency fails
@@ -1659,6 +1834,10 @@ agent, stop a VM, add HTTP behavior, or wire a production command.
   helper fd-root/capability/seccomp boundary, cgroup-v2 placement/kill proof,
   numeric resource limits, and stop-VM fallback before live helper or
   guest-agent behavior.
+- Lock the two-stage `JobCredentialRuntimePreflight` seam so authenticated
+  guest/helper generations exist before complete identity validation and
+  lifecycle construction; D2 supplies only contracts and fakes, not a live
+  connection.
 
 ### D3 — HTTP credential route
 
@@ -1686,9 +1865,9 @@ agent, stop a VM, add HTTP behavior, or wire a production command.
 
 ### D5 — SSH relay
 
-- Lock AEAD relay subkeys, SCM_RIGHTS handoff, backpressure, numeric limits,
-  operation policy, and mandatory key/algorithm allowlists before host/guest
-  streams.
+- Implement live AEAD relay subkeys, SCM_RIGHTS handoff, clocks, streams, and
+  backpressure under D2's already locked numeric limits, operation policy, and
+  mandatory key/algorithm allowlists.
 - Cover replay, generation mismatch, per-connection agent peer revalidation,
   filtered enumeration, key/flag rejection, bounds, loss, and cleanup.
 
