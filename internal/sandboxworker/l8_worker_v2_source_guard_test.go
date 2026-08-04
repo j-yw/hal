@@ -3845,6 +3845,28 @@ func JobStatusV2Fixture() {}`,
 	}
 }
 
+func TestL8WorkerV2GuardAuditsForbiddenImportsInUnlistedPackageGlobals(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"handler.go": true}}
+	v2Root := `package sandboxworker
+func JobStartV2Fixture() {}`
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"handler.go": v2Root,
+		"unlisted_plugin.go": `package sandboxworker
+import _ "plugin"`,
+	}, policy, "plugin")
+
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"handler.go": v2Root,
+		"unlisted_legacy.go": `package sandboxworker
+import (
+	_ "image/png"
+	httpalias "net/http"
+)
+func unrelatedLegacyRequest() { _, _ = httpalias.Get("https://legacy.example.invalid") }`,
+	}, policy)
+}
+
 func TestL8WorkerV2GuardClosesSemanticExternalSurfaceDependencies(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"handler.go": true,
