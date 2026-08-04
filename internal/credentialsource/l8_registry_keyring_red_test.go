@@ -114,7 +114,7 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 	}
 }
 
-func TestL8CredentialSourceRegistryConfigRejectsOversizedGrantSet(t *testing.T) {
+func TestL8CredentialSourceRegistryConfigEnforcesEntryBounds(t *testing.T) {
 	authority := l8PrincipalAuthority(t, "peercred-owner", "daemon-generation-1")
 	principal := l8Principal(t, authority, "principal-owner", 1001, 1002)
 	source, err := NewSourceRegistration("source-primary", l8KeyIdentity(t, 41, principal.UID(), principal.GID(), "hal-primary"))
@@ -130,8 +130,36 @@ func TestL8CredentialSourceRegistryConfigRejectsOversizedGrantSet(t *testing.T) 
 			t.Fatalf("new grant %d: %v", index, err)
 		}
 	}
-	if _, err := NewRegistryConfig(authority, principal.UID(), principal.GID(), []SourceRegistration{source}, grants); !errors.Is(err, ErrCredentialSourceRegistration) {
-		t.Fatalf("oversized grant set error = %v, want registration rejected", err)
+	sources := []SourceRegistration{source}
+	for index := 1; index < 65; index++ {
+		registration, registrationErr := NewSourceRegistration(
+			fmt.Sprintf("source-%d", index),
+			l8KeyIdentity(t, int32(41+index), principal.UID(), principal.GID(), fmt.Sprintf("hal-%d", index)),
+		)
+		if registrationErr != nil {
+			t.Fatalf("new source %d: %v", index, registrationErr)
+		}
+		sources = append(sources, registration)
+	}
+
+	if _, err := NewRegistryConfig(authority, principal.UID(), principal.GID(), sources[:64], grants[:64]); err != nil {
+		t.Fatalf("maximum bounded registry config rejected: %v", err)
+	}
+	for _, tt := range []struct {
+		name    string
+		sources []SourceRegistration
+		grants  []AdmissionGrantRegistration
+	}{
+		{name: "zero sources", grants: grants[:1]},
+		{name: "oversized sources", sources: sources, grants: grants[:1]},
+		{name: "zero grants", sources: sources[:1]},
+		{name: "oversized grants", sources: sources[:1], grants: grants},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewRegistryConfig(authority, principal.UID(), principal.GID(), tt.sources, tt.grants); !errors.Is(err, ErrCredentialSourceRegistration) {
+				t.Fatalf("registry config boundary error = %v, want registration rejected", err)
+			}
+		})
 	}
 }
 
