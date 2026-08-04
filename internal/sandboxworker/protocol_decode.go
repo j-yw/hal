@@ -385,7 +385,7 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 	seenFolded := make(map[string]bool)
 	productionFlagSeen := false
 	rootTypedDocument := false
-	rootResponse := false
+	rootEnvelope := false
 	rootStoredState := false
 	rootJobV2Key := ""
 	rootJobV2Token := ""
@@ -423,9 +423,10 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 				switch folded {
 				case "protocolversion", "requestid", "operation":
 					rootTypedDocument = true
+					rootEnvelope = true
 				case "ok":
 					rootTypedDocument = true
-					rootResponse = true
+					rootEnvelope = true
 				case "requestkey", "principalid", "daemongeneration":
 					rootTypedDocument = true
 					rootStoredState = true
@@ -455,7 +456,7 @@ func (parser *workerJSONPreflightV2) parseObject(context workerJSONPreflightCont
 				return errors.New("worker JSON productionCredentialsRequested is required")
 			}
 			if context == workerJSONPreflightRootV2 {
-				return parser.validateRootCanonicalKeys(rootTypedDocument, rootResponse, rootStoredState, rootJobV2Key, rootJobV2Token)
+				return parser.validateRootCanonicalKeys(rootTypedDocument, rootEnvelope, rootStoredState, rootJobV2Key, rootJobV2Token)
 			}
 			return nil
 		}
@@ -532,7 +533,7 @@ func workerJSONPreflightTypedContextV2(context workerJSONPreflightContextV2) boo
 	}
 }
 
-func (parser *workerJSONPreflightV2) validateRootCanonicalKeys(typedDocument, response, storedState bool, jobV2Key, jobV2Token string) error {
+func (parser *workerJSONPreflightV2) validateRootCanonicalKeys(typedDocument, envelope, storedState bool, jobV2Key, jobV2Token string) error {
 	if parser.noncanonicalTypedKey {
 		return errors.New("worker JSON typed object key is noncanonical")
 	}
@@ -542,7 +543,7 @@ func (parser *workerJSONPreflightV2) validateRootCanonicalKeys(typedDocument, re
 		}
 		return nil
 	}
-	if response && storedState {
+	if envelope && storedState {
 		return errors.New("worker JSON root schema is ambiguous")
 	}
 	expectedJobV2Key := "jobV2"
