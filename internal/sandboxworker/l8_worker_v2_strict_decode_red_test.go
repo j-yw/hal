@@ -251,11 +251,17 @@ func TestL8WorkerStrictDecodersPreserveCredentialSchemaNamesInsideStringMaps(t *
 func TestL8WorkerV2JSONPreflightRequiresProductionFlagOnlyAtCredentialSchemaPaths(t *testing.T) {
 	for _, raw := range []string{
 		`{"jobStartV2":{"contractVersion":"sandboxjob-v2"}}`,
+		`{"JobStartV2":{"contractVersion":"sandboxjob-v2"}}`,
+		`{"JOBSTARTV2":{"contractVersion":"sandboxjob-v2"}}`,
 		`{"jobV2":{"credentialIntent":{"planId":"plan-primary"}}}`,
+		`{"jobV2":{"CredentialIntent":{"planId":"plan-primary"}}}`,
 		`{"JobV2":{"credentialIntent":{"planId":"plan-primary"}}}`,
+		`{"JOBV2":{"CREDENTIALINTENT":{"planId":"plan-primary"}}}`,
+		`{"jobStartV2":{"productionCredentialsRequested":false,"ProductionCredentialsRequested":true}}`,
+		`{"jobV2":{"credentialIntent":{"productionCredentialsRequested":false,"PRODUCTIONCREDENTIALSREQUESTED":true}}}`,
 	} {
 		if err := validateWorkerJSONPreflightV2(raw); err == nil {
-			t.Fatalf("preflight accepted credential schema without productionCredentialsRequested: %s", raw)
+			t.Fatalf("preflight accepted invalid or ambiguous credential schema: %s", raw)
 		}
 	}
 
@@ -265,6 +271,15 @@ func TestL8WorkerV2JSONPreflightRequiresProductionFlagOnlyAtCredentialSchemaPath
 	} {
 		if err := validateWorkerJSONPreflightV2(raw); err != nil {
 			t.Fatalf("preflight treated unrestricted string-map key as credential schema: %v", err)
+		}
+	}
+
+	for _, raw := range []string{
+		`{"JobStartV2":{"ProductionCredentialsRequested":false}}`,
+		`{"JOBV2":{"CredentialIntent":{"ProductionCredentialsRequested":false}}}`,
+	} {
+		if err := validateWorkerJSONPreflightV2(raw); err != nil {
+			t.Fatalf("preflight rejected case-insensitive credential schema spelling accepted by typed JSON decode: %v", err)
 		}
 	}
 }
