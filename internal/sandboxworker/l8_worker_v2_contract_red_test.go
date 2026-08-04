@@ -1282,8 +1282,19 @@ func TestL8WorkerV2StoreJobIDVocabularyIsContractAndPersistenceConsistent(t *tes
 		})
 	}
 
-	for _, jobID := range []string{".", "_", "-", ".leading"} {
-		t.Run("rejected "+jobID, func(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		jobID string
+	}{
+		{name: "dot", jobID: "."},
+		{name: "underscore", jobID: "_"},
+		{name: "hyphen", jobID: "-"},
+		{name: "leading dot", jobID: ".leading"},
+		{name: "129 bytes", jobID: "j" + strings.Repeat("a", 128)},
+		{name: "colon", jobID: "job:colon"},
+	} {
+		t.Run("rejected "+tt.name, func(t *testing.T) {
+			jobID := tt.jobID
 			state := base
 			state.JobV2.ID = jobID
 			if err := state.JobV2.Validate(); err == nil {

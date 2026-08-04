@@ -178,6 +178,55 @@ func TestL8WorkerStrictRequestDecoderRejectsCaseFoldedTypedAliasesBeforeAdmissio
 	}
 }
 
+func TestL8WorkerStrictRequestDecoderRejectsLoneNoncanonicalTypedAliasesBeforeAdmission(t *testing.T) {
+	canonical := l8WorkerV2StartJSON(t)
+	var canonicalOutput Request
+	if err := decodeWorkerRequestInto(strings.NewReader(canonical), defaultMaxRequestBytes, &canonicalOutput); err != nil {
+		t.Fatalf("request decoder rejected exact canonical tags: %v", err)
+	}
+	for _, tt := range []struct {
+		name      string
+		canonical string
+		alias     string
+	}{
+		{name: "outer driver identity", canonical: `"driverId":"microvm"`, alias: `"DriverId":"microvm"`},
+		{name: "nested binding identity", canonical: `"bindingId":"binding-primary"`, alias: `"BindingId":"binding-primary"`},
+		{name: "unicode simple-fold submission identity", canonical: `"submissionId":"submission-primary"`, alias: `"ſubmissionId":"submission-primary"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := strings.Replace(canonical, tt.canonical, tt.alias, 1)
+			if raw == canonical {
+				t.Fatalf("canonical request did not contain typed field %s", tt.canonical)
+			}
+			output := Request{RequestID: "preflight-sentinel"}
+			if err := decodeWorkerRequestInto(strings.NewReader(raw), defaultMaxRequestBytes, &output); err == nil {
+				t.Fatal("request decoder accepted lone noncanonical typed alias")
+			}
+			if output.RequestID != "preflight-sentinel" || output.JobStartV2 != nil {
+				t.Fatalf("lone noncanonical request alias reached typed decode: %#v", output)
+			}
+			called := false
+			server := &Server{
+				maxRequestBytes: defaultMaxRequestBytes,
+				handler: RequestHandlerFunc(func(context.Context, Request) Response {
+					called = true
+					return Response{}
+				}),
+			}
+			decoded, errorResp := server.readRequest(strings.NewReader(raw))
+			if errorResp == nil {
+				server.handler.HandleRequest(context.Background(), decoded)
+			}
+			if errorResp == nil || errorResp.Error == nil || errorResp.Error.Code != ErrorCodeMalformedRequest {
+				t.Fatalf("lone noncanonical typed alias response = %#v, want malformed_request", errorResp)
+			}
+			if called {
+				t.Fatal("lone noncanonical typed alias reached admission")
+			}
+		})
+	}
+}
+
 func TestL8WorkerStrictResponseDecoderRejectsCaseFoldedTypedAliasBeforeDecode(t *testing.T) {
 	job := l8WorkerV2QueuedJob()
 	response := Response{
@@ -202,6 +251,37 @@ func TestL8WorkerStrictResponseDecoderRejectsCaseFoldedTypedAliasBeforeDecode(t 
 	}
 	if output.RequestID != "preflight-sentinel" || output.JobV2 != nil {
 		t.Fatalf("case-folded response alias reached typed decode: %#v", output)
+	}
+}
+
+func TestL8WorkerStrictResponseDecoderRejectsLoneUnicodeCaseFoldAliasBeforeDecode(t *testing.T) {
+	job := l8WorkerV2QueuedJob()
+	response := Response{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "job_status_v2-lone-case-alias",
+		Operation:       OperationJobStatusV2,
+		OK:              true,
+		JobV2:           &job,
+	}
+	payload, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var canonicalOutput Response
+	if err := decodeWorkerResponseInto(bytes.NewReader(payload), defaultMaxResponseBytes, &canonicalOutput); err != nil {
+		t.Fatalf("response decoder rejected exact canonical tags: %v", err)
+	}
+	canonical := `"workerId":"worker-primary"`
+	raw := strings.Replace(string(payload), canonical, `"worKerId":"worker-primary"`, 1)
+	if raw == string(payload) {
+		t.Fatal("canonical response did not contain worker identity")
+	}
+	output := Response{RequestID: "preflight-sentinel"}
+	if err := decodeWorkerResponseInto(strings.NewReader(raw), defaultMaxResponseBytes, &output); err == nil {
+		t.Fatal("response decoder accepted lone Unicode case-fold JobV2 worker identity alias")
+	}
+	if output.RequestID != "preflight-sentinel" || output.JobV2 != nil {
+		t.Fatalf("lone Unicode response alias reached typed decode: %#v", output)
 	}
 }
 
@@ -230,10 +310,47 @@ func TestL8WorkerStrictDurableStateDecoderRejectsCaseFoldedJobIdentityAliasBefor
 	}
 }
 
+func TestL8WorkerStrictDurableStateDecoderRejectsLoneUnicodeCaseFoldAliasBeforeDecode(t *testing.T) {
+	state := storedJobStateV2{
+		JobV2:            l8WorkerV2QueuedJob(),
+		RequestKey:       "request-v2-" + strings.Repeat("0", 64),
+		PrincipalID:      "principal-primary",
+		DaemonGeneration: l8WorkerV2DaemonGeneration,
+	}
+	payload, err := encodeStoredJobStateV2(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var canonicalOutput storedJobStateV2
+	if err := decodeStoredJobStateV2Into(bytes.NewReader(payload), maxStoredJobStateV2Bytes, &canonicalOutput); err != nil {
+		t.Fatalf("durable-state decoder rejected exact canonical tags: %v", err)
+	}
+	canonical := `"requestKey":"` + state.RequestKey + `"`
+	raw := strings.Replace(string(payload), canonical, `"requeſtKey":"`+state.RequestKey+`"`, 1)
+	if raw == string(payload) {
+		t.Fatal("canonical durable state did not contain request identity")
+	}
+	output := storedJobStateV2{PrincipalID: "preflight-sentinel"}
+	if err := decodeStoredJobStateV2Into(strings.NewReader(raw), maxStoredJobStateV2Bytes, &output); err == nil {
+		t.Fatal("durable state decoder accepted lone Unicode case-fold request identity alias")
+	}
+	if output.PrincipalID != "preflight-sentinel" || output.JobV2.ID != "" {
+		t.Fatalf("lone Unicode durable-state alias reached typed decode: %#v", output)
+	}
+}
+
 func TestL8WorkerStrictRequestDecoderPreservesDistinctCaseSensitiveStringMapKeys(t *testing.T) {
 	start := l8WorkerV2StartRequest()
-	start.Exec.Env = map[string]string{"SAFE": "upper-env", "safe": "lower-env"}
-	start.Exec.Target.Labels = map[string]string{"SAFE": "upper-label", "safe": "lower-label"}
+	start.Exec.Env = map[string]string{
+		"SAFE": "upper-env", "safe": "lower-env",
+		"K": "ascii-k-env", "K": "kelvin-env",
+		"S": "ascii-s-env", "ſ": "long-s-env",
+	}
+	start.Exec.Target.Labels = map[string]string{
+		"SAFE": "upper-label", "safe": "lower-label",
+		"K": "ascii-k-label", "K": "kelvin-label",
+		"S": "ascii-s-label", "ſ": "long-s-label",
+	}
 	request := Request{
 		ProtocolVersion: ProtocolVersion,
 		RequestID:       "request-v2-case-sensitive-maps",
@@ -251,7 +368,11 @@ func TestL8WorkerStrictRequestDecoderPreservesDistinctCaseSensitiveStringMapKeys
 		t.Fatalf("strict request decoder rejected distinct case-sensitive map keys: %#v", errorResp)
 	}
 	if decoded.JobStartV2 == nil || decoded.JobStartV2.Exec.Env["SAFE"] != "upper-env" || decoded.JobStartV2.Exec.Env["safe"] != "lower-env" ||
-		decoded.JobStartV2.Exec.Target.Labels["SAFE"] != "upper-label" || decoded.JobStartV2.Exec.Target.Labels["safe"] != "lower-label" {
+		decoded.JobStartV2.Exec.Env["K"] != "ascii-k-env" || decoded.JobStartV2.Exec.Env["K"] != "kelvin-env" ||
+		decoded.JobStartV2.Exec.Env["S"] != "ascii-s-env" || decoded.JobStartV2.Exec.Env["ſ"] != "long-s-env" ||
+		decoded.JobStartV2.Exec.Target.Labels["SAFE"] != "upper-label" || decoded.JobStartV2.Exec.Target.Labels["safe"] != "lower-label" ||
+		decoded.JobStartV2.Exec.Target.Labels["K"] != "ascii-k-label" || decoded.JobStartV2.Exec.Target.Labels["K"] != "kelvin-label" ||
+		decoded.JobStartV2.Exec.Target.Labels["S"] != "ascii-s-label" || decoded.JobStartV2.Exec.Target.Labels["ſ"] != "long-s-label" {
 		t.Fatalf("strict request decoder collapsed case-sensitive map keys: %#v", decoded.JobStartV2)
 	}
 }
