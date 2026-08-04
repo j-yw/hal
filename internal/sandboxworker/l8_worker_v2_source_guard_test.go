@@ -1681,6 +1681,9 @@ type unixSocketClientTransport struct { maxResponseBytes int64 }
 type workerResponseConnection interface { io.Reader; io.Writer; Close() error; SetDeadline(time.Time) error }
 func openResponseReader() (workerResponseConnection, error) { return nil, nil }
 func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, request Request) (Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	connection, err := openResponseReader()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
@@ -4439,10 +4442,12 @@ func l8WorkerV2ExactServerRequestDecoderCall(scope l8WorkerV2GuardScope, call *a
 		l8WorkerV2ObjectHasNoReassignments(function, receiver, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, reader, info) &&
 		l8WorkerV2ObjectOnlyConsumedByExactCalls(function, reader, []*ast.CallExpr{call}, info) &&
+		l8WorkerV2ObjectHasNoWholeValueEscapes(function, reader, []*ast.CallExpr{call}, nil, false, info) &&
 		l8WorkerV2SelectorHasNoMutations(function, receiver, "maxRequestBytes", info) &&
 		l8WorkerV2ExactTopLevelCodecConditional(function, call, info) &&
 		l8WorkerV2ExactTopLevelSuccessAfterCall(function, output, call, info) &&
-		l8WorkerV2ObjectHasNoReassignments(function, output, info)
+		l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
+		l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call}, nil, true, info)
 }
 
 func l8WorkerV2ExactUnixResponseDecoderCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
@@ -4463,11 +4468,16 @@ func l8WorkerV2ExactUnixResponseDecoderCall(scope l8WorkerV2GuardScope, call *as
 	request := parameters[1]
 	_, encodeCall, exactEncode := l8WorkerV2ExactClientRequestEncoderCalls(function, info)
 	lifecycleCalls, connectionLifecycleCalls, exactLifecycle := l8WorkerV2ExactClientConnectionLifecycle(function, connection, parameters[0], encodeCall, info)
+	halfCloseAssertion := l8WorkerV2ExactClientConnectionHalfCloseAssertion(function, connection, info)
+	connectionCalls := append(append([]*ast.CallExpr(nil), connectionLifecycleCalls...), encodeCall, call)
 	if connection == nil || output == nil || !l8WorkerV2ObjectIsAcquiredCallResult(function, connection, "", nil, info) ||
 		!exactEncode || !exactLifecycle || len(lifecycleCalls) == 0 || !l8WorkerV2ObjectHasNoReassignments(function, receiver, info) ||
 		!l8WorkerV2ObjectHasNoReassignments(function, request, info) ||
+		!l8WorkerV2ObjectHasNoWholeValueEscapes(function, request, []*ast.CallExpr{encodeCall}, nil, false, info) ||
 		!l8WorkerV2ObjectHasNoReassignments(function, connection, info) || !l8WorkerV2ObjectHasNoReassignments(function, output, info) ||
-		!l8WorkerV2ObjectOnlyConsumedByExactCalls(function, connection, append(connectionLifecycleCalls, encodeCall, call), info) ||
+		!l8WorkerV2ObjectOnlyConsumedByExactCalls(function, connection, connectionCalls, info) ||
+		!l8WorkerV2ObjectHasNoWholeValueEscapes(function, connection, connectionCalls, []*ast.TypeAssertExpr{halfCloseAssertion}, false, info) ||
+		!l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call}, nil, true, info) ||
 		!l8WorkerV2ExactTopLevelSuccessAfterCall(function, output, call, info) ||
 		!l8WorkerV2ExactClientCodecErrorBranch(function, call, info) ||
 		!l8WorkerV2ExactSyntheticClientSafeBranches(function, info) {
@@ -4491,6 +4501,8 @@ func l8WorkerV2ExactBehavioralResponseDecoderCall(scope l8WorkerV2GuardScope, ca
 	return output != nil && l8WorkerV2ExpressionObject(call.Args[0], info) == parameters[0] &&
 		l8WorkerV2ExactPackageInt64Constant(call.Args[1], "defaultMaxResponseBytes", 1<<20, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
+		l8WorkerV2ObjectHasNoWholeValueEscapes(function, parameters[0], []*ast.CallExpr{call}, nil, false, info) &&
+		l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call}, nil, true, info) &&
 		l8WorkerV2ExactThreeStatementResponseWrapper(function, call, output, info)
 }
 
@@ -4504,13 +4516,17 @@ func l8WorkerV2ExactStoreStateDecoderCall(scope l8WorkerV2GuardScope, call *ast.
 	reader := l8WorkerV2ExpressionObject(call.Args[0], info)
 	output := l8WorkerV2AddressedObject(call.Args[2], "storedJobStateV2", info)
 	readerClose, exactReaderClose := l8WorkerV2ExactDeferredReaderClose(function, reader, call, info)
+	acquireCall, _ := l8WorkerV2TopLevelAcquisition(function, "openStoredJobStateV2", info)
 	return receiver != nil && len(parameters) == 1 && reader != nil && output != nil &&
 		exactReaderClose &&
 		l8WorkerV2ObjectHasNoReassignments(function, receiver, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, parameters[0], info) &&
+		l8WorkerV2ObjectHasNoWholeValueEscapes(function, parameters[0], []*ast.CallExpr{acquireCall}, nil, false, info) &&
 		l8WorkerV2ObjectIsAcquiredCallResult(function, reader, "openStoredJobStateV2", parameters[0], info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, reader, info) && l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
 		l8WorkerV2ObjectOnlyConsumedByExactCalls(function, reader, []*ast.CallExpr{readerClose, call}, info) &&
+		l8WorkerV2ObjectHasNoWholeValueEscapes(function, reader, []*ast.CallExpr{readerClose, call}, nil, false, info) &&
+		l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call}, nil, true, info) &&
 		l8WorkerV2ExactPackageInt64Constant(call.Args[1], "maxStoredJobStateV2Bytes", 64<<10, info) &&
 		l8WorkerV2ExactTopLevelSuccessAfterCall(function, output, call, info) &&
 		l8WorkerV2ExactStoreSafeBranches(function, call, info)
@@ -4520,10 +4536,14 @@ func l8WorkerV2ExactClientConnectionLifecycle(function *ast.FuncDecl, connection
 	if function == nil || function.Body == nil || connection == nil || ctx == nil || encodeCall == nil {
 		return nil, nil, false
 	}
-	var deferredClose, cancellationClose, contextDone, contextDeadline, setDeadline *ast.CallExpr
+	acquireCall, acquireErr := l8WorkerV2TopLevelAcquisition(function, "openResponseReader", info)
+	if acquireCall == nil || acquireErr == nil || !l8WorkerV2ExactClientNilContextNormalization(function, ctx, acquireCall, info) {
+		return nil, nil, false
+	}
+	var deferredClose, deferredDoneClose, cancellationClose, contextDone, contextDeadline, setDeadline *ast.CallExpr
 	var done types.Object
 	var deferClosePos, donePos, goPos, deferDonePos, deadlinePos token.Pos
-	closeCalls, doneCalls, deadlineCalls, setDeadlineCalls := 0, 0, 0, 0
+	closeCalls, doneCalls, deadlineCalls, setDeadlineCalls, doneCloseCalls, doneReceives := 0, 0, 0, 0, 0, 0
 
 	for _, statement := range function.Body.List {
 		switch statement := statement.(type) {
@@ -4534,6 +4554,7 @@ func l8WorkerV2ExactClientConnectionLifecycle(function *ast.FuncDecl, connection
 				continue
 			}
 			if done != nil && l8WorkerV2ExactBuiltinCall(statement.Call, "close", done, info) {
+				deferredDoneClose = statement.Call
 				deferDonePos = statement.Pos()
 			}
 		case *ast.AssignStmt:
@@ -4543,7 +4564,12 @@ func l8WorkerV2ExactClientConnectionLifecycle(function *ast.FuncDecl, connection
 			}
 		}
 	}
-	if deferredClose == nil || done == nil || deferDonePos == token.NoPos {
+	if deferredClose == nil || deferredDoneClose == nil || done == nil || deferDonePos == token.NoPos {
+		return nil, nil, false
+	}
+	if !l8WorkerV2ExactCleanupDeferImmediatelyAfterAcquisitionError(function, acquireCall, acquireErr, deferredClose, info) ||
+		!l8WorkerV2ObjectHasNoReassignments(function, done, info) ||
+		!l8WorkerV2ObjectHasNoWholeValueEscapes(function, done, []*ast.CallExpr{deferredDoneClose}, nil, false, info) {
 		return nil, nil, false
 	}
 
@@ -4570,6 +4596,9 @@ func l8WorkerV2ExactClientConnectionLifecycle(function *ast.FuncDecl, connection
 	}
 
 	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if receive, ok := node.(*ast.UnaryExpr); ok && receive.Op == token.ARROW && l8WorkerV2ExpressionObject(receive.X, info) == done {
+			doneReceives++
+		}
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -4584,12 +4613,90 @@ func l8WorkerV2ExactClientConnectionLifecycle(function *ast.FuncDecl, connection
 		case l8WorkerV2ExactObjectMethodCallArity(call, connection, "SetDeadline", 1, info):
 			setDeadlineCalls++
 		}
+		if l8WorkerV2ExactBuiltinCall(call, "close", done, info) {
+			doneCloseCalls++
+		}
 		return true
 	})
 	exactOrder := deferClosePos < donePos && donePos < goPos && goPos < deferDonePos && deferDonePos < deadlinePos && deadlinePos < encodeCall.Pos()
 	allCalls := []*ast.CallExpr{deferredClose, cancellationClose, contextDone, contextDeadline, setDeadline}
 	connectionCalls := []*ast.CallExpr{deferredClose, cancellationClose, setDeadline}
-	return allCalls, connectionCalls, exactOrder && closeCalls == 2 && doneCalls == 1 && deadlineCalls == 1 && setDeadlineCalls == 1
+	return allCalls, connectionCalls, exactOrder && closeCalls == 2 && doneCalls == 1 && deadlineCalls == 1 && setDeadlineCalls == 1 && doneCloseCalls == 1 && doneReceives == 1
+}
+
+func l8WorkerV2ExactClientNilContextNormalization(function *ast.FuncDecl, ctx types.Object, acquireCall *ast.CallExpr, info *types.Info) bool {
+	if function == nil || function.Body == nil || ctx == nil || acquireCall == nil || len(function.Body.List) == 0 {
+		return false
+	}
+	conditional, ok := function.Body.List[0].(*ast.IfStmt)
+	if !ok || conditional.Init != nil || conditional.Else != nil || len(conditional.Body.List) != 1 || conditional.End() > acquireCall.Pos() {
+		return false
+	}
+	comparison, ok := l8WorkerV2UnparenExpression(conditional.Cond).(*ast.BinaryExpr)
+	if !ok || comparison.Op != token.EQL || l8WorkerV2ExpressionObject(comparison.X, info) != ctx || !l8WorkerV2IsNilExpression(comparison.Y, info) {
+		return false
+	}
+	assignment, ok := conditional.Body.List[0].(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.ASSIGN || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || l8WorkerV2ExpressionObject(assignment.Lhs[0], info) != ctx {
+		return false
+	}
+	background, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2IsPackageCall(background, "context", "Background", 0, info) {
+		return false
+	}
+	target := func(expression ast.Expr) bool { return l8WorkerV2ExpressionObject(expression, info) == ctx }
+	aliases := l8WorkerV2PointerAliases(function, target, info)
+	writes := 0
+	valid := l8WorkerV2StorageHasNoEscapes(function, target, aliases, info)
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !valid {
+			return false
+		}
+		switch statement := node.(type) {
+		case *ast.AssignStmt:
+			for _, left := range statement.Lhs {
+				if target(left) {
+					writes++
+					continue
+				}
+				if l8WorkerV2AssignmentMutatesStorage(left, target, aliases, info) {
+					valid = false
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			if target(statement.X) || l8WorkerV2AssignmentMutatesStorage(statement.X, target, aliases, info) {
+				valid = false
+				return false
+			}
+		}
+		return true
+	})
+	return valid && writes == 1
+}
+
+func l8WorkerV2ClientContextIsExactlyNormalized(function *ast.FuncDecl, ctx types.Object, info *types.Info) bool {
+	acquireCall, _ := l8WorkerV2TopLevelAcquisition(function, "openResponseReader", info)
+	return l8WorkerV2ExactClientNilContextNormalization(function, ctx, acquireCall, info)
+}
+
+func l8WorkerV2ExactCleanupDeferImmediatelyAfterAcquisitionError(function *ast.FuncDecl, acquireCall *ast.CallExpr, acquireErr types.Object, closeCall *ast.CallExpr, info *types.Info) bool {
+	if function == nil || function.Body == nil || acquireCall == nil || acquireErr == nil || closeCall == nil {
+		return false
+	}
+	for index, statement := range function.Body.List {
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || len(assignment.Rhs) != 1 || assignment.Rhs[0].Pos() != acquireCall.Pos() || index+2 >= len(function.Body.List) {
+			continue
+		}
+		errorBranch, ok := function.Body.List[index+1].(*ast.IfStmt)
+		if !ok || !l8WorkerV2IsErrorComparison(errorBranch.Cond, acquireErr, nil, info) {
+			return false
+		}
+		deferred, ok := function.Body.List[index+2].(*ast.DeferStmt)
+		return ok && deferred.Call == closeCall
+	}
+	return false
 }
 
 func l8WorkerV2ExactDoneChannelDefinition(statement *ast.AssignStmt, info *types.Info) types.Object {
@@ -4707,7 +4814,9 @@ func l8WorkerV2ExactDeferredReaderClose(function *ast.FuncDecl, reader types.Obj
 		}
 		return true
 	})
-	return deferredClose, deferredClose != nil && deferredClose.Pos() < decoderCall.Pos() && closeCalls == 1
+	acquireCall, acquireErr := l8WorkerV2TopLevelAcquisition(function, "openStoredJobStateV2", info)
+	return deferredClose, deferredClose != nil && deferredClose.Pos() < decoderCall.Pos() && closeCalls == 1 &&
+		l8WorkerV2ExactCleanupDeferImmediatelyAfterAcquisitionError(function, acquireCall, acquireErr, deferredClose, info)
 }
 
 func l8WorkerV2ExactObjectMethodCall(call *ast.CallExpr, receiver types.Object, method string, arguments []types.Object, info *types.Info) bool {
@@ -5276,6 +5385,138 @@ func l8WorkerV2ObjectOnlyConsumedByExactCalls(function *ast.FuncDecl, object typ
 	return valid
 }
 
+func l8WorkerV2ObjectHasNoWholeValueEscapes(function *ast.FuncDecl, object types.Object, allowedCalls []*ast.CallExpr, allowedAssertions []*ast.TypeAssertExpr, allowFinalReturn bool, info *types.Info) bool {
+	if function == nil || function.Body == nil || object == nil {
+		return false
+	}
+	aliases := l8WorkerV2ValueAliases(function, object, info)
+	callSet := make(map[*ast.CallExpr]bool, len(allowedCalls))
+	for _, call := range allowedCalls {
+		if call != nil {
+			callSet[call] = true
+		}
+	}
+	assertionSet := make(map[*ast.TypeAssertExpr]bool, len(allowedAssertions))
+	for _, assertion := range allowedAssertions {
+		if assertion != nil {
+			assertionSet[assertion] = true
+		}
+	}
+	valid := true
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !valid {
+			return false
+		}
+		switch statement := node.(type) {
+		case *ast.CallExpr:
+			if _, closure := l8WorkerV2UnparenExpression(statement.Fun).(*ast.FuncLit); closure {
+				return true
+			}
+			if callSet[statement] {
+				return false
+			}
+			if l8WorkerV2CallCarriesWholeObject(statement, object, aliases, info) {
+				valid = false
+				return false
+			}
+		case *ast.TypeAssertExpr:
+			if assertionSet[statement] {
+				return false
+			}
+			if l8WorkerV2ExpressionCarriesWholeObject(statement.X, object, aliases, info) {
+				valid = false
+				return false
+			}
+		case *ast.SendStmt:
+			if l8WorkerV2ExpressionCarriesWholeObject(statement.Value, object, aliases, info) {
+				valid = false
+				return false
+			}
+		case *ast.ReturnStmt:
+			if allowFinalReturn && l8WorkerV2IsExactFinalObjectReturn(function, statement, object, info) {
+				return false
+			}
+			for _, result := range statement.Results {
+				if l8WorkerV2ExpressionCarriesWholeObject(result, object, aliases, info) {
+					valid = false
+					return false
+				}
+			}
+		case *ast.AssignStmt:
+			for index, right := range statement.Rhs {
+				if !l8WorkerV2ExpressionCarriesWholeObject(right, object, aliases, info) {
+					continue
+				}
+				if len(statement.Lhs) != len(statement.Rhs) || !l8WorkerV2IsLocalWholeValueAliasTarget(function, statement.Lhs[index], info) {
+					valid = false
+					return false
+				}
+			}
+		case *ast.ValueSpec:
+			for index, right := range statement.Values {
+				if !l8WorkerV2ExpressionCarriesWholeObject(right, object, aliases, info) {
+					continue
+				}
+				if len(statement.Names) != len(statement.Values) || !l8WorkerV2IsLocalWholeValueAliasTarget(function, statement.Names[index], info) {
+					valid = false
+					return false
+				}
+			}
+		case *ast.CompositeLit:
+			if l8WorkerV2NodeReferencesObjectSet(statement, object, aliases, info) {
+				valid = false
+				return false
+			}
+		}
+		return true
+	})
+	return valid
+}
+
+func l8WorkerV2ExpressionCarriesWholeObject(expression ast.Expr, object types.Object, aliases map[types.Object]bool, info *types.Info) bool {
+	expression = l8WorkerV2UnparenExpression(expression)
+	referenced := l8WorkerV2ExpressionObject(expression, info)
+	if referenced == object || aliases[referenced] {
+		return true
+	}
+	_, composite := expression.(*ast.CompositeLit)
+	return composite && l8WorkerV2NodeReferencesObjectSet(expression, object, aliases, info)
+}
+
+func l8WorkerV2CallCarriesWholeObject(call *ast.CallExpr, object types.Object, aliases map[types.Object]bool, info *types.Info) bool {
+	if call == nil {
+		return false
+	}
+	if selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr); ok && l8WorkerV2ExpressionCarriesWholeObject(selector.X, object, aliases, info) {
+		return true
+	}
+	for _, argument := range call.Args {
+		if l8WorkerV2ExpressionCarriesWholeObject(argument, object, aliases, info) {
+			return true
+		}
+	}
+	return false
+}
+
+func l8WorkerV2IsLocalWholeValueAliasTarget(function *ast.FuncDecl, expression ast.Expr, info *types.Info) bool {
+	identifier, ok := l8WorkerV2UnparenExpression(expression).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if identifier.Name == "_" {
+		return true
+	}
+	object := l8WorkerV2ExpressionObject(identifier, info)
+	return object != nil && object.Pos() >= function.Body.Pos() && object.Pos() <= function.Body.End()
+}
+
+func l8WorkerV2IsExactFinalObjectReturn(function *ast.FuncDecl, returned *ast.ReturnStmt, object types.Object, info *types.Info) bool {
+	if function == nil || function.Body == nil || returned == nil || len(function.Body.List) == 0 || function.Body.List[len(function.Body.List)-1] != returned || len(returned.Results) != 2 {
+		return false
+	}
+	return l8WorkerV2ExpressionObject(returned.Results[0], info) == object && l8WorkerV2IsNilExpression(returned.Results[1], info)
+}
+
 func l8WorkerV2ValueAliases(function *ast.FuncDecl, object types.Object, info *types.Info) map[types.Object]bool {
 	aliases := make(map[types.Object]bool)
 	changed := true
@@ -5558,12 +5799,40 @@ func l8WorkerV2ExactClientHalfCloseComposition(function *ast.FuncDecl, info *typ
 		return false
 	}
 	return acquirePos < encodePos && encodePos < assertionPos && assertionPos < unsupported.Pos() && unsupported.End() < closePos && closePos < decodePos && closeCalls == 1 &&
-		l8WorkerV2ObjectHasNoReassignments(function, ctx, info) &&
+		l8WorkerV2ClientContextIsExactlyNormalized(function, ctx, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, connection, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, halfCloser, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, okObject, info) &&
 		l8WorkerV2ExactContextThenConstantResponseError(unsupported.Body, ctx, "write worker request framing failed", info) &&
 		closeConditional != nil && l8WorkerV2ExactCloseWriteErrorConditional(function, closeConditional, halfCloser, ctx, info)
+}
+
+func l8WorkerV2ExactClientConnectionHalfCloseAssertion(function *ast.FuncDecl, connection types.Object, info *types.Info) *ast.TypeAssertExpr {
+	if function == nil || function.Body == nil || connection == nil {
+		return nil
+	}
+	var result *ast.TypeAssertExpr
+	matches := 0
+	aliases := l8WorkerV2ValueAliases(function, connection, info)
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		assertion, ok := node.(*ast.TypeAssertExpr)
+		if !ok || !l8WorkerV2IsExactCloseWriteInterface(assertion.Type, info) {
+			return true
+		}
+		asserted := l8WorkerV2ExpressionObject(assertion.X, info)
+		if asserted == connection || aliases[asserted] {
+			result = assertion
+			matches++
+		}
+		return true
+	})
+	if matches != 1 {
+		return nil
+	}
+	return result
 }
 
 func l8WorkerV2ExactClientRequestEncoderCalls(function *ast.FuncDecl, info *types.Info) (*ast.CallExpr, *ast.CallExpr, bool) {
@@ -5809,7 +6078,7 @@ func l8WorkerV2ExactCallContextErrorBranch(function *ast.FuncDecl, call *ast.Cal
 	errObject := l8WorkerV2IfInitializerErrorObject(conditional, call, info)
 	return errObject != nil && l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) &&
 		l8WorkerV2ObjectHasNoReassignments(function, errObject, info) &&
-		l8WorkerV2ObjectHasNoReassignments(function, ctx, info) &&
+		l8WorkerV2ClientContextIsExactlyNormalized(function, ctx, info) &&
 		l8WorkerV2ExactContextThenConstantResponseError(conditional.Body, ctx, message, info)
 }
 
@@ -5818,7 +6087,7 @@ func l8WorkerV2ExactObjectContextErrorBranch(function *ast.FuncDecl, errObject, 
 		conditional, ok := statement.(*ast.IfStmt)
 		if ok && conditional.Init == nil && l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) &&
 			l8WorkerV2ObjectHasNoReassignments(function, errObject, info) &&
-			l8WorkerV2ObjectHasNoReassignments(function, ctx, info) &&
+			l8WorkerV2ClientContextIsExactlyNormalized(function, ctx, info) &&
 			l8WorkerV2ExactContextThenConstantResponseError(conditional.Body, ctx, message, info) {
 			return true
 		}
