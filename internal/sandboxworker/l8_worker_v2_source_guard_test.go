@@ -756,9 +756,9 @@ import (
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func validWorkerV2SafeID(value string) bool { return value != "" }
+func validJobSafeID(value string) bool { return value != "" }
 func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
-	if store == nil || !validWorkerV2SafeID(jobID) {
+	if store == nil || !validJobSafeID(jobID) {
 		return nil, errors.New("stored job state is unavailable")
 	}
 	path := filepath.Join(store.root, jobID+".json")
@@ -1429,6 +1429,13 @@ func (reviewReturningReceiver) value() int { return 1 }
 				return strings.Replace(source, "\treader, err := store.openStoredJobStateV2(jobID)", "\tescapedStoredJobOpenerV2 = store.openStoredJobStateV2\n\treader, err := store.openStoredJobStateV2(jobID)", 1)
 			},
 		},
+		{
+			name: "store opener substitutes private worker v2 id vocabulary",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "validJobSafeID(jobID)", "validWorkerV2SafeID(jobID)", 1)
+				return source + "\nfunc validWorkerV2SafeID(value string) bool { return value != \"\" }\n"
+			},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
@@ -1500,7 +1507,7 @@ func openStoredJobStateV2FromRoot(root, jobID string) (storedJobReaderV2, error)
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			const safeOpener = `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
-	if store == nil || !validWorkerV2SafeID(jobID) {
+	if store == nil || !validJobSafeID(jobID) {
 		return nil, errors.New("stored job state is unavailable")
 	}
 	path := filepath.Join(store.root, jobID+".json")
@@ -2416,9 +2423,9 @@ import (
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func validWorkerV2SafeID(value string) bool { return value != "" }
+func validJobSafeID(value string) bool { return value != "" }
 func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
-	if store == nil || !validWorkerV2SafeID(jobID) {
+	if store == nil || !validJobSafeID(jobID) {
 		return nil, errors.New("stored job state is unavailable")
 	}
 	path := filepath.Join(store.root, jobID+".json")
@@ -6549,7 +6556,7 @@ func l8WorkerV2ExactStoredJobOpenerInputGuard(statement ast.Stmt, store, jobID t
 		return false
 	}
 	call, ok := l8WorkerV2UnparenExpression(negated.X).(*ast.CallExpr)
-	return ok && l8WorkerV2IsExactPackageFunctionCall(call, "validWorkerV2SafeID", []types.Object{jobID}, info)
+	return ok && l8WorkerV2IsExactPackageFunctionCall(call, "validJobSafeID", []types.Object{jobID}, info)
 }
 
 func l8WorkerV2ExactStoredJobFileInspection(statement ast.Stmt, statInfo, statErr types.Object, info *types.Info) ([]*ast.CallExpr, bool) {
