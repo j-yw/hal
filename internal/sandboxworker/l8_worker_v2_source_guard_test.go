@@ -785,6 +785,9 @@ func encodeWorkerResponse(writer io.Writer, response Response) error {
 		source string
 	}{
 		{name: "adjacent runtime metadata", path: "job_v2_helpers.go", source: strings.Replace(keySource, "RuntimeMetadata", "RuntimeTemplateStatusMetadata", 1)},
+		{name: "missing request driver identity", path: "job_v2_helpers.go", source: strings.NewReplacer("\t\tDriverID string `json:\"driverId\"`\n", "", "DriverID: driverID, ", "").Replace(keySource)},
+		{name: "missing request principal identity", path: "job_v2_helpers.go", source: strings.NewReplacer("\t\tPrincipalID string `json:\"principalId\"`\n", "", "PrincipalID: principalID, ", "").Replace(keySource)},
+		{name: "wrong canonical request field", path: "job_v2_helpers.go", source: strings.Replace(keySource, "Request JobStartRequestV2 `json:\"request\"`", "Request any `json:\"request\"`", 1)},
 		{name: "nested custom marshal", path: "job_v2_helpers.go", source: `package sandboxworker
 import "encoding/json"
 type callbackV2 struct{}
@@ -805,6 +808,8 @@ func jobRequestKeyV2(request JobStartRequestV2) ([]byte, error) { return json.Ma
 		{name: "wrong key function", path: "job_v2_helpers.go", source: strings.Replace(keySource, "jobRequestKeyV2", "encodeJobRequestV2", 1)},
 		{name: "wrong store function", path: "job_store_v2.go", source: strings.Replace(storeSource, "encodeStoredJobStateV2", "encodeStoredJobSnapshotV2", 1)},
 		{name: "wrong store file", path: "job_v2_service.go", source: storeSource},
+		{name: "missing stored principal", path: "job_store_v2.go", source: strings.Replace(storeSource, "; PrincipalID string `json:\"principalId\"`", "", 1)},
+		{name: "wrong stored request key tag", path: "job_store_v2.go", source: strings.Replace(storeSource, `json:"requestKey"`, `json:"requestIdentity"`, 1)},
 		{name: "wrong response encoder file", path: "job_v2_service.go", source: responseEncodeSource},
 		{name: "wrong response encoder function", path: "protocol_decode.go", source: strings.Replace(responseEncodeSource, "encodeWorkerResponse", "encodeWorkerSnapshot", 1)},
 	}
@@ -818,13 +823,13 @@ func jobRequestKeyV2(request JobStartRequestV2) ([]byte, error) { return json.Ma
 	l8AssertWorkerV2GuardRejects(t, map[string]string{"job_store_v2.go": unmarshalSource}, keyPolicy, "implicit interface callback")
 
 	for name, field := range map[string]string{
-		"store nested marshal":   `Value storedCallbackV2`,
+		"store nested marshal":   `Value storedEncoderV2`,
 		"store nested interface": `Value any`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			callbackDeclaration := ""
-			if strings.Contains(field, "storedCallbackV2") {
-				callbackDeclaration = "type storedCallbackV2 struct{}\nfunc (storedCallbackV2) MarshalJSON() ([]byte, error) { return nil, nil }\n"
+			if strings.Contains(field, "storedEncoderV2") {
+				callbackDeclaration = "type storedEncoderV2 struct{}\nfunc (storedEncoderV2) MarshalJSON() ([]byte, error) { return nil, nil }\n"
 			}
 			source := "package sandboxworker\nimport \"encoding/json\"\n" + callbackDeclaration + "type JobV2 struct { " + field + " }\ntype storedJobStateV2 struct { JobV2 JobV2 }\nfunc encodeStoredJobStateV2(state storedJobStateV2) ([]byte, error) { return json.Marshal(state) }"
 			l8AssertWorkerV2GuardRejects(t, map[string]string{"job_store_v2.go": source}, keyPolicy, "implicit interface callback")
