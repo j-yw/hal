@@ -159,8 +159,10 @@ absence cannot be proved, the public state is `unknown` with reason
   package imports the other.
 - `internal/sandboxruntime` owns neutral optional job-credential lifecycle
   interfaces used by `internal/sandboxworker`.
-- `internal/sandboxruntime/microvm/guestagent` owns versioned v2 wire contracts
-  and a v2 client while preserving v1 byte and behavior compatibility.
+- `internal/sandboxruntime/microvm/guestagent` keeps the frozen v1 contract.
+  Its leaf child `session` owns only the authenticated binary session, and
+  sibling `v2control` owns strict v2 control unions, compatibility negotiation,
+  and the injected client. Neither child changes a v1 production file.
 - `cmd/hal-guest-credential-helper` is the narrow process entrypoint and PID1
   bootstrap adapter. It contains no independently testable privilege or
   lifecycle policy.
@@ -219,6 +221,20 @@ endpoint, or a reusable authorization secret. This makes job admission and
 recovery independent of command-process lifetime.
 `ExecBinding` contains only ephemeral capabilities needed by the exact exec;
 it is not copied into the durable `Job`.
+
+D2 completes the neutral identity before guest proofs exist. In addition to the
+D1 fields, `JobCredentialIdentity` and its canonical proof digest bind required
+`TemplatePolicyID`, `WorkspacePolicyID`, `ControllerKeyGeneration`,
+`GuestBootGeneration`, `GuestImageGeneration`, `GuestImageDigest`,
+`GuestSessionGeneration`, and `GuestHelperGeneration` safe fields. The
+admission request and accepted grant carry the same template/workspace values.
+The guest-session generation is derived only after the authenticated handshake;
+it identifies but does not authorize that session. The helper generation is
+accepted only from authenticated readiness. Raw boot nonce, session keys,
+private/public keys, helper nonce, CID, ports, and live handles do not enter the
+neutral identity or durable/status projection. Root active and cleanup proof
+tokens commit to every added field, and the Firecracker adapter proves lossless
+order-preserving mapping to `credentialprotocol.JobIdentity`.
 
 ### Admission authorization precedes source resolution
 
@@ -399,10 +415,16 @@ exact two-field compatibility preface as one length-framed JSON object:
 {"protocolVersion":"guest-agent-v2","operation":"readiness"}
 ```
 
-The preface and response each have a 512-byte compatibility limit. They reject
-unknown, duplicate, trailing, null, noncanonical, or missing fields. An old
-server response is accepted only when it is byte-for-byte the canonical JSON
-encoding of the frozen v1 unsupported-version envelope below:
+The 512-byte compatibility limit applies to the preface JSON payload (516 bytes
+including the four-byte outer length). After consuming it, a v2 guest
+immediately emits the length-framed binary `GuestHello` defined below; there is
+no separate plaintext v2 JSON acknowledgement. The host reads the next outer
+frame with the 4096-byte handshake bound. A payload beginning with `HL8H` must
+be the exact valid `GuestHello`. A payload beginning with `{` is considered
+only as the legacy exception, must be no larger than the 512-byte JSON payload
+compatibility limit, and is accepted only when it is byte-for-byte the
+canonical JSON encoding of the frozen v1 unsupported-version envelope below.
+Every other prefix or payload is terminal.
 
 ```json
 {"protocolVersion":"guest-agent-v1","operation":"readiness","error":{"code":"unsupported_protocol_version","operation":"readiness","field":"protocolVersion","message":"guest agent protocol version is unsupported"}}
@@ -414,16 +436,18 @@ terminal `credential_protocol_unsupported` result, never admission. An absent
 port-1025 listener, any other v1 envelope, any near-miss field, a response on a
 new stream, or any v2 negotiation failure is terminal and cannot trigger a v1
 readiness request, retry, downgrade, environment fallback, or compatibility
-handoff. Once the preface succeeds as v2, every encrypted application request
-and response has an exact echoed request ID.
+handoff. Receiving and validating `GuestHello` is the only successful v2
+classification. After the authenticated handshake, every encrypted application
+request and response has an exact echoed request ID.
 
 Each lifecycle request carries the full identity and generation tuple, a
 monotonic revision, bounded expiry, and exact ordered mode/binding
 declarations. The child `credentialprotocol.JobIdentity` is a data-only wire
 mirror mapped losslessly at the Firecracker host boundary; it does not import
 the root `sandboxruntime` package. The signed handshake binds a base guest
-session identity containing the boot nonce and generation, controller signing
-key generation, expected CID, fixed channel port, image digest/generation,
+session identity containing the host-generated guest-session boot nonce and
+generation, controller signing-key generation, expected CID, fixed channel
+port, image digest/generation,
 runtime ID/generation, Firecracker process generation, and vsock generation.
 `GuestCredentialSessionIdentity` then contains that base session ID, the exact
 job identity, and helper-session generation. Every application request, proof,
@@ -436,7 +460,11 @@ snapshot, proxy session, proxy generation, topology generation, and rule
 generation. Mixed mode has the same requirement when any binding is HTTP.
 Conversely, file-only and SSH-only modes require that tuple to be absent.
 Changing this validation is an intentional D2 correction to the D1 neutral
-contract and must retain order-sensitive binding/mode correlation.
+contract and must retain order-sensitive binding/mode correlation. The same
+mode-dependent rule applies independently in
+`credentialsource.validAdmissionRequest`; D2 changes and cross-tests both
+validators so file-only and SSH-only admission do not require invented network
+IDs and HTTP or mixed admission cannot omit them.
 
 Responses echo request identity and return safe proof or cleanup IDs only.
 Unknown or duplicate fields, noncanonical scalars, oversized arrays or frames,
@@ -457,7 +485,11 @@ CID alone is not authentication because another host process could connect.
 The worker daemon owns an Ed25519 controller identity in a separate sealed
 Linux-keyring entry. Firecracker passes only its public key and safe key
 generation in runtime-owned boot configuration; project/template/job input
-cannot replace them. Before any untrusted exec, host and guest perform a
+cannot replace them. The host also generates and retains the 32-byte
+guest-session boot nonce, passes the same value only through runtime-owned boot
+configuration, and rejects a `GuestHello` that does not echo it. This nonce is
+distinct from the PID1/helper-local boot nonce below and neither is durable or
+project-selectable. Before any untrusted exec, host and guest perform a
 signed ephemeral X25519 handshake over the CID-checked stream. The transcript
 covers both ephemeral keys, a guest boot nonce, controller-key generation,
 guest CID and port, image digest, and every runtime/process/vsock generation.
@@ -473,12 +505,12 @@ not a credential-delivery proof.
 Handshake suite `0x0001` is X25519, pure Ed25519, SHA-256,
 HKDF-SHA-256, HMAC-SHA-256, and AES-256-GCM using the Go standard-library
 implementations. A strict prepared-Linux proof additionally requires hardware
-AES acceleration visible to the guest. This avoids extending D2 with a second
-cryptographic dependency or making a timing claim that the portable Go GCM
-implementation cannot support. Go cryptographic objects may retain internal
-copies that expose no destruction API; the physical-zeroization disclaimer
-above applies, while every Hal-owned mutable input, derived byte buffer, and
-plaintext buffer is still overwritten and logically released.
+AES-GCM acceleration visible to the host and guest. This avoids extending D2
+with a second cryptographic dependency or making a timing claim that the
+portable Go GCM implementation cannot support. Go cryptographic objects may
+retain internal copies that expose no destruction API; the physical-zeroization
+disclaimer above applies, while every Hal-owned mutable input, derived byte
+buffer, and plaintext buffer is still overwritten and logically released.
 
 The handshake order is exact:
 
@@ -618,8 +650,10 @@ controllerVerify = HMAC-SHA256(
 ```
 
 Application control plaintext is at most 2 MiB and relay plaintext is at most
-256 KiB; ciphertext adds exactly the 16-byte GCM tag. Private file payloads
-remain separately typed and bounded to 64 KiB per binding and 1 MiB aggregate.
+256 KiB; these are plaintext payload bounds, so complete encrypted wires are
+2,097,220 and 262,212 bytes respectively after the 52-byte header and 16-byte
+GCM tag. Private file payloads remain separately typed and bounded to 64 KiB
+per binding and 1 MiB aggregate.
 Every encrypted control request carries a 16-byte random request ID rendered in
 JSON as exactly 22 unpadded base64url characters, its canonical job/session
 identity digest, operation, and body. Responses echo the same request ID and
@@ -648,15 +682,57 @@ generation it owned. A reconnect under that same generation is terminal; a
 later job requires a new runtime/session generation rather than reconstructing
 live state.
 
-The D2 implementation locks one deterministic suite-1 control vector. It uses
-the RFC 7748 Alice/Bob X25519 private/public pairs beginning
-`77076d0a.../8520f009...` and `5dab087e.../de9edb7d...`, RFC 8032 Ed25519 seed
-`9d61b19d...` and public key `d75a9801...`, boot nonce bytes `00..1f`, CID 3,
-port 1025, image SHA-256
+Before a session authenticates, a malformed connection is closed without
+claiming the generation or mutating guest/job state. At most three pre-auth
+connections, each under the five-second deadline, are allowed for one boot
+generation; reaching that cap makes readiness false and requires exact VM
+stop/reap. The official controller performs one attempt and never retries or
+falls back. The first successfully authenticated session exclusively claims
+the generation, after which every loss/failure is permanently non-reconnectable
+as above.
+
+The root `MaxJobCredentialLifetime` one-hour value remains a generic neutral
+ceiling. L8 adds `MaxGuestCredentialSessionLifetime = 35 minutes`: handshake
+time, every guest job activation/expiry, ticket hard expiry, helper/keeper
+state, and SSH relay hard expiry must fit inside it. The 60-second ticket lease,
+20-second renewal cadence, and five-second skew allowance never extend the
+35-minute hard expiry.
+
+The D2 implementation locks one deterministic suite-1 control vector. The guest
+is RFC 7748 Alice and the controller is Bob. Full inputs are:
+
+```text
+guest X25519 private = 77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a
+guest X25519 public  = 8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a
+controller X25519 private = 5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb
+controller X25519 public  = de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f
+controller Ed25519 seed   = 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60
+controller Ed25519 public = d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
+```
+
+The boot nonce is bytes `00..1f`, CID 3, port 1025, image SHA-256
 `5756b67946a36d1e78ce0b3ae6f1131ead840b828d41b334de1594a7c8a00687`,
 and the tokens `controller-key-gen-1`, `runtime-1`, `runtime-gen-1`,
 `process-gen-1`, `vsock-gen-1`, `boot-gen-1`, and `image-gen-1`. The required
-intermediate/output values are:
+canonical encodings are:
+
+```text
+GuestHello outer length = 000000d9
+GuestHello inner =
+484c384801010000000101008520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00000003000004010014636f6e74726f6c6c65722d6b65792d67656e2d31000972756e74696d652d31000d72756e74696d652d67656e2d31000d70726f636573732d67656e2d31000b76736f636b2d67656e2d31000a626f6f742d67656e2d31000b696d6167652d67656e2d315756b67946a36d1e78ce0b3ae6f1131ead840b828d41b334de1594a7c8a00687
+
+ControllerAuth unsigned inner =
+484c38480102000000010100de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f
+
+ControllerAuth outer length = 0000006c
+signatureInput =
+002c68616c2f6c382f67756573742d73657373696f6e2f636f6e74726f6c6c65722d7369676e61747572652f76315ca9d78096d266d650caef23a7619548039feffcd6ef4d4636d8e330c3c9591a
+signature =
+f40a8509d1881897bfd0838d2008290d71287a45ab92a811450e71a74b26243766c6e1a62de2a1a13064cbd8c8f512cd9be8dd49ed840c4fe765468eb5d27600
+ControllerAuth wire = outer length || unsigned inner || signature
+```
+
+The required intermediate/output values are:
 
 ```text
 SS = 4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742
@@ -674,12 +750,169 @@ guestVerify = 7869fb8ddfac62aaa8a8a59febda424eb1d31834e2ba89d433ba69ef17c763f2
 controllerVerify = 4489107525a59d2174bfed691601ce21f6389420f3151cdc26c65f23f9c797dd
 ```
 
+The exact encrypted vectors are:
+
+```text
+guest Finished wire =
+484c3846010100000000000000000000000000308bb2532307629fb19302a9e5ee11490e8c9f2265f030bcc46a13391dc9759efbfb955227d8d3bf927f66b3e947f3dd2608bc81ba3070ab22d1aef360e6579366d5e79ee66d83dcf5234495deaf608cae
+
+controller Finished wire =
+484c3846010200000000000000000000000000308bb2532307629fb19302a9e5ee11490e8c9f2265f030bcc46a13391dc9759efbdacd029fbeabc81d3644fc6c194f5ade5082bcf21140d99a286ea0ca7d730267bfe2fb9806023953216d89368c00ec23
+
+controller-to-guest application plaintext at sequence 1 = bytes 00..1f
+nonce = 525309e40000000000000001
+header =
+484c3846011000000000000000000001000000308bb2532307629fb19302a9e5ee11490e8c9f2265f030bcc46a13391dc9759efb
+ciphertext and tag =
+5a7ea7228a09f92f035b0bd61133da82428eb55e9a5c2d54004927c84edecc39cf4512c772cbf1ad10e9a6c317411a34
+```
+
+That final item is deliberately a session-layer plaintext vector, not a v2
+control-envelope fixture; request ID, identity digest, and operation-union
+canonicalization have separate exact codec vectors.
+
 Tests lock the full GuestHello, ControllerAuth, both Finished frames, and the
 sequence-1 application ciphertext—not only these abbreviated display values—
 and independently recompute them from the normative encoding above. Each
 transcript identity, signature, X25519 share, Finished tag, sequence, session
 ID, header field, length boundary, and reconnect state has a mutation-negative
 test.
+
+### Normative v2 control unions
+
+`v2control` uses canonical JSON only for safe control metadata. The encoder
+emits fields in the order below with no insignificant whitespace. The decoder
+first rejects invalid UTF-8, unknown/case-aliased/duplicate/null/trailing
+fields, noninteger or alternate numeric encodings, excessive depth, and bounds;
+it then re-encodes and requires byte equality. It uses concrete discriminated
+structs—never `map[string]any`, `json.RawMessage`, or an interface body.
+
+Every request has this root field order:
+
+```json
+{"protocolVersion":"guest-agent-v2","operation":"<operation>","requestId":"<22-char-base64url>","identityDigest":"<43-char-base64url>","body":{}}
+```
+
+Every response has the same first four fields followed by `ok`. Success has one
+operation-specific `body` and omits `error`; failure has no `body` and one
+`error` with exact field order `code`, optional `field`, and `message`. Error
+codes/messages are fixed safe catalogs and never wrap a cause. The 16-byte
+request ID is nonzero. The 32-byte digest is unpadded base64url and is the base
+session ID itself for readiness or the exact
+`GuestCredentialSessionIdentity` digest for job operations. Responses echo
+operation, request ID, and digest byte-for-byte.
+
+The child `JobIdentity` JSON order is the root neutral field order:
+
+```text
+sandboxId, executionId, workerId, hostId, runtimeDriver, runtimeId,
+runtimeGeneration, firecrackerProcessGeneration, vsockGeneration,
+workerJobId, submissionId, planId, activationGeneration,
+credentialGeneration, networkPlanId, policySnapshotId, proxySessionId,
+proxyGenerationId, topologyGenerationId, ruleGenerationId,
+admissionGrantId, principalId, templatePolicyId, workspacePolicyId,
+controllerKeyGeneration, guestBootGeneration, guestImageGeneration,
+guestImageDigest, guestSessionGeneration, guestHelperGeneration,
+admissionGrantRevision, issuedAtUnixNano, bindings
+```
+
+`bindings` is an ordered nonempty array of exact `{bindingId,mode}` objects.
+The digest is SHA-256 over eight-byte big-endian length plus bytes for every
+string above through `guestHelperGeneration`, then big-endian `uint64`
+admission revision, big-endian `uint64(issuedAtUnixNano)`, big-endian binding
+count, and the same length-plus-bytes encoding for each ordered binding ID then
+mode. The root and child expose validated digest functions and conformance tests
+prove equality; no package copies an undocumented digest variant.
+
+`GuestCredentialSessionIdentity` is exactly the current 32-byte session ID plus
+that validated `JobIdentity`. Its `JobIdentity.guestSessionGeneration` must be
+the 43-character unpadded base64url encoding of the same session ID. Its digest
+is `SHA256(opaque16("hal/l8/guest-credential-identity/v1") || sessionID ||
+jobIdentityDigest)`. It is live-only; durable proof tokens commit to the root
+job-identity digest and safe session generation, never the raw wrapper or
+session keys.
+
+The exact operation bodies are:
+
+```text
+readiness request:
+  requiredCapabilities: ordered array of
+    credential_lifecycle, credential_exec_binding, helper_exact_pid,
+    file_tmpfs, ssh_agent
+  expectedServiceUID: 998
+  expectedServiceGID: 998
+  expectedWorkloadUID: 1000
+  expectedWorkloadGID: 1000
+  helperProtocol: "guest-helper-v1"
+
+readiness success:
+  capabilities: exact ordered echo
+  serviceUID/serviceGID: 998/998
+  workloadUID/workloadGID: 1000/1000
+  helperProtocol: "guest-helper-v1"
+  guestSessionGeneration: safe ID derived from sessionID
+  helperGeneration: authenticated safe ID
+
+credential_prepare request:
+  identity: JobIdentity
+  revision: 1
+  expiresAtUnixNano: positive int64 within the 35-minute hard limit
+  bindings: exact ordered binding manifest
+  privateRecordCount/privateAggregateBytes: bounded nonnegative integers
+
+credential_prepare success:
+  revision/expiresAtUnixNano: exact echo
+  activeProofId: safe ID
+  execBindingId: safe opaque ID
+  bindingProofs: ordered exact {bindingId,mode,proofId} array
+
+credential_renew request:
+  identity, next revision, new expiresAtUnixNano, priorProofId
+credential_renew success:
+  revision/expiresAtUnixNano exact echo, replacementActiveProofId
+
+credential_revoke request:
+  identity, current revision, reason enum
+credential_revoke success:
+  revision exact echo, cleanupProofId, authorityAbsent=true,
+  resourcesAbsent=true, cleanupDisposition="cleanup_complete"
+
+exec request:
+  identity, active revision, execBindingId, bounded ExecPlan metadata,
+  privateRecordCount/privateAggregateBytes
+exec success:
+  revision exact echo, exitCode, bounded stdout/stderr metadata
+```
+
+Prepare revision starts at one; renew is exactly prior plus one. Revoke uses the
+current accepted revision. Repeating the same request ID plus identical
+canonical bytes is idempotent; reusing an ID with different bytes, changing any
+identity field, stale/gapped revision, expiry outside the job/session window,
+or a response mismatch closes and revokes the session. Readiness has no job and
+cannot authorize prepare by itself.
+
+Prepare private-record count equals the number of file bindings, zero through
+16, with aggregate at most 1 MiB. Exec private-record count is zero or one and
+aggregate at most 64 KiB. Renew, revoke, readiness, and every response require
+both private fields absent and accept no private record.
+
+Sensitive data uses an encrypted binary private record inside `HL8F`, never a
+JSON field. Its plaintext header is exactly:
+
+```text
+magic[4]="HL8B" | version:u8=1 | kind:u8 | flags:u16_be=0
+requestID:[16]byte | identityDigest:[32]byte | bindingIndex:u16_be
+chunkIndex:u16_be | chunkCount:u16_be | reserved:u16_be=0
+payloadLength:u32_be | payloadSHA256:[32]byte | mutable payload
+```
+
+Kinds are 1 file bytes and 2 opaque exec binding. File bindings use one record,
+so chunk index is zero and count one; the explicit fields reject accidental
+future chunking without a protocol version. Exec-binding records have binding
+index zero and the same zero/one chunk rule. Payload is at most 64 KiB and the
+aggregate/count exactly match the preceding control request. Digests, request
+ID, identity, index, order, count, and length validate before a sink receives
+bytes. Any mismatch aborts the request and wipes every owned buffer.
 
 V2 exec is admitted only into the exact prepared job namespace on that
 authenticated persistent session. V1 exec and a
@@ -899,25 +1132,42 @@ namespace/mount ownership, final child identity/capability drop, and file
 ownership only. PID1 removes every other bounding/ambient capability.
 
 The D2 bootstrap contract resolves process-identity ordering explicitly. PID1
-creates the seqpacket socketpair, a 32-byte random boot nonce, and a start-gate
-pipe; it starts the helper first. It then creates the guest agent with
-`clone3(CLONE_PIDFD)` behind the gate. From PID1 credentials, the helper accepts
-one bootstrap datagram with exactly one `SCM_RIGHTS` descriptor containing that
-pidfd and records the reported agent PID plus UID/GID 998. Only after the helper
-reinspects the live pidfd and acknowledges does PID1 release the start gate.
-The helper requires exact PID 1, UID 0, and GID 0 credentials for bootstrap.
-Every later agent packet must contain exactly one `SCM_CREDENTIALS` record
-matching the recorded PID/UID/GID and still-live pidfd. `MSG_TRUNC`,
-`MSG_CTRUNC`, missing or duplicate credentials, unexpected rights, extra file
-descriptors, stale boot/helper/job generation, replay, sequence gap, and
-sequence wrap fail closed.
+creates the seqpacket socketpair, enables `SO_PASSCRED` on both endpoints,
+creates a 32-byte random helper-local boot nonce and start-gate pipe, and starts
+the helper first. The helper rechecks `SO_PASSCRED`, fixed descriptors,
+generation, and hardening, then sends `helper_ready`; PID1 verifies the exact
+known helper PID/UID/GID before doing anything else. A bootstrap can never be
+queued before that ready message.
+
+PID1 then creates the guest agent with `clone3(CLONE_PIDFD)` behind the gate and
+sends one atomic bootstrap datagram from exact PID 1, UID 0, and GID 0. It
+carries exactly one `SCM_RIGHTS` descriptor: the agent pidfd. The helper treats
+the trusted PID1 packet as the binding between that pidfd and the reported
+agent PID/UID/GID 998, proves current liveness with
+`pidfd_send_signal(pidfd, 0, nil, 0)` and a non-readable/non-hung-up poll, and
+records both. It does not claim that pidfd alone reveals a numeric PID. PID1
+verifies the correlated bootstrap acknowledgement and only then releases the
+agent gate and closes its control duplicate.
+
+The sealed start-gate record gives the agent the expected helper PID/UID/GID,
+helper and boot generations, nonce, and bootstrap digest. The agent verifies
+those exact `SCM_CREDENTIALS` on every helper response; socket EOF is permanent
+helper loss, so PID reuse cannot acquire the unshared socketpair endpoint. The
+helper requires every later request's one credentials record to match the
+recorded agent and its still-live pidfd. `MSG_TRUNC`, `MSG_CTRUNC`, missing or
+duplicate credentials, unexpected rights, extra file descriptors, stale
+boot/helper/job generation, replay, sequence gap, and sequence wrap fail
+closed. Any received descriptor is closed on every rejection path.
 
 Inherited descriptor numbers are fixed. The helper receives control socket 3,
 credential-root `O_PATH` directory 4, delegated cgroup-v2 `O_PATH` directory 5,
-and minimal-root `O_PATH` directory 6. The agent receives control socket 3 and
-the start-gate read end 4. All unrelated descriptors are closed; intended
-descriptors become close-on-exec after bootstrap, and no workload inherits a
-control, root, namespace, pidfd, or nonce descriptor.
+minimal-root `O_PATH` directory 6, and sealed read-only bootstrap config 7,
+which it closes after validation. It reserves internal fixed slots 8 for the
+one active job's mount namespace, 9 for its cgroup directory, 10 for the keeper
+pidfd, and 11 for a child start gate. The agent receives control socket 3 and
+the sealed start-gate/config read end 4. All unrelated descriptors are closed;
+intended descriptors become close-on-exec after bootstrap, and no workload
+inherits a control, root, namespace, cgroup, pidfd, config, or nonce descriptor.
 
 The neutral helper packet codec is one seqpacket datagram with a fixed header:
 
@@ -927,17 +1177,102 @@ sequence:u64_be | requestID:[16]byte | bodyLength:u32_be
 guestCredentialIdentityDigest:[32]byte | bootNonce:[32]byte | body
 ```
 
-The fixed header is 100 bytes. Body length must equal the remaining datagram
-and is at most 256 KiB; the private credential payload inside a typed body is
-still at most 64 KiB. Independent direction counters start at zero for the
-PID1 bootstrap/acknowledgement and at one for the first authenticated agent
-request/response. Packet types are bootstrap, bootstrap acknowledgement,
-agent hello, prepare, renew, revoke, exec, SSH accepted-FD handoff, response,
-event, and close. Each type has an exact ancillary-data cardinality; only
-bootstrap carries the agent pidfd and only SSH handoff carries one accepted
-Unix-stream FD. The decoder validates header, exact datagram length,
-credentials, descriptor kinds/counts, sequence, identity, revision, and body
-bounds before touching helper state.
+The fixed header is 100 bytes. `bodyLength` is payload bytes only, must equal the
+remaining datagram, and is at most 72 KiB; therefore the complete maximum
+datagram is 73,828 bytes. A private file body remains at most 64 KiB. Integer
+body fields are big-endian. A body token uses the handshake token encoding and
+grammar; a body blob is `uint32_be(length) || bytes` with a type-specific bound.
+Timestamps are signed Unix nanoseconds. Booleans are exactly zero or one.
+
+Packet type numbers, directions, sequence starts, and bodies are fixed:
+
+```text
+0x01 helper_ready      helper -> PID1, seq 0, empty body
+0x02 bootstrap         PID1 -> helper, seq 0,
+                       agentPID:u32 | agentUID:u32 | agentGID:u32 |
+                       bootGeneration:token | helperGeneration:token
+0x03 bootstrap_ack     helper -> PID1, seq 1, bootstrapSHA256:[32]byte
+0x04 agent_hello       agent -> helper, seq 1,
+                       bootstrapSHA256:[32]byte | bootGeneration:token |
+                       helperGeneration:token
+0x05 agent_hello_ack   helper -> agent, seq 2, bootstrapSHA256:[32]byte
+0x10 prepare_begin     agent -> helper, revision:u64 | expiryUnixNano:i64 |
+                       bindingCount:u16 | ordered binding manifest
+0x11 prepare_file      agent -> helper, revision:u64 | bindingIndex:u16 |
+                       fileLength:u32 | fileSHA256:[32]byte | private bytes
+0x12 prepare_commit    agent -> helper, revision:u64 | manifestSHA256:[32]byte
+0x13 renew             agent -> helper, revision:u64 | expiryUnixNano:i64 |
+                       priorProofID:token
+0x14 revoke            agent -> helper, revision:u64 | reason:u8
+0x15 exec              agent -> helper, revision:u64 | execBindingID:token |
+                       bounded binary ExecPlan
+0x16 ssh_accepted_fd   helper -> agent, revision:u64 | bindingIndex:u16 |
+                       connectionOrdinal:u8 | relayCapabilityDigest:[32]byte
+0x20 response          helper -> agent, requestType:u8 | disposition:u8 |
+                       revision:u64 | proofID:optional-token |
+                       failureCode:optional-token
+0x21 event             helper -> agent, eventCode:u8 | revision:u64 |
+                       eventID:token
+0x7f close_notify      either direction, reasonCode:token
+```
+
+The ordered manifest record is:
+
+```text
+bindingID:token | mode:u8 | targetName:optional-token | declaredFileBytes:u32 | fileSHA256:[32]byte
+```
+
+Modes are 1 HTTP, 2 file-tmpfs, and 3 SSH-agent. Only file mode has a target,
+nonzero declared bytes, and nonzero digest; the others encode the optional
+token as length zero and both numeric/digest fields as zero. There are at most
+16 unique bindings, 64 KiB per file, and 1 MiB aggregate. `ExecPlan` is an
+explicit fixed union over the existing L4 bounds: 1..128 argument blobs of at
+most 8192 bytes without NUL, at most 256 environment name/value records, one
+canonical guest work directory of at most 4096 bytes, stdin/stdout/stderr
+bounds, and one timeout or deadline. The combined encoded argument,
+environment, work-directory, and I/O metadata is at most 64 KiB so the exec body
+fits its 72 KiB helper bound; this L8 aggregate may be stricter than v1 without
+changing v1. Direct credential-bearing environment names/values are forbidden;
+the helper constructs selected credential bindings only from its prepared live
+state.
+
+Ready, bootstrap, bootstrap-ack, and both hello packets require an all-zero
+request ID and all-zero job identity digest. `helper_ready` alone has an
+all-zero nonce; bootstrap and every later packet echo the exact helper-local
+nonce. Every job request has a nonzero 16-byte request ID, exact nonzero
+`GuestCredentialSessionIdentity` digest, and positive revision. A response
+echoes its request ID/digest/type/revision; an event has its own nonzero ID.
+`close_notify` consumes the ordinary next sequence and record cap and contains
+only its safe reason.
+
+Both endpoints require exactly one kernel-supplied credentials record on every
+packet. Ancillary rights cardinality is zero except bootstrap (exactly one live
+pidfd), exec (exactly three pipe endpoints for stdin-read, stdout-write, and
+stderr-write, with type/access reinspection), and SSH handoff (exactly one
+connected `AF_UNIX` `SOCK_STREAM`). `MSG_TRUNC` or `MSG_CTRUNC` rejects the
+entire packet and closes all received rights. Direction counters are continuous
+across PID1-to-agent handoff: inbound PID1 bootstrap is helper receive sequence
+0, agent hello is receive sequence 1, and the first job request is sequence 2;
+helper ready/ack/hello-ack are send sequences 0/1/2 and its first job response
+is sequence 3. Later packets increment exactly by one only after full semantic
+acceptance.
+
+Preparation is an atomic `prepare_begin`, then exactly one `prepare_file` for
+each file binding in ascending manifest index, then `prepare_commit`
+transaction. The helper stages but does not publish a namespace, file,
+capability, or proof before commit verifies the manifest digest, counts,
+aggregate, identity, revision, and expiry. Duplicate, missing, reordered,
+changed, replayed, canceled, disconnected, or failed packets abort the whole
+unpublished transaction, wipe every buffer, close staging descriptors, and
+remove exact owned staging state. Retrying the identical request ID and
+canonical transaction digest is idempotent; reuse with different bytes is a
+terminal correlation failure.
+
+The decoder validates header, exact datagram length, credentials, descriptor
+kinds/counts, sequence, identity, revision, and body bounds before touching
+helper state. D2 implements only codecs and transition decisions; D4 supplies
+seqpacket, pidfd, pipe, clock, cgroup, mount, and process enforcement, while D5
+supplies live SSH connection and backpressure enforcement.
 
 Safe lifecycle and SSH metadata use fixed binary codecs in
 `credentialprotocol`; sensitive bodies decode directly into caller-owned
@@ -1023,7 +1358,14 @@ mount namespace, sets UID/GID 1000 with no supplementary groups, clears every
 capability, applies `no_new_privs`, then launches the existing bounded
 stdin/stdout/stderr supervision contract. Direct unprivileged-agent exec cannot
 join a credential namespace. Job/process/file/FD/count/byte/time limits are
-fixed at construction and are charged before allocation.
+fixed at construction and charged before allocation: one active credential
+job, one pending prepare transaction, one mount namespace/cgroup/keeper, one
+outstanding helper request, at most 64 concurrently populated workload
+processes, 4096 launches over the activation lifetime, 256 helper-owned file
+descriptors, 16 bindings/files, and the byte limits above. The keeper and helper
+job state cannot outlive the 35-minute guest activation. Guest cleanup gets at
+most three idempotent attempts within one 30-second total deadline before
+`stop_vm_required`; retry clocks and observations are injected in D2 tests.
 
 Revoke denies new exec, writes `1` to the exact job cgroup's `cgroup.kill`,
 waits for `cgroup.events` to report `populated 0`, closes helper-owned
@@ -1054,7 +1396,8 @@ SSH private keys remain in the host agent. L8 never copies a private key into a
 guest, file, environment value, manifest, or protocol payload.
 
 D2 locks the neutral SSH-agent codec before D5 opens a live socket. Every
-message is `uint32_be(payloadLength) || payload`, length 1 through 256 KiB,
+message is `uint32_be(payloadLength) || payload`, payload length 1 through 256
+KiB and therefore complete wire length at most 262,148 bytes,
 with no truncation, trailing byte, concatenated frame, or allocation before the
 length check. The only accepted client messages are
 `SSH_AGENTC_REQUEST_IDENTITIES` (11) with no body and
@@ -1065,8 +1408,11 @@ and `SSH_AGENT_FAILURE` (5). Add/remove/remove-all, smartcard, lock/unlock,
 extension, protocol-v1, unknown types, unknown flags, and trailing fields
 receive failure without contacting the host agent.
 
-Durable policy identifies public keys only as the OpenSSH-style
-`SHA256:` prefix plus unpadded base64 of SHA-256 over the exact public-key blob.
+The immutable host-admin live policy identifies public keys only as the
+OpenSSH-style `SHA256:` prefix plus unpadded base64 of SHA-256 over the exact
+public-key blob. That fingerprint is a registry-private selector, not durable
+job/status metadata; durable state contains only the separately safe SSH policy
+ID and revision. The fingerprint never crosses the host relay boundary.
 Enumeration preserves host-agent order after filtering and rewrites comments
 to empty strings. Supported key/signature policy is exact: `ssh-ed25519` and
 `ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`, or
@@ -1075,14 +1421,22 @@ to empty strings. Supported key/signature policy is exact: `ssh-ed25519` and
 their combination, or SHA-1. Security-key, certificate, DSA, legacy RSA, and
 unknown algorithms are unsupported in L8. A sign response must be a canonical
 SSH signature string whose algorithm exactly matches the admitted request
-policy. Key blobs, comments, challenges, signatures, frames, and raw agent
+policy: an `ssh-rsa` key with flag 2 must return `rsa-sha2-256`, and flag 4
+must return `rsa-sha2-512`. Enumeration parses at most 256 host identities;
+each public-key blob and signature is at most 16 KiB, each discarded source
+comment at most 4 KiB, and each signing challenge at most 192 KiB within the
+outer bound. Key blobs, comments, challenges, signatures, frames, and raw agent
 errors are ephemeral and never logged or persisted; owned mutable frame and
 challenge buffers are wiped after each response.
 
-The codec state machine allows one outstanding request per connection, four
-connections per job, 4096 operations per activation, a five-minute idle
-timeout, and a 35-minute hard lifetime. It applies backpressure before reading
-a second request. D2 tests exact-bound and plus-one cases, malformed nested SSH
+The pure D2 state machine decides whether a read is permitted for one
+outstanding request per connection, at most four concurrent and 64 lifetime
+connections per job, and 4096 total attempted operations across all
+connections; rejected and malformed attempts count. It models a five-minute
+idle deadline and 35-minute hard lifetime but opens no connection and reads no
+clock or stream. D5 supplies clocks, connections, reads, and live backpressure
+and must consult those decisions before reading a second request. D2 tests
+exact-bound and plus-one cases, malformed nested SSH
 strings/counts, forbidden operations, algorithm/flag mismatch, filtered stable
 ordering, and buffer destruction. It contains no Unix listener, vsock stream,
 `SCM_RIGHTS`, host-agent dial, or relay pump.
@@ -1109,12 +1463,13 @@ filters enumeration to allowed key blobs, and rejects signing for every other
 key or algorithm. It permits only filtered identity enumeration and signing.
 Add, remove, remove-all, lock, unlock, extension, and unknown messages fail
 closed. Frames, keys, signatures, concurrent streams, operations, and duration
-are bounded: 4 connections, 1 outstanding request per connection, 256 KiB per
-frame, 4096 operations per activation, 5 minute idle, and the same 35 minute
-hard lifetime as the job ticket. The helper permits at most 16 credential
-bindings, 64 KiB per file, 1 MiB aggregate file payload, and a 4 MiB tmpfs per
-job. These fixed limits may be lowered by a sealed catalog but never raised by
-a project, job, guest, or provider.
+are bounded: 4 concurrent and 64 lifetime connections, 1 outstanding request
+per connection, 256 KiB SSH payload (262,148-byte complete wire), 4096 attempted
+operations per activation including rejected/malformed attempts, 5 minute idle,
+and the same 35 minute hard lifetime as the job ticket. The helper permits at
+most 16 credential bindings, 64 KiB per file, 1 MiB aggregate file payload, and
+a 4 MiB tmpfs per job. These fixed limits may be lowered by a sealed catalog but
+never raised by a project, job, guest, or provider.
 
 The relay never logs host or guest socket paths, public-key blobs, signature
 payloads, comments, request bytes, or raw agent errors. Relay or v2 session

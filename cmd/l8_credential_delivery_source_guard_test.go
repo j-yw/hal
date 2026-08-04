@@ -89,6 +89,7 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 				"github.com/jywlabs/hal/internal/credentialsource",
 				"github.com/jywlabs/hal/internal/credentialproxy",
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol",
+				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialhelper",
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server/credentialclient",
 			} {
 				if importPath == forbidden || strings.HasPrefix(importPath, forbidden+"/") {

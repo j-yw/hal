@@ -13,6 +13,7 @@ func TestL8D2GuestHelperContractsAreNormative(t *testing.T) {
 		"GuestAgentV2ControlPort = 1025",
 		"GuestAgentV2SSHRelayPort = 1026",
 		`{"protocolVersion":"guest-agent-v2","operation":"readiness"}`,
+		"A payload beginning with `HL8H`",
 		"512-byte compatibility limit",
 		"same-stream positional correlation",
 		"no request ID exists in the frozen v1 envelope",
@@ -28,11 +29,17 @@ func TestL8D2GuestHelperContractsAreNormative(t *testing.T) {
 		"application records begin at sequence 1",
 		"HTTP-proxy mode requires the complete network tuple",
 		"file-only and SSH-only modes require that tuple to be absent",
+		"credentialsource.validAdmissionRequest",
+		"TemplatePolicyID",
 		"GuestCredentialSessionIdentity",
 		"CLONE_INTO_CGROUP",
 		"CLONE_PIDFD",
 		`magic[4] = "HL8P"`,
 		"The fixed header is 100 bytes",
+		"at most 72 KiB",
+		"0x01 helper_ready",
+		"prepare_begin",
+		`magic[4]="HL8B"`,
 		"SECBIT_NOROOT",
 		"SSH_AGENTC_REQUEST_IDENTITIES",
 		"SSH_AGENT_RSA_SHA2_512",
@@ -43,6 +50,7 @@ func TestL8D2GuestHelperContractsAreNormative(t *testing.T) {
 		"D4 owns live helper",
 		"D5 owns live SSH-agent",
 		"D6 owns whole-VM stop",
+		"MaxGuestCredentialSessionLifetime = 35 minutes",
 	} {
 		if !strings.Contains(doc, required) {
 			t.Fatalf("L8 D2 architecture omits normative contract %q", required)

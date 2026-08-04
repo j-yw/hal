@@ -114,13 +114,16 @@ Required focused areas are:
   on peer close or server cancellation, unsupported-v2 failure, no v1 retry, and
   client-loss recovery;
 - guest-v1 compatibility, exact guest-v2 negotiation including only the bounded
-  old-server error envelope, fixed ports 1024/1025/1026, the exact 512-byte
-  request-ID-free compatibility preface/response exception, host peer-CID and
+  old-server error envelope, fixed ports 1024/1025/1026, the exact 512-byte JSON
+  payload request-ID-free compatibility preface/response exception versus a
+  4096-byte `HL8H` GuestHello, host peer-CID and
   local CID/port validation, the suite-1 signed X25519 transcript and full
   deterministic vector, HKDF-SHA-256 labels, AES-256-GCM 52-byte headers,
   Finished sequence zero, application sequence one, replay/gap/cap/tamper and
   unauthorized-host negatives, reconnect rejection, no fallback, strict frames,
-  mode-dependent network identity, and cross-job negatives;
+  exact concrete control unions and private `HL8B` records, both root/source
+  mode-dependent network validators, root/child/session digest conformance, and
+  cross-job negatives;
 - neutral leaf-route registration and composed Registry definition/dispatch
   separation, collision/cleanup-retry ordering, live request and response
   non-serialization, safe metadata bounds, exact deployment-prefixed
@@ -134,15 +137,18 @@ Required focused areas are:
   destination/TLS policy, redirects, header control, L7 proof races, and generic
   CONNECT noninterference;
 - dedicated agent/workload identities, non-dumpable/protected-proc agent,
-  PID1 bootstrap before gated `clone3(CLONE_PIDFD)`, exact
+  helper readiness before gated `clone3(CLONE_PIDFD)`, authenticated pidfd
+  bootstrap after clone and before gate release, exact
   PID/UID/GID/pidfd/nonce/SCM helper IPC, fixed inherited descriptors and
   helper packet codec, exact capability/securebits sets, fd-root/pivot/seccomp
-  loss behavior, `clone3(CLONE_INTO_CGROUP | CLONE_PIDFD)` race-free placement,
+  loss behavior, exact 72 KiB body/73,828-byte datagram bounds,
+  `clone3(CLONE_INTO_CGROUP | CLONE_PIDFD)` race-free placement,
   tmpfs namespace/mount/openat2 behavior,
   ownership, linkage, path races, partial prepare, fixed resource limits,
   file-generation policy, `setsid` escape,
   `cgroup.kill`/zero-population proof, normal unmount, keeper reap, whole-VM
-  fallback, and restart cleanup;
+  fallback, exact numeric helper/job/FD/process/cleanup limits, atomic
+  prepare-begin/file/commit rollback, and restart cleanup;
 - neutral SSH codec, authenticated relay subkey, SCM_RIGHTS handoff,
   backpressure, mandatory key and algorithm/flag allowlists, filtered
   enumeration, per-connection host-agent identity, exact relay limits, loss,
@@ -209,8 +215,8 @@ Before the selected E2E begins, a separate no-skip prerequisite test proves:
 - owned local verified-TLS HTTP fixtures and resolver namespace with no internet route; and
 - an owned controller signing key and credential value in private test
   keyrings, followed by revocation/removal proof; and
-- hardware AES acceleration visible inside the exact guest used for the
-  AES-256-GCM strict session.
+- hardware AES-GCM acceleration visible on the host and inside the exact guest
+  used for the strict session.
 
 ```sh
 tools/microvm/l8/verify-selected-live.sh prerequisites
