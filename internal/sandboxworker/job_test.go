@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,40 +38,34 @@ func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *tes
 	service, stateDir, daemonCancel := newL2JobTestService(t, driver)
 	defer daemonCancel()
 
-	server, err := NewServer(ServerOptions{SocketPath: "/tmp/unused-worker.sock", Handler: service})
+	socketPath := testWorkerSocketPath(t)
+	server, err := NewServer(ServerOptions{SocketPath: socketPath, Handler: service})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
 	}
-	serverConn, clientConn := net.Pipe()
-	go server.handleConnection(context.Background(), serverConn)
-
-	request := Request{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "req-disconnect",
-		Operation:       OperationJobStart,
-		DriverID:        driver.ID(),
-		JobStart: &JobStartRequest{
-			ContractVersion: JobContractVersion,
-			SubmissionID:    "disconnect-submission",
-			Exec: func() ExecRequest {
-				req := l2JobExecRequest(secret)
-				req.Args = append(req.Args, "--argument-only", argumentSecret)
-				return req
-			}(),
-		},
+	serverCancel, serverErr := runTestServer(t, server)
+	defer stopTestServer(t, serverCancel, serverErr)
+	client, err := NewClient(ClientOptions{SocketPath: socketPath})
+	if err != nil {
+		t.Fatalf("NewClient() error: %v", err)
 	}
-	if err := json.NewEncoder(clientConn).Encode(request); err != nil {
-		t.Fatalf("encode job start: %v", err)
+	request := JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    "disconnect-submission",
+		Exec: func() ExecRequest {
+			req := l2JobExecRequest(secret)
+			req.Args = append(req.Args, "--argument-only", argumentSecret)
+			return req
+		}(),
 	}
-	var startResponse Response
-	if err := json.NewDecoder(clientConn).Decode(&startResponse); err != nil {
-		t.Fatalf("decode job start: %v", err)
+	startJob, err := client.JobStart(context.Background(), driver.ID(), request)
+	if err != nil {
+		t.Fatalf("JobStart() error: %v", err)
 	}
-	if !startResponse.OK || startResponse.Job == nil {
-		t.Fatalf("job start response = %#v error=%#v, want accepted job", startResponse, startResponse.Error)
+	if startJob == nil {
+		t.Fatal("JobStart() job = nil, want accepted job")
 	}
-	jobID := startResponse.Job.ID
-	_ = clientConn.Close()
+	jobID := startJob.ID
 
 	select {
 	case <-started:

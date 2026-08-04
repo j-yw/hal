@@ -330,6 +330,15 @@ changes any of them conflicts instead of reusing an uncredentialed job.
 All outer envelopes and the `sandboxjob-v2` payloads are decoded with
 unknown-field rejection, exactly one JSON value, canonical scalar validation,
 duplicate-key rejection before unmarshal, and the existing byte limits. A
+worker Unix connection carries exactly one request and one response. Every
+request writer must successfully write-half-close after its single JSON request
+so EOF is the request-frame boundary; failure is terminal. The official client
+does this before reading, and the server closes the connection after its single
+response. The server does not dispatch a
+complete-looking prefix before that EOF, and neither side multiplexes another
+JSON value on the connection. A peer that omits the half-close cannot cause
+partial dispatch and remains blocked only until that peer closes or server
+context cancellation promptly closes the connection and cleans up. A
 pre-L8 daemon sees the distinct operation before any mutation and returns its
 bounded `protocol_error`/`malformed_request` unsupported-operation response. A
 v2 client may accept that exact legacy envelope, or the new daemon's exact

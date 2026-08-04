@@ -663,7 +663,7 @@ func TestL8WorkerV2GuardLocksExactDecoderCallerComposition(t *testing.T) {
 		"types.go": `package sandboxworker
 type JobStartRequestV2 struct{}
 type JobV2 struct{}
-type Request struct { JobStartV2 *JobStartRequestV2 }
+type Request struct { Operation string; JobStartV2 *JobStartRequestV2 }
 type Response struct { JobV2 *JobV2 }
 type storedJobStateV2 struct { JobV2 JobV2 }`,
 		"protocol_decode.go": `package sandboxworker
@@ -689,32 +689,74 @@ func (server *Server) readRequest(reader io.Reader) (Request, *Response) {
 		"client.go": `package sandboxworker
 import (
 	"context"
+	"errors"
 	"io"
 )
 const defaultMaxResponseBytes int64 = 1 << 20
 type unixSocketClientTransport struct { maxResponseBytes int64 }
-func (transport unixSocketClientTransport) RoundTrip(_ context.Context, _ Request) (Response, error) {
-	var connection io.Reader
+type workerResponseConnection interface { io.Reader; io.Writer }
+func openResponseReader() (workerResponseConnection, error) { return nil, nil }
+func encodeWorkerRequest(writer io.Writer, request Request) error { return nil }
+func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, request Request) (Response, error) {
+	connection, err := openResponseReader()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("open worker connection failed")
+	}
+	if err := encodeWorkerRequest(connection, request); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request failed")
+	}
+	halfCloser, ok := connection.(interface{ CloseWrite() error })
+	if !ok {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request framing failed")
+	}
+	if err := halfCloser.CloseWrite(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request framing failed")
+	}
 	maxResponseBytes := transport.maxResponseBytes
 	if maxResponseBytes <= 0 { maxResponseBytes = defaultMaxResponseBytes }
 	var response Response
-	if err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil { return Response{}, err }
+	if err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("read worker response failed")
+	}
 	return response, nil
 }`,
 		"job_store_v2.go": `package sandboxworker
-import "io"
+import (
+	"errors"
+	"io"
+)
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct{}
 func openStoredJobStateV2(jobID string) (io.Reader, error) { return nil, nil }
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reader, err := openStoredJobStateV2(jobID)
-	if err != nil { return storedJobStateV2{}, err }
+	if err != nil { return storedJobStateV2{}, errors.New("stored job state could not be opened") }
 	var state storedJobStateV2
-	if err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, err }
+	if err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
 	return state, nil
 }`,
 	}
 	l8AssertWorkerV2GuardAllows(t, sources, policy)
+	clientHalfCloseBlock := `	halfCloser, ok := connection.(interface{ CloseWrite() error })
+	if !ok {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request framing failed")
+	}
+	if err := halfCloser.CloseWrite(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request framing failed")
+	}
+`
+	clientEncodeBlock := `	if err := encodeWorkerRequest(connection, request); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request failed")
+	}
+`
 
 	tests := []struct {
 		name    string
@@ -728,10 +770,18 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		{name: "client hardcoded limit", path: "client.go", old: "connection, maxResponseBytes, &response", replace: "connection, int64(1 << 20), &response"},
 		{name: "client transformed limit", path: "client.go", old: "connection, maxResponseBytes, &response", replace: "connection, maxResponseBytes-1, &response"},
 		{name: "response wrapper hardcoded limit", path: "protocol_decode.go", old: "reader, defaultMaxResponseBytes, &output", replace: "reader, int64(1 << 20), &output"},
+		{name: "response wrapper outer limit", path: "protocol_decode.go", old: "decodeWorkerResponseInto(reader, defaultMaxResponseBytes, &output)", replace: "decodeWorkerResponseInto(io.LimitReader(reader, defaultMaxResponseBytes), defaultMaxResponseBytes, &output)"},
 		{name: "store hardcoded limit", path: "job_store_v2.go", old: "reader, maxStoredJobStateV2Bytes, &state", replace: "reader, int64(64 << 10), &state"},
 		{name: "store transformed limit", path: "job_store_v2.go", old: "reader, maxStoredJobStateV2Bytes, &state", replace: "reader, maxStoredJobStateV2Bytes-1, &state"},
 		{name: "store outer limit", path: "job_store_v2.go", old: "decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state)", replace: "decodeStoredJobStateV2Into(io.LimitReader(reader, maxStoredJobStateV2Bytes), maxStoredJobStateV2Bytes, &state)"},
 		{name: "wrong store load signature", path: "job_store_v2.go", old: "load(jobID string) (storedJobStateV2, error) {", replace: "load(jobID string, unused bool) (storedJobStateV2, error) {\n\t_ = unused"},
+		{name: "response wrapper returns zero", path: "protocol_decode.go", old: "return output, nil", replace: "return Response{}, nil"},
+		{name: "response wrapper swallows error", path: "protocol_decode.go", old: "return Response{}, err", replace: "return Response{}, nil"},
+		{name: "server outer limit", path: "server.go", old: "decodeWorkerRequestInto(reader, server.maxRequestBytes, &request)", replace: "decodeWorkerRequestInto(io.LimitReader(reader, server.maxRequestBytes), server.maxRequestBytes, &request)"},
+		{name: "wrong server signature", path: "server.go", old: "readRequest(reader io.Reader)", replace: "readRequest(reader io.Reader, unused bool)"},
+		{name: "wrong server receiver", path: "server.go", old: "func (server *Server) readRequest", replace: "func (server Server) readRequest"},
+		{name: "wrong client receiver", path: "client.go", old: "func (transport unixSocketClientTransport) RoundTrip", replace: "func (transport *unixSocketClientTransport) RoundTrip"},
+		{name: "wrong client signature", path: "client.go", old: "RoundTrip(ctx context.Context, request Request)", replace: "RoundTrip(ctx context.Context, request Request, unused bool)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -740,6 +790,100 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 		})
 	}
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{name: "missing mandatory half-close", mutate: func(source string) string {
+			return strings.Replace(source, clientHalfCloseBlock, "", 1)
+		}},
+		{name: "half-close before request encode", mutate: func(source string) string {
+			source = strings.Replace(source, clientHalfCloseBlock, "", 1)
+			return strings.Replace(source, clientEncodeBlock, clientHalfCloseBlock+clientEncodeBlock, 1)
+		}},
+		{name: "response decode before half-close", mutate: func(source string) string {
+			source = strings.Replace(source, clientHalfCloseBlock, "", 1)
+			return strings.Replace(source, "\treturn response, nil\n}", clientHalfCloseBlock+"\treturn response, nil\n}", 1)
+		}},
+		{name: "unsupported half-close panics", mutate: func(source string) string {
+			return strings.Replace(source, "halfCloser, ok := connection.(interface{ CloseWrite() error })\n\tif !ok {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}", "halfCloser := connection.(interface{ CloseWrite() error })", 1)
+		}},
+		{name: "ignored half-close error", mutate: func(source string) string {
+			return strings.Replace(source, "\tif err := halfCloser.CloseWrite(); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}\n", "\t_ = halfCloser.CloseWrite()\n", 1)
+		}},
+		{name: "half-close twice", mutate: func(source string) string {
+			return strings.Replace(source, "\tmaxResponseBytes := transport.maxResponseBytes", "\t_ = halfCloser.CloseWrite()\n\tmaxResponseBytes := transport.maxResponseBytes", 1)
+		}},
+		{name: "half-close on different acquired object", mutate: func(source string) string {
+			return strings.Replace(source, "halfCloser, ok := connection.(interface{ CloseWrite() error })", "otherConnection := connection\n\thalfCloser, ok := otherConnection.(interface{ CloseWrite() error })", 1)
+		}},
+		{name: "unsupported half-close omits context precedence", mutate: func(source string) string {
+			return strings.Replace(source, "\tif !ok {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }", "\tif !ok {", 1)
+		}},
+		{name: "failed half-close omits context precedence", mutate: func(source string) string {
+			return strings.Replace(source, "\tif err := halfCloser.CloseWrite(); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }", "\tif err := halfCloser.CloseWrite(); err != nil {", 1)
+		}},
+		{name: "failed half-close exposes raw error", mutate: func(source string) string {
+			return strings.Replace(source, "\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}\n\tmaxResponseBytes", "\t\treturn Response{}, err\n\t}\n\tmaxResponseBytes", 1)
+		}},
+		{name: "failed half-close uses variable error text", mutate: func(source string) string {
+			return strings.Replace(source, "errors.New(\"write worker request framing failed\")", "errors.New(\"write worker request framing failed: \" + request.Operation)", 2)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated["client.go"] = tt.mutate(mutated["client.go"])
+			if mutated["client.go"] == sources["client.go"] {
+				t.Fatal("client half-close mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "client half-close composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name    string
+		path    string
+		old     string
+		replace string
+	}{
+		{name: "server decodes throwaway request", path: "server.go", old: "var request Request\n\tif err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request)", replace: "var decoded Request\n\tvar request Request\n\tif err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &decoded)"},
+		{name: "client decodes throwaway response", path: "client.go", old: "var response Response\n\tif err := decodeWorkerResponseInto(connection, maxResponseBytes, &response)", replace: "var decoded Response\n\tvar response Response\n\tif err := decodeWorkerResponseInto(connection, maxResponseBytes, &decoded)"},
+		{name: "client uses different acquired reader", path: "client.go", old: "maxResponseBytes := transport.maxResponseBytes", replace: "otherConnection := connection\n\tmaxResponseBytes := transport.maxResponseBytes"},
+		{name: "store decodes throwaway state", path: "job_store_v2.go", old: "var state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state)", replace: "var decoded storedJobStateV2\n\tvar state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &decoded)"},
+		{name: "store uses different acquired reader", path: "job_store_v2.go", old: "var state storedJobStateV2", replace: "otherReader := reader\n\tvar state storedJobStateV2"},
+		{name: "store opens neighbor identity", path: "job_store_v2.go", old: "openStoredJobStateV2(jobID)", replace: "openStoredJobStateV2(\"job-neighbor\")"},
+		{name: "client exposes raw codec error", path: "client.go", old: "return Response{}, errors.New(\"read worker response failed\")", replace: "return Response{}, err"},
+		{name: "client exposes raw connection error", path: "client.go", old: "return Response{}, errors.New(\"open worker connection failed\")", replace: "return Response{}, err"},
+		{name: "client exposes raw request encoder error", path: "client.go", old: "return Response{}, errors.New(\"write worker request failed\")", replace: "return Response{}, err"},
+		{name: "client connection error omits context precedence", path: "client.go", old: "if err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"open worker connection failed\")", replace: "if err != nil {\n\t\treturn Response{}, errors.New(\"open worker connection failed\")"},
+		{name: "client request encoder error omits context precedence", path: "client.go", old: "if err := encodeWorkerRequest(connection, request); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }", replace: "if err := encodeWorkerRequest(connection, request); err != nil {"},
+		{name: "store exposes raw codec error", path: "job_store_v2.go", old: "return storedJobStateV2{}, errors.New(\"stored job state is malformed\")", replace: "return storedJobStateV2{}, err"},
+		{name: "store exposes raw opener error", path: "job_store_v2.go", old: "return storedJobStateV2{}, errors.New(\"stored job state could not be opened\")", replace: "return storedJobStateV2{}, err"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			switch tt.name {
+			case "client uses different acquired reader":
+				mutated[tt.path] = strings.Replace(mutated[tt.path], "decodeWorkerResponseInto(connection,", "decodeWorkerResponseInto(otherConnection,", 1)
+			case "store uses different acquired reader":
+				mutated[tt.path] = strings.Replace(mutated[tt.path], "decodeStoredJobStateV2Into(reader,", "decodeStoredJobStateV2Into(otherReader,", 1)
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	otherWrapperOutput := l8CloneWorkerV2GuardSources(sources)
+	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "var output Response", "var output Response\n\tvar other Response", 1)
+	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "return output, nil", "return other, nil", 1)
+	l8AssertWorkerV2GuardRejects(t, otherWrapperOutput, policy, "decoder caller composition")
+	responseWrapperHelper := l8CloneWorkerV2GuardSources(sources)
+	responseWrapperHelper["protocol_decode.go"] = strings.Replace(responseWrapperHelper["protocol_decode.go"],
+		"decodeWorkerResponseInto(reader, defaultMaxResponseBytes, &output)",
+		"callWorkerResponseInto(reader, defaultMaxResponseBytes, &output)", 1)
+	responseWrapperHelper["protocol_decode.go"] += "\nfunc callWorkerResponseInto(reader io.Reader, maxBytes int64, output *Response) error { return decodeWorkerResponseInto(reader, maxBytes, output) }\n"
+	l8AssertWorkerV2GuardRejects(t, responseWrapperHelper, policy, "decoder caller composition")
 
 	directGenericStore := l8CloneWorkerV2GuardSources(sources)
 	directGenericStore["job_store_v2.go"] = strings.Replace(directGenericStore["job_store_v2.go"],
@@ -953,6 +1097,8 @@ func encodeWorkerResponse(writer io.Writer, response Response) error {
 		{name: "adjacent runtime metadata", path: "job_v2_helpers.go", source: strings.Replace(keySource, "RuntimeMetadata", "RuntimeTemplateStatusMetadata", 1)},
 		{name: "swapped canonical identity bindings", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: driverID, PrincipalID: principalID, Request: request", "DriverID: principalID, PrincipalID: driverID, Request: request", 1)},
 		{name: "wrong driver identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: driverID", "DriverID: principalID", 1)},
+		{name: "wrong principal identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "PrincipalID: principalID", "PrincipalID: driverID", 1)},
+		{name: "constant principal identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "PrincipalID: principalID", `PrincipalID: "principal-fixed"`, 1)},
 		{name: "missing driver identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "DriverID: driverID, ", "", 1)},
 		{name: "wrong request identity binding", path: "job_v2_helpers.go", source: strings.Replace(keySource, "Request: request", "Request: JobStartRequestV2{}", 1)},
 		{name: "unkeyed canonical identity", path: "job_v2_helpers.go", source: strings.Replace(keySource, "jobRequestIdentityV2{DriverID: driverID, PrincipalID: principalID, Request: request}", "jobRequestIdentityV2{driverID, principalID, request}", 1)},

@@ -104,7 +104,11 @@ Required focused areas are:
 - `sandboxjob-v1` compatibility, distinct `job_*_v2` operations, strict `sandboxjob-v2`,
   credential-aware idempotency/request keys,
   unknown/duplicate/trailing JSON rejection, exact legacy unsupported-operation
-  envelope, unsupported-v2 failure, no v1 retry, and client-loss recovery;
+  envelope, one-request/one-response Unix connections framed by request-sender
+  write-half-close/EOF, mandatory successful official-client half-close before
+  response decoding, no dispatch before EOF, prompt missing-half-close cleanup
+  on peer close or server cancellation, unsupported-v2 failure, no v1 retry, and
+  client-loss recovery;
 - guest-v1 compatibility, exact guest-v2 negotiation including only the bounded
   old-server error envelope, host-CID validation, signed X25519 transcript,
   AEAD sequence/replay/tamper/unauthorized-host negatives, no fallback, strict
