@@ -165,6 +165,83 @@ func decodeJobResolveV2() { _ = formatting.Sprint(callbackRenderer{}) }`,
 	}, policy, "implicit interface callback")
 }
 
+func TestL8WorkerV2GuardAllowsSafeMixedEnvelopeFieldsAndTypedClient(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{
+			"job_v2_client.go": true,
+			"job_v2_types.go":  true,
+		},
+		mixed: map[string]bool{
+			"client.go": true,
+			"types.go":  true,
+		},
+	}
+	safeEnvelope := map[string]string{
+		"job_v2_types.go": `package sandboxworker
+const OperationJobStartV2 = "job_start_v2"
+type JobStartRequestV2 struct {
+	ContractVersion string ` + "`json:\"contractVersion\"`" + `
+}
+type JobV2 struct {
+	ID string ` + "`json:\"id\"`" + `
+}`,
+		"types.go": `package sandboxworker
+type Request struct {
+	Operation  string             ` + "`json:\"operation\"`" + `
+	JobStartV2 *JobStartRequestV2 ` + "`json:\"jobStartV2,omitempty\"`" + `
+}
+type Response struct {
+	OK    bool   ` + "`json:\"ok\"`" + `
+	JobV2 *JobV2 ` + "`json:\"jobV2,omitempty\"`" + `
+}`,
+	}
+	l8AssertWorkerV2GuardAllows(t, safeEnvelope, policy)
+
+	clientSources := l8CloneWorkerV2GuardSources(safeEnvelope)
+	clientSources["client.go"] = `package sandboxworker
+import "context"
+type Client struct{}
+func (client *Client) roundTrip(context.Context, Request) (Response, error) {
+	return Response{OK: true, JobV2: &JobV2{ID: "job-safe"}}, nil
+}`
+	clientSources["job_v2_client.go"] = `package sandboxworker
+import "context"
+func (client *Client) StartJobV2(ctx context.Context, request JobStartRequestV2) (*JobV2, error) {
+	response, err := client.roundTrip(ctx, Request{Operation: OperationJobStartV2, JobStartV2: &request})
+	if err != nil {
+		return nil, err
+	}
+	return response.JobV2, nil
+}`
+	l8AssertWorkerV2GuardAllows(t, clientSources, policy)
+
+	forbiddenField := l8CloneWorkerV2GuardSources(safeEnvelope)
+	forbiddenField["types.go"] = `package sandboxworker
+type Request struct {
+	JobStartV2 *JobStartRequestV2 ` + "`json:\"jobStartV2,omitempty\"`" + `
+	SecretV2   string             ` + "`json:\"secretValue,omitempty\"`" + `
+}`
+	l8AssertWorkerV2GuardRejects(t, forbiddenField, policy, `json:"secret`)
+
+	forbiddenClosure := l8CloneWorkerV2GuardSources(safeEnvelope)
+	forbiddenClosure["job_v2_types.go"] = `package sandboxworker
+type JobStartRequestV2 struct {
+	Credential jobCredentialRecord
+}
+type JobV2 struct{ ID string }`
+	forbiddenClosure["shared.go"] = `package sandboxworker
+type jobCredentialRecord struct{ Label string }`
+	l8AssertWorkerV2GuardRejects(t, forbiddenClosure, policy, "outside the exact allowlist")
+}
+
+func l8CloneWorkerV2GuardSources(sources map[string]string) map[string]string {
+	cloned := make(map[string]string, len(sources))
+	for path, source := range sources {
+		cloned[path] = source
+	}
+	return cloned
+}
+
 type l8WorkerV2GuardPolicy struct {
 	dedicated map[string]bool
 	mixed     map[string]bool
