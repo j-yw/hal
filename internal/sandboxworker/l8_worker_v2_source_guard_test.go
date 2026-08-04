@@ -689,16 +689,30 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"time"
 )
 const defaultMaxResponseBytes int64 = 1 << 20
 type unixSocketClientTransport struct { maxResponseBytes int64 }
-type workerResponseConnection interface { io.Reader; io.Writer }
+type workerResponseConnection interface { io.Reader; io.Writer; Close() error; SetDeadline(time.Time) error }
 func openResponseReader() (workerResponseConnection, error) { return nil, nil }
 func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, request Request) (Response, error) {
 	connection, err := openResponseReader()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
 		return Response{}, errors.New("open worker connection failed")
+	}
+	defer connection.Close()
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = connection.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = connection.SetDeadline(deadline)
 	}
 	if err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
@@ -729,10 +743,12 @@ import (
 )
 const maxStoredJobStateV2Bytes int64 = 64 << 10
 type jobStoreV2 struct{}
-func openStoredJobStateV2(jobID string) (io.Reader, error) { return nil, nil }
+type storedJobReaderV2 interface { io.Reader; Close() error }
+func openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reader, err := openStoredJobStateV2(jobID)
 	if err != nil { return storedJobStateV2{}, errors.New("stored job state could not be opened") }
+	defer reader.Close()
 	var state storedJobStateV2
 	if err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
 	return state, nil
@@ -762,6 +778,20 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	clientUnsupportedHalfCloseBlock := `	if !ok {
 		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
 		return Response{}, errors.New("write worker request framing failed")
+	}
+`
+	clientConnectionLifecycleBlock := `	defer connection.Close()
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = connection.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = connection.SetDeadline(deadline)
 	}
 `
 	existingJSONWriterSources := l8CloneWorkerV2GuardSources(sources)
@@ -796,6 +826,63 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		t.Run(tt.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
 			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{
+			name: "client omits deferred connection close",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdefer connection.Close()\n", "", 1)
+			},
+		},
+		{
+			name: "client cancellation closure omits connection close",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\t\t\t_ = connection.Close()", "\t\t\treturn", 1)
+			},
+		},
+		{
+			name: "client cancellation closure consumes connection",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\t\t\t_ = connection.Close()", "\t\t\t_, _ = io.ReadAll(io.LimitReader(connection, 1))", 1)
+			},
+		},
+		{
+			name: "client omits deadline propagation",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], clientConnectionLifecycleBlock, strings.Replace(clientConnectionLifecycleBlock, "\tif deadline, ok := ctx.Deadline(); ok {\n\t\t_ = connection.SetDeadline(deadline)\n\t}\n", "", 1), 1)
+			},
+		},
+		{
+			name: "store omits deferred reader close",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()\n", "", 1)
+			},
+		},
+		{
+			name: "store eagerly closes reader before decode",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\t_ = reader.Close()", 1)
+			},
+		},
+		{
+			name: "store defers close on replacement reader",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\treplacementReader, _ := openStoredJobStateV2(jobID)\n\tdefer replacementReader.Close()", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			tt.mutate(mutated)
+			if mutated["client.go"] == sources["client.go"] && mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
+				t.Fatal("connection or reader lifecycle mutation did not change the positive fixture")
+			}
 			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 		})
 	}
