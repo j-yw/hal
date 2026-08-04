@@ -1628,6 +1628,218 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	}
 }
 
+func TestL8WorkerV2GuardRejectsCallerWholeValueEscapesAndCleanupBypasses(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{
+		dedicated: map[string]bool{
+			"job_store_v2.go":    true,
+			"protocol_decode.go": true,
+		},
+		mixed: map[string]bool{
+			"client.go": true,
+			"server.go": true,
+			"types.go":  true,
+		},
+	}
+	sources := map[string]string{
+		"types.go": `package sandboxworker
+type JobStartRequestV2 struct{}
+type JobV2 struct{}
+type Request struct { Operation string; JobStartV2 *JobStartRequestV2 }
+type Response struct { JobV2 *JobV2 }
+type storedJobStateV2 struct { JobV2 JobV2 }
+func (request Request) WithDefaults() Request { return request }`,
+		"protocol_decode.go": `package sandboxworker
+import "io"
+func decodeWorkerRequestInto(reader io.Reader, maxBytes int64, output *Request) error { return nil }
+func decodeWorkerResponseInto(reader io.Reader, maxBytes int64, output *Response) error { return nil }
+func decodeStoredJobStateV2Into(reader io.Reader, maxBytes int64, output *storedJobStateV2) error { return nil }
+func decodeWorkerResponse(reader io.Reader) (Response, error) {
+	var output Response
+	if err := decodeWorkerResponseInto(reader, defaultMaxResponseBytes, &output); err != nil { return Response{}, err }
+	return output, nil
+}`,
+		"server.go": `package sandboxworker
+import "io"
+const configuredMaxRequestBytesV2 int64 = 8 << 20
+type Server struct { maxRequestBytes int64 }
+func configuredServerV2() *Server { return &Server{maxRequestBytes: configuredMaxRequestBytesV2} }
+func (server *Server) readRequest(reader io.Reader) (Request, *Response) {
+	var request Request
+	if err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil { return Request{}, &Response{} }
+	return request, nil
+}`,
+		"client.go": `package sandboxworker
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"time"
+)
+const defaultMaxResponseBytes int64 = 1 << 20
+type unixSocketClientTransport struct { maxResponseBytes int64 }
+type workerResponseConnection interface { io.Reader; io.Writer; Close() error; SetDeadline(time.Time) error }
+func openResponseReader() (workerResponseConnection, error) { return nil, nil }
+func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, request Request) (Response, error) {
+	connection, err := openResponseReader()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("open worker connection failed")
+	}
+	defer connection.Close()
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = connection.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = connection.SetDeadline(deadline)
+	}
+	if err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request failed")
+	}
+	halfCloser, ok := connection.(interface{ CloseWrite() error })
+	if !ok {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request framing failed")
+	}
+	if err := halfCloser.CloseWrite(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("write worker request framing failed")
+	}
+	maxResponseBytes := transport.maxResponseBytes
+	if maxResponseBytes <= 0 { maxResponseBytes = defaultMaxResponseBytes }
+	var response Response
+	if err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }
+		return Response{}, errors.New("read worker response failed")
+	}
+	return response, nil
+}`,
+		"job_store_v2.go": `package sandboxworker
+import (
+	"errors"
+	"io"
+)
+const maxStoredJobStateV2Bytes int64 = 64 << 10
+type jobStoreV2 struct{}
+type storedJobReaderV2 interface { io.Reader; Close() error }
+func openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
+func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
+	reader, err := openStoredJobStateV2(jobID)
+	if err != nil { return storedJobStateV2{}, errors.New("stored job state could not be opened") }
+	defer reader.Close()
+	var state storedJobStateV2
+	if err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New("stored job state is malformed") }
+	return state, nil
+}`,
+	}
+	l8AssertWorkerV2GuardAllows(t, sources, policy)
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{
+			name: "client connection assigned to package global",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] += "\nvar leakedConnection workerResponseConnection\n"
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdefer connection.Close()", "\tleakedConnection = connection\n\tdefer connection.Close()", 1)
+			},
+		},
+		{
+			name: "store reader assigned to package global",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] += "\nvar leakedReader storedJobReaderV2\n"
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\tleakedReader = reader\n\tdefer reader.Close()", 1)
+			},
+		},
+		{
+			name: "client clears done channel",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdone := make(chan struct{})", "\tdone := make(chan struct{})\n\tdone = nil", 1)
+			},
+		},
+		{
+			name: "client replaces done channel",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdone := make(chan struct{})", "\tdone := make(chan struct{})\n\tdone = make(chan struct{})", 1)
+			},
+		},
+		{
+			name: "client eagerly closes done channel",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdefer close(done)", "\tclose(done)\n\tdefer close(done)", 1)
+			},
+		},
+		{
+			name: "client exposes connection before cleanup defer",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdefer connection.Close()", "\tif exposed, ok := connection.(error); ok { return Response{}, exposed }\n\tdefer connection.Close()", 1)
+			},
+		},
+		{
+			name: "store exposes reader before cleanup defer",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\tif exposed, ok := reader.(error); ok { return storedJobStateV2{}, exposed }\n\tdefer reader.Close()", 1)
+			},
+		},
+		{
+			name: "client request assigned to package global",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] += "\nvar leakedRequest Request\n"
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tif err := json.NewEncoder", "\tleakedRequest = request\n\tif err := json.NewEncoder", 1)
+			},
+		},
+		{
+			name: "client response assigned to package global",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] += "\nvar leakedResponse Response\n"
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\treturn response, nil", "\tleakedResponse = response\n\treturn response, nil", 1)
+			},
+		},
+		{
+			name: "server request sent to package channel",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] += "\nvar leakedRequests = make(chan Request, 1)\n"
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "\treturn request, nil", "\tleakedRequests <- request\n\treturn request, nil", 1)
+			},
+		},
+		{
+			name: "store state assigned through package composite",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] += "\ntype leakedStoredStateBox struct { Value storedJobStateV2 }\nvar leakedStoredState leakedStoredStateBox\n"
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\treturn state, nil", "\tleakedStoredState = leakedStoredStateBox{Value: state}\n\treturn state, nil", 1)
+			},
+		},
+		{
+			name: "client connection assigned through package composite",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] += "\ntype leakedConnectionBox struct { Value workerResponseConnection }\nvar leakedConnectionComposite leakedConnectionBox\n"
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdefer connection.Close()", "\tleakedConnectionComposite = leakedConnectionBox{Value: connection}\n\tdefer connection.Close()", 1)
+			},
+		},
+		{
+			name: "store reader sent to package channel",
+			mutate: func(mutated map[string]string) {
+				mutated["job_store_v2.go"] += "\nvar leakedReaders = make(chan storedJobReaderV2, 1)\n"
+				mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "\tdefer reader.Close()", "\tleakedReaders <- reader\n\tdefer reader.Close()", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			tt.mutate(mutated)
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+}
+
 func TestL8WorkerV2GuardLocksExactBoundedRawPreflightSeam(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{
 		"job_store_v2.go":    true,
