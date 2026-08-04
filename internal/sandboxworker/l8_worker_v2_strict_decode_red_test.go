@@ -37,6 +37,18 @@ func TestL8WorkerV2BoundedJSONReaderPreservesFullPositiveInt64Range(t *testing.T
 	}
 }
 
+func TestL8WorkerV2JSONPreflightBoundsNestingBeforeTypedDecode(t *testing.T) {
+	const decoderNestingLimit = 10_000
+	atLimit := strings.Repeat("[", decoderNestingLimit) + "null" + strings.Repeat("]", decoderNestingLimit)
+	if err := validateWorkerJSONPreflightV2(atLimit); err != nil {
+		t.Fatalf("preflight rejected JSON at the typed decoder nesting limit: %v", err)
+	}
+	overLimit := "[" + atLimit + "]"
+	if err := validateWorkerJSONPreflightV2(overLimit); err == nil {
+		t.Fatal("preflight accepted JSON beyond the typed decoder nesting limit")
+	}
+}
+
 type l8WorkerV2ProbeErrorReader struct {
 	err error
 }
@@ -141,6 +153,119 @@ func TestL8WorkerStrictRequestDecoderAcceptsAllFiveExactV1Operations(t *testing.
 				t.Fatalf("decoded operation = %q, want %q", decoded.Operation, operation)
 			}
 		})
+	}
+}
+
+func TestL8WorkerStrictDecodersPreserveCredentialSchemaNamesInsideStringMaps(t *testing.T) {
+	server := &Server{maxRequestBytes: defaultMaxRequestBytes}
+	fixtures := l8WorkerV2RequestPayloadFixturesForTest(t)
+
+	for _, key := range []string{"credentialIntent", "jobStartV2"} {
+		for _, location := range []string{"env", "labels"} {
+			for _, version := range []string{"v1", "v2"} {
+				t.Run(version+"/"+location+"/"+key, func(t *testing.T) {
+					request := Request{
+						ProtocolVersion: ProtocolVersion,
+						RequestID:       "request-map-key-" + version + "-" + location,
+						DriverID:        RuntimeDriverMicroVM,
+					}
+					if version == "v1" {
+						start := fixtures.startV1
+						if location == "env" {
+							start.Exec.Env = map[string]string{key: "safe-map-value"}
+						} else {
+							start.Exec.Target.Labels = map[string]string{key: "safe-map-value"}
+						}
+						request.Operation = OperationJobStart
+						request.JobStart = &start
+					} else {
+						start := l8WorkerV2StartRequest()
+						if location == "env" {
+							start.Exec.Env = map[string]string{key: "safe-map-value"}
+						} else {
+							start.Exec.Target.Labels = map[string]string{key: "safe-map-value"}
+						}
+						request.Operation = OperationJobStartV2
+						request.JobStartV2 = &start
+					}
+					if err := request.Validate(); err != nil {
+						t.Fatalf("typed request rejected unrestricted map key: %v", err)
+					}
+					payload, err := json.Marshal(request)
+					if err != nil {
+						t.Fatal(err)
+					}
+					decoded, errorResp := server.readRequest(bytes.NewReader(payload))
+					if errorResp != nil {
+						t.Fatalf("strict request decoder rejected unrestricted map key: %#v", errorResp)
+					}
+					var got string
+					if decoded.JobStart != nil {
+						if location == "env" {
+							got = decoded.JobStart.Exec.Env[key]
+						} else {
+							got = decoded.JobStart.Exec.Target.Labels[key]
+						}
+					} else if decoded.JobStartV2 != nil {
+						if location == "env" {
+							got = decoded.JobStartV2.Exec.Env[key]
+						} else {
+							got = decoded.JobStartV2.Exec.Target.Labels[key]
+						}
+					}
+					if got != "safe-map-value" {
+						t.Fatalf("decoded unrestricted map value = %q", got)
+					}
+				})
+			}
+		}
+
+		t.Run("response/labels/"+key, func(t *testing.T) {
+			target := l8WorkerV2ExecRequest().Target
+			target.Labels = map[string]string{key: "safe-map-value"}
+			response := Response{
+				ProtocolVersion: ProtocolVersion,
+				RequestID:       "response-map-key",
+				Operation:       OperationInspect,
+				OK:              true,
+				Target:          &target,
+			}
+			if err := response.Validate(); err != nil {
+				t.Fatalf("typed response rejected unrestricted map key: %v", err)
+			}
+			payload, err := json.Marshal(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := decodeWorkerResponse(bytes.NewReader(payload))
+			if err != nil {
+				t.Fatalf("strict response decoder rejected unrestricted map key: %v", err)
+			}
+			if decoded.Target == nil || decoded.Target.Labels[key] != "safe-map-value" {
+				t.Fatalf("decoded unrestricted response map value = %#v", decoded.Target)
+			}
+		})
+	}
+}
+
+func TestL8WorkerV2JSONPreflightRequiresProductionFlagOnlyAtCredentialSchemaPaths(t *testing.T) {
+	for _, raw := range []string{
+		`{"jobStartV2":{"contractVersion":"sandboxjob-v2"}}`,
+		`{"jobV2":{"credentialIntent":{"planId":"plan-primary"}}}`,
+		`{"JobV2":{"credentialIntent":{"planId":"plan-primary"}}}`,
+	} {
+		if err := validateWorkerJSONPreflightV2(raw); err == nil {
+			t.Fatalf("preflight accepted credential schema without productionCredentialsRequested: %s", raw)
+		}
+	}
+
+	for _, raw := range []string{
+		`{"env":{"credentialIntent":"safe-map-value","jobStartV2":"safe-map-value"}}`,
+		`{"labels":{"credentialIntent":"safe-map-value","jobStartV2":"safe-map-value"}}`,
+	} {
+		if err := validateWorkerJSONPreflightV2(raw); err != nil {
+			t.Fatalf("preflight treated unrestricted string-map key as credential schema: %v", err)
+		}
 	}
 }
 
