@@ -219,6 +219,91 @@ type Response struct {
 	}
 }
 
+func TestL8WorkerV2GuardClientTransportFixtureIgnoresMarkerSpoofing(t *testing.T) {
+	sources := map[string]string{
+		"types.go": `package sandboxworker
+// *JobStartRequestV2 *JobResolveRequestV2 *JobStatusRequestV2
+// *JobLogsRequestV2 *JobCancelRequestV2 *JobV2 *JobLogsResponseV2
+type Request struct {
+	JobCancel *JobCancelRequest ` + "`json:\"jobCancel,omitempty\"`" + `
+}
+type Response struct {
+	Error *Error ` + "`json:\"error,omitempty\"`" + `
+}`,
+	}
+	l8WorkerV2AddExactClientTransportSeamFixture(t, sources)
+	_, complete, err := l8WorkerV2OuterEnvelopeFixtureState(sources["types.go"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !complete {
+		t.Fatal("comment markers suppressed the exact V2 envelope fixture")
+	}
+}
+
+func l8WorkerV2OuterEnvelopeFixtureState(source string) (bool, bool, error) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "types.go", source, 0)
+	if err != nil {
+		return false, false, err
+	}
+	required := map[string]bool{
+		`Request|JobStartV2|*JobStartRequestV2|json:"jobStartV2,omitempty"`:       false,
+		`Request|JobResolveV2|*JobResolveRequestV2|json:"jobResolveV2,omitempty"`: false,
+		`Request|JobStatusV2|*JobStatusRequestV2|json:"jobStatusV2,omitempty"`:    false,
+		`Request|JobLogsV2|*JobLogsRequestV2|json:"jobLogsV2,omitempty"`:          false,
+		`Request|JobCancelV2|*JobCancelRequestV2|json:"jobCancelV2,omitempty"`:    false,
+		`Response|JobV2|*JobV2|json:"jobV2,omitempty"`:                            false,
+		`Response|JobLogsV2|*JobLogsResponseV2|json:"jobLogsV2,omitempty"`:        false,
+	}
+	hasV2 := false
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		typeSpec, ok := node.(*ast.TypeSpec)
+		if !ok || (typeSpec.Name.Name != "Request" && typeSpec.Name.Name != "Response") {
+			return true
+		}
+		structure, ok := typeSpec.Type.(*ast.StructType)
+		if !ok {
+			return false
+		}
+		for _, field := range structure.Fields.List {
+			if len(field.Names) != 1 {
+				continue
+			}
+			var typeSource bytes.Buffer
+			if renderErr := format.Node(&typeSource, fileSet, field.Type); renderErr != nil {
+				err = renderErr
+				return false
+			}
+			tag := ""
+			if field.Tag != nil {
+				tag, err = strconv.Unquote(field.Tag.Value)
+				if err != nil {
+					return false
+				}
+			}
+			name, typ := field.Names[0].Name, typeSource.String()
+			if strings.HasSuffix(name, "V2") || strings.HasSuffix(typ, "V2") || strings.Contains(tag, "V2") {
+				hasV2 = true
+			}
+			key := typeSpec.Name.Name + "|" + name + "|" + typ + "|" + tag
+			if _, expected := required[key]; expected {
+				required[key] = true
+			}
+		}
+		return false
+	})
+	if err != nil {
+		return false, false, err
+	}
+	for _, found := range required {
+		if !found {
+			return hasV2, false, nil
+		}
+	}
+	return true, true, nil
+}
+
 func l8WorkerV2AddExactClientTransportSeamFixture(t *testing.T, sources map[string]string) {
 	t.Helper()
 	typesSource := sources["types.go"]
