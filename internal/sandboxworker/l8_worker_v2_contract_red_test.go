@@ -476,6 +476,91 @@ func TestL8WorkerV2PrivateRequestKeyIncludesCanonicalExecIdentity(t *testing.T) 
 	}
 }
 
+func TestL8WorkerV2PrivateRequestKeyCanonicalizationDoesNotMutateInput(t *testing.T) {
+	request := l8WorkerV2StartRequest()
+	request.SourceReferenceIDs = []string{"source-secondary", "source-primary"}
+	request.Bindings = []JobCredentialBindingV2{
+		{
+			BindingID:         "binding-secondary",
+			SourceReferenceID: "source-secondary",
+			Mode:              CredentialModeSSHAgent,
+		},
+		{
+			BindingID:         "binding-primary",
+			SourceReferenceID: "source-primary",
+			Mode:              "http_proxy",
+			ServiceID:         "azure-openai-responses-v1",
+		},
+	}
+	request.Exec = ExecRequest{
+		OperationID: "exec-identity",
+		Target: Target{
+			ID:     " target-primary ",
+			Name:   " sandbox-primary ",
+			Status: " ready ",
+			Labels: map[string]string{"tier": "worker", "purpose": "test"},
+			Runtime: RuntimeTarget{
+				Driver:         " microvm ",
+				RuntimeID:      " runtime-primary ",
+				Image:          " image-primary ",
+				WorkerID:       " worker-primary ",
+				IsolationLevel: IsolationLevelVM,
+				Metadata: &sandboxruntime.RuntimeMetadata{
+					Backend:          "firecracker",
+					CapabilityLabels: []string{"offline", "credential_safe"},
+					PathRoles:        []string{"workspace", "artifacts"},
+				},
+			},
+		},
+		Args:    []string{"pi", "--offline", "task"},
+		Env:     map[string]string{"LANG": "C", "HAL_PROFILE": "test"},
+		WorkDir: " workspace ",
+		Stdin: &ExecStdinPayload{
+			Data:       "c2FmZQ==",
+			Encoding:   CopyPayloadEncodingBase64,
+			SizeBytes:  4,
+			LimitBytes: 16,
+		},
+		StdoutLimitBytes: 2048,
+		StderrLimitBytes: 4096,
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("valid full canonicalization fixture: %v", err)
+	}
+	before, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var equivalent JobStartRequestV2
+	if err := json.Unmarshal(before, &equivalent); err != nil {
+		t.Fatal(err)
+	}
+	equivalent.SourceReferenceIDs[0], equivalent.SourceReferenceIDs[1] = equivalent.SourceReferenceIDs[1], equivalent.SourceReferenceIDs[0]
+	equivalent.Bindings[0], equivalent.Bindings[1] = equivalent.Bindings[1], equivalent.Bindings[0]
+
+	key, err := jobRequestKeyV2(" microvm ", " principal-owner ", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("private request key canonicalization mutated caller input:\n before: %s\n  after: %s", before, after)
+	}
+	canonicalKey, err := jobRequestKeyV2("microvm", "principal-owner", equivalent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != canonicalKey {
+		t.Fatalf("private request key did not preserve canonical equivalence: got %q want %q", key, canonicalKey)
+	}
+	if !regexp.MustCompile(`^request-v2-[0-9a-f]{64}$`).MatchString(key) {
+		t.Fatalf("private request key = %q, want exact opaque canonical shape", key)
+	}
+}
+
 func TestL8WorkerV2ReusesExistingExecLogAndIdentityBounds(t *testing.T) {
 	start := l8WorkerV2StartRequest()
 	start.Exec.StdoutLimitBytes = MaxExecStdoutCaptureBytes + 1
