@@ -1265,6 +1265,83 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 	})
 
+	for _, tt := range []struct {
+		name     string
+		path     string
+		old      string
+		replace  string
+		jobValue bool
+	}{
+		{
+			name:    "client rewrites request operation before direct JSON encode",
+			path:    "client.go",
+			old:     "\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+			replace: "\trequest.Operation = \"neighbor\"\n\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+		},
+		{
+			name:    "server rewrites decoded request operation",
+			path:    "server.go",
+			old:     "\treturn request, nil",
+			replace: "\trequest.Operation = \"neighbor\"\n\treturn request, nil",
+		},
+		{
+			name:    "server rewrites decoded request field through pointer alias root",
+			path:    "server.go",
+			old:     "\treturn request, nil",
+			replace: "\trequestAlias := &request\n\trequestAlias.Operation = \"neighbor\"\n\treturn request, nil",
+		},
+		{
+			name:     "store rewrites decoded nested job value",
+			path:     "job_store_v2.go",
+			old:      "\treturn state, nil",
+			replace:  "\tstate.JobV2.Value = \"neighbor\"\n\treturn state, nil",
+			jobValue: true,
+		},
+		{
+			name:     "store rewrites decoded nested job value through pointer alias root",
+			path:     "job_store_v2.go",
+			old:      "\treturn state, nil",
+			replace:  "\tstateAlias := &state\n\tstateAlias.JobV2.Value = \"neighbor\"\n\treturn state, nil",
+			jobValue: true,
+		},
+		{
+			name:    "client replaces receiver before response limit snapshot",
+			path:    "client.go",
+			old:     "\tmaxResponseBytes := transport.maxResponseBytes",
+			replace: "\ttransport = unixSocketClientTransport{}\n\tmaxResponseBytes := transport.maxResponseBytes",
+		},
+		{
+			name:    "store replaces receiver before open",
+			path:    "job_store_v2.go",
+			old:     "\treader, err := openStoredJobStateV2(jobID)",
+			replace: "\tstore = &jobStoreV2{}\n\treader, err := openStoredJobStateV2(jobID)",
+		},
+		{
+			name:    "server preconsumes bounded reader before exact decoder",
+			path:    "server.go",
+			old:     "\tvar request Request",
+			replace: "\t_, _ = io.ReadAll(io.LimitReader(reader, 1))\n\tvar request Request",
+		},
+		{
+			name:    "client preconsumes bounded connection before exact decoder",
+			path:    "client.go",
+			old:     "\tvar response Response",
+			replace: "\t_, _ = io.ReadAll(io.LimitReader(connection, 1))\n\tvar response Response",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			if tt.jobValue {
+				mutated["types.go"] = strings.Replace(mutated["types.go"], "type JobV2 struct{}", "type JobV2 struct { Value string }", 1)
+			}
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			if mutated[tt.path] == sources[tt.path] {
+				t.Fatal("rooted field, receiver, or input-consumption mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
 	otherWrapperOutput := l8CloneWorkerV2GuardSources(sources)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "var output Response", "var output Response\n\tvar other Response", 1)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "return output, nil", "return other, nil", 1)
