@@ -810,6 +810,67 @@ func (server *Server) readRequest(reader io.Reader) (Request, *Response) {
 }`
 	l8AssertWorkerV2GuardAllows(t, validatedServerSources, policy)
 
+	for _, tt := range []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{
+			name: "validated server substitutes decoder limit",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "decodeWorkerRequestInto(reader, server.maxRequestBytes, &request)", "decodeWorkerRequestInto(reader, configuredMaxRequestBytesV2, &request)", 1)
+			},
+		},
+		{
+			name: "validated server skips defaults",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "\trequest = request.WithDefaults()\n", "", 1)
+			},
+		},
+		{
+			name: "validated server validates pointer alias",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "request.Validate()", "(&request).Validate()", 1)
+			},
+		},
+		{
+			name: "validated server changes validation error format",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "malformed worker request: %v", "worker request validation failed: %v", 1)
+			},
+		},
+		{
+			name: "validated server changes validation error code",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "request.Operation, ErrorCodeMalformedRequest, fmt.Sprintf", "request.Operation, OperationProtocolError, fmt.Sprintf", 1)
+			},
+		},
+		{
+			name: "validated server uses decoded request ID on decode failure",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "protocolErrorResponse(\"\", OperationProtocolError", "protocolErrorResponse(request.RequestID, OperationProtocolError", 1)
+			},
+		},
+		{
+			name: "validated server smuggles decoded request",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] += "\nvar leakedValidatedRequest Request\n"
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "\trequest = request.WithDefaults()", "\tleakedValidatedRequest = request\n\trequest = request.WithDefaults()", 1)
+			},
+		},
+		{
+			name: "validated server returns before validation",
+			mutate: func(mutated map[string]string) {
+				mutated["server.go"] = strings.Replace(mutated["server.go"], "\tif err := request.Validate()", "\tif request.RequestID == \"early\" { return request, nil }\n\tif err := request.Validate()", 1)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(validatedServerSources)
+			tt.mutate(mutated)
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
 	possiblyReturningHelper := l8CloneWorkerV2GuardSources(sources)
 	possiblyReturningHelper["client.go"] = strings.Replace(possiblyReturningHelper["client.go"], "\tvar response Response", `	_ = false && reviewSkippedForeverBool()
 	_ = true || reviewSkippedForeverBool()
@@ -4986,7 +5047,7 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 			inspectionErr = fmt.Errorf("worker-v2 production path in %s declaration %s violates exact decoder caller composition", scope.file.path, scopeName)
 			return false
 		}
-		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) {
+		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) {
 			scopeName := "declaration"
 			if function, ok := scope.node.(*ast.FuncDecl); ok {
 				scopeName = function.Name.Name
@@ -5040,6 +5101,20 @@ func l8WorkerV2AllowedExactClientRoundTripFormatting(scope l8WorkerV2GuardScope,
 	format := constant.StringVal(formatValue)
 	return (function.Name.Name == "roundTrip" && format == "malformed worker request: %v") ||
 		(function.Name.Name == "validateClientResponse" && format == "malformed worker response: %v")
+}
+
+func l8WorkerV2AllowedExactServerRequestValidationFormatting(scope l8WorkerV2GuardScope, candidate *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "server.go" || function.Name.Name != "readRequest" {
+		return false
+	}
+	decoderCall := l8WorkerV2SingleTypedDecoderCall(function, info)
+	if decoderCall == nil || len(decoderCall.Args) != 3 {
+		return false
+	}
+	output := l8WorkerV2AddressedObject(decoderCall.Args[2], "Request", info)
+	formatCall, exact := l8WorkerV2ExactValidatedServerRequestFlow(function, decoderCall, output, info)
+	return exact && candidate == formatCall
 }
 
 func l8WorkerV2AllowedExactClientContextClassification(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
@@ -5305,7 +5380,7 @@ func l8WorkerV2ExactServerRequestDecoderCall(scope l8WorkerV2GuardScope, call *a
 	}
 	reader := parameters[0]
 	output := l8WorkerV2AddressedObject(call.Args[2], "Request", info)
-	return output != nil && l8WorkerV2ExpressionObject(call.Args[0], info) == reader &&
+	common := output != nil && l8WorkerV2ExpressionObject(call.Args[0], info) == reader &&
 		l8WorkerV2ExactSelectorRoot(call.Args[1], receiver, "maxRequestBytes", info) &&
 		l8WorkerV2NoUnconditionalTerminalBefore(function, call, info, scope.terminalAnalysis) &&
 		l8WorkerV2ObjectHasNoReassignments(function, receiver, info) &&
@@ -5314,9 +5389,172 @@ func l8WorkerV2ExactServerRequestDecoderCall(scope l8WorkerV2GuardScope, call *a
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, reader, []*ast.CallExpr{call}, nil, false, info) &&
 		l8WorkerV2SelectorHasNoMutations(function, receiver, "maxRequestBytes", info) &&
 		l8WorkerV2ExactTopLevelCodecConditional(function, call, info) &&
-		l8WorkerV2ExactTopLevelSuccessAfterCall(function, output, call, info) &&
-		l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
+		l8WorkerV2ExactTopLevelSuccessAfterCall(function, output, call, info)
+	if !common {
+		return false
+	}
+	minimal := l8WorkerV2ObjectHasNoReassignments(function, output, info) &&
 		l8WorkerV2ObjectHasNoWholeValueEscapes(function, output, []*ast.CallExpr{call}, nil, true, info)
+	_, validated := l8WorkerV2ExactValidatedServerRequestFlow(function, call, output, info)
+	return minimal || validated
+}
+
+func l8WorkerV2ExactValidatedServerRequestFlow(function *ast.FuncDecl, decoderCall *ast.CallExpr, request types.Object, info *types.Info) (*ast.CallExpr, bool) {
+	if function == nil || function.Body == nil || decoderCall == nil || request == nil || len(function.Body.List) != 5 {
+		return nil, false
+	}
+	declaration, ok := function.Body.List[0].(*ast.DeclStmt)
+	if !ok || l8WorkerV2ExpressionObjectFromSingleVarDeclaration(declaration, info) != request {
+		return nil, false
+	}
+	decodeFailure, ok := function.Body.List[1].(*ast.IfStmt)
+	if !ok || !l8WorkerV2IfInitializerCalls(decodeFailure, decoderCall, info) || decodeFailure.Else != nil || len(decodeFailure.Body.List) != 2 {
+		return nil, false
+	}
+	decodeErr := l8WorkerV2IfInitializerErrorObject(decodeFailure, decoderCall, info)
+	if decodeErr == nil || !l8WorkerV2IsErrorComparison(decodeFailure.Cond, decodeErr, nil, info) {
+		return nil, false
+	}
+	decodeResponse, exactResponse := l8WorkerV2ExactProtocolErrorResponseDefinition(decodeFailure.Body.List[0], []l8WorkerV2ExactProtocolErrorArgument{
+		{constantString: stringPointer("")},
+		{packageConstant: "OperationProtocolError"},
+		{packageConstant: "ErrorCodeMalformedRequest"},
+		{constantString: stringPointer("malformed worker request")},
+	}, info)
+	if !exactResponse || !l8WorkerV2IsZeroStructAndAddressedObjectReturn(decodeFailure.Body.List[1], "Request", decodeResponse, info) {
+		return nil, false
+	}
+	defaults, ok := function.Body.List[2].(*ast.AssignStmt)
+	if !ok || defaults.Tok != token.ASSIGN || len(defaults.Lhs) != 1 || len(defaults.Rhs) != 1 || l8WorkerV2ExpressionObject(defaults.Lhs[0], info) != request {
+		return nil, false
+	}
+	defaultsCall, ok := l8WorkerV2UnparenExpression(defaults.Rhs[0]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2ExactObjectMethodCall(defaultsCall, request, "WithDefaults", nil, info) {
+		return nil, false
+	}
+	validation, ok := function.Body.List[3].(*ast.IfStmt)
+	if !ok || validation.Else != nil || len(validation.Body.List) != 2 {
+		return nil, false
+	}
+	validateCall, validateErr := l8WorkerV2ExactRequestValidationInitializer(validation, request, info)
+	if validateCall == nil || validateErr == nil || !l8WorkerV2IsErrorComparison(validation.Cond, validateErr, nil, info) {
+		return nil, false
+	}
+	formatCall := l8WorkerV2ExactMalformedRequestFormatCall(validation.Body.List[0], validateErr, info)
+	if formatCall == nil {
+		return nil, false
+	}
+	validationResponse, exactValidationResponse := l8WorkerV2ExactProtocolErrorResponseDefinition(validation.Body.List[0], []l8WorkerV2ExactProtocolErrorArgument{
+		{selectorRoot: request, selectorField: "RequestID"},
+		{selectorRoot: request, selectorField: "Operation"},
+		{packageConstant: "ErrorCodeMalformedRequest"},
+		{expression: formatCall},
+	}, info)
+	if !exactValidationResponse || !l8WorkerV2IsObjectAndAddressedObjectReturn(validation.Body.List[1], request, validationResponse, info) {
+		return nil, false
+	}
+	returned, ok := function.Body.List[4].(*ast.ReturnStmt)
+	return formatCall, ok && len(returned.Results) == 2 && l8WorkerV2ExpressionObject(returned.Results[0], info) == request && l8WorkerV2IsNilExpression(returned.Results[1], info)
+}
+
+type l8WorkerV2ExactProtocolErrorArgument struct {
+	constantString  *string
+	packageConstant string
+	selectorRoot    types.Object
+	selectorField   string
+	expression      ast.Expr
+}
+
+func stringPointer(value string) *string {
+	return &value
+}
+
+func l8WorkerV2ExactProtocolErrorResponseDefinition(statement ast.Stmt, arguments []l8WorkerV2ExactProtocolErrorArgument, info *types.Info) (types.Object, bool) {
+	assignment, ok := statement.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return nil, false
+	}
+	response := l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if response == nil || !ok || !l8WorkerV2IsExactNamedStruct(response.Type(), "Response") || call.Ellipsis.IsValid() || len(call.Args) != len(arguments) ||
+		!l8WorkerV2IsExactPackageFunctionObject(l8WorkerV2CalledObject(call.Fun, info), "protocolErrorResponse") {
+		return nil, false
+	}
+	for index, expected := range arguments {
+		argument := call.Args[index]
+		switch {
+		case expected.constantString != nil:
+			value := info.Types[argument].Value
+			if value == nil || value.Kind() != constant.String || constant.StringVal(value) != *expected.constantString {
+				return nil, false
+			}
+		case expected.packageConstant != "":
+			object, ok := l8WorkerV2ExpressionObject(argument, info).(*types.Const)
+			if !ok || object.Pkg() == nil || object.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" || object.Name() != expected.packageConstant || object.Pkg().Scope().Lookup(expected.packageConstant) != object {
+				return nil, false
+			}
+		case expected.selectorRoot != nil:
+			if !l8WorkerV2ExactSelectorRoot(argument, expected.selectorRoot, expected.selectorField, info) {
+				return nil, false
+			}
+		case expected.expression != nil:
+			if l8WorkerV2UnparenExpression(argument) != l8WorkerV2UnparenExpression(expected.expression) {
+				return nil, false
+			}
+		default:
+			return nil, false
+		}
+	}
+	return response, true
+}
+
+func l8WorkerV2IsZeroStructAndAddressedObjectReturn(statement ast.Stmt, structName string, object types.Object, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 || l8WorkerV2DirectAddressedObject(returned.Results[1], info) != object {
+		return false
+	}
+	literal, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.CompositeLit)
+	return ok && len(literal.Elts) == 0 && l8WorkerV2IsExactNamedStruct(info.TypeOf(literal), structName)
+}
+
+func l8WorkerV2ExactRequestValidationInitializer(conditional *ast.IfStmt, request types.Object, info *types.Info) (*ast.CallExpr, types.Object) {
+	if conditional == nil || conditional.Init == nil {
+		return nil, nil
+	}
+	assignment, ok := conditional.Init.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return nil, nil
+	}
+	call, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2ExactObjectMethodCall(call, request, "Validate", nil, info) {
+		return nil, nil
+	}
+	return call, l8WorkerV2ExpressionObject(assignment.Lhs[0], info)
+}
+
+func l8WorkerV2ExactMalformedRequestFormatCall(statement ast.Stmt, validationErr types.Object, info *types.Info) *ast.CallExpr {
+	assignment, ok := statement.(*ast.AssignStmt)
+	if !ok || len(assignment.Rhs) != 1 {
+		return nil
+	}
+	responseCall, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+	if !ok || len(responseCall.Args) != 4 {
+		return nil
+	}
+	formatCall, ok := l8WorkerV2UnparenExpression(responseCall.Args[3]).(*ast.CallExpr)
+	if !ok || !l8WorkerV2IsExactPackageCall(formatCall, "fmt", "Sprintf", 2, info) || l8WorkerV2ExpressionObject(formatCall.Args[1], info) != validationErr {
+		return nil
+	}
+	formatValue := info.Types[formatCall.Args[0]].Value
+	if formatValue == nil || formatValue.Kind() != constant.String || constant.StringVal(formatValue) != "malformed worker request: %v" {
+		return nil
+	}
+	return formatCall
+}
+
+func l8WorkerV2IsObjectAndAddressedObjectReturn(statement ast.Stmt, first, second types.Object, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	return ok && len(returned.Results) == 2 && l8WorkerV2ExpressionObject(returned.Results[0], info) == first && l8WorkerV2DirectAddressedObject(returned.Results[1], info) == second
 }
 
 func l8WorkerV2ExactUnixResponseDecoderCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
