@@ -98,6 +98,48 @@ type JobStartRequestV2 struct{}`
 	}
 }
 
+func TestL8WorkerV2GuardAllowsExactExistingClientTransportSeam(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := make(map[string]string)
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		matched, matchErr := build.Default.MatchFile(".", path)
+		if matchErr != nil {
+			t.Fatalf("match production file %s: %v", path, matchErr)
+		}
+		if matched {
+			sources[path] = l8ReadWorkerSource(t, path)
+		}
+	}
+	sources["job_v2_client.go"] = `package sandboxworker
+import "context"
+func (client *Client) roundTripV2(ctx context.Context, request Request) (Response, error) {
+	return client.roundTrip(ctx, request)
+}`
+	l8AssertWorkerV2GuardAllows(t, sources, l8WorkerV2ProductionGuardPolicy())
+
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import "context"
+type arbitraryTransport interface {
+	RoundTrip(context.Context, Request) (Response, error)
+}
+func JobStartV2Fixture(ctx context.Context, transport arbitraryTransport, request Request) {
+	_, _ = transport.RoundTrip(ctx, request)
+}`,
+	}, policy, "interface dispatch")
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+func JobResolveV2Fixture(callback func()) { callback() }`,
+	}, policy, "function-value dispatch")
+}
+
 type l8WorkerV2GuardPolicy struct {
 	dedicated map[string]bool
 	mixed     map[string]bool
