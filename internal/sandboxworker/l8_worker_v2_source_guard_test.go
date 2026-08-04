@@ -3981,6 +3981,35 @@ func unrelatedLegacyRequest() { _, _ = httpalias.Get("https://legacy.example.inv
 	}, policy)
 }
 
+func TestL8WorkerV2GuardReportsForbiddenImportsDeterministically(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"job_v2_fixture.go": true}}
+	sources := map[string]string{
+		"job_v2_fixture.go": `package sandboxworker
+import (
+	_ "unsafe"
+	_ "plugin"
+)
+func JobStartV2Fixture() {}`,
+	}
+	var first string
+	for iteration := 0; iteration < 256; iteration++ {
+		err := l8AuditWorkerV2Sources(sources, policy)
+		if err == nil {
+			t.Fatal("guard accepted forbidden import fixture")
+		}
+		if !strings.Contains(err.Error(), `"plugin"`) {
+			t.Fatalf("iteration %d reported %q; want stable lexicographically first forbidden import plugin", iteration, err)
+		}
+		if iteration == 0 {
+			first = err.Error()
+			continue
+		}
+		if err.Error() != first {
+			t.Fatalf("iteration %d diagnostic = %q, first diagnostic = %q", iteration, err, first)
+		}
+	}
+}
+
 func TestL8WorkerV2GuardClosesSemanticExternalSurfaceDependencies(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{
 		"handler.go": true,
