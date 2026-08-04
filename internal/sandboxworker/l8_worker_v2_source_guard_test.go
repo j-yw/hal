@@ -260,6 +260,20 @@ func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error 
 	_ = decoder.Decode(&trailing)
 	return nil
 }`,
+		"extra_decode_in_error_return": `package sandboxworker
+import (
+	"encoding/json"
+	"io"
+)
+type JobStartRequestV2 struct { Value string }
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return decoder.Decode(output) }
+	return nil
+}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			l8AssertWorkerV2GuardRejects(t, map[string]string{"protocol_decode.go": source}, policy, "implicit interface callback")
@@ -2435,7 +2449,7 @@ func l8WorkerV2AllowedBoundedStrictDecoderCall(scope l8WorkerV2GuardScope, candi
 	})
 	for _, pair := range pairs {
 		decoderObject := l8WorkerV2AssignedObjectForValue(scope, pair.newDecoder, info)
-		if decoderObject == nil || !l8WorkerV2ScopeCallsJSONDecoderMethods(scope, decoderObject, info) {
+		if decoderObject == nil || !l8WorkerV2ScopeUsesExactStrictDecoder(scope, pair.newDecoder, decoderObject, info) {
 			continue
 		}
 		if candidate == pair.newDecoder || candidate == pair.limit {
@@ -2479,31 +2493,192 @@ func l8WorkerV2AssignedObjectForValue(scope l8WorkerV2GuardScope, value ast.Expr
 	return result
 }
 
-func l8WorkerV2ScopeCallsJSONDecoderMethods(scope l8WorkerV2GuardScope, decoder types.Object, info *types.Info) bool {
-	strict := false
-	decoded := false
-	l8WorkerV2InspectScopeAST(scope, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
+func l8WorkerV2ScopeUsesExactStrictDecoder(scope l8WorkerV2GuardScope, constructor ast.Expr, decoder types.Object, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || function.Body == nil || len(function.Body.List) != 6 {
+		return false
+	}
+	assignment, ok := function.Body.List[0].(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || assignment.Rhs[0] != constructor || l8WorkerV2ExpressionObject(assignment.Lhs[0], info) != decoder {
+		return false
+	}
+	strictStatement, ok := function.Body.List[1].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	strictCall, ok := l8WorkerV2DecoderMethodCall(strictStatement.X, decoder, "DisallowUnknownFields", info)
+	if !ok || len(strictCall.Args) != 0 {
+		return false
+	}
+	if !l8WorkerV2ExactPrimaryDecodeIf(function.Body.List[2], function, decoder, info) {
+		return false
+	}
+	trailingObject, ok := l8WorkerV2ExactTrailingDeclaration(function.Body.List[3], info)
+	if !ok || !l8WorkerV2ExactTrailingDecodeIf(function.Body.List[4], decoder, trailingObject, info) {
+		return false
+	}
+	return l8WorkerV2IsBareReturn(function.Body.List[5], nil, info)
+}
+
+func l8WorkerV2DecoderMethodCall(expression ast.Expr, decoder types.Object, methodName string, info *types.Info) (*ast.CallExpr, bool) {
+	call, ok := l8WorkerV2UnparenExpression(expression).(*ast.CallExpr)
+	if !ok {
+		return nil, false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	if !ok || l8WorkerV2ExpressionObject(selector.X, info) != decoder {
+		return nil, false
+	}
+	selection := info.Selections[selector]
+	if selection == nil || selection.Obj() == nil || selection.Obj().Pkg() == nil || selection.Obj().Pkg().Path() != "encoding/json" || selection.Obj().Name() != methodName {
+		return nil, false
+	}
+	return call, true
+}
+
+func l8WorkerV2ExactPrimaryDecodeIf(statement ast.Stmt, function *ast.FuncDecl, decoder types.Object, info *types.Info) bool {
+	conditional, errObject, decodeCall, ok := l8WorkerV2ExactDecodeIf(statement, decoder, info)
+	if !ok || len(decodeCall.Args) != 1 {
+		return false
+	}
+	argument, ok := l8WorkerV2UnparenExpression(decodeCall.Args[0]).(*ast.Ident)
+	if !ok || !l8WorkerV2IsFunctionParameter(function, info.Uses[argument], info) {
+		return false
+	}
+	if !l8WorkerV2IsErrorComparison(conditional.Cond, errObject, nil, info) {
+		return false
+	}
+	return conditional.Else == nil && len(conditional.Body.List) == 1 && l8WorkerV2IsBareReturn(conditional.Body.List[0], errObject, info)
+}
+
+func l8WorkerV2ExactTrailingDeclaration(statement ast.Stmt, info *types.Info) (types.Object, bool) {
+	declaration, ok := statement.(*ast.DeclStmt)
+	if !ok {
+		return nil, false
+	}
+	generated, ok := declaration.Decl.(*ast.GenDecl)
+	if !ok || generated.Tok != token.VAR || len(generated.Specs) != 1 {
+		return nil, false
+	}
+	spec, ok := generated.Specs[0].(*ast.ValueSpec)
+	if !ok || len(spec.Names) != 1 || len(spec.Values) != 0 {
+		return nil, false
+	}
+	structure, ok := spec.Type.(*ast.StructType)
+	if !ok || structure.Fields == nil || len(structure.Fields.List) != 0 {
+		return nil, false
+	}
+	object := info.Defs[spec.Names[0]]
+	return object, object != nil
+}
+
+func l8WorkerV2ExactTrailingDecodeIf(statement ast.Stmt, decoder, trailing types.Object, info *types.Info) bool {
+	conditional, errObject, decodeCall, ok := l8WorkerV2ExactDecodeIf(statement, decoder, info)
+	if !ok || len(decodeCall.Args) != 1 {
+		return false
+	}
+	address, ok := l8WorkerV2UnparenExpression(decodeCall.Args[0]).(*ast.UnaryExpr)
+	if !ok || address.Op != token.AND || l8WorkerV2ExpressionObject(address.X, info) != trailing {
+		return false
+	}
+	eof := l8WorkerV2PackageObjectExpression(conditional.Cond, "io", "EOF", info)
+	if eof == nil || !l8WorkerV2IsErrorComparison(conditional.Cond, errObject, eof, info) {
+		return false
+	}
+	return conditional.Else == nil && len(conditional.Body.List) == 1 && l8WorkerV2IsConstantErrorsNewReturn(conditional.Body.List[0], info)
+}
+
+func l8WorkerV2ExactDecodeIf(statement ast.Stmt, decoder types.Object, info *types.Info) (*ast.IfStmt, types.Object, *ast.CallExpr, bool) {
+	conditional, ok := statement.(*ast.IfStmt)
+	if !ok || conditional.Init == nil {
+		return nil, nil, nil, false
+	}
+	assignment, ok := conditional.Init.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return nil, nil, nil, false
+	}
+	errName, ok := assignment.Lhs[0].(*ast.Ident)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	errObject := info.Defs[errName]
+	decodeCall, ok := l8WorkerV2DecoderMethodCall(assignment.Rhs[0], decoder, "Decode", info)
+	if errObject == nil || !ok {
+		return nil, nil, nil, false
+	}
+	return conditional, errObject, decodeCall, true
+}
+
+func l8WorkerV2IsFunctionParameter(function *ast.FuncDecl, object types.Object, info *types.Info) bool {
+	if function == nil || function.Type.Params == nil || object == nil {
+		return false
+	}
+	for _, field := range function.Type.Params.List {
+		for _, name := range field.Names {
+			if info.Defs[name] == object {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func l8WorkerV2IsErrorComparison(expression ast.Expr, errObject, expected types.Object, info *types.Info) bool {
+	comparison, ok := l8WorkerV2UnparenExpression(expression).(*ast.BinaryExpr)
+	if !ok || comparison.Op != token.NEQ || l8WorkerV2ExpressionObject(comparison.X, info) != errObject {
+		return false
+	}
+	if expected == nil {
+		identifier, ok := l8WorkerV2UnparenExpression(comparison.Y).(*ast.Ident)
+		return ok && identifier.Name == "nil" && info.Uses[identifier] == types.Universe.Lookup("nil")
+	}
+	return l8WorkerV2ExpressionObject(comparison.Y, info) == expected
+}
+
+func l8WorkerV2PackageObjectExpression(expression ast.Expr, packagePath, name string, info *types.Info) types.Object {
+	var result types.Object
+	ast.Inspect(expression, func(node ast.Node) bool {
+		identifier, ok := node.(*ast.Ident)
 		if !ok {
 			return true
 		}
-		selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
-		if !ok || l8WorkerV2ExpressionObject(selector.X, info) != decoder {
-			return true
-		}
-		selection := info.Selections[selector]
-		if selection == nil || selection.Obj() == nil || selection.Obj().Pkg() == nil || selection.Obj().Pkg().Path() != "encoding/json" {
-			return true
-		}
-		switch selection.Obj().Name() {
-		case "DisallowUnknownFields":
-			strict = len(call.Args) == 0
-		case "Decode":
-			decoded = len(call.Args) == 1
+		object := info.Uses[identifier]
+		if object != nil && object.Pkg() != nil && object.Pkg().Path() == packagePath && object.Name() == name {
+			result = object
+			return false
 		}
 		return true
 	})
-	return strict && decoded
+	return result
+}
+
+func l8WorkerV2IsBareReturn(statement ast.Stmt, expected types.Object, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return false
+	}
+	if expected != nil {
+		return l8WorkerV2ExpressionObject(returned.Results[0], info) == expected
+	}
+	identifier, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.Ident)
+	return ok && identifier.Name == "nil" && info.Uses[identifier] == types.Universe.Lookup("nil")
+}
+
+func l8WorkerV2IsConstantErrorsNewReturn(statement ast.Stmt, info *types.Info) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return false
+	}
+	call, ok := l8WorkerV2UnparenExpression(returned.Results[0]).(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	object := l8WorkerV2CalledObject(call.Fun, info)
+	if object == nil || object.Pkg() == nil || object.Pkg().Path() != "errors" || object.Name() != "New" {
+		return false
+	}
+	value := info.Types[call.Args[0]].Value
+	return value != nil && value.Kind() == constant.String
 }
 
 func l8WorkerV2CallMayInvokeImplicitInterface(call *ast.CallExpr, info *types.Info) bool {
