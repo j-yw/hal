@@ -29,10 +29,10 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 			name: "prepare activate renew revoke",
 			steps: []func(*JobCredentialLifecycle) error{
 				func(l *JobCredentialLifecycle) error { return l.BeginPrepare(identity) },
-				func(l *JobCredentialLifecycle) error { return l.Activate(active) },
+				func(l *JobCredentialLifecycle) error { return l.Activate(active, now) },
 				func(l *JobCredentialLifecycle) error { return l.BeginRenew() },
 				func(l *JobCredentialLifecycle) error {
-					return l.Renew(l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute)))
+					return l.Renew(l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute)), now.Add(time.Second))
 				},
 				func(l *JobCredentialLifecycle) error { return l.BeginRevoke() },
 				func(l *JobCredentialLifecycle) error { return l8RevokeError(l, cleanup, now.Add(2*time.Second)) },
@@ -43,7 +43,7 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 			name: "cleanup without begin revoke",
 			steps: []func(*JobCredentialLifecycle) error{
 				func(l *JobCredentialLifecycle) error { return l.BeginPrepare(identity) },
-				func(l *JobCredentialLifecycle) error { return l.Activate(active) },
+				func(l *JobCredentialLifecycle) error { return l.Activate(active, now) },
 				func(l *JobCredentialLifecycle) error { return l8RevokeError(l, cleanup, now.Add(2*time.Second)) },
 			},
 			wantState: JobCredentialStateActive,
@@ -53,7 +53,7 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 			name: "renew cannot resurrect expired",
 			steps: []func(*JobCredentialLifecycle) error{
 				func(l *JobCredentialLifecycle) error { return l.BeginPrepare(identity) },
-				func(l *JobCredentialLifecycle) error { return l.Activate(active) },
+				func(l *JobCredentialLifecycle) error { return l.Activate(active, now) },
 				func(l *JobCredentialLifecycle) error { return l.Expire(now.Add(2 * time.Minute)) },
 				func(l *JobCredentialLifecycle) error { return l.BeginRenew() },
 			},
@@ -64,7 +64,7 @@ func TestL8JobCredentialLifecycleTransitionTableFailsClosed(t *testing.T) {
 			name: "loss removes active state immediately",
 			steps: []func(*JobCredentialLifecycle) error{
 				func(l *JobCredentialLifecycle) error { return l.BeginPrepare(identity) },
-				func(l *JobCredentialLifecycle) error { return l.Activate(active) },
+				func(l *JobCredentialLifecycle) error { return l.Activate(active, now) },
 				func(l *JobCredentialLifecycle) error {
 					return l.ObserveLoss(JobCredentialLoss{
 						Identity: identity,
@@ -149,7 +149,7 @@ func TestL8JobCredentialLossRejectsNeighborAndStaleWatchers(t *testing.T) {
 				t.Fatal(err)
 			}
 			active := l8ActiveProof(t, identity, 3, now, now.Add(time.Minute))
-			if err := lifecycle.Activate(active); err != nil {
+			if err := lifecycle.Activate(active, now); err != nil {
 				t.Fatal(err)
 			}
 			err = lifecycle.ObserveLoss(tt.loss)
@@ -191,7 +191,7 @@ func TestL8JobCredentialIdentityAndProofOwnSliceInputs(t *testing.T) {
 	if err := lifecycle.BeginPrepare(expected); err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.Activate(l8ActiveProof(t, expected, 1, now, now.Add(time.Minute))); err != nil {
+	if err := lifecycle.Activate(l8ActiveProof(t, expected, 1, now, now.Add(time.Minute)), now); err != nil {
 		t.Fatal("lifecycle retained caller-owned identity slices")
 	}
 }
@@ -285,6 +285,134 @@ func TestL8JobCredentialActiveProofLifetimeBoundsAndTemporalValidation(t *testin
 	if err := ValidateJobCredentialActiveProof(expired, identity, 1, now.Add(time.Minute)); !errors.Is(err, ErrJobCredentialExpired) {
 		t.Fatalf("proof at exact expiry = %v, want expired", err)
 	}
+}
+
+func TestL8JobCredentialActivationAndRenewRequireCurrentObservation(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 2, 17, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+
+	for _, tt := range []struct {
+		name       string
+		proof      JobCredentialActiveProof
+		observedAt time.Time
+		want       error
+	}{
+		{
+			name:       "initial activation rejects expired proof",
+			proof:      l8ActiveProof(t, identity, 1, now, now.Add(time.Minute)),
+			observedAt: now.Add(time.Minute),
+			want:       ErrJobCredentialExpired,
+		},
+		{
+			name:       "initial activation rejects not yet valid proof",
+			proof:      l8ActiveProof(t, identity, 1, now.Add(time.Minute), now.Add(2*time.Minute)),
+			observedAt: now,
+			want:       ErrJobCredentialProofInvalid,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lifecycle, err := NewJobCredentialLifecycle(identity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := lifecycle.BeginPrepare(identity); err != nil {
+				t.Fatal(err)
+			}
+			if err := lifecycle.Activate(tt.proof, tt.observedAt); !errors.Is(err, tt.want) || err.Error() != tt.want.Error() {
+				t.Fatalf("activation error = %v, want exact %v", err, tt.want)
+			}
+			if lifecycle.State() != JobCredentialStateRevoking || lifecycle.HasActiveProof() {
+				t.Fatalf("rejected activation state=%q active=%t, want revoking/false", lifecycle.State(), lifecycle.HasActiveProof())
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name       string
+		observedAt time.Time
+		want       error
+	}{
+		{name: "renew rejects expired proof", observedAt: now.Add(2 * time.Minute), want: ErrJobCredentialExpired},
+		{name: "renew rejects not yet valid proof", observedAt: now, want: ErrJobCredentialProofInvalid},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+			if err := lifecycle.BeginRenew(); err != nil {
+				t.Fatal(err)
+			}
+			renewal := l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute))
+			if err := lifecycle.Renew(renewal, tt.observedAt); !errors.Is(err, tt.want) || err.Error() != tt.want.Error() {
+				t.Fatalf("renew error = %v, want exact %v", err, tt.want)
+			}
+			if lifecycle.State() != JobCredentialStateRevoking || lifecycle.HasActiveProof() {
+				t.Fatalf("rejected renewal state=%q active=%t, want revoking/false", lifecycle.State(), lifecycle.HasActiveProof())
+			}
+		})
+	}
+}
+
+func TestL8JobCredentialRenewRequiresCurrentHeldAuthority(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 2, 18, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+
+	t.Run("expired current proof cannot be replaced by valid renewal", func(t *testing.T) {
+		lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+		if err := lifecycle.BeginRenew(); err != nil {
+			t.Fatal(err)
+		}
+		observedAt := now.Add(2 * time.Minute)
+		renewal := l8ActiveProof(t, identity, 2, now.Add(90*time.Second), now.Add(4*time.Minute))
+		if err := lifecycle.Renew(renewal, observedAt); !errors.Is(err, ErrJobCredentialExpired) || err.Error() != ErrJobCredentialExpired.Error() {
+			t.Fatalf("renewal over expired current proof = %v, want exact expired error", err)
+		}
+		if lifecycle.State() != JobCredentialStateRevoking || lifecycle.HasActiveProof() {
+			t.Fatalf("expired-current renewal state=%q active=%t, want revoking/false", lifecycle.State(), lifecycle.HasActiveProof())
+		}
+	})
+
+	t.Run("current proof is revalidated after optimistic hook", func(t *testing.T) {
+		observedAt := now.Add(30 * time.Second)
+		var lifecycle *JobCredentialLifecycle
+		hookCalled := false
+		var err error
+		lifecycle, err = newJobCredentialLifecycleWithOptions(identity, jobCredentialLifecycleOptions{
+			beforeCommit: func(transition jobCredentialLifecycleTransition) {
+				if transition != jobCredentialLifecycleTransitionRenew {
+					return
+				}
+				hookCalled = true
+				live, ok := loadJobCredentialLifecycleState(lifecycle)
+				if !ok {
+					t.Fatal("renew hook could not access canonical lifecycle state")
+				}
+				live.mu.Lock()
+				live.activeProof = l8ActiveProof(t, identity, 1, now, observedAt)
+				live.mu.Unlock()
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.BeginPrepare(identity); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.Activate(l8ActiveProof(t, identity, 1, now, now.Add(time.Minute)), now); err != nil {
+			t.Fatal(err)
+		}
+		if err := lifecycle.BeginRenew(); err != nil {
+			t.Fatal(err)
+		}
+		renewal := l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute))
+		if err := lifecycle.Renew(renewal, observedAt); !errors.Is(err, ErrJobCredentialExpired) || err.Error() != ErrJobCredentialExpired.Error() {
+			t.Fatalf("post-hook current-proof renewal = %v, want exact expired error", err)
+		}
+		if !hookCalled {
+			t.Fatal("renew hook was not called")
+		}
+		if lifecycle.State() != JobCredentialStateRevoking || lifecycle.HasActiveProof() {
+			t.Fatalf("post-hook expired-current state=%q active=%t, want revoking/false", lifecycle.State(), lifecycle.HasActiveProof())
+		}
+	})
 }
 
 func TestL8JobCredentialCleanupProofRequiresExplicitCurrentObservation(t *testing.T) {
@@ -439,15 +567,15 @@ func TestL8JobCredentialLifecycleIdempotenceAndConflicts(t *testing.T) {
 	if err := lifecycle.BeginPrepare(conflictingIdentity); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
 		t.Fatalf("conflicting prepare error = %v, want identity mismatch", err)
 	}
-	if err := lifecycle.Activate(active); err != nil {
+	if err := lifecycle.Activate(active, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.Activate(active); err != nil {
+	if err := lifecycle.Activate(active, now); err != nil {
 		t.Fatalf("same active proof is not idempotent: %v", err)
 	}
 
 	conflicting := l8ActiveProof(t, conflictingIdentity, 1, now, now.Add(time.Minute))
-	if err := lifecycle.Activate(conflicting); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+	if err := lifecycle.Activate(conflicting, now); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
 		t.Fatalf("conflicting active proof error = %v, want identity mismatch", err)
 	}
 
@@ -489,7 +617,7 @@ func TestL8JobCredentialLifecycleFailureCancelLossAndReplayTransitions(t *testin
 		if err := lifecycle.BeginPrepare(identity); err != nil {
 			t.Fatal(err)
 		}
-		if err := lifecycle.Activate(JobCredentialActiveProof{}); err == nil {
+		if err := lifecycle.Activate(JobCredentialActiveProof{}, now); err == nil {
 			t.Fatal("zero active proof was accepted")
 		}
 		if got := lifecycle.State(); got != JobCredentialStateRevoking {
@@ -502,7 +630,7 @@ func TestL8JobCredentialLifecycleFailureCancelLossAndReplayTransitions(t *testin
 		if err := lifecycle.BeginRenew(); err != nil {
 			t.Fatal(err)
 		}
-		if err := lifecycle.Renew(JobCredentialActiveProof{}); err == nil {
+		if err := lifecycle.Renew(JobCredentialActiveProof{}, now); err == nil {
 			t.Fatal("zero renewal proof was accepted")
 		}
 		if got := lifecycle.State(); got != JobCredentialStateRevoking {
@@ -583,7 +711,7 @@ func TestL8JobCredentialLifecycleFailureCancelLossAndReplayTransitions(t *testin
 			t.Fatal(err)
 		}
 		replayed := l8ActiveProof(t, identity, 1, now, now.Add(time.Minute))
-		if err := lifecycle.Renew(replayed); !errors.Is(err, ErrJobCredentialReplayRejected) {
+		if err := lifecycle.Renew(replayed, now); !errors.Is(err, ErrJobCredentialReplayRejected) {
 			t.Fatalf("replayed proof error = %v, want replay rejected", err)
 		}
 		if got := lifecycle.State(); got != JobCredentialStateRevoking {
@@ -622,13 +750,13 @@ func TestL8JobCredentialLifecycleDefaultConstructorHasNoObservableHookState(t *t
 		if err := lifecycle.BeginPrepare(identity); err != nil {
 			return l8LifecycleTransitionResult{err: err}
 		}
-		if err := lifecycle.Activate(active); err != nil {
+		if err := lifecycle.Activate(active, now); err != nil {
 			return l8LifecycleTransitionResult{err: err}
 		}
 		if err := lifecycle.BeginRenew(); err != nil {
 			return l8LifecycleTransitionResult{err: err}
 		}
-		return l8LifecycleTransitionResult{err: lifecycle.Renew(renewed)}
+		return l8LifecycleTransitionResult{err: lifecycle.Renew(renewed, now.Add(time.Second))}
 	}))
 	if result.err != nil {
 		t.Fatalf("default constructor transition requires hook state: %v", result.err)
@@ -665,7 +793,7 @@ func TestL8JobCredentialLifecycleInvalidHookablePathsNeverReachHook(t *testing.T
 				return l8HookedActiveLifecycle(t, identity, 1, now, pause.beforeCommit), JobCredentialCleanupProof{}
 			},
 			invoke: func(lifecycle *JobCredentialLifecycle) l8LifecycleTransitionResult {
-				return l8LifecycleTransitionResult{err: lifecycle.Renew(l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute)))}
+				return l8LifecycleTransitionResult{err: lifecycle.Renew(l8ActiveProof(t, identity, 2, now.Add(time.Second), now.Add(2*time.Minute)), now.Add(time.Second))}
 			},
 			wantErr:      ErrJobCredentialTransition,
 			wantState:    JobCredentialStateActive,
@@ -796,7 +924,7 @@ func TestL8JobCredentialLifecycleInvalidHookablePathsNeverReachHook(t *testing.T
 				t.Fatalf("post-transition state=%q active=%t revision=%d, want %q/%t/%d", lifecycle.State(), lifecycle.HasActiveProof(), lifecycle.Revision(), tt.wantState, tt.wantActive, tt.wantRevision)
 			}
 			if tt.verifyActive {
-				if err := lifecycle.Activate(active); err != nil {
+				if err := lifecycle.Activate(active, now); err != nil {
 					t.Fatalf("invalid transition changed exact active proof: %v", err)
 				}
 				if lifecycle.State() != tt.wantState || !lifecycle.HasActiveProof() || lifecycle.Revision() != tt.wantRevision {
@@ -842,7 +970,7 @@ func TestL8JobCredentialLifecycleForcedRenewInterleavingsCannotResurrect(t *test
 			}
 			pause.arm()
 			pausedRenew := l8StartLifecycleTransition(func() l8LifecycleTransitionResult {
-				return l8LifecycleTransitionResult{err: lifecycle.Renew(renewal)}
+				return l8LifecycleTransitionResult{err: lifecycle.Renew(renewal, now.Add(time.Second))}
 			})
 			pause.waitUntilEntered(t)
 			if lifecycle.State() != JobCredentialStateRenewing || !lifecycle.HasActiveProof() || lifecycle.Revision() != 1 {
@@ -1048,13 +1176,13 @@ func TestL8JobCredentialRenewAndCleanupProofsRequireMonotonicAbsenceEvidence(t *
 	if err := lifecycle.BeginPrepare(identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.Activate(active); err != nil {
+	if err := lifecycle.Activate(active, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := lifecycle.BeginRenew(); err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.Renew(l8ActiveProof(t, identity, 4, now.Add(time.Second), now.Add(2*time.Minute))); !errors.Is(err, ErrJobCredentialRevisionStale) {
+	if err := lifecycle.Renew(l8ActiveProof(t, identity, 4, now.Add(time.Second), now.Add(2*time.Minute)), now.Add(time.Second)); !errors.Is(err, ErrJobCredentialRevisionStale) {
 		t.Fatalf("same-revision renew error = %v, want revision stale", err)
 	}
 
@@ -1098,9 +1226,8 @@ func TestL8JobCredentialAuthenticatedWorkerPrincipalRequiresExactAuthorityCapabi
 	}
 
 	copyOfAuthority := *authority
-	principalFromCopy, err := copyOfAuthority.IssueAuthenticatedWorkerPrincipal("principal-owner", 1001, 1002)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := copyOfAuthority.IssueAuthenticatedWorkerPrincipal("principal-owner", 1001, 1002); !errors.Is(err, ErrAuthenticatedWorkerPrincipal) {
+		t.Fatalf("copied authority issue error = %v, want authority rejection", err)
 	}
 	identicalVisibleAuthority, err := NewAuthenticatedWorkerPrincipalAuthority("peercred-authority", "daemon-generation-1")
 	if err != nil {
@@ -1122,7 +1249,6 @@ func TestL8JobCredentialAuthenticatedWorkerPrincipalRequiresExactAuthorityCapabi
 	}{
 		{name: "zero", principal: zeroPrincipal},
 		{name: "copied principal", principal: &copyOfPrincipal},
-		{name: "copied authority", principal: principalFromCopy},
 		{name: "identical visible different authority", principal: principalFromOther},
 		{name: "forged interface", principal: l8ForgedAuthenticatedWorkerPrincipal{}},
 	} {
@@ -1204,6 +1330,89 @@ func TestL8JobCredentialLiveStateIsOpaqueAndExplicitlyDeniesSerialization(t *tes
 	}
 }
 
+func TestL8JobCredentialReflectedValueCopiesStayOpaqueAndFailClosed(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 47, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+	authority, err := NewAuthenticatedWorkerPrincipalAuthority("peercred-copy-canary", "daemon-copy-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := authority.IssueAuthenticatedWorkerPrincipal("principal-copy-canary", 1000, 1001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityCopy := *authority
+	lifecycleCopy := *lifecycle
+	principalCopy := reflect.ValueOf(principal).Elem().Interface()
+	for _, copied := range []struct {
+		label          string
+		value          any
+		expectedFormat string
+	}{
+		{label: "authority value copy", value: authorityCopy, expectedFormat: "<sandboxruntime.AuthenticatedWorkerPrincipalAuthority>"},
+		{label: "lifecycle value copy", value: lifecycleCopy, expectedFormat: "<sandboxruntime.JobCredentialLifecycle>"},
+		{label: "principal reflected value copy", value: principalCopy, expectedFormat: "<sandboxruntime.authenticatedWorkerPrincipal>"},
+	} {
+		l8AssertJobCredentialLiveValue(t, copied.label, copied.value, copied.expectedFormat, []string{
+			identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.RuntimeID,
+			"peercred-copy-canary", "daemon-copy-generation", "principal-copy-canary", "1000", "1001",
+		})
+		for _, control := range []string{"%p", "%T"} {
+			rendered := l8JobCredentialSafeSprintf(t, copied.label+" "+control, control, copied.value)
+			l8JobCredentialRejectFormattingPoison(t, copied.label+" "+control, rendered, l8JobCredentialControlFormattingForbidden([]string{
+				identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.RuntimeID,
+				"peercred-copy-canary", "daemon-copy-generation", "principal-copy-canary", "1000", "1001",
+			}))
+		}
+	}
+	if _, err := authorityCopy.IssueAuthenticatedWorkerPrincipal("principal-copy-attempt", 1000, 1001); !errors.Is(err, ErrAuthenticatedWorkerPrincipal) {
+		t.Fatalf("copied authority remained operational: %v", err)
+	}
+	if err := lifecycleCopy.BeginRevoke(); !errors.Is(err, ErrJobCredentialTransition) {
+		t.Fatalf("copied lifecycle remained operational: %v", err)
+	}
+	if lifecycle.State() != JobCredentialStateActive || !lifecycle.HasActiveProof() {
+		t.Fatal("copied lifecycle operation changed original live state")
+	}
+}
+
+func TestL8JobCredentialNestedReflectCannotReachPrivateLiveState(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 3, 48, 0, 0, time.UTC)
+	identity := l8JobCredentialIdentity(now)
+	lifecycle := l8ActiveLifecycle(t, identity, 1, now)
+	authority, err := NewAuthenticatedWorkerPrincipalAuthority("peercred-reflect-canary", "daemon-reflect-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := authority.IssueAuthenticatedWorkerPrincipal("principal-reflect-canary", 424242001, 424242002)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, handle := range []struct {
+		label string
+		value any
+	}{
+		{label: "lifecycle", value: lifecycle},
+		{label: "authority", value: authority},
+		{label: "principal", value: principal},
+	} {
+		l8AssertJobCredentialNestedReflectOpaque(t, handle.label, handle.value, []string{
+			identity.SandboxID, identity.ExecutionID, identity.HostID, identity.WorkerID,
+			identity.WorkerJobID, identity.RuntimeID, identity.RuntimeGeneration,
+			identity.ProxySessionID, identity.ProxyGenerationID, identity.AdmissionGrantID,
+			identity.PrincipalID, identity.BindingIDs[0], "active-proof-1",
+			"peercred-reflect-canary", "daemon-reflect-generation", "principal-reflect-canary",
+		}, []uint64{424242001, 424242002})
+	}
+	if lifecycle.State() != JobCredentialStateActive || !lifecycle.HasActiveProof() {
+		t.Fatal("nested reflection changed the original lifecycle")
+	}
+	if err := authority.ValidateAuthenticatedWorkerPrincipal(principal); err != nil {
+		t.Fatalf("nested reflection changed the original authority/principal: %v", err)
+	}
+}
+
 func l8AssertJobCredentialLiveValue(t *testing.T, label string, value any, expectedFormat string, forbidden []string) {
 	t.Helper()
 	jsonCodec, ok := value.(json.Marshaler)
@@ -1232,27 +1441,29 @@ func l8AssertJobCredentialAllVerbFormatting(t *testing.T, label string, value an
 		if _, ok := variant.value.(fmt.Formatter); !ok {
 			t.Fatalf("%s %s lacks fmt.Formatter", label, variant.name)
 		}
-		if rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value); rendered != expectedFormat {
+		if rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" %v", "%v", variant.value); !variant.nilPointer && rendered != expectedFormat {
 			t.Fatalf("%s %s formatter output = %q, want exact %q", label, variant.name, rendered, expectedFormat)
 		}
 		for _, format := range l8JobCredentialFormatterVerbs() {
 			rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" "+format, format, variant.value)
-			if rendered != expectedFormat {
+			if !variant.nilPointer && rendered != expectedFormat {
 				t.Fatalf("%s %s formatting %s = %q, want fixed %q", label, variant.name, format, rendered, expectedFormat)
 			}
 			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+format, rendered, forbidden)
 		}
 		for _, control := range []string{"%T", "%p"} {
 			rendered := l8JobCredentialSafeSprintf(t, label+" "+variant.name+" "+control, control, variant.value)
-			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, forbidden)
+			l8JobCredentialRejectFormattingPoison(t, label+" "+variant.name+" "+control, rendered, l8JobCredentialControlFormattingForbidden(forbidden))
 		}
-		stringer, ok := variant.value.(fmt.Stringer)
-		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expectedFormat {
-			t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
-		}
-		goStringer, ok := variant.value.(fmt.GoStringer)
-		if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expectedFormat {
-			t.Fatalf("%s %s GoString output is not the fixed formatter output", label, variant.name)
+		if !variant.nilPointer {
+			stringer, ok := variant.value.(fmt.Stringer)
+			if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" String", stringer.String) != expectedFormat {
+				t.Fatalf("%s %s String output is not the fixed formatter output", label, variant.name)
+			}
+			goStringer, ok := variant.value.(fmt.GoStringer)
+			if !ok || l8JobCredentialSafeFormatCall(t, label+" "+variant.name+" GoString", goStringer.GoString) != expectedFormat {
+				t.Fatalf("%s %s GoString output is not the fixed formatter output", label, variant.name)
+			}
 		}
 	}
 }
@@ -1310,6 +1521,79 @@ func l8JobCredentialRejectFormattingPoison(t *testing.T, label, rendered string,
 			t.Fatalf("%s exposed formatting poison %q in %q", label, poison, rendered)
 		}
 	}
+}
+
+func l8JobCredentialControlFormattingForbidden(forbidden []string) []string {
+	result := make([]string, 0, len(forbidden))
+	for _, poison := range forbidden {
+		onlyDigits := poison != ""
+		for _, character := range poison {
+			if character < '0' || character > '9' {
+				onlyDigits = false
+				break
+			}
+		}
+		if !onlyDigits {
+			result = append(result, poison)
+		}
+	}
+	return result
+}
+
+func l8AssertJobCredentialNestedReflectOpaque(t *testing.T, label string, handle any, forbiddenStrings []string, forbiddenUnsigned []uint64) {
+	t.Helper()
+	packagePath := reflect.TypeOf(JobCredentialLifecycle{}).PkgPath()
+	type visit struct {
+		typeName string
+		pointer  uintptr
+	}
+	seen := make(map[visit]struct{})
+	var walk func(reflect.Value, string)
+	walk = func(value reflect.Value, path string) {
+		if !value.IsValid() {
+			return
+		}
+		rendered := fmt.Sprintf("%v|%+v|%#v", value, value, value)
+		l8JobCredentialRejectFormattingPoison(t, label+" "+path, rendered, forbiddenStrings)
+		switch value.Kind() {
+		case reflect.Interface:
+			if !value.IsNil() {
+				walk(value.Elem(), path+".interface")
+			}
+		case reflect.Pointer:
+			if value.IsNil() {
+				return
+			}
+			key := visit{typeName: value.Type().String(), pointer: value.Pointer()}
+			if _, ok := seen[key]; ok {
+				return
+			}
+			seen[key] = struct{}{}
+			walk(value.Elem(), path+".pointer")
+		case reflect.Struct:
+			if pkg := value.Type().PkgPath(); pkg != "" && pkg != packagePath {
+				return
+			}
+			for index := 0; index < value.NumField(); index++ {
+				walk(value.Field(index), fmt.Sprintf("%s.%s", path, value.Type().Field(index).Name))
+			}
+		case reflect.Slice, reflect.Array:
+			for index := 0; index < value.Len(); index++ {
+				walk(value.Index(index), fmt.Sprintf("%s[%d]", path, index))
+			}
+		case reflect.String:
+			l8JobCredentialRejectFormattingPoison(t, label+" "+path+" string", value.String(), forbiddenStrings)
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			for _, forbidden := range forbiddenUnsigned {
+				if value.Uint() == forbidden {
+					t.Fatalf("%s %s exposed private unsigned value %d", label, path, forbidden)
+				}
+			}
+		case reflect.Func:
+			return
+		}
+	}
+	walk(reflect.ValueOf(handle), "handle")
 }
 
 func TestL8JobCredentialAuthorizationIsStructurallyRequiredBeforeSourceResolution(t *testing.T) {
@@ -1455,7 +1739,7 @@ func l8ActiveLifecycle(t *testing.T, identity JobCredentialIdentity, revision ui
 	if err := lifecycle.BeginPrepare(identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.Activate(l8ActiveProof(t, identity, revision, now, now.Add(time.Minute))); err != nil {
+	if err := lifecycle.Activate(l8ActiveProof(t, identity, revision, now, now.Add(time.Minute)), now); err != nil {
 		t.Fatal(err)
 	}
 	return lifecycle
@@ -1591,7 +1875,7 @@ func l8HookedActiveLifecycle(t *testing.T, identity JobCredentialIdentity, revis
 	if err := lifecycle.BeginPrepare(identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.Activate(l8ActiveProof(t, identity, revision, now, now.Add(time.Minute))); err != nil {
+	if err := lifecycle.Activate(l8ActiveProof(t, identity, revision, now, now.Add(time.Minute)), now); err != nil {
 		t.Fatal(err)
 	}
 	return lifecycle
