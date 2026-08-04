@@ -140,6 +140,31 @@ func JobResolveV2Fixture(callback func()) { callback() }`,
 	}, policy, "function-value dispatch")
 }
 
+func TestL8WorkerV2GuardAllowsExactBoundedStrictDecoderSeam(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{mixed: map[string]bool{"protocol_decode.go": true}}
+	l8AssertWorkerV2GuardAllows(t, map[string]string{
+		"protocol_decode.go": `package sandboxworker
+import (
+	"encoding/json"
+	"io"
+)
+type JobStartRequestV2 struct { Value string }
+func decodeJobStartRequestV2(reader io.Reader, output *JobStartRequestV2) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(output)
+}`,
+	}, policy)
+
+	l8AssertWorkerV2GuardRejects(t, map[string]string{
+		"protocol_decode.go": `package sandboxworker
+import formatting "fmt"
+type callbackRenderer struct{}
+func (callbackRenderer) String() string { return "" }
+func decodeJobResolveV2() { _ = formatting.Sprint(callbackRenderer{}) }`,
+	}, policy, "implicit interface callback")
+}
+
 type l8WorkerV2GuardPolicy struct {
 	dedicated map[string]bool
 	mixed     map[string]bool
