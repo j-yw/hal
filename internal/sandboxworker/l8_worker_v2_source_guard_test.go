@@ -2038,10 +2038,22 @@ import formatting "fmt"
 var hiddenOperation = formatting.Sprintf("%s%c%d", "job_status_", 'v', 2)`,
 		},
 		{
+			name: "fmt sprintf recoverable string value",
+			source: `package sandboxworker
+import formatting "fmt"
+var hiddenOperation = formatting.Sprintf("%s_%s_%v", "job", "start", string([]byte{118, 50}))`,
+		},
+		{
 			name: "strings repeat",
 			source: `package sandboxworker
 import text "strings"
 var hiddenOperation = "job_logs_" + text.Repeat("v", 1) + string([]byte{50})`,
+		},
+		{
+			name: "strings join sliced array pointer",
+			source: `package sandboxworker
+import text "strings"
+var hiddenOperation = text.Join((&[3]string{"job", "start", string([]byte{118, 50})})[:], "_")`,
 		},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
