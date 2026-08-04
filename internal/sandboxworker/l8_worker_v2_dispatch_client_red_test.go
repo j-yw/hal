@@ -621,6 +621,40 @@ func TestL8WorkerV2ClientUsesEveryDistinctOperationWithoutMutatingIntent(t *test
 	}
 }
 
+func TestL8WorkerV2ClientRejectsEmptySuccessfulResponseIdentity(t *testing.T) {
+	for _, operation := range l8WorkerV2ClientOperationCases() {
+		t.Run(operation.operation, func(t *testing.T) {
+			client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, request Request) (Response, error) {
+				response := Response{ProtocolVersion: ProtocolVersion, Operation: request.Operation, OK: true}
+				response = l8WorkerV2AttachValidMatchingResponsePayload(t, response, request)
+				return response, nil
+			})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			invokeErr := operation.invoke(client)
+			if invokeErr == nil || errors.Is(invokeErr, ErrCredentialWorkerProtocolUnsupported) {
+				t.Fatalf("empty successful response identity error = %v, want malformed non-admission error", invokeErr)
+			}
+			var malformed *ClientError
+			if !errors.As(invokeErr, &malformed) || malformed.Code != ErrorCodeMalformedRequest {
+				t.Fatalf("empty successful response identity error = %v, want malformed client response", invokeErr)
+			}
+		})
+	}
+
+	v1Job := l8WorkerV1ValidQueuedJob(t)
+	v1Client, err := NewClient(ClientOptions{Transport: ClientTransportFunc(func(_ context.Context, request Request) (Response, error) {
+		return l8WorkerV1ValidSuccessResponse(t, request.Operation, "", v1Job), nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v1Client.JobStatus(context.Background(), JobStatusRequest{ContractVersion: JobContractVersion, JobID: v1Job.ID}); err != nil {
+		t.Fatalf("v1 job status rejected compatible empty response identity: %v", err)
+	}
+}
+
 func TestL8WorkerV2ClientTreatsOnlyExactUnsupportedResponsesAsTerminal(t *testing.T) {
 	v1Job := l8WorkerV1ValidQueuedJob(t)
 	responders := []struct {

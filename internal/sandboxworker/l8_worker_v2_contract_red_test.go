@@ -325,15 +325,41 @@ func TestL8WorkerV2CredentialIdentitiesUseCrossPhaseSafeIDVocabulary(t *testing.
 			})
 		}
 	}
+	for _, field := range fields {
+		for _, allowed := range l8WorkerV2CrossPhaseSafeIDCases() {
+			t.Run(field.name+" accepts "+allowed.name, func(t *testing.T) {
+				request := l8WorkerV2StartRequest()
+				field.mutate(&request, allowed.value)
+				if err := request.Validate(); err != nil {
+					t.Fatalf("v2 credential %s rejected allowed %s safe ID: %v", field.name, allowed.name, err)
+				}
+			})
+		}
+	}
 
 	legacy := JobStartRequest{
 		ContractVersion: JobContractVersion,
-		SubmissionID:    strings.Repeat("s", 129),
+		SubmissionID:    strings.Repeat("s", 192),
 		Exec:            l8WorkerV2StartRequest().Exec,
 	}
 	legacy.Exec.Target.Runtime.RuntimeID = "runtime:legacy"
 	if err := legacy.Validate(); err != nil {
-		t.Fatalf("stricter v2 credential vocabulary changed legacy v1 job/runtime IDs: %v", err)
+		t.Fatalf("stricter v2 credential vocabulary changed legacy v1 192-byte/colon job/runtime IDs: %v", err)
+	}
+}
+
+type l8WorkerV2SafeIDCase struct {
+	name  string
+	value string
+}
+
+func l8WorkerV2CrossPhaseSafeIDCases() []l8WorkerV2SafeIDCase {
+	return []l8WorkerV2SafeIDCase{
+		{name: "128 byte mixed alphabet", value: strings.Repeat("-._Aa0", 21) + "-."},
+		{name: "single dot", value: "."},
+		{name: "single underscore", value: "_"},
+		{name: "single hyphen", value: "-"},
+		{name: "leading punctuation and uppercase", value: "._-Upper9"},
 	}
 }
 
@@ -661,6 +687,13 @@ func TestL8WorkerV2NoCredentialIntentRequiresExactAbsence(t *testing.T) {
 	if err := req.Validate(); err != nil {
 		t.Fatalf("explicit no-credential v2 request: %v", err)
 	}
+	for _, allowed := range l8WorkerV2CrossPhaseSafeIDCases() {
+		candidate := l8CloneWorkerV2StartRequest(req)
+		candidate.SubmissionID = allowed.value
+		if err := candidate.Validate(); err != nil {
+			t.Fatalf("no-credential v2 request rejected %s submission identity: %v", allowed.name, err)
+		}
+	}
 	for _, submissionID := range []string{strings.Repeat("s", 129), "submission:neighbor"} {
 		candidate := l8CloneWorkerV2StartRequest(req)
 		candidate.SubmissionID = submissionID
@@ -835,6 +868,21 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 	}
 	if !reflect.DeepEqual(gotPrivateSchema, wantPrivateSchema) {
 		t.Fatalf("storedJobStateV2 schema = %q, want exact private wrapper %q", gotPrivateSchema, wantPrivateSchema)
+	}
+	for _, allowed := range l8WorkerV2CrossPhaseSafeIDCases() {
+		t.Run("accepts principal "+allowed.name, func(t *testing.T) {
+			candidate := state
+			candidate.PrincipalID = allowed.value
+			candidate.JobV2.SubmissionKey = jobSubmissionKeyV2(allowed.value, request)
+			requestKey, keyErr := jobRequestKeyV2(RuntimeDriverMicroVM, allowed.value, request)
+			if keyErr != nil {
+				t.Fatal(keyErr)
+			}
+			candidate.RequestKey = requestKey
+			if err := candidate.Validate(); err != nil {
+				t.Fatalf("private durable v2 state rejected allowed principal %s: %v", allowed.name, err)
+			}
+		})
 	}
 	for _, tt := range []struct {
 		name   string

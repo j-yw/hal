@@ -766,8 +766,30 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	}
 	l8AssertWorkerV2GuardAllows(t, sources, policy)
 	possiblyReturningHelper := l8CloneWorkerV2GuardSources(sources)
-	possiblyReturningHelper["client.go"] = strings.Replace(possiblyReturningHelper["client.go"], "\tvar response Response", "\treviewMayReturn(true)\n\treviewLoopMayReturn()\n\tvar response Response", 1)
-	possiblyReturningHelper["client.go"] += "\nfunc reviewMayReturn(shouldReturn bool) { if shouldReturn { return }; select {} }\nfunc reviewLoopMayReturn() { for { break } }\n"
+	possiblyReturningHelper["client.go"] = strings.Replace(possiblyReturningHelper["client.go"], "\tvar response Response", `	_ = false && reviewSkippedForeverBool()
+	_ = true || reviewSkippedForeverBool()
+	defer reviewDeferredForever()
+	go reviewDeferredForever()
+	_ = reviewReturnsNormally()
+	reviewMayReturn(true)
+	reviewLoopMayReturn()
+	reviewCountdown(1)
+	reviewConditionalRecursive(false)
+	reviewMutualMayReturnA(false)
+	reviewRecoveringRecursiveDecoy(false)
+	var response Response`, 1)
+	possiblyReturningHelper["client.go"] += `
+func reviewSkippedForeverBool() bool { select {} }
+func reviewDeferredForever() { select {} }
+func reviewReturnsNormally() int { return 1 }
+func reviewMayReturn(shouldReturn bool) { if shouldReturn { return }; select {} }
+func reviewLoopMayReturn() { for { break } }
+func reviewCountdown(value int) { if value == 0 { return }; reviewCountdown(value-1) }
+func reviewConditionalRecursive(recurse bool) { if recurse { reviewConditionalRecursive(false) } }
+func reviewMutualMayReturnA(recurse bool) { if recurse { reviewMutualMayReturnB(false) } }
+func reviewMutualMayReturnB(recurse bool) { if recurse { reviewMutualMayReturnA(false) } }
+func reviewRecoveringRecursiveDecoy(recurse bool) { defer func() { _ = recover() }(); if recurse { reviewRecoveringRecursiveDecoy(false) } }
+`
 	l8AssertWorkerV2GuardAllows(t, possiblyReturningHelper, policy)
 	clientHalfCloseBlock := `	halfCloser, ok := connection.(interface{ CloseWrite() error })
 	if !ok {
@@ -987,6 +1009,55 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			mutate: func(source string) string {
 				source = strings.Replace(source, "\tvar response Response", "\tfor range reviewBlockForeverValues() {}\n\tvar response Response", 1)
 				return source + "\nfunc reviewBlockForeverValues() []int { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after true and helper",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\t_ = true && reviewBlockForeverBool()\n\tvar response Response", 1)
+				return source + "\nfunc reviewBlockForeverBool() bool { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after false or helper",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\t_ = false || reviewBlockForeverBool()\n\tvar response Response", 1)
+				return source + "\nfunc reviewBlockForeverBool() bool { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after direct recursion",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewRecursiveForever()\n\tvar response Response", 1)
+				return source + "\nfunc reviewRecursiveForever() { reviewRecursiveForever() }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after mutual recursion",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewMutualForeverA()\n\tvar response Response", 1)
+				return source + "\nfunc reviewMutualForeverA() { reviewMutualForeverB() }\nfunc reviewMutualForeverB() { reviewMutualForeverA() }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after defer argument helper",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\tdefer reviewSinkValue(reviewBlockForeverValue())\n\tvar response Response", 1)
+				return source + "\nfunc reviewSinkValue(int) {}\nfunc reviewBlockForeverValue() int { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after go argument helper",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\tgo reviewSinkValue(reviewBlockForeverValue())\n\tvar response Response", 1)
+				return source + "\nfunc reviewSinkValue(int) {}\nfunc reviewBlockForeverValue() int { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after return operand helper",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\t_ = reviewReturnBlocks()\n\tvar response Response", 1)
+				return source + "\nfunc reviewReturnBlocks() int { return reviewBlockForeverValue() }\nfunc reviewBlockForeverValue() int { select {} }\n"
 			},
 		},
 	} {
