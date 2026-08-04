@@ -786,8 +786,17 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reviewReassignedLocal := func() { select {} }
 	reviewReassignedLocal = func() {}
 	reviewReassignedLocal()
+	reviewAddressedLocal := func() { select {} }
+	reviewAddressedAlias := &reviewAddressedLocal
+	*reviewAddressedAlias = func() {}
+	reviewAddressedLocal()
+	var reviewCycleA, reviewCycleB func()
+	reviewCycleA = reviewCycleB
+	reviewCycleB = reviewCycleA
+	if reviewCycleA != nil { reviewCycleA() }
 	switch true { case true: case reviewSkippedForeverBool(): }
 	switch true { case true, reviewSkippedForeverBool(): }
+	switch true { case reviewUnknownBool(): case reviewSkippedForeverBool(): }
 	reviewNormalAssignment := 0
 	reviewNormalAssignment = 1
 	_ = reviewNormalAssignment
@@ -807,6 +816,7 @@ func reviewReturnBeforeRecursion(stop bool) { if stop { return }; reviewReturnBe
 func reviewConditionalReturnBeforeTerminal(stop bool) { if stop { return }; select {} }
 func reviewReachableDeferRecover() { defer func() { _ = recover() }() }
 func reviewDeferredRecoverThenPanic() { defer func() { _ = recover() }(); panic("recovered") }
+func reviewUnknownBool() bool { return false }
 type reviewReturningReceiver struct{}
 func (reviewReturningReceiver) value() int { return 1 }
 `
@@ -1177,10 +1187,58 @@ func (reviewReturningReceiver) value() int { return 1 }
 			},
 		},
 		{
+			name: "client response decode is unreachable after immutable local function alias chain",
+			mutate: func(source string) string {
+				return strings.Replace(source, "\tvar response Response", "\treviewLocalBlock := func() { select {} }\n\treviewLocalAlias := reviewLocalBlock\n\treviewLocalAlias2 := reviewLocalAlias\n\treviewLocalAlias2()\n\tvar response Response", 1)
+			},
+		},
+		{
+			name: "client response decode is unreachable after immutable package function alias chain",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewPackageBlockAlias2()\n\tvar response Response", 1)
+				return source + "\nvar reviewPackageBlock = func() { select {} }\nvar reviewPackageBlockAlias = reviewPackageBlock\nvar reviewPackageBlockAlias2 = reviewPackageBlockAlias\n"
+			},
+		},
+		{
 			name: "client response decode is unreachable after first switch case expression",
 			mutate: func(source string) string {
 				source = strings.Replace(source, "\tvar response Response", "\tswitch true { case reviewSwitchBlocks(): }\n\tvar response Response", 1)
 				return source + "\nfunc reviewSwitchBlocks() bool { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after provably nonmatching switch case",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\tswitch true { case false: case reviewSwitchBlocks(): }\n\tvar response Response", 1)
+				return source + "\nfunc reviewSwitchBlocks() bool { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after provably nonmatching switch list expression",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\tswitch true { case false, reviewSwitchBlocks(): }\n\tvar response Response", 1)
+				return source + "\nfunc reviewSwitchBlocks() bool { select {} }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after panic with defer recover then select",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewRecoverThenSelectPanic()\n\tvar response Response", 1)
+				return source + "\nfunc reviewRecoverThenSelectPanic() { defer func() { _ = recover(); select {} }(); panic(\"blocked\") }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after panic with defer recover then recurse",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewRecoverThenRecursePanic()\n\tvar response Response", 1)
+				return source + "\nfunc reviewRecoverThenRecursePanic() { defer func() { _ = recover(); reviewRecoverThenRecursePanic() }(); panic(\"blocked\") }\n"
+			},
+		},
+		{
+			name: "client response decode is unreachable after panic with deferred goroutine recover",
+			mutate: func(source string) string {
+				source = strings.Replace(source, "\tvar response Response", "\treviewDeferredGoRecoverPanic()\n\tvar response Response", 1)
+				return source + "\nfunc reviewDeferredGoRecoverPanic() { defer func() { go recover() }(); panic(\"blocked\") }\n"
 			},
 		},
 		{
