@@ -417,6 +417,52 @@ func decodeJobResolveV2() { _ = formatting.Sprint(callbackRenderer{}) }`,
 	}, policy, "implicit interface callback")
 }
 
+func TestL8WorkerV2GuardAllowsAuditedRuntimeMetadataInOuterStrictDecoders(t *testing.T) {
+	policy := l8WorkerV2GuardPolicy{dedicated: map[string]bool{"protocol_decode.go": true}}
+	for name, source := range map[string]string{
+		"request": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+)
+type RuntimeTarget struct { Metadata *sandboxruntime.RuntimeMetadata }
+type Target struct { Runtime RuntimeTarget }
+type JobStartRequestV2 struct { Target Target }
+type Request struct { JobStartV2 *JobStartRequestV2 }
+func decodeWorkerRequest(reader io.Reader, output *Request) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`,
+		"response": `package sandboxworker
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+)
+type Status struct { Metadata *sandboxruntime.RuntimeMetadata }
+type Response struct { Status *Status }
+func decodeWorkerResponse(reader io.Reader, output *Response) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil { return err }
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	return nil
+}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			l8AssertWorkerV2GuardAllows(t, map[string]string{"protocol_decode.go": source}, policy)
+		})
+	}
+}
+
 func TestL8WorkerV2GuardAllowsSafeMixedEnvelopeFieldsAndTypedClient(t *testing.T) {
 	policy := l8WorkerV2GuardPolicy{
 		dedicated: map[string]bool{
