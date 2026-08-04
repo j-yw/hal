@@ -195,6 +195,58 @@ func (ExecRequest) Validate() error {
 	}, l8WorkerV2ProductionGuardPolicy(), "outside the exact allowlist")
 }
 
+func TestL8WorkerV2GuardAllowsExactUnchangedV1AdapterCorrelationMethods(t *testing.T) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "adapter.go", l8ReadWorkerSource(t, "adapter.go"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &l8WorkerV2ParsedFile{path: "adapter.go", fileSet: fileSet, parsed: parsed}
+	wanted := map[string]bool{"JobStart": true, "JobResolve": true, "JobStatus": true, "JobLogs": true}
+	found := make(map[string]bool, len(wanted))
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || !wanted[function.Name.Name] || function.Recv == nil || len(function.Recv.List) != 1 {
+			continue
+		}
+		receiver, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		receiverName, ok := receiver.X.(*ast.Ident)
+		if !ok || receiverName.Name != "ClientDriver" {
+			continue
+		}
+		found[function.Name.Name] = true
+		scope := l8WorkerV2GuardScope{file: file, node: function}
+		if !l8WorkerV2AllowedCompatibilityDeclaration(scope) || !l8WorkerV2LockedV1CompatibilityDeclaration(scope) {
+			t.Errorf("exact unchanged ClientDriver.%s compatibility declaration was not locked", function.Name.Name)
+		}
+
+		for _, mutation := range []struct {
+			name       string
+			expression ast.Expr
+		}{
+			{name: "hash drift", expression: &ast.BasicLit{Kind: token.STRING, Value: `"hash drift"`}},
+			{name: "V2 marker", expression: &ast.Ident{Name: "JobStartV2Fixture"}},
+		} {
+			mutatedFunction := *function
+			mutatedBody := *function.Body
+			mutatedBody.List = append(append([]ast.Stmt(nil), function.Body.List...), &ast.ExprStmt{X: mutation.expression})
+			mutatedFunction.Body = &mutatedBody
+			mutatedScope := l8WorkerV2GuardScope{file: file, node: &mutatedFunction}
+			if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) || l8WorkerV2LockedV1CompatibilityDeclaration(mutatedScope) {
+				t.Errorf("ClientDriver.%s mutation %q retained compatibility allowance", function.Name.Name, mutation.name)
+			}
+		}
+	}
+	for name := range wanted {
+		if !found[name] {
+			t.Errorf("exact unchanged ClientDriver.%s declaration was not found", name)
+		}
+	}
+}
+
 func TestL8WorkerV2GuardClientTransportFixturePreservesExistingV2Production(t *testing.T) {
 	sources := map[string]string{
 		"types.go": `package sandboxworker
