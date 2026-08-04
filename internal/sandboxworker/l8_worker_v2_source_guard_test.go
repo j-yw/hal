@@ -750,11 +750,16 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, reques
 import (
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 )
 const maxStoredJobStateV2Bytes int64 = 64 << 10
-type jobStoreV2 struct{}
+type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
+func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	path := filepath.Join(store.root, jobID+".json")
+	return os.Open(path)
+}
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reader, err := store.openStoredJobStateV2(jobID)
 	if err != nil { return storedJobStateV2{}, errors.New("stored job state could not be opened") }
@@ -1374,7 +1379,9 @@ func (reviewReturningReceiver) value() int { return 1 }
 	t.Run("store uses package-level root-blind acquisition with matching name", func(t *testing.T) {
 		mutated := l8CloneWorkerV2GuardSources(sources)
 		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "func (store *jobStoreV2) openStoredJobStateV2(jobID string)", "func openStoredJobStateV2(jobID string)", 1)
+		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "store.root", "globalJobStoreV2Root", 1)
 		mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], "store.openStoredJobStateV2(jobID)", "openStoredJobStateV2(jobID)", 1)
+		mutated["job_store_v2.go"] += "\nvar globalJobStoreV2Root string\n"
 		if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
 			t.Fatal("package-level store acquisition mutation did not change the positive fixture")
 		}
@@ -1401,7 +1408,7 @@ func (reviewReturningReceiver) value() int { return 1 }
 		{
 			name: "store opener belongs to a generic receiver",
 			mutate: func(source string) string {
-				source = strings.Replace(source, "type jobStoreV2 struct{}", "type jobStoreV2[T any] struct{}", 1)
+				source = strings.Replace(source, "type jobStoreV2 struct { root string }", "type jobStoreV2[T any] struct { root string }", 1)
 				source = strings.Replace(source, "func (store *jobStoreV2) openStoredJobStateV2", "func (store *jobStoreV2[T]) openStoredJobStateV2", 1)
 				return strings.Replace(source, "func (store *jobStoreV2) load", "func (store *jobStoreV2[T]) load", 1)
 			},
@@ -1419,6 +1426,50 @@ func (reviewReturningReceiver) value() int { return 1 }
 			mutated["job_store_v2.go"] = tt.mutate(mutated["job_store_v2.go"])
 			if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
 				t.Fatal("store opener mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
+	for _, tt := range []struct {
+		name        string
+		replacement string
+		helper      string
+	}{
+		{
+			name: "store opener references receiver but delegates to package global root helper",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	_ = store.root
+	return openGlobalStoredJobStateV2(jobID)
+}`,
+			helper: `
+var globalJobStoreV2Root string
+func openGlobalStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	return os.Open(filepath.Join(globalJobStoreV2Root, jobID+".json"))
+}
+`,
+		},
+		{
+			name: "store opener delegates receiver root and job identity through package helper",
+			replacement: `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	return openStoredJobStateV2FromRoot(store.root, jobID)
+}`,
+			helper: `
+func openStoredJobStateV2FromRoot(root, jobID string) (storedJobReaderV2, error) {
+	return os.Open(filepath.Join(root, jobID+".json"))
+}
+`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			const safeOpener = `func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	path := filepath.Join(store.root, jobID+".json")
+	return os.Open(path)
+}`
+			mutated["job_store_v2.go"] = strings.Replace(mutated["job_store_v2.go"], safeOpener, tt.replacement, 1) + tt.helper
+			if mutated["job_store_v2.go"] == sources["job_store_v2.go"] {
+				t.Fatal("store opener implementation mutation did not change the positive fixture")
 			}
 			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
 		})
@@ -2316,11 +2367,16 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, reques
 import (
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 )
 const maxStoredJobStateV2Bytes int64 = 64 << 10
-type jobStoreV2 struct{}
+type jobStoreV2 struct { root string }
 type storedJobReaderV2 interface { io.Reader; Close() error }
-func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) { return nil, nil }
+func (store *jobStoreV2) openStoredJobStateV2(jobID string) (storedJobReaderV2, error) {
+	path := filepath.Join(store.root, jobID+".json")
+	return os.Open(path)
+}
 func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 	reader, err := store.openStoredJobStateV2(jobID)
 	if err != nil { return storedJobStateV2{}, errors.New("stored job state could not be opened") }
