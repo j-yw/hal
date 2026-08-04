@@ -50,6 +50,9 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 		{name: "authenticated principal substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			return l8Principal(t, authority, "caller-controlled", 1001, 1002)
 		}},
+		{name: "reissued principal with identical visible fields from same authority", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
+			return l8Principal(t, authority, "principal-owner", 1001, 1002)
+		}},
 		{name: "issuer substitution", mutate: func(t *testing.T, _ sandboxruntime.AuthenticatedWorkerPrincipal, _ *sandboxruntime.JobCredentialAdmissionRequest) sandboxruntime.AuthenticatedWorkerPrincipal {
 			other := l8PrincipalAuthority(t, "caller-issuer", "daemon-generation-1")
 			return l8Principal(t, other, "principal-owner", 1001, 1002)
@@ -91,7 +94,7 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 	}
 	for _, tt := range denials {
 		t.Run(tt.name, func(t *testing.T) {
-			p := l8Principal(t, authority, "principal-owner", 1001, 1002)
+			p := principal
 			r := l8AdmissionRequest()
 			p = tt.mutate(t, p, &r)
 			before := len(keyctl.calls)
@@ -108,6 +111,27 @@ func TestL8CredentialSourceAuthorizesExactHostAdminGrantBeforeLookup(t *testing.
 				}
 			}
 		})
+	}
+}
+
+func TestL8CredentialSourceRegistryConfigRejectsOversizedGrantSet(t *testing.T) {
+	authority := l8PrincipalAuthority(t, "peercred-owner", "daemon-generation-1")
+	principal := l8Principal(t, authority, "principal-owner", 1001, 1002)
+	source, err := NewSourceRegistration("source-primary", l8KeyIdentity(t, 41, principal.UID(), principal.GID(), "hal-primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := make([]AdmissionGrantRegistration, 65)
+	for index := range grants {
+		request := l8AdmissionRequest()
+		request.GrantID = fmt.Sprintf("grant-%d", index)
+		grants[index], err = NewAdmissionGrantRegistration(authority, principal, request, []string{"source-primary"})
+		if err != nil {
+			t.Fatalf("new grant %d: %v", index, err)
+		}
+	}
+	if _, err := NewRegistryConfig(authority, principal.UID(), principal.GID(), []SourceRegistration{source}, grants); !errors.Is(err, ErrCredentialSourceRegistration) {
+		t.Fatalf("oversized grant set error = %v, want registration rejected", err)
 	}
 }
 
