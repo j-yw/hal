@@ -6591,7 +6591,14 @@ func l8WorkerV2NoUnconditionalTerminalBefore(function *ast.FuncDecl, target ast.
 func l8WorkerV2StaticallyUnconditionalTerminal(statement ast.Stmt, info *types.Info, analysis *l8WorkerV2TerminalAnalysis, returnIsTerminal bool) bool {
 	switch statement := statement.(type) {
 	case *ast.ReturnStmt:
+		if l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(statement.Results, info, analysis) {
+			return true
+		}
 		return returnIsTerminal
+	case *ast.DeferStmt:
+		return l8WorkerV2CallOperandsCannotReturn(statement.Call, info, analysis)
+	case *ast.GoStmt:
+		return l8WorkerV2CallOperandsCannotReturn(statement.Call, info, analysis)
 	case *ast.LabeledStmt:
 		return l8WorkerV2StaticallyUnconditionalTerminal(statement.Stmt, info, analysis, returnIsTerminal)
 	case *ast.BlockStmt:
@@ -6744,7 +6751,17 @@ func l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression ast.Exp
 		if l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis) {
 			return true
 		}
-		return expression.Op != token.LAND && expression.Op != token.LOR && l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.Y, info, analysis)
+		if expression.Op == token.LAND || expression.Op == token.LOR {
+			value := info.Types[expression.X].Value
+			if value == nil || value.Kind() != constant.Bool {
+				return false
+			}
+			left := constant.BoolVal(value)
+			if (expression.Op == token.LAND && !left) || (expression.Op == token.LOR && left) {
+				return false
+			}
+		}
+		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.Y, info, analysis)
 	case *ast.UnaryExpr:
 		return l8WorkerV2UnconditionallyEvaluatedExpressionCannotReturn(expression.X, info, analysis)
 	case *ast.SelectorExpr:
@@ -6802,24 +6819,28 @@ func l8WorkerV2DirectSamePackageFunctionCannotReturn(call *ast.CallExpr, info *t
 	}
 	signature, ok := function.Type().(*types.Signature)
 	declaration := analysis.declarations[function]
-	if !ok || signature.Recv() != nil || declaration == nil || declaration.Body == nil || analysis.visiting[function] {
+	if !ok || signature.Recv() != nil || declaration == nil || declaration.Body == nil {
 		return false
 	}
 	if terminal, known := analysis.memo[function]; known {
 		return terminal
 	}
-	if l8WorkerV2FunctionHasConservativeReturnEscape(declaration, info) {
+	if analysis.visiting[function] {
+		return true
+	}
+	analysis.visiting[function] = true
+	if l8WorkerV2FunctionHasConservativeReturnEscape(declaration, info, analysis) {
+		delete(analysis.visiting, function)
 		analysis.memo[function] = false
 		return false
 	}
-	analysis.visiting[function] = true
 	terminal := l8WorkerV2StatementListStaticallyTerminal(declaration.Body.List, info, analysis, false)
 	delete(analysis.visiting, function)
 	analysis.memo[function] = terminal
 	return terminal
 }
 
-func l8WorkerV2FunctionHasConservativeReturnEscape(function *ast.FuncDecl, info *types.Info) bool {
+func l8WorkerV2FunctionHasConservativeReturnEscape(function *ast.FuncDecl, info *types.Info, analysis *l8WorkerV2TerminalAnalysis) bool {
 	found := false
 	if function == nil || function.Body == nil {
 		return false
@@ -6832,8 +6853,10 @@ func l8WorkerV2FunctionHasConservativeReturnEscape(function *ast.FuncDecl, info 
 			return false
 		}
 		switch typed := node.(type) {
-		case *ast.ReturnStmt, *ast.DeferStmt:
-			found = true
+		case *ast.ReturnStmt:
+			found = !l8WorkerV2UnconditionallyEvaluatedExpressionsCannotReturn(typed.Results, info, analysis)
+		case *ast.DeferStmt:
+			found = !l8WorkerV2CallOperandsCannotReturn(typed.Call, info, analysis)
 		case *ast.CallExpr:
 			found = l8WorkerV2CalledObject(typed.Fun, info) == types.Universe.Lookup("recover")
 		}
