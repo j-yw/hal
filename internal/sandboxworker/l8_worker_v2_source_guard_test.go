@@ -1342,6 +1342,53 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 		})
 	}
 
+	for _, tt := range []struct {
+		name    string
+		path    string
+		old     string
+		replace string
+	}{
+		{
+			name:    "server goto bypasses exact decoder",
+			path:    "server.go",
+			old:     "\tvar request Request\n\tif err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil { return Request{}, &Response{} }\n\treturn request, nil",
+			replace: "\tvar request Request\n\tgoto decoded\n\tif err := decodeWorkerRequestInto(reader, server.maxRequestBytes, &request); err != nil { return Request{}, &Response{} }\n decoded:\n\t;\n\treturn request, nil",
+		},
+		{
+			name:    "store goto bypasses exact decoder",
+			path:    "job_store_v2.go",
+			old:     "\tvar state storedJobStateV2\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n\treturn state, nil",
+			replace: "\tvar state storedJobStateV2\n\tgoto decoded\n\tif err := decodeStoredJobStateV2Into(reader, maxStoredJobStateV2Bytes, &state); err != nil { return storedJobStateV2{}, errors.New(\"stored job state is malformed\") }\n decoded:\n\t;\n\treturn state, nil",
+		},
+		{
+			name:    "client goto bypasses required half-close",
+			path:    "client.go",
+			old:     "\tif err := halfCloser.CloseWrite(); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}\n\tmaxResponseBytes := transport.maxResponseBytes",
+			replace: "\tgoto framed\n\tif err := halfCloser.CloseWrite(); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"write worker request framing failed\")\n\t}\n framed:\n\t;\n\tmaxResponseBytes := transport.maxResponseBytes",
+		},
+		{
+			name:    "client goto bypasses exact response decoder",
+			path:    "client.go",
+			old:     "\tvar response Response\n\tif err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"read worker response failed\")\n\t}\n\treturn response, nil",
+			replace: "\tvar response Response\n\tgoto decoded\n\tif err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {\n\t\tif ctxErr := ctx.Err(); ctxErr != nil { return Response{}, ctxErr }\n\t\treturn Response{}, errors.New(\"read worker response failed\")\n\t}\n decoded:\n\t;\n\treturn response, nil",
+		},
+		{
+			name:    "client emits extra unhandled direct request frame",
+			path:    "client.go",
+			old:     "\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+			replace: "\tjson.NewEncoder(connection).Encode(request.WithDefaults())\n\tif err := json.NewEncoder(connection).Encode(request.WithDefaults()); err != nil {",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutated[tt.path] = strings.Replace(mutated[tt.path], tt.old, tt.replace, 1)
+			if mutated[tt.path] == sources[tt.path] {
+				t.Fatal("control-flow or duplicate-encoder mutation did not change the positive fixture")
+			}
+			l8AssertWorkerV2GuardRejects(t, mutated, policy, "decoder caller composition")
+		})
+	}
+
 	otherWrapperOutput := l8CloneWorkerV2GuardSources(sources)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "var output Response", "var output Response\n\tvar other Response", 1)
 	otherWrapperOutput["protocol_decode.go"] = strings.Replace(otherWrapperOutput["protocol_decode.go"], "return output, nil", "return other, nil", 1)
