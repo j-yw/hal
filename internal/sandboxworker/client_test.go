@@ -421,6 +421,9 @@ func TestServerHandlesSingleJSONRequestResponsePerUnixConnection(t *testing.T) {
 	if err := encoder.Encode(firstReq); err != nil {
 		t.Fatalf("Encode(first request) error: %v", err)
 	}
+	if err := conn.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite(first request) error: %v", err)
+	}
 
 	decoder := json.NewDecoder(conn)
 	var firstResp Response
