@@ -1883,6 +1883,18 @@ func (store *jobStoreV2) load(jobID string) (storedJobStateV2, error) {
 			},
 		},
 		{
+			name: "client select sends done channel before deferred close",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\t}()\n\tdefer close(done)", "\t}()\n\tselect {\n\tcase done <- struct{}{}:\n\tdefault:\n\t}\n\tdefer close(done)", 1)
+			},
+		},
+		{
+			name: "client adds asynchronous done channel range consumer",
+			mutate: func(mutated map[string]string) {
+				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdone := make(chan struct{})", "\tdone := make(chan struct{})\n\tgo func() {\n\t\tfor range done {}\n\t}()", 1)
+			},
+		},
+		{
 			name: "client exposes connection before cleanup defer",
 			mutate: func(mutated map[string]string) {
 				mutated["client.go"] = strings.Replace(mutated["client.go"], "\tdefer connection.Close()", "\tif exposed, ok := connection.(error); ok { return Response{}, exposed }\n\tdefer connection.Close()", 1)
