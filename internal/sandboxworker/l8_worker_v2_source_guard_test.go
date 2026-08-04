@@ -125,6 +125,8 @@ type l8WorkerV2SemanticUnit struct {
 	tainted     bool
 }
 
+const l8WorkerV2MaxExactOperationLength = len("job_resolve_v2")
+
 func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPolicy) error {
 	paths := make([]string, 0, len(sources))
 	for path := range sources {
@@ -224,9 +226,10 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 	if len(roots) == 0 {
 		return nil
 	}
+	roots = append(roots, l8WorkerV2RuntimeOperationAssemblyRoots(parsedFiles, info)...)
 	// Initializers execute before any request can reach a V2 handler. Once the
-	// package contains V2-relevant production, every package initializer is
-	// therefore part of the reachable process-global surface.
+	// package contains V2-relevant production, every explicit init function and
+	// package variable initializer is therefore reachable process-global code.
 	roots = append(roots, l8WorkerV2PackageInitializerRoots(parsedFiles)...)
 
 	objects := make(map[types.Object]l8WorkerV2GuardScope)
@@ -389,10 +392,37 @@ func l8WorkerV2SemanticRoots(files []*l8WorkerV2ParsedFile, info *types.Info) []
 	return roots
 }
 
+func l8WorkerV2RuntimeOperationAssemblyRoots(files []*l8WorkerV2ParsedFile, info *types.Info) []l8WorkerV2GuardScope {
+	var roots []l8WorkerV2GuardScope
+	for _, file := range files {
+		for _, declaration := range file.parsed.Decls {
+			for _, node := range l8WorkerV2SemanticDeclarationUnits(declaration, file.valueSpecUnits) {
+				if l8WorkerV2ContainsIdentifiedRuntimeOperationAssembly(node, info) {
+					roots = append(roots, l8WorkerV2GuardScope{file: file, node: node})
+				}
+			}
+		}
+	}
+	return roots
+}
+
 func l8WorkerV2PackageInitializerRoots(files []*l8WorkerV2ParsedFile) []l8WorkerV2GuardScope {
 	var roots []l8WorkerV2GuardScope
 	for _, file := range files {
 		for _, declaration := range file.parsed.Decls {
+			if generated, ok := declaration.(*ast.GenDecl); ok && generated.Tok == token.VAR {
+				for _, rawSpec := range generated.Specs {
+					spec, ok := rawSpec.(*ast.ValueSpec)
+					if !ok || len(spec.Values) == 0 {
+						continue
+					}
+					for _, unit := range file.valueSpecUnits[spec] {
+						if len(unit.Values) > 0 {
+							roots = append(roots, l8WorkerV2GuardScope{file: file, node: unit})
+						}
+					}
+				}
+			}
 			function, ok := declaration.(*ast.FuncDecl)
 			if !ok || function.Recv != nil || function.Name.Name != "init" {
 				continue
@@ -401,6 +431,113 @@ func l8WorkerV2PackageInitializerRoots(files []*l8WorkerV2ParsedFile) []l8Worker
 		}
 	}
 	return roots
+}
+
+func l8WorkerV2IdentifiesOperationFlow(node ast.Node, info *types.Info) bool {
+	if node == nil || info == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		if found {
+			return false
+		}
+		identifier, ok := candidate.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		object := info.Defs[identifier]
+		found = object != nil && strings.Contains(strings.ToLower(object.Name()), "operation")
+		return !found
+	})
+	return found
+}
+
+func l8WorkerV2ContainsIdentifiedRuntimeOperationAssembly(node ast.Node, info *types.Info) bool {
+	if l8WorkerV2IdentifiesOperationFlow(node, info) && l8WorkerV2ContainsRuntimeStringAssembly(node, info) {
+		return true
+	}
+	found := false
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		if found {
+			return false
+		}
+		switch typed := candidate.(type) {
+		case *ast.AssignStmt:
+			for index, left := range typed.Lhs {
+				rightIndex := index
+				if rightIndex >= len(typed.Rhs) {
+					rightIndex = len(typed.Rhs) - 1
+				}
+				if rightIndex >= 0 && l8WorkerV2IsOperationTarget(left, info) && l8WorkerV2ContainsRuntimeStringAssembly(typed.Rhs[rightIndex], info) {
+					found = true
+					return false
+				}
+			}
+		case *ast.KeyValueExpr:
+			if l8WorkerV2IsOperationTarget(typed.Key, info) && l8WorkerV2ContainsRuntimeStringAssembly(typed.Value, info) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func l8WorkerV2IsOperationTarget(expression ast.Expr, info *types.Info) bool {
+	for {
+		switch typed := expression.(type) {
+		case *ast.ParenExpr:
+			expression = typed.X
+		case *ast.StarExpr:
+			expression = typed.X
+		case *ast.SelectorExpr:
+			return strings.EqualFold(typed.Sel.Name, "operation")
+		case *ast.Ident:
+			object := info.Defs[typed]
+			if object == nil {
+				object = info.Uses[typed]
+			}
+			return object != nil && strings.Contains(strings.ToLower(object.Name()), "operation")
+		default:
+			return false
+		}
+	}
+}
+
+func l8WorkerV2ContainsRuntimeStringAssembly(node ast.Node, info *types.Info) bool {
+	if node == nil || info == nil {
+		return false
+	}
+	// Runtime string construction is undecidable in general. This deliberately
+	// fail-closed rule applies only where object definitions identify operation
+	// flow. V2 operation identifiers must be locked constants there; unrelated
+	// V1/string helpers remain outside this architectural invariant.
+	found := false
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := candidate.(*ast.CallExpr)
+		if !ok || !l8WorkerV2IsStringType(info.TypeOf(call)) || info.Types[call].Value != nil {
+			return true
+		}
+		if value, known := l8WorkerV2StaticString(call, info); known && !l8WorkerV2IsExactOperationString(value) {
+			return true
+		}
+		found = true
+		return false
+	})
+	return found
+}
+
+func l8WorkerV2IsStringType(typ types.Type) bool {
+	if typ == nil {
+		return false
+	}
+	basic, ok := types.Unalias(typ).Underlying().(*types.Basic)
+	return ok && basic.Kind() == types.String
 }
 
 func l8WorkerV2ContainsExactOperationConstant(node ast.Node, info *types.Info) bool {
@@ -535,6 +672,9 @@ unwrapped:
 				return "", false
 			}
 			rawElement = keyed.Value
+		}
+		if index >= int64(l8WorkerV2MaxExactOperationLength) {
+			return "", false
 		}
 		expression, ok := rawElement.(ast.Expr)
 		if !ok {
@@ -820,6 +960,9 @@ func l8WorkerV2ReferencedDeclarationScopes(scope l8WorkerV2GuardScope) []l8Worke
 }
 
 func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info) error {
+	if l8WorkerV2ContainsIdentifiedRuntimeOperationAssembly(scope.node, info) {
+		return fmt.Errorf("worker-v2 production path in %s uses forbidden runtime operation assembly; operation identifiers must use locked constants", scope.file.path)
+	}
 	if err := l8RejectWorkerV2SemanticExternalSurfaces(scope, info); err != nil {
 		return err
 	}
@@ -868,6 +1011,12 @@ func l8WorkerV2CallMayInvokeImplicitInterface(call *ast.CallExpr, info *types.In
 			}
 			parameterIndex = signature.Params().Len() - 1
 		}
+		if call.Ellipsis.IsValid() && index == len(call.Args)-1 {
+			if l8WorkerV2VariadicExpansionMayCallback(argument, info) {
+				return true
+			}
+			continue
+		}
 		parameterType := signature.Params().At(parameterIndex).Type()
 		if signature.Variadic() && parameterIndex == signature.Params().Len()-1 {
 			if slice, ok := parameterType.(*types.Slice); ok {
@@ -878,6 +1027,34 @@ func l8WorkerV2CallMayInvokeImplicitInterface(call *ast.CallExpr, info *types.In
 			continue
 		}
 		if l8WorkerV2InterfaceCapableArgument(info.TypeOf(argument)) {
+			return true
+		}
+	}
+	return false
+}
+
+func l8WorkerV2VariadicExpansionMayCallback(argument ast.Expr, info *types.Info) bool {
+	typ := info.TypeOf(argument)
+	if typ == nil {
+		return false
+	}
+	slice, ok := types.Unalias(typ).Underlying().(*types.Slice)
+	if !ok {
+		return l8WorkerV2InterfaceCapableArgument(typ)
+	}
+	if !l8WorkerV2IsInterfaceType(slice.Elem()) {
+		return l8WorkerV2InterfaceCapableArgument(slice.Elem())
+	}
+	literal, ok := argument.(*ast.CompositeLit)
+	if !ok {
+		return true
+	}
+	for _, rawElement := range literal.Elts {
+		if keyed, ok := rawElement.(*ast.KeyValueExpr); ok {
+			rawElement = keyed.Value
+		}
+		expression, ok := rawElement.(ast.Expr)
+		if !ok || l8WorkerV2InterfaceCapableArgument(info.TypeOf(expression)) {
 			return true
 		}
 	}
@@ -913,25 +1090,7 @@ func l8WorkerV2InterfaceCapableArgument(typ types.Type) bool {
 	if l8WorkerV2IsInterfaceType(typ) {
 		return true
 	}
-	if l8WorkerV2LocalNamedType(typ) == nil {
-		return false
-	}
-	return types.NewMethodSet(typ).Len() > 0 || types.NewMethodSet(types.NewPointer(typ)).Len() > 0
-}
-
-func l8WorkerV2LocalNamedType(typ types.Type) *types.Named {
-	if typ == nil {
-		return nil
-	}
-	typ = types.Unalias(typ)
-	if pointer, ok := typ.(*types.Pointer); ok {
-		typ = types.Unalias(pointer.Elem())
-	}
-	named, ok := typ.(*types.Named)
-	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxworker" {
-		return nil
-	}
-	return named
+	return types.NewMethodSet(typ).Len() > 0
 }
 
 func l8RejectWorkerV2SemanticExternalSurfaces(scope l8WorkerV2GuardScope, info *types.Info) error {
@@ -1476,7 +1635,7 @@ func dispatch(operation string) hiddenSchema {
 import processapi "os"
 type hiddenSchema struct { Value string ` + "`json:\"value\"`" + ` }
 func forbiddenRoutedHelper() { _, _ = processapi.StartProcess("worker", nil, nil) }`,
-			}, policy, `json:\"value`)
+			}, policy, "runtime operation assembly")
 		})
 	}
 
