@@ -290,6 +290,53 @@ func TestL8WorkerV2ProductionCredentialIntentValidationFailsClosed(t *testing.T)
 	}
 }
 
+func TestL8WorkerV2CredentialIdentitiesUseCrossPhaseSafeIDVocabulary(t *testing.T) {
+	fields := []struct {
+		name   string
+		mutate func(*JobStartRequestV2, string)
+	}{
+		{name: "submission", mutate: func(req *JobStartRequestV2, value string) { req.SubmissionID = value }},
+		{name: "plan", mutate: func(req *JobStartRequestV2, value string) { req.PlanID = value }},
+		{name: "grant", mutate: func(req *JobStartRequestV2, value string) { req.AdmissionGrantID = value }},
+		{name: "template policy", mutate: func(req *JobStartRequestV2, value string) { req.TemplatePolicyID = value }},
+		{name: "workspace policy", mutate: func(req *JobStartRequestV2, value string) { req.WorkspacePolicyID = value }},
+		{name: "source reference", mutate: func(req *JobStartRequestV2, value string) {
+			req.SourceReferenceIDs[0] = value
+			req.Bindings[0].SourceReferenceID = value
+		}},
+		{name: "binding", mutate: func(req *JobStartRequestV2, value string) { req.Bindings[0].BindingID = value }},
+		{name: "service", mutate: func(req *JobStartRequestV2, value string) { req.Bindings[0].ServiceID = value }},
+	}
+	invalid := []struct {
+		name  string
+		value string
+	}{
+		{name: "129 bytes", value: strings.Repeat("a", 129)},
+		{name: "colon bearing", value: "credential:neighbor"},
+	}
+	for _, field := range fields {
+		for _, value := range invalid {
+			t.Run(field.name+" rejects "+value.name, func(t *testing.T) {
+				request := l8WorkerV2StartRequest()
+				field.mutate(&request, value.value)
+				if err := request.Validate(); err == nil {
+					t.Fatalf("v2 credential %s accepted %s safe ID", field.name, value.name)
+				}
+			})
+		}
+	}
+
+	legacy := JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    strings.Repeat("s", 129),
+		Exec:            l8WorkerV2StartRequest().Exec,
+	}
+	legacy.Exec.Target.Runtime.RuntimeID = "runtime:legacy"
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("stricter v2 credential vocabulary changed legacy v1 job/runtime IDs: %v", err)
+	}
+}
+
 func TestL8WorkerV2IdentityKeysAreExactOpaqueLowercaseHex(t *testing.T) {
 	principalID := l8GeneratedWorkerV2SafeID(t, "principal")
 	req := l8WorkerV2StartRequest()
@@ -791,7 +838,8 @@ func TestL8WorkerV2PrivateDurablePrincipalSurvivesRestartRoundTrip(t *testing.T)
 		{name: "oversized request key", mutate: func(candidate *storedJobStateV2) { candidate.RequestKey = strings.Repeat("r", 193) }},
 		{name: "missing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "" }},
 		{name: "raw looking principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "/run/user/1000/peer" }},
-		{name: "oversized principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = strings.Repeat("p", 193) }},
+		{name: "129 byte principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = strings.Repeat("p", 129) }},
+		{name: "colon bearing principal", mutate: func(candidate *storedJobStateV2) { candidate.PrincipalID = "principal:neighbor" }},
 	} {
 		t.Run("rejects "+tt.name, func(t *testing.T) {
 			candidate := state
