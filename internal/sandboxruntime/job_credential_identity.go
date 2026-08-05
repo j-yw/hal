@@ -31,13 +31,16 @@ func ValidateJobCredentialIdentitySeed(seed JobCredentialIdentitySeed) error {
 		len(seed.BindingIDs) == 0 || len(seed.BindingIDs) != len(seed.DeliveryModes) {
 		return ErrJobCredentialIdentityMismatch
 	}
-	hasHTTP := false
+	httpBindings := 0
 	for index, bindingID := range seed.BindingIDs {
 		if !validJobCredentialSafeID(bindingID) || !validJobCredentialDeliveryMode(seed.DeliveryModes[index]) {
 			return ErrJobCredentialIdentityMismatch
 		}
 		if seed.DeliveryModes[index] == JobCredentialDeliveryModeHTTPProxy {
-			hasHTTP = true
+			httpBindings++
+			if httpBindings > 1 {
+				return ErrJobCredentialIdentityMismatch
+			}
 		}
 		for previous := 0; previous < index; previous++ {
 			if seed.BindingIDs[previous] == bindingID {
@@ -45,7 +48,7 @@ func ValidateJobCredentialIdentitySeed(seed JobCredentialIdentitySeed) error {
 			}
 		}
 	}
-	if !validJobCredentialNetworkTuple(seed, hasHTTP) {
+	if !validJobCredentialNetworkTuple(seed, httpBindings == 1) {
 		return ErrJobCredentialIdentityMismatch
 	}
 	return nil

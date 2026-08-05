@@ -1,6 +1,7 @@
 package credentialsource
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -39,6 +40,43 @@ func TestJobCredentialAdmissionNetworkTupleMatchesDeliveryModes(t *testing.T) {
 		if validAdmissionRequest(request) {
 			t.Fatal("invalid mode-dependent admission tuple accepted")
 		}
+	}
+}
+
+func TestJobCredentialAdmissionRejectsMultipleHTTPBindingsAtRegistration(t *testing.T) {
+	authority := l8PrincipalAuthority(t, "peercred-owner", "daemon-generation-1")
+	principal := l8Principal(t, authority, "principal-owner", 1001, 1002)
+	twoHTTP := l8AdmissionRequest()
+	twoHTTP.SourceReferenceIDs = append(twoHTTP.SourceReferenceIDs, "source-secondary")
+	twoHTTP.Bindings = append(twoHTTP.Bindings, sandboxruntime.JobCredentialBindingRequest{
+		ID:                "binding-secondary",
+		Mode:              sandboxruntime.JobCredentialDeliveryModeHTTPProxy,
+		SourceReferenceID: "source-secondary",
+		ServiceID:         "service-secondary",
+	})
+	if validAdmissionRequest(twoHTTP) {
+		t.Fatal("two-HTTP admission request passed internal validation")
+	}
+	if validSealedAdmissionRequest(sealAdmissionRequest(twoHTTP)) {
+		t.Fatal("two-HTTP sealed admission request passed internal validation")
+	}
+	if _, err := NewAdmissionGrantRegistration(authority, principal, twoHTTP, []string{"source-primary", "source-secondary"}); !errors.Is(err, ErrCredentialSourceRegistration) {
+		t.Fatalf("two-HTTP grant registration error = %v, want registration rejected", err)
+	}
+
+	mixed := l8AdmissionRequest()
+	mixed.SourceReferenceIDs = append(mixed.SourceReferenceIDs, "source-secondary")
+	mixed.Bindings = append(mixed.Bindings, sandboxruntime.JobCredentialBindingRequest{
+		ID:                "binding-secondary",
+		Mode:              sandboxruntime.JobCredentialDeliveryModeFileTmpfs,
+		SourceReferenceID: "source-secondary",
+	})
+	grant, err := NewAdmissionGrantRegistration(authority, principal, mixed, []string{"source-primary", "source-secondary"})
+	if err != nil {
+		t.Fatalf("one-HTTP mixed grant registration rejected: %v", err)
+	}
+	if !validSealedAdmissionRequest(grant.request) {
+		t.Fatal("one-HTTP mixed sealed grant rejected")
 	}
 }
 

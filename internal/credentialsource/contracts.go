@@ -193,7 +193,7 @@ func validAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRequest)
 		sourceReferenceIDs[referenceID] = struct{}{}
 	}
 	bindingIDs := make(map[string]struct{}, len(request.Bindings))
-	hasHTTP := false
+	httpBindings := 0
 	for _, binding := range request.Bindings {
 		_, sourceRegistered := sourceReferenceIDs[binding.SourceReferenceID]
 		if !validSafeID(binding.ID) || !validSafeID(binding.SourceReferenceID) ||
@@ -205,14 +205,17 @@ func validAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRequest)
 			return false
 		}
 		if binding.Mode == sandboxruntime.JobCredentialDeliveryModeHTTPProxy {
-			hasHTTP = true
+			httpBindings++
+			if httpBindings > 1 {
+				return false
+			}
 		}
 		if _, duplicate := bindingIDs[binding.ID]; duplicate {
 			return false
 		}
 		bindingIDs[binding.ID] = struct{}{}
 	}
-	return validAdmissionNetworkTuple(identity, hasHTTP, validSafeID)
+	return validAdmissionNetworkTuple(identity, httpBindings == 1, validSafeID)
 }
 
 func validAdmissionNetworkTuple(identity sandboxruntime.JobCredentialAdmissionIdentity, required bool, validate func(string) bool) bool {
@@ -388,16 +391,19 @@ func validSealedAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRe
 	if !validDigests(values) || !validUniqueDigests(request.SourceReferenceIDs) {
 		return false
 	}
-	hasHTTP := false
+	httpBindings := 0
 	for _, binding := range request.Bindings {
 		if !validSafeDigest(binding.ID) || !validSafeDigest(binding.SourceReferenceID) || binding.ServiceID != "" && !validSafeDigest(binding.ServiceID) {
 			return false
 		}
 		if binding.Mode == sandboxruntime.JobCredentialDeliveryModeHTTPProxy {
-			hasHTTP = true
+			httpBindings++
+			if httpBindings > 1 {
+				return false
+			}
 		}
 	}
-	return validAdmissionNetworkTuple(identity, hasHTTP, validSafeDigest)
+	return validAdmissionNetworkTuple(identity, httpBindings == 1, validSafeDigest)
 }
 
 func validDigests(values []string) bool {

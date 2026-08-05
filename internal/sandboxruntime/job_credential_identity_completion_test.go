@@ -125,6 +125,33 @@ func TestJobCredentialIdentityD2ValidationAndNetworkTuple(t *testing.T) {
 	}
 }
 
+func TestJobCredentialIdentityD2RejectsMultipleHTTPBindings(t *testing.T) {
+	seed := d2JobCredentialIdentitySeed(time.Date(2026, time.August, 5, 1, 30, 0, 0, time.UTC))
+	seed.DeliveryModes = []JobCredentialDeliveryMode{
+		JobCredentialDeliveryModeHTTPProxy,
+		JobCredentialDeliveryModeHTTPProxy,
+	}
+	if err := ValidateJobCredentialIdentitySeed(seed); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+		t.Fatalf("two-HTTP seed validation error = %v, want identity mismatch", err)
+	}
+	if _, err := CompleteJobCredentialIdentity(seed, d2GuestSessionGeneration(1), "helper-generation-1"); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+		t.Fatalf("two-HTTP completion error = %v, want identity mismatch", err)
+	}
+
+	validSeed := d2JobCredentialIdentitySeed(seed.IssuedAt)
+	identity, err := CompleteJobCredentialIdentity(validSeed, d2GuestSessionGeneration(1), "helper-generation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.DeliveryModes[1] = JobCredentialDeliveryModeHTTPProxy
+	if err := ValidateJobCredentialIdentity(identity); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+		t.Fatalf("two-HTTP identity validation error = %v, want identity mismatch", err)
+	}
+	if _, err := JobCredentialIdentityDigest(identity); !errors.Is(err, ErrJobCredentialIdentityMismatch) {
+		t.Fatalf("two-HTTP identity digest error = %v, want identity mismatch", err)
+	}
+}
+
 func TestJobCredentialIdentityD2CloneCompletionAndDigestOwnEveryField(t *testing.T) {
 	seed := d2JobCredentialIdentitySeed(time.Date(2026, time.August, 5, 2, 3, 4, 0, time.UTC))
 	cloned, err := CloneJobCredentialIdentitySeed(seed)
