@@ -583,11 +583,12 @@ still-capable monitor remains alive for normal unmount after workload absence.
 
 ### Unix SSH relay extension
 
-Only a D5-enabled monitor may add `umask socket bind listen`; only the matching
-controller extension may add `accept4 shutdown`:
+Only a D5-enabled monitor may add
+`umask socket bind getsockname listen`; only the matching controller extension
+may add `accept4 shutdown`:
 
 ```text
-umask socket bind listen | accept4 shutdown
+umask socket bind getsockname listen | accept4 shutdown
 ```
 
 `socket` is exactly `AF_UNIX`, `SOCK_STREAM|SOCK_CLOEXEC` with optional
@@ -596,12 +597,18 @@ umask socket bind listen | accept4 shutdown
 fixed credential root; abstract names, unnamed caller sockets, and
 any network or vsock family are rejected. The pointer is copied and validated
 before the syscall. `umask` is the exact one-way `0177` transition above and is
-permitted only immediately before the sole D5 bind. The resulting local/peer
-identity, type, connected state, fixed UID/GID 1000, mode 0600, ownership, and
-generation are reinspected after the exact parent-FD-relative ownership-last
-transition. `listen` backlog is 1 through 4, matching the frozen relay
-concurrency. `shutdown` is `SHUT_RD`, `SHUT_WR`, or `SHUT_RDWR` on a recorded
-relay FD only.
+permitted only immediately before the sole D5 bind. The monitor-only `getsockname`
+rule applies only to its recorded D5 listener, uses a fixed-size
+zeroed `sockaddr_un` and initialized length, and after bind must return exact
+`AF_UNIX`, length, and sealed canonical pathname bytes. After the exact
+parent-FD-relative ownership-last transition, the monitor calls `listen` with
+backlog 1 through 4 and repeats `getsockname`; read-only `getsockopt` must prove
+the exact domain, type, protocol, and `SO_ACCEPTCONN` listening state. It also
+reinspects the same filesystem mount/device/inode, fixed UID/GID 1000, mode
+0600, ownership, and generation before publication. A listener has no peer or
+connected-state claim. The controller validates accepted peer identity only after `accept4`
+on the resulting connected FD. `shutdown` is `SHUT_RD`, `SHUT_WR`, or
+`SHUT_RDWR` on a recorded relay FD only.
 
 D2 owns the policy rule and fake decisions. The monitor sends the one inspected
 listener capability to the controller through the exact D5 monitor response,
