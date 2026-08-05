@@ -1645,8 +1645,16 @@ func l8JobCredentialIdentity(now time.Time) JobCredentialIdentity {
 		TopologyGenerationID:         "topology-generation-1",
 		RuleGenerationID:             "rule-generation-1",
 		AdmissionGrantID:             "grant-1",
-		AdmissionGrantRevision:       4,
 		PrincipalID:                  "principal-1",
+		TemplatePolicyID:             "template-policy-1",
+		WorkspacePolicyID:            "workspace-policy-1",
+		ControllerKeyGeneration:      "controller-key-generation-1",
+		GuestBootGeneration:          "guest-boot-generation-1",
+		GuestImageGeneration:         "guest-image-generation-1",
+		GuestImageDigest:             "sha256-" + strings.Repeat("0", 64),
+		GuestSessionGeneration:       d2GuestSessionGeneration(1),
+		GuestHelperGeneration:        "guest-helper-generation-1",
+		AdmissionGrantRevision:       4,
 		BindingIDs:                   []string{"binding-http"},
 		DeliveryModes:                []JobCredentialDeliveryMode{JobCredentialDeliveryModeHTTPProxy},
 		IssuedAt:                     now,
@@ -1689,12 +1697,28 @@ func l8JobCredentialIdentityMutations() []l8JobCredentialIdentityMutation {
 		stringField("topology_generation_id", func(value *JobCredentialIdentity) *string { return &value.TopologyGenerationID }),
 		stringField("rule_generation_id", func(value *JobCredentialIdentity) *string { return &value.RuleGenerationID }),
 		stringField("admission_grant_id", func(value *JobCredentialIdentity) *string { return &value.AdmissionGrantID }),
+		stringField("principal_id", func(value *JobCredentialIdentity) *string { return &value.PrincipalID }),
+		stringField("template_policy_id", func(value *JobCredentialIdentity) *string { return &value.TemplatePolicyID }),
+		stringField("workspace_policy_id", func(value *JobCredentialIdentity) *string { return &value.WorkspacePolicyID }),
+		stringField("controller_key_generation", func(value *JobCredentialIdentity) *string { return &value.ControllerKeyGeneration }),
+		stringField("guest_boot_generation", func(value *JobCredentialIdentity) *string { return &value.GuestBootGeneration }),
+		stringField("guest_image_generation", func(value *JobCredentialIdentity) *string { return &value.GuestImageGeneration }),
+		{
+			name:   "guest_image_digest",
+			clear:  func(value *JobCredentialIdentity) { value.GuestImageDigest = "" },
+			mutate: func(value *JobCredentialIdentity) { value.GuestImageDigest = "sha256-" + strings.Repeat("1", 64) },
+		},
+		{
+			name:   "guest_session_generation",
+			clear:  func(value *JobCredentialIdentity) { value.GuestSessionGeneration = "" },
+			mutate: func(value *JobCredentialIdentity) { value.GuestSessionGeneration = d2GuestSessionGeneration(2) },
+		},
+		stringField("guest_helper_generation", func(value *JobCredentialIdentity) *string { return &value.GuestHelperGeneration }),
 		{
 			name:   "admission_grant_revision",
 			clear:  func(value *JobCredentialIdentity) { value.AdmissionGrantRevision = 0 },
 			mutate: func(value *JobCredentialIdentity) { value.AdmissionGrantRevision++ },
 		},
-		stringField("principal_id", func(value *JobCredentialIdentity) *string { return &value.PrincipalID }),
 		{
 			name:   "binding_ids",
 			clear:  func(value *JobCredentialIdentity) { value.BindingIDs = nil },
@@ -1705,6 +1729,12 @@ func l8JobCredentialIdentityMutations() []l8JobCredentialIdentityMutation {
 			clear: func(value *JobCredentialIdentity) { value.DeliveryModes = nil },
 			mutate: func(value *JobCredentialIdentity) {
 				value.DeliveryModes = []JobCredentialDeliveryMode{JobCredentialDeliveryModeFileTmpfs}
+				value.NetworkPlanID = ""
+				value.PolicySnapshotID = ""
+				value.ProxySessionID = ""
+				value.ProxyGenerationID = ""
+				value.TopologyGenerationID = ""
+				value.RuleGenerationID = ""
 			},
 		},
 		{

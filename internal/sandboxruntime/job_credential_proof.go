@@ -3,7 +3,6 @@ package sandboxruntime
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"io"
 	"time"
 )
 
@@ -198,37 +197,6 @@ func sameJobCredentialCleanupProof(left, right JobCredentialCleanupProof) bool {
 }
 
 func jobCredentialIdentityDigest(identity JobCredentialIdentity) [sha256.Size]byte {
-	digest := sha256.New()
-	writeJobCredentialDigestString := func(value string) {
-		var length [8]byte
-		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
-		_, _ = digest.Write(length[:])
-		_, _ = io.WriteString(digest, value)
-	}
-	for _, value := range []string{
-		identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.HostID,
-		identity.RuntimeDriver, identity.RuntimeID, identity.RuntimeGeneration,
-		identity.FirecrackerProcessGeneration, identity.VsockGeneration,
-		identity.WorkerJobID, identity.SubmissionID, identity.PlanID,
-		identity.ActivationGeneration, identity.CredentialGeneration,
-		identity.NetworkPlanID, identity.PolicySnapshotID, identity.ProxySessionID,
-		identity.ProxyGenerationID, identity.TopologyGenerationID,
-		identity.RuleGenerationID, identity.AdmissionGrantID, identity.PrincipalID,
-	} {
-		writeJobCredentialDigestString(value)
-	}
-	var numeric [8]byte
-	binary.BigEndian.PutUint64(numeric[:], identity.AdmissionGrantRevision)
-	_, _ = digest.Write(numeric[:])
-	binary.BigEndian.PutUint64(numeric[:], uint64(identity.IssuedAt.UnixNano()))
-	_, _ = digest.Write(numeric[:])
-	binary.BigEndian.PutUint64(numeric[:], uint64(len(identity.BindingIDs)))
-	_, _ = digest.Write(numeric[:])
-	for index := range identity.BindingIDs {
-		writeJobCredentialDigestString(identity.BindingIDs[index])
-		writeJobCredentialDigestString(string(identity.DeliveryModes[index]))
-	}
-	var result [sha256.Size]byte
-	copy(result[:], digest.Sum(nil))
-	return result
+	digest, _ := JobCredentialIdentityDigest(identity)
+	return digest
 }

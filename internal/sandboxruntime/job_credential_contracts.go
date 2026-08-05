@@ -67,6 +67,43 @@ const (
 	JobCredentialFailureCleanupIncomplete             JobCredentialFailureCode = "credential_cleanup_incomplete"
 )
 
+// JobCredentialIdentitySeed is the complete safe correlation tuple available
+// before guest authentication supplies its session and helper generations.
+type JobCredentialIdentitySeed struct {
+	SandboxID                    string
+	ExecutionID                  string
+	WorkerID                     string
+	HostID                       string
+	RuntimeDriver                string
+	RuntimeID                    string
+	RuntimeGeneration            string
+	FirecrackerProcessGeneration string
+	VsockGeneration              string
+	WorkerJobID                  string
+	SubmissionID                 string
+	PlanID                       string
+	ActivationGeneration         string
+	CredentialGeneration         string
+	NetworkPlanID                string
+	PolicySnapshotID             string
+	ProxySessionID               string
+	ProxyGenerationID            string
+	TopologyGenerationID         string
+	RuleGenerationID             string
+	AdmissionGrantID             string
+	PrincipalID                  string
+	TemplatePolicyID             string
+	WorkspacePolicyID            string
+	ControllerKeyGeneration      string
+	GuestBootGeneration          string
+	GuestImageGeneration         string
+	GuestImageDigest             string
+	AdmissionGrantRevision       uint64
+	BindingIDs                   []string
+	DeliveryModes                []JobCredentialDeliveryMode
+	IssuedAt                     time.Time
+}
+
 // JobCredentialIdentity is the complete safe correlation tuple for one live
 // credential activation. It never contains a value, path, endpoint, or ticket.
 type JobCredentialIdentity struct {
@@ -91,8 +128,16 @@ type JobCredentialIdentity struct {
 	TopologyGenerationID         string
 	RuleGenerationID             string
 	AdmissionGrantID             string
-	AdmissionGrantRevision       uint64
 	PrincipalID                  string
+	TemplatePolicyID             string
+	WorkspacePolicyID            string
+	ControllerKeyGeneration      string
+	GuestBootGeneration          string
+	GuestImageGeneration         string
+	GuestImageDigest             string
+	GuestSessionGeneration       string
+	GuestHelperGeneration        string
+	AdmissionGrantRevision       uint64
 	BindingIDs                   []string
 	DeliveryModes                []JobCredentialDeliveryMode
 	IssuedAt                     time.Time
@@ -222,35 +267,7 @@ func cloneJobCredentialIdentity(identity JobCredentialIdentity) JobCredentialIde
 }
 
 func validJobCredentialIdentity(identity JobCredentialIdentity) bool {
-	values := []string{
-		identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.HostID,
-		identity.RuntimeDriver, identity.RuntimeID, identity.RuntimeGeneration,
-		identity.FirecrackerProcessGeneration, identity.VsockGeneration,
-		identity.WorkerJobID, identity.SubmissionID, identity.PlanID,
-		identity.ActivationGeneration, identity.CredentialGeneration,
-		identity.NetworkPlanID, identity.PolicySnapshotID, identity.ProxySessionID,
-		identity.ProxyGenerationID, identity.TopologyGenerationID,
-		identity.RuleGenerationID, identity.AdmissionGrantID, identity.PrincipalID,
-	}
-	for _, value := range values {
-		if !validJobCredentialSafeID(value) {
-			return false
-		}
-	}
-	if identity.AdmissionGrantRevision == 0 || identity.IssuedAt.IsZero() || len(identity.BindingIDs) == 0 || len(identity.DeliveryModes) == 0 || len(identity.BindingIDs) != len(identity.DeliveryModes) {
-		return false
-	}
-	for index, bindingID := range identity.BindingIDs {
-		if !validJobCredentialSafeID(bindingID) || !validJobCredentialDeliveryMode(identity.DeliveryModes[index]) {
-			return false
-		}
-		for previous := 0; previous < index; previous++ {
-			if identity.BindingIDs[previous] == bindingID {
-				return false
-			}
-		}
-	}
-	return true
+	return ValidateJobCredentialIdentity(identity) == nil
 }
 
 func validJobCredentialSafeID(value string) bool {
@@ -277,23 +294,6 @@ func validJobCredentialDeliveryMode(mode JobCredentialDeliveryMode) bool {
 }
 
 func sameJobCredentialIdentity(left, right JobCredentialIdentity) bool {
-	if left.SandboxID != right.SandboxID || left.ExecutionID != right.ExecutionID || left.WorkerID != right.WorkerID || left.HostID != right.HostID ||
-		left.RuntimeDriver != right.RuntimeDriver || left.RuntimeID != right.RuntimeID || left.RuntimeGeneration != right.RuntimeGeneration ||
-		left.FirecrackerProcessGeneration != right.FirecrackerProcessGeneration || left.VsockGeneration != right.VsockGeneration ||
-		left.WorkerJobID != right.WorkerJobID || left.SubmissionID != right.SubmissionID || left.PlanID != right.PlanID ||
-		left.ActivationGeneration != right.ActivationGeneration || left.CredentialGeneration != right.CredentialGeneration ||
-		left.NetworkPlanID != right.NetworkPlanID || left.PolicySnapshotID != right.PolicySnapshotID ||
-		left.ProxySessionID != right.ProxySessionID || left.ProxyGenerationID != right.ProxyGenerationID ||
-		left.TopologyGenerationID != right.TopologyGenerationID || left.RuleGenerationID != right.RuleGenerationID ||
-		left.AdmissionGrantID != right.AdmissionGrantID || left.AdmissionGrantRevision != right.AdmissionGrantRevision ||
-		left.PrincipalID != right.PrincipalID || !left.IssuedAt.Equal(right.IssuedAt) ||
-		len(left.BindingIDs) != len(right.BindingIDs) || len(left.DeliveryModes) != len(right.DeliveryModes) {
-		return false
-	}
-	for index := range left.BindingIDs {
-		if left.BindingIDs[index] != right.BindingIDs[index] || left.DeliveryModes[index] != right.DeliveryModes[index] {
-			return false
-		}
-	}
-	return true
+	return sameJobCredentialIdentitySeed(jobCredentialIdentitySeedFromIdentity(left), jobCredentialIdentitySeedFromIdentity(right)) &&
+		left.GuestSessionGeneration == right.GuestSessionGeneration && left.GuestHelperGeneration == right.GuestHelperGeneration
 }

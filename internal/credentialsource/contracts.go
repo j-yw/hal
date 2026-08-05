@@ -180,8 +180,7 @@ func validAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRequest)
 		identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.HostID, identity.RuntimeDriver,
 		identity.RuntimeID, identity.RuntimeGeneration, identity.FirecrackerProcessGeneration, identity.VsockGeneration,
 		identity.WorkerJobID, identity.SubmissionID, identity.PlanID, identity.ActivationGeneration,
-		identity.CredentialGeneration, identity.NetworkPlanID, identity.PolicySnapshotID, identity.ProxySessionID,
-		identity.ProxyGenerationID, identity.TopologyGenerationID, identity.RuleGenerationID,
+		identity.CredentialGeneration,
 		request.GrantID, request.PlanID, request.TemplatePolicyID, request.WorkspacePolicyID,
 	}
 	if !validIDs(identities) || identity.IssuedAt.IsZero() || request.GrantRevision == 0 ||
@@ -194,6 +193,7 @@ func validAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRequest)
 		sourceReferenceIDs[referenceID] = struct{}{}
 	}
 	bindingIDs := make(map[string]struct{}, len(request.Bindings))
+	httpBindings := 0
 	for _, binding := range request.Bindings {
 		_, sourceRegistered := sourceReferenceIDs[binding.SourceReferenceID]
 		if !validSafeID(binding.ID) || !validSafeID(binding.SourceReferenceID) ||
@@ -204,10 +204,33 @@ func validAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRequest)
 		if !sourceRegistered {
 			return false
 		}
+		if binding.Mode == sandboxruntime.JobCredentialDeliveryModeHTTPProxy {
+			httpBindings++
+			if httpBindings > 1 {
+				return false
+			}
+		}
 		if _, duplicate := bindingIDs[binding.ID]; duplicate {
 			return false
 		}
 		bindingIDs[binding.ID] = struct{}{}
+	}
+	return validAdmissionNetworkTuple(identity, httpBindings == 1, validSafeID)
+}
+
+func validAdmissionNetworkTuple(identity sandboxruntime.JobCredentialAdmissionIdentity, required bool, validate func(string) bool) bool {
+	values := []string{
+		identity.NetworkPlanID, identity.PolicySnapshotID, identity.ProxySessionID,
+		identity.ProxyGenerationID, identity.TopologyGenerationID, identity.RuleGenerationID,
+	}
+	for _, value := range values {
+		if required {
+			if !validate(value) {
+				return false
+			}
+		} else if value != "" {
+			return false
+		}
 	}
 	return true
 }
@@ -311,12 +334,24 @@ func sealAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRequest) 
 	identity.PlanID = safeDigest(identity.PlanID)
 	identity.ActivationGeneration = safeDigest(identity.ActivationGeneration)
 	identity.CredentialGeneration = safeDigest(identity.CredentialGeneration)
-	identity.NetworkPlanID = safeDigest(identity.NetworkPlanID)
-	identity.PolicySnapshotID = safeDigest(identity.PolicySnapshotID)
-	identity.ProxySessionID = safeDigest(identity.ProxySessionID)
-	identity.ProxyGenerationID = safeDigest(identity.ProxyGenerationID)
-	identity.TopologyGenerationID = safeDigest(identity.TopologyGenerationID)
-	identity.RuleGenerationID = safeDigest(identity.RuleGenerationID)
+	if identity.NetworkPlanID != "" {
+		identity.NetworkPlanID = safeDigest(identity.NetworkPlanID)
+	}
+	if identity.PolicySnapshotID != "" {
+		identity.PolicySnapshotID = safeDigest(identity.PolicySnapshotID)
+	}
+	if identity.ProxySessionID != "" {
+		identity.ProxySessionID = safeDigest(identity.ProxySessionID)
+	}
+	if identity.ProxyGenerationID != "" {
+		identity.ProxyGenerationID = safeDigest(identity.ProxyGenerationID)
+	}
+	if identity.TopologyGenerationID != "" {
+		identity.TopologyGenerationID = safeDigest(identity.TopologyGenerationID)
+	}
+	if identity.RuleGenerationID != "" {
+		identity.RuleGenerationID = safeDigest(identity.RuleGenerationID)
+	}
 	request.GrantID = safeDigest(request.GrantID)
 	request.PlanID = safeDigest(request.PlanID)
 	request.TemplatePolicyID = safeDigest(request.TemplatePolicyID)
@@ -350,19 +385,25 @@ func validSealedAdmissionRequest(request sandboxruntime.JobCredentialAdmissionRe
 		identity.SandboxID, identity.ExecutionID, identity.WorkerID, identity.HostID, identity.RuntimeDriver,
 		identity.RuntimeID, identity.RuntimeGeneration, identity.FirecrackerProcessGeneration, identity.VsockGeneration,
 		identity.WorkerJobID, identity.SubmissionID, identity.PlanID, identity.ActivationGeneration,
-		identity.CredentialGeneration, identity.NetworkPlanID, identity.PolicySnapshotID, identity.ProxySessionID,
-		identity.ProxyGenerationID, identity.TopologyGenerationID, identity.RuleGenerationID,
+		identity.CredentialGeneration,
 		request.GrantID, request.PlanID, request.TemplatePolicyID, request.WorkspacePolicyID,
 	}
 	if !validDigests(values) || !validUniqueDigests(request.SourceReferenceIDs) {
 		return false
 	}
+	httpBindings := 0
 	for _, binding := range request.Bindings {
 		if !validSafeDigest(binding.ID) || !validSafeDigest(binding.SourceReferenceID) || binding.ServiceID != "" && !validSafeDigest(binding.ServiceID) {
 			return false
 		}
+		if binding.Mode == sandboxruntime.JobCredentialDeliveryModeHTTPProxy {
+			httpBindings++
+			if httpBindings > 1 {
+				return false
+			}
+		}
 	}
-	return true
+	return validAdmissionNetworkTuple(identity, httpBindings == 1, validSafeDigest)
 }
 
 func validDigests(values []string) bool {
