@@ -5,8 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,7 +17,7 @@ func TestV2ControlIdentityProductionImportsStayDataOnly(t *testing.T) {
 		"fmt": true, "io": true, "time": true, "unicode/utf8": true,
 		"github.com/jywlabs/hal/internal/sandboxruntime": true,
 	}
-	for _, path := range v2ControlProductionFiles(t) {
+	for _, path := range v2ControlIdentityProductionFiles(t) {
 		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatalf("ParseFile(%s): %v", path, err)
@@ -40,7 +38,7 @@ func TestV2ControlIdentityProductionImportsStayDataOnly(t *testing.T) {
 }
 
 func TestV2ControlIdentityHasNoLiveOrExpandedProtocolSurface(t *testing.T) {
-	for _, path := range v2ControlProductionFiles(t) {
+	for _, path := range v2ControlIdentityProductionFiles(t) {
 		source, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -59,7 +57,7 @@ func TestV2ControlIdentityHasNoLiveOrExpandedProtocolSurface(t *testing.T) {
 }
 
 func TestV2ControlIdentityProductionHasNoMutableGlobalOrInit(t *testing.T) {
-	for _, path := range v2ControlProductionFiles(t) {
+	for _, path := range v2ControlIdentityProductionFiles(t) {
 		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -88,19 +86,53 @@ func TestV2ControlIdentityProductionHasNoMutableGlobalOrInit(t *testing.T) {
 	}
 }
 
-func v2ControlProductionFiles(t *testing.T) []string {
-	t.Helper()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var paths []string
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
+func TestV2ControlIdentityGuardsExcludeFutureControlFiles(t *testing.T) {
+	for _, unrelated := range []string{
+		"readiness.go",
+		"request_envelope.go",
+		"response_envelope.go",
+		"private_frame.go",
+		"stream_frame.go",
+	} {
+		if isV2ControlIdentityProductionFile(unrelated) {
+			t.Errorf("future production file %q was silently swept into the identity-only guard", unrelated)
 		}
-		paths = append(paths, filepath.Clean(entry.Name()))
 	}
-	sort.Strings(paths)
+}
+
+func isV2ControlIdentityProductionFile(name string) bool {
+	for _, approved := range v2ControlIdentityProductionFileNames() {
+		if name == approved {
+			return true
+		}
+	}
+	return false
+}
+
+func v2ControlIdentityProductionFileNames() []string {
+	return []string{
+		"errors.go",
+		"identity.go",
+		"identity_json.go",
+		"session_identity.go",
+		"session_identity_format.go",
+	}
+}
+
+func v2ControlIdentityProductionFiles(t *testing.T) []string {
+	t.Helper()
+	paths := v2ControlIdentityProductionFileNames()
+	for _, path := range paths {
+		if !isV2ControlIdentityProductionFile(path) {
+			t.Fatalf("identity guard list contains unapproved file %q", path)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("identity guard file %q: %v", path, err)
+		}
+		if info.IsDir() {
+			t.Fatalf("identity guard path %q is a directory", path)
+		}
+	}
 	return paths
 }
