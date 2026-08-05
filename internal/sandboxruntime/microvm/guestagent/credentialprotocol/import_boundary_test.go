@@ -104,3 +104,87 @@ func TestCredentialProtocolCatalogHasNoLiveOrDurableSurface(t *testing.T) {
 		}
 	}
 }
+
+func TestHelperEnvelopeUsesOnlyPureStandardLibraryAndHasNoDurableMethods(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"helper_envelope.go", "helper_primitives.go", "helper_catalog.go"} {
+		file, err := parser.ParseFile(token.NewFileSet(), name, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, imported := range file.Imports {
+			path, err := strconv.Unquote(imported.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import in %s: %v", name, err)
+			}
+			if path != "encoding/binary" && path != "errors" {
+				t.Errorf("helper contract file %s imports %q; only pure codec/error packages are allowed", name, path)
+			}
+		}
+	}
+
+	for _, value := range []any{HelperPacketHeader{}} {
+		typeOf := reflect.TypeOf(value)
+		for methodIndex := 0; methodIndex < typeOf.NumMethod(); methodIndex++ {
+			method := typeOf.Method(methodIndex)
+			switch method.Name {
+			case "MarshalJSON", "UnmarshalJSON", "MarshalText", "UnmarshalText", "String", "GoString":
+				t.Errorf("%s exposes durable/formatting method %s", typeOf, method.Name)
+			}
+		}
+		for fieldIndex := 0; fieldIndex < typeOf.NumField(); fieldIndex++ {
+			field := typeOf.Field(fieldIndex)
+			if field.Tag != "" {
+				t.Errorf("%s.%s tag = %q, want none", typeOf, field.Name, field.Tag)
+			}
+		}
+	}
+}
+
+func TestHelperEnvelopeExposesNoGenericBodyOwnerOrBodyReturningAPI(t *testing.T) {
+	t.Parallel()
+
+	file, err := parser.ParseFile(token.NewFileSet(), "helper_envelope.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse helper_envelope.go: %v", err)
+	}
+	for _, declaration := range file.Decls {
+		switch typed := declaration.(type) {
+		case *ast.GenDecl:
+			if typed.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range typed.Specs {
+				typeSpec := spec.(*ast.TypeSpec)
+				structure, ok := typeSpec.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				for _, field := range structure.Fields.List {
+					if identifier, ok := field.Type.(*ast.Ident); ok && identifier.Name == "string" {
+						t.Errorf("helper envelope struct %s has string body-capable field", typeSpec.Name)
+					}
+					if array, ok := field.Type.(*ast.ArrayType); ok && array.Len == nil {
+						t.Errorf("helper envelope struct %s has slice body-capable field", typeSpec.Name)
+					}
+				}
+			}
+		case *ast.FuncDecl:
+			if typed.Name.Name == "EncodeHelperPacket" || typed.Name.Name == "DecodeHelperPacket" {
+				t.Errorf("helper envelope exposes forbidden generic body API %s", typed.Name.Name)
+			}
+			if typed.Type.Results == nil {
+				continue
+			}
+			for _, result := range typed.Type.Results.List {
+				if identifier, ok := result.Type.(*ast.Ident); ok && identifier.Name == "string" {
+					t.Errorf("helper envelope API %s returns a body-capable string", typed.Name.Name)
+				}
+				if array, ok := result.Type.(*ast.ArrayType); ok && array.Len == nil {
+					t.Errorf("helper envelope API %s returns a body-capable slice", typed.Name.Name)
+				}
+			}
+		}
+	}
+}
