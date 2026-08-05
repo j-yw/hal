@@ -15,4 +15,8 @@ var (
 	ErrInvalidRequestID                            = errors.New("guest agent v2 control request ID is invalid")
 	ErrInvalidIdentityDigest                       = errors.New("guest agent v2 control identity digest is invalid")
 	ErrControlScalarSerialization                  = errors.New("guest agent v2 control scalar serialization is denied")
+	ErrInvalidFailureResponse                      = errors.New("guest agent v2 failure response is invalid")
+	ErrInvalidFailureResponseJSON                  = errors.New("guest agent v2 failure response JSON is invalid")
+	ErrFailureCorrelationMismatch                  = errors.New("guest agent v2 failure response correlation does not match")
+	ErrFailureSerialization                        = errors.New("guest agent v2 failure response serialization is denied")
 )
