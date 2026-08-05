@@ -395,7 +395,7 @@ The steady monitor may use:
 
 ```text
 openat2 mkdirat unlinkat renameat2
-fchmod fchown fchmodat2 fchownat ftruncate fsync fdatasync
+fchmod fchown fchownat ftruncate fsync fdatasync
 ```
 
 PID1 `launch-base` may use only `openat2`, `mkdirat`, and
@@ -444,10 +444,21 @@ generation/component name. `unlinkat` uses zero or `AT_REMOVEDIR` as required;
 whiteout, caller-selected overwrite, hard link, symlink, node, FIFO, or device
 creation.
 
-`fchownat` and `fchmodat2` are monitor-only, use an already revalidated
-contained `O_PATH` FD, an empty path, and `AT_EMPTY_PATH`; their only values are
-fixed UID/GID 1000 and mode 0600 for the D5 socket entry. They never follow a
-path or change a directory owner/mode.
+The pinned Linux 6.1.178 guest kernel requires the D5 pathname socket mode to
+be fixed at creation. After every required directory and regular-file creation
+and immediately before the sole D5 bind, the monitor makes the one-way
+`umask(0177)` transition. It never restores the process-wide umask, creates no
+later directory, and permits no concurrent creator. The bind therefore creates
+the pathname socket at exact mode 0600. The monitor reinspects the root-owned,
+mode-0711 parent directory, sealed leaf name, socket FD, local address, mount,
+device, and inode before calling
+`fchownat(parentDirFD, sealedLeaf, 1000, 1000, AT_SYMLINK_NOFOLLOW)` with
+ownership last. The non-writable parent and closed monitor state machine forbid
+create, unlink, or rename from bind through the final same-mount/device/inode
+reinspection. It sets mode 0600 before changing the D5 socket to fixed UID/GID 1000,
+with ownership last. `fchownat` never receives an empty, absolute,
+caller-selected, or multi-component path and never changes a directory owner
+or mode.
 
 Monitor writes are permitted only to an inspected staging regular file. PID1
 writes only `cgroup.kill` or another closed-catalog cgroup control file needed
@@ -572,11 +583,11 @@ still-capable monitor remains alive for normal unmount after workload absence.
 
 ### Unix SSH relay extension
 
-Only a D5-enabled monitor may add `socket bind listen`; only the matching
+Only a D5-enabled monitor may add `umask socket bind listen`; only the matching
 controller extension may add `accept4 shutdown`:
 
 ```text
-socket bind listen | accept4 shutdown
+umask socket bind listen | accept4 shutdown
 ```
 
 `socket` is exactly `AF_UNIX`, `SOCK_STREAM|SOCK_CLOEXEC` with optional
@@ -584,11 +595,13 @@ socket bind listen | accept4 shutdown
 `SOCK_NONBLOCK`. `bind` uses only the monitor-owned job relay address under the
 fixed credential root; abstract names, unnamed caller sockets, and
 any network or vsock family are rejected. The pointer is copied and validated
-before the syscall, and the resulting local/peer identity, type, connected
-state, fixed UID/GID 1000, mode 0600, ownership, and generation are reinspected
-after the exact FD-relative ownership/mode transition. `listen` backlog is 1 through
-4, matching the frozen relay concurrency. `shutdown` is `SHUT_RD`, `SHUT_WR`,
-or `SHUT_RDWR` on a recorded relay FD only.
+before the syscall. `umask` is the exact one-way `0177` transition above and is
+permitted only immediately before the sole D5 bind. The resulting local/peer
+identity, type, connected state, fixed UID/GID 1000, mode 0600, ownership, and
+generation are reinspected after the exact parent-FD-relative ownership-last
+transition. `listen` backlog is 1 through 4, matching the frozen relay
+concurrency. `shutdown` is `SHUT_RD`, `SHUT_WR`, or `SHUT_RDWR` on a recorded
+relay FD only.
 
 D2 owns the policy rule and fake decisions. The monitor sends the one inspected
 listener capability to the controller through the exact D5 monitor response,

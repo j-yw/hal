@@ -130,6 +130,7 @@ func TestL8D2GuestHelperContractsRejectImpossibleV1Correlation(t *testing.T) {
 		"matching request ID and operation",
 		"a v1 response echoes the v2 request ID",
 		"backpressures only the corresponding pipe",
+		"It has no public listener",
 		"D2 intentionally does not choose a live composition mechanism",
 		"fchdir(6)",
 		"all five capability sets empty",
@@ -172,6 +173,12 @@ func TestL8D2GuestHelperSupplementContractsAreNormative(t *testing.T) {
 				"PID1 never signals a UID-1000 workload",
 				"getresuid getresgid getgroups capget",
 				"mode=0711",
+				"pinned Linux 6.1.178 guest kernel",
+				"umask(0177)",
+				"sole D5 bind",
+				"sets mode 0600 before changing the D5 socket to fixed UID/GID 1000",
+				"ownership last",
+				"AT_SYMLINK_NOFOLLOW",
 				"native bootstrap commits role state, not a child role filter",
 				"NS_GET_NSTYPE",
 				"SECCOMP_RET_KILL_PROCESS",
@@ -230,6 +237,17 @@ func TestL8D2GuestHelperSyscallPolicyRejectsImplicitOSPidfdProbe(t *testing.T) {
 	} {
 		if strings.Contains(doc, forbidden) {
 			t.Fatalf("L8 D2 syscall policy retains implicit os pidfd-probe path %q", forbidden)
+		}
+	}
+}
+
+func TestL8D2GuestHelperSyscallPolicyMatchesPinnedGuestKernel(t *testing.T) {
+	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-helper-syscall-policy.md"))
+	for _, forbidden := range []string{
+		"fchmodat2",
+	} {
+		if strings.Contains(doc, forbidden) {
+			t.Fatalf("L8 D2 syscall policy requires primitive unavailable on the pinned guest kernel %q", forbidden)
 		}
 	}
 }

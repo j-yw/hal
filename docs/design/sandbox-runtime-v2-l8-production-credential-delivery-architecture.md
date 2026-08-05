@@ -1622,9 +1622,10 @@ exactly `CAP_SYS_ADMIN`, `CAP_SYS_CHROOT`, `CAP_SETUID`, `CAP_SETGID`,
 `CAP_SETPCAP`, and `CAP_CHOWN`; those exact six bits populate its bounding,
 permitted, effective, inheritable, and ambient sets, and every other bit is
 removed. The launch supervisor accepts only the D2 closed launch protocol over
-an unnamed private `SOCK_SEQPACKET` socket. It has no public listener and
-accepts no executable path, arbitrary clone flag, argv, environment, or
-credential body. It launches only the immutable image-owned
+an unnamed private `SOCK_SEQPACKET` socket. It never accepts from the preopened
+VSOCK listeners and exposes no public launch endpoint. It accepts no executable
+path, arbitrary clone flag, argv, environment, or credential body. It launches
+only the immutable image-owned
 `hal-guest-role-bootstrap` in exact monitor or workload-shim mode. There is no
 general-purpose or unmediated privileged launcher.
 
@@ -2284,9 +2285,11 @@ exec operations. Preparation:
    no-magic-link, and no-cross-mount resolution;
 6. has the monitor write regular mode-`0600`, single-link files owned by the
    fixed workload identity from mutable buffers; and
-7. for D5, has the monitor publish the Unix socket as fixed UID/GID 1000 and
-   mode `0600` through an exact contained FD-relative ownership/mode transition;
-   and
+7. for D5 on the pinned Linux 6.1.178 guest kernel, has the monitor complete all
+   directory and regular-file creation, make a one-way `umask(0177)` transition,
+   perform the sole D5 bind at mode `0600`, and then change the sealed socket
+   leaf to fixed UID/GID 1000 ownership last through exact contained
+   parent-FD-relative `fchownat(..., AT_SYMLINK_NOFOLLOW)`; and
 8. atomically publishes and reinspects mount type/options, device boundary,
    ownership, mode, linkage, file count, cgroup, monitor, and generation
    identity before PID1 accepts a launch.
