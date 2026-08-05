@@ -32,7 +32,7 @@ junction, and image-profile ownership:
 
 ```sh
 go test -count=1 ./cmd \
-  -run '^TestL8CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)$'
+  -run '^TestL8(CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)|D2GuestHelper.*)$'
 ```
 
 Guards must prove:
