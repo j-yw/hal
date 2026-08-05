@@ -23,12 +23,16 @@ active/cleanup proof kinds, failure codes, strict worker and guest protocol v2,
 no-downgrade behavior, the neutral L6 route seam, exact non-MITM HTTP protocol,
 initial Pi service/consumer and numeric limits, Linux-keyring byte source,
 anonymous locked memory, authenticated v2 vsock, dedicated guest identities,
-fd-confined privileged helper/cgroup cleanup, restricted SSH relay,
-finalization/recovery ordering, and the L10 handoff:
+fd-confined launch/controller/agent/monitor/shim cleanup, restricted SSH relay,
+finalization/recovery ordering, and the L10 handoff. Its normative
+`sandbox-runtime-v2-l8-helper-syscall-policy.md` and
+`sandbox-runtime-v2-l8-guest-extension-seams.md` supplements freeze the exact
+role/syscall boundary, extension APIs, live host-agent registry, composition
+junction, and image-profile ownership:
 
 ```sh
 go test -count=1 ./cmd \
-  -run '^TestL8CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)$'
+  -run '^TestL8(CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)|D2GuestHelper.*)$'
 ```
 
 Guards must prove:
@@ -38,7 +42,7 @@ Guards must prove:
 - every current `cmd` production file, including all `sandboxd*.go`
   composition files, stays free of premature L8 live imports and constructors;
   D4 replaces the blanket only for exact guest-asset entrypoints needed to
-  compose the guest agent/init/helper, with per-file import and constructor
+  compose the native role bootstrap and guest agent/init/helper, with per-file import and constructor
   allowlists while root command and `sandboxd*.go` files remain forbidden; D6
   then permits one explicit root L8 composition file. Every transition retains
   default-disabled construction tests and rejects L8 imports or constructors in
@@ -114,13 +118,26 @@ Required focused areas are:
   on peer close or server cancellation, unsupported-v2 failure, no v1 retry, and
   client-loss recovery;
 - guest-v1 compatibility, exact guest-v2 negotiation including only the bounded
-  old-server error envelope, host-CID validation, signed X25519 transcript,
-  AEAD sequence/replay/tamper/unauthorized-host negatives, no fallback, strict
-  frames, and cross-job negatives;
+  old-server error envelope, fixed ports 1024/1025/1026, the exact 512-byte JSON
+  payload request-ID-free compatibility preface/response exception versus a
+  4096-byte `HL8H` GuestHello, host peer-CID and
+  local CID/port validation, the suite-1 signed X25519 transcript and full
+  deterministic vector, HKDF-SHA-256 labels, AES-256-GCM 52-byte headers,
+  Finished sequence zero, application sequence one, replay/gap/cap/tamper and
+  unauthorized-host negatives, reconnect rejection, no fallback, strict frames,
+  exact concrete control request/response/error unions, binding/exec schemas,
+  `0x13` private `HL8B` records, and direction-constrained `0x14` binary `HL8S`
+  stdin/stdout/stderr streaming, both root/source mode-dependent network
+  validators, root/child/session digest conformance, canonical `sha256-`
+  guest-image mapping, authenticated preflight-to-complete identity
+  construction, private versioned seed/complete-identity persistence and clone
+  rules, generated-only `HTTP_PROXY`/`HTTPS_PROXY`/`http_proxy`/`https_proxy`
+  values fixed to the proved L7 base, and cross-job negatives;
 - neutral leaf-route registration and composed Registry definition/dispatch
   separation, collision/cleanup-retry ordering, live request and response
   non-serialization, safe metadata bounds, exact deployment-prefixed
-  reserved HTTP framing mapped to upstream `/openai/v1/responses`, fixed ticket
+  reserved HTTP target/header-value seam and framing mapped to upstream
+  `/openai/v1/responses`, fixed ticket
   encoding/lease/request/concurrency and body/response/SSE/idle limits,
   initial Pi Azure Responses clean-environment flags and sealed model, disabled
   extension/prompt-template/theme/session
@@ -130,20 +147,58 @@ Required focused areas are:
   destination/TLS policy, redirects, header control, L7 proof races, and generic
   CONNECT noninterference;
 - dedicated agent/workload identities, non-dumpable/protected-proc agent,
-  exact-PID/UID/GID/pidfd helper IPC, fd-root/pivot/seccomp loss behavior,
-  cgroup race-free placement, tmpfs namespace/mount/openat2 behavior,
+  controller readiness before gated exact `syscall.ForkExec` service `clone`
+  with `CLONE_PIDFD`, authenticated pidfd
+  bootstrap after clone and before gate release, exact
+  PID/UID/GID/pidfd/nonce/SCM helper IPC, fixed inherited descriptors and
+  helper packet codec, exact launch-supervisor/agent-supervisor/monitor codecs,
+  process-safe
+  helper/client descriptor attestation, exact capability/securebits sets,
+  fd-root/pivot/seccomp
+  loss behavior, deny-by-default amd64/x32 and pinned Go 1.25.7 syscall-role
+  decisions, pointer/provenance reinspection, exact 4 MiB tmpfs ceiling and
+  namespace-type inspection, exact 72 KiB body/73,828-byte datagram bounds,
+  PID1-owned `CLONE_INTO_CGROUP|CLONE_PIDFD` race-free shim placement,
+  launch-bootstrap/launch-base filter ancestry, exact PID1 ambient inheritance,
+  native-preopened fixed v1/control/relay VSOCK listeners and steady-agent-only
+  acceptance, capability-empty agent bootstrap, pidfd-poll-only agent liveness,
+  same-UID-only monitor signaling, cgroup-only UID-1000 workload termination,
+  no protocol-FD read before each Go role's
+  TSYNC steady/transition-filter commit, native stage-zero raw-syscall golden
+  coverage, native-shim namespace entry before Go `CLONE_FS` threads, exact
+  post-setns three-capability Go transition plus identity/capability read-back,
+  child role-filter ownership, required `CAP_SYS_CHROOT`, monitor-owned tmpfs namespace/mount/
+  openat2 behavior and exact proc namespace-handle exception,
+  root-owned searchable/non-listable directory and UID-1000 file/socket
   ownership, linkage, path races, partial prepare, fixed resource limits,
   file-generation policy, `setsid` escape,
-  `cgroup.kill`/zero-population proof, normal unmount, keeper reap, whole-VM
-  fallback, and restart cleanup;
+  `cgroup.kill`/zero-population proof, normal monitor unmount/reap, whole-VM
+  fallback, exact numeric helper/job/FD/process/cleanup limits, atomic
+  prepare-begin/file/commit correlation, domain-separated bootstrap/manifest/
+  transaction digests, exact enum, typed response-union and ExecPlan codecs,
+  nested relative-path encoding, opaque `0x17` exec-private transfer,
+  rights-free exec requests, per-stream `HL8C`/`0x19 exec_credit` flow control
+  over concurrently drained `0x18` exec streams,
+  terminal input/output/transaction digests, host-resupplied comparison-only
+  replay without a second launch, no agent replay retention, local helper-loss
+  termination, rollback, and restart cleanup;
 - neutral SSH codec, authenticated relay subkey, SCM_RIGHTS handoff,
   backpressure, mandatory key and algorithm/flag allowlists, filtered
   enumeration, per-connection host-agent identity, exact relay limits, loss,
   and absence proof;
+- immutable matching helper/client extension registries, typed-nil and
+  duplicate-claim rejection, exact helper/client/core/transport/policy/host
+  method sets, D4/D5 import independence, the D6-only process-local composition
+  junction and PID1 descriptor attestation, the daemon-owned host-agent live registry with fresh peer proof per
+  connection, and D7-only image source-lock/build/profile ownership;
 - Firecracker process/vsock/network/credential generation composition;
-- worker prepare-before-exec, heartbeat renewal, loss cancellation,
-  revoke-before-terminal behavior, state-write failures, daemon close, and
-  restart reconciliation;
+- worker durable seed-before-preflight ordering, the exact preflight return and
+  ownership matrix, immediate continuously latched loss watching, complete
+  identity persistence before source resolution, proof-bearing idempotent
+  abort, prepare-before-exec, heartbeat renewal, loss cancellation,
+  revoke-before-terminal behavior, state-write failures, daemon close,
+  seed-only crash stop/reap, complete-identity recovery, and restart
+  reconciliation;
 - L3 finalization ordering with optional `CredentialCleanup` nil for
   compatibility, required before artifacts for live intent, and the existing
   post-publication sync-out recovery exception; and
@@ -167,13 +222,17 @@ tools/microvm/l8/verify-reproducible.sh \
   --output "$HAL_L8_DISTRIBUTION"
 ```
 
-The final-image verifier proves the exact v2 guest agent/init/helper binaries,
+The final-image verifier proves the exact v2 guest agent/init/controller,
+single-threaded native role-bootstrap, mount-monitor, and workload-shim binaries,
 musl target Node 22.22.0, `@earendil-works/pi-coding-agent` 0.82.1 and its
 locked dependency-tree digest, root-owned non-setuid `/usr/bin/node` and
 `/usr/bin/pi`, and absence of npm cache/config/session material. It also proves
-dedicated agent UID/GID 998 and workload UID/GID 1000, PID1 helper launch before
-agent privilege drop, protected proc, exact helper capability/pivot/seccomp
-policy, empty agent/workload capability sets, controller-public-key boot input
+dedicated agent UID/GID 998 and workload UID/GID 1000, PID1 controller launch
+before agent privilege drop, protected proc, exact launch-base/controller/
+agent/monitor/shim capability and seccomp policies, native no-libc/no-loader/
+no-thread bootstrap constraints, exact locked-off setuid fixups,
+native fixed VSOCK listener table, native-shim pre-Go namespace entry, empty
+controller/agent/workload capability sets, controller-public-key boot input
 without private material, L7 network profile, absence of
 setuid/setgid/file capabilities, private filesystem modes, required
 tmpfs/fd-mount/pidfd/mount namespace and cgroup-v2/`cgroup.kill` kernel support,
@@ -201,7 +260,9 @@ Before the selected E2E begins, a separate no-skip prerequisite test proves:
 - local `ssh-agent`/`ssh-keygen` tooling for an owned disposable agent;
 - owned local verified-TLS HTTP fixtures and resolver namespace with no internet route; and
 - an owned controller signing key and credential value in private test
-  keyrings, followed by revocation/removal proof.
+  keyrings, followed by revocation/removal proof; and
+- hardware AES-GCM acceleration visible on the host and inside the exact guest
+  used for the strict session.
 
 ```sh
 tools/microvm/l8/verify-selected-live.sh prerequisites
@@ -251,11 +312,13 @@ variables, direct Pi `xai`, arbitrary base URLs, and `--api-key` are negative
 cases.
 
 The Pi 0.82.1 compatibility probe also locks the path split independently of
-the fixture: the agent normalizes the Azure Responses base to `/openai/v1`, the
-bundled Responses client appends `/responses`, and the Azure deployment
-endpoint set excludes the Responses operation. The fixture must therefore
-observe upstream `POST /openai/v1/responses`; only Hal's reserved local route is
-deployment-prefixed and carries the exact sealed `api-version` query.
+the fixture: Pi preserves Hal's runtime-local reserved base, which ends exactly
+at `/deployments/<sealed-deployment>` with no trailing slash, `/responses`, or
+query. The bundled Responses client appends `/responses`; the Azure client
+appends the sealed `api-version` query; and its deployment endpoint set excludes
+Responses, so it inserts no second deployment segment. Hal's reserved local
+route is therefore deployment-prefixed and queried exactly once, while Hal's
+proxy transforms it to upstream `POST /openai/v1/responses`.
 
 Negative cases cover missing/wrong Node or Pi version/tree digest, wrong
 deployment/version/model, Pi ambient configuration
@@ -275,9 +338,11 @@ agent attacks are impossible because the workload has a distinct UID; forged
 SCM credentials/PID/nonce, proc/ptrace/process-memory/pidfd-getfd access,
 neighbor job, v1 exec, stale generation, traversal, symlink/hardlink, and
 post-revoke reads fail. Live inspection proves the private mount namespace,
-tmpfs type and flags, file mode/owner/link count, bounded contents, helper
-privilege/root/fd/seccomp boundary, race-free cgroup membership, normal unmount,
-keeper reap, zero population, and absence after cleanup. A copied child calls
+tmpfs type and flags, file mode/owner/link count, bounded contents,
+root-owned mode-0711 traversal directories and UID-1000 socket ownership/mode,
+controller/supervisor/monitor/shim privilege/fd/seccomp boundaries, race-free
+cgroup membership, normal monitor unmount/reap, zero population, and absence
+after cleanup. A copied child calls
 `setsid`, retains a descriptor, and must still die through `cgroup.kill`; forced
 cgroup-inspection failure must stop and reap the entire microVM.
 
@@ -304,7 +369,7 @@ success or begin artifacts while cleanup is incomplete.
 
 After every case, scan durable state and inspect live resources. All owned
 containers, Firecracker processes, helpers, listeners, connections,
-namespaces, mounts, keepers, cgroups, sockets, rules, routes, locks, leases,
+namespaces, mounts, monitors, cgroups, sockets, rules, routes, locks, leases,
 tickets, buffers, and sessions must be absent. Historical or unrelated
 resources are observed but never removed without exact ownership proof.
 

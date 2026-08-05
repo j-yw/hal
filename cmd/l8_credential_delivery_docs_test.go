@@ -18,6 +18,8 @@ func TestL8CredentialDeliveryArchitecture(t *testing.T) {
 		"5068151561",
 		"5068157402",
 		"5068162708",
+		"sandbox-runtime-v2-l8-helper-syscall-policy.md",
+		"sandbox-runtime-v2-l8-guest-extension-seams.md",
 		"guest-agent-v2",
 		"sandboxjob-v2",
 		"sandboxworker-v1",
@@ -82,7 +84,9 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialVerificationDoc))
 	liveTag := "l8_production_" + "credential_" + "delivery_live"
 	for _, required := range []string{
-		"TestL8CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)",
+		"TestL8(CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)|D2GuestHelper.*)",
+		"sandbox-runtime-v2-l8-helper-syscall-policy.md",
+		"sandbox-runtime-v2-l8-guest-extension-seams.md",
 		"tools/microvm/l8/verify-reproducible.sh",
 		"tools/microvm/l8/verify-focused.sh",
 		"tools/microvm/l8/verify-selected-live.sh",
