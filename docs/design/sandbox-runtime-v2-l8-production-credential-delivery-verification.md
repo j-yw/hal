@@ -160,10 +160,16 @@ Required focused areas are:
   namespace-type inspection, exact 72 KiB body/73,828-byte datagram bounds,
   PID1-owned `CLONE_INTO_CGROUP|CLONE_PIDFD` race-free shim placement,
   launch-bootstrap/launch-base filter ancestry, exact PID1 ambient inheritance,
-  capability-empty agent bootstrap, no protocol-FD read before each Go role's
+  native-preopened fixed v1/control/relay VSOCK listeners and steady-agent-only
+  acceptance, capability-empty agent bootstrap, pidfd-poll-only agent liveness,
+  same-UID-only monitor signaling, cgroup-only UID-1000 workload termination,
+  no protocol-FD read before each Go role's
   TSYNC steady/transition-filter commit, native stage-zero raw-syscall golden
-  coverage, required `CAP_SYS_CHROOT`, monitor-owned tmpfs namespace/mount/
+  coverage, native-shim namespace entry before Go `CLONE_FS` threads, exact
+  post-setns three-capability Go transition plus identity/capability read-back,
+  child role-filter ownership, required `CAP_SYS_CHROOT`, monitor-owned tmpfs namespace/mount/
   openat2 behavior and exact proc namespace-handle exception,
+  root-owned searchable/non-listable directory and UID-1000 file/socket
   ownership, linkage, path races, partial prepare, fixed resource limits,
   file-generation policy, `setsid` escape,
   `cgroup.kill`/zero-population proof, normal monitor unmount/reap, whole-VM
@@ -173,8 +179,9 @@ Required focused areas are:
   nested relative-path encoding, opaque `0x17` exec-private transfer,
   rights-free exec requests, per-stream `HL8C`/`0x19 exec_credit` flow control
   over concurrently drained `0x18` exec streams,
-  terminal input/output/transaction digests, comparison-only replay without a
-  second launch, rollback, and restart cleanup;
+  terminal input/output/transaction digests, host-resupplied comparison-only
+  replay without a second launch, no agent replay retention, local helper-loss
+  termination, rollback, and restart cleanup;
 - neutral SSH codec, authenticated relay subkey, SCM_RIGHTS handoff,
   backpressure, mandatory key and algorithm/flag allowlists, filtered
   enumeration, per-connection host-agent identity, exact relay limits, loss,
@@ -224,7 +231,8 @@ dedicated agent UID/GID 998 and workload UID/GID 1000, PID1 controller launch
 before agent privilege drop, protected proc, exact launch-base/controller/
 agent/monitor/shim capability and seccomp policies, native no-libc/no-loader/
 no-thread bootstrap constraints, exact locked-off setuid fixups,
-empty controller/agent/workload capability sets, controller-public-key boot input
+native fixed VSOCK listener table, native-shim pre-Go namespace entry, empty
+controller/agent/workload capability sets, controller-public-key boot input
 without private material, L7 network profile, absence of
 setuid/setgid/file capabilities, private filesystem modes, required
 tmpfs/fd-mount/pidfd/mount namespace and cgroup-v2/`cgroup.kill` kernel support,
@@ -331,6 +339,7 @@ SCM credentials/PID/nonce, proc/ptrace/process-memory/pidfd-getfd access,
 neighbor job, v1 exec, stale generation, traversal, symlink/hardlink, and
 post-revoke reads fail. Live inspection proves the private mount namespace,
 tmpfs type and flags, file mode/owner/link count, bounded contents,
+root-owned mode-0711 traversal directories and UID-1000 socket ownership/mode,
 controller/supervisor/monitor/shim privilege/fd/seccomp boundaries, race-free
 cgroup membership, normal monitor unmount/reap, zero population, and absence
 after cleanup. A copied child calls

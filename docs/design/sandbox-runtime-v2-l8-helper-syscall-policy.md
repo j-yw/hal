@@ -43,10 +43,11 @@ PID1 launch-base -> workload-transition -> workload -> execveat
 
 Linux seccomp filters are inherited and cannot be relaxed. The native role
 bootstrap establishes each role's per-thread capability/identity state before
-any Go runtime starts. PID1 then
-installs the reviewed `launch-base` ancestor filter, whose allow set is the
-union mechanically required by its four image-pinned descendants. Each child
-then stacks a narrower role filter. The steady controller never launches a
+any Go runtime starts. PID1 then installs the reviewed `launch-base` ancestor
+filter, whose allow set is the union mechanically required by its four
+image-pinned descendants. Native child modes do not install another filter:
+the native bootstrap commits role state, not a child role filter. Each Go child
+stacks its narrower role filter before protocol input. The steady controller never launches a
 process, and neither does the steady agent; monitors and workload shims are
 direct PID1 children and never inherit either steady service filter. A monitor
 cannot clone or exec. A workload shim cannot
@@ -73,22 +74,28 @@ does not authorize reusing its number for another object in that role.
 | FD | PID1 launch supervisor | Controller | Service agent | Mount monitor | Workload shim |
 |---:|---|---|---|---|---|
 | 0-2 | Image-owned inert console/sinks. | Inert sinks. | Inert sinks. | Inert sinks. | Inspected stdin-read, stdout-write, stderr-write pipes after remap. |
-| 3 | Controller supervisor endpoint. | Agent control endpoint. | Controller control endpoint. | Controller-monitor endpoint. | Exact monitor namespace FD. |
+| 3 | Controller supervisor endpoint. | Agent control endpoint. | Controller control endpoint. | Controller-monitor endpoint. | Native-only monitor namespace FD, closed before Go starts. |
 | 4 | Delegated cgroup-v2 root. | PID1 supervisor endpoint. | Agent-supervisor seqpacket endpoint. | `verified_proc_root_fd`, revalidated procfs. | Reinspected workdir FD. |
-| 5 | Pinned mount-monitor executable. | Minimal controller root. | Closed. | Fixed job mount-target `O_PATH|O_DIRECTORY`. | Pinned workload executable FD. |
-| 6 | Pinned workload-shim executable. | Sealed bootstrap config, closed at commit. | Closed. | Sealed monitor config, closed at commit. | Sealed controller-to-shim launch-block read FD; this is the complete shim config. |
-| 7 | Verified proc root. | Agent pidfd after bootstrap. | Closed. | Self mount-namespace FD after exact lookup. | Supervisor start-gate read FD. |
+| 5 | Pinned mount-monitor executable. | Minimal controller root. | Preopened v1 VSOCK listener, port 1024. | Fixed job mount-target `O_PATH|O_DIRECTORY`. | Pinned workload executable FD. |
+| 6 | Pinned workload-shim executable. | Sealed bootstrap config, closed at commit. | Preopened v2 control VSOCK listener, port 1025. | Sealed monitor config, closed at commit. | Sealed controller-to-shim launch-block read FD; this is the complete shim config. |
+| 7 | Verified proc root. | Agent pidfd after bootstrap. | Preopened v2 SSH-relay VSOCK listener, port 1026. | Self mount-namespace FD after exact lookup. | Supervisor start-gate read FD. |
 | 8 | Fixed monitor mount-target root. | Active monitor endpoint or closed. | Closed. | Active tmpfs root or closed. | Closed. |
 | 9 | Active job cgroup or closed. | Active monitor namespace or closed. | Closed. | Closed after a published SSH listener transfers to the controller. | Closed. |
 | 10 | Active monitor pidfd or closed. | Closed. | Closed. | Closed. | Closed. |
 | 11 | Closed; workload pidfds occupy recorded transient slots. | Closed. | Closed. | Closed. | Pinned executable after final remap for `execveat(11, "", ..., AT_EMPTY_PATH)`. |
+| 12 | Preopened v1 VSOCK listener until agent transfer. | Closed. | Closed. | Closed. | Closed. |
+| 13 | Preopened v2 control VSOCK listener until agent transfer. | Closed. | Closed. | Closed. | Closed. |
+| 14 | Preopened v2 SSH-relay VSOCK listener until agent transfer. | Closed. | Closed. | Closed. | Closed. |
+| 15 | Closed. | Closed. | Closed. | Closed. | Closed. |
 
 Transient FDs are 16 through 255, consistent with the frozen maximum of 256
 descriptors per role. A newly returned lower-numbered FD MUST be moved
 with `dup3(..., O_CLOEXEC)` into an unused transient slot and the original
 closed before it can enter helper state. Each transient slot has one recorded
 kind and generation: regular file, directory, pipe end, pidfd, mount FD,
-filesystem-context FD, or connected/listening Unix socket. It is revalidated
+filesystem-context FD, connected/listening Unix socket, or connected/listening
+VSOCK.
+It is revalidated
 after creation or receipt and immediately before every authority-bearing use.
 Active fixed slots are populated only by a validated transient FD and are
 cleared on rollback. No fixed or transient FD except 0, 1, 2, and the frozen L4
@@ -102,7 +109,7 @@ interpreter-script executable descriptor survives workload exec.
 any Go runtime, controller, agent, monitor, shim, or protocol input. Starting
 from the image verifier's exact PID1 identity and protected L4/L7 base, its
 closed native syscall loop may use fixed-descriptor operations plus `capget`,
-`capset`, and `prctl` only to:
+`capset`, `prctl`, and the exact listener operations below only to:
 
 1. drop every bounding capability outside the frozen six;
 2. set permitted, effective, and inheritable sets to exactly those six;
@@ -111,15 +118,30 @@ closed native syscall loop may use fixed-descriptor operations plus `capget`,
 4. set and lock `SECBIT_NOROOT` and `SECBIT_NO_CAP_AMBIENT_RAISE`, lock
    `SECBIT_KEEP_CAPS` and `SECBIT_NO_SETUID_FIXUP` off, set
    `PR_SET_DUMPABLE=0` and `PR_SET_NO_NEW_PRIVS=1`; and
-5. read back every UID/GID, capability set, securebit, limit, and hardening
-   property before stacking the exact `launch-base` filter and `execve`ing the
-   fixed `hal-guest-init` target in the same PID.
+5. create, bind, listen on, and reinspect exactly three nonblocking
+   `AF_VSOCK/SOCK_STREAM|SOCK_CLOEXEC` listeners at CID any, fixed ports
+   1024/1025/1026, fixed backlogs 64/1/4, and fixed PID1 FDs 12/13/14, then
+   clear close-on-exec only for the immediate PID1 target handoff; and
+6. read back every UID/GID, capability set, securebit, limit, listener property,
+   and hardening property before stacking the exact `launch-base` filter and
+   `execve`ing the fixed `hal-guest-init` target in the same PID.
+
+Listener setup uses only native `socket`, `bind`, `listen`, `getsockopt`, and
+`getsockname` with compiled structures and no caller input. The bootstrap never
+connects, accepts, sends, or receives. A partial listener set is closed and boot
+fails. After `launch-base` commits, no PID1 or child role can create or bind an
+`AF_VSOCK` socket; only service-agent FDs 5, 6, and 7 can accept after the
+agent's steady filter and composition commit.
 
 After native commit and exec, `hal-guest-init` constructs and reinspects the
 frozen descriptor table, anonymous seqpacket pairs, sealed config pipes,
 workload gate pipes, delegated cgroup root, verified proc root, fixed mount
-target, and image-profile-pinned executable identities before readiness. No
-credential body or protocol/job-derived value exists at this point.
+target, inherited VSOCK listeners, and image-profile-pinned executable identities
+before readiness. Go PID1 immediately reinspects FDs 12..14 and restores
+`FD_CLOEXEC` before any child launch. Only its exact agent `ForkExec` maps
+copies to child FDs 5..7; the native agent retains them through its fixed second
+exec and Go agent adds `FD_CLOEXEC` before admission. No credential body or
+protocol/job-derived value exists at this point.
 The bootstrap is one native thread and allocates no heap, starts no thread,
 loads no dynamic object, and reads no external input. `hal-guest-init` starts
 under the committed filter with every thread inheriting the same exact six
@@ -184,9 +206,10 @@ exact six-bit bounding/permitted/effective/inheritable/ambient sets. Its
 `steady-agent`. Neither process can read a job request before authenticated
 `composition_accepted`. The native bootstrap permits only:
 
-- native fixed-FD/socket reinspection with no socket I/O; after Go commits the
-  steady filter, FD 4 permits agent-config receive and direct PID1 attestation,
-  while FD 3 permits property inspection only and no I/O before accepted;
+- native fixed-FD/socket reinspection with no socket I/O, including exact
+  listening VSOCK identity at FDs 5, 6, and 7; after Go commits the steady
+  filter, FD 4 permits agent-config receive and direct PID1 attestation, while
+  FD 3 permits property inspection only and no I/O before accepted;
 - `setgroups(0, NULL)`, exact bounding-set drops for all six bits,
   `setresgid(998,998,998)`, and `setresuid(998,998,998)` in that order;
 - `capget`/`capset` solely to verify the UID transition cleared
@@ -202,10 +225,11 @@ performs the kernel's normal capability clearing. The native bootstrap verifies
 UID/GID 998, no supplementary groups, empty bounding/permitted/effective/
 inheritable/ambient sets and `no_new_privs` before exec. Go verifies the same
 state, stacks the steady filter, and sends its descriptor directly to PID1 on
-FD 4. The steady agent retains only FDs 3
-and 4 until authenticated `composition_accepted`, then closes FD 4 and performs
-the controller hello. It has no capability, clone, mount, cgroup, namespace, pathname
-exec, raw filesystem, or arbitrary socket authority. Bootstrap failure exits
+FD 4. The steady agent retains FDs 3 through 7 until authenticated
+`composition_accepted`, then closes FD 4, performs the controller hello, and
+begins accepting on exact listeners 5 through 7. It has no capability, process
+clone, mount, cgroup, namespace, pathname exec, raw filesystem, socket creation,
+bind, listen, connect, or arbitrary accept authority. Bootstrap failure exits
 and forces PID1 whole-VM cleanup; it never releases admission.
 
 ### Common bounded runtime
@@ -241,11 +265,16 @@ The following restrictions apply:
 - `clock_gettime` uses only `CLOCK_MONOTONIC`, `CLOCK_BOOTTIME`, or
   `CLOCK_REALTIME`. Sleeps use an absolute monotonic deadline and cannot extend
   the 35-minute activation or 30-second cleanup limits.
-- `ppoll` watches only recorded control, pipe, pidfd, cgroup-event, and Unix
-  relay FDs with a bounded timeout. Signal-mask and timespec pointers are
+- `ppoll` watches only recorded control, pipe, pidfd, cgroup-event, inherited
+  VSOCK listener/accepted-stream, and Unix relay FDs with a bounded timeout.
+  Signal-mask and timespec pointers are
   helper-owned.
 - `fcntl` is limited to `F_GETFD`, `F_SETFD` adding `FD_CLOEXEC`, `F_GETFL`,
   `F_SETFL` changing only `O_NONBLOCK`, and `F_DUPFD_CLOEXEC` into 16..255.
+  Native launch-bootstrap may clear `FD_CLOEXEC` only on verified listener FDs
+  12..14 immediately before its one exec; Go PID1 restores it before creating a
+  child. `ForkExec` maps only agent copies to 5..7 without close-on-exec for the
+  two fixed role execs, and Go agent adds it before admission.
   The sole clearing exception is shim FD 11 for an already detected and
   pinned L4 interpreter script immediately before `execveat`.
 - `statx` is limited to `AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW` reinspection of a
@@ -266,14 +295,16 @@ before D4 can claim conformance.
 
 `hal-guest-role-bootstrap` is one freestanding static Linux-amd64 ELF `_start`
 using reviewed raw syscall stubs. It has no libc, dynamic loader, Go runtime,
-allocator, TLS, signal handler, thread creation, plugin, environment lookup, or
-filesystem search. Its union is limited to fixed-FD `read`, `write`, `close`,
+allocator, TLS, signal handler, thread creation, plugin, environment lookup,
+network client, or filesystem search. Its union is limited to fixed-FD `read`,
+`write`, `close`,
 `close_range`, `dup3`, `fcntl`, `fstat`, `statx`, `fstatfs`, `getsockopt`,
-`getuid`, `geteuid`, `getgid`, `getegid`, read-only `prlimit64`, `capget`,
+`getsockname`, `getuid`, `geteuid`, `getgid`, `getegid`, read-only `prlimit64`, `capget`,
 `capset`, exact `prctl`, exact
 `setgroups`/`setresgid`/`setresuid`, controller-only `fchdir`/`pivot_root`/
-`chdir`/`umount2`/`unlinkat`, PID1-mode `seccomp`, exact target `execve`,
-and `exit_group`. All pointers address fixed read-only image data or bounded
+`chdir`/`umount2`/`unlinkat`, shim-only `ioctl`/`setns`, PID1-only exact
+`socket`/`bind`/`listen`, PID1-mode `seccomp`, exact target `execve`, and
+`exit_group`. All pointers address fixed read-only image data or bounded
 stack objects; the native source has no mutable global or general path/argv/env
 parameter. PID1 mode is entered only as the immutable image init; child modes
 are selected only by the supervisor adapter's closed enum. D2 fake decisions
@@ -338,13 +369,33 @@ reinspection of those fixed socket properties and accepted Unix peers.
 `sendto`, `recvfrom`, `sendmmsg`, `recvmmsg`, and generic `ioctl` are not
 substitutes.
 
+### Preopened guest VSOCK acceptance
+
+PID1 preopens the three fixed `AF_VSOCK` listeners in native
+`launch-bootstrap`, passes them as service-agent FDs 5, 6, and 7, and closes
+its FDs 12, 13, and 14 only after authenticated agent composition. The agent
+revalidates `SO_DOMAIN=AF_VSOCK`, `SO_TYPE=SOCK_STREAM`, `SO_ACCEPTCONN=1`,
+nonblocking/close-on-exec state, CID any, and exact port before admission.
+
+After `steady-agent` and `composition_accepted`, `accept4` is permitted only on
+FDs 5 through 7 with `SOCK_CLOEXEC|SOCK_NONBLOCK`. The returned transient FD
+and exact kernel peer `SockaddrVM` are validated before any read: v2 requires
+`VMADDR_CID_HOST`, while the listener's revalidated local port and sealed
+generation supply the channel identity; v1 retains the existing port-1024 peer
+behavior. Port 1025 admits one active control stream and port 1026 at
+most four relay streams. Duplicate control, over-cap relay, wrong CID/port,
+truncation, or listener replacement closes the accepted FD without protocol
+decode. `shutdown` applies only to a recorded accepted VSOCK or D5 Unix relay
+FD. Agent loss closes all three listeners and accepted streams; there is no
+listener recreation in-place.
+
 ### Descriptor-relative monitor filesystem and PID1 cgroup operations
 
 The steady monitor may use:
 
 ```text
 openat2 mkdirat unlinkat renameat2
-fchmod fchown ftruncate fsync fdatasync
+fchmod fchown fchmodat2 fchownat ftruncate fsync fdatasync
 ```
 
 PID1 `launch-base` may use only `openat2`, `mkdirat`, and
@@ -381,8 +432,10 @@ The result is accepted only after exact monitor credentials/pidfd liveness,
 `NSFS_MAGIC`, `NS_GET_NSTYPE == CLONE_NEWNS`, expected device/inode, and
 inequality from PID1's namespace are proved. No other exception exists.
 
-`O_CREAT` additionally requires `O_EXCL|O_NOFOLLOW`; credential files are
-regular, mode 0600, single-link, fixed UID/GID 1000. PID1 opens cgroup control
+`O_CREAT` additionally requires `O_EXCL|O_NOFOLLOW`; every traversed credential
+directory is root-owned mode 0711, and credential files are regular, mode 0600,
+single-link, fixed UID/GID 1000. A D5 Unix socket entry is mode 0600 and fixed
+UID/GID 1000 beneath those non-listable, non-writable directories. PID1 opens cgroup control
 files only beneath its active FD 9 with fixed names and expected cgroup-v2
 filesystem identity. `mkdirat`, `unlinkat`, and `renameat2` operate only beneath
 the monitor credential root or PID1 delegated cgroup root on a canonical safe
@@ -390,6 +443,11 @@ generation/component name. `unlinkat` uses zero or `AT_REMOVEDIR` as required;
 `renameat2` uses `RENAME_NOREPLACE` for publication. There is no exchange,
 whiteout, caller-selected overwrite, hard link, symlink, node, FIFO, or device
 creation.
+
+`fchownat` and `fchmodat2` are monitor-only, use an already revalidated
+contained `O_PATH` FD, an empty path, and `AT_EMPTY_PATH`; their only values are
+fixed UID/GID 1000 and mode 0600 for the D5 socket entry. They never follow a
+path or change a directory owner/mode.
 
 Monitor writes are permitted only to an inspected staging regular file. PID1
 writes only `cgroup.kill` or another closed-catalog cgroup control file needed
@@ -410,7 +468,8 @@ fsopen fsconfig fsmount open_tree move_mount mount_setattr umount2
 The monitor is already executing in the job mount namespace created by PID1;
 it never calls `setns`. The only filesystem created is `tmpfs`. `fsopen` uses
 `FSOPEN_CLOEXEC`; `fsconfig` accepts only `size=4194304`, `nr_inodes=65536`, and
-`mode=0700`, followed once by `FSCONFIG_CMD_CREATE`. `fsmount` uses
+`mode=0711`, followed once by `FSCONFIG_CMD_CREATE`. The tmpfs root remains
+root-owned and is searchable but neither listable nor writable by UID 1000. `fsmount` uses
 `FSMOUNT_CLOEXEC`; `open_tree` uses `OPEN_TREE_CLONE|OPEN_TREE_CLOEXEC`;
 `move_mount` attaches only the inspected tmpfs object to monitor FD 5 in the
 monitor's current namespace with the two empty-path flags; and `mount_setattr`
@@ -477,8 +536,10 @@ after `ForkExec` returns.
 The `ForkExec` pre-exec child may call pathname `execve` only for the compiled
 role-bootstrap path. That native bootstrap may perform exactly one second
 pathname `execve` to its role's compiled, image-profile-pinned controller,
-agent, monitor, or shim target after committing the role bootstrap filter and
-state. Both argv/environment sets contain no protocol or job field and are
+agent, monitor, or shim target after committing the exact native role state.
+The inherited `launch-base` remains the only installed filter until the Go
+target commits its steady or transition filter before protocol input. Both
+argv/environment sets contain no protocol or job field and are
 validated in immutable adapter-owned storage before `clone`; `CLONE_VFORK`
 suspends the only mutator until first exec/exit. The sole PID1 launch adapter
 admits no other pathname exec request, and every steady child role filter
@@ -497,15 +558,17 @@ forwarding the controller endpoint and proof. Any discrepancy kills/reaps the
 monitor and rolls back.
 
 `pipe2` uses `O_CLOEXEC` plus optional `O_NONBLOCK`; each pair is immediately
-type/direction inspected. `pidfd_send_signal` and `waitid(P_PIDFD, ...)` are
-PID1-only for monitor/workload processes, except controller signal-zero liveness
-checks on its fixed agent pidfd. PID1 uses signal zero or `SIGKILL`, null
-siginfo, flags zero, `WEXITED`, optional bounded `WNOHANG`, and a final reap
-without `WNOWAIT`. PID numbers, process groups, and ambient `/proc` lookups are
-not authority. Credential revoke writes exact `1` to `cgroup.kill`, observes
-`populated 0`, reaps every workload pidfd, then leaves the still-capable monitor
-alive for normal unmount. `setsid` and `setpgid` descendants remain covered by
-cgroup kill.
+type/direction inspected. `waitid(P_PIDFD, ...)` is PID1-only for monitor and
+workload processes. The controller proves agent liveness by pidfd polling only;
+it lacks signal permission for UID 998 and never calls `pidfd_send_signal`.
+PID1 may use `pidfd_send_signal` with signal zero or `SIGKILL`, null siginfo,
+and flags zero only for its same-UID-0 monitor. PID1 never signals a UID-1000 workload;
+after shim start, every stop path writes exact `1` to the owned job cgroup's
+`cgroup.kill`, observes `populated 0`, and reaps each workload pidfd with
+`WEXITED`, optional bounded `WNOHANG`, and a final wait without `WNOWAIT`.
+PID numbers, process groups, and ambient `/proc` lookups are not authority. The
+still-capable monitor remains alive for normal unmount after workload absence.
+`setsid` and `setpgid` descendants remain covered by cgroup kill.
 
 ### Unix SSH relay extension
 
@@ -522,7 +585,8 @@ socket bind listen | accept4 shutdown
 fixed credential root; abstract names, unnamed caller sockets, and
 any network or vsock family are rejected. The pointer is copied and validated
 before the syscall, and the resulting local/peer identity, type, connected
-state, ownership, and generation are reinspected. `listen` backlog is 1 through
+state, fixed UID/GID 1000, mode 0600, ownership, and generation are reinspected
+after the exact FD-relative ownership/mode transition. `listen` backlog is 1 through
 4, matching the frozen relay concurrency. `shutdown` is `SHUT_RD`, `SHUT_WR`,
 or `SHUT_RDWR` on a recorded relay FD only.
 
@@ -550,8 +614,16 @@ namespace. After successful absence proof it calls `exit_group`; monitor exits
 the entire process, so no privileged runtime thread survives.
 
 Shim mode of the native role bootstrap verifies the exact six inherited sets,
-fixed FDs, securebits, cgroup placement, and `no_new_privs`, then execs the
-fixed Go shim without reading the launch block or gate. Go immediately stacks
+fixed FDs, securebits, cgroup placement, and `no_new_privs`. The single-threaded
+native shim enters the mount namespace before any Go runtime starts: it
+revalidates FD 3 as the exact monitor namespace, calls
+`setns(3, CLONE_NEWNS)` while holding `CAP_SYS_ADMIN|CAP_SYS_CHROOT`, and closes
+FD 3. It then drops `CAP_SYS_ADMIN`, `CAP_SYS_CHROOT`, and `CAP_CHOWN` from the
+bounding/permitted/effective/inheritable/ambient sets, verifies the remaining
+sets are exactly `CAP_SETUID|CAP_SETGID|CAP_SETPCAP`, and execs the fixed Go
+shim without reading the launch block or gate. The child was created without
+`CLONE_FS`; native namespace entry therefore cannot share filesystem state with
+another process. Go starts inside the job namespace and immediately stacks
 `workload-transition` with TSYNC before either read; no transition policy is
 learned from input. It later stacks the final existing workload filter.
 
@@ -559,32 +631,32 @@ A workload shim transition may call only:
 
 ```text
 read close close_range dup3 fcntl fchdir
-setns setgroups setresgid setresuid capset prctl
+setgroups setresgid setresuid getresuid getresgid getgroups capget capset prctl
 seccomp execveat exit exit_group rt_sigreturn
 ```
 
 The exact sequence is:
 
-1. validate fixed FDs 0 through 7, require FD 8 is closed, and close every
-   unrelated descriptor;
+1. validate fixed FDs 0..2 and 4..7, require native FD 3 is closed after
+   namespace entry, require FD 8 is closed, and close every unrelated
+   descriptor;
 2. read and authenticate the bounded launch block from FD 6 directly into
    locked memory, construct the sealed `ExecPlan`/binding, wipe the input slot,
    and close FD 6;
-3. `setns(3, CLONE_NEWNS)` while holding exactly `CAP_SYS_ADMIN` and
-   `CAP_SYS_CHROOT`, then close FD 3;
-4. revalidate already mapped pipe directions at 0, 1, and 2;
-5. `fchdir` to workdir FD 4 and close it;
-6. consume gate FD 7 only after PID1 committed cgroup/namespace/FD correlation,
+3. revalidate already mapped pipe directions at 0, 1, and 2;
+4. `fchdir` to workdir FD 4 and close it;
+5. consume gate FD 7 only after PID1 committed cgroup/namespace/FD correlation,
    then close it;
-7. drop each of the six bounding bits with `PR_CAPBSET_DROP` while
+6. drop each of the remaining three bounding bits with `PR_CAPBSET_DROP` while
    `CAP_SETPCAP` remains effective;
-8. `setgroups(0, NULL)`, `setresgid(1000,1000,1000)`, and
+7. `setgroups(0, NULL)`, `setresgid(1000,1000,1000)`, and
    `setresuid(1000,1000,1000)`; require the normal UID transition to clear
    permitted/effective/ambient state, clear the inherited set with `capset`,
-   verify all five sets empty, set `PR_SET_DUMPABLE=0`, and set
-   `PR_SET_NO_NEW_PRIVS=1`;
-9. stack the existing workload seccomp policy; and
-10. move pinned executable FD 5 to FD 11 and call
+   use exact `getresuid`, `getresgid`, `getgroups`, `capget`, and bounding/
+   ambient `prctl` reads to verify UID/GID 1000, no groups, and all five sets
+   empty, set `PR_SET_DUMPABLE=0`, and reconfirm `PR_SET_NO_NEW_PRIVS=1`;
+8. stack the existing workload seccomp policy; and
+9. move pinned executable FD 5 to FD 11 and call
    `execveat(11, "", argv, envp, AT_EMPTY_PATH)`. FD 11 remains close-on-exec
    for a native executable. For an already detected and pinned interpreter
    script only, the child clears `FD_CLOEXEC` immediately before `execveat` so
@@ -597,8 +669,8 @@ and frozen L4 kernel interpreter handoff are the only exceptions. `argv` and
 `envp` are constructed solely from the
 validated bounded `ExecPlan` plus authenticated prepared bindings; their
 pointers are not seccomp-inspectable. Failure at any step wipes private memory,
-closes pipes/gate, and exits without a second launch attempt. PID1 kills/reaps
-the recorded pidfd and continues cgroup cleanup.
+closes pipes/gate, and exits without a second launch attempt. PID1 kills the
+owned job cgroup, reaps the recorded pidfd, and continues cgroup cleanup.
 
 The final workload policy is not broadened here. It MUST retain the existing
 L4 execution semantics and L7 network confinement and MUST deny at least the
@@ -632,9 +704,10 @@ controller is UID/GID 0 with locked `SECBIT_NOROOT` and every capability set
 empty. The monitor is UID/GID 0, has no supplementary groups, and retains only
 `CAP_SYS_ADMIN|CAP_CHOWN` until normal unmount/absence, then exits its entire
 process. The workload is UID/GID 1000, has no supplementary groups, has every
-capability set empty, and has `no_new_privs` before exec. The workload shim's
-temporary six-bit set exists only before that drop; `CAP_SYS_CHROOT` is present
-solely so exact mount-namespace `setns` can succeed. Any mismatch blocks
+capability set empty, and has `no_new_privs` before exec. The native workload
+shim has the six-bit set only through namespace entry; `CAP_SYS_CHROOT` is
+present solely so exact mount-namespace `setns` can succeed. The Go shim starts
+with exactly `CAP_SETUID|CAP_SETGID|CAP_SETPCAP` and no namespace FD. Any mismatch blocks
 readiness or gate release; it is never downgraded to a warning.
 
 ## Forbidden syscall catalog
@@ -648,8 +721,8 @@ to workloads where applicable:
 - arbitrary namespace or privilege: `unshare`, arbitrary `setns`,
   `setuid`, `setgid`, `setreuid`, `setregid`, `setfsuid`, `setfsgid`,
   `personality`, `uselib`, and seccomp listener creation;
-- device, kernel, or key authority: every `ioctl` except exact monitor
-  `ioctl(7, NS_GET_NSTYPE)`, `iopl`, `ioperm`, `kexec_load`,
+- device, kernel, or key authority: every `ioctl` except exact monitor or native
+  shim `ioctl(7|3, NS_GET_NSTYPE)`, `iopl`, `ioperm`, `kexec_load`,
   `kexec_file_load`, `init_module`, `finit_module`, `delete_module`,
   `reboot`, `swapon`, `swapoff`, `quotactl`, `syslog`, `acct`,
   `add_key`, `request_key`, and `keyctl`;
@@ -659,10 +732,11 @@ to workloads where applicable:
 - uncontrolled process/signal authority: `fork`, `vfork`, every `clone` and
   `tgkill` outside the pinned Go-runtime envelope, `kill`, `tkill`, and
   every `clone3` outside PID1's single exact shim template;
-- network/vsock authority: every `socket` family except the exact D5 `AF_UNIX`
-  rule, plus `socketpair`, `accept`, `sendto`, `recvfrom`, `sendmmsg`,
-  `recvmmsg`, and `setsockopt` after bootstrap, except the exact local protocol
-  endpoints and D5 monitor/controller split above; and
+- network/vsock authority: every `socket` family except PID1 native bootstrap's
+  exact three `AF_VSOCK` listeners and the exact D5 `AF_UNIX` rule, plus
+  `socketpair`, `accept`, `connect`, `sendto`, `recvfrom`, `sendmmsg`, `recvmmsg`,
+  and `setsockopt` after bootstrap, except the exact local protocols, steady-agent
+  `accept4`, and D5 monitor/controller split above; and
 - asynchronous or opaque kernel execution: `io_uring_setup`,
   `io_uring_enter`, `io_uring_register`, `fanotify_init`, `inotify_init`,
   `inotify_init1`, `epoll_create`, `epoll_create1`, and `restart_syscall`.
@@ -687,8 +761,8 @@ object before recording authority:
 - files/directories: type, mode, UID/GID, link count, device/inode, mount ID,
   filesystem type, access mode, and containment beneath the fixed dirfd;
 - pipes: pipe type and exact read/write direction;
-- pidfds: pidfd type, expected generation/liveness, poll state, and signal-zero
-  result;
+- pidfds: pidfd type, expected generation/liveness, and poll state; signal
+  permission is never inferred from pidfd ownership;
 - namespaces/mounts: namespace type, mount ID, parent/root relation, tmpfs
   type, exact attributes, propagation, and generation;
 - cgroups: cgroup-v2 filesystem, delegated-root descent, exact leaf identity,
@@ -726,8 +800,10 @@ absence.
 ## Kill, reap, and cleanup convergence
 
 Before shim gate release, any authentication, descriptor, private-binding,
-policy, or setup failure closes the gate and pipes, wipes buffers, kills/reaps
-PID1's recorded shim pidfd if necessary, and rolls back unpublished state.
+policy, or setup failure closes the gate and pipes and wipes buffers. If a shim
+has started, PID1 uses the owned cgroup-kill/zero-population path and then reaps
+its recorded pidfd; it never relies on signal permission after the UID drop.
+Unstarted state rolls back without a kill.
 
 After gate release, cancel, timeout, protocol/session/role loss, malformed
 stream, output failure, expiry, or revoke denies new exec and converges through
@@ -770,12 +846,19 @@ syscall. They include:
   `open_how`, `clone_args`, paths, ancillary data, mount options, sockaddr,
   argv/env, and object reinspection;
 - launch-base ancestry, capability/securebits/UID/GID, and fixed-FD transition
-  matrices, including the required `CAP_SYS_CHROOT` shim transition;
+  matrices, including native pre-Go namespace entry, post-setns three-capability
+  shim state, required read-back calls, and the `CAP_SYS_CHROOT` transition;
+- exact native VSOCK listener create/bind/listen/CLOEXEC handoff, partial-set
+  rollback, fixed agent-FD accept matrix, peer/local identity checks, limits,
+  and no service-side socket creation;
 - host `HL8C` and helper `0x19 exec_credit` direction/offset/one-outstanding
   matrices, independent stdout/stderr progress, credit digest exclusion,
-  comparison-only replay, fixed-slot wiping, and shared-transport stall cleanup;
+  host-resupplied comparison-only replay, no agent replay retention, local
+  response-loss termination, fixed-slot wiping, and shared-transport stall cleanup;
 - partial prepare, child-before-gate, pidfd loss, `setsid` descendant,
-  cgroup-kill, nonzero population, unmount, monitor-reap, three-attempt/deadline,
+  forbidden cross-UID signal, cgroup-kill, nonzero population, root-0711
+  traversal, UID-1000 file/socket access and parent non-write, unmount,
+  monitor-reap, three-attempt/deadline,
   and `stop_vm_required` state-machine tests; and
 - compiler golden tests proving exact `ALLOW`, `ERRNO(EPERM)`, and
   `KILL_PROCESS` decisions, amd64 arch check, x32 rejection, no permissive
@@ -787,7 +870,8 @@ D4 owns the Linux implementation and adds:
   `ERRNO(EPERM)` classes, asserting the process disposition and absence of a
   performed side effect;
 - positive kernel tests for fixed-FD bootstrap, filesystem/mount/cgroup,
-  canonical service/monitor `clone` and shim `clone3`, shim identity/capability drop, and
+  VSOCK inherited-listener acceptance, canonical service/monitor `clone` and
+  shim `clone3`, native shim setns before any Go thread, shim identity/capability drop, and
   kill/reap ordering through injected syscall fakes before any prepared-host
   test;
 - one normalized, committed strace fixture for each bootstrap, prepare,
