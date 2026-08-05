@@ -24,7 +24,11 @@ no-downgrade behavior, the neutral L6 route seam, exact non-MITM HTTP protocol,
 initial Pi service/consumer and numeric limits, Linux-keyring byte source,
 anonymous locked memory, authenticated v2 vsock, dedicated guest identities,
 fd-confined privileged helper/cgroup cleanup, restricted SSH relay,
-finalization/recovery ordering, and the L10 handoff:
+finalization/recovery ordering, and the L10 handoff. Its normative
+`sandbox-runtime-v2-l8-helper-syscall-policy.md` and
+`sandbox-runtime-v2-l8-guest-extension-seams.md` supplements freeze the exact
+role/syscall boundary, extension APIs, live host-agent registry, composition
+junction, and image-profile ownership:
 
 ```sh
 go test -count=1 ./cmd \
@@ -147,7 +151,9 @@ Required focused areas are:
   bootstrap after clone and before gate release, exact
   PID/UID/GID/pidfd/nonce/SCM helper IPC, fixed inherited descriptors and
   helper packet codec, exact capability/securebits sets, fd-root/pivot/seccomp
-  loss behavior, exact 72 KiB body/73,828-byte datagram bounds,
+  loss behavior, deny-by-default amd64/x32 and pinned Go 1.25.7 syscall-role
+  decisions, pointer/provenance reinspection, exact 4 MiB tmpfs ceiling and
+  namespace-type inspection, exact 72 KiB body/73,828-byte datagram bounds,
   `clone3(CLONE_INTO_CGROUP | CLONE_PIDFD)` race-free placement,
   tmpfs namespace/mount/openat2 behavior,
   ownership, linkage, path races, partial prepare, fixed resource limits,
@@ -164,6 +170,10 @@ Required focused areas are:
   backpressure, mandatory key and algorithm/flag allowlists, filtered
   enumeration, per-connection host-agent identity, exact relay limits, loss,
   and absence proof;
+- immutable matching helper/client extension registries, typed-nil and
+  duplicate-claim rejection, D4/D5 import independence, the D6-only composition
+  junction, the daemon-owned host-agent live registry with fresh peer proof per
+  connection, and D7-only image source-lock/build/profile ownership;
 - Firecracker process/vsock/network/credential generation composition;
 - worker durable seed-before-preflight ordering, the exact preflight return and
   ownership matrix, immediate continuously latched loss watching, complete

@@ -85,6 +85,8 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 	liveTag := "l8_production_" + "credential_" + "delivery_live"
 	for _, required := range []string{
 		"TestL8CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)",
+		"sandbox-runtime-v2-l8-helper-syscall-policy.md",
+		"sandbox-runtime-v2-l8-guest-extension-seams.md",
 		"tools/microvm/l8/verify-reproducible.sh",
 		"tools/microvm/l8/verify-focused.sh",
 		"tools/microvm/l8/verify-selected-live.sh",

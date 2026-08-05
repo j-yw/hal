@@ -1856,7 +1856,10 @@ keeping the parent-side stdin-write, stdout-read, and stderr-read endpoints and
 placing the child-side stdin-read, stdout-write, and stderr-write endpoints
 behind its internal start gate. It then uses
 `clone3(CLONE_INTO_CGROUP | CLONE_PIDFD)` and releases the gate only after every
-post-clone identity, namespace, capability, descriptor, and exec check passes.
+parent-side post-clone pidfd, cgroup-placement, pipe, gate, and executable/input
+check passes. The child then performs the syscall supplement's ordered
+namespace, identity, capability, seccomp, and exec transition; a failure exits
+without exec and is observed through the same pidfd/cgroup cleanup path.
 Any failure after clone but before gate release closes the child-side endpoints,
 kills and reaps the exact pidfd/cgroup child, proves zero population, wipes the
 private buffer, and only then returns a safe failure.

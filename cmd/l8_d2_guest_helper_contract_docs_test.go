@@ -100,3 +100,54 @@ func TestL8D2GuestHelperContractsRejectImpossibleV1Correlation(t *testing.T) {
 		}
 	}
 }
+
+func TestL8D2GuestHelperSupplementContractsAreNormative(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		required []string
+	}{
+		{
+			name: "syscall policy",
+			file: "sandbox-runtime-v2-l8-helper-syscall-policy.md",
+			required: []string{
+				"deny-by-default",
+				"AUDIT_ARCH_X86_64",
+				"Pinned Go 1.25.7 runtime envelope",
+				"size=4194304",
+				"steady helper never enters a job namespace",
+				"NS_GET_NSTYPE",
+				"SECCOMP_RET_KILL_PROCESS",
+				"observed - policy",
+				"live PID1/helper/agent role composition",
+			},
+		},
+		{
+			name: "extension seams",
+			file: "sandbox-runtime-v2-l8-guest-extension-seams.md",
+			required: []string{
+				"type ExtensionDescriptor struct",
+				"ValidateMatchingExtensionSets",
+				"func NewExtensionRegistry",
+				"NewHelperExtension",
+				"NewClientExtension",
+				"OpenVerifiedConnection",
+				"ImageProfileL8ProductionCredentials",
+				"D7 creates and locks",
+				"No package uses `init`",
+				"HelperTransport credentialhelper.Transport",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", tt.file))
+			for _, required := range tt.required {
+				if !strings.Contains(doc, required) {
+					t.Fatalf("L8 D2 supplement %q omits normative contract %q", tt.file, required)
+				}
+			}
+		})
+	}
+}

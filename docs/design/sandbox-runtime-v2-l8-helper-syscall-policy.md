@@ -3,11 +3,10 @@
 ## Authority and scope
 
 This document closes the D2 syscall-policy architecture left open by
-`sandbox-runtime-v2-l8-production-credential-delivery-architecture.md` at
-commit `fd54f257295430029f585f94bda6b7dbe60a104c`. That architecture remains
-authoritative for protocol, identity, resource, mount, cgroup, execution, and
-cleanup semantics. This file narrows those semantics into one normative Linux
-amd64 helper policy; it does not expand them.
+`sandbox-runtime-v2-l8-production-credential-delivery-architecture.md`. That
+architecture remains authoritative for protocol, identity, resource, mount,
+cgroup, execution, and cleanup semantics. This file narrows those semantics
+into one normative Linux amd64 helper policy; it does not expand them.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 The policy applies only to the L8 `hal-guest-credential-helper`, its bounded
@@ -36,7 +35,8 @@ The three roles are:
 
 Role transition is one-way. `bootstrap -> steady` happens only after fixed-FD,
 `SO_PASSCRED`, capability, securebits, pivot-root, config, and seccomp checks
-succeed. `steady -> child` exists only in the newly created child task. A child
+succeed and the canonical `helper_ready` is sent under the committed filter.
+`steady -> child` exists only in the newly created child task. A child
 cannot return to `steady` and no role can return to `bootstrap`.
 
 Linux seccomp filters are inherited and cannot be relaxed. The steady helper
@@ -147,7 +147,10 @@ The following restrictions apply:
   never create an executable writable mapping. `mprotect` cannot add execute
   permission and cannot make credential memory readable after wipe.
 - `madvise` is limited to `MADV_DONTDUMP`, `MADV_DONTFORK`,
-  `MADV_WIPEONFORK`, and post-wipe `MADV_DONTNEED` on helper-owned mappings.
+  `MADV_WIPEONFORK`, `MADV_DONTNEED` on pinned-runtime noncredential pages or
+  post-wipe helper mappings, and `MADV_NOHUGEPAGE` on pinned-runtime
+  noncredential pages. `MADV_FREE`, `MADV_HUGEPAGE`, and `MADV_COLLAPSE` are
+  forbidden.
 - `mlock`/`munlock` apply only to bounded helper-owned mutable mappings. Full
   capacity is overwritten before `munlock`/`munmap`.
 - `getrandom` accepts only a bounded mutable destination and flags zero; it may
@@ -169,11 +172,44 @@ The following restrictions apply:
   `CLOSE_RANGE_UNSHARE` or `CLOSE_RANGE_CLOEXEC` as proof that an individual
   authority was closed.
 - signal disposition calls may install only the construction-time fixed
-  handlers. The policy does not allow `kill`, `tkill`, or `tgkill`.
+  handlers. The policy does not allow `kill` or `tkill`; `tgkill` has only the
+  pinned Go-runtime exception below.
 
 An implementation whose language runtime needs another syscall does not gain
 an implied exception. It must remove that dependency or amend this D2 contract
 before D4 can claim conformance.
+
+### Pinned Go 1.25.7 runtime envelope
+
+The production helper entrypoint is the repository's exact static
+`CGO_ENABLED=0` Go 1.25.7 build, not a generic language runtime. PID1 supplies
+the sealed runtime settings `GOMAXPROCS=1` and
+`GODEBUG=madvdontneed=1,disablethp=1`; the helper confirms them before
+readiness and never inherits caller-controlled Go settings. The steady filter
+adds only these runtime calls:
+
+```text
+clone arch_prctl tgkill
+```
+
+`clone` is only a same-process runtime thread with exactly
+`CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_SYSVSEM|CLONE_THREAD` plus
+optional `CLONE_SETTLS`; its exit signal, parent-TID pointer, child-TID pointer,
+and every namespace/privilege flag are zero. The stack and optional TLS pointer
+must fall within the pinned runtime's own noncredential mappings. It cannot
+create a process, namespace, pidfd, cgroup placement, or different file table.
+`arch_prctl` is only `ARCH_SET_FS` to that runtime-owned TLS pointer.
+`tgkill` embeds the already inspected helper TGID in the filter, targets a
+thread in that same thread group, and permits only `SIGURG` for Go asynchronous
+preemption. Profiling, cgo, plugins, `os/signal`, generic network polling, and
+runtime-created application sockets are absent from the helper build.
+
+Bootstrap may additionally use `sched_getaffinity(0, boundedMaskBytes, ...)`
+and `mincore` only while the pinned Go runtime initializes, before capability,
+root, descriptor, and filter commit. The committed steady policy forbids both.
+D4's safe normalized strace fixtures must prove this exact runtime envelope at
+the locked toolchain and binary digest; a toolchain or runtime-dependency change
+is a contract change, never an automatically learned syscall.
 
 ### Authenticated helper IPC
 
@@ -236,11 +272,11 @@ The steady helper may use:
 
 ```text
 fsopen fsconfig fsmount open_tree move_mount mount_setattr
-setns umount2
+umount2
 ```
 
 The only filesystem created is `tmpfs`. `fsopen` uses `FSOPEN_CLOEXEC`;
-`fsconfig` accepts only the helper constants `size=16777216`,
+`fsconfig` accepts only the helper constants `size=4194304`,
 `nr_inodes=65536`,
 and `mode=0700`, followed once by `FSCONFIG_CMD_CREATE`. The resulting mount is
 made by `fsmount(..., FSMOUNT_CLOEXEC, 0)`. `open_tree` uses only
@@ -256,9 +292,9 @@ or 1 MiB aggregate credential-byte limits.
 No caller supplies filesystem type, option name/value, target, propagation, or
 mount flags.
 
-`setns` is exactly `setns(8, CLONE_NEWNS)` after FD 8 is revalidated as the
-current job generation. `umount2` is a normal unmount with flags zero of the
-one helper-generated job mountpoint after mount identity reinspection.
+The steady helper never enters a job namespace; only the gated workload child
+may call `setns(8, CLONE_NEWNS)`. `umount2` is a normal unmount with flags zero
+of the one helper-generated job mountpoint after mount identity reinspection.
 `MNT_DETACH`, recursive mount attributes, shared/slave propagation, bind mounts
 from caller paths, classic `mount`, and arbitrary namespace entry are
 forbidden. Normal unmount failure follows the bounded retry/stop-VM contract;
@@ -269,7 +305,7 @@ it is never converted to success by a lazy unmount.
 The steady helper may use:
 
 ```text
-clone3 pipe2 socketpair pidfd_send_signal waitid
+clone3 pipe2 socketpair setsockopt ioctl pidfd_send_signal waitid
 ```
 
 There are only two canonical `clone3` templates:
@@ -285,8 +321,9 @@ bytes and kernel ABI fallback sizes are rejected. There is no `fork`, `vfork`,
 
 The keeper namespace FD handoff is the only `socketpair` rule. Immediately
 before keeper clone, the helper creates
-`socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0)`, enables `SO_PASSCRED` on
-both transient endpoints, and records the pair for that pending keeper
+`socketpair(AF_UNIX, SOCK_SEQPACKET|SOCK_CLOEXEC, 0)`, applies only
+`setsockopt(endpoint, SOL_SOCKET, SO_PASSCRED, one)` to both transient
+endpoints, and records the pair for that pending keeper
 generation. In the new `CLONE_NEWNS` child, the keeper uses exact-constant
 `openat2(6, "proc/self/ns/mnt", ...)` solely to acquire its own mount namespace
 pseudo-file. This one lookup permits the required procfs crossing/magic link;
@@ -294,8 +331,9 @@ it is not a credential/cgroup/file lookup and no protocol value can influence
 it. The keeper sends exactly that one FD with its kernel credentials, then
 closes its handoff endpoint. The parent requires the exact keeper PID/UID/GID,
 one FD, no truncation, and the expected generation, moves the reinspected FD to
-8, closes both handoff endpoints, and proves the namespace type with
-`setns(8, CLONE_NEWNS)` before recording it. Any discrepancy kills/reaps the
+8, closes both handoff endpoints, proves `NSFS_MAGIC` with `fstatfs`, and calls
+only `ioctl(8, NS_GET_NSTYPE)` with no third argument to require
+`CLONE_NEWNS` before recording it. Any discrepancy kills/reaps the
 keeper and rolls back. No internal socketpair survives preparation.
 
 `pipe2` uses `O_CLOEXEC` plus optional `O_NONBLOCK`; the returned pair is
@@ -355,7 +393,7 @@ seccomp execveat exit exit_group rt_sigreturn
 
 The exact sequence is:
 
-1. close FD 3, 4, 5, 7, 9, 10 and every unrelated transient FD;
+1. close FD 3, 4, 5, 6, 7, 9, 10 and every unrelated transient FD;
 2. `setns(8, CLONE_NEWNS)`, then close FD 8;
 3. remap the three already inspected pipes to 0, 1, and 2;
 4. `fchdir` to the already opened/reinspected work-directory FD and close it;
@@ -424,15 +462,17 @@ children where applicable:
 - arbitrary namespace or privilege: `unshare`, arbitrary `setns`,
   `setuid`, `setgid`, `setreuid`, `setregid`, `setfsuid`, `setfsgid`,
   `personality`, `uselib`, and seccomp listener creation;
-- device, kernel, or key authority: `ioctl`, `iopl`, `ioperm`, `kexec_load`,
+- device, kernel, or key authority: every `ioctl` except exact
+  `ioctl(8, NS_GET_NSTYPE)`, `iopl`, `ioperm`, `kexec_load`,
   `kexec_file_load`, `init_module`, `finit_module`, `delete_module`,
   `reboot`, `swapon`, `swapoff`, `quotactl`, `syslog`, `acct`,
   `add_key`, `request_key`, and `keyctl`;
 - process inspection or cross-process memory: `ptrace`, `process_vm_readv`,
   `process_vm_writev`, `pidfd_getfd`, `kcmp`, `perf_event_open`, `bpf`,
   `userfaultfd`, and `membarrier` registration;
-- uncontrolled process/signal authority: `fork`, `vfork`, `clone`, `kill`,
-  `tkill`, `tgkill`, and caller-selected `clone3`;
+- uncontrolled process/signal authority: `fork`, `vfork`, every `clone` and
+  `tgkill` outside the pinned Go-runtime envelope, `kill`, `tkill`, and
+  caller-selected `clone3`;
 - network/vsock authority: every `socket` family except the exact D5 `AF_UNIX`
   rule, plus `socketpair`, `accept`, `sendto`, `recvfrom`, `sendmmsg`,
   `recvmmsg`, and `setsockopt` after bootstrap, except the exact temporary
