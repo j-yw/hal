@@ -2414,9 +2414,11 @@ The relay uses a separate runtime/job-bound vsock stream; the existing framed
 one-request/one-response guest control transport is not reused for a persistent
 SSH-agent stream. The stream performs the same CID check and signed v2
 handshake, then derives a relay-specific AEAD subkey. The helper creates and
-accepts the guest Unix socket inside the job mount namespace, passes each
-accepted connected FD plus exact job identity to the dedicated-UID guest agent
-over authenticated `SCM_RIGHTS`, and closes its duplicate. The agent pumps only
+accepts the guest Unix socket inside the job mount namespace. The guest relay accepts exact UID/GID 1000
+only after exact-size `getsockopt(SOL_SOCKET, SO_PEERCRED)` proof on each
+connected FD; peer PID is positive ephemeral check metadata, never durable
+identity. It passes the accepted FD plus exact job identity to the dedicated-UID
+guest agent over authenticated `SCM_RIGHTS` and closes its duplicate. The agent pumps only
 the neutral bounded SSH codec between that FD and the authenticated host relay;
 neither side accepts a second request on a connection until its response is
 complete. Backpressure pauses reads rather than allocating unbounded queues.

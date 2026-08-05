@@ -607,8 +607,12 @@ the exact domain, type, protocol, and `SO_ACCEPTCONN` listening state. It also
 reinspects the same filesystem mount/device/inode, fixed UID/GID 1000, mode
 0600, ownership, and generation before publication. A listener has no peer or
 connected-state claim. The controller validates accepted peer identity only after `accept4`
-on the resulting connected FD. `shutdown` is `SHUT_RD`, `SHUT_WR`, or
-`SHUT_RDWR` on a recorded relay FD only.
+on the resulting connected FD. Before rights publication or any stream read,
+exact `getsockopt(SOL_SOCKET, SO_PEERCRED)` must return an accepted `struct ucred`
+at its exact kernel ABI size with positive PID and fixed UID/GID 1000. The PID is
+ephemeral check metadata, never durable identity or authority. A mismatch or
+wrong result length closes the connected FD without publication. `shutdown` is
+`SHUT_RD`, `SHUT_WR`, or `SHUT_RDWR` on a recorded relay FD only.
 
 D2 owns the policy rule and fake decisions. The monitor sends the one inspected
 listener capability to the controller through the exact D5 monitor response,
