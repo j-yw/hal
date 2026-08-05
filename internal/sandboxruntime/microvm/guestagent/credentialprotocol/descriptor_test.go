@@ -149,6 +149,9 @@ func TestCloneExtensionDescriptorsDeepCopiesOuterAndInnerSlices(t *testing.T) {
 	clone[0].ID = "other-v1"
 	clone[0].Modes[0] = DeliveryModeHTTPProxy
 	clone = append(clone, ExtensionDescriptor{})
+	if len(clone) != 2 {
+		t.Fatalf("clone length = %d, want 2 after outer-slice mutation", len(clone))
+	}
 	if len(original) != 1 || original[0].ID != ExtensionIDSSHRelayV1 || original[0].Modes[0] != DeliveryModeSSHAgent {
 		t.Fatalf("clone mutation changed original set: %#v", original)
 	}
