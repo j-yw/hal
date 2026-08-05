@@ -443,6 +443,150 @@ func TestEstablishedAndRevokedStateReleaseOwnedMaterial(t *testing.T) {
 	}
 }
 
+func TestApplicationOperationsEnforceExactHardExpiry(t *testing.T) {
+	boundaries := []struct {
+		name    string
+		offset  time.Duration
+		wantErr error
+	}{
+		{name: "just before", offset: MaxGuestCredentialSessionLifetime - time.Nanosecond},
+		{name: "exact", offset: MaxGuestCredentialSessionLifetime, wantErr: ErrCredentialLifetime},
+		{name: "after", offset: MaxGuestCredentialSessionLifetime + time.Nanosecond, wantErr: ErrCredentialLifetime},
+	}
+	directions := []struct {
+		name      string
+		selectEnd func(*State, *State) (*State, *State)
+		frameType FrameType
+	}{
+		{name: "controller-to-guest", selectEnd: func(guest, controller *State) (*State, *State) { return controller, guest }, frameType: FrameTypeControlRequest},
+		{name: "guest-to-controller", selectEnd: func(guest, controller *State) (*State, *State) { return guest, controller }, frameType: FrameTypeControlResponse},
+	}
+
+	for _, direction := range directions {
+		for _, boundary := range boundaries {
+			t.Run("seal/"+direction.name+"/"+boundary.name, func(t *testing.T) {
+				now := vectorNow
+				guest, controller := newEstablishedPairWithClock(t, ChannelControl, func() time.Time { return now })
+				sender, _ := direction.selectEnd(guest, controller)
+				now = vectorNow.Add(boundary.offset)
+				wire, err := sender.SealApplication(direction.frameType, []byte("payload"))
+				if !errors.Is(err, boundary.wantErr) {
+					t.Fatalf("SealApplication() error = %v, want %v", err, boundary.wantErr)
+				}
+				if boundary.wantErr == nil {
+					if wire == nil || sender.Revoked() || sender.nextSend != 2 {
+						t.Fatalf("pre-expiry seal wire=%x revoked=%v nextSend=%d", wire, sender.Revoked(), sender.nextSend)
+					}
+					return
+				}
+				if wire != nil || sender.nextSend != 1 {
+					t.Fatalf("expired seal wire=%x nextSend=%d, want nil/1", wire, sender.nextSend)
+				}
+				assertRevokedMaterialReleased(t, sender)
+			})
+
+			t.Run("write/"+direction.name+"/"+boundary.name, func(t *testing.T) {
+				now := vectorNow
+				guest, controller := newEstablishedPairWithClock(t, ChannelControl, func() time.Time { return now })
+				sender, _ := direction.selectEnd(guest, controller)
+				writer := &recordingWriter{}
+				now = vectorNow.Add(boundary.offset)
+				err := sender.WriteApplication(writer, direction.frameType, []byte("payload"))
+				if !errors.Is(err, boundary.wantErr) {
+					t.Fatalf("WriteApplication() error = %v, want %v", err, boundary.wantErr)
+				}
+				if boundary.wantErr == nil {
+					if len(writer.records) != 1 || sender.Revoked() || sender.nextSend != 2 {
+						t.Fatalf("pre-expiry write records=%d revoked=%v nextSend=%d", len(writer.records), sender.Revoked(), sender.nextSend)
+					}
+					return
+				}
+				if len(writer.records) != 0 || sender.nextSend != 1 {
+					t.Fatalf("expired write records=%d nextSend=%d, want 0/1", len(writer.records), sender.nextSend)
+				}
+				assertRevokedMaterialReleased(t, sender)
+			})
+
+			t.Run("open/"+direction.name+"/"+boundary.name, func(t *testing.T) {
+				now := vectorNow
+				guest, controller := newEstablishedPairWithClock(t, ChannelControl, func() time.Time { return now })
+				sender, receiver := direction.selectEnd(guest, controller)
+				wire, err := sender.SealApplication(direction.frameType, []byte("payload"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				now = vectorNow.Add(boundary.offset)
+				plaintext, err := receiver.OpenApplication(wire, nil)
+				if !errors.Is(err, boundary.wantErr) {
+					t.Fatalf("OpenApplication() error = %v, want %v", err, boundary.wantErr)
+				}
+				if boundary.wantErr == nil {
+					if string(plaintext) != "payload" || receiver.Revoked() || receiver.nextReceive != 2 {
+						t.Fatalf("pre-expiry open plaintext=%q revoked=%v nextReceive=%d", plaintext, receiver.Revoked(), receiver.nextReceive)
+					}
+					DestroyBytes(plaintext)
+					return
+				}
+				if plaintext != nil || receiver.nextReceive != 1 {
+					t.Fatalf("expired open plaintext=%x nextReceive=%d, want nil/1", plaintext, receiver.nextReceive)
+				}
+				assertRevokedMaterialReleased(t, receiver)
+			})
+		}
+	}
+}
+
+func TestCredentialExpiryValidationEnforcesSessionHardExpiry(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		offset  time.Duration
+		wantErr error
+	}{
+		{name: "just before", offset: MaxGuestCredentialSessionLifetime - time.Nanosecond},
+		{name: "exact", offset: MaxGuestCredentialSessionLifetime, wantErr: ErrCredentialLifetime},
+		{name: "after", offset: MaxGuestCredentialSessionLifetime + time.Nanosecond, wantErr: ErrCredentialLifetime},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := vectorNow
+			guest, _ := newEstablishedPairWithClock(t, ChannelControl, func() time.Time { return now })
+			now = vectorNow.Add(tt.offset)
+			err := guest.ValidateCredentialExpiry(guest.HardExpiry())
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("ValidateCredentialExpiry() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr == nil {
+				if guest.Revoked() {
+					t.Fatal("pre-expiry validation revoked session")
+				}
+				return
+			}
+			assertRevokedMaterialReleased(t, guest)
+		})
+	}
+}
+
+func assertRevokedMaterialReleased(t *testing.T, state *State) {
+	t.Helper()
+	if !state.Revoked() || state.established {
+		t.Fatalf("expired state revoked=%v established=%v", state.Revoked(), state.established)
+	}
+	for name, value := range map[string][]byte{
+		"session ID":                   state.material.sessionID[:],
+		"controller-to-guest key":      state.material.controllerToGuest.key[:],
+		"controller-to-guest nonce":    state.material.controllerToGuest.noncePrefix[:],
+		"controller-to-guest finished": state.material.controllerToGuest.finishedKey[:],
+		"guest-to-controller key":      state.material.guestToController.key[:],
+		"guest-to-controller nonce":    state.material.guestToController.noncePrefix[:],
+		"guest-to-controller finished": state.material.guestToController.finishedKey[:],
+		"local finished":               state.localFinished[:],
+		"peer finished":                state.peerFinished[:],
+	} {
+		if !allZero(value) {
+			t.Fatalf("%s retained after hard expiry: %x", name, value)
+		}
+	}
+}
+
 func allZero(value []byte) bool {
 	for _, item := range value {
 		if item != 0 {
@@ -494,7 +638,12 @@ func newEstablishedPairBeforeFinishedWithClock(t *testing.T, channel Channel, no
 
 func newEstablishedPair(t *testing.T, channel Channel) (*State, *State) {
 	t.Helper()
-	guest, controller := newEstablishedPairBeforeFinished(t, channel)
+	return newEstablishedPairWithClock(t, channel, func() time.Time { return vectorNow })
+}
+
+func newEstablishedPairWithClock(t *testing.T, channel Channel, now func() time.Time) (*State, *State) {
+	t.Helper()
+	guest, controller := newEstablishedPairBeforeFinishedWithClock(t, channel, now)
 	guestFinished, err := guest.SealFinished()
 	if err != nil {
 		t.Fatal(err)

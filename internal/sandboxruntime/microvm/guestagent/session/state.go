@@ -117,10 +117,13 @@ func (s *State) SealApplication(frameType FrameType, plaintext []byte) ([]byte, 
 func (s *State) WriteApplication(writer io.Writer, frameType FrameType, plaintext []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.usableForApplicationLocked(); err != nil {
+		return err
+	}
 	if writer == nil {
 		return s.failLocked(ErrPartialWrite)
 	}
-	wire, err := s.sealApplicationLocked(frameType, plaintext)
+	wire, err := s.sealAdmittedApplicationLocked(frameType, plaintext)
 	if err != nil {
 		return err
 	}
@@ -135,11 +138,8 @@ func (s *State) WriteApplication(writer io.Writer, frameType FrameType, plaintex
 func (s *State) OpenApplication(wire []byte, validate PlaintextValidator) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.revoked {
-		return nil, ErrSessionRevoked
-	}
-	if !s.established {
-		return nil, s.failLocked(ErrInvalidState)
+	if err := s.usableForApplicationLocked(); err != nil {
+		return nil, err
 	}
 	header, err := parseRecordHeader(wire, s.channel)
 	if err != nil {
@@ -193,7 +193,11 @@ func (s *State) ValidateCredentialExpiry(expiry time.Time) error {
 	if s.revoked {
 		return ErrSessionRevoked
 	}
-	if expiry.Before(s.now()) || expiry.After(s.hardExpiry) {
+	now := s.now()
+	if sessionHardExpiryReached(now, s.hardExpiry) {
+		return s.failLocked(ErrCredentialLifetime)
+	}
+	if expiry.Before(now) || expiry.After(s.hardExpiry) {
 		return ErrCredentialLifetime
 	}
 	return nil
@@ -213,12 +217,13 @@ func DestroyBytes(value []byte) {
 }
 
 func (s *State) sealApplicationLocked(frameType FrameType, plaintext []byte) ([]byte, error) {
-	if s.revoked {
-		return nil, ErrSessionRevoked
+	if err := s.usableForApplicationLocked(); err != nil {
+		return nil, err
 	}
-	if !s.established {
-		return nil, s.failLocked(ErrInvalidState)
-	}
+	return s.sealAdmittedApplicationLocked(frameType, plaintext)
+}
+
+func (s *State) sealAdmittedApplicationLocked(frameType FrameType, plaintext []byte) ([]byte, error) {
 	if !allowedApplicationType(s.channel, s.outboundDirection(), frameType) {
 		return nil, s.failLocked(ErrUnexpectedFrame)
 	}
@@ -226,6 +231,25 @@ func (s *State) sealApplicationLocked(frameType FrameType, plaintext []byte) ([]
 		return nil, s.failLocked(ErrRecordTooLarge)
 	}
 	return s.sealLocked(frameType, plaintext)
+}
+
+func (s *State) usableForApplicationLocked() error {
+	if s.revoked {
+		return ErrSessionRevoked
+	}
+	// The application lifetime is half-open: [establishment, hardExpiry).
+	// Reaching the boundary revokes the session before any record processing.
+	if sessionHardExpiryReached(s.now(), s.hardExpiry) {
+		return s.failLocked(ErrCredentialLifetime)
+	}
+	if !s.established {
+		return s.failLocked(ErrInvalidState)
+	}
+	return nil
+}
+
+func sessionHardExpiryReached(now, hardExpiry time.Time) bool {
+	return !now.Before(hardExpiry)
 }
 
 func (s *State) sealLocked(frameType FrameType, plaintext []byte) ([]byte, error) {
