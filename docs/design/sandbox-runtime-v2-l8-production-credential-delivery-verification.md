@@ -23,7 +23,7 @@ active/cleanup proof kinds, failure codes, strict worker and guest protocol v2,
 no-downgrade behavior, the neutral L6 route seam, exact non-MITM HTTP protocol,
 initial Pi service/consumer and numeric limits, Linux-keyring byte source,
 anonymous locked memory, authenticated v2 vsock, dedicated guest identities,
-fd-confined privileged helper/cgroup cleanup, restricted SSH relay,
+fd-confined launch/controller/agent/monitor/shim cleanup, restricted SSH relay,
 finalization/recovery ordering, and the L10 handoff. Its normative
 `sandbox-runtime-v2-l8-helper-syscall-policy.md` and
 `sandbox-runtime-v2-l8-guest-extension-seams.md` supplements freeze the exact
@@ -42,7 +42,7 @@ Guards must prove:
 - every current `cmd` production file, including all `sandboxd*.go`
   composition files, stays free of premature L8 live imports and constructors;
   D4 replaces the blanket only for exact guest-asset entrypoints needed to
-  compose the guest agent/init/helper, with per-file import and constructor
+  compose the native role bootstrap and guest agent/init/helper, with per-file import and constructor
   allowlists while root command and `sandboxd*.go` files remain forbidden; D6
   then permits one explicit root L8 composition file. Every transition retains
   default-disabled construction tests and rejects L8 imports or constructors in
@@ -147,23 +147,32 @@ Required focused areas are:
   destination/TLS policy, redirects, header control, L7 proof races, and generic
   CONNECT noninterference;
 - dedicated agent/workload identities, non-dumpable/protected-proc agent,
-  helper readiness before gated `clone3(CLONE_PIDFD)`, authenticated pidfd
+  controller readiness before gated exact `syscall.ForkExec` service `clone`
+  with `CLONE_PIDFD`, authenticated pidfd
   bootstrap after clone and before gate release, exact
   PID/UID/GID/pidfd/nonce/SCM helper IPC, fixed inherited descriptors and
-  helper packet codec, exact capability/securebits sets, fd-root/pivot/seccomp
+  helper packet codec, exact launch-supervisor/agent-supervisor/monitor codecs,
+  process-safe
+  helper/client descriptor attestation, exact capability/securebits sets,
+  fd-root/pivot/seccomp
   loss behavior, deny-by-default amd64/x32 and pinned Go 1.25.7 syscall-role
   decisions, pointer/provenance reinspection, exact 4 MiB tmpfs ceiling and
   namespace-type inspection, exact 72 KiB body/73,828-byte datagram bounds,
-  `clone3(CLONE_INTO_CGROUP | CLONE_PIDFD)` race-free placement,
-  tmpfs namespace/mount/openat2 behavior,
+  PID1-owned `CLONE_INTO_CGROUP|CLONE_PIDFD` race-free shim placement,
+  launch-bootstrap/launch-base filter ancestry, exact PID1 ambient inheritance,
+  capability-empty agent bootstrap, no protocol-FD read before each Go role's
+  TSYNC steady/transition-filter commit, native stage-zero raw-syscall golden
+  coverage, required `CAP_SYS_CHROOT`, monitor-owned tmpfs namespace/mount/
+  openat2 behavior and exact proc namespace-handle exception,
   ownership, linkage, path races, partial prepare, fixed resource limits,
   file-generation policy, `setsid` escape,
-  `cgroup.kill`/zero-population proof, normal unmount, keeper reap, whole-VM
+  `cgroup.kill`/zero-population proof, normal monitor unmount/reap, whole-VM
   fallback, exact numeric helper/job/FD/process/cleanup limits, atomic
   prepare-begin/file/commit correlation, domain-separated bootstrap/manifest/
   transaction digests, exact enum, typed response-union and ExecPlan codecs,
   nested relative-path encoding, opaque `0x17` exec-private transfer,
-  rights-free exec requests, concurrently backpressured `0x18` exec streams,
+  rights-free exec requests, per-stream `HL8C`/`0x19 exec_credit` flow control
+  over concurrently drained `0x18` exec streams,
   terminal input/output/transaction digests, comparison-only replay without a
   second launch, rollback, and restart cleanup;
 - neutral SSH codec, authenticated relay subkey, SCM_RIGHTS handoff,
@@ -171,8 +180,9 @@ Required focused areas are:
   enumeration, per-connection host-agent identity, exact relay limits, loss,
   and absence proof;
 - immutable matching helper/client extension registries, typed-nil and
-  duplicate-claim rejection, D4/D5 import independence, the D6-only composition
-  junction, the daemon-owned host-agent live registry with fresh peer proof per
+  duplicate-claim rejection, exact helper/client/core/transport/policy/host
+  method sets, D4/D5 import independence, the D6-only process-local composition
+  junction and PID1 descriptor attestation, the daemon-owned host-agent live registry with fresh peer proof per
   connection, and D7-only image source-lock/build/profile ownership;
 - Firecracker process/vsock/network/credential generation composition;
 - worker durable seed-before-preflight ordering, the exact preflight return and
@@ -205,13 +215,16 @@ tools/microvm/l8/verify-reproducible.sh \
   --output "$HAL_L8_DISTRIBUTION"
 ```
 
-The final-image verifier proves the exact v2 guest agent/init/helper binaries,
+The final-image verifier proves the exact v2 guest agent/init/controller,
+single-threaded native role-bootstrap, mount-monitor, and workload-shim binaries,
 musl target Node 22.22.0, `@earendil-works/pi-coding-agent` 0.82.1 and its
 locked dependency-tree digest, root-owned non-setuid `/usr/bin/node` and
 `/usr/bin/pi`, and absence of npm cache/config/session material. It also proves
-dedicated agent UID/GID 998 and workload UID/GID 1000, PID1 helper launch before
-agent privilege drop, protected proc, exact helper capability/pivot/seccomp
-policy, empty agent/workload capability sets, controller-public-key boot input
+dedicated agent UID/GID 998 and workload UID/GID 1000, PID1 controller launch
+before agent privilege drop, protected proc, exact launch-base/controller/
+agent/monitor/shim capability and seccomp policies, native no-libc/no-loader/
+no-thread bootstrap constraints, exact locked-off setuid fixups,
+empty controller/agent/workload capability sets, controller-public-key boot input
 without private material, L7 network profile, absence of
 setuid/setgid/file capabilities, private filesystem modes, required
 tmpfs/fd-mount/pidfd/mount namespace and cgroup-v2/`cgroup.kill` kernel support,
@@ -317,9 +330,10 @@ agent attacks are impossible because the workload has a distinct UID; forged
 SCM credentials/PID/nonce, proc/ptrace/process-memory/pidfd-getfd access,
 neighbor job, v1 exec, stale generation, traversal, symlink/hardlink, and
 post-revoke reads fail. Live inspection proves the private mount namespace,
-tmpfs type and flags, file mode/owner/link count, bounded contents, helper
-privilege/root/fd/seccomp boundary, race-free cgroup membership, normal unmount,
-keeper reap, zero population, and absence after cleanup. A copied child calls
+tmpfs type and flags, file mode/owner/link count, bounded contents,
+controller/supervisor/monitor/shim privilege/fd/seccomp boundaries, race-free
+cgroup membership, normal monitor unmount/reap, zero population, and absence
+after cleanup. A copied child calls
 `setsid`, retains a descriptor, and must still die through `cgroup.kill`; forced
 cgroup-inspection failure must stop and reap the entire microVM.
 
@@ -346,7 +360,7 @@ success or begin artifacts while cleanup is incomplete.
 
 After every case, scan durable state and inspect live resources. All owned
 containers, Firecracker processes, helpers, listeners, connections,
-namespaces, mounts, keepers, cgroups, sockets, rules, routes, locks, leases,
+namespaces, mounts, monitors, cgroups, sockets, rules, routes, locks, leases,
 tickets, buffers, and sessions must be absent. Historical or unrelated
 resources are observed but never removed without exact ownership proof.
 

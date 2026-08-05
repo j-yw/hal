@@ -93,6 +93,9 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/session",
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/v2control",
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server/credentialclient",
+				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition",
+				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/rolebootstrap",
+				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost/sshrelay",
 			} {
 				if importPath == forbidden || strings.HasPrefix(importPath, forbidden+"/") {
 					t.Errorf("command production file %s prematurely imports L8 live package %q", filepath.ToSlash(path), importPath)
@@ -104,6 +107,10 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 			"NewJobCredentialRuntime",
 			"NewCredentialProxy",
 			"NewL8Firecracker",
+			"l8composition.NewHelper",
+			"l8composition.NewClient",
+			"sshrelay.NewHelperExtension",
+			"sshrelay.NewClientExtension",
 			"guest-agent-v2",
 		} {
 			if strings.Contains(source, marker) {

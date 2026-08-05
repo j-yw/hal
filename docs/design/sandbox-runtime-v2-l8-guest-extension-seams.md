@@ -12,7 +12,7 @@ implementation is wrong unless both design files are deliberately revised.
 D2 freezes only types, constructor rules, ownership transfer, fake boundaries,
 and red-test obligations. It adds no live socket, syscall, namespace, mount,
 cgroup, process, relay, host-agent, image build, or command composition. D4 may
-implement the tmpfs/helper core and D5 may implement SSH extensions against
+implement the controller/supervisor/monitor/shim core and D5 may implement SSH extensions against
 these seams without importing or editing each other's implementation. D6 alone
 owns production composition. D7 alone may claim the freshly built L8 image and
 prepared-Linux acceptance.
@@ -31,13 +31,14 @@ guestagent/credentialhelper      guestagent/server/credentialclient
 credentialhelper/sshrelay        credentialclient/sshrelay          D5
 
 credentialhelper/linux                                              D4
+guestagent/rolebootstrap (freestanding native, no Go imports)       D4
 
 guestagent/l8composition                                            D6
         | imports helper core and both registered SSH extensions
         | never imported by a contract or implementation leaf
         v
-cmd/hal-guest-init, cmd/hal-guest-agent,
-cmd/hal-guest-credential-helper                                    D6 wiring
+cmd/hal-guest-init, cmd/hal-guest-agent, cmd/hal-guest-credential-helper,
+cmd/hal-guest-mount-monitor, cmd/hal-guest-workload-shim            D6 wiring
 
 firecrackerhost/sshrelay                                            D5 host side
         ^
@@ -143,13 +144,79 @@ deep copy in ascending extension-ID order. A nil registry means an empty set;
 it never means “install defaults.” `NewService` snapshots the registry and
 does not retain caller-owned slices.
 
-`Core`, `Transport`, and `Policy` are D2 narrow interfaces. D4 supplies their
-Linux implementations. D2 supplies fakes and transition tests only. The
-service remains the sole owner of helper packet sequencing, authenticated
-kernel credentials, request correlation, core prepare/renew/revoke/exec state,
-and terminal cleanup disposition. Extensions cannot send an arbitrary packet,
-advance a sequence, manufacture a proof, publish a response, or bypass the
-core state machine.
+The D2 method sets are exact:
+
+```go
+type Core interface {
+	BeginPrepare(context.Context, CorePrepareRequest) (CorePreparation, error)
+	BeginExec(context.Context, CoreExecRequest) (CoreExecution, error)
+	Renew(context.Context, CoreRenewRequest) error
+	Revoke(context.Context, CoreRevokeRequest) (CoreCleanupResult, error)
+	Inspect(context.Context, CoreInspectRequest) (CoreInspection, error)
+	Close(context.Context) error
+}
+
+type CorePreparation interface {
+	StageFile(context.Context, CoreFileRequest, credentialmemory.BorrowedView) error
+	Commit(context.Context, CoreCommitRequest) (CorePreparedResult, error)
+	Rollback(context.Context) (CoreCleanupResult, error)
+}
+
+type CoreExecution interface {
+	WriteStdin(context.Context, credentialmemory.BorrowedView, uint64, bool) error
+	ReadOutput(context.Context, CoreOutputRequest, credentialmemory.CredentialSink) (CoreOutputResult, error)
+	Wait(context.Context) (CoreExecResult, error)
+	Cancel(context.Context) (CoreCleanupResult, error)
+}
+
+type Transport interface {
+	Receive(context.Context, ReceiveRequest) (ReceivedPacket, error)
+	Send(context.Context, SendPacket) error
+	Close(context.Context) error
+}
+
+type Policy interface {
+	Authorize(PolicyRequest) (PolicyDecision, error)
+	Descriptor() PolicyDescriptor
+}
+```
+
+The named request/result types are concrete non-JSON closed unions. Every core
+request contains only exact identity digest, positive revision, safe request/
+binding IDs, safe generation IDs, expiry, fixed-limit-set ID, declared byte
+counts/digests, and closed operation/reason enums required by that method.
+`CoreFileRequest` adds binding index and the canonical relative-path capability;
+`CoreOutputRequest` adds stdout/stderr kind, exact offset, and at-most-64-KiB
+capacity. Results contain only safe generations, counts/digests, exit category,
+truncation, cleanup category, and private opaque capabilities. No request/result
+contains `any`, map, callback, raw `[]byte`, path string, FD integer, PID, socket
+address, environment, or proof token.
+
+`ReceiveRequest` supplies fixed mutable body and ancillary-capability sinks plus
+the exact next sequence; `ReceivedPacket` is the already decoded closed helper
+packet union and never owns sensitive bytes. `SendPacket` is the service-built
+closed outbound union with no public constructor. `PolicyRequest` contains only
+the decoded safe operation/identity/revision/manifest/limit metadata;
+`PolicyDecision` is exactly allow or a stable safe rejection code and cannot
+mint proof, sequence, transport, or resource authority.
+
+`PolicyDescriptor` is a concrete non-JSON value with private fields, safe ID and
+SHA-256 accessors, fail-closed formatting, and no public literal constructor.
+The helper's sole production policy ID is `helper-policy-v1`; the client's is
+`client-policy-v1`. For either exact ID, the digest is
+`SHA256(opaque16("hal/l8/process-policy/v1") || opaque16(policyID))`. A policy
+with an unknown ID, zero/wrong digest, typed nil, or changing descriptor is a
+constructor failure. `NewHelper`/`NewClient` snapshot the descriptor before
+opening extensions and put its digest in `ProcessDescriptor.PolicySHA256`; the
+sealed image-profile descriptor digest independently binds that result to the
+exact production binary. Authorization cannot change or mint the descriptor.
+
+D4 supplies Linux `Core` and transport implementations; D2 supplies the sole
+production policy, codecs, fakes, and transition tests. The service remains the
+sole owner of packet sequencing, authenticated kernel credentials, request
+correlation, core prepare/renew/revoke/exec state, and terminal cleanup
+disposition. Extensions cannot send an arbitrary packet, advance a sequence,
+manufacture a proof, publish a response, or bypass the core state machine.
 
 ### Extension contract
 
@@ -172,17 +239,92 @@ type ExtensionSession interface {
 	Revoke(context.Context, ExtensionRevokeRequest) (ExtensionCleanupResult, error)
 	Close(context.Context) error
 }
+
+type ExtensionHost interface {
+	CreateSSHAgentEndpoint(context.Context, SSHAgentEndpointRequest) (SSHAgentEndpoint, error)
+	PublishSSHAcceptedConnection(context.Context, SSHAcceptedPublication, SSHAgentConnection) error
+}
+
+type SSHAgentEndpoint interface {
+	ExecBinding() ExecBindingCapability
+	Accept(context.Context) (SSHAgentConnection, error)
+	Close(context.Context) (ExtensionCleanupResult, error)
+}
+
+type SSHAgentConnection interface {
+	Read(context.Context, credentialmemory.CredentialSink) (SSHIOResult, error)
+	Write(context.Context, credentialmemory.BorrowedView) (SSHIOResult, error)
+	Shutdown(context.Context, SSHShutdownDirection) error
+	Close(context.Context) error
+}
+
+type ExtensionPrepareRequest struct {
+	IdentityDigest [32]byte
+	Revision       uint64
+	ExpiresAt      time.Time
+	BindingID      credentialprotocol.SafeID
+	BindingIndex   uint16
+	Mode           credentialprotocol.DeliveryMode
+}
+
+type ExtensionPrepareResult struct {
+	ExecBinding ExecBindingCapability
+}
+
+type ExtensionExecRequest struct {
+	IdentityDigest [32]byte
+	Revision       uint64
+	ExecBindingID  credentialprotocol.SafeID
+}
+
+type ExtensionExecResult struct {
+	ExecBinding ExecBindingCapability
+}
+
+type ExtensionRenewRequest struct {
+	IdentityDigest [32]byte
+	Revision       uint64
+	ExpiresAt      time.Time
+}
+
+type ExtensionRevokeRequest struct {
+	IdentityDigest [32]byte
+	Revision       uint64
+	Reason         credentialprotocol.RevokeReason
+}
+
+type SSHAgentEndpointRequest struct {
+	IdentityDigest [32]byte
+	Revision       uint64
+	BindingID      credentialprotocol.SafeID
+	BindingIndex   uint16
+}
+
+type SSHAcceptedPublication struct {
+	IdentityDigest [32]byte
+	Revision       uint64
+	BindingIndex   uint16
+	Ordinal        uint8
+	CapabilitySHA256 [32]byte
+}
 ```
 
-The request/result structs are concrete, non-JSON, closed unions owned by
+`ExecBindingCapability`, `ExtensionCleanupResult`, `SSHIOResult`, and live
+endpoint/connection values have private concrete implementations, no public
+literal constructor, and fail-closed formatting/serialization. Cleanup result
+contains only the extension resource-absence boolean and retry/stop-VM category;
+it can never claim whole-job cleanup. `SSHIOResult` contains only byte count,
+EOF, and truncation. Shutdown direction is a closed read/write/both enum.
+
+These request/result structs are concrete, non-JSON closed types owned by
 `credentialhelper`. They contain only canonical safe identity/digest/revision
 metadata and opaque capabilities owned by `ExtensionHost`; they contain no
 path string, raw secret, key, key fingerprint, socket address, numeric file
 descriptor, PID, or generic `any`/map/body. `ExtensionHost` is the D4-owned
-narrow capability for the already-created exact job namespace and for one
-authenticated `0x16` rights publication. It does not expose namespace or root
-file descriptors. D5 cannot open outside the owned job namespace or publish
-another packet type through it.
+narrow capability backed by the authenticated mount-monitor protocol for the
+already-created exact job namespace and by the core service for one
+authenticated `0x16` rights publication. It exposes no namespace or root FD.
+D5 cannot open outside the owned job namespace or publish another packet type.
 
 The SSH registration is constructed only by:
 
@@ -196,7 +338,7 @@ socket and acceptor through `ExtensionHost`; `BindExec` may return only the
 opaque generated `SSH_AUTH_SOCK` binding understood by the core; `Renew` may
 only shorten or extend within the core hard expiry; `Revoke` must stop accepts,
 close connections, and prove its owned guest resource absent. The core combines
-that result with D4 cgroup/mount/keeper absence. An extension cannot return
+that result with D4 cgroup/mount/monitor absence. An extension cannot return
 `cleanup_complete` for the whole helper job.
 
 ### Uniqueness and typed nil
@@ -249,10 +391,12 @@ once after terminal revoke/rollback or during service drain. All caller
 contexts may stop waiting; cleanup continues under the service's bounded
 cleanup context.
 
-For SSH cleanup the order is fixed: deny new exec and new accepts; close guest
-listeners; cancel relay pumps; close every service-owned accepted descriptor;
-wait for extension absence; perform D4 cgroup kill/zero-population and tmpfs
-cleanup; close the extension session. `retry_required` keeps ownership and
+For SSH cleanup the order is fixed: deny new exec and new accepts; the
+controller closes every published listener; cancel relay pumps; close every
+service-owned accepted descriptor; wait for extension connection absence;
+perform D4 cgroup kill/zero-population; instruct the monitor to unlink the
+socket entry and complete tmpfs cleanup; close the extension session.
+`retry_required` keeps ownership and
 reinspects without recreating. `stop_vm_required`, helper loss, a stuck pump,
 or missing extension absence proof escalates unchanged to D6 whole-VM
 stop/reap. A timeout never detaches a goroutine or leaks a descriptor.
@@ -287,6 +431,19 @@ type ExtensionSession interface {
 	Handle(context.Context, ExtensionPacket) error
 	Close(context.Context) error
 }
+
+type Transport interface {
+	ReceiveController(context.Context, ControllerReceiveRequest) (ControllerPacket, error)
+	SendController(context.Context, ControllerSendPacket) error
+	ReceiveHelper(context.Context, HelperReceiveRequest) (HelperPacket, error)
+	SendHelper(context.Context, HelperSendPacket) error
+	Close(context.Context) error
+}
+
+type Policy interface {
+	Authorize(ClientPolicyRequest) (ClientPolicyDecision, error)
+	Descriptor() PolicyDescriptor
+}
 ```
 
 Its registry has the identical immutability, uniqueness, ordering, typed-nil,
@@ -296,6 +453,15 @@ is:
 ```go
 func sshrelay.NewClientExtension(sshrelay.ClientOptions) (credentialclient.ExtensionRegistration, error)
 ```
+
+The four transport packet/request types are private-constructor closed unions
+over the exact v2 controller and helper codecs. Receive requests provide fixed
+mutable/ancillary sinks and expected sequence/identity; send values are built
+only by the core client. They expose no generic body or arbitrary frame/packet
+type. `ClientPolicyRequest` contains only safe operation, identity, revision,
+manifest, descriptor, and fixed-limit metadata. `ClientPolicyDecision` is allow
+or a stable rejection code and has no transport, proof, credential, or rights
+authority.
 
 `ExtensionPacket` is a closed client-owned union already authenticated and
 correlated by the core client. For `ssh-relay-v1` it can represent only one
@@ -310,9 +476,11 @@ relay boundary and closes it on EOF, loss, revoke, or client drain.
 The client serializes packet delivery for one helper session. It starts the
 extension loss watcher before acknowledging transfer, never dispatches a
 second SSH request while one response is outstanding, and applies bounded
-backpressure instead of a queue. Client and helper descriptors must match
-through `ValidateMatchingExtensionSets` before D6 releases the guest-agent
-start gate. A mismatch makes readiness false and requires VM stop/reap.
+backpressure instead of a queue. Client and helper process descriptors must
+arrive through the authenticated PID1 bootstrap; PID1 calls
+`ValidateProcessDescriptors`, which applies `ValidateMatchingExtensionSets`,
+before releasing the guest-agent start gate. A mismatch makes readiness false
+and requires VM stop/reap.
 
 The existing v1 `guestagent/server.Options`, `server.New`, v1 backend, and v1
 client are unchanged. V2 composition receives `*credentialclient.Client`
@@ -418,31 +586,108 @@ but does not abandon cleanup.
 
 ## Production composition is D6-owned
 
-D4 exports a constructor for the Linux helper core and D5 exports the two SSH
-registrations plus the host registry. None changes a default constructor or a
-command. D6 adds the only explicit composition package and functions:
+D4 exports constructors for the Linux core, PID1 supervisor adapter, monitor,
+and workload shim plus the freestanding native role-bootstrap source contract;
+D5 exports the two SSH registrations plus the host registry.
+None changes a default constructor or command. Because init, agent, and
+controller are separate executables, no live Go object or registry may cross an
+`exec` boundary. D6 adds one explicit composition package with separate
+process-local constructors and a process-safe descriptor attestation:
 
 ```go
-type GuestOptions struct {
-	HelperCore      credentialhelper.Core
-	HelperTransport credentialhelper.Transport
-	HelperPolicy    credentialhelper.Policy
-	HelperSSH       credentialhelper.ExtensionRegistration
-	ClientTransport credentialclient.Transport
-	ClientPolicy    credentialclient.Policy
-	ClientSSH       credentialclient.ExtensionRegistration
+type HelperOptions struct {
+	Core      credentialhelper.Core
+	Transport credentialhelper.Transport
+	Policy    credentialhelper.Policy
+	SSH       credentialhelper.ExtensionRegistration
 }
 
-func NewGuest(GuestOptions) (*Guest, error)
+type ClientOptions struct {
+	Transport credentialclient.Transport
+	Policy    credentialclient.Policy
+	SSH       credentialclient.ExtensionRegistration
+}
+
+type ProcessRole uint8
+
+const (
+	ProcessRoleHelper ProcessRole = 1
+	ProcessRoleClient ProcessRole = 2
+)
+
+type ProcessDescriptor struct {
+	ContractVersion string
+	Role            ProcessRole
+	Extensions      []credentialprotocol.ExtensionDescriptor
+	PolicySHA256    [32]byte
+}
+
+type CompositionDescriptor struct {
+	ContractVersion string
+	HelperSHA256    [32]byte
+	ClientSHA256    [32]byte
+	CompositionSHA256 [32]byte
+}
+
+func NewHelper(HelperOptions) (*credentialhelper.Service, ProcessDescriptor, error)
+func NewClient(ClientOptions) (*credentialclient.Client, ProcessDescriptor, error)
+func ValidateProcessDescriptors(ProcessDescriptor, ProcessDescriptor) (CompositionDescriptor, error)
+func EncodeProcessDescriptor(ProcessDescriptor) ([]byte, error)
+func DecodeProcessDescriptor([]byte) (ProcessDescriptor, error)
 ```
 
-`NewGuest` constructs both immutable registries, calls
-`credentialprotocol.ValidateMatchingExtensionSets`, then constructs the helper
-service and credential client. It rejects missing, extra, typed-nil, or
-mismatched production dependencies. It never auto-installs an SSH extension.
-The exact D6 command files may call this explicit constructor only after PID1
-bootstrap identities and the L8 image profile are validated. Existing v1 and
-L5/L7 command paths do not import `l8composition`.
+`NewHelper` is called only inside `cmd/hal-guest-credential-helper`; `NewClient`
+only inside `cmd/hal-guest-agent`. Each constructs one immutable local registry,
+rejects missing/extra/typed-nil dependencies, never installs a default SSH
+extension, and returns a defensively copied safe descriptor. Descriptor encoding
+is one canonical bounded binary form with strict field order, exact contract
+version `l8-process-composition-v1`, closed roles, no unknown/trailing fields,
+and SHA-256 over the complete encoding. It contains no live handle, path, FD,
+PID, endpoint, secret, config value, or JSON tag.
+
+The process descriptor encoding is exact:
+
+```text
+magic[4] = "HL8D" | version:u8=1 | role:u8 | reserved:u16=0
+extensionCount:u16 | policySHA256:[32]byte
+for each extension in strictly increasing ID order:
+  idLength:u8 | id:idLength bytes
+  modeCount:u8 | modes:modeCount*u8
+  agentPacketCount:u8 | agentPacketTypes:agentPacketCount*u8
+  helperPacketCount:u8 | helperPacketTypes:helperPacketCount*u8
+```
+
+There are 0..16 extensions. Each ID is 1..64 canonical safe ASCII bytes and
+each list has 0..16 entries in strictly increasing order; the descriptor
+validator still requires every registered extension to claim at least one mode
+or packet direction. Role 1 is helper and role 2 client. All integers wider
+than one byte are big-endian. The complete encoding is at most 1,898 bytes.
+Decode rejects a wrong magic/version/role/reserved byte, count overflow,
+unknown catalog value, noncanonical ordering, invalid descriptor, truncation,
+or trailing byte. `ContractVersion` is the fixed in-memory projection of wire
+version 1 and is not encoded a second time.
+
+`HelperSHA256` and `ClientSHA256` are SHA-256 of the exact respective encodings.
+`CompositionSHA256` is SHA-256 of
+`opaque16("hal/l8/process-composition/v1") || HelperSHA256 || ClientSHA256`.
+`ValidateProcessDescriptors` requires helper then client roles, validates both
+canonical descriptors, requires the exact `helper-policy-v1` digest for the
+helper and exact `client-policy-v1` digest for the client, and applies
+`ValidateMatchingExtensionSets`; it never sorts or normalizes caller values.
+
+PID1 owns the sealed expected helper/client descriptor digests from the verified
+L8 image profile. The helper sends its canonical descriptor during authenticated
+readiness. The gated agent sends its descriptor directly to PID1 over the
+authenticated agent-supervisor endpoint after dropping to the already-pinned
+agent identity and before admission release. PID1 decodes both, checks the sealed
+digests, calls `ValidateProcessDescriptors`, which in
+turn calls `credentialprotocol.ValidateMatchingExtensionSets`, and sends the
+same canonical composition digest independently to helper and agent only on
+exact agreement. The helper then verifies the descriptor repeated in
+`agent_hello` before admitting requests. A descriptor cannot attest a live object;
+the object remains process-local and its loss invalidates readiness. Mismatch,
+missing attestation, noncanonical encoding, or wrong policy digest requires
+whole-VM stop/reap. Existing v1 and L5/L7 paths never import `l8composition`.
 
 On the host, D6 injects the daemon-owned `*sshrelay.Registry` into the explicit
 L8 Firecracker runtime wrapper. The worker imports only the neutral
@@ -479,8 +724,10 @@ The exact ownership is:
   advertising v2 credential capability. `cmd` may select an already verified
   distribution but cannot mint, weaken, or project the profile.
 
-Sequencing is fixed. D2 lands this ownership and red guards. D4 lands helper,
-PID1, tmpfs, and guest cleanup code with fake syscall tests but no image claim.
+Sequencing is fixed. D2 lands this ownership and red guards. D4 lands the native
+role bootstrap, controller, PID1 supervisor, mount monitor, workload shim,
+tmpfs, and guest cleanup code
+with fake syscall tests but no image claim.
 D5 lands guest/host SSH relay code and fake connection tests but no image claim.
 D6 lands the explicit production composition, opaque profile requirement, and
 worker/runtime cleanup wiring; all defaults remain off. D7 creates and locks
@@ -501,7 +748,7 @@ D2 implementation starts with failing tests for these exact obligations:
   caller cancellation, and no extension-driven proof/sequence bypass.
 - `server/credentialclient`: the matching registry cases, ownership of a
   received rights capability before/after `Handle`, descriptor mismatch before
-  start-gate release, serialized dispatch, bounded backpressure, loss while
+  authenticated composition/admission release, serialized dispatch, bounded backpressure, loss while
   transferring ownership, and close-on-every-rejection.
 - D4/D5 independence guards: helper core production files cannot import either
   SSH child or host relay; each SSH child cannot import the other side; only

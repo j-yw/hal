@@ -45,7 +45,7 @@ L8 is complete only when a prepared-Linux run proves all of the following:
   relay loss, guest loss, Firecracker exit, daemon restart, and partial prepare
   all converge through bounded cleanup;
 - no owned ticket, connection, listener route, secret buffer, file, mount,
-  namespace keeper, relay, guest socket, session, or live proof remains after
+  namespace monitor, relay, guest socket, session, or live proof remains after
   cleanup; and
 - the resulting sanitized proof is exact, current, warning-free, and bound to
   the same sandbox, execution, worker, runtime, network, and job generations.
@@ -170,9 +170,18 @@ absence cannot be proved, the public state is `unknown` with reason
   Its leaf child `session` owns only the authenticated binary session, and
   sibling `v2control` owns strict v2 control unions, compatibility negotiation,
   and the injected client. Neither child changes a v1 production file.
-- `cmd/hal-guest-credential-helper` is the narrow process entrypoint and PID1
-  bootstrap adapter. It contains no independently testable privilege or
-  lifecycle policy.
+- `cmd/hal-guest-init` owns the exact PID1 launch supervisor. It launches only
+  image-pinned `hal-guest-role-bootstrap` modes through the private D2 launch
+  protocol; it is not a general process runner.
+- `internal/sandboxruntime/microvm/guestagent/rolebootstrap` owns the
+  freestanding Linux-amd64 native `_start`, raw-syscall role tables, and golden
+  source/disassembly contract for `hal-guest-role-bootstrap`. It imports no Go
+  package and has no host or non-L8 production use. D4 lands source/fakes;
+  D7's locked offline image build is the sole production compiler/installer.
+- `cmd/hal-guest-credential-helper`, `cmd/hal-guest-mount-monitor`, and
+  `cmd/hal-guest-workload-shim` are narrow process entrypoints for the
+  capability-free credential controller, per-job mount owner, and one workload
+  transition respectively. They contain no independently testable policy.
 - `internal/sandboxruntime/microvm/guestagent/credentialhelper` owns the
   testable privileged service policy for per-job cgroups, mount namespaces,
   credential files, the restricted guest SSH endpoint, credential-aware exec,
@@ -823,12 +832,14 @@ Frame types are `0x01 guest_finished` guest-to-controller,
 controller-to-guest, `0x11 control_response` and `0x12 control_event`
 guest-to-controller, and `0x13 control_private` controller-to-guest. On the
 control channel, `0x14 control_stream` is direction-constrained by its inner
-stream kind. On the relay, `0x20 relay_request` is guest-to-controller and
+stream kind and `0x15 control_stream_credit` travels in the opposite direction
+for that same kind. On the relay, `0x20 relay_request` is guest-to-controller and
 `0x21 relay_response` is controller-to-guest; `0x7f close_notify` is valid in
 either direction. `0x13` carries one binary `HL8B` record only; it never
 multiplexes JSON into `0x10` or another type. `0x14` carries one binary `HL8S`
-record only. Magic, version, zero flags, channel/type/direction, session ID,
-expected sequence, and length are validated before allocation or AEAD open.
+record only and `0x15` carries one binary `HL8C` credit record only. Magic,
+version, zero flags, channel/type/direction, session ID, expected sequence, and
+length are validated before allocation or AEAD open.
 
 Finished plaintexts are these exact 32-byte HMACs, encrypted with the matching
 direction at sequence 0 and compared in constant time after GCM succeeds:
@@ -887,7 +898,7 @@ as above.
 
 The root `MaxJobCredentialLifetime` one-hour value remains a generic neutral
 ceiling. L8 adds `MaxGuestCredentialSessionLifetime = 35 minutes`: handshake
-time, every guest job activation/expiry, ticket hard expiry, helper/keeper
+time, every guest job activation/expiry, ticket hard expiry, helper/monitor
 state, and SSH relay hard expiry must fit inside it. The 60-second ticket lease,
 20-second renewal cadence, and five-second skew allowance never extend the
 35-minute hard expiry.
@@ -1287,6 +1298,38 @@ beyond a declared maximum is drained under the fixed process limit, not sent,
 and sets the matching truncation flag. Every owned chunk buffer is wiped after
 authenticated write/read on success and every failure path.
 
+Stream admission uses one encrypted credit record per data record. The exact
+64-byte `HL8C` plaintext is:
+
+```text
+magic[4]="HL8C" | version:u8=1 | streamKind:u8 | flags:u16_be=0
+requestID:[16]byte | identityDigest:[32]byte | nextOffset:u64_be
+```
+
+The complete encrypted credit wire is exactly 132 bytes: the 52-byte `HL8F`
+header, 64-byte plaintext, and 16-byte GCM tag. A credit authorizes exactly one
+next `HL8S` data-or-EOF record for the same request, identity, stream kind, and
+offset. At most one unused credit exists per stream. Duplicate, stale, gapped,
+wrong-direction, wrong-request, wrong-identity, post-EOF, or second-outstanding
+credit is a terminal protocol error. Stdin credit travels guest-to-controller;
+stdout and stderr credit travel controller-to-guest. The controller grants an
+output credit only while its corresponding bounded consumer slot is empty. The
+guest grants upstream credit only while it owns that downstream credit and its
+matching fixed slot is empty. An output stream at its byte maximum receives one
+final EOF-only credit after excess bytes are drained and discarded under the
+fixed process limit.
+
+Each endpoint has one mutable payload slot per stream, capped at 64 KiB, and one
+shared encoded transmit slot. Sends are nonblocking or use an effective write
+deadline no later than the exec/session deadline. `EAGAIN` retains the exact
+encoded frame in that slot and does not advance the secure sequence. The event
+loop continues polling control reads, transport writability, stdin pipe
+writability, both output pipes, the child pidfd, and cancellation. Ready credits
+are scheduled before data; simultaneously ready stdout/stderr data use fixed
+round-robin order, initially stdout. A peer that stops reading can still stall
+the whole transport; that is session loss/timeout and follows ordinary cleanup,
+never a claim of per-stream progress.
+
 V2 exec is admitted only into the exact prepared job namespace on that
 authenticated persistent session. V1 exec and a
 v2 exec with a missing, stale, or neighboring binding cannot see L8 files or
@@ -1542,55 +1585,221 @@ response payload, and raw TLS/DNS errors do not enter decisions or diagnostics.
 
 ## File-on-tmpfs delivery
 
-The L8 image separates its service and workload identities. PID1 runs the guest
-agent as dedicated UID/GID 998 and every workload as UID/GID 1000. The L8
+The L8 image separates its service and workload identities. The guest-agent
+bootstrap reaches dedicated UID/GID 998 with every capability set empty before
+descriptor hello or admission; every workload reaches UID/GID 1000 before its
+final exec. The L8
 isolation verifier takes the expected service identity explicitly; completed L5
 images and their UID/GID-1000 verifier remain byte-compatible. Both identities
 have empty capability sets and `no_new_privs`, and L8 never raises or restores
-their privilege. Before dropping the agent, PID1 starts
-`hal-guest-credential-helper` on one end of an inherited `SOCK_SEQPACKET`
-socketpair. The helper bounding set is exactly
-`CAP_SYS_ADMIN`, `CAP_SETUID`, `CAP_SETGID`, `CAP_SETPCAP`, and `CAP_CHOWN`:
-namespace/mount ownership, final child identity/capability drop, and file
-ownership only. PID1 removes every other bounding/ambient capability.
+their privilege.
+
+PID1 is the one explicit immutable launch authority. Before protocol input,
+its one-way `launch-bootstrap` establishes the frozen FDs, exact six-bit
+capability inheritance, locked securebits, and `no_new_privs`, then commits the
+`launch-base` filter and can never return. That filter
+is the common ancestor policy for the image-pinned credential controller,
+service agent, per-job mount monitor, and workload transition shim. PID1's bounding set is
+exactly `CAP_SYS_ADMIN`, `CAP_SYS_CHROOT`, `CAP_SETUID`, `CAP_SETGID`,
+`CAP_SETPCAP`, and `CAP_CHOWN`; those exact six bits populate its bounding,
+permitted, effective, inheritable, and ambient sets, and every other bit is
+removed. The launch supervisor accepts only the D2 closed launch protocol over
+an unnamed private `SOCK_SEQPACKET` socket. It has no public listener and
+accepts no executable path, arbitrary clone flag, argv, environment, or
+credential body. It launches only the immutable image-owned
+`hal-guest-role-bootstrap` in exact monitor or workload-shim mode. There is no
+general-purpose or unmediated privileged launcher.
+
+`hal-guest-role-bootstrap` is the single-threaded native role bootstrap for
+PID1 init, controller, agent, monitor, and shim. It has no Go runtime, allocator,
+thread creation, dynamic loader, network, public input, or generic process API.
+The image entrypoint invokes its fixed PID1 mode; every later `syscall.ForkExec`
+targets only this binary with one adapter-owned closed role enum and fixed
+target. The bootstrap runs before any Go runtime starts and establishes that
+role's pre-runtime root/UID/GID/capability/securebit state, reinspects its
+inherited FD inputs, and `execve`s the corresponding image-profile-pinned Go
+binary in the same PID and pidfd. PID1 mode establishes the exact six-set
+inheritance before execing `hal-guest-init`; controller mode pivots then clears
+all capability sets; agent mode drops bounding state and switches to UID/GID
+998 under normal fixups; monitor mode retains exactly
+`CAP_SYS_ADMIN|CAP_CHOWN`; shim mode retains the exact six transition bits.
+After PID1 target exec, `hal-guest-init` constructs the remaining frozen
+supervisor FD table before readiness.
+Unknown role, changed argv/environment/path/FD, failed reinspection, or failed
+exec exits without starting a Go runtime and forces owned-role cleanup.
+
+Seccomp ancestry is explicit. The credential controller stacks the narrow
+`steady-controller` filter and the agent stacks `steady-agent`; neither
+launches a process. A mount monitor is a
+direct PID1 child created by pinned Go 1.25.7 `syscall.ForkExec` with exact
+`CLONE_VFORK|CLONE_VM|CLONE_NEWNS|CLONE_PIDFD` plus `SIGCHLD` and stacks the
+exact monitor filter. A workload shim is a direct PID1 child placed atomically
+by the same pinned launcher with exact
+`CLONE_VFORK|CLONE_VM|CLONE_PIDFD|CLONE_INTO_CGROUP` plus `SIGCHLD`; it stacks
+the existing L4/L7 workload filter before the final pinned-FD `execveat`.
+Neither is descended from a filtered service process, so no child must relax
+an inherited filter. The launch-base policy
+is a reviewed superset needed by its descendants; PID1 is part of the guest TCB,
+contains no credential bytes, and remains reachable only from the authenticated
+controller endpoint.
 
 The D2 bootstrap contract resolves process-identity ordering explicitly. PID1
-creates the seqpacket socketpair, enables `SO_PASSCRED` on both endpoints,
-creates a 32-byte random helper-local boot nonce and start-gate pipe, and starts
-the helper first. The helper rechecks `SO_PASSCRED`, fixed descriptors,
-generation, and hardening, then sends `helper_ready`; PID1 verifies the exact
-known helper PID/UID/GID before doing anything else. A bootstrap can never be
-queued before that ready message.
+creates separate agent-controller, controller-supervisor, and agent-supervisor
+seqpacket pairs, enables `SO_PASSCRED` on every endpoint, creates a 32-byte random
+controller-local boot nonce, and starts the credential controller role
+bootstrap first with the exact image-profile-pinned service `clone` tuple
+`CLONE_VFORK|CLONE_VM|CLONE_PIDFD|SIGCHLD`. The controller rechecks
+`SO_PASSCRED`, fixed descriptors, generation, sealed runtime settings, and
+hardening, verifies every capability set was already cleared by the native
+bootstrap, stacks `steady-controller`, sends its canonical
+`controller_attestation` over the supervisor endpoint, then sends
+`helper_ready`; PID1 verifies the sealed descriptor digest and exact known
+controller PID/UID/GID before doing anything else. A bootstrap can never be
+queued before both records are accepted.
 
-PID1 then creates the guest agent with `clone3(CLONE_PIDFD)` behind the gate and
-sends one atomic bootstrap datagram from exact PID 1, UID 0, and GID 0. It
-carries exactly one `SCM_RIGHTS` descriptor: the agent pidfd. The helper treats
-the trusted PID1 packet as the binding between that pidfd and the reported
-agent PID/UID/GID 998, proves current liveness with
+PID1 then creates the guest-agent role bootstrap with pinned
+`syscall.ForkExec` and exact
+`clone(CLONE_VFORK|CLONE_VM|CLONE_PIDFD|SIGCHLD)` behind the application gate.
+It sends the agent one authenticated `HL8A agent_config` packet containing the
+expected controller PID/UID/GID, helper and boot generations, nonce, bootstrap
+digest, and expected client process-descriptor digest. No request or credential
+body is present.
+
+The native `agent-bootstrap` drops all bounding bits while `CAP_SETPCAP` is
+effective, switches supplementary groups/GID/UID to exact 998 under normal
+kernel UID capability fixups, clears remaining inheritable state, and execs the
+agent. The Go agent therefore starts with every capability set empty; before
+any hello or admission release it verifies that state, commits the steady-agent
+filter, and only then constructs the client descriptor.
+It sends that canonical descriptor directly to PID1 in authenticated
+`HL8A client_attestation`; PID1 verifies the packet's exact agent PID/UID/GID
+998 against the new pidfd and sealed digest before representing that identity
+to the controller.
+
+PID1 now sends one atomic helper bootstrap datagram from exact PID 1, UID 0,
+and GID 0. It carries exactly one `SCM_RIGHTS` descriptor: the already-verified
+agent pidfd. The helper treats the trusted PID1 packet as the binding between
+that pidfd and the reported agent PID/UID/GID 998, proves current liveness with
 `pidfd_send_signal(pidfd, 0, nil, 0)` and a non-readable/non-hung-up poll, and
 records both. It does not claim that pidfd alone reveals a numeric PID. PID1
-verifies the correlated bootstrap acknowledgement and only then releases the
-agent gate and closes its control duplicate.
+requires the correlated bootstrap acknowledgement before composition release.
 
-The sealed start-gate record gives the agent the expected helper PID/UID/GID,
-helper and boot generations, nonce, and bootstrap digest. The agent verifies
-those exact `SCM_CREDENTIALS` on every helper response; socket EOF is permanent
-helper loss, so PID reuse cannot acquire the unshared socketpair endpoint. The
+PID1 verifies both sealed descriptor digests, validates the matching extension
+sets and policy identities, then sends `composition_accepted` with the canonical
+composition digest independently over HL8L to the controller and HL8A to the
+agent. Only then does the agent send `agent_hello` with its canonical client
+descriptor over the agent-controller endpoint. The controller authenticates
+the already-pinned agent identity and descriptor, sends `agent_hello_ack`, and
+admits v2 requests. The agent verifies those exact `SCM_CREDENTIALS` on every
+helper response; socket EOF is permanent helper loss, so PID reuse cannot
+acquire the unshared socketpair endpoint. The
 helper requires every later request's one credentials record to match the
 recorded agent and its still-live pidfd. `MSG_TRUNC`, `MSG_CTRUNC`, missing or
 duplicate credentials, unexpected rights, extra file descriptors, stale
 boot/helper/job generation, replay, sequence gap, and sequence wrap fail
-closed. Any received descriptor is closed on every rejection path.
+closed. Any received descriptor is closed on every rejection path. PID1 closes
+its agent-supervisor and temporary agent-control duplicates only after both
+accepted packets commit. Any mismatch, missing/duplicate attestation, or loss
+before release stops/reaps the microVM; no partially composed agent admits a
+request.
 
-Inherited descriptor numbers are fixed. The helper receives control socket 3,
-credential-root `O_PATH` directory 4, delegated cgroup-v2 `O_PATH` directory 5,
-minimal-root `O_PATH` directory 6, and sealed read-only bootstrap config 7,
-which it closes after validation. It reserves internal fixed slots 8 for the
-one active job's mount namespace, 9 for its cgroup directory, 10 for the keeper
-pidfd, and 11 for a child start gate. The agent receives control socket 3 and
-the sealed start-gate/config read end 4. All unrelated descriptors are closed;
-intended descriptors become close-on-exec after bootstrap, and no workload
-inherits a control, root, namespace, cgroup, pidfd, config, or nonce descriptor.
+Inherited descriptor numbers are role-specific and frozen in the syscall
+supplement. The controller receives agent socket 3, supervisor socket 4,
+minimal-root FD 5, and sealed bootstrap config 6. Active job slots hold only the
+monitor endpoint, namespace FD, cgroup identity capability, and safe PID1-owned
+launch correlation; the controller never owns a clone or mount capability. A
+monitor receives only its controller endpoint, verified proc-root and fixed
+mount-target FDs, and sealed config. A workload shim receives the inspected
+namespace/workdir/executable/pipe/gate/launch-block FDs for one launch; the
+launch block is its complete sealed config and FD 8 is closed. The
+agent receives controller socket 3 and agent-supervisor socket 4. All
+unrelated descriptors are closed, and no workload inherits a control, root,
+namespace, cgroup, pidfd, config, gate, launch-block, or nonce descriptor.
+
+The private controller-supervisor codec is a strict seqpacket union with header
+`HL8L`, version 1, zero flags, monotonic sequence, exact request/job identity,
+exact body length, and kernel credentials. Its job operations
+are exactly `create_job`, `launch_shim`, `terminate_job`, and `destroy_job`, with
+matching safe result/event unions. `create_job` carries only revision, safe
+monitor/cgroup generation requests, fixed limit-set ID, and digests. PID1
+creates the cgroup and monitor and returns a safe generation result; the new
+monitor sends its controller endpoint and namespace proof through PID1 with
+exactly one endpoint right, after which credential bytes use that direct link.
+
+`launch_shim` carries revision, exact monitor/cgroup generations, executable
+and launch-block digests, fixed limit-set ID, and exactly eight controller-supplied rights
+in this order: monitor namespace, workdir, executable, child stdin-read,
+stdout-write, stderr-write, start-gate read, and sealed launch-block read. PID1
+reinspects every kind, access direction, generation, and namespace/cgroup
+correlation before using the already-owned exact cgroup FD. No numeric FD value
+enters a digest. `terminate_job` and `destroy_job` carry only identity, revision,
+generation, and a closed reason code. PID1 events contain only safe launch ID,
+exit category/code, zero-population state, monitor state, and cleanup category.
+Unknown types, fields, rights, ordering, identities, generations, or duplicate
+active requests close the link and require `stop_vm_required`.
+
+Both private headers have the exact 68-byte layout:
+
+```text
+magic[4] | version:u8=1 | type:u8 | flags:u16_be=0 | sequence:u64_be
+requestID:[16]byte | jobIdentityDigest:[32]byte | bodyLength:u32_be
+```
+
+Sequences start at zero independently in each direction and advance by one per
+accepted packet. Boot readiness/attestation/composition/close records have zero
+request ID and zero job identity; every job operation has the exact nonzero
+request ID and identity. `HL8L` bodies are at most 8 KiB and complete datagrams at most
+8,260 bytes. Its closed types are `0x01 supervisor_ready`, `0x02 create_job`,
+`0x03 job_created`, `0x04 launch_shim`, `0x05 shim_started`,
+`0x06 terminate_job`, `0x07 destroy_job`, `0x08 supervisor_event`, and
+`0x09 controller_attestation`, `0x0a composition_accepted`, and
+`0x7f close_notify`; the direction and rights rules above are part of each type.
+The controller attestation body is `descriptorLength:u16 | descriptor`;
+accepted carries exactly `compositionSHA256:[32]byte`. Neither carries rights.
+
+The direct agent-supervisor codec uses the same 68-byte header and 8-KiB body
+bound with `magic[4] = "HL8A"`, version 1, zero flags/request/job identity, and
+independent per-direction sequences starting at zero. Its closed no-rights types
+are `0x01 agent_config` PID1 to agent, `0x02 client_attestation` agent to PID1,
+`0x03 composition_accepted` PID1 to agent, and `0x7f close_notify` either way.
+`agent_config` is the exact safe boot tuple above; client attestation is
+`descriptorLength:u16 | descriptor`; accepted is
+`compositionSHA256:[32]byte`. Every packet requires the expected PID1 or
+already-pinned agent kernel credentials. Unknown type, rights, nonzero identity,
+sequence error, wrong descriptor/digest, truncation, loss, or packet after
+accepted is a pre-admission VM-stop failure. The agent closes FD 4 after
+accepted; HL8A never carries a credential value or becomes a job protocol.
+
+The direct controller-monitor codec is a second strict seqpacket union with
+header `HL8M`, the same version/flags/sequence/request/identity/length rules, and
+exact controller/monitor kernel credentials. Its only operations are
+`monitor_ready`, `prepare_begin`, `prepare_file`, `prepare_commit`,
+`create_ssh_endpoint`, `revoke`, and their closed response/event forms.
+`monitor_ready` carries exactly one namespace FD plus safe monitor/mount
+generations and the postinspection digest. `prepare_file` is the only packet
+that contains credential bytes and decodes directly into a fixed-capacity locked
+monitor buffer. `create_ssh_endpoint` exists only with the D5 extension and may
+return exactly one inspected listening `AF_UNIX` capability. The monitor closes
+its original after authenticated transfer; the controller owns and accepts on
+the published listener and closes it before monitor cleanup. All other packets
+carry no rights. There is one outstanding request, one active job, no arbitrary
+path/mount/socket/clone/exec operation, and no PID1 credential-body path.
+
+D2 owns canonical encoders/decoders, rights matrices, fake
+supervisor/agent/monitor state machines, and plus-one negatives for all three
+private codecs. D4 owns the live PID1
+adapter, exact Go 1.25.7 monitor `Cloneflags`/`PidFD` and shim
+`UseCgroupFD`/`PidFD` process starts, monitor syscalls,
+and workload shim. None of these protocols is durable, public, remotely reachable, or
+available to the guest agent or workload.
+
+`HL8M` bodies are at most 72 KiB and complete datagrams at most 73,796 bytes.
+Its closed types are `0x01 monitor_ready`, `0x10 prepare_begin`,
+`0x11 prepare_file`, `0x12 prepare_commit`, `0x13 create_ssh_endpoint`,
+`0x14 revoke`, `0x20 response`, `0x21 monitor_event`, and
+`0x7f close_notify`. A zero request ID is accepted only for ready/close; every
+job operation uses the exact nonzero controller request ID. Integer/token/path
+encodings reuse the canonical helper definitions below, not JSON or reflection.
 
 The neutral helper packet codec is one seqpacket datagram with a fixed header:
 
@@ -1617,7 +1826,8 @@ Packet type numbers, directions, sequence starts, and bodies are fixed:
 0x03 bootstrap_ack     helper -> PID1, seq 1, bootstrapSHA256:[32]byte
 0x04 agent_hello       agent -> helper, seq 1,
                        bootstrapSHA256:[32]byte | bootGeneration:token |
-                       helperGeneration:token
+                       helperGeneration:token | descriptorLength:u16 |
+                       canonical client process descriptor
 0x05 agent_hello_ack   helper -> agent, seq 2, bootstrapSHA256:[32]byte
 0x10 prepare_begin     agent -> helper, revision:u64 | expiryUnixNano:i64 |
                        bindingCount:u16 | ordered binding manifest
@@ -1637,12 +1847,20 @@ Packet type numbers, directions, sequence starts, and bodies are fixed:
 0x18 exec_stream       either direction, revision:u64 | streamKind:u8 |
                        flags:u8 | reserved:u16=0 | offset:u64 |
                        payloadLength:u32 | payloadSHA256:[32]byte | mutable payload
+0x19 exec_credit       opposite direction from matching stream data,
+                       revision:u64 | streamKind:u8 | reserved[7]=0 |
+                       nextOffset:u64
 0x20 response          helper -> agent, requestType:u8 | disposition:u8 |
                        revision:u64 | failureCode:u8 | typed result union
 0x21 event             helper -> agent, eventCode:u8 | revision:u64 |
                        eventID:token
 0x7f close_notify      either direction, reasonCode:u8
 ```
+
+The `0x19` credit body is exactly 24 bytes and its complete helper datagram is
+124 bytes. It carries no rights or sensitive body. A helper credit authorizes
+exactly one next data-or-EOF `0x18` record at `nextOffset`; its direction,
+single-outstanding, terminal-error, and wipe rules are identical to `HL8C`.
 
 Numeric body catalogs are closed and reject zero or unknown values except
 `failureCode=0` on success:
@@ -1683,7 +1901,8 @@ exec accepted:
 
 Prepare proof count equals the manifest and every identity/mode/proof is exact.
 Exec byte counts, all four digests, and zero/one truncation flags match the
-`0x15`/`0x17`/`0x18` transaction and streams. `accepted` is valid only for
+`0x15`/`0x17`/`0x18` transaction and streams. `0x19` is transport flow control
+and never changes a logical result. `accepted` is valid only for
 prepare, renew, and exec;
 `cleanup_complete` only for revoke. These successful dispositions require
 failure code zero. `rejected`, `cleanup_retry`, and `stop_vm_required` have no
@@ -1796,6 +2015,11 @@ ordinary SHA-256 of empty input. `stdinTranscriptSHA256` additionally binds
 chunk boundaries, offsets, per-chunk digests, content, and the unique EOF, so a
 rechunked replay is not identical. The exact canonical `0x15` body already
 binds the exec plan, private length/digest, revision, and exec binding ID.
+Credit records are transport flow control only. They do not enter
+`stdinRecordCount`, `stdinTranscriptSHA256`, `stdinSHA256`, or
+`execTransactionSHA256`; credit timing and stdout/stderr interleaving likewise
+do not change the per-stream content hashes. They do consume ordinary secure
+and helper sequences and the existing record caps.
 
 Ready, bootstrap, bootstrap-ack, and both hello packets require an all-zero
 request ID and all-zero job identity digest. `helper_ready` alone has an
@@ -1851,28 +2075,39 @@ length, and digest follows immediately. No child, pipe, gate, or pidfd exists
 while the helper authenticates and decodes that payload. A missing, extra,
 reordered, changed, or zero/nonzero-mismatched private packet aborts exec, wipes
 the payload, and cannot leave an orphan because process creation has not begun.
-Only after private authentication does the helper create all three pipe pairs,
-keeping the parent-side stdin-write, stdout-read, and stderr-read endpoints and
-placing the child-side stdin-read, stdout-write, and stderr-write endpoints
-behind its internal start gate. It then uses
-`clone3(CLONE_INTO_CGROUP | CLONE_PIDFD)` and releases the gate only after every
-parent-side post-clone pidfd, cgroup-placement, pipe, gate, and executable/input
-check passes. The child then performs the syscall supplement's ordered
-namespace, identity, capability, seccomp, and exec transition; a failure exits
-without exec and is observed through the same pidfd/cgroup cleanup path.
-Any failure after clone but before gate release closes the child-side endpoints,
-kills and reaps the exact pidfd/cgroup child, proves zero population, wipes the
-private buffer, and only then returns a safe failure.
+Only after private authentication does the credential controller create all
+three pipe pairs, keeping the parent-side stdin-write, stdout-read, and
+stderr-read endpoints. It sends the inspected child ends, exact namespace,
+workdir and executable FDs, sealed launch-block FD, and start gate to the PID1
+launch supervisor under the closed D2 launch request. Credential bytes travel
+only through the direct controller-to-shim launch block; PID1 never receives or
+parses them. PID1 starts only immutable `hal-guest-role-bootstrap` in shim mode with Go
+1.25.7 `SysProcAttr.UseCgroupFD`, the exact cgroup FD, and `PidFD`, which commits
+`CLONE_VFORK|CLONE_VM|CLONE_PIDFD|CLONE_INTO_CGROUP` plus `SIGCHLD` before the
+shim can run. PID1 releases the gate
+only after exact pidfd, cgroup placement, FD roles, generation, executable, and
+input correlation pass. The shim performs the syscall supplement's ordered
+namespace, identity, capability, seccomp, and pinned-FD exec transition; a
+failure exits without workload exec and is reported through the supervisor's
+authenticated exit event. Any failure after shim start but before gate release
+closes the child-side endpoints and gate, kills and reaps the exact
+cgroup-placed shim, proves zero population, wipes the private buffer, and only
+then returns a safe failure.
 
 After the child gate opens, each `0x18 exec_stream` maps one-for-one to the
 correlated host `HL8S` record. Its stream kind, EOF flag, offset, length, digest,
 direction, and aggregate obey the same rules; agent-to-helper carries stdin and
 helper-to-agent carries stdout/stderr. The helper concurrently forwards stdin
 while draining stdout and stderr; it never waits for stdin EOF before reading
-either output pipe. One bounded mutable chunk per stream may be outstanding,
-and a single serialized packet writer preserves the helper send sequence, so a
-blocked receiver backpressures only the corresponding pipe instead of creating
-an unbounded queue or deadlocking another stream. The terminal exec response is
+either output pipe. `0x19 exec_credit` propagates the corresponding host `HL8C`
+credit across the agent. Stdin credit flows helper-to-agent; stdout/stderr credit
+flows agent-to-helper. The agent grants helper output credit only while it owns
+the matching controller credit and an empty fixed slot. After a complete stdin
+pipe write, the helper wipes that slot before granting another stdin credit;
+after an authenticated output write upstream, the agent wipes its slot before
+granting another helper credit. This keeps one bounded mutable chunk per stream
+without filling the shared seqpacket queue with a stream whose consumer is not
+ready. The terminal exec response is
 emitted only after stdin closure, both output EOF packets, child exit/reap, and
 stream metadata reconciliation. It contains the independently recomputed
 `stdinSHA256` and `execTransactionSHA256`. Loss,
@@ -1887,9 +2122,11 @@ charged before launch; exhaustion rejects a new ID without mutation. A
 duplicate request while the original is active is a terminal conflict. After a
 lost terminal response, the agent replays `0x15`, optional
 `0x17`, and every stdin `0x18` record at fresh packet sequences with the same
-request ID. The helper enters comparison-only mode: it creates no pipes or
-child, consumes and authenticates the complete private/input transaction,
-recomputes its digest, and re-emits the cached response only on an exact match.
+request ID and fresh per-record credits. The helper enters comparison-only mode:
+it creates no pipes or child, issues only stdin credits, accepts no stdout or
+stderr credit, emits no output stream records, consumes and authenticates the
+complete private/input transaction, recomputes its digest, and re-emits the
+cached response only on an exact match.
 A changed plan, private record, chunking, content, EOF, identity, or revision
 closes and revokes the session. A canonically framed semantic rejection enters
 the same no-launch drain mode, consumes the declared private/input transaction
@@ -1914,31 +2151,51 @@ owned raw `[]byte`, and neither the v1 frame codec nor generic JSON,
 overwritten on success, error, cancellation, truncation, authentication
 failure, partial write, and cleanup.
 
-The helper starts with precisely the five capabilities above in both permitted
-and effective sets; its bounding set contains only those five, and inheritable
-and ambient sets are empty. It locks `SECBIT_NOROOT`,
-`SECBIT_NO_SETUID_FIXUP`, and `SECBIT_NO_CAP_AMBIENT_RAISE` with their locked
-bits before serving. The workload child has an empty bounding, permitted,
-effective, inheritable, and ambient set, no supplementary groups, UID/GID 1000,
-and `no_new_privs` before exec. D2 represents the permitted helper operations
-as an exact syscall-and-argument policy. D4's seccomp implementation may allow
-namespace entry only through the helper-owned fixed namespace descriptor and
-may allow filesystem/cgroup/mount operations only through revalidated fixed
-dirfds. It rejects arbitrary `setns`, networking/vsock, unrestricted path
-opens, device/module/keyring operations, `ptrace`, `process_vm_*`,
-`pidfd_getfd`, `kcmp`, perf, and BPF.
+PID1 starts with exactly the six launch capabilities above in bounding,
+permitted, and effective sets. PID1 inheritable and ambient sets are exactly the same six bits
+so the four image-profile-pinned nonprivileged service execs receive only the
+transition authority the native role bootstrap must reduce before each Go
+service starts. The credential controller starts with bounding, permitted,
+effective, inheritable, and ambient capability sets already empty and verifies
+that state before serving.
+The mount monitor retains only `CAP_SYS_ADMIN|CAP_CHOWN` until it has normally
+unmounted and inspected absence, then monitor exits the entire process so no
+runtime thread or capability survives. The workload shim temporarily inherits
+the six-bit transition set because Linux mount-namespace `setns` requires both
+`CAP_SYS_ADMIN` and `CAP_SYS_CHROOT`; before workload exec it has empty
+capability sets, no supplementary groups, UID/GID 1000, and `no_new_privs`.
+Its final single-thread transition drops the caller's bounding/capability state;
+successful `execveat` atomically destroys every other Go runtime thread, while
+failure uses `exit_group` before any retry or success claim.
+Every privileged role inherits locked-on `SECBIT_NOROOT` and
+`SECBIT_NO_CAP_AMBIENT_RAISE`. `SECBIT_KEEP_CAPS` is unset and locked off.
+`SECBIT_NO_SETUID_FIXUP` is unset and locked off so agent/workload UID changes
+perform normal kernel capability clearing. PID1 raises no ambient bit after
+that lock; each child clears ambient state during bootstrap, and no child can
+restore it before accepting input.
 
-PID1 gives the helper a private mount namespace, preopened fixed credential and
-cgroup roots, and a minimal root containing only those mounts and required
-runtime objects. The helper pivots into it before serving. Its seccomp profile
-denies unrestricted `open`, `mount`, and pathname mutation, permits only the
-fd-oriented mount API plus `openat2` beneath the fixed dirfds with
-no-symlink/no-magic-link/no-cross-mount resolution, and allows `AF_UNIX` relay
-sockets while denying network/vsock families, device opens, module/keyring
-operations, ptrace/process-memory/pidfd-getfd/perf/BPF access, and arbitrary
-namespace entry. Seccomp is not claimed to inspect pathname strings; root
-confinement, fixed dirfds, protocol validation, and fd reinspection provide the
-path boundary.
+D2 represents each role as an exact syscall-and-argument policy. The steady
+controller has no `clone3`, `setns`, mount API, cgroup mutation, or workload
+exec authority. Only the PID1 supervisor starts image-pinned monitors and shims
+and manages cgroup placement/kill/reap. Only the monitor mutates its current
+mount namespace and creates the optional fixed-path `AF_UNIX` endpoint. Only
+the workload shim uses the exact validated namespace descriptor, drops identity
+and capability, stacks the workload policy, and executes the pinned workload
+FD. Every role rejects networking/vsock unless the final L4/L7 workload policy
+explicitly admits it, unrestricted path opens, device/module/keyring operations,
+`ptrace`, `process_vm_*`, `pidfd_getfd`, `kcmp`, perf, and BPF.
+
+Contained file lookup starts beneath a reinspected monitor-owned dirfd and uses
+`openat2` with beneath, no-symlink, no-magic-link, and no-cross-mount
+resolution. The sole namespace-handle exception is the monitor's compiled
+`self/ns/mnt` lookup relative to `verified_proc_root_fd` with exact
+`O_RDONLY|O_CLOEXEC`, mode zero, `.resolve = 0`, and the v0 `open_how` size.
+It occurs before monitor protocol input and is immediately correlated to its
+pidfd/credentials and reinspected for `NSFS_MAGIC`,
+`NS_GET_NSTYPE == CLONE_NEWNS`, expected device/inode, and inequality from the
+supervisor namespace. Seccomp is not claimed to inspect pathname strings;
+compiled constants, fixed dirfds, closed protocols, and FD reinspection provide
+the path boundary.
 
 The socketpair has no filesystem name and both ends become close-on-exec after
 the intended handoff. PID1 records the guest-agent PID in a pidfd. The helper
@@ -1958,17 +2215,25 @@ absence.
 Every credential-bearing job gets a private mount namespace used by its v2
 exec operations. Preparation:
 
-1. asks the helper to create a cgroup-v2 leaf and an owned mount namespace with
-   a bounded keeper;
-2. makes mount propagation private;
-3. mounts a bounded tmpfs with `nodev,nosuid,noexec,mode=0700`;
-4. creates a generation directory beneath a fixed agent-owned root;
-5. opens every component with beneath, no-symlink, no-magic-link, and
-   no-cross-mount resolution;
-6. writes regular mode-`0600`, single-link files owned by the fixed workload
-   identity from mutable buffers; and
+1. asks the PID1 launch supervisor to create the cgroup-v2 leaf and an
+   image-pinned per-job mount monitor with exact pinned `syscall.ForkExec`
+   `CLONE_VFORK|CLONE_VM|CLONE_NEWNS|CLONE_PIDFD` plus `SIGCHLD`;
+2. requires the monitor to open and return its exact namespace handle under the
+   namespace exception above, make propagation private, and retain only
+   `CAP_SYS_ADMIN|CAP_CHOWN`;
+3. has that monitor mount a bounded tmpfs with
+   `nodev,nosuid,noexec,mode=0700` at the one fixed job target in its current
+   namespace;
+4. sends credential bodies directly from controller-owned locked buffers to the
+   authenticated monitor endpoint, never through PID1;
+5. has the monitor create the generation directory and open every contained
+   component with beneath, no-symlink, no-magic-link, and no-cross-mount
+   resolution;
+6. has the monitor write regular mode-`0600`, single-link files owned by the
+   fixed workload identity from mutable buffers; and
 7. atomically publishes and reinspects mount type/options, device boundary,
-   ownership, mode, linkage, file count, cgroup, and generation identity.
+   ownership, mode, linkage, file count, cgroup, monitor, and generation
+   identity before PID1 accepts a launch.
 
 Caller paths must be canonical relative names from a sealed binding schema.
 Absolute paths, `..`, empty components, alternate separators, symlinks,
@@ -1981,31 +2246,40 @@ file content requires the current job cgroup to reach zero population (or the
 microVM to be stopped) and a new credential generation to prepare before
 another exec.
 
-Every credential-aware v2 exec enters through the helper. The helper uses
-`clone3(CLONE_INTO_CGROUP | CLONE_PIDFD)` with the revalidated exact cgroup
-directory FD for race-free placement before the workload can execute. There is
-no successful spawn-then-write-`cgroup.procs` fallback. The placed child remains
-behind an internal start gate while it enters the exact
-mount namespace, sets UID/GID 1000 with no supplementary groups, clears every
-capability, applies `no_new_privs`, then launches the existing bounded
-stdin/stdout/stderr supervision contract. Direct unprivileged-agent exec cannot
-join a credential namespace. Job/process/file/FD/count/byte/time limits are
+Every credential-aware v2 exec enters through the controller and exact PID1
+launch supervisor. PID1 starts only immutable `hal-guest-role-bootstrap` in shim mode
+with Go's `UseCgroupFD` and `PidFD`, requiring
+`CLONE_VFORK|CLONE_VM|CLONE_PIDFD|CLONE_INTO_CGROUP` plus `SIGCHLD` against the
+revalidated exact cgroup FD before
+the shim runs. There is no successful spawn-then-write-`cgroup.procs` fallback.
+The shim remains behind the supervisor-owned start gate while it enters the
+exact monitor namespace, reads the bounded controller-to-shim launch block,
+sets UID/GID 1000 with no supplementary groups, clears every capability,
+applies `no_new_privs` and the existing L4/L7 workload filter, then uses
+pinned-FD `execveat` under the existing bounded stdin/stdout/stderr supervision
+contract. Direct unprivileged-agent or steady-controller exec cannot join a
+credential namespace. Job/process/file/FD/count/byte/time limits are
 fixed at construction and charged before allocation: one active credential
-job, one pending prepare transaction, one mount namespace/cgroup/keeper, one
+job, one pending prepare transaction, one mount namespace/cgroup/monitor, one
 outstanding helper request, at most 64 concurrently populated workload
 processes, 4096 launches over the activation lifetime, 256 helper-owned file
-descriptors, 16 bindings/files, and the byte limits above. The keeper and helper
+descriptors, 16 bindings/files, and the byte limits above. The monitor and helper
 job state cannot outlive the 35-minute guest activation. Guest cleanup gets at
 most three idempotent attempts within one 30-second total deadline before
 `stop_vm_required`; retry clocks and observations are injected in D2 tests.
 
-Revoke denies new exec, writes `1` to the exact job cgroup's `cgroup.kill`,
-waits for `cgroup.events` to report `populated 0`, closes helper-owned
-descriptors, unlinks files, destroys buffers, unmounts normally, proves mount
-absence, stops/reaps the keeper, and removes the owned directory and cgroup.
+Revoke denies new exec; PID1 writes `1` to the exact job cgroup's
+`cgroup.kill`, waits for `cgroup.events` to report `populated 0`, and reaps every
+workload shim/leader. The controller closes pipes, destroys buffers, denies new
+accepts, and the controller closes the published listener plus every accepted
+connection. It then instructs the still-capable monitor to unlink files and the
+socket entry, normally unmount in its current namespace, and inspect mount/file
+absence. Only after that proof does the monitor call `exit_group`; PID1 reaps
+its pidfd, proves no privileged monitor thread survives, removes the owned
+directory and cgroup, and reinspects absence.
 Process-group termination alone is never L8 cleanup proof because a descendant
 can call `setsid` or `setpgid`. If cgroup creation, race-free placement,
-`cgroup.kill`, zero-population inspection, normal unmount, or helper inspection
+`cgroup.kill`, zero-population inspection, normal unmount, or monitor inspection
 is unavailable, cleanup stops and reaps the entire microVM; without that proof
 the result is `credential_cleanup_incomplete`.
 Lazy unmount is not successful cleanup proof.
@@ -2015,7 +2289,8 @@ The guest/helper cleanup result is exactly one of `cleanup_complete`,
 revision is idempotent and resumes from reinspection rather than recreating a
 resource. `cleanup_complete` requires every ordered absence check above.
 `retry_required` means owned guest cleanup can still be retried within its
-bounded deadline. `stop_vm_required` is emitted for lost helper identity,
+bounded deadline. `stop_vm_required` is emitted for lost helper, supervisor, or
+monitor identity,
 unavailable cgroup placement/kill/inspection, unknown mount ownership, normal
 unmount failure after bounded retries, or any condition the guest cannot prove
 absent. The helper can never convert `stop_vm_required` into success: the host
@@ -2312,8 +2587,9 @@ compatible where existing contracts require it.
 ### D2 — guest v2 and privileged-helper contracts
 
 D2 owns immutable contracts, strict codecs, cryptographic/session state
-machines, validators, fakeable helper/cgroup policy, source/import guards, and
-negative tests. D4 owns live helper/PID1/agent composition, syscalls,
+machines, validators, fakeable supervisor/controller/agent/monitor/shim policy,
+source/import guards, and negative tests. D4 owns live PID1/controller/monitor/shim/agent composition,
+syscalls,
 namespaces, tmpfs, cgroups, workload launch, and guest cleanup retries.
 D5 owns live SSH-agent sockets, descriptor passing, host-agent validation, and
 relay pumping. D6 owns whole-VM stop/reap fallback, Firecracker host
@@ -2327,7 +2603,10 @@ agent, stop a VM, add HTTP behavior, or wire a production command.
   overflows, and malformed private payloads.
 - Lock the neutral lifecycle/SSH codec, signed ephemeral v2 handshake,
   dedicated service/workload identities, exact-PID socketpair authentication,
-  helper fd-root/capability/seccomp boundary, cgroup-v2 placement/kill proof,
+  launch-base ancestry, process-safe descriptor attestation, exact private
+  supervisor/agent/monitor protocols, native role bootstrap,
+  fd/capability/seccomp boundaries,
+  cgroup-v2 placement/kill proof,
   numeric resource limits, and stop-VM fallback before live helper or
   guest-agent behavior.
 - Lock the two-stage `JobCredentialRuntimePreflight` seam so authenticated
@@ -2347,19 +2626,24 @@ agent, stop a VM, add HTTP behavior, or wire a production command.
 
 ### D4 — guest tmpfs
 
-- Add the Linux helper core behind D2's exact interfaces and lock its production
+- Add the Linux native role bootstrap, controller core, PID1 supervisor
+  adapter, mount monitor, and workload shim behind D2's exact interfaces and
+  lock their production
   imports and constructors file by file. D4 changes no command constructor and
   does not import the D5 SSH children. The exact `hal-guest-agent`,
-  `hal-guest-init`, and `hal-guest-credential-helper` production composition
+  `hal-guest-init`, `hal-guest-credential-helper`, `hal-guest-mount-monitor`,
+  and `hal-guest-workload-shim` production composition plus the native
+  `hal-guest-role-bootstrap` target table
   files remain guarded until D6 assembles the matching immutable helper/client
   extension sets; every root command and `sandboxd*.go` path remains forbidden
   until that same junction.
-- Implement the PID1 child, protected proc, agent pidfd/socketpair, helper
-  pivot/fd/seccomp exec/cgroup boundary, and namespace/tmpfs behavior through
-  injected syscall fakes first.
+- Implement protected proc, agent pidfd/socketpairs, exact Go
+  `UseCgroupFD`/`PidFD` starts, controller pivot/drop, monitor current-namespace
+  mount ownership, shim transition, and cgroup cleanup through injected fakes
+  first.
 - Cover namespace/mount flags, path traversal and replacement races, partial
   prepare, open-descriptor rotation, `setsid` escape, cgroup kill/zero-populated
-  proof, teardown retry, helper loss, whole-VM fallback, and orphan recovery.
+  proof, teardown retry, role loss, whole-VM fallback, and orphan recovery.
 
 ### D5 — SSH relay
 
@@ -2377,8 +2661,9 @@ agent, stop a VM, add HTTP behavior, or wire a production command.
 
 - Compose v2, HTTP, tmpfs, relay, process/vsock, and L7 generations.
 - Own the sole production `guestagent/l8composition` junction and exact guest
-  command wiring; validate matching helper/client extension descriptors before
-  releasing the agent start gate, with no implicit/default registration.
+  command wiring; construct helper/client objects only in their own processes
+  and have PID1 validate their canonical process descriptors before releasing
+  the agent start gate, with no implicit/default registration.
 - Wire prepare/renew/loss/revoke around worker exec and recovery.
 - Add the optional finalization cleanup checkpoint, existing post-publication
   sync-out ordering, and conservative active-versus-cleanup projections.
