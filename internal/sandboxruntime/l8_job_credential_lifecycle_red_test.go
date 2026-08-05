@@ -1981,7 +1981,7 @@ func (*l8FakeAuthorizedSourceRegistry) ResolveAuthorizedSource(context.Context, 
 
 type l8FakeJobCredentialRuntime struct{}
 
-func (*l8FakeJobCredentialRuntime) PrepareJobCredentials(context.Context, JobCredentialPrepareRequest) (JobCredentialSession, error) {
+func (*l8FakeJobCredentialRuntime) PreflightJobCredentials(context.Context, JobCredentialIdentitySeed) (JobCredentialRuntimePreflight, error) {
 	return nil, nil
 }
 
