@@ -248,8 +248,15 @@ type JobCredentialLoss struct {
 }
 
 type JobCredentialRuntime interface {
-	PrepareJobCredentials(context.Context, JobCredentialPrepareRequest) (JobCredentialSession, error)
+	PreflightJobCredentials(context.Context, JobCredentialIdentitySeed) (JobCredentialRuntimePreflight, error)
 	RecoverJobCredentials(context.Context, JobCredentialRecoveryRequest) (JobCredentialCleanupProof, error)
+}
+
+type JobCredentialRuntimePreflight interface {
+	Identity() JobCredentialIdentity
+	PrepareJobCredentials(context.Context, JobCredentialPrepareRequest) (JobCredentialSession, error)
+	Abort(context.Context) (JobCredentialCleanupProof, error)
+	Loss() <-chan JobCredentialLoss
 }
 
 type JobCredentialSession interface {
