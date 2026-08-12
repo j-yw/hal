@@ -4,7 +4,6 @@ package credentialhelper
 
 import (
 	"context"
-	"time"
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
@@ -18,8 +17,9 @@ type ExtensionFactory interface {
 // ExtensionOpenRequest carries the frozen descriptor and the only host
 // capabilities available to an extension.
 type ExtensionOpenRequest struct {
-	Descriptor credentialprotocol.ExtensionDescriptor
-	Host       ExtensionHost
+	liveValue
+	descriptor credentialprotocol.ExtensionDescriptor
+	host       ExtensionHost
 }
 
 // ExtensionSession owns one extension's transitions for a helper service.
@@ -53,51 +53,63 @@ type SSHAgentConnection interface {
 }
 
 type ExtensionPrepareRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	ExpiresAt      time.Time
-	BindingID      credentialprotocol.SafeID
-	BindingIndex   uint16
-	Mode           credentialprotocol.DeliveryMode
+	liveValue
+	identityDigest  [32]byte
+	revision        uint64
+	expiresUnixNano int64
+	bindingID       credentialprotocol.SafeID
+	bindingIndex    uint16
+	mode            credentialprotocol.DeliveryMode
+	execBinding     ExecBindingCapability
 }
 
 type ExtensionPrepareResult struct {
-	ExecBinding ExecBindingCapability
+	liveValue
+	execBinding ExecBindingCapability
 }
 
 type ExtensionExecRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	ExecBindingID  credentialprotocol.SafeID
+	liveValue
+	identityDigest [32]byte
+	revision       uint64
+	execBindingID  credentialprotocol.SafeID
+	execBinding    ExecBindingCapability
 }
 
 type ExtensionExecResult struct {
-	ExecBinding ExecBindingCapability
+	liveValue
+	execBinding ExecBindingCapability
 }
 
 type ExtensionRenewRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	ExpiresAt      time.Time
+	liveValue
+	identityDigest  [32]byte
+	revision        uint64
+	expiresUnixNano int64
 }
 
 type ExtensionRevokeRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	Reason         credentialprotocol.RevokeReason
+	liveValue
+	identityDigest [32]byte
+	revision       uint64
+	reason         credentialprotocol.RevokeReason
 }
 
 type SSHAgentEndpointRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	BindingID      credentialprotocol.SafeID
-	BindingIndex   uint16
+	liveValue
+	identityDigest [32]byte
+	revision       uint64
+	bindingID      credentialprotocol.SafeID
+	bindingIndex   uint16
+	execBinding    ExecBindingCapability
 }
 
 type SSHAcceptedPublication struct {
-	IdentityDigest   [32]byte
-	Revision         uint64
-	BindingIndex     uint16
-	Ordinal          uint8
-	CapabilitySHA256 [32]byte
+	liveValue
+	identityDigest   [32]byte
+	revision         uint64
+	bindingIndex     uint16
+	ordinal          uint8
+	capabilitySHA256 [32]byte
+	execBinding      ExecBindingCapability
 }

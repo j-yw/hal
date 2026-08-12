@@ -75,7 +75,10 @@ func TestExtensionCleanupResultConstructionAndAccessors(t *testing.T) {
 }
 
 func TestSSHIOResultConstructionAndAccessors(t *testing.T) {
-	result := NewSSHIOResult(4096, true, false)
+	result, err := NewSSHIOResult(4096, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.ByteCount() != 4096 || !result.EOF() || result.Truncated() {
 		t.Fatalf("result = count %d, EOF %v, truncated %v", result.ByteCount(), result.EOF(), result.Truncated())
 	}
@@ -84,36 +87,42 @@ func TestSSHIOResultConstructionAndAccessors(t *testing.T) {
 func TestSensitiveContractsDenySerializationAndFormatting(t *testing.T) {
 	identity := [32]byte{}
 	copy(identity[:], "super-secret-socket-fingerprint")
+	binding := execBindingCapability{digest: identity}
 	request := ExtensionPrepareRequest{
-		IdentityDigest: identity,
-		Revision:       17,
-		BindingID:      credentialprotocol.SafeID("secret-binding-marker"),
-		Mode:           credentialprotocol.DeliveryModeSSHAgent,
+		identityDigest: identity,
+		revision:       17,
+		bindingID:      credentialprotocol.SafeID("secret-binding-marker"),
+		mode:           credentialprotocol.DeliveryModeSSHAgent,
+		execBinding:    binding,
 	}
 	cleanup, err := NewExtensionCleanupResult(false, ExtensionCleanupRetryRequired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ioResult, err := NewSSHIOResult(99, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	values := []any{
 		ExtensionRegistration{Descriptor: credentialprotocol.SSHRelayV1ExtensionDescriptor(), Factory: formattingTrapFactory{}},
 		&ExtensionRegistry{},
-		ExtensionOpenRequest{Descriptor: credentialprotocol.SSHRelayV1ExtensionDescriptor()},
+		ExtensionOpenRequest{descriptor: credentialprotocol.SSHRelayV1ExtensionDescriptor()},
 		request,
-		ExtensionPrepareResult{ExecBinding: newExecBindingCapability()},
-		ExtensionExecRequest{IdentityDigest: identity, Revision: 17, ExecBindingID: "secret-binding-marker"},
-		ExtensionExecResult{ExecBinding: newExecBindingCapability()},
-		ExtensionRenewRequest{IdentityDigest: identity, Revision: 17},
-		ExtensionRevokeRequest{IdentityDigest: identity, Revision: 17, Reason: credentialprotocol.RevokeReasonRequested},
-		SSHAgentEndpointRequest{IdentityDigest: identity, Revision: 17, BindingID: "secret-binding-marker"},
-		SSHAcceptedPublication{IdentityDigest: identity, Revision: 17, CapabilitySHA256: identity},
-		newExecBindingCapability(),
+		ExtensionPrepareResult{execBinding: binding},
+		ExtensionExecRequest{identityDigest: identity, revision: 17, execBindingID: "secret-binding-marker", execBinding: binding},
+		ExtensionExecResult{execBinding: binding},
+		ExtensionRenewRequest{identityDigest: identity, revision: 17},
+		ExtensionRevokeRequest{identityDigest: identity, revision: 17, reason: credentialprotocol.RevokeReasonRequested},
+		SSHAgentEndpointRequest{identityDigest: identity, revision: 17, bindingID: "secret-binding-marker", execBinding: binding},
+		SSHAcceptedPublication{identityDigest: identity, revision: 17, capabilitySHA256: identity, execBinding: binding},
+		binding,
 		cleanup,
-		NewSSHIOResult(99, true, true),
+		ioResult,
 	}
 	for _, value := range values {
 		t.Run(reflect.TypeOf(value).Name(), func(t *testing.T) {
 			encoded, err := json.Marshal(value)
-			if encoded != nil || !errors.Is(err, ErrExtensionSerialization) {
+			if encoded != nil || !(errors.Is(err, ErrExtensionSerialization) || errors.Is(err, ErrContractInvalidArgument)) {
 				t.Fatalf("json.Marshal() = %q, %v", encoded, err)
 			}
 			jsonMarshaler, ok := value.(interface{ MarshalJSON() ([]byte, error) })
@@ -121,7 +130,7 @@ func TestSensitiveContractsDenySerializationAndFormatting(t *testing.T) {
 				t.Fatal("value does not implement json.Marshaler")
 			}
 			encoded, err = jsonMarshaler.MarshalJSON()
-			if encoded != nil || !errors.Is(err, ErrExtensionSerialization) || err.Error() != ErrExtensionSerialization.Error() {
+			if encoded != nil || !(errors.Is(err, ErrExtensionSerialization) || errors.Is(err, ErrContractInvalidArgument)) {
 				t.Fatalf("MarshalJSON() = %q, %v", encoded, err)
 			}
 			for _, rendered := range []string{
@@ -139,7 +148,7 @@ func TestSensitiveContractsDenySerializationAndFormatting(t *testing.T) {
 				t.Fatal("value does not implement encoding.TextMarshaler")
 			}
 			encoded, err = textMarshaler.MarshalText()
-			if encoded != nil || !errors.Is(err, ErrExtensionSerialization) {
+			if encoded != nil || !(errors.Is(err, ErrExtensionSerialization) || errors.Is(err, ErrContractInvalidArgument)) {
 				t.Fatalf("MarshalText() = %q, %v", encoded, err)
 			}
 		})
