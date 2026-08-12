@@ -21,11 +21,12 @@ func TestCredentialHelperContractImportBoundaries(t *testing.T) {
 		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol": true,
 	}
 	allowedStandard := map[string]bool{
-		"context": true,
-		"errors":  true,
-		"fmt":     true,
-		"reflect": true,
-		"time":    true,
+		"context":       true,
+		"crypto/sha256": true,
+		"errors":        true,
+		"fmt":           true,
+		"reflect":       true,
+		"time":          true,
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || !isCredentialHelperContractFile(entry.Name()) {
@@ -56,7 +57,7 @@ func TestCredentialHelperContractImportGuardExcludesFutureImplementationFiles(t 
 			t.Errorf("future implementation file %q is in the D2 foundation allowlist", name)
 		}
 	}
-	for _, name := range []string{"contracts.go", "registry.go", "opaque.go", "format.go"} {
+	for _, name := range []string{"contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go"} {
 		if !isCredentialHelperContractFile(name) {
 			t.Errorf("foundation file %q is outside the import guard", name)
 		}
@@ -65,7 +66,7 @@ func TestCredentialHelperContractImportGuardExcludesFutureImplementationFiles(t 
 
 func isCredentialHelperContractFile(name string) bool {
 	switch name {
-	case "contracts.go", "registry.go", "opaque.go", "format.go":
+	case "contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go":
 		return true
 	default:
 		return false
@@ -131,13 +132,37 @@ func TestCredentialHelperHasNoGlobalOrSideEffectRegistration(t *testing.T) {
 					if !ok {
 						continue
 					}
-					if value.Tok == token.VAR && !isSentinelErrorSpec(valueSpec) {
+					if value.Tok == token.VAR && !isSentinelErrorSpec(valueSpec) && !isContractSentinelSpec(valueSpec) {
 						t.Errorf("%s declares forbidden mutable package-global state", path)
 					}
 				}
 			}
 		}
 	}
+}
+
+func isContractSentinelSpec(spec *ast.ValueSpec) bool {
+	if spec == nil || spec.Type != nil || len(spec.Names) == 0 || len(spec.Values) != len(spec.Names) {
+		return false
+	}
+	for index, name := range spec.Names {
+		if !strings.HasPrefix(name.Name, "ErrContract") {
+			return false
+		}
+		literal, ok := spec.Values[index].(*ast.CompositeLit)
+		if !ok || expressionText(literal.Type) != "ContractError" || len(literal.Elts) != 1 {
+			return false
+		}
+		field, ok := literal.Elts[0].(*ast.KeyValueExpr)
+		if !ok || expressionText(field.Key) != "code" {
+			return false
+		}
+		identifier, ok := field.Value.(*ast.Ident)
+		if !ok || !strings.HasPrefix(identifier.Name, "Contract") {
+			return false
+		}
+	}
+	return true
 }
 
 func TestGlobalRegistrationGuardRejectsMutableStateEvasions(t *testing.T) {
