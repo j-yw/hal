@@ -396,6 +396,42 @@ func TestAgentSupervisorRejectsPIDOutsideLinuxSignedDomain(t *testing.T) {
 	}
 }
 
+func TestAgentSupervisorRejectsPID1AndCrossRoleAliases(t *testing.T) {
+	t.Parallel()
+
+	fixture := agentSupervisorFixture(t)
+	config := fixture.config
+	config.ControllerPID = 1
+	if _, err := EncodeAgentSupervisorAgentConfigBody(config); !errors.Is(err, ErrAgentSupervisorControllerIdentity) {
+		t.Fatalf("PID1 controller error = %v", err)
+	}
+	wire, err := EncodeAgentSupervisorAgentConfigBody(fixture.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire[0], wire[1], wire[2], wire[3] = 0, 0, 0, 1
+	if _, err := DecodeAgentSupervisorAgentConfigBody(wire); !errors.Is(err, ErrAgentSupervisorControllerIdentity) {
+		t.Fatalf("PID1 decoded controller error = %v", err)
+	}
+
+	expected := AgentSupervisorPreAdmissionExpected{
+		PID1Credential:    fixture.pid1,
+		AgentCredential:   fixture.agent,
+		AgentConfig:       fixture.config,
+		ClientDescriptor:  fixture.client,
+		CompositionSHA256: fixture.composition,
+	}
+	expected.AgentCredential.PID = 1
+	if _, err := NewAgentSupervisorPreAdmissionState(expected); !errors.Is(err, ErrAgentSupervisorPeerIdentity) {
+		t.Fatalf("PID1 agent error = %v", err)
+	}
+	expected.AgentCredential = fixture.agent
+	expected.AgentConfig.ControllerPID = fixture.agent.PID
+	if _, err := NewAgentSupervisorPreAdmissionState(expected); !errors.Is(err, ErrAgentSupervisorRoleIdentityAlias) {
+		t.Fatalf("controller/agent alias error = %v", err)
+	}
+}
+
 func TestAgentSupervisorDescriptorAndWireCopiesAreDefensive(t *testing.T) {
 	t.Parallel()
 

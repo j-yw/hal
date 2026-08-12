@@ -382,7 +382,7 @@ func validateAndEncodeHelperBootstrap(header credentialprotocol.HelperPacketHead
 }
 
 func validateHelperBootstrapBody(body HelperBootstrapBody) error {
-	if body.AgentPID == 0 || body.AgentUID != HelperAgentServiceUID || body.AgentGID != HelperAgentServiceGID {
+	if !validHelperBootstrapPID(body.AgentPID) || body.AgentUID != HelperAgentServiceUID || body.AgentGID != HelperAgentServiceGID {
 		return ErrHelperBootstrapAgentIdentity
 	}
 	if err := credentialprotocol.ValidateBodyToken(body.BootGeneration); err != nil {
@@ -392,7 +392,7 @@ func validateHelperBootstrapBody(body HelperBootstrapBody) error {
 }
 
 func validateHelperBootstrapExpected(expected HelperBootstrapExpected) error {
-	if expected.AgentPID == 0 || expected.AgentUID != HelperAgentServiceUID || expected.AgentGID != HelperAgentServiceGID {
+	if !validHelperBootstrapPID(expected.AgentPID) || expected.AgentUID != HelperAgentServiceUID || expected.AgentGID != HelperAgentServiceGID {
 		return ErrHelperBootstrapAgentIdentity
 	}
 	if err := credentialprotocol.ValidateBodyToken(expected.BootGeneration); err != nil {
@@ -406,6 +406,8 @@ func validateHelperBootstrapExpected(expected HelperBootstrapExpected) error {
 	}
 	return nil
 }
+
+func validHelperBootstrapPID(value uint32) bool { return value >= 2 && value <= 1<<31-1 }
 
 func validateExpectedDigest(expected [sha256.Size]byte) error {
 	if expected == [sha256.Size]byte{} {

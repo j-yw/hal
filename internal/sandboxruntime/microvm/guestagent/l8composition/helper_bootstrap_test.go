@@ -239,7 +239,7 @@ func TestHelperBootstrapBodiesRejectBoundsTruncationTrailingAndNoncanonicalDescr
 	t.Parallel()
 
 	maxToken := "a" + strings.Repeat("-", credentialprotocol.MaxBodyTokenBytes-1)
-	maxBootstrap := HelperBootstrapBody{AgentPID: 1, AgentUID: HelperAgentServiceUID, AgentGID: HelperAgentServiceGID, BootGeneration: maxToken, HelperGeneration: maxToken}
+	maxBootstrap := HelperBootstrapBody{AgentPID: 2, AgentUID: HelperAgentServiceUID, AgentGID: HelperAgentServiceGID, BootGeneration: maxToken, HelperGeneration: maxToken}
 	if _, err := EncodeHelperBootstrapBody(maxBootstrap); err != nil {
 		t.Fatalf("maximum token error = %v", err)
 	}
