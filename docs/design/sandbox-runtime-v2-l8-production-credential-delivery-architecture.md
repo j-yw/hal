@@ -2794,6 +2794,33 @@ likewise sends from one controller-owned locked slot and overwrites it after
 the atomic send. No second file slot, retained packet copy, generic formatter,
 JSON path, or PID1 path exists.
 
+The production D2/D4 seam for that requirement is exact. D2 exports a fixed
+`ControllerMonitorPrepareFileSlot` array sized to the maximum complete `0x11`
+datagram and an opaque one-owner-pointer
+`ControllerMonitorPrepareFileObservation`. D4 receives directly into the
+mlocked slot, then calls
+`InspectControllerMonitorPrepareFileSlot(*ControllerMonitorPrepareFileSlot,
+receivedBytes uint32)`. The inspector validates the fixed 68-byte header and
+46-byte safe prefix in place, exact type/request/job/sequence/body/received
+length bounds, revision/index/file length, nonzero declared digest, and
+SHA-256 of the payload bytes in that same slot. It returns only the opaque safe
+header/revision/index/length/digest observation and does not expose or retain the slot pointer.
+The observation is canonical byte correlation only; it never treats locking or object existence as proved.
+
+`ControllerMonitorState.AcceptPrepareFile(metadata,
+ControllerMonitorPrepareFileObservation)` authenticates credentials,
+direction, zero rights, no truncation, active request, identity, exact sequence,
+manifest order, and the observation's one-use owner before committing the safe
+metadata to the canonical prepare transaction and advancing the controller
+counter. The ordinary `Accept` path rejects `0x11` before generic body decoding;
+the generic packet decoder is test/diagnostic-only for this arm and there is no public `PrepareFile` packet accessor.
+Production D4 sends through an analogous
+fixed 68-byte header and 46-byte safe prefix writer followed by the existing
+locked payload; it does not call a full-wire encoder that copies payload bytes.
+Every success and failure leaves D4 responsible for full-capacity wipe/unlock/
+unmap of its slot. D2 holds neither an owned secret body nor a second payload
+copy.
+
 The `0x14` body is byte-for-byte `HelperRevokeBody`; its reason catalog is the
 existing exact catalog:
 
