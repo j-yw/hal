@@ -35,6 +35,49 @@ go test -count=1 ./cmd \
   -run '^TestL8(CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)|D2(GuestHelper|CredentialClient).*)$'
 ```
 
+The D2 image/profile closure has its own required fake-only selector. It locks
+the additive schemas, exact catalogs, canonical descriptor/evidence
+fingerprints, parent L7 evidence binding, validator precedence, sole resolver
+issuer, lease remint rules, Firecracker JSON-omitted consumption, and D2/D6/D7
+ownership split:
+
+```sh
+go test -count=1 ./cmd \
+  -run '^TestL8D2ImageProfile'
+
+go test -count=1 ./internal/sandboxruntime/microvm/assets/build \
+  ./internal/sandboxruntime/microvm/assets/localresolver \
+  ./internal/sandboxruntime/microvm/firecracker \
+  -run '^TestL8D2ImageProfile'
+
+go test -race -count=1 ./internal/sandboxruntime/microvm/assets/build \
+  ./internal/sandboxruntime/microvm/assets/localresolver \
+  ./internal/sandboxruntime/microvm/firecracker \
+  -run '^TestL8D2ImageProfile'
+
+go test -count=10 ./internal/sandboxruntime/microvm/assets/build \
+  ./internal/sandboxruntime/microvm/assets/localresolver \
+  ./internal/sandboxruntime/microvm/firecracker \
+  -run '^TestL8D2ImageProfile'
+```
+
+Before the D2 product slice lands, only the `cmd` guard is expected to match.
+The product slice must make every package selector non-empty; an unmatched
+selector is not a pass. Tests use synthetic regular-file bundles and fake
+launch-material writers only. They perform no network access, source fetch,
+image build, debugfs inspection, process start, or Firecracker launch.
+
+The package tests must mutate every field and boundary: nil versus empty
+slices, exact/plus-one metadata and entry counts, source/check order,
+duplicates, fixed Node/Pi versions, parent L7 evidence, every safe digest,
+manifest/provenance/source-lock/inspection correlation, seven-file inventory,
+checksum coverage, unknown/trailing JSON, descriptor and evidence fingerprint
+domains, zero/forged profiles, source replacement, private launch-material
+descriptor remint with unchanged evidence, repeat close, L7/L8 mutual
+exclusion, and Firecracker revalidation before start. They also marshal legacy
+L5 and L7 fixtures before and after the additive zero fields and require exact
+byte equality.
+
 Guards must prove:
 
 - `internal/credentialdelivery` and `internal/sandbox/credential_proxy*.go`
