@@ -500,6 +500,8 @@ func validateSSHAgentECDSAKey(reader *sshAgentNestedReader, algorithm SSHAgentKe
 	if len(point) != pointLength || point[0] != 4 {
 		return ErrSSHAgentKeyBlob
 	}
+	// SSH ECDSA keys use SEC1 points for signature verification, not ECDH.
+	//nolint:staticcheck // crypto/ecdh is not a replacement for this ECDSA SEC1 validation.
 	if x, y := elliptic.Unmarshal(ellipticCurve, point); x == nil || y == nil {
 		return ErrSSHAgentKeyBlob
 	}

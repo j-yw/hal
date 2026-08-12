@@ -174,8 +174,7 @@ func NewHelperExecComparisonTransaction(correlation HelperExecTransactionCorrela
 	}
 	owner := transaction.owner
 	if subtle.ConstantTimeCompare(owner.execBodySHA[:], cached.state.execBodySHA256[:]) != 1 || owner.privateLen != cached.state.privateLength || subtle.ConstantTimeCompare(owner.privateSHA[:], cached.state.privateSHA256[:]) != 1 {
-		owner.failLocked(ErrHelperExecTransactionReplayMismatch)
-		return nil, ErrHelperExecTransactionReplayMismatch
+		return nil, owner.failLocked(ErrHelperExecTransactionReplayMismatch)
 	}
 	return transaction, nil
 }
@@ -366,8 +365,7 @@ func (proposal *HelperExecPayloadProposal) CopyPayload(destination []byte) (int,
 	}
 	if len(destination) != int(owner.length) {
 		wipeHelperExecTransactionBytes(destination)
-		transaction.failLocked(ErrHelperExecProposalDestination)
-		return 0, ErrHelperExecProposalDestination
+		return 0, transaction.failLocked(ErrHelperExecProposalDestination)
 	}
 	wipeHelperExecTransactionBytes(destination)
 	count := copy(destination, owner.slot)
@@ -398,8 +396,7 @@ func (proposal *HelperExecPayloadProposal) Commit() error {
 		return ErrHelperExecTransactionCompleted
 	}
 	if transaction.pending != owner || owner.committed || (!transaction.comparison && !owner.copied) || (transaction.comparison && !owner.hashed) {
-		transaction.failLocked(ErrHelperExecProposalConsumed)
-		return ErrHelperExecProposalConsumed
+		return transaction.failLocked(ErrHelperExecProposalConsumed)
 	}
 	kind, flags, length := owner.kind, owner.flags, owner.length
 	owner.committed = true
@@ -435,7 +432,7 @@ func (proposal *HelperExecPayloadProposal) Wipe() {
 	if owner.wiped {
 		return
 	}
-	transaction.failLocked(ErrHelperExecProposalWiped)
+	_ = transaction.failLocked(ErrHelperExecProposalWiped)
 }
 
 func (proposal *HelperExecPayloadProposal) Wiped() bool {
@@ -556,7 +553,7 @@ func (transaction *HelperExecTransaction) Close() {
 	if owner.completed || owner.terminal {
 		return
 	}
-	owner.failLocked(ErrHelperExecTransactionTerminal)
+	_ = owner.failLocked(ErrHelperExecTransactionTerminal)
 }
 
 func (result HelperExecTransactionResult) RequestID() [16]byte {

@@ -900,6 +900,7 @@ func TestL8WorkerV2GuardAllowsOnlyExactBase64CopyPayloadEncoding(t *testing.T) {
 	}
 	if encoding == nil || request == nil || len(neighboring) != 2 {
 		t.Fatal("exact copy payload encoding or neighboring copy declarations were not found")
+		return
 	}
 	scope := l8WorkerV2GuardScope{file: file, node: encoding}
 	if !l8WorkerV2AllowedCompatibilityDeclaration(scope) {
@@ -959,6 +960,7 @@ func TestL8WorkerV2GuardAllowsOnlyExactSharedJobLogRecord(t *testing.T) {
 	}
 	if record == nil || neighboring == nil {
 		t.Fatal("exact JobLogRecord or neighboring Job declaration was not found")
+		return
 	}
 	scope := l8WorkerV2GuardScope{file: file, node: record}
 	if !l8WorkerV2AllowedCompatibilityDeclaration(scope) {

@@ -1033,6 +1033,8 @@ func sshAgentNestedECDSAKeys() []struct {
 	}, 0, len(tests))
 	for _, test := range tests {
 		x, y := test.curve.ScalarBaseMult([]byte{1})
+		// Test fixtures encode the ECDSA public key in the SSH-required SEC1 form.
+		//nolint:staticcheck // crypto/ecdh cannot represent the ECDSA fixture contract.
 		point := elliptic.Marshal(test.curve, x, y)
 		blob := sshAgentNestedString(nil, []byte(test.algorithm))
 		blob = sshAgentNestedString(blob, []byte(test.curveName))

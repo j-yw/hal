@@ -13,7 +13,7 @@ type RouteID string
 
 const (
 	RouteCredentialHTTPV1  RouteID = "credential-http-v1"
-	CredentialHTTPV1Prefix         = "/.well-known/hal/credential-http/v1/"
+	CredentialHTTPV1Prefix string  = "/.well-known/hal/credential-http/v1/"
 )
 
 type StreamLimits struct {

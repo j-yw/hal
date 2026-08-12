@@ -8,7 +8,7 @@ import (
 
 const (
 	helperPolicyID           credentialprotocol.SafeID = "helper-policy-v1"
-	helperPolicyDigestDomain                           = "hal/l8/process-policy/v1"
+	helperPolicyDigestDomain string                    = "hal/l8/process-policy/v1"
 )
 
 // Policy authorizes only canonical safe helper metadata. It cannot mint or

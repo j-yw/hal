@@ -135,7 +135,7 @@ func TestL8ControllerSupervisorSuccessfulTerminateDeniesFreshTerminate(t *testin
 
 func TestL8ControllerSupervisorOneOutstandingRequestAndPendingEventOrdering(t *testing.T) {
 	f := controllerSupervisorVectorFixture(t)
-	state, pid1, controller, _ := controllerSupervisorStateThroughJob(t, f)
+	state, _, controller, _ := controllerSupervisorStateThroughJob(t, f)
 	acceptControllerSupervisorState(t, state, ControllerSupervisorDirectionControllerToPID1, controller, launchRights(t, f), mustControllerSupervisorWire(EncodeControllerSupervisorLaunchShimPacket(2, f.launchRequest, f.identity, f.launch)), ControllerSupervisorTransitionContinue)
 	terminateID := controllerSupervisor16(t, "707172737475767778797a7b7c7d7e7f")
 	metadata := ControllerSupervisorReceiveMetadata{Direction: ControllerSupervisorDirectionControllerToPID1, Credential: controller, CredentialCount: 1}
@@ -143,7 +143,7 @@ func TestL8ControllerSupervisorOneOutstandingRequestAndPendingEventOrdering(t *t
 	if !errors.Is(err, ErrControllerSupervisorOutstandingRequest) || decision != ControllerSupervisorTransitionStopVMRequired {
 		t.Fatalf("second request = %v/%v", decision, err)
 	}
-	state, pid1, controller, _ = controllerSupervisorStateThroughJob(t, f)
+	state, pid1, controller, _ := controllerSupervisorStateThroughJob(t, f)
 	acceptControllerSupervisorState(t, state, ControllerSupervisorDirectionControllerToPID1, controller, launchRights(t, f), mustControllerSupervisorWire(EncodeControllerSupervisorLaunchShimPacket(2, f.launchRequest, f.identity, f.launch)), ControllerSupervisorTransitionContinue)
 	acceptControllerSupervisorState(t, state, ControllerSupervisorDirectionPID1ToController, pid1, nil, mustControllerSupervisorWire(EncodeControllerSupervisorShimStartedPacket(3, f.launchRequest, f.identity, f.started)), ControllerSupervisorTransitionContinue)
 	observation, _ := NewControllerSupervisorShimExitObservation(ControllerSupervisorExitExited, 0, false, ControllerSupervisorMonitorReady)
