@@ -667,6 +667,43 @@ func TestSendPacketSSHRightCardinalityAndOwnership(t *testing.T) {
 	}
 }
 
+func TestSendSSHAcceptedPacketConnectionOrdinalBounds(t *testing.T) {
+	digest := sha256.Sum256([]byte("relay"))
+	header := transportJobHeader(credentialprotocol.PacketTypeSSHAcceptedFD, 9, credentialprotocol.HelperSSHAcceptedFDBodyEncodedLength())
+	for _, tc := range []struct {
+		name    string
+		ordinal uint8
+		wantErr bool
+	}{
+		{name: "maximum", ordinal: 64},
+		{name: "maximum plus one", ordinal: 65, wantErr: true},
+		{name: "uint8 maximum", ordinal: 255, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			right := transportTestRight{state: &transportTestRightState{kind: ReceivedCapabilitySSHConnection, digest: digest}}
+			packet, err := newSSHAcceptedPacket(header, 1, 0, tc.ordinal, digest, right)
+			if tc.wantErr {
+				if !errors.Is(err, ErrContractInvalidArgument) {
+					t.Fatalf("ordinal %d error = %v, want ErrContractInvalidArgument", tc.ordinal, err)
+				}
+				if !right.state.closed {
+					t.Fatalf("invalid ordinal %d did not close owned right", tc.ordinal)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ordinal %d rejected: %v", tc.ordinal, err)
+			}
+			if right.state.closed || packet.Right() != right {
+				t.Fatal("valid maximum ordinal changed right ownership")
+			}
+			if err := packet.Right().Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestSendExecStreamOwnsLockedBodyUntilExplicitDestroy(t *testing.T) {
 	payload := []byte("stdout")
 	digest := sha256.Sum256(payload)
