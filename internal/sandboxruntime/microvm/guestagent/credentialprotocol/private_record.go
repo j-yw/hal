@@ -419,7 +419,6 @@ func (record *PrivateRecord) Wipe() {
 	state.payloadLength = 0
 	state.payloadSHA256 = [32]byte{}
 	state.wiped = true
-	return
 }
 
 func (PrivateRecord) String() string   { return "PrivateRecord" }

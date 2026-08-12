@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -730,6 +732,23 @@ func TestHelperExecTransactionSHA256VectorsAndCompleteWipe(t *testing.T) {
 				owner.Wipe()
 				assertHelperExecSHA256Wiped(t, owner)
 			})
+		}
+	}
+}
+
+func TestHelperExecTransactionSHA256CompressionWorkingStateIsWipeable(t *testing.T) {
+	source, err := os.ReadFile("helper_exec_transaction_sha256.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"var working [8]uint32",
+		"clear(working[:])",
+		"runtime.KeepAlive(working)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("streaming SHA-256 compression omits wipeable working-state marker %q", required)
 		}
 	}
 }

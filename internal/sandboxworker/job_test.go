@@ -64,6 +64,7 @@ func TestWorkerJobSurvivesClientDisconnectAndPersistsRedactedPrivateState(t *tes
 	}
 	if startJob == nil {
 		t.Fatal("JobStart() job = nil, want accepted job")
+		return
 	}
 	jobID := startJob.ID
 

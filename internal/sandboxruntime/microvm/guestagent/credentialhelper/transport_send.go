@@ -317,6 +317,8 @@ func newExecStreamPacket(header credentialprotocol.HelperPacketHeader, revision 
 func newResponsePacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperResponseBody) (SendPacket, error) {
 	return newSendPacket(header, sendResponseArm{body: body}, nil)
 }
+
+//nolint:unused // Frozen D4 Service seam; production use lands with the service state machine.
 func newEventPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperEventBody) (SendPacket, error) {
 	return newSendPacket(header, sendEventArm{body: body}, nil)
 }

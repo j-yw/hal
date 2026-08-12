@@ -195,7 +195,8 @@ func TestL8WorkerV2ExactSchemaHelperIncludesUntaggedExportedFields(t *testing.T)
 		`DefaultSerialized|string|`,
 		`IgnoredByJSON|string|json:"-"`,
 	}
-	if got := l8WorkerV2ExportedSchema(reflect.TypeOf(schemaFixture{})); !reflect.DeepEqual(got, want) {
+	fixture := schemaFixture{private: "excluded"}
+	if got := l8WorkerV2ExportedSchema(reflect.TypeOf(fixture)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("exact exported schema helper = %q, want %q", got, want)
 	}
 }

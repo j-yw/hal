@@ -105,28 +105,25 @@ func (owner *helperExecSHA256) consume(message []byte) {
 		high := helperExecRotateRight32(schedule[index-2], 17) ^ helperExecRotateRight32(schedule[index-2], 19) ^ (schedule[index-2] >> 10)
 		schedule[index] = schedule[index-16] + low + schedule[index-7] + high
 	}
-	a, b, c, d := owner.chaining[0], owner.chaining[1], owner.chaining[2], owner.chaining[3]
-	e, f, g, h := owner.chaining[4], owner.chaining[5], owner.chaining[6], owner.chaining[7]
+	var working [8]uint32
+	copy(working[:], owner.chaining[:])
 	for index := range schedule {
-		upper := helperExecRotateRight32(e, 6) ^ helperExecRotateRight32(e, 11) ^ helperExecRotateRight32(e, 25)
-		choice := (e & f) ^ (^e & g)
-		first := h + upper + choice + constants[index] + schedule[index]
-		lower := helperExecRotateRight32(a, 2) ^ helperExecRotateRight32(a, 13) ^ helperExecRotateRight32(a, 22)
-		majority := (a & b) ^ (a & c) ^ (b & c)
+		upper := helperExecRotateRight32(working[4], 6) ^ helperExecRotateRight32(working[4], 11) ^ helperExecRotateRight32(working[4], 25)
+		choice := (working[4] & working[5]) ^ (^working[4] & working[6])
+		first := working[7] + upper + choice + constants[index] + schedule[index]
+		lower := helperExecRotateRight32(working[0], 2) ^ helperExecRotateRight32(working[0], 13) ^ helperExecRotateRight32(working[0], 22)
+		majority := (working[0] & working[1]) ^ (working[0] & working[2]) ^ (working[1] & working[2])
 		second := lower + majority
-		h, g, f, e, d, c, b, a = g, f, e, d+first, c, b, a, first+second
+		working[7], working[6], working[5], working[4], working[3], working[2], working[1], working[0] =
+			working[6], working[5], working[4], working[3]+first, working[2], working[1], working[0], first+second
 	}
-	owner.chaining[0] += a
-	owner.chaining[1] += b
-	owner.chaining[2] += c
-	owner.chaining[3] += d
-	owner.chaining[4] += e
-	owner.chaining[5] += f
-	owner.chaining[6] += g
-	owner.chaining[7] += h
+	for index := range owner.chaining {
+		owner.chaining[index] += working[index]
+	}
 	clear(schedule[:])
-	a, b, c, d, e, f, g, h = 0, 0, 0, 0, 0, 0, 0, 0
+	clear(working[:])
 	runtime.KeepAlive(schedule)
+	runtime.KeepAlive(working)
 }
 
 func helperExecRotateRight32(value uint32, shift uint) uint32 {

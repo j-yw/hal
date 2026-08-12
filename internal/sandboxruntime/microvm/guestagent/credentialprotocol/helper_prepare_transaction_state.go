@@ -290,12 +290,10 @@ func (proposal *HelperPrepareFileProposal) CommitStaged() error {
 		return ErrHelperPrepareTransactionCommitted
 	}
 	if !proposalOwner.consumed {
-		owner.failLocked(ErrHelperPrepareTransactionFile)
-		return ErrHelperPrepareTransactionFile
+		return owner.failLocked(ErrHelperPrepareTransactionFile)
 	}
 	if owner.pending != proposalOwner || len(owner.acceptedFiles) >= len(owner.expectedFiles) || proposalOwner.metadata != owner.expectedFiles[len(owner.acceptedFiles)] {
-		owner.failLocked(ErrHelperPrepareTransactionFile)
-		return ErrHelperPrepareTransactionFile
+		return owner.failLocked(ErrHelperPrepareTransactionFile)
 	}
 	owner.acceptedFiles = append(owner.acceptedFiles, proposalOwner.metadata)
 	owner.acceptedBytes += uint64(proposalOwner.metadata.fileLength)

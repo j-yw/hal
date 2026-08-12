@@ -350,9 +350,7 @@ func (state *controllerMonitorStateOwner) acceptPrepareBeginLocked(packet Contro
 	}
 	state.prepareCorrelation, state.prepareTransaction, state.manifestSHA256 = correlation, transaction, manifest
 	state.manifestCount = uint16(len(packet.begin.Bindings))
-	for index := range packet.begin.Bindings {
-		state.manifest[index] = packet.begin.Bindings[index]
-	}
+	copy(state.manifest[:len(packet.begin.Bindings)], packet.begin.Bindings)
 	state.phase = ControllerMonitorPhasePreparing
 	return ControllerMonitorTransitionContinue, nil
 }
