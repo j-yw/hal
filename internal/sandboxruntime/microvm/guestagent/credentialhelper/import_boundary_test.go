@@ -21,14 +21,19 @@ func TestCredentialHelperContractImportBoundaries(t *testing.T) {
 		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol": true,
 	}
 	allowedStandard := map[string]bool{
-		"context":       true,
-		"crypto/sha256": true,
-		"errors":        true,
-		"fmt":           true,
-		"reflect":       true,
-		"runtime":       true,
-		"sync":          true,
-		"time":          true,
+		"context":         true,
+		"crypto/sha256":   true,
+		"crypto/subtle":   true,
+		"encoding/binary": true,
+		"errors":          true,
+		"fmt":             true,
+		"hash":            true,
+		"math":            true,
+		"reflect":         true,
+		"runtime":         true,
+		"sync":            true,
+		"sync/atomic":     true,
+		"time":            true,
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || !isCredentialHelperContractFile(entry.Name()) {
@@ -59,7 +64,7 @@ func TestCredentialHelperContractImportGuardExcludesFutureImplementationFiles(t 
 			t.Errorf("future implementation file %q is in the D2 foundation allowlist", name)
 		}
 	}
-	for _, name := range []string{"contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "policy.go"} {
+	for _, name := range []string{"contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "policy.go", "transport_types.go", "transport_accessors.go", "transport_receive.go", "transport_send.go"} {
 		if !isCredentialHelperContractFile(name) {
 			t.Errorf("foundation file %q is outside the import guard", name)
 		}
@@ -115,7 +120,7 @@ func TestCredentialHelperPolicyUsesOnlyPureContractImports(t *testing.T) {
 
 func isCredentialHelperContractFile(name string) bool {
 	switch name {
-	case "contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "policy.go":
+	case "contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "policy.go", "transport_types.go", "transport_accessors.go", "transport_receive.go", "transport_send.go":
 		return true
 	default:
 		return false
