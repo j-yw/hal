@@ -2354,6 +2354,14 @@ The deterministic state model has these rules:
    limit set, cgroup, monitor, validated `monitorReadySHA256`, two-right
    transfer, and `job_created` together. A proven pre-publication rollback may
    emit `operation_failed`; uncertainty emits stop-VM and becomes terminal.
+   A committed create failure is the final HL8L packet for that non-reusable
+   guest session. After the exact correlated result commits, the pure state
+   returns `stop_vm_required` after that result commits, accepts no normal
+   close or second create, and D6 stops/reaps the microVM. This teardown is
+   required even for a canonical pre-mutation resource denial or completely
+   proved rollback because the authenticated generation and one-job lease
+   cannot be reused; it does not turn the safe failure result into a cleanup
+   or live-absence proof.
 5. The controller has one outstanding request. PID1 sends its one correlated
    terminal result before an asynchronous event. A second request, duplicate
    active request, response with the wrong type/ID/identity/revision, or
@@ -2381,7 +2389,9 @@ The deterministic state model has these rules:
    requires cgroup `populated 0` and emits `job_terminated`. Retry-required
    permits only a fresh-ID `terminate_job` with the same generations and a
    nondecreasing revision, within the shared three-attempt/deadline limit.
-   Stop-VM is terminal.
+   Stop-VM is terminal. Terminate and destroy charge one shared cleanup-attempt counter
+   before work, not separate per-operation counters. At most three
+   total terminate/destroy request IDs exist inside the one 30-second deadline.
 8. `destroy_job` is valid only after termination proved zero population and the
    controller has first denied new exec/accept, driven direct HL8M
    revoke/cleanup to `cleanup_complete`, closed every listener and accepted
@@ -2396,6 +2406,8 @@ The deterministic state model has these rules:
    monitor-exit/cleanup precondition gets one canonical correlated operation
    failure with retry/stop cleanup disposition. A later fresh-ID destroy retry
    remains inside the same three-attempt/deadline bound. Stop-VM is terminal.
+   The complete non-evicting request-ID ledger bound is therefore exactly
+   create + launches + shared cleanup attempts: `1 + 4096 + 3 = 4100`.
 9. PID1 has exactly one pending asynchronous-event slot. Only `shim_exited`
    may occupy it. If an exit races any outstanding request, the immutable exit
    tuple is placed in that slot; PID1 completes and sends the outstanding
