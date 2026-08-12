@@ -2828,7 +2828,10 @@ direction, zero rights, no truncation, active request, identity, exact sequence,
 manifest order, and the observation's one-use owner before committing the safe
 metadata to the canonical prepare transaction and advancing the controller
 counter. The ordinary `Accept` path rejects `0x11` before generic body decoding;
-the generic packet decoder is test/diagnostic-only for this arm and there is no public `PrepareFile` packet accessor.
+the generic packet encoder and decoder both reject `0x11`, the packet union
+contains no private file-body owner, and there is no public `PrepareFile` packet accessor.
+Tests construct only the safe fixed prefix and caller-owned
+fixed slot; a diagnostic exception is forbidden.
 Production D4 sends through `ControllerMonitorPrepareFilePrefixBytes`, exactly
 `ControllerMonitorHeaderBytes + 46`, and
 `EncodeControllerMonitorPrepareFilePrefix(header ControllerMonitorHeader,

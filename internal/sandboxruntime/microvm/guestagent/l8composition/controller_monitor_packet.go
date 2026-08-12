@@ -11,7 +11,6 @@ type ControllerMonitorPacket struct {
 	header   ControllerMonitorHeader
 	ready    ControllerMonitorReadyBody
 	begin    credentialprotocol.HelperPrepareBeginBody
-	file     *credentialprotocol.HelperPrepareFileBody
 	commit   credentialprotocol.HelperPrepareCommitBody
 	ssh      ControllerMonitorCreateSSHEndpointBody
 	revoke   credentialprotocol.HelperRevokeBody
@@ -97,16 +96,6 @@ func EncodeControllerMonitorPrepareBeginPacket(sequence uint64, request [16]byte
 	return encodeControllerMonitorTypedPacket(ControllerMonitorPacketTypePrepareBegin, sequence, request, job, encoded, err)
 }
 
-// EncodeControllerMonitorPrepareFilePacket preserves the canonical generic
-// codec for tests and diagnostics. Production D4 uses the fixed-prefix writer
-// and its locked payload slot instead of this allocating full-wire helper.
-func EncodeControllerMonitorPrepareFilePacket(sequence uint64, request [16]byte, job [32]byte, body *credentialprotocol.HelperPrepareFileBody) ([]byte, error) {
-	encoded, err := credentialprotocol.EncodeHelperPrepareFileBody(body)
-	if err == nil && (len(encoded) < controllerMonitorPrepareFileMinBytes || len(encoded) > controllerMonitorPrepareFileMaxBytes) {
-		err = ErrControllerMonitorBodyLength
-	}
-	return encodeControllerMonitorTypedPacket(ControllerMonitorPacketTypePrepareFile, sequence, request, job, encoded, err)
-}
 func EncodeControllerMonitorPrepareCommitPacket(sequence uint64, request [16]byte, job [32]byte, body credentialprotocol.HelperPrepareCommitBody) ([]byte, error) {
 	encoded, err := credentialprotocol.EncodeHelperPrepareCommitBody(body)
 	return encodeControllerMonitorTypedPacket(ControllerMonitorPacketTypePrepareCommit, sequence, request, job, encoded, err)
@@ -178,10 +167,7 @@ func DecodeControllerMonitorPacket(encoded []byte) (ControllerMonitorPacket, err
 			err = validateControllerMonitorPrepareBindings(packet.begin.Bindings)
 		}
 	case ControllerMonitorPacketTypePrepareFile:
-		// Diagnostic generic decoding only. ControllerMonitorState rejects this
-		// arm before entering DecodeControllerMonitorPacket; D4 uses the fixed
-		// slot inspector and AcceptPrepareFile.
-		packet.file, err = credentialprotocol.DecodeHelperPrepareFileBody(body)
+		err = ErrControllerMonitorPrepareFileSlotRequired
 	case ControllerMonitorPacketTypePrepareCommit:
 		packet.commit, err = credentialprotocol.DecodeHelperPrepareCommitBody(body)
 	case ControllerMonitorPacketTypeCreateSSHEndpoint:
@@ -201,9 +187,6 @@ func DecodeControllerMonitorPacket(encoded []byte) (ControllerMonitorPacket, err
 		err = ErrControllerMonitorPacketType
 	}
 	if err != nil {
-		if packet.file != nil {
-			packet.file.Wipe()
-		}
 		return ControllerMonitorPacket{}, err
 	}
 	return packet, nil
@@ -262,7 +245,7 @@ func EncodeControllerMonitorPacket(packet ControllerMonitorPacket) ([]byte, erro
 	case ControllerMonitorPacketTypePrepareBegin:
 		body, err = credentialprotocol.EncodeHelperPrepareBeginBody(packet.begin)
 	case ControllerMonitorPacketTypePrepareFile:
-		body, err = credentialprotocol.EncodeHelperPrepareFileBody(packet.file)
+		return nil, ErrControllerMonitorPrepareFileSlotRequired
 	case ControllerMonitorPacketTypePrepareCommit:
 		body, err = credentialprotocol.EncodeHelperPrepareCommitBody(packet.commit)
 	case ControllerMonitorPacketTypeCreateSSHEndpoint:
@@ -298,7 +281,6 @@ func EncodeControllerMonitorPacket(packet ControllerMonitorPacket) ([]byte, erro
 func validateControllerMonitorPacketUnion(packet ControllerMonitorPacket) error {
 	emptyBegin := packet.begin.Revision == 0 && packet.begin.ExpiryUnixNano == 0 && packet.begin.Bindings == nil
 	emptyReady := packet.ready == (ControllerMonitorReadyBody{})
-	emptyFile := packet.file == nil
 	emptyCommit := packet.commit == (credentialprotocol.HelperPrepareCommitBody{})
 	emptySSH := packet.ssh == (ControllerMonitorCreateSSHEndpointBody{})
 	emptyRevoke := packet.revoke == (credentialprotocol.HelperRevokeBody{})
@@ -307,7 +289,6 @@ func validateControllerMonitorPacketUnion(packet ControllerMonitorPacket) error 
 	emptyClose := packet.close == (ControllerMonitorCloseNotifyBody{})
 	inactiveEmpty := (packet.header.Type == ControllerMonitorPacketTypeMonitorReady || emptyReady) &&
 		(packet.header.Type == ControllerMonitorPacketTypePrepareBegin || emptyBegin) &&
-		(packet.header.Type == ControllerMonitorPacketTypePrepareFile || emptyFile) &&
 		(packet.header.Type == ControllerMonitorPacketTypePrepareCommit || emptyCommit) &&
 		(packet.header.Type == ControllerMonitorPacketTypeCreateSSHEndpoint || emptySSH) &&
 		(packet.header.Type == ControllerMonitorPacketTypeRevoke || emptyRevoke) &&
@@ -349,12 +330,6 @@ func (packet ControllerMonitorPacket) Event() (ControllerMonitorEventBody, bool)
 }
 func (packet ControllerMonitorPacket) CloseNotify() (ControllerMonitorCloseNotifyBody, bool) {
 	return packet.close, packet.header.Type == ControllerMonitorPacketTypeCloseNotify
-}
-func (packet *ControllerMonitorPacket) Wipe() {
-	if packet != nil && packet.file != nil {
-		packet.file.Wipe()
-		packet.file = nil
-	}
 }
 
 func ValidateControllerMonitorPacketMetadata(packetType ControllerMonitorPacketType, direction ControllerMonitorDirection, rightsCount uint32, response *ControllerMonitorResponseBody) error {

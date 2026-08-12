@@ -89,9 +89,6 @@ func TestEncodeControllerMonitorPacketRejectsForgedInactiveUnionHeaderAndEventCo
 		"begin nonnil empty": func(packet *ControllerMonitorPacket) {
 			packet.begin.Bindings = []credentialprotocol.HelperBindingManifestRecord{}
 		},
-		"file": func(packet *ControllerMonitorPacket) {
-			packet.file, _ = credentialprotocol.NewHelperPrepareFileBody(1, 0, sha256.Sum256([]byte("x")), []byte("x"))
-		},
 		"commit": func(packet *ControllerMonitorPacket) { packet.commit.Revision = 1 },
 		"ssh":    func(packet *ControllerMonitorPacket) { packet.ssh.Revision = 1 },
 		"revoke": func(packet *ControllerMonitorPacket) { packet.revoke.Revision = 1 },
@@ -109,7 +106,6 @@ func TestEncodeControllerMonitorPacketRejectsForgedInactiveUnionHeaderAndEventCo
 		if _, err := EncodeControllerMonitorPacket(packet); !errors.Is(err, ErrControllerMonitorBody) {
 			t.Errorf("inactive %s = %v", name, err)
 		}
-		packet.Wipe()
 	}
 
 	packet, err := DecodeControllerMonitorPacket(readyWire)
@@ -162,30 +158,6 @@ func TestControllerMonitorExactBodyBoundsAndDelegatedPrepareRevokeCodecs(t *test
 	}
 	if !bytes.Equal(wire[ControllerMonitorHeaderBytes:], helperBegin) || len(wire) != ControllerMonitorHeaderBytes+controllerMonitorPrepareBeginMaxBytes {
 		t.Fatal("prepare begin did not delegate exact helper bytes")
-	}
-
-	private := bytes.Repeat([]byte{0x5a}, credentialprotocol.MaxHelperFileBytes)
-	file, err := credentialprotocol.NewHelperPrepareFileBody(1, 0, sha256.Sum256(private), private)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Wipe()
-	helperFile, _ := credentialprotocol.EncodeHelperPrepareFileBody(file)
-	wire, err = EncodeControllerMonitorPrepareFilePacket(1, request, fixture.jobIdentity, file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(helperFile) != controllerMonitorPrepareFileMaxBytes || !bytes.Equal(wire[ControllerMonitorHeaderBytes:], helperFile) {
-		t.Fatal("prepare file did not delegate exact helper bytes")
-	}
-	diagnosticPacket, err := DecodeControllerMonitorPacket(wire)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer diagnosticPacket.Wipe()
-	diagnosticWire, err := EncodeControllerMonitorPacket(diagnosticPacket)
-	if err != nil || !bytes.Equal(diagnosticWire, wire) {
-		t.Fatalf("diagnostic file roundtrip = %v/%t", err, bytes.Equal(diagnosticWire, wire))
 	}
 
 	commit := credentialprotocol.HelperPrepareCommitBody{Revision: 1, ManifestSHA256: [32]byte{1}}

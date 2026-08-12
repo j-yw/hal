@@ -435,6 +435,48 @@ func TestControllerMonitorPrepareFileProductionSourceHasNoUnsafeBodyPath(t *test
 	if _, ok := reflect.TypeOf(ControllerMonitorPacket{}).MethodByName("PrepareFile"); ok {
 		t.Fatal("public PrepareFile packet accessor exists")
 	}
+	packetSource, err := os.ReadFile("controller_monitor_packet.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"func EncodeControllerMonitorPrepareFilePacket(",
+		"packet.file",
+		"DecodeHelperPrepareFileBody",
+		"EncodeHelperPrepareFileBody",
+		"Diagnostic generic decoding",
+	} {
+		if bytes.Contains(packetSource, []byte(forbidden)) {
+			t.Errorf("generic packet source retains forbidden prepare-file path %q", forbidden)
+		}
+	}
+
+	payload := []byte("private-generic-path-must-fail")
+	digest := sha256.Sum256(payload)
+	header, err := EncodeControllerMonitorHeader(ControllerMonitorHeader{
+		Type:              ControllerMonitorPacketTypePrepareFile,
+		Sequence:          0,
+		RequestID:         byteRange16(0x31),
+		JobIdentityDigest: byteRange32(0x41),
+		BodyLength:        controllerMonitorPrepareFileBodyPrefixBytes + uint32(len(payload)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, controllerMonitorPrepareFileBodyPrefixBytes+len(payload))
+	binary.BigEndian.PutUint64(body[:8], 1)
+	binary.BigEndian.PutUint32(body[10:14], uint32(len(payload)))
+	copy(body[14:46], digest[:])
+	copy(body[46:], payload)
+	wire := append(append([]byte(nil), header[:]...), body...)
+	if _, err := DecodeControllerMonitorPacket(wire); !errors.Is(err, ErrControllerMonitorPrepareFileSlotRequired) {
+		t.Fatalf("generic decode error = %v", err)
+	}
+	if _, err := EncodeControllerMonitorPacket(ControllerMonitorPacket{header: ControllerMonitorHeader{
+		Type: ControllerMonitorPacketTypePrepareFile,
+	}}); !errors.Is(err, ErrControllerMonitorPrepareFileSlotRequired) {
+		t.Fatalf("generic encode error = %v", err)
+	}
 	slotSource, err := os.ReadFile("controller_monitor_prepare_file_slot.go")
 	if err != nil {
 		t.Fatal(err)

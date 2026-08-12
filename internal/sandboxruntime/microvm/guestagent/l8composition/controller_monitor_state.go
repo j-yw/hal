@@ -187,7 +187,6 @@ func (state *ControllerMonitorState) Accept(metadata ControllerMonitorReceiveMet
 		s.mu.Unlock()
 		return ControllerMonitorTransitionStopVMRequired, err
 	}
-	defer packet.Wipe()
 	if packet.header.Type == ControllerMonitorPacketTypePrepareBegin {
 		if trustedObservationUnixNano <= 0 {
 			s.mu.Lock()
