@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 const (
@@ -43,7 +45,7 @@ func TestCredentialRenewCanonicalVectorsAndAccessors(t *testing.T) {
 	if string(wire) != want {
 		t.Fatalf("renew request:\n got %s\nwant %s", wire, want)
 	}
-	decoded, err := DecodeCredentialRenewRequest(testSessionIdentity(t), testPriorRevision, testSessionExpiry, testRootExpiry, wire)
+	decoded, err := DecodeCredentialRenewRequest(testSessionIdentity(t), testPriorRevision, "active-proof-8", testSessionExpiry, testRootExpiry, wire)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +109,17 @@ func TestCredentialRenewCallerStateRules(t *testing.T) {
 	}
 	if _, err := NewCredentialRenewRequest(requestID, identity, testPriorRevision, testSessionExpiry, testSessionExpiry, testSessionExpiry, "active-proof-8"); err != nil {
 		t.Fatalf("expiry equal to both horizons rejected: %v", err)
+	}
+	issuedAt := identity.JobIdentity().IssuedAtUnixNano
+	rootMaximum := issuedAt + int64(sandboxruntime.MaxJobCredentialLifetime)
+	if _, err := NewCredentialRenewRequest(requestID, identity, testPriorRevision, rootMaximum, rootMaximum+1, rootMaximum+1, "active-proof-8"); err != nil {
+		t.Fatalf("exact root lifetime rejected: %v", err)
+	}
+	if _, err := NewCredentialRenewRequest(requestID, identity, testPriorRevision, rootMaximum+1, rootMaximum+2, rootMaximum+2, "active-proof-8"); !errors.Is(err, ErrInvalidCredentialRenewRequest) {
+		t.Fatalf("root lifetime plus one error = %v", err)
+	}
+	if validCredentialRenewRootExpiry(math.MaxInt64-int64(sandboxruntime.MaxJobCredentialLifetime)+1, math.MaxInt64) {
+		t.Fatal("overflowing root lifetime accepted")
 	}
 	if _, err := NewCredentialRenewRequest(requestID, identity, testPriorRevision, testRenewExpiry, testSessionExpiry, testRootExpiry, strings.Repeat("a", 128)); err != nil {
 		t.Fatalf("exact safe-ID bound rejected: %v", err)
@@ -246,8 +259,18 @@ func TestCredentialLifecycleStrictCanonicalJSONAndCorrelation(t *testing.T) {
 	if _, err := DecodeCredentialRenewSuccessResponse(otherIdentityRenew, renewSuccessWire); !errors.Is(err, ErrCredentialRenewCorrelationMismatch) {
 		t.Fatalf("renew session/identity correlation error = %v", err)
 	}
-	if _, err := DecodeCredentialRenewRequest(otherIdentity, testPriorRevision, testSessionExpiry, testRootExpiry, renewWire); !errors.Is(err, ErrInvalidCredentialRenewRequestJSON) {
+	if _, err := DecodeCredentialRenewRequest(otherIdentity, testPriorRevision, "active-proof-8", testSessionExpiry, testRootExpiry, renewWire); !errors.Is(err, ErrInvalidCredentialRenewRequestJSON) {
 		t.Fatalf("renew request session/identity error = %v", err)
+	}
+	changedProofWire := replaceBytes(renewWire, `"priorProofId":"active-proof-8"`, `"priorProofId":"different-active-proof"`)
+	if _, err := DecodeCredentialRenewRequest(testSessionIdentity(t), testPriorRevision, "active-proof-8", testSessionExpiry, testRootExpiry, changedProofWire); !errors.Is(err, ErrInvalidCredentialRenewRequestJSON) {
+		t.Fatalf("renew request prior-proof correlation error = %v", err)
+	}
+	if _, err := DecodeCredentialRenewRequest(testSessionIdentity(t), testPriorRevision, "", testSessionExpiry, testRootExpiry, renewWire); !errors.Is(err, ErrInvalidCredentialRenewRequestJSON) {
+		t.Fatalf("renew request empty caller proof error = %v", err)
+	}
+	if _, err := DecodeCredentialRenewRequest(testSessionIdentity(t), testPriorRevision, "unsafe/proof", testSessionExpiry, testRootExpiry, renewWire); !errors.Is(err, ErrInvalidCredentialRenewRequestJSON) {
+		t.Fatalf("renew request unsafe caller proof error = %v", err)
 	}
 	otherRevisionRenew, _ := NewCredentialRenewRequest(renew.RequestID(), testSessionIdentity(t), testPriorRevision+1, testRenewExpiry, testSessionExpiry, testRootExpiry, "active-proof-9")
 	if _, err := DecodeCredentialRenewSuccessResponse(otherRevisionRenew, renewSuccessWire); !errors.Is(err, ErrCredentialRenewCorrelationMismatch) {
@@ -439,7 +462,7 @@ func testRequestIDWithFirstByte(t *testing.T, first byte) RequestID {
 }
 
 func decodeRenewForTest(wire []byte) error {
-	_, err := DecodeCredentialRenewRequest(mustTestSessionIdentity(), testPriorRevision, testSessionExpiry, testRootExpiry, wire)
+	_, err := DecodeCredentialRenewRequest(mustTestSessionIdentity(), testPriorRevision, "active-proof-8", testSessionExpiry, testRootExpiry, wire)
 	return err
 }
 

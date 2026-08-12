@@ -13,7 +13,8 @@ import (
 func TestCredentialLifecycleCodecProductionImportsStayPure(t *testing.T) {
 	allowed := map[string]bool{
 		"bytes": true, "encoding/base64": true, "encoding/json": true,
-		"errors": true, "fmt": true, "io": true, "unicode/utf8": true,
+		"errors": true, "fmt": true, "io": true, "math": true, "unicode/utf8": true,
+		"github.com/jywlabs/hal/internal/sandboxruntime":                                       true,
 		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol": true,
 	}
 	for _, path := range credentialLifecycleProductionFiles(t) {

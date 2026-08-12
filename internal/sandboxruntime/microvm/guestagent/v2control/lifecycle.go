@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"unicode/utf8"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 )
 
@@ -212,7 +214,7 @@ func ValidateCredentialRenewRequest(request CredentialRenewRequest) error {
 		request.state.priorRevision == ^uint64(0) || request.state.revision != request.state.priorRevision+1 ||
 		request.state.expiresAtUnixNano <= 0 || request.state.authenticatedSessionExpiresUnixNano <= 0 ||
 		request.state.rootExpiresAtUnixNano <= 0 ||
-		request.state.expiresAtUnixNano <= request.state.identity.JobIdentity().IssuedAtUnixNano ||
+		!validCredentialRenewRootExpiry(request.state.identity.JobIdentity().IssuedAtUnixNano, request.state.expiresAtUnixNano) ||
 		request.state.expiresAtUnixNano > request.state.authenticatedSessionExpiresUnixNano ||
 		request.state.expiresAtUnixNano > request.state.rootExpiresAtUnixNano ||
 		!validCredentialLifecycleSafeID(request.state.priorProofID) {
@@ -249,9 +251,10 @@ func EncodeCredentialRenewRequest(request CredentialRenewRequest) ([]byte, error
 }
 
 // DecodeCredentialRenewRequest accepts only canonical bytes matching the
-// authenticated identity and caller's prior revision and expiry horizons.
-func DecodeCredentialRenewRequest(expectedIdentity GuestCredentialSessionIdentity, priorRevision uint64, authenticatedSessionExpiresUnixNano, rootExpiresAtUnixNano int64, wire []byte) (CredentialRenewRequest, error) {
-	if ValidateGuestCredentialSessionIdentity(expectedIdentity) != nil || !validCredentialLifecycleJSONInput(wire) {
+// authenticated identity, current proof, prior revision, and expiry horizons.
+func DecodeCredentialRenewRequest(expectedIdentity GuestCredentialSessionIdentity, priorRevision uint64, expectedPriorProofID string, authenticatedSessionExpiresUnixNano, rootExpiresAtUnixNano int64, wire []byte) (CredentialRenewRequest, error) {
+	if ValidateGuestCredentialSessionIdentity(expectedIdentity) != nil ||
+		!validCredentialLifecycleSafeID(expectedPriorProofID) || !validCredentialLifecycleJSONInput(wire) {
 		return CredentialRenewRequest{}, ErrInvalidCredentialRenewRequestJSON
 	}
 	var decoded credentialRenewRequestJSON
@@ -269,7 +272,8 @@ func DecodeCredentialRenewRequest(expectedIdentity GuestCredentialSessionIdentit
 		return CredentialRenewRequest{}, ErrInvalidCredentialRenewRequestJSON
 	}
 	expectedDigest, err := credentialLifecycleIdentityDigest(expectedIdentity)
-	if err != nil || digest != expectedDigest || priorRevision == 0 || priorRevision == ^uint64(0) || decoded.Body.Revision != priorRevision+1 {
+	if err != nil || digest != expectedDigest || priorRevision == 0 || priorRevision == ^uint64(0) ||
+		decoded.Body.Revision != priorRevision+1 || decoded.Body.PriorProofID != expectedPriorProofID {
 		return CredentialRenewRequest{}, ErrInvalidCredentialRenewRequestJSON
 	}
 	request, err := NewCredentialRenewRequest(requestID, expectedIdentity, priorRevision, decoded.Body.ExpiresAtUnixNano, authenticatedSessionExpiresUnixNano, rootExpiresAtUnixNano, decoded.Body.PriorProofID)
@@ -702,6 +706,14 @@ func credentialLifecycleIdentityDigest(identity GuestCredentialSessionIdentity) 
 
 func validCredentialLifecycleSafeID(value string) bool {
 	return credentialprotocol.ValidateSafeID(credentialprotocol.SafeID(value)) == nil
+}
+
+func validCredentialRenewRootExpiry(issuedAtUnixNano, expiresAtUnixNano int64) bool {
+	maximumLifetime := int64(sandboxruntime.MaxJobCredentialLifetime)
+	return issuedAtUnixNano > 0 && maximumLifetime > 0 &&
+		issuedAtUnixNano <= math.MaxInt64-maximumLifetime &&
+		expiresAtUnixNano > issuedAtUnixNano &&
+		expiresAtUnixNano <= issuedAtUnixNano+maximumLifetime
 }
 
 func validCredentialRevokeReason(reason CredentialRevokeReason) bool {
