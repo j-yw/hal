@@ -48,7 +48,7 @@ func (request CredentialPrepareRequest) Identity() JobIdentity {
 	if request.state == nil {
 		return JobIdentity{}
 	}
-	return cloneJobIdentity(request.state.identity)
+	return request.state.identity.JobIdentity()
 }
 func (request CredentialPrepareRequest) Revision() uint64 {
 	if request.state == nil {

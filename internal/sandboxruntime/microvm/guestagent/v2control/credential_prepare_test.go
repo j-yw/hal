@@ -4,9 +4,74 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+const canonicalCredentialPrepareIdentityJSON = `{"sandboxId":"sandbox-1","executionId":"execution-1","workerId":"worker-1","hostId":"host-1","runtimeDriver":"microvm","runtimeId":"runtime-1","runtimeGeneration":"runtime-generation-1","firecrackerProcessGeneration":"process-generation-1","vsockGeneration":"vsock-generation-1","workerJobId":"worker-job-1","submissionId":"submission-1","planId":"plan-1","activationGeneration":"activation-generation-1","credentialGeneration":"credential-generation-1","networkPlanId":"network-plan-1","policySnapshotId":"policy-snapshot-1","proxySessionId":"proxy-session-1","proxyGenerationId":"proxy-generation-1","topologyGenerationId":"topology-generation-1","ruleGenerationId":"rule-generation-1","admissionGrantId":"grant-1","principalId":"principal-1","templatePolicyId":"template-policy-1","workspacePolicyId":"workspace-policy-1","controllerKeyGeneration":"controller-key-generation-1","guestBootGeneration":"guest-boot-generation-1","guestImageGeneration":"guest-image-generation-1","guestImageDigest":"sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","guestSessionGeneration":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","guestHelperGeneration":"helper-generation-1","admissionGrantRevision":7,"issuedAtUnixNano":1700000000123456789,"bindings":[{"bindingId":"binding-http","mode":"http_proxy"},{"bindingId":"binding-file","mode":"file_tmpfs"}]}`
+
+func TestCredentialPrepareRequiresAuthenticatedSessionIdentity(t *testing.T) {
+	t.Run("API requires authenticated context", func(t *testing.T) {
+		constructor := reflect.TypeOf(NewCredentialPrepareRequest)
+		if got := constructor.In(1); got != reflect.TypeOf(GuestCredentialSessionIdentity{}) {
+			t.Errorf("constructor identity parameter = %v, want authenticated GuestCredentialSessionIdentity", got)
+		}
+		decoder := reflect.TypeOf(DecodeCredentialPrepareRequest)
+		if decoder.NumIn() != 2 || decoder.In(0) != reflect.TypeOf(GuestCredentialSessionIdentity{}) {
+			t.Errorf("decoder inputs = %v, want expected authenticated session identity plus wire", decoder)
+		}
+	})
+
+	sessionIdentity := testSessionIdentity(t)
+	request, err := NewCredentialPrepareRequest(
+		testRequestID(t), sessionIdentity, 1, 1700000001123456789,
+		[]BindingManifest{mustHTTPManifest(t, "binding-http"), mustFileManifest(t, "binding-file", 7)}, 1, 7,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionDigest, err := GuestCredentialSessionIdentityDigest(sessionIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobDigest, err := JobIdentityDigest(sessionIdentity.JobIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("digest binds authenticated session", func(t *testing.T) {
+		if request.IdentityDigest().Bytes() != sessionDigest || sessionDigest == jobDigest {
+			t.Fatal("prepare envelope digest must be the session-bound identity digest, not the bare job digest")
+		}
+	})
+
+	otherSession := otherLifecycleSessionIdentity(t)
+	firstJob := sessionIdentity.JobIdentity()
+	otherJob := otherSession.JobIdentity()
+	otherJob.GuestSessionGeneration = firstJob.GuestSessionGeneration
+	if !sameCredentialLifecycleIdentity(firstJob, otherJob) {
+		t.Fatal("cross-session fixture differs outside its valid session generation")
+	}
+	otherRequest, err := NewCredentialPrepareRequest(
+		testRequestID(t), otherSession, 1, 1700000001123456789,
+		[]BindingManifest{mustHTTPManifest(t, "binding-http"), mustFileManifest(t, "binding-file", 7)}, 1, 7,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherWire, err := EncodeCredentialPrepareRequest(otherRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("exact expected session and cross-session rejection", func(t *testing.T) {
+		if _, err := DecodeCredentialPrepareRequest(otherSession, otherWire); err != nil {
+			t.Fatalf("exact expected session decode error = %v", err)
+		}
+		if _, err := DecodeCredentialPrepareRequest(sessionIdentity, otherWire); !errors.Is(err, ErrInvalidCredentialPrepareRequestJSON) {
+			t.Fatalf("cross-session decode error = %v", err)
+		}
+	})
+}
 
 func TestCredentialPrepareCanonicalRequestAndCorrelatedSuccess(t *testing.T) {
 	httpBinding, err := NewHTTPBindingManifest("binding-http", "azure-openai-responses-v1")
@@ -17,8 +82,9 @@ func TestCredentialPrepareCanonicalRequestAndCorrelatedSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sessionIdentity := testSessionIdentity(t)
 	request, err := NewCredentialPrepareRequest(
-		testRequestID(t), validChildIdentity(t), 1, 1700000001123456789,
+		testRequestID(t), sessionIdentity, 1, 1700000001123456789,
 		[]BindingManifest{httpBinding, fileBinding}, 1, 7,
 	)
 	if err != nil {
@@ -28,15 +94,29 @@ func TestCredentialPrepareCanonicalRequestAndCorrelatedSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identityWire, err := MarshalJobIdentity(validChildIdentity(t))
+	identityWire, err := MarshalJobIdentity(sessionIdentity.JobIdentity())
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRequest := `{"protocolVersion":"guest-agent-v2","operation":"credential_prepare","requestId":"AQIDBAUGBwgJCgsMDQ4PEA","identityDigest":"GXLGyw5Cat-dCO-SgtEiDD96-GxgeiNBcQ_0jEgyXhI","body":{"identity":` + string(identityWire) + `,"revision":1,"expiresAtUnixNano":1700000001123456789,"bindings":[{"bindingId":"binding-http","mode":"http_proxy","serviceId":"azure-openai-responses-v1"},{"bindingId":"binding-file","mode":"file_tmpfs","targetPath":"credentials/config","declaredFileBytes":7,"fileSha256":"` + strings.Repeat("a", 64) + `"}],"privateRecordCount":1,"privateAggregateBytes":7}}`
+	if string(identityWire) != canonicalCredentialPrepareIdentityJSON {
+		t.Fatalf("prepare identity wire:\n got %s\nwant %s", identityWire, canonicalCredentialPrepareIdentityJSON)
+	}
+	wantRequest := `{"protocolVersion":"guest-agent-v2","operation":"credential_prepare","requestId":"AQIDBAUGBwgJCgsMDQ4PEA","identityDigest":"iaQbfxpg50wx_Vd-KNW31vsy14Pncip3rlX9pNb4Tzw","body":{"identity":` + canonicalCredentialPrepareIdentityJSON + `,"revision":1,"expiresAtUnixNano":1700000001123456789,"bindings":[{"bindingId":"binding-http","mode":"http_proxy","serviceId":"azure-openai-responses-v1"},{"bindingId":"binding-file","mode":"file_tmpfs","targetPath":"credentials/config","declaredFileBytes":7,"fileSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"privateRecordCount":1,"privateAggregateBytes":7}}`
 	if string(wire) != wantRequest {
 		t.Fatalf("request wire:\n got %s\nwant %s", wire, wantRequest)
 	}
-	decodedRequest, err := DecodeCredentialPrepareRequest(wire)
+	sessionDigest, err := GuestCredentialSessionIdentityDigest(sessionIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobDigest, err := JobIdentityDigest(sessionIdentity.JobIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.IdentityDigest().Bytes() != sessionDigest || sessionDigest == jobDigest {
+		t.Fatal("canonical prepare request is not bound to the authenticated session")
+	}
+	decodedRequest, err := DecodeCredentialPrepareRequest(sessionIdentity, wire)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,15 +133,23 @@ func TestCredentialPrepareCanonicalRequestAndCorrelatedSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantResponse := `{"protocolVersion":"guest-agent-v2","operation":"credential_prepare","requestId":"AQIDBAUGBwgJCgsMDQ4PEA","identityDigest":"GXLGyw5Cat-dCO-SgtEiDD96-GxgeiNBcQ_0jEgyXhI","ok":true,"body":{"revision":1,"expiresAtUnixNano":1700000001123456789,"activeProofId":"active-proof","execBindingId":"exec-binding","bindingProofs":[{"bindingId":"binding-http","mode":"http_proxy","proofId":"proof-http"},{"bindingId":"binding-file","mode":"file_tmpfs","proofId":"proof-file"}]}}`
+	wantResponse := `{"protocolVersion":"guest-agent-v2","operation":"credential_prepare","requestId":"AQIDBAUGBwgJCgsMDQ4PEA","identityDigest":"iaQbfxpg50wx_Vd-KNW31vsy14Pncip3rlX9pNb4Tzw","ok":true,"body":{"revision":1,"expiresAtUnixNano":1700000001123456789,"activeProofId":"active-proof","execBindingId":"exec-binding","bindingProofs":[{"bindingId":"binding-http","mode":"http_proxy","proofId":"proof-http"},{"bindingId":"binding-file","mode":"file_tmpfs","proofId":"proof-file"}]}}`
 	if string(responseWire) != wantResponse {
 		t.Fatalf("response wire:\n got %s\nwant %s", responseWire, wantResponse)
 	}
 	if _, err := DecodeCredentialPrepareSuccessResponse(decodedRequest, responseWire); err != nil {
 		t.Fatal(err)
 	}
+	otherSession := otherLifecycleSessionIdentity(t)
+	otherSessionRequest, err := NewCredentialPrepareRequest(testRequestID(t), otherSession, 1, 1700000001123456789, []BindingManifest{httpBinding, fileBinding}, 1, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeCredentialPrepareSuccessResponse(otherSessionRequest, responseWire); !errors.Is(err, ErrCredentialPrepareCorrelationMismatch) {
+		t.Fatalf("cross-session response correlation error = %v", err)
+	}
 
-	other, err := NewCredentialPrepareRequest(testRequestIDWithByte(0x7f), validChildIdentity(t), 1, 1700000001123456789, []BindingManifest{httpBinding, fileBinding}, 1, 7)
+	other, err := NewCredentialPrepareRequest(testRequestIDWithByte(0x7f), sessionIdentity, 1, 1700000001123456789, []BindingManifest{httpBinding, fileBinding}, 1, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +158,7 @@ func TestCredentialPrepareCanonicalRequestAndCorrelatedSuccess(t *testing.T) {
 	}
 	otherIdentity := validChildIdentity(t)
 	otherIdentity.SandboxID = "sandbox-2"
-	other, err = NewCredentialPrepareRequest(testRequestID(t), otherIdentity, 1, 1700000001123456789, []BindingManifest{httpBinding, fileBinding}, 1, 7)
+	other, err = NewCredentialPrepareRequest(testRequestID(t), prepareSessionIdentity(t, otherIdentity), 1, 1700000001123456789, []BindingManifest{httpBinding, fileBinding}, 1, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,8 +169,9 @@ func TestCredentialPrepareCanonicalRequestAndCorrelatedSuccess(t *testing.T) {
 
 func TestCredentialPrepareSSHManifestCanonicalVector(t *testing.T) {
 	identity := prepareIdentity(t, []JobBinding{{BindingID: "binding-ssh", Mode: DeliveryMode("ssh_agent")}})
+	sessionIdentity := prepareSessionIdentity(t, identity)
 	manifest := mustSSHManifest(t, "binding-ssh")
-	request, err := NewCredentialPrepareRequest(testRequestID(t), identity, 1, 1700000001123456789,
+	request, err := NewCredentialPrepareRequest(testRequestID(t), sessionIdentity, 1, 1700000001123456789,
 		[]BindingManifest{manifest}, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +180,7 @@ func TestCredentialPrepareSSHManifestCanonicalVector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := JobIdentityDigest(identity)
+	digest, err := GuestCredentialSessionIdentityDigest(sessionIdentity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +192,7 @@ func TestCredentialPrepareSSHManifestCanonicalVector(t *testing.T) {
 	if string(wire) != want {
 		t.Fatalf("SSH request wire:\n got %s\nwant %s", wire, want)
 	}
-	if _, err := DecodeCredentialPrepareRequest(wire); err != nil {
+	if _, err := DecodeCredentialPrepareRequest(sessionIdentity, wire); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -135,7 +224,8 @@ func TestCredentialPrepareManifestModesAndPrivateAccounting(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bindings := tt.bindings(t)
-			request, err := NewCredentialPrepareRequest(testRequestID(t), tt.identity(t), 1, 1700000001123456789, bindings, tt.count, tt.aggregate)
+			identity := tt.identity(t)
+			request, err := NewCredentialPrepareRequest(testRequestID(t), prepareSessionIdentity(t, identity), 1, 1700000001123456789, bindings, tt.count, tt.aggregate)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -181,7 +271,7 @@ func TestCredentialPrepareManifestIdentityAndLimitRejections(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := NewCredentialPrepareRequest(testRequestID(t), tt.identity, tt.revision, tt.expiry, tt.bindings, tt.count, tt.aggregate); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
+			if _, err := NewCredentialPrepareRequest(testRequestID(t), prepareSessionIdentity(t, tt.identity), tt.revision, tt.expiry, tt.bindings, tt.count, tt.aggregate); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
 				t.Fatalf("error = %v", err)
 			}
 		})
@@ -195,10 +285,11 @@ func TestCredentialPrepareManifestIdentityAndLimitRejections(t *testing.T) {
 		maxJobBindings[index] = JobBinding{BindingID: id, Mode: DeliveryMode("file_tmpfs")}
 	}
 	maxIdentity := prepareIdentity(t, maxJobBindings)
-	if _, err := NewCredentialPrepareRequest(testRequestID(t), maxIdentity, 1, 1700000001123456789, maxBindings, 16, maxCredentialPrepareAggregateBytes); err != nil {
+	maxSessionIdentity := prepareSessionIdentity(t, maxIdentity)
+	if _, err := NewCredentialPrepareRequest(testRequestID(t), maxSessionIdentity, 1, 1700000001123456789, maxBindings, 16, maxCredentialPrepareAggregateBytes); err != nil {
 		t.Fatalf("maximum request: %v", err)
 	}
-	maximumRequest, err := NewCredentialPrepareRequest(testRequestID(t), maxIdentity, 1, 1700000001123456789, maxBindings, 16, maxCredentialPrepareAggregateBytes)
+	maximumRequest, err := NewCredentialPrepareRequest(testRequestID(t), maxSessionIdentity, 1, 1700000001123456789, maxBindings, 16, maxCredentialPrepareAggregateBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,20 +297,17 @@ func TestCredentialPrepareManifestIdentityAndLimitRejections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DecodeCredentialPrepareRequest(maximumWire); err != nil {
+	if _, err := DecodeCredentialPrepareRequest(maxSessionIdentity, maximumWire); err != nil {
 		t.Fatalf("decode maximum request: %v", err)
 	}
 	plusOneBindings := append(append([]BindingManifest(nil), maxBindings...), mustSSHManifest(t, "ssh-extra"))
-	plusOneIdentityBindings := append(append([]JobBinding(nil), maxJobBindings...), JobBinding{BindingID: "ssh-extra", Mode: DeliveryMode("ssh_agent")})
-	plusOneIdentity := maxIdentity
-	plusOneIdentity.Bindings = plusOneIdentityBindings
-	if _, err := NewCredentialPrepareRequest(testRequestID(t), plusOneIdentity, 1, 1700000001123456789, plusOneBindings, 16, maxCredentialPrepareAggregateBytes); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
+	if _, err := NewCredentialPrepareRequest(testRequestID(t), maxSessionIdentity, 1, 1700000001123456789, plusOneBindings, 16, maxCredentialPrepareAggregateBytes); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
 		t.Fatalf("17 bindings error = %v", err)
 	}
-	if _, err := NewCredentialPrepareRequest(testRequestID(t), maxIdentity, 1, 1700000001123456789, maxBindings, 17, maxCredentialPrepareAggregateBytes); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
+	if _, err := NewCredentialPrepareRequest(testRequestID(t), maxSessionIdentity, 1, 1700000001123456789, maxBindings, 17, maxCredentialPrepareAggregateBytes); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
 		t.Fatalf("private count plus one error = %v", err)
 	}
-	if _, err := NewCredentialPrepareRequest(testRequestID(t), maxIdentity, 1, 1700000001123456789, maxBindings, 16, maxCredentialPrepareAggregateBytes+1); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
+	if _, err := NewCredentialPrepareRequest(testRequestID(t), maxSessionIdentity, 1, 1700000001123456789, maxBindings, 16, maxCredentialPrepareAggregateBytes+1); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
 		t.Fatalf("private aggregate plus one error = %v", err)
 	}
 }
@@ -262,16 +350,17 @@ func TestCredentialPrepareManifestConstructorBounds(t *testing.T) {
 
 func TestCredentialPrepareExpiryRootAndSessionHandoff(t *testing.T) {
 	identity := validChildIdentity(t)
+	sessionIdentity := prepareSessionIdentity(t, identity)
 	bindings := []BindingManifest{mustHTTPManifest(t, "binding-http"), mustFileManifest(t, "binding-file", 7)}
-	if _, err := NewCredentialPrepareRequest(testRequestID(t), identity, 1, identity.IssuedAtUnixNano, bindings, 1, 7); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
+	if _, err := NewCredentialPrepareRequest(testRequestID(t), sessionIdentity, 1, identity.IssuedAtUnixNano, bindings, 1, 7); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
 		t.Fatalf("expiry at issue error = %v", err)
 	}
 	rootMaximum := identity.IssuedAtUnixNano + int64(60*60*1e9)
-	request, err := NewCredentialPrepareRequest(testRequestID(t), identity, 1, rootMaximum, bindings, 1, 7)
+	request, err := NewCredentialPrepareRequest(testRequestID(t), sessionIdentity, 1, rootMaximum, bindings, 1, 7)
 	if err != nil {
 		t.Fatalf("root maximum: %v", err)
 	}
-	if _, err := NewCredentialPrepareRequest(testRequestID(t), identity, 1, rootMaximum+1, bindings, 1, 7); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
+	if _, err := NewCredentialPrepareRequest(testRequestID(t), sessionIdentity, 1, rootMaximum+1, bindings, 1, 7); !errors.Is(err, ErrInvalidCredentialPrepareRequest) {
 		t.Fatalf("over root maximum error = %v", err)
 	}
 	if err := ValidateCredentialPrepareRequestExpiry(request, rootMaximum); err != nil {
@@ -318,12 +407,16 @@ func TestCredentialPrepareSuccessRequiresExactRequestProofs(t *testing.T) {
 }
 
 func TestCredentialPrepareStrictCanonicalDecodeMatrices(t *testing.T) {
-	request := testCredentialPrepareRequest(t)
+	sessionIdentity := testSessionIdentity(t)
+	request := testCredentialPrepareRequestForIdentity(t, sessionIdentity)
 	requestWireBytes, err := EncodeCredentialPrepareRequest(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	requestWire := string(requestWireBytes)
+	if _, err := DecodeCredentialPrepareRequest(GuestCredentialSessionIdentity{}, requestWireBytes); !errors.Is(err, ErrInvalidCredentialPrepareRequestJSON) {
+		t.Fatalf("missing authenticated session identity error = %v", err)
+	}
 	requestCases := []string{
 		" " + requestWire,
 		requestWire + `{}`,
@@ -338,7 +431,7 @@ func TestCredentialPrepareStrictCanonicalDecodeMatrices(t *testing.T) {
 	}
 	requestCases = append(requestCases, strings.Repeat(" ", maxCredentialPrepareJSONBytes+1), string([]byte{0xff}))
 	for index, input := range requestCases {
-		if _, err := DecodeCredentialPrepareRequest([]byte(input)); !errors.Is(err, ErrInvalidCredentialPrepareRequestJSON) {
+		if _, err := DecodeCredentialPrepareRequest(sessionIdentity, []byte(input)); !errors.Is(err, ErrInvalidCredentialPrepareRequestJSON) {
 			t.Errorf("request case %d error = %v", index, err)
 		}
 	}
@@ -382,8 +475,9 @@ func TestCredentialPrepareStrictCanonicalDecodeMatrices(t *testing.T) {
 
 func TestCredentialPrepareDefensiveCopiesAndOpaqueSerialization(t *testing.T) {
 	identity := validChildIdentity(t)
+	sessionIdentity := prepareSessionIdentity(t, identity)
 	bindings := []BindingManifest{mustHTTPManifest(t, "binding-http"), mustFileManifest(t, "binding-file", 7)}
-	request, err := NewCredentialPrepareRequest(testRequestID(t), identity, 1, 1700000001123456789, bindings, 1, 7)
+	request, err := NewCredentialPrepareRequest(testRequestID(t), sessionIdentity, 1, 1700000001123456789, bindings, 1, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,12 +654,26 @@ func prepareIdentity(t *testing.T, bindings []JobBinding) JobIdentity {
 
 func testCredentialPrepareRequest(t *testing.T) CredentialPrepareRequest {
 	t.Helper()
-	request, err := NewCredentialPrepareRequest(testRequestID(t), validChildIdentity(t), 1, 1700000001123456789,
+	return testCredentialPrepareRequestForIdentity(t, testSessionIdentity(t))
+}
+
+func testCredentialPrepareRequestForIdentity(t *testing.T, identity GuestCredentialSessionIdentity) CredentialPrepareRequest {
+	t.Helper()
+	request, err := NewCredentialPrepareRequest(testRequestID(t), identity, 1, 1700000001123456789,
 		[]BindingManifest{mustHTTPManifest(t, "binding-http"), mustFileManifest(t, "binding-file", 7)}, 1, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return request
+}
+
+func prepareSessionIdentity(t *testing.T, identity JobIdentity) GuestCredentialSessionIdentity {
+	t.Helper()
+	sessionIdentity, err := NewGuestCredentialSessionIdentity(sequentialSessionID(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sessionIdentity
 }
 
 func replacePrepareOnce(t *testing.T, value, old, replacement string) string {
