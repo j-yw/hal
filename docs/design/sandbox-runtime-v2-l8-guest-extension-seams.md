@@ -125,6 +125,13 @@ calls it for production assembly.
 
 ## Privileged helper service seam
 
+### Helper Service normative closure
+
+This section closes the public lifecycle and live-runtime authority of the
+privileged helper. It is normative over the earlier high-level seam. The
+Service has one constructor and one Serve lifetime; terminal ownership is
+reported as a value rather than hidden behind an error or a second wait path.
+
 ### Constructor and registry
 
 `credentialhelper` exposes these exact construction shapes:
@@ -135,9 +142,27 @@ type ServiceOptions struct {
 	Transport  Transport
 	Policy     Policy
 	Extensions *ExtensionRegistry
+	Host       ExtensionHost
+	Runtime    ServiceRuntime
 }
 
 func NewService(ServiceOptions) (*Service, error)
+func (s *Service) Serve(context.Context) (ServiceResult, error)
+
+type ServiceDisposition uint8
+const (
+	ServiceClosed         ServiceDisposition = 1
+	ServiceStopVMRequired ServiceDisposition = 2
+)
+
+type ServiceResult struct {
+	liveValue
+	disposition ServiceDisposition
+	closeReason credentialprotocol.CloseReason
+}
+
+func (r ServiceResult) Disposition() ServiceDisposition
+func (r ServiceResult) CloseReason() credentialprotocol.CloseReason
 
 type ExtensionRegistration struct {
 	Descriptor credentialprotocol.ExtensionDescriptor
@@ -147,6 +172,193 @@ type ExtensionRegistration struct {
 func NewExtensionRegistry(...ExtensionRegistration) (*ExtensionRegistry, error)
 func (r *ExtensionRegistry) Descriptors() []credentialprotocol.ExtensionDescriptor
 ```
+
+There is no public `Close` or `Wait` method. `Serve` returns `ServiceClosed`
+only after an authenticated bilateral normal or shutdown close commits and all
+Service-owned authority is proved absent. `ServiceClosed` is legal after either
+committed bilateral `normal` or `shutdown`. It returns
+`ServiceStopVMRequired` when in-process absence is unproved or a terminal
+close/send/loss condition requires D6 to stop and reap the whole VM. A nil
+error means the returned `ServiceResult` is structurally valid; it does not
+turn stop-VM into success. `closeReason` is the exact safe closed
+`credentialprotocol.CloseReason` selected by the terminal transition.
+
+The exact D4 runtime boundary is:
+
+```go
+type ServiceRuntime interface {
+	Bootstrap(context.Context) (ServiceBootstrap, error)
+	BindAgent(context.Context, ServiceAgentBindingRequest, ReceivedCapability) error
+	ObserveJob(context.Context, ServiceJobObservationRequest) (ServiceJobObservation, error)
+	Loss() <-chan ServiceLoss
+	BeginCleanup() (ServiceCleanupBudget, error)
+	Close(context.Context) error
+}
+
+type ServiceBootstrap struct {
+	liveValue
+	bootNonce       [32]byte
+	bootGeneration  credentialprotocol.SafeID
+	helperGeneration credentialprotocol.SafeID
+}
+
+type ServiceAgentBindingRequest struct {
+	liveValue
+	agentIdentitySHA256      [32]byte
+	bootstrapSHA256          [32]byte
+	processDescriptorSHA256  [32]byte
+	bootGeneration           credentialprotocol.SafeID
+	helperGeneration         credentialprotocol.SafeID
+}
+
+type ServiceOperation uint8
+const (
+	ServiceOperationPrepare ServiceOperation = 1
+	ServiceOperationExec    ServiceOperation = 2
+	ServiceOperationRenew   ServiceOperation = 3
+	ServiceOperationRevoke  ServiceOperation = 4
+	ServiceOperationInspect ServiceOperation = 5
+)
+
+type ServiceJobObservationRequest struct {
+	liveValue
+	operation        ServiceOperation
+	requestID        [16]byte
+	identityDigest   [32]byte
+	revision         uint64
+	bootGeneration   credentialprotocol.SafeID
+	helperGeneration credentialprotocol.SafeID
+}
+
+type ServiceJobObservation struct {
+	liveValue
+	generations       CoreGenerations
+	observedUnixNano  int64
+	hardExpiryUnixNano int64
+}
+
+type ServiceLossCategory uint8
+const (
+	ServiceLossAgent   ServiceLossCategory = 1
+	ServiceLossJob     ServiceLossCategory = 2
+	ServiceLossMonitor ServiceLossCategory = 3
+	ServiceLossMount   ServiceLossCategory = 4
+	ServiceLossCgroup  ServiceLossCategory = 5
+)
+
+type ServiceLoss struct {
+	liveValue
+	category ServiceLossCategory
+}
+
+type ServiceCleanupBudget interface {
+	Context() context.Context
+	Limit() time.Duration
+	DeadlineExceeded() bool
+	Close() error
+}
+
+func NewServiceBootstrap(
+	bootNonce [32]byte,
+	bootGeneration, helperGeneration credentialprotocol.SafeID,
+) (ServiceBootstrap, error)
+func (b ServiceBootstrap) BootNonce() [32]byte
+func (b ServiceBootstrap) BootGeneration() credentialprotocol.SafeID
+func (b ServiceBootstrap) HelperGeneration() credentialprotocol.SafeID
+
+func (r ServiceAgentBindingRequest) AgentIdentitySHA256() [32]byte
+func (r ServiceAgentBindingRequest) BootstrapSHA256() [32]byte
+func (r ServiceAgentBindingRequest) ProcessDescriptorSHA256() [32]byte
+func (r ServiceAgentBindingRequest) BootGeneration() credentialprotocol.SafeID
+func (r ServiceAgentBindingRequest) HelperGeneration() credentialprotocol.SafeID
+
+func (r ServiceJobObservationRequest) Operation() ServiceOperation
+func (r ServiceJobObservationRequest) RequestID() [16]byte
+func (r ServiceJobObservationRequest) IdentityDigest() [32]byte
+func (r ServiceJobObservationRequest) Revision() uint64
+func (r ServiceJobObservationRequest) BootGeneration() credentialprotocol.SafeID
+func (r ServiceJobObservationRequest) HelperGeneration() credentialprotocol.SafeID
+
+func NewServiceJobObservation(
+	generations CoreGenerations,
+	observedUnixNano, hardExpiryUnixNano int64,
+) (ServiceJobObservation, error)
+func (o ServiceJobObservation) Generations() CoreGenerations
+func (o ServiceJobObservation) ObservedUnixNano() int64
+func (o ServiceJobObservation) HardExpiryUnixNano() int64
+
+func NewServiceLoss(category ServiceLossCategory) (ServiceLoss, error)
+func (l ServiceLoss) Category() ServiceLossCategory
+
+func ValidateServiceDisposition(ServiceDisposition) error
+func (d ServiceDisposition) String() string
+func ValidateServiceOperation(ServiceOperation) error
+func (o ServiceOperation) String() string
+func ValidateServiceLossCategory(ServiceLossCategory) error
+func (c ServiceLossCategory) String() string
+```
+
+D4 constructs `ServiceBootstrap`, `ServiceJobObservation`, and `ServiceLoss`
+only through those validating public constructors. Service constructs both
+request types through package-private constructors, so D4 cannot mint an
+expected binding or observation; their public methods are only the listed
+fixed-array, safe-ID, scalar, and enum copy accessors. `ServiceResult` is minted
+only through a private Service constructor and has no public constructor.
+Every constructor rejects zero, unknown, invalid, or inconsistent fields.
+The three closed enums accept only their listed values through the named
+validators and expose only their canonical `String`; no enum parser, numeric
+fallback, or generic serialization API is part of the contract. Every concrete
+runtime request/result value has `liveValue` first, static safe formatting, and
+the same value-and-pointer JSON/text/binary marshal and unmarshal denial,
+seeded-receiver nonmutation and absence of exported fields
+or mutators as the other live helper values. Bootstrap is called exactly once
+before helper-ready.
+
+BindAgent ownership is exact. After the authenticated bootstrap,
+agent identity/digest, and process-descriptor checks, a nil `BindAgent` return
+atomically transfers the sole bootstrap pidfd capability to Runtime. On error
+or panic, Service retains that capability and closes it during drain. Runtime
+independently validates the pinned process descriptor and bootstrap facts. No
+descriptor or numeric PID accessor is exposed, and there is no ambiguous
+non-nil-error transfer. Ambiguous transfer is forbidden.
+
+The observation matrix is exact. `NewServiceJobObservation` requires all six
+canonical nonempty generations,
+`observedUnixNano > 0`, and `hardExpiryUnixNano >= observedUnixNano`. For every
+observation, Service requires the request's Boot and Helper generations to
+equal the exact Bootstrap Boot and Helper generations, and independently
+requires operation, request ID, identity digest, and revision to equal its
+current ledger. The first prepare latches the complete six-generation
+observation and hard horizon. Every later observation must equal all six
+latched generations and that exact hard horizon; observation time advances
+monotonically and never regresses. A prepare or renew expiry must be in the
+half-open interval `(observedUnixNano, hardExpiryUnixNano]`. Renew additionally
+requires `revision == current revision + 1` and `expiry > the prior expiry`.
+The runtime cannot extend or replace the hard horizon.
+
+The loss-channel matrix is exact. `Loss` returns one stable non-nil receive-only
+channel for the complete Service
+lifetime. Exactly one valid nonzero `ServiceLoss` may be delivered, after which
+the channel closes. A nil channel, close-before-value, or invalid value is
+`ContractResultMatrix` and terminal `HelperLoss`. More than one value is
+invalid for the same reason. Service owns exactly one loss watcher, cancels any
+blocking receive during terminal
+drain, and joins it before `Serve` returns. A missing, nil, typed-nil, unstable,
+or malformed runtime result is a dependency contract failure, never an inferred
+healthy state.
+
+`BeginCleanup` is the sole cleanup-clock authority. It returns a fresh budget
+whose `Context` is non-nil, whose `Limit` is exactly 30 seconds, and whose
+deadline equals its creation time plus that fixed internal limit. No option,
+caller context, environment value, or dependency may shorten, extend, reset,
+or replace it. The budget is shared by one entire terminal cleanup, not renewed
+per pass or resource. `DeadlineExceeded` is checked after every cleanup call
+and before accepting absence. `Close` is called exactly once after cleanup,
+under that same budget context, and the budget is then closed exactly once.
+The 30-second contract requires conforming trusted dependencies to return under
+the supplied context; it does not promise forced in-process return from an
+arbitrary blocking implementation. Nonconformance or unknown absence yields
+`ServiceStopVMRequired` and D6 kill/reap rather than a detached goroutine.
 
 There is deliberately no `Register`, `MustRegister`, default registry, clone
 with additions, or lookup that exposes a factory. `NewExtensionRegistry`
@@ -175,8 +387,8 @@ type CorePreparation interface {
 
 type CoreExecution interface {
 	WriteStdin(context.Context, credentialmemory.BorrowedView, uint64, bool) error
-	ReadOutput(context.Context, CoreOutputRequest, credentialmemory.CredentialSink) (CoreOutputResult, error)
-	Wait(context.Context) (CoreExecResult, error)
+	GrantOutput(context.Context, CoreOutputRequest) error
+	Next(context.Context) (CoreExecutionEvent, error)
 	Cancel(context.Context) (CoreCleanupResult, error)
 }
 
@@ -350,12 +562,77 @@ disclose stale metadata. `CopyCanonicalTo` returns the stable
 `ContractDestroyed` error without calling the sink. The sink call is
 synchronous and the sink must not retain the borrowed slice after return.
 
-The four core capability digests are domain-separated SHA-256 values over the
-exact request correlation, boot/helper/job generations, and helper boot nonce.
-Their constructors are private to `credentialhelper`; D4 receives and echoes
-them but cannot mint them. A zero, changed, cross-request, or cross-generation
-capability is rejected before a core transition. They are process-local
-correlation capabilities, not proof IDs and never enter HL8P or durable state.
+The four core capability digests use this one exact encoding:
+
+```text
+SHA256(
+  opaque16("hal/l8/guest-helper/core-capability/v1") ||
+  u8(kind) || requestID[16] || identityDigest[32] || u64be(revision) ||
+  opaque16(boot) || opaque16(helper) || opaque16(job) ||
+  opaque16(monitor) || opaque16(mount) || opaque16(cgroup) ||
+  bootNonce[32]
+)
+kind: preparation=1, prepared=2, execution=3, cleanup=4
+```
+
+The encoding retains all six generation positions in every kind. Preparation,
+prepared, and prepare-cleanup capabilities use the partial generation tuple
+and are all pre-minted from the prepare correlation:
+they require boot/helper/job and encode monitor/mount/cgroup as empty
+`opaque16` values. `CorePreparedResult` separately echoes and validates all six
+observed generations after Commit; it does not retroactively change the
+already-issued prepared-capability digest. The execution, exec-cleanup, and
+revoke-cleanup capabilities require all six generations as nonempty safe IDs.
+There is no omitted suffix, delimiter, zero-ID alias,
+alternate order, or kind cast. Their constructors are private to
+`credentialhelper`; D4 receives and echoes them but cannot mint them. A zero,
+changed, cross-kind, cross-request, cross-generation, or cross-boot capability
+is rejected in constant time before a core transition. The Service records
+each issuance in a fixed one-use ledger; result acceptance consumes only the
+exact expected entry. These are process-local correlation capabilities, not
+proof IDs, and never enter HL8P or durable state.
+
+All redaction-safe proof labels are deterministic and nonsecret. Define
+`Label(prefix, domain, payload)` as
+`prefix || base64.RawURLEncoding(SHA256(opaque16(domain) || payload))`. The
+prefix/domain pairs are exact:
+
+```text
+active.  / hal/l8/guest-helper/active-proof-label/v1
+binding. / hal/l8/guest-helper/binding-proof-label/v1
+exec.    / hal/l8/guest-helper/exec-proof-label/v1
+cleanup. / hal/l8/guest-helper/cleanup-proof-label/v1
+```
+
+Thus the literal prefixes are `active.`, `binding.`, `exec.`, and `cleanup.`.
+The common active/binding/exec payload is exactly
+`bootNonce[32] || identityDigest[32] || u64be(revision) || opaque16(boot) ||
+opaque16(helper) || opaque16(job) || opaque16(monitor) || opaque16(mount) ||
+opaque16(cgroup) || i64be(expiresUnixNano) || manifestSHA256[32] ||
+transactionSHA256[32]`. A binding label appends `u16be(bindingIndex) ||
+opaque16(bindingID) || u8(mode)`. The cleanup payload is exactly boot nonce,
+identity, revision, all six generations, `u8(revokeReason)`, manifest SHA-256,
+transaction SHA-256, then the two exact bytes `authorityAbsent=1 ||
+resourcesAbsent=1`; the reason byte occupies the common expiry position. No
+dynamic hostname, path, PID, endpoint, secret, clock text, map order, or random
+value enters a label.
+
+An event ID is exact:
+
+```text
+eventDigest = SHA256(
+  opaque16("hal/l8/guest-helper/event-id/v1") || bootNonce[32] ||
+  identityDigest[32] || u64be(revision) || u8(eventCode) ||
+  u32be(eventOrdinal)
+)
+header.requestID = eventDigest[0:16]
+body.eventID = base64.RawURLEncoding(eventDigest[0:16]) // exactly 22 chars
+```
+
+The event ordinal is one Service-lifetime private nonzero monotonic `uint32`;
+it never resets when identity changes and advances only when the event send
+commits. There is no UUID, wall-clock, raw digest, or alternative
+truncation.
 
 The exact core request/result layouts are:
 
@@ -467,6 +744,27 @@ type CoreOutputResult struct {
 	truncated  bool
 }
 
+type CoreOutputBody interface {
+	Len() uint32
+	SHA256() [32]byte
+	Borrow(context.Context, func(credentialmemory.BorrowedView) error) error
+	Destroy(context.Context) error
+}
+
+type CoreExecutionEventKind uint8
+const (
+	CoreExecutionEventOutput   CoreExecutionEventKind = 1
+	CoreExecutionEventComplete CoreExecutionEventKind = 2
+)
+
+type CoreExecutionEvent struct {
+	liveValue
+	kind     CoreExecutionEventKind
+	output   CoreOutputResult
+	body     CoreOutputBody
+	complete CoreExecResult
+}
+
 type CoreExecExitCategory uint8
 const (
 	CoreExecExitExited   CoreExecExitCategory = 1
@@ -490,6 +788,14 @@ type CoreExecResult struct {
 	stderrTruncated       bool
 	execTransactionSHA256 [32]byte
 }
+
+func NewCoreExecutionOutputEvent(
+	ctx context.Context, output CoreOutputResult, body CoreOutputBody,
+) (CoreExecutionEvent, error)
+func NewCoreExecutionCompleteEvent(CoreExecResult) (CoreExecutionEvent, error)
+func (e CoreExecutionEvent) Kind() CoreExecutionEventKind
+func (e CoreExecutionEvent) Output() (CoreOutputResult, CoreOutputBody, bool)
+func (e CoreExecutionEvent) Complete() (CoreExecResult, bool)
 
 type CoreCleanupCategory uint8
 const (
@@ -632,9 +938,10 @@ from the service. The service accepts a result only when the capability equals
 the exact issued value in constant time, is in the expected transition, and is
 still unconsumed. A zero, bit-changed, wrong-kind, cross-request,
 cross-generation, or already-consumed capability is a contract violation. A
-successful commit, wait, complete cleanup, or inspection consumes the exact
-one-shot ledger entry as appropriate; `retry_required` leaves only its cleanup
-capability live for the next reinspection and every other capability is dead.
+successful commit, complete execution event, complete cleanup, or inspection
+consumes the exact one-shot ledger entry as appropriate; `retry_required`
+leaves only its cleanup capability live for the next reinspection and every
+other capability is dead.
 Rollback and Cancel return the cleanup capability retained by their owning
 `CorePreparation` or `CoreExecution`. Capability digests are private
 domain-separated SHA-256 values over kind, exact request correlation,
@@ -730,20 +1037,47 @@ transaction digests, and a nonzero prepared capability. Its generations,
 expiry, count, digests, and capability must equal the exact successful commit
 ledger before the result is accepted.
 
+Core execution is a grant-driven CoreExecution event loop. Service grants one
+stdout or stderr range with `GrantOutput`, concurrently supplies stdin through
+`WriteStdin`, and serially consumes `Next` until the complete event. Core may
+not return output without one exact outstanding grant, return completion while
+a grant or stdin obligation remains, or retain a borrowed stdin view.
+
 The CoreOutputResult matrix is exact:
 
 | EOF | Byte count | SHA-256 | Truncated |
 | --- | --- | --- | --- |
-| false | 1 through `credentialprotocol.MaxHelperExecStreamPayloadBytes` | nonzero and equal to the bytes written to the sink | false only |
+| false | 1 through `credentialprotocol.MaxHelperExecStreamPayloadBytes` | nonzero and equal to the payload bytes carried in the full `CoreOutputBody` | false only |
 | true | exactly 0 | SHA-256 of empty bytes | false or true |
 
 Every other combination is `ContractResultMatrix`. The execution capability is
 nonzero and kind is stdout or stderr only. The service additionally requires
-execution, kind, offset, capacity, count, digest, and sink write to match the
+execution, kind, offset, capacity, count, digest, and event body to match the
 exact outstanding `CoreOutputRequest`. `truncated=true` is carried only on the
 unique EOF result after D4 drains bytes beyond the declared aggregate maximum;
 the shape constructor cannot infer that maximum, so the service validates that
 fact against its plan ledger.
+
+`NewCoreExecutionOutputEvent` owns the owned full canonical `0x18`
+`CoreOutputBody` on entry. It requires a non-nil, non-typed-nil body whose `Len`
+is exactly `56 + CoreOutputResult.ByteCount()` and whose full-body SHA-256 is
+nonzero and equals
+the complete canonical `0x18` body, including all safe metadata and its payload.
+It never accepts a payload-only body. The constructor uses the supplied
+non-nil context to destroy that body on every validation error or panic; it
+never substitutes `context.Background()`. On success the event is sole owner.
+`Output` exposes the exact correlated output/body arm; wrong-arm access returns
+zero/nil/false. Service calls the matching accessor once and remains responsible
+for the shared body capability across event copies. Service dispatch validates
+the grant, then borrows the full canonical body only long enough to send it and
+destroys it on every result.
+
+`NewCoreExecutionCompleteEvent` is metadata-only, contains exactly one valid
+`CoreExecResult`, owns no body, and needs no cleanup context. `Complete`
+exposes that correlated result; wrong-arm access returns zero/false. An event
+cannot contain both arms or neither arm. `Kind` remains a pinned scalar. The
+frozen struct has no extra owner pointer and makes no cross-copy one-shot
+accessor claim.
 
 The CoreExecResult matrix is exact: exit code is 0 through 255 for `exited`,
 1 through 64 for `signaled`, and exactly 1 for `setup_failed`, which is a
@@ -754,9 +1088,9 @@ stdin transcript digest and exec transaction digest are always nonzero, because
 the unique stdin EOF is committed even when stdin has no payload. Output
 truncation booleans are shape-valid independently of the byte count; the service
 accepts true only when the matching plan maximum was reached and excess output
-was drained. The execution capability is nonzero. Wait is accepted only after
-the unique stdout and stderr EOF results, exact input transaction finalization,
-and matching service-owned digest/count correlation.
+was drained. The execution capability is nonzero. The complete event is
+accepted only after the unique stdout and stderr EOF results, exact input
+transaction finalization, and matching service-owned digest/count correlation.
 
 The CoreCleanupResult matrix is exact:
 
@@ -792,9 +1126,10 @@ service compares every returned generation and capability with the exact
 inspect request and treats drift as terminal.
 
 `CoreOutputRequest.capacity` is 1..64 KiB and kind is stdout or stderr; stdin is
-rejected. `ReadOutput` writes at most that exact capacity into the supplied sink
-and `byteCount` must equal the sink write. EOF has count zero and SHA-256 of
-empty bytes. `WriteStdin` accepts the already-correlated execution, requires
+rejected. `GrantOutput` admits exactly one range, and the subsequent output
+event has at most that capacity; its payload count and digest must equal the
+payload region in the owned full canonical `0x18` body. EOF has count zero and
+SHA-256 of empty bytes. `WriteStdin` accepts the already-correlated execution, requires
 offset continuity, accepts 1..64 KiB for non-EOF, and accepts an empty view only
 for the unique EOF. The borrowed view is valid only for that call and cannot be
 retained.
@@ -810,6 +1145,36 @@ by the service. Core may synchronously call `CopyTo` or `WriteTo` only during
 capacity wipes and destroys the source on every result, including validation
 and Core errors. A zero/nonzero mismatch fails before D4 can create a pipe,
 child, gate, or pidfd.
+
+The exec transcript starts from one reusable, one-shot seed in package
+`credentialprotocol`:
+
+```go
+type HelperExecTransactionSeed struct {
+	// exactly one private shared owner pointer
+}
+
+func NewHelperExecTransactionSeed(
+	HelperExecTransactionCorrelation, HelperExecBody,
+) (HelperExecTransactionSeed, error)
+func (s *HelperExecTransactionSeed) Begin() (*HelperExecTransaction, error)
+func (s *HelperExecTransactionSeed) BeginComparison(
+	HelperExecTransactionResult,
+) (*HelperExecTransaction, error)
+func (s *HelperExecTransactionSeed) Close()
+```
+
+`NewHelperExecTransactionSeed` retains only safe correlation/scalars, the exact
+canonical `0x15` body length and SHA-256, and a cloned initialized hash state.
+It retains no string, exec plan, body, borrowed view, owned byte slice, live
+handle, or resource authority. Its one temporary canonical encoding is wiped
+through full capacity before constructor return. Value aliases share one mutex,
+one-use state, and closed state. Exactly one of `Begin` or `BeginComparison`
+may succeed across all aliases. `BeginComparison` first validates the complete
+safe cached result against the seed and produces only the existing comparison-
+only transaction. `Close` is idempotent, prevents either begin method, and
+wipes correlation and cloned hash state. A successful begin transfers those
+values into the transaction and leaves the seed consumed and empty.
 
 ### Transport packet concrete closure
 
@@ -925,6 +1290,53 @@ and plans become `ExecPlanCapability`. Bootstrap numeric identity and renew
 proof strings are accepted transiently and stored only as private equality
 digests with no numeric/string accessor.
 
+The two transaction-start arms reuse the existing credentialprotocol FSMs
+rather than duplicating them in Service:
+
+```go
+type ReceivedPrepareBegin struct {
+	liveValue
+	revision      uint64
+	expiryUnixNano int64
+	manifest      ManifestCapability
+	transaction *credentialprotocol.HelperPrepareTransaction
+}
+
+type ReceivedExec struct {
+	liveValue
+	revision        uint64
+	execBindingID    credentialprotocol.SafeID
+	privateLength    uint32
+	privateSHA256    [32]byte
+	plan             ExecPlanCapability
+	transactionSeed credentialprotocol.HelperExecTransactionSeed
+}
+```
+
+`NewReceivedPrepareBeginPacket` constructs the exact prepare transaction
+correlation from the authenticated header/body and starts the existing
+`credentialprotocol.HelperPrepareTransaction` while decoded metadata is in
+scope. Service privately takes that pointer; there is no public transaction or
+seed accessor. Prepare-file dispatch uses the existing safe
+`credentialprotocol.HelperPrepareFileObservation` and
+`AcceptObservedFileObservation`, while the sole private payload remains the
+ReceivedPacket body. It never creates a second private-body owner or a second
+prepare FSM. Replays use a fresh prepare transaction and compare the final
+manifest and transaction digests with the cached result.
+
+`NewReceivedExecPacket` verifies the canonical received bytes against the
+decoded `credentialprotocol.HelperExecBody`, constructs the safe plan and
+`credentialprotocol.HelperExecTransactionSeed` while that decoded body is in
+scope, and then retains no decoded plan strings or body bytes. The public safe accessors are
+only Revision, ExecBindingID, PrivateLength, PrivateSHA256, and Plan. After the
+cache lookup, Service privately chooses seed `Begin` or `BeginComparison`; it
+does not build a second exec transaction state machine.
+
+Thus the prepare arm retains a private
+`*credentialprotocol.HelperPrepareTransaction`, and the exec arm retains a
+private `credentialprotocol.HelperExecTransactionSeed`; neither is exposed by a
+public accessor.
+
 Those two private equality digests have one exact encoding. They are not proof,
 resource authority, or durable identity:
 
@@ -948,44 +1360,43 @@ accepted.
 D4 constructs the union only through:
 
 ```go
-func NewReceivedBootstrapPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedBootstrapPacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	uint32, uint32, uint32, credentialprotocol.SafeID,
 	credentialprotocol.SafeID, ReceivedCapability) (ReceivedPacket, error)
-func NewReceivedAgentHelloPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedAgentHelloPacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	[32]byte, credentialprotocol.SafeID, credentialprotocol.SafeID,
 	[32]byte) (ReceivedPacket, error)
-func NewReceivedPrepareBeginPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedPrepareBeginPacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	credentialprotocol.HelperPrepareBeginBody, ManifestCapability) (ReceivedPacket, error)
-func NewReceivedPrepareFilePacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedPrepareFilePacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	uint64, uint16, uint32, [32]byte) (ReceivedPacket, error)
-func NewReceivedPrepareCommitPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedPrepareCommitPacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	credentialprotocol.HelperPrepareCommitBody) (ReceivedPacket, error)
-func NewReceivedRenewPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedRenewPacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	uint64, int64, credentialprotocol.SafeID) (ReceivedPacket, error)
-func NewReceivedRevokePacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedRevokePacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	credentialprotocol.HelperRevokeBody) (ReceivedPacket, error)
-func NewReceivedExecPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedExecPacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
-	uint64, credentialprotocol.SafeID, uint32, [32]byte,
-	ExecPlanCapability) (ReceivedPacket, error)
-func NewReceivedExecPrivatePacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	decoded credentialprotocol.HelperExecBody, plan ExecPlanCapability) (ReceivedPacket, error)
+func NewReceivedExecPrivatePacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	uint64, uint32, [32]byte) (ReceivedPacket, error)
-func NewReceivedExecStreamPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedExecStreamPacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	uint64, credentialprotocol.HelperExecStreamKind,
 	credentialprotocol.HelperExecStreamFlags, uint64, uint32, [32]byte) (ReceivedPacket, error)
-func NewReceivedExecCreditPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedExecCreditPacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	credentialprotocol.HelperExecCreditBody) (ReceivedPacket, error)
-func NewReceivedCloseNotifyPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+func NewReceivedCloseNotifyPacket(context.Context, ReceiveRequest, credentialprotocol.HelperPacketHeader,
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	credentialprotocol.HelperCloseNotifyBody) (ReceivedPacket, error)
 ```
@@ -1038,7 +1449,7 @@ through private `newSendPacket`. Its exact Transport method set is
 `Type() credentialprotocol.PacketType`, `Header()
 credentialprotocol.HelperPacketHeader`, `EncodedBodyLength() uint32`,
 `BodySHA256() [32]byte`,
-`WriteCanonicalBody(credentialmemory.CredentialSink) error`, `RightsCount()
+`WriteCanonicalBody(context.Context, credentialmemory.CredentialSink) error`, `RightsCount()
 uint32`, and `Right() ReceivedCapability`. No generic arm or bytes are exposed.
 The configured Transport is the sole consumer of `Right`; it exists only for
 the D4 `sendmsg` adapter and exposes no credential-body capability to an
@@ -1058,8 +1469,16 @@ payload bytes never use that scratch: their body capability is copied directly
 into the locked transmit slot and destroyed under the service/Transport
 ownership rule.
 
-Transport calls `WriteCanonicalBody` exactly once for a send. A successful
-fill transfers ownership of the exact encoded slot to Transport. Transport
+Transport calls `WriteCanonicalBody` exactly once for a send, passing the
+operation context before drain and the one shared cleanup-budget context after
+drain begins. It rejects a nil context before touching ownership. Context is
+checked before and after each borrow, copy, or destroy; cancellation cannot
+abandon ownership. No send constructor, validator, or write path uses
+`context.Background()` or `context.TODO()`. Context-aware private send
+constructors that take or borrow a live body/right also take a leading non-nil
+`context.Context` and own the supplied capability on entry. The constructor
+uses that exact context to clean constructor failure. A successful fill
+transfers ownership of the exact encoded slot to Transport. Transport
 retains that slot across a nonblocking retry and must not call
 `WriteCanonicalBody` again for `EAGAIN`; it sends the same pinned body length
 and SHA-256, advances sequence only after commit, and overwrites the slot
@@ -1214,8 +1633,13 @@ contains an index, identifier, digest, generation, candidate type, raw cause,
 or formatted value. Invalid enum/length/bound/zero-required input maps to
 `invalid_argument`; any interface whose dynamic nil-capable value is nil maps
 to `typed_nil`; mismatches and state errors map to the correspondingly named
-codes above. Constructors always return the complete zero value with the exact
-error and do not consume an input capability.
+codes above. Metadata-only constructors return the complete zero value with the
+exact error and preserve every input. Every constructor that accepts a live
+body or right has a leading non-nil `context.Context`; ownership transfers on
+constructor entry, and the constructor synchronously destroys/closes the owned
+capability with that supplied context on every failure or panic. It never uses
+`context.Background()` or `context.TODO()` and never returns live ownership to
+the caller after entry.
 
 The service calls only these transitions:
 
@@ -1225,7 +1649,7 @@ staging -> StageFile* in ascending manifest index -> Commit -> prepared
 staging -> Rollback -> absent | cleanup-retry | stop-VM
 prepared -> Renew -> prepared
 prepared -> BeginExec -> executing
-executing -> WriteStdin/ReadOutput* -> Wait -> prepared
+executing -> WriteStdin/GrantOutput/Next* -> complete event -> prepared
 executing -> Cancel -> prepared | cleanup-retry | stop-VM
 prepared/executing/staging -> Revoke -> absent | cleanup-retry | stop-VM
 prepared/retrying -> Inspect -> same state or conservative cleanup escalation
@@ -1249,8 +1673,116 @@ violation; the service invokes the narrow rollback/cancel/close operation when
 callable, then preserves the stricter cleanup result. A panic is not recovered
 as success. Validation/policy failures perform no Core call. Core failures map
 only to the matching stable HL8P failure code; raw errors and capability values
-are never formatted. Context cancellation stops the caller wait but ownership
-continues under the bounded service cleanup context.
+are never formatted. Serve caller cancellation latches drain; `Serve` then
+waits for bounded cleanup by conforming dependencies and returns the terminal
+Service result. Caller cancellation never abandons ownership or creates an
+unbounded detached cleanup task.
+
+### Service ledgers, cleanup, and terminal result
+
+Service state uses fixed storage only. It has a fixed 4,096-entry non-exec
+ledger: entries 0..4092 admit Prepare and Renew request correlations, while the
+last three slots are reserved for fresh Revoke request IDs. A
+non-Revoke operation can never consume a reserved slot. It also has a separate
+fixed 4,096-entry exec ledger. Neither ledger grows, evicts, wraps, reuses a
+request ID, or allocates a map. Each entry records only safe request
+correlation, canonical request/result digests, disposition, and the exact
+one-use capabilities required for replay or cleanup. Repeated exact requests
+use comparison-only state; a changed request with the same ID is a conflict and
+never calls Core or an extension.
+
+Cross-ledger same-ID reuse is rejected before charging; an exact replay
+consumes no slot. Service charges a first-seen ID before mutation. Prepare and
+Renew can admit at most 4,093 distinct non-exec IDs; Revoke never consumes
+those general slots. The three reserved Revoke entries are the at-most-three
+fresh cleanup attempts. After they are exhausted cleanup is already terminal
+stop-VM and no fresh request is admitted.
+
+A distinct Prepare or Exec received after its admissible capacity is exhausted
+has all declared input fully consumed and drained without a Core/extension
+mutation. While IPC is unambiguously usable, Service best-effort emits
+`rejected/resource_limit`, then immediately enters mandatory drain and returns
+`ServiceStopVMRequired` with `helper_loss` and the existing sanitized
+`ContractTransition` for the mandatory exhausted-state transition unless a
+stricter cleanup Contract error overrides it. Renew has no
+resource-limit wire row; its overflow instead best-effort emits
+`stop_vm_required/helper_unavailable`, then enters the same mandatory drain.
+If cleanup or absence becomes uncertain,
+`stop_vm_required/cleanup_incomplete` and its terminal reason override that
+initial overflow response.
+
+The overflow ID is the sole terminal overflow exception: it is not inserted or
+cached and has no idempotent replay promise. No later job request is admitted.
+It cannot create a successful operation, evict a tombstone, consume reserved
+Revoke capacity, or mutate job/extension state. This is the only exception to
+charging a first-seen ID before mutation and avoids pretending a 4,097th ID can
+fit in a 4,096-entry ledger.
+
+One terminal drain uses one budget and at most three complete cleanup passes.
+Within each pass the order is exact, completed steps are skipped, and no
+resource is recreated:
+
+1. deny new packet admission, exec, extension accepts, and publication;
+2. cancel the active `CoreExecution`, if any;
+3. call `Revoke` in reverse binding order on every extension session whose
+   `Prepare` call began;
+4. before commit call `CorePreparation.Rollback`; after commit call
+   `Core.Revoke` and then `Core.Inspect`;
+5. call every opened extension session `Close` in reverse open order;
+6. destroy or close every Service-owned received/send packet body and right;
+7. call `Core.Close` exactly once;
+8. call `ServiceRuntime.Close` exactly once;
+9. if IPC is still unambiguously usable, perform the correlated close-notify
+   handshake described below;
+10. call `Transport.Close` exactly once and last.
+
+This is the exact three-pass cleanup protocol: retryable absence observations
+may repeat the complete dependency-inspection pass at most three times inside
+the single 30-second budget; the ordered steps do not create ten separate
+budgets. `cleanup_complete` skips completed steps. `retry_required` preserves
+exact ownership and reinspects without recreate. Any stop-VM result, budget
+expiry, dependency nonconformance, loss, or absence that remains unknown
+dominates all prior retry/success results and produces
+`ServiceStopVMRequired`. No cleanup call is placed in a detached goroutine,
+and no call uses `context.Background()`.
+
+Close correlation is exact. A close-notify header always has an all-zero
+request ID and the exact boot nonce. Its identity digest is all-zero before the
+first authenticated job; after a job identity is installed, it is that exact
+pinned identity forever, including after cleanup. A bilateral `normal` close
+is legal only after cleanup-complete. A bilateral `shutdown` close is legal
+only after a clean cancellation drain. Every other reason is a terminal
+one-way best-effort notification. EOF is expected only after a committed
+bilateral normal/shutdown exchange; every other EOF is `helper_loss`.
+
+The final Service result matrix is closed:
+
+| Disposition | Close reason | Error |
+| --- | --- | --- |
+| `ServiceClosed` | `normal` | nil |
+| `ServiceClosed` | `shutdown` | nil |
+| `ServiceStopVMRequired` | `protocol_error`, `identity_drift`, `expired`, or `helper_loss` | non-nil sanitized `ContractError` |
+
+Every other tuple is `ContractResultMatrix`. A stop-VM result is not a clean
+close, and a clean result never carries an error.
+
+The helper response-disposition matrix has this correction:
+
+- `cleanup_retry` is Revoke-only;
+- `stop_vm_required` may answer PrepareCommit, Renew, Exec, or Revoke;
+- Renew and Exec add the exact `CleanupIncomplete` failure alongside their
+  pre-existing operation failures;
+- for non-Revoke operations, stop-VM uses only `CleanupIncomplete` when
+  absence is unknown, or `HelperUnavailable` when a dependency/liveness
+  failure is terminal but absence is proved and no mutation occurred;
+- Revoke stop-VM may use only `RevokeFailed`, `HelperUnavailable`, or
+  `CleanupIncomplete`;
+- a stop-VM response is attempted only while IPC is unambiguously usable.
+
+No PrepareBegin/PrepareFile response, accepted result, cleanup-complete result,
+or unrelated error code can carry stop-VM. Failure to commit the best-effort
+terminal response does not change ownership: Service still returns
+`ServiceStopVMRequired` for D6 kill/reap.
 
 ### Extension contract
 
@@ -1262,8 +1794,9 @@ type ExtensionFactory interface {
 }
 
 type ExtensionOpenRequest struct {
-	Descriptor credentialprotocol.ExtensionDescriptor
-	Host       ExtensionHost
+	liveValue
+	descriptor credentialprotocol.ExtensionDescriptor
+	host       ExtensionHost
 }
 
 type ExtensionSession interface {
@@ -1293,62 +1826,194 @@ type SSHAgentConnection interface {
 }
 
 type ExtensionPrepareRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	ExpiresAt      time.Time
-	BindingID      credentialprotocol.SafeID
-	BindingIndex   uint16
-	Mode           credentialprotocol.DeliveryMode
+	liveValue
+	identityDigest [32]byte
+	revision       uint64
+	expiresUnixNano int64
+	bindingID      credentialprotocol.SafeID
+	bindingIndex   uint16
+	mode           credentialprotocol.DeliveryMode
+	execBinding    ExecBindingCapability
 }
 
 type ExtensionPrepareResult struct {
-	ExecBinding ExecBindingCapability
+	liveValue
+	execBinding ExecBindingCapability
 }
 
 type ExtensionExecRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	ExecBindingID  credentialprotocol.SafeID
+	liveValue
+	identityDigest [32]byte
+	revision       uint64
+	execBindingID  credentialprotocol.SafeID
+	execBinding    ExecBindingCapability
 }
 
 type ExtensionExecResult struct {
-	ExecBinding ExecBindingCapability
+	liveValue
+	execBinding ExecBindingCapability
 }
 
 type ExtensionRenewRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	ExpiresAt      time.Time
+	liveValue
+	identityDigest [32]byte
+	revision       uint64
+	expiresUnixNano int64
 }
 
 type ExtensionRevokeRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	Reason         credentialprotocol.RevokeReason
+	liveValue
+	identityDigest [32]byte
+	revision       uint64
+	reason         credentialprotocol.RevokeReason
 }
 
 type SSHAgentEndpointRequest struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	BindingID      credentialprotocol.SafeID
-	BindingIndex   uint16
+	liveValue
+	identityDigest [32]byte
+	revision       uint64
+	bindingID      credentialprotocol.SafeID
+	bindingIndex   uint16
+	execBinding    ExecBindingCapability
 }
 
 type SSHAcceptedPublication struct {
-	IdentityDigest [32]byte
-	Revision       uint64
-	BindingIndex   uint16
-	Ordinal        uint8
-	CapabilitySHA256 [32]byte
+	liveValue
+	identityDigest   [32]byte
+	revision         uint64
+	bindingIndex     uint16
+	ordinal          uint8
+	capabilitySHA256 [32]byte
+	execBinding      ExecBindingCapability
+}
+
+type ExtensionCleanupCategory uint8
+const (
+	ExtensionCleanupComplete      ExtensionCleanupCategory = 1
+	ExtensionCleanupRetryRequired ExtensionCleanupCategory = 2
+	ExtensionCleanupStopVMRequired ExtensionCleanupCategory = 3
+)
+
+type ExtensionCleanupResult struct {
+	liveValue
+	resourcesAbsent bool
+	category        ExtensionCleanupCategory
 }
 ```
 
-`ExecBindingCapability`, `ExtensionCleanupResult`, `SSHIOResult`, and live
-endpoint/connection values have private concrete implementations, no public
-literal constructor, and fail-closed formatting/serialization. Cleanup result
+The exact constructors and accessor sets are:
+
+```go
+func NewExtensionOpenRequest(credentialprotocol.ExtensionDescriptor, ExtensionHost) (ExtensionOpenRequest, error)
+func (r ExtensionOpenRequest) Descriptor() credentialprotocol.ExtensionDescriptor
+func (r ExtensionOpenRequest) Host() ExtensionHost
+func NewExtensionPrepareRequest([32]byte, uint64, int64,
+	credentialprotocol.SafeID, uint16, credentialprotocol.DeliveryMode,
+	ExecBindingCapability) (ExtensionPrepareRequest, error)
+func (r ExtensionPrepareRequest) IdentityDigest() [32]byte
+func (r ExtensionPrepareRequest) Revision() uint64
+func (r ExtensionPrepareRequest) ExpiresUnixNano() int64
+func (r ExtensionPrepareRequest) BindingID() credentialprotocol.SafeID
+func (r ExtensionPrepareRequest) BindingIndex() uint16
+func (r ExtensionPrepareRequest) Mode() credentialprotocol.DeliveryMode
+func (r ExtensionPrepareRequest) ExecBinding() ExecBindingCapability
+func NewExtensionPrepareResult(ExecBindingCapability) (ExtensionPrepareResult, error)
+func (r ExtensionPrepareResult) ExecBinding() ExecBindingCapability
+func NewExtensionExecRequest([32]byte, uint64, credentialprotocol.SafeID,
+	ExecBindingCapability) (ExtensionExecRequest, error)
+func (r ExtensionExecRequest) IdentityDigest() [32]byte
+func (r ExtensionExecRequest) Revision() uint64
+func (r ExtensionExecRequest) ExecBindingID() credentialprotocol.SafeID
+func (r ExtensionExecRequest) ExecBinding() ExecBindingCapability
+func NewExtensionExecResult(ExecBindingCapability) (ExtensionExecResult, error)
+func (r ExtensionExecResult) ExecBinding() ExecBindingCapability
+func NewExtensionRenewRequest([32]byte, uint64, int64) (ExtensionRenewRequest, error)
+func (r ExtensionRenewRequest) IdentityDigest() [32]byte
+func (r ExtensionRenewRequest) Revision() uint64
+func (r ExtensionRenewRequest) ExpiresUnixNano() int64
+func NewExtensionRevokeRequest([32]byte, uint64,
+	credentialprotocol.RevokeReason) (ExtensionRevokeRequest, error)
+func (r ExtensionRevokeRequest) IdentityDigest() [32]byte
+func (r ExtensionRevokeRequest) Revision() uint64
+func (r ExtensionRevokeRequest) Reason() credentialprotocol.RevokeReason
+func NewSSHAgentEndpointRequest([32]byte, uint64, credentialprotocol.SafeID,
+	uint16, ExecBindingCapability) (SSHAgentEndpointRequest, error)
+func (r SSHAgentEndpointRequest) IdentityDigest() [32]byte
+func (r SSHAgentEndpointRequest) Revision() uint64
+func (r SSHAgentEndpointRequest) BindingID() credentialprotocol.SafeID
+func (r SSHAgentEndpointRequest) BindingIndex() uint16
+func (r SSHAgentEndpointRequest) ExecBinding() ExecBindingCapability
+func NewSSHAcceptedPublication([32]byte, uint64, uint16, uint8, [32]byte,
+	ExecBindingCapability) (SSHAcceptedPublication, error)
+func (r SSHAcceptedPublication) IdentityDigest() [32]byte
+func (r SSHAcceptedPublication) Revision() uint64
+func (r SSHAcceptedPublication) BindingIndex() uint16
+func (r SSHAcceptedPublication) Ordinal() uint8
+func (r SSHAcceptedPublication) CapabilitySHA256() [32]byte
+func (r SSHAcceptedPublication) ExecBinding() ExecBindingCapability
+func NewExtensionCleanupResult(
+	resourcesAbsent bool, category ExtensionCleanupCategory,
+) (ExtensionCleanupResult, error)
+func (r ExtensionCleanupResult) ResourcesAbsent() bool
+func (r ExtensionCleanupResult) Category() ExtensionCleanupCategory
+```
+
+All fields are private, `liveValue` is first, and constructor argument order is
+field order. Constructors reject zero, unknown, noncanonical, nil, and typed-
+nil values before any capability method call. Each type has static formatting,
+denies JSON/text/binary marshal and unmarshal, and preserves a seeded receiver
+on rejected unmarshal. Accessors return only immutable scalar/fixed copies or
+the exact opaque interface; no public literal mutation is possible. Canonical
+expiry is `int64` Unix nanoseconds; `time.Time` is not accepted.
+
+`ExecBindingCapability` and live endpoint/connection values have private
+concrete implementations. `ExtensionCleanupResult` and `SSHIOResult` have only
+private fields and validating constructors. None permits public struct-literal
+construction; all use fail-closed formatting/serialization. Cleanup result
 contains only the extension resource-absence boolean and retry/stop-VM category;
 it can never claim whole-job cleanup. `SSHIOResult` contains only byte count,
 EOF, and truncation. Shutdown direction is a closed read/write/both enum.
+
+All extension authority crosses this seam as opaque extension values.
+`ExecBindingCapability` remains an opaque interface with its existing private
+marker; its sole private concrete representation is
+`struct { liveValue; digest [32]byte }`. Only Service mints it, after successful
+Core Commit, from this exact frozen digest:
+
+```text
+SHA256(
+  opaque16("hal/l8/guest-helper/extension-exec-binding/v1") ||
+  bootNonce[32] || identityDigest[32] || u64be(revision) ||
+  opaque16(boot) || opaque16(helper) || opaque16(job) ||
+  opaque16(monitor) || opaque16(mount) || opaque16(cgroup) ||
+  i64be(expiresUnixNano) || manifestSHA256[32] || transactionSHA256[32] ||
+  u16be(bindingIndex) || opaque16(bindingID) || u8(mode)
+)
+```
+
+The extension factory/session, D4 endpoint, and publication code may only echo
+the exact issued interface value. Service constant-time checks the same private
+concrete type and digest in the Prepare result, BindExec result, endpoint's
+`ExecBinding`, endpoint creation result, and accepted publication. A zero,
+foreign implementation, typed-nil, changed digest, or wrong binding is
+`ContractCapability`. The exact issued value may
+be echoed only at its frozen lifecycle checks; that is not mint authority. The
+interface has no ID, digest, bytes, formatting, or serialization accessor and
+never becomes a proof label.
+
+`ExtensionCleanupResult` remains exactly `resourcesAbsent bool` plus
+`category ExtensionCleanupCategory`, with its validating constructor and those
+two accessors. Its matrix is closed: Complete requires `resourcesAbsent=true`;
+RetryRequired requires false; StopVMRequired requires false. An unknown
+category or any other boolean/category pair is invalid. It proves only absence
+of resources owned by that extension and can never prove whole-job absence.
+
+The interface method sets do not otherwise change. `ExtensionFactory.Open`,
+the five `ExtensionSession` methods, both `ExtensionHost` methods, the three
+`SSHAgentEndpoint` methods, and the five `SSHAgentConnection` methods remain
+exactly as declared. The endpoint request and accepted publication carry the
+issued binding and the endpoint must echo it. No new host/endpoint method,
+numeric handle, path, namespace, or transport authority is added.
 
 These request/result structs are concrete, non-JSON closed types owned by
 `credentialhelper`. They contain only canonical safe identity/digest/revision
@@ -1422,22 +2087,36 @@ extension or downgrading the requested mode.
 ### Concurrency, lifecycle, and cleanup
 
 An `ExtensionRegistry` is immutable and safe for concurrent reads. A `Service`
-has one `Serve` lifetime and one drain path. For a prepare transaction it opens
-only the extensions named by the sealed manifest, in manifest order. It calls
-`Prepare` only after core file commit exists and before outer helper
-publication. The closed manifest contains at most one SSH binding, so the SSH
-extension may issue one `create_ssh_endpoint` and cannot create a second
-`SSH_AUTH_SOCK`. On failure it
-revokes prepared extensions in reverse order, then rolls back core staging.
+has one `Serve` lifetime, one activation, and one drain path. The exact
+extension lifecycle is:
+
+1. open manifest-selected extension sessions in order before `Core.BeginPrepare`;
+2. on a pre-commit failure, call opened sessions' `Close` in reverse order and
+   call `CorePreparation.Rollback` if staging began;
+3. complete Core file staging and Core Commit, then call extension `Prepare` in
+   manifest order, and only after all succeed publish the outer prepare result;
+4. once any post-commit extension Prepare begins, its failure cleanup calls
+   reverse `Revoke` on every session whose Prepare call began, including the
+   failing session even when it returned an error; it then calls Core Revoke,
+   never Rollback after commit, and finally Close on all opened sessions in
+   reverse order;
+5. renew Core first and extensions in manifest order; any extension Renew
+   failure revokes the whole activation through that post-commit path;
+6. revoke denies new work, cancels an active execution, calls extension
+   `Revoke` in reverse order, then Core Revoke, then extension `Close` in
+   reverse order.
+
+The closed manifest contains at most one SSH binding, so the SSH extension may
+issue one `create_ssh_endpoint` and cannot create a second `SSH_AUTH_SOCK`.
 No extension call is concurrent with another transition for the same job.
 
-An extension session is owned by the service from a valid `Open` return until
-exactly one successful transfer into job state. After transfer, job state owns
-it until revoke. `Close` is idempotent, may be called after partial open, and
-does not substitute for `Revoke` or absence proof. The service calls it exactly
-once after terminal revoke/rollback or during service drain. All caller
-contexts may stop waiting; cleanup continues under the service's bounded
-cleanup context.
+Service owns each valid `Open` return for the Service/job lifetime. During the
+applicable pre-commit rollback, post-commit revoke, or terminal Service teardown
+it calls that session's `Close` at most once and exactly once when its teardown
+step is reached. The contract does not promise that an extension Close is
+idempotent. Close exactly once never substitutes for Revoke or absence proof.
+Caller cancellation latches the same drain; Serve waits for the shared bounded
+cleanup result.
 
 For SSH cleanup the order is fixed: deny new exec and new accepts; the
 controller closes every published listener; cancel relay pumps; close every
@@ -1865,10 +2544,18 @@ cannot mutate the inspected metadata. Tests cover formatting, every marshal
 and unmarshal interface, accessor stability, copies, and attempted packet
 consumption.
 
-The unknown constructor requires a syntactically safe unknown operation;
-Client dispatch emits only the v2control `unknown_operation` failure for the
-inspected request ID and digest. Thus a safe unknown operation receives only `unknown_operation`
-and is never body-decoded. The malformed constructor requires a known operation
+The unknown constructor requires a syntactically safe unknown operation, but
+that shape alone is not response authority. Response eligibility exists only
+after a job identity is active and the inspected root identity digest exactly
+equals that active identity. In that state, a safe unknown operation receives
+only `unknown_operation`; Client dispatch emits only the v2control failure for
+the inspected request ID/digest and never body-decodes it. The only safe-unknown
+response is `unknown_operation`. An unknown operation before identity
+activation is unsafe for response and closes terminally
+without mutation or response: only readiness or a known initial prepare can
+establish pre-active correlation. D4 may inspect it while
+`expectedIdentitySet=false`, but the Client phase check rejects the unknown arm
+before construction of any response. The malformed constructor requires a known operation
 whose root inspection completed. A schema or canonical concrete-decoder failure
 after usable root correlation is the only malformed-known boundary;
 Client dispatch emits only that operation's matrix-valid
@@ -2178,13 +2865,25 @@ every other type; mismatch closes every received right and destroys the slot.
 Only after those checks does it decode the bounded body and call the matching
 constructor.
 
-`ExpectedRequestID` is false only for an idle active-job asynchronous event or SSH acceptance, with no logical controller/helper operation
-outstanding. In that state only `event` or `ssh_accepted_fd` may construct a
-packet, and its authenticated HL8P header request ID is still mandatory and
-nonzero. No asynchronous event or SSH acceptance may interleave with an
+`ExpectedRequestID` is false in exactly two Client-owned phase cases:
+
+1. an idle active job with no outstanding logical operation permits only an
+   asynchronous `event` or `ssh_accepted_fd`; its authenticated header request
+   ID remains nonzero and producer-owned;
+2. the drain/close handshake permits only `close_notify`; its authenticated
+   close-notify header request ID is exactly zero.
+
+All ordinary response, stream, and credit packets require expected=true and
+the exact outstanding nonzero ID. Only operational packets belonging to an
+outstanding logical request match that ID; idle event/SSH packets use their own
+nonzero IDs, close-notify uses zero, and readiness/bootstrap are separately
+correlated. No asynchronous event or SSH acceptance may interleave with an
 outstanding prepare, renew, revoke, exec, stream, credit, response, or cleanup
-operation. Every other receive request sets the exact expected nonzero request
-ID. After constructor return, Client validates active identity, revision,
+operation. ReceiveRequest intentionally carries no phase enum. The
+`HelperReceiveRequest` constructor performs only shape/header checks, then
+Client immediately enforces
+this phase-specific arm allowlist before body borrow, state mutation, or right
+transfer. After constructor return, Client validates active identity, revision,
 packet type, binding, ordinal, capability/body digest, and sequence before
 borrowing a body, mutating state, or transferring a right.
 
@@ -2198,8 +2897,8 @@ nonzero boot nonce, exact sequence/body length, request ID, identity, packet
 direction, body codec, other typed-nil dependencies, represented arm
 cardinality, and closed safe shape before sealing its request.
 It compares the request ID when `ExpectedRequestID` is set and always compares
-the explicitly present identity in `HelperReceiveRequest`; the false-ID case is
-restricted to the two idle asynchronous arms above. It has no access to Client
+the explicitly present identity in `HelperReceiveRequest`; the false-ID cases
+are restricted to the idle asynchronous and drain/close arms above. It has no access to Client
 phase, revision, binding,
 stream, credit, aggregate, or SSH ledgers. Non-sensitive bodies are destroyed
 after construction. Exec-stream body ownership stays live until its payload is

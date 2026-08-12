@@ -270,7 +270,7 @@ func TestL8D2GuestHelperCoreContractClosureIsImplementationReady(t *testing.T) {
 		"BeginExec(context.Context, CoreExecRequest, credentialmemory.BorrowedView)",
 		"NewReceiveRequest",
 		"NewReceivedBootstrapPacket",
-		"NewReceivedBootstrapPacket(ReceiveRequest",
+		"NewReceivedBootstrapPacket(context.Context, ReceiveRequest",
 		"NewReceivedExecStreamPacket",
 		"ExpectedRights() uint32",
 		"type ReceivedBodyCapability interface",
@@ -282,7 +282,7 @@ func TestL8D2GuestHelperCoreContractClosureIsImplementationReady(t *testing.T) {
 		"Configured D4 Transport",
 		"one-shot atomic consumed latch",
 		"newSendPacket",
-		"WriteCanonicalBody(credentialmemory.CredentialSink)",
+		"WriteCanonicalBody(context.Context, credentialmemory.CredentialSink)",
 		"func NewPolicyRequest",
 		"ExecBodyBytes() uint32",
 		"PrivateBytes() uint32",
@@ -328,6 +328,166 @@ func TestL8D2GuestHelperCoreContractClosureIsImplementationReady(t *testing.T) {
 	} {
 		if !strings.Contains(architecture, required) {
 			t.Fatalf("L8 D2 architecture omits stream-computable transcript closure %q", required)
+		}
+	}
+}
+
+func TestL8D2GuestHelperServiceIndependentReviewClosureIsImplementationReady(t *testing.T) {
+	seam := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-guest-extension-seams.md"))
+	for _, required := range []string{
+		"### Helper Service normative closure",
+		"Host       ExtensionHost",
+		"Runtime    ServiceRuntime",
+		"type ServiceDisposition uint8",
+		"ServiceClosed",
+		"ServiceStopVMRequired",
+		"type ServiceResult struct",
+		"func (s *Service) Serve(context.Context) (ServiceResult, error)",
+		"There is no public `Close` or `Wait` method",
+		"type ServiceRuntime interface",
+		"Bootstrap(context.Context) (ServiceBootstrap, error)",
+		"BindAgent(context.Context, ServiceAgentBindingRequest, ReceivedCapability) error",
+		"ObserveJob(context.Context, ServiceJobObservationRequest) (ServiceJobObservation, error)",
+		"Loss() <-chan ServiceLoss",
+		"BeginCleanup() (ServiceCleanupBudget, error)",
+		"type ServiceCleanupBudget interface",
+		"Limit() time.Duration",
+		"DeadlineExceeded() bool",
+		"func NewServiceBootstrap(",
+		"func (b ServiceBootstrap) BootNonce() [32]byte",
+		"func (r ServiceAgentBindingRequest) AgentIdentitySHA256() [32]byte",
+		"func (r ServiceJobObservationRequest) Operation() ServiceOperation",
+		"func NewServiceJobObservation(",
+		"func (o ServiceJobObservation) Generations() CoreGenerations",
+		"func NewServiceLoss(category ServiceLossCategory) (ServiceLoss, error)",
+		"func (l ServiceLoss) Category() ServiceLossCategory",
+		"func ValidateServiceDisposition(ServiceDisposition) error",
+		"func ValidateServiceOperation(ServiceOperation) error",
+		"func ValidateServiceLossCategory(ServiceLossCategory) error",
+		"`ServiceResult` is minted",
+		"has no public constructor",
+		"The observation matrix is exact",
+		"canonical nonempty generations",
+		"hardExpiryUnixNano >= observedUnixNano",
+		"equal the exact Bootstrap Boot and Helper generations",
+		"The first prepare latches",
+		"latched generations and that exact hard horizon",
+		"observation time advances",
+		"monotonically and never regresses",
+		"cannot extend or replace the hard horizon",
+		"revision == current revision + 1",
+		"expiry > the prior expiry",
+		"The loss-channel matrix is exact",
+		"stable non-nil receive-only",
+		"Exactly one valid nonzero `ServiceLoss`",
+		"close-before-value",
+		"More than one value",
+		"owns exactly one loss watcher",
+		"joins it before `Serve` returns",
+		"BindAgent ownership is exact",
+		"atomically transfers the sole bootstrap pidfd capability to Runtime",
+		"Service retains that capability",
+		"numeric PID accessor",
+		"Ambiguous transfer is forbidden",
+		"exactly 30 seconds",
+		"does not promise forced in-process return",
+		"CoreExecution event loop",
+		"WriteStdin",
+		"GrantOutput",
+		"Next",
+		"NewCoreExecutionOutputEvent",
+		"NewCoreExecutionCompleteEvent",
+		"owned full canonical `0x18`",
+		"`CoreOutputBody` on entry",
+		`opaque16("hal/l8/guest-helper/core-capability/v1")`,
+		"all six generation positions",
+		"`active.`",
+		"`binding.`",
+		"`exec.`",
+		"`cleanup.`",
+		"one Service-lifetime private nonzero monotonic `uint32`",
+		"prepare-cleanup capabilities use the partial generation tuple",
+		"revoke-cleanup capabilities require all six generations",
+		"event ID",
+		"opaque extension values",
+		"type ExtensionCleanupResult struct",
+		"func NewExtensionCleanupResult(",
+		"func (r ExtensionCleanupResult) ResourcesAbsent() bool",
+		"func (r ExtensionCleanupResult) Category() ExtensionCleanupCategory",
+		`opaque16("hal/l8/guest-helper/extension-exec-binding/v1")`,
+		"fixed 4,096-entry non-exec",
+		"last three slots are reserved for fresh Revoke",
+		"fixed 4,096-entry exec ledger",
+		"terminal overflow exception",
+		"type HelperExecTransactionSeed struct",
+		"`*credentialprotocol.HelperPrepareTransaction`",
+		"AcceptObservedFileObservation",
+		"Replays use a fresh prepare transaction",
+		"decoded credentialprotocol.HelperExecBody, plan ExecPlanCapability",
+		"private `credentialprotocol.HelperExecTransactionSeed`",
+		"no public transaction",
+		"seed accessor",
+		"ownership transfers on",
+		"constructor entry",
+		"uses that exact context to clean constructor failure",
+		"never substitutes `context.Background()`",
+		"three-pass cleanup",
+		"open manifest-selected extension sessions in order before `Core.BeginPrepare`",
+		"complete Core file staging and Core Commit, then call extension `Prepare`",
+		"never Rollback after commit",
+		"Close exactly once never substitutes for Revoke or absence proof",
+		"Close correlation is exact",
+		"caller cancellation latches drain",
+		"`ServiceClosed` is legal after either",
+		"committed bilateral `normal` or `shutdown`",
+		"ContractTransition",
+		"`cleanup_retry` is Revoke-only",
+		"PrepareCommit, Renew, Exec, or Revoke",
+		"CleanupIncomplete",
+		"WriteCanonicalBody(context.Context, credentialmemory.CredentialSink) error",
+	} {
+		if !strings.Contains(seam, required) {
+			t.Fatalf("L8 D2 extension seam omits helper-Service review closure %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"ReadOutput(context.Context, CoreOutputRequest, credentialmemory.CredentialSink)",
+		"Wait(context.Context) (CoreExecResult, error)",
+		"Wait is accepted",
+		"Constructors always return the complete zero value with the exact\nerror and do not consume an input capability.",
+	} {
+		if strings.Contains(seam, forbidden) {
+			t.Fatalf("L8 D2 extension seam retains superseded helper-Service contract %q", forbidden)
+		}
+	}
+
+	architecture := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialArchitectureDoc))
+	for _, required := range []string{
+		"helper-Service normative closure",
+		"ServiceStopVMRequired",
+		"CoreExecution event loop",
+		"4,096-entry non-exec ledger",
+		"three reserved Revoke slots",
+		"ownership-on-entry",
+		"three-pass cleanup",
+		"stop-VM response correction",
+	} {
+		if !strings.Contains(architecture, required) {
+			t.Fatalf("L8 D2 architecture omits helper-Service review closure %q", required)
+		}
+	}
+
+	verification := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialVerificationDoc))
+	for _, required := range []string{
+		"helper-Service normative closure",
+		"runtime-owned 30-second cleanup budget",
+		"CoreExecution event/body ownership",
+		"reserved Revoke ledger capacity",
+		"opaque extension lifecycle",
+		"response-disposition correction",
+	} {
+		if !strings.Contains(verification, required) {
+			t.Fatalf("L8 verification omits helper-Service review closure %q", required)
 		}
 	}
 }
@@ -544,14 +704,22 @@ func TestL8D2CredentialClientIndependentReviewClosureIsImplementationReady(t *te
 		"seeded receiver nonmutation",
 		"value and pointer forms as applicable",
 		"expose no mutator",
-		"safe unknown operation receives only `unknown_operation`",
+		"response is `unknown_operation`",
+		"job identity is active",
+		"activation is unsafe for response",
+		"known initial prepare",
+		"establish pre-active correlation",
 		"unsafe or unreadable operation",
 		"malformed known request receives only `malformed_request`",
 		"does not promise an in-process forced return",
 		"D6 process/VM kill and reap",
 		"expectedRequestIDSet bool",
 		"ExpectedRequestID() ([16]byte, bool)",
-		"false only for an idle active-job asynchronous event or SSH acceptance",
+		"false in exactly two Client-owned phase cases",
+		"drain/close handshake permits only `close_notify`",
+		"close-notify header request ID is exactly zero",
+		"ordinary response, stream, and credit packets require expected=true",
+		"ReceiveRequest intentionally carries no phase enum",
 		"type BodySegmentSink interface",
 		"Capacity() uint32",
 		"WriteSegment(offset uint32, source []byte) error",
@@ -588,8 +756,8 @@ func TestL8D2CredentialClientIndependentReviewClosureIsImplementationReady(t *te
 			t.Fatalf("L8 D2 extension seam retains superseded credential-client contract %q", forbidden)
 		}
 	}
-	if count := strings.Count(seam, "WriteCanonicalBody(credentialmemory.CredentialSink) error"); count != 1 {
-		t.Fatalf("L8 D2 extension seam retains %d credential-sink WriteCanonicalBody signatures; want only the helper-service signature", count)
+	if count := strings.Count(seam, "WriteCanonicalBody(credentialmemory.CredentialSink) error"); count != 0 {
+		t.Fatalf("L8 D2 extension seam retains %d context-free credential-sink WriteCanonicalBody signatures; want none", count)
 	}
 
 	architecture := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialArchitectureDoc))
