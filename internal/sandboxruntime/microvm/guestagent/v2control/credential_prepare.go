@@ -72,7 +72,7 @@ type credentialPrepareRequestState struct {
 	operation             Operation
 	requestID             RequestID
 	identityDigest        IdentityDigest
-	identity              JobIdentity
+	identity              GuestCredentialSessionIdentity
 	revision              uint64
 	expiresAtUnixNano     int64
 	bindings              []BindingManifest
@@ -179,17 +179,17 @@ func ValidateBindingProof(proof BindingProof) error {
 	return nil
 }
 
-// NewCredentialPrepareRequest constructs a request and derives its envelope
-// identity digest from the validated concrete JobIdentity.
-func NewCredentialPrepareRequest(requestID RequestID, identity JobIdentity, revision uint64, expiresAtUnixNano int64, bindings []BindingManifest, privateRecordCount uint32, privateAggregateBytes uint64) (CredentialPrepareRequest, error) {
-	digestBytes, err := JobIdentityDigest(identity)
+// NewCredentialPrepareRequest constructs a request from the authenticated
+// guest session identity and derives its exact session-bound envelope digest.
+func NewCredentialPrepareRequest(requestID RequestID, identity GuestCredentialSessionIdentity, revision uint64, expiresAtUnixNano int64, bindings []BindingManifest, privateRecordCount uint32, privateAggregateBytes uint64) (CredentialPrepareRequest, error) {
+	digestBytes, err := GuestCredentialSessionIdentityDigest(identity)
 	if err != nil {
 		return CredentialPrepareRequest{}, ErrInvalidCredentialPrepareRequest
 	}
 	request := CredentialPrepareRequest{state: &credentialPrepareRequestState{
 		protocolVersion: ProtocolVersion, operation: OperationCredentialPrepare,
 		requestID: requestID, identityDigest: NewIdentityDigest(digestBytes),
-		identity: cloneJobIdentity(identity), revision: revision, expiresAtUnixNano: expiresAtUnixNano,
+		identity: identity, revision: revision, expiresAtUnixNano: expiresAtUnixNano,
 		bindings: cloneBindingManifests(bindings), privateRecordCount: privateRecordCount,
 		privateAggregateBytes: privateAggregateBytes,
 	}}
@@ -204,17 +204,17 @@ func NewCredentialPrepareRequest(requestID RequestID, identity JobIdentity, revi
 func ValidateCredentialPrepareRequest(request CredentialPrepareRequest) error {
 	if request.state == nil || request.state.protocolVersion != ProtocolVersion ||
 		request.state.operation != OperationCredentialPrepare || request.state.revision != 1 ||
-		!validCredentialPrepareRootExpiry(request.state.identity, request.state.expiresAtUnixNano) {
+		!validCredentialPrepareRootExpiry(request.state.identity.JobIdentity(), request.state.expiresAtUnixNano) {
 		return ErrInvalidCredentialPrepareRequest
 	}
 	if _, err := EncodeRequestID(request.state.requestID); err != nil {
 		return ErrInvalidCredentialPrepareRequest
 	}
-	digest, err := JobIdentityDigest(request.state.identity)
+	digest, err := GuestCredentialSessionIdentityDigest(request.state.identity)
 	if err != nil || request.state.identityDigest != NewIdentityDigest(digest) {
 		return ErrInvalidCredentialPrepareRequest
 	}
-	if !validPrepareManifestList(request.state.identity, request.state.bindings,
+	if !validPrepareManifestList(request.state.identity.JobIdentity(), request.state.bindings,
 		request.state.privateRecordCount, request.state.privateAggregateBytes) {
 		return ErrInvalidCredentialPrepareRequest
 	}
@@ -224,7 +224,7 @@ func ValidateCredentialPrepareRequest(request CredentialPrepareRequest) error {
 // ValidateCredentialPrepareRequestExpiry applies the authenticated session's
 // caller-owned hard-expiry boundary. The codec has no clock or session state.
 func ValidateCredentialPrepareRequestExpiry(request CredentialPrepareRequest, sessionHardExpiryUnixNano int64) error {
-	if ValidateCredentialPrepareRequest(request) != nil || sessionHardExpiryUnixNano <= request.state.identity.IssuedAtUnixNano ||
+	if ValidateCredentialPrepareRequest(request) != nil || sessionHardExpiryUnixNano <= request.state.identity.JobIdentity().IssuedAtUnixNano ||
 		request.state.expiresAtUnixNano > sessionHardExpiryUnixNano {
 		return ErrInvalidCredentialPrepareRequest
 	}
@@ -236,7 +236,7 @@ func EncodeCredentialPrepareRequest(request CredentialPrepareRequest) ([]byte, e
 	if ValidateCredentialPrepareRequest(request) != nil {
 		return nil, ErrInvalidCredentialPrepareRequest
 	}
-	identityWire, err := MarshalJobIdentity(request.state.identity)
+	identityWire, err := MarshalJobIdentity(request.state.identity.JobIdentity())
 	if err != nil {
 		return nil, ErrInvalidCredentialPrepareRequest
 	}
@@ -268,9 +268,10 @@ func EncodeCredentialPrepareRequest(request CredentialPrepareRequest) ([]byte, e
 	return wire.Bytes(), nil
 }
 
-// DecodeCredentialPrepareRequest accepts exactly one complete canonical wire.
-func DecodeCredentialPrepareRequest(wire []byte) (CredentialPrepareRequest, error) {
-	if !validCredentialPrepareJSONInput(wire) {
+// DecodeCredentialPrepareRequest accepts exactly one complete canonical wire
+// bound to the expected authenticated guest session identity.
+func DecodeCredentialPrepareRequest(expectedIdentity GuestCredentialSessionIdentity, wire []byte) (CredentialPrepareRequest, error) {
+	if ValidateGuestCredentialSessionIdentity(expectedIdentity) != nil || !validCredentialPrepareJSONInput(wire) {
 		return CredentialPrepareRequest{}, ErrInvalidCredentialPrepareRequestJSON
 	}
 	decoder := json.NewDecoder(bytes.NewReader(wire))
@@ -326,10 +327,14 @@ func DecodeCredentialPrepareRequest(wire []byte) (CredentialPrepareRequest, erro
 		return CredentialPrepareRequest{}, ErrInvalidCredentialPrepareRequestJSON
 	}
 	identityDigest, err := ParseIdentityDigest(digestText)
-	if err != nil {
+	if err != nil || !sameCredentialLifecycleIdentity(identity, expectedIdentity.JobIdentity()) {
 		return CredentialPrepareRequest{}, ErrInvalidCredentialPrepareRequestJSON
 	}
-	request, err := NewCredentialPrepareRequest(requestID, identity, revision, expiresAtUnixNano,
+	expectedDigest, err := GuestCredentialSessionIdentityDigest(expectedIdentity)
+	if err != nil || identityDigest != NewIdentityDigest(expectedDigest) {
+		return CredentialPrepareRequest{}, ErrInvalidCredentialPrepareRequestJSON
+	}
+	request, err := NewCredentialPrepareRequest(requestID, expectedIdentity, revision, expiresAtUnixNano,
 		bindings, uint32(privateRecordCount64), privateAggregateBytes)
 	if err != nil || request.state.identityDigest != identityDigest {
 		return CredentialPrepareRequest{}, ErrInvalidCredentialPrepareRequestJSON
