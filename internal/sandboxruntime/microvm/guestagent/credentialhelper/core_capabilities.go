@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"reflect"
+	"runtime"
+	"sync"
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
@@ -63,6 +65,7 @@ type ExecPlanCapability struct {
 }
 
 type execPlanCapabilityState struct {
+	mu            sync.Mutex
 	encodedLength uint32
 	sha256        [32]byte
 	canonical     [credentialprotocol.MaxHelperExecPlanBytes]byte
@@ -196,21 +199,36 @@ func NewExecPlanCapability(plan credentialprotocol.HelperExecPlan) (ExecPlanCapa
 }
 
 func (capability ExecPlanCapability) EncodedLength() uint32 {
-	if capability.state == nil || capability.state.destroyed {
+	if capability.state == nil {
+		return 0
+	}
+	capability.state.mu.Lock()
+	defer capability.state.mu.Unlock()
+	if capability.state.destroyed {
 		return 0
 	}
 	return capability.state.encodedLength
 }
 
 func (capability ExecPlanCapability) SHA256() [32]byte {
-	if capability.state == nil || capability.state.destroyed {
+	if capability.state == nil {
+		return [32]byte{}
+	}
+	capability.state.mu.Lock()
+	defer capability.state.mu.Unlock()
+	if capability.state.destroyed {
 		return [32]byte{}
 	}
 	return capability.state.sha256
 }
 
 func (capability ExecPlanCapability) CopyCanonicalTo(sink credentialmemory.CredentialSink) error {
-	if capability.state == nil || capability.state.destroyed {
+	if capability.state == nil {
+		return ErrContractDestroyed
+	}
+	capability.state.mu.Lock()
+	defer capability.state.mu.Unlock()
+	if capability.state.destroyed {
 		return ErrContractDestroyed
 	}
 	if isNilCoreDependency(sink) {
@@ -230,6 +248,8 @@ func (capability ExecPlanCapability) destroy() {
 	if capability.state == nil {
 		return
 	}
+	capability.state.mu.Lock()
+	defer capability.state.mu.Unlock()
 	wipeBytes(capability.state.canonical[:])
 	capability.state.encodedLength = 0
 	capability.state.sha256 = [32]byte{}
@@ -237,9 +257,8 @@ func (capability ExecPlanCapability) destroy() {
 }
 
 func wipeBytes(value []byte) {
-	for index := range value {
-		value[index] = 0
-	}
+	clear(value)
+	runtime.KeepAlive(value)
 }
 
 func isNilCoreDependency(value credentialmemory.CredentialSink) bool {

@@ -26,6 +26,8 @@ func TestCredentialHelperContractImportBoundaries(t *testing.T) {
 		"errors":        true,
 		"fmt":           true,
 		"reflect":       true,
+		"runtime":       true,
+		"sync":          true,
 		"time":          true,
 	}
 	for _, entry := range entries {

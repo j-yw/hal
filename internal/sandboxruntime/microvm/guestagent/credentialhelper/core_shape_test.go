@@ -28,13 +28,16 @@ func TestCoreConcreteValuesHaveOnlyPrivateUntaggedFields(t *testing.T) {
 			}
 		}
 	}
-	if reflect.TypeOf(RelativePathCapability{}).Field(2).Type.Len() != 4096 {
+	pathBytes, _ := reflect.TypeOf(RelativePathCapability{}).FieldByName("bytes")
+	if pathBytes.Type.Len() != 4096 {
 		t.Fatal("relative path storage is not fixed at 4096 bytes")
 	}
-	if reflect.TypeOf(ManifestCapability{}).Field(2).Type.Len() != 16 {
+	manifestRecords, _ := reflect.TypeOf(ManifestCapability{}).FieldByName("records")
+	if manifestRecords.Type.Len() != 16 {
 		t.Fatal("manifest storage is not fixed at 16 records")
 	}
-	if reflect.TypeOf(execPlanCapabilityState{}).Field(2).Type.Len() != 64*1024 {
+	canonical, _ := reflect.TypeOf(execPlanCapabilityState{}).FieldByName("canonical")
+	if canonical.Type.Len() != 64*1024 {
 		t.Fatal("exec plan storage is not fixed at 64 KiB")
 	}
 }
@@ -50,7 +53,7 @@ func TestCoreConcreteFieldOrderAndCatalogValuesAreExact(t *testing.T) {
 		{ManifestCapability{}, []string{"liveValue", "count", "records"}},
 		{manifestRecord{}, []string{"bindingID", "mode", "target", "declaredFileBytes", "fileSHA256"}},
 		{ExecPlanCapability{}, []string{"liveValue", "state"}},
-		{execPlanCapabilityState{}, []string{"encodedLength", "sha256", "canonical", "destroyed"}},
+		{execPlanCapabilityState{}, []string{"mu", "encodedLength", "sha256", "canonical", "destroyed"}},
 		{CorePrepareRequest{}, []string{"liveValue", "correlation", "generations", "expiresUnixNano", "fixedLimitSetID", "manifest", "manifestSHA256", "preparation", "prepared", "cleanup"}},
 		{CoreFileRequest{}, []string{"liveValue", "correlation", "job", "preparation", "bindingID", "bindingIndex", "target", "fileLength", "fileSHA256"}},
 		{CoreCommitRequest{}, []string{"liveValue", "correlation", "job", "preparation", "manifestSHA256", "transactionSHA256", "prepared"}},

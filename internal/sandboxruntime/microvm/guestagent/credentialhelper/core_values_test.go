@@ -3,7 +3,9 @@ package credentialhelper
 import (
 	"crypto/sha256"
 	"errors"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 )
@@ -88,6 +90,87 @@ func TestCoreCapabilitiesValidateCopyAndDestroy(t *testing.T) {
 	sink = &recordingCoreSink{maximum: int(lengthBefore)}
 	if err := alias.CopyCanonicalTo(sink); !errors.Is(err, ErrContractDestroyed) || sink.calls != 0 {
 		t.Fatalf("destroyed copy = %v, calls = %d", err, sink.calls)
+	}
+}
+
+func TestExecPlanCapabilityDestroyWaitsForInFlightSinkAndLatchesAliases(t *testing.T) {
+	plan, err := NewExecPlanCapability(validCoreExecPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := plan
+	sink := &blockingCoreSink{
+		maximum: int(plan.EncodedLength()),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	copyDone := make(chan error, 1)
+	go func() { copyDone <- alias.CopyCanonicalTo(sink) }()
+	<-sink.entered
+
+	destroyStarted := make(chan struct{})
+	destroyDone := make(chan struct{})
+	go func() {
+		close(destroyStarted)
+		plan.destroy()
+		close(destroyDone)
+	}()
+	<-destroyStarted
+	select {
+	case <-destroyDone:
+		t.Fatal("destroy returned while the synchronous sink call was in flight")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(sink.release)
+	if err := <-copyDone; err != nil {
+		t.Fatalf("CopyCanonicalTo() error = %v", err)
+	}
+	<-destroyDone
+
+	if len(sink.payload) == 0 || alias.EncodedLength() != 0 || alias.SHA256() != ([32]byte{}) {
+		t.Fatal("alias did not observe the completed destruction transition")
+	}
+	for index, value := range plan.state.canonical {
+		if value != 0 {
+			t.Fatalf("canonical byte %d was not wiped", index)
+		}
+	}
+	if plan.state.encodedLength != 0 || plan.state.sha256 != ([32]byte{}) || !plan.state.destroyed {
+		t.Fatal("destroy did not clear metadata and latch destroyed")
+	}
+	before := sink.calls
+	if err := alias.CopyCanonicalTo(sink); !errors.Is(err, ErrContractDestroyed) || sink.calls != before {
+		t.Fatalf("post-destroy copy = %v, calls = %d -> %d", err, before, sink.calls)
+	}
+	runtime.KeepAlive(plan)
+}
+
+func TestExecPlanCapabilityConcurrentAliasesAreRaceFree(t *testing.T) {
+	plan, err := NewExecPlanCapability(validCoreExecPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliases := [8]ExecPlanCapability{plan, plan, plan, plan, plan, plan, plan, plan}
+	start := make(chan struct{})
+	done := make(chan struct{}, len(aliases))
+	for index := range aliases {
+		alias := aliases[index]
+		go func() {
+			<-start
+			for iteration := 0; iteration < 256; iteration++ {
+				_ = alias.EncodedLength()
+				_ = alias.SHA256()
+			}
+			done <- struct{}{}
+		}()
+	}
+	close(start)
+	plan.destroy()
+	for range aliases {
+		<-done
+	}
+	if plan.EncodedLength() != 0 || plan.SHA256() != ([32]byte{}) {
+		t.Fatal("destroyed metadata remained visible")
 	}
 }
 
@@ -260,6 +343,23 @@ type recordingCoreSink struct {
 	maximum int
 	payload []byte
 	calls   int
+}
+
+type blockingCoreSink struct {
+	maximum int
+	entered chan struct{}
+	release chan struct{}
+	payload []byte
+	calls   int
+}
+
+func (sink *blockingCoreSink) MaxCredentialBytes() int { return sink.maximum }
+func (sink *blockingCoreSink) WriteCredential(value []byte) error {
+	sink.calls++
+	close(sink.entered)
+	<-sink.release
+	sink.payload = append([]byte(nil), value...)
+	return nil
 }
 
 func (sink *recordingCoreSink) MaxCredentialBytes() int { return sink.maximum }
