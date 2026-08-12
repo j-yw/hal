@@ -125,6 +125,9 @@ func EncodeControllerMonitorCloseNotifyPacket(sequence uint64, job [32]byte, bod
 }
 
 func encodeControllerMonitorTypedPacket(packetType ControllerMonitorPacketType, sequence uint64, request [16]byte, job [32]byte, body []byte, bodyErr error) ([]byte, error) {
+	if packetType == ControllerMonitorPacketTypePrepareFile {
+		return nil, ErrControllerMonitorPrepareFileSlotRequired
+	}
 	if bodyErr != nil {
 		return nil, bodyErr
 	}
