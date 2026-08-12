@@ -195,6 +195,48 @@ func (transaction *HelperPrepareTransaction) ProposeFile(correlation HelperPrepa
 	return &HelperPrepareFileProposal{owner: proposalOwner}, nil
 }
 
+// AcceptObservedFileObservation records canonical safe metadata from one
+// already-inspected file packet. It owns no private bytes and does not stage,
+// publish, or prove a filesystem object.
+func (transaction *HelperPrepareTransaction) AcceptObservedFileObservation(correlation HelperPrepareTransactionCorrelation, observation HelperPrepareFileObservation) error {
+	owner := helperPrepareTransactionLiveOwner(transaction)
+	if owner == nil {
+		return ErrHelperPrepareTransactionTerminal
+	}
+	observed := observation.owner
+	if observed == nil {
+		return ErrHelperPrepareFileObservation
+	}
+	observed.mu.Lock()
+	defer observed.mu.Unlock()
+	if observed.used {
+		return ErrHelperPrepareFileObservationUsed
+	}
+	observed.used = true
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if owner.terminal {
+		return ErrHelperPrepareTransactionTerminal
+	}
+	if owner.committed {
+		return ErrHelperPrepareTransactionCommitted
+	}
+	if !helperPrepareTransactionCorrelationEqual(owner.correlation, correlation) || owner.pending != nil || len(owner.acceptedFiles) >= len(owner.expectedFiles) {
+		return owner.failLocked(ErrHelperPrepareTransactionCorrelation)
+	}
+	if observed.revision != owner.correlation.revision {
+		return owner.failLocked(ErrHelperPrepareTransactionFile)
+	}
+	expected := owner.expectedFiles[len(owner.acceptedFiles)]
+	actual := helperPrepareTransactionFileMetadata{bindingIndex: observed.bindingIndex, fileLength: observed.fileLength, fileSHA256: observed.fileSHA256}
+	if actual != expected || uint64(actual.fileLength) > MaxHelperFileAggregateBytes-owner.acceptedBytes {
+		return owner.failLocked(ErrHelperPrepareTransactionFile)
+	}
+	owner.acceptedFiles = append(owner.acceptedFiles, actual)
+	owner.acceptedBytes += uint64(actual.fileLength)
+	return nil
+}
+
 // CopyPrivateBytes copies the complete value into an exact-length destination
 // without exposing an alias. Every denial wipes destination through capacity.
 func (proposal *HelperPrepareFileProposal) CopyPrivateBytes(destination []byte) (int, error) {
