@@ -8,6 +8,9 @@ main architecture remains authoritative for the wire encodings, identity
 fields, limits, state transitions, security properties, and D2 through D7
 outcomes. If an implementation choice conflicts with this file, the
 implementation is wrong unless both design files are deliberately revised.
+Its normative HL8M controller-monitor ABI is also the sole authority for the
+monitor extension packet, rights, sequence, correlation, and ownership
+boundary; this supplement exposes only a typed capability seam over that ABI.
 
 D2 freezes only types, constructor rules, ownership transfer, fake boundaries,
 and red-test obligations. It adds no live socket, syscall, namespace, mount,
@@ -325,6 +328,17 @@ narrow capability backed by the authenticated mount-monitor protocol for the
 already-created exact job namespace and by the core service for one
 authenticated `0x16` rights publication. It exposes no namespace or root FD.
 D5 cannot open outside the owned job namespace or publish another packet type.
+In particular, D5 cannot add an HL8M packet type, body arm, right, sequence, or
+state transition.
+
+`CreateSSHAgentEndpoint` maps to exactly one normative HL8M
+`create_ssh_endpoint` request after the core file prepare commit has succeeded
+and before the outer helper prepare result is published. The matching accepted
+response carries exactly one inspected listening `AF_UNIX` capability and the
+frozen safe result metadata; every rejection carries no right. The D4 host
+owns and closes a received capability until the complete response and state
+transition commit, then transfers the opaque endpoint to the D5 session. D5
+never sees the monitor namespace, a numeric descriptor, or an alternate path.
 
 The SSH registration is constructed only by:
 
@@ -379,7 +393,10 @@ extension or downgrading the requested mode.
 An `ExtensionRegistry` is immutable and safe for concurrent reads. A `Service`
 has one `Serve` lifetime and one drain path. For a prepare transaction it opens
 only the extensions named by the sealed manifest, in manifest order. It calls
-`Prepare` only after core staging exists and before publication. On failure it
+`Prepare` only after core file commit exists and before outer helper
+publication. The closed manifest contains at most one SSH binding, so the SSH
+extension may issue one `create_ssh_endpoint` and cannot create a second
+`SSH_AUTH_SOCK`. On failure it
 revokes prepared extensions in reverse order, then rolls back core staging.
 No extension call is concurrent with another transition for the same job.
 
