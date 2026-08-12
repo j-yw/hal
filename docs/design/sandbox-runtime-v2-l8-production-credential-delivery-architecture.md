@@ -2502,55 +2502,698 @@ sequence error, wrong descriptor/digest, truncation, loss, or packet after
 accepted is a pre-admission VM-stop failure. The agent closes FD 4 after
 accepted; HL8A never carries a credential value or becomes a job protocol.
 
-The controller-monitor codec is a second strict seqpacket union with header
-`HL8M`, the same version/flags/sequence/request/identity/length rules, and exact
-endpoint-owner kernel credentials. Its sequence-zero `monitor_ready` is the
-sole bootstrap exception: the monitor sends it to PID1 over the temporary
-authenticated PID1-monitor pair from monitor FD 10 to PID1's recorded transient
-peer. Monitor FD 3 remains the direct endpoint, FD 9 the controller peer sent
-as the first ready right, and FD 7 the namespace authority sent second. The
-monitor closes FD 9 and FD 10 permanently after that one send. After the
-two-right HL8L transfer, all later HL8M traffic is direct between the pinned
-controller and monitor, the logical monitor send sequence continues at one,
-and controller send sequence starts at zero. Its only operations are
-`monitor_ready`, `prepare_begin`, `prepare_file`, `prepare_commit`,
-`create_ssh_endpoint`, `revoke`, and their closed response/event forms.
-`monitor_ready` carries exactly two rights in order: the separately created
-long-lived controller endpoint, then the live namespace capability. Its body
-carries the revision, controller-minted job/monitor/mount/cgroup generations,
-`helper-limits-v1`, exact `createJobSHA256`, and canonical
-`monitorReadySHA256`. PID1 authenticates the monitor, requires the exact pending
-tuple and recomputed digest, reinspects both live rights, relays both plus the
-ready digest in `HL8L job_created`, and closes its duplicates; this packet is
-not exposed to the controller or replayed. The digest is correlation, never a
-substitute for inspecting the live namespace authority.
-`prepare_file` is the only packet
-that contains credential bytes and decodes directly into a fixed-capacity locked
-monitor buffer. `create_ssh_endpoint` exists only with the D5 extension and may
-return exactly one inspected listening `AF_UNIX` capability. The monitor closes
-its original after authenticated transfer; the controller owns and accepts on
-the published listener and closes it before monitor cleanup. All other packets
-carry no rights. The `monitor_ready` endpoint is not an arbitrary socket:
-PID1 created both endpoints before monitor launch, the monitor is only a
-one-time authenticated transfer owner, and no monitor syscall creates a
-socketpair. There is one outstanding request, one active job, no arbitrary
-path/mount/socket/clone/exec operation, and no PID1 credential-body path.
+### Normative HL8M controller-monitor ABI
 
-D2 owns canonical encoders/decoders, rights matrices, fake
-supervisor/agent/monitor state machines, and plus-one negatives for all three
-private codecs. D4 owns the live PID1
-adapter, exact Go 1.25.7 monitor `Cloneflags`/`PidFD` and shim
-`UseCgroupFD`/`PidFD` process starts, monitor syscalls,
-and workload shim. None of these protocols is durable, public, remotely reachable, or
-available to the guest agent or workload.
+The direct controller-monitor codec is one atomic Unix
+`SOCK_SEQPACKET|SOCK_CLOEXEC` datagram per packet. It is neither a byte stream
+nor a public or durable protocol. The constants are exact:
 
-`HL8M` bodies are at most 72 KiB and complete datagrams at most 73,796 bytes.
-Its closed types are `0x01 monitor_ready`, `0x10 prepare_begin`,
-`0x11 prepare_file`, `0x12 prepare_commit`, `0x13 create_ssh_endpoint`,
-`0x14 revoke`, `0x20 response`, `0x21 monitor_event`, and
-`0x7f close_notify`. A zero request ID is accepted only for ready/close; every
-job operation uses the exact nonzero controller request ID. Integer/token/path
-encodings reuse the canonical helper definitions below, not JSON or reflection.
+```text
+HL8MHeaderBytes = 68
+HL8MMaxBodyBytes = 73728
+HL8MMaxDatagramBytes = 73796
+HL8MMaxPacketsPerDirection = 4294967296
+```
+
+The retained 68-byte header is:
+
+```text
+offset  size  field
+0       4     magic[4] = ASCII "HL8M"
+4       1     version:u8 = 1
+5       1     type:u8
+6       2     flags:u16_be = 0
+8       8     sequence:u64_be
+16      16    requestID:[16]byte
+32      32    jobIdentityDigest:[32]byte
+64      4     bodyLength:u32_be
+68      n     body
+```
+
+`bodyLength` is body bytes only, equals the datagram remainder exactly, and is
+at most 73728. A shorter datagram is truncation and a longer one has trailing
+data; neither is a second packet. Every multibyte integer is big-endian. A body
+`token` is the existing helper encoding `uint16_be(length) || ASCII bytes`,
+length 1 through 128, matching
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,127}` without trimming, normalization, Unicode,
+case folding, or defaulting. A safe ID additionally passes the narrower
+`credentialprotocol` safe-ID validator. An `optional-token` is
+`uint16_be(0)` for absent or the same canonical nonempty token form. A relative
+path uses the already locked helper optional-relative-path codec and its exact
+4096-byte/component rules. Booleans are one byte and exactly zero or one.
+SHA-256 values are 32 raw bytes and are nonzero unless an exact result matrix
+below requires zero. No body is JSON, text, a generic map, a generic body, or
+an extensible tagged union.
+
+Every receive supplies independent kernel metadata to the pure decoder. These
+are closed non-JSON value types:
+
+```text
+HL8MRightKind:u8:
+  1 controller_endpoint, 2 mount_namespace, 3 ssh_listener
+HL8MRightAccess:u8:
+  1 duplex_seqpacket, 2 namespace_enter, 3 listen_stream
+
+HL8MRightMetadata:
+  Index:uint32 | Kind:HL8MRightKind | Access:HL8MRightAccess |
+  Generation:token | CorrelationSHA256:[32]byte
+
+HL8MReceiveMetadata:
+  Direction:closed enum | CredentialCount:uint32 = 1 |
+  Credential:{PID:uint32, UID:uint32, GID:uint32} |
+  RightsCount:uint32 | Rights:[2]HL8MRightMetadata |
+  MSG_TRUNC:bool | MSG_CTRUNC:bool
+```
+
+The receive wrapper rejects `RightsCount > 2` before indexing the fixed array;
+unused entries are the zero value and are never decoded. Ready metadata is
+exactly index 0 `controller_endpoint/duplex_seqpacket`, monitor generation and
+`monitorReadySHA256`, followed by index 1
+`mount_namespace/namespace_enter`, mount generation and the same
+`monitorReadySHA256`. An accepted SSH response has exactly index 0
+`ssh_listener/listen_stream`, endpoint generation and `endpointSHA256`.
+Metadata is safe expected-role correlation only. D4/D5 live inspection of the
+received object remains authority and must agree before the transition commits.
+
+The monitor credentials are its exact positive PID pinned from the successful
+PID1 launch and UID 0, GID 0. PID1 credentials are exactly PID 1, UID 0, GID 0;
+controller credentials are the exact positive PID pinned at controller launch
+and UID 0, GID 0. Monitor and controller PIDs are each 2..2147483647, distinct
+from PID1, each other, and the pinned agent PID. PID values remain `uint32`
+through collection and comparison with no signed or narrower conversion. A
+body can never select an identity. Missing or duplicate
+`SCM_CREDENTIALS`, changed credentials, `MSG_TRUNC`, `MSG_CTRUNC`, or a wrong,
+missing, extra, or reordered right is terminal. Bodies and digests contain no
+numeric FD/PID/UID/GID, inode/device, mount/cgroup path, socket address,
+credential name/value, executable path, argv, or environment value.
+
+The type/direction/identity/rights matrix is closed:
+
+| Type | Name and direction | request ID | job digest | rights |
+| --- | --- | --- | --- | ---: |
+| `0x01` | `monitor_ready`, monitor -> PID1 | zero | exact nonzero job | 2 |
+| `0x10` | `prepare_begin`, controller -> monitor | new nonzero | exact active job | 0 |
+| `0x11` | `prepare_file`, controller -> monitor | exact active `0x10` | exact active job | 0 |
+| `0x12` | `prepare_commit`, controller -> monitor | exact active `0x10` | exact active job | 0 |
+| `0x13` | `create_ssh_endpoint`, controller -> monitor | new nonzero | exact active job | 0 |
+| `0x14` | `revoke`, controller -> monitor | new nonzero | exact active job | 0 |
+| `0x20` | `response`, monitor -> controller | exact echoed request | exact echoed job | 0 or exact typed result count |
+| `0x21` | `monitor_event`, monitor -> controller | new nonzero event ID | exact active job | 0 |
+| `0x7f` | `close_notify`, either direction | zero | exact active job | 0 |
+
+No type is valid in the opposite direction. `response` has one right only for
+an accepted `create_ssh_endpoint`; every other response has zero. A nonzero
+request ID is unique for the link lifetime, except that every packet in one
+prepare transaction intentionally repeats its `prepare_begin` ID. The exact
+22-character unpadded-base64url encoding of an event header request ID equals
+its body `eventID`. Responses echo header bytes, not a re-encoding. Loss of an
+atomic response is monitor loss: response loss is monitor loss and requires
+whole-VM stop/reap, never a request replay or live-right retransmission.
+
+#### PID1 bootstrap relay and live-right ownership
+
+PID1 creates the direct controller-monitor pair and a separate one-use
+PID1-monitor bootstrap pair before launch. The monitor inherits its direct side
+at FD 3, the controller peer side at transient FD 9 solely for transfer, and
+the bootstrap side at FD 10 solely for the one ready send; PID1 owns the
+bootstrap peer in a recorded transient slot, not its fixed FD 10 monitor pidfd
+slot. After stacking `steady-monitor`, the monitor creates and reinspects its
+namespace handle at FD 7. Its sequence-zero `monitor_ready` sends exactly two
+rights over FD 10 to PID1, in this order:
+
+1. the controller peer endpoint, reinspected as the other side of the exact
+   `AF_UNIX/SOCK_SEQPACKET|SOCK_CLOEXEC` pair with `SO_PASSCRED`; and
+2. exactly one inspected mount-namespace capability, proved independently as
+   `NSFS_MAGIC`, `NS_GET_NSTYPE == CLONE_NEWNS`, the expected mount
+   generation, and unequal to PID1's namespace.
+
+The namespace is live authority, never proof. `monitorReadySHA256` is safe
+correlation metadata and never substitutes for either right or its
+reinspection. On a successful atomic send the monitor closes FDs 9 and 10
+permanently, never reuses either number, and retains direct endpoint FD 3 plus
+namespace FD 7. Any send failure closes both handoff FDs and is terminal. PID1
+owns both
+received rights, authenticates and reinspects them, and relays those same two
+authorities in the matching HL8L `job_created`, ordered monitor endpoint then
+namespace capability. PID1 closes its duplicates only after that atomic send
+succeeds. The controller's receive wrapper owns and closes both until the
+complete HL8L packet, credentials, body, digests, rights, and transition commit;
+job state then owns both for the job lifetime. PID1 closes its bootstrap peer
+after successful relay or on every failure and has no remaining HL8M channel.
+The logical monitor send sequence
+is deliberately shared across the one-use bootstrap and direct channels under
+the same sealed monitor identity/config: PID1 consumes sequence zero on the
+bootstrap pair, so the controller starts its direct monitor receive counter at
+one. The controller's independent send sequence starts at zero.
+
+This is the only PID1 bootstrap relay. PID1 never originates an HL8M packet,
+forwards an HL8M body, or receives credential bytes. After `job_created`, all
+prepare, SSH-endpoint, revoke, response, event, and close packets travel only
+between controller-owned locked buffers and the authenticated direct monitor
+endpoint. The controller retains the namespace right for later HL8L launch
+duplication. For normal cleanup the controller first closes the published D5
+listener and accepted connections, then alone sends HL8M `revoke` over FD 3.
+After receiving cleanup-complete it completes the bilateral normal-close
+handshake, observes the expected monitor endpoint closure, closes its endpoint
+and namespace duplicate. PID1 never requests monitor cleanup; only then does
+the controller send HL8L `destroy_job`, which authorizes PID1
+to reap the already-exited monitor and remove/reinspect the PID1-owned cgroup
+and directories.
+
+#### Exact bodies and canonical codec reuse
+
+The bodies are exact, in the displayed byte order:
+
+```text
+0x01 monitor_ready:
+  revision:u64 | jobGeneration:token | monitorGeneration:token |
+  mountGeneration:token | cgroupGeneration:token | limitSetID:token |
+  createJobSHA256:[32]byte | monitorReadySHA256:[32]byte
+
+0x10 prepare_begin:
+  revision:u64 | expiryUnixNano:i64 | bindingCount:u16 |
+  ordered helper binding manifest
+
+0x11 prepare_file:
+  revision:u64 | bindingIndex:u16 | fileLength:u32 |
+  fileSHA256:[32]byte | mutable private bytes
+
+0x12 prepare_commit:
+  revision:u64 | manifestSHA256:[32]byte
+
+0x13 create_ssh_endpoint:
+  revision:u64 | bindingIndex:u16 | bindingID:token |
+  endpointGeneration:token | manifestSHA256:[32]byte |
+  endpointConfigSHA256:[32]byte
+
+0x14 revoke:
+  revision:u64 | reason:u8
+
+0x20 response:
+  requestType:u8 | disposition:u8 | revision:u64 | failureCode:u8 |
+  exact typed result union
+
+0x21 monitor_event:
+  eventCode:u8 | failureCode:u8 | cleanupCategory:u8 | reserved:u8=0 |
+  revision:u64 | eventID:token | mountGeneration:token |
+  postinspectionSHA256:[32]byte
+
+0x7f close_notify:
+  closeReason:u8
+```
+
+The structural body bounds are exact. `prepare_begin` has a fixed 18-byte
+prefix and 1..16 records; its minimal record is
+`token(3) + mode(1) + absent-path(2) + declared-length(4) + digest(32) = 42`
+bytes. Therefore:
+
+```text
+prepare_begin: 18 + 1..16 encoded manifest records = 60..68258
+```
+
+The delegated helper codec rejects zero bindings before HL8M state and enforces
+the same 16-record maximum. `prepare_file` is `46 + fileLength` (47..65582
+bytes), and file length is 1..65536.
+`monitor_ready` is 87..722 bytes, `prepare_commit` is 40,
+`revoke` is 9, and `close_notify` is 1. The remaining arithmetic is frozen, not
+inferred from the aggregate ceiling:
+
+```text
+create_ssh_endpoint: 8 + 2 + (2 + 1..128) + (2 + 1..128) + 32 + 32 = 80..334
+monitor_event: 4 + 8 + (2 + 22) + (2 + 1..128) + 32 = 71..198
+failed response: 11
+prepare response: 11 + (2 + 1..128) + 32 + 32 + 2 + 8 + 32 = 120..247
+SSH response: 11 + 2 + (2 + 1..128) + (2 + 1..128) + 32 = 51..305
+revoke response: 11 + 32 + 1 + 1 + 1 = 46
+```
+
+These per-type bounds are checked before allocation and do not relax the
+73728-byte aggregate body ceiling.
+
+`monitor_ready` revision is exactly one. Every generation and limit-set value
+is a safe ID and equals sealed monitor configuration. The sole limit-set ID is
+`helper-limits-v1`. For HL8M it denotes one active job, one monitor and mount
+namespace, one prepare transaction, one fixed private receive slot, at most 16
+bindings, at most one HTTP and one SSH binding, 64 KiB per file, 1 MiB file
+aggregate, one optional listener, 256 role descriptors, one credential-aware
+exec at a time, 4096 lifetime credential-aware launch attempts, three cleanup
+attempts, a 30-second cleanup deadline, and the 35-minute hard lifetime. The
+generic L4 process ceiling of 64 is distinct and never raises credential-aware
+execution concurrency above exactly 1.
+
+The codec does not read a clock or choose a horizon. Monitor construction state
+receives `AuthenticatedSessionHardExpiryUnixNano:int64`, derived from the
+successfully authenticated session's fixed 35-minute hard horizon and no later
+than root `MaxJobCredentialLifetime`, and each prepare transition receives
+`TrustedObservationUnixNano:int64` from D4's trusted clock. Both are positive
+signed Unix nanoseconds and are not body fields. `prepare_begin.expiryUnixNano`
+must be greater than the trusted observation and less than or equal to the
+authenticated session hard horizon; the exact value is then correlated
+unchanged through the helper prepare transaction and publication. A body,
+controller argument, retry, or later observation cannot authorize an extension
+of the construction-time horizon. An otherwise canonical out-of-window expiry
+is pre-mutation `operation_denied`, consumes the prepare attempt, clears the
+outstanding request, and returns to `ready_transferred` for revoke. Missing,
+nonpositive, untrusted, or internally inconsistent construction/clock input is
+not a peer rejection: it is terminal `stop_vm_required` with no mutation.
+
+The `0x10`, `0x11`, and `0x12` encodings are byte-for-byte the already locked
+`HelperPrepareBeginBody`, `HelperPrepareFileBody`, and
+`HelperPrepareCommitBody` encodings. HL8M implementations delegate to those
+canonical safe codecs; they do not copy, reinterpret, or reorder them. The
+ordered manifest record therefore remains exactly:
+
+```text
+bindingID:token | mode:u8 | targetPath:optional-relative-path |
+declaredFileBytes:u32 | fileSHA256:[32]byte
+```
+
+Modes remain 1 HTTP, 2 file-tmpfs, and 3 SSH-agent. Only file mode has a path,
+nonzero size, and nonzero digest. HL8M's monitor-state validator additionally
+requires at most one SSH binding because this ABI publishes one
+`SSH_AUTH_SOCK`; that restriction does not change the shared helper codec.
+File packets occur only for file-mode records, in ascending manifest index.
+The monitor decodes mutable file bytes directly into one fixed 64-KiB locked
+receive slot. It authenticates header and metadata before the slot is exposed,
+writes from that borrowed slot to the one inspected staging file, and
+overwrites the slot through full capacity before accepting another packet.
+The decoder never returns an owned body `[]byte` or `string`. The controller
+likewise sends from one controller-owned locked slot and overwrites it after
+the atomic send. No second file slot, retained packet copy, generic formatter,
+JSON path, or PID1 path exists.
+
+The `0x14` body is byte-for-byte `HelperRevokeBody`; its reason catalog is the
+existing exact catalog:
+
+```text
+revoke reason: 1 requested, 2 expired, 3 session_loss, 4 source_revoked,
+               5 worker_cancel, 6 daemon_shutdown
+```
+
+The response common prefix deliberately reuses the existing disposition
+numbers, while its request and result arms are HL8M-specific:
+
+```text
+response disposition: 1 accepted, 2 rejected, 3 cleanup_complete,
+                      4 cleanup_retry, 5 stop_vm_required
+
+monitor failure code: 0 none, 1 resource_limit, 2 prepare_failed,
+                      3 ssh_endpoint_failed, 4 revoke_failed,
+                      5 inspection_failed, 6 cleanup_incomplete,
+                      7 operation_denied
+```
+
+After the 11-byte response prefix, successful results are:
+
+```text
+prepare accepted (`requestType=0x12`, zero rights):
+  mountGeneration:token | manifestSHA256:[32]byte |
+  prepareTransactionSHA256:[32]byte | fileCount:u16 |
+  aggregateFileBytes:u64 | preparePostinspectionSHA256:[32]byte
+
+SSH endpoint accepted (`requestType=0x13`, exactly one right):
+  bindingIndex:u16 | bindingID:token | endpointGeneration:token |
+  endpointSHA256:[32]byte
+
+revoke cleanup_complete (`requestType=0x14`, zero rights):
+  cleanupSHA256:[32]byte | entriesAbsent:u8=1 | socketAbsent:u8=1 |
+  mountAbsent:u8=1
+```
+
+An accepted prepare result exactly matches the active manifest, transaction,
+counts, byte total, and generation. An accepted SSH result is valid only when
+D5 was attested in the process descriptors, the unique manifest record is SSH
+mode, and the sole received right is an inspected listening
+`AF_UNIX/SOCK_STREAM|SOCK_CLOEXEC` capability at the sealed job-relative leaf,
+with backlog 1 through 4, mode 0600, fixed UID/GID 1000, and matching endpoint
+generation/digests. The controller receive wrapper owns and closes that right
+on every failure; job state owns it only after full response commit. The
+monitor closes its original after its authenticated atomic response send. The
+controller owns and accepts on the published listener, validates each connected
+peer separately, and closes listener/connections before monitor cleanup.
+
+`accepted` is valid only for prepare and SSH creation, and requires failure
+zero plus the exact result. `cleanup_complete` is valid only for revoke,
+requires failure zero and the exact three true fields, and proves only
+monitor-local entry/socket/mount absence. A monitor cannot prove or commit its
+own exit while sending. The successful bilateral close handshake below occurs
+only after that response; after monitor exit and the later HL8L `destroy_job`,
+PID1 separately reaps the monitor and proves process, cgroup, and directory
+absence.
+`rejected` is valid only for a pre-mutation `resource_limit` or
+`operation_denied` result, or a prepare/SSH operational failure after exact
+rollback and postinspection prove no unowned partial state. `cleanup_retry` is
+valid only for retryable revoke observation and retains monitor ownership.
+`stop_vm_required` is required for nonretryable revoke/inspection/cleanup
+failure and every prepare/SSH failure whose rollback/absence is not proved.
+Both carry no result. Every failure result has exactly the 11-byte prefix, no
+trailing arm, and zero rights. A disposition/type/failure mismatch,
+noncanonical boolean, missing/extra result, or trailing byte is malformed.
+
+The monitor event catalogs are closed:
+
+```text
+monitor event code: 1 expired, 2 mount_drift, 3 endpoint_drift,
+                    4 cleanup_required
+monitor cleanup category: 1 not_applicable, 2 cleanup_complete,
+                          3 retry_required, 4 stop_vm_required
+close reason: 1 normal, 2 protocol_error, 3 identity_drift,
+              4 expired, 5 helper_loss, 6 shutdown
+```
+
+Close reason is exactly the existing `credentialprotocol.CloseReason` numeric
+catalog. Event `expired` requires failure `operation_denied` and cleanup
+category `retry_required`; `mount_drift` and `endpoint_drift` require
+`inspection_failed` and `stop_vm_required`; `cleanup_required` requires
+`cleanup_incomplete` and `retry_required` or `stop_vm_required`. Event revision
+and generations equal active state, event ID equals the encoded header request
+ID, and the postinspection digest equals the exact event-postinspection digest
+below. Events carry no rights and never authorize use or prove whole-job
+cleanup. The monitor has exactly one pending-event slot. If an observation is
+already represented by the outstanding request's response, it is suppressed;
+it is never duplicated as an event. One relevant orthogonal observation is
+stored in the slot, the correlated response is sent first, and the event is
+then sent exactly once if it is still relevant. A second pending observation
+or either failed send is terminal `stop_vm_required`. No event can precede or
+interleave with a prepare transaction's sole response.
+
+#### Local observation transition matrix
+
+An event reports a monitor-local observation; it never chooses its own source
+or next state. The closed matrix is:
+
+| Observation | Legal source state | Event tuple | State fixed before send |
+| --- | --- | --- | --- |
+| session/job expired | `ready_transferred`, `preparing`, `prepared`, or `prepared_with_endpoint` | `expired / operation_denied / retry_required` | `revoke_required`; permanently deny use and endpoint creation |
+| mount identity/property drift | `preparing`, `prepared`, `prepared_with_endpoint`, or `revoking` while the mount exists | `mount_drift / inspection_failed / stop_vm_required` | `stop_pending_event`, then terminal regardless of send success |
+| endpoint identity/property drift | `prepared_with_endpoint` or `revoking` while the endpoint exists | `endpoint_drift / inspection_failed / stop_vm_required` | `stop_pending_event`, then terminal regardless of send success |
+| retryable cleanup required outside an outstanding revoke | `ready_transferred`, `prepared`, or `prepared_with_endpoint`, with no request outstanding | `cleanup_required / cleanup_incomplete / retry_required` | `revoke_required`; permanently deny use and endpoint creation |
+| nonretryable cleanup required | `ready_transferred`, `preparing`, `prepared`, `prepared_with_endpoint`, or `revoking` | `cleanup_required / cleanup_incomplete / stop_vm_required` | `stop_pending_event`, then terminal regardless of send success |
+
+With no outstanding response, the monitor sets the next state before sending
+the event immediately. `revoke_required` accepts exactly one fresh-ID `revoke`;
+it cannot accept prepare, endpoint creation, or any use-producing transition.
+`stop_pending_event` accepts no packet; after its one safe event send attempt it
+is terminal, and failed send still requires stop-VM.
+
+With an outstanding prepare or SSH operation, the monitor first denies use,
+rolls back as required, and fixes `revoke_required` or terminal state before
+the response send. An expiry already represented by an `operation_denied`
+response plus the `revoke_required` latch is suppressed. An independent expiry
+uses the sole pending slot, follows the response exactly once, and leaves the
+already-fixed `revoke_required` state. Drift or nonretryable cleanup forces the
+outstanding response to `stop_vm_required`; that response represents the
+observation, so its event is suppressed and the state is terminal. Retryable
+`cleanup_required` is not legal during prepare/SSH. During an outstanding
+revoke, retryable cleanup is represented only by `cleanup_retry`, while drift
+or nonretryable cleanup is represented by `stop_vm_required`; neither produces
+a duplicate event. An expiry observed after entry to `revoking` is subsumed by
+the existing deny-use latch and emits no event. A second orthogonal observation
+cannot be queued and is terminal. Thus no event opens a path forbidden by the
+primary state table.
+
+#### Digest domains and fixed vectors
+
+Digest inputs use existing `opaque16`; every displayed token includes its
+canonical `uint16_be` length. The definitions are exact:
+
+```text
+monitorReadySHA256 = SHA256(
+  opaque16("hal/l8/controller-monitor/monitor-ready/v1") ||
+  jobIdentityDigest || uint64_be(revision) || jobGeneration:token ||
+  monitorGeneration:token || mountGeneration:token ||
+  cgroupGeneration:token || limitSetID:token || createJobSHA256)
+
+manifestSHA256 and prepareTransactionSHA256 are exactly the existing
+  hal/l8/guest-helper/manifest/v1 and
+  hal/l8/guest-helper/prepare-transaction/v1 digests.
+
+preparePostinspectionSHA256 = SHA256(
+  opaque16("hal/l8/controller-monitor/prepare-postinspection/v1") ||
+  jobIdentityDigest || uint64_be(revision) || monitorGeneration:token ||
+  mountGeneration:token || manifestSHA256 || prepareTransactionSHA256 ||
+  uint16_be(fileCount) || uint64_be(aggregateFileBytes))
+
+endpointConfigSHA256 = SHA256(
+  opaque16("hal/l8/controller-monitor/ssh-endpoint-config/v1") ||
+  jobIdentityDigest || uint64_be(revision) || uint16_be(bindingIndex) ||
+  bindingID:token || endpointGeneration:token || mountGeneration:token ||
+  manifestSHA256)
+
+endpointSHA256 = SHA256(
+  opaque16("hal/l8/controller-monitor/ssh-endpoint/v1") ||
+  jobIdentityDigest || endpointConfigSHA256 || endpointGeneration:token ||
+  monitorGeneration:token || mountGeneration:token)
+
+event postinspectionSHA256 = SHA256(
+  opaque16("hal/l8/controller-monitor/event-postinspection/v1") ||
+  jobIdentityDigest || eventCode:u8 || failureCode:u8 ||
+  cleanupCategory:u8 || uint64_be(revision) || eventID:token ||
+  monitorGeneration:token || mountGeneration:token)
+
+cleanupSHA256 = SHA256(
+  opaque16("hal/l8/controller-monitor/cleanup/v1") ||
+  jobIdentityDigest || uint64_be(revision) || reason:u8 ||
+  monitorGeneration:token || mountGeneration:token ||
+  endpointGeneration:optional-token || entriesAbsent:u8 ||
+  socketAbsent:u8 || mountAbsent:u8)
+```
+
+The prepare transaction digest includes file bodies through the already frozen
+helper file digests/order. Endpoint and cleanup digests bind safe correlation,
+not a pathname, inode, socket, FD, or kernel proof. D4 independently reinspects
+every live object before accepting the corresponding digest.
+
+Canonical monitor-ready vector (spaces and newlines are display only):
+
+```text
+revision = 1
+sequence = 0
+requestID = 00000000000000000000000000000000
+jobIdentityDigest =
+  000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+jobGeneration = "job-gen-1"
+monitorGeneration = "monitor-gen-1"
+mountGeneration = "mount-gen-1"
+cgroupGeneration = "cgroup-gen-1"
+limitSetID = "helper-limits-v1"
+createJobSHA256 =
+  202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+monitorReadySHA256 =
+  d1eb1ee5d971de0f1c771fd564443c651c176e977ba8da11248b7c7b47f9080b
+complete datagram =
+  484c384d01010000000000000000000000000000000000000000000000000000
+  000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+  0000008f000000000000000100096a6f622d67656e2d31000d6d6f6e69746f72
+  2d67656e2d31000b6d6f756e742d67656e2d31000c6367726f75702d67656e2d
+  31001068656c7065722d6c696d6974732d7631202122232425262728292a2b2c
+  2d2e2f303132333435363738393a3b3c3d3e3fd1eb1ee5d971de0f1c771fd564
+  443c651c176e977ba8da11248b7c7b47f9080b
+ancillary credentials = {monitor PID, UID 0, GID 0}
+ancillary rights roles = [controller_endpoint, mount_namespace]
+ancillary right metadata[0] =
+  {Index:0, Kind:controller_endpoint, Access:duplex_seqpacket,
+   Generation:"monitor-gen-1",
+   CorrelationSHA256:d1eb1ee5d971de0f1c771fd564443c651c176e977ba8da11248b7c7b47f9080b}
+ancillary right metadata[1] =
+  {Index:1, Kind:mount_namespace, Access:namespace_enter,
+   Generation:"mount-gen-1",
+   CorrelationSHA256:d1eb1ee5d971de0f1c771fd564443c651c176e977ba8da11248b7c7b47f9080b}
+complete datagram bytes = 211
+```
+
+The complete vector has exactly two rights and one credentials record; rights
+are not wire bytes and numeric descriptor values never enter the digest. D2
+tests independently reconstruct it and mutate every header/body field, digest
+input, sequence, credential, right count/order/kind, truncation flag, and
+trailing byte. Separate vectors lock every body/result/event arm and every
+digest domain; exact maximum token/file/body/datagram and plus-one cases are
+mandatory.
+
+The digest-domain fixtures additionally freeze these independent expected
+values. Unless a line overrides a value, they use the ready vector's job
+digest, revision, monitor generation, and mount generation:
+
+```text
+manifestSHA256 = bytes 40..5f
+prepareTransactionSHA256 = bytes 60..7f
+fileCount = 1
+aggregateFileBytes = 3
+preparePostinspectionSHA256 =
+  38f6cff0a56628b30fd7f4127242a45acabd288deac94cb170c99205cbff8918
+
+bindingIndex = 2
+bindingID = "ssh-binding-1"
+endpointGeneration = "endpoint-gen-1"
+endpointConfigSHA256 =
+  8791ee5446150ccea1c9f78dd4005a1d0be14053f7bea7d455f9b6f872cc6748
+endpointSHA256 =
+  50a4ae4feeac5718dcfef009f6e994ee38da6c66201f82b14dbacb2e7b71d94d
+
+eventCode = 1 expired
+failureCode = 7 operation_denied
+cleanupCategory = 3 retry_required
+eventID = "AAECAwQFBgcICQoLDA0ODw"
+event postinspectionSHA256 =
+  f139a2d62a6e9ebdd8d6857e2888b04eed654a151d6a29a6df563ff6e41198e8
+
+revoke reason = 1 requested
+entriesAbsent = 1
+socketAbsent = 1
+mountAbsent = 1
+cleanupSHA256 =
+  b9e0cab24180f9cc5ada909e2b6de84a5ab7061e87d634259c701c8dfda51219
+```
+
+#### State and correlation matrix
+
+The deterministic state model is exact:
+
+| State | Accepted input | Committed result and next state |
+| --- | --- | --- |
+| native bootstrap | monitor constructs and sends `monitor_ready` sequence 0 | PID1 validates two rights; monitor enters `ready_transferred`; any ambiguity is terminal |
+| `ready_transferred` | controller's first `prepare_begin` at sequence 0 if no prepare was consumed, or a fresh `revoke` | prepare validates exact revision/identity/manifest/expiry, latches prepare consumed, creates unpublished mount staging, and enters `preparing`; revoke enters `revoking` |
+| `preparing` | next manifest-ordered `prepare_file`, or `prepare_commit` after all files | one-slot file write/wipe stays `preparing`; valid commit publishes prepared monitor state, responds once, enters `prepared` |
+| `prepared` without SSH | optional sole `create_ssh_endpoint` if no endpoint attempt was consumed, or `revoke` | endpoint attempt latches consumed; accepted endpoint enters `prepared_with_endpoint`; revoke enters `revoking` |
+| `prepared_with_endpoint` | `revoke` only | denies new accepts externally, enters `revoking` |
+| `revoke_required` | one fresh-ID `revoke` only | enters `revoking`; prepare, endpoint creation, and use are permanently denied |
+| `revoking` | no new operation; a fresh-ID revoke retry only after `cleanup_retry` | complete absence sends cleanup-complete and enters `cleanup_reported`; retry remains `revoking`; stop-VM is terminal |
+| `stop_pending_event` | none | makes at most one safe event send attempt, then enters terminal regardless of success |
+| `cleanup_reported` | no request | monitor sends normal `close_notify` at its exact next sequence and enters `close_wait` |
+| `close_wait` | controller normal `close_notify` at its exact next sequence | after commit, monitor closes FD 3 and calls `exit_group`; controller observes expected EOF, closes endpoint/namespace, and sends later HL8L `destroy_job` |
+| terminal/closing | none | every packet is terminal protocol failure; no state or right is recreated; PID1 separately proves monitor process/cgroup/directory absence after `destroy_job` |
+
+There is one logical outstanding request and one active job. Prepare begin,
+zero or more ordered file packets, and commit are one request with one terminal
+response; while `preparing` no new request, including revoke, may interleave.
+An authenticated canonical pre-mutation denial, or a prepare semantic failure
+whose rollback is proved, aborts and wipes all unpublished staging, emits the
+single `requestType=0x12` rejection when the link remains usable, clears the
+outstanding request, and returns to `ready_transferred` with prepare consumed;
+only a fresh-ID revoke is then accepted. An unproved rollback emits
+`stop_vm_required` when sendable and becomes terminal.
+Authentication,
+framing, credential, right, identity, sequence, or canonical-decode failure
+closes without response. `create_ssh_endpoint` is valid exactly once after
+prepare commit and only when the sealed unique SSH binding exists. A prepare or
+endpoint failure never permits exec; the controller drives revoke. An SSH
+failure with proved listener/socket-leaf absence returns to `prepared` with the
+endpoint attempt consumed, after which only a fresh-ID revoke is accepted. A
+prepare or SSH rollback whose
+absence is not proved is terminal after `stop_vm_required` is sent when
+possible and accepts no later packet. Revoke may start only from
+`ready_transferred`, `prepared`, or `prepared_with_endpoint`; it first denies
+use, then removes exact owned entries/listener/mount, and never reports
+cleanup-complete before all three result booleans are true.
+
+Directions have independent counters. Monitor send sequence zero is readiness;
+its first controller-visible response/event is one. Controller send sequence
+starts at zero. A received sequence must equal the exact next value. Counters
+advance only after credentials, framing, body, rights, canonical encoding,
+correlation, and either a state transition or committed accepted semantic
+rejection validate. Lower is replay and higher is loss/gap. Legal sequences are
+zero through `2^32-1`; accepting the last exhausts that direction, and a later
+packet or wrap is terminal. Each sender serializes its direction and does not
+advance after a failed or partial send.
+
+Normal close is valid only in the post-cleanup handshake. The cleanup-complete
+response commits first; the monitor's normal close consumes its next send
+sequence, and the controller commits it before its normal reply consumes the
+controller's next send sequence. Only after both close records commit may the
+monitor close/exit and the controller close its endpoint/namespace. EOF then is
+an expected transport consequence, but neither close record nor EOF is cleanup
+or process-absence proof.
+
+#### Response outcome and next-state matrix
+
+Every sendable operational outcome has one exact next state and ownership
+decision:
+
+| Operation outcome | Required next state | Ownership after committed send |
+| --- | --- | --- |
+| prepare `resource_limit`/`operation_denied` before mutation | returns to `ready_transferred`; prepare consumed and outstanding request cleared; only revoke next | no staging or published mount exists; locked slot is wiped |
+| prepare expiry outside `(TrustedObservationUnixNano, AuthenticatedSessionHardExpiryUnixNano]` | `operation_denied`; returns to `ready_transferred`; prepare consumed and only revoke next | no mutation; caller-selected expiry cannot widen authenticated authority |
+| absent/invalid trusted time or hard-horizon state | terminal `stop_vm_required`; no later packet accepted | no mutation and no caller-controlled fallback clock/horizon |
+| prepare `prepare_failed` after complete rollback and inspection | returns to `ready_transferred`; prepare consumed and outstanding request cleared; only revoke next | unpublished staging is absent, every transient is closed, locked slot is wiped |
+| SSH `resource_limit`/`operation_denied` before mutation | returns to `prepared`; endpoint attempt consumed and outstanding request cleared; only revoke next | prepared mount remains owned; no listener/socket leaf exists |
+| SSH `ssh_endpoint_failed` after proved rollback | returns to `prepared`; endpoint attempt consumed and outstanding request cleared; only revoke next | prepared mount remains owned; listener/right/socket leaf are absent |
+| revoke `cleanup_retry` | remains `revoking`; outstanding request cleared | monitor retains the exact remaining owned objects; only a fresh-ID revoke retry is accepted |
+| any `stop_vm_required`, including unproved prepare/SSH rollback | terminal; no later packet accepted | no ownership is released or treated as usable; D6 stops/reaps the VM and proves host absence |
+| any atomic send loss, including response/event/close | terminal `stop_vm_required`; no replay | peer commit is unknown, received/uncommitted rights are closed, and all remaining ownership converges only through D6 |
+
+An `accepted` prepare enters `prepared`, an accepted SSH response enters
+`prepared_with_endpoint`, and revoke cleanup-complete enters `cleanup_reported`
+as stated in the primary state table. There is no implicit "continue" state.
+
+#### Failure and cleanup matrix
+
+| Failure class | response/event | ownership and cleanup |
+| --- | --- | --- |
+| canonical, authenticated resource/bound denial before mutation | one correlated `rejected` response | no mutation or cleanup; exact next state is fixed by the response-outcome matrix |
+| prepare/file/commit mismatch with proven rollback | one `requestType=0x12` rejected response | no partial publication; controller must revoke before any exec |
+| SSH creation/inspection failure with proven listener absence | rejected `0x13`, zero rights | close listener/socket leaf, retain prepared mount only for revoke |
+| revoke observation incomplete but retryable | `cleanup_retry` | monitor retains exact ownership; fresh-ID retry reinspects and never recreates |
+| unknown ownership, mount/listener replacement, monitor/PID1/controller loss, or failed normal unmount | `stop_vm_required` when sendable, otherwise no packet | latch terminal; D6 stops/reaps the microVM and inspects host absence |
+| framing/authentication/credentials/rights/sequence/identity/correlation failure | no response | close every received right, wipe buffers, terminal stop-VM path |
+| atomic send or response loss | no replay | monitor loss; close controller-owned rights and use whole-VM cleanup |
+
+Unknown type, wrong direction/credentials, bad length, truncation, trailing or
+noncanonical data, zero required digest, wrong/reordered rights, request/job
+identity error, stale revision/generation, replay/gap/exhaustion, duplicate ID,
+illegal transition, response/event mismatch, or any packet after terminal
+failure permanently latches `stop_vm_required`. EOF outside the committed
+bilateral normal-close state, any non-normal close, a normal close in any other
+state, close-send failure, policy kill, and role loss do the same. Even the
+valid normal close and expected EOF are not cleanup proof.
+
+The operational response matrix is closed:
+
+| Request | `accepted` / `cleanup_complete` | `rejected` | `cleanup_retry` / `stop_vm_required` |
+| --- | --- | --- | --- |
+| prepare transaction (`0x12`) | `accepted`, failure `none`, exact prepare result | `resource_limit` or `operation_denied` before mutation; `prepare_failed` only after complete rollback and inspection | only `stop_vm_required` with `prepare_failed`, `inspection_failed`, or `cleanup_incomplete` when rollback/absence is not proved |
+| create SSH endpoint (`0x13`) | `accepted`, failure `none`, exact result and one listener right | `resource_limit` or `operation_denied` before mutation; `ssh_endpoint_failed` only after listener/socket-leaf rollback and inspection | only `stop_vm_required` with `ssh_endpoint_failed`, `inspection_failed`, or `cleanup_incomplete` when rollback/absence is not proved |
+| revoke (`0x14`) | `cleanup_complete`, failure `none`, exact absence result | never | `revoke_failed`, `inspection_failed`, or `cleanup_incomplete` |
+
+No other combination exists. In particular, `accepted` and
+`cleanup_complete` always require failure zero; `resource_limit` and
+`operation_denied` always mean a pre-mutation rejection with cleanup category
+not applicable; and revoke, inspection, or cleanup failure never maps to an
+ordinary rejection that leaves state looking usable.
+
+Formerly ambiguous HL8M choices are closed as follows: readiness transfers two
+rights, not one, because PID1 must relay both the controller peer endpoint and
+live namespace authority in HL8L `job_created`; PID1 consumes readiness rather
+than forwarding its body, so the controller begins monitor receive sequence at
+one; monitor readiness is job-correlated with a nonzero job digest even though
+its request ID is zero; prepare reuses the already implemented helper body and
+digest codecs byte-for-byte; one logical prepare has no intermediate response;
+the single D5 endpoint is created only after file commit and before overall
+helper activation; response loss never replays live rights; cleanup-complete is
+monitor-local and cannot stand in for PID1 reap/cgroup or D6 whole-VM evidence;
+and `helper-limits-v1` distinguishes exactly one credential-aware exec from the
+generic L4 ceiling. These choices preserve
+the already frozen 68-byte header,
+type IDs, helper layouts/catalog values, direct credential-body path, syscall
+supplement, and D2/D4/D5 ownership split.
+
+D2 owns the pure HL8M codec, canonical body/digest functions, fixed-size rights
+role metadata, safe formatting and denied serialization, one-slot proposal and
+transition state, fake-only correlation/cleanup decisions, vectors, and
+plus-one tests. D4 owns the PID1 bootstrap relay, live socketpair and
+credentials/rights receive, FD close/dup/remap, pidfd/namespace/mount/file
+syscalls, locked receive mapping, listener-independent core cleanup, monitor
+exit/reap coordination, the later HL8L destroy path, and all object
+reinspection behind D2 decisions. D5
+owns only the optional live Unix endpoint creation/accept/peer-validation and
+relay behavior reached through the frozen `0x13` seam; it cannot add a type,
+right, body, proof, or state transition. D6 alone turns `stop_vm_required` into
+exact Firecracker stop/reap and host-owned absence evidence.
+
+HL8M has no public listener, reconnect, resumption, arbitrary path/mount/socket/
+clone/exec operation, general FD transfer, PID1 credential-body path, durable
+projection, proof-minting authority, live implementation in D2, or authority
+available to the agent or workload. D4 and D5 may not reinterpret an encoding,
+weaken a terminal result, infer success, or bypass the pure state machine.
 
 The neutral helper packet codec is one seqpacket datagram with a fixed header:
 
@@ -3064,7 +3707,10 @@ outstanding helper request, exactly one active credential-aware workload
 execution beneath the separate generic L4 ceiling of 64, 4096 launches over
 the activation lifetime, 256 helper-owned file
 descriptors, 16 bindings/files, and the byte limits above. The monitor and helper
-job state cannot outlive the 35-minute guest activation. Guest cleanup gets at
+job state cannot outlive the 35-minute guest activation. Credential-aware v2
+execution admits exactly one populated workload at a time; the generic L4
+ceiling of 64 processes remains a separate non-credential workload bound and
+does not widen this job. Guest cleanup gets at
 most three idempotent attempts within one 30-second total deadline before
 `stop_vm_required`; retry clocks and observations are injected in D2 tests.
 
