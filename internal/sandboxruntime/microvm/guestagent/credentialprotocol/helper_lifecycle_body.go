@@ -131,21 +131,46 @@ func DecodeHelperRevokeBody(encoded []byte) (HelperRevokeBody, error) {
 // EncodeHelperEventBody returns eventCode:u8, revision:u64, then the canonical
 // body-token encoding of eventID.
 func EncodeHelperEventBody(body HelperEventBody) ([]byte, error) {
-	if err := ValidateEventCode(body.Code); err != nil {
-		return nil, err
-	}
-	if err := validateHelperLifecycleRevision(body.Revision); err != nil {
-		return nil, err
-	}
-	eventID, err := EncodeBodyToken(body.EventID)
+	length, err := HelperEventBodyEncodedLength(body)
 	if err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, helperEventBodyFixedBytes+len(eventID))
-	encoded[0] = byte(body.Code)
-	binary.BigEndian.PutUint64(encoded[1:9], body.Revision)
-	copy(encoded[9:], eventID)
+	encoded := make([]byte, length)
+	if err := EncodeHelperEventBodyTo(encoded, body); err != nil {
+		clear(encoded)
+		return nil, err
+	}
 	return encoded, nil
+}
+
+// HelperEventBodyEncodedLength returns the exact canonical event body length.
+func HelperEventBodyEncodedLength(body HelperEventBody) (uint32, error) {
+	if err := ValidateEventCode(body.Code); err != nil {
+		return 0, err
+	}
+	if err := validateHelperLifecycleRevision(body.Revision); err != nil {
+		return 0, err
+	}
+	tokenLength, err := bodyTokenEncodedLength(body.EventID)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(helperEventBodyFixedBytes + tokenLength), nil
+}
+
+// EncodeHelperEventBodyTo writes an event body into an exact-length destination.
+func EncodeHelperEventBodyTo(dst []byte, body HelperEventBody) error {
+	length, err := HelperEventBodyEncodedLength(body)
+	if err != nil {
+		return err
+	}
+	if len(dst) != int(length) {
+		return ErrHelperEventBodyLength
+	}
+	dst[0] = byte(body.Code)
+	binary.BigEndian.PutUint64(dst[1:9], body.Revision)
+	putBodyToken(dst[9:], body.EventID)
+	return nil
 }
 
 // DecodeHelperEventBody strictly decodes one complete event body.
@@ -176,10 +201,37 @@ func DecodeHelperEventBody(encoded []byte) (HelperEventBody, error) {
 
 // EncodeHelperCloseNotifyBody returns the sole closed reason byte.
 func EncodeHelperCloseNotifyBody(body HelperCloseNotifyBody) ([]byte, error) {
-	if err := ValidateCloseReason(body.Reason); err != nil {
+	length, err := HelperCloseNotifyBodyEncodedLength(body)
+	if err != nil {
 		return nil, err
 	}
-	return []byte{byte(body.Reason)}, nil
+	encoded := make([]byte, length)
+	if err := EncodeHelperCloseNotifyBodyTo(encoded, body); err != nil {
+		clear(encoded)
+		return nil, err
+	}
+	return encoded, nil
+}
+
+// HelperCloseNotifyBodyEncodedLength returns the fixed canonical close length.
+func HelperCloseNotifyBodyEncodedLength(body HelperCloseNotifyBody) (uint32, error) {
+	if err := ValidateCloseReason(body.Reason); err != nil {
+		return 0, err
+	}
+	return helperCloseNotifyBodyBytes, nil
+}
+
+// EncodeHelperCloseNotifyBodyTo writes a close body into an exact destination.
+func EncodeHelperCloseNotifyBodyTo(dst []byte, body HelperCloseNotifyBody) error {
+	length, err := HelperCloseNotifyBodyEncodedLength(body)
+	if err != nil {
+		return err
+	}
+	if len(dst) != int(length) {
+		return ErrHelperCloseNotifyBodyLength
+	}
+	dst[0] = byte(body.Reason)
+	return nil
 }
 
 // DecodeHelperCloseNotifyBody strictly decodes one complete close-notify body.

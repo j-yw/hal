@@ -381,7 +381,7 @@ func NewReceivedExecPrivatePacket(request ReceiveRequest, header credentialproto
 }
 
 func NewReceivedExecStreamPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, streamKind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, offset uint64, payloadLength uint32, payloadSHA256 [32]byte) (ReceivedPacket, error) {
-	if revision == 0 || credentialprotocol.ValidateHelperExecStreamKind(streamKind) != nil || (flags != credentialprotocol.HelperExecStreamFlagsNone && flags != credentialprotocol.HelperExecStreamFlagEOF) || payloadLength > credentialprotocol.MaxHelperExecStreamPayloadBytes || (flags == credentialprotocol.HelperExecStreamFlagsNone && payloadLength == 0) || (flags == credentialprotocol.HelperExecStreamFlagEOF && payloadLength != 0) || (payloadLength == 0 && payloadSHA256 != sha256.Sum256(nil)) || (payloadLength > 0 && payloadSHA256 == ([32]byte{})) {
+	if revision == 0 || streamKind != credentialprotocol.HelperExecStreamStdin || (flags != credentialprotocol.HelperExecStreamFlagsNone && flags != credentialprotocol.HelperExecStreamFlagEOF) || payloadLength > credentialprotocol.MaxHelperExecStreamPayloadBytes || (flags == credentialprotocol.HelperExecStreamFlagsNone && payloadLength == 0) || (flags == credentialprotocol.HelperExecStreamFlagEOF && payloadLength != 0) || (payloadLength == 0 && payloadSHA256 != sha256.Sum256(nil)) || (payloadLength > 0 && payloadSHA256 == ([32]byte{})) {
 		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
 	}
 	arm := ReceivedExecStream{revision: revision, streamKind: streamKind, flags: flags, offset: offset, payloadLength: payloadLength, payloadSHA256: payloadSHA256}
@@ -394,6 +394,9 @@ func NewReceivedExecStreamPacket(request ReceiveRequest, header credentialprotoc
 }
 
 func NewReceivedExecCreditPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperExecCreditBody) (ReceivedPacket, error) {
+	if decoded.StreamKind != credentialprotocol.HelperExecStreamStdout && decoded.StreamKind != credentialprotocol.HelperExecStreamStderr {
+		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+	}
 	encoded, encodeErr := credentialprotocol.EncodeHelperExecCreditBody(decoded)
 	return receivedCanonicalPacket(request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypeExecCredit, ReceivedExecCredit{revision: decoded.Revision, streamKind: decoded.StreamKind, nextOffset: decoded.NextOffset}, encoded, encodeErr)
 }

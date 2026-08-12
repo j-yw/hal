@@ -805,17 +805,43 @@ func (body *HelperExecStreamBody) Wipe() {
 }
 
 func EncodeHelperExecCreditBody(body HelperExecCreditBody) ([]byte, error) {
-	if err := validateHelperExecRevision(body.Revision); err != nil {
+	length, err := HelperExecCreditBodyEncodedLength(body)
+	if err != nil {
 		return nil, err
+	}
+	encoded := make([]byte, length)
+	if err := EncodeHelperExecCreditBodyTo(encoded, body); err != nil {
+		clear(encoded)
+		return nil, err
+	}
+	return encoded, nil
+}
+
+// HelperExecCreditBodyEncodedLength returns the fixed canonical credit length.
+func HelperExecCreditBodyEncodedLength(body HelperExecCreditBody) (uint32, error) {
+	if err := validateHelperExecRevision(body.Revision); err != nil {
+		return 0, err
 	}
 	if err := ValidateHelperExecStreamKind(body.StreamKind); err != nil {
-		return nil, err
+		return 0, err
 	}
-	encoded := make([]byte, HelperExecCreditBodyBytes)
-	binary.BigEndian.PutUint64(encoded[0:8], body.Revision)
-	encoded[8] = byte(body.StreamKind)
-	binary.BigEndian.PutUint64(encoded[16:24], body.NextOffset)
-	return encoded, nil
+	return HelperExecCreditBodyBytes, nil
+}
+
+// EncodeHelperExecCreditBodyTo writes a credit body into an exact destination.
+func EncodeHelperExecCreditBodyTo(dst []byte, body HelperExecCreditBody) error {
+	length, err := HelperExecCreditBodyEncodedLength(body)
+	if err != nil {
+		return err
+	}
+	if len(dst) != int(length) {
+		return ErrHelperExecCreditBodyLength
+	}
+	binary.BigEndian.PutUint64(dst[0:8], body.Revision)
+	dst[8] = byte(body.StreamKind)
+	clear(dst[9:16])
+	binary.BigEndian.PutUint64(dst[16:24], body.NextOffset)
+	return nil
 }
 
 func DecodeHelperExecCreditBody(encoded []byte) (HelperExecCreditBody, error) {
