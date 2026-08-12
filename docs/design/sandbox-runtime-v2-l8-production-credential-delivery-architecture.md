@@ -4177,11 +4177,20 @@ descriptor fingerprint. Descriptor equality alone never makes values from two
 bundles composable. D6 supplies the pair through the exact
 `L8LiveBootConfigProvider` ownership-transferring live overlay defined in the
 extension-seam supplement. A provider error retains every returned value;
-successful validation transfers the exact lease to Firecracker, which closes
-it exactly once on every later failure or completion path.
+nil-error return provisionally transfers the exact lease to Firecracker before
+validation so cleanup ownership is never ambiguous. Firecracker snapshots the
+profile by value and all mutable overlay fields, validates only those copies,
+then retains the lease on success or closes it exactly once on rejection. The
+provider is injected through the exact L8 field adjacent to the L7 provider in
+`BackendOptions`; selecting both is rejected before either call.
 In particular, a post-start validation failure stops and reaps the exact
 Firecracker process and proves its absence before closing the lease or
 returning an error; no live handle escapes that path.
+
+The source-record digest includes kind, name, version, filename, size, and
+digest for the Pi package, shrinkwrap, and every npm archive. Temporary parent
+L7 verification leases are resolver-owned, exactly-once closed, and must close
+successfully before L8 authority can issue.
 
 Ownership and sequencing are exact in the extension-seam supplement. D2 owns
 the opaque profile contracts and guards; D4 and D5 land guest behavior without

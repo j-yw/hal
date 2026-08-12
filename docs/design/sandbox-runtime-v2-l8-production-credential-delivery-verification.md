@@ -351,12 +351,21 @@ protocol and every ordered feature position, count, duplicate, case, and
 cross-document value. All must fail under the L8-aware validator while the
 unchanged L5/L7 v1 fixtures retain identical JSON bytes and validation results.
 Digest vectors independently assemble the canonical Pi dependency-tree
-preimage and mutate each package/archive field and order. Filename vectors
-cover every closed URL/credential marker and one-byte near misses. Launch-
+preimage and mutate kind, name, version, filename, size, digest, and order for
+each package/archive record. Filename vectors cover every ASCII boundary,
+non-ASCII byte/UTF-8 sequence, closed URL/credential marker, and one-byte near
+miss. Launch-
 material tests inject failure before, during, and after each writer call and
 the final source confirmation; they prove caller ownership plus exactly-once
 close on every failure, retry only with a new writer, atomic transfer only on
 success, and stable joined sanitized cleanup errors.
+Provider tests retain an alias to every successful output and prove Backend's
+descriptor/network/profile snapshots are immune to later mutation. They prove
+provisional nil-error lease ownership, exact rejection cleanup, the explicit
+`BackendOptions.L8LiveConfigProvider` injection, and L7/L8 mutual exclusion.
+Parent-L7 lease fakes inject confirm and close failures on every path and require
+exactly-once close plus no L8 issuance on cleanup uncertainty. Source guards
+exercise every per-marker allowlist and AST issuer reference form.
 
 ## Prepared-Linux prerequisite gate
 

@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,8 +59,13 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 		"close error with the primary error",
 		`opaque16("hal/l8/pi-dependency-tree/v1")`,
 		"uint32_be(npmArchiveCount)",
+		"token(piPackage.kind)",
+		"token(piPackage.filename)",
+		"token(piShrinkwrap.kind)",
+		"token(piShrinkwrap.filename)",
 		"case-insensitive",
 		"URL/credential-marker algorithm",
+		"ASCII bytes permitted in a source filename",
 		`"authorization", "bearer", "token", "secret"`,
 		`"credential", "password"`,
 		`"api_key", "apikey"`,
@@ -86,12 +94,20 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 		"type L8LiveBootConfigOverlay struct",
 		"type L8LiveBootConfigProvider interface",
 		"ProvideL8LiveBootConfig(context.Context, L8LiveBootConfigRequest)",
+		"L8LiveConfigProvider L8LiveBootConfigProvider",
 		"provider retains ownership of every returned value",
+		"ownership of every non-nil lease immediately transfers to Backend",
+		"copies the opaque profile by value into Backend-owned storage",
+		"provider must not mutate or access any nil-error output after return",
+		"temporary parent L7 lease immediately after a successful",
+		"blocks issuance because parent-handle absence",
 		"confirms current assets before ownership of",
 		"L8 lease transfers to Backend",
 		"recursively deep-copies",
 		"launch descriptor and every nested slice/pointer",
 		"snapshots every caller-mutable safe field before validation",
+		"per-marker production allowlist",
+		"AST-level issuer identifier guard",
 		"does not parse a source lock",
 		"host profile never enters the guest",
 		"D7 embeds the exact expected workload, runtime, and syscall-policy catalog digests",
@@ -134,55 +150,28 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 }
 
 func TestL8D2ImageProfileMintAuthorityStaysNarrow(t *testing.T) {
-	allowed := []string{
-		filepath.Join("..", "internal", "sandboxruntime", "microvm", "assets", "build"),
-		filepath.Join("..", "internal", "sandboxruntime", "microvm", "assets", "localresolver"),
-		filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecracker"),
-		filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost"),
+	buildRoot := filepath.Join("..", "internal", "sandboxruntime", "microvm", "assets", "build")
+	issuerRoot := filepath.Join("..", "internal", "sandboxruntime", "microvm", "assets", "localresolver")
+	firecrackerRoot := filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecracker")
+	firecrackerHostRoot := filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost")
+	rules := []struct {
+		marker string
+		roots  []string
+	}{
+		{marker: "ImageProfileL8ProductionCredentials", roots: []string{buildRoot, issuerRoot}},
+		{marker: "l8-production-credentials-v1", roots: []string{buildRoot, issuerRoot}},
+		{marker: "VerifiedL8Profile", roots: []string{issuerRoot, firecrackerRoot, firecrackerHostRoot}},
+		{marker: "VerifiedL8AssetLease", roots: []string{issuerRoot, firecrackerRoot, firecrackerHostRoot}},
 	}
-	for _, root := range []string{
-		".",
-		filepath.Join("..", "internal"),
-		filepath.Join("..", "tools"),
-		filepath.Join("..", "sandbox"),
-		filepath.Join("..", "main.go"),
-	} {
-		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
+	allowed := func(path string, roots []string) bool {
+		for _, root := range roots {
+			if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+				return true
 			}
-			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			clean := filepath.Clean(path)
-			for _, approved := range allowed {
-				if clean == approved || strings.HasPrefix(clean, approved+string(filepath.Separator)) {
-					return nil
-				}
-			}
-			payload, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			text := string(payload)
-			for _, marker := range []string{
-				"ImageProfileL8ProductionCredentials",
-				"VerifiedL8Profile",
-				"VerifiedL8AssetLease",
-				"l8-production-credentials-v1",
-			} {
-				if strings.Contains(text, marker) {
-					t.Errorf("unapproved production file %s contains L8 image-profile authority marker %q", filepath.ToSlash(path), marker)
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("scan %s: %v", root, err)
 		}
+		return false
 	}
 
-	issuerRoot := filepath.Join("..", "internal", "sandboxruntime", "microvm", "assets", "localresolver")
 	err := filepath.WalkDir("..", func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -190,20 +179,33 @@ func TestL8D2ImageProfileMintAuthorityStaysNarrow(t *testing.T) {
 		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		clean := filepath.Clean(path)
-		if clean == issuerRoot || strings.HasPrefix(clean, issuerRoot+string(filepath.Separator)) {
-			return nil
-		}
 		payload, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		if strings.Contains(string(payload), "VerifyL8DistributionBundle(") {
-			t.Errorf("unapproved production file %s invokes the sole L8 profile issuer", filepath.ToSlash(path))
+		clean := filepath.Clean(path)
+		text := string(payload)
+		for _, rule := range rules {
+			if strings.Contains(text, rule.marker) && !allowed(clean, rule.roots) {
+				t.Errorf("unapproved production file %s contains L8 image-profile marker %q", filepath.ToSlash(path), rule.marker)
+			}
 		}
+		if allowed(clean, []string{issuerRoot}) {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, payload, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			if identifier, ok := node.(*ast.Ident); ok && identifier.Name == "VerifyL8DistributionBundle" {
+				t.Errorf("unapproved production file %s references the sole L8 profile issuer", filepath.ToSlash(path))
+			}
+			return true
+		})
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("scan L8 issuer boundary: %v", err)
+		t.Fatalf("scan L8 image-profile authority: %v", err)
 	}
 }

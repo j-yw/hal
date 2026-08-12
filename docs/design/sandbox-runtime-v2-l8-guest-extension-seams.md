@@ -3901,6 +3901,12 @@ Every SHA-256 is exactly 64 lower-case hexadecimal characters. An input size is
 1..1,073,741,824 bytes, the source aggregate is at most 4,294,967,296 bytes,
 and overflow is rejected before addition.
 
+The only ASCII bytes permitted in a source filename are printable bytes
+`0x21..0x7e`; the slash, backslash, and every character rejected above remain
+excluded. Bytes `0x80..0xff`, UTF-8 multibyte sequences, DEL, and every control
+or space byte are rejected before marker checks. The validator iterates bytes,
+not Unicode code points.
+
 The filename URL/credential checks are one exact case-insensitive
 URL/credential-marker algorithm over an ASCII-lowercased copy; they never
 normalize the stored filename. A URL marker is either substring `://` or one
@@ -3938,13 +3944,15 @@ len(Sources)-3`:
 ```text
 SHA256(
   opaque16("hal/l8/pi-dependency-tree/v1") ||
-  token(piPackage.name) || token(piPackage.version) ||
+  token(piPackage.kind) || token(piPackage.name) || token(piPackage.version) ||
+  token(piPackage.filename) ||
   uint64_be(piPackage.sizeBytes) || digest32(piPackage.sha256) ||
-  token(piShrinkwrap.name) || token(piShrinkwrap.version) ||
+  token(piShrinkwrap.kind) || token(piShrinkwrap.name) || token(piShrinkwrap.version) ||
+  token(piShrinkwrap.filename) ||
   uint64_be(piShrinkwrap.sizeBytes) || digest32(piShrinkwrap.sha256) ||
   uint32_be(npmArchiveCount) ||
   for each npm_archive in the already validated source-lock order:
-    token(name) || token(version) || token(filename) ||
+    token(kind) || token(name) || token(version) || token(filename) ||
     uint64_be(sizeBytes) || digest32(sha256))
 ```
 
@@ -4190,6 +4198,14 @@ may return an L8 descriptor for diagnostics but never a profile or lease.
 Synthetic fakes live only in `_test.go` or explicitly fake-only files and have
 no production command reachability.
 
+The resolver owns the temporary parent L7 lease immediately after a successful
+acquire. It closes that lease exactly once on every later success, validation
+failure, panic-recovery, or return path and never places it in the returned L8
+distribution. L8 issuance occurs only after parent confirmation and that close
+both succeed. A close failure is sanitized, joined with any earlier primary
+error without replacing it, and blocks issuance because parent-handle absence
+is uncertain.
+
 The opaque value contains one active private seal, the descriptor fingerprint,
 and the evidence fingerprint. `VerifiedL8ProfileMatches` validates and
 normalizes the candidate and compares only against the sealed descriptor
@@ -4293,22 +4309,35 @@ type L8LiveBootConfigProvider interface {
 }
 ```
 
+`BackendOptions` adds `L8LiveConfigProvider L8LiveBootConfigProvider`
+immediately after its existing `L7LiveConfigProvider` field, and `Backend`
+stores the corresponding private interface immediately after the private L7
+field. Because `NewBackend` has no error result, it performs no provider call;
+the first explicit live-start validation rejects a nil or typed-nil L8 provider
+when L8 is selected and rejects L7 plus L8 providers configured together before
+calling either one. Planning-only/default paths remain inert and never call a
+provider.
+
 The request contains only the exact safe nonempty runtime generation copied
 from the base config. A nil or typed-nil provider is rejected before a call.
 The common interface-result matrix applies: on any non-nil provider error the
 provider retains ownership of every returned value; nonzero output with error
-is a contract violation and Backend uses none of it. On nil error the overlay
+is a contract violation and Backend uses none of it. On nil error, provisional
+ownership of every non-nil lease immediately transfers to Backend before any
+field validation; Backend closes it exactly once on every rejection. The
+provider must not mutate or access any nil-error output after return. The overlay
 must echo the exact runtime generation and contain a non-nil descriptor,
 profile, and lease, the exact inherited L7 proxy network mode, exactly one
 interface, non-nil static network, and the fixed namespace asset-FD start.
 Backend snapshots every caller-mutable safe field before validation: it
 deep-copies the interface/static-network metadata and recursively deep-copies
 the launch descriptor and every nested slice/pointer while preserving
-nil-versus-empty shape. It validates and uses only that snapshot, calls
+nil-versus-empty shape, and copies the opaque profile by value into Backend-owned storage.
+It validates and uses only those snapshots, calls
 `VerifiedL8ProfileMatchesLease`, and confirms current assets before ownership of
-the exact non-nil L8 lease transfers to Backend. If any
-post-return validation fails, Backend owns and closes that lease exactly once;
-it never closes a lease on the provider-error path. The overlay cannot replace
+the exact non-nil L8 lease transfers to Backend permanently. The earlier
+provisional transfer exists solely to make cleanup unambiguous. Backend never
+closes a lease on the provider-error path. The overlay cannot replace
 executable, jailer, CPU, memory, path, runtime-generation, VSOCK, or lifecycle
 fields from the base config. L7 and L8 providers cannot both be configured for
 one start.
@@ -4345,6 +4374,13 @@ The exact ownership is:
 - `firecrackerhost` D6 composition requires that verified profile before
   advertising v2 credential capability. `cmd` may select an already verified
   distribution but cannot mint, weaken, or project the profile.
+
+Production source guards use a per-marker production allowlist: the L8 profile
+constant and literal are confined to `assets/build` plus the localresolver
+issuer; opaque profile/lease type names are additionally allowed in the exact
+Firecracker and firecrackerhost consumers. A separate AST-level issuer identifier guard
+rejects every reference to `VerifyL8DistributionBundle` outside localresolver,
+including selector, method-value, alias, and call use.
 
 Sequencing is fixed. D2 lands this ownership and red guards. D4 lands the native
 role bootstrap, controller, PID1 supervisor, mount monitor, workload shim,
