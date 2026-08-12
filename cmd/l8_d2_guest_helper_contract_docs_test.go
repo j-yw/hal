@@ -234,6 +234,88 @@ func TestL8D2GuestHelperSupplementContractsAreNormative(t *testing.T) {
 	}
 }
 
+func TestL8D2GuestHelperCoreContractClosureIsImplementationReady(t *testing.T) {
+	seam := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-guest-extension-seams.md"))
+	for _, required := range []string{
+		"### Core contract concrete closure",
+		"type RelativePathCapability struct",
+		"type CorePrepareRequest struct",
+		"type CoreExecRequest struct",
+		"type CoreRenewRequest struct",
+		"type CoreRevokeRequest struct",
+		"type CoreInspectRequest struct",
+		"type CoreFileRequest struct",
+		"type CoreCommitRequest struct",
+		"type CorePreparedResult struct",
+		"type CoreOutputRequest struct",
+		"type CoreOutputResult struct",
+		"type CoreExecResult struct",
+		"type CoreCleanupResult struct",
+		"type CoreInspection struct",
+		"type ReceiveRequest struct",
+		"type ReceivedPacket struct",
+		"type SendPacket struct",
+		"type PolicyRequest struct",
+		"type PolicyDecision struct",
+		"type PolicyDescriptor struct",
+		"PolicyOperationPrepare",
+		"PolicyRejectionIdentityMismatch",
+		"NewRelativePathCapability",
+		"NewManifestCapability",
+		"NewExecPlanCapability",
+		"NewCorePrepareRequest",
+		"BeginExec(context.Context, CoreExecRequest, credentialmemory.BorrowedView)",
+		"NewReceiveRequest",
+		"NewReceivedBootstrapPacket",
+		"NewReceivedBootstrapPacket(ReceiveRequest",
+		"NewReceivedExecStreamPacket",
+		"ExpectedRights() uint32",
+		"type ReceivedBodyCapability interface",
+		"type ReceivedKernelCredential struct",
+		"NewReceivedKernelCredential",
+		"no public credential, body, or right accessor",
+		"recvmsg` adapter as the datagram",
+		"No private payload\nis copied to an ordinary heap allocation",
+		"Configured D4 Transport",
+		"one-shot atomic consumed latch",
+		"newSendPacket",
+		"WriteCanonicalBody(credentialmemory.CredentialSink)",
+		"func NewPolicyRequest",
+		"ExecBodyBytes() uint32",
+		"PrivateBytes() uint32",
+		"ContractErrorCode",
+		"CoreCleanupCapability",
+		"NewHelperPolicy",
+		"Transport owns a right",
+		"service owns the private credential/body/right fields thereafter",
+		"typed-nil",
+		"no public constructor",
+		"No request or result contains a raw",
+	} {
+		if !strings.Contains(seam, required) {
+			t.Fatalf("L8 D2 extension seam omits implementation-ready core contract %q", required)
+		}
+	}
+
+	architecture := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialArchitectureDoc))
+	for _, required := range []string{
+		"Pre-production transcript correction",
+		"for each stdin record, including the final EOF, in offset order:",
+		"uint32_be(stdinRecordCount)",
+		"The record\ncount is appended after the last record",
+		"one-pass",
+		"O(1) hash state",
+		"full-capacity wipe",
+		"No D4 producer",
+		"Two-pass replay",
+		"retained leaf digests",
+	} {
+		if !strings.Contains(architecture, required) {
+			t.Fatalf("L8 D2 architecture omits stream-computable transcript closure %q", required)
+		}
+	}
+}
+
 func TestL8D2GuestHelperSyscallPolicyRejectsImplicitOSPidfdProbe(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-helper-syscall-policy.md"))
 	for _, forbidden := range []string{

@@ -2027,10 +2027,10 @@ stdinSHA256 = SHA256(concatenated stdin payload bytes)
 
 stdinTranscriptSHA256 = SHA256(
   opaque16("hal/l8/guest-helper/stdin-transcript/v1") ||
-  uint32_be(stdinRecordCount) ||
   for each stdin record, including the final EOF, in offset order:
     flags:u8 || uint64_be(offset) || uint32_be(payloadLength) ||
-    payloadSHA256 || payload)
+    payloadSHA256 || payload ||
+  uint32_be(stdinRecordCount))
 
 execTransactionSHA256 = SHA256(
   opaque16("hal/l8/guest-helper/exec-transaction/v1") ||
@@ -2054,6 +2054,26 @@ Credit records are transport flow control only. They do not enter
 `execTransactionSHA256`; credit timing and stdout/stderr interleaving likewise
 do not change the per-stream content hashes. They do consume ordinary secure
 and helper sequences and the existing record caps.
+
+This count-trailer formula is the sole canonical construction. The record
+count is appended after the last record, immediately before finalizing the
+hash. The receiver initializes the domain-separated hash once, streams each
+authenticated canonical record header and payload into it, increments one
+bounded counter, performs the downstream write, then performs an immediate
+full-capacity wipe of the sole at-most-64-KiB payload slot. At the unique EOF it
+hashes that record, appends `uint32_be(stdinRecordCount)`, and finalizes. The
+comparison-only replay path uses the identical one-pass construction. This
+requires O(1) hash state plus the one payload slot and preserves exact chunk
+boundaries, offsets, per-chunk digests, content, and EOF.
+
+**Pre-production transcript correction.** The earlier count-prefix expression
+required knowing the count before consuming records, contradicting immediate
+wipe/no-retention and the single-slot bound. No D4 producer, live L8 deployment,
+or accepted L8 proof has shipped, so D2 deliberately corrects the vector before
+compatibility exists. Two-pass replay is rejected because it adds a second
+input/retention seam; retained leaf digests are rejected because they add
+record-count-sized state and still cannot recover payload content. No prior
+count-prefix vector is accepted or negotiated.
 
 Ready, bootstrap, bootstrap-ack, and both hello packets require an all-zero
 request ID and all-zero job identity digest. `helper_ready` alone has an
