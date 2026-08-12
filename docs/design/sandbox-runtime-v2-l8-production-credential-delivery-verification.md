@@ -202,12 +202,23 @@ Required focused areas are:
   failure matrices, D4/D5 import independence, the D6-only process-local composition
   junction and PID1 descriptor attestation, the daemon-owned host-agent live registry with fresh peer proof per
   connection, and D7-only image source-lock/build/profile ownership;
+- the helper-Service normative closure: exact Service/ServiceRuntime/result
+  APIs, a runtime-owned 30-second cleanup budget without forced-return claims,
+  CoreExecution event/body ownership over the full canonical output body,
+  context-aware ownership-on-entry for helper live body/right constructors and
+  the helper CredentialSink send, exact core/extension capability domains,
+  deterministic proof/event labels, reused prepare/exec transaction FSMs,
+  fixed non-evicting exec/non-exec ledgers with reserved Revoke ledger capacity
+  and the uncached terminal-overflow rule, opaque extension lifecycle with
+  Service-only binding mint authority, three-pass cleanup and close
+  correlation, and the response-disposition correction;
 - the credential-client concrete closure: its one-way read-only `credentialclient -> v2control`
   authority edge with a reverse-import guard,
   D6-issued canonical process-descriptor snapshot,
   D4-owned helper bootstrap before Client construction with operational
   sequences 2/3 and no Client hello/body retention,
-  bodyless request-root inspection with safe unknown/malformed-known responses
+  bodyless request-root inspection with active-identity-gated unknown and
+  safely correlated malformed-known responses
   and a complete-root versus schema/canonical-decode boundary,
   exact lexical root boundary with canonical key order, compact inspected
   scalars/punctuation, one bounded body value, and EOF,
@@ -218,7 +229,7 @@ Required focused areas are:
   escalation without an in-process forced-return or detached-goroutine claim,
   exact controller/HL8P typed unions with the constructor/dispatch authority split,
   conditional helper request-ID correlation for idle asynchronous event/SSH
-  packets only, segmented exact-coverage send sinks with direct private-body
+  packets and drain-time zero-ID close-notify only, segmented exact-coverage send sinks with direct private-body
   offset writes, intrinsic-only SSH I/O results plus operation/bound validation,
   one-slot body and one-shot send ownership with retained-slot `EAGAIN` retry and
   no re-encoding, full-v2-to-helper manifest projection and ordered proof mapping,

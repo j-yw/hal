@@ -1072,8 +1072,12 @@ body, map, `json.RawMessage`, unvalidated or raw string echo, or raw bytes. The
 operation token contains only the validated private operation string. The
 inspector requires exact canonical root-key order
 `protocolVersion,operation,requestId,identityDigest,body`, compact scalar spellings and punctuation with no insignificant whitespace or alternate JSON encoding for the four inspected scalars, then token-skips exactly one syntactically complete bounded body value and requires EOF. Wrong root order, whitespace, extra/missing/duplicate root fields, incomplete syntax, or trailing data is unsafe and closes without a response.
-A safe unknown operation receives `unknown_operation` without body decode.
-Its body schema remains uninterpreted. If safely correlated, a malformed known operation receives `malformed_request` only when its concrete decoder reports
+A safe unknown operation receives `unknown_operation` without body decode only
+after a job identity is active and the root digest exactly equals that active
+identity. Its body schema remains uninterpreted. Before activation an unknown
+operation is unsafe for response and closes without one: only readiness or a
+known initial prepare can establish pre-active correlation. If safely
+correlated, a malformed known operation receives `malformed_request` only when its concrete decoder reports
 a body schema or canonical re-encode failure after complete root inspection;
 the optional static field is omitted.
 An unsafe or unusably correlated root closes without a response.
@@ -3400,6 +3404,77 @@ maps to neutral `retry_required`, and wire `stop_vm_required` maps to neutral
 `stop_vm_required`. `accepted` and `rejected` are never cleanup results. No
 other spelling, default, or success inference is permitted.
 
+### Helper-Service normative closure
+
+The helper-Service normative closure is the exact D2/D4 orchestration contract;
+the companion extension-seams document freezes every Go declaration. Service
+is constructed with Core, Transport, Policy, immutable Extensions, ExtensionHost,
+and ServiceRuntime, and exposes only one `Serve` lifetime returning either
+clean `ServiceClosed` after a bilateral normal/shutdown close or
+`ServiceStopVMRequired` plus a sanitized error and terminal reason. There is no
+public Close or Wait race.
+
+ServiceRuntime exclusively owns authenticated bootstrap/agent binding, live
+job generation/time observation, loss notification, and one cleanup budget.
+That budget has an exact 30-second limit shared by the whole drain. It requires
+conforming trusted dependencies to observe the supplied context but makes no
+in-process forced-return promise for an arbitrary blocker; nonconformance or
+unknown absence escalates to D6 kill/reap.
+
+Core execution uses the grant-driven CoreExecution event loop: WriteStdin,
+GrantOutput, Next, and Cancel. An output event owns the full canonical `0x18`
+body, not a second payload buffer; its leading-context constructor takes
+ownership-on-entry and synchronously destroys failure with that supplied
+context. The helper SendPacket keeps the existing CredentialSink but makes the
+write context-aware; credentialclient's two BodySegmentSink contracts remain
+separate and unchanged. Every live body/right receive or private-send
+constructor likewise takes a leading context, owns on entry, and never uses a
+background/TODO substitute.
+
+Core correlation capabilities use the single
+`hal/l8/guest-helper/core-capability/v1` domain with four exact kinds and all
+six fixed generation positions; partial prepare values encode the final three
+positions empty. Extension exec bindings are Service-minted opaque values under
+`hal/l8/guest-helper/extension-exec-binding/v1` and are echo-only for D4/D5.
+Public active/binding/exec/cleanup proof labels and event IDs are deterministic
+nonsecret digests with literal prefixes `active.`, `binding.`, `exec.`, and
+`cleanup.`; no live capability becomes a proof string.
+
+The state machine reuses the existing credentialprotocol prepare transaction
+and `credentialprotocol.HelperExecTransactionSeed` rather than inventing
+Service-local prepare/exec FSMs. It stores two non-evicting fixed ledgers: a
+4,096-entry non-exec ledger
+whose last three entries are three reserved Revoke slots, and a separate
+4,096-entry exec ledger. Exact replay consumes no slot. A first-seen ID is
+charged before mutation. The sole overflow exception is terminal and uncached:
+drain declared input without mutation, best-effort emit the operation's allowed
+failure while IPC is usable, then mandatory drain/stop-VM; no 4,097th cached ID
+is promised.
+
+Extension lifecycle is one activation: open selected sessions in order before
+Core BeginPrepare; pre-commit failure closes in reverse and rolls back staging;
+Core Commit precedes ordered extension Prepare and publish; any begun
+post-commit Prepare failure reverse-revokes including the failing session,
+Core-revokes (never rolls back), then reverse-closes; renew is Core then
+extensions and failure revokes the activation; revoke denies new work, cancels,
+reverse-revokes extensions, Core-revokes, then reverse-closes. Close is called
+once and never substitutes for Revoke or absence proof.
+
+Terminal cleanup is one fixed budget and one exact three-pass cleanup protocol:
+deny admission; Cancel; reverse extension Revoke; precommit Rollback or
+postcommit Core Revoke/Inspect; reverse extension Close; destroy Service-owned
+packets; Core Close; Runtime Close; correlated close-notify if unambiguously
+usable; Transport Close last. Completed work is skipped, retry never recreates,
+and stop/deadline/unknown absence dominates.
+
+The stop-VM response correction is closed: `cleanup_retry` is Revoke-only;
+`stop_vm_required` is legal only for PrepareCommit, Renew, Exec, or Revoke;
+Renew and Exec admit `cleanup_incomplete`; non-Revoke stop uses only
+cleanup-incomplete for unknown absence or helper-unavailable for a proved-clean
+terminal dependency failure; Revoke stop uses revoke-failed,
+helper-unavailable, or cleanup-incomplete. A terminal response is best effort
+only while IPC is unambiguously usable and never converts stop-VM into success.
+
 The ordered manifest record is:
 
 ```text
@@ -3530,9 +3605,13 @@ request ID and all-zero job identity digest. `helper_ready` alone has an
 all-zero nonce; bootstrap and every later packet echo the exact helper-local
 nonce. Every job request has a nonzero 16-byte request ID, exact nonzero
 `GuestCredentialSessionIdentity` digest, and positive revision. A response
-echoes its request ID/digest/type/revision; an event has its own nonzero ID.
-`close_notify` consumes the ordinary next sequence and record cap and contains
-only its safe reason.
+echoes its request ID/digest/type/revision; an event and SSH-accepted packet use
+their own producer-owned nonzero ID while no operation is outstanding.
+`close_notify` consumes the ordinary next sequence and record cap, has an exact
+zero request ID, and contains only its safe reason. Thus a Client helper receive
+with no expected request ID is legal only for idle event/SSH or drain-time
+close-notify; all ordinary response/stream/credit packets match an outstanding
+nonzero ID. Readiness and bootstrap remain separately correlated.
 
 Both endpoints require exactly one kernel-supplied credentials record on every
 packet. Ancillary rights cardinality is zero except bootstrap (exactly one live
