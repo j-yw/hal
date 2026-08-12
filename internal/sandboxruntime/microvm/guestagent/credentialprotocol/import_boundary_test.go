@@ -142,6 +142,60 @@ func TestHelperEnvelopeUsesOnlyPureStandardLibraryAndHasNoDurableMethods(t *test
 	}
 }
 
+func TestHelperPrepareBodyUsesOnlyExactPureImportsAndConcreteOwners(t *testing.T) {
+	t.Parallel()
+
+	const name = "helper_prepare_body.go"
+	file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+	allowed := map[string]bool{
+		"crypto/sha256":   true,
+		"encoding/binary": true,
+		"errors":          true,
+		"fmt":             true,
+		"runtime":         true,
+	}
+	for _, imported := range file.Imports {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			t.Fatalf("unquote import in %s: %v", name, err)
+		}
+		if imported.Name != nil || !allowed[path] {
+			t.Errorf("helper prepare body imports %q; only the exact pure codec/hash/opaque-format set is allowed", path)
+		}
+		delete(allowed, path)
+	}
+	for missing := range allowed {
+		t.Errorf("helper prepare body exact import %q is missing", missing)
+	}
+
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch typed := node.(type) {
+		case *ast.InterfaceType:
+			t.Errorf("helper prepare body declares a generic interface at %s", token.NewFileSet().Position(typed.Pos()))
+		case *ast.MapType:
+			t.Errorf("helper prepare body declares a map owner")
+		case *ast.TypeSpec:
+			if typed.TypeParams != nil && len(typed.TypeParams.List) != 0 {
+				t.Errorf("helper prepare body declares generic type %s", typed.Name)
+			}
+		case *ast.FuncDecl:
+			if typed.Type.TypeParams != nil && len(typed.Type.TypeParams.List) != 0 {
+				t.Errorf("helper prepare body declares generic function %s", typed.Name)
+			}
+		case *ast.Field:
+			for _, fieldName := range typed.Names {
+				if fieldName.IsExported() && (fieldName.Name == "Body" || fieldName.Name == "Raw" || fieldName.Name == "Bytes") {
+					t.Errorf("helper prepare body exposes generic field %s", fieldName.Name)
+				}
+			}
+		}
+		return true
+	})
+}
+
 func TestHelperEnvelopeExposesNoGenericBodyOwnerOrBodyReturningAPI(t *testing.T) {
 	t.Parallel()
 
