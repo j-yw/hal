@@ -204,13 +204,26 @@ Required focused areas are:
   connection, and D7-only image source-lock/build/profile ownership;
 - the credential-client concrete closure: its one-way read-only `credentialclient -> v2control`
   authority edge with a reverse-import guard,
-  D6-issued canonical process-descriptor snapshot, single-Serve lifecycle and
+  D6-issued canonical process-descriptor snapshot,
+  D4-owned helper bootstrap before Client construction with operational
+  sequences 2/3 and no Client hello/body retention,
+  bodyless request-root inspection with safe unknown/malformed-known responses
+  and a complete-root versus schema/canonical-decode boundary,
+  exact lexical root boundary with canonical key order, compact inspected
+  scalars/punctuation, one bounded body value, and EOF,
+  initial identity reconstruction and root-digest recheck,
+  static formatting and JSON/text/binary denial, specifically marshal/unmarshal denial with seeded nonmutation for inspected and bodyless dispatch values, single-Serve lifecycle and
   racing idempotent drain under the fixed 30-second internal cleanup deadline,
+  trusted-dependency deadline conformance plus D6 process/VM kill-reap
+  escalation without an in-process forced-return or detached-goroutine claim,
   exact controller/HL8P typed unions with the constructor/dispatch authority split,
+  conditional helper request-ID correlation for idle asynchronous event/SSH
+  packets only, segmented exact-coverage send sinks with direct private-body
+  offset writes, intrinsic-only SSH I/O results plus operation/bound validation,
   one-slot body and one-shot send ownership with retained-slot `EAGAIN` retry and
   no re-encoding, full-v2-to-helper manifest projection and ordered proof mapping,
   operation/result/stream/credit correlation, closed
-  policy/error matrices, and SSH connection-capability ownership before and
+  policy/error matrices with a policy-subset error allowlist, pure v2/helper conversion functions, and SSH connection-capability ownership before and
   after extension transfer;
 - Firecracker process/vsock/network/credential generation composition;
 - worker durable seed-before-preflight ordering, the exact preflight return and
