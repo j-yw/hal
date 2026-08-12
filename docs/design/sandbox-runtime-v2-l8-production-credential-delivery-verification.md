@@ -180,7 +180,9 @@ Required focused areas are:
   rights-free exec requests, per-stream `HL8C`/`0x19 exec_credit` flow control
   over concurrently drained `0x18` exec streams,
   terminal input/output/transaction digests, host-resupplied comparison-only
-  replay without a second launch, no agent replay retention, local helper-loss
+  replay without a second launch, the pre-production count-trailer
+  `stdinTranscriptSHA256` one-pass vector with one immediately wiped payload
+  slot and no two-pass/leaf retention, no agent replay retention, local helper-loss
   termination, rollback, and restart cleanup;
 - neutral SSH codec, authenticated relay subkey, SCM_RIGHTS handoff,
   backpressure, mandatory key and algorithm/flag allowlists, filtered
@@ -188,7 +190,11 @@ Required focused areas are:
   and absence proof;
 - immutable matching helper/client extension registries, typed-nil and
   duplicate-claim rejection, exact helper/client/core/transport/policy/host
-  method sets, D4/D5 import independence, the D6-only process-local composition
+  method sets, implementation-ready private-field Core request/result layouts,
+  canonical relative-path and one-shot correlation capabilities, synchronous
+  borrowed private-binding input, exact receive/send packet unions and
+  body/right budget ownership, closed helper-policy operation/rejection and
+  failure matrices, D4/D5 import independence, the D6-only process-local composition
   junction and PID1 descriptor attestation, the daemon-owned host-agent live registry with fresh peer proof per
   connection, and D7-only image source-lock/build/profile ownership;
 - Firecracker process/vsock/network/credential generation composition;

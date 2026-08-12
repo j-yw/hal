@@ -149,7 +149,7 @@ The D2 method sets are exact:
 ```go
 type Core interface {
 	BeginPrepare(context.Context, CorePrepareRequest) (CorePreparation, error)
-	BeginExec(context.Context, CoreExecRequest) (CoreExecution, error)
+	BeginExec(context.Context, CoreExecRequest, credentialmemory.BorrowedView) (CoreExecution, error)
 	Renew(context.Context, CoreRenewRequest) error
 	Revoke(context.Context, CoreRevokeRequest) (CoreCleanupResult, error)
 	Inspect(context.Context, CoreInspectRequest) (CoreInspection, error)
@@ -192,9 +192,11 @@ truncation, cleanup category, and private opaque capabilities. No request/result
 contains `any`, map, callback, raw `[]byte`, path string, FD integer, PID, socket
 address, environment, or proof token.
 
-`ReceiveRequest` supplies fixed mutable body and ancillary-capability sinks plus
-the exact next sequence; `ReceivedPacket` is the already decoded closed helper
-packet union and never owns sensitive bytes. `SendPacket` is the service-built
+`ReceiveRequest` supplies exact sequence and body/right budgets. The configured
+D4 Transport receives directly into its own fixed-capacity locked mapping and
+returns that mapping as the opaque body capability of the already decoded
+`ReceivedPacket`; the packet owns no raw sensitive byte slice, and service
+borrows then destroys the capability on every path. `SendPacket` is the service-built
 closed outbound union with no public constructor. `PolicyRequest` contains only
 the decoded safe operation/identity/revision/manifest/limit metadata;
 `PolicyDecision` is exactly allow or a stable safe rejection code and cannot
@@ -217,6 +219,882 @@ sole owner of packet sequencing, authenticated kernel credentials, request
 correlation, core prepare/renew/revoke/exec state, and terminal cleanup
 disposition. Extensions cannot send an arbitrary packet, advance a sequence,
 manufacture a proof, publish a response, or bypass the core state machine.
+
+### Core contract concrete closure
+
+This section is the implementation authority for every named value in the
+method sets above. It deliberately replaces the earlier prose-only field
+description. The declarations below show the exact field order and field types;
+all fields are private, have no tags, and are immutable after their validating
+constructor returns. `liveValue` is the common zero-sized private marker whose
+methods deny JSON, text, and binary marshal/unmarshal and render every `fmt`
+verb as `credentialhelper.live[redacted]`. No request or result contains a raw
+`[]byte`, path string, descriptor number, PID, socket address, environment,
+proof token, `any`, map, or callback.
+
+The shared concrete values are:
+
+```go
+type requestCorrelation struct {
+	requestID      [16]byte
+	identityDigest [32]byte
+	revision       uint64
+}
+
+type CoreGenerations struct {
+	boot    credentialprotocol.SafeID
+	helper  credentialprotocol.SafeID
+	job     credentialprotocol.SafeID
+	monitor credentialprotocol.SafeID
+	mount   credentialprotocol.SafeID
+	cgroup  credentialprotocol.SafeID
+}
+
+type RelativePathCapability struct {
+	liveValue
+	length uint16
+	bytes  [credentialprotocol.MaxRelativePathBytes]byte
+}
+
+type ManifestCapability struct {
+	liveValue
+	count   uint16
+	records [credentialprotocol.MaxHelperBindings]manifestRecord
+}
+
+type manifestRecord struct {
+	bindingID         credentialprotocol.SafeID
+	mode              credentialprotocol.DeliveryMode
+	target            RelativePathCapability
+	declaredFileBytes uint32
+	fileSHA256        [32]byte
+}
+
+type ExecPlanCapability struct {
+	liveValue
+	state *execPlanCapabilityState
+}
+
+type execPlanCapabilityState struct {
+	encodedLength uint32
+	sha256        [32]byte
+	canonical     [credentialprotocol.MaxHelperExecPlanBytes]byte
+	destroyed     bool
+}
+
+type CorePreparationCapability struct { liveValue; digest [32]byte }
+type CorePreparedCapability struct    { liveValue; digest [32]byte }
+type CoreExecutionCapability struct   { liveValue; digest [32]byte }
+type CoreCleanupCapability struct     { liveValue; digest [32]byte }
+```
+
+`NewRelativePathCapability(path string) (RelativePathCapability, error)` is the
+only public capability constructor. It accepts a present canonical relative
+path under the exact `credentialprotocol` grammar; empty is rejected because a
+`CoreFileRequest` always represents file mode. `Len() uint16` returns the exact
+canonical byte length. `CopyTo(destination []byte) (int, error)` succeeds only
+when `len(destination)` is exactly `Len`, copies without aliasing, and returns
+that exact count. On nil, short, long, or otherwise failed destinations it
+returns zero and clears `destination[:cap(destination)]`; there is no partial
+success. Value copies are independent opaque copies and expose no string or
+owned byte slice. Optional paths remain a manifest-codec concern: non-file
+records use the zero capability, while every file record requires a nonzero
+capability.
+
+`ManifestCapability` is constructed by
+`NewManifestCapability([]credentialprotocol.HelperBindingManifestRecord)
+(ManifestCapability, error)` after the canonical codec validator succeeds. The
+public constructor is required so trusted D4 Transport can project safe decoded
+metadata; it mints no live/resource authority. It snapshots at most 16 records
+into the fixed array. Its public methods are `Count() uint16`,
+`Binding(index uint16) (credentialprotocol.SafeID,
+credentialprotocol.DeliveryMode, RelativePathCapability, uint32, [32]byte,
+bool)`, and `SHA256() [32]byte`; every return is a value copy. An out-of-range
+index returns zero values and false. `ExecPlanCapability` is constructed by
+`NewExecPlanCapability(credentialprotocol.HelperExecPlan)
+(ExecPlanCapability, error)` from an already canonical at-most-64-KiB plan. The
+public constructor permits trusted D4 in-place decode to hand safe plan metadata
+to the service; helper exec plans contain no credential binding bytes.
+Its methods are `EncodedLength() uint32`, `SHA256() [32]byte`, and
+`CopyCanonicalTo(credentialmemory.CredentialSink) error`. Copy is exact and
+all-or-error; it never returns bytes. Value copies share destruction state.
+The service destroys the complete fixed capacity after `BeginExec` returns on
+every path, and any later method returns the stable destroyed error.
+
+The four core capability digests are domain-separated SHA-256 values over the
+exact request correlation, boot/helper/job generations, and helper boot nonce.
+Their constructors are private to `credentialhelper`; D4 receives and echoes
+them but cannot mint them. A zero, changed, cross-request, or cross-generation
+capability is rejected before a core transition. They are process-local
+correlation capabilities, not proof IDs and never enter HL8P or durable state.
+
+The exact core request/result layouts are:
+
+```go
+type CorePrepareRequest struct {
+	liveValue
+	correlation     requestCorrelation
+	generations     CoreGenerations // boot, helper, and job present; others zero
+	expiresUnixNano int64
+	fixedLimitSetID credentialprotocol.SafeID
+	manifest        ManifestCapability
+	manifestSHA256  [32]byte
+	preparation     CorePreparationCapability
+	prepared        CorePreparedCapability
+	cleanup         CoreCleanupCapability
+}
+
+type CoreFileRequest struct {
+	liveValue
+	correlation requestCorrelation
+	job         credentialprotocol.SafeID
+	preparation CorePreparationCapability
+	bindingID   credentialprotocol.SafeID
+	bindingIndex uint16
+	target      RelativePathCapability
+	fileLength  uint32
+	fileSHA256  [32]byte
+}
+
+type CoreCommitRequest struct {
+	liveValue
+	correlation      requestCorrelation
+	job              credentialprotocol.SafeID
+	preparation      CorePreparationCapability
+	manifestSHA256   [32]byte
+	transactionSHA256 [32]byte
+	prepared         CorePreparedCapability
+}
+
+type CorePreparedResult struct {
+	liveValue
+	generations     CoreGenerations // all six present
+	expiresUnixNano int64
+	bindingCount    uint16
+	manifestSHA256  [32]byte
+	transactionSHA256 [32]byte
+	prepared        CorePreparedCapability
+}
+
+type CoreExecRequest struct {
+	liveValue
+	correlation         requestCorrelation
+	generations         CoreGenerations // all six present
+	fixedLimitSetID     credentialprotocol.SafeID
+	execBindingID       credentialprotocol.SafeID
+	privateLength       uint32
+	privateSHA256       [32]byte
+	execBodyLength      uint32
+	execBodySHA256      [32]byte
+	plan                ExecPlanCapability
+	prepared            CorePreparedCapability
+	execution           CoreExecutionCapability
+	cleanup             CoreCleanupCapability
+}
+
+type CoreRenewRequest struct {
+	liveValue
+	correlation     requestCorrelation
+	generations     CoreGenerations // all six present
+	expiresUnixNano int64
+	prepared        CorePreparedCapability
+}
+
+type CoreRevokeRequest struct {
+	liveValue
+	correlation requestCorrelation
+	generations CoreGenerations // all six present
+	reason      credentialprotocol.RevokeReason
+	prepared    CorePreparedCapability
+	cleanup     CoreCleanupCapability
+}
+
+type CoreInspectRequest struct {
+	liveValue
+	identityDigest [32]byte
+	revision       uint64
+	generations    CoreGenerations // all six present
+	prepared       CorePreparedCapability
+}
+
+type CoreOutputRequest struct {
+	liveValue
+	correlation requestCorrelation
+	job         credentialprotocol.SafeID
+	execution   CoreExecutionCapability
+	kind        credentialprotocol.HelperExecStreamKind // stdout or stderr only
+	offset      uint64
+	capacity    uint32
+}
+
+type CoreOutputResult struct {
+	liveValue
+	execution  CoreExecutionCapability
+	kind       credentialprotocol.HelperExecStreamKind
+	offset     uint64
+	byteCount  uint32
+	sha256     [32]byte
+	eof        bool
+	truncated  bool
+}
+
+type CoreExecExitCategory uint8
+const (
+	CoreExecExitExited   CoreExecExitCategory = 1
+	CoreExecExitSignaled CoreExecExitCategory = 2
+	CoreExecExitSetupFailed CoreExecExitCategory = 3
+)
+
+type CoreExecResult struct {
+	liveValue
+	execution             CoreExecutionCapability
+	exitCategory          CoreExecExitCategory
+	exitCode              int32
+	stdinBytes            uint64
+	stdinSHA256           [32]byte
+	stdinTranscriptSHA256 [32]byte
+	stdoutBytes           uint64
+	stdoutSHA256          [32]byte
+	stdoutTruncated       bool
+	stderrBytes           uint64
+	stderrSHA256          [32]byte
+	stderrTruncated       bool
+	execTransactionSHA256 [32]byte
+}
+
+type CoreCleanupCategory uint8
+const (
+	CoreCleanupComplete       CoreCleanupCategory = 1
+	CoreCleanupRetryRequired  CoreCleanupCategory = 2
+	CoreCleanupStopVMRequired CoreCleanupCategory = 3
+)
+
+type CoreCleanupResult struct {
+	liveValue
+	cleanup         CoreCleanupCapability
+	category        CoreCleanupCategory
+	authorityAbsent bool
+	resourcesAbsent bool
+}
+
+type CoreInspectionState uint8
+const (
+	CoreInspectionPreparing CoreInspectionState = 1
+	CoreInspectionPrepared  CoreInspectionState = 2
+	CoreInspectionExecuting CoreInspectionState = 3
+	CoreInspectionRevoking  CoreInspectionState = 4
+	CoreInspectionAbsent    CoreInspectionState = 5
+)
+
+type CoreInspection struct {
+	liveValue
+	prepared          CorePreparedCapability
+	state             CoreInspectionState
+	generations       CoreGenerations
+	expiresUnixNano   int64
+	activeExecutions  uint16
+	authorityPresent  bool
+	resourcesPresent  bool
+}
+```
+
+The exact validating constructors are `NewCorePrepareRequest`,
+`NewCoreFileRequest`, `NewCoreCommitRequest`, `NewCoreExecRequest`,
+`NewCoreRenewRequest`, `NewCoreRevokeRequest`, `NewCoreInspectRequest`, and
+`NewCoreOutputRequest`; each takes its private fields in declaration order and
+returns `(value, error)`. `NewCoreGenerations` constructs the exported opaque
+projection `CoreGenerations`, whose only methods are `Boot`, `Helper`, `Job`,
+`Monitor`, `Mount`, and `Cgroup`, each returning a
+`credentialprotocol.SafeID` value copy. Constructors reject unused nonzero
+generations and return the complete zero value on error.
+
+```go
+func NewCoreGenerations(
+	boot, helper, job, monitor, mount, cgroup credentialprotocol.SafeID,
+) (CoreGenerations, error)
+func NewCorePrepareRequest(
+	requestID [16]byte, identityDigest [32]byte, revision uint64,
+	generations CoreGenerations, expiresUnixNano int64,
+	fixedLimitSetID credentialprotocol.SafeID, manifest ManifestCapability,
+	manifestSHA256 [32]byte, preparation CorePreparationCapability,
+	prepared CorePreparedCapability, cleanup CoreCleanupCapability,
+) (CorePrepareRequest, error)
+func NewCoreFileRequest(
+	requestID [16]byte, identityDigest [32]byte, revision uint64,
+	job credentialprotocol.SafeID, preparation CorePreparationCapability,
+	bindingID credentialprotocol.SafeID, bindingIndex uint16,
+	target RelativePathCapability, fileLength uint32, fileSHA256 [32]byte,
+) (CoreFileRequest, error)
+func NewCoreCommitRequest(
+	requestID [16]byte, identityDigest [32]byte, revision uint64,
+	job credentialprotocol.SafeID, preparation CorePreparationCapability,
+	manifestSHA256, transactionSHA256 [32]byte,
+	prepared CorePreparedCapability,
+) (CoreCommitRequest, error)
+func NewCoreExecRequest(
+	requestID [16]byte, identityDigest [32]byte, revision uint64,
+	generations CoreGenerations, fixedLimitSetID, execBindingID credentialprotocol.SafeID,
+	privateLength uint32, privateSHA256 [32]byte,
+	execBodyLength uint32, execBodySHA256 [32]byte,
+	plan ExecPlanCapability, prepared CorePreparedCapability,
+	execution CoreExecutionCapability, cleanup CoreCleanupCapability,
+) (CoreExecRequest, error)
+func NewCoreRenewRequest(
+	requestID [16]byte, identityDigest [32]byte, revision uint64,
+	generations CoreGenerations, expiresUnixNano int64,
+	prepared CorePreparedCapability,
+) (CoreRenewRequest, error)
+func NewCoreRevokeRequest(
+	requestID [16]byte, identityDigest [32]byte, revision uint64,
+	generations CoreGenerations, reason credentialprotocol.RevokeReason,
+	prepared CorePreparedCapability, cleanup CoreCleanupCapability,
+) (CoreRevokeRequest, error)
+func NewCoreInspectRequest(
+	identityDigest [32]byte, revision uint64, generations CoreGenerations,
+	prepared CorePreparedCapability,
+) (CoreInspectRequest, error)
+func NewCoreOutputRequest(
+	requestID [16]byte, identityDigest [32]byte, revision uint64,
+	job credentialprotocol.SafeID, execution CoreExecutionCapability,
+	kind credentialprotocol.HelperExecStreamKind, offset uint64, capacity uint32,
+) (CoreOutputRequest, error)
+```
+
+D4 must be able to return results without gaining mint authority. The service
+therefore pre-mints every nonzero `CorePreparationCapability`,
+`CorePreparedCapability`, `CoreExecutionCapability`, and
+`CoreCleanupCapability`, places it in the initiating request above, and records
+it as issued in its private one-shot ledger. D4 obtains only value copies through
+the request accessors and must return the matching value unchanged through:
+
+```go
+func NewCorePreparedResult(
+	prepared CorePreparedCapability, generations CoreGenerations,
+	expiresUnixNano int64, bindingCount uint16,
+	manifestSHA256, transactionSHA256 [32]byte,
+) (CorePreparedResult, error)
+func NewCoreOutputResult(
+	execution CoreExecutionCapability,
+	kind credentialprotocol.HelperExecStreamKind, offset uint64,
+	byteCount uint32, sha256 [32]byte, eof, truncated bool,
+) (CoreOutputResult, error)
+func NewCoreExecResult(
+	execution CoreExecutionCapability,
+	exitCategory CoreExecExitCategory, exitCode int32,
+	stdinBytes uint64, stdinSHA256, stdinTranscriptSHA256 [32]byte,
+	stdoutBytes uint64, stdoutSHA256 [32]byte, stdoutTruncated bool,
+	stderrBytes uint64, stderrSHA256 [32]byte, stderrTruncated bool,
+	execTransactionSHA256 [32]byte,
+) (CoreExecResult, error)
+func NewCoreCleanupResult(
+	cleanup CoreCleanupCapability, category CoreCleanupCategory,
+	authorityAbsent, resourcesAbsent bool,
+) (CoreCleanupResult, error)
+func NewCoreInspection(
+	prepared CorePreparedCapability, state CoreInspectionState,
+	generations CoreGenerations, expiresUnixNano int64,
+	activeExecutions uint16, authorityPresent, resourcesPresent bool,
+) (CoreInspection, error)
+```
+
+These public result constructors validate shape but do not mint: outside code
+can construct only the zero capability or echo a nonzero capability it received
+from the service. The service accepts a result only when the capability equals
+the exact issued value in constant time, is in the expected transition, and is
+still unconsumed. A zero, bit-changed, wrong-kind, cross-request,
+cross-generation, or already-consumed capability is a contract violation. A
+successful commit, wait, complete cleanup, or inspection consumes the exact
+one-shot ledger entry as appropriate; `retry_required` leaves only its cleanup
+capability live for the next reinspection and every other capability is dead.
+Rollback and Cancel return the cleanup capability retained by their owning
+`CorePreparation` or `CoreExecution`. Capability digests are private
+domain-separated SHA-256 values over kind, exact request correlation,
+boot/helper/job generations, and boot nonce. They never enter a wire digest.
+
+Every value has one accessor per field with the exported field spelling.
+Accessors return scalar, fixed-array, or opaque value copies only. In
+particular, request accessors include `RequestID`, `IdentityDigest`, `Revision`,
+`Generations`, `ExpiresUnixNano`, `FixedLimitSetID`, `Manifest`,
+`ManifestSHA256`, and the applicable `Preparation`, `Prepared`, `Execution`, or
+`Cleanup`; field-specific accessors use the exact names in the declarations.
+Result accessors similarly expose their safe scalar/digest metadata and echo
+capability. No accessor returns a string, slice, pointer to internal state,
+generic body, or live right.
+
+The exact accessor method sets, in addition to `String`, `GoString`, `Format`,
+and the fail-closed marshal/unmarshal methods supplied by `liveValue`, are:
+
+```text
+CoreGenerations: Boot, Helper, Job, Monitor, Mount, Cgroup -> SafeID
+CorePrepareRequest: RequestID->[16]byte, IdentityDigest->[32]byte,
+  Revision->uint64, Generations->CoreGenerations, ExpiresUnixNano->int64,
+  FixedLimitSetID->SafeID, Manifest->ManifestCapability,
+  ManifestSHA256->[32]byte, Preparation->CorePreparationCapability,
+  Prepared->CorePreparedCapability, Cleanup->CoreCleanupCapability
+CoreFileRequest: RequestID, IdentityDigest, Revision, Job->SafeID,
+  Preparation->CorePreparationCapability, BindingID->SafeID,
+  BindingIndex->uint16, Target->RelativePathCapability, FileLength->uint32,
+  FileSHA256->[32]byte
+CoreCommitRequest: RequestID, IdentityDigest, Revision, Job->SafeID,
+  Preparation->CorePreparationCapability, ManifestSHA256->[32]byte,
+  TransactionSHA256->[32]byte, Prepared->CorePreparedCapability
+CorePreparedResult: Generations->CoreGenerations, ExpiresUnixNano->int64,
+  BindingCount->uint16, ManifestSHA256->[32]byte,
+  TransactionSHA256->[32]byte, Prepared->CorePreparedCapability
+CoreExecRequest: RequestID, IdentityDigest, Revision,
+  Generations->CoreGenerations, FixedLimitSetID->SafeID, ExecBindingID->SafeID,
+  PrivateLength->uint32, PrivateSHA256->[32]byte, ExecBodyLength->uint32,
+  ExecBodySHA256->[32]byte, Plan->ExecPlanCapability,
+  Prepared->CorePreparedCapability, Execution->CoreExecutionCapability,
+  Cleanup->CoreCleanupCapability
+CoreRenewRequest: RequestID, IdentityDigest, Revision,
+  Generations->CoreGenerations, ExpiresUnixNano->int64,
+  Prepared->CorePreparedCapability
+CoreRevokeRequest: RequestID, IdentityDigest, Revision,
+  Generations->CoreGenerations, Reason->RevokeReason,
+  Prepared->CorePreparedCapability, Cleanup->CoreCleanupCapability
+CoreInspectRequest: IdentityDigest, Revision, Generations->CoreGenerations,
+  Prepared->CorePreparedCapability
+CoreOutputRequest: RequestID, IdentityDigest, Revision, Job->SafeID,
+  Execution->CoreExecutionCapability, Kind->HelperExecStreamKind,
+  Offset->uint64, Capacity->uint32
+CoreOutputResult: Execution->CoreExecutionCapability,
+  Kind->HelperExecStreamKind, Offset->uint64, ByteCount->uint32,
+  SHA256->[32]byte, EOF->bool, Truncated->bool
+CoreExecResult: Execution->CoreExecutionCapability,
+  ExitCategory->CoreExecExitCategory, ExitCode->int32, StdinBytes->uint64,
+  StdinSHA256->[32]byte, StdinTranscriptSHA256->[32]byte,
+  StdoutBytes->uint64, StdoutSHA256->[32]byte, StdoutTruncated->bool,
+  StderrBytes->uint64, StderrSHA256->[32]byte, StderrTruncated->bool,
+  ExecTransactionSHA256->[32]byte
+CoreCleanupResult: Cleanup->CoreCleanupCapability,
+  Category->CoreCleanupCategory, AuthorityAbsent->bool, ResourcesAbsent->bool
+CoreInspection: Prepared->CorePreparedCapability, State->CoreInspectionState,
+  Generations->CoreGenerations, ExpiresUnixNano->int64,
+  ActiveExecutions->uint16, AuthorityPresent->bool, ResourcesPresent->bool
+```
+
+Where a return type is omitted for the repeated `RequestID`, `IdentityDigest`,
+or `Revision` spelling, it is exactly `[16]byte`, `[32]byte`, or `uint64`
+respectively. There are no other public methods. `CorePreparedResult.Generations`
+is D4-produced, validator-bounded safe observation metadata; it is not authority.
+`NewCoreGenerations` merely validates safe IDs and cannot mint a core capability.
+The independently service-minted `Prepared` value must be returned unchanged
+and is the authority-bearing correlation checked against the one-shot ledger.
+
+`CoreOutputRequest.capacity` is 1..64 KiB and kind is stdout or stderr; stdin is
+rejected. `ReadOutput` writes at most that exact capacity into the supplied sink
+and `byteCount` must equal the sink write. EOF has count zero and SHA-256 of
+empty bytes. `WriteStdin` accepts the already-correlated execution, requires
+offset continuity, accepts 1..64 KiB for non-EOF, and accepts an empty view only
+for the unique EOF. The borrowed view is valid only for that call and cannot be
+retained.
+
+The `BeginExec` signature above is a deliberate correction to the prose-only
+seam. Its borrowed view is the sole private HTTP-binding input and remains
+excluded from `CoreExecRequest`. The interface value is nil if and only if
+`privateLength` is zero and `privateSHA256` is zero. A typed-nil view is rejected
+before any method call. For nonzero private length, a non-nil view whose `Len()`
+exactly equals `privateLength` is mandatory and its digest was already checked
+by the service. Core may synchronously call `CopyTo` or `WriteTo` only during
+`BeginExec`; it must not retain or use the view after return. The service full-
+capacity wipes and destroys the source on every result, including validation
+and Core errors. A zero/nonzero mismatch fails before D4 can create a pipe,
+child, gate, or pidfd.
+
+### Transport packet concrete closure
+
+Transport operates on closed capabilities, never generic datagrams:
+
+```go
+type ReceivedCapabilityKind uint8
+const (
+	ReceivedCapabilityAgentPIDFD ReceivedCapabilityKind = 1
+	ReceivedCapabilitySSHConnection ReceivedCapabilityKind = 2
+)
+type ReceivedCapability interface {
+	Kind() ReceivedCapabilityKind
+	SHA256() [32]byte
+	Close(context.Context) error
+}
+type ReceivedBodyCapability interface {
+	Len() uint32
+	SHA256() [32]byte
+	Borrow(context.Context, func(credentialmemory.BorrowedView) error) error
+	Destroy(context.Context) error
+}
+type ReceivedKernelCredential struct {
+	liveValue
+	pid uint32
+	uid uint32
+	gid uint32
+}
+type ReceiveRequest struct {
+	liveValue
+	nextSequence uint64
+	maximumBodyBytes uint32
+	expectedRights uint32
+	state *receiveRequestState
+}
+type ReceivedPacket struct {
+	liveValue
+	header credentialprotocol.HelperPacketHeader
+	arm receivedPacketArm
+	credential ReceivedKernelCredential
+	body ReceivedBodyCapability
+	right ReceivedCapability
+}
+type SendPacket struct {
+	liveValue
+	header credentialprotocol.HelperPacketHeader
+	arm sendPacketArm
+	right ReceivedCapability
+}
+```
+
+The only receive constructor and exact Transport accessor set are:
+
+```go
+func NewReceiveRequest(nextSequence uint64, maximumBodyBytes,
+	expectedRights uint32) (ReceiveRequest, error)
+func (r ReceiveRequest) NextSequence() uint64
+func (r ReceiveRequest) MaximumBodyBytes() uint32
+func (r ReceiveRequest) ExpectedRights() uint32
+```
+
+Maximum body is 0..72 KiB and expected rights is exactly zero or one, retained
+as `uint32` so actual kernel cardinality is never narrowed. `state` is a private
+one-shot atomic consumed latch; all value copies share it. Exactly one
+`NewReceived<Arm>Packet` call may seal it. Reuse returns `ContractOwnership`.
+
+D4 Transport owns one fixed-capacity anonymous locked mapping per receive slot
+and passes that mapping directly to its `recvmsg` adapter as the datagram
+destination. No `credentialmemory.CredentialSink`, ordinary heap `[]byte`, or
+second mutable payload slot is used. After exact datagram length, truncation,
+header, credentials, ancillary count, and safe metadata decode in that mapping,
+D4 wraps only the body subrange of that same full-datagram mapping as
+`ReceivedBodyCapability`. Its `Len`, `SHA256`, and `Borrow` address body bytes
+only; no header or ancillary storage is borrowable by Core. `Borrow` supplies a scoped
+`credentialmemory.BorrowedView`, and `Destroy` full-capacity overwrites,
+unlocks, and unmaps exactly once. Value copies share borrow/destroy state;
+destroy waits for an active borrow and later borrow/destroy returns the stable
+destroyed result. The callback is a method of the private live capability, not
+caller-selected request/result behavior; service supplies only its fixed
+StageFile/BeginExec/WriteStdin closure. It is fixed package code, never a
+caller-supplied callback, and cannot escape or retain the view. All safe
+metadata parsing from the locked mapping completes before arm construction.
+
+Configured D4 Transport is explicitly the sole trusted issuer of
+`ReceivedCapability` and `ReceivedBodyCapability`. These interfaces are
+publicly implementable only for that injected boundary; helper code does not
+claim it can recognize an implementation from their methods. Service validates
+typed nil, body bound/length/digest, closed right kind, nonzero right digest,
+arm cardinality, correlation, and ownership. A malicious configured Transport
+is inside the guest helper TCB.
+`ReceivedCapabilityAgentPIDFD` is legal only on inbound bootstrap and never on
+`SendPacket`. `ReceivedCapabilitySSHConnection` is legal only on outbound SSH
+accepted and never on a received packet. Every other packet has no right.
+
+`NewReceivedKernelCredential(pid, uid, gid uint32)
+(ReceivedKernelCredential, error)` is the sole public constructor for one
+kernel observation. PID is 1..`math.MaxInt32`, the positive Linux `pid_t`
+range; UID/GID are exact unsigned kernel
+values, including zero. It has private fields and no PID/UID/GID or generic
+accessor; formatting and serialization fail closed. D4 constructs it only from
+an exact-size kernel `struct ucred`. Service accesses private fields to compare
+the already-pinned expected role identity and enforce exact PID1, controller,
+or agent role plus distinct-role inequality. It is equality metadata, never
+authority or durable identity.
+
+Received arms are private-field non-JSON values named `ReceivedBootstrap`,
+`ReceivedAgentHello`, `ReceivedPrepareBegin`, `ReceivedPrepareFile`,
+`ReceivedPrepareCommit`, `ReceivedRenew`, `ReceivedRevoke`, `ReceivedExec`,
+`ReceivedExecPrivate`, `ReceivedExecStream`, `ReceivedExecCredit`, and
+`ReceivedCloseNotify`. They contain only the corresponding safe codec metadata;
+sensitive payloads stay in the locked body capability, paths become `RelativePathCapability`,
+and plans become `ExecPlanCapability`. Bootstrap numeric identity and renew
+proof strings are accepted transiently and stored only as private equality
+digests with no numeric/string accessor.
+
+D4 constructs the union only through:
+
+```go
+func NewReceivedBootstrapPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	uint32, uint32, uint32, credentialprotocol.SafeID,
+	credentialprotocol.SafeID, ReceivedCapability) (ReceivedPacket, error)
+func NewReceivedAgentHelloPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	[32]byte, credentialprotocol.SafeID, credentialprotocol.SafeID,
+	[32]byte) (ReceivedPacket, error)
+func NewReceivedPrepareBeginPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	credentialprotocol.HelperPrepareBeginBody, ManifestCapability) (ReceivedPacket, error)
+func NewReceivedPrepareFilePacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	uint64, uint16, uint32, [32]byte) (ReceivedPacket, error)
+func NewReceivedPrepareCommitPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	credentialprotocol.HelperPrepareCommitBody) (ReceivedPacket, error)
+func NewReceivedRenewPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	uint64, int64, credentialprotocol.SafeID) (ReceivedPacket, error)
+func NewReceivedRevokePacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	credentialprotocol.HelperRevokeBody) (ReceivedPacket, error)
+func NewReceivedExecPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	uint64, credentialprotocol.SafeID, uint32, [32]byte,
+	ExecPlanCapability) (ReceivedPacket, error)
+func NewReceivedExecPrivatePacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	uint64, uint32, [32]byte) (ReceivedPacket, error)
+func NewReceivedExecStreamPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	uint64, credentialprotocol.HelperExecStreamKind,
+	credentialprotocol.HelperExecStreamFlags, uint64, uint32, [32]byte) (ReceivedPacket, error)
+func NewReceivedExecCreditPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	credentialprotocol.HelperExecCreditBody) (ReceivedPacket, error)
+func NewReceivedCloseNotifyPacket(ReceiveRequest, credentialprotocol.HelperPacketHeader,
+	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
+	credentialprotocol.HelperCloseNotifyBody) (ReceivedPacket, error)
+```
+
+The last agent-hello digest is the independently validated canonical process
+descriptor digest. Prepare-file, exec-private, and exec-stream constructors
+bind their sensitive payload in the body capability and retain metadata only.
+The first `uint32` after `ReceivedKernelCredential` is the actual credentials
+record count and must be exactly one. The `uint32` after the body is actual
+rights count; only bootstrap's
+final argument may be a non-nil agent-pidfd right. Each constructor atomically
+seals its first request and validates header/type/sequence/body length,
+identity/nonce, body length/digest, actual credential/right counts, closed
+fields, right kind, and cardinality. Service independently compares the private
+credential with its exact pinned role before dispatch. Sensitive constructors recompute and compare exact
+private payload length/digest in place before transfer. Failure destroys the
+full body capability and closes the right. Success makes `ReceivedPacket` owner
+of both the exact body mapping and right.
+
+`ReceivedPacket` public methods are only `Type()
+credentialprotocol.PacketType`, `Header() credentialprotocol.HelperPacketHeader`, and the
+exact typed arms `Bootstrap() (ReceivedBootstrap,bool)`, `AgentHello()`,
+`PrepareBegin()`, `PrepareFile()`, `PrepareCommit()`, `Renew()`, `Revoke()`,
+`Exec()`, `ExecPrivate()`, `ExecStream()`, `ExecCredit()`, and `CloseNotify()`
+with analogous `(Received<Arm>,bool)` results. Each arm has only value-copy
+accessors corresponding in order to its constructor arguments after the
+header. Wrong-arm access is zero/false. Transport owns a right until a valid
+return; service owns the private credential/body/right fields thereafter. There
+is no public credential, body, or right accessor; only code in
+`credentialhelper` performs comparison, borrow, transfer, wipe, or close. The
+service borrows a sensitive
+body directly into the matching Core call, then destroys it on every success,
+error, rejection, cancellation, or panic path. Non-sensitive bodies are
+destroyed immediately after their safe arm is constructed. No private payload
+is copied to an ordinary heap allocation.
+
+`SendPacket` has no public constructor. Service uses only
+`newHelperReadyPacket`, `newBootstrapAckPacket`, `newAgentHelloAckPacket`,
+`newSSHAcceptedPacket`, `newExecCreditPacket`, `newExecStreamPacket`,
+`newResponsePacket`, `newEventPacket`, and `newCloseNotifyPacket`, all delegated
+through private `newSendPacket`. Its exact Transport method set is
+`Type() credentialprotocol.PacketType`, `Header()
+credentialprotocol.HelperPacketHeader`, `EncodedBodyLength() uint32`,
+`BodySHA256() [32]byte`,
+`WriteCanonicalBody(credentialmemory.CredentialSink) error`, `RightsCount()
+uint32`, and `Right() ReceivedCapability`. No generic arm or bytes are exposed.
+The configured Transport is the sole consumer of `Right`; it exists only for
+the D4 `sendmsg` adapter and exposes no credential-body capability to an
+extension. `WriteCanonicalBody` writes directly into Transport's one fixed
+locked transmit slot with no ordinary heap body staging. That slot is
+full-capacity wiped after committed send and every error. Send uses values
+synchronously and retains nothing. Service owns body/right
+until nil return; error wipes and closes. Only SSH accepted has one right.
+Wrong direction/sequence/identity/nonce, typed nil, unknown arm, or matrix
+mismatch fails before I/O.
+
+### Policy concrete closure
+
+```go
+type PolicyOperation uint8
+const (
+	PolicyOperationPrepare PolicyOperation = 1
+	PolicyOperationExec    PolicyOperation = 2
+	PolicyOperationRenew   PolicyOperation = 3
+	PolicyOperationRevoke  PolicyOperation = 4
+	PolicyOperationInspect PolicyOperation = 5
+)
+
+type PolicyRejectionCode uint8
+const (
+	PolicyRejectionMalformed          PolicyRejectionCode = 1
+	PolicyRejectionIdentityMismatch   PolicyRejectionCode = 2
+	PolicyRejectionRevisionStale      PolicyRejectionCode = 3
+	PolicyRejectionExpired            PolicyRejectionCode = 4
+	PolicyRejectionResourceLimit      PolicyRejectionCode = 5
+	PolicyRejectionManifestMismatch   PolicyRejectionCode = 6
+	PolicyRejectionGenerationMismatch PolicyRejectionCode = 7
+	PolicyRejectionOperationDenied    PolicyRejectionCode = 8
+)
+
+type PolicyRequest struct {
+	liveValue
+	operation        PolicyOperation
+	correlation      requestCorrelation
+	generations      CoreGenerations
+	expiresUnixNano  int64
+	fixedLimitSetID  credentialprotocol.SafeID
+	manifest         ManifestCapability
+	manifestSHA256   [32]byte
+	execBodyBytes    uint32
+	execBodySHA256   [32]byte
+	privateBytes     uint32
+	privateSHA256    [32]byte
+}
+
+type PolicyDecision struct {
+	liveValue
+	allow         bool
+	rejectionCode PolicyRejectionCode
+}
+
+type PolicyDescriptor struct {
+	liveValue
+	id     credentialprotocol.SafeID
+	digest [32]byte
+}
+```
+
+The exact constructor and accessor set is:
+
+```go
+func NewPolicyRequest(operation PolicyOperation, requestID [16]byte,
+	identityDigest [32]byte, revision uint64, generations CoreGenerations,
+	expiresUnixNano int64, fixedLimitSetID credentialprotocol.SafeID,
+	manifest ManifestCapability, manifestSHA256 [32]byte,
+	execBodyBytes uint32, execBodySHA256 [32]byte,
+	privateBytes uint32, privateSHA256 [32]byte) (PolicyRequest, error)
+func (r PolicyRequest) Operation() PolicyOperation
+func (r PolicyRequest) RequestID() [16]byte
+func (r PolicyRequest) IdentityDigest() [32]byte
+func (r PolicyRequest) Revision() uint64
+func (r PolicyRequest) Generations() CoreGenerations
+func (r PolicyRequest) ExpiresUnixNano() int64
+func (r PolicyRequest) FixedLimitSetID() credentialprotocol.SafeID
+func (r PolicyRequest) Manifest() ManifestCapability
+func (r PolicyRequest) ManifestSHA256() [32]byte
+func (r PolicyRequest) ExecBodyBytes() uint32
+func (r PolicyRequest) ExecBodySHA256() [32]byte
+func (r PolicyRequest) PrivateBytes() uint32
+func (r PolicyRequest) PrivateSHA256() [32]byte
+```
+
+Prepare requires a nonempty manifest, positive expiry and exact manifest
+digest; both exec/private pairs are zero. Exec requires the exact prepared
+manifest, a 1..72-KiB canonical exec body with nonzero digest, and either a
+zero/zero private pair or 1..64 KiB with nonzero digest. Renew requires positive
+expiry and empty manifest/body pairs. Revoke and inspect require empty expiry,
+manifest, and body pairs. Packet operations require nonzero request ID and
+identity; inspect requires zero request ID and nonzero identity. Every operation
+requires positive revision, its operation-required safe generations, and exact
+`helper-limits-v1`; unused fields are exactly zero.
+
+`newPolicyAllowDecision()` and `newPolicyRejectionDecision(code)` are the sole
+production decision constructors. Allow is exactly `allow=true, code=0`;
+rejection is exactly `allow=false` plus one known nonzero code. Every other
+combination is invalid. `Allowed()` and `RejectionCode()` are the only decision
+accessors. The sole production implementation is returned by
+`NewHelperPolicy() Policy`; it has no options and is deny-by-default. It allows
+only already-correlated canonical metadata whose operation-specific shape,
+manifest, body/private bounds, and fixed limit set equal `helper-limits-v1`.
+Policy can return only malformed, resource-limit, manifest-mismatch, or
+operation-denied. The service owns identity, next-revision, generation, and
+expiry comparison before calling Policy and constructs identity-mismatch,
+revision-stale, generation-mismatch, or expired decisions without a Policy
+call. The first failing service check is identity, revision, generation, then
+expiry; the first Policy check is closed operation, shape, fixed limits, then
+manifest. Neither service nor Policy reads a clock at this seam: a later
+clock-owning state-machine slice supplies the exact expiry-admitted fact.
+
+The helper descriptor is constructed only by `newHelperPolicyDescriptor()` and
+is exactly ID `helper-policy-v1` plus
+`SHA256(opaque16("hal/l8/process-policy/v1") ||
+opaque16("helper-policy-v1"))`. `ID()` and `SHA256()` return safe value copies.
+Unknown ID, zero/wrong digest, a descriptor that changes across two reads, nil,
+or typed-nil policy is constructor failure. Authorization errors never become
+allow; a returned invalid decision or non-nil error is a stable policy contract
+failure and closes/revokes the session.
+
+### Core transition and failure matrices
+
+All constructors, validators, dependency checks, return-matrix checks, and
+ownership checks use this closed sanitized error catalog:
+
+```go
+type ContractErrorCode uint8
+const (
+	ContractInvalidArgument ContractErrorCode = 1
+	ContractTypedNil       ContractErrorCode = 2
+	ContractCorrelation    ContractErrorCode = 3
+	ContractTransition     ContractErrorCode = 4
+	ContractCapability     ContractErrorCode = 5
+	ContractOwnership      ContractErrorCode = 6
+	ContractResultMatrix   ContractErrorCode = 7
+	ContractDependency     ContractErrorCode = 8
+	ContractDestroyed      ContractErrorCode = 9
+)
+
+type ContractError struct { liveValue; code ContractErrorCode }
+func (e ContractError) Code() ContractErrorCode
+func (e ContractError) Error() string
+```
+
+`Error` returns only `credential helper contract <canonical-code>` where the
+canonical spellings are `invalid_argument`, `typed_nil`, `correlation`,
+`transition`, `capability`, `ownership`, `result_matrix`, `dependency`, and
+`destroyed`. There is exactly one package sentinel `ErrContract<Spelling>` for
+each code and `ContractError.Is` matches only its own sentinel/code. No error
+contains an index, identifier, digest, generation, candidate type, raw cause,
+or formatted value. Invalid enum/length/bound/zero-required input maps to
+`invalid_argument`; any interface whose dynamic nil-capable value is nil maps
+to `typed_nil`; mismatches and state errors map to the correspondingly named
+codes above. Constructors always return the complete zero value with the exact
+error and do not consume an input capability.
+
+The service calls only these transitions:
+
+```text
+absent -> BeginPrepare -> staging
+staging -> StageFile* in ascending manifest index -> Commit -> prepared
+staging -> Rollback -> absent | cleanup-retry | stop-VM
+prepared -> Renew -> prepared
+prepared -> BeginExec -> executing
+executing -> WriteStdin/ReadOutput* -> Wait -> prepared
+executing -> Cancel -> prepared | cleanup-retry | stop-VM
+prepared/executing/staging -> Revoke -> absent | cleanup-retry | stop-VM
+prepared/retrying -> Inspect -> same state or conservative cleanup escalation
+any terminal service drain -> Close exactly once
+```
+
+There is one preparation and one execution at a time. A repeated identical
+completed request uses service-owned safe result cache metadata and does not
+call Core again. A changed request/capability, stale/gapped revision, invalid
+transition, out-of-order file, stream gap, second EOF, or cross-generation
+value fails before a method call. `retry_required` retains ownership and only
+`Inspect`, `Revoke`, `Rollback`, or `Cancel` may retry; it never recreates.
+`stop_vm_required` is terminal and cannot be downgraded.
+
+`Core`, `Transport`, `Policy`, every returned `CorePreparation` or
+`CoreExecution`, each sink, borrowed view, result builder, extension, and live
+capability uses the common typed-nil rule before any method call. Interface nil
+or typed nil plus nil error is a contract violation. Interface nil plus non-nil
+error is an ordinary safe failure. Non-nil plus non-nil error is a contract
+violation; the service invokes the narrow rollback/cancel/close operation when
+callable, then preserves the stricter cleanup result. A panic is not recovered
+as success. Validation/policy failures perform no Core call. Core failures map
+only to the matching stable HL8P failure code; raw errors and capability values
+are never formatted. Context cancellation stops the caller wait but ownership
+continues under the bounded service cleanup context.
 
 ### Extension contract
 
