@@ -155,6 +155,7 @@ func TestTransportDirectionAndBootSequenceSourceContract(t *testing.T) {
 	for _, required := range []string{
 		"body.StreamKind != credentialprotocol.HelperExecStreamStdin",
 		"arm.streamKind != credentialprotocol.HelperExecStreamStdout && arm.streamKind != credentialprotocol.HelperExecStreamStderr",
+		"sshAccepted.connectionOrdinal > credentialprotocol.SSHAgentRelayMaxLifetimeConnections",
 		"header.Sequence != 0",
 		"header.Sequence != 1",
 		"header.Sequence != 2",

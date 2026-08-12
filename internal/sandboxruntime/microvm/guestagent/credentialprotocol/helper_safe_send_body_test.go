@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -160,6 +161,39 @@ func TestHelperSafeSendBodyWritersDoNotTouchDestinationOnInvalidValue(t *testing
 	}
 }
 
+func TestHelperSSHAcceptedFDWriterConnectionOrdinalBounds(t *testing.T) {
+	digest := sha256.Sum256([]byte("relay capability"))
+	for _, tc := range []struct {
+		name    string
+		ordinal uint8
+		wantErr bool
+	}{
+		{name: "maximum", ordinal: 64},
+		{name: "maximum plus one", ordinal: 65, wantErr: true},
+		{name: "uint8 maximum", ordinal: 255, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := bytes.Repeat([]byte{0xa5}, int(HelperSSHAcceptedFDBodyEncodedLength()))
+			err := EncodeHelperSSHAcceptedFDBodyTo(dst, 1, 0, tc.ordinal, digest)
+			if tc.wantErr {
+				if !errors.Is(err, ErrHelperSafeSendBodyValue) {
+					t.Fatalf("ordinal %d error = %v, want ErrHelperSafeSendBodyValue", tc.ordinal, err)
+				}
+				if !bytes.Equal(dst, bytes.Repeat([]byte{0xa5}, len(dst))) {
+					t.Fatalf("invalid ordinal %d modified destination = %x", tc.ordinal, dst)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ordinal %d rejected: %v", tc.ordinal, err)
+			}
+			if dst[10] != tc.ordinal {
+				t.Fatalf("encoded ordinal = %d, want %d", dst[10], tc.ordinal)
+			}
+		})
+	}
+}
+
 func TestHelperSafeSendBodyWriterSourceHasNoTransientBuffers(t *testing.T) {
 	for _, name := range []string{"helper_safe_send_body.go", "helper_response_body.go", "helper_lifecycle_body.go", "helper_exec_body.go", "helper_primitives.go"} {
 		source, err := os.ReadFile(name)
@@ -190,6 +224,16 @@ func TestHelperSafeSendBodyWriterSourceHasNoTransientBuffers(t *testing.T) {
 				return true
 			})
 		}
+	}
+}
+
+func TestHelperSSHAcceptedFDWriterSourcePinsOrdinalLimit(t *testing.T) {
+	source, err := os.ReadFile("helper_safe_send_body.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), "connectionOrdinal > SSHAgentRelayMaxLifetimeConnections") {
+		t.Fatal("SSH accepted writer does not pin the relay lifetime ordinal limit")
 	}
 }
 

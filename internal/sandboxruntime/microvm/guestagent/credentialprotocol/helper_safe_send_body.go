@@ -48,7 +48,7 @@ func encodeHelperDigestAckBodyTo(dst []byte, digest [32]byte) error {
 }
 
 func EncodeHelperSSHAcceptedFDBodyTo(dst []byte, revision uint64, bindingIndex uint16, connectionOrdinal uint8, relayCapabilitySHA256 [32]byte) error {
-	if revision == 0 || bindingIndex >= MaxHelperBindings || connectionOrdinal == 0 || relayCapabilitySHA256 == ([32]byte{}) {
+	if revision == 0 || bindingIndex >= MaxHelperBindings || connectionOrdinal == 0 || connectionOrdinal > SSHAgentRelayMaxLifetimeConnections || relayCapabilitySHA256 == ([32]byte{}) {
 		return ErrHelperSafeSendBodyValue
 	}
 	if len(dst) != helperSSHAcceptedFDBodyBytes {

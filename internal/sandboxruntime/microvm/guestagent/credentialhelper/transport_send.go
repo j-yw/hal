@@ -162,6 +162,9 @@ func newSendPacket(header credentialprotocol.HelperPacketHeader, arm sendPacketA
 			return SendPacket{}, ErrContractCapability
 		}
 		sshAccepted, ok := arm.(sendSSHAcceptedArm)
+		if ok && (sshAccepted.connectionOrdinal == 0 || sshAccepted.connectionOrdinal > credentialprotocol.SSHAgentRelayMaxLifetimeConnections) {
+			return SendPacket{}, ErrContractInvalidArgument
+		}
 		rightDigest := right.SHA256()
 		if rightDigest == ([32]byte{}) {
 			return SendPacket{}, ErrContractCapability
