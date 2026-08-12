@@ -3743,6 +3743,446 @@ fake files, and cannot be reached from production commands.
 
 ## L8 image source lock, build, and profile ownership
 
+### L8 D2 image-profile concrete closure
+
+This section is the implementation contract for the D2 image/profile slice. It
+closes the schema, validation, resolver, lease, and Firecracker seams before a
+real L8 image exists. D2 is schema, pure validation, opaque issuance/matching, guards, and fakes only.
+D6 consumes only the opaque profile and lease. D7 owns real source-lock contents, building, inspection, reproducibility, and live issuance.
+No D2 test downloads a source, runs a builder, inspects an image,
+opens KVM, or mints a claim from a label.
+
+The profile identifier is exact:
+
+```go
+const ImageProfileL8ProductionCredentials = "l8-production-credentials-v1"
+```
+
+The additive schema/catalog identifiers are exact:
+
+```go
+const (
+	L8ProfileContractVersionV1        = "hal-microvm-l8-profile-v1"
+	L8SourceLockSchemaVersionV1       = "hal-microvm-l8-source-lock-v1"
+	L8SourceLockCatalogVersionV1      = "l8-source-lock-catalog-v1"
+	L8ProcessCompositionCatalogV1     = "l8-process-composition-catalog-v1"
+	L8FinalInspectionSchemaVersionV1  = "hal-microvm-l8-final-inspection-v1"
+	L8FinalInspectionCatalogVersionV1 = "l8-final-inspection-catalog-v1"
+)
+```
+
+`DistributionManifest` gains `L8Profile *L8ProfileFacts` with tag
+`json:"l8Profile,omitempty"` immediately after `GuestNetwork` and before
+`Assets`. `Provenance` gains the same field and tag immediately after
+`GuestNetwork` and before `Outputs`. The pointer is nil for L5 and L7. Those structs retain their current
+field order and tags; therefore L5 and L7 JSON bytes remain unchanged. An L8
+manifest and provenance require the pointer, while a non-L8 profile rejects
+it. Both carry the same normalized value byte-for-byte under the canonical
+encoding below.
+
+The exact Go field order and JSON names are:
+
+```go
+type L8ParentL7Evidence struct {
+	ImageProfile        string `json:"imageProfile"`
+	ManifestSHA256      string `json:"manifestSha256"`
+	ProvenanceSHA256    string `json:"provenanceSha256"`
+	ChecksumsSHA256     string `json:"checksumsSha256"`
+	KernelSizeBytes     int64  `json:"kernelSizeBytes"`
+	KernelSHA256        string `json:"kernelSha256"`
+	RootfsSizeBytes     int64  `json:"rootfsSizeBytes"`
+	RootfsSHA256        string `json:"rootfsSha256"`
+	EvidenceSHA256      string `json:"evidenceSha256"`
+}
+
+type L8RuntimeFacts struct {
+	NodeVersion            string `json:"nodeVersion"`
+	NodeSHA256             string `json:"nodeSha256"`
+	PiPackage              string `json:"piPackage"`
+	PiVersion              string `json:"piVersion"`
+	PiLauncherSHA256       string `json:"piLauncherSha256"`
+	PiDependencyTreeSHA256 string `json:"piDependencyTreeSha256"`
+}
+
+type L8ProcessCompositionFacts struct {
+	CatalogVersion          string `json:"catalogVersion"`
+	GuestAgentSHA256        string `json:"guestAgentSha256"`
+	GuestInitSHA256         string `json:"guestInitSha256"`
+	CredentialHelperSHA256  string `json:"credentialHelperSha256"`
+	MountMonitorSHA256      string `json:"mountMonitorSha256"`
+	WorkloadShimSHA256      string `json:"workloadShimSha256"`
+	RoleBootstrapSHA256     string `json:"roleBootstrapSha256"`
+	HelperDescriptorSHA256  string `json:"helperDescriptorSha256"`
+	ClientDescriptorSHA256  string `json:"clientDescriptorSha256"`
+	CompositionSHA256       string `json:"compositionSha256"`
+	WorkloadPolicySHA256    string `json:"workloadPolicySha256"`
+	RuntimePolicySHA256     string `json:"runtimePolicySha256"`
+	SyscallPolicySHA256     string `json:"syscallPolicySha256"`
+}
+
+type L8ProfileFacts struct {
+	ContractVersion       string                    `json:"contractVersion"`
+	ParentL7              L8ParentL7Evidence        `json:"parentL7"`
+	Runtime               L8RuntimeFacts            `json:"runtime"`
+	ProcessComposition    L8ProcessCompositionFacts `json:"processComposition"`
+	SourceLockSHA256      string                    `json:"sourceLockSha256"`
+	FinalInspectionSHA256 string                    `json:"finalInspectionSha256"`
+}
+
+type L8LockedSource struct {
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	Filename  string `json:"filename"`
+	SizeBytes int64  `json:"sizeBytes"`
+	SHA256    string `json:"sha256"`
+}
+
+type L8SourceLock struct {
+	SchemaVersion  string                    `json:"schemaVersion"`
+	CatalogVersion string                    `json:"catalogVersion"`
+	ImageProfile   string                    `json:"imageProfile"`
+	ParentL7       L8ParentL7Evidence        `json:"parentL7"`
+	Runtime        L8RuntimeFacts            `json:"runtime"`
+	Sources        []L8LockedSource          `json:"sources"`
+}
+
+type L8InspectionCheck struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	EvidenceSHA256 string `json:"evidenceSha256"`
+}
+
+type L8FinalInspection struct {
+	SchemaVersion       string                    `json:"schemaVersion"`
+	CatalogVersion      string                    `json:"catalogVersion"`
+	ImageProfile        string                    `json:"imageProfile"`
+	RootfsSHA256        string                    `json:"rootfsSha256"`
+	SourceLockSHA256    string                    `json:"sourceLockSha256"`
+	ParentL7            L8ParentL7Evidence        `json:"parentL7"`
+	Runtime             L8RuntimeFacts            `json:"runtime"`
+	ProcessComposition  L8ProcessCompositionFacts `json:"processComposition"`
+	Checks              []L8InspectionCheck       `json:"checks"`
+}
+```
+
+All fields are required; none of these structs uses `omitempty`. Slices must be
+non-nil. JSON decoding is bounded, rejects unknown fields and trailing values,
+and never normalizes input. The source-lock and final-inspection files are each
+at most 4 MiB. A safe token is 1..128 bytes of lower-case ASCII letters,
+digits, `_`, `-`, or `.`. A source `Name` is either such an unscoped npm name
+or a 1..214-byte lower-case `@scope/name` with exactly one slash and nonempty
+safe scope/name components; filenames are 1..240-byte base names with no slash,
+backslash, whitespace, `..`, control byte, URL marker, or credential marker.
+Every SHA-256 is exactly 64 lower-case hexadecimal characters. An input size is
+1..1,073,741,824 bytes, the source aggregate is at most 4,294,967,296 bytes,
+and overflow is rejected before addition.
+
+Runtime values are exactly Node 22.22.0 and
+`@earendil-works/pi-coding-agent 0.82.1`; `PiPackage` is exactly
+`@earendil-works/pi-coding-agent`. `NodeSHA256` and `PiLauncherSHA256` bind the
+exact installed regular files, not their version output. The source list has 4..4096 entries. Its
+first three entries, in order, have kinds `node_source`, `pi_package`, and
+`pi_shrinkwrap`, names `node`, `@earendil-works/pi-coding-agent`, and
+`pi-shrinkwrap`, and versions `22.22.0`, `0.82.1`, and `0.82.1`. All remaining
+entries have kind `npm_archive`, are ordered by `(name, version, filename)` in
+strict byte order, and have a unique filename and unique `(kind,name,version,
+filename)` tuple. Empty transitive sets, duplicates, optional/native packages
+not represented by an entry, floating versions, lifecycle-script outputs not
+represented by an entry, and nil/empty interchange are invalid. The lock has
+no URL, registry, endpoint, path, command, environment, header, credential,
+token, or signature field. D7 source authenticity belongs to the D7
+source-lock issuer and its reviewed offline cache acquisition; D2 does not
+invent a public signing key or signature ABI.
+
+The process facts are exact, not a general binary inventory. Their catalog is
+`L8ProcessCompositionCatalogV1`; all twelve digest fields are required. The
+six binary fields bind the exact installed `hal-guest-agent`, `hal-guest-init`,
+`hal-guest-credential-helper`, `hal-guest-mount-monitor`,
+`hal-guest-workload-shim`, and freestanding `hal-guest-role-bootstrap` bytes.
+`HelperDescriptorSHA256`, `ClientDescriptorSHA256`, and
+`CompositionSHA256` are the exact `HL8D` values defined above.
+`WorkloadPolicySHA256`, `RuntimePolicySHA256`, and `SyscallPolicySHA256` bind,
+respectively, the canonical workload-transition policy artifact, the complete
+role/runtime policy artifact, and the amd64/x32 syscall-policy catalog artifact
+closed by the syscall supplement. D7 produces those three canonical artifacts
+from the exact phase head and embeds their digests in the guest binaries; it
+independently copies the same values into `L8ProfileFacts`. A descriptor label,
+binary filename, static version string, or live guest response cannot replace
+any digest.
+
+The final-inspection `Checks` slice is non-nil and has exactly these 22 records
+in this order, each once, each with `status:"pass"`, and each with a distinct
+nonzero evidence digest:
+
+```text
+parent_l7_profile
+kernel_network_profile
+guest_binary_inventory
+binary_owner_mode
+node_runtime
+pi_runtime
+pi_dependency_tree
+offline_source_inventory
+package_manager_state_absent
+credential_material_absent
+identity_layout
+pid1_launch_order
+process_composition
+workload_policy
+runtime_policy
+syscall_policy
+native_bootstrap
+vsock_listener_table
+filesystem_privilege_absent
+filesystem_private_modes
+kernel_tmpfs_mount_namespace
+kernel_cgroup_v2_kill
+```
+
+This catalog is sufficient for profile issuance only when the typed top-level
+facts also correlate. An inspection record is a safe assertion digest, not raw
+debugfs/ELF/disassembly output. D7 keeps raw inspection output outside the
+distribution and emits a digest over each canonical safe assertion record.
+Warnings, `skip`, duplicate/reordered/extra/missing checks, a zero digest, or
+an unrecognized status fail closed.
+
+#### Parent identity and canonical fingerprints
+
+The parent is not a label. `ParentL7.ImageProfile` is exactly
+`l7-firecracker-network-v1`; its five digest/size facts are measured from one
+already verified, no-follow-opened L7 bundle. Its evidence digest is:
+
+```text
+SHA256(
+  opaque16("hal/l8/image-profile/parent-l7-evidence/v1") ||
+  token("l7-firecracker-network-v1") ||
+  digest32(manifestSha256) || digest32(provenanceSha256) ||
+  digest32(checksumsSha256) ||
+  uint64_be(kernelSizeBytes) || digest32(kernelSha256) ||
+  uint64_be(rootfsSizeBytes) || digest32(rootfsSha256))
+```
+
+`opaque16` and `token` mean a `uint16_be` byte length followed by those bytes;
+`digest32` decodes the lower-case hexadecimal input to exactly 32 bytes.
+Sizes are positive and at most 1,073,741,824. No JSON encoding, map order,
+platform path, timestamp, or source URL participates.
+
+The private descriptor fingerprint supports only a validated normalized
+two-asset L8 distribution descriptor. The L8 resolver constructs exact ID
+`l8-production-credentials-image`, exact labels `firecracker`, `reproducible`,
+`network-profile`, `production-credentials-profile` in that order, and exact
+assets `vmlinux` then `rootfs.ext4`. The L8 validator rejects any other order;
+the generic descriptor normalizer does not sort caller input. The fingerprint is:
+
+```text
+SHA256(
+  opaque16("hal/l8/image-profile/descriptor/v1") ||
+  token(descriptor.ID) || tokenList(descriptor.Labels) || uint16_be(2) ||
+  for each asset:
+    token(asset.ID) || token(asset.Role) || token(asset.Kind) ||
+    tokenList(asset.Labels) || token(asset.Source.Type) ||
+    token(asset.Source.HostPath.Role) || token(asset.Source.HostPath.Path) ||
+    token(asset.Lock.Digest.Algorithm) || digest32(asset.Lock.Digest.Value) ||
+    uint64_be(asset.Lock.SizeBytes) ||
+    uint64_be(asset.Lock.LockedAtUnixMillis))
+```
+
+`tokenList` is `uint16_be(count)` then tokens in existing normalized order.
+The exact L8 descriptor has no init config, agent config, or resources. The
+private path participates so a source path and lease-owned launch-material path
+cannot share a descriptor fingerprint; it is never logged or exposed.
+
+The exact L8 distribution contains exactly seven regular files, in byte-order:
+`SHA256SUMS`, `distribution-manifest.json`, `final-inspection.json`,
+`provenance.json`, `rootfs.ext4`, `sources.lock.json`, and `vmlinux`.
+`SHA256SUMS` contains exactly the other six names in that order. The evidence
+fingerprint uses the digest and size measured from every no-follow-opened file:
+
+```text
+SHA256(
+  opaque16("hal/l8/image-profile/evidence/v1") ||
+  for each of the seven names in byte order:
+    token(name) || uint64_be(size) || digest32(fileSha256) ||
+  digest32(parentL7.evidenceSha256) ||
+  digest32(sourceLockSha256) || digest32(finalInspectionSha256) ||
+  digest32(nodeSha256) || digest32(piLauncherSha256) ||
+  digest32(piDependencyTreeSha256) ||
+  digest32(helperDescriptorSha256) || digest32(clientDescriptorSha256) ||
+  digest32(compositionSha256) || digest32(workloadPolicySha256) ||
+  digest32(runtimePolicySha256) || digest32(syscallPolicySha256))
+```
+
+The validator first proves that the typed manifest/provenance/source-lock/
+inspection values agree and that their named file digests agree with the
+checksum inventory. Consequently the fingerprint binds the manifest,
+provenance, source lock, final inspection, parent L7 bundle, helper/client/
+composition, and workload/runtime/syscall artifact digests. This resolves the
+L7 evidence substitution weakness: L7's current profile can be recreated from
+a descriptor alone during private launch-material preparation, whereas no L8
+path can create or replace its evidence fingerprint from a descriptor.
+
+#### Pure validators and precedence
+
+The build package exports only these pure validators for the additive values:
+
+```go
+func ValidateL8DistributionManifest(DistributionManifest) error
+func ValidateL8Provenance(Provenance) error
+func ValidateL8ProvenanceAgainstManifest(Provenance, DistributionManifest) error
+func ValidateL8SourceLock(L8SourceLock) error
+func ValidateL8FinalInspection(L8FinalInspection) error
+```
+
+They return this exact safe error shape:
+
+```go
+type L8ValidationCode string
+
+type L8ValidationError struct {
+	Code  L8ValidationCode `json:"code"`
+	Field string           `json:"field,omitempty"`
+	Index *int             `json:"index,omitempty"`
+}
+```
+
+`Index` is an optional zero-based source/check index; `Error()` is only
+`"L8 image profile validation failed: <code>"`. Rejected values and wrapped parser errors never appear.
+Codes are closed: `schema_invalid`, `profile_invalid`, `parent_invalid`,
+`version_invalid`, `catalog_invalid`, `count_invalid`, `order_invalid`,
+`field_invalid`, `digest_invalid`, and `correlation_mismatch`.
+
+Validation returns the first error in this exact precedence: (1) schema and
+profile discriminator, (2) required pointer/slice presence and count/size
+bounds, (3) fixed versions and catalog identifiers, (4) parent evidence and
+top-level scalar syntax, (5) ordered entry/check syntax and uniqueness, (6)
+per-entry sizes/digests with ascending index, and (7) cross-document
+correlation. Within a struct, fields are visited in declared order; within a
+slice, indexes ascend. Cross-document correlation order is parent, runtime,
+process composition, source-lock digest, final-inspection digest, rootfs,
+then output/asset equality. Validation does not trim, lowercase, sort, default,
+drop, or mutate. Generic L5/L7 validation remains byte/behavior compatible and
+delegates to the L8 validator only for the exact L8 discriminator.
+
+The resolver retains its existing bounded `json.Decoder` unknown/trailing-field
+behavior. Resolver classification is exact: a typed build validation error is
+`manifest_invalid`; missing/unreadable metadata is `file_unavailable`; wrong
+entry set/type is `unsupported_file_type` or `manifest_invalid` as today;
+checksum, measured digest, correlation, parent-evidence, or final-inspection
+mismatch is `asset_lock_mismatch`. Public field names are only
+`distributionManifest`, `provenance`, `sourceLock`, `finalInspection`,
+`checksums`, `parentL7`, `l8Profile`, or `assets`; messages never contain an
+input value, filename beyond those fixed public names, path, URL, or parser
+text.
+
+#### Opaque resolver proof and lease
+
+`internal/sandboxruntime/microvm/assets/localresolver` owns these exact APIs:
+
+```go
+type VerifiedL8Profile struct { /* private seal and two private [32]byte fingerprints */ }
+type VerifiedL8AssetLease struct { /* private pinned bundle and launch material */ }
+
+type L8LaunchMaterialWriter interface {
+	WriteAsset(assets.AssetRole, io.Reader) (string, error)
+	Validate() error
+	Close() error
+}
+
+func (VerifiedDistribution) L8Profile() (VerifiedL8Profile, bool)
+func (VerifiedDistribution) AcquireL8AssetLease() (*VerifiedL8AssetLease, error)
+func VerifiedL8ProfileMatches(*VerifiedL8Profile, *assets.LaunchDescriptor) bool
+
+func (*VerifiedL8AssetLease) ConfirmCurrent(*assets.LaunchDescriptor) error
+func (*VerifiedL8AssetLease) PrepareLaunch(
+	*assets.LaunchDescriptor,
+	L8LaunchMaterialWriter,
+) (assets.LaunchDescriptor, VerifiedL8Profile, error)
+func (*VerifiedL8AssetLease) Close() error
+```
+
+There is no public constructor or fingerprint accessor. The existing
+`VerifyDistributionBundle(DistributionRequest)` remains the five-file L5/L7
+entry point and cannot issue L8 authority. The sole L8 issuer is the separate
+exact entry point:
+
+```go
+type L8DistributionRequest struct {
+	DistributionRequest
+	ParentL7 VerifiedDistribution
+}
+
+func VerifyL8DistributionBundle(L8DistributionRequest) (VerifiedDistribution, error)
+```
+
+The request requires a nonzero resolver-issued parent distribution whose
+`L7Profile()` is valid and whose current parent asset lease can be acquired and
+confirmed. A copied public manifest/provenance/descriptor without that private
+parent authority is invalid. `VerifyL8DistributionBundle` is the sole opaque
+`VerifiedL8Profile` issuance path. It issues only after the
+exact seven-file entry/type check; bounded strict decoding; all five pure
+validation/correlation checks; exact checksum inventory; current asset locks;
+parent L7 evidence fingerprint; final-inspection catalog; descriptor
+normalization; and both canonical fingerprints succeed. `ResolveDistribution`
+may return an L8 descriptor for diagnostics but never a profile or lease.
+Synthetic fakes live only in `_test.go` or explicitly fake-only files and have
+no production command reachability.
+
+The opaque value contains one active private seal, the descriptor fingerprint,
+and the evidence fingerprint. `VerifiedL8ProfileMatches` validates and
+normalizes the candidate and compares only against the sealed descriptor
+fingerprint; the evidence fingerprint is intentionally not caller-readable.
+A zero value, copied fields in an external literal, a nil pointer, a generic,
+L5, or L7 descriptor, or any descriptor drift fails.
+
+`AcquireL8AssetLease` pins the opened distribution root plus all seven current
+regular files, verifies root/file identity and every digest again, and copies
+both private fingerprints from the verified distribution. `ConfirmCurrent`
+reopens the current root entries without following links, requires the exact
+entry set and retained identities/digests, and accepts only the source
+descriptor or its one lease-owned prepared descriptor. Metadata replacement,
+parent evidence replacement, inspection replacement, or asset replacement
+therefore fails even if a caller preserves the launch descriptor.
+
+`PrepareLaunch` is single-use. It confirms the source before copying, streams
+only the pinned kernel and rootfs into an `L8LaunchMaterialWriter`, verifies
+size/digest while copying, requires distinct private destinations, normalizes
+the prepared descriptor, validates sealed material, and confirms the complete
+source bundle again. It then creates a new sealed profile internally whose
+descriptor fingerprint is recomputed for the private descriptor and whose
+evidence fingerprint is copied unchanged from the lease. No descriptor-only
+constructor is called. The material and every pinned source/evidence handle
+remain lease-owned until idempotent `Close`; a cleanup error is sanitized and
+stable across repeated close calls.
+
+#### Firecracker and guest boundary
+
+The explicit L8 overlay and `BackendConfig` add these adjacent JSON-omitted
+fields after their existing L7 counterparts:
+
+```go
+VerifiedL8Profile *localresolver.VerifiedL8Profile `json:"-"`
+VerifiedL8Assets *localresolver.VerifiedL8AssetLease `json:"-"`
+```
+
+L7 and L8 profile/lease fields are mutually exclusive. The L8 path requires
+both L8 fields, the exact L8 network mode inherited from the verified parent,
+one NIC/static-network overlay, production VSOCK, and the exact current runtime
+generation. Before render, immediately before process start, and after a
+successful synchronous start handoff it calls the L8 lease current-asset check
+and `VerifiedL8ProfileMatches` against the exact descriptor it uses. Any
+failure closes the owned lease and returns a sanitized L8 live-config error.
+Firecracker does not parse a source lock, final-inspection artifact, checksum
+file, or label and cannot infer a capability from an image ID.
+
+The host profile never enters the guest. D7 embeds the exact expected workload, runtime, and syscall-policy catalog digests
+plus helper, client, and composition digests into the built guest binaries, and independently binds the same values
+into the host `VerifiedL8Profile` evidence. PID1 compares authenticated live
+process descriptors with those embedded expectations; the host separately
+requires its opaque profile. Neither side accepts the other's assertion as a
+substitute, and no host path, source-lock body, inspection body, or opaque
+profile is sent over VSOCK.
+
 The exact ownership is:
 
 - `tools/microvm/l8/` owns the L8 build scripts, Buildroot/kernel fragments,

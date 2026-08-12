@@ -4148,6 +4148,17 @@ behavior and must exist in the immutable booted image. L8 therefore emits a
 distinct reproducible guest profile and descriptor. It does not rewrite the L5
 or L7 distributions, descriptors, or digests into a new capability claim.
 
+The extension-seam supplement's “L8 D2 image-profile concrete closure” is the
+normative API/schema definition. In particular, an L8 profile carries separate
+private descriptor and evidence fingerprints. The evidence fingerprint binds
+the exact seven-file L8 bundle, typed manifest/provenance/source-lock/final-
+inspection correlation, explicit parent L7 evidence fingerprint, and the
+helper/client/composition plus workload/runtime/syscall-policy artifact
+digests. Private launch-material preparation may remint only the descriptor
+fingerprint and must copy the evidence fingerprint unchanged. This prevents
+evidence substitution through a descriptor-only proof while preserving the L7
+API and artifacts byte-for-byte.
+
 Ownership and sequencing are exact in the extension-seam supplement. D2 owns
 the opaque profile contracts and guards; D4 and D5 land guest behavior without
 an image claim; D6 requires the opaque verified L8 profile in explicit
