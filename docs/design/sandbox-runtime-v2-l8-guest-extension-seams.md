@@ -917,6 +917,26 @@ and plans become `ExecPlanCapability`. Bootstrap numeric identity and renew
 proof strings are accepted transiently and stored only as private equality
 digests with no numeric/string accessor.
 
+Those two private equality digests have one exact encoding. They are not proof,
+resource authority, or durable identity:
+
+```text
+agentIdentitySHA256 = SHA256(
+  opaque16("hal/l8/guest-helper/agent-identity/v1") ||
+  agentPID:u32 || agentUID:u32 || agentGID:u32)
+
+priorProofSHA256 = SHA256(
+  opaque16("hal/l8/guest-helper/renew-proof/v1") ||
+  opaque16(priorProofID))
+```
+
+Every `u32` is unsigned big-endian and every `opaque16` is the common unsigned
+big-endian 16-bit byte length followed by exact bytes. The bootstrap input PID
+is already restricted to 1 through `math.MaxInt32`; UID and GID retain their
+full unsigned kernel values. `priorProofID` must first pass the safe-ID grammar.
+No other domain, scalar order, text rendering, delimiter, or normalization is
+accepted.
+
 D4 constructs the union only through:
 
 ```go
@@ -961,6 +981,14 @@ func NewReceivedCloseNotifyPacket(ReceiveRequest, credentialprotocol.HelperPacke
 	ReceivedKernelCredential, uint32, ReceivedBodyCapability, uint32,
 	credentialprotocol.HelperCloseNotifyBody) (ReceivedPacket, error)
 ```
+
+There is no separate descriptor-length constructor argument for
+`NewReceivedAgentHelloPacket`. The constructor reads the canonical body-owned
+`descriptorLength:u16` in place, requires 1 through `MaxProcessDescriptorBytes`,
+requires that it equal the exact remaining bytes, and compares SHA-256 of those
+bytes with the final independently validated descriptor digest argument. This
+keeps the wire length under the locked-body authority and prevents a second
+caller-supplied scalar from disagreeing with it.
 
 The last agent-hello digest is the independently validated canonical process
 descriptor digest. Prepare-file, exec-private, and exec-stream constructors

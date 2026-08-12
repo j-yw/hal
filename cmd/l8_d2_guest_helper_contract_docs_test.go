@@ -329,6 +329,23 @@ func TestL8D2GuestHelperCoreContractClosureIsImplementationReady(t *testing.T) {
 	}
 }
 
+func TestL8D2GuestHelperTransportDigestClosureIsImplementationReady(t *testing.T) {
+	seam := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-guest-extension-seams.md"))
+	for _, required := range []string{
+		`opaque16("hal/l8/guest-helper/agent-identity/v1")`,
+		`agentPID:u32 || agentUID:u32 || agentGID:u32`,
+		`opaque16("hal/l8/guest-helper/renew-proof/v1")`,
+		`opaque16(priorProofID)`,
+		"There is no separate descriptor-length constructor argument",
+		"the canonical body-owned",
+		"`descriptorLength:u16`",
+	} {
+		if !strings.Contains(seam, required) {
+			t.Fatalf("L8 D2 extension seam omits transport digest closure %q", required)
+		}
+	}
+}
+
 func TestL8D2GuestHelperSyscallPolicyRejectsImplicitOSPidfdProbe(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-helper-syscall-policy.md"))
 	for _, forbidden := range []string{
