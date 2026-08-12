@@ -1064,6 +1064,32 @@ unknown-operation failure struct echoing that token. An unsafe/unreadable
 operation closes the session without response because it cannot be safely
 echoed. The five known request unions remain closed.
 
+That rule is implemented through two-stage, bodyless request-root inspection,
+not a generic JSON body. `v2control.InspectCredentialRequestRoot` consumes one
+bounded root, retains only a private nonserializable operation token, request
+ID, identity digest, and known-operation classification, and never retains a
+body, map, `json.RawMessage`, unvalidated or raw string echo, or raw bytes. The
+operation token contains only the validated private operation string. The
+inspector requires exact canonical root-key order
+`protocolVersion,operation,requestId,identityDigest,body`, compact scalar spellings and punctuation with no insignificant whitespace or alternate JSON encoding for the four inspected scalars, then token-skips exactly one syntactically complete bounded body value and requires EOF. Wrong root order, whitespace, extra/missing/duplicate root fields, incomplete syntax, or trailing data is unsafe and closes without a response.
+A safe unknown operation receives `unknown_operation` without body decode.
+Its body schema remains uninterpreted. If safely correlated, a malformed known operation receives `malformed_request` only when its concrete decoder reports
+a body schema or canonical re-encode failure after complete root inspection;
+the optional static field is omitted.
+An unsafe or unusably correlated root closes without a response.
+The first prepare is decoded only by
+`DecodeInitialCredentialPrepareRequest`, which derives and authenticates its
+`GuestCredentialSessionIdentity` from the canonical body `JobIdentity`, the
+authenticated session ID, and the root digest; it accepts no caller-supplied
+expected job identity. The returned request exposes only `JobIdentity`; Client
+reconstructs the wrapper with
+`NewGuestCredentialSessionIdentity(sessionID, request.Identity())`, verifies
+the same root digest, and stores that exact
+identity. `InspectedRequest` and the unknown/malformed dispatch arms use only
+static fail-closed formatting, deny JSON/text/binary marshal and unmarshal
+operations for value and pointer forms as applicable, preserve seeded receivers
+unchanged on every unmarshal denial, and expose no mutation.
+
 The exact envelope orders are
 `protocolVersion,operation,requestId,identityDigest,ok,body` for success and
 `protocolVersion,operation,requestId,identityDigest,ok,error` for failure. The

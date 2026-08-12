@@ -506,6 +506,127 @@ func TestL8D2CredentialClientContractClosureIsImplementationReady(t *testing.T) 
 	}
 }
 
+func TestL8D2CredentialClientIndependentReviewClosureIsImplementationReady(t *testing.T) {
+	seam := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-guest-extension-seams.md"))
+	for _, required := range []string{
+		"D4 bootstrap owns `agent_hello`",
+		"helper send sequence 1",
+		"helper receive sequence 2",
+		"first operational helper send sequence is 2",
+		"first operational helper receive sequence is 3",
+		"same immutable validated `l8composition.ProcessDescriptor` snapshot",
+		"destroys the temporary mapping before returning",
+		"Client never retains descriptor bytes and never sends agent hello",
+		"type InspectedRequest struct",
+		"InspectCredentialRequestRoot",
+		"`OperationToken` owns only the validated private operation string",
+		"no unvalidated or raw string echo",
+		"DecodeInitialCredentialPrepareRequest(sessionID [32]byte, wire []byte)",
+		"`CredentialPrepareRequest` exposes only `JobIdentity`",
+		"NewGuestCredentialSessionIdentity(sessionID, request.Identity())",
+		"verifies the reconstructed identity digest against the inspected root",
+		"exactly one syntactically complete bounded JSON value",
+		"schema or canonical concrete-decoder failure",
+		"Malformed root or body syntax that prevents complete inspection",
+		"root keys in exact canonical order `protocolVersion,operation,requestId,identityDigest,body`",
+		"compact JSON with no insignificant whitespace",
+		"exact colon and comma placement",
+		"alternate scalar encodings",
+		"token-skips exactly one syntactically complete bounded body value and then requires EOF",
+		"safe unknown operation leaves body schema uninterpreted",
+		"known operation's concrete decoder owns body schema and canonical re-encode failures",
+		"wrong root order, whitespace, extra, missing, or duplicate root field",
+		"ControllerUnknownOperation",
+		"ControllerMalformedKnown",
+		"static fail-closed formatting",
+		"deny JSON, text, and binary marshaling on both value and pointer forms",
+		"deny JSON, text, and binary marshal and unmarshal operations",
+		"seeded receiver nonmutation",
+		"value and pointer forms as applicable",
+		"expose no mutator",
+		"safe unknown operation receives only `unknown_operation`",
+		"unsafe or unreadable operation",
+		"malformed known request receives only `malformed_request`",
+		"does not promise an in-process forced return",
+		"D6 process/VM kill and reap",
+		"expectedRequestIDSet bool",
+		"ExpectedRequestID() ([16]byte, bool)",
+		"false only for an idle active-job asynchronous event or SSH acceptance",
+		"type BodySegmentSink interface",
+		"Capacity() uint32",
+		"WriteSegment(offset uint32, source []byte) error",
+		"exact contiguous, nonoverlapping coverage",
+		"package-private offset `credentialmemory.CredentialSink` adapter",
+		"no combined private scratch",
+		"SSHIOResult constructor validates only intrinsic shape",
+		"Read versus Write contract",
+		"policy-subset allowlist before `v2control.ValidateOperationErrorCode`",
+		"globally valid but policy-forbidden",
+		"projectV2ExecPlanToHelper",
+		"literal/inherited/generated to 1/2/3",
+		"timeout/deadline to 1/2",
+		"decodePrivateAggregateSHA256",
+		"projectV2RevokeReasonToHelper",
+		"requested/expired/session_loss/source_revoked/worker_cancel/daemon_shutdown to 1/2/3/4/5/6",
+		"mapHelperPrepareSuccessToV2",
+		"mapHelperRenewSuccessToV2",
+		"mapHelperRevokeSuccessToV2",
+		"mapHelperExecSuccessToV2",
+		"no default mapping",
+	} {
+		if !strings.Contains(seam, required) {
+			t.Fatalf("L8 D2 extension seam omits independent-review closure %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"the one agent-hello send body",
+		"descriptorBody   *credentialmemory.LockedMapping",
+		"At the start of `Serve`",
+		"ExpectedRequestID`, and",
+	} {
+		if strings.Contains(seam, forbidden) {
+			t.Fatalf("L8 D2 extension seam retains superseded credential-client contract %q", forbidden)
+		}
+	}
+	if count := strings.Count(seam, "WriteCanonicalBody(credentialmemory.CredentialSink) error"); count != 1 {
+		t.Fatalf("L8 D2 extension seam retains %d credential-sink WriteCanonicalBody signatures; want only the helper-service signature", count)
+	}
+
+	architecture := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialArchitectureDoc))
+	for _, required := range []string{
+		"two-stage, bodyless request-root inspection",
+		"exact canonical root-key order",
+		"compact scalar spellings and punctuation",
+		"DecodeInitialCredentialPrepareRequest",
+		"safe unknown operation receives `unknown_operation`",
+		"malformed known operation receives `malformed_request`",
+		"unsafe or unusably correlated root closes without a response",
+	} {
+		if !strings.Contains(architecture, required) {
+			t.Fatalf("L8 D2 architecture omits independent-review closure %q", required)
+		}
+	}
+
+	verification := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialVerificationDoc))
+	for _, required := range []string{
+		"D4-owned helper bootstrap before Client construction",
+		"bodyless request-root inspection",
+		"complete-root versus schema/canonical-decode boundary",
+		"exact lexical root boundary",
+		"initial identity reconstruction and root-digest recheck",
+		"static formatting and JSON/text/binary denial",
+		"marshal/unmarshal denial with seeded nonmutation",
+		"conditional helper request-ID correlation",
+		"segmented exact-coverage send sinks",
+		"policy-subset error allowlist",
+		"pure v2/helper conversion functions",
+	} {
+		if !strings.Contains(verification, required) {
+			t.Fatalf("L8 verification omits independent-review closure %q", required)
+		}
+	}
+}
+
 func TestL8D2GuestHelperSyscallPolicyRejectsImplicitOSPidfdProbe(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-helper-syscall-policy.md"))
 	for _, forbidden := range []string{
