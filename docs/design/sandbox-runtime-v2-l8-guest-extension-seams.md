@@ -3771,6 +3771,29 @@ const (
 )
 ```
 
+The inherited `GuestAgent` shape has an L8-specific exact value rather than a
+false v1 claim:
+
+```go
+const L8GuestAgentProtocolV2 = "guest-agent-v2"
+```
+
+For an L8 manifest and provenance, `GuestAgent.Protocol` is exactly that
+constant and `GuestAgent.Features` is exactly this order with no omissions,
+duplicates, aliases, or additions: `"copy_in", "copy_out", "credential_delivery_v2"`,
+then `"exec", "readiness", "ssh_agent_relay_v1"`. `ValidateL8DistributionManifest`
+and `ValidateL8Provenance` apply the stable common
+architecture/version/network/asset checks through an L8-aware internal
+validator; the generic L5/L7 validator is not called on an L8 value because
+its exact v1 protocol predicate must remain unchanged. L5/L7 continue to
+require their existing `guest-agent-v1` and four-feature sequence. The
+manifest and provenance GuestAgent values must match exactly before L8
+profile-fact correlation. Both L8 documents also require the exact unchanged
+L7 `static_proxy` guest-network value and ordered L7 network feature catalog;
+the parent evidence and descriptor must agree with it. Any protocol, feature,
+order, count, case, network, or manifest/provenance mutation is
+`version_invalid` at the declared GuestAgent field.
+
 `DistributionManifest` gains `L8Profile *L8ProfileFacts` with tag
 `json:"l8Profile,omitempty"` immediately after `GuestNetwork` and before
 `Assets`. `Provenance` gains the same field and tag immediately after
@@ -3878,6 +3901,18 @@ Every SHA-256 is exactly 64 lower-case hexadecimal characters. An input size is
 1..1,073,741,824 bytes, the source aggregate is at most 4,294,967,296 bytes,
 and overflow is rejected before addition.
 
+The filename URL/credential checks are one exact case-insensitive
+URL/credential-marker algorithm over an ASCII-lowercased copy; they never
+normalize the stored filename. A URL marker is either substring `://` or one
+of the prefixes `http:`, `https:`, `ssh:`, `tcp:`, `udp:`, `grpc:`, `file:`.
+A credential marker is any occurrence in this exact catalog:
+`"authorization", "bearer", "token", "secret"`; `"credential", "password",
+"api_key", "apikey"`; or `"access_key", "private_key", "ghp_", "github_pat_",
+"sk-"`. Matching is byte-oriented;
+non-ASCII filenames are already rejected by the basename grammar. Tests mutate
+every marker's case, prefix position, and one adjacent byte and require the
+closed accept/reject result.
+
 Runtime values are exactly Node 22.22.0 and
 `@earendil-works/pi-coding-agent 0.82.1`; `PiPackage` is exactly
 `@earendil-works/pi-coding-agent`. `NodeSHA256` and `PiLauncherSHA256` bind the
@@ -3894,6 +3929,32 @@ no URL, registry, endpoint, path, command, environment, header, credential,
 token, or signature field. D7 source authenticity belongs to the D7
 source-lock issuer and its reviewed offline cache acquisition; D2 does not
 invent a public signing key or signature ABI.
+
+`PiDependencyTreeSHA256` is not a package-manager-dependent installed-tree
+walk. It is the lower-case hex encoding of this canonical digest, computed
+only after the source list is validated and with `npmArchiveCount =
+len(Sources)-3`:
+
+```text
+SHA256(
+  opaque16("hal/l8/pi-dependency-tree/v1") ||
+  token(piPackage.name) || token(piPackage.version) ||
+  uint64_be(piPackage.sizeBytes) || digest32(piPackage.sha256) ||
+  token(piShrinkwrap.name) || token(piShrinkwrap.version) ||
+  uint64_be(piShrinkwrap.sizeBytes) || digest32(piShrinkwrap.sha256) ||
+  uint32_be(npmArchiveCount) ||
+  for each npm_archive in the already validated source-lock order:
+    token(name) || token(version) || token(filename) ||
+    uint64_be(sizeBytes) || digest32(sha256))
+```
+
+`opaque16`, `token`, and `digest32` retain their definitions below and all
+integers are big-endian. The manifest, provenance, source lock, and final
+inspection must carry this exact value; final inspection independently
+recomputes it from the validated lock and also proves the offline installed Pi
+tree contains no package/archive outside that lock. Shrinkwrap file bytes and
+every archive digest are bound directly, so traversal order, filesystem
+metadata, npm output, JSON map order, and a host cache path never participate.
 
 The process facts are exact, not a general binary inventory. Their catalog is
 `L8ProcessCompositionCatalogV1`; all twelve digest fields are required. The
@@ -4092,6 +4153,7 @@ type L8LaunchMaterialWriter interface {
 func (VerifiedDistribution) L8Profile() (VerifiedL8Profile, bool)
 func (VerifiedDistribution) AcquireL8AssetLease() (*VerifiedL8AssetLease, error)
 func VerifiedL8ProfileMatches(*VerifiedL8Profile, *assets.LaunchDescriptor) bool
+func VerifiedL8ProfileMatchesLease(*VerifiedL8Profile, *VerifiedL8AssetLease) bool
 
 func (*VerifiedL8AssetLease) ConfirmCurrent(*assets.LaunchDescriptor) error
 func (*VerifiedL8AssetLease) PrepareLaunch(
@@ -4135,6 +4197,16 @@ fingerprint; the evidence fingerprint is intentionally not caller-readable.
 A zero value, copied fields in an external literal, a nil pointer, a generic,
 L5, or L7 descriptor, or any descriptor drift fails.
 
+`VerifiedL8ProfileMatchesLease` is the sole profile/lease pair-correlation
+check. Under the lease mutex it requires both private seals active, the exact
+same evidence fingerprint, and the profile descriptor fingerprint to equal
+either the lease's source descriptor fingerprint or its single prepared-
+material descriptor fingerprint, as applicable. It never exposes either
+fingerprint and performs no path lookup. A profile and lease issued from
+different bundles therefore fail even when their public descriptors and asset
+locks are byte-identical. The check is required wherever both values cross an
+ownership boundary and before every current-asset confirmation.
+
 `AcquireL8AssetLease` pins the opened distribution root plus all seven current
 regular files, verifies root/file identity and every digest again, and copies
 both private fingerprints from the verified distribution. `ConfirmCurrent`
@@ -4144,16 +4216,32 @@ descriptor or its one lease-owned prepared descriptor. Metadata replacement,
 parent evidence replacement, inspection replacement, or asset replacement
 therefore fails even if a caller preserves the launch descriptor.
 
-`PrepareLaunch` is single-use. It confirms the source before copying, streams
+Successful `PrepareLaunch` is single-use. It confirms the source before copying, streams
 only the pinned kernel and rootfs into an `L8LaunchMaterialWriter`, verifies
 size/digest while copying, requires distinct private destinations, normalizes
 the prepared descriptor, validates sealed material, and confirms the complete
 source bundle again. It then creates a new sealed profile internally whose
 descriptor fingerprint is recomputed for the private descriptor and whose
 evidence fingerprint is copied unchanged from the lease. No descriptor-only
-constructor is called. The material and every pinned source/evidence handle
-remain lease-owned until idempotent `Close`; a cleanup error is sanitized and
-stable across repeated close calls.
+constructor is called. After the atomic success transfer, the material and
+every pinned source/evidence handle remain lease-owned until idempotent
+`Close`; a cleanup error is sanitized and stable across repeated close calls.
+
+Writer ownership is exact. The caller owns a non-nil, non-typed-nil writer on
+entry. Any failure from initial correlation/currentness, either ordered
+`WriteAsset`, private-path validation, descriptor validation, writer
+`Validate`, or the final source confirmation returns zero descriptor/profile
+plus a sanitized error and does not call `Close`; failure leaves writer
+ownership with the caller.
+A failed call does not consume the successful single-use latch;
+the caller may retry only with a new writer after closing the failed writer.
+The Firecracker caller closes the failed writer exactly once and joins the sanitized
+close error with the primary error without replacing it. Only after
+all validation and final confirmation succeed does `PrepareLaunch` latch the
+material, and success atomically transfers writer ownership to the lease. From
+that point only the lease's idempotent `Close` closes it, exactly once; the
+caller must not close it. Concurrent attempts serialize on the lease and at
+most one success transfers ownership.
 
 #### Firecracker and guest boundary
 
@@ -4170,10 +4258,60 @@ both L8 fields, the exact L8 network mode inherited from the verified parent,
 one NIC/static-network overlay, production VSOCK, and the exact current runtime
 generation. Before render, immediately before process start, and after a
 successful synchronous start handoff it calls the L8 lease current-asset check
-and `VerifiedL8ProfileMatches` against the exact descriptor it uses. Any
+and both `VerifiedL8ProfileMatches` and `VerifiedL8ProfileMatchesLease` against
+the exact descriptor, profile, and lease it uses. Any
 failure closes the owned lease and returns a sanitized L8 live-config error.
+If the final check after a successful synchronous start handoff fails, Backend
+first invokes its exact process stop/reap authority, waits for proved process
+absence, closes the lease, and only then returns the sanitized error without a
+live handle. Merely closing the asset lease cannot authorize a started process
+to remain alive.
 Firecracker does not parse a source lock, final-inspection artifact, checksum
 file, or label and cannot infer a capability from an image ID.
+
+The explicit D6-to-Firecracker live overlay API is exact and separate from the
+existing L7 provider:
+
+```go
+type L8LiveBootConfigRequest struct {
+	RuntimeGenerationID string `json:"runtimeGenerationId"`
+}
+
+type L8LiveBootConfigOverlay struct {
+	RuntimeGenerationID string                              `json:"runtimeGenerationId"`
+	LaunchDescriptor    *assets.LaunchDescriptor            `json:"-"`
+	VerifiedL8Profile   *localresolver.VerifiedL8Profile    `json:"-"`
+	VerifiedL8Assets    *localresolver.VerifiedL8AssetLease `json:"-"`
+	NetworkMode         microvm.NetworkMode                 `json:"networkMode"`
+	NetworkInterfaces   []NetworkInterfaceConfig            `json:"-"`
+	StaticNetwork       *StaticNetworkBootConfig            `json:"-"`
+	AssetChildFDStart   int                                 `json:"-"`
+}
+
+type L8LiveBootConfigProvider interface {
+	ProvideL8LiveBootConfig(context.Context, L8LiveBootConfigRequest) (L8LiveBootConfigOverlay, error)
+}
+```
+
+The request contains only the exact safe nonempty runtime generation copied
+from the base config. A nil or typed-nil provider is rejected before a call.
+The common interface-result matrix applies: on any non-nil provider error the
+provider retains ownership of every returned value; nonzero output with error
+is a contract violation and Backend uses none of it. On nil error the overlay
+must echo the exact runtime generation and contain a non-nil descriptor,
+profile, and lease, the exact inherited L7 proxy network mode, exactly one
+interface, non-nil static network, and the fixed namespace asset-FD start.
+Backend snapshots every caller-mutable safe field before validation: it
+deep-copies the interface/static-network metadata and recursively deep-copies
+the launch descriptor and every nested slice/pointer while preserving
+nil-versus-empty shape. It validates and uses only that snapshot, calls
+`VerifiedL8ProfileMatchesLease`, and confirms current assets before ownership of
+the exact non-nil L8 lease transfers to Backend. If any
+post-return validation fails, Backend owns and closes that lease exactly once;
+it never closes a lease on the provider-error path. The overlay cannot replace
+executable, jailer, CPU, memory, path, runtime-generation, VSOCK, or lifecycle
+fields from the base config. L7 and L8 providers cannot both be configured for
+one start.
 
 The host profile never enters the guest. D7 embeds the exact expected workload, runtime, and syscall-policy catalog digests
 plus helper, client, and composition digests into the built guest binaries, and independently binds the same values

@@ -4147,6 +4147,10 @@ Guest protocol v2, tmpfs namespaces, and the guest relay are production guest
 behavior and must exist in the immutable booted image. L8 therefore emits a
 distinct reproducible guest profile and descriptor. It does not rewrite the L5
 or L7 distributions, descriptors, or digests into a new capability claim.
+Its manifest and provenance both declare exact protocol `guest-agent-v2` and
+the ordered feature catalog `copy_in`, `copy_out`, `credential_delivery_v2`,
+`exec`, `readiness`, `ssh_agent_relay_v1`; the L5/L7 v1 validator and bytes
+remain unchanged.
 
 The extension-seam supplement's “L8 D2 image-profile concrete closure” is the
 normative API/schema definition. In particular, an L8 profile carries separate
@@ -4158,6 +4162,26 @@ digests. Private launch-material preparation may remint only the descriptor
 fingerprint and must copy the evidence fingerprint unchanged. This prevents
 evidence substitution through a descriptor-only proof while preserving the L7
 API and artifacts byte-for-byte.
+
+The Pi dependency-tree digest is the canonical domain-separated source-lock
+record digest—not npm output or a filesystem tree walk—and final inspection
+recomputes it. Filename URL/credential rejection uses the closed byte-marker
+catalog, and a failed launch-material preparation leaves its writer with the
+caller for exactly-once close; only a fully successful preparation transfers
+writer ownership into the lease.
+
+Profile/lease pair correlation is separately mandatory: the opaque profile
+and lease must carry the same sealed evidence fingerprint, and the profile's
+descriptor fingerprint must match the lease's source or sole prepared-material
+descriptor fingerprint. Descriptor equality alone never makes values from two
+bundles composable. D6 supplies the pair through the exact
+`L8LiveBootConfigProvider` ownership-transferring live overlay defined in the
+extension-seam supplement. A provider error retains every returned value;
+successful validation transfers the exact lease to Firecracker, which closes
+it exactly once on every later failure or completion path.
+In particular, a post-start validation failure stops and reaps the exact
+Firecracker process and proves its absence before closing the lease or
+returning an error; no live handle escapes that path.
 
 Ownership and sequencing are exact in the extension-seam supplement. D2 owns
 the opaque profile contracts and guards; D4 and D5 land guest behavior without

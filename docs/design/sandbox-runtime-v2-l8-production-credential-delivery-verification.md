@@ -335,6 +335,29 @@ and absence of embedded secret/test keys. Test probes are copied into the
 workspace through the existing bounded guest copy contract; they are not
 installed in the production image and cannot manufacture proof.
 
+Host-side profile tests include cross-bundle profile/lease substitution with
+byte-identical public descriptors and require rejection by the sealed evidence
+correlation. Firecracker provider tests cover typed-nil rejection,
+provider-error ownership retention, deep-copying of safe overlay metadata,
+exact generation/network/descriptor correlation, and the rule that a
+post-return validation failure closes the lease exactly once. They also prove
+that L7 and L8 providers cannot be configured together and that retries never
+recall the provider or remint opaque authority.
+An injected post-start revalidation failure forces stop/reap and proved process
+absence before lease closure and error return; the test rejects any returned
+live handle or surviving process.
+Manifest/provenance mutation vectors independently change the L8 guest-agent
+protocol and every ordered feature position, count, duplicate, case, and
+cross-document value. All must fail under the L8-aware validator while the
+unchanged L5/L7 v1 fixtures retain identical JSON bytes and validation results.
+Digest vectors independently assemble the canonical Pi dependency-tree
+preimage and mutate each package/archive field and order. Filename vectors
+cover every closed URL/credential marker and one-byte near misses. Launch-
+material tests inject failure before, during, and after each writer call and
+the final source confirmation; they prove caller ownership plus exactly-once
+close on every failure, retry only with a new writer, atomic transfer only on
+success, and stable joined sanitized cleanup errors.
+
 ## Prepared-Linux prerequisite gate
 
 Before the selected E2E begins, a separate no-skip prerequisite test proves:

@@ -16,6 +16,11 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 	for _, required := range []string{
 		"### L8 D2 image-profile concrete closure",
 		`ImageProfileL8ProductionCredentials = "l8-production-credentials-v1"`,
+		`L8GuestAgentProtocolV2 = "guest-agent-v2"`,
+		`"copy_in", "copy_out", "credential_delivery_v2"`,
+		`"exec", "readiness", "ssh_agent_relay_v1"`,
+		"generic L5/L7 validator is not called on an L8 value",
+		"manifest and provenance GuestAgent values must match exactly",
 		"L8SourceLockSchemaVersionV1",
 		"L8FinalInspectionSchemaVersionV1",
 		"Node 22.22.0",
@@ -43,6 +48,22 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 		"ValidateL8FinalInspection",
 		"type L8ValidationError struct",
 		"type L8LaunchMaterialWriter interface",
+		"failure leaves writer",
+		"ownership with the caller",
+		"failed call does not consume the successful single-use latch",
+		"success atomically transfers writer ownership to the lease",
+		"joins the sanitized",
+		"close error with the primary error",
+		`opaque16("hal/l8/pi-dependency-tree/v1")`,
+		"uint32_be(npmArchiveCount)",
+		"case-insensitive",
+		"URL/credential-marker algorithm",
+		`"authorization", "bearer", "token", "secret"`,
+		`"credential", "password"`,
+		`"api_key", "apikey"`,
+		`"access_key", "private_key"`,
+		`"ghp_", "github_pat_"`,
+		`"sk-"`,
 		"schema_invalid",
 		"correlation_mismatch",
 		"first error in this exact precedence",
@@ -55,10 +76,22 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 		"PrepareLaunch",
 		"evidence fingerprint is copied unchanged",
 		"VerifiedL8ProfileMatches",
+		"VerifiedL8ProfileMatchesLease",
+		"same evidence fingerprint",
 		"no public constructor or fingerprint accessor",
 		"VerifiedL8Profile *localresolver.VerifiedL8Profile `json:\"-\"`",
 		"VerifiedL8Assets *localresolver.VerifiedL8AssetLease `json:\"-\"`",
 		"L7 and L8 profile/lease fields are mutually exclusive",
+		"type L8LiveBootConfigRequest struct",
+		"type L8LiveBootConfigOverlay struct",
+		"type L8LiveBootConfigProvider interface",
+		"ProvideL8LiveBootConfig(context.Context, L8LiveBootConfigRequest)",
+		"provider retains ownership of every returned value",
+		"confirms current assets before ownership of",
+		"L8 lease transfers to Backend",
+		"recursively deep-copies",
+		"launch descriptor and every nested slice/pointer",
+		"snapshots every caller-mutable safe field before validation",
 		"does not parse a source lock",
 		"host profile never enters the guest",
 		"D7 embeds the exact expected workload, runtime, and syscall-policy catalog digests",
@@ -75,6 +108,29 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 			t.Fatalf("L8 D2 image-profile contract omits normative marker %q", required)
 		}
 	}
+
+	for _, required := range []string{
+		"Profile/lease pair correlation",
+		"same sealed evidence fingerprint",
+		"L8LiveBootConfigProvider",
+		"ownership-transferring live overlay",
+		"post-start validation failure stops and reaps",
+	} {
+		if !strings.Contains(architecture, required) {
+			t.Fatalf("L8 architecture omits image-profile ownership marker %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"cross-bundle profile/lease substitution",
+		"provider-error ownership retention",
+		"post-return validation failure closes the lease exactly once",
+		"post-start revalidation failure forces stop/reap",
+	} {
+		if !strings.Contains(verification, required) {
+			t.Fatalf("L8 verification omits image-profile ownership marker %q", required)
+		}
+	}
 }
 
 func TestL8D2ImageProfileMintAuthorityStaysNarrow(t *testing.T) {
@@ -82,6 +138,7 @@ func TestL8D2ImageProfileMintAuthorityStaysNarrow(t *testing.T) {
 		filepath.Join("..", "internal", "sandboxruntime", "microvm", "assets", "build"),
 		filepath.Join("..", "internal", "sandboxruntime", "microvm", "assets", "localresolver"),
 		filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecracker"),
+		filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost"),
 	}
 	for _, root := range []string{
 		".",
@@ -123,5 +180,30 @@ func TestL8D2ImageProfileMintAuthorityStaysNarrow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("scan %s: %v", root, err)
 		}
+	}
+
+	issuerRoot := filepath.Join("..", "internal", "sandboxruntime", "microvm", "assets", "localresolver")
+	err := filepath.WalkDir("..", func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		clean := filepath.Clean(path)
+		if clean == issuerRoot || strings.HasPrefix(clean, issuerRoot+string(filepath.Separator)) {
+			return nil
+		}
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(payload), "VerifyL8DistributionBundle(") {
+			t.Errorf("unapproved production file %s invokes the sole L8 profile issuer", filepath.ToSlash(path))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan L8 issuer boundary: %v", err)
 	}
 }
