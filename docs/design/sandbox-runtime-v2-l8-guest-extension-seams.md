@@ -313,7 +313,16 @@ into the fixed array. Its public methods are `Count() uint16`,
 `Binding(index uint16) (credentialprotocol.SafeID,
 credentialprotocol.DeliveryMode, RelativePathCapability, uint32, [32]byte,
 bool)`, and `SHA256() [32]byte`; every return is a value copy. An out-of-range
-index returns zero values and false. `ExecPlanCapability` is constructed by
+index returns zero values and false. The core boundary then requires every
+already codec-valid binding ID to pass `credentialprotocol.ValidateSafeID` and
+stores that exact `SafeID`; a broader body token such as one containing `:` is
+rejected before construction. Safe-ID narrowing is intentional: the generic
+HL8P codec accepts a reusable body-token vocabulary, while the production job
+identity and every core proof/binding ID use the narrower safe-ID grammar. The
+manifest digest is still computed by the canonical helper manifest authority
+over the exact accepted records.
+
+`ExecPlanCapability` is constructed by
 `NewExecPlanCapability(credentialprotocol.HelperExecPlan)
 (ExecPlanCapability, error)` from an already canonical at-most-64-KiB plan. The
 public constructor permits trusted D4 in-place decode to hand safe plan metadata
@@ -322,7 +331,11 @@ Its methods are `EncodedLength() uint32`, `SHA256() [32]byte`, and
 `CopyCanonicalTo(credentialmemory.CredentialSink) error`. Copy is exact and
 all-or-error; it never returns bytes. Value copies share destruction state.
 The service destroys the complete fixed capacity after `BeginExec` returns on
-every path, and any later method returns the stable destroyed error.
+every path. `EncodedLength` and `SHA256` return zero after destruction; those
+accessors cannot return errors and must not retain or disclose stale metadata.
+`CopyCanonicalTo` returns the stable `ContractDestroyed` error without calling
+the sink. Destruction zeroes the full canonical fixed capacity, encoded length,
+and digest through every alias.
 
 The four core capability digests are domain-separated SHA-256 values over the
 exact request correlation, boot/helper/job generations, and helper boot nonce.
@@ -684,6 +697,86 @@ is D4-produced, validator-bounded safe observation metadata; it is not authority
 `NewCoreGenerations` merely validates safe IDs and cannot mint a core capability.
 The independently service-minted `Prepared` value must be returned unchanged
 and is the authority-bearing correlation checked against the one-shot ledger.
+
+### Core value validation matrices
+
+The constructors apply these exact shape rules before the service performs its
+separate one-shot capability, request, generation, expiry, stream-continuity,
+or sink-write correlation. Every request ID, identity digest, revision, safe
+ID, required generation, and opaque capability is nonzero and valid. Every
+content, manifest, transaction, transcript, or capability SHA-256 field is
+nonzero except where an exact SHA-256 of empty bytes is required below. An
+all-zero fixed digest is only the absent sentinel and is never a successful
+content digest. A zero byte count uses the SHA-256 of empty bytes; a positive
+byte count requires a nonzero digest. These rules do not claim that a digest is
+proof: the service recomputes or correlates it at the owning transition.
+
+`CorePreparedResult` requires all six generations, positive expiry, binding
+count 1 through `credentialprotocol.MaxHelperBindings`, nonzero manifest and
+transaction digests, and a nonzero prepared capability. Its generations,
+expiry, count, digests, and capability must equal the exact successful commit
+ledger before the result is accepted.
+
+The CoreOutputResult matrix is exact:
+
+| EOF | Byte count | SHA-256 | Truncated |
+| --- | --- | --- | --- |
+| false | 1 through `credentialprotocol.MaxHelperExecStreamPayloadBytes` | nonzero and equal to the bytes written to the sink | false only |
+| true | exactly 0 | SHA-256 of empty bytes | false or true |
+
+Every other combination is `ContractResultMatrix`. The execution capability is
+nonzero and kind is stdout or stderr only. The service additionally requires
+execution, kind, offset, capacity, count, digest, and sink write to match the
+exact outstanding `CoreOutputRequest`. `truncated=true` is carried only on the
+unique EOF result after D4 drains bytes beyond the declared aggregate maximum;
+the shape constructor cannot infer that maximum, so the service validates that
+fact against its plan ledger.
+
+The CoreExecResult matrix is exact: exit code is 0 through 255 for `exited`,
+1 through 64 for `signaled`, and exactly 1 for `setup_failed`, which is a
+stable category code rather than a raw errno. Each stdin/stdout/stderr byte
+count is at most `credentialprotocol.MaxHelperExecStreamAggregateBytes`; zero
+requires the SHA-256 of empty bytes and positive requires a nonzero digest. The
+stdin transcript digest and exec transaction digest are always nonzero, because
+the unique stdin EOF is committed even when stdin has no payload. Output
+truncation booleans are shape-valid independently of the byte count; the service
+accepts true only when the matching plan maximum was reached and excess output
+was drained. The execution capability is nonzero. Wait is accepted only after
+the unique stdout and stderr EOF results, exact input transaction finalization,
+and matching service-owned digest/count correlation.
+
+The CoreCleanupResult matrix is exact:
+
+| Category | Authority absent | Resources absent |
+| --- | --- | --- |
+| `cleanup_complete` | true | true |
+| `retry_required` | true | false |
+| `stop_vm_required` | false | false or true |
+| `stop_vm_required` | true | false |
+
+Thus `stop_vm_required` accepts exactly the other three boolean pairs and never
+accepts true/true. `retry_required` is safe only after admission authority is
+permanently absent while resources still require bounded cleanup. A nonzero
+cleanup capability is mandatory. The service consumes it on complete or
+stop-VM; retry leaves only that exact cleanup capability live.
+
+The CoreInspection matrix is exact. Every row requires the nonzero prepared
+capability and all six nonzero generations from the inspect request:
+
+| State | Expiry | Active executions | Authority present | Resources present |
+| --- | --- | --- | --- | --- |
+| `preparing` | positive | 0 | false | true |
+| `prepared` | positive | 0 | true | true |
+| `executing` | positive | 1 | true | true |
+| `revoking` | positive | 0 or 1 | false | true |
+| `absent` | exactly 0 | 0 | false | false |
+
+Every other combination is `ContractResultMatrix`. A revoking observation may
+still report the sole execution while cancellation is being confirmed, but it
+cannot restore authority. An absent observation retains only safe correlation
+generations and the echoed prepared capability; neither is live authority. The
+service compares every returned generation and capability with the exact
+inspect request and treats drift as terminal.
 
 `CoreOutputRequest.capacity` is 1..64 KiB and kind is stdout or stderr; stdin is
 rejected. `ReadOutput` writes at most that exact capacity into the supplied sink

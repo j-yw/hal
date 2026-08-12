@@ -291,6 +291,16 @@ func TestL8D2GuestHelperCoreContractClosureIsImplementationReady(t *testing.T) {
 		"typed-nil",
 		"no public constructor",
 		"No request or result contains a raw",
+		"### Core value validation matrices",
+		"Safe-ID narrowing is intentional",
+		"`EncodedLength` and `SHA256` return zero after destruction",
+		"CoreOutputResult matrix",
+		"CoreExecResult matrix",
+		"CoreCleanupResult matrix",
+		"CoreInspection matrix",
+		"SHA-256 of empty bytes",
+		"1 through 64 for `signaled`",
+		"`stop_vm_required` accepts exactly the other three boolean pairs",
 	} {
 		if !strings.Contains(seam, required) {
 			t.Fatalf("L8 D2 extension seam omits implementation-ready core contract %q", required)
