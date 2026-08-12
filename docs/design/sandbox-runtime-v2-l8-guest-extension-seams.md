@@ -583,14 +583,27 @@ they require boot/helper/job and encode monitor/mount/cgroup as empty
 observed generations after Commit; it does not retroactively change the
 already-issued prepared-capability digest. The execution, exec-cleanup, and
 revoke-cleanup capabilities require all six generations as nonempty safe IDs.
+
+The prepared capability remains bound to its issuing Prepare correlation and
+activation for that activation's lifetime. Its digest is not recomputed from a
+later Exec, Renew, Revoke, or Inspect request ID or revision. Service records
+the current activation entry and permits that exact prepared value to be echoed
+only by those enumerated later operations. A prepared value from another
+issuing Prepare correlation or activation is rejected. Prepare-cleanup remains
+the internally initiated cleanup capability after Commit; the newly observed
+complete generation tuple is carried in later requests but does not remint that
+capability. A peer-initiated first Revoke instead mints the full-generation
+revoke-cleanup capability described below.
+
 There is no omitted suffix, delimiter, zero-ID alias,
 alternate order, or kind cast. Their constructors are private to
 `credentialhelper`; D4 receives and echoes them but cannot mint them. A zero,
-changed, cross-kind, cross-request, cross-generation, or cross-boot capability
-is rejected in constant time before a core transition. The Service records
-each issuance in a fixed one-use ledger; result acceptance consumes only the
-exact expected entry. These are process-local correlation capabilities, not
-proof IDs, and never enter HL8P or durable state.
+changed, cross-kind, wrong issuing correlation under the prepared-capability
+exception above, cross-generation, or cross-boot capability is rejected in
+constant time before a core transition. The Service records each issuance in a
+fixed lifecycle ledger; result acceptance consumes only the exact expected
+entry when its lifecycle completes. These are process-local correlation
+capabilities, not proof IDs, and never enter HL8P or durable state.
 
 All redaction-safe proof labels are deterministic and nonsecret. Define
 `Label(prefix, domain, payload)` as
@@ -934,14 +947,25 @@ func NewCoreInspection(
 
 These public result constructors validate shape but do not mint: outside code
 can construct only the zero capability or echo a nonzero capability it received
-from the service. The service accepts a result only when the capability equals
-the exact issued value in constant time, is in the expected transition, and is
-still unconsumed. A zero, bit-changed, wrong-kind, cross-request,
-cross-generation, or already-consumed capability is a contract violation. A
-successful commit, complete execution event, complete cleanup, or inspection
-consumes the exact one-shot ledger entry as appropriate; `retry_required`
-leaves only its cleanup capability live for the next reinspection and every
-other capability is dead.
+from the service. Each capability is issued once and never reassigned to another
+lifecycle or correlation. It is not consumed on every valid echo. The service
+accepts a mutating operation or result only
+when its capability equals the exact issued value in constant time, is in the
+expected transition, and has not completed its lifecycle. A zero, bit-changed,
+wrong-kind, value from another issuing lifecycle/correlation, cross-generation,
+or terminally consumed capability
+is a contract violation. Successful commit consumes preparation; complete
+execution consumes execution; complete or stop-VM cleanup consumes cleanup.
+The prepared capability remains current while its prepared activation exists.
+
+When cleanup returns `retry_required`, cleanup remains the sole live mutation
+authority. The prepared capability remains as non-authoritative cleanup
+correlation for repeat Revoke and Inspect; echoing it in those exact calls and
+results neither reauthorizes admission nor consumes it. Multiple Inspect calls
+may echo the same prepared value while the repeatable absence loop is active.
+Terminal cleanup or Core Close ends both cleanup authority and that prepared
+correlation. Every preparation/execution capability and every unrelated
+prepared value is dead.
 Rollback and Cancel return the cleanup capability retained by their owning
 `CorePreparation` or `CoreExecution`. Capability digests are private
 domain-separated SHA-256 values over kind, exact request correlation,
@@ -1105,7 +1129,9 @@ Thus `stop_vm_required` accepts exactly the other three boolean pairs and never
 accepts true/true. `retry_required` is safe only after admission authority is
 permanently absent while resources still require bounded cleanup. A nonzero
 cleanup capability is mandatory. The service consumes it on complete or
-stop-VM; retry leaves only that exact cleanup capability live.
+stop-VM; retry leaves only that exact cleanup capability live as mutation
+authority, while the exact prepared value remains available only as the
+non-authoritative echo required by repeat Revoke and Inspect.
 
 The CoreInspection matrix is exact. Every row requires the nonzero prepared
 capability and all six nonzero generations from the inspect request:
@@ -1687,16 +1713,38 @@ non-Revoke operation can never consume a reserved slot. It also has a separate
 fixed 4,096-entry exec ledger. Neither ledger grows, evicts, wraps, reuses a
 request ID, or allocates a map. Each entry records only safe request
 correlation, canonical request/result digests, disposition, and the exact
-one-use capabilities required for replay or cleanup. Repeated exact requests
-use comparison-only state; a changed request with the same ID is a conflict and
-never calls Core or an extension.
+lifecycle-correlation capability digests required for replay or cleanup.
+Repeated exact requests use comparison-only state; a changed request with the
+same ID is a conflict and never calls Core or an extension.
 
 Cross-ledger same-ID reuse is rejected before charging; an exact replay
 consumes no slot. Service charges a first-seen ID before mutation. Prepare and
 Renew can admit at most 4,093 distinct non-exec IDs; Revoke never consumes
 those general slots. The three reserved Revoke entries are the at-most-three
-fresh cleanup attempts. After they are exhausted cleanup is already terminal
-stop-VM and no fresh request is admitted.
+fresh peer-driven cleanup attempts. After they are exhausted cleanup is already
+terminal stop-VM and no fresh request is admitted. A fresh Revoke after
+`cleanup_retry` is an outer wire retry trigger: it has a new request ID for
+transport, replay-cache, policy, runtime-observation, and response correlation,
+but it never replaces or remints the retained cleanup capability.
+
+The first accepted peer Revoke establishes the first internal cleanup
+correlation and mints its full-generation revoke-cleanup capability. Every
+later fresh-ID Revoke must have the same identity, revision, reason, and active
+activation; Service charges its reserved outer ledger entry, but constructs
+repeat Core Revoke and Inspect calls with that first internal cleanup
+correlation, exact prepared echo, and retained cleanup capability. A duplicate
+outer request replays only its cached response and runs no absence work. A
+changed same-ID request, changed cleanup fields, or fourth distinct attempt is
+terminal. The outer request ID is never substituted into the retained Core
+capability ledger.
+
+An internally driven cleanup episode has no outer Revoke trigger. Pre-commit
+failure and prepared/post-commit failure use the retained prepare-cleanup
+capability bound to the issuing Prepare; an active-exec cancellation first uses
+its exec-cleanup capability and then the retained prepare-cleanup correlation
+for remaining prepared-activation cleanup. Caller cancellation, dependency
+failure, loss, or send ambiguity drives its bounded passes immediately and does
+not consume a reserved Revoke slot or expose `cleanup_retry` to a peer.
 
 A distinct Prepare or Exec received after its admissible capacity is exhausted
 has all declared input fully consumed and drained without a Core/extension
@@ -1718,33 +1766,54 @@ Revoke capacity, or mutate job/extension state. This is the only exception to
 charging a first-seen ID before mutation and avoids pretending a 4,097th ID can
 fit in a 4,096-entry ledger.
 
-One terminal drain uses one budget and at most three complete cleanup passes.
-Within each pass the order is exact, completed steps are skipped, and no
-resource is recreated:
+One cleanup episode uses one budget. Its exact three-pass cleanup protocol is
+split into at most three repeatable absence passes followed by exactly one
+one-time finalization pass. Before the first absence pass, Service denies exec,
+extension accepts, publication, and every ordinary packet. A peer-driven
+cleanup episode permits only the next fresh-ID Revoke after a committed
+`cleanup_retry`; an internally driven cleanup episode denies every packet.
+Each repeatable absence pass then performs, in this exact order:
 
-1. deny new packet admission, exec, extension accepts, and publication;
-2. cancel the active `CoreExecution`, if any;
-3. call `Revoke` in reverse binding order on every extension session whose
+1. cancel the active `CoreExecution`, if any;
+2. call `Revoke` in reverse binding order on every extension session whose
    `Prepare` call began;
-4. before commit call `CorePreparation.Rollback`; after commit call
-   `Core.Revoke` and then `Core.Inspect`;
-5. call every opened extension session `Close` in reverse open order;
-6. destroy or close every Service-owned received/send packet body and right;
-7. call `Core.Close` exactly once;
-8. call `ServiceRuntime.Close` exactly once;
-9. if IPC is still unambiguously usable, perform the correlated close-notify
-   handshake described below;
-10. call `Transport.Close` exactly once and last.
+3. before commit call `CorePreparation.Rollback`; after commit call
+   `Core.Revoke` and then `Core.Inspect`.
 
-This is the exact three-pass cleanup protocol: retryable absence observations
-may repeat the complete dependency-inspection pass at most three times inside
-the single 30-second budget; the ordered steps do not create ten separate
-budgets. `cleanup_complete` skips completed steps. `retry_required` preserves
-exact ownership and reinspects without recreate. Any stop-VM result, budget
-expiry, dependency nonconformance, loss, or absence that remains unknown
-dominates all prior retry/success results and produces
-`ServiceStopVMRequired`. No cleanup call is placed in a detached goroutine,
-and no call uses `context.Background()`.
+`cleanup_complete` skips that completed component in later absence passes.
+`retry_required` preserves exact ownership and permits only the corresponding
+Cancel, Revoke, Rollback, or Inspect work to run again; nothing is recreated.
+In a peer-driven episode, attempt one is the first Revoke. After attempt one or
+two reports retryable incomplete absence, Service commits the correlated
+`cleanup_retry`, clears that outer outstanding request, and waits for that retry
+under the same cleanup budget. Only the next fresh-ID Revoke may start the next
+absence pass. In an internally driven episode, Service starts the next pass
+itself without admitting a packet and never emits `cleanup_retry`. The absence
+loop stops as soon as every applicable component reports complete. A third
+incomplete attempt, stop-VM result, budget expiry (including while awaiting a
+fresh retry), dependency nonconformance, loss, or ambiguous send makes the
+episode terminal `ServiceStopVMRequired`.
+
+After the absence loop ends in cleanup-complete or terminal escalation, and
+never while a peer retry remains admissible, the one-time finalization pass
+performs, in this exact order:
+
+1. call every opened extension session `Close` in reverse open order;
+2. destroy or close every Service-owned received/send packet body and right;
+3. call `Core.Close` exactly once;
+4. call `ServiceRuntime.Close` exactly once;
+5. if IPC is still unambiguously usable, perform the correlated close-notify
+   handshake described below;
+6. call `Transport.Close` exactly once and last.
+
+No repeatable absence operation runs after one-time finalization begins, and no
+finalizer runs a second time. All absence passes and finalizers share the single
+30-second budget. Any stop-VM result, budget expiry, dependency nonconformance,
+loss, or absence that remains unknown dominates all prior retry/success results
+and produces `ServiceStopVMRequired`. Finalizers still run best-effort under the
+remaining shared budget so Service releases every ownership it can before D6
+kill/reap. No cleanup call is placed in a detached goroutine, and no call uses
+`context.Background()`.
 
 Close correlation is exact. A close-notify header always has an all-zero
 request ID and the exact boot nonce. Its identity digest is all-zero before the
@@ -1966,6 +2035,17 @@ on rejected unmarshal. Accessors return only immutable scalar/fixed copies or
 the exact opaque interface; no public literal mutation is possible. Canonical
 expiry is `int64` Unix nanoseconds; `time.Time` is not accepted.
 
+`NewExtensionOpenRequest` is the one slice-bearing input exception: after
+validation it deep-clones the descriptor on construction, including all three
+`ExtensionDescriptor` claim slices, into
+private request ownership. The caller may mutate its input immediately without
+changing the request. Every `Descriptor` accessor call returns a fresh deep
+clone, so an extension cannot mutate the stored request through a returned
+slice. The constructor and fresh deep clone on every `Descriptor` accessor call
+preserve nil-versus-explicit-empty slice shape; they use
+`credentialprotocol.CloneExtensionDescriptor` and never retain or return a
+shallow descriptor alias.
+
 `ExecBindingCapability` and live endpoint/connection values have private
 concrete implementations. `ExtensionCleanupResult` and `SSHIOResult` have only
 private fields and validating constructors. None permits public struct-literal
@@ -2091,20 +2171,23 @@ has one `Serve` lifetime, one activation, and one drain path. The exact
 extension lifecycle is:
 
 1. open manifest-selected extension sessions in order before `Core.BeginPrepare`;
-2. on a pre-commit failure, call opened sessions' `Close` in reverse order and
-   call `CorePreparation.Rollback` if staging began;
+2. on a pre-commit failure, call `CorePreparation.Rollback` before closing every
+   opened session in reverse order; a retry-required Rollback is resolved by
+   the repeatable absence pass before any one-time extension Close begins;
 3. complete Core file staging and Core Commit, then call extension `Prepare` in
    manifest order, and only after all succeed publish the outer prepare result;
 4. once any post-commit extension Prepare begins, its failure cleanup calls
    reverse `Revoke` on every session whose Prepare call began, including the
    failing session even when it returned an error; it then calls Core Revoke,
-   never Rollback after commit, and finally Close on all opened sessions in
-   reverse order;
+   never Rollback after commit. Every retry/unknown result enters the repeatable
+   absence pass. Only after that loop ends does the one-time finalization pass
+   Close all opened sessions in reverse order;
 5. renew Core first and extensions in manifest order; any extension Renew
    failure revokes the whole activation through that post-commit path;
 6. revoke denies new work, cancels an active execution, calls extension
-   `Revoke` in reverse order, then Core Revoke, then extension `Close` in
-   reverse order.
+   `Revoke` in reverse order, then Core Revoke. Retry/unknown results enter the
+   repeatable absence pass; extension `Close` in reverse order occurs only in
+   the one-time finalization pass after the absence loop ends.
 
 The closed manifest contains at most one SSH binding, so the SSH extension may
 issue one `create_ssh_endpoint` and cannot create a second `SSH_AUTH_SOCK`.

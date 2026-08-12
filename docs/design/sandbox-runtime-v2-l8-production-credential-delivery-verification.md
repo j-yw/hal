@@ -205,13 +205,16 @@ Required focused areas are:
 - the helper-Service normative closure: exact Service/ServiceRuntime/result
   APIs, a runtime-owned 30-second cleanup budget without forced-return claims,
   CoreExecution event/body ownership over the full canonical output body,
+  non-reassignable lifecycle correlation capabilities whose prepared echo remains
+  non-authoritative through repeat Revoke/Inspect,
   context-aware ownership-on-entry for helper live body/right constructors and
   the helper CredentialSink send, exact core/extension capability domains,
   deterministic proof/event labels, reused prepare/exec transaction FSMs,
   fixed non-evicting exec/non-exec ledgers with reserved Revoke ledger capacity
   and the uncached terminal-overflow rule, opaque extension lifecycle with
-  Service-only binding mint authority, three-pass cleanup and close
-  correlation, and the response-disposition correction;
+  Service-only binding mint authority, repeatable absence passes before
+  one-time finalization, three-pass cleanup and close correlation, and the
+  response-disposition correction;
 - the credential-client concrete closure: its one-way read-only `credentialclient -> v2control`
   authority edge with a reverse-import guard,
   D6-issued canonical process-descriptor snapshot,

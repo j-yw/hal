@@ -3451,21 +3451,44 @@ drain declared input without mutation, best-effort emit the operation's allowed
 failure while IPC is usable, then mandatory drain/stop-VM; no 4,097th cached ID
 is promised.
 
+The three reserved Revoke slots are outer wire attempt correlations. The first
+Revoke establishes one inner Core cleanup correlation and capability; a
+fresh-ID retry retains that inner correlation/capability and uses its new ID
+only for transport, policy, runtime-observation, response, and replay-cache
+correlation. The outer wire retry trigger never replaces or remints the retained cleanup capability.
+After `cleanup_retry`, the peer-driven cleanup episode denies ordinary
+admission and accepts only the next fresh-ID Revoke under the same cleanup
+budget. An internally driven cleanup episode uses the owning prepare/exec
+cleanup correlation, consumes no reserved Revoke slot, and drives retries
+without exposing `cleanup_retry`.
+
 Extension lifecycle is one activation: open selected sessions in order before
-Core BeginPrepare; pre-commit failure closes in reverse and rolls back staging;
+Core BeginPrepare. Precommit Rollback before reverse extension Close is
+mandatory on pre-commit failure.
 Core Commit precedes ordered extension Prepare and publish; any begun
-post-commit Prepare failure reverse-revokes including the failing session,
-Core-revokes (never rolls back), then reverse-closes; renew is Core then
-extensions and failure revokes the activation; revoke denies new work, cancels,
-reverse-revokes extensions, Core-revokes, then reverse-closes. Close is called
-once and never substitutes for Revoke or absence proof.
+post-commit Prepare failure reverse-revokes including the failing session and
+Core-revokes (never rolls back); renew is Core then extensions and failure
+revokes the activation; revoke denies new work, cancels, reverse-revokes
+extensions, then Core-revokes. Every retry or unknown result flows through the
+repeatable absence pass; reverse Close occurs only in the one-time finalization
+pass after the absence loop ends. Close is called once and never substitutes
+for Revoke or absence proof.
 
 Terminal cleanup is one fixed budget and one exact three-pass cleanup protocol:
-deny admission; Cancel; reverse extension Revoke; precommit Rollback or
-postcommit Core Revoke/Inspect; reverse extension Close; destroy Service-owned
-packets; Core Close; Runtime Close; correlated close-notify if unambiguously
-usable; Transport Close last. Completed work is skipped, retry never recreates,
-and stop/deadline/unknown absence dominates.
+deny ordinary admission once; run at most three repeatable absence passes of
+Cancel, reverse extension Revoke, and precommit Rollback or postcommit Core
+Revoke/Inspect. In the peer-driven cleanup episode, Service must
+wait for that retry under the same cleanup budget after attempt one or two
+returns cleanup-retry; an internally driven cleanup episode advances without a
+packet.
+A third incomplete attempt is terminal. Then run one one-time finalization pass
+of reverse extension Close, Service-owned packet destruction, Core Close,
+Runtime Close, correlated close-notify if unambiguously usable, and Transport
+Close last. Completed absence work is skipped, retry never recreates, no
+finalizer begins before the
+absence loop ends, and no absence operation runs after finalization begins.
+Stop/deadline/unknown absence dominates, while finalizers remain best-effort
+inside the same budget before D6 kill/reap.
 
 The stop-VM response correction is closed: `cleanup_retry` is Revoke-only;
 `stop_vm_required` is legal only for PrepareCommit, Renew, Exec, or Revoke;
