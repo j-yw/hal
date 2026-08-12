@@ -625,6 +625,37 @@ func TestHelperPrepareTransactionConcurrentCopyAndClose(t *testing.T) {
 	}
 }
 
+func TestHelperPrepareTransactionAcceptObservedFileObservationRetainsMetadataOnlyAndIsOneUse(t *testing.T) {
+	correlation := testHelperPrepareTransactionCorrelation(t)
+	begin, manifestDigest, private := testHelperPrepareTransactionBegin(t)
+	state := mustHelperPrepareTransaction(t, correlation, begin, manifestDigest)
+	first, err := NewHelperPrepareFileObservation(1, 1, uint32(len(private[0])), sha256.Sum256(private[0]), sha256.Sum256(private[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := first
+	if err := state.AcceptObservedFileObservation(correlation, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.AcceptObservedFileObservation(correlation, alias); !errors.Is(err, ErrHelperPrepareFileObservationUsed) {
+		t.Fatalf("reuse = %v", err)
+	}
+	second, err := NewHelperPrepareFileObservation(1, 3, uint32(len(private[1])), sha256.Sum256(private[1]), sha256.Sum256(private[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.AcceptObservedFileObservation(correlation, second); err != nil {
+		t.Fatal(err)
+	}
+	result, err := state.Commit(correlation, HelperPrepareCommitBody{Revision: 1, ManifestSHA256: manifestDigest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount() != 2 || result.TransactionSHA256() == [32]byte{} {
+		t.Fatalf("result = count %d digest %x", result.FileCount(), result.TransactionSHA256())
+	}
+}
+
 func testHelperPrepareTransactionCorrelation(t *testing.T) HelperPrepareTransactionCorrelation {
 	t.Helper()
 	var requestID [16]byte
