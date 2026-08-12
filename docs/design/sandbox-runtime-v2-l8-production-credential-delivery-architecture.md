@@ -1740,8 +1740,12 @@ supplement. The controller receives agent socket 3, supervisor socket 4,
 minimal-root FD 5, and sealed bootstrap config 6. Active job slots hold only the
 monitor endpoint, namespace FD, cgroup identity capability, and safe PID1-owned
 launch correlation; the controller never owns a clone or mount capability. A
-monitor receives only its controller endpoint, verified proc-root and fixed
-mount-target FDs, and sealed config. A workload shim receives the inspected
+monitor receives its direct controller endpoint at FD 3, verified proc-root and
+fixed mount-target FDs, sealed config, self namespace FD 7, plus launch-only
+controller peer FD 9 and PID1 bootstrap endpoint FD 10. It sends FD 9 and FD 7
+once over FD 10, closes FD 9 and FD 10 permanently, and retains FD 3 and FD 7.
+PID1's fixed FD 10 independently remains the monitor pidfd; its bootstrap peer
+is instead recorded in a transient slot. A workload shim receives the inspected
 namespace/workdir/executable/pipe/gate/launch-block FDs for one launch; the
 native shim consumes and closes the namespace FD before starting Go; the launch
 block is the Go shim's complete sealed config and FD 8 is closed. The agent
@@ -1750,46 +1754,740 @@ VSOCK listeners at 5/6/7. All
 unrelated descriptors are closed, and no workload inherits a control, root,
 namespace, cgroup, pidfd, config, gate, launch-block, or nonce descriptor.
 
-The private controller-supervisor codec is a strict seqpacket union with header
-`HL8L`, version 1, zero flags, monotonic sequence, exact request/job identity,
-exact body length, and kernel credentials. Its job operations
-are exactly `create_job`, `launch_shim`, `terminate_job`, and `destroy_job`, with
-matching safe result/event unions. `create_job` carries only revision, safe
-monitor/cgroup generation requests, fixed limit-set ID, and digests. PID1
-creates the cgroup and monitor and returns a safe generation result; the new
-monitor sends its controller endpoint and namespace proof through PID1 with
-exactly one endpoint right, after which credential bytes use that direct link.
+### Normative HL8L controller-supervisor ABI
 
-`launch_shim` carries revision, exact monitor/cgroup generations, executable
-and launch-block digests, fixed limit-set ID, and exactly eight controller-supplied rights
-in this order: monitor namespace, workdir, executable, child stdin-read,
-stdout-write, stderr-write, start-gate read, and sealed launch-block read. PID1
-reinspects every kind, access direction, generation, and namespace/cgroup
-correlation before using the already-owned exact cgroup FD. No numeric FD value
-enters a digest. `terminate_job` and `destroy_job` carry only identity, revision,
-generation, and a closed reason code. PID1 events contain only safe launch ID,
-exit category/code, zero-population state, monitor state, and cleanup category.
-Unknown types, fields, rights, ordering, identities, generations, or duplicate
-active requests close the link and require `stop_vm_required`.
-
-Both private headers have the exact 68-byte layout:
+The private controller-supervisor codec is one atomic Unix
+`SOCK_SEQPACKET|SOCK_CLOEXEC` datagram per packet. It is neither a byte stream
+nor a public or durable protocol. The constants are exact:
 
 ```text
-magic[4] | version:u8=1 | type:u8 | flags:u16_be=0 | sequence:u64_be
-requestID:[16]byte | jobIdentityDigest:[32]byte | bodyLength:u32_be
+HL8LHeaderBytes = 68
+HL8LMaxBodyBytes = 8192
+HL8LMaxDatagramBytes = 8260
+HL8LMaxPacketsPerDirection = 4294967296
 ```
 
-Sequences start at zero independently in each direction and advance by one per
-accepted packet. Boot readiness/attestation/composition/close records have zero
-request ID and zero job identity; every job operation has the exact nonzero
-request ID and identity. `HL8L` bodies are at most 8 KiB and complete datagrams at most
-8,260 bytes. Its closed types are `0x01 supervisor_ready`, `0x02 create_job`,
-`0x03 job_created`, `0x04 launch_shim`, `0x05 shim_started`,
-`0x06 terminate_job`, `0x07 destroy_job`, `0x08 supervisor_event`, and
-`0x09 controller_attestation`, `0x0a composition_accepted`, and
-`0x7f close_notify`; the direction and rights rules above are part of each type.
-The controller attestation body is `descriptorLength:u16 | descriptor`;
-accepted carries exactly `compositionSHA256:[32]byte`. Neither carries rights.
+The header byte layout is:
+
+```text
+offset  size  field
+0       4     magic[4] = ASCII "HL8L"
+4       1     version:u8 = 1
+5       1     type:u8
+6       2     flags:u16_be = 0
+8       8     sequence:u64_be
+16      16    requestID:[16]byte
+32      32    jobIdentityDigest:[32]byte
+64      4     bodyLength:u32_be
+68      n     body
+```
+
+`bodyLength` is body bytes only, equals the datagram remainder exactly, and is
+at most 8192. A shorter datagram is truncation and a longer one has trailing
+data; neither is a second packet. Every multibyte integer is big-endian. A body
+`token` delegates exactly to `credentialprotocol.EncodeBodyToken`,
+`DecodeBodyTokenPrefix`, `ValidateBodyToken`, and `MaxBodyTokenBytes`: its wire
+is `uint16_be(length) || ASCII bytes`, length 1 through 128, matching
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,127}` without trimming, normalization, Unicode,
+case folding, or defaulting. A field identified below as a safe ID is first
+decoded as that body token and then must pass
+`credentialprotocol.ValidateSafeID`, whose exact grammar is 1 through 128
+ASCII bytes from `[A-Za-z0-9._-]`; a colon is therefore rejected for every
+generation, launch, and limit-set ID. An
+`optional-token` is `uint16_be(0)` for absent or the same canonical nonempty
+token form; no other nullable encoding exists. Booleans are one byte and are
+exactly zero or one. SHA-256 fields are 32 raw bytes and are nonzero unless a
+type-specific matrix below explicitly requires the all-zero value. No body is
+JSON, text, a generic map, a generic body, or an extensible tagged union.
+
+Every receive supplies this independent kernel metadata to the pure decoder:
+
+```text
+Direction:closed enum | CredentialCount:uint32 = 1 |
+Credential:{PID:uint32, UID:uint32, GID:uint32} |
+RightsCount:uint32 | MSG_TRUNC:bool | MSG_CTRUNC:bool
+```
+
+D2 represents inspected rights without representing live descriptors. The
+exact concrete, non-JSON vocabulary is:
+
+```text
+right kind: 1 monitor_endpoint, 2 monitor_namespace, 3 workdir,
+            4 executable, 5 stdin_read, 6 stdout_write, 7 stderr_write,
+            8 start_gate_read, 9 launch_block_read
+right access: 1 duplex_seqpacket, 2 namespace_enter, 3 directory_chdir,
+              4 executable_read, 5 pipe_read, 6 pipe_write,
+              7 sealed_pipe_read
+
+HL8LRightMetadata = {
+  Kind:HL8LRightKind, Access:HL8LRightAccess, Generation:SafeID,
+  SHA256:[32]byte
+}
+
+HL8LReceiveMetadata = {
+  Direction:HL8LDirection, Credential:HL8LKernelCredential,
+  CredentialCount:uint32, RightsCount:uint32,
+  Rights:[8]HL8LRightMetadata,
+  MessageTruncated:bool, ControlTruncated:bool
+}
+```
+
+The fixed array prevents a generic or caller-sized rights body; only its first
+`RightsCount` entries may be nonzero and every remaining entry must be zero.
+`RightsCount > 8` is rejected before any array index or role comparison.
+For `job_created`, endpoint metadata uses `monitorGeneration` and namespace
+metadata uses `mountGeneration`; both SHA-256 fields are exactly the received
+and validated `monitorReadySHA256`, which is protocol correlation only and is
+not proof of either live object. For `launch_shim`, namespace and workdir use
+`mountGeneration`/`launchShimSHA256`, executable uses
+`jobGeneration`/`executableSHA256`, the four ordinary pipe/gate rights use
+`launchID`/`launchShimSHA256`, and the launch block uses
+`launchID`/`launchBlockSHA256`. Endpoint is `duplex_seqpacket`, namespace is
+`namespace_enter`, workdir is `directory_chdir`, executable is
+`executable_read`, stdin and gate are `pipe_read`, stdout/stderr are
+`pipe_write`, and launch block is `sealed_pipe_read`. No production D2 type has
+an `FD`, integer descriptor, `any`, map, raw ancillary bytes, callback, live
+handle, or interface body. D4 constructs this metadata only after kernel
+inspection and remains owner of all live rights until the D2 transition says
+ownership committed.
+
+The role metadata order is closed and exact:
+
+| Packet/index | kind | access | generation | SHA-256 metadata |
+| --- | --- | --- | --- | --- |
+| `job_created/0` | `1 monitor_endpoint` | `1 duplex_seqpacket` | `monitorGeneration` | `monitorReadySHA256` |
+| `job_created/1` | `2 monitor_namespace` | `2 namespace_enter` | `mountGeneration` | `monitorReadySHA256` |
+| `launch_shim/0` | `2 monitor_namespace` | `2 namespace_enter` | `mountGeneration` | `launchShimSHA256` |
+| `launch_shim/1` | `3 workdir` | `3 directory_chdir` | `mountGeneration` | `launchShimSHA256` |
+| `launch_shim/2` | `4 executable` | `4 executable_read` | `jobGeneration` | `executableSHA256` |
+| `launch_shim/3` | `5 stdin_read` | `5 pipe_read` | `launchID` | `launchShimSHA256` |
+| `launch_shim/4` | `6 stdout_write` | `6 pipe_write` | `launchID` | `launchShimSHA256` |
+| `launch_shim/5` | `7 stderr_write` | `6 pipe_write` | `launchID` | `launchShimSHA256` |
+| `launch_shim/6` | `8 start_gate_read` | `5 pipe_read` | `launchID` | `launchShimSHA256` |
+| `launch_shim/7` | `9 launch_block_read` | `7 sealed_pipe_read` | `launchID` | `launchBlockSHA256` |
+
+No SHA-256 metadata in this table attests a live FD. It only binds the role to
+an already defined canonical protocol correlation or content digest; D4's
+kernel reinspection is separately mandatory and authoritative.
+
+PID1 credentials are exactly PID 1, UID 0, GID 0. Controller credentials are
+the PID from 2 through `math.MaxInt32` pinned from the successful image-owned
+controller launch, distinct from PID1 and the pinned agent PID, and UID 0,
+GID 0. D2 retains all kernel PID/UID/GID metadata as `uint32` and validates
+bounds before any conversion; it never narrows the values. A request field can
+never select either identity. Missing or
+duplicate `SCM_CREDENTIALS`, a changed PID/UID/GID, `MSG_TRUNC`, `MSG_CTRUNC`,
+or any wrong/missing/extra right is a terminal protocol failure. There is no
+numeric FD, PID, UID, GID, inode, device, cgroup path, mount path, executable
+path, socket address, credential body, argv, or environment value in an HL8L
+body or digest.
+
+The type/direction/identity/rights matrix is closed:
+
+| Type | Name and direction | request ID | job digest | rights |
+| --- | --- | --- | --- | ---: |
+| `0x01` | `supervisor_ready`, PID1 -> controller | zero | zero | 0 |
+| `0x02` | `create_job`, controller -> PID1 | nonzero | nonzero | 0 |
+| `0x03` | `job_created`, PID1 -> controller | exact echoed `0x02` | exact echoed `0x02` | 2 |
+| `0x04` | `launch_shim`, controller -> PID1 | nonzero | exact active job | 8 |
+| `0x05` | `shim_started`, PID1 -> controller | exact echoed `0x04` | exact echoed `0x04` | 0 |
+| `0x06` | `terminate_job`, controller -> PID1 | nonzero | exact active job | 0 |
+| `0x07` | `destroy_job`, controller -> PID1 | nonzero | exact active job | 0 |
+| `0x08` | `supervisor_event`, PID1 -> controller | exact causative request | exact active job | 0 |
+| `0x09` | `controller_attestation`, controller -> PID1 | zero | zero | 0 |
+| `0x0a` | `composition_accepted`, PID1 -> controller | zero | zero | 0 |
+| `0x7f` | `close_notify`, either direction | zero | zero | 0 |
+
+No type is valid in the opposite direction. “Exact echoed” is byte equality,
+not re-encoding. A job request ID is a nonzero 16-byte idempotency/correlation
+identifier and is unique for the lifetime of the link. It cannot be reused for
+another operation, even with identical bytes. For a launch, `launchID` is the
+exact 22-character unpadded-base64url encoding of that request ID; decoding it
+must reproduce the header bytes. An event reuses its causative operation's
+request ID and never invents a second event identifier. Loss of an atomic local
+response is link loss: response loss is supervisor loss and requires whole-VM
+stop/reap, not request replay. This deliberately avoids retaining or
+retransferring live rights for idempotency.
+
+The two rights on `job_created` are, in order:
+
+1. the controller side of the new monitor's inspected
+   `AF_UNIX/SOCK_SEQPACKET|SOCK_CLOEXEC` pair with `SO_PASSCRED`; and
+2. the monitor-created, PID1-reinspected live mount-namespace capability received
+   through authenticated `HL8M monitor_ready`, with `NSFS_MAGIC`,
+   `NS_GET_NSTYPE == CLONE_NEWNS`, exact generation, and inequality from the
+   supervisor namespace already proved.
+
+Thus `job_created` transfers exactly one monitor endpoint right and one
+monitor-created namespace authority; “exactly one endpoint right” never meant
+that the namespace authority could be omitted. PID1 creates both the temporary
+PID1-monitor bootstrap pair and the separate long-lived controller-monitor
+pair before launch. The monitor receives its long-lived endpoint at fixed FD 3,
+the long-lived controller peer at launch-only FD 9, and its temporary bootstrap
+endpoint at launch-only FD 10. PID1 holds the matching bootstrap peer in a
+recorded transient slot; PID1 fixed FD 10 remains the monitor pidfd. Its
+`HL8M monitor_ready` sequence-zero packet sends exactly two rights over monitor
+FD 10 to PID1 in this order: monitor FD 9, the long-lived controller peer, then
+monitor FD 7, the live namespace
+capability. Its body carries revision, job, monitor, mount, and cgroup
+generations, `helper-limits-v1`, the exact `createJobSHA256`, and the exact
+`monitorReadySHA256`. PID1 requires byte equality with its pending create tuple,
+recomputes the ready digest, and authenticates and reinspects both rights before
+the monitor permanently closes FD 9 and FD 10 and retains only fixed FD 3 and
+namespace FD 7. PID1 relays those same two
+authorities in `job_created` in the same order, echoes the same
+`monitorReadySHA256`, and closes its duplicates after authenticated transfer.
+Direct controller-monitor HL8M traffic begins with controller send
+sequence zero and monitor send sequence one, preserving the monitor's consumed
+sequence-zero readiness record without replaying it.
+
+The controller owns both only after
+the complete packet, credentials, body, digests, rights, and state transition
+commit. Before commit the receiver owns and closes both on every error. The
+controller retains the endpoint for `HL8M` and the namespace capability for
+the job lifetime, passes a fresh duplicate of the namespace capability in each
+launch, performs all direct monitor cleanup through that endpoint, and closes
+both before it is permitted to send `destroy_job`.
+
+The eight controller-supplied rights on `launch_shim` retain the already frozen
+order: monitor namespace, workdir, executable, child stdin-read, stdout-write,
+stderr-write, start-gate read, and sealed launch-block read. Their exact
+required kinds are:
+
+```text
+monitor namespace, workdir, executable, child stdin-read, stdout-write, stderr-write, start-gate read, and sealed launch-block read
+```
+
+1. a duplicate of the active inspected `NSFS` mount-namespace capability;
+2. an `O_PATH|O_DIRECTORY|O_CLOEXEC` workdir beneath the pinned workspace root;
+3. the frozen L4 regular executable capability, `O_PATH|O_CLOEXEC`, executable
+   and contained beneath an image-pinned executable root;
+4. the read end of the inspected stdin pipe;
+5. the write end of the inspected stdout pipe;
+6. the write end of the inspected stderr pipe;
+7. the read end of the empty, unread supervisor start-gate pipe; and
+8. the read end of the bounded launch-block pipe after its controller write
+   end is closed and the exact bytes hash to `launchBlockSHA256`.
+
+PID1 takes ownership of all eight only after one atomic receive. It reinspects
+kind, access direction, close-on-exec state, generation, namespace and cgroup
+correlation before launch. Rejection closes all eight. After successful pinned
+`ForkExec`, the child mappings own the required copies and PID1 closes every
+unneeded copy; the gate's PID1 write end remains the sole release authority.
+No descriptor integer enters `launchShimSHA256`. The controller retains only
+its parent pipe ends and its original job namespace capability.
+
+The bodies are exact, in the displayed byte order:
+
+```text
+0x01 supervisor_ready:
+  bootGeneration:token | helperGeneration:token |
+  supervisorGeneration:token | limitSetID:token |
+  supervisorReadySHA256:[32]byte
+
+0x02 create_job:
+  revision:u64 | jobGeneration:token | monitorGeneration:token |
+  mountGeneration:token | cgroupGeneration:token | limitSetID:token |
+  monitorConfigSHA256:[32]byte | cgroupConfigSHA256:[32]byte
+
+0x03 job_created:
+  revision:u64 | jobGeneration:token | monitorGeneration:token |
+  mountGeneration:token | cgroupGeneration:token | limitSetID:token |
+  createJobSHA256:[32]byte | monitorReadySHA256:[32]byte
+
+0x04 launch_shim:
+  revision:u64 | jobGeneration:token | monitorGeneration:token |
+  mountGeneration:token | cgroupGeneration:token |
+  launchID:token | limitSetID:token |
+  executableSHA256:[32]byte | launchBlockSHA256:[32]byte
+
+0x05 shim_started:
+  revision:u64 | jobGeneration:token | monitorGeneration:token |
+  mountGeneration:token | cgroupGeneration:token |
+  launchID:token | launchShimSHA256:[32]byte
+
+0x06 terminate_job and 0x07 destroy_job:
+  revision:u64 | jobGeneration:token | monitorGeneration:token |
+  mountGeneration:token | cgroupGeneration:token | reason:u8
+
+0x08 supervisor_event:
+  eventCode:u8 | requestType:u8 | failureCode:u8 | reserved:u8=0 |
+  revision:u64 | jobGeneration:token | monitorGeneration:token |
+  mountGeneration:token | cgroupGeneration:token | launchID:optional-token |
+  exitCategory:u8 | exitCode:i32 | zeroPopulation:u8 |
+  monitorState:u8 | cleanupCategory:u8
+
+0x09 controller_attestation:
+  descriptorLength:u16 | canonical controller ProcessDescriptor
+
+0x0a composition_accepted:
+  compositionSHA256:[32]byte
+
+0x7f close_notify:
+  closeReason:u8
+```
+
+`descriptorLength` is 1 through `MaxProcessDescriptorBytes` (currently the
+existing locked value 1898) and equals the remaining descriptor
+bytes. Decoding delegates to the canonical `DecodeProcessDescriptor`, requires
+`ProcessRoleHelper`, re-encodes with `EncodeProcessDescriptor`, requires byte equality,
+and compares SHA-256 of those exact bytes with the image-sealed controller
+descriptor digest. Reusing `ProcessRoleHelper` is deliberate: the credential
+controller process hosts the privileged helper service policy, while
+`ProcessRoleClient` names the unprivileged agent-side client. There is no third
+controller descriptor role to invent. PID1 never copies or locally redefines
+`HL8D`. The
+`composition_accepted` value is exactly the `CompositionSHA256` returned by
+`ValidateProcessDescriptors(helper, client)`, whose existing domain is
+`hal/l8/process-composition/v1`; HL8L does not wrap or reinterpret it.
+
+All generation fields and `limitSetID` are safe IDs. The controller mints the
+job, monitor, mount, and cgroup generations, and every job-scoped request or
+result carries that complete tuple. `revision` is positive;
+create is exactly revision 1. A later new operation's revision is not less
+than the current revision; an increase atomically replaces the current value
+only when that request commits. Equal revisions allow multiple launches under
+one activation. A lower revision is stale and terminal. All later generation
+and limit fields equal the committed create tuple byte-for-byte. The sole limit
+set is `helper-limits-v1`, the one fixed limit-set ID shared by the HL8L
+supervisor, HL8M monitor, HL8P helper service, and client policy. It denotes one
+job, one monitor/cgroup/namespace, one active credential-aware execution,
+4096 lifetime launches, 256 role FDs,
+the existing body/file/stream limits, three cleanup attempts, the 30-second
+cleanup deadline, and the 35-minute hard session lifetime. No caller-selected
+number accompanies that ID. The generic L4 server may support up to 64
+concurrent ordinary v1 executions, but this L8 limit set deliberately narrows
+the one-outstanding helper transaction and `CoreExecution` ownership to one;
+neither catalog is projected as the other.
+
+The supervisor reason catalog is closed and nonzero:
+
+```text
+supervisor reason: 1 requested, 2 expired, 3 session_loss,
+                   4 source_revoked, 5 worker_cancel, 6 daemon_shutdown,
+                   7 launch_failed, 8 exec_failed
+```
+
+The `supervisor_event` catalogs are closed:
+
+```text
+event code:       1 shim_exited, 2 operation_failed, 3 job_terminated,
+                  4 job_destroyed, 5 cleanup_observed
+failure code:     0 none, 1 resource_limit, 2 create_failed,
+                  3 launch_failed, 4 terminate_failed, 5 destroy_failed,
+                  6 cleanup_incomplete, 7 monitor_unavailable,
+                  8 cgroup_unavailable,
+                  9 process_termination_unconfirmed
+exit category:    0 not_applicable, 1 exited, 2 signaled,
+                  3 launch_transition_failed, 4 unknown
+monitor state:    0 not_applicable, 1 starting, 2 ready,
+                  3 cleanup_pending, 4 absent, 5 lost
+cleanup category: 1 not_applicable, 2 cleanup_complete,
+                  3 retry_required, 4 stop_vm_required
+close reason:     1 normal, 2 protocol_error, 3 identity_drift,
+                  4 expired, 5 helper_loss, 6 shutdown
+```
+
+`close reason` deliberately reuses the exact `credentialprotocol.CloseReason`
+numeric catalog used by `HL8P` and `HL8A`; no conversion table exists.
+`terminate_job` accepts supervisor reasons 1 through 8. `destroy_job` accepts
+only reasons 1 through 6 because launch/exec failure is a termination cause,
+not authority to skip the required terminated state. The failure-code/request
+matrix is exact:
+
+```text
+0x02 create_job:    1 resource_limit, 2 create_failed,
+                    6 cleanup_incomplete, 7 monitor_unavailable,
+                    8 cgroup_unavailable
+0x04 launch_shim:   1 resource_limit, 3 launch_failed,
+                    6 cleanup_incomplete, 7 monitor_unavailable,
+                    8 cgroup_unavailable,
+                    9 process_termination_unconfirmed
+0x06 terminate_job: 4 terminate_failed, 6 cleanup_incomplete,
+                    7 monitor_unavailable, 8 cgroup_unavailable,
+                    9 process_termination_unconfirmed
+0x07 destroy_job:   5 destroy_failed, 6 cleanup_incomplete,
+                    7 monitor_unavailable, 8 cgroup_unavailable
+```
+
+No other request/failure pair is valid.
+`exitCode` is 0 through 255 for `exited`, 1 through 64 for `signaled`, exactly 1
+for `launch_transition_failed`, and zero for `not_applicable` or `unknown`.
+Zero population is a canonical boolean and is evidence only when one. The
+event union rules are:
+
+| Event | Correlation and exact canonical fields |
+| --- | --- |
+| `shim_exited` | `requestType=0x04`; header request ID and `launchID` match one entry in the completed-launch ledger; `failureCode=0`; exit category is 1, 2, or 3 with its allowed code; `zeroPopulation` is the exact observation and may be zero or one; monitor state is ready or cleanup-pending; `cleanupCategory=not_applicable`. This event correlation does not reuse the ID for a controller request. |
+| `operation_failed` | `requestType` is 0x02, 0x04, 0x06, or 0x07 and header request ID echoes that outstanding request; the matching nonzero failure code is required; launch ID is present only for 0x04; exit fields are not-applicable/zero; cleanup is not-applicable only for a pre-mutation resource-limit rejection, otherwise complete, retry, or stop-VM. |
+| `job_terminated` | `requestType=0x06`, exact outstanding request, `failureCode=0`, absent launch ID, not-applicable/zero exit, `zeroPopulation=1`, monitor ready or cleanup-pending, cleanup not-applicable. |
+| `job_destroyed` | `requestType=0x07`, exact outstanding request, `failureCode=0`, absent launch ID, not-applicable/zero exit, `zeroPopulation=1`, monitor absent, cleanup complete. |
+| `cleanup_observed` | is the sole terminal result for the exact outstanding causative 0x02/0x04/0x06/0x07 request; `failureCode=cleanup_incomplete`; launch ID is present only when the cause is 0x04; exit fields are not-applicable/zero; cleanup is retry-required or stop-VM and monitor/zero-population report the inspected state. It is never spontaneous and never references a completed request. |
+
+Any other enum, zero/nonzero combination, reserved byte, result request type,
+or trailing byte is malformed. `job_created` and `shim_started` mean success
+only; failure is never inferred from an empty body and is represented only by
+the exact `operation_failed` event. Successful terminate and destroy results
+are respectively `job_terminated` and `job_destroyed` events. A canonical
+resource-limit request can be an accepted semantic rejection: it consumes the
+receive sequence, performs no mutation, and gets exactly one correlated
+`operation_failed` event with `failureCode=resource_limit` and cleanup
+not-applicable. Authentication, framing, identity, sequence, generation,
+rights, or transition failures are not semantic rejections and emit no packet.
+
+The digest definitions use the existing `opaque16` encoding. Exact token wire
+bytes below include their `uint16_be` length:
+
+```text
+supervisorReadySHA256 = SHA256(
+  opaque16("hal/l8/controller-supervisor/supervisor-ready/v1") ||
+  bootGeneration:token || helperGeneration:token ||
+  supervisorGeneration:token || limitSetID:token)
+
+monitorConfigSHA256 = SHA256(
+  opaque16("hal/l8/controller-supervisor/monitor-config/v1") ||
+  jobIdentityDigest || jobGeneration:token || monitorGeneration:token ||
+  mountGeneration:token || limitSetID:token)
+
+cgroupConfigSHA256 = SHA256(
+  opaque16("hal/l8/controller-supervisor/cgroup-config/v1") ||
+  jobIdentityDigest || jobGeneration:token || cgroupGeneration:token ||
+  limitSetID:token)
+
+createJobSHA256 = SHA256(
+  opaque16("hal/l8/controller-supervisor/create-job/v1") ||
+  jobIdentityDigest || uint64_be(revision) || jobGeneration:token ||
+  monitorGeneration:token || mountGeneration:token ||
+  cgroupGeneration:token || limitSetID:token || monitorConfigSHA256 ||
+  cgroupConfigSHA256)
+
+monitorReadySHA256 = SHA256(
+  opaque16("hal/l8/controller-monitor/monitor-ready/v1") ||
+  jobIdentityDigest || uint64_be(revision) || jobGeneration:token ||
+  monitorGeneration:token || mountGeneration:token ||
+  cgroupGeneration:token || limitSetID:token || createJobSHA256)
+
+launchShimSHA256 = SHA256(
+  opaque16("hal/l8/controller-supervisor/launch-shim/v1") ||
+  jobIdentityDigest || uint64_be(revision) || jobGeneration:token ||
+  monitorGeneration:token || mountGeneration:token ||
+  cgroupGeneration:token || launchID:token || limitSetID:token ||
+  executableSHA256 || launchBlockSHA256)
+```
+
+The canonical fixed body and digest vector table uses these complete inputs:
+
+```text
+bootGeneration       = "boot-1"
+helperGeneration     = "helper-1"
+supervisorGeneration = "supervisor-1"
+limitSetID            = "helper-limits-v1"
+revision              = 1
+jobGeneration         = "job-1"
+monitorGeneration     = "monitor-1"
+mountGeneration       = "mount-1"
+cgroupGeneration      = "cgroup-1"
+jobIdentityDigest     = a0a1a2a3a4a5a6a7a8a9aaabacadaeaf
+                        b0b1b2b3b4b5b6b7b8b9babbbcbdbebf
+launch request ID     = 000102030405060708090a0b0c0d0e0f
+launchID              = "AAECAwQFBgcICQoLDA0ODw"
+executableSHA256      = 202122232425262728292a2b2c2d2e2f
+                        303132333435363738393a3b3c3d3e3f
+launchBlockSHA256     = 404142434445464748494a4b4c4d4e4f
+                        505152535455565758595a5b5c5d5e5f
+```
+
+The required digest outputs are:
+
+```text
+supervisorReadySHA256 = f184ff36331fa69007751e7a567f03dd
+                        9c9b369125a984f99ac7f5b02cfb70b3
+monitorConfigSHA256   = 8f77e47200fe4b9fc5f8cb48f2840a50
+                        487f80b3b1fc6b373d29199778c8e3d4
+cgroupConfigSHA256    = 4c0b5daf0102f695bfa60c63c5a99361
+                        2d61f99161a735217eb9d12f76e6b05b
+createJobSHA256       = f4ff4d17dfe08c11946ddb35dbb7c7c5
+                        3f72c31ea14f0655c5e30c66819b0d38
+monitorReadySHA256    = fef4fb8972101ac91c792380e1f06cc3
+                        713c69ba68ca89cbcaf63aee73458cae
+launchShimSHA256      = 8b2dedea6f00f15c8d1e404ee84efee4
+                        6c905e1e8f4aa27e7a03d06b1e1ae404
+```
+
+For the event vector, `shim_exited`, request type `0x04`, no failure, exited
+with code zero, zero-population false, monitor ready, and cleanup
+not-applicable are selected. The attestation vector reuses the existing exact
+42-byte empty-extension helper descriptor. The canonical body hex and byte
+lengths for every type are:
+
+```text
+0x01 len=82
+0006626f6f742d31000868656c7065722d31000c73757065727669736f722d31
+001068656c7065722d6c696d6974732d7631
+f184ff36331fa69007751e7a567f03dd9c9b369125a984f99ac7f5b02cfb70b3
+
+0x02 len=127
+000000000000000100056a6f622d3100096d6f6e69746f722d3100076d6f756e
+742d3100086367726f75702d31001068656c7065722d6c696d6974732d7631
+8f77e47200fe4b9fc5f8cb48f2840a50487f80b3b1fc6b373d29199778c8e3d4
+4c0b5daf0102f695bfa60c63c5a993612d61f99161a735217eb9d12f76e6b05b
+
+0x03 len=127
+000000000000000100056a6f622d3100096d6f6e69746f722d3100076d6f756e
+742d3100086367726f75702d31001068656c7065722d6c696d6974732d7631
+f4ff4d17dfe08c11946ddb35dbb7c7c53f72c31ea14f0655c5e30c66819b0d38
+fef4fb8972101ac91c792380e1f06cc3713c69ba68ca89cbcaf63aee73458cae
+
+0x04 len=151
+000000000000000100056a6f622d3100096d6f6e69746f722d3100076d6f756e
+742d3100086367726f75702d31001641414543417751464267634943516f4c4441
+304f4477001068656c7065722d6c696d6974732d7631
+202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f
+
+0x05 len=101
+000000000000000100056a6f622d3100096d6f6e69746f722d3100076d6f756e
+742d3100086367726f75702d31001641414543417751464267634943516f4c4441
+304f44778b2dedea6f00f15c8d1e404ee84efee46c905e1e8f4aa27e7a03d06b
+1e1ae404
+
+0x06 len=46
+000000000000000100056a6f622d3100096d6f6e69746f722d3100076d6f756e
+742d3100086367726f75702d3101
+
+0x07 len=46
+000000000000000100056a6f622d3100096d6f6e69746f722d3100076d6f756e
+742d3100086367726f75702d3101
+
+0x08 len=81
+01040000000000000000000100056a6f622d3100096d6f6e69746f722d310007
+6d6f756e742d3100086367726f75702d3100164141454341775146426763494351
+6f4c4441304f44770100000000000201
+
+0x09 len=44
+002a484c3844010100000000702f1015d6dded7d0991d3275cb3f36d4ddab234
+d208a9b851369dc6d5fb7df6
+
+0x0a len=32
+000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+
+0x7f len=1
+01
+```
+
+The vector's exact complete datagrams covering every new digest domain are:
+
+```text
+supervisor_ready (150 bytes; PID1 send sequence 0):
+484c384c01010000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+000000520006626f6f742d31000868656c7065722d31000c73757065727669736f
+722d31001068656c7065722d6c696d6974732d7631f184ff36331fa69007751e7a
+567f03dd9c9b369125a984f99ac7f5b02cfb70b3
+
+create_job (195 bytes; controller send sequence 1; request ID 10..1f):
+484c384c010200000000000000000001101112131415161718191a1b1c1d1e1f
+a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf
+0000007f000000000000000100056a6f622d3100096d6f6e69746f722d310007
+6d6f756e742d3100086367726f75702d31001068656c7065722d6c696d697473
+2d76318f77e47200fe4b9fc5f8cb48f2840a50487f80b3b1fc6b373d29199778
+c8e3d44c0b5daf0102
+f695bfa60c63c5a993612d61f99161a735217eb9d12f76e6b05b
+
+job_created (195 bytes; PID1 send sequence 2; same request and identity):
+484c384c010300000000000000000002101112131415161718191a1b1c1d1e1f
+a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf
+0000007f000000000000000100056a6f622d3100096d6f6e69746f722d310007
+6d6f756e742d3100086367726f75702d31001068656c7065722d6c696d697473
+2d7631f4ff4d17dfe08c11946ddb35dbb7c7c53f72c31ea14f0655c5e30c668
+19b0d38fef4fb8972101ac91c792380e1f06cc3713c69ba68ca89cbcaf63aee7
+3458cae
+
+launch_shim (219 bytes; controller send sequence 2; request ID 00..0f):
+484c384c010400000000000000000002000102030405060708090a0b0c0d0e0f
+a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf
+00000097000000000000000100056a6f622d3100096d6f6e69746f722d310007
+6d6f756e742d3100086367726f75702d3100164141454341775146426763494351
+6f4c4441304f4477001068656c7065722d6c696d6974732d763120212223242526
+2728292a2b2c2d
+2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d
+4e4f505152535455565758595a5b5c5d5e5f
+
+shim_started (169 bytes; PID1 send sequence 3):
+484c384c010500000000000000000003000102030405060708090a0b0c0d0e0f
+a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf
+00000065000000000000000100056a6f622d3100096d6f6e69746f722d310007
+6d6f756e742d3100086367726f75702d3100164141454341775146426763494351
+6f4c4441304f44778b2dedea6f00f15c8d1e404ee84efee46c905e1e8f4aa27e
+7a03d06b1e1ae404
+```
+
+Concatenating display lines yields the exact bytes; there are no whitespace
+bytes. `job_created` carries the two out-of-band rights and `launch_shim` the
+eight out-of-band rights, so the datagram bytes remain independent of unstable
+descriptor integers. Tests must reproduce these hashes from the domains and
+inputs rather than treating the literals as the hash implementation.
+
+The monitor and cgroup configuration digests therefore bind only canonical
+safe identity/configuration, not kernel object numbers. The monitor-ready
+digest binds the exact cross-protocol create/readiness correlation;
+authenticated rights and D4 post-receive reinspection independently prove the
+live endpoint and namespace objects. Executable and launch-block SHA-256 are
+over the exact pinned executable bytes and exact bounded sealed launch-block
+bytes. These live-only digests are never durable credential proof and never
+substitute for descriptor or object inspection.
+
+The deterministic state model has these rules:
+
+1. PID1 sends `supervisor_ready` at PID1-to-controller sequence 0. The
+   controller compares the sealed boot/helper/supervisor generations, exact
+   limit ID, and recomputed digest before sending anything.
+2. The controller sends `controller_attestation` at controller-to-PID1
+   sequence 0. PID1 validates the canonical helper-role descriptor and sealed
+   descriptor digest. A second ready or attestation is terminal.
+3. After the independently authenticated agent/helper bootstrap and matching
+   descriptors, PID1 sends `composition_accepted` at its sequence 1. The
+   controller requires the independently computed composition digest. This
+   enters `composed_idle`; job traffic before it is terminal.
+4. Exactly one `create_job` may leave `composed_idle`. Success commits the
+   identity, revision, complete job/monitor/mount/cgroup generation tuple,
+   limit set, cgroup, monitor, validated `monitorReadySHA256`, two-right
+   transfer, and `job_created` together. A proven pre-publication rollback may
+   emit `operation_failed`; uncertainty emits stop-VM and becomes terminal.
+5. The controller has one outstanding request. PID1 sends its one correlated
+   terminal result before an asynchronous event. A second request, duplicate
+   active request, response with the wrong type/ID/identity/revision, or
+   unexpected result is terminal. Response/event correlation may echo an old
+   request ID, but only controller requests are subject to the never-reuse
+   rule. PID1 holds a non-evicting used-request/launch-ID ledger with at most
+   4096 launch tombstones and one completed-launch entry
+   `{requestID, launchID, revision, launchShimSHA256, exitPending}`.
+   `shim_started` records the tombstone and completed-launch correlation before
+   the result becomes sendable. The exact `shim_exited` send consumes the
+   completed-launch entry while the tombstone remains, so exactly one event
+   exists and neither identifier can ever be reused.
+6. There is exactly one active credential-aware execution. `launch_shim` is
+   valid only when no launch is active and fewer than 4096 launch IDs have
+   been charged. Capacity is charged before D4 launch. Success commits
+   `shim_started`; a failed adapter path emits the exact failure result only
+   after its cleanup category is known. If a gated workload exit is observed
+   before `shim_started` is sent, PID1 first commits/sends `shim_started`, then
+   emits the queued `shim_exited`; an exit before gate release is instead a
+   launch failure and never produces `shim_started`. A successful launch
+   remains active until one exact `shim_exited` event. Launch-ID tombstones are
+   never reused or evicted during the link lifetime; the sole live
+   completed-launch entry is consumed only by that event.
+7. The first accepted `terminate_job` permanently denies new launches. Success
+   requires cgroup `populated 0` and emits `job_terminated`. Retry-required
+   permits only a fresh-ID `terminate_job` with the same generations and a
+   nondecreasing revision, within the shared three-attempt/deadline limit.
+   Stop-VM is terminal.
+8. `destroy_job` is valid only after termination proved zero population and the
+   controller has first denied new exec/accept, driven direct HL8M
+   revoke/cleanup to `cleanup_complete`, closed every listener and accepted
+   connection, received the monitor cleanup result, committed bilateral normal
+   HL8M close, closed its direct monitor endpoint and namespace duplicate, and
+   observed monitor exit. PID1 never
+   contacts the monitor: its bootstrap endpoint was permanently closed after
+   readiness and PID1 owns neither direct capability. PID1 performs only any
+   still-needed cgroup kill/zero confirmation, monitor-pidfd exit/reap,
+   PID1-owned directory and cgroup removal, and absence reinspection. Success
+   emits `job_destroyed` and enters `destroyed`; a request before the exact
+   monitor-exit/cleanup precondition gets one canonical correlated operation
+   failure with retry/stop cleanup disposition. A later fresh-ID destroy retry
+   remains inside the same three-attempt/deadline bound. Stop-VM is terminal.
+9. PID1 has exactly one pending asynchronous-event slot. Only `shim_exited`
+   may occupy it. If an exit races any outstanding request, the immutable exit
+   tuple is placed in that slot; PID1 completes and sends the outstanding
+   request's result, then sends the queued exit before accepting another
+   controller request. Exit data is never folded into another result. The
+   controller may not send while the slot is pending. A second event while
+   occupied, a missing ledger entry, or inability to send the event is
+   supervisor loss and stop-VM. With one active execution, no conforming path
+   needs a second slot.
+10. In `destroyed`, either peer may send one normal `close_notify`; the receiver
+   sends its own normal close at its next sequence if it has not already, and
+   both close only after both normal packets commit. This is graceful local
+   HL8L closure, not a guest or host cleanup proof. A new create is not session
+   reuse: the runtime/job lease requires a new authenticated guest session
+   generation. Any job or boot-class post-accept packet is terminal.
+
+Directions have independent counters starting at zero. A packet sequence must
+equal the exact next value. Counters advance only after credentials, framing,
+body, rights, canonical encoding, correlation, and either a state transition
+or committed accepted semantic rejection all validate. Lower is replay and
+higher is loss/gap. Legal sequences are zero through `2^32-1`; accepting the
+last legal value exhausts that direction, and attempting a later packet or
+counter wrap is terminal. The D4 sender serializes each direction and never
+advances after a partial/failed send.
+
+Unknown type, wrong direction or credentials, bad body length, truncation,
+trailing data, noncanonical token, zero required digest, wrong or reordered
+rights, request/job zero-semantics error, stale identity/revision/generation,
+sequence replay/gap/exhaustion, duplicate request ID, illegal transition, result/event
+correlation mismatch, or any packet after terminal failure permanently latches
+the pure state to `stop_vm_required`. EOF before the two committed normal close
+packets, controller/PID1 loss, an abnormal `close_notify`, and policy-kill also
+latch role loss. The exact paired normal close after `destroyed` enters
+`closed_clean` rather than stop-VM, but it does not by itself prove guest or
+host cleanup; D6 still owns exact Firecracker reap and host absence inspection.
+A post-accept packet means a repeated boot-class 0x01/0x09/0x0a after
+composition acceptance; ordinary valid job traffic is not “post-accept.”
+
+Canonical no-rights composition vector (spaces and newlines are display only):
+
+```text
+sequence = 1
+requestID = 00000000000000000000000000000000
+jobIdentityDigest =
+  0000000000000000000000000000000000000000000000000000000000000000
+compositionSHA256 =
+  000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+complete datagram =
+  484c384c010a00000000000000000001
+  00000000000000000000000000000000
+  0000000000000000000000000000000000000000000000000000000000000000
+  00000020
+  000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+```
+
+The complete vector is exactly 100 bytes. Tests independently assemble it,
+then mutate every header byte class, sequence, identity, body length, digest,
+direction, credential count/value, rights count/order/kind, truncation flag,
+and trailing byte. Separate canonical vectors lock every body and every digest
+domain above; maximum token/body/datagram and plus-one cases are mandatory.
+
+Formerly ambiguous choices are closed as follows: `job_created` carries two
+rights because the controller's frozen FD table needs both the single monitor
+endpoint and monitor-created namespace authority; launch identity is the
+canonical request-ID encoding rather than a second independent capability;
+terminate/destroy success uses the existing event type because no new type ID
+is available; response loss never triggers rights replay; and the process
+composition digest remains the existing `HL8D` digest rather than an HL8L
+variant. These choices preserve all already frozen type IDs, the eight-right
+launch order, the controller/PID1 capability split, and the D4 cgroup/mount
+cleanup order.
+
+D2 owns the pure codec, canonical body and digest functions, fixed-size
+rights-role metadata, descriptor delegation, deterministic transition state,
+opaque formatting, fail-closed JSON/text/binary marshal and unmarshal methods,
+defensive ownership copies, and fake-only negative tests. D4 owns every live
+syscall, socketpair, credentials/rights receive, descriptor close/dup/remap,
+pidfd, cgroup, namespace, monitor, pipe, `ForkExec`, gate, reap, and cleanup
+operation behind D2 decisions. D2 opens no socket or process, receives no FD,
+mounts nothing, serializes nothing durably, and does not claim live cleanup.
+D2's exported packet, body, enum, metadata, and state values format only as
+their static type name from both `String` and `GoString`; they expose no field
+value, byte, digest, ID, generation, reason, or credential. Their
+`MarshalJSON`, `MarshalText`, and `MarshalBinary` methods return no bytes and
+the one stable opaque-serialization error. Their matching unmarshal methods
+return that error without mutating even a seeded receiver. No D2 struct has a
+JSON tag. The explicit canonical encode/decode APIs are the sole wire boundary,
+defensively copy every accepted input and returned byte slice, and return only
+closed stable error codes that contain no input-derived text.
+D4 may not reinterpret a body, add a type/right, weaken a terminal disposition,
+or bypass D2 correlation. D6 alone turns `stop_vm_required` into exact
+Firecracker stop/reap and host-owned absence evidence.
 
 The direct agent-supervisor codec uses the same 68-byte header and 8-KiB body
 bound with `magic[4] = "HL8A"`, version 1, zero flags/request/job identity, and
@@ -1804,19 +2502,38 @@ sequence error, wrong descriptor/digest, truncation, loss, or packet after
 accepted is a pre-admission VM-stop failure. The agent closes FD 4 after
 accepted; HL8A never carries a credential value or becomes a job protocol.
 
-The direct controller-monitor codec is a second strict seqpacket union with
-header `HL8M`, the same version/flags/sequence/request/identity/length rules, and
-exact controller/monitor kernel credentials. Its only operations are
+The controller-monitor codec is a second strict seqpacket union with header
+`HL8M`, the same version/flags/sequence/request/identity/length rules, and exact
+endpoint-owner kernel credentials. Its sequence-zero `monitor_ready` is the
+sole bootstrap exception: the monitor sends it to PID1 over the temporary
+authenticated PID1-monitor pair from monitor FD 10 to PID1's recorded transient
+peer. Monitor FD 3 remains the direct endpoint, FD 9 the controller peer sent
+as the first ready right, and FD 7 the namespace authority sent second. The
+monitor closes FD 9 and FD 10 permanently after that one send. After the
+two-right HL8L transfer, all later HL8M traffic is direct between the pinned
+controller and monitor, the logical monitor send sequence continues at one,
+and controller send sequence starts at zero. Its only operations are
 `monitor_ready`, `prepare_begin`, `prepare_file`, `prepare_commit`,
 `create_ssh_endpoint`, `revoke`, and their closed response/event forms.
-`monitor_ready` carries exactly one namespace FD plus safe monitor/mount
-generations and the postinspection digest. `prepare_file` is the only packet
+`monitor_ready` carries exactly two rights in order: the separately created
+long-lived controller endpoint, then the live namespace capability. Its body
+carries the revision, controller-minted job/monitor/mount/cgroup generations,
+`helper-limits-v1`, exact `createJobSHA256`, and canonical
+`monitorReadySHA256`. PID1 authenticates the monitor, requires the exact pending
+tuple and recomputed digest, reinspects both live rights, relays both plus the
+ready digest in `HL8L job_created`, and closes its duplicates; this packet is
+not exposed to the controller or replayed. The digest is correlation, never a
+substitute for inspecting the live namespace authority.
+`prepare_file` is the only packet
 that contains credential bytes and decodes directly into a fixed-capacity locked
 monitor buffer. `create_ssh_endpoint` exists only with the D5 extension and may
 return exactly one inspected listening `AF_UNIX` capability. The monitor closes
 its original after authenticated transfer; the controller owns and accepts on
 the published listener and closes it before monitor cleanup. All other packets
-carry no rights. There is one outstanding request, one active job, no arbitrary
+carry no rights. The `monitor_ready` endpoint is not an arbitrary socket:
+PID1 created both endpoints before monitor launch, the monitor is only a
+one-time authenticated transfer owner, and no monitor syscall creates a
+socketpair. There is one outstanding request, one active job, no arbitrary
 path/mount/socket/clone/exec operation, and no PID1 credential-body path.
 
 D2 owns canonical encoders/decoders, rights matrices, fake
@@ -2323,22 +3040,30 @@ contract. Direct unprivileged-agent or steady-controller exec cannot join a
 credential namespace. Job/process/file/FD/count/byte/time limits are
 fixed at construction and charged before allocation: one active credential
 job, one pending prepare transaction, one mount namespace/cgroup/monitor, one
-outstanding helper request, at most 64 concurrently populated workload
-processes, 4096 launches over the activation lifetime, 256 helper-owned file
+outstanding helper request, exactly one active credential-aware workload
+execution beneath the separate generic L4 ceiling of 64, 4096 launches over
+the activation lifetime, 256 helper-owned file
 descriptors, 16 bindings/files, and the byte limits above. The monitor and helper
 job state cannot outlive the 35-minute guest activation. Guest cleanup gets at
 most three idempotent attempts within one 30-second total deadline before
 `stop_vm_required`; retry clocks and observations are injected in D2 tests.
 
-Revoke denies new exec; PID1 writes `1` to the exact job cgroup's
-`cgroup.kill`, waits for `cgroup.events` to report `populated 0`, and reaps every
-workload shim/leader. The controller closes pipes, destroys buffers, denies new
-accepts, and the controller closes the published listener plus every accepted
-connection. It then instructs the still-capable monitor to unlink files and the
-socket entry, normally unmount in its current namespace, and inspect mount/file
-absence. Only after that proof does the monitor call `exit_group`; PID1 reaps
-its pidfd, proves no privileged monitor thread survives, removes the owned
-directory and cgroup, and reinspects absence.
+Revoke first makes the controller deny new exec and accepts. It sends HL8L
+`terminate_job`; PID1 writes `1` to the exact job cgroup's `cgroup.kill`, waits
+for `cgroup.events` to report `populated 0`, and reaps every workload
+shim/leader. After correlated `job_terminated`, the controller closes pipes and
+wipes private buffers. The controller closes the published listener plus every
+accepted connection, and drives direct HL8M `revoke`/cleanup through the
+controller-owned monitor endpoint. The still-capable monitor unlinks files and
+the socket entry, normally unmounts in its current namespace, inspects
+mount/file absence, returns
+`cleanup_complete`, and only then calls `exit_group`. The controller receives
+that result, commits bilateral normal HL8M close, observes monitor exit, and
+closes its direct endpoint and namespace duplicate. Only then may it send HL8L
+`destroy_job`. PID1 never contacts the monitor during destroy; it uses its
+monitor pidfd to confirm/reap exit, performs any still-needed cgroup kill/zero
+check, removes the PID1-owned directory and cgroup, and reinspects absence
+before returning `job_destroyed`.
 Process-group termination alone is never L8 cleanup proof because a descendant
 can call `setsid` or `setpgid`. If cgroup creation, race-free placement,
 `cgroup.kill`, zero-population inspection, normal unmount, or monitor inspection

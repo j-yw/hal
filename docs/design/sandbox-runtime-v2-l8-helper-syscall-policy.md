@@ -80,8 +80,8 @@ does not authorize reusing its number for another object in that role.
 | 6 | Pinned workload-shim executable. | Sealed bootstrap config, closed at commit. | Preopened v2 control VSOCK listener, port 1025. | Sealed monitor config, closed at commit. | Sealed controller-to-shim launch-block read FD; this is the complete shim config. |
 | 7 | Verified proc root. | Agent pidfd after bootstrap. | Preopened v2 SSH-relay VSOCK listener, port 1026. | Self mount-namespace FD after exact lookup. | Supervisor start-gate read FD. |
 | 8 | Fixed monitor mount-target root. | Active monitor endpoint or closed. | Closed. | Active tmpfs root or closed. | Closed. |
-| 9 | Active job cgroup or closed. | Active monitor namespace or closed. | Closed. | Closed after a published SSH listener transfers to the controller. | Closed. |
-| 10 | Active monitor pidfd or closed. | Closed. | Closed. | Closed. | Closed. |
+| 9 | Active job cgroup or closed. | Active monitor namespace or closed. | Closed. | Launch-only long-lived controller peer; sent once during readiness, then permanently closed. | Closed. |
+| 10 | Active monitor pidfd or closed. | Closed. | Closed. | Launch-only PID1 bootstrap endpoint; one readiness send, then permanently closed. | Closed. |
 | 11 | Closed; workload pidfds occupy recorded transient slots. | Closed. | Closed. | Closed. | Pinned executable after final remap for `execveat(11, "", ..., AT_EMPTY_PATH)`. |
 | 12 | Preopened v1 VSOCK listener until agent transfer. | Closed. | Closed. | Closed. | Closed. |
 | 13 | Preopened v2 control VSOCK listener until agent transfer. | Closed. | Closed. | Closed. | Closed. |
@@ -357,7 +357,10 @@ recvmsg sendmsg getsockopt
 
 Agent-controller traffic is only agent FD 3/controller FD 3, agent-supervisor
 traffic only agent FD 4/PID1's recorded boot endpoint, controller-supervisor
-traffic only controller FD 4/PID1 FD 3, and monitor traffic only monitor FD 3.
+traffic only controller FD 4/PID1 FD 3, monitor bootstrap traffic only monitor
+FD 10 to PID1's recorded transient bootstrap peer before readiness commit, and
+steady monitor traffic only monitor FD 3. PID1 FD 10 remains the monitor pidfd
+and is never a protocol endpoint; descriptor numbers are role-local.
 Receive flags are exactly
 `MSG_CMSG_CLOEXEC` plus optional `MSG_DONTWAIT`; send flags are zero or
 `MSG_NOSIGNAL`. Each role allocates the fixed bounded control and ancillary
@@ -561,12 +564,28 @@ above, and the shim is the sole service binary that later uses pinned-FD
 
 PID1 and the controller may create only the exact `pipe2` and unnamed
 `AF_UNIX/SOCK_SEQPACKET|SOCK_CLOEXEC` pairs required by the closed launch and
-stream protocols, with `SO_PASSCRED` on protocol endpoints. The monitor opens
-its namespace using the exact `verified_proc_root_fd` exception above, sends
-exactly that one FD with its kernel credentials, and retains its own reference.
-PID1 requires the expected monitor pidfd/PID/UID/GID and generation before
-forwarding the controller endpoint and proof. Any discrepancy kills/reaps the
-monitor and rolls back.
+stream protocols, with `SO_PASSCRED` on protocol endpoints. Before monitor
+launch PID1 creates a temporary PID1-monitor bootstrap pair and a distinct
+long-lived controller-monitor pair. The monitor receives the long-lived
+monitor endpoint at fixed FD 3, the long-lived controller peer at launch-only
+FD 9, and its bootstrap endpoint at launch-only FD 10. PID1 keeps the other
+bootstrap peer in a recorded transient slot; PID1 fixed FD 10 remains the
+monitor pidfd. The monitor creates no socketpair. It opens and reinspects its
+namespace as FD 7 using the exact `verified_proc_root_fd` exception above, then
+its sequence-zero `HL8M monitor_ready` sends exactly two rights over FD 10 to
+PID1 in this order: FD 9, the long-lived controller peer, then FD 7, the live
+namespace capability. It retains fixed FD 3 and FD 7 and closes FD 9 and FD 10
+permanently after the authenticated send. The ready body carries the exact
+pending revision,
+controller-minted job/monitor/mount/cgroup generations, `helper-limits-v1`,
+`createJobSHA256`, and canonical `monitorReadySHA256`. PID1 requires exact
+equality, recomputes the ready digest, requires the expected monitor
+pidfd/PID/UID/GID, and reinspects both rights before relaying them in the same
+order through `HL8L job_created` with that same ready digest; it then closes
+its bootstrap peer and transferred duplicates. The controller owns the direct
+endpoint and namespace authority after that commit. Any discrepancy closes
+every transient right,
+kills/reaps the monitor, and rolls back.
 
 `pipe2` uses `O_CLOEXEC` plus optional `O_NONBLOCK`; each pair is immediately
 type/direction inspected. `waitid(P_PIDFD, ...)` is PID1-only for monitor and
@@ -833,16 +852,29 @@ After gate release, cancel, timeout, protocol/session/role loss, malformed
 stream, output failure, expiry, or revoke denies new exec and converges through
 the exact job cgroup:
 
-1. PID1 writes exactly `1` to `cgroup.kill` beneath its fixed FD 9;
+1. the controller denies new exec/accept and sends HL8L `terminate_job`; PID1
+   writes exactly `1` to `cgroup.kill` beneath its fixed FD 9;
 2. PID1 parses bounded `cgroup.events` until exact `populated 0`;
 3. PID1 reaps all recorded workload shims/leaders with `waitid(P_PIDFD, ...)`;
-4. the controller closes pipes and wipes private buffers;
+4. PID1 returns `job_terminated`; the controller closes pipes and wipes private
+   buffers;
 5. the controller closes every published listener and accepted connection;
-   the still-capable monitor then unlinks files/socket entries, normally
-   unmounts in its current namespace, and proves mount/file absence;
-6. the monitor calls `exit_group` after proof, then PID1 reaps its FD 10 pidfd;
-   no monitor thread or capability survives; and
-7. PID1 removes and reinspects the generation directory and cgroup.
+   through direct monitor FD 3 it drives HL8M revoke/cleanup, and the
+   still-capable monitor unlinks files/socket entries, normally unmounts in its
+   current namespace, and proves mount/file absence;
+6. the monitor returns `cleanup_complete` directly to the controller, calls
+   `exit_group` only after bilateral normal HL8M close commits, and the
+   controller observes monitor exit before closing its direct endpoint and
+   namespace duplicate;
+7. only then the controller sends HL8L `destroy_job`; PID1 never contacts the
+   monitor, whose bootstrap channel is permanently closed, but confirms/reaps
+   the monitor with its FD 10 pidfd; and
+8. PID1 performs any still-needed cgroup kill/zero confirmation, removes and
+   reinspects the generation directory and cgroup, and returns `job_destroyed`.
+
+An early `destroy_job` before the monitor cleanup/exit precondition returns only
+the canonical correlated cleanup retry or stop-VM result; PID1 does not attempt
+to recreate a bootstrap link or operate a controller-owned capability.
 
 There are at most three idempotent attempts inside one 30-second total
 deadline. A retry begins with reinspection and never recreates a resource.
