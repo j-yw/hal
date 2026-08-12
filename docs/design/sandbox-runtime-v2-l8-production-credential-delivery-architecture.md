@@ -2814,9 +2814,16 @@ manifest order, and the observation's one-use owner before committing the safe
 metadata to the canonical prepare transaction and advancing the controller
 counter. The ordinary `Accept` path rejects `0x11` before generic body decoding;
 the generic packet decoder is test/diagnostic-only for this arm and there is no public `PrepareFile` packet accessor.
-Production D4 sends through an analogous
-fixed 68-byte header and 46-byte safe prefix writer followed by the existing
-locked payload; it does not call a full-wire encoder that copies payload bytes.
+Production D4 sends through `ControllerMonitorPrepareFilePrefixBytes`, exactly
+`ControllerMonitorHeaderBytes + 46`, and
+`EncodeControllerMonitorPrepareFilePrefix(header ControllerMonitorHeader,
+revision uint64, bindingIndex uint16, fileLength uint32,
+fileSHA256 [32]byte)`. That function returns the fixed 68-byte header and 46-byte safe prefix
+only after validating type `0x11`, sequence/request/job,
+`header.BodyLength == 46 + fileLength`, revision one, index below 16, length
+1..64 KiB, and nonzero digest. D4 copies that value into its existing locked
+transmit slot followed by the separately filled and hashed payload; it does not
+call a full-wire encoder that copies payload bytes.
 Every success and failure leaves D4 responsible for full-capacity wipe/unlock/
 unmap of its slot. D2 holds neither an owned secret body nor a second payload
 copy.

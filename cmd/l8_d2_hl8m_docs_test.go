@@ -44,6 +44,8 @@ func TestL8D2HL8MControllerMonitorABIIsImplementationReady(t *testing.T) {
 		"rejects `0x11` before generic body decoding",
 		"never treats locking or object existence as proved",
 		"fixed 68-byte header and 46-byte safe prefix",
+		"ControllerMonitorPrepareFilePrefixBytes",
+		"EncodeControllerMonitorPrepareFilePrefix",
 		"does not expose or retain the slot pointer",
 		"no public `PrepareFile` packet accessor",
 		"The bodies are exact, in the displayed byte order",
