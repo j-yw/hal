@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"go/parser"
+	"go/token"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -325,6 +328,134 @@ func TestL8D2GuestHelperCoreContractClosureIsImplementationReady(t *testing.T) {
 	} {
 		if !strings.Contains(architecture, required) {
 			t.Fatalf("L8 D2 architecture omits stream-computable transcript closure %q", required)
+		}
+	}
+}
+
+func TestL8D2CredentialClientContractClosureIsImplementationReady(t *testing.T) {
+	seam := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-guest-extension-seams.md"))
+	for _, required := range []string{
+		"### Credential client concrete closure",
+		"credentialclient -> v2control",
+		"must not import `credentialclient`",
+		"type ClientOptions struct",
+		"Descriptor  ClientProcessDescriptor",
+		"type ClientProcessDescriptor interface",
+		"ContractVersion() uint8",
+		"Role() uint8",
+		"WriteCanonical(credentialmemory.CredentialSink) error",
+		"`l8composition.ProcessDescriptor`",
+		"func NewClient(ClientOptions) (*Client, error)",
+		"func (c *Client) Serve(context.Context) error",
+		"func (c *Client) Close(context.Context) error",
+		"exactly one successful call to `Serve`",
+		"type ControllerReceiveRequest struct",
+		"type ControllerPacket struct",
+		"type ControllerSendPacket struct",
+		"type HelperReceiveRequest struct",
+		"type HelperPacket struct",
+		"type HelperSendPacket struct",
+		"ControllerBodyCapability",
+		"NewControllerReadinessPacket",
+		"NewControllerPreparePacket",
+		"NewControllerRenewPacket",
+		"NewControllerRevokePacket",
+		"NewControllerExecPacket",
+		"NewControllerPrivatePacket",
+		"NewControllerStreamPacket",
+		"NewControllerCreditPacket",
+		"constructors perform no Client-ledger validation",
+		"Client dispatch validates outstanding operation",
+		"fixed datagram slot and a bounded rights array of capacity one",
+		"rejects and closes all received rights before indexing",
+		"parses and authenticates the fixed header",
+		"constructors rely on that inspected-cardinality Transport TCB check",
+		"projectV2ManifestToHelperRecords",
+		"credentialprotocol.ComputeHelperManifestSHA256",
+		"encoded in `credentialprotocol.HelperPrepareBeginBody.Bindings`",
+		"sent only in `credentialprotocol.HelperPrepareCommitBody.ManifestSHA256`",
+		"full immutable v2 manifest",
+		"does not hash v2 JSON",
+		"before any helper send",
+		"*controllerSendPacketState",
+		"type controllerSendPacketOwner struct",
+		"*helperSendPacketState",
+		"type helperSendPacketOwner struct",
+		"deep-snapshots every safe graph",
+		"Transport calls `WriteCanonicalBody` exactly once",
+		"retained filled slot",
+		"never by re-encoding",
+		"BodySHA256 remains pinned",
+		"safe typed arm accessors return zero/false after consumption",
+		"30-second internal cleanup deadline",
+		"v2control.FailureResponse",
+		"credentialprotocol.HelperPrepareBeginBody",
+		"credentialprotocol.HelperResponseBody",
+		"one-slot",
+		"### Credential client request/result correlation matrix",
+		"### Credential client policy closure",
+		"func NewClientPolicy() Policy",
+		"type PolicyDescriptor struct",
+		"operation v2control.Operation",
+		"rejectionCode v2control.ErrorCode",
+		"v2control.OperationReadiness",
+		"v2control.ErrorCodeExecFailed",
+		"v2control.ValidateOperationErrorCode",
+		"type SSHConnectionCapability interface",
+		"Read(context.Context, credentialmemory.CredentialSink) (SSHIOResult, error)",
+		"Write(context.Context, credentialmemory.BorrowedView) (SSHIOResult, error)",
+		"SSHAccepted() (SSHAcceptedPacket, bool)",
+		"Transport is the sole trusted issuer",
+		"Connection methods return `ClientContractOwnership` while Client-owned",
+		"### Credential client validation and ownership matrices",
+		"ClientContractErrorCode",
+		"ClientContractSerialization",
+		"ClientContractServeState",
+		"full-capacity wipe",
+		"MarshalBinary",
+		"UnmarshalBinary",
+	} {
+		if !strings.Contains(seam, required) {
+			t.Fatalf("L8 D2 extension seam omits implementation-ready credential client contract %q", required)
+		}
+	}
+
+	verification := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialVerificationDoc))
+	for _, required := range []string{
+		"credential-client concrete closure",
+		"one-way read-only `credentialclient -> v2control`",
+		"single-Serve lifecycle",
+		"SSH connection-capability ownership",
+		"constructor/dispatch authority split",
+		"one-shot send ownership",
+		"retained-slot `EAGAIN` retry",
+		"fixed 30-second internal cleanup deadline",
+		"full-v2-to-helper manifest projection",
+		"ordered proof mapping",
+	} {
+		if !strings.Contains(verification, required) {
+			t.Fatalf("L8 verification omits credential-client closure guard %q", required)
+		}
+	}
+
+	v2controlFiles, err := filepath.Glob(filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent", "v2control", "*.go"))
+	if err != nil || len(v2controlFiles) == 0 {
+		t.Fatalf("locate v2control sources: files=%d err=%v", len(v2controlFiles), err)
+	}
+	const forbiddenReverseImport = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server/credentialclient"
+	for _, file := range v2controlFiles {
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse v2control source %q: %v", file, err)
+		}
+		for _, imported := range parsed.Imports {
+			path, err := strconv.Unquote(imported.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote v2control import in %q: %v", file, err)
+			}
+			if path == forbiddenReverseImport {
+				t.Fatalf("v2control source %q imports credentialclient and would reverse the one-way authority edge", file)
+			}
 		}
 	}
 }

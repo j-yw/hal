@@ -84,7 +84,7 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialVerificationDoc))
 	liveTag := "l8_production_" + "credential_" + "delivery_live"
 	for _, required := range []string{
-		"TestL8(CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)|D2GuestHelper.*)",
+		"TestL8(CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)|D2(GuestHelper|CredentialClient).*)",
 		"sandbox-runtime-v2-l8-helper-syscall-policy.md",
 		"sandbox-runtime-v2-l8-guest-extension-seams.md",
 		"tools/microvm/l8/verify-reproducible.sh",
