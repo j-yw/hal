@@ -54,21 +54,68 @@ func TestCredentialHelperContractImportBoundaries(t *testing.T) {
 }
 
 func TestCredentialHelperContractImportGuardExcludesFutureImplementationFiles(t *testing.T) {
-	for _, name := range []string{"service.go", "policy.go", "core_state.go", "sshrelay.go", "future_linux.go"} {
+	for _, name := range []string{"service.go", "core_state.go", "sshrelay.go", "future_linux.go"} {
 		if isCredentialHelperContractFile(name) {
 			t.Errorf("future implementation file %q is in the D2 foundation allowlist", name)
 		}
 	}
-	for _, name := range []string{"contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go"} {
+	for _, name := range []string{"contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "policy.go"} {
 		if !isCredentialHelperContractFile(name) {
 			t.Errorf("foundation file %q is outside the import guard", name)
 		}
 	}
 }
 
+func TestCredentialHelperPolicyUsesOnlyPureContractImports(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "policy.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"crypto/sha256",
+		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol",
+	}
+	if len(file.Imports) != len(want) {
+		t.Fatalf("policy.go import count = %d, want %d", len(file.Imports), len(want))
+	}
+	for index, imported := range file.Imports {
+		path, unquoteErr := strconv.Unquote(imported.Path.Value)
+		if unquoteErr != nil {
+			t.Fatal(unquoteErr)
+		}
+		if path != want[index] {
+			t.Errorf("policy.go import %d = %q, want %q", index, path, want[index])
+		}
+	}
+	for _, declaration := range file.Decls {
+		generation, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, specification := range generation.Specs {
+			typeSpec, ok := specification.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			if typeSpec.TypeParams != nil && len(typeSpec.TypeParams.List) != 0 {
+				t.Errorf("policy.go declares forbidden generic type %s", typeSpec.Name.Name)
+			}
+			if _, isInterface := typeSpec.Type.(*ast.InterfaceType); isInterface && typeSpec.Name.Name != "Policy" {
+				t.Errorf("policy.go declares non-frozen interface %s", typeSpec.Name.Name)
+			}
+			ast.Inspect(typeSpec.Type, func(node ast.Node) bool {
+				if _, isMap := node.(*ast.MapType); isMap {
+					t.Errorf("policy.go type %s contains a forbidden map", typeSpec.Name.Name)
+				}
+				return true
+			})
+		}
+	}
+}
+
 func isCredentialHelperContractFile(name string) bool {
 	switch name {
-	case "contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go":
+	case "contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "policy.go":
 		return true
 	default:
 		return false
