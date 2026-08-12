@@ -3492,7 +3492,8 @@ only for transport, policy, runtime-observation, response, and replay-cache
 correlation. The outer wire retry trigger never replaces or remints the retained cleanup capability.
 After `cleanup_retry`, the peer-driven cleanup episode denies ordinary
 admission and accepts only the next fresh-ID Revoke under the same cleanup
-budget. An internally driven cleanup episode uses the owning prepare/exec
+budget to start new work. An exact duplicate outer Revoke remains replayable
+from cache without starting absence work. An internally driven cleanup episode uses the owning prepare/exec
 cleanup correlation, consumes no reserved Revoke slot, and drives retries
 without exposing `cleanup_retry`.
 
@@ -3511,7 +3512,8 @@ for Revoke or absence proof.
 Terminal cleanup is one fixed budget and one exact three-pass cleanup protocol:
 deny ordinary admission once; run at most three repeatable absence passes of
 Cancel, reverse extension Revoke, and precommit Rollback or postcommit Core
-Revoke/Inspect. In the peer-driven cleanup episode, Service must
+Revoke. Complete Revoke proves Core absence and stop-VM Revoke escalates; only a retry-required Core Revoke is followed by Core Inspect.
+In the peer-driven cleanup episode, Service must
 wait for that retry under the same cleanup budget after attempt one or two
 returns cleanup-retry; an internally driven cleanup episode advances without a
 packet.

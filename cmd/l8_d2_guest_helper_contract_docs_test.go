@@ -312,6 +312,8 @@ func TestL8D2GuestHelperCoreContractClosureIsImplementationReady(t *testing.T) {
 		"issued once and never reassigned to another\nlifecycle or correlation. It is not consumed on every valid echo",
 		"The prepared capability remains as non-authoritative cleanup\ncorrelation",
 		"repeat Revoke and Inspect",
+		"fixed lifecycle ledger",
+		"lifecycle-correlation checks",
 		"prepared capability remains bound to its issuing Prepare correlation",
 		"another\nissuing Prepare correlation or activation",
 		"SHA-256 of empty bytes",
@@ -447,6 +449,7 @@ func TestL8D2GuestHelperServiceIndependentReviewClosureIsImplementationReady(t *
 		"three-pass cleanup",
 		"repeatable absence pass",
 		"one-time finalization pass",
+		"only a `retry_required` Core Revoke result is followed by Core Inspect",
 		"open manifest-selected extension sessions in order before `Core.BeginPrepare`",
 		"complete Core file staging and Core Commit, then call extension `Prepare`",
 		"call `CorePreparation.Rollback` before closing",
@@ -490,12 +493,15 @@ func TestL8D2GuestHelperServiceIndependentReviewClosureIsImplementationReady(t *
 		"peer-driven cleanup episode",
 		"internally driven cleanup episode",
 		"only the next fresh-ID Revoke",
+		"exact duplicate outer Revoke remains replayable",
+		"without starting absence work",
 		"wait for that retry under the same cleanup budget",
 		"third incomplete attempt",
 		"ownership-on-entry",
 		"three-pass cleanup",
 		"repeatable absence pass",
 		"one-time finalization pass",
+		"only a retry-required Core Revoke is followed by Core Inspect",
 		"stop-VM response correction",
 		"Precommit Rollback before reverse extension Close",
 	} {
@@ -514,10 +520,14 @@ func TestL8D2GuestHelperServiceIndependentReviewClosureIsImplementationReady(t *
 		"opaque extension lifecycle",
 		"response-disposition correction",
 		"repeatable absence passes before\n  one-time finalization",
+		"lifecycle correlation capabilities",
 	} {
 		if !strings.Contains(verification, required) {
 			t.Fatalf("L8 verification omits helper-Service review closure %q", required)
 		}
+	}
+	if strings.Contains(verification, "one-shot correlation capabilities") {
+		t.Fatal("L8 verification retains stale one-shot prepared-capability wording")
 	}
 }
 

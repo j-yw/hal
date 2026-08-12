@@ -912,7 +912,7 @@ D4 must be able to return results without gaining mint authority. The service
 therefore pre-mints every nonzero `CorePreparationCapability`,
 `CorePreparedCapability`, `CoreExecutionCapability`, and
 `CoreCleanupCapability`, places it in the initiating request above, and records
-it as issued in its private one-shot ledger. D4 obtains only value copies through
+it as issued in its private fixed lifecycle ledger. D4 obtains only value copies through
 the request accessors and must return the matching value unchanged through:
 
 ```go
@@ -1040,12 +1040,12 @@ respectively. There are no other public methods. `CorePreparedResult.Generations
 is D4-produced, validator-bounded safe observation metadata; it is not authority.
 `NewCoreGenerations` merely validates safe IDs and cannot mint a core capability.
 The independently service-minted `Prepared` value must be returned unchanged
-and is the authority-bearing correlation checked against the one-shot ledger.
+and is the authority-bearing correlation checked against the fixed lifecycle ledger.
 
 ### Core value validation matrices
 
 The constructors apply these exact shape rules before the service performs its
-separate one-shot capability, request, generation, expiry, stream-continuity,
+separate lifecycle-correlation checks for capability, request, generation, expiry, stream-continuity,
 or sink-write correlation. Every request ID, identity digest, revision, safe
 ID, required generation, and opaque capability is nonzero and valid. Every
 content, manifest, transaction, transcript, or capability SHA-256 field is
@@ -1771,14 +1771,20 @@ split into at most three repeatable absence passes followed by exactly one
 one-time finalization pass. Before the first absence pass, Service denies exec,
 extension accepts, publication, and every ordinary packet. A peer-driven
 cleanup episode permits only the next fresh-ID Revoke after a committed
-`cleanup_retry`; an internally driven cleanup episode denies every packet.
+`cleanup_retry` to start new work. An exact duplicate outer Revoke remains replayable
+from its cache without starting absence work; an internally driven cleanup
+episode denies every packet.
 Each repeatable absence pass then performs, in this exact order:
 
 1. cancel the active `CoreExecution`, if any;
 2. call `Revoke` in reverse binding order on every extension session whose
    `Prepare` call began;
 3. before commit call `CorePreparation.Rollback`; after commit call
-   `Core.Revoke` and then `Core.Inspect`.
+   `Core.Revoke`. A `cleanup_complete` result proves Core authority and
+   resources absent and runs no Inspect. A `stop_vm_required` result is
+   terminal and runs no Inspect. Thus only a `retry_required` Core Revoke result is followed by Core Inspect
+   with the retained non-authoritative prepared correlation and live cleanup
+   capability.
 
 `cleanup_complete` skips that completed component in later absence passes.
 `retry_required` preserves exact ownership and permits only the corresponding
@@ -1787,7 +1793,8 @@ In a peer-driven episode, attempt one is the first Revoke. After attempt one or
 two reports retryable incomplete absence, Service commits the correlated
 `cleanup_retry`, clears that outer outstanding request, and waits for that retry
 under the same cleanup budget. Only the next fresh-ID Revoke may start the next
-absence pass. In an internally driven episode, Service starts the next pass
+absence pass among first-seen IDs; an exact duplicate only replays its cached
+response. In an internally driven episode, Service starts the next pass
 itself without admitting a packet and never emits `cleanup_retry`. The absence
 loop stops as soon as every applicable component reports complete. A third
 incomplete attempt, stop-VM result, budget expiry (including while awaiting a

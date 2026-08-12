@@ -200,7 +200,7 @@ Required focused areas are:
 - immutable matching helper/client extension registries, typed-nil and
   duplicate-claim rejection, exact helper/client/core/transport/policy/host
   method sets, implementation-ready private-field Core request/result layouts,
-  canonical relative-path and one-shot correlation capabilities, synchronous
+  canonical relative-path and lifecycle correlation capabilities, synchronous
   borrowed private-binding input, exact receive/send packet unions and
   body/right budget ownership, closed helper-policy operation/rejection and
   failure matrices, D4/D5 import independence, the D6-only process-local composition
