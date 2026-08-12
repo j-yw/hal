@@ -46,6 +46,7 @@ var (
 	ErrAgentSupervisorKernelCredential       = errors.New("L8 agent-supervisor kernel credential does not match")
 	ErrAgentSupervisorControllerIdentity     = errors.New("L8 agent-supervisor controller identity is invalid")
 	ErrAgentSupervisorPeerIdentity           = errors.New("L8 agent-supervisor peer identity is invalid")
+	ErrAgentSupervisorRoleIdentityAlias      = errors.New("L8 agent-supervisor role identities alias")
 	ErrAgentSupervisorDigestZero             = errors.New("L8 agent-supervisor digest is zero")
 	ErrAgentSupervisorConfigLength           = errors.New("L8 agent-supervisor agent-config body is truncated")
 	ErrAgentSupervisorConfigTrailingData     = errors.New("L8 agent-supervisor agent-config body has trailing data")
@@ -636,6 +637,9 @@ func NewAgentSupervisorPreAdmissionState(expected AgentSupervisorPreAdmissionExp
 	if err := validateAgentSupervisorAgentConfig(expected.AgentConfig); err != nil {
 		return nil, err
 	}
+	if expected.AgentConfig.ControllerPID == expected.AgentCredential.PID {
+		return nil, ErrAgentSupervisorRoleIdentityAlias
+	}
 	clientWire, err := EncodeAgentSupervisorClientAttestationBody(AgentSupervisorClientAttestationBody{Descriptor: expected.ClientDescriptor})
 	if err != nil {
 		return nil, err
@@ -796,7 +800,7 @@ func validAgentSupervisorAgentCredential(value AgentSupervisorKernelCredential) 
 	return validAgentSupervisorPID(value.PID) && value.UID == AgentSupervisorServiceUID && value.GID == AgentSupervisorServiceGID
 }
 
-func validAgentSupervisorPID(value uint32) bool { return value > 0 && value <= 1<<31-1 }
+func validAgentSupervisorPID(value uint32) bool { return value >= 2 && value <= 1<<31-1 }
 
 func cloneAgentSupervisorDescriptor(value ProcessDescriptor) ProcessDescriptor {
 	value.Extensions = credentialprotocol.CloneExtensionDescriptors(value.Extensions)
