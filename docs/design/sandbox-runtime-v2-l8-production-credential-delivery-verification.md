@@ -32,7 +32,7 @@ junction, and image-profile ownership:
 
 ```sh
 go test -count=1 ./cmd \
-  -run '^TestL8(CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)|D2GuestHelper.*)$'
+  -run '^TestL8(CredentialDelivery(Architecture|Verification|DefaultGuards|SourceGuards.*)|D2(GuestHelper|CredentialClient).*)$'
 ```
 
 Guards must prove:
@@ -202,6 +202,16 @@ Required focused areas are:
   failure matrices, D4/D5 import independence, the D6-only process-local composition
   junction and PID1 descriptor attestation, the daemon-owned host-agent live registry with fresh peer proof per
   connection, and D7-only image source-lock/build/profile ownership;
+- the credential-client concrete closure: its one-way read-only `credentialclient -> v2control`
+  authority edge with a reverse-import guard,
+  D6-issued canonical process-descriptor snapshot, single-Serve lifecycle and
+  racing idempotent drain under the fixed 30-second internal cleanup deadline,
+  exact controller/HL8P typed unions with the constructor/dispatch authority split,
+  one-slot body and one-shot send ownership with retained-slot `EAGAIN` retry and
+  no re-encoding, full-v2-to-helper manifest projection and ordered proof mapping,
+  operation/result/stream/credit correlation, closed
+  policy/error matrices, and SSH connection-capability ownership before and
+  after extension transfer;
 - Firecracker process/vsock/network/credential generation composition;
 - worker durable seed-before-preflight ordering, the exact preflight return and
   ownership matrix, immediate continuously latched loss watching, complete

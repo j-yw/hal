@@ -33,6 +33,8 @@ guestagent/credentialhelper      guestagent/server/credentialclient
         |                         |
 credentialhelper/sshrelay        credentialclient/sshrelay          D5
 
+guestagent/v2control --------read-only------^                       controller codec authority
+
 credentialhelper/linux                                              D4
 guestagent/rolebootstrap (freestanding native, no Go imports)       D4
 
@@ -59,9 +61,15 @@ The rules are:
 - `credentialprotocol` imports only the standard library and the already
   approved mutable-memory sink contract. It imports no helper, client, server,
   runtime, worker, command, factory, network, filesystem, or concrete adapter.
-- `credentialhelper` and `server/credentialclient` may import
-  `credentialprotocol`; neither imports the other. Neither imports its child
-  `sshrelay` package.
+- `credentialhelper` may import `credentialprotocol` and the approved
+  `credentialmemory` sink contract. `server/credentialclient` may import those
+  two packages and has one additional one-way read-only
+  `credentialclient -> v2control` edge so its controller arms reuse the exact
+  closed operation, request, response, error, and scalar authorities. It does
+  not redefine or migrate those authorities into `credentialprotocol`.
+  `v2control` and its tests must not import `credentialclient`, directly or
+  transitively; an AST import-cycle guard locks that reverse edge out. Helper
+  and client never import one another or their child `sshrelay` package.
 - Each D5 child imports only its parent contract, `credentialprotocol`, and
   narrow standard-library live interfaces needed by that side. Guest D5 code
   does not import `firecrackerhost/sshrelay`.
@@ -1451,6 +1459,7 @@ type ClientOptions struct {
 	Transport   Transport
 	Policy      Policy
 	Extensions *ExtensionRegistry
+	Descriptor  ClientProcessDescriptor
 }
 
 func NewClient(ClientOptions) (*Client, error)
@@ -1526,6 +1535,974 @@ The existing v1 `guestagent/server.Options`, `server.New`, v1 backend, and v1
 client are unchanged. V2 composition receives `*credentialclient.Client`
 through a new explicit D6-only option; nil preserves v1 only and cannot admit a
 production credential request.
+
+### Credential client concrete closure
+
+The following closes the earlier client seam without adding a wire field or a
+sixth Transport method. `v2control` remains the sole authority for controller
+operation tokens, concrete request and response values, request IDs, identity
+digests, error codes, error matrices, and canonical JSON. `credentialprotocol`
+remains the sole authority for HL8P headers, packet types, bodies, limits, and
+catalogs. The client types below are live ownership and dispatch wrappers over
+those authorities; their numeric arm tags are private Go state and are not a
+new wire ABI.
+
+#### Construction and single-Serve lifecycle
+
+The complete public lifecycle API is:
+
+```go
+type ClientOptions struct {
+	Transport   Transport
+	Policy      Policy
+	Extensions *ExtensionRegistry
+	Descriptor  ClientProcessDescriptor
+}
+
+type Client struct {
+	liveValue
+	transport        Transport
+	policy           Policy
+	policyDescriptor PolicyDescriptor
+	extensions       []credentialprotocol.ExtensionDescriptor
+	descriptorSHA256 [32]byte
+	descriptorBody   *credentialmemory.LockedMapping
+	state            *clientState
+}
+
+func NewClient(ClientOptions) (*Client, error)
+func (c *Client) Serve(context.Context) error
+func (c *Client) Close(context.Context) error
+
+type ClientProcessDescriptor interface {
+	ContractVersion() uint8
+	Role() uint8
+	PolicySHA256() [32]byte
+	Extensions() []credentialprotocol.ExtensionDescriptor
+	EncodedLength() uint16
+	SHA256() [32]byte
+	WriteCanonical(credentialmemory.CredentialSink) error
+}
+```
+
+`clientState` is one private synchronized owner with exactly: phase
+`new|serving|draining|closed|terminal`; booleans `serveCalled`, `closeStarted`,
+and `transportClosed`; next controller receive/send and helper receive/send
+sequences; the optional active session identity, full immutable v2 manifest,
+projected helper manifest records and helper manifest digest, revision,
+expiry, proof IDs, and fixed limit-set ID; one optional outstanding request
+ledger; three stream ledgers; one optional extension dispatch slot; opened
+extension sessions in canonical order; the one watcher/pump wait group; the
+latched sanitized terminal error; and a completion channel. The sole
+`descriptorBody` is the fixed-capacity locked mapping containing the validated
+canonical client-process descriptor until agent hello commits;
+`descriptorSHA256` is its pinned digest. The request ledger
+contains only v2control operation/request ID/identity, canonical safe request
+digest, the full immutable v2 manifest, the exact deep-snapshotted
+`credentialprotocol.HelperPrepareBeginBody` containing the projected records,
+their helper manifest digest, revision, expected helper request/response type, declared private
+record count/aggregate/digest, accepted private count/aggregate, and optional
+credentialprotocol prepare/exec transaction state. Each stream ledger contains
+kind, next offset, maximum, EOF, and one-credit-outstanding. Apart from the
+one bounded `descriptorBody`, no state field stores a payload or body
+capability. No state stores an endpoint, ordinary-memory or publicly accessible
+descriptor bytes, clock function, arbitrary error, or queue. `Client` has no
+other exported or
+unexported authority-bearing dependency.
+
+`NewClient` rejects a nil or any constructible typed-nil Transport, Policy, or
+ClientProcessDescriptor, and rejects a nil `ExtensionRegistry`. It reads
+`Policy.Descriptor` twice, requires two equal
+values with ID `client-policy-v1` and the exact digest already specified, and
+snapshots it. It obtains two `Extensions.Descriptors` snapshots, requires byte-
+equal canonical order and validity, and stores a third deep copy. The registry
+may be empty at this generic seam; D6 production composition requires exactly
+the locked SSH registration and rejects missing or extra registrations. Once
+a constructor check fails, no new dependency method is called; only
+cleanup of already-acquired live values may run. A Policy panic is a contract
+failure, never an allow. A registry or descriptor snapshot can contain no live
+factory, endpoint, right, body, PID, path, or secret.
+
+`ClientProcessDescriptor` is a narrow D6-issued view over the already-frozen
+`l8composition.ProcessDescriptor`; it is not another descriptor ABI. D6 builds
+and validates that existing role-2 value before `credentialclient.NewClient`,
+wraps it without changing its canonical `HL8D` bytes, passes the wrapper here,
+and returns the same ProcessDescriptor to its caller. `ContractVersion` and
+`Role` are projections of that value's already-frozen scalar fields, not a new
+catalog: D6 returns the exact existing values `1` and
+`l8composition.ProcessRoleClient` (wire value 2) through the two `uint8`
+accessors. `NewClient` reads every safe projection twice, requires stable
+equality, exact contract version 1 and client role 2, the snapshotted Policy
+digest and extension set, a
+1..1,898 encoded length, and nonzero SHA-256 equal to a fresh hash of one
+`WriteCanonical` through a package-private exact-capacity sink valid only
+inside one newly allocated `credentialmemory.LockedMapping.Load`. The source must write exactly
+`EncodedLength` bytes. On success Client retains that mapping as
+`descriptorBody`, retains only its independently checked digest, and never
+retains or calls the source again. It borrows the mapping directly into the one
+agent-hello send body and destroys it after send commit or error. On every
+constructor failure after allocation it destroys the mapping under the same
+cleanup rules. No raw byte getter, decoder, ordinary-memory copy, role override,
+or second encoding exists. `l8composition` remains the only producer and
+authority; credentialclient never imports it.
+
+Only after every dependency, policy, registry, and process-descriptor check
+passes does `NewClient` open extension sessions in ascending canonical
+descriptor order through `ExtensionFactory.Open` and an
+`ExtensionOpenRequest{Descriptor: deepSnapshot}`. A first open failure stops
+construction and closes every already-opened session in reverse order with the
+30-second internal cleanup deadline. No later factory is called. Cleanup failure
+returns `ClientContractCleanup`; otherwise the factory's raw error is replaced
+by `ClientContractExtension`. Success stores exactly one session per descriptor
+and transfers their closure to Client drain. The existing four-row factory
+return matrix remains exact. An empty generic registry opens nothing.
+
+Transport is constructed by D4 from the authenticated PID1 bootstrap and is
+already past the secure-control Finished exchange when supplied to `NewClient`.
+It privately pins the
+control session ID, boot nonce, controller key/session generations, helper
+kernel identity, bootstrap digest, helper generation, and exact canonical
+expected client-process-descriptor digest from `HL8A agent_config`. This is why
+those values are not caller-selectable scalar `ClientOptions` fields.
+At the start of `Serve`, after the authenticated PID1 composition release, the
+Client sends its private agent-hello at helper sequence 1 from the validated
+descriptor snapshot and accepts only the exact helper hello-ack at receive
+sequence 2. It verifies bootstrap digest, generations, descriptor digest,
+helper credentials, and zero request/job identity fields before admitting a
+controller request. The first operational helper send sequence is 2 and first
+helper receive sequence is 3; controller application receive/send both start
+at secure sequence 1. Transport verifies its pinned channel facts while Client
+owns these counters, operation correlation, and state transitions.
+
+There is exactly one successful call to `Serve`. The first call atomically
+moves `new` to `serving`; a concurrent or later call returns
+`ClientContractServeState`, including after the first call returns. `Serve`
+cannot be restarted. It owns both receive paths, the one logical outstanding
+request, sequence and identity correlation, Policy calls, extension sessions,
+body/right transfer, and drain. It returns only after the Client is closed and
+all Client-owned live values are destroyed or after an absence-unproved cleanup
+failure requiring VM stop/reap.
+
+`Close` is safe before, during, or after `Serve`. Its context must be non-nil,
+but its deadline and cancellation do not select, shorten, or abandon cleanup.
+The first call atomically
+denies new dispatch and starts one drain; concurrent calls join that drain.
+Drain cancels receive admission, closes any Client-owned packet body/right,
+closes opened extension sessions in reverse canonical registration order,
+calls `Transport.Close` exactly once, and waits for the active extension loss
+watcher and pump ownership handoff to settle. Every caller waits for that
+latched result even if its context ends; the package deadline is the sole wait
+bound. Every constructor
+rollback, `Serve` terminal cleanup, and `Close` drain uses the shared L8
+30-second internal cleanup deadline. It is created by package code when cleanup
+starts, has no option or caller-selected clock/deadline, and is never shortened
+or replaced by the caller context. Expiry latches `ClientContractCleanup` and
+requires VM stop/reap; no cleanup goroutine is detached.
+Once complete, later `Close` calls return the same sanitized result. No close
+path calls a dependency while holding the Client state mutex.
+
+#### Controller packet unions
+
+Controller ingress owns one private receive latch and one Transport-owned
+fixed-capacity locked plaintext slot:
+
+```go
+type ControllerBodyCapability interface {
+	Len() uint32
+	SHA256() [32]byte
+	Borrow(context.Context, func(credentialmemory.BorrowedView) error) error
+	Destroy(context.Context) error
+}
+
+type ControllerReceiveRequest struct {
+	liveValue
+	nextSequence         uint64
+	expectedIdentity     v2control.IdentityDigest
+	expectedIdentitySet  bool
+	maximumPlaintextBytes uint32
+	state                *controllerReceiveRequestState
+}
+
+type ControllerPacket struct {
+	liveValue
+	sequence  uint64
+	sessionID [32]byte
+	arm       controllerPacketArm
+	body      ControllerBodyCapability
+}
+
+type ControllerSendPacket struct {
+	liveValue
+	sequence          uint64
+	sessionID         [32]byte
+	arm                controllerSendArmKind
+	encodedBodyLength uint32
+	bodySHA256         [32]byte
+	state              *controllerSendPacketState
+}
+type controllerSendPacketState struct {
+	mu       sync.Mutex
+	consumed bool
+	owner    *controllerSendPacketOwner
+}
+type controllerSendPacketOwner struct {
+	arm  controllerSendArm
+	body ControllerBodyCapability
+}
+```
+
+The private Client constructor creates `ControllerReceiveRequest`; Transport
+only reads `NextSequence() uint64`, `ExpectedIdentity()
+(v2control.IdentityDigest, bool)`, and `MaximumPlaintextBytes() uint32`.
+`expectedIdentitySet=false` is legal only for readiness and the first prepare,
+before a job identity is installed. Readiness still carries the exact
+authenticated control-session ID pinned inside Transport; a prepare carries
+its own validated nonzero `GuestCredentialSessionIdentity` digest. Renew,
+revoke, exec, and every binary record set the exact active identity. Maximum
+plaintext is 1 through the existing secure-control 2-MiB bound. Copies share a
+one-shot atomic latch. Exactly one successful `NewController<Arm>Packet` seals
+it; constructor failure destroys a supplied body and leaves the latch terminal.
+
+Safe JSON request arms reuse these exact values and constructors:
+
+```go
+func NewControllerReadinessPacket(ControllerReceiveRequest, uint64, [32]byte,
+	v2control.ReadinessRequest) (ControllerPacket, error)
+func NewControllerPreparePacket(ControllerReceiveRequest, uint64, [32]byte,
+	v2control.CredentialPrepareRequest) (ControllerPacket, error)
+func NewControllerRenewPacket(ControllerReceiveRequest, uint64, [32]byte,
+	v2control.CredentialRenewRequest) (ControllerPacket, error)
+func NewControllerRevokePacket(ControllerReceiveRequest, uint64, [32]byte,
+	v2control.CredentialRevokeRequest) (ControllerPacket, error)
+func NewControllerExecPacket(ControllerReceiveRequest, uint64, [32]byte,
+	v2control.CredentialExecRequest) (ControllerPacket, error)
+```
+
+The `uint64` and `[32]byte` arguments are the authenticated secure-record
+sequence and session ID observed by Transport. Transport compares the session
+ID to its pinned secure session before calling a constructor. Every constructor
+validates only its one-shot request, exact requested sequence, nonzero session
+ID, corresponding v2control value, and the ReceiveRequest identity when set.
+Readiness must carry the session ID and no job; prepare must carry a valid
+nonzero self-consistent identity. The constructors perform no Client-ledger validation:
+they do not install an identity or inspect the outstanding operation, expected
+request ID, revision, manifest, binding, stream, credit, aggregate, or phase.
+No constructor accepts an `OperationToken`, generic JSON object, `[]byte`, frame
+type, or caller-selected decoder.
+
+Private and stream records retain only their exact frozen safe metadata; the
+payload remains in the locked `ControllerBodyCapability`:
+
+```go
+func NewControllerPrivatePacket(ControllerReceiveRequest, uint64, [32]byte,
+	credentialprotocol.PrivateRecordKind, v2control.RequestID,
+	v2control.IdentityDigest, uint16, uint16, uint16, uint32, [32]byte,
+	ControllerBodyCapability) (ControllerPacket, error)
+func NewControllerStreamPacket(ControllerReceiveRequest, uint64, [32]byte,
+	credentialprotocol.HelperExecStreamKind,
+	credentialprotocol.HelperExecStreamFlags, v2control.RequestID,
+	v2control.IdentityDigest, uint64, uint32, [32]byte,
+	ControllerBodyCapability) (ControllerPacket, error)
+func NewControllerCreditPacket(ControllerReceiveRequest, uint64, [32]byte,
+	credentialprotocol.HelperExecStreamKind, v2control.RequestID,
+	v2control.IdentityDigest, uint64) (ControllerPacket, error)
+func NewControllerCloseNotifyPacket(ControllerReceiveRequest, uint64, [32]byte,
+	credentialprotocol.CloseReason) (ControllerPacket, error)
+```
+
+The exact private fields are:
+
+```go
+type ControllerPrivateRecord struct {
+	liveValue
+	kind           credentialprotocol.PrivateRecordKind
+	requestID      v2control.RequestID
+	identityDigest v2control.IdentityDigest
+	bindingIndex   uint16
+	chunkIndex     uint16
+	chunkCount     uint16
+	payloadLength  uint32
+	payloadSHA256  [32]byte
+}
+type ControllerStreamRecord struct {
+	liveValue
+	kind           credentialprotocol.HelperExecStreamKind
+	flags          credentialprotocol.HelperExecStreamFlags
+	requestID      v2control.RequestID
+	identityDigest v2control.IdentityDigest
+	offset         uint64
+	payloadLength  uint32
+	payloadSHA256  [32]byte
+}
+type ControllerCreditRecord struct {
+	liveValue
+	kind           credentialprotocol.HelperExecStreamKind
+	requestID      v2control.RequestID
+	identityDigest v2control.IdentityDigest
+	nextOffset     uint64
+}
+```
+
+The private-record arguments after identity are binding index, chunk index,
+chunk count, payload length, and payload digest from the exact HL8B header.
+Constructors require only a known file or opaque-exec kind, chunk index
+zero/count one, an in-range binding index, and 1..64-KiB payload whose capability
+length/digest match. Stream arguments after
+identity are offset, payload length, and digest from HL8S. Stdin is the only
+controller-to-guest stream; non-EOF is 1..64 KiB with nonzero matching digest;
+EOF is zero bytes and the SHA-256 of empty bytes. A controller-to-guest credit
+is stdout or stderr only and carries a scalar next offset. These constructors
+validate direction, closed wire-field shape, ReceiveRequest sequence/identity,
+and body capability only. Close construction accepts only a known close reason.
+Client dispatch validates outstanding operation, request ID, revision, exact
+binding index, phase-permitted close, contiguous offset, one unused credit, and
+declared per-stream/aggregate limits after valid packet return and before any
+borrow, send construction, state mutation, or ownership transfer. A dispatch
+failure destroys the packet body and closes the session.
+
+`ControllerPacket` public methods are only `Sequence() uint64`, `SessionID()
+[32]byte`, and typed accessors `Readiness()`, `Prepare()`, `Renew()`, `Revoke()`,
+`Exec()`, `Private()`, `Stream()`, `Credit()`, and `CloseNotify()`, each returning
+the exact arm and `bool`. Wrong-arm access is zero/false. The three binary arms
+expose only value-copy accessors matching the safe metadata arguments above;
+there is no public body, bytes, sink, capability, generic frame, or operation-
+token accessor. Client code alone borrows and destroys the body.
+
+The accessor result types are exact:
+
+```go
+func (p ControllerPacket) Readiness() (v2control.ReadinessRequest, bool)
+func (p ControllerPacket) Prepare() (v2control.CredentialPrepareRequest, bool)
+func (p ControllerPacket) Renew() (v2control.CredentialRenewRequest, bool)
+func (p ControllerPacket) Revoke() (v2control.CredentialRevokeRequest, bool)
+func (p ControllerPacket) Exec() (v2control.CredentialExecRequest, bool)
+func (p ControllerPacket) Private() (ControllerPrivateRecord, bool)
+func (p ControllerPacket) Stream() (ControllerStreamRecord, bool)
+func (p ControllerPacket) Credit() (ControllerCreditRecord, bool)
+func (p ControllerPacket) CloseNotify() (credentialprotocol.CloseReason, bool)
+```
+
+Controller response construction is Client-private. The response arm is
+exactly one of `v2control.ReadinessSuccessResponse`,
+`v2control.CredentialPrepareSuccessResponse`,
+`v2control.CredentialRenewSuccessResponse`,
+`v2control.CredentialRevokeSuccessResponse`,
+`v2control.CredentialExecSuccessResponse`, or `v2control.FailureResponse`.
+Additional send arms are one stdout/stderr HL8S record, one stdin HL8C credit,
+or one close notify. There is no D2 credential-client constructor for secure
+frame `control_event`: no v2control event-body authority exists, so helper
+events drive the loss/failure rules below rather than inventing JSON.
+
+`ControllerSendPacket` public methods are the exact typed arm accessors
+`ReadinessResponse()`, `PrepareResponse()`, `RenewResponse()`,
+`RevokeResponse()`, `ExecResponse()`, `FailureResponse()`, `Stream()`,
+`Credit()`, and `CloseNotify()`, plus `Sequence()`, `SessionID()`,
+`EncodedBodyLength() uint32`, `BodySHA256() [32]byte`, and
+`WriteCanonicalBody(credentialmemory.CredentialSink) error`. There is no raw
+body or generic frame accessor. Each private send constructor deep-snapshots
+every safe graph, computes and pins `encodedBodyLength` and `bodySHA256`, and
+places that snapshot or the locked sensitive body in the shared owner. Every
+value alias shares `state`; `WriteCanonicalBody` atomically changes unused to
+consumed before touching the sink and can succeed or fail only once across all
+aliases. A second call returns `ClientContractOwnership` without inspecting the
+owner. The safe typed arm accessors return zero/false after consumption; before
+consumption they lock the shared state and return a fresh deep snapshot without
+transferring the owner. `Sequence`, `SessionID`, and `EncodedBodyLength` remain
+pinned scalar metadata before and after consumption. BodySHA256 remains pinned
+and returns the same digest before and after consumption. Safe metadata may use
+one bounded scratch owned by the call, which is full-capacity wiped before
+return. Private file, opaque-exec, and stream payloads write directly from their
+locked body capability and never enter that scratch.
+
+The sole write transition marks the state consumed and removes `owner` under
+the state mutex, then uses that owner outside the mutex. It destroys any locked
+body and releases every safe graph before returning on success, sink error, or
+panic, using the package-created 30-second internal cleanup deadline because
+the method has no caller context. Cleanup failure returns
+`ClientContractCleanup`. Thus an alias can neither observe nor reuse owner state after the write,
+while the pinned outer scalar metadata remains available to Transport.
+
+Transport calls `WriteCanonicalBody` exactly once to fill its one fixed transmit
+slot. A Write error causes a full-capacity slot wipe and no send syscall. Only
+after a nil Write does Transport own that filled slot and may retry a temporary
+`EAGAIN` send from the retained filled slot while the `SendController` context
+remains live, never by re-encoding or invoking the method again. Context end is
+terminal. Transport full-capacity wipes the slot after committed send and every
+terminal error and retains nothing. A nil `SendController` return commits
+sequence; any error consumes the packet, destroys its owner, closes the session,
+and cannot be retried by Client. Constructor failure destroys a supplied
+sensitive body.
+
+```go
+func (p ControllerSendPacket) ReadinessResponse() (v2control.ReadinessSuccessResponse, bool)
+func (p ControllerSendPacket) PrepareResponse() (v2control.CredentialPrepareSuccessResponse, bool)
+func (p ControllerSendPacket) RenewResponse() (v2control.CredentialRenewSuccessResponse, bool)
+func (p ControllerSendPacket) RevokeResponse() (v2control.CredentialRevokeSuccessResponse, bool)
+func (p ControllerSendPacket) ExecResponse() (v2control.CredentialExecSuccessResponse, bool)
+func (p ControllerSendPacket) FailureResponse() (v2control.FailureResponse, bool)
+func (p ControllerSendPacket) Stream() (ControllerStreamRecord, bool)
+func (p ControllerSendPacket) Credit() (ControllerCreditRecord, bool)
+func (p ControllerSendPacket) CloseNotify() (credentialprotocol.CloseReason, bool)
+```
+
+#### Helper packet unions
+
+The helper side follows the already-closed HL8P receive design, narrowed to the
+agent direction and without duplicating its codecs:
+
+```go
+type HelperReceiveRequest struct {
+	liveValue
+	nextSequence         uint64
+	maximumBodyBytes     uint32
+	maximumRights        uint32
+	expectedRequestID    [16]byte
+	expectedIdentity     [32]byte
+	state                *helperReceiveRequestState
+}
+
+type HelperPacket struct {
+	liveValue
+	header credentialprotocol.HelperPacketHeader
+	arm   helperPacketArm
+	body  HelperBodyCapability
+	right SSHConnectionCapability
+}
+
+type HelperSendPacket struct {
+	liveValue
+	header            credentialprotocol.HelperPacketHeader
+	arm               helperSendArmKind
+	encodedBodyLength uint32
+	bodySHA256        [32]byte
+	state             *helperSendPacketState
+}
+type helperSendPacketState struct {
+	mu       sync.Mutex
+	consumed bool
+	owner    *helperSendPacketOwner
+}
+type helperSendPacketOwner struct {
+	arm  helperSendArm
+	body HelperBodyCapability
+}
+```
+
+`HelperBodyCapability` has the same `Len`, `SHA256`, `Borrow`, and `Destroy`
+method set and synchronized destruction rules as `ControllerBodyCapability`.
+Transport is its sole trusted issuer and owns a single fixed-capacity locked
+HL8P datagram slot. Receive-request accessors are `NextSequence`,
+`MaximumBodyBytes`, `MaximumRights`, `ExpectedRequestID`, and
+`ExpectedIdentityDigest`; the last two return fixed arrays. Maximum body is
+0..`credentialprotocol.MaxHelperPacketBodyBytes`; maximum rights is zero when
+the Client state makes SSH accepted impossible and otherwise exactly one so
+Transport has one bounded ancillary sink without predicting the next packet
+arm. Copies share a one-shot latch.
+
+Transport constructs a received value only through these exact public
+constructors:
+
+```go
+func NewHelperResponsePacket(HelperReceiveRequest,
+	credentialprotocol.HelperPacketHeader, HelperBodyCapability,
+	credentialprotocol.HelperResponseBody) (HelperPacket, error)
+func NewHelperEventPacket(HelperReceiveRequest,
+	credentialprotocol.HelperPacketHeader, HelperBodyCapability,
+	credentialprotocol.HelperEventBody) (HelperPacket, error)
+func NewHelperExecStreamPacket(HelperReceiveRequest,
+	credentialprotocol.HelperPacketHeader, HelperBodyCapability,
+	uint64, credentialprotocol.HelperExecStreamKind,
+	credentialprotocol.HelperExecStreamFlags, uint64, uint32, [32]byte) (HelperPacket, error)
+func NewHelperExecCreditPacket(HelperReceiveRequest,
+	credentialprotocol.HelperPacketHeader, HelperBodyCapability,
+	credentialprotocol.HelperExecCreditBody) (HelperPacket, error)
+func NewHelperSSHAcceptedPacket(HelperReceiveRequest,
+	credentialprotocol.HelperPacketHeader, HelperBodyCapability,
+	uint64, uint16, uint8, [32]byte,
+	SSHConnectionCapability) (HelperPacket, error)
+func NewHelperCloseNotifyPacket(HelperReceiveRequest,
+	credentialprotocol.HelperPacketHeader, HelperBodyCapability,
+	credentialprotocol.HelperCloseNotifyBody) (HelperPacket, error)
+```
+
+The SSH arguments are revision, binding index, connection ordinal, and relay
+capability digest from the exact `0x16` body. The receive order is exact.
+Transport performs one `recvmsg` into its fixed datagram slot and a bounded rights array of capacity one, observes truncation and the kernel-reported actual
+rights count, and compares that count to `MaximumRights`. If truncation occurred
+or count exceeds the maximum, it rejects and closes all received rights before indexing
+the array. It then parses and authenticates the fixed header, including exact
+sequence/direction/body length and its pinned boot nonce. From that authenticated
+packet type it requires exactly one right for `ssh_accepted_fd` and zero for
+every other type; mismatch closes every received right and destroys the slot.
+Only after those checks does it decode the bounded body and call the matching
+constructor.
+
+The constructors rely on that inspected-cardinality Transport TCB check; they
+do not accept a redundant caller-selectable `actualRights` scalar. Non-SSH
+constructors receive no right argument. `NewHelperSSHAcceptedPacket` receives
+the sole inspected Transport-issued capability, rejects nil and every
+constructible typed-nil before calling any method, and therefore represents
+exactly one right. Each constructor validates the complete closed header shape,
+nonzero boot nonce, exact sequence/body length, request ID, identity, packet
+direction, body codec, other typed-nil dependencies, represented arm
+cardinality, and closed safe shape before sealing its request.
+It compares only the request ID and identity explicitly present in
+`HelperReceiveRequest`; it has no access to Client phase, revision, binding,
+stream, credit, aggregate, or SSH ledgers. Non-sensitive bodies are destroyed
+after construction. Exec-stream body ownership stays live until its payload is
+forwarded or rejected. SSH accepted shape requires exactly one Transport-issued
+capability, an in-range binding index, ordinal 1..64, and a nonzero capability
+digest equal to `SHA256()`. Failure destroys the body and closes the capability.
+Success makes `HelperPacket` their Client-owned container.
+
+After return and before any body borrow or SSH ownership transfer, Client
+dispatch compares the typed arm against the outstanding operation, expected
+response/request type, exact revision and binding, stream offsets/EOF/credit,
+declared aggregates, active SSH binding, one-request rule, and lifecycle phase.
+Mismatch destroys the body, closes the capability, and terminates the session.
+
+`HelperPacket` methods are only `Type`, `Header`, and typed `Response`, `Event`,
+`ExecStream`, `ExecCredit`, `SSHAccepted`, and `CloseNotify` accessors. The
+non-sensitive arms return the exact `credentialprotocol` body plus `bool`;
+exec stream returns only its safe metadata record while Client privately owns
+the payload capability.
+`SSHAccepted() (SSHAcceptedPacket, bool)` returns a private-field safe arm whose
+only metadata accessors are `Revision`, `BindingIndex`, `Ordinal`,
+`CapabilitySHA256`, and `Connection() SSHConnectionCapability`. There is no
+generic arm, body, credential, right, FD, socket, or raw-byte accessor.
+
+```go
+type HelperExecStreamRecord struct {
+	liveValue
+	revision      uint64
+	kind          credentialprotocol.HelperExecStreamKind
+	flags         credentialprotocol.HelperExecStreamFlags
+	offset        uint64
+	payloadLength uint32
+	payloadSHA256 [32]byte
+}
+func (p HelperPacket) Response() (credentialprotocol.HelperResponseBody, bool)
+func (p HelperPacket) Event() (credentialprotocol.HelperEventBody, bool)
+func (p HelperPacket) ExecStream() (HelperExecStreamRecord, bool)
+func (p HelperPacket) ExecCredit() (credentialprotocol.HelperExecCreditBody, bool)
+func (p HelperPacket) SSHAccepted() (SSHAcceptedPacket, bool)
+func (p HelperPacket) CloseNotify() (credentialprotocol.HelperCloseNotifyBody, bool)
+```
+
+`HelperSendPacket` has no public constructor. Client-private constructors cover
+only prepare-begin, ordered prepare-file, prepare-commit, renew, revoke, exec,
+exec-private, stdin exec-stream, stdout/stderr exec-credit, and close-notify.
+Their arms contain the exact corresponding `credentialprotocol` body types,
+including `credentialprotocol.HelperPrepareBeginBody`; private file, private
+exec, and stdin payloads remain in a one-slot body capability. Every private
+constructor deep-snapshots every safe graph, pins the exact header, encoded
+length, and body SHA-256, and installs the graph/body in the shared owner. Its
+public methods are only `Type`, `Header`, `EncodedBodyLength`, `BodySHA256`, and
+`WriteCanonicalBody(credentialmemory.CredentialSink) error`. No send packet has
+a right. `WriteCanonicalBody` uses the identical shared one-shot alias state,
+safe-scratch wipe, locked sensitive-body direct write, and permanently pinned
+length/SHA rules as `ControllerSendPacket`. Its `Type` and `Header` values are
+pinned outer scalar/value metadata and remain stable after consumption; it has
+no typed safe-arm accessor. The sole write removes the owner under lock and
+destroys/releases it on every return exactly as on the controller side.
+
+Transport calls `WriteCanonicalBody` exactly once, retains its filled fixed
+HL8P slot across temporary `EAGAIN` after a nil Write, and retries the syscall
+from that slot while the `SendHelper` context remains live, never by re-encoding.
+A Write error performs no syscall; context end is terminal. Transport
+full-capacity wipes the slot after commit or every terminal failure. A nil
+`SendHelper` return commits sequence; an error consumes and destroys the owner,
+closes the helper session, and is never retried by Client.
+
+#### Credential client policy closure
+
+Policy reuses the exact v2 controller catalogs rather than accepting arbitrary
+HL8P types or safe strings:
+
+```go
+type PolicyDescriptor struct {
+	liveValue
+	id     credentialprotocol.SafeID
+	digest [32]byte
+}
+
+type ClientPolicyRequest struct {
+	liveValue
+	operation       v2control.Operation
+	requestID       v2control.RequestID
+	identityDigest  v2control.IdentityDigest
+	revision        uint64
+	expiresUnixNano int64
+	manifest        []v2control.BindingManifest
+	manifestSHA256  [32]byte
+	descriptors     []credentialprotocol.ExtensionDescriptor
+	fixedLimitSetID credentialprotocol.SafeID
+}
+
+type ClientPolicyDecision struct {
+	liveValue
+	allow         bool
+	rejectionCode v2control.ErrorCode
+}
+```
+
+The client descriptor remains the already-frozen `client-policy-v1` value with
+digest `SHA256(opaque16("hal/l8/process-policy/v1") ||
+opaque16("client-policy-v1"))`. `ID() credentialprotocol.SafeID` and `SHA256()
+[32]byte` are its only data accessors; private `newClientPolicyDescriptor()` is
+its sole constructor. `func NewClientPolicy() Policy` has no options and returns
+the sole D2 production policy. D6 must pass that Policy to `NewClient`; a fake
+may be injected only by an explicit test composition. No registry entry,
+request metadata, environment value, or command option selects a Policy.
+
+The sole public request constructor is
+`NewClientPolicyRequest(operation v2control.Operation, requestID
+v2control.RequestID, identityDigest v2control.IdentityDigest, revision uint64,
+expiresUnixNano int64, manifest []v2control.BindingManifest,
+descriptors []credentialprotocol.ExtensionDescriptor,
+fixedLimitSetID credentialprotocol.SafeID) (ClientPolicyRequest, error)`.
+Accessors return those fields in order; slice accessors return deep snapshots.
+There is no private body, plan, endpoint, right, proof authority, clock, or
+generic metadata.
+
+```go
+func (r ClientPolicyRequest) Operation() v2control.Operation
+func (r ClientPolicyRequest) RequestID() v2control.RequestID
+func (r ClientPolicyRequest) IdentityDigest() v2control.IdentityDigest
+func (r ClientPolicyRequest) Revision() uint64
+func (r ClientPolicyRequest) ExpiresUnixNano() int64
+func (r ClientPolicyRequest) Manifest() []v2control.BindingManifest
+func (r ClientPolicyRequest) ManifestSHA256() [32]byte
+func (r ClientPolicyRequest) Descriptors() []credentialprotocol.ExtensionDescriptor
+func (r ClientPolicyRequest) FixedLimitSetID() credentialprotocol.SafeID
+func (d ClientPolicyDecision) Allowed() bool
+func (d ClientPolicyDecision) RejectionCode() v2control.ErrorCode
+```
+
+The shape matrix is exact. Readiness has a nonzero request ID and session
+digest, zero revision/expiry/manifest/digest, the constructor-snapshotted
+descriptor set, and `helper-limits-v1`. Prepare has a nonzero request ID/job
+digest, revision 1, positive expiry, nonempty ordered v2control manifest and its
+nonzero projected helper-manifest digest defined below. Renew has nonzero request ID/job digest, positive
+revision and expiry, and no manifest/digest. Revoke has nonzero request ID/job
+digest and positive revision, with zero expiry/manifest/digest. Exec has
+nonzero request ID/job digest and positive revision, the exact prepared
+full v2 manifest and projected helper-manifest digest, and zero expiry. Every operation has exactly the
+constructor-snapshotted descriptor set and `helper-limits-v1`; every unused
+field is zero. Unknown operations and every other combination are invalid. The
+constructor itself invokes the projection below for prepare and exec and stores
+its computed helper digest; callers cannot supply or override that digest. It
+requires nil manifest and stores zero digest for the other three operations.
+
+Client-private allow/reject constructors enforce allow exactly as
+`allow=true,code=""` and rejection as `allow=false` plus one nonempty known
+`v2control.ErrorCode`. `Allowed()` and `RejectionCode()` are the sole decision
+accessors. Policy may reject only `malformed_request`, `resource_limit`, or the
+operation's existing `*_failed` code (`prepare_failed`, `renew_failed`,
+`revoke_failed`, or `exec_failed`); readiness uses `malformed_request` or
+`helper_unavailable`. Client state constructs request-conflict,
+identity-mismatch, revision-stale, expired, helper-unavailable, and cleanup-
+incomplete results without a Policy call. Client first obtains the closed token
+with `v2control.OperationTokenFor(request.Operation())`, then checks every
+rejection with `v2control.ValidateOperationErrorCode`; an unknown code, disallowed pair,
+invalid decision, panic, or `(decision,error)` other than valid decision/nil is
+a policy contract failure and closes/revokes. The exact known operations are
+`v2control.OperationReadiness`, credential prepare, renew, revoke, and exec;
+no helper extension packet invokes Policy independently of its owning prepared
+job correlation.
+
+Manifest authority is deliberately split rather than conflated. After
+v2control has validated a prepare request, Client deep-snapshots its full
+ordered `[]v2control.BindingManifest` for policy and controller-result
+correlation. The private pure
+`projectV2ManifestToHelperRecords([]v2control.BindingManifest)
+([]credentialprotocol.HelperBindingManifestRecord, [32]byte, error)` performs
+this exact order-preserving conversion:
+
+- copy `BindingID()` unchanged;
+- map exact v2 mode `http_proxy`, `file_tmpfs`, or `ssh_agent` to
+  `credentialprotocol.DeliveryModeHTTPProxy`, `DeliveryModeFileTmpfs`, or
+  `DeliveryModeSSHAgent`, respectively, rejecting every other value;
+- for `file_tmpfs`, copy `TargetPath()` and `DeclaredFileBytes()`, require the
+  already-v2-valid `FileSHA256()` to be exactly 64 lowercase hexadecimal
+  characters, decode it into `[32]byte`, and set those three helper fields;
+- for HTTP and SSH, leave target path, file length, and file digest zero; omit
+  HTTP `ServiceID()` and SSH `SSHPolicyID()`/`SSHPolicyRevision()` because no
+  such fields exist in the frozen `HelperBindingManifestRecord`.
+
+The function validates every projected record through
+`credentialprotocol.ValidateHelperBindingManifestRecord` and calls
+`credentialprotocol.ComputeHelperManifestSHA256` exactly once over the complete
+ordered projected slice. The projected records are encoded in `credentialprotocol.HelperPrepareBeginBody.Bindings`; that body has no digest field. The computed
+digest is stored with the exact deep-snapshotted begin body in the request and
+active ledgers, supplied in `ClientPolicyRequest`, and sent only in `credentialprotocol.HelperPrepareCommitBody.ManifestSHA256` after every ordered file record commits. Credentialclient does not hash v2 JSON and claims no
+digest authority for the full v2 manifest. The authenticated v2 job identity
+and the full manifest passed to Policy continue to bind HTTP service and SSH
+policy ID/revision; their deliberate omission from the helper projection does
+not grant the helper or extension any policy-selection authority.
+
+For prepare and exec, Client calls Policy with the full v2 manifest plus this
+projected helper digest and requires an allow before any helper send. Policy
+therefore authorizes all service/SSH-policy fields that the helper record omits.
+On successful prepare, Client compares the ordered
+`credentialprotocol.HelperBindingProof` results one-for-one with both retained
+representations by binding count, binding ID, and mapped mode before constructing
+the ordered v2control binding proofs. Proof IDs are copied only after those
+checks. An order, ID, mode, count, or projection mismatch is terminal and
+installs no active state.
+
+Those names are the existing constants
+`v2control.ErrorCodeMalformedRequest`, `v2control.ErrorCodeResourceLimit`,
+`v2control.ErrorCodePrepareFailed`, `v2control.ErrorCodeRenewFailed`,
+`v2control.ErrorCodeRevokeFailed`, `v2control.ErrorCodeExecFailed`,
+`v2control.ErrorCodeHelperUnavailable`, `v2control.ErrorCodeRequestConflict`,
+`v2control.ErrorCodeIdentityMismatch`, `v2control.ErrorCodeRevisionStale`,
+`v2control.ErrorCodeExpired`, and `v2control.ErrorCodeCleanupIncomplete`. The
+client defines no alias catalog.
+
+#### SSH accepted capability and transfer
+
+The client-side D5 child pumps through this parent-owned exact capability:
+
+```go
+type SSHIOResult struct {
+	liveValue
+	byteCount uint64
+	eof       bool
+	truncated bool
+}
+
+type SSHAcceptedPacket struct {
+	liveValue
+	revision         uint64
+	bindingIndex     uint16
+	ordinal          uint8
+	capabilitySHA256 [32]byte
+	connection       SSHConnectionCapability
+	ownership        *sshConnectionOwnership
+}
+
+type sshConnectionOwnership struct {
+	mu        sync.Mutex
+	cond      *sync.Cond
+	phase     sshConnectionPhase // clientOwned|transferred|closing|closed
+	activeOps uint32
+	digest    [32]byte
+	issuer    SSHConnectionCapability
+}
+
+type sshConnectionView struct {
+	ownership *sshConnectionOwnership
+}
+
+type SSHShutdownDirection uint8
+const (
+	SSHShutdownRead  SSHShutdownDirection = 1
+	SSHShutdownWrite SSHShutdownDirection = 2
+	SSHShutdownBoth  SSHShutdownDirection = 3
+)
+
+type SSHConnectionCapability interface {
+	SHA256() [32]byte
+	Read(context.Context, credentialmemory.CredentialSink) (SSHIOResult, error)
+	Write(context.Context, credentialmemory.BorrowedView) (SSHIOResult, error)
+	Shutdown(context.Context, SSHShutdownDirection) error
+	Close(context.Context) error
+}
+```
+
+Transport is the sole trusted issuer and part of the configured Client TCB. It
+wraps only one already-inspected connected `AF_UNIX SOCK_STREAM`; D5 cannot
+construct another. The interface exposes no FD, socket, address, path, peer,
+PID, raw bytes, generic reader/writer, deadline, duplication, or unwrap method.
+`SHA256` is the authenticated relay-capability correlation digest, not an
+endpoint identity. Shutdown direction is the closed read/write/both catalog.
+`SSHIOResult` has only `ByteCount`, `EOF`, and `Truncated` accessors; count is at
+most the supplied sink/view bound, non-EOF requires positive count, EOF requires
+zero count, and truncation is valid only for a bounded Read that filled its
+sink. `NewSSHIOResult(byteCount uint64, eof, truncated bool)
+(SSHIOResult,error)` is the sole result constructor and applies that matrix;
+`ValidateSSHShutdownDirection` accepts only the three constants. All other
+combinations are a capability contract failure.
+
+The Client owns the capability from successful receive through correlation and
+dispatch. Before calling `Handle`, Client registers the opened extension
+session in its Serve-owned helper/control-loss fan-out; that already-running
+receive/loss path is the watcher and requires no additional ExtensionSession
+method. Exactly these returns are valid: nil transfers ownership to the
+extension; non-nil retains Client ownership and Client closes it; panic is a
+contract failure and Client closes it. Typed-nil session or capability, wrong
+arm, cancellation, sequence/identity/revision/binding/ordinal/digest mismatch,
+or concurrent outstanding SSH request closes before transfer. `Handle` is
+serialized with every packet for the helper session and there is no queue: the
+single dispatch slot is either empty or contains this one Client-owned packet.
+Transport does not receive another helper packet until the slot commits or
+closes.
+
+`Connection()` returns only a `sshConnectionView`, never the Transport-issued
+`issuer`. Connection methods return `ClientContractOwnership` while Client-owned
+for `Read`, `Write`, `Shutdown`, and `Close`; `SHA256` instead returns only the
+already-pinned correlation digest. Thus an extension may retain the view during
+`Handle` but cannot start I/O, shutdown, or close before returning nil. After a
+nil return, Client changes `phase` to
+`transferred` under the shared mutex before freeing the dispatch slot; only
+then may view operations enter and increment `activeOps`. A non-nil return,
+panic, loss, or cancellation changes the phase to `closing`, denies new view
+operations, closes the private issuer, waits for active operations, and ends at
+`closed`. The view never exposes the issuer and every alias shares this state.
+
+After nil return, the D5 child is sole capability owner and pumps only through
+Read/Write. It permits at most one outstanding relay request per connection,
+uses one bounded read sink and one scoped write view, and never retains a view.
+EOF, relay loss, revoke, Client drain, or either-direction error triggers
+idempotent shutdown/close. `Shutdown` and `Close` reject unknown directions,
+typed-nil sinks/views, oversized results, and calls after `closed`; `Close`
+atomically moves `transferred` to `closing`, denies new operations, waits for
+`activeOps` under its context, calls the issuer exactly once, and latches its
+sanitized result. The watcher and pump share one terminal latch so
+only one path initiates close; all join bounded cleanup. Client Close waits for
+the extension session to close transferred capabilities, but never calls a
+transferred capability itself. An extension close that cannot prove connection
+absence is cleanup-incomplete and requires VM stop/reap.
+
+### Credential client request/result correlation matrix
+
+| Controller input | Exact helper transaction | Controller result and commit |
+| --- | --- | --- |
+| readiness JSON | no operational helper packet; uses already-authenticated helper readiness/hello state | exact `v2control.ReadinessSuccessResponse`, or matrix-valid failure; cannot install a job |
+| prepare JSON then its declared ordered HL8B file records | policy first authorizes the full v2 manifest; `prepare_begin` carries its exact ordered helper projection, followed by one `prepare_file` per file binding; the final `prepare_commit` carries the projected helper digest; all share one request ID/identity/revision | the sole `credentialprotocol.HelperResponseBody` has `requestType=prepare_commit`; ordered helper proofs map back by exact binding ID/mode before success atomically installs identity, both manifest representations/digest, revision, expiry and proof IDs |
+| renew JSON | one `renew` and one response with the same request ID/identity/new revision | accepted result maps to exact renew success and replaces expiry/proof/revision atomically |
+| revoke JSON | one `revoke` and one response | cleanup-complete maps to exact revoke success and removes authority; retry/stop-VM and cleanup-incomplete never become success |
+| exec JSON, optional one HL8B exec-private record, then credited stdin HL8S | `exec`, optional `exec_private`, credited stdin `exec_stream`; helper emits stdout/stderr streams, opposite credits, then one response | stdout/stderr become credited controller HL8S; stdin credits become controller HL8C; exact accepted response is sent only after three EOFs and child exit |
+| controller stdout/stderr HL8C | one matching helper `exec_credit` | consumes exactly one previously granted output credit; no JSON result |
+| helper `ssh_accepted_fd` | no controller control packet; dispatch to the one registered SSH extension | ownership transfers only after `Handle` nil; helper flow remains serialized while the one request is outstanding |
+| helper event or close-notify | no invented controller event body | latch loss/revoke/drain and send only an already-defined operation failure or close where its frozen matrix permits; otherwise close the secure session |
+
+One logical controller request is outstanding. Prepare's packet group and
+exec's JSON/private/three-stream group count as one request. Every helper
+packet, controller private/stream/credit record, response, and extension packet
+must match that request's exact nonzero request ID, identity digest, revision,
+projected helper-manifest/transaction digest, and contiguous offsets where applicable.
+Readiness alone has the session ID. Lower sequence, gap, changed request bytes,
+response type mismatch, duplicate/missing/reordered/interleaved record, stale
+revision, identity drift, unexpected EOF/credit/right, or response after close
+is terminal. Counters advance only after authentication, canonical validation,
+correlation, ownership transfer, and committed state transition or safe
+rejection. Failed or partial send never advances.
+
+The client retains canonical safe request metadata, both immutable manifest
+representations, the helper-manifest digest, and transaction digests for the one
+active request, not private bytes. An identical host retry is accepted
+only from newly supplied canonical JSON/private/stream records at fresh secure
+sequences and is checked against the frozen credentialprotocol transaction
+state. The Client never reconstructs wiped HL8B/HL8S payloads and never retries
+an ambiguous helper request. Helper loss, timeout, or response ambiguity closes
+and revokes the whole VM credential session.
+
+### Credential client validation and ownership matrices
+
+All new constructors and lifecycle paths return `*ClientContractError`, whose
+closed `ClientContractErrorCode uint8` catalog is:
+
+```text
+1 ClientContractDependency       8 ClientContractPolicy
+2 ClientContractDescriptor       9 ClientContractExtension
+3 ClientContractServeState      10 ClientContractOwnership
+4 ClientContractPacket          11 ClientContractCleanup
+5 ClientContractCorrelation     12 ClientContractSerialization
+6 ClientContractSequence        13 ClientContractPanic
+7 ClientContractLimit
+```
+
+Its concrete safe layout and accessor set are:
+
+```go
+type ClientContractField uint8
+const (
+	ClientFieldDependency ClientContractField = 1
+	ClientFieldDescriptor ClientContractField = 2
+	ClientFieldSequence ClientContractField = 3
+	ClientFieldPacketType ClientContractField = 4
+	ClientFieldRequestID ClientContractField = 5
+	ClientFieldIdentity ClientContractField = 6
+	ClientFieldRevision ClientContractField = 7
+	ClientFieldBody ClientContractField = 8
+	ClientFieldRight ClientContractField = 9
+	ClientFieldPolicy ClientContractField = 10
+	ClientFieldExtension ClientContractField = 11
+	ClientFieldLifecycle ClientContractField = 12
+)
+type ClientContractIndexKind uint8
+const (
+	ClientIndexPacket ClientContractIndexKind = 1
+	ClientIndexRecord ClientContractIndexKind = 2
+	ClientIndexBinding ClientContractIndexKind = 3
+	ClientIndexStream ClientContractIndexKind = 4
+)
+type ClientContractError struct {
+	code      ClientContractErrorCode
+	field     ClientContractField
+	indexKind ClientContractIndexKind
+	index     uint32
+	hasIndex  bool
+}
+func (e *ClientContractError) Code() ClientContractErrorCode
+func (e *ClientContractError) Field() (ClientContractField, bool)
+func (e *ClientContractError) Index() (ClientContractIndexKind, uint32, bool)
+func (e *ClientContractError) Error() string
+```
+
+Codes map in order to these exact messages: `credential client dependency is
+invalid`, `credential client descriptor is invalid`, `credential client Serve
+state is invalid`, `credential client packet is invalid`, `credential client
+correlation is invalid`, `credential client sequence is invalid`, `credential
+client fixed limit is exceeded`, `credential client policy contract is
+invalid`, `credential client extension contract is invalid`, `credential client
+ownership is invalid`, `credential client cleanup is incomplete`, `credential
+client live serialization is forbidden`, and `credential client dependency
+panicked`. Field zero means absent; otherwise it must be one listed constant.
+Index is permitted only for Packet/Record/Binding/Stream with the corresponding
+field and is never a raw sequence, request ID, FD, PID, or byte offset.
+
+The error contains only code, one closed static field selector, and optional
+packet/record/binding/stream index. Its message is a static catalog string; it
+does not wrap or format a dependency error. Unknown code/field or a non-applicable
+index is invalid. Errors contain no operation token from untrusted input,
+request bytes, IDs beyond fixed public catalog names, body, key, path, socket,
+PID, endpoint, digest text, policy message, or raw cause.
+
+Receive ownership is exact: before a valid constructor return Transport owns
+the slot/body/right; constructor failure destroys/closes them. After a valid
+return Client owns them. Client destroys non-sensitive bodies immediately,
+destroys sensitive bodies after the sole scoped borrow on success/error/panic,
+and closes every untransferred right. For send, Client owns body state until
+the sole `WriteCanonicalBody` call consumes the shared owner; Transport then
+owns only its retained filled fixed write slot, wipes it before `Send*` returns,
+and retains nothing afterward. A nil send commits; a returned error destroys
+the consumed owner, closes the session, and cannot be retried by Client. Value
+copies share one synchronized owner state. Destroy waits for any in-flight borrow; later
+borrow/destroy returns the stable destroyed error. Every owned locked slot uses
+`clear` plus `runtime.KeepAlive`, then unlock/unmap, for a full-capacity wipe.
+
+The dependency/factory return matrix is exact: `(valid,nil)` is success;
+`(nil,nil)` or `(typed-nil,nil)` is contract failure; `(nil,error)` returns the
+sanitized operation failure; `(non-nil,error)`, including callable typed nil,
+closes the value with the 30-second internal cleanup deadline and returns contract
+failure. Cleanup error is joined only as `ClientContractCleanup`, never exposed
+verbatim. Policy has no valid non-nil-error row. Transport receive has the same
+four rows plus ownership cleanup; Transport send and Close accept only nil or a
+sanitized failure. Extension `Handle` uses the ownership rule above.
+
+Every live Client, options snapshot containing interfaces, registry,
+registration, open request, transport request/packet, body/right capability,
+policy request/decision/descriptor, SSH arm/result, and Client error-adjacent
+live wrapper implements fail-closed `MarshalJSON`, `MarshalText`,
+`MarshalBinary`, `UnmarshalJSON`, `UnmarshalText`, and `UnmarshalBinary` without
+traversal. `String`, `GoString`, and `Format` return one static redacted type
+label. Reflection/panic tests seed private bytes, endpoint/path text, request
+data, and dependency errors and require absence. Safe reused v2control and
+credentialprotocol values retain their own already-frozen serialization rules;
+the wrapper never provides an alternate encoder.
 
 ## D5 daemon-owned host-agent registry
 
