@@ -80,13 +80,26 @@ func TestSendPacketEncodingWipeAndStreamBypassSourceGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	if strings.Count(text, "defer wipeBytes(encoded[:cap(encoded)])") < 2 {
-		t.Fatal("safe send encodings are not wiped after construction/hash and writing")
+	if strings.Count(text, "defer wipeBytes(encoded[:cap(encoded)])") != 1 {
+		t.Fatal("shared safe send scratch primitive must wipe through full capacity")
 	}
 	constructorStream := strings.Index(text, "if stream, ok := arm.(sendExecStreamArm); ok {")
-	constructorEncode := strings.Index(text, "encoded, err := arm.encodeCanonical()")
-	if constructorStream < 0 || constructorEncode < 0 || constructorStream > constructorEncode {
+	constructorScratch := strings.Index(text, "withCanonicalScratch(arm, length")
+	if constructorStream < 0 || constructorScratch < 0 || constructorStream > constructorScratch {
 		t.Fatal("sensitive send stream does not bypass canonical encoding during construction")
+	}
+	if strings.Count(text, "make([]byte, int(length))") != 1 || strings.Count(text, "withCanonicalScratch(") != 3 {
+		t.Fatal("safe send constructor/write must share one exact-length scratch primitive")
+	}
+	for _, forbidden := range []string{
+		"credentialprotocol.EncodeHelperResponseBody(",
+		"credentialprotocol.EncodeHelperEventBody(",
+		"credentialprotocol.EncodeHelperExecCreditBody(",
+		"credentialprotocol.EncodeHelperCloseNotifyBody(",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("credentialhelper duplicates/uses allocating safe codec %q", forbidden)
+		}
 	}
 }
 
@@ -102,6 +115,7 @@ func TestSendPacketApprovedScratchSnapshotAndOneShotSourceContract(t *testing.T)
 		"atomic.Bool",
 		"CompareAndSwap(false, true)",
 		"defer wipeBytes(encoded[:cap(encoded)])",
+		"encodeCanonicalTo(encoded)",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("send path omits approved scratch/snapshot/one-shot marker %q", required)
@@ -118,5 +132,35 @@ func TestSendPacketApprovedScratchSnapshotAndOneShotSourceContract(t *testing.T)
 	credentialSink := reflect.TypeOf((*credentialmemory.CredentialSink)(nil)).Elem()
 	if method.Type.NumIn() != 2 || method.Type.In(1) != credentialSink {
 		t.Errorf("WriteCanonicalBody input = %v, want exact credentialmemory.CredentialSink", method.Type)
+	}
+}
+
+func TestTransportDirectionAndBootSequenceSourceContract(t *testing.T) {
+	receive, err := os.ReadFile("transport_receive.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	send, err := os.ReadFile("transport_send.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"streamKind != credentialprotocol.HelperExecStreamStdin",
+		"decoded.StreamKind != credentialprotocol.HelperExecStreamStdout && decoded.StreamKind != credentialprotocol.HelperExecStreamStderr",
+	} {
+		if !strings.Contains(string(receive), required) {
+			t.Errorf("receive direction source omits %q", required)
+		}
+	}
+	for _, required := range []string{
+		"body.StreamKind != credentialprotocol.HelperExecStreamStdin",
+		"arm.streamKind != credentialprotocol.HelperExecStreamStdout && arm.streamKind != credentialprotocol.HelperExecStreamStderr",
+		"header.Sequence != 0",
+		"header.Sequence != 1",
+		"header.Sequence != 2",
+	} {
+		if !strings.Contains(string(send), required) {
+			t.Errorf("send direction/sequence source omits %q", required)
+		}
 	}
 }

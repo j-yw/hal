@@ -368,18 +368,25 @@ type transportRetainingTestSink struct {
 	err     error
 }
 
-type transportTrackingSendArm struct{ encoded []byte }
-
-func (transportTrackingSendArm) sendPacketArm() {}
-func (arm transportTrackingSendArm) encodeCanonical() ([]byte, error) {
-	return arm.encoded, nil
+type transportTrackingSendArm struct {
+	state  *transportTrackingSendState
+	length uint32
+	fail   bool
 }
 
-type transportFailingSendArm struct{ encoded []byte }
+type transportTrackingSendState struct{ alias []byte }
 
-func (transportFailingSendArm) sendPacketArm() {}
-func (arm transportFailingSendArm) encodeCanonical() ([]byte, error) {
-	return arm.encoded, errors.New("encode failed")
+func (transportTrackingSendArm) sendPacketArm()                       {}
+func (arm transportTrackingSendArm) canonicalLength() (uint32, error) { return arm.length, nil }
+func (arm transportTrackingSendArm) encodeCanonicalTo(dst []byte) error {
+	arm.state.alias = dst
+	for index := range dst {
+		dst[index] = byte(credentialprotocol.CloseReasonNormal)
+	}
+	if arm.fail {
+		return errors.New("encode failed")
+	}
+	return nil
 }
 
 func (sink *transportRetainingTestSink) MaxCredentialBytes() int { return sink.maximum }
@@ -469,25 +476,25 @@ func TestSendPacketWipesSafeEncodingAndConsumesOwnershipOnSinkError(t *testing.T
 }
 
 func TestSendPacketWipesSafeEncodingAfterConstruction(t *testing.T) {
-	encoded := make([]byte, 1, 64)
-	encoded[0] = byte(credentialprotocol.CloseReasonNormal)
-	arm := transportTrackingSendArm{encoded: encoded}
-	_, err := newSendPacket(transportHeader(credentialprotocol.PacketTypeCloseNotify, 9, 1), arm, nil)
-	if !errors.Is(err, ErrContractCorrelation) {
-		t.Fatalf("test-only unknown safe arm error = %v", err)
+	state := &transportTrackingSendState{}
+	arm := transportTrackingSendArm{state: state, length: 1}
+	if err := withCanonicalScratch(arm, 1, func(encoded []byte) error {
+		if !reflect.DeepEqual(encoded, []byte{byte(credentialprotocol.CloseReasonNormal)}) {
+			t.Fatalf("test-only scratch = %x", encoded)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if !allZeroBytes(encoded[:cap(encoded)]) {
-		t.Fatalf("safe encoding retained after construction = %x", encoded)
+	if len(state.alias) != 1 || !allZeroBytes(state.alias[:cap(state.alias)]) {
+		t.Fatalf("safe encoding retained after construction = %x", state.alias)
 	}
 
-	failed := make([]byte, 1, 64)
-	for index := range failed[:cap(failed)] {
-		failed[:cap(failed)][index] = 0xff
-	}
-	if _, err := newSendPacket(transportHeader(credentialprotocol.PacketTypeCloseNotify, 9, 1), transportFailingSendArm{encoded: failed}, nil); !errors.Is(err, ErrContractInvalidArgument) {
+	failedState := &transportTrackingSendState{}
+	if err := withCanonicalScratch(transportTrackingSendArm{state: failedState, length: 1, fail: true}, 1, func([]byte) error { return nil }); !errors.Is(err, ErrContractInvalidArgument) {
 		t.Fatalf("failing safe arm error = %v", err)
 	}
-	if !allZeroBytes(failed[:cap(failed)]) {
+	if len(failedState.alias) != 1 || !allZeroBytes(failedState.alias[:cap(failedState.alias)]) {
 		t.Fatal("failed constructor did not wipe scratch through capacity")
 	}
 }
@@ -704,10 +711,177 @@ func TestSendExecStreamOwnsLockedBodyUntilExplicitDestroy(t *testing.T) {
 }
 
 func TestSendExecStreamCanonicalEncoderIsUnavailable(t *testing.T) {
-	if encoded, err := (sendExecStreamArm{}).encodeCanonical(); encoded != nil || !errors.Is(err, ErrContractCapability) {
-		t.Fatalf("sensitive stream canonical encoder = %x, %v", encoded, err)
+	if err := (sendExecStreamArm{}).encodeCanonicalTo(make([]byte, 1)); !errors.Is(err, ErrContractCapability) {
+		t.Fatalf("sensitive stream canonical encoder = %v", err)
 	}
 	assertPublicMethods(t, reflect.TypeOf((*credentialmemory.CredentialSink)(nil)).Elem(), []string{"MaxCredentialBytes", "WriteCredential"})
+}
+
+func TestExecStreamAndCreditDirectionMatrix(t *testing.T) {
+	credential := transportCredential(t)
+	streamPayload := []byte("payload")
+	streamDigest := sha256.Sum256(streamPayload)
+	for _, tc := range []struct {
+		name     string
+		kind     credentialprotocol.HelperExecStreamKind
+		accepted bool
+	}{
+		{name: "inbound stdin", kind: credentialprotocol.HelperExecStreamStdin, accepted: true},
+		{name: "inbound stdout", kind: credentialprotocol.HelperExecStreamStdout},
+		{name: "inbound stderr", kind: credentialprotocol.HelperExecStreamStderr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded := transportStreamBody(2, tc.kind, credentialprotocol.HelperExecStreamFlagsNone, 0, streamPayload, streamDigest)
+			body := newTransportTestBody(encoded, 256)
+			request, _ := NewReceiveRequest(2, uint32(len(encoded)), 0)
+			packet, err := NewReceivedExecStreamPacket(request, transportJobHeader(credentialprotocol.PacketTypeExecStream, 2, uint32(len(encoded))), credential, 1, body, 0, 2, tc.kind, credentialprotocol.HelperExecStreamFlagsNone, 0, uint32(len(streamPayload)), streamDigest)
+			if tc.accepted {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := packet.body.Destroy(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, ErrContractInvalidArgument) {
+				t.Fatalf("wrong inbound stream direction error = %v", err)
+			}
+			assertBodyDestroyedAndWiped(t, body)
+		})
+	}
+
+	for _, tc := range []struct {
+		name     string
+		kind     credentialprotocol.HelperExecStreamKind
+		accepted bool
+	}{
+		{name: "outbound stdin", kind: credentialprotocol.HelperExecStreamStdin},
+		{name: "outbound stdout", kind: credentialprotocol.HelperExecStreamStdout, accepted: true},
+		{name: "outbound stderr", kind: credentialprotocol.HelperExecStreamStderr, accepted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded := transportStreamBody(2, tc.kind, credentialprotocol.HelperExecStreamFlagsNone, 0, streamPayload, streamDigest)
+			body := newTransportTestBody(encoded, 256)
+			packet, err := newExecStreamPacket(transportJobHeader(credentialprotocol.PacketTypeExecStream, 2, uint32(len(encoded))), 2, tc.kind, credentialprotocol.HelperExecStreamFlagsNone, 0, uint32(len(streamPayload)), streamDigest, body)
+			if tc.accepted {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := packet.destroyBody(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, ErrContractCorrelation) {
+				t.Fatalf("wrong outbound stream direction error = %v", err)
+			}
+			assertBodyDestroyedAndWiped(t, body)
+		})
+	}
+
+	for _, tc := range []struct {
+		name     string
+		kind     credentialprotocol.HelperExecStreamKind
+		accepted bool
+	}{
+		{name: "inbound credit stdin", kind: credentialprotocol.HelperExecStreamStdin},
+		{name: "inbound credit stdout", kind: credentialprotocol.HelperExecStreamStdout, accepted: true},
+		{name: "inbound credit stderr", kind: credentialprotocol.HelperExecStreamStderr, accepted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decoded := credentialprotocol.HelperExecCreditBody{Revision: 2, StreamKind: tc.kind, NextOffset: 1}
+			encoded, err := credentialprotocol.EncodeHelperExecCreditBody(decoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := newTransportTestBody(encoded, 256)
+			request, _ := NewReceiveRequest(2, uint32(len(encoded)), 0)
+			_, err = NewReceivedExecCreditPacket(request, transportJobHeader(credentialprotocol.PacketTypeExecCredit, 2, uint32(len(encoded))), credential, 1, body, 0, decoded)
+			if tc.accepted && err != nil {
+				t.Fatal(err)
+			}
+			if !tc.accepted && !errors.Is(err, ErrContractInvalidArgument) {
+				t.Fatalf("wrong inbound credit direction error = %v", err)
+			}
+			assertBodyDestroyedAndWiped(t, body)
+		})
+	}
+
+	for _, tc := range []struct {
+		name     string
+		kind     credentialprotocol.HelperExecStreamKind
+		accepted bool
+	}{
+		{name: "outbound credit stdin", kind: credentialprotocol.HelperExecStreamStdin, accepted: true},
+		{name: "outbound credit stdout", kind: credentialprotocol.HelperExecStreamStdout},
+		{name: "outbound credit stderr", kind: credentialprotocol.HelperExecStreamStderr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decoded := credentialprotocol.HelperExecCreditBody{Revision: 2, StreamKind: tc.kind, NextOffset: 1}
+			encoded, err := credentialprotocol.EncodeHelperExecCreditBody(decoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = newExecCreditPacket(transportJobHeader(credentialprotocol.PacketTypeExecCredit, 2, uint32(len(encoded))), decoded)
+			if tc.accepted && err != nil {
+				t.Fatal(err)
+			}
+			if !tc.accepted && !errors.Is(err, ErrContractInvalidArgument) {
+				t.Fatalf("wrong outbound credit direction error = %v", err)
+			}
+		})
+	}
+}
+
+func TestBootSendConstructorsRequireFixedSequences(t *testing.T) {
+	digest := sha256.Sum256([]byte("digest"))
+	for _, tc := range []struct {
+		name       string
+		want       uint64
+		bodyBytes  uint32
+		packetType credentialprotocol.PacketType
+		construct  func(credentialprotocol.HelperPacketHeader) (SendPacket, error)
+	}{
+		{name: "helper ready", want: 0, bodyBytes: 0, packetType: credentialprotocol.PacketTypeHelperReady, construct: newHelperReadyPacket},
+		{name: "bootstrap ack", want: 1, bodyBytes: 32, packetType: credentialprotocol.PacketTypeBootstrapAck, construct: func(header credentialprotocol.HelperPacketHeader) (SendPacket, error) {
+			return newBootstrapAckPacket(header, digest)
+		}},
+		{name: "agent hello ack", want: 2, bodyBytes: 32, packetType: credentialprotocol.PacketTypeAgentHelloAck, construct: func(header credentialprotocol.HelperPacketHeader) (SendPacket, error) {
+			return newAgentHelloAckPacket(header, digest)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			header := transportHeader(tc.packetType, tc.want, tc.bodyBytes)
+			if tc.packetType == credentialprotocol.PacketTypeHelperReady {
+				header.BootNonce = [32]byte{}
+			}
+			if _, err := tc.construct(header); err != nil {
+				t.Fatalf("fixed sequence rejected: %v", err)
+			}
+			wrong := tc.want + 1
+			if tc.want > 0 {
+				wrong = tc.want - 1
+			}
+			header.Sequence = wrong
+			if _, err := tc.construct(header); !errors.Is(err, ErrContractCorrelation) {
+				t.Fatalf("wrong boot sequence %d error = %v", wrong, err)
+			}
+		})
+	}
+}
+
+func TestJobSendConstructorsKeepServiceOwnedSequences(t *testing.T) {
+	for _, sequence := range []uint64{0, 17, uint64(^uint32(0))} {
+		body := credentialprotocol.HelperExecCreditBody{
+			Revision:   2,
+			StreamKind: credentialprotocol.HelperExecStreamStdin,
+			NextOffset: sequence,
+		}
+		packet, err := newExecCreditPacket(transportJobHeader(credentialprotocol.PacketTypeExecCredit, sequence, credentialprotocol.HelperExecCreditBodyBytes), body)
+		if err != nil {
+			t.Fatalf("dynamic job sequence %d rejected: %v", sequence, err)
+		}
+		if packet.Header().Sequence != sequence {
+			t.Fatalf("job sequence = %d, want %d", packet.Header().Sequence, sequence)
+		}
+	}
 }
 
 func TestReceiveRequestConcurrentCopiesHaveOneOwner(t *testing.T) {

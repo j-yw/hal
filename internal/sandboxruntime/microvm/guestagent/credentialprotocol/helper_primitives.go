@@ -39,13 +39,27 @@ func ValidateBodyToken(token string) error {
 
 // EncodeBodyToken returns uint16_be(length) followed by canonical ASCII bytes.
 func EncodeBodyToken(token string) ([]byte, error) {
-	if err := ValidateBodyToken(token); err != nil {
+	length, err := bodyTokenEncodedLength(token)
+	if err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, 2+len(token))
-	binary.BigEndian.PutUint16(encoded[:2], uint16(len(token)))
-	copy(encoded[2:], token)
+	encoded := make([]byte, length)
+	putBodyToken(encoded, token)
 	return encoded, nil
+}
+
+func bodyTokenEncodedLength(token string) (int, error) {
+	if err := ValidateBodyToken(token); err != nil {
+		return 0, err
+	}
+	return 2 + len(token), nil
+}
+
+func putBodyToken(dst []byte, token string) int {
+	length := 2 + len(token)
+	binary.BigEndian.PutUint16(dst[:2], uint16(len(token)))
+	copy(dst[2:length], token)
+	return length
 }
 
 // DecodeBodyToken decodes one complete token and rejects trailing bytes.

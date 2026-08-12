@@ -13,7 +13,8 @@ import (
 
 type sendPacketArm interface {
 	sendPacketArm()
-	encodeCanonical() ([]byte, error)
+	canonicalLength() (uint32, error)
+	encodeCanonicalTo([]byte) error
 }
 
 type sealedSendPacketArm struct {
@@ -65,50 +66,58 @@ func (sendEventArm) sendPacketArm()         {}
 func (sendCloseNotifyArm) sendPacketArm()   {}
 func (*sealedSendPacketArm) sendPacketArm() {}
 
-func (*sealedSendPacketArm) encodeCanonical() ([]byte, error) {
-	return nil, ErrContractCapability
-}
+func (*sealedSendPacketArm) canonicalLength() (uint32, error) { return 0, ErrContractCapability }
+func (*sealedSendPacketArm) encodeCanonicalTo([]byte) error   { return ErrContractCapability }
 
-func (sendHelperReadyArm) encodeCanonical() ([]byte, error) { return []byte{}, nil }
-func (arm sendBootstrapAckArm) encodeCanonical() ([]byte, error) {
-	if arm.bootstrapSHA256 == ([32]byte{}) {
-		return nil, ErrContractInvalidArgument
-	}
-	encoded := make([]byte, 32)
-	copy(encoded, arm.bootstrapSHA256[:])
-	return encoded, nil
+func (sendHelperReadyArm) canonicalLength() (uint32, error) {
+	return credentialprotocol.HelperReadyBodyEncodedLength(), nil
 }
-func (arm sendAgentHelloAckArm) encodeCanonical() ([]byte, error) {
-	if arm.bootstrapSHA256 == ([32]byte{}) {
-		return nil, ErrContractInvalidArgument
-	}
-	encoded := make([]byte, 32)
-	copy(encoded, arm.bootstrapSHA256[:])
-	return encoded, nil
+func (sendHelperReadyArm) encodeCanonicalTo(dst []byte) error {
+	return credentialprotocol.EncodeHelperReadyBodyTo(dst)
 }
-func (arm sendSSHAcceptedArm) encodeCanonical() ([]byte, error) {
-	if arm.revision == 0 || arm.bindingIndex >= credentialprotocol.MaxHelperBindings || arm.connectionOrdinal == 0 || arm.relayCapabilitySHA256 == ([32]byte{}) {
-		return nil, ErrContractInvalidArgument
-	}
-	encoded := make([]byte, 43)
-	binary.BigEndian.PutUint64(encoded[:8], arm.revision)
-	binary.BigEndian.PutUint16(encoded[8:10], arm.bindingIndex)
-	encoded[10] = arm.connectionOrdinal
-	copy(encoded[11:], arm.relayCapabilitySHA256[:])
-	return encoded, nil
+func (sendBootstrapAckArm) canonicalLength() (uint32, error) {
+	return credentialprotocol.HelperBootstrapAckBodyEncodedLength(), nil
 }
-func (arm sendExecCreditArm) encodeCanonical() ([]byte, error) {
-	return credentialprotocol.EncodeHelperExecCreditBody(arm.body)
+func (arm sendBootstrapAckArm) encodeCanonicalTo(dst []byte) error {
+	return credentialprotocol.EncodeHelperBootstrapAckBodyTo(dst, arm.bootstrapSHA256)
 }
-func (sendExecStreamArm) encodeCanonical() ([]byte, error) { return nil, ErrContractCapability }
-func (arm sendResponseArm) encodeCanonical() ([]byte, error) {
-	return credentialprotocol.EncodeHelperResponseBody(arm.body)
+func (sendAgentHelloAckArm) canonicalLength() (uint32, error) {
+	return credentialprotocol.HelperAgentHelloAckBodyEncodedLength(), nil
 }
-func (arm sendEventArm) encodeCanonical() ([]byte, error) {
-	return credentialprotocol.EncodeHelperEventBody(arm.body)
+func (arm sendAgentHelloAckArm) encodeCanonicalTo(dst []byte) error {
+	return credentialprotocol.EncodeHelperAgentHelloAckBodyTo(dst, arm.bootstrapSHA256)
 }
-func (arm sendCloseNotifyArm) encodeCanonical() ([]byte, error) {
-	return credentialprotocol.EncodeHelperCloseNotifyBody(arm.body)
+func (sendSSHAcceptedArm) canonicalLength() (uint32, error) {
+	return credentialprotocol.HelperSSHAcceptedFDBodyEncodedLength(), nil
+}
+func (arm sendSSHAcceptedArm) encodeCanonicalTo(dst []byte) error {
+	return credentialprotocol.EncodeHelperSSHAcceptedFDBodyTo(dst, arm.revision, arm.bindingIndex, arm.connectionOrdinal, arm.relayCapabilitySHA256)
+}
+func (arm sendExecCreditArm) canonicalLength() (uint32, error) {
+	return credentialprotocol.HelperExecCreditBodyEncodedLength(arm.body)
+}
+func (arm sendExecCreditArm) encodeCanonicalTo(dst []byte) error {
+	return credentialprotocol.EncodeHelperExecCreditBodyTo(dst, arm.body)
+}
+func (sendExecStreamArm) canonicalLength() (uint32, error) { return 0, ErrContractCapability }
+func (sendExecStreamArm) encodeCanonicalTo([]byte) error   { return ErrContractCapability }
+func (arm sendResponseArm) canonicalLength() (uint32, error) {
+	return credentialprotocol.HelperResponseBodyEncodedLength(arm.body)
+}
+func (arm sendResponseArm) encodeCanonicalTo(dst []byte) error {
+	return credentialprotocol.EncodeHelperResponseBodyTo(dst, arm.body)
+}
+func (arm sendEventArm) canonicalLength() (uint32, error) {
+	return credentialprotocol.HelperEventBodyEncodedLength(arm.body)
+}
+func (arm sendEventArm) encodeCanonicalTo(dst []byte) error {
+	return credentialprotocol.EncodeHelperEventBodyTo(dst, arm.body)
+}
+func (arm sendCloseNotifyArm) canonicalLength() (uint32, error) {
+	return credentialprotocol.HelperCloseNotifyBodyEncodedLength(arm.body)
+}
+func (arm sendCloseNotifyArm) encodeCanonicalTo(dst []byte) error {
+	return credentialprotocol.EncodeHelperCloseNotifyBodyTo(dst, arm.body)
 }
 
 // SendPacket is the service-built closed outbound union.
@@ -180,16 +189,21 @@ func newSendPacket(header credentialprotocol.HelperPacketHeader, arm sendPacketA
 		success = true
 		return packet, nil
 	}
-	encoded, err := arm.encodeCanonical()
+	length, err := arm.canonicalLength()
 	if err != nil {
-		wipeBytes(encoded[:cap(encoded)])
 		return SendPacket{}, ErrContractInvalidArgument
 	}
-	defer wipeBytes(encoded[:cap(encoded)])
-	if uint32(len(encoded)) != header.BodyLength || header.Type != sendArmPacketType(arm) {
+	if length != header.BodyLength || header.Type != sendArmPacketType(arm) {
 		return SendPacket{}, ErrContractCorrelation
 	}
-	packet = SendPacket{header: header, arm: &sealedSendPacketArm{arm: arm, bodyLength: header.BodyLength, bodySHA256: sha256.Sum256(encoded)}, right: right}
+	var bodySHA256 [32]byte
+	if err := withCanonicalScratch(arm, length, func(encoded []byte) error {
+		bodySHA256 = sha256.Sum256(encoded)
+		return nil
+	}); err != nil {
+		return SendPacket{}, err
+	}
+	packet = SendPacket{header: header, arm: &sealedSendPacketArm{arm: arm, bodyLength: header.BodyLength, bodySHA256: bodySHA256}, right: right}
 	success = true
 	return packet, nil
 }
@@ -268,18 +282,30 @@ func sendArmPacketType(arm sendPacketArm) credentialprotocol.PacketType {
 }
 
 func newHelperReadyPacket(header credentialprotocol.HelperPacketHeader) (SendPacket, error) {
+	if header.Sequence != 0 {
+		return SendPacket{}, ErrContractCorrelation
+	}
 	return newSendPacket(header, sendHelperReadyArm{}, nil)
 }
 func newBootstrapAckPacket(header credentialprotocol.HelperPacketHeader, digest [32]byte) (SendPacket, error) {
+	if header.Sequence != 1 {
+		return SendPacket{}, ErrContractCorrelation
+	}
 	return newSendPacket(header, sendBootstrapAckArm{bootstrapSHA256: digest}, nil)
 }
 func newAgentHelloAckPacket(header credentialprotocol.HelperPacketHeader, digest [32]byte) (SendPacket, error) {
+	if header.Sequence != 2 {
+		return SendPacket{}, ErrContractCorrelation
+	}
 	return newSendPacket(header, sendAgentHelloAckArm{bootstrapSHA256: digest}, nil)
 }
 func newSSHAcceptedPacket(header credentialprotocol.HelperPacketHeader, revision uint64, bindingIndex uint16, ordinal uint8, digest [32]byte, right ReceivedCapability) (SendPacket, error) {
 	return newSendPacket(header, sendSSHAcceptedArm{revision: revision, bindingIndex: bindingIndex, connectionOrdinal: ordinal, relayCapabilitySHA256: digest}, right)
 }
 func newExecCreditPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperExecCreditBody) (SendPacket, error) {
+	if body.StreamKind != credentialprotocol.HelperExecStreamStdin {
+		return SendPacket{}, ErrContractInvalidArgument
+	}
 	return newSendPacket(header, sendExecCreditArm{body: body}, nil)
 }
 func newExecStreamPacket(header credentialprotocol.HelperPacketHeader, revision uint64, streamKind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, offset uint64, payloadLength uint32, payloadSHA256 [32]byte, body ReceivedBodyCapability) (SendPacket, error) {
@@ -339,19 +365,22 @@ func (packet SendPacket) WriteCanonicalBody(sink credentialmemory.CredentialSink
 	if !configuredDependency(sealed.arm) {
 		return ErrContractInvalidArgument
 	}
-	encoded, err := sealed.arm.encodeCanonical()
+	length, err := sealed.arm.canonicalLength()
 	if err != nil {
-		wipeBytes(encoded[:cap(encoded)])
 		return ErrContractInvalidArgument
 	}
-	defer wipeBytes(encoded[:cap(encoded)])
-	if len(encoded) != int(packet.header.BodyLength) || sha256.Sum256(encoded) != sealed.bodySHA256 || sink.MaxCredentialBytes() < len(encoded) {
+	if length != packet.header.BodyLength {
 		return ErrContractInvalidArgument
 	}
-	if err := sink.WriteCredential(encoded); err != nil {
-		return ErrContractOwnership
-	}
-	return nil
+	return withCanonicalScratch(sealed.arm, length, func(encoded []byte) error {
+		if sha256.Sum256(encoded) != sealed.bodySHA256 || sink.MaxCredentialBytes() < len(encoded) {
+			return ErrContractInvalidArgument
+		}
+		if err := sink.WriteCredential(encoded); err != nil {
+			return ErrContractOwnership
+		}
+		return nil
+	})
 }
 func (packet SendPacket) RightsCount() uint32 {
 	if configuredDependency(packet.right) {
@@ -376,6 +405,18 @@ func (packet SendPacket) destroyBody(ctx context.Context) error {
 func (packet SendPacket) sealedArm() *sealedSendPacketArm {
 	sealed, _ := packet.arm.(*sealedSendPacketArm)
 	return sealed
+}
+
+func withCanonicalScratch(arm sendPacketArm, length uint32, consume func([]byte) error) error {
+	if !configuredDependency(arm) || consume == nil {
+		return ErrContractInvalidArgument
+	}
+	encoded := make([]byte, int(length))
+	defer wipeBytes(encoded[:cap(encoded)])
+	if err := arm.encodeCanonicalTo(encoded); err != nil {
+		return ErrContractInvalidArgument
+	}
+	return consume(encoded)
 }
 
 func validSendExecStreamArm(arm sendExecStreamArm, bodyLength uint32) bool {

@@ -201,28 +201,97 @@ func validateHelperResponseCommon(body HelperResponseBody) error {
 
 // EncodeHelperResponseBody returns the exact canonical response-body encoding.
 func EncodeHelperResponseBody(body HelperResponseBody) ([]byte, error) {
-	if err := ValidateHelperResponseBody(body); err != nil {
+	length, err := HelperResponseBodyEncodedLength(body)
+	if err != nil {
 		return nil, err
 	}
+	encoded := make([]byte, length)
+	if err := EncodeHelperResponseBodyTo(encoded, body); err != nil {
+		clear(encoded)
+		return nil, err
+	}
+	return encoded, nil
+}
 
-	encoded := make([]byte, helperResponseCommonBytes)
-	encoded[0] = byte(body.RequestType)
-	encoded[1] = byte(body.Disposition)
-	binary.BigEndian.PutUint64(encoded[2:10], body.Revision)
-	encoded[10] = byte(body.FailureCode)
-
+// HelperResponseBodyEncodedLength returns the exact canonical response length.
+func HelperResponseBodyEncodedLength(body HelperResponseBody) (uint32, error) {
+	if err := ValidateHelperResponseBody(body); err != nil {
+		return 0, err
+	}
+	length := helperResponseCommonBytes
 	switch {
 	case body.Prepare != nil:
-		return encodeHelperPrepareResponseResult(encoded, *body.Prepare)
+		result := body.Prepare
+		length += 8 + 2 + len(result.ActiveProofID) + 2 + len(result.ExecBindingID) + 2
+		for _, proof := range result.BindingProofs {
+			length += 2 + len(proof.BindingID) + 1 + 2 + len(proof.ProofID)
+		}
 	case body.Renew != nil:
-		return encodeHelperRenewResponseResult(encoded, *body.Renew)
+		length += 8 + 2 + len(body.Renew.ReplacementActiveProofID)
 	case body.Revoke != nil:
-		return encodeHelperRevokeResponseResult(encoded, *body.Revoke)
+		length += 2 + len(body.Revoke.CleanupProofID) + 2
 	case body.Exec != nil:
-		return encodeHelperExecResponseResult(encoded, *body.Exec), nil
-	default:
-		return encoded, nil
+		length += helperExecResponseResultBytes
 	}
+	return uint32(length), nil
+}
+
+// EncodeHelperResponseBodyTo writes a response into an exact destination.
+func EncodeHelperResponseBodyTo(dst []byte, body HelperResponseBody) error {
+	length, err := HelperResponseBodyEncodedLength(body)
+	if err != nil {
+		return err
+	}
+	if len(dst) != int(length) {
+		return ErrHelperResponseBodyLength
+	}
+	dst[0] = byte(body.RequestType)
+	dst[1] = byte(body.Disposition)
+	binary.BigEndian.PutUint64(dst[2:10], body.Revision)
+	dst[10] = byte(body.FailureCode)
+	offset := helperResponseCommonBytes
+	switch {
+	case body.Prepare != nil:
+		result := body.Prepare
+		binary.BigEndian.PutUint64(dst[offset:offset+8], uint64(result.ExpiresAtUnixNano))
+		offset += 8
+		offset += putBodyToken(dst[offset:], result.ActiveProofID)
+		offset += putBodyToken(dst[offset:], result.ExecBindingID)
+		binary.BigEndian.PutUint16(dst[offset:offset+2], uint16(len(result.BindingProofs)))
+		offset += 2
+		for _, proof := range result.BindingProofs {
+			offset += putBodyToken(dst[offset:], proof.BindingID)
+			dst[offset] = byte(proof.Mode)
+			offset++
+			offset += putBodyToken(dst[offset:], proof.ProofID)
+		}
+	case body.Renew != nil:
+		binary.BigEndian.PutUint64(dst[offset:offset+8], uint64(body.Renew.ExpiresAtUnixNano))
+		offset += 8
+		offset += putBodyToken(dst[offset:], body.Renew.ReplacementActiveProofID)
+	case body.Revoke != nil:
+		offset += putBodyToken(dst[offset:], body.Revoke.CleanupProofID)
+		dst[offset] = encodeHelperResponseBoolean(body.Revoke.AuthorityAbsent)
+		dst[offset+1] = encodeHelperResponseBoolean(body.Revoke.ResourcesAbsent)
+		offset += 2
+	case body.Exec != nil:
+		result := body.Exec
+		binary.BigEndian.PutUint32(dst[offset:offset+4], uint32(result.ExitCode))
+		binary.BigEndian.PutUint64(dst[offset+4:offset+12], result.StdinBytes)
+		copy(dst[offset+12:offset+44], result.StdinSHA256[:])
+		binary.BigEndian.PutUint64(dst[offset+44:offset+52], result.StdoutBytes)
+		copy(dst[offset+52:offset+84], result.StdoutSHA256[:])
+		dst[offset+84] = encodeHelperResponseBoolean(result.StdoutTruncated)
+		binary.BigEndian.PutUint64(dst[offset+85:offset+93], result.StderrBytes)
+		copy(dst[offset+93:offset+125], result.StderrSHA256[:])
+		dst[offset+125] = encodeHelperResponseBoolean(result.StderrTruncated)
+		copy(dst[offset+126:offset+158], result.ExecTransactionSHA256[:])
+		offset += helperExecResponseResultBytes
+	}
+	if offset != len(dst) {
+		return ErrHelperResponseBodyLength
+	}
+	return nil
 }
 
 // DecodeHelperResponseBody strictly decodes one complete response body.
@@ -407,84 +476,6 @@ func validateHelperExecResponseResult(result HelperExecResponseResult) error {
 		return ErrHelperResponseExitCode
 	}
 	return nil
-}
-
-func encodeHelperPrepareResponseResult(encoded []byte, result HelperPrepareResponseResult) ([]byte, error) {
-	encoded = appendUint64(encoded, uint64(result.ExpiresAtUnixNano))
-	var err error
-	encoded, err = appendHelperResponseToken(encoded, result.ActiveProofID)
-	if err != nil {
-		return nil, err
-	}
-	encoded, err = appendHelperResponseToken(encoded, result.ExecBindingID)
-	if err != nil {
-		return nil, err
-	}
-	encoded = appendUint16(encoded, uint16(len(result.BindingProofs)))
-	for _, proof := range result.BindingProofs {
-		encoded, err = appendHelperResponseToken(encoded, proof.BindingID)
-		if err != nil {
-			return nil, err
-		}
-		encoded = append(encoded, byte(proof.Mode))
-		encoded, err = appendHelperResponseToken(encoded, proof.ProofID)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return encoded, nil
-}
-
-func encodeHelperRenewResponseResult(encoded []byte, result HelperRenewResponseResult) ([]byte, error) {
-	encoded = appendUint64(encoded, uint64(result.ExpiresAtUnixNano))
-	return appendHelperResponseToken(encoded, result.ReplacementActiveProofID)
-}
-
-func encodeHelperRevokeResponseResult(encoded []byte, result HelperRevokeResponseResult) ([]byte, error) {
-	var err error
-	encoded, err = appendHelperResponseToken(encoded, result.CleanupProofID)
-	if err != nil {
-		return nil, err
-	}
-	return append(encoded, encodeHelperResponseBoolean(result.AuthorityAbsent), encodeHelperResponseBoolean(result.ResourcesAbsent)), nil
-}
-
-func encodeHelperExecResponseResult(encoded []byte, result HelperExecResponseResult) []byte {
-	start := len(encoded)
-	encoded = append(encoded, make([]byte, helperExecResponseResultBytes)...)
-	binary.BigEndian.PutUint32(encoded[start:start+4], uint32(result.ExitCode))
-	binary.BigEndian.PutUint64(encoded[start+4:start+12], result.StdinBytes)
-	copy(encoded[start+12:start+44], result.StdinSHA256[:])
-	binary.BigEndian.PutUint64(encoded[start+44:start+52], result.StdoutBytes)
-	copy(encoded[start+52:start+84], result.StdoutSHA256[:])
-	encoded[start+84] = encodeHelperResponseBoolean(result.StdoutTruncated)
-	binary.BigEndian.PutUint64(encoded[start+85:start+93], result.StderrBytes)
-	copy(encoded[start+93:start+125], result.StderrSHA256[:])
-	encoded[start+125] = encodeHelperResponseBoolean(result.StderrTruncated)
-	copy(encoded[start+126:start+158], result.ExecTransactionSHA256[:])
-	return encoded
-}
-
-func appendHelperResponseToken(encoded []byte, value string) ([]byte, error) {
-	token, err := EncodeBodyToken(value)
-	if err != nil {
-		return nil, err
-	}
-	return append(encoded, token...), nil
-}
-
-func appendUint16(encoded []byte, value uint16) []byte {
-	start := len(encoded)
-	encoded = append(encoded, 0, 0)
-	binary.BigEndian.PutUint16(encoded[start:start+2], value)
-	return encoded
-}
-
-func appendUint64(encoded []byte, value uint64) []byte {
-	start := len(encoded)
-	encoded = append(encoded, make([]byte, 8)...)
-	binary.BigEndian.PutUint64(encoded[start:start+8], value)
-	return encoded
 }
 
 func encodeHelperResponseBoolean(value bool) byte {
