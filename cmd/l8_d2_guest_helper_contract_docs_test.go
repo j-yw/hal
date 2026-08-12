@@ -119,6 +119,11 @@ func TestL8D2GuestHelperContractsAreNormative(t *testing.T) {
 		"MaxGuestCredentialSessionLifetime = 35 minutes",
 		"type RequestTarget struct",
 		"RequestHeaderValues interface",
+		"Two safe reads of `Names`",
+		"Registry does not",
+		"invoke `CopyValue`",
+		"denies JSON/text/binary marshaling",
+		"No new public error identity is introduced",
 		"ApplicationRoutes applicationroute.Handler",
 		"runtime-local reserved base unchanged",
 	} {

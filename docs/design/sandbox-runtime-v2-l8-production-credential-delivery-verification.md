@@ -140,8 +140,12 @@ Required focused areas are:
   values fixed to the proved L7 base, and cross-job negatives;
 - neutral leaf-route registration and composed Registry definition/dispatch
   separation, collision/cleanup-retry ordering, live request and response
-  non-serialization, safe metadata bounds, exact deployment-prefixed
-  reserved HTTP target/header-value seam and framing mapped to upstream
+  non-serialization, safe metadata bounds, exact exported live target/header
+  seam shape, static target formatting and marshal/unmarshal denial, canonical
+  bounded ASCII target validation, typed-nil and unstable/panicking header
+  rejection, defensive sorted name snapshots and stable positive counts, and
+  no Registry-side header-value copy before the selected handler; exact
+  deployment-prefixed reserved HTTP target/header-value seam and framing mapped to upstream
   `/openai/v1/responses`, fixed ticket
   encoding/lease/request/concurrency and body/response/SSE/idle limits,
   initial Pi Azure Responses clean-environment flags and sealed model, disabled

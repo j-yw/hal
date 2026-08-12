@@ -222,6 +222,17 @@ func (registry *Registry) Handle(ctx context.Context, id RouteID, request Reques
 		shared.mu.Unlock()
 		return Response{}, err
 	}
+	shared.mu.Unlock()
+
+	if err := validateRequestLiveShape(selected.definition, request); err != nil {
+		return Response{}, err
+	}
+
+	shared.mu.Lock()
+	if shared.state != RegistryStateStarted {
+		shared.mu.Unlock()
+		return Response{}, ErrRegistryClosed
+	}
 	shared.dispatches.Add(1)
 	shared.mu.Unlock()
 
