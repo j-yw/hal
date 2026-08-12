@@ -1347,6 +1347,21 @@ round-robin order, initially stdout. A peer that stops reading can still stall
 the whole transport; that is session loss/timeout and follows ordinary cleanup,
 never a claim of per-stream progress.
 
+#### Safe-metadata transmit scratch correction
+
+The single shared encoded transmit slot remains the only body retained for
+socket retry. A redaction-safe metadata body may be constructed in one bounded
+transient ordinary-heap scratch from a validated deep immutable typed snapshot;
+its exact length and SHA-256 are pinned, it is copied synchronously into the
+locked slot, and the scratch is overwritten through full capacity immediately
+after every construction, digest, or copy attempt. This exception applies only
+to fields already classified as safe IDs, catalogs, counts, timestamps, and
+digests. It does not apply to file, opaque-exec, stdin, stdout, or stderr
+payloads: those move from their locked body capability directly into the shared
+encoded transmit slot without an ordinary-heap payload copy. The transport
+does not retain or re-encode a `SendPacket` on `EAGAIN`; it retries the exact
+already-filled slot and wipes that slot after commit or terminal failure.
+
 V2 exec is admitted only into the exact prepared job namespace on that
 authenticated persistent session. V1 exec and a
 v2 exec with a missing, stale, or neighboring binding cannot see L8 files or

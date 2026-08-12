@@ -346,6 +346,35 @@ func TestL8D2GuestHelperTransportDigestClosureIsImplementationReady(t *testing.T
 	}
 }
 
+func TestL8D2GuestHelperTransmitScratchClosureIsImplementationReady(t *testing.T) {
+	seam := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-guest-extension-seams.md"))
+	for _, required := range []string{
+		"safe-metadata transmit scratch correction",
+		"deep immutable snapshot",
+		"bounded transient ordinary-heap scratch",
+		"full capacity immediately after",
+		"payload bytes never use that scratch",
+		"`WriteCanonicalBody` again for `EAGAIN`",
+		"and SHA-256, advances sequence only after commit",
+	} {
+		if !strings.Contains(seam, required) {
+			t.Fatalf("L8 D2 extension seam omits transmit-scratch closure %q", required)
+		}
+	}
+
+	architecture := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialArchitectureDoc))
+	for _, required := range []string{
+		"Safe-metadata transmit scratch correction",
+		"redaction-safe metadata body",
+		"does not retain or re-encode a `SendPacket` on `EAGAIN`",
+		"encoded transmit slot without an ordinary-heap payload copy",
+	} {
+		if !strings.Contains(architecture, required) {
+			t.Fatalf("L8 D2 architecture omits transmit-scratch closure %q", required)
+		}
+	}
+}
+
 func TestL8D2GuestHelperSyscallPolicyRejectsImplicitOSPidfdProbe(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-helper-syscall-policy.md"))
 	for _, forbidden := range []string{

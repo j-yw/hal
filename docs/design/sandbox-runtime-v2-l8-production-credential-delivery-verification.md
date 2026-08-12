@@ -67,6 +67,11 @@ Guards must prove:
   duplicate, and trailing JSON before any v2 dispatch is added, so v1 cannot
   accept or ignore production credential intent;
 - v1 guest behavior and no-credential JSON remain compatible;
+- helper and controller send construction deep-snapshot mutable safe result
+  graphs, pins canonical length/digest, permits only a bounded full-capacity-
+  wiped safe-metadata transmit scratch, keeps private stream/file payloads on
+  the locked direct-copy path, and retries `EAGAIN` from the already-filled
+  locked slot without re-encoding;
 - handoff, simulation, env, and legacy activation cannot project L8 live
   proof;
 - D0 fixture-name and test-import barriers remain intact; once the D1 catalog

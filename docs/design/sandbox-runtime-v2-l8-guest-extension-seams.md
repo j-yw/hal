@@ -1034,10 +1034,29 @@ credentialprotocol.HelperPacketHeader`, `EncodedBodyLength() uint32`,
 uint32`, and `Right() ReceivedCapability`. No generic arm or bytes are exposed.
 The configured Transport is the sole consumer of `Right`; it exists only for
 the D4 `sendmsg` adapter and exposes no credential-body capability to an
-extension. `WriteCanonicalBody` writes directly into Transport's one fixed
-locked transmit slot with no ordinary heap body staging. That slot is
-full-capacity wiped after committed send and every error. Send uses values
-synchronously and retains nothing. Service owns body/right
+extension.
+
+This is the pre-production safe-metadata transmit scratch correction. Every
+non-stream send constructor first validates and takes a deep immutable snapshot
+of the complete typed arm, including every pointed-to result and binding-proof
+slice. It derives and pins the exact canonical length and SHA-256 from that
+snapshot. A later caller mutation cannot change either value or the emitted
+body. `WriteCanonicalBody` may encode that redaction-safe metadata body into
+one bounded transient ordinary-heap scratch, copy it synchronously into
+Transport's one fixed locked transmit slot, and overwrite the scratch through
+full capacity immediately after construction, hashing, or copying on every
+success and error path. Private file, opaque-exec, stdin, stdout, and stderr
+payload bytes never use that scratch: their body capability is copied directly
+into the locked transmit slot and destroyed under the service/Transport
+ownership rule.
+
+Transport calls `WriteCanonicalBody` exactly once for a send. A successful
+fill transfers ownership of the exact encoded slot to Transport. Transport
+retains that slot across a nonblocking retry and must not call
+`WriteCanonicalBody` again for `EAGAIN`; it sends the same pinned body length
+and SHA-256, advances sequence only after commit, and overwrites the slot
+through full capacity after committed send or every terminal error. Send uses
+values synchronously and retains no caller-owned alias. Service owns body/right
 until nil return; error wipes and closes. Only SSH accepted has one right.
 Wrong direction/sequence/identity/nonce, typed nil, unknown arm, or matrix
 mismatch fails before I/O.
