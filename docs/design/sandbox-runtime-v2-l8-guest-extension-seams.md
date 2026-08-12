@@ -279,6 +279,7 @@ type ExecPlanCapability struct {
 }
 
 type execPlanCapabilityState struct {
+	mu            sync.Mutex
 	encodedLength uint32
 	sha256        [32]byte
 	canonical     [credentialprotocol.MaxHelperExecPlanBytes]byte
@@ -329,13 +330,17 @@ public constructor permits trusted D4 in-place decode to hand safe plan metadata
 to the service; helper exec plans contain no credential binding bytes.
 Its methods are `EncodedLength() uint32`, `SHA256() [32]byte`, and
 `CopyCanonicalTo(credentialmemory.CredentialSink) error`. Copy is exact and
-all-or-error; it never returns bytes. Value copies share destruction state.
-The service destroys the complete fixed capacity after `BeginExec` returns on
-every path. `EncodedLength` and `SHA256` return zero after destruction; those
-accessors cannot return errors and must not retain or disclose stale metadata.
-`CopyCanonicalTo` returns the stable `ContractDestroyed` error without calling
-the sink. Destruction zeroes the full canonical fixed capacity, encoded length,
-and digest through every alias.
+all-or-error; it never returns bytes. Value copies share synchronized destruction state.
+`CopyCanonicalTo`, `EncodedLength`, `SHA256`, and the
+service-only `destroy` transition serialize on that private mutex. `destroy` waits for any in-flight `CopyCanonicalTo` call,
+then wipes the complete fixed
+capacity with `clear` plus `runtime.KeepAlive`, zeros its safe metadata, and
+latches destroyed. The service performs that transition after `BeginExec`
+returns on every path. `EncodedLength` and `SHA256` return zero after destruction;
+those accessors cannot return errors and must not retain or
+disclose stale metadata. `CopyCanonicalTo` returns the stable
+`ContractDestroyed` error without calling the sink. The sink call is
+synchronous and the sink must not retain the borrowed slice after return.
 
 The four core capability digests are domain-separated SHA-256 values over the
 exact request correlation, boot/helper/job generations, and helper boot nonce.
