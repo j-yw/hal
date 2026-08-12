@@ -1480,6 +1480,40 @@ duplicate or competing authentication/authority headers before source access.
 Nil/typed-nil header access, invalid canonical target, a name/value mismatch,
 or a route prefix that does not match `Target.Path` fails dispatch.
 
+D2 closes only the exact lexical boundary representable without parsing HTTP.
+Before calling the selected leaf, the Registry requires a nonempty authority of
+at most 512 ASCII bytes with no control/space, userinfo `@`, `/`, `\\`, `?`, or
+`#`; a nonempty origin path of at most 4096 ASCII bytes beginning with `/` and
+containing no control/space, `\\`, `?`, or `#`; and a raw query of at most 4096
+ASCII bytes with no leading `?`, control/space, `\\`, or `#`. Path and query
+percent triplets are exactly uppercase `%HH`; malformed triplets and lowercase
+hex are rejected. This is lexical contract validation, not URL or HTTP parsing.
+
+The header accessor must be nonnil and not typed nil. Two safe reads of `Names`
+must agree and yield no more than 128 strictly increasing unique lowercase
+canonical names. Each name is 1..256 ASCII bytes drawn only from
+lowercase letters, digits, and the exact punctuation
+``!#$%&'*+-.^_`|~``; every listed name has a stable positive
+`ValueCount` across two reads. An accessor panic, changed snapshot, or invalid
+count fails with the existing sanitized `ErrHandlerDispatch`. Registry does not
+probe unlisted names or invoke `CopyValue`; the selected handler owns exact
+per-name, duplicate-count, and value-bound enforcement. The accessor contract
+still requires defensive `Names` copies and all-or-error `CopyValue`: success
+returns the exact copied byte count with no retained destination alias, while
+every failure overwrites the caller's entire destination. D2 tests this with
+conforming and adversarial fakes but cannot structurally enforce arbitrary
+implementations.
+
+`RequestTarget` remains the exact exported three-string live boundary above so
+the selected handler can inspect it. It nevertheless has static value-receiver
+`String`, `GoString`, and `Format` output, denies JSON/text/binary marshaling,
+and its pointer denies JSON/text/binary unmarshaling without inspecting or
+changing the receiver. The containing `Request` keeps the same live opacity;
+its formatting and serialization paths never traverse target, header accessor,
+or body. Target/header validation happens before leaf dispatch and uses
+`ErrHandlerDispatch`; existing request metadata size failures remain
+`ErrStreamBounds`. No new public error identity is introduced.
+
 The neutral `applicationroute.Registry` registers singular leaf route handlers
 and may deterministically order multiple leaves only when their prefixes do not
 overlap. The Registry itself is the single composed `applicationroute.Handler`:

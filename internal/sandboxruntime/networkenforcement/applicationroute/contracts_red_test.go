@@ -751,10 +751,7 @@ func TestL8ApplicationRouteRegistryCloseStopsAdmissionAndDrainsAcceptedDispatch(
 	}
 	dispatchDone := make(chan dispatchResult, 1)
 	go func() {
-		response, err := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, Request{
-			Metadata: RequestMetadata{Method: "POST", ContentType: "application/json", ContentLength: 2},
-			Body:     strings.NewReader("{}"),
-		})
+		response, err := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, validL8D2ApplicationRouteRequest())
 		dispatchDone <- dispatchResult{response: response, err: err}
 	}()
 	<-handler.handleEntered
@@ -804,10 +801,7 @@ func TestL8ApplicationRouteRegistryConcurrentDispatchFailsClosed(t *testing.T) {
 	}
 
 	newRequest := func() Request {
-		return Request{
-			Metadata: RequestMetadata{Method: "POST", ContentType: "application/json", ContentLength: 2},
-			Body:     strings.NewReader("{}"),
-		}
+		return validL8D2ApplicationRouteRequest()
 	}
 	if _, err := registry.Dispatch(context.Background(), RouteCredentialHTTPV1, newRequest()); !errors.Is(err, ErrRegistryNotStarted) {
 		t.Fatalf("Dispatch() before Start error = %v, want ErrRegistryNotStarted", err)
@@ -873,10 +867,7 @@ func TestL8ApplicationRouteHandlerErrorsAreSanitized(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	_, err = registry.Dispatch(context.Background(), RouteCredentialHTTPV1, Request{
-		Metadata: RequestMetadata{Method: "POST", ContentType: "application/json", ContentLength: 2},
-		Body:     strings.NewReader("{}"),
-	})
+	_, err = registry.Dispatch(context.Background(), RouteCredentialHTTPV1, validL8D2ApplicationRouteRequest())
 	if !errors.Is(err, ErrHandlerDispatch) {
 		t.Fatalf("Dispatch() error = %v, want ErrHandlerDispatch", err)
 	}

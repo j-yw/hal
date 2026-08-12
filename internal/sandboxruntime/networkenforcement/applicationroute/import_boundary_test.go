@@ -77,13 +77,16 @@ func TestL8ApplicationRouteProductionSourceOmitsNetworkBehavior(t *testing.T) {
 			"net.Listen(",
 			"net.Dial(",
 			"net.Dialer",
+			"url.Parse(",
 			"http.Client",
 			"http.Server",
+			"http.NewRequest(",
 			"httputil.ReverseProxy",
 			"tls.Dial(",
 			"exec.Command(",
 			"os.Getenv(",
 			"InsecureSkipVerify",
+			".CopyValue(",
 		} {
 			if strings.Contains(text, marker) {
 				t.Errorf("production application-route file %s contains live behavior marker %q", path, marker)
@@ -97,15 +100,18 @@ func TestL8ApplicationRouteSourceGuardCoversForbiddenBehavior(t *testing.T) {
 		"net.Listen(",
 		"net.Dial(",
 		"net.Dialer",
+		"url.Parse(",
 		"http.Client",
 		"http.Server",
+		"http.NewRequest(",
 		"httputil.ReverseProxy",
 		"tls.Dial(",
 		"exec.Command(",
 		"os.Getenv(",
 		"InsecureSkipVerify",
+		".CopyValue(",
 	}, "\n")
-	for _, marker := range []string{"net.Listen(", "net.Dial(", "http.Client", "tls.Dial(", "exec.Command("} {
+	for _, marker := range []string{"net.Listen(", "net.Dial(", "url.Parse(", "http.Client", "http.NewRequest(", "tls.Dial(", "exec.Command(", ".CopyValue("} {
 		if !strings.Contains(fixture, marker) {
 			t.Fatalf("source guard fixture does not cover %q", marker)
 		}

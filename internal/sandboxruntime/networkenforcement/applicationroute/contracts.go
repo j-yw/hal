@@ -46,8 +46,22 @@ type ResponseMetadata struct {
 	Streaming     bool
 }
 
+type RequestTarget struct {
+	Authority string
+	Path      string
+	RawQuery  string
+}
+
+type RequestHeaderValues interface {
+	Names() []string
+	ValueCount(name string) int
+	CopyValue(name string, index int, destination []byte) (int, error)
+}
+
 type Request struct {
 	Metadata RequestMetadata
+	Target   RequestTarget
+	Headers  RequestHeaderValues
 	Body     io.Reader
 }
 
@@ -150,6 +164,18 @@ func (Request) String() string               { return "applicationroute.Request{
 func (Request) GoString() string             { return "applicationroute.Request{live}" }
 func (Request) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("applicationroute.Request{live}"))
+}
+
+func (RequestTarget) MarshalJSON() ([]byte, error)   { return nil, ErrLiveRouteStateNotSerializable }
+func (RequestTarget) MarshalText() ([]byte, error)   { return nil, ErrLiveRouteStateNotSerializable }
+func (RequestTarget) MarshalBinary() ([]byte, error) { return nil, ErrLiveRouteStateNotSerializable }
+func (*RequestTarget) UnmarshalJSON([]byte) error    { return ErrLiveRouteStateNotSerializable }
+func (*RequestTarget) UnmarshalText([]byte) error    { return ErrLiveRouteStateNotSerializable }
+func (*RequestTarget) UnmarshalBinary([]byte) error  { return ErrLiveRouteStateNotSerializable }
+func (RequestTarget) String() string                 { return "applicationroute.RequestTarget{live}" }
+func (RequestTarget) GoString() string               { return "applicationroute.RequestTarget{live}" }
+func (RequestTarget) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("applicationroute.RequestTarget{live}"))
 }
 
 func (Response) MarshalJSON() ([]byte, error) { return nil, ErrLiveRouteStateNotSerializable }

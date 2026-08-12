@@ -774,8 +774,5 @@ func (body *ownedApplicationRouteBody) closeCallCount() int {
 }
 
 func validOwnedApplicationRouteRequest() Request {
-	return Request{
-		Metadata: RequestMetadata{Method: "POST", ContentType: "application/json", ContentLength: 2},
-		Body:     strings.NewReader("{}"),
-	}
+	return validL8D2ApplicationRouteRequest()
 }
