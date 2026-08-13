@@ -121,7 +121,11 @@ func validCoreOutputBody(ctx context.Context, output CoreOutputResult, body Core
 			sink.invalid = true
 			return ErrContractResultMatrix
 		}
-		return view.WriteTo(ctx, sink)
+		writeErr := view.WriteTo(ctx, sink)
+		if writeErr != nil {
+			sink.invalid = true
+		}
+		return writeErr
 	})
 	return err == nil && sink.callbackCount == 1 && sink.writeCount == 1 && sink.valid && !sink.invalid
 }

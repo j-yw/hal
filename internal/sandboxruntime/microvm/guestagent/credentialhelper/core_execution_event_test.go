@@ -12,23 +12,25 @@ import (
 )
 
 type eventBody struct {
-	length      uint32
-	digest      [32]byte
-	destroyed   int
-	destroyCtx  context.Context
-	destroyErr  error
-	panicOnLen  bool
-	canonical   []byte
-	swallowErr  bool
-	borrowTwice bool
-	writeTwice  bool
+	length       uint32
+	digest       [32]byte
+	destroyed    int
+	destroyCtx   context.Context
+	destroyErr   error
+	panicOnLen   bool
+	canonical    []byte
+	swallowErr   bool
+	borrowTwice  bool
+	writeTwice   bool
+	postWriteErr error
 }
 
 type eventContextKey struct{}
 
 type eventBorrowedView struct {
-	canonical  []byte
-	writeTwice bool
+	canonical    []byte
+	writeTwice   bool
+	postWriteErr error
 }
 
 func (view eventBorrowedView) Len() int { return len(view.canonical) }
@@ -42,6 +44,9 @@ func (view eventBorrowedView) WriteTo(_ context.Context, sink credentialmemory.C
 	err := sink.WriteCredential(view.canonical)
 	if err == nil && view.writeTwice {
 		err = sink.WriteCredential(view.canonical)
+	}
+	if err == nil && view.postWriteErr != nil {
+		err = view.postWriteErr
 	}
 	return err
 }
@@ -69,7 +74,7 @@ func (body *eventBody) Len() uint32 {
 }
 func (body *eventBody) SHA256() [32]byte { return body.digest }
 func (body *eventBody) Borrow(ctx context.Context, callback func(credentialmemory.BorrowedView) error) error {
-	view := eventBorrowedView{canonical: body.canonical, writeTwice: body.writeTwice}
+	view := eventBorrowedView{canonical: body.canonical, writeTwice: body.writeTwice, postWriteErr: body.postWriteErr}
 	err := callback(view)
 	if body.borrowTwice {
 		secondErr := callback(view)
@@ -190,6 +195,10 @@ func TestCoreExecutionOutputEventRejectsSuppressedAndDuplicateValidationErrors(t
 		{
 			name: "suppressed invalid write",
 			body: &eventBody{length: uint32(len(invalid)), digest: sha256.Sum256(invalid), canonical: invalid, swallowErr: true},
+		},
+		{
+			name: "suppressed post-write error",
+			body: &eventBody{length: uint32(len(valid)), digest: sha256.Sum256(valid), canonical: valid, swallowErr: true, postWriteErr: errors.New("post-write failure")},
 		},
 		{
 			name: "suppressed duplicate write",
