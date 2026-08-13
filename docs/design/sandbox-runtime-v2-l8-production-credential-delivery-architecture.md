@@ -3495,6 +3495,42 @@ clean `ServiceClosed` after a bilateral normal/shutdown close or
 `ServiceStopVMRequired` plus a sanitized error and terminal reason. There is no
 public Close or Wait race.
 
+The private Service topology is also closed: its exact top-level field order is
+Core, Transport, Policy, a canonical private `[]extensionEntry` snapshot,
+ExtensionHost, ServiceRuntime, and one `*serviceState`. That state is the sole
+synchronized owner and includes `sync.Mutex`, the never-reset
+`serveCalled` latch, and the sole `CoreExecution` value derived from
+Service.core.BeginExec. NewService typed-nil validates each configured live
+dependency, treats only a nil Extensions pointer as the empty registry,
+snapshots nonnil entries through
+`snapshotServiceExtensionEntries(*ExtensionRegistry) []extensionEntry`, which
+allocates a distinct slice, preserves canonical order/factory identity, and
+uses `credentialprotocol.CloneExtensionDescriptor` for every descriptor;
+initializes all seven fields; and allocates one fresh empty `&serviceState{}`
+with no keyed values, pre-set latch, or execution. Serve classifies a plain or
+typed-nil context before the latch and returns that exact classification error;
+a noncontrolling check or suppressed error is invalid.
+The first valid caller atomically claims the sole lifetime and every later
+caller receives `ErrContractTransition` without a dependency call. Context
+classification is the first operation, and the latch check and set occupy one
+unbroken mutex critical section. The latch is never reset and the state owner
+is never replaced through direct access, a receiver alias, or a state alias in
+any private Service method reachable from Serve. Ignored/late dependency
+checks, source-slice aliases, and split or unlocked latch operations are
+rejected. The
+constructor/Serve signatures, storage, state allocation, and synchronized
+one-Serve transition are production AST requirements, not documentation-only
+markers.
+All five invalid dependency cases return the exact sanitized
+`ErrContractDependency` before snapshot or storage.
+After that constructor returns, Core, Transport, Policy, ExtensionHost,
+ServiceRuntime, and the owned extension snapshot are immutable across the
+entire Serve-reachable Service graph. No reachable method may replace one
+directly, through a receiver alias or pointer, through a composite/field
+assignment, or by giving the field or its address to a helper. Only a direct
+method invocation on the exact stored dependency is an authorized use, so the
+validated object is the object used at dispatch and Core boundaries.
+
 ServiceRuntime exclusively owns authenticated bootstrap/agent binding, live
 job generation/time observation, loss notification, and one cleanup budget.
 That budget has an exact 30-second limit shared by the whole drain. It requires
@@ -3709,6 +3745,12 @@ comparison-only replay path uses the identical one-pass construction. This
 requires O(1) hash state plus the one payload slot and preserves exact chunk
 boundaries, offsets, per-chunk digests, content, and EOF.
 
+For the helper Service observed path, that one payload slot is precisely D4
+Transport's retained locked `ReceivedPacket` body. The transaction never
+allocates or copies a second heap payload slot: it retains only proposal-local
+candidate hash state and safe counters until commit. The older decoded-body
+transaction API's compatible heap slot is not used by configured Service.
+
 **Pre-production transcript correction.** The earlier count-prefix expression
 required knowing the count before consuming records, contradicting immediate
 wipe/no-retention and the single-slot bound. No D4 producer, live L8 deployment,
@@ -3850,6 +3892,405 @@ only the safe terminal response, never output stream bytes; a host that cannot
 resupply the exact input transcript or that loses output treats the operation
 as terminal. Local helper-response loss is role loss and never enters this
 comparison path.
+
+**D2 Service-readiness payload closure.** The helper never converts received
+`exec_private` or stdin `exec_stream` payloads into the heap-owning decoded
+credentialprotocol bodies. Trusted Transport first completes canonical packet
+validation and mints an opaque one-use safe-metadata observation whose declared
+length/digest equals the independently observed locked payload digest. Service
+privately takes that observation and the sole retained body. The existing exec
+transaction consumes the observation: private input reserves the existing
+proposal while the same scoped view goes to Core; stdin synchronously hashes a
+single supplied `credentialmemory.BorrowedView` through cloned hash state and
+then the same view goes to Core. Comparison replay performs the identical
+metadata, offset, EOF, content, record-count, transcript, and transaction hash
+work but never calls Core. The observation proves canonical metadata/digest
+only; configured Service sequencing and Core's echo/result matrix own live-use
+assurance. No second FSM, payload owner, slot, transcript, or heap copy exists.
+
+The exact pure bridge API is
+`NewHelperExecPrivateObservation`, `NewHelperExecStreamObservation`,
+`(*HelperExecTransaction).ProposeObservedPrivate`, and
+`(*HelperExecTransaction).ProposeObservedStdin(context.Context,
+HelperExecTransactionCorrelation, HelperExecStreamObservation,
+credentialmemory.BorrowedView)`. Observation aliases share one-use state.
+Hash reservation and installation are synchronized, while no transaction lock
+is held across a borrowed-view method. Cancellation, panic, concurrent alias
+use, duplicate or missing writes, error suppression, changed state, or digest
+mismatch wipes proposal-local candidate state and terminally fails the
+transaction. The transaction's current hashes and counters remain unchanged
+until `HelperExecPayloadProposal.Commit`, which alone atomically installs and
+advances the candidate after Core success (or immediately for comparison).
+`Wipe` never installs it. EOF remains one exact zero-payload record and the
+existing count trailer is appended only on its successful commit.
+
+Every observation field is rebound under the transaction mutex before a
+proposal becomes usable. Request ID and identity digest correlation and all
+SHA-256 values compare in constant time; revision, private length, stream kind,
+flags, offset, payload length, current credit, aggregate, record count, and EOF
+state compare exactly against the transaction owner. The observation is first
+validated and charged once; only that alias winner may attempt transaction
+admission. Precedence is plain/typed-nil context or view before touch,
+observation structural error, observation-used error, transaction
+terminal/completed/correlation, transition or credit, field binding,
+record-count and aggregate/offset bounds, external view consumption, then
+pending-state revalidation. Any mismatch after the one-use charge is terminal
+and wipes pending and candidate state; it cannot be retried with an alias.
+AST guards bind the constant-time requirement to the exact observation
+constructors and observed admission methods, their calls to
+`helperExecDigestsEqual` and `helperExecTransactionCorrelationEqual`, and the
+helpers' exact direct return expressions over `subtle.ConstantTimeCompare`.
+Every unshadowed helper call in those four declarations must itself be a direct
+term in an immediate nonnil-error rejection. Discarded, dead, nested
+noncontrolling, equality-substituted, or locally shadowed calls and a
+constant-time call elsewhere in the package do not satisfy this closure.
+Each call's operands are exact too: constructor declared digest versus observed
+digest; supplied correlation versus the transaction owner's correlation;
+private observation digest versus the owner's private digest; and stdin
+observation digest versus the digest computed only from that same method's
+borrowed view. Self, swapped, foreign, global, shadowed, dead, discarded, or
+noncontrolling operand substitutions are rejected.
+
+Proposal source is explicit and private: legacy is 1 and observed is 2, with
+an `observedReady` latch. Legacy normal/comparison commit keeps its existing
+copied/hashed predicate. Observed private commits only an observation-ready
+metadata proposal; observed stdin commits only an observation-ready proposal
+with both candidate hash owners and exact next offset/bytes/records/EOF.
+Commit does not attest that Core ran. Under the transaction mutex it first
+fully wipes the superseded current stdin/transcript hash owners, transfers the
+candidate pointers, nils the proposal pointers without wiping the transferred
+owners, installs counters, and finalizes EOF. Failure/Wipe wipes candidates and
+leaves the current transaction unadvanced and terminal.
+
+The borrowed view and private sink are synchronous scoped TCB values. Neither
+may be retained and every concurrent sink call must join before `WriteTo`
+returns; duplicates completed in that scope are synchronized and rejected.
+Use after return is a D4 Transport contract violation, not a retroactive
+detection promise made by the returned proposal. Source and shape guards
+forbid transaction or observation struct state from retaining either interface
+through pointer, array, map, channel, index/generic, named, alias, nested
+struct, interface, or function-valued fields. A retained function field is
+forbidden when a parameter or result reaches either scoped interface; top-
+level function and method parameters remain the required scoped API. Generic
+constraints from every `TypeSpec.TypeParams` are recursive retention edges:
+`holder[T BorrowedView]`, `holder[T CredentialSink]`, and constrained
+function-field parameter or result variants are forbidden, while a top-level
+function or method parameter remains allowed. The same recursion treats every
+package-level `ValueSpec` variable as a retention root and follows explicit or
+inferred types, cross-file aliases, containers, channels, function
+values/results, and closure captures. Later package-variable assignment,
+locally returned closures, and interface/container assignment sinks are also
+retention roots. While either scoped interface is lexically live, no function
+literal is permitted except the one direct synchronous body-borrow callback;
+that callback has no nested literal, IIFE, `defer`, `go`, or retained method
+value. Direct, aliased, shadowed, and composite captures are equivalent.
+Required test evidence is one unique
+top-level exact `func TestX(t *testing.T)` AST declaration using the real
+`testing` import; text markers, function literals, lookalike imports, wrong
+signatures, and duplicate declarations do not count. The exact
+one shared helper `helperExecConfiguredDependencyNil(any) bool` handles all
+arbitrary typed-nil context and borrowed-view values before any owner is
+touched. A plain nil context or typed-nil context returns the same stream error
+before any context or view method, so no `ctx.Err` call can panic. `reflect` is
+confined to that helper and cannot emit a dynamic type or value.
+
+After observation consumption, cancellation, view length/write errors, sink
+errors or suppressed/duplicate/no writes, and panics from the two external view
+calls are narrowly recovered and collapse to
+`ErrHelperExecTransactionStream`. No cause or panic escapes; the proposal and
+candidate hashes are wiped and the transaction is terminal. Internal invariant
+panics outside that narrow external-call boundary are not recovered.
+
+Normal Service sequencing keeps the body scope intact: it invokes
+`ProposeObservedStdin` and then `Core.WriteStdin` sequentially inside the same
+outer body-borrow callback, commits only after the Core call returns nil, and
+wipes before leaving that callback on error. Comparison proposes and commits
+inside the same outer body-borrow callback without calling Core. Private input
+uses the corresponding same-scope ordering around `ProposeObservedPrivate` and
+`Core.BeginExec`.
+
+The production wiring privately takes the matching received arm, the exact
+`*credentialprotocol.HelperExecTransaction`, and its sole retained body before
+that outer Borrow. Its parameters bind the credentialhelper package's exact
+`ReceivedBodyCapability`, the exact imported
+`credentialmemory.BorrowedView`, and the same handler context across Borrow,
+observed stdin admission, and Core; suffix lookalikes and background-context
+substitution are rejected. The exact transaction correlation and exact
+private/stream observation taken from that received arm remain the handler
+parameters passed to Propose; zero values, package globals, foreign values, or
+shadowed replacements are invalid. Reassignment or shadowing cannot substitute
+any
+handler receiver/context/body/transaction/comparison parameter or callback
+view/proposal/proposal-error/Core-result variable.
+
+The matching-arm extraction is one closed private topology. A live dispatch
+method receives the packet through `s.transport.Receive(ctx, request)` and
+immediately propagates the receive error, selects exactly `packet.ExecPrivate()`
+or `packet.ExecStream()` and immediately rejects a false arm result, then calls
+the sole `s.takeExecDispatch(arm.Revision())` transition and immediately
+propagates its error. Its exact private result is `serviceExecDispatch` with
+fields, in order, `transaction *credentialprotocol.HelperExecTransaction`,
+`correlation credentialprotocol.HelperExecTransactionCorrelation`, and
+`comparison bool`. The branch directly returns the matching handler with
+exactly `ctx`, `packet.body`, `dispatch.transaction`, `dispatch.correlation`,
+`arm.observation`, and `dispatch.comparison`. Those locals cannot be rebound;
+cross-arm, zero, global, foreign, shadowed, and background-context values are
+rejected. Handler reachability from `Serve` follows only actual returned
+Service `CallExpr` values in live control-flow branches. The sole dispatch-state
+transition may instead bind its result and error when the immediately following
+gate propagates that exact error. Method values, discarded or non-propagated
+results, calls after an unconditional return, and statically false branches
+cannot satisfy the production AST requirements.
+
+The outer Borrow is one
+direct reachable call; its returned error is bound and propagated after
+cleanup, never swallowed or placed under an unreachable condition. The exact
+proposal error controls a direct return before comparison, Core, or Commit.
+Its proposal, comparison, Core, canonical rejection, retained execution, and
+final Commit are direct callback statements, not markers hidden under a
+noncontrolling branch. For private input the callback orders
+one exact proposal value, Service.core.BeginExec with the scoped view, strict
+nil-error/non-nil-execution return validation through the canonical
+`coreErr != nil || !configuredDependency(execution)` rejection, retention of
+that exact result as the sole serviceState execution, then a directly returned
+Commit on that same proposal. For
+stdin it orders one exact proposal and that Service-owned execution's
+WriteStdin with the same scoped view, validates the exact `coreErr != nil`
+rejection, then directly returns Commit on that same proposal. Both callbacks
+invoke the exact same proposal's no-result Wipe as the statement immediately
+before a nonnil failure return; discarded Commit results and omitted or
+non-direct Wipe calls are invalid. Across each callback there is exactly one
+matching Propose call, one normal Core call, two mutually exclusive Commit call
+sites, and one Wipe call; expression-statement duplicates, rebound same-named
+proposal values, and any earlier or extra terminal side effect are invalid.
+The total includes executable nested/IIFE closures. The guard rejects every
+nested function literal in the callback, including IIFE, `defer`, `go`, and
+terminal method-value forms, so hidden calls, asynchronous view use, and
+closure retention cannot evade that count.
+The private CoreExecution is retained only after the canonical
+`coreErr != nil || !configuredDependency(execution)` rejection. Comparison's
+entire branch condition
+is the exact handler `comparison bool` parameter and the branch terminates by
+directly returning Commit in the same callback without Core or fallthrough.
+Every cancellation, denial, observation/body/
+Core/send error, invalid return, and recovered external panic wipes pending
+state and synchronously destroys the retained body and any still-owned claimed
+plan exactly once. Source guards bind the two concrete Borrow-callback orders;
+tests cover normal, comparison, failure, typed-nil, cancellation, panic, body
+destruction, and claimed-plan cleanup rather than accepting disconnected call
+markers.
+Seeded negative AST fixtures reject unrelated names and suffix-lookalike scoped
+types, background-context substitution, proposal-variable substitution or
+ignored proposal/Borrow results, noncontrolling and AND Core gates, wrong Core
+or foreign
+execution receivers, local-lookalike comparison values, comparison fallthrough,
+any Core call in the comparison branch, retention before validation, extra
+Propose/Core/Commit/Wipe calls, and direct or aliased method access that lets
+the private service state reset or escape.
+
+The Service proof is evaluated as one combined construction, one-shot,
+reachability, and state-stability graph. A canonical combined fixture must pass
+with both the exact returned private dispatcher/handler path and the exact
+returned stdin dispatcher/handler path live under the claimed Serve lifetime.
+Only those argument-bound returned `CallExpr` edges are trusted and recursively
+inspected. Unknown returned Service calls, returned method values, dead,
+discarded, or nonpropagated calls, receiver escape, and unknown Service/state
+methods fail the complete graph; a state-stability scan cannot reject the very
+validated edge on which the required Service wiring depends.
+
+The scoped no-retention proof spans `credentialprotocol` and
+`credentialhelper` and includes ordinary call dataflow. It propagates
+`BorrowedView`/`CredentialSink` aliases through private helper parameters and
+rejects global storage and closure/container/channel/interface returns. Exact
+synchronous consumers are structurally allowlisted; arbitrary function,
+method, interface, variadic/generic, function-value, deferred, and goroutine
+calls remain escapes. The allowlist covers only the frozen view/sink methods,
+body Borrow scope, observed/Core consumers, and already audited transport
+forwarding/validation helpers, never a name-only lookalike.
+Taking a scoped view/sink method without invoking it immediately creates a
+bound method value which carries the receiver capability. That value is always
+an escape when assigned, stored in a field/container/interface, returned, or
+passed to a call; there is no bound-method exception to the direct synchronous
+consumer rule.
+Reflection, custom/generic identity helpers, interface conversions, containers,
+and nested wrapper calls do not declassify a bound scoped method. Their results
+remain tainted; `reflect.ValueOf` has no exception. Only an exact audited
+nonretaining consumer invoked directly and returning no storable scoped value
+can terminate the taint.
+The expression graph includes ordinary and full slices, parentheses, indexes
+and generic indexes, assertions/conversions, pointer/unary/binary operations,
+key/value composites, containers, and nested calls. None declassifies scoped
+authority.
+Every direct nonretaining method call is bound to the exact imported
+`credentialmemory` interface receiver, declared signature, argument positions,
+and result behavior. Embedded, promoted, generic, alias-import, or user-defined
+lookalikes do not qualify. `reflect.ValueOf` of a bound method is always
+tainted. A raw scoped interface is accepted only as the transient operand of
+the exact confined typed-nil helper, whose result cannot escape; it is not a
+general declassification rule.
+The exception is tied to one unique exact helper body, not its name or
+signature: after the plain-nil return, a sole local `reflect.ValueOf` feeds only
+the exact six-kind `Kind` switch and `IsNil` return. Storage, containers,
+helper calls, returns of the reflected value, extra calls, or side effects
+invalidate the helper package-wide.
+
+Each constant-time gate also dominates the exact issued authority. From the
+constructor comparison to the returned observation-owner literal, and from
+the admission correlation/digest gates to the installed and returned observed
+proposal owner, all checked parameters, transaction-owner fields,
+observation-owner fields, and derived digest are immutable. Assignment,
+inc/dec, shadowing, pointer/alias or closure mutation, owner-field mutation,
+alternate composite construction, and a self-check followed by foreign issue
+are rejected. The returned observation fields and the proposal's exact
+transaction/source/kind/observation metadata/candidate state/`observedReady`
+must be the checked values, and the same proposal owner must be installed as
+the transaction's pending value and returned.
+Correlation and digest inputs are protected independently from their own
+successful gates. The proposal owner must be constructed after both gates,
+remain immutable, be installed by one live dominating pending assignment, and
+be returned without overwrite. Stdin candidate hash/counter/EOF provenance is
+bound to the same checked view, current transaction owner, and observation;
+arbitrary helper calls receiving any protected value are mutation authority,
+not pure uses.
+The alias graph is built before each gate and recursively follows pointers,
+struct fields, arrays, slices, maps, indexes, interfaces, composites, and
+further aliases. A pre-gate container holding an operand pointer remains
+protected after the gate, so mutation through a nested selector/dereference or
+by passing that container to a helper invalidates issuance. The exact pending
+install is the direct statement immediately before the unique live success.
+Any earlier unconditional return, panic, `runtime.Goexit`, constant-true
+terminal branch, infinite loop, empty select, or equivalent terminal statement
+makes a later textual success dead and invalid.
+The pre-gate graph also tracks closures and callable aliases that capture a
+protected root. Invoking or escaping such a callable after the root's gate is
+mutation authority even through an interface, wrapper, or container and even
+when the invocation has no arguments. Terminal aliases and wrappers of
+`panic`, `runtime.Goexit`, `Exit`, `Fatal`, or `FailNow`, terminal IIFEs, and
+nested terminal closures are resolved conservatively so their dead successor
+cannot satisfy the live-success proof.
+Callable-mutator taint traverses the same complete slice/index/map/struct/
+interface/generic/composite/call expression graph. Terminal analysis reaches a
+package fixed point across private helper chains and exact recursive no-return
+cycles, not just local aliases. It also evaluates exact safe compile-time
+literal, unary, logical, and basic-literal comparison conditions, so a constant
+terminal branch cannot precede an apparently successful issuance.
+The two stdin hash-state helpers are pure only at their exact package
+declarations and exact operand-bound `ProposeObservedStdin` call sites; shadowed
+locals, parameters, dot/alias imports, function values, and wrappers remain
+tainted, and their arguments are always traversed first. Terminal analysis keys
+all declarations by exact package/import and receiver-type identity, includes
+receiver methods and terminal-callable factories, and conservatively unions
+duplicate build-tag declarations independent of parse order. It never treats a
+`Goexit`, `Exit`, `Fatal`, or `FailNow` suffix or a lookalike import as terminal
+authority by name alone.
+The terminal fixed point additionally derives exact parameter-position
+summaries for wrapper functions and methods: a terminal callable passed through
+one or more ordinary, generic, or interface wrapper calls makes the call
+nonreturning only when the matching parameter is invoked unconditionally on
+the live callee path. Reordered parameters are bound by position; unused and
+conditional callable parameters remain returning paths.
+Those summaries retain their exact qualified wrapper identity through local
+assignment/reassignment, parentheses, interfaces and type assertions,
+slices/maps/structs/generic composites and indexes, helper-returned wrapper
+factories, and exact receiver method values. Invocation resolves the complete
+alias/factory identity set before applying parameter positions. Resolution is
+flow-sensitive to declarations and assignments preceding that invocation and
+tracks exact identifier, selector, pointer/nested-field, and array/slice/map
+index storage locations plus aliases of their containing storage. Static fields
+and constant indexes remain separate; dynamic indexes and unresolved pointer
+aliases union possible locations conservatively, while containing aliases
+translate descendant paths without contaminating sibling paths. Constant
+indexes use an import-safe canonical constant evaluator, so equivalent
+interpreted/raw strings, rune/integer spellings, safe unary/binary expressions,
+typed constants, and declared package/local constants including `iota` share
+one canonical representable identity while unequal constants remain siblings.
+Resolution is lexical and position-aware: parameters, results, and dynamic local
+bindings shadow package constants instead of inheriting their values, and
+numerically equal representable forms such as `1` and `1.0` share an identity.
+Exactly representable modeled built-in constant conversions are evaluated without executing code, and
+forward package constants reach an order-independent fixed point. Map keys are
+canonicalized after conversion to their exact statically resolved key type,
+including floating-point precision rounding and integer range/overflow
+rejection. The type graph follows local/package named maps, generic named
+instantiations, variable aliases, exact receiver-method and local helper/closure
+sole result types, interface assertions, and pointer-to-map normalization.
+Value and type-name resolution is lexical, position-aware, and follows Go
+scope. Function and closure parameters/results, sequential block and
+case/communication-clause declarations, `if`/`for`/`switch` initializers,
+range key/value declarations, type-switch arm declarations, and select receive
+declarations shadow an outer package type only inside their exact scope. A type
+declaration in a nested active scope can re-establish the type name there; an
+ended control or clause scope and a sibling scope cannot shadow it. Ambiguous
+or external identities remain dynamic.
+Indexed storage with an unresolved or merely suspected map key type is always
+wildcarded rather than exact-canonicalized as an untyped constant; known arrays
+and slices retain exact constant integer indexes. Unresolved/illegal conversions and
+arbitrary-magnitude integer-to-string conversions not exactly modeled also
+remain dynamic and conservatively union possible keys rather than minting a
+false distinct identity.
+Wildcard ambiguity matches each nested selector/index segment, so a dynamic
+parent index conservatively aliases an exact descendant without contaminating a
+statically distinct sibling. Recursive containing aliases use a finite symbolic
+path graph bounded by syntactically observable storage paths: cycles close
+without unbounded string expansion, and every used nested descendant remains
+reachable. Selector/index subpaths and pointer-normalized nested paths may
+themselves be containing aliases. A later
+assignment does not retroactively define an earlier call. Named or anonymous
+closure factories, their aliases, IIFEs, nested factories, and cyclic
+alias/factory chains participate in the same fixed point. Alternate
+build-context declarations and preceding ambiguous reassignments are unioned
+conservatively—any terminal identity makes the successor dead—while aliases of
+unused or conditional wrappers remain valid returning paths.
+The same reachability proof detects unconditional no-return calls in every
+synchronously evaluated expression: assignment/declaration values, nested call
+arguments, composites and indexes, returns and sends, plus control-statement
+initializers and conditions. It also follows synchronous switch-case
+expressions, type-switch assignments, and select communication channel/send
+operands in execution order without treating conditional clause bodies as
+unconditional. Every expression-switch case expression remains source-ordered
+even when `default` appears earlier, because default selection occurs only after
+case-expression evaluation. Select entry evaluates receive channels and send
+channels/values; receive-assignment destinations are evaluated only after their
+clause is selected and are not unconditional entry expressions. Tagless-switch
+conditions use the same lexical constant environment, so named false constants
+continue to later cases while unknown conditions stay conservative. It does not execute an uncalled function-literal
+body, a deferred call body, or a new goroutine body; `defer` and `go` still
+evaluate their callee and arguments synchronously.
+The stdin clone and sink exceptions likewise require one unique exact package
+implementation across build variants. The clone nil-checks, value-copies the
+entire wipeable hash owner, and returns only the fresh address. The sink
+constructor performs one return of a fresh sink initialized only from the exact
+stdin/transcript candidate parameters. Input aliasing/retention, global or
+scoped retention, helper calls, side effects, alternate composites, or duplicate
+declarations invalidate the exception before any caller is analyzed.
+
+After the accepted transport constructor transfers an exec packet, Service
+destroys the claimed plan exactly once on every dispatch path: directly after
+normal `Core.BeginExec` returns or panics; after comparison seed/cache
+validation and before response; and before any return, response, or drain on
+policy, cache, observation, cancellation, pre-Core denial, error, or panic.
+Cleanup never depends on Core having been invoked.
+
+**D2 Service-readiness bootstrap closure.** The shared leaf authority is
+`credentialprotocol.ComputeCanonicalHelperBootstrapSHA256(header,
+canonicalBody)`. It accepts already-validated canonical safe metadata,
+requires bootstrap type, sequence zero, exact canonical header semantics and
+body length, retains no input, and hashes exactly
+`opaque16("hal/l8/guest-helper/bootstrap/v1") || canonicalHeader ||
+canonicalBody`. `l8composition.ComputeHelperBootstrapSHA256` keeps its current
+public types and semantic validation and delegates only this final digest step.
+The received helper bootstrap constructor independently validates its scalar
+arguments and exact body, delegates to the same primitive, and stores the
+result in the final private `ReceivedBootstrap.bootstrapSHA256` field. No
+caller-supplied digest is accepted and no dependency cycle is introduced.
+
+Implementation merge ordering is satisfied by this phase head. The
+transport-context correction is already present: all `Received*` constructors take the leading
+`context.Context`, receive/send ownership and failure cleanup use that supplied
+context, and `ReceivedPrepareBegin.transaction` plus
+`ReceivedExec.transactionSeed` are present. The observation, bootstrap, and
+Service-readiness implementation may turn the remaining D2 product guard green
+only while preserving that accepted transport surface.
 
 The decoder validates header, exact datagram length, credentials, descriptor
 kinds/counts, sequence, identity, revision, and body bounds before touching
