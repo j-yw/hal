@@ -1528,11 +1528,11 @@ func TestTransportNilContextIsPreTransferAndDoesNotConsumeOwnership(t *testing.T
 	bodyBytes := transportBootstrapBody(t, 42, 998, 998, "boot-1", "helper-1")
 	body := newTransportTestBody(bodyBytes, 256)
 	right := transportTestRight{state: &transportTestRightState{kind: ReceivedCapabilityAgentPIDFD, digest: sha256.Sum256([]byte("pidfd"))}}
-	request, err := NewReceiveRequest(2, uint32(len(bodyBytes)), 1)
+	request, err := NewReceiveRequest(0, uint32(len(bodyBytes)), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	header := transportHeader(credentialprotocol.PacketTypeBootstrap, 2, uint32(len(bodyBytes)))
+	header := transportHeader(credentialprotocol.PacketTypeBootstrap, 0, uint32(len(bodyBytes)))
 	if _, err := NewReceivedBootstrapPacket(plainNilTransportContext(), request, header, transportCredential(t), 1, body, 1, 42, 998, 998, "boot-1", "helper-1", right); !errors.Is(err, ErrContractInvalidArgument) {
 		t.Fatalf("nil-context receive error = %v", err)
 	}
@@ -1844,8 +1844,8 @@ func TestReceivedSensitivePacketRetainsBodyAndRejectsDigestMismatch(t *testing.T
 
 func TestReceivedBootstrapRightOwnershipAndTypedNil(t *testing.T) {
 	bodyBytes := transportBootstrapBody(t, 42, 998, 998, "boot-1", "helper-1")
-	header := transportHeader(credentialprotocol.PacketTypeBootstrap, 1, uint32(len(bodyBytes)))
-	request, _ := NewReceiveRequest(1, uint32(len(bodyBytes)), 1)
+	header := transportHeader(credentialprotocol.PacketTypeBootstrap, 0, uint32(len(bodyBytes)))
+	request, _ := NewReceiveRequest(0, uint32(len(bodyBytes)), 1)
 	body := newTransportTestBody(bodyBytes, 256)
 	right := transportTestRight{state: &transportTestRightState{kind: ReceivedCapabilityAgentPIDFD, digest: sha256.Sum256([]byte("pidfd"))}}
 	packet, err := NewReceivedBootstrapPacket(context.Background(), request, header, transportCredential(t), 1, body, 1, 42, 998, 998, "boot-1", "helper-1", right)

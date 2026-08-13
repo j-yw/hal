@@ -108,6 +108,7 @@ type ReceivedBootstrap struct {
 	agentIdentitySHA256 [32]byte
 	bootGeneration      credentialprotocol.SafeID
 	helperGeneration    credentialprotocol.SafeID
+	bootstrapSHA256     [32]byte
 }
 
 type ReceivedAgentHello struct {
@@ -168,6 +169,7 @@ type ReceivedExecPrivate struct {
 	revision             uint64
 	privateBindingLength uint32
 	privateBindingSHA256 [32]byte
+	observation          credentialprotocol.HelperExecPrivateObservation
 }
 
 type ReceivedExecStream struct {
@@ -178,6 +180,7 @@ type ReceivedExecStream struct {
 	offset        uint64
 	payloadLength uint32
 	payloadSHA256 [32]byte
+	observation   credentialprotocol.HelperExecStreamObservation
 }
 
 type ReceivedExecCredit struct {

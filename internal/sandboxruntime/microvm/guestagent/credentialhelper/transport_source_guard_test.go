@@ -415,3 +415,31 @@ func TestTransportDirectionAndBootSequenceSourceContract(t *testing.T) {
 		}
 	}
 }
+
+func TestTransportExecObservationUsesIndependentObservedDigestSourceContract(t *testing.T) {
+	receive, err := os.ReadFile("transport_receive.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(receive)
+	for _, forbidden := range []string{
+		"NewHelperExecPrivateObservation(revision, privateBindingLength, privateBindingSHA256, privateBindingSHA256)",
+		"NewHelperExecStreamObservation(revision, streamKind, flags, offset, payloadLength, payloadSHA256, payloadSHA256)",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("transport observation self-compares declared digest via %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"observedPrivate.store(sha256.Sum256(encoded[44:]))",
+		"observedPrivateSHA256 := observedPrivate.load()",
+		"credentialprotocol.NewHelperExecPrivateObservation(revision, privateBindingLength, privateBindingSHA256, observedPrivateSHA256)",
+		"observedPayload.store(sha256.Sum256(encoded[56:]))",
+		"observedPayloadSHA256 := observedPayload.load()",
+		"credentialprotocol.NewHelperExecStreamObservation(revision, streamKind, flags, offset, payloadLength, payloadSHA256, observedPayloadSHA256)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("transport observation omits independently observed digest marker %q", required)
+		}
+	}
+}

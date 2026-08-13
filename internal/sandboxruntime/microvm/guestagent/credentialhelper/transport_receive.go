@@ -40,6 +40,25 @@ type retainedReceivedPayload struct {
 	digest [32]byte
 }
 
+type receivedArmFinalizer func() (receivedPacketArm, error)
+
+type observedReceivedPayloadSHA256 struct {
+	mu     sync.Mutex
+	digest [32]byte
+}
+
+func (observed *observedReceivedPayloadSHA256) store(digest [32]byte) {
+	observed.mu.Lock()
+	defer observed.mu.Unlock()
+	observed.digest = digest
+}
+
+func (observed *observedReceivedPayloadSHA256) load() [32]byte {
+	observed.mu.Lock()
+	defer observed.mu.Unlock()
+	return observed.digest
+}
+
 type receivedPayloadBody struct {
 	owner           ReceivedBodyCapability
 	canonicalLength uint32
@@ -294,6 +313,25 @@ func newReceivedPacket(
 	retainedPayload retainedReceivedPayload,
 	validate func([]byte) bool,
 ) (packet ReceivedPacket, err error) {
+	return newReceivedPacketFinalized(ctx, request, header, credential, credentialCount, body, rightsCount, right, wantType, wantRights, arm, retainedPayload, validate, nil)
+}
+
+func newReceivedPacketFinalized(
+	ctx context.Context,
+	request ReceiveRequest,
+	header credentialprotocol.HelperPacketHeader,
+	credential ReceivedKernelCredential,
+	credentialCount uint32,
+	body ReceivedBodyCapability,
+	rightsCount uint32,
+	right ReceivedCapability,
+	wantType credentialprotocol.PacketType,
+	wantRights uint32,
+	arm receivedPacketArm,
+	retainedPayload retainedReceivedPayload,
+	validate func([]byte) bool,
+	finalize receivedArmFinalizer,
+) (packet ReceivedPacket, err error) {
 	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
 		return ReceivedPacket{}, contextErr
 	}
@@ -407,6 +445,18 @@ func newReceivedPacket(
 	if sinkDigest == ([32]byte{}) || subtle.ConstantTimeCompare(sinkDigest[:], bodyDigest[:]) != 1 {
 		return ReceivedPacket{}, ErrContractCorrelation
 	}
+	if finalize != nil {
+		if ctx.Err() != nil {
+			return ReceivedPacket{}, ErrContractOwnership
+		}
+		arm, err = finalize()
+		if err != nil || arm == nil {
+			return ReceivedPacket{}, ErrContractCorrelation
+		}
+		if ctx.Err() != nil {
+			return ReceivedPacket{}, ErrContractOwnership
+		}
+	}
 
 	packet = ReceivedPacket{header: header, arm: arm, credential: credential, right: right}
 	if retainedPayload.retain {
@@ -431,8 +481,24 @@ func NewReceivedBootstrapPacket(ctx context.Context, request ReceiveRequest, hea
 	if agentPID == 0 || agentPID > uint32(^uint32(0)>>1) || credentialprotocol.ValidateSafeID(bootGeneration) != nil || credentialprotocol.ValidateSafeID(helperGeneration) != nil {
 		return failedReceivedInputs(ctx, request, body, right, ErrContractInvalidArgument)
 	}
+	bootWire, bootErr := credentialprotocol.EncodeBodyToken(string(bootGeneration))
+	helperWire, helperErr := credentialprotocol.EncodeBodyToken(string(helperGeneration))
+	if bootErr != nil || helperErr != nil {
+		wipeBytes(bootWire)
+		wipeBytes(helperWire)
+		return failedReceivedInputs(ctx, request, body, right, ErrContractInvalidArgument)
+	}
+	canonicalBody := make([]byte, 12, 12+len(bootWire)+len(helperWire))
+	binary.BigEndian.PutUint32(canonicalBody[:4], agentPID)
+	binary.BigEndian.PutUint32(canonicalBody[4:8], agentUID)
+	binary.BigEndian.PutUint32(canonicalBody[8:12], agentGID)
+	canonicalBody = append(canonicalBody, bootWire...)
+	canonicalBody = append(canonicalBody, helperWire...)
+	wipeBytes(bootWire)
+	wipeBytes(helperWire)
+	defer wipeBytes(canonicalBody)
 	arm := ReceivedBootstrap{agentIdentitySHA256: hashAgentIdentity(agentPID, agentUID, agentGID), bootGeneration: bootGeneration, helperGeneration: helperGeneration}
-	return newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, right, credentialprotocol.PacketTypeBootstrap, 1, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
+	return newReceivedPacketFinalized(ctx, request, header, credential, credentialCount, body, rightsCount, right, credentialprotocol.PacketTypeBootstrap, 1, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
 		if len(encoded) < 16 {
 			return false
 		}
@@ -442,7 +508,14 @@ func NewReceivedBootstrapPacket(ctx context.Context, request ReceiveRequest, hea
 			return false
 		}
 		helper, helperConsumed, decodeErr := credentialprotocol.DecodeBodyTokenPrefix(encoded[12+consumed:])
-		return decodeErr == nil && 12+consumed+helperConsumed == len(encoded) && pid == agentPID && uid == agentUID && gid == agentGID && boot == string(bootGeneration) && helper == string(helperGeneration)
+		return decodeErr == nil && 12+consumed+helperConsumed == len(encoded) && pid == agentPID && uid == agentUID && gid == agentGID && boot == string(bootGeneration) && helper == string(helperGeneration) && len(encoded) == len(canonicalBody) && subtle.ConstantTimeCompare(encoded, canonicalBody) == 1
+	}, func() (receivedPacketArm, error) {
+		digest, digestErr := credentialprotocol.ComputeCanonicalHelperBootstrapSHA256(header, canonicalBody)
+		if digestErr != nil {
+			return nil, digestErr
+		}
+		arm.bootstrapSHA256 = digest
+		return arm, nil
 	})
 }
 
@@ -633,9 +706,22 @@ func NewReceivedExecPrivatePacket(ctx context.Context, request ReceiveRequest, h
 	if revision == 0 || privateBindingLength == 0 || privateBindingLength > credentialprotocol.MaxHelperExecPrivateBytes || privateBindingSHA256 == ([32]byte{}) {
 		return failedReceivedInputs(ctx, request, body, nil, ErrContractInvalidArgument)
 	}
+	var observedPrivate observedReceivedPayloadSHA256
 	arm := ReceivedExecPrivate{revision: revision, privateBindingLength: privateBindingLength, privateBindingSHA256: privateBindingSHA256}
-	return newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExecPrivate, 0, arm, retainedReceivedPayload{retain: true, offset: 44, length: privateBindingLength, digest: privateBindingSHA256}, func(encoded []byte) bool {
-		return len(encoded) == 44+int(privateBindingLength) && binary.BigEndian.Uint64(encoded[:8]) == revision && binary.BigEndian.Uint32(encoded[8:12]) == privateBindingLength && equalDigest(encoded[12:44], privateBindingSHA256) && sha256.Sum256(encoded[44:]) == privateBindingSHA256
+	return newReceivedPacketFinalized(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExecPrivate, 0, arm, retainedReceivedPayload{retain: true, offset: 44, length: privateBindingLength, digest: privateBindingSHA256}, func(encoded []byte) bool {
+		if len(encoded) != 44+int(privateBindingLength) || binary.BigEndian.Uint64(encoded[:8]) != revision || binary.BigEndian.Uint32(encoded[8:12]) != privateBindingLength || !equalDigest(encoded[12:44], privateBindingSHA256) {
+			return false
+		}
+		observedPrivate.store(sha256.Sum256(encoded[44:]))
+		return true
+	}, func() (receivedPacketArm, error) {
+		observedPrivateSHA256 := observedPrivate.load()
+		observation, observationErr := credentialprotocol.NewHelperExecPrivateObservation(revision, privateBindingLength, privateBindingSHA256, observedPrivateSHA256)
+		if observationErr != nil {
+			return nil, observationErr
+		}
+		arm.observation = observation
+		return arm, nil
 	})
 }
 
@@ -646,12 +732,22 @@ func NewReceivedExecStreamPacket(ctx context.Context, request ReceiveRequest, he
 	if revision == 0 || streamKind != credentialprotocol.HelperExecStreamStdin || (flags != credentialprotocol.HelperExecStreamFlagsNone && flags != credentialprotocol.HelperExecStreamFlagEOF) || payloadLength > credentialprotocol.MaxHelperExecStreamPayloadBytes || (flags == credentialprotocol.HelperExecStreamFlagsNone && payloadLength == 0) || (flags == credentialprotocol.HelperExecStreamFlagEOF && payloadLength != 0) || (payloadLength == 0 && payloadSHA256 != sha256.Sum256(nil)) || (payloadLength > 0 && payloadSHA256 == ([32]byte{})) {
 		return failedReceivedInputs(ctx, request, body, nil, ErrContractInvalidArgument)
 	}
+	var observedPayload observedReceivedPayloadSHA256
 	arm := ReceivedExecStream{revision: revision, streamKind: streamKind, flags: flags, offset: offset, payloadLength: payloadLength, payloadSHA256: payloadSHA256}
-	return newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExecStream, 0, arm, retainedReceivedPayload{retain: true, offset: 56, length: payloadLength, digest: payloadSHA256}, func(encoded []byte) bool {
+	return newReceivedPacketFinalized(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExecStream, 0, arm, retainedReceivedPayload{retain: true, offset: 56, length: payloadLength, digest: payloadSHA256}, func(encoded []byte) bool {
 		if len(encoded) != 56+int(payloadLength) || binary.BigEndian.Uint64(encoded[:8]) != revision || encoded[8] != byte(streamKind) || encoded[9] != byte(flags) || encoded[10] != 0 || encoded[11] != 0 || binary.BigEndian.Uint64(encoded[12:20]) != offset || binary.BigEndian.Uint32(encoded[20:24]) != payloadLength || !equalDigest(encoded[24:56], payloadSHA256) {
 			return false
 		}
-		return sha256.Sum256(encoded[56:]) == payloadSHA256
+		observedPayload.store(sha256.Sum256(encoded[56:]))
+		return true
+	}, func() (receivedPacketArm, error) {
+		observedPayloadSHA256 := observedPayload.load()
+		observation, observationErr := credentialprotocol.NewHelperExecStreamObservation(revision, streamKind, flags, offset, payloadLength, payloadSHA256, observedPayloadSHA256)
+		if observationErr != nil {
+			return nil, observationErr
+		}
+		arm.observation = observation
+		return arm, nil
 	})
 }
 
