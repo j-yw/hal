@@ -503,6 +503,7 @@ type execPlanCapabilityState struct {
 	encodedLength uint32
 	sha256        [32]byte
 	canonical     [credentialprotocol.MaxHelperExecPlanBytes]byte
+	claimed       bool
 	destroyed     bool
 }
 
@@ -552,7 +553,9 @@ Its methods are `EncodedLength() uint32`, `SHA256() [32]byte`, and
 `CopyCanonicalTo(credentialmemory.CredentialSink) error`. Copy is exact and
 all-or-error; it never returns bytes. Value copies share synchronized destruction state.
 `CopyCanonicalTo`, `EncodedLength`, `SHA256`, and the
-service-only `destroy` transition serialize on that private mutex. `destroy` waits for any in-flight `CopyCanonicalTo` call,
+service-only `claimAndMatch` and `destroy` transitions serialize on that private
+mutex. `claimAndMatch` is the sole atomic receive-constructor claim and decoded-
+plan comparison described below. `destroy` waits for any in-flight `CopyCanonicalTo` call,
 then wipes the complete fixed
 capacity with `clear` plus `runtime.KeepAlive`, zeros its safe metadata, and
 latches destroyed. The service performs that transition after `BeginExec`
@@ -1286,6 +1289,17 @@ StageFile/BeginExec/WriteStdin closure. It is fixed package code, never a
 caller-supplied callback, and cannot escape or retain the view. All safe
 metadata parsing from the locked mapping completes before arm construction.
 
+The retained body wrapper threads the exact operation context through its
+owner `Borrow`, the scoped view `Len`/`WriteTo`, and the destination
+`MaxCredentialBytes`/`WriteCredential` calls. It checks cancellation before
+and immediately after every such external callback. Once cancellation is
+observed it performs no later external call, payload fill, or successful
+return; it returns only `ErrContractOwnership`, never `ctx.Err()`. Plain and
+typed-nil contexts are rejected before any callback. The receive and send body
+destroy wrappers apply the same context precondition, but a non-nil canceled
+context does not skip cleanup: they call `Destroy` exactly once with that exact
+context and return `ErrContractOwnership`.
+
 Configured D4 Transport is explicitly the sole trusted issuer of
 `ReceivedCapability` and `ReceivedBodyCapability`. These interfaces are
 publicly implementable only for that injected boundary; helper code does not
@@ -1341,6 +1355,22 @@ type ReceivedExec struct {
 }
 ```
 
+`NewReceivedExecPacket` first rejects a plain nil context with
+`ErrContractInvalidArgument` or a typed-nil context with
+`ErrContractTypedNil`. It next rejects a zero/nil-state, already destroyed, or
+already claimed plan before ownership transfer and without calling any plan
+capability method. A losing concurrent claim is the same pre-transfer plan
+precondition failure: it returns `ErrContractOwnership` and leaves the
+`ReceiveRequest`, body, and right unconsumed and caller-owned; it does not
+destroy the winner-owned state. After those preconditions, it atomically claims
+the `ExecPlanCapability` together with the body and right; the caller and every
+alias must cease use. Under the one
+plan-state mutex, that same private claim operation compares the complete
+decoded plan's canonical length and SHA-256 with the claimed state. Every later
+constructor error or panic destroys and full-capacity wipes the claimed plan
+and body and closes the right; nil return transfers those same claimed
+capabilities to the packet and Service.
+
 `NewReceivedPrepareBeginPacket` constructs the exact prepare transaction
 correlation from the authenticated header/body and starts the existing
 `credentialprotocol.HelperPrepareTransaction` while decoded metadata is in
@@ -1355,10 +1385,13 @@ manifest and transaction digests with the cached result.
 `NewReceivedExecPacket` verifies the canonical received bytes against the
 decoded `credentialprotocol.HelperExecBody`, constructs the safe plan and
 `credentialprotocol.HelperExecTransactionSeed` while that decoded body is in
-scope, and then retains no decoded plan strings or body bytes. The public safe accessors are
-only Revision, ExecBindingID, PrivateLength, PrivateSHA256, and Plan. After the
-cache lookup, Service privately chooses seed `Begin` or `BeginComparison`; it
-does not build a second exec transaction state machine.
+scope, and then retains no decoded plan strings or body bytes. The complete
+public `ReceivedExec` value-method set is exactly `Revision`, `ExecBindingID`,
+`PrivateBindingLength`, `PrivateBindingSHA256`, `Plan`, `Format`, `GoString`,
+`MarshalBinary`, `MarshalJSON`, `MarshalText`, and `String`; there is no other
+public accessor. After the cache lookup, Service privately chooses seed `Begin`
+or `BeginComparison`; it does not build a second exec transaction state
+machine.
 
 Thus the prepare arm retains a private
 `*credentialprotocol.HelperPrepareTransaction`, and the exec arm retains a
@@ -1443,14 +1476,15 @@ bind their sensitive payload in the body capability and retain metadata only.
 The first `uint32` after `ReceivedKernelCredential` is the actual credentials
 record count and must be exactly one. The `uint32` after the body is actual
 rights count; only bootstrap's
-final argument may be a non-nil agent-pidfd right. Each constructor atomically
-seals its first request and validates header/type/sequence/body length,
+final argument may be a non-nil agent-pidfd right. After the context
+precondition and, for Exec, the plan precondition pass, each constructor
+atomically seals its first request and validates header/type/sequence/body length,
 identity/nonce, body length/digest, actual credential/right counts, closed
 fields, right kind, and cardinality. Service independently compares the private
 credential with its exact pinned role before dispatch. Sensitive constructors recompute and compare exact
-private payload length/digest in place before transfer. Failure destroys the
-full body capability and closes the right. Success makes `ReceivedPacket` owner
-of both the exact body mapping and right.
+private payload length/digest in place before transfer. Post-transfer failure
+destroys the full body capability and closes the right. Success makes
+`ReceivedPacket` owner of both the exact body mapping and right.
 
 `ReceivedPacket` public methods are only `Type()
 credentialprotocol.PacketType`, `Header() credentialprotocol.HelperPacketHeader`, and the
@@ -1499,13 +1533,17 @@ ownership rule.
 
 Transport calls `WriteCanonicalBody` exactly once for a send, passing the
 operation context before drain and the one shared cleanup-budget context after
-drain begins. It rejects a nil context before touching ownership. Context is
-checked before and after each borrow, copy, or destroy; cancellation cannot
-abandon ownership. No send constructor, validator, or write path uses
+drain begins. It rejects a plain nil context with
+`ErrContractInvalidArgument` or a typed-nil context with
+`ErrContractTypedNil` before touching ownership, the one-shot latch, or any
+capability method. Context is checked before and after each borrow, copy, or
+destroy; cancellation cannot abandon ownership. No send constructor,
+validator, or write path uses
 `context.Background()` or `context.TODO()`. Context-aware private send
-constructors that take or borrow a live body/right also take a leading non-nil
-`context.Context` and own the supplied capability on entry. The constructor
-uses that exact context to clean constructor failure. A successful fill
+constructors that take or borrow a live body/right also take a leading
+`context.Context`. After its plain/typed-nil context precondition passes, each
+owns the supplied capability on entry. The constructor uses that exact context
+to clean post-transfer constructor failure. A successful fill
 transfers ownership of the exact encoded slot to Transport. Transport
 retains that slot across a nonblocking retry and must not call
 `WriteCanonicalBody` again for `EAGAIN`; it sends the same pinned body length
@@ -1662,12 +1700,43 @@ or formatted value. Invalid enum/length/bound/zero-required input maps to
 `invalid_argument`; any interface whose dynamic nil-capable value is nil maps
 to `typed_nil`; mismatches and state errors map to the correspondingly named
 codes above. Metadata-only constructors return the complete zero value with the
-exact error and preserve every input. Every constructor that accepts a live
-body or right has a leading non-nil `context.Context`; ownership transfers on
-constructor entry, and the constructor synchronously destroys/closes the owned
-capability with that supplied context on every failure or panic. It never uses
+exact error and preserve every input. Every receive or private-send transport
+constructor that accepts a live body or right has a leading `context.Context`.
+It first rejects a plain nil context with `ErrContractInvalidArgument` or a
+typed-nil context with
+`ErrContractTypedNil`, before ownership transfer, request consumption, a
+one-shot latch, or any body/right method; all supplied live inputs remain
+caller-owned in those pre-transfer cases. `NewReceivedExecPacket` next rejects
+a zero/nil-state, destroyed, or already claimed plan, including a losing
+concurrent claim, before transfer and leaves its `ReceiveRequest`, body, and
+right unconsumed and caller-owned. After these preconditions, ownership of
+every supplied non-nil live body or right transfers atomically on constructor
+entry, and the constructor synchronously destroys/closes the owned capability
+with that supplied context on every failure or panic. Capability validation
+precedence is context, then the applicable Exec-plan precondition, then body,
+then right; a typed-nil capability is never called. It never uses
 `context.Background()` or `context.TODO()` and never returns live ownership to
-the caller after entry.
+the caller after transfer.
+
+Only a plain nil or typed-nil context is the global context pre-transfer
+failure. Exec has the additional plan precondition above. Any other context,
+including one already done, follows the normal atomic live-input ownership
+transfer. Constructors
+never return or wrap `ctx.Err()`: cancellation observed before a borrow/copy or
+immediately after an external callback prevents success, all mandatory
+destroy/close calls are still attempted exactly once with that same context,
+and the result is `ErrContractOwnership`. Cancellation observed before or after
+destroy/close is recorded but never skips cleanup. For `WriteCanonicalBody`, a
+plain or typed-nil context is rejected before the one-shot latch; cancellation
+after the latch consumes the write, performs no further fill when already
+observed, and returns
+`ErrContractOwnership`. Safe metadata-only send constructors likewise return
+`ErrContractOwnership` for a non-nil already-done context before success.
+Post-transfer cleanup isolates each body `Destroy` and right `Close`: if either
+trusted callback panics, the panic is recovered and reduced to
+`ErrContractOwnership`, without raw panic text, while every other live owner is
+still synchronously offered its one mandatory cleanup call. A cleanup panic
+never skips another owner and never escapes the transport constructor.
 
 The service calls only these transitions:
 

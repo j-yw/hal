@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"hash"
+	"sync"
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
@@ -17,11 +18,19 @@ const (
 )
 
 type bodyValidationSink struct {
+	mu       sync.Mutex
 	maximum  int
 	validate func([]byte) bool
 	writes   int
 	valid    bool
 	digest   [32]byte
+}
+
+type callbackValidationState struct {
+	mu    sync.Mutex
+	calls int
+	valid bool
+	err   error
 }
 
 type retainedReceivedPayload struct {
@@ -47,6 +56,7 @@ type borrowedPayloadView struct {
 }
 
 type payloadSlicingSink struct {
+	ctx             context.Context
 	sink            credentialmemory.CredentialSink
 	canonicalLength int
 	offset          int
@@ -61,12 +71,42 @@ type payloadCopySink struct {
 
 func (sink *bodyValidationSink) MaxCredentialBytes() int { return sink.maximum }
 func (sink *bodyValidationSink) WriteCredential(value []byte) error {
+	valid := len(value) <= sink.maximum && sink.validate(value)
+	digest := sha256.Sum256(value)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
 	sink.writes++
-	if sink.writes == 1 && len(value) <= sink.maximum {
-		sink.valid = sink.validate(value)
-		sink.digest = sha256.Sum256(value)
+	if sink.writes != 1 {
+		sink.valid = false
+		return nil
 	}
+	sink.valid = valid
+	sink.digest = digest
 	return nil
+}
+
+func (sink *bodyValidationSink) snapshot() (int, bool, [32]byte) {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	return sink.writes, sink.valid, sink.digest
+}
+
+func (state *callbackValidationState) record(err error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.calls++
+	if state.calls != 1 || err != nil {
+		state.valid = false
+	}
+	if state.err == nil && err != nil {
+		state.err = err
+	}
+}
+
+func (state *callbackValidationState) snapshot() (int, bool, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.calls, state.valid, state.err
 }
 
 func (body receivedPayloadBody) Len() uint32 {
@@ -84,22 +124,40 @@ func (body receivedPayloadBody) SHA256() [32]byte {
 }
 
 func (body receivedPayloadBody) Borrow(ctx context.Context, callback func(credentialmemory.BorrowedView) error) error {
-	if ctx == nil || callback == nil || !configuredDependency(body.owner) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return contextErr
+	}
+	if callback == nil || !configuredDependency(body.owner) {
 		return ErrContractInvalidArgument
 	}
-	return body.owner.Borrow(ctx, func(owner credentialmemory.BorrowedView) error {
-		if !configuredDependency(owner) || owner.Len() != int(body.canonicalLength) || body.offset > body.canonicalLength || body.length > body.canonicalLength-body.offset {
+	if ctx.Err() != nil {
+		return ErrContractOwnership
+	}
+	err := body.owner.Borrow(ctx, func(owner credentialmemory.BorrowedView) error {
+		if ctx.Err() != nil {
 			return ErrContractOwnership
 		}
-		return callback(borrowedPayloadView{owner: owner, canonicalLength: int(body.canonicalLength), offset: int(body.offset), length: int(body.length)})
+		if !configuredDependency(owner) {
+			return ErrContractOwnership
+		}
+		length := owner.Len()
+		if ctx.Err() != nil || length != int(body.canonicalLength) || body.offset > body.canonicalLength || body.length > body.canonicalLength-body.offset {
+			return ErrContractOwnership
+		}
+		callbackErr := callback(borrowedPayloadView{owner: owner, canonicalLength: int(body.canonicalLength), offset: int(body.offset), length: int(body.length)})
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		return callbackErr
 	})
+	if ctx.Err() != nil {
+		return ErrContractOwnership
+	}
+	return err
 }
 
 func (body receivedPayloadBody) Destroy(ctx context.Context) error {
-	if !configuredDependency(body.owner) {
-		return ErrContractDestroyed
-	}
-	return body.owner.Destroy(ctx)
+	return destroyTransportBody(ctx, body.owner)
 }
 
 func (view borrowedPayloadView) Len() int {
@@ -110,42 +168,119 @@ func (view borrowedPayloadView) Len() int {
 }
 
 func (view borrowedPayloadView) CopyTo(ctx context.Context, target *credentialmemory.LockedMapping) error {
-	if ctx == nil || target == nil {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return contextErr
+	}
+	if target == nil {
 		return ErrContractInvalidArgument
 	}
 	return view.WriteTo(ctx, &payloadCopySink{ctx: ctx, target: target, maximum: view.length})
 }
 
 func (view borrowedPayloadView) WriteTo(ctx context.Context, sink credentialmemory.CredentialSink) error {
-	if ctx == nil || !configuredDependency(view.owner) || !configuredDependency(sink) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return contextErr
+	}
+	if !configuredDependency(view.owner) || !configuredDependency(sink) {
 		return ErrContractTypedNil
 	}
-	if view.owner.Len() != view.canonicalLength || view.offset < 0 || view.length < 0 || view.offset > view.canonicalLength || view.length > view.canonicalLength-view.offset || sink.MaxCredentialBytes() < view.length {
+	if ctx.Err() != nil {
 		return ErrContractOwnership
 	}
-	return view.owner.WriteTo(ctx, &payloadSlicingSink{sink: sink, canonicalLength: view.canonicalLength, offset: view.offset, length: view.length})
+	ownerLength := view.owner.Len()
+	if ctx.Err() != nil || ownerLength != view.canonicalLength || view.offset < 0 || view.length < 0 || view.offset > view.canonicalLength || view.length > view.canonicalLength-view.offset {
+		return ErrContractOwnership
+	}
+	maximum := sink.MaxCredentialBytes()
+	if ctx.Err() != nil || maximum < view.length {
+		return ErrContractOwnership
+	}
+	err := view.owner.WriteTo(ctx, &payloadSlicingSink{ctx: ctx, sink: sink, canonicalLength: view.canonicalLength, offset: view.offset, length: view.length})
+	if ctx.Err() != nil {
+		return ErrContractOwnership
+	}
+	return err
 }
 
 func (sink *payloadSlicingSink) MaxCredentialBytes() int { return sink.canonicalLength }
 func (sink *payloadSlicingSink) WriteCredential(value []byte) error {
+	if sink.ctx.Err() != nil {
+		return ErrContractOwnership
+	}
 	if len(value) != sink.canonicalLength || sink.offset < 0 || sink.length < 0 || sink.offset > len(value) || sink.length > len(value)-sink.offset {
 		return ErrContractOwnership
 	}
-	return sink.sink.WriteCredential(value[sink.offset : sink.offset+sink.length])
+	err := sink.sink.WriteCredential(value[sink.offset : sink.offset+sink.length])
+	if sink.ctx.Err() != nil {
+		return ErrContractOwnership
+	}
+	return err
 }
 
 func (sink *payloadCopySink) MaxCredentialBytes() int { return sink.maximum }
 func (sink *payloadCopySink) WriteCredential(value []byte) error {
-	return sink.target.Load(sink.ctx, func(region []byte) (int, error) {
+	if sink.ctx.Err() != nil {
+		return ErrContractOwnership
+	}
+	err := sink.target.Load(sink.ctx, func(region []byte) (int, error) {
+		if sink.ctx.Err() != nil {
+			return 0, ErrContractOwnership
+		}
 		if len(value) > len(region) {
 			return 0, ErrContractInvalidArgument
 		}
 		copy(region, value)
+		if sink.ctx.Err() != nil {
+			return 0, ErrContractOwnership
+		}
 		return len(value), nil
 	})
+	if sink.ctx.Err() != nil {
+		return ErrContractOwnership
+	}
+	return err
+}
+
+func destroyTransportBody(ctx context.Context, body ReceivedBodyCapability) (err error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return contextErr
+	}
+	if !configuredDependency(body) {
+		return ErrContractDestroyed
+	}
+	canceled := ctx.Err() != nil
+	defer func() {
+		if recover() != nil || canceled || ctx.Err() != nil {
+			err = ErrContractOwnership
+		}
+	}()
+	if cleanupErr := body.Destroy(ctx); cleanupErr != nil {
+		return ErrContractOwnership
+	}
+	return nil
+}
+
+func closeTransportRight(ctx context.Context, right ReceivedCapability) (err error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return contextErr
+	}
+	if !configuredDependency(right) {
+		return ErrContractDestroyed
+	}
+	canceled := ctx.Err() != nil
+	defer func() {
+		if recover() != nil || canceled || ctx.Err() != nil {
+			err = ErrContractOwnership
+		}
+	}()
+	if cleanupErr := right.Close(ctx); cleanupErr != nil {
+		return ErrContractOwnership
+	}
+	return nil
 }
 
 func newReceivedPacket(
+	ctx context.Context,
 	request ReceiveRequest,
 	header credentialprotocol.HelperPacketHeader,
 	credential ReceivedKernelCredential,
@@ -159,6 +294,9 @@ func newReceivedPacket(
 	retainedPayload retainedReceivedPayload,
 	validate func([]byte) bool,
 ) (packet ReceivedPacket, err error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	ownedBody := configuredDependency(body)
 	ownedRight := configuredDependency(right)
 	bodyReleased := false
@@ -169,16 +307,19 @@ func newReceivedPacket(
 		}
 		if ownedBody && !bodyReleased {
 			bodyReleased = true
-			if cleanupErr := body.Destroy(context.Background()); cleanupErr != nil {
+			if cleanupErr := destroyTransportBody(ctx, body); cleanupErr != nil {
 				err = ErrContractOwnership
 			}
 		}
 		if ownedRight {
-			if cleanupErr := right.Close(context.Background()); cleanupErr != nil {
+			if cleanupErr := closeTransportRight(ctx, right); cleanupErr != nil {
 				err = ErrContractOwnership
 			}
 		}
 	}()
+	if ctx.Err() != nil {
+		return ReceivedPacket{}, ErrContractOwnership
+	}
 
 	if request.state == nil || !request.state.consumed.CompareAndSwap(false, true) {
 		return ReceivedPacket{}, ErrContractOwnership
@@ -196,6 +337,9 @@ func newReceivedPacket(
 		return ReceivedPacket{}, ErrContractInvalidArgument
 	}
 	length := body.Len()
+	if ctx.Err() != nil {
+		return ReceivedPacket{}, ErrContractOwnership
+	}
 	if length != header.BodyLength || length > request.maximumBodyBytes || credentialCount != 1 || rightsCount != request.expectedRights || rightsCount != wantRights {
 		return ReceivedPacket{}, ErrContractCorrelation
 	}
@@ -207,37 +351,60 @@ func newReceivedPacket(
 		if !ownedRight {
 			return ReceivedPacket{}, ErrContractTypedNil
 		}
-		if right.Kind() != ReceivedCapabilityAgentPIDFD || right.SHA256() == ([32]byte{}) {
+		kind := right.Kind()
+		if ctx.Err() != nil {
+			return ReceivedPacket{}, ErrContractOwnership
+		}
+		digest := right.SHA256()
+		if ctx.Err() != nil {
+			return ReceivedPacket{}, ErrContractOwnership
+		}
+		if kind != ReceivedCapabilityAgentPIDFD || digest == ([32]byte{}) {
 			return ReceivedPacket{}, ErrContractCapability
 		}
 	}
 
 	sink := &bodyValidationSink{maximum: int(length), validate: validate}
-	callbackCount := 0
-	var callbackErr error
-	borrowErr := body.Borrow(context.Background(), func(view credentialmemory.BorrowedView) error {
-		callbackCount++
-		if !configuredDependency(view) {
+	callbacks := &callbackValidationState{valid: true}
+	if ctx.Err() != nil {
+		return ReceivedPacket{}, ErrContractOwnership
+	}
+	borrowErr := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
+		var callbackErr error
+		if ctx.Err() != nil {
+			callbackErr = ErrContractOwnership
+		} else if !configuredDependency(view) {
 			callbackErr = ErrContractTypedNil
-			return callbackErr
+		} else {
+			viewLength := view.Len()
+			if ctx.Err() != nil || viewLength != int(length) {
+				callbackErr = ErrContractOwnership
+			} else if writeErr := view.WriteTo(ctx, sink); writeErr != nil {
+				callbackErr = ErrContractOwnership
+			}
 		}
-		if callbackCount != 1 || view.Len() != int(length) {
+		if ctx.Err() != nil {
 			callbackErr = ErrContractOwnership
-			return callbackErr
 		}
-		if writeErr := view.WriteTo(context.Background(), sink); writeErr != nil {
-			callbackErr = ErrContractOwnership
-			return callbackErr
-		}
-		return nil
+		callbacks.record(callbackErr)
+		return callbackErr
 	})
+	if ctx.Err() != nil {
+		return ReceivedPacket{}, ErrContractOwnership
+	}
+	callbackCount, callbacksValid, callbackErr := callbacks.snapshot()
 	if callbackErr != nil {
 		return ReceivedPacket{}, callbackErr
 	}
-	if borrowErr != nil || callbackCount != 1 || sink.writes != 1 || !sink.valid {
+	writes, bodyValid, bodyDigest := sink.snapshot()
+	if borrowErr != nil || callbackCount != 1 || !callbacksValid || writes != 1 || !bodyValid {
 		return ReceivedPacket{}, ErrContractCorrelation
 	}
-	if sinkDigest := body.SHA256(); sinkDigest == ([32]byte{}) || subtle.ConstantTimeCompare(sinkDigest[:], sink.digest[:]) != 1 {
+	sinkDigest := body.SHA256()
+	if ctx.Err() != nil {
+		return ReceivedPacket{}, ErrContractOwnership
+	}
+	if sinkDigest == ([32]byte{}) || subtle.ConstantTimeCompare(sinkDigest[:], bodyDigest[:]) != 1 {
 		return ReceivedPacket{}, ErrContractCorrelation
 	}
 
@@ -249,7 +416,7 @@ func newReceivedPacket(
 		packet.body = receivedPayloadBody{owner: body, canonicalLength: length, offset: retainedPayload.offset, length: retainedPayload.length, digest: retainedPayload.digest}
 	} else {
 		bodyReleased = true
-		if destroyErr := body.Destroy(context.Background()); destroyErr != nil {
+		if destroyErr := destroyTransportBody(ctx, body); destroyErr != nil {
 			return ReceivedPacket{}, ErrContractOwnership
 		}
 	}
@@ -257,12 +424,15 @@ func newReceivedPacket(
 	return packet, nil
 }
 
-func NewReceivedBootstrapPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, agentPID, agentUID, agentGID uint32, bootGeneration, helperGeneration credentialprotocol.SafeID, right ReceivedCapability) (ReceivedPacket, error) {
+func NewReceivedBootstrapPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, agentPID, agentUID, agentGID uint32, bootGeneration, helperGeneration credentialprotocol.SafeID, right ReceivedCapability) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	if agentPID == 0 || agentPID > uint32(^uint32(0)>>1) || credentialprotocol.ValidateSafeID(bootGeneration) != nil || credentialprotocol.ValidateSafeID(helperGeneration) != nil {
-		return failedReceivedInputs(request, body, right, ErrContractInvalidArgument)
+		return failedReceivedInputs(ctx, request, body, right, ErrContractInvalidArgument)
 	}
 	arm := ReceivedBootstrap{agentIdentitySHA256: hashAgentIdentity(agentPID, agentUID, agentGID), bootGeneration: bootGeneration, helperGeneration: helperGeneration}
-	return newReceivedPacket(request, header, credential, credentialCount, body, rightsCount, right, credentialprotocol.PacketTypeBootstrap, 1, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
+	return newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, right, credentialprotocol.PacketTypeBootstrap, 1, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
 		if len(encoded) < 16 {
 			return false
 		}
@@ -276,12 +446,15 @@ func NewReceivedBootstrapPacket(request ReceiveRequest, header credentialprotoco
 	})
 }
 
-func NewReceivedAgentHelloPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, bootstrapSHA256 [32]byte, bootGeneration, helperGeneration credentialprotocol.SafeID, processDescriptorSHA256 [32]byte) (ReceivedPacket, error) {
+func NewReceivedAgentHelloPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, bootstrapSHA256 [32]byte, bootGeneration, helperGeneration credentialprotocol.SafeID, processDescriptorSHA256 [32]byte) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	if bootstrapSHA256 == ([32]byte{}) || processDescriptorSHA256 == ([32]byte{}) || credentialprotocol.ValidateSafeID(bootGeneration) != nil || credentialprotocol.ValidateSafeID(helperGeneration) != nil {
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+		return failedReceivedInputs(ctx, request, body, nil, ErrContractInvalidArgument)
 	}
 	arm := ReceivedAgentHello{bootstrapSHA256: bootstrapSHA256, bootGeneration: bootGeneration, helperGeneration: helperGeneration, processDescriptorSHA256: processDescriptorSHA256}
-	return newReceivedPacket(request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeAgentHello, 0, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
+	return newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeAgentHello, 0, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
 		if len(encoded) < 38 || !equalDigest(encoded[:32], bootstrapSHA256) {
 			return false
 		}
@@ -300,92 +473,181 @@ func NewReceivedAgentHelloPacket(request ReceiveRequest, header credentialprotoc
 	})
 }
 
-func NewReceivedPrepareBeginPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperPrepareBeginBody, manifest ManifestCapability) (ReceivedPacket, error) {
+func NewReceivedPrepareBeginPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperPrepareBeginBody, manifest ManifestCapability) (packet ReceivedPacket, err error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
+	delegatedBody := false
+	success := false
+	var transaction *credentialprotocol.HelperPrepareTransaction
+	defer func() {
+		if success {
+			return
+		}
+		if transaction != nil {
+			transaction.Close()
+		}
+		if !delegatedBody {
+			_, cleanupErr := failedReceivedInputs(ctx, request, body, nil, err)
+			if cleanupErr != nil {
+				err = cleanupErr
+			}
+		}
+	}()
+	if ctx.Err() != nil {
+		err = ErrContractOwnership
+		return ReceivedPacket{}, err
+	}
 	canonical, encodeErr := credentialprotocol.EncodeHelperPrepareBeginBody(decoded)
 	manifestDigest, manifestErr := credentialprotocol.ComputeHelperManifestSHA256(decoded.Bindings)
-	if encodeErr != nil || manifestErr != nil || manifest.Count() == 0 || manifest.SHA256() != manifestDigest {
+	correlation, correlationErr := credentialprotocol.NewHelperPrepareTransactionCorrelation(header.RequestID, header.GuestCredentialIdentityDigest, decoded.Revision, decoded.ExpiryUnixNano)
+	var transactionErr error
+	transaction, transactionErr = credentialprotocol.NewHelperPrepareTransaction(correlation, decoded, manifestDigest)
+	if encodeErr != nil || manifestErr != nil || correlationErr != nil || transactionErr != nil || transaction == nil || manifest.Count() == 0 || manifest.SHA256() != manifestDigest {
 		wipeBytes(canonical)
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+		err = ErrContractInvalidArgument
+		return ReceivedPacket{}, err
 	}
 	wantDigest := sha256.Sum256(canonical)
 	wantLength := len(canonical)
 	wipeBytes(canonical)
-	arm := ReceivedPrepareBegin{revision: decoded.Revision, expiryUnixNano: decoded.ExpiryUnixNano, manifest: manifest}
-	return newReceivedPacket(request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypePrepareBegin, 0, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
+	arm := ReceivedPrepareBegin{revision: decoded.Revision, expiryUnixNano: decoded.ExpiryUnixNano, manifest: manifest, transaction: transaction}
+	delegatedBody = true
+	packet, err = newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypePrepareBegin, 0, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
 		return len(encoded) == wantLength && sha256.Sum256(encoded) == wantDigest
 	})
+	if err == nil {
+		success = true
+	}
+	return packet, err
 }
 
-func NewReceivedPrepareFilePacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, bindingIndex uint16, fileLength uint32, fileSHA256 [32]byte) (ReceivedPacket, error) {
+func NewReceivedPrepareFilePacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, bindingIndex uint16, fileLength uint32, fileSHA256 [32]byte) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	if revision == 0 || bindingIndex >= credentialprotocol.MaxHelperBindings || fileLength == 0 || fileLength > credentialprotocol.MaxHelperFileBytes || fileSHA256 == ([32]byte{}) {
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+		return failedReceivedInputs(ctx, request, body, nil, ErrContractInvalidArgument)
 	}
 	arm := ReceivedPrepareFile{revision: revision, bindingIndex: bindingIndex, fileLength: fileLength, fileSHA256: fileSHA256}
-	return newReceivedPacket(request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypePrepareFile, 0, arm, retainedReceivedPayload{retain: true, offset: 46, length: fileLength, digest: fileSHA256}, func(encoded []byte) bool {
+	return newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypePrepareFile, 0, arm, retainedReceivedPayload{retain: true, offset: 46, length: fileLength, digest: fileSHA256}, func(encoded []byte) bool {
 		return len(encoded) == 46+int(fileLength) && binary.BigEndian.Uint64(encoded[:8]) == revision && binary.BigEndian.Uint16(encoded[8:10]) == bindingIndex && binary.BigEndian.Uint32(encoded[10:14]) == fileLength && equalDigest(encoded[14:46], fileSHA256) && sha256.Sum256(encoded[46:]) == fileSHA256
 	})
 }
 
-func NewReceivedPrepareCommitPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperPrepareCommitBody) (ReceivedPacket, error) {
+func NewReceivedPrepareCommitPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperPrepareCommitBody) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	encoded, encodeErr := credentialprotocol.EncodeHelperPrepareCommitBody(decoded)
-	return receivedCanonicalPacket(request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypePrepareCommit, ReceivedPrepareCommit{revision: decoded.Revision, manifestSHA256: decoded.ManifestSHA256}, encoded, encodeErr)
+	return receivedCanonicalPacket(ctx, request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypePrepareCommit, ReceivedPrepareCommit{revision: decoded.Revision, manifestSHA256: decoded.ManifestSHA256}, encoded, encodeErr)
 }
 
-func NewReceivedRenewPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, expiryUnixNano int64, priorProofID credentialprotocol.SafeID) (ReceivedPacket, error) {
+func NewReceivedRenewPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, expiryUnixNano int64, priorProofID credentialprotocol.SafeID) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	if credentialprotocol.ValidateSafeID(priorProofID) != nil {
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+		return failedReceivedInputs(ctx, request, body, nil, ErrContractInvalidArgument)
 	}
 	decoded := credentialprotocol.HelperRenewBody{Revision: revision, ExpiryUnixNano: expiryUnixNano, PriorProofID: string(priorProofID)}
 	encoded, encodeErr := credentialprotocol.EncodeHelperRenewBody(decoded)
-	return receivedCanonicalPacket(request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypeRenew, ReceivedRenew{revision: revision, expiryUnixNano: expiryUnixNano, priorProofSHA256: hashOpaqueToken(renewProofDomain, priorProofID)}, encoded, encodeErr)
+	return receivedCanonicalPacket(ctx, request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypeRenew, ReceivedRenew{revision: revision, expiryUnixNano: expiryUnixNano, priorProofSHA256: hashOpaqueToken(renewProofDomain, priorProofID)}, encoded, encodeErr)
 }
 
-func NewReceivedRevokePacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperRevokeBody) (ReceivedPacket, error) {
+func NewReceivedRevokePacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperRevokeBody) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	encoded, encodeErr := credentialprotocol.EncodeHelperRevokeBody(decoded)
-	return receivedCanonicalPacket(request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypeRevoke, ReceivedRevoke{revision: decoded.Revision, reason: decoded.Reason}, encoded, encodeErr)
+	return receivedCanonicalPacket(ctx, request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypeRevoke, ReceivedRevoke{revision: decoded.Revision, reason: decoded.Reason}, encoded, encodeErr)
 }
 
-func NewReceivedExecPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, execBindingID credentialprotocol.SafeID, privateBindingLength uint32, privateBindingSHA256 [32]byte, plan ExecPlanCapability) (ReceivedPacket, error) {
-	if revision == 0 || credentialprotocol.ValidateSafeID(execBindingID) != nil || plan.EncodedLength() == 0 || (privateBindingLength == 0) != (privateBindingSHA256 == ([32]byte{})) || privateBindingLength > credentialprotocol.MaxHelperExecPrivateBytes {
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+func NewReceivedExecPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperExecBody, plan ExecPlanCapability) (packet ReceivedPacket, err error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
 	}
-	token, tokenErr := credentialprotocol.EncodeBodyToken(string(execBindingID))
-	if tokenErr != nil {
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
-	}
-	prefix := make([]byte, 8+len(token)+36)
-	binary.BigEndian.PutUint64(prefix[:8], revision)
-	copy(prefix[8:], token)
-	offset := 8 + len(token)
-	binary.BigEndian.PutUint32(prefix[offset:offset+4], privateBindingLength)
-	copy(prefix[offset+4:], privateBindingSHA256[:])
-	prefixDigest := append([]byte(nil), prefix...)
-	wipeBytes(prefix)
-	arm := ReceivedExec{revision: revision, execBindingID: execBindingID, privateBindingLength: privateBindingLength, privateBindingSHA256: privateBindingSHA256, plan: plan}
-	return newReceivedPacket(request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExec, 0, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
-		if len(encoded) != len(prefixDigest)+int(plan.EncodedLength()) || subtle.ConstantTimeCompare(encoded[:len(prefixDigest)], prefixDigest) != 1 {
-			return false
+	delegatedBody := false
+	success := false
+	claimed := false
+	var transactionSeed credentialprotocol.HelperExecTransactionSeed
+	defer func() {
+		if success || !claimed {
+			return
 		}
-		return sha256.Sum256(encoded[len(prefixDigest):]) == plan.SHA256()
+		transactionSeed.Close()
+		plan.destroy()
+		if !delegatedBody {
+			_, cleanupErr := failedReceivedInputs(ctx, request, body, nil, err)
+			if cleanupErr != nil {
+				err = cleanupErr
+			}
+		}
+	}()
+	claimErr := plan.claimAndMatch(decoded.Plan, &claimed)
+	if !claimed {
+		return ReceivedPacket{}, claimErr
+	}
+	if claimErr != nil {
+		return ReceivedPacket{}, claimErr
+	}
+	if ctx.Err() != nil {
+		err = ErrContractOwnership
+		return ReceivedPacket{}, err
+	}
+	execBindingID := credentialprotocol.SafeID(decoded.ExecBindingID)
+	correlation, correlationErr := credentialprotocol.NewHelperExecTransactionCorrelation(header.RequestID, header.GuestCredentialIdentityDigest, decoded.Revision)
+	var transactionErr error
+	transactionSeed, transactionErr = credentialprotocol.NewHelperExecTransactionSeed(correlation, decoded)
+	if credentialprotocol.ValidateSafeID(execBindingID) != nil || correlationErr != nil || transactionErr != nil {
+		err = ErrContractInvalidArgument
+		return ReceivedPacket{}, err
+	}
+	canonical, encodeErr := credentialprotocol.EncodeHelperExecBody(decoded)
+	if encodeErr != nil {
+		wipeBytes(canonical)
+		err = ErrContractInvalidArgument
+		return ReceivedPacket{}, err
+	}
+	wantDigest, wantLength := sha256.Sum256(canonical), len(canonical)
+	wipeBytes(canonical)
+	arm := ReceivedExec{
+		revision: decoded.Revision, execBindingID: execBindingID,
+		privateLength: decoded.PrivateBindingLength, privateSHA256: decoded.PrivateBindingSHA256,
+		plan: plan, transactionSeed: transactionSeed,
+	}
+	delegatedBody = true
+	packet, err = newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExec, 0, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
+		return len(encoded) == wantLength && sha256.Sum256(encoded) == wantDigest
 	})
+	if err == nil {
+		success = true
+	}
+	return packet, err
 }
 
-func NewReceivedExecPrivatePacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, privateBindingLength uint32, privateBindingSHA256 [32]byte) (ReceivedPacket, error) {
+func NewReceivedExecPrivatePacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, privateBindingLength uint32, privateBindingSHA256 [32]byte) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	if revision == 0 || privateBindingLength == 0 || privateBindingLength > credentialprotocol.MaxHelperExecPrivateBytes || privateBindingSHA256 == ([32]byte{}) {
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+		return failedReceivedInputs(ctx, request, body, nil, ErrContractInvalidArgument)
 	}
 	arm := ReceivedExecPrivate{revision: revision, privateBindingLength: privateBindingLength, privateBindingSHA256: privateBindingSHA256}
-	return newReceivedPacket(request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExecPrivate, 0, arm, retainedReceivedPayload{retain: true, offset: 44, length: privateBindingLength, digest: privateBindingSHA256}, func(encoded []byte) bool {
+	return newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExecPrivate, 0, arm, retainedReceivedPayload{retain: true, offset: 44, length: privateBindingLength, digest: privateBindingSHA256}, func(encoded []byte) bool {
 		return len(encoded) == 44+int(privateBindingLength) && binary.BigEndian.Uint64(encoded[:8]) == revision && binary.BigEndian.Uint32(encoded[8:12]) == privateBindingLength && equalDigest(encoded[12:44], privateBindingSHA256) && sha256.Sum256(encoded[44:]) == privateBindingSHA256
 	})
 }
 
-func NewReceivedExecStreamPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, streamKind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, offset uint64, payloadLength uint32, payloadSHA256 [32]byte) (ReceivedPacket, error) {
+func NewReceivedExecStreamPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, revision uint64, streamKind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, offset uint64, payloadLength uint32, payloadSHA256 [32]byte) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	if revision == 0 || streamKind != credentialprotocol.HelperExecStreamStdin || (flags != credentialprotocol.HelperExecStreamFlagsNone && flags != credentialprotocol.HelperExecStreamFlagEOF) || payloadLength > credentialprotocol.MaxHelperExecStreamPayloadBytes || (flags == credentialprotocol.HelperExecStreamFlagsNone && payloadLength == 0) || (flags == credentialprotocol.HelperExecStreamFlagEOF && payloadLength != 0) || (payloadLength == 0 && payloadSHA256 != sha256.Sum256(nil)) || (payloadLength > 0 && payloadSHA256 == ([32]byte{})) {
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+		return failedReceivedInputs(ctx, request, body, nil, ErrContractInvalidArgument)
 	}
 	arm := ReceivedExecStream{revision: revision, streamKind: streamKind, flags: flags, offset: offset, payloadLength: payloadLength, payloadSHA256: payloadSHA256}
-	return newReceivedPacket(request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExecStream, 0, arm, retainedReceivedPayload{retain: true, offset: 56, length: payloadLength, digest: payloadSHA256}, func(encoded []byte) bool {
+	return newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, nil, credentialprotocol.PacketTypeExecStream, 0, arm, retainedReceivedPayload{retain: true, offset: 56, length: payloadLength, digest: payloadSHA256}, func(encoded []byte) bool {
 		if len(encoded) != 56+int(payloadLength) || binary.BigEndian.Uint64(encoded[:8]) != revision || encoded[8] != byte(streamKind) || encoded[9] != byte(flags) || encoded[10] != 0 || encoded[11] != 0 || binary.BigEndian.Uint64(encoded[12:20]) != offset || binary.BigEndian.Uint32(encoded[20:24]) != payloadLength || !equalDigest(encoded[24:56], payloadSHA256) {
 			return false
 		}
@@ -393,32 +655,45 @@ func NewReceivedExecStreamPacket(request ReceiveRequest, header credentialprotoc
 	})
 }
 
-func NewReceivedExecCreditPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperExecCreditBody) (ReceivedPacket, error) {
+func NewReceivedExecCreditPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperExecCreditBody) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	if decoded.StreamKind != credentialprotocol.HelperExecStreamStdout && decoded.StreamKind != credentialprotocol.HelperExecStreamStderr {
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+		return failedReceivedInputs(ctx, request, body, nil, ErrContractInvalidArgument)
 	}
 	encoded, encodeErr := credentialprotocol.EncodeHelperExecCreditBody(decoded)
-	return receivedCanonicalPacket(request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypeExecCredit, ReceivedExecCredit{revision: decoded.Revision, streamKind: decoded.StreamKind, nextOffset: decoded.NextOffset}, encoded, encodeErr)
+	return receivedCanonicalPacket(ctx, request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypeExecCredit, ReceivedExecCredit{revision: decoded.Revision, streamKind: decoded.StreamKind, nextOffset: decoded.NextOffset}, encoded, encodeErr)
 }
 
-func NewReceivedCloseNotifyPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperCloseNotifyBody) (ReceivedPacket, error) {
+func NewReceivedCloseNotifyPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, decoded credentialprotocol.HelperCloseNotifyBody) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	encoded, encodeErr := credentialprotocol.EncodeHelperCloseNotifyBody(decoded)
-	return receivedCanonicalPacket(request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypeCloseNotify, ReceivedCloseNotify{reason: decoded.Reason}, encoded, encodeErr)
+	return receivedCanonicalPacket(ctx, request, header, credential, credentialCount, body, rightsCount, credentialprotocol.PacketTypeCloseNotify, ReceivedCloseNotify{reason: decoded.Reason}, encoded, encodeErr)
 }
 
-func receivedCanonicalPacket(request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, packetType credentialprotocol.PacketType, arm receivedPacketArm, canonical []byte, encodeErr error) (ReceivedPacket, error) {
+func receivedCanonicalPacket(ctx context.Context, request ReceiveRequest, header credentialprotocol.HelperPacketHeader, credential ReceivedKernelCredential, credentialCount uint32, body ReceivedBodyCapability, rightsCount uint32, packetType credentialprotocol.PacketType, arm receivedPacketArm, canonical []byte, encodeErr error) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		wipeBytes(canonical)
+		return ReceivedPacket{}, contextErr
+	}
 	if encodeErr != nil {
 		wipeBytes(canonical)
-		return failedReceivedInputs(request, body, nil, ErrContractInvalidArgument)
+		return failedReceivedInputs(ctx, request, body, nil, ErrContractInvalidArgument)
 	}
 	digest, length := sha256.Sum256(canonical), len(canonical)
 	wipeBytes(canonical)
-	return newReceivedPacket(request, header, credential, credentialCount, body, rightsCount, nil, packetType, 0, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
+	return newReceivedPacket(ctx, request, header, credential, credentialCount, body, rightsCount, nil, packetType, 0, arm, retainedReceivedPayload{}, func(encoded []byte) bool {
 		return len(encoded) == length && sha256.Sum256(encoded) == digest
 	})
 }
 
-func failedReceivedInputs(request ReceiveRequest, body ReceivedBodyCapability, right ReceivedCapability, err error) (ReceivedPacket, error) {
+func failedReceivedInputs(ctx context.Context, request ReceiveRequest, body ReceivedBodyCapability, right ReceivedCapability, err error) (ReceivedPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return ReceivedPacket{}, contextErr
+	}
 	if request.state == nil || !request.state.consumed.CompareAndSwap(false, true) {
 		err = ErrContractOwnership
 	}
@@ -426,12 +701,12 @@ func failedReceivedInputs(request ReceiveRequest, body ReceivedBodyCapability, r
 		err = ErrContractTypedNil
 	}
 	if configuredDependency(body) {
-		if cleanupErr := body.Destroy(context.Background()); cleanupErr != nil {
+		if cleanupErr := destroyTransportBody(ctx, body); cleanupErr != nil {
 			err = ErrContractOwnership
 		}
 	}
 	if configuredDependency(right) {
-		if cleanupErr := right.Close(context.Background()); cleanupErr != nil {
+		if cleanupErr := closeTransportRight(ctx, right); cleanupErr != nil {
 			err = ErrContractOwnership
 		}
 	}

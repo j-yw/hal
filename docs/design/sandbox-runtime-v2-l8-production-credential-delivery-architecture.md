@@ -3457,13 +3457,25 @@ unknown absence escalates to D6 kill/reap.
 
 Core execution uses the grant-driven CoreExecution event loop: WriteStdin,
 GrantOutput, Next, and Cancel. An output event owns the full canonical `0x18`
-body, not a second payload buffer; its leading-context constructor takes
-ownership-on-entry and synchronously destroys failure with that supplied
-context. The helper SendPacket keeps the existing CredentialSink but makes the
-write context-aware; credentialclient's two BodySegmentSink contracts remain
-separate and unchanged. Every live body/right receive or private-send
-constructor likewise takes a leading context, owns on entry, and never uses a
-background/TODO substitute.
+body, not a second payload buffer; after its frozen context/body preconditions,
+its leading-context constructor takes ownership and synchronously destroys
+post-transfer failure with that supplied context. The helper SendPacket keeps
+the existing CredentialSink but makes the write context-aware;
+credentialclient's two BodySegmentSink contracts remain separate and
+unchanged. Every live body/right receive or private-send constructor likewise
+takes a leading context; it rejects plain or typed nil before transfer, applies
+the additional Exec-plan precondition when applicable, then owns on entry and
+never uses a background/TODO substitute.
+
+Retained receive payload access threads the exact supplied context through
+owner borrow, scoped-view length/write, and destination maximum/write
+callbacks, with cancellation checks before and immediately after every
+external callback. Observed cancellation prevents every later call, fill, and
+success and is reported only as sanitized ownership failure. Cleanup still
+calls each owned body destroy/right close exactly once with a non-nil canceled
+context. Cleanup callbacks are isolated from one another: a panic is reduced
+to sanitized ownership failure and cannot skip another live owner's mandatory
+cleanup or escape the transport constructor.
 
 Core correlation capabilities use the single
 `hal/l8/guest-helper/core-capability/v1` domain with four exact kinds and all
