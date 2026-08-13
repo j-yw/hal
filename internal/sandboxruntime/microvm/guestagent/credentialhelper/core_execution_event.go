@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"reflect"
+	"sync"
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
@@ -63,6 +64,7 @@ func NewCoreExecutionOutputEvent(ctx context.Context, output CoreOutputResult, b
 }
 
 type coreOutputBodyValidationSink struct {
+	mu            sync.Mutex
 	output        CoreOutputResult
 	bodySHA       [32]byte
 	callbackCount uint8
@@ -76,6 +78,8 @@ func (sink *coreOutputBodyValidationSink) MaxCredentialBytes() int {
 }
 
 func (sink *coreOutputBodyValidationSink) WriteCredential(wire []byte) error {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
 	if sink.writeCount != 0 {
 		sink.writeCount = 2
 		sink.invalid = true
@@ -108,26 +112,47 @@ func (sink *coreOutputBodyValidationSink) WriteCredential(wire []byte) error {
 	return nil
 }
 
+func (sink *coreOutputBodyValidationSink) beginCallback() bool {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if sink.callbackCount != 0 {
+		sink.callbackCount = 2
+		sink.invalid = true
+		return false
+	}
+	sink.callbackCount = 1
+	return true
+}
+
+func (sink *coreOutputBodyValidationSink) markInvalid() {
+	sink.mu.Lock()
+	sink.invalid = true
+	sink.mu.Unlock()
+}
+
+func (sink *coreOutputBodyValidationSink) validated() bool {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	return sink.callbackCount == 1 && sink.writeCount == 1 && sink.valid && !sink.invalid
+}
+
 func validCoreOutputBody(ctx context.Context, output CoreOutputResult, body CoreOutputBody, bodySHA [32]byte) bool {
 	sink := &coreOutputBodyValidationSink{output: output, bodySHA: bodySHA}
 	err := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
-		if sink.callbackCount != 0 {
-			sink.callbackCount = 2
-			sink.invalid = true
+		if !sink.beginCallback() {
 			return ErrContractResultMatrix
 		}
-		sink.callbackCount = 1
 		if view == nil || typedNil(view) || view.Len() != sink.MaxCredentialBytes() {
-			sink.invalid = true
+			sink.markInvalid()
 			return ErrContractResultMatrix
 		}
 		writeErr := view.WriteTo(ctx, sink)
 		if writeErr != nil {
-			sink.invalid = true
+			sink.markInvalid()
 		}
 		return writeErr
 	})
-	return err == nil && sink.callbackCount == 1 && sink.writeCount == 1 && sink.valid && !sink.invalid
+	return err == nil && sink.validated()
 }
 
 func NewCoreExecutionCompleteEvent(complete CoreExecResult) (CoreExecutionEvent, error) {

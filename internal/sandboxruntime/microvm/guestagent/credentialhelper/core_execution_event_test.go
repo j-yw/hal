@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
@@ -12,25 +13,28 @@ import (
 )
 
 type eventBody struct {
-	length       uint32
-	digest       [32]byte
-	destroyed    int
-	destroyCtx   context.Context
-	destroyErr   error
-	panicOnLen   bool
-	canonical    []byte
-	swallowErr   bool
-	borrowTwice  bool
-	writeTwice   bool
-	postWriteErr error
+	length              uint32
+	digest              [32]byte
+	destroyed           int
+	destroyCtx          context.Context
+	destroyErr          error
+	panicOnLen          bool
+	canonical           []byte
+	swallowErr          bool
+	borrowTwice         bool
+	writeTwice          bool
+	postWriteErr        error
+	concurrentCallbacks bool
+	concurrentWrites    bool
 }
 
 type eventContextKey struct{}
 
 type eventBorrowedView struct {
-	canonical    []byte
-	writeTwice   bool
-	postWriteErr error
+	canonical        []byte
+	writeTwice       bool
+	postWriteErr     error
+	concurrentWrites bool
 }
 
 func (view eventBorrowedView) Len() int { return len(view.canonical) }
@@ -40,6 +44,28 @@ func (eventBorrowedView) CopyTo(context.Context, *credentialmemory.LockedMapping
 func (view eventBorrowedView) WriteTo(_ context.Context, sink credentialmemory.CredentialSink) error {
 	if len(view.canonical) > sink.MaxCredentialBytes() {
 		return errors.New("destination too small")
+	}
+	if view.concurrentWrites {
+		start := make(chan struct{})
+		errorsByWrite := make(chan error, 2)
+		var writers sync.WaitGroup
+		for range 2 {
+			writers.Add(1)
+			go func() {
+				defer writers.Done()
+				<-start
+				errorsByWrite <- sink.WriteCredential(view.canonical)
+			}()
+		}
+		close(start)
+		writers.Wait()
+		close(errorsByWrite)
+		for err := range errorsByWrite {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	err := sink.WriteCredential(view.canonical)
 	if err == nil && view.writeTwice {
@@ -74,7 +100,32 @@ func (body *eventBody) Len() uint32 {
 }
 func (body *eventBody) SHA256() [32]byte { return body.digest }
 func (body *eventBody) Borrow(ctx context.Context, callback func(credentialmemory.BorrowedView) error) error {
-	view := eventBorrowedView{canonical: body.canonical, writeTwice: body.writeTwice, postWriteErr: body.postWriteErr}
+	view := eventBorrowedView{canonical: body.canonical, writeTwice: body.writeTwice, postWriteErr: body.postWriteErr, concurrentWrites: body.concurrentWrites}
+	if body.concurrentCallbacks {
+		start := make(chan struct{})
+		errorsByCallback := make(chan error, 2)
+		var callbacks sync.WaitGroup
+		for range 2 {
+			callbacks.Add(1)
+			go func() {
+				defer callbacks.Done()
+				<-start
+				errorsByCallback <- callback(view)
+			}()
+		}
+		close(start)
+		callbacks.Wait()
+		close(errorsByCallback)
+		if body.swallowErr {
+			return nil
+		}
+		for err := range errorsByCallback {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	err := callback(view)
 	if body.borrowTwice {
 		secondErr := callback(view)
@@ -203,6 +254,14 @@ func TestCoreExecutionOutputEventRejectsSuppressedAndDuplicateValidationErrors(t
 		{
 			name: "suppressed duplicate write",
 			body: &eventBody{length: uint32(len(valid)), digest: sha256.Sum256(valid), canonical: valid, swallowErr: true, writeTwice: true},
+		},
+		{
+			name: "suppressed concurrent duplicate write",
+			body: &eventBody{length: uint32(len(valid)), digest: sha256.Sum256(valid), canonical: valid, swallowErr: true, concurrentWrites: true},
+		},
+		{
+			name: "suppressed concurrent duplicate callback",
+			body: &eventBody{length: uint32(len(valid)), digest: sha256.Sum256(valid), canonical: valid, swallowErr: true, concurrentCallbacks: true},
 		},
 		{
 			name: "suppressed duplicate callback",
