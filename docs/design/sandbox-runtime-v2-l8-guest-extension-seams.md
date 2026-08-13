@@ -35,6 +35,7 @@ credentialhelper/sshrelay        credentialclient/sshrelay          D5
 
 guestagent/v2control --------read-only------^                       controller codec authority
 
+guestagent/syscallpolicy <--------- D4 Linux consumers              D2 standard-library-only neutral leaf
 credentialhelper/linux                                              D4
 guestagent/rolebootstrap (freestanding native, no Go imports)       D4
 
@@ -58,6 +59,45 @@ All paths above are below
 
 The rules are:
 
+- `guestagent/syscallpolicy` is a standard-library-only neutral leaf. D2 owns
+  its canonical artifact grammar, importer/verifier, immutable copied views,
+  pure decisions, exact `FilterRules` own/ancestry projection, complete
+  catalog-bound `FilterProfile`, fake
+  observations, fixtures, and guards. D7 alone authors and issues the complete
+  role/workload/runtime/catalog artifact. D4 imports this leaf for filter compilation
+  only through `FilterProfile` and consumes semantic rows only through the
+  concrete two-phase `AdapterBindings` plus `AuthorizePre` permit then
+  `AuthorizePost`/`CommitNoObject` adapter. Its private one-use wrapper is
+  exactly `unstarted -> claimed -> executed -> finalized`. D4 creates one inert `unstarted` wrapper before `NewAdapterBindings`; the same wrapper identity is
+  the sole production `BindingSource` and initially has no permit, closure, or
+  live syscall authority. It alone retains the exact opaque bindings/token.
+  Binding or pre-authorization failure destroys it synchronously with zero
+  syscall/terminal calls and no escape. Success installs the permit and closure
+  in that identity, then claims before escape. There is no replacement,
+  cross-wrapper transfer, or acceptance of foreign bindings. After claim,
+  pre-syscall cancellation/failure calls the phase-explicit
+  `AbortPermit` with `AdapterPhasePre`, the exact same permit, and zero syscall
+  calls; otherwise it makes exactly one syscall and exactly one post/commit on
+  success or the phase-explicit `AbortPermit` with `AdapterPhasePost` and the
+  exact same permit on syscall failure. Abort and successful-syscall terminal
+  routes cannot be interchanged. All wrong-phase, duplicate, second,
+  concurrent, and post-finalization calls fail closed with no retry on that
+  wrapper, ticket, or permit. State/fact-narrowed rows have no
+  direct/raw-syscall seam. `EnforcementPathPinnedDirect` is limited to D7's
+  source-locked native child-bootstrap and pinned-Go runtime callsites; D7's
+  exact complete per-role/kind binary set, external final-binary evidence, and
+  identical `policySourceLockSHA256` / `policyBinaryBindingSetSHA256` /
+  `pinnedCallsiteEvidenceSHA256` host-profile bindings are mandatory, and D4/D6
+  cannot add or widen a pinned callsite. The scalar-only workload exception is
+  limited to ordinary-catalog `RuleOriginWorkload` rows imported from the
+  source-locked snapshot after final exec, with no helper pointer provenance,
+  conditional/fatal authority, ticket, or adapter;
+  the freestanding `rolebootstrap` source consumes generated golden data rather
+  than a Go import. There is no reverse import from `syscallpolicy` to D4,
+  helper, client, composition, command, runtime, worker, factory, provider, or
+  live platform packages. D6 may select only a guest binary whose embedded
+  artifact verified locally; it never passes a host profile or artifact through
+  the guest boundary and cannot mint or mutate rows.
 - `credentialprotocol` imports only the standard library and the already
   approved mutable-memory sink contract. It imports no helper, client, server,
   runtime, worker, command, factory, network, filesystem, or concrete adapter.
@@ -3899,19 +3939,22 @@ type L8RuntimeFacts struct {
 }
 
 type L8ProcessCompositionFacts struct {
-	CatalogVersion          string `json:"catalogVersion"`
-	GuestAgentSHA256        string `json:"guestAgentSha256"`
-	GuestInitSHA256         string `json:"guestInitSha256"`
-	CredentialHelperSHA256  string `json:"credentialHelperSha256"`
-	MountMonitorSHA256      string `json:"mountMonitorSha256"`
-	WorkloadShimSHA256      string `json:"workloadShimSha256"`
-	RoleBootstrapSHA256     string `json:"roleBootstrapSha256"`
-	HelperDescriptorSHA256  string `json:"helperDescriptorSha256"`
-	ClientDescriptorSHA256  string `json:"clientDescriptorSha256"`
-	CompositionSHA256       string `json:"compositionSha256"`
-	WorkloadPolicySHA256    string `json:"workloadPolicySha256"`
-	RuntimePolicySHA256     string `json:"runtimePolicySha256"`
-	SyscallPolicySHA256     string `json:"syscallPolicySha256"`
+	CatalogVersion                   string `json:"catalogVersion"`
+	GuestAgentSHA256                 string `json:"guestAgentSha256"`
+	GuestInitSHA256                  string `json:"guestInitSha256"`
+	CredentialHelperSHA256           string `json:"credentialHelperSha256"`
+	MountMonitorSHA256               string `json:"mountMonitorSha256"`
+	WorkloadShimSHA256               string `json:"workloadShimSha256"`
+	RoleBootstrapSHA256              string `json:"roleBootstrapSha256"`
+	HelperDescriptorSHA256           string `json:"helperDescriptorSha256"`
+	ClientDescriptorSHA256           string `json:"clientDescriptorSha256"`
+	CompositionSHA256                string `json:"compositionSha256"`
+	WorkloadSnapshotSHA256           string `json:"workloadSnapshotSha256"`
+	RuntimeProfileSHA256             string `json:"runtimeProfileSha256"`
+	PolicyArtifactSHA256             string `json:"policyArtifactSha256"`
+	PolicySourceLockSHA256           string `json:"policySourceLockSha256"`
+	PolicyBinaryBindingSetSHA256     string `json:"policyBinaryBindingSetSha256"`
+	PinnedCallsiteEvidenceSHA256     string `json:"pinnedCallsiteEvidenceSha256"`
 }
 
 type L8ProfileFacts struct {
@@ -4036,20 +4079,25 @@ every archive digest are bound directly, so traversal order, filesystem
 metadata, npm output, JSON map order, and a host cache path never participate.
 
 The process facts are exact, not a general binary inventory. Their catalog is
-`L8ProcessCompositionCatalogV1`; all twelve digest fields are required. The
+`L8ProcessCompositionCatalogV1`; all fifteen digest fields are required. The
 six binary fields bind the exact installed `hal-guest-agent`, `hal-guest-init`,
 `hal-guest-credential-helper`, `hal-guest-mount-monitor`,
 `hal-guest-workload-shim`, and freestanding `hal-guest-role-bootstrap` bytes.
 `HelperDescriptorSHA256`, `ClientDescriptorSHA256`, and
-`CompositionSHA256` are the exact `HL8D` values defined above.
-`WorkloadPolicySHA256`, `RuntimePolicySHA256`, and `SyscallPolicySHA256` bind,
-respectively, the canonical workload-transition policy artifact, the complete
-role/runtime policy artifact, and the amd64/x32 syscall-policy catalog artifact
-closed by the syscall supplement. D7 produces those three canonical artifacts
-from the exact phase head and embeds their digests in the guest binaries; it
-independently copies the same values into `L8ProfileFacts`. A descriptor label,
+`CompositionSHA256` are the exact `HL8D` values defined above. The final six
+fields bind one canonical HL8Q artifact and its external HL8E evidence, in this
+exact order: `WorkloadSnapshotSHA256`, `RuntimeProfileSHA256`,
+`PolicyArtifactSHA256`, `PolicySourceLockSHA256`,
+`PolicyBinaryBindingSetSHA256`, and `PinnedCallsiteEvidenceSHA256`. The first two fields are immutable views derived from the sole HL8Q artifact, never
+separate artifacts or issuer authority. The latter four are the host authority
+bindings independently correlated by the HL8E importer. D7 produces the single
+HL8Q plus external HL8E from the exact phase head, embeds the HL8Q expectation
+in the guest binaries, and independently copies these six values into
+`L8ProfileFacts`. A descriptor label,
 binary filename, static version string, or live guest response cannot replace
 any digest.
+Manifest, provenance, and final inspection carry all six fields in this exact
+order, and the evidence fingerprint binds all six in the same exact order.
 
 The final-inspection `Checks` slice is non-nil and has exactly these 22 records
 in this order, each once, each with `status:"pass"`, and each with a distinct
@@ -4069,9 +4117,9 @@ credential_material_absent
 identity_layout
 pid1_launch_order
 process_composition
-workload_policy
-runtime_policy
-syscall_policy
+workload_snapshot
+runtime_profile
+policy_artifact
 native_bootstrap
 vsock_listener_table
 filesystem_privilege_absent
@@ -4149,15 +4197,19 @@ SHA256(
   digest32(nodeSha256) || digest32(piLauncherSha256) ||
   digest32(piDependencyTreeSha256) ||
   digest32(helperDescriptorSha256) || digest32(clientDescriptorSha256) ||
-  digest32(compositionSha256) || digest32(workloadPolicySha256) ||
-  digest32(runtimePolicySha256) || digest32(syscallPolicySha256))
+  digest32(compositionSha256) || digest32(workloadSnapshotSha256) ||
+  digest32(runtimeProfileSha256) || digest32(policyArtifactSha256) ||
+  digest32(policySourceLockSha256) ||
+  digest32(policyBinaryBindingSetSha256) ||
+  digest32(pinnedCallsiteEvidenceSha256))
 ```
 
 The validator first proves that the typed manifest/provenance/source-lock/
 inspection values agree and that their named file digests agree with the
 checksum inventory. Consequently the fingerprint binds the manifest,
 provenance, source lock, final inspection, parent L7 bundle, helper/client/
-composition, and workload/runtime/syscall artifact digests. This resolves the
+composition, and all six HL8Q-view/policy/HL8E digests in their declared order.
+This resolves the
 L7 evidence substitution weakness: L7's current profile can be recreated from
 a descriptor alone during private launch-material preparation, whereas no L8
 path can create or replace its evidence fingerprint from a descriptor.
@@ -4220,8 +4272,37 @@ text.
 `internal/sandboxruntime/microvm/assets/localresolver` owns these exact APIs:
 
 ```go
-type VerifiedL8Profile struct { /* private seal and two private [32]byte fingerprints */ }
-type VerifiedL8AssetLease struct { /* private pinned bundle and launch material */ }
+type verifiedL8PolicyAuthorityBindings struct {
+	policyArtifactSHA256         [32]byte
+	policySourceLockSHA256       [32]byte
+	policyBinaryBindingSetSHA256 [32]byte
+	pinnedCallsiteEvidenceSHA256 [32]byte
+	imageSHA256                  [32]byte
+}
+
+type verifiedL8ProfileCorrelation struct {
+	descriptorFingerprint [32]byte
+	evidenceFingerprint   [32]byte
+	policyAuthority       verifiedL8PolicyAuthorityBindings
+}
+
+type verifiedL8LeaseCorrelation struct {
+	sourceDescriptorFingerprint   [32]byte
+	preparedDescriptorFingerprint [32]byte
+	hasPreparedDescriptor          bool
+	evidenceFingerprint           [32]byte
+	policyAuthority               verifiedL8PolicyAuthorityBindings
+}
+
+type VerifiedL8Profile struct {
+	seal        verifiedL8ProfileSeal
+	correlation verifiedL8ProfileCorrelation
+}
+
+type VerifiedL8AssetLease struct {
+	state       *verifiedL8AssetLeaseState
+	correlation verifiedL8LeaseCorrelation
+}
 
 type L8LaunchMaterialWriter interface {
 	WriteAsset(assets.AssetRole, io.Reader) (string, error)
@@ -4242,6 +4323,12 @@ func (*VerifiedL8AssetLease) PrepareLaunch(
 func (*VerifiedL8AssetLease) Close() error
 ```
 
+The private `verifiedL8AssetLeaseState` owns the mutex, pinned bundle, launch
+material, and lifecycle state; it never owns a second correlation record. The
+exact nested field on both correlation records is
+`policyAuthority verifiedL8PolicyAuthorityBindings`; it is private and has no
+accessor.
+
 There is no public constructor or fingerprint accessor. The existing
 `VerifyDistributionBundle(DistributionRequest)` remains the five-file L5/L7
 entry point and cannot issue L8 authority. The sole L8 issuer is the separate
@@ -4251,17 +4338,323 @@ exact entry point:
 type L8DistributionRequest struct {
 	DistributionRequest
 	ParentL7 VerifiedDistribution
+	PinnedCallsiteEvidence []byte
 }
 
 func VerifyL8DistributionBundle(L8DistributionRequest) (VerifiedDistribution, error)
 ```
 
-The request requires a nonzero resolver-issued parent distribution whose
+The final request field is exact. `PinnedCallsiteEvidence` must be non-nil,
+nonempty, and at most 16 MiB (`16777216` bytes). The resolver deep-snapshots
+`PinnedCallsiteEvidence` before hashing or import, so caller mutation cannot
+affect verification, a returned value, or an error. It obtains the sole policy
+authority only from `syscallpolicy.EmbeddedVerifiedPolicyArtifact()` and the
+sole expected evidence issuer only from
+`syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()`. It checks that
+issuer's separate error before passing the returned exact expectation to
+`syscallpolicy.ImportPinnedCallsiteEvidence` with the copied snapshot and
+artifact. A missing default
+embedded artifact/issuer, zero or oversized evidence, or any import mismatch
+fails before profile issuance. No caller can supply an expected digest or
+artifact issuer. After sealing the four host-authority digests, the resolver
+destroys the temporary copy and retains no caller slice or imported evidence
+graph after sealing. D7 passes the fixed `verified-pinned-callsites.hl8e` output
+bytes in this field. The seven-file distribution remains unchanged: HL8E is an
+explicit bounded verification input, not an eighth distribution file.
+The resolver retains no caller slice or imported evidence graph after sealing.
+
+Policy composition correlation is derived, never copied from a document. After
+`EmbeddedVerifiedPolicyArtifact` succeeds and the copied request bytes have
+successfully passed `ImportPinnedCallsiteEvidence`, but before any profile or
+lease issuance, `localresolver` constructs this exact private value in declared
+field order:
+
+```go
+type l8VerifiedPolicyCompositionDigests struct {
+	workloadSnapshotSHA256       [32]byte
+	runtimeProfileSHA256         [32]byte
+	policyArtifactSHA256         [32]byte
+	policySourceLockSHA256       [32]byte
+	policyBinaryBindingSetSHA256 [32]byte
+	pinnedCallsiteEvidenceSHA256 [32]byte
+}
+
+func deriveL8PolicyCompositionDigests(
+	artifact syscallpolicy.VerifiedPolicyArtifact,
+	evidence syscallpolicy.PinnedCallsiteEvidenceSet,
+) l8VerifiedPolicyCompositionDigests
+func l8PolicyCompositionDigestsEqual(
+	left, right l8VerifiedPolicyCompositionDigests,
+) bool
+func validateL8PolicyCompositionCorrelation(
+	derived, manifest, provenance, finalInspection l8VerifiedPolicyCompositionDigests,
+) error
+```
+
+`deriveL8PolicyCompositionDigests` has one direct composite return whose six
+expressions, in order, are exactly:
+
+```go
+artifact.Workload().SHA256()
+artifact.Runtime().SHA256()
+artifact.SHA256()
+artifact.SourceLockSHA256()
+evidence.BinaryBindings().SHA256()
+evidence.SHA256()
+```
+
+No document field, cached string, profile field, alternative artifact/view, or
+caller value may supply one of those expressions. The already-imported
+artifact and evidence remain the exact receiver values. All six results are
+nonzero by their successful import invariants. The struct and three functions
+live together in exact private production file
+`localresolver/l8_policy_composition_correlation.go`, which imports the
+standard `crypto/subtle`, exact `assets/build` as `assetbuild`, and exact
+neutral `guestagent/syscallpolicy` package; aliases, lookalike local types,
+and cross-file marker substitutes do not satisfy the guard. Its final exact
+constructor is:
+
+```go
+func l8PolicyCompositionCorrelationMismatch() error {
+	return &assetbuild.L8ValidationError{
+		Code:  assetbuild.L8ValidationCode("correlation_mismatch"),
+		Field: "processComposition",
+	}
+}
+```
+
+`Index` is therefore nil and `Error()` is exactly
+`L8 image profile validation failed: correlation_mismatch`; there is no
+digest, parser cause, document value, or variable text.
+
+Once ordinary field validation has decoded the six lower-case hex fields from
+each manifest, provenance, and final-inspection `ProcessComposition` into an
+independent `l8VerifiedPolicyCompositionDigests`, the resolver compares the
+derived value against manifest first, provenance second, and final inspection third.
+Each comparison invokes `l8PolicyCompositionDigestsEqual`. That helper
+starts one integer accumulator at one, applies exactly six ordered
+`crypto/subtle.ConstantTimeCompare` operations with `&=`, and returns only
+whether the final accumulator remains one; it has no field-dependent early
+return, and the final inspection independently repeats the complete six-field
+equality against the derived value. It is not accepted merely because its
+value equals manifest or provenance, nor because an earlier cross-document
+validator compared the documents to each other.
+
+Digest syntax/zero failures retain the existing internal `digest_invalid`
+validation result at the first field in declared order. After syntax succeeds,
+the first helper mismatch uses only internal typed code `correlation_mismatch`
+and field `processComposition`, in document order manifest, provenance, then
+final inspection; no value, digest, document contents, or parser cause enters
+the error. The sole issuer then maps it to the closed resolver result specified
+below. No profile seal, evidence
+fingerprint, lease, or returned distribution exists before all three complete
+comparisons succeed. The `VerifyL8DistributionBundle` package-test matrix
+mutates each of the six fields in each of the three documents and requires the same closed mismatch result while leaving all
+other fields valid. The AST guard locks the receiver chain, composite field
+order, direct accumulator, six concrete slice comparisons, and final result;
+mere disconnected accessor or comparison marker calls do not satisfy it.
+
+The helper shape is not sufficient by itself. The real sole issuer lives in
+the exact production file
+`localresolver/l8_distribution_verifier.go`. Its top-level
+`VerifyL8DistributionBundle(request L8DistributionRequest)
+(VerifiedDistribution, error)` body owns these protected one-assignment values:
+`manifest`, `provenance`, `sourceLock`, `finalInspection`,
+`pinnedCallsiteEvidenceBytes`, `artifact`, `expectedEvidence`, `evidence`,
+`manifestPolicyComposition`, `provenancePolicyComposition`,
+`finalInspectionPolicyComposition`, `derivedPolicyComposition`,
+`evidenceFingerprint`, and `verifiedL8Profile`.
+The four exact bounded decoder/error pairs form an ordered prelude, not the
+closed authority block. Their assignments and immediately following matching
+error returns are ordered, while all existing pure document, parent, checksum,
+catalog, and final-inspection validation occurs after those decodes and before
+the authority block. It may not reassign a protected value, branch around an
+anchor, or construct or return L8 authority before correlation succeeds.
+
+The prelude obtains `manifest`, `provenance`, `sourceLock`, and
+`finalInspection` with, respectively, `decodeL8DistributionManifest`,
+`decodeL8Provenance`, `decodeL8SourceLock`, and `decodeL8FinalInspection` over
+`request.DistributionRequest`; each assignment has an immediately following
+nonnil-error return through its matching `classifyL8*Error`. After all other
+required validation succeeds, the following statements form one closed,
+contiguous, ordered top-level authority block; each import/process-composition
+decode is followed immediately by its nonnil-error return:
+
+```go
+pinnedCallsiteEvidenceBytes := append([]byte(nil), request.PinnedCallsiteEvidence...)
+artifact, err := syscallpolicy.EmbeddedVerifiedPolicyArtifact()
+if err != nil { return VerifiedDistribution{}, classifyL8PolicyArtifactError(err) }
+expectedEvidence, err := syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()
+if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceExpectationError(err) }
+evidence, err := syscallpolicy.ImportPinnedCallsiteEvidence(
+	pinnedCallsiteEvidenceBytes,
+	artifact,
+	expectedEvidence,
+)
+if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceError(err) }
+manifestPolicyComposition, err := decodeL8PolicyCompositionDigests(manifest.ProcessComposition)
+if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }
+provenancePolicyComposition, err := decodeL8PolicyCompositionDigests(provenance.ProcessComposition)
+if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }
+finalInspectionPolicyComposition, err := decodeL8PolicyCompositionDigests(finalInspection.ProcessComposition)
+if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }
+derivedPolicyComposition := deriveL8PolicyCompositionDigests(artifact, evidence)
+if err := validateL8PolicyCompositionCorrelation(
+	derivedPolicyComposition,
+	manifestPolicyComposition,
+	provenancePolicyComposition,
+	finalInspectionPolicyComposition,
+); err != nil {
+	return VerifiedDistribution{}, classifyL8PolicyCompositionCorrelationError(err)
+}
+```
+
+The exact classifier is in the issuer file and deliberately retains no input
+error or cause:
+
+```go
+func classifyL8PolicyCompositionCorrelationError(_ error) error {
+	return newResolverError(
+		ErrorCodeAssetLockMismatch,
+		"processComposition",
+		"",
+		"L8 policy composition correlation mismatch",
+		ErrAssetLockMismatch,
+	)
+}
+```
+
+The public result is therefore exact resolver code `asset_lock_mismatch`, field
+`processComposition`, empty role, static message
+`L8 policy composition correlation mismatch`, and only the static
+`ErrAssetLockMismatch` unwrap. Its complete `Error()` string is
+`local asset resolver failed (asset_lock_mismatch) field=processComposition:
+L8 policy composition correlation mismatch`. The internal typed build error's
+`correlation_mismatch` code never escapes this sole issuance boundary.
+
+That controlling top-level validation must precede the first
+`buildL8EvidenceFingerprint`, `sealVerifiedL8Profile`,
+or `sealVerifiedL8Distribution` call and every successful
+`(VerifiedDistribution, nil)` return. The derived value is passed to the
+fingerprint and profile seal; the profile, fingerprint, and derived authority
+are passed to the sole successful distribution seal. The verifier does not
+mint a `VerifiedL8AssetLease`: only a successfully returned verified
+distribution can later service `AcquireL8AssetLease`, so correlation failure
+transitively makes lease issuance unreachable. Discarding the error, placing validation in unreachable or
+noncontrolling code, using a lookalike import/result, aliasing two document
+records, deriving from any other artifact/evidence, reassigning a protected
+value, or issuing before validation fails the AST guard.
+The package-wide parsed production reference guard has no basename-wide
+allowlist. It parses every production declaration and function in
+`localresolver`. The only references to `buildL8EvidenceFingerprint`,
+`sealVerifiedL8Profile`, `sealVerifiedL8Distribution`, and
+`classifyL8PolicyCompositionCorrelationError` are their exact direct calls in
+the real top-level `VerifyL8DistributionBundle`, with exactly one of each and
+with the controlling correlation validation first. Same-file or alternate-
+file helpers, wrappers, methods, closures, `defer`, `go`, function values,
+aliases, and exact-name shadows are not exceptions. A transitive wrapper is
+rejected at its protected terminal reference. The verifier may not call or
+retain `AcquireL8AssetLease`, `PrepareLaunch`, or any case-insensitive
+`mint`, `new`, `create`, `construct`, `make`, `build`, `issue`, `seal`,
+`acquire`, `prepare`, or `remint`-prefixed API whose name contains
+`VerifiedL8Profile`, `VerifiedDistribution`, or `VerifiedL8AssetLease`.
+The guard treats `VerifiedL8Profile`, `VerifiedDistribution`,
+`VerifiedL8AssetLease`, `verifiedL8ProfileSeal`,
+`verifiedL8PolicyAuthorityBindings`, `verifiedL8ProfileCorrelation`,
+`verifiedL8LeaseCorrelation`, and `verifiedL8AssetLeaseState` as the closed
+authority-owner graph. Exact signature-locked profile/distribution sealers and
+`(VerifiedDistribution).AcquireL8AssetLease` may construct only their matching
+single direct returned result. They cannot stage, copy, alias, cache, or assign
+an authority value or nested owner; store one in a package/global/interface/
+map/slice/generic container/channel; pass one to an arbitrary helper; capture
+one in a closure or function value; or return one from a factory, alternate
+function, or getter. Exact profile/lease matcher and lifecycle calls are the
+only non-construction consumers. Authority type aliases and derived types are
+forbidden. The verifier therefore returns the sealed distribution but never
+mints, acquires, prepares, or remints a lease.
+The guard computes the recursive authority-containing named-type closure over
+every localresolver Go file and build context. Struct fields, pointers, arrays,
+maps, generic instantiations, and named nesting remain tainted through selector
+extraction, copy, assignment, accessor return, and arbitrary-helper passage;
+an additional containing wrapper outside the closed graph is rejected at its
+declaration. Exactly one all-build-context declaration with the frozen
+signature/receiver is allowed for each profile sealer, distribution sealer,
+and lease acquirer. Alternate-file or build-tagged duplicate definitions fail
+even when the ordinary build would select only one.
+Collection preserves every definition for each named type across all files and
+mutually exclusive build tags; it never performs a last-writer overwrite by
+source/map iteration.
+The deterministic fixed point sorts paths and names, unions definitions
+conservatively, and marks a name authority-containing when any definition can
+reach authority. Cyclic, aliased, and generic-instantiated definitions converge
+under the same rule, so a benign alternate definition cannot mask an
+authority-bearing one in another build context.
+Zero `VerifiedDistribution{}` error returns remain non-authority.
+
+The complete runtime regression is exact file
+`localresolver/l8_distribution_verifier_test.go`. The sole runnable test owns
+one function-local `[18]struct { document string; field string }` value named
+`l8PolicyCompositionMutationCases`; there is no package type, variable,
+slice, init hook, or externally addressable mutation table. Its document order
+is `manifest`, `provenance`, `finalInspection`, each with field order
+`workloadSnapshotSha256`, `runtimeProfileSha256`, `policyArtifactSha256`,
+`policySourceLockSha256`, `policyBinaryBindingSetSha256`, and
+`pinnedCallsiteEvidenceSha256`. The top-level runnable
+`TestVerifyL8DistributionBundleRejectsPolicyCompositionMutations` first builds
+an exact `validL8DistributionRequest` and requires the real
+`VerifyL8DistributionBundle` to succeed before any mutation. It then ranges
+the exact 3x6 table. For each tuple a fresh request also must succeed through
+the real verifier before mutation. The test snapshots the 18 fields by
+independently decoding manifest, provenance, and final inspection and hashes
+the canonical JSON semantics of each document after zeroing only its complete
+`ProcessComposition`; it passes both tuple fields to the exact mutator and
+snapshots again. It proves only the selected array index changed, the
+replacement is the different valid lower-case digest consisting of 32 `0x01`
+bytes, all other 17 fields remain identical, and all three non-policy document
+semantic hashes remain identical. Only then does it
+invoke the real verifier, assert the exact sanitized mismatch above, and
+increment one local counter after each successful exact
+assertion, and requires the executed count to equal exactly 18. Its complete
+body and exact builder/mutator/snapshot/change-assertion helper declarations
+are parsed. An already-invalid baseline, missing/ignored baseline check,
+no-op/fixed-field/alternate mutator, lying/aliased snapshot, missing/wrong-index
+or missing non-policy change proof, comment/string markers, a dead or
+cleared table, missing/duplicate/reordered/wrong tuples, ignored tuple fields,
+alternate issuers, skips, continues, zero increments, and weak count/error
+assertions do not satisfy it. Package/test source guards reject `unsafe`,
+`go:linkname`, assembly, reflection-based aliases to the cases, package or
+alternate init mutation, and every reference to the cases outside that exact
+local test body; normal unrelated test reflection is not mutation authority.
+
+The underlying implementations are confined to exact file
+`localresolver/l8_distribution_policy_composition_fixture_test.go`, with one
+all-build-context declaration each of
+`materializeValidL8DistributionRequestFixture(*testing.T)
+L8DistributionRequest` and
+`replaceL8DistributionPolicyCompositionField(DistributionRequest, string,
+string, string) error`. The parsed builder materializes the complete request,
+requires real `VerifyL8DistributionBundle` success, and only then returns it;
+the parsed mutator passes the exact request, document, field, and replacement
+to the sole exact rewrite primitive. Lookalikes, fixed fields, missing
+arguments, no-ops, `Skip`, `Skipf`, `SkipNow`, `runtime.Goexit`, and alternate
+build-tagged declarations fail. Initial/per-case real verification and the
+selected-only, other-17, and three non-policy semantic checks prove the helpers
+non-vacuous at runtime.
+
+While D2 product code is absent, `syscallpolicy`, the exact correlation-helper
+file, exact issuer file, exact mutation-test file, and exact underlying fixture
+file may all be absent and this product guard remains green. Once any one
+appears all five must appear together and satisfy their parsed guards. Thus a
+dead helper or partially
+landed product stays fail-closed.
+
+The request also requires a nonzero resolver-issued parent distribution whose
 `L7Profile()` is valid and whose current parent asset lease can be acquired and
 confirmed. A copied public manifest/provenance/descriptor without that private
 parent authority is invalid. `VerifyL8DistributionBundle` is the sole opaque
 `VerifiedL8Profile` issuance path. It issues only after the
-exact seven-file entry/type check; bounded strict decoding; all five pure
+exact seven-file entry/type check; bounded copied HL8E import; bounded strict
+decoding; all five pure
 validation/correlation checks; exact checksum inventory; current asset locks;
 parent L7 evidence fingerprint; final-inspection catalog; descriptor
 normalization; and both canonical fingerprints succeed. `ResolveDistribution`
@@ -4277,8 +4670,12 @@ both succeed. A close failure is sanitized, joined with any earlier primary
 error without replacing it, and blocks issuance because parent-handle absence
 is uncertain.
 
-The opaque value contains one active private seal, the descriptor fingerprint,
-and the evidence fingerprint. `VerifiedL8ProfileMatches` validates and
+The opaque value contains one active private seal and the exact
+`verifiedL8ProfileCorrelation` above. The policy authority record contains the
+four host-only authority bindings plus the measured rootfs image digest; every
+member is nonzero. `imageSHA256` is the measured rootfs image digest from the
+no-follow-opened `rootfs.ext4`, not a manifest-only claim. There is no public
+digest accessor. `VerifiedL8ProfileMatches` validates and
 normalizes the candidate and compares only against the sealed descriptor
 fingerprint; the evidence fingerprint is intentionally not caller-readable.
 A zero value, copied fields in an external literal, a nil pointer, a generic,
@@ -4286,7 +4683,8 @@ L5, or L7 descriptor, or any descriptor drift fails.
 
 `VerifiedL8ProfileMatchesLease` is the sole profile/lease pair-correlation
 check. Under the lease mutex it requires both private seals active, the exact
-same evidence fingerprint, and the profile descriptor fingerprint to equal
+same evidence fingerprint, constant-time equality of all five private policy
+authority fields, and the profile descriptor fingerprint to equal
 either the lease's source descriptor fingerprint or its single prepared-
 material descriptor fingerprint, as applicable. It never exposes either
 fingerprint and performs no path lookup. A profile and lease issued from
@@ -4296,7 +4694,8 @@ ownership boundary and before every current-asset confirmation.
 
 `AcquireL8AssetLease` pins the opened distribution root plus all seven current
 regular files, verifies root/file identity and every digest again, and copies
-both private fingerprints from the verified distribution. `ConfirmCurrent`
+both private fingerprints plus the complete private policy authority record
+from the verified distribution. `ConfirmCurrent`
 reopens the current root entries without following links, requires the exact
 entry set and retained identities/digests, and accepts only the source
 descriptor or its one lease-owned prepared descriptor. Metadata replacement,
@@ -4309,7 +4708,8 @@ size/digest while copying, requires distinct private destinations, normalizes
 the prepared descriptor, validates sealed material, and confirms the complete
 source bundle again. It then creates a new sealed profile internally whose
 descriptor fingerprint is recomputed for the private descriptor and whose
-evidence fingerprint is copied unchanged from the lease. No descriptor-only
+evidence fingerprint, four host-authority bindings, and measured image digest
+are copied unchanged from the lease. The evidence fingerprint is copied unchanged while none of the five private authority fields can be reminted. No descriptor-only
 constructor is called. After the atomic success transfer, the material and
 every pinned source/evidence handle remain lease-owned until idempotent
 `Close`; a cleanup error is sanitized and stable across repeated close calls.
@@ -4413,13 +4813,20 @@ executable, jailer, CPU, memory, path, runtime-generation, VSOCK, or lifecycle
 fields from the base config. L7 and L8 providers cannot both be configured for
 one start.
 
-The host profile never enters the guest. D7 embeds the exact expected workload, runtime, and syscall-policy catalog digests
-plus helper, client, and composition digests into the built guest binaries, and independently binds the same values
-into the host `VerifiedL8Profile` evidence. PID1 compares authenticated live
-process descriptors with those embedded expectations; the host separately
-requires its opaque profile. Neither side accepts the other's assertion as a
-substitute, and no host path, source-lock body, inspection body, or opaque
-profile is sent over VSOCK.
+The host profile never enters the guest. D7 embeds the sole canonical HL8Q
+bytes plus only the expected `policyArtifactSHA256` and
+`policySourceLockSHA256` in the built guest binaries, alongside the helper,
+client, and composition expectations. `WorkloadSnapshotSHA256` and
+`RuntimeProfileSHA256` are immutable views derived from that imported HL8Q,
+never separately embedded artifacts or authority. The complete binary-binding
+set and external HL8E evidence remain host-side; neither
+`PolicyBinaryBindingSetSHA256` nor `PinnedCallsiteEvidenceSHA256` enters a guest
+protocol or becomes guest-minted authority. PID1 compares authenticated live
+process descriptors with the embedded expectations, the guest importer verifies
+the embedded HL8Q, and the host separately requires its opaque profile. Neither
+side accepts the other's assertion as a substitute, and no host path,
+source-lock body, inspection body, opaque profile, binary-binding set, or HL8E
+evidence is sent over VSOCK.
 
 The exact ownership is:
 
@@ -4436,8 +4843,19 @@ The exact ownership is:
 - `internal/sandboxruntime/microvm/assets/localresolver` is the sole issuer of
   opaque `VerifiedL8Profile`. It issues that value only after checksums,
   manifest, provenance, parent L7 profile, source lock, final inspection, and
-  descriptor correlation all validate. The zero value and external literal
-  are invalid. `VerifiedL8ProfileMatches` binds it to the exact normalized
+  descriptor correlation all validate. For L8 it additionally requires the
+  host asset manifest's policy-artifact digest to equal the digest independently
+  embedded in every locked guest binary, plus the artifact source-lock and
+  generator-output identities, and requires a complete external
+  pinned-callsite evidence set correlated to the same source lock and exact
+  complete per-role/kind final binary/executable-text set. The profile privately
+  retains `policyArtifactSHA256`, `policySourceLockSHA256`,
+  `policyBinaryBindingSetSHA256`, and `pinnedCallsiteEvidenceSHA256`; sealed
+  profile/lease matching compares those four bindings in constant time together
+  with the measured image digest. It exposes no digest accessor, digest value,
+  rule graph, or evidence record.
+  The zero value and external literal are invalid.
+  `VerifiedL8ProfileMatches` binds every artifact digest to the exact normalized
   launch descriptor.
 - `internal/sandboxruntime/microvm/firecracker` consumes the opaque profile and
   rejects L8 boot material without a matching verified profile. It does not
@@ -4459,9 +4877,15 @@ tmpfs, and guest cleanup code
 with fake syscall tests but no image claim.
 D5 lands guest/host SSH relay code and fake connection tests but no image claim.
 D6 lands the explicit production composition, opaque profile requirement, and
-worker/runtime cleanup wiring; all defaults remain off. D7 creates and locks
+worker/runtime cleanup wiring; all defaults remain off. D4/D6 composition
+rejects a missing or mismatched `VerifiedPolicyArtifact`. D7 is the only phase
+allowed to invoke the local resolver's `VerifiedL8Profile` issuance path. D7 creates and locks
 `tools/microvm/l8`, builds twice offline, installs the exact D4/D5/D6 phase-head
-binaries plus locked Node 22.22.0 and Pi 0.82.1, issues the verified profile,
+binaries plus locked Node 22.22.0 and Pi 0.82.1, source-locks the role FSM,
+workload, runtime, catalog, and generator inputs, embeds the sole artifact,
+resolves the per-role/kind final-binary pinned callsites, binds the identical
+artifact, source-lock, complete binary-set, and evidence-set digests into the
+host profile, issues the verified profile,
 boots only that digest-locked output, and runs the prepared-Linux acceptance.
 No earlier slice may satisfy a gate by reusing an L5/L7 image, a host binary,
 an unlocked overlay, or a hand-authored descriptor.

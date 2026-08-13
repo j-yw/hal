@@ -78,8 +78,102 @@ exclusion, and Firecracker revalidation before start. They also marshal legacy
 L5 and L7 fixtures before and after the additive zero fields and require exact
 byte equality.
 
+The image-profile contract test parses the documented Go declarations and
+locks `L8ProcessCompositionFacts` to `CatalogVersion` plus exactly fifteen
+digest fields. Its last six are, in order, `WorkloadSnapshotSHA256`,
+`RuntimeProfileSHA256`, `PolicyArtifactSHA256`,
+`PolicySourceLockSHA256`, `PolicyBinaryBindingSetSHA256`, and
+`PinnedCallsiteEvidenceSHA256`; the first two are views from one canonical HL8Q
+artifact and its external HL8E evidence. It also AST-locks the exact five-field
+private `verifiedL8PolicyAuthorityBindings` and the final
+`PinnedCallsiteEvidence []byte` request field. Guards reject the superseded
+three-policy field names and any claim of independent policy artifacts.
+
 Guards must prove:
 
+- `TestL8D2GuestHelperSyscallPolicyArchitectureClosure` locks the neutral
+  `guestagent/syscallpolicy` package, catalogs, source pins, mandatory artifact
+  gates, decision precedence, fixture format, opacity, and ownership across all
+  four normative L8 documents;
+- image and syscall coordination guards require the six policy/evidence
+  process-composition digests in the exact manifest/provenance/final-inspection/
+  fingerprint order; nonzero private profile/lease correlation of the four
+  host-authority bindings plus measured rootfs image digest; preservation
+  through acquisition and `PrepareLaunch`; and no public digest accessor;
+- `L8DistributionRequest.PinnedCallsiteEvidence` is non-nil, nonempty, at most
+  16 MiB, copied before hash/import, mutation-isolated, imported only with
+  `EmbeddedVerifiedPolicyArtifact` and
+  `EmbeddedExpectedPinnedCallsiteEvidence`, and not retained as caller bytes or
+  an evidence graph after sealing. D7 supplies fixed HL8E bytes while the
+  seven-file distribution remains unchanged;
+- after `EmbeddedVerifiedPolicyArtifact` and copied
+  `ImportPinnedCallsiteEvidence` succeed, the resolver derives one exact
+  private `l8VerifiedPolicyCompositionDigests` from, in order,
+  `artifact.Workload().SHA256()`, `artifact.Runtime().SHA256()`,
+  `artifact.SHA256()`, `artifact.SourceLockSHA256()`,
+  `evidence.BinaryBindings().SHA256()`, and `evidence.SHA256()`; it decodes and
+  accumulated-constant-time compares all six against manifest, provenance,
+  and final-inspection `ProcessComposition` in that order before issuance, and
+  final inspection independently repeats the complete six-field equality;
+  digest syntax precedes the closed `correlation_mismatch`,
+  `VerifyL8DistributionBundle` mutations cover
+  each of six fields in each of three documents, and the AST guard rejects
+  mere disconnected accessor or comparison marker calls. The guard parses the
+  exact real issuer file/function and proves the successful embedded-artifact
+  result and separately checked embedded expected-evidence result feed copied
+  evidence import, whose result feeds derivation; three independently decoded
+  document records feed the controlling validation, its error dominates all
+  fingerprint/profile/distribution sealing, and protected values are not
+  reassigned. The verifier mints no lease; failed validation returns no
+  distribution from which `AcquireL8AssetLease` could later issue one. Seeded dead/discarded/unreachable/noncontrolling/late,
+  aliased/lookalike/wrong-receiver paths all reject. It also parses the exact
+  runnable product test and ordered 3x6 table, rejects comment/string/dead,
+  missing/duplicate/wrong/ignored-dimension or alternate-issuer bypasses. It
+  locks the internal typed static `correlation_mismatch`/`processComposition`
+  result and its public sanitized resolver classification to
+  `asset_lock_mismatch`/`processComposition` with only
+  `ErrAssetLockMismatch` unwrap. The package-wide parsed production guard has
+  no basename-wide allowlist: every declaration is parsed, and protected
+  fingerprint/seal/classifier references are allowed only as the exact direct
+  calls in `VerifyL8DistributionBundle` after controlling validation. It
+  rejects same/alternate-file helpers, wrappers, methods, closures, `defer`,
+  `go`, function values, aliases/shadows, transitive calls, noncanonical
+  authority construction, and any verifier path in the closed
+  mint/new/create/construct/make/build/issue/seal/acquire/prepare/remint verb
+  family paired with a verified L8 profile/distribution/lease type. The closed
+  exported and private authority-owner graph can be constructed only as the
+  matching direct returned sealer/acquirer result; no staging, copying,
+  aliasing, caching, package/global/interface/container/channel/generic store,
+  arbitrary-helper pass, closure capture, factory return, or alternate getter;
+  recursive cross-file/all-build-context named-type and field taint preserves
+  authority through nested selectors, pointers, containers, generics, copies,
+  arguments, and returns, rejects added wrapper types, and requires exactly one
+  frozen declaration each of both sealers and the acquirer even across build
+  tags;
+  recursive type closure retains all same-named definitions across mutually
+  exclusive build tags, sorts and conservatively unions them to a fixed point,
+  and proves both source orders repeatedly so cycles/aliases/generics cannot be
+  hidden by last-writer map iteration;
+  The exact product regression instead owns a function-local
+  `[18]struct { document string; field string }` 3x6 array and requires the
+  initial and every fresh per-tuple baseline to succeed through the real
+  issuer before mutation. Each tuple uses exact independently decoded
+  18-field before/after snapshots to prove only its selected field changed to
+  the valid 32-byte `0x01` digest and three canonical JSON hashes made after
+  zeroing complete `ProcessComposition` values to prove all other document
+  semantics unchanged, then calls the
+  issuer, completes the exact mismatch assertion, increments,
+  and finish with executed count exactly 18. Guards reject package/init or
+  external case mutation, `unsafe`, `go:linkname`, assembly, reflection-based
+  aliases, invalid/unchecked baseline, no-op/fixed/alternate mutator, lying
+  snapshot, missing/wrong-index/non-policy proof, dead/cleared/duplicate/missing/wrong
+  tables, skip/continue, zero execution, and weak assertions;
+  exact `l8_distribution_policy_composition_fixture_test.go` owns one
+  all-build-context real-verifier-checked builder and one exact four-argument
+  mutator; parsed bodies reject skip/`runtime.Goexit`, no-op/fixed/lookalike/
+  argument-disconnected helpers and build-tag duplicates, while initial and
+  per-case real verification plus selected-only, other-17, and non-policy
+  semantic comparisons establish a non-vacuous proof;
 - `internal/credentialdelivery` and `internal/sandbox/credential_proxy*.go`
   remain metadata-only;
 - every current `cmd` production file, including all `sandboxd*.go`
@@ -124,6 +218,125 @@ Guards must prove:
 - every file that declares either selected prepared-Linux test remains behind
   the exact L8 build tag even if the tag literal is otherwise absent, and all
   other live test markers remain behind their exact build tags.
+
+## Syscall-policy artifact and hand-off gates
+
+The D2 architecture guard is docs-only and runs before product implementation:
+
+```sh
+go test -count=1 ./cmd \
+  -run '^TestL8D2GuestHelperSyscallPolicyArchitectureClosure'
+```
+
+The later D2 artifact implementation is complete only when the neutral package
+contains the exact canonical `VerifiedPolicyArtifact` grammar,
+importer/verifier, fail-closed default embedded-artifact placeholder, immutable
+`WorkloadSnapshot`, `RuntimeProfileView`, and rule views, pure scalar decision
+engine, exact `FilterRules` own/ancestry projection, complete catalog-bound
+`FilterProfile`, operation-scoped `AdapterBindings`, two-phase observer fakes,
+the cycle-free permit correlation, opacity guards, canonical
+fixtures, and plus-one matrices. It contains no hand-authored production rule
+table. Its exact default gates are:
+
+```sh
+go test -count=1 ./internal/sandboxruntime/microvm/guestagent/syscallpolicy
+go test -count=1 -race ./internal/sandboxruntime/microvm/guestagent/syscallpolicy
+go test -count=10 ./internal/sandboxruntime/microvm/guestagent/syscallpolicy
+```
+
+D4's later fake wrapper gate must lock the exact
+`unstarted -> claimed -> executed -> finalized` lifecycle and the pre-syscall
+`claimed -> finalized` abort edge. Its construction matrix allocates one inert `unstarted` wrapper before `NewAdapterBindings`; the same wrapper identity is
+the sole production `BindingSource`, owns the exact opaque bindings/token, and
+has no permit, closure, or live syscall authority. Binding/pre-authorization
+failure synchronously destroys it with zero syscall/terminal calls and no
+escape; success installs the permit and closure into that identity before the
+atomic claim. Seeded negatives reject replacement, cross-wrapper transfer,
+foreign bindings, zero/foreign permits, authorization before bindings, closure
+installation before permit, and escape before claim. There is no replacement
+identity or foreign-bindings acceptance. The positive lifecycle matrix proves pre-syscall
+cancellation/failure makes exactly one phase-explicit `AbortPermit` call with
+`AdapterPhasePre`, the exact same permit, and zero syscall calls; normal
+success/failure makes exactly one syscall and exactly one of post, commit, or
+the phase-explicit `AbortPermit` with `AdapterPhasePost` and the exact same
+permit. It locks the pure-D2 ownership/error/return table and the D4
+wrong-phase, duplicate, reuse, and terminal-selection table: abort routes never
+call post/commit, successful-syscall routes never call abort, and terminal-call
+errors never trigger an alternate call. The lifecycle plus-one matrix rejects
+skipped states, second claims, multiple syscall calls, wrong terminal calls,
+concurrent or reentrant use, every post-finalization method, and retry on the
+same wrapper, ticket, or permit; there is no retry. It also proves no observer,
+syscall, or D2 terminal call is made on a rejected transition. These are
+default fake-only tests, not live syscall evidence.
+
+That implementation gate verifies canonical artifact/rule/role fingerprints
+twice from independently copied inputs; every bound/count/order/reserved-byte
+rule; typed-nil and opacity behavior; unsafe widening, fatal allow,
+missing-role, ancestry, contradiction, provenance, and digest negatives; and
+that `NewPolicy` rejects anything except an opaque importer result. The default
+placeholder must make `EmbeddedVerifiedPolicyArtifact` fail. The default test
+process performs no live syscall. D4 trace is evidence only and cannot add a
+row.
+
+The D7 issuance gate is separate and later. It must:
+
+1. source-lock the approved role FSM, L4 execution policy, L7 network policy,
+   exact Go 1.25.7 source, pinned x/sys source, and generator;
+2. author and review every complete role/runtime/workload/catalog row and emit
+   the sole canonical artifact plus generated guest source;
+3. reproduce the artifact bytes, section digests, rule/role fingerprints, and
+   final digest from those locked inputs without using trace as admission;
+   prove every state/fact-narrowed `EnforcementPathAdapter` row reaches the
+   sole two-phase adapter with no raw-syscall bypass, prove every
+   `EnforcementPathDirect` row is all-stage and nonoverlapping with adapter
+   authority in its effective `FilterProfile`, and prove every
+   `EnforcementPathPinnedDirect` source/template/instruction record against the
+   exact complete per-role/kind locked final binary and executable-text set
+   without treating it as a live pointer observation; preserve the scalar-only workload exception only for ordinary-catalog `RuleOriginWorkload` rows with
+   no helper pointer provenance, conditional/fatal authority, ticket, or
+   adapter;
+4. embed the artifact plus expected artifact/source-lock digests in every
+   phase-head guest binary, issue the external pinned-callsite evidence after
+   each final binary exists, and independently bind exact
+   `policyArtifactSHA256`, `policySourceLockSHA256`,
+   `policyBinaryBindingSetSHA256`, `pinnedCallsiteEvidenceSHA256`, image digest,
+   parent-profile identity, and launch descriptor into the opaque host
+   `VerifiedL8Profile` through the sole local-resolver issuer;
+   issue manifest, provenance, and final inspection with all six exact
+   composition values above, pass the fixed HL8E output bytes through the
+   bounded copied request, and prove the evidence fingerprint uses that same
+   ordering;
+5. prove the guest does not receive the host profile, the host cannot mint a
+   guest expected-digest marker, and default/untagged builds fail closed;
+6. build twice offline and require byte-identical artifacts; and
+7. boot only that profile and pass the no-skip prepared-Linux prerequisite and
+   selected E2E gates.
+
+Its reviewed inputs and outputs are fixed at
+`tools/microvm/l8/policy/roles-v1.yaml`, `workload-v1.lock`,
+`runtime-go1.25.7.lock`, `catalog-xsys-v0.41.0.lock`,
+`verified-syscall-policy.hl8q`, and
+`verified-syscall-policy.hl8q.sha256`, plus
+`verified-syscall-policy.source-lock.sha256`,
+`verified-pinned-callsites.hl8e`, and
+`verified-pinned-callsites.hl8e.sha256`. The guest expectation is generated only
+at `internal/sandboxruntime/microvm/guestagent/syscallpolicy/artifact_expected_d7_gen.go`;
+the host-only evidence expectation is generated at the sibling
+`pinned_callsite_evidence_expected_d7_gen.go` and excluded from guest binaries.
+Each digest file is 64 lowercase hexadecimal bytes plus LF. The generated
+sources, D7 source lock, and host asset manifest independently correlate the
+exact `policyArtifactSHA256`, `policySourceLockSHA256`, and
+`policyBinaryBindingSetSHA256`, and `pinnedCallsiteEvidenceSHA256`; no digest is
+derived from a running guest.
+
+The D4/D6 live composition gate rejects construction unless the guest verifies
+its embedded artifact/source lock and the D7-issued host profile independently
+binds the same digests, complete pinned-callsite evidence, and matching
+complete per-role/kind binary/image identities. D4 filter compilation must
+reproduce D2's action goldens, and D6 must fail before helper readiness on any
+missing or mismatched artifact. Neither phase may mint rows, accept an empty
+table, pass a host profile into the guest leaf, use a fake profile, or treat
+metadata, trace, or a policy label as authority.
 
 ## Focused fake-only gates
 
