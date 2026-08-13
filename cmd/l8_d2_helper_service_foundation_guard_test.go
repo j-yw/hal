@@ -43,6 +43,7 @@ func TestL8D2HelperServiceFoundationGuard(t *testing.T) {
 		"func NewCoreExecutionOutputEvent(",
 		"func NewCoreExecutionCompleteEvent(",
 		"body.Borrow(ctx",
+		"sink.callbackCount == 1 && sink.writeCount == 1 && sink.valid && !sink.invalid",
 		"subtle.ConstantTimeCompare(wireSHA[:], sink.bodySHA[:])",
 		"ordinal > credentialprotocol.SSHAgentRelayMaxLifetimeConnections",
 	})

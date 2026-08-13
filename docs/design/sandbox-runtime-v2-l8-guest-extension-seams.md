@@ -1082,11 +1082,13 @@ unique EOF result after D4 drains bytes beyond the declared aggregate maximum;
 the shape constructor cannot infer that maximum, so the service validates that
 fact against its plan ledger.
 
-`NewCoreExecutionOutputEvent` owns the owned full canonical `0x18`
-`CoreOutputBody` on entry. It requires a non-nil, non-typed-nil body whose `Len`
-is exactly `56 + CoreOutputResult.ByteCount()` and whose full-body SHA-256 is
-nonzero and equals
-the complete canonical `0x18` body, including all safe metadata and its payload.
+`NewCoreExecutionOutputEvent` first rejects a nil context or a nil or typed-nil
+`CoreOutputBody` before ownership transfer and before any body method call;
+ownership transfers only after the non-nil context and non-nil, non-typed-nil
+body preconditions pass. It then owns the full canonical `0x18` body and
+requires its `Len` to be exactly `56 + CoreOutputResult.ByteCount()` and its
+full-body SHA-256 to be nonzero and equal the complete canonical `0x18` body,
+including all safe metadata and its payload.
 It never accepts a payload-only body. The constructor uses the supplied
 non-nil context to destroy that body on every validation error or panic; it
 never substitutes `context.Background()`. On success the event is sole owner.

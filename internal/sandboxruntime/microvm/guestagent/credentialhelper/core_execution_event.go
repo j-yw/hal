@@ -63,9 +63,12 @@ func NewCoreExecutionOutputEvent(ctx context.Context, output CoreOutputResult, b
 }
 
 type coreOutputBodyValidationSink struct {
-	output  CoreOutputResult
-	bodySHA [32]byte
-	wrote   bool
+	output        CoreOutputResult
+	bodySHA       [32]byte
+	callbackCount uint8
+	writeCount    uint8
+	valid         bool
+	invalid       bool
 }
 
 func (sink *coreOutputBodyValidationSink) MaxCredentialBytes() int {
@@ -73,13 +76,16 @@ func (sink *coreOutputBodyValidationSink) MaxCredentialBytes() int {
 }
 
 func (sink *coreOutputBodyValidationSink) WriteCredential(wire []byte) error {
-	if sink.wrote {
+	if sink.writeCount != 0 {
+		sink.writeCount = 2
+		sink.invalid = true
 		return ErrContractResultMatrix
 	}
-	sink.wrote = true
+	sink.writeCount = 1
 	if len(wire) != sink.MaxCredentialBytes() || binary.BigEndian.Uint64(wire[0:8]) == 0 ||
 		credentialprotocol.HelperExecStreamKind(wire[8]) != sink.output.kind || wire[10] != 0 || wire[11] != 0 ||
 		binary.BigEndian.Uint64(wire[12:20]) != sink.output.offset || binary.BigEndian.Uint32(wire[20:24]) != sink.output.byteCount {
+		sink.invalid = true
 		return ErrContractResultMatrix
 	}
 	wantFlags := credentialprotocol.HelperExecStreamFlagsNone
@@ -87,6 +93,7 @@ func (sink *coreOutputBodyValidationSink) WriteCredential(wire []byte) error {
 		wantFlags = credentialprotocol.HelperExecStreamFlagEOF
 	}
 	if credentialprotocol.HelperExecStreamFlags(wire[9]) != wantFlags {
+		sink.invalid = true
 		return ErrContractResultMatrix
 	}
 	payloadSHA := sha256.Sum256(wire[56:])
@@ -94,20 +101,29 @@ func (sink *coreOutputBodyValidationSink) WriteCredential(wire []byte) error {
 	if subtle.ConstantTimeCompare(wire[24:56], sink.output.sha256[:]) != 1 ||
 		subtle.ConstantTimeCompare(payloadSHA[:], sink.output.sha256[:]) != 1 ||
 		subtle.ConstantTimeCompare(wireSHA[:], sink.bodySHA[:]) != 1 {
+		sink.invalid = true
 		return ErrContractResultMatrix
 	}
+	sink.valid = true
 	return nil
 }
 
 func validCoreOutputBody(ctx context.Context, output CoreOutputResult, body CoreOutputBody, bodySHA [32]byte) bool {
 	sink := &coreOutputBodyValidationSink{output: output, bodySHA: bodySHA}
 	err := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
+		if sink.callbackCount != 0 {
+			sink.callbackCount = 2
+			sink.invalid = true
+			return ErrContractResultMatrix
+		}
+		sink.callbackCount = 1
 		if view == nil || typedNil(view) || view.Len() != sink.MaxCredentialBytes() {
+			sink.invalid = true
 			return ErrContractResultMatrix
 		}
 		return view.WriteTo(ctx, sink)
 	})
-	return err == nil && sink.wrote
+	return err == nil && sink.callbackCount == 1 && sink.writeCount == 1 && sink.valid && !sink.invalid
 }
 
 func NewCoreExecutionCompleteEvent(complete CoreExecResult) (CoreExecutionEvent, error) {

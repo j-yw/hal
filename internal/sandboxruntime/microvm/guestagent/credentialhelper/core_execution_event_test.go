@@ -12,18 +12,24 @@ import (
 )
 
 type eventBody struct {
-	length     uint32
-	digest     [32]byte
-	destroyed  int
-	destroyCtx context.Context
-	destroyErr error
-	panicOnLen bool
-	canonical  []byte
+	length      uint32
+	digest      [32]byte
+	destroyed   int
+	destroyCtx  context.Context
+	destroyErr  error
+	panicOnLen  bool
+	canonical   []byte
+	swallowErr  bool
+	borrowTwice bool
+	writeTwice  bool
 }
 
 type eventContextKey struct{}
 
-type eventBorrowedView struct{ canonical []byte }
+type eventBorrowedView struct {
+	canonical  []byte
+	writeTwice bool
+}
 
 func (view eventBorrowedView) Len() int { return len(view.canonical) }
 func (eventBorrowedView) CopyTo(context.Context, *credentialmemory.LockedMapping) error {
@@ -33,7 +39,11 @@ func (view eventBorrowedView) WriteTo(_ context.Context, sink credentialmemory.C
 	if len(view.canonical) > sink.MaxCredentialBytes() {
 		return errors.New("destination too small")
 	}
-	return sink.WriteCredential(view.canonical)
+	err := sink.WriteCredential(view.canonical)
+	if err == nil && view.writeTwice {
+		err = sink.WriteCredential(view.canonical)
+	}
+	return err
 }
 
 func canonicalCoreOutputBody(revision uint64, kind credentialprotocol.HelperExecStreamKind, offset uint64, payload []byte, eof bool) []byte {
@@ -59,7 +69,18 @@ func (body *eventBody) Len() uint32 {
 }
 func (body *eventBody) SHA256() [32]byte { return body.digest }
 func (body *eventBody) Borrow(ctx context.Context, callback func(credentialmemory.BorrowedView) error) error {
-	return callback(eventBorrowedView{canonical: body.canonical})
+	view := eventBorrowedView{canonical: body.canonical, writeTwice: body.writeTwice}
+	err := callback(view)
+	if body.borrowTwice {
+		secondErr := callback(view)
+		if err == nil {
+			err = secondErr
+		}
+	}
+	if body.swallowErr {
+		return nil
+	}
+	return err
 }
 func (body *eventBody) Destroy(ctx context.Context) error {
 	body.destroyed++
@@ -145,6 +166,43 @@ func TestCoreExecutionOutputEventRejectsUnboundCanonicalBody(t *testing.T) {
 			body := &eventBody{length: uint32(len(test.wire)), digest: test.hash, canonical: test.wire}
 			if _, err := NewCoreExecutionOutputEvent(ctx, output, body); !errors.Is(err, ErrContractResultMatrix) || body.destroyed != 1 {
 				t.Fatalf("event error = %v, destroyed = %d", err, body.destroyed)
+			}
+		})
+	}
+}
+
+func TestCoreExecutionOutputEventRejectsSuppressedAndDuplicateValidationErrors(t *testing.T) {
+	ctx := context.Background()
+	execution := CoreExecutionCapability{digest: sha256.Sum256([]byte("execution"))}
+	payload := []byte("payload")
+	output, err := NewCoreOutputResult(execution, credentialprotocol.HelperExecStreamStdout, 9, uint32(len(payload)), sha256.Sum256(payload), false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := canonicalCoreOutputBody(7, credentialprotocol.HelperExecStreamStdout, 9, payload, false)
+	invalid := append([]byte(nil), valid...)
+	invalid[8] = byte(credentialprotocol.HelperExecStreamStderr)
+
+	for _, test := range []struct {
+		name string
+		body *eventBody
+	}{
+		{
+			name: "suppressed invalid write",
+			body: &eventBody{length: uint32(len(invalid)), digest: sha256.Sum256(invalid), canonical: invalid, swallowErr: true},
+		},
+		{
+			name: "suppressed duplicate write",
+			body: &eventBody{length: uint32(len(valid)), digest: sha256.Sum256(valid), canonical: valid, swallowErr: true, writeTwice: true},
+		},
+		{
+			name: "suppressed duplicate callback",
+			body: &eventBody{length: uint32(len(valid)), digest: sha256.Sum256(valid), canonical: valid, swallowErr: true, borrowTwice: true},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := NewCoreExecutionOutputEvent(ctx, output, test.body); !errors.Is(err, ErrContractResultMatrix) || test.body.destroyed != 1 {
+				t.Fatalf("event error = %v, destroyed = %d", err, test.body.destroyed)
 			}
 		})
 	}
