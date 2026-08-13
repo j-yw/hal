@@ -54,6 +54,16 @@ func (HelperExecTransactionResult) Format(state fmt.State, _ rune) {
 	helperExecTransactionFormat(state, "HelperExecTransactionResult")
 }
 
+func (HelperExecTransactionSeed) String() string {
+	return "<credentialprotocol.HelperExecTransactionSeed>"
+}
+func (HelperExecTransactionSeed) GoString() string {
+	return "<credentialprotocol.HelperExecTransactionSeed>"
+}
+func (HelperExecTransactionSeed) Format(state fmt.State, _ rune) {
+	helperExecTransactionFormat(state, "HelperExecTransactionSeed")
+}
+
 func (HelperExecTransactionCorrelation) MarshalJSON() ([]byte, error) {
 	return nil, ErrHelperExecTransactionSerialization
 }
@@ -70,6 +80,25 @@ func (*HelperExecTransactionCorrelation) UnmarshalText([]byte) error {
 	return ErrHelperExecTransactionSerialization
 }
 func (*HelperExecTransactionCorrelation) UnmarshalBinary([]byte) error {
+	return ErrHelperExecTransactionSerialization
+}
+
+func (HelperExecTransactionSeed) MarshalJSON() ([]byte, error) {
+	return nil, ErrHelperExecTransactionSerialization
+}
+func (HelperExecTransactionSeed) MarshalText() ([]byte, error) {
+	return nil, ErrHelperExecTransactionSerialization
+}
+func (HelperExecTransactionSeed) MarshalBinary() ([]byte, error) {
+	return nil, ErrHelperExecTransactionSerialization
+}
+func (*HelperExecTransactionSeed) UnmarshalJSON([]byte) error {
+	return ErrHelperExecTransactionSerialization
+}
+func (*HelperExecTransactionSeed) UnmarshalText([]byte) error {
+	return ErrHelperExecTransactionSerialization
+}
+func (*HelperExecTransactionSeed) UnmarshalBinary([]byte) error {
 	return ErrHelperExecTransactionSerialization
 }
 

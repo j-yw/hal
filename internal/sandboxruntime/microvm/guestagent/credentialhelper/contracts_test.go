@@ -4,7 +4,6 @@ import (
 	"context"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
@@ -109,15 +108,15 @@ func TestExtensionRequestAndResultFieldSetsAreExact(t *testing.T) {
 		fields []fieldContract
 	}{
 		{ExtensionRegistration{}, []fieldContract{{"Descriptor", reflect.TypeOf(credentialprotocol.ExtensionDescriptor{})}, {"Factory", reflect.TypeOf((*ExtensionFactory)(nil)).Elem()}}},
-		{ExtensionOpenRequest{}, []fieldContract{{"Descriptor", reflect.TypeOf(credentialprotocol.ExtensionDescriptor{})}, {"Host", reflect.TypeOf((*ExtensionHost)(nil)).Elem()}}},
-		{ExtensionPrepareRequest{}, []fieldContract{{"IdentityDigest", reflect.TypeOf([32]byte{})}, {"Revision", reflect.TypeOf(uint64(0))}, {"ExpiresAt", reflect.TypeOf(time.Time{})}, {"BindingID", reflect.TypeOf(credentialprotocol.SafeID(""))}, {"BindingIndex", reflect.TypeOf(uint16(0))}, {"Mode", reflect.TypeOf(credentialprotocol.DeliveryMode(0))}}},
-		{ExtensionPrepareResult{}, []fieldContract{{"ExecBinding", reflect.TypeOf((*ExecBindingCapability)(nil)).Elem()}}},
-		{ExtensionExecRequest{}, []fieldContract{{"IdentityDigest", reflect.TypeOf([32]byte{})}, {"Revision", reflect.TypeOf(uint64(0))}, {"ExecBindingID", reflect.TypeOf(credentialprotocol.SafeID(""))}}},
-		{ExtensionExecResult{}, []fieldContract{{"ExecBinding", reflect.TypeOf((*ExecBindingCapability)(nil)).Elem()}}},
-		{ExtensionRenewRequest{}, []fieldContract{{"IdentityDigest", reflect.TypeOf([32]byte{})}, {"Revision", reflect.TypeOf(uint64(0))}, {"ExpiresAt", reflect.TypeOf(time.Time{})}}},
-		{ExtensionRevokeRequest{}, []fieldContract{{"IdentityDigest", reflect.TypeOf([32]byte{})}, {"Revision", reflect.TypeOf(uint64(0))}, {"Reason", reflect.TypeOf(credentialprotocol.RevokeReason(0))}}},
-		{SSHAgentEndpointRequest{}, []fieldContract{{"IdentityDigest", reflect.TypeOf([32]byte{})}, {"Revision", reflect.TypeOf(uint64(0))}, {"BindingID", reflect.TypeOf(credentialprotocol.SafeID(""))}, {"BindingIndex", reflect.TypeOf(uint16(0))}}},
-		{SSHAcceptedPublication{}, []fieldContract{{"IdentityDigest", reflect.TypeOf([32]byte{})}, {"Revision", reflect.TypeOf(uint64(0))}, {"BindingIndex", reflect.TypeOf(uint16(0))}, {"Ordinal", reflect.TypeOf(uint8(0))}, {"CapabilitySHA256", reflect.TypeOf([32]byte{})}}},
+		{ExtensionOpenRequest{}, []fieldContract{{"liveValue", reflect.TypeOf(liveValue{})}, {"descriptor", reflect.TypeOf(credentialprotocol.ExtensionDescriptor{})}, {"host", reflect.TypeOf((*ExtensionHost)(nil)).Elem()}}},
+		{ExtensionPrepareRequest{}, []fieldContract{{"liveValue", reflect.TypeOf(liveValue{})}, {"identityDigest", reflect.TypeOf([32]byte{})}, {"revision", reflect.TypeOf(uint64(0))}, {"expiresUnixNano", reflect.TypeOf(int64(0))}, {"bindingID", reflect.TypeOf(credentialprotocol.SafeID(""))}, {"bindingIndex", reflect.TypeOf(uint16(0))}, {"mode", reflect.TypeOf(credentialprotocol.DeliveryMode(0))}, {"execBinding", reflect.TypeOf((*ExecBindingCapability)(nil)).Elem()}}},
+		{ExtensionPrepareResult{}, []fieldContract{{"liveValue", reflect.TypeOf(liveValue{})}, {"execBinding", reflect.TypeOf((*ExecBindingCapability)(nil)).Elem()}}},
+		{ExtensionExecRequest{}, []fieldContract{{"liveValue", reflect.TypeOf(liveValue{})}, {"identityDigest", reflect.TypeOf([32]byte{})}, {"revision", reflect.TypeOf(uint64(0))}, {"execBindingID", reflect.TypeOf(credentialprotocol.SafeID(""))}, {"execBinding", reflect.TypeOf((*ExecBindingCapability)(nil)).Elem()}}},
+		{ExtensionExecResult{}, []fieldContract{{"liveValue", reflect.TypeOf(liveValue{})}, {"execBinding", reflect.TypeOf((*ExecBindingCapability)(nil)).Elem()}}},
+		{ExtensionRenewRequest{}, []fieldContract{{"liveValue", reflect.TypeOf(liveValue{})}, {"identityDigest", reflect.TypeOf([32]byte{})}, {"revision", reflect.TypeOf(uint64(0))}, {"expiresUnixNano", reflect.TypeOf(int64(0))}}},
+		{ExtensionRevokeRequest{}, []fieldContract{{"liveValue", reflect.TypeOf(liveValue{})}, {"identityDigest", reflect.TypeOf([32]byte{})}, {"revision", reflect.TypeOf(uint64(0))}, {"reason", reflect.TypeOf(credentialprotocol.RevokeReason(0))}}},
+		{SSHAgentEndpointRequest{}, []fieldContract{{"liveValue", reflect.TypeOf(liveValue{})}, {"identityDigest", reflect.TypeOf([32]byte{})}, {"revision", reflect.TypeOf(uint64(0))}, {"bindingID", reflect.TypeOf(credentialprotocol.SafeID(""))}, {"bindingIndex", reflect.TypeOf(uint16(0))}, {"execBinding", reflect.TypeOf((*ExecBindingCapability)(nil)).Elem()}}},
+		{SSHAcceptedPublication{}, []fieldContract{{"liveValue", reflect.TypeOf(liveValue{})}, {"identityDigest", reflect.TypeOf([32]byte{})}, {"revision", reflect.TypeOf(uint64(0))}, {"bindingIndex", reflect.TypeOf(uint16(0))}, {"ordinal", reflect.TypeOf(uint8(0))}, {"capabilitySHA256", reflect.TypeOf([32]byte{})}, {"execBinding", reflect.TypeOf((*ExecBindingCapability)(nil)).Elem()}}},
 	}
 
 	for _, test := range tests {

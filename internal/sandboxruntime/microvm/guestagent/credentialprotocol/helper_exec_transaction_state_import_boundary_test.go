@@ -26,7 +26,7 @@ func TestHelperExecTransactionStatePureImportAndLiveBehaviorBoundary(t *testing.
 		}
 	}
 	sort.Strings(names)
-	wantNames := []string{"helper_exec_transaction_sha256.go", "helper_exec_transaction_state.go", "helper_exec_transaction_state_format.go"}
+	wantNames := []string{"helper_exec_transaction_seed.go", "helper_exec_transaction_sha256.go", "helper_exec_transaction_state.go", "helper_exec_transaction_state_format.go"}
 	if !reflectStringSlicesEqual(names, wantNames) {
 		t.Fatalf("production exec transaction files = %v, want %v", names, wantNames)
 	}

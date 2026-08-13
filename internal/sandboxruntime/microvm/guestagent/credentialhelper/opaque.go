@@ -1,12 +1,17 @@
 package credentialhelper
 
-import "errors"
+import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/binary"
+	"errors"
+	"hash"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+)
 
 var (
-	ErrUnknownExtensionCleanupCategory = errors.New("credential helper extension cleanup category is unknown")
-	ErrInvalidExtensionCleanupResult   = errors.New("credential helper extension cleanup result is invalid")
-	ErrUnknownSSHShutdownDirection     = errors.New("credential helper SSH shutdown direction is unknown")
-	ErrExtensionSerialization          = errors.New("credential helper extension serialization is denied")
+	ErrExtensionSerialization = errors.New("credential helper extension serialization is denied")
 )
 
 // ExecBindingCapability is opaque authority minted only by the helper host.
@@ -15,12 +20,77 @@ type ExecBindingCapability interface {
 	credentialHelperExecBindingCapability()
 }
 
-type execBindingCapability struct{}
+type execBindingCapability struct {
+	liveValue
+	digest [32]byte
+}
 
 func (execBindingCapability) credentialHelperExecBindingCapability() {}
 
-func newExecBindingCapability() ExecBindingCapability {
-	return execBindingCapability{}
+func newExecBindingCapability(
+	bootNonce, identityDigest [32]byte,
+	revision uint64,
+	generations CoreGenerations,
+	expiresUnixNano int64,
+	manifestSHA256, transactionSHA256 [32]byte,
+	bindingIndex uint16,
+	bindingID credentialprotocol.SafeID,
+	mode credentialprotocol.DeliveryMode,
+) (ExecBindingCapability, error) {
+	if bootNonce == ([32]byte{}) || identityDigest == ([32]byte{}) || revision == 0 ||
+		!validCompleteCoreGenerations(generations) || expiresUnixNano <= 0 ||
+		manifestSHA256 == ([32]byte{}) || transactionSHA256 == ([32]byte{}) ||
+		bindingIndex >= credentialprotocol.MaxHelperBindings || !validSafeID(bindingID) ||
+		credentialprotocol.ValidateDeliveryMode(mode) != nil {
+		return nil, ErrContractInvalidArgument
+	}
+	hasher := sha256.New()
+	writeExtensionOpaque16(hasher, "hal/l8/guest-helper/extension-exec-binding/v1")
+	_, _ = hasher.Write(bootNonce[:])
+	_, _ = hasher.Write(identityDigest[:])
+	var scalar [8]byte
+	binary.BigEndian.PutUint64(scalar[:], revision)
+	_, _ = hasher.Write(scalar[:])
+	for _, generation := range [...]credentialprotocol.SafeID{
+		generations.boot, generations.helper, generations.job,
+		generations.monitor, generations.mount, generations.cgroup,
+	} {
+		writeExtensionOpaque16(hasher, string(generation))
+	}
+	binary.BigEndian.PutUint64(scalar[:], uint64(expiresUnixNano))
+	_, _ = hasher.Write(scalar[:])
+	_, _ = hasher.Write(manifestSHA256[:])
+	_, _ = hasher.Write(transactionSHA256[:])
+	var index [2]byte
+	binary.BigEndian.PutUint16(index[:], bindingIndex)
+	_, _ = hasher.Write(index[:])
+	writeExtensionOpaque16(hasher, string(bindingID))
+	_, _ = hasher.Write([]byte{byte(mode)})
+	var digest [32]byte
+	copy(digest[:], hasher.Sum(nil))
+	return execBindingCapability{digest: digest}, nil
+}
+
+func writeExtensionOpaque16(hasher hash.Hash, value string) {
+	var length [2]byte
+	binary.BigEndian.PutUint16(length[:], uint16(len(value)))
+	_, _ = hasher.Write(length[:])
+	_, _ = hasher.Write([]byte(value))
+}
+
+func validExecBindingCapability(value ExecBindingCapability) bool {
+	capability, ok := value.(execBindingCapability)
+	return ok && capability.digest != ([32]byte{})
+}
+
+func validateExecBindingEcho(value, expected ExecBindingCapability) error {
+	actualCapability, actualOK := value.(execBindingCapability)
+	expectedCapability, expectedOK := expected.(execBindingCapability)
+	if !actualOK || !expectedOK || actualCapability.digest == ([32]byte{}) || expectedCapability.digest == ([32]byte{}) ||
+		subtle.ConstantTimeCompare(actualCapability.digest[:], expectedCapability.digest[:]) != 1 {
+		return ErrContractCapability
+	}
+	return nil
 }
 
 // ExtensionCleanupCategory is the closed guest/helper cleanup result catalog.
@@ -37,7 +107,7 @@ func ValidateExtensionCleanupCategory(value ExtensionCleanupCategory) error {
 	case ExtensionCleanupComplete, ExtensionCleanupRetryRequired, ExtensionCleanupStopVMRequired:
 		return nil
 	default:
-		return ErrUnknownExtensionCleanupCategory
+		return ErrContractInvalidArgument
 	}
 }
 
@@ -56,6 +126,7 @@ func (value ExtensionCleanupCategory) String() string {
 
 // ExtensionCleanupResult proves absence only for extension-owned resources.
 type ExtensionCleanupResult struct {
+	liveValue
 	resourcesAbsent bool
 	category        ExtensionCleanupCategory
 }
@@ -65,7 +136,7 @@ func NewExtensionCleanupResult(resourcesAbsent bool, category ExtensionCleanupCa
 		return ExtensionCleanupResult{}, err
 	}
 	if resourcesAbsent != (category == ExtensionCleanupComplete) {
-		return ExtensionCleanupResult{}, ErrInvalidExtensionCleanupResult
+		return ExtensionCleanupResult{}, ErrContractResultMatrix
 	}
 	return ExtensionCleanupResult{resourcesAbsent: resourcesAbsent, category: category}, nil
 }
@@ -80,13 +151,17 @@ func (result ExtensionCleanupResult) Category() ExtensionCleanupCategory {
 
 // SSHIOResult is bounded non-authority I/O metadata.
 type SSHIOResult struct {
+	liveValue
 	byteCount uint64
 	eof       bool
 	truncated bool
 }
 
-func NewSSHIOResult(byteCount uint64, eof, truncated bool) SSHIOResult {
-	return SSHIOResult{byteCount: byteCount, eof: eof, truncated: truncated}
+func NewSSHIOResult(byteCount uint64, eof, truncated bool) (SSHIOResult, error) {
+	if byteCount > credentialprotocol.SSHAgentMaxFrameBytes {
+		return SSHIOResult{}, ErrContractInvalidArgument
+	}
+	return SSHIOResult{byteCount: byteCount, eof: eof, truncated: truncated}, nil
 }
 
 func (result SSHIOResult) ByteCount() uint64 {
@@ -115,7 +190,7 @@ func ValidateSSHShutdownDirection(value SSHShutdownDirection) error {
 	case SSHShutdownRead, SSHShutdownWrite, SSHShutdownBoth:
 		return nil
 	default:
-		return ErrUnknownSSHShutdownDirection
+		return ErrContractInvalidArgument
 	}
 }
 

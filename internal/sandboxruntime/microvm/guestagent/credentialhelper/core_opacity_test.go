@@ -19,7 +19,11 @@ func TestCoreLiveValuesDenyFormattingAndSerialization(t *testing.T) {
 		CorePreparationCapability{digest: coreDigest("secret-capability")}, CorePreparedCapability{}, CoreExecutionCapability{}, CoreCleanupCapability{},
 		CorePrepareRequest{}, CoreFileRequest{}, CoreCommitRequest{}, CorePreparedResult{}, CoreExecRequest{},
 		CoreRenewRequest{}, CoreRevokeRequest{}, CoreInspectRequest{}, CoreOutputRequest{}, CoreOutputResult{},
-		CoreExecResult{}, CoreCleanupResult{}, CoreInspection{}, ContractError{},
+		CoreExecResult{}, CoreCleanupResult{}, CoreInspection{}, CoreExecutionEvent{}, ContractError{},
+		ExtensionOpenRequest{}, ExtensionPrepareRequest{}, ExtensionPrepareResult{}, ExtensionExecRequest{}, ExtensionExecResult{},
+		ExtensionRenewRequest{}, ExtensionRevokeRequest{}, SSHAgentEndpointRequest{}, SSHAcceptedPublication{},
+		execBindingCapability{}, ExtensionCleanupResult{}, SSHIOResult{},
+		ServiceResult{}, ServiceBootstrap{}, ServiceAgentBindingRequest{}, ServiceJobObservationRequest{}, ServiceJobObservation{}, ServiceLoss{},
 	}
 	for _, value := range values {
 		t.Run(reflect.TypeOf(value).Name(), func(t *testing.T) {

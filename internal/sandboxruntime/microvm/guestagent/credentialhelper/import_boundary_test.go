@@ -64,7 +64,7 @@ func TestCredentialHelperContractImportGuardExcludesFutureImplementationFiles(t 
 			t.Errorf("future implementation file %q is in the D2 foundation allowlist", name)
 		}
 	}
-	for _, name := range []string{"contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "policy.go", "transport_types.go", "transport_accessors.go", "transport_receive.go", "transport_send.go"} {
+	for _, name := range []string{"contracts.go", "extension_values.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "core_execution_event.go", "service_values.go", "policy.go", "transport_types.go", "transport_accessors.go", "transport_receive.go", "transport_send.go"} {
 		if !isCredentialHelperContractFile(name) {
 			t.Errorf("foundation file %q is outside the import guard", name)
 		}
@@ -120,7 +120,7 @@ func TestCredentialHelperPolicyUsesOnlyPureContractImports(t *testing.T) {
 
 func isCredentialHelperContractFile(name string) bool {
 	switch name {
-	case "contracts.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "policy.go", "transport_types.go", "transport_accessors.go", "transport_receive.go", "transport_send.go":
+	case "contracts.go", "extension_values.go", "registry.go", "opaque.go", "format.go", "core_contract_error.go", "core_capabilities.go", "core_requests.go", "core_results.go", "core_accessors.go", "core_execution_event.go", "service_values.go", "policy.go", "transport_types.go", "transport_accessors.go", "transport_receive.go", "transport_send.go":
 		return true
 	default:
 		return false
