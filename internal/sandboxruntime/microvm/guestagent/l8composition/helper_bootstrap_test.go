@@ -95,7 +95,7 @@ func TestComputeHelperBootstrapSHA256ExactVectorAndHeaderBinding(t *testing.T) {
 	independentHeader[5] = byte(credentialprotocol.PacketTypeBootstrap)
 	binary.BigEndian.PutUint32(independentHeader[32:36], uint32(len(bodyWire)))
 	copy(independentHeader[68:100], expected.BootNonce[:])
-	independentInput := helperOpaque16(helperBootstrapDomain)
+	independentInput := helperOpaque16("hal/l8/guest-helper/bootstrap/v1")
 	independentInput = append(independentInput, independentHeader...)
 	independentInput = append(independentInput, bodyWire...)
 	if independentlyComputed := sha256.Sum256(independentInput); independentlyComputed != digest {
@@ -131,6 +131,29 @@ func TestComputeHelperBootstrapSHA256ExactVectorAndHeaderBinding(t *testing.T) {
 				t.Fatalf("ComputeHelperBootstrapSHA256() = %x, %v, want zero and %v", got, err, test.want)
 			}
 		})
+	}
+}
+
+func TestComputeHelperBootstrapSHA256DelegatesWithoutVectorDrift(t *testing.T) {
+	t.Parallel()
+
+	body := helperBootstrapFixture()
+	bodyWire := independentBootstrapVector()
+	header := helperBootstrapHeader(uint32(len(bodyWire)))
+	got, err := ComputeHelperBootstrapSHA256(header, body, helperBootstrapExpected())
+	if err != nil {
+		t.Fatalf("ComputeHelperBootstrapSHA256() error = %v", err)
+	}
+	leaf, err := credentialprotocol.ComputeCanonicalHelperBootstrapSHA256(header, bodyWire)
+	if err != nil {
+		t.Fatalf("ComputeCanonicalHelperBootstrapSHA256() error = %v", err)
+	}
+	if got != leaf {
+		t.Fatalf("compatibility digest = %x, shared leaf = %x", got, leaf)
+	}
+	const wantHex = "8e3b5225e1c65dff41ce543c5cd69be9e981361819160dcfbd0447ce2166cba0"
+	if encoded := hex.EncodeToString(got[:]); encoded != wantHex {
+		t.Fatalf("compatibility digest = %s, want %s", encoded, wantHex)
 	}
 }
 

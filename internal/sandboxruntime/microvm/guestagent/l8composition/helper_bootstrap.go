@@ -18,7 +18,6 @@ const (
 
 	helperBootstrapFixedBytes  = 12
 	helperBootstrapDigestBytes = sha256.Size
-	helperBootstrapDomain      = "hal/l8/guest-helper/bootstrap/v1"
 )
 
 var (
@@ -254,24 +253,15 @@ func DecodeHelperAgentHelloAckBody(encoded []byte) (HelperAgentHelloAckBody, err
 	return HelperAgentHelloAckBody{BootstrapSHA256: digest}, nil
 }
 
-// ComputeHelperBootstrapSHA256 is the sole bootstrap digest authority. It
-// validates exact bootstrap header/body/caller correlation before hashing.
+// ComputeHelperBootstrapSHA256 preserves the public composition contract. It
+// validates exact bootstrap header/body/caller correlation before delegating
+// canonical hashing to credentialprotocol.
 func ComputeHelperBootstrapSHA256(header credentialprotocol.HelperPacketHeader, body HelperBootstrapBody, expected HelperBootstrapExpected) ([sha256.Size]byte, error) {
-	var digest [sha256.Size]byte
 	bodyEncoded, err := validateAndEncodeHelperBootstrap(header, body, expected)
 	if err != nil {
-		return digest, err
+		return [sha256.Size]byte{}, err
 	}
-	headerEncoded, err := credentialprotocol.EncodeHelperPacketHeader(header)
-	if err != nil {
-		return digest, err
-	}
-	hash := sha256.New()
-	_, _ = hash.Write(helperOpaque16Bytes(helperBootstrapDomain))
-	_, _ = hash.Write(headerEncoded[:])
-	_, _ = hash.Write(bodyEncoded)
-	copy(digest[:], hash.Sum(nil))
-	return digest, nil
+	return credentialprotocol.ComputeCanonicalHelperBootstrapSHA256(header, bodyEncoded)
 }
 
 // ValidateHelperReadyCorrelation requires type 0x01, sequence zero, an exact
@@ -465,12 +455,6 @@ func canonicalClientDescriptor(descriptor ProcessDescriptor) ([]byte, error) {
 		return nil, ErrHelperBootstrapDescriptorRole
 	}
 	return EncodeProcessDescriptor(descriptor)
-}
-
-func helperOpaque16Bytes(value string) []byte {
-	encoded := make([]byte, 2, len(value)+2)
-	binary.BigEndian.PutUint16(encoded, uint16(len(value)))
-	return append(encoded, value...)
 }
 
 func helperBootstrapFormat(state fmt.State, name string) { _, _ = state.Write([]byte(name)) }
