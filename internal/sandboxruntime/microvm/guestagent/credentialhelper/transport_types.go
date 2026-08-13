@@ -39,6 +39,16 @@ type ReceivedBodyCapability interface {
 	Destroy(context.Context) error
 }
 
+func transportContextPrecondition(ctx context.Context) error {
+	if ctx == nil {
+		return ErrContractInvalidArgument
+	}
+	if !configuredDependency(ctx) {
+		return ErrContractTypedNil
+	}
+	return nil
+}
+
 // ReceivedKernelCredential is one opaque kernel credential observation.
 type ReceivedKernelCredential struct {
 	liveValue
@@ -113,6 +123,7 @@ type ReceivedPrepareBegin struct {
 	revision       uint64
 	expiryUnixNano int64
 	manifest       ManifestCapability
+	transaction    *credentialprotocol.HelperPrepareTransaction
 }
 
 type ReceivedPrepareFile struct {
@@ -144,11 +155,12 @@ type ReceivedRevoke struct {
 
 type ReceivedExec struct {
 	liveValue
-	revision             uint64
-	execBindingID        credentialprotocol.SafeID
-	privateBindingLength uint32
-	privateBindingSHA256 [32]byte
-	plan                 ExecPlanCapability
+	revision        uint64
+	execBindingID   credentialprotocol.SafeID
+	privateLength   uint32
+	privateSHA256   [32]byte
+	plan            ExecPlanCapability
+	transactionSeed credentialprotocol.HelperExecTransactionSeed
 }
 
 type ReceivedExecPrivate struct {

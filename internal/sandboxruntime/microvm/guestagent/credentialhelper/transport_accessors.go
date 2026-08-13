@@ -37,8 +37,8 @@ func (value ReceivedRevoke) Revision() uint64                        { return va
 func (value ReceivedRevoke) Reason() credentialprotocol.RevokeReason { return value.reason }
 func (value ReceivedExec) Revision() uint64                          { return value.revision }
 func (value ReceivedExec) ExecBindingID() credentialprotocol.SafeID  { return value.execBindingID }
-func (value ReceivedExec) PrivateBindingLength() uint32              { return value.privateBindingLength }
-func (value ReceivedExec) PrivateBindingSHA256() [32]byte            { return value.privateBindingSHA256 }
+func (value ReceivedExec) PrivateBindingLength() uint32              { return value.privateLength }
+func (value ReceivedExec) PrivateBindingSHA256() [32]byte            { return value.privateSHA256 }
 func (value ReceivedExec) Plan() ExecPlanCapability                  { return value.plan }
 func (value ReceivedExecPrivate) Revision() uint64                   { return value.revision }
 func (value ReceivedExecPrivate) PrivateBindingLength() uint32       { return value.privateBindingLength }

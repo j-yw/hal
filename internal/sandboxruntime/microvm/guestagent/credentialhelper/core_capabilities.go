@@ -69,6 +69,7 @@ type execPlanCapabilityState struct {
 	encodedLength uint32
 	sha256        [32]byte
 	canonical     [credentialprotocol.MaxHelperExecPlanBytes]byte
+	claimed       bool
 	destroyed     bool
 }
 
@@ -240,6 +241,35 @@ func (capability ExecPlanCapability) CopyCanonicalTo(sink credentialmemory.Crede
 	}
 	if err := sink.WriteCredential(capability.state.canonical[:length]); err != nil {
 		return ErrContractOwnership
+	}
+	return nil
+}
+
+func (capability ExecPlanCapability) claimAndMatch(plan credentialprotocol.HelperExecPlan, claimed *bool) error {
+	if claimed == nil {
+		return ErrContractInvalidArgument
+	}
+	if capability.state == nil {
+		return ErrContractDestroyed
+	}
+	capability.state.mu.Lock()
+	defer capability.state.mu.Unlock()
+	if capability.state.destroyed {
+		return ErrContractDestroyed
+	}
+	if capability.state.claimed {
+		return ErrContractOwnership
+	}
+	capability.state.claimed = true
+	*claimed = true
+	canonical, err := credentialprotocol.EncodeHelperExecPlan(plan)
+	if err != nil || len(canonical) == 0 || len(canonical) > credentialprotocol.MaxHelperExecPlanBytes {
+		wipeBytes(canonical[:cap(canonical)])
+		return ErrContractInvalidArgument
+	}
+	defer wipeBytes(canonical[:cap(canonical)])
+	if capability.state.encodedLength != uint32(len(canonical)) || capability.state.sha256 != sha256.Sum256(canonical) {
+		return ErrContractCorrelation
 	}
 	return nil
 }

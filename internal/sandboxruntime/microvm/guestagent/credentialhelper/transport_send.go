@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
@@ -128,23 +129,77 @@ type SendPacket struct {
 	right  ReceivedCapability
 }
 
-func newSendPacket(header credentialprotocol.HelperPacketHeader, arm sendPacketArm, right ReceivedCapability) (packet SendPacket, err error) {
+type exactForwardingSink struct {
+	mu       sync.Mutex
+	ctx      context.Context
+	target   credentialmemory.CredentialSink
+	expected int
+	calls    int
+	valid    bool
+	err      error
+}
+
+func (sink *exactForwardingSink) MaxCredentialBytes() int { return sink.expected }
+func (sink *exactForwardingSink) WriteCredential(value []byte) error {
+	if sink.ctx.Err() != nil {
+		return ErrContractOwnership
+	}
+	sink.mu.Lock()
+	sink.calls++
+	if sink.calls != 1 || len(value) != sink.expected {
+		sink.valid = false
+		sink.mu.Unlock()
+		return ErrContractOwnership
+	}
+	sink.mu.Unlock()
+	err := sink.target.WriteCredential(value)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if err != nil {
+		sink.valid = false
+		if sink.err == nil {
+			sink.err = err
+		}
+	}
+	if sink.ctx.Err() != nil {
+		sink.valid = false
+		if sink.err == nil {
+			sink.err = ErrContractOwnership
+		}
+		return ErrContractOwnership
+	}
+	return err
+}
+
+func (sink *exactForwardingSink) snapshot() (int, bool, error) {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	return sink.calls, sink.valid, sink.err
+}
+
+func newSendPacket(ctx context.Context, header credentialprotocol.HelperPacketHeader, arm sendPacketArm, right ReceivedCapability) (packet SendPacket, err error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
 	success := false
 	defer func() {
 		if success {
 			return
 		}
 		if stream, ok := arm.(sendExecStreamArm); ok && configuredDependency(stream.body) {
-			if cleanupErr := stream.body.Destroy(context.Background()); cleanupErr != nil {
+			if cleanupErr := destroyTransportBody(ctx, stream.body); cleanupErr != nil {
 				err = ErrContractOwnership
 			}
 		}
 		if configuredDependency(right) {
-			if cleanupErr := right.Close(context.Background()); cleanupErr != nil {
+			if cleanupErr := closeTransportRight(ctx, right); cleanupErr != nil {
 				err = ErrContractOwnership
 			}
 		}
 	}()
+	if ctx.Err() != nil {
+		return SendPacket{}, ErrContractOwnership
+	}
 	if !configuredDependency(arm) || header.Sequence > uint64(^uint32(0)) || credentialprotocol.ValidateHelperPacketHeaderSemantics(header) != nil {
 		return SendPacket{}, ErrContractInvalidArgument
 	}
@@ -158,7 +213,11 @@ func newSendPacket(header credentialprotocol.HelperPacketHeader, arm sendPacketA
 		return SendPacket{}, ErrContractCapability
 	}
 	if hasRight {
-		if right.Kind() != ReceivedCapabilitySSHConnection {
+		kind := right.Kind()
+		if ctx.Err() != nil {
+			return SendPacket{}, ErrContractOwnership
+		}
+		if kind != ReceivedCapabilitySSHConnection {
 			return SendPacket{}, ErrContractCapability
 		}
 		sshAccepted, ok := arm.(sendSSHAcceptedArm)
@@ -166,6 +225,9 @@ func newSendPacket(header credentialprotocol.HelperPacketHeader, arm sendPacketA
 			return SendPacket{}, ErrContractInvalidArgument
 		}
 		rightDigest := right.SHA256()
+		if ctx.Err() != nil {
+			return SendPacket{}, ErrContractOwnership
+		}
 		if rightDigest == ([32]byte{}) {
 			return SendPacket{}, ErrContractCapability
 		}
@@ -181,10 +243,16 @@ func newSendPacket(header credentialprotocol.HelperPacketHeader, arm sendPacketA
 			}
 			return SendPacket{}, ErrContractCorrelation
 		}
-		if !validSendExecStreamArm(stream, header.BodyLength) {
+		if !validSendExecStreamArm(ctx, stream, header.BodyLength) {
+			if ctx.Err() != nil {
+				return SendPacket{}, ErrContractOwnership
+			}
 			return SendPacket{}, ErrContractCorrelation
 		}
 		bodySHA256 := stream.body.SHA256()
+		if ctx.Err() != nil {
+			return SendPacket{}, ErrContractOwnership
+		}
 		if bodySHA256 == ([32]byte{}) {
 			return SendPacket{}, ErrContractCorrelation
 		}
@@ -284,46 +352,85 @@ func sendArmPacketType(arm sendPacketArm) credentialprotocol.PacketType {
 	}
 }
 
-func newHelperReadyPacket(header credentialprotocol.HelperPacketHeader) (SendPacket, error) {
+func newHelperReadyPacket(ctx context.Context, header credentialprotocol.HelperPacketHeader) (SendPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
+	if ctx.Err() != nil {
+		return SendPacket{}, ErrContractOwnership
+	}
 	if header.Sequence != 0 {
 		return SendPacket{}, ErrContractCorrelation
 	}
-	return newSendPacket(header, sendHelperReadyArm{}, nil)
+	return newSendPacket(ctx, header, sendHelperReadyArm{}, nil)
 }
-func newBootstrapAckPacket(header credentialprotocol.HelperPacketHeader, digest [32]byte) (SendPacket, error) {
+func newBootstrapAckPacket(ctx context.Context, header credentialprotocol.HelperPacketHeader, digest [32]byte) (SendPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
+	if ctx.Err() != nil {
+		return SendPacket{}, ErrContractOwnership
+	}
 	if header.Sequence != 1 {
 		return SendPacket{}, ErrContractCorrelation
 	}
-	return newSendPacket(header, sendBootstrapAckArm{bootstrapSHA256: digest}, nil)
+	return newSendPacket(ctx, header, sendBootstrapAckArm{bootstrapSHA256: digest}, nil)
 }
-func newAgentHelloAckPacket(header credentialprotocol.HelperPacketHeader, digest [32]byte) (SendPacket, error) {
+func newAgentHelloAckPacket(ctx context.Context, header credentialprotocol.HelperPacketHeader, digest [32]byte) (SendPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
+	if ctx.Err() != nil {
+		return SendPacket{}, ErrContractOwnership
+	}
 	if header.Sequence != 2 {
 		return SendPacket{}, ErrContractCorrelation
 	}
-	return newSendPacket(header, sendAgentHelloAckArm{bootstrapSHA256: digest}, nil)
+	return newSendPacket(ctx, header, sendAgentHelloAckArm{bootstrapSHA256: digest}, nil)
 }
-func newSSHAcceptedPacket(header credentialprotocol.HelperPacketHeader, revision uint64, bindingIndex uint16, ordinal uint8, digest [32]byte, right ReceivedCapability) (SendPacket, error) {
-	return newSendPacket(header, sendSSHAcceptedArm{revision: revision, bindingIndex: bindingIndex, connectionOrdinal: ordinal, relayCapabilitySHA256: digest}, right)
+func newSSHAcceptedPacket(ctx context.Context, header credentialprotocol.HelperPacketHeader, revision uint64, bindingIndex uint16, ordinal uint8, digest [32]byte, right ReceivedCapability) (SendPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
+	return newSendPacket(ctx, header, sendSSHAcceptedArm{revision: revision, bindingIndex: bindingIndex, connectionOrdinal: ordinal, relayCapabilitySHA256: digest}, right)
 }
-func newExecCreditPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperExecCreditBody) (SendPacket, error) {
+func newExecCreditPacket(ctx context.Context, header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperExecCreditBody) (SendPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
+	if ctx.Err() != nil {
+		return SendPacket{}, ErrContractOwnership
+	}
 	if body.StreamKind != credentialprotocol.HelperExecStreamStdin {
 		return SendPacket{}, ErrContractInvalidArgument
 	}
-	return newSendPacket(header, sendExecCreditArm{body: body}, nil)
+	return newSendPacket(ctx, header, sendExecCreditArm{body: body}, nil)
 }
-func newExecStreamPacket(header credentialprotocol.HelperPacketHeader, revision uint64, streamKind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, offset uint64, payloadLength uint32, payloadSHA256 [32]byte, body ReceivedBodyCapability) (SendPacket, error) {
-	return newSendPacket(header, sendExecStreamArm{revision: revision, streamKind: streamKind, flags: flags, offset: offset, payloadLength: payloadLength, payloadSHA256: payloadSHA256, body: body}, nil)
+func newExecStreamPacket(ctx context.Context, header credentialprotocol.HelperPacketHeader, revision uint64, streamKind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, offset uint64, payloadLength uint32, payloadSHA256 [32]byte, body ReceivedBodyCapability) (SendPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
+	return newSendPacket(ctx, header, sendExecStreamArm{revision: revision, streamKind: streamKind, flags: flags, offset: offset, payloadLength: payloadLength, payloadSHA256: payloadSHA256, body: body}, nil)
 }
-func newResponsePacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperResponseBody) (SendPacket, error) {
-	return newSendPacket(header, sendResponseArm{body: body}, nil)
+func newResponsePacket(ctx context.Context, header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperResponseBody) (SendPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
+	return newSendPacket(ctx, header, sendResponseArm{body: body}, nil)
 }
 
 //nolint:unused // Frozen D4 Service seam; production use lands with the service state machine.
-func newEventPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperEventBody) (SendPacket, error) {
-	return newSendPacket(header, sendEventArm{body: body}, nil)
+func newEventPacket(ctx context.Context, header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperEventBody) (SendPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
+	return newSendPacket(ctx, header, sendEventArm{body: body}, nil)
 }
-func newCloseNotifyPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperCloseNotifyBody) (SendPacket, error) {
-	return newSendPacket(header, sendCloseNotifyArm{body: body}, nil)
+func newCloseNotifyPacket(ctx context.Context, header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperCloseNotifyBody) (SendPacket, error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return SendPacket{}, contextErr
+	}
+	return newSendPacket(ctx, header, sendCloseNotifyArm{body: body}, nil)
 }
 
 func (packet SendPacket) Type() credentialprotocol.PacketType           { return packet.header.Type }
@@ -336,9 +443,15 @@ func (packet SendPacket) BodySHA256() [32]byte {
 	}
 	return sealed.bodySHA256
 }
-func (packet SendPacket) WriteCanonicalBody(sink credentialmemory.CredentialSink) error {
+func (packet SendPacket) WriteCanonicalBody(ctx context.Context, sink credentialmemory.CredentialSink) error {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return contextErr
+	}
 	sealed := packet.sealedArm()
 	if sealed == nil || sealed.bodyLength != packet.header.BodyLength || !sealed.written.CompareAndSwap(false, true) {
+		return ErrContractOwnership
+	}
+	if ctx.Err() != nil {
 		return ErrContractOwnership
 	}
 	if !configuredDependency(sink) {
@@ -348,21 +461,41 @@ func (packet SendPacket) WriteCanonicalBody(sink credentialmemory.CredentialSink
 		if !configuredDependency(stream.body) {
 			return ErrContractDestroyed
 		}
-		if sink.MaxCredentialBytes() < int(packet.header.BodyLength) {
+		maximum := sink.MaxCredentialBytes()
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		if maximum < int(packet.header.BodyLength) {
 			return ErrContractInvalidArgument
 		}
-		calls := 0
-		err := stream.body.Borrow(context.Background(), func(view credentialmemory.BorrowedView) error {
-			calls++
-			if calls != 1 || !configuredDependency(view) || view.Len() != int(packet.header.BodyLength) {
-				return ErrContractOwnership
+		forward := &exactForwardingSink{ctx: ctx, target: sink, expected: int(packet.header.BodyLength), valid: true}
+		callbacks := &callbackValidationState{valid: true}
+		err := stream.body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
+			var callbackErr error
+			if ctx.Err() != nil {
+				callbackErr = ErrContractOwnership
+			} else if !configuredDependency(view) {
+				callbackErr = ErrContractOwnership
+			} else {
+				viewLength := view.Len()
+				if ctx.Err() != nil || viewLength != int(packet.header.BodyLength) {
+					callbackErr = ErrContractOwnership
+				} else if err := view.WriteTo(ctx, forward); err != nil {
+					callbackErr = ErrContractOwnership
+				}
 			}
-			if err := view.WriteTo(context.Background(), sink); err != nil {
-				return ErrContractOwnership
+			if ctx.Err() != nil {
+				callbackErr = ErrContractOwnership
 			}
-			return nil
+			callbacks.record(callbackErr)
+			return callbackErr
 		})
-		if err != nil || calls != 1 {
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		calls, callbacksValid, callbackErr := callbacks.snapshot()
+		writes, writeValid, writeErr := forward.snapshot()
+		if err != nil || callbackErr != nil || calls != 1 || !callbacksValid || writeErr != nil || writes != 1 || !writeValid {
 			return ErrContractOwnership
 		}
 		return nil
@@ -378,10 +511,23 @@ func (packet SendPacket) WriteCanonicalBody(sink credentialmemory.CredentialSink
 		return ErrContractInvalidArgument
 	}
 	return withCanonicalScratch(sealed.arm, length, func(encoded []byte) error {
-		if sha256.Sum256(encoded) != sealed.bodySHA256 || sink.MaxCredentialBytes() < len(encoded) {
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		if sha256.Sum256(encoded) != sealed.bodySHA256 {
+			return ErrContractInvalidArgument
+		}
+		maximum := sink.MaxCredentialBytes()
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		if maximum < len(encoded) {
 			return ErrContractInvalidArgument
 		}
 		if err := sink.WriteCredential(encoded); err != nil {
+			return ErrContractOwnership
+		}
+		if ctx.Err() != nil {
 			return ErrContractOwnership
 		}
 		return nil
@@ -396,6 +542,9 @@ func (packet SendPacket) RightsCount() uint32 {
 func (packet SendPacket) Right() ReceivedCapability { return packet.right }
 
 func (packet SendPacket) destroyBody(ctx context.Context) error {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return contextErr
+	}
 	sealed := packet.sealedArm()
 	if sealed == nil {
 		return nil
@@ -404,7 +553,7 @@ func (packet SendPacket) destroyBody(ctx context.Context) error {
 	if !ok || !configuredDependency(stream.body) {
 		return nil
 	}
-	return stream.body.Destroy(ctx)
+	return destroyTransportBody(ctx, stream.body)
 }
 
 func (packet SendPacket) sealedArm() *sealedSendPacketArm {
@@ -424,7 +573,14 @@ func withCanonicalScratch(arm sendPacketArm, length uint32, consume func([]byte)
 	return consume(encoded)
 }
 
-func validSendExecStreamArm(arm sendExecStreamArm, bodyLength uint32) bool {
+func validSendExecStreamArm(ctx context.Context, arm sendExecStreamArm, bodyLength uint32) bool {
+	if transportContextPrecondition(ctx) != nil || ctx.Err() != nil {
+		return false
+	}
+	length := arm.body.Len()
+	if ctx.Err() != nil {
+		return false
+	}
 	if arm.revision == 0 || arm.streamKind != credentialprotocol.HelperExecStreamStdout && arm.streamKind != credentialprotocol.HelperExecStreamStderr ||
 		(arm.flags != credentialprotocol.HelperExecStreamFlagsNone && arm.flags != credentialprotocol.HelperExecStreamFlagEOF) ||
 		arm.payloadLength > credentialprotocol.MaxHelperExecStreamPayloadBytes ||
@@ -432,24 +588,44 @@ func validSendExecStreamArm(arm sendExecStreamArm, bodyLength uint32) bool {
 		(arm.flags == credentialprotocol.HelperExecStreamFlagEOF && arm.payloadLength != 0) ||
 		(arm.payloadLength == 0 && arm.payloadSHA256 != sha256.Sum256(nil)) ||
 		(arm.payloadLength > 0 && arm.payloadSHA256 == ([32]byte{})) ||
-		arm.body.Len() != bodyLength || bodyLength != 56+arm.payloadLength {
+		length != bodyLength || bodyLength != 56+arm.payloadLength {
 		return false
 	}
-	length := arm.body.Len()
 	sink := &bodyValidationSink{maximum: int(length), validate: func(encoded []byte) bool {
 		if len(encoded) != 56+int(arm.payloadLength) || binary.BigEndian.Uint64(encoded[:8]) != arm.revision || encoded[8] != byte(arm.streamKind) || encoded[9] != byte(arm.flags) || encoded[10] != 0 || encoded[11] != 0 || binary.BigEndian.Uint64(encoded[12:20]) != arm.offset || binary.BigEndian.Uint32(encoded[20:24]) != arm.payloadLength || !equalDigest(encoded[24:56], arm.payloadSHA256) {
 			return false
 		}
 		return sha256.Sum256(encoded[56:]) == arm.payloadSHA256
 	}}
-	calls := 0
-	borrowErr := arm.body.Borrow(context.Background(), func(view credentialmemory.BorrowedView) error {
-		calls++
-		if calls != 1 || !configuredDependency(view) || view.Len() != int(length) {
-			return ErrContractOwnership
+	callbacks := &callbackValidationState{valid: true}
+	borrowErr := arm.body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
+		var callbackErr error
+		if ctx.Err() != nil {
+			callbackErr = ErrContractOwnership
+		} else if !configuredDependency(view) {
+			callbackErr = ErrContractOwnership
+		} else {
+			viewLength := view.Len()
+			if ctx.Err() != nil || viewLength != int(length) {
+				callbackErr = ErrContractOwnership
+			} else if err := view.WriteTo(ctx, sink); err != nil {
+				callbackErr = ErrContractOwnership
+			}
 		}
-		return view.WriteTo(context.Background(), sink)
+		if ctx.Err() != nil {
+			callbackErr = ErrContractOwnership
+		}
+		callbacks.record(callbackErr)
+		return callbackErr
 	})
+	if ctx.Err() != nil {
+		return false
+	}
+	calls, callbacksValid, callbackErr := callbacks.snapshot()
+	writes, bodyValid, validationDigest := sink.snapshot()
 	bodyDigest := arm.body.SHA256()
-	return borrowErr == nil && calls == 1 && sink.writes == 1 && sink.valid && bodyDigest != ([32]byte{}) && bodyDigest == sink.digest
+	if ctx.Err() != nil {
+		return false
+	}
+	return borrowErr == nil && callbackErr == nil && calls == 1 && callbacksValid && writes == 1 && bodyValid && bodyDigest != ([32]byte{}) && bodyDigest == validationDigest
 }

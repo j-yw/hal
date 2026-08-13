@@ -53,7 +53,7 @@ func TestCoreConcreteFieldOrderAndCatalogValuesAreExact(t *testing.T) {
 		{ManifestCapability{}, []string{"liveValue", "count", "records"}},
 		{manifestRecord{}, []string{"bindingID", "mode", "target", "declaredFileBytes", "fileSHA256"}},
 		{ExecPlanCapability{}, []string{"liveValue", "state"}},
-		{execPlanCapabilityState{}, []string{"mu", "encodedLength", "sha256", "canonical", "destroyed"}},
+		{execPlanCapabilityState{}, []string{"mu", "encodedLength", "sha256", "canonical", "claimed", "destroyed"}},
 		{CorePrepareRequest{}, []string{"liveValue", "correlation", "generations", "expiresUnixNano", "fixedLimitSetID", "manifest", "manifestSHA256", "preparation", "prepared", "cleanup"}},
 		{CoreFileRequest{}, []string{"liveValue", "correlation", "job", "preparation", "bindingID", "bindingIndex", "target", "fileLength", "fileSHA256"}},
 		{CoreCommitRequest{}, []string{"liveValue", "correlation", "job", "preparation", "manifestSHA256", "transactionSHA256", "prepared"}},
