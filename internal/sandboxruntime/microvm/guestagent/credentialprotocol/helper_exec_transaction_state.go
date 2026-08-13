@@ -85,6 +85,13 @@ const (
 	helperExecProposalStdin   helperExecProposalKind = 2
 )
 
+type helperExecProposalSource uint8
+
+const (
+	helperExecProposalSourceLegacy   helperExecProposalSource = 1
+	helperExecProposalSourceObserved helperExecProposalSource = 2
+)
+
 // HelperExecPayloadProposal owns the sole bounded mutable private/stdin slot.
 // Value copies deliberately share consumption and wipe state.
 type HelperExecPayloadProposal struct {
@@ -92,17 +99,25 @@ type HelperExecPayloadProposal struct {
 }
 
 type helperExecPayloadProposalOwner struct {
-	transaction *helperExecTransactionOwner
-	kind        helperExecProposalKind
-	flags       HelperExecStreamFlags
-	offset      uint64
-	length      uint32
-	sha256      [32]byte
-	slot        []byte
-	hashed      bool
-	copied      bool
-	committed   bool
-	wiped       bool
+	transaction             *helperExecTransactionOwner
+	source                  helperExecProposalSource
+	kind                    helperExecProposalKind
+	flags                   HelperExecStreamFlags
+	offset                  uint64
+	length                  uint32
+	sha256                  [32]byte
+	slot                    []byte
+	candidateStdinHash      *helperExecSHA256
+	candidateTranscriptHash *helperExecSHA256
+	candidateStdinOffset    uint64
+	candidateStdinBytes     uint64
+	candidateStdinRecords   uint32
+	candidateStdinEOF       bool
+	observedReady           bool
+	hashed                  bool
+	copied                  bool
+	committed               bool
+	wiped                   bool
 }
 
 // HelperExecTransactionSnapshot contains only safe scalar and digest state.
@@ -243,6 +258,7 @@ func (transaction *HelperExecTransaction) ProposePrivate(correlation HelperExecT
 	payload := takeHelperExecPrivatePayload(state)
 	proposal := &helperExecPayloadProposalOwner{
 		transaction: owner,
+		source:      helperExecProposalSourceLegacy,
 		kind:        helperExecProposalPrivate,
 		length:      length,
 		sha256:      digest,
@@ -311,6 +327,7 @@ func (transaction *HelperExecTransaction) ProposeStdin(correlation HelperExecTra
 	payload := takeHelperExecStreamPayload(state)
 	proposal := &helperExecPayloadProposalOwner{
 		transaction: owner,
+		source:      helperExecProposalSourceLegacy,
 		kind:        helperExecProposalStdin,
 		flags:       flags,
 		offset:      offset,
@@ -359,6 +376,10 @@ func (proposal *HelperExecPayloadProposal) CopyPayload(destination []byte) (int,
 		wipeHelperExecTransactionBytes(destination)
 		return 0, ErrHelperExecProposalComparisonOnly
 	}
+	if owner.source == helperExecProposalSourceObserved {
+		wipeHelperExecTransactionBytes(destination)
+		return 0, ErrHelperExecProposalComparisonOnly
+	}
 	if owner.copied {
 		wipeHelperExecTransactionBytes(destination)
 		return 0, ErrHelperExecProposalConsumed
@@ -395,10 +416,23 @@ func (proposal *HelperExecPayloadProposal) Commit() error {
 		transaction.wipeProposalLocked(owner)
 		return ErrHelperExecTransactionCompleted
 	}
-	if transaction.pending != owner || owner.committed || (!transaction.comparison && !owner.copied) || (transaction.comparison && !owner.hashed) {
+	if transaction.pending != owner || owner.committed || !transaction.validProposalForCommitLocked(owner) {
 		return transaction.failLocked(ErrHelperExecProposalConsumed)
 	}
-	kind, flags, length := owner.kind, owner.flags, owner.length
+	source, kind, flags, length := owner.source, owner.kind, owner.flags, owner.length
+	if source == helperExecProposalSourceObserved && kind == helperExecProposalStdin {
+		currentStdinHash, currentTranscriptHash := transaction.stdinHash, transaction.transcriptHash
+		currentStdinHash.Wipe()
+		currentTranscriptHash.Wipe()
+		transaction.stdinHash = owner.candidateStdinHash
+		transaction.transcriptHash = owner.candidateTranscriptHash
+		owner.candidateStdinHash = nil
+		owner.candidateTranscriptHash = nil
+		transaction.stdinOffset = owner.candidateStdinOffset
+		transaction.stdinBytes = owner.candidateStdinBytes
+		transaction.stdinRecords = owner.candidateStdinRecords
+		transaction.stdinEOF = owner.candidateStdinEOF
+	}
 	owner.committed = true
 	transaction.wipeProposalLocked(owner)
 	switch kind {
@@ -406,9 +440,11 @@ func (proposal *HelperExecPayloadProposal) Commit() error {
 		transaction.privateComplete = true
 	case helperExecProposalStdin:
 		transaction.credit = false
-		transaction.stdinRecords++
-		transaction.stdinBytes += uint64(length)
-		transaction.stdinOffset += uint64(length)
+		if source == helperExecProposalSourceLegacy {
+			transaction.stdinRecords++
+			transaction.stdinBytes += uint64(length)
+			transaction.stdinOffset += uint64(length)
+		}
 		if flags == HelperExecStreamFlagEOF {
 			transaction.stdinEOF = true
 			transaction.finalizeInputLocked()
@@ -417,6 +453,28 @@ func (proposal *HelperExecPayloadProposal) Commit() error {
 		return transaction.failLocked(ErrHelperExecTransactionStream)
 	}
 	return nil
+}
+
+func (owner *helperExecTransactionOwner) validProposalForCommitLocked(proposal *helperExecPayloadProposalOwner) bool {
+	switch proposal.source {
+	case helperExecProposalSourceLegacy:
+		return (!owner.comparison && proposal.copied) || (owner.comparison && proposal.hashed)
+	case helperExecProposalSourceObserved:
+		if !proposal.observedReady || proposal.slot != nil || proposal.copied || proposal.hashed {
+			return false
+		}
+		switch proposal.kind {
+		case helperExecProposalPrivate:
+			return proposal.candidateStdinHash == nil && proposal.candidateTranscriptHash == nil
+		case helperExecProposalStdin:
+			return proposal.candidateStdinHash != nil && proposal.candidateTranscriptHash != nil &&
+				proposal.candidateStdinOffset == owner.stdinOffset+uint64(proposal.length) &&
+				proposal.candidateStdinBytes == owner.stdinBytes+uint64(proposal.length) &&
+				proposal.candidateStdinRecords == owner.stdinRecords+1 &&
+				proposal.candidateStdinEOF == (proposal.flags == HelperExecStreamFlagEOF)
+		}
+	}
+	return false
 }
 
 // Wipe abandons the sole proposal. Missing private/input is terminal and the
@@ -592,7 +650,7 @@ func (owner *helperExecTransactionOwner) admitLocked(correlation HelperExecTrans
 }
 
 func (owner *helperExecTransactionOwner) hashProposalLocked(proposal *helperExecPayloadProposalOwner) {
-	if proposal == nil || proposal.hashed || proposal.kind != helperExecProposalStdin {
+	if proposal == nil || proposal.source != helperExecProposalSourceLegacy || proposal.hashed || proposal.kind != helperExecProposalStdin {
 		return
 	}
 	if proposal.flags == HelperExecStreamFlagsNone {
@@ -654,14 +712,23 @@ func (owner *helperExecTransactionOwner) wipeProposalLocked(proposal *helperExec
 		return
 	}
 	owner.wipeProposalSlotLocked(proposal)
+	wipeHelperExecObservedCandidateHashes(proposal.candidateStdinHash, proposal.candidateTranscriptHash)
 	if owner.pending == proposal {
 		owner.pending = nil
 	}
+	proposal.source = 0
 	proposal.kind = 0
 	proposal.flags = 0
 	proposal.offset = 0
 	proposal.length = 0
 	proposal.sha256 = [32]byte{}
+	proposal.candidateStdinHash = nil
+	proposal.candidateTranscriptHash = nil
+	proposal.candidateStdinOffset = 0
+	proposal.candidateStdinBytes = 0
+	proposal.candidateStdinRecords = 0
+	proposal.candidateStdinEOF = false
+	proposal.observedReady = false
 	proposal.hashed = false
 	proposal.copied = false
 	proposal.wiped = true
@@ -722,7 +789,7 @@ func validHelperExecTransactionCorrelation(correlation HelperExecTransactionCorr
 }
 
 func helperExecTransactionCorrelationEqual(left, right HelperExecTransactionCorrelation) bool {
-	return left.requestID == right.requestID && left.identityDigest == right.identityDigest && left.revision == right.revision
+	return subtle.ConstantTimeCompare(left.requestID[:], right.requestID[:]) == 1 && subtle.ConstantTimeCompare(left.identityDigest[:], right.identityDigest[:]) == 1 && left.revision == right.revision
 }
 
 func helperExecDigestsEqual(left, right [32]byte) bool {

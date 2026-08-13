@@ -26,18 +26,21 @@ func TestHelperExecTransactionStatePureImportAndLiveBehaviorBoundary(t *testing.
 		}
 	}
 	sort.Strings(names)
-	wantNames := []string{"helper_exec_transaction_seed.go", "helper_exec_transaction_sha256.go", "helper_exec_transaction_state.go", "helper_exec_transaction_state_format.go"}
+	wantNames := []string{"helper_exec_transaction_observation.go", "helper_exec_transaction_seed.go", "helper_exec_transaction_sha256.go", "helper_exec_transaction_state.go", "helper_exec_transaction_state_format.go"}
 	if !reflectStringSlicesEqual(names, wantNames) {
 		t.Fatalf("production exec transaction files = %v, want %v", names, wantNames)
 	}
 	allowed := map[string]bool{
+		"context":         true,
 		"crypto/sha256":   true,
 		"crypto/subtle":   true,
 		"encoding/binary": true,
 		"errors":          true,
 		"fmt":             true,
-		"runtime":         true,
-		"sync":            true,
+		"github.com/jywlabs/hal/internal/credentialmemory": true,
+		"reflect": true,
+		"runtime": true,
+		"sync":    true,
 	}
 	used := make(map[string]bool)
 	for _, name := range names {
@@ -46,7 +49,7 @@ func TestHelperExecTransactionStatePureImportAndLiveBehaviorBoundary(t *testing.
 			t.Fatal(err)
 		}
 		for _, marker := range []string{
-			"net.", "http.", "os.", "exec.", "syscall.", "unix.", "context.", "time.Now", "time.After",
+			"net.", "http.", "os.", "exec.", "syscall.", "unix.", "time.Now", "time.After",
 			"Listen(", "Dial(", "Open(", "ReadFile(", "WriteFile(", "Command(", "ForkExec(", "Mount(", "go func",
 		} {
 			if strings.Contains(string(content), marker) {
