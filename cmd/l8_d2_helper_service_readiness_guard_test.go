@@ -1,14 +1,19 @@
 package cmd
 
 import (
+	stdcontext "context"
+	"encoding/json"
 	"go/ast"
+	"go/build"
 	"go/constant"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"go/types"
 	"io/fs"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -111,6 +116,20 @@ func TestL8D2HelperServiceReadinessDocsAreNormative(t *testing.T) {
 		"Counts include every executable nested closure",
 		"unique top-level exact `func TestX(t *testing.T)` AST declaration",
 		"one combined topology",
+		"exact Service `state.mu` is held",
+		"general state-field or helper exemption",
+		"literal untyped `nil` third argument",
+		"immediate recovery owned by the enclosing handler",
+		"control-flow-complete critical section",
+		"assigned exactly once under `state.mu`",
+		"exact typed `ReceivedExec` arm carried by that dispatch",
+		"exact outer recovery is installed before",
+		"private `corePlan.destroy()` call",
+		"zero result with nil error",
+		"body `Destroy(ctx)` result is bound and checked",
+		"Every lock-acquired path unlocks",
+		"Assignment to a global or another owner",
+		"includes helpers, method values, aliases",
 		"ordinary calls in both",
 		"Constant-time acceptance is bound through issuance",
 	} {
@@ -151,7 +170,7 @@ func TestL8D2HelperServiceReadinessDocsAreNormative(t *testing.T) {
 		"direct callback statements",
 		"no-result Wipe as the statement immediately",
 		"entire branch condition",
-		"Source guards bind the two concrete Borrow-callback orders",
+		"concrete Borrow-callback orders",
 		"The outer Borrow is one",
 		"direct reachable call",
 		"exact transaction correlation and exact",
@@ -163,6 +182,20 @@ func TestL8D2HelperServiceReadinessDocsAreNormative(t *testing.T) {
 		"The total includes executable nested/IIFE closures",
 		"top-level exact `func TestX(t *testing.T)` AST declaration",
 		"one combined construction, one-shot",
+		"sole state-copy allowance",
+		"literal untyped `nil` view",
+		"immediately enclosing handler recovery",
+		"control-flow-complete critical section",
+		"sole state execution install",
+		"exact typed `ReceivedExec` arm carried by that dispatch",
+		"The outer recovery is installed before",
+		"private `corePlan.destroy()` call",
+		"zero result/nil error is forbidden",
+		"Body `Destroy(ctx)`",
+		"is bound and checked",
+		"Every path which acquired the lock unlocks",
+		"global/other-owner assignment",
+		"including through helpers, method",
 		"includes ordinary call dataflow",
 		"constant-time gate also dominates the exact issued authority",
 	} {
@@ -411,9 +444,18 @@ func TestL8D2HelperServiceReadinessProductGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	serviceTestRequirements := l8D2ReadinessServiceTestRequirements()
+	serviceTestResults, err := l8D2ReadinessExactServiceBehavioralTests(filepath.Join("..", "internal", "sandboxruntime", "microvm", "guestagent"), serviceTestRequirements)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, requiredTest := range requiredTests {
 		if counts[requiredTest] != 1 {
 			t.Errorf("guestagent exact top-level test %s count = %d, want 1", requiredTest, counts[requiredTest])
+			continue
+		}
+		if _, serviceTest := serviceTestRequirements[requiredTest]; serviceTest && !serviceTestResults[requiredTest] {
+			t.Errorf("guestagent exact top-level test %s does not live-drive its exact Service boundary and assert every promised observable", requiredTest)
 		}
 	}
 }
@@ -524,6 +566,558 @@ func target() { { wrapperMap := map[float64]int{}; _ = wrapperMap }; { marker(wr
 			_, got := l8D2ReadinessWrapperNamedTypes(function, marker, environment)["wrapperMap"]
 			if got != test.wantType {
 				t.Fatalf("package wrapperMap visible = %t, want %t", got, test.wantType)
+			}
+		})
+	}
+	t.Run("resolver does not retain stale package name across analyses", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "credentialhelper")
+		dependency := filepath.Join(root, "replacement")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(dependency, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/main\n\ngo 1.25\nrequire example.test/dependency v0.0.0\nreplace example.test/dependency => ./replacement\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dependency, "go.mod"), []byte("module example.test/dependency\n\ngo 1.25\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		packageFile := filepath.Join(dependency, "package.go")
+		if err := os.WriteFile(packageFile, []byte("package mathx\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		source := "package fixture\nimport \"example.test/dependency\"\n"
+		file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, "fixture.go"), source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := l8D2ReadinessResolvedImportPackageNames(build.Default, dir, file)["example.test/dependency"]; got != "mathx" {
+			t.Fatalf("initial resolved package = %q", got)
+		}
+		if err := os.WriteFile(packageFile, []byte("package int\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := l8D2ReadinessResolvedImportPackageNames(build.Default, dir, file)["example.test/dependency"]; got != "int" {
+			t.Fatalf("resolved package after source mutation = %q, want int", got)
+		}
+	})
+	t.Run("offline environment seals hostile module and vanity resolution controls", func(t *testing.T) {
+		values := make(map[string]string)
+		counts := make(map[string]int)
+		for _, item := range l8D2ReadinessOfflineGoEnvironmentFrom(build.Default, []string{
+			"CGO_ENABLED=1",
+			"GO111MODULE=off",
+			"GOARCH=hostile",
+			"GOENV=/tmp/hostile-goenv",
+			"GOFLAGS=-mod=mod",
+			"GOWORK=/tmp/foreign.work",
+			"GOPRIVATE=*.private.invalid",
+			"GOPRIVATE=*.second.invalid",
+			"GONOPROXY=*.direct.invalid",
+			"GOINSECURE=*.insecure.invalid",
+			"GONOSUMDB=*.unchecked.invalid",
+			"GOOS=hostile",
+			"GOPROXY=direct",
+			"GOSUMDB=sum.invalid",
+			"GOTOOLCHAIN=auto",
+			"GOVCS=private.invalid:all",
+		}) {
+			name, value, _ := strings.Cut(item, "=")
+			values[name] = value
+			counts[name]++
+		}
+		for name, want := range map[string]string{
+			"CGO_ENABLED": "0",
+			"GO111MODULE": "on",
+			"GOENV":       "off",
+			"GOFLAGS":     "",
+			"GOARCH":      build.Default.GOARCH,
+			"GOINSECURE":  "",
+			"GONOPROXY":   "none",
+			"GONOSUMDB":   "none",
+			"GOOS":        build.Default.GOOS,
+			"GOPRIVATE":   "",
+			"GOPROXY":     "off",
+			"GOSUMDB":     "off",
+			"GOTOOLCHAIN": "local",
+			"GOVCS":       "*:off",
+			"GOWORK":      "off",
+		} {
+			if got := values[name]; got != want {
+				t.Fatalf("%s = %q, want %q", name, got, want)
+			}
+			if got := counts[name]; got != 1 {
+				t.Fatalf("%s count = %d, want 1", name, got)
+			}
+		}
+	})
+	t.Run("module roots canonicalize symlinks and reject broken chains", func(t *testing.T) {
+		realRoot := t.TempDir()
+		nested := filepath.Join(realRoot, "credentialhelper", "nested")
+		if err := os.MkdirAll(nested, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(realRoot, "go.mod"), []byte("module example.test/main\n\ngo 1.25\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		links := t.TempDir()
+		linkedRoot := filepath.Join(links, "module")
+		if err := os.Symlink(realRoot, linkedRoot); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := l8D2ReadinessModuleRoot(filepath.Join(linkedRoot, "credentialhelper", "nested"))
+		if !ok || got != realRoot {
+			t.Fatalf("symlinked module root = %q, %t, want %q", got, ok, realRoot)
+		}
+		broken := filepath.Join(links, "broken")
+		if err := os.Symlink(filepath.Join(links, "missing"), broken); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := l8D2ReadinessModuleRoot(broken); ok || got != "" {
+			t.Fatalf("broken module root = %q, %t", got, ok)
+		}
+		cycleA := filepath.Join(links, "cycle-a")
+		cycleB := filepath.Join(links, "cycle-b")
+		if err := os.Symlink(cycleB, cycleA); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(cycleA, cycleB); err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now()
+		if got, ok := l8D2ReadinessModuleRoot(cycleA); ok || got != "" {
+			t.Fatalf("cyclic module root = %q, %t", got, ok)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("cyclic module root resolution took %s", elapsed)
+		}
+	})
+	t.Run("readonly invocation and failures are not cached", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/main\n\ngo 1.25\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		goSum := filepath.Join(root, "go.sum")
+		if err := os.WriteFile(goSum, []byte("sentinel\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fakeGo := filepath.Join(root, "fake-go")
+		arguments := filepath.Join(root, "arguments")
+		writeScript := func(body string) {
+			t.Helper()
+			if err := os.WriteFile(fakeGo, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		writeScript("exit 1")
+		resolver := l8D2ReadinessNewImportResolver()
+		resolver.goCommand = fakeGo
+		resolver.timeout = 100 * time.Millisecond
+		resolver.environment = []string{"GO111MODULE=off", "GOFLAGS=-mod=mod"}
+		if name, ok := resolver.goListPackageName(build.Default, root, "example.test/dependency"); ok || name != "" {
+			t.Fatalf("failed command resolved %q", name)
+		}
+		writeScript("printf '%s\\n' \"$*\" > " + strconv.Quote(arguments) + "\nprintf '%s\\n' '{\"ImportPath\":\"example.test/dependency\",\"Name\":\"int\",\"Dir\":\"/safe\"}'")
+		if name, ok := resolver.goListPackageName(build.Default, root, "example.test/dependency"); !ok || name != "int" {
+			t.Fatalf("success after failure = %q, %t", name, ok)
+		}
+		called, err := os.ReadFile(arguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(called), "-mod=readonly") || strings.Contains(string(called), "-mod=mod") {
+			t.Fatalf("go list arguments = %q", called)
+		}
+		if content, err := os.ReadFile(filepath.Join(root, "go.mod")); err != nil || string(content) != "module example.test/main\n\ngo 1.25\n" {
+			t.Fatalf("go.mod changed: %q, %v", content, err)
+		}
+		if content, err := os.ReadFile(goSum); err != nil || string(content) != "sentinel\n" {
+			t.Fatalf("go.sum changed: %q, %v", content, err)
+		}
+	})
+	t.Run("timeout is bounded and not negatively cached", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/main\n\ngo 1.25\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fakeGo := filepath.Join(root, "fake-go")
+		if err := os.WriteFile(fakeGo, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		resolver := l8D2ReadinessNewImportResolver()
+		resolver.goCommand = fakeGo
+		resolver.timeout = 10 * time.Millisecond
+		started := time.Now()
+		if name, ok := resolver.goListPackageName(build.Default, root, "example.test/timeout"); ok || name != "" {
+			t.Fatalf("timeout resolved %q", name)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("timeout took %s", elapsed)
+		}
+		if err := os.WriteFile(fakeGo, []byte("#!/bin/sh\nprintf '%s\\n' '{\"ImportPath\":\"example.test/timeout\",\"Name\":\"mathx\",\"Dir\":\"/safe\"}'\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		resolver.timeout = time.Second
+		if name, ok := resolver.goListPackageName(build.Default, root, "example.test/timeout"); !ok || name != "mathx" {
+			t.Fatalf("success after timeout = %q, %t", name, ok)
+		}
+	})
+}
+
+func TestL8D2HelperServiceReadinessReducerGuardSelfTest(t *testing.T) {
+	t.Parallel()
+	canonical := l8D2ReadinessCanonicalReducerFixture()
+	for _, test := range []struct {
+		name, source string
+		want         bool
+	}{
+		{name: "canonical", source: canonical, want: true},
+		{name: "package variable alias", source: strings.Replace(canonical, "func newServiceResult", "var newServiceResult = evilResult\nfunc ignoredServiceResult", 1)},
+		{name: "wrong function body", source: strings.Replace(canonical, "return ServiceResult{disposition: disposition, closeReason: closeReason}, nil", "return ServiceResult{}, nil", 1)},
+		{name: "duplicate declaration", source: canonical + "\nfunc newServiceResult(disposition ServiceDisposition, closeReason credentialprotocol.CloseReason) (ServiceResult, error) { return ServiceResult{}, nil }"},
+		{name: "lookalike protocol import", source: strings.Replace(canonical, "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol", "example.invalid/credentialprotocol", 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", test.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := l8D2ReadinessExactServiceResultReducer(map[string]*ast.File{"fixture.go": file}); got != test.want {
+				t.Fatalf("exact reducer = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func l8D2ReadinessCanonicalReducerFixture() string {
+	return `package fixture
+import credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+type ServiceDisposition uint8
+const ( ServiceClosed ServiceDisposition = 1; ServiceStopVMRequired ServiceDisposition = 2 )
+type ServiceResult struct { disposition ServiceDisposition; closeReason credentialprotocol.CloseReason }
+var ErrContractInvalidArgument, ErrContractResultMatrix error
+func ValidateServiceDisposition(ServiceDisposition) error { return nil }
+func newServiceResult(disposition ServiceDisposition, closeReason credentialprotocol.CloseReason) (ServiceResult, error) {
+	if ValidateServiceDisposition(disposition) != nil || credentialprotocol.ValidateCloseReason(closeReason) != nil { return ServiceResult{}, ErrContractInvalidArgument }
+	clean := disposition == ServiceClosed && (closeReason == credentialprotocol.CloseReasonNormal || closeReason == credentialprotocol.CloseReasonShutdown)
+	stop := disposition == ServiceStopVMRequired && (closeReason == credentialprotocol.CloseReasonProtocolError || closeReason == credentialprotocol.CloseReasonIdentityDrift || closeReason == credentialprotocol.CloseReasonExpired || closeReason == credentialprotocol.CloseReasonHelperLoss)
+	if !clean && !stop { return ServiceResult{}, ErrContractResultMatrix }
+	return ServiceResult{disposition: disposition, closeReason: closeReason}, nil
+}`
+}
+
+func TestL8D2HelperServiceReadinessBuildContextGuardSelfTest(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{name: "canonical all supported builds", want: true, files: map[string]string{"service.go": "package credentialhelper\ntype Service struct{}\n", "service_values.go": l8D2ReadinessCanonicalReducerFixture()}},
+		{name: "windows only reducer does not satisfy linux", files: map[string]string{"service.go": "package credentialhelper\ntype Service struct{}\n", "service_values_windows.go": l8D2ReadinessCanonicalReducerFixture()}},
+		{name: "duplicate alternate build reducer rejected", files: map[string]string{"service.go": "package credentialhelper\ntype Service struct{}\n", "service_values_linux.go": l8D2ReadinessCanonicalReducerFixture(), "service_values_windows.go": l8D2ReadinessCanonicalReducerFixture()}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			files := make(map[string]*ast.File)
+			for name, source := range test.files {
+				path := filepath.Join(dir, name)
+				if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				file, err := parser.ParseFile(token.NewFileSet(), path, source, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				files[path] = file
+			}
+			if got := l8D2ReadinessExactServiceResultReducerAcrossBuilds(dir, files); got != test.want {
+				t.Fatalf("build reducer = %t, want %t", got, test.want)
+			}
+		})
+	}
+	behavioralSource := `package credentialhelper
+import "testing"
+type fakeRuntime struct{ serveCalls int }
+type ServiceOptions struct{ Runtime *fakeRuntime }
+const expectedCalls int = 1
+func TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil || result.Disposition() != ServiceClosed || runtime.serveCalls != expectedCalls { t.Fatalf("unexpected result") } }
+`
+	for _, test := range []struct {
+		name, testFile         string
+		extraFile, extraSource string
+		want                   bool
+	}{
+		{name: "behavioral test selected in every supported build", testFile: "service_test.go", want: true},
+		{name: "windows only behavioral test does not satisfy linux", testFile: "service_windows_test.go"},
+		{name: "active build package int shadow rejects", testFile: "service_test.go", extraFile: "shadow_linux.go", extraSource: "package credentialhelper\ntype int = int64\n"},
+		{name: "inactive build package int shadow ignored", testFile: "service_test.go", extraFile: "shadow_aix.go", extraSource: "package credentialhelper\ntype int = int64\n", want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "credentialhelper")
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for name, source := range map[string]string{
+				"service.go":        "package credentialhelper\ntype Service struct{}\n",
+				"service_values.go": strings.Replace(l8D2ReadinessCanonicalReducerFixture(), "package fixture", "package credentialhelper", 1),
+				test.testFile:       behavioralSource,
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.extraFile != "" {
+				if err := os.WriteFile(filepath.Join(dir, test.extraFile), []byte(test.extraSource), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			results, err := l8D2ReadinessExactServiceBehavioralTests(root, map[string]l8D2ReadinessServiceTestRequirement{
+				"TestRequired": {exercise: []string{"NewService", "Serve"}, evidence: []string{"serveCalls"}, dependencyFields: map[string][]string{"serveCalls": {"Runtime"}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := results["TestRequired"]; got != test.want {
+				t.Fatalf("behavioral build selection = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessBehavioralTestGuardSelfTest(t *testing.T) {
+	t.Parallel()
+	spec := l8D2ReadinessServiceTestRequirement{exercise: []string{"NewService", "Serve"}, evidence: []string{"serveCalls"}, dependencyFields: map[string][]string{"serveCalls": {"Runtime"}}}
+	for _, test := range []struct {
+		name, body string
+		want       bool
+	}{
+		{name: "canonical", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil || result.Disposition() != ServiceClosed || runtime.serveCalls != 1 { t.Fatalf("unexpected result") }`, want: true},
+		{name: "canonical with supplemental table", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil || result.Disposition() != ServiceClosed || runtime.serveCalls != 1 { t.Fatalf("unexpected result") }; for _, tc := range []struct{ want int }{{want: 1}} { _ = tc }`, want: true},
+		{name: "empty"},
+		{name: "no assertion", body: `service, _ := NewService(options); _, _ = service.Serve(ctx); _ = runtime.serveCalls`},
+		{name: "skip", body: `t.Skip("disabled"); service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "skip now", body: `t.SkipNow(); service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "goexit before exercise", body: `runtime.Goexit(); service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "return before exercise", body: `return; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "comment and string only", body: "marker := `NewService Serve serveCalls t.Fatal`; _ = marker"},
+		{name: "dead markers", body: `if false { service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") } }`},
+		{name: "assertion before exercise only", body: `if ready { t.Fatal("bad") }; service, _ := NewService(options); _, _ = service.Serve(ctx); _ = runtime.serveCalls`},
+		{name: "missing promised evidence", body: `service, _ := NewService(options); result, err := service.Serve(ctx); if err != nil || result.Disposition() != ServiceClosed { t.Fatal("bad") }`},
+		{name: "same named local is not observable", body: `service, _ := NewService(options); _, _ = service.Serve(ctx); serveCalls := 1; if serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "shadow constructor", body: `NewService := evilConstructor; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "foreign serve receiver", body: `service, _ := NewService(options); _, _ = foreign.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; _ = service`},
+		{name: "dead assertion marker", body: `service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { if false { t.Fatal("bad") } }`},
+		{name: "statically dead assertion condition", body: `service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 && false { t.Fatal("bad") }`},
+		{name: "panic before exercise", body: `panic("stop"); service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "service owner rebound", body: `service, _ := NewService(options); service = foreign; _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "deferred serve", body: `service, _ := NewService(options); defer service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "goroutine serve", body: `service, _ := NewService(options); go service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "short circuit dead serve", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _ = false && observe(service.Serve(ctx)); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "helper mediated stop", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; stop(t); service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "foreign observable selector", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if foreign.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "self comparison", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != runtime.serveCalls { t.Fatal("bad") }`},
+		{name: "manual observable write", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); runtime.serveCalls = 1; if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "manual observable write through preconstructor alias", body: `runtime := &fakeRuntime{}; alias := runtime; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); alias.serveCalls = 1; if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "preseeded observable", body: `runtime := &fakeRuntime{serveCalls: 1}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "typed zero initialized observable", body: `const zero int = int(0); runtime := &fakeRuntime{serveCalls: zero}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`, want: true},
+		{name: "positional preseeded observable", body: `runtime := &fakeRuntime{1}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "helper initialized observable", body: `runtime := newFakeRuntime(1); options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "manual observable write through nested alias", body: `holder := struct{ runtime *fakeRuntime }{runtime: &fakeRuntime{}}; runtime := holder.runtime; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); holder.runtime.serveCalls = 1; if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "manual observable write through container before constructor", body: `runtime := &fakeRuntime{}; holders := []*fakeRuntime{runtime}; holders[0].serveCalls = 1; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "manual observable write through local range", body: `runtime := &fakeRuntime{}; holders := []*fakeRuntime{runtime}; for _, alias := range holders { alias.serveCalls = 1 }; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "range alias escapes global then mutates", body: `runtime := &fakeRuntime{}; holders := []*fakeRuntime{runtime}; for _, alias := range holders { retainedRuntime = alias }; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); retainedRuntime.serveCalls = 1; if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "observable direct global transfer", body: `runtime := &fakeRuntime{}; retainedRuntime = runtime; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "channel roundtrip mutates observable", body: `runtime := &fakeRuntime{}; channel := make(chan *fakeRuntime, 1); channel <- runtime; alias := <-channel; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); alias.serveCalls = 1; if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "observable stored into selector before constructor", body: `runtime := &fakeRuntime{}; holder := struct{ runtime *fakeRuntime }{}; holder.runtime = runtime; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "manual observable write through field pointer", body: `runtime := &fakeRuntime{}; field := &runtime.serveCalls; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); *field = 1; if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "manual observable mutation helper before constructor", body: `runtime := &fakeRuntime{}; mutate(runtime); options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "manual observable receiver mutation before constructor", body: `runtime := &fakeRuntime{}; runtime.mutate(); options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "manual observable nested pointer write before constructor", body: `runtime := &fakeRuntime{}; *(&runtime.serveCalls) = 1; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "observable owner rebound", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); runtime = foreignRuntime; _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "observable owner passed to mutator", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); mutate(runtime); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "observable owner supplied through arbitrary helper", body: `runtime := &fakeRuntime{}; options := wrapOptions(runtime); service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "testing owner reassigned", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); t = fakeT; if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "service owner passed to helper", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); retain(service); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "service method value escape", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); retained := service.Serve; _ = retained; _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "expected derived from observed", body: `runtime := &fakeRuntime{}; expected := struct{ expectedCalls int }{expectedCalls: runtime.serveCalls}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expected.expectedCalls { t.Fatal("bad") }`},
+		{name: "vacuous named false conjunction", body: `const never = false; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 && never { t.Fatal("bad") }`},
+		{name: "vacuous named true disjunction", body: `const always = true; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 || always { t.Fatal("bad") }`},
+		{name: "observable nested under dynamic conjunction", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 && ready { t.Fatal("bad") }`},
+		{name: "observable polarity inverted", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if (runtime.serveCalls != 1) == false { t.Fatal("bad") }`},
+		{name: "wrong equality direction", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls == 1 { t.Fatal("bad") }`},
+		{name: "observable hidden in unrelated dependency field", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Core: runtime, Runtime: foreignRuntime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "observable duplicated into unrelated dependency field", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Core: runtime, Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "observable wrapped in allowed dependency field", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: wrapRuntime(runtime)}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "untyped named expected constant", body: `const expectedCalls = 1; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+		{name: "explicit int expected constant", body: `const expectedCalls int = 1; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`, want: true},
+		{name: "typed named expected constant", body: `const expectedCalls int = int(1); runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`, want: true},
+		{name: "int64 named expected constant", body: `const expectedCalls int64 = 1; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+		{name: "named integer alias expected constant", body: `type counter int; const expectedCalls counter = 1; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+		{name: "shadowed predeclared int expected type", body: `type int = int64; const expectedCalls int = 1; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+		{name: "shadowed predeclared int conversion", body: `type int = int64; const expectedCalls int = int(1); runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+		{name: "local value named int shadows expected type", body: `int := int64(1); const expectedCalls int = 1; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }; _ = int`},
+		{name: "parenthesized expected initializer", body: `const expectedCalls int = (1); runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+		{name: "parenthesized expected conversion initializer", body: `const expectedCalls int = (int(1)); runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+		{name: "grouped exact int expected constant", body: `const ( expectedCalls int = 1 ); runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`, want: true},
+		{name: "noninteger named expected constant", body: `const expectedCalls string = "1"; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+		{name: "derived named expected constant", body: `const base int = 1; const expectedCalls int = base; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+		{name: "unrelated map range positive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); for key, value := range map[string]int{"one": 1} { _, _ = key, value }; if runtime.serveCalls != 1 { t.Fatal("bad") }`, want: true},
+		{name: "unrelated nested table positive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); table := map[string][][]int{"one": {{1}}}; for key, rows := range table { _, _ = key, rows }; if runtime.serveCalls != 1 { t.Fatal("bad") }`, want: true},
+		{name: "expected constant declared after exercise", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); const expectedCalls int = 1; if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := "package fixture\nimport (\"testing\"; \"runtime\")\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Core any; Transport any; Policy any; Extensions any; Host any; Runtime *fakeRuntime }; var retainedRuntime *fakeRuntime; func stop(t *testing.T){ t.SkipNow() }\nfunc TestRequired(t *testing.T) {" + test.body + "}\n"
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture_test.go", source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := l8D2ReadinessExactServiceBehavioralTest(file, "TestRequired", spec); got != test.want {
+				t.Fatalf("behavioral test = %t, want %t", got, test.want)
+			}
+		})
+	}
+	mainFile, err := parser.ParseFile(token.NewFileSet(), "service_test.go", "package fixture\nimport \"testing\"\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; stop(t); service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal(\"bad\") } }", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperFile, err := parser.ParseFile(token.NewFileSet(), "stop_test.go", "package fixture\nimport \"testing\"\nfunc stop(t *testing.T) { t.SkipNow() }", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l8D2ReadinessExactServiceBehavioralTestInEnvironment(mainFile, "TestRequired", spec, l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{mainFile, helperFile})) {
+		t.Fatal("cross-file terminal helper satisfied live Service test")
+	}
+	packageConstantMain, err := parser.ParseFile(token.NewFileSet(), "package_constant_test.go", "package fixture\nimport \"testing\"\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal(\"bad\") } }", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paddedConstant, err := parser.ParseFile(token.NewFileSet(), "expected_test.go", "package fixture\n"+strings.Repeat("// padding\n", 200)+"const expectedCalls int = 1\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l8D2ReadinessExactServiceBehavioralTestInEnvironment(packageConstantMain, "TestRequired", spec, l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{packageConstantMain, paddedConstant})) {
+		t.Fatal("padded cross-file package expected constant did not satisfy live Service test")
+	}
+	shadowFile, err := parser.ParseFile(token.NewFileSet(), "shadow.go", "package fixture\ntype int = int64\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l8D2ReadinessExactServiceBehavioralTestInEnvironment(packageConstantMain, "TestRequired", spec, l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{packageConstantMain, paddedConstant, shadowFile})) {
+		t.Fatal("cross-file package int alias satisfied named expected grammar")
+	}
+	dotImportMain, err := parser.ParseFile(token.NewFileSet(), "dot_import_test.go", "package fixture\nimport (\"testing\"; . \"math\")\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }\nconst expectedCalls int = 1\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; _ = Abs(1); options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal(\"bad\") } }", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l8D2ReadinessExactServiceBehavioralTest(dotImportMain, "TestRequired", spec) {
+		t.Fatal("live dot import of exported names rejected canonical typed expected constant")
+	}
+	explicitAliasMain, err := parser.ParseFile(token.NewFileSet(), "explicit_alias_test.go", "package fixture\nimport (\"testing\"; int \"math\")\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }\nconst expectedCalls int = 1\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; _ = int.Abs(1); options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal(\"bad\") } }", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l8D2ReadinessExactServiceBehavioralTest(explicitAliasMain, "TestRequired", spec) {
+		t.Fatal("explicit import alias int satisfied canonical typed expected grammar")
+	}
+	for _, test := range []struct {
+		name, importPath, packageName, packageUse string
+		want                                      bool
+	}{
+		{name: "path ending int with mathx declaration", importPath: "../ending/int", packageName: "mathx", packageUse: "mathx.Value", want: true},
+		{name: "arbitrary path declaring int", importPath: "../arbitrary/pkg", packageName: "int", packageUse: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "credentialhelper")
+			packageDir := filepath.Clean(filepath.Join(dir, test.importPath))
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(packageDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(packageDir, "package.go"), []byte("package "+test.packageName+"\nconst Value = 1\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			use := ""
+			if test.packageUse != "" {
+				use = "_ = " + test.packageUse + "; "
+			}
+			source := "package fixture\nimport (\"testing\"; \"" + test.importPath + "\")\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }; const expectedCalls int = 1\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; " + use + "options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal(\"bad\") } }"
+			file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, "service_test.go"), source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolvedImports := map[*ast.File]map[string]string{file: l8D2ReadinessResolvedImportPackageNames(build.Default, dir, file)}
+			environment := l8D2ReadinessTerminalEnvironmentForFilesWithImports([]*ast.File{file}, resolvedImports)
+			if got := l8D2ReadinessExactServiceBehavioralTestInEnvironment(file, "TestRequired", spec, environment); got != test.want {
+				t.Fatalf("behavioral resolved import = %t, want %t", got, test.want)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name, importPath, packageName string
+		replace, vendor, externalTest bool
+		want                          bool
+	}{
+		{name: "production int with external int test", importPath: "example.test/dependency", packageName: "int", replace: true, externalTest: true},
+		{name: "local replace declaring int", importPath: "example.test/replaced", packageName: "int", replace: true},
+		{name: "local replace declaring mathx", importPath: "example.test/replaced", packageName: "mathx", replace: true, want: true},
+		{name: "vendor declaring int", importPath: "example.test/vendorint", packageName: "int", vendor: true},
+		{name: "vendor declaring mathx", importPath: "example.test/vendorint", packageName: "mathx", vendor: true, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "credentialhelper")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			moduleText := "module example.test/main\n\ngo 1.25\n\nrequire " + test.importPath + " v0.0.0\n"
+			packageDir := ""
+			if test.replace {
+				moduleText += "replace " + test.importPath + " => ./replacement\n"
+				packageDir = filepath.Join(root, "replacement")
+				if err := os.MkdirAll(packageDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(packageDir, "go.mod"), []byte("module "+test.importPath+"\n\ngo 1.25\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				packageDir = filepath.Join(root, "vendor", filepath.FromSlash(test.importPath))
+				if err := os.MkdirAll(packageDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				modules := "# " + test.importPath + " v0.0.0\n## explicit; go 1.25\n" + test.importPath + "\n"
+				if err := os.WriteFile(filepath.Join(root, "vendor", "modules.txt"), []byte(modules), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(moduleText), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(packageDir, "package.go"), []byte("package "+test.packageName+"\nconst Value = 1\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if test.externalTest {
+				if err := os.WriteFile(filepath.Join(packageDir, "package_test.go"), []byte("package int_test\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			source := "package fixture\nimport (\"testing\"; \"" + test.importPath + "\")\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }; const expectedCalls int = 1\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal(\"bad\") } }"
+			file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, "service_test.go"), source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved := map[*ast.File]map[string]string{file: l8D2ReadinessResolvedImportPackageNames(build.Default, dir, file)}
+			environment := l8D2ReadinessTerminalEnvironmentForFilesWithImports([]*ast.File{file}, resolved)
+			if got := l8D2ReadinessExactServiceBehavioralTestInEnvironment(file, "TestRequired", spec, environment); got != test.want {
+				t.Fatalf("behavioral module import = %t, want %t; resolved=%v", got, test.want, resolved[file])
 			}
 		})
 	}
@@ -1517,6 +2111,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 	extensions := snapshotServiceExtensionEntries(options.Extensions)
 	return &Service{core: options.Core, transport: options.Transport, policy: options.Policy, extensions: extensions, host: options.Host, runtime: options.Runtime, state: &serviceState{}}, nil
 }
+
 func (s *Service) Serve(ctx context.Context) (ServiceResult, error) {
 	if err := transportContextPrecondition(ctx); err != nil { return ServiceResult{}, err }
 	s.state.mu.Lock(); if s.state.serveCalled { s.state.mu.Unlock(); return ServiceResult{}, ErrContractTransition }; s.state.serveCalled = true; s.state.mu.Unlock()
@@ -1528,10 +2123,64 @@ func (s *Service) Serve(ctx context.Context) (ServiceResult, error) {
 			source: l8D2ReadinessCanonicalPrivateServiceFixture(), private: true,
 		},
 		{
-			name: "canonical stdin authority chain",
-			source: l8D2ReadinessServiceFixture(`func (s *Service) Serve(ctx context.Context) (ServiceResult, error) { return s.dispatchStdin(ctx) }
-func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult, error) { packet, receiveErr := s.transport.Receive(ctx, request); if receiveErr != nil { return ServiceResult{}, receiveErr }; arm, ok := packet.ExecStream(); if !ok { return ServiceResult{}, errInvalid }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.stdin(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison) }
-func (s *Service) stdin(ctx context.Context, body ReceivedBodyCapability, tx *credentialprotocol.HelperExecTransaction, obs Observation, comparison bool) (ServiceResult, error) { _ = body.Borrow(ctx, func(view BorrowedView) error { proposal, proposalErr := tx.ProposeObservedStdin(obs, view); if proposalErr != nil { return proposalErr }; if comparison { return proposal.Commit() }; coreErr := s.state.execution.WriteStdin(ctx, view, 0, false); if coreErr != nil { _ = proposal.Wipe(); return coreErr }; return proposal.Commit() }); return ServiceResult{}, nil }`), stdin: true,
+			name:   "private handler omits body cleanup",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "bodyDestroyErr := error(nil);", 1),
+		},
+		{
+			name:   "private handler duplicates body cleanup",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "bodyDestroyErr := body.Destroy(ctx); _ = body.Destroy(ctx);", 1),
+		},
+		{
+			name:   "private handler omits plan cleanup",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "corePlan.destroy();", "", 1),
+		},
+		{
+			name:   "private handler duplicates plan cleanup",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "corePlan.destroy();", "corePlan.destroy(); corePlan.destroy();", 1),
+		},
+		{
+			name:   "private handler captures proposal before its error gate",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "if proposalErr != nil { return proposalErr }; pending = proposal", "pending = proposal; if proposalErr != nil { return proposalErr }", 1),
+		},
+		{
+			name:   "private handler has disconnected recovery",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "recovered != nil", "false", 1),
+		},
+		{
+			name:   "private handler silently swallows recovered panic",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership", "", 1),
+		},
+		{
+			name:   "private handler shadows terminal reducer",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "var pending Proposal;", "newServiceResult := evilResult; var pending Proposal;", 1),
+		},
+		{
+			name:   "private handler shadows sanitized error",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "var pending Proposal;", "ErrContractOwnership := rawError; var pending Proposal;", 1),
+		},
+		{
+			name:   "private handler discards body destroy failure",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "_ = body.Destroy(ctx); bodyDestroyErr := error(nil);", 1),
+		},
+		{
+			name:   "canonical stdin authority chain",
+			source: l8D2ReadinessCanonicalStdinServiceFixture(), stdin: true,
+		},
+		{
+			name:   "stdin handler omits body cleanup",
+			source: strings.Replace(l8D2ReadinessCanonicalStdinServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "bodyDestroyErr := error(nil);", 1),
+		},
+		{
+			name:   "stdin handler has disconnected recovery",
+			source: strings.Replace(l8D2ReadinessCanonicalStdinServiceFixture(), "recovered != nil", "false", 1),
+		},
+		{
+			name:   "stdin handler silently swallows recovered panic",
+			source: strings.Replace(l8D2ReadinessCanonicalStdinServiceFixture(), "; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership", "", 1),
+		},
+		{
+			name:   "stdin handler discards body destroy failure",
+			source: strings.Replace(l8D2ReadinessCanonicalStdinServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "_ = body.Destroy(ctx); bodyDestroyErr := error(nil);", 1),
 		},
 		{
 			name: "combined canonical constructor one-shot private and stdin topology",
@@ -1983,10 +2632,184 @@ func (s *Service) private(ctx context.Context, body ReceivedBodyCapability, tx *
 	}
 }
 
+func TestL8D2HelperServiceReadinessStateLedgerGuardSelfTest(t *testing.T) {
+	t.Parallel()
+	canonical := `package fixture
+import ("context"; "sync"; credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol")
+type CoreExecution interface{ WriteStdin(context.Context, any, uint64, bool) error; Probe() }
+type Core interface{ BeginExec(context.Context, any, any) (CoreExecution, error) }
+type ExecPlanCapability struct{}; func (ExecPlanCapability) destroy() {}
+type serviceExecDispatch struct{ transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool }
+type serviceState struct{ mu sync.Mutex; serveCalled bool; execution CoreExecution; request any; plan ExecPlanCapability; revision uint64; transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool; dispatchTaken bool }
+type Service struct{ core Core; state *serviceState }
+var errInvalid error; func configuredDependency(any) bool { return true }
+func (s *Service) Serve(context.Context) error { return nil }
+func (s *Service) takeExecDispatch(revision uint64) (serviceExecDispatch, error) {
+	s.state.mu.Lock()
+	if revision != s.state.revision || s.state.dispatchTaken { s.state.mu.Unlock(); return serviceExecDispatch{}, errInvalid }
+	transaction := s.state.transaction
+	correlation := s.state.correlation
+	comparison := s.state.comparison
+	s.state.dispatchTaken = true
+	s.state.mu.Unlock()
+	return serviceExecDispatch{transaction: transaction, correlation: correlation, comparison: comparison}, nil
+}
+func (s *Service) private(ctx context.Context) error {
+	s.state.mu.Lock()
+	request := s.state.request
+	plan := s.state.plan
+	s.state.mu.Unlock()
+	execution, coreErr := s.core.BeginExec(ctx, request, nil)
+	plan.destroy()
+	if coreErr != nil || !configuredDependency(execution) { return errInvalid }
+	s.state.mu.Lock()
+	s.state.execution = execution
+	s.state.mu.Unlock()
+	return nil
+}
+func (s *Service) stdin(ctx context.Context, view any) error {
+	s.state.mu.Lock()
+	execution := s.state.execution
+	s.state.mu.Unlock()
+	return execution.WriteStdin(ctx, view, 0, false)
+}`
+	for _, test := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "canonical mutex-bound value-copy and take", source: canonical, want: true},
+		{name: "unlocked ledger read", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "request := s.state.request\n\ts.state.mu.Lock()", 1)},
+		{name: "unlocked revision gate", source: strings.Replace(canonical, "s.state.mu.Lock()\n\tif revision", "if revision", 1)},
+		{name: "dead lock does not authorize ledger read", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "if false { s.state.mu.Lock() }; request := s.state.request", 1)},
+		{name: "conditional unlock falls through before ledger read", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "s.state.mu.Lock()\n\tif maybe { s.state.mu.Unlock() }\n\trequest := s.state.request", 1)},
+		{name: "early return omits unlock", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "s.state.mu.Lock()\n\tif maybe { return errInvalid }\n\trequest := s.state.request", 1)},
+		{name: "critical rejection condition calls panic-capable helper", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "s.state.mu.Lock()\n\tif helperBool() { s.state.mu.Unlock(); return errInvalid }\n\trequest := s.state.request", 1)},
+		{name: "critical rejection condition can panic while indexing", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "s.state.mu.Lock()\n\tif flags[index] { s.state.mu.Unlock(); return errInvalid }\n\trequest := s.state.request", 1)},
+		{name: "critical assignment can panic before unlock", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "s.state.mu.Lock()\n\tprobe := values[index]\n\t_ = probe\n\trequest := s.state.request", 1)},
+		{name: "critical assignment target can panic before unlock", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "s.state.mu.Lock()\n\tvalues[index] = true\n\trequest := s.state.request", 1)},
+		{name: "critical rejection else path panics before unlock", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "s.state.mu.Lock()\n\tif maybe { s.state.mu.Unlock(); return errInvalid } else { panic(errInvalid) }\n\trequest := s.state.request", 1)},
+		{name: "nested panic omits unlock", source: strings.Replace(canonical, "s.state.mu.Lock()\n\trequest := s.state.request", "s.state.mu.Lock()\n\tif maybe { panic(errInvalid) }\n\trequest := s.state.request", 1)},
+		{name: "terminal after take latch omits unlock", source: strings.Replace(canonical, "s.state.dispatchTaken = true\n\ts.state.mu.Unlock()", "s.state.dispatchTaken = true\n\tif maybe { panic(errInvalid) }\n\ts.state.mu.Unlock()", 1)},
+		{name: "success path omits unlock", source: strings.Replace(canonical, "s.state.mu.Unlock()\n\texecution, coreErr := s.core.BeginExec", "execution, coreErr := s.core.BeginExec", 1)},
+		{name: "success path unlocks twice", source: strings.Replace(canonical, "s.state.mu.Unlock()\n\texecution, coreErr := s.core.BeginExec", "s.state.mu.Unlock()\n\ts.state.mu.Unlock()\n\texecution, coreErr := s.core.BeginExec", 1)},
+		{name: "wrong revision source", source: strings.Replace(canonical, "revision != s.state.revision", "revision != foreignRevision", 1)},
+		{name: "noncontrolling take gate", source: strings.Replace(canonical, "revision != s.state.revision || s.state.dispatchTaken", "(revision != s.state.revision || s.state.dispatchTaken) && false", 1)},
+		{name: "empty take rejection body", source: strings.Replace(canonical, "{ s.state.mu.Unlock(); return serviceExecDispatch{}, errInvalid }", "{}", 1)},
+		{name: "duplicate take", source: strings.Replace(canonical, "s.state.dispatchTaken = true", "s.state.dispatchTaken = true\n\ts.state.dispatchTaken = true", 1)},
+		{name: "dispatch return swaps entry values", source: strings.Replace(canonical, "transaction: transaction, correlation: correlation", "transaction: correlation, correlation: transaction", 1)},
+		{name: "global request substitution", source: strings.Replace(canonical, "request := s.state.request", "request := globalRequest", 1)},
+		{name: "state field address escape", source: strings.Replace(canonical, "request := s.state.request", "request := &s.state.request", 1)},
+		{name: "state value passed to arbitrary helper", source: strings.Replace(canonical, "request := s.state.request", "request := helper(s.state.request)", 1)},
+		{name: "copied state value passed to arbitrary helper", source: strings.Replace(canonical, "execution, coreErr := s.core.BeginExec", "helper(request); execution, coreErr := s.core.BeginExec", 1)},
+		{name: "copied state value address escapes", source: strings.Replace(canonical, "execution, coreErr := s.core.BeginExec", "helper(&request); execution, coreErr := s.core.BeginExec", 1)},
+		{name: "foreign execution overwrites validated Core result", source: strings.Replace(canonical, "s.state.execution = execution", "s.state.execution = foreignExecution", 1)},
+		{name: "duplicate execution overwrite", source: strings.Replace(canonical, "s.state.execution = execution", "s.state.execution = execution\n\ts.state.execution = foreignExecution", 1)},
+		{name: "validated execution address escapes", source: strings.Replace(canonical, "s.state.mu.Lock()\n\ts.state.execution = execution", "helper(&execution)\n\ts.state.mu.Lock()\n\ts.state.execution = execution", 1)},
+		{name: "validated execution escapes to global before gate", source: strings.Replace(canonical, "if coreErr != nil || !configuredDependency(execution)", "globalExecution = execution\n\tif coreErr != nil || !configuredDependency(execution)", 1)},
+		{name: "validated execution receiver used before gate", source: strings.Replace(canonical, "if coreErr != nil || !configuredDependency(execution)", "execution.Probe()\n\tif coreErr != nil || !configuredDependency(execution)", 1)},
+		{name: "validated execution inspected before gate", source: strings.Replace(canonical, "if coreErr != nil || !configuredDependency(execution)", "switch execution {}\n\tif coreErr != nil || !configuredDependency(execution)", 1)},
+		{name: "copied execution is rebound before Core", source: strings.Replace(canonical, "return execution.WriteStdin", "execution = foreignExecution; return execution.WriteStdin", 1)},
+		{name: "cross-entry correlation", source: strings.Replace(canonical, "correlation := s.state.correlation", "correlation := other.state.correlation", 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", test.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reachable := make(map[*ast.FuncDecl]bool)
+			var serve *ast.FuncDecl
+			for _, declaration := range file.Decls {
+				function, ok := declaration.(*ast.FuncDecl)
+				if !ok || function.Recv == nil {
+					continue
+				}
+				reachable[function] = true
+				if function.Name.Name == "Serve" {
+					serve = function
+				}
+			}
+			if got := l8D2ReadinessReachableServiceStateStable(reachable, serve); got != test.want {
+				t.Fatalf("state stability = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessZeroPrivateExecGuardSelfTest(t *testing.T) {
+	t.Parallel()
+	canonical := `package fixture
+import "context"
+type Core interface{ BeginExec(context.Context, any, any)(CoreExecution,error) }; type CoreExecution interface{}
+type ReceivedExec struct{}; func (ReceivedExec) PrivateBindingLength() uint32{return 0}; func (ReceivedExec) PrivateBindingSHA256()[32]byte{return [32]byte{}}; func (ReceivedExec) ExecPrivate(){}
+type ReceivedPacket struct{}; func (ReceivedPacket) Exec()(ReceivedExec,bool){return ReceivedExec{},true}
+type mutex struct{}; func (*mutex) Lock(){}; func (*mutex) Unlock(){}
+type ExecPlanCapability struct{}; func (ExecPlanCapability) destroy(){}; type serviceState struct{ mu mutex; request any; plan ExecPlanCapability; execution CoreExecution }; type Service struct{ core Core; state *serviceState }; type ServiceResult struct{}
+var errInvalid error; var foreignArm ReceivedExec; var foreignPacket ReceivedPacket; func configuredDependency(any)bool{return true}; func helperCore(any){}
+func (s *Service) zeroPrivate(ctx context.Context, packet ReceivedPacket, comparison bool)(ServiceResult,error){
+	arm, ok := packet.Exec(); if !ok { return ServiceResult{}, errInvalid }
+	if arm.PrivateBindingLength() == 0 && arm.PrivateBindingSHA256() == ([32]byte{}) {
+		if comparison { return ServiceResult{}, nil }
+		s.state.mu.Lock(); stateRequest := s.state.request; statePlan := s.state.plan; s.state.mu.Unlock()
+		execution, coreErr := s.core.BeginExec(ctx, stateRequest, nil)
+		statePlan.destroy()
+		if coreErr != nil || !configuredDependency(execution) { return ServiceResult{}, errInvalid }
+		s.state.mu.Lock(); s.state.execution = execution; s.state.mu.Unlock()
+		return ServiceResult{}, nil
+	}
+	return ServiceResult{}, errInvalid
+}`
+	for _, test := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "canonical literal nil state-backed path", source: canonical, want: true},
+		{name: "typed nil substitute", source: strings.Replace(canonical, "s.core.BeginExec(ctx, stateRequest, nil)", "s.core.BeginExec(ctx, stateRequest, nilView)", 1)},
+		{name: "background context substitute", source: strings.Replace(canonical, "s.core.BeginExec(ctx, stateRequest, nil)", "s.core.BeginExec(context.Background(), stateRequest, nil)", 1)},
+		{name: "global request", source: strings.Replace(canonical, "s.core.BeginExec(ctx, stateRequest, nil)", "s.core.BeginExec(ctx, globalRequest, nil)", 1)},
+		{name: "cross-arm zero digest", source: strings.Replace(canonical, "arm.PrivateBindingSHA256()", "foreign.PrivateBindingSHA256()", 1)},
+		{name: "foreign arm extraction", source: strings.Replace(canonical, "arm, ok := packet.Exec()", "arm, ok := foreignPacket.Exec()", 1)},
+		{name: "foreign arm substitution after extraction", source: strings.Replace(canonical, "if arm.PrivateBindingLength()", "arm = foreignArm; if arm.PrivateBindingLength()", 1)},
+		{name: "comparison path calls Core", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { _, _ = s.core.BeginExec(ctx, stateRequest, nil); return ServiceResult{}, nil }", 1)},
+		{name: "comparison path returns rejection instead of accepted terminal", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { return ServiceResult{}, errInvalid }", 1)},
+		{name: "comparison path passes Core to indirect helper", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { helperCore(s.core); return ServiceResult{}, nil }", 1)},
+		{name: "comparison path retains Core method value", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { begin := s.core.BeginExec; _ = begin; return ServiceResult{}, nil }", 1)},
+		{name: "comparison path aliases Core authority", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { authority := s.core; _ = authority; return ServiceResult{}, nil }", 1)},
+		{name: "private wait in zero path", source: strings.Replace(canonical, "execution, coreErr :=", "arm.ExecPrivate(); execution, coreErr :=", 1)},
+		{name: "observed Borrow in zero path", source: strings.Replace(canonical, "execution, coreErr :=", "body.Borrow(ctx, callback); execution, coreErr :=", 1)},
+		{name: "unlocked execution retention", source: strings.Replace(canonical, "s.state.mu.Lock(); s.state.execution = execution; s.state.mu.Unlock()", "s.state.execution = execution", 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", test.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var function *ast.FuncDecl
+			for _, declaration := range file.Decls {
+				candidate, ok := declaration.(*ast.FuncDecl)
+				if ok && candidate.Name.Name == "zeroPrivate" {
+					function = candidate
+				}
+			}
+			got := function != nil && l8D2ReadinessZeroPrivateExecStable(map[*ast.FuncDecl]bool{function: true}) && l8D2ReadinessServiceMethodStateStable(function, nil)
+			if got != test.want {
+				t.Fatalf("zero-private stability = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func l8D2ReadinessCanonicalPrivateServiceFixture() string {
 	return l8D2ReadinessServiceFixture(`func (s *Service) Serve(ctx context.Context) (ServiceResult, error) { return s.dispatchPrivate(ctx) }
 func (s *Service) dispatchPrivate(ctx context.Context) (ServiceResult, error) { packet, receiveErr := s.transport.Receive(ctx, request); if receiveErr != nil { return ServiceResult{}, receiveErr }; arm, ok := packet.ExecPrivate(); if !ok { return ServiceResult{}, errInvalid }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.private(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison) }
 func (s *Service) private(ctx context.Context, body ReceivedBodyCapability, tx *credentialprotocol.HelperExecTransaction, obs Observation, comparison bool) (ServiceResult, error) { _ = body.Borrow(ctx, func(view BorrowedView) error { proposal, proposalErr := tx.ProposeObservedPrivate(obs); if proposalErr != nil { return proposalErr }; if comparison { return proposal.Commit() }; execution, coreErr := s.core.BeginExec(ctx, request, view); if coreErr != nil || !configuredDependency(execution) { _ = proposal.Wipe(); return errInvalid }; s.state.execution = execution; return proposal.Commit() }); return ServiceResult{}, nil }`)
+}
+
+func l8D2ReadinessCanonicalStdinServiceFixture() string {
+	return l8D2ReadinessServiceFixture(`func (s *Service) Serve(ctx context.Context) (ServiceResult, error) { return s.dispatchStdin(ctx) }
+func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult, error) { packet, receiveErr := s.transport.Receive(ctx, request); if receiveErr != nil { return ServiceResult{}, receiveErr }; arm, ok := packet.ExecStream(); if !ok { return ServiceResult{}, errInvalid }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.stdin(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison) }
+func (s *Service) stdin(ctx context.Context, body ReceivedBodyCapability, tx *credentialprotocol.HelperExecTransaction, obs Observation, comparison bool) (ServiceResult, error) { _ = body.Borrow(ctx, func(view BorrowedView) error { proposal, proposalErr := tx.ProposeObservedStdin(obs, view); if proposalErr != nil { return proposalErr }; if comparison { return proposal.Commit() }; coreErr := s.state.execution.WriteStdin(ctx, view, 0, false); if coreErr != nil { _ = proposal.Wipe(); return coreErr }; return proposal.Commit() }); return ServiceResult{}, nil }`)
 }
 
 func l8D2ReadinessServiceFixture(declarations string) string {
@@ -2005,21 +2828,63 @@ func l8D2ReadinessServiceFixture(declarations string) string {
 	declarations = strings.ReplaceAll(declarations, "}); return ServiceResult{}, nil", "}); if borrowErr != nil { return ServiceResult{}, borrowErr }; return ServiceResult{}, nil")
 	declarations = strings.ReplaceAll(declarations, "_ = proposal.Wipe(); return errInvalid", "proposal.Wipe(); return errInvalid")
 	declarations = strings.ReplaceAll(declarations, "_ = proposal.Wipe(); return coreErr", "proposal.Wipe(); return coreErr")
+	decorateHandler := func(name string, transform func(string) string) {
+		marker := "func (s *Service) " + name
+		start := strings.Index(declarations, marker)
+		if start < 0 {
+			return
+		}
+		end := strings.Index(declarations[start+len(marker):], "\nfunc ")
+		if end < 0 {
+			end = len(declarations)
+		} else {
+			end += start + len(marker)
+		}
+		declarations = declarations[:start] + transform(declarations[start:end]) + declarations[end:]
+	}
+	decorateHandler("private", func(handler string) string {
+		handler = strings.ReplaceAll(handler, "(ServiceResult, error) { borrowErr := body.Borrow", "(serviceResult ServiceResult, serviceErr error) { s.state.mu.Lock(); coreRequest := s.state.request; corePlan := s.state.plan; s.state.mu.Unlock(); var pending Proposal; defer func() { if recovered := recover(); recovered != nil { if pending != nil { pending.Wipe() }; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership }; bodyDestroyErr := body.Destroy(ctx); corePlan.destroy(); if bodyDestroyErr != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }(); borrowErr := body.Borrow")
+		handler = strings.ReplaceAll(handler, "s.core.BeginExec(ctx, request, view)", "s.core.BeginExec(ctx, coreRequest, view)")
+		return strings.ReplaceAll(handler, "if proposalErr != nil { return proposalErr }; if comparison", "if proposalErr != nil { return proposalErr }; pending = proposal; if comparison")
+	})
+	decorateHandler("stdin", func(handler string) string {
+		handler = strings.ReplaceAll(handler, "(ServiceResult, error) { borrowErr := body.Borrow", "(serviceResult ServiceResult, serviceErr error) { var pending Proposal; defer func() { if recovered := recover(); recovered != nil { if pending != nil { pending.Wipe() }; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership }; bodyDestroyErr := body.Destroy(ctx); if bodyDestroyErr != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }(); borrowErr := body.Borrow")
+		return strings.ReplaceAll(handler, "if proposalErr != nil { return proposalErr }; if comparison", "if proposalErr != nil { return proposalErr }; pending = proposal; if comparison")
+	})
+	declarations = strings.ReplaceAll(declarations, "s.state.execution = execution", "s.state.mu.Lock(); s.state.execution = execution; s.state.mu.Unlock()")
+	declarations = strings.ReplaceAll(declarations, "coreErr := s.state.execution.WriteStdin", "s.state.mu.Lock(); retainedExecution := s.state.execution; s.state.mu.Unlock(); coreErr := retainedExecution.WriteStdin")
 	return `package fixture
 import ("context"; "sync"; credentialmemory "github.com/jywlabs/hal/internal/credentialmemory"; credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol")
-type Core interface{ BeginExec(context.Context, any, credentialmemory.BorrowedView) (CoreExecution, error) }; type CoreExecution interface{ WriteStdin(context.Context, credentialmemory.BorrowedView, uint64, bool) error }; type Transport interface{ Receive(context.Context, any) (ReceivedPacket, error) }; type Policy interface{}; type ExtensionHost interface{}; type ServiceRuntime interface{}; type ReceivedBodyCapability interface{ Borrow(context.Context, func(credentialmemory.BorrowedView) error) error }; type Proposal interface{ Commit() error; Wipe() error }; type Observation struct{}; type ReceivedExecPrivate struct{ observation credentialprotocol.HelperExecPrivateObservation }; func (ReceivedExecPrivate) Revision() uint64{return 1}; type ReceivedExecStream struct{ observation credentialprotocol.HelperExecStreamObservation }; func (ReceivedExecStream) Revision() uint64{return 1}; type ReceivedPacket struct{ body ReceivedBodyCapability }; func (ReceivedPacket) ExecPrivate()(ReceivedExecPrivate,bool){return ReceivedExecPrivate{},true}; func (ReceivedPacket) ExecStream()(ReceivedExecStream,bool){return ReceivedExecStream{},true}; type serviceExecDispatch struct{ transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool }; type descriptor struct{}; type extensionEntry struct{ descriptor descriptor; factory any }; type ExtensionRegistry struct{ entries []extensionEntry }; type ServiceOptions struct{ Core Core; Transport Transport; Policy Policy; Extensions *ExtensionRegistry; Host ExtensionHost; Runtime ServiceRuntime }; type serviceState struct{ mu sync.Mutex; serveCalled bool; execution CoreExecution }; type Service struct{ core Core; transport Transport; policy Policy; extensions []extensionEntry; host ExtensionHost; runtime ServiceRuntime; state *serviceState }; func (s *Service) takeExecDispatch(uint64)(serviceExecDispatch,error){return serviceExecDispatch{},nil}; type ServiceResult struct{}; var errInvalid, ErrContractDependency, ErrContractTransition error; var unrelated, foreign any; var foreignExecution CoreExecution; var foreignCore Core; var foreignTransport Transport; var foreignService *Service; var body ReceivedBodyCapability; var tx *credentialprotocol.HelperExecTransaction; var fakeTx *other.HelperExecTransaction; var obs Observation; var correlation credentialprotocol.HelperExecTransactionCorrelation; var request any; var ctx context.Context; func configuredDependency(any) bool{return true}; func transportContextPrecondition(context.Context) error{return nil}; func snapshotServiceExtensionEntries(registry *ExtensionRegistry) []extensionEntry { if registry == nil { return nil }; result := make([]extensionEntry, len(registry.entries)); for index, entry := range registry.entries { result[index] = extensionEntry{descriptor: credentialprotocol.CloneExtensionDescriptor(entry.descriptor), factory: entry.factory} }; return result }
+type Core interface{ BeginExec(context.Context, any, credentialmemory.BorrowedView) (CoreExecution, error) }; type CoreExecution interface{ WriteStdin(context.Context, credentialmemory.BorrowedView, uint64, bool) error }; type ExecPlanCapability struct{}; func (ExecPlanCapability) destroy(){}; type Transport interface{ Receive(context.Context, any) (ReceivedPacket, error) }; type Policy interface{}; type ExtensionHost interface{}; type ServiceRuntime interface{}; type ReceivedBodyCapability interface{ Borrow(context.Context, func(credentialmemory.BorrowedView) error) error; Destroy(context.Context) error }; type Proposal interface{ Commit() error; Wipe() error }; type Observation struct{}; type ReceivedExecPrivate struct{ observation credentialprotocol.HelperExecPrivateObservation }; func (ReceivedExecPrivate) Revision() uint64{return 1}; type ReceivedExecStream struct{ observation credentialprotocol.HelperExecStreamObservation }; func (ReceivedExecStream) Revision() uint64{return 1}; type ReceivedPacket struct{ body ReceivedBodyCapability }; func (ReceivedPacket) ExecPrivate()(ReceivedExecPrivate,bool){return ReceivedExecPrivate{},true}; func (ReceivedPacket) ExecStream()(ReceivedExecStream,bool){return ReceivedExecStream{},true}; type serviceExecDispatch struct{ transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool }; type descriptor struct{}; type extensionEntry struct{ descriptor descriptor; factory any }; type ExtensionRegistry struct{ entries []extensionEntry }; type ServiceOptions struct{ Core Core; Transport Transport; Policy Policy; Extensions *ExtensionRegistry; Host ExtensionHost; Runtime ServiceRuntime }; type serviceState struct{ mu sync.Mutex; serveCalled bool; execution CoreExecution; request any; plan ExecPlanCapability }; type Service struct{ core Core; transport Transport; policy Policy; extensions []extensionEntry; host ExtensionHost; runtime ServiceRuntime; state *serviceState }; func (s *Service) takeExecDispatch(uint64)(serviceExecDispatch,error){return serviceExecDispatch{},nil}; type ServiceDisposition uint8; const (ServiceClosed ServiceDisposition = 1; ServiceStopVMRequired ServiceDisposition = 2); type ServiceResult struct{ disposition ServiceDisposition; closeReason credentialprotocol.CloseReason }; func ValidateServiceDisposition(ServiceDisposition) error{return nil}; func newServiceResult(disposition ServiceDisposition, closeReason credentialprotocol.CloseReason)(ServiceResult,error){ if ValidateServiceDisposition(disposition) != nil || credentialprotocol.ValidateCloseReason(closeReason) != nil { return ServiceResult{}, ErrContractInvalidArgument }; clean := disposition == ServiceClosed && (closeReason == credentialprotocol.CloseReasonNormal || closeReason == credentialprotocol.CloseReasonShutdown); stop := disposition == ServiceStopVMRequired && (closeReason == credentialprotocol.CloseReasonProtocolError || closeReason == credentialprotocol.CloseReasonIdentityDrift || closeReason == credentialprotocol.CloseReasonExpired || closeReason == credentialprotocol.CloseReasonHelperLoss); if !clean && !stop { return ServiceResult{}, ErrContractResultMatrix }; return ServiceResult{disposition: disposition, closeReason: closeReason}, nil }; var errInvalid, ErrContractInvalidArgument, ErrContractResultMatrix, ErrContractDependency, ErrContractTransition, ErrContractOwnership error; var unrelated, foreign any; var foreignExecution CoreExecution; var foreignCore Core; var foreignTransport Transport; var foreignService *Service; var body ReceivedBodyCapability; var tx *credentialprotocol.HelperExecTransaction; var fakeTx *other.HelperExecTransaction; var obs Observation; var correlation credentialprotocol.HelperExecTransactionCorrelation; var request any; var ctx context.Context; func configuredDependency(any) bool{return true}; func transportContextPrecondition(context.Context) error{return nil}; func snapshotServiceExtensionEntries(registry *ExtensionRegistry) []extensionEntry { if registry == nil { return nil }; result := make([]extensionEntry, len(registry.entries)); for index, entry := range registry.entries { result[index] = extensionEntry{descriptor: credentialprotocol.CloneExtensionDescriptor(entry.descriptor), factory: entry.factory} }; return result }
 ` + declarations
 }
 
 type l8D2ReadinessServiceASTAnalysis struct {
-	construction    bool
-	serveOneShot    bool
-	privateSequence bool
-	stdinSequence   bool
+	construction        bool
+	serveOneShot        bool
+	privateSequence     bool
+	stdinSequence       bool
+	zeroPrivateSequence bool
 }
 
 func assertL8D2ReadinessServiceStructuralBoundaries(t *testing.T, dir string) {
 	t.Helper()
+	allFiles := make(map[string]*ast.File)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		allFiles[path] = file
+	}
 	packages, err := parser.ParseDir(token.NewFileSet(), dir, func(info fs.FileInfo) bool {
 		return !strings.HasSuffix(info.Name(), "_test.go")
 	}, 0)
@@ -2031,6 +2896,9 @@ func assertL8D2ReadinessServiceStructuralBoundaries(t *testing.T, dir string) {
 		files = pkg.Files
 		break
 	}
+	if !l8D2ReadinessExactServiceResultReducerAcrossBuilds(dir, allFiles) {
+		t.Error("newServiceResult must be the unique exact package reducer for the frozen disposition/close-reason matrix")
+	}
 	analysis := l8D2ReadinessAnalyzeServiceAST(files)
 	if !analysis.construction {
 		t.Error("NewService must immediately reject all five invalid configured dependencies and store one owned canonical extension snapshot plus fresh state without caller aliases")
@@ -2038,7 +2906,7 @@ func assertL8D2ReadinessServiceStructuralBoundaries(t *testing.T, dir string) {
 	if !analysis.serveOneShot {
 		t.Error("Serve must classify context first and atomically check/set serveCalled in one exact state mutex critical section before dependency calls")
 	}
-	if !analysis.privateSequence {
+	if !analysis.privateSequence || !analysis.zeroPrivateSequence {
 		t.Error("Serve-reachable private wiring must bind one ReceivedBodyCapability.Borrow view and one observed proposal to Service.core.BeginExec, its exact return matrix, Commit/Wipe, comparison no-Core, and retained execution owner")
 	}
 	if !analysis.stdinSequence {
@@ -2046,8 +2914,155 @@ func assertL8D2ReadinessServiceStructuralBoundaries(t *testing.T, dir string) {
 	}
 }
 
+func l8D2ReadinessExactServiceResultReducer(files map[string]*ast.File) bool {
+	const protocolPath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+	var reducer *ast.FuncDecl
+	var reducerAliases map[string]string
+	declarations := 0
+	for _, file := range files {
+		aliases, _ := l8D2ReadinessImportAliases(file)
+		for _, declaration := range file.Decls {
+			switch value := declaration.(type) {
+			case *ast.FuncDecl:
+				if value.Name.Name == "newServiceResult" {
+					declarations++
+					reducer, reducerAliases = value, aliases
+				}
+			case *ast.GenDecl:
+				for _, specification := range value.Specs {
+					switch candidate := specification.(type) {
+					case *ast.ValueSpec:
+						for _, name := range candidate.Names {
+							if name.Name == "newServiceResult" {
+								declarations++
+							}
+						}
+					case *ast.TypeSpec:
+						if candidate.Name.Name == "newServiceResult" {
+							declarations++
+						}
+					}
+				}
+			}
+		}
+	}
+	if declarations != 1 || reducer == nil || reducer.Recv != nil || reducer.Body == nil || reducer.Type.TypeParams != nil || reducer.Type.Params == nil || reducer.Type.Results == nil || len(reducer.Type.Params.List) != 2 || len(reducer.Type.Results.List) != 2 {
+		return false
+	}
+	if len(reducer.Type.Params.List[0].Names) != 1 || reducer.Type.Params.List[0].Names[0].Name != "disposition" || types.ExprString(reducer.Type.Params.List[0].Type) != "ServiceDisposition" || len(reducer.Type.Params.List[1].Names) != 1 || reducer.Type.Params.List[1].Names[0].Name != "closeReason" || !l8D2ReadinessExactImportedType(reducer.Type.Params.List[1].Type, reducerAliases, protocolPath, "CloseReason", false) {
+		return false
+	}
+	if len(reducer.Type.Results.List[0].Names) != 0 || types.ExprString(reducer.Type.Results.List[0].Type) != "ServiceResult" || len(reducer.Type.Results.List[1].Names) != 0 || types.ExprString(reducer.Type.Results.List[1].Type) != "error" {
+		return false
+	}
+	canonical, err := parser.ParseFile(token.NewFileSet(), "canonical.go", `package fixture
+func newServiceResult(disposition ServiceDisposition, closeReason credentialprotocol.CloseReason) (ServiceResult, error) {
+	if ValidateServiceDisposition(disposition) != nil || credentialprotocol.ValidateCloseReason(closeReason) != nil {
+		return ServiceResult{}, ErrContractInvalidArgument
+	}
+	clean := disposition == ServiceClosed && (closeReason == credentialprotocol.CloseReasonNormal || closeReason == credentialprotocol.CloseReasonShutdown)
+	stop := disposition == ServiceStopVMRequired && (closeReason == credentialprotocol.CloseReasonProtocolError || closeReason == credentialprotocol.CloseReasonIdentityDrift || closeReason == credentialprotocol.CloseReasonExpired || closeReason == credentialprotocol.CloseReasonHelperLoss)
+	if !clean && !stop {
+		return ServiceResult{}, ErrContractResultMatrix
+	}
+	return ServiceResult{disposition: disposition, closeReason: closeReason}, nil
+}`, 0)
+	if err != nil || len(canonical.Decls) != 1 {
+		return false
+	}
+	want := canonical.Decls[0].(*ast.FuncDecl)
+	return l8D2ReadinessFormattedNode(reducer.Body) == l8D2ReadinessFormattedNode(want.Body)
+}
+
+func l8D2ReadinessExactServiceResultReducerAcrossBuilds(dir string, files map[string]*ast.File) bool {
+	if dir == "" || !l8D2ReadinessExactServiceResultReducer(files) {
+		return false
+	}
+	for _, context := range l8D2ReadinessSupportedBuildContexts() {
+		serviceActive, reducerActive := false, false
+		for path, file := range files {
+			active, err := context.MatchFile(dir, filepath.Base(path))
+			if err != nil {
+				return false
+			}
+			if !active {
+				continue
+			}
+			if l8D2ReadinessFileDeclaresStruct(file, "Service") {
+				serviceActive = true
+			}
+			if l8D2ReadinessFileDeclaresFunction(file, "newServiceResult") {
+				reducerActive = true
+			}
+		}
+		if serviceActive && !reducerActive {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessSupportedBuildContexts() []build.Context {
+	result := make([]build.Context, 0, 4)
+	for _, goos := range []string{"linux", "darwin", "freebsd", "windows"} {
+		context := build.Default
+		context.GOOS = goos
+		context.GOARCH = "amd64"
+		context.CgoEnabled = false
+		context.BuildTags = nil
+		result = append(result, context)
+	}
+	return result
+}
+
+func l8D2ReadinessFileDeclaresStruct(file *ast.File, name string) bool {
+	if file == nil {
+		return false
+	}
+	for _, declaration := range file.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok || general.Tok != token.TYPE {
+			continue
+		}
+		for _, specification := range general.Specs {
+			typeSpec, ok := specification.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name != name {
+				continue
+			}
+			if _, ok := typeSpec.Type.(*ast.StructType); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessFileDeclaresFunction(file *ast.File, name string) bool {
+	if file == nil {
+		return false
+	}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Recv == nil && function.Name.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessFormattedNode(node ast.Node) string {
+	var output strings.Builder
+	if node == nil || format.Node(&output, token.NewFileSet(), node) != nil {
+		return ""
+	}
+	return output.String()
+}
+
 func l8D2ReadinessAnalyzeServiceAST(files map[string]*ast.File) l8D2ReadinessServiceASTAnalysis {
 	var result l8D2ReadinessServiceASTAnalysis
+	if !l8D2ReadinessExactServiceResultReducer(files) {
+		return result
+	}
 	functions := make(map[string][]*ast.FuncDecl)
 	serviceMethods := make(map[string]*ast.FuncDecl)
 	aliasesByFunction := make(map[*ast.FuncDecl]map[string]string)
@@ -2196,7 +3211,223 @@ func l8D2ReadinessAnalyzeServiceAST(files map[string]*ast.File) l8D2ReadinessSer
 	result.serveOneShot = result.serveOneShot && topologyStable
 	result.privateSequence = privateDispatchers[serve] && topologyStable
 	result.stdinSequence = stdinDispatchers[serve] && topologyStable
+	result.zeroPrivateSequence = l8D2ReadinessZeroPrivateExecStable(stableReachable) && topologyStable
 	return result
+}
+
+func l8D2ReadinessZeroPrivateExecStable(reachable map[*ast.FuncDecl]bool) bool {
+	for function := range reachable {
+		receiver := l8D2ReadinessReceiverName(function)
+		if receiver == "" || function.Body == nil {
+			continue
+		}
+		parameters := l8D2ReadinessNamedParameters(function)
+		if len(parameters) != 3 || types.ExprString(parameters[0].typ) != "context.Context" || types.ExprString(parameters[1].typ) != "ReceivedPacket" || types.ExprString(parameters[2].typ) != "bool" || len(function.Body.List) < 3 {
+			continue
+		}
+		arm, armOK := l8D2ReadinessExactExecArmExtraction(function.Body.List[0], parameters[1].name)
+		if !armOK || !l8D2ReadinessBooleanArmGate(function.Body.List[1], arm.ok) {
+			continue
+		}
+		for _, statement := range function.Body.List[2:] {
+			branch, ok := statement.(*ast.IfStmt)
+			protected := map[string]bool{parameters[1].name: true, parameters[2].name: true, arm.value: true, arm.ok: true}
+			exempt := func(assignment *ast.AssignStmt, name string) bool {
+				return assignment == function.Body.List[0] && (name == arm.value || name == arm.ok)
+			}
+			if ok && !l8D2ReadinessBodyRebindsNames(function.Body, protected, exempt) && l8D2ReadinessExactZeroPrivateCondition(branch.Cond, arm.value) && l8D2ReadinessZeroPrivateBranchStable(branch.Body, receiver, parameters[0].name, parameters[2].name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type l8D2ReadinessExecArmNames struct {
+	value string
+	ok    string
+}
+
+func l8D2ReadinessExactExecArmExtraction(statement ast.Stmt, packet string) (l8D2ReadinessExecArmNames, bool) {
+	assignment, ok := statement.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 {
+		return l8D2ReadinessExecArmNames{}, false
+	}
+	arm, armOK := assignment.Lhs[0].(*ast.Ident)
+	present, presentOK := assignment.Lhs[1].(*ast.Ident)
+	call, callOK := assignment.Rhs[0].(*ast.CallExpr)
+	selector, selectorOK := func() (*ast.SelectorExpr, bool) {
+		if !callOK {
+			return nil, false
+		}
+		candidate, valid := call.Fun.(*ast.SelectorExpr)
+		return candidate, valid
+	}()
+	owner, ownerOK := func() (*ast.Ident, bool) {
+		if !selectorOK {
+			return nil, false
+		}
+		candidate, valid := selector.X.(*ast.Ident)
+		return candidate, valid
+	}()
+	if !armOK || !presentOK || !ownerOK || arm.Name == "_" || present.Name == "_" || owner.Name != packet || selector.Sel.Name != "Exec" || len(call.Args) != 0 {
+		return l8D2ReadinessExecArmNames{}, false
+	}
+	return l8D2ReadinessExecArmNames{value: arm.Name, ok: present.Name}, true
+}
+
+func l8D2ReadinessExactZeroPrivateCondition(expression ast.Expr, arm string) bool {
+	condition, ok := expression.(*ast.BinaryExpr)
+	if !ok || condition.Op != token.LAND {
+		return false
+	}
+	exactCall := func(candidate ast.Expr, method string) bool {
+		call, ok := candidate.(*ast.CallExpr)
+		if !ok || len(call.Args) != 0 {
+			return false
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		owner, ownerOK := func() (*ast.Ident, bool) {
+			if !ok {
+				return nil, false
+			}
+			value, valid := selector.X.(*ast.Ident)
+			return value, valid
+		}()
+		return ownerOK && owner.Name == arm && selector.Sel.Name == method
+	}
+	length := func(candidate ast.Expr) bool {
+		comparison, ok := candidate.(*ast.BinaryExpr)
+		return ok && comparison.Op == token.EQL && exactCall(comparison.X, "PrivateBindingLength") && types.ExprString(comparison.Y) == "0"
+	}
+	digest := func(candidate ast.Expr) bool {
+		comparison, ok := candidate.(*ast.BinaryExpr)
+		return ok && comparison.Op == token.EQL && exactCall(comparison.X, "PrivateBindingSHA256") && (types.ExprString(comparison.Y) == "[32]byte{}" || types.ExprString(comparison.Y) == "([32]byte{})")
+	}
+	return (length(condition.X) && digest(condition.Y)) || (digest(condition.X) && length(condition.Y))
+}
+
+func l8D2ReadinessZeroPrivateBranchStable(body *ast.BlockStmt, receiver, contextName, comparisonName string) bool {
+	if body == nil {
+		return false
+	}
+	var coreAssignment *ast.AssignStmt
+	var execution, coreError, request, plan string
+	stateRequest, statePlan, planDestroy, validMatrix, locked, retained, unlocked := token.NoPos, token.NoPos, token.NoPos, token.NoPos, token.NoPos, token.NoPos, token.NoPos
+	comparisonGate := token.NoPos
+	planDestroyCount := 0
+	for _, statement := range body.List {
+		switch value := statement.(type) {
+		case *ast.AssignStmt:
+			if len(value.Lhs) == 1 && len(value.Rhs) == 1 && types.ExprString(value.Rhs[0]) == receiver+".state.request" {
+				if identifier, ok := value.Lhs[0].(*ast.Ident); ok && identifier.Name != "_" {
+					request, stateRequest = identifier.Name, value.Pos()
+				}
+			}
+			if len(value.Lhs) == 1 && len(value.Rhs) == 1 && types.ExprString(value.Rhs[0]) == receiver+".state.plan" {
+				if identifier, ok := value.Lhs[0].(*ast.Ident); ok && identifier.Name != "_" {
+					plan, statePlan = identifier.Name, value.Pos()
+				}
+			}
+			if len(value.Lhs) == 2 && len(value.Rhs) == 1 {
+				call, ok := value.Rhs[0].(*ast.CallExpr)
+				selector, selectorOK := func() (*ast.SelectorExpr, bool) {
+					if !ok {
+						return nil, false
+					}
+					candidate, valid := call.Fun.(*ast.SelectorExpr)
+					return candidate, valid
+				}()
+				if selectorOK && types.ExprString(selector.X) == receiver+".core" && selector.Sel.Name == "BeginExec" && len(call.Args) == 3 && types.ExprString(call.Args[0]) == contextName && l8D2ReadinessNilIdentifier(call.Args[2]) && types.ExprString(call.Args[1]) == request {
+					first, firstOK := value.Lhs[0].(*ast.Ident)
+					second, secondOK := value.Lhs[1].(*ast.Ident)
+					if firstOK && secondOK && first.Name != "_" && second.Name != "_" {
+						coreAssignment, execution, coreError = value, first.Name, second.Name
+					}
+				}
+			}
+			if len(value.Lhs) == 1 && len(value.Rhs) == 1 && execution != "" && types.ExprString(value.Lhs[0]) == receiver+".state.execution" && types.ExprString(value.Rhs[0]) == execution {
+				retained = value.Pos()
+			}
+		case *ast.IfStmt:
+			if types.ExprString(value.Cond) == comparisonName && value.Init == nil && value.Else == nil && l8D2ReadinessExactZeroPrivateComparisonReturn(value.Body) {
+				authority := false
+				ast.Inspect(value.Body, func(node ast.Node) bool {
+					switch candidate := node.(type) {
+					case *ast.CallExpr:
+						authority = true
+						return false
+					case *ast.SelectorExpr:
+						if types.ExprString(candidate.X) == receiver+".core" || candidate.Sel.Name == "Borrow" || candidate.Sel.Name == "BeginExec" || strings.HasPrefix(candidate.Sel.Name, "Propose") {
+							authority = true
+							return false
+						}
+					}
+					return true
+				})
+				if !authority {
+					comparisonGate = value.Pos()
+				}
+			}
+			if coreAssignment != nil && l8D2ReadinessCoreResultFailureCondition(value.Cond, coreError, execution) {
+				validMatrix = value.Pos()
+			}
+		case *ast.ExprStmt:
+			call, ok := value.X.(*ast.CallExpr)
+			if ok && l8D2ReadinessExactStateMutexCall(call, receiver, "Lock") {
+				if coreAssignment == nil {
+					locked = call.Pos()
+				} else {
+					locked = call.Pos()
+				}
+			}
+			if ok && l8D2ReadinessExactStateMutexCall(call, receiver, "Unlock") {
+				unlocked = call.Pos()
+			}
+			if ok {
+				selector, selectorOK := call.Fun.(*ast.SelectorExpr)
+				owner, ownerOK := func() (*ast.Ident, bool) {
+					if !selectorOK {
+						return nil, false
+					}
+					candidate, valid := selector.X.(*ast.Ident)
+					return candidate, valid
+				}()
+				if ownerOK && owner.Name == plan && selector.Sel.Name == "destroy" && len(call.Args) == 0 {
+					planDestroy, planDestroyCount = call.Pos(), planDestroyCount+1
+				}
+			}
+		}
+	}
+	forbidden := false
+	coreCalls := 0
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch l8D2ReadinessCallMethodName(call) {
+		case "BeginExec":
+			coreCalls++
+		case "Borrow", "ExecPrivate", "ProposeObservedPrivate", "ProposeObservedStdin":
+			forbidden = true
+			return false
+		}
+		return true
+	})
+	return !forbidden && comparisonGate != token.NoPos && comparisonGate < stateRequest && coreCalls == 1 && coreAssignment != nil && stateRequest != token.NoPos && statePlan != token.NoPos && stateRequest <= statePlan && statePlan < coreAssignment.Pos() && coreAssignment.Pos() < planDestroy && planDestroy < validMatrix && planDestroyCount == 1 && validMatrix < locked && locked < retained && retained < unlocked
+}
+
+func l8D2ReadinessExactZeroPrivateComparisonReturn(body *ast.BlockStmt) bool {
+	if body == nil || len(body.List) != 1 {
+		return false
+	}
+	returned, ok := body.List[0].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 2 || !l8D2ReadinessNilIdentifier(returned.Results[1]) {
+		return false
+	}
+	literal, ok := returned.Results[0].(*ast.CompositeLit)
+	return ok && types.ExprString(literal.Type) == "ServiceResult" && len(literal.Elts) == 0
 }
 
 func l8D2ReadinessExactDispatcherForwardCall(caller, target *ast.FuncDecl, call *ast.CallExpr, aliasesByFunction map[*ast.FuncDecl]map[string]string) bool {
@@ -2849,6 +4080,733 @@ func l8D2ReadinessWrappedServiceReceiver(expression ast.Expr, receiver string, a
 }
 
 func l8D2ReadinessReachableServiceStateStable(reachable map[*ast.FuncDecl]bool, serve *ast.FuncDecl) bool {
+	if len(reachable) == 0 {
+		return l8D2ReadinessReachableServiceStateStableLegacy(reachable, serve)
+	}
+	for function := range reachable {
+		if l8D2ReadinessFunctionUsesLedgerState(function) {
+			if !l8D2ReadinessServiceMethodStateStable(function, serve) {
+				return false
+			}
+			continue
+		}
+		if !l8D2ReadinessReachableServiceStateStableLegacy(map[*ast.FuncDecl]bool{function: true}, serve) {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessFunctionUsesLedgerState(function *ast.FuncDecl) bool {
+	if function == nil || function.Body == nil {
+		return false
+	}
+	uses := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		switch selector.Sel.Name {
+		case "request", "plan", "revision", "transaction", "correlation", "comparison", "execution", "dispatchTaken":
+			if strings.Contains(types.ExprString(selector), ".state.") {
+				uses = true
+				return false
+			}
+		}
+		return true
+	})
+	return uses
+}
+
+func l8D2ReadinessStateCriticalSectionsComplete(function *ast.FuncDecl, receiver string) bool {
+	if function == nil || function.Body == nil {
+		return false
+	}
+	var validateBlock func(*ast.BlockStmt) bool
+	validateBlock = func(block *ast.BlockStmt) bool {
+		if block == nil {
+			return true
+		}
+		for index := 0; index < len(block.List); index++ {
+			if l8D2ReadinessExactSelectorCallStatement(block.List[index], receiver+".state.mu", "Unlock") {
+				return false
+			}
+			if !l8D2ReadinessExactSelectorCallStatement(block.List[index], receiver+".state.mu", "Lock") {
+				continue
+			}
+			unlock := -1
+			for candidate := index + 1; candidate < len(block.List); candidate++ {
+				if l8D2ReadinessExactSelectorCallStatement(block.List[candidate], receiver+".state.mu", "Unlock") {
+					unlock = candidate
+					break
+				}
+			}
+			if unlock < 0 {
+				return false
+			}
+			for _, statement := range block.List[index+1 : unlock] {
+				if branch, ok := statement.(*ast.IfStmt); ok {
+					if !l8D2ReadinessExactCriticalRejectBranch(branch, receiver) {
+						return false
+					}
+					continue
+				}
+				if _, ok := statement.(*ast.AssignStmt); !ok {
+					return false
+				}
+				if !l8D2ReadinessPureCriticalAssignment(statement.(*ast.AssignStmt), receiver) {
+					return false
+				}
+				forbidden := false
+				ast.Inspect(statement, func(node ast.Node) bool {
+					switch node.(type) {
+					case *ast.CallExpr, *ast.FuncLit, *ast.ReturnStmt, *ast.BranchStmt, *ast.GoStmt, *ast.DeferStmt:
+						forbidden = true
+						return false
+					}
+					return true
+				})
+				if forbidden {
+					return false
+				}
+			}
+			index = unlock
+		}
+		valid := true
+		ast.Inspect(block, func(node ast.Node) bool {
+			if !valid {
+				return false
+			}
+			child, ok := node.(*ast.BlockStmt)
+			if !ok || child == block {
+				return true
+			}
+			if l8D2ReadinessExactUnlockThenReturn(child, receiver) {
+				return false
+			}
+			if !validateBlock(child) {
+				valid = false
+			}
+			return false
+		})
+		return valid
+	}
+	return validateBlock(function.Body)
+}
+
+func l8D2ReadinessPureCriticalAssignment(assignment *ast.AssignStmt, receiver string) bool {
+	if assignment == nil || len(assignment.Rhs) == 0 {
+		return false
+	}
+	var pure func(ast.Expr) bool
+	pure = func(expression ast.Expr) bool {
+		switch value := expression.(type) {
+		case *ast.Ident, *ast.BasicLit:
+			return true
+		case *ast.ParenExpr:
+			return pure(value.X)
+		case *ast.SelectorExpr:
+			text := types.ExprString(value)
+			prefix := receiver + ".state."
+			return strings.HasPrefix(text, prefix) && !strings.ContainsAny(strings.TrimPrefix(text, prefix), ".[()")
+		}
+		return false
+	}
+	for _, expression := range assignment.Rhs {
+		if !pure(expression) {
+			return false
+		}
+	}
+	for _, expression := range assignment.Lhs {
+		switch value := expression.(type) {
+		case *ast.Ident:
+		case *ast.SelectorExpr:
+			text := types.ExprString(value)
+			prefix := receiver + ".state."
+			if !strings.HasPrefix(text, prefix) || strings.ContainsAny(strings.TrimPrefix(text, prefix), ".[()") {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessExactCriticalRejectBranch(branch *ast.IfStmt, receiver string) bool {
+	if branch == nil || branch.Init != nil || branch.Else != nil || !l8D2ReadinessExactUnlockThenReturn(branch.Body, receiver) {
+		return false
+	}
+	return l8D2ReadinessPureCriticalCondition(branch.Cond, receiver)
+}
+
+func l8D2ReadinessPureCriticalCondition(expression ast.Expr, receiver string) bool {
+	switch value := expression.(type) {
+	case *ast.Ident, *ast.BasicLit:
+		return true
+	case *ast.ParenExpr:
+		return l8D2ReadinessPureCriticalCondition(value.X, receiver)
+	case *ast.SelectorExpr:
+		text := types.ExprString(value)
+		prefix := receiver + ".state."
+		return strings.HasPrefix(text, prefix) && !strings.ContainsAny(strings.TrimPrefix(text, prefix), ".[()")
+	case *ast.UnaryExpr:
+		return value.Op == token.NOT && l8D2ReadinessPureCriticalCondition(value.X, receiver)
+	case *ast.BinaryExpr:
+		switch value.Op {
+		case token.LAND, token.LOR, token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			return l8D2ReadinessPureCriticalCondition(value.X, receiver) && l8D2ReadinessPureCriticalCondition(value.Y, receiver)
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessExactUnlockThenReturn(block *ast.BlockStmt, receiver string) bool {
+	if block == nil || len(block.List) != 2 || !l8D2ReadinessExactSelectorCallStatement(block.List[0], receiver+".state.mu", "Unlock") {
+		return false
+	}
+	returned, ok := block.List[1].(*ast.ReturnStmt)
+	return ok && len(returned.Results) != 0
+}
+
+func l8D2ReadinessServiceMethodStateStable(function, serve *ast.FuncDecl) bool {
+	receiver := l8D2ReadinessReceiverName(function)
+	if receiver == "" || function.Body == nil {
+		return true
+	}
+	if !l8D2ReadinessStateCriticalSectionsComplete(function, receiver) {
+		return false
+	}
+	bodyParameters := make(map[string]bool)
+	contextParameters := make(map[string]bool)
+	if function.Type.Params != nil {
+		for _, field := range function.Type.Params.List {
+			for _, name := range field.Names {
+				switch types.ExprString(field.Type) {
+				case "ReceivedBodyCapability":
+					bodyParameters[name.Name] = true
+				case "context.Context":
+					contextParameters[name.Name] = true
+				}
+			}
+		}
+	}
+	statePrefix := receiver + ".state"
+	allowedValueFields := map[string]bool{
+		"request": true, "plan": true, "revision": true, "transaction": true,
+		"correlation": true, "comparison": true, "execution": true, "dispatchTaken": true,
+	}
+	stateField := func(expression ast.Expr) (string, bool) {
+		text := types.ExprString(expression)
+		prefix := statePrefix + "."
+		if !strings.HasPrefix(text, prefix) {
+			return "", false
+		}
+		remainder := strings.TrimPrefix(text, prefix)
+		if remainder == "" || strings.ContainsAny(remainder, ".[()") {
+			return "", false
+		}
+		return remainder, true
+	}
+	referencesState := func(node ast.Node) bool {
+		found := false
+		ast.Inspect(node, func(candidate ast.Node) bool {
+			if found {
+				return false
+			}
+			expression, ok := candidate.(ast.Expr)
+			if ok && (types.ExprString(expression) == statePrefix || strings.HasPrefix(types.ExprString(expression), statePrefix+".")) {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	exactBodyBorrow := func(expression ast.Expr) bool {
+		call, ok := expression.(*ast.CallExpr)
+		if !ok || len(call.Args) != 2 {
+			return false
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return false
+		}
+		owner, ownerOK := selector.X.(*ast.Ident)
+		contextName, contextOK := call.Args[0].(*ast.Ident)
+		_, callbackOK := call.Args[1].(*ast.FuncLit)
+		return ownerOK && contextOK && callbackOK && selector.Sel.Name == "Borrow" && bodyParameters[owner.Name] && contextParameters[contextName.Name]
+	}
+	exactUnlockReturn := func(block *ast.BlockStmt) bool {
+		if block == nil || len(block.List) != 2 || !l8D2ReadinessExactSelectorCallStatement(block.List[0], receiver+".state.mu", "Unlock") {
+			return false
+		}
+		_, ok := block.List[1].(*ast.ReturnStmt)
+		return ok
+	}
+	mutexBound := func(position token.Pos) bool {
+		block := function.Body
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			candidate, ok := node.(*ast.BlockStmt)
+			if ok && candidate.Pos() < position && position < candidate.End() && candidate.End()-candidate.Pos() < block.End()-block.Pos() {
+				block = candidate
+			}
+			return true
+		})
+		lastLock, lastUnlock := token.NoPos, token.NoPos
+		validEarlierBranches := true
+		for _, statement := range block.List {
+			if statement.Pos() >= position {
+				break
+			}
+			if branch, branchOK := statement.(*ast.IfStmt); branchOK && lastLock != token.NoPos && lastUnlock < lastLock {
+				branchUnlock := false
+				ast.Inspect(branch.Body, func(node ast.Node) bool {
+					call, ok := node.(*ast.CallExpr)
+					if ok && l8D2ReadinessExactStateMutexCall(call, receiver, "Unlock") {
+						branchUnlock = true
+					}
+					return true
+				})
+				branchReturn := false
+				if len(branch.Body.List) != 0 {
+					_, branchReturn = branch.Body.List[len(branch.Body.List)-1].(*ast.ReturnStmt)
+				}
+				if (branchUnlock || branchReturn) && !exactUnlockReturn(branch.Body) {
+					validEarlierBranches = false
+				}
+				continue
+			}
+			expression, ok := statement.(*ast.ExprStmt)
+			call, callOK := func() (*ast.CallExpr, bool) {
+				if !ok {
+					return nil, false
+				}
+				candidate, valid := expression.X.(*ast.CallExpr)
+				return candidate, valid
+			}()
+			if !callOK {
+				continue
+			}
+			if l8D2ReadinessExactStateMutexCall(call, receiver, "Lock") {
+				lastLock = call.Pos()
+			}
+			if l8D2ReadinessExactStateMutexCall(call, receiver, "Unlock") {
+				lastUnlock = call.Pos()
+			}
+		}
+		futureUnlock := token.NoPos
+		for _, statement := range block.List {
+			if statement.Pos() <= position {
+				continue
+			}
+			if l8D2ReadinessExactSelectorCallStatement(statement, receiver+".state.mu", "Unlock") {
+				futureUnlock = statement.Pos()
+				break
+			}
+		}
+		return validEarlierBranches && lastLock != token.NoPos && lastUnlock < lastLock && futureUnlock != token.NoPos
+	}
+	copies := make(map[string]int)
+	writes := make(map[string]int)
+	stateCopies := make(map[string]string)
+	copyField := func(expression ast.Expr) string {
+		field := ""
+		ast.Inspect(expression, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if ok && stateCopies[identifier.Name] != "" {
+				field = stateCopies[identifier.Name]
+				return false
+			}
+			return field == ""
+		})
+		return field
+	}
+	stable := true
+	fail := func() {
+		stable = false
+	}
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !stable {
+			return false
+		}
+		switch value := node.(type) {
+		case *ast.UnaryExpr:
+			if value.Op == token.AND && referencesState(value.X) {
+				fail()
+				return false
+			}
+		case *ast.AssignStmt:
+			for index, left := range value.Lhs {
+				if identifier, ok := left.(*ast.Ident); ok && stateCopies[identifier.Name] != "" {
+					fail()
+					return false
+				}
+				field, stateWrite := stateField(left)
+				if stateWrite {
+					if !mutexBound(left.Pos()) || index >= len(value.Rhs) {
+						fail()
+						return false
+					}
+					writes[field]++
+					right := types.ExprString(value.Rhs[index])
+					switch field {
+					case "serveCalled":
+						if function != serve || right != "true" {
+							fail()
+							return false
+						}
+					case "execution":
+						if _, ok := value.Rhs[index].(*ast.Ident); !ok {
+							fail()
+							return false
+						}
+					case "dispatchTaken":
+						if function.Name.Name != "takeExecDispatch" || right != "true" {
+							fail()
+							return false
+						}
+					default:
+						fail()
+						return false
+					}
+				}
+				if index >= len(value.Rhs) {
+					continue
+				}
+				right := value.Rhs[index]
+				if types.ExprString(right) == statePrefix {
+					fail()
+					return false
+				}
+				field, stateRead := stateField(right)
+				if stateRead {
+					identifier, local := left.(*ast.Ident)
+					if !local || identifier.Name == "_" || !allowedValueFields[field] || !mutexBound(right.Pos()) {
+						fail()
+						return false
+					}
+					copies[field]++
+					stateCopies[identifier.Name] = field
+				} else if referencesState(right) && !exactBodyBorrow(right) {
+					fail()
+					return false
+				}
+			}
+		case *ast.CallExpr:
+			if l8D2ReadinessExactStateMutexCall(value, receiver, "Lock") || l8D2ReadinessExactStateMutexCall(value, receiver, "Unlock") {
+				return true
+			}
+			if exactBodyBorrow(value) {
+				return true
+			}
+			selector, selectorCall := value.Fun.(*ast.SelectorExpr)
+			if selectorCall && referencesState(selector.X) {
+				fail()
+				return false
+			}
+			if selectorCall {
+				if owner, ok := selector.X.(*ast.Ident); ok && stateCopies[owner.Name] != "" {
+					field := stateCopies[owner.Name]
+					allowed := (field == "plan" && selector.Sel.Name == "destroy" && len(value.Args) == 0) || (field == "execution" && selector.Sel.Name == "WriteStdin")
+					if !allowed || mutexBound(value.Pos()) {
+						fail()
+						return false
+					}
+				}
+			}
+			for index, argument := range value.Args {
+				if referencesState(argument) {
+					fail()
+					return false
+				}
+				field := copyField(argument)
+				if field != "" {
+					identifier, direct := argument.(*ast.Ident)
+					allowed := direct && selectorCall && types.ExprString(selector.X) == receiver+".core" && selector.Sel.Name == "BeginExec" && index == 1 && stateCopies[identifier.Name] == "request" && !mutexBound(value.Pos())
+					if !allowed {
+						fail()
+						return false
+					}
+				}
+			}
+		case *ast.ReturnStmt:
+			for _, result := range value.Results {
+				if referencesState(result) {
+					fail()
+					return false
+				}
+				allowedCopyCall := false
+				if call, ok := result.(*ast.CallExpr); ok {
+					if selector, selectorOK := call.Fun.(*ast.SelectorExpr); selectorOK {
+						if owner, ownerOK := selector.X.(*ast.Ident); ownerOK && stateCopies[owner.Name] == "execution" && selector.Sel.Name == "WriteStdin" && !mutexBound(call.Pos()) {
+							allowedCopyCall = true
+						}
+					}
+				}
+				if copyField(result) != "" && function.Name.Name != "takeExecDispatch" && !allowedCopyCall {
+					fail()
+					return false
+				}
+			}
+		case *ast.SelectorExpr:
+			text := types.ExprString(value)
+			if field, direct := stateField(value); direct && field != "mu" && !mutexBound(value.Pos()) {
+				stable = false
+				return false
+			}
+			for field := range allowedValueFields {
+				suffix := ".state." + field
+				if strings.HasSuffix(text, suffix) && !strings.HasPrefix(text, statePrefix+".") {
+					fail()
+					return false
+				}
+			}
+		}
+		return true
+	})
+	if !stable {
+		return false
+	}
+	if function.Name.Name == "takeExecDispatch" {
+		return l8D2ReadinessExactStateDispatchTake(function, receiver, copies, writes, stateCopies)
+	}
+	if writes["execution"] != 0 && (writes["execution"] != 1 || !l8D2ReadinessExactCoreExecutionInstall(function, receiver)) {
+		return false
+	}
+	if copies["request"] != copies["plan"] {
+		return false
+	}
+	return true
+}
+
+func l8D2ReadinessExactCoreExecutionInstall(function *ast.FuncDecl, receiver string) bool {
+	if function == nil || function.Body == nil {
+		return false
+	}
+	var coreAssignment, install *ast.AssignStmt
+	execution, coreError := "", ""
+	validGate := token.NoPos
+	rebound := false
+	coreCalls := 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok {
+			selector, selectorOK := call.Fun.(*ast.SelectorExpr)
+			if selectorOK && types.ExprString(selector.X) == receiver+".core" && selector.Sel.Name == "BeginExec" {
+				coreCalls++
+			}
+		}
+		switch value := node.(type) {
+		case *ast.UnaryExpr:
+			if execution != "" && value.Pos() > coreAssignment.Pos() && value.Op == token.AND && types.ExprString(value.X) == execution {
+				rebound = true
+			}
+		case *ast.AssignStmt:
+			if len(value.Lhs) == 2 && len(value.Rhs) == 1 {
+				call, ok := value.Rhs[0].(*ast.CallExpr)
+				selector, selectorOK := func() (*ast.SelectorExpr, bool) {
+					if !ok {
+						return nil, false
+					}
+					candidate, valid := call.Fun.(*ast.SelectorExpr)
+					return candidate, valid
+				}()
+				first, firstOK := value.Lhs[0].(*ast.Ident)
+				second, secondOK := value.Lhs[1].(*ast.Ident)
+				if selectorOK && firstOK && secondOK && types.ExprString(selector.X) == receiver+".core" && selector.Sel.Name == "BeginExec" && first.Name != "_" && second.Name != "_" && coreAssignment == nil {
+					coreAssignment, execution, coreError = value, first.Name, second.Name
+				}
+			}
+			if execution != "" && value != coreAssignment {
+				installCandidate := len(value.Lhs) == 1 && len(value.Rhs) == 1 && types.ExprString(value.Lhs[0]) == receiver+".state.execution" && types.ExprString(value.Rhs[0]) == execution
+				for _, right := range value.Rhs {
+					if l8D2ReadinessExpressionContainsIdentifier(right, execution) && !installCandidate {
+						rebound = true
+					}
+				}
+				for _, left := range value.Lhs {
+					if types.ExprString(left) == execution && (install == nil || value != install) {
+						rebound = true
+					}
+				}
+			}
+			if execution != "" && len(value.Lhs) == 1 && len(value.Rhs) == 1 && types.ExprString(value.Lhs[0]) == receiver+".state.execution" && types.ExprString(value.Rhs[0]) == execution {
+				if install != nil {
+					rebound = true
+				} else {
+					install = value
+				}
+			}
+		case *ast.IfStmt:
+			if coreAssignment != nil && value.Pos() > coreAssignment.Pos() && l8D2ReadinessCoreResultFailureCondition(value.Cond, coreError, execution) && l8D2ReadinessBlockReturns(value.Body) {
+				validGate = value.Pos()
+			}
+		}
+		if call, ok := node.(*ast.CallExpr); ok && execution != "" && coreAssignment != nil && call.Pos() > coreAssignment.Pos() {
+			if selector, selectorOK := call.Fun.(*ast.SelectorExpr); selectorOK && l8D2ReadinessExpressionContainsIdentifier(selector.X, execution) {
+				rebound = true
+			}
+			for _, argument := range call.Args {
+				if types.ExprString(argument) != execution {
+					continue
+				}
+				callee, exact := call.Fun.(*ast.Ident)
+				if !exact || callee.Name != "configuredDependency" || len(call.Args) != 1 {
+					rebound = true
+				}
+			}
+		}
+		if returned, ok := node.(*ast.ReturnStmt); ok && execution != "" && coreAssignment != nil && returned.Pos() > coreAssignment.Pos() {
+			for _, result := range returned.Results {
+				if l8D2ReadinessExpressionContainsIdentifier(result, execution) {
+					rebound = true
+				}
+			}
+		}
+		if declaration, ok := node.(*ast.ValueSpec); ok && execution != "" && coreAssignment != nil && declaration.Pos() > coreAssignment.Pos() {
+			for _, value := range declaration.Values {
+				if l8D2ReadinessExpressionContainsIdentifier(value, execution) {
+					rebound = true
+				}
+			}
+		}
+		return true
+	})
+	identifierUses := 0
+	if coreAssignment != nil {
+		selectorNames := make(map[token.Pos]bool)
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			if selector, ok := node.(*ast.SelectorExpr); ok {
+				selectorNames[selector.Sel.Pos()] = true
+			}
+			return true
+		})
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if ok && identifier.Name == execution && identifier.Pos() >= coreAssignment.Pos() && !selectorNames[identifier.Pos()] {
+				identifierUses++
+			}
+			return true
+		})
+	}
+	return !rebound && identifierUses == 3 && coreCalls == 1 && coreAssignment != nil && validGate != token.NoPos && install != nil && coreAssignment.Pos() < validGate && validGate < install.Pos()
+}
+
+func l8D2ReadinessExpressionContainsIdentifier(expression ast.Expr, name string) bool {
+	if expression == nil || name == "" {
+		return false
+	}
+	found := false
+	ast.Inspect(expression, func(node ast.Node) bool {
+		identifier, ok := node.(*ast.Ident)
+		if ok && identifier.Name == name {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
+}
+
+func l8D2ReadinessBlockReturns(body *ast.BlockStmt) bool {
+	if body == nil || len(body.List) == 0 {
+		return false
+	}
+	_, ok := body.List[len(body.List)-1].(*ast.ReturnStmt)
+	return ok
+}
+
+func l8D2ReadinessExactStateMutexCall(call *ast.CallExpr, receiver, method string) bool {
+	if call == nil || len(call.Args) != 0 {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && selector.Sel.Name == method && types.ExprString(selector.X) == receiver+".state.mu"
+}
+
+func l8D2ReadinessExactStateDispatchTake(function *ast.FuncDecl, receiver string, copies, writes map[string]int, stateCopies map[string]string) bool {
+	if function == nil || function.Type.Params == nil || len(function.Type.Params.List) != 1 || len(function.Type.Params.List[0].Names) != 1 {
+		return false
+	}
+	revision := function.Type.Params.List[0].Names[0].Name
+	revisionGate := token.NoPos
+	successUnlock := token.NoPos
+	latchWrite := token.NoPos
+	exactReturn := false
+	if len(function.Body.List) == 0 || !l8D2ReadinessExactSelectorCallStatement(function.Body.List[0], receiver+".state.mu", "Lock") {
+		return false
+	}
+	for _, statement := range function.Body.List {
+		switch value := statement.(type) {
+		case *ast.IfStmt:
+			if revisionGate == token.NoPos && value.Init == nil && value.Else == nil && l8D2ReadinessExactDispatchRejectCondition(value.Cond, receiver, revision) && len(value.Body.List) == 2 && l8D2ReadinessExactSelectorCallStatement(value.Body.List[0], receiver+".state.mu", "Unlock") {
+				returned, ok := value.Body.List[1].(*ast.ReturnStmt)
+				if ok && len(returned.Results) == 2 && !l8D2ReadinessNilIdentifier(returned.Results[1]) {
+					revisionGate = value.Pos()
+				}
+			}
+		case *ast.AssignStmt:
+			if len(value.Lhs) == 1 && types.ExprString(value.Lhs[0]) == receiver+".state.dispatchTaken" && len(value.Rhs) == 1 && types.ExprString(value.Rhs[0]) == "true" {
+				latchWrite = value.Pos()
+			}
+		case *ast.ExprStmt:
+			call, ok := value.X.(*ast.CallExpr)
+			if ok && l8D2ReadinessExactStateMutexCall(call, receiver, "Unlock") {
+				successUnlock = value.Pos()
+			}
+		case *ast.ReturnStmt:
+			if len(value.Results) != 2 || !l8D2ReadinessNilIdentifier(value.Results[1]) {
+				continue
+			}
+			literal, ok := value.Results[0].(*ast.CompositeLit)
+			if !ok || types.ExprString(literal.Type) != "serviceExecDispatch" || len(literal.Elts) != 3 {
+				continue
+			}
+			fields := make(map[string]string)
+			for _, element := range literal.Elts {
+				keyed, ok := element.(*ast.KeyValueExpr)
+				key, keyOK := func() (*ast.Ident, bool) {
+					if !ok {
+						return nil, false
+					}
+					candidate, valid := keyed.Key.(*ast.Ident)
+					return candidate, valid
+				}()
+				identifier, valueOK := func() (*ast.Ident, bool) {
+					if !ok {
+						return nil, false
+					}
+					candidate, valid := keyed.Value.(*ast.Ident)
+					return candidate, valid
+				}()
+				if !keyOK || !valueOK {
+					continue
+				}
+				fields[key.Name] = stateCopies[identifier.Name]
+			}
+			exactReturn = fields["transaction"] == "transaction" && fields["correlation"] == "correlation" && fields["comparison"] == "comparison" && successUnlock < value.Pos()
+		}
+	}
+	return revisionGate != token.NoPos && revisionGate < latchWrite && latchWrite < successUnlock && exactReturn && copies["transaction"] == 1 && copies["correlation"] == 1 && copies["comparison"] == 1 && writes["dispatchTaken"] == 1
+}
+
+func l8D2ReadinessExactDispatchRejectCondition(expression ast.Expr, receiver, revision string) bool {
+	condition, ok := expression.(*ast.BinaryExpr)
+	if !ok || condition.Op != token.LOR {
+		return false
+	}
+	mismatch := func(candidate ast.Expr) bool {
+		binary, ok := candidate.(*ast.BinaryExpr)
+		return ok && binary.Op == token.NEQ && types.ExprString(binary.X) == revision && types.ExprString(binary.Y) == receiver+".state.revision"
+	}
+	taken := func(candidate ast.Expr) bool {
+		return types.ExprString(candidate) == receiver+".state.dispatchTaken"
+	}
+	return (mismatch(condition.X) && taken(condition.Y)) || (taken(condition.X) && mismatch(condition.Y))
+}
+
+func l8D2ReadinessReachableServiceStateStableLegacy(reachable map[*ast.FuncDecl]bool, serve *ast.FuncDecl) bool {
 	for function := range reachable {
 		receiver := l8D2ReadinessReceiverName(function)
 		if receiver == "" {
@@ -3465,8 +5423,8 @@ func l8D2ReadinessAnalyzeServiceBorrowCallbacks(function *ast.FuncDecl, aliases 
 			continue
 		}
 		view := callback.Type.Params.List[0].Names[0].Name
-		private = private || l8D2ReadinessValidPrivateCallback(callback, receiver, ctx.Name, view, transactionParams, comparisonParams, correlationParams, privateObservationParams)
-		stdin = stdin || l8D2ReadinessValidStdinCallback(callback, receiver, ctx.Name, view, transactionParams, comparisonParams, correlationParams, streamObservationParams)
+		private = private || (l8D2ReadinessValidPrivateCallback(callback, receiver, ctx.Name, view, transactionParams, comparisonParams, correlationParams, privateObservationParams) && l8D2ReadinessObservedHandlerCleanupStable(function, callback, receiver, ctx.Name, body.Name, true))
+		stdin = stdin || (l8D2ReadinessValidStdinCallback(callback, receiver, ctx.Name, view, transactionParams, comparisonParams, correlationParams, streamObservationParams) && l8D2ReadinessObservedHandlerCleanupStable(function, callback, receiver, ctx.Name, body.Name, false))
 	}
 	return private, stdin
 }
@@ -3481,6 +5439,367 @@ func l8D2ReadinessBorrowErrorPropagated(body *ast.BlockStmt, assignmentIndex int
 	}
 	returned, ok := gate.Body.List[len(gate.Body.List)-1].(*ast.ReturnStmt)
 	return ok && len(returned.Results) > 0 && types.ExprString(returned.Results[len(returned.Results)-1]) == errorName
+}
+
+func l8D2ReadinessObservedHandlerCleanupStable(function *ast.FuncDecl, callback *ast.FuncLit, receiver, contextName, bodyName string, planRequired bool) bool {
+	if function == nil || function.Body == nil || callback == nil || callback.Body == nil {
+		return false
+	}
+	resultName, errorName, namedResults := l8D2ReadinessNamedServiceHandlerResults(function)
+	if !namedResults {
+		return false
+	}
+	if l8D2ReadinessFunctionShadowsCleanupAuthority(function) {
+		return false
+	}
+	planName, pendingName := "", ""
+	planPosition, pendingPosition, deferPosition, borrowPosition := token.NoPos, token.NoPos, token.NoPos, token.NoPos
+	var recovery *ast.IfStmt
+	var deferredBody *ast.BlockStmt
+	deferCount := 0
+	for _, statement := range function.Body.List {
+		if returned, ok := statement.(*ast.ReturnStmt); ok && deferPosition == token.NoPos && len(returned.Results) != 0 {
+			return false
+		}
+		switch value := statement.(type) {
+		case *ast.AssignStmt:
+			if len(value.Lhs) == 1 && len(value.Rhs) == 1 && types.ExprString(value.Rhs[0]) == receiver+".state.plan" {
+				if identifier, ok := value.Lhs[0].(*ast.Ident); ok && identifier.Name != "_" {
+					planName, planPosition = identifier.Name, value.Pos()
+				}
+			}
+			if len(value.Rhs) == 1 {
+				call, ok := value.Rhs[0].(*ast.CallExpr)
+				selector, selectorOK := func() (*ast.SelectorExpr, bool) {
+					if !ok {
+						return nil, false
+					}
+					candidate, valid := call.Fun.(*ast.SelectorExpr)
+					return candidate, valid
+				}()
+				owner, ownerOK := func() (*ast.Ident, bool) {
+					if !selectorOK {
+						return nil, false
+					}
+					candidate, valid := selector.X.(*ast.Ident)
+					return candidate, valid
+				}()
+				if ownerOK && owner.Name == bodyName && selector.Sel.Name == "Borrow" {
+					borrowPosition = value.Pos()
+				}
+			}
+		case *ast.DeclStmt:
+			declaration, ok := value.Decl.(*ast.GenDecl)
+			if !ok || declaration.Tok != token.VAR {
+				continue
+			}
+			for _, specification := range declaration.Specs {
+				valueSpec, ok := specification.(*ast.ValueSpec)
+				if ok && len(valueSpec.Names) == 1 && len(valueSpec.Values) == 0 && types.ExprString(valueSpec.Type) == "Proposal" {
+					pendingName, pendingPosition = valueSpec.Names[0].Name, value.Pos()
+				}
+			}
+		case *ast.DeferStmt:
+			deferCount++
+			if deferPosition != token.NoPos || len(value.Call.Args) != 0 {
+				continue
+			}
+			deferred, ok := value.Call.Fun.(*ast.FuncLit)
+			if !ok || deferred.Body == nil {
+				continue
+			}
+			deferPosition = value.Pos()
+			deferredBody = deferred.Body
+			for _, deferredStatement := range deferred.Body.List {
+				candidate, ok := deferredStatement.(*ast.IfStmt)
+				if ok && l8D2ReadinessExactRecoverGate(candidate) {
+					recovery = candidate
+				}
+			}
+		}
+	}
+	if deferCount != 1 || deferPosition == token.NoPos || borrowPosition == token.NoPos || deferPosition >= borrowPosition || pendingName == "" || pendingPosition == token.NoPos || pendingPosition >= deferPosition || recovery == nil || deferredBody == nil || (planRequired && (planName == "" || planPosition == token.NoPos || planPosition >= deferPosition)) {
+		return false
+	}
+	callbackDefers := 0
+	proposalName, proposalErrorName := "", ""
+	proposePosition, proposalGate, pendingInstall, firstAuthority := token.NoPos, token.NoPos, token.NoPos, token.NoPos
+	directCallback := l8D2ReadinessDirectStatements(callback.Body)
+	ast.Inspect(callback.Body, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.DeferStmt:
+			callbackDefers++
+		case *ast.AssignStmt:
+			if len(value.Lhs) == 2 && len(value.Rhs) == 1 {
+				call, ok := value.Rhs[0].(*ast.CallExpr)
+				method := ""
+				if ok {
+					method = l8D2ReadinessCallMethodName(call)
+				}
+				if (method == "ProposeObservedPrivate" || method == "ProposeObservedStdin") && directCallback[value] {
+					if proposal, ok := value.Lhs[0].(*ast.Ident); ok && proposal.Name != "_" {
+						proposalName, proposePosition = proposal.Name, value.Pos()
+					}
+					if proposalError, ok := value.Lhs[1].(*ast.Ident); ok && proposalError.Name != "_" {
+						proposalErrorName = proposalError.Name
+					}
+				}
+			}
+			if proposalName != "" && len(value.Lhs) == 1 && len(value.Rhs) == 1 && types.ExprString(value.Lhs[0]) == pendingName && types.ExprString(value.Rhs[0]) == proposalName && directCallback[value] {
+				if pendingInstall != token.NoPos {
+					pendingInstall = token.NoPos
+				} else {
+					pendingInstall = value.Pos()
+				}
+			}
+		case *ast.IfStmt:
+			if proposalName != "" && proposalErrorName != "" && directCallback[value] && value.Pos() > proposePosition && proposalGate == token.NoPos && l8D2ReadinessExactErrorReturnGate(value, proposalErrorName) {
+				proposalGate = value.Pos()
+			}
+		case *ast.CallExpr:
+			method := l8D2ReadinessCallMethodName(value)
+			if proposePosition != token.NoPos && value.Pos() > proposePosition && method != "ProposeObservedPrivate" && method != "ProposeObservedStdin" && firstAuthority == token.NoPos && (method == "BeginExec" || method == "WriteStdin" || method == "Commit") {
+				firstAuthority = value.Pos()
+			}
+		}
+		return true
+	})
+	if callbackDefers != 0 || proposalName == "" || proposalErrorName == "" || proposePosition == token.NoPos || proposalGate == token.NoPos || pendingInstall == token.NoPos || firstAuthority == token.NoPos || !(proposePosition < proposalGate && proposalGate < pendingInstall && pendingInstall < firstAuthority) {
+		return false
+	}
+	if !l8D2ReadinessExactRecoveredHandlerFailure(recovery.Body, pendingName, resultName, errorName) {
+		return false
+	}
+	wantDeferredStatements := 3
+	if planRequired {
+		wantDeferredStatements = 4
+	}
+	if len(deferredBody.List) != wantDeferredStatements || deferredBody.List[0] != recovery {
+		return false
+	}
+	bodyDestroyError, bodyDestroyOK := l8D2ReadinessExactBoundBodyDestroy(deferredBody.List[1], bodyName, contextName)
+	if !bodyDestroyOK {
+		return false
+	}
+	failureIndex := 2
+	if planRequired {
+		if !l8D2ReadinessExactPrivatePlanDestroy(deferredBody.List[2], planName) {
+			return false
+		}
+		failureIndex = 3
+	}
+	if !l8D2ReadinessExactCleanupFailureGate(deferredBody.List[failureIndex], bodyDestroyError, resultName, errorName) {
+		return false
+	}
+	bodyDestroyCount, planDestroyCount := 0, 0
+	bodyDestroyPosition, planDestroyPosition := token.NoPos, token.NoPos
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		owner, ownerOK := func() (*ast.Ident, bool) {
+			if !ok {
+				return nil, false
+			}
+			candidate, valid := selector.X.(*ast.Ident)
+			return candidate, valid
+		}()
+		if ownerOK && owner.Name == bodyName && l8D2ReadinessCallMethodName(call) == "Destroy" && len(call.Args) == 1 && types.ExprString(call.Args[0]) == contextName {
+			bodyDestroyCount++
+			bodyDestroyPosition = call.Pos()
+		}
+		if ownerOK && owner.Name == planName && l8D2ReadinessCallMethodName(call) == "destroy" && len(call.Args) == 0 {
+			planDestroyCount++
+			planDestroyPosition = call.Pos()
+		}
+		return true
+	})
+	if bodyDestroyCount != 1 || (planRequired && planDestroyCount != 1) || (!planRequired && planDestroyCount != 0) {
+		return false
+	}
+	return recovery.Pos() < bodyDestroyPosition && (!planRequired || bodyDestroyPosition < planDestroyPosition)
+}
+
+func l8D2ReadinessFunctionShadowsCleanupAuthority(function *ast.FuncDecl) bool {
+	if function == nil || function.Body == nil {
+		return true
+	}
+	protected := map[string]bool{
+		"newServiceResult":      true,
+		"ErrContractOwnership":  true,
+		"ServiceStopVMRequired": true,
+		"credentialprotocol":    true,
+	}
+	shadowed := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if shadowed {
+			return false
+		}
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			for _, left := range value.Lhs {
+				if identifier, ok := left.(*ast.Ident); ok && protected[identifier.Name] {
+					shadowed = true
+					return false
+				}
+			}
+		case *ast.ValueSpec:
+			for _, name := range value.Names {
+				if protected[name.Name] {
+					shadowed = true
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return shadowed
+}
+
+func l8D2ReadinessNamedServiceHandlerResults(function *ast.FuncDecl) (string, string, bool) {
+	if function == nil || function.Type.Results == nil || len(function.Type.Results.List) != 2 {
+		return "", "", false
+	}
+	result, failure := function.Type.Results.List[0], function.Type.Results.List[1]
+	if len(result.Names) != 1 || len(failure.Names) != 1 || types.ExprString(result.Type) != "ServiceResult" || types.ExprString(failure.Type) != "error" || result.Names[0].Name == "_" || failure.Names[0].Name == "_" {
+		return "", "", false
+	}
+	return result.Names[0].Name, failure.Names[0].Name, true
+}
+
+func l8D2ReadinessExactBoundBodyDestroy(statement ast.Stmt, ownerName, contextName string) (string, bool) {
+	assignment, ok := statement.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return "", false
+	}
+	failure, failureOK := assignment.Lhs[0].(*ast.Ident)
+	call, ok := assignment.Rhs[0].(*ast.CallExpr)
+	if !failureOK || !ok || failure.Name == "_" || len(call.Args) != 1 || types.ExprString(call.Args[0]) != contextName || l8D2ReadinessCallMethodName(call) != "Destroy" {
+		return "", false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	owner, ok := func() (*ast.Ident, bool) {
+		if !ok {
+			return nil, false
+		}
+		candidate, valid := selector.X.(*ast.Ident)
+		return candidate, valid
+	}()
+	return failure.Name, ok && owner.Name == ownerName
+}
+
+func l8D2ReadinessExactPrivatePlanDestroy(statement ast.Stmt, ownerName string) bool {
+	expression, ok := statement.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expression.X.(*ast.CallExpr)
+	if !ok || len(call.Args) != 0 || l8D2ReadinessCallMethodName(call) != "destroy" {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	owner, ownerOK := func() (*ast.Ident, bool) {
+		if !ok {
+			return nil, false
+		}
+		candidate, valid := selector.X.(*ast.Ident)
+		return candidate, valid
+	}()
+	return ownerOK && owner.Name == ownerName
+}
+
+func l8D2ReadinessExactProtocolFailureReduction(body *ast.BlockStmt, resultName, errorName string) bool {
+	if body == nil || len(body.List) != 2 {
+		return false
+	}
+	resultAssignment, ok := body.List[0].(*ast.AssignStmt)
+	if !ok || resultAssignment.Tok != token.ASSIGN || len(resultAssignment.Lhs) != 2 || len(resultAssignment.Rhs) != 1 || types.ExprString(resultAssignment.Lhs[0]) != resultName || types.ExprString(resultAssignment.Lhs[1]) != "_" {
+		return false
+	}
+	call, ok := resultAssignment.Rhs[0].(*ast.CallExpr)
+	callee, callOK := func() (*ast.Ident, bool) {
+		if !ok {
+			return nil, false
+		}
+		candidate, valid := call.Fun.(*ast.Ident)
+		return candidate, valid
+	}()
+	if !callOK || callee.Name != "newServiceResult" || len(call.Args) != 2 || types.ExprString(call.Args[0]) != "ServiceStopVMRequired" || types.ExprString(call.Args[1]) != "credentialprotocol.CloseReasonProtocolError" {
+		return false
+	}
+	errorAssignment, ok := body.List[1].(*ast.AssignStmt)
+	return ok && errorAssignment.Tok == token.ASSIGN && len(errorAssignment.Lhs) == 1 && len(errorAssignment.Rhs) == 1 && types.ExprString(errorAssignment.Lhs[0]) == errorName && types.ExprString(errorAssignment.Rhs[0]) == "ErrContractOwnership"
+}
+
+func l8D2ReadinessExactRecoveredHandlerFailure(body *ast.BlockStmt, pendingName, resultName, errorName string) bool {
+	if body == nil || len(body.List) != 3 {
+		return false
+	}
+	wipe := &ast.BlockStmt{List: body.List[:1]}
+	reduction := &ast.BlockStmt{List: body.List[1:]}
+	return l8D2ReadinessExactPendingRecoveryWipe(wipe, pendingName) && l8D2ReadinessExactProtocolFailureReduction(reduction, resultName, errorName)
+}
+
+func l8D2ReadinessExactCleanupFailureGate(statement ast.Stmt, destroyError, resultName, errorName string) bool {
+	gate, ok := statement.(*ast.IfStmt)
+	return ok && gate.Init == nil && gate.Else == nil && l8D2ReadinessExactErrorNonNilCondition(gate.Cond, destroyError) && l8D2ReadinessExactProtocolFailureReduction(gate.Body, resultName, errorName)
+}
+
+func l8D2ReadinessExactPendingRecoveryWipe(body *ast.BlockStmt, pendingName string) bool {
+	if body == nil || len(body.List) != 1 || pendingName == "" {
+		return false
+	}
+	gate, ok := body.List[0].(*ast.IfStmt)
+	if !ok || gate.Init != nil || gate.Else != nil || len(gate.Body.List) != 1 {
+		return false
+	}
+	condition, ok := gate.Cond.(*ast.BinaryExpr)
+	if !ok || condition.Op != token.NEQ || types.ExprString(condition.X) != pendingName || !l8D2ReadinessNilIdentifier(condition.Y) {
+		return false
+	}
+	statement, ok := gate.Body.List[0].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := statement.X.(*ast.CallExpr)
+	if !ok || len(call.Args) != 0 || l8D2ReadinessCallMethodName(call) != "Wipe" {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	owner, ok := selector.X.(*ast.Ident)
+	return ok && owner.Name == pendingName
+}
+
+func l8D2ReadinessExactRecoverGate(gate *ast.IfStmt) bool {
+	if gate == nil || gate.Else != nil || gate.Init == nil {
+		return false
+	}
+	assignment, ok := gate.Init.(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+		return false
+	}
+	recovered, recoveredOK := assignment.Lhs[0].(*ast.Ident)
+	call, callOK := assignment.Rhs[0].(*ast.CallExpr)
+	builtin, builtinOK := func() (*ast.Ident, bool) {
+		if !callOK {
+			return nil, false
+		}
+		candidate, valid := call.Fun.(*ast.Ident)
+		return candidate, valid
+	}()
+	if !recoveredOK || !builtinOK || recovered.Name == "_" || builtin.Name != "recover" || len(call.Args) != 0 {
+		return false
+	}
+	return l8D2ReadinessExactErrorNonNilCondition(gate.Cond, recovered.Name) && l8D2ReadinessBlockReturnsOrContinues(gate.Body)
+}
+
+func l8D2ReadinessBlockReturnsOrContinues(body *ast.BlockStmt) bool {
+	return body != nil && len(body.List) != 0
 }
 
 type l8D2ReadinessProposalFlow struct {
@@ -3541,7 +5860,7 @@ func l8D2ReadinessValidPrivateCallback(callback *ast.FuncLit, serviceReceiver, c
 
 func l8D2ReadinessValidStdinCallback(callback *ast.FuncLit, serviceReceiver, contextName, view string, transactionParams, comparisonParams, correlationParams, observationParams map[string]bool) bool {
 	flow := l8D2ReadinessProposalCallbackFlow(callback, "ProposeObservedStdin", "WriteStdin", serviceReceiver, contextName, view, transactionParams, comparisonParams, correlationParams, observationParams)
-	if l8D2ReadinessCallbackRetainsScopedIdentifier(callback, view) || l8D2ReadinessCallbackContainsNestedAuthority(callback, flow.proposal) || flow.proposal == "" || flow.propose == token.NoPos || flow.proposalErrorGate == token.NoPos || flow.core == token.NoPos || flow.normalCommit == token.NoPos || flow.wipe == token.NoPos || !flow.proposeDirect || !flow.coreDirect || !flow.commitDirect || !flow.comparisonDirect || !flow.comparisonGood || flow.coreReceiver != serviceReceiver+".state.execution" || !flow.viewAtPropose || !flow.viewAtCore || !flow.contextAtPropose || !flow.contextAtCore || !flow.correlationAtPropose || !flow.observationAtPropose || !(flow.propose < flow.proposalErrorGate && flow.proposalErrorGate < flow.core && flow.core < flow.normalCommit) || flow.coreError == "" || flow.proposalError == "" || flow.proposeCount != 1 || flow.coreCount != 1 || flow.normalCommits != 1 || flow.totalProposeCalls != 1 || flow.totalCoreCalls != 1 || flow.commitCalls != 2 || flow.wipeCalls != 1 || l8D2ReadinessCallbackRebindsAuthority(callback, serviceReceiver, contextName, view, transactionParams, comparisonParams, correlationParams, observationParams, flow) {
+	if l8D2ReadinessCallbackRetainsScopedIdentifier(callback, view) || l8D2ReadinessCallbackContainsNestedAuthority(callback, flow.proposal) || flow.proposal == "" || flow.propose == token.NoPos || flow.proposalErrorGate == token.NoPos || flow.core == token.NoPos || flow.normalCommit == token.NoPos || flow.wipe == token.NoPos || !flow.proposeDirect || !flow.coreDirect || !flow.commitDirect || !flow.comparisonDirect || !flow.comparisonGood || !l8D2ReadinessCallbackUsesStateExecution(callback, serviceReceiver, flow.coreReceiver, flow.core) || !flow.viewAtPropose || !flow.viewAtCore || !flow.contextAtPropose || !flow.contextAtCore || !flow.correlationAtPropose || !flow.observationAtPropose || !(flow.propose < flow.proposalErrorGate && flow.proposalErrorGate < flow.core && flow.core < flow.normalCommit) || flow.coreError == "" || flow.proposalError == "" || flow.proposeCount != 1 || flow.coreCount != 1 || flow.normalCommits != 1 || flow.totalProposeCalls != 1 || flow.totalCoreCalls != 1 || flow.commitCalls != 2 || flow.wipeCalls != 1 || l8D2ReadinessCallbackRebindsAuthority(callback, serviceReceiver, contextName, view, transactionParams, comparisonParams, correlationParams, observationParams, flow) {
 		return false
 	}
 	validErrorGate := false
@@ -3554,6 +5873,33 @@ func l8D2ReadinessValidStdinCallback(callback *ast.FuncLit, serviceReceiver, con
 		return true
 	})
 	return validErrorGate
+}
+
+func l8D2ReadinessCallbackUsesStateExecution(callback *ast.FuncLit, serviceReceiver, execution string, corePosition token.Pos) bool {
+	if callback == nil || callback.Body == nil || execution == "" || corePosition == token.NoPos {
+		return false
+	}
+	locked, copied, unlocked := token.NoPos, token.NoPos, token.NoPos
+	for _, statement := range callback.Body.List {
+		if statement.Pos() >= corePosition {
+			break
+		}
+		switch value := statement.(type) {
+		case *ast.ExprStmt:
+			call, ok := value.X.(*ast.CallExpr)
+			if ok && l8D2ReadinessExactStateMutexCall(call, serviceReceiver, "Lock") {
+				locked = call.Pos()
+			}
+			if ok && l8D2ReadinessExactStateMutexCall(call, serviceReceiver, "Unlock") {
+				unlocked = call.Pos()
+			}
+		case *ast.AssignStmt:
+			if len(value.Lhs) == 1 && len(value.Rhs) == 1 && types.ExprString(value.Lhs[0]) == execution && types.ExprString(value.Rhs[0]) == serviceReceiver+".state.execution" {
+				copied = value.Pos()
+			}
+		}
+	}
+	return locked != token.NoPos && locked < copied && copied < unlocked && unlocked < corePosition
 }
 
 func l8D2ReadinessCallbackRetainsScopedIdentifier(callback *ast.FuncLit, view string) bool {
@@ -4176,6 +6522,1575 @@ func l8D2ReadinessExactTestDeclarations(files map[string]*ast.File) map[string]i
 		}
 	}
 	return counts
+}
+
+type l8D2ReadinessServiceTestRequirement struct {
+	exercise         []string
+	evidence         []string
+	dependencyFields map[string][]string
+}
+
+func l8D2ReadinessServiceTestRequirements() map[string]l8D2ReadinessServiceTestRequirement {
+	transport := map[string][]string{
+		"planDestroyCalls": {"Transport"}, "takeCalls": {"Transport"}, "commitCalls": {"Transport"},
+		"bodyDestroyCalls": {"Transport"}, "wipeCalls": {"Transport"},
+	}
+	core := map[string][]string{"beginExecCalls": {"Core"}, "writeStdinCalls": {"Core"}}
+	fields := func(names ...string) map[string][]string {
+		result := make(map[string][]string)
+		for _, name := range names {
+			if values := transport[name]; values != nil {
+				result[name] = values
+			}
+			if values := core[name]; values != nil {
+				result[name] = values
+			}
+		}
+		return result
+	}
+	return map[string]l8D2ReadinessServiceTestRequirement{
+		"TestServiceDestroysClaimedExecPlanOnEveryDispatchPath": {exercise: []string{"NewService", "Serve"}, evidence: []string{"planDestroyCalls"}, dependencyFields: fields("planDestroyCalls")},
+		"TestServiceConstructorDependenciesSnapshotAndServeOneShot": {exercise: []string{"NewService", "Serve"}, evidence: []string{"dependencyCalls", "snapshotEntries", "serveCalls"}, dependencyFields: map[string][]string{
+			"dependencyCalls": {"Core", "Transport", "Policy", "Host", "Runtime"}, "snapshotEntries": {"Extensions"}, "serveCalls": {"Transport", "Runtime"},
+		}},
+		"TestServiceServeContextPreconditionBeforeOneShotLatch": {exercise: []string{"NewService", "Serve"}, evidence: []string{"dependencyCalls", "serveCalls"}, dependencyFields: map[string][]string{
+			"dependencyCalls": {"Core", "Transport", "Policy", "Host", "Runtime"}, "serveCalls": {"Transport", "Runtime"},
+		}},
+		"TestServiceObservedInputsTakenOnceBeforeDispatch":           {exercise: []string{"NewService", "Serve"}, evidence: []string{"takeCalls"}, dependencyFields: fields("takeCalls")},
+		"TestServiceObservedPrivateCoreCommitCleanupMatrix":          {exercise: []string{"NewService", "Serve"}, evidence: []string{"beginExecCalls", "commitCalls", "bodyDestroyCalls", "planDestroyCalls"}, dependencyFields: fields("beginExecCalls", "commitCalls", "bodyDestroyCalls", "planDestroyCalls")},
+		"TestServiceObservedPrivateCommitRequiresValidCoreExecution": {exercise: []string{"NewService", "Serve"}, evidence: []string{"beginExecCalls", "commitCalls", "wipeCalls"}, dependencyFields: fields("beginExecCalls", "commitCalls", "wipeCalls")},
+		"TestServiceObservedStdinCoreCommitCleanupMatrix":            {exercise: []string{"NewService", "Serve"}, evidence: []string{"writeStdinCalls", "commitCalls", "bodyDestroyCalls"}, dependencyFields: fields("writeStdinCalls", "commitCalls", "bodyDestroyCalls")},
+		"TestServiceObservedStdinCommitRequiresNilCoreError":         {exercise: []string{"NewService", "Serve"}, evidence: []string{"writeStdinCalls", "commitCalls", "wipeCalls"}, dependencyFields: fields("writeStdinCalls", "commitCalls", "wipeCalls")},
+		"TestServiceObservedComparisonNeverCallsCore":                {exercise: []string{"NewService", "Serve"}, evidence: []string{"beginExecCalls", "writeStdinCalls", "commitCalls"}, dependencyFields: fields("beginExecCalls", "writeStdinCalls", "commitCalls")},
+		"TestServiceObservedBodiesDestroyedExactlyOnce":              {exercise: []string{"NewService", "Serve"}, evidence: []string{"bodyDestroyCalls"}, dependencyFields: fields("bodyDestroyCalls")},
+		"TestServiceObservedFailureAndPanicCleanupIsExhaustive":      {exercise: []string{"NewService", "Serve"}, evidence: []string{"wipeCalls", "bodyDestroyCalls", "planDestroyCalls"}, dependencyFields: fields("wipeCalls", "bodyDestroyCalls", "planDestroyCalls")},
+	}
+}
+
+func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[string]l8D2ReadinessServiceTestRequirement) (map[string]bool, error) {
+	dir := filepath.Join(root, "credentialhelper")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	testFiles := make(map[string]*ast.File)
+	productionFiles := make(map[string]*ast.File)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if file.Name == nil || file.Name.Name != "credentialhelper" {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), "_test.go") {
+			testFiles[path] = file
+		} else {
+			productionFiles[path] = file
+		}
+	}
+	contexts := l8D2ReadinessSupportedBuildContexts()
+	var applicable []build.Context
+	for _, context := range contexts {
+		active := false
+		for path, file := range productionFiles {
+			matched, matchErr := context.MatchFile(dir, filepath.Base(path))
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			if matched && l8D2ReadinessFileDeclaresStruct(file, "Service") {
+				active = true
+				break
+			}
+		}
+		if active {
+			applicable = append(applicable, context)
+		}
+	}
+	if len(applicable) == 0 {
+		applicable = contexts
+	}
+	results := make(map[string]bool)
+	resolver := l8D2ReadinessNewImportResolver()
+	for name, requirement := range requirements {
+		validEverywhere := true
+		for _, context := range applicable {
+			var contextFiles []*ast.File
+			resolvedImports := make(map[*ast.File]map[string]string)
+			for path, file := range productionFiles {
+				matched, matchErr := context.MatchFile(dir, filepath.Base(path))
+				if matchErr != nil {
+					return nil, matchErr
+				}
+				if matched {
+					contextFiles = append(contextFiles, file)
+					resolvedImports[file] = resolver.resolve(context, filepath.Dir(path), file)
+				}
+			}
+			for path, file := range testFiles {
+				matched, matchErr := context.MatchFile(dir, filepath.Base(path))
+				if matchErr != nil {
+					return nil, matchErr
+				}
+				if matched {
+					contextFiles = append(contextFiles, file)
+					resolvedImports[file] = resolver.resolve(context, filepath.Dir(path), file)
+				}
+			}
+			environment := l8D2ReadinessTerminalEnvironmentForFilesWithImports(contextFiles, resolvedImports)
+			validHere := false
+			for path, file := range testFiles {
+				matched, matchErr := context.MatchFile(dir, filepath.Base(path))
+				if matchErr != nil {
+					return nil, matchErr
+				}
+				if matched && l8D2ReadinessExactServiceBehavioralTestInEnvironment(file, name, requirement, environment) {
+					validHere = true
+				}
+			}
+			if !validHere {
+				validEverywhere = false
+				break
+			}
+		}
+		results[name] = validEverywhere
+	}
+	return results, nil
+}
+
+func l8D2ReadinessExactServiceBehavioralTest(file *ast.File, name string, requirement l8D2ReadinessServiceTestRequirement) bool {
+	return l8D2ReadinessExactServiceBehavioralTestInEnvironment(file, name, requirement, l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{file}))
+}
+
+func l8D2ReadinessTerminalEnvironmentForFiles(files []*ast.File) l8D2ReadinessTerminalEnvironment {
+	return l8D2ReadinessTerminalEnvironmentForFilesWithImports(files, nil)
+}
+
+func l8D2ReadinessTerminalEnvironmentForFilesWithImports(files []*ast.File, resolvedImports map[*ast.File]map[string]string) l8D2ReadinessTerminalEnvironment {
+	declarations := make([]*ast.FuncDecl, 0)
+	aliasesByFunction := make(map[*ast.FuncDecl]map[string]string)
+	functionFiles := make(map[*ast.FuncDecl]*ast.File)
+	globals := make(map[string]bool)
+	expectedConstants := make(map[string][]l8D2ReadinessExpectedConstantDeclaration)
+	fileIntShadowed := make(map[*ast.File]bool)
+	packageIntShadowed := false
+	var allDeclarations []ast.Decl
+	for _, file := range files {
+		if file == nil {
+			continue
+		}
+		aliases, _ := l8D2ReadinessImportAliases(file)
+		for _, imported := range file.Imports {
+			if imported.Name != nil {
+				if imported.Name.Name == "int" {
+					fileIntShadowed[file] = true
+				}
+				continue
+			}
+			path := strings.Trim(imported.Path.Value, `"`)
+			if resolvedImports[file][path] == "int" {
+				fileIntShadowed[file] = true
+			}
+		}
+		allDeclarations = append(allDeclarations, file.Decls...)
+		for _, declaration := range file.Decls {
+			if group, ok := declaration.(*ast.GenDecl); ok {
+				for _, specification := range group.Specs {
+					if typeSpec, ok := specification.(*ast.TypeSpec); ok && typeSpec.Name.Name == "int" {
+						packageIntShadowed = true
+					}
+					values, ok := specification.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for _, name := range values.Names {
+						if name.Name == "int" {
+							packageIntShadowed = true
+						}
+						switch group.Tok {
+						case token.VAR:
+							globals[name.Name] = true
+						case token.CONST:
+							expectedConstants[name.Name] = append(expectedConstants[name.Name], l8D2ReadinessExpectedConstantDeclaration{file: file, group: group, values: values, packageScope: true})
+						}
+					}
+				}
+			}
+			candidate, ok := declaration.(*ast.FuncDecl)
+			if !ok || candidate.Body == nil {
+				continue
+			}
+			if candidate.Recv == nil && candidate.Name.Name == "int" {
+				packageIntShadowed = true
+			}
+			declarations = append(declarations, candidate)
+			aliasesByFunction[candidate] = aliases
+			functionFiles[candidate] = file
+		}
+	}
+	return l8D2ReadinessTerminalEnvironment{
+		declarations:       declarations,
+		aliases:            aliasesByFunction,
+		functionFiles:      functionFiles,
+		constants:          l8D2ReadinessDeclaredConstants(allDeclarations),
+		namedTypes:         l8D2ReadinessDeclaredNamedTypes(allDeclarations),
+		globals:            globals,
+		expectedConstants:  expectedConstants,
+		packageIntShadowed: packageIntShadowed,
+		fileIntShadowed:    fileIntShadowed,
+	}
+}
+
+func l8D2ReadinessResolvedImportPackageNames(context build.Context, sourceDir string, file *ast.File) map[string]string {
+	return l8D2ReadinessNewImportResolver().resolve(context, sourceDir, file)
+}
+
+type l8D2ReadinessImportResolver struct {
+	cache       map[string]l8D2ReadinessImportResolution
+	goCommand   string
+	timeout     time.Duration
+	environment []string
+}
+
+func l8D2ReadinessNewImportResolver() *l8D2ReadinessImportResolver {
+	return &l8D2ReadinessImportResolver{cache: make(map[string]l8D2ReadinessImportResolution), goCommand: "go", timeout: 5 * time.Second}
+}
+
+func (resolver *l8D2ReadinessImportResolver) resolve(context build.Context, sourceDir string, file *ast.File) map[string]string {
+	result := make(map[string]string)
+	if file == nil {
+		return result
+	}
+	canonicalSource, ok := l8D2ReadinessCanonicalDirectory(sourceDir)
+	if !ok {
+		return result
+	}
+	sourceDir = canonicalSource
+	for _, imported := range file.Imports {
+		if imported.Name != nil {
+			continue
+		}
+		importPath := strings.Trim(imported.Path.Value, `"`)
+		if importPath == "" {
+			continue
+		}
+		if packageInfo, err := context.Import(importPath, sourceDir, 0); err == nil && packageInfo.Goroot && packageInfo.Name != "" {
+			result[importPath] = packageInfo.Name
+			continue
+		}
+		if moduleRoot, ok := l8D2ReadinessModuleRoot(sourceDir); ok {
+			if packageName, resolved := resolver.goListPackageName(context, moduleRoot, importPath); resolved {
+				result[importPath] = packageName
+				continue
+			}
+		}
+		if packageName, ok := l8D2ReadinessModuleLocalPackageName(context, sourceDir, importPath); ok {
+			result[importPath] = packageName
+			continue
+		}
+		if _, module := l8D2ReadinessModuleRoot(sourceDir); !module {
+			if packageInfo, err := context.Import(importPath, sourceDir, 0); err == nil && packageInfo.Name != "" {
+				result[importPath] = packageInfo.Name
+			}
+		}
+	}
+	return result
+}
+
+type l8D2ReadinessImportResolution struct {
+	name string
+	ok   bool
+}
+
+func (resolver *l8D2ReadinessImportResolver) goListPackageName(context build.Context, moduleRoot, importPath string) (string, bool) {
+	cleanRoot, canonical := l8D2ReadinessCanonicalDirectory(moduleRoot)
+	if !canonical {
+		return "", false
+	}
+	if info, err := os.Stat(filepath.Join(cleanRoot, "go.mod")); err != nil || info.IsDir() {
+		return "", false
+	}
+	key := strings.Join([]string{cleanRoot, context.GOOS, context.GOARCH, importPath}, "\x00")
+	if result, ok := resolver.cache[key]; ok {
+		return result.name, result.ok
+	}
+	mode := "readonly"
+	if _, err := os.Stat(filepath.Join(cleanRoot, "vendor", "modules.txt")); err == nil {
+		mode = "vendor"
+	}
+	timeout := resolver.timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	commandContext, cancel := stdcontext.WithTimeout(stdcontext.Background(), timeout)
+	defer cancel()
+	goCommand := resolver.goCommand
+	if goCommand == "" {
+		goCommand = "go"
+	}
+	command := exec.CommandContext(commandContext, goCommand, "list", "-e", "-json", "-mod="+mode, importPath)
+	command.Dir = cleanRoot
+	baseEnvironment := resolver.environment
+	if baseEnvironment == nil {
+		baseEnvironment = os.Environ()
+	}
+	command.Env = l8D2ReadinessOfflineGoEnvironmentFrom(context, baseEnvironment)
+	output, err := command.Output()
+	result := l8D2ReadinessImportResolution{}
+	if err == nil && commandContext.Err() == nil {
+		var listed struct {
+			ImportPath string
+			Name       string
+			Dir        string
+			Error      *struct{ Err string }
+		}
+		if decodeErr := json.Unmarshal(output, &listed); decodeErr == nil && listed.ImportPath == importPath && listed.Name != "" && listed.Dir != "" && listed.Error == nil {
+			result = l8D2ReadinessImportResolution{name: listed.Name, ok: true}
+		}
+	}
+	if result.ok {
+		resolver.cache[key] = result
+	}
+	return result.name, result.ok
+}
+
+func l8D2ReadinessOfflineGoEnvironmentFrom(context build.Context, base []string) []string {
+	overrides := map[string]string{
+		"CGO_ENABLED": "0",
+		"GO111MODULE": "on",
+		"GOARCH":      context.GOARCH,
+		"GOENV":       "off",
+		"GOFLAGS":     "",
+		"GOINSECURE":  "",
+		"GONOPROXY":   "none",
+		"GONOSUMDB":   "none",
+		"GOOS":        context.GOOS,
+		"GOPRIVATE":   "",
+		"GOPROXY":     "off",
+		"GOSUMDB":     "off",
+		"GOTOOLCHAIN": "local",
+		"GOVCS":       "*:off",
+		"GOWORK":      "off",
+	}
+	result := make([]string, 0, len(base)+len(overrides))
+	for _, item := range base {
+		name, _, _ := strings.Cut(item, "=")
+		if _, replaced := overrides[name]; !replaced {
+			result = append(result, item)
+		}
+	}
+	keys := make([]string, 0, len(overrides))
+	for name := range overrides {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		result = append(result, name+"="+overrides[name])
+	}
+	return result
+}
+
+func l8D2ReadinessModuleRoot(sourceDir string) (string, bool) {
+	directory, ok := l8D2ReadinessCanonicalDirectory(sourceDir)
+	if !ok {
+		return "", false
+	}
+	for {
+		if info, statErr := os.Stat(filepath.Join(directory, "go.mod")); statErr == nil && !info.IsDir() {
+			return directory, true
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return "", false
+		}
+		directory = parent
+	}
+}
+
+func l8D2ReadinessCanonicalDirectory(path string) (string, bool) {
+	if path == "" || strings.ContainsAny(path, "\x00\r\n") {
+		return "", false
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", false
+	}
+	resolved = filepath.Clean(resolved)
+	if !filepath.IsAbs(resolved) || strings.ContainsAny(resolved, "\x00\r\n") {
+		return "", false
+	}
+	info, err := os.Stat(resolved)
+	return resolved, err == nil && info.IsDir()
+}
+
+func l8D2ReadinessPathWithin(root, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func l8D2ReadinessModuleLocalPackageName(context build.Context, sourceDir, importPath string) (string, bool) {
+	directory, ok := l8D2ReadinessModuleRoot(sourceDir)
+	if !ok {
+		return "", false
+	}
+	moduleFile := filepath.Join(directory, "go.mod")
+	content, readErr := os.ReadFile(moduleFile)
+	if readErr == nil {
+		modulePath := ""
+		for _, line := range strings.Split(string(content), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && fields[0] == "module" {
+				modulePath = fields[1]
+				break
+			}
+		}
+		if modulePath == "" || importPath != modulePath && !strings.HasPrefix(importPath, modulePath+"/") {
+			return "", false
+		}
+		relative := strings.TrimPrefix(strings.TrimPrefix(importPath, modulePath), "/")
+		packageDir, canonical := l8D2ReadinessCanonicalDirectory(filepath.Join(directory, filepath.FromSlash(relative)))
+		if !canonical || !l8D2ReadinessPathWithin(directory, packageDir) {
+			return "", false
+		}
+		entries, readDirErr := os.ReadDir(packageDir)
+		if readDirErr != nil {
+			return "", false
+		}
+		packageName := ""
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			matched, matchErr := context.MatchFile(packageDir, entry.Name())
+			if matchErr != nil || !matched {
+				continue
+			}
+			parsed, parseErr := parser.ParseFile(token.NewFileSet(), filepath.Join(packageDir, entry.Name()), nil, parser.PackageClauseOnly)
+			if parseErr != nil || parsed.Name == nil || parsed.Name.Name == "" {
+				return "", false
+			}
+			if packageName != "" && packageName != parsed.Name.Name {
+				return "", false
+			}
+			packageName = parsed.Name.Name
+		}
+		return packageName, packageName != ""
+	}
+	return "", false
+}
+
+func l8D2ReadinessExactServiceBehavioralTestInEnvironment(file *ast.File, name string, requirement l8D2ReadinessServiceTestRequirement, terminalEnvironment l8D2ReadinessTerminalEnvironment) bool {
+	if file == nil {
+		return false
+	}
+	aliases, _ := l8D2ReadinessImportAliases(file)
+	var function *ast.FuncDecl
+	count := 0
+	for _, declaration := range file.Decls {
+		candidate, ok := declaration.(*ast.FuncDecl)
+		if !ok || candidate.Name.Name != name || candidate.Recv != nil || candidate.Body == nil || candidate.Type.TypeParams != nil || candidate.Type.Results != nil || candidate.Type.Params == nil || len(candidate.Type.Params.List) != 1 || len(candidate.Type.Params.List[0].Names) != 1 || candidate.Type.Params.List[0].Names[0].Name != "t" || !l8D2ReadinessExactImportedType(candidate.Type.Params.List[0].Type, aliases, "testing", "T", true) {
+			continue
+		}
+		count++
+		function = candidate
+	}
+	if count != 1 || function == nil || len(function.Body.List) == 0 {
+		return false
+	}
+	if l8D2ReadinessBodyRebindsNames(function.Body, map[string]bool{"NewService": true, "t": true}, nil) {
+		return false
+	}
+	terminalFacts := l8D2ReadinessPackageTerminalFunctions(terminalEnvironment)
+	terminalAliases := l8D2ReadinessTerminalCallableAliases(function, terminalFacts, terminalEnvironment, nil)
+	exercisePosition := make(map[string]token.Pos)
+	exerciseCalls := make(map[string]*ast.CallExpr)
+	exerciseCounts := make(map[string]int)
+	serviceOwners := make(map[string]bool)
+	assertedEvidence := make(map[string]bool)
+	terminated := false
+	var visitBlock func(*ast.BlockStmt, bool)
+	var visitStatement func(ast.Stmt, bool)
+	visitBlock = func(body *ast.BlockStmt, live bool) {
+		if body == nil || !live || terminated {
+			return
+		}
+		for _, statement := range body.List {
+			visitStatement(statement, true)
+			if terminated {
+				return
+			}
+		}
+	}
+	visitStatement = func(statement ast.Stmt, live bool) {
+		if statement == nil || !live || terminated {
+			return
+		}
+		if l8D2ReadinessStatementNeverReturns(function, statement, terminalAliases, terminalFacts, terminalEnvironment) {
+			terminated = true
+			return
+		}
+		if returned, ok := statement.(*ast.ReturnStmt); ok {
+			for _, expression := range returned.Results {
+				l8D2ReadinessCollectExerciseCalls(expression, exercisePosition, exerciseCalls, exerciseCounts, serviceOwners)
+			}
+			terminated = true
+			return
+		}
+		if l8D2ReadinessStatementHasImmediateTestTermination(statement, "t") {
+			terminated = true
+			return
+		}
+		switch value := statement.(type) {
+		case *ast.IfStmt:
+			l8D2ReadinessCollectExerciseCalls(value.Init, exercisePosition, exerciseCalls, exerciseCounts, serviceOwners)
+			l8D2ReadinessCollectExerciseCalls(value.Cond, exercisePosition, exerciseCalls, exerciseCounts, serviceOwners)
+			if !l8D2ReadinessStaticallyFalse(value.Cond) && l8D2ReadinessBlockHasTestingFailure(value.Body, "t") {
+				for _, evidence := range requirement.evidence {
+					if l8D2ReadinessConditionAssertsCausalObservable(function, value.Cond, evidence, exerciseCalls["NewService"], requirement.dependencyFields[evidence], terminalEnvironment) && l8D2ReadinessAllExerciseBefore(exercisePosition, requirement.exercise, value.Pos()) {
+						assertedEvidence[evidence] = true
+					}
+				}
+			}
+			if l8D2ReadinessStaticallyTrue(value.Cond) {
+				visitBlock(value.Body, true)
+			}
+			if l8D2ReadinessStaticallyFalse(value.Cond) {
+				switch alternate := value.Else.(type) {
+				case *ast.BlockStmt:
+					visitBlock(alternate, true)
+				case *ast.IfStmt:
+					visitStatement(alternate, true)
+				}
+			}
+		case *ast.BlockStmt:
+			visitBlock(value, true)
+		case *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt, *ast.GoStmt, *ast.DeferStmt:
+			// Required Service tests use one direct, unconditionally reached
+			// exercise path. Conditional/table bodies are supplementary only.
+		default:
+			l8D2ReadinessCollectExerciseCalls(statement, exercisePosition, exerciseCalls, exerciseCounts, serviceOwners)
+		}
+	}
+	visitBlock(function.Body, true)
+	if !l8D2ReadinessTestServiceOwnersStable(function.Body, serviceOwners) || len(serviceOwners) != 1 || exerciseCounts["NewService"] != 1 || exerciseCounts["Serve"] != 1 {
+		return false
+	}
+	for owner := range serviceOwners {
+		if !l8D2ReadinessServiceOwnerConfinedUntilServe(function.Body, owner, exerciseCalls["NewService"], exerciseCalls["Serve"]) {
+			return false
+		}
+	}
+	for _, exercise := range requirement.exercise {
+		if exercisePosition[exercise] == token.NoPos {
+			return false
+		}
+	}
+	for _, evidence := range requirement.evidence {
+		if !assertedEvidence[evidence] {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessTestServiceOwnersStable(body *ast.BlockStmt, owners map[string]bool) bool {
+	if body == nil || len(owners) == 0 {
+		return false
+	}
+	assignments := make(map[string]int)
+	stable := true
+	ast.Inspect(body, func(node ast.Node) bool {
+		if !stable {
+			return false
+		}
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			for index, left := range value.Lhs {
+				identifier, ok := left.(*ast.Ident)
+				if !ok || !owners[identifier.Name] {
+					continue
+				}
+				assignments[identifier.Name]++
+				if assignments[identifier.Name] != 1 || index != 0 || len(value.Rhs) != 1 {
+					stable = false
+					return false
+				}
+				call, ok := value.Rhs[0].(*ast.CallExpr)
+				called, ok := func() (*ast.Ident, bool) {
+					if !ok {
+						return nil, false
+					}
+					candidate, valid := call.Fun.(*ast.Ident)
+					return candidate, valid
+				}()
+				if !ok || called.Name != "NewService" {
+					stable = false
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			if identifier, ok := value.X.(*ast.Ident); ok && owners[identifier.Name] {
+				stable = false
+				return false
+			}
+		case *ast.RangeStmt:
+			for _, expression := range []ast.Expr{value.Key, value.Value} {
+				if identifier, ok := expression.(*ast.Ident); ok && owners[identifier.Name] {
+					stable = false
+					return false
+				}
+			}
+		}
+		return true
+	})
+	if !stable {
+		return false
+	}
+	for owner := range owners {
+		if assignments[owner] != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessCollectExerciseCalls(node ast.Node, positions map[string]token.Pos, calls map[string]*ast.CallExpr, counts map[string]int, serviceOwners map[string]bool) {
+	if node == nil {
+		return
+	}
+	if assignment, ok := node.(*ast.AssignStmt); ok && len(assignment.Rhs) == 1 && len(assignment.Lhs) >= 1 {
+		call, callOK := assignment.Rhs[0].(*ast.CallExpr)
+		called, identOK := func() (*ast.Ident, bool) {
+			if !callOK {
+				return nil, false
+			}
+			candidate, valid := call.Fun.(*ast.Ident)
+			return candidate, valid
+		}()
+		owner, ownerOK := assignment.Lhs[0].(*ast.Ident)
+		if identOK && called.Name == "NewService" && ownerOK && owner.Name != "_" {
+			counts["NewService"]++
+			if positions["NewService"] == token.NoPos {
+				positions["NewService"], calls["NewService"] = call.Pos(), call
+			}
+			serviceOwners[owner.Name] = true
+		}
+		selector, ok := func() (*ast.SelectorExpr, bool) {
+			if !callOK {
+				return nil, false
+			}
+			candidate, valid := call.Fun.(*ast.SelectorExpr)
+			return candidate, valid
+		}()
+		serveOwner, serveOwnerOK := func() (*ast.Ident, bool) {
+			if !ok {
+				return nil, false
+			}
+			candidate, valid := selector.X.(*ast.Ident)
+			return candidate, valid
+		}()
+		if serveOwnerOK && serviceOwners[serveOwner.Name] && selector.Sel.Name == "Serve" && positions["Serve"] == token.NoPos {
+			positions["Serve"], calls["Serve"] = call.Pos(), call
+			counts["Serve"]++
+		} else if serveOwnerOK && serviceOwners[serveOwner.Name] && selector.Sel.Name == "Serve" {
+			counts["Serve"]++
+		}
+	}
+}
+
+func l8D2ReadinessStatementHasImmediateTestTermination(statement ast.Stmt, testingName string) bool {
+	if expression, ok := statement.(*ast.ExprStmt); ok {
+		call, callOK := expression.X.(*ast.CallExpr)
+		if callOK {
+			if builtin, ok := call.Fun.(*ast.Ident); ok && builtin.Name == "panic" {
+				return true
+			}
+			if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if owner, ok := selector.X.(*ast.Ident); ok && owner.Name == testingName && (selector.Sel.Name == "Fatal" || selector.Sel.Name == "Fatalf" || selector.Sel.Name == "Skip" || selector.Sel.Name == "Skipf" || selector.Sel.Name == "SkipNow" || selector.Sel.Name == "FailNow") {
+					return true
+				}
+				if owner, ok := selector.X.(*ast.Ident); ok && owner.Name == "runtime" && selector.Sel.Name == "Goexit" {
+					return true
+				}
+			}
+		}
+	}
+	terminated := false
+	ast.Inspect(statement, func(node ast.Node) bool {
+		if terminated {
+			return false
+		}
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
+			if owner, ok := selector.X.(*ast.Ident); ok && owner.Name == testingName && (selector.Sel.Name == "Skip" || selector.Sel.Name == "Skipf" || selector.Sel.Name == "SkipNow" || selector.Sel.Name == "FailNow") {
+				terminated = true
+				return false
+			}
+			if owner, ok := selector.X.(*ast.Ident); ok && owner.Name == "runtime" && selector.Sel.Name == "Goexit" {
+				terminated = true
+				return false
+			}
+		}
+		return true
+	})
+	return terminated
+}
+
+func l8D2ReadinessBlockHasTestingFailure(body *ast.BlockStmt, testingName string) bool {
+	if body == nil {
+		return false
+	}
+	for _, statement := range body.List {
+		expression, ok := statement.(*ast.ExprStmt)
+		if !ok {
+			continue
+		}
+		call, ok := expression.X.(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		owner, ownerOK := func() (*ast.Ident, bool) {
+			if !ok {
+				return nil, false
+			}
+			candidate, valid := selector.X.(*ast.Ident)
+			return candidate, valid
+		}()
+		if ownerOK && owner.Name == testingName && (selector.Sel.Name == "Fatal" || selector.Sel.Name == "Fatalf" || selector.Sel.Name == "Error" || selector.Sel.Name == "Errorf") {
+			return true
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessConditionAssertsCausalObservable(function *ast.FuncDecl, condition ast.Expr, field string, constructor *ast.CallExpr, dependencyFields []string, environment l8D2ReadinessTerminalEnvironment) bool {
+	if function == nil || function.Body == nil || condition == nil || constructor == nil || len(dependencyFields) == 0 {
+		return false
+	}
+	body := function.Body
+	constants := l8D2ReadinessWrapperConstantValues(function, condition.Pos(), environment)
+	owners := make(map[string]bool)
+	validComparison := false
+	var inspectClause func(ast.Expr)
+	inspectClause = func(clause ast.Expr) {
+		for {
+			parenthesized, ok := clause.(*ast.ParenExpr)
+			if !ok {
+				break
+			}
+			clause = parenthesized.X
+		}
+		if disjunction, ok := clause.(*ast.BinaryExpr); ok && disjunction.Op == token.LOR {
+			inspectClause(disjunction.X)
+			inspectClause(disjunction.Y)
+			return
+		}
+		comparison, ok := clause.(*ast.BinaryExpr)
+		if !ok || comparison.Op != token.NEQ {
+			return
+		}
+		for _, pair := range [][2]ast.Expr{{comparison.X, comparison.Y}, {comparison.Y, comparison.X}} {
+			selector, selectorOK := pair[0].(*ast.SelectorExpr)
+			owner, ownerOK := func() (*ast.Ident, bool) {
+				if !selectorOK {
+					return nil, false
+				}
+				candidate, valid := selector.X.(*ast.Ident)
+				return candidate, valid
+			}()
+			if !ownerOK || selector.Sel.Name != field || types.ExprString(pair[0]) == types.ExprString(pair[1]) || !l8D2ReadinessCanonicalExpectedObservable(function, pair[1], constructor, constants, environment) {
+				continue
+			}
+			owners[owner.Name] = true
+			validComparison = true
+		}
+	}
+	inspectClause(condition)
+	conditionValue, conditionExact := l8D2ReadinessConstantExpression(condition, constants)
+	if conditionExact && conditionValue.Kind() == constant.Bool {
+		return false
+	}
+	if !validComparison || len(owners) != 1 || l8D2ReadinessBooleanMasksObservable(condition, constants) {
+		return false
+	}
+	for owner := range owners {
+		if !l8D2ReadinessObservableOwnerFeedsConstructor(body, owner, constructor, dependencyFields) || !l8D2ReadinessObservableOwnerStartsZero(body, owner, field, constructor, environment, constants) || !l8D2ReadinessObservableOwnerStable(body, owner) || !l8D2ReadinessObservableOwnerConfinedAfterConstructor(body, owner, constructor) || l8D2ReadinessObservableFieldWritten(body, owner, field, constructor, environment.globals) {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessBooleanMasksObservable(expression ast.Expr, constants map[string]constant.Value) bool {
+	masked := false
+	ast.Inspect(expression, func(node ast.Node) bool {
+		binary, ok := node.(*ast.BinaryExpr)
+		if !ok || (binary.Op != token.LAND && binary.Op != token.LOR) {
+			return true
+		}
+		for _, operand := range []ast.Expr{binary.X, binary.Y} {
+			value, exact := l8D2ReadinessConstantExpression(operand, constants)
+			if exact && value.Kind() == constant.Bool && ((binary.Op == token.LAND && !constant.BoolVal(value)) || (binary.Op == token.LOR && constant.BoolVal(value))) {
+				masked = true
+				return false
+			}
+		}
+		return !masked
+	})
+	return masked
+}
+
+func l8D2ReadinessObservableOwnerConfinedAfterConstructor(body *ast.BlockStmt, owner string, constructor *ast.CallExpr) bool {
+	if body == nil || owner == "" || constructor == nil {
+		return false
+	}
+	aliases := map[string]bool{owner: true}
+	carries := func(expression ast.Expr) bool {
+		found := false
+		ast.Inspect(expression, func(node ast.Node) bool {
+			if found {
+				return false
+			}
+			if selector, ok := node.(*ast.SelectorExpr); ok {
+				return selector == expression
+			}
+			if identifier, ok := node.(*ast.Ident); ok && aliases[identifier.Name] {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, statement := range body.List {
+			if statement.End() >= constructor.Pos() {
+				break
+			}
+			assignment, ok := statement.(*ast.AssignStmt)
+			if !ok {
+				continue
+			}
+			for index, left := range assignment.Lhs {
+				identifier, ok := left.(*ast.Ident)
+				if !ok || aliases[identifier.Name] || index >= len(assignment.Rhs) || !carries(assignment.Rhs[index]) {
+					continue
+				}
+				aliases[identifier.Name] = true
+				changed = true
+			}
+		}
+	}
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
+	ast.Inspect(body, func(node ast.Node) bool {
+		if node == nil {
+			if len(stack) != 0 {
+				stack = stack[:len(stack)-1]
+			}
+			return true
+		}
+		if len(stack) != 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	confined := true
+	ast.Inspect(body, func(node ast.Node) bool {
+		if !confined {
+			return false
+		}
+		identifier, ok := node.(*ast.Ident)
+		if !ok || !aliases[identifier.Name] || identifier.Pos() <= constructor.End() {
+			return true
+		}
+		if identifier.Name != owner {
+			confined = false
+			return false
+		}
+		selector, ok := parents[identifier].(*ast.SelectorExpr)
+		if !ok || selector.X != identifier {
+			confined = false
+			return false
+		}
+		parent := parents[selector]
+		if call, ok := parent.(*ast.CallExpr); ok && call.Fun == selector {
+			confined = false
+			return false
+		}
+		if unary, ok := parent.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			confined = false
+			return false
+		}
+		return true
+	})
+	return confined
+}
+
+func l8D2ReadinessCanonicalExpectedObservable(function *ast.FuncDecl, expression ast.Expr, before ast.Node, constants map[string]constant.Value, environment l8D2ReadinessTerminalEnvironment) bool {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expression = parenthesized.X
+	}
+	value, exact := l8D2ReadinessConstantExpression(expression, constants)
+	if !exact || value == nil || value.Kind() != constant.Int {
+		return false
+	}
+	if literal, ok := expression.(*ast.BasicLit); ok {
+		return literal.Kind == token.INT
+	}
+	identifier, ok := expression.(*ast.Ident)
+	if !ok || function == nil || function.Body == nil {
+		return false
+	}
+	declaration, ok := l8D2ReadinessExpectedConstantDeclarationFor(function, identifier, environment)
+	if !ok || declaration.group.Tok != token.CONST || !declaration.packageScope && (declaration.file != environment.functionFiles[function] || !l8D2ReadinessNodePrecedes(function.Body, declaration.values, before)) || environment.packageIntShadowed || environment.fileIntShadowed[declaration.file] || !l8D2ReadinessExactIntType(declaration.values.Type) || !l8D2ReadinessCanonicalExpectedConstantInitializer(declaration.values, identifier.Name) {
+		return false
+	}
+	valid := true
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !valid || node == nil {
+			return valid
+		}
+		switch item := node.(type) {
+		case *ast.AssignStmt:
+			for _, left := range item.Lhs {
+				if assigned, ok := left.(*ast.Ident); ok && assigned.Name == identifier.Name {
+					valid = false
+					return false
+				}
+			}
+		case *ast.ValueSpec:
+			for _, name := range item.Names {
+				if name.Name == identifier.Name && item != declaration.values {
+					if localGroup, ok := l8D2ReadinessParentGenDecl(function.Body, item); !ok || localGroup.Tok != token.CONST || !l8D2ReadinessNodePrecedes(function.Body, item, before) {
+						valid = false
+						return false
+					}
+				}
+			}
+		}
+		return true
+	})
+	return valid
+}
+
+func l8D2ReadinessExpectedConstantDeclarationFor(function *ast.FuncDecl, identifier *ast.Ident, environment l8D2ReadinessTerminalEnvironment) (l8D2ReadinessExpectedConstantDeclaration, bool) {
+	if identifier == nil {
+		return l8D2ReadinessExpectedConstantDeclaration{}, false
+	}
+	if identifier.Obj != nil {
+		if declaration, ok := identifier.Obj.Decl.(*ast.ValueSpec); ok {
+			if group, found := l8D2ReadinessParentGenDecl(function.Body, declaration); found {
+				return l8D2ReadinessExpectedConstantDeclaration{file: environment.functionFiles[function], group: group, values: declaration}, true
+			}
+			for _, candidate := range environment.expectedConstants[identifier.Name] {
+				if candidate.values == declaration {
+					return candidate, true
+				}
+			}
+		}
+	}
+	candidates := environment.expectedConstants[identifier.Name]
+	if len(candidates) != 1 {
+		return l8D2ReadinessExpectedConstantDeclaration{}, false
+	}
+	return candidates[0], true
+}
+
+func l8D2ReadinessNodePrecedes(root ast.Node, declaration, before ast.Node) bool {
+	if root == nil || declaration == nil || before == nil {
+		return false
+	}
+	declarationSeen := false
+	beforeSeen := false
+	ast.Inspect(root, func(node ast.Node) bool {
+		if beforeSeen || node == nil {
+			return !beforeSeen
+		}
+		if node == declaration {
+			declarationSeen = true
+		}
+		if node == before {
+			beforeSeen = true
+			return false
+		}
+		return true
+	})
+	return beforeSeen && declarationSeen
+}
+
+func l8D2ReadinessExactIntType(expression ast.Expr) bool {
+	identifier, ok := expression.(*ast.Ident)
+	return ok && identifier.Name == "int" && identifier.Obj == nil
+}
+
+func l8D2ReadinessCanonicalExpectedConstantInitializer(declaration *ast.ValueSpec, name string) bool {
+	if declaration == nil || len(declaration.Names) != len(declaration.Values) {
+		return false
+	}
+	var initializer ast.Expr
+	for index, candidate := range declaration.Names {
+		if candidate.Name == name {
+			initializer = declaration.Values[index]
+			break
+		}
+	}
+	if literal, ok := initializer.(*ast.BasicLit); ok {
+		return literal.Kind == token.INT
+	}
+	conversion, ok := initializer.(*ast.CallExpr)
+	if !ok || len(conversion.Args) != 1 || conversion.Ellipsis.IsValid() {
+		return false
+	}
+	target, ok := conversion.Fun.(*ast.Ident)
+	literal, literalOK := conversion.Args[0].(*ast.BasicLit)
+	return ok && target.Name == "int" && target.Obj == nil && literalOK && literal.Kind == token.INT
+}
+
+func l8D2ReadinessParentGenDecl(root ast.Node, target *ast.ValueSpec) (*ast.GenDecl, bool) {
+	var result *ast.GenDecl
+	ast.Inspect(root, func(node ast.Node) bool {
+		group, ok := node.(*ast.GenDecl)
+		if !ok {
+			return result == nil
+		}
+		for _, specification := range group.Specs {
+			if specification == target {
+				result = group
+				return false
+			}
+		}
+		return result == nil
+	})
+	return result, result != nil
+}
+
+func l8D2ReadinessObservableOwnerStable(body *ast.BlockStmt, owner string) bool {
+	if body == nil || owner == "" {
+		return false
+	}
+	definitions := 0
+	stable := true
+	ast.Inspect(body, func(node ast.Node) bool {
+		if !stable {
+			return false
+		}
+		switch declaration := node.(type) {
+		case *ast.AssignStmt:
+			for _, left := range declaration.Lhs {
+				if identifier, ok := left.(*ast.Ident); ok && identifier.Name == owner {
+					definitions++
+				}
+			}
+		case *ast.ValueSpec:
+			for _, name := range declaration.Names {
+				if name.Name == owner {
+					definitions++
+				}
+			}
+		case *ast.IncDecStmt:
+			if identifier, ok := declaration.X.(*ast.Ident); ok && identifier.Name == owner {
+				stable = false
+				return false
+			}
+		case *ast.RangeStmt:
+			for _, expression := range []ast.Expr{declaration.Key, declaration.Value} {
+				if identifier, ok := expression.(*ast.Ident); ok && identifier.Name == owner {
+					stable = false
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return stable && definitions == 1
+}
+
+func l8D2ReadinessObservableOwnerStartsZero(body *ast.BlockStmt, owner, field string, constructor *ast.CallExpr, environment l8D2ReadinessTerminalEnvironment, constants map[string]constant.Value) bool {
+	if body == nil || owner == "" || field == "" || constructor == nil {
+		return false
+	}
+	var initializer ast.Expr
+	for _, statement := range body.List {
+		if statement.Pos() >= constructor.Pos() {
+			break
+		}
+		switch declaration := statement.(type) {
+		case *ast.AssignStmt:
+			for index, left := range declaration.Lhs {
+				if identifier, ok := left.(*ast.Ident); ok && identifier.Name == owner && index < len(declaration.Rhs) {
+					initializer = declaration.Rhs[index]
+				}
+			}
+		case *ast.DeclStmt:
+			group, ok := declaration.Decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, raw := range group.Specs {
+				specification, ok := raw.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for index, name := range specification.Names {
+					if name.Name == owner && index < len(specification.Values) {
+						initializer = specification.Values[index]
+					}
+				}
+			}
+		}
+	}
+	if initializer == nil {
+		return false
+	}
+	for {
+		switch value := initializer.(type) {
+		case *ast.ParenExpr:
+			initializer = value.X
+			continue
+		case *ast.UnaryExpr:
+			if value.Op != token.AND {
+				return false
+			}
+			initializer = value.X
+			continue
+		}
+		break
+	}
+	literal, ok := initializer.(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	typeName, ok := literal.Type.(*ast.Ident)
+	if !ok || len(environment.namedTypes[typeName.Name]) != 1 {
+		return false
+	}
+	structure, ok := environment.namedTypes[typeName.Name][0].underlying.(*ast.StructType)
+	if !ok || structure.Fields == nil {
+		return false
+	}
+	directField := 0
+	for _, declared := range structure.Fields.List {
+		for _, name := range declared.Names {
+			if name.Name == field {
+				directField++
+			}
+		}
+	}
+	if directField != 1 {
+		return false
+	}
+	zero := true
+	for _, element := range literal.Elts {
+		if _, keyed := element.(*ast.KeyValueExpr); !keyed {
+			return false
+		}
+	}
+	ast.Inspect(literal, func(node ast.Node) bool {
+		keyValue, ok := node.(*ast.KeyValueExpr)
+		key, keyOK := func() (*ast.Ident, bool) {
+			if !ok {
+				return nil, false
+			}
+			identifier, valid := keyValue.Key.(*ast.Ident)
+			return identifier, valid
+		}()
+		if keyOK && key.Name == field {
+			value, exact := l8D2ReadinessConstantExpression(keyValue.Value, constants)
+			if !exact || value.Kind() != constant.Int || constant.Sign(value) != 0 {
+				zero = false
+				return false
+			}
+		}
+		return zero
+	})
+	return zero
+}
+
+func l8D2ReadinessObservableOwnerFeedsConstructor(body *ast.BlockStmt, owner string, constructor *ast.CallExpr, dependencyFields []string) bool {
+	if body == nil || owner == "" || constructor == nil || len(dependencyFields) == 0 || len(constructor.Args) != 1 {
+		return false
+	}
+	definitions := make(map[string][]ast.Expr)
+	definitionCounts := make(map[string]int)
+	ownerInitialized := false
+	for _, statement := range body.List {
+		if statement.Pos() >= constructor.Pos() {
+			break
+		}
+		switch declaration := statement.(type) {
+		case *ast.AssignStmt:
+			for index, left := range declaration.Lhs {
+				identifier, ok := left.(*ast.Ident)
+				if !ok || index >= len(declaration.Rhs) {
+					continue
+				}
+				definitions[identifier.Name] = append(definitions[identifier.Name], declaration.Rhs[index])
+				definitionCounts[identifier.Name]++
+				if identifier.Name == owner {
+					ownerInitialized = true
+				}
+			}
+		case *ast.DeclStmt:
+			general, ok := declaration.Decl.(*ast.GenDecl)
+			if !ok || general.Tok != token.VAR {
+				continue
+			}
+			for _, specification := range general.Specs {
+				values, ok := specification.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for index, name := range values.Names {
+					if index >= len(values.Values) {
+						continue
+					}
+					definitions[name.Name] = append(definitions[name.Name], values.Values[index])
+					definitionCounts[name.Name]++
+					if name.Name == owner {
+						ownerInitialized = true
+					}
+				}
+			}
+		}
+	}
+	if !ownerInitialized || definitionCounts[owner] != 1 {
+		return false
+	}
+	visiting := make(map[string]bool)
+	var contains func(ast.Expr) bool
+	contains = func(expression ast.Expr) bool {
+		if expression == nil {
+			return false
+		}
+		switch value := expression.(type) {
+		case *ast.Ident:
+			if value.Name == owner {
+				return true
+			}
+			if visiting[value.Name] || definitionCounts[value.Name] != 1 {
+				return false
+			}
+			visiting[value.Name] = true
+			result := contains(definitions[value.Name][0])
+			delete(visiting, value.Name)
+			return result
+		case *ast.ParenExpr:
+			return contains(value.X)
+		case *ast.UnaryExpr:
+			return value.Op == token.AND && contains(value.X)
+		case *ast.CompositeLit:
+			for _, element := range value.Elts {
+				if contains(element) {
+					return true
+				}
+			}
+		case *ast.KeyValueExpr:
+			return contains(value.Value)
+		}
+		return false
+	}
+	options := constructor.Args[0]
+	if identifier, ok := options.(*ast.Ident); ok && definitionCounts[identifier.Name] == 1 {
+		options = definitions[identifier.Name][0]
+	}
+	literal, ok := options.(*ast.CompositeLit)
+	if !ok || types.ExprString(literal.Type) != "ServiceOptions" {
+		return false
+	}
+	allowed := make(map[string]bool, len(dependencyFields))
+	for _, field := range dependencyFields {
+		allowed[field] = true
+	}
+	matches := 0
+	invalid := false
+	var exactOwner func(ast.Expr, map[string]bool) bool
+	exactOwner = func(expression ast.Expr, visiting map[string]bool) bool {
+		switch value := expression.(type) {
+		case *ast.Ident:
+			if value.Name == owner {
+				return true
+			}
+			if visiting[value.Name] || definitionCounts[value.Name] != 1 {
+				return false
+			}
+			visiting[value.Name] = true
+			result := exactOwner(definitions[value.Name][0], visiting)
+			delete(visiting, value.Name)
+			return result
+		case *ast.ParenExpr:
+			return exactOwner(value.X, visiting)
+		}
+		return false
+	}
+	for _, element := range literal.Elts {
+		keyValue, ok := element.(*ast.KeyValueExpr)
+		key, keyOK := func() (*ast.Ident, bool) {
+			if !ok {
+				return nil, false
+			}
+			identifier, valid := keyValue.Key.(*ast.Ident)
+			return identifier, valid
+		}()
+		if !keyOK || !contains(keyValue.Value) {
+			continue
+		}
+		if !allowed[key.Name] || !exactOwner(keyValue.Value, make(map[string]bool)) {
+			invalid = true
+			continue
+		}
+		matches++
+	}
+	return !invalid && matches == 1
+}
+
+func l8D2ReadinessObservableFieldWritten(body *ast.BlockStmt, owner, field string, constructor *ast.CallExpr, globals map[string]bool) bool {
+	aliases := map[string]bool{owner: true}
+	fieldPointers := make(map[string]bool)
+	aliasEscaped := false
+	carriesAlias := func(expression ast.Expr) bool {
+		found := false
+		ast.Inspect(expression, func(node ast.Node) bool {
+			if identifier, ok := node.(*ast.Ident); ok && aliases[identifier.Name] {
+				found = true
+				return false
+			}
+			return !found
+		})
+		return found
+	}
+	for changed := true; changed; {
+		changed = false
+		ast.Inspect(body, func(node ast.Node) bool {
+			var names []*ast.Ident
+			var values []ast.Expr
+			switch declaration := node.(type) {
+			case *ast.AssignStmt:
+				for _, left := range declaration.Lhs {
+					if identifier, ok := left.(*ast.Ident); ok {
+						names = append(names, identifier)
+					} else {
+						names = append(names, nil)
+					}
+				}
+				values = declaration.Rhs
+			case *ast.ValueSpec:
+				names, values = declaration.Names, declaration.Values
+			case *ast.RangeStmt:
+				if !carriesAlias(declaration.X) {
+					return true
+				}
+				for _, expression := range []ast.Expr{declaration.Key, declaration.Value} {
+					if expression == nil {
+						continue
+					}
+					identifier, ok := expression.(*ast.Ident)
+					if !ok || identifier.Name == "_" {
+						aliasEscaped = true
+						continue
+					}
+					if !aliases[identifier.Name] {
+						aliases[identifier.Name] = true
+						changed = true
+					}
+				}
+				return true
+			case *ast.SendStmt:
+				if carriesAlias(declaration.Value) {
+					aliasEscaped = true
+				}
+				return true
+			default:
+				return true
+			}
+			for index, identifier := range names {
+				if index >= len(values) {
+					continue
+				}
+				right := values[index]
+				if right == constructor {
+					continue
+				}
+				if identifier == nil {
+					if carriesAlias(right) {
+						aliasEscaped = true
+					}
+					continue
+				}
+				if carriesAlias(right) && !aliases[identifier.Name] {
+					aliases[identifier.Name] = true
+					changed = true
+				}
+				if carriesAlias(right) && globals[identifier.Name] {
+					aliasEscaped = true
+				}
+				if unary, ok := right.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+					if selector, ok := unary.X.(*ast.SelectorExpr); ok {
+						if carriesAlias(selector.X) && selector.Sel.Name == field && !fieldPointers[identifier.Name] {
+							fieldPointers[identifier.Name] = true
+							changed = true
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+	if aliasEscaped {
+		return true
+	}
+	written := false
+	var isField func(ast.Expr) bool
+	isField = func(expression ast.Expr) bool {
+		switch wrapped := expression.(type) {
+		case *ast.ParenExpr:
+			return isField(wrapped.X)
+		case *ast.StarExpr:
+			if identifier, ok := wrapped.X.(*ast.Ident); ok && fieldPointers[identifier.Name] {
+				return true
+			}
+			return isField(wrapped.X)
+		case *ast.UnaryExpr:
+			return wrapped.Op == token.AND && isField(wrapped.X)
+		}
+		selector, ok := expression.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != field {
+			return false
+		}
+		found := false
+		ast.Inspect(selector.X, func(node ast.Node) bool {
+			if identifier, ok := node.(*ast.Ident); ok && aliases[identifier.Name] {
+				found = true
+				return false
+			}
+			return !found
+		})
+		return found
+	}
+	ast.Inspect(body, func(node ast.Node) bool {
+		if written {
+			return false
+		}
+		switch value := node.(type) {
+		case *ast.CallExpr:
+			if value == constructor {
+				return true
+			}
+			for _, argument := range append([]ast.Expr{value.Fun}, value.Args...) {
+				found := false
+				ast.Inspect(argument, func(node ast.Node) bool {
+					if identifier, ok := node.(*ast.Ident); ok && aliases[identifier.Name] {
+						found = true
+						return false
+					}
+					return !found
+				})
+				if found {
+					written = true
+					return false
+				}
+			}
+		case *ast.AssignStmt:
+			for _, left := range value.Lhs {
+				if isField(left) {
+					written = true
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			if isField(value.X) {
+				written = true
+				return false
+			}
+		}
+		return true
+	})
+	return written
+}
+
+func l8D2ReadinessServiceOwnerConfinedUntilServe(body *ast.BlockStmt, owner string, constructor, serve *ast.CallExpr) bool {
+	if body == nil || owner == "" || constructor == nil || serve == nil || constructor.End() >= serve.Pos() {
+		return false
+	}
+	allowedOwner, ok := serve.Fun.(*ast.SelectorExpr)
+	if !ok || allowedOwner.Sel.Name != "Serve" {
+		return false
+	}
+	allowed, ok := allowedOwner.X.(*ast.Ident)
+	if !ok || allowed.Name != owner {
+		return false
+	}
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
+	ast.Inspect(body, func(node ast.Node) bool {
+		if node == nil {
+			if len(stack) != 0 {
+				stack = stack[:len(stack)-1]
+			}
+			return true
+		}
+		if len(stack) != 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	confined := true
+	ast.Inspect(body, func(node ast.Node) bool {
+		if !confined {
+			return false
+		}
+		identifier, ok := node.(*ast.Ident)
+		if !ok || identifier.Name != owner || identifier.Pos() <= constructor.End() || identifier.Pos() >= serve.End() {
+			return true
+		}
+		if identifier == allowed {
+			return true
+		}
+		parent := parents[identifier]
+		if comparison, ok := parent.(*ast.BinaryExpr); ok && (comparison.Op == token.EQL || comparison.Op == token.NEQ) {
+			other := comparison.X
+			if other == identifier {
+				other = comparison.Y
+			}
+			if l8D2ReadinessNilIdentifier(other) {
+				return true
+			}
+		}
+		confined = false
+		return false
+	})
+	return confined
+}
+
+func l8D2ReadinessAllExerciseBefore(positions map[string]token.Pos, required []string, boundary token.Pos) bool {
+	for _, name := range required {
+		if positions[name] == token.NoPos || positions[name] >= boundary {
+			return false
+		}
+	}
+	return true
 }
 
 func assertL8D2ReadinessStructFields(t *testing.T, dir, typeName string, want []string) {
@@ -6252,10 +10167,22 @@ func l8D2ReadinessHelperCallsUseExactParamPair(function *ast.FuncDecl, helper st
 }
 
 type l8D2ReadinessTerminalEnvironment struct {
-	declarations []*ast.FuncDecl
-	aliases      map[*ast.FuncDecl]map[string]string
-	constants    map[string]constant.Value
-	namedTypes   map[string][]l8D2ReadinessNamedType
+	declarations       []*ast.FuncDecl
+	aliases            map[*ast.FuncDecl]map[string]string
+	functionFiles      map[*ast.FuncDecl]*ast.File
+	constants          map[string]constant.Value
+	namedTypes         map[string][]l8D2ReadinessNamedType
+	globals            map[string]bool
+	expectedConstants  map[string][]l8D2ReadinessExpectedConstantDeclaration
+	packageIntShadowed bool
+	fileIntShadowed    map[*ast.File]bool
+}
+
+type l8D2ReadinessExpectedConstantDeclaration struct {
+	file         *ast.File
+	group        *ast.GenDecl
+	values       *ast.ValueSpec
+	packageScope bool
 }
 
 type l8D2ReadinessNamedType struct {
@@ -6579,7 +10506,7 @@ func l8D2ReadinessExactTerminalSelectorIdentity(function *ast.FuncDecl, selector
 	receiverType := l8D2ReadinessTerminalReceiverType(function, selector.X)
 	if separator := strings.IndexByte(receiverType, '.'); separator > 0 && receiverType[separator+1:] == "T" && environment.aliases[function][receiverType[:separator]] == "testing" {
 		switch selector.Sel.Name {
-		case "FailNow", "Fatal", "Fatalf":
+		case "FailNow", "Fatal", "Fatalf", "Skip", "Skipf", "SkipNow":
 			return "testing." + selector.Sel.Name
 		}
 	}
@@ -6792,7 +10719,7 @@ func l8D2ReadinessTerminalCallableExpression(function *ast.FuncDecl, expression 
 		return value.Name == "panic" || aliases[value.Name] || facts.neverReturns[value.Name]
 	case *ast.SelectorExpr:
 		identity := l8D2ReadinessExactTerminalSelectorIdentity(function, value, environment)
-		return identity == "runtime.Goexit" || identity == "os.Exit" || identity == "testing.FailNow" || identity == "testing.Fatal" || identity == "testing.Fatalf" || facts.neverReturns[identity] || l8D2ReadinessTerminalCallableExpression(function, value.X, aliases, facts, environment)
+		return identity == "runtime.Goexit" || identity == "os.Exit" || identity == "testing.FailNow" || identity == "testing.Fatal" || identity == "testing.Fatalf" || identity == "testing.Skip" || identity == "testing.Skipf" || identity == "testing.SkipNow" || facts.neverReturns[identity] || l8D2ReadinessTerminalCallableExpression(function, value.X, aliases, facts, environment)
 	case *ast.FuncLit:
 		return l8D2ReadinessBlockNeverReturns(function, value.Body, aliases, facts, environment)
 	case *ast.ParenExpr:
