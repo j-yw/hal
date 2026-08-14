@@ -115,6 +115,17 @@ func TestL8D2HelperServiceReadinessDocsAreNormative(t *testing.T) {
 		"Every reachable private Service handler",
 		"Counts include every executable nested closure",
 		"unique top-level exact `func TestX(t *testing.T)` AST declaration",
+		"`ownedSnapshotEntries` is the sole non-fake observable",
+		"not add mutable instrumentation",
+		"recursively call-free",
+		"sole `NewService` identifier",
+		"first credited statement",
+		"provably inert direct string/integer/array/slice/map value",
+		"key/value bindings invalidate same-named inert provenance",
+		"proof follows lexical blocks sequentially",
+		"parser's exact lexical object",
+		"any second write kills inert provenance",
+		"tail rejects address-taking",
 		"one combined topology",
 		"exact Service `state.mu` is held",
 		"general state-field or helper exemption",
@@ -181,6 +192,17 @@ func TestL8D2HelperServiceReadinessDocsAreNormative(t *testing.T) {
 		"Handler reachability from `Serve` follows only actual returned",
 		"The total includes executable nested/IIFE closures",
 		"top-level exact `func TestX(t *testing.T)` AST declaration",
+		"`ownedSnapshotEntries` is deliberately not a fake-field counter",
+		"never requires or permits mutation or instrumentation",
+		"recursively call-free",
+		"sole `NewService` identifier",
+		"first credited statement",
+		"provably inert direct string/integer/array/slice/map value",
+		"key/value bindings invalidate same-named inert provenance",
+		"proof follows lexical blocks sequentially",
+		"parser's exact lexical object",
+		"any second write kills inert provenance",
+		"tail rejects address-taking",
 		"one combined construction, one-shot",
 		"sole state-copy allowance",
 		"literal untyped `nil` view",
@@ -844,7 +866,7 @@ import "testing"
 type fakeRuntime struct{ serveCalls int }
 type ServiceOptions struct{ Runtime *fakeRuntime }
 const expectedCalls int = 1
-func TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil || result.Disposition() != ServiceClosed || runtime.serveCalls != expectedCalls { t.Fatalf("unexpected result") } }
+func TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil { t.Fatal(err) }; if runtime.serveCalls != expectedCalls { t.Fatalf("unexpected result") }; _ = result }
 `
 	for _, test := range []struct {
 		name, testFile         string
@@ -896,8 +918,9 @@ func TestL8D2HelperServiceReadinessBehavioralTestGuardSelfTest(t *testing.T) {
 		name, body string
 		want       bool
 	}{
-		{name: "canonical", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil || result.Disposition() != ServiceClosed || runtime.serveCalls != 1 { t.Fatalf("unexpected result") }`, want: true},
-		{name: "canonical with supplemental table", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil || result.Disposition() != ServiceClosed || runtime.serveCalls != 1 { t.Fatalf("unexpected result") }; for _, tc := range []struct{ want int }{{want: 1}} { _ = tc }`, want: true},
+		{name: "canonical", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil { t.Fatal(err) }; if runtime.serveCalls != 1 { t.Fatalf("unexpected result") }; _ = result`, want: true},
+		{name: "canonical with supplemental table", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil { t.Fatal(err) }; if runtime.serveCalls != 1 { t.Fatalf("unexpected result") }; _ = result; for _, tc := range []struct{ want int }{{want: 1}} { _ = tc }`, want: true},
+		{name: "canonical with inert result field inspection", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; result, err := service.Serve(ctx); if err != nil { t.Fatal(err) }; if runtime.serveCalls != 1 { t.Fatalf("unexpected result") }; disposition := result.disposition; _ = disposition`, want: true},
 		{name: "empty"},
 		{name: "no assertion", body: `service, _ := NewService(options); _, _ = service.Serve(ctx); _ = runtime.serveCalls`},
 		{name: "skip", body: `t.Skip("disabled"); service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
@@ -906,6 +929,27 @@ func TestL8D2HelperServiceReadinessBehavioralTestGuardSelfTest(t *testing.T) {
 		{name: "return before exercise", body: `return; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }`},
 		{name: "comment and string only", body: "marker := `NewService Serve serveCalls t.Fatal`; _ = marker"},
 		{name: "dead markers", body: `if false { service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") } }`},
+		{name: "runtime true conditional return before fake evidence", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); skip := true; if skip { return }; if runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "terminal call in fake evidence condition", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if snapshotGlobalStop() || runtime.serveCalls != 1 { t.Fatal("bad") }`},
+		{name: "post-evidence extra Serve", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; service.Serve(ctx)`},
+		{name: "post-evidence deferred Serve", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; defer service.Serve(ctx)`},
+		{name: "post-evidence goroutine Serve", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; go service.Serve(ctx)`},
+		{name: "post-evidence extra NewService", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; NewService(ServiceOptions{})`},
+		{name: "post-evidence aliased NewService", body: `ctor := NewService; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; ctor(ServiceOptions{})`},
+		{name: "post-evidence channel send", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; channel <- 1`},
+		{name: "post-evidence channel receive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; _ = <-channel`},
+		{name: "post-evidence channel range receive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; for range channel {}`},
+		{name: "post-evidence range function helper", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; for range buildIterator {}`},
+		{name: "post-evidence range variable shadows inert alias", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := []int{1}; _ = table; for _, table := range []func(func() bool){buildIterator} { for range table {} }`},
+		{name: "post-evidence parenthesized range assignment shadows inert alias", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := []int{1}; for _, (table) = range [][]int{{2}} { for range table {} }`},
+		{name: "post-evidence unknown range operand", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; for range unknownTable {}`},
+		{name: "post-evidence reassigned range operand", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := []int{1}; table = []int{2}; for range table {}`},
+		{name: "post-evidence incremented integer range operand", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := 1; table++; for range table {}`},
+		{name: "post-evidence parenthesized incremented integer range operand", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := 1; (table)++; for range table {}`},
+		{name: "post-evidence parenthesized reassigned range operand", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := []int{1}; (table) = []int{2}; for range table {}`},
+		{name: "post-evidence pointer reassigned range operand", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := []int{1}; pointer := &table; *pointer = []int{2}; for range table {}`},
+		{name: "post-evidence if-init reassigned range operand", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := []int{1}; if table = []int{2}; ready { for range table {} }`},
+		{name: "post-evidence labeled reassigned range operand", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := []int{1}; update: table = []int{2}; for range table {}`},
 		{name: "assertion before exercise only", body: `if ready { t.Fatal("bad") }; service, _ := NewService(options); _, _ = service.Serve(ctx); _ = runtime.serveCalls`},
 		{name: "missing promised evidence", body: `service, _ := NewService(options); result, err := service.Serve(ctx); if err != nil || result.Disposition() != ServiceClosed { t.Fatal("bad") }`},
 		{name: "same named local is not observable", body: `service, _ := NewService(options); _, _ = service.Serve(ctx); serveCalls := 1; if serveCalls != 1 { t.Fatal("bad") }`},
@@ -966,18 +1010,79 @@ func TestL8D2HelperServiceReadinessBehavioralTestGuardSelfTest(t *testing.T) {
 		{name: "grouped exact int expected constant", body: `const ( expectedCalls int = 1 ); runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`, want: true},
 		{name: "noninteger named expected constant", body: `const expectedCalls string = "1"; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
 		{name: "derived named expected constant", body: `const base int = 1; const expectedCalls int = base; runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
-		{name: "unrelated map range positive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); for key, value := range map[string]int{"one": 1} { _, _ = key, value }; if runtime.serveCalls != 1 { t.Fatal("bad") }`, want: true},
-		{name: "unrelated nested table positive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); table := map[string][][]int{"one": {{1}}}; for key, rows := range table { _, _ = key, rows }; if runtime.serveCalls != 1 { t.Fatal("bad") }`, want: true},
+		{name: "unrelated map range positive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; for key, value := range map[string]int{"one": 1} { _, _ = key, value }`, want: true},
+		{name: "inert local range alias positive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := []int{1}; alias := table; for _, value := range alias { _ = value }`, want: true},
+		{name: "inert nested block range alias positive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; { table := []int{1}; for _, value := range table { _ = value } }`, want: true},
+		{name: "unrelated nested table positive", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal("bad") }; table := map[string][][]int{"one": {{1}}}; for key, rows := range table { _, _ = key, rows }`, want: true},
 		{name: "expected constant declared after exercise", body: `runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, _ := NewService(options); _, _ = service.Serve(ctx); const expectedCalls int = 1; if runtime.serveCalls != expectedCalls { t.Fatal("bad") }`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			source := "package fixture\nimport (\"testing\"; \"runtime\")\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Core any; Transport any; Policy any; Extensions any; Host any; Runtime *fakeRuntime }; var retainedRuntime *fakeRuntime; func stop(t *testing.T){ t.SkipNow() }\nfunc TestRequired(t *testing.T) {" + test.body + "}\n"
+			source := "package fixture\nimport (\"testing\"; \"runtime\")\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Core any; Transport any; Policy any; Extensions any; Host any; Runtime *fakeRuntime }; var retainedRuntime *fakeRuntime; var snapshotGlobalStop = func() bool { panic(\"stop\") }; func stop(t *testing.T){ t.SkipNow() }\nfunc TestRequired(t *testing.T) {" + test.body + "}\n"
 			file, err := parser.ParseFile(token.NewFileSet(), "fixture_test.go", source, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got := l8D2ReadinessExactServiceBehavioralTest(file, "TestRequired", spec); got != test.want {
 				t.Fatalf("behavioral test = %t, want %t", got, test.want)
+			}
+		})
+	}
+	multiEvidenceSource := "package fixture\nimport \"testing\"\ntype fakeRuntime struct{ dependencyCalls, serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }; var ctx any\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, serveErr := service.Serve(ctx); if serveErr != nil { t.Fatal(serveErr) }; if runtime.dependencyCalls != 1 { t.Fatal(\"dependency\") }; if runtime.serveCalls != 1 { t.Fatal(\"serve\") } }\n"
+	multiEvidenceFile, err := parser.ParseFile(token.NewFileSet(), "multi_evidence_test.go", multiEvidenceSource, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	multiEvidenceSpec := l8D2ReadinessServiceTestRequirement{
+		exercise: []string{"NewService", "Serve"},
+		evidence: []string{"dependencyCalls", "serveCalls"},
+		dependencyFields: map[string][]string{
+			"dependencyCalls": {"Runtime"},
+			"serveCalls":      {"Runtime"},
+		},
+	}
+	if !l8D2ReadinessExactServiceBehavioralTest(multiEvidenceFile, "TestRequired", multiEvidenceSpec) {
+		t.Fatal("canonical direct multi-evidence fake test did not satisfy behavioral guard")
+	}
+	combinedEvidenceSpec := l8D2ReadinessServiceTestRequirement{
+		exercise: []string{"NewService", "Serve"},
+		evidence: []string{"dependencyCalls", "ownedSnapshotEntries", "serveCalls"},
+		dependencyFields: map[string][]string{
+			"dependencyCalls": {"Runtime"},
+			"serveCalls":      {"Runtime"},
+		},
+	}
+	for _, test := range []struct {
+		name, evidence string
+		want           bool
+	}{
+		{name: "canonical snapshot first combined evidence", evidence: `if len(service.extensions) != 1 { t.Fatal("snapshot") }; if runtime.dependencyCalls != 1 { t.Fatal("dependency") }; if runtime.serveCalls != 1 { t.Fatal("serve") }`, want: true},
+		{name: "fake assertion interposed before immediate snapshot", evidence: `if runtime.dependencyCalls != 1 { t.Fatal("dependency") }; if len(service.extensions) != 1 { t.Fatal("snapshot") }; if runtime.serveCalls != 1 { t.Fatal("serve") }`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := "package fixture\nimport \"testing\"\ntype fakeRuntime struct{ dependencyCalls, serveCalls int }; type extensionEntry struct{}; type ExtensionRegistry struct{ entries []extensionEntry }; type Service struct{ extensions []extensionEntry }; type ServiceOptions struct{ Extensions *ExtensionRegistry; Runtime *fakeRuntime }; var ctx any\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry, Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, serveErr := service.Serve(ctx); if serveErr != nil { t.Fatal(serveErr) }; " + test.evidence + " }\n"
+			file, err := parser.ParseFile(token.NewFileSet(), "combined_evidence_test.go", source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := l8D2ReadinessExactServiceBehavioralTest(file, "TestRequired", combinedEvidenceSpec); got != test.want {
+				t.Fatalf("combined behavioral test = %t, want %t", got, test.want)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name, alternate string
+	}{
+		{name: "else return before later evidence", alternate: "return"},
+		{name: "else terminal before later evidence", alternate: "t.SkipNow()"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := "package fixture\nimport \"testing\"\ntype fakeRuntime struct{ dependencyCalls, serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }; var ctx any\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.dependencyCalls != 1 { t.Fatal(\"dependency\") } else { " + test.alternate + " }; if runtime.serveCalls != 1 { t.Fatal(\"serve\") } }\n"
+			file, err := parser.ParseFile(token.NewFileSet(), "multi_evidence_else_test.go", source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l8D2ReadinessExactServiceBehavioralTest(file, "TestRequired", multiEvidenceSpec) {
+				t.Fatal("credited assertion alternate bypassed later evidence")
 			}
 		})
 	}
@@ -991,6 +1096,17 @@ func TestL8D2HelperServiceReadinessBehavioralTestGuardSelfTest(t *testing.T) {
 	}
 	if l8D2ReadinessExactServiceBehavioralTestInEnvironment(mainFile, "TestRequired", spec, l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{mainFile, helperFile})) {
 		t.Fatal("cross-file terminal helper satisfied live Service test")
+	}
+	constructionHelperMain, err := parser.ParseFile(token.NewFileSet(), "construction_helper_test.go", "package fixture\nimport \"testing\"\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != 1 { t.Fatal(\"bad\") }; buildAgain() }", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	constructionHelper, err := parser.ParseFile(token.NewFileSet(), "construction_helper.go", "package fixture\nfunc buildAgain() { NewService(ServiceOptions{}) }", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l8D2ReadinessExactServiceBehavioralTestInEnvironment(constructionHelperMain, "TestRequired", spec, l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{constructionHelperMain, constructionHelper})) {
+		t.Fatal("package helper extra NewService satisfied exact one-construction test")
 	}
 	packageConstantMain, err := parser.ParseFile(token.NewFileSet(), "package_constant_test.go", "package fixture\nimport \"testing\"\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal(\"bad\") } }", 0)
 	if err != nil {
@@ -1010,7 +1126,7 @@ func TestL8D2HelperServiceReadinessBehavioralTestGuardSelfTest(t *testing.T) {
 	if l8D2ReadinessExactServiceBehavioralTestInEnvironment(packageConstantMain, "TestRequired", spec, l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{packageConstantMain, paddedConstant, shadowFile})) {
 		t.Fatal("cross-file package int alias satisfied named expected grammar")
 	}
-	dotImportMain, err := parser.ParseFile(token.NewFileSet(), "dot_import_test.go", "package fixture\nimport (\"testing\"; . \"math\")\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }\nconst expectedCalls int = 1\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; _ = Abs(1); options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal(\"bad\") } }", 0)
+	dotImportMain, err := parser.ParseFile(token.NewFileSet(), "dot_import_test.go", "package fixture\nimport (\"testing\"; . \"math\")\ntype fakeRuntime struct{ serveCalls int }; type ServiceOptions struct{ Runtime *fakeRuntime }\nconst expectedCalls int = 1\nfunc TestRequired(t *testing.T) { runtime := &fakeRuntime{}; _ = Pi; options := ServiceOptions{Runtime: runtime}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if runtime.serveCalls != expectedCalls { t.Fatal(\"bad\") } }", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1120,6 +1236,151 @@ func TestL8D2HelperServiceReadinessBehavioralTestGuardSelfTest(t *testing.T) {
 				t.Fatalf("behavioral module import = %t, want %t; resolved=%v", got, test.want, resolved[file])
 			}
 		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessOwnedSnapshotBehavioralGuardSelfTest(t *testing.T) {
+	t.Parallel()
+	spec := l8D2ReadinessServiceTestRequirement{
+		exercise: []string{"NewService", "Serve"},
+		evidence: []string{"ownedSnapshotEntries"},
+	}
+	for _, test := range []struct {
+		name, body string
+		want       bool
+	}{
+		{
+			name: "canonical owned snapshot",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+			want: true,
+		},
+		{
+			name: "canonical typed count",
+			body: `const expectedSnapshotEntries int = 1; registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != expectedSnapshotEntries { t.Fatal("snapshot") }`,
+			want: true,
+		},
+		{
+			name: "canonical Serve error gate",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, serveErr := service.Serve(ctx); if serveErr != nil { t.Fatal(serveErr) }; if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+			want: true,
+		},
+		{
+			name: "mutable caller registry counter cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if registry.snapshotEntries != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "foreign service snapshot cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(foreignService.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "caller registry length cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(registry.entries) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "pre-serve snapshot assertion cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; if len(service.extensions) != 1 { t.Fatal("snapshot") }; _, _ = service.Serve(ctx)`,
+		},
+		{
+			name: "zero expected snapshot cannot substitute",
+			body: `registry := &ExtensionRegistry{}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 0 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "shadowed len cannot substitute",
+			body: `len := func([]extensionEntry) int { return 1 }; registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "post-serve snapshot replacement cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); service.extensions = []extensionEntry{{}}; if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "post-serve service alias mutation cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); alias := service; alias.extensions = []extensionEntry{{}}; if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "post-serve append cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); service.extensions = append(service.extensions, extensionEntry{}); if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "post-serve indexed mutation cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); service.extensions[0] = extensionEntry{}; if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "extra expression Serve cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "extra deferred Serve cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); defer service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "extra goroutine Serve cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); go service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "return before failure cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { return; t.Fatal("snapshot") }`,
+		},
+		{
+			name: "skip before failure cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.SkipNow(); t.Fatal("snapshot") }`,
+		},
+		{
+			name: "terminal failure argument cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal(snapshotStop()) }`,
+		},
+		{
+			name: "package terminal function value failure argument cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal(snapshotGlobalStop()) }`,
+		},
+		{
+			name: "benign call failure argument is conservatively rejected",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal(snapshotText()) }`,
+		},
+		{
+			name: "channel receive failure argument is conservatively rejected",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal(<-snapshotMessages) }`,
+		},
+		{
+			name: "function literal failure argument is conservatively rejected",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal(func() {}) }`,
+		},
+		{
+			name: "runtime true conditional return before snapshot failure cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); snapshotReturn := true; if snapshotReturn { return }; if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "runtime true conditional return before NewService cannot substitute",
+			body: `snapshotReturn := true; if snapshotReturn { return }; registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+		{
+			name: "runtime true conditional return between NewService and Serve cannot substitute",
+			body: `registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; snapshotReturn := true; if snapshotReturn { return }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal("snapshot") }`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := "package fixture\nimport \"testing\"\ntype extensionEntry struct{}; type ExtensionRegistry struct{ entries []extensionEntry; snapshotEntries int }; type Service struct{ extensions []extensionEntry }; type ServiceOptions struct{ Extensions *ExtensionRegistry }; var foreignService *Service; var ctx any; var snapshotMessages chan string\nvar snapshotGlobalStop = func() string { panic(\"stop\") }; func snapshotStop() string { panic(\"stop\") }; func snapshotText() string { return \"snapshot\" }\nfunc TestRequired(t *testing.T) {" + test.body + "}\n"
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture_test.go", source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := l8D2ReadinessExactServiceBehavioralTest(file, "TestRequired", spec); got != test.want {
+				t.Fatalf("owned snapshot behavioral test = %t, want %t", got, test.want)
+			}
+		})
+	}
+	mainSource := "package fixture\nimport \"testing\"\ntype extensionEntry struct{}; type ExtensionRegistry struct{ entries []extensionEntry }; type Service struct{ extensions []extensionEntry }; type ServiceOptions struct{ Extensions *ExtensionRegistry }; var ctx any\nfunc TestRequired(t *testing.T) { registry := &ExtensionRegistry{entries: []extensionEntry{{}}}; options := ServiceOptions{Extensions: registry}; service, err := NewService(options); if err != nil { t.Fatal(err) }; _, _ = service.Serve(ctx); if len(service.extensions) != 1 { t.Fatal(\"snapshot\") } }\n"
+	shadowSource := "package fixture\nfunc len(any) int { return 1 }\n"
+	mainFile, err := parser.ParseFile(token.NewFileSet(), "snapshot_test.go", mainSource, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadowFile, err := parser.ParseFile(token.NewFileSet(), "shadow.go", shadowSource, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{mainFile, shadowFile})
+	if l8D2ReadinessExactServiceBehavioralTestInEnvironment(mainFile, "TestRequired", spec, environment) {
+		t.Fatal("package-scope cross-file len shadow satisfied owned snapshot evidence")
 	}
 }
 
@@ -6530,6 +6791,10 @@ type l8D2ReadinessServiceTestRequirement struct {
 	dependencyFields map[string][]string
 }
 
+// parser.ParseFile populates local lexical identities even for intentionally
+// incomplete adversarial fixtures; this guard uses only those local identities.
+type l8D2ReadinessLexicalObject = ast.Object //nolint:staticcheck
+
 func l8D2ReadinessServiceTestRequirements() map[string]l8D2ReadinessServiceTestRequirement {
 	transport := map[string][]string{
 		"planDestroyCalls": {"Transport"}, "takeCalls": {"Transport"}, "commitCalls": {"Transport"},
@@ -6550,8 +6815,8 @@ func l8D2ReadinessServiceTestRequirements() map[string]l8D2ReadinessServiceTestR
 	}
 	return map[string]l8D2ReadinessServiceTestRequirement{
 		"TestServiceDestroysClaimedExecPlanOnEveryDispatchPath": {exercise: []string{"NewService", "Serve"}, evidence: []string{"planDestroyCalls"}, dependencyFields: fields("planDestroyCalls")},
-		"TestServiceConstructorDependenciesSnapshotAndServeOneShot": {exercise: []string{"NewService", "Serve"}, evidence: []string{"dependencyCalls", "snapshotEntries", "serveCalls"}, dependencyFields: map[string][]string{
-			"dependencyCalls": {"Core", "Transport", "Policy", "Host", "Runtime"}, "snapshotEntries": {"Extensions"}, "serveCalls": {"Transport", "Runtime"},
+		"TestServiceConstructorDependenciesSnapshotAndServeOneShot": {exercise: []string{"NewService", "Serve"}, evidence: []string{"dependencyCalls", "ownedSnapshotEntries", "serveCalls"}, dependencyFields: map[string][]string{
+			"dependencyCalls": {"Core", "Transport", "Policy", "Host", "Runtime"}, "serveCalls": {"Transport", "Runtime"},
 		}},
 		"TestServiceServeContextPreconditionBeforeOneShotLatch": {exercise: []string{"NewService", "Serve"}, evidence: []string{"dependencyCalls", "serveCalls"}, dependencyFields: map[string][]string{
 			"dependencyCalls": {"Core", "Transport", "Policy", "Host", "Runtime"}, "serveCalls": {"Transport", "Runtime"},
@@ -6677,7 +6942,9 @@ func l8D2ReadinessTerminalEnvironmentForFilesWithImports(files []*ast.File, reso
 	globals := make(map[string]bool)
 	expectedConstants := make(map[string][]l8D2ReadinessExpectedConstantDeclaration)
 	fileIntShadowed := make(map[*ast.File]bool)
+	fileLenShadowed := make(map[*ast.File]bool)
 	packageIntShadowed := false
+	packageLenShadowed := false
 	var allDeclarations []ast.Decl
 	for _, file := range files {
 		if file == nil {
@@ -6689,19 +6956,30 @@ func l8D2ReadinessTerminalEnvironmentForFilesWithImports(files []*ast.File, reso
 				if imported.Name.Name == "int" {
 					fileIntShadowed[file] = true
 				}
+				if imported.Name.Name == "len" {
+					fileLenShadowed[file] = true
+				}
 				continue
 			}
 			path := strings.Trim(imported.Path.Value, `"`)
 			if resolvedImports[file][path] == "int" {
 				fileIntShadowed[file] = true
 			}
+			if resolvedImports[file][path] == "len" {
+				fileLenShadowed[file] = true
+			}
 		}
 		allDeclarations = append(allDeclarations, file.Decls...)
 		for _, declaration := range file.Decls {
 			if group, ok := declaration.(*ast.GenDecl); ok {
 				for _, specification := range group.Specs {
-					if typeSpec, ok := specification.(*ast.TypeSpec); ok && typeSpec.Name.Name == "int" {
-						packageIntShadowed = true
+					if typeSpec, ok := specification.(*ast.TypeSpec); ok {
+						if typeSpec.Name.Name == "int" {
+							packageIntShadowed = true
+						}
+						if typeSpec.Name.Name == "len" {
+							packageLenShadowed = true
+						}
 					}
 					values, ok := specification.(*ast.ValueSpec)
 					if !ok {
@@ -6710,6 +6988,9 @@ func l8D2ReadinessTerminalEnvironmentForFilesWithImports(files []*ast.File, reso
 					for _, name := range values.Names {
 						if name.Name == "int" {
 							packageIntShadowed = true
+						}
+						if name.Name == "len" {
+							packageLenShadowed = true
 						}
 						switch group.Tok {
 						case token.VAR:
@@ -6727,6 +7008,9 @@ func l8D2ReadinessTerminalEnvironmentForFilesWithImports(files []*ast.File, reso
 			if candidate.Recv == nil && candidate.Name.Name == "int" {
 				packageIntShadowed = true
 			}
+			if candidate.Recv == nil && candidate.Name.Name == "len" {
+				packageLenShadowed = true
+			}
 			declarations = append(declarations, candidate)
 			aliasesByFunction[candidate] = aliases
 			functionFiles[candidate] = file
@@ -6742,6 +7026,8 @@ func l8D2ReadinessTerminalEnvironmentForFilesWithImports(files []*ast.File, reso
 		expectedConstants:  expectedConstants,
 		packageIntShadowed: packageIntShadowed,
 		fileIntShadowed:    fileIntShadowed,
+		packageLenShadowed: packageLenShadowed,
+		fileLenShadowed:    fileLenShadowed,
 	}
 }
 
@@ -7015,6 +7301,8 @@ func l8D2ReadinessExactServiceBehavioralTestInEnvironment(file *ast.File, name s
 	exerciseCounts := make(map[string]int)
 	serviceOwners := make(map[string]bool)
 	assertedEvidence := make(map[string]bool)
+	evidenceAssertions := make(map[*ast.IfStmt]bool)
+	var ownedSnapshotAssertion *ast.IfStmt
 	terminated := false
 	var visitBlock func(*ast.BlockStmt, bool)
 	var visitStatement func(ast.Stmt, bool)
@@ -7052,10 +7340,17 @@ func l8D2ReadinessExactServiceBehavioralTestInEnvironment(file *ast.File, name s
 		case *ast.IfStmt:
 			l8D2ReadinessCollectExerciseCalls(value.Init, exercisePosition, exerciseCalls, exerciseCounts, serviceOwners)
 			l8D2ReadinessCollectExerciseCalls(value.Cond, exercisePosition, exerciseCalls, exerciseCounts, serviceOwners)
-			if !l8D2ReadinessStaticallyFalse(value.Cond) && l8D2ReadinessBlockHasTestingFailure(value.Body, "t") {
+			if value.Init == nil && value.Else == nil && !l8D2ReadinessStaticallyFalse(value.Cond) && l8D2ReadinessBlockHasTestingFailure(function, value.Body, "t", terminalAliases, terminalFacts, terminalEnvironment) {
 				for _, evidence := range requirement.evidence {
+					if evidence == "ownedSnapshotEntries" && l8D2ReadinessConditionAssertsOwnedExtensionSnapshot(function, value, serviceOwners, exerciseCalls["NewService"], exerciseCalls["Serve"], terminalEnvironment) && l8D2ReadinessAllExerciseBefore(exercisePosition, requirement.exercise, value.Pos()) {
+						assertedEvidence[evidence] = true
+						evidenceAssertions[value] = true
+						ownedSnapshotAssertion = value
+						continue
+					}
 					if l8D2ReadinessConditionAssertsCausalObservable(function, value.Cond, evidence, exerciseCalls["NewService"], requirement.dependencyFields[evidence], terminalEnvironment) && l8D2ReadinessAllExerciseBefore(exercisePosition, requirement.exercise, value.Pos()) {
 						assertedEvidence[evidence] = true
+						evidenceAssertions[value] = true
 					}
 				}
 			}
@@ -7083,6 +7378,9 @@ func l8D2ReadinessExactServiceBehavioralTestInEnvironment(file *ast.File, name s
 	if !l8D2ReadinessTestServiceOwnersStable(function.Body, serviceOwners) || len(serviceOwners) != 1 || exerciseCounts["NewService"] != 1 || exerciseCounts["Serve"] != 1 {
 		return false
 	}
+	if !l8D2ReadinessOnlyExactConstructorReference(function, exerciseCalls["NewService"]) || !l8D2ReadinessServiceTestDirectLivePath(function, exerciseCalls["NewService"], exerciseCalls["Serve"], evidenceAssertions, ownedSnapshotAssertion, terminalEnvironment) {
+		return false
+	}
 	for owner := range serviceOwners {
 		if !l8D2ReadinessServiceOwnerConfinedUntilServe(function.Body, owner, exerciseCalls["NewService"], exerciseCalls["Serve"]) {
 			return false
@@ -7099,6 +7397,537 @@ func l8D2ReadinessExactServiceBehavioralTestInEnvironment(file *ast.File, name s
 		}
 	}
 	return true
+}
+
+func l8D2ReadinessConditionAssertsOwnedExtensionSnapshot(function *ast.FuncDecl, assertion *ast.IfStmt, serviceOwners map[string]bool, constructor, serve *ast.CallExpr, environment l8D2ReadinessTerminalEnvironment) bool {
+	if function == nil || assertion == nil || constructor == nil || serve == nil || len(serviceOwners) != 1 || environment.packageLenShadowed || environment.fileLenShadowed[environment.functionFiles[function]] {
+		return false
+	}
+	comparison, ok := assertion.Cond.(*ast.BinaryExpr)
+	if !ok || comparison.Op != token.NEQ {
+		return false
+	}
+	constants := l8D2ReadinessWrapperConstantValues(function, assertion.Cond.Pos(), environment)
+	for _, pair := range [][2]ast.Expr{{comparison.X, comparison.Y}, {comparison.Y, comparison.X}} {
+		call, ok := pair[0].(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 || call.Ellipsis.IsValid() {
+			continue
+		}
+		builtin, ok := call.Fun.(*ast.Ident)
+		selector, selectorOK := call.Args[0].(*ast.SelectorExpr)
+		owner, ownerOK := func() (*ast.Ident, bool) {
+			if !selectorOK {
+				return nil, false
+			}
+			candidate, valid := selector.X.(*ast.Ident)
+			return candidate, valid
+		}()
+		if !ok || builtin.Name != "len" || builtin.Obj != nil || !ownerOK || !serviceOwners[owner.Name] || selector.Sel.Name != "extensions" || !l8D2ReadinessCanonicalExpectedObservable(function, pair[1], constructor, constants, environment) {
+			continue
+		}
+		value, exact := l8D2ReadinessConstantExpression(pair[1], constants)
+		if !exact || value.Kind() != constant.Int {
+			continue
+		}
+		expected, exact := constant.Int64Val(value)
+		if exact && expected > 0 && l8D2ReadinessOwnedExtensionSnapshotOwnerConfined(function.Body, owner.Name, constructor, serve, selector) {
+			return true
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessOnlyExactConstructorReference(function *ast.FuncDecl, constructor *ast.CallExpr) bool {
+	if function == nil || function.Body == nil || constructor == nil {
+		return false
+	}
+	exact, ok := constructor.Fun.(*ast.Ident)
+	if !ok || exact.Name != "NewService" || exact.Obj != nil {
+		return false
+	}
+	valid := true
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !valid {
+			return false
+		}
+		identifier, ok := node.(*ast.Ident)
+		if ok && identifier.Name == "NewService" && identifier != exact {
+			valid = false
+			return false
+		}
+		return true
+	})
+	return valid
+}
+
+func l8D2ReadinessServiceTestDirectLivePath(function *ast.FuncDecl, constructor, serve *ast.CallExpr, evidenceAssertions map[*ast.IfStmt]bool, ownedSnapshotAssertion *ast.IfStmt, environment l8D2ReadinessTerminalEnvironment) bool {
+	if function == nil || function.Body == nil || constructor == nil || serve == nil || len(evidenceAssertions) == 0 {
+		return false
+	}
+	constructorIndex, serveIndex, lastAssertionIndex := -1, -1, -1
+	constructorError, serveError, serviceOwner := "", "", ""
+	assertionIndexes := make(map[int]bool)
+	ownedSnapshotIndex := -1
+	for index, statement := range function.Body.List {
+		if assertion, ok := statement.(*ast.IfStmt); ok && evidenceAssertions[assertion] {
+			assertionIndexes[index] = true
+			lastAssertionIndex = index
+			if assertion == ownedSnapshotAssertion {
+				ownedSnapshotIndex = index
+			}
+		}
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || len(assignment.Rhs) != 1 || len(assignment.Lhs) != 2 {
+			continue
+		}
+		if assignment.Rhs[0] == constructor {
+			constructorIndex = index
+			if identifier, ok := assignment.Lhs[0].(*ast.Ident); ok && identifier.Name != "_" {
+				serviceOwner = identifier.Name
+			}
+			if identifier, ok := assignment.Lhs[1].(*ast.Ident); ok && identifier.Name != "_" {
+				constructorError = identifier.Name
+			}
+		}
+		if assignment.Rhs[0] == serve {
+			serveIndex = index
+			if identifier, ok := assignment.Lhs[1].(*ast.Ident); ok && identifier.Name != "_" {
+				serveError = identifier.Name
+			}
+		}
+	}
+	if constructorIndex < 0 || serveIndex <= constructorIndex || lastAssertionIndex <= serveIndex || len(assertionIndexes) != len(evidenceAssertions) || serviceOwner == "" {
+		return false
+	}
+	for _, statement := range function.Body.List[:constructorIndex] {
+		if !l8D2ReadinessServiceTestSetupStatement(function, statement, environment) {
+			return false
+		}
+	}
+	betweenConstructorAndServe := function.Body.List[constructorIndex+1 : serveIndex]
+	if len(betweenConstructorAndServe) != 0 && (len(betweenConstructorAndServe) != 1 || constructorError == "" || !l8D2ReadinessCanonicalServiceErrorGate(betweenConstructorAndServe[0], constructorError)) {
+		return false
+	}
+	serveErrorGateIndex := -1
+	if serveError != "" && serveIndex+1 < len(function.Body.List) && l8D2ReadinessCanonicalServiceErrorGate(function.Body.List[serveIndex+1], serveError) {
+		serveErrorGateIndex = serveIndex + 1
+	}
+	firstCreditedIndex := serveIndex + 1
+	if serveErrorGateIndex == firstCreditedIndex {
+		firstCreditedIndex++
+	}
+	if ownedSnapshotAssertion != nil && ownedSnapshotIndex != firstCreditedIndex {
+		return false
+	}
+	for index := range function.Body.List[serveIndex+1 : lastAssertionIndex+1] {
+		absoluteIndex := serveIndex + 1 + index
+		if assertionIndexes[absoluteIndex] {
+			continue
+		}
+		if absoluteIndex == serveErrorGateIndex {
+			continue
+		}
+		return false
+	}
+	return l8D2ReadinessServiceTestSupplementalTailSafe(function.Body.List[lastAssertionIndex+1:], serviceOwner)
+}
+
+func l8D2ReadinessServiceTestSupplementalTailSafe(statements []ast.Stmt, serviceOwner string) bool {
+	if serviceOwner == "" {
+		return false
+	}
+	safe := true
+	for _, statement := range statements {
+		ast.Inspect(statement, func(node ast.Node) bool {
+			if !safe {
+				return false
+			}
+			switch value := node.(type) {
+			case *ast.CallExpr, *ast.FuncLit, *ast.GoStmt, *ast.DeferStmt, *ast.SendStmt:
+				safe = false
+				return false
+			case *ast.UnaryExpr:
+				if value.Op == token.ARROW || value.Op == token.AND {
+					safe = false
+					return false
+				}
+			case *ast.Ident:
+				if value.Name == serviceOwner || value.Name == "NewService" {
+					safe = false
+					return false
+				}
+			}
+			return true
+		})
+		if !safe {
+			return false
+		}
+	}
+	return l8D2ReadinessSupplementalBlockRangesSafe(statements, nil, l8D2ReadinessSupplementalAssignmentCounts(statements))
+}
+
+func l8D2ReadinessSupplementalBlockRangesSafe(statements []ast.Stmt, inherited map[*l8D2ReadinessLexicalObject]bool, assignments map[*l8D2ReadinessLexicalObject]int) bool {
+	inert := make(map[*l8D2ReadinessLexicalObject]bool, len(inherited))
+	for object, value := range inherited {
+		inert[object] = value
+	}
+	for _, statement := range statements {
+		switch value := statement.(type) {
+		case *ast.AssignStmt, *ast.DeclStmt, *ast.IncDecStmt:
+			l8D2ReadinessRecordSupplementalInertValues(statement, assignments, inert)
+		case *ast.BlockStmt:
+			if !l8D2ReadinessSupplementalBlockRangesSafe(value.List, inert, assignments) {
+				return false
+			}
+		case *ast.RangeStmt:
+			if !l8D2ReadinessSupplementalInertRangeOperand(value.X, inert) {
+				return false
+			}
+			child := l8D2ReadinessCloneSupplementalInertValues(inert)
+			for _, expression := range []ast.Expr{value.Key, value.Value} {
+				if identifier := l8D2ReadinessSupplementalAssignedIdentifier(expression); identifier != nil && identifier.Obj != nil {
+					delete(child, identifier.Obj)
+				}
+			}
+			if !l8D2ReadinessSupplementalBlockRangesSafe(value.Body.List, child, assignments) {
+				return false
+			}
+		case *ast.IfStmt:
+			child := l8D2ReadinessCloneSupplementalInertValues(inert)
+			l8D2ReadinessRecordSupplementalInertValues(value.Init, assignments, child)
+			if !l8D2ReadinessSupplementalBlockRangesSafe(value.Body.List, child, assignments) || !l8D2ReadinessSupplementalAlternateRangesSafe(value.Else, child, assignments) {
+				return false
+			}
+		case *ast.ForStmt:
+			child := l8D2ReadinessCloneSupplementalInertValues(inert)
+			l8D2ReadinessRecordSupplementalInertValues(value.Init, assignments, child)
+			l8D2ReadinessRecordSupplementalInertValues(value.Post, assignments, child)
+			if !l8D2ReadinessSupplementalBlockRangesSafe(value.Body.List, child, assignments) {
+				return false
+			}
+		case *ast.SwitchStmt:
+			child := l8D2ReadinessCloneSupplementalInertValues(inert)
+			l8D2ReadinessRecordSupplementalInertValues(value.Init, assignments, child)
+			for _, clause := range value.Body.List {
+				candidate, ok := clause.(*ast.CaseClause)
+				if ok && !l8D2ReadinessSupplementalBlockRangesSafe(candidate.Body, child, assignments) {
+					return false
+				}
+			}
+		case *ast.TypeSwitchStmt:
+			child := l8D2ReadinessCloneSupplementalInertValues(inert)
+			l8D2ReadinessRecordSupplementalInertValues(value.Init, assignments, child)
+			l8D2ReadinessRecordSupplementalInertValues(value.Assign, assignments, child)
+			for _, clause := range value.Body.List {
+				candidate, ok := clause.(*ast.CaseClause)
+				if ok && !l8D2ReadinessSupplementalBlockRangesSafe(candidate.Body, child, assignments) {
+					return false
+				}
+			}
+		case *ast.SelectStmt:
+			for _, clause := range value.Body.List {
+				candidate, ok := clause.(*ast.CommClause)
+				if ok && !l8D2ReadinessSupplementalBlockRangesSafe(candidate.Body, inert, assignments) {
+					return false
+				}
+			}
+		case *ast.LabeledStmt:
+			if !l8D2ReadinessSupplementalBlockRangesSafe([]ast.Stmt{value.Stmt}, inert, assignments) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessSupplementalAlternateRangesSafe(statement ast.Stmt, inert map[*l8D2ReadinessLexicalObject]bool, assignments map[*l8D2ReadinessLexicalObject]int) bool {
+	switch value := statement.(type) {
+	case nil:
+		return true
+	case *ast.BlockStmt:
+		return l8D2ReadinessSupplementalBlockRangesSafe(value.List, inert, assignments)
+	case *ast.IfStmt:
+		return l8D2ReadinessSupplementalBlockRangesSafe([]ast.Stmt{value}, inert, assignments)
+	default:
+		return false
+	}
+}
+
+func l8D2ReadinessCloneSupplementalInertValues(values map[*l8D2ReadinessLexicalObject]bool) map[*l8D2ReadinessLexicalObject]bool {
+	cloned := make(map[*l8D2ReadinessLexicalObject]bool, len(values))
+	for object, value := range values {
+		cloned[object] = value
+	}
+	return cloned
+}
+
+func l8D2ReadinessSupplementalAssignmentCounts(statements []ast.Stmt) map[*l8D2ReadinessLexicalObject]int {
+	assignments := make(map[*l8D2ReadinessLexicalObject]int)
+	for _, statement := range statements {
+		ast.Inspect(statement, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.AssignStmt:
+				for _, expression := range value.Lhs {
+					if identifier := l8D2ReadinessSupplementalAssignedIdentifier(expression); identifier != nil && identifier.Obj != nil {
+						assignments[identifier.Obj]++
+					}
+				}
+			case *ast.ValueSpec:
+				for _, identifier := range value.Names {
+					if identifier.Obj != nil {
+						assignments[identifier.Obj]++
+					}
+				}
+			case *ast.RangeStmt:
+				for _, expression := range []ast.Expr{value.Key, value.Value} {
+					if identifier := l8D2ReadinessSupplementalAssignedIdentifier(expression); identifier != nil && identifier.Obj != nil {
+						assignments[identifier.Obj]++
+					}
+				}
+			case *ast.IncDecStmt:
+				if identifier := l8D2ReadinessSupplementalAssignedIdentifier(value.X); identifier != nil && identifier.Obj != nil {
+					assignments[identifier.Obj]++
+				}
+			}
+			return true
+		})
+	}
+	return assignments
+}
+
+func l8D2ReadinessRecordSupplementalInertValues(statement ast.Stmt, assignments map[*l8D2ReadinessLexicalObject]int, inert map[*l8D2ReadinessLexicalObject]bool) {
+	record := func(names []*ast.Ident, values []ast.Expr, declaration bool) {
+		for _, name := range names {
+			if name.Obj != nil {
+				delete(inert, name.Obj)
+			}
+		}
+		if !declaration || len(names) != len(values) {
+			return
+		}
+		for index, name := range names {
+			if name.Obj != nil && assignments[name.Obj] == 1 && l8D2ReadinessSupplementalInertRangeOperand(values[index], inert) {
+				inert[name.Obj] = true
+			}
+		}
+	}
+	switch value := statement.(type) {
+	case *ast.AssignStmt:
+		names := make([]*ast.Ident, len(value.Lhs))
+		for index, expression := range value.Lhs {
+			identifier := l8D2ReadinessSupplementalAssignedIdentifier(expression)
+			if identifier == nil {
+				return
+			}
+			names[index] = identifier
+		}
+		record(names, value.Rhs, value.Tok == token.DEFINE)
+	case *ast.DeclStmt:
+		declaration, ok := value.Decl.(*ast.GenDecl)
+		if !ok {
+			return
+		}
+		for _, specification := range declaration.Specs {
+			values, ok := specification.(*ast.ValueSpec)
+			if ok {
+				record(values.Names, values.Values, true)
+			}
+		}
+	case *ast.IncDecStmt:
+		if identifier := l8D2ReadinessSupplementalAssignedIdentifier(value.X); identifier != nil && identifier.Obj != nil {
+			delete(inert, identifier.Obj)
+		}
+	}
+}
+
+func l8D2ReadinessSupplementalAssignedIdentifier(expression ast.Expr) *ast.Ident {
+	for {
+		switch value := expression.(type) {
+		case *ast.Ident:
+			return value
+		case *ast.ParenExpr:
+			expression = value.X
+		default:
+			return nil
+		}
+	}
+}
+
+func l8D2ReadinessSupplementalInertRangeOperand(expression ast.Expr, inert map[*l8D2ReadinessLexicalObject]bool) bool {
+	switch value := expression.(type) {
+	case *ast.BasicLit:
+		return value.Kind == token.INT || value.Kind == token.STRING
+	case *ast.CompositeLit:
+		switch value.Type.(type) {
+		case *ast.ArrayType, *ast.MapType:
+			return true
+		default:
+			return false
+		}
+	case *ast.Ident:
+		return value.Obj != nil && inert[value.Obj]
+	case *ast.ParenExpr:
+		return l8D2ReadinessSupplementalInertRangeOperand(value.X, inert)
+	default:
+		return false
+	}
+}
+
+func l8D2ReadinessServiceTestSetupStatement(function *ast.FuncDecl, statement ast.Stmt, environment l8D2ReadinessTerminalEnvironment) bool {
+	switch value := statement.(type) {
+	case *ast.AssignStmt:
+		return l8D2ReadinessStaticServiceSetupExpressions(function, append(append([]ast.Expr{}, value.Lhs...), value.Rhs...), environment)
+	case *ast.DeclStmt:
+		declaration, ok := value.Decl.(*ast.GenDecl)
+		if !ok {
+			return false
+		}
+		for _, specification := range declaration.Specs {
+			values, ok := specification.(*ast.ValueSpec)
+			if !ok || !l8D2ReadinessStaticServiceSetupExpressions(function, values.Values, environment) {
+				return false
+			}
+		}
+		return true
+	case *ast.EmptyStmt:
+		return true
+	default:
+		return false
+	}
+}
+
+func l8D2ReadinessStaticServiceSetupExpressions(function *ast.FuncDecl, expressions []ast.Expr, environment l8D2ReadinessTerminalEnvironment) bool {
+	valid := true
+	for _, expression := range expressions {
+		ast.Inspect(expression, func(node ast.Node) bool {
+			if !valid {
+				return false
+			}
+			switch value := node.(type) {
+			case *ast.FuncLit:
+				valid = false
+				return false
+			case *ast.UnaryExpr:
+				if value.Op == token.ARROW {
+					valid = false
+					return false
+				}
+			case *ast.CallExpr:
+				called, ok := value.Fun.(*ast.Ident)
+				if !ok || called.Name != "int" || called.Obj != nil || len(value.Args) != 1 || environment.packageIntShadowed || environment.fileIntShadowed[environment.functionFiles[function]] {
+					valid = false
+					return false
+				}
+				literal, ok := value.Args[0].(*ast.BasicLit)
+				if !ok || literal.Kind != token.INT {
+					valid = false
+					return false
+				}
+			}
+			return true
+		})
+		if !valid {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessCanonicalServiceErrorGate(statement ast.Stmt, errorName string) bool {
+	branch, ok := statement.(*ast.IfStmt)
+	if !ok || branch.Init != nil || branch.Else != nil || branch.Cond == nil || branch.Body == nil || len(branch.Body.List) != 1 {
+		return false
+	}
+	comparison, ok := branch.Cond.(*ast.BinaryExpr)
+	if !ok || comparison.Op != token.NEQ {
+		return false
+	}
+	exactCondition := func(left, right ast.Expr) bool {
+		identifier, ok := left.(*ast.Ident)
+		return ok && identifier.Name == errorName && l8D2ReadinessNilIdentifier(right)
+	}
+	if !exactCondition(comparison.X, comparison.Y) && !exactCondition(comparison.Y, comparison.X) {
+		return false
+	}
+	expression, ok := branch.Body.List[0].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expression.X.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	owner, ownerOK := func() (*ast.Ident, bool) {
+		if !ok {
+			return nil, false
+		}
+		candidate, exact := selector.X.(*ast.Ident)
+		return candidate, exact
+	}()
+	argument, argumentOK := call.Args[0].(*ast.Ident)
+	return ownerOK && owner.Name == "t" && selector.Sel.Name == "Fatal" && argumentOK && argument.Name == errorName
+}
+
+func l8D2ReadinessOwnedExtensionSnapshotOwnerConfined(body *ast.BlockStmt, owner string, constructor, serve *ast.CallExpr, snapshot *ast.SelectorExpr) bool {
+	if body == nil || owner == "" || constructor == nil || serve == nil || snapshot == nil {
+		return false
+	}
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
+	ast.Inspect(body, func(node ast.Node) bool {
+		if node == nil {
+			if len(stack) != 0 {
+				stack = stack[:len(stack)-1]
+			}
+			return true
+		}
+		if len(stack) != 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	valid := true
+	ast.Inspect(body, func(node ast.Node) bool {
+		if !valid {
+			return false
+		}
+		identifier, ok := node.(*ast.Ident)
+		if !ok || identifier.Name != owner {
+			return true
+		}
+		parent := parents[identifier]
+		if selector, ok := parent.(*ast.SelectorExpr); ok && selector.X == identifier {
+			if selector == snapshot {
+				return true
+			}
+			call, called := parents[selector].(*ast.CallExpr)
+			if called && call == serve && call.Fun == selector && selector.Sel.Name == "Serve" {
+				return true
+			}
+		}
+		if assignment, ok := parent.(*ast.AssignStmt); ok && len(assignment.Rhs) == 1 {
+			call, called := assignment.Rhs[0].(*ast.CallExpr)
+			calledName, exact := func() (*ast.Ident, bool) {
+				if !called {
+					return nil, false
+				}
+				candidate, found := call.Fun.(*ast.Ident)
+				return candidate, found
+			}()
+			if exact && calledName.Name == "NewService" && call == constructor {
+				for _, left := range assignment.Lhs {
+					if left == identifier {
+						return true
+					}
+				}
+			}
+		}
+		valid = false
+		return false
+	})
+	return valid
 }
 
 func l8D2ReadinessTestServiceOwnersStable(body *ast.BlockStmt, owners map[string]bool) bool {
@@ -7250,36 +8079,54 @@ func l8D2ReadinessStatementHasImmediateTestTermination(statement ast.Stmt, testi
 	return terminated
 }
 
-func l8D2ReadinessBlockHasTestingFailure(body *ast.BlockStmt, testingName string) bool {
-	if body == nil {
+func l8D2ReadinessBlockHasTestingFailure(function *ast.FuncDecl, body *ast.BlockStmt, testingName string, aliases map[string]bool, facts l8D2ReadinessTerminalFacts, environment l8D2ReadinessTerminalEnvironment) bool {
+	if function == nil || body == nil || len(body.List) != 1 {
 		return false
 	}
-	for _, statement := range body.List {
-		expression, ok := statement.(*ast.ExprStmt)
-		if !ok {
-			continue
-		}
-		call, ok := expression.X.(*ast.CallExpr)
-		if !ok {
-			continue
-		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		owner, ownerOK := func() (*ast.Ident, bool) {
-			if !ok {
-				return nil, false
+	expression, ok := body.List[0].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expression.X.(*ast.CallExpr)
+	if !ok || !l8D2ReadinessStaticTestingFailureArguments(call.Args) || l8D2ReadinessExpressionsNeverReturn(function, call.Args, aliases, facts, environment) {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	owner, ok := selector.X.(*ast.Ident)
+	return ok && owner.Name == testingName && (selector.Sel.Name == "Fatal" || selector.Sel.Name == "Fatalf" || selector.Sel.Name == "Error" || selector.Sel.Name == "Errorf")
+}
+
+func l8D2ReadinessStaticTestingFailureArguments(arguments []ast.Expr) bool {
+	valid := true
+	for _, argument := range arguments {
+		ast.Inspect(argument, func(node ast.Node) bool {
+			if !valid {
+				return false
 			}
-			candidate, valid := selector.X.(*ast.Ident)
-			return candidate, valid
-		}()
-		if ownerOK && owner.Name == testingName && (selector.Sel.Name == "Fatal" || selector.Sel.Name == "Fatalf" || selector.Sel.Name == "Error" || selector.Sel.Name == "Errorf") {
+			switch value := node.(type) {
+			case *ast.CallExpr, *ast.FuncLit:
+				valid = false
+				return false
+			case *ast.UnaryExpr:
+				if value.Op == token.ARROW {
+					valid = false
+					return false
+				}
+			}
 			return true
+		})
+		if !valid {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func l8D2ReadinessConditionAssertsCausalObservable(function *ast.FuncDecl, condition ast.Expr, field string, constructor *ast.CallExpr, dependencyFields []string, environment l8D2ReadinessTerminalEnvironment) bool {
-	if function == nil || function.Body == nil || condition == nil || constructor == nil || len(dependencyFields) == 0 {
+	if function == nil || function.Body == nil || condition == nil || constructor == nil || len(dependencyFields) == 0 || !l8D2ReadinessStaticTestingFailureArguments([]ast.Expr{condition}) {
 		return false
 	}
 	body := function.Body
@@ -10176,6 +11023,8 @@ type l8D2ReadinessTerminalEnvironment struct {
 	expectedConstants  map[string][]l8D2ReadinessExpectedConstantDeclaration
 	packageIntShadowed bool
 	fileIntShadowed    map[*ast.File]bool
+	packageLenShadowed bool
+	fileLenShadowed    map[*ast.File]bool
 }
 
 type l8D2ReadinessExpectedConstantDeclaration struct {

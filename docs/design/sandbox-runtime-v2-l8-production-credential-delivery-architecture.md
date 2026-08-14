@@ -4178,7 +4178,7 @@ live `Fatal`/`Fatalf`/`Error`/`Errorf` condition containing that exact
 fake-field selector; a same-named local constant is not evidence. The
 observable catalog is:
 plan destruction `planDestroyCalls`; constructor/one-shot
-`dependencyCalls,snapshotEntries,serveCalls`; context precedence
+`dependencyCalls,ownedSnapshotEntries,serveCalls`; context precedence
 `dependencyCalls,serveCalls`; input take `takeCalls`; private lifecycle
 `beginExecCalls,commitCalls,bodyDestroyCalls,planDestroyCalls`; valid private
 Core gate `beginExecCalls,commitCalls,wipeCalls`; stdin lifecycle
@@ -4189,6 +4189,16 @@ Core gate `beginExecCalls,commitCalls,wipeCalls`; stdin lifecycle
 `wipeCalls,bodyDestroyCalls,planDestroyCalls`. Empty/no-op, skip/Goexit,
 early-return, dead/comment/string-only, shadow/foreign-boundary, pre-exercise
 assertion, and assertion-free substitutes do not satisfy the evidence.
+The credited mismatch body is exactly one direct call to the original
+unshadowed `t` owner's `Fatal`, `Fatalf`, `Error`, or `Errorf`; a preceding
+return, skip, Goexit, panic, helper, deferred/goroutine call, or other statement
+makes the assertion non-evidence; a terminal helper evaluated as a failure
+argument is rejected too, even when a failure call remains textually present.
+Credited failure arguments contain no `CallExpr`, function literal, or channel
+receive; the canonical literal, identifier, and selector forms needed by the
+required tests remain valid. This conservative grammar closes package-global,
+closure-aliased, and channel-transported terminal callables without inventing
+a second provenance graph for test messages.
 Each required test is itself selected and runnable in every supported build
 context where Service is selected. Its NewService and Serve operations are one
 direct, unconditionally live top-level path: short-circuiting, conditionals,
@@ -4199,8 +4209,48 @@ through addressing, return, send, closure, interface/container storage, helper
 argument, conversion, or method value before its exact direct Serve receiver
 use.
 
-Observable evidence is causal: its fake owner is initialized before and
-reaches NewService through the exact options/dependency value graph, remains
+The same direct-live topology governs every credited observable in all eleven
+tests. Pre-NewService setup is restricted to direct assignments and
+value/constant declarations with no call, function literal, or channel receive,
+apart from exact unshadowed predeclared `int(raw-integer-literal)` conversion.
+Only the matching `if err != nil { t.Fatal(err) }` constructor-error gate may
+stand between NewService and Serve. Between Serve and the last credited
+evidence, only its matching captured-error gate and the credited top-level
+assertion clauses may appear. Thus a runtime-true but analyzer-unknown
+conditional return before construction, between construction and Serve, or
+before fake or Service-owned evidence cannot yield a vacuous pass. Supplemental
+tables are valid only after the direct credited evidence. Credited evidence
+conditions contain no `CallExpr`, function literal, or channel receive;
+non-exercise result fields and inert table data may be inspected afterward,
+but the supplemental tail is recursively call-free and cannot invoke an
+accessor, helper, constructor, deferred call, goroutine, or channel operation. Credited assertions
+have nil `Init` and nil
+`Else`, so an alternate return, skip, Goexit, panic, or other terminal branch
+cannot bypass the remaining clauses of a multi-evidence test. The supplemental
+tail is exercise-data-only: it contains no occurrence of the returned Service
+owner, no function literal, call expression, send, or receive, and no `NewService` identifier.
+The exact constructor `CallExpr.Fun` is the sole `NewService` identifier across
+the whole test, excluding prebound aliases and package-helper construction.
+Exact one-construction/one-Serve therefore holds across the complete test, not
+merely through the last evidence clause. Supplemental `range` accepts only a
+provably inert direct string/integer/array/slice/map value or a local
+single-assignment alias recursively initialized from one. Channel, function,
+unknown, and reassigned operands are rejected, closing implicit receive and
+range-over-function invocation while preserving inert table loops. Range
+key/value bindings invalidate same-named inert provenance and never become an
+inert nested-range operand. The proof follows lexical blocks sequentially, so a
+nested block may declare and then range over its own inert single-assignment
+table without inheriting or leaking a shadowed name. Provenance is keyed by the
+parser's exact lexical object, not identifier spelling. Assignment-form control
+initializers, labeled assignments, loop post statements, and increment or
+decrement are writes; any second write kills inert provenance across every
+reachable child scope. Parentheses cannot hide a write, and the supplemental
+tail rejects address-taking so an indirect pointer write cannot bypass the
+single-assignment proof.
+
+Except for the Service-owned snapshot count called out below, observable
+evidence is causal: its fake owner is initialized before and reaches NewService
+through the exact options/dependency value graph, remains
 single-assignment, begins at canonical zero, and the test never writes the
 observed field directly or through an alias, pointer, container, or arbitrary
 helper call. Range key/value transport through arrays, slices, maps, or nested
@@ -4248,10 +4298,44 @@ original unshadowed `t`. Foreign selectors, self-comparisons, indirect expected
 values, manual writes, pre-exercise comparisons, and rebound/fake test owners
 fail.
 
+`ownedSnapshotEntries` is deliberately not a fake-field counter. It is the
+exact live post-Serve check
+`len(service.extensions) != positiveExpected` on the sole Service owner
+returned by the test's exact `NewService` call, using the same canonical
+integer-literal or explicit `int` constant grammar. `len` is the exact
+unshadowed predeclared builtin across the test file, package, and every
+applicable build context; local, file-import, or cross-file package
+declarations named `len` invalidate the evidence. Caller-registry counters,
+`len(registry.entries)`, foreign or rebound Service owners, zero expected
+counts, and pre-Serve checks are invalid. Outside the exact direct Serve
+call recorded as the one required exercise and this one length check, the
+Service owner and its `extensions` selector cannot be used: an additional
+expression, deferred, goroutine, or indirect Serve call, direct or aliased
+replacement, append, index/field mutation, helper passing, or any other
+test-authored snapshot change is invalid. The runtime count observation is
+on a direct top-level path and immediately follows the Serve assignment. The
+sole permitted intervening statement is the exact
+`if serveErr != nil { t.Fatal(serveErr) }` gate for the non-blank error captured
+from that same Serve call. In the constructor/one-shot test the snapshot is the
+first credited statement; no fake-field assertion may intervene. Any other
+assignment, call, conditional, return, loop, switch, select, defer, or goroutine
+invalidates the observation, closing runtime-true but analyzer-unknown early
+exits. Pre-NewService setup is limited
+to direct assignments and value/constant declarations with no call, function
+literal, or channel-receive expression. Between the exact NewService assignment
+and Serve, only its matching captured-error gate
+`if err != nil { t.Fatal(err) }` may appear. Thus control flow before
+construction, between construction and Serve, and before evidence cannot turn
+the test into a vacuous pass. It is paired with the production AST proof that
+`snapshotServiceExtensionEntries` allocates a distinct slice, deep-clones
+descriptors, and preserves order and factory identity. It never requires or permits mutation or instrumentation
+of the caller-owned immutable `ExtensionRegistry`.
+
 The observable binds to its exact Go-checked `ServiceOptions` dependency field:
 Core owns `beginExecCalls,writeStdinCalls`; Transport owns
 `planDestroyCalls,takeCalls,commitCalls,bodyDestroyCalls,wipeCalls`; Extensions
-owns `snapshotEntries`; the five configured live fields may own their own
+is proven through the Service-owned `ownedSnapshotEntries` rule above; the five
+configured live fields may own their own
 `dependencyCalls`; and Transport or Runtime owns `serveCalls`. Recursive
 occurrence in an unrelated field or container is not provenance. A
 supplemental table may follow the direct exercise but is never its substitute.

@@ -2347,7 +2347,7 @@ constant or same-named marker. Empty/no-op tests,
 comment/string/dead-branch markers, a shadow constructor, a rebound owner, a foreign Serve
 receiver, an assertion before exercise, or calls without observable assertions
 are invalid. The exact per-test observable catalog is: claimed-plan cleanup
-`planDestroyCalls`; constructor/one-shot `dependencyCalls`, `snapshotEntries`,
+`planDestroyCalls`; constructor/one-shot `dependencyCalls`, `ownedSnapshotEntries`,
 `serveCalls`; context precedence `dependencyCalls`, `serveCalls`; dispatch take
 `takeCalls`; private matrix `beginExecCalls`, `commitCalls`,
 `bodyDestroyCalls`, `planDestroyCalls`; private-return gate
@@ -2357,6 +2357,17 @@ are invalid. The exact per-test observable catalog is: claimed-plan cleanup
 `beginExecCalls`, `writeStdinCalls`, `commitCalls`; body lifetime
 `bodyDestroyCalls`; and failure/panic cleanup `wipeCalls`,
 `bodyDestroyCalls`, `planDestroyCalls`.
+
+The credited mismatch body contains exactly one direct call to the original
+unshadowed test owner's `Fatal`, `Fatalf`, `Error`, or `Errorf`. A return,
+skip, Goexit, panic, helper, deferred/goroutine call, or any other statement
+before that failure is not evidence; a terminal helper used while evaluating
+the failure arguments is rejected too. Credited failure arguments contain no
+`CallExpr`, function literal, or channel receive; canonical literals,
+identifiers, and selectors are sufficient for the required assertions. This
+also closes terminal package function values, closure aliases, and channel-
+transported callables without a second interprocedural provenance graph. A
+syntactically present but unreachable failure cannot satisfy the contract.
 
 Each test must be selected and runnable in every supported build context in
 which Service is selected; a Windows-only test does not satisfy Linux. The
@@ -2369,8 +2380,49 @@ addressed, returned, sent, captured, converted, put in a container or
 interface, passed to a helper, used as a method value, or otherwise escape
 before the one direct Serve call.
 
-Every promised observable is an exact field on a fake initialized before and
-causally supplied to `NewService` through the Service options/dependency graph.
+That direct-live topology applies to every promised observable in all eleven
+tests. Before NewService, setup consists only of direct assignments and
+value/constant declarations whose evaluated expressions contain no call,
+function literal, or channel receive, except an exact unshadowed predeclared
+`int(raw-integer-literal)` conversion. Between NewService and Serve, only the
+matching captured constructor-error gate `if err != nil { t.Fatal(err) }` may
+appear. From Serve through the last credited evidence clause, statements are
+limited to the matching captured Serve-error gate and the credited top-level
+assertions themselves. A runtime-true but analyzer-unknown conditional return
+before construction, between construction and Serve, or before any evidence
+is therefore invalid for fake and Service-owned observables alike. Supplemental
+tables remain permitted only after the direct credited evidence. Credited
+evidence conditions themselves contain no `CallExpr`, function literal, or
+channel receive. Non-exercise result fields and inert table data may be
+inspected only after the required direct evidence; the supplemental tail is
+recursively call-free and cannot invoke an accessor, helper, constructor,
+deferred call, goroutine, or channel operation. Every credited assertion has
+nil `Init` and nil `Else`; an alternate return, skip, Goexit, panic, or other
+terminal branch cannot bypass later evidence in a multi-evidence test. The
+supplemental tail is data-only with respect to the exercise: it contains no use
+of the returned Service owner, no function literal, call expression, send, or
+receive, and no `NewService` identifier. Across the whole test the sole `NewService` identifier
+is the exact constructor `CallExpr.Fun`; prebound aliases and package-helper
+construction cannot substitute. Consequently the full test still has exactly
+one construction and one Serve. A supplemental `range` is permitted only over
+a provably inert direct string/integer/array/slice/map value or a local
+single-assignment alias recursively initialized from one. Channel, function,
+unknown, and reassigned range operands are rejected, closing implicit receive
+and range-over-function invocation without rejecting inert table loops. Range
+key/value bindings invalidate same-named inert provenance and never become an
+inert nested-range operand. The proof follows lexical blocks sequentially, so a
+nested block may declare and then range over its own inert single-assignment
+table without inheriting or leaking a shadowed name. Provenance is keyed by the
+parser's exact lexical object, not identifier spelling. Assignment-form control
+initializers, labeled assignments, loop post statements, and increment or
+decrement are writes; any second write kills inert provenance across every
+reachable child scope. Parentheses cannot hide a write, and the supplemental
+tail rejects address-taking so an indirect pointer write cannot bypass the
+single-assignment proof.
+
+Except for the Service-owned snapshot count called out below, every promised
+observable is an exact field on a fake initialized before and causally supplied
+to `NewService` through the Service options/dependency graph.
 The fake begins at the canonical zero value: keyed zero fields are allowed, but
 a nonzero/positional seed, helper-issued value, alias/container/pointer write,
 or arbitrary call with the fake is not. Its complete alias graph remains
@@ -2423,10 +2475,47 @@ conjunction, constant-true disjunction, inverted/equality condition, foreign
 selector, self-comparison, indirect expected value, manual field write,
 pre-exercise assertion, or fake/rebound testing owner does not.
 
+`ownedSnapshotEntries` is the sole non-fake observable in that catalog. It is
+an exact live post-Serve `len(service.extensions) != positiveExpected` check on
+the one Service owner returned by the test's exact `NewService` call. The
+expected count follows the same canonical integer-literal or explicitly typed
+`int` constant grammar above and must be positive. `len` is the exact
+unshadowed predeclared builtin in the test file and package across every
+applicable build context; a local, file-import, or cross-file package
+declaration named `len` invalidates the evidence. A caller-registry counter,
+`len(registry.entries)`, a foreign or rebound Service, a zero expected count,
+or a pre-Serve check cannot satisfy this evidence. The returned Service owner
+and its `extensions` selector have no other use except the one exact direct
+Serve call recorded as the required exercise and this one length observation:
+an additional expression, deferred, goroutine, or indirect Serve call, direct
+or aliased replacement, append, index/field mutation, helper passing, or any
+other test-authored snapshot change is rejected. This behavioral observation
+is a direct top-level path: the length assertion immediately follows the Serve
+assignment, except that a captured non-blank Serve error may be checked by the
+sole exact intervening `if serveErr != nil { t.Fatal(serveErr) }` gate. No
+other credited fake-field assertion may intervene: in the multi-evidence
+constructor/one-shot test, the owned snapshot is the first credited statement
+after that optional gate. No other assignment, call, conditional, return, loop,
+switch, select, defer, or goroutine may intervene, so a runtime-true but
+analyzer-unknown return cannot make the observation vacuous. Before NewService,
+setup is limited to direct
+assignments and value/constant declarations whose evaluated expressions
+contain no call, function literal, or channel receive. Between the exact
+NewService assignment and Serve, the sole permitted statement is the matching
+captured constructor-error gate `if err != nil { t.Fatal(err) }`. Control flow
+before construction, between construction and Serve, or between Serve and the
+observation therefore cannot hide a passing early exit. This behavioral
+observation is paired with the production structural proof that
+`snapshotServiceExtensionEntries` allocates a distinct slice and deep-clones
+every descriptor while preserving order and factory identity. This rule does
+not add mutable instrumentation to the caller-owned immutable
+`ExtensionRegistry`.
+
 Observable provenance is field-specific, not recursive occurrence anywhere in
 `ServiceOptions`: `beginExecCalls` and `writeStdinCalls` come from `Core`;
 `planDestroyCalls`, `takeCalls`, `commitCalls`, `bodyDestroyCalls`, and
-`wipeCalls` come from `Transport`; `snapshotEntries` comes from `Extensions`;
+`wipeCalls` come from `Transport`; `ownedSnapshotEntries` comes only from the
+returned Service's owned private extension slice under the rule above;
 `dependencyCalls` comes from one of Core, Transport, Policy, Host, or Runtime;
 and `serveCalls` comes from Transport or Runtime. The Go-checked exact
 `ServiceOptions` field type is part of this binding. Supplying the same fake in
