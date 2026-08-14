@@ -213,6 +213,24 @@ func NewExtensionRegistry(...ExtensionRegistration) (*ExtensionRegistry, error)
 func (r *ExtensionRegistry) Descriptors() []credentialprotocol.ExtensionDescriptor
 ```
 
+The package has one and only one private
+`func newServiceResult(ServiceDisposition, credentialprotocol.CloseReason) (ServiceResult, error)`
+declaration across all production files and build contexts. It is the existing
+`service_values.go` issuer, not a variable, function alias, alternate build
+definition, or caller-local lookalike. Its exact body first rejects an invalid
+disposition or close reason with `ErrContractInvalidArgument`, admits only
+`ServiceClosed` with `normal|shutdown` and `ServiceStopVMRequired` with
+`protocol_error|identity_drift|expired|helper_loss`, rejects every other pair
+with `ErrContractResultMatrix`, and returns the exact private disposition and
+close-reason fields. The recovered-panic and body-destroy-error paths call this
+same unshadowed declaration; a syntactically matching call cannot substitute a
+different issuer.
+The reducer must be selected in every supported build context in which the
+Service is selected: Linux, Darwin, FreeBSD, and Windows on amd64 under the
+repository's default non-cgo build tags. A declaration selected only on one
+platform cannot satisfy another platform, while any alternate tagged duplicate
+still violates the package-wide uniqueness rule.
+
 The configured Service owner has exactly these top-level private fields, in
 this order:
 
@@ -1751,8 +1769,27 @@ body and declared private digest. Its proposal has source `observed`, kind
 body once and, inside the same outer `ReceivedBodyCapability.Borrow` callback,
 calls `ProposeObservedPrivate`, then `Core.BeginExec` with that same scoped
 view, then commits only after a valid Core return. On proposal error, Core
-error, panic, cancellation, or invalid return it wipes any proposal before the
-outer callback returns and makes the transaction terminal. In comparison mode
+error, cancellation, or invalid return it wipes any proposal before the outer
+callback returns and makes the transaction terminal. A panic from an external
+call unwinds the callback first: because a nested callback `defer` is forbidden,
+the immediate recovery owned by the enclosing handler then wipes the captured
+proposal and completes body/plan cleanup before the handler returns or sends a
+response. It does not claim the impossible ordering of cleanup before the
+panicking callback unwinds. The exact outer recovery is installed before
+Borrow, captures the proposal only after its error gate, contains exactly one
+recovery wipe, and owns exactly one body destroy plus, for private Exec, exactly
+one private `corePlan.destroy()` call. The plan cleanup is the existing
+unexported no-argument/no-result method; D2 adds no public plan cleanup surface.
+The handler has named `ServiceResult` and error returns. A recovered external
+callback panic is reduced before any handler response to
+`ServiceStopVMRequired`/`protocol_error` plus the sanitized nonnil
+`ErrContractOwnership`; it can never become a zero result with nil error. The
+body `Destroy(ctx)` result is bound and checked. A nonnil destroy error selects
+that same stop-VM/protocol-error/ownership result after proposal wipe and
+without skipping private plan destruction. The package reducer, disposition,
+protocol close reason, and sanitized error identifiers cannot be shadowed or
+substituted inside the handler. Missing, duplicate, discarded,
+disconnected, pre-gate, or callback-local cleanup is invalid. In comparison mode
 the proposal is committed inside that callback without calling Core. The
 observation alone never proves launch or live use.
 The configured Service sequencing and the Core return matrix own that assurance.
@@ -2186,6 +2223,63 @@ the immediately following gate propagating that error. A method value,
 discarded or merely assigned result, call after return, or statically false
 branch is not an edge and cannot make a handler reachable.
 
+The synchronized state owner remains implementable by this topology. The
+request, claimed plan, exec transaction, transaction correlation, comparison
+bit, revision, and retained `CoreExecution` are copied or taken only while the
+exact Service `state.mu` is held. `takeExecDispatch` compares its exact revision
+argument with the matching exec-ledger entry, rejects an already-taken entry,
+copies that entry's transaction/correlation/comparison values, and marks that
+same entry taken in one lexical and control-flow-complete critical section. Its
+exact `revision != state.revision || state.dispatchTaken` gate immediately
+unlocks and returns an error; the success path performs the one latch write and
+one unlock before returning the copied tuple. Every lock-acquired path unlocks
+exactly once before leaving the critical section. A nested or aliased return,
+panic, no-return call, conditional terminal, or other control transfer before
+that unlock is invalid, including after `dispatchTaken=true`. A rejection
+condition inside the critical section is pure—no helper call, callback,
+receive, initializer, or else path may panic, block, or bypass its exact
+unlock-and-return body. Critical-section assignments are limited to exact
+state-field value copies/latch writes with safe local or state-field targets;
+indexing, calls, conversions, indirect targets, and other panic-capable
+expressions are invalid. Conditional early
+unlocks, missing success-path unlocks, empty or noncontrolling gates, and
+`&& false` lookalikes are invalid. The handler may similarly copy the
+matching request/plan or retained execution value for the one immediate Core
+call; those value copies do not transfer or duplicate the state owner. State
+pointers, field addresses, and live owners never escape. Unlocked reads or
+writes, arbitrary helper calls over state values, globals, cross-entry values,
+wrong revisions, and duplicate take/retry paths are invalid. The guard permits
+only these exact mutex-bound value-copy/take operations; it does not grant a
+general state-field or helper exemption.
+
+The execution installed into Service state is the exact result of the sole
+`Service.core.BeginExec` call after the canonical Core-result rejection gate.
+It is assigned exactly once under `state.mu`; before that gate the result and
+every alias may appear only as the exact `configuredDependency(execution)`
+operand. Assignment to a global or another owner, return, address-taking,
+receiver use, helper argument, composite/container storage, or method call is
+invalid. No inspection, switch/tag use, comparison, formatting, or other read
+is permitted before the gate. A foreign value, pre-gate install, rebind, second write, or overwrite
+cannot derive launch authority.
+
+An Exec arm whose exact private binding length and digest are the canonical
+zero/zero pair is the exact typed `ReceivedExec` arm carried by that dispatch,
+obtained by the exact `arm, ok := packet.Exec()` extraction and its immediate
+not-ok rejection, not a same-shaped or foreign owner. It takes no `ExecPrivate` arm and opens no
+body. Its comparison branch is one direct terminal accepted result with no
+Core, Borrow, body, proposal, or observed-input authority. This prohibition
+includes helpers, method values, aliases, callbacks, interfaces, containers,
+and other indirect calls; a syntactic absence of `BeginExec` alone is not
+sufficient. Its normal branch
+calls the same `Service.core.BeginExec` with the matching state-backed request
+and a literal untyped `nil` third argument, applies the same exact
+`coreErr != nil || !configuredDependency(execution)` rejection, and only then
+installs the returned execution under `state.mu`. A typed nil, zero-length
+lookalike view, global nil-like value, observed proposal, or Borrow call cannot
+satisfy this path. Comparison still calls no Core. This topology is part of the
+existing `TestServiceObservedInputsTakenOnceBeforeDispatch` and Service AST
+contract rather than a new independent readiness marker.
+
 The handler
 receiver, context, body, transaction, correlation, observation, and comparison
 parameters and the callback view/proposal/proposal-error/Core-result variables
@@ -2227,13 +2321,118 @@ through and never calls Core. Cancellation, policy denial,
 observation/admission error, invalid Core return, Core error, body error, send
 error, and every recovered external panic wipe the proposal, destroy the body,
 and destroy the claimed exec plan when it is still owned, before response,
-return, or drain. A successful Core call does not transfer plan ownership.
+handler return, or drain. Panic recovery is immediately outside the Borrow
+callback: cleanup follows callback unwind and precedes every handler response
+or return. The recovery and body-destroy error reductions both produce the
+deterministic sanitized stop-VM/protocol-error result above; neither can be
+silently swallowed. Body destruction is checked, and the existing private
+plan `destroy()` still runs exactly once afterward. A successful Core call does
+not transfer plan ownership.
 Tests cover private and stdin nil/error/typed-nil/panic matrices, comparison
 no-Core behavior, body destruction exactly once, and claimed-plan destruction
 on every dispatch path. The AST guard binds both propose/Core/commit orders to
 one actual `ReceivedBodyCapability.Borrow` callback and binds the scoped view to
 the Core call; a disconnected helper or marker cannot satisfy that sequencing
 requirement.
+
+The eleven required Service tests are executable behavioral contracts in the
+exact `credentialhelper` package, not name markers in another guest-agent
+package. Each is one unique top-level `func TestX(t *testing.T)`, directly
+and unconditionally constructs the real Service with `NewService`, calls
+`Serve` on that never-rebound returned owner (not through `go` or `defer`), and
+has a later live `Fatal`, `Fatalf`, `Error`,
+or `Errorf` assertion over the exact promised fake-field selector, not a local
+constant or same-named marker. Empty/no-op tests,
+`Skip`/`SkipNow`/`FailNow`/`runtime.Goexit`, a return before exercise,
+comment/string/dead-branch markers, a shadow constructor, a rebound owner, a foreign Serve
+receiver, an assertion before exercise, or calls without observable assertions
+are invalid. The exact per-test observable catalog is: claimed-plan cleanup
+`planDestroyCalls`; constructor/one-shot `dependencyCalls`, `snapshotEntries`,
+`serveCalls`; context precedence `dependencyCalls`, `serveCalls`; dispatch take
+`takeCalls`; private matrix `beginExecCalls`, `commitCalls`,
+`bodyDestroyCalls`, `planDestroyCalls`; private-return gate
+`beginExecCalls`, `commitCalls`, `wipeCalls`; stdin matrix
+`writeStdinCalls`, `commitCalls`, `bodyDestroyCalls`; stdin-return gate
+`writeStdinCalls`, `commitCalls`, `wipeCalls`; comparison no-Core
+`beginExecCalls`, `writeStdinCalls`, `commitCalls`; body lifetime
+`bodyDestroyCalls`; and failure/panic cleanup `wipeCalls`,
+`bodyDestroyCalls`, `planDestroyCalls`.
+
+Each test must be selected and runnable in every supported build context in
+which Service is selected; a Windows-only test does not satisfy Linux. The
+constructor and Serve call are direct live top-level statements, not hidden by
+short-circuiting, a conditional, loop, switch, select, goroutine, deferred call,
+or an early-terminating helper. Termination analysis spans all active package
+test files and binds only the real imported `testing.T` and `runtime` terminal
+operations. The returned Service owner is a one-assignment local and cannot be
+addressed, returned, sent, captured, converted, put in a container or
+interface, passed to a helper, used as a method value, or otherwise escape
+before the one direct Serve call.
+
+Every promised observable is an exact field on a fake initialized before and
+causally supplied to `NewService` through the Service options/dependency graph.
+The fake begins at the canonical zero value: keyed zero fields are allowed, but
+a nonzero/positional seed, helper-issued value, alias/container/pointer write,
+or arbitrary call with the fake is not. Its complete alias graph remains
+unmodified except by the exact configured Service lifetime. That fake owner
+remains single-assignment and the test never writes the tracked field itself.
+Alias transport through array, slice, map, or nested-container `range`
+keys/values, through channel send/receive, or through package-global storage is
+part of the same causal graph: the guard either follows every subsequent alias
+or rejects the transfer conservatively. Unrelated ranges and nested tables
+which do not carry the configured fake remain valid test structure.
+Only a live post-Serve `observed != expected` clause against an integer literal
+or independently defined immutable constant with an explicit exact `int`
+`ValueSpec.Type` which drives `Fatal`,
+`Fatalf`, `Error`, or `Errorf` on the original unshadowed `t` counts. The
+constant is fixed before NewService and its initializer AST is exactly a raw
+integer literal or `int(raw-integer-literal)` with no parenthesized wrapper; it
+cannot be untyped, use an integer alias or another numeric/string type, or
+derive through another value or constant. An active package-scope declaration
+or explicit/default file import binding named `int` which shadows the
+predeclared identifier invalidates the named form in every supported build
+context. A dot import never shadows lowercase `int`, because it exposes only
+exported identifiers. Unaliased import bindings are resolved from the actual
+declared package name in the applicable build context (including module-local
+active production package clauses), never guessed from the import-path
+basename. `_test.go`, external-test packages, and other non-importable test
+variants never participate in that package-name consensus. Resolution uses the
+effective module graph, including local `replace`, vendor mode, and available
+cached dependencies, through a bounded analysis-local, success-only cached `go
+list`. Module mode is exactly `readonly` unless an existing vendor manifest
+selects `vendor`; `GO111MODULE=on`, `GOENV=off`, empty `GOFLAGS`, `GOWORK=off`,
+`GOPROXY=off`, `GOSUMDB=off`, empty `GOPRIVATE`/`GOINSECURE`,
+`GONOPROXY=none`, `GONOSUMDB=none`, `GOVCS=*:off`, `GOTOOLCHAIN=local`, exact
+GOOS/GOARCH, and `CGO_ENABLED=0` are forced exactly once after inherited
+duplicates are removed. The source directory and target module-root working
+directory are made absolute, cleaned, and canonicalized with symlinks resolved
+before discovery or execution; broken or cyclic links fail unresolved. A
+module-local fallback package directory must remain within that canonical
+root. It cannot write `go.mod`/`go.sum`, access the network or direct/vanity
+resolution, reuse failures/timeouts, or retain success across analyzer
+invocations/source mutations. Module-local parsing is the deterministic
+fallback. An unresolved unrelated
+import does not itself invalidate the grammar. A
+package-level const is definitionally before
+the test construction regardless of source-file size/order; a function-local
+const must be in that same function and structurally precede NewService. Raw
+`token.Pos` values from separately parsed files are never compared.
+Constant evaluation follows named constants and conversions for masking only.
+A constant-false
+conjunction, constant-true disjunction, inverted/equality condition, foreign
+selector, self-comparison, indirect expected value, manual field write,
+pre-exercise assertion, or fake/rebound testing owner does not.
+
+Observable provenance is field-specific, not recursive occurrence anywhere in
+`ServiceOptions`: `beginExecCalls` and `writeStdinCalls` come from `Core`;
+`planDestroyCalls`, `takeCalls`, `commitCalls`, `bodyDestroyCalls`, and
+`wipeCalls` come from `Transport`; `snapshotEntries` comes from `Extensions`;
+`dependencyCalls` comes from one of Core, Transport, Policy, Host, or Runtime;
+and `serveCalls` comes from Transport or Runtime. The Go-checked exact
+`ServiceOptions` field type is part of this binding. Supplying the same fake in
+an unrelated field or nested container cannot prove the boundary.
+Supplemental table checks are permitted after this direct causal exercise but
+cannot replace it.
 
 Thus the prepare arm retains a private
 `*credentialprotocol.HelperPrepareTransaction`, and the exec arm retains a

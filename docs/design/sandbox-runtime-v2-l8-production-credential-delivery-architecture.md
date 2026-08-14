@@ -4042,6 +4042,63 @@ gate propagates that exact error. Method values, discarded or non-propagated
 results, calls after an unconditional return, and statically false branches
 cannot satisfy the production AST requirements.
 
+The Service state guard permits the exact synchronization that this closed FSM
+requires instead of rejecting its own implementation. The matching request,
+claimed plan, exec transaction, transaction correlation, comparison bit,
+revision, and retained `CoreExecution` are value-copied or taken only under the
+exact `serviceState.mu`. `takeExecDispatch` checks the supplied revision against
+the same exec-ledger entry, rejects an already-taken entry, copies that entry's
+transaction/correlation/comparison tuple, and latches that same entry taken in
+one lexical and control-flow-complete critical section. Its exact revision-
+mismatch-or-taken condition immediately unlocks and returns an error, while the
+success path performs exactly one latch write and unlock before returning the
+copied tuple. Every path which acquired the lock unlocks exactly once before
+leaving the critical section. Nested or aliased returns, panics, no-return
+calls, conditional terminals, and other control transfers before that unlock
+are rejected, including after the taken latch is written. Critical-section
+rejection conditions are pure: helper calls, callbacks, receives, initializers,
+and else paths cannot panic, block, or bypass the exact unlock-and-return body.
+Assignments in a critical section are only exact state-field value copies or
+latch writes with safe local/state-field targets; indexing, calls, conversions,
+indirect targets, and other panic-capable expressions are invalid.
+Conditional early
+unlocks, missing success unlocks, empty or noncontrolling gates, and
+false-conjoined lookalikes are invalid. A handler may copy the matching request/plan or retained
+execution for its one immediate Core boundary under the same mutex. These are
+value transfers, not a second state owner: no state pointer, field address, or
+live owner escapes. Unlocked access, an arbitrary helper over a state value,
+global or cross-entry substitution, a wrong revision, and duplicate take/retry
+are rejected. This is the sole state-copy allowance; it does not weaken the
+never-reset latch, immutable configured dependencies, or owner-replacement
+guards.
+
+The sole state execution install is the exact result of the sole
+`Service.core.BeginExec` call after its canonical rejection gate, assigned once
+under `state.mu`. Before that gate, the result and any alias are confined to the
+exact configured-dependency operand: global/other-owner assignment, return,
+address-taking, receiver use, helper arguments, containers/composites, and
+method calls are invalid. Inspection, switch/tag use, comparison, formatting,
+or any other pre-gate read is also invalid. Foreign, pre-gate, rebound, duplicate, or overwritten
+values cannot become launch authority.
+
+The canonical zero-private Exec path is separate from observed private input.
+When the exact typed `ReceivedExec` arm carried by that dispatch, obtained by
+the exact `arm, ok := packet.Exec()` extraction and immediate not-ok rejection,
+declares the canonical zero length/all-zero
+digest pair, Service takes no `ExecPrivate` packet and performs no Borrow or
+observed proposal. A same-shaped or foreign owner is invalid and the comparison
+branch is a direct terminal accepted result with no Core, Borrow, body,
+proposal, or observed-input authority, including through helpers, method
+values, aliases, callbacks, interfaces, or containers. Merely omitting a direct
+`BeginExec` spelling is insufficient. The normal branch calls exact `Service.core.BeginExec` with
+the state-backed request and a literal untyped `nil` view, applies the same
+`coreErr != nil || !configuredDependency(execution)` matrix, and retains that
+exact execution under `state.mu` only after acceptance. Typed-nil or
+zero-length lookalike views and global nil-like values are invalid. Comparison
+calls no Core. The existing Service structural diagnostic and
+`TestServiceObservedInputsTakenOnceBeforeDispatch` cover this branch; it does
+not add a disconnected ProductGuard marker.
+
 The outer Borrow is one
 direct reachable call; its returned error is bound and propagated after
 cleanup, never swallowed or placed under an unreachable condition. The exact
@@ -4075,10 +4132,129 @@ directly returning Commit in the same callback without Core or fallthrough.
 Every cancellation, denial, observation/body/
 Core/send error, invalid return, and recovered external panic wipes pending
 state and synchronously destroys the retained body and any still-owned claimed
-plan exactly once. Source guards bind the two concrete Borrow-callback orders;
+plan exactly once. An external panic first unwinds the Borrow callback; the
+immediately enclosing handler recovery then performs proposal/body/plan cleanup
+before any handler return or response. This is the only implementable ordering
+because the scoped callback forbids a nested `defer`, and the contract does not
+claim cleanup occurs before the panicking callback unwinds. The handlers use
+named result/error returns. Recovery deterministically selects
+`ServiceStopVMRequired`/`protocol_error` plus sanitized nonnil
+`ErrContractOwnership`; zero result/nil error is forbidden. Body `Destroy(ctx)`
+is bound and checked, and its nonnil error selects the same terminal reduction
+without skipping remaining cleanup. The reducer, disposition, close reason,
+and sanitized error identifiers cannot be shadowed or substituted in the
+handler. The outer recovery is installed before
+Borrow, captures the proposal only after its exact error gate, has one recovery
+Wipe, and owns one checked body Destroy plus, for private Exec, one exact
+private `corePlan.destroy()` call. That existing unexported method has no
+context argument or result; no public plan cleanup API is added. Missing,
+duplicate, discarded, disconnected, pre-gate, or callback-local cleanup is
+rejected. Source guards bind
+the two concrete Borrow-callback orders. They also bind this outer cleanup
+boundary;
 tests cover normal, comparison, failure, typed-nil, cancellation, panic, body
 destruction, and claimed-plan cleanup rather than accepting disconnected call
 markers.
+
+`newServiceResult` is a package-wide unique private declaration with the exact
+landed `service_values.go` signature and body. It cannot be a variable, alias,
+alternate-build duplicate, or lookalike. It validates disposition and close
+reason first, enforces exactly the closed/normal-or-shutdown and
+stop-VM/protocol-error-or-identity-drift-or-expired-or-helper-loss matrix, and
+mints only those exact private fields. Recovery and body-destroy failure use
+that same unshadowed issuer, so the terminal reduction is authority-bound and
+not merely name-shaped.
+The reducer is selected in every supported Service build context—Linux,
+Darwin, FreeBSD, and Windows on amd64 with the repository's default non-cgo
+tags—and remains unique across all parsed tagged files. A platform-only issuer
+cannot stand in for a context where Service also builds.
+
+The eleven named Service behavioral tests are structural evidence in the exact
+`credentialhelper` package rather than declarations alone. Each unique exact
+`func TestX(t *testing.T)` has one
+unconditionally live `NewService` construction, invokes `Serve` on that exact
+never-rebound returned Service without `go` or `defer`, and subsequently asserts its test-specific observable via a
+live `Fatal`/`Fatalf`/`Error`/`Errorf` condition containing that exact
+fake-field selector; a same-named local constant is not evidence. The
+observable catalog is:
+plan destruction `planDestroyCalls`; constructor/one-shot
+`dependencyCalls,snapshotEntries,serveCalls`; context precedence
+`dependencyCalls,serveCalls`; input take `takeCalls`; private lifecycle
+`beginExecCalls,commitCalls,bodyDestroyCalls,planDestroyCalls`; valid private
+Core gate `beginExecCalls,commitCalls,wipeCalls`; stdin lifecycle
+`writeStdinCalls,commitCalls,bodyDestroyCalls`; nil-error stdin gate
+`writeStdinCalls,commitCalls,wipeCalls`; comparison
+`beginExecCalls,writeStdinCalls,commitCalls`; body ownership
+`bodyDestroyCalls`; and exhaustive failure/panic cleanup
+`wipeCalls,bodyDestroyCalls,planDestroyCalls`. Empty/no-op, skip/Goexit,
+early-return, dead/comment/string-only, shadow/foreign-boundary, pre-exercise
+assertion, and assertion-free substitutes do not satisfy the evidence.
+Each required test is itself selected and runnable in every supported build
+context where Service is selected. Its NewService and Serve operations are one
+direct, unconditionally live top-level path: short-circuiting, conditionals,
+loops, switches, selects, goroutines, defers, or a package-helper chain that
+terminates through the real `testing.T` or `runtime` boundary cannot supply the
+exercise. The returned Service local stays single-assignment and cannot escape
+through addressing, return, send, closure, interface/container storage, helper
+argument, conversion, or method value before its exact direct Serve receiver
+use.
+
+Observable evidence is causal: its fake owner is initialized before and
+reaches NewService through the exact options/dependency value graph, remains
+single-assignment, begins at canonical zero, and the test never writes the
+observed field directly or through an alias, pointer, container, or arbitrary
+helper call. Range key/value transport through arrays, slices, maps, or nested
+containers, channel send/receive round-trips, package-global storage, and all
+subsequent aliases remain in that causal graph or are rejected conservatively;
+unrelated range/table structure remains permitted. A nonzero/positional seed
+or helper-issued fake is invalid. After
+Serve, one exact unmasked `observed != expected` clause compares the tracked
+selector with an independently defined integer literal or immutable constant
+whose `ValueSpec.Type` is explicitly the exact predeclared `int`, fixed before
+NewService, and initialized only by an integer literal or
+`int(integer-literal)` in the raw AST; parenthesized initializers do not count.
+Any active package declaration named `int`, or explicit/default file import
+binding named `int`, invalidates this named grammar in that supported build
+context. Dot imports remain valid because Go exposes only exported identifiers
+through them and therefore cannot introduce lowercase `int`. Default import
+bindings use the actual build-context package declaration, with deterministic
+module-local active-production-source resolution, rather than the path
+basename. Test files and external test-package variants cannot define an
+imported binding. A bounded analysis-local positive-only offline `go list`
+resolves the effective module graph for local replacements, vendor mode, and
+present module-cache dependencies. It uses readonly module mode (or vendor for
+an existing vendor manifest), exact GOOS/GOARCH, `CGO_ENABLED=0`,
+`GO111MODULE=on`, `GOENV=off`, empty `GOFLAGS`, `GOWORK=off`, `GOPROXY=off`,
+`GOSUMDB=off`, empty `GOPRIVATE`/`GOINSECURE`, `GONOPROXY=none`,
+`GONOSUMDB=none`, `GOVCS=*:off`, and `GOTOOLCHAIN=local`; inherited duplicates
+are removed before those single values are installed. Source and module-root
+directories are absolute, clean, and symlink-canonical before discovery and
+execution. Broken/cyclic links fail unresolved, and module-local fallback
+paths cannot escape the canonical module root. The resolver never writes
+module metadata, reaches direct/vanity or network resolution, caches a
+timeout/error, or reuses cache state across an analyzer invocation/source
+mutation; module-local parsing is fallback only. An
+unresolved unrelated import is not a shadow. Package-level
+constants are definitionally pre-construction independent of file padding or
+order. Function-local constants must be in the same function and structurally
+precede NewService; positions from separately parsed files are not ordered.
+Untyped constants, aliases, other integer/numeric or string types, and values
+derived through another name do not count. The
+constant cannot derive from the fake. Named-constant/conversion evaluation
+rejects constant-false conjunctions,
+constant-true disjunctions, equality/inverted polarity, and other vacuous
+conditions. That clause drives `Fatal`, `Fatalf`, `Error`, or `Errorf` on the
+original unshadowed `t`. Foreign selectors, self-comparisons, indirect expected
+values, manual writes, pre-exercise comparisons, and rebound/fake test owners
+fail.
+
+The observable binds to its exact Go-checked `ServiceOptions` dependency field:
+Core owns `beginExecCalls,writeStdinCalls`; Transport owns
+`planDestroyCalls,takeCalls,commitCalls,bodyDestroyCalls,wipeCalls`; Extensions
+owns `snapshotEntries`; the five configured live fields may own their own
+`dependencyCalls`; and Transport or Runtime owns `serveCalls`. Recursive
+occurrence in an unrelated field or container is not provenance. A
+supplemental table may follow the direct exercise but is never its substitute.
 Seeded negative AST fixtures reject unrelated names and suffix-lookalike scoped
 types, background-context substitution, proposal-variable substitution or
 ignored proposal/Borrow results, noncontrolling and AND Core gates, wrong Core
