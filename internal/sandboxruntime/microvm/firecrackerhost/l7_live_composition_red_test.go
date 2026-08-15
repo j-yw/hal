@@ -128,6 +128,40 @@ func TestL7LiveDriverReachesConcreteCoordinatorBeforeAnyVMStart(t *testing.T) {
 	assertL7CompositionSanitizedError(t, err)
 }
 
+func TestL7LiveCompositionProofSourceRequiresExactActiveRuntime(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-only explicit composition")
+	}
+	harness := newL7RuntimeControllerHarness(t, "live-proof-source", nil)
+	composition := &L7LiveComposition{registry: harness.registry}
+
+	if metadata, err := composition.Inspect(context.Background(), harness.identity); err == nil || metadata != (l7network.Metadata{}) {
+		t.Fatalf("Inspect(before Start) = %#v, %v; want fail closed", metadata, err)
+	}
+	if _, err := harness.controller.Start(context.Background(), harness.request(microvm.OperationStart)); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	metadata, err := composition.Inspect(context.Background(), harness.identity)
+	if err != nil {
+		t.Fatalf("Inspect(active) error = %v", err)
+	}
+	if !validL7RuntimeInspectedMetadata(metadata, harness.identity) || harness.session.freshInspectCalls != 1 {
+		t.Fatalf("Inspect(active) = %#v, calls=%d; want fresh exact proof", metadata, harness.session.freshInspectCalls)
+	}
+
+	wrong := harness.identity
+	wrong.TopologyGenerationID += "-wrong"
+	if metadata, err := composition.Inspect(context.Background(), wrong); err == nil || metadata != (l7network.Metadata{}) {
+		t.Fatalf("Inspect(wrong identity) = %#v, %v; want fail closed", metadata, err)
+	}
+	if _, err := harness.controller.Stop(context.Background(), harness.request(microvm.OperationStop)); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if metadata, err := composition.Inspect(context.Background(), harness.identity); err == nil || metadata != (l7network.Metadata{}) {
+		t.Fatalf("Inspect(after Stop) = %#v, %v; want fail closed", metadata, err)
+	}
+}
+
 func TestL7ProcessTrackerRequiresAttemptedUnambiguousNoProcessProof(t *testing.T) {
 	tracker := &l7ProcessTracker{lifecycle: NewProcessLifecycleManager(l7CompositionStartErrorRunner{
 		err: ErrNamespaceProcessStartFailed,

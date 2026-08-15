@@ -150,6 +150,19 @@ func (registry *l7RuntimeControllerRegistry) Controller(runtimeGenerationID stri
 	return controller, nil
 }
 
+func (registry *l7RuntimeControllerRegistry) Inspect(ctx context.Context, identity l7network.Identity) (l7network.Metadata, error) {
+	if registry == nil || !l7RuntimeSafeID(identity.RuntimeGenerationID) {
+		return l7network.Metadata{}, errL7RuntimeController
+	}
+	registry.mu.Lock()
+	controller := registry.controllers[identity.RuntimeGenerationID]
+	registry.mu.Unlock()
+	if controller == nil {
+		return l7network.Metadata{}, errL7RuntimeController
+	}
+	return controller.inspectActive(nonNilContext(ctx), identity)
+}
+
 type l7RuntimeState uint8
 
 const (
@@ -174,6 +187,22 @@ type l7RuntimeController struct {
 	lossDone            chan struct{}
 	preVMCleanup        *l7RuntimePreVMCleanup
 	vmCleanup           *l7RuntimeVMCleanup
+}
+
+func (controller *l7RuntimeController) inspectActive(ctx context.Context, identity l7network.Identity) (l7network.Metadata, error) {
+	if controller == nil {
+		return l7network.Metadata{}, errL7RuntimeController
+	}
+	controller.opMu.Lock()
+	defer controller.opMu.Unlock()
+	if controller.state != l7RuntimeStateActive || controller.identity != identity || interfaceValueIsNil(controller.session) {
+		return l7network.Metadata{}, errL7RuntimeController
+	}
+	metadata, err := controller.session.Inspect(nonNilContext(ctx), identity)
+	if err != nil || !validL7RuntimeInspectedMetadata(metadata, identity) {
+		return l7network.Metadata{}, errL7RuntimeController
+	}
+	return metadata, nil
 }
 
 type l7RuntimePreVMCleanup struct {

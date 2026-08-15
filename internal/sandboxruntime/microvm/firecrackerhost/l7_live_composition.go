@@ -35,16 +35,54 @@ type L7LiveDriverOptions struct {
 // NewL7LiveDriver constructs a driver whose per-target controller prepares a
 // concrete l7network session before it creates any Firecracker live runtime.
 func NewL7LiveDriver(options L7LiveDriverOptions) (*microvm.Driver, error) {
+	composition, err := NewL7LiveComposition(options)
+	if err != nil {
+		return nil, err
+	}
+	return composition.Driver(), nil
+}
+
+// L7LiveComposition retains both the runnable driver and the sole live proof
+// source for its active runtime generations. The proof source is not durable.
+type L7LiveComposition struct {
+	driver   *microvm.Driver
+	registry *l7RuntimeControllerRegistry
+}
+
+// NewL7LiveComposition constructs the L7 driver together with its retained
+// proof source for L10. Callers that do not need L10 continue to use
+// NewL7LiveDriver.
+func NewL7LiveComposition(options L7LiveDriverOptions) (*L7LiveComposition, error) {
 	config, backend, err := newL7LiveBackend(options)
 	if err != nil {
 		return nil, err
 	}
-	return microvm.NewDriver(microvm.DriverOptions{
+	driver := microvm.NewDriver(microvm.DriverOptions{
 		Config: config, CapabilityDetector: options.Live.CapabilityDetector, Backend: backend,
-	}), nil
+	})
+	return &L7LiveComposition{driver: driver, registry: backend.registry}, nil
 }
 
-func newL7LiveBackend(options L7LiveDriverOptions) (microvm.Config, microvm.Backend, error) {
+// Driver returns the composition-owned runnable driver.
+func (composition *L7LiveComposition) Driver() *microvm.Driver {
+	if composition == nil {
+		return nil
+	}
+	return composition.driver
+
+}
+
+// Inspect freshly reinspects the exact active L7 retained authority. It
+// intentionally implements strictcomposition.RuntimeProofSource without an
+// import from the higher-level composition package.
+func (composition *L7LiveComposition) Inspect(ctx context.Context, identity l7network.Identity) (l7network.Metadata, error) {
+	if composition == nil || composition.registry == nil {
+		return l7network.Metadata{}, ErrL7LiveCompositionInvalid
+	}
+	return composition.registry.Inspect(nonNilContext(ctx), identity)
+}
+
+func newL7LiveBackend(options L7LiveDriverOptions) (microvm.Config, *l7LiveBackend, error) {
 	if runtime.GOOS != "linux" || interfaceValueIsNil(options.Intent) || interfaceValueIsNil(options.Assets) ||
 		interfaceValueIsNil(options.NamespaceStarter) || !validL7NSenterPath(options.NSenterPath) ||
 		options.Live.HostProcessRunner != nil || options.Live.GuestReadinessProbe != nil || options.Live.GuestTransport != nil {

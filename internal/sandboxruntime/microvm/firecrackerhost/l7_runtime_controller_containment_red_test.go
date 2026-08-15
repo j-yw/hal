@@ -591,6 +591,7 @@ type l7RuntimeControllerHarness struct {
 	session    *l7RuntimeFakeTopologySession
 	assets     *l7RuntimeFakeAssetProvider
 	runtimes   *l7RuntimeFakeFirecrackerFactory
+	registry   *l7RuntimeControllerRegistry
 	controller *l7RuntimeController
 }
 
@@ -633,7 +634,7 @@ func newL7RuntimeControllerHarness(t *testing.T, suffix string, configure func(*
 	registerL7RuntimeControllerTestCleanup(t, controller, session)
 	return &l7RuntimeControllerHarness{
 		identity: identity, intents: intents, topologies: topologies, session: session,
-		assets: assetProvider, runtimes: runtimes, controller: controller,
+		assets: assetProvider, runtimes: runtimes, registry: registry, controller: controller,
 	}
 }
 
