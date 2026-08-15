@@ -282,6 +282,23 @@ func AttestationValid(attestation ActiveAttestation, sandboxID, executionID, run
 		sandboxruntime.ValidateJobCredentialActiveProof(state.credentialProof, state.identity, state.credentialRevision, now) == nil
 }
 
+// AttestationMatchesDecision proves that a sanitized active decision was
+// emitted alongside this exact opaque authority. The decision remains
+// informational and cannot satisfy this check without the live token.
+func AttestationMatchesDecision(attestation ActiveAttestation, decision sandbox.SandboxStrictCompositionDecision) bool {
+	state := attestation.state
+	if state == nil || !tokensEqual(attestation.token, state.token) {
+		return false
+	}
+	decision = sandbox.SanitizeSandboxStrictCompositionDecision(decision)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return !state.consumed && decision.State == sandbox.SandboxStrictCompositionStateActive &&
+		decision.Code == sandbox.SandboxStrictCompositionCodeReady &&
+		decision.CompositionID == compositionID(state.token) &&
+		decision.ObservedAt.Equal(state.observedAt) && decision.ExpiresAt.Equal(state.expiresAt)
+}
+
 func validateTemplate(identity sandboxruntime.JobCredentialIdentity, policyID string, result selection.Result, bindingRequest selection.BindingRequest) ([32]byte, sandbox.SandboxStrictCompositionCode) {
 	if strings.TrimSpace(policyID) == "" || result.ManifestDigest == nil {
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeTemplateProofMissing
