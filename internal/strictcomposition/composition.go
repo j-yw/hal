@@ -179,7 +179,7 @@ func EvaluateActive(ctx context.Context, request ActiveRequest) (ActiveAttestati
 	}
 	expiresAt := request.Now.Add(MaxActiveAttestationAge)
 	state := &attestationState{
-		token: token, identity: request.Identity, identityDigest: identityDigest,
+		token: token, identity: cloneCredentialIdentity(request.Identity), identityDigest: identityDigest,
 		credentialRevision: request.CredentialRevision, credentialProof: request.CredentialActive,
 		templatePolicyID: request.TemplatePolicyID, templateFingerprint: templateFingerprint,
 		workspacePolicyID: request.Workspace.WorkspacePolicyID, workspaceFingerprint: workspaceFingerprint,
@@ -438,6 +438,12 @@ func networkIdentity(identity sandboxruntime.JobCredentialIdentity) l7network.Id
 		ProxyGenerationID: identity.ProxyGenerationID, TopologyGenerationID: identity.TopologyGenerationID,
 		RuleGenerationID: identity.RuleGenerationID,
 	}
+}
+
+func cloneCredentialIdentity(identity sandboxruntime.JobCredentialIdentity) sandboxruntime.JobCredentialIdentity {
+	identity.BindingIDs = append([]string(nil), identity.BindingIDs...)
+	identity.DeliveryModes = append([]sandboxruntime.JobCredentialDeliveryMode(nil), identity.DeliveryModes...)
+	return identity
 }
 
 func runtimeSourceNil(source RuntimeProofSource) bool {

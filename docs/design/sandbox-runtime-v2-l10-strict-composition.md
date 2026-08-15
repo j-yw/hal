@@ -197,6 +197,29 @@ Broad gates are `go test ./...`, typecheck-only tests, `go vet ./...`,
 `make docs-check`, `make build`, base-relative lint when installed, gofmt, and
 `git diff --check`.
 
+The exact fake-safe and prepared-Linux commands are:
+
+```sh
+go test -count=1 ./internal/strictcomposition ./internal/sandbox ./internal/sandboxtarget ./internal/factory ./cmd -run '^TestL10'
+go test -race -count=1 ./internal/strictcomposition ./internal/sandboxtarget -run '^TestL10'
+go test -count=10 ./internal/strictcomposition ./internal/sandboxtarget -run '^TestL10'
+go test -count=1 -tags=l10_strict_composition_integration ./internal/strictcomposition -run '^TestL10PreparedLinuxStrictCompositionE2E$'
+go test -count=1 ./...
+go test -count=1 -run '^$' ./...
+go vet ./...
+make docs-check
+make build
+git diff --check
+```
+
+The explicitly selected prepared-Linux test must fail, rather than skip, when
+its local Firecracker binary, immutable kernel/rootfs, KVM, proxy, Linux-rule,
+credential-helper, registry, or isolated-workspace prerequisites are absent.
+It makes no cloud or billed provider call. The prepared lane must use the real
+retained L5/L7/L8/L9 authorities; a fake `RuntimeProofSource`, synthesized
+proof token, cached readiness projection, or simulated template/workspace
+record cannot satisfy it.
+
 L10 does not implement new Firecracker, networking, credential, registry,
 workspace-collection, provider, or cloud behavior. It makes no billed provider
 call. L11 receives the strict active/complete decision and runs the final
