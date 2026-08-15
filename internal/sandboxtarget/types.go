@@ -31,6 +31,7 @@ type Request struct {
 	StrictComposition         *StrictCompositionAuthority
 	Project                   ProjectContext
 	Fallback                  FallbackPolicy
+	strictCompositionNow      time.Time
 }
 
 // StrictCompositionAuthority carries the opaque L10 authority and its exact
@@ -40,7 +41,6 @@ type StrictCompositionAuthority struct {
 	SandboxID   string
 	ExecutionID string
 	RuntimeID   string
-	Now         time.Time
 }
 
 // ProjectContext carries repository context that can influence deterministic

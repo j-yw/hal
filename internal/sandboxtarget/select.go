@@ -27,6 +27,11 @@ type CachedState struct {
 // legacy unconstrained decision order: explicit sandbox name, then the only
 // running sandbox, then branch-named provisioning when fallback policy allows it.
 func Select(req Request, cache CachedState) Result {
+	if cache.Now != nil {
+		req.strictCompositionNow = cache.Now().UTC()
+	} else {
+		req.strictCompositionNow = time.Now().UTC()
+	}
 	policy := req.EffectiveFallbackPolicy()
 	gateMode := targetSelectionReadinessGateMode(req, policy)
 	if isolationResult := validateRequestedIsolation(req); isolationResult.Failed() {
@@ -881,7 +886,7 @@ func targetSelectionSecurityReadinessGateDecision(req Request, result Result, mo
 func targetSelectionStrictCompositionAllows(req Request, result Result) bool {
 	authority := req.StrictComposition
 	target := targetSelectionResultTarget(result)
-	if authority == nil || target == nil || target.Runtime == nil || target.Security == nil || target.Security.StrictComposition == nil || authority.Now.IsZero() {
+	if authority == nil || target == nil || target.Runtime == nil || target.Security == nil || target.Security.StrictComposition == nil || req.strictCompositionNow.IsZero() {
 		return false
 	}
 	sandboxID := strings.TrimSpace(target.ID)
@@ -896,7 +901,7 @@ func targetSelectionStrictCompositionAllows(req Request, result Result) bool {
 		authority.SandboxID,
 		authority.ExecutionID,
 		authority.RuntimeID,
-		authority.Now,
+		req.strictCompositionNow,
 	) && strictcomposition.AttestationMatchesDecision(authority.Attestation, *target.Security.StrictComposition)
 }
 

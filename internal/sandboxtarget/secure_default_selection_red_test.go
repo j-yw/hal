@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/securedefaultfixtures"
@@ -114,6 +115,7 @@ func TestSelectStrictSecureDefaultDefaultSelectionAllowsProofCompleteRunningTarg
 			AllowDefaultRunningSandbox: true,
 		},
 	}, CachedState{
+		Now: func() time.Time { return decision.ObservedAt },
 		LoadSandbox: func(string) (*sandbox.SandboxState, error) {
 			t.Fatal("LoadSandbox should not run for strict cached default selection")
 			return nil, nil
@@ -475,6 +477,7 @@ func selectUS008StrictFixtureTarget(t *testing.T, target *sandbox.SandboxState) 
 		StrictComposition:         authority,
 		Fallback:                  FallbackPolicy{Disabled: true},
 	}, CachedState{
+		Now: func() time.Time { return decision.ObservedAt },
 		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
 			if name != target.Name {
 				t.Fatalf("loaded sandbox name = %q, want %q", name, target.Name)

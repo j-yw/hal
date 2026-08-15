@@ -33,6 +33,14 @@ func TestL10EvaluateActiveAcceptsOnlyCompleteCorrelatedEvidence(t *testing.T) {
 	if AttestationValid(attestation, request.Identity.SandboxID, request.Identity.ExecutionID, request.Identity.RuntimeID, request.Now.Add(MaxActiveAttestationAge+time.Nanosecond)) {
 		t.Fatal("active attestation remained valid after its bounded horizon")
 	}
+	if !AttestationMatchesDecision(attestation, decision) {
+		t.Fatal("active attestation did not match its exact emitted decision")
+	}
+	tampered := decision
+	tampered.Evidence = append([]sandbox.SandboxStrictCompositionEvidence(nil), decision.Evidence[1:]...)
+	if AttestationMatchesDecision(attestation, tampered) {
+		t.Fatal("active attestation matched a decision missing runtime evidence")
+	}
 }
 
 func TestL10ActiveAttestationCannotBeSerializedOrRecreatedFromDecision(t *testing.T) {
@@ -100,6 +108,26 @@ func TestL10TerminalAttestationIsSingleUseUnderConcurrency(t *testing.T) {
 	}
 }
 
+func TestL10TerminalCorrelationSurvivesSelectionAndActiveProofExpiry(t *testing.T) {
+	activeRequest := l10CompleteActiveRequest(t)
+	attestation, active := EvaluateActive(context.Background(), activeRequest)
+	if active.State != sandbox.SandboxStrictCompositionStateActive {
+		t.Fatalf("active decision = %#v, want active", active)
+	}
+	terminalNow := activeRequest.Now.Add(10 * time.Minute)
+	workspace := activeRequest.Workspace
+	workspace.ObservedAt = terminalNow
+	terminal := EvaluateTerminal(context.Background(), TerminalRequest{
+		Now: terminalNow, Identity: activeRequest.Identity, CredentialRevision: activeRequest.CredentialRevision,
+		Attestation: attestation, CredentialCleanup: l10CleanupProof(t, activeRequest.Identity, activeRequest.CredentialRevision, terminalNow),
+		TemplatePolicyID: activeRequest.TemplatePolicyID, Template: activeRequest.Template,
+		TemplateBinding: activeRequest.TemplateBinding, Workspace: workspace,
+	})
+	if terminal.State != sandbox.SandboxStrictCompositionStateComplete || terminal.Code != sandbox.SandboxStrictCompositionCodeComplete {
+		t.Fatalf("terminal after long execution = %#v, want complete", terminal)
+	}
+}
+
 func TestL10EvaluateActiveRejectsEachMissingCorruptOrWeakProof(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -125,6 +153,9 @@ func TestL10EvaluateActiveRejectsEachMissingCorruptOrWeakProof(t *testing.T) {
 			r.Workspace.SyncOut.Workspace.Mode = sandbox.SandboxWorkspaceModeDirect
 		}, code: sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe},
 		{name: "stale workspace", mutate: func(r *ActiveRequest) { r.Workspace.ObservedAt = r.Now.Add(-MaxWorkspaceEvidenceAge - time.Nanosecond) }, code: sandbox.SandboxStrictCompositionCodeWorkspaceProofStale},
+		{name: "workspace mixed eligibility reasons", mutate: func(r *ActiveRequest) {
+			r.Workspace.SyncOut.Apply.Reasons = append(r.Workspace.SyncOut.Apply.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonEligibleBundle)
+		}, code: sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe},
 		{name: "warning bearing", mutate: func(r *ActiveRequest) { r.WarningCodes = []string{"partial"} }, code: sandbox.SandboxStrictCompositionCodeWarningBearing},
 		{name: "fallback", mutate: func(r *ActiveRequest) { r.FallbackUsed = true }, code: sandbox.SandboxStrictCompositionCodeFallbackForbidden},
 		{name: "simulation", mutate: func(r *ActiveRequest) { r.Simulated = true }, code: sandbox.SandboxStrictCompositionCodeSimulationForbidden},

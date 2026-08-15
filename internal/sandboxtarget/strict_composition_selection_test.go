@@ -38,19 +38,26 @@ func TestL10StrictSelectionRequiresLiveCompositionAttestation(t *testing.T) {
 		t.Fatalf("different execution live authority selected target: %#v", result)
 	}
 
-	expired := *authority
-	expired.Now = expired.Now.Add(strictcomposition.MaxActiveAttestationAge + time.Nanosecond)
-	if result := l10SelectStrictTarget(t, target, &expired); !result.Failed() || result.Sandbox != nil {
+	if result := l10SelectStrictTargetAt(t, target, authority, decision.ObservedAt.Add(strictcomposition.MaxActiveAttestationAge+time.Nanosecond)); !result.Failed() || result.Sandbox != nil {
 		t.Fatalf("expired live authority selected target: %#v", result)
 	}
 }
 
 func l10SelectStrictTarget(t *testing.T, target *sandbox.SandboxState, authority *StrictCompositionAuthority) Result {
 	t.Helper()
+	now := time.Time{}
+	if target.Security != nil && target.Security.StrictComposition != nil {
+		now = target.Security.StrictComposition.ObservedAt
+	}
+	return l10SelectStrictTargetAt(t, target, authority, now)
+}
+
+func l10SelectStrictTargetAt(t *testing.T, target *sandbox.SandboxState, authority *StrictCompositionAuthority, now time.Time) Result {
+	t.Helper()
 	return Select(Request{
 		SandboxName: target.Name, SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
 		StrictComposition: authority, Fallback: FallbackPolicy{Disabled: true},
-	}, CachedState{LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
+	}, CachedState{Now: func() time.Time { return now }, LoadSandbox: func(name string) (*sandbox.SandboxState, error) {
 		if name != target.Name {
 			t.Fatalf("LoadSandbox(%q), want %q", name, target.Name)
 		}
@@ -136,5 +143,5 @@ func l10TargetSelectionAuthority(t *testing.T, target *sandbox.SandboxState) (*S
 	if decision.State != sandbox.SandboxStrictCompositionStateActive {
 		t.Fatalf("EvaluateActive() decision = %#v, want active", decision)
 	}
-	return &StrictCompositionAuthority{Attestation: attestation, SandboxID: identity.SandboxID, ExecutionID: identity.ExecutionID, RuntimeID: identity.RuntimeID, Now: now}, decision
+	return &StrictCompositionAuthority{Attestation: attestation, SandboxID: identity.SandboxID, ExecutionID: identity.ExecutionID, RuntimeID: identity.RuntimeID}, decision
 }

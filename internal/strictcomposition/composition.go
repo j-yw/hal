@@ -214,8 +214,7 @@ func EvaluateTerminal(ctx context.Context, request TerminalRequest) sandbox.Sand
 	identityMismatch := state.identityDigest != identityDigest ||
 		state.identity.SandboxID != request.Identity.SandboxID || state.identity.ExecutionID != request.Identity.ExecutionID ||
 		state.identity.RuntimeID != request.Identity.RuntimeID
-	stale := state.consumed || request.Now.Before(state.observedAt) || !request.Now.Before(state.expiresAt) ||
-		sandboxruntime.ValidateJobCredentialActiveProof(state.credentialProof, state.identity, state.credentialRevision, request.Now) != nil
+	stale := state.consumed || request.Now.Before(state.observedAt)
 	state.mu.Unlock()
 	if identityMismatch {
 		return blocked(sandbox.SandboxStrictCompositionCodeIdentityMismatch)
@@ -293,10 +292,18 @@ func AttestationMatchesDecision(attestation ActiveAttestation, decision sandbox.
 	decision = sandbox.SanitizeSandboxStrictCompositionDecision(decision)
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	return !state.consumed && decision.State == sandbox.SandboxStrictCompositionStateActive &&
-		decision.Code == sandbox.SandboxStrictCompositionCodeReady &&
-		decision.CompositionID == compositionID(state.token) &&
-		decision.ObservedAt.Equal(state.observedAt) && decision.ExpiresAt.Equal(state.expiresAt)
+	expected := decisionForActiveAttestation(state)
+	return !state.consumed && reflect.DeepEqual(decision, expected)
+}
+
+func decisionForActiveAttestation(state *attestationState) sandbox.SandboxStrictCompositionDecision {
+	return decision(
+		sandbox.SandboxStrictCompositionStateActive,
+		sandbox.SandboxStrictCompositionCodeReady,
+		compositionID(state.token),
+		state.observedAt,
+		state.expiresAt,
+	)
 }
 
 func validateTemplate(identity sandboxruntime.JobCredentialIdentity, policyID string, result selection.Result, bindingRequest selection.BindingRequest) ([32]byte, sandbox.SandboxStrictCompositionCode) {
@@ -346,6 +353,10 @@ func validateWorkspace(now time.Time, identity sandboxruntime.JobCredentialIdent
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofStale
 	}
 	workspace := evidence.Workspace
+	if !reflect.DeepEqual(evidence.SyncOut, sandboxworkspace.SanitizeSyncOutSummary(evidence.SyncOut)) ||
+		(evidence.SafeApply != nil && !reflect.DeepEqual(*evidence.SafeApply, sandboxworkspace.SanitizeSafeApplyResult(*evidence.SafeApply))) {
+		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
+	}
 	if workspace.Repo != "" || !isolatedWorkspace(workspace) ||
 		workspace.Mode != evidence.SyncOut.Workspace.Mode || workspace.InputSource != evidence.SyncOut.Workspace.InputSource ||
 		workspace.Branch != evidence.SyncOut.Workspace.Branch || workspace.SyncRef != evidence.SyncOut.Workspace.SyncRef {
@@ -357,9 +368,11 @@ func validateWorkspace(now time.Time, identity sandboxruntime.JobCredentialIdent
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
 	}
 	artifact := workspaceApplyArtifact(evidence.SyncOut)
-	if artifact == nil || artifact.ID == "" || evidence.SyncOut.Apply.ArtifactID != artifact.ID ||
-		evidence.SyncOut.Apply.Mode == "" || evidence.SyncOut.Apply.Mode != artifact.ApplyEligibility.Mode ||
-		artifact.ApplyEligibility == nil || !artifact.ApplyEligibility.Eligible {
+	if artifact == nil || artifact.ApplyEligibility == nil || artifact.ID == "" ||
+		evidence.SyncOut.Apply.ArtifactID != artifact.ID || evidence.SyncOut.Apply.Mode == "" ||
+		evidence.SyncOut.Apply.Mode != artifact.ApplyEligibility.Mode || !artifact.ApplyEligibility.Eligible ||
+		!exactEligibleApplyReasons(evidence.SyncOut.Apply.Mode, evidence.SyncOut.Apply.Reasons) ||
+		!exactEligibleApplyReasons(artifact.ApplyEligibility.Mode, artifact.ApplyEligibility.Reasons) {
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
 	}
 	if evidence.SafeApply != nil && !safeApplyExact(*evidence.SafeApply, evidence.SyncOut.Apply) {
@@ -382,6 +395,20 @@ func validateWorkspace(now time.Time, identity sandboxruntime.JobCredentialIdent
 	var fingerprint [32]byte
 	copy(fingerprint[:], digest.Sum(nil))
 	return fingerprint, ""
+}
+
+func exactEligibleApplyReasons(mode sandboxworkspace.SyncOutApplyMode, reasons []sandboxworkspace.SyncOutApplyEligibilityReason) bool {
+	if len(reasons) != 1 {
+		return false
+	}
+	switch mode {
+	case sandboxworkspace.SyncOutApplyModePatch:
+		return reasons[0] == sandboxworkspace.SyncOutApplyEligibilityReasonEligiblePatch
+	case sandboxworkspace.SyncOutApplyModeBundle:
+		return reasons[0] == sandboxworkspace.SyncOutApplyEligibilityReasonEligibleBundle
+	default:
+		return false
+	}
 }
 
 func isolatedWorkspace(workspace sandbox.SandboxWorkspace) bool {
