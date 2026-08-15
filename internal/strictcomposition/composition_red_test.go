@@ -2,7 +2,10 @@ package strictcomposition
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +32,71 @@ func TestL10EvaluateActiveAcceptsOnlyCompleteCorrelatedEvidence(t *testing.T) {
 	}
 	if AttestationValid(attestation, request.Identity.SandboxID, request.Identity.ExecutionID, request.Identity.RuntimeID, request.Now.Add(MaxActiveAttestationAge+time.Nanosecond)) {
 		t.Fatal("active attestation remained valid after its bounded horizon")
+	}
+}
+
+func TestL10ActiveAttestationCannotBeSerializedOrRecreatedFromDecision(t *testing.T) {
+	request := l10CompleteActiveRequest(t)
+	attestation, decision := EvaluateActive(context.Background(), request)
+	if _, err := json.Marshal(attestation); !errors.Is(err, ErrAttestationSerialization) {
+		t.Fatalf("json.Marshal(attestation) error = %v, want ErrAttestationSerialization", err)
+	}
+	payload, err := json.Marshal(decision)
+	if err != nil {
+		t.Fatalf("json.Marshal(decision) error = %v", err)
+	}
+	var restored sandbox.SandboxStrictCompositionDecision
+	if err := json.Unmarshal(payload, &restored); err != nil {
+		t.Fatalf("json.Unmarshal(decision) error = %v", err)
+	}
+	if restored.State != sandbox.SandboxStrictCompositionStateActive {
+		t.Fatalf("restored decision = %#v, want informational active state", restored)
+	}
+	if AttestationValid(ActiveAttestation{}, request.Identity.SandboxID, request.Identity.ExecutionID, request.Identity.RuntimeID, request.Now) {
+		t.Fatal("durable decision recreated live authority")
+	}
+}
+
+func TestL10TerminalAttestationIsSingleUseUnderConcurrency(t *testing.T) {
+	activeRequest := l10CompleteActiveRequest(t)
+	attestation, active := EvaluateActive(context.Background(), activeRequest)
+	if active.State != sandbox.SandboxStrictCompositionStateActive {
+		t.Fatalf("active decision = %#v, want active", active)
+	}
+	now := activeRequest.Now.Add(time.Second)
+	request := TerminalRequest{
+		Now: now, Identity: activeRequest.Identity, CredentialRevision: activeRequest.CredentialRevision,
+		Attestation: attestation, CredentialCleanup: l10CleanupProof(t, activeRequest.Identity, activeRequest.CredentialRevision, now),
+		TemplatePolicyID: activeRequest.TemplatePolicyID, Template: activeRequest.Template,
+		TemplateBinding: activeRequest.TemplateBinding, Workspace: activeRequest.Workspace,
+	}
+	start := make(chan struct{})
+	results := make(chan sandbox.SandboxStrictCompositionDecision, 2)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	for range 2 {
+		go func() {
+			defer workers.Done()
+			<-start
+			results <- EvaluateTerminal(context.Background(), request)
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	var complete, stale int
+	for result := range results {
+		switch result.Code {
+		case sandbox.SandboxStrictCompositionCodeComplete:
+			complete++
+		case sandbox.SandboxStrictCompositionCodeAttestationStale:
+			stale++
+		default:
+			t.Fatalf("concurrent terminal result = %#v", result)
+		}
+	}
+	if complete != 1 || stale != 1 {
+		t.Fatalf("concurrent terminal results complete/stale = %d/%d, want 1/1", complete, stale)
 	}
 }
 
@@ -111,6 +179,7 @@ func TestL10EvaluateTerminalRequiresExactPriorAttestationAndCleanupProof(t *test
 		CredentialRevision: activeRequest.CredentialRevision,
 		Attestation:        attestation,
 		CredentialCleanup:  l10CleanupProof(t, activeRequest.Identity, activeRequest.CredentialRevision, terminalNow),
+		TemplatePolicyID:   activeRequest.TemplatePolicyID,
 		Template:           activeRequest.Template,
 		TemplateBinding:    activeRequest.TemplateBinding,
 		Workspace:          activeRequest.Workspace,
@@ -140,8 +209,19 @@ func TestL10EvaluateTerminalRequiresExactPriorAttestationAndCleanupProof(t *test
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			current := request
-			current.Attestation = attestation
+			freshActive := l10CompleteActiveRequest(t)
+			freshAttestation, freshDecision := EvaluateActive(context.Background(), freshActive)
+			if freshDecision.State != sandbox.SandboxStrictCompositionStateActive {
+				t.Fatalf("fresh active decision = %#v, want active", freshDecision)
+			}
+			freshTerminalNow := freshActive.Now.Add(2 * time.Second)
+			current := TerminalRequest{
+				Now: freshTerminalNow, Identity: freshActive.Identity,
+				CredentialRevision: freshActive.CredentialRevision, Attestation: freshAttestation,
+				CredentialCleanup: l10CleanupProof(t, freshActive.Identity, freshActive.CredentialRevision, freshTerminalNow),
+				TemplatePolicyID:  freshActive.TemplatePolicyID, Template: freshActive.Template,
+				TemplateBinding: freshActive.TemplateBinding, Workspace: freshActive.Workspace,
+			}
 			tt.mutate(&current)
 			got := EvaluateTerminal(context.Background(), current)
 			if got.State != sandbox.SandboxStrictCompositionStateBlocked || got.Code != tt.code {
@@ -190,6 +270,7 @@ func l10CompleteActiveRequest(t *testing.T) ActiveRequest {
 		}},
 		NetworkIdentity:  networkIdentity,
 		CredentialActive: active,
+		TemplatePolicyID: identity.TemplatePolicyID,
 		Template:         templateResult,
 		TemplateBinding:  templateBinding,
 		Workspace:        workspace,
