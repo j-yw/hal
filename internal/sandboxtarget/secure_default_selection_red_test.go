@@ -101,11 +101,15 @@ func TestSelectStrictSecureDefaultRejectsCompatibilityTargetsInsteadOfSelectingT
 
 func TestSelectStrictSecureDefaultDefaultSelectionAllowsProofCompleteRunningTarget(t *testing.T) {
 	target := strictSecureDefaultProofCompleteSandbox("strict-ready-default")
+	target.ID = target.Name
+	authority, decision := l10TargetSelectionAuthority(t, target)
+	target.Security.StrictComposition = &decision
 	stopped := strictSecureDefaultProofCompleteSandbox("strict-stopped")
 	stopped.Status = sandbox.StatusStopped
 
 	result := Select(Request{
 		SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		StrictComposition:         authority,
 		Fallback: FallbackPolicy{
 			AllowDefaultRunningSandbox: true,
 		},
@@ -462,9 +466,13 @@ func TestSelectCompatibilitySecureDefaultReadinessRemainsAdvisoryAndTruthful(t *
 
 func selectUS008StrictFixtureTarget(t *testing.T, target *sandbox.SandboxState) Result {
 	t.Helper()
+	target.ID = target.Name
+	authority, decision := l10TargetSelectionAuthority(t, target)
+	target.Security.StrictComposition = &decision
 	return Select(Request{
 		SandboxName:               target.Name,
 		SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		StrictComposition:         authority,
 		Fallback:                  FallbackPolicy{Disabled: true},
 	}, CachedState{
 		LoadSandbox: func(name string) (*sandbox.SandboxState, error) {

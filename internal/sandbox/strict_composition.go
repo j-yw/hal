@@ -112,6 +112,15 @@ func SanitizeSandboxStrictCompositionDecision(input SandboxStrictCompositionDeci
 	return output
 }
 
+// CloneSandboxStrictCompositionDecisionPtr returns a sanitized deep copy.
+func CloneSandboxStrictCompositionDecisionPtr(input *SandboxStrictCompositionDecision) *SandboxStrictCompositionDecision {
+	if input == nil {
+		return nil
+	}
+	output := SanitizeSandboxStrictCompositionDecision(*input)
+	return &output
+}
+
 func sanitizeSandboxStrictCompositionState(value SandboxStrictCompositionState) SandboxStrictCompositionState {
 	switch value {
 	case SandboxStrictCompositionStateBlocked, SandboxStrictCompositionStateActive, SandboxStrictCompositionStateComplete:

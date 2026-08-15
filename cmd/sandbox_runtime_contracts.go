@@ -163,6 +163,7 @@ type SandboxRuntimeSecuritySummary struct {
 	CapabilityReadiness            *sandbox.SandboxSecurityCapabilityReadinessOutput            `json:"capabilityReadiness,omitempty"`
 	CapabilityReadinessDiagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics,omitempty"`
 	SecurityReadinessGate          *sandbox.SandboxSecurityCapabilityReadinessGateDecision      `json:"securityReadinessGate,omitempty"`
+	StrictComposition              *sandbox.SandboxStrictCompositionDecision                    `json:"strictComposition,omitempty"`
 }
 
 // SandboxRuntimeSecurityControls captures safe security posture metadata.
@@ -985,6 +986,7 @@ func newSandboxRuntimeSecuritySummary(security *sandbox.SandboxSecurity) Sandbox
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: sandboxRuntimeCapabilityReadinessDiagnostics(capabilityReadiness),
 		SecurityReadinessGate:          sandboxRuntimeSecurityReadinessGate(security, capabilityReadiness),
+		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
 	}
 }
 

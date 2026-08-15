@@ -142,6 +142,7 @@ func factorySandboxReadinessSecurity(security *factory.SandboxSecurityMetadata) 
 		CapabilityReadiness:            sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
 		CapabilityReadinessDiagnostics: factorySandboxCapabilityReadinessDiagnostics(security.CapabilityReadiness),
 		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
+		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
 	}
 	if security.Network != nil {
 		out.Network = &sandbox.SandboxNetworkSecurity{
@@ -157,7 +158,7 @@ func factorySandboxReadinessSecurity(security *factory.SandboxSecurityMetadata) 
 			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
 		}
 	}
-	if out.Network == nil && out.Secrets == nil && out.CapabilityReadiness == nil && out.SecurityReadinessGate == nil {
+	if out.Network == nil && out.Secrets == nil && out.CapabilityReadiness == nil && out.SecurityReadinessGate == nil && out.StrictComposition == nil {
 		return nil
 	}
 	return sanitizeCommandSandboxSecurity(out)

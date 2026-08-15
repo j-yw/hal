@@ -120,6 +120,7 @@ func TestSandboxtargetImportBoundaryAllowsStableContractsOnly(t *testing.T) {
 		"fmt",
 		"github.com/jywlabs/hal/internal/sandbox",
 		"github.com/jywlabs/hal/internal/sandboxruntime",
+		"github.com/jywlabs/hal/internal/strictcomposition",
 	} {
 		t.Run(importPath, func(t *testing.T) {
 			if message := sandboxtargetImportBoundaryMessage("types.go", importPath); message != "" {
@@ -174,7 +175,8 @@ func sandboxtargetForbiddenImportFor(importPath string) *sandboxtargetForbiddenI
 func sandboxtargetAllowedImport(importPath string) bool {
 	return sandboxtargetIsStandardLibraryImport(importPath) ||
 		importPath == "github.com/jywlabs/hal/internal/sandbox" ||
-		importPath == "github.com/jywlabs/hal/internal/sandboxruntime"
+		importPath == "github.com/jywlabs/hal/internal/sandboxruntime" ||
+		importPath == "github.com/jywlabs/hal/internal/strictcomposition"
 }
 
 func sandboxtargetIsStandardLibraryImport(importPath string) bool {

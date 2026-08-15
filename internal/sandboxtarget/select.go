@@ -10,6 +10,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/strictcomposition"
 )
 
 // CachedState provides target selection with durable sandbox metadata only.
@@ -526,6 +527,7 @@ func cloneSandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSec
 	cloned.CapabilityReadiness = sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
 	cloned.CapabilityReadinessDiagnostics = sandbox.DeriveSandboxSecurityCapabilityReadinessDiagnosticSummaryPtr(cloned.CapabilityReadiness)
 	cloned.SecurityReadinessGate = sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate)
+	cloned.StrictComposition = sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition)
 	if security.Network != nil {
 		network := *security.Network
 		network.PolicyResult = sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult)
@@ -863,6 +865,9 @@ func targetSelectionSecurityReadinessGateDecision(req Request, result Result, mo
 			if proof := targetSelectionStrictTargetSelectionProof(result); !targetSelectionStrictTargetSelectionProofAllows(proof) {
 				return targetSelectionStrictTargetSelectionProofBlockedDecision(proof)
 			}
+			if !targetSelectionStrictCompositionAllows(req, result) {
+				return sandbox.EvaluateSandboxSecureDefaultReadiness(sandbox.SandboxSecurityCapabilityReadinessOutput{})
+			}
 			return decision
 		}
 		return sandbox.EvaluateSandboxSecureDefaultReadiness(sandbox.SandboxSecurityCapabilityReadinessOutput{})
@@ -871,6 +876,28 @@ func targetSelectionSecurityReadinessGateDecision(req Request, result Result, mo
 		mode,
 		targetSelectionSecurityReadinessDiagnostics(req, result),
 	)
+}
+
+func targetSelectionStrictCompositionAllows(req Request, result Result) bool {
+	authority := req.StrictComposition
+	target := targetSelectionResultTarget(result)
+	if authority == nil || target == nil || target.Runtime == nil || target.Security == nil || target.Security.StrictComposition == nil || authority.Now.IsZero() {
+		return false
+	}
+	sandboxID := strings.TrimSpace(target.ID)
+	if sandboxID == "" {
+		sandboxID = strings.TrimSpace(target.Name)
+	}
+	if authority.SandboxID != sandboxID || authority.RuntimeID != strings.TrimSpace(target.Runtime.RuntimeID) {
+		return false
+	}
+	return strictcomposition.AttestationValid(
+		authority.Attestation,
+		authority.SandboxID,
+		authority.ExecutionID,
+		authority.RuntimeID,
+		authority.Now,
+	) && strictcomposition.AttestationMatchesDecision(authority.Attestation, *target.Security.StrictComposition)
 }
 
 func targetSelectionSecurityReadinessDiagnostics(req Request, result Result) *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary {

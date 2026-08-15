@@ -23,10 +23,11 @@ func sanitizeCommandSandboxSecurityWithNetworkProof(security *sandbox.SandboxSec
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: capabilityReadinessDiagnostics,
 		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
+		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
 		Network:                        sanitizeCommandSandboxNetworkSecurityWithProof(security.Network, proof),
 	}
 	clone.Secrets = sanitizeCommandSandboxSecretSecurity(security.Secrets)
-	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil && clone.SecurityReadinessGate == nil {
+	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil && clone.SecurityReadinessGate == nil && clone.StrictComposition == nil {
 		return nil
 	}
 	return clone
