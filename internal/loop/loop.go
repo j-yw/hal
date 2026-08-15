@@ -99,11 +99,18 @@ func New(cfg Config) (*Runner, error) {
 // Run executes the Hal loop.
 func (r *Runner) Run(ctx context.Context) (result Result) {
 	loopStart := time.Now()
+	var initialPRD *engine.PRD
 	defer func() {
 		result.Duration = time.Since(loopStart)
 		// Capture final PRD story counts when available
 		if prd, err := engine.LoadPRDFile(r.config.Dir, r.config.PRDFile); err == nil {
 			result.CompletedStories, result.TotalStories = prd.Progress()
+			if result.Success && result.Complete && result.Iterations > 0 && r.config.StoryID == "" {
+				if story := lastNewlyCompletedStory(initialPRD, prd); story != nil {
+					result.LastStoryID = story.ID
+					result.LastStoryTitle = story.Title
+				}
+			}
 		}
 	}()
 
@@ -133,6 +140,7 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 			Error:   fmt.Errorf("failed to load PRD: %w", err),
 		}
 	}
+	initialPRD = prd
 
 	// Determine which story to run
 	var targetStory *engine.UserStory
@@ -313,6 +321,54 @@ func (r *Runner) Run(ctx context.Context) (result Result) {
 	result.Success = true
 	result.Complete = false
 	return result
+}
+
+// lastNewlyCompletedStory identifies the final story completed by a successful
+// multi-story run. It reconciles the public result from the initial and final
+// durable PRD states so transient iteration-header read failures cannot leave
+// LastStoryID stuck on an earlier story.
+func lastNewlyCompletedStory(initial, final *engine.PRD) *engine.UserStory {
+	if initial == nil || final == nil {
+		return nil
+	}
+
+	userPending := make(map[string]struct{}, len(initial.UserStories))
+	for _, story := range initial.UserStories {
+		if !story.Passes {
+			userPending[story.ID] = struct{}{}
+		}
+	}
+	taskPending := make(map[string]struct{}, len(initial.Tasks))
+	for _, story := range initial.Tasks {
+		if !story.Passes {
+			taskPending[story.ID] = struct{}{}
+		}
+	}
+
+	selectLast := func(stories []engine.UserStory, pending map[string]struct{}) *engine.UserStory {
+		var selected *engine.UserStory
+		for i := range stories {
+			story := &stories[i]
+			if !story.Passes {
+				continue
+			}
+			if _, ok := pending[story.ID]; !ok {
+				continue
+			}
+			if selected == nil || story.Priority >= selected.Priority {
+				copy := *story
+				selected = &copy
+			}
+		}
+		return selected
+	}
+
+	// CurrentStory exhausts UserStories before consulting legacy Tasks, so any
+	// newly completed task is later than a newly completed user story.
+	if story := selectLast(final.Tasks, taskPending); story != nil {
+		return story
+	}
+	return selectLast(final.UserStories, userPending)
 }
 
 // loadPrompt reads the prompt file and replaces placeholders.

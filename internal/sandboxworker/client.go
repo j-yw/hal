@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"regexp"
 	"strconv"
@@ -15,9 +14,9 @@ import (
 )
 
 const (
-	defaultClientDialTimeout  = 5 * time.Second
-	defaultMaxResponseBytes   = 1 << 20
-	maxClientErrorDetailBytes = 512
+	defaultClientDialTimeout        = 5 * time.Second
+	defaultMaxResponseBytes   int64 = 1 << 20
+	maxClientErrorDetailBytes       = 512
 )
 
 var (
@@ -186,6 +185,78 @@ func (client *Client) Exec(ctx context.Context, driverID string, req ExecRequest
 	return &execResp, nil
 }
 
+// JobStart durably submits an asynchronous exec request to the worker daemon.
+func (client *Client) JobStart(ctx context.Context, driverID string, req JobStartRequest) (*Job, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationJobStart,
+		DriverID:  driverID,
+		JobStart:  &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientJobResponse(resp)
+}
+
+// JobResolve retrieves an admitted asynchronous job by caller-stable
+// submission identity without submitting work.
+func (client *Client) JobResolve(ctx context.Context, req JobResolveRequest) (*Job, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation:  OperationJobResolve,
+		JobResolve: &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientJobResponse(resp)
+}
+
+// JobStatus retrieves the latest durable asynchronous job snapshot.
+func (client *Client) JobStatus(ctx context.Context, req JobStatusRequest) (*Job, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationJobStatus,
+		JobStatus: &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientJobResponse(resp)
+}
+
+// JobLogs reads one bounded redacted cursor page.
+func (client *Client) JobLogs(ctx context.Context, req JobLogsRequest) (*JobLogsResponse, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationJobLogs,
+		JobLogs:   &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.JobLogs == nil {
+		return nil, malformedClientResponseError(OperationJobLogs, "worker job logs response did not include jobLogs payload")
+	}
+	logs := *resp.JobLogs
+	logs.Records = cloneJobLogRecords(resp.JobLogs.Records)
+	return &logs, nil
+}
+
+// JobCancel requests cancellation and returns the resulting snapshot.
+func (client *Client) JobCancel(ctx context.Context, req JobCancelRequest) (*Job, error) {
+	req.ContractVersion = defaultJobContractVersion(req.ContractVersion)
+	resp, err := client.roundTrip(ctx, Request{
+		Operation: OperationJobCancel,
+		JobCancel: &req,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return clientJobResponse(resp)
+}
+
 // CopyIn copies a bounded file payload into a worker target.
 func (client *Client) CopyIn(ctx context.Context, driverID string, req CopyInRequest) (*CopyInResponse, error) {
 	resp, err := client.roundTrip(ctx, Request{
@@ -244,6 +315,12 @@ func (client *Client) roundTrip(ctx context.Context, req Request) (Response, err
 	if err != nil {
 		return Response{}, clientContextOrTransportError(req.Operation, err)
 	}
+	if isWorkerV2Operation(req.Operation) && resp.ProtocolVersion != ProtocolVersion {
+		return Response{}, malformedClientResponseError(req.Operation, "worker V2 response protocolVersion did not match request")
+	}
+	if exactCredentialWorkerProtocolUnsupported(req, resp) {
+		return Response{}, ErrCredentialWorkerProtocolUnsupported
+	}
 	resp = resp.WithDefaults()
 	if err := validateClientResponse(req, resp); err != nil {
 		return Response{}, err
@@ -262,6 +339,14 @@ func clientTargetResponse(resp Response) (*Target, error) {
 	return &target, nil
 }
 
+func clientJobResponse(resp Response) (*Job, error) {
+	if resp.Job == nil {
+		return nil, malformedClientResponseError(resp.Operation, "worker response did not include job payload")
+	}
+	job := cloneJob(*resp.Job)
+	return &job, nil
+}
+
 func (client *Client) nextRequestID(operation string) string {
 	seq := client.nextID.Add(1)
 	return strings.TrimSpace(operation) + "-" + strconv.FormatUint(seq, 10)
@@ -271,14 +356,22 @@ func validateClientResponse(req Request, resp Response) error {
 	if err := resp.Validate(); err != nil {
 		return malformedClientResponseError(req.Operation, fmt.Sprintf("malformed worker response: %v", err))
 	}
+	if isWorkerV2Operation(req.Operation) && resp.RequestID == "" {
+		return malformedClientResponseError(req.Operation, "worker V2 response requestId is required")
+	}
 	if resp.RequestID != "" && resp.RequestID != req.RequestID {
 		return malformedClientResponseError(req.Operation, "worker response requestId did not match request")
 	}
 	if resp.OK && resp.Operation != req.Operation {
 		return malformedClientResponseError(req.Operation, "worker response operation did not match request")
 	}
-	if !resp.OK && resp.Operation != req.Operation && resp.Operation != OperationProtocolError {
-		return malformedClientResponseError(req.Operation, "worker error response operation did not match request")
+	if !resp.OK {
+		if isWorkerV2Operation(req.Operation) && resp.Operation != req.Operation {
+			return malformedClientResponseError(req.Operation, "worker V2 error response operation did not match request")
+		}
+		if !isWorkerV2Operation(req.Operation) && resp.Operation != req.Operation && resp.Operation != OperationProtocolError {
+			return malformedClientResponseError(req.Operation, "worker error response operation did not match request")
+		}
 	}
 	if err := validateClientIOResponseLimits(req, resp); err != nil {
 		return malformedClientResponseError(req.Operation, fmt.Sprintf("malformed worker response: %v", err))
@@ -304,6 +397,72 @@ func validateClientIOResponseLimits(req Request, resp Response) error {
 			return nil
 		}
 		return validateClientPayloadWithinLimit("copy_out payload", *resp.CopyOut.Payload, req.CopyOut.MaxPayloadBytes)
+	case OperationJobStart:
+		if req.JobStart == nil || resp.Job == nil {
+			return nil
+		}
+		if resp.Job.SubmissionKey != jobSubmissionKey(req.JobStart.SubmissionID) {
+			return workerIOValidationError("job_start submissionKey did not match request")
+		}
+		if resp.Job.RuntimeDriver != strings.TrimSpace(req.DriverID) {
+			return workerIOValidationError("job_start runtimeDriver did not match request")
+		}
+		if resp.Job.RuntimeID != strings.TrimSpace(req.JobStart.Exec.Target.Runtime.RuntimeID) {
+			return workerIOValidationError("job_start runtimeId did not match request")
+		}
+		return nil
+	case OperationJobResolve:
+		if req.JobResolve == nil || resp.Job == nil {
+			return nil
+		}
+		if resp.Job.SubmissionKey != jobSubmissionKey(req.JobResolve.SubmissionID) {
+			return workerIOValidationError("job_resolve submissionKey did not match request")
+		}
+		return nil
+	case OperationJobStatus:
+		if req.JobStatus != nil && resp.Job != nil && resp.Job.ID != req.JobStatus.JobID {
+			return workerIOValidationError("job_status jobId did not match request")
+		}
+		return nil
+	case OperationJobLogs:
+		if req.JobLogs == nil || resp.JobLogs == nil {
+			return nil
+		}
+		if resp.JobLogs.JobID != req.JobLogs.JobID {
+			return workerIOValidationError("job_logs jobId did not match request")
+		}
+		if size := jobLogRecordsSize(resp.JobLogs.Records); size > req.JobLogs.LimitBytes {
+			return workerIOValidationError("job_logs records exceed requested limit of %d bytes", req.JobLogs.LimitBytes)
+		}
+		if resp.JobLogs.NextCursor < req.JobLogs.Cursor {
+			return workerIOValidationError("job_logs nextCursor precedes requested cursor")
+		}
+		previous := req.JobLogs.Cursor
+		cursorGap := false
+		for _, record := range resp.JobLogs.Records {
+			if record.Cursor <= previous {
+				return workerIOValidationError("job_logs record cursor does not follow requested cursor")
+			}
+			if record.Cursor-previous > 1 {
+				cursorGap = true
+			}
+			previous = record.Cursor
+		}
+		if resp.JobLogs.NextCursor < previous {
+			return workerIOValidationError("job_logs nextCursor precedes returned records")
+		}
+		if resp.JobLogs.NextCursor > previous {
+			cursorGap = true
+		}
+		if cursorGap && !resp.JobLogs.Truncated {
+			return workerIOValidationError("job_logs cursor gap requires truncation marker")
+		}
+		return nil
+	case OperationJobCancel:
+		if req.JobCancel != nil && resp.Job != nil && resp.Job.ID != req.JobCancel.JobID {
+			return workerIOValidationError("job_cancel jobId did not match request")
+		}
+		return nil
 	default:
 		return nil
 	}
@@ -531,50 +690,60 @@ func (transport unixSocketClientTransport) RoundTrip(ctx context.Context, req Re
 	if dialer.Timeout <= 0 {
 		dialer.Timeout = defaultClientDialTimeout
 	}
-	conn, err := dialer.DialContext(ctx, "unix", socketPath)
+	connection, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, fmt.Errorf("connect unix worker socket: %s", sanitizeProtocolErrorDetail(err.Error()))
+		return Response{}, errors.New("open worker connection failed")
 	}
-	defer conn.Close()
+	defer connection.Close()
 
 	done := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = conn.Close()
+			_ = connection.Close()
 		case <-done:
 		}
 	}()
 	defer close(done)
 
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
+		_ = connection.SetDeadline(deadline)
 	}
-	if err := json.NewEncoder(conn).Encode(req.WithDefaults()); err != nil {
+	if err := json.NewEncoder(connection).Encode(req.WithDefaults()); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, fmt.Errorf("write worker request: %s", sanitizeProtocolErrorDetail(err.Error()))
+		return Response{}, errors.New("write worker request failed")
 	}
-	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
-		_ = closer.CloseWrite()
+	halfCloser, ok := connection.(interface{ CloseWrite() error })
+	if !ok {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Response{}, ctxErr
+		}
+		return Response{}, errors.New("write worker request framing failed")
+	}
+	if err := halfCloser.CloseWrite(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Response{}, ctxErr
+		}
+		return Response{}, errors.New("write worker request framing failed")
 	}
 
 	maxResponseBytes := transport.maxResponseBytes
 	if maxResponseBytes <= 0 {
 		maxResponseBytes = defaultMaxResponseBytes
 	}
-	var resp Response
-	if err := json.NewDecoder(io.LimitReader(conn, maxResponseBytes)).Decode(&resp); err != nil {
+	var response Response
+	if err := decodeWorkerResponseInto(connection, maxResponseBytes, &response); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Response{}, ctxErr
 		}
-		return Response{}, fmt.Errorf("read worker response: %s", sanitizeProtocolErrorDetail(err.Error()))
+		return Response{}, errors.New("read worker response failed")
 	}
-	return resp, nil
+	return response, nil
 }
 
 func sanitizeProtocolErrorDetail(detail string) string {

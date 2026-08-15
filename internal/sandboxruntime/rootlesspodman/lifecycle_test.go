@@ -110,6 +110,7 @@ func TestLifecycleCommandsUseFakeRunnerAndSafePodmanArgs(t *testing.T) {
 		rootlesspodman.OperationCreate: {
 			"podman", "create",
 			"--pull=never",
+			"--init",
 			"--name", containerName,
 			"--hostname", containerName,
 			"--label", "dev.jywlabs.hal.runtime=rootless_podman",

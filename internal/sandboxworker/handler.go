@@ -16,6 +16,9 @@ func (service *Service) HandleRequest(ctx context.Context, req Request) Response
 	if resp, ok := contextErrorResponse(ctx, req); ok {
 		return resp
 	}
+	if isWorkerV2Operation(req.Operation) {
+		return unsupportedOperationResponse(req)
+	}
 	if !service.supportsRequestOperation(req.Operation, req.DriverID) {
 		return unsupportedOperationResponse(req)
 	}
@@ -65,6 +68,31 @@ func (service *Service) HandleRequest(ctx context.Context, req Request) Response
 			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request copyOut payload is required")
 		}
 		return service.CopyOutResponse(ctx, req.RequestID, req.DriverID, *req.CopyOut)
+	case OperationJobStart:
+		if req.JobStart == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobStart payload is required")
+		}
+		return service.JobStartResponse(ctx, req.RequestID, req.DriverID, *req.JobStart)
+	case OperationJobResolve:
+		if req.JobResolve == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobResolve payload is required")
+		}
+		return service.JobResolveResponse(req.RequestID, *req.JobResolve)
+	case OperationJobStatus:
+		if req.JobStatus == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobStatus payload is required")
+		}
+		return service.JobStatusResponse(req.RequestID, *req.JobStatus)
+	case OperationJobLogs:
+		if req.JobLogs == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobLogs payload is required")
+		}
+		return service.JobLogsResponse(req.RequestID, *req.JobLogs)
+	case OperationJobCancel:
+		if req.JobCancel == nil {
+			return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeMalformedRequest, "worker request jobCancel payload is required")
+		}
+		return service.JobCancelResponse(req.RequestID, *req.JobCancel)
 	default:
 		return unsupportedOperationResponse(req)
 	}

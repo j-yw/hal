@@ -17,6 +17,23 @@ enables sync-out only for explicit local non-factory sandbox requests:
 - `hal run --sandbox --sandbox-apply`
 - `hal auto --sandbox --sandbox-sync-out`
 - `hal auto --sandbox --sandbox-apply`
+- `hal sandbox apply EXECUTION_ID`
+
+The run/auto `--sandbox-apply` flags apply artifacts from the new execution
+they launch. They do not select a prior named sandbox workspace or stored run.
+Sandbox JSON with explicit sync-out metadata includes `sandboxExecutionId` so
+operators can select the exact durable result later.
+
+`hal sandbox apply EXECUTION_ID` is the apply-only path for a prior completed
+execution. It must not resolve, provision, start, materialize, or execute a
+sandbox. It requires a succeeded manifest, a collected `.hal/prd.json` with
+every story passing, an eligible committed patch or bundle, a stored project
+and branch matching the current host worktree, and a host worktree that passes
+the existing lock, cleanliness, and Git dry-run checks. A commit-valued stored
+sync ref must also match the current host HEAD.
+Already-applied executions are rejected to prevent accidental double apply.
+Tracked uncommitted output, including PRD completion metadata, remains a
+separate manual-review handoff after a committed patch is applied.
 
 Default `hal run --sandbox` and `hal auto --sandbox` must preserve default
 no-mutation behavior. They must not invoke sync-out apply, host dry-run apply,
@@ -38,9 +55,11 @@ Explicit sync-out collection generates committed and tracked-uncommitted
 artifacts separately. The committed patch contains commits after the prepared
 workspace baseline. The uncommitted diff contains staged and unstaged tracked
 changes, is omitted when empty, and always requires manual review rather than
-automatic host apply. Untracked archive and file-list fields remain additive
-handoff contract categories; production generation of those artifacts is not
-included in this phase.
+automatic host apply. Production sync-out also generates an untracked tar
+archive and quoted file list from `git ls-files --others --exclude-standard`.
+Ignored files and Hal's generated sync-out payloads are excluded, empty
+untracked output is omitted, and both artifacts remain handoff-only rather than
+eligible for automatic host apply.
 
 ## Focused Verification Commands
 
@@ -53,7 +72,7 @@ go test -timeout=120s ./internal/sandboxworkspace -run 'TestWorkspaceSyncOutCont
 Run sync-out summary and execution import-boundary checks:
 
 ```sh
-go test -timeout=120s ./internal/sandboxexecution -run 'TestBuildSyncOutSummaryFromArtifacts|TestBuildSyncOutSummaryRedaction|TestCollectUncommittedSyncOutArtifactBestEffort|TestUncommittedSyncOutDiffGenerationScript|TestPackageImportBoundaries'
+go test -timeout=120s ./internal/sandboxexecution -run 'TestBuildSyncOutSummaryFromArtifacts|TestBuildSyncOutSummaryRedaction|TestCollectUncommittedSyncOutArtifactBestEffort|TestUncommittedSyncOutDiffGenerationScript|TestCollectUntrackedSyncOutArtifactsBestEffort|TestUntrackedSyncOutArtifactsGenerationScript|TestPackageImportBoundaries'
 ```
 
 Run safe apply dry-run, dirty worktree, lock, and redaction checks:
@@ -66,7 +85,7 @@ Run command default no-mutation, explicit flag scope, recovery-before-apply,
 eligible artifact selection, handoff, additive JSON, and redaction checks:
 
 ```sh
-go test -timeout=120s ./cmd -run 'TestSandboxRunAutoDefaultDoesNotMutateHostWorktree|TestSandboxSyncOutApplyFlagsAreExplicitAndScoped|TestSandboxApplyPersistsRecoveryBeforeHostMutation|TestSandboxApplyOnlyUsesEligibleSyncOutArtifacts|TestSandboxSyncOutHandoffInstructions|TestSandboxSyncOutManifestJSONAdditiveContract|TestSandboxSyncOutApplyRedaction'
+go test -timeout=120s ./cmd -run 'TestSandboxRunAutoDefaultDoesNotMutateHostWorktree|TestSandboxSyncOutApplyFlagsAreExplicitAndScoped|TestSandboxApplyPersistsRecoveryBeforeHostMutation|TestSandboxApplyOnlyUsesEligibleSyncOutArtifacts|TestSandboxSyncOutHandoffInstructions|TestSandboxSyncOutManifestJSONAdditiveContract|TestSandboxSyncOutApplyRedaction|TestRunSandboxApplyExecution|TestSandboxAugmentedJSONExposesStoredExecutionID'
 ```
 
 Run additive contract documentation and example checks:
@@ -129,7 +148,9 @@ adapters, or network-only packages.
 
 Command code owns local host apply intent. `--sandbox-sync-out` records durable
 sync-out and handoff metadata without mutating the host, while `--sandbox-apply`
-is the explicit opt-in path for automatic eligible host apply. Keep these flags
+is the explicit opt-in path for automatic eligible host apply from the new
+run/auto execution. Use `hal sandbox apply EXECUTION_ID` to apply a prior
+completed execution without launching another sandbox run. Keep the flags
 scoped to local non-factory run and auto sandbox commands and omit them from
 remote command builders and factory commands.
 

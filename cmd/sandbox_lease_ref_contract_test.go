@@ -62,7 +62,7 @@ func TestSandboxLeaseRefContractPersistsOnRunAutoAndFactoryMetadata(t *testing.T
 		},
 	}
 
-	runStore := sandboxexecution.NewStore(t.TempDir())
+	runStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
 		ExecutionID:   "exec-run",
 		SandboxName:   target.Name,
@@ -79,7 +79,7 @@ func TestSandboxLeaseRefContractPersistsOnRunAutoAndFactoryMetadata(t *testing.T
 	}
 	assertSafeLeaseJSONObject(t, runManifest.Lease, "run")
 
-	autoStore := sandboxexecution.NewStore(t.TempDir())
+	autoStore := newPrivateSandboxExecutionTestStore(t)
 	target.Lease.Purpose = sandbox.SandboxLeasePurposeAuto
 	target.Lease.RunID = "exec-auto"
 	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{

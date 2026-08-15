@@ -421,6 +421,9 @@ func TestServerHandlesSingleJSONRequestResponsePerUnixConnection(t *testing.T) {
 	if err := encoder.Encode(firstReq); err != nil {
 		t.Fatalf("Encode(first request) error: %v", err)
 	}
+	if err := conn.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite(first request) error: %v", err)
+	}
 
 	decoder := json.NewDecoder(conn)
 	var firstResp Response
@@ -944,8 +947,8 @@ func TestClientConnectionFailureIsSanitized(t *testing.T) {
 			t.Fatalf("connection error leaked unsafe detail %q in %q", unsafe, message)
 		}
 	}
-	if !strings.Contains(message, "[redacted-path]") {
-		t.Fatalf("connection error = %q, want redacted path marker", message)
+	if !strings.Contains(message, "open worker connection failed") {
+		t.Fatalf("connection error = %q, want generic connection failure marker", message)
 	}
 }
 

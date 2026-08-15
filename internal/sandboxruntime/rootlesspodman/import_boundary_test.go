@@ -60,6 +60,18 @@ var forbiddenRootlessPodmanImports = []rootlessPodmanForbiddenImport{
 		name:  "concrete provider adapter",
 		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandbox/provider"),
 	},
+	{
+		name:  "concrete Linux rule adapter",
+		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"),
+	},
+	{
+		name:  "concrete Linux topology adapter",
+		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"),
+	},
+	{
+		name:  "concrete policy proxy adapter",
+		match: moduleImportMatcher("github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/policyproxy"),
+	},
 }
 
 func TestRootlessPodmanImportsStayCommandAgnostic(t *testing.T) {
@@ -107,6 +119,9 @@ func TestRootlessPodmanForbiddenImportListCoversCommandCouplingSurfaces(t *testi
 		{name: "worker protocol packages", importPath: "github.com/jywlabs/hal/internal/sandboxworker"},
 		{name: "SSH-machine runtime adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/sshmachine"},
 		{name: "concrete provider adapter", importPath: "github.com/jywlabs/hal/internal/sandbox/provider/hetzner"},
+		{name: "concrete Linux rule adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"},
+		{name: "concrete Linux topology adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"},
+		{name: "concrete policy proxy adapter", importPath: "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/policyproxy"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if forbidden := rootlessPodmanForbiddenImportFor(tt.importPath); forbidden == nil {

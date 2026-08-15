@@ -411,7 +411,7 @@ func TestRunSandboxManifestUsesConfiguredSecurityIntentAndRedactsUnsafeValues(t 
     activeModes:
       - ssh_agent
 `)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	startedAt := time.Date(2026, 7, 2, 4, 13, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(time.Second)
 
@@ -2229,7 +2229,6 @@ func TestRunRunWithWriterSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 		"json":            "true",
 		"engine":          "codex-test",
 		"base":            "main",
-		"dry-run":         "true",
 	} {
 		if err := cmd.Flags().Set(flag, value); err != nil {
 			t.Fatalf("set %s: %v", flag, err)
@@ -2249,7 +2248,7 @@ func TestRunRunWithWriterSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 	if captured.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
 		t.Fatalf("SandboxRuntime = %q, want %q", captured.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
 	}
-	wantCommand := []string{"hal", "run", "--json", "--engine", "codex-test", "--dry-run", "--base", "main", "4"}
+	wantCommand := []string{"hal", "run", "--json", "--engine", "codex-test", "--base", "main", "4"}
 	if !reflect.DeepEqual(captured.RemoteCommand, wantCommand) {
 		t.Fatalf("RemoteCommand = %#v, want %#v", captured.RemoteCommand, wantCommand)
 	}
@@ -2547,6 +2546,7 @@ type fakeRunSandboxRuntimeDriver struct {
 	id      string
 	create  func(context.Context, sandboxruntime.CreateRequest) (*sandboxruntime.Target, error)
 	start   func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
+	inspect func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error)
 	exec    func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
 	copyIn  func(context.Context, sandboxruntime.CopyRequest) error
 	copyOut func(context.Context, sandboxruntime.CopyRequest) error
@@ -2591,8 +2591,11 @@ func (fakeRunSandboxRuntimeDriver) Delete(context.Context, sandboxruntime.Lifecy
 	return nil
 }
 
-func (fakeRunSandboxRuntimeDriver) Inspect(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
-	return nil, nil
+func (f fakeRunSandboxRuntimeDriver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	if f.inspect != nil {
+		return f.inspect(ctx, req)
+	}
+	return &req.Target, nil
 }
 
 func (f fakeRunSandboxRuntimeDriver) Exec(ctx context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {

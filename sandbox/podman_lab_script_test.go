@@ -30,6 +30,10 @@ func TestPodmanLabStartDetachesDaemonAndUsesLiveReadiness(t *testing.T) {
 		`remove_stale_lifecycle_lock`,
 		`"$HAL_BIN" sandbox host register worker "$WORKER_ID" --socket "$SOCKET" --live`,
 		`"$HAL_BIN" sandbox host status "$WORKER_ID" --live`,
+		`if ! podman machine start "$MACHINE"; then`,
+		`echo "Podman machine failed to start"`,
+		`LAB_ROOT=${HOST_XDG_DATA_HOME%/}/hal-sandbox-lab-${USER:-local}`,
+		`LAB_ROOT=${HOST_HOME%/}/.local/share/hal-sandbox-lab-${USER:-local}`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("podman-lab.sh missing lifecycle contract %q", want)
@@ -59,6 +63,68 @@ func TestPodmanLabPrepareUsesNamedConnectionWhenDefaultIsHealthy(t *testing.T) {
 		}
 	}
 	assertNoUnboundPodmanOperation(t, log, "info", "pull", "build")
+}
+
+func TestPodmanLabPrepareUsesIsolatedNativePodmanWithoutMachineOperations(t *testing.T) {
+	env := newPodmanLabTestEnv(t)
+	env.podmanMode = "native"
+	writePodmanLabGoStub(t, env.binDir)
+
+	runPodmanLabScript(t, env, "prepare")
+
+	log := readPodmanLabLog(t, env.logPath)
+	for _, want := range []string{
+		"info",
+		"pull example.invalid/base:latest",
+		"build --pull=never",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("native podman log missing %q:\n%s", want, log)
+		}
+	}
+	for _, unwanted := range []string{
+		"machine inspect",
+		"machine init",
+		"machine start",
+		"--connection",
+	} {
+		if strings.Contains(log, unwanted) {
+			t.Fatalf("native podman log unexpectedly contains %q:\n%s", unwanted, log)
+		}
+	}
+}
+
+func TestPodmanLabPreparePreflightsQEMUCommandsBeforeMachineCreation(t *testing.T) {
+	_, sourcePath, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller() failed")
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(sourcePath), "podman-lab.sh"))
+	if err != nil {
+		t.Fatalf("ReadFile(podman-lab.sh) error = %v", err)
+	}
+	script := string(data)
+	prepareStart := strings.Index(script, "prepare() {")
+	if prepareStart < 0 {
+		t.Fatal("podman-lab.sh missing prepare function")
+	}
+	prepareScript := script[prepareStart:]
+	preflight := strings.Index(prepareScript, "require_podman_machine_commands")
+	machineInit := strings.Index(prepareScript, "podman machine init")
+	if preflight < 0 || machineInit < 0 || preflight > machineInit {
+		t.Fatalf("QEMU preflight must run before Podman machine creation: preflight=%d machineInit=%d", preflight, machineInit)
+	}
+	for _, want := range []string{
+		"podman machine info --format '{{.Host.VMType}}'",
+		"require_qemu_machine_command qemu-img",
+		"require_qemu_machine_command qemu-system-x86_64",
+		"require_qemu_machine_command qemu-system-aarch64",
+		"Arch Linux: sudo pacman -S --needed qemu-base",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("podman-lab.sh missing QEMU preflight contract %q", want)
+		}
+	}
 }
 
 func TestPodmanLabDestroyRemovesContainersOnlyOnNamedConnection(t *testing.T) {
@@ -94,6 +160,7 @@ type podmanLabTestEnv struct {
 	halReady      string
 	halStartDelay string
 	realPS        string
+	podmanMode    string
 }
 
 func newPodmanLabTestEnv(t *testing.T) podmanLabTestEnv {
@@ -123,6 +190,7 @@ func newPodmanLabTestEnv(t *testing.T) podmanLabTestEnv {
 		halReady:      filepath.Join(root, "hal-daemon.ready"),
 		halStartDelay: "0",
 		realPS:        realPS,
+		podmanMode:    "machine",
 	}
 	if err := os.MkdirAll(env.hostHome, 0o700); err != nil {
 		t.Fatalf("MkdirAll(host home) error = %v", err)
@@ -265,6 +333,7 @@ func newPodmanLabCommand(env podmanLabTestEnv, command string) *exec.Cmd {
 		"HAL_SANDBOX_LAB_ROOT="+env.labRoot,
 		"HAL_SANDBOX_LAB_MACHINE=lab-machine",
 		"HAL_SANDBOX_LAB_MACHINE_PROVIDER=",
+		"HAL_SANDBOX_LAB_PODMAN_MODE="+env.podmanMode,
 		"HAL_SANDBOX_LAB_BASE_IMAGE=example.invalid/base:latest",
 		"PODMAN_TEST_LOG="+env.logPath,
 		"PODMAN_TEST_MACHINE=lab-machine",

@@ -1,6 +1,10 @@
 package rootlesspodman
 
-import "strings"
+import (
+	"strings"
+	"sync"
+	"time"
+)
 
 const (
 	DefaultPodmanExecutable = "podman"
@@ -18,16 +22,31 @@ type Options struct {
 	PodmanPath      string
 	Image           string
 	WorkDir         string
+	// JobExecutionSupported explicitly attests that a custom image supplies
+	// the shell and process-supervision utilities required by async jobs.
+	JobExecutionSupported bool
+	// NetworkTopologyFactory enables the explicit L7 per-target topology path.
+	// Nil preserves the legacy rootless Podman lifecycle and command bytes.
+	NetworkTopologyFactory NetworkTopologyFactory
+	// NetworkTopologyCleanupTimeout bounds revoke and cleanup work independently
+	// from a canceled lifecycle caller. Zero selects the package default.
+	NetworkTopologyCleanupTimeout time.Duration
 }
 
 // Driver is the rootless Podman runtime adapter.
 type Driver struct {
-	lifecycleRunner LifecycleCommandRunner
-	execRunner      ExecCommandRunner
-	copyRunner      CopyCommandRunner
-	podmanPath      string
-	image           string
-	workDir         string
+	lifecycleRunner               LifecycleCommandRunner
+	execRunner                    ExecCommandRunner
+	copyRunner                    CopyCommandRunner
+	podmanPath                    string
+	image                         string
+	workDir                       string
+	jobExecutionSupported         bool
+	networkTopologyFactory        NetworkTopologyFactory
+	networkTopologyCleanupTimeout time.Duration
+	networkTopologyMu             sync.Mutex
+	networkTopologySessions       map[string]*networkTopologyEntry
+	pendingNetworkTopologyCleanup map[*pendingNetworkTopologyCleanup]struct{}
 }
 
 func New(opts Options) *Driver {
@@ -44,17 +63,26 @@ func New(opts Options) *Driver {
 		workDir = DefaultWorkDir
 	}
 	return &Driver{
-		lifecycleRunner: opts.LifecycleRunner,
-		execRunner:      opts.ExecRunner,
-		copyRunner:      opts.CopyRunner,
-		podmanPath:      podmanPath,
-		image:           image,
-		workDir:         workDir,
+		lifecycleRunner:               opts.LifecycleRunner,
+		execRunner:                    opts.ExecRunner,
+		copyRunner:                    opts.CopyRunner,
+		podmanPath:                    podmanPath,
+		image:                         image,
+		workDir:                       workDir,
+		jobExecutionSupported:         image == DefaultImage || opts.JobExecutionSupported,
+		networkTopologyFactory:        opts.NetworkTopologyFactory,
+		networkTopologyCleanupTimeout: opts.NetworkTopologyCleanupTimeout,
 	}
 }
 
 func (d *Driver) ID() string {
 	return DriverID
+}
+
+// SupportsJobExecution reports whether this driver was configured with the
+// provisioned default image or an explicitly attested compatible custom image.
+func (d *Driver) SupportsJobExecution() bool {
+	return d != nil && d.jobExecutionSupported
 }
 
 func (d *Driver) Metadata() RuntimeMetadata {

@@ -19,10 +19,12 @@ const (
 type Status string
 
 const (
-	StatusRunning   Status = "running"
-	StatusSucceeded Status = "succeeded"
-	StatusFailed    Status = "failed"
-	StatusCanceled  Status = "canceled"
+	StatusRunning     Status = "running"
+	StatusSucceeded   Status = "succeeded"
+	StatusFailed      Status = "failed"
+	StatusCanceled    Status = "canceled"
+	StatusInterrupted Status = "interrupted"
+	StatusUnknown     Status = "unknown"
 )
 
 // Artifact describes a persisted execution payload without recording unsafe
@@ -71,6 +73,7 @@ type Manifest struct {
 	ID                        string                                           `json:"id"`
 	Purpose                   Purpose                                          `json:"purpose"`
 	SandboxName               string                                           `json:"sandboxName,omitempty"`
+	SandboxID                 string                                           `json:"sandboxId,omitempty"`
 	ProjectDir                string                                           `json:"projectDir,omitempty"`
 	Command                   []string                                         `json:"command,omitempty"`
 	WorkDir                   string                                           `json:"workDir,omitempty"`
@@ -89,6 +92,8 @@ type Manifest struct {
 	CredentialDelivery        *sandbox.SandboxCredentialDeliveryStatusMetadata `json:"credentialDelivery,omitempty"`
 	Lease                     *sandbox.SandboxLeaseRef                         `json:"lease,omitempty"`
 	WorkerRouting             *sandbox.WorkerRoutingMetadata                   `json:"workerRouting,omitempty"`
+	WorkerJob                 *WorkerJobReference                              `json:"workerJob,omitempty"`
+	Finalization              *FinalizationMetadata                            `json:"finalization,omitempty"`
 	TemplateLock              *sandbox.SandboxTemplateLockMetadata             `json:"templateLock,omitempty"`
 	Artifacts                 []Artifact                                       `json:"artifacts,omitempty"`
 	ArtifactMetadata          *ArtifactMetadata                                `json:"artifactMetadata,omitempty"`
@@ -107,7 +112,7 @@ func validPurpose(purpose Purpose) bool {
 
 func validStatus(status Status) bool {
 	switch status {
-	case StatusRunning, StatusSucceeded, StatusFailed, StatusCanceled:
+	case StatusRunning, StatusSucceeded, StatusFailed, StatusCanceled, StatusInterrupted, StatusUnknown:
 		return true
 	default:
 		return false

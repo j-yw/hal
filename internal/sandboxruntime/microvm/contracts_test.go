@@ -265,6 +265,7 @@ func TestOperationErrorConstructorsUseStableCodes(t *testing.T) {
 		{name: "invalid config", err: NewInvalidConfigError("create", errors.New("bad config")), code: ErrorCodeInvalidConfig},
 		{name: "backend not configured", err: NewBackendNotConfiguredError("inspect"), code: ErrorCodeBackendNotConfigured},
 		{name: "backend operation failed", err: NewBackendOperationFailedError("exec", errors.New("backend failed")), code: ErrorCodeBackendOperationFailed},
+		{name: "durability uncertain", err: NewOperationError(ErrorCodeDurabilityUncertain, "copy_in", ErrDurabilityUncertain), code: ErrorCodeDurabilityUncertain},
 		{name: "target required", err: NewTargetRequiredError("start"), code: ErrorCodeTargetRequired},
 		{name: "target name required", err: NewTargetNameRequiredError("create"), code: ErrorCodeTargetNameRequired},
 	}

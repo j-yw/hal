@@ -94,10 +94,12 @@ func TestProtocolDTOJSONShapes(t *testing.T) {
 		ProtocolVersion: ProtocolVersionV1,
 		Operation:       OperationExec,
 		ExitCode:        0,
-		Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 2048},
+		Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 2048, Encoding: PayloadEncodingBase64, Data: "b2s="},
 		Stderr:          StreamMetadata{MaxBytes: 2048},
 	})
 	assertExactObjectKeys(t, execResponse, []string{"protocolVersion", "operation", "exitCode", "stdout", "stderr"})
+	assertExactObjectKeys(t, execResponse["stdout"], []string{"sizeBytes", "maxBytes", "data", "encoding"})
+	assertExactObjectKeys(t, execResponse["stderr"], []string{"maxBytes"})
 
 	copyInRequest := mustMarshalObject(t, CopyInRequest{
 		ProtocolVersion: ProtocolVersionV1,

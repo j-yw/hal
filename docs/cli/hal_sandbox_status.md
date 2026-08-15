@@ -26,12 +26,15 @@ hal sandbox status [NAME] [flags]
 ```
   hal sandbox status my-sandbox
   hal sandbox status
+  hal sandbox status NAME --live --json
 ```
 
 ### Options
 
 ```
   -h, --help   help for status
+      --json   Output machine-readable JSON (sandbox-status-v1 contract)
+      --live   Refresh the selected durable worker execution
 ```
 
 ### Options inherited from parent commands

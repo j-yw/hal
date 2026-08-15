@@ -8,12 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
@@ -620,6 +622,64 @@ func TestSandboxSyncOutHandoffInstructions(t *testing.T) {
 	}
 }
 
+func TestSandboxSyncOutApplyKeepsVerifiedPayloadOpenAcrossPathReplacement(t *testing.T) {
+	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+	const executionID = "verified-apply-payload"
+	const storedPath = executionID + "/artifacts/sync/committed.patch"
+	saveSandboxSyncOutApplyManifest(t, store, executionID, sandboxexecution.PurposeRun, sandboxexecution.ArtifactMetadata{
+		Collected: []sandboxexecution.ArtifactMetadataEntry{
+			sandboxSyncOutApplyCollected("committed-patch", ".hal/sync/committed.patch", storedPath),
+		},
+	})
+	payloadPath := filepath.Join(store.Root(), filepath.FromSlash(storedPath))
+
+	_, err := applySandboxSyncOut(context.Background(), store, sandboxSyncOutApplyRequest{
+		ExecutionID: executionID,
+		Purpose:     sandboxexecution.PurposeRun,
+		ProjectDir:  t.TempDir(),
+		Options: sandboxSyncOutOptions{
+			Enabled: true,
+			Apply:   true,
+		},
+	}, func(_ context.Context, got sandboxSyncOutApplyRequest) (sandboxworkspace.SafeApplyResult, error) {
+		payloadField := reflect.ValueOf(got).FieldByName("Payload")
+		if !payloadField.IsValid() || payloadField.IsNil() {
+			t.Fatal("apply request did not retain a verified stored payload descriptor")
+		}
+		payload, ok := payloadField.Interface().(*os.File)
+		if !ok {
+			t.Fatalf("apply request Payload type = %T, want *os.File", payloadField.Interface())
+		}
+
+		trustedPath := payloadPath + ".trusted"
+		if err := os.Rename(payloadPath, trustedPath); err != nil {
+			t.Fatalf("Rename(trusted payload) error: %v", err)
+		}
+		if err := os.WriteFile(payloadPath, []byte("attacker replacement\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(replacement payload) error: %v", err)
+		}
+		if _, err := payload.Seek(0, io.SeekStart); err != nil {
+			t.Fatalf("Seek(verified payload) error: %v", err)
+		}
+		data, err := io.ReadAll(payload)
+		if err != nil {
+			t.Fatalf("ReadAll(verified payload) error: %v", err)
+		}
+		if got, want := string(data), "test artifact\n"; got != want {
+			t.Fatalf("verified payload bytes = %q, want trusted bytes %q", got, want)
+		}
+		return sandboxworkspace.SafeApplyResult{
+			Status:     sandboxworkspace.SafeApplyStatusApplied,
+			Applied:    true,
+			ArtifactID: "committed-patch",
+			Mode:       sandboxworkspace.SyncOutApplyModePatch,
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("applySandboxSyncOut() error: %v", err)
+	}
+}
+
 func TestSandboxSyncOutApplyRedaction(t *testing.T) {
 	store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
 	executionID := "sync-out-redaction"
@@ -843,6 +903,9 @@ func TestSandboxSyncOutManifestJSONAdditiveContract(t *testing.T) {
 		if result.Summary != "remote run" {
 			t.Fatalf("RunResult.Summary = %q, want remote run", result.Summary)
 		}
+		if result.SandboxExecutionID != "run-json-sync-out" {
+			t.Fatalf("RunResult.SandboxExecutionID = %q, want run-json-sync-out", result.SandboxExecutionID)
+		}
 		assertRunAutoSyncOutJSONFields(t, result.SyncOut, result.SyncOutApply)
 		manifest := mustLoadSandboxExecutionManifest(t, store, "run-json-sync-out")
 		assertRunAutoSyncOutJSONFields(t, manifest.SyncOut, manifest.SyncOutApply)
@@ -918,10 +981,140 @@ func TestSandboxSyncOutManifestJSONAdditiveContract(t *testing.T) {
 		if result.Summary != "remote auto" {
 			t.Fatalf("AutoResult.Summary = %q, want remote auto", result.Summary)
 		}
+		if result.SandboxExecutionID != "auto-json-sync-out" {
+			t.Fatalf("AutoResult.SandboxExecutionID = %q, want auto-json-sync-out", result.SandboxExecutionID)
+		}
 		assertRunAutoSyncOutJSONFields(t, result.SyncOut, result.SyncOutApply)
 		manifest := mustLoadSandboxExecutionManifest(t, store, "auto-json-sync-out")
 		assertRunAutoSyncOutJSONFields(t, manifest.SyncOut, manifest.SyncOutApply)
 	})
+}
+
+func TestFailedSandboxSyncOutPersistsRecoveryHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		purpose sandboxexecution.Purpose
+		collect func(context.Context, sandboxexecution.Store, string, string, sandboxruntime.Driver, sandboxruntime.Target) error
+	}{
+		{
+			name:    "run",
+			purpose: sandboxexecution.PurposeRun,
+			collect: func(ctx context.Context, store sandboxexecution.Store, executionID, workDir string, driver sandboxruntime.Driver, target sandboxruntime.Target) error {
+				return collectRunSandboxRecoveryAfterCommandFailure(ctx, store, runSandboxRequest{
+					ExecutionID: executionID,
+					BaseBranch:  "main",
+					WorkDir:     workDir,
+					Workspace: &sandbox.SandboxWorkspace{
+						Mode:    sandbox.SandboxWorkspaceModeClone,
+						SyncRef: "baseline-ref",
+					},
+					SyncOut: sandboxSyncOutOptions{Enabled: true},
+				}, runSandboxExecutionResult{
+					Result:        &sandboxexec.Result{Target: target},
+					RuntimeDriver: driver,
+				}, nil)
+			},
+		},
+		{
+			name:    "auto",
+			purpose: sandboxexecution.PurposeAuto,
+			collect: func(ctx context.Context, store sandboxexecution.Store, executionID, workDir string, driver sandboxruntime.Driver, target sandboxruntime.Target) error {
+				return collectAutoSandboxRecoveryAfterCommandFailure(ctx, store, autoSandboxRequest{
+					ExecutionID: executionID,
+					BaseBranch:  "main",
+					WorkDir:     workDir,
+					Workspace: &sandbox.SandboxWorkspace{
+						Mode:    sandbox.SandboxWorkspaceModeClone,
+						SyncRef: "baseline-ref",
+					},
+					SyncOut: sandboxSyncOutOptions{Enabled: true},
+				}, autoSandboxExecutionResult{
+					Result:        &sandboxexec.Result{Target: target},
+					RuntimeDriver: driver,
+				}, nil)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executionID := "failed-sync-out-" + tc.name
+			workDir := "/workspace/failed-sync-out-" + tc.name
+			store := sandboxexecution.NewStore(filepath.Join(t.TempDir(), "sandbox-executions"))
+			if err := store.SaveManifest(&sandboxexecution.Manifest{
+				ID:        executionID,
+				Purpose:   tc.purpose,
+				Status:    sandboxexecution.StatusRunning,
+				StartedAt: time.Date(2026, 7, 16, 5, 30, 0, 0, time.UTC),
+				Workspace: &sandbox.SandboxWorkspace{
+					Mode:    sandbox.SandboxWorkspaceModeClone,
+					SyncRef: "baseline-ref",
+				},
+			}); err != nil {
+				t.Fatalf("SaveManifest() error = %v", err)
+			}
+
+			var order []string
+			driver := sandboxApplyOrderRuntimeDriver(t, workDir, &order, "")
+			target := sandboxruntime.Target{ID: "failed-sync-out-target"}
+			if err := tc.collect(context.Background(), store, executionID, workDir, driver, target); err != nil {
+				t.Fatalf("collect failed sync-out artifacts error = %v", err)
+			}
+			wantOrder := []string{
+				"recovery_generation",
+				"copy_recovery",
+				"uncommitted_generation",
+				"copy_uncommitted",
+				"untracked_generation",
+				"copy_untracked_archive",
+				"copy_untracked_list",
+				"committed_generation",
+				"copy_committed",
+			}
+			assertSandboxApplyOrder(t, order, wantOrder)
+
+			manifest := mustLoadSandboxExecutionManifest(t, store, executionID)
+			for _, path := range []string{
+				".hal/recovery/workspace.patch",
+				".hal/sync/uncommitted.diff",
+				".hal/sync/untracked.tar",
+				".hal/sync/untracked.txt",
+				".hal/sync/committed.patch",
+			} {
+				if !sandboxManifestHasCollectedPath(manifest, path) {
+					t.Fatalf("failed manifest missing collected path %q: %#v", path, manifest.ArtifactMetadata)
+				}
+			}
+			if manifest.SyncOut == nil || manifest.SyncOut.Committed.Patch == nil || manifest.SyncOut.Uncommitted.Diff == nil || manifest.SyncOut.Untracked.Archive == nil || manifest.SyncOut.Untracked.List == nil {
+				t.Fatalf("failed manifest sync-out = %#v, want committed, uncommitted, and untracked handoff artifacts", manifest.SyncOut)
+			}
+			if manifest.SyncOutApply == nil || !sandboxApplyReasonsContain(manifest.SyncOutApply.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonManualReviewRequired) {
+				t.Fatalf("failed manifest sync-out apply = %#v, want manual-review handoff", manifest.SyncOutApply)
+			}
+			if len(manifest.SyncOutApply.HandoffInstructions) == 0 {
+				t.Fatalf("failed manifest sync-out apply = %#v, want handoff instructions", manifest.SyncOutApply)
+			}
+
+			augmented, ok := sandboxAugmentJSON([]byte(`{"contractVersion":1,"ok":false,"summary":"remote failed"}`), manifest)
+			if !ok {
+				t.Fatal("sandboxAugmentJSON() ok = false, want failed sync-out augmentation")
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(augmented, &fields); err != nil {
+				t.Fatalf("Unmarshal(augmented JSON) error = %v", err)
+			}
+			var gotExecutionID string
+			if err := json.Unmarshal(fields["sandboxExecutionId"], &gotExecutionID); err != nil {
+				t.Fatalf("Unmarshal(sandboxExecutionId) error = %v", err)
+			}
+			if gotExecutionID != executionID {
+				t.Fatalf("sandboxExecutionId = %q, want %q", gotExecutionID, executionID)
+			}
+			for _, field := range []string{"syncOut", "syncOutApply"} {
+				if len(fields[field]) == 0 {
+					t.Fatalf("failed augmented JSON omitted %q: %s", field, augmented)
+				}
+			}
+		})
+	}
 }
 
 func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
@@ -1004,7 +1197,7 @@ func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 		if !errors.Is(err, applyErr) {
 			t.Fatalf("runRunSandboxWithWriter() error = %v, want apply error", err)
 		}
-		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "recovery_generation", "copy_recovery", "uncommitted_generation", "copy_uncommitted", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
+		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "recovery_generation", "copy_recovery", "uncommitted_generation", "copy_uncommitted", "untracked_generation", "copy_untracked_archive", "copy_untracked_list", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
 		assertSandboxApplyOrder(t, order, wantOrder)
 		assertSandboxFinalManifestRetainsRecovery(t, store, "run-apply-order")
 	})
@@ -1083,7 +1276,7 @@ func TestSandboxApplyPersistsRecoveryBeforeHostMutation(t *testing.T) {
 		if !errors.Is(err, applyErr) {
 			t.Fatalf("runAutoSandboxWithWriter() error = %v, want apply error", err)
 		}
-		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "copy_core_auto_state", "recovery_generation", "copy_recovery", "uncommitted_generation", "copy_uncommitted", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
+		wantOrder := []string{"remote_run", "copy_core_prd", "copy_core_progress", "copy_core_auto_state", "recovery_generation", "copy_recovery", "uncommitted_generation", "copy_uncommitted", "untracked_generation", "copy_untracked_archive", "copy_untracked_list", "committed_generation", "copy_committed", "reports_generation", "copy_reports", "host_apply"}
 		assertSandboxApplyOrder(t, order, wantOrder)
 		assertSandboxFinalManifestRetainsRecovery(t, store, "auto-apply-order")
 	})
@@ -1112,6 +1305,8 @@ func sandboxApplyOrderRuntimeDriver(t *testing.T, expectedWorkspace string, orde
 				*order = append(*order, "recovery_generation")
 			case got.WorkDir == expectedWorkspace && strings.Contains(script, "uncommitted.diff"):
 				*order = append(*order, "uncommitted_generation")
+			case got.WorkDir == expectedWorkspace && strings.Contains(script, "untracked.tar") && strings.Contains(script, "untracked.txt"):
+				*order = append(*order, "untracked_generation")
 			case got.WorkDir == expectedWorkspace && strings.Contains(script, "committed.patch"):
 				*order = append(*order, "committed_generation")
 			case got.WorkDir == expectedWorkspace && strings.Contains(script, "reports.tar"):
@@ -1146,6 +1341,10 @@ func sandboxApplyOrderCopyLabel(sourcePath string) string {
 		return "copy_recovery"
 	case strings.HasSuffix(sourcePath, "/.hal/sync/uncommitted.diff"):
 		return "copy_uncommitted"
+	case strings.HasSuffix(sourcePath, "/.hal/sync/untracked.tar"):
+		return "copy_untracked_archive"
+	case strings.HasSuffix(sourcePath, "/.hal/sync/untracked.txt"):
+		return "copy_untracked_list"
 	case strings.HasSuffix(sourcePath, "/.hal/sync/committed.patch"):
 		return "copy_committed"
 	case strings.HasSuffix(sourcePath, "/.hal/reports.tar"):
@@ -1200,6 +1399,9 @@ func assertSandboxSyncOutApplyRequestHasDurableArtifacts(t *testing.T, got sandb
 	}
 	if got.Summary.Uncommitted.Diff == nil || got.Summary.Uncommitted.Diff.StoredPath == "" || got.Summary.Uncommitted.Diff.ApplyEligibility == nil || got.Summary.Uncommitted.Diff.ApplyEligibility.Eligible {
 		t.Fatalf("sync-out uncommitted artifacts = %#v, want durable handoff-only diff", got.Summary.Uncommitted)
+	}
+	if got.Summary.Untracked.Archive == nil || got.Summary.Untracked.Archive.StoredPath == "" || got.Summary.Untracked.List == nil || got.Summary.Untracked.List.StoredPath == "" {
+		t.Fatalf("sync-out untracked artifacts = %#v, want durable handoff-only archive and list", got.Summary.Untracked)
 	}
 	for _, path := range corePaths {
 		if !sandboxSyncOutSummaryHasCorePath(got.Summary, path) {
@@ -1315,6 +1517,20 @@ func saveSandboxSyncOutApplyManifest(t *testing.T, store sandboxexecution.Store,
 		ArtifactMetadata: &metadata,
 	}); err != nil {
 		t.Fatalf("SaveManifest() error = %v", err)
+	}
+	for _, artifact := range metadata.Collected {
+		switch {
+		case strings.HasPrefix(artifact.StoredPath, executionID+"/artifacts/"):
+			payloadPath := strings.TrimPrefix(artifact.StoredPath, executionID+"/artifacts/")
+			if _, err := store.WriteArtifactPayload(executionID, payloadPath, []byte("test artifact\n")); err != nil {
+				t.Fatalf("WriteArtifactPayload(%q) error = %v", artifact.StoredPath, err)
+			}
+		case strings.HasPrefix(artifact.StoredPath, executionID+"/recovery/"):
+			payloadPath := strings.TrimPrefix(artifact.StoredPath, executionID+"/recovery/")
+			if _, err := store.WriteRecovery(executionID, payloadPath, []byte("test recovery artifact\n")); err != nil {
+				t.Fatalf("WriteRecovery(%q) error = %v", artifact.StoredPath, err)
+			}
+		}
 	}
 }
 

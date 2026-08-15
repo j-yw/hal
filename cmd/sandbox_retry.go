@@ -1,6 +1,10 @@
 package cmd
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+)
 
 type missingSandboxDeleteRule struct {
 	operation string
@@ -84,4 +88,31 @@ func containsAnySandboxDeleteMarker(text string, markers []string) bool {
 		}
 	}
 	return false
+}
+
+// isMissingWorkerRuntimeOperationError recognizes only an explicit rootless
+// Podman absence result for the requested lifecycle operation. Keep this
+// narrower than provider not-found matching: worker transport, authentication,
+// timeout, and generic driver failures must never finalize registry deletion.
+func isMissingWorkerRuntimeOperationError(driverID, operation string, err error) bool {
+	if err == nil || strings.TrimSpace(driverID) != sandboxruntime.DriverRootlessPodman {
+		return false
+	}
+
+	text := strings.ToLower(err.Error())
+	if containsAnySandboxDeleteMarker(text, nonMissingSandboxDeleteMarkers) {
+		return false
+	}
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	if operation == "" || !strings.Contains(text, operation+" failed") {
+		return false
+	}
+	if !strings.Contains(text, sandboxruntime.DriverRootlessPodman) {
+		return false
+	}
+
+	return containsAnySandboxDeleteMarker(text, []string{
+		"no such object",
+		"no such container",
+	})
 }

@@ -95,7 +95,7 @@ func TestScheduledSandboxCommandsReleaseAcquiredLeaseExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestScheduledSandboxCommandCancellationReleasesLease(t *testing.T) {
+func TestScheduledSandboxCommandCancellationBeforeAcknowledgementKeepsLeaseForRecovery(t *testing.T) {
 	startedAt := time.Date(2026, 7, 1, 9, 10, 0, 0, time.UTC)
 	ctx, cancel := context.WithCancel(context.Background())
 	var released []string
@@ -110,8 +110,12 @@ func TestScheduledSandboxCommandCancellationReleasesLease(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("command error = %v, want context.Canceled", err)
 	}
-	if len(released) != 1 || released[0] != "run-canceled-lease" {
-		t.Fatalf("released leases = %v, want canceled lease exactly once", released)
+	var detached *sandboxWorkerJobDetachedError
+	if !errors.As(err, &detached) {
+		t.Fatalf("command error = %T, want recoverable detached error", err)
+	}
+	if len(released) != 0 {
+		t.Fatalf("released leases = %v, want accepted-or-ambiguous job lease retained for recovery", released)
 	}
 }
 
@@ -211,7 +215,7 @@ func runScheduledRunLeaseLifecycleWithID(t *testing.T, ctx context.Context, star
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return lifecycleWorkerDriver(exec), nil
+			return withFakeSandboxWorkerJobs(lifecycleWorkerDriver(exec)), nil
 		},
 		materializeWorkspace: func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			return sandboxworkspace.MaterializationResult{}, nil
@@ -264,7 +268,7 @@ func runScheduledAutoLeaseLifecycle(t *testing.T, startedAt time.Time, execErr e
 			return nil, nil
 		},
 		resolveWorkerRuntime: func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
-			return lifecycleWorkerDriver(lifecycleExecFunc(sandbox.SandboxLeasePurposeAuto, execErr)), nil
+			return withFakeSandboxWorkerJobs(lifecycleWorkerDriver(lifecycleExecFunc(sandbox.SandboxLeasePurposeAuto, execErr))), nil
 		},
 		materializeWorkspace: func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
 			return sandboxworkspace.MaterializationResult{}, nil
@@ -388,12 +392,20 @@ func lifecycleWorkerDriver(exec func(context.Context, sandboxruntime.ExecRequest
 
 func lifecycleExecFunc(purpose string, err error) func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 	return func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
-		if err != nil {
+		if purpose == sandbox.SandboxLeasePurposeFactory && err != nil {
 			return nil, err
+		}
+		finalCommand := (purpose == sandbox.SandboxLeasePurposeAuto && isWorkerAutoCommandExec(req)) ||
+			(purpose != sandbox.SandboxLeasePurposeAuto && isWorkerRunCommandExec(req))
+		if err != nil && finalCommand {
+			return nil, err
+		}
+		if !finalCommand {
+			return &sandboxruntime.ExecResult{}, nil
 		}
 		switch purpose {
 		case sandbox.SandboxLeasePurposeAuto:
-			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSON("lease lifecycle")+"\n")
+			_, _ = io.WriteString(req.Stdout, autoSandboxRemoteSuccessJSONWithArchivePath("lease lifecycle", ".hal/archive/lease-lifecycle")+"\n")
 		default:
 			_, _ = fmt.Fprintln(req.Stdout, "lease lifecycle")
 		}

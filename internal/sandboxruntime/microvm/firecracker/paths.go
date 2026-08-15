@@ -54,12 +54,17 @@ func PlanPaths(request PathPlanRequest) (PathPlan, error) {
 	if !validFirecrackerAPISocketPath(apiSocketPath) {
 		return PathPlan{}, newPathPlanError("apiSocketPath", "API socket path exceeds the Unix socket path limit")
 	}
+	vsockSocketPath := filepath.Join(stateDir, defaultVsockPath)
+	if !validFirecrackerAPISocketPath(vsockSocketPath) {
+		return PathPlan{}, newPathPlanError("vsockSocketPath", "vsock socket path exceeds the Unix socket path limit")
+	}
 	return PathPlan{
-		StateDir:      stateDir,
-		APISocketPath: apiSocketPath,
-		LogPath:       filepath.Join(stateDir, DefaultLogPath),
-		MetricsPath:   filepath.Join(stateDir, DefaultMetricsPath),
-		ConfigPath:    filepath.Join(stateDir, DefaultConfigPath),
+		StateDir:        stateDir,
+		APISocketPath:   apiSocketPath,
+		LogPath:         filepath.Join(stateDir, DefaultLogPath),
+		MetricsPath:     filepath.Join(stateDir, DefaultMetricsPath),
+		ConfigPath:      filepath.Join(stateDir, DefaultConfigPath),
+		VsockSocketPath: vsockSocketPath,
 	}, nil
 }
 

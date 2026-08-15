@@ -270,7 +270,7 @@ func runSandboxCreate(
 		provider = deps.provider
 		getBranch = deps.getBranch
 	}
-	return runSandboxCreateWithDepsAndCountOption(dir, name, count, countExplicit, force, size, repo, envVars, shutdownOpts, out, provider, getBranch)
+	return runSandboxCreateWithDepsAndCountOption(dir, name, count, countExplicit, force, size, repo, envVars, shutdownOpts, out, provider, getBranch, nil)
 }
 
 // runSandboxCreateWithDeps contains the testable logic for the sandbox create command.
@@ -292,7 +292,7 @@ func runSandboxCreateWithDeps(
 	provider sandbox.Provider,
 	getBranch branchResolver,
 ) error {
-	return runSandboxCreateWithDepsAndCountOption(dir, name, count, false, force, size, repo, envVars, shutdownOpts, out, provider, getBranch)
+	return runSandboxCreateWithDepsAndCountOption(dir, name, count, false, force, size, repo, envVars, shutdownOpts, out, provider, getBranch, nil)
 }
 
 // runSandboxCreateWithDepsAndCountOption contains the sandbox create logic with
@@ -308,6 +308,7 @@ func runSandboxCreateWithDepsAndCountOption(
 	out io.Writer,
 	provider sandbox.Provider,
 	getBranch branchResolver,
+	templateRuntime *sandbox.SandboxRuntimeState,
 ) error {
 	halDir := filepath.Join(dir, template.HalDir)
 
@@ -399,7 +400,7 @@ func runSandboxCreateWithDepsAndCountOption(
 	}
 
 	// Single sandbox creation
-	return runSingleCreate(dir, name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out)
+	return runSingleCreate(dir, name, force, provider, sandboxCfg, mergedEnv, autoShutdown, idleHours, resolvedSize, repo, halDir, out, templateRuntime)
 }
 
 func batchPreflight(base string, count int) ([]string, error) {
@@ -810,6 +811,7 @@ func runSingleCreate(
 	size, repo string,
 	halDir string,
 	out io.Writer,
+	templateRuntime *sandbox.SandboxRuntimeState,
 ) error {
 	identity, err := prepareSandboxCreateIdentity(name, mergedEnv)
 	if err != nil {
@@ -859,6 +861,7 @@ func runSingleCreate(
 		IdleHours:         idleHours,
 		Size:              size,
 		Repo:              repo,
+		Runtime:           cloneSandboxRuntime(templateRuntime),
 	}
 
 	// Persist to global registry

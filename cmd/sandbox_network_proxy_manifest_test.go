@@ -13,7 +13,7 @@ import (
 func TestRunAndAutoSandboxManifestsOmitProxyMetadataByDefault(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 6, 15, 0, 0, time.UTC)
 
-	runStore := sandboxexecution.NewStore(t.TempDir())
+	runStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
 		ExecutionID: "run-no-proxy-metadata",
 		ProjectDir:  "/repo",
@@ -23,7 +23,7 @@ func TestRunAndAutoSandboxManifestsOmitProxyMetadataByDefault(t *testing.T) {
 	runManifest := mustLoadSandboxExecutionManifest(t, runStore, "run-no-proxy-metadata")
 	assertSandboxManifestOmitsNetworkProxyMetadata(t, runManifest)
 
-	autoStore := sandboxexecution.NewStore(t.TempDir())
+	autoStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{
 		ExecutionID: "auto-no-proxy-metadata",
 		ProjectDir:  "/repo",
@@ -37,7 +37,7 @@ func TestRunAndAutoSandboxManifestsOmitProxyMetadataByDefault(t *testing.T) {
 func TestRunAndAutoSandboxManifestsPersistSanitizedProxySessionMetadata(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 6, 20, 0, 0, time.UTC)
 
-	runStore := sandboxexecution.NewStore(t.TempDir())
+	runStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
 		ExecutionID:         "run-proxy-metadata",
 		ProjectDir:          "/repo",
@@ -48,7 +48,7 @@ func TestRunAndAutoSandboxManifestsPersistSanitizedProxySessionMetadata(t *testi
 	runManifest := mustLoadSandboxExecutionManifest(t, runStore, "run-proxy-metadata")
 	assertSandboxManifestSanitizedNetworkProxySession(t, runManifest, sandbox.SandboxNetworkPolicyDecisionSourceRun)
 
-	autoStore := sandboxexecution.NewStore(t.TempDir())
+	autoStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{
 		ExecutionID:         "auto-proxy-metadata",
 		ProjectDir:          "/repo",
@@ -63,7 +63,7 @@ func TestRunAndAutoSandboxManifestsPersistSanitizedProxySessionMetadata(t *testi
 func TestRunAndAutoSandboxManifestsPersistSanitizedPolicyDecisionLogs(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 6, 25, 0, 0, time.UTC)
 
-	runStore := sandboxexecution.NewStore(t.TempDir())
+	runStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
 		ExecutionID:               "run-decision-log-metadata",
 		ProjectDir:                "/repo",
@@ -74,7 +74,7 @@ func TestRunAndAutoSandboxManifestsPersistSanitizedPolicyDecisionLogs(t *testing
 	runManifest := mustLoadSandboxExecutionManifest(t, runStore, "run-decision-log-metadata")
 	assertSandboxManifestSanitizedPolicyDecisionLogs(t, runManifest, sandbox.SandboxNetworkPolicyDecisionSourceRun)
 
-	autoStore := sandboxexecution.NewStore(t.TempDir())
+	autoStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{
 		ExecutionID:               "auto-decision-log-metadata",
 		ProjectDir:                "/repo",
@@ -89,7 +89,7 @@ func TestRunAndAutoSandboxManifestsPersistSanitizedPolicyDecisionLogs(t *testing
 func TestRunAndAutoSandboxManifestsStripNonEnforcingDecisionLogClaims(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 6, 28, 0, 0, time.UTC)
 
-	runStore := sandboxexecution.NewStore(t.TempDir())
+	runStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveRunSandboxManifest(runStore, runSandboxRequest{
 		ExecutionID:               "run-compat-decision-log",
 		ProjectDir:                "/repo",
@@ -100,7 +100,7 @@ func TestRunAndAutoSandboxManifestsStripNonEnforcingDecisionLogClaims(t *testing
 	runManifest := mustLoadSandboxExecutionManifest(t, runStore, "run-compat-decision-log")
 	assertSandboxManifestNonEnforcingDecisionLogs(t, runManifest, sandbox.SandboxNetworkPolicyDecisionSourceRun)
 
-	autoStore := sandboxexecution.NewStore(t.TempDir())
+	autoStore := newPrivateSandboxExecutionTestStore(t)
 	if err := saveAutoSandboxManifest(autoStore, autoSandboxRequest{
 		ExecutionID:               "auto-compat-decision-log",
 		ProjectDir:                "/repo",

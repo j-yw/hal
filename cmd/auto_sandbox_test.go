@@ -86,6 +86,10 @@ func TestAutoSandboxRemoteArchivePath(t *testing.T) {
 			stdout: "Step: archive\nArchived state to 2026-07-14-keyboard-game-2\n",
 			want:   ".hal/archive/2026-07-14-keyboard-game-2",
 		},
+		{
+			name:   "incomplete human output suffix",
+			stdout: "Step: archive\nArchived state to 2026-07-14-keyboard",
+		},
 		{name: "older result without path", payload: autoSandboxRemoteSuccessJSON("remote")},
 		{name: "absolute", payload: autoSandboxRemoteSuccessJSONWithArchivePath("remote", "/workspace/repo/.hal/archive/unsafe"), wantErr: true},
 		{name: "traversal", payload: autoSandboxRemoteSuccessJSONWithArchivePath("remote", ".hal/archive/../unsafe"), wantErr: true},
@@ -333,7 +337,6 @@ func TestRunAutoWithDirSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 		"sandbox":      "true",
 		"sandbox-name": "auto-box",
 		"json":         "true",
-		"dry-run":      "true",
 		"no-ci":        "true",
 		"engine":       "codex-test",
 		"base":         "main",
@@ -349,7 +352,7 @@ func TestRunAutoWithDirSandboxFlagDispatchesToSandboxExecutor(t *testing.T) {
 	if captured.SandboxName != "auto-box" {
 		t.Fatalf("SandboxName = %q, want auto-box", captured.SandboxName)
 	}
-	wantCommand := []string{"hal", "auto", ".hal/prd-feature.md", "--dry-run", "--no-ci", "--engine", "codex-test", "--base", "main", "--json"}
+	wantCommand := []string{"hal", "auto", ".hal/prd-feature.md", "--no-ci", "--engine", "codex-test", "--base", "main", "--json"}
 	if !reflect.DeepEqual(captured.RemoteCommand, wantCommand) {
 		t.Fatalf("RemoteCommand = %#v, want %#v", captured.RemoteCommand, wantCommand)
 	}

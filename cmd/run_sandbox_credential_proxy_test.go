@@ -11,7 +11,7 @@ import (
 
 func TestRunSandboxManifestPersistsSanitizedCredentialProxyMetadata(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 7, 10, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	fixture := phase26CredentialProxyUnsafeValues()
 
 	req := runSandboxRequest{

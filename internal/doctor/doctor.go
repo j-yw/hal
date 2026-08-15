@@ -183,6 +183,9 @@ func Run(opts Options) DoctorResult {
 	// 7. Progress file
 	progressCheck := checkProgressFile(halDir)
 	checks = append(checks, progressCheck)
+	if progressCheck.Status == StatusWarn {
+		warnings = append(warnings, "progress_file")
+	}
 
 	// 8. PRD validity (only when prd.json exists)
 	prdCheck := checkPRDJSON(halDir)
@@ -357,6 +360,8 @@ func warningSummaryPart(warningID string, checks []Check) string {
 		}
 		return "review GitHub auth configuration"
 	case "config_yaml":
+		return "run hal init"
+	case "progress_file":
 		return "run hal init"
 	case "legacy_debris":
 		return "run hal cleanup"

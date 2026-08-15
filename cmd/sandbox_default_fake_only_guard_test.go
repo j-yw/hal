@@ -21,14 +21,20 @@ func TestPhase19DefaultTestsAvoidPodmanDaemonsAndWorkerIntegrationEnv(t *testing
 		}
 		hasPodmanTag := phase19HasBuildTag(source, "podman_integration")
 		hasWorkerTag := phase19HasBuildTag(source, "worker_integration")
+		hasL3RecoveryE2ETag := phase19HasBuildTag(source, "l3_recovery_e2e")
+		isL3PreparedLinuxGuard := rel == "cmd/l3_prepared_linux_verification_test.go"
+		isL4PreparedLinuxGuard := rel == "cmd/l4_guest_agent_server_docs_test.go"
+		isL5PrivateVsockFixture := rel == "internal/sandboxruntime/microvm/firecrackerhost/l5_vsock_transport_red_test.go" ||
+			rel == "internal/sandboxruntime/microvm/firecrackerhost/production_vsock_bridge_test.go" ||
+			rel == "internal/sandboxruntime/microvm/firecrackerhost/real_process_runner_private_umask_linux_test.go"
 
-		if phase19UsesRealPodman(source) && !hasPodmanTag {
+		if phase19UsesRealPodman(source) && !hasPodmanTag && !isL3PreparedLinuxGuard && !isL4PreparedLinuxGuard {
 			t.Fatalf("%s uses real Podman integration hooks without the podman_integration build tag", rel)
 		}
 		if phase19RequiresWorkerIntegrationEnv(source) && !hasWorkerTag {
 			t.Fatalf("%s requires HAL_WORKER_INTEGRATION_* environment without the worker_integration build tag", rel)
 		}
-		if hasWorkerTag {
+		if hasWorkerTag || hasPodmanTag && hasL3RecoveryE2ETag {
 			continue
 		}
 		if strings.HasPrefix(rel, "internal/sandboxworker/") {
@@ -44,6 +50,9 @@ func TestPhase19DefaultTestsAvoidPodmanDaemonsAndWorkerIntegrationEnv(t *testing
 			"sandboxdCmd.Execute",
 		} {
 			if strings.Contains(source, forbidden) {
+				if isL5PrivateVsockFixture && forbidden == `net.Listen("unix"` {
+					continue
+				}
 				t.Fatalf("%s contains %q; default tests outside internal/sandboxworker must not bind worker sockets or start sandboxd with production daemon deps", rel, forbidden)
 			}
 		}
@@ -95,7 +104,7 @@ func TestPhase19WorkerLiveRefreshCallSitesStayScoped(t *testing.T) {
 	want := map[string][]string{
 		"querySandboxHostWorkerMetadata":       {"sandbox_host.go"},
 		"querySandboxRuntimeLiveMetadata":      {"sandbox_runtime.go"},
-		"sandboxWorkerRuntimeDriverFromTarget": {"auto_sandbox.go", "factory_sandbox_executor.go", "run_sandbox.go", "sandbox_worker_runtime.go"},
+		"sandboxWorkerRuntimeDriverFromTarget": {"auto_sandbox.go", "factory_sandbox_executor.go", "run_sandbox.go", "sandbox_l3_recovery_actions.go", "sandbox_worker_runtime.go"},
 	}
 	for name, wantFiles := range want {
 		got := callSites[name]

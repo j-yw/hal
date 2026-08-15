@@ -19,46 +19,51 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxexecution"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtemplate/selection"
 	"github.com/jywlabs/hal/internal/sandboxworkspace"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
 
 type autoSandboxOptions struct {
-	DryRun                bool
-	DryRunChanged         bool
-	Resume                bool
-	ResumeChanged         bool
-	NoCI                  bool
-	NoCIChanged           bool
-	SkipPR                bool
-	SkipPRChanged         bool
-	NoReview              bool
-	NoReviewChanged       bool
-	Mode                  string
-	ModeChanged           bool
-	ReviewStreak          int
-	ReviewStreakChanged   bool
-	ReviewMax             int
-	ReviewMaxChanged      bool
-	Report                string
-	ReportChanged         bool
-	Engine                string
-	EngineChanged         bool
-	Base                  string
-	BaseChanged           bool
-	JSON                  bool
-	JSONChanged           bool
-	SandboxName           string
-	SandboxNameChanged    bool
-	SandboxHostID         string
-	SandboxHostChanged    bool
-	SandboxRuntime        string
-	SandboxRuntimeChanged bool
-	SandboxSyncOut        bool
-	SandboxSyncOutChanged bool
-	SandboxApply          bool
-	SandboxApplyChanged   bool
+	DryRun                      bool
+	DryRunChanged               bool
+	Resume                      bool
+	ResumeChanged               bool
+	NoCI                        bool
+	NoCIChanged                 bool
+	SkipPR                      bool
+	SkipPRChanged               bool
+	NoReview                    bool
+	NoReviewChanged             bool
+	Mode                        string
+	ModeChanged                 bool
+	ReviewStreak                int
+	ReviewStreakChanged         bool
+	ReviewMax                   int
+	ReviewMaxChanged            bool
+	Report                      string
+	ReportChanged               bool
+	Engine                      string
+	EngineChanged               bool
+	Base                        string
+	BaseChanged                 bool
+	JSON                        bool
+	JSONChanged                 bool
+	SandboxName                 string
+	SandboxNameChanged          bool
+	SandboxHostID               string
+	SandboxHostChanged          bool
+	SandboxRuntime              string
+	SandboxRuntimeChanged       bool
+	SandboxTemplate             string
+	SandboxTemplateChanged      bool
+	SandboxTemplateTrust        string
+	SandboxTemplateTrustChanged bool
+	SandboxSyncOut              bool
+	SandboxSyncOutChanged       bool
+	SandboxApply                bool
+	SandboxApplyChanged         bool
 }
 
 type autoSandboxRequest struct {
@@ -85,6 +90,12 @@ type autoSandboxRequest struct {
 	NetworkProxySession          *sandbox.SandboxNetworkProxySessionMetadata
 	NetworkPolicyDecisionLogs    []sandbox.SandboxNetworkPolicyDecisionLogRecord
 	CredentialDeliveryActivation credentialDeliveryActivationResult
+	WorkerJob                    *sandboxexecution.WorkerJobReference
+	Finalization                 *sandboxexecution.FinalizationMetadata
+	TemplateFlags                sandboxTemplateFlagValues
+	TemplateSelection            *selection.Result
+	TemplateConstructionLock     *sandbox.SandboxTemplateLockMetadata
+	TemplateLock                 *sandbox.SandboxTemplateLockMetadata
 }
 
 type autoSandboxExecutionResult struct {
@@ -97,10 +108,13 @@ type autoSandboxExecutionResult struct {
 }
 
 type autoSandboxExecutionHooks struct {
-	OnTargetReady func(*sandbox.SandboxState) error
+	ValidateTarget    func(*sandbox.SandboxState) error
+	OnTargetReady     func(*sandbox.SandboxState) error
+	OnWorkerJobUpdate func(*sandboxexecution.WorkerJobReference) error
 }
 
 type autoSandboxDeps struct {
+	templateSelection      sandboxTemplateSelectionDeps
 	defaultStore           func() (sandboxexecution.Store, error)
 	durableLeaseStore      bool
 	newExecutionID         func(time.Time) string
@@ -125,6 +139,7 @@ type autoSandboxDeps struct {
 	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
 	prepareCommandContext  func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error)
 	applySyncOut           sandboxSyncOutApplier
+	workerJobWait          func(context.Context) error
 	execute                func(context.Context, autoSandboxRequest, io.Writer, io.Writer, autoSandboxExecutionHooks) (autoSandboxExecutionResult, error)
 
 	customRuntimeResolver bool
@@ -198,13 +213,19 @@ func parseAutoSandboxRequest(args []string, opts autoSandboxOptions) (autoSandbo
 		Flags:          opts,
 		SyncOut:        syncOut,
 		Security:       runSandboxSecurityRequest(),
+		TemplateFlags: sandboxTemplateFlagValues{
+			Sandbox:          true,
+			Reference:        opts.SandboxTemplate,
+			ReferenceChanged: opts.SandboxTemplateChanged,
+			TrustMode:        opts.SandboxTemplateTrust,
+			TrustChanged:     opts.SandboxTemplateTrustChanged,
+		},
 	}
 	req.RemoteCommand = buildAutoSandboxRemoteCommand(req)
 	return req, nil
 }
 
 func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []string, projectDir string, opts autoSandboxOptions, out, errOut io.Writer, deps autoSandboxDeps) error {
-	deps = normalizeAutoSandboxDeps(deps)
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -223,17 +244,6 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		return autoSandboxExitValidation(cmd, err)
 	}
 
-	startedAt := deps.now().UTC()
-	req.ExecutionID = deps.newExecutionID(startedAt)
-	store, storeErr := deps.defaultStore()
-	if storeErr != nil {
-		err := fmt.Errorf("open sandbox execution store: %w", storeErr)
-		if opts.JSON {
-			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
-		}
-		return err
-	}
-
 	projectDir = strings.TrimSpace(projectDir)
 	if projectDir == "" {
 		projectDir = "."
@@ -247,6 +257,84 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		return err
 	}
 	req.ProjectDir = filepath.Clean(absProjectDir)
+	if opts.DryRun {
+		templateIntent, err := prepareSandboxTemplateSelection(ctx, sandboxTemplateSelectionRequest{
+			Command: "auto",
+			DryRun:  true,
+			Flags:   req.TemplateFlags,
+		}, deps.templateSelection)
+		if err != nil {
+			if opts.JSON {
+				return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+			}
+			return autoSandboxExitValidation(cmd, err)
+		}
+		securitySettings, err := loadConfiguredSandboxSecuritySettings(req.ProjectDir, req.SandboxRuntime)
+		if err != nil {
+			err = fmt.Errorf("load sandbox security config: %w", err)
+			if opts.JSON {
+				return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+			}
+			return err
+		}
+		sourceMarkdown := ""
+		if len(req.Args) > 0 {
+			sourceMarkdown = req.Args[0]
+		}
+		entryMode := determineAutoEntryMode(sourceMarkdown)
+		preview := newSandboxDryRunPreview(
+			sandbox.SandboxLeasePurposeAuto,
+			req.SandboxName,
+			req.SandboxHostID,
+			req.SandboxRuntime,
+			opts.Base,
+			req.SyncOut,
+			securitySettings.Request,
+			templateIntent,
+			string(entryMode),
+		)
+		return renderSandboxDryRunPreview(out, opts.JSON, preview)
+	}
+
+	deps = normalizeAutoSandboxDeps(deps)
+	startedAt := deps.now().UTC()
+	req.ExecutionID = deps.newExecutionID(startedAt)
+	store, storeErr := deps.defaultStore()
+	if storeErr != nil {
+		err := fmt.Errorf("open sandbox execution store: %w", storeErr)
+		if opts.JSON {
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+		}
+		return err
+	}
+
+	templateSelection, err := executeSandboxTemplateSelectionBeforeConstruction(ctx, sandboxTemplateConstructionRequest{
+		Command:          "auto",
+		RequestedRuntime: req.SandboxRuntime,
+		Selection: sandboxTemplateSelectionRequest{
+			Command: "auto",
+			Flags:   req.TemplateFlags,
+		},
+	}, sandboxTemplateConstructionDeps{Selection: deps.templateSelection})
+	if err != nil {
+		if opts.JSON {
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+		}
+		return autoSandboxExitValidation(cmd, err)
+	}
+	req.TemplateSelection = templateSelection.Selection
+	if req.TemplateSelection != nil {
+		req.TemplateFlags.Reference = ""
+	}
+	req.TemplateConstructionLock = selectedTemplateConstructionLock(req.TemplateSelection)
+	if req.TemplateSelection != nil && req.TemplateConstructionLock == nil {
+		err := errors.New("selection_rejected")
+		if opts.JSON {
+			return outputAutoSandboxJSONErrorForCommand(cmd, out, args, opts, err.Error())
+		}
+		return autoSandboxExitValidation(cmd, err)
+	}
+
 	securitySettings, err := loadConfiguredSandboxSecuritySettings(req.ProjectDir, req.SandboxRuntime)
 	if err != nil {
 		err = fmt.Errorf("load sandbox security config: %w", err)
@@ -292,12 +380,21 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 	var target *sandbox.SandboxState
 	commandOut := out
 	var capturedJSON bytes.Buffer
+	capturedSummary := sandboxL3BoundedSummaryWriter{limit: sandboxL3RecoveryOutputSummaryBytes}
 	augmentJSON := opts.JSON
 	if augmentJSON {
 		commandOut = &capturedJSON
+	} else {
+		commandOut = io.MultiWriter(out, &capturedSummary)
 	}
 	execResult, execErr := deps.execute(ctx, req, commandOut, errOut, autoSandboxExecutionHooks{
+		ValidateTarget: func(target *sandbox.SandboxState) error {
+			return validateSelectedTemplateConstructionTarget(req.TemplateSelection, target)
+		},
 		OnTargetReady: func(ready *sandbox.SandboxState) error {
+			if err := bindAutoSandboxTemplateSelectionToTarget(&req, ready); err != nil {
+				return err
+			}
 			target = ready
 			if target != nil && strings.TrimSpace(req.SandboxName) == "" {
 				req.SandboxName = strings.TrimSpace(target.Name)
@@ -315,6 +412,22 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 				return err
 			}
 			return enforceSandboxExecutionSecurityReadinessGate(store, req.ExecutionID)
+		},
+		OnWorkerJobUpdate: func(reference *sandboxexecution.WorkerJobReference) error {
+			req.WorkerJob = sandboxexecution.SanitizeWorkerJobReference(reference)
+			req.Finalization = updateSandboxWorkerJobFinalization(
+				req.Finalization,
+				req.WorkerJob,
+				req.SyncOut.Enabled,
+				deps.now().UTC(),
+			)
+			return persistSandboxWorkerJobUpdate(
+				store,
+				req.ExecutionID,
+				req.WorkerJob,
+				req.SyncOut.Enabled,
+				deps.now().UTC(),
+			)
 		},
 	})
 	if execResult.Result != nil {
@@ -338,6 +451,38 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 			}
 		}
 		applyAutoSandboxSecurityReadinessGateError(&req, execErr)
+	}
+	if isSandboxWorkerJobDetachedError(execErr) {
+		return execErr
+	}
+	if req.WorkerJob != nil {
+		foregroundOutput := capturedJSON.Bytes()
+		if !augmentJSON {
+			foregroundOutput = []byte(capturedSummary.String())
+		}
+		if finalizationErr := finalizeAutoSandboxWorkerJob(
+			ctx,
+			store,
+			req,
+			execResult,
+			target,
+			foregroundOutput,
+			deps,
+		); finalizationErr != nil {
+			execErr = errors.Join(execErr, finalizationErr)
+		}
+		if augmentJSON && execResult.RemoteStarted {
+			if outputErr := outputSandboxAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
+				execErr = errors.Join(execErr, outputErr)
+			}
+		}
+		if execErr != nil {
+			if opts.JSON && !execResult.RemoteStarted {
+				return outputAutoSandboxJSONErrorWithReadinessGateForCommand(cmd, out, args, opts, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
+			}
+			return execErr
+		}
+		return nil
 	}
 
 	if isSandboxRunPhaseError(execErr) {
@@ -471,6 +616,9 @@ func normalizeAutoSandboxDeps(deps autoSandboxDeps) autoSandboxDeps {
 	if deps.prepareCommandContext == nil {
 		deps.prepareCommandContext = prepareSandboxCommandContextRuntime
 	}
+	if deps.workerJobWait == nil {
+		deps.workerJobWait = waitForSandboxWorkerJobPoll
+	}
 	if deps.execute == nil {
 		deps.execute = deps.executeAutoSandbox
 	}
@@ -567,12 +715,19 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 		SetupStdout: prepOut,
 		SetupStderr: prepOut,
 	}, sandboxexec.Dependencies{
+		SelectedRuntimeImage: templateSelectionRuntimeImage(req.TemplateSelection),
 		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
 			target, err := deps.resolveAutoSandboxTarget(ctx, req, prepOut)
 			if err == nil {
 				selectedTarget = target
 			}
 			return target, err
+		},
+		ValidateTarget: func(_ context.Context, target *sandbox.SandboxState) error {
+			if hooks.ValidateTarget == nil {
+				return nil
+			}
+			return hooks.ValidateTarget(target)
 		},
 		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
 			driver, handled, err := deps.resolveAutoSandboxRuntimeDriver(req, target, selectedTarget)
@@ -663,7 +818,15 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
-			return runSandboxRuntimeExec(ctx, run, command)
+			return runSandboxWorkerJobOrSync(ctx, sandboxWorkerJobCommandRequest{
+				ExecutionID:  req.ExecutionID,
+				UseWorkerJob: autoSandboxWorkerJobRouteSelected(req, run.Target, selectedTarget),
+				HostID:       sandboxWorkerJobSelectedHostID(selectedTarget),
+				Run:          run,
+				Command:      command,
+				Persist:      hooks.OnWorkerJobUpdate,
+				Wait:         deps.workerJobWait,
+			})
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
 			if event.Type == sandboxexec.EventCommandOutput && event.Stream == sandboxexec.StreamStdout {
@@ -734,7 +897,13 @@ func autoSandboxRemoteArchivePath(remoteJSON []byte, stdoutSummary string) (stri
 	}
 	if archivePath == "" {
 		const archivedStatePrefix = "Archived state to "
-		for _, line := range strings.Split(stdoutSummary, "\n") {
+		for {
+			end := strings.IndexByte(stdoutSummary, '\n')
+			if end < 0 {
+				break
+			}
+			line := stdoutSummary[:end]
+			stdoutSummary = stdoutSummary[end+1:]
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, archivedStatePrefix) {
 				archiveName := strings.TrimSpace(strings.TrimPrefix(line, archivedStatePrefix))
@@ -799,6 +968,15 @@ func collectAutoSandboxGeneratedArtifacts(ctx context.Context, store sandboxexec
 		}); err != nil {
 			return fmt.Errorf("collect auto sandbox uncommitted sync-out artifact: %w", err)
 		}
+		if _, err := sandboxexecution.CollectUntrackedSyncOutArtifactsBestEffort(ctx, sandboxexecution.UntrackedSyncOutCollectionRequest{
+			ExecutionID:        req.ExecutionID,
+			Store:              store,
+			Runtime:            result.RuntimeDriver,
+			Target:             result.Result.Target,
+			RemoteWorkspaceDir: req.WorkDir,
+		}); err != nil {
+			return fmt.Errorf("collect auto sandbox untracked sync-out artifacts: %w", err)
+		}
 		if _, err := sandboxexecution.CollectCommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.CommittedSyncOutCollectionRequest{
 			ExecutionID:        req.ExecutionID,
 			Store:              store,
@@ -836,6 +1014,7 @@ func collectAutoSandboxRecoveryAfterCommandFailure(ctx context.Context, store sa
 	if !ok {
 		return nil
 	}
+	var collectErr error
 	if _, err := sandboxexecution.CollectRecoveryArtifactsBestEffort(ctx, sandboxexecution.RecoveryArtifactCollectionRequest{
 		ExecutionID:        req.ExecutionID,
 		Store:              store,
@@ -843,9 +1022,43 @@ func collectAutoSandboxRecoveryAfterCommandFailure(ctx context.Context, store sa
 		Target:             runtimeTarget,
 		RemoteWorkspaceDir: req.WorkDir,
 	}); err != nil {
-		return fmt.Errorf("collect auto sandbox recovery artifacts after command failure: %w", err)
+		collectErr = errors.Join(collectErr, fmt.Errorf("collect auto sandbox recovery artifacts after command failure: %w", err))
 	}
-	return nil
+	if !req.SyncOut.Enabled {
+		return collectErr
+	}
+	if _, err := sandboxexecution.CollectUncommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.UncommittedSyncOutCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             runtimeTarget,
+		RemoteWorkspaceDir: req.WorkDir,
+	}); err != nil {
+		collectErr = errors.Join(collectErr, fmt.Errorf("collect auto sandbox uncommitted sync-out artifact after command failure: %w", err))
+	}
+	if _, err := sandboxexecution.CollectUntrackedSyncOutArtifactsBestEffort(ctx, sandboxexecution.UntrackedSyncOutCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             runtimeTarget,
+		RemoteWorkspaceDir: req.WorkDir,
+	}); err != nil {
+		collectErr = errors.Join(collectErr, fmt.Errorf("collect auto sandbox untracked sync-out artifacts after command failure: %w", err))
+	}
+	if _, err := sandboxexecution.CollectCommittedSyncOutArtifactBestEffort(ctx, sandboxexecution.CommittedSyncOutCollectionRequest{
+		ExecutionID:        req.ExecutionID,
+		Store:              store,
+		Runtime:            result.RuntimeDriver,
+		Target:             runtimeTarget,
+		RemoteWorkspaceDir: req.WorkDir,
+		SyncRef:            sandboxCommittedSyncOutBaseRef(req.Workspace, req.BaseBranch),
+	}); err != nil {
+		collectErr = errors.Join(collectErr, fmt.Errorf("collect auto sandbox committed sync-out artifact after command failure: %w", err))
+	}
+	if err := persistFailedSandboxSyncOutHandoff(store, req.ExecutionID); err != nil {
+		collectErr = errors.Join(collectErr, err)
+	}
+	return collectErr
 }
 
 func autoSandboxRuntimeTargetForCollection(result autoSandboxExecutionResult, target *sandbox.SandboxState) (sandboxruntime.Target, bool) {
@@ -892,6 +1105,10 @@ func (deps autoSandboxDeps) resolveAutoSandboxTarget(ctx context.Context, req au
 			Repository:                req.RepoRemote,
 			Branch:                    req.RunBranch,
 			ProvisionRepository:       req.RepoRemote,
+			TemplateRuntimeDriver:     templateSelectionRuntimeDriver(req.TemplateSelection),
+			TemplateIsolationLevel:    templateSelectionIsolationLevel(req.TemplateSelection),
+			TemplateRuntimeImage:      templateSelectionRuntimeImage(req.TemplateSelection),
+			TemplateLock:              req.TemplateConstructionLock,
 			Out:                       out,
 		},
 		sandboxCommandTargetDeps{
@@ -1042,9 +1259,13 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 		Security:                  cloneSandboxSecurity(nil),
 		NetworkProxySession:       sandboxManifestNetworkProxySession(req.NetworkProxySession),
 		NetworkPolicyDecisionLogs: sandboxManifestNetworkPolicyDecisionLogs(req.NetworkPolicyDecisionLogs),
+		WorkerJob:                 sandboxexecution.SanitizeWorkerJobReference(req.WorkerJob),
+		Finalization:              cloneSandboxWorkerJobFinalization(req.Finalization),
+		TemplateLock:              sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock),
 	}
 	applyAutoSandboxCredentialProxyMetadata(manifest, req)
 	if target != nil {
+		manifest.SandboxID = strings.TrimSpace(target.ID)
 		if strings.TrimSpace(manifest.SandboxName) == "" {
 			manifest.SandboxName = strings.TrimSpace(target.Name)
 		}
@@ -1063,6 +1284,7 @@ func saveAutoSandboxManifest(store sandboxexecution.Store, req autoSandboxReques
 	applyAutoSandboxCapabilityReadinessMetadata(manifest)
 	manifest.Security = applyCommandSandboxSecurityReadinessGate(manifest.Security, req.SecurityReadinessGateMode, autoSandboxManifestSecurityReadinessGate(req, target))
 	preserveSandboxManifestArtifacts(store, manifest)
+	preserveSandboxManifestWorkerJobState(store, manifest)
 	return store.SaveManifest(manifest)
 }
 

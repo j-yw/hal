@@ -113,6 +113,8 @@ func TestConvertLongHelpDocumentsSourceSelectionAndSafety(t *testing.T) {
 		"picks lexicographically ascending filename",
 		"Using source: <path>",
 		"use --archive or --force to override",
+		"Standard conversion preserves explicitly numbered source stories one-to-one.",
+		"--granular intentionally decomposes source stories into 8-15 atomic tasks.",
 	}
 
 	for _, want := range checks {

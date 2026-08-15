@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -278,6 +279,17 @@ func gitRun(ctx context.Context, dir string, args ...string) error {
 func gitRunSafe(ctx context.Context, dir string, operation string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return gitSafeCommandError(operation, stderr.String(), err)
+	}
+	return nil
+}
+
+func gitRunSafeWithStdin(ctx context.Context, dir string, operation string, stdin io.Reader, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	var stderr bytes.Buffer
+	cmd.Stdin = stdin
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return gitSafeCommandError(operation, stderr.String(), err)

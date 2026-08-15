@@ -19,7 +19,7 @@ import (
 
 func TestRunSandboxCapabilityReadinessOmittedWhenUnavailable(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 8, 10, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 
 	if err := saveRunSandboxManifest(store, runSandboxRequest{
 		ExecutionID: "run-readiness-unavailable",
@@ -44,7 +44,7 @@ func TestRunSandboxCapabilityReadinessOmittedWhenUnavailable(t *testing.T) {
 
 func TestRunSandboxManifestOmitsReadinessDiagnosticsWhenUnavailable(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 8, 12, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 
 	if err := saveRunSandboxManifest(store, runSandboxRequest{
 		ExecutionID: "run-readiness-diagnostics-unavailable",
@@ -69,7 +69,7 @@ func TestRunSandboxManifestOmitsReadinessDiagnosticsWhenUnavailable(t *testing.T
 
 func TestRunSandboxManifestAttachesSanitizedProjectedCapabilityReadiness(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 8, 15, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	fixture := phase26CredentialProxyUnsafeValues()
 	req := runSandboxRequest{
 		ExecutionID:         "run-readiness-projected",
@@ -117,7 +117,7 @@ func TestRunSandboxManifestAttachesSanitizedProjectedCapabilityReadiness(t *test
 
 func TestRunSandboxManifestAttachesSanitizedReadinessDiagnostics(t *testing.T) {
 	startedAt := time.Date(2026, 7, 2, 8, 17, 0, 0, time.UTC)
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	fixture := phase26CredentialProxyUnsafeValues()
 	req := runSandboxRequest{
 		ExecutionID:         "run-readiness-diagnostics-projected",

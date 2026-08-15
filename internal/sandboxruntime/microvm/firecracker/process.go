@@ -3,6 +3,7 @@ package firecracker
 import (
 	"context"
 	"errors"
+	"os"
 	"regexp"
 	"strings"
 
@@ -39,7 +40,8 @@ type ProcessStartCommandRequest struct {
 // descriptor. The descriptor carries raw argv only across this injected
 // boundary.
 type ProcessStartRequest struct {
-	Descriptor ProcessCommandDescriptor `json:"descriptor"`
+	Descriptor     ProcessCommandDescriptor `json:"descriptor"`
+	InheritedFiles []*os.File               `json:"-"`
 }
 
 // ProcessCommandDescriptor is the process-boundary command shape. Argv keeps
@@ -48,6 +50,7 @@ type ProcessCommandDescriptor struct {
 	Action      OperationAction                `json:"action"`
 	Executable  OperationPathReference         `json:"executable"`
 	Argv        []string                       `json:"-"`
+	EnablePCI   bool                           `json:"enablePCI,omitempty"`
 	Environment []OperationEnvironmentMetadata `json:"environment"`
 	Paths       []OperationPathReference       `json:"paths"`
 	Payloads    []OperationPayloadReference    `json:"payloads"`
@@ -83,17 +86,99 @@ func PrepareStartCommand(ctx context.Context, adapter ProcessAdapter, plan Start
 // StartProcess delegates Firecracker process start to an injected adapter.
 // This function validates the descriptor before crossing the adapter boundary.
 func StartProcess(ctx context.Context, adapter ProcessAdapter, descriptor ProcessCommandDescriptor) (ProcessHandleMetadata, error) {
+	return startProcessWithInheritedFiles(ctx, adapter, descriptor, nil)
+}
+
+// startProcessWithInheritedFiles delegates process start while keeping the
+// supplied private files out of descriptors and durable metadata. Ownership
+// remains with the caller; the adapter may only borrow them for process start.
+func startProcessWithInheritedFiles(
+	ctx context.Context,
+	adapter ProcessAdapter,
+	descriptor ProcessCommandDescriptor,
+	files []*os.File,
+) (ProcessHandleMetadata, error) {
 	if adapter == nil {
 		return ProcessHandleMetadata{}, newProcessBoundaryError("processAdapter", "process adapter is required")
 	}
 	if err := validateProcessCommandDescriptor(descriptor); err != nil {
 		return ProcessHandleMetadata{}, err
 	}
-	handle, err := adapter.StartProcess(processContext(ctx), ProcessStartRequest{Descriptor: descriptor})
+	if err := validateProcessInheritedFiles(files); err != nil {
+		return ProcessHandleMetadata{}, err
+	}
+	handle, err := adapter.StartProcess(processContext(ctx), ProcessStartRequest{
+		Descriptor:     descriptor,
+		InheritedFiles: append([]*os.File(nil), files...),
+	})
 	if err != nil {
 		return ProcessHandleMetadata{}, newProcessBoundaryAdapterError("processAdapter", "process start failed", err)
 	}
 	return sanitizeProcessHandleMetadata(handle), nil
+}
+
+func validateProcessInheritedFiles(files []*os.File) error {
+	if len(files) != 0 && len(files) != 2 {
+		return newProcessBoundaryError("inheritedFiles", "exactly two inherited process files are required")
+	}
+	for _, file := range files {
+		if file == nil {
+			return newProcessBoundaryError("inheritedFiles", "inherited process file is invalid")
+		}
+	}
+	return nil
+}
+
+// closeProcessInheritedFiles releases a start-owned file set exactly once at
+// its owning call site. A close error is cleanup uncertainty: callers must not
+// retry an ambiguous close or accept a started process as successful.
+func closeProcessInheritedFiles(files []*os.File) error {
+	return closeProcessInheritedFilesWith(files, func(file *os.File) error {
+		return file.Close()
+	})
+}
+
+func closeProcessInheritedFilesWith(files []*os.File, closeFile func(*os.File) error) error {
+	cleanupCauses := make([]error, 0, len(files))
+	for _, file := range files {
+		if file != nil {
+			if err := closeFile(file); err != nil {
+				cleanupCauses = append(cleanupCauses, err)
+			}
+		}
+	}
+	if len(cleanupCauses) > 0 {
+		return newProcessBoundaryAdapterError(
+			"inheritedFiles",
+			"inherited process file cleanup failed",
+			newSanitizedProcessCleanupCause(cleanupCauses...),
+		)
+	}
+	return nil
+}
+
+func newSanitizedProcessCleanupCause(causes ...error) error {
+	joined := errors.Join(causes...)
+	if joined == nil {
+		return nil
+	}
+	return sanitizedProcessCleanupCause{causes: joined}
+}
+
+type sanitizedProcessCleanupCause struct {
+	causes error
+}
+
+func (sanitizedProcessCleanupCause) Error() string {
+	return "inherited process file cleanup failed"
+}
+
+func (cause sanitizedProcessCleanupCause) Is(target error) bool {
+	return errors.Is(cause.causes, target)
+}
+
+func (cause sanitizedProcessCleanupCause) As(target any) bool {
+	return errors.As(cause.causes, target)
 }
 
 // ProcessCommandDescriptorFromStartPlan converts a pure start operation plan
@@ -114,7 +199,7 @@ func ProcessCommandDescriptorFromStartPlan(plan StartOperationPlan) (ProcessComm
 	if err := validateProcessPathReferences(paths); err != nil {
 		return ProcessCommandDescriptor{}, err
 	}
-	if err := validateProcessStartArgv(plan.Argv, plan.Executable, paths); err != nil {
+	if err := validateProcessStartArgv(plan.Argv, plan.Executable, paths, plan.EnablePCI); err != nil {
 		return ProcessCommandDescriptor{}, err
 	}
 	if err := validateProcessPayloadReferences(plan.Payloads); err != nil {
@@ -125,6 +210,7 @@ func ProcessCommandDescriptorFromStartPlan(plan StartOperationPlan) (ProcessComm
 		Action:      plan.Action,
 		Executable:  plan.Executable,
 		Argv:        cloneStringSlice(plan.Argv),
+		EnablePCI:   plan.EnablePCI,
 		Environment: cloneOperationEnvironment(plan.Environment),
 		Paths:       cloneOperationPathReferences(paths),
 		Payloads:    cloneOperationPayloadReferences(plan.Payloads),
@@ -161,7 +247,7 @@ func validateProcessCommandDescriptor(descriptor ProcessCommandDescriptor) error
 	if err := validateProcessPathReferences(descriptor.Paths); err != nil {
 		return err
 	}
-	if err := validateProcessStartArgv(descriptor.Argv, descriptor.Executable, descriptor.Paths); err != nil {
+	if err := validateProcessStartArgv(descriptor.Argv, descriptor.Executable, descriptor.Paths, descriptor.EnablePCI); err != nil {
 		return err
 	}
 	if len(descriptor.Environment) != 0 {
@@ -178,6 +264,7 @@ func validateProcessCommandDescriptorMatchesPlan(descriptor ProcessCommandDescri
 	if descriptor.Action != expected.Action ||
 		descriptor.Executable != expected.Executable ||
 		!equalStringSlices(descriptor.Argv, expected.Argv) ||
+		descriptor.EnablePCI != expected.EnablePCI ||
 		!equalOperationEnvironment(descriptor.Environment, expected.Environment) ||
 		!equalOperationPathReferences(descriptor.Paths, expected.Paths) ||
 		!equalOperationPayloadReferences(descriptor.Payloads, expected.Payloads) {
@@ -220,8 +307,8 @@ func validateProcessPathReference(ref OperationPathReference, role OperationPath
 	return nil
 }
 
-func validateProcessStartArgv(argv []string, executable OperationPathReference, paths []OperationPathReference) error {
-	want, err := processStartArgv(executable, paths)
+func validateProcessStartArgv(argv []string, executable OperationPathReference, paths []OperationPathReference, enablePCI bool) error {
+	want, err := processStartArgvWithPCI(executable, paths, enablePCI)
 	if err != nil {
 		return err
 	}
@@ -237,6 +324,10 @@ func validateProcessStartArgv(argv []string, executable OperationPathReference, 
 }
 
 func processStartArgv(executable OperationPathReference, paths []OperationPathReference) ([]string, error) {
+	return processStartArgvWithPCI(executable, paths, false)
+}
+
+func processStartArgvWithPCI(executable OperationPathReference, paths []OperationPathReference, enablePCI bool) ([]string, error) {
 	byRole := operationPathReferenceByRole(paths)
 	apiSocket, ok := byRole[OperationPathRoleAPISocket]
 	if !ok {
@@ -254,13 +345,19 @@ func processStartArgv(executable OperationPathReference, paths []OperationPathRe
 	if !ok {
 		return nil, newProcessBoundaryError("metricsPath", "path role is required")
 	}
-	return []string{
+	argv := []string{
 		executable.Path,
+	}
+	if enablePCI {
+		argv = append(argv, "--enable-pci")
+	}
+	argv = append(argv,
 		"--api-sock", apiSocket.Path,
 		"--config-file", config.Path,
 		"--log-path", logPath.Path,
 		"--metrics-path", metrics.Path,
-	}, nil
+	)
+	return argv, nil
 }
 
 func validateProcessPayloadReferences(payloads []OperationPayloadReference) error {
@@ -324,17 +421,22 @@ func processCommandArgumentSummary(descriptor ProcessCommandDescriptor) []Operat
 		return []OperationArgumentSummary{}
 	}
 	byRole := operationPathReferenceByRole(descriptor.Paths)
-	return []OperationArgumentSummary{
+	argv := []OperationArgumentSummary{
 		{PathRole: descriptor.Executable.Role},
-		{Value: "--api-sock"},
-		{PathRole: byRole[OperationPathRoleAPISocket].Role},
-		{Value: "--config-file"},
-		{PathRole: byRole[OperationPathRoleConfig].Role},
-		{Value: "--log-path"},
-		{PathRole: byRole[OperationPathRoleLog].Role},
-		{Value: "--metrics-path"},
-		{PathRole: byRole[OperationPathRoleMetrics].Role},
 	}
+	if descriptor.EnablePCI {
+		argv = append(argv, OperationArgumentSummary{Value: "--enable-pci"})
+	}
+	return append(argv,
+		OperationArgumentSummary{Value: "--api-sock"},
+		OperationArgumentSummary{PathRole: byRole[OperationPathRoleAPISocket].Role},
+		OperationArgumentSummary{Value: "--config-file"},
+		OperationArgumentSummary{PathRole: byRole[OperationPathRoleConfig].Role},
+		OperationArgumentSummary{Value: "--log-path"},
+		OperationArgumentSummary{PathRole: byRole[OperationPathRoleLog].Role},
+		OperationArgumentSummary{Value: "--metrics-path"},
+		OperationArgumentSummary{PathRole: byRole[OperationPathRoleMetrics].Role},
+	)
 }
 
 func operationPathReferenceByRole(paths []OperationPathReference) map[OperationPathRole]OperationPathReference {
@@ -558,4 +660,8 @@ func (err sanitizedProcessBoundaryAdapterCause) Error() string {
 
 func (err sanitizedProcessBoundaryAdapterCause) Is(target error) bool {
 	return target != nil && errors.Is(err.cause, target)
+}
+
+func (err sanitizedProcessBoundaryAdapterCause) As(target any) bool {
+	return errors.As(err.cause, target)
 }

@@ -116,13 +116,21 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"GuestReadinessResult":                  true,
 		"GuestReadinessWaiter":                  true,
 		"GuestCopyRequest":                      true,
+		"GuestCopyPublicationError":             true,
 		"GuestExecRequest":                      true,
 		"GuestTransport":                        true,
+		"ProductionVsockBridge":                 true,
+		"ProductionVsockSessionRequest":         true,
 		"GuestWorkDirMetadata":                  true,
+		"L7LiveBootConfigOverlay":               true,
+		"L7LiveBootConfigProvider":              true,
+		"L7LiveBootConfigRequest":               true,
 		"InspectOperationPlan":                  true,
+		"LiveProcessTerminalVerifier":           true,
 		"LiveProcessManager":                    true,
 		"LiveProcessRequest":                    true,
 		"MachineConfigPayload":                  true,
+		"NetworkInterfaceConfig":                true,
 		"NewBackend":                            true,
 		"NewGuestReadinessRequest":              true,
 		"NewGuestReadinessResult":               true,
@@ -185,6 +193,7 @@ func TestFirecrackerPackageDeclaresExpectedFoundationExports(t *testing.T) {
 		"StartProcess":                          true,
 		"StartOperationPlan":                    true,
 		"StopOperationPlan":                     true,
+		"StaticNetworkBootConfig":               true,
 		"NewProcessLaunchMetadata":              true,
 	}
 	seenExportedNames := map[string]bool{}
@@ -665,6 +674,10 @@ func firecrackerDefaultTestFile(t *testing.T, path string) bool {
 }
 
 func firecrackerProductionImportBoundaryMessage(fileName, importPath string) string {
+	if (filepath.Base(fileName) == "render_secure_linux.go" || filepath.Base(fileName) == "l7_launch_material_linux.go") &&
+		importPath == "golang.org/x/sys/unix" {
+		return ""
+	}
 	if forbidden := firecrackerForbiddenImportFor(importPath); forbidden != nil {
 		return fmt.Sprintf("package %s file %s imports forbidden %s %q", firecrackerPackagePath, fileName, forbidden.name, importPath)
 	}
@@ -695,7 +708,8 @@ func firecrackerAllowedProductionImport(importPath string) bool {
 		importPath == "github.com/jywlabs/hal/internal/sandbox" ||
 		importPath == "github.com/jywlabs/hal/internal/sandboxruntime" ||
 		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm" ||
-		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets"
+		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets" ||
+		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/localresolver"
 }
 
 func firecrackerIsStandardLibraryImport(importPath string) bool {

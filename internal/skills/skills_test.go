@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/template"
@@ -25,6 +26,22 @@ func TestLoadSkillFactory(t *testing.T) {
 	}
 	if content == "" {
 		t.Fatal("factory skill content should not be empty")
+	}
+}
+
+func TestLoadSkillHalDocumentsStandardStoryBoundaryPreservation(t *testing.T) {
+	content, err := LoadSkill("hal")
+	if err != nil {
+		t.Fatalf("LoadSkill(hal) error = %v", err)
+	}
+
+	for _, want := range []string{
+		"standard conversion preserves their count, IDs, order, and boundaries",
+		"use `hal convert --granular` when intentional decomposition is desired",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("hal skill missing %q", want)
+		}
 	}
 }
 

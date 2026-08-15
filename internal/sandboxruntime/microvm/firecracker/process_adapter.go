@@ -1,6 +1,9 @@
 package firecracker
 
-import "context"
+import (
+	"context"
+	"os"
+)
 
 // ProcessStarter is the narrow injected boundary that accepts a concrete
 // Firecracker runner request and performs process startup.
@@ -18,9 +21,10 @@ type ProcessLaunchAdapter struct {
 // explicitly injected process starter. Environment is an explicit empty list
 // until a later strict whitelist feature adds tested environment delivery.
 type ProcessRunnerStartRequest struct {
-	Executable  string   `json:"-"`
-	Args        []string `json:"-"`
-	Environment []string `json:"-"`
+	Executable     string     `json:"-"`
+	Args           []string   `json:"-"`
+	Environment    []string   `json:"-"`
+	InheritedFiles []*os.File `json:"-"`
 }
 
 // PrepareStartCommand renders the process descriptor for a validated
@@ -38,11 +42,14 @@ func (adapter ProcessLaunchAdapter) StartProcess(ctx context.Context, req Proces
 	if err := validateProcessCommandDescriptor(req.Descriptor); err != nil {
 		return ProcessHandleMetadata{}, err
 	}
+	if err := validateProcessInheritedFiles(req.InheritedFiles); err != nil {
+		return ProcessHandleMetadata{}, err
+	}
 	ctx = processContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return ProcessHandleMetadata{}, err
 	}
-	startReq, err := processRunnerStartRequest(req.Descriptor)
+	startReq, err := processRunnerStartRequest(req.Descriptor, req.InheritedFiles)
 	if err != nil {
 		return ProcessHandleMetadata{}, err
 	}
@@ -53,13 +60,14 @@ func (adapter ProcessLaunchAdapter) StartProcess(ctx context.Context, req Proces
 	return sanitizeProcessHandleMetadata(handle), nil
 }
 
-func processRunnerStartRequest(descriptor ProcessCommandDescriptor) (ProcessRunnerStartRequest, error) {
+func processRunnerStartRequest(descriptor ProcessCommandDescriptor, files []*os.File) (ProcessRunnerStartRequest, error) {
 	if len(descriptor.Argv) == 0 {
 		return ProcessRunnerStartRequest{}, newProcessBoundaryError("argv", "start argv is required")
 	}
 	return ProcessRunnerStartRequest{
-		Executable:  descriptor.Executable.Path,
-		Args:        cloneStringSlice(descriptor.Argv[1:]),
-		Environment: []string{},
+		Executable:     descriptor.Executable.Path,
+		Args:           cloneStringSlice(descriptor.Argv[1:]),
+		Environment:    []string{},
+		InheritedFiles: append([]*os.File(nil), files...),
 	}, nil
 }

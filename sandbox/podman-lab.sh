@@ -8,10 +8,15 @@ REPO_ROOT=$(
 	pwd
 )
 HOST_HOME=${HOME:-}
+HOST_XDG_DATA_HOME=${XDG_DATA_HOME:-}
 HOST_CODEX_HOME=${CODEX_HOME:-}
 HOST_PI_HOME=${PI_HOME:-}
 if [ -n "${HAL_SANDBOX_LAB_ROOT:-}" ]; then
 	LAB_ROOT=${HAL_SANDBOX_LAB_ROOT%/}
+elif [ -n "$HOST_XDG_DATA_HOME" ]; then
+	LAB_ROOT=${HOST_XDG_DATA_HOME%/}/hal-sandbox-lab-${USER:-local}
+elif [ -n "$HOST_HOME" ]; then
+	LAB_ROOT=${HOST_HOME%/}/.local/share/hal-sandbox-lab-${USER:-local}
 else
 	LAB_ROOT=${TMPDIR:-/tmp}
 	LAB_ROOT=${LAB_ROOT%/}/hal-sandbox-lab-${USER:-local}
@@ -20,6 +25,14 @@ MACHINE=${HAL_SANDBOX_LAB_MACHINE:-hal-sandbox-lab}
 MACHINE_PROVIDER=${HAL_SANDBOX_LAB_MACHINE_PROVIDER:-}
 if [ -z "$MACHINE_PROVIDER" ] && [ "$(uname -s)" = "Darwin" ]; then
 	MACHINE_PROVIDER=applehv
+fi
+PODMAN_MODE=${HAL_SANDBOX_LAB_PODMAN_MODE:-}
+if [ -z "$PODMAN_MODE" ]; then
+	if [ "$(uname -s)" = "Linux" ]; then
+		PODMAN_MODE=native
+	else
+		PODMAN_MODE=machine
+	fi
 fi
 WORKER_ID=${HAL_SANDBOX_LAB_WORKER_ID:-hal-lab-worker}
 IMAGE=${HAL_SANDBOX_LAB_IMAGE:-localhost/hal-agent:hal-lab}
@@ -42,7 +55,11 @@ export XDG_DATA_HOME="$LAB_ROOT/data"
 export XDG_CACHE_HOME="$LAB_ROOT/cache"
 export TMPDIR="$LAB_ROOT/tmp"
 export HOME="$LAB_ROOT/home"
-export CONTAINER_CONNECTION="$MACHINE"
+if [ "$PODMAN_MODE" = "machine" ]; then
+	export CONTAINER_CONNECTION="$MACHINE"
+else
+	unset CONTAINER_CONNECTION
+fi
 unset CODEX_HOME PI_HOME
 export PATH="$LAB_ROOT/bin:$PATH"
 if [ -n "$MACHINE_PROVIDER" ]; then
@@ -75,13 +92,20 @@ case "$MACHINE:$WORKER_ID" in
 		exit 2
 		;;
 esac
+case "$PODMAN_MODE" in
+	native|machine) ;;
+	*)
+		echo "HAL_SANDBOX_LAB_PODMAN_MODE must be native or machine" >&2
+		exit 2
+		;;
+esac
 
 usage() {
 	cat <<EOF
 Usage: sandbox/podman-lab.sh COMMAND [ARGS]
 
 Commands:
-  prepare                 Create the isolated Podman machine, build Hal, and build the lab image
+  prepare                 Prepare isolated Podman, build Hal, and build the lab image
   start                   Start sandboxd and register the lab worker
   seed-auth               Copy supported engine auth files into the isolated lab home
   clone REPOSITORY [NAME] Clone a disposable repository into the lab workspace
@@ -91,6 +115,7 @@ Commands:
   destroy                 Delete lab targets, daemon, machine, and all lab files
 
 Lab root: $LAB_ROOT
+Podman mode: $PODMAN_MODE
 EOF
 }
 
@@ -101,8 +126,48 @@ require_command() {
 	fi
 }
 
+require_qemu_machine_command() {
+	if command -v "$1" >/dev/null 2>&1; then
+		return
+	fi
+	echo "required QEMU-backed Podman Machine command not found: $1" >&2
+	echo "install the host QEMU machine package before prepare (Arch Linux: sudo pacman -S --needed qemu-base)" >&2
+	exit 1
+}
+
+require_podman_machine_commands() {
+	machine_vm_type=$(podman machine info --format '{{.Host.VMType}}' 2>/dev/null || true)
+	case "$machine_vm_type" in
+		qemu)
+			require_qemu_machine_command qemu-img
+			case "$(uname -m)" in
+				x86_64|amd64) require_qemu_machine_command qemu-system-x86_64 ;;
+				aarch64|arm64) require_qemu_machine_command qemu-system-aarch64 ;;
+			esac
+			;;
+	esac
+}
+
 lab_podman() {
-	podman --connection "$MACHINE" "$@"
+	if [ "$PODMAN_MODE" = "native" ]; then
+		podman "$@"
+	else
+		podman --connection "$MACHINE" "$@"
+	fi
+}
+
+with_guest_proxy_podman() {
+	if [ -z "$GUEST_PROXY" ]; then
+		lab_podman "$@"
+		return
+	fi
+	if [ "$PODMAN_MODE" = "native" ]; then
+		env HTTP_PROXY="$GUEST_PROXY" HTTPS_PROXY="$GUEST_PROXY" ALL_PROXY="$GUEST_PROXY" \
+			NO_PROXY="localhost,127.0.0.1" podman "$@"
+	else
+		env HTTP_PROXY="$GUEST_PROXY" HTTPS_PROXY="$GUEST_PROXY" ALL_PROXY="$GUEST_PROXY" \
+			NO_PROXY="localhost,127.0.0.1" podman --connection "$MACHINE" "$@"
+	fi
 }
 
 with_host_proxy() {
@@ -114,16 +179,11 @@ with_host_proxy() {
 		NO_PROXY="localhost,127.0.0.1" "$@"
 }
 
-with_guest_proxy() {
-	if [ -z "$GUEST_PROXY" ]; then
-		"$@"
+prefetch_base_image() {
+	if [ "$PODMAN_MODE" = "native" ]; then
+		with_guest_proxy_podman pull "$BASE_IMAGE"
 		return
 	fi
-	env HTTP_PROXY="$GUEST_PROXY" HTTPS_PROXY="$GUEST_PROXY" ALL_PROXY="$GUEST_PROXY" \
-		NO_PROXY="localhost,127.0.0.1" "$@"
-}
-
-prefetch_base_image() {
 	if [ -z "$GUEST_PROXY" ]; then
 		lab_podman pull "$BASE_IMAGE"
 		return
@@ -514,7 +574,14 @@ record_launched_daemon() {
 	return 1
 }
 
-ensure_machine_ready() {
+ensure_podman_ready() {
+	if [ "$PODMAN_MODE" = "native" ]; then
+		if lab_podman info >/dev/null 2>&1; then
+			return
+		fi
+		echo "native rootless Podman is unavailable in the isolated lab environment" >&2
+		exit 1
+	fi
 	if ! podman machine inspect "$MACHINE" >/dev/null 2>&1; then
 		echo "Podman machine is missing; run prepare first" >&2
 		exit 1
@@ -522,7 +589,10 @@ ensure_machine_ready() {
 	if lab_podman info >/dev/null 2>&1; then
 		return
 	fi
-	podman machine start "$MACHINE" >/dev/null 2>&1 || true
+	if ! podman machine start "$MACHINE"; then
+		echo "Podman machine failed to start" >&2
+		exit 1
+	fi
 	i=0
 	until lab_podman info >/dev/null 2>&1; do
 		if [ "$i" -ge 30 ]; then
@@ -537,27 +607,31 @@ ensure_machine_ready() {
 prepare() {
 	require_command go
 	require_command podman
+	if [ "$PODMAN_MODE" = "machine" ]; then
+		require_podman_machine_commands
+	fi
 	ensure_dirs
 
-	if ! podman machine inspect "$MACHINE" >/dev/null 2>&1; then
+	if [ "$PODMAN_MODE" = "machine" ] && ! podman machine inspect "$MACHINE" >/dev/null 2>&1; then
 		if [ -n "$MACHINE_PROVIDER" ]; then
 			with_host_proxy podman machine init --provider "$MACHINE_PROVIDER" --cpus 4 --memory 4096 --disk-size 30 "$MACHINE"
 		else
 			with_host_proxy podman machine init --cpus 4 --memory 4096 --disk-size 30 "$MACHINE"
 		fi
 	fi
-	ensure_machine_ready
+	ensure_podman_ready
 	prefetch_base_image
 
 	(
 		cd "$REPO_ROOT"
 		go build -o "$HAL_BIN" .
-		with_guest_proxy podman --connection "$MACHINE" build --pull=never --retry 5 --retry-delay 5s -f sandbox/Dockerfile -t "$IMAGE" .
+		with_guest_proxy_podman build --pull=never --retry 5 --retry-delay 5s -f sandbox/Dockerfile -t "$IMAGE" .
 	)
 	cat >"$LAB_ROOT/manifest.txt" <<EOF
 lab_root=$LAB_ROOT
 machine=$MACHINE
 machine_provider=$MACHINE_PROVIDER
+podman_mode=$PODMAN_MODE
 worker_id=$WORKER_ID
 image=$IMAGE
 base_image=$BASE_IMAGE
@@ -577,7 +651,7 @@ start() {
 		echo "lab Hal binary is missing; run prepare first" >&2
 		exit 1
 	fi
-	ensure_machine_ready
+	ensure_podman_ready
 	if ! lab_podman image exists "$IMAGE"; then
 		echo "lab image is missing; run prepare first" >&2
 		exit 1
@@ -662,7 +736,14 @@ status() {
 	require_command ps
 	ensure_dirs
 	echo "Lab root: $LAB_ROOT"
-	if podman machine inspect "$MACHINE"; then
+	echo "Podman mode: $PODMAN_MODE"
+	if [ "$PODMAN_MODE" = "native" ]; then
+		if lab_podman info >/dev/null 2>&1; then
+			echo "Native rootless Podman: ready"
+		else
+			echo "Native rootless Podman: unavailable"
+		fi
+	elif podman machine inspect "$MACHINE"; then
 		if lab_podman info >/dev/null 2>&1; then
 			echo "Podman connection: $MACHINE (ready)"
 		else
@@ -693,6 +774,12 @@ print_env() {
 	printf "export TMPDIR='%s'\n" "$TMPDIR"
 	printf "export HOME='%s'\n" "$HOME"
 	printf "export PATH='%s':\"\$PATH\"\n" "$LAB_ROOT/bin"
+	printf "export HAL_SANDBOX_LAB_PODMAN_MODE='%s'\n" "$PODMAN_MODE"
+	if [ "$PODMAN_MODE" = "native" ]; then
+		printf "unset CONTAINER_CONNECTION\n"
+	else
+		printf "export CONTAINER_CONNECTION='%s'\n" "$MACHINE"
+	fi
 }
 
 destroy() {
@@ -708,8 +795,10 @@ destroy() {
 		if lab_podman info >/dev/null 2>&1; then
 			lab_podman rm -af --filter label=dev.jywlabs.hal.runtime=rootless_podman >/dev/null 2>&1 || true
 		fi
-		podman machine stop "$MACHINE" >/dev/null 2>&1 || true
-		podman machine rm -f "$MACHINE" >/dev/null 2>&1 || true
+		if [ "$PODMAN_MODE" = "machine" ]; then
+			podman machine stop "$MACHINE" >/dev/null 2>&1 || true
+			podman machine rm -f "$MACHINE" >/dev/null 2>&1 || true
+		fi
 	fi
 	# Go module caches are intentionally read-only. The lab root has already
 	# passed the absolute-path and leaf-name safety checks above.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -55,11 +56,13 @@ type RunContext struct {
 
 // Dependencies contains the side-effect boundaries used by Run.
 type Dependencies struct {
-	ResolveTarget    func(context.Context, TargetRequest) (*sandbox.SandboxState, error)
-	ResolveDriver    func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error)
-	PrepareWorkspace func(context.Context, PrepareContext, *CommandRequest) error
-	PrepareAuth      func(context.Context, PrepareContext, *CommandRequest) error
-	PrepareCommand   func(context.Context, PrepareContext, *CommandRequest) error
+	ResolveTarget        func(context.Context, TargetRequest) (*sandbox.SandboxState, error)
+	ValidateTarget       func(context.Context, *sandbox.SandboxState) error
+	SelectedRuntimeImage string
+	ResolveDriver        func(context.Context, sandboxruntime.Target) (sandboxruntime.Driver, error)
+	PrepareWorkspace     func(context.Context, PrepareContext, *CommandRequest) error
+	PrepareAuth          func(context.Context, PrepareContext, *CommandRequest) error
+	PrepareCommand       func(context.Context, PrepareContext, *CommandRequest) error
 	// RunCommand overrides the default runtime driver Exec path for command-specific compatibility behavior.
 	RunCommand    func(context.Context, RunContext, CommandRequest) error
 	HandleEvent   func(context.Context, Event) error
@@ -189,9 +192,18 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 	if target == nil {
 		return nil, phaseError(PhaseResolveTarget, nil, "", fmt.Errorf("sandbox target is required"))
 	}
+	if deps.ValidateTarget != nil {
+		if err := deps.ValidateTarget(ctx, target); err != nil {
+			return nil, phaseError(PhaseResolveTarget, nil, "", err)
+		}
+	}
 
 	targetRunning := strings.TrimSpace(target.Status) == sandbox.StatusRunning
-	if targetRunning {
+	runtimeTarget := runtimeTargetFromSandboxState(target)
+	trustedTemplateLock := runtimeTemplateLockFromTarget(runtimeTarget)
+	expectedRuntimeImage := strings.TrimSpace(deps.SelectedRuntimeImage)
+	requireRuntimeImageObservation := expectedRuntimeImage != ""
+	if targetRunning && !requireRuntimeImageObservation {
 		applySandboxSecurityMetadata(target, req)
 		if deps.OnTargetReady != nil {
 			if err := deps.OnTargetReady(ctx, target); err != nil {
@@ -200,7 +212,6 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 		}
 	}
 
-	runtimeTarget := runtimeTargetFromSandboxState(target)
 	driver, err := deps.ResolveDriver(ctx, runtimeTarget)
 	if err != nil {
 		return nil, phaseError(PhaseResolveDriver, target, "", err)
@@ -213,21 +224,55 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 	if !targetRunning && workerTargetNeedsCreate(target, runtimeTarget) {
 		created, err := driver.Create(ctx, sandboxruntime.CreateRequest{
 			Name:   runtimeTarget.Name,
+			Image:  strings.TrimSpace(runtimeTarget.Runtime.Image),
 			Stdout: req.SetupStdout,
 			Stderr: req.SetupStderr,
 		})
 		if err != nil {
 			if created != nil {
 				runtimeTarget = mergeRuntimeTarget(runtimeTarget, *created)
-				target = applyRuntimeTargetToSandboxState(target, runtimeTarget)
+				if requireRuntimeImageObservation {
+					if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
+						Target: runtimeTarget,
+						Stdout: req.SetupStdout,
+						Stderr: req.SetupStderr,
+					}); cleanupErr != nil {
+						err = errors.Join(err, fmt.Errorf("delete newly created sandbox target after provision failure: %w", cleanupErr))
+					}
+					return nil, phaseError(PhaseProvisionTarget, nil, runtimeDriverID(driver), err)
+				}
+				var correlationErr error
+				runtimeTarget, correlationErr = correlateRuntimeTargetTemplateLock(runtimeTarget, trustedTemplateLock)
+				target = applyRuntimeTargetToSandboxState(target, runtimeTarget, trustedTemplateLock)
+				err = errors.Join(err, correlationErr)
 			}
 			return nil, phaseError(PhaseProvisionTarget, target, runtimeDriverID(driver), err)
 		}
 		if created == nil {
+			if requireRuntimeImageObservation {
+				return nil, phaseError(PhaseProvisionTarget, nil, runtimeDriverID(driver), fmt.Errorf("created sandbox target is required"))
+			}
 			return nil, phaseError(PhaseProvisionTarget, target, runtimeDriverID(driver), fmt.Errorf("created sandbox target is required"))
 		}
 		runtimeTarget = mergeRuntimeTarget(runtimeTarget, *created)
-		target = applyRuntimeTargetToSandboxState(target, runtimeTarget)
+		if requireRuntimeImageObservation {
+			runtimeTarget.Runtime.Image = expectedRuntimeImage
+		}
+		runtimeTarget, err = correlateRuntimeTargetTemplateLock(runtimeTarget, trustedTemplateLock)
+		target = applyRuntimeTargetToSandboxState(target, runtimeTarget, trustedTemplateLock)
+		if err != nil {
+			if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
+				Target: runtimeTarget,
+				Stdout: req.SetupStdout,
+				Stderr: req.SetupStderr,
+			}); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("delete newly created sandbox target after provision failure: %w", cleanupErr))
+			}
+			if requireRuntimeImageObservation {
+				return nil, phaseError(PhaseProvisionTarget, nil, runtimeDriverID(driver), err)
+			}
+			return nil, phaseError(PhaseProvisionTarget, target, runtimeDriverID(driver), err)
+		}
 		targetRunning = strings.TrimSpace(runtimeTarget.Status) == sandbox.StatusRunning
 		createdInRun = true
 	}
@@ -242,9 +287,28 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 			startErr = fmt.Errorf("started sandbox target is required")
 		}
 		if startErr != nil {
+			if requireRuntimeImageObservation {
+				if started != nil {
+					runtimeTarget = mergeRuntimeTarget(runtimeTarget, *started)
+					runtimeTarget.Runtime.Image = expectedRuntimeImage
+				}
+				if createdInRun {
+					if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
+						Target: runtimeTarget,
+						Stdout: req.SetupStdout,
+						Stderr: req.SetupStderr,
+					}); cleanupErr != nil {
+						startErr = errors.Join(startErr, fmt.Errorf("delete newly created sandbox target after start failure: %w", cleanupErr))
+					}
+				}
+				return nil, phaseError(PhaseStartTarget, nil, runtimeDriverID(driver), startErr)
+			}
 			if started != nil {
 				runtimeTarget = mergeRuntimeTarget(runtimeTarget, *started)
-				target = applyRuntimeTargetToSandboxState(target, runtimeTarget)
+				var correlationErr error
+				runtimeTarget, correlationErr = correlateRuntimeTargetTemplateLock(runtimeTarget, trustedTemplateLock)
+				target = applyRuntimeTargetToSandboxState(target, runtimeTarget, trustedTemplateLock)
+				startErr = errors.Join(startErr, correlationErr)
 			}
 			if createdInRun {
 				if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
@@ -257,8 +321,73 @@ func Run(ctx context.Context, req CommandRequest, deps Dependencies) (*Result, e
 			}
 			return nil, phaseError(PhaseStartTarget, target, runtimeDriverID(driver), startErr)
 		}
-		runtimeTarget = *started
-		target = applyRuntimeTargetToSandboxState(target, runtimeTarget)
+		if requireRuntimeImageObservation {
+			runtimeTarget = mergeRuntimeTarget(runtimeTarget, *started)
+			runtimeTarget.Runtime.Image = expectedRuntimeImage
+		} else {
+			runtimeTarget = *started
+		}
+		runtimeTarget, err = correlateRuntimeTargetTemplateLock(runtimeTarget, trustedTemplateLock)
+		target = applyRuntimeTargetToSandboxState(target, runtimeTarget, trustedTemplateLock)
+		if err != nil {
+			if createdInRun {
+				if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
+					Target: runtimeTarget,
+					Stdout: req.SetupStdout,
+					Stderr: req.SetupStderr,
+				}); cleanupErr != nil {
+					err = errors.Join(err, fmt.Errorf("delete newly created sandbox target after start failure: %w", cleanupErr))
+				}
+			}
+			if requireRuntimeImageObservation {
+				return nil, phaseError(PhaseStartTarget, nil, runtimeDriverID(driver), err)
+			}
+			return nil, phaseError(PhaseStartTarget, target, runtimeDriverID(driver), err)
+		}
+		if !requireRuntimeImageObservation {
+			applySandboxSecurityMetadata(target, req)
+			if deps.OnTargetReady != nil {
+				if err := deps.OnTargetReady(ctx, target); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	if requireRuntimeImageObservation {
+		observed, inspectErr := driver.Inspect(ctx, sandboxruntime.InspectRequest{Target: runtimeTarget})
+		if inspectErr == nil && observed == nil {
+			inspectErr = errors.New("selection_rejected")
+		}
+		if inspectErr == nil && strings.TrimSpace(observed.Runtime.Image) != expectedRuntimeImage {
+			inspectErr = errors.New("selection_rejected")
+		}
+		if inspectErr != nil {
+			if createdInRun {
+				if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
+					Target: runtimeTarget,
+					Stdout: req.SetupStdout,
+					Stderr: req.SetupStderr,
+				}); cleanupErr != nil {
+					inspectErr = errors.Join(inspectErr, fmt.Errorf("delete newly created sandbox target after image observation failure: %w", cleanupErr))
+				}
+			}
+			return nil, phaseError(PhaseStartTarget, nil, runtimeDriverID(driver), inspectErr)
+		}
+		runtimeTarget = mergeRuntimeTarget(runtimeTarget, *observed)
+		runtimeTarget, err = correlateRuntimeTargetTemplateLock(runtimeTarget, trustedTemplateLock)
+		target = applyRuntimeTargetToSandboxState(target, runtimeTarget, trustedTemplateLock)
+		if err != nil {
+			if createdInRun {
+				if cleanupErr := driver.Delete(ctx, sandboxruntime.LifecycleRequest{
+					Target: runtimeTarget,
+					Stdout: req.SetupStdout,
+					Stderr: req.SetupStderr,
+				}); cleanupErr != nil {
+					err = errors.Join(err, fmt.Errorf("delete newly created sandbox target after image observation failure: %w", cleanupErr))
+				}
+			}
+			return nil, phaseError(PhaseStartTarget, nil, runtimeDriverID(driver), err)
+		}
 		applySandboxSecurityMetadata(target, req)
 		if deps.OnTargetReady != nil {
 			if err := deps.OnTargetReady(ctx, target); err != nil {
@@ -590,6 +719,12 @@ func runtimeTargetFromSandboxState(target *sandbox.SandboxState) sandboxruntime.
 			Image:          target.Runtime.Image,
 			WorkerID:       target.Runtime.WorkerID,
 			IsolationLevel: target.Runtime.IsolationLevel,
+			Metadata: &sandboxruntime.RuntimeMetadata{
+				TemplateLock: runtimeTemplateLockFromSandbox(target.Runtime.TemplateLock),
+			},
+		}
+		if runtimeTarget.Runtime.Metadata.TemplateLock == nil {
+			runtimeTarget.Runtime.Metadata = nil
 		}
 	}
 	if info := sandbox.ConnectInfoFromState(target); info != nil {
@@ -605,7 +740,11 @@ func runtimeTargetFromSandboxState(target *sandbox.SandboxState) sandboxruntime.
 	return runtimeTarget
 }
 
-func applyRuntimeTargetToSandboxState(state *sandbox.SandboxState, target sandboxruntime.Target) *sandbox.SandboxState {
+func applyRuntimeTargetToSandboxState(
+	state *sandbox.SandboxState,
+	target sandboxruntime.Target,
+	trustedTemplateLock *sandboxruntime.RuntimeTemplateLockMetadata,
+) *sandbox.SandboxState {
 	if state == nil {
 		state = &sandbox.SandboxState{}
 	}
@@ -643,9 +782,143 @@ func applyRuntimeTargetToSandboxState(state *sandbox.SandboxState, target sandbo
 			Image:          target.Runtime.Image,
 			WorkerID:       target.Runtime.WorkerID,
 			IsolationLevel: target.Runtime.IsolationLevel,
+			TemplateLock: sandboxTemplateLockFromRuntime(&sandboxruntime.RuntimeMetadata{
+				TemplateLock: trustedTemplateLock,
+			}),
 		}
 	}
 	return state
+}
+
+func runtimeTemplateLockFromTarget(target sandboxruntime.Target) *sandboxruntime.RuntimeTemplateLockMetadata {
+	if target.Runtime.Metadata == nil {
+		return nil
+	}
+	return sandboxruntime.SanitizeRuntimeTemplateLockMetadata(target.Runtime.Metadata.TemplateLock)
+}
+
+func correlateRuntimeTargetTemplateLock(
+	target sandboxruntime.Target,
+	trusted *sandboxruntime.RuntimeTemplateLockMetadata,
+) (sandboxruntime.Target, error) {
+	trusted = sandboxruntime.SanitizeRuntimeTemplateLockMetadata(trusted)
+	reported := runtimeTemplateLockFromTarget(target)
+	reportedPresent := target.Runtime.Metadata != nil && target.Runtime.Metadata.TemplateLock != nil
+	mismatch := reportedPresent && !reflect.DeepEqual(reported, trusted)
+
+	metadata := sandboxruntime.SanitizeRuntimeMetadata(target.Runtime.Metadata)
+	if metadata == nil && trusted != nil {
+		metadata = &sandboxruntime.RuntimeMetadata{}
+	}
+	if metadata != nil {
+		metadata.SetTemplateLock(trusted)
+		metadata = sandboxruntime.SanitizeRuntimeMetadata(metadata)
+	}
+	target.Runtime.Metadata = metadata
+
+	if mismatch {
+		return target, errors.New("runtime-reported template lock does not match command-selected template")
+	}
+	return target, nil
+}
+
+func runtimeTemplateLockFromSandbox(lock *sandbox.SandboxTemplateLockMetadata) *sandboxruntime.RuntimeTemplateLockMetadata {
+	lock = sandbox.SanitizeSandboxTemplateLockMetadata(lock)
+	if lock == nil {
+		return nil
+	}
+	return sandboxruntime.SanitizeRuntimeTemplateLockMetadata(&sandboxruntime.RuntimeTemplateLockMetadata{
+		Document:          runtimeTemplateLockEntryFromSandbox(lock.Document),
+		TemplateReference: runtimeTemplateLockEntryFromSandbox(lock.TemplateReference),
+		RuntimeImage:      runtimeTemplateLockEntryFromSandbox(lock.RuntimeImage),
+		SourceArtifact:    runtimeTemplateLockEntryFromSandbox(lock.SourceArtifact),
+		TrustPolicy:       runtimeTemplateTrustPolicyFromSandbox(lock.TrustPolicy),
+	})
+}
+
+func runtimeTemplateLockEntryFromSandbox(entry *sandbox.SandboxTemplateLockEntryMetadata) *sandboxruntime.RuntimeTemplateLockEntryMetadata {
+	if entry == nil {
+		return nil
+	}
+	return &sandboxruntime.RuntimeTemplateLockEntryMetadata{
+		SourceKind:      entry.SourceKind,
+		ReferenceKind:   entry.ReferenceKind,
+		Status:          entry.Status,
+		DigestAlgorithm: entry.DigestAlgorithm,
+		DigestValue:     entry.DigestValue,
+		SizeBytes:       entry.SizeBytes,
+		LockedAt:        entry.LockedAt,
+		WarningCodes:    append([]string(nil), entry.WarningCodes...),
+		ReasonCode:      entry.ReasonCode,
+	}
+}
+
+func runtimeTemplateTrustPolicyFromSandbox(policy *sandbox.SandboxTemplateTrustPolicyMetadata) *sandboxruntime.RuntimeTemplateTrustPolicyMetadata {
+	if policy == nil {
+		return nil
+	}
+	return &sandboxruntime.RuntimeTemplateTrustPolicyMetadata{
+		Mode:            policy.Mode,
+		Decision:        policy.Decision,
+		SourceKind:      policy.SourceKind,
+		ReferenceKind:   policy.ReferenceKind,
+		Status:          policy.Status,
+		DigestAlgorithm: policy.DigestAlgorithm,
+		DigestValue:     policy.DigestValue,
+		WarningCodes:    append([]string(nil), policy.WarningCodes...),
+		ErrorCodes:      append([]string(nil), policy.ErrorCodes...),
+		ReasonCodes:     append([]string(nil), policy.ReasonCodes...),
+	}
+}
+
+func sandboxTemplateLockFromRuntime(metadata *sandboxruntime.RuntimeMetadata) *sandbox.SandboxTemplateLockMetadata {
+	metadata = sandboxruntime.SanitizeRuntimeMetadata(metadata)
+	if metadata == nil || metadata.TemplateLock == nil {
+		return nil
+	}
+	lock := metadata.TemplateLock
+	return sandbox.SanitizeSandboxTemplateLockMetadata(&sandbox.SandboxTemplateLockMetadata{
+		Document:          sandboxTemplateLockEntryFromRuntime(lock.Document),
+		TemplateReference: sandboxTemplateLockEntryFromRuntime(lock.TemplateReference),
+		RuntimeImage:      sandboxTemplateLockEntryFromRuntime(lock.RuntimeImage),
+		SourceArtifact:    sandboxTemplateLockEntryFromRuntime(lock.SourceArtifact),
+		TrustPolicy:       sandboxTemplateTrustPolicyFromRuntime(lock.TrustPolicy),
+	})
+}
+
+func sandboxTemplateLockEntryFromRuntime(entry *sandboxruntime.RuntimeTemplateLockEntryMetadata) *sandbox.SandboxTemplateLockEntryMetadata {
+	if entry == nil {
+		return nil
+	}
+	return &sandbox.SandboxTemplateLockEntryMetadata{
+		SourceKind:      entry.SourceKind,
+		ReferenceKind:   entry.ReferenceKind,
+		Status:          entry.Status,
+		DigestAlgorithm: entry.DigestAlgorithm,
+		DigestValue:     entry.DigestValue,
+		SizeBytes:       entry.SizeBytes,
+		LockedAt:        entry.LockedAt,
+		WarningCodes:    append([]string(nil), entry.WarningCodes...),
+		ReasonCode:      entry.ReasonCode,
+	}
+}
+
+func sandboxTemplateTrustPolicyFromRuntime(policy *sandboxruntime.RuntimeTemplateTrustPolicyMetadata) *sandbox.SandboxTemplateTrustPolicyMetadata {
+	if policy == nil {
+		return nil
+	}
+	return &sandbox.SandboxTemplateTrustPolicyMetadata{
+		Mode:            policy.Mode,
+		Decision:        policy.Decision,
+		SourceKind:      policy.SourceKind,
+		ReferenceKind:   policy.ReferenceKind,
+		Status:          policy.Status,
+		DigestAlgorithm: policy.DigestAlgorithm,
+		DigestValue:     policy.DigestValue,
+		WarningCodes:    append([]string(nil), policy.WarningCodes...),
+		ErrorCodes:      append([]string(nil), policy.ErrorCodes...),
+		ReasonCodes:     append([]string(nil), policy.ReasonCodes...),
+	}
 }
 
 func hasRuntimeState(runtime sandboxruntime.RuntimeState) bool {

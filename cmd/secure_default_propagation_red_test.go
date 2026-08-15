@@ -160,7 +160,7 @@ func TestUS007FactoryStrictSecureDefaultProofCompletePropagatesAllowedDecision(t
 
 func TestUS007RunAndAutoDefaultSecureDefaultReadinessPersistsAdvisoryDecision(t *testing.T) {
 	startedAt := time.Date(2026, 7, 3, 22, 30, 0, 0, time.UTC)
-	runStore := sandboxexecution.NewStore(t.TempDir())
+	runStore := newPrivateSandboxExecutionTestStore(t)
 	runReq := runSandboxRequest{
 		ExecutionID:   "run-us007-default-advisory",
 		ProjectDir:    us007UnsafeWorktree(),
@@ -178,7 +178,7 @@ func TestUS007RunAndAutoDefaultSecureDefaultReadinessPersistsAdvisoryDecision(t 
 	}
 	us007AssertAdvisorySecurityReadinessGate(t, "run default manifest", runManifest.Security)
 
-	autoStore := sandboxexecution.NewStore(t.TempDir())
+	autoStore := newPrivateSandboxExecutionTestStore(t)
 	autoReq := autoSandboxRequest{
 		ExecutionID:   "auto-us007-default-advisory",
 		ProjectDir:    us007UnsafeWorktree(),

@@ -1,6 +1,7 @@
 package sandboxworker
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -52,6 +53,7 @@ type Service struct {
 	metadata          *sandboxruntime.RuntimeMetadata
 	supportedOps      []string
 	driverDescriptors map[string]RuntimeDriver
+	jobs              *jobManager
 }
 
 // ServiceOptions configures a local worker service.
@@ -71,6 +73,9 @@ type ServiceOptions struct {
 
 	SupportedOperations []string
 	RuntimeDrivers      map[string]RuntimeDriver
+
+	JobContext  context.Context
+	JobStateDir string
 }
 
 // NewService returns a worker service with validated status and capability
@@ -118,6 +123,29 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if len(supportedOps) == 0 {
 		supportedOps = defaultSupportedOperationsForDrivers(registry.DriverIDs(), descriptors)
 	}
+	supportedOps = withoutJobOperations(supportedOps)
+	var jobs *jobManager
+	if strings.TrimSpace(options.JobStateDir) != "" && jobStateLockSupported() {
+		var err error
+		jobs, err = newJobManager(jobManagerOptions{
+			Context:           options.JobContext,
+			WorkerID:          workerID,
+			StateDir:          options.JobStateDir,
+			MaxConcurrentJobs: capacity.MaxConcurrentSandboxes,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("worker job state is unavailable")
+		}
+		supportedOps = appendMissingStrings(supportedOps,
+			OperationJobResolve,
+			OperationJobStatus,
+			OperationJobLogs,
+			OperationJobCancel,
+		)
+		if registrySupportsJobExecution(registry) {
+			supportedOps = appendMissingStrings(supportedOps, OperationJobStart)
+		}
+	}
 	service := &Service{
 		workerID:          workerID,
 		hostKind:          hostKind,
@@ -129,20 +157,39 @@ func NewService(options ServiceOptions) (*Service, error) {
 		metadata:          sandboxruntime.SanitizeRuntimeMetadata(options.Metadata),
 		supportedOps:      supportedOps,
 		driverDescriptors: descriptors,
+		jobs:              jobs,
 	}
 
 	if err := service.Status().Validate(); err != nil {
+		if jobs != nil {
+			jobs.close()
+		}
 		return nil, fmt.Errorf("worker service status: %w", err)
 	}
 	if err := service.Capabilities().Validate(); err != nil {
+		if jobs != nil {
+			jobs.close()
+		}
 		return nil, fmt.Errorf("worker service capabilities: %w", err)
 	}
 	return service, nil
 }
 
+// Close synchronously stops active durable jobs and releases their state lock.
+func (service *Service) Close() {
+	if service == nil || service.jobs == nil {
+		return
+	}
+	service.jobs.close()
+}
+
 // Status returns current worker readiness generated from service state and the
 // registered runtime drivers.
 func (service *Service) Status() Status {
+	capacity := service.capacity
+	if service.jobs != nil {
+		capacity.ActiveSandboxes = service.jobs.activeRuntimeCount()
+	}
 	return Status{
 		ProtocolVersion:         ProtocolVersion,
 		WorkerID:                service.workerID,
@@ -150,7 +197,7 @@ func (service *Service) Status() Status {
 		SocketPath:              service.socketPath,
 		SupportedRuntimeDrivers: service.registry.DriverIDs(),
 		Health:                  service.health,
-		Capacity:                service.capacity,
+		Capacity:                capacity,
 		Security:                cloneSecurityPolicy(service.security),
 		Metadata:                sandboxruntime.SanitizeRuntimeMetadata(service.metadata),
 	}
@@ -223,7 +270,19 @@ func DefaultWorkerSecurityPolicy() SecurityPolicy {
 }
 
 func (service *Service) runtimeDriverCapability(driverID string) RuntimeDriver {
-	return runtimeDriverCapabilityFromDescriptors(driverID, service.driverDescriptors)
+	var descriptors map[string]RuntimeDriver
+	if service != nil {
+		descriptors = service.driverDescriptors
+	}
+	driver := runtimeDriverCapabilityFromDescriptors(driverID, descriptors)
+	driver.Operations = withoutJobOperations(driver.Operations)
+	if service != nil && service.jobs != nil && service.registry != nil {
+		registered, err := service.registry.Lookup(driverID)
+		if err == nil && driverSupportsJobExecution(registered) {
+			driver.Operations = appendMissingStrings(driver.Operations, OperationJobStart)
+		}
+	}
+	return driver
 }
 
 func runtimeDriverCapabilityFromDescriptors(driverID string, descriptors map[string]RuntimeDriver) RuntimeDriver {
@@ -259,10 +318,34 @@ func defaultSupportedOperationsForDrivers(driverIDs []string, descriptors map[st
 	return operations
 }
 
+func registrySupportsJobExecution(registry *DriverRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	for _, driverID := range registry.DriverIDs() {
+		driver, err := registry.Lookup(driverID)
+		if err == nil && driverSupportsJobExecution(driver) {
+			return true
+		}
+	}
+	return false
+}
+
+func driverSupportsJobExecution(driver sandboxruntime.Driver) bool {
+	support, ok := driver.(sandboxruntime.JobExecutionSupport)
+	return ok && support.SupportsJobExecution()
+}
+
 func (service *Service) supportsRequestOperation(operation, driverID string) bool {
 	operation = strings.TrimSpace(operation)
 	if operation == OperationStatus || operation == OperationCapabilities {
 		return true
+	}
+	if operation == OperationJobResolve || operation == OperationJobStatus || operation == OperationJobLogs || operation == OperationJobCancel {
+		return service != nil && service.jobs != nil && stringSliceContains(service.supportedOps, operation)
+	}
+	if operation == OperationJobStart && (service == nil || service.jobs == nil) {
+		return false
 	}
 	if !validOperation(operation) {
 		return false
@@ -276,6 +359,29 @@ func (service *Service) supportsRequestOperation(operation, driverID string) boo
 	}
 	driver := service.runtimeDriverCapability(driverID)
 	return stringSliceContains(driver.Operations, operation)
+}
+
+func appendMissingStrings(values []string, additions ...string) []string {
+	result := cloneStringSlice(values)
+	for _, addition := range additions {
+		if !stringSliceContains(result, addition) {
+			result = append(result, addition)
+		}
+	}
+	return result
+}
+
+func withoutJobOperations(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		switch value {
+		case OperationJobStart, OperationJobResolve, OperationJobStatus, OperationJobLogs, OperationJobCancel:
+			continue
+		default:
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func defaultRuntimeDriverCapability(driverID string) RuntimeDriver {

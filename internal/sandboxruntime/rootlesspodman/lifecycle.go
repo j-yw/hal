@@ -41,6 +41,21 @@ type OperationError struct {
 	Err       error
 }
 
+type explicitRuntimeImageOperationError struct {
+	err error
+}
+
+func (e *explicitRuntimeImageOperationError) Error() string {
+	return "rootless_podman create failed: explicit runtime image unavailable"
+}
+
+func (e *explicitRuntimeImageOperationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 func (e *OperationError) Error() string {
 	if e == nil {
 		return ""
@@ -67,16 +82,36 @@ func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (
 	if name == "" {
 		return nil, operationError(OperationCreate, CommandResult{}, ErrTargetNameRequired)
 	}
+	explicitImage := strings.TrimSpace(req.Image)
+	image := explicitImage
+	if image == "" {
+		image = d.image
+	}
+	entry, topologyArgs, err := d.prepareNetworkTopology(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	createArgs := d.createArgs(name, image)
+	if entry != nil {
+		createArgs = d.createArgsWithNetworkTopologyImage(name, image, topologyArgs, &entry.identity)
+	}
 
 	result, err := d.runLifecycleCommand(ctx, CommandRequest{
 		Operation: OperationCreate,
-		Args:      d.createArgs(name),
+		Args:      createArgs,
 		Env:       cloneStringMap(req.Env),
 		Stdout:    req.Stdout,
 		Stderr:    req.Stderr,
 	})
 	if err != nil {
-		return nil, err
+		var cleanupErr error
+		if entry != nil {
+			cleanupErr = d.cleanupUnregisteredTopology(entry.identity, entry.session, sandboxruntime.Target{})
+		}
+		if explicitImage != "" {
+			return nil, errors.Join(&explicitRuntimeImageOperationError{err: err}, cleanupErr)
+		}
+		return nil, errors.Join(err, cleanupErr)
 	}
 
 	runtimeID := firstOutputField(result.Stdout)
@@ -91,16 +126,41 @@ func (d *Driver) Create(ctx context.Context, req sandboxruntime.CreateRequest) (
 		Runtime: sandboxruntime.RuntimeState{
 			Driver:         DriverID,
 			RuntimeID:      runtimeID,
-			Image:          d.image,
+			Image:          image,
 			IsolationLevel: IsolationLevel,
 		},
 	}
 	ensureRootlessRuntimeMetadata(&target)
+	clearNetworkTopologyProof(&target)
+	if entry != nil {
+		if err := d.registerNetworkTopology(entry, target); err != nil {
+			cleanupCtx, cancel := d.networkTopologyCleanupContext()
+			defer cancel()
+			_, deleteErr := d.runLifecycleCommand(cleanupCtx, CommandRequest{
+				Operation: OperationDelete,
+				Args:      d.deleteArgs(runtimeID),
+			})
+			cleanupErr := d.cleanupUnregisteredTopology(entry.identity, entry.session, target)
+			return nil, errors.Join(err, deleteErr, cleanupErr)
+		}
+	}
 	return &target, nil
 }
 
 func (d *Driver) Start(ctx context.Context, req sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error) {
 	target := req.Target
+	entry, topologyErr := d.topologyEntryForTarget(target)
+	if topologyErr != nil {
+		return nil, topologyError(OperationStart, ErrNetworkTopologySessionMissing)
+	}
+	if entry != nil {
+		entry.mu.Lock()
+		unavailable := entry.cleaned
+		entry.mu.Unlock()
+		if unavailable {
+			return nil, topologyError(OperationStart, ErrNetworkTopologySessionMissing)
+		}
+	}
 	ref, err := containerRef(target)
 	if err != nil {
 		return nil, operationError(OperationStart, CommandResult{}, err)
@@ -112,11 +172,19 @@ func (d *Driver) Start(ctx context.Context, req sandboxruntime.LifecycleRequest)
 		Stdout:    req.Stdout,
 		Stderr:    req.Stderr,
 	}); err != nil {
+		if entry != nil {
+			return nil, d.rollbackNetworkTopologyStart(entry, target, err)
+		}
 		return nil, err
 	}
 
 	target.Status = sandbox.StatusRunning
 	ensureRootlessRuntimeMetadata(&target)
+	if entry != nil {
+		if err := d.activateNetworkTopology(ctx, entry, &target); err != nil {
+			return nil, d.rollbackNetworkTopologyStart(entry, target, err)
+		}
+	}
 	return &target, nil
 }
 
@@ -127,17 +195,28 @@ func (d *Driver) Stop(ctx context.Context, req sandboxruntime.LifecycleRequest) 
 		return nil, operationError(OperationStop, CommandResult{}, err)
 	}
 
-	if _, err := d.runLifecycleCommand(ctx, CommandRequest{
-		Operation: OperationStop,
-		Args:      d.stopArgs(ref),
-		Stdout:    req.Stdout,
-		Stderr:    req.Stderr,
-	}); err != nil {
+	entry, _ := d.topologyEntryForTarget(target)
+	runtimeStop := func(runCtx context.Context) error {
+		_, runErr := d.runLifecycleCommand(runCtx, CommandRequest{
+			Operation: OperationStop,
+			Args:      d.stopArgs(ref),
+			Stdout:    req.Stdout,
+			Stderr:    req.Stderr,
+		})
+		return runErr
+	}
+	if entry != nil {
+		err = d.revokeAndCleanupNetworkTopology(entry, target, OperationStop, false, runtimeStop)
+	} else {
+		err = runtimeStop(ctx)
+	}
+	if err != nil {
 		return nil, err
 	}
 
 	target.Status = sandbox.StatusStopped
 	ensureRootlessRuntimeMetadata(&target)
+	clearNetworkTopologyProof(&target)
 	return &target, nil
 }
 
@@ -147,13 +226,20 @@ func (d *Driver) Delete(ctx context.Context, req sandboxruntime.LifecycleRequest
 		return operationError(OperationDelete, CommandResult{}, err)
 	}
 
-	_, err = d.runLifecycleCommand(ctx, CommandRequest{
-		Operation: OperationDelete,
-		Args:      d.deleteArgs(ref),
-		Stdout:    req.Stdout,
-		Stderr:    req.Stderr,
-	})
-	return err
+	entry, _ := d.topologyEntryForTarget(req.Target)
+	runtimeDelete := func(runCtx context.Context) error {
+		_, runErr := d.runLifecycleCommand(runCtx, CommandRequest{
+			Operation: OperationDelete,
+			Args:      d.deleteArgs(ref),
+			Stdout:    req.Stdout,
+			Stderr:    req.Stderr,
+		})
+		return runErr
+	}
+	if entry != nil {
+		return d.revokeAndCleanupNetworkTopology(entry, req.Target, OperationDelete, false, runtimeDelete)
+	}
+	return runtimeDelete(ctx)
 }
 
 func (d *Driver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
@@ -174,6 +260,7 @@ func (d *Driver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest)
 		return nil, operationError(OperationInspect, result, err)
 	}
 	ensureRootlessRuntimeMetadata(&target)
+	d.projectCurrentNetworkTopologyProof(&target)
 	return &target, nil
 }
 
@@ -200,20 +287,8 @@ func (d *Driver) lifecycleRunnerFor(operation string) (LifecycleCommandRunner, e
 	return d.lifecycleRunner, nil
 }
 
-func (d *Driver) createArgs(name string) []string {
-	return []string{
-		d.podmanPath,
-		"create",
-		"--pull=never",
-		"--name", name,
-		"--hostname", name,
-		"--label", labelRuntime + "=" + DriverID,
-		"--label", labelSandboxName + "=" + name,
-		"--security-opt", "no-new-privileges",
-		"--workdir", d.workDir,
-		d.image,
-		"sleep", "infinity",
-	}
+func (d *Driver) createArgs(name, image string) []string {
+	return d.createArgsWithNetworkTopologyImage(name, image, nil, nil)
 }
 
 func (d *Driver) startArgs(ref string) []string {
@@ -357,7 +432,10 @@ func applyInspectOutput(target *sandboxruntime.Target, output string) error {
 	if name := strings.TrimPrefix(strings.TrimSpace(entry.Name), "/"); name != "" {
 		target.Name = name
 	}
-	if image := firstNonEmpty(entry.ImageName, entry.Config.Image, entry.Image, target.Runtime.Image); image != "" {
+	// Inspection is an observation boundary. Never retain a requested image
+	// when Podman omits image identity from its own response.
+	target.Runtime.Image = ""
+	if image := firstNonEmpty(entry.ImageName, entry.Config.Image, entry.Image); image != "" {
 		target.Runtime.Image = image
 	}
 	if status := normalizePodmanStatus(entry.State.Status, entry.State.Running); status != "" {

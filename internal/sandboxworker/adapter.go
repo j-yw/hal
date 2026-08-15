@@ -15,9 +15,12 @@ import (
 
 var (
 	ErrWorkerClientRequired          = errors.New("worker client is required")
+	ErrWorkerJobClientRequired       = errors.New("worker job client is required")
 	ErrWorkerTargetRequired          = errors.New("worker client returned no target")
 	ErrWorkerOperationUnsupported    = errors.New("worker runtime driver operation unsupported")
 	ErrWorkerExecResponseRequired    = errors.New("worker client returned no exec response")
+	ErrWorkerJobResponseRequired     = errors.New("worker job client returned no job response")
+	ErrWorkerJobLogsResponseRequired = errors.New("worker job client returned no logs response")
 	ErrWorkerExecOutputTruncated     = errors.New("worker exec output truncated")
 	ErrWorkerCopyInResponseRequired  = errors.New("worker client returned no copy_in response")
 	ErrWorkerCopyOutResponseRequired = errors.New("worker client returned no copy_out response")
@@ -38,6 +41,7 @@ const (
 )
 
 var _ sandboxruntime.Driver = (*ClientDriver)(nil)
+var _ RuntimeDriverJobClient = (*Client)(nil)
 
 // RuntimeDriverClient is the worker-client subset needed by ClientDriver.
 type RuntimeDriverClient interface {
@@ -51,18 +55,32 @@ type RuntimeDriverClient interface {
 	CopyOut(context.Context, string, CopyOutRequest) (*CopyOutResponse, error)
 }
 
+// RuntimeDriverJobClient is the optional worker-client subset needed for
+// daemon-owned asynchronous execution. Cancellation is deliberately excluded:
+// losing a command context after durable admission must not cancel the job.
+type RuntimeDriverJobClient interface {
+	JobStart(context.Context, string, JobStartRequest) (*Job, error)
+	JobResolve(context.Context, JobResolveRequest) (*Job, error)
+	JobStatus(context.Context, JobStatusRequest) (*Job, error)
+	JobLogs(context.Context, JobLogsRequest) (*JobLogsResponse, error)
+}
+
 // ClientDriverOptions configures a sandboxruntime.Driver backed by a worker
 // client.
 type ClientDriverOptions struct {
 	DriverID string
 	Client   RuntimeDriverClient
+	// JobClient optionally enables daemon-owned asynchronous execution. When
+	// omitted, Client is used if it also implements RuntimeDriverJobClient.
+	JobClient RuntimeDriverJobClient
 }
 
 // ClientDriver adapts worker protocol lifecycle and inspect calls to the
 // sandboxruntime.Driver contract.
 type ClientDriver struct {
-	driverID string
-	client   RuntimeDriverClient
+	driverID  string
+	client    RuntimeDriverClient
+	jobClient RuntimeDriverJobClient
 }
 
 // NewClientDriver returns a runtime driver adapter backed by a worker client.
@@ -74,10 +92,15 @@ func NewClientDriver(options ClientDriverOptions) (*ClientDriver, error) {
 	if options.Client == nil {
 		return nil, ErrWorkerClientRequired
 	}
-	return &ClientDriver{
-		driverID: driverID,
-		client:   options.Client,
-	}, nil
+	driver := &ClientDriver{
+		driverID:  driverID,
+		client:    options.Client,
+		jobClient: options.JobClient,
+	}
+	if driver.jobClient == nil {
+		driver.jobClient, _ = options.Client.(RuntimeDriverJobClient)
+	}
+	return driver, nil
 }
 
 // ID returns the runtime driver ID this adapter routes through the worker.
@@ -95,8 +118,9 @@ func (driver *ClientDriver) Create(ctx context.Context, req sandboxruntime.Creat
 		return nil, err
 	}
 	target, err := client.Create(ctx, driverID, CreateRequest{
-		Name: strings.TrimSpace(req.Name),
-		Env:  cloneStringMap(req.Env),
+		Name:  strings.TrimSpace(req.Name),
+		Image: strings.TrimSpace(req.Image),
+		Env:   cloneStringMap(req.Env),
 	})
 	return driver.runtimeTargetFromWorkerResponse(OperationCreate, target, err)
 }
@@ -158,21 +182,8 @@ func (driver *ClientDriver) Exec(ctx context.Context, req sandboxruntime.ExecReq
 		return nil, err
 	}
 
-	stdin, err := clientDriverExecStdinPayload(req.Stdin)
+	workerReq, err := clientDriverWorkerExecRequest(driverID, req)
 	if err != nil {
-		return nil, driver.operationError(OperationExec, err)
-	}
-	workerReq := ExecRequest{
-		OperationID:      clientDriverExecOperationID,
-		Target:           workerTargetFromRuntimeTarget(req.Target, driverID),
-		Args:             cloneStringSlice(req.Args),
-		Env:              cloneStringMap(req.Env),
-		WorkDir:          strings.TrimSpace(req.WorkDir),
-		Stdin:            stdin,
-		StdoutLimitBytes: MaxExecStdoutCaptureBytes,
-		StderrLimitBytes: MaxExecStderrCaptureBytes,
-	}
-	if err := workerReq.Validate(); err != nil {
 		return nil, driver.operationError(OperationExec, err)
 	}
 
@@ -181,6 +192,110 @@ func (driver *ClientDriver) Exec(ctx context.Context, req sandboxruntime.ExecReq
 		return nil, driver.operationError(OperationExec, err)
 	}
 	return driver.runtimeExecResultFromWorkerResponse(req, resp)
+}
+
+// JobStart durably submits the final execution request under a caller-stable
+// submission identity. It does not synchronously execute or cancel the job.
+func (driver *ClientDriver) JobStart(ctx context.Context, submissionID string, req sandboxruntime.ExecRequest) (*Job, error) {
+	client, driverID, err := driver.jobClientFor(OperationJobStart)
+	if err != nil {
+		return nil, err
+	}
+	execReq, err := clientDriverWorkerExecRequest(driverID, req)
+	if err != nil {
+		return nil, driver.operationError(OperationJobStart, err)
+	}
+	workerReq := JobStartRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    strings.TrimSpace(submissionID),
+		Exec:            execReq,
+	}
+	if err := workerReq.Validate(); err != nil {
+		return nil, driver.operationError(OperationJobStart, err)
+	}
+	job, err := client.JobStart(ctx, driverID, workerReq)
+	if err != nil {
+		return nil, driver.operationError(OperationJobStart, err)
+	}
+	return driver.validatedJobResponse(
+		OperationJobStart,
+		Request{Operation: OperationJobStart, DriverID: driverID, JobStart: &workerReq},
+		job,
+	)
+}
+
+// JobResolve retrieves a durably admitted job by caller submission identity
+// without reconstructing or resubmitting execution.
+func (driver *ClientDriver) JobResolve(ctx context.Context, submissionID string) (*Job, error) {
+	client, _, err := driver.jobClientFor(OperationJobResolve)
+	if err != nil {
+		return nil, err
+	}
+	workerReq := JobResolveRequest{
+		ContractVersion: JobContractVersion,
+		SubmissionID:    strings.TrimSpace(submissionID),
+	}
+	if err := workerReq.Validate(); err != nil {
+		return nil, driver.operationError(OperationJobResolve, err)
+	}
+	job, err := client.JobResolve(ctx, workerReq)
+	if err != nil {
+		return nil, driver.operationError(OperationJobResolve, err)
+	}
+	return driver.validatedJobResponse(
+		OperationJobResolve,
+		Request{Operation: OperationJobResolve, JobResolve: &workerReq},
+		job,
+	)
+}
+
+// JobStatus retrieves the latest durable snapshot for a job identity.
+func (driver *ClientDriver) JobStatus(ctx context.Context, jobID string) (*Job, error) {
+	client, _, err := driver.jobClientFor(OperationJobStatus)
+	if err != nil {
+		return nil, err
+	}
+	workerReq := JobStatusRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           strings.TrimSpace(jobID),
+	}
+	if err := workerReq.Validate(); err != nil {
+		return nil, driver.operationError(OperationJobStatus, err)
+	}
+	job, err := client.JobStatus(ctx, workerReq)
+	if err != nil {
+		return nil, driver.operationError(OperationJobStatus, err)
+	}
+	return driver.validatedJobResponse(
+		OperationJobStatus,
+		Request{Operation: OperationJobStatus, JobStatus: &workerReq},
+		job,
+	)
+}
+
+// JobLogs reads a caller-bounded page from the durable redacted job log.
+func (driver *ClientDriver) JobLogs(ctx context.Context, jobID string, cursor uint64, limitBytes int64) (*JobLogsResponse, error) {
+	client, _, err := driver.jobClientFor(OperationJobLogs)
+	if err != nil {
+		return nil, err
+	}
+	workerReq := JobLogsRequest{
+		ContractVersion: JobContractVersion,
+		JobID:           strings.TrimSpace(jobID),
+		Cursor:          cursor,
+		LimitBytes:      limitBytes,
+	}
+	if err := workerReq.Validate(); err != nil {
+		return nil, driver.operationError(OperationJobLogs, err)
+	}
+	logs, err := client.JobLogs(ctx, workerReq)
+	if err != nil {
+		return nil, driver.operationError(OperationJobLogs, err)
+	}
+	return driver.validatedJobLogsResponse(
+		Request{Operation: OperationJobLogs, JobLogs: &workerReq},
+		logs,
+	)
 }
 
 // CopyIn copies a bounded local file payload into a worker target.
@@ -251,6 +366,59 @@ func (driver *ClientDriver) clientFor(operation string) (RuntimeDriverClient, st
 	return driver.client, driverID, nil
 }
 
+func (driver *ClientDriver) jobClientFor(operation string) (RuntimeDriverJobClient, string, error) {
+	driverID := ""
+	if driver != nil {
+		driverID = strings.TrimSpace(driver.driverID)
+	}
+	if driverID == "" {
+		return nil, "", (&ClientDriver{driverID: driverID}).operationError(operation, ErrDriverIDRequired)
+	}
+	if driver == nil || driver.jobClient == nil {
+		return nil, "", driver.operationError(operation, ErrWorkerJobClientRequired)
+	}
+	return driver.jobClient, driverID, nil
+}
+
+func (driver *ClientDriver) validatedJobResponse(operation string, req Request, job *Job) (*Job, error) {
+	if job == nil {
+		return nil, driver.operationError(operation, ErrWorkerJobResponseRequired)
+	}
+	response := Response{
+		Operation: operation,
+		OK:        true,
+		Job:       job,
+	}
+	if err := validateClientResponse(req, response); err != nil {
+		return nil, driver.operationError(operation, err)
+	}
+	if strings.TrimSpace(job.RuntimeDriver) != driver.ID() {
+		return nil, driver.operationError(
+			operation,
+			malformedClientResponseError(operation, "worker job runtimeDriver did not match adapter"),
+		)
+	}
+	snapshot := cloneJob(*job)
+	return &snapshot, nil
+}
+
+func (driver *ClientDriver) validatedJobLogsResponse(req Request, logs *JobLogsResponse) (*JobLogsResponse, error) {
+	if logs == nil {
+		return nil, driver.operationError(OperationJobLogs, ErrWorkerJobLogsResponseRequired)
+	}
+	response := Response{
+		Operation: OperationJobLogs,
+		OK:        true,
+		JobLogs:   logs,
+	}
+	if err := validateClientResponse(req, response); err != nil {
+		return nil, driver.operationError(OperationJobLogs, err)
+	}
+	snapshot := *logs
+	snapshot.Records = cloneJobLogRecords(logs.Records)
+	return &snapshot, nil
+}
+
 func (driver *ClientDriver) runtimeTargetFromWorkerResponse(operation string, target *Target, err error) (*sandboxruntime.Target, error) {
 	if err != nil {
 		return nil, driver.operationError(operation, err)
@@ -263,6 +431,27 @@ func (driver *ClientDriver) runtimeTargetFromWorkerResponse(operation string, ta
 		runtimeTarget.Runtime.Driver = driver.ID()
 	}
 	return &runtimeTarget, nil
+}
+
+func clientDriverWorkerExecRequest(driverID string, req sandboxruntime.ExecRequest) (ExecRequest, error) {
+	stdin, err := clientDriverExecStdinPayload(req.Stdin)
+	if err != nil {
+		return ExecRequest{}, err
+	}
+	workerReq := ExecRequest{
+		OperationID:      clientDriverExecOperationID,
+		Target:           workerTargetFromRuntimeTarget(req.Target, driverID),
+		Args:             cloneStringSlice(req.Args),
+		Env:              cloneStringMap(req.Env),
+		WorkDir:          strings.TrimSpace(req.WorkDir),
+		Stdin:            stdin,
+		StdoutLimitBytes: MaxExecStdoutCaptureBytes,
+		StderrLimitBytes: MaxExecStderrCaptureBytes,
+	}
+	if err := workerReq.Validate(); err != nil {
+		return ExecRequest{}, err
+	}
+	return workerReq, nil
 }
 
 func (driver *ClientDriver) runtimeExecResultFromWorkerResponse(req sandboxruntime.ExecRequest, resp *ExecResponse) (*sandboxruntime.ExecResult, error) {

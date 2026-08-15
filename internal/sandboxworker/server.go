@@ -2,17 +2,21 @@ package sandboxworker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
 
 const defaultMaxRequestBytes int64 = 1 << 20
+
+var listenWorkerUnixSocket = func(ctx context.Context, socketPath string) (net.Listener, error) {
+	return (&net.ListenConfig{}).Listen(ctx, "unix", socketPath)
+}
 
 // RequestHandler dispatches a validated worker protocol request.
 type RequestHandler interface {
@@ -50,6 +54,9 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if socketPath == "" {
 		return nil, fmt.Errorf("worker server socketPath is required")
 	}
+	if !filepath.IsAbs(socketPath) {
+		return nil, fmt.Errorf("worker server socketPath must be absolute")
+	}
 	if !requestHandlerConfigured(options.Handler) {
 		return nil, fmt.Errorf("worker server handler is required")
 	}
@@ -58,7 +65,7 @@ func NewServer(options ServerOptions) (*Server, error) {
 		maxRequestBytes = defaultMaxRequestBytes
 	}
 	return &Server{
-		socketPath:      socketPath,
+		socketPath:      filepath.Clean(socketPath),
 		handler:         options.Handler,
 		maxRequestBytes: maxRequestBytes,
 	}, nil
@@ -80,19 +87,54 @@ func (server *Server) ListenAndServe(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "unix", server.socketPath)
+	parentProof, err := validateWorkerSocketPath(server.socketPath)
 	if err != nil {
-		return fmt.Errorf("worker server listen unix socket: %w", err)
+		return err
 	}
-	defer func() {
-		_ = os.Remove(server.socketPath)
-	}()
-	return server.Serve(ctx, listener)
+	listener, err := listenWorkerUnixSocket(ctx, server.socketPath)
+	if err != nil {
+		return fmt.Errorf("worker server could not bind the Unix socket")
+	}
+	unixListener, ok := listener.(*net.UnixListener)
+	if !ok {
+		_ = listener.Close()
+		return fmt.Errorf("worker server listener is not a Unix socket")
+	}
+	unixListener.SetUnlinkOnClose(false)
+	createdInfo, err := os.Lstat(server.socketPath)
+	if err != nil || createdInfo.Mode()&os.ModeSocket == 0 {
+		_ = listener.Close()
+		return fmt.Errorf("worker server could not verify the Unix socket")
+	}
+	if err := validateWorkerSocketParentProof(parentProof); err != nil {
+		_ = listener.Close()
+		removeWorkerSocketIfSame(server.socketPath, createdInfo)
+		return err
+	}
+	if err := os.Chmod(server.socketPath, 0o600); err != nil {
+		_ = listener.Close()
+		removeWorkerSocketIfSame(server.socketPath, createdInfo)
+		return fmt.Errorf("worker server could not secure the Unix socket")
+	}
+	securedInfo, err := os.Lstat(server.socketPath)
+	if err != nil || securedInfo.Mode()&os.ModeSocket == 0 ||
+		securedInfo.Mode().Perm() != 0o600 || !os.SameFile(createdInfo, securedInfo) {
+		_ = listener.Close()
+		removeWorkerSocketIfSame(server.socketPath, createdInfo)
+		return fmt.Errorf("worker server could not verify Unix socket security")
+	}
+	defer removeWorkerSocketIfSame(server.socketPath, securedInfo)
+	defer listener.Close()
+	return server.serve(ctx, listener, true)
 }
 
 // Serve accepts Unix socket connections from listener and handles one JSON
 // request/response exchange per connection.
 func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
+	return server.serve(ctx, listener, false)
+}
+
+func (server *Server) serve(ctx context.Context, listener net.Listener, filesystemBoundaryProven bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -123,7 +165,11 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 			if ctx.Err() != nil || isClosedNetworkError(err) {
 				return nil
 			}
-			return fmt.Errorf("worker server accept unix connection: %w", err)
+			return fmt.Errorf("worker server could not accept a Unix connection")
+		}
+		if err := validateWorkerPeerCredentials(conn, filesystemBoundaryProven); err != nil {
+			_ = conn.Close()
+			continue
 		}
 
 		wg.Add(1)
@@ -163,8 +209,7 @@ func (server *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 func (server *Server) readRequest(r io.Reader) (Request, *Response) {
 	var req Request
-	decoder := json.NewDecoder(io.LimitReader(r, server.maxRequestBytes))
-	if err := decoder.Decode(&req); err != nil {
+	if err := decodeWorkerRequestInto(r, server.maxRequestBytes, &req); err != nil {
 		resp := protocolErrorResponse("", OperationProtocolError, ErrorCodeMalformedRequest, "malformed worker request")
 		return Request{}, &resp
 	}
@@ -178,7 +223,7 @@ func (server *Server) readRequest(r io.Reader) (Request, *Response) {
 }
 
 func (server *Server) writeResponse(w io.Writer, resp Response) {
-	_ = json.NewEncoder(w).Encode(resp.WithDefaults())
+	_ = encodeWorkerResponse(w, resp.WithDefaults())
 }
 
 func normalizeHandlerResponse(req Request, resp Response) Response {

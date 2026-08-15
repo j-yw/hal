@@ -64,7 +64,7 @@ Examples:
   hal auto --sandbox                 # Run inside a sandbox
   hal auto --sandbox --sandbox-name worker-1 # Run inside a named sandbox
   hal auto --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
-  hal auto --sandbox --sandbox-apply    # Explicit opt-in to automatic eligible host apply
+  hal auto --sandbox --sandbox-apply    # Run a new execution, then apply its eligible artifacts
   hal auto --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection
 
 ```
@@ -92,24 +92,26 @@ hal auto [prd-path] [flags]
 ### Options
 
 ```
-  -b, --base string              Base branch for new work branch and PR target (default: current branch, or HEAD when detached)
-      --dry-run                  Show steps without executing
-  -e, --engine string            Engine to use (claude, codex, pi) (default "codex")
-  -h, --help                     help for auto
-      --json                     Output machine-readable JSON result
-  -m, --mode string              Policy preset: fast, balanced, strict (default from config)
-      --no-ci                    Disable CI gate for this run
-      --no-review                Disable review gate for this run
-      --report string            Specific report file (overrides markdown auto-discovery, skips find latest)
-      --resume                   Continue from last saved state
-      --review-max int           Maximum review cycles before failing (default from mode/config)
-      --review-streak int        Consecutive clean review cycles required (default from mode/config)
-      --sandbox                  Run inside a sandbox
-      --sandbox-apply            explicit opt-in: dry-run and apply eligible sandbox sync-out artifacts to the host worktree
-      --sandbox-host string      Cached sandbox host ID for target selection
-      --sandbox-name string      Sandbox name for --sandbox execution
-      --sandbox-runtime string   Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
-      --sandbox-sync-out         Collect sandbox sync-out metadata without applying to the host worktree
+  -b, --base string                     Base branch for new work branch and PR target (default: current branch, or HEAD when detached)
+      --dry-run                         Show steps without executing
+  -e, --engine string                   Engine to use (claude, codex, pi) (default "codex")
+  -h, --help                            help for auto
+      --json                            Output machine-readable JSON result
+  -m, --mode string                     Policy preset: fast, balanced, strict (default from config)
+      --no-ci                           Disable CI gate for this run
+      --no-review                       Disable review gate for this run
+      --report string                   Specific report file (overrides markdown auto-discovery, skips find latest)
+      --resume                          Continue from last saved state
+      --review-max int                  Maximum review cycles before failing (default from mode/config)
+      --review-streak int               Consecutive clean review cycles required (default from mode/config)
+      --sandbox                         Run inside a sandbox
+      --sandbox-apply                   explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree
+      --sandbox-host string             Cached sandbox host ID for target selection
+      --sandbox-name string             Sandbox name for --sandbox execution
+      --sandbox-runtime string          Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
+      --sandbox-sync-out                Collect sandbox sync-out metadata without applying to the host worktree
+      --sandbox-template string         OCI sandbox template reference to select before runtime construction
+      --sandbox-template-trust string   Sandbox template trust mode (strict or advisory) (default "strict")
 ```
 
 ### SEE ALSO

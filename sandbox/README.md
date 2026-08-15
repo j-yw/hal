@@ -42,6 +42,9 @@ curl -fsSL https://raw.githubusercontent.com/ReScienceLab/hal/main/sandbox/setup
 
 ### Option 2: Rootless Podman lab
 
+Linux uses native rootless Podman with isolated lab storage. macOS and explicit
+`HAL_SANDBOX_LAB_PODMAN_MODE=machine` runs use a named Podman machine.
+
 ```bash
 make sandbox-lab-prepare
 make sandbox-lab-start

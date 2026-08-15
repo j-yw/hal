@@ -26,6 +26,7 @@ type MachineConfigPayload struct {
 type BootSourcePayload struct {
 	KernelImagePath string  `json:"kernel_image_path"`
 	InitrdPath      *string `json:"initrd_path,omitempty"`
+	BootArgs        string  `json:"boot_args,omitempty"`
 }
 
 // RootDrivePayload is the JSON-compatible Firecracker block-device request
@@ -55,6 +56,10 @@ func RenderMachineConfigPayload(config BackendConfig) (MachineConfigPayload, err
 // RenderBootSourcePayload derives the Firecracker boot-source payload without
 // touching host files or requiring a Firecracker binary.
 func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
+	bootArgs, err := productionBootArgs(config)
+	if err != nil {
+		return BootSourcePayload{}, err
+	}
 	if config.LaunchDescriptor != nil {
 		launchAssets, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, PayloadRenderingOperation)
 		if err != nil {
@@ -63,6 +68,7 @@ func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
 		return BootSourcePayload{
 			KernelImagePath: launchAssets.kernelPath(),
 			InitrdPath:      launchAssets.initrdPath(),
+			BootArgs:        bootArgs,
 		}, nil
 	}
 	kernelImagePath := strings.TrimSpace(config.KernelImagePath)
@@ -72,7 +78,25 @@ func RenderBootSourcePayload(config BackendConfig) (BootSourcePayload, error) {
 	return BootSourcePayload{
 		KernelImagePath: kernelImagePath,
 		InitrdPath:      optionalPayloadPath(config.InitrdPath),
+		BootArgs:        bootArgs,
 	}, nil
+}
+
+func productionBootArgs(config BackendConfig) (string, error) {
+	if !config.ProductionVsock {
+		if mode := strings.TrimSpace(string(config.NetworkMode)); mode != "" && mode != string(microvm.NetworkModeNoLiveNetworking) {
+			return "", newPayloadRenderingError("networkMode", "live networking requires production guest readiness")
+		}
+		return "", nil
+	}
+	_, staticNetwork, err := renderNetworkInterfaces(config)
+	if err != nil {
+		return "", err
+	}
+	if staticNetwork == nil {
+		return l5ProductionBootArgs, nil
+	}
+	return l7ProductionBootArgs(*staticNetwork)
 }
 
 // RenderRootDrivePayload derives the Firecracker root block-device payload
@@ -87,7 +111,7 @@ func RenderRootDrivePayload(config BackendConfig) (RootDrivePayload, error) {
 			DriveID:      defaultRootDriveID,
 			PathOnHost:   launchAssets.rootfsPath(),
 			IsRootDevice: true,
-			IsReadOnly:   false,
+			IsReadOnly:   config.ProductionVsock,
 		}, nil
 	}
 	rootfsPath := strings.TrimSpace(config.RootfsPath)
@@ -98,7 +122,7 @@ func RenderRootDrivePayload(config BackendConfig) (RootDrivePayload, error) {
 		DriveID:      defaultRootDriveID,
 		PathOnHost:   rootfsPath,
 		IsRootDevice: true,
-		IsReadOnly:   false,
+		IsReadOnly:   config.ProductionVsock,
 	}, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	pathpkg "path"
@@ -29,7 +30,8 @@ var errStoreRootUnavailable = errors.New("no sandbox execution store root availa
 
 // Store addresses durable local non-factory sandbox execution records.
 type Store struct {
-	root string
+	root      string
+	lockScope *executionLockScope
 }
 
 // NewStore returns a store rooted at root. Tests use this to operate in temp
@@ -64,21 +66,40 @@ func (s Store) Root() string {
 // ResolveStoredPath returns the local filesystem path for a store-relative
 // artifact payload that is already scoped to executionID.
 func (s Store) ResolveStoredPath(executionID, storedPath string) (string, error) {
-	executionID, err := validateExecutionID(executionID)
+	file, err := s.OpenStoredFile(executionID, storedPath)
 	if err != nil {
 		return "", err
 	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close sandbox execution stored payload")
+	}
+	clean, _ := validateStoreRelativePath(storedPath)
+	return filepath.Join(s.root, filepath.FromSlash(clean)), nil
+}
+
+// OpenStoredFile opens a verified regular payload without following a final
+// symlink. Callers should consume the returned descriptor rather than reopen
+// the path after validation.
+func (s Store) OpenStoredFile(executionID, storedPath string) (*os.File, error) {
+	executionID, err := validateExecutionID(executionID)
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(s.root) == "" {
-		return "", errStoreRootUnavailable
+		return nil, errStoreRootUnavailable
 	}
 	clean, err := validateStoreRelativePath(storedPath)
 	if err != nil {
-		return "", fmt.Errorf("sandbox execution stored path is invalid: %w", err)
+		return nil, fmt.Errorf("sandbox execution stored path is invalid: %w", err)
 	}
 	if clean == executionID || !strings.HasPrefix(clean, executionID+"/") {
-		return "", fmt.Errorf("sandbox execution stored path is not scoped under execution %q", executionID)
+		return nil, fmt.Errorf("sandbox execution stored path is not scoped under execution %q", executionID)
 	}
-	return filepath.Join(s.root, filepath.FromSlash(clean)), nil
+	parts := strings.Split(clean, "/")
+	if len(parts) < 3 || !validPayloadArea(parts[1]) {
+		return nil, fmt.Errorf("sandbox execution stored path is not a payload")
+	}
+	return openVerifiedContainedPrivateRegularFile(s.root, parts, "sandbox execution stored payload")
 }
 
 // Ensure creates the store root, execution directory, and known payload
@@ -97,16 +118,32 @@ func (s Store) Ensure(executionID string) error {
 		name string
 		path string
 	}{
-		{name: "sandbox execution store", path: s.root},
 		{name: "sandbox execution", path: executionDir},
 		{name: "sandbox execution logs", path: filepath.Join(executionDir, logsDirName)},
 		{name: "sandbox execution artifacts", path: filepath.Join(executionDir, artifactsDirName)},
 		{name: "sandbox execution handoff", path: filepath.Join(executionDir, handoffDirName)},
 		{name: "sandbox execution recovery", path: filepath.Join(executionDir, recoveryDirName)},
 	}
+	if err := ensurePrivateStoreRoot(s.root); err != nil {
+		return err
+	}
+	// Validate every existing component before creating anything so an unsafe
+	// partial layout is rejected without chmod, deletion, or additive mutation.
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir.path, 0o700); err != nil {
-			return fmt.Errorf("create %s dir: %w", dir.name, err)
+		info, err := os.Lstat(dir.path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return filesystemUnavailable(dir.name, err)
+		}
+		if err := validatePrivateDirectoryInfo(info, dir.name); err != nil {
+			return err
+		}
+	}
+	for _, dir := range dirs {
+		if err := ensurePrivateDirectory(dir.path, dir.name); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -141,7 +178,14 @@ func (s Store) SaveManifest(manifest *Manifest) error {
 	}
 	data = append(data, '\n')
 
-	if err := writeStoreFileAtomic(path, data, 0o600); err != nil {
+	if _, err := writeStoreBytesAtomic(
+		s.root,
+		[]string{manifest.ID, manifestFileName},
+		path,
+		data,
+		0o600,
+		false,
+	); err != nil {
 		return fmt.Errorf("save sandbox execution manifest %q: %w", manifest.ID, err)
 	}
 	return nil
@@ -153,7 +197,13 @@ func (s Store) LoadManifest(executionID string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	manifest, err := loadManifestFile(path, executionID)
+	if err := validatePrivateStoreRoot(s.root); err != nil {
+		return nil, err
+	}
+	if err := validatePrivateDirectory(filepath.Dir(path), "sandbox execution"); err != nil {
+		return nil, err
+	}
+	manifest, err := loadManifestFile(s.root, executionID)
 	if err == nil {
 		return manifest, nil
 	}
@@ -174,26 +224,126 @@ func (s Store) AppendArtifactMetadata(executionID string, metadata ArtifactMetad
 		return nil
 	}
 
+	return s.UpdateManifest(executionID, func(manifest *Manifest) error {
+		if manifest.ArtifactMetadata == nil {
+			manifest.ArtifactMetadata = &ArtifactMetadata{}
+		}
+		manifest.ArtifactMetadata.Collected = append(manifest.ArtifactMetadata.Collected, metadata.Collected...)
+		manifest.ArtifactMetadata.Partial = append(manifest.ArtifactMetadata.Partial, metadata.Partial...)
+		manifest.ArtifactMetadata.Warnings = append(manifest.ArtifactMetadata.Warnings, metadata.Warnings...)
+		return nil
+	})
+}
+
+// UpdateManifest atomically loads, mutates, validates, and saves one manifest
+// while holding its per-execution OS lock.
+func (s Store) UpdateManifest(executionID string, update func(*Manifest) error) error {
+	executionID, err := validateExecutionID(executionID)
+	if err != nil {
+		return err
+	}
+	if update == nil {
+		return fmt.Errorf("sandbox execution manifest update callback is required")
+	}
+	if leaveScope := s.enterLockScope(executionID); leaveScope != nil {
+		defer leaveScope()
+		return s.updateManifestUnlocked(executionID, update)
+	}
+	return s.WithExecutionLock(executionID, func() error {
+		return s.updateManifestUnlocked(executionID, update)
+	})
+}
+
+func (s Store) updateManifestUnlocked(executionID string, update func(*Manifest) error) error {
 	manifest, err := s.LoadManifest(executionID)
 	if err != nil {
 		return err
 	}
 	if manifest.ID != executionID {
-		return fmt.Errorf("sandbox execution manifest %q has ID %q", executionID, manifest.ID)
+		return fmt.Errorf("sandbox execution manifest %q has mismatched ID", executionID)
 	}
-	if manifest.ArtifactMetadata == nil {
-		manifest.ArtifactMetadata = &ArtifactMetadata{}
+	if err := update(manifest); err != nil {
+		return err
 	}
-	manifest.ArtifactMetadata.Collected = append(manifest.ArtifactMetadata.Collected, metadata.Collected...)
-	manifest.ArtifactMetadata.Partial = append(manifest.ArtifactMetadata.Partial, metadata.Partial...)
-	manifest.ArtifactMetadata.Warnings = append(manifest.ArtifactMetadata.Warnings, metadata.Warnings...)
+	if manifest.ID != executionID {
+		return fmt.Errorf("sandbox execution manifest update changed ID")
+	}
 	return s.SaveManifest(manifest)
+}
+
+// UpsertArtifactMetadata merges retry-safe artifact metadata under the
+// execution lock. Stable artifact identities replace retry entries in place
+// while unrelated metadata and ordering are preserved.
+func (s Store) UpsertArtifactMetadata(executionID string, metadata ArtifactMetadata) error {
+	attempted := make([]ArtifactMetadataEntry, 0, len(metadata.Collected)+len(metadata.Partial)+len(metadata.Warnings))
+	attempted = append(attempted, metadata.Collected...)
+	attempted = append(attempted, metadata.Partial...)
+	for _, warning := range metadata.Warnings {
+		attempted = append(attempted, warning.Artifact)
+	}
+	return s.ReplaceArtifactAttemptMetadata(executionID, attempted, metadata)
+}
+
+// ReplaceArtifactAttemptMetadata replaces the current collected/partial/warning
+// state for stable artifact identities attempted by one retry. This permits a
+// successful empty retry to clear a previous partial result without disturbing
+// unrelated artifacts.
+func (s Store) ReplaceArtifactAttemptMetadata(
+	executionID string,
+	attempted []ArtifactMetadataEntry,
+	metadata ArtifactMetadata,
+) error {
+	executionID, err := validateExecutionID(executionID)
+	if err != nil {
+		return err
+	}
+	if len(attempted) == 0 && isArtifactMetadataEmpty(metadata) {
+		return nil
+	}
+	attemptKeys := make(map[string]struct{}, len(attempted))
+	for _, entry := range attempted {
+		attempt := entry
+		attempt.StoredPath = ""
+		attempt.SizeBytes = nil
+		attempt.CreatedAt = nil
+		if err := validateArtifactFileMetadataInput(attempt); err != nil {
+			return err
+		}
+		attemptKeys[artifactMetadataEntryStableKey(entry)] = struct{}{}
+	}
+	if err := validateArtifactCollectionMetadata(executionID, &metadata); err != nil {
+		return err
+	}
+	return s.UpdateManifest(executionID, func(manifest *Manifest) error {
+		existing := ArtifactMetadata{}
+		if manifest.ArtifactMetadata != nil {
+			existing = *manifest.ArtifactMetadata
+		}
+		existing.Collected = removeArtifactEntriesByStableKey(existing.Collected, attemptKeys)
+		existing.Partial = removeArtifactEntriesByStableKey(existing.Partial, attemptKeys)
+		existing.Warnings = removeArtifactWarningsByStableKey(existing.Warnings, attemptKeys)
+		existing.Collected = upsertArtifactEntries(existing.Collected, metadata.Collected)
+		existing.Partial = upsertArtifactEntries(existing.Partial, metadata.Partial)
+		existing.Partial = removeCollectedArtifactEntries(existing.Partial, existing.Collected)
+		existing.Warnings = upsertArtifactWarnings(existing.Warnings, metadata.Warnings)
+		if isArtifactMetadataEmpty(existing) {
+			manifest.ArtifactMetadata = nil
+			return nil
+		}
+		manifest.ArtifactMetadata = &existing
+		return nil
+	})
 }
 
 // ListManifests returns committed manifests sorted by started time, then ID.
 func (s Store) ListManifests() ([]Manifest, error) {
 	if strings.TrimSpace(s.root) == "" {
 		return nil, errStoreRootUnavailable
+	}
+	if err := validatePrivateStoreRoot(s.root); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
 	}
 	entries, err := os.ReadDir(s.root)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -205,6 +355,12 @@ func (s Store) ListManifests() ([]Manifest, error) {
 
 	manifests := make([]Manifest, 0, len(entries))
 	for _, entry := range entries {
+		if entry.Type()&fs.ModeSymlink != 0 {
+			if _, err := validateExecutionID(entry.Name()); err == nil {
+				return nil, fmt.Errorf("sandbox execution is a symlink")
+			}
+			continue
+		}
 		if !entry.IsDir() {
 			continue
 		}
@@ -212,8 +368,10 @@ func (s Store) ListManifests() ([]Manifest, error) {
 		if err != nil {
 			continue
 		}
-		path := filepath.Join(s.root, executionID, manifestFileName)
-		manifest, err := loadManifestFile(path, executionID)
+		if err := validatePrivateDirectory(filepath.Join(s.root, executionID), "sandbox execution"); err != nil {
+			return nil, err
+		}
+		manifest, err := loadManifestFile(s.root, executionID)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -239,15 +397,14 @@ func (s Store) Remove(executionID string) error {
 	if err != nil {
 		return err
 	}
-	info, err := os.Lstat(executionDir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("sandbox execution %q does not exist: %w", executionID, err)
+	if err := validatePrivateStoreRoot(s.root); err != nil {
+		return err
 	}
-	if err != nil {
-		return fmt.Errorf("stat sandbox execution %q: %w", executionID, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("sandbox execution %q is not a directory", executionID)
+	if err := validatePrivateDirectory(executionDir, "sandbox execution"); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("sandbox execution %q does not exist: %w", executionID, fs.ErrNotExist)
+		}
+		return err
 	}
 	if err := os.RemoveAll(executionDir); err != nil {
 		return fmt.Errorf("remove sandbox execution %q: %w", executionID, err)
@@ -282,6 +439,18 @@ func validateManifestForSave(manifest *Manifest) error {
 	if manifest.StartedAt.IsZero() {
 		return fmt.Errorf("sandbox execution startedAt is required")
 	}
+	if manifest.SandboxID != "" && !validWorkerJobSafeID(manifest.SandboxID) {
+		return fmt.Errorf("sandbox execution sandboxId is invalid")
+	}
+	if err := validateWorkerJobReference(manifest.WorkerJob); err != nil {
+		return err
+	}
+	if err := validateFinalizationMetadata(manifest.Finalization); err != nil {
+		return err
+	}
+	if err := validateManifestTerminalPublication(manifest); err != nil {
+		return err
+	}
 	for _, artifact := range manifest.Artifacts {
 		if err := validateArtifactMetadata(manifest.ID, artifact); err != nil {
 			return err
@@ -293,18 +462,138 @@ func validateManifestForSave(manifest *Manifest) error {
 	return nil
 }
 
+func validateManifestTerminalPublication(manifest *Manifest) error {
+	if manifest == nil ||
+		manifest.Finalization == nil ||
+		!manifest.Finalization.Checkpoints.TerminalPublication.Completed {
+		return nil
+	}
+	terminalState := strings.TrimSpace(manifest.Finalization.TerminalJobState)
+	switch terminalState {
+	case "succeeded", "failed", "canceled":
+	default:
+		return fmt.Errorf("sandbox execution terminal publication state is invalid")
+	}
+	if manifest.WorkerJob == nil ||
+		strings.TrimSpace(manifest.WorkerJob.State) != terminalState ||
+		string(manifest.Status) != terminalState ||
+		manifest.FinishedAt == nil ||
+		manifest.WorkerJob.FinishedAt == nil ||
+		!manifest.FinishedAt.Equal(*manifest.WorkerJob.FinishedAt) {
+		return fmt.Errorf("sandbox execution terminal publication is inconsistent")
+	}
+	return nil
+}
+
 func isArtifactMetadataEmpty(metadata ArtifactMetadata) bool {
 	return len(metadata.Collected) == 0 && len(metadata.Partial) == 0 && len(metadata.Warnings) == 0
 }
 
-func loadManifestFile(path, executionID string) (*Manifest, error) {
-	data, err := os.ReadFile(path)
+func upsertArtifactEntries(existing, incoming []ArtifactMetadataEntry) []ArtifactMetadataEntry {
+	merged := make([]ArtifactMetadataEntry, 0, len(existing)+len(incoming))
+	indexes := make(map[string]int, len(existing)+len(incoming))
+	for _, entry := range append(append([]ArtifactMetadataEntry(nil), existing...), incoming...) {
+		key := artifactMetadataEntryStableKey(entry)
+		if index, ok := indexes[key]; ok {
+			merged[index] = entry
+			continue
+		}
+		indexes[key] = len(merged)
+		merged = append(merged, entry)
+	}
+	return merged
+}
+
+func upsertArtifactWarnings(existing, incoming []ArtifactWarning) []ArtifactWarning {
+	merged := make([]ArtifactWarning, 0, len(existing)+len(incoming))
+	indexes := make(map[string]int, len(existing)+len(incoming))
+	for _, warning := range append(append([]ArtifactWarning(nil), existing...), incoming...) {
+		key := strings.TrimSpace(warning.Phase) + "\x00" + artifactMetadataEntryStableKey(warning.Artifact)
+		if index, ok := indexes[key]; ok {
+			merged[index] = warning
+			continue
+		}
+		indexes[key] = len(merged)
+		merged = append(merged, warning)
+	}
+	return merged
+}
+
+func removeCollectedArtifactEntries(partial, collected []ArtifactMetadataEntry) []ArtifactMetadataEntry {
+	collectedKeys := make(map[string]struct{}, len(collected))
+	for _, entry := range collected {
+		collectedKeys[artifactMetadataEntryStableKey(entry)] = struct{}{}
+	}
+	filtered := make([]ArtifactMetadataEntry, 0, len(partial))
+	for _, entry := range partial {
+		if _, collected := collectedKeys[artifactMetadataEntryStableKey(entry)]; collected {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func removeArtifactEntriesByStableKey(entries []ArtifactMetadataEntry, keys map[string]struct{}) []ArtifactMetadataEntry {
+	if len(keys) == 0 {
+		return entries
+	}
+	filtered := make([]ArtifactMetadataEntry, 0, len(entries))
+	for _, entry := range entries {
+		if _, remove := keys[artifactMetadataEntryStableKey(entry)]; remove {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func removeArtifactWarningsByStableKey(warnings []ArtifactWarning, keys map[string]struct{}) []ArtifactWarning {
+	if len(keys) == 0 {
+		return warnings
+	}
+	filtered := make([]ArtifactWarning, 0, len(warnings))
+	for _, warning := range warnings {
+		if _, remove := keys[artifactMetadataEntryStableKey(warning.Artifact)]; remove {
+			continue
+		}
+		filtered = append(filtered, warning)
+	}
+	return filtered
+}
+
+func artifactMetadataEntryStableKey(entry ArtifactMetadataEntry) string {
+	if id := strings.TrimSpace(entry.ID); id != "" {
+		return "id:" + id
+	}
+	return "path:" + entry.Path
+}
+
+func loadManifestFile(root, executionID string) (*Manifest, error) {
+	file, err := openVerifiedContainedPrivateRegularFile(root, []string{executionID, manifestFileName}, "sandbox execution manifest")
 	if err != nil {
 		return nil, fmt.Errorf("read sandbox execution manifest %q: %w", executionID, err)
 	}
+	data, err := io.ReadAll(file)
+	closeErr := file.Close()
+	if err != nil || closeErr != nil {
+		return nil, fmt.Errorf("read sandbox execution manifest %q", executionID)
+	}
 	var manifest Manifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("parse sandbox execution manifest %q: %w", executionID, err)
+		if strings.Contains(err.Error(), "finalization") {
+			return nil, fmt.Errorf("parse sandbox execution manifest %q: finalization metadata is invalid", executionID)
+		}
+		if strings.Contains(err.Error(), "workerJob") {
+			return nil, fmt.Errorf("parse sandbox execution manifest %q: workerJob metadata is invalid", executionID)
+		}
+		return nil, fmt.Errorf("parse sandbox execution manifest %q: manifest JSON is invalid", executionID)
+	}
+	if err := validateManifestForSave(&manifest); err != nil {
+		return nil, fmt.Errorf("sandbox execution manifest %q is invalid", executionID)
+	}
+	if manifest.ID != executionID {
+		return nil, fmt.Errorf("sandbox execution manifest %q has mismatched ID", executionID)
 	}
 	return &manifest, nil
 }
@@ -445,46 +734,11 @@ func validateStoreRelativePath(value string) (string, error) {
 	return clean, nil
 }
 
-func writeStoreFileAtomic(path string, data []byte, mode fs.FileMode) error {
-	tmpPath := path + tempFileSuffix
-	if err := os.WriteFile(tmpPath, data, mode); err != nil {
-		return err
+func validPayloadArea(area string) bool {
+	switch area {
+	case logsDirName, artifactsDirName, handoffDirName, recoveryDirName:
+		return true
+	default:
+		return false
 	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	if err := renameStoreFile(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	return nil
-}
-
-func renameStoreFile(tmpPath, path string) error {
-	if err := os.Rename(tmpPath, path); err == nil {
-		return nil
-	} else if !isRenameNoReplaceError(err) {
-		return err
-	}
-
-	backupPath := path + backupFileSuffix
-	if err := os.Remove(backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	if err := os.Rename(path, backupPath); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		if restoreErr := os.Rename(backupPath, path); restoreErr != nil {
-			return fmt.Errorf("%w (restore failed: %v)", err, restoreErr)
-		}
-		return err
-	}
-	_ = os.Remove(backupPath)
-	return nil
-}
-
-func isRenameNoReplaceError(err error) bool {
-	return errors.Is(err, fs.ErrExist) || os.IsExist(err)
 }

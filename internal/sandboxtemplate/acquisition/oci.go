@@ -2,6 +2,8 @@ package acquisition
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 
 	"github.com/jywlabs/hal/internal/sandboxtemplate"
@@ -60,11 +62,7 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return ResolveResult{}, &ResolveError{
-			Code:    ResolveErrorCodeInvalidSource,
-			Message: "template resolution was canceled",
-			Err:     err,
-		}
+		return ResolveResult{}, canceledResolutionError(err)
 	}
 	if request.Source.Kind != SourceKindOCIArtifact {
 		return ResolveResult{}, unsupportedSourceError()
@@ -85,13 +83,18 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 	})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ResolveResult{}, &ResolveError{
-				Code:    ResolveErrorCodeInvalidSource,
-				Message: "template resolution was canceled",
-				Err:     ctxErr,
-			}
+			return ResolveResult{}, canceledResolutionError(ctxErr)
+		}
+		if code, ok := safeOCIArtifactResolveErrorCode(err); ok {
+			return ResolveResult{}, &ResolveError{Code: code, Err: err}
 		}
 		return ResolveResult{}, resolverUnavailableError()
+	}
+	if err := ctx.Err(); err != nil {
+		return ResolveResult{}, canceledResolutionError(err)
+	}
+	if err := verifyOCIArtifactMeasuredEvidence(artifact); err != nil {
+		return ResolveResult{}, err
 	}
 
 	format := artifact.Format
@@ -117,10 +120,64 @@ func (r OCIResolver) Resolve(ctx context.Context, request ResolveRequest) (Resol
 	}
 
 	sanitized := sandboxtemplate.SanitizeTemplate(*validation.Normalized)
+	if err := ctx.Err(); err != nil {
+		return ResolveResult{}, canceledResolutionError(err)
+	}
 	return ResolveResult{
 		Template: sanitized,
 		Lock:     ociTemplateLock(artifact, sanitized, request.LockedAtUnixMillis),
 	}, nil
+}
+
+type safeOCIArtifactResolveError interface {
+	SafeCode() string
+}
+
+func safeOCIArtifactResolveErrorCode(err error) (ResolveErrorCode, bool) {
+	var coded safeOCIArtifactResolveError
+	if !errors.As(err, &coded) {
+		return "", false
+	}
+	code := ResolveErrorCode(coded.SafeCode())
+	switch code {
+	case "invalid_reference",
+		"request_canceled",
+		"request_timeout",
+		"registry_unavailable",
+		"address_rejected",
+		"authentication_failed",
+		"authentication_challenge_invalid",
+		"authentication_response_oversize",
+		"response_headers_oversize",
+		"response_headers_invalid",
+		"redirect_rejected",
+		"manifest_oversize",
+		"manifest_media_type_unsupported",
+		"manifest_invalid",
+		"manifest_digest_mismatch",
+		"tag_mutated",
+		"artifact_type_unsupported",
+		"layer_count_invalid",
+		"layer_media_type_unsupported",
+		"layer_oversize",
+		"layer_digest_mismatch",
+		"cache_invalid",
+		"cache_publish_failed":
+		return code, true
+	default:
+		return "", false
+	}
+}
+
+func canceledResolutionError(err error) *ResolveError {
+	code := ResolveErrorCodeRequestCanceled
+	if errors.Is(err, context.DeadlineExceeded) {
+		code = ResolveErrorCodeRequestTimeout
+	}
+	return &ResolveError{
+		Code: code,
+		Err:  err,
+	}
 }
 
 func resolverUnavailableError() *ResolveError {
@@ -266,6 +323,7 @@ func cloneOCIArtifactResolveRequest(request OCIArtifactResolveRequest) OCIArtifa
 func cloneOCIArtifactResolveResult(result OCIArtifactResolveResult) OCIArtifactResolveResult {
 	out := OCIArtifactResolveResult{
 		TemplateBytes:          append([]byte(nil), result.TemplateBytes...),
+		ArtifactManifestBytes:  append([]byte(nil), result.ArtifactManifestBytes...),
 		Format:                 result.Format,
 		DocumentDigest:         cloneDigestMetadata(result.DocumentDigest),
 		TemplateArtifactDigest: cloneDigestMetadata(result.TemplateArtifactDigest),
@@ -275,14 +333,53 @@ func cloneOCIArtifactResolveResult(result OCIArtifactResolveResult) OCIArtifactR
 		out.ReferenceDigests = make([]ReferenceDigestProof, 0, len(result.ReferenceDigests))
 		for _, proof := range result.ReferenceDigests {
 			out.ReferenceDigests = append(out.ReferenceDigests, ReferenceDigestProof{
-				Field:  proof.Field,
-				Kind:   proof.Kind,
-				Ref:    proof.Ref,
-				Digest: cloneDigestMetadata(proof.Digest),
+				Field:         proof.Field,
+				Kind:          proof.Kind,
+				Ref:           proof.Ref,
+				Digest:        cloneDigestMetadata(proof.Digest),
+				VerifiedBytes: append([]byte(nil), proof.VerifiedBytes...),
 			})
 		}
 	}
 	return out
+}
+
+func verifyOCIArtifactMeasuredEvidence(artifact OCIArtifactResolveResult) error {
+	if artifact.SizeBytes > 0 && artifact.SizeBytes != int64(len(artifact.TemplateBytes)) {
+		return ociDigestMismatchError()
+	}
+	if artifact.DocumentDigest != nil && !digestMatchesBytes(artifact.DocumentDigest, artifact.TemplateBytes) {
+		return ociDigestMismatchError()
+	}
+	if artifact.TemplateArtifactDigest != nil &&
+		(len(artifact.ArtifactManifestBytes) == 0 || !digestMatchesBytes(artifact.TemplateArtifactDigest, artifact.ArtifactManifestBytes)) {
+		return ociDigestMismatchError()
+	}
+	for _, proof := range artifact.ReferenceDigests {
+		if proof.Digest == nil {
+			continue
+		}
+		if len(proof.VerifiedBytes) == 0 || !digestMatchesBytes(proof.Digest, proof.VerifiedBytes) {
+			return ociDigestMismatchError()
+		}
+	}
+	return nil
+}
+
+func digestMatchesBytes(digest *sandboxtemplate.DigestMetadata, data []byte) bool {
+	if digest == nil || digest.Algorithm != sandboxtemplate.DigestAlgorithmSHA256 || len(digest.Value) != 64 {
+		return false
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]) == digest.Value
+}
+
+func ociDigestMismatchError() *ResolveError {
+	return &ResolveError{
+		Code:    ResolveErrorCodeDigestMismatch,
+		Message: "oci template digest evidence does not match verified bytes",
+		Err:     ErrInvalidSource,
+	}
 }
 
 func cloneImmutableRefValue(ref sandboxtemplate.ImmutableRef) sandboxtemplate.ImmutableRef {

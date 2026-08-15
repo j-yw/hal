@@ -2,7 +2,9 @@ package guestagent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,9 @@ import (
 
 func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 	var operations []Operation
+	copyInPayload := []byte("copy payload")
+	copyInSum := sha256.Sum256(copyInPayload)
+	copyInDigest := "sha256:" + hex.EncodeToString(copyInSum[:])
 	client, err := NewClient(ClientOptions{
 		Transport: TransportFunc(func(_ context.Context, request TransportRequest) (TransportResponse, error) {
 			operations = append(operations, request.Operation)
@@ -52,19 +57,19 @@ func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationExec,
 					ExitCode:        7,
-					Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 1024},
-					Stderr:          StreamMetadata{SizeBytes: 3, MaxBytes: 1024},
+					Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString([]byte("ok"))},
+					Stderr:          StreamMetadata{SizeBytes: 3, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString([]byte("err"))},
 				}), nil
 			case OperationCopyIn:
 				var decoded CopyInRequest
 				decodeClientRequest(t, request.Encoded, &decoded)
-				if decoded.DestinationPath != "/workspace/input.txt" || decoded.Payload.SizeBytes != 12 || decoded.Payload.Data == "" || decoded.Payload.Encoding != PayloadEncodingBase64 {
+				if decoded.DestinationPath != "/workspace/input.txt" || decoded.Payload.SizeBytes != 12 || decoded.Payload.Data == "" || decoded.Payload.Digest != copyInDigest || decoded.Payload.Encoding != PayloadEncodingBase64 {
 					t.Fatalf("copy_in request = %#v, want guest destination and payload content", decoded)
 				}
 				return encodeClientResponse(t, CopyInResponse{
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationCopyIn,
-					Written:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64},
+					Written:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Digest: copyInDigest, Encoding: PayloadEncodingBase64},
 				}), nil
 			case OperationCopyOut:
 				var decoded CopyOutRequest
@@ -105,7 +110,7 @@ func TestClientUsesFakeTransportForReadinessExecAndCopyRequests(t *testing.T) {
 
 	copyInResponse, err := client.CopyIn(context.Background(), CopyInRequest{
 		DestinationPath: "/workspace/input.txt",
-		Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString([]byte("copy payload"))},
+		Payload:         PayloadMetadata{SizeBytes: 12, MaxBytes: 1024, Digest: copyInDigest, Encoding: PayloadEncodingBase64, Data: base64.StdEncoding.EncodeToString(copyInPayload)},
 	})
 	if err != nil {
 		t.Fatalf("CopyIn() error: %v", err)
@@ -191,6 +196,267 @@ func TestClientHonorsContextCancellationAndRequestDeadlines(t *testing.T) {
 		Timing: &TimingMetadata{TimeoutMillis: 500},
 	}); err != nil {
 		t.Fatalf("Readiness(deadline) error: %v", err)
+	}
+}
+
+func TestClientCopyInPublishedOutcomeOutranksLateContext(t *testing.T) {
+	payload := []byte("published payload")
+	sum := sha256.Sum256(payload)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	request := CopyInRequest{
+		DestinationPath: "/workspace/published.txt",
+		Payload: PayloadMetadata{
+			SizeBytes: int64(len(payload)),
+			MaxBytes:  1024,
+			Digest:    digest,
+			Encoding:  PayloadEncodingBase64,
+			Data:      base64.StdEncoding.EncodeToString(payload),
+		},
+	}
+
+	tests := []struct {
+		name     string
+		response TransportResponse
+		wantCode ErrorCode
+	}{
+		{
+			name: "published success",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  1024,
+					Digest:    digest,
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+		},
+		{
+			name: "published durability uncertain",
+			response: encodeClientResponse(t, ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Error: &ProtocolError{
+					Code:      ErrorCodeDurabilityUncertain,
+					Operation: OperationCopyIn,
+					Field:     "copy",
+					Message:   "copy publication durability is uncertain",
+				},
+			}),
+			wantCode: ErrorCodeDurabilityUncertain,
+		},
+		{
+			name: "unpublished failure remains context authoritative",
+			response: encodeClientResponse(t, ErrorResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Error: &ProtocolError{
+					Code:      ErrorCodeCopyFailed,
+					Operation: OperationCopyIn,
+					Field:     "copy",
+					Message:   "copy failed",
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "stale success size remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload) - 1),
+					MaxBytes:  1024,
+					Digest:    digest,
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "stale success digest remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  1024,
+					Digest:    "sha256:" + strings.Repeat("0", 64),
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "missing success digest remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  1024,
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "oversized success limit remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  2048,
+					Digest:    digest,
+					Encoding:  PayloadEncodingBase64,
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "wrong success encoding remains context authoritative",
+			response: encodeClientResponse(t, CopyInResponse{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyIn,
+				Written: PayloadMetadata{
+					SizeBytes: int64(len(payload)),
+					MaxBytes:  1024,
+					Digest:    digest,
+					Encoding:  PayloadEncodingRaw,
+				},
+			}),
+			wantCode: ErrorCodeRequestCanceled,
+		},
+		{
+			name: "malformed durability response remains context authoritative",
+			response: TransportResponse{Encoded: []byte(
+				`{"protocolVersion":"guest-agent-v1","operation":"copy_in",` +
+					`"error":{"code":"durability_uncertain","operation":"copy_in"},"extra":true}`,
+			)},
+			wantCode: ErrorCodeRequestCanceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			client, err := NewClient(ClientOptions{
+				Transport: TransportFunc(func(context.Context, TransportRequest) (TransportResponse, error) {
+					cancel()
+					return tt.response, nil
+				}),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error: %v", err)
+			}
+
+			response, err := client.CopyIn(ctx, request)
+			if tt.wantCode == "" {
+				if err != nil {
+					t.Fatalf("CopyIn() error = %v, want published success", err)
+				}
+				if response == nil || response.Written.SizeBytes != int64(len(payload)) {
+					t.Fatalf("CopyIn() response = %#v, want published metadata", response)
+				}
+				return
+			}
+			if !clientProtocolErrorCode(err, tt.wantCode) {
+				t.Fatalf("CopyIn() error = %v, want %s", err, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestClientCopyInRequiresRequestBoundSuccessAcknowledgement(t *testing.T) {
+	payload := []byte("request-bound payload")
+	sum := sha256.Sum256(payload)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	request := CopyInRequest{
+		DestinationPath: "/workspace/request-bound.txt",
+		Payload: PayloadMetadata{
+			SizeBytes: int64(len(payload)),
+			MaxBytes:  1024,
+			Digest:    digest,
+			Encoding:  PayloadEncodingBase64,
+			Data:      base64.StdEncoding.EncodeToString(payload),
+		},
+	}
+
+	tests := []struct {
+		name    string
+		written PayloadMetadata
+	}{
+		{
+			name: "mismatched size",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload) - 1),
+				MaxBytes:  1024,
+				Digest:    digest,
+				Encoding:  PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "mismatched digest",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  1024,
+				Digest:    "sha256:" + strings.Repeat("0", 64),
+				Encoding:  PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "missing digest",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  1024,
+				Encoding:  PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "request-relative limit exceeded",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  2048,
+				Digest:    digest,
+				Encoding:  PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "wrong encoding",
+			written: PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  1024,
+				Digest:    digest,
+				Encoding:  PayloadEncodingRaw,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := NewClient(ClientOptions{
+				Transport: TransportFunc(func(context.Context, TransportRequest) (TransportResponse, error) {
+					return encodeClientResponse(t, CopyInResponse{
+						ProtocolVersion: ProtocolVersionV1,
+						Operation:       OperationCopyIn,
+						Written:         tt.written,
+					}), nil
+				}),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error: %v", err)
+			}
+
+			response, err := client.CopyIn(context.Background(), request)
+			if response != nil {
+				t.Fatalf("CopyIn() response = %#v, want nil for unbound acknowledgement", response)
+			}
+			if !clientProtocolErrorCode(err, ErrorCodeInvalidMetadata) {
+				t.Fatalf("CopyIn() error = %v, want %s", err, ErrorCodeInvalidMetadata)
+			}
+		})
 	}
 }
 

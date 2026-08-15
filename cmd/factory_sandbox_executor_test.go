@@ -4789,10 +4789,11 @@ func (fakeFactorySandboxProvider) Exec(*sandbox.ConnectInfo, []string) (*exec.Cm
 }
 
 type fakeFactorySandboxRuntimeDriver struct {
-	id       string
-	startFn  func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
-	execFn   func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
-	deleteFn func(context.Context, sandboxruntime.LifecycleRequest) error
+	id        string
+	startFn   func(context.Context, sandboxruntime.LifecycleRequest) (*sandboxruntime.Target, error)
+	inspectFn func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error)
+	execFn    func(context.Context, sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error)
+	deleteFn  func(context.Context, sandboxruntime.LifecycleRequest) error
 }
 
 func (d fakeFactorySandboxRuntimeDriver) ID() string {
@@ -4826,7 +4827,10 @@ func (d fakeFactorySandboxRuntimeDriver) Delete(ctx context.Context, req sandbox
 	return nil
 }
 
-func (d fakeFactorySandboxRuntimeDriver) Inspect(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+func (d fakeFactorySandboxRuntimeDriver) Inspect(ctx context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+	if d.inspectFn != nil {
+		return d.inspectFn(ctx, req)
+	}
 	return &req.Target, nil
 }
 

@@ -400,6 +400,76 @@ func TestRun_AllStoriesCompleteDoesNotExecuteEngine(t *testing.T) {
 	}
 }
 
+func TestRun_ReconcilesLastStoryAfterTransientPRDReadFailure(t *testing.T) {
+	stories := []engine.UserStory{
+		{ID: "US-001", Title: "First story", Priority: 1},
+		{ID: "US-002", Title: "Second story", Priority: 2},
+	}
+	wantLast := stories[len(stories)-1]
+	halDir := setupTestHalDir(t, stories)
+	prdPath := filepath.Join(halDir, template.PRDFile)
+
+	calls := 0
+	fe := &fakeEngineWithHook{
+		fakeEngine: &fakeEngine{results: []engine.Result{
+			{Success: true, Complete: false},
+			{Success: true, Complete: true},
+		}},
+		hook: func(string) {
+			calls++
+			if calls == 1 {
+				if err := os.WriteFile(prdPath, []byte("{"), 0644); err != nil {
+					t.Fatalf("write transient malformed PRD: %v", err)
+				}
+				return
+			}
+
+			completedStories := append([]engine.UserStory(nil), stories...)
+			for i := range completedStories {
+				completedStories[i].Passes = true
+			}
+			completed := engine.PRD{
+				Project:     "test",
+				BranchName:  "main",
+				UserStories: completedStories,
+			}
+			data, err := json.Marshal(completed)
+			if err != nil {
+				t.Fatalf("marshal completed PRD: %v", err)
+			}
+			if err := os.WriteFile(prdPath, data, 0644); err != nil {
+				t.Fatalf("write completed PRD: %v", err)
+			}
+		},
+	}
+
+	var logBuf bytes.Buffer
+	runner := &Runner{
+		config: Config{
+			Dir:           halDir,
+			PRDFile:       template.PRDFile,
+			ProgressFile:  template.ProgressFile,
+			MaxIterations: 2,
+			Logger:        &logBuf,
+			MaxRetries:    0,
+		},
+		engine:  fe,
+		display: engine.NewDisplay(&logBuf),
+	}
+
+	result := runner.Run(context.Background())
+
+	if !result.Success || !result.Complete || result.Error != nil {
+		t.Fatalf("result = %#v, want successful complete result", result)
+	}
+	if result.Iterations != 2 {
+		t.Fatalf("iterations = %d, want 2", result.Iterations)
+	}
+	if result.LastStoryID != wantLast.ID || result.LastStoryTitle != wantLast.Title {
+		t.Fatalf("last story = %q (%q), want %s (%s)", result.LastStoryID, result.LastStoryTitle, wantLast.ID, wantLast.Title)
+	}
+}
+
 func TestFalseComplete_StopsAfterMaxFalseCompletes(t *testing.T) {
 	stories := []engine.UserStory{{
 		ID:                 "FIX-001",

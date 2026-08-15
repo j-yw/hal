@@ -28,10 +28,15 @@ const (
 type PolicyProxyDecisionReasonCode string
 
 const (
-	PolicyProxyDecisionReasonAllowRuleMatched         PolicyProxyDecisionReasonCode = "allow_rule_matched"
-	PolicyProxyDecisionReasonDefaultDenyNoAllowRule   PolicyProxyDecisionReasonCode = "default_deny_no_allow_rule"
-	PolicyProxyDecisionReasonUnsafeDestinationBlocked PolicyProxyDecisionReasonCode = "unsafe_destination_blocked"
-	PolicyProxyDecisionReasonProxyUnsupported         PolicyProxyDecisionReasonCode = "policy_proxy_unsupported"
+	PolicyProxyDecisionReasonAllowRuleMatched            PolicyProxyDecisionReasonCode = "allow_rule_matched"
+	PolicyProxyDecisionReasonDefaultDenyNoAllowRule      PolicyProxyDecisionReasonCode = "default_deny_no_allow_rule"
+	PolicyProxyDecisionReasonUnsafeDestinationBlocked    PolicyProxyDecisionReasonCode = "unsafe_destination_blocked"
+	PolicyProxyDecisionReasonResolvedDestinationBlocked  PolicyProxyDecisionReasonCode = "resolved_destination_blocked"
+	PolicyProxyDecisionReasonDestinationResolutionFailed PolicyProxyDecisionReasonCode = "destination_resolution_failed"
+	PolicyProxyDecisionReasonRequestBoundsExceeded       PolicyProxyDecisionReasonCode = "request_bounds_exceeded"
+	PolicyProxyDecisionReasonResponseBoundsExceeded      PolicyProxyDecisionReasonCode = "response_bounds_exceeded"
+	PolicyProxyDecisionReasonUpstreamUnavailable         PolicyProxyDecisionReasonCode = "upstream_unavailable"
+	PolicyProxyDecisionReasonProxyUnsupported            PolicyProxyDecisionReasonCode = "policy_proxy_unsupported"
 )
 
 // PolicyProxyDecisionPolicy carries the sanitized plan plus validation-only
@@ -158,6 +163,11 @@ func sanitizePolicyProxyDecisionReasonCode(value PolicyProxyDecisionReasonCode) 
 	case PolicyProxyDecisionReasonAllowRuleMatched,
 		PolicyProxyDecisionReasonDefaultDenyNoAllowRule,
 		PolicyProxyDecisionReasonUnsafeDestinationBlocked,
+		PolicyProxyDecisionReasonResolvedDestinationBlocked,
+		PolicyProxyDecisionReasonDestinationResolutionFailed,
+		PolicyProxyDecisionReasonRequestBoundsExceeded,
+		PolicyProxyDecisionReasonResponseBoundsExceeded,
+		PolicyProxyDecisionReasonUpstreamUnavailable,
 		PolicyProxyDecisionReasonProxyUnsupported:
 		return normalized
 	default:

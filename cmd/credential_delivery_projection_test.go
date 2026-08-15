@@ -306,7 +306,7 @@ func TestCredentialProxyIntentKeepsLegacyAuthSyncRequestedOnly(t *testing.T) {
 }
 
 func TestRunSandboxCredentialActivationManifestProjection(t *testing.T) {
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	activation := phase51CredentialActivationSkippedResult()
 	if err := saveRunSandboxManifest(store, runSandboxRequest{
 		ExecutionID:                  "run-credential-activation-manifest",
@@ -324,7 +324,7 @@ func TestRunSandboxCredentialActivationManifestProjection(t *testing.T) {
 }
 
 func TestAutoSandboxCredentialActivationManifestProjection(t *testing.T) {
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	activation := phase51CredentialActivationFailedResult()
 	if err := saveAutoSandboxManifest(store, autoSandboxRequest{
 		ExecutionID:                  "auto-credential-activation-manifest",
@@ -342,7 +342,7 @@ func TestAutoSandboxCredentialActivationManifestProjection(t *testing.T) {
 }
 
 func TestRunSandboxCredentialActivationCommandJSONProjection(t *testing.T) {
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	if err := saveRunSandboxManifest(store, runSandboxRequest{
 		ExecutionID:                  "run-credential-activation-json",
 		ProjectDir:                   "/repo",
@@ -364,7 +364,7 @@ func TestRunSandboxCredentialActivationCommandJSONProjection(t *testing.T) {
 }
 
 func TestAutoSandboxCredentialActivationCommandJSONProjection(t *testing.T) {
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	if err := saveAutoSandboxManifest(store, autoSandboxRequest{
 		ExecutionID:                  "auto-credential-activation-json",
 		ProjectDir:                   "/repo",
@@ -386,7 +386,7 @@ func TestAutoSandboxCredentialActivationCommandJSONProjection(t *testing.T) {
 }
 
 func TestRunSandboxCredentialActivationDefaultOmission(t *testing.T) {
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	startedAt := time.Date(2026, 7, 4, 3, 20, 0, 0, time.UTC)
 	if err := saveRunSandboxManifest(store, runSandboxRequest{
 		ExecutionID: "run-credential-activation-default",
@@ -416,7 +416,7 @@ func TestRunSandboxCredentialActivationDefaultOmission(t *testing.T) {
 }
 
 func TestAutoSandboxCredentialActivationDefaultOmission(t *testing.T) {
-	store := sandboxexecution.NewStore(t.TempDir())
+	store := newPrivateSandboxExecutionTestStore(t)
 	startedAt := time.Date(2026, 7, 4, 3, 25, 0, 0, time.UTC)
 	if err := saveAutoSandboxManifest(store, autoSandboxRequest{
 		ExecutionID: "auto-credential-activation-default",

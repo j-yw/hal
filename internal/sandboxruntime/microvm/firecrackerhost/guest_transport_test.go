@@ -46,8 +46,8 @@ func TestGuestAgentTransportExecDelegatesBoundedProtocolRequestAndPropagatesOutp
 			ProtocolVersion: guestagent.ProtocolVersionV1,
 			Operation:       guestagent.OperationExec,
 			ExitCode:        23,
-			Stdout:          guestagent.StreamMetadata{Data: "guest stdout\n", SizeBytes: 13, MaxBytes: 32},
-			Stderr:          guestagent.StreamMetadata{Data: "guest stderr\n", SizeBytes: 13, MaxBytes: 16},
+			Stdout:          guestagent.StreamMetadata{Data: base64.StdEncoding.EncodeToString([]byte("guest stdout\n")), SizeBytes: 13, MaxBytes: 32, Encoding: guestagent.PayloadEncodingBase64},
+			Stderr:          guestagent.StreamMetadata{Data: base64.StdEncoding.EncodeToString([]byte("guest stderr\n")), SizeBytes: 13, MaxBytes: 16, Encoding: guestagent.PayloadEncodingBase64},
 		},
 	}
 	transport := NewGuestAgentTransport(GuestAgentTransportOptions{
@@ -165,6 +165,114 @@ func TestGuestAgentTransportCopyInSendsBoundedHostSourceBytes(t *testing.T) {
 	}
 }
 
+func TestGuestAgentTransportCopyInPreservesPublishedDurabilityUncertainOutcome(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		asResult bool
+	}{
+		{name: "client error"},
+		{name: "response error", asResult: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sourcePath := filepath.Join(t.TempDir(), "input.txt")
+			if err := os.WriteFile(sourcePath, []byte("published payload"), 0o600); err != nil {
+				t.Fatalf("WriteFile(source) error: %v", err)
+			}
+			protocolError := &guestagent.ProtocolError{
+				Code:      guestagent.ErrorCodeDurabilityUncertain,
+				Operation: guestagent.OperationCopyIn,
+				Field:     "copy",
+				Message:   "copy publication durability is uncertain",
+				Err:       errors.New("fsync /Users/alice/private/token-ghp_secret.txt endpoint=unix:///tmp/guest.sock"),
+			}
+			client := validRecordingGuestAgentClient()
+			if tt.asResult {
+				client.copyInResponse = &guestagent.CopyInResponse{
+					ProtocolVersion: guestagent.ProtocolVersionV1,
+					Operation:       guestagent.OperationCopyIn,
+					Error:           protocolError,
+				}
+			} else {
+				client.copyInErr = protocolError
+			}
+			transport := NewGuestAgentTransport(GuestAgentTransportOptions{
+				Client:                  client,
+				CopyInPayloadLimitBytes: 64,
+			})
+
+			err := transport.CopyIn(context.Background(), firecracker.GuestCopyRequest{
+				SourcePath:      sourcePath,
+				DestinationPath: "/workspace/input.txt",
+			})
+			requireGuestAgentProtocolErrorCode(t, err, guestagent.ErrorCodeDurabilityUncertain)
+
+			var publicationError interface {
+				CopyPublicationDurabilityUncertain() bool
+			}
+			if !errors.As(err, &publicationError) || !publicationError.CopyPublicationDurabilityUncertain() {
+				t.Fatalf("CopyIn() error = %v, want machine-readable uncertain publication outcome", err)
+			}
+			assertGuestAgentTransportErrorDoesNotLeak(t, err,
+				"/Users/alice",
+				"ghp_secret",
+				"unix://",
+				"/tmp",
+				"guest.sock",
+			)
+		})
+	}
+}
+
+func TestGuestAgentTransportCopyInRejectsUnboundSuccessAcknowledgement(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "input.txt")
+	payload := []byte("copy-in payload")
+	if err := os.WriteFile(sourcePath, payload, 0o600); err != nil {
+		t.Fatalf("WriteFile(source) error: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		written guestagent.PayloadMetadata
+	}{
+		{
+			name: "missing digest",
+			written: guestagent.PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  64,
+				Encoding:  guestagent.PayloadEncodingBase64,
+			},
+		},
+		{
+			name: "wrong encoding",
+			written: guestagent.PayloadMetadata{
+				SizeBytes: int64(len(payload)),
+				MaxBytes:  64,
+				Digest:    guestAgentTransportDigest(payload),
+				Encoding:  guestagent.PayloadEncodingRaw,
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := validRecordingGuestAgentClient()
+			client.copyInResponse = &guestagent.CopyInResponse{
+				ProtocolVersion: guestagent.ProtocolVersionV1,
+				Operation:       guestagent.OperationCopyIn,
+				Written:         tt.written,
+			}
+			transport := NewGuestAgentTransport(GuestAgentTransportOptions{
+				Client:                  client,
+				CopyInPayloadLimitBytes: 64,
+			})
+
+			err := transport.CopyIn(context.Background(), firecracker.GuestCopyRequest{
+				SourcePath:      sourcePath,
+				DestinationPath: "/workspace/input.txt",
+			})
+			requireGuestAgentProtocolErrorCode(t, err, guestagent.ErrorCodeInvalidMetadata)
+		})
+	}
+}
+
 func TestGuestAgentTransportCopyOutWritesBoundedGuestPayloadBytes(t *testing.T) {
 	destinationPath := filepath.Join(t.TempDir(), "nested", "output.txt")
 	payload := []byte("copy-out payload\n")
@@ -216,7 +324,7 @@ func TestGuestAgentTransportExecRejectsOutputAboveConfiguredLimitsBeforeWriting(
 			ProtocolVersion: guestagent.ProtocolVersionV1,
 			Operation:       guestagent.OperationExec,
 			ExitCode:        0,
-			Stdout:          guestagent.StreamMetadata{Data: "abcdef", SizeBytes: 6, MaxBytes: 6},
+			Stdout:          guestagent.StreamMetadata{Data: base64.StdEncoding.EncodeToString([]byte("abcdef")), SizeBytes: 6, MaxBytes: 6, Encoding: guestagent.PayloadEncodingBase64},
 			Stderr:          guestagent.StreamMetadata{MaxBytes: 5},
 		},
 	}

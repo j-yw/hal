@@ -105,8 +105,9 @@ var sandboxListInstances = sandbox.ListActiveInstances
 // registry entry before a live refresh persists updates.
 var sandboxListLoadActiveInstance = sandbox.LoadActiveInstance
 
-// sandboxListForceWrite persists live status updates back to the registry.
-var sandboxListForceWrite = sandbox.ForceWriteInstance
+// sandboxListForceWrite persists live status updates back to the exact active
+// registry instance.
+var sandboxListForceWrite = updateActiveSandboxInstanceExact
 
 // resolveProviderFromGlobalConfig creates a Provider from global config settings
 // or global defaults when the config file has not been written yet.
@@ -216,6 +217,9 @@ func runSandboxListWithWriters(out, errOut io.Writer, jsonMode, liveMode bool) e
 
 	if jsonMode {
 		renderLiveStatusWarnings(warnOut, liveWarnings, redactor)
+		if liveMode {
+			return renderSandboxL3LiveListJSON(context.Background(), out, instances)
+		}
 		return renderSandboxListJSON(out, instances, now)
 	}
 
@@ -327,7 +331,7 @@ func queryOneStatusWithRuntime(inst *sandbox.SandboxState, resolveProvider func(
 		}
 		return err
 	}
-	writeTarget, err := liveStatusWriteTarget(inst.Name, sandboxListLoadActiveInstance, sandboxListForceWrite)
+	writeTarget, err := liveStatusWriteTarget(inst, sandboxListLoadActiveInstance, sandboxListForceWrite)
 	if err != nil {
 		return fmt.Errorf("load active sandbox %q: %w", inst.Name, err)
 	}

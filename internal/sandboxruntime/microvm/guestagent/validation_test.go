@@ -46,7 +46,7 @@ func TestValidateProtocolRequestsAndResponsesAcceptValidContracts(t *testing.T) 
 					ProtocolVersion: ProtocolVersionV1,
 					Operation:       OperationExec,
 					ExitCode:        0,
-					Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 1024},
+					Stdout:          StreamMetadata{SizeBytes: 2, MaxBytes: 1024, Encoding: PayloadEncodingBase64, Data: "b2s="},
 					Stderr:          StreamMetadata{MaxBytes: 1024},
 				})
 			},
@@ -160,6 +160,12 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 			wantField: "workDir",
 		},
 		{
+			name:      "dot segment workdir",
+			err:       ValidateExecRequest(withExecRequest(func(req *ExecRequest) { req.WorkDir = "/workspace/dir/./file" })),
+			wantCode:  ErrorCodeMalformedPath,
+			wantField: "workDir",
+		},
+		{
 			name: "invalid env name",
 			err: ValidateExecRequest(withExecRequest(func(req *ExecRequest) {
 				req.Env = []EnvironmentEntry{{Name: "TOKEN=value", Source: EnvironmentSourceLiteral}}
@@ -225,6 +231,17 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 			wantField: "destinationPath",
 		},
 		{
+			name: "trailing copy path separator",
+			err: ValidateCopyOutRequest(CopyOutRequest{
+				ProtocolVersion: ProtocolVersionV1,
+				Operation:       OperationCopyOut,
+				SourcePath:      "/workspace/output/",
+				Payload:         PayloadMetadata{MaxBytes: 1024, Encoding: PayloadEncodingBase64},
+			}),
+			wantCode:  ErrorCodeMalformedPath,
+			wantField: "sourcePath",
+		},
+		{
 			name: "oversized copy payload metadata",
 			err: ValidateCopyOutRequest(CopyOutRequest{
 				ProtocolVersion: ProtocolVersionV1,
@@ -261,6 +278,23 @@ func TestValidateProtocolRequestsRejectInvalidMetadata(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertProtocolError(t, tt.err, tt.wantCode, tt.wantField)
+		})
+	}
+}
+
+func TestValidateExecRequestRejectsNonCanonicalEnvironmentSources(t *testing.T) {
+	sources := []EnvironmentSource{
+		" literal ",
+		"\tsecret",
+		"inherited\n",
+		" generated",
+	}
+	for _, source := range sources {
+		t.Run(string(source), func(t *testing.T) {
+			err := ValidateExecRequest(withExecRequest(func(req *ExecRequest) {
+				req.Env = []EnvironmentEntry{{Name: "HAL_VALUE", Source: source}}
+			}))
+			assertProtocolError(t, err, ErrorCodeInvalidMetadata, "env[0].source")
 		})
 	}
 }

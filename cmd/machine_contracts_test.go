@@ -1547,6 +1547,9 @@ func TestMachineContractFields_AutoV2Examples(t *testing.T) {
 				t.Fatalf("decode %s as AutoResult: %v", tc.path, err)
 			}
 			if tc.wantSyncOut {
+				if result.SandboxExecutionID == "" {
+					t.Fatalf("sync-out example missing decoded SandboxExecutionID")
+				}
 				if result.SyncOut == nil {
 					t.Fatalf("sync-out example missing decoded SyncOut")
 				}

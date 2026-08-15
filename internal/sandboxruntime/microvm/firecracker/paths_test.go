@@ -30,11 +30,12 @@ func TestPlanPathsReturnsDeterministicTargetPaths(t *testing.T) {
 
 	expectedStateDir := filepath.Join(baseStateDir, "runtime-alpha")
 	want := PathPlan{
-		StateDir:      expectedStateDir,
-		APISocketPath: filepath.Join(expectedStateDir, DefaultAPISocketPath),
-		LogPath:       filepath.Join(expectedStateDir, DefaultLogPath),
-		MetricsPath:   filepath.Join(expectedStateDir, DefaultMetricsPath),
-		ConfigPath:    filepath.Join(expectedStateDir, DefaultConfigPath),
+		StateDir:        expectedStateDir,
+		APISocketPath:   filepath.Join(expectedStateDir, DefaultAPISocketPath),
+		LogPath:         filepath.Join(expectedStateDir, DefaultLogPath),
+		MetricsPath:     filepath.Join(expectedStateDir, DefaultMetricsPath),
+		ConfigPath:      filepath.Join(expectedStateDir, DefaultConfigPath),
+		VsockSocketPath: filepath.Join(expectedStateDir, defaultVsockPath),
 	}
 	if first != want {
 		t.Fatalf("PlanPaths() = %#v, want %#v", first, want)

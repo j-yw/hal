@@ -30,6 +30,7 @@ import (
 	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtemplate/selection"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/jywlabs/hal/internal/verify"
@@ -62,6 +63,8 @@ var factoryRunSandboxFlag bool
 var factoryRunSandboxNameFlag string
 var factoryRunSandboxHostFlag string
 var factoryRunSandboxRuntimeFlag string
+var factoryRunSandboxTemplateFlag string
+var factoryRunSandboxTemplateTrustFlag string
 var factoryOpenExecFlag bool
 var factoryOpenJSONFlag bool
 var factoryRecoverJSONFlag bool
@@ -226,6 +229,8 @@ func init() {
 	factoryRunCmd.Flags().StringVar(&factoryRunSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
 	factoryRunCmd.Flags().StringVar(&factoryRunSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
 	factoryRunCmd.Flags().StringVar(&factoryRunSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
+	factoryRunCmd.Flags().StringVar(&factoryRunSandboxTemplateFlag, sandboxTemplateFlagName, "", "OCI sandbox template reference to select before runtime construction")
+	factoryRunCmd.Flags().StringVar(&factoryRunSandboxTemplateTrustFlag, sandboxTemplateTrustFlagName, defaultSandboxTemplateTrustMode, "Sandbox template trust mode (strict or advisory)")
 	factoryRunCmd.Flags().BoolVar(&factoryRunJSONFlag, "json", false, "Output machine-readable JSON (factory-run-v1 contract)")
 	factoryListCmd.Flags().BoolVar(&factoryListJSONFlag, "json", false, "Output machine-readable JSON (factory-list-v1 contract)")
 	factoryStatusCmd.Flags().BoolVar(&factoryStatusJSONFlag, "json", false, "Output machine-readable JSON (factory-status-v1 contract)")
@@ -340,6 +345,7 @@ var defaultFactoryPublishDeps = factoryPublishDeps{
 }
 
 type factoryRunDeps struct {
+	templateSelection      sandboxTemplateSelectionDeps
 	defaultStore           func() (factory.Store, error)
 	newRunID               func() (string, error)
 	now                    func() time.Time
@@ -418,18 +424,20 @@ var defaultFactoryRunDeps = factoryRunDeps{
 }
 
 type factoryRunRequest struct {
-	MarkdownPath   string
-	ReportPath     string
-	BaseBranch     string
-	CIPolicy       string
-	PublishPolicy  string
-	PublishFrom    string
-	Sandbox        bool
-	SandboxName    string
-	SandboxHostID  string
-	SandboxRuntime string
-	JSON           bool
-	Secrets        []factory.RunSecretInput
+	MarkdownPath      string
+	ReportPath        string
+	BaseBranch        string
+	CIPolicy          string
+	PublishPolicy     string
+	PublishFrom       string
+	Sandbox           bool
+	SandboxName       string
+	SandboxHostID     string
+	SandboxRuntime    string
+	TemplateFlags     sandboxTemplateFlagValues
+	TemplateSelection *selection.Result
+	JSON              bool
+	Secrets           []factory.RunSecretInput
 
 	ResolvedSecrets []factory.ResolvedRunSecret
 
@@ -825,6 +833,21 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 	if req.Sandbox && strings.TrimSpace(req.BaseBranch) == "" {
 		return failFactoryRunSetup(store, record, deps.now(), fmt.Errorf("--base is required when --sandbox is set"), factory.RunSecretRedactor{})
 	}
+	templateSelection, err := executeSandboxTemplateSelectionBeforeConstruction(ctx, sandboxTemplateConstructionRequest{
+		Command:          "factory",
+		RequestedRuntime: req.SandboxRuntime,
+		Selection: sandboxTemplateSelectionRequest{
+			Command: "factory",
+			Flags:   req.TemplateFlags,
+		},
+	}, sandboxTemplateConstructionDeps{Selection: deps.templateSelection})
+	if err != nil {
+		return failFactoryRunSetup(store, record, deps.now(), err, factory.RunSecretRedactor{})
+	}
+	req.TemplateSelection = templateSelection.Selection
+	if req.TemplateSelection != nil {
+		req.TemplateFlags.Reference = ""
+	}
 	var sandboxSecurity sandbox.SecurityEvaluationRequest
 	if req.Sandbox {
 		var err error
@@ -843,7 +866,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 		}
 	}
 
-	req, record, err := resolveFactoryRunExecutionSecrets(req, record, deps)
+	req, record, err = resolveFactoryRunExecutionSecrets(req, record, deps)
 	redactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
 	if err != nil {
 		redactor = factory.NewRunSecretRedactor(resolveFactoryRunRedactionSecrets(req.Secrets, deps.lookupEnv))
@@ -901,6 +924,7 @@ func executeFactoryRun(ctx context.Context, dir string, req factoryRunRequest, o
 			SandboxName:               req.SandboxName,
 			SandboxHostID:             req.SandboxHostID,
 			SandboxRuntime:            req.SandboxRuntime,
+			TemplateSelection:         req.TemplateSelection,
 			Security:                  sandboxSecurity,
 			SecurityReadinessGateMode: policy.EffectiveSecurityReadinessGatePolicyMode(),
 			RemoteOutput:              remoteOutput,
@@ -4005,7 +4029,7 @@ func factorySandboxArtifactRequestsFromTimeline(store factory.Store, runID strin
 		return nil, fmt.Errorf("factory sandbox archive path is invalid")
 	}
 
-	archivePath, err := autoSandboxRemoteArchivePath(nil, strings.Join(lines, "\n"))
+	archivePath, err := autoSandboxRemoteArchivePath(nil, strings.Join(lines, "\n")+"\n")
 	if err != nil {
 		return nil, fmt.Errorf("factory sandbox archive path is invalid: %w", err)
 	}
@@ -5677,6 +5701,10 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 	sandboxHostChanged := strings.TrimSpace(factoryRunSandboxHostFlag) != ""
 	sandboxRuntime := factoryRunSandboxRuntimeFlag
 	sandboxRuntimeChanged := strings.TrimSpace(factoryRunSandboxRuntimeFlag) != ""
+	sandboxTemplate := factoryRunSandboxTemplateFlag
+	sandboxTemplateChanged := strings.TrimSpace(factoryRunSandboxTemplateFlag) != ""
+	sandboxTemplateTrust := factoryRunSandboxTemplateTrustFlag
+	sandboxTemplateTrustChanged := false
 
 	if cmd != nil {
 		if cmd.Flags().Lookup("report") != nil {
@@ -5773,6 +5801,22 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 			sandboxRuntime = value
 			sandboxRuntimeChanged = cmd.Flags().Changed(sandboxRuntimeFlagName)
 		}
+		if cmd.Flags().Lookup(sandboxTemplateFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxTemplateFlagName)
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			sandboxTemplate = value
+			sandboxTemplateChanged = cmd.Flags().Changed(sandboxTemplateFlagName)
+		}
+		if cmd.Flags().Lookup(sandboxTemplateTrustFlagName) != nil {
+			value, err := cmd.Flags().GetString(sandboxTemplateTrustFlagName)
+			if err != nil {
+				return factoryRunRequest{}, err
+			}
+			sandboxTemplateTrust = value
+			sandboxTemplateTrustChanged = cmd.Flags().Changed(sandboxTemplateTrustFlagName)
+		}
 	}
 
 	cfg, err := loadFactoryCommandConfig(".")
@@ -5815,6 +5859,17 @@ func factoryRunRequestFromCommand(cmd *cobra.Command, args []string) (factoryRun
 	if err != nil {
 		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
 	}
+	templateFlags, err := validateSandboxTemplateFlagValues(sandboxTemplateFlagValues{
+		Sandbox:          sandboxMode,
+		Reference:        sandboxTemplate,
+		ReferenceChanged: sandboxTemplateChanged,
+		TrustMode:        sandboxTemplateTrust,
+		TrustChanged:     sandboxTemplateTrustChanged,
+	})
+	if err != nil {
+		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	req.TemplateFlags = templateFlags
 	req.Secrets, err = parseFactoryRunSecretEnvFlags(secretEnv)
 	if err != nil {
 		return factoryRunRequest{}, exitWithCode(cmd, ExitCodeValidation, err)
