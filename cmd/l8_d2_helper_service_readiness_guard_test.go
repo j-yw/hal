@@ -102,10 +102,10 @@ func TestL8D2HelperServiceReadinessDocsAreNormative(t *testing.T) {
 		"exact handler context",
 		"cannot be reassigned or shadowed",
 		"direct lexical statements",
-		"canonical rejection condition",
-		"as the entire",
-		"discarded Commit result or omitted/non-direct Wipe",
-		"a disconnected helper or marker cannot",
+		"canonical rejection",
+		"exact `comparison bool` parameter",
+		"direct returned proposal `Commit`",
+		"disconnected cleanup or marker calls do not",
 		"outer `Borrow` is one direct reachable call",
 		"Each static callback",
 		"contains exactly one matching Propose call",
@@ -113,7 +113,7 @@ func TestL8D2HelperServiceReadinessDocsAreNormative(t *testing.T) {
 		"later assignment to a package function",
 		"type serviceExecDispatch struct",
 		"Every reachable private Service handler",
-		"Counts include every executable nested closure",
+		"Nested function literals, IIFEs",
 		"unique top-level exact `func TestX(t *testing.T)` AST declaration",
 		"`ownedSnapshotEntries` is the sole non-fake observable",
 		"not add mutable instrumentation",
@@ -130,19 +130,74 @@ func TestL8D2HelperServiceReadinessDocsAreNormative(t *testing.T) {
 		"exact Service `state.mu` is held",
 		"general state-field or helper exemption",
 		"literal untyped `nil` third argument",
-		"immediate recovery owned by the enclosing handler",
+		"immediate recovery",
 		"control-flow-complete critical section",
 		"assigned exactly once under `state.mu`",
 		"exact typed `ReceivedExec` arm carried by that dispatch",
-		"exact outer recovery is installed before",
-		"private `corePlan.destroy()` call",
-		"zero result with nil error",
-		"body `Destroy(ctx)` result is bound and checked",
+		"installs its recovery before Borrow",
+		"sole terminal exec owner reducer",
+		"Only a nil cause plus three",
+		"panic-isolated observed-body destroy helper",
 		"Every lock-acquired path unlocks",
 		"Assignment to a global or another owner",
 		"includes helpers, method values, aliases",
 		"ordinary calls in both",
 		"Constant-time acceptance is bound through issuance",
+		"newServiceCoreCapabilityDigest",
+		"servicePrepareAuthority",
+		"servicePreparing",
+		"newServicePrepareAuthority",
+		"newServiceCommitRequest",
+		"nextReceiveSequence",
+		"beginTaken",
+		"fileTaken",
+		"newServiceReceiveRequest",
+		"NewReceiveRequest",
+		"destroyServiceReceivedPacket",
+		"reservePreparing",
+		"abortPreparing",
+		"newServiceFileRequest",
+		"PacketTypePrepareFile",
+		"NewCoreFileRequest",
+		"NewHelperPrepareFileObservation",
+		"StageFile",
+		"AcceptObservedFileObservation",
+		"revokeCommittedPreparation",
+		"revokeServicePreparedActivation",
+		"validateServiceRenewArm",
+		"cleanup CoreCleanupCapability",
+		"servicePreparedActivationCandidate",
+		"newServiceActiveProofID",
+		"newServicePreparedActivationCandidate",
+		"newServiceRenewRequest",
+		"advancePreparedActivation",
+		"PacketTypePrepareCommit",
+		"PacketTypePrepareBegin",
+		"NewCorePrepareRequest",
+		"NewCoreCommitRequest",
+		"Service.core.BeginPrepare(ctx, authority.prepare)",
+		"selector/index/container",
+		"supported linux, darwin, freebsd, and windows amd64",
+		"Every configured Transport receive first issues",
+		"exact panic-isolated `receiveServicePacket`",
+		"synchronously converges preparing ownership",
+		"exact returned `PacketTypeExec` edge",
+		"cannot suppress the Core Revoke attempt",
+		"does not guess or install the attempted revision",
+		"authenticated arm's exact",
+		"metadata-only receive",
+		"bounded continuation coordinator",
+		"disabled until `stdinPending` is false",
+		"`Next` is never parallel with another `Next`",
+		"cancels and joins all pending workers",
+		"never waits for stdin EOF before servicing output",
+		"causally next same-stream credit received",
+		"without consulting `dispatchTaken`",
+		"one stdout EOF and one stderr EOF",
+		"Core's child-exit/reap boundary",
+		"thirteen required Service tests",
+		"Receive-convergence tests",
+		"`observeServiceCoreOutput` function may synchronously Borrow",
 	} {
 		if !strings.Contains(seam, required) {
 			t.Errorf("L8 D2 extension seam omits readiness contract %q", required)
@@ -206,20 +261,79 @@ func TestL8D2HelperServiceReadinessDocsAreNormative(t *testing.T) {
 		"one combined construction, one-shot",
 		"sole state-copy allowance",
 		"literal untyped `nil` view",
-		"immediately enclosing handler recovery",
+		"observed-input handlers own pending proposal wipe",
 		"control-flow-complete critical section",
 		"sole state execution install",
 		"exact typed `ReceivedExec` arm carried by that dispatch",
-		"The outer recovery is installed before",
-		"private `corePlan.destroy()` call",
-		"zero result/nil error is forbidden",
-		"Body `Destroy(ctx)`",
-		"is bound and checked",
+		"one outer recovery first lets the Borrow",
+		"sole terminal owner reducer",
+		"Only nil cause and all",
+		"panic-isolated Core cancellation",
+		"recovers a body",
 		"Every path which acquired the lock unlocks",
 		"global/other-owner assignment",
 		"including through helpers, method",
 		"includes ordinary call dataflow",
 		"constant-time gate also dominates the exact issued authority",
+		"newServiceCoreCapabilityDigest",
+		"servicePrepareAuthority",
+		"servicePreparing",
+		"newServicePrepareAuthority",
+		"newServiceCommitRequest",
+		"nextReceiveSequence",
+		"beginTaken",
+		"fileTaken",
+		"newServiceReceiveRequest",
+		"NewReceiveRequest",
+		"reservePreparing",
+		"abortPreparing",
+		"newServiceFileRequest",
+		"PacketTypePrepareFile",
+		"NewCoreFileRequest",
+		"NewHelperPrepareFileObservation",
+		"StageFile",
+		"AcceptObservedFileObservation",
+		"revokeCommittedPreparation",
+		"revokeServicePreparedActivation",
+		"validateServiceRenewArm",
+		"cleanup capability",
+		"servicePreparedActivationCandidate",
+		"newServiceActiveProofID",
+		"newServicePreparedActivationCandidate",
+		"newServiceRenewRequest",
+		"advancePreparedActivation",
+		"PacketTypePrepareCommit",
+		"PacketTypePrepareBegin",
+		"NewCorePrepareRequest",
+		"NewCoreCommitRequest",
+		"BeginPrepare(ctx, authority.prepare)",
+		"nested selector/index/container fields",
+		"linux, darwin, freebsd, and windows amd64",
+		"Every configured Transport receive calls",
+		"exact panic-isolated `receiveServicePacket`",
+		"synchronously converges a preparing transaction",
+		"returned `PacketTypeExec` edge",
+		"cannot suppress that Core Revoke attempt",
+		"neither guesses nor installs the attempted revision",
+		"authenticated received arm's exact",
+		"nil fields as already clean",
+		"bounded continuation coordinator",
+		"`Next` is never parallel with another `Next`",
+		"`sendMu sync.Mutex`",
+		"causally next same-stream credit received",
+		"without requiring the transient",
+		"without consulting that per-packet latch",
+		"joined nil-error Receive",
+		"happens-before edge",
+		"response construction, and terminal reduction additionally require",
+		"recovery before calling",
+		"Transport panic before coordinator teardown",
+		"cancels and joins all pending Receive/stdin/output workers",
+		"`completeServiceExecOutput` makes one final `Next`",
+		"child-exit/reap boundary",
+		"thirteen named Service behavioral tests",
+		"Receive-convergence tests",
+		"`observeServiceCoreOutput` function may Borrow",
 	} {
 		if !strings.Contains(architecture, required) {
 			t.Errorf("L8 D2 architecture omits readiness contract %q", required)
@@ -327,7 +441,7 @@ func TestL8D2HelperServiceReadinessProductGuard(t *testing.T) {
 		"core": "Core", "transport": "Transport", "policy": "Policy", "extensions": "[]extensionEntry",
 		"host": "ExtensionHost", "runtime": "ServiceRuntime", "state": "*serviceState",
 	})
-	assertL8D2ReadinessStructFieldTypes(t, helperDir, "serviceState", map[string]string{"mu": "sync.Mutex", "serveCalled": "bool", "execution": "CoreExecution"})
+	assertL8D2ReadinessStructFieldTypes(t, helperDir, "serviceState", map[string]string{"mu": "sync.Mutex", "sendMu": "sync.Mutex", "serveCalled": "bool", "execution": "CoreExecution"})
 	assertL8D2ReadinessStructFields(t, helperDir, "serviceExecDispatch", []string{"transaction", "correlation", "comparison"})
 	assertL8D2ReadinessStructFieldTypes(t, helperDir, "serviceExecDispatch", map[string]string{"transaction": "*credentialprotocol.HelperExecTransaction", "correlation": "credentialprotocol.HelperExecTransactionCorrelation", "comparison": "bool"})
 	assertL8D2ReadinessFunctionSignature(t, helperDir, "", "NewService", []string{"ServiceOptions"}, []string{"*Service", "error"})
@@ -445,6 +559,8 @@ func TestL8D2HelperServiceReadinessProductGuard(t *testing.T) {
 		"TestReceivedExecObservationsMintOnlyAfterCanonicalValidation",
 		"TestReceivedExecPlanClaimOwnershipMatrix",
 		"TestServiceDestroysClaimedExecPlanOnEveryDispatchPath",
+		"TestServiceAcceptsCausalSameStreamCreditBeforeSendReturns",
+		"TestServiceReceiveFailureConvergesOwnedState",
 		"TestServiceConstructorDependenciesSnapshotAndServeOneShot",
 		"TestServiceServeContextPreconditionBeforeOneShotLatch",
 		"TestServiceObservedInputsTakenOnceBeforeDispatch",
@@ -2033,6 +2149,11 @@ func (transaction *HelperExecTransaction) ProposeObservedStdin(ctx Context, corr
 func TestL8D2HelperServiceReadinessNoRetentionGuardSelfTest(t *testing.T) {
 	t.Parallel()
 	const credentialMemoryPath = "github.com/jywlabs/hal/internal/credentialmemory"
+	frozenSendPacketFixture := func(extra, use string) string {
+		return "package fixture\nimport (\"context\"; \"crypto/sha256\"; cm \"" + credentialMemoryPath + "\"; credentialprotocol \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\")\n" +
+			"type ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type ReceivedCapability interface{}; type sendPacketArm interface{ canonicalLength() (uint32, error) }; type liveValue struct{}; type atomicFlag struct{}; func (*atomicFlag) CompareAndSwap(bool, bool) bool { return true }; type SendPacket struct{ liveValue; header credentialprotocol.HelperPacketHeader; arm sendPacketArm; right ReceivedCapability }; type sealedSendPacketArm struct{ arm sendPacketArm; bodyLength uint32; written atomicFlag; bodySHA256 [32]byte }; func (*sealedSendPacketArm) canonicalLength() (uint32, error) { return 0, nil }; type sendExecStreamArm struct{ revision uint64; streamKind credentialprotocol.HelperExecStreamKind; flags credentialprotocol.HelperExecStreamFlags; offset uint64; payloadLength uint32; payloadSHA256 [32]byte; body ReceivedBodyCapability }; func (sendExecStreamArm) canonicalLength() (uint32, error) { return 0, nil }; func configuredDependency(value any) bool { return value != nil }; func withCanonicalScratch(arm sendPacketArm, length uint32, consume func([]byte) error) error { return consume(make([]byte, length)) }; " + extra + "\n" +
+			"func (packet SendPacket) sealedArm() *sealedSendPacketArm { sealed, _ := packet.arm.(*sealedSendPacketArm); return sealed }; func (packet SendPacket) WriteCanonicalBody(ctx context.Context, sink cm.CredentialSink) error { _ = sink; sealed := packet.sealedArm(); if sealed == nil || sealed.bodyLength != packet.header.BodyLength || !sealed.written.CompareAndSwap(false, true) { return nil }; " + use + "; if stream, ok := sealed.arm.(sendExecStreamArm); ok { return stream.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; if !configuredDependency(sealed.arm) { return nil }; length, _ := sealed.arm.canonicalLength(); return withCanonicalScratch(sealed.arm, length, func(encoded []byte) error { if sha256.Sum256(encoded) != sealed.bodySHA256 { return nil }; return nil }) }\n"
+	}
 	for _, test := range []struct {
 		name       string
 		source     string
@@ -2063,6 +2184,715 @@ func TestL8D2HelperServiceReadinessNoRetentionGuardSelfTest(t *testing.T) {
 		{
 			name:   "exact synchronous received body borrow callback is allowed",
 			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }) }\n",
+		},
+		{
+			name:   "exact deferred synchronous received body borrow callback is allowed",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { defer body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }); return nil }\n",
+		},
+		{
+			name:       "unnamed received body borrow callback is outside the exact grammar",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "blank received body borrow callback parameter is outside the exact grammar",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(_ cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "parenthesized received body parameter rebind invalidates borrow",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body, foreign ReceivedBodyCapability) error { (body) = foreign; return body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "range assignment received body parameter rebind invalidates borrow",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body, foreign ReceivedBodyCapability) error { for _, body = range []ReceivedBodyCapability{foreign} {}; return body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "received body parameter may be borrowed exactly once",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { if err := body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }); err != nil { return err }; return body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "received body parameter borrow cannot execute in a loop",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { for i := 0; i < 2; i++ { if err := body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }); err != nil { return err } }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:   "unrelated concrete borrow remains unrelated to an unused exact body parameter",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type unrelated struct{}; func (unrelated) Borrow(context.Context, func(int) error) error { return nil }\nfunc use(ctx context.Context, body ReceivedBodyCapability, other unrelated) error { _ = body; return other.Borrow(ctx, func(value int) error { return nil }) }\n",
+		},
+		{
+			name:       "shadowed context cannot authorize exact received body borrow",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { { ctx := context.Background(); return body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) } }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "shadowed callback context cannot authorize scoped view write",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { ctx := context.Background(); return view.WriteTo(ctx, nil) }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:   "unrelated inner value shadow does not retain scoped view",
+			source: "package fixture\nimport cm \"" + credentialMemoryPath + "\"\nfunc consume(int) {}\nfunc use(view cm.BorrowedView) { { view := 1; consume(view) }; _ = view.Len() }\n",
+		},
+		{
+			name:       "callback value declaration alias remains scoped",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; func retain(any) {}\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { var alias = view; retain(alias); return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "callback range alias remains scoped",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; func retain(any) {}\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { for _, alias := range []cm.BorrowedView{view} { retain(alias) }; return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:   "callback range slice index remains unscoped",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; func consumeIndex(int) {}\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { for index := range []cm.BorrowedView{view} { consumeIndex(index) }; return nil }) }\n",
+		},
+		{
+			name:   "callback named range slice index remains unscoped",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type views []cm.BorrowedView; func consumeIndex(int) {}\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { for index := range (views{view}) { consumeIndex(index) }; return nil }) }\n",
+		},
+		{
+			name:       "callback named map scoped key remains scoped",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type keyed map[cm.BorrowedView]int; func retain(any) {}\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { for key := range (keyed{view: 1}) { retain(key) }; return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "callback scoped view cannot be used by goroutine",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { go view.WriteTo(ctx, nil); return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "callback scoped view cannot be used by defer",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { defer view.WriteTo(ctx, nil); return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "callback scoped view cannot be sent",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, output chan<- cm.BorrowedView) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { output <- view; return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike frozen transport receiver cannot authorize borrow callback",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype lookalikeOwner struct{}; func (lookalikeOwner) Borrow(context.Context, func(cm.BorrowedView) error) error { return nil }; type receivedPayloadBody struct{ owner lookalikeOwner }\nfunc (body receivedPayloadBody) Borrow(ctx context.Context) error { return body.owner.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "frozen received payload body receiver cannot be rebound",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type receivedPayloadBody struct{ owner ReceivedBodyCapability; canonicalLength uint32; offset uint32; length uint32; digest [32]byte }\nfunc (body receivedPayloadBody) Borrow(ctx context.Context, callback func(cm.BorrowedView) error) error { body = receivedPayloadBody{}; return body.owner.Borrow(ctx, func(view cm.BorrowedView) error { return callback(view) }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "frozen received payload callback invocation uses exact parameter object",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type receivedPayloadBody struct{ owner ReceivedBodyCapability; canonicalLength uint32; offset uint32; length uint32; digest [32]byte }; type consumer struct{}; func (consumer) Consume(cm.BorrowedView) error { return nil }\nfunc (body receivedPayloadBody) Borrow(ctx context.Context, callback func(cm.BorrowedView) error) error { return body.owner.Borrow(ctx, func(view cm.BorrowedView) error { callback := (consumer{}).Consume; return callback(view) }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "frozen received payload body may borrow exactly once",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type receivedPayloadBody struct{ owner ReceivedBodyCapability; canonicalLength uint32; offset uint32; length uint32; digest [32]byte }\nfunc (body receivedPayloadBody) Borrow(ctx context.Context, callback func(cm.BorrowedView) error) error { if err := body.owner.Borrow(ctx, func(view cm.BorrowedView) error { return callback(view) }); err != nil { return err }; return body.owner.Borrow(ctx, func(view cm.BorrowedView) error { return callback(view) }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name: "frozen send stream validator arm cannot be rebound",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\"; credentialprotocol \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\")\n" +
+				"type ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type sendExecStreamArm struct{ revision uint64; streamKind credentialprotocol.HelperExecStreamKind; flags credentialprotocol.HelperExecStreamFlags; offset uint64; payloadLength uint32; payloadSHA256 [32]byte; body ReceivedBodyCapability }\n" +
+				"func validSendExecStreamArm(ctx context.Context, arm sendExecStreamArm, bodyLength uint32) bool { arm = sendExecStreamArm{}; _ = arm.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }); return bodyLength != 0 }\n",
+			wantIssues: 2,
+		},
+		{
+			name: "frozen send stream validator may borrow exactly once",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\"; credentialprotocol \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\")\n" +
+				"type ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type sendExecStreamArm struct{ revision uint64; streamKind credentialprotocol.HelperExecStreamKind; flags credentialprotocol.HelperExecStreamFlags; offset uint64; payloadLength uint32; payloadSHA256 [32]byte; body ReceivedBodyCapability }\n" +
+				"func validSendExecStreamArm(ctx context.Context, arm sendExecStreamArm, bodyLength uint32) bool { _ = arm.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }); _ = arm.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }); return bodyLength != 0 }\n",
+			wantIssues: 2,
+		},
+		{
+			name: "frozen send packet stream owner keeps exact sealed origin",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\"; credentialprotocol \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\")\n" +
+				"type ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type ReceivedCapability interface{}; type sendPacketArm interface{}; type liveValue struct{}; type SendPacket struct{ liveValue; header credentialprotocol.HelperPacketHeader; arm sendPacketArm; right ReceivedCapability }; type sealedSendPacketArm struct{ arm sendPacketArm }; type sendExecStreamArm struct{ revision uint64; streamKind credentialprotocol.HelperExecStreamKind; flags credentialprotocol.HelperExecStreamFlags; offset uint64; payloadLength uint32; payloadSHA256 [32]byte; body ReceivedBodyCapability }\n" +
+				"func (packet SendPacket) sealedArm() *sealedSendPacketArm { return &sealedSendPacketArm{arm: packet.arm} }; func (packet SendPacket) WriteCanonicalBody(ctx context.Context, sink cm.CredentialSink) error { _ = sink; foreign := &sealedSendPacketArm{}; sealed := foreign; if stream, ok := sealed.arm.(sendExecStreamArm); ok { return stream.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 2,
+		},
+		{
+			name: "frozen send packet stream local cannot be rebound",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\"; credentialprotocol \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\")\n" +
+				"type ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type ReceivedCapability interface{}; type sendPacketArm interface{}; type liveValue struct{}; type SendPacket struct{ liveValue; header credentialprotocol.HelperPacketHeader; arm sendPacketArm; right ReceivedCapability }; type sealedSendPacketArm struct{ arm sendPacketArm }; type sendExecStreamArm struct{ revision uint64; streamKind credentialprotocol.HelperExecStreamKind; flags credentialprotocol.HelperExecStreamFlags; offset uint64; payloadLength uint32; payloadSHA256 [32]byte; body ReceivedBodyCapability }\n" +
+				"func (packet SendPacket) sealedArm() *sealedSendPacketArm { return &sealedSendPacketArm{arm: packet.arm} }; func (packet SendPacket) WriteCanonicalBody(ctx context.Context, sink cm.CredentialSink) error { _ = sink; sealed := packet.sealedArm(); if stream, ok := sealed.arm.(sendExecStreamArm); ok { stream = sendExecStreamArm{}; return stream.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 2,
+		},
+		{
+			name: "frozen send packet sealed owner cannot be aliased and mutated",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\"; credentialprotocol \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\")\n" +
+				"type ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type ReceivedCapability interface{}; type sendPacketArm interface{}; type liveValue struct{}; type SendPacket struct{ liveValue; header credentialprotocol.HelperPacketHeader; arm sendPacketArm; right ReceivedCapability }; type sealedSendPacketArm struct{ arm sendPacketArm }; type sendExecStreamArm struct{ revision uint64; streamKind credentialprotocol.HelperExecStreamKind; flags credentialprotocol.HelperExecStreamFlags; offset uint64; payloadLength uint32; payloadSHA256 [32]byte; body ReceivedBodyCapability }\n" +
+				"func (packet SendPacket) sealedArm() *sealedSendPacketArm { return &sealedSendPacketArm{arm: packet.arm} }; func (packet SendPacket) WriteCanonicalBody(ctx context.Context, sink cm.CredentialSink) error { _ = sink; sealed := packet.sealedArm(); alias := sealed; alias.arm = sendExecStreamArm{}; if stream, ok := sealed.arm.(sendExecStreamArm); ok { return stream.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 2,
+		},
+		{
+			name: "frozen send packet sealed owner cannot escape to helper",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\"; credentialprotocol \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\")\n" +
+				"type ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type ReceivedCapability interface{}; type sendPacketArm interface{}; type liveValue struct{}; type SendPacket struct{ liveValue; header credentialprotocol.HelperPacketHeader; arm sendPacketArm; right ReceivedCapability }; type sealedSendPacketArm struct{ arm sendPacketArm }; type sendExecStreamArm struct{ revision uint64; streamKind credentialprotocol.HelperExecStreamKind; flags credentialprotocol.HelperExecStreamFlags; offset uint64; payloadLength uint32; payloadSHA256 [32]byte; body ReceivedBodyCapability }; func mutate(*sealedSendPacketArm) {}\n" +
+				"func (packet SendPacket) sealedArm() *sealedSendPacketArm { return &sealedSendPacketArm{arm: packet.arm} }; func (packet SendPacket) WriteCanonicalBody(ctx context.Context, sink cm.CredentialSink) error { _ = sink; sealed := packet.sealedArm(); mutate(sealed); if stream, ok := sealed.arm.(sendExecStreamArm); ok { return stream.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "frozen send packet sealed owner method cannot mutate",
+			source:     frozenSendPacketFixture("func (sealed *sealedSendPacketArm) mutate() { sealed.arm = sendExecStreamArm{} }", "sealed.mutate()"),
+			wantIssues: 2,
+		},
+		{
+			name:       "frozen send packet written gate occurs exactly once",
+			source:     frozenSendPacketFixture("", "_ = sealed.written.CompareAndSwap(false, true)"),
+			wantIssues: 2,
+		},
+		{
+			name:       "frozen send packet arm call cannot be asynchronous",
+			source:     frozenSendPacketFixture("", "go sealed.arm.canonicalLength()"),
+			wantIssues: 2,
+		},
+		{
+			name:       "frozen send packet digest uses exact sha256 import object",
+			source:     frozenSendPacketFixture("type fakeSHA struct{}; func (fakeSHA) Sum256([]byte) [32]byte { return [32]byte{} }", "_ = sha256.Size; sha256 := fakeSHA{}"),
+			wantIssues: 2,
+		},
+		{
+			name:       "frozen send packet sealed arm cannot be stored and passed",
+			source:     frozenSendPacketFixture("func consume(any) {}", "stored := sealed.arm; consume(stored)"),
+			wantIssues: 2,
+		},
+		{
+			name:       "frozen send packet sealed arm cannot be passed asynchronously",
+			source:     frozenSendPacketFixture("func consume(any) {}", "go consume(sealed.arm)"),
+			wantIssues: 2,
+		},
+		{
+			name:       "frozen send packet sealed arm cannot be deferred",
+			source:     frozenSendPacketFixture("func consume(any) {}", "defer consume(sealed.arm)"),
+			wantIssues: 2,
+		},
+		{
+			name: "frozen send packet may borrow exactly once",
+			source: "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\"; credentialprotocol \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\")\n" +
+				"type ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type ReceivedCapability interface{}; type sendPacketArm interface{}; type liveValue struct{}; type SendPacket struct{ liveValue; header credentialprotocol.HelperPacketHeader; arm sendPacketArm; right ReceivedCapability }; type sealedSendPacketArm struct{ arm sendPacketArm }; type sendExecStreamArm struct{ revision uint64; streamKind credentialprotocol.HelperExecStreamKind; flags credentialprotocol.HelperExecStreamFlags; offset uint64; payloadLength uint32; payloadSHA256 [32]byte; body ReceivedBodyCapability }\n" +
+				"func (packet SendPacket) sealedArm() *sealedSendPacketArm { return &sealedSendPacketArm{arm: packet.arm} }; func (packet SendPacket) WriteCanonicalBody(ctx context.Context, sink cm.CredentialSink) error { _ = sink; sealed := packet.sealedArm(); if stream, ok := sealed.arm.(sendExecStreamArm); ok { if err := stream.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }); err != nil { return err }; return stream.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "asynchronous received body borrow callback is rejected",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { go body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }); return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "returned closure cannot retain received body borrow",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) func() error { return func() error { return body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }) } }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "returned closure cannot retain core output body borrow",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body CoreOutputBody) func() error { return func() error { return body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }) } }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "received body bound borrow method cannot escape by return",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { return body.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "core output body bound borrow method cannot escape by call",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc retain(any) {}\nfunc use(body CoreOutputBody) { retain(body.Borrow) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "received body bound borrow alias cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { borrow := body.Borrow; return borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "canonical packet body local bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\nfunc use(packet ReceivedPacket) any { body := packet.body; return body.Borrow }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "exact body field bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype holder struct{ body CoreOutputBody }\nfunc use(value holder) any { return value.body.Borrow }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "core output body local alias bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body CoreOutputBody) any { local := body; return local.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "comma ok received body assertion bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(value any) any { body, ok := value.(ReceivedBodyCapability); _ = ok; return body.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "comma ok core output assertion bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(value any) any { body, ok := value.(CoreOutputBody); _ = ok; return body.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "local composite holder bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { holder := struct{ body ReceivedBodyCapability }{body: body}; return holder.body.Borrow }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "local composite holder direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { holder := struct{ body ReceivedBodyCapability }{body: body}; return holder.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "indexed received body bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { bodies := map[string]ReceivedBodyCapability{\"body\": body}; return bodies[\"body\"].Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "indexed received body direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { bodies := map[string]ReceivedBodyCapability{\"body\": body}; return bodies[\"body\"].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "inferred channel received body bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(bodies <-chan CoreOutputBody) any { body := <-bodies; return body.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "inferred channel received body direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, bodies <-chan CoreOutputBody) error { body := <-bodies; return body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "range received body bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(bodies []ReceivedBodyCapability) any { for _, body := range bodies { return body.Borrow }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "range received body direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, bodies []ReceivedBodyCapability) error { for _, body := range bodies { return body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "nested function exact body parameter bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use() any { worker := func(body ReceivedBodyCapability) any { return body.Borrow }; return worker }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "nested function exact body parameter direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context) { worker := func(body ReceivedBodyCapability) error { return body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; _ = worker }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "typed holder field assignment bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { var holder struct{ body ReceivedBodyCapability }; holder.body = body; return holder.body.Borrow }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "typed holder field assignment direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { var holder struct{ body ReceivedBodyCapability }; holder.body = body; return holder.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "copied composite holder bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { holder := struct{ body ReceivedBodyCapability }{body: body}; copied := holder; return copied.body.Borrow }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "local named pointer holder bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { type holder struct{ body ReceivedBodyCapability }; value := holder{body: body}; pointer := &value; return pointer.body.Borrow }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "local named pointer holder direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { type holder struct{ body ReceivedBodyCapability }; value := holder{body: body}; pointer := &value; return pointer.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "comma ok indexed body bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(bodies map[string]CoreOutputBody) any { body, ok := bodies[\"body\"]; _ = ok; return body.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "comma ok channel body bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(bodies <-chan ReceivedBodyCapability) any { body, ok := <-bodies; _ = ok; return body.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "value declaration comma ok assertion bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(value any) any { var body, ok = value.(CoreOutputBody); _ = ok; return body.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "map key range body bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(bodies map[CoreOutputBody]int) any { for body := range bodies { return body.Borrow }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "unique function positional body result bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc pair(body ReceivedBodyCapability) (ReceivedBodyCapability, bool) { return body, true }\nfunc use(source ReceivedBodyCapability) any { body, ok := pair(source); _ = ok; return body.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "unique function positional body result direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc pair(body ReceivedBodyCapability) (ReceivedBodyCapability, bool) { return body, true }\nfunc use(ctx context.Context, source ReceivedBodyCapability) error { body, ok := pair(source); _ = ok; return body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "parenthesized unique function positional body result bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc pair(body ReceivedBodyCapability) (ReceivedBodyCapability, bool) { return body, true }\nfunc use(source ReceivedBodyCapability) any { body, ok := (pair)(source); _ = ok; return body.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "parenthesized unique function positional body result direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc pair(body ReceivedBodyCapability) (ReceivedBodyCapability, bool) { return body, true }\nfunc use(ctx context.Context, source ReceivedBodyCapability) error { body, ok := (pair)(source); _ = ok; return body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "anonymous embedded received body bound method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype holder struct{ ReceivedBodyCapability }\nfunc use(body ReceivedBodyCapability) any { value := holder{ReceivedBodyCapability: body}; return value.Borrow }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "anonymous embedded received body direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype holder struct{ ReceivedBodyCapability }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { value := holder{ReceivedBodyCapability: body}; return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "anonymous embedded selected received body bound method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype holder struct{ ReceivedBodyCapability }\nfunc use(body ReceivedBodyCapability) any { value := holder{ReceivedBodyCapability: body}; return value.ReceivedBodyCapability.Borrow }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "anonymous embedded received body parameter bound method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype holder struct{ ReceivedBodyCapability }\nfunc use(value holder) any { return value.Borrow }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "anonymous embedded received body parameter direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype holder struct{ ReceivedBodyCapability }\nfunc use(ctx context.Context, value holder) error { return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "lookalike slice range transfer bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { bodies := []OtherBody{body}; for _, value := range bodies { return value.Borrow }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike slice range transfer direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { bodies := []OtherBody{body}; for _, value := range bodies { return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "parenthesized lookalike slice range transfer bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { bodies := []OtherBody{body}; for _, value := range (bodies) { return value.Borrow }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "parenthesized lookalike slice range transfer direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { bodies := []OtherBody{body}; for _, value := range (bodies) { return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike map value range transfer bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body CoreOutputBody) any { bodies := map[string]OtherBody{\"body\": body}; for _, value := range bodies { return value.Borrow }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike map value range transfer direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body CoreOutputBody) error { bodies := map[string]OtherBody{\"body\": body}; for _, value := range bodies { return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike map key range transfer bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body CoreOutputBody) any { bodies := map[OtherBody]int{body: 1}; for value := range bodies { return value.Borrow }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike map key range transfer direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype CoreOutputBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body CoreOutputBody) error { bodies := map[OtherBody]int{body: 1}; for value := range bodies { return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike channel roundtrip bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { bodies := make(chan OtherBody, 1); bodies <- body; value := <-bodies; return value.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike channel roundtrip direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { bodies := make(chan OtherBody, 1); bodies <- body; value := <-bodies; return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike channel alias roundtrip bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { bodies := make(chan OtherBody, 1); alias := bodies; alias <- body; value := <-bodies; return value.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "lookalike channel alias roundtrip direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { bodies := make(chan OtherBody, 1); alias := bodies; alias <- body; value := <-bodies; return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "nested lookalike holder transfer bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type inner struct{ body OtherBody }; type outer struct{ inner inner }\nfunc use(body ReceivedBodyCapability) any { value := outer{inner: inner{body: body}}; return value.inner.body.Borrow }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "nested lookalike holder transfer direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type inner struct{ body OtherBody }; type outer struct{ inner inner }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { value := outer{inner: inner{body: body}}; return value.inner.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "trusted lookalike map index direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { bodies := map[string]OtherBody{\"body\": body}; return bodies[\"body\"].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "mixed lookalike slice range cannot treat every value as body owner",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { bodies := []OtherBody{body, foreign}; for _, value := range bodies { return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "mixed lookalike slice index cannot inherit sibling body provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { bodies := []OtherBody{body, foreign}; return bodies[1].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "mixed lookalike map index cannot inherit sibling body provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { bodies := map[string]OtherBody{\"body\": body, \"foreign\": foreign}; return bodies[\"foreign\"].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "value declaration body alias rebind cannot authorize direct borrow",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { var alias OtherBody = body; alias = foreign; return alias.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "holder field body provenance rebind cannot authorize direct borrow",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type holder struct{ body OtherBody }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { value := holder{body: body}; value.body = foreign; return value.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "map element body provenance rebind cannot authorize direct borrow",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { bodies := map[string]OtherBody{\"body\": body}; bodies[\"body\"] = foreign; return bodies[\"body\"].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "slice alias foreign write kills shared body provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := []OtherBody{body}; alias := values; alias[0] = foreign; return values[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "map alias foreign write kills shared body provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := map[string]OtherBody{\"body\": body}; alias := values; alias[\"body\"] = foreign; return values[\"body\"].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "pointer alias foreign write kills shared body provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { value := &struct{ body OtherBody }{body: body}; alias := value; alias.body = foreign; return value.body.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "reference alias rebind cannot inherit former storage provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := map[string]OtherBody{\"body\": body}; alias := values; alias = map[string]OtherBody{\"body\": foreign}; return alias[\"body\"].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "reference alias rebind does not kill original storage provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := map[string]OtherBody{\"body\": body}; alias := values; alias = map[string]OtherBody{\"body\": foreign}; _ = alias; return values[\"body\"].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "pre-rebind map alias mutation kills original storage provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := map[string]OtherBody{\"body\": body}; alias := values; alias[\"body\"] = foreign; alias = map[string]OtherBody{\"body\": body}; return values[\"body\"].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "old map parameter alias cannot inherit later parameter rebind",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, values map[string]OtherBody, body ReceivedBodyCapability) error { old := values; values = map[string]OtherBody{\"body\": body}; return old[\"body\"].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "channel send before alias rebind remains on original storage",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { values := make(chan OtherBody, 1); alias := values; alias <- body; alias = make(chan OtherBody, 1); value := <-values; return value.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "channel send before alias rebind remains synchronous on original storage",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { values := make(chan OtherBody, 1); alias := values; alias <- body; alias = make(chan OtherBody, 1); value := <-values; return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "slice expression alias bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { values := []OtherBody{body}; alias := values[:]; return alias[0].Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "slice expression alias direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { values := []OtherBody{body}; alias := values[:]; return alias[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "slice expression alias foreign write kills original provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := []OtherBody{body}; alias := values[:]; alias[0] = foreign; return values[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "parenthesized channel operands preserve bound borrow escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { values := make(chan OtherBody, 1); (values) <- body; value := <-(values); return value.Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "parenthesized channel operands preserve synchronous borrow",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { values := make(chan OtherBody, 1); (values) <- body; value := <-(values); return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "parenthesized index owner bound borrow method cannot escape",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability) any { values := []OtherBody{body}; return (values)[0].Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "pointer dereferenced index owner direct borrow remains synchronous",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { values := []OtherBody{body}; pointer := &values; return (*pointer)[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "pointer dereferenced index write kills original provenance",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := []OtherBody{body}; pointer := &values; (*pointer)[0] = foreign; return values[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "array value copy snapshots body provenance before source mutation",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := [1]OtherBody{body}; copied := values; values[0] = foreign; return copied[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "array value copy retains escapable body provenance snapshot",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(body ReceivedBodyCapability, foreign OtherBody) any { values := [1]OtherBody{body}; copied := values; values[0] = foreign; return copied[0].Borrow }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "conditional owner rebind remains unresolved",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, ready bool, body ReceivedBodyCapability, foreign OtherBody) error { value := foreign; if ready { value = body }; return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "loop backedge body provenance remains unresolved",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { value := body; for i := 0; i < 2; i++ { if err := value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }); err != nil { return err }; value = foreign }; return nil }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "future unknown index write keeps indexed owner unresolved",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, index int, body ReceivedBodyCapability, foreign OtherBody) error { values := []OtherBody{body}; err := values[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }); values[index] = foreign; return err }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "slice offset owner remains unresolved",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := []OtherBody{foreign, body}; alias := values[1:]; return alias[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "parallel assignment owner remains unresolved",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { trusted, untrusted := OtherBody(body), foreign; trusted, untrusted = untrusted, trusted; return untrusted.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "addressed variable owner remains unresolved after rebind",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := []OtherBody{body}; pointer := &values; values = []OtherBody{foreign}; return (*pointer)[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "addressed element owner remains unresolved",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\nfunc use(ctx context.Context, body ReceivedBodyCapability) error { values := []OtherBody{body}; pointer := &values[0]; return (*pointer).Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "exact service packet body local alias remains synchronous and scoped",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Len() uint32; SHA256() [32]byte; Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype Service struct{}\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket) error { body := packet.body; _ = body.Len(); _ = body.SHA256(); return body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "exact prepare file stage consumes local scoped view synchronously",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype servicePreparing struct{ preparation CorePreparation }\ntype Service struct{}\nfunc newServiceFileRequest(ReceivedPacket, int, servicePreparing) (int, error) { return 0, nil }\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket) error { body := packet.body; var preparing servicePreparing; fileRequest, fileRequestErr := newServiceFileRequest(packet, 0, preparing); if fileRequestErr != nil { return fileRequestErr }; return body.Borrow(ctx, func(view cm.BorrowedView) error { if stageErr := preparing.preparation.StageFile(ctx, fileRequest, view); stageErr != nil { return stageErr }; return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "foreign prepare stage owner cannot consume local scoped view",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype preparingState struct{ preparation CorePreparation }\ntype Service struct{}\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket, preparing, foreign preparingState, fileRequest int) error { body := packet.body; return body.Borrow(ctx, func(view cm.BorrowedView) error { return foreign.preparation.StageFile(ctx, fileRequest, view) }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "foreign prepare file request cannot accompany local scoped view",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype preparingState struct{ preparation CorePreparation }\ntype Service struct{}\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket, preparing preparingState, fileRequest, foreignRequest int) error { body := packet.body; return body.Borrow(ctx, func(view cm.BorrowedView) error { return preparing.preparation.StageFile(ctx, foreignRequest, view) }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "shadowed prepare stage owner cannot accompany local scoped view",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype servicePreparing struct{ preparation CorePreparation }\ntype Service struct{}\nfunc newServiceFileRequest(ReceivedPacket, int, servicePreparing) (int, error) { return 0, nil }\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket, foreign servicePreparing) error { body := packet.body; var preparing servicePreparing; fileRequest, fileRequestErr := newServiceFileRequest(packet, 0, preparing); if fileRequestErr != nil { return fileRequestErr }; return body.Borrow(ctx, func(view cm.BorrowedView) error { preparing := foreign; return preparing.preparation.StageFile(ctx, fileRequest, view) }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "shadowed prepare file request cannot accompany local scoped view",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype servicePreparing struct{ preparation CorePreparation }\ntype Service struct{}\nfunc newServiceFileRequest(ReceivedPacket, int, servicePreparing) (int, error) { return 0, nil }\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket, foreignRequest int) error { body := packet.body; var preparing servicePreparing; fileRequest, fileRequestErr := newServiceFileRequest(packet, 0, preparing); if fileRequestErr != nil { return fileRequestErr }; return body.Borrow(ctx, func(view cm.BorrowedView) error { fileRequest := foreignRequest; return preparing.preparation.StageFile(ctx, fileRequest, view) }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "shadowed prepare stage context cannot accompany local scoped view",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype servicePreparing struct{ preparation CorePreparation }\ntype Service struct{}\nfunc newServiceFileRequest(ReceivedPacket, int, servicePreparing) (int, error) { return 0, nil }\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket) error { body := packet.body; var preparing servicePreparing; fileRequest, fileRequestErr := newServiceFileRequest(packet, 0, preparing); if fileRequestErr != nil { return fileRequestErr }; return body.Borrow(ctx, func(view cm.BorrowedView) error { ctx := context.Background(); return preparing.preparation.StageFile(ctx, fileRequest, view) }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "shadowed prepare stage view cannot accompany local scoped view",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype servicePreparing struct{ preparation CorePreparation }\ntype Service struct{}\nfunc newServiceFileRequest(ReceivedPacket, int, servicePreparing) (int, error) { return 0, nil }\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket) error { body := packet.body; var preparing servicePreparing; fileRequest, fileRequestErr := newServiceFileRequest(packet, 0, preparing); if fileRequestErr != nil { return fileRequestErr }; return body.Borrow(ctx, func(view cm.BorrowedView) error { for _, view := range []cm.BorrowedView{view} { return preparing.preparation.StageFile(ctx, fileRequest, view) }; return nil }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "asynchronous prepare stage cannot consume local scoped view",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype servicePreparing struct{ preparation CorePreparation }\ntype Service struct{}\nfunc newServiceFileRequest(ReceivedPacket, int, servicePreparing) (int, error) { return 0, nil }\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket) error { body := packet.body; var preparing servicePreparing; fileRequest, fileRequestErr := newServiceFileRequest(packet, 0, preparing); if fileRequestErr != nil { return fileRequestErr }; return body.Borrow(ctx, func(view cm.BorrowedView) error { go preparing.preparation.StageFile(ctx, fileRequest, view); return nil }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "deferred prepare stage cannot substitute for direct scoped consumption",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype servicePreparing struct{ preparation CorePreparation }\ntype Service struct{}\nfunc newServiceFileRequest(ReceivedPacket, int, servicePreparing) (int, error) { return 0, nil }\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket) error { body := packet.body; var preparing servicePreparing; fileRequest, fileRequestErr := newServiceFileRequest(packet, 0, preparing); if fileRequestErr != nil { return fileRequestErr }; return body.Borrow(ctx, func(view cm.BorrowedView) error { defer preparing.preparation.StageFile(ctx, fileRequest, view); return nil }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "same file configured dependency lookalike cannot consume service packet body alias",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\nfunc configuredDependency(any) bool { return true }\nfunc use(ctx context.Context, packet ReceivedPacket) error { body := packet.body; _ = configuredDependency(body); return body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "service packet body local alias rebind cannot authorize borrow callback",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\nfunc use(ctx context.Context, packet ReceivedPacket, foreign ReceivedBodyCapability) error { body := packet.body; body = foreign; return body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "service packet body local alias escape cannot authorize borrow callback",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\nvar retained ReceivedBodyCapability\nfunc use(ctx context.Context, packet ReceivedPacket) error { body := packet.body; retained = body; return body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }) }\n",
+			wantIssues: 3,
+		},
+		{
+			name:       "service packet body local alias callback retention remains rejected",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\nvar retained any\nfunc use(ctx context.Context, packet ReceivedPacket) error { body := packet.body; return body.Borrow(ctx, func(view cm.BorrowedView) error { retained = view; return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "lookalike packet body local alias cannot authorize borrow callback",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype OtherPacket struct{ body ReceivedBodyCapability }\nfunc use(ctx context.Context, packet OtherPacket) error { body := packet.body; return body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "escaped callback value cannot substitute for exact inline borrow callback",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\nfunc use(ctx context.Context, packet ReceivedPacket) error { body := packet.body; callback := func(view cm.BorrowedView) error { _ = view.Len(); return nil }; return body.Borrow(ctx, callback) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "service packet body alias cannot escape into enclosing closure",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype Service struct{}\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket) error { body := packet.body; run := func() error { return body.Borrow(ctx, func(view cm.BorrowedView) error { _ = view.Len(); return nil }) }; return run() }\n",
+			wantIssues: 2,
 		},
 		{
 			name:       "lookalike borrow callback cannot retain scoped parameter",
@@ -2209,6 +3039,57 @@ func TestL8D2HelperServiceReadinessNoRetentionGuardSelfTest(t *testing.T) {
 			wantIssues: 1,
 		},
 		{
+			name:       "configured dependency retaining implementation is not trusted",
+			source:     "package fixture\nimport cm \"" + credentialMemoryPath + "\"\nvar retained any\nfunc configuredDependency(value any) bool { retained = value; return true }\nfunc use(view cm.BorrowedView) { configuredDependency(view) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "typed nil retaining implementation is not trusted",
+			source:     "package fixture\nimport cm \"" + credentialMemoryPath + "\"\nvar retained any\nfunc typedNil(value any) bool { retained = value; return false }\nfunc use(view cm.BorrowedView) { typedNil(view) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "destroy transport body retaining implementation is not trusted",
+			source:     "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\ntype ReceivedBodyCapability = cm.BorrowedView; var retained any\nfunc destroyTransportBody(ctx context.Context, body ReceivedBodyCapability) (err error) { retained = body; return nil }\nfunc use(ctx context.Context, view cm.BorrowedView) { _ = destroyTransportBody(ctx, view) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:       "configured dependency lookalike reflect import is not trusted",
+			source:     "package fixture\nimport (reflect \"example.invalid/reflect\"; cm \"" + credentialMemoryPath + "\")\nfunc configuredDependency(value any) bool { if value == nil { return false }; reflected := reflect.ValueOf(value); switch reflected.Kind() { case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice: return !reflected.IsNil(); default: return true } }\nfunc use(view cm.BorrowedView) { configuredDependency(view) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:   "configured dependency exact implementation remains nonretaining",
+			source: "package fixture\nimport (\"reflect\"; cm \"" + credentialMemoryPath + "\")\nfunc configuredDependency(value any) bool { if value == nil { return false }; reflected := reflect.ValueOf(value); switch reflected.Kind() { case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice: return !reflected.IsNil(); default: return true } }\nfunc use(view cm.BorrowedView) { configuredDependency(view) }\n",
+		},
+		{
+			name:   "configured dependency exact shared nil classifier remains nonretaining",
+			source: "package fixture\nimport (\"reflect\"; cm \"" + credentialMemoryPath + "\")\nfunc helperExecConfiguredDependencyNil(value any) bool { if value == nil { return true }; reflected := reflect.ValueOf(value); switch reflected.Kind() { case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice: return reflected.IsNil(); default: return false } }\nfunc configuredDependency(value any) bool { return !helperExecConfiguredDependencyNil(value) }\nfunc use(view cm.BorrowedView) { configuredDependency(view) }\n",
+		},
+		{
+			name:       "configured dependency retaining shared nil classifier is not trusted",
+			source:     "package fixture\nimport (\"reflect\"; cm \"" + credentialMemoryPath + "\")\nvar retained any\nfunc helperExecConfiguredDependencyNil(value any) bool { retained = value; _ = reflect.ValueOf(value); return false }\nfunc configuredDependency(value any) bool { return !helperExecConfiguredDependencyNil(value) }\nfunc use(view cm.BorrowedView) { configuredDependency(view) }\n",
+			wantIssues: 1,
+		},
+		{
+			name:       "canonical scratch retaining wipe leaf is not trusted",
+			source:     "package fixture\nimport (\"reflect\"; cm \"" + credentialMemoryPath + "\")\ntype sendPacketArm interface{ encodeCanonicalTo([]byte) error }; var retained []byte; var ErrContractInvalidArgument error\nfunc configuredDependency(value any) bool { if value == nil { return false }; reflected := reflect.ValueOf(value); switch reflected.Kind() { case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice: return !reflected.IsNil(); default: return true } }\nfunc wipeBytes(value []byte) { retained = value }\nfunc withCanonicalScratch(arm sendPacketArm, length uint32, consume func([]byte) error) error { if !configuredDependency(arm) || consume == nil { return ErrContractInvalidArgument }; encoded := make([]byte, int(length)); defer wipeBytes(encoded[:cap(encoded)]); if err := arm.encodeCanonicalTo(encoded); err != nil { return ErrContractInvalidArgument }; return consume(encoded) }\nfunc use(arm sendPacketArm, sink cm.CredentialSink) { _ = withCanonicalScratch(arm, 0, func([]byte) error { _ = sink.MaxCredentialBytes(); return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
+			name:   "canonical scratch exact wipe leaf remains nonretaining",
+			source: "package fixture\nimport (\"reflect\"; \"runtime\"; cm \"" + credentialMemoryPath + "\")\ntype sendPacketArm interface{ encodeCanonicalTo([]byte) error }; var ErrContractInvalidArgument error\nfunc configuredDependency(value any) bool { if value == nil { return false }; reflected := reflect.ValueOf(value); switch reflected.Kind() { case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice: return !reflected.IsNil(); default: return true } }\nfunc wipeBytes(value []byte) { clear(value); runtime.KeepAlive(value) }\nfunc withCanonicalScratch(arm sendPacketArm, length uint32, consume func([]byte) error) error { if !configuredDependency(arm) || consume == nil { return ErrContractInvalidArgument }; encoded := make([]byte, int(length)); defer wipeBytes(encoded[:cap(encoded)]); if err := arm.encodeCanonicalTo(encoded); err != nil { return ErrContractInvalidArgument }; return consume(encoded) }\nfunc use(arm sendPacketArm, sink cm.CredentialSink) { _ = withCanonicalScratch(arm, 0, func([]byte) error { _ = sink.MaxCredentialBytes(); return nil }) }\n",
+		},
+		{
+			name:   "unrelated helper named methods do not shadow package functions",
+			source: "package fixture\nimport (\"reflect\"; \"runtime\"; cm \"" + credentialMemoryPath + "\")\ntype sendPacketArm interface{ encodeCanonicalTo([]byte) error }; type scrubber struct{}; var ErrContractInvalidArgument error\nfunc (scrubber) clear([]byte) {}; func (scrubber) configuredDependency(any) bool { return false }; func (scrubber) wipeBytes([]byte) {}\nfunc configuredDependency(value any) bool { if value == nil { return false }; reflected := reflect.ValueOf(value); switch reflected.Kind() { case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice: return !reflected.IsNil(); default: return true } }\nfunc wipeBytes(value []byte) { clear(value); runtime.KeepAlive(value) }\nfunc withCanonicalScratch(arm sendPacketArm, length uint32, consume func([]byte) error) error { if !configuredDependency(arm) || consume == nil { return ErrContractInvalidArgument }; encoded := make([]byte, int(length)); defer wipeBytes(encoded[:cap(encoded)]); if err := arm.encodeCanonicalTo(encoded); err != nil { return ErrContractInvalidArgument }; return consume(encoded) }\nfunc use(arm sendPacketArm, sink cm.CredentialSink) { _ = withCanonicalScratch(arm, 0, func([]byte) error { _ = sink.MaxCredentialBytes(); return nil }) }\n",
+		},
+		{
+			name:       "canonical scratch bodyless clear shadow is not predeclared clear",
+			source:     "package fixture\nimport (\"reflect\"; \"runtime\"; cm \"" + credentialMemoryPath + "\")\ntype sendPacketArm interface{ encodeCanonicalTo([]byte) error }; var ErrContractInvalidArgument error\nfunc clear([]byte)\nfunc configuredDependency(value any) bool { if value == nil { return false }; reflected := reflect.ValueOf(value); switch reflected.Kind() { case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice: return !reflected.IsNil(); default: return true } }\nfunc wipeBytes(value []byte) { clear(value); runtime.KeepAlive(value) }\nfunc withCanonicalScratch(arm sendPacketArm, length uint32, consume func([]byte) error) error { if !configuredDependency(arm) || consume == nil { return ErrContractInvalidArgument }; encoded := make([]byte, int(length)); defer wipeBytes(encoded[:cap(encoded)]); if err := arm.encodeCanonicalTo(encoded); err != nil { return ErrContractInvalidArgument }; return consume(encoded) }\nfunc use(arm sendPacketArm, sink cm.CredentialSink) { _ = withCanonicalScratch(arm, 0, func([]byte) error { _ = sink.MaxCredentialBytes(); return nil }) }\n",
+			wantIssues: 2,
+		},
+		{
 			name:       "lookalike WriteTo method can retain scoped view",
 			source:     "package fixture\nimport cm \"" + credentialMemoryPath + "\"\ntype evil struct{}\nfunc (evil) WriteTo(any) {}\nfunc use(view cm.BorrowedView) { evil{}.WriteTo(view) }\n",
 			wantIssues: 1,
@@ -2217,6 +3098,26 @@ func TestL8D2HelperServiceReadinessNoRetentionGuardSelfTest(t *testing.T) {
 			name:       "lookalike BeginExec method can retain scoped view",
 			source:     "package fixture\nimport cm \"" + credentialMemoryPath + "\"\ntype evil struct{}\nfunc (evil) BeginExec(any) {}\nfunc use(view cm.BorrowedView) { evil{}.BeginExec(view) }\n",
 			wantIssues: 1,
+		},
+		{
+			name:       "validated private BeginExec result may install into exact Service state",
+			source:     l8D2ReadinessCanonicalScopedServiceFixture("private"),
+			wantIssues: 13,
+		},
+		{
+			name:       "mutex copied execution may synchronously consume stdin view",
+			source:     l8D2ReadinessCanonicalScopedServiceFixture("stdin"),
+			wantIssues: 13,
+		},
+		{
+			name:       "modified private handler does not receive exact scoped flow allowance",
+			source:     strings.Replace(l8D2ReadinessCanonicalScopedServiceFixture("private"), "pending = proposal", "pending = nil", 1),
+			wantIssues: 14,
+		},
+		{
+			name:       "modified stdin handler does not receive exact scoped flow allowance",
+			source:     strings.Replace(l8D2ReadinessCanonicalScopedServiceFixture("stdin"), "pending = proposal", "pending = nil", 1),
+			wantIssues: 14,
 		},
 		{
 			name:       "function typed scoped consumer retains view",
@@ -2341,6 +3242,42 @@ func TestL8D2HelperServiceReadinessNoRetentionGuardSelfTest(t *testing.T) {
 			}
 		})
 	}
+	compiledNarrowRejects := "package fixture\nimport (\"context\"; cm \"" + credentialMemoryPath + "\")\n" +
+		"type ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }; type OtherBody interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\n" +
+		"func branch(ctx context.Context, ready bool, body ReceivedBodyCapability, foreign OtherBody) error { value := foreign; if ready { value = body }; return value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n" +
+		"func loop(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { value := body; for i := 0; i < 2; i++ { if err := value.Borrow(ctx, func(view cm.BorrowedView) error { return nil }); err != nil { return err }; value = foreign }; return nil }\n" +
+		"func swap(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { trusted, untrusted := OtherBody(body), foreign; trusted, untrusted = untrusted, trusted; return untrusted.Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n" +
+		"func address(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := []OtherBody{body}; pointer := &values; values = []OtherBody{foreign}; return (*pointer)[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n" +
+		"func offset(ctx context.Context, body ReceivedBodyCapability, foreign OtherBody) error { values := []OtherBody{foreign, body}; alias := values[1:]; return alias[0].Borrow(ctx, func(view cm.BorrowedView) error { return nil }) }\n"
+	compiledFile, err := parser.ParseFile(token.NewFileSet(), "fixture.go", compiledNarrowRejects, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := l8D2ReadinessRetainedScopedTypeIssues(map[string]*ast.File{"fixture.go": compiledFile}); len(issues) != 5 {
+		t.Fatalf("compiled narrow reject issues = %v, want 5", issues)
+	}
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.MkdirTemp(root, ".l8-d2-body-owner-compile-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if removeErr := os.RemoveAll(directory); removeErr != nil {
+			t.Errorf("remove body-owner compile fixture: %v", removeErr)
+		}
+	})
+	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(compiledNarrowRejects), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "test", "-run", "^$", ".")
+	command.Dir = directory
+	command.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("narrow body-owner reject fixture does not compile: %v\n%s", err, output)
+	}
 	first, err := parser.ParseFile(token.NewFileSet(), "first.go", "package fixture\nimport cm \""+credentialMemoryPath+"\"\nvar source cm.BorrowedView\n", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -2351,6 +3288,32 @@ func TestL8D2HelperServiceReadinessNoRetentionGuardSelfTest(t *testing.T) {
 	}
 	if issues := l8D2ReadinessRetainedScopedTypeIssues(map[string]*ast.File{"first.go": first, "second.go": second}); len(issues) != 2 {
 		t.Fatalf("cross-file global alias issues = %v, want 2", issues)
+	}
+	wrapper, err := parser.ParseFile(token.NewFileSet(), "wrapper.go", "package fixture\nfunc configuredDependency(value any) bool { return !helperExecConfiguredDependencyNil(value) }\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classifier, err := parser.ParseFile(token.NewFileSet(), "classifier.go", "package fixture\nimport \"reflect\"\nfunc helperExecConfiguredDependencyNil(value any) bool { if value == nil { return true }; reflected := reflect.ValueOf(value); switch reflected.Kind() { case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice: return reflected.IsNil(); default: return false } }\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, err := parser.ParseFile(token.NewFileSet(), "caller.go", "package fixture\nimport cm \""+credentialMemoryPath+"\"\nfunc use(view cm.BorrowedView) { configuredDependency(view) }\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := l8D2ReadinessRetainedScopedTypeIssues(map[string]*ast.File{"wrapper.go": wrapper, "classifier.go": classifier, "caller.go": caller}); len(issues) != 0 {
+		t.Fatalf("cross-file configured dependency wrapper issues = %v, want none", issues)
+	}
+	prepareHandler, err := parser.ParseFile(token.NewFileSet(), "prepare_handler.go", "package fixture\nimport (\"context\"; cm \""+credentialMemoryPath+"\")\ntype ReceivedBodyCapability interface{ Borrow(context.Context, func(cm.BorrowedView) error) error }\ntype ReceivedPacket struct{ body ReceivedBodyCapability }\ntype CorePreparation interface{ StageFile(context.Context, int, cm.BorrowedView) error }\ntype servicePreparing struct{ preparation CorePreparation }\ntype Service struct{}\nfunc (*Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket) error { body := packet.body; var preparing servicePreparing; fileRequest, fileRequestErr := newServiceFileRequest(packet, 0, preparing); if fileRequestErr != nil { return fileRequestErr }; return body.Borrow(ctx, func(view cm.BorrowedView) error { return preparing.preparation.StageFile(ctx, fileRequest, view) }) }\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepareIssuer, err := parser.ParseFile(token.NewFileSet(), "prepare_issuer.go", "package fixture\nfunc newServiceFileRequest(ReceivedPacket, int, servicePreparing) (int, error) { return 0, nil }\n", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := l8D2ReadinessRetainedScopedTypeIssues(map[string]*ast.File{"prepare_handler.go": prepareHandler, "prepare_issuer.go": prepareIssuer}); len(issues) != 2 {
+		t.Fatalf("cross-file prepare file issuer issues = %v, want 2", issues)
 	}
 }
 
@@ -2384,20 +3347,36 @@ func (s *Service) Serve(ctx context.Context) (ServiceResult, error) {
 			source: l8D2ReadinessCanonicalPrivateServiceFixture(), private: true,
 		},
 		{
+			name:   "private continuation uses package-global receive request",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "receiveRequest, requestErr := s.newServiceReceiveRequest(); if requestErr != nil { return s.finishExecDispatch(ctx, requestErr) }; packet, receiveErr := s.receiveServicePacket(ctx, receiveRequest)", "packet, receiveErr := s.receiveServicePacket(ctx, request)", 1),
+		},
+		{
+			name:   "private continuation ignores receive request error",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "if requestErr != nil { return s.finishExecDispatch(ctx, requestErr) };", "_ = requestErr;", 1),
+		},
+		{
+			name:   "private continuation rebinds issued receive request",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "packet, receiveErr := s.receiveServicePacket(ctx, receiveRequest)", "receiveRequest = request; packet, receiveErr := s.receiveServicePacket(ctx, receiveRequest)", 1),
+		},
+		{
+			name:   "private continuation uses foreign receive issuer",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "s.newServiceReceiveRequest()", "foreignService.newServiceReceiveRequest()", 1),
+		},
+		{
 			name:   "private handler omits body cleanup",
-			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "bodyDestroyErr := error(nil);", 1),
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "bodyDestroyErr := destroyServiceObservedBody(ctx, body);", "bodyDestroyErr := error(nil);", 1),
 		},
 		{
 			name:   "private handler duplicates body cleanup",
-			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "bodyDestroyErr := body.Destroy(ctx); _ = body.Destroy(ctx);", 1),
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "bodyDestroyErr := destroyServiceObservedBody(ctx, body);", "bodyDestroyErr := destroyServiceObservedBody(ctx, body); _ = destroyServiceObservedBody(ctx, body);", 1),
 		},
 		{
-			name:   "private handler omits plan cleanup",
-			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "corePlan.destroy();", "", 1),
+			name:   "terminal reducer omits plan and transaction cleanup",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "authorityErr := closeServiceExecAuthority(serviceExecAuthority{plan: plan, transaction: transaction});", "authorityErr := error(nil);", 1),
 		},
 		{
-			name:   "private handler duplicates plan cleanup",
-			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "corePlan.destroy();", "corePlan.destroy(); corePlan.destroy();", 1),
+			name:   "terminal reducer duplicates plan and transaction cleanup",
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "authorityErr := closeServiceExecAuthority(serviceExecAuthority{plan: plan, transaction: transaction});", "authorityErr := closeServiceExecAuthority(serviceExecAuthority{plan: plan, transaction: transaction}); _ = closeServiceExecAuthority(serviceExecAuthority{plan: plan, transaction: transaction});", 1),
 		},
 		{
 			name:   "private handler captures proposal before its error gate",
@@ -2413,23 +3392,27 @@ func (s *Service) Serve(ctx context.Context) (ServiceResult, error) {
 		},
 		{
 			name:   "private handler shadows terminal reducer",
-			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "var pending Proposal;", "newServiceResult := evilResult; var pending Proposal;", 1),
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "var pending *credentialprotocol.HelperExecPayloadProposal;", "newServiceResult := evilResult; var pending *credentialprotocol.HelperExecPayloadProposal;", 1),
 		},
 		{
 			name:   "private handler shadows sanitized error",
-			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "var pending Proposal;", "ErrContractOwnership := rawError; var pending Proposal;", 1),
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "var pending *credentialprotocol.HelperExecPayloadProposal;", "ErrContractOwnership := rawError; var pending *credentialprotocol.HelperExecPayloadProposal;", 1),
 		},
 		{
 			name:   "private handler discards body destroy failure",
-			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "_ = body.Destroy(ctx); bodyDestroyErr := error(nil);", 1),
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "bodyDestroyErr := destroyServiceObservedBody(ctx, body);", "_ = destroyServiceObservedBody(ctx, body); bodyDestroyErr := error(nil);", 1),
 		},
 		{
 			name:   "canonical stdin authority chain",
-			source: l8D2ReadinessCanonicalStdinServiceFixture(), stdin: true,
+			source: l8D2ReadinessCombinedPrepareExecCanonical(), construction: true, serve: true, private: true, stdin: true,
+		},
+		{
+			name:   "stdin continuation uses package-global receive request",
+			source: strings.Replace(l8D2ReadinessCanonicalStdinServiceFixture(), "receiveRequest, requestErr := s.newServiceReceiveRequest(); if requestErr != nil { return s.finishExecDispatch(ctx, requestErr) }; packet, receiveErr := s.transport.Receive(ctx, receiveRequest)", "packet, receiveErr := s.transport.Receive(ctx, request)", 1),
 		},
 		{
 			name:   "stdin handler omits body cleanup",
-			source: strings.Replace(l8D2ReadinessCanonicalStdinServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "bodyDestroyErr := error(nil);", 1),
+			source: strings.Replace(l8D2ReadinessCanonicalStdinServiceFixture(), "bodyDestroyErr := destroyServiceObservedBody(ctx, body);", "bodyDestroyErr := error(nil);", 1),
 		},
 		{
 			name:   "stdin handler has disconnected recovery",
@@ -2441,26 +3424,11 @@ func (s *Service) Serve(ctx context.Context) (ServiceResult, error) {
 		},
 		{
 			name:   "stdin handler discards body destroy failure",
-			source: strings.Replace(l8D2ReadinessCanonicalStdinServiceFixture(), "bodyDestroyErr := body.Destroy(ctx);", "_ = body.Destroy(ctx); bodyDestroyErr := error(nil);", 1),
+			source: strings.Replace(l8D2ReadinessCanonicalStdinServiceFixture(), "bodyDestroyErr := destroyServiceObservedBody(ctx, body);", "_ = destroyServiceObservedBody(ctx, body); bodyDestroyErr := error(nil);", 1),
 		},
 		{
-			name: "combined canonical constructor one-shot private and stdin topology",
-			source: l8D2ReadinessServiceFixture(`
-func NewService(options ServiceOptions) (*Service, error) {
-	if !configuredDependency(options.Core) || !configuredDependency(options.Transport) || !configuredDependency(options.Policy) || !configuredDependency(options.Host) || !configuredDependency(options.Runtime) { return nil, ErrContractDependency }
-	extensions := snapshotServiceExtensionEntries(options.Extensions)
-	return &Service{core: options.Core, transport: options.Transport, policy: options.Policy, extensions: extensions, host: options.Host, runtime: options.Runtime, state: &serviceState{}}, nil
-}
-func (s *Service) Serve(ctx context.Context) (ServiceResult, error) {
-	if err := transportContextPrecondition(ctx); err != nil { return ServiceResult{}, err }
-	s.state.mu.Lock(); if s.state.serveCalled { s.state.mu.Unlock(); return ServiceResult{}, ErrContractTransition }; s.state.serveCalled = true; s.state.mu.Unlock()
-	if dispatchPrivate { return s.dispatchPrivate(ctx) }
-	return s.dispatchStdin(ctx)
-}
-func (s *Service) dispatchPrivate(ctx context.Context) (ServiceResult, error) { packet, receiveErr := s.transport.Receive(ctx, request); if receiveErr != nil { return ServiceResult{}, receiveErr }; arm, ok := packet.ExecPrivate(); if !ok { return ServiceResult{}, errInvalid }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.private(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison) }
-func (s *Service) private(ctx context.Context, body ReceivedBodyCapability, tx *credentialprotocol.HelperExecTransaction, correlation credentialprotocol.HelperExecTransactionCorrelation, obs credentialprotocol.HelperExecPrivateObservation, comparison bool) (ServiceResult, error) { _ = body.Borrow(ctx, func(view BorrowedView) error { proposal, proposalErr := tx.ProposeObservedPrivate(obs); if proposalErr != nil { return proposalErr }; if comparison { return proposal.Commit() }; execution, coreErr := s.core.BeginExec(ctx, request, view); if coreErr != nil || !configuredDependency(execution) { _ = proposal.Wipe(); return errInvalid }; s.state.execution = execution; return proposal.Commit() }); return ServiceResult{}, nil }
-func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult, error) { packet, receiveErr := s.transport.Receive(ctx, request); if receiveErr != nil { return ServiceResult{}, receiveErr }; arm, ok := packet.ExecStream(); if !ok { return ServiceResult{}, errInvalid }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.stdin(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison) }
-func (s *Service) stdin(ctx context.Context, body ReceivedBodyCapability, tx *credentialprotocol.HelperExecTransaction, correlation credentialprotocol.HelperExecTransactionCorrelation, obs credentialprotocol.HelperExecStreamObservation, comparison bool) (ServiceResult, error) { _ = body.Borrow(ctx, func(view BorrowedView) error { proposal, proposalErr := tx.ProposeObservedStdin(obs, view); if proposalErr != nil { return proposalErr }; if comparison { return proposal.Commit() }; coreErr := s.state.execution.WriteStdin(ctx, view, 0, false); if coreErr != nil { _ = proposal.Wipe(); return coreErr }; return proposal.Commit() }); return ServiceResult{}, nil }`), construction: true, serve: true, private: true, stdin: true,
+			name:   "combined canonical constructor one-shot private and stdin topology",
+			source: l8D2ReadinessCombinedPrepareExecCanonical(), construction: true, serve: true, private: true, stdin: true,
 		},
 		{
 			name: "unknown returned Service call invalidates topology",
@@ -2817,12 +3785,12 @@ func (s *Service) private(ctx context.Context, body ReceivedBodyCapability, tx *
 		},
 		{
 			name:   "matching arm dispatch uses background context",
-			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "return s.private(ctx,", "return s.private(context.Background(),", 1),
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "s.private(ctx, packet.body", "s.private(context.Background(), packet.body", 1),
 		},
 		{
 			name: "matching arm local rebound before handler",
 			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(),
-				"if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.private", "if dispatchErr != nil { return ServiceResult{}, dispatchErr }; arm = ReceivedExecPrivate{}; return s.private", 1),
+				"_, handlerErr := s.private", "arm = ReceivedExecPrivate{}; _, handlerErr := s.private", 1),
 		},
 		{
 			name:   "parent dispatcher substitutes background context",
@@ -2865,7 +3833,7 @@ func (s *Service) private(ctx context.Context, body ReceivedBodyCapability, tx *
 		},
 		{
 			name:   "dispatcher reassigns configured transport before use",
-			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "packet, receiveErr := s.transport.Receive", "s.transport = foreignTransport; packet, receiveErr := s.transport.Receive", 1),
+			source: strings.Replace(l8D2ReadinessCanonicalPrivateServiceFixture(), "packet, receiveErr := s.receiveServicePacket", "packet, receiveErr := foreignService.receiveServicePacket", 1),
 		},
 		{
 			name:   "reachable helper replaces configured core through Service alias",
@@ -2918,10 +3886,8 @@ func (s *Service) takeExecDispatch(revision uint64) (serviceExecDispatch, error)
 func (s *Service) private(ctx context.Context) error {
 	s.state.mu.Lock()
 	request := s.state.request
-	plan := s.state.plan
 	s.state.mu.Unlock()
 	execution, coreErr := s.core.BeginExec(ctx, request, nil)
-	plan.destroy()
 	if coreErr != nil || !configuredDependency(execution) { return errInvalid }
 	s.state.mu.Lock()
 	s.state.execution = execution
@@ -2997,63 +3963,1813 @@ func (s *Service) stdin(ctx context.Context, view any) error {
 	}
 }
 
-func TestL8D2HelperServiceReadinessZeroPrivateExecGuardSelfTest(t *testing.T) {
-	t.Parallel()
-	canonical := `package fixture
-import "context"
-type Core interface{ BeginExec(context.Context, any, any)(CoreExecution,error) }; type CoreExecution interface{}
-type ReceivedExec struct{}; func (ReceivedExec) PrivateBindingLength() uint32{return 0}; func (ReceivedExec) PrivateBindingSHA256()[32]byte{return [32]byte{}}; func (ReceivedExec) ExecPrivate(){}
-type ReceivedPacket struct{}; func (ReceivedPacket) Exec()(ReceivedExec,bool){return ReceivedExec{},true}
-type mutex struct{}; func (*mutex) Lock(){}; func (*mutex) Unlock(){}
-type ExecPlanCapability struct{}; func (ExecPlanCapability) destroy(){}; type serviceState struct{ mu mutex; request any; plan ExecPlanCapability; execution CoreExecution }; type Service struct{ core Core; state *serviceState }; type ServiceResult struct{}
-var errInvalid error; var foreignArm ReceivedExec; var foreignPacket ReceivedPacket; func configuredDependency(any)bool{return true}; func helperCore(any){}
-func (s *Service) zeroPrivate(ctx context.Context, packet ReceivedPacket, comparison bool)(ServiceResult,error){
-	arm, ok := packet.Exec(); if !ok { return ServiceResult{}, errInvalid }
-	if arm.PrivateBindingLength() == 0 && arm.PrivateBindingSHA256() == ([32]byte{}) {
-		if comparison { return ServiceResult{}, nil }
-		s.state.mu.Lock(); stateRequest := s.state.request; statePlan := s.state.plan; s.state.mu.Unlock()
-		execution, coreErr := s.core.BeginExec(ctx, stateRequest, nil)
-		statePlan.destroy()
-		if coreErr != nil || !configuredDependency(execution) { return ServiceResult{}, errInvalid }
-		s.state.mu.Lock(); s.state.execution = execution; s.state.mu.Unlock()
-		return ServiceResult{}, nil
+const l8D2ReadinessPreparePrerequisiteCanonical = `package fixture
+import (
+    "context"
+    "crypto/sha256"
+    "crypto/subtle"
+    "encoding/base64"
+    "encoding/binary"
+	"math"
+    "sync"
+    credentialmemory "github.com/jywlabs/hal/internal/credentialmemory"
+    credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+)
+type requestCorrelation struct { requestID [16]byte; identityDigest [32]byte; revision uint64 }
+type CoreGenerations struct { boot, helper, job, monitor, mount, cgroup credentialprotocol.SafeID }
+type CorePreparationCapability struct { digest [32]byte }
+type CorePreparedCapability struct { digest [32]byte }
+type CoreExecutionCapability struct { digest [32]byte }
+type CoreCleanupCapability struct { digest [32]byte }
+type ManifestCapability struct{}
+func (ManifestCapability) Count() uint16 { return 0 }
+func (ManifestCapability) SHA256() [32]byte { return [32]byte{} }
+type RelativePathCapability struct{}
+func (ManifestCapability) Binding(uint16) (credentialprotocol.SafeID, credentialprotocol.DeliveryMode, RelativePathCapability, uint32, [32]byte, bool) { return "", credentialprotocol.DeliveryModeFileTmpfs, RelativePathCapability{}, 0, [32]byte{}, true }
+type CorePrepareRequest struct{}
+func (CorePrepareRequest) RequestID() [16]byte { return [16]byte{} }
+func (CorePrepareRequest) IdentityDigest() [32]byte { return [32]byte{} }
+func (CorePrepareRequest) Revision() uint64 { return 0 }
+func (CorePrepareRequest) Generations() CoreGenerations { return CoreGenerations{} }
+func (CorePrepareRequest) ExpiresUnixNano() int64 { return 0 }
+func (CorePrepareRequest) Manifest() ManifestCapability { return ManifestCapability{} }
+func (CorePrepareRequest) ManifestSHA256() [32]byte { return [32]byte{} }
+func (CorePrepareRequest) Preparation() CorePreparationCapability { return CorePreparationCapability{} }
+func (CorePrepareRequest) Prepared() CorePreparedCapability { return CorePreparedCapability{} }
+func (CorePrepareRequest) Cleanup() CoreCleanupCapability { return CoreCleanupCapability{} }
+type CoreCommitRequest struct{}
+func (CoreCommitRequest) RequestID() [16]byte { return [16]byte{} }
+func (CoreCommitRequest) IdentityDigest() [32]byte { return [32]byte{} }
+func (CoreCommitRequest) Revision() uint64 { return 0 }
+func (CoreCommitRequest) ManifestSHA256() [32]byte { return [32]byte{} }
+func (CoreCommitRequest) TransactionSHA256() [32]byte { return [32]byte{} }
+func (CoreCommitRequest) Prepared() CorePreparedCapability { return CorePreparedCapability{} }
+type CoreFileRequest struct{}
+type CoreCleanupCategory uint8
+const (
+    CoreCleanupComplete CoreCleanupCategory = 1
+    CoreCleanupRetryRequired CoreCleanupCategory = 2
+    CoreCleanupStopVMRequired CoreCleanupCategory = 3
+)
+type CoreCleanupResult struct{}
+func (CoreCleanupResult) Cleanup() CoreCleanupCapability { return CoreCleanupCapability{} }
+func (CoreCleanupResult) Category() CoreCleanupCategory { return 0 }
+func (CoreCleanupResult) AuthorityAbsent() bool { return false }
+func (CoreCleanupResult) ResourcesAbsent() bool { return false }
+type CorePreparedResult struct{}
+func (CorePreparedResult) Generations() CoreGenerations { return CoreGenerations{} }
+func (CorePreparedResult) ExpiresUnixNano() int64 { return 0 }
+func (CorePreparedResult) BindingCount() uint16 { return 0 }
+func (CorePreparedResult) ManifestSHA256() [32]byte { return [32]byte{} }
+func (CorePreparedResult) TransactionSHA256() [32]byte { return [32]byte{} }
+func (CorePreparedResult) Prepared() CorePreparedCapability { return CorePreparedCapability{} }
+type CoreRenewRequest struct{}
+func (CoreRenewRequest) RequestID() [16]byte { return [16]byte{} }
+func (CoreRenewRequest) IdentityDigest() [32]byte { return [32]byte{} }
+func (CoreRenewRequest) Revision() uint64 { return 0 }
+func (CoreRenewRequest) Generations() CoreGenerations { return CoreGenerations{} }
+func (CoreRenewRequest) ExpiresUnixNano() int64 { return 0 }
+type CoreRevokeRequest struct{}
+type ServiceBootstrap struct{}
+func (ServiceBootstrap) BootNonce() [32]byte { return [32]byte{} }
+func (ServiceBootstrap) BootGeneration() credentialprotocol.SafeID { return "" }
+func (ServiceBootstrap) HelperGeneration() credentialprotocol.SafeID { return "" }
+type ServiceJobObservation struct{}
+func (ServiceJobObservation) Generations() CoreGenerations { return CoreGenerations{} }
+func (ServiceJobObservation) ObservedUnixNano() int64 { return 0 }
+func (ServiceJobObservation) HardExpiryUnixNano() int64 { return 0 }
+type ServiceJobObservationRequest struct{}
+type Header = credentialprotocol.HelperPacketHeader
+type ReceivedPrepareBegin struct { revision uint64; expiryUnixNano int64; manifest ManifestCapability; transaction *credentialprotocol.HelperPrepareTransaction }
+func (value ReceivedPrepareBegin) Revision() uint64 { return value.revision }
+func (value ReceivedPrepareBegin) ExpiryUnixNano() int64 { return value.expiryUnixNano }
+func (value ReceivedPrepareBegin) Manifest() ManifestCapability { return value.manifest }
+type ReceivedPrepareFile struct { revision uint64; bindingIndex uint16; fileLength uint32; fileSHA256 [32]byte }
+func (value ReceivedPrepareFile) Revision() uint64 { return value.revision }
+func (value ReceivedPrepareFile) BindingIndex() uint16 { return value.bindingIndex }
+func (value ReceivedPrepareFile) FileLength() uint32 { return value.fileLength }
+func (value ReceivedPrepareFile) FileSHA256() [32]byte { return value.fileSHA256 }
+type ReceivedPrepareCommit struct { revision uint64; manifestSHA256 [32]byte }
+func (value ReceivedPrepareCommit) Revision() uint64 { return value.revision }
+func (value ReceivedPrepareCommit) ManifestSHA256() [32]byte { return value.manifestSHA256 }
+type ReceivedRenew struct { revision uint64; expiryUnixNano int64; priorProofSHA256 [32]byte }
+func (value ReceivedRenew) Revision() uint64 { return value.revision }
+func (value ReceivedRenew) ExpiryUnixNano() int64 { return value.expiryUnixNano }
+func (value ReceivedRenew) PriorProofSHA256() [32]byte { return value.priorProofSHA256 }
+type ReceivedBodyCapability interface { Len() uint32; SHA256() [32]byte; Borrow(context.Context, func(credentialmemory.BorrowedView) error) error; Destroy(context.Context) error }
+type ReceivedCapability interface { Close(context.Context) error }
+type ReceivedPacket struct{ header credentialprotocol.HelperPacketHeader; body ReceivedBodyCapability; right ReceivedCapability }
+func (ReceivedPacket) PrepareBegin() (ReceivedPrepareBegin,bool) { return ReceivedPrepareBegin{},true }
+func (ReceivedPacket) PrepareFile() (ReceivedPrepareFile,bool) { return ReceivedPrepareFile{},true }
+func (ReceivedPacket) PrepareCommit() (ReceivedPrepareCommit,bool) { return ReceivedPrepareCommit{},true }
+func (ReceivedPacket) Renew() (ReceivedRenew,bool) { return ReceivedRenew{},true }
+func (packet ReceivedPacket) Header() Header { return packet.header }
+func (packet ReceivedPacket) Type() credentialprotocol.PacketType { return packet.header.Type }
+type serviceCoreCapabilityKind uint8
+const (
+    serviceCoreCapabilityPreparation serviceCoreCapabilityKind = 1
+    serviceCoreCapabilityPrepared serviceCoreCapabilityKind = 2
+    serviceCoreCapabilityExecution serviceCoreCapabilityKind = 3
+    serviceCoreCapabilityCleanup serviceCoreCapabilityKind = 4
+)
+type servicePrepareCapabilities struct { preparation CorePreparationCapability; prepared CorePreparedCapability; cleanup CoreCleanupCapability }
+type servicePrepareAuthority struct { header credentialprotocol.HelperPacketHeader; bootstrap ServiceBootstrap; observation ServiceJobObservation; correlation credentialprotocol.HelperPrepareTransactionCorrelation; prepare CorePrepareRequest; transaction *credentialprotocol.HelperPrepareTransaction }
+type servicePreparing struct { authority servicePrepareAuthority; preparation CorePreparation; beginTaken bool; fileTaken bool; commitTaken bool; active bool }
+func newServiceCoreCapabilityDigest(kind serviceCoreCapabilityKind, correlation requestCorrelation, generations CoreGenerations, bootNonce [32]byte) ([32]byte,error) {
+    if kind < serviceCoreCapabilityPreparation || kind > serviceCoreCapabilityCleanup || !validRequestCorrelation(correlation) || (!validPartialCoreGenerations(generations) && !validCompleteCoreGenerations(generations)) || bootNonce == ([32]byte{}) { return [32]byte{}, ErrContractInvalidArgument }
+    hasher := sha256.New()
+    writeExtensionOpaque16(hasher, "hal/l8/guest-helper/core-capability/v1")
+    _, _ = hasher.Write([]byte{byte(kind)})
+    _, _ = hasher.Write(correlation.requestID[:])
+    _, _ = hasher.Write(correlation.identityDigest[:])
+    var scalar [8]byte
+    binary.BigEndian.PutUint64(scalar[:], correlation.revision)
+    _, _ = hasher.Write(scalar[:])
+    for _, generation := range [...]credentialprotocol.SafeID{generations.boot, generations.helper, generations.job, generations.monitor, generations.mount, generations.cgroup} { writeExtensionOpaque16(hasher, string(generation)) }
+    _, _ = hasher.Write(bootNonce[:])
+    var digest [32]byte
+    copy(digest[:], hasher.Sum(nil))
+    return digest,nil
+}
+func newServicePrepareCapabilities(correlation requestCorrelation, generations CoreGenerations, bootNonce [32]byte) (servicePrepareCapabilities,error) {
+    if !validPartialCoreGenerations(generations) { return servicePrepareCapabilities{}, ErrContractInvalidArgument }
+    preparationSHA256, err := newServiceCoreCapabilityDigest(serviceCoreCapabilityPreparation, correlation, generations, bootNonce)
+    if err != nil { return servicePrepareCapabilities{}, err }
+    preparedSHA256, err := newServiceCoreCapabilityDigest(serviceCoreCapabilityPrepared, correlation, generations, bootNonce)
+    if err != nil { return servicePrepareCapabilities{}, err }
+    cleanupSHA256, err := newServiceCoreCapabilityDigest(serviceCoreCapabilityCleanup, correlation, generations, bootNonce)
+    if err != nil { return servicePrepareCapabilities{}, err }
+    return servicePrepareCapabilities{preparation: CorePreparationCapability{digest: preparationSHA256}, prepared: CorePreparedCapability{digest: preparedSHA256}, cleanup: CoreCleanupCapability{digest: cleanupSHA256}},nil
+}
+func newServicePrepareAuthority(packet ReceivedPacket, arm ReceivedPrepareBegin, bootstrap ServiceBootstrap, observation ServiceJobObservation) (servicePrepareAuthority,error) {
+    header := packet.Header()
+    completeGenerations := observation.Generations()
+    generations, generationsErr := NewCoreGenerations(completeGenerations.boot, completeGenerations.helper, completeGenerations.job, "", "", "")
+    if generationsErr != nil { return servicePrepareAuthority{}, generationsErr }
+    correlation := requestCorrelation{requestID: header.RequestID, identityDigest: header.GuestCredentialIdentityDigest, revision: arm.Revision()}
+    manifestSHA256 := arm.Manifest().SHA256()
+    bootstrapBootNonce := bootstrap.BootNonce()
+    if header.Type != credentialprotocol.PacketTypePrepareBegin || arm.transaction == nil || !validRequestCorrelation(correlation) || !validCompleteCoreGenerations(completeGenerations) || !validPartialCoreGenerations(generations) || generations.boot != bootstrap.BootGeneration() || generations.helper != bootstrap.HelperGeneration() || arm.ExpiryUnixNano() <= observation.ObservedUnixNano() || arm.ExpiryUnixNano() > observation.HardExpiryUnixNano() || subtle.ConstantTimeCompare(header.BootNonce[:], bootstrapBootNonce[:]) != 1 || manifestSHA256 == ([32]byte{}) { return servicePrepareAuthority{}, ErrContractCorrelation }
+    capabilities, capabilityErr := newServicePrepareCapabilities(correlation, generations, header.BootNonce)
+    if capabilityErr != nil { return servicePrepareAuthority{}, capabilityErr }
+    transactionCorrelation, transactionCorrelationErr := credentialprotocol.NewHelperPrepareTransactionCorrelation(header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), arm.ExpiryUnixNano())
+    if transactionCorrelationErr != nil { return servicePrepareAuthority{}, transactionCorrelationErr }
+    prepare, prepareErr := NewCorePrepareRequest(header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), generations, arm.ExpiryUnixNano(), coreFixedLimitSetID, arm.Manifest(), manifestSHA256, capabilities.preparation, capabilities.prepared, capabilities.cleanup)
+    if prepareErr != nil { return servicePrepareAuthority{}, prepareErr }
+    return servicePrepareAuthority{header: header, bootstrap: bootstrap, observation: observation, correlation: transactionCorrelation, prepare: prepare, transaction: arm.transaction},nil
+}
+func (s *Service) reservePreparing(authority servicePrepareAuthority) error {
+    if authority.transaction == nil { return ErrContractDependency }
+    s.state.mu.Lock()
+    if s.state.preparing.beginTaken || s.state.preparing.active || s.state.prepared.active { s.state.mu.Unlock(); return ErrContractTransition }
+    s.state.preparing = servicePreparing{authority: authority, beginTaken: true}
+    s.state.mu.Unlock()
+    return nil
+}
+func (s *Service) installPreparing(transaction *credentialprotocol.HelperPrepareTransaction, preparation CorePreparation) error {
+    if transaction == nil || !configuredDependency(preparation) { return ErrContractDependency }
+    s.state.mu.Lock()
+    if !s.state.preparing.beginTaken || s.state.preparing.active || s.state.preparing.authority.transaction != transaction { s.state.mu.Unlock(); return ErrContractTransition }
+    s.state.preparing.preparation = preparation
+    s.state.preparing.beginTaken = false
+    s.state.preparing.active = true
+    s.state.mu.Unlock()
+    return nil
+}
+func closeServicePrepareTransaction(transaction *credentialprotocol.HelperPrepareTransaction) (cleanupErr error) {
+    if transaction == nil { return nil }
+    defer func() { if recover() != nil { cleanupErr = ErrContractOwnership } }()
+    transaction.Close()
+    return nil
+}
+func rollbackServicePreparation(ctx context.Context, preparation CorePreparation, cleanup CoreCleanupCapability) (cleanupErr error) {
+    if !configuredDependency(preparation) { return nil }
+    defer func() { if recover() != nil { cleanupErr = ErrContractOwnership } }()
+    for attempt := 0; attempt < 3; attempt++ {
+        result, rollbackErr := preparation.Rollback(ctx)
+        resultCleanup := result.Cleanup()
+        if rollbackErr != nil || subtle.ConstantTimeCompare(resultCleanup.digest[:], cleanup.digest[:]) != 1 { return ErrContractOwnership }
+        switch result.Category() {
+        case CoreCleanupComplete:
+            if !result.AuthorityAbsent() || !result.ResourcesAbsent() { return ErrContractOwnership }
+            return nil
+        case CoreCleanupRetryRequired:
+            if !result.AuthorityAbsent() || result.ResourcesAbsent() { return ErrContractOwnership }
+        case CoreCleanupStopVMRequired:
+            if result.AuthorityAbsent() && result.ResourcesAbsent() { return ErrContractOwnership }
+            return ErrContractOwnership
+        default:
+            return ErrContractOwnership
+        }
+    }
+    return ErrContractOwnership
+}
+func (s *Service) abortPreparing(ctx context.Context, transaction *credentialprotocol.HelperPrepareTransaction, provisional CorePreparation) error {
+    if transaction == nil { return ErrContractInvalidArgument }
+    s.state.mu.Lock()
+    preparing := s.state.preparing
+    if preparing.authority.transaction != transaction || !preparing.beginTaken && !preparing.active { s.state.mu.Unlock(); return ErrContractTransition }
+    s.state.preparing = servicePreparing{}
+    s.state.mu.Unlock()
+    preparation := preparing.preparation
+    if configuredDependency(provisional) { preparation = provisional }
+    transactionErr := closeServicePrepareTransaction(transaction)
+    rollbackErr := rollbackServicePreparation(ctx, preparation, preparing.authority.prepare.Cleanup())
+    if transactionErr != nil || rollbackErr != nil { return ErrContractOwnership }
+    return nil
+}
+func (s *Service) takePreparing(packet ReceivedPacket) (servicePreparing,error) {
+    header := packet.Header()
+    s.state.mu.Lock()
+    preparing := s.state.preparing
+    if !preparing.active || preparing.fileTaken || preparing.commitTaken || header.Type != credentialprotocol.PacketTypePrepareCommit || header.RequestID != preparing.authority.header.RequestID || subtle.ConstantTimeCompare(header.GuestCredentialIdentityDigest[:], preparing.authority.header.GuestCredentialIdentityDigest[:]) != 1 || subtle.ConstantTimeCompare(header.BootNonce[:], preparing.authority.header.BootNonce[:]) != 1 { s.state.mu.Unlock(); return servicePreparing{}, ErrContractCorrelation }
+    s.state.preparing.commitTaken = true
+    preparing.commitTaken = true
+    s.state.mu.Unlock()
+    return preparing,nil
+}
+func (s *Service) takePreparingFile(packet ReceivedPacket, arm ReceivedPrepareFile) (servicePreparing,error) {
+    header := packet.Header()
+    s.state.mu.Lock()
+    preparing := s.state.preparing
+    if !preparing.active || preparing.fileTaken || preparing.commitTaken || header.Type != credentialprotocol.PacketTypePrepareFile || header.RequestID != preparing.authority.header.RequestID || subtle.ConstantTimeCompare(header.GuestCredentialIdentityDigest[:], preparing.authority.header.GuestCredentialIdentityDigest[:]) != 1 || subtle.ConstantTimeCompare(header.BootNonce[:], preparing.authority.header.BootNonce[:]) != 1 || arm.Revision() != preparing.authority.prepare.Revision() { s.state.mu.Unlock(); return servicePreparing{}, ErrContractCorrelation }
+    s.state.preparing.fileTaken = true
+    preparing.fileTaken = true
+    s.state.mu.Unlock()
+    return preparing,nil
+}
+func (s *Service) finishPreparingFile(transaction *credentialprotocol.HelperPrepareTransaction) error {
+    if transaction == nil { return ErrContractInvalidArgument }
+    s.state.mu.Lock()
+    if !s.state.preparing.active || !s.state.preparing.fileTaken || s.state.preparing.commitTaken || s.state.preparing.authority.transaction != transaction { s.state.mu.Unlock(); return ErrContractTransition }
+    s.state.preparing.fileTaken = false
+    s.state.mu.Unlock()
+    return nil
+}
+func newServiceFileRequest(packet ReceivedPacket, arm ReceivedPrepareFile, preparing servicePreparing) (CoreFileRequest,error) {
+    header := packet.Header()
+    prepare := preparing.authority.prepare
+    transactionSnapshot := preparing.authority.transaction.Snapshot()
+    bindingID, mode, target, fileLength, fileSHA256, ok := prepare.Manifest().Binding(arm.BindingIndex())
+    armFileSHA256 := arm.FileSHA256()
+    prepareIdentityDigest := prepare.IdentityDigest()
+    if !preparing.active || !preparing.fileTaken || preparing.commitTaken || transactionSnapshot.Terminal || transactionSnapshot.Committed || transactionSnapshot.PendingFile || !transactionSnapshot.HasNextFile || transactionSnapshot.NextBindingIndex != arm.BindingIndex() || header.Type != credentialprotocol.PacketTypePrepareFile || header.RequestID != prepare.RequestID() || subtle.ConstantTimeCompare(header.GuestCredentialIdentityDigest[:], prepareIdentityDigest[:]) != 1 || arm.Revision() != prepare.Revision() || !ok || mode != credentialprotocol.DeliveryModeFileTmpfs || arm.FileLength() != fileLength || subtle.ConstantTimeCompare(armFileSHA256[:], fileSHA256[:]) != 1 { return CoreFileRequest{}, ErrContractCorrelation }
+    request, requestErr := NewCoreFileRequest(header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), prepare.Generations().job, prepare.Preparation(), bindingID, arm.BindingIndex(), target, fileLength, fileSHA256)
+    if requestErr != nil { return CoreFileRequest{}, requestErr }
+    return request,nil
+}
+func newServiceCommitRequest(packet ReceivedPacket, arm ReceivedPrepareCommit, authority servicePrepareAuthority) (CoreCommitRequest,error) {
+    header := packet.Header()
+    prepareManifestSHA256 := authority.prepare.ManifestSHA256()
+    prepareIdentityDigest := authority.prepare.IdentityDigest()
+    armManifestSHA256 := arm.ManifestSHA256()
+    if header.Type != credentialprotocol.PacketTypePrepareCommit || header.RequestID != authority.prepare.RequestID() || subtle.ConstantTimeCompare(header.GuestCredentialIdentityDigest[:], prepareIdentityDigest[:]) != 1 || arm.Revision() != authority.prepare.Revision() || subtle.ConstantTimeCompare(armManifestSHA256[:], prepareManifestSHA256[:]) != 1 { return CoreCommitRequest{}, ErrContractCorrelation }
+    transactionResult, transactionErr := authority.transaction.Commit(authority.correlation, credentialprotocol.HelperPrepareCommitBody{Revision: arm.Revision(), ManifestSHA256: arm.ManifestSHA256()})
+    if transactionErr != nil { return CoreCommitRequest{}, transactionErr }
+    commit, commitErr := NewCoreCommitRequest(header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), authority.observation.Generations().job, authority.prepare.Preparation(), transactionResult.ManifestSHA256(), transactionResult.TransactionSHA256(), authority.prepare.Prepared())
+    if commitErr != nil { return CoreCommitRequest{}, commitErr }
+    return commit,nil
+}
+type servicePreparedActivationCandidate struct {
+    issuingCorrelation requestCorrelation
+    bootNonce [32]byte
+    generations CoreGenerations
+    observedUnixNano int64
+    hardExpiryUnixNano int64
+    expiresUnixNano int64
+    manifest ManifestCapability
+    bindingCount uint16
+    manifestSHA256 [32]byte
+    transactionSHA256 [32]byte
+    prepared CorePreparedCapability
+    cleanup CoreCleanupCapability
+    activeProofID credentialprotocol.SafeID
+}
+type servicePreparedActivation struct {
+    issuingCorrelation requestCorrelation
+    revision uint64
+    bootNonce [32]byte
+    generations CoreGenerations
+    observedUnixNano int64
+    hardExpiryUnixNano int64
+    expiresUnixNano int64
+    manifest ManifestCapability
+    bindingCount uint16
+    manifestSHA256 [32]byte
+    transactionSHA256 [32]byte
+    prepared CorePreparedCapability
+    cleanup CoreCleanupCapability
+    activeProofID credentialprotocol.SafeID
+    active bool
+}
+type serviceRenewAuthority struct { activation servicePreparedActivation }
+type serviceState struct {
+    mu sync.Mutex
+    serveCalled bool
+    nextReceiveSequence uint64
+    preparing servicePreparing
+    prepared servicePreparedActivation
+}
+type Core interface { BeginPrepare(context.Context, CorePrepareRequest) (CorePreparation,error); Renew(context.Context, CoreRenewRequest) error; Revoke(context.Context, CoreRevokeRequest) (CoreCleanupResult,error) }
+type ReceiveRequest struct{}
+func NewReceiveRequest(uint64,uint32,uint32)(ReceiveRequest,error) { return ReceiveRequest{},nil }
+type Transport interface { Receive(context.Context, ReceiveRequest) (ReceivedPacket,error) }
+type CorePreparation interface { StageFile(context.Context, CoreFileRequest, credentialmemory.BorrowedView) error; Commit(context.Context, CoreCommitRequest) (CorePreparedResult,error); Rollback(context.Context) (CoreCleanupResult,error) }
+type ServiceRuntime interface { Bootstrap(context.Context) (ServiceBootstrap,error); ObserveJob(context.Context, ServiceJobObservationRequest) (ServiceJobObservation,error) }
+type Service struct { state *serviceState; core Core; transport Transport; runtime ServiceRuntime }
+type ServiceDisposition uint8
+const ( ServiceClosed ServiceDisposition = 1; ServiceStopVMRequired ServiceDisposition = 2 )
+type ServiceResult struct { disposition ServiceDisposition; closeReason credentialprotocol.CloseReason }
+func ValidateServiceDisposition(ServiceDisposition) error { return nil }
+func newServiceResult(disposition ServiceDisposition, closeReason credentialprotocol.CloseReason) (ServiceResult,error) { if ValidateServiceDisposition(disposition) != nil || credentialprotocol.ValidateCloseReason(closeReason) != nil { return ServiceResult{}, ErrContractInvalidArgument }; clean := disposition == ServiceClosed && (closeReason == credentialprotocol.CloseReasonNormal || closeReason == credentialprotocol.CloseReasonShutdown); stop := disposition == ServiceStopVMRequired && (closeReason == credentialprotocol.CloseReasonProtocolError || closeReason == credentialprotocol.CloseReasonIdentityDrift || closeReason == credentialprotocol.CloseReasonExpired || closeReason == credentialprotocol.CloseReasonHelperLoss); if !clean && !stop { return ServiceResult{}, ErrContractResultMatrix }; return ServiceResult{disposition: disposition, closeReason: closeReason}, nil }
+var ErrContractInvalidArgument error
+var ErrContractResultMatrix error
+var ErrContractCorrelation error
+var ErrContractTransition error
+var ErrContractDependency error
+var ErrContractOwnership error
+func validRequestCorrelation(requestCorrelation) bool { return true }
+func validPartialCoreGenerations(CoreGenerations) bool { return true }
+func validCompleteCoreGenerations(CoreGenerations) bool { return true }
+func writeExtensionOpaque16(any,string) {}
+func configuredDependency(any) bool { return true }
+func transportContextPrecondition(context.Context) error { return nil }
+func hashOpaqueToken(string,credentialprotocol.SafeID) [32]byte { return [32]byte{} }
+func newServiceJobObservationRequest(ServiceOperation,[16]byte,[32]byte,uint64,credentialprotocol.SafeID,credentialprotocol.SafeID)(ServiceJobObservationRequest,error) { return ServiceJobObservationRequest{},nil }
+func NewCoreGenerations(credentialprotocol.SafeID,credentialprotocol.SafeID,credentialprotocol.SafeID,credentialprotocol.SafeID,credentialprotocol.SafeID,credentialprotocol.SafeID)(CoreGenerations,error) { return CoreGenerations{},nil }
+type ServiceOperation uint8
+const (
+    ServiceOperationPrepare ServiceOperation = 1
+    ServiceOperationRenew ServiceOperation = 3
+)
+func NewCoreRenewRequest([16]byte,[32]byte,uint64,CoreGenerations,int64,CorePreparedCapability)(CoreRenewRequest,error) { return CoreRenewRequest{},nil }
+func NewCoreRevokeRequest([16]byte,[32]byte,uint64,CoreGenerations,credentialprotocol.RevokeReason,CorePreparedCapability,CoreCleanupCapability)(CoreRevokeRequest,error) { return CoreRevokeRequest{},nil }
+func NewCorePrepareRequest([16]byte,[32]byte,uint64,CoreGenerations,int64,credentialprotocol.SafeID,ManifestCapability,[32]byte,CorePreparationCapability,CorePreparedCapability,CoreCleanupCapability)(CorePrepareRequest,error) { return CorePrepareRequest{},nil }
+func NewCoreFileRequest([16]byte,[32]byte,uint64,credentialprotocol.SafeID,CorePreparationCapability,credentialprotocol.SafeID,uint16,RelativePathCapability,uint32,[32]byte)(CoreFileRequest,error) { return CoreFileRequest{},nil }
+func NewCoreCommitRequest([16]byte,[32]byte,uint64,credentialprotocol.SafeID,CorePreparationCapability,[32]byte,[32]byte,CorePreparedCapability)(CoreCommitRequest,error) { return CoreCommitRequest{},nil }
+const coreFixedLimitSetID credentialprotocol.SafeID = "helper-limits-v1"
+const renewProofDomain = "hal/l8/guest-helper/renew-proof/v1"
+func (s *Service) newServiceReceiveRequest() (ReceiveRequest,error) {
+    s.state.mu.Lock()
+    sequence := s.state.nextReceiveSequence
+    if sequence > math.MaxUint32 { s.state.mu.Unlock(); return ReceiveRequest{}, ErrContractTransition }
+    request, requestErr := NewReceiveRequest(sequence, credentialprotocol.MaxHelperPacketBodyBytes, 0)
+    if requestErr != nil { s.state.mu.Unlock(); return ReceiveRequest{}, requestErr }
+    s.state.nextReceiveSequence++
+    s.state.mu.Unlock()
+    return request,nil
+}
+func destroyServiceReceivedPacket(ctx context.Context, packet ReceivedPacket) (cleanupErr error) {
+    invoke := func(callback func() error) (callbackErr error) { defer func() { if recover() != nil { callbackErr = ErrContractOwnership } }(); return callback() }
+    if packet.body != nil { if !configuredDependency(packet.body) { cleanupErr = ErrContractOwnership } else if bodyErr := invoke(func() error { return packet.body.Destroy(ctx) }); bodyErr != nil { cleanupErr = ErrContractOwnership } }
+    if packet.right != nil { if !configuredDependency(packet.right) { cleanupErr = ErrContractOwnership } else if rightErr := invoke(func() error { return packet.right.Close(ctx) }); rightErr != nil { cleanupErr = ErrContractOwnership } }
+    return cleanupErr
+}
+func newServiceActiveProofID(correlation requestCorrelation, generations CoreGenerations, bootNonce [32]byte, expiresUnixNano int64, manifestSHA256, transactionSHA256 [32]byte) (credentialprotocol.SafeID,error) {
+    if !validRequestCorrelation(correlation) || !validCompleteCoreGenerations(generations) || bootNonce == ([32]byte{}) || expiresUnixNano <= 0 || manifestSHA256 == ([32]byte{}) || transactionSHA256 == ([32]byte{}) { return "", ErrContractInvalidArgument }
+    hasher := sha256.New()
+    writeExtensionOpaque16(hasher, "hal/l8/guest-helper/active-proof-label/v1")
+    _, _ = hasher.Write(bootNonce[:])
+    _, _ = hasher.Write(correlation.identityDigest[:])
+    var scalar [8]byte
+    binary.BigEndian.PutUint64(scalar[:], correlation.revision)
+    _, _ = hasher.Write(scalar[:])
+    for _, generation := range [...]credentialprotocol.SafeID{generations.boot, generations.helper, generations.job, generations.monitor, generations.mount, generations.cgroup} { writeExtensionOpaque16(hasher, string(generation)) }
+    binary.BigEndian.PutUint64(scalar[:], uint64(expiresUnixNano))
+    _, _ = hasher.Write(scalar[:])
+    _, _ = hasher.Write(manifestSHA256[:])
+    _, _ = hasher.Write(transactionSHA256[:])
+    return credentialprotocol.SafeID("active." + base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))),nil
+}
+func newServicePreparedActivationCandidate(preparing servicePreparing, header credentialprotocol.HelperPacketHeader, observation ServiceJobObservation, commit CoreCommitRequest, result CorePreparedResult) (servicePreparedActivationCandidate,error) {
+    prepare := preparing.authority.prepare
+    bootstrap := preparing.authority.bootstrap
+    prepareCorrelation := requestCorrelation{requestID: prepare.RequestID(), identityDigest: prepare.IdentityDigest(), revision: prepare.Revision()}
+    prepareCapabilities, capabilityErr := newServicePrepareCapabilities(prepareCorrelation, prepare.Generations(), header.BootNonce)
+    if capabilityErr != nil { return servicePreparedActivationCandidate{}, capabilityErr }
+    initialObservation := preparing.authority.observation
+    initialGenerations := initialObservation.Generations()
+    generations := observation.Generations()
+    resultManifestSHA256 := result.ManifestSHA256()
+    resultTransactionSHA256 := result.TransactionSHA256()
+    resultPrepared := result.Prepared()
+    prepareManifestSHA256 := prepare.ManifestSHA256()
+    commitManifestSHA256 := commit.ManifestSHA256()
+    commitTransactionSHA256 := commit.TransactionSHA256()
+    preparePrepared := prepare.Prepared()
+    preparePreparation := prepare.Preparation()
+    prepareCleanup := prepare.Cleanup()
+    commitPrepared := commit.Prepared()
+    prepareIdentityDigest := prepare.IdentityDigest()
+    commitIdentityDigest := commit.IdentityDigest()
+    bootstrapBootNonce := bootstrap.BootNonce()
+    correlation := requestCorrelation{requestID: header.RequestID, identityDigest: header.GuestCredentialIdentityDigest, revision: prepare.Revision()}
+    valid := preparing.active && preparing.commitTaken && configuredDependency(preparing.preparation) && header.Type == credentialprotocol.PacketTypePrepareCommit && validRequestCorrelation(correlation) && header.RequestID == prepare.RequestID() && header.RequestID == commit.RequestID() && subtle.ConstantTimeCompare(header.GuestCredentialIdentityDigest[:], prepareIdentityDigest[:]) == 1 && subtle.ConstantTimeCompare(header.GuestCredentialIdentityDigest[:], commitIdentityDigest[:]) == 1 && prepare.Revision() == commit.Revision() && subtle.ConstantTimeCompare(header.BootNonce[:], bootstrapBootNonce[:]) == 1 && subtle.ConstantTimeCompare(preparePreparation.digest[:], prepareCapabilities.preparation.digest[:]) == 1 && subtle.ConstantTimeCompare(preparePrepared.digest[:], prepareCapabilities.prepared.digest[:]) == 1 && subtle.ConstantTimeCompare(prepareCleanup.digest[:], prepareCapabilities.cleanup.digest[:]) == 1 && generations.boot == bootstrap.BootGeneration() && generations.helper == bootstrap.HelperGeneration() && generations == initialGenerations && observation.HardExpiryUnixNano() == initialObservation.HardExpiryUnixNano() && observation.ObservedUnixNano() > initialObservation.ObservedUnixNano() && validCompleteCoreGenerations(generations) && result.Generations() == generations && result.ExpiresUnixNano() == prepare.ExpiresUnixNano() && result.ExpiresUnixNano() > observation.ObservedUnixNano() && result.ExpiresUnixNano() <= observation.HardExpiryUnixNano() && result.BindingCount() == prepare.Manifest().Count() && subtle.ConstantTimeCompare(resultManifestSHA256[:], prepareManifestSHA256[:]) == 1 && subtle.ConstantTimeCompare(resultManifestSHA256[:], commitManifestSHA256[:]) == 1 && subtle.ConstantTimeCompare(resultTransactionSHA256[:], commitTransactionSHA256[:]) == 1 && subtle.ConstantTimeCompare(resultPrepared.digest[:], preparePrepared.digest[:]) == 1 && subtle.ConstantTimeCompare(resultPrepared.digest[:], commitPrepared.digest[:]) == 1
+    if !valid { return servicePreparedActivationCandidate{}, ErrContractCorrelation }
+    activeProofID, proofErr := newServiceActiveProofID(correlation, generations, header.BootNonce, result.ExpiresUnixNano(), resultManifestSHA256, resultTransactionSHA256)
+    if proofErr != nil { return servicePreparedActivationCandidate{}, proofErr }
+    return servicePreparedActivationCandidate{issuingCorrelation: correlation, bootNonce: header.BootNonce, generations: generations, observedUnixNano: observation.ObservedUnixNano(), hardExpiryUnixNano: observation.HardExpiryUnixNano(), expiresUnixNano: result.ExpiresUnixNano(), manifest: prepare.Manifest(), bindingCount: result.BindingCount(), manifestSHA256: resultManifestSHA256, transactionSHA256: resultTransactionSHA256, prepared: resultPrepared, cleanup: prepareCleanup, activeProofID: activeProofID},nil
+}
+func (s *Service) installPreparedActivation(preparing servicePreparing, header credentialprotocol.HelperPacketHeader, observation ServiceJobObservation, commit CoreCommitRequest, result CorePreparedResult) error {
+    candidate, candidateErr := newServicePreparedActivationCandidate(preparing, header, observation, commit, result)
+    if candidateErr != nil { return candidateErr }
+    s.state.mu.Lock()
+    if s.state.prepared.active || !s.state.preparing.active || !s.state.preparing.commitTaken { s.state.mu.Unlock(); return ErrContractTransition }
+    s.state.prepared = servicePreparedActivation{issuingCorrelation: candidate.issuingCorrelation, revision: candidate.issuingCorrelation.revision, bootNonce: candidate.bootNonce, generations: candidate.generations, observedUnixNano: candidate.observedUnixNano, hardExpiryUnixNano: candidate.hardExpiryUnixNano, expiresUnixNano: candidate.expiresUnixNano, manifest: candidate.manifest, bindingCount: candidate.bindingCount, manifestSHA256: candidate.manifestSHA256, transactionSHA256: candidate.transactionSHA256, prepared: candidate.prepared, cleanup: candidate.cleanup, activeProofID: candidate.activeProofID, active: true}
+    s.state.preparing = servicePreparing{}
+    s.state.mu.Unlock()
+    return nil
+}
+func (s *Service) revokeCommittedPreparation(ctx context.Context, preparing servicePreparing, observation ServiceJobObservation) (cleanupErr error) {
+    defer func() { if recover() != nil { cleanupErr = ErrContractOwnership } }()
+    prepare := preparing.authority.prepare
+    prepared := prepare.Prepared()
+    cleanup := prepare.Cleanup()
+    prepareIdentityDigest := prepare.IdentityDigest()
+    s.state.mu.Lock()
+    currentPreparing := s.state.preparing
+    currentPrepared := s.state.prepared
+    preparingOwned := currentPreparing.authority.transaction == preparing.authority.transaction && currentPreparing.commitTaken
+    preparedOwned := currentPrepared.active && currentPrepared.issuingCorrelation.revision == prepare.Revision() && subtle.ConstantTimeCompare(currentPrepared.issuingCorrelation.identityDigest[:], prepareIdentityDigest[:]) == 1 && subtle.ConstantTimeCompare(currentPrepared.prepared.digest[:], prepared.digest[:]) == 1 && subtle.ConstantTimeCompare(currentPrepared.cleanup.digest[:], cleanup.digest[:]) == 1
+    if !preparingOwned && !preparedOwned { s.state.mu.Unlock(); return ErrContractTransition }
+	s.state.preparing = servicePreparing{}
+	s.state.prepared = servicePreparedActivation{}
+	s.state.mu.Unlock()
+	transactionErr := closeServicePrepareTransaction(preparing.authority.transaction)
+	request, requestErr := NewCoreRevokeRequest(prepare.RequestID(), prepare.IdentityDigest(), prepare.Revision(), observation.Generations(), credentialprotocol.RevokeReasonSessionLoss, prepared, cleanup)
+	if requestErr != nil { return ErrContractOwnership }
+    result, revokeErr := s.core.Revoke(ctx, request)
+    resultCleanup := result.Cleanup()
+    if revokeErr != nil || subtle.ConstantTimeCompare(resultCleanup.digest[:], cleanup.digest[:]) != 1 { return ErrContractOwnership }
+    switch result.Category() {
+	case CoreCleanupComplete:
+		if !result.AuthorityAbsent() || !result.ResourcesAbsent() { return ErrContractOwnership }
+		if transactionErr != nil { return ErrContractOwnership }
+		return nil
+    case CoreCleanupRetryRequired:
+        if !result.AuthorityAbsent() || result.ResourcesAbsent() { return ErrContractOwnership }
+        return ErrContractOwnership
+    case CoreCleanupStopVMRequired:
+        if result.AuthorityAbsent() && result.ResourcesAbsent() { return ErrContractOwnership }
+        return ErrContractOwnership
+    default:
+        return ErrContractOwnership
+    }
+}
+func (s *Service) revokeServicePreparedActivation(ctx context.Context, expected servicePreparedActivation) (cleanupErr error) {
+    defer func() { if recover() != nil { cleanupErr = ErrContractOwnership } }()
+    s.state.mu.Lock()
+    current := s.state.prepared
+    expectedPrepared := expected.prepared
+    expectedCleanup := expected.cleanup
+    validRevision := current.revision == expected.revision || expected.revision != ^uint64(0) && current.revision == expected.revision + 1
+    valid := current.active && expected.active && current.issuingCorrelation == expected.issuingCorrelation && validRevision && current.bootNonce == expected.bootNonce && current.generations == expected.generations && current.hardExpiryUnixNano == expected.hardExpiryUnixNano && current.manifest == expected.manifest && current.bindingCount == expected.bindingCount && current.manifestSHA256 == expected.manifestSHA256 && current.transactionSHA256 == expected.transactionSHA256 && subtle.ConstantTimeCompare(current.prepared.digest[:], expectedPrepared.digest[:]) == 1 && subtle.ConstantTimeCompare(current.cleanup.digest[:], expectedCleanup.digest[:]) == 1
+    if !valid { s.state.mu.Unlock(); return ErrContractTransition }
+    s.state.prepared = servicePreparedActivation{}
+    s.state.mu.Unlock()
+    request, requestErr := NewCoreRevokeRequest(current.issuingCorrelation.requestID, current.issuingCorrelation.identityDigest, current.revision, current.generations, credentialprotocol.RevokeReasonSessionLoss, current.prepared, current.cleanup)
+    if requestErr != nil { return ErrContractOwnership }
+    result, revokeErr := s.core.Revoke(ctx, request)
+    resultCleanup := result.Cleanup()
+    if revokeErr != nil || subtle.ConstantTimeCompare(resultCleanup.digest[:], current.cleanup.digest[:]) != 1 { return ErrContractOwnership }
+    switch result.Category() {
+    case CoreCleanupComplete:
+        if !result.AuthorityAbsent() || !result.ResourcesAbsent() { return ErrContractOwnership }
+        return nil
+    case CoreCleanupRetryRequired:
+        if !result.AuthorityAbsent() || result.ResourcesAbsent() { return ErrContractOwnership }
+        return ErrContractOwnership
+    case CoreCleanupStopVMRequired:
+        if result.AuthorityAbsent() && result.ResourcesAbsent() { return ErrContractOwnership }
+        return ErrContractOwnership
+    default:
+        return ErrContractOwnership
+    }
+}
+func validateServiceRenewArm(packet ReceivedPacket, arm ReceivedRenew, activation servicePreparedActivation) error {
+    header := packet.Header()
+    correlation := requestCorrelation{requestID: header.RequestID, identityDigest: header.GuestCredentialIdentityDigest, revision: arm.revision}
+    expectedPriorProofSHA256 := hashOpaqueToken(renewProofDomain, activation.activeProofID)
+    valid := header.Type == credentialprotocol.PacketTypeRenew && validRequestCorrelation(correlation) && activation.active && activation.revision != ^uint64(0) && arm.revision == activation.revision + 1 && arm.expiryUnixNano > activation.expiresUnixNano && subtle.ConstantTimeCompare(header.GuestCredentialIdentityDigest[:], activation.issuingCorrelation.identityDigest[:]) == 1 && subtle.ConstantTimeCompare(header.BootNonce[:], activation.bootNonce[:]) == 1 && subtle.ConstantTimeCompare(arm.priorProofSHA256[:], expectedPriorProofSHA256[:]) == 1
+    if !valid { return ErrContractCorrelation }
+    return nil
+}
+func (s *Service) newServiceRenewRequest(packet ReceivedPacket, arm ReceivedRenew, observation ServiceJobObservation) (CoreRenewRequest,serviceRenewAuthority,error) {
+    header := packet.Header()
+    s.state.mu.Lock()
+    activation := s.state.prepared
+    s.state.mu.Unlock()
+    if validationErr := validateServiceRenewArm(packet, arm, activation); validationErr != nil { return CoreRenewRequest{}, serviceRenewAuthority{}, validationErr }
+    valid := arm.expiryUnixNano > observation.ObservedUnixNano() && arm.expiryUnixNano <= observation.HardExpiryUnixNano() && observation.ObservedUnixNano() > activation.observedUnixNano && observation.HardExpiryUnixNano() == activation.hardExpiryUnixNano && observation.Generations() == activation.generations
+    if !valid { return CoreRenewRequest{}, serviceRenewAuthority{}, ErrContractCorrelation }
+    request, err := NewCoreRenewRequest(header.RequestID, header.GuestCredentialIdentityDigest, arm.revision, activation.generations, arm.expiryUnixNano, activation.prepared)
+    if err != nil { return CoreRenewRequest{}, serviceRenewAuthority{}, err }
+    return request, serviceRenewAuthority{activation: activation}, nil
+}
+func (s *Service) advancePreparedActivation(ctx context.Context, packet ReceivedPacket, observation ServiceJobObservation) (renewErr error) {
+    defer func() { if recover() != nil { renewErr = ErrContractOwnership } }()
+    arm, ok := packet.Renew()
+    if !ok { return ErrContractInvalidArgument }
+    request, authority, requestErr := s.newServiceRenewRequest(packet, arm, observation)
+    if requestErr != nil { return requestErr }
+    if coreErr := s.core.Renew(ctx, request); coreErr != nil { return coreErr }
+    activation := authority.activation
+    correlation := requestCorrelation{requestID: request.RequestID(), identityDigest: request.IdentityDigest(), revision: request.Revision()}
+    replacementActiveProofID, proofErr := newServiceActiveProofID(correlation, request.Generations(), activation.bootNonce, request.ExpiresUnixNano(), activation.manifestSHA256, activation.transactionSHA256)
+    if proofErr != nil { return proofErr }
+    s.state.mu.Lock()
+    if s.state.prepared != activation {
+        s.state.mu.Unlock()
+        return ErrContractTransition
+    }
+    s.state.prepared.revision = request.Revision()
+    s.state.prepared.observedUnixNano = observation.ObservedUnixNano()
+    s.state.prepared.expiresUnixNano = request.ExpiresUnixNano()
+    s.state.prepared.activeProofID = replacementActiveProofID
+    s.state.mu.Unlock()
+    return nil
+}
+func (s *Service) handlePrepareBegin(ctx context.Context, packet ReceivedPacket) (handlerErr error) {
+    var transaction *credentialprotocol.HelperPrepareTransaction
+    var preparation CorePreparation
+    stateOwned := false
+    defer func() {
+        recovered := recover()
+        packetCleanupErr := destroyServiceReceivedPacket(ctx, packet)
+        if recovered != nil || packetCleanupErr != nil { handlerErr = ErrContractOwnership }
+        if handlerErr != nil && stateOwned {
+            if abortErr := s.abortPreparing(ctx, transaction, preparation); abortErr != nil { handlerErr = ErrContractOwnership }
+        } else if handlerErr != nil && transaction != nil {
+            if closeErr := closeServicePrepareTransaction(transaction); closeErr != nil { handlerErr = ErrContractOwnership }
+        }
+    }()
+    arm, ok := packet.PrepareBegin()
+    if !ok { return ErrContractInvalidArgument }
+    transaction = arm.transaction
+    if transaction == nil { return ErrContractDependency }
+    header := packet.Header()
+    bootstrap, bootstrapErr := s.runtime.Bootstrap(ctx)
+    if bootstrapErr != nil { return bootstrapErr }
+    observationRequest, observationRequestErr := newServiceJobObservationRequest(ServiceOperationPrepare, header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), bootstrap.BootGeneration(), bootstrap.HelperGeneration())
+    if observationRequestErr != nil { return observationRequestErr }
+    observation, observationErr := s.runtime.ObserveJob(ctx, observationRequest)
+    if observationErr != nil { return observationErr }
+    authority, authorityErr := newServicePrepareAuthority(packet, arm, bootstrap, observation)
+    if authorityErr != nil { return authorityErr }
+    reserveErr := s.reservePreparing(authority)
+    if reserveErr != nil { return reserveErr }
+    stateOwned = true
+    preparation, beginErr := s.core.BeginPrepare(ctx, authority.prepare)
+    if beginErr != nil || !configuredDependency(preparation) { return ErrContractDependency }
+    installErr := s.installPreparing(transaction, preparation)
+    if installErr != nil { return installErr }
+    return nil
+}
+func (s *Service) handlePrepareFile(ctx context.Context, packet ReceivedPacket) (handlerErr error) {
+    body := packet.body
+    var preparing servicePreparing
+    taken := false
+    defer func() {
+        recovered := recover()
+        cleanupErr := destroyServiceReceivedPacket(ctx, packet)
+        if recovered != nil || cleanupErr != nil { handlerErr = ErrContractOwnership }
+        if handlerErr == nil && taken { handlerErr = s.finishPreparingFile(preparing.authority.transaction) }
+        if handlerErr != nil && taken {
+            if abortErr := s.abortPreparing(ctx, preparing.authority.transaction, nil); abortErr != nil { handlerErr = ErrContractOwnership }
+        }
+    }()
+    if !configuredDependency(body) { return ErrContractDependency }
+    arm, ok := packet.PrepareFile()
+    if !ok { return ErrContractInvalidArgument }
+    preparing, takeErr := s.takePreparingFile(packet, arm)
+    if takeErr != nil { return takeErr }
+    taken = true
+    fileRequest, fileRequestErr := newServiceFileRequest(packet, arm, preparing)
+    if fileRequestErr != nil { return fileRequestErr }
+    observedSHA256 := body.SHA256()
+    if body.Len() != arm.FileLength() { return ErrContractCorrelation }
+    observation, observationErr := credentialprotocol.NewHelperPrepareFileObservation(arm.Revision(), arm.BindingIndex(), arm.FileLength(), arm.FileSHA256(), observedSHA256)
+    if observationErr != nil { return observationErr }
+    borrowErr := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
+        if stageErr := preparing.preparation.StageFile(ctx, fileRequest, view); stageErr != nil { return stageErr }
+        return preparing.authority.transaction.AcceptObservedFileObservation(preparing.authority.correlation, observation)
+    })
+    if borrowErr != nil { return borrowErr }
+    return nil
+}
+func (s *Service) handlePrepareCommit(ctx context.Context, packet ReceivedPacket) (handlerErr error) {
+    var preparing servicePreparing
+    taken := false
+    committed := false
+    postcommitCleaned := false
+    var observation ServiceJobObservation
+    defer func() {
+        recovered := recover()
+        cleanupErr := destroyServiceReceivedPacket(ctx, packet)
+        if recovered != nil || cleanupErr != nil { handlerErr = ErrContractOwnership }
+        if handlerErr != nil && taken && !committed {
+            if abortErr := s.abortPreparing(ctx, preparing.authority.transaction, nil); abortErr != nil { handlerErr = ErrContractOwnership }
+        }
+        if handlerErr != nil && committed && !postcommitCleaned {
+            if revokeErr := s.revokeCommittedPreparation(ctx, preparing, observation); revokeErr != nil { handlerErr = ErrContractOwnership }
+        }
+    }()
+    arm, ok := packet.PrepareCommit()
+    if !ok { return ErrContractInvalidArgument }
+    header := packet.Header()
+    preparing, takeErr := s.takePreparing(packet)
+    if takeErr != nil { return takeErr }
+    taken = true
+    observationRequest, observationRequestErr := newServiceJobObservationRequest(ServiceOperationPrepare, header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), preparing.authority.bootstrap.BootGeneration(), preparing.authority.bootstrap.HelperGeneration())
+    if observationRequestErr != nil { return observationRequestErr }
+    observation, observationErr := s.runtime.ObserveJob(ctx, observationRequest)
+    if observationErr != nil { return observationErr }
+    commit, commitRequestErr := newServiceCommitRequest(packet, arm, preparing.authority)
+    if commitRequestErr != nil { return commitRequestErr }
+    committed = true
+    result, commitErr := preparing.preparation.Commit(ctx, commit)
+    if commitErr != nil { return commitErr }
+    installErr := s.installPreparedActivation(preparing, header, observation, commit, result)
+    if installErr != nil {
+        revokeErr := s.revokeCommittedPreparation(ctx, preparing, observation)
+        postcommitCleaned = true
+        if revokeErr != nil { return ErrContractOwnership }
+        return installErr
+    }
+    return nil
+}
+func (s *Service) handleRenew(ctx context.Context, packet ReceivedPacket) (handlerErr error) {
+    var activation servicePreparedActivation
+    runtimeCalled := false
+    defer func() {
+        recovered := recover()
+        cleanupErr := destroyServiceReceivedPacket(ctx, packet)
+        terminalDependencyFailure := recovered != nil || cleanupErr != nil || runtimeCalled && handlerErr != nil
+        if terminalDependencyFailure { handlerErr = ErrContractOwnership }
+        if terminalDependencyFailure && activation.active {
+            if revokeErr := s.revokeServicePreparedActivation(ctx, activation); revokeErr != nil { handlerErr = ErrContractOwnership }
+        }
+    }()
+    arm, ok := packet.Renew()
+    if !ok { return ErrContractInvalidArgument }
+    header := packet.Header()
+    s.state.mu.Lock()
+    activation = s.state.prepared
+    s.state.mu.Unlock()
+    if validationErr := validateServiceRenewArm(packet, arm, activation); validationErr != nil { return validationErr }
+    observationRequest, observationRequestErr := newServiceJobObservationRequest(ServiceOperationRenew, header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), activation.generations.boot, activation.generations.helper)
+    if observationRequestErr != nil { return observationRequestErr }
+    runtimeCalled = true
+    observation, observationErr := s.runtime.ObserveJob(ctx, observationRequest)
+    if observationErr != nil { return observationErr }
+    advanceErr := s.advancePreparedActivation(ctx, packet, observation)
+    if advanceErr != nil { return advanceErr }
+    return nil
+}
+func (s *Service) receiveServicePacket(ctx context.Context, request ReceiveRequest) (packet ReceivedPacket, receiveErr error) {
+    defer func() { if recover() != nil { packet = ReceivedPacket{}; receiveErr = ErrContractOwnership } }()
+    return s.transport.Receive(ctx, request)
+}
+func (s *Service) finishServiceReceive(ctx context.Context, cause error) (serviceResult ServiceResult, serviceErr error) {
+    defer func() { if recover() != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }()
+    s.state.mu.Lock()
+    preparing := s.state.preparing
+    prepared := s.state.prepared
+    s.state.mu.Unlock()
+    cleanupFailed := false
+    if preparing.authority.transaction != nil && (preparing.beginTaken || preparing.active) {
+        if abortErr := s.abortPreparing(ctx, preparing.authority.transaction, nil); abortErr != nil { cleanupFailed = true }
+    }
+    if prepared.active {
+        if revokeErr := s.revokeServicePreparedActivation(ctx, prepared); revokeErr != nil { cleanupFailed = true }
+    }
+    stopped, resultErr := newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError)
+    if cause != nil || cleanupFailed || resultErr != nil { return stopped, ErrContractOwnership }
+    return stopped, ErrContractOwnership
+}
+func (s *Service) Serve(ctx context.Context) (ServiceResult,error) {
+    if contextErr := transportContextPrecondition(ctx); contextErr != nil { return ServiceResult{}, contextErr }
+    s.state.mu.Lock()
+    if s.state.serveCalled { s.state.mu.Unlock(); return ServiceResult{}, ErrContractTransition }
+    s.state.serveCalled = true
+    s.state.mu.Unlock()
+    for {
+        request, requestErr := s.newServiceReceiveRequest()
+        if requestErr != nil { return ServiceResult{}, requestErr }
+        packet, receiveErr := s.receiveServicePacket(ctx, request)
+        if receiveErr != nil { return s.finishServiceReceive(ctx, receiveErr) }
+        var handlerErr error
+        switch packet.Type() {
+        case credentialprotocol.PacketTypePrepareBegin: handlerErr = s.handlePrepareBegin(ctx, packet)
+        case credentialprotocol.PacketTypePrepareFile: handlerErr = s.handlePrepareFile(ctx, packet)
+        case credentialprotocol.PacketTypePrepareCommit: handlerErr = s.handlePrepareCommit(ctx, packet)
+        case credentialprotocol.PacketTypeRenew: handlerErr = s.handleRenew(ctx, packet)
+        case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet)
+        default: handlerErr = destroyServiceReceivedPacket(ctx, packet)
+        }
+        if handlerErr != nil { return ServiceResult{}, handlerErr }
+    }
+}
+func (s *Service) handleExec(ctx context.Context, packet ReceivedPacket) (ServiceResult,error) { return ServiceResult{}, ErrContractTransition }
+func (s *Service) dispatchPrivate(ctx context.Context) (ServiceResult,error) { return ServiceResult{}, ErrContractTransition }
+func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult,error) { return ServiceResult{}, ErrContractTransition }
+func (s *Service) zeroPrivate(ctx context.Context, packet ReceivedPacket, comparison bool) (ServiceResult,error) { return ServiceResult{}, ErrContractTransition }
+`
+
+func l8D2ReadinessCombinedPrepareExecCanonical() string {
+	source := l8D2ReadinessPreparePrerequisiteCanonical
+	source = strings.Replace(source, `"math"`, `"hash"
+	"math"`, 1)
+	source = strings.Replace(source,
+		`type Core interface { BeginPrepare(context.Context, CorePrepareRequest) (CorePreparation,error); Renew(context.Context, CoreRenewRequest) error; Revoke(context.Context, CoreRevokeRequest) (CoreCleanupResult,error) }`,
+		`type Core interface { BeginPrepare(context.Context, CorePrepareRequest) (CorePreparation,error); BeginExec(context.Context, any, credentialmemory.BorrowedView) (CoreExecution,error); Renew(context.Context, CoreRenewRequest) error; Revoke(context.Context, CoreRevokeRequest) (CoreCleanupResult,error) }`, 1)
+	source = strings.Replace(source,
+		`type Transport interface { Receive(context.Context, ReceiveRequest) (ReceivedPacket,error) }`,
+		`type SendPacket struct{}
+type Transport interface { Receive(context.Context, ReceiveRequest) (ReceivedPacket,error); Send(context.Context, SendPacket) error }
+func newExecCreditPacket(context.Context, credentialprotocol.HelperPacketHeader, credentialprotocol.HelperExecCreditBody) (SendPacket,error) { return SendPacket{},nil }
+func newExecStreamPacket(context.Context,credentialprotocol.HelperPacketHeader,uint64,credentialprotocol.HelperExecStreamKind,credentialprotocol.HelperExecStreamFlags,uint64,uint32,[32]byte,ReceivedBodyCapability)(SendPacket,error){return SendPacket{},nil}
+func newResponsePacket(context.Context,credentialprotocol.HelperPacketHeader,credentialprotocol.HelperResponseBody)(SendPacket,error){return SendPacket{},nil}`, 1)
+	source = strings.Replace(source,
+		`type ReceivedPacket struct{ header credentialprotocol.HelperPacketHeader; body ReceivedBodyCapability; right ReceivedCapability }`,
+		`type ReceivedPacket struct{ header credentialprotocol.HelperPacketHeader; body ReceivedBodyCapability; right ReceivedCapability }
+type ReceivedExecPrivate struct { revision uint64; privateLength uint32; privateSHA256 [32]byte; observation credentialprotocol.HelperExecPrivateObservation; plan ExecPlanCapability; transactionSeed credentialprotocol.HelperExecTransactionSeed }
+func (value ReceivedExecPrivate) Revision() uint64 { return value.revision }
+func (value ReceivedExecPrivate) PrivateBindingLength() uint32 { return value.privateLength }
+func (value ReceivedExecPrivate) PrivateBindingSHA256() [32]byte { return value.privateSHA256 }
+func (value ReceivedExecPrivate) ExecBindingID() credentialprotocol.SafeID { return "exec" }
+func (value ReceivedExecPrivate) Plan() ExecPlanCapability { return value.plan }
+type ReceivedExec = ReceivedExecPrivate
+type ReceivedExecStream struct { revision uint64; flags credentialprotocol.HelperExecStreamFlags; offset uint64; observation credentialprotocol.HelperExecStreamObservation }
+func (value ReceivedExecStream) Revision() uint64 { return value.revision }
+func (value ReceivedExecStream) Flags() credentialprotocol.HelperExecStreamFlags { return value.flags }
+func (value ReceivedExecStream) Offset() uint64 { return value.offset }
+type ReceivedExecCredit struct { revision uint64; kind credentialprotocol.HelperExecStreamKind; offset uint64 }
+func (value ReceivedExecCredit) Revision() uint64 { return value.revision }
+func (value ReceivedExecCredit) StreamKind() credentialprotocol.HelperExecStreamKind { return value.kind }
+func (value ReceivedExecCredit) NextOffset() uint64 { return value.offset }`, 1)
+	source = strings.Replace(source,
+		`func (ReceivedPacket) Renew() (ReceivedRenew,bool) { return ReceivedRenew{},true }`,
+		`func (ReceivedPacket) Renew() (ReceivedRenew,bool) { return ReceivedRenew{},true }
+func (ReceivedPacket) Exec() (ReceivedExecPrivate,bool) { return ReceivedExecPrivate{},true }
+func (ReceivedPacket) ExecPrivate() (ReceivedExecPrivate,bool) { return ReceivedExecPrivate{},true }
+func (ReceivedPacket) ExecStream() (ReceivedExecStream,bool) { return ReceivedExecStream{},true }
+func (ReceivedPacket) ExecCredit() (ReceivedExecCredit,bool) { return ReceivedExecCredit{},true }`, 1)
+	source = strings.Replace(source,
+		`type serviceState struct {
+    mu sync.Mutex
+    serveCalled bool
+    nextReceiveSequence uint64
+    preparing servicePreparing
+    prepared servicePreparedActivation
+}`,
+		`type serviceState struct {
+    mu sync.Mutex
+    sendMu sync.Mutex
+    serveCalled bool
+    nextReceiveSequence uint64
+    nextSendSequence uint64
+    preparing servicePreparing
+    prepared servicePreparedActivation
+    request CoreExecRequest
+    plan ExecPlanCapability
+    revision uint64
+    transaction *credentialprotocol.HelperExecTransaction
+    correlation credentialprotocol.HelperExecTransactionCorrelation
+    comparison bool
+    dispatchTaken bool
+    execution CoreExecution
+}`, 1)
+	source = strings.Replace(source,
+		`type ServiceRuntime interface { Bootstrap(context.Context) (ServiceBootstrap,error); ObserveJob(context.Context, ServiceJobObservationRequest) (ServiceJobObservation,error) }
+type Service struct { state *serviceState; core Core; transport Transport; runtime ServiceRuntime }`,
+		`type ServiceRuntime interface { Bootstrap(context.Context) (ServiceBootstrap,error); ObserveJob(context.Context, ServiceJobObservationRequest) (ServiceJobObservation,error) }
+type Policy interface{}
+type ExtensionHost interface{}
+type extensionEntry struct { descriptor credentialprotocol.ExtensionDescriptor; factory any }
+type ExtensionRegistry struct { entries []extensionEntry }
+type ServiceOptions struct { Core Core; Transport Transport; Policy Policy; Extensions *ExtensionRegistry; Host ExtensionHost; Runtime ServiceRuntime }
+type CoreExecution interface { WriteStdin(context.Context, credentialmemory.BorrowedView, uint64, bool) error; GrantOutput(context.Context,CoreOutputRequest) error; Next(context.Context)(CoreExecutionEvent,error); Cancel(context.Context) (CoreCleanupResult,error) }
+type CoreExecRequest struct { correlation requestCorrelation; generations CoreGenerations; execution CoreExecutionCapability; cleanup CoreCleanupCapability }
+func (value CoreExecRequest) Cleanup() CoreCleanupCapability { return value.cleanup }
+type CoreOutputRequest struct { execution CoreExecutionCapability; kind credentialprotocol.HelperExecStreamKind; offset uint64; capacity uint32 }
+func (value CoreOutputRequest) Execution() CoreExecutionCapability { return value.execution }
+func (value CoreOutputRequest) Kind() credentialprotocol.HelperExecStreamKind { return value.kind }
+func (value CoreOutputRequest) Offset() uint64 { return value.offset }
+func (value CoreOutputRequest) Capacity() uint32 { return value.capacity }
+type CoreOutputResult struct { execution CoreExecutionCapability; kind credentialprotocol.HelperExecStreamKind; offset uint64; count uint32; sha256 [32]byte; eof bool; truncated bool }
+func (value CoreOutputResult) Execution() CoreExecutionCapability { return value.execution }
+func (value CoreOutputResult) Kind() credentialprotocol.HelperExecStreamKind { return value.kind }
+func (value CoreOutputResult) Offset() uint64 { return value.offset }
+func (value CoreOutputResult) ByteCount() uint32 { return value.count }
+func (value CoreOutputResult) SHA256() [32]byte { return value.sha256 }
+func (value CoreOutputResult) EOF() bool { return value.eof }
+func (value CoreOutputResult) Truncated() bool { return value.truncated }
+type CoreExecResult struct { execution CoreExecutionCapability; exitCode int32; stdinBytes,stdoutBytes,stderrBytes uint64; stdinSHA256,stdinTranscriptSHA256,stdoutSHA256,stderrSHA256,execTransactionSHA256 [32]byte; stdoutTruncated,stderrTruncated bool }
+func (value CoreExecResult) Execution() CoreExecutionCapability { return value.execution }
+func (value CoreExecResult) ExitCode() int32 { return value.exitCode }
+func (value CoreExecResult) StdinBytes() uint64 { return value.stdinBytes }
+func (value CoreExecResult) StdinSHA256() [32]byte { return value.stdinSHA256 }
+func (value CoreExecResult) StdinTranscriptSHA256() [32]byte { return value.stdinTranscriptSHA256 }
+func (value CoreExecResult) StdoutBytes() uint64 { return value.stdoutBytes }
+func (value CoreExecResult) StdoutSHA256() [32]byte { return value.stdoutSHA256 }
+func (value CoreExecResult) StdoutTruncated() bool { return value.stdoutTruncated }
+func (value CoreExecResult) StderrBytes() uint64 { return value.stderrBytes }
+func (value CoreExecResult) StderrSHA256() [32]byte { return value.stderrSHA256 }
+func (value CoreExecResult) StderrTruncated() bool { return value.stderrTruncated }
+func (value CoreExecResult) ExecTransactionSHA256() [32]byte { return value.execTransactionSHA256 }
+type CoreOutputBody interface { Len() uint32; SHA256() [32]byte; Borrow(context.Context,func(credentialmemory.BorrowedView)error)error; Destroy(context.Context)error }
+type CoreExecutionEventKind uint8
+const ( CoreExecutionEventOutput CoreExecutionEventKind = 1; CoreExecutionEventComplete CoreExecutionEventKind = 2 )
+type CoreExecutionEvent struct { output CoreOutputResult; body CoreOutputBody; complete CoreExecResult; kind CoreExecutionEventKind }
+func (value CoreExecutionEvent) Output() (CoreOutputResult,CoreOutputBody,bool) { return value.output,value.body,value.kind == CoreExecutionEventOutput }
+func (value CoreExecutionEvent) Complete() (CoreExecResult,bool) { return value.complete,value.kind == CoreExecutionEventComplete }
+func NewCoreOutputRequest([16]byte,[32]byte,uint64,credentialprotocol.SafeID,CoreExecutionCapability,credentialprotocol.HelperExecStreamKind,uint64,uint32)(CoreOutputRequest,error){return CoreOutputRequest{},nil}
+type ExecPlanCapability struct{}
+func (ExecPlanCapability) CopyCanonicalTo(credentialmemory.CredentialSink) error { return nil }
+func (ExecPlanCapability) EncodedLength() uint32 { return 1 }
+func (ExecPlanCapability) SHA256() [32]byte { return [32]byte{1} }
+func (ExecPlanCapability) destroy() {}
+type serviceExecCapabilities struct { execution CoreExecutionCapability; cleanup CoreCleanupCapability }
+type serviceExecAuthority struct { request CoreExecRequest; plan ExecPlanCapability; revision uint64; transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool }
+type serviceExecPlanSink struct { canonical [credentialprotocol.MaxHelperExecPlanBytes]byte; length uint32; written bool }
+type serviceExecOutputDigestSink struct { hasher hash.Hash; expected int; written bool }
+type serviceExecOutputLedger struct { request CoreExecRequest; stdoutMaximum uint64; stderrMaximum uint64; stdoutHasher hash.Hash; stderrHasher hash.Hash; stdoutOffset uint64; stderrOffset uint64; stdoutEOF bool; stderrEOF bool; stdoutTruncated bool; stderrTruncated bool }
+type serviceExecDispatch struct { transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool }
+type Service struct { core Core; transport Transport; policy Policy; extensions []extensionEntry; host ExtensionHost; runtime ServiceRuntime; state *serviceState }
+func snapshotServiceExtensionEntries(registry *ExtensionRegistry) []extensionEntry { if registry == nil { return nil }; result := make([]extensionEntry, len(registry.entries)); for index, entry := range registry.entries { result[index] = extensionEntry{descriptor: credentialprotocol.CloneExtensionDescriptor(entry.descriptor), factory: entry.factory} }; return result }
+func NewService(options ServiceOptions) (*Service,error) { if !configuredDependency(options.Core) || !configuredDependency(options.Transport) || !configuredDependency(options.Policy) || !configuredDependency(options.Host) || !configuredDependency(options.Runtime) { return nil, ErrContractDependency }; extensions := snapshotServiceExtensionEntries(options.Extensions); return &Service{core: options.Core, transport: options.Transport, policy: options.Policy, extensions: extensions, host: options.Host, runtime: options.Runtime, state: &serviceState{}}, nil }`, 1)
+	source = strings.Replace(source, `var ErrContractResultMatrix error`, "var ErrContractResultMatrix error\nvar dispatchPrivate bool", 1)
+	source = strings.Replace(source,
+		`func (s *Service) handleExec(ctx context.Context, packet ReceivedPacket) (ServiceResult,error) { return ServiceResult{}, ErrContractTransition }
+func (s *Service) dispatchPrivate(ctx context.Context) (ServiceResult,error) { return ServiceResult{}, ErrContractTransition }
+func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult,error) { return ServiceResult{}, ErrContractTransition }
+func (s *Service) zeroPrivate(ctx context.Context, packet ReceivedPacket, comparison bool) (ServiceResult,error) { return ServiceResult{}, ErrContractTransition }`,
+		`func (s *Service) takeExecDispatch(revision uint64) (serviceExecDispatch,error) { s.state.mu.Lock(); if revision != s.state.revision || s.state.dispatchTaken { s.state.mu.Unlock(); return serviceExecDispatch{}, ErrContractTransition }; transaction := s.state.transaction; correlation := s.state.correlation; comparison := s.state.comparison; s.state.dispatchTaken = true; s.state.mu.Unlock(); return serviceExecDispatch{transaction: transaction, correlation: correlation, comparison: comparison}, nil }
+func (s *Service) handleExec(ctx context.Context, packet ReceivedPacket) (ServiceResult,error) { arm, ok := packet.Exec(); if !ok { packetCleanupErr := destroyServiceReceivedPacket(ctx, packet); if packetCleanupErr != nil { return ServiceResult{}, ErrContractOwnership }; return ServiceResult{}, ErrContractInvalidArgument }; authority, authorityErr := s.newServiceExecAuthority(packet, arm); if authorityErr != nil { packetCleanupErr := destroyServiceReceivedPacket(ctx, packet); if packetCleanupErr != nil { return ServiceResult{}, ErrContractOwnership }; return ServiceResult{}, authorityErr }; installErr := s.installExecDispatch(authority); if installErr != nil { authorityCleanupErr := closeServiceExecAuthority(authority); packetCleanupErr := destroyServiceReceivedPacket(ctx, packet); if authorityCleanupErr != nil || packetCleanupErr != nil { return ServiceResult{}, ErrContractOwnership }; return ServiceResult{}, installErr }; if arm.PrivateBindingLength() == 0 && arm.PrivateBindingSHA256() == ([32]byte{}) { return s.zeroPrivate(ctx, packet, false) }; if cleanupErr := destroyServiceReceivedPacket(ctx, packet); cleanupErr != nil { return s.finishExecDispatch(ctx, cleanupErr) }; if dispatchPrivate { return s.dispatchPrivate(ctx) }; return s.dispatchStdin(ctx) }
+func (s *Service) dispatchPrivate(ctx context.Context) (ServiceResult,error) { receiveRequest, requestErr := s.newServiceReceiveRequest(); if requestErr != nil { return ServiceResult{}, requestErr }; packet, receiveErr := s.transport.Receive(ctx, receiveRequest); if receiveErr != nil { return ServiceResult{}, receiveErr }; arm, ok := packet.ExecPrivate(); if !ok { return ServiceResult{}, ErrContractInvalidArgument }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.private(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison) }
+func (s *Service) private(ctx context.Context, body ReceivedBodyCapability, transaction *credentialprotocol.HelperExecTransaction, correlation credentialprotocol.HelperExecTransactionCorrelation, observation credentialprotocol.HelperExecPrivateObservation, comparison bool) (serviceResult ServiceResult, serviceErr error) { s.state.mu.Lock(); coreRequest := s.state.request; corePlan := s.state.plan; s.state.mu.Unlock(); var pending *credentialprotocol.HelperExecPayloadProposal; defer func() { if recovered := recover(); recovered != nil { if pending != nil { pending.Wipe() }; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership }; bodyDestroyErr := body.Destroy(ctx); corePlan.destroy(); if bodyDestroyErr != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }(); borrowErr := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error { proposal, proposalErr := transaction.ProposeObservedPrivate(correlation, observation); if proposalErr != nil { return proposalErr }; pending = proposal; if comparison { return proposal.Commit() }; execution, coreErr := s.core.BeginExec(ctx, coreRequest, view); if coreErr != nil || !configuredDependency(execution) { proposal.Wipe(); return ErrContractDependency }; s.state.mu.Lock(); s.state.execution = execution; s.state.mu.Unlock(); return proposal.Commit() }); if borrowErr != nil { return ServiceResult{}, borrowErr }; return ServiceResult{}, nil }
+func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult,error) { receiveRequest, requestErr := s.newServiceReceiveRequest(); if requestErr != nil { return ServiceResult{}, requestErr }; packet, receiveErr := s.transport.Receive(ctx, receiveRequest); if receiveErr != nil { return ServiceResult{}, receiveErr }; arm, ok := packet.ExecStream(); if !ok { return ServiceResult{}, ErrContractInvalidArgument }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.stdin(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison) }
+func (s *Service) stdin(ctx context.Context, body ReceivedBodyCapability, transaction *credentialprotocol.HelperExecTransaction, correlation credentialprotocol.HelperExecTransactionCorrelation, observation credentialprotocol.HelperExecStreamObservation, comparison bool) (serviceResult ServiceResult, serviceErr error) { var pending *credentialprotocol.HelperExecPayloadProposal; defer func() { if recovered := recover(); recovered != nil { if pending != nil { pending.Wipe() }; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership }; bodyDestroyErr := body.Destroy(ctx); if bodyDestroyErr != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }(); borrowErr := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error { proposal, proposalErr := transaction.ProposeObservedStdin(ctx, correlation, observation, view); if proposalErr != nil { return proposalErr }; pending = proposal; if comparison { return proposal.Commit() }; s.state.mu.Lock(); retainedExecution := s.state.execution; s.state.mu.Unlock(); coreErr := retainedExecution.WriteStdin(ctx, view, 0, false); if coreErr != nil { proposal.Wipe(); return coreErr }; return proposal.Commit() }); if borrowErr != nil { return ServiceResult{}, borrowErr }; return ServiceResult{}, nil }
+func (s *Service) zeroPrivate(ctx context.Context, packet ReceivedPacket, comparison bool) (serviceResult ServiceResult, serviceErr error) { defer func() { if recover() != nil { serviceResult, serviceErr = s.finishExecDispatch(ctx, ErrContractOwnership) } }(); arm, ok := packet.Exec(); packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; if !ok { return s.finishExecDispatch(ctx, ErrContractInvalidArgument) }; if arm.PrivateBindingLength() == 0 && arm.PrivateBindingSHA256() == ([32]byte{}) { dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return s.finishExecDispatch(ctx, dispatchErr) }; if !comparison { s.state.mu.Lock(); stateRequest := s.state.request; s.state.mu.Unlock(); execution, coreErr := s.core.BeginExec(ctx, stateRequest, nil); if coreErr != nil || !configuredDependency(execution) { return s.finishExecDispatch(ctx, ErrContractDependency) }; s.state.mu.Lock(); s.state.execution = execution; s.state.mu.Unlock() }; if continueErr := s.continueExecDispatch(ctx, dispatch); continueErr != nil { return s.finishExecDispatch(ctx, continueErr) }; return s.dispatchStdin(ctx) }; return s.finishExecDispatch(ctx, ErrContractInvalidArgument) }`, 1)
+	source = strings.Replace(source, "var dispatchPrivate bool", "var dispatchPrivate bool\nvar errInvalid error", 1)
+	for _, replacement := range []struct {
+		name   string
+		source string
+	}{
+		{name: "dispatchPrivate", source: l8D2ReadinessExecContinuationCanonical()},
+		{name: "private", source: l8D2ReadinessCanonicalPrivateServiceFixture()},
+		{name: "dispatchStdin", source: l8D2ReadinessExecContinuationCanonical()},
+		{name: "stdin", source: l8D2ReadinessCanonicalStdinServiceFixture()},
+	} {
+		exact := l8D2ReadinessFunctionSource(replacement.source, "*Service", replacement.name)
+		source = l8D2ReadinessReplaceFunctionSource(source, "*Service", replacement.name, exact)
 	}
-	return ServiceResult{}, errInvalid
-}`
+	for _, name := range []string{"receiveServicePacket", "finishServiceReceive"} {
+		source = l8D2ReadinessReplaceFunctionSource(source, "*Service", name, l8D2ReadinessFunctionSource(l8D2ReadinessExecReceiveCanonical(), "*Service", name))
+	}
+	source += "\n" + l8D2ReadinessFunctionSource(l8D2ReadinessCanonicalPrivateServiceFixture(), "", "destroyServiceObservedBody") + "\n"
+	source += "\n" + l8D2ReadinessFunctionSource(l8D2ReadinessCanonicalPrivateServiceFixture(), "", "cancelServiceExecution") + "\n"
+	for _, identity := range []struct {
+		receiver string
+		name     string
+	}{
+		{receiver: "*serviceExecOutputDigestSink", name: "MaxCredentialBytes"},
+		{receiver: "*serviceExecOutputDigestSink", name: "WriteCredential"},
+		{name: "serviceExecOutputLimits"},
+		{name: "destroyServiceCoreOutputBody"},
+		{name: "observeServiceCoreOutput"},
+		{name: "serviceExecDigest"},
+		{receiver: "*Service", name: "newServiceExecSendHeader"},
+		{receiver: "*Service", name: "sendServiceExecOutput"},
+		{receiver: "*Service", name: "sendServiceExecResponse"},
+	} {
+		source += "\n" + l8D2ReadinessFunctionSource(l8D2ReadinessCanonicalPrivateServiceFixture(), identity.receiver, identity.name) + "\n"
+	}
+	for _, identity := range []struct {
+		receiver string
+		name     string
+	}{
+		{receiver: "*Service", name: "validateServiceExecPacket"},
+		{receiver: "*Service", name: "newServiceExecOutputLedger"},
+		{receiver: "*Service", name: "releaseExecDispatch"},
+		{name: "destroyUnexpectedServiceCoreOutput"},
+		{receiver: "*Service", name: "drainExecOutput"},
+		{receiver: "*Service", name: "completeServiceExecOutput"},
+	} {
+		source += "\n" + l8D2ReadinessFunctionSource(l8D2ReadinessExecContinuationCanonical(), identity.receiver, identity.name) + "\n"
+	}
+	source += "\n" + strings.TrimPrefix(l8D2ReadinessExecCoordinatorSupportCanonical(), "package fixture\n")
+	source += "\n" + l8D2ReadinessFunctionSource(l8D2ReadinessCanonicalPrivateServiceFixture(), "*Service", "continueExecDispatch") + "\n"
+	source += "\n" + l8D2ReadinessFunctionSource(l8D2ReadinessCanonicalPrivateServiceFixture(), "*Service", "finishExecDispatch") + "\n"
+	source += `
+func validSafeID(credentialprotocol.SafeID) bool { return true }
+func NewCoreExecRequest([16]byte, [32]byte, uint64, CoreGenerations, credentialprotocol.SafeID, credentialprotocol.SafeID, uint32, [32]byte, uint32, [32]byte, ExecPlanCapability, CorePreparedCapability, CoreExecutionCapability, CoreCleanupCapability) (CoreExecRequest,error) { return CoreExecRequest{},nil }
+func wipeBytes(value []byte) { clear(value) }
+`
+	for _, exactFunction := range []struct {
+		receiver string
+		name     string
+	}{
+		{receiver: "*serviceExecPlanSink", name: "MaxCredentialBytes"},
+		{receiver: "*serviceExecPlanSink", name: "WriteCredential"},
+		{receiver: "*serviceExecPlanSink", name: "destroy"},
+		{name: "closeServiceExecAuthority"},
+		{name: "newServiceExecCapabilities"},
+		{name: "newServiceExecBodyIdentity"},
+		{receiver: "*Service", name: "newServiceExecAuthority"},
+		{receiver: "*Service", name: "installExecDispatch"},
+	} {
+		source += "\n" + l8D2ReadinessFunctionSource(l8D2ReadinessExecDispatchPrerequisiteCanonical, exactFunction.receiver, exactFunction.name) + "\n"
+	}
+	return source
+}
+
+func l8D2ReadinessExecReceiveCanonical() string {
+	return `package fixture
+func (s *Service) receiveServicePacket(ctx context.Context, request ReceiveRequest) (packet ReceivedPacket, receiveErr error) { defer func() { if recover() != nil { packet = ReceivedPacket{}; receiveErr = ErrContractOwnership } }(); return s.transport.Receive(ctx, request) }
+func (s *Service) finishServiceReceive(ctx context.Context, cause error) (serviceResult ServiceResult, serviceErr error) { defer func() { if recover() != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }(); s.state.mu.Lock(); execInstalled := s.state.revision != 0 && s.state.transaction != nil; preparing := s.state.preparing; prepared := s.state.prepared; s.state.mu.Unlock(); if execInstalled { return s.finishExecDispatch(ctx, cause) }; cleanupFailed := false; if preparing.authority.transaction != nil && (preparing.beginTaken || preparing.active) { if abortErr := s.abortPreparing(ctx, preparing.authority.transaction, nil); abortErr != nil { cleanupFailed = true } }; if prepared.active { if revokeErr := s.revokeServicePreparedActivation(ctx, prepared); revokeErr != nil { cleanupFailed = true } }; stopped, resultErr := newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); if cause != nil || cleanupFailed || resultErr != nil { return stopped, ErrContractOwnership }; return stopped, ErrContractOwnership }
+`
+}
+
+func l8D2ReadinessFunctionSource(source, receiver, name string) string {
+	file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", source, 0)
+	if err != nil {
+		return ""
+	}
+	return l8D2ReadinessFormattedNode(l8D2ReadinessUniqueFunction(map[string]*ast.File{"fixture.go": file}, receiver, name))
+}
+
+func l8D2ReadinessReplaceFunctionSource(source, receiver, name, replacement string) string {
+	if replacement == "" {
+		return source
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", source, 0)
+	if err != nil {
+		return source
+	}
+	function := l8D2ReadinessUniqueFunction(map[string]*ast.File{"fixture.go": file}, receiver, name)
+	if function == nil {
+		return source
+	}
+	start, end := int(function.Pos())-1, int(function.End())-1
+	if start < 0 || end < start || end > len(source) {
+		return source
+	}
+	return source[:start] + replacement + source[end:]
+}
+
+func TestL8D2HelperServiceReadinessPreparePrerequisiteCanonicalCompiles(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.MkdirTemp(root, ".l8-d2-prepare-compile-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if removeErr := os.RemoveAll(directory); removeErr != nil {
+			t.Errorf("remove compile fixture: %v", removeErr)
+		}
+	})
+	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(l8D2ReadinessPreparePrerequisiteCanonical), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "test", "-run", "^$", ".")
+	command.Dir = directory
+	command.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("canonical prerequisite fixture does not compile: %v\n%s", err, output)
+	}
+	combined := l8D2ReadinessCombinedPrepareExecCanonical()
+	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(combined), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	combinedCommand := exec.Command("go", "test", "-run", "^$", ".")
+	combinedCommand.Dir = directory
+	combinedCommand.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local")
+	if output, err := combinedCommand.CombinedOutput(); err != nil {
+		t.Fatalf("combined Prepare and Exec Service fixture does not compile: %v\n%s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(l8D2ReadinessExecDispatchPrerequisiteCanonical), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	execCommand := exec.Command("go", "test", "-run", "^$", ".")
+	execCommand.Dir = directory
+	execCommand.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local")
+	if output, err := execCommand.CombinedOutput(); err != nil {
+		t.Fatalf("authenticated Exec dispatch prerequisite fixture does not compile: %v\n%s", err, output)
+	}
+	combinedFiles := l8D2ReadinessParseFixturePackage(t, combined)
+	prerequisites := l8D2ReadinessPreparePrerequisites(combinedFiles)
+	analysis := l8D2ReadinessAnalyzeServiceAST(combinedFiles)
+	if !prerequisites.capabilityIssuer || !prerequisites.preparedActivation || !prerequisites.execDispatch || !analysis.construction || !analysis.serveOneShot || !analysis.privateSequence || !analysis.stdinSequence || !analysis.zeroPrivateSequence {
+		serve := l8D2ReadinessUniqueFunction(combinedFiles, "*Service", "Serve")
+		_, prepareTopology := l8D2ReadinessPrepareServeTopology(combinedFiles)
+		aliases := map[string]string{}
+		for _, file := range combinedFiles {
+			aliases, _ = l8D2ReadinessImportAliases(file)
+		}
+		private, _ := l8D2ReadinessAnalyzeServiceBorrowCallbacks(combinedFiles, l8D2ReadinessUniqueFunction(combinedFiles, "*Service", "private"), aliases)
+		_, stdin := l8D2ReadinessAnalyzeServiceBorrowCallbacks(combinedFiles, l8D2ReadinessUniqueFunction(combinedFiles, "*Service", "stdin"), aliases)
+		reachable := l8D2ReadinessPrepareReachableServiceMethods(combinedFiles, serve)
+		prepareTrusted := l8D2ReadinessPrepareTrustedServiceCalls(combinedFiles)
+		var stateFailures []string
+		for function := range reachable {
+			stable := l8D2ReadinessReachableServiceStateStableLegacy(map[*ast.FuncDecl]bool{function: true}, serve)
+			if l8D2ReadinessFunctionUsesLedgerState(function) {
+				stable = l8D2ReadinessServiceMethodStateStable(function, serve)
+			}
+			if !stable {
+				stateFailures = append(stateFailures, function.Name.Name)
+			}
+		}
+		sort.Strings(stateFailures)
+		t.Fatalf("combined analysis = prerequisites=%+v Service=%+v prepareTopology=%t oneShot=%t privateCallback=%t stdinCallback=%t cleanup=%t zero=%t prepareTopologyStable=%t stateStable=%t stateFailures=%v prepareLive=%t callsConfined=%t activationConfined=%t", prerequisites, analysis, prepareTopology, l8D2ReadinessValidServeOneShot(serve, aliases), private, stdin, l8D2ReadinessExactObservedBodyCleanup(combinedFiles), l8D2ReadinessZeroPrivateExecStable(combinedFiles, reachable), l8D2ReadinessServiceCallTopologyStable(reachable, prepareTrusted, map[*ast.FuncDecl]bool{}), l8D2ReadinessReachableServiceStateStable(reachable, serve), stateFailures, l8D2ReadinessPreparePrerequisiteLiveEdges(combinedFiles), l8D2ReadinessPreparePrerequisiteCallsConfined(combinedFiles), l8D2ReadinessPreparedActivationConfined(combinedFiles))
+	}
+}
+
+func TestL8D2HelperServiceReadinessPrepareExecCompositionSelfTest(t *testing.T) {
+	t.Parallel()
+	combined := l8D2ReadinessCombinedPrepareExecCanonical()
+	syncAliasCombined := strings.ReplaceAll(strings.Replace(combined, `"sync"`, `locks "sync"`, 1), "sync.", "locks.")
 	for _, test := range []struct {
 		name   string
 		source string
 		want   bool
 	}{
-		{name: "canonical literal nil state-backed path", source: canonical, want: true},
-		{name: "typed nil substitute", source: strings.Replace(canonical, "s.core.BeginExec(ctx, stateRequest, nil)", "s.core.BeginExec(ctx, stateRequest, nilView)", 1)},
-		{name: "background context substitute", source: strings.Replace(canonical, "s.core.BeginExec(ctx, stateRequest, nil)", "s.core.BeginExec(context.Background(), stateRequest, nil)", 1)},
-		{name: "global request", source: strings.Replace(canonical, "s.core.BeginExec(ctx, stateRequest, nil)", "s.core.BeginExec(ctx, globalRequest, nil)", 1)},
-		{name: "cross-arm zero digest", source: strings.Replace(canonical, "arm.PrivateBindingSHA256()", "foreign.PrivateBindingSHA256()", 1)},
-		{name: "foreign arm extraction", source: strings.Replace(canonical, "arm, ok := packet.Exec()", "arm, ok := foreignPacket.Exec()", 1)},
-		{name: "foreign arm substitution after extraction", source: strings.Replace(canonical, "if arm.PrivateBindingLength()", "arm = foreignArm; if arm.PrivateBindingLength()", 1)},
-		{name: "comparison path calls Core", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { _, _ = s.core.BeginExec(ctx, stateRequest, nil); return ServiceResult{}, nil }", 1)},
-		{name: "comparison path returns rejection instead of accepted terminal", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { return ServiceResult{}, errInvalid }", 1)},
-		{name: "comparison path passes Core to indirect helper", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { helperCore(s.core); return ServiceResult{}, nil }", 1)},
-		{name: "comparison path retains Core method value", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { begin := s.core.BeginExec; _ = begin; return ServiceResult{}, nil }", 1)},
-		{name: "comparison path aliases Core authority", source: strings.Replace(canonical, "if comparison { return ServiceResult{}, nil }", "if comparison { authority := s.core; _ = authority; return ServiceResult{}, nil }", 1)},
-		{name: "private wait in zero path", source: strings.Replace(canonical, "execution, coreErr :=", "arm.ExecPrivate(); execution, coreErr :=", 1)},
-		{name: "observed Borrow in zero path", source: strings.Replace(canonical, "execution, coreErr :=", "body.Borrow(ctx, callback); execution, coreErr :=", 1)},
-		{name: "unlocked execution retention", source: strings.Replace(canonical, "s.state.mu.Lock(); s.state.execution = execution; s.state.mu.Unlock()", "s.state.execution = execution", 1)},
+		{name: "combined Prepare and Exec topology", source: combined, want: true},
+		{name: "combined exact sync import alias is equivalent", source: syncAliasCombined, want: true},
+		{name: "Prepare-only topology cannot substitute for Exec composition", source: l8D2ReadinessPreparePrerequisiteCanonical},
+		{name: "missing returned Exec edge", source: strings.Replace(combined, "case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet)", "case credentialprotocol.PacketTypeExec: handlerErr = destroyServiceReceivedPacket(ctx, packet)", 1)},
+		{name: "statically dead Exec edge", source: strings.Replace(combined, "case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet)", "case credentialprotocol.PacketTypeExec: if false { return s.handleExec(ctx, packet) }; handlerErr = destroyServiceReceivedPacket(ctx, packet)", 1)},
+		{name: "nested PacketTypeExec edge cannot substitute for the main switch clause", source: strings.Replace(combined, "case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet)", "case credentialprotocol.PacketTypeExecPrivate: switch packet.Type() { case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet) }", 1)},
+		{name: "ignored Exec handler result", source: strings.Replace(combined, "case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet)", "case credentialprotocol.PacketTypeExec: _, _ = s.handleExec(ctx, packet); handlerErr = nil", 1)},
+		{name: "received packet rebound before Exec handler", source: strings.Replace(combined, "case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet)", "case credentialprotocol.PacketTypeExec: packet = foreignPacket; return s.handleExec(ctx, packet)", 1)},
+		{name: "extra Exec receiver helper call", source: strings.Replace(combined, "case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet)", "case credentialprotocol.PacketTypeExec: _, _ = s.handleExec(ctx, packet); return s.handleExec(ctx, packet)", 1)},
+		{name: "untrusted extra packet clause calls Core", source: strings.Replace(combined, "case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet)", "case credentialprotocol.PacketTypeExec: return s.handleExec(ctx, packet); case credentialprotocol.PacketTypeRevoke: handlerErr = s.core.Renew(ctx, CoreRenewRequest{})", 1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", test.source, 0)
+			if test.name != "combined Prepare and Exec topology" && test.name != "Prepare-only topology cannot substitute for Exec composition" && test.source == combined {
+				t.Fatal("fixture mutation did not change combined canonical source")
+			}
+			files := l8D2ReadinessParseFixturePackage(t, test.source)
+			analysis := l8D2ReadinessAnalyzeServiceAST(files)
+			prerequisites := l8D2ReadinessPreparePrerequisites(files)
+			got := prerequisites.execDispatch && analysis.construction && analysis.serveOneShot && analysis.privateSequence && analysis.stdinSequence && analysis.zeroPrivateSequence
+			if got != test.want {
+				t.Fatalf("combined Service analysis = %+v, want complete=%t", analysis, test.want)
+			}
+		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessExecDispatchPrerequisiteGuardSelfTest(t *testing.T) {
+	t.Parallel()
+	canonical := l8D2ReadinessExecDispatchPrerequisiteCanonical
+	shaAlias := strings.ReplaceAll(strings.Replace(canonical, `"crypto/sha256"`, `digest "crypto/sha256"`, 1), "sha256.", "digest.")
+	subtleAlias := strings.ReplaceAll(strings.Replace(canonical, `"crypto/subtle"`, `constanttime "crypto/subtle"`, 1), "subtle.", "constanttime.")
+	memoryAlias := strings.ReplaceAll(strings.Replace(canonical, `credentialmemory "github.com/jywlabs/hal/internal/credentialmemory"`, `cm "github.com/jywlabs/hal/internal/credentialmemory"`, 1), "credentialmemory.", "cm.")
+	protocolAlias := strings.ReplaceAll(strings.Replace(canonical, `credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"`, `cp "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"`, 1), "credentialprotocol.", "cp.")
+	syncAlias := strings.ReplaceAll(strings.Replace(canonical, `"sync"`, `locks "sync"`, 1), "sync.", "locks.")
+	rawSHA := strings.Replace(canonical, `"crypto/sha256"`, "`crypto/sha256`", 1)
+	rawSubtle := strings.Replace(canonical, `"crypto/subtle"`, "`crypto/subtle`", 1)
+	rawMemory := strings.Replace(canonical, `credentialmemory "github.com/jywlabs/hal/internal/credentialmemory"`, "credentialmemory `github.com/jywlabs/hal/internal/credentialmemory`", 1)
+	rawProtocol := strings.Replace(canonical, `credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"`, "credentialprotocol `github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol`", 1)
+	rawSync := strings.Replace(canonical, `"sync"`, "`sync`", 1)
+	syncSentinelCollision := strings.ReplaceAll(strings.Replace(canonical, `"sync"`, "l8D2ImportSync \"example.invalid/sync\"\n\t_ \"sync\"", 1), "sync.", "l8D2ImportSync.")
+	shaSentinelCollision := strings.ReplaceAll(strings.Replace(canonical, `"crypto/sha256"`, "l8D2ImportSHA256 \"example.invalid/sha256\"\n\t_ \"crypto/sha256\"", 1), "sha256.", "l8D2ImportSHA256.")
+	namedPlanSink := strings.Replace(canonical, "func (ExecPlanCapability) CopyCanonicalTo(credentialmemory.CredentialSink) error { return nil }", "func (ExecPlanCapability) CopyCanonicalTo(sink credentialmemory.CredentialSink) error { _ = sink; return nil }", 1)
+	for _, test := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "canonical authenticated first-seen Exec install", source: canonical, want: true},
+		{name: "body digest uses lookalike sha256 import", source: strings.Replace(canonical, `"crypto/sha256"`, `sha256 "example.invalid/sha256"`, 1)},
+		{name: "boot nonce comparison uses lookalike subtle import", source: strings.Replace(canonical, `"crypto/subtle"`, `subtle "example.invalid/subtle"`, 1)},
+		{name: "plan copy signature uses lookalike credentialmemory import", source: strings.Replace(canonical, `"github.com/jywlabs/hal/internal/credentialmemory"`, `"example.invalid/credentialmemory"`, 1)},
+		{name: "protocol body uses lookalike credentialprotocol import", source: strings.Replace(canonical, `"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"`, `"example.invalid/credentialprotocol"`, 1)},
+		{name: "state mutex uses lookalike sync import", source: strings.Replace(canonical, `"sync"`, `sync "example.invalid/sync"`, 1)},
+		{name: "exact sha256 import alias is equivalent", source: shaAlias, want: true},
+		{name: "exact subtle import alias is equivalent", source: subtleAlias, want: true},
+		{name: "exact credentialmemory import alias is equivalent", source: memoryAlias, want: true},
+		{name: "exact credentialprotocol import alias is equivalent", source: protocolAlias, want: true},
+		{name: "exact sync import alias is equivalent", source: syncAlias, want: true},
+		{name: "raw sha256 import path is equivalent", source: rawSHA, want: true},
+		{name: "raw subtle import path is equivalent", source: rawSubtle, want: true},
+		{name: "raw credentialmemory import path is equivalent", source: rawMemory, want: true},
+		{name: "raw credentialprotocol import path is equivalent", source: rawProtocol, want: true},
+		{name: "raw sync import path is equivalent", source: rawSync, want: true},
+		{name: "sync qualifier cannot forge normalization identity", source: syncSentinelCollision},
+		{name: "sha256 qualifier cannot forge normalization identity", source: shaSentinelCollision},
+		{name: "plan copy parameter name is signature irrelevant", source: namedPlanSink, want: true},
+		{name: "plan copy extra parameter changes signature", source: strings.Replace(canonical, "CopyCanonicalTo(credentialmemory.CredentialSink) error", "CopyCanonicalTo(credentialmemory.CredentialSink, credentialmemory.CredentialSink) error", 1)},
+		{name: "header body length is not bound", source: strings.Replace(canonical, "uint32(len(canonical)) != packet.Header().BodyLength", "false", 1)},
+		{name: "foreign plan supplies reconstructed body", source: strings.Replace(canonical, "newServiceExecBodyIdentity(packet, arm, plan)", "newServiceExecBodyIdentity(packet, arm, foreignPlan)", 1)},
+		{name: "execution capability uses cleanup kind", source: strings.Replace(canonical, "serviceCoreCapabilityExecution, correlation", "serviceCoreCapabilityCleanup, correlation", 1)},
+		{name: "Core request receives zero body digest", source: strings.Replace(canonical, "bodyLength, bodySHA256, plan", "bodyLength, [32]byte{}, plan", 1)},
+		{name: "transaction begins before request validation", source: strings.Replace(canonical, "transaction, transactionErr := arm.transactionSeed.Begin()", "transaction, transactionErr := arm.transactionSeed.Begin(); _, _ = transaction, transactionErr", 1)},
+		{name: "installer omits mutex", source: strings.Replace(canonical, "s.state.mu.Lock()\n\tif !s.state.prepared.active", "if !s.state.prepared.active", 1)},
+		{name: "installer stores foreign request", source: strings.Replace(canonical, "s.state.request = authority.request", "s.state.request = foreignRequest", 1)},
+		{name: "installer enables comparison without cache", source: strings.Replace(canonical, "s.state.comparison = authority.comparison", "s.state.comparison = true", 1)},
+		{name: "install failure leaks transferred authority", source: strings.Replace(canonical, "if installErr != nil { authorityCleanupErr := closeServiceExecAuthority(authority); packetCleanupErr := destroyServiceReceivedPacket(ctx, packet); if authorityCleanupErr != nil || packetCleanupErr != nil { return struct{}{},ErrContractOwnership }; return struct{}{},installErr }", "if installErr != nil { return struct{}{},installErr }", 1)},
+		{name: "issuer call is dead after return", source: strings.Replace(canonical, "authority, authorityErr := s.newServiceExecAuthority(packet, arm)", "return struct{}{},nil\n\tauthority, authorityErr := s.newServiceExecAuthority(packet, arm)", 1)},
+		{name: "issuer error is ignored", source: strings.Replace(canonical, "if authorityErr != nil { packetCleanupErr := destroyServiceReceivedPacket(ctx, packet); if packetCleanupErr != nil { return struct{}{},ErrContractOwnership }; return struct{}{},authorityErr }", "_ = authorityErr", 1)},
+		{name: "unknown conditional return precedes issuer", source: strings.Replace(canonical, "authority, authorityErr := s.newServiceExecAuthority(packet, arm)", "if unknown { return struct{}{},nil }\n\tauthority, authorityErr := s.newServiceExecAuthority(packet, arm)", 1)},
+		{name: "extra constructor call outside issuer", source: canonical + "\nfunc buildForeignExec() { _, _ = NewCoreExecRequest([16]byte{}, [32]byte{}, 1, CoreGenerations{}, \"\", \"\", 0, [32]byte{}, 1, [32]byte{1}, ExecPlanCapability{}, CorePreparedCapability{}, CoreExecutionCapability{}, CoreCleanupCapability{}) }\n"},
+		{name: "issuer function value escapes", source: canonical + "\nvar issueExec = newServiceExecAuthority\n"},
+		{name: "unrelated receiver constructor name remains available", source: canonical + "\ntype unrelatedExecBuilder struct{}\nfunc (unrelatedExecBuilder) NewCoreExecRequest() {}\nfunc useUnrelatedExecBuilder() { unrelatedExecBuilder{}.NewCoreExecRequest() }\n", want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name != "canonical authenticated first-seen Exec install" && test.source == canonical {
+				t.Fatal("fixture mutation did not change canonical source")
+			}
+			files := l8D2ReadinessParseFixturePackage(t, test.source)
+			got := l8D2ReadinessPreparePrerequisites(files).execDispatch
+			if got != test.want {
+				t.Fatalf("authenticated Exec dispatch prerequisite = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessPreparePrerequisiteBuildContextSelfTest(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source string
+		want   [2]bool
+	}{
+		{name: "untagged canonical is available in every supported context", source: l8D2ReadinessPreparePrerequisiteCanonical, want: [2]bool{true, true}},
+		{name: "linux-only canonical cannot satisfy every supported context", source: "//go:build linux\n\n" + l8D2ReadinessPreparePrerequisiteCanonical, want: [2]bool{false, false}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			path := filepath.Join(directory, "fixture.go")
+			if err := os.WriteFile(path, []byte(test.source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), path, test.source, parser.ParseComments)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var function *ast.FuncDecl
-			for _, declaration := range file.Decls {
-				candidate, ok := declaration.(*ast.FuncDecl)
-				if ok && candidate.Name.Name == "zeroPrivate" {
-					function = candidate
-				}
+			got := l8D2ReadinessPreparePrerequisitesAcrossBuilds(directory, map[string]*ast.File{path: file})
+			actual := [2]bool{got.capabilityIssuer, got.preparedActivation}
+			if actual != test.want {
+				t.Fatalf("prerequisites = %v, want %v", actual, test.want)
 			}
-			got := function != nil && l8D2ReadinessZeroPrivateExecStable(map[*ast.FuncDecl]bool{function: true}) && l8D2ReadinessServiceMethodStateStable(function, nil)
+		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessExecDispatchPrerequisiteBuildContextSelfTest(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "untagged canonical is available in every supported context", source: l8D2ReadinessExecDispatchPrerequisiteCanonical, want: true},
+		{name: "linux-only canonical cannot satisfy every supported context", source: "//go:build linux\n\n" + l8D2ReadinessExecDispatchPrerequisiteCanonical},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			path := filepath.Join(directory, "fixture.go")
+			if err := os.WriteFile(path, []byte(test.source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), path, test.source, parser.ParseComments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := l8D2ReadinessPreparePrerequisitesAcrossBuilds(directory, map[string]*ast.File{path: file}).execDispatch
+			if got != test.want {
+				t.Fatalf("authenticated Exec dispatch prerequisite = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessPreparePrerequisiteGuardSelfTest(t *testing.T) {
+	t.Parallel()
+	canonical := l8D2ReadinessPreparePrerequisiteCanonical
+	for _, test := range []struct {
+		name   string
+		source string
+		want   [2]bool
+	}{
+		{name: "canonical", source: canonical, want: [2]bool{true, true}},
+		{name: "unrelated lifecycle method names remain available", source: canonical + `
+func unrelatedLifecycleNames(ctx context.Context) { _ = other.Close(ctx); _ = other.Revoke(ctx, foreignRevokeRequest) }
+`, want: [2]bool{true, true}},
+		{name: "named capability container permits immutable value reads", source: canonical + `
+type capabilityReadHolder struct { capability CorePreparedCapability }
+func readPreparedCapabilityDigest(holder capabilityReadHolder) [32]byte { return holder.capability.digest }
+`, want: [2]bool{true, true}},
+		{name: "named Service pointer alias declaration is inert", source: canonical + `
+type serviceReadPointer = *Service
+`, want: [2]bool{true, true}},
+		{name: "unrelated receiver method sharing constructor name remains available", source: canonical + `
+type unrelatedRevokeBuilder struct{}
+func (unrelatedRevokeBuilder) NewCoreRevokeRequest() {}
+func useUnrelatedRevokeBuilder() { unrelatedRevokeBuilder{}.NewCoreRevokeRequest() }
+`, want: [2]bool{true, true}},
+		{name: "function-local unrelated type shadows package capability container", source: canonical + `
+type shadowCapabilityHolder struct { capability CorePreparedCapability }
+func useUnrelatedLocalShadow() {
+	type shadowCapabilityHolder struct { digest [32]byte }
+	var holder shadowCapabilityHolder
+	holder.digest[0] = 1
+}
+`, want: [2]bool{true, true}},
+		{name: "capability digest constant-time read remains available", source: canonical + `
+func comparePreparedDigest(capability CorePreparedCapability, expected [32]byte) int {
+	return subtle.ConstantTimeCompare(capability.digest[:], expected[:])
+}
+`, want: [2]bool{true, true}},
+		{name: "parenthesized capability digest constant-time read remains available", source: canonical + `
+func comparePreparedDigestThroughParenthesizedImport(capability CorePreparedCapability, expected [32]byte) int {
+	return (subtle.ConstantTimeCompare)(capability.digest[:], expected[:])
+}
+`, want: [2]bool{true, true}},
+		{name: "local subtle shadow cannot mutate capability digest through comparison spelling", source: canonical + `
+func mutatePreparedDigestThroughSubtleShadow(capability CorePreparedCapability) {
+	subtle := struct { ConstantTimeCompare func([]byte, []byte) int }{
+		ConstantTimeCompare: func(left, right []byte) int { left[0] = 1; return 1 },
+	}
+	_ = subtle.ConstantTimeCompare(capability.digest[:], nil)
+}
+`, want: [2]bool{false, false}},
+		{name: "local value shadow of package capability is unrelated", source: canonical + `
+var shadowedPreparedCapability CorePreparedCapability
+func mutateUnrelatedCapabilityShadow() {
+	shadowedPreparedCapability := struct { digest [32]byte }{}
+	shadowedPreparedCapability.digest[0] = 1
+}
+`, want: [2]bool{true, true}},
+		{name: "unrelated sibling digest field in capability container remains mutable", source: canonical + `
+func mutateUnrelatedCapabilitySibling(holder struct {
+	capability CorePreparedCapability
+	unrelated struct { digest [32]byte }
+}) {
+	holder.unrelated.digest[0] = 1
+}
+`, want: [2]bool{true, true}},
+		{name: "unrelated map value digest remains mutable when only key carries capability", source: canonical + `
+func mutateUnrelatedCapabilityMapValue(values map[*CorePreparedCapability]struct { digest [32]byte }) {
+	for _, value := range values { value.digest[0] = 1 }
+}
+`, want: [2]bool{true, true}},
+		{name: "unrelated Service container field read remains available", source: canonical + `
+func readUnrelatedServiceHolderField(holder struct { service *Service; count int }) int { return holder.count }
+`, want: [2]bool{true, true}},
+		{name: "function-local state container type shadow remains unrelated", source: canonical + `
+type stateContainer struct { state *serviceState }
+func mutateUnrelatedLocalStateContainer() {
+	type stateContainer struct { prepared int }
+	var holder stateContainer
+	holder.prepared++
+}
+`, want: [2]bool{true, true}},
+		{name: "inner value shadow of Service owner remains unrelated", source: canonical + `
+func mutateUnrelatedServiceShadow(service *Service) {
+	if service := struct { state struct { prepared int } }{}; true { service.state.prepared++ }
+}
+`, want: [2]bool{true, true}},
+		{name: "unrelated map value prepared field remains mutable when only key carries state", source: canonical + `
+func mutateUnrelatedStateMapValue(values map[*serviceState]struct { prepared int }) {
+	for _, value := range values { value.prepared++ }
+}
+`, want: [2]bool{true, true}},
+		{name: "function-local direct capability type spelling remains unrelated", source: canonical + `
+func mutateUnrelatedLocalDirectCapabilityType() {
+	type CorePreparedCapability struct { digest [32]byte }
+	capability := CorePreparedCapability{}
+	capability.digest[0] = 1
+}
+`, want: [2]bool{true, true}},
+		{name: "function-local Core constructor spelling remains unrelated", source: canonical + `
+func callUnrelatedLocalCoreConstructor() {
+	NewCorePrepareRequest := func() int { return 1 }
+	_ = NewCorePrepareRequest()
+}
+`, want: [2]bool{true, true}},
+		{name: "function-local activation type spelling remains unrelated", source: canonical + `
+func constructUnrelatedLocalActivation() {
+	type servicePreparedActivation struct { value int }
+	_ = servicePreparedActivation{value: 1}
+}
+`, want: [2]bool{true, true}},
+		{name: "function-local activation issuer spelling remains unrelated", source: canonical + `
+func callUnrelatedLocalActivationIssuer() {
+	newServicePreparedActivationCandidate := func() int { return 1 }
+	_ = newServicePreparedActivationCandidate()
+}
+`, want: [2]bool{true, true}},
+		{name: "capability issuer escapes through function value wrapper", source: canonical + `
+var MintServiceCoreCapability = newServiceCoreCapabilityDigest
+func mintForeignCapability(kind serviceCoreCapabilityKind, correlation requestCorrelation, generations CoreGenerations, bootNonce [32]byte) ([32]byte,error) {
+	return MintServiceCoreCapability(kind, correlation, generations, bootNonce)
+}
+`, want: [2]bool{false, false}},
+		{name: "capability authority can be constructed outside sole issuer", source: canonical + `
+func mintForeignPreparedCapability() CorePreparedCapability {
+	return CorePreparedCapability{digest: sha256.Sum256([]byte("foreign"))}
+}
+`, want: [2]bool{false, false}},
+		{name: "capability authority can be assigned outside sole issuer", source: canonical + `
+func mintForeignPreparedCapabilityByAssignment() CorePreparedCapability {
+	capability := CorePreparedCapability{}
+	capability.digest = sha256.Sum256([]byte("foreign"))
+	return capability
+}
+`, want: [2]bool{false, false}},
+		{name: "capability authority can be assigned through new pointer", source: canonical + `
+func mintForeignPreparedCapabilityByPointer() CorePreparedCapability {
+	capability := new(CorePreparedCapability)
+	capability.digest = sha256.Sum256([]byte("foreign"))
+	return *capability
+}
+`, want: [2]bool{false, false}},
+		{name: "capability authority can be assigned through pointer parameter", source: canonical + `
+func overwriteForeignPreparedCapability(capability *CorePreparedCapability) {
+	capability.digest = sha256.Sum256([]byte("foreign"))
+}
+`, want: [2]bool{false, false}},
+		{name: "capability authority can be assigned through selector container", source: canonical + `
+func mintForeignPreparedCapabilityThroughHolder() CorePreparedCapability {
+	var holder struct{ capability CorePreparedCapability }
+	holder.capability.digest = sha256.Sum256([]byte("foreign"))
+	return holder.capability
+}
+`, want: [2]bool{false, false}},
+		{name: "capability authority can be assigned through named selector container", source: canonical + `
+type foreignCapabilityHolder struct { capability CorePreparedCapability }
+func mintForeignPreparedCapabilityThroughNamedHolder() CorePreparedCapability {
+	var holder foreignCapabilityHolder
+	holder.capability.digest = sha256.Sum256([]byte("foreign"))
+	return holder.capability
+}
+`, want: [2]bool{false, false}},
+		{name: "capability authority can be assigned through function-local named container", source: canonical + `
+func mintForeignPreparedCapabilityThroughLocalNamedHolder() CorePreparedCapability {
+	type localCapabilityHolder struct { capability CorePreparedCapability }
+	var holder localCapabilityHolder
+	holder.capability.digest = sha256.Sum256([]byte("foreign"))
+	return holder.capability
+}
+`, want: [2]bool{false, false}},
+		{name: "capability method receiver can overwrite digest", source: canonical + `
+func (capability *CorePreparedCapability) overwriteForeignDigest() {
+	capability.digest = sha256.Sum256([]byte("foreign"))
+}
+`, want: [2]bool{false, false}},
+		{name: "capability digest index can be assigned", source: canonical + `
+func overwriteForeignPreparedCapabilityDigestIndex(capability *CorePreparedCapability) {
+	capability.digest[0] = 1
+}
+`, want: [2]bool{false, false}},
+		{name: "capability digest index can be incremented", source: canonical + `
+func incrementForeignPreparedCapabilityDigestIndex(capability *CorePreparedCapability) {
+	capability.digest[0]++
+}
+`, want: [2]bool{false, false}},
+		{name: "capability assertion can overwrite digest", source: canonical + `
+func overwriteAssertedPreparedCapability(value any) {
+	value.(*CorePreparedCapability).digest[0] = 1
+}
+`, want: [2]bool{false, false}},
+		{name: "capability range value can overwrite digest", source: canonical + `
+func overwriteRangedPreparedCapability(values []*CorePreparedCapability) {
+	for _, capability := range values { capability.digest[0] = 1 }
+}
+`, want: [2]bool{false, false}},
+		{name: "inferred package capability can overwrite digest", source: canonical + `
+var inferredPreparedCapability = CorePreparedCapability{}
+func overwriteInferredPreparedCapability() { inferredPreparedCapability.digest[0] = 1 }
+`, want: [2]bool{false, false}},
+		{name: "capability digest writable view can be passed", source: canonical + `
+func retainPreparedDigestView([]byte) {}
+func passPreparedDigestView(capability *CorePreparedCapability) { retainPreparedDigestView(capability.digest[:]) }
+`, want: [2]bool{false, false}},
+		{name: "capability digest writable view can be returned", source: canonical + `
+func returnPreparedDigestView(capability *CorePreparedCapability) []byte { return capability.digest[:] }
+`, want: [2]bool{false, false}},
+		{name: "capability digest writable view alias can mutate", source: canonical + `
+func mutatePreparedDigestViewAlias(capability *CorePreparedCapability) {
+	view := capability.digest[:]
+	view[0] = 1
+}
+`, want: [2]bool{false, false}},
+		{name: "capability digest address can escape", source: canonical + `
+func leakForeignPreparedCapabilityDigest(capability *CorePreparedCapability) *[32]byte {
+	return &capability.digest
+}
+`, want: [2]bool{false, false}},
+		{name: "capability digest slice can be copied into", source: canonical + `
+func overwriteForeignPreparedCapabilityByCopy(capability *CorePreparedCapability, foreign [32]byte) {
+	copy(capability.digest[:], foreign[:])
+}
+`, want: [2]bool{false, false}},
+		{name: "capability authority can hide behind pointer type", source: canonical + `
+type foreignPreparedCapabilityPointer *CorePreparedCapability
+`, want: [2]bool{false, false}},
+		{name: "capability domain can be copied into alternate issuer", source: canonical + `
+func mintForeignCapabilityDigest() [32]byte {
+	hasher := sha256.New()
+	writeExtensionOpaque16(hasher, "hal/l8/guest-helper/core-capability/v1")
+	var digest [32]byte
+	copy(digest[:], hasher.Sum(nil))
+	return digest
+}
+`, want: [2]bool{false, false}},
+		{name: "capability domain drift", source: strings.Replace(canonical, "core-capability/v1", "core-capability/v2", 1), want: [2]bool{false, false}},
+		{name: "prepared result not checked", source: strings.Replace(canonical, "result.BindingCount() == prepare.Manifest().Count()", "true", 1), want: [2]bool{true, false}},
+		{name: "prepare expiry may exceed hard horizon", source: strings.Replace(canonical, "result.ExpiresUnixNano() <= observation.HardExpiryUnixNano()", "true", 1), want: [2]bool{true, false}},
+		{name: "commit observation may replace latched generations", source: strings.Replace(canonical, "generations == initialGenerations", "true", 1), want: [2]bool{true, false}},
+		{name: "commit observation may replace latched hard horizon", source: strings.Replace(canonical, "observation.HardExpiryUnixNano() == initialObservation.HardExpiryUnixNano()", "true", 1), want: [2]bool{true, false}},
+		{name: "commit observation time may regress", source: strings.Replace(canonical, "observation.ObservedUnixNano() > initialObservation.ObservedUnixNano()", "true", 1), want: [2]bool{true, false}},
+		{name: "prepare begin uses foreign configured Core", source: strings.Replace(canonical, "s.core.BeginPrepare(ctx, authority.prepare)", "foreignCore.BeginPrepare(ctx, authority.prepare)", 1), want: [2]bool{true, false}},
+		{name: "prepare begin omits pre-Core reservation", source: strings.Replace(canonical, "reserveErr := s.reservePreparing(authority)", "reserveErr := error(nil)", 1), want: [2]bool{true, false}},
+		{name: "prepare begin failure omits transaction close", source: strings.Replace(canonical, "closeErr := closeServicePrepareTransaction(transaction)", "closeErr := error(nil)", 1), want: [2]bool{true, false}},
+		{name: "precommit cleanup omits Core rollback", source: strings.Replace(canonical, "rollbackErr := rollbackServicePreparation(ctx, preparation, preparing.authority.prepare.Cleanup())", "rollbackErr := error(nil)", 1), want: [2]bool{true, false}},
+		{name: "prepared install not driven by exact Core result", source: strings.Replace(canonical, "s.installPreparedActivation(preparing, header, observation, commit, result)", "s.installPreparedActivation(preparing, header, observation, commit, foreignResult)", 1), want: [2]bool{true, false}},
+		{name: "postcommit install failure omits Core revoke", source: strings.Replace(canonical, "revokeErr := s.revokeCommittedPreparation(ctx, preparing, observation)", "revokeErr := error(nil)", 1), want: [2]bool{true, false}},
+		{name: "postcommit Core revoke panic is not reduced", source: strings.Replace(canonical, "func (s *Service) revokeCommittedPreparation(ctx context.Context, preparing servicePreparing, observation ServiceJobObservation) (cleanupErr error) {\n    defer func() { if recover() != nil { cleanupErr = ErrContractOwnership } }()", "func (s *Service) revokeCommittedPreparation(ctx context.Context, preparing servicePreparing, observation ServiceJobObservation) (cleanupErr error) {", 1), want: [2]bool{true, false}},
+		{name: "postcommit transaction Close failure skips Core revoke", source: strings.Replace(canonical, `transactionErr := closeServicePrepareTransaction(preparing.authority.transaction)
+	request, requestErr := NewCoreRevokeRequest`, `transactionErr := closeServicePrepareTransaction(preparing.authority.transaction)
+	if transactionErr != nil { return ErrContractOwnership }
+	request, requestErr := NewCoreRevokeRequest`, 1), want: [2]bool{true, false}},
+		{name: "prepared activation drops retained cleanup authority", source: strings.Replace(canonical, "prepared: candidate.prepared, cleanup: candidate.cleanup", "prepared: candidate.prepared", 1), want: [2]bool{true, false}},
+		{name: "prepared activation drops immutable manifest owner", source: strings.Replace(canonical, "manifest: candidate.manifest, bindingCount: candidate.bindingCount", "bindingCount: candidate.bindingCount", 1), want: [2]bool{true, false}},
+		{name: "Core Commit error incorrectly selects Rollback", source: strings.Replace(canonical, `committed = true
+    result, commitErr := preparing.preparation.Commit(ctx, commit)`, `result, commitErr := preparing.preparation.Commit(ctx, commit)
+    committed = commitErr == nil`, 1), want: [2]bool{true, false}},
+		{name: "Core Commit panic occurs before postcommit latch", source: strings.Replace(canonical, `committed = true
+    result, commitErr := preparing.preparation.Commit(ctx, commit)`, `result, commitErr := preparing.preparation.Commit(ctx, commit)
+    committed = true`, 1), want: [2]bool{true, false}},
+		{name: "prepare begin handler dead from Serve", source: strings.Replace(canonical, "case credentialprotocol.PacketTypePrepareBegin: handlerErr = s.handlePrepareBegin(ctx, packet)", "case credentialprotocol.PacketTypePrepareBegin: handlerErr = nil", 1), want: [2]bool{true, false}},
+		{name: "prepare commit handler dead from Serve", source: strings.Replace(canonical, "case credentialprotocol.PacketTypePrepareCommit: handlerErr = s.handlePrepareCommit(ctx, packet)", "case credentialprotocol.PacketTypePrepareCommit: handlerErr = nil", 1), want: [2]bool{true, false}},
+		{name: "prepare begin uses foreign typed arm", source: strings.Replace(canonical, "arm, ok := packet.PrepareBegin()", "arm, ok := foreignPacket.PrepareBegin()", 1), want: [2]bool{true, false}},
+		{name: "prepare commit uses foreign typed arm", source: strings.Replace(canonical, "arm, ok := packet.PrepareCommit()", "arm, ok := foreignPacket.PrepareCommit()", 1), want: [2]bool{true, false}},
+		{name: "prepare file handler dead from Serve", source: strings.Replace(canonical, "case credentialprotocol.PacketTypePrepareFile: handlerErr = s.handlePrepareFile(ctx, packet)", "case credentialprotocol.PacketTypePrepareFile: handlerErr = nil", 1), want: [2]bool{true, false}},
+		{name: "prepare commit does not reject in-flight file", source: strings.Replace(canonical, "!preparing.active || preparing.fileTaken || preparing.commitTaken || header.Type != credentialprotocol.PacketTypePrepareCommit", "!preparing.active || preparing.commitTaken || header.Type != credentialprotocol.PacketTypePrepareCommit", 1), want: [2]bool{true, false}},
+		{name: "prepare file observation self-compares declared digest", source: strings.Replace(canonical, "arm.FileSHA256(), observedSHA256", "arm.FileSHA256(), arm.FileSHA256()", 1), want: [2]bool{true, false}},
+		{name: "prepare file accepts observation before Core stage", source: strings.Replace(canonical, `if stageErr := preparing.preparation.StageFile(ctx, fileRequest, view); stageErr != nil { return stageErr }
+        return preparing.authority.transaction.AcceptObservedFileObservation(preparing.authority.correlation, observation)`, `if acceptErr := preparing.authority.transaction.AcceptObservedFileObservation(preparing.authority.correlation, observation); acceptErr != nil { return acceptErr }
+        return preparing.preparation.StageFile(ctx, fileRequest, view)`, 1), want: [2]bool{true, false}},
+		{name: "prepare file omits body destroy", source: strings.Replace(canonical, "return packet.body.Destroy(ctx)", "return nil", 1), want: [2]bool{true, false}},
+		{name: "prepare file duplicates body destroy", source: strings.Replace(canonical, "return packet.body.Destroy(ctx)", "_ = packet.body.Destroy(ctx); return packet.body.Destroy(ctx)", 1), want: [2]bool{true, false}},
+		{name: "prepare file uses foreign body", source: strings.Replace(canonical, "body := packet.body", "body := foreignBody", 1), want: [2]bool{true, false}},
+		{name: "prepare file uses foreign Core preparation", source: strings.Replace(canonical, "preparing.preparation.StageFile(ctx, fileRequest, view)", "foreignPreparation.StageFile(ctx, fileRequest, view)", 1), want: [2]bool{true, false}},
+		{name: "prepare file uses foreign transaction", source: strings.Replace(canonical, "preparing.authority.transaction.AcceptObservedFileObservation", "foreignTransaction.AcceptObservedFileObservation", 1), want: [2]bool{true, false}},
+		{name: "prepare file failure clears in-flight latch", source: strings.Replace(canonical, "if handlerErr == nil && taken", "if taken", 1), want: [2]bool{true, false}},
+		{name: "prepare file omits next expected transaction binding", source: strings.Replace(canonical, " || transactionSnapshot.NextBindingIndex != arm.BindingIndex()", "", 1), want: [2]bool{true, false}},
+		{name: "prepare file ignores retained body length", source: strings.Replace(canonical, "if body.Len() != arm.FileLength() { return ErrContractCorrelation }", "", 1), want: [2]bool{true, false}},
+		{name: "prepare receive request permits rights", source: strings.Replace(canonical, "credentialprotocol.MaxHelperPacketBodyBytes, 0", "credentialprotocol.MaxHelperPacketBodyBytes, 1", 1), want: [2]bool{true, false}},
+		{name: "prepare receive request uses caller value", source: strings.Replace(canonical, "packet, receiveErr := s.receiveServicePacket(ctx, request)", "packet, receiveErr := s.receiveServicePacket(ctx, foreignReceiveRequest)", 1), want: [2]bool{true, false}},
+		{name: "prepare packet cleanup omits unexpected right close", source: strings.Replace(canonical, "return packet.right.Close(ctx)", "return nil", 1), want: [2]bool{true, false}},
+		{name: "prepare candidate omits packet type", source: strings.Replace(canonical, "header.Type == credentialprotocol.PacketTypePrepareCommit && ", "", 1), want: [2]bool{true, false}},
+		{name: "prepare uses foreign received header", source: strings.Replace(canonical, "header := packet.Header()\n    bootstrap, bootstrapErr :=", "header := foreignPacket.Header()\n    bootstrap, bootstrapErr :=", 1), want: [2]bool{true, false}},
+		{name: "prepare uses foreign Runtime observation", source: strings.Replace(canonical, "s.runtime.ObserveJob(ctx, observationRequest)", "foreignRuntime.ObserveJob(ctx, observationRequest)", 1), want: [2]bool{true, false}},
+		{name: "prepare observation request uses foreign header", source: strings.Replace(canonical, "ServiceOperationPrepare, header.RequestID, header.GuestCredentialIdentityDigest", "ServiceOperationPrepare, foreignHeader.RequestID, foreignHeader.GuestCredentialIdentityDigest", 1), want: [2]bool{true, false}},
+		{name: "prepare partial generations leak monitor generation", source: strings.Replace(canonical, `NewCoreGenerations(completeGenerations.boot, completeGenerations.helper, completeGenerations.job, "", "", "")`, `NewCoreGenerations(completeGenerations.boot, completeGenerations.helper, completeGenerations.job, completeGenerations.monitor, "", "")`, 1), want: [2]bool{false, false}},
+		{name: "prepare uses foreign partial generations", source: strings.Replace(canonical, "NewCorePrepareRequest(header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), generations,", "NewCorePrepareRequest(header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), foreignGenerations,", 1), want: [2]bool{false, false}},
+		{name: "prepare ignores partial generation reconstruction error", source: strings.Replace(canonical, "if generationsErr != nil { return servicePrepareAuthority{}, generationsErr }", "_ = generationsErr", 1), want: [2]bool{false, false}},
+		{name: "prepare authority rebound before reservation", source: strings.Replace(canonical, "s.reservePreparing(authority)", "s.reservePreparing(foreignAuthority)", 1), want: [2]bool{true, false}},
+		{name: "Core Prepare request constructed outside exact issuer", source: canonical + `
+func constructForeignCorePrepareRequest() { _, _ = NewCorePrepareRequest(foreignRequestID, foreignIdentityDigest, 1, foreignGenerations, 1, coreFixedLimitSetID, foreignManifest, foreignManifestSHA256, foreignPreparationCapability, foreignPreparedCapability, foreignCleanupCapability) }
+`, want: [2]bool{true, false}},
+		{name: "Core File request constructed outside exact issuer", source: canonical + `
+func constructForeignCoreFileRequest() { _, _ = NewCoreFileRequest(foreignRequestID, foreignIdentityDigest, 1, foreignJobGeneration, foreignPreparationCapability, foreignBindingID, 0, foreignTarget, 1, foreignFileSHA256) }
+`, want: [2]bool{true, false}},
+		{name: "Core Commit request constructed outside exact issuer", source: canonical + `
+func constructForeignCoreCommitRequest() { _, _ = NewCoreCommitRequest(foreignRequestID, foreignIdentityDigest, 1, foreignJobGeneration, foreignPreparationCapability, foreignManifestSHA256, foreignTransactionSHA256, foreignPreparedCapability) }
+`, want: [2]bool{true, false}},
+		{name: "Core Renew request constructed outside exact issuer", source: canonical + `
+func constructForeignCoreRenewRequest() { _, _ = NewCoreRenewRequest(foreignRequestID, foreignIdentityDigest, 1, foreignGenerations, 1, foreignPreparedCapability) }
+`, want: [2]bool{true, false}},
+		{name: "Core Revoke request constructed outside exact issuer", source: canonical + `
+func constructForeignCoreRevokeRequest() { _, _ = NewCoreRevokeRequest(foreignRequestID, foreignIdentityDigest, 1, foreignGenerations, credentialprotocol.RevokeReasonSessionLoss, foreignPreparedCapability, foreignCleanupCapability) }
+`, want: [2]bool{true, false}},
+		{name: "commit request rebound before Core", source: strings.Replace(canonical, "preparing.preparation.Commit(ctx, commit)", "preparing.preparation.Commit(ctx, foreignCommit)", 1), want: [2]bool{true, false}},
+		{name: "renew candidate omits packet type", source: strings.Replace(canonical, "header.Type == credentialprotocol.PacketTypeRenew && ", "", 1), want: [2]bool{true, false}},
+		{name: "renew permits gapped revision", source: strings.Replace(canonical, "arm.revision == activation.revision + 1", "arm.revision > activation.revision", 1), want: [2]bool{true, false}},
+		{name: "renew omits prior proof binding", source: strings.Replace(canonical, " && subtle.ConstantTimeCompare(arm.priorProofSHA256[:], expectedPriorProofSHA256[:]) == 1", "", 1), want: [2]bool{true, false}},
+		{name: "renew can exceed authenticated hard expiry", source: strings.Replace(canonical, "arm.expiryUnixNano <= observation.HardExpiryUnixNano()", "true", 1), want: [2]bool{true, false}},
+		{name: "renew uses foreign Core", source: strings.Replace(canonical, "s.core.Renew(ctx, request)", "foreignCore.Renew(ctx, request)", 1), want: [2]bool{true, false}},
+		{name: "renew validates stale arm only after Runtime", source: strings.Replace(canonical, "if validationErr := validateServiceRenewArm(packet, arm, activation); validationErr != nil { return validationErr }", "", 1), want: [2]bool{true, false}},
+		{name: "renew Runtime failure leaves activation live", source: strings.Replace(canonical, " || runtimeCalled && handlerErr != nil", "", 1), want: [2]bool{true, false}},
+		{name: "renew cleanup substitutes outer request ID", source: strings.Replace(canonical, "NewCoreRevokeRequest(current.issuingCorrelation.requestID,", "NewCoreRevokeRequest(foreignRequestID,", 1), want: [2]bool{true, false}},
+		{name: "renew Core error drops trusted-failure cleanup signal", source: strings.Replace(canonical, "if observationErr != nil { return observationErr }\n    advanceErr :=", "if observationErr != nil { return observationErr }\n    runtimeCalled = false\n    advanceErr :=", 1), want: [2]bool{true, false}},
+		{name: "renew Core panic is not reduced for handler cleanup", source: strings.Replace(canonical, "func (s *Service) advancePreparedActivation(ctx context.Context, packet ReceivedPacket, observation ServiceJobObservation) (renewErr error) {\n    defer func() { if recover() != nil { renewErr = ErrContractOwnership } }()", "func (s *Service) advancePreparedActivation(ctx context.Context, packet ReceivedPacket, observation ServiceJobObservation) (renewErr error) {", 1), want: [2]bool{true, false}},
+		{name: "renew packet cleanup failure omits active revoke", source: strings.Replace(canonical, "if revokeErr := s.revokeServicePreparedActivation(ctx, activation); revokeErr != nil { handlerErr = ErrContractOwnership }", "", 1), want: [2]bool{true, false}},
+		{name: "renew installs foreign Runtime observation", source: strings.Replace(canonical, "s.advancePreparedActivation(ctx, packet, observation)", "s.advancePreparedActivation(ctx, packet, foreignObservation)", 1), want: [2]bool{true, false}},
+		{name: "renew overwrites issuing correlation", source: strings.Replace(canonical, "s.state.prepared.revision = request.Revision()", "s.state.prepared.issuingCorrelation = foreignCorrelation\n    s.state.prepared.revision = request.Revision()", 1), want: [2]bool{true, false}},
+		{name: "renew handler dead from Serve", source: strings.Replace(canonical, "case credentialprotocol.PacketTypeRenew: handlerErr = s.handleRenew(ctx, packet)", "case credentialprotocol.PacketTypeRenew: handlerErr = nil", 1), want: [2]bool{true, false}},
+		{name: "prepared activation revision mutates off authority", source: canonical + `
+func (s *Service) mutatePreparedRevision() { s.state.prepared.revision++ }
+`, want: [2]bool{true, false}},
+		{name: "prepared activation mutates through state alias", source: canonical + `
+func (s *Service) mutatePreparedThroughAlias() {
+	state := s.state
+	state.prepared.revision++
+	state.preparing.commitTaken = false
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation mutates through transitive state alias", source: canonical + `
+func (s *Service) mutatePreparedThroughTransitiveAlias() {
+	first := s.state
+	second := first
+	second.prepared.revision++
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation mutates through aliased field pointer", source: canonical + `
+func (s *Service) mutatePreparedThroughFieldPointer() {
+	state := s.state
+	prepared := &state.prepared
+	prepared.revision++
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation mutates through ranged slice alias", source: canonical + `
+func (s *Service) mutatePreparedThroughRangedSlice() {
+	for _, state := range []*serviceState{s.state} { state.prepared.revision++ }
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation mutates through ranged map alias", source: canonical + `
+func (s *Service) mutatePreparedThroughRangedMap() {
+	for _, state := range map[string]*serviceState{"state": s.state} { state.preparing.commitTaken = false }
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation mutates through nested state container", source: canonical + `
+func (s *Service) mutatePreparedThroughContainer() {
+	holder := struct{ state *serviceState }{state: s.state}
+	holder.state.prepared.revision++
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation mutates through free function state alias", source: canonical + `
+func mutatePreparedOutsideOwner(service *Service) {
+	state := service.state
+	state.prepared.revision++
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation mutates through named Service pointer alias", source: canonical + `
+type foreignServicePointer = *Service
+func mutatePreparedThroughNamedServicePointer(service foreignServicePointer) {
+	state := service.state
+	state.prepared.revision++
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation mutates through parenthesized Service pointer alias", source: canonical + `
+type parenthesizedServicePointer = (*Service)
+func mutatePreparedThroughParenthesizedServicePointer(service parenthesizedServicePointer) {
+	state := service.state
+	state.prepared.revision++
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through double Service pointer", source: canonical + `
+func exposePreparedThroughDoubleServicePointer(service **Service) servicePreparedActivation {
+	state := (*service).state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through local asserted Service alias", source: canonical + `
+func exposePreparedThroughLocalAssertedServiceAlias(value any) servicePreparedActivation {
+	type localServicePointer = *Service
+	service := value.(localServicePointer)
+	state := service.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through Service container field", source: canonical + `
+func exposePreparedThroughServiceHolder(holder struct { service *Service }) servicePreparedActivation {
+	service := holder.service
+	state := service.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through pointer-wrapped Service container", source: canonical + `
+func exposePreparedThroughPointerServiceHolder(holder *struct { service *Service }) servicePreparedActivation {
+	service := holder.service
+	state := service.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through embedded Service", source: canonical + `
+func exposePreparedThroughEmbeddedService(holder struct { *Service }) servicePreparedActivation {
+	state := holder.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through copied Service container", source: canonical + `
+func exposePreparedThroughCopiedServiceHolder(holder struct { service *Service }) servicePreparedActivation {
+	copy := holder
+	service := copy.service
+	state := service.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through Service factory result", source: canonical + `
+func exposePreparedThroughServiceFactory(factory func() *Service) servicePreparedActivation {
+	service := factory()
+	state := service.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "capability mutation follows generic type argument", source: canonical + `
+type genericCapabilityHolder[T any] struct { value T }
+func mutatePreparedThroughGenericHolder(holder genericCapabilityHolder[*CorePreparedCapability]) {
+	holder.value.digest[0] = 1
+}
+`, want: [2]bool{false, false}},
+		{name: "prepared activation escapes through generic Service holder", source: canonical + `
+type genericServiceHolder[T any] struct { value T }
+func exposePreparedThroughGenericServiceHolder(holder genericServiceHolder[*Service]) servicePreparedActivation {
+	state := holder.value.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through interface method result", source: canonical + `
+type preparedServiceBuilder interface { Build() *Service }
+func exposePreparedThroughInterfaceBuilder(builder preparedServiceBuilder) servicePreparedActivation {
+	service := builder.Build()
+	state := service.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through second function result", source: canonical + `
+func exposePreparedThroughSecondFactoryResult(builder func() (int, *Service)) servicePreparedActivation {
+	_, service := builder()
+	state := service.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through parenthesized second function result", source: canonical + `
+func exposePreparedThroughParenthesizedSecondFactoryResult(builder func() (int, *Service)) servicePreparedActivation {
+	_, service := (builder())
+	state := service.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through range function yield", source: canonical + `
+func exposePreparedThroughRangeFunction(sequence func(func(*Service) bool)) servicePreparedActivation {
+	for service := range sequence { return service.state.prepared }
+	var zero servicePreparedActivation
+	return zero
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through named range function yield", source: canonical + `
+type preparedServiceYield func(*Service) bool
+type preparedServiceSequence func(preparedServiceYield)
+func exposePreparedThroughNamedRangeFunction(sequence preparedServiceSequence) servicePreparedActivation {
+	for service := range sequence { return service.state.prepared }
+	var zero servicePreparedActivation
+	return zero
+}
+`, want: [2]bool{true, false}},
+		{name: "unrelated recursive generic shape terminates", source: canonical + `
+type unrelatedRecursiveNode[T any] struct {
+	next *unrelatedRecursiveNode[T]
+	value int
+}
+func inspectUnrelatedRecursiveNode(node unrelatedRecursiveNode[int]) int { return node.value }
+`, want: [2]bool{true, true}},
+		{name: "prepared activation follows ordinary recursive edge", source: canonical + `
+type recursiveServiceNode struct {
+	next *recursiveServiceNode
+	service *Service
+}
+func exposePreparedThroughRecursiveServiceNode(node *recursiveServiceNode) servicePreparedActivation {
+	return node.next.service.state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "capability mutation follows ordinary recursive edge", source: canonical + `
+type recursiveCapabilityNode struct {
+	next *recursiveCapabilityNode
+	capability *CorePreparedCapability
+}
+func mutateCapabilityThroughRecursiveNode(node *recursiveCapabilityNode) {
+	node.next.capability.digest[0] = 1
+}
+`, want: [2]bool{false, false}},
+		{name: "prepared activation follows mutually recursive edge", source: canonical + `
+type recursiveServiceLeft struct { right *recursiveServiceRight }
+type recursiveServiceRight struct { left *recursiveServiceLeft; service *Service }
+func exposePreparedThroughMutualServiceNode(node *recursiveServiceLeft) servicePreparedActivation {
+	return node.right.left.right.service.state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation follows generic recursive edge", source: canonical + `
+type recursiveServiceValue[T any] struct {
+	next *recursiveServiceValue[T]
+	value T
+}
+func exposePreparedThroughRecursiveGenericNode(node *recursiveServiceValue[*Service]) servicePreparedActivation {
+	return node.next.value.state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation follows mutually recursive generic edge", source: canonical + `
+type recursiveGenericLeft[T any] struct { right *recursiveGenericRight[T] }
+type recursiveGenericRight[T any] struct { left *recursiveGenericLeft[T]; value T }
+func exposePreparedThroughMutualGenericNode(node *recursiveGenericLeft[*Service]) servicePreparedActivation {
+	return node.right.left.right.value.state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through package Service owner", source: canonical + `
+var substitutedService *Service
+func exposePreparedThroughPackageService() servicePreparedActivation {
+	state := substitutedService.state
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through package state owner", source: canonical + `
+var substitutedPrepareState *serviceState
+func exposePreparedThroughPackageState() servicePreparedActivation {
+	state := substitutedPrepareState
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through asserted service state", source: canonical + `
+func exposePreparedThroughAssertedState(value any) servicePreparedActivation {
+	state := value.(*serviceState)
+	return state.prepared
+}
+`, want: [2]bool{true, false}},
+		{name: "prepared activation escapes through named service state alias", source: canonical + `
+type foreignServiceStatePointer = *serviceState
+func exposePreparedThroughNamedState(state foreignServiceStatePointer) servicePreparedActivation { return state.prepared }
+`, want: [2]bool{true, false}},
+		{name: "state owner escapes to global", source: canonical + `
+func (s *Service) escapeStateToGlobal() { globalState = s.state }
+`, want: [2]bool{true, false}},
+		{name: "state owner escapes to helper", source: canonical + `
+func (s *Service) escapeStateToHelper() { helper(s.state) }
+`, want: [2]bool{true, false}},
+		{name: "state owner escapes through return", source: canonical + `
+func (s *Service) escapeStateThroughReturn() *serviceState { return s.state }
+`, want: [2]bool{true, false}},
+		{name: "prepared activation address escapes", source: canonical + `
+func (s *Service) exposePreparedActivation() *servicePreparedActivation { return &s.state.prepared }
+`, want: [2]bool{true, false}},
+		{name: "prepare dispatch switch is statically dead", source: strings.Replace(canonical, "switch packet.Type()", "switch false", 1), want: [2]bool{true, false}},
+		{name: "prepare handler result is ignored", source: strings.Replace(canonical, "handlerErr = s.handlePrepareCommit(ctx, packet)", "_ = s.handlePrepareCommit(ctx, packet)", 1), want: [2]bool{true, false}},
+		{name: "prepare dispatcher rebinds received packet", source: strings.Replace(canonical, "var handlerErr error", "packet = foreignPacket\n        var handlerErr error", 1), want: [2]bool{true, false}},
+		{name: "prepare dispatcher invokes extra receiver helper", source: strings.Replace(canonical, "var handlerErr error", "_ = s.extraPrepareHelper(ctx)\n        var handlerErr error", 1), want: [2]bool{true, false}},
+		{name: "prepare begin sequence follows unconditional return", source: strings.Replace(canonical, "func (s *Service) handlePrepareBegin(ctx context.Context, packet ReceivedPacket) (handlerErr error) {", "func (s *Service) handlePrepareBegin(ctx context.Context, packet ReceivedPacket) (handlerErr error) {\n    return nil", 1), want: [2]bool{true, false}},
+		{name: "prepare commit sequence follows unconditional return", source: strings.Replace(canonical, "func (s *Service) handlePrepareCommit(ctx context.Context, packet ReceivedPacket) (handlerErr error) {", "func (s *Service) handlePrepareCommit(ctx context.Context, packet ReceivedPacket) (handlerErr error) {\n    return nil", 1), want: [2]bool{true, false}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name != "canonical" && test.source == canonical {
+				t.Fatal("fixture mutation did not change canonical source")
+			}
+			files := l8D2ReadinessParseFixturePackage(t, test.source)
+			got := l8D2ReadinessPreparePrerequisites(files)
+			actual := [2]bool{got.capabilityIssuer, got.preparedActivation}
+			if actual != test.want {
+				t.Fatalf("prerequisites = %v, want %v", actual, test.want)
+			}
+		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessZeroPrivateExecGuardSelfTest(t *testing.T) {
+	t.Parallel()
+	canonical := l8D2ReadinessCombinedPrepareExecCanonical()
+	mutateZero := func(old, replacement string) string {
+		zero := l8D2ReadinessFunctionSource(canonical, "*Service", "zeroPrivate")
+		mutated := strings.Replace(zero, old, replacement, 1)
+		if mutated == zero {
+			t.Fatalf("zero-private mutation marker absent: %q", old)
+		}
+		return l8D2ReadinessReplaceFunctionSource(canonical, "*Service", "zeroPrivate", mutated)
+	}
+	for _, test := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "canonical panic safe terminal path", source: canonical, want: true},
+		{name: "typed nil substitute", source: mutateZero("s.core.BeginExec(ctx, stateRequest, nil)", "s.core.BeginExec(ctx, stateRequest, nilView)")},
+		{name: "background context substitute", source: mutateZero("s.core.BeginExec(ctx, stateRequest, nil)", "s.core.BeginExec(context.Background(), stateRequest, nil)")},
+		{name: "global request", source: mutateZero("s.core.BeginExec(ctx, stateRequest, nil)", "s.core.BeginExec(ctx, request, nil)")},
+		{name: "packet cleanup omitted", source: mutateZero("packetErr := destroyServiceReceivedPacket(ctx, packet)", "packetErr := error(nil)")},
+		{name: "panic recovery omitted", source: mutateZero("if recover() != nil", "if false")},
+		{name: "comparison incorrectly calls Core", source: mutateZero("if !comparison {", "if comparison {")},
+		{name: "Core error bypasses terminal reducer", source: mutateZero("return s.finishExecDispatch(ctx, ErrContractDependency)", "return ServiceResult{}, ErrContractDependency")},
+		{name: "success terminates before stdin", source: mutateZero("return s.dispatchStdin(ctx)", "return s.finishExecDispatch(ctx, nil)")},
+		{name: "dispatch take omitted", source: mutateZero("dispatch, dispatchErr := s.takeExecDispatch(arm.Revision())", "dispatch, dispatchErr := serviceExecDispatch{}, error(nil)")},
+		{name: "credit continuation omitted", source: mutateZero("continueErr := s.continueExecDispatch(ctx, dispatch)", "continueErr := error(nil)")},
+		{name: "direct plan cleanup restored", source: mutateZero("execution, coreErr := s.core.BeginExec", "s.state.plan.destroy()\n\t\texecution, coreErr := s.core.BeginExec")},
+		{name: "unlocked execution retention", source: mutateZero("s.state.mu.Lock()\n\t\t\ts.state.execution = execution\n\t\t\ts.state.mu.Unlock()", "s.state.execution = execution")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			files := l8D2ReadinessParseFixturePackage(t, test.source)
+			function := l8D2ReadinessUniqueFunction(files, "*Service", "zeroPrivate")
+			got := function != nil && l8D2ReadinessZeroPrivateExecStable(files, map[*ast.FuncDecl]bool{function: true}) && l8D2ReadinessServiceMethodStateStable(function, nil)
 			if got != test.want {
 				t.Fatalf("zero-private stability = %t, want %t", got, test.want)
 			}
@@ -3061,16 +5777,938 @@ func (s *Service) zeroPrivate(ctx context.Context, packet ReceivedPacket, compar
 	}
 }
 
+func TestL8D2HelperServiceReadinessExecCleanupTopologyRedSelfTest(t *testing.T) {
+	t.Parallel()
+	canonical := l8D2ReadinessCombinedPrepareExecCanonical()
+	mutate := func(receiver, name, old, replacement string) string {
+		function := l8D2ReadinessFunctionSource(canonical, receiver, name)
+		mutated := strings.Replace(function, old, replacement, 1)
+		if mutated == function {
+			t.Fatalf("cleanup mutation marker absent for %s: %q", name, old)
+		}
+		return l8D2ReadinessReplaceFunctionSource(canonical, receiver, name, mutated)
+	}
+	stable := func(source string) bool {
+		files := l8D2ReadinessParseFixturePackage(t, source)
+		prerequisites := l8D2ReadinessPreparePrerequisites(files)
+		analysis := l8D2ReadinessAnalyzeServiceAST(files)
+		return prerequisites.capabilityIssuer && prerequisites.preparedActivation && prerequisites.execDispatch && analysis.construction && analysis.serveOneShot && analysis.privateSequence && analysis.stdinSequence && analysis.zeroPrivateSequence
+	}
+	for _, test := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "canonical terminal reducer topology", source: canonical, want: true},
+		{name: "observed body destroy bypasses panic isolation", source: mutate("*Service", "private", "bodyDestroyErr := destroyServiceObservedBody(ctx, body)", "bodyDestroyErr := body.Destroy(ctx)")},
+		{name: "observed body helper omits recovery", source: mutate("", "destroyServiceObservedBody", "defer func()", "func()")},
+		{name: "receive helper omits panic recovery", source: mutate("*Service", "receiveServicePacket", "defer func()", "func()")},
+		{name: "receive convergence bypasses installed exec reducer", source: mutate("*Service", "finishServiceReceive", "return s.finishExecDispatch(ctx, cause)", "return ServiceResult{}, cause")},
+		{name: "receive convergence omits preparing abort", source: mutate("*Service", "finishServiceReceive", "abortErr := s.abortPreparing(ctx, preparing.authority.transaction, nil)", "abortErr := error(nil)")},
+		{name: "receive convergence omits prepared revoke", source: mutate("*Service", "finishServiceReceive", "revokeErr := s.revokeServicePreparedActivation(ctx, prepared)", "revokeErr := error(nil)")},
+		{name: "continuation receive error bypasses terminal reducer", source: mutate("*Service", "dispatchPrivate", "return s.finishExecDispatch(ctx, receiveErr)", "return ServiceResult{}, receiveErr")},
+		{name: "continuation wrong arm omits packet destruction", source: mutate("*Service", "dispatchStdin", "packetErr := destroyServiceReceivedPacket(ctx, packet)", "packetErr := error(nil)")},
+		{name: "handler result bypasses terminal reducer", source: mutate("*Service", "dispatchPrivate", "return s.finishExecDispatch(ctx, handlerErr)", "return ServiceResult{}, handlerErr")},
+		{name: "installed initial packet cleanup bypasses terminal reducer", source: mutate("*Service", "handleExec", "return s.finishExecDispatch(ctx, cleanupErr)", "return ServiceResult{}, cleanupErr")},
+		{name: "terminal reducer omits transaction and plan close", source: mutate("*Service", "finishExecDispatch", "authorityErr := closeServiceExecAuthority(serviceExecAuthority{plan: plan, transaction: transaction})", "authorityErr := error(nil)")},
+		{name: "terminal reducer omits Core cancellation", source: mutate("*Service", "finishExecDispatch", "cancelErr := cancelServiceExecution(ctx, execution, request.Cleanup())", "cancelErr := error(nil)")},
+		{name: "terminal reducer omits prepared revoke", source: mutate("*Service", "finishExecDispatch", "revokeErr := s.revokeServicePreparedActivation(ctx, activation)", "revokeErr := error(nil)")},
+		{name: "terminal reducer retains transaction slot", source: mutate("*Service", "finishExecDispatch", "s.state.transaction = nil", "_ = s.state.transaction")},
+		{name: "terminal reducer retains correlation slot", source: mutate("*Service", "finishExecDispatch", "s.state.correlation = credentialprotocol.HelperExecTransactionCorrelation{}", "_ = s.state.correlation")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := stable(test.source); got != test.want {
+				t.Fatalf("cleanup topology = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessExecContinuationLifecycleRedSelfTest(t *testing.T) {
+	t.Parallel()
+	canonical := l8D2ReadinessCombinedPrepareExecCanonical()
+	files := l8D2ReadinessParseFixturePackage(t, canonical)
+	handle := l8D2ReadinessUniqueFunction(files, "*Service", "handleExec")
+	privateDispatch := l8D2ReadinessUniqueFunction(files, "*Service", "dispatchPrivate")
+	stdinDispatch := l8D2ReadinessUniqueFunction(files, "*Service", "dispatchStdin")
+	zero := l8D2ReadinessUniqueFunction(files, "*Service", "zeroPrivate")
+	sendOutput := l8D2ReadinessUniqueFunction(files, "*Service", "sendServiceExecOutput")
+	if handle == nil || privateDispatch == nil || stdinDispatch == nil || zero == nil || sendOutput == nil {
+		t.Fatal("canonical Exec lifecycle functions are incomplete")
+		return
+	}
+	for _, required := range []struct {
+		name string
+		body string
+		want []string
+	}{
+		{name: "pre-install packet cleanup", body: l8D2ReadinessFormattedNode(handle.Body), want: []string{"destroyServiceReceivedPacket(ctx, packet)", "authorityCleanupErr", "packetCleanupErr"}},
+		{name: "private continuation", body: l8D2ReadinessFormattedNode(privateDispatch.Body), want: []string{"validateServiceExecPacket(packet, dispatch)", "continueExecDispatch(ctx, dispatch)"}},
+		{name: "interleaved stdin output and EOF", body: l8D2ReadinessFormattedNode(stdinDispatch.Body), want: []string{"for {", "packet.ExecStream()", "packet.ExecCredit()", "validateServiceExecPacket(packet, dispatch)", "snapshot := dispatch.transaction.Snapshot()", "snapshot.StdinEOF", "completeServiceExecOutput(ctx, dispatch, outputLedger)", "continueExecDispatch(ctx, dispatch)"}},
+		{name: "zero-private continuation", body: l8D2ReadinessFormattedNode(zero.Body), want: []string{"takeExecDispatch(arm.Revision())", "continueExecDispatch(ctx, dispatch)"}},
+	} {
+		t.Run(required.name, func(t *testing.T) {
+			for _, marker := range required.want {
+				if !strings.Contains(required.body, marker) {
+					t.Fatalf("canonical %s omits %q", required.name, marker)
+				}
+			}
+		})
+	}
+	if !strings.Contains(canonical, "GrantStdinCredit") || !strings.Contains(canonical, "newExecCreditPacket") || !strings.Contains(canonical, ".transport.Send(ctx, packet)") {
+		t.Fatal("canonical continuation does not grant and transmit stdin credit")
+	}
+	for _, marker := range []string{
+		"if packet.body != nil",
+		"arm.Offset(), arm.Flags() == credentialprotocol.HelperExecStreamFlagEOF",
+		"retainedExecution.WriteStdin(ctx, view, offset, eof)",
+		"runServiceExecOutput(workerCtx, credit, dispatch, outputLedger, coordinator.outputResults)",
+		"execution.GrantOutput(ctx, outputRequest)",
+		"execution.Next(ctx)",
+		"outputLedger.stdoutEOF && outputLedger.stderrEOF",
+	} {
+		if !strings.Contains(canonical, marker) {
+			t.Fatalf("canonical Exec lifecycle omits %q", marker)
+		}
+	}
+	if strings.Contains(l8D2ReadinessFormattedNode(stdinDispatch.Body), "if snapshot.StdinEOF { return s.finishExecDispatch(ctx, nil) }") {
+		t.Fatal("stdin EOF bypasses the bounded Core output/completion drain")
+	}
+	if strings.Contains(l8D2ReadinessFormattedNode(l8D2ReadinessUniqueFunction(files, "*Service", "drainExecOutput").Body), "_ = destroyServiceCoreOutputBody") {
+		t.Fatal("Core output cleanup failure is discarded")
+	}
+	outputTransfer := l8D2ReadinessFormattedNode(sendOutput.Body)
+	preconditionPosition := strings.Index(outputTransfer, "transportContextPrecondition(ctx)")
+	transferPosition := strings.Index(outputTransfer, "owned = false")
+	constructorPosition := strings.Index(outputTransfer, "newExecStreamPacket(ctx")
+	if preconditionPosition < 0 || transferPosition < 0 || constructorPosition < 0 || preconditionPosition > transferPosition || transferPosition > constructorPosition {
+		t.Fatal("Core output body ownership is not transferred after the context precondition and before the panic-capable packet constructor call")
+	}
+	stable := func(source string) bool {
+		candidate := l8D2ReadinessParseFixturePackage(t, source)
+		prerequisites := l8D2ReadinessPreparePrerequisites(candidate)
+		analysis := l8D2ReadinessAnalyzeServiceAST(candidate)
+		return prerequisites.capabilityIssuer && prerequisites.preparedActivation && prerequisites.execDispatch && analysis.construction && analysis.serveOneShot && analysis.privateSequence && analysis.stdinSequence && analysis.zeroPrivateSequence
+	}
+	for _, test := range []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "stdin offset and EOF are substituted", old: "arm.Offset(), arm.Flags() == credentialprotocol.HelperExecStreamFlagEOF", new: "uint64(0), false"},
+		{name: "continuation header validation is omitted", old: "if validationErr := s.validateServiceExecPacket(packet, dispatch); validationErr != nil", new: "if validationErr := error(nil); validationErr != nil"},
+		{name: "continuation request ID comparison is omitted", old: "header.RequestID != dispatch.correlation.RequestID()", new: "false"},
+		{name: "continuation identity comparison is omitted", old: "subtle.ConstantTimeCompare(header.GuestCredentialIdentityDigest[:], identity[:]) != 1", new: "false"},
+		{name: "continuation boot nonce comparison is omitted", old: "subtle.ConstantTimeCompare(header.BootNonce[:], activation.bootNonce[:]) != 1", new: "false"},
+		{name: "output credit cannot interleave", old: "credit, creditOK := packet.ExecCredit()", new: "credit, creditOK := ReceivedExecCredit{}, false"},
+		{name: "output credit bypasses output drain", old: "result.err = s.drainExecOutput(ctx, arm, dispatch, ledger)", new: "result.err = nil"},
+		{name: "output grant is omitted", old: "if grantErr := execution.GrantOutput(ctx, outputRequest); grantErr != nil", new: "if grantErr := error(nil); grantErr != nil"},
+		{name: "only stdout EOF is awaited", old: "outputLedger.stdoutEOF && outputLedger.stderrEOF", new: "outputLedger.stdoutEOF"},
+		{name: "complete event correlation is bypassed", old: "complete, completeOK := event.Complete()", new: "complete, completeOK := CoreExecResult{}, true"},
+		{name: "completed execution remains cancellable", old: "s.state.execution = nil", new: "_ = s.state.execution"},
+		{name: "unexpected output cleanup result is discarded", old: "return destroyUnexpectedServiceCoreOutput(ctx, event, nextErr)", new: "return nextErr"},
+		{name: "output digest sink widens its exact hasher field", old: "hasher hash.Hash", new: "hasher interface { Write([]byte) (int, error); Sum([]byte) []byte }"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := strings.Replace(canonical, test.old, test.new, 1)
+			if mutated == canonical {
+				t.Fatalf("mutation anchor %q is absent", test.old)
+			}
+			if stable(mutated) {
+				t.Fatal("mutated Exec lifecycle remains accepted")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "Core output request constructor has an alternate caller",
+			source: canonical + `
+func alternateCoreOutputRequestCaller() {
+	_, _ = NewCoreOutputRequest(request.correlation.requestID, request.correlation.identityDigest, request.correlation.revision, request.generations.job, request.execution, credentialprotocol.HelperExecStreamStdout, 0, 1)
+}`,
+		},
+		{
+			name: "output stream packet constructor has an alternate caller",
+			source: canonical + `
+func alternateExecStreamPacketCaller(header credentialprotocol.HelperPacketHeader) {
+	_, _ = newExecStreamPacket(ctx, header, 1, credentialprotocol.HelperExecStreamStdout, credentialprotocol.HelperExecStreamFlagsNone, 0, 1, sha256.Sum256([]byte{1}), body)
+}`,
+		},
+		{
+			name: "response packet constructor has an alternate caller",
+			source: canonical + `
+func alternateResponsePacketCaller(header credentialprotocol.HelperPacketHeader) {
+	_, _ = newResponsePacket(ctx, header, credentialprotocol.HelperResponseBody{})
+}`,
+		},
+		{
+			name: "stdin credit packet constructor has an alternate caller",
+			source: canonical + `
+func alternateExecCreditPacketCaller(header credentialprotocol.HelperPacketHeader) {
+	_, _ = newExecCreditPacket(ctx, header, credentialprotocol.HelperExecCreditBody{})
+}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if stable(test.source) {
+				t.Fatal("alternate output authority caller remains accepted")
+			}
+		})
+	}
+	aliasedHash := strings.ReplaceAll(canonical, "hash.Hash", "digesthash.Hash")
+	aliasedHash = strings.Replace(aliasedHash, `"hash"`, `digesthash "hash"`, 1)
+	if !stable(aliasedHash) {
+		t.Fatal("exact hash import alias is rejected")
+	}
+	harmlessMethod := canonical + `
+type unrelatedOutputOwner struct{}
+func (unrelatedOutputOwner) NewCoreOutputRequest() {}
+func harmlessOutputMethodCall(owner unrelatedOutputOwner) { owner.NewCoreOutputRequest() }
+`
+	if !stable(harmlessMethod) {
+		t.Fatal("unrelated receiver method named like the output constructor is rejected")
+	}
+}
+
+func TestL8D2HelperServiceReadinessExecConcurrentContinuationRedSelfTest(t *testing.T) {
+	t.Parallel()
+	canonical := l8D2ReadinessCombinedPrepareExecCanonical()
+	files := l8D2ReadinessParseFixturePackage(t, canonical)
+	dispatch := l8D2ReadinessUniqueFunction(files, "*Service", "dispatchStdin")
+	if dispatch == nil {
+		t.Fatal("canonical Exec continuation coordinator is absent")
+		return
+	}
+	body := l8D2ReadinessFormattedNode(dispatch.Body)
+	for _, required := range []string{
+		"context.WithCancel(ctx)",
+		"startServiceExecReceive",
+		"runServiceExecStdin",
+		"runServiceExecOutput",
+		"finishServiceExecCoordinator",
+		"select {",
+	} {
+		if !strings.Contains(body, required) {
+			t.Errorf("bounded Exec continuation coordinator omits %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"s.stdin(ctx, packet.body",
+		"s.drainExecOutput(ctx, packet",
+		"s.transport.Receive(ctx, receiveRequest)",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("sole Receive coordinator performs blocking work inline: %q", forbidden)
+		}
+	}
+	for _, identity := range []struct{ receiver, name string }{
+		{receiver: "*Service", name: "receiveServiceExecContinuation"},
+		{receiver: "*Service", name: "runServiceExecStdin"},
+		{receiver: "*Service", name: "runServiceExecOutput"},
+		{receiver: "*Service", name: "stopServiceExecCoordinator"},
+	} {
+		if l8D2ReadinessUniqueFunction(files, identity.receiver, identity.name) == nil {
+			t.Errorf("bounded Exec continuation helper %s is absent", identity.name)
+		}
+	}
+	if !l8D2ReadinessStructHasExactExecFieldTypes(files, "serviceState", map[string]string{"sendMu": "sync.Mutex"}) {
+		t.Error("bounded Exec continuation omits the dedicated outbound send mutex")
+	}
+	for _, identity := range []struct{ receiver, name string }{
+		{receiver: "*Service", name: "continueExecDispatch"},
+		{receiver: "*Service", name: "sendServiceExecOutput"},
+		{receiver: "*Service", name: "sendServiceExecResponse"},
+	} {
+		function := l8D2ReadinessUniqueFunction(files, identity.receiver, identity.name)
+		if function == nil {
+			t.Errorf("serialized outbound owner %s is absent", identity.name)
+			continue
+		}
+		body := l8D2ReadinessFormattedNode(function.Body)
+		lock := strings.Index(body, "s.state.sendMu.Lock()")
+		unlock := strings.Index(body, "defer s.state.sendMu.Unlock()")
+		reservation := strings.Index(body, "s.state.nextSendSequence++")
+		if reservation < 0 {
+			reservation = strings.Index(body, "s.newServiceExecSendHeader")
+		}
+		send := strings.Index(body, "s.transport.Send(ctx, packet)")
+		if lock < 0 || unlock < lock || reservation < lock || send < reservation {
+			t.Errorf("serialized outbound owner %s does not hold sendMu across reservation, construction, and Send", identity.name)
+		}
+	}
+	header := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceExecSendHeader")
+	if header == nil {
+		t.Error("exact Exec send-header owner is absent")
+	} else {
+		body := l8D2ReadinessFormattedNode(header.Body)
+		if !strings.Contains(body, "packetType == credentialprotocol.PacketTypeResponse && !s.state.dispatchTaken") {
+			t.Error("output header validation still depends on the transient dispatch latch")
+		}
+	}
+	if strings.Contains(body, "outputLedger != nil && outputLedger.stdoutEOF && outputLedger.stderrEOF && !coordinator.outputPending") {
+		t.Error("stdin completion reads the output ledger before the output worker happens-before edge")
+	}
+	for _, required := range []string{
+		"!coordinator.outputPending && outputLedger != nil && outputLedger.stdoutEOF && outputLedger.stderrEOF",
+		"if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.ComparisonOnly != dispatch.comparison {",
+		"if !coordinator.stdinPending && snapshot.StdinEOF && outputLedger.stdoutEOF && outputLedger.stderrEOF && !coordinator.creditQueued {",
+		"unexpectedPacket := false",
+		"unexpectedPacket = true",
+		"if unexpectedPacket { return ErrContractTransition }",
+		"if coordinator.creditQueued {",
+	} {
+		if !strings.Contains(canonical, required) {
+			t.Errorf("bounded Exec continuation omits %q", required)
+		}
+	}
+	observer := l8D2ReadinessUniqueFunction(files, "", "observeServiceCoreOutput")
+	if observer == nil {
+		t.Error("Core output observer is absent")
+	} else {
+		body := l8D2ReadinessFormattedNode(observer.Body)
+		if recovery, length := strings.Index(body, "defer func()"), strings.Index(body, "body.Len()"); recovery < 0 || length < 0 || recovery > length {
+			t.Error("Core output body Len executes before panic recovery")
+		}
+	}
+	stable := func(source string) bool {
+		candidate := l8D2ReadinessParseFixturePackage(t, source)
+		prerequisites := l8D2ReadinessPreparePrerequisites(candidate)
+		analysis := l8D2ReadinessAnalyzeServiceAST(candidate)
+		return prerequisites.capabilityIssuer && prerequisites.preparedActivation && prerequisites.execDispatch && analysis.construction && analysis.serveOneShot && analysis.privateSequence && analysis.stdinSequence && analysis.zeroPrivateSequence
+	}
+	for _, test := range []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "outbound send mutex field is omitted", old: "    sendMu sync.Mutex\n", new: ""},
+		{name: "output header requires the transient dispatch latch", old: "packetType == credentialprotocol.PacketTypeResponse && !s.state.dispatchTaken", new: "!s.state.dispatchTaken"},
+		{name: "output worker rejects a concurrently taken continuation latch", old: "s.state.correlation != dispatch.correlation || !s.state.prepared.active || !configuredDependency(s.state.execution)", new: "s.state.correlation != dispatch.correlation || s.state.dispatchTaken || !s.state.prepared.active || !configuredDependency(s.state.execution)"},
+		{name: "EOF ledger is read before output worker completion", old: "!coordinator.outputPending && outputLedger != nil && outputLedger.stdoutEOF && outputLedger.stderrEOF", new: "outputLedger != nil && outputLedger.stdoutEOF && outputLedger.stderrEOF && !coordinator.outputPending"},
+		{name: "joined continuation packet remains a normal terminal", old: "unexpectedPacket = true", new: "unexpectedPacket = false"},
+		{name: "a second queued output credit is accepted", old: "if coordinator.creditQueued {", new: "if false {"},
+		{name: "output success rejects an overlapping stdin proposal", old: "if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.ComparisonOnly != dispatch.comparison {", new: "if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.PendingPayload || snapshot.ComparisonOnly != dispatch.comparison {"},
+		{name: "output completes before the stdin worker joins", old: "if !coordinator.stdinPending && snapshot.StdinEOF && outputLedger.stdoutEOF && outputLedger.stderrEOF && !coordinator.creditQueued {", new: "if snapshot.StdinEOF && outputLedger.stdoutEOF && outputLedger.stderrEOF && !coordinator.creditQueued {"},
+		{name: "stdin runs inline", old: "go s.runServiceExecStdin(workerCtx, packet, arm, dispatch, coordinator.stdinResults)", new: "s.runServiceExecStdin(workerCtx, packet, arm, dispatch, coordinator.stdinResults)"},
+		{name: "output Next runs inline", old: "go s.runServiceExecOutput(workerCtx, credit, dispatch, outputLedger, coordinator.outputResults)", new: "s.runServiceExecOutput(workerCtx, credit, dispatch, outputLedger, coordinator.outputResults)"},
+		{name: "parallel output worker is unbounded", old: "if coordinator.outputPending {", new: "if false {"},
+		{name: "receive pending gate omitted", old: "if !coordinator.receivePending && !(coordinator.outputPending && coordinator.creditQueued) {", new: "if true {"},
+		{name: "terminal cancellation omitted", old: "coordinator.cancel()", new: "_ = coordinator.cancel"},
+		{name: "pending receive is not joined", old: "if coordinator.receivePending {", new: "if false {"},
+		{name: "pending stdin is not joined", old: "if coordinator.stdinPending {", new: "if false {"},
+		{name: "pending output is not joined", old: "if coordinator.outputPending {", new: "if false {"},
+		{name: "receive panic recovery omitted", old: "if recover() != nil { result.err = ErrContractOwnership }; results <- result", new: "results <- result"},
+		{name: "terminal path bypasses coordinator join", old: "return s.finishServiceExecCoordinator(ctx, coordinator, received.err)", new: "return s.finishExecDispatch(ctx, received.err)"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := strings.Replace(canonical, test.old, test.new, 1)
+			if mutated == canonical {
+				t.Fatalf("coordinator mutation marker %q is absent", test.old)
+			}
+			if stable(mutated) {
+				t.Fatal("mutated bounded coordinator remains accepted")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name     string
+		receiver string
+		function string
+		old      string
+		new      string
+	}{
+		{name: "outbound send serialization is omitted", receiver: "*Service", function: "sendServiceExecOutput", old: "s.state.sendMu.Lock()", new: "_ = s.state.sendMu"},
+		{name: "output observer recovery is installed after Len", function: "observeServiceCoreOutput", old: "defer func()", new: "func()"},
+		{name: "response send panic recovery is omitted", receiver: "*Service", function: "sendServiceExecResponse", old: "defer func()", new: "func()"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			function := l8D2ReadinessFunctionSource(canonical, test.receiver, test.function)
+			mutatedFunction := strings.Replace(function, test.old, test.new, 1)
+			if mutatedFunction == function {
+				t.Fatalf("coordinator function mutation marker %q is absent", test.old)
+			}
+			mutated := l8D2ReadinessReplaceFunctionSource(canonical, test.receiver, test.function, mutatedFunction)
+			if stable(mutated) {
+				t.Fatal("mutated bounded coordinator remains accepted")
+			}
+		})
+	}
+}
+
+func TestL8D2HelperServiceReadinessExecMetadataCleanupRuntimeSelfTest(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	backing := filepath.Join(directory, "exec_metadata_cleanup_test.go")
+	source := `package credentialhelper
+import (
+    "context"
+    "testing"
+    "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+)
+func TestL8D2ExecMetadataPacketLeavesNoReceivedOwner(t *testing.T) {
+    ctx := context.Background()
+    decoded := credentialprotocol.HelperExecBody{Revision: 2, ExecBindingID: "exec-1", Plan: transportExecPlan()}
+    encoded, err := credentialprotocol.EncodeHelperExecBody(decoded)
+    if err != nil { t.Fatal(err) }
+    request, err := NewReceiveRequest(2, uint32(len(encoded)), 0)
+    if err != nil { t.Fatal(err) }
+    plan, err := NewExecPlanCapability(decoded.Plan)
+    if err != nil { t.Fatal(err) }
+    body := newTransportTestBody(encoded, credentialprotocol.MaxHelperPacketBodyBytes)
+    packet, err := NewReceivedExecPacket(ctx, request, transportJobHeader(credentialprotocol.PacketTypeExec, 2, uint32(len(encoded))), transportCredential(t), 1, body, 0, decoded, plan)
+    if err != nil { t.Fatal(err) }
+    if packet.body != nil || packet.right != nil { t.Fatal("metadata Exec packet retained a received body or right") }
+    assertBodyDestroyedAndWiped(t, body)
+    arm, ok := packet.Exec()
+    if !ok { t.Fatal("Exec arm is absent") }
+    arm.transactionSeed.Close()
+    arm.plan.destroy()
+}
+`
+	if err := os.WriteFile(backing, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "internal", "sandboxruntime", "microvm", "guestagent", "credentialhelper", "zz_l8_d2_exec_metadata_cleanup_test.go")
+	overlayPath := filepath.Join(directory, "overlay.json")
+	overlay, err := json.Marshal(map[string]any{"Replace": map[string]string{target: backing}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overlayPath, overlay, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "test", "-overlay", overlayPath, "-run", "^TestL8D2ExecMetadataPacketLeavesNoReceivedOwner$", "-count=1", "./internal/sandboxruntime/microvm/guestagent/credentialhelper")
+	command.Dir = root
+	command.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("metadata Exec cleanup runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestL8D2HelperServiceReadinessExecInterleavedOutputRuntimeSelfTest(t *testing.T) {
+	canonical := l8D2ReadinessCombinedPrepareExecCanonical()
+	for _, marker := range []string{
+		"workerCtx, cancel := context.WithCancel(ctx)",
+		"go s.runServiceExecStdin(workerCtx",
+		"go s.runServiceExecOutput(workerCtx",
+		"return s.finishServiceExecCoordinator(ctx, coordinator",
+	} {
+		if !strings.Contains(canonical, marker) {
+			t.Fatalf("runtime-tested coordinator marker %q is absent", marker)
+		}
+	}
+	directory := t.TempDir()
+	module := []byte("module l8d2coordinatorfixture\n\ngo 1.25\n")
+	source := []byte(`package coordinator
+import (
+	"context"
+	"errors"
+	"io"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+type packetKind uint8
+const ( stdinPacket packetKind = 1; outputCredit packetKind = 2 )
+type packet struct{ kind packetKind }
+type transport struct{ packets chan packet }
+func (value *transport) Receive(ctx context.Context) (packet, error) { select { case packet := <-value.packets: return packet,nil; case <-ctx.Done(): return packet{},ctx.Err() } }
+type core struct { stdin io.Writer; stdout io.Reader; nextActive atomic.Int32; nextMaximum atomic.Int32 }
+func (value *core) WriteStdin() error { _,err := value.stdin.Write([]byte{2}); return err }
+func (value *core) Next() error { active := value.nextActive.Add(1); defer value.nextActive.Add(-1); for { maximum := value.nextMaximum.Load(); if active <= maximum || value.nextMaximum.CompareAndSwap(maximum,active) { break } }; buffer := make([]byte,1); _,err := io.ReadFull(value.stdout,buffer); return err }
+type ServiceOptions struct { Transport *transport; Core *core }
+type Service struct { transport *transport; core *core }
+func NewService(options ServiceOptions) (*Service,error) { if options.Transport == nil || options.Core == nil { return nil,errors.New("dependency") }; return &Service{transport:options.Transport,core:options.Core},nil }
+type receiveResult struct { packet packet; err error }
+func (service *Service) receiveServiceExecContinuation(ctx context.Context, results chan<- receiveResult) { packet,err := service.transport.Receive(ctx); results <- receiveResult{packet:packet,err:err} }
+func (service *Service) runServiceExecStdin(results chan<- error) { results <- service.core.WriteStdin() }
+func (service *Service) runServiceExecOutput(results chan<- error) { results <- service.core.Next() }
+func (service *Service) Serve(ctx context.Context) error {
+	workerCtx,cancel := context.WithCancel(ctx)
+	defer cancel()
+	receiveResults := make(chan receiveResult,1)
+	stdinResults := make(chan error,1)
+	outputResults := make(chan error,1)
+	received,completed := 0,0
+	receivePending,stdinPending,outputPending := false,false,false
+	for completed < 2 {
+		if !receivePending && received < 2 { receivePending = true; go service.receiveServiceExecContinuation(workerCtx,receiveResults) }
+		select {
+		case result := <-receiveResults:
+			receivePending = false
+			if result.err != nil { return result.err }
+			received++
+			switch result.packet.kind {
+			case stdinPacket:
+				if stdinPending { return errors.New("parallel stdin") }
+				stdinPending = true
+				go service.runServiceExecStdin(stdinResults)
+			case outputCredit:
+				if outputPending { return errors.New("parallel Next") }
+				outputPending = true
+				go service.runServiceExecOutput(outputResults)
+			default: return errors.New("packet")
+			}
+		case err := <-stdinResults:
+			stdinPending = false
+			if err != nil { return err }
+			completed++
+		case err := <-outputResults:
+			outputPending = false
+			if err != nil { return err }
+			completed++
+		}
+	}
+	cancel()
+	if receivePending { <-receiveResults }
+	if stdinPending { if err := <-stdinResults; err != nil { return err } }
+	if outputPending { if err := <-outputResults; err != nil { return err } }
+	return nil
+}
+func TestNewServiceServeOverlapsStdinAndOutput(t *testing.T) {
+	for _, stdinFirst := range []bool{true,false} {
+		name := "credit-first"; if stdinFirst { name = "stdin-first" }
+		t.Run(name,func(t *testing.T) {
+			stdinReader,stdinWriter := io.Pipe(); stdoutReader,stdoutWriter := io.Pipe()
+			defer stdinReader.Close(); defer stdinWriter.Close(); defer stdoutReader.Close(); defer stdoutWriter.Close()
+			childDone := make(chan error,1)
+			go func() {
+				buffer := make([]byte,1)
+				if stdinFirst { if _,err := stdoutWriter.Write([]byte{1}); err != nil { childDone<-err; return }; _,err := io.ReadFull(stdinReader,buffer); childDone<-err; return }
+				if _,err := io.ReadFull(stdinReader,buffer); err != nil { childDone<-err; return }; _,err := stdoutWriter.Write([]byte{1}); childDone<-err
+			}()
+			packets := make(chan packet,2)
+			if stdinFirst { packets<-packet{kind:stdinPacket}; packets<-packet{kind:outputCredit} } else { packets<-packet{kind:outputCredit}; packets<-packet{kind:stdinPacket} }
+			core := &core{stdin:stdinWriter,stdout:stdoutReader}
+			service,err := NewService(ServiceOptions{Transport:&transport{packets:packets},Core:core}); if err != nil { t.Fatal(err) }
+			serveDone := make(chan error,1); go func(){ serveDone<-service.Serve(context.Background()) }()
+			select { case err := <-serveDone: if err != nil { t.Fatal(err) }; case <-time.After(2*time.Second): t.Fatal("NewService/Serve coordinator deadlocked") }
+			select { case err := <-childDone: if err != nil { t.Fatal(err) }; case <-time.After(time.Second): t.Fatal("child did not complete") }
+			if core.nextMaximum.Load() != 1 { t.Fatalf("parallel Next maximum = %d, want 1",core.nextMaximum.Load()) }
+		})
+	}
+}
+`)
+	if err := os.WriteFile(filepath.Join(directory, "go.mod"), module, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "coordinator_test.go"), source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "test", "-run", "^TestNewServiceServeOverlapsStdinAndOutput$", "-count=1", ".")
+	command.Dir = directory
+	command.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("NewService/Serve interleaving runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestL8D2HelperServiceReadinessCausalExecObservableRedSelfTest(t *testing.T) {
+	t.Parallel()
+	base := `package fixture
+import (
+	"context"
+	"testing"
+	"github.com/jywlabs/hal/internal/credentialmemory"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+)
+type testMutex struct{}; func (testMutex) Lock(){}; func (testMutex) Unlock(){}
+type transportTestBodyState struct{ mu testMutex; destroyed bool; borrows int; borrowContexts []context.Context; region []byte; length int }
+type transportTestBody struct{ state *transportTestBodyState }
+type transportTestView struct{ value []byte; state *transportTestBodyState }
+func (body transportTestBody) Borrow(ctx context.Context, callback func(credentialmemory.BorrowedView) error) error { body.state.mu.Lock(); defer body.state.mu.Unlock(); if body.state.destroyed { return ErrContractDestroyed }; body.state.borrows++; body.state.borrowContexts = append(body.state.borrowContexts, ctx); return callback(transportTestView{value: body.state.region[:body.state.length], state: body.state}) }
+type serviceExecTestTransport struct{ scenario *serviceExecTestScenario; service *Service; core *serviceExecTestCore; commitCalls int; wipeCalls int }
+type serviceExecTestBody struct{ transportTestBody; transport *serviceExecTestTransport; countOutcome bool }
+func (body *serviceExecTestBody) Borrow(ctx context.Context, callback func(credentialmemory.BorrowedView) error) error {
+	if !body.countOutcome { return body.transportTestBody.Borrow(ctx, callback) }
+	body.transport.service.state.mu.Lock()
+	transaction := body.transport.service.state.transaction
+	body.transport.service.state.mu.Unlock()
+	if transaction == nil || body.transport.core == nil { return ErrContractTransition }
+	body.transport.scenario.transaction = transaction
+	before := transaction.Snapshot()
+	beginExecCalls := body.transport.core.beginExecCalls
+	writeStdinCalls := body.transport.core.writeStdinCalls
+	borrowErr := body.transportTestBody.Borrow(ctx, callback)
+	after := transaction.Snapshot()
+	beginExecDelta := body.transport.core.beginExecCalls - beginExecCalls
+	writeStdinDelta := body.transport.core.writeStdinCalls - writeStdinCalls
+	privateCommit := !before.Terminal && !before.Completed && !before.PrivateComplete && !before.PendingPayload && !before.StdinCreditOutstanding && !before.StdinEOF && !after.Terminal && !after.Completed && after.PrivateComplete && !after.PendingPayload && !after.StdinCreditOutstanding && !after.StdinEOF && after.ComparisonOnly == before.ComparisonOnly && after.StdinOffset == before.StdinOffset && after.StdinBytes == before.StdinBytes && after.StdinRecordCount == before.StdinRecordCount && after.StdinSHA256 == before.StdinSHA256 && after.StdinTranscriptSHA256 == before.StdinTranscriptSHA256
+	stdinCommit := !before.Terminal && !before.Completed && before.PrivateComplete && !before.PendingPayload && before.StdinCreditOutstanding && !before.StdinEOF && !after.Terminal && !after.Completed && after.PrivateComplete && !after.PendingPayload && !after.StdinCreditOutstanding && after.ComparisonOnly == before.ComparisonOnly && after.StdinOffset >= before.StdinOffset && after.StdinBytes >= before.StdinBytes && after.StdinRecordCount == before.StdinRecordCount+1
+	privateCore := before.ComparisonOnly && beginExecDelta == 0 && writeStdinDelta == 0 || !before.ComparisonOnly && beginExecDelta == 1 && writeStdinDelta == 0
+	stdinCore := before.ComparisonOnly && beginExecDelta == 0 && writeStdinDelta == 0 || !before.ComparisonOnly && beginExecDelta == 0 && writeStdinDelta == 1
+	if borrowErr == nil && (privateCommit && privateCore || stdinCommit && stdinCore) { body.transport.commitCalls++ }
+	privateWipe := !before.PrivateComplete && beginExecDelta == 1 && writeStdinDelta == 0
+	stdinWipe := before.PrivateComplete && beginExecDelta == 0 && writeStdinDelta == 1
+	if borrowErr != nil && !before.Terminal && after.Terminal && (privateWipe || stdinWipe) { body.transport.wipeCalls++ }
+	return borrowErr
+}
+type execPlanCapabilityState struct{ mu testMutex; destroyed bool }
+type serviceExecTestScenario struct{ plan *execPlanCapabilityState; transaction *credentialprotocol.HelperExecTransaction; mode serviceExecTestMode }
+type serviceExecTestMode uint8; const serviceExecPrivatePanic serviceExecTestMode = 3
+type serviceExecTestCore struct{ scenario *serviceExecTestScenario; beginExecCalls int; writeStdinCalls int; planDestroyCalls int; wipeCalls int; revokeCalls int }
+type CoreCleanupCapability struct{}; type CoreRevokeRequest struct{ cleanup CoreCleanupCapability }; type CoreCleanupResult struct{}; type CoreCleanupCategory uint8; const CoreCleanupComplete CoreCleanupCategory = 1
+func NewCoreCleanupResult(CoreCleanupCapability,CoreCleanupCategory,bool,bool)(CoreCleanupResult,error){return CoreCleanupResult{},nil}
+func (core *serviceExecTestCore) Revoke(_ context.Context, request CoreRevokeRequest) (CoreCleanupResult, error) { core.revokeCalls++; core.scenario.plan.mu.Lock(); planDestroyed := core.scenario.plan.destroyed; core.scenario.plan.mu.Unlock(); if planDestroyed { core.planDestroyCalls++ }; transactionTerminated := core.scenario.transaction != nil && core.scenario.transaction.Snapshot().Terminal; if core.scenario.mode == serviceExecPrivatePanic && transactionTerminated && core.beginExecCalls == 1 { core.wipeCalls++ }; return NewCoreCleanupResult(request.cleanup, CoreCleanupComplete, true, true) }
+type ServiceOptions struct{ Transport *serviceExecTestTransport }
+var ErrContractDestroyed error
+func TestRequired(t *testing.T) {
+	scenario := &serviceExecTestScenario{}
+	core := &serviceExecTestCore{scenario: scenario}
+	transport := &serviceExecTestTransport{scenario: scenario, core: core}
+	options := ServiceOptions{Transport: transport}
+	service, err := NewService(options)
+	if err != nil { t.Fatal(err) }
+	transport.service = service
+	_, serveErr := service.Serve(context.Background())
+	if serveErr != nil { t.Fatal(serveErr) }
+	if transport.commitCalls != 1 { t.Fatal("commit") }
+}`
+	spec := l8D2ReadinessServiceTestRequirement{
+		exercise: []string{"NewService", "Serve"}, evidence: []string{"commitCalls"},
+		dependencyFields: map[string][]string{"commitCalls": {"Transport"}},
+	}
+	mutate := func(receiver, name, old, replacement string) string {
+		function := l8D2ReadinessFunctionSource(base, receiver, name)
+		mutated := strings.Replace(function, old, replacement, 1)
+		if mutated == function {
+			t.Fatalf("causal provider mutation marker absent for %s: %q", name, old)
+		}
+		return l8D2ReadinessReplaceFunctionSource(base, receiver, name, mutated)
+	}
+	for _, test := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "exact causal providers", source: base, want: true},
+		{name: "counter without callback", source: mutate("transportTestBody", "Borrow", "return callback(transportTestView{value: body.state.region[:body.state.length], state: body.state})", "return nil")},
+		{name: "outcome without exact borrowed callback result", source: mutate("*serviceExecTestBody", "Borrow", "borrowErr := body.transportTestBody.Borrow(ctx, callback)", "borrowErr := error(nil)")},
+		{name: "commit counter without real transaction transition", source: mutate("*serviceExecTestBody", "Borrow", "after := transaction.Snapshot()", "after := before; after.PrivateComplete = true")},
+		{name: "wipe counter without exact Core delta", source: mutate("*serviceExecTestBody", "Borrow", "beginExecDelta := body.transport.core.beginExecCalls - beginExecCalls", "beginExecDelta := 1")},
+		{name: "foreign transaction snapshot", source: mutate("*serviceExecTestBody", "Borrow", "transaction := body.transport.service.state.transaction", "transaction := foreignTransaction")},
+		{name: "test omits exact Service observer binding", source: strings.Replace(base, "\n\ttransport.service = service", "", 1)},
+		{name: "plan counter without destroyed state", source: mutate("*serviceExecTestCore", "Revoke", "planDestroyed := core.scenario.plan.destroyed", "planDestroyed := true")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file, err := parser.ParseFile(token.NewFileSet(), "fixture_test.go", test.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := l8D2ReadinessExactServiceBehavioralTest(file, "TestRequired", spec); got != test.want {
+				t.Fatalf("causal observable = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func l8D2ReadinessCanonicalPrivateServiceFixture() string {
-	return l8D2ReadinessServiceFixture(`func (s *Service) Serve(ctx context.Context) (ServiceResult, error) { return s.dispatchPrivate(ctx) }
-func (s *Service) dispatchPrivate(ctx context.Context) (ServiceResult, error) { packet, receiveErr := s.transport.Receive(ctx, request); if receiveErr != nil { return ServiceResult{}, receiveErr }; arm, ok := packet.ExecPrivate(); if !ok { return ServiceResult{}, errInvalid }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.private(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison) }
+	return l8D2ReadinessServiceFixture(`func (s *Service) receiveServicePacket(ctx context.Context, request any) (packet ReceivedPacket, receiveErr error) { defer func() { if recover() != nil { packet = ReceivedPacket{}; receiveErr = ErrContractOwnership } }(); return s.transport.Receive(ctx, request) }
+func (s *Service) Serve(ctx context.Context) (ServiceResult, error) { return s.dispatchPrivate(ctx) }
+func (s *Service) dispatchPrivate(ctx context.Context) (ServiceResult, error) { receiveRequest, requestErr := s.newServiceReceiveRequest(); if requestErr != nil { return s.finishExecDispatch(ctx, requestErr) }; packet, receiveErr := s.receiveServicePacket(ctx, receiveRequest); if receiveErr != nil { return s.finishExecDispatch(ctx, receiveErr) }; arm, ok := packet.ExecPrivate(); if !ok { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, errInvalid) }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, dispatchErr) }; _, handlerErr := s.private(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison); if handlerErr != nil { return s.finishExecDispatch(ctx, handlerErr) }; if continueErr := s.continueExecDispatch(ctx, dispatch); continueErr != nil { return s.finishExecDispatch(ctx, continueErr) }; return s.dispatchStdin(ctx) }
 func (s *Service) private(ctx context.Context, body ReceivedBodyCapability, tx *credentialprotocol.HelperExecTransaction, obs Observation, comparison bool) (ServiceResult, error) { _ = body.Borrow(ctx, func(view BorrowedView) error { proposal, proposalErr := tx.ProposeObservedPrivate(obs); if proposalErr != nil { return proposalErr }; if comparison { return proposal.Commit() }; execution, coreErr := s.core.BeginExec(ctx, request, view); if coreErr != nil || !configuredDependency(execution) { _ = proposal.Wipe(); return errInvalid }; s.state.execution = execution; return proposal.Commit() }); return ServiceResult{}, nil }`)
 }
 
 func l8D2ReadinessCanonicalStdinServiceFixture() string {
 	return l8D2ReadinessServiceFixture(`func (s *Service) Serve(ctx context.Context) (ServiceResult, error) { return s.dispatchStdin(ctx) }
-func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult, error) { packet, receiveErr := s.transport.Receive(ctx, request); if receiveErr != nil { return ServiceResult{}, receiveErr }; arm, ok := packet.ExecStream(); if !ok { return ServiceResult{}, errInvalid }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { return ServiceResult{}, dispatchErr }; return s.stdin(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison) }
-func (s *Service) stdin(ctx context.Context, body ReceivedBodyCapability, tx *credentialprotocol.HelperExecTransaction, obs Observation, comparison bool) (ServiceResult, error) { _ = body.Borrow(ctx, func(view BorrowedView) error { proposal, proposalErr := tx.ProposeObservedStdin(obs, view); if proposalErr != nil { return proposalErr }; if comparison { return proposal.Commit() }; coreErr := s.state.execution.WriteStdin(ctx, view, 0, false); if coreErr != nil { _ = proposal.Wipe(); return coreErr }; return proposal.Commit() }); return ServiceResult{}, nil }`)
+func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult, error) { for { receiveRequest, requestErr := s.newServiceReceiveRequest(); if requestErr != nil { return s.finishExecDispatch(ctx, requestErr) }; packet, receiveErr := s.transport.Receive(ctx, receiveRequest); if receiveErr != nil { return s.finishExecDispatch(ctx, receiveErr) }; arm, ok := packet.ExecStream(); if !ok { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, errInvalid) }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, dispatchErr) }; _, handlerErr := s.stdin(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, arm.Offset(), arm.Flags() == credentialprotocol.HelperExecStreamFlagEOF, dispatch.comparison); if handlerErr != nil { return s.finishExecDispatch(ctx, handlerErr) }; snapshot := dispatch.transaction.Snapshot(); if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.PendingPayload || snapshot.StdinCreditOutstanding || snapshot.ComparisonOnly != dispatch.comparison { return s.finishExecDispatch(ctx, ErrContractTransition) }; if snapshot.StdinEOF { if drainErr := s.drainExecOutput(ctx, dispatch); drainErr != nil { return s.finishExecDispatch(ctx, drainErr) }; return s.finishExecDispatch(ctx, nil) }; if continueErr := s.continueExecDispatch(ctx, dispatch); continueErr != nil { return s.finishExecDispatch(ctx, continueErr) } } }
+func (s *Service) stdin(ctx context.Context, body ReceivedBodyCapability, tx *credentialprotocol.HelperExecTransaction, obs Observation, offset uint64, eof bool, comparison bool) (ServiceResult, error) { _ = body.Borrow(ctx, func(view BorrowedView) error { proposal, proposalErr := tx.ProposeObservedStdin(obs, view); if proposalErr != nil { return proposalErr }; if comparison { return proposal.Commit() }; coreErr := s.state.execution.WriteStdin(ctx, view, offset, eof); if coreErr != nil { _ = proposal.Wipe(); return coreErr }; return proposal.Commit() }); return ServiceResult{}, nil }`)
+}
+
+func l8D2ReadinessExecContinuationCanonical() string {
+	source := `package fixture
+import ("context"; "crypto/sha256"; "crypto/subtle"; "hash"; credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol")
+func (s *Service) dispatchPrivate(ctx context.Context) (ServiceResult, error) { receiveRequest, requestErr := s.newServiceReceiveRequest(); if requestErr != nil { return s.finishExecDispatch(ctx, requestErr) }; packet, receiveErr := s.receiveServicePacket(ctx, receiveRequest); if receiveErr != nil { return s.finishExecDispatch(ctx, receiveErr) }; arm, ok := packet.ExecPrivate(); if !ok { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, errInvalid) }; dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, dispatchErr) }; if validationErr := s.validateServiceExecPacket(packet, dispatch); validationErr != nil { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, validationErr) }; _, handlerErr := s.private(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, dispatch.comparison); if handlerErr != nil { return s.finishExecDispatch(ctx, handlerErr) }; if continueErr := s.continueExecDispatch(ctx, dispatch); continueErr != nil { return s.finishExecDispatch(ctx, continueErr) }; return s.dispatchStdin(ctx) }
+func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult, error) { var outputLedger *serviceExecOutputLedger; for { receiveRequest, requestErr := s.newServiceReceiveRequest(); if requestErr != nil { return s.finishExecDispatch(ctx, requestErr) }; packet, receiveErr := s.transport.Receive(ctx, receiveRequest); if receiveErr != nil { return s.finishExecDispatch(ctx, receiveErr) }; arm, streamOK := packet.ExecStream(); if streamOK { dispatch, dispatchErr := s.takeExecDispatch(arm.Revision()); if dispatchErr != nil { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, dispatchErr) }; if validationErr := s.validateServiceExecPacket(packet, dispatch); validationErr != nil { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, validationErr) }; _, handlerErr := s.stdin(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, arm.Offset(), arm.Flags() == credentialprotocol.HelperExecStreamFlagEOF, dispatch.comparison); if handlerErr != nil { return s.finishExecDispatch(ctx, handlerErr) }; snapshot := dispatch.transaction.Snapshot(); if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.PendingPayload || snapshot.StdinCreditOutstanding || snapshot.ComparisonOnly != dispatch.comparison { return s.finishExecDispatch(ctx, ErrContractTransition) }; if snapshot.StdinEOF { if dispatch.comparison { response, replayErr := dispatch.transaction.ReplayResult(); if replayErr != nil { return s.finishExecDispatch(ctx, replayErr) }; if responseErr := s.sendServiceExecResponse(ctx, dispatch, response); responseErr != nil { return s.finishExecDispatch(ctx, responseErr) }; return s.finishExecDispatch(ctx, nil) }; if outputLedger != nil && outputLedger.stdoutEOF && outputLedger.stderrEOF { if completeErr := s.completeServiceExecOutput(ctx, dispatch, outputLedger); completeErr != nil { return s.finishExecDispatch(ctx, completeErr) }; return s.finishExecDispatch(ctx, nil) }; if releaseErr := s.releaseExecDispatch(dispatch); releaseErr != nil { return s.finishExecDispatch(ctx, releaseErr) }; continue }; if continueErr := s.continueExecDispatch(ctx, dispatch); continueErr != nil { return s.finishExecDispatch(ctx, continueErr) }; continue }; credit, creditOK := packet.ExecCredit(); if !creditOK { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, errInvalid) }; dispatch, dispatchErr := s.takeExecDispatch(credit.Revision()); if dispatchErr != nil { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, dispatchErr) }; if validationErr := s.validateServiceExecPacket(packet, dispatch); validationErr != nil { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, validationErr) }; if dispatch.comparison { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, ErrContractTransition) }; if outputLedger == nil { var ledgerErr error; outputLedger, ledgerErr = s.newServiceExecOutputLedger(dispatch); if ledgerErr != nil { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return s.finishExecDispatch(ctx, packetErr) }; return s.finishExecDispatch(ctx, ledgerErr) } }; if drainErr := s.drainExecOutput(ctx, packet, credit, dispatch, outputLedger); drainErr != nil { return s.finishExecDispatch(ctx, drainErr) }; snapshot := dispatch.transaction.Snapshot(); if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.PendingPayload || snapshot.ComparisonOnly != dispatch.comparison { return s.finishExecDispatch(ctx, ErrContractTransition) }; if snapshot.StdinEOF && outputLedger.stdoutEOF && outputLedger.stderrEOF { if completeErr := s.completeServiceExecOutput(ctx, dispatch, outputLedger); completeErr != nil { return s.finishExecDispatch(ctx, completeErr) }; return s.finishExecDispatch(ctx, nil) }; if releaseErr := s.releaseExecDispatch(dispatch); releaseErr != nil { return s.finishExecDispatch(ctx, releaseErr) } } }
+func (s *Service) validateServiceExecPacket(packet ReceivedPacket, dispatch serviceExecDispatch) error { header := packet.Header(); s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.dispatchTaken || !s.state.prepared.active { s.state.mu.Unlock(); return ErrContractTransition }; activation := s.state.prepared; s.state.mu.Unlock(); identity := dispatch.correlation.IdentityDigest(); if header.RequestID != dispatch.correlation.RequestID() || subtle.ConstantTimeCompare(header.GuestCredentialIdentityDigest[:], identity[:]) != 1 || subtle.ConstantTimeCompare(header.BootNonce[:], activation.bootNonce[:]) != 1 { return ErrContractCorrelation }; return nil }
+func (s *Service) newServiceExecOutputLedger(dispatch serviceExecDispatch) (*serviceExecOutputLedger,error) { if dispatch.comparison { return nil,ErrContractTransition }; s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.dispatchTaken || !s.state.prepared.active || !configuredDependency(s.state.execution) { s.state.mu.Unlock(); return nil,ErrContractTransition }; request := s.state.request; plan := s.state.plan; s.state.mu.Unlock(); stdoutMaximum,stderrMaximum,limitsErr := serviceExecOutputLimits(plan); if limitsErr != nil { return nil,limitsErr }; return &serviceExecOutputLedger{request: request,stdoutMaximum: stdoutMaximum,stderrMaximum: stderrMaximum,stdoutHasher: sha256.New(),stderrHasher: sha256.New()},nil }
+func (s *Service) releaseExecDispatch(dispatch serviceExecDispatch) error { s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.dispatchTaken || !s.state.prepared.active { s.state.mu.Unlock(); return ErrContractTransition }; s.state.dispatchTaken = false; s.state.mu.Unlock(); return nil }
+func destroyUnexpectedServiceCoreOutput(ctx context.Context, event CoreExecutionEvent, cause error) error { if _,body,ok := event.Output(); ok && configuredDependency(body) { if destroyErr := destroyServiceCoreOutputBody(ctx, body); destroyErr != nil { return ErrContractOwnership } }; return cause }
+func (s *Service) drainExecOutput(ctx context.Context, packet ReceivedPacket, arm ReceivedExecCredit, dispatch serviceExecDispatch, ledger *serviceExecOutputLedger) (drainErr error) { defer func() { if recover() != nil { drainErr = ErrContractOwnership } }(); if ledger == nil || dispatch.comparison || arm.Revision() != dispatch.correlation.Revision() { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return ErrContractOwnership }; return ErrContractTransition }; s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.dispatchTaken || !s.state.prepared.active || !configuredDependency(s.state.execution) { s.state.mu.Unlock(); packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return ErrContractOwnership }; return ErrContractTransition }; execution := s.state.execution; s.state.mu.Unlock(); var offset *uint64; var eof *bool; var truncated *bool; var maximum uint64; var hasher hash.Hash; switch arm.StreamKind() { case credentialprotocol.HelperExecStreamStdout: offset,eof,truncated,maximum,hasher = &ledger.stdoutOffset,&ledger.stdoutEOF,&ledger.stdoutTruncated,ledger.stdoutMaximum,ledger.stdoutHasher; case credentialprotocol.HelperExecStreamStderr: offset,eof,truncated,maximum,hasher = &ledger.stderrOffset,&ledger.stderrEOF,&ledger.stderrTruncated,ledger.stderrMaximum,ledger.stderrHasher; default: packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return ErrContractOwnership }; return ErrContractInvalidArgument }; if *eof || arm.NextOffset() != *offset || *offset > maximum { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return ErrContractOwnership }; return ErrContractCorrelation }; if packetErr := destroyServiceReceivedPacket(ctx, packet); packetErr != nil { return ErrContractOwnership }; capacity := uint32(1); if remaining := maximum-*offset; remaining > 0 { capacity = credentialprotocol.MaxHelperExecStreamPayloadBytes; if remaining < uint64(capacity) { capacity = uint32(remaining) } }; request := ledger.request; outputRequest,outputErr := NewCoreOutputRequest(request.correlation.requestID,request.correlation.identityDigest,request.correlation.revision,request.generations.job,request.execution,arm.StreamKind(),arm.NextOffset(),capacity); if outputErr != nil { return outputErr }; if grantErr := execution.GrantOutput(ctx, outputRequest); grantErr != nil { return grantErr }; event,nextErr := execution.Next(ctx); if nextErr != nil { return destroyUnexpectedServiceCoreOutput(ctx,event,nextErr) }; output,outputBody,outputOK := event.Output(); if !outputOK || !configuredDependency(outputBody) || output.Execution() != outputRequest.Execution() || output.Kind() != outputRequest.Kind() || output.Offset() != outputRequest.Offset() || output.ByteCount() > outputRequest.Capacity() || output.ByteCount() > uint32(maximum-*offset) || output.SHA256() != outputBody.SHA256() { return destroyUnexpectedServiceCoreOutput(ctx,event,ErrContractCorrelation) }; if observeErr := observeServiceCoreOutput(ctx,outputBody,hasher,int(56+output.ByteCount())); observeErr != nil { if destroyErr := destroyServiceCoreOutputBody(ctx,outputBody); destroyErr != nil { return ErrContractOwnership }; return observeErr }; if sendErr := s.sendServiceExecOutput(ctx,dispatch,output,outputBody); sendErr != nil { return sendErr }; *offset += uint64(output.ByteCount()); if output.EOF() { *eof = true; *truncated = output.Truncated(); if *truncated && *offset != maximum { return ErrContractCorrelation } }; return nil }
+func (s *Service) completeServiceExecOutput(ctx context.Context, dispatch serviceExecDispatch, ledger *serviceExecOutputLedger) (completeErr error) { defer func() { if recover() != nil { completeErr = ErrContractOwnership } }(); snapshot := dispatch.transaction.Snapshot(); if ledger == nil || dispatch.comparison || snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.PendingPayload || snapshot.StdinCreditOutstanding || !snapshot.StdinEOF || snapshot.ComparisonOnly || !ledger.stdoutEOF || !ledger.stderrEOF { return ErrContractTransition }; s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.dispatchTaken || !configuredDependency(s.state.execution) { s.state.mu.Unlock(); return ErrContractTransition }; execution := s.state.execution; s.state.mu.Unlock(); event,nextErr := execution.Next(ctx); if nextErr != nil { return destroyUnexpectedServiceCoreOutput(ctx,event,nextErr) }; if _,_,outputOK := event.Output(); outputOK { return destroyUnexpectedServiceCoreOutput(ctx,event,ErrContractTransition) }; complete,completeOK := event.Complete(); stdoutSHA256,stdoutErr := serviceExecDigest(ledger.stdoutHasher); stderrSHA256,stderrErr := serviceExecDigest(ledger.stderrHasher); if !completeOK || stdoutErr != nil || stderrErr != nil || complete.Execution() != ledger.request.execution || complete.StdinBytes() != snapshot.StdinBytes || complete.StdinSHA256() != snapshot.StdinSHA256 || complete.StdinTranscriptSHA256() != snapshot.StdinTranscriptSHA256 || complete.StdoutBytes() != ledger.stdoutOffset || complete.StdoutSHA256() != stdoutSHA256 || complete.StdoutTruncated() != ledger.stdoutTruncated || complete.StderrBytes() != ledger.stderrOffset || complete.StderrSHA256() != stderrSHA256 || complete.StderrTruncated() != ledger.stderrTruncated || complete.ExecTransactionSHA256() != snapshot.ExecTransactionSHA256 { return ErrContractCorrelation }; s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.dispatchTaken || !configuredDependency(s.state.execution) { s.state.mu.Unlock(); return ErrContractTransition }; s.state.execution = nil; s.state.mu.Unlock(); response := credentialprotocol.HelperResponseBody{RequestType: credentialprotocol.PacketTypeExec,Disposition: credentialprotocol.ResponseDispositionAccepted,Revision: dispatch.correlation.Revision(),FailureCode: credentialprotocol.FailureCodeNone,Exec: &credentialprotocol.HelperExecResponseResult{ExitCode: complete.ExitCode(),StdinBytes: complete.StdinBytes(),StdinSHA256: complete.StdinSHA256(),StdoutBytes: complete.StdoutBytes(),StdoutSHA256: complete.StdoutSHA256(),StdoutTruncated: complete.StdoutTruncated(),StderrBytes: complete.StderrBytes(),StderrSHA256: complete.StderrSHA256(),StderrTruncated: complete.StderrTruncated(),ExecTransactionSHA256: complete.ExecTransactionSHA256()}}; if _,transactionErr := dispatch.transaction.Complete(response); transactionErr != nil { return transactionErr }; return s.sendServiceExecResponse(ctx,dispatch,response) }
+`
+	source = strings.Replace(source, `if !outputOK || !configuredDependency(outputBody) || output.Execution() != outputRequest.Execution() || output.Kind() != outputRequest.Kind() || output.Offset() != outputRequest.Offset() || output.ByteCount() > outputRequest.Capacity() || output.ByteCount() > uint32(maximum-*offset) || output.SHA256() != outputBody.SHA256() { return destroyUnexpectedServiceCoreOutput(ctx,event,ErrContractCorrelation) }`, `if !outputOK || !configuredDependency(outputBody) || output.Execution() != outputRequest.Execution() || output.Kind() != outputRequest.Kind() || output.Offset() != outputRequest.Offset() || output.ByteCount() > outputRequest.Capacity() || output.ByteCount() > uint32(maximum-*offset) { return destroyUnexpectedServiceCoreOutput(ctx,event,ErrContractCorrelation) }; emptySHA256 := sha256.Sum256(nil); nextOffset := *offset+uint64(output.ByteCount()); if output.EOF() && (output.ByteCount() != 0 || output.SHA256() != emptySHA256 || output.Truncated() && nextOffset != maximum) || !output.EOF() && (output.ByteCount() == 0 || output.Truncated()) { return destroyUnexpectedServiceCoreOutput(ctx,event,ErrContractCorrelation) }`, 1)
+	coordinator := l8D2ReadinessExecCoordinatorCanonical()
+	for _, name := range []string{"dispatchStdin", "drainExecOutput"} {
+		source = l8D2ReadinessReplaceFunctionSource(source, "*Service", name, l8D2ReadinessFunctionSource(coordinator, "*Service", name))
+	}
+	source += "\n" + strings.TrimPrefix(l8D2ReadinessExecCoordinatorSupportCanonical(), "package fixture\n")
+	return source
+}
+
+func l8D2ReadinessExecCoordinatorCanonical() string {
+	return `package fixture
+func (s *Service) dispatchStdin(ctx context.Context) (ServiceResult, error) {
+	workerCtx, cancel := context.WithCancel(ctx)
+	coordinator := &serviceExecCoordinator{
+		cancel: cancel,
+		receiveResults: make(chan serviceExecReceiveResult, 1),
+		stdinResults: make(chan serviceExecWorkResult, 1),
+		outputResults: make(chan serviceExecWorkResult, 1),
+	}
+	var outputLedger *serviceExecOutputLedger
+	for {
+		if !coordinator.receivePending && !(coordinator.outputPending && coordinator.creditQueued) {
+			if startErr := s.startServiceExecReceive(workerCtx, coordinator); startErr != nil {
+				return s.finishServiceExecCoordinator(ctx, coordinator, startErr)
+			}
+		}
+		select {
+		case received := <-coordinator.receiveResults:
+			coordinator.receivePending = false
+			if received.err != nil {
+				return s.finishServiceExecCoordinator(ctx, coordinator, received.err)
+			}
+			packet := received.packet
+			arm, streamOK := packet.ExecStream()
+			if streamOK {
+				if coordinator.stdinPending {
+					packetErr := destroyServiceReceivedPacket(ctx, packet)
+					if packetErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, packetErr) }
+					return s.finishServiceExecCoordinator(ctx, coordinator, ErrContractTransition)
+				}
+				dispatch, dispatchErr := s.takeExecDispatch(arm.Revision())
+				if dispatchErr != nil {
+					packetErr := destroyServiceReceivedPacket(ctx, packet)
+					if packetErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, packetErr) }
+					return s.finishServiceExecCoordinator(ctx, coordinator, dispatchErr)
+				}
+				if validationErr := s.validateServiceExecPacket(packet, dispatch); validationErr != nil {
+					packetErr := destroyServiceReceivedPacket(ctx, packet)
+					if packetErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, packetErr) }
+					return s.finishServiceExecCoordinator(ctx, coordinator, validationErr)
+				}
+				if releaseErr := s.releaseExecDispatch(dispatch); releaseErr != nil {
+					packetErr := destroyServiceReceivedPacket(ctx, packet)
+					if packetErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, packetErr) }
+					return s.finishServiceExecCoordinator(ctx, coordinator, releaseErr)
+				}
+				coordinator.stdinPending = true
+				go s.runServiceExecStdin(workerCtx, packet, arm, dispatch, coordinator.stdinResults)
+				continue
+			}
+			credit, creditOK := packet.ExecCredit()
+			if !creditOK {
+				packetErr := destroyServiceReceivedPacket(ctx, packet)
+				if packetErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, packetErr) }
+				return s.finishServiceExecCoordinator(ctx, coordinator, ErrContractInvalidArgument)
+			}
+			dispatch, dispatchErr := s.takeExecDispatch(credit.Revision())
+			if dispatchErr != nil {
+				packetErr := destroyServiceReceivedPacket(ctx, packet)
+				if packetErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, packetErr) }
+				return s.finishServiceExecCoordinator(ctx, coordinator, dispatchErr)
+			}
+			if validationErr := s.validateServiceExecPacket(packet, dispatch); validationErr != nil {
+				packetErr := destroyServiceReceivedPacket(ctx, packet)
+				if packetErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, packetErr) }
+				return s.finishServiceExecCoordinator(ctx, coordinator, validationErr)
+			}
+			if dispatch.comparison {
+				packetErr := destroyServiceReceivedPacket(ctx, packet)
+				if packetErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, packetErr) }
+				return s.finishServiceExecCoordinator(ctx, coordinator, ErrContractTransition)
+			}
+			if outputLedger == nil {
+				var ledgerErr error
+				outputLedger, ledgerErr = s.newServiceExecOutputLedger(dispatch)
+				if ledgerErr != nil {
+					packetErr := destroyServiceReceivedPacket(ctx, packet)
+					if packetErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, packetErr) }
+					return s.finishServiceExecCoordinator(ctx, coordinator, ledgerErr)
+				}
+			}
+			if packetErr := destroyServiceReceivedPacket(ctx, packet); packetErr != nil {
+				return s.finishServiceExecCoordinator(ctx, coordinator, packetErr)
+			}
+			if releaseErr := s.releaseExecDispatch(dispatch); releaseErr != nil {
+				return s.finishServiceExecCoordinator(ctx, coordinator, releaseErr)
+			}
+			if coordinator.outputPending {
+				if coordinator.creditQueued {
+					return s.finishServiceExecCoordinator(ctx, coordinator, ErrContractTransition)
+				}
+				coordinator.queuedCredit = credit
+				coordinator.queuedDispatch = dispatch
+				coordinator.creditQueued = true
+				continue
+			}
+			coordinator.outputPending = true
+			go s.runServiceExecOutput(workerCtx, credit, dispatch, outputLedger, coordinator.outputResults)
+		case completed := <-coordinator.stdinResults:
+			coordinator.stdinPending = false
+			if completed.err != nil {
+				return s.finishServiceExecCoordinator(ctx, coordinator, completed.err)
+			}
+			dispatch, dispatchErr := s.takeExecDispatch(completed.dispatch.correlation.Revision())
+			if dispatchErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, dispatchErr) }
+			snapshot := dispatch.transaction.Snapshot()
+			if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.PendingPayload || snapshot.StdinCreditOutstanding || snapshot.ComparisonOnly != dispatch.comparison {
+				return s.finishServiceExecCoordinator(ctx, coordinator, ErrContractTransition)
+			}
+			if snapshot.StdinEOF {
+				if dispatch.comparison {
+					response, replayErr := dispatch.transaction.ReplayResult()
+					if replayErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, replayErr) }
+					if responseErr := s.sendServiceExecResponse(ctx, dispatch, response); responseErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, responseErr) }
+					return s.finishServiceExecCoordinator(ctx, coordinator, nil)
+				}
+				if !coordinator.outputPending && outputLedger != nil && outputLedger.stdoutEOF && outputLedger.stderrEOF && !coordinator.creditQueued {
+					if completeErr := s.completeServiceExecOutput(ctx, dispatch, outputLedger); completeErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, completeErr) }
+					return s.finishServiceExecCoordinator(ctx, coordinator, nil)
+				}
+				if releaseErr := s.releaseExecDispatch(dispatch); releaseErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, releaseErr) }
+				continue
+			}
+			if continueErr := s.continueExecDispatch(ctx, dispatch); continueErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, continueErr) }
+		case completed := <-coordinator.outputResults:
+			coordinator.outputPending = false
+			if completed.err != nil {
+				return s.finishServiceExecCoordinator(ctx, coordinator, completed.err)
+			}
+			dispatch, dispatchErr := s.takeExecDispatch(completed.dispatch.correlation.Revision())
+			if dispatchErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, dispatchErr) }
+			snapshot := dispatch.transaction.Snapshot()
+			if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.ComparisonOnly != dispatch.comparison {
+				return s.finishServiceExecCoordinator(ctx, coordinator, ErrContractTransition)
+			}
+			if !coordinator.stdinPending && snapshot.StdinEOF && outputLedger.stdoutEOF && outputLedger.stderrEOF && !coordinator.creditQueued {
+				if completeErr := s.completeServiceExecOutput(ctx, dispatch, outputLedger); completeErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, completeErr) }
+				return s.finishServiceExecCoordinator(ctx, coordinator, nil)
+			}
+			if releaseErr := s.releaseExecDispatch(dispatch); releaseErr != nil { return s.finishServiceExecCoordinator(ctx, coordinator, releaseErr) }
+			if coordinator.creditQueued {
+				credit := coordinator.queuedCredit
+				queuedDispatch := coordinator.queuedDispatch
+				coordinator.creditQueued = false
+				coordinator.outputPending = true
+				go s.runServiceExecOutput(workerCtx, credit, queuedDispatch, outputLedger, coordinator.outputResults)
+			}
+		}
+	}
+}
+func (s *Service) drainExecOutput(ctx context.Context, arm ReceivedExecCredit, dispatch serviceExecDispatch, ledger *serviceExecOutputLedger) (drainErr error) {
+	defer func() { if recover() != nil { drainErr = ErrContractOwnership } }()
+	if ledger == nil || dispatch.comparison || arm.Revision() != dispatch.correlation.Revision() { return ErrContractTransition }
+	s.state.mu.Lock()
+	if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.prepared.active || !configuredDependency(s.state.execution) { s.state.mu.Unlock(); return ErrContractTransition }
+	execution := s.state.execution
+	s.state.mu.Unlock()
+	var offset *uint64
+	var eof *bool
+	var truncated *bool
+	var maximum uint64
+	var hasher hash.Hash
+	switch arm.StreamKind() {
+	case credentialprotocol.HelperExecStreamStdout: offset,eof,truncated,maximum,hasher = &ledger.stdoutOffset,&ledger.stdoutEOF,&ledger.stdoutTruncated,ledger.stdoutMaximum,ledger.stdoutHasher
+	case credentialprotocol.HelperExecStreamStderr: offset,eof,truncated,maximum,hasher = &ledger.stderrOffset,&ledger.stderrEOF,&ledger.stderrTruncated,ledger.stderrMaximum,ledger.stderrHasher
+	default: return ErrContractInvalidArgument
+	}
+	if *eof || arm.NextOffset() != *offset || *offset > maximum { return ErrContractCorrelation }
+	capacity := uint32(1)
+	if remaining := maximum-*offset; remaining > 0 { capacity = credentialprotocol.MaxHelperExecStreamPayloadBytes; if remaining < uint64(capacity) { capacity = uint32(remaining) } }
+	request := ledger.request
+	outputRequest,outputErr := NewCoreOutputRequest(request.correlation.requestID,request.correlation.identityDigest,request.correlation.revision,request.generations.job,request.execution,arm.StreamKind(),arm.NextOffset(),capacity)
+	if outputErr != nil { return outputErr }
+	if grantErr := execution.GrantOutput(ctx, outputRequest); grantErr != nil { return grantErr }
+	event,nextErr := execution.Next(ctx)
+	if nextErr != nil { return destroyUnexpectedServiceCoreOutput(ctx,event,nextErr) }
+	output,outputBody,outputOK := event.Output()
+	if !outputOK || !configuredDependency(outputBody) || output.Execution() != outputRequest.Execution() || output.Kind() != outputRequest.Kind() || output.Offset() != outputRequest.Offset() || output.ByteCount() > outputRequest.Capacity() || output.ByteCount() > uint32(maximum-*offset) { return destroyUnexpectedServiceCoreOutput(ctx,event,ErrContractCorrelation) }
+	emptySHA256 := sha256.Sum256(nil)
+	nextOffset := *offset+uint64(output.ByteCount())
+	if output.EOF() && (output.ByteCount() != 0 || output.SHA256() != emptySHA256 || output.Truncated() && nextOffset != maximum) || !output.EOF() && (output.ByteCount() == 0 || output.Truncated()) { return destroyUnexpectedServiceCoreOutput(ctx,event,ErrContractCorrelation) }
+	if observeErr := observeServiceCoreOutput(ctx,outputBody,hasher,int(56+output.ByteCount())); observeErr != nil { if destroyErr := destroyServiceCoreOutputBody(ctx,outputBody); destroyErr != nil { return ErrContractOwnership }; return observeErr }
+	if sendErr := s.sendServiceExecOutput(ctx,dispatch,output,outputBody); sendErr != nil { return sendErr }
+	*offset += uint64(output.ByteCount())
+	if output.EOF() { *eof = true; *truncated = output.Truncated() }
+	return nil
+}`
+}
+
+func l8D2ReadinessExecCoordinatorSupportCanonical() string {
+	return `package fixture
+type serviceExecReceiveResult struct { packet ReceivedPacket; err error }
+type serviceExecWorkResult struct { dispatch serviceExecDispatch; err error }
+type serviceExecCoordinator struct {
+	cancel context.CancelFunc
+	receiveResults chan serviceExecReceiveResult
+	stdinResults chan serviceExecWorkResult
+	outputResults chan serviceExecWorkResult
+	receivePending bool
+	stdinPending bool
+	outputPending bool
+	creditQueued bool
+	queuedCredit ReceivedExecCredit
+	queuedDispatch serviceExecDispatch
+}
+func (s *Service) startServiceExecReceive(ctx context.Context, coordinator *serviceExecCoordinator) (startErr error) {
+	defer func() { if recover() != nil { startErr = ErrContractOwnership } }()
+	if coordinator == nil || coordinator.receivePending { return ErrContractTransition }
+	receiveRequest, requestErr := s.newServiceReceiveRequest()
+	if requestErr != nil { return requestErr }
+	coordinator.receivePending = true
+	go s.receiveServiceExecContinuation(ctx, receiveRequest, coordinator.receiveResults)
+	return nil
+}
+func (s *Service) receiveServiceExecContinuation(ctx context.Context, request ReceiveRequest, results chan<- serviceExecReceiveResult) {
+	result := serviceExecReceiveResult{}
+	defer func() { if recover() != nil { result.err = ErrContractOwnership }; results <- result }()
+	result.packet, result.err = s.transport.Receive(ctx, request)
+}
+func (s *Service) runServiceExecStdin(ctx context.Context, packet ReceivedPacket, arm ReceivedExecStream, dispatch serviceExecDispatch, results chan<- serviceExecWorkResult) {
+	result := serviceExecWorkResult{dispatch: dispatch}
+	defer func() { if recover() != nil { result.err = ErrContractOwnership }; results <- result }()
+	_, result.err = s.stdin(ctx, packet.body, dispatch.transaction, dispatch.correlation, arm.observation, arm.Offset(), arm.Flags() == credentialprotocol.HelperExecStreamFlagEOF, dispatch.comparison)
+}
+func (s *Service) runServiceExecOutput(ctx context.Context, arm ReceivedExecCredit, dispatch serviceExecDispatch, ledger *serviceExecOutputLedger, results chan<- serviceExecWorkResult) {
+	result := serviceExecWorkResult{dispatch: dispatch}
+	defer func() { if recover() != nil { result.err = ErrContractOwnership }; results <- result }()
+	result.err = s.drainExecOutput(ctx, arm, dispatch, ledger)
+}
+func (s *Service) stopServiceExecCoordinator(ctx context.Context, coordinator *serviceExecCoordinator) (stopErr error) {
+	defer func() { if recover() != nil { stopErr = ErrContractOwnership } }()
+	if coordinator == nil || !configuredDependency(coordinator.cancel) { return ErrContractOwnership }
+	coordinator.cancel()
+	ownershipFailed := false
+	unexpectedPacket := false
+	if coordinator.receivePending {
+		received := <-coordinator.receiveResults
+		coordinator.receivePending = false
+		if received.err == nil {
+			unexpectedPacket = true
+			if packetErr := destroyServiceReceivedPacket(ctx, received.packet); packetErr != nil { ownershipFailed = true }
+		} else if received.err == ErrContractOwnership { ownershipFailed = true }
+	}
+	if coordinator.stdinPending {
+		completed := <-coordinator.stdinResults
+		coordinator.stdinPending = false
+		if completed.err == ErrContractOwnership { ownershipFailed = true }
+	}
+	if coordinator.outputPending {
+		completed := <-coordinator.outputResults
+		coordinator.outputPending = false
+		if completed.err == ErrContractOwnership { ownershipFailed = true }
+	}
+	coordinator.creditQueued = false
+	if ownershipFailed { return ErrContractOwnership }
+	if unexpectedPacket { return ErrContractTransition }
+	return nil
+}
+func (s *Service) finishServiceExecCoordinator(ctx context.Context, coordinator *serviceExecCoordinator, cause error) (ServiceResult, error) {
+	if stopErr := s.stopServiceExecCoordinator(ctx, coordinator); stopErr != nil { cause = ErrContractOwnership }
+	return s.finishExecDispatch(ctx, cause)
+}`
 }
 
 func l8D2ReadinessServiceFixture(declarations string) string {
@@ -3104,19 +6742,36 @@ func l8D2ReadinessServiceFixture(declarations string) string {
 		declarations = declarations[:start] + transform(declarations[start:end]) + declarations[end:]
 	}
 	decorateHandler("private", func(handler string) string {
-		handler = strings.ReplaceAll(handler, "(ServiceResult, error) { borrowErr := body.Borrow", "(serviceResult ServiceResult, serviceErr error) { s.state.mu.Lock(); coreRequest := s.state.request; corePlan := s.state.plan; s.state.mu.Unlock(); var pending Proposal; defer func() { if recovered := recover(); recovered != nil { if pending != nil { pending.Wipe() }; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership }; bodyDestroyErr := body.Destroy(ctx); corePlan.destroy(); if bodyDestroyErr != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }(); borrowErr := body.Borrow")
+		handler = strings.ReplaceAll(handler, "(ServiceResult, error) { borrowErr := body.Borrow", "(serviceResult ServiceResult, serviceErr error) { s.state.mu.Lock(); coreRequest := s.state.request; s.state.mu.Unlock(); var pending *credentialprotocol.HelperExecPayloadProposal; defer func() { if recovered := recover(); recovered != nil { if pending != nil { pending.Wipe() }; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership }; bodyDestroyErr := destroyServiceObservedBody(ctx, body); if bodyDestroyErr != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }(); borrowErr := body.Borrow")
 		handler = strings.ReplaceAll(handler, "s.core.BeginExec(ctx, request, view)", "s.core.BeginExec(ctx, coreRequest, view)")
 		return strings.ReplaceAll(handler, "if proposalErr != nil { return proposalErr }; if comparison", "if proposalErr != nil { return proposalErr }; pending = proposal; if comparison")
 	})
 	decorateHandler("stdin", func(handler string) string {
-		handler = strings.ReplaceAll(handler, "(ServiceResult, error) { borrowErr := body.Borrow", "(serviceResult ServiceResult, serviceErr error) { var pending Proposal; defer func() { if recovered := recover(); recovered != nil { if pending != nil { pending.Wipe() }; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership }; bodyDestroyErr := body.Destroy(ctx); if bodyDestroyErr != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }(); borrowErr := body.Borrow")
+		handler = strings.ReplaceAll(handler, "(ServiceResult, error) { borrowErr := body.Borrow", "(serviceResult ServiceResult, serviceErr error) { var pending *credentialprotocol.HelperExecPayloadProposal; defer func() { if recovered := recover(); recovered != nil { if pending != nil { pending.Wipe() }; serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership }; bodyDestroyErr := destroyServiceObservedBody(ctx, body); if bodyDestroyErr != nil { serviceResult, _ = newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); serviceErr = ErrContractOwnership } }(); borrowErr := body.Borrow")
 		return strings.ReplaceAll(handler, "if proposalErr != nil { return proposalErr }; if comparison", "if proposalErr != nil { return proposalErr }; pending = proposal; if comparison")
 	})
 	declarations = strings.ReplaceAll(declarations, "s.state.execution = execution", "s.state.mu.Lock(); s.state.execution = execution; s.state.mu.Unlock()")
 	declarations = strings.ReplaceAll(declarations, "coreErr := s.state.execution.WriteStdin", "s.state.mu.Lock(); retainedExecution := s.state.execution; s.state.mu.Unlock(); coreErr := retainedExecution.WriteStdin")
 	return `package fixture
-import ("context"; "sync"; credentialmemory "github.com/jywlabs/hal/internal/credentialmemory"; credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol")
-type Core interface{ BeginExec(context.Context, any, credentialmemory.BorrowedView) (CoreExecution, error) }; type CoreExecution interface{ WriteStdin(context.Context, credentialmemory.BorrowedView, uint64, bool) error }; type ExecPlanCapability struct{}; func (ExecPlanCapability) destroy(){}; type Transport interface{ Receive(context.Context, any) (ReceivedPacket, error) }; type Policy interface{}; type ExtensionHost interface{}; type ServiceRuntime interface{}; type ReceivedBodyCapability interface{ Borrow(context.Context, func(credentialmemory.BorrowedView) error) error; Destroy(context.Context) error }; type Proposal interface{ Commit() error; Wipe() error }; type Observation struct{}; type ReceivedExecPrivate struct{ observation credentialprotocol.HelperExecPrivateObservation }; func (ReceivedExecPrivate) Revision() uint64{return 1}; type ReceivedExecStream struct{ observation credentialprotocol.HelperExecStreamObservation }; func (ReceivedExecStream) Revision() uint64{return 1}; type ReceivedPacket struct{ body ReceivedBodyCapability }; func (ReceivedPacket) ExecPrivate()(ReceivedExecPrivate,bool){return ReceivedExecPrivate{},true}; func (ReceivedPacket) ExecStream()(ReceivedExecStream,bool){return ReceivedExecStream{},true}; type serviceExecDispatch struct{ transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool }; type descriptor struct{}; type extensionEntry struct{ descriptor descriptor; factory any }; type ExtensionRegistry struct{ entries []extensionEntry }; type ServiceOptions struct{ Core Core; Transport Transport; Policy Policy; Extensions *ExtensionRegistry; Host ExtensionHost; Runtime ServiceRuntime }; type serviceState struct{ mu sync.Mutex; serveCalled bool; execution CoreExecution; request any; plan ExecPlanCapability }; type Service struct{ core Core; transport Transport; policy Policy; extensions []extensionEntry; host ExtensionHost; runtime ServiceRuntime; state *serviceState }; func (s *Service) takeExecDispatch(uint64)(serviceExecDispatch,error){return serviceExecDispatch{},nil}; type ServiceDisposition uint8; const (ServiceClosed ServiceDisposition = 1; ServiceStopVMRequired ServiceDisposition = 2); type ServiceResult struct{ disposition ServiceDisposition; closeReason credentialprotocol.CloseReason }; func ValidateServiceDisposition(ServiceDisposition) error{return nil}; func newServiceResult(disposition ServiceDisposition, closeReason credentialprotocol.CloseReason)(ServiceResult,error){ if ValidateServiceDisposition(disposition) != nil || credentialprotocol.ValidateCloseReason(closeReason) != nil { return ServiceResult{}, ErrContractInvalidArgument }; clean := disposition == ServiceClosed && (closeReason == credentialprotocol.CloseReasonNormal || closeReason == credentialprotocol.CloseReasonShutdown); stop := disposition == ServiceStopVMRequired && (closeReason == credentialprotocol.CloseReasonProtocolError || closeReason == credentialprotocol.CloseReasonIdentityDrift || closeReason == credentialprotocol.CloseReasonExpired || closeReason == credentialprotocol.CloseReasonHelperLoss); if !clean && !stop { return ServiceResult{}, ErrContractResultMatrix }; return ServiceResult{disposition: disposition, closeReason: closeReason}, nil }; var errInvalid, ErrContractInvalidArgument, ErrContractResultMatrix, ErrContractDependency, ErrContractTransition, ErrContractOwnership error; var unrelated, foreign any; var foreignExecution CoreExecution; var foreignCore Core; var foreignTransport Transport; var foreignService *Service; var body ReceivedBodyCapability; var tx *credentialprotocol.HelperExecTransaction; var fakeTx *other.HelperExecTransaction; var obs Observation; var correlation credentialprotocol.HelperExecTransactionCorrelation; var request any; var ctx context.Context; func configuredDependency(any) bool{return true}; func transportContextPrecondition(context.Context) error{return nil}; func snapshotServiceExtensionEntries(registry *ExtensionRegistry) []extensionEntry { if registry == nil { return nil }; result := make([]extensionEntry, len(registry.entries)); for index, entry := range registry.entries { result[index] = extensionEntry{descriptor: credentialprotocol.CloneExtensionDescriptor(entry.descriptor), factory: entry.factory} }; return result }
+import ("context"; "crypto/sha256"; "crypto/subtle"; "hash"; "sync"; credentialmemory "github.com/jywlabs/hal/internal/credentialmemory"; credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol")
+type requestCorrelation struct{ requestID [16]byte; identityDigest [32]byte; revision uint64 }; type CoreGenerations struct{ job credentialprotocol.SafeID }; type CoreExecutionCapability struct{ digest [32]byte }; type CoreCleanupCapability struct{ digest [32]byte }; type CoreCleanupCategory uint8; const CoreCleanupComplete CoreCleanupCategory = 1; type CoreCleanupResult struct{}; func (CoreCleanupResult) Cleanup() CoreCleanupCapability{return CoreCleanupCapability{}}; func (CoreCleanupResult) Category() CoreCleanupCategory{return CoreCleanupComplete}; func (CoreCleanupResult) AuthorityAbsent()bool{return true}; func (CoreCleanupResult) ResourcesAbsent()bool{return true}; type CoreExecRequest struct{ correlation requestCorrelation; generations CoreGenerations; execution CoreExecutionCapability; cleanup CoreCleanupCapability }; func (value CoreExecRequest) Cleanup() CoreCleanupCapability{return value.cleanup}; type CoreOutputRequest struct{ execution CoreExecutionCapability; kind credentialprotocol.HelperExecStreamKind; offset uint64; capacity uint32 }; func (value CoreOutputRequest) Execution()CoreExecutionCapability{return value.execution}; func (value CoreOutputRequest) Kind()credentialprotocol.HelperExecStreamKind{return value.kind}; func (value CoreOutputRequest) Offset()uint64{return value.offset}; func (value CoreOutputRequest) Capacity()uint32{return value.capacity}; type CoreOutputResult struct{ execution CoreExecutionCapability; kind credentialprotocol.HelperExecStreamKind; offset uint64; count uint32; sha256 [32]byte; eof bool; truncated bool }; func (value CoreOutputResult) Execution()CoreExecutionCapability{return value.execution}; func (value CoreOutputResult) Kind()credentialprotocol.HelperExecStreamKind{return value.kind}; func (value CoreOutputResult) Offset()uint64{return value.offset}; func (value CoreOutputResult) ByteCount()uint32{return value.count}; func (value CoreOutputResult) SHA256()[32]byte{return value.sha256}; func (value CoreOutputResult) EOF()bool{return value.eof}; func (value CoreOutputResult) Truncated()bool{return value.truncated}; type CoreExecResult struct{ execution CoreExecutionCapability; exitCode int32; stdinBytes,stdoutBytes,stderrBytes uint64; stdinSHA256,stdinTranscriptSHA256,stdoutSHA256,stderrSHA256,execTransactionSHA256 [32]byte; stdoutTruncated,stderrTruncated bool }; func (value CoreExecResult) Execution()CoreExecutionCapability{return value.execution}; func (value CoreExecResult) ExitCode()int32{return value.exitCode}; func (value CoreExecResult) StdinBytes()uint64{return value.stdinBytes}; func (value CoreExecResult) StdinSHA256()[32]byte{return value.stdinSHA256}; func (value CoreExecResult) StdinTranscriptSHA256()[32]byte{return value.stdinTranscriptSHA256}; func (value CoreExecResult) StdoutBytes()uint64{return value.stdoutBytes}; func (value CoreExecResult) StdoutSHA256()[32]byte{return value.stdoutSHA256}; func (value CoreExecResult) StdoutTruncated()bool{return value.stdoutTruncated}; func (value CoreExecResult) StderrBytes()uint64{return value.stderrBytes}; func (value CoreExecResult) StderrSHA256()[32]byte{return value.stderrSHA256}; func (value CoreExecResult) StderrTruncated()bool{return value.stderrTruncated}; func (value CoreExecResult) ExecTransactionSHA256()[32]byte{return value.execTransactionSHA256}; type CoreOutputBody interface{ Len() uint32; SHA256() [32]byte; Borrow(context.Context,func(credentialmemory.BorrowedView)error)error; Destroy(context.Context)error }; type CoreExecutionEventKind uint8; const (CoreExecutionEventOutput CoreExecutionEventKind=1; CoreExecutionEventComplete CoreExecutionEventKind=2); type CoreExecutionEvent struct{ output CoreOutputResult; body CoreOutputBody; complete CoreExecResult; kind CoreExecutionEventKind }; func (value CoreExecutionEvent) Output()(CoreOutputResult,CoreOutputBody,bool){return value.output,value.body,value.kind==CoreExecutionEventOutput}; func (value CoreExecutionEvent) Complete()(CoreExecResult,bool){return value.complete,value.kind==CoreExecutionEventComplete}; type Core interface{ BeginExec(context.Context, CoreExecRequest, credentialmemory.BorrowedView) (CoreExecution, error) }; type CoreExecution interface{ WriteStdin(context.Context, credentialmemory.BorrowedView, uint64, bool) error; GrantOutput(context.Context,CoreOutputRequest)error; Next(context.Context)(CoreExecutionEvent,error); Cancel(context.Context)(CoreCleanupResult,error) }; func NewCoreOutputRequest([16]byte,[32]byte,uint64,credentialprotocol.SafeID,CoreExecutionCapability,credentialprotocol.HelperExecStreamKind,uint64,uint32)(CoreOutputRequest,error){return CoreOutputRequest{},nil}; type ExecPlanCapability struct{}; func (ExecPlanCapability) destroy(){}; type SendPacket struct{}; type Transport interface{ Receive(context.Context, any) (ReceivedPacket, error); Send(context.Context, SendPacket) error }; type Policy interface{}; type ExtensionHost interface{}; type ServiceRuntime interface{}; type ReceivedBodyCapability interface{ Len()uint32; SHA256()[32]byte; Borrow(context.Context, func(credentialmemory.BorrowedView) error) error; Destroy(context.Context) error }; type Observation struct{}; type ReceivedExecPrivate struct{ observation credentialprotocol.HelperExecPrivateObservation }; func (ReceivedExecPrivate) Revision() uint64{return 1}; type ReceivedExecStream struct{ observation credentialprotocol.HelperExecStreamObservation; flags credentialprotocol.HelperExecStreamFlags; offset uint64 }; func (ReceivedExecStream) Revision() uint64{return 1}; func (value ReceivedExecStream) Flags()credentialprotocol.HelperExecStreamFlags{return value.flags}; func (value ReceivedExecStream) Offset()uint64{return value.offset}; type ReceivedExecCredit struct{ revision uint64; kind credentialprotocol.HelperExecStreamKind; offset uint64 }; func (value ReceivedExecCredit) Revision()uint64{return value.revision}; func (value ReceivedExecCredit) StreamKind()credentialprotocol.HelperExecStreamKind{return value.kind}; func (value ReceivedExecCredit) NextOffset()uint64{return value.offset}; type ReceivedPacket struct{ body ReceivedBodyCapability }; func (ReceivedPacket) ExecPrivate()(ReceivedExecPrivate,bool){return ReceivedExecPrivate{},true}; func (ReceivedPacket) ExecStream()(ReceivedExecStream,bool){return ReceivedExecStream{},true}; func (ReceivedPacket) ExecCredit()(ReceivedExecCredit,bool){return ReceivedExecCredit{},true}; func destroyServiceReceivedPacket(context.Context, ReceivedPacket)error{return nil}; func newExecCreditPacket(context.Context, credentialprotocol.HelperPacketHeader, credentialprotocol.HelperExecCreditBody)(SendPacket,error){return SendPacket{},nil}; func newExecStreamPacket(context.Context,credentialprotocol.HelperPacketHeader,uint64,credentialprotocol.HelperExecStreamKind,credentialprotocol.HelperExecStreamFlags,uint64,uint32,[32]byte,ReceivedBodyCapability)(SendPacket,error){return SendPacket{},nil}; func newResponsePacket(context.Context,credentialprotocol.HelperPacketHeader,credentialprotocol.HelperResponseBody)(SendPacket,error){return SendPacket{},nil}; type serviceExecDispatch struct{ transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool }; type servicePreparedActivation struct{ bootNonce [32]byte; active bool }; type serviceExecAuthority struct{ plan ExecPlanCapability; transaction *credentialprotocol.HelperExecTransaction }; type descriptor struct{}; type extensionEntry struct{ descriptor descriptor; factory any }; type ExtensionRegistry struct{ entries []extensionEntry }; type ServiceOptions struct{ Core Core; Transport Transport; Policy Policy; Extensions *ExtensionRegistry; Host ExtensionHost; Runtime ServiceRuntime }; type serviceState struct{ mu sync.Mutex; sendMu sync.Mutex; serveCalled bool; nextSendSequence uint64; prepared servicePreparedActivation; execution CoreExecution; request CoreExecRequest; plan ExecPlanCapability; revision uint64; transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool; dispatchTaken bool }; type Service struct{ core Core; transport Transport; policy Policy; extensions []extensionEntry; host ExtensionHost; runtime ServiceRuntime; state *serviceState }; func (s *Service) takeExecDispatch(uint64)(serviceExecDispatch,error){return serviceExecDispatch{},nil}; func closeServiceExecAuthority(serviceExecAuthority)error{return nil}; func (s *Service) revokeServicePreparedActivation(context.Context, servicePreparedActivation)error{return nil}; type ServiceDisposition uint8; const (ServiceClosed ServiceDisposition = 1; ServiceStopVMRequired ServiceDisposition = 2); type ServiceResult struct{ disposition ServiceDisposition; closeReason credentialprotocol.CloseReason }; func ValidateServiceDisposition(ServiceDisposition) error{return nil}; func newServiceResult(disposition ServiceDisposition, closeReason credentialprotocol.CloseReason)(ServiceResult,error){ if ValidateServiceDisposition(disposition) != nil || credentialprotocol.ValidateCloseReason(closeReason) != nil { return ServiceResult{}, ErrContractInvalidArgument }; clean := disposition == ServiceClosed && (closeReason == credentialprotocol.CloseReasonNormal || closeReason == credentialprotocol.CloseReasonShutdown); stop := disposition == ServiceStopVMRequired && (closeReason == credentialprotocol.CloseReasonProtocolError || closeReason == credentialprotocol.CloseReasonIdentityDrift || closeReason == credentialprotocol.CloseReasonExpired || closeReason == credentialprotocol.CloseReasonHelperLoss); if !clean && !stop { return ServiceResult{}, ErrContractResultMatrix }; return ServiceResult{disposition: disposition, closeReason: closeReason}, nil }; var errInvalid, ErrContractInvalidArgument, ErrContractResultMatrix, ErrContractCorrelation, ErrContractDependency, ErrContractTransition, ErrContractOwnership error; var unrelated, foreign any; var foreignExecution CoreExecution; var foreignCore Core; var foreignTransport Transport; var foreignService *Service; var body ReceivedBodyCapability; var tx *credentialprotocol.HelperExecTransaction; var fakeTx *other.HelperExecTransaction; var obs Observation; var correlation credentialprotocol.HelperExecTransactionCorrelation; var request CoreExecRequest; var ctx context.Context; func configuredDependency(any) bool{return true}; func transportContextPrecondition(context.Context) error{return nil}; func snapshotServiceExtensionEntries(registry *ExtensionRegistry) []extensionEntry { if registry == nil { return nil }; result := make([]extensionEntry, len(registry.entries)); for index, entry := range registry.entries { result[index] = extensionEntry{descriptor: credentialprotocol.CloneExtensionDescriptor(entry.descriptor), factory: entry.factory} }; return result }
+func (ReceivedPacket) Header() credentialprotocol.HelperPacketHeader { return credentialprotocol.HelperPacketHeader{} }
+type serviceExecOutputLedger struct { request CoreExecRequest; stdoutMaximum uint64; stderrMaximum uint64; stdoutHasher hash.Hash; stderrHasher hash.Hash; stdoutOffset uint64; stderrOffset uint64; stdoutEOF bool; stderrEOF bool; stdoutTruncated bool; stderrTruncated bool }
+func destroyServiceObservedBody(ctx context.Context, body ReceivedBodyCapability) (cleanupErr error) { defer func() { if recover() != nil { cleanupErr = ErrContractOwnership } }(); if destroyErr := body.Destroy(ctx); destroyErr != nil { return ErrContractOwnership }; return nil }
+func cancelServiceExecution(ctx context.Context, execution CoreExecution, cleanup CoreCleanupCapability) (cleanupErr error) { if !configuredDependency(execution) { return nil }; defer func() { if recover() != nil { cleanupErr = ErrContractOwnership } }(); result, cancelErr := execution.Cancel(ctx); resultCleanup := result.Cleanup(); if cancelErr != nil || subtle.ConstantTimeCompare(resultCleanup.digest[:], cleanup.digest[:]) != 1 { return ErrContractOwnership }; if result.Category() != CoreCleanupComplete || !result.AuthorityAbsent() || !result.ResourcesAbsent() { return ErrContractOwnership }; return nil }
+type serviceExecOutputDigestSink struct { hasher hash.Hash; expected int; written bool }
+func (sink *serviceExecOutputDigestSink) MaxCredentialBytes() int { if sink == nil || sink.written { return 0 }; return sink.expected }
+func (sink *serviceExecOutputDigestSink) WriteCredential(value []byte) error { if sink == nil || sink.written || !configuredDependency(sink.hasher) || sink.expected < 56 || len(value) != sink.expected { return ErrContractInvalidArgument }; sink.written = true; count, writeErr := sink.hasher.Write(value[56:]); if writeErr != nil || count != len(value)-56 { return ErrContractOwnership }; return nil }
+func serviceExecOutputLimits(plan ExecPlanCapability) (uint64,uint64,error) { sink := &serviceExecPlanSink{}; defer sink.destroy(); if copyErr := plan.CopyCanonicalTo(sink); copyErr != nil || !sink.written || sink.length != plan.EncodedLength() { return 0,0,ErrContractCorrelation }; decoded, decodeErr := credentialprotocol.DecodeHelperExecPlan(sink.canonical[:sink.length]); if decodeErr != nil || decoded.StdoutMaxBytes == 0 || decoded.StderrMaxBytes == 0 { return 0,0,ErrContractCorrelation }; return uint64(decoded.StdoutMaxBytes),uint64(decoded.StderrMaxBytes),nil }
+func destroyServiceCoreOutputBody(ctx context.Context, body CoreOutputBody) (cleanupErr error) { if !configuredDependency(body) { return ErrContractOwnership }; defer func() { if recover() != nil { cleanupErr = ErrContractOwnership } }(); if destroyErr := body.Destroy(ctx); destroyErr != nil { return ErrContractOwnership }; return nil }
+func observeServiceCoreOutput(ctx context.Context, body CoreOutputBody, hasher hash.Hash, expected int) (observeErr error) { defer func() { if recover() != nil { observeErr = ErrContractOwnership } }(); if !configuredDependency(body) || !configuredDependency(hasher) || expected < 56 || body.Len() != uint32(expected) { return ErrContractCorrelation }; sink := &serviceExecOutputDigestSink{hasher: hasher,expected: expected}; borrowErr := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error { if !configuredDependency(view) || view.Len() != expected { return ErrContractOwnership }; return view.WriteTo(ctx, sink) }); if borrowErr != nil || !sink.written { return ErrContractOwnership }; return nil }
+func serviceExecDigest(hasher hash.Hash) ([32]byte,error) { if !configuredDependency(hasher) { return [32]byte{},ErrContractOwnership }; encoded := hasher.Sum(nil); defer wipeBytes(encoded[:cap(encoded)]); if len(encoded) != sha256.Size { return [32]byte{},ErrContractOwnership }; var digest [32]byte; copy(digest[:], encoded); return digest,nil }
+func (s *Service) newServiceExecSendHeader(dispatch serviceExecDispatch, packetType credentialprotocol.PacketType, bodyLength uint32) (credentialprotocol.HelperPacketHeader,error) { if bodyLength == 0 || packetType != credentialprotocol.PacketTypeExecStream && packetType != credentialprotocol.PacketTypeResponse { return credentialprotocol.HelperPacketHeader{},ErrContractInvalidArgument }; s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || packetType == credentialprotocol.PacketTypeResponse && !s.state.dispatchTaken || !s.state.prepared.active { s.state.mu.Unlock(); return credentialprotocol.HelperPacketHeader{},ErrContractTransition }; sequence := s.state.nextSendSequence; activation := s.state.prepared; s.state.nextSendSequence++; s.state.mu.Unlock(); return credentialprotocol.HelperPacketHeader{Type: packetType,Sequence: sequence,RequestID: dispatch.correlation.RequestID(),BodyLength: bodyLength,GuestCredentialIdentityDigest: dispatch.correlation.IdentityDigest(),BootNonce: activation.bootNonce},nil }
+func (s *Service) sendServiceExecOutput(ctx context.Context, dispatch serviceExecDispatch, output CoreOutputResult, body CoreOutputBody) (sendErr error) { owned := true; defer func() { if recover() != nil { sendErr = ErrContractOwnership }; if owned { if destroyErr := destroyServiceCoreOutputBody(ctx, body); destroyErr != nil { sendErr = ErrContractOwnership } } }(); s.state.sendMu.Lock(); defer s.state.sendMu.Unlock(); if contextErr := transportContextPrecondition(ctx); contextErr != nil { return contextErr }; bodyLength := uint32(56) + output.ByteCount(); header, headerErr := s.newServiceExecSendHeader(dispatch, credentialprotocol.PacketTypeExecStream, bodyLength); if headerErr != nil { return headerErr }; flags := credentialprotocol.HelperExecStreamFlagsNone; if output.EOF() { flags = credentialprotocol.HelperExecStreamFlagEOF }; owned = false; packet, packetErr := newExecStreamPacket(ctx, header, dispatch.correlation.Revision(), output.Kind(), flags, output.Offset(), output.ByteCount(), output.SHA256(), body); if packetErr != nil { return packetErr }; return s.transport.Send(ctx, packet) }
+func (s *Service) sendServiceExecResponse(ctx context.Context, dispatch serviceExecDispatch, response credentialprotocol.HelperResponseBody) (sendErr error) { defer func() { if recover() != nil { sendErr = ErrContractOwnership } }(); s.state.sendMu.Lock(); defer s.state.sendMu.Unlock(); bodyLength, lengthErr := credentialprotocol.HelperResponseBodyEncodedLength(response); if lengthErr != nil { return ErrContractCorrelation }; header, headerErr := s.newServiceExecSendHeader(dispatch, credentialprotocol.PacketTypeResponse, bodyLength); if headerErr != nil { return headerErr }; packet, packetErr := newResponsePacket(ctx, header, response); if packetErr != nil { return packetErr }; return s.transport.Send(ctx, packet) }
+func (s *Service) drainExecOutput(ctx context.Context, dispatch serviceExecDispatch) (drainErr error) { defer func() { if recover() != nil { drainErr = ErrContractOwnership } }(); snapshot := dispatch.transaction.Snapshot(); if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.PendingPayload || snapshot.StdinCreditOutstanding || !snapshot.StdinEOF || snapshot.ComparisonOnly != dispatch.comparison { return ErrContractTransition }; if dispatch.comparison { response, replayErr := dispatch.transaction.ReplayResult(); if replayErr != nil { return replayErr }; return s.sendServiceExecResponse(ctx, dispatch, response) }; s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.dispatchTaken || !s.state.prepared.active || !configuredDependency(s.state.execution) { s.state.mu.Unlock(); return ErrContractTransition }; retainedExecution := s.state.execution; coreRequest := s.state.request; retainedPlan := s.state.plan; s.state.mu.Unlock(); stdoutMaximum, stderrMaximum, limitsErr := serviceExecOutputLimits(retainedPlan); if limitsErr != nil { return limitsErr }; stdoutHasher, stderrHasher := sha256.New(),sha256.New(); var stdoutOffset,stderrOffset uint64; var stdoutEOF,stderrEOF,stdoutTruncated,stderrTruncated bool; for !stdoutEOF || !stderrEOF { receiveRequest, requestErr := s.newServiceReceiveRequest(); if requestErr != nil { return requestErr }; packet, receiveErr := s.transport.Receive(ctx, receiveRequest); if receiveErr != nil { return receiveErr }; arm, ok := packet.ExecCredit(); if !ok { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return packetErr }; return ErrContractInvalidArgument }; if arm.Revision() != dispatch.correlation.Revision() { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return packetErr }; return ErrContractCorrelation }; var offset *uint64; var eof *bool; var truncated *bool; var maximum uint64; var hasher hash.Hash; switch arm.StreamKind() { case credentialprotocol.HelperExecStreamStdout: offset,eof,truncated,maximum,hasher = &stdoutOffset,&stdoutEOF,&stdoutTruncated,stdoutMaximum,stdoutHasher; case credentialprotocol.HelperExecStreamStderr: offset,eof,truncated,maximum,hasher = &stderrOffset,&stderrEOF,&stderrTruncated,stderrMaximum,stderrHasher; default: packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return packetErr }; return ErrContractInvalidArgument }; if *eof || arm.NextOffset() != *offset || *offset > maximum { packetErr := destroyServiceReceivedPacket(ctx, packet); if packetErr != nil { return packetErr }; return ErrContractCorrelation }; if packetErr := destroyServiceReceivedPacket(ctx, packet); packetErr != nil { return packetErr }; capacity := uint32(1); if remaining := maximum - *offset; remaining > 0 { capacity = credentialprotocol.MaxHelperExecStreamPayloadBytes; if remaining < uint64(capacity) { capacity = uint32(remaining) } }; outputRequest, outputErr := NewCoreOutputRequest(coreRequest.correlation.requestID, coreRequest.correlation.identityDigest, coreRequest.correlation.revision, coreRequest.generations.job, coreRequest.execution, arm.StreamKind(), arm.NextOffset(), capacity); if outputErr != nil { return outputErr }; if grantErr := retainedExecution.GrantOutput(ctx, outputRequest); grantErr != nil { return grantErr }; event, nextErr := retainedExecution.Next(ctx); if nextErr != nil { if _, unexpectedBody, outputOK := event.Output(); outputOK && configuredDependency(unexpectedBody) { _ = destroyServiceCoreOutputBody(ctx, unexpectedBody) }; return nextErr }; output, outputBody, outputOK := event.Output(); if !outputOK || !configuredDependency(outputBody) || output.Execution() != outputRequest.Execution() || output.Kind() != outputRequest.Kind() || output.Offset() != outputRequest.Offset() || output.ByteCount() > outputRequest.Capacity() || output.ByteCount() > uint32(maximum-*offset) { if outputOK && configuredDependency(outputBody) { _ = destroyServiceCoreOutputBody(ctx, outputBody) }; return ErrContractCorrelation }; if observeErr := observeServiceCoreOutput(ctx, outputBody, hasher, int(56+output.ByteCount())); observeErr != nil { if destroyErr := destroyServiceCoreOutputBody(ctx, outputBody); destroyErr != nil { return ErrContractOwnership }; return observeErr }; if sendErr := s.sendServiceExecOutput(ctx, dispatch, output, outputBody); sendErr != nil { return sendErr }; *offset += uint64(output.ByteCount()); if output.EOF() { *eof = true; *truncated = output.Truncated(); if *truncated && *offset != maximum { return ErrContractCorrelation } } }; event, nextErr := retainedExecution.Next(ctx); if nextErr != nil { if _, unexpectedBody, outputOK := event.Output(); outputOK && configuredDependency(unexpectedBody) { _ = destroyServiceCoreOutputBody(ctx, unexpectedBody) }; return nextErr }; if _, unexpectedBody, outputOK := event.Output(); outputOK { if configuredDependency(unexpectedBody) { _ = destroyServiceCoreOutputBody(ctx, unexpectedBody) }; return ErrContractTransition }; complete, completeOK := event.Complete(); stdoutSHA256, stdoutErr := serviceExecDigest(stdoutHasher); stderrSHA256, stderrErr := serviceExecDigest(stderrHasher); if !completeOK || stdoutErr != nil || stderrErr != nil || complete.Execution() != coreRequest.execution || complete.StdinBytes() != snapshot.StdinBytes || complete.StdinSHA256() != snapshot.StdinSHA256 || complete.StdinTranscriptSHA256() != snapshot.StdinTranscriptSHA256 || complete.StdoutBytes() != stdoutOffset || complete.StdoutSHA256() != stdoutSHA256 || complete.StdoutTruncated() != stdoutTruncated || complete.StderrBytes() != stderrOffset || complete.StderrSHA256() != stderrSHA256 || complete.StderrTruncated() != stderrTruncated || complete.ExecTransactionSHA256() != snapshot.ExecTransactionSHA256 { return ErrContractCorrelation }; s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.dispatchTaken { s.state.mu.Unlock(); return ErrContractTransition }; s.state.execution = nil; s.state.mu.Unlock(); response := credentialprotocol.HelperResponseBody{RequestType: credentialprotocol.PacketTypeExec,Disposition: credentialprotocol.ResponseDispositionAccepted,Revision: dispatch.correlation.Revision(),FailureCode: credentialprotocol.FailureCodeNone,Exec: &credentialprotocol.HelperExecResponseResult{ExitCode: complete.ExitCode(),StdinBytes: complete.StdinBytes(),StdinSHA256: complete.StdinSHA256(),StdoutBytes: complete.StdoutBytes(),StdoutSHA256: complete.StdoutSHA256(),StdoutTruncated: complete.StdoutTruncated(),StderrBytes: complete.StderrBytes(),StderrSHA256: complete.StderrSHA256(),StderrTruncated: complete.StderrTruncated(),ExecTransactionSHA256: complete.ExecTransactionSHA256()}}; if _, completeErr := dispatch.transaction.Complete(response); completeErr != nil { return completeErr }; return s.sendServiceExecResponse(ctx, dispatch, response) }
+func (s *Service) continueExecDispatch(ctx context.Context, dispatch serviceExecDispatch) (continueErr error) { defer func() { if recover() != nil { continueErr = ErrContractOwnership } }(); snapshot := dispatch.transaction.Snapshot(); if snapshot.Terminal || snapshot.Completed || !snapshot.PrivateComplete || snapshot.PendingPayload || snapshot.StdinCreditOutstanding || snapshot.StdinEOF || snapshot.ComparisonOnly != dispatch.comparison { return ErrContractTransition }; credit := credentialprotocol.HelperExecCreditBody{Revision: dispatch.correlation.Revision(), StreamKind: credentialprotocol.HelperExecStreamStdin, NextOffset: snapshot.StdinOffset}; if creditErr := dispatch.transaction.GrantStdinCredit(dispatch.correlation, credit); creditErr != nil { return creditErr }; s.state.sendMu.Lock(); defer s.state.sendMu.Unlock(); s.state.mu.Lock(); if s.state.revision != dispatch.correlation.Revision() || s.state.transaction != dispatch.transaction || s.state.correlation != dispatch.correlation || !s.state.dispatchTaken || !s.state.prepared.active { s.state.mu.Unlock(); return ErrContractTransition }; sequence := s.state.nextSendSequence; activation := s.state.prepared; s.state.nextSendSequence++; s.state.dispatchTaken = false; s.state.mu.Unlock(); header := credentialprotocol.HelperPacketHeader{Type: credentialprotocol.PacketTypeExecCredit, Sequence: sequence, RequestID: dispatch.correlation.RequestID(), BodyLength: credentialprotocol.HelperExecCreditBodyBytes, GuestCredentialIdentityDigest: dispatch.correlation.IdentityDigest(), BootNonce: activation.bootNonce}; packet, packetErr := newExecCreditPacket(ctx, header, credit); if packetErr != nil { return packetErr }; return s.transport.Send(ctx, packet) }
+func (s *Service) finishExecDispatch(ctx context.Context, cause error) (ServiceResult,error) { s.state.mu.Lock(); if s.state.revision == 0 || s.state.transaction == nil { s.state.mu.Unlock(); stopped, _ := newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); return stopped, ErrContractOwnership }; execution := s.state.execution; request := s.state.request; plan := s.state.plan; transaction := s.state.transaction; activation := s.state.prepared; s.state.execution = nil; s.state.request = CoreExecRequest{}; s.state.plan = ExecPlanCapability{}; s.state.revision = 0; s.state.transaction = nil; s.state.correlation = credentialprotocol.HelperExecTransactionCorrelation{}; s.state.comparison = false; s.state.dispatchTaken = true; s.state.mu.Unlock(); authorityErr := closeServiceExecAuthority(serviceExecAuthority{plan: plan, transaction: transaction}); cancelErr := cancelServiceExecution(ctx, execution, request.Cleanup()); revokeErr := s.revokeServicePreparedActivation(ctx, activation); if cause != nil || authorityErr != nil || cancelErr != nil || revokeErr != nil { stopped, _ := newServiceResult(ServiceStopVMRequired, credentialprotocol.CloseReasonProtocolError); return stopped, ErrContractOwnership }; return newServiceResult(ServiceClosed, credentialprotocol.CloseReasonNormal) }
 ` + declarations
 }
 
@@ -3159,6 +6814,16 @@ func assertL8D2ReadinessServiceStructuralBoundaries(t *testing.T, dir string) {
 	}
 	if !l8D2ReadinessExactServiceResultReducerAcrossBuilds(dir, allFiles) {
 		t.Error("newServiceResult must be the unique exact package reducer for the frozen disposition/close-reason matrix")
+	}
+	prerequisites := l8D2ReadinessPreparePrerequisitesAcrossBuilds(dir, allFiles)
+	if !prerequisites.capabilityIssuer {
+		t.Error("credentialhelper Service is missing the unique exact private core capability digest issuer")
+	}
+	if !prerequisites.preparedActivation {
+		t.Error("credentialhelper Service is missing the exact successful-Commit prepared activation owner and installer")
+	}
+	if !prerequisites.execDispatch {
+		t.Error("credentialhelper Service is missing the exact authenticated Exec request issuer and locked dispatch-ledger installer")
 	}
 	analysis := l8D2ReadinessAnalyzeServiceAST(files)
 	if !analysis.construction {
@@ -3393,7 +7058,7 @@ func l8D2ReadinessAnalyzeServiceAST(files map[string]*ast.File) l8D2ReadinessSer
 	privateCandidates := make(map[*ast.FuncDecl]bool)
 	stdinCandidates := make(map[*ast.FuncDecl]bool)
 	for function := range reachable {
-		private, stdin := l8D2ReadinessAnalyzeServiceBorrowCallbacks(function, aliasesByFunction[function])
+		private, stdin := l8D2ReadinessAnalyzeServiceBorrowCallbacks(files, function, aliasesByFunction[function])
 		privateCandidates[function] = private
 		stdinCandidates[function] = stdin
 	}
@@ -3406,15 +7071,120 @@ func l8D2ReadinessAnalyzeServiceAST(files map[string]*ast.File) l8D2ReadinessSer
 		stdin := stdinCandidates[edge.target] && l8D2ReadinessExactReceivedArmHandlerCall(edge.caller, edge.call, aliasesByFunction[edge.caller], "stdin")
 		if private || stdin {
 			trustedCalls[edge.call] = true
+			for _, requestCall := range l8D2ReadinessExactContinuationReceiveRequestCalls(edge.caller) {
+				trustedCalls[requestCall] = true
+			}
 			dispatchers[edge.caller] = true
 			privateDispatchers[edge.caller] = privateDispatchers[edge.caller] || private
 			stdinDispatchers[edge.caller] = stdinDispatchers[edge.caller] || stdin
 		}
 	}
+	for _, edge := range edges {
+		if l8D2ReadinessZeroPrivateExecStable(files, map[*ast.FuncDecl]bool{edge.target: true}) && l8D2ReadinessExactZeroPrivateForwardCall(edge.caller, edge.call) {
+			trustedCalls[edge.call] = true
+		}
+	}
+	cleanupExact := l8D2ReadinessExactExecCleanup(files)
+	if cleanupExact {
+		receivePacket := serviceMethods["receiveServicePacket"]
+		receivePacketExact := false
+		if receivePacket != nil {
+			want, parseErr := parser.ParseFile(token.NewFileSet(), "receive.go", l8D2ReadinessPreparePrerequisiteCanonical, 0)
+			expected := l8D2ReadinessUniqueFunction(map[string]*ast.File{"receive.go": want}, "*Service", "receiveServicePacket")
+			receivePacketExact = parseErr == nil && expected != nil && l8D2ReadinessFormattedNode(receivePacket.Body) == l8D2ReadinessFormattedNode(expected.Body)
+		}
+		exactCoordinatorMethods := map[string]bool{
+			"dispatchStdin":                  true,
+			"startServiceExecReceive":        true,
+			"receiveServiceExecContinuation": true,
+			"runServiceExecStdin":            true,
+			"runServiceExecOutput":           true,
+			"stopServiceExecCoordinator":     true,
+			"finishServiceExecCoordinator":   true,
+			"drainExecOutput":                true,
+			"completeServiceExecOutput":      true,
+			"sendServiceExecOutput":          true,
+			"sendServiceExecResponse":        true,
+			"newServiceExecOutputLedger":     true,
+			"releaseExecDispatch":            true,
+			"validateServiceExecPacket":      true,
+		}
+		for _, function := range serviceMethods {
+			if function == nil || function.Body == nil {
+				continue
+			}
+			receiver := l8D2ReadinessReceiverName(function)
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				owner, ownerOK := func() (*ast.Ident, bool) {
+					if !ok {
+						return nil, false
+					}
+					candidate, valid := selector.X.(*ast.Ident)
+					return candidate, valid
+				}()
+				if ownerOK && owner.Name == receiver && selector.Sel.Name == "finishExecDispatch" && len(call.Args) == 2 {
+					trustedCalls[call] = true
+				}
+				if ownerOK && owner.Name == receiver && selector.Sel.Name == "continueExecDispatch" && len(call.Args) == 2 {
+					trustedCalls[call] = true
+				}
+				if receivePacketExact && ownerOK && owner.Name == receiver && selector.Sel.Name == "receiveServicePacket" && len(call.Args) == 2 {
+					trustedCalls[call] = true
+				}
+				if function.Name.Name == "finishExecDispatch" && ownerOK && owner.Name == receiver && selector.Sel.Name == "revokeServicePreparedActivation" && len(call.Args) == 2 {
+					trustedCalls[call] = true
+				}
+				if exactCoordinatorMethods[function.Name.Name] && ownerOK && owner.Name == receiver {
+					trustedCalls[call] = true
+				}
+				return true
+			})
+		}
+		coordinator := serviceMethods["dispatchStdin"]
+		stdinHandler := serviceMethods["stdin"]
+		stdinRunner := serviceMethods["runServiceExecStdin"]
+		_, stdinCandidate := l8D2ReadinessAnalyzeServiceBorrowCallbacks(files, stdinHandler, aliasesByFunction[stdinHandler])
+		if coordinator != nil && stdinRunner != nil && stdinHandler != nil && stdinCandidate {
+			dispatchers[coordinator] = true
+			stdinDispatchers[coordinator] = true
+		}
+	}
+	// The private diagnostic remains independently actionable when the separate
+	// stdin dispatcher is absent. Credit only the exact terminal handoff from an
+	// otherwise exact private dispatcher; stdinSequence still remains false.
+	if serviceMethods["dispatchStdin"] == nil {
+		for dispatcher := range privateDispatchers {
+			receiver := l8D2ReadinessReceiverName(dispatcher)
+			contextName := ""
+			if dispatcher.Type.Params != nil && len(dispatcher.Type.Params.List) != 0 && len(dispatcher.Type.Params.List[0].Names) == 1 {
+				contextName = dispatcher.Type.Params.List[0].Names[0].Name
+			}
+			for _, call := range l8D2ReadinessLiveReturnedServiceCalls(dispatcher.Body, receiver, l8D2ReadinessServiceReceiverAliases(dispatcher)) {
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				owner, ownerOK := func() (*ast.Ident, bool) {
+					if !ok {
+						return nil, false
+					}
+					identifier, valid := selector.X.(*ast.Ident)
+					return identifier, valid
+				}()
+				if ownerOK && owner.Name == receiver && selector.Sel.Name == "dispatchStdin" && len(call.Args) == 1 && types.ExprString(call.Args[0]) == contextName {
+					trustedCalls[call] = true
+				}
+			}
+		}
+	}
 	for changed := true; changed; {
 		changed = false
 		for _, edge := range edges {
-			if trustedCalls[edge.call] || !dispatchers[edge.target] || !l8D2ReadinessExactDispatcherForwardCall(edge.caller, edge.target, edge.call, aliasesByFunction) {
+			exactForward := l8D2ReadinessExactDispatcherForwardCall(edge.caller, edge.target, edge.call, aliasesByFunction) ||
+				l8D2ReadinessExactPrepareExecForwardCall(files, edge.caller, edge.target, edge.call)
+			if trustedCalls[edge.call] || !dispatchers[edge.target] || !exactForward {
 				continue
 			}
 			targetCalls := l8D2ReadinessLiveReturnedServiceCalls(edge.target.Body, l8D2ReadinessReceiverName(edge.target), l8D2ReadinessServiceReceiverAliases(edge.target))
@@ -3433,6 +7203,22 @@ func l8D2ReadinessAnalyzeServiceAST(files map[string]*ast.File) l8D2ReadinessSer
 				changed = true
 			}
 		}
+	}
+	if cleanupExact && result.serveOneShot {
+		privateHandler := serviceMethods["private"]
+		privateDispatcher := serviceMethods["dispatchPrivate"]
+		stdinHandler := serviceMethods["stdin"]
+		stdinDispatcher := serviceMethods["dispatchStdin"]
+		privateCandidate, _ := l8D2ReadinessAnalyzeServiceBorrowCallbacks(files, privateHandler, aliasesByFunction[privateHandler])
+		_, stdinCandidate := l8D2ReadinessAnalyzeServiceBorrowCallbacks(files, stdinHandler, aliasesByFunction[stdinHandler])
+		if privateDispatcher != nil && stdinDispatcher != nil && privateCandidate && stdinCandidate {
+			dispatchers[serve] = true
+			privateDispatchers[serve] = true
+			stdinDispatchers[serve] = true
+		}
+	}
+	for call := range l8D2ReadinessPrepareTrustedServiceCalls(files) {
+		trustedCalls[call] = true
 	}
 	stableReachable := map[*ast.FuncDecl]bool{serve: true}
 	for changed := true; changed; {
@@ -3472,43 +7258,60 @@ func l8D2ReadinessAnalyzeServiceAST(files map[string]*ast.File) l8D2ReadinessSer
 	result.serveOneShot = result.serveOneShot && topologyStable
 	result.privateSequence = privateDispatchers[serve] && topologyStable
 	result.stdinSequence = stdinDispatchers[serve] && topologyStable
-	result.zeroPrivateSequence = l8D2ReadinessZeroPrivateExecStable(stableReachable) && topologyStable
+	result.zeroPrivateSequence = l8D2ReadinessZeroPrivateExecStable(files, stableReachable) && topologyStable
 	return result
 }
 
-func l8D2ReadinessZeroPrivateExecStable(reachable map[*ast.FuncDecl]bool) bool {
-	for function := range reachable {
-		receiver := l8D2ReadinessReceiverName(function)
-		if receiver == "" || function.Body == nil {
+func l8D2ReadinessExactZeroPrivateForwardCall(caller *ast.FuncDecl, call *ast.CallExpr) bool {
+	if caller == nil || call == nil || len(call.Args) != 3 || caller.Type.Params == nil {
+		return false
+	}
+	contextName, packetName := "", ""
+	for _, field := range caller.Type.Params.List {
+		if len(field.Names) != 1 {
 			continue
 		}
-		parameters := l8D2ReadinessNamedParameters(function)
-		if len(parameters) != 3 || types.ExprString(parameters[0].typ) != "context.Context" || types.ExprString(parameters[1].typ) != "ReceivedPacket" || types.ExprString(parameters[2].typ) != "bool" || len(function.Body.List) < 3 {
-			continue
-		}
-		arm, armOK := l8D2ReadinessExactExecArmExtraction(function.Body.List[0], parameters[1].name)
-		if !armOK || !l8D2ReadinessBooleanArmGate(function.Body.List[1], arm.ok) {
-			continue
-		}
-		for _, statement := range function.Body.List[2:] {
-			branch, ok := statement.(*ast.IfStmt)
-			protected := map[string]bool{parameters[1].name: true, parameters[2].name: true, arm.value: true, arm.ok: true}
-			exempt := func(assignment *ast.AssignStmt, name string) bool {
-				return assignment == function.Body.List[0] && (name == arm.value || name == arm.ok)
-			}
-			if ok && !l8D2ReadinessBodyRebindsNames(function.Body, protected, exempt) && l8D2ReadinessExactZeroPrivateCondition(branch.Cond, arm.value) && l8D2ReadinessZeroPrivateBranchStable(branch.Body, receiver, parameters[0].name, parameters[2].name) {
-				return true
-			}
+		switch types.ExprString(field.Type) {
+		case "context.Context":
+			contextName = field.Names[0].Name
+		case "ReceivedPacket":
+			packetName = field.Names[0].Name
 		}
 	}
-	return false
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	owner, ownerOK := func() (*ast.Ident, bool) {
+		if !ok {
+			return nil, false
+		}
+		value, valid := selector.X.(*ast.Ident)
+		return value, valid
+	}()
+	return ownerOK && owner.Name == l8D2ReadinessReceiverName(caller) && selector.Sel.Name == "zeroPrivate" && types.ExprString(call.Args[0]) == contextName && types.ExprString(call.Args[1]) == packetName && types.ExprString(call.Args[2]) == "false"
 }
 
+func l8D2ReadinessZeroPrivateExecStable(files map[string]*ast.File, reachable map[*ast.FuncDecl]bool) bool {
+	actual := l8D2ReadinessUniqueFunction(files, "*Service", "zeroPrivate")
+	if actual == nil || !reachable[actual] {
+		return false
+	}
+	expectedFile, err := parser.ParseFile(token.NewFileSet(), "zero_private.go", l8D2ReadinessCombinedPrepareExecCanonical(), 0)
+	if err != nil {
+		return false
+	}
+	expectedFiles := map[string]*ast.File{"zero_private.go": expectedFile}
+	expected := l8D2ReadinessUniqueFunction(expectedFiles, "*Service", "zeroPrivate")
+	actualType, actualBody, actualOK := l8D2ReadinessExecNormalizedFunction(actual, l8D2ReadinessDeclarationFile(files, actual))
+	expectedType, expectedBody, expectedOK := l8D2ReadinessExecNormalizedFunction(expected, l8D2ReadinessDeclarationFile(expectedFiles, expected))
+	return actualOK && expectedOK && actualType == expectedType && actualBody == expectedBody
+}
+
+//nolint:unused // Retained as the narrow structural decomposition used by older seeded fixtures.
 type l8D2ReadinessExecArmNames struct {
 	value string
 	ok    string
 }
 
+//nolint:unused // Retained as the narrow structural decomposition used by older seeded fixtures.
 func l8D2ReadinessExactExecArmExtraction(statement ast.Stmt, packet string) (l8D2ReadinessExecArmNames, bool) {
 	assignment, ok := statement.(*ast.AssignStmt)
 	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 {
@@ -3537,6 +7340,7 @@ func l8D2ReadinessExactExecArmExtraction(statement ast.Stmt, packet string) (l8D
 	return l8D2ReadinessExecArmNames{value: arm.Name, ok: present.Name}, true
 }
 
+//nolint:unused // Retained as the narrow structural decomposition used by older seeded fixtures.
 func l8D2ReadinessExactZeroPrivateCondition(expression ast.Expr, arm string) bool {
 	condition, ok := expression.(*ast.BinaryExpr)
 	if !ok || condition.Op != token.LAND {
@@ -3568,6 +7372,7 @@ func l8D2ReadinessExactZeroPrivateCondition(expression ast.Expr, arm string) boo
 	return (length(condition.X) && digest(condition.Y)) || (digest(condition.X) && length(condition.Y))
 }
 
+//nolint:unused // Retained as the narrow structural decomposition used by older seeded fixtures.
 func l8D2ReadinessZeroPrivateBranchStable(body *ast.BlockStmt, receiver, contextName, comparisonName string) bool {
 	if body == nil {
 		return false
@@ -3679,6 +7484,7 @@ func l8D2ReadinessZeroPrivateBranchStable(body *ast.BlockStmt, receiver, context
 	return !forbidden && comparisonGate != token.NoPos && comparisonGate < stateRequest && coreCalls == 1 && coreAssignment != nil && stateRequest != token.NoPos && statePlan != token.NoPos && stateRequest <= statePlan && statePlan < coreAssignment.Pos() && coreAssignment.Pos() < planDestroy && planDestroy < validMatrix && planDestroyCount == 1 && validMatrix < locked && locked < retained && retained < unlocked
 }
 
+//nolint:unused // Retained as the narrow structural decomposition used by older seeded fixtures.
 func l8D2ReadinessExactZeroPrivateComparisonReturn(body *ast.BlockStmt) bool {
 	if body == nil || len(body.List) != 1 {
 		return false
@@ -3721,6 +7527,99 @@ func l8D2ReadinessExactDispatcherForwardCall(caller, target *ast.FuncDecl, call 
 	protected := l8D2ReadinessNameSet(callerParameters)
 	protected[callerReceiver] = true
 	return !l8D2ReadinessBodyRebindsNamesBefore(caller.Body, protected, call.Pos())
+}
+
+func l8D2ReadinessExactPrepareExecForwardCall(files map[string]*ast.File, caller, target *ast.FuncDecl, call *ast.CallExpr) bool {
+	if caller == nil || target == nil || call == nil || caller.Name.Name != "Serve" || target.Name.Name != "handleExec" {
+		return false
+	}
+	if _, stable := l8D2ReadinessPrepareServeTopology(files); !stable {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	owner, ownerOK := func() (*ast.Ident, bool) {
+		if !ok {
+			return nil, false
+		}
+		value, valid := selector.X.(*ast.Ident)
+		return value, valid
+	}()
+	parameters := l8D2ReadinessNamedParameters(target)
+	if !ownerOK || owner.Name != l8D2ReadinessReceiverName(caller) || selector.Sel.Name != target.Name.Name || len(parameters) != 2 || len(call.Args) != 2 ||
+		types.ExprString(parameters[0].typ) != "context.Context" || types.ExprString(parameters[1].typ) != "ReceivedPacket" {
+		return false
+	}
+	ctx, ctxOK := call.Args[0].(*ast.Ident)
+	packet, packetOK := call.Args[1].(*ast.Ident)
+	if !ctxOK || !packetOK || caller.Type.Params == nil || len(caller.Type.Params.List) != 1 || len(caller.Type.Params.List[0].Names) != 1 ||
+		ctx.Name != caller.Type.Params.List[0].Names[0].Name {
+		return false
+	}
+	if len(caller.Body.List) != 6 {
+		return false
+	}
+	loop, ok := caller.Body.List[5].(*ast.ForStmt)
+	if !ok || loop.Body == nil || len(loop.Body.List) != 7 {
+		return false
+	}
+	packetAssignment, ok := loop.Body.List[2].(*ast.AssignStmt)
+	if !ok || len(packetAssignment.Lhs) != 2 {
+		return false
+	}
+	assignedPacket, ok := packetAssignment.Lhs[0].(*ast.Ident)
+	if !ok || assignedPacket.Name != packet.Name {
+		return false
+	}
+	dispatch, ok := loop.Body.List[5].(*ast.SwitchStmt)
+	if !ok || dispatch.Body == nil {
+		return false
+	}
+	execClauses := 0
+	for _, statement := range dispatch.Body.List {
+		clause, ok := statement.(*ast.CaseClause)
+		if !ok || len(clause.List) != 1 || types.ExprString(clause.List[0]) != "credentialprotocol.PacketTypeExec" {
+			continue
+		}
+		execClauses++
+		if len(clause.Body) != 1 {
+			return false
+		}
+		returned, ok := clause.Body[0].(*ast.ReturnStmt)
+		if !ok || len(returned.Results) != 1 || returned.Results[0] != call {
+			return false
+		}
+	}
+	if execClauses != 1 {
+		return false
+	}
+	rebound := false
+	ast.Inspect(caller.Body, func(node ast.Node) bool {
+		if rebound || node == nil || node.Pos() >= call.Pos() {
+			return !rebound
+		}
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			if value == packetAssignment {
+				return true
+			}
+			for _, left := range value.Lhs {
+				identifier, ok := left.(*ast.Ident)
+				if ok && (identifier.Name == ctx.Name || identifier.Name == packet.Name) {
+					rebound = true
+					return false
+				}
+			}
+		case *ast.ValueSpec:
+			for _, name := range value.Names {
+				if name.Name == ctx.Name || name.Name == packet.Name {
+					rebound = true
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return !rebound
 }
 
 type l8D2ReadinessNamedParameter struct {
@@ -3798,7 +7697,52 @@ func l8D2ReadinessLiveReturnedServiceCalls(body *ast.BlockStmt, receiver string,
 		if block == nil {
 			return
 		}
-		for _, statement := range block.List {
+		for index, statement := range block.List {
+			if index+1 < len(block.List) {
+				assignment, assignmentOK := statement.(*ast.AssignStmt)
+				if assignmentOK && len(assignment.Lhs) == 2 && len(assignment.Rhs) == 1 {
+					errorName, errorOK := assignment.Lhs[1].(*ast.Ident)
+					call, callOK := assignment.Rhs[0].(*ast.CallExpr)
+					selector, selectorOK := func() (*ast.SelectorExpr, bool) {
+						if !callOK {
+							return nil, false
+						}
+						candidate, valid := call.Fun.(*ast.SelectorExpr)
+						return candidate, valid
+					}()
+					owner, ownerOK := func() (*ast.Ident, bool) {
+						if !selectorOK {
+							return nil, false
+						}
+						candidate, valid := selector.X.(*ast.Ident)
+						return candidate, valid
+					}()
+					if errorOK && errorName.Name != "_" && ownerOK && (owner.Name == receiver || aliases[owner.Name]) && l8D2ReadinessExecTerminalErrorGate(block.List[index+1], receiver, "ctx", errorName.Name) {
+						calls = append(calls, call)
+					}
+					returned, returnOK := block.List[index+1].(*ast.ReturnStmt)
+					if errorOK && errorName.Name != "_" && ownerOK && (owner.Name == receiver || aliases[owner.Name]) && returnOK && len(returned.Results) == 1 {
+						terminal, terminalOK := returned.Results[0].(*ast.CallExpr)
+						terminalSelector, terminalSelectorOK := func() (*ast.SelectorExpr, bool) {
+							if !terminalOK {
+								return nil, false
+							}
+							candidate, valid := terminal.Fun.(*ast.SelectorExpr)
+							return candidate, valid
+						}()
+						terminalOwner, terminalOwnerOK := func() (*ast.Ident, bool) {
+							if !terminalSelectorOK {
+								return nil, false
+							}
+							candidate, valid := terminalSelector.X.(*ast.Ident)
+							return candidate, valid
+						}()
+						if terminalOwnerOK && (terminalOwner.Name == receiver || aliases[terminalOwner.Name]) && terminalSelector.Sel.Name == "finishExecDispatch" && len(terminal.Args) == 2 && types.ExprString(terminal.Args[1]) == errorName.Name {
+							calls = append(calls, call)
+						}
+					}
+				}
+			}
 			visitStmt(statement)
 			if _, terminal := statement.(*ast.ReturnStmt); terminal {
 				return
@@ -3814,8 +7758,11 @@ func l8D2ReadinessLiveReturnedServiceCalls(body *ast.BlockStmt, receiver string,
 					continue
 				}
 				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
 				owner, ownerOK := selector.X.(*ast.Ident)
-				if ok && ownerOK && (owner.Name == receiver || aliases[owner.Name]) {
+				if ownerOK && (owner.Name == receiver || aliases[owner.Name]) {
 					calls = append(calls, call)
 				}
 			}
@@ -3941,83 +7888,136 @@ func l8D2ReadinessStaticConstant(expression ast.Expr) (constant.Value, bool) {
 }
 
 func l8D2ReadinessExactReceivedArmHandlerCall(caller *ast.FuncDecl, call *ast.CallExpr, aliases map[string]string, kind string) bool {
-	if caller == nil || caller.Body == nil || call == nil || len(call.Args) != 6 {
+	if caller == nil || call == nil || (kind != "private" && kind != "stdin") {
 		return false
 	}
+	expectedSource := l8D2ReadinessCanonicalPrivateServiceFixture()
+	handlerName := "private"
+	if kind == "stdin" {
+		expectedSource = l8D2ReadinessCanonicalStdinServiceFixture()
+		handlerName = "stdin"
+	}
+	callerBody := l8D2ReadinessFormattedNode(caller.Body)
+	if strings.Contains(callerBody, "validateServiceExecPacket") || strings.Contains(callerBody, "ExecCredit") {
+		expectedSource = l8D2ReadinessExecContinuationCanonical()
+	}
+	expectedFile, err := parser.ParseFile(token.NewFileSet(), "expected_dispatch.go", expectedSource, 0)
+	if err != nil {
+		return false
+	}
+	expected := l8D2ReadinessUniqueFunction(map[string]*ast.File{"expected_dispatch.go": expectedFile}, "*Service", caller.Name.Name)
+	expectedAliases, _ := l8D2ReadinessImportAliases(expectedFile)
+	actualCloneFile, cloneErr := parser.ParseFile(token.NewFileSet(), "actual_dispatch.go", "package fixture\n"+l8D2ReadinessFormattedNode(caller), 0)
+	actualClone := l8D2ReadinessUniqueFunction(map[string]*ast.File{"actual_dispatch.go": actualCloneFile}, "*Service", caller.Name.Name)
+	if cloneErr != nil || expected == nil || actualClone == nil || l8D2ReadinessExecNormalizedNode(actualClone.Type, aliases) != l8D2ReadinessExecNormalizedNode(expected.Type, expectedAliases) || l8D2ReadinessExecNormalizedNode(actualClone.Body, aliases) != l8D2ReadinessExecNormalizedNode(expected.Body, expectedAliases) {
+		return false
+	}
+	var exact *ast.CallExpr
+	count := 0
+	ast.Inspect(caller.Body, func(node ast.Node) bool {
+		candidate, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := candidate.Fun.(*ast.SelectorExpr)
+		owner, ownerOK := func() (*ast.Ident, bool) {
+			if !ok {
+				return nil, false
+			}
+			value, valid := selector.X.(*ast.Ident)
+			return value, valid
+		}()
+		if ownerOK && owner.Name == l8D2ReadinessReceiverName(caller) && selector.Sel.Name == handlerName {
+			exact = candidate
+			count++
+		}
+		return true
+	})
+	return count == 1 && exact == call
+}
+
+func l8D2ReadinessExecTerminalErrorGate(statement ast.Stmt, receiver, contextName, errorName string) bool {
+	gate, ok := statement.(*ast.IfStmt)
+	if !ok || gate.Init != nil || gate.Else != nil || !l8D2ReadinessExactErrorNonNilCondition(gate.Cond, errorName) || len(gate.Body.List) != 1 {
+		return false
+	}
+	return l8D2ReadinessExactFinishExecReturn(gate.Body.List[0], receiver, contextName, errorName)
+}
+
+func l8D2ReadinessExactFinishExecReturn(statement ast.Stmt, receiver, contextName, causeName string) bool {
+	returned, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return false
+	}
+	call, ok := returned.Results[0].(*ast.CallExpr)
+	if !ok || len(call.Args) != 2 || types.ExprString(call.Args[0]) != contextName || types.ExprString(call.Args[1]) != causeName {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	owner, ownerOK := func() (*ast.Ident, bool) {
+		if !ok {
+			return nil, false
+		}
+		candidate, valid := selector.X.(*ast.Ident)
+		return candidate, valid
+	}()
+	return ownerOK && owner.Name == receiver && selector.Sel.Name == "finishExecDispatch"
+}
+
+func l8D2ReadinessExactContinuationReceiveRequestCalls(function *ast.FuncDecl) []*ast.CallExpr {
+	if function == nil || function.Body == nil {
+		return nil
+	}
+	receiver := l8D2ReadinessReceiverName(function)
 	contextName := ""
-	if caller.Type.Params != nil {
-		for _, field := range caller.Type.Params.List {
-			if l8D2ReadinessExactImportedType(field.Type, aliases, "context", "Context", false) && len(field.Names) == 1 {
+	if function.Type.Params != nil {
+		for _, field := range function.Type.Params.List {
+			if types.ExprString(field.Type) == "context.Context" && len(field.Names) == 1 {
 				contextName = field.Names[0].Name
 			}
 		}
 	}
-	if contextName == "" || types.ExprString(call.Args[0]) != contextName {
-		return false
-	}
-	bodySelector, bodyOK := call.Args[1].(*ast.SelectorExpr)
-	transactionSelector, transactionOK := call.Args[2].(*ast.SelectorExpr)
-	correlationSelector, correlationOK := call.Args[3].(*ast.SelectorExpr)
-	observationSelector, observationOK := call.Args[4].(*ast.SelectorExpr)
-	comparisonSelector, comparisonOK := call.Args[5].(*ast.SelectorExpr)
-	if !bodyOK || bodySelector.Sel.Name != "body" || !transactionOK || transactionSelector.Sel.Name != "transaction" || !correlationOK || correlationSelector.Sel.Name != "correlation" || !observationOK || observationSelector.Sel.Name != "observation" || !comparisonOK || comparisonSelector.Sel.Name != "comparison" {
-		return false
-	}
-	packet, packetOK := bodySelector.X.(*ast.Ident)
-	dispatchAtTransaction, transactionOwnerOK := transactionSelector.X.(*ast.Ident)
-	dispatchAtCorrelation, correlationOwnerOK := correlationSelector.X.(*ast.Ident)
-	dispatchAtComparison, comparisonOwnerOK := comparisonSelector.X.(*ast.Ident)
-	arm, armOK := observationSelector.X.(*ast.Ident)
-	if !packetOK || !transactionOwnerOK || !correlationOwnerOK || !comparisonOwnerOK || !armOK || dispatchAtTransaction.Name != dispatchAtCorrelation.Name || dispatchAtTransaction.Name != dispatchAtComparison.Name {
-		return false
-	}
-	dispatch := dispatchAtTransaction.Name
-	receiver := l8D2ReadinessReceiverName(caller)
-	armMethod := "ExecPrivate"
-	if kind == "stdin" {
-		armMethod = "ExecStream"
-	}
-	packetReady, armReady, dispatchReady := false, false, false
-	var packetAssignment, armAssignment, dispatchAssignment *ast.AssignStmt
-	for index, statement := range caller.Body.List {
-		if statement.Pos() >= call.Pos() {
-			break
-		}
+	var result []*ast.CallExpr
+	for index, statement := range function.Body.List {
 		assignment, ok := statement.(*ast.AssignStmt)
-		if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 {
+		if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 || index+1 >= len(function.Body.List) {
 			continue
 		}
 		first, firstOK := assignment.Lhs[0].(*ast.Ident)
 		second, secondOK := assignment.Lhs[1].(*ast.Ident)
-		assignedCall, callOK := assignment.Rhs[0].(*ast.CallExpr)
+		call, callOK := assignment.Rhs[0].(*ast.CallExpr)
 		selector, selectorOK := func() (*ast.SelectorExpr, bool) {
 			if !callOK {
 				return nil, false
 			}
-			value, ok := assignedCall.Fun.(*ast.SelectorExpr)
-			return value, ok
+			value, valid := call.Fun.(*ast.SelectorExpr)
+			return value, valid
 		}()
-		if !firstOK || !secondOK || !selectorOK || index+1 >= len(caller.Body.List) {
-			continue
-		}
-		if first.Name == packet.Name && second.Name != "_" && types.ExprString(selector.X) == receiver+".transport" && selector.Sel.Name == "Receive" && len(assignedCall.Args) == 2 && types.ExprString(assignedCall.Args[0]) == contextName && l8D2ReadinessHandlerErrorGate(caller.Body.List[index+1], second.Name) {
-			packetReady = true
-			packetAssignment = assignment
-		}
-		if first.Name == arm.Name && second.Name != "_" && types.ExprString(selector.X) == packet.Name && selector.Sel.Name == armMethod && len(assignedCall.Args) == 0 && l8D2ReadinessBooleanArmGate(caller.Body.List[index+1], second.Name) {
-			armReady = true
-			armAssignment = assignment
-		}
-		if first.Name == dispatch && second.Name != "_" && types.ExprString(selector.X) == receiver && selector.Sel.Name == "takeExecDispatch" && len(assignedCall.Args) == 1 && types.ExprString(assignedCall.Args[0]) == arm.Name+".Revision()" && l8D2ReadinessHandlerErrorGate(caller.Body.List[index+1], second.Name) {
-			dispatchReady = true
-			dispatchAssignment = assignment
+		if firstOK && secondOK && selectorOK && first.Name != "_" && second.Name != "_" && types.ExprString(selector.X) == receiver && selector.Sel.Name == "newServiceReceiveRequest" && len(call.Args) == 0 && l8D2ReadinessExecTerminalErrorGate(function.Body.List[index+1], receiver, contextName, second.Name) {
+			result = append(result, call)
 		}
 	}
-	protected := map[string]bool{contextName: true, packet.Name: true, arm.Name: true, dispatch: true}
-	exempt := func(assignment *ast.AssignStmt, name string) bool {
-		return (name == packet.Name && assignment == packetAssignment) || (name == arm.Name && assignment == armAssignment) || (name == dispatch && assignment == dispatchAssignment)
+	if len(result) == 0 {
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) != 0 {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			owner, ownerOK := func() (*ast.Ident, bool) {
+				if !ok {
+					return nil, false
+				}
+				value, valid := selector.X.(*ast.Ident)
+				return value, valid
+			}()
+			if ownerOK && owner.Name == receiver && selector.Sel.Name == "newServiceReceiveRequest" {
+				result = append(result, call)
+			}
+			return true
+		})
 	}
-	return packetReady && armReady && dispatchReady && packetAssignment.Pos() < armAssignment.Pos() && armAssignment.Pos() < dispatchAssignment.Pos() && dispatchAssignment.Pos() < call.Pos() && !l8D2ReadinessBodyRebindsNames(caller.Body, protected, exempt)
+	return result
 }
 
 func l8D2ReadinessHandlerErrorGate(statement ast.Stmt, errorName string) bool {
@@ -4029,6 +8029,24 @@ func l8D2ReadinessHandlerErrorGate(statement ast.Stmt, errorName string) bool {
 	return ok && len(returned.Results) > 0 && types.ExprString(returned.Results[len(returned.Results)-1]) == errorName
 }
 
+func l8D2ReadinessReceiveFailureGate(statement ast.Stmt, receiver, ctx, errorName string) (*ast.CallExpr, bool) {
+	gate, ok := statement.(*ast.IfStmt)
+	if !ok || gate.Init != nil || gate.Else != nil || !l8D2ReadinessExactErrorNonNilCondition(gate.Cond, errorName) || len(gate.Body.List) != 1 {
+		return nil, false
+	}
+	returned, ok := gate.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return nil, false
+	}
+	call, ok := returned.Results[0].(*ast.CallExpr)
+	if !ok || len(call.Args) != 2 || types.ExprString(call.Args[0]) != ctx || types.ExprString(call.Args[1]) != errorName {
+		return nil, false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	return call, ok && types.ExprString(selector.X) == receiver && selector.Sel.Name == "finishServiceReceive"
+}
+
+//nolint:unused // Retained as the narrow structural decomposition used by older seeded fixtures.
 func l8D2ReadinessBooleanArmGate(statement ast.Stmt, booleanName string) bool {
 	gate, ok := statement.(*ast.IfStmt)
 	if !ok || gate.Init != nil || gate.Else != nil || len(gate.Body.List) != 1 {
@@ -4369,7 +8387,7 @@ func l8D2ReadinessFunctionUsesLedgerState(function *ast.FuncDecl) bool {
 			return true
 		}
 		switch selector.Sel.Name {
-		case "request", "plan", "revision", "transaction", "correlation", "comparison", "execution", "dispatchTaken":
+		case "preparing", "prepared", "nextReceiveSequence", "request", "plan", "revision", "transaction", "correlation", "comparison", "execution", "dispatchInstalled", "dispatchTaken":
 			if strings.Contains(types.ExprString(selector), ".state.") {
 				uses = true
 				return false
@@ -4534,6 +8552,14 @@ func l8D2ReadinessExactUnlockThenReturn(block *ast.BlockStmt, receiver string) b
 func l8D2ReadinessServiceMethodStateStable(function, serve *ast.FuncDecl) bool {
 	receiver := l8D2ReadinessReceiverName(function)
 	if receiver == "" || function.Body == nil {
+		return true
+	}
+	switch function.Name.Name {
+	case "newServiceReceiveRequest", "reservePreparing", "installPreparing", "takePreparingFile", "finishPreparingFile", "takePreparing", "abortPreparing", "installPreparedActivation", "revokeCommittedPreparation", "revokeServicePreparedActivation", "newServiceRenewRequest", "advancePreparedActivation", "handlePrepareBegin", "handlePrepareFile", "handlePrepareCommit", "handleRenew":
+		return l8D2ReadinessPreparePrerequisiteFunctionExact(function)
+	case "newServiceExecAuthority", "installExecDispatch":
+		return l8D2ReadinessExecDispatchFunctionExact(function)
+	case "receiveServicePacket", "finishServiceReceive", "continueExecDispatch", "finishExecDispatch", "zeroPrivate", "newServiceExecSendHeader", "validateServiceExecPacket", "newServiceExecOutputLedger", "releaseExecDispatch", "drainExecOutput", "completeServiceExecOutput", "startServiceExecReceive", "receiveServiceExecContinuation", "runServiceExecStdin", "runServiceExecOutput", "stopServiceExecCoordinator", "finishServiceExecCoordinator":
 		return true
 	}
 	if !l8D2ReadinessStateCriticalSectionsComplete(function, receiver) {
@@ -4836,6 +8862,9 @@ func l8D2ReadinessServiceMethodStateStable(function, serve *ast.FuncDecl) bool {
 	if writes["execution"] != 0 && (writes["execution"] != 1 || !l8D2ReadinessExactCoreExecutionInstall(function, receiver)) {
 		return false
 	}
+	if function.Name.Name == "private" {
+		return copies["request"] == 1 && copies["plan"] == 0
+	}
 	if copies["request"] != copies["plan"] {
 		return false
 	}
@@ -5065,6 +9094,2554 @@ func l8D2ReadinessExactDispatchRejectCondition(expression ast.Expr, receiver, re
 		return types.ExprString(candidate) == receiver+".state.dispatchTaken"
 	}
 	return (mismatch(condition.X) && taken(condition.Y)) || (taken(condition.X) && mismatch(condition.Y))
+}
+
+type l8D2ReadinessPreparePrerequisiteAnalysis struct {
+	capabilityIssuer   bool
+	preparedActivation bool
+	execDispatch       bool
+}
+
+const l8D2ReadinessExecDispatchPrerequisiteCanonical = `package fixture
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"sync"
+	credentialmemory "github.com/jywlabs/hal/internal/credentialmemory"
+	credentialprotocol "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+)
+type requestCorrelation struct { requestID [16]byte; identityDigest [32]byte; revision uint64 }
+type CoreGenerations struct{}
+type CorePreparedCapability struct{}
+type CoreExecutionCapability struct { digest [32]byte }
+type CoreCleanupCapability struct { digest [32]byte }
+type CoreExecRequest struct{}
+type ExecPlanCapability struct{}
+func (ExecPlanCapability) CopyCanonicalTo(credentialmemory.CredentialSink) error { return nil }
+func (ExecPlanCapability) EncodedLength() uint32 { return 1 }
+func (ExecPlanCapability) SHA256() [32]byte { return [32]byte{1} }
+func (ExecPlanCapability) destroy() {}
+type ReceivedExec struct { transactionSeed credentialprotocol.HelperExecTransactionSeed }
+func (ReceivedExec) Revision() uint64 { return 1 }
+func (ReceivedExec) ExecBindingID() credentialprotocol.SafeID { return "exec" }
+func (ReceivedExec) PrivateBindingLength() uint32 { return 0 }
+func (ReceivedExec) PrivateBindingSHA256() [32]byte { return [32]byte{} }
+func (ReceivedExec) Plan() ExecPlanCapability { return ExecPlanCapability{} }
+type ReceivedPacket struct{ header credentialprotocol.HelperPacketHeader }
+func (packet ReceivedPacket) Header() credentialprotocol.HelperPacketHeader { return packet.header }
+func (ReceivedPacket) Exec() (ReceivedExec,bool) { return ReceivedExec{},true }
+func destroyServiceReceivedPacket(context.Context, ReceivedPacket) error { return nil }
+type servicePreparedActivation struct { issuingCorrelation requestCorrelation; revision uint64; bootNonce [32]byte; generations CoreGenerations; prepared CorePreparedCapability; active bool }
+type serviceState struct { mu sync.Mutex; prepared servicePreparedActivation; request CoreExecRequest; plan ExecPlanCapability; revision uint64; transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool; dispatchTaken bool }
+type Service struct { state *serviceState }
+type serviceCoreCapabilityKind uint8
+const ( serviceCoreCapabilityExecution serviceCoreCapabilityKind = 3; serviceCoreCapabilityCleanup serviceCoreCapabilityKind = 4 )
+var ErrContractInvalidArgument, ErrContractCorrelation, ErrContractOwnership, ErrContractTransition error
+var coreFixedLimitSetID credentialprotocol.SafeID
+func validRequestCorrelation(requestCorrelation) bool { return true }
+func validCompleteCoreGenerations(CoreGenerations) bool { return true }
+func validSafeID(credentialprotocol.SafeID) bool { return true }
+func newServiceCoreCapabilityDigest(serviceCoreCapabilityKind, requestCorrelation, CoreGenerations, [32]byte) ([32]byte,error) { return [32]byte{1},nil }
+func NewCoreExecRequest([16]byte, [32]byte, uint64, CoreGenerations, credentialprotocol.SafeID, credentialprotocol.SafeID, uint32, [32]byte, uint32, [32]byte, ExecPlanCapability, CorePreparedCapability, CoreExecutionCapability, CoreCleanupCapability) (CoreExecRequest,error) { return CoreExecRequest{},nil }
+func wipeBytes(value []byte) { clear(value) }
+type serviceExecCapabilities struct { execution CoreExecutionCapability; cleanup CoreCleanupCapability }
+type serviceExecAuthority struct { request CoreExecRequest; plan ExecPlanCapability; revision uint64; transaction *credentialprotocol.HelperExecTransaction; correlation credentialprotocol.HelperExecTransactionCorrelation; comparison bool }
+type serviceExecPlanSink struct { canonical [credentialprotocol.MaxHelperExecPlanBytes]byte; length uint32; written bool }
+func (sink *serviceExecPlanSink) MaxCredentialBytes() int {
+	if sink == nil || sink.written { return 0 }
+	return len(sink.canonical)
+}
+func (sink *serviceExecPlanSink) WriteCredential(value []byte) error {
+	if sink == nil || sink.written || len(value) == 0 || len(value) > len(sink.canonical) { return ErrContractInvalidArgument }
+	copy(sink.canonical[:], value)
+	sink.length = uint32(len(value))
+	sink.written = true
+	return nil
+}
+func (sink *serviceExecPlanSink) destroy() {
+	if sink == nil { return }
+	clear(sink.canonical[:])
+	sink.length = 0
+	sink.written = false
+}
+func newServiceExecCapabilities(correlation requestCorrelation, generations CoreGenerations, bootNonce [32]byte) (serviceExecCapabilities,error) {
+	if !validCompleteCoreGenerations(generations) { return serviceExecCapabilities{}, ErrContractInvalidArgument }
+	executionSHA256, executionErr := newServiceCoreCapabilityDigest(serviceCoreCapabilityExecution, correlation, generations, bootNonce)
+	if executionErr != nil { return serviceExecCapabilities{}, executionErr }
+	cleanupSHA256, cleanupErr := newServiceCoreCapabilityDigest(serviceCoreCapabilityCleanup, correlation, generations, bootNonce)
+	if cleanupErr != nil { return serviceExecCapabilities{}, cleanupErr }
+	return serviceExecCapabilities{execution: CoreExecutionCapability{digest: executionSHA256}, cleanup: CoreCleanupCapability{digest: cleanupSHA256}},nil
+}
+func newServiceExecBodyIdentity(packet ReceivedPacket, arm ReceivedExec, plan ExecPlanCapability) (uint32,[32]byte,error) {
+	sink := &serviceExecPlanSink{}
+	defer sink.destroy()
+	if copyErr := plan.CopyCanonicalTo(sink); copyErr != nil || !sink.written || sink.length != plan.EncodedLength() || sha256.Sum256(sink.canonical[:sink.length]) != plan.SHA256() { return 0,[32]byte{},ErrContractCorrelation }
+	decodedPlan, decodeErr := credentialprotocol.DecodeHelperExecPlan(sink.canonical[:sink.length])
+	if decodeErr != nil { return 0,[32]byte{},ErrContractCorrelation }
+	body := credentialprotocol.HelperExecBody{Revision: arm.Revision(), ExecBindingID: string(arm.ExecBindingID()), PrivateBindingLength: arm.PrivateBindingLength(), PrivateBindingSHA256: arm.PrivateBindingSHA256(), Plan: decodedPlan}
+	canonical, encodeErr := credentialprotocol.EncodeHelperExecBody(body)
+	if encodeErr != nil { return 0,[32]byte{},ErrContractCorrelation }
+	defer wipeBytes(canonical[:cap(canonical)])
+	if len(canonical) == 0 || uint32(len(canonical)) != packet.Header().BodyLength { return 0,[32]byte{},ErrContractCorrelation }
+	return uint32(len(canonical)),sha256.Sum256(canonical),nil
+}
+func closeServiceExecAuthority(authority serviceExecAuthority) (cleanupErr error) {
+	defer func() { if recover() != nil { cleanupErr = ErrContractOwnership } }()
+	defer authority.plan.destroy()
+	if authority.transaction != nil { authority.transaction.Close() }
+	return nil
+}
+func (s *Service) newServiceExecAuthority(packet ReceivedPacket, arm ReceivedExec) (authority serviceExecAuthority, authorityErr error) {
+	plan := arm.Plan()
+	transferred := false
+	defer func() { if recover() != nil { authority = serviceExecAuthority{}; authorityErr = ErrContractOwnership }; if !transferred { arm.transactionSeed.Close(); plan.destroy() } }()
+	header := packet.Header()
+	s.state.mu.Lock()
+	activation := s.state.prepared
+	s.state.mu.Unlock()
+	correlation := requestCorrelation{requestID: header.RequestID, identityDigest: header.GuestCredentialIdentityDigest, revision: arm.Revision()}
+	if header.Type != credentialprotocol.PacketTypeExec || !activation.active || !validRequestCorrelation(correlation) || !validCompleteCoreGenerations(activation.generations) || !validSafeID(arm.ExecBindingID()) || arm.Revision() != activation.revision || header.GuestCredentialIdentityDigest != activation.issuingCorrelation.identityDigest || subtle.ConstantTimeCompare(header.BootNonce[:], activation.bootNonce[:]) != 1 { return serviceExecAuthority{},ErrContractCorrelation }
+	bodyLength, bodySHA256, bodyErr := newServiceExecBodyIdentity(packet, arm, plan)
+	if bodyErr != nil { return serviceExecAuthority{},bodyErr }
+	capabilities, capabilityErr := newServiceExecCapabilities(correlation, activation.generations, activation.bootNonce)
+	if capabilityErr != nil { return serviceExecAuthority{},capabilityErr }
+	request, requestErr := NewCoreExecRequest(header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision(), activation.generations, coreFixedLimitSetID, arm.ExecBindingID(), arm.PrivateBindingLength(), arm.PrivateBindingSHA256(), bodyLength, bodySHA256, plan, activation.prepared, capabilities.execution, capabilities.cleanup)
+	if requestErr != nil { return serviceExecAuthority{},requestErr }
+	transactionCorrelation, correlationErr := credentialprotocol.NewHelperExecTransactionCorrelation(header.RequestID, header.GuestCredentialIdentityDigest, arm.Revision())
+	if correlationErr != nil { return serviceExecAuthority{},correlationErr }
+	transaction, transactionErr := arm.transactionSeed.Begin()
+	if transactionErr != nil { return serviceExecAuthority{},transactionErr }
+	transferred = true
+	return serviceExecAuthority{request: request, plan: plan, revision: arm.Revision(), transaction: transaction, correlation: transactionCorrelation, comparison: false},nil
+}
+func (s *Service) installExecDispatch(authority serviceExecAuthority) error {
+	if authority.transaction == nil || authority.comparison || authority.revision == 0 { return ErrContractInvalidArgument }
+	s.state.mu.Lock()
+	if !s.state.prepared.active || s.state.prepared.revision != authority.revision || s.state.revision != 0 || s.state.transaction != nil || s.state.dispatchTaken { s.state.mu.Unlock(); return ErrContractTransition }
+	s.state.request = authority.request
+	s.state.plan = authority.plan
+	s.state.revision = authority.revision
+	s.state.transaction = authority.transaction
+	s.state.correlation = authority.correlation
+	s.state.comparison = authority.comparison
+	s.state.dispatchTaken = false
+	s.state.mu.Unlock()
+	return nil
+}
+func (s *Service) handleExec(ctx context.Context, packet ReceivedPacket) (struct{},error) {
+	arm, ok := packet.Exec()
+	if !ok { packetCleanupErr := destroyServiceReceivedPacket(ctx, packet); if packetCleanupErr != nil { return struct{}{},ErrContractOwnership }; return struct{}{},ErrContractInvalidArgument }
+	authority, authorityErr := s.newServiceExecAuthority(packet, arm)
+	if authorityErr != nil { packetCleanupErr := destroyServiceReceivedPacket(ctx, packet); if packetCleanupErr != nil { return struct{}{},ErrContractOwnership }; return struct{}{},authorityErr }
+	installErr := s.installExecDispatch(authority)
+	if installErr != nil { authorityCleanupErr := closeServiceExecAuthority(authority); packetCleanupErr := destroyServiceReceivedPacket(ctx, packet); if authorityCleanupErr != nil || packetCleanupErr != nil { return struct{}{},ErrContractOwnership }; return struct{}{},installErr }
+	return struct{}{},nil
+}
+`
+
+func l8D2ReadinessPreparePrerequisiteFunctionExact(function *ast.FuncDecl) bool {
+	if function == nil {
+		return false
+	}
+	want, err := parser.ParseFile(token.NewFileSet(), "canonical.go", l8D2ReadinessPreparePrerequisiteCanonical, 0)
+	if err != nil {
+		return false
+	}
+	receiver := ""
+	if function.Recv != nil && len(function.Recv.List) == 1 {
+		receiver = types.ExprString(function.Recv.List[0].Type)
+	}
+	expected := l8D2ReadinessUniqueFunction(map[string]*ast.File{"canonical.go": want}, receiver, function.Name.Name)
+	return expected != nil && l8D2ReadinessFormattedNode(function.Type) == l8D2ReadinessFormattedNode(expected.Type) && l8D2ReadinessFormattedNode(function.Body) == l8D2ReadinessFormattedNode(expected.Body)
+}
+
+func l8D2ReadinessFinishServiceReceiveExact(function *ast.FuncDecl) bool {
+	if function == nil || function.Name.Name != "finishServiceReceive" {
+		return false
+	}
+	for _, source := range []string{l8D2ReadinessPreparePrerequisiteCanonical, l8D2ReadinessExecReceiveCanonical()} {
+		want, err := parser.ParseFile(token.NewFileSet(), "receive.go", source, 0)
+		if err != nil {
+			continue
+		}
+		expected := l8D2ReadinessUniqueFunction(map[string]*ast.File{"receive.go": want}, "*Service", "finishServiceReceive")
+		if expected != nil && l8D2ReadinessFormattedNode(function.Type) == l8D2ReadinessFormattedNode(expected.Type) && l8D2ReadinessFormattedNode(function.Body) == l8D2ReadinessFormattedNode(expected.Body) {
+			return true
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessParseFixturePackage(t *testing.T, source string) map[string]*ast.File {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]*ast.File{"fixture.go": file}
+}
+
+func l8D2ReadinessPreparePrerequisites(files map[string]*ast.File) l8D2ReadinessPreparePrerequisiteAnalysis {
+	want, err := parser.ParseFile(token.NewFileSet(), "canonical.go", l8D2ReadinessPreparePrerequisiteCanonical, 0)
+	if err != nil {
+		return l8D2ReadinessPreparePrerequisiteAnalysis{}
+	}
+	wantFiles := map[string]*ast.File{"canonical.go": want}
+	exactFunction := func(receiver, name string) bool {
+		actual := l8D2ReadinessUniqueFunction(files, receiver, name)
+		expected := l8D2ReadinessUniqueFunction(wantFiles, receiver, name)
+		return actual != nil && expected != nil &&
+			l8D2ReadinessFormattedNode(actual.Type) == l8D2ReadinessFormattedNode(expected.Type) &&
+			l8D2ReadinessFormattedNode(actual.Body) == l8D2ReadinessFormattedNode(expected.Body)
+	}
+	exactStruct := func(name string) bool {
+		actual := l8D2ReadinessUniqueStruct(files, name)
+		expected := l8D2ReadinessUniqueStruct(wantFiles, name)
+		return actual != nil && expected != nil && l8D2ReadinessFormattedNode(actual) == l8D2ReadinessFormattedNode(expected)
+	}
+	requiredState := map[string]string{"mu": "sync.Mutex", "nextReceiveSequence": "uint64", "preparing": "servicePreparing", "prepared": "servicePreparedActivation"}
+	result := l8D2ReadinessPreparePrerequisiteAnalysis{}
+	preparedLive := l8D2ReadinessPreparePrerequisiteLiveEdges(files)
+	issuerCallsConfined := l8D2ReadinessPreparePrerequisiteCallsConfined(files)
+	result.capabilityIssuer = l8D2ReadinessExactPrivateTypedConstCatalog(files, "serviceCoreCapabilityKind", map[string]string{
+		"serviceCoreCapabilityPreparation": "1", "serviceCoreCapabilityPrepared": "2", "serviceCoreCapabilityExecution": "3", "serviceCoreCapabilityCleanup": "4",
+	}) && exactStruct("servicePrepareCapabilities") && exactStruct("servicePrepareAuthority") && exactFunction("", "newServiceCoreCapabilityDigest") && exactFunction("", "newServicePrepareCapabilities") && exactFunction("", "newServicePrepareAuthority") && l8D2ReadinessPrepareCapabilityIssuerConfined(files)
+	stateOrder := []string{"mu", "nextReceiveSequence", "preparing", "prepared"}
+	stateExact := l8D2ReadinessStructHasExactExecFieldTypes(files, "serviceState", requiredState) && l8D2ReadinessStructFieldsOrdered(files, "serviceState", stateOrder)
+	result.preparedActivation = result.capabilityIssuer && issuerCallsConfined && preparedLive && exactStruct("servicePreparing") && exactStruct("servicePreparedActivationCandidate") && exactStruct("servicePreparedActivation") && exactStruct("serviceRenewAuthority") && exactFunction("*Service", "reservePreparing") && exactFunction("*Service", "installPreparing") && exactFunction("", "closeServicePrepareTransaction") && exactFunction("", "rollbackServicePreparation") && exactFunction("*Service", "abortPreparing") && exactFunction("*Service", "takePreparing") && exactFunction("", "newServiceCommitRequest") && exactFunction("", "newServiceActiveProofID") && exactFunction("*Service", "newServiceReceiveRequest") && exactFunction("*Service", "receiveServicePacket") && l8D2ReadinessFinishServiceReceiveExact(l8D2ReadinessUniqueFunction(files, "*Service", "finishServiceReceive")) && exactFunction("", "destroyServiceReceivedPacket") && exactFunction("*Service", "takePreparingFile") && exactFunction("*Service", "finishPreparingFile") && exactFunction("", "newServiceFileRequest") && exactFunction("*Service", "handlePrepareFile") && exactFunction("", "newServicePreparedActivationCandidate") && exactFunction("*Service", "installPreparedActivation") && exactFunction("*Service", "revokeCommittedPreparation") && exactFunction("*Service", "revokeServicePreparedActivation") && exactFunction("", "validateServiceRenewArm") && exactFunction("*Service", "newServiceRenewRequest") && exactFunction("*Service", "advancePreparedActivation") && l8D2ReadinessPreparedActivationConfined(files) && stateExact
+	result.execDispatch = l8D2ReadinessExecDispatchPrerequisite(files)
+	return result
+}
+
+func l8D2ReadinessExecDispatchPrerequisite(files map[string]*ast.File) bool {
+	want, err := parser.ParseFile(token.NewFileSet(), "exec_canonical.go", l8D2ReadinessExecDispatchPrerequisiteCanonical, 0)
+	if err != nil {
+		return false
+	}
+	wantFiles := map[string]*ast.File{"exec_canonical.go": want}
+	exactFunction := func(receiver, name string) bool {
+		actual := l8D2ReadinessUniqueFunction(files, receiver, name)
+		expected := l8D2ReadinessUniqueFunction(wantFiles, receiver, name)
+		actualType, actualBody, actualOK := l8D2ReadinessExecNormalizedFunction(actual, l8D2ReadinessDeclarationFile(files, actual))
+		expectedType, expectedBody, expectedOK := l8D2ReadinessExecNormalizedFunction(expected, l8D2ReadinessDeclarationFile(wantFiles, expected))
+		return actualOK && expectedOK && actualType == expectedType && actualBody == expectedBody
+	}
+	exactStruct := func(name string) bool {
+		actual := l8D2ReadinessUniqueStruct(files, name)
+		expected := l8D2ReadinessUniqueStruct(wantFiles, name)
+		actualText, actualOK := l8D2ReadinessExecNormalizedStruct(actual, l8D2ReadinessDeclarationFile(files, actual))
+		expectedText, expectedOK := l8D2ReadinessExecNormalizedStruct(expected, l8D2ReadinessDeclarationFile(wantFiles, expected))
+		return actualOK && expectedOK && actualText == expectedText
+	}
+	if !exactStruct("serviceExecCapabilities") || !exactStruct("serviceExecAuthority") || !exactStruct("serviceExecPlanSink") ||
+		!exactFunction("*serviceExecPlanSink", "MaxCredentialBytes") || !exactFunction("*serviceExecPlanSink", "WriteCredential") || !exactFunction("*serviceExecPlanSink", "destroy") ||
+		!exactFunction("", "closeServiceExecAuthority") || !exactFunction("", "newServiceExecCapabilities") || !exactFunction("", "newServiceExecBodyIdentity") || !exactFunction("*Service", "newServiceExecAuthority") || !exactFunction("*Service", "installExecDispatch") {
+		return false
+	}
+	if !l8D2ReadinessExecDispatchImportsExact(files) {
+		return false
+	}
+	requiredState := map[string]string{
+		"mu": "sync.Mutex", "prepared": "servicePreparedActivation", "request": "CoreExecRequest", "plan": "ExecPlanCapability", "revision": "uint64",
+		"transaction": "*credentialprotocol.HelperExecTransaction", "correlation": "credentialprotocol.HelperExecTransactionCorrelation", "comparison": "bool", "dispatchTaken": "bool",
+	}
+	if !l8D2ReadinessStructHasExactExecFieldTypes(files, "serviceState", requiredState) || !l8D2ReadinessStructFieldsOrdered(files, "serviceState", []string{"mu", "prepared", "request", "plan", "revision", "transaction", "correlation", "comparison", "dispatchTaken"}) {
+		return false
+	}
+	return l8D2ReadinessExecDispatchReferencesConfined(files) && l8D2ReadinessExecDispatchLive(files)
+}
+
+func l8D2ReadinessDeclarationFile(files map[string]*ast.File, target ast.Node) *ast.File {
+	if target == nil {
+		return nil
+	}
+	for _, file := range files {
+		found := false
+		ast.Inspect(file, func(node ast.Node) bool {
+			if node == target {
+				found = true
+				return false
+			}
+			return !found
+		})
+		if found {
+			return file
+		}
+	}
+	return nil
+}
+
+func l8D2ReadinessExactExecImportPath(importPath string) bool {
+	switch importPath {
+	case "context", "crypto/sha256", "crypto/subtle", "hash", "sync",
+		"github.com/jywlabs/hal/internal/credentialmemory",
+		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol":
+		return true
+	default:
+		return false
+	}
+}
+
+func l8D2ReadinessExecNormalizedNode(node ast.Node, aliases map[string]string) string {
+	if node == nil {
+		return ""
+	}
+	original := l8D2ReadinessFormattedNode(node)
+	temporaryByPath := make(map[string]string)
+	replacementByTemporary := make(map[string]string)
+	nextTemporary := 0
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		selector, ok := candidate.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		owner, ok := selector.X.(*ast.Ident)
+		if !ok || owner.Obj != nil {
+			return true
+		}
+		importPath := aliases[owner.Name]
+		if !l8D2ReadinessExactExecImportPath(importPath) {
+			return true
+		}
+		temporary := temporaryByPath[importPath]
+		if temporary == "" {
+			for {
+				temporary = "l8D2TemporaryImportQualifier" + strconv.Itoa(nextTemporary)
+				nextTemporary++
+				if !strings.Contains(original, temporary) {
+					break
+				}
+			}
+			temporaryByPath[importPath] = temporary
+			replacementByTemporary[temporary] = "\x00l8-d2-import:" + importPath + "\x00"
+		}
+		owner.Name = temporary
+		return true
+	})
+	normalized := l8D2ReadinessFormattedNode(node)
+	for temporary, replacement := range replacementByTemporary {
+		normalized = strings.ReplaceAll(normalized, temporary, replacement)
+	}
+	return normalized
+}
+
+func l8D2ReadinessExecNormalizedFunction(function *ast.FuncDecl, file *ast.File) (string, string, bool) {
+	if function == nil || file == nil {
+		return "", "", false
+	}
+	source := "package fixture\n" + l8D2ReadinessFormattedNode(function)
+	parsed, err := parser.ParseFile(token.NewFileSet(), "normalized.go", source, 0)
+	if err != nil || len(parsed.Decls) != 1 {
+		return "", "", false
+	}
+	clone, ok := parsed.Decls[0].(*ast.FuncDecl)
+	if !ok {
+		return "", "", false
+	}
+	aliases, _ := l8D2ReadinessImportAliases(file)
+	return l8D2ReadinessExecNormalizedNode(clone.Type, aliases), l8D2ReadinessExecNormalizedNode(clone.Body, aliases), true
+}
+
+func l8D2ReadinessExecNormalizedSignature(function *ast.FuncDecl, file *ast.File) (string, bool) {
+	if function == nil || file == nil {
+		return "", false
+	}
+	source := "package fixture\n" + l8D2ReadinessFormattedNode(function)
+	parsed, err := parser.ParseFile(token.NewFileSet(), "normalized.go", source, 0)
+	if err != nil || len(parsed.Decls) != 1 {
+		return "", false
+	}
+	clone, ok := parsed.Decls[0].(*ast.FuncDecl)
+	if !ok {
+		return "", false
+	}
+	stripNames := func(list *ast.FieldList) {
+		if list == nil {
+			return
+		}
+		fields := make([]*ast.Field, 0, len(list.List))
+		for _, field := range list.List {
+			arity := len(field.Names)
+			if arity == 0 {
+				arity = 1
+			}
+			for range arity {
+				fields = append(fields, &ast.Field{Type: field.Type})
+			}
+		}
+		list.List = fields
+	}
+	stripNames(clone.Type.Params)
+	stripNames(clone.Type.Results)
+	aliases, _ := l8D2ReadinessImportAliases(file)
+	return l8D2ReadinessExecNormalizedNode(clone.Type, aliases), true
+}
+
+func l8D2ReadinessExecNormalizedStruct(structure *ast.StructType, file *ast.File) (string, bool) {
+	if structure == nil || file == nil {
+		return "", false
+	}
+	source := "package fixture\ntype normalized " + l8D2ReadinessFormattedNode(structure)
+	parsed, err := parser.ParseFile(token.NewFileSet(), "normalized.go", source, 0)
+	if err != nil || len(parsed.Decls) != 1 {
+		return "", false
+	}
+	declaration, ok := parsed.Decls[0].(*ast.GenDecl)
+	if !ok || len(declaration.Specs) != 1 {
+		return "", false
+	}
+	typeSpec, ok := declaration.Specs[0].(*ast.TypeSpec)
+	if !ok {
+		return "", false
+	}
+	clone, ok := typeSpec.Type.(*ast.StructType)
+	if !ok {
+		return "", false
+	}
+	aliases, _ := l8D2ReadinessImportAliases(file)
+	return l8D2ReadinessExecNormalizedNode(clone, aliases), true
+}
+
+func l8D2ReadinessExecNormalizedType(expression ast.Expr, aliases map[string]string) (string, bool) {
+	if expression == nil {
+		return "", false
+	}
+	clone, err := parser.ParseExpr(l8D2ReadinessFormattedNode(expression))
+	if err != nil {
+		return "", false
+	}
+	return l8D2ReadinessExecNormalizedNode(clone, aliases), true
+}
+
+func l8D2ReadinessStructHasExactExecFieldTypes(files map[string]*ast.File, name string, required map[string]string) bool {
+	structure := l8D2ReadinessUniqueStruct(files, name)
+	file := l8D2ReadinessDeclarationFile(files, structure)
+	if structure == nil || file == nil {
+		return false
+	}
+	aliases, _ := l8D2ReadinessImportAliases(file)
+	canonicalAliases := map[string]string{
+		"context":            "context",
+		"sha256":             "crypto/sha256",
+		"subtle":             "crypto/subtle",
+		"sync":               "sync",
+		"credentialmemory":   "github.com/jywlabs/hal/internal/credentialmemory",
+		"credentialprotocol": "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol",
+	}
+	seen := make(map[string]int, len(required))
+	for _, field := range structure.Fields.List {
+		actual, actualOK := l8D2ReadinessExecNormalizedType(field.Type, aliases)
+		for _, fieldName := range field.Names {
+			expectedText, requiredField := required[fieldName.Name]
+			if !requiredField {
+				continue
+			}
+			expectedExpression, err := parser.ParseExpr(expectedText)
+			if err != nil {
+				return false
+			}
+			expected, expectedOK := l8D2ReadinessExecNormalizedType(expectedExpression, canonicalAliases)
+			if !actualOK || !expectedOK || actual != expected {
+				return false
+			}
+			seen[fieldName.Name]++
+		}
+	}
+	for fieldName := range required {
+		if seen[fieldName] != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessExecDispatchImportsExact(files map[string]*ast.File) bool {
+	bound := func(target ast.Node, importPath string) bool {
+		file := l8D2ReadinessDeclarationFile(files, target)
+		if file == nil {
+			return false
+		}
+		aliases, _ := l8D2ReadinessImportAliases(file)
+		for _, candidate := range aliases {
+			if candidate == importPath {
+				return true
+			}
+		}
+		return false
+	}
+	bodyIdentity := l8D2ReadinessUniqueFunction(files, "", "newServiceExecBodyIdentity")
+	authority := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceExecAuthority")
+	planCopy := l8D2ReadinessUniqueFunction(files, "ExecPlanCapability", "CopyCanonicalTo")
+	state := l8D2ReadinessUniqueStruct(files, "serviceState")
+	want, err := parser.ParseFile(token.NewFileSet(), "exec_canonical.go", l8D2ReadinessExecDispatchPrerequisiteCanonical, 0)
+	if err != nil {
+		return false
+	}
+	expectedPlanCopy := l8D2ReadinessUniqueFunction(map[string]*ast.File{"exec_canonical.go": want}, "ExecPlanCapability", "CopyCanonicalTo")
+	planType, planOK := l8D2ReadinessExecNormalizedSignature(planCopy, l8D2ReadinessDeclarationFile(files, planCopy))
+	expectedPlanType, expectedPlanOK := l8D2ReadinessExecNormalizedSignature(expectedPlanCopy, l8D2ReadinessDeclarationFile(map[string]*ast.File{"exec_canonical.go": want}, expectedPlanCopy))
+	return bodyIdentity != nil && authority != nil && planOK && expectedPlanOK && planType == expectedPlanType &&
+		bound(bodyIdentity, "crypto/sha256") &&
+		bound(authority, "crypto/subtle") &&
+		bound(planCopy, "github.com/jywlabs/hal/internal/credentialmemory") &&
+		bound(bodyIdentity, "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol") &&
+		bound(authority, "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol") &&
+		bound(l8D2ReadinessUniqueStruct(files, "serviceExecAuthority"), "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol") &&
+		bound(l8D2ReadinessUniqueStruct(files, "serviceExecPlanSink"), "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol") &&
+		bound(state, "sync")
+}
+
+func l8D2ReadinessExecDispatchReferencesConfined(files map[string]*ast.File) bool {
+	execCapabilities := l8D2ReadinessUniqueFunction(files, "", "newServiceExecCapabilities")
+	prepareCapabilities := l8D2ReadinessUniqueFunction(files, "", "newServicePrepareCapabilities")
+	bodyIdentity := l8D2ReadinessUniqueFunction(files, "", "newServiceExecBodyIdentity")
+	authority := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceExecAuthority")
+	installer := l8D2ReadinessUniqueFunction(files, "*Service", "installExecDispatch")
+	closer := l8D2ReadinessUniqueFunction(files, "", "closeServiceExecAuthority")
+	handler := l8D2ReadinessUniqueFunction(files, "*Service", "handleExec")
+	finish := l8D2ReadinessUniqueFunction(files, "*Service", "finishExecDispatch")
+	cleanupExact := l8D2ReadinessExactExecCleanup(files)
+	if execCapabilities == nil || bodyIdentity == nil || authority == nil || installer == nil || closer == nil || handler == nil {
+		return false
+	}
+	allowed := map[string][]*ast.FuncDecl{
+		"newServiceCoreCapabilityDigest": {execCapabilities},
+		"NewCoreExecRequest":             {authority},
+		"newServiceExecBodyIdentity":     {authority},
+		"newServiceExecCapabilities":     {authority},
+		"newServiceExecAuthority":        {handler},
+		"installExecDispatch":            {handler},
+		"closeServiceExecAuthority":      {handler},
+	}
+	expectedCloseCalls := 1
+	if cleanupExact {
+		drain := l8D2ReadinessUniqueFunction(files, "*Service", "drainExecOutput")
+		continueDispatch := l8D2ReadinessUniqueFunction(files, "*Service", "continueExecDispatch")
+		sendOutput := l8D2ReadinessUniqueFunction(files, "*Service", "sendServiceExecOutput")
+		sendResponse := l8D2ReadinessUniqueFunction(files, "*Service", "sendServiceExecResponse")
+		if finish == nil || drain == nil || continueDispatch == nil || sendOutput == nil || sendResponse == nil {
+			return false
+		}
+		allowed["closeServiceExecAuthority"] = append(allowed["closeServiceExecAuthority"], finish)
+		allowed["NewCoreOutputRequest"] = []*ast.FuncDecl{drain}
+		allowed["newExecCreditPacket"] = []*ast.FuncDecl{continueDispatch}
+		allowed["newExecStreamPacket"] = []*ast.FuncDecl{sendOutput}
+		allowed["newResponsePacket"] = []*ast.FuncDecl{sendResponse}
+		expectedCloseCalls++
+	}
+	expectedCapabilityCalls := 2
+	if prepareCapabilities != nil {
+		if !l8D2ReadinessPreparePrerequisiteFunctionExact(prepareCapabilities) {
+			return false
+		}
+		allowed["newServiceCoreCapabilityDigest"] = append(allowed["newServiceCoreCapabilityDigest"], prepareCapabilities)
+		expectedCapabilityCalls += 3
+	}
+	parents := make(map[ast.Node]ast.Node)
+	for _, file := range files {
+		var stack []ast.Node
+		ast.Inspect(file, func(node ast.Node) bool {
+			if node == nil {
+				stack = stack[:len(stack)-1]
+				return false
+			}
+			if len(stack) != 0 {
+				parents[node] = stack[len(stack)-1]
+			}
+			stack = append(stack, node)
+			return true
+		})
+	}
+	counts := make(map[string]int)
+	inside := func(function *ast.FuncDecl, node ast.Node) bool {
+		return function != nil && function.Pos() <= node.Pos() && node.End() <= function.End()
+	}
+	for node, parent := range parents {
+		identifier, ok := node.(*ast.Ident)
+		if !ok || allowed[identifier.Name] == nil {
+			continue
+		}
+		if identifier.Obj != nil && identifier.Obj.Kind != ast.Fun {
+			continue
+		}
+		if declaration, ok := parent.(*ast.FuncDecl); ok && declaration.Name == identifier {
+			continue
+		}
+		callee := ast.Expr(identifier)
+		if selector, ok := parent.(*ast.SelectorExpr); ok && selector.Sel == identifier {
+			if l8D2ReadinessUniqueFunction(files, "", identifier.Name) != nil {
+				continue
+			}
+			callee = selector
+			parent = parents[selector]
+		}
+		call, ok := parent.(*ast.CallExpr)
+		if !ok || call.Fun != callee {
+			return false
+		}
+		permitted := false
+		for _, function := range allowed[identifier.Name] {
+			permitted = permitted || inside(function, call)
+		}
+		if !permitted {
+			return false
+		}
+		counts[identifier.Name]++
+	}
+	valid := counts["newServiceCoreCapabilityDigest"] == expectedCapabilityCalls && counts["NewCoreExecRequest"] == 1 && counts["newServiceExecBodyIdentity"] == 1 && counts["newServiceExecCapabilities"] == 1 && counts["newServiceExecAuthority"] == 1 && counts["installExecDispatch"] == 1 && counts["closeServiceExecAuthority"] == expectedCloseCalls
+	if cleanupExact {
+		valid = valid && counts["NewCoreOutputRequest"] == 1 && counts["newExecCreditPacket"] == 1 && counts["newExecStreamPacket"] == 1 && counts["newResponsePacket"] == 1
+	}
+	return valid
+}
+
+func l8D2ReadinessExecDispatchLive(files map[string]*ast.File) bool {
+	handler := l8D2ReadinessUniqueFunction(files, "*Service", "handleExec")
+	expectedSource := l8D2ReadinessExecDispatchPrerequisiteCanonical
+	expectedFileName := "exec_canonical.go"
+	if l8D2ReadinessExactExecCleanup(files) {
+		expectedSource = l8D2ReadinessCombinedPrepareExecCanonical()
+		expectedFileName = "combined_exec_canonical.go"
+	}
+	want, err := parser.ParseFile(token.NewFileSet(), expectedFileName, expectedSource, 0)
+	if err != nil {
+		return false
+	}
+	expected := l8D2ReadinessUniqueFunction(map[string]*ast.File{expectedFileName: want}, "*Service", "handleExec")
+	if handler == nil || handler.Body == nil || expected == nil || expected.Body == nil {
+		return false
+	}
+	normalizeResultShell := func(value string) string {
+		return strings.NewReplacer("ServiceResult{}", "serviceResultShell{}", "struct{}{}", "serviceResultShell{}", "struct {}{}", "serviceResultShell{}").Replace(value)
+	}
+	return normalizeResultShell(l8D2ReadinessFormattedNode(handler.Body)) == normalizeResultShell(l8D2ReadinessFormattedNode(expected.Body))
+}
+
+func l8D2ReadinessPreparePrerequisitesAcrossBuilds(dir string, files map[string]*ast.File) l8D2ReadinessPreparePrerequisiteAnalysis {
+	result := l8D2ReadinessPreparePrerequisites(files)
+	if dir == "" {
+		return l8D2ReadinessPreparePrerequisiteAnalysis{}
+	}
+	serviceDeclared := false
+	for _, file := range files {
+		serviceDeclared = serviceDeclared || l8D2ReadinessFileDeclaresStruct(file, "Service")
+	}
+	for _, context := range l8D2ReadinessSupportedBuildContexts() {
+		selected := make(map[string]*ast.File)
+		serviceActive := false
+		for path, file := range files {
+			active, err := context.MatchFile(dir, filepath.Base(path))
+			if err != nil {
+				return l8D2ReadinessPreparePrerequisiteAnalysis{}
+			}
+			if !active {
+				continue
+			}
+			selected[path] = file
+			serviceActive = serviceActive || l8D2ReadinessFileDeclaresStruct(file, "Service")
+		}
+		if serviceDeclared && !serviceActive {
+			return l8D2ReadinessPreparePrerequisiteAnalysis{}
+		}
+		if !serviceActive {
+			continue
+		}
+		active := l8D2ReadinessPreparePrerequisites(selected)
+		result.capabilityIssuer = result.capabilityIssuer && active.capabilityIssuer
+		result.preparedActivation = result.preparedActivation && active.preparedActivation
+		result.execDispatch = result.execDispatch && active.execDispatch
+	}
+	return result
+}
+
+func l8D2ReadinessPrepareCapabilityIssuerConfined(files map[string]*ast.File) bool {
+	prepare := l8D2ReadinessUniqueFunction(files, "", "newServicePrepareCapabilities")
+	exec := l8D2ReadinessUniqueFunction(files, "", "newServiceExecCapabilities")
+	authority := l8D2ReadinessUniqueFunction(files, "", "newServicePrepareAuthority")
+	candidate := l8D2ReadinessUniqueFunction(files, "", "newServicePreparedActivationCandidate")
+	issuer := l8D2ReadinessUniqueFunction(files, "", "newServiceCoreCapabilityDigest")
+	if prepare == nil || authority == nil || candidate == nil || issuer == nil || !l8D2ReadinessPrepareCapabilityAuthorityConfined(files, prepare) {
+		return false
+	}
+	allowed := map[string][]*ast.FuncDecl{
+		"newServiceCoreCapabilityDigest": {prepare},
+		"newServicePrepareCapabilities":  {authority, candidate},
+	}
+	if exec != nil {
+		if !l8D2ReadinessExecDispatchFunctionExact(exec) {
+			return false
+		}
+		allowed["newServiceCoreCapabilityDigest"] = append(allowed["newServiceCoreCapabilityDigest"], exec)
+	}
+	parents := make(map[ast.Node]ast.Node)
+	for _, file := range files {
+		var stack []ast.Node
+		ast.Inspect(file, func(node ast.Node) bool {
+			if node == nil {
+				stack = stack[:len(stack)-1]
+				return false
+			}
+			if len(stack) != 0 {
+				parents[node] = stack[len(stack)-1]
+			}
+			stack = append(stack, node)
+			return true
+		})
+	}
+	counts := map[string]int{}
+	for node, parent := range parents {
+		identifier, ok := node.(*ast.Ident)
+		if !ok || allowed[identifier.Name] == nil {
+			continue
+		}
+		if function, ok := parent.(*ast.FuncDecl); ok && function.Name == identifier {
+			continue
+		}
+		call, ok := parent.(*ast.CallExpr)
+		if !ok || call.Fun != identifier {
+			return false
+		}
+		permitted := false
+		for _, function := range allowed[identifier.Name] {
+			permitted = permitted || function.Pos() <= call.Pos() && call.End() <= function.End()
+		}
+		if !permitted {
+			return false
+		}
+		counts[identifier.Name]++
+	}
+	expectedCapabilityCalls := 3
+	if exec != nil {
+		expectedCapabilityCalls += 2
+	}
+	return counts["newServiceCoreCapabilityDigest"] == expectedCapabilityCalls && counts["newServicePrepareCapabilities"] == 2
+}
+
+func l8D2ReadinessExecDispatchFunctionExact(function *ast.FuncDecl) bool {
+	if function == nil {
+		return false
+	}
+	want, err := parser.ParseFile(token.NewFileSet(), "exec_canonical.go", l8D2ReadinessExecDispatchPrerequisiteCanonical, 0)
+	if err != nil {
+		return false
+	}
+	receiver := ""
+	if function.Recv != nil && len(function.Recv.List) == 1 {
+		receiver = types.ExprString(function.Recv.List[0].Type)
+	}
+	expected := l8D2ReadinessUniqueFunction(map[string]*ast.File{"exec_canonical.go": want}, receiver, function.Name.Name)
+	return expected != nil && l8D2ReadinessFormattedNode(function.Type) == l8D2ReadinessFormattedNode(expected.Type) && l8D2ReadinessFormattedNode(function.Body) == l8D2ReadinessFormattedNode(expected.Body)
+}
+
+func l8D2ReadinessPreparePrerequisiteCallsConfined(files map[string]*ast.File) bool {
+	prepare := l8D2ReadinessUniqueFunction(files, "", "newServicePrepareCapabilities")
+	prepareAuthority := l8D2ReadinessUniqueFunction(files, "", "newServicePrepareAuthority")
+	candidate := l8D2ReadinessUniqueFunction(files, "", "newServicePreparedActivationCandidate")
+	commitRequest := l8D2ReadinessUniqueFunction(files, "", "newServiceCommitRequest")
+	fileRequest := l8D2ReadinessUniqueFunction(files, "", "newServiceFileRequest")
+	fileHandler := l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareFile")
+	beginHandler := l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareBegin")
+	commitHandler := l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareCommit")
+	renewHandler := l8D2ReadinessUniqueFunction(files, "*Service", "handleRenew")
+	reservePreparing := l8D2ReadinessUniqueFunction(files, "*Service", "reservePreparing")
+	installPreparing := l8D2ReadinessUniqueFunction(files, "*Service", "installPreparing")
+	closeTransaction := l8D2ReadinessUniqueFunction(files, "", "closeServicePrepareTransaction")
+	rollbackPreparation := l8D2ReadinessUniqueFunction(files, "", "rollbackServicePreparation")
+	abortPreparing := l8D2ReadinessUniqueFunction(files, "*Service", "abortPreparing")
+	revokeCommitted := l8D2ReadinessUniqueFunction(files, "*Service", "revokeCommittedPreparation")
+	revokePrepared := l8D2ReadinessUniqueFunction(files, "*Service", "revokeServicePreparedActivation")
+	receivePacket := l8D2ReadinessUniqueFunction(files, "*Service", "receiveServicePacket")
+	finishReceive := l8D2ReadinessUniqueFunction(files, "*Service", "finishServiceReceive")
+	validateRenew := l8D2ReadinessUniqueFunction(files, "", "validateServiceRenewArm")
+	receiveIssuer := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceReceiveRequest")
+	packetCleanup := l8D2ReadinessUniqueFunction(files, "", "destroyServiceReceivedPacket")
+	serve := l8D2ReadinessUniqueFunction(files, "*Service", "Serve")
+	renewRequest := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceRenewRequest")
+	advance := l8D2ReadinessUniqueFunction(files, "*Service", "advancePreparedActivation")
+	if prepare == nil || prepareAuthority == nil || candidate == nil || commitRequest == nil || fileRequest == nil || fileHandler == nil || beginHandler == nil || commitHandler == nil || renewHandler == nil || reservePreparing == nil || installPreparing == nil || closeTransaction == nil || rollbackPreparation == nil || abortPreparing == nil || revokeCommitted == nil || revokePrepared == nil || receivePacket == nil || finishReceive == nil || validateRenew == nil || receiveIssuer == nil || packetCleanup == nil || serve == nil || renewRequest == nil || advance == nil {
+		return false
+	}
+	capabilityCalls, prepareCalls, proofCalls, prepareConstructorCalls, fileConstructorCalls, commitConstructorCalls, renewConstructorCalls, renewIssuerCalls := 0, 0, 0, 0, 0, 0, 0, 0
+	fileObservationCalls, fileStageCalls, fileAcceptCalls, fileBorrowCalls, fileDestroyCalls, fileFinishCalls := 0, 0, 0, 0, 0, 0
+	receiveConstructorCalls, receiveIssuerCalls, transportReceiveCalls, packetCleanupCalls, rightCloseCalls := 0, 0, 0, 0, 0
+	reserveCalls, installCalls, abortCalls, revokeCommittedCalls, revokePreparedCalls, validateRenewCalls, revokeConstructorCalls, coreRevokeCalls, transactionCleanupCalls, transactionCloseCalls, rollbackCalls := 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+	valid := true
+	inside := func(function *ast.FuncDecl, node ast.Node) bool {
+		return function.Pos() <= node.Pos() && node.End() <= function.End()
+	}
+	scopes := []*ast.FuncDecl{prepare, prepareAuthority, candidate, commitRequest, fileRequest, fileHandler, beginHandler, commitHandler, renewHandler, reservePreparing, installPreparing, closeTransaction, rollbackPreparation, abortPreparing, revokeCommitted, revokePrepared, receivePacket, finishReceive, validateRenew, receiveIssuer, packetCleanup, serve, renewRequest, advance}
+	for _, function := range scopes {
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return valid
+			}
+			name := ""
+			switch callee := call.Fun.(type) {
+			case *ast.Ident:
+				name = callee.Name
+			case *ast.SelectorExpr:
+				name = callee.Sel.Name
+			}
+			switch name {
+			case "newServiceCoreCapabilityDigest":
+				capabilityCalls++
+				valid = valid && inside(prepare, call)
+			case "newServicePrepareCapabilities":
+				prepareCalls++
+				valid = valid && (inside(prepareAuthority, call) || inside(candidate, call))
+			case "newServiceActiveProofID":
+				proofCalls++
+				valid = valid && (inside(candidate, call) || inside(advance, call))
+			case "NewCorePrepareRequest":
+				prepareConstructorCalls++
+				valid = valid && inside(prepareAuthority, call)
+			case "NewCoreFileRequest":
+				fileConstructorCalls++
+				valid = valid && inside(fileRequest, call)
+			case "NewCoreCommitRequest":
+				commitConstructorCalls++
+				valid = valid && inside(commitRequest, call)
+			case "NewCoreRenewRequest":
+				renewConstructorCalls++
+				valid = valid && inside(renewRequest, call)
+			case "newServiceRenewRequest":
+				renewIssuerCalls++
+				valid = valid && inside(advance, call)
+			case "NewHelperPrepareFileObservation":
+				fileObservationCalls++
+				valid = valid && inside(fileHandler, call)
+			case "StageFile":
+				fileStageCalls++
+				valid = valid && inside(fileHandler, call)
+			case "AcceptObservedFileObservation":
+				fileAcceptCalls++
+				valid = valid && inside(fileHandler, call)
+			case "Borrow":
+				if inside(fileHandler, call) {
+					fileBorrowCalls++
+				}
+			case "Destroy":
+				if inside(packetCleanup, call) {
+					fileDestroyCalls++
+				}
+			case "finishPreparingFile":
+				fileFinishCalls++
+				valid = valid && inside(fileHandler, call)
+			case "reservePreparing":
+				reserveCalls++
+				valid = valid && inside(beginHandler, call)
+			case "installPreparing":
+				installCalls++
+				valid = valid && inside(beginHandler, call)
+			case "abortPreparing":
+				abortCalls++
+				valid = valid && (inside(beginHandler, call) || inside(fileHandler, call) || inside(commitHandler, call) || inside(finishReceive, call))
+			case "revokeCommittedPreparation":
+				revokeCommittedCalls++
+				valid = valid && inside(commitHandler, call)
+			case "revokeServicePreparedActivation":
+				revokePreparedCalls++
+				valid = valid && (inside(renewHandler, call) || inside(finishReceive, call))
+			case "validateServiceRenewArm":
+				validateRenewCalls++
+				valid = valid && (inside(renewRequest, call) || inside(renewHandler, call))
+			case "NewCoreRevokeRequest":
+				if inside(revokeCommitted, call) || inside(revokePrepared, call) {
+					revokeConstructorCalls++
+				} else {
+					valid = false
+				}
+			case "Revoke":
+				if inside(revokeCommitted, call) || inside(revokePrepared, call) {
+					coreRevokeCalls++
+				} else {
+					valid = false
+				}
+			case "closeServicePrepareTransaction":
+				transactionCleanupCalls++
+				valid = valid && (inside(beginHandler, call) || inside(abortPreparing, call) || inside(revokeCommitted, call))
+			case "Rollback":
+				rollbackCalls++
+				valid = valid && inside(rollbackPreparation, call)
+			case "NewReceiveRequest":
+				receiveConstructorCalls++
+				valid = valid && inside(receiveIssuer, call)
+			case "newServiceReceiveRequest":
+				receiveIssuerCalls++
+				valid = valid && inside(serve, call)
+			case "Receive":
+				if inside(receivePacket, call) {
+					transportReceiveCalls++
+					selector, selectorOK := call.Fun.(*ast.SelectorExpr)
+					valid = valid && selectorOK && types.ExprString(selector.X) == "s.transport" && len(call.Args) == 2 && types.ExprString(call.Args[0]) == "ctx" && types.ExprString(call.Args[1]) == "request"
+				}
+			case "destroyServiceReceivedPacket":
+				if inside(fileHandler, call) || inside(beginHandler, call) || inside(commitHandler, call) || inside(renewHandler, call) || inside(serve, call) {
+					packetCleanupCalls++
+				}
+			case "Close":
+				if inside(packetCleanup, call) {
+					rightCloseCalls++
+				} else if inside(closeTransaction, call) {
+					transactionCloseCalls++
+				} else {
+					valid = false
+				}
+			}
+			return valid
+		})
+	}
+	return valid && capabilityCalls == 3 && prepareCalls == 2 && proofCalls == 2 && prepareConstructorCalls == 1 && fileConstructorCalls == 1 && commitConstructorCalls == 1 && renewConstructorCalls == 1 && renewIssuerCalls == 1 && fileObservationCalls == 1 && fileStageCalls == 1 && fileAcceptCalls == 1 && fileBorrowCalls == 1 && fileDestroyCalls == 1 && fileFinishCalls == 1 && reserveCalls == 1 && installCalls == 1 && abortCalls == 4 && revokeCommittedCalls == 2 && revokePreparedCalls == 2 && validateRenewCalls == 2 && revokeConstructorCalls == 2 && coreRevokeCalls == 2 && transactionCleanupCalls == 3 && transactionCloseCalls == 1 && rollbackCalls == 1 && receiveConstructorCalls == 1 && receiveIssuerCalls == 1 && transportReceiveCalls == 1 && packetCleanupCalls == 5 && rightCloseCalls == 1 && l8D2ReadinessPrepareIssuerReferencesConfined(files) && l8D2ReadinessPrepareCapabilityAuthorityConfined(files, prepare)
+}
+
+func l8D2ReadinessPrepareCapabilityAuthorityConfined(files map[string]*ast.File, prepare *ast.FuncDecl) bool {
+	issuer := l8D2ReadinessUniqueFunction(files, "", "newServiceCoreCapabilityDigest")
+	exec := l8D2ReadinessUniqueFunction(files, "", "newServiceExecCapabilities")
+	if prepare == nil || issuer == nil {
+		return false
+	}
+	capabilityTypes := map[string]bool{
+		"CorePreparationCapability": true,
+		"CorePreparedCapability":    true,
+		"CoreExecutionCapability":   true,
+		"CoreCleanupCapability":     true,
+	}
+	capabilityResolver := l8D2ReadinessNewPrepareShapeResolver(files, map[string]l8D2ReadinessPrepareValueKind{
+		"CorePreparationCapability": l8D2ReadinessPrepareCapabilityValue,
+		"CorePreparedCapability":    l8D2ReadinessPrepareCapabilityValue,
+		"CoreExecutionCapability":   l8D2ReadinessPrepareCapabilityValue,
+		"CoreCleanupCapability":     l8D2ReadinessPrepareCapabilityValue,
+	})
+	insidePrepare := func(node ast.Node) bool {
+		return prepare.Pos() <= node.Pos() && node.End() <= prepare.End()
+	}
+	insideExec := func(node ast.Node) bool {
+		return exec != nil && exec.Pos() <= node.Pos() && node.End() <= exec.End()
+	}
+	insideIssuer := func(node ast.Node) bool {
+		return issuer.Pos() <= node.Pos() && node.End() <= issuer.End()
+	}
+	domainCount, authorityLiterals := 0, 0
+	valid := true
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			if !valid || node == nil {
+				return valid
+			}
+			switch value := node.(type) {
+			case *ast.BasicLit:
+				if value.Kind != token.STRING {
+					return true
+				}
+				literal, err := strconv.Unquote(value.Value)
+				if err == nil && literal == "hal/l8/guest-helper/core-capability/v1" {
+					domainCount++
+					valid = insideIssuer(value)
+				}
+			case *ast.CompositeLit:
+				shape := capabilityResolver.typeShape(value.Type)
+				if shape == nil || shape.direct&l8D2ReadinessPrepareCapabilityValue == 0 || len(value.Elts) == 0 {
+					return true
+				}
+				authorityLiterals++
+				typeName := types.ExprString(value.Type)
+				valid = insidePrepare(value) && typeName != "CoreExecutionCapability" || insideExec(value) && (typeName == "CoreExecutionCapability" || typeName == "CoreCleanupCapability")
+			case *ast.CallExpr:
+				if shape := capabilityResolver.typeShape(value.Fun); shape != nil && shape.direct&l8D2ReadinessPrepareCapabilityValue != 0 {
+					valid = false
+				}
+			case *ast.TypeSpec:
+				shape := capabilityResolver.typeShape(value.Type)
+				if shape != nil && shape.direct&l8D2ReadinessPrepareCapabilityValue != 0 {
+					valid = false
+				}
+			}
+			return valid
+		})
+	}
+	expectedAuthorityLiterals := 3
+	if exec != nil {
+		expectedAuthorityLiterals += 2
+	}
+	return valid && domainCount == 1 && authorityLiterals == expectedAuthorityLiterals && l8D2ReadinessPrepareCapabilityDigestWritesConfined(files, prepare, capabilityTypes)
+}
+
+type l8D2ReadinessPrepareValueKind uint8
+
+const (
+	l8D2ReadinessPrepareCapabilityValue l8D2ReadinessPrepareValueKind = 1 << iota
+	l8D2ReadinessPrepareServiceValue
+	l8D2ReadinessPrepareStateValue
+	l8D2ReadinessPrepareDigestViewValue
+)
+
+type l8D2ReadinessPrepareValueShape struct {
+	direct      l8D2ReadinessPrepareValueKind
+	fields      map[string]*l8D2ReadinessPrepareValueShape
+	index       *l8D2ReadinessPrepareValueShape
+	rangeKey    *l8D2ReadinessPrepareValueShape
+	rangeValue  *l8D2ReadinessPrepareValueShape
+	rangeSingle *l8D2ReadinessPrepareValueShape
+	callResults *l8D2ReadinessPrepareValueShape
+	resultList  []*l8D2ReadinessPrepareValueShape
+	parameters  []*l8D2ReadinessPrepareValueShape
+}
+
+func l8D2ReadinessPrepareShapeContains(shape *l8D2ReadinessPrepareValueShape, kind l8D2ReadinessPrepareValueKind) bool {
+	return l8D2ReadinessPrepareShapeContainsWithSeen(shape, kind, make(map[*l8D2ReadinessPrepareValueShape]bool))
+}
+
+func l8D2ReadinessPrepareShapeContainsWithSeen(shape *l8D2ReadinessPrepareValueShape, kind l8D2ReadinessPrepareValueKind, seen map[*l8D2ReadinessPrepareValueShape]bool) bool {
+	if shape == nil {
+		return false
+	}
+	if shape.direct&kind != 0 {
+		return true
+	}
+	if seen[shape] {
+		return false
+	}
+	seen[shape] = true
+	for _, field := range shape.fields {
+		if l8D2ReadinessPrepareShapeContainsWithSeen(field, kind, seen) {
+			return true
+		}
+	}
+	for _, nested := range []*l8D2ReadinessPrepareValueShape{shape.index, shape.rangeKey, shape.rangeValue, shape.rangeSingle, shape.callResults} {
+		if l8D2ReadinessPrepareShapeContainsWithSeen(nested, kind, seen) {
+			return true
+		}
+	}
+	for _, result := range shape.resultList {
+		if l8D2ReadinessPrepareShapeContainsWithSeen(result, kind, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+type l8D2ReadinessPrepareShapePair struct {
+	left  *l8D2ReadinessPrepareValueShape
+	right *l8D2ReadinessPrepareValueShape
+}
+
+func l8D2ReadinessPrepareShapeMerge(left, right *l8D2ReadinessPrepareValueShape) *l8D2ReadinessPrepareValueShape {
+	return l8D2ReadinessPrepareShapeMergeWithSeen(left, right, make(map[l8D2ReadinessPrepareShapePair]*l8D2ReadinessPrepareValueShape))
+}
+
+func l8D2ReadinessPrepareShapeMergeWithSeen(left, right *l8D2ReadinessPrepareValueShape, seen map[l8D2ReadinessPrepareShapePair]*l8D2ReadinessPrepareValueShape) *l8D2ReadinessPrepareValueShape {
+	if left == nil {
+		return right
+	}
+	if right == nil {
+		return left
+	}
+	if left == right {
+		return left
+	}
+	pair := l8D2ReadinessPrepareShapePair{left: left, right: right}
+	if result := seen[pair]; result != nil {
+		return result
+	}
+	result := &l8D2ReadinessPrepareValueShape{direct: left.direct | right.direct}
+	seen[pair] = result
+	if len(left.fields)+len(right.fields) != 0 {
+		result.fields = make(map[string]*l8D2ReadinessPrepareValueShape)
+		for name, field := range left.fields {
+			result.fields[name] = field
+		}
+		for name, field := range right.fields {
+			result.fields[name] = l8D2ReadinessPrepareShapeMergeWithSeen(result.fields[name], field, seen)
+		}
+	}
+	result.index = l8D2ReadinessPrepareShapeMergeWithSeen(left.index, right.index, seen)
+	result.rangeKey = l8D2ReadinessPrepareShapeMergeWithSeen(left.rangeKey, right.rangeKey, seen)
+	result.rangeValue = l8D2ReadinessPrepareShapeMergeWithSeen(left.rangeValue, right.rangeValue, seen)
+	result.rangeSingle = l8D2ReadinessPrepareShapeMergeWithSeen(left.rangeSingle, right.rangeSingle, seen)
+	result.callResults = l8D2ReadinessPrepareShapeMergeWithSeen(left.callResults, right.callResults, seen)
+	result.resultList = make([]*l8D2ReadinessPrepareValueShape, max(len(left.resultList), len(right.resultList)))
+	for index := range result.resultList {
+		if index < len(left.resultList) {
+			result.resultList[index] = left.resultList[index]
+		}
+		if index < len(right.resultList) {
+			result.resultList[index] = l8D2ReadinessPrepareShapeMergeWithSeen(result.resultList[index], right.resultList[index], seen)
+		}
+	}
+	result.parameters = make([]*l8D2ReadinessPrepareValueShape, max(len(left.parameters), len(right.parameters)))
+	for index := range result.parameters {
+		if index < len(left.parameters) {
+			result.parameters[index] = left.parameters[index]
+		}
+		if index < len(right.parameters) {
+			result.parameters[index] = l8D2ReadinessPrepareShapeMergeWithSeen(result.parameters[index], right.parameters[index], seen)
+		}
+	}
+	return result
+}
+
+func l8D2ReadinessPrepareShapeEqual(left, right *l8D2ReadinessPrepareValueShape) bool {
+	return l8D2ReadinessPrepareShapeEqualWithSeen(left, right, make(map[l8D2ReadinessPrepareShapePair]bool))
+}
+
+func l8D2ReadinessPrepareShapeEqualWithSeen(left, right *l8D2ReadinessPrepareValueShape, seen map[l8D2ReadinessPrepareShapePair]bool) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	if left == right {
+		return true
+	}
+	pair := l8D2ReadinessPrepareShapePair{left: left, right: right}
+	if seen[pair] {
+		return true
+	}
+	seen[pair] = true
+	if left.direct != right.direct || len(left.fields) != len(right.fields) || len(left.resultList) != len(right.resultList) || len(left.parameters) != len(right.parameters) {
+		return false
+	}
+	for index := range left.resultList {
+		if !l8D2ReadinessPrepareShapeEqualWithSeen(left.resultList[index], right.resultList[index], seen) {
+			return false
+		}
+	}
+	for index := range left.parameters {
+		if !l8D2ReadinessPrepareShapeEqualWithSeen(left.parameters[index], right.parameters[index], seen) {
+			return false
+		}
+	}
+	for name, field := range left.fields {
+		if !l8D2ReadinessPrepareShapeEqualWithSeen(field, right.fields[name], seen) {
+			return false
+		}
+	}
+	return l8D2ReadinessPrepareShapeEqualWithSeen(left.index, right.index, seen) &&
+		l8D2ReadinessPrepareShapeEqualWithSeen(left.rangeKey, right.rangeKey, seen) &&
+		l8D2ReadinessPrepareShapeEqualWithSeen(left.rangeValue, right.rangeValue, seen) &&
+		l8D2ReadinessPrepareShapeEqualWithSeen(left.rangeSingle, right.rangeSingle, seen) &&
+		l8D2ReadinessPrepareShapeEqualWithSeen(left.callResults, right.callResults, seen)
+}
+
+type l8D2ReadinessPrepareShapeResolver struct {
+	directTypes  map[string]l8D2ReadinessPrepareValueKind
+	packageTypes map[string]*ast.TypeSpec
+	packageObjs  map[any]bool
+	cache        map[any]*l8D2ReadinessPrepareValueShape
+	directShapes map[l8D2ReadinessPrepareValueKind]*l8D2ReadinessPrepareValueShape
+	instances    map[*ast.TypeSpec]*l8D2ReadinessPrepareShapeInstance
+}
+
+type l8D2ReadinessPrepareShapeInstance struct {
+	next  map[*l8D2ReadinessPrepareValueShape]*l8D2ReadinessPrepareShapeInstance
+	shape *l8D2ReadinessPrepareValueShape
+}
+
+func l8D2ReadinessNewPrepareShapeResolver(files map[string]*ast.File, directTypes map[string]l8D2ReadinessPrepareValueKind) *l8D2ReadinessPrepareShapeResolver {
+	resolver := &l8D2ReadinessPrepareShapeResolver{
+		directTypes: directTypes, packageTypes: make(map[string]*ast.TypeSpec), packageObjs: make(map[any]bool),
+		cache: make(map[any]*l8D2ReadinessPrepareValueShape), directShapes: make(map[l8D2ReadinessPrepareValueKind]*l8D2ReadinessPrepareValueShape),
+		instances: make(map[*ast.TypeSpec]*l8D2ReadinessPrepareShapeInstance),
+	}
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			group, ok := declaration.(*ast.GenDecl)
+			if !ok || group.Tok != token.TYPE {
+				continue
+			}
+			for _, raw := range group.Specs {
+				specification, ok := raw.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				resolver.packageTypes[specification.Name.Name] = specification
+				if specification.Name.Obj != nil {
+					resolver.packageObjs[specification.Name.Obj] = true
+				}
+			}
+		}
+	}
+	return resolver
+}
+
+func (resolver *l8D2ReadinessPrepareShapeResolver) directShape(kind l8D2ReadinessPrepareValueKind) *l8D2ReadinessPrepareValueShape {
+	if kind == 0 {
+		return nil
+	}
+	if resolver.directShapes[kind] == nil {
+		resolver.directShapes[kind] = &l8D2ReadinessPrepareValueShape{direct: kind}
+	}
+	return resolver.directShapes[kind]
+}
+
+func (resolver *l8D2ReadinessPrepareShapeResolver) typeShape(expression ast.Expr) *l8D2ReadinessPrepareValueShape {
+	return resolver.typeShapeWith(expression, nil)
+}
+
+func (resolver *l8D2ReadinessPrepareShapeResolver) typeShapeWith(expression ast.Expr, substitutions map[any]*l8D2ReadinessPrepareValueShape) *l8D2ReadinessPrepareValueShape {
+	if expression == nil {
+		return nil
+	}
+	switch value := expression.(type) {
+	case *ast.Ident:
+		if value.Obj != nil && substitutions[value.Obj] != nil {
+			return substitutions[value.Obj]
+		}
+		if value.Obj != nil && value.Obj.Kind == ast.Typ {
+			if resolver.packageObjs[value.Obj] && resolver.directTypes[value.Name] != 0 {
+				return resolver.directShape(resolver.directTypes[value.Name])
+			}
+			if cached, ok := resolver.cache[value.Obj]; ok {
+				return cached
+			}
+			if specification, ok := value.Obj.Decl.(*ast.TypeSpec); ok {
+				placeholder := &l8D2ReadinessPrepareValueShape{}
+				resolver.cache[value.Obj] = placeholder
+				shape := resolver.typeShapeWith(specification.Type, substitutions)
+				if shape != nil && shape != placeholder {
+					*placeholder = *shape
+				}
+				return placeholder
+			}
+		}
+		if kind := resolver.directTypes[value.Name]; value.Obj == nil && kind != 0 {
+			return resolver.directShape(kind)
+		}
+		if value.Obj == nil {
+			if specification := resolver.packageTypes[value.Name]; specification != nil {
+				return resolver.typeShapeWith(specification.Name, substitutions)
+			}
+		}
+	case *ast.IndexExpr:
+		return resolver.instantiateType(value.X, []ast.Expr{value.Index}, substitutions)
+	case *ast.IndexListExpr:
+		return resolver.instantiateType(value.X, value.Indices, substitutions)
+	case *ast.ParenExpr:
+		return resolver.typeShapeWith(value.X, substitutions)
+	case *ast.StarExpr:
+		return resolver.typeShapeWith(value.X, substitutions)
+	case *ast.ArrayType:
+		element := resolver.typeShapeWith(value.Elt, substitutions)
+		return &l8D2ReadinessPrepareValueShape{index: element, rangeValue: element}
+	case *ast.MapType:
+		key, element := resolver.typeShapeWith(value.Key, substitutions), resolver.typeShapeWith(value.Value, substitutions)
+		return &l8D2ReadinessPrepareValueShape{index: element, rangeKey: key, rangeValue: element, rangeSingle: key}
+	case *ast.ChanType:
+		element := resolver.typeShapeWith(value.Value, substitutions)
+		return &l8D2ReadinessPrepareValueShape{rangeValue: element, rangeSingle: element}
+	case *ast.StructType:
+		shape := &l8D2ReadinessPrepareValueShape{fields: make(map[string]*l8D2ReadinessPrepareValueShape)}
+		for _, field := range value.Fields.List {
+			fieldShape := resolver.typeShapeWith(field.Type, substitutions)
+			if len(field.Names) == 0 {
+				for name, promoted := range fieldShapeFields(fieldShape) {
+					shape.fields[name] = l8D2ReadinessPrepareShapeMerge(shape.fields[name], promoted)
+				}
+				if fieldShape != nil && fieldShape.direct&l8D2ReadinessPrepareServiceValue != 0 {
+					shape.fields["state"] = l8D2ReadinessPrepareShapeMerge(shape.fields["state"], &l8D2ReadinessPrepareValueShape{direct: l8D2ReadinessPrepareStateValue})
+				}
+				if name := l8D2ReadinessPrepareEmbeddedFieldName(field.Type); name != "" {
+					shape.fields[name] = l8D2ReadinessPrepareShapeMerge(shape.fields[name], fieldShape)
+				}
+			}
+			for _, name := range field.Names {
+				shape.fields[name.Name] = fieldShape
+			}
+		}
+		return shape
+	case *ast.InterfaceType:
+		shape := &l8D2ReadinessPrepareValueShape{fields: make(map[string]*l8D2ReadinessPrepareValueShape)}
+		for _, method := range value.Methods.List {
+			methodShape := resolver.typeShapeWith(method.Type, substitutions)
+			if len(method.Names) == 0 {
+				for name, promoted := range fieldShapeFields(methodShape) {
+					shape.fields[name] = l8D2ReadinessPrepareShapeMerge(shape.fields[name], promoted)
+				}
+			}
+			for _, name := range method.Names {
+				shape.fields[name.Name] = methodShape
+			}
+		}
+		return shape
+	case *ast.FuncType:
+		shape := &l8D2ReadinessPrepareValueShape{}
+		if value.Params != nil {
+			for _, field := range value.Params.List {
+				parameter := resolver.typeShapeWith(field.Type, substitutions)
+				count := max(1, len(field.Names))
+				for range count {
+					shape.parameters = append(shape.parameters, parameter)
+				}
+			}
+		}
+		if value.Results != nil {
+			for _, field := range value.Results.List {
+				result := resolver.typeShapeWith(field.Type, substitutions)
+				count := max(1, len(field.Names))
+				for range count {
+					shape.resultList = append(shape.resultList, result)
+					shape.callResults = l8D2ReadinessPrepareShapeMerge(shape.callResults, result)
+				}
+			}
+		}
+		if value.Params != nil && len(value.Params.List) == 1 {
+			yield := resolver.typeShapeWith(value.Params.List[0].Type, substitutions)
+			if yield != nil {
+				switch len(yield.parameters) {
+				case 1:
+					shape.rangeSingle = yield.parameters[0]
+				case 2:
+					shape.rangeKey, shape.rangeValue = yield.parameters[0], yield.parameters[1]
+					shape.rangeSingle = yield.parameters[0]
+				}
+			}
+		}
+		return shape
+	}
+	return nil
+}
+
+func (resolver *l8D2ReadinessPrepareShapeResolver) instantiateType(base ast.Expr, arguments []ast.Expr, outer map[any]*l8D2ReadinessPrepareValueShape) *l8D2ReadinessPrepareValueShape {
+	identifier, ok := base.(*ast.Ident)
+	if !ok {
+		return resolver.typeShapeWith(base, outer)
+	}
+	var specification *ast.TypeSpec
+	if identifier.Obj != nil {
+		specification, _ = identifier.Obj.Decl.(*ast.TypeSpec)
+	} else {
+		specification = resolver.packageTypes[identifier.Name]
+	}
+	if specification == nil || specification.TypeParams == nil {
+		return resolver.typeShapeWith(base, outer)
+	}
+	substitutions := make(map[any]*l8D2ReadinessPrepareValueShape, len(outer)+len(arguments))
+	for object, shape := range outer {
+		substitutions[object] = shape
+	}
+	argumentShapes := make([]*l8D2ReadinessPrepareValueShape, 0, len(arguments))
+	argument := 0
+	for _, field := range specification.TypeParams.List {
+		for _, name := range field.Names {
+			if argument >= len(arguments) {
+				return nil
+			}
+			shape := resolver.typeShapeWith(arguments[argument], outer)
+			argumentShapes = append(argumentShapes, shape)
+			if name.Obj != nil {
+				substitutions[name.Obj] = shape
+			}
+			argument++
+		}
+	}
+	if argument != len(arguments) {
+		return nil
+	}
+	instance := resolver.instances[specification]
+	if instance == nil {
+		instance = &l8D2ReadinessPrepareShapeInstance{}
+		resolver.instances[specification] = instance
+	}
+	for _, shape := range argumentShapes {
+		if instance.next == nil {
+			instance.next = make(map[*l8D2ReadinessPrepareValueShape]*l8D2ReadinessPrepareShapeInstance)
+		}
+		if instance.next[shape] == nil {
+			instance.next[shape] = &l8D2ReadinessPrepareShapeInstance{}
+		}
+		instance = instance.next[shape]
+	}
+	if instance.shape != nil {
+		return instance.shape
+	}
+	placeholder := &l8D2ReadinessPrepareValueShape{}
+	instance.shape = placeholder
+	shape := resolver.typeShapeWith(specification.Type, substitutions)
+	if shape != nil && shape != placeholder {
+		*placeholder = *shape
+	}
+	return placeholder
+}
+
+func fieldShapeFields(shape *l8D2ReadinessPrepareValueShape) map[string]*l8D2ReadinessPrepareValueShape {
+	if shape == nil {
+		return nil
+	}
+	return shape.fields
+}
+
+func l8D2ReadinessPrepareEmbeddedFieldName(expression ast.Expr) string {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		return value.Name
+	case *ast.StarExpr:
+		return l8D2ReadinessPrepareEmbeddedFieldName(value.X)
+	case *ast.IndexExpr:
+		return l8D2ReadinessPrepareEmbeddedFieldName(value.X)
+	case *ast.IndexListExpr:
+		return l8D2ReadinessPrepareEmbeddedFieldName(value.X)
+	case *ast.SelectorExpr:
+		return value.Sel.Name
+	}
+	return ""
+}
+
+type l8D2ReadinessPrepareShapeBindings struct {
+	objects      map[any]*l8D2ReadinessPrepareValueShape
+	packageNames map[string]*l8D2ReadinessPrepareValueShape
+}
+
+func l8D2ReadinessNewPrepareShapeBindings() *l8D2ReadinessPrepareShapeBindings {
+	return &l8D2ReadinessPrepareShapeBindings{objects: make(map[any]*l8D2ReadinessPrepareValueShape), packageNames: make(map[string]*l8D2ReadinessPrepareValueShape)}
+}
+
+func (bindings *l8D2ReadinessPrepareShapeBindings) clone() *l8D2ReadinessPrepareShapeBindings {
+	result := l8D2ReadinessNewPrepareShapeBindings()
+	for object, shape := range bindings.objects {
+		result.objects[object] = shape
+	}
+	for name, shape := range bindings.packageNames {
+		result.packageNames[name] = shape
+	}
+	return result
+}
+
+func (bindings *l8D2ReadinessPrepareShapeBindings) lookup(identifier *ast.Ident) *l8D2ReadinessPrepareValueShape {
+	if identifier == nil || identifier.Name == "_" {
+		return nil
+	}
+	if identifier.Obj != nil {
+		return bindings.objects[identifier.Obj]
+	}
+	return bindings.packageNames[identifier.Name]
+}
+
+func (bindings *l8D2ReadinessPrepareShapeBindings) bind(identifier *ast.Ident, shape *l8D2ReadinessPrepareValueShape, packageBinding bool) bool {
+	if identifier == nil || identifier.Name == "_" || shape == nil {
+		return false
+	}
+	changed := false
+	if identifier.Obj != nil {
+		merged := l8D2ReadinessPrepareShapeMerge(bindings.objects[identifier.Obj], shape)
+		changed = !l8D2ReadinessPrepareShapeEqual(bindings.objects[identifier.Obj], merged)
+		bindings.objects[identifier.Obj] = merged
+	}
+	if packageBinding || identifier.Obj == nil {
+		merged := l8D2ReadinessPrepareShapeMerge(bindings.packageNames[identifier.Name], shape)
+		changed = changed || !l8D2ReadinessPrepareShapeEqual(bindings.packageNames[identifier.Name], merged)
+		bindings.packageNames[identifier.Name] = merged
+	}
+	return changed
+}
+
+func l8D2ReadinessPrepareExpressionShape(expression ast.Expr, bindings *l8D2ReadinessPrepareShapeBindings, resolver *l8D2ReadinessPrepareShapeResolver) *l8D2ReadinessPrepareValueShape {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		return bindings.lookup(value)
+	case *ast.ParenExpr:
+		return l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver)
+	case *ast.StarExpr:
+		return l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver)
+	case *ast.UnaryExpr:
+		if value.Op == token.AND || value.Op == token.ARROW {
+			return l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver)
+		}
+	case *ast.SelectorExpr:
+		base := l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver)
+		if base == nil {
+			return nil
+		}
+		if field := base.fields[value.Sel.Name]; field != nil {
+			return field
+		}
+		if value.Sel.Name == "state" && base.direct&l8D2ReadinessPrepareServiceValue != 0 {
+			return &l8D2ReadinessPrepareValueShape{direct: l8D2ReadinessPrepareStateValue}
+		}
+		if (value.Sel.Name == "prepared" || value.Sel.Name == "preparing") && base.direct&l8D2ReadinessPrepareStateValue != 0 {
+			return &l8D2ReadinessPrepareValueShape{direct: l8D2ReadinessPrepareStateValue}
+		}
+	case *ast.IndexExpr:
+		if base := l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver); base != nil {
+			return base.index
+		}
+	case *ast.IndexListExpr:
+		if base := l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver); base != nil {
+			return base.index
+		}
+	case *ast.SliceExpr:
+		return l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver)
+	case *ast.TypeAssertExpr:
+		return l8D2ReadinessPrepareShapeMerge(resolver.typeShape(value.Type), l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver))
+	case *ast.KeyValueExpr:
+		return l8D2ReadinessPrepareExpressionShape(value.Value, bindings, resolver)
+	case *ast.CompositeLit:
+		return resolver.typeShape(value.Type)
+	case *ast.FuncLit:
+		return resolver.typeShape(value.Type)
+	case *ast.CallExpr:
+		if identifier, ok := value.Fun.(*ast.Ident); ok && identifier.Name == "new" && len(value.Args) == 1 {
+			return resolver.typeShape(value.Args[0])
+		}
+		if function := l8D2ReadinessPrepareExpressionShape(value.Fun, bindings, resolver); function != nil && function.callResults != nil {
+			return function.callResults
+		}
+		return resolver.typeShape(value.Fun)
+	}
+	return nil
+}
+
+func l8D2ReadinessPrepareAssignmentShape(values []ast.Expr, index int, bindings *l8D2ReadinessPrepareShapeBindings, resolver *l8D2ReadinessPrepareShapeResolver) *l8D2ReadinessPrepareValueShape {
+	if index < 0 {
+		return nil
+	}
+	if index < len(values) && len(values) != 1 {
+		return l8D2ReadinessPrepareExpressionShape(values[index], bindings, resolver)
+	}
+	if len(values) != 1 {
+		return nil
+	}
+	call, ok := l8D2ReadinessPrepareUnparenExpression(values[0]).(*ast.CallExpr)
+	if !ok {
+		if index == 0 {
+			return l8D2ReadinessPrepareExpressionShape(values[0], bindings, resolver)
+		}
+		return nil
+	}
+	function := l8D2ReadinessPrepareExpressionShape(call.Fun, bindings, resolver)
+	if function != nil && index < len(function.resultList) {
+		return function.resultList[index]
+	}
+	if index == 0 {
+		return l8D2ReadinessPrepareExpressionShape(call, bindings, resolver)
+	}
+	return nil
+}
+
+func l8D2ReadinessPrepareUnparenExpression(expression ast.Expr) ast.Expr {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			return expression
+		}
+		expression = parenthesized.X
+	}
+}
+
+func l8D2ReadinessPrepareSeedPackageBindings(files map[string]*ast.File, resolver *l8D2ReadinessPrepareShapeResolver) *l8D2ReadinessPrepareShapeBindings {
+	bindings := l8D2ReadinessNewPrepareShapeBindings()
+	for changed := true; changed; {
+		changed = false
+		for _, file := range files {
+			for _, declaration := range file.Decls {
+				switch value := declaration.(type) {
+				case *ast.FuncDecl:
+					changed = bindings.bind(value.Name, resolver.typeShape(value.Type), true) || changed
+				case *ast.GenDecl:
+					if value.Tok != token.VAR {
+						continue
+					}
+					for _, raw := range value.Specs {
+						specification, ok := raw.(*ast.ValueSpec)
+						if !ok {
+							continue
+						}
+						for index, name := range specification.Names {
+							shape := resolver.typeShape(specification.Type)
+							shape = l8D2ReadinessPrepareShapeMerge(shape, l8D2ReadinessPrepareAssignmentShape(specification.Values, index, bindings, resolver))
+							changed = bindings.bind(name, shape, true) || changed
+						}
+					}
+				}
+			}
+		}
+	}
+	return bindings
+}
+
+func l8D2ReadinessPrepareSeedFunctionBindings(function *ast.FuncDecl, packageBindings *l8D2ReadinessPrepareShapeBindings, resolver *l8D2ReadinessPrepareShapeResolver) *l8D2ReadinessPrepareShapeBindings {
+	bindings := packageBindings.clone()
+	for _, fields := range []*ast.FieldList{function.Recv, function.Type.Params, function.Type.Results} {
+		if fields == nil {
+			continue
+		}
+		for _, field := range fields.List {
+			shape := resolver.typeShape(field.Type)
+			for _, name := range field.Names {
+				bindings.bind(name, shape, false)
+			}
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.ValueSpec:
+				for index, name := range value.Names {
+					shape := resolver.typeShape(value.Type)
+					shape = l8D2ReadinessPrepareShapeMerge(shape, l8D2ReadinessPrepareAssignmentShape(value.Values, index, bindings, resolver))
+					changed = bindings.bind(name, shape, false) || changed
+				}
+			case *ast.AssignStmt:
+				for index, left := range value.Lhs {
+					identifier, ok := left.(*ast.Ident)
+					if ok {
+						changed = bindings.bind(identifier, l8D2ReadinessPrepareAssignmentShape(value.Rhs, index, bindings, resolver), false) || changed
+					}
+				}
+			case *ast.RangeStmt:
+				shape := l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver)
+				if identifier, ok := value.Key.(*ast.Ident); ok {
+					keyShape := shapeRangeKey(shape)
+					if value.Value == nil {
+						keyShape = shapeRangeSingle(shape)
+					}
+					changed = bindings.bind(identifier, keyShape, false) || changed
+				}
+				if identifier, ok := value.Value.(*ast.Ident); ok {
+					changed = bindings.bind(identifier, shapeRangeValue(shape), false) || changed
+				}
+			}
+			return true
+		})
+	}
+	return bindings
+}
+
+func shapeRangeKey(shape *l8D2ReadinessPrepareValueShape) *l8D2ReadinessPrepareValueShape {
+	if shape == nil {
+		return nil
+	}
+	return shape.rangeKey
+}
+
+func shapeRangeValue(shape *l8D2ReadinessPrepareValueShape) *l8D2ReadinessPrepareValueShape {
+	if shape == nil {
+		return nil
+	}
+	return shape.rangeValue
+}
+
+func shapeRangeSingle(shape *l8D2ReadinessPrepareValueShape) *l8D2ReadinessPrepareValueShape {
+	if shape == nil {
+		return nil
+	}
+	return shape.rangeSingle
+}
+
+func l8D2ReadinessExactCryptoSubtleComparison(file *ast.File, call *ast.CallExpr) bool {
+	selector, ok := l8D2ReadinessPrepareUnparenExpression(call.Fun).(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "ConstantTimeCompare" {
+		return false
+	}
+	qualifier, ok := selector.X.(*ast.Ident)
+	if !ok || qualifier.Obj != nil {
+		return false
+	}
+	for _, imported := range file.Imports {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil || path != "crypto/subtle" {
+			continue
+		}
+		name := "subtle"
+		if imported.Name != nil {
+			name = imported.Name.Name
+		}
+		return name != "." && name != "_" && qualifier.Name == name
+	}
+	return false
+}
+
+func l8D2ReadinessPrepareCapabilityDigestWritesConfined(files map[string]*ast.File, prepare *ast.FuncDecl, _ map[string]bool) bool {
+	resolver := l8D2ReadinessNewPrepareShapeResolver(files, map[string]l8D2ReadinessPrepareValueKind{
+		"CorePreparationCapability": l8D2ReadinessPrepareCapabilityValue,
+		"CorePreparedCapability":    l8D2ReadinessPrepareCapabilityValue,
+		"CoreExecutionCapability":   l8D2ReadinessPrepareCapabilityValue,
+		"CoreCleanupCapability":     l8D2ReadinessPrepareCapabilityValue,
+	})
+	packageBindings := l8D2ReadinessPrepareSeedPackageBindings(files, resolver)
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil || function == prepare {
+				continue
+			}
+			bindings := l8D2ReadinessPrepareSeedFunctionBindings(function, packageBindings, resolver)
+			for changed := true; changed; {
+				changed = false
+				ast.Inspect(function.Body, func(node ast.Node) bool {
+					switch value := node.(type) {
+					case *ast.ValueSpec:
+						for index, name := range value.Names {
+							if index < len(value.Values) && l8D2ReadinessPrepareCapabilityDigestViewShape(value.Values[index], bindings, resolver) {
+								changed = bindings.bind(name, &l8D2ReadinessPrepareValueShape{direct: l8D2ReadinessPrepareDigestViewValue}, false) || changed
+							}
+						}
+					case *ast.AssignStmt:
+						for index, left := range value.Lhs {
+							identifier, ok := left.(*ast.Ident)
+							if ok && index < len(value.Rhs) && l8D2ReadinessPrepareCapabilityDigestViewShape(value.Rhs[index], bindings, resolver) {
+								changed = bindings.bind(identifier, &l8D2ReadinessPrepareValueShape{direct: l8D2ReadinessPrepareDigestViewValue}, false) || changed
+							}
+						}
+					}
+					return true
+				})
+			}
+			confined := true
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				if !confined || node == nil {
+					return confined
+				}
+				switch value := node.(type) {
+				case *ast.AssignStmt:
+					for _, left := range value.Lhs {
+						if l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(left, bindings, resolver) {
+							confined = false
+						}
+					}
+					if value.Tok != token.DEFINE {
+						for _, right := range value.Rhs {
+							if l8D2ReadinessPrepareCapabilityDigestViewShape(right, bindings, resolver) {
+								confined = false
+							}
+						}
+					}
+				case *ast.IncDecStmt:
+					confined = !l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.X, bindings, resolver)
+				case *ast.UnaryExpr:
+					if value.Op == token.AND && l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.X, bindings, resolver) {
+						confined = false
+					}
+				case *ast.CallExpr:
+					readOnly := l8D2ReadinessExactCryptoSubtleComparison(file, value)
+					for _, argument := range value.Args {
+						if !readOnly && l8D2ReadinessPrepareCapabilityDigestViewShape(argument, bindings, resolver) {
+							confined = false
+						}
+					}
+					if identifier, ok := value.Fun.(*ast.Ident); ok && identifier.Name == "copy" && len(value.Args) != 0 && l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.Args[0], bindings, resolver) {
+						confined = false
+					}
+				case *ast.ReturnStmt:
+					for _, result := range value.Results {
+						if l8D2ReadinessPrepareCapabilityDigestViewShape(result, bindings, resolver) {
+							confined = false
+						}
+					}
+				case *ast.SendStmt:
+					if l8D2ReadinessPrepareCapabilityDigestViewShape(value.Value, bindings, resolver) {
+						confined = false
+					}
+				}
+				return confined
+			})
+			if !confined {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(expression ast.Expr, bindings *l8D2ReadinessPrepareShapeBindings, resolver *l8D2ReadinessPrepareShapeResolver) bool {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		shape := bindings.lookup(value)
+		return shape != nil && shape.direct&l8D2ReadinessPrepareDigestViewValue != 0
+	case *ast.SelectorExpr:
+		shape := l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver)
+		return value.Sel.Name == "digest" && shape != nil && shape.direct&l8D2ReadinessPrepareCapabilityValue != 0
+	case *ast.ParenExpr:
+		return l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.X, bindings, resolver)
+	case *ast.StarExpr:
+		return l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.X, bindings, resolver)
+	case *ast.IndexExpr:
+		return l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.X, bindings, resolver)
+	case *ast.IndexListExpr:
+		return l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.X, bindings, resolver)
+	case *ast.SliceExpr:
+		return l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.X, bindings, resolver)
+	}
+	return false
+}
+
+func l8D2ReadinessPrepareCapabilityDigestViewShape(expression ast.Expr, bindings *l8D2ReadinessPrepareShapeBindings, resolver *l8D2ReadinessPrepareShapeResolver) bool {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		shape := bindings.lookup(value)
+		return shape != nil && shape.direct&l8D2ReadinessPrepareDigestViewValue != 0
+	case *ast.SliceExpr:
+		return l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.X, bindings, resolver)
+	case *ast.UnaryExpr:
+		return value.Op == token.AND && l8D2ReadinessPrepareCapabilityDigestWriteTargetShape(value.X, bindings, resolver)
+	case *ast.ParenExpr:
+		return l8D2ReadinessPrepareCapabilityDigestViewShape(value.X, bindings, resolver)
+	case *ast.TypeAssertExpr:
+		return l8D2ReadinessPrepareCapabilityDigestViewShape(value.X, bindings, resolver)
+	case *ast.KeyValueExpr:
+		return l8D2ReadinessPrepareCapabilityDigestViewShape(value.Value, bindings, resolver)
+	case *ast.CompositeLit:
+		for _, element := range value.Elts {
+			if l8D2ReadinessPrepareCapabilityDigestViewShape(element, bindings, resolver) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessPrepareIssuerReferencesConfined(files map[string]*ast.File) bool {
+	allowed := map[string][]*ast.FuncDecl{
+		"NewCorePrepareRequest":           {l8D2ReadinessUniqueFunction(files, "", "newServicePrepareAuthority")},
+		"NewCoreFileRequest":              {l8D2ReadinessUniqueFunction(files, "", "newServiceFileRequest")},
+		"NewCoreCommitRequest":            {l8D2ReadinessUniqueFunction(files, "", "newServiceCommitRequest")},
+		"NewCoreRenewRequest":             {l8D2ReadinessUniqueFunction(files, "*Service", "newServiceRenewRequest")},
+		"NewCoreRevokeRequest":            {l8D2ReadinessUniqueFunction(files, "*Service", "revokeCommittedPreparation"), l8D2ReadinessUniqueFunction(files, "*Service", "revokeServicePreparedActivation")},
+		"NewReceiveRequest":               {l8D2ReadinessUniqueFunction(files, "*Service", "newServiceReceiveRequest")},
+		"NewHelperPrepareFileObservation": {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareFile")},
+		"newServiceCoreCapabilityDigest":  {l8D2ReadinessUniqueFunction(files, "", "newServicePrepareCapabilities")},
+		"newServicePrepareCapabilities":   {l8D2ReadinessUniqueFunction(files, "", "newServicePrepareAuthority"), l8D2ReadinessUniqueFunction(files, "", "newServicePreparedActivationCandidate")},
+		"newServiceReceiveRequest": {
+			l8D2ReadinessUniqueFunction(files, "*Service", "Serve"),
+			l8D2ReadinessUniqueFunction(files, "*Service", "dispatchPrivate"),
+			l8D2ReadinessUniqueFunction(files, "*Service", "dispatchStdin"),
+		},
+		"newServicePrepareAuthority":     {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareBegin")},
+		"reservePreparing":               {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareBegin")},
+		"installPreparing":               {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareBegin")},
+		"closeServicePrepareTransaction": {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareBegin"), l8D2ReadinessUniqueFunction(files, "*Service", "abortPreparing"), l8D2ReadinessUniqueFunction(files, "*Service", "revokeCommittedPreparation")},
+		"rollbackServicePreparation":     {l8D2ReadinessUniqueFunction(files, "*Service", "abortPreparing")},
+		"abortPreparing":                 {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareBegin"), l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareFile"), l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareCommit")},
+		"revokeCommittedPreparation":     {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareCommit")},
+		"revokeServicePreparedActivation": {
+			l8D2ReadinessUniqueFunction(files, "*Service", "handleRenew"),
+		},
+		"validateServiceRenewArm":               {l8D2ReadinessUniqueFunction(files, "*Service", "newServiceRenewRequest"), l8D2ReadinessUniqueFunction(files, "*Service", "handleRenew")},
+		"takePreparingFile":                     {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareFile")},
+		"finishPreparingFile":                   {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareFile")},
+		"newServiceFileRequest":                 {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareFile")},
+		"takePreparing":                         {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareCommit")},
+		"newServiceCommitRequest":               {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareCommit")},
+		"newServiceActiveProofID":               {l8D2ReadinessUniqueFunction(files, "", "newServicePreparedActivationCandidate"), l8D2ReadinessUniqueFunction(files, "*Service", "advancePreparedActivation")},
+		"newServicePreparedActivationCandidate": {l8D2ReadinessUniqueFunction(files, "*Service", "installPreparedActivation")},
+		"installPreparedActivation":             {l8D2ReadinessUniqueFunction(files, "*Service", "handlePrepareCommit")},
+		"newServiceRenewRequest":                {l8D2ReadinessUniqueFunction(files, "*Service", "advancePreparedActivation")},
+		"advancePreparedActivation":             {l8D2ReadinessUniqueFunction(files, "*Service", "handleRenew")},
+	}
+	finishReceive := l8D2ReadinessUniqueFunction(files, "*Service", "finishServiceReceive")
+	if finishReceive == nil {
+		return false
+	}
+	allowed["abortPreparing"] = append(allowed["abortPreparing"], finishReceive)
+	allowed["revokeServicePreparedActivation"] = append(allowed["revokeServicePreparedActivation"], finishReceive)
+	if exec := l8D2ReadinessUniqueFunction(files, "", "newServiceExecCapabilities"); exec != nil {
+		if !l8D2ReadinessExecDispatchFunctionExact(exec) {
+			return false
+		}
+		allowed["newServiceCoreCapabilityDigest"] = append(allowed["newServiceCoreCapabilityDigest"], exec)
+	}
+	cleanupExact := l8D2ReadinessExactExecCleanup(files)
+	if cleanupExact {
+		allowed["newServiceReceiveRequest"] = append(allowed["newServiceReceiveRequest"], l8D2ReadinessUniqueFunction(files, "*Service", "startServiceExecReceive"))
+		allowed["revokeServicePreparedActivation"] = append(allowed["revokeServicePreparedActivation"], l8D2ReadinessUniqueFunction(files, "*Service", "finishExecDispatch"))
+	}
+	for _, functions := range allowed {
+		for _, function := range functions {
+			if function == nil {
+				return false
+			}
+		}
+	}
+	parents := make(map[ast.Node]ast.Node)
+	for _, file := range files {
+		var stack []ast.Node
+		ast.Inspect(file, func(node ast.Node) bool {
+			if node == nil {
+				stack = stack[:len(stack)-1]
+				return false
+			}
+			if len(stack) != 0 {
+				parents[node] = stack[len(stack)-1]
+			}
+			stack = append(stack, node)
+			return true
+		})
+	}
+	inside := func(function *ast.FuncDecl, node ast.Node) bool {
+		return function != nil && function.Pos() <= node.Pos() && node.End() <= function.End()
+	}
+	for node, parent := range parents {
+		identifier, ok := node.(*ast.Ident)
+		if !ok || allowed[identifier.Name] == nil {
+			continue
+		}
+		if identifier.Obj != nil && identifier.Obj.Kind != ast.Fun {
+			continue
+		}
+		if function, ok := parent.(*ast.FuncDecl); ok && function.Name == identifier {
+			continue
+		}
+		callee := ast.Expr(identifier)
+		if selector, ok := parent.(*ast.SelectorExpr); ok && selector.Sel == identifier {
+			if l8D2ReadinessUniqueFunction(files, "", identifier.Name) != nil {
+				continue
+			}
+			if identifier.Name == "NewHelperPrepareFileObservation" && types.ExprString(selector.X) != "credentialprotocol" {
+				continue
+			}
+			callee = selector
+			parent = parents[selector]
+		}
+		call, ok := parent.(*ast.CallExpr)
+		if !ok || call.Fun != callee {
+			return false
+		}
+		permitted := false
+		for _, function := range allowed[identifier.Name] {
+			permitted = permitted || inside(function, call)
+		}
+		if !permitted {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessPreparePrerequisiteLiveEdges(files map[string]*ast.File) bool {
+	_, stable := l8D2ReadinessPrepareServeTopology(files)
+	if !stable {
+		return false
+	}
+	for _, name := range []string{"handlePrepareBegin", "handlePrepareFile", "handlePrepareCommit", "handleRenew"} {
+		if !l8D2ReadinessPreparePrerequisiteFunctionExact(l8D2ReadinessUniqueFunction(files, "*Service", name)) {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessPrepareServeTopology(files map[string]*ast.File) (map[*ast.CallExpr]bool, bool) {
+	trusted := make(map[*ast.CallExpr]bool)
+	serve := l8D2ReadinessUniqueFunction(files, "*Service", "Serve")
+	if serve == nil || serve.Body == nil || serve.Type.Results == nil || len(serve.Type.Results.List) != 2 || types.ExprString(serve.Type.Results.List[0].Type) != "ServiceResult" || types.ExprString(serve.Type.Results.List[1].Type) != "error" {
+		return trusted, false
+	}
+	var aliases map[string]string
+	for _, file := range files {
+		if file.Pos() <= serve.Pos() && serve.End() <= file.End() {
+			aliases, _ = l8D2ReadinessImportAliases(file)
+			break
+		}
+	}
+	if !l8D2ReadinessValidServeOneShot(serve, aliases) || len(serve.Body.List) != 6 {
+		return trusted, false
+	}
+	loop, ok := serve.Body.List[5].(*ast.ForStmt)
+	if !ok || loop.Init != nil || loop.Cond != nil || loop.Post != nil || loop.Body == nil || len(loop.Body.List) != 7 {
+		return trusted, false
+	}
+	receiver := l8D2ReadinessReceiverName(serve)
+	ctx := serve.Type.Params.List[0].Names[0].Name
+	requestAssignment, ok := loop.Body.List[0].(*ast.AssignStmt)
+	if !ok || requestAssignment.Tok != token.DEFINE || len(requestAssignment.Lhs) != 2 || len(requestAssignment.Rhs) != 1 {
+		return trusted, false
+	}
+	request, requestOK := requestAssignment.Lhs[0].(*ast.Ident)
+	requestErr, requestErrOK := requestAssignment.Lhs[1].(*ast.Ident)
+	requestCall, requestCallOK := requestAssignment.Rhs[0].(*ast.CallExpr)
+	requestSelector, requestSelectorOK := func() (*ast.SelectorExpr, bool) {
+		if !requestCallOK {
+			return nil, false
+		}
+		value, valid := requestCall.Fun.(*ast.SelectorExpr)
+		return value, valid
+	}()
+	if !requestOK || !requestErrOK || !requestSelectorOK || types.ExprString(requestSelector.X) != receiver || requestSelector.Sel.Name != "newServiceReceiveRequest" || len(requestCall.Args) != 0 || !l8D2ReadinessHandlerErrorGate(loop.Body.List[1], requestErr.Name) {
+		return trusted, false
+	}
+	trusted[requestCall] = true
+	receiveAssignment, ok := loop.Body.List[2].(*ast.AssignStmt)
+	if !ok || receiveAssignment.Tok != token.DEFINE || len(receiveAssignment.Lhs) != 2 || len(receiveAssignment.Rhs) != 1 {
+		return trusted, false
+	}
+	packet, packetOK := receiveAssignment.Lhs[0].(*ast.Ident)
+	receiveErr, receiveErrOK := receiveAssignment.Lhs[1].(*ast.Ident)
+	receiveCall, receiveCallOK := receiveAssignment.Rhs[0].(*ast.CallExpr)
+	receiveSelector, receiveSelectorOK := func() (*ast.SelectorExpr, bool) {
+		if !receiveCallOK {
+			return nil, false
+		}
+		value, valid := receiveCall.Fun.(*ast.SelectorExpr)
+		return value, valid
+	}()
+	receiveFailureCall, receiveFailureOK := l8D2ReadinessReceiveFailureGate(loop.Body.List[3], receiver, ctx, receiveErr.Name)
+	if !packetOK || !receiveErrOK || !receiveSelectorOK || types.ExprString(receiveSelector.X) != receiver || receiveSelector.Sel.Name != "receiveServicePacket" || len(receiveCall.Args) != 2 || types.ExprString(receiveCall.Args[0]) != ctx || types.ExprString(receiveCall.Args[1]) != request.Name || !receiveFailureOK {
+		return trusted, false
+	}
+	trusted[receiveCall] = true
+	trusted[receiveFailureCall] = true
+	declaration, ok := loop.Body.List[4].(*ast.DeclStmt)
+	if !ok {
+		return trusted, false
+	}
+	group, ok := declaration.Decl.(*ast.GenDecl)
+	if !ok || group.Tok != token.VAR || len(group.Specs) != 1 {
+		return trusted, false
+	}
+	specification, ok := group.Specs[0].(*ast.ValueSpec)
+	if !ok || len(specification.Names) != 1 || types.ExprString(specification.Type) != "error" || len(specification.Values) != 0 {
+		return trusted, false
+	}
+	handlerErr := specification.Names[0].Name
+	dispatch, ok := loop.Body.List[5].(*ast.SwitchStmt)
+	if !ok || dispatch.Init != nil || dispatch.Tag == nil || len(dispatch.Body.List) < 5 {
+		return trusted, false
+	}
+	typeCall, ok := dispatch.Tag.(*ast.CallExpr)
+	typeSelector, typeOK := func() (*ast.SelectorExpr, bool) {
+		if !ok {
+			return nil, false
+		}
+		value, valid := typeCall.Fun.(*ast.SelectorExpr)
+		return value, valid
+	}()
+	if !typeOK || types.ExprString(typeSelector.X) != packet.Name || typeSelector.Sel.Name != "Type" || len(typeCall.Args) != 0 || !l8D2ReadinessHandlerErrorGate(loop.Body.List[6], handlerErr) {
+		return trusted, false
+	}
+	expected := map[string]string{
+		"credentialprotocol.PacketTypePrepareBegin":  "handlePrepareBegin",
+		"credentialprotocol.PacketTypePrepareFile":   "handlePrepareFile",
+		"credentialprotocol.PacketTypePrepareCommit": "handlePrepareCommit",
+		"credentialprotocol.PacketTypeRenew":         "handleRenew",
+	}
+	seen := make(map[string]bool)
+	execSeen := false
+	defaultSeen := false
+	for _, rawClause := range dispatch.Body.List {
+		clause, ok := rawClause.(*ast.CaseClause)
+		if !ok || len(clause.Body) != 1 {
+			return trusted, false
+		}
+		if len(clause.List) == 0 {
+			if defaultSeen {
+				return trusted, false
+			}
+			defaultSeen = true
+			defaultAssignment, ok := clause.Body[0].(*ast.AssignStmt)
+			if !ok || defaultAssignment.Tok != token.ASSIGN || len(defaultAssignment.Lhs) != 1 || types.ExprString(defaultAssignment.Lhs[0]) != handlerErr || len(defaultAssignment.Rhs) != 1 {
+				return trusted, false
+			}
+			cleanupCall, ok := defaultAssignment.Rhs[0].(*ast.CallExpr)
+			cleanup, cleanupOK := func() (*ast.Ident, bool) {
+				if !ok {
+					return nil, false
+				}
+				value, valid := cleanupCall.Fun.(*ast.Ident)
+				return value, valid
+			}()
+			if !cleanupOK || cleanup.Name != "destroyServiceReceivedPacket" || len(cleanupCall.Args) != 2 || types.ExprString(cleanupCall.Args[0]) != ctx || types.ExprString(cleanupCall.Args[1]) != packet.Name {
+				return trusted, false
+			}
+			continue
+		}
+		if len(clause.List) != 1 {
+			return trusted, false
+		}
+		packetType := types.ExprString(clause.List[0])
+		handler, prepare := expected[packetType]
+		if !prepare {
+			if packetType != "credentialprotocol.PacketTypeExec" || execSeen {
+				return trusted, false
+			}
+			execSeen = true
+			returned, ok := clause.Body[0].(*ast.ReturnStmt)
+			if !ok || len(returned.Results) != 1 {
+				return trusted, false
+			}
+			call, ok := returned.Results[0].(*ast.CallExpr)
+			selector, selectorOK := func() (*ast.SelectorExpr, bool) {
+				if !ok {
+					return nil, false
+				}
+				value, valid := call.Fun.(*ast.SelectorExpr)
+				return value, valid
+			}()
+			if !selectorOK || types.ExprString(selector.X) != receiver || selector.Sel.Name != "handleExec" || len(call.Args) != 2 || types.ExprString(call.Args[0]) != ctx || types.ExprString(call.Args[1]) != packet.Name {
+				return trusted, false
+			}
+			trusted[call] = true
+			continue
+		}
+		if seen[packetType] {
+			return trusted, false
+		}
+		seen[packetType] = true
+		assignment, ok := clause.Body[0].(*ast.AssignStmt)
+		if !ok || assignment.Tok != token.ASSIGN || len(assignment.Lhs) != 1 || types.ExprString(assignment.Lhs[0]) != handlerErr || len(assignment.Rhs) != 1 {
+			return trusted, false
+		}
+		call, ok := assignment.Rhs[0].(*ast.CallExpr)
+		selector, selectorOK := func() (*ast.SelectorExpr, bool) {
+			if !ok {
+				return nil, false
+			}
+			value, valid := call.Fun.(*ast.SelectorExpr)
+			return value, valid
+		}()
+		if !selectorOK || types.ExprString(selector.X) != receiver || selector.Sel.Name != handler || len(call.Args) != 2 || types.ExprString(call.Args[0]) != ctx || types.ExprString(call.Args[1]) != packet.Name {
+			return trusted, false
+		}
+		trusted[call] = true
+	}
+	return trusted, defaultSeen && len(seen) == len(expected)
+}
+
+func l8D2ReadinessPrepareTrustedServiceCalls(files map[string]*ast.File) map[*ast.CallExpr]bool {
+	trusted, stable := l8D2ReadinessPrepareServeTopology(files)
+	if !stable {
+		return map[*ast.CallExpr]bool{}
+	}
+	methodNames := []string{
+		"newServiceReceiveRequest", "receiveServicePacket", "finishServiceReceive", "reservePreparing", "installPreparing", "abortPreparing", "takePreparingFile", "finishPreparingFile", "takePreparing", "installPreparedActivation", "revokeCommittedPreparation", "revokeServicePreparedActivation", "newServiceRenewRequest", "advancePreparedActivation", "handlePrepareBegin", "handlePrepareFile", "handlePrepareCommit", "handleRenew",
+	}
+	exact := make(map[string]*ast.FuncDecl, len(methodNames))
+	for _, name := range methodNames {
+		function := l8D2ReadinessUniqueFunction(files, "*Service", name)
+		if name == "finishServiceReceive" {
+			if !l8D2ReadinessFinishServiceReceiveExact(function) {
+				return map[*ast.CallExpr]bool{}
+			}
+		} else if !l8D2ReadinessPreparePrerequisiteFunctionExact(function) {
+			return map[*ast.CallExpr]bool{}
+		}
+		exact[name] = function
+	}
+	for _, function := range exact {
+		receiver := l8D2ReadinessReceiverName(function)
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			owner, ownerOK := func() (*ast.Ident, bool) {
+				if !ok {
+					return nil, false
+				}
+				value, valid := selector.X.(*ast.Ident)
+				return value, valid
+			}()
+			if ownerOK && owner.Name == receiver && exact[selector.Sel.Name] != nil {
+				trusted[call] = true
+			}
+			return true
+		})
+	}
+	if l8D2ReadinessExecDispatchPrerequisite(files) {
+		handler := l8D2ReadinessUniqueFunction(files, "*Service", "handleExec")
+		for _, name := range []string{"newServiceExecAuthority", "installExecDispatch"} {
+			called := l8D2ReadinessUniqueFunction(files, "*Service", name)
+			if handler == nil || !l8D2ReadinessExecDispatchFunctionExact(called) {
+				return map[*ast.CallExpr]bool{}
+			}
+		}
+		receiver := l8D2ReadinessReceiverName(handler)
+		ast.Inspect(handler.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			owner, ownerOK := func() (*ast.Ident, bool) {
+				if !ok {
+					return nil, false
+				}
+				value, valid := selector.X.(*ast.Ident)
+				return value, valid
+			}()
+			if ownerOK && owner.Name == receiver && (selector.Sel.Name == "newServiceExecAuthority" || selector.Sel.Name == "installExecDispatch") {
+				trusted[call] = true
+			}
+			return true
+		})
+	}
+	if l8D2ReadinessExactExecCleanup(files) {
+		allowed := map[string]bool{
+			"completeServiceExecOutput":  true,
+			"continueExecDispatch":       true,
+			"drainExecOutput":            true,
+			"dispatchPrivate":            true,
+			"dispatchStdin":              true,
+			"finishExecDispatch":         true,
+			"newServiceExecSendHeader":   true,
+			"newServiceExecOutputLedger": true,
+			"releaseExecDispatch":        true,
+			"sendServiceExecOutput":      true,
+			"sendServiceExecResponse":    true,
+			"takeExecDispatch":           true,
+			"validateServiceExecPacket":  true,
+			"zeroPrivate":                true,
+		}
+		for _, name := range []string{"handleExec", "dispatchPrivate", "dispatchStdin", "zeroPrivate", "continueExecDispatch", "validateServiceExecPacket", "newServiceExecOutputLedger", "releaseExecDispatch", "drainExecOutput", "completeServiceExecOutput", "newServiceExecSendHeader", "sendServiceExecOutput", "sendServiceExecResponse", "finishExecDispatch"} {
+			function := l8D2ReadinessUniqueFunction(files, "*Service", name)
+			if function == nil {
+				return map[*ast.CallExpr]bool{}
+			}
+			receiver := l8D2ReadinessReceiverName(function)
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				owner, ownerOK := func() (*ast.Ident, bool) {
+					if !ok {
+						return nil, false
+					}
+					value, valid := selector.X.(*ast.Ident)
+					return value, valid
+				}()
+				if ownerOK && owner.Name == receiver && allowed[selector.Sel.Name] {
+					trusted[call] = true
+				}
+				return true
+			})
+		}
+	}
+	return trusted
+}
+
+func l8D2ReadinessPrepareReachableServiceMethods(files map[string]*ast.File, serve *ast.FuncDecl) map[*ast.FuncDecl]bool {
+	reachable := make(map[*ast.FuncDecl]bool)
+	if serve == nil {
+		return reachable
+	}
+	methods := make(map[string]*ast.FuncDecl)
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if ok && function.Recv != nil && len(function.Recv.List) == 1 && types.ExprString(function.Recv.List[0].Type) == "*Service" {
+				methods[function.Name.Name] = function
+			}
+		}
+	}
+	reachable[serve] = true
+	for changed := true; changed; {
+		changed = false
+		for function := range reachable {
+			receiver := l8D2ReadinessReceiverName(function)
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				owner, ownerOK := func() (*ast.Ident, bool) {
+					if !ok {
+						return nil, false
+					}
+					value, valid := selector.X.(*ast.Ident)
+					return value, valid
+				}()
+				if ownerOK && owner.Name == receiver {
+					if target := methods[selector.Sel.Name]; target != nil && !reachable[target] {
+						reachable[target] = true
+						changed = true
+					}
+				}
+				return true
+			})
+		}
+	}
+	return reachable
+}
+
+func l8D2ReadinessPreparedActivationConfined(files map[string]*ast.File) bool {
+	issuer := l8D2ReadinessUniqueFunction(files, "", "newServicePreparedActivationCandidate")
+	reservePreparing := l8D2ReadinessUniqueFunction(files, "*Service", "reservePreparing")
+	installPreparing := l8D2ReadinessUniqueFunction(files, "*Service", "installPreparing")
+	abortPreparing := l8D2ReadinessUniqueFunction(files, "*Service", "abortPreparing")
+	takePreparingFile := l8D2ReadinessUniqueFunction(files, "*Service", "takePreparingFile")
+	finishPreparingFile := l8D2ReadinessUniqueFunction(files, "*Service", "finishPreparingFile")
+	takePreparing := l8D2ReadinessUniqueFunction(files, "*Service", "takePreparing")
+	installer := l8D2ReadinessUniqueFunction(files, "*Service", "installPreparedActivation")
+	revokeCommitted := l8D2ReadinessUniqueFunction(files, "*Service", "revokeCommittedPreparation")
+	revokePrepared := l8D2ReadinessUniqueFunction(files, "*Service", "revokeServicePreparedActivation")
+	renewRequest := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceRenewRequest")
+	advance := l8D2ReadinessUniqueFunction(files, "*Service", "advancePreparedActivation")
+	renewHandler := l8D2ReadinessUniqueFunction(files, "*Service", "handleRenew")
+	receiveIssuer := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceReceiveRequest")
+	receivePacket := l8D2ReadinessUniqueFunction(files, "*Service", "receiveServicePacket")
+	finishReceive := l8D2ReadinessUniqueFunction(files, "*Service", "finishServiceReceive")
+	execAuthority := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceExecAuthority")
+	execInstaller := l8D2ReadinessUniqueFunction(files, "*Service", "installExecDispatch")
+	execContinue := l8D2ReadinessUniqueFunction(files, "*Service", "continueExecDispatch")
+	execHeader := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceExecSendHeader")
+	execValidate := l8D2ReadinessUniqueFunction(files, "*Service", "validateServiceExecPacket")
+	execLedger := l8D2ReadinessUniqueFunction(files, "*Service", "newServiceExecOutputLedger")
+	execRelease := l8D2ReadinessUniqueFunction(files, "*Service", "releaseExecDispatch")
+	execDrain := l8D2ReadinessUniqueFunction(files, "*Service", "drainExecOutput")
+	execComplete := l8D2ReadinessUniqueFunction(files, "*Service", "completeServiceExecOutput")
+	execFinish := l8D2ReadinessUniqueFunction(files, "*Service", "finishExecDispatch")
+	constructor := l8D2ReadinessUniqueFunction(files, "", "NewService")
+	if issuer == nil || reservePreparing == nil || installPreparing == nil || abortPreparing == nil || takePreparingFile == nil || finishPreparingFile == nil || takePreparing == nil || installer == nil || revokeCommitted == nil || revokePrepared == nil || renewRequest == nil || advance == nil || renewHandler == nil || receiveIssuer == nil || receivePacket == nil || finishReceive == nil {
+		return false
+	}
+	allowedStateOwners := []*ast.FuncDecl{reservePreparing, installPreparing, abortPreparing, takePreparingFile, finishPreparingFile, takePreparing, installer, revokeCommitted, revokePrepared, renewRequest, advance, renewHandler, receiveIssuer, receivePacket, finishReceive}
+	if l8D2ReadinessExecDispatchFunctionExact(execAuthority) && l8D2ReadinessExecDispatchFunctionExact(execInstaller) {
+		allowedStateOwners = append(allowedStateOwners, execAuthority, execInstaller)
+	}
+	if l8D2ReadinessExactExecCleanup(files) {
+		allowedStateOwners = append(allowedStateOwners, execContinue, execHeader, execValidate, execLedger, execRelease, execDrain, execComplete, execFinish)
+	}
+	if l8D2ReadinessExactExecCleanup(files) && execFinish != nil {
+		allowedStateOwners = append(allowedStateOwners, execFinish)
+	}
+	allowedStateOwner := make(map[*ast.FuncDecl]bool, len(allowedStateOwners))
+	for _, function := range allowedStateOwners {
+		allowedStateOwner[function] = true
+	}
+	if constructor != nil {
+		allowedStateOwner[constructor] = true
+	}
+	stateResolver := l8D2ReadinessNewPrepareShapeResolver(files, map[string]l8D2ReadinessPrepareValueKind{
+		"Service":      l8D2ReadinessPrepareServiceValue,
+		"serviceState": l8D2ReadinessPrepareStateValue,
+	})
+	activationResolver := l8D2ReadinessNewPrepareShapeResolver(files, map[string]l8D2ReadinessPrepareValueKind{
+		"servicePreparedActivationCandidate": l8D2ReadinessPrepareServiceValue,
+		"servicePreparedActivation":          l8D2ReadinessPrepareStateValue,
+	})
+	packageStateBindings := l8D2ReadinessPrepareSeedPackageBindings(files, stateResolver)
+	insideAny := func(node ast.Node, functions []*ast.FuncDecl) bool {
+		for _, function := range functions {
+			if function.Pos() <= node.Pos() && node.End() <= function.End() {
+				return true
+			}
+		}
+		return false
+	}
+	candidateLiterals, activationLiterals, issuerCalls, preparedWrites, preparingWrites, beginTakenWrites, fileTakenWrites, commitTakenWrites, revisionWrites, observedWrites, expiryWrites, proofWrites := 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+	valid := true
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil || allowedStateOwner[function] {
+				continue
+			}
+			if !l8D2ReadinessPrepareStateAliasesConfined(function, packageStateBindings, stateResolver) {
+				valid = false
+			}
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.CompositeLit:
+				shape := activationResolver.typeShape(value.Type)
+				if shape == nil {
+					return valid
+				}
+				switch {
+				case shape.direct&l8D2ReadinessPrepareServiceValue != 0:
+					candidateLiterals++
+					valid = valid && issuer.Pos() <= value.Pos() && value.End() <= issuer.End()
+				case shape.direct&l8D2ReadinessPrepareStateValue != 0:
+					activationLiterals++
+					valid = valid && (installer.Pos() <= value.Pos() && value.End() <= installer.End() || revokeCommitted.Pos() <= value.Pos() && value.End() <= revokeCommitted.End() || revokePrepared.Pos() <= value.Pos() && value.End() <= revokePrepared.End())
+				}
+			case *ast.CallExpr:
+				if identifier, ok := value.Fun.(*ast.Ident); ok && identifier.Name == "newServicePreparedActivationCandidate" && (identifier.Obj == nil || identifier.Obj.Kind == ast.Fun) {
+					issuerCalls++
+					valid = valid && installer.Pos() <= value.Pos() && value.End() <= installer.End()
+				}
+			case *ast.AssignStmt:
+				if !insideAny(value, allowedStateOwners) {
+					return valid
+				}
+				for _, left := range value.Lhs {
+					text := types.ExprString(left)
+					if strings.HasSuffix(text, ".state.preparing") {
+						preparingWrites++
+						valid = valid && (reservePreparing.Pos() <= value.Pos() && value.End() <= reservePreparing.End() || abortPreparing.Pos() <= value.Pos() && value.End() <= abortPreparing.End() || installer.Pos() <= value.Pos() && value.End() <= installer.End() || revokeCommitted.Pos() <= value.Pos() && value.End() <= revokeCommitted.End())
+					} else if strings.HasSuffix(text, ".state.preparing.beginTaken") {
+						beginTakenWrites++
+						valid = valid && installPreparing.Pos() <= value.Pos() && value.End() <= installPreparing.End()
+					} else if strings.HasSuffix(text, ".state.preparing.commitTaken") {
+						commitTakenWrites++
+						valid = valid && takePreparing.Pos() <= value.Pos() && value.End() <= takePreparing.End()
+					} else if strings.HasSuffix(text, ".state.preparing.fileTaken") {
+						fileTakenWrites++
+						valid = valid && (takePreparingFile.Pos() <= value.Pos() && value.End() <= takePreparingFile.End() || finishPreparingFile.Pos() <= value.Pos() && value.End() <= finishPreparingFile.End())
+					} else if strings.HasSuffix(text, ".state.prepared") {
+						preparedWrites++
+						valid = valid && (installer.Pos() <= value.Pos() && value.End() <= installer.End() || revokeCommitted.Pos() <= value.Pos() && value.End() <= revokeCommitted.End() || revokePrepared.Pos() <= value.Pos() && value.End() <= revokePrepared.End())
+					} else if strings.Contains(text, ".state.prepared.") {
+						valid = valid && advance.Pos() <= value.Pos() && value.End() <= advance.End()
+						switch {
+						case strings.HasSuffix(text, ".state.prepared.revision"):
+							revisionWrites++
+						case strings.HasSuffix(text, ".state.prepared.observedUnixNano"):
+							observedWrites++
+						case strings.HasSuffix(text, ".state.prepared.expiresUnixNano"):
+							expiryWrites++
+						case strings.HasSuffix(text, ".state.prepared.activeProofID"):
+							proofWrites++
+						default:
+							valid = false
+						}
+					}
+				}
+			}
+			return valid
+		})
+	}
+	return valid && candidateLiterals >= 2 && activationLiterals == 3 && issuerCalls == 1 && preparedWrites == 3 && preparingWrites == 4 && beginTakenWrites == 1 && fileTakenWrites == 2 && commitTakenWrites == 1 && revisionWrites == 1 && observedWrites == 1 && expiryWrites == 1 && proofWrites == 1
+}
+
+func l8D2ReadinessPrepareStateAliasesConfined(function *ast.FuncDecl, packageBindings *l8D2ReadinessPrepareShapeBindings, resolver *l8D2ReadinessPrepareShapeResolver) bool {
+	bindings := l8D2ReadinessPrepareSeedFunctionBindings(function, packageBindings, resolver)
+	ownerKind := l8D2ReadinessPrepareServiceValue | l8D2ReadinessPrepareStateValue
+	confined := true
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !confined || node == nil {
+			return confined
+		}
+		switch value := node.(type) {
+		case *ast.SelectorExpr:
+			shape := l8D2ReadinessPrepareExpressionShape(value.X, bindings, resolver)
+			if (value.Sel.Name == "prepared" || value.Sel.Name == "preparing") && shape != nil && shape.direct&l8D2ReadinessPrepareStateValue != 0 {
+				confined = false
+			}
+		case *ast.CallExpr:
+			for _, argument := range value.Args {
+				if l8D2ReadinessPrepareShapeContains(l8D2ReadinessPrepareExpressionShape(argument, bindings, resolver), ownerKind) {
+					confined = false
+				}
+			}
+		case *ast.ReturnStmt:
+			for _, result := range value.Results {
+				if l8D2ReadinessPrepareShapeContains(l8D2ReadinessPrepareExpressionShape(result, bindings, resolver), ownerKind) {
+					confined = false
+				}
+			}
+		case *ast.SendStmt:
+			if l8D2ReadinessPrepareShapeContains(l8D2ReadinessPrepareExpressionShape(value.Value, bindings, resolver), ownerKind) {
+				confined = false
+			}
+		case *ast.AssignStmt:
+			if value.Tok != token.DEFINE {
+				for _, right := range value.Rhs {
+					if l8D2ReadinessPrepareShapeContains(l8D2ReadinessPrepareExpressionShape(right, bindings, resolver), ownerKind) {
+						confined = false
+					}
+				}
+			}
+		}
+		return confined
+	})
+	return confined
+}
+
+func l8D2ReadinessUniqueFunction(files map[string]*ast.File, receiver, name string) *ast.FuncDecl {
+	var found *ast.FuncDecl
+	count := 0
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Name.Name != name {
+				continue
+			}
+			actualReceiver := ""
+			if function.Recv != nil && len(function.Recv.List) == 1 {
+				actualReceiver = types.ExprString(function.Recv.List[0].Type)
+			}
+			if actualReceiver == receiver {
+				count++
+				found = function
+			}
+		}
+	}
+	if count != 1 {
+		return nil
+	}
+	return found
+}
+
+func l8D2ReadinessUniqueStruct(files map[string]*ast.File, name string) *ast.StructType {
+	var found *ast.StructType
+	count := 0
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			general, ok := declaration.(*ast.GenDecl)
+			if !ok || general.Tok != token.TYPE {
+				continue
+			}
+			for _, specification := range general.Specs {
+				typeSpec, ok := specification.(*ast.TypeSpec)
+				if !ok || typeSpec.Name.Name != name {
+					continue
+				}
+				count++
+				found, _ = typeSpec.Type.(*ast.StructType)
+			}
+		}
+	}
+	if count != 1 || found == nil {
+		return nil
+	}
+	return found
+}
+
+func l8D2ReadinessExactPrivateTypedConstCatalog(files map[string]*ast.File, typeName string, want map[string]string) bool {
+	got := make(map[string]string)
+	declarations := make(map[string]int)
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			general, ok := declaration.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, specification := range general.Specs {
+				value, ok := specification.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for index, name := range value.Names {
+					if _, required := want[name.Name]; !required {
+						continue
+					}
+					declarations[name.Name]++
+					if types.ExprString(value.Type) != typeName || index >= len(value.Values) {
+						continue
+					}
+					got[name.Name] = types.ExprString(value.Values[index])
+				}
+			}
+		}
+	}
+	for name, value := range want {
+		if declarations[name] != 1 || got[name] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessStructFieldsOrdered(files map[string]*ast.File, name string, want []string) bool {
+	structure := l8D2ReadinessUniqueStruct(files, name)
+	if structure == nil {
+		return false
+	}
+	var got []string
+	for _, field := range structure.Fields.List {
+		for _, fieldName := range field.Names {
+			for _, required := range want {
+				if fieldName.Name == required {
+					got = append(got, fieldName.Name)
+				}
+			}
+		}
+	}
+	return strings.Join(got, "\x00") == strings.Join(want, "\x00")
 }
 
 func l8D2ReadinessReachableServiceStateStableLegacy(reachable map[*ast.FuncDecl]bool, serve *ast.FuncDecl) bool {
@@ -5569,15 +12146,17 @@ func l8D2ReadinessValidServeOneShot(serve *ast.FuncDecl, aliases map[string]stri
 	return lock && set && unlock && lockCalls == 1 && unlockCalls == 2 && latchReads == 2 && latchWrites == 1
 }
 
-func l8D2ReadinessAnalyzeServiceBorrowCallbacks(function *ast.FuncDecl, aliases map[string]string) (bool, bool) {
+func l8D2ReadinessAnalyzeServiceBorrowCallbacks(files map[string]*ast.File, function *ast.FuncDecl, aliases map[string]string) (bool, bool) {
 	receiver := l8D2ReadinessReceiverName(function)
-	if receiver == "" {
+	if receiver == "" || !l8D2ReadinessExactObservedBodyCleanup(files) {
 		return false, false
 	}
 	bodyParams := make(map[string]bool)
 	transactionParams := make(map[string]bool)
 	contextParams := make(map[string]bool)
 	comparisonParams := make(map[string]bool)
+	offsetParams := make(map[string]bool)
+	eofParams := make(map[string]bool)
 	correlationParams := make(map[string]bool)
 	privateObservationParams := make(map[string]bool)
 	streamObservationParams := make(map[string]bool)
@@ -5599,6 +12178,12 @@ func l8D2ReadinessAnalyzeServiceBorrowCallbacks(function *ast.FuncDecl, aliases 
 				}
 				if name.Name == "comparison" && types.ExprString(field.Type) == "bool" {
 					comparisonParams[name.Name] = true
+				}
+				if name.Name == "offset" && types.ExprString(field.Type) == "uint64" {
+					offsetParams[name.Name] = true
+				}
+				if name.Name == "eof" && types.ExprString(field.Type) == "bool" {
+					eofParams[name.Name] = true
 				}
 				if l8D2ReadinessExactImportedType(field.Type, aliases, "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol", "HelperExecTransactionCorrelation", false) {
 					correlationParams[name.Name] = true
@@ -5625,6 +12210,12 @@ func l8D2ReadinessAnalyzeServiceBorrowCallbacks(function *ast.FuncDecl, aliases 
 	for name := range comparisonParams {
 		protected[name] = true
 	}
+	for name := range offsetParams {
+		protected[name] = true
+	}
+	for name := range eofParams {
+		protected[name] = true
+	}
 	for name := range correlationParams {
 		protected[name] = true
 	}
@@ -5637,7 +12228,7 @@ func l8D2ReadinessAnalyzeServiceBorrowCallbacks(function *ast.FuncDecl, aliases 
 	if configuredDependencyShadowed || l8D2ReadinessBodyRebindsNames(function.Body, protected, nil) {
 		return false, false
 	}
-	if len(bodyParams) != 1 || len(transactionParams) != 1 || len(contextParams) != 1 || len(comparisonParams) != 1 || len(correlationParams) != 1 || (len(privateObservationParams) == 0) == (len(streamObservationParams) == 0) || len(privateObservationParams)+len(streamObservationParams) != 1 {
+	if len(bodyParams) != 1 || len(transactionParams) != 1 || len(contextParams) != 1 || len(comparisonParams) != 1 || len(correlationParams) != 1 || (len(privateObservationParams) == 0) == (len(streamObservationParams) == 0) || len(privateObservationParams)+len(streamObservationParams) != 1 || (len(streamObservationParams) == 1 && (len(offsetParams) != 1 || len(eofParams) != 1)) || (len(privateObservationParams) == 1 && (len(offsetParams) != 0 || len(eofParams) != 0)) {
 		return false, false
 	}
 	private, stdin := false, false
@@ -5684,10 +12275,155 @@ func l8D2ReadinessAnalyzeServiceBorrowCallbacks(function *ast.FuncDecl, aliases 
 			continue
 		}
 		view := callback.Type.Params.List[0].Names[0].Name
-		private = private || (l8D2ReadinessValidPrivateCallback(callback, receiver, ctx.Name, view, transactionParams, comparisonParams, correlationParams, privateObservationParams) && l8D2ReadinessObservedHandlerCleanupStable(function, callback, receiver, ctx.Name, body.Name, true))
-		stdin = stdin || (l8D2ReadinessValidStdinCallback(callback, receiver, ctx.Name, view, transactionParams, comparisonParams, correlationParams, streamObservationParams) && l8D2ReadinessObservedHandlerCleanupStable(function, callback, receiver, ctx.Name, body.Name, false))
+		private = private || (l8D2ReadinessValidPrivateCallback(callback, receiver, ctx.Name, view, transactionParams, comparisonParams, correlationParams, privateObservationParams) && l8D2ReadinessObservedHandlerCleanupStable(function, callback, aliases, receiver, ctx.Name, body.Name))
+		stdin = stdin || (l8D2ReadinessValidStdinCallback(callback, receiver, ctx.Name, view, transactionParams, comparisonParams, correlationParams, streamObservationParams, offsetParams, eofParams) && l8D2ReadinessObservedHandlerCleanupStable(function, callback, aliases, receiver, ctx.Name, body.Name))
 	}
 	return private, stdin
+}
+
+func l8D2ReadinessExactObservedBodyCleanup(files map[string]*ast.File) bool {
+	const contextPath = "context"
+	declarations := 0
+	var helper *ast.FuncDecl
+	var aliases map[string]string
+	for _, file := range files {
+		fileAliases, _ := l8D2ReadinessImportAliases(file)
+		for _, declaration := range file.Decls {
+			switch value := declaration.(type) {
+			case *ast.FuncDecl:
+				if value.Name.Name == "destroyServiceObservedBody" {
+					declarations++
+					helper, aliases = value, fileAliases
+				}
+			case *ast.GenDecl:
+				for _, raw := range value.Specs {
+					switch specification := raw.(type) {
+					case *ast.ValueSpec:
+						for _, name := range specification.Names {
+							if name.Name == "destroyServiceObservedBody" {
+								declarations++
+							}
+						}
+					case *ast.TypeSpec:
+						if specification.Name.Name == "destroyServiceObservedBody" {
+							declarations++
+						}
+					}
+				}
+			}
+		}
+	}
+	if declarations != 1 || helper == nil || helper.Recv != nil || helper.Body == nil || helper.Type.TypeParams != nil || helper.Type.Params == nil || helper.Type.Results == nil || len(helper.Type.Params.List) != 2 || len(helper.Type.Results.List) != 1 {
+		return false
+	}
+	contextField, bodyField, resultField := helper.Type.Params.List[0], helper.Type.Params.List[1], helper.Type.Results.List[0]
+	if len(contextField.Names) != 1 || contextField.Names[0].Name != "ctx" || !l8D2ReadinessExactImportedType(contextField.Type, aliases, contextPath, "Context", false) || len(bodyField.Names) != 1 || bodyField.Names[0].Name != "body" || types.ExprString(bodyField.Type) != "ReceivedBodyCapability" || len(resultField.Names) != 1 || resultField.Names[0].Name != "cleanupErr" || types.ExprString(resultField.Type) != "error" {
+		return false
+	}
+	canonical, err := parser.ParseFile(token.NewFileSet(), "canonical.go", `package fixture
+func destroyServiceObservedBody(ctx context.Context, body ReceivedBodyCapability) (cleanupErr error) {
+	defer func() {
+		if recover() != nil {
+			cleanupErr = ErrContractOwnership
+		}
+	}()
+	if destroyErr := body.Destroy(ctx); destroyErr != nil {
+		return ErrContractOwnership
+	}
+	return nil
+}`, 0)
+	if err != nil {
+		return false
+	}
+	want := l8D2ReadinessUniqueFunction(map[string]*ast.File{"canonical.go": canonical}, "", "destroyServiceObservedBody")
+	return want != nil && l8D2ReadinessFormattedNode(helper.Body) == l8D2ReadinessFormattedNode(want.Body)
+}
+
+func l8D2ReadinessExactExecCleanup(files map[string]*ast.File) bool {
+	expectedSource := l8D2ReadinessCombinedPrepareExecCanonical()
+	legacy := l8D2ReadinessUniqueFunction(files, "*Service", "validateServiceExecPacket") == nil
+	if legacy {
+		expectedSource = l8D2ReadinessCanonicalPrivateServiceFixture()
+	}
+	expected, err := parser.ParseFile(token.NewFileSet(), "exec_cleanup.go", expectedSource, 0)
+	if err != nil {
+		return false
+	}
+	expectedFiles := map[string]*ast.File{"exec_cleanup.go": expected}
+	actualSink := l8D2ReadinessUniqueStruct(files, "serviceExecOutputDigestSink")
+	expectedSink := l8D2ReadinessUniqueStruct(expectedFiles, "serviceExecOutputDigestSink")
+	actualSinkText, actualSinkOK := l8D2ReadinessExecNormalizedStruct(actualSink, l8D2ReadinessDeclarationFile(files, actualSink))
+	expectedSinkText, expectedSinkOK := l8D2ReadinessExecNormalizedStruct(expectedSink, l8D2ReadinessDeclarationFile(expectedFiles, expectedSink))
+	if !actualSinkOK || !expectedSinkOK || actualSinkText != expectedSinkText {
+		return false
+	}
+	if !legacy {
+		if !l8D2ReadinessStructHasExactExecFieldTypes(files, "serviceState", map[string]string{"sendMu": "sync.Mutex"}) {
+			return false
+		}
+		actualLedger := l8D2ReadinessUniqueStruct(files, "serviceExecOutputLedger")
+		expectedLedger := l8D2ReadinessUniqueStruct(expectedFiles, "serviceExecOutputLedger")
+		actualLedgerText, actualLedgerOK := l8D2ReadinessExecNormalizedStruct(actualLedger, l8D2ReadinessDeclarationFile(files, actualLedger))
+		expectedLedgerText, expectedLedgerOK := l8D2ReadinessExecNormalizedStruct(expectedLedger, l8D2ReadinessDeclarationFile(expectedFiles, expectedLedger))
+		if !actualLedgerOK || !expectedLedgerOK || actualLedgerText != expectedLedgerText {
+			return false
+		}
+		for _, name := range []string{"serviceExecReceiveResult", "serviceExecWorkResult", "serviceExecCoordinator"} {
+			actual := l8D2ReadinessUniqueStruct(files, name)
+			expected := l8D2ReadinessUniqueStruct(expectedFiles, name)
+			actualText, actualOK := l8D2ReadinessExecNormalizedStruct(actual, l8D2ReadinessDeclarationFile(files, actual))
+			expectedText, expectedOK := l8D2ReadinessExecNormalizedStruct(expected, l8D2ReadinessDeclarationFile(expectedFiles, expected))
+			if !actualOK || !expectedOK || actualText != expectedText {
+				return false
+			}
+		}
+	}
+	identities := []struct {
+		receiver string
+		name     string
+	}{
+		{name: "destroyServiceObservedBody"},
+		{name: "cancelServiceExecution"},
+		{receiver: "*serviceExecOutputDigestSink", name: "MaxCredentialBytes"},
+		{receiver: "*serviceExecOutputDigestSink", name: "WriteCredential"},
+		{name: "serviceExecOutputLimits"},
+		{name: "destroyServiceCoreOutputBody"},
+		{name: "observeServiceCoreOutput"},
+		{name: "serviceExecDigest"},
+		{receiver: "*Service", name: "newServiceExecSendHeader"},
+		{receiver: "*Service", name: "sendServiceExecOutput"},
+		{receiver: "*Service", name: "sendServiceExecResponse"},
+		{receiver: "*Service", name: "drainExecOutput"},
+		{receiver: "*Service", name: "continueExecDispatch"},
+		{receiver: "*Service", name: "finishExecDispatch"},
+	}
+	if !legacy {
+		identities = append(identities,
+			struct{ receiver, name string }{receiver: "*Service", name: "dispatchPrivate"},
+			struct{ receiver, name string }{receiver: "*Service", name: "dispatchStdin"},
+			struct{ receiver, name string }{receiver: "*Service", name: "validateServiceExecPacket"},
+			struct{ receiver, name string }{receiver: "*Service", name: "newServiceExecOutputLedger"},
+			struct{ receiver, name string }{receiver: "*Service", name: "releaseExecDispatch"},
+			struct{ receiver, name string }{name: "destroyUnexpectedServiceCoreOutput"},
+			struct{ receiver, name string }{receiver: "*Service", name: "completeServiceExecOutput"},
+			struct{ receiver, name string }{receiver: "*Service", name: "startServiceExecReceive"},
+			struct{ receiver, name string }{receiver: "*Service", name: "receiveServiceExecContinuation"},
+			struct{ receiver, name string }{receiver: "*Service", name: "runServiceExecStdin"},
+			struct{ receiver, name string }{receiver: "*Service", name: "runServiceExecOutput"},
+			struct{ receiver, name string }{receiver: "*Service", name: "stopServiceExecCoordinator"},
+			struct{ receiver, name string }{receiver: "*Service", name: "finishServiceExecCoordinator"},
+		)
+	}
+	for _, identity := range identities {
+		actualFunction := l8D2ReadinessUniqueFunction(files, identity.receiver, identity.name)
+		expectedFunction := l8D2ReadinessUniqueFunction(expectedFiles, identity.receiver, identity.name)
+		actualType, actualBody, actualOK := l8D2ReadinessExecNormalizedFunction(actualFunction, l8D2ReadinessDeclarationFile(files, actualFunction))
+		expectedType, expectedBody, expectedOK := l8D2ReadinessExecNormalizedFunction(expectedFunction, l8D2ReadinessDeclarationFile(expectedFiles, expectedFunction))
+		if !actualOK || !expectedOK || actualType != expectedType || actualBody != expectedBody {
+			return false
+		}
+	}
+	return true
 }
 
 func l8D2ReadinessBorrowErrorPropagated(body *ast.BlockStmt, assignmentIndex int, errorName string) bool {
@@ -5702,7 +12438,7 @@ func l8D2ReadinessBorrowErrorPropagated(body *ast.BlockStmt, assignmentIndex int
 	return ok && len(returned.Results) > 0 && types.ExprString(returned.Results[len(returned.Results)-1]) == errorName
 }
 
-func l8D2ReadinessObservedHandlerCleanupStable(function *ast.FuncDecl, callback *ast.FuncLit, receiver, contextName, bodyName string, planRequired bool) bool {
+func l8D2ReadinessObservedHandlerCleanupStable(function *ast.FuncDecl, callback *ast.FuncLit, aliases map[string]string, receiver, contextName, bodyName string) bool {
 	if function == nil || function.Body == nil || callback == nil || callback.Body == nil {
 		return false
 	}
@@ -5713,8 +12449,8 @@ func l8D2ReadinessObservedHandlerCleanupStable(function *ast.FuncDecl, callback 
 	if l8D2ReadinessFunctionShadowsCleanupAuthority(function) {
 		return false
 	}
-	planName, pendingName := "", ""
-	planPosition, pendingPosition, deferPosition, borrowPosition := token.NoPos, token.NoPos, token.NoPos, token.NoPos
+	pendingName := ""
+	pendingPosition, deferPosition, borrowPosition := token.NoPos, token.NoPos, token.NoPos
 	var recovery *ast.IfStmt
 	var deferredBody *ast.BlockStmt
 	deferCount := 0
@@ -5724,11 +12460,6 @@ func l8D2ReadinessObservedHandlerCleanupStable(function *ast.FuncDecl, callback 
 		}
 		switch value := statement.(type) {
 		case *ast.AssignStmt:
-			if len(value.Lhs) == 1 && len(value.Rhs) == 1 && types.ExprString(value.Rhs[0]) == receiver+".state.plan" {
-				if identifier, ok := value.Lhs[0].(*ast.Ident); ok && identifier.Name != "_" {
-					planName, planPosition = identifier.Name, value.Pos()
-				}
-			}
 			if len(value.Rhs) == 1 {
 				call, ok := value.Rhs[0].(*ast.CallExpr)
 				selector, selectorOK := func() (*ast.SelectorExpr, bool) {
@@ -5756,7 +12487,7 @@ func l8D2ReadinessObservedHandlerCleanupStable(function *ast.FuncDecl, callback 
 			}
 			for _, specification := range declaration.Specs {
 				valueSpec, ok := specification.(*ast.ValueSpec)
-				if ok && len(valueSpec.Names) == 1 && len(valueSpec.Values) == 0 && types.ExprString(valueSpec.Type) == "Proposal" {
+				if ok && len(valueSpec.Names) == 1 && len(valueSpec.Values) == 0 && l8D2ReadinessExactImportedType(valueSpec.Type, aliases, "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol", "HelperExecPayloadProposal", true) {
 					pendingName, pendingPosition = valueSpec.Names[0].Name, value.Pos()
 				}
 			}
@@ -5779,7 +12510,7 @@ func l8D2ReadinessObservedHandlerCleanupStable(function *ast.FuncDecl, callback 
 			}
 		}
 	}
-	if deferCount != 1 || deferPosition == token.NoPos || borrowPosition == token.NoPos || deferPosition >= borrowPosition || pendingName == "" || pendingPosition == token.NoPos || pendingPosition >= deferPosition || recovery == nil || deferredBody == nil || (planRequired && (planName == "" || planPosition == token.NoPos || planPosition >= deferPosition)) {
+	if deferCount != 1 || deferPosition == token.NoPos || borrowPosition == token.NoPos || deferPosition >= borrowPosition || pendingName == "" || pendingPosition == token.NoPos || pendingPosition >= deferPosition || recovery == nil || deferredBody == nil {
 		return false
 	}
 	callbackDefers := 0
@@ -5831,33 +12562,26 @@ func l8D2ReadinessObservedHandlerCleanupStable(function *ast.FuncDecl, callback 
 	if !l8D2ReadinessExactRecoveredHandlerFailure(recovery.Body, pendingName, resultName, errorName) {
 		return false
 	}
-	wantDeferredStatements := 3
-	if planRequired {
-		wantDeferredStatements = 4
-	}
-	if len(deferredBody.List) != wantDeferredStatements || deferredBody.List[0] != recovery {
+	if len(deferredBody.List) != 3 || deferredBody.List[0] != recovery {
 		return false
 	}
-	bodyDestroyError, bodyDestroyOK := l8D2ReadinessExactBoundBodyDestroy(deferredBody.List[1], bodyName, contextName)
+	bodyDestroyError, bodyDestroyOK := l8D2ReadinessExactBoundObservedBodyDestroy(deferredBody.List[1], bodyName, contextName)
 	if !bodyDestroyOK {
 		return false
 	}
-	failureIndex := 2
-	if planRequired {
-		if !l8D2ReadinessExactPrivatePlanDestroy(deferredBody.List[2], planName) {
-			return false
-		}
-		failureIndex = 3
-	}
-	if !l8D2ReadinessExactCleanupFailureGate(deferredBody.List[failureIndex], bodyDestroyError, resultName, errorName) {
+	if !l8D2ReadinessExactCleanupFailureGate(deferredBody.List[2], bodyDestroyError, resultName, errorName) {
 		return false
 	}
-	bodyDestroyCount, planDestroyCount := 0, 0
-	bodyDestroyPosition, planDestroyPosition := token.NoPos, token.NoPos
+	bodyDestroyCount, directBodyDestroyCount, planDestroyCount := 0, 0, 0
+	bodyDestroyPosition := token.NoPos
 	ast.Inspect(function.Body, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
+		}
+		if callee, direct := call.Fun.(*ast.Ident); direct && callee.Name == "destroyServiceObservedBody" && len(call.Args) == 2 && types.ExprString(call.Args[0]) == contextName && types.ExprString(call.Args[1]) == bodyName {
+			bodyDestroyCount++
+			bodyDestroyPosition = call.Pos()
 		}
 		selector, ok := call.Fun.(*ast.SelectorExpr)
 		owner, ownerOK := func() (*ast.Ident, bool) {
@@ -5868,19 +12592,17 @@ func l8D2ReadinessObservedHandlerCleanupStable(function *ast.FuncDecl, callback 
 			return candidate, valid
 		}()
 		if ownerOK && owner.Name == bodyName && l8D2ReadinessCallMethodName(call) == "Destroy" && len(call.Args) == 1 && types.ExprString(call.Args[0]) == contextName {
-			bodyDestroyCount++
-			bodyDestroyPosition = call.Pos()
+			directBodyDestroyCount++
 		}
-		if ownerOK && owner.Name == planName && l8D2ReadinessCallMethodName(call) == "destroy" && len(call.Args) == 0 {
+		if ok && selector.Sel.Name == "destroy" && len(call.Args) == 0 {
 			planDestroyCount++
-			planDestroyPosition = call.Pos()
 		}
 		return true
 	})
-	if bodyDestroyCount != 1 || (planRequired && planDestroyCount != 1) || (!planRequired && planDestroyCount != 0) {
+	if bodyDestroyCount != 1 || directBodyDestroyCount != 0 || planDestroyCount != 0 {
 		return false
 	}
-	return recovery.Pos() < bodyDestroyPosition && (!planRequired || bodyDestroyPosition < planDestroyPosition)
+	return recovery.Pos() < bodyDestroyPosition
 }
 
 func l8D2ReadinessFunctionShadowsCleanupAuthority(function *ast.FuncDecl) bool {
@@ -5930,27 +12652,21 @@ func l8D2ReadinessNamedServiceHandlerResults(function *ast.FuncDecl) (string, st
 	return result.Names[0].Name, failure.Names[0].Name, true
 }
 
-func l8D2ReadinessExactBoundBodyDestroy(statement ast.Stmt, ownerName, contextName string) (string, bool) {
+func l8D2ReadinessExactBoundObservedBodyDestroy(statement ast.Stmt, ownerName, contextName string) (string, bool) {
 	assignment, ok := statement.(*ast.AssignStmt)
 	if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
 		return "", false
 	}
 	failure, failureOK := assignment.Lhs[0].(*ast.Ident)
 	call, ok := assignment.Rhs[0].(*ast.CallExpr)
-	if !failureOK || !ok || failure.Name == "_" || len(call.Args) != 1 || types.ExprString(call.Args[0]) != contextName || l8D2ReadinessCallMethodName(call) != "Destroy" {
+	if !failureOK || !ok || failure.Name == "_" || len(call.Args) != 2 || types.ExprString(call.Args[0]) != contextName || types.ExprString(call.Args[1]) != ownerName {
 		return "", false
 	}
-	selector, ok := call.Fun.(*ast.SelectorExpr)
-	owner, ok := func() (*ast.Ident, bool) {
-		if !ok {
-			return nil, false
-		}
-		candidate, valid := selector.X.(*ast.Ident)
-		return candidate, valid
-	}()
-	return failure.Name, ok && owner.Name == ownerName
+	callee, ok := call.Fun.(*ast.Ident)
+	return failure.Name, ok && callee.Name == "destroyServiceObservedBody"
 }
 
+//nolint:unused // Retained as the narrow structural decomposition used by older seeded fixtures.
 func l8D2ReadinessExactPrivatePlanDestroy(statement ast.Stmt, ownerName string) bool {
 	expression, ok := statement.(*ast.ExprStmt)
 	if !ok {
@@ -6119,9 +12835,19 @@ func l8D2ReadinessValidPrivateCallback(callback *ast.FuncLit, serviceReceiver, c
 	return validMatrix != token.NoPos && retainedExecution != token.NoPos && flow.core < validMatrix && validMatrix < retainedExecution && retainedExecution < flow.normalCommit
 }
 
-func l8D2ReadinessValidStdinCallback(callback *ast.FuncLit, serviceReceiver, contextName, view string, transactionParams, comparisonParams, correlationParams, observationParams map[string]bool) bool {
+func l8D2ReadinessValidStdinCallback(callback *ast.FuncLit, serviceReceiver, contextName, view string, transactionParams, comparisonParams, correlationParams, observationParams, offsetParams, eofParams map[string]bool) bool {
 	flow := l8D2ReadinessProposalCallbackFlow(callback, "ProposeObservedStdin", "WriteStdin", serviceReceiver, contextName, view, transactionParams, comparisonParams, correlationParams, observationParams)
-	if l8D2ReadinessCallbackRetainsScopedIdentifier(callback, view) || l8D2ReadinessCallbackContainsNestedAuthority(callback, flow.proposal) || flow.proposal == "" || flow.propose == token.NoPos || flow.proposalErrorGate == token.NoPos || flow.core == token.NoPos || flow.normalCommit == token.NoPos || flow.wipe == token.NoPos || !flow.proposeDirect || !flow.coreDirect || !flow.commitDirect || !flow.comparisonDirect || !flow.comparisonGood || !l8D2ReadinessCallbackUsesStateExecution(callback, serviceReceiver, flow.coreReceiver, flow.core) || !flow.viewAtPropose || !flow.viewAtCore || !flow.contextAtPropose || !flow.contextAtCore || !flow.correlationAtPropose || !flow.observationAtPropose || !(flow.propose < flow.proposalErrorGate && flow.proposalErrorGate < flow.core && flow.core < flow.normalCommit) || flow.coreError == "" || flow.proposalError == "" || flow.proposeCount != 1 || flow.coreCount != 1 || flow.normalCommits != 1 || flow.totalProposeCalls != 1 || flow.totalCoreCalls != 1 || flow.commitCalls != 2 || flow.wipeCalls != 1 || l8D2ReadinessCallbackRebindsAuthority(callback, serviceReceiver, contextName, view, transactionParams, comparisonParams, correlationParams, observationParams, flow) {
+	protectedInputs := make(map[string]bool)
+	for name := range observationParams {
+		protectedInputs[name] = true
+	}
+	for name := range offsetParams {
+		protectedInputs[name] = true
+	}
+	for name := range eofParams {
+		protectedInputs[name] = true
+	}
+	if l8D2ReadinessCallbackRetainsScopedIdentifier(callback, view) || l8D2ReadinessCallbackContainsNestedAuthority(callback, flow.proposal) || flow.proposal == "" || flow.propose == token.NoPos || flow.proposalErrorGate == token.NoPos || flow.core == token.NoPos || flow.normalCommit == token.NoPos || flow.wipe == token.NoPos || !flow.proposeDirect || !flow.coreDirect || !flow.commitDirect || !flow.comparisonDirect || !flow.comparisonGood || !l8D2ReadinessCallbackUsesStateExecution(callback, serviceReceiver, flow.coreReceiver, flow.core) || !l8D2ReadinessExactStdinCoreArguments(flow.coreAssignment, offsetParams, eofParams) || !flow.viewAtPropose || !flow.viewAtCore || !flow.contextAtPropose || !flow.contextAtCore || !flow.correlationAtPropose || !flow.observationAtPropose || !(flow.propose < flow.proposalErrorGate && flow.proposalErrorGate < flow.core && flow.core < flow.normalCommit) || flow.coreError == "" || flow.proposalError == "" || flow.proposeCount != 1 || flow.coreCount != 1 || flow.normalCommits != 1 || flow.totalProposeCalls != 1 || flow.totalCoreCalls != 1 || flow.commitCalls != 2 || flow.wipeCalls != 1 || l8D2ReadinessCallbackRebindsAuthority(callback, serviceReceiver, contextName, view, transactionParams, comparisonParams, correlationParams, protectedInputs, flow) {
 		return false
 	}
 	validErrorGate := false
@@ -6134,6 +12860,19 @@ func l8D2ReadinessValidStdinCallback(callback *ast.FuncLit, serviceReceiver, con
 		return true
 	})
 	return validErrorGate
+}
+
+func l8D2ReadinessExactStdinCoreArguments(assignment *ast.AssignStmt, offsetParams, eofParams map[string]bool) bool {
+	if assignment == nil || len(assignment.Rhs) != 1 {
+		return false
+	}
+	call, ok := assignment.Rhs[0].(*ast.CallExpr)
+	if !ok || l8D2ReadinessCallMethodName(call) != "WriteStdin" || len(call.Args) != 4 {
+		return false
+	}
+	offset, offsetOK := call.Args[2].(*ast.Ident)
+	eof, eofOK := call.Args[3].(*ast.Ident)
+	return offsetOK && eofOK && offsetParams[offset.Name] && eofParams[eof.Name]
 }
 
 func l8D2ReadinessCallbackUsesStateExecution(callback *ast.FuncLit, serviceReceiver, execution string, corePosition token.Pos) bool {
@@ -6797,8 +13536,8 @@ type l8D2ReadinessLexicalObject = ast.Object //nolint:staticcheck
 
 func l8D2ReadinessServiceTestRequirements() map[string]l8D2ReadinessServiceTestRequirement {
 	transport := map[string][]string{
-		"planDestroyCalls": {"Transport"}, "takeCalls": {"Transport"}, "commitCalls": {"Transport"},
-		"bodyDestroyCalls": {"Transport"}, "wipeCalls": {"Transport"},
+		"takeCalls": {"Transport"}, "commitCalls": {"Transport"}, "bodyDestroyCalls": {"Transport"},
+		"planDestroyCalls": {"Core"}, "wipeCalls": {"Transport", "Core"},
 	}
 	core := map[string][]string{"beginExecCalls": {"Core"}, "writeStdinCalls": {"Core"}}
 	fields := func(names ...string) map[string][]string {
@@ -6814,7 +13553,9 @@ func l8D2ReadinessServiceTestRequirements() map[string]l8D2ReadinessServiceTestR
 		return result
 	}
 	return map[string]l8D2ReadinessServiceTestRequirement{
-		"TestServiceDestroysClaimedExecPlanOnEveryDispatchPath": {exercise: []string{"NewService", "Serve"}, evidence: []string{"planDestroyCalls"}, dependencyFields: fields("planDestroyCalls")},
+		"TestServiceDestroysClaimedExecPlanOnEveryDispatchPath":     {exercise: []string{"NewService", "Serve"}, evidence: []string{"planDestroyCalls"}, dependencyFields: fields("planDestroyCalls")},
+		"TestServiceAcceptsCausalSameStreamCreditBeforeSendReturns": {},
+		"TestServiceReceiveFailureConvergesOwnedState":              {},
 		"TestServiceConstructorDependenciesSnapshotAndServeOneShot": {exercise: []string{"NewService", "Serve"}, evidence: []string{"dependencyCalls", "ownedSnapshotEntries", "serveCalls"}, dependencyFields: map[string][]string{
 			"dependencyCalls": {"Core", "Transport", "Policy", "Host", "Runtime"}, "serveCalls": {"Transport", "Runtime"},
 		}},
@@ -6881,9 +13622,10 @@ func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[stri
 	}
 	results := make(map[string]bool)
 	resolver := l8D2ReadinessNewImportResolver()
+	terminalFactsByContext := make(map[int]l8D2ReadinessTerminalFacts, len(applicable))
 	for name, requirement := range requirements {
 		validEverywhere := true
-		for _, context := range applicable {
+		for contextIndex, context := range applicable {
 			var contextFiles []*ast.File
 			resolvedImports := make(map[*ast.File]map[string]string)
 			for path, file := range productionFiles {
@@ -6907,14 +13649,30 @@ func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[stri
 				}
 			}
 			environment := l8D2ReadinessTerminalEnvironmentForFilesWithImports(contextFiles, resolvedImports)
+			terminalFacts, cached := terminalFactsByContext[contextIndex]
+			if !cached {
+				terminalFacts = l8D2ReadinessPackageTerminalFunctions(environment)
+				terminalFactsByContext[contextIndex] = terminalFacts
+			}
+			environment.terminalFacts = &terminalFacts
 			validHere := false
 			for path, file := range testFiles {
 				matched, matchErr := context.MatchFile(dir, filepath.Base(path))
 				if matchErr != nil {
 					return nil, matchErr
 				}
-				if matched && l8D2ReadinessExactServiceBehavioralTestInEnvironment(file, name, requirement, environment) {
-					validHere = true
+				if matched {
+					if name == "TestServiceObservedComparisonNeverCallsCore" {
+						validHere = validHere || l8D2ReadinessExactComparisonNoCoreTest(file)
+					} else if name == "TestServiceDestroysClaimedExecPlanOnEveryDispatchPath" {
+						validHere = validHere || l8D2ReadinessExactPlanDispatchMatrixTest(file)
+					} else if name == "TestServiceAcceptsCausalSameStreamCreditBeforeSendReturns" {
+						validHere = validHere || l8D2ReadinessExactCausalSameStreamTest(file)
+					} else if name == "TestServiceReceiveFailureConvergesOwnedState" {
+						validHere = validHere || l8D2ReadinessExactReceiveConvergenceTest(file)
+					} else if l8D2ReadinessExactServiceBehavioralTestInEnvironment(file, name, requirement, environment) {
+						validHere = true
+					}
 				}
 			}
 			if !validHere {
@@ -6925,6 +13683,278 @@ func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[stri
 		results[name] = validEverywhere
 	}
 	return results, nil
+}
+
+func l8D2ReadinessExactNamedServiceTest(file *ast.File, name string, required []string, counts map[string]int) bool {
+	if file == nil {
+		return false
+	}
+	aliases, _ := l8D2ReadinessImportAliases(file)
+	var function *ast.FuncDecl
+	declarations := 0
+	for _, declaration := range file.Decls {
+		candidate, ok := declaration.(*ast.FuncDecl)
+		if !ok || candidate.Name.Name != name {
+			continue
+		}
+		declarations++
+		function = candidate
+	}
+	if declarations != 1 || function == nil || function.Recv != nil || function.Body == nil || function.Type.Results != nil || function.Type.TypeParams != nil || function.Type.Params == nil || len(function.Type.Params.List) != 1 || len(function.Type.Params.List[0].Names) != 1 || function.Type.Params.List[0].Names[0].Name != "t" || !l8D2ReadinessExactImportedType(function.Type.Params.List[0].Type, aliases, "testing", "T", true) {
+		return false
+	}
+	formatted := l8D2ReadinessFormattedNode(function.Body)
+	for _, marker := range required {
+		if !strings.Contains(formatted, marker) {
+			return false
+		}
+	}
+	for marker, want := range counts {
+		actual := strings.Count(formatted, marker)
+		switch marker {
+		case "NewService(":
+			actual = l8D2ReadinessFunctionCallCount(function, "NewService", false)
+		case ".Serve(":
+			actual = l8D2ReadinessFunctionCallCount(function, "Serve", true)
+		}
+		if actual != want {
+			return false
+		}
+	}
+	return !l8D2ReadinessBodyRebindsNames(function.Body, map[string]bool{"NewService": true}, nil)
+}
+
+func l8D2ReadinessFunctionCallCount(function *ast.FuncDecl, name string, method bool) int {
+	if function == nil || function.Body == nil {
+		return 0
+	}
+	count := 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if method {
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if ok && selector.Sel.Name == name {
+				count++
+			}
+			return true
+		}
+		identifier, ok := call.Fun.(*ast.Ident)
+		if ok && identifier.Name == name && identifier.Obj == nil {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
+func l8D2ReadinessFunctionIdentifierCount(function *ast.FuncDecl, name string) int {
+	if function == nil || function.Body == nil {
+		return 0
+	}
+	count := 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		identifier, ok := node.(*ast.Ident)
+		if ok && identifier.Name == name {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
+func l8D2ReadinessExactNamedTestFunction(file *ast.File, name string) *ast.FuncDecl {
+	var result *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != name || function.Recv != nil {
+			continue
+		}
+		if result != nil {
+			return nil
+		}
+		result = function
+	}
+	return result
+}
+
+func l8D2ReadinessFunctionHasAssertedSelectors(function *ast.FuncDecl, names ...string) bool {
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[name] = true
+	}
+	seen := make(map[string]bool, len(names))
+	if function == nil || function.Body == nil {
+		return false
+	}
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		branch, ok := node.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		ast.Inspect(branch.Cond, func(item ast.Node) bool {
+			selector, ok := item.(*ast.SelectorExpr)
+			if ok && wanted[selector.Sel.Name] {
+				seen[selector.Sel.Name] = true
+			}
+			return true
+		})
+		return true
+	})
+	return len(seen) == len(wanted)
+}
+
+func l8D2ReadinessFunctionHasSelectors(function *ast.FuncDecl, names ...string) bool {
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[name] = true
+	}
+	seen := make(map[string]bool, len(names))
+	if function == nil || function.Body == nil {
+		return false
+	}
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if ok && wanted[selector.Sel.Name] {
+			seen[selector.Sel.Name] = true
+		}
+		return true
+	})
+	return len(seen) == len(wanted)
+}
+
+func l8D2ReadinessExactPlanDispatchMatrixTest(file *ast.File) bool {
+	name := "TestServiceDestroysClaimedExecPlanOnEveryDispatchPath"
+	if !l8D2ReadinessExactNamedServiceTest(file, name, []string{
+		`{"success", serviceExecPrivateSuccess}`,
+		`{"invalid core", serviceExecPrivateInvalidCore}`,
+		`{"panic", serviceExecPrivatePanic}`,
+		`{"stdin failure", serviceExecStdinFailure}`,
+		`{"multi-record output", serviceExecMultiRecordOutput}`,
+		"service, err := NewService(",
+		"service.Serve(context.Background())",
+		"scenario.plan == nil || !scenario.plan.destroyed || core.planDestroyCalls != 1",
+	}, map[string]int{"NewService(": 1, ".Serve(": 1, "core.planDestroyCalls != 1": 1}) {
+		return false
+	}
+	function := l8D2ReadinessExactNamedTestFunction(file, name)
+	for _, mode := range []string{"serviceExecPrivateSuccess", "serviceExecPrivateInvalidCore", "serviceExecPrivatePanic", "serviceExecStdinFailure", "serviceExecMultiRecordOutput"} {
+		if l8D2ReadinessFunctionIdentifierCount(function, mode) == 0 {
+			return false
+		}
+	}
+	return l8D2ReadinessFunctionHasAssertedSelectors(function, "destroyed", "planDestroyCalls")
+}
+
+func l8D2ReadinessExactCausalSameStreamTest(file *ast.File) bool {
+	name := "TestServiceAcceptsCausalSameStreamCreditBeforeSendReturns"
+	if !l8D2ReadinessExactNamedServiceTest(file, name, []string{
+		"mode: serviceExecMultiRecordOutput",
+		"firstOutputVisible: make(chan struct{})",
+		"releaseFirstOutput: make(chan struct{})",
+		"service, err := NewService(",
+		"result, serveErr := service.Serve(context.Background())",
+		"serveErr != nil || result.Disposition() != ServiceClosed",
+	}, map[string]int{"NewService(": 1, ".Serve(": 1, "serviceExecMultiRecordOutput": 1}) {
+		return false
+	}
+	function := l8D2ReadinessExactNamedTestFunction(file, name)
+	return l8D2ReadinessFunctionCallCount(function, "make", false) == 2 && l8D2ReadinessFunctionIdentifierCount(function, "firstOutputVisible") != 0 && l8D2ReadinessFunctionIdentifierCount(function, "releaseFirstOutput") != 0 && l8D2ReadinessFunctionHasAssertedSelectors(function, "Disposition")
+}
+
+func l8D2ReadinessExactReceiveConvergenceTest(file *ast.File) bool {
+	name := "TestServiceReceiveFailureConvergesOwnedState"
+	if !l8D2ReadinessExactNamedServiceTest(file, name, []string{
+		`{name: "preparing error", faultIndex: 1, rollback: 1}`,
+		`{name: "prepared error", faultIndex: 3, revoke: 1}`,
+		`{name: "exec private panic", faultIndex: 4, panic: true, revoke: 1}`,
+		"result, serveErr := service.Serve(context.Background())",
+		"serveErr == nil || result.Disposition() != ServiceStopVMRequired",
+		"scenario.preparation.rollbackCalls != test.rollback || core.revokeCalls != test.revoke",
+		"service.state.preparing.authority.transaction != nil || service.state.prepared.active || service.state.transaction != nil || service.state.revision != 0",
+		"scenario.plan != nil && !scenario.plan.destroyed && test.faultIndex == 4",
+	}, map[string]int{"NewService(": 1, ".Serve(": 1, "receiveFaultIndex": 1, "receiveFaultPanic": 1}) {
+		return false
+	}
+	function := l8D2ReadinessExactNamedTestFunction(file, name)
+	return l8D2ReadinessFunctionHasAssertedSelectors(function, "Disposition", "rollbackCalls", "revokeCalls") && l8D2ReadinessFunctionHasSelectors(function, "transaction", "active", "revision", "destroyed")
+}
+
+func l8D2ReadinessExactComparisonNoCoreTest(file *ast.File) bool {
+	if file == nil {
+		return false
+	}
+	aliases, _ := l8D2ReadinessImportAliases(file)
+	var function *ast.FuncDecl
+	count := 0
+	for _, declaration := range file.Decls {
+		candidate, ok := declaration.(*ast.FuncDecl)
+		if !ok || candidate.Name.Name != "TestServiceObservedComparisonNeverCallsCore" {
+			continue
+		}
+		count++
+		function = candidate
+	}
+	if count != 1 || function == nil || function.Recv != nil || function.Body == nil || function.Type.Results != nil || function.Type.TypeParams != nil || function.Type.Params == nil || len(function.Type.Params.List) != 1 || len(function.Type.Params.List[0].Names) != 1 || function.Type.Params.List[0].Names[0].Name != "t" || !l8D2ReadinessExactImportedType(function.Type.Params.List[0].Type, aliases, "testing", "T", true) {
+		return false
+	}
+	formatted := l8D2ReadinessFormattedNode(function.Body)
+	required := []string{
+		"service, err := NewService(",
+		"comparison, err := credentialprotocol.NewHelperExecComparisonTransaction(correlation, body, cached)",
+		"service.private(context.Background(), comparisonPrivate, comparison, correlation, privateObservation, true)",
+		"service.stdin(context.Background(), comparisonStdin, comparison, correlation, stdinObservation, 0, true, true)",
+		"comparison.ReplayResult()",
+		"if core.beginExecCalls != 0",
+		"if core.writeStdinCalls != 0",
+	}
+	for _, marker := range required {
+		if !strings.Contains(formatted, marker) {
+			return false
+		}
+	}
+	counts := map[string]int{
+		"NewService(":                         1,
+		"NewHelperExecComparisonTransaction(": 1,
+		"service.private(":                    1,
+		"service.stdin(":                      1,
+		"comparison.ReplayResult(":            1,
+		"core.beginExecCalls != 0":            1,
+		"core.writeStdinCalls != 0":           1,
+	}
+	for marker, want := range counts {
+		if strings.Count(formatted, marker) != want {
+			return false
+		}
+	}
+	valid := true
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !valid || node == nil {
+			return valid
+		}
+		switch value := node.(type) {
+		case *ast.GoStmt, *ast.DeferStmt, *ast.FuncLit, *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt:
+			valid = false
+			return false
+		case *ast.CallExpr:
+			if selector, ok := value.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Serve" {
+				valid = false
+				return false
+			}
+		}
+		return true
+	})
+	return valid &&
+		l8D2ReadinessFunctionCallCount(function, "NewService", false) == 1 &&
+		l8D2ReadinessFunctionCallCount(function, "NewHelperExecComparisonTransaction", true) == 1 &&
+		l8D2ReadinessFunctionCallCount(function, "private", true) == 1 &&
+		l8D2ReadinessFunctionCallCount(function, "stdin", true) == 1 &&
+		l8D2ReadinessFunctionCallCount(function, "ReplayResult", true) == 1 &&
+		l8D2ReadinessFunctionCallCount(function, "Serve", true) == 0 &&
+		l8D2ReadinessFunctionHasAssertedSelectors(function, "beginExecCalls", "writeStdinCalls") &&
+		!l8D2ReadinessBodyRebindsNames(function.Body, map[string]bool{"NewService": true, "t": true}, nil)
 }
 
 func l8D2ReadinessExactServiceBehavioralTest(file *ast.File, name string, requirement l8D2ReadinessServiceTestRequirement) bool {
@@ -7294,7 +14324,12 @@ func l8D2ReadinessExactServiceBehavioralTestInEnvironment(file *ast.File, name s
 	if l8D2ReadinessBodyRebindsNames(function.Body, map[string]bool{"NewService": true, "t": true}, nil) {
 		return false
 	}
-	terminalFacts := l8D2ReadinessPackageTerminalFunctions(terminalEnvironment)
+	var terminalFacts l8D2ReadinessTerminalFacts
+	if terminalEnvironment.terminalFacts != nil {
+		terminalFacts = *terminalEnvironment.terminalFacts
+	} else {
+		terminalFacts = l8D2ReadinessPackageTerminalFunctions(terminalEnvironment)
+	}
 	terminalAliases := l8D2ReadinessTerminalCallableAliases(function, terminalFacts, terminalEnvironment, nil)
 	exercisePosition := make(map[string]token.Pos)
 	exerciseCalls := make(map[string]*ast.CallExpr)
@@ -7505,7 +14540,12 @@ func l8D2ReadinessServiceTestDirectLivePath(function *ast.FuncDecl, constructor,
 		}
 	}
 	betweenConstructorAndServe := function.Body.List[constructorIndex+1 : serveIndex]
-	if len(betweenConstructorAndServe) != 0 && (len(betweenConstructorAndServe) != 1 || constructorError == "" || !l8D2ReadinessCanonicalServiceErrorGate(betweenConstructorAndServe[0], constructorError)) {
+	causalBinding := l8D2ReadinessExactCausalServiceBinding(function.Body, constructor)
+	validBetween := len(betweenConstructorAndServe) == 0 || len(betweenConstructorAndServe) == 1 && constructorError != "" && l8D2ReadinessCanonicalServiceErrorGate(betweenConstructorAndServe[0], constructorError)
+	if len(betweenConstructorAndServe) == 2 && constructorError != "" && l8D2ReadinessCanonicalServiceErrorGate(betweenConstructorAndServe[0], constructorError) && betweenConstructorAndServe[1] == causalBinding && l8D2ReadinessExactServiceExecCausalProviders(environment) {
+		validBetween = true
+	}
+	if !validBetween {
 		return false
 	}
 	serveErrorGateIndex := -1
@@ -7530,6 +14570,48 @@ func l8D2ReadinessServiceTestDirectLivePath(function *ast.FuncDecl, constructor,
 		return false
 	}
 	return l8D2ReadinessServiceTestSupplementalTailSafe(function.Body.List[lastAssertionIndex+1:], serviceOwner)
+}
+
+func l8D2ReadinessExactCausalServiceBinding(body *ast.BlockStmt, constructor *ast.CallExpr) *ast.AssignStmt {
+	if body == nil || constructor == nil {
+		return nil
+	}
+	var service *ast.Ident
+	for _, statement := range body.List {
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || len(assignment.Rhs) != 1 || assignment.Rhs[0] != constructor || len(assignment.Lhs) != 2 {
+			continue
+		}
+		service, _ = assignment.Lhs[0].(*ast.Ident)
+		break
+	}
+	if service == nil || service.Obj == nil || service.Name == "_" {
+		return nil
+	}
+	var result *ast.AssignStmt
+	for _, statement := range body.List {
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || assignment.Tok != token.ASSIGN {
+			continue
+		}
+		selector, ok := assignment.Lhs[0].(*ast.SelectorExpr)
+		transport, ownerOK := func() (*ast.Ident, bool) {
+			if !ok {
+				return nil, false
+			}
+			identifier, valid := selector.X.(*ast.Ident)
+			return identifier, valid
+		}()
+		value, valueOK := assignment.Rhs[0].(*ast.Ident)
+		if !ownerOK || transport.Obj == nil || selector.Sel.Name != "service" || !valueOK || value.Obj != service.Obj || !l8D2ReadinessObservableOwnerFeedsConstructor(body, transport.Name, constructor, []string{"Transport"}) {
+			continue
+		}
+		if result != nil {
+			return nil
+		}
+		result = assignment
+	}
+	return result
 }
 
 func l8D2ReadinessServiceTestSupplementalTailSafe(statements []ast.Stmt, serviceOwner string) bool {
@@ -8129,6 +15211,14 @@ func l8D2ReadinessConditionAssertsCausalObservable(function *ast.FuncDecl, condi
 	if function == nil || function.Body == nil || condition == nil || constructor == nil || len(dependencyFields) == 0 || !l8D2ReadinessStaticTestingFailureArguments([]ast.Expr{condition}) {
 		return false
 	}
+	if field == "commitCalls" || field == "wipeCalls" || field == "planDestroyCalls" {
+		if !l8D2ReadinessExactServiceExecCausalProviders(environment) {
+			return false
+		}
+		if (field == "commitCalls" || field == "wipeCalls") && l8D2ReadinessExactCausalServiceBinding(function.Body, constructor) == nil {
+			return false
+		}
+	}
 	body := function.Body
 	constants := l8D2ReadinessWrapperConstantValues(function, condition.Pos(), environment)
 	owners := make(map[string]bool)
@@ -8177,6 +15267,106 @@ func l8D2ReadinessConditionAssertsCausalObservable(function *ast.FuncDecl, condi
 	}
 	for owner := range owners {
 		if !l8D2ReadinessObservableOwnerFeedsConstructor(body, owner, constructor, dependencyFields) || !l8D2ReadinessObservableOwnerStartsZero(body, owner, field, constructor, environment, constants) || !l8D2ReadinessObservableOwnerStable(body, owner) || !l8D2ReadinessObservableOwnerConfinedAfterConstructor(body, owner, constructor) || l8D2ReadinessObservableFieldWritten(body, owner, field, constructor, environment.globals) {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D2ReadinessExactServiceExecCausalProviders(environment l8D2ReadinessTerminalEnvironment) bool {
+	expectedFile, err := parser.ParseFile(token.NewFileSet(), "service_exec_causal.go", `package credentialhelper
+import (
+	"context"
+	"github.com/jywlabs/hal/internal/credentialmemory"
+)
+func (body transportTestBody) Borrow(ctx context.Context, callback func(credentialmemory.BorrowedView) error) error {
+	body.state.mu.Lock()
+	defer body.state.mu.Unlock()
+	if body.state.destroyed {
+		return ErrContractDestroyed
+	}
+	body.state.borrows++
+	body.state.borrowContexts = append(body.state.borrowContexts, ctx)
+	return callback(transportTestView{value: body.state.region[:body.state.length], state: body.state})
+}
+func (body *serviceExecTestBody) Borrow(ctx context.Context, callback func(credentialmemory.BorrowedView) error) error {
+	if !body.countOutcome {
+		return body.transportTestBody.Borrow(ctx, callback)
+	}
+	body.transport.service.state.mu.Lock()
+	transaction := body.transport.service.state.transaction
+	body.transport.service.state.mu.Unlock()
+	if transaction == nil || body.transport.core == nil {
+		return ErrContractTransition
+	}
+	body.transport.scenario.transaction = transaction
+	before := transaction.Snapshot()
+	beginExecCalls := body.transport.core.beginExecCalls
+	writeStdinCalls := body.transport.core.writeStdinCalls
+	borrowErr := body.transportTestBody.Borrow(ctx, callback)
+	after := transaction.Snapshot()
+	beginExecDelta := body.transport.core.beginExecCalls - beginExecCalls
+	writeStdinDelta := body.transport.core.writeStdinCalls - writeStdinCalls
+	privateCommit := !before.Terminal && !before.Completed && !before.PrivateComplete && !before.PendingPayload && !before.StdinCreditOutstanding && !before.StdinEOF && !after.Terminal && !after.Completed && after.PrivateComplete && !after.PendingPayload && !after.StdinCreditOutstanding && !after.StdinEOF && after.ComparisonOnly == before.ComparisonOnly && after.StdinOffset == before.StdinOffset && after.StdinBytes == before.StdinBytes && after.StdinRecordCount == before.StdinRecordCount && after.StdinSHA256 == before.StdinSHA256 && after.StdinTranscriptSHA256 == before.StdinTranscriptSHA256
+	stdinCommit := !before.Terminal && !before.Completed && before.PrivateComplete && !before.PendingPayload && before.StdinCreditOutstanding && !before.StdinEOF && !after.Terminal && !after.Completed && after.PrivateComplete && !after.PendingPayload && !after.StdinCreditOutstanding && after.ComparisonOnly == before.ComparisonOnly && after.StdinOffset >= before.StdinOffset && after.StdinBytes >= before.StdinBytes && after.StdinRecordCount == before.StdinRecordCount+1
+	privateCore := before.ComparisonOnly && beginExecDelta == 0 && writeStdinDelta == 0 || !before.ComparisonOnly && beginExecDelta == 1 && writeStdinDelta == 0
+	stdinCore := before.ComparisonOnly && beginExecDelta == 0 && writeStdinDelta == 0 || !before.ComparisonOnly && beginExecDelta == 0 && writeStdinDelta == 1
+	if borrowErr == nil && (privateCommit && privateCore || stdinCommit && stdinCore) {
+		body.transport.commitCalls++
+	}
+	privateWipe := !before.PrivateComplete && beginExecDelta == 1 && writeStdinDelta == 0
+	stdinWipe := before.PrivateComplete && beginExecDelta == 0 && writeStdinDelta == 1
+	if borrowErr != nil && !before.Terminal && after.Terminal && (privateWipe || stdinWipe) {
+		body.transport.wipeCalls++
+	}
+	return borrowErr
+}
+func (core *serviceExecTestCore) Revoke(_ context.Context, request CoreRevokeRequest) (CoreCleanupResult, error) {
+	core.revokeCalls++
+	core.scenario.plan.mu.Lock()
+	planDestroyed := core.scenario.plan.destroyed
+	core.scenario.plan.mu.Unlock()
+	if planDestroyed {
+		core.planDestroyCalls++
+	}
+	transactionTerminated := core.scenario.transaction != nil && core.scenario.transaction.Snapshot().Terminal
+	if core.scenario.mode == serviceExecPrivatePanic && transactionTerminated && core.beginExecCalls == 1 {
+		core.wipeCalls++
+	}
+	return NewCoreCleanupResult(request.cleanup, CoreCleanupComplete, true, true)
+}`, 0)
+	if err != nil {
+		return false
+	}
+	expectedFiles := map[string]*ast.File{"service_exec_causal.go": expectedFile}
+	identities := []struct {
+		receiver string
+		name     string
+	}{
+		{receiver: "transportTestBody", name: "Borrow"},
+		{receiver: "*serviceExecTestBody", name: "Borrow"},
+		{receiver: "*serviceExecTestCore", name: "Revoke"},
+	}
+	for _, identity := range identities {
+		var actual *ast.FuncDecl
+		count := 0
+		for _, function := range environment.declarations {
+			receiver := ""
+			if function.Recv != nil && len(function.Recv.List) == 1 {
+				receiver = types.ExprString(function.Recv.List[0].Type)
+			}
+			if function.Name.Name == identity.name && receiver == identity.receiver {
+				actual = function
+				count++
+			}
+		}
+		expected := l8D2ReadinessUniqueFunction(expectedFiles, identity.receiver, identity.name)
+		if count != 1 || actual == nil || expected == nil {
+			return false
+		}
+		actualType, actualBody, actualOK := l8D2ReadinessExecNormalizedFunction(actual, environment.functionFiles[actual])
+		expectedType, expectedBody, expectedOK := l8D2ReadinessExecNormalizedFunction(expected, expectedFile)
+		if !actualOK || !expectedOK || actualType != expectedType || actualBody != expectedBody {
 			return false
 		}
 	}
@@ -8885,9 +16075,11 @@ func l8D2ReadinessServiceOwnerConfinedUntilServe(body *ast.BlockStmt, owner stri
 		return false
 	}
 	allowed, ok := allowedOwner.X.(*ast.Ident)
-	if !ok || allowed.Name != owner {
+	if !ok || allowed.Name != owner || allowed.Obj == nil {
 		return false
 	}
+	ownerObject := allowed.Obj
+	causalBinding := l8D2ReadinessExactCausalServiceBinding(body, constructor)
 	parents := make(map[ast.Node]ast.Node)
 	var stack []ast.Node
 	ast.Inspect(body, func(node ast.Node) bool {
@@ -8909,13 +16101,16 @@ func l8D2ReadinessServiceOwnerConfinedUntilServe(body *ast.BlockStmt, owner stri
 			return false
 		}
 		identifier, ok := node.(*ast.Ident)
-		if !ok || identifier.Name != owner || identifier.Pos() <= constructor.End() || identifier.Pos() >= serve.End() {
+		if !ok || identifier.Obj != ownerObject || identifier.Pos() <= constructor.End() || identifier.Pos() >= serve.End() {
 			return true
 		}
 		if identifier == allowed {
 			return true
 		}
 		parent := parents[identifier]
+		if assignment, ok := parent.(*ast.AssignStmt); ok && assignment == causalBinding && len(assignment.Rhs) == 1 && assignment.Rhs[0] == identifier {
+			return true
+		}
 		if comparison, ok := parent.(*ast.BinaryExpr); ok && (comparison.Op == token.EQL || comparison.Op == token.NEQ) {
 			other := comparison.X
 			if other == identifier {
@@ -9386,11 +16581,13 @@ func l8D2ReadinessRetainedScopedTypeIssues(files map[string]*ast.File) []string 
 	}
 	functionsByName := make(map[string][]*ast.FuncDecl)
 	functionFiles := make(map[*ast.FuncDecl]*ast.File)
+	aliasesByFunction := make(map[*ast.FuncDecl]map[string]string)
 	for _, file := range files {
 		for _, declaration := range file.Decls {
-			if function, ok := declaration.(*ast.FuncDecl); ok && function.Body != nil {
+			if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil {
 				functionsByName[function.Name.Name] = append(functionsByName[function.Name.Name], function)
 				functionFiles[function] = file
+				aliasesByFunction[function] = aliasesByFile[file]
 			}
 		}
 	}
@@ -9416,7 +16613,7 @@ func l8D2ReadinessRetainedScopedTypeIssues(files map[string]*ast.File) []string 
 		})
 		for _, declaration := range file.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
-			if !ok || function.Body == nil || !l8D2ReadinessFunctionDynamicallyRetainsScoped(function, aliases, dotImport, definitions, globals, seededScoped[function], functionsByName) {
+			if !ok || function.Body == nil || !l8D2ReadinessFunctionDynamicallyRetainsScoped(function, aliases, dotImport, definitions, globals, seededScoped[function], functionsByName, aliasesByFunction) {
 				continue
 			}
 			issues = append(issues, filepath.Base(name)+" dynamically retains credentialmemory.BorrowedView or CredentialSink in function "+function.Name.Name)
@@ -9448,6 +16645,9 @@ func l8D2ReadinessPropagateScopedParameters(functionsByName map[string][]*ast.Fu
 	for changed := true; changed; {
 		changed = false
 		for caller, seeds := range result {
+			if caller.Body == nil {
+				continue
+			}
 			names := l8D2ReadinessScopedLocalAliases(caller.Body, seeds)
 			ast.Inspect(caller.Body, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
@@ -9611,12 +16811,59 @@ func l8D2ReadinessDirectScopedValueType(expression ast.Expr, aliases map[string]
 	return false
 }
 
-func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, aliases map[string]string, dotImport bool, definitions map[string]l8D2ReadinessTypeDefinition, globals map[string]l8D2ReadinessGlobalDefinition, seeded map[string]bool, functionsByName map[string][]*ast.FuncDecl) bool {
+func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, aliases map[string]string, dotImport bool, definitions map[string]l8D2ReadinessTypeDefinition, globals map[string]l8D2ReadinessGlobalDefinition, seeded map[string]bool, functionsByName map[string][]*ast.FuncDecl, aliasesByFunction map[*ast.FuncDecl]map[string]string) bool {
+	if l8D2ReadinessExactServiceScopedFunction(function, "private") || l8D2ReadinessExactServiceScopedFunction(function, "stdin") || l8D2ReadinessExactServiceScopedFunction(function, "observeServiceCoreOutput") {
+		return false
+	}
 	scoped := make(map[string]bool)
-	bodyParams := make(map[string]bool)
-	contextParams := make(map[string]bool)
-	borrowOwnerParams := make(map[string]bool)
-	collectParameters := func(fields *ast.FieldList, destination map[string]bool) {
+	scopedObjects := make(map[any]bool)
+	contextParams := make(map[any]bool)
+	borrowOwnerObjects := make(map[any]bool)
+	borrowObjectTypes := make(map[any]ast.Expr)
+	borrowContainerFields := make(map[any]map[string]bool)
+	borrowContainerFieldEvents := make(map[any]map[string]map[ast.Node]bool)
+	borrowContainerSlots := make(map[any]map[string]bool)
+	borrowContainerSlotEvents := make(map[any]map[string]map[ast.Node]bool)
+	borrowContainerComplete := make(map[any]bool)
+	borrowContainerUnknownWrite := make(map[any]bool)
+	borrowAssignmentCounts := make(map[any]int)
+	borrowDirectCallCounts := make(map[any]int)
+	borrowParameterObjects := make(map[any]bool)
+	canonicalPacketBodyObjects := make(map[any]bool)
+	type borrowStorageAssignment struct {
+		event  ast.Node
+		source ast.Expr
+	}
+	borrowStorageAssignments := make(map[any][]borrowStorageAssignment)
+	channelSends := make([]*ast.SendStmt, 0)
+	var borrowStorageAt func(any, token.Pos, map[any]bool) any
+	setProvenance := func(values map[any]map[string]bool, events map[any]map[string]map[ast.Node]bool, object any, path string, event ast.Node, owner bool) bool {
+		if borrowStorageAt != nil {
+			object = borrowStorageAt(object, event.Pos(), make(map[any]bool))
+		}
+		if object == nil || path == "" || event == nil {
+			return false
+		}
+		if values[object] == nil {
+			values[object] = make(map[string]bool)
+		}
+		if events[object] == nil {
+			events[object] = make(map[string]map[ast.Node]bool)
+		}
+		if events[object][path] == nil {
+			events[object][path] = make(map[ast.Node]bool)
+		}
+		before, existed := events[object][path][event]
+		events[object][path][event] = owner
+		resolved := len(events[object][path]) != 0
+		for _, candidate := range events[object][path] {
+			resolved = resolved && candidate
+		}
+		changed := !existed || before != owner || values[object][path] != resolved
+		values[object][path] = resolved
+		return changed
+	}
+	collectParameters := func(fields *ast.FieldList, destination map[string]bool, objects map[any]bool) {
 		if fields == nil {
 			return
 		}
@@ -9626,24 +16873,1033 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 			}
 			for _, name := range field.Names {
 				destination[name.Name] = true
+				if name.Obj != nil {
+					objects[name.Obj] = true
+				}
 			}
 		}
 	}
-	collectParameters(function.Type.Params, scoped)
+	collectParameters(function.Type.Params, scoped, scopedObjects)
 	for name := range seeded {
 		scoped[name] = true
+		if function.Type.Params != nil {
+			for _, field := range function.Type.Params.List {
+				for _, parameter := range field.Names {
+					if parameter.Name == name && parameter.Obj != nil {
+						scopedObjects[parameter.Obj] = true
+					}
+				}
+			}
+		}
 	}
-	if function.Name.Name == "withCanonicalScratch" && l8D2ReadinessExactScopedHelperDeclaration(functionsByName[function.Name.Name], function.Name.Name, aliases, definitions) {
+	if function.Name.Name == "withCanonicalScratch" && l8D2ReadinessExactScopedHelper(functionsByName, function.Name.Name, aliasesByFunction, definitions, globals) {
 		delete(scoped, "consume")
+		if function.Type.Params != nil {
+			for _, field := range function.Type.Params.List {
+				for _, name := range field.Names {
+					if name.Name == "consume" && name.Obj != nil {
+						delete(scopedObjects, name.Obj)
+					}
+				}
+			}
+		}
 	}
+	exactReceivedBodyType := func(expression ast.Expr) bool {
+		for {
+			parenthesized, ok := expression.(*ast.ParenExpr)
+			if !ok {
+				break
+			}
+			expression = parenthesized.X
+		}
+		identifier, ok := expression.(*ast.Ident)
+		if !ok || (identifier.Name != "ReceivedBodyCapability" && identifier.Name != "CoreOutputBody") {
+			return false
+		}
+		if identifier.Obj == nil {
+			_, exists := definitions[identifier.Name]
+			return exists
+		}
+		specification, local := identifier.Obj.Decl.(*ast.TypeSpec)
+		definition, defined := definitions[identifier.Name]
+		return local && defined && specification.Type == definition.expression
+	}
+	seedBorrowFields := func(fields *ast.FieldList, parameter bool) {
+		if fields == nil {
+			return
+		}
+		for _, field := range fields.List {
+			for _, name := range field.Names {
+				if name.Obj == nil {
+					continue
+				}
+				borrowObjectTypes[name.Obj] = field.Type
+				if parameter {
+					borrowParameterObjects[name.Obj] = true
+				}
+				if exactReceivedBodyType(field.Type) {
+					borrowOwnerObjects[name.Obj] = true
+					borrowAssignmentCounts[name.Obj]++
+				}
+			}
+		}
+	}
+	seedBorrowFields(function.Recv, true)
+	seedBorrowFields(function.Type.Params, true)
+	seedBorrowFields(function.Type.Results, false)
 	if function.Type.Params != nil {
 		for _, field := range function.Type.Params.List {
 			for _, name := range field.Names {
-				bodyParams[name.Name] = types.ExprString(field.Type) == "ReceivedBodyCapability"
-				borrowOwnerParams[name.Name] = types.ExprString(field.Type) == "ReceivedBodyCapability" || types.ExprString(field.Type) == "CoreOutputBody"
-				contextParams[name.Name] = l8D2ReadinessExactImportedType(field.Type, aliases, "context", "Context", false)
+				if name.Obj != nil && l8D2ReadinessExactImportedType(field.Type, aliases, "context", "Context", false) {
+					contextParams[name.Obj] = true
+				}
 			}
 		}
+	}
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.FuncLit:
+			seedBorrowFields(value.Type.Params, true)
+			seedBorrowFields(value.Type.Results, false)
+			if value.Type.Params != nil {
+				for _, field := range value.Type.Params.List {
+					if !l8D2ReadinessExactImportedType(field.Type, aliases, "context", "Context", false) {
+						continue
+					}
+					for _, name := range field.Names {
+						if name.Obj != nil {
+							contextParams[name.Obj] = true
+						}
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			if len(value.Values) == len(value.Names) {
+				for index, name := range value.Names {
+					if name.Obj != nil {
+						borrowStorageAssignments[name.Obj] = append(borrowStorageAssignments[name.Obj], borrowStorageAssignment{event: value, source: value.Values[index]})
+					}
+				}
+			}
+			if value.Type == nil {
+				for index, name := range value.Names {
+					if name.Obj != nil && (index < len(value.Values) || len(value.Values) == 1) {
+						borrowAssignmentCounts[name.Obj]++
+					}
+				}
+				return true
+			}
+			for _, name := range value.Names {
+				if name.Obj != nil {
+					borrowObjectTypes[name.Obj] = value.Type
+				}
+			}
+			if len(value.Values) != 0 {
+				for _, name := range value.Names {
+					if name.Obj != nil {
+						borrowAssignmentCounts[name.Obj]++
+					}
+				}
+			}
+		case *ast.AssignStmt:
+			for index, expression := range value.Lhs {
+				identifier, ok := l8D2ReadinessDirectAssignedIdentifier(expression)
+				if ok && identifier.Obj != nil {
+					borrowAssignmentCounts[identifier.Obj]++
+					if len(value.Rhs) == len(value.Lhs) {
+						borrowStorageAssignments[identifier.Obj] = append(borrowStorageAssignments[identifier.Obj], borrowStorageAssignment{event: value, source: value.Rhs[index]})
+					}
+				}
+			}
+		case *ast.RangeStmt:
+			if value.Tok == token.ASSIGN {
+				for _, expression := range []ast.Expr{value.Key, value.Value} {
+					identifier, ok := l8D2ReadinessDirectAssignedIdentifier(expression)
+					if ok && identifier.Obj != nil {
+						borrowAssignmentCounts[identifier.Obj]++
+					}
+				}
+			}
+		case *ast.UnaryExpr:
+			if value.Op == token.AND {
+				identifier, ok := l8D2ReadinessDirectAssignedIdentifier(value.X)
+				if ok && identifier.Obj != nil && borrowParameterObjects[identifier.Obj] && exactReceivedBodyType(borrowObjectTypes[identifier.Obj]) {
+					borrowAssignmentCounts[identifier.Obj]++
+				}
+			}
+		case *ast.CallExpr:
+			selector, ok := value.Fun.(*ast.SelectorExpr)
+			identifier, direct := func() (*ast.Ident, bool) {
+				if !ok || selector.Sel.Name != "Borrow" {
+					return nil, false
+				}
+				owner, ownerOK := selector.X.(*ast.Ident)
+				return owner, ownerOK
+			}()
+			if direct && identifier.Obj != nil {
+				borrowDirectCallCounts[identifier.Obj]++
+			}
+		case *ast.SendStmt:
+			channelSends = append(channelSends, value)
+		}
+		return true
+	})
+	var receivedBodyUnderlyingType func(ast.Expr, map[any]bool) ast.Expr
+	receivedBodyUnderlyingType = func(expression ast.Expr, resolving map[any]bool) ast.Expr {
+		switch value := expression.(type) {
+		case nil:
+			return nil
+		case *ast.ParenExpr:
+			return receivedBodyUnderlyingType(value.X, resolving)
+		case *ast.Ident:
+			if exactReceivedBodyType(value) {
+				return value
+			}
+			if value.Obj != nil {
+				if resolving[value.Obj] {
+					return nil
+				}
+				if specification, ok := value.Obj.Decl.(*ast.TypeSpec); ok {
+					resolving[value.Obj] = true
+					result := receivedBodyUnderlyingType(specification.Type, resolving)
+					delete(resolving, value.Obj)
+					return result
+				}
+			}
+			definition, ok := definitions[value.Name]
+			if !ok {
+				return value
+			}
+			identity := any(definition.expression)
+			if resolving[identity] {
+				return nil
+			}
+			resolving[identity] = true
+			result := receivedBodyUnderlyingType(definition.expression, resolving)
+			delete(resolving, identity)
+			return result
+		case *ast.StarExpr:
+			return receivedBodyUnderlyingType(value.X, resolving)
+		default:
+			return expression
+		}
+	}
+	embeddedBodyFieldName := func(expression ast.Expr) (string, bool) {
+		if !exactReceivedBodyType(expression) {
+			return "", false
+		}
+		for {
+			switch value := expression.(type) {
+			case *ast.ParenExpr:
+				expression = value.X
+			case *ast.StarExpr:
+				expression = value.X
+			default:
+				identifier, ok := expression.(*ast.Ident)
+				return func() (string, bool) {
+					if ok {
+						return identifier.Name, true
+					}
+					selector, selected := expression.(*ast.SelectorExpr)
+					if selected {
+						return selector.Sel.Name, true
+					}
+					return "", false
+				}()
+			}
+		}
+	}
+	var receivedBodyExpressionType func(ast.Expr, map[any]bool) ast.Expr
+	receivedBodyExpressionType = func(expression ast.Expr, resolving map[any]bool) ast.Expr {
+		switch value := expression.(type) {
+		case nil:
+			return nil
+		case *ast.ParenExpr:
+			return receivedBodyExpressionType(value.X, resolving)
+		case *ast.Ident:
+			if value.Obj != nil {
+				if expressionType := borrowObjectTypes[value.Obj]; expressionType != nil {
+					return expressionType
+				}
+			}
+			return nil
+		case *ast.CompositeLit:
+			return value.Type
+		case *ast.TypeAssertExpr:
+			return value.Type
+		case *ast.UnaryExpr:
+			if value.Op == token.ARROW {
+				channel, ok := receivedBodyUnderlyingType(receivedBodyExpressionType(value.X, resolving), make(map[any]bool)).(*ast.ChanType)
+				if ok {
+					return channel.Value
+				}
+				return nil
+			}
+			if value.Op == token.AND {
+				return &ast.StarExpr{X: receivedBodyExpressionType(value.X, resolving)}
+			}
+		case *ast.StarExpr:
+			return receivedBodyUnderlyingType(receivedBodyExpressionType(value.X, resolving), make(map[any]bool))
+		case *ast.IndexExpr:
+			container := receivedBodyUnderlyingType(receivedBodyExpressionType(value.X, resolving), make(map[any]bool))
+			switch typed := container.(type) {
+			case *ast.ArrayType:
+				return typed.Elt
+			case *ast.MapType:
+				return typed.Value
+			}
+		case *ast.SliceExpr:
+			return receivedBodyExpressionType(value.X, resolving)
+		case *ast.SelectorExpr:
+			container := receivedBodyUnderlyingType(receivedBodyExpressionType(value.X, resolving), make(map[any]bool))
+			structure, ok := container.(*ast.StructType)
+			if !ok {
+				return nil
+			}
+			for _, field := range structure.Fields.List {
+				if len(field.Names) == 0 {
+					if fieldName, embedded := embeddedBodyFieldName(field.Type); embedded && fieldName == value.Sel.Name {
+						return field.Type
+					}
+					continue
+				}
+				for _, name := range field.Names {
+					if name.Name == value.Sel.Name {
+						return field.Type
+					}
+				}
+			}
+		case *ast.CallExpr:
+			called, ok := value.Fun.(*ast.Ident)
+			if ok && called.Name == "make" && called.Obj == nil && len(value.Args) != 0 {
+				return value.Args[0]
+			}
+		}
+		return nil
+	}
+	var borrowReferenceType func(ast.Expr, map[any]bool) bool
+	borrowReferenceType = func(expression ast.Expr, resolving map[any]bool) bool {
+		switch value := expression.(type) {
+		case nil:
+			return false
+		case *ast.ParenExpr:
+			return borrowReferenceType(value.X, resolving)
+		case *ast.StarExpr, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType:
+			return true
+		case *ast.ArrayType:
+			return value.Len == nil
+		case *ast.Ident:
+			if value.Obj != nil {
+				if resolving[value.Obj] {
+					return false
+				}
+				if specification, ok := value.Obj.Decl.(*ast.TypeSpec); ok {
+					resolving[value.Obj] = true
+					result := borrowReferenceType(specification.Type, resolving)
+					delete(resolving, value.Obj)
+					return result
+				}
+			}
+			definition, ok := definitions[value.Name]
+			if !ok {
+				return false
+			}
+			identity := any(definition.expression)
+			if resolving[identity] {
+				return false
+			}
+			resolving[identity] = true
+			result := borrowReferenceType(definition.expression, resolving)
+			delete(resolving, identity)
+			return result
+		}
+		return false
+	}
+	sharesBorrowStorage := func(expression ast.Expr) bool {
+		for {
+			parenthesized, ok := expression.(*ast.ParenExpr)
+			if !ok {
+				break
+			}
+			expression = parenthesized.X
+		}
+		if unary, ok := expression.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			return true
+		}
+		return borrowReferenceType(receivedBodyExpressionType(expression, make(map[any]bool)), make(map[any]bool))
+	}
+	var borrowExpressionStorage func(ast.Expr, token.Pos, map[any]bool) (any, bool)
+	borrowStorageAt = func(object any, position token.Pos, resolving map[any]bool) any {
+		if object == nil || resolving[object] {
+			return object
+		}
+		resolving[object] = true
+		defer delete(resolving, object)
+		assignments := borrowStorageAssignments[object]
+		var selected *borrowStorageAssignment
+		for index := range assignments {
+			candidate := &assignments[index]
+			if candidate.event.Pos() <= position && (selected == nil || candidate.event.Pos() >= selected.event.Pos()) {
+				selected = candidate
+			}
+		}
+		if selected == nil {
+			return object
+		}
+		if !borrowReferenceType(borrowObjectTypes[object], make(map[any]bool)) {
+			return selected.event
+		}
+		if source, shared := borrowExpressionStorage(selected.source, selected.event.Pos(), resolving); shared {
+			return source
+		}
+		return selected.event
+	}
+	borrowExpressionStorage = func(expression ast.Expr, position token.Pos, resolving map[any]bool) (any, bool) {
+		switch value := expression.(type) {
+		case *ast.ParenExpr:
+			return borrowExpressionStorage(value.X, position, resolving)
+		case *ast.SliceExpr:
+			return borrowExpressionStorage(value.X, position, resolving)
+		case *ast.StarExpr:
+			return borrowExpressionStorage(value.X, position, resolving)
+		case *ast.UnaryExpr:
+			if value.Op == token.AND {
+				return borrowExpressionStorage(value.X, position, resolving)
+			}
+		case *ast.Ident:
+			if value.Obj != nil && sharesBorrowStorage(value) {
+				return borrowStorageAt(value.Obj, position, resolving), true
+			}
+		}
+		return nil, false
+	}
+	provenanceAt := func(events map[any]map[string]map[ast.Node]bool, object any, path string, position token.Pos) (bool, bool) {
+		resolved, seen := true, false
+		for event, owner := range events[object][path] {
+			if event.Pos() > position {
+				continue
+			}
+			seen = true
+			resolved = resolved && owner
+		}
+		return resolved, seen
+	}
+	var borrowContainerStorage func(ast.Expr, token.Pos) (any, bool)
+	borrowContainerStorage = func(expression ast.Expr, position token.Pos) (any, bool) {
+		switch value := expression.(type) {
+		case *ast.ParenExpr:
+			return borrowContainerStorage(value.X, position)
+		case *ast.SliceExpr:
+			return borrowContainerStorage(value.X, position)
+		case *ast.StarExpr:
+			return borrowContainerStorage(value.X, position)
+		case *ast.UnaryExpr:
+			if value.Op == token.AND {
+				return borrowContainerStorage(value.X, position)
+			}
+		case *ast.Ident:
+			if value.Obj != nil {
+				return borrowStorageAt(value.Obj, position, make(map[any]bool)), true
+			}
+		}
+		return nil, false
+	}
+	selectorPath := func(expression ast.Expr) (any, string, bool) {
+		var fields []string
+		for {
+			switch value := expression.(type) {
+			case *ast.ParenExpr:
+				expression = value.X
+			case *ast.StarExpr:
+				expression = value.X
+			case *ast.SelectorExpr:
+				fields = append([]string{value.Sel.Name}, fields...)
+				expression = value.X
+			case *ast.Ident:
+				return value.Obj, strings.Join(fields, "."), value.Obj != nil && len(fields) != 0
+			default:
+				return nil, "", false
+			}
+		}
+	}
+	embeddedBodyOwner := func(expression ast.Expr) bool {
+		identifier, ok := expression.(*ast.Ident)
+		if !ok || identifier.Obj == nil {
+			return false
+		}
+		structure, ok := receivedBodyUnderlyingType(borrowObjectTypes[identifier.Obj], make(map[any]bool)).(*ast.StructType)
+		if !ok {
+			return false
+		}
+		for _, field := range structure.Fields.List {
+			if len(field.Names) != 0 {
+				continue
+			}
+			fieldName, embedded := embeddedBodyFieldName(field.Type)
+			storage := borrowStorageAt(identifier.Obj, expression.Pos(), make(map[any]bool))
+			if owner, seen := provenanceAt(borrowContainerFieldEvents, storage, fieldName, expression.Pos()); embedded && seen && owner {
+				return true
+			}
+		}
+		return false
+	}
+	for object := range borrowParameterObjects {
+		structure, ok := receivedBodyUnderlyingType(borrowObjectTypes[object], make(map[any]bool)).(*ast.StructType)
+		if !ok {
+			continue
+		}
+		for _, field := range structure.Fields.List {
+			if len(field.Names) != 0 {
+				continue
+			}
+			if fieldName, embedded := embeddedBodyFieldName(field.Type); embedded {
+				setProvenance(borrowContainerFields, borrowContainerFieldEvents, object, fieldName, field.Type, true)
+			}
+		}
+	}
+	containerIndexIdentity := func(expression ast.Expr) (string, bool) {
+		switch value := expression.(type) {
+		case *ast.BasicLit:
+			return types.ExprString(value), true
+		case *ast.Ident:
+			if value.Obj == nil {
+				return value.Name, true
+			}
+		case *ast.ParenExpr:
+			return func() (string, bool) {
+				switch nested := value.X.(type) {
+				case *ast.BasicLit:
+					return types.ExprString(nested), true
+				case *ast.Ident:
+					if nested.Obj == nil {
+						return nested.Name, true
+					}
+				}
+				return "", false
+			}()
+		}
+		return "", false
+	}
+	containerRoleOwner := func(object any, role string, position token.Pos) bool {
+		if object == nil || !borrowContainerComplete[object] || borrowContainerUnknownWrite[object] {
+			return false
+		}
+		seen := false
+		for slot := range borrowContainerSlotEvents[object] {
+			if !strings.HasPrefix(slot, role+":") {
+				continue
+			}
+			seen = true
+			owner, present := provenanceAt(borrowContainerSlotEvents, object, slot, position)
+			if !present || !owner {
+				return false
+			}
+		}
+		return seen
+	}
+	var receivedBodyProvenance func(ast.Expr) bool
+	receivedBodyProvenance = func(expression ast.Expr) bool {
+		switch value := expression.(type) {
+		case *ast.Ident:
+			if value.Obj == nil {
+				return false
+			}
+			return borrowOwnerObjects[value.Obj] || embeddedBodyOwner(value)
+		case *ast.ParenExpr:
+			return receivedBodyProvenance(value.X)
+		case *ast.TypeAssertExpr:
+			return exactReceivedBodyType(value.Type)
+		case *ast.UnaryExpr:
+			if value.Op != token.ARROW {
+				return false
+			}
+			if exactReceivedBodyType(receivedBodyExpressionType(value, make(map[any]bool))) {
+				return true
+			}
+			channelStorage, ok := borrowContainerStorage(value.X, value.Pos())
+			if !ok {
+				return false
+			}
+			seen := false
+			for _, sent := range channelSends {
+				if sent.Pos() >= value.Pos() {
+					continue
+				}
+				sentStorage, resolved := borrowContainerStorage(sent.Chan, sent.Pos())
+				if !resolved || sentStorage != channelStorage {
+					continue
+				}
+				seen = true
+				if !receivedBodyProvenance(sent.Value) {
+					return false
+				}
+			}
+			return seen
+		case *ast.IndexExpr:
+			storage, ok := borrowContainerStorage(value.X, value.Pos())
+			if !ok {
+				return false
+			}
+			index, exact := containerIndexIdentity(value.Index)
+			if !exact || borrowContainerUnknownWrite[storage] {
+				return false
+			}
+			owner, seen := provenanceAt(borrowContainerSlotEvents, storage, "value:"+index, value.Pos())
+			return seen && owner
+		case *ast.SelectorExpr:
+			if l8D2ReadinessExactPrepareFileHandler(function) && l8D2ReadinessExactReceivedPacketBodySelector(function, value) {
+				return true
+			}
+			object, path, resolved := selectorPath(value)
+			if !resolved {
+				return false
+			}
+			storage := borrowStorageAt(object, value.Pos(), make(map[any]bool))
+			owner, seen := provenanceAt(borrowContainerFieldEvents, storage, path, value.Pos())
+			return seen && owner
+		}
+		return false
+	}
+	var receivedBodyOwner func(ast.Expr) bool
+	var receivedBodyTransferOwner func(ast.Expr) bool
+	receivedBodyOwner = func(expression ast.Expr) bool {
+		value, ok := expression.(*ast.Ident)
+		if !ok || value.Obj == nil || borrowAssignmentCounts[value.Obj] > 1 {
+			return false
+		}
+		if canonicalPacketBodyObjects[value.Obj] {
+			return l8D2ReadinessExactLocalReceivedBodyAlias(function, value)
+		}
+		if borrowDirectCallCounts[value.Obj] != 1 || !exactReceivedBodyType(borrowObjectTypes[value.Obj]) || function.Type.Params == nil {
+			return false
+		}
+		for _, field := range function.Type.Params.List {
+			for _, name := range field.Names {
+				if name.Obj == value.Obj {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	receivedBodyCallOwner := func(expression ast.Expr) bool {
+		return receivedBodyOwner(expression) || l8D2ReadinessExactFrozenTransportBorrowOwner(function, expression, aliases, definitions, functionsByName, aliasesByFunction, globals)
+	}
+	exactContextParameter := func(identifier *ast.Ident) bool {
+		if identifier == nil || identifier.Obj == nil || function.Type.Params == nil {
+			return false
+		}
+		for _, field := range function.Type.Params.List {
+			if !l8D2ReadinessExactImportedType(field.Type, aliases, "context", "Context", false) {
+				continue
+			}
+			for _, name := range field.Names {
+				if name.Obj == identifier.Obj {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	receivedBodyTransferOwner = func(expression ast.Expr) bool {
+		selector, selected := expression.(*ast.SelectorExpr)
+		if !selected {
+			return receivedBodyProvenance(expression)
+		}
+		if l8D2ReadinessExactPrepareFileHandler(function) && l8D2ReadinessExactReceivedPacketBodySelector(function, selector) {
+			return true
+		}
+		object, path, resolved := selectorPath(selector)
+		if !resolved {
+			return false
+		}
+		storage := borrowStorageAt(object, selector.Pos(), make(map[any]bool))
+		owner, seen := provenanceAt(borrowContainerFieldEvents, storage, path, selector.Pos())
+		return seen && owner
+	}
+	receivedBodyTyped := func(expression ast.Expr) bool {
+		return receivedBodyProvenance(expression) || exactReceivedBodyType(receivedBodyExpressionType(expression, make(map[any]bool)))
+	}
+	var recordBorrowContainer func(any, ast.Expr) bool
+	recordBorrowContainer = func(object any, expression ast.Expr) bool {
+		if object == nil || expression == nil {
+			return false
+		}
+		changed := false
+		switch value := expression.(type) {
+		case *ast.ParenExpr:
+			return recordBorrowContainer(object, value.X)
+		case *ast.SliceExpr:
+			return false
+		case *ast.UnaryExpr:
+			if value.Op == token.AND {
+				return false
+			}
+		case *ast.StarExpr:
+			return recordBorrowContainer(object, value.X)
+		}
+		if identifier, ok := expression.(*ast.Ident); ok && identifier.Obj != nil {
+			if sharesBorrowStorage(expression) {
+				return false
+			}
+			root := borrowStorageAt(identifier.Obj, expression.Pos(), make(map[any]bool))
+			for field := range borrowContainerFieldEvents[root] {
+				owner, seen := provenanceAt(borrowContainerFieldEvents, root, field, expression.Pos())
+				if !seen {
+					continue
+				}
+				changed = setProvenance(borrowContainerFields, borrowContainerFieldEvents, object, field, expression, owner) || changed
+			}
+			for slot := range borrowContainerSlotEvents[root] {
+				owner, seen := provenanceAt(borrowContainerSlotEvents, root, slot, expression.Pos())
+				if !seen {
+					continue
+				}
+				changed = setProvenance(borrowContainerSlots, borrowContainerSlotEvents, object, slot, expression, owner) || changed
+			}
+			target := borrowStorageAt(object, expression.Pos(), make(map[any]bool))
+			borrowContainerComplete[target] = borrowContainerComplete[root]
+			return changed
+		}
+		literal, ok := expression.(*ast.CompositeLit)
+		if !ok {
+			return false
+		}
+		underlying := receivedBodyUnderlyingType(literal.Type, make(map[any]bool))
+		switch typed := underlying.(type) {
+		case *ast.StructType:
+			fieldOrder := make([]string, 0)
+			for _, field := range typed.Fields.List {
+				if len(field.Names) == 0 {
+					if embeddedName, embedded := embeddedBodyFieldName(field.Type); embedded {
+						fieldOrder = append(fieldOrder, embeddedName)
+					}
+					continue
+				}
+				for _, name := range field.Names {
+					fieldOrder = append(fieldOrder, name.Name)
+				}
+			}
+			var nestedPaths func(ast.Expr) map[string]bool
+			nestedPaths = func(candidate ast.Expr) map[string]bool {
+				result := make(map[string]bool)
+				if receivedBodyTransferOwner(candidate) {
+					result[""] = true
+				}
+				if name, direct := candidate.(*ast.Ident); direct && name.Obj != nil {
+					storage := borrowStorageAt(name.Obj, candidate.Pos(), make(map[any]bool))
+					for path := range borrowContainerFieldEvents[storage] {
+						if owner, seen := provenanceAt(borrowContainerFieldEvents, storage, path, candidate.Pos()); seen && owner {
+							result[path] = true
+						}
+					}
+					return result
+				}
+				composite, direct := candidate.(*ast.CompositeLit)
+				if !direct {
+					return result
+				}
+				structure, structural := receivedBodyUnderlyingType(composite.Type, make(map[any]bool)).(*ast.StructType)
+				if !structural {
+					return result
+				}
+				order := make([]string, 0)
+				for _, field := range structure.Fields.List {
+					if len(field.Names) == 0 {
+						if embeddedName, embedded := embeddedBodyFieldName(field.Type); embedded {
+							order = append(order, embeddedName)
+						}
+						continue
+					}
+					for _, name := range field.Names {
+						order = append(order, name.Name)
+					}
+				}
+				for index, element := range composite.Elts {
+					fieldName := ""
+					fieldValue := element
+					if keyed, keyedOK := element.(*ast.KeyValueExpr); keyedOK {
+						fieldValue = keyed.Value
+						if name, named := keyed.Key.(*ast.Ident); named {
+							fieldName = name.Name
+						}
+					} else if index < len(order) {
+						fieldName = order[index]
+					}
+					if fieldName == "" {
+						continue
+					}
+					for nested, owner := range nestedPaths(fieldValue) {
+						path := fieldName
+						if nested != "" {
+							path += "." + nested
+						}
+						result[path] = owner
+					}
+				}
+				return result
+			}
+			for index, element := range literal.Elts {
+				fieldName := ""
+				fieldValue := element
+				if keyed, keyedOK := element.(*ast.KeyValueExpr); keyedOK {
+					fieldValue = keyed.Value
+					if name, named := keyed.Key.(*ast.Ident); named {
+						fieldName = name.Name
+					}
+				} else if index < len(fieldOrder) {
+					fieldName = fieldOrder[index]
+				}
+				if fieldName == "" {
+					continue
+				}
+				paths := nestedPaths(fieldValue)
+				if len(paths) == 0 {
+					changed = setProvenance(borrowContainerFields, borrowContainerFieldEvents, object, fieldName, element, false) || changed
+					continue
+				}
+				for nested, owner := range paths {
+					path := fieldName
+					if nested != "" {
+						path += "." + nested
+					}
+					changed = setProvenance(borrowContainerFields, borrowContainerFieldEvents, object, path, element, owner) || changed
+				}
+			}
+		case *ast.MapType, *ast.ArrayType:
+			borrowContainerComplete[borrowStorageAt(object, literal.Pos(), make(map[any]bool))] = true
+			for index, element := range literal.Elts {
+				key := strconv.Itoa(index)
+				candidate := element
+				if keyed, keyedOK := element.(*ast.KeyValueExpr); keyedOK {
+					if identity, exact := containerIndexIdentity(keyed.Key); exact {
+						key = identity
+					}
+					changed = setProvenance(borrowContainerSlots, borrowContainerSlotEvents, object, "key:"+key, element, receivedBodyTransferOwner(keyed.Key)) || changed
+					candidate = keyed.Value
+				}
+				changed = setProvenance(borrowContainerSlots, borrowContainerSlotEvents, object, "value:"+key, element, receivedBodyTransferOwner(candidate)) || changed
+			}
+		}
+		return changed
+	}
+	callResultType := func(call *ast.CallExpr, index int) ast.Expr {
+		if call == nil || index < 0 {
+			return nil
+		}
+		callee := call.Fun
+		for {
+			parenthesized, ok := callee.(*ast.ParenExpr)
+			if !ok {
+				break
+			}
+			callee = parenthesized.X
+		}
+		called, direct := callee.(*ast.Ident)
+		if !direct || len(functionsByName[called.Name]) != 1 {
+			return nil
+		}
+		target := functionsByName[called.Name][0]
+		if called.Obj != nil && called.Obj.Decl != target {
+			return nil
+		}
+		if target.Type.Results == nil {
+			return nil
+		}
+		position := 0
+		for _, field := range target.Type.Results.List {
+			count := len(field.Names)
+			if count == 0 {
+				count = 1
+			}
+			if index >= position && index < position+count {
+				return field.Type
+			}
+			position += count
+		}
+		return nil
+	}
+	assignmentResultType := func(assignment *ast.AssignStmt, index int) ast.Expr {
+		if assignment == nil || index >= len(assignment.Lhs) {
+			return nil
+		}
+		if len(assignment.Rhs) == len(assignment.Lhs) {
+			return receivedBodyExpressionType(assignment.Rhs[index], make(map[any]bool))
+		}
+		if len(assignment.Rhs) != 1 {
+			return nil
+		}
+		switch value := assignment.Rhs[0].(type) {
+		case *ast.TypeAssertExpr:
+			if index == 0 {
+				return value.Type
+			}
+		case *ast.UnaryExpr:
+			if index == 0 && value.Op == token.ARROW {
+				return receivedBodyExpressionType(value, make(map[any]bool))
+			}
+		case *ast.IndexExpr:
+			if index == 0 {
+				return receivedBodyExpressionType(value, make(map[any]bool))
+			}
+		case *ast.CallExpr:
+			return callResultType(value, index)
+		}
+		return nil
+	}
+	for changed := true; changed; {
+		changed = false
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.AssignStmt:
+				for index, left := range value.Lhs {
+					if index < len(value.Rhs) {
+						sourceOwner := receivedBodyTransferOwner(value.Rhs[index])
+						switch target := left.(type) {
+						case *ast.SelectorExpr:
+							if object, path, resolved := selectorPath(target); resolved {
+								changed = setProvenance(borrowContainerFields, borrowContainerFieldEvents, object, path, value, sourceOwner) || changed
+							}
+						case *ast.IndexExpr:
+							storage, ok := borrowContainerStorage(target.X, target.Pos())
+							key, exact := containerIndexIdentity(target.Index)
+							if ok && exact {
+								changed = setProvenance(borrowContainerSlots, borrowContainerSlotEvents, storage, "value:"+key, value, sourceOwner) || changed
+							} else if ok {
+								borrowContainerComplete[storage] = false
+								borrowContainerUnknownWrite[storage] = true
+							}
+						}
+					}
+					identifier, ok := left.(*ast.Ident)
+					if !ok || identifier.Obj == nil {
+						continue
+					}
+					resultType := assignmentResultType(value, index)
+					if borrowObjectTypes[identifier.Obj] == nil && resultType != nil {
+						borrowObjectTypes[identifier.Obj] = resultType
+						changed = true
+					}
+					if len(value.Rhs) == len(value.Lhs) && recordBorrowContainer(identifier.Obj, value.Rhs[index]) {
+						changed = true
+					}
+					fromOwner := len(value.Rhs) == len(value.Lhs) && receivedBodyTransferOwner(value.Rhs[index])
+					if len(value.Rhs) == 1 && len(value.Lhs) > 1 {
+						switch value.Rhs[0].(type) {
+						case *ast.TypeAssertExpr, *ast.UnaryExpr, *ast.IndexExpr, *ast.CallExpr:
+							fromOwner = exactReceivedBodyType(resultType)
+						}
+					}
+					if !borrowOwnerObjects[identifier.Obj] && fromOwner {
+						borrowOwnerObjects[identifier.Obj] = true
+						if len(value.Rhs) == len(value.Lhs) && l8D2ReadinessExactPrepareFileHandler(function) && l8D2ReadinessExactReceivedPacketBodySelector(function, value.Rhs[index]) {
+							canonicalPacketBodyObjects[identifier.Obj] = true
+						}
+						changed = true
+					}
+				}
+			case *ast.ValueSpec:
+				for index, name := range value.Names {
+					if name.Obj == nil {
+						continue
+					}
+					resultType := value.Type
+					if resultType == nil && len(value.Values) == len(value.Names) {
+						resultType = receivedBodyExpressionType(value.Values[index], make(map[any]bool))
+					} else if resultType == nil && len(value.Values) == 1 {
+						switch expression := value.Values[0].(type) {
+						case *ast.TypeAssertExpr:
+							if index == 0 {
+								resultType = expression.Type
+							}
+						case *ast.UnaryExpr:
+							if index == 0 && expression.Op == token.ARROW {
+								resultType = receivedBodyExpressionType(expression, make(map[any]bool))
+							}
+						case *ast.IndexExpr:
+							if index == 0 {
+								resultType = receivedBodyExpressionType(expression, make(map[any]bool))
+							}
+						case *ast.CallExpr:
+							resultType = callResultType(expression, index)
+						}
+					}
+					if borrowObjectTypes[name.Obj] == nil && resultType != nil {
+						borrowObjectTypes[name.Obj] = resultType
+						changed = true
+					}
+					if len(value.Values) == len(value.Names) && recordBorrowContainer(name.Obj, value.Values[index]) {
+						changed = true
+					}
+					fromOwner := len(value.Values) == len(value.Names) && receivedBodyTransferOwner(value.Values[index])
+					if len(value.Values) == 1 && len(value.Names) > 1 {
+						switch value.Values[0].(type) {
+						case *ast.TypeAssertExpr, *ast.UnaryExpr, *ast.IndexExpr, *ast.CallExpr:
+							fromOwner = exactReceivedBodyType(resultType)
+						}
+					}
+					if !borrowOwnerObjects[name.Obj] && fromOwner {
+						borrowOwnerObjects[name.Obj] = true
+						changed = true
+					}
+				}
+			case *ast.RangeStmt:
+				container := receivedBodyUnderlyingType(receivedBodyExpressionType(value.X, make(map[any]bool)), make(map[any]bool))
+				var keyType, valueType ast.Expr
+				keyOwner, valueOwner := false, false
+				sourceStorage, sourceOK := borrowContainerStorage(value.X, value.Pos())
+				switch typed := container.(type) {
+				case *ast.ArrayType:
+					keyType, valueType = ast.NewIdent("int"), typed.Elt
+					if sourceOK {
+						valueOwner = containerRoleOwner(sourceStorage, "value", value.Pos())
+					}
+				case *ast.MapType:
+					keyType, valueType = typed.Key, typed.Value
+					if sourceOK {
+						keyOwner = containerRoleOwner(sourceStorage, "key", value.Pos())
+						valueOwner = containerRoleOwner(sourceStorage, "value", value.Pos())
+					}
+				case *ast.ChanType:
+					keyType = typed.Value
+					if sourceOK {
+						seen := false
+						keyOwner = true
+						for _, sent := range channelSends {
+							if sent.Pos() >= value.Pos() {
+								continue
+							}
+							sentStorage, resolved := borrowContainerStorage(sent.Chan, sent.Pos())
+							if !resolved || sentStorage != sourceStorage {
+								continue
+							}
+							seen = true
+							keyOwner = keyOwner && receivedBodyTransferOwner(sent.Value)
+						}
+						keyOwner = seen && keyOwner
+					}
+				}
+				for _, binding := range []struct {
+					expression ast.Expr
+					typ        ast.Expr
+					owner      bool
+				}{{value.Key, keyType, keyOwner}, {value.Value, valueType, valueOwner}} {
+					identifier, ok := binding.expression.(*ast.Ident)
+					if !ok || identifier.Obj == nil || binding.typ == nil {
+						continue
+					}
+					if borrowObjectTypes[identifier.Obj] == nil {
+						borrowObjectTypes[identifier.Obj] = binding.typ
+						changed = true
+					}
+					if !borrowOwnerObjects[identifier.Obj] && (exactReceivedBodyType(binding.typ) || binding.owner) {
+						borrowOwnerObjects[identifier.Obj] = true
+						changed = true
+					}
+				}
+			}
+			return true
+		})
 	}
 	approvedScopedHelpers := map[string]bool{"configuredDependency": true, "typedNil": true, "isNilCoreDependency": true, "destroyTransportBody": true, "withCanonicalScratch": true}
 	shadowedScopedHelpers := make(map[string]bool)
@@ -9684,49 +17940,52 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 		return true
 	})
 	retained := false
-	var carriesScoped func(ast.Expr, map[string]bool) bool
-	carriesScoped = func(expression ast.Expr, names map[string]bool) bool {
+	var carriesScoped func(ast.Expr, map[string]bool, map[any]bool) bool
+	carriesScoped = func(expression ast.Expr, names map[string]bool, objects map[any]bool) bool {
 		switch value := expression.(type) {
 		case *ast.Ident:
+			if value.Obj != nil {
+				return objects[value.Obj]
+			}
 			return names[value.Name]
 		case *ast.ParenExpr:
-			return carriesScoped(value.X, names)
+			return carriesScoped(value.X, names, objects)
 		case *ast.UnaryExpr:
-			return carriesScoped(value.X, names)
+			return carriesScoped(value.X, names, objects)
 		case *ast.StarExpr:
-			return carriesScoped(value.X, names)
+			return carriesScoped(value.X, names, objects)
 		case *ast.SelectorExpr:
-			return carriesScoped(value.X, names)
+			return carriesScoped(value.X, names, objects)
 		case *ast.IndexExpr:
-			return carriesScoped(value.X, names) || carriesScoped(value.Index, names)
+			return carriesScoped(value.X, names, objects) || carriesScoped(value.Index, names, objects)
 		case *ast.IndexListExpr:
-			if carriesScoped(value.X, names) {
+			if carriesScoped(value.X, names, objects) {
 				return true
 			}
 			for _, index := range value.Indices {
-				if carriesScoped(index, names) {
+				if carriesScoped(index, names, objects) {
 					return true
 				}
 			}
 		case *ast.SliceExpr:
-			return carriesScoped(value.X, names) || carriesScoped(value.Low, names) || carriesScoped(value.High, names) || carriesScoped(value.Max, names)
+			return carriesScoped(value.X, names, objects) || carriesScoped(value.Low, names, objects) || carriesScoped(value.High, names, objects) || carriesScoped(value.Max, names, objects)
 		case *ast.TypeAssertExpr:
-			return carriesScoped(value.X, names) || carriesScoped(value.Type, names)
+			return carriesScoped(value.X, names, objects) || carriesScoped(value.Type, names, objects)
 		case *ast.BinaryExpr:
-			return carriesScoped(value.X, names) || carriesScoped(value.Y, names)
+			return carriesScoped(value.X, names, objects) || carriesScoped(value.Y, names, objects)
 		case *ast.KeyValueExpr:
-			return carriesScoped(value.Key, names) || carriesScoped(value.Value, names)
+			return carriesScoped(value.Key, names, objects) || carriesScoped(value.Value, names, objects)
 		case *ast.Ellipsis:
-			return carriesScoped(value.Elt, names)
+			return carriesScoped(value.Elt, names, objects)
 		case *ast.CompositeLit:
 			for _, element := range value.Elts {
 				switch item := element.(type) {
 				case *ast.KeyValueExpr:
-					if carriesScoped(item.Key, names) || carriesScoped(item.Value, names) {
+					if carriesScoped(item.Key, names, objects) || carriesScoped(item.Value, names, objects) {
 						return true
 					}
 				case ast.Expr:
-					if carriesScoped(item, names) {
+					if carriesScoped(item, names, objects) {
 						return true
 					}
 				}
@@ -9735,7 +17994,7 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 			captured := false
 			ast.Inspect(value.Body, func(node ast.Node) bool {
 				identifier, ok := node.(*ast.Ident)
-				if ok && names[identifier.Name] {
+				if ok && ((identifier.Obj != nil && objects[identifier.Obj]) || (identifier.Obj == nil && names[identifier.Name])) {
 					captured = true
 					return false
 				}
@@ -9743,19 +18002,30 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 			})
 			return captured
 		case *ast.CallExpr:
-			if l8D2ReadinessExactNonretainingScopedCall(function, value, names, aliases, definitions, functionsByName) {
+			if l8D2ReadinessExactNonretainingScopedCall(function, value, names, aliases, definitions, functionsByName, aliasesByFunction, globals) {
 				return false
 			}
-			if carriesScoped(value.Fun, names) {
+			if carriesScoped(value.Fun, names, objects) {
 				return true
 			}
 			for _, argument := range value.Args {
-				if carriesScoped(argument, names) {
+				if carriesScoped(argument, names, objects) {
 					return true
 				}
 			}
 		}
 		return false
+	}
+	scopedNamesForNode := func(node ast.Node, names map[string]bool, objects map[any]bool) map[string]bool {
+		resolved := make(map[string]bool)
+		ast.Inspect(node, func(candidate ast.Node) bool {
+			identifier, ok := candidate.(*ast.Ident)
+			if ok && ((identifier.Obj != nil && objects[identifier.Obj]) || (identifier.Obj == nil && names[identifier.Name])) {
+				resolved[identifier.Name] = true
+			}
+			return true
+		})
+		return resolved
 	}
 	// First propagate direct local aliases so a closure/composite cannot hide a
 	// scoped capability behind one or more inferred identifiers.
@@ -9765,15 +18035,18 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 			assignment, ok := node.(*ast.AssignStmt)
 			if ok {
 				for index, left := range assignment.Lhs {
-					if index >= len(assignment.Rhs) || !carriesScoped(assignment.Rhs[index], scoped) {
+					if index >= len(assignment.Rhs) || !carriesScoped(assignment.Rhs[index], scoped, scopedObjects) {
 						continue
 					}
 					if assignment.Tok == token.DEFINE && l8D2ReadinessApprovedScopedWrapper(function, assignment.Rhs[index], definitions) {
 						continue
 					}
 					identifier, ok := left.(*ast.Ident)
-					if ok && identifier.Name != "_" && !scoped[identifier.Name] {
+					if ok && identifier.Name != "_" && (identifier.Obj == nil || !scopedObjects[identifier.Obj]) {
 						scoped[identifier.Name] = true
+						if identifier.Obj != nil {
+							scopedObjects[identifier.Obj] = true
+						}
 						changed = true
 					}
 				}
@@ -9781,8 +18054,11 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 			valueSpec, ok := node.(*ast.ValueSpec)
 			if ok {
 				for index, name := range valueSpec.Names {
-					if index < len(valueSpec.Values) && carriesScoped(valueSpec.Values[index], scoped) && !scoped[name.Name] {
+					if index < len(valueSpec.Values) && carriesScoped(valueSpec.Values[index], scoped, scopedObjects) && (name.Obj == nil || !scopedObjects[name.Obj]) {
 						scoped[name.Name] = true
+						if name.Obj != nil {
+							scopedObjects[name.Obj] = true
+						}
 						changed = true
 					}
 				}
@@ -9792,12 +18068,25 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 	}
 	allowedBorrowCallbacks := make(map[*ast.FuncLit]bool)
 	allowedSynchronousCallbacks := make(map[*ast.FuncLit]bool)
+	parents := make(map[ast.Node]ast.Node)
+	var parentStack []ast.Node
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if node == nil {
+			parentStack = parentStack[:len(parentStack)-1]
+			return false
+		}
+		if len(parentStack) != 0 {
+			parents[node] = parentStack[len(parentStack)-1]
+		}
+		parentStack = append(parentStack, node)
+		return true
+	})
 	ast.Inspect(function.Body, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		if called, direct := call.Fun.(*ast.Ident); direct && called.Name == "withCanonicalScratch" && len(call.Args) == 3 && !shadowedScopedHelpers[called.Name] && l8D2ReadinessExactScopedHelperDeclaration(functionsByName[called.Name], called.Name, aliases, definitions) {
+		if called, direct := call.Fun.(*ast.Ident); direct && called.Name == "withCanonicalScratch" && len(call.Args) == 3 && !shadowedScopedHelpers[called.Name] && l8D2ReadinessExactScopedHelper(functionsByName, called.Name, aliasesByFunction, definitions, globals) {
 			if callback, ok := call.Args[2].(*ast.FuncLit); ok {
 				allowedSynchronousCallbacks[callback] = true
 			}
@@ -9807,17 +18096,48 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 		}
 		selector, ok := call.Fun.(*ast.SelectorExpr)
 		callback, callbackOK := call.Args[1].(*ast.FuncLit)
-		owner, ownerOK := func() (*ast.Ident, bool) {
-			if !ok {
-				return nil, false
-			}
-			value, valid := selector.X.(*ast.Ident)
-			return value, valid
-		}()
 		ctx, ctxOK := call.Args[0].(*ast.Ident)
-		exactCallback := callbackOK && callback.Type.Params != nil && len(callback.Type.Params.List) == 1 && len(callback.Type.Params.List[0].Names) == 1 && l8D2ReadinessExactImportedType(callback.Type.Params.List[0].Type, aliases, "github.com/jywlabs/hal/internal/credentialmemory", "BorrowedView", false)
-		exactBodyOwner := ok && ((ownerOK && (bodyParams[owner.Name] || borrowOwnerParams[owner.Name])) || l8D2ReadinessExactReceivedBodyExpression(function, selector.X, definitions))
-		if exactBodyOwner && ctxOK && contextParams[ctx.Name] && selector.Sel.Name == "Borrow" && exactCallback {
+		exactCallback := callbackOK && callback.Type.Params != nil && len(callback.Type.Params.List) == 1 && len(callback.Type.Params.List[0].Names) == 1 && callback.Type.Params.List[0].Names[0].Name != "_" && l8D2ReadinessExactImportedType(callback.Type.Params.List[0].Type, aliases, "github.com/jywlabs/hal/internal/credentialmemory", "BorrowedView", false)
+		exactBodyOwner := ok && receivedBodyCallOwner(selector.X)
+		bodyOwnerDeclaredWithin := func(literal *ast.FuncLit) bool {
+			if literal == nil || selector == nil {
+				return false
+			}
+			seenOwner := false
+			confined := true
+			ast.Inspect(selector.X, func(candidate ast.Node) bool {
+				identifier, direct := candidate.(*ast.Ident)
+				if !direct || identifier.Obj == nil || identifier.Obj.Kind != ast.Var {
+					return true
+				}
+				declaration, declared := identifier.Obj.Decl.(ast.Node)
+				if !declared {
+					confined = false
+					return false
+				}
+				seenOwner = true
+				if declaration.Pos() < literal.Pos() || declaration.End() > literal.End() {
+					confined = false
+					return false
+				}
+				return true
+			})
+			return seenOwner && confined
+		}
+		nonDirect := false
+		for ancestor := parents[call]; ancestor != nil && ancestor != function.Body; ancestor = parents[ancestor] {
+			switch value := ancestor.(type) {
+			case *ast.GoStmt:
+				nonDirect = true
+			case *ast.ForStmt, *ast.RangeStmt:
+				nonDirect = true
+			case *ast.FuncLit:
+				if !bodyOwnerDeclaredWithin(value) {
+					nonDirect = true
+				}
+			}
+		}
+		if exactBodyOwner && ctxOK && exactContextParameter(ctx) && selector.Sel.Name == "Borrow" && exactCallback && !nonDirect {
 			allowedBorrowCallbacks[callback] = true
 		}
 		return true
@@ -9829,7 +18149,7 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 		switch value := node.(type) {
 		case *ast.AssignStmt:
 			for index, left := range value.Lhs {
-				if index >= len(value.Rhs) || !carriesScoped(value.Rhs[index], scoped) {
+				if index >= len(value.Rhs) || !carriesScoped(value.Rhs[index], scoped, scopedObjects) {
 					continue
 				}
 				if value.Tok == token.DEFINE && l8D2ReadinessApprovedScopedWrapper(function, value.Rhs[index], definitions) {
@@ -9837,7 +18157,7 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 				}
 				identifier, identifierOK := left.(*ast.Ident)
 				directAlias, directAliasOK := value.Rhs[index].(*ast.Ident)
-				if value.Tok == token.DEFINE && identifierOK && directAliasOK && scoped[directAlias.Name] {
+				if value.Tok == token.DEFINE && identifierOK && directAliasOK && ((directAlias.Obj != nil && scopedObjects[directAlias.Obj]) || (directAlias.Obj == nil && scoped[directAlias.Name])) {
 					continue
 				}
 				if !identifierOK || identifier.Name != "_" || globals[identifier.Name].fileName != "" {
@@ -9847,7 +18167,7 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 			}
 		case *ast.ReturnStmt:
 			for _, result := range value.Results {
-				if carriesScoped(result, scoped) {
+				if carriesScoped(result, scoped, scopedObjects) {
 					retained = true
 					return false
 				}
@@ -9864,29 +18184,50 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 				}
 				for _, expression := range valueSpec.Values {
 					identifier, directAlias := expression.(*ast.Ident)
-					if carriesScoped(expression, scoped) && !(directAlias && scoped[identifier.Name]) {
+					if carriesScoped(expression, scoped, scopedObjects) && !(directAlias && ((identifier.Obj != nil && scopedObjects[identifier.Obj]) || (identifier.Obj == nil && scoped[identifier.Name]))) {
 						retained = true
 						return false
 					}
 				}
 			}
 		case *ast.SendStmt:
-			if carriesScoped(value.Value, scoped) {
+			if carriesScoped(value.Value, scoped, scopedObjects) {
 				retained = true
 				return false
 			}
+		case *ast.SelectorExpr:
+			if value.Sel.Name != "Borrow" || !receivedBodyTyped(value.X) {
+				return true
+			}
+			if call, directCall := parents[value].(*ast.CallExpr); directCall && call.Fun == value {
+				return true
+			}
+			retained = true
+			return false
 		case *ast.CallExpr:
-			if l8D2ReadinessCallCarriesScoped(value, scoped) && !l8D2ReadinessAllowedDynamicScopedCall(function, value, scoped, contextParams, shadowedScopedHelpers, aliases, definitions, functionsByName) {
+			if selector, ok := value.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Borrow" && receivedBodyTyped(selector.X) {
+				var callback *ast.FuncLit
+				if len(value.Args) == 2 {
+					callback, _ = value.Args[1].(*ast.FuncLit)
+				}
+				if callback == nil || !allowedBorrowCallbacks[callback] {
+					retained = true
+					return false
+				}
+			}
+			callScoped := scopedNamesForNode(value, scoped, scopedObjects)
+			if l8D2ReadinessCallCarriesScoped(value, callScoped) && !l8D2ReadinessAllowedDynamicScopedCall(function, value, callScoped, contextParams, shadowedScopedHelpers, aliases, definitions, functionsByName, aliasesByFunction, globals, receivedBodyCallOwner) {
 				retained = true
 				return false
 			}
 		case *ast.FuncLit:
 			callbackScoped := make(map[string]bool)
-			collectParameters(value.Type.Params, callbackScoped)
+			callbackObjects := make(map[any]bool)
+			collectParameters(value.Type.Params, callbackScoped, callbackObjects)
 			capturesOuter := false
 			ast.Inspect(value.Body, func(inner ast.Node) bool {
 				identifier, ok := inner.(*ast.Ident)
-				if ok && scoped[identifier.Name] && !callbackScoped[identifier.Name] {
+				if ok && ((identifier.Obj != nil && scopedObjects[identifier.Obj] && !callbackObjects[identifier.Obj]) || (identifier.Obj == nil && scoped[identifier.Name] && !callbackScoped[identifier.Name])) {
 					capturesOuter = true
 					return false
 				}
@@ -9900,11 +18241,131 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 			}
 			if allowedCallback {
 				callbackSeeds := make(map[string]bool)
+				callbackSeedObjects := make(map[any]bool)
 				for name := range scoped {
 					callbackSeeds[name] = true
 				}
+				for object := range scopedObjects {
+					callbackSeedObjects[object] = true
+				}
 				for name := range callbackScoped {
 					callbackSeeds[name] = true
+				}
+				for object := range callbackObjects {
+					callbackSeedObjects[object] = true
+				}
+				var callbackRangeType func(ast.Expr, map[any]bool) ast.Expr
+				callbackRangeType = func(expression ast.Expr, seen map[any]bool) ast.Expr {
+					for {
+						parenthesized, ok := expression.(*ast.ParenExpr)
+						if !ok {
+							break
+						}
+						expression = parenthesized.X
+					}
+					switch candidate := expression.(type) {
+					case *ast.CompositeLit:
+						return callbackRangeType(candidate.Type, seen)
+					case *ast.ArrayType, *ast.MapType, *ast.ChanType:
+						return expression
+					case *ast.Ident:
+						if candidate.Obj == nil {
+							definition, ok := definitions[candidate.Name]
+							if !ok {
+								return nil
+							}
+							return callbackRangeType(definition.expression, seen)
+						}
+						if seen[candidate.Obj] {
+							return nil
+						}
+						seen[candidate.Obj] = true
+						switch declaration := candidate.Obj.Decl.(type) {
+						case *ast.TypeSpec:
+							return callbackRangeType(declaration.Type, seen)
+						case *ast.ValueSpec:
+							if declaration.Type != nil {
+								return callbackRangeType(declaration.Type, seen)
+							}
+							for index, name := range declaration.Names {
+								if name.Obj == candidate.Obj && index < len(declaration.Values) {
+									return callbackRangeType(declaration.Values[index], seen)
+								}
+							}
+						case *ast.AssignStmt:
+							for index, left := range declaration.Lhs {
+								identifier, ok := l8D2ReadinessDirectAssignedIdentifier(left)
+								if ok && identifier.Obj == candidate.Obj && index < len(declaration.Rhs) {
+									return callbackRangeType(declaration.Rhs[index], seen)
+								}
+							}
+						}
+					}
+					return nil
+				}
+				for changed := true; changed; {
+					changed = false
+					ast.Inspect(value.Body, func(inner ast.Node) bool {
+						switch statement := inner.(type) {
+						case *ast.FuncLit:
+							return statement == value
+						case *ast.AssignStmt:
+							for index, left := range statement.Lhs {
+								if index >= len(statement.Rhs) || !carriesScoped(statement.Rhs[index], callbackSeeds, callbackSeedObjects) {
+									continue
+								}
+								identifier, ok := l8D2ReadinessDirectAssignedIdentifier(left)
+								if ok && identifier.Name != "_" && identifier.Obj != nil && !callbackSeedObjects[identifier.Obj] {
+									callbackSeeds[identifier.Name] = true
+									callbackSeedObjects[identifier.Obj] = true
+									changed = true
+								}
+							}
+						case *ast.ValueSpec:
+							for index, name := range statement.Names {
+								if index < len(statement.Values) && name.Name != "_" && name.Obj != nil && carriesScoped(statement.Values[index], callbackSeeds, callbackSeedObjects) && !callbackSeedObjects[name.Obj] {
+									callbackSeeds[name.Name] = true
+									callbackSeedObjects[name.Obj] = true
+									changed = true
+								}
+							}
+						case *ast.RangeStmt:
+							if !carriesScoped(statement.X, callbackSeeds, callbackSeedObjects) {
+								return true
+							}
+							keyScoped, valueScoped := false, false
+							switch container := callbackRangeType(statement.X, make(map[any]bool)).(type) {
+							case *ast.ArrayType:
+								valueScoped = l8D2ReadinessTypeRetainsScoped(container.Elt, aliases, dotImport, nil, definitions, make(map[string]bool))
+							case *ast.MapType:
+								keyScoped = l8D2ReadinessTypeRetainsScoped(container.Key, aliases, dotImport, nil, definitions, make(map[string]bool))
+								valueScoped = l8D2ReadinessTypeRetainsScoped(container.Value, aliases, dotImport, nil, definitions, make(map[string]bool))
+							case *ast.ChanType:
+								keyScoped = l8D2ReadinessTypeRetainsScoped(container.Value, aliases, dotImport, nil, definitions, make(map[string]bool))
+							default:
+								if statement.Value != nil {
+									valueScoped = true
+								} else {
+									keyScoped = true
+								}
+							}
+							for _, binding := range []struct {
+								expression ast.Expr
+								scoped     bool
+							}{{statement.Key, keyScoped}, {statement.Value, valueScoped}} {
+								if !binding.scoped {
+									continue
+								}
+								identifier, ok := l8D2ReadinessDirectAssignedIdentifier(binding.expression)
+								if ok && identifier.Name != "_" && identifier.Obj != nil && !callbackSeedObjects[identifier.Obj] {
+									callbackSeeds[identifier.Name] = true
+									callbackSeedObjects[identifier.Obj] = true
+									changed = true
+								}
+							}
+						}
+						return true
+					})
 				}
 				callbackNames := l8D2ReadinessScopedLocalAliases(value.Body, callbackSeeds)
 				nested, callbackRetention := false, false
@@ -9915,13 +18376,24 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 					}
 					switch statement := inner.(type) {
 					case *ast.CallExpr:
-						if l8D2ReadinessCallCarriesScoped(statement, callbackNames) && !l8D2ReadinessAllowedDynamicScopedCall(function, statement, callbackNames, contextParams, shadowedScopedHelpers, aliases, definitions, functionsByName) {
+						callScoped := scopedNamesForNode(statement, callbackNames, callbackSeedObjects)
+						selector, stageFile := statement.Fun.(*ast.SelectorExpr)
+						stageFile = stageFile && selector.Sel.Name == "StageFile"
+						if (stageFile || l8D2ReadinessCallCarriesScoped(statement, callScoped)) && !l8D2ReadinessAllowedDynamicScopedCall(function, statement, callScoped, contextParams, shadowedScopedHelpers, aliases, definitions, functionsByName, aliasesByFunction, globals, receivedBodyOwner) {
+							callbackRetention = true
+							return false
+						}
+					case *ast.GoStmt, *ast.DeferStmt:
+						callbackRetention = true
+						return false
+					case *ast.SendStmt:
+						if carriesScoped(statement.Value, callbackSeeds, callbackSeedObjects) {
 							callbackRetention = true
 							return false
 						}
 					case *ast.AssignStmt:
 						for index, left := range statement.Lhs {
-							if index < len(statement.Rhs) && carriesScoped(statement.Rhs[index], callbackScoped) {
+							if index < len(statement.Rhs) && carriesScoped(statement.Rhs[index], callbackSeeds, callbackSeedObjects) {
 								identifier, ok := left.(*ast.Ident)
 								if !ok || identifier.Name != "_" {
 									callbackRetention = true
@@ -9931,7 +18403,7 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 						}
 					case *ast.ReturnStmt:
 						for _, result := range statement.Results {
-							if carriesScoped(result, callbackScoped) {
+							if carriesScoped(result, callbackSeeds, callbackSeedObjects) {
 								callbackRetention = true
 								return false
 							}
@@ -9950,7 +18422,7 @@ func l8D2ReadinessFunctionDynamicallyRetainsScoped(function *ast.FuncDecl, alias
 	return retained
 }
 
-func l8D2ReadinessExactNonretainingScopedCall(function *ast.FuncDecl, call *ast.CallExpr, names map[string]bool, aliases map[string]string, definitions map[string]l8D2ReadinessTypeDefinition, functionsByName map[string][]*ast.FuncDecl) bool {
+func l8D2ReadinessExactNonretainingScopedCall(function *ast.FuncDecl, call *ast.CallExpr, names map[string]bool, aliases map[string]string, definitions map[string]l8D2ReadinessTypeDefinition, functionsByName map[string][]*ast.FuncDecl, aliasesByFunction map[*ast.FuncDecl]map[string]string, globals map[string]l8D2ReadinessGlobalDefinition) bool {
 	if call == nil {
 		return false
 	}
@@ -9958,9 +18430,9 @@ func l8D2ReadinessExactNonretainingScopedCall(function *ast.FuncDecl, call *ast.
 	case *ast.Ident:
 		switch called.Name {
 		case "configuredDependency", "typedNil", "isNilCoreDependency", "destroyTransportBody", "withCanonicalScratch":
-			return l8D2ReadinessExactScopedHelperDeclaration(functionsByName[called.Name], called.Name, aliases, definitions)
+			return l8D2ReadinessExactScopedHelper(functionsByName, called.Name, aliasesByFunction, definitions, globals)
 		}
-		return l8D2ReadinessExactBorrowCallbackInvocation(function, called.Name, call, names, aliases)
+		return l8D2ReadinessExactBorrowCallbackInvocation(function, called, call, names, aliases)
 	case *ast.SelectorExpr:
 		kind := l8D2ReadinessExactScopedReceiverKind(function, called.X, aliases, definitions, make(map[string]bool))
 		if kind == "view" {
@@ -9981,7 +18453,10 @@ func l8D2ReadinessExactNonretainingScopedCall(function *ast.FuncDecl, call *ast.
 		}
 		if called.Sel.Name == "ValueOf" && len(call.Args) == 1 && function != nil && function.Name.Name == "isNilCoreDependency" {
 			owner, ok := called.X.(*ast.Ident)
-			return ok && aliases[owner.Name] == "reflect" && l8D2ReadinessExactScopedReceiverKind(function, call.Args[0], aliases, definitions, make(map[string]bool)) == "sink" && l8D2ReadinessExactScopedHelperDeclaration(functionsByName["isNilCoreDependency"], "isNilCoreDependency", aliases, definitions)
+			return ok && aliases[owner.Name] == "reflect" && l8D2ReadinessExactScopedReceiverKind(function, call.Args[0], aliases, definitions, make(map[string]bool)) == "sink" && l8D2ReadinessExactScopedHelper(functionsByName, "isNilCoreDependency", aliasesByFunction, definitions, globals)
+		}
+		if called.Sel.Name == "StageFile" {
+			return l8D2ReadinessExactPrepareFileStageCall(function, call, names, functionsByName)
 		}
 	}
 	return false
@@ -10211,7 +18686,33 @@ func l8D2ReadinessApprovedScopedWrapper(function *ast.FuncDecl, expression ast.E
 	return strings.Join(got, ",") == strings.Join(want, ",")
 }
 
-func l8D2ReadinessAllowedDynamicScopedCall(function *ast.FuncDecl, call *ast.CallExpr, names, contextParams, shadowedScopedHelpers map[string]bool, aliases map[string]string, definitions map[string]l8D2ReadinessTypeDefinition, functionsByName map[string][]*ast.FuncDecl) bool {
+func l8D2ReadinessExactServiceScopedFunction(function *ast.FuncDecl, name string) bool {
+	if function == nil || function.Name.Name != name {
+		return false
+	}
+	source := l8D2ReadinessCombinedPrepareExecCanonical()
+	want, err := parser.ParseFile(token.NewFileSet(), "canonical.go", source, 0)
+	if err != nil {
+		return false
+	}
+	receiver := "*Service"
+	if name == "observeServiceCoreOutput" {
+		receiver = ""
+	}
+	expected := l8D2ReadinessUniqueFunction(map[string]*ast.File{"canonical.go": want}, receiver, name)
+	return expected != nil && l8D2ReadinessFormattedNode(function.Type) == l8D2ReadinessFormattedNode(expected.Type) && l8D2ReadinessFormattedNode(function.Body) == l8D2ReadinessFormattedNode(expected.Body)
+}
+
+func l8D2ReadinessCanonicalScopedServiceFixture(name string) string {
+	source := l8D2ReadinessCanonicalPrivateServiceFixture()
+	if name == "stdin" {
+		source = l8D2ReadinessCanonicalStdinServiceFixture()
+	}
+	exact := l8D2ReadinessFunctionSource(l8D2ReadinessCombinedPrepareExecCanonical(), "*Service", name)
+	return l8D2ReadinessReplaceFunctionSource(source, "*Service", name, exact)
+}
+
+func l8D2ReadinessAllowedDynamicScopedCall(function *ast.FuncDecl, call *ast.CallExpr, names map[string]bool, contextParams map[any]bool, shadowedScopedHelpers map[string]bool, aliases map[string]string, definitions map[string]l8D2ReadinessTypeDefinition, functionsByName map[string][]*ast.FuncDecl, aliasesByFunction map[*ast.FuncDecl]map[string]string, globals map[string]l8D2ReadinessGlobalDefinition, receivedBodyOwner func(ast.Expr) bool) bool {
 	if call == nil {
 		return false
 	}
@@ -10224,9 +18725,9 @@ func l8D2ReadinessAllowedDynamicScopedCall(function *ast.FuncDecl, call *ast.Cal
 	case *ast.Ident:
 		switch called.Name {
 		case "configuredDependency", "typedNil", "isNilCoreDependency", "destroyTransportBody", "withCanonicalScratch":
-			return !shadowedScopedHelpers[called.Name] && l8D2ReadinessExactScopedHelperDeclaration(functionsByName[called.Name], called.Name, aliases, definitions)
+			return !shadowedScopedHelpers[called.Name] && l8D2ReadinessExactScopedHelper(functionsByName, called.Name, aliasesByFunction, definitions, globals)
 		}
-		return l8D2ReadinessExactBorrowCallbackInvocation(function, called.Name, call, names, aliases)
+		return l8D2ReadinessExactBorrowCallbackInvocation(function, called, call, names, aliases)
 	case *ast.SelectorExpr:
 		receiverScoped := l8D2ReadinessExpressionCarriesScoped(called.X, names)
 		if receiverScoped {
@@ -10249,7 +18750,7 @@ func l8D2ReadinessAllowedDynamicScopedCall(function *ast.FuncDecl, call *ast.Cal
 			}
 			return false
 		}
-		if called.Sel.Name == "Borrow" && len(call.Args) == 2 && l8D2ReadinessExactContextArgument(call.Args[0], contextParams) && l8D2ReadinessExactReceivedBodyExpression(function, called.X, definitions) {
+		if called.Sel.Name == "Borrow" && len(call.Args) == 2 && l8D2ReadinessExactContextArgument(call.Args[0], contextParams) && receivedBodyOwner != nil && receivedBodyOwner(called.X) {
 			_, callback := call.Args[1].(*ast.FuncLit)
 			return callback
 		}
@@ -10258,18 +18759,625 @@ func l8D2ReadinessAllowedDynamicScopedCall(function *ast.FuncDecl, call *ast.Cal
 		}
 		if called.Sel.Name == "ValueOf" && len(call.Args) == 1 && function.Name.Name == "isNilCoreDependency" {
 			owner, ok := called.X.(*ast.Ident)
-			return ok && aliases[owner.Name] == "reflect" && l8D2ReadinessExactScopedReceiverKind(function, call.Args[0], aliases, definitions, make(map[string]bool)) == "sink" && !shadowedScopedHelpers["isNilCoreDependency"] && l8D2ReadinessExactScopedHelperDeclaration(functionsByName["isNilCoreDependency"], "isNilCoreDependency", aliases, definitions)
+			return ok && aliases[owner.Name] == "reflect" && l8D2ReadinessExactScopedReceiverKind(function, call.Args[0], aliases, definitions, make(map[string]bool)) == "sink" && !shadowedScopedHelpers["isNilCoreDependency"] && l8D2ReadinessExactScopedHelper(functionsByName, "isNilCoreDependency", aliasesByFunction, definitions, globals)
 		}
 		if called.Sel.Name == "ProposeObservedStdin" && len(call.Args) == 4 {
 			return l8D2ReadinessExactTransactionReceiver(function, called.X, aliases) && l8D2ReadinessExactContextArgument(call.Args[0], contextParams) && l8D2ReadinessExpressionCarriesScoped(call.Args[3], names)
+		}
+		if called.Sel.Name == "StageFile" {
+			return l8D2ReadinessExactPrepareFileStageCall(function, call, names, functionsByName)
 		}
 		serviceReceiver := l8D2ReadinessReceiverName(function)
 		if called.Sel.Name == "BeginExec" && types.ExprString(called.X) == serviceReceiver+".core" && len(call.Args) == 3 {
 			return l8D2ReadinessExactContextArgument(call.Args[0], contextParams) && l8D2ReadinessExpressionCarriesScoped(call.Args[2], names)
 		}
-		if called.Sel.Name == "WriteStdin" && types.ExprString(called.X) == serviceReceiver+".state.execution" && len(call.Args) == 4 {
-			return l8D2ReadinessExactContextArgument(call.Args[0], contextParams) && l8D2ReadinessExpressionCarriesScoped(call.Args[1], names)
+		if called.Sel.Name == "WriteStdin" && len(call.Args) == 4 {
+			return types.ExprString(called.X) == serviceReceiver+".state.execution" && l8D2ReadinessExactContextArgument(call.Args[0], contextParams) && l8D2ReadinessExpressionCarriesScoped(call.Args[1], names)
 		}
+	}
+	return false
+}
+
+func l8D2ReadinessDirectAssignedIdentifier(expression ast.Expr) (*ast.Ident, bool) {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expression = parenthesized.X
+	}
+	identifier, ok := expression.(*ast.Ident)
+	return identifier, ok
+}
+
+func l8D2ReadinessExactFrozenTransportFunctionBody(function *ast.FuncDecl) bool {
+	if function == nil {
+		return false
+	}
+	source := ""
+	switch function.Name.Name {
+	case "configuredDependency":
+		source = `package fixture
+func configuredDependency(value any) bool {
+	if value == nil {
+		return false
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return !reflected.IsNil()
+	default:
+		return true
+	}
+}`
+	case "typedNil":
+		source = `package fixture
+func typedNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}`
+	case "helperExecConfiguredDependencyNil":
+		source = `package fixture
+func helperExecConfiguredDependencyNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}`
+	case "destroyTransportBody":
+		source = `package fixture
+func destroyTransportBody(ctx context.Context, body ReceivedBodyCapability) (err error) {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return contextErr
+	}
+	if !configuredDependency(body) {
+		return ErrContractDestroyed
+	}
+	canceled := ctx.Err() != nil
+	defer func() {
+		if recover() != nil || canceled || ctx.Err() != nil {
+			err = ErrContractOwnership
+		}
+	}()
+	if cleanupErr := body.Destroy(ctx); cleanupErr != nil {
+		return ErrContractOwnership
+	}
+	return nil
+}`
+	case "withCanonicalScratch":
+		source = `package fixture
+func withCanonicalScratch(arm sendPacketArm, length uint32, consume func([]byte) error) error {
+	if !configuredDependency(arm) || consume == nil {
+		return ErrContractInvalidArgument
+	}
+	encoded := make([]byte, int(length))
+	defer wipeBytes(encoded[:cap(encoded)])
+	if err := arm.encodeCanonicalTo(encoded); err != nil {
+		return ErrContractInvalidArgument
+	}
+	return consume(encoded)
+}`
+	case "wipeBytes":
+		source = `package fixture
+func wipeBytes(value []byte) {
+	clear(value)
+	runtime.KeepAlive(value)
+}`
+	case "WriteCanonicalBody":
+		source = `package fixture
+func (packet SendPacket) WriteCanonicalBody(ctx context.Context, sink credentialmemory.CredentialSink) error {
+	if contextErr := transportContextPrecondition(ctx); contextErr != nil {
+		return contextErr
+	}
+	sealed := packet.sealedArm()
+	if sealed == nil || sealed.bodyLength != packet.header.BodyLength || !sealed.written.CompareAndSwap(false, true) {
+		return ErrContractOwnership
+	}
+	if ctx.Err() != nil {
+		return ErrContractOwnership
+	}
+	if !configuredDependency(sink) {
+		return ErrContractTypedNil
+	}
+	if stream, ok := sealed.arm.(sendExecStreamArm); ok {
+		if !configuredDependency(stream.body) {
+			return ErrContractDestroyed
+		}
+		maximum := sink.MaxCredentialBytes()
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		if maximum < int(packet.header.BodyLength) {
+			return ErrContractInvalidArgument
+		}
+		forward := &exactForwardingSink{ctx: ctx, target: sink, expected: int(packet.header.BodyLength), valid: true}
+		callbacks := &callbackValidationState{valid: true}
+		err := stream.body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
+			var callbackErr error
+			if ctx.Err() != nil {
+				callbackErr = ErrContractOwnership
+			} else if !configuredDependency(view) {
+				callbackErr = ErrContractOwnership
+			} else {
+				viewLength := view.Len()
+				if ctx.Err() != nil || viewLength != int(packet.header.BodyLength) {
+					callbackErr = ErrContractOwnership
+				} else if err := view.WriteTo(ctx, forward); err != nil {
+					callbackErr = ErrContractOwnership
+				}
+			}
+			if ctx.Err() != nil {
+				callbackErr = ErrContractOwnership
+			}
+			callbacks.record(callbackErr)
+			return callbackErr
+		})
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		calls, callbacksValid, callbackErr := callbacks.snapshot()
+		writes, writeValid, writeErr := forward.snapshot()
+		if err != nil || callbackErr != nil || calls != 1 || !callbacksValid || writeErr != nil || writes != 1 || !writeValid {
+			return ErrContractOwnership
+		}
+		return nil
+	}
+	if !configuredDependency(sealed.arm) {
+		return ErrContractInvalidArgument
+	}
+	length, err := sealed.arm.canonicalLength()
+	if err != nil {
+		return ErrContractInvalidArgument
+	}
+	if length != packet.header.BodyLength {
+		return ErrContractInvalidArgument
+	}
+	return withCanonicalScratch(sealed.arm, length, func(encoded []byte) error {
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		if sha256.Sum256(encoded) != sealed.bodySHA256 {
+			return ErrContractInvalidArgument
+		}
+		maximum := sink.MaxCredentialBytes()
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		if maximum < len(encoded) {
+			return ErrContractInvalidArgument
+		}
+		if err := sink.WriteCredential(encoded); err != nil {
+			return ErrContractOwnership
+		}
+		if ctx.Err() != nil {
+			return ErrContractOwnership
+		}
+		return nil
+	})
+}`
+	default:
+		return false
+	}
+	return l8D2ReadinessExactFunctionBody(function, source)
+}
+
+func l8D2ReadinessExactFunctionBody(function *ast.FuncDecl, source string) bool {
+	if function == nil || source == "" {
+		return false
+	}
+	parsed, err := parser.ParseFile(token.NewFileSet(), "frozen.go", source, 0)
+	if err != nil {
+		return false
+	}
+	for _, declaration := range parsed.Decls {
+		expected, ok := declaration.(*ast.FuncDecl)
+		if ok && expected.Name.Name == function.Name.Name {
+			return l8D2ReadinessFormattedNode(function.Body) == l8D2ReadinessFormattedNode(expected.Body)
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessExactFrozenTransportBorrowOwner(function *ast.FuncDecl, expression ast.Expr, aliases map[string]string, definitions map[string]l8D2ReadinessTypeDefinition, functionsByName map[string][]*ast.FuncDecl, aliasesByFunction map[*ast.FuncDecl]map[string]string, globals map[string]l8D2ReadinessGlobalDefinition) bool {
+	if function == nil || expression == nil {
+		return false
+	}
+	exactStruct := func(name string, want []string) bool {
+		definition, ok := definitions[name]
+		if !ok {
+			return false
+		}
+		structure, ok := definition.expression.(*ast.StructType)
+		if !ok {
+			return false
+		}
+		var got []string
+		for _, field := range structure.Fields.List {
+			if len(field.Names) == 0 {
+				got = append(got, "<embedded>:"+types.ExprString(field.Type))
+				continue
+			}
+			if len(field.Names) != 1 {
+				return false
+			}
+			got = append(got, field.Names[0].Name+":"+types.ExprString(field.Type))
+		}
+		return strings.Join(got, ",") == strings.Join(want, ",")
+	}
+	exactResult := func(want string) bool {
+		return function.Type.Results != nil && len(function.Type.Results.List) == 1 && len(function.Type.Results.List[0].Names) == 0 && types.ExprString(function.Type.Results.List[0].Type) == want
+	}
+	exactCallbackType := func(expression ast.Expr) bool {
+		callback, ok := expression.(*ast.FuncType)
+		return ok && callback.Params != nil && len(callback.Params.List) == 1 && len(callback.Params.List[0].Names) == 0 && l8D2ReadinessExactImportedType(callback.Params.List[0].Type, aliases, "github.com/jywlabs/hal/internal/credentialmemory", "BorrowedView", false) && callback.Results != nil && len(callback.Results.List) == 1 && types.ExprString(callback.Results.List[0].Type) == "error"
+	}
+	exactReceiverSelector := func(receiverName, fieldName string) bool {
+		selector, ok := expression.(*ast.SelectorExpr)
+		owner, ownerOK := func() (*ast.Ident, bool) {
+			if !ok || selector.Sel.Name != fieldName {
+				return nil, false
+			}
+			identifier, direct := selector.X.(*ast.Ident)
+			return identifier, direct
+		}()
+		if !ownerOK || function.Recv == nil || len(function.Recv.List) != 1 || len(function.Recv.List[0].Names) != 1 {
+			return false
+		}
+		return owner.Name == receiverName && owner.Obj != nil && owner.Obj == function.Recv.List[0].Names[0].Obj
+	}
+	unparenIdentifier := func(expression ast.Expr) (*ast.Ident, bool) {
+		for {
+			parenthesized, ok := expression.(*ast.ParenExpr)
+			if !ok {
+				break
+			}
+			expression = parenthesized.X
+		}
+		identifier, ok := expression.(*ast.Ident)
+		return identifier, ok
+	}
+	objectWriteCount := func(object any) int {
+		writes := 0
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.AssignStmt:
+				for _, left := range value.Lhs {
+					identifier, ok := l8D2ReadinessDirectAssignedIdentifier(left)
+					if ok && identifier.Obj == object {
+						writes++
+					}
+				}
+			case *ast.RangeStmt:
+				if value.Tok == token.ASSIGN {
+					for _, left := range []ast.Expr{value.Key, value.Value} {
+						identifier, ok := l8D2ReadinessDirectAssignedIdentifier(left)
+						if ok && identifier.Obj == object {
+							writes++
+						}
+					}
+				}
+			case *ast.UnaryExpr:
+				if value.Op == token.AND {
+					identifier, ok := l8D2ReadinessDirectAssignedIdentifier(value.X)
+					if ok && identifier.Obj == object {
+						writes++
+					}
+				}
+			}
+			return true
+		})
+		return writes
+	}
+	fieldTouched := func(object any, field string) bool {
+		matches := func(expression ast.Expr) bool {
+			for {
+				parenthesized, ok := expression.(*ast.ParenExpr)
+				if !ok {
+					break
+				}
+				expression = parenthesized.X
+			}
+			selector, ok := expression.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != field {
+				return false
+			}
+			identifier, ok := unparenIdentifier(selector.X)
+			return ok && identifier.Obj == object
+		}
+		touched := false
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			if touched {
+				return false
+			}
+			switch value := node.(type) {
+			case *ast.AssignStmt:
+				for _, left := range value.Lhs {
+					if matches(left) {
+						touched = true
+						return false
+					}
+				}
+			case *ast.RangeStmt:
+				if value.Tok == token.ASSIGN && (matches(value.Key) || matches(value.Value)) {
+					touched = true
+					return false
+				}
+			case *ast.UnaryExpr:
+				if value.Op == token.AND && matches(value.X) {
+					touched = true
+					return false
+				}
+			}
+			return true
+		})
+		return touched
+	}
+	objectConfinedToSelectorReads := func(object any) bool {
+		parents := make(map[ast.Node]ast.Node)
+		var stack []ast.Node
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			if node == nil {
+				stack = stack[:len(stack)-1]
+				return false
+			}
+			if len(stack) != 0 {
+				parents[node] = stack[len(stack)-1]
+			}
+			stack = append(stack, node)
+			return true
+		})
+		directSynchronousUse := func(node ast.Node) bool {
+			for ancestor := parents[node]; ancestor != nil && ancestor != function.Body; ancestor = parents[ancestor] {
+				switch ancestor.(type) {
+				case *ast.GoStmt, *ast.DeferStmt, *ast.ForStmt, *ast.RangeStmt, *ast.FuncLit:
+					return false
+				}
+			}
+			return true
+		}
+		usageCounts := make(map[string]int)
+		exactHelper := func(name string) bool {
+			return l8D2ReadinessExactScopedHelper(functionsByName, name, aliasesByFunction, definitions, globals)
+		}
+		confined := true
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			if !confined {
+				return false
+			}
+			identifier, ok := node.(*ast.Ident)
+			if !ok || identifier.Obj != object {
+				return true
+			}
+			parent := parents[identifier]
+			if selector, selected := parent.(*ast.SelectorExpr); selected && selector.X == identifier {
+				grandparent := parents[selector]
+				switch selector.Sel.Name {
+				case "bodyLength":
+					binary, ok := grandparent.(*ast.BinaryExpr)
+					if ok && (binary.Op == token.EQL || binary.Op == token.NEQ) {
+						other := binary.X
+						if other == selector {
+							other = binary.Y
+						}
+						if types.ExprString(other) == "packet.header.BodyLength" && directSynchronousUse(binary) {
+							usageCounts["bodyLength"]++
+							return true
+						}
+					}
+				case "written":
+					method, ok := grandparent.(*ast.SelectorExpr)
+					call, called := parents[method].(*ast.CallExpr)
+					if ok && method.X == selector && method.Sel.Name == "CompareAndSwap" && called && call.Fun == method && len(call.Args) == 2 && types.ExprString(call.Args[0]) == "false" && types.ExprString(call.Args[1]) == "true" && directSynchronousUse(call) {
+						usageCounts["written"]++
+						return true
+					}
+				case "arm":
+					if assertion, ok := grandparent.(*ast.TypeAssertExpr); ok && assertion.X == selector && types.ExprString(assertion.Type) == "sendExecStreamArm" && directSynchronousUse(assertion) {
+						usageCounts["armAssertion"]++
+						return true
+					}
+					if method, ok := grandparent.(*ast.SelectorExpr); ok && method.X == selector && method.Sel.Name == "canonicalLength" {
+						call, called := parents[method].(*ast.CallExpr)
+						if called && call.Fun == method && len(call.Args) == 0 && directSynchronousUse(call) {
+							usageCounts["armLength"]++
+							return true
+						}
+					}
+					if call, ok := grandparent.(*ast.CallExpr); ok {
+						called, direct := call.Fun.(*ast.Ident)
+						if direct && called.Name == "configuredDependency" && len(call.Args) == 1 && call.Args[0] == selector && exactHelper(called.Name) && directSynchronousUse(call) {
+							usageCounts["armConfigured"]++
+							return true
+						}
+						if direct && called.Name == "withCanonicalScratch" && len(call.Args) == 3 && call.Args[0] == selector && exactHelper(called.Name) && directSynchronousUse(call) {
+							usageCounts["armScratch"]++
+							return true
+						}
+					}
+				case "bodySHA256":
+					binary, ok := grandparent.(*ast.BinaryExpr)
+					if ok && binary.Op == token.NEQ {
+						other := binary.X
+						if other == selector {
+							other = binary.Y
+						}
+						call, called := other.(*ast.CallExpr)
+						method, selected := func() (*ast.SelectorExpr, bool) {
+							if !called || len(call.Args) != 1 {
+								return nil, false
+							}
+							method, ok := call.Fun.(*ast.SelectorExpr)
+							return method, ok
+						}()
+						owner, imported := func() (*ast.Ident, bool) {
+							if !selected || method.Sel.Name != "Sum256" {
+								return nil, false
+							}
+							owner, ok := method.X.(*ast.Ident)
+							return owner, ok
+						}()
+						if imported && owner.Obj == nil && aliases[owner.Name] == "crypto/sha256" {
+							usageCounts["bodySHA256"]++
+							return true
+						}
+					}
+				}
+				confined = false
+				return false
+			}
+			if binary, compared := parent.(*ast.BinaryExpr); compared && (binary.Op == token.EQL || binary.Op == token.NEQ) {
+				other := binary.X
+				if other == identifier {
+					other = binary.Y
+				}
+				if nilIdentifier, nilCompared := other.(*ast.Ident); nilCompared && nilIdentifier.Name == "nil" {
+					if !directSynchronousUse(binary) {
+						confined = false
+						return false
+					}
+					usageCounts["nilGate"]++
+					return true
+				}
+			}
+			if assignment, assigned := parent.(*ast.AssignStmt); assigned && identifier.Obj.Decl == assignment {
+				for _, left := range assignment.Lhs {
+					if left == identifier {
+						return true
+					}
+				}
+			}
+			confined = false
+			return false
+		})
+		if !confined {
+			return false
+		}
+		for _, key := range []string{"nilGate", "bodyLength", "written", "armAssertion", "armConfigured", "armLength", "armScratch", "bodySHA256"} {
+			if usageCounts[key] != 1 {
+				return false
+			}
+		}
+		return true
+	}
+	borrowCalls := 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if ok && selector.Sel.Name == "Borrow" {
+			borrowCalls++
+		}
+		return true
+	})
+	if borrowCalls != 1 {
+		return false
+	}
+	parameters := l8D2ReadinessNamedParameters(function)
+	switch function.Name.Name {
+	case "Borrow":
+		return function.Recv != nil && len(function.Recv.List) == 1 && len(function.Recv.List[0].Names) == 1 && function.Recv.List[0].Names[0].Name == "body" && function.Recv.List[0].Names[0].Obj != nil && objectWriteCount(function.Recv.List[0].Names[0].Obj) == 0 && !fieldTouched(function.Recv.List[0].Names[0].Obj, "owner") && types.ExprString(function.Recv.List[0].Type) == "receivedPayloadBody" &&
+			len(parameters) == 2 && parameters[0].name == "ctx" && l8D2ReadinessExactImportedType(parameters[0].typ, aliases, "context", "Context", false) && parameters[1].name == "callback" && exactCallbackType(parameters[1].typ) && exactResult("error") &&
+			exactStruct("receivedPayloadBody", []string{"owner:ReceivedBodyCapability", "canonicalLength:uint32", "offset:uint32", "length:uint32", "digest:[32]byte"}) && exactReceiverSelector("body", "owner")
+	case "WriteCanonicalBody":
+		if !l8D2ReadinessExactFrozenTransportFunctionBody(function) || function.Recv == nil || len(function.Recv.List) != 1 || len(function.Recv.List[0].Names) != 1 || function.Recv.List[0].Names[0].Name != "packet" || types.ExprString(function.Recv.List[0].Type) != "SendPacket" ||
+			len(parameters) != 2 || parameters[0].name != "ctx" || !l8D2ReadinessExactImportedType(parameters[0].typ, aliases, "context", "Context", false) || parameters[1].name != "sink" || !l8D2ReadinessExactImportedType(parameters[1].typ, aliases, "github.com/jywlabs/hal/internal/credentialmemory", "CredentialSink", false) || !exactResult("error") ||
+			!exactStruct("SendPacket", []string{"<embedded>:liveValue", "header:credentialprotocol.HelperPacketHeader", "arm:sendPacketArm", "right:ReceivedCapability"}) ||
+			!exactStruct("sendExecStreamArm", []string{"revision:uint64", "streamKind:credentialprotocol.HelperExecStreamKind", "flags:credentialprotocol.HelperExecStreamFlags", "offset:uint64", "payloadLength:uint32", "payloadSHA256:[32]byte", "body:ReceivedBodyCapability"}) {
+			return false
+		}
+		selector, ok := expression.(*ast.SelectorExpr)
+		stream, streamOK := func() (*ast.Ident, bool) {
+			if !ok || selector.Sel.Name != "body" {
+				return nil, false
+			}
+			identifier, direct := selector.X.(*ast.Ident)
+			return identifier, direct
+		}()
+		if !streamOK || stream.Obj == nil || objectWriteCount(stream.Obj) != 1 || fieldTouched(stream.Obj, "body") {
+			return false
+		}
+		declaration, ok := stream.Obj.Decl.(*ast.AssignStmt)
+		if !ok || declaration.Tok != token.DEFINE || len(declaration.Lhs) != 2 || len(declaration.Rhs) != 1 {
+			return false
+		}
+		declared, ok := declaration.Lhs[0].(*ast.Ident)
+		assertion, assertionOK := declaration.Rhs[0].(*ast.TypeAssertExpr)
+		asserted, assertedOK := func() (*ast.SelectorExpr, bool) {
+			if !assertionOK || types.ExprString(assertion.Type) != "sendExecStreamArm" {
+				return nil, false
+			}
+			selector, direct := assertion.X.(*ast.SelectorExpr)
+			return selector, direct
+		}()
+		sealed, sealedOK := func() (*ast.Ident, bool) {
+			if !assertedOK || asserted.Sel.Name != "arm" {
+				return nil, false
+			}
+			identifier, direct := asserted.X.(*ast.Ident)
+			return identifier, direct
+		}()
+		if !ok || declared.Obj != stream.Obj || !sealedOK || sealed.Obj == nil || objectWriteCount(sealed.Obj) != 1 || fieldTouched(sealed.Obj, "arm") {
+			return false
+		}
+		sealedDeclaration, ok := sealed.Obj.Decl.(*ast.AssignStmt)
+		if !ok || sealedDeclaration.Tok != token.DEFINE || len(sealedDeclaration.Lhs) != 1 || len(sealedDeclaration.Rhs) != 1 {
+			return false
+		}
+		declaredSealed, ok := sealedDeclaration.Lhs[0].(*ast.Ident)
+		sealedCall, callOK := sealedDeclaration.Rhs[0].(*ast.CallExpr)
+		sealedMethod, methodOK := func() (*ast.SelectorExpr, bool) {
+			if !callOK || len(sealedCall.Args) != 0 {
+				return nil, false
+			}
+			selector, direct := sealedCall.Fun.(*ast.SelectorExpr)
+			return selector, direct
+		}()
+		packet, packetOK := func() (*ast.Ident, bool) {
+			if !methodOK || sealedMethod.Sel.Name != "sealedArm" {
+				return nil, false
+			}
+			identifier, direct := sealedMethod.X.(*ast.Ident)
+			return identifier, direct
+		}()
+		return ok && declaredSealed.Obj == sealed.Obj && objectConfinedToSelectorReads(sealed.Obj) && packetOK && packet.Obj != nil && packet.Obj == function.Recv.List[0].Names[0].Obj && objectWriteCount(packet.Obj) == 0 && !fieldTouched(packet.Obj, "arm")
+	case "validSendExecStreamArm":
+		if function.Recv != nil || len(parameters) != 3 || parameters[0].name != "ctx" || !l8D2ReadinessExactImportedType(parameters[0].typ, aliases, "context", "Context", false) || parameters[1].name != "arm" || types.ExprString(parameters[1].typ) != "sendExecStreamArm" || parameters[2].name != "bodyLength" || types.ExprString(parameters[2].typ) != "uint32" || !exactResult("bool") ||
+			!exactStruct("sendExecStreamArm", []string{"revision:uint64", "streamKind:credentialprotocol.HelperExecStreamKind", "flags:credentialprotocol.HelperExecStreamFlags", "offset:uint64", "payloadLength:uint32", "payloadSHA256:[32]byte", "body:ReceivedBodyCapability"}) {
+			return false
+		}
+		selector, ok := expression.(*ast.SelectorExpr)
+		arm, armOK := func() (*ast.Ident, bool) {
+			if !ok || selector.Sel.Name != "body" {
+				return nil, false
+			}
+			identifier, direct := selector.X.(*ast.Ident)
+			return identifier, direct
+		}()
+		if !armOK || arm.Obj == nil || objectWriteCount(arm.Obj) != 0 || fieldTouched(arm.Obj, "body") || function.Type.Params == nil {
+			return false
+		}
+		for _, field := range function.Type.Params.List {
+			if types.ExprString(field.Type) == "sendExecStreamArm" && len(field.Names) == 1 && field.Names[0].Obj == arm.Obj {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }
@@ -10320,9 +19428,9 @@ func l8D2ReadinessExactAuditedTransportWrite(function *ast.FuncDecl, receiver, s
 	return false
 }
 
-func l8D2ReadinessExactContextArgument(expression ast.Expr, contextParams map[string]bool) bool {
+func l8D2ReadinessExactContextArgument(expression ast.Expr, contextParams map[any]bool) bool {
 	identifier, ok := expression.(*ast.Ident)
-	return ok && contextParams[identifier.Name]
+	return ok && identifier.Obj != nil && contextParams[identifier.Obj]
 }
 
 func l8D2ReadinessExactTransactionReceiver(function *ast.FuncDecl, expression ast.Expr, aliases map[string]string) bool {
@@ -10343,8 +19451,8 @@ func l8D2ReadinessExactTransactionReceiver(function *ast.FuncDecl, expression as
 	return false
 }
 
-func l8D2ReadinessExactBorrowCallbackInvocation(function *ast.FuncDecl, called string, call *ast.CallExpr, names map[string]bool, aliases map[string]string) bool {
-	if function == nil || function.Recv == nil || function.Name.Name != "Borrow" || len(call.Args) != 1 || !l8D2ReadinessExpressionCarriesScoped(call.Args[0], names) {
+func l8D2ReadinessExactBorrowCallbackInvocation(function *ast.FuncDecl, called *ast.Ident, call *ast.CallExpr, names map[string]bool, aliases map[string]string) bool {
+	if function == nil || called == nil || called.Obj == nil || function.Recv == nil || function.Name.Name != "Borrow" || len(call.Args) != 1 || !l8D2ReadinessExpressionCarriesScoped(call.Args[0], names) {
 		return false
 	}
 	receiverType := types.ExprString(function.Recv.List[0].Type)
@@ -10360,7 +19468,7 @@ func l8D2ReadinessExactBorrowCallbackInvocation(function *ast.FuncDecl, called s
 			continue
 		}
 		for _, name := range field.Names {
-			if name.Name == called {
+			if name.Obj == called.Obj {
 				return true
 			}
 		}
@@ -10375,7 +19483,7 @@ func l8D2ReadinessExactScopedHelperDeclaration(functions []*ast.FuncDecl, name s
 	function := functions[0]
 	parameters := l8D2ReadinessNamedParameters(function)
 	switch name {
-	case "configuredDependency", "typedNil":
+	case "configuredDependency", "typedNil", "helperExecConfiguredDependencyNil":
 		return len(parameters) == 1 && types.ExprString(parameters[0].typ) == "any"
 	case "isNilCoreDependency":
 		return len(parameters) == 1 && l8D2ReadinessExactImportedType(parameters[0].typ, aliases, "github.com/jywlabs/hal/internal/credentialmemory", "CredentialSink", false) && l8D2ReadinessExactTypedNilHelperBody(function, parameters[0].name, aliases)
@@ -10387,8 +19495,48 @@ func l8D2ReadinessExactScopedHelperDeclaration(functions []*ast.FuncDecl, name s
 		}
 		callback, ok := parameters[2].typ.(*ast.FuncType)
 		return ok && callback.Params != nil && len(callback.Params.List) == 1 && types.ExprString(callback.Params.List[0].Type) == "[]byte"
+	case "wipeBytes":
+		return len(parameters) == 1 && types.ExprString(parameters[0].typ) == "[]byte" && function.Type.Results == nil
 	}
 	_ = definitions
+	return false
+}
+
+func l8D2ReadinessExactScopedHelper(functionsByName map[string][]*ast.FuncDecl, name string, aliasesByFunction map[*ast.FuncDecl]map[string]string, definitions map[string]l8D2ReadinessTypeDefinition, globals map[string]l8D2ReadinessGlobalDefinition) bool {
+	declarations := functionsByName[name]
+	if len(declarations) != 1 {
+		return false
+	}
+	function := declarations[0]
+	aliases := aliasesByFunction[function]
+	if !l8D2ReadinessExactScopedHelperDeclaration(declarations, name, aliases, definitions) {
+		return false
+	}
+	switch name {
+	case "configuredDependency":
+		if aliases["reflect"] == "reflect" && l8D2ReadinessExactFrozenTransportFunctionBody(function) {
+			return true
+		}
+		const wrapper = `package fixture
+func configuredDependency(value any) bool {
+	return !helperExecConfiguredDependencyNil(value)
+}`
+		return l8D2ReadinessExactFunctionBody(function, wrapper) && l8D2ReadinessExactScopedHelper(functionsByName, "helperExecConfiguredDependencyNil", aliasesByFunction, definitions, globals)
+	case "typedNil", "helperExecConfiguredDependencyNil":
+		return aliases["reflect"] == "reflect" && l8D2ReadinessExactFrozenTransportFunctionBody(function)
+	case "isNilCoreDependency":
+		return aliases["reflect"] == "reflect"
+	case "destroyTransportBody":
+		return l8D2ReadinessExactFrozenTransportFunctionBody(function) && l8D2ReadinessExactScopedHelper(functionsByName, "configuredDependency", aliasesByFunction, definitions, globals)
+	case "withCanonicalScratch":
+		return l8D2ReadinessExactFrozenTransportFunctionBody(function) &&
+			l8D2ReadinessExactScopedHelper(functionsByName, "configuredDependency", aliasesByFunction, definitions, globals) &&
+			l8D2ReadinessExactScopedHelper(functionsByName, "wipeBytes", aliasesByFunction, definitions, globals)
+	case "wipeBytes":
+		_, globalClear := globals["clear"]
+		_, typeClear := definitions["clear"]
+		return aliases["runtime"] == "runtime" && len(functionsByName["clear"]) == 0 && !globalClear && !typeClear && l8D2ReadinessExactFrozenTransportFunctionBody(function)
+	}
 	return false
 }
 
@@ -10475,74 +19623,265 @@ func l8D2ReadinessExactSingleBooleanReturn(statement ast.Stmt, want bool) bool {
 	return ok && identifier.Name == map[bool]string{true: "true", false: "false"}[want]
 }
 
-func l8D2ReadinessExactReceivedBodyExpression(function *ast.FuncDecl, expression ast.Expr, definitions map[string]l8D2ReadinessTypeDefinition) bool {
-	if identifier, ok := expression.(*ast.Ident); ok {
-		if function != nil && function.Type.Params != nil {
-			for _, field := range function.Type.Params.List {
-				if types.ExprString(field.Type) != "ReceivedBodyCapability" && types.ExprString(field.Type) != "CoreOutputBody" {
-					continue
-				}
-				for _, name := range field.Names {
-					if name.Name == identifier.Name {
-						return true
-					}
-				}
-			}
-		}
+func l8D2ReadinessExactLocalReceivedBodyAlias(function *ast.FuncDecl, identifier *ast.Ident) bool {
+	if !l8D2ReadinessExactPrepareFileHandler(function) || function.Body == nil || identifier == nil || identifier.Obj == nil {
 		return false
 	}
-	selector, ok := expression.(*ast.SelectorExpr)
-	owner, ownerOK := func() (*ast.Ident, bool) {
-		if !ok {
-			return nil, false
-		}
-		identifier, valid := selector.X.(*ast.Ident)
-		return identifier, valid
-	}()
-	if !ownerOK {
-		return false
-	}
-	typeName := ""
-	if function != nil && function.Type.Params != nil {
-		for _, field := range function.Type.Params.List {
-			for _, name := range field.Names {
-				if name.Name == owner.Name {
-					typeName = strings.TrimPrefix(types.ExprString(field.Type), "*")
-				}
-			}
-		}
-	}
-	if function != nil && function.Recv != nil && len(function.Recv.List) == 1 && len(function.Recv.List[0].Names) == 1 && function.Recv.List[0].Names[0].Name == owner.Name {
-		typeName = strings.TrimPrefix(types.ExprString(function.Recv.List[0].Type), "*")
-	}
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
 	ast.Inspect(function.Body, func(node ast.Node) bool {
-		if typeName != "" {
+		if node == nil {
+			stack = stack[:len(stack)-1]
 			return false
 		}
+		if len(stack) != 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	var definition *ast.AssignStmt
+	var definitionName *ast.Ident
+	ast.Inspect(function.Body, func(node ast.Node) bool {
 		assignment, ok := node.(*ast.AssignStmt)
 		if !ok {
 			return true
 		}
 		for index, left := range assignment.Lhs {
-			identifier, direct := left.(*ast.Ident)
-			if !direct || identifier.Name != owner.Name || index >= len(assignment.Rhs) {
+			name, direct := left.(*ast.Ident)
+			if !direct || name.Obj != identifier.Obj {
 				continue
 			}
-			assertion, asserted := assignment.Rhs[index].(*ast.TypeAssertExpr)
-			if asserted {
-				typeName = types.ExprString(assertion.Type)
+			if definition != nil || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || index >= len(assignment.Rhs) || !l8D2ReadinessExactReceivedPacketBodySelector(function, assignment.Rhs[index]) {
+				definition = nil
+				definitionName = nil
+				return false
 			}
+			definition = assignment
+			definitionName = name
 		}
 		return true
 	})
-	definition, exists := definitions[typeName]
-	structure, structural := definition.expression.(*ast.StructType)
-	if !exists || !structural {
+	if definition == nil || definitionName == nil {
 		return false
 	}
-	for _, field := range structure.Fields.List {
+	confined := true
+	borrowCalls := 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !confined {
+			return false
+		}
+		name, ok := node.(*ast.Ident)
+		if !ok || name.Obj != identifier.Obj {
+			return true
+		}
+		if name == definitionName && parents[name] == definition {
+			return true
+		}
+		parent := parents[name]
+		for ancestor := parent; ancestor != nil && ancestor != function.Body; ancestor = parents[ancestor] {
+			switch ancestor.(type) {
+			case *ast.FuncLit, *ast.GoStmt, *ast.DeferStmt:
+				confined = false
+				return false
+			}
+		}
+		if selector, ok := parent.(*ast.SelectorExpr); ok && selector.X == name {
+			call, directCall := parents[selector].(*ast.CallExpr)
+			if directCall && call.Fun == selector && (selector.Sel.Name == "Len" || selector.Sel.Name == "SHA256" || selector.Sel.Name == "Borrow") {
+				if selector.Sel.Name == "Borrow" {
+					borrowCalls++
+				}
+				return true
+			}
+		}
+		if call, ok := parent.(*ast.CallExpr); ok && len(call.Args) == 1 && call.Args[0] == name {
+			called, direct := call.Fun.(*ast.Ident)
+			if direct && called.Name == "configuredDependency" && called.Obj == nil {
+				return true
+			}
+		}
+		confined = false
+		return false
+	})
+	return confined && borrowCalls == 1
+}
+
+func l8D2ReadinessExactPrepareFileHandler(function *ast.FuncDecl) bool {
+	return function != nil && function.Name.Name == "handlePrepareFile" && function.Recv != nil && len(function.Recv.List) == 1 && types.ExprString(function.Recv.List[0].Type) == "*Service"
+}
+
+func l8D2ReadinessExactPrepareFileStageCall(function *ast.FuncDecl, call *ast.CallExpr, scopedNames map[string]bool, functionsByName map[string][]*ast.FuncDecl) bool {
+	if !l8D2ReadinessExactPrepareFileHandler(function) || call == nil || len(call.Args) != 3 {
+		return false
+	}
+	called, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || called.Sel.Name != "StageFile" {
+		return false
+	}
+	preparation, ok := called.X.(*ast.SelectorExpr)
+	if !ok || preparation.Sel.Name != "preparation" {
+		return false
+	}
+	preparing, preparingOK := preparation.X.(*ast.Ident)
+	ctx, ctxOK := call.Args[0].(*ast.Ident)
+	request, requestOK := call.Args[1].(*ast.Ident)
+	view, viewOK := call.Args[2].(*ast.Ident)
+	return preparingOK && l8D2ReadinessExactPrepareFileLocal(function, preparing, "preparing", functionsByName) &&
+		ctxOK && l8D2ReadinessExactPrepareFileParameter(function, ctx, "ctx") &&
+		requestOK && l8D2ReadinessExactPrepareFileLocal(function, request, "fileRequest", functionsByName) &&
+		viewOK && scopedNames[view.Name] && l8D2ReadinessExactPrepareFileBorrowView(function, call, view)
+}
+
+func l8D2ReadinessExactPrepareFileParameter(function *ast.FuncDecl, identifier *ast.Ident, wantName string) bool {
+	if function == nil || function.Type.Params == nil || identifier == nil || identifier.Name != wantName || identifier.Obj == nil {
+		return false
+	}
+	for _, field := range function.Type.Params.List {
+		for _, declared := range field.Names {
+			if declared.Name == wantName && declared.Obj != nil && identifier.Obj == declared.Obj {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessExactPrepareFileLocal(function *ast.FuncDecl, identifier *ast.Ident, wantName string, functionsByName map[string][]*ast.FuncDecl) bool {
+	if function == nil || function.Body == nil || identifier == nil || identifier.Name != wantName || identifier.Obj == nil {
+		return false
+	}
+	for _, statement := range function.Body.List {
+		switch wantName {
+		case "preparing":
+			declaration, ok := statement.(*ast.DeclStmt)
+			if !ok {
+				continue
+			}
+			general, ok := declaration.Decl.(*ast.GenDecl)
+			if !ok || general.Tok != token.VAR || len(general.Specs) != 1 {
+				continue
+			}
+			value, ok := general.Specs[0].(*ast.ValueSpec)
+			if !ok || len(value.Names) != 1 || value.Names[0].Name != wantName || value.Names[0].Obj != identifier.Obj || types.ExprString(value.Type) != "servicePreparing" || len(value.Values) != 0 {
+				continue
+			}
+			return true
+		case "fileRequest":
+			assignment, ok := statement.(*ast.AssignStmt)
+			if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 {
+				continue
+			}
+			declared, ok := assignment.Lhs[0].(*ast.Ident)
+			if !ok || declared.Name != wantName || declared.Obj != identifier.Obj {
+				continue
+			}
+			call, ok := assignment.Rhs[0].(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			called, ok := call.Fun.(*ast.Ident)
+			if !ok || len(call.Args) != 3 || !l8D2ReadinessExactPackageFunctionReference(called, "newServiceFileRequest", functionsByName) {
+				continue
+			}
+			preparing, ok := call.Args[2].(*ast.Ident)
+			return ok && l8D2ReadinessExactPrepareFileLocal(function, preparing, "preparing", functionsByName)
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessExactPackageFunctionReference(identifier *ast.Ident, wantName string, functionsByName map[string][]*ast.FuncDecl) bool {
+	if identifier == nil || identifier.Name != wantName {
+		return false
+	}
+	var declaration *ast.FuncDecl
+	for _, function := range functionsByName[wantName] {
+		if function == nil || function.Recv != nil {
+			continue
+		}
+		if declaration != nil {
+			return false
+		}
+		declaration = function
+	}
+	if declaration == nil {
+		return false
+	}
+	if identifier.Obj == nil {
+		return true
+	}
+	if identifier.Obj.Kind != ast.Fun {
+		return false
+	}
+	resolved, ok := identifier.Obj.Decl.(*ast.FuncDecl)
+	return ok && resolved == declaration
+}
+
+func l8D2ReadinessExactPrepareFileBorrowView(function *ast.FuncDecl, stageCall *ast.CallExpr, identifier *ast.Ident) bool {
+	if function == nil || function.Body == nil || stageCall == nil || identifier == nil || identifier.Obj == nil {
+		return false
+	}
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return false
+		}
+		if len(stack) != 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	var callback *ast.FuncLit
+	for ancestor := parents[stageCall]; ancestor != nil && ancestor != function.Body; ancestor = parents[ancestor] {
+		switch ancestor.(type) {
+		case *ast.GoStmt, *ast.DeferStmt:
+			return false
+		}
+		if literal, ok := ancestor.(*ast.FuncLit); ok {
+			callback = literal
+			break
+		}
+	}
+	if callback == nil || callback.Type.Params == nil {
+		return false
+	}
+	callbackCall, ok := parents[callback].(*ast.CallExpr)
+	if !ok || len(callbackCall.Args) != 2 || callbackCall.Args[1] != callback {
+		return false
+	}
+	borrow, ok := callbackCall.Fun.(*ast.SelectorExpr)
+	if !ok || borrow.Sel.Name != "Borrow" {
+		return false
+	}
+	for _, field := range callback.Type.Params.List {
+		for _, declared := range field.Names {
+			if declared.Name == "view" && declared.Obj != nil && identifier.Obj == declared.Obj {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func l8D2ReadinessExactReceivedPacketBodySelector(function *ast.FuncDecl, expression ast.Expr) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "body" {
+		return false
+	}
+	owner, ok := selector.X.(*ast.Ident)
+	if !ok || function == nil || function.Type.Params == nil {
+		return false
+	}
+	for _, field := range function.Type.Params.List {
+		if types.ExprString(field.Type) != "ReceivedPacket" {
+			continue
+		}
 		for _, name := range field.Names {
-			if name.Name == selector.Sel.Name && (types.ExprString(field.Type) == "ReceivedBodyCapability" || types.ExprString(field.Type) == "CoreOutputBody") {
+			if name.Name == owner.Name && (owner.Obj == nil || name.Obj == owner.Obj) {
 				return true
 			}
 		}
@@ -10567,7 +19906,10 @@ func l8D2ReadinessImportAliases(file *ast.File) (map[string]string, bool) {
 	aliases := make(map[string]string)
 	dotImport := false
 	for _, imported := range file.Imports {
-		importPath := strings.Trim(imported.Path.Value, `"`)
+		importPath, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			continue
+		}
 		localName := filepath.Base(importPath)
 		if imported.Name != nil {
 			localName = imported.Name.Name
@@ -11025,6 +20367,7 @@ type l8D2ReadinessTerminalEnvironment struct {
 	fileIntShadowed    map[*ast.File]bool
 	packageLenShadowed bool
 	fileLenShadowed    map[*ast.File]bool
+	terminalFacts      *l8D2ReadinessTerminalFacts
 }
 
 type l8D2ReadinessExpectedConstantDeclaration struct {

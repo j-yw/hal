@@ -3984,6 +3984,76 @@ retention roots. While either scoped interface is lexically live, no function
 literal is permitted except the one direct synchronous body-borrow callback;
 that callback has no nested literal, IIFE, `defer`, `go`, or retained method
 value. Direct, aliased, shadowed, and composite captures are equivalent.
+The no-retention analyzer credits only an unrebound exact
+`ReceivedBodyCapability` or `CoreOutputBody` identifier declared directly in
+the enclosing top-level function parameter list. That identifier may make one
+immediate inline synchronous `Borrow` call, directly or as a direct `defer`;
+the call is outside `for`/`range` loops, no second `Borrow` call is present, the
+callback has one named, nonblank, exact import-bound
+`credentialmemory.BorrowedView` parameter, the context and callback identifiers
+are those exact parameter objects rather than same-spelled shadows throughout
+the callback's scoped-view consumers. Alias propagation follows the exact
+range role, so slice indexes and unrelated map keys do not inherit value-side
+scope; named and aliased container types resolve to those same underlying
+roles, and callback `go`, `defer`, and sends are forbidden. Its
+bound method value cannot escape. Assignment/comma-ok and function
+results, composites, fields/promoted fields, indexes, range/channel values,
+slices, pointers, address/dereference, parentheses or other wrappers,
+branch/loop joins, and nested-function parameters are deliberately unresolved.
+Direct `Borrow` and bound methods from those forms are rejected instead of
+requiring a general control-flow/location analyzer. This narrow rule does not
+relax the exact Prepare-file handler shape.
+The exact already-landed synchronous transport-wrapper calls in
+`receivedPayloadBody.Borrow`, `SendPacket.WriteCanonicalBody`, and
+`validSendExecStreamArm` remain governed by their separate frozen transport
+proof. Each contains exactly one synchronous `Borrow`; the receiver, arm, and
+stream are unrebound, their selected body owner is neither written nor
+addressed, and `WriteCanonicalBody` obtains the stream only through the exact
+unrebound `packet.sealedArm()` result. The sealed pointer is confined to its
+direct read-only selector and nil-check uses; it is never aliased, passed,
+returned, stored, sent, or addressed. Its selector grammar is exactly the
+body-length comparison, one `written.CompareAndSwap(false, true)`, stream-arm
+assertion, configured/canonical-length/scratch arm calls, and body-digest
+comparison through the declaration-bound `crypto/sha256` import. Every listed
+occurrence is unique and direct (the digest read is inside the one synchronous
+scratch callback); loop, `go`, and `defer` ancestors are not equivalents.
+Selector methods and standalone stored selector values are also invalid. No
+selected field is written or
+addressed outside the named atomic gate. This does not create a general
+field-owner exception. The readiness proof compares the complete formatted
+`WriteCanonicalBody` body plus every trusted scoped-value helper body against
+the already-landed declarations: `configuredDependency`, `typedNil`,
+`destroyTransportBody`, `isNilCoreDependency`, and `withCanonicalScratch`.
+Helper imports are resolved from their own declaration files. The protocol
+wrapper form additionally requires the unique exact standard-library
+`reflect`-bound `helperExecConfiguredDependencyNil` leaf, and the scratch form
+requires the unique exact `wipeBytes` leaf that clears the supplied
+full-capacity slice before the exact standard-library `runtime.KeepAlive`.
+Signature-only helpers, lookalike imports, retaining classifier/wipe leaves,
+reordered gates, ignored results, and dead-branch observations are invalid.
+The exact Prepare-file path may use the single-assignment local
+`body := packet.body` from its exact `ReceivedPacket` parameter, then call only
+`configuredDependency(body)`, `body.Len()`, `body.SHA256()`, and one direct
+inline `body.Borrow(ctx, callback)`. Rebinding, address-taking, returning,
+sending, passing, storing, further aliasing, a lookalike packet owner, a method
+value, or an escaped callback makes that local ineligible for scoped Borrow
+credit.
+Within the inline callback, only the exact
+`preparing.preparation.StageFile(ctx, fileRequest, view)` call may consume the
+scoped view for Prepare-file staging; foreign owners, requests, contexts,
+helpers, and method values remain invalid.
+The generic scoped-flow scan has exactly three closed execution composition
+allowances: the entire canonical `private` function may install its already
+validated `Core.BeginExec` result under `state.mu`, and the entire canonical
+`stdin` function may copy the retained execution under that mutex and consume
+the callback view synchronously in its one `WriteStdin`. The exact free
+`observeServiceCoreOutput` function may Borrow one `CoreOutputBody` only to
+synchronously call the view's `WriteTo` into the payload-digest sink. Each
+allowance compares the complete function signature and body with the
+independently guarded canonical AST. It is not inferred from a statement,
+receiver, or name. Any
+mutation, extra statement, reorder, shadow, rebind, wrapper, or asynchronous
+use loses the allowance and returns to the ordinary fail-closed scan.
 Required test evidence is one unique
 top-level exact `func TestX(t *testing.T)` AST declaration using the real
 `testing` import; text markers, function literals, lookalike imports, wrong
@@ -4072,6 +4142,274 @@ are rejected. This is the sole state-copy allowance; it does not weaken the
 never-reset latch, immutable configured dependencies, or owner-replacement
 guards.
 
+Before Service wiring can retain a prepared activation or install a first-seen
+Exec dispatch, three private D2 prerequisites are present together and are
+guarded as one dependency chain. This bounded slice covers Prepare, Commit,
+Renew, and authenticated first-seen Exec request/in-flight dispatch issuance.
+Exec completion, the fixed 4,096-entry result ledger, and comparison-replay
+issuance remain a separate prerequisite slice. The unique
+`newServiceCoreCapabilityDigest` implements the exact
+`hal/l8/guest-helper/core-capability/v1` encoding and private 1..4 kind catalog;
+there is no public or alternate-build issuer. Its domain literal is unique, and
+every nonzero Prepare capability literal is built only by the exact
+`newServicePrepareCapabilities` body from the returned digests. Direct or
+aliased capability composites or conversions, digest field writes, a copied
+encoder, or an execution-capability literal cannot establish authority. This
+includes nested selector/index/container fields, pointer and parenthesized
+forms, package or function-local named container types and aliases, method
+receivers, type assertions, inferred package owners, and range-derived aliases.
+Address-taking of `.digest`, slicing it into `copy`, indexed assignment or
+increment/decrement, and any returned, passed, stored, or aliased writable view
+are invalid. Tracking is bound to exact lexical declarations and exact
+field/index/range positions: container copies preserve only their capability
+field paths, map key/value roles remain distinct, and unrelated siblings or
+same-spelled local values/types do not inherit capability classification. Exact
+generic instantiations substitute their declaration-bound type arguments;
+anonymous embedded fields, interface method results, positional multi-results,
+and range-over-function yields preserve only their exact value paths.
+Parentheses preserve call-result positions, named callback types preserve
+range-function yield positions, and recursive generic declarations converge on
+a finite declaration-cycle proof. Ordinary, generic, and mutually recursive
+edges terminate without losing an owner reachable after the cycle. A local
+lookalike capability type or Core-constructor value is not the package
+declaration and remains unrelated. Exact value reads remain valid. Digest
+slices may reach `ConstantTimeCompare` only
+through the exact file import bound to `crypto/subtle`; a local/package shadow
+or same-named receiver is not accepted, while parentheses around that exact
+imported function leave the binding unchanged. The Core
+Prepare/File/Commit/Renew/Revoke and receive constructors are each confined to
+their exact declaration-bound call sites rather than accepted by name; Revoke
+construction is limited to the two exact cleanup owners, while an unrelated
+receiver method sharing a constructor spelling remains unrelated.
+Every prerequisite declaration and live edge is selected in each supported
+linux, darwin, freebsd, and windows amd64 build context where Service is built;
+a sole build-tag-specific or alternate declaration is insufficient. The unique
+`newServicePrepareAuthority` mints one exact private `servicePrepareAuthority`;
+the configured Core result and that authority become one exact state-owned
+`servicePreparing`. The issuer consumes only the exact authenticated
+`PacketTypePrepareBegin` header and typed arm, configured Runtime
+bootstrap/complete observation, and retained protocol transaction. It projects
+the exact partial Prepare tuple only through
+`NewCoreGenerations(boot, helper, job, "", "", "")`, checks that constructor
+error immediately, and retains the complete observation independently. It derives
+the exact transaction correlation, pre-mints the three partial-tuple
+capabilities, and solely calls `NewCorePrepareRequest`. The configured Core's
+exact successful `BeginPrepare` result and that authority are installed in the
+one Service-owned `servicePreparing` entry under `state.mu`. Before the Core
+call, `reservePreparing` atomically installs the exact authority and transaction
+with `beginTaken`; duplicates and an existing activation fail before Core. An
+outer handler recovery closes that exact transaction and rolls back any exact
+returned `CorePreparation` on every pre-install failure or panic. Only
+`installPreparing` consumes the reservation and transfers both owners.
+
+Every configured Transport receive calls the exact private
+`newServiceReceiveRequest` to issue exactly one state-sequenced
+`NewReceiveRequest(sequence, MaxHelperPacketBodyBytes, 0)` and passes that same
+local value to configured Transport. The main loop and private continuation
+cross the exact panic-isolated `receiveServicePacket`, so a synchronous
+Transport panic becomes `ErrContractOwnership`. This includes the main Serve loop and
+each private/stdin continuation dispatcher; each checks the issuer error
+immediately. Global, caller-provided, foreign, stale, ignored-error, or rebound
+requests are invalid. The one returned packet dispatches by exact authenticated
+type. Every post-receive path—including handler panic/error and
+unknown type—runs the same panic-isolated cleanup, checks body `Destroy(ctx)`,
+and checks an unexpected right `Close(ctx)` exactly once with the same context.
+An error from the main Receive enters exact `finishServiceReceive`, which
+synchronously converges a preparing transaction through abort, a prepared
+activation through revoke, or an installed Exec through `finishExecDispatch`;
+it returns a valid stop-VM result and cannot expose a live owner.
+The state field order is exact: `mu`, `nextReceiveSequence`, `preparing`, then
+`prepared`.
+
+For `PacketTypePrepareFile`, the handler atomically sets `fileTaken`, while
+Commit rejects that latch. Before Core, the sole file-request issuer,
+`newServiceFileRequest`, snapshots the retained transaction, proves its exact
+next binding index, resolves the
+same `file_tmpfs` manifest binding, and binds its metadata and stored Prepare
+correlation into `NewCoreFileRequest`. The retained packet body supplies the
+independently observed length and digest. In one synchronous Borrow callback,
+the exact state-owned `CorePreparation.StageFile` must succeed before the exact
+transaction `AcceptObservedFileObservation` accepts a declared-versus-observed
+`NewHelperPrepareFileObservation`. Only full success clears `fileTaken`; any
+post-take error or panic enters the reachable precommit cleanup owner.
+
+The matching authenticated `PacketTypePrepareCommit` arm takes that entry once.
+The sole `newServiceCommitRequest` drives its exact retained protocol
+transaction with the typed Commit body and solely calls `NewCoreCommitRequest`
+from the stored Prepare request/capabilities and transaction result. Only the
+stored `CorePreparation` receives it. The unique
+`newServicePreparedActivationCandidate` derives an ephemeral
+`servicePreparedActivationCandidate` only from that taken entry, authenticated
+Commit header, configured Runtime observation, issued Commit request, and
+successful Core result. It checks exact request/identity/revision/boot and
+generation provenance plus every result echo. `installPreparedActivation`
+takes those exact five values, invokes only that candidate issuer and, under
+`state.mu`, installs one `servicePreparedActivation` only when the one-use
+preparing entry still exists and no activation already exists, then clears the
+preparing owner. No state-owned candidate slot or caller-mintable shortcut
+exists. `servicePreparing` stores exact `beginTaken`, `fileTaken`,
+`commitTaken`, and `active` latches after its authority/Core owners. Candidate
+and activation retain the exact copy-safe manifest, binding count, prepared
+capability, and original Prepare cleanup capability; Renew cannot rewrite any
+of them. Aliases,
+addresses, returns, increments, alternate writers, function-value issuer
+aliases, and wrappers are rejected package-wide. The proof follows transitive
+Service-state aliases in methods and package free functions, plus aliased field
+pointers and package- or function-local named/alias spellings, nested pointer
+layers such as `**Service`, container wrappers, conversions, and type assertions
+whose underlying value is `*Service`, plus direct/named/asserted
+`*serviceState` owners and selectors extracting either owner from a container,
+including pointer-wrapped and copied containers and function-valued factories.
+Package-global Service/state owners seed the same provenance graph. Anonymous
+embedding and promoted selectors, instantiated generic fields, interface
+method results, each positional function result, and range-over-function yields
+retain the owner at the exact value position. Function-local activation types
+or issuer values that merely reuse package spellings remain unrelated; only the
+declaration-bound candidate and activation constructors receive authority.
+Lexical
+identity plus exact field/index/range roles prevent an inner same-spelled
+binding or unrelated sibling/map value from inheriting owner classification.
+The graph rejects state-owner escape
+through globals, helpers, returns, sends, containers, or conversions.
+
+The only state-owner functions in this prerequisite are the exact receive
+issuer, reservation/install, file take/finish, commit take, precommit
+`abortPreparing`,
+prepared install, postcommit revoke, Renew request/advance, and their exact
+handlers. Precommit failure atomically takes the owner, closes the transaction,
+and performs bounded `CorePreparation.Rollback` with the frozen cleanup-result
+matrix. Immediately before Core Commit is invoked, ownership switches to the
+postcommit path because a Core error or panic cannot prove absence of mutation.
+If that call errors/panics, candidate validation/install fails, or received-packet
+cleanup then fails, `revokeCommittedPreparation` uses the
+retained prepared/cleanup capabilities and exact complete observation to call
+Core Revoke, never Rollback. Transaction Close failure or panic is accumulated
+and cannot suppress that Core Revoke attempt. A complete result reaches absent;
+malformed,
+panic, stop-VM, or retry-required results reduce to the sanitized stop-VM path.
+This bounded prerequisite never immediately repeats Revoke: the later full
+cleanup episode alone owns the frozen Revoke-then-Inspect retry protocol.
+
+These are live Serve edges, not pasted or post-terminal statement sequences.
+The public `Serve(context.Context) (ServiceResult, error)` retains its exact
+context-first one-shot latch, then uses the exact request/receive loop and
+packet-type switch. Its four Prepare/Renew clauses assign the exact handler
+error and share the immediate error gate. This bounded composition admits no
+arbitrary extra clause: before another boundary is composed, the sole
+additional clause is the exact returned `PacketTypeExec` edge. A direct Core
+call, foreign request, or other packet type is invalid. The combined
+satisfiability proof carries that exact edge from the switch to the already-guarded Exec
+handler and its live private, stdin, and literal-nil zero-private branches. A
+Prepare-only switch, dead edge, ignored result, rebound packet/context, or extra
+receiver helper cannot substitute.
+Lexically visible named boolean constants participate in reachability, so a
+named `false` condition cannot make a textual branch authoritative; an
+assignment-form call after an unconditional return is also dead.
+The matching Begin and Commit handlers obtain packet/header/typed arm only from
+configured Transport, bootstrap only from configured Runtime, the exact
+`ServiceOperationPrepare` observation request only from that header, issued
+typed-arm revision, and bootstrap generations, the matching observation only
+from configured Runtime, and preparation only from configured Core's exact
+`BeginPrepare(ctx, authority.prepare)` result after its immediate error/typed-nil matrix.
+That exact stored owner alone receives the solely issued Commit request; its exact successful value
+alone reaches the installer. The candidate also requires
+`PacketTypePrepareCommit`. Dead helpers, foreign owners, globals, cross-packet
+headers, and rebound Prepare/Commit requests are rejected.
+
+The stored activation separates its immutable issuing Prepare correlation from
+its current revision. It also retains the current Runtime observation time,
+immutable Runtime hard horizon, current expiry, manifest/transaction digests,
+and the exact current `active.` proof ID needed for Renew correlation; the
+prepared and cleanup capabilities remain bound to the issuing Prepare. Initial expiry is
+strictly after observed time and no later than the hard horizon. The unique
+private `newServiceActiveProofID` implements the exact already-frozen label
+formula; no caller supplies that ID or its digest. A live Renew handler derives
+the exact `ServiceOperationRenew` observation request from the
+authenticated Renew header/arm and stored boot/helper generations. Exact
+`validateServiceRenewArm` rejects stale/untrusted correlation before Runtime.
+The
+configured Runtime observation must match all generations and the hard horizon,
+advance observed time, and bound expiry to
+`(observedUnixNano, hardExpiryUnixNano]`. The arm must be current revision plus
+one, exceed current expiry, and carry the exact digest of the current active
+proof. `newServiceRenewRequest` creates the sole exact `CoreRenewRequest`; only
+a nil return from configured `s.core.Renew(ctx, request)` allows
+`advancePreparedActivation` to revalidate the unchanged activation under
+`state.mu` and update exactly current revision, observation time, expiry, and
+replacement active-proof ID. No Renew path may write issuing correlation,
+prepared or cleanup capability, generations, boot nonce, hard horizon,
+manifest/binding count, or manifest and transaction identities.
+After Runtime is called for that prevalidated arm, a Runtime error/panic or
+malformed observation is a trusted dependency failure and revokes the active
+owner. Core Renew's mutation boundary begins before its call; Core error/panic,
+post-call state failure, or received-packet cleanup failure after success runs
+`revokeServicePreparedActivation`. That exact reducer uses the retained issuing
+Prepare request ID/identity, current activation revision/generations, and
+prepared/cleanup capabilities. It never substitutes the outer Renew request ID
+and never immediately repeats a retry-required Core Revoke. After a Core Renew
+error or panic, Service retains the old installed revision and uses it for the
+cleanup attempt; it neither guesses nor installs the attempted revision, and a
+cleanup mismatch becomes sanitized stop-VM. After nil Core success and state
+install, a later packet-cleanup failure uses the new current revision. Noncomplete cleanup
+conservatively becomes stop-VM pending the full cleanup FSM.
+
+The third prerequisite issues and installs only the authenticated first-seen
+Exec request and in-flight dispatch owner. `serviceExecCapabilities` contains
+the exact execution and cleanup capabilities; `serviceExecAuthority` contains,
+in order, the exact `CoreExecRequest`, claimed `ExecPlanCapability`, revision,
+helper Exec transaction, transaction correlation, and comparison bit. A
+fixed-array `serviceExecPlanSink` accepts one nonempty canonical plan no larger
+than `MaxHelperExecPlanBytes` and wipes its full capacity on every path.
+`newServiceExecBodyIdentity` copies the claimed plan once, binds its encoded
+length and SHA-256, decodes it, reconstructs the exact canonical
+`HelperExecBody` from the authenticated `ReceivedExec` arm, requires the
+encoded length to equal `packet.Header().BodyLength`, hashes those exact bytes,
+and wipes both temporary canonical buffers.
+
+The prerequisite resolves every qualifier from the declaration's own file:
+`sha256` is the standard `crypto/sha256`, `subtle` is the standard
+`crypto/subtle`, `sync` is the standard package behind `serviceState.mu`,
+`credentialmemory` is the repository's exact
+`internal/credentialmemory` package, and `credentialprotocol` is the exact
+guest-agent protocol package. This identity also covers the
+`ExecPlanCapability.CopyCanonicalTo` signature, the state mutex, and the Exec
+authority, body-identity, and plan-sink declarations. Import aliases for those
+exact paths are normalized through their lexical import object and are
+equivalent; lookalike packages, local shadows, or bindings inherited from
+another file are not.
+The `CopyCanonicalTo` check follows Go signature identity: it erases only
+parameter/result identifiers, preserving exact arity, order, variadic shape,
+import-bound types, and the error result. Its already-frozen implementation,
+single-claim provenance, and destroy behavior remain separate mandatory
+checks, so naming the sink cannot broaden the accepted data flow.
+
+`newServiceExecAuthority` accepts only an exact `PacketTypeExec` packet/arm and
+the immutable active prepared snapshot. It binds request ID, identity,
+revision, boot nonce, complete generations, safe Exec binding, private binding
+metadata, reconstructed body identity, and claimed plan. The sole
+`newServiceExecCapabilities` calls the private capability issuer for execution
+kind `3` and cleanup kind `4`; only this authority issuer calls
+`NewCoreExecRequest`. It then derives the exact helper transaction correlation
+and begins the arm's retained transaction seed. Failure or panic before
+transfer closes that seed and destroys the plan.
+
+The live handler immediately gates the authority error, then obtains the result
+of `installExecDispatch`. That installer requires
+`comparison == false`, locks `state.mu`, revalidates the current prepared
+revision and empty dispatch slot, and installs the exact request, plan,
+revision, transaction, correlation, false comparison bit, and false taken
+latch. Constructor/issuer references are declaration-bound and confined to
+these functions across every supported build context; globals, caller values,
+function values, wrappers, alternate constructors, dead calls, ignored errors,
+unlocked writes, field substitution, and alternate-build declarations are
+invalid. On installation failure, the sole panic-isolated
+`closeServiceExecAuthority` closes the transferred helper transaction and
+destroys the claimed plan before the installer error is returned; cleanup
+failure becomes the sanitized ownership error. This prerequisite deliberately
+cannot authorize comparison: it does
+not implement or claim the separate fixed 4,096-entry completion/result ledger
+or comparison-replay issuance.
+
 The sole state execution install is the exact result of the sole
 `Service.core.BeginExec` call after its canonical rejection gate, assigned once
 under `state.mu`. Before that gate, the result and any alias are confined to the
@@ -4112,7 +4450,8 @@ nil-error/non-nil-execution return validation through the canonical
 that exact result as the sole serviceState execution, then a directly returned
 Commit on that same proposal. For
 stdin it orders one exact proposal and that Service-owned execution's
-WriteStdin with the same scoped view, validates the exact `coreErr != nil`
+WriteStdin with the same scoped view and the authenticated received arm's exact
+offset/EOF flag, validates the exact `coreErr != nil`
 rejection, then directly returns Commit on that same proposal. Both callbacks
 invoke the exact same proposal's no-result Wipe as the statement immediately
 before a nonnil failure return; discarded Commit results and omitted or
@@ -4129,32 +4468,152 @@ The private CoreExecution is retained only after the canonical
 entire branch condition
 is the exact handler `comparison bool` parameter and the branch terminates by
 directly returning Commit in the same callback without Core or fallthrough.
-Every cancellation, denial, observation/body/
-Core/send error, invalid return, and recovered external panic wipes pending
-state and synchronously destroys the retained body and any still-owned claimed
-plan exactly once. An external panic first unwinds the Borrow callback; the
-immediately enclosing handler recovery then performs proposal/body/plan cleanup
-before any handler return or response. This is the only implementable ordering
-because the scoped callback forbids a nested `defer`, and the contract does not
-claim cleanup occurs before the panicking callback unwinds. The handlers use
-named result/error returns. Recovery deterministically selects
-`ServiceStopVMRequired`/`protocol_error` plus sanitized nonnil
-`ErrContractOwnership`; zero result/nil error is forbidden. Body `Destroy(ctx)`
-is bound and checked, and its nonnil error selects the same terminal reduction
-without skipping remaining cleanup. The reducer, disposition, close reason,
-and sanitized error identifiers cannot be shadowed or substituted in the
-handler. The outer recovery is installed before
-Borrow, captures the proposal only after its exact error gate, has one recovery
-Wipe, and owns one checked body Destroy plus, for private Exec, one exact
-private `corePlan.destroy()` call. That existing unexported method has no
-context argument or result; no public plan cleanup API is added. Missing,
-duplicate, discarded, disconnected, pre-gate, or callback-local cleanup is
-rejected. Source guards bind
-the two concrete Borrow-callback orders. They also bind this outer cleanup
-boundary;
-tests cover normal, comparison, failure, typed-nil, cancellation, panic, body
-destruction, and claimed-plan cleanup rather than accepting disconnected call
-markers.
+The observed-input handlers own pending proposal wipe and the received body,
+not the terminal exec ledger. Their one outer recovery first lets the Borrow
+callback unwind, wipes a pending proposal, and invokes the exact panic-isolated
+`destroyServiceObservedBody(ctx, body)` helper. That helper recovers a body
+Destroy panic and treats either panic or nonnil Destroy error as
+`ErrContractOwnership`. The handler returns its Borrow/cleanup outcome; it does
+not close the helper transaction, destroy the plan, cancel the retained
+CoreExecution, revoke the prepared activation, or mint the final Service
+result. A dispatcher with a nonnil handler outcome immediately returns
+`finishExecDispatch(ctx, handlerErr)`. A successful private handler issues the
+first stdin credit and enters stdin dispatch. A successful stdin handler reads
+the actual transaction snapshot: non-EOF sends the next exact credit and
+continues, while EOF stops stdin credit but never permits normal terminal
+reduction by itself.
+
+`dispatchStdin` is the bounded continuation coordinator. It has at most one
+authenticated Receive worker, at most one stdin worker, and at most one serial
+output worker. Its Receive owner routes either stdin `exec_stream` or
+normal-mode stdout/stderr `exec_credit` while Core is live, including output
+before stdin EOF, but never invokes blocking `WriteStdin` or `Next` inline. One
+stdin `WriteStdin` may overlap one output `Next`; `Next` is never parallel with another `Next`.
+At most one copy-safe credit from either output stream may be queued after its
+received metadata packet has been destroyed. Offset and EOF validation occur
+after the active worker publishes its ledger transition, so a causally next same-stream credit received after the prior output becomes visible remains
+valid even when the local Transport `Send` has not returned. A second queued
+credit is rejected. The exact Service state
+adds one `sendMu sync.Mutex`. Stdin-credit, output-stream, and response owners
+hold it across send-sequence reservation, packet construction, and configured
+Transport `Send`; none holds `state.mu` across construction or Send. Output
+headers bind the live state tuple without requiring the transient
+`dispatchTaken` latch, while responses still require the terminal take. The
+serial output worker likewise validates correlation, activation, and the
+retained execution without consulting that per-packet latch; the coordinator
+may legitimately hold it for the next authenticated continuation while the
+previously authorized output worker starts. After the revision take,
+each private/stdin/output-credit header must echo the installed request ID,
+identity digest, and boot nonce. Comparison mode rejects output credits and
+sends the completed replay response only after stdin EOF, with no Core call.
+The exact coordinator owner is one `context.CancelFunc`, three capacity-one
+result channels (`serviceExecReceiveResult`, stdin `serviceExecWorkResult`, and
+output `serviceExecWorkResult`), three pending latches, one queued-credit latch,
+and one `ReceivedExecCredit` plus `serviceExecDispatch` queued pair. The only
+worker/termination helpers are `startServiceExecReceive`,
+`receiveServiceExecContinuation`, `runServiceExecStdin`,
+`runServiceExecOutput`, `stopServiceExecCoordinator`, and
+`finishServiceExecCoordinator`. Each started worker recovers panic and sends
+exactly one result; termination cancels once and joins every true pending latch
+before the terminal reducer takes retained state. A joined nil-error Receive
+destroys its packet and converts even a previously nil terminal cause into a
+transition failure. Output-ledger EOF fields are read only after
+`outputPending` is false, using the result-channel handoff as their
+happens-before edge. A successful output result is valid while the overlapping
+stdin transaction proposal still reports `PendingPayload`; final completion,
+response construction, and terminal reduction additionally require
+`stdinPending == false`, after stdin commit and deferred received-body cleanup.
+Normal mode creates one output ledger from the installed execution/request/plan
+and exact stdout/stderr maxima. For each authenticated output credit, the
+coordinator validates kind/next offset and destroys the metadata packet before
+the serial output worker enters `drainExecOutput`, mints one bounded
+`CoreOutputRequest`, calls `GrantOutput`, and consumes exactly
+one `Next` output event. It correlates the execution, stream, offset, capacity,
+count, digest and full canonical owned body, independently hashes only the
+payload, then transfers that body to one authenticated output stream packet.
+An exact context precondition runs while the local ownership latch remains set.
+After that precondition passes, the latch is cleared immediately before the
+panic-capable packet-constructor call, whose frozen post-precondition contract
+consumes or destroys the body on every outcome, so nested recovery never
+destroys the transferred body twice.
+Each stream advances contiguously to one empty EOF; truncation is accepted only
+at its plan maximum. Only after stdin EOF and both output EOF records,
+`completeServiceExecOutput` makes one final `Next`, which must return the
+bodyless complete event. That event is the child-exit/reap boundary. Its input,
+output and transaction summaries must equal the transaction snapshot and the
+independently accumulated ledgers. Service clears the completed execution,
+completes the helper transaction, sends the exact accepted response, and only
+then permits closed/normal reduction. Any panic, credit/grant/event/body/send
+failure, early complete, missing/duplicate EOF, correlation drift, or response
+failure leaves the execution noncomplete and runs cancellation plus all other
+terminal cleanup. Every returned Core output body is either transferred once or
+destroyed with a checked result; Destroy failure is promoted to
+`ErrContractOwnership`. Output observation installs recovery before calling
+even `Len`, preserving the caller's cleanup latch, and response sending
+recovers packet-constructor or Transport panic before coordinator teardown.
+Stdin and plan maxima plus unique EOF events bound the
+loop, which never waits for stdin EOF before servicing ready output. Every
+terminal path cancels and joins all pending Receive/stdin/output workers,
+checked-destroys any packet returned by the joined Receive, clears the single
+queued copy-safe credit, and only then invokes `finishExecDispatch`; a worker
+cannot outlive the Serve result.
+
+The exact output digest sink retains only `hash.Hash`, the expected canonical
+length, and its one-write latch. Package-wide constructor confinement permits
+`NewCoreOutputRequest`, `newExecCreditPacket`, `newExecStreamPacket`, and
+`newResponsePacket` only in their exact drain/continuation/send owners; an
+unrelated call site cannot mint or transmit an alternate ledger edge.
+
+`finishExecDispatch` is the sole terminal owner reducer. In one exact mutex
+critical section it validates a live exec entry, copies the retained execution,
+request, plan, transaction, and activation, and clears execution/request/plan/
+revision/comparison while latching dispatch taken. It performs no external call
+while locked. After unlock it always attempts, in order,
+`closeServiceExecAuthority` (transaction Close plus claimed-plan destroy),
+`cancelServiceExecution` (panic-isolated Core cancellation with exact cleanup
+echo and complete/absent validation when execution is nonnil), and
+`revokeServicePreparedActivation` (retained activation cleanup). A prior cause
+or cleanup failure never short-circuits later attempts. Only nil cause and all
+three successful cleanup outcomes yield `ServiceClosed`/`normal`; every other
+case yields `ServiceStopVMRequired`/`protocol_error` plus sanitized
+`ErrContractOwnership`. The retained transaction may remain only as a terminal,
+non-dispatchable snapshot tombstone after it has been closed; no live authority
+remains.
+
+`continueExecDispatch` is the sole nonterminal handoff. It requires the same
+live transaction/correlation/revision, private completion, no pending proposal,
+no prior credit, no EOF, and matching comparison mode. It calls that
+transaction's unique `GrantStdinCredit`, revalidates the ledger under the
+Service mutex, reserves the send sequence, clears the take latch, constructs
+the exact authenticated credit packet through the unique issuer, and calls the
+configured Transport `Send`. Panic, drift, construction failure, or send
+failure terminal-reduces the installed owners.
+
+Continuation request issuance and Receive failure, wrong arm, failed take, and
+handler error/panic reduction converge on the reducer. Wrong-arm and failed-
+take packets are destroyed before reduction. The initial Exec wrong-arm and
+authority-error paths destroy the packet before returning; install failure
+closes the not-installed authority and destroys that packet. Landed metadata
+packet constructors already destroy their received body and return nil
+body/right fields; exact cleanup treats those nil fields as already clean while
+still destroying/closing every configured nonnil field once with panic/error
+reduction. Cleanup after ledger installation is checked and converges on the
+reducer on failure. The
+zero-private branch installs one named
+result recovery that always destroys its received packet and reduces panic or
+cleanup failure to stop-VM/ownership. Invalid arm/binding, Core error, and
+invalid Core return terminal-reduce. Valid comparison or Core success issues
+the first stdin credit and enters the same stdin loop; zero-private never
+directly destroys the plan. The comparison branch calls no Core. Successful
+normal completion requires stdin EOF, both output EOF records, the correlated
+complete event, transaction completion, and response send. Missing, duplicate,
+discarded, disconnected,
+pre-gate, callback-local, or short-circuit cleanup is rejected. Source guards
+bind both concrete Borrow-callback orders, every live dispatch exit, the
+zero-private result matrix, and the terminal cleanup order. Tests cover normal,
+comparison, failure, typed-nil, continuation failure, cancellation, panic,
+body destruction, and exactly-once plan/transaction/execution/activation
+cleanup rather than accepting disconnected call markers.
 
 `newServiceResult` is a package-wide unique private declaration with the exact
 landed `service_values.go` signature and body. It cannot be a variable, alias,
@@ -4169,7 +4628,7 @@ Darwin, FreeBSD, and Windows on amd64 with the repository's default non-cgo
 tags—and remains unique across all parsed tagged files. A platform-only issuer
 cannot stand in for a context where Service also builds.
 
-The eleven named Service behavioral tests are structural evidence in the exact
+The thirteen named Service behavioral tests are structural evidence in the exact
 `credentialhelper` package rather than declarations alone. Each unique exact
 `func TestX(t *testing.T)` has one
 unconditionally live `NewService` construction, invokes `Serve` on that exact
@@ -4177,7 +4636,10 @@ never-rebound returned Service without `go` or `defer`, and subsequently asserts
 live `Fatal`/`Fatalf`/`Error`/`Errorf` condition containing that exact
 fake-field selector; a same-named local constant is not evidence. The
 observable catalog is:
-plan destruction `planDestroyCalls`; constructor/one-shot
+plan destruction across success, invalid Core, panic, stdin failure, and
+multi-record output through actual plan state and `planDestroyCalls`; causal
+same-stream credit after peer-visible output; Receive error/panic convergence
+for preparing, prepared, and installed Exec; constructor/one-shot
 `dependencyCalls,ownedSnapshotEntries,serveCalls`; context precedence
 `dependencyCalls,serveCalls`; input take `takeCalls`; private lifecycle
 `beginExecCalls,commitCalls,bodyDestroyCalls,planDestroyCalls`; valid private
@@ -4209,8 +4671,14 @@ through addressing, return, send, closure, interface/container storage, helper
 argument, conversion, or method value before its exact direct Serve receiver
 use.
 
-The same direct-live topology governs every credited observable in all eleven
-tests. Pre-NewService setup is restricted to direct assignments and
+The same direct-live topology governs the original direct-Serve tests. The
+claimed-plan, causal-credit, and Receive-convergence tests instead use their
+exact table/channel/state-backed causal matrices. The comparison no-Core test
+constructs one real Service, one completed normal transaction, and the exact
+comparison transaction, directly invokes the private and stdin handlers with
+comparison true, replays the cached result, and asserts both Core counters
+remain zero; normal Serve cannot substitute for that comparison evidence.
+Pre-NewService setup is restricted to direct assignments and
 value/constant declarations with no call, function literal, or channel receive,
 apart from exact unshadowed predeclared `int(raw-integer-literal)` conversion.
 Only the matching `if err != nil { t.Fatal(err) }` constructor-error gate may
@@ -4323,17 +4791,39 @@ invalidates the observation, closing runtime-true but analyzer-unknown early
 exits. Pre-NewService setup is limited
 to direct assignments and value/constant declarations with no call, function
 literal, or channel-receive expression. Between the exact NewService assignment
-and Serve, only its matching captured-error gate
-`if err != nil { t.Fatal(err) }` may appear. Thus control flow before
+and Serve, its matching captured-error gate
+`if err != nil { t.Fatal(err) }` is required. Tests crediting `commitCalls` or
+`wipeCalls` then perform exactly one direct `transport.service = service`
+assignment. That exact Transport already feeds `ServiceOptions.Transport`; the
+test-only link permits read-only observation of the installed transaction and
+no other Service escape. Thus control flow before
 construction, between construction and Serve, and before evidence cannot turn
 the test into a vacuous pass. It is paired with the production AST proof that
 `snapshotServiceExtensionEntries` allocates a distinct slice, deep-clones
 descriptors, and preserves order and factory identity. It never requires or permits mutation or instrumentation
 of the caller-owned immutable `ExtensionRegistry`.
 
-The observable binds to its exact Go-checked `ServiceOptions` dependency field:
-Core owns `beginExecCalls,writeStdinCalls`; Transport owns
-`planDestroyCalls,takeCalls,commitCalls,bodyDestroyCalls,wipeCalls`; Extensions
+The observable binds to its exact Go-checked `ServiceOptions` dependency field
+and to the transition that actually causes it. Core owns
+`beginExecCalls,writeStdinCalls,planDestroyCalls`; Transport owns
+`takeCalls,commitCalls,bodyDestroyCalls`; `wipeCalls` is Transport-owned for a
+verified failed proposal transition and Core-owned for the recovered-panic
+cleanup path. Before the embedded exact `transportTestBody.Borrow`, the exact
+test body reads the real installed transaction from the bound Service under
+its mutex, retains that pointer for panic observation, snapshots it, and
+snapshots the exact Core counters. After Borrow returns it snapshots the same
+transaction again. `commitCalls` requires a nil Borrow result, the exact
+private-complete or stdin-record transition, and the matching one-call Core
+delta (or zero Core delta in comparison mode). Normal `wipeCalls` requires a
+nonnil result, a real nonterminal-to-terminal transition, and the matching
+one-call Core delta. The embedded callback still receives the actual retained
+region and is invoked exactly once. Exact Core revoke may increment
+`planDestroyCalls` only after reading the scenario's actual plan `destroyed`
+state, and may increment the panic `wipeCalls` only when the retained real
+transaction is terminal, the panic mode is exact, and the Core call occurred.
+Skipped callbacks, synthesized errors or snapshots, a foreign transaction,
+missing exact Service observer binding, constant Core delta or plan state, and
+unrelated counters do not satisfy the observable. Extensions
 is proven through the Service-owned `ownedSnapshotEntries` rule above; the five
 configured live fields may own their own
 `dependencyCalls`; and Transport or Runtime owns `serveCalls`. Recursive
