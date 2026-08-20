@@ -205,6 +205,36 @@ func TestL8D3AzureResponsesRouteRejectsMalformedRequestsBeforeSourceAccess(t *te
 	}
 }
 
+func TestL8D3AzureResponsesRouteContainsHeaderAccessorPanicsAndUnstableCounts(t *testing.T) {
+	handler, ticket, source := l8D3RequestValidationRoute(t)
+	request := l8D3ValidRouteRequest(t, ticket)
+	base := request.Headers.(*l8D3HeaderValues)
+	request.Headers = &l8D3AdversarialHeaderValues{l8D3HeaderValues: base, panicCopy: "content-type"}
+	if _, err := handler.Handle(context.Background(), request); !errors.Is(err, ErrRouteRequestRejected) {
+		t.Fatalf("content-type CopyValue panic error = %v, want sanitized rejection", err)
+	}
+	if source.Count() != 0 {
+		t.Fatalf("source reads after accessor panic = %d, want zero", source.Count())
+	}
+
+	metadata := &l8D3AdversarialHeaderValues{
+		l8D3HeaderValues: newL8D3HeaderValues(map[string][][]byte{"user-agent": {[]byte("pi/0.82.1")}}),
+		panicCopy:        "user-agent",
+	}
+	if value, err := copySafeHeaderValue(metadata, "user-agent", 64); !errors.Is(err, ErrRouteRequestRejected) || value != nil {
+		t.Fatalf("metadata CopyValue panic = (%q, %v), want sanitized all-or-error", value, err)
+	}
+
+	unstable := &l8D3AdversarialHeaderValues{
+		l8D3HeaderValues: newL8D3HeaderValues(map[string][][]byte{"content-type": {[]byte("application/json")}}),
+		countName:        "content-type",
+		counts:           []int{1, 2},
+	}
+	if value, err := copySafeHeaderValue(unstable, "content-type", 64); !errors.Is(err, ErrRouteRequestRejected) || value != nil {
+		t.Fatalf("unstable ValueCount copy = (%q, %v), want sanitized all-or-error", value, err)
+	}
+}
+
 func TestL8D3AzureResponsesRouteRejectsUnsafeDNSAndTLSBeforeSourceAccess(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -437,6 +467,31 @@ type l8D3ObservedUpstream struct {
 type l8D3HeaderValues struct {
 	names  []string
 	values map[string][][]byte
+}
+
+type l8D3AdversarialHeaderValues struct {
+	*l8D3HeaderValues
+	panicCopy string
+	countName string
+	counts    []int
+	countCall int
+}
+
+func (headers *l8D3AdversarialHeaderValues) ValueCount(name string) int {
+	if name == headers.countName && headers.countCall < len(headers.counts) {
+		count := headers.counts[headers.countCall]
+		headers.countCall++
+		return count
+	}
+	return headers.l8D3HeaderValues.ValueCount(name)
+}
+
+func (headers *l8D3AdversarialHeaderValues) CopyValue(name string, index int, destination []byte) (int, error) {
+	if name == headers.panicCopy {
+		copy(destination, []byte("raw-header-canary"))
+		panic("raw header panic api-key=canary")
+	}
+	return headers.l8D3HeaderValues.CopyValue(name, index, destination)
 }
 
 func newL8D3HeaderValues(values map[string][][]byte) *l8D3HeaderValues {
