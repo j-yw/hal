@@ -131,6 +131,35 @@ func TestL8D3TicketLeaseRenewalHardExpiryAndExactCorrelation(t *testing.T) {
 	}
 }
 
+func TestL8D3TicketRenewalUsesOneAtomicClockSample(t *testing.T) {
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	clockCalls := 0
+	store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{
+		now: func() time.Time {
+			clockCalls++
+			return now
+		},
+		entropy: bytes.NewReader(bytes.Repeat([]byte{0x24}, 64)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	activation := l8D3TicketActivation(t, now)
+	ticket, err := store.Issue(context.Background(), activation)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clockCalls = 0
+	if err := store.Renew(context.Background(), ticket, activation.Correlation); err != nil {
+		t.Fatalf("Renew() error: %v", err)
+	}
+	if clockCalls != 1 {
+		t.Fatalf("renewal clock samples = %d, want one atomic sample", clockCalls)
+	}
+}
+
 func TestL8D3TicketConcurrentAndTotalRequestLimits(t *testing.T) {
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
 	store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{
