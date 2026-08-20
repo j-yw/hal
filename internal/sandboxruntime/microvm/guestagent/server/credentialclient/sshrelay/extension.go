@@ -51,10 +51,12 @@ func (factory clientFactory) Open(ctx context.Context, request credentialclient.
 		return nil, ErrInvalidArgument
 	}
 	return &clientSession{
-		relay:       factory.relay,
-		lifetimeCtx: lifetimeCtx,
-		cancel:      cancel,
-		pumps:       make(map[*clientPump]struct{}),
+		relay:            factory.relay,
+		lifetimeCtx:      lifetimeCtx,
+		cancel:           cancel,
+		pumps:            make(map[*clientPump]struct{}),
+		drainStarted:     make(chan struct{}),
+		ownershipTimeout: clientRelayCleanupTimeout,
 	}, nil
 }
 
@@ -64,14 +66,16 @@ type clientSession struct {
 	lifetimeCtx context.Context
 	cancel      context.CancelFunc
 
-	handleMu sync.Mutex
-	closeMu  sync.Mutex
-	mu       sync.Mutex
-	pumps    map[*clientPump]struct{}
-	retained []RelayConnection
-	closing  bool
-	closed   bool
-	fatal    bool
+	handleMu         sync.Mutex
+	closeMu          sync.Mutex
+	mu               sync.Mutex
+	pumps            map[*clientPump]struct{}
+	retained         []RelayConnection
+	drainStarted     chan struct{}
+	ownershipTimeout time.Duration
+	closing          bool
+	closed           bool
+	fatal            bool
 }
 
 func (session *clientSession) Handle(ctx context.Context, packet credentialclient.ExtensionPacket) error {
@@ -124,20 +128,28 @@ func (session *clientSession) handleAccepted(ctx context.Context, accepted accep
 	}
 
 	pumpCtx, pumpCancel := context.WithCancel(session.lifetimeCtx)
+	ownershipTimeout := session.ownershipTimeout
+	if ownershipTimeout <= 0 || ownershipTimeout > clientRelayCleanupTimeout {
+		ownershipTimeout = clientRelayCleanupTimeout
+	}
+	ownershipCtx, ownershipCancel := context.WithTimeout(context.Background(), ownershipTimeout)
 	pump := &clientPump{
-		session:  session,
-		accepted: accepted,
-		guest:    snapshot.connection,
-		relay:    relayConnection,
-		ctx:      pumpCtx,
-		cancel:   pumpCancel,
-		started:  make(chan struct{}),
-		done:     make(chan struct{}),
+		session:         session,
+		accepted:        accepted,
+		guest:           snapshot.connection,
+		relay:           relayConnection,
+		ctx:             pumpCtx,
+		cancel:          pumpCancel,
+		ownershipCtx:    ownershipCtx,
+		ownershipCancel: ownershipCancel,
+		started:         make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 	session.mu.Lock()
 	if session.closing || session.closed || !validContext(ctx) {
 		session.mu.Unlock()
 		pumpCancel()
+		ownershipCancel()
 		return errors.Join(ErrLifecycle, session.rejectRelayConnection(relayConnection))
 	}
 	session.pumps[pump] = struct{}{}
@@ -170,6 +182,7 @@ func (session *clientSession) Close(ctx context.Context) error {
 	if !session.closing {
 		session.closing = true
 		session.cancel()
+		close(session.drainStarted)
 	}
 	pumps := make([]*clientPump, 0, len(session.pumps))
 	for pump := range session.pumps {

@@ -3,6 +3,7 @@ package sshrelay
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"sync"
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
@@ -11,20 +12,25 @@ import (
 )
 
 type clientPump struct {
-	session  *clientSession
-	accepted acceptedPacket
-	guest    credentialclient.SSHConnectionCapability
-	relay    RelayConnection
-	ctx      context.Context
-	cancel   context.CancelFunc
-	started  chan struct{}
-	done     chan struct{}
+	session         *clientSession
+	accepted        acceptedPacket
+	guest           credentialclient.SSHConnectionCapability
+	relay           RelayConnection
+	ctx             context.Context
+	cancel          context.CancelFunc
+	ownershipCtx    context.Context
+	ownershipCancel context.CancelFunc
+	started         chan struct{}
+	done            chan struct{}
 }
 
 func (pump *clientPump) run() {
 	close(pump.started)
-	if safeWaitTransferred(pump.ctx, pump.accepted) != nil {
-		pump.cleanup(false, false)
+	waitErr := safeWaitTransferred(pump.ownershipCtx, pump.accepted)
+	ownershipTimedOut := pump.ownershipCtx.Err() != nil
+	pump.ownershipCancel()
+	if waitErr != nil {
+		pump.cleanup(false, ownershipTimedOut || errors.Is(waitErr, ErrDependency))
 		return
 	}
 	if pump.ctx.Err() != nil {
