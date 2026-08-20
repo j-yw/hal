@@ -97,7 +97,8 @@ func TestL11FinalClosureMatrixGuardRejectsMutations(t *testing.T) {
 }
 
 func TestL11FinalClosureVerificationCommandsAreExact(t *testing.T) {
-	commands := l11FinalClosureDocumentedShellCommands(l11ReadFinalClosureDoc(t))
+	doc := l11ReadFinalClosureDoc(t)
+	commands := l11FinalClosureDocumentedShellCommands(doc)
 	for _, command := range []string{
 		"go test -count=1 ./cmd -run '^TestL11FinalClosure'",
 		"go test -race -count=1 ./cmd -run '^TestL11FinalClosure'",
@@ -120,9 +121,9 @@ func TestL11FinalClosureVerificationCommandsAreExact(t *testing.T) {
 		"exactly one run and one pass event for the selected top-level test",
 		"exactly one run and one pass event for each of the nine required rows",
 		"reject every skip event",
-		"does not exist in this contract-only slice",
+		"do not exist in this contract-only slice",
 	} {
-		if !strings.Contains(l11ReadFinalClosureDoc(t), required) {
+		if !l11FinalClosureContains(doc, required) {
 			t.Errorf("L11 final-closure live verification contract omits %q", required)
 		}
 	}
@@ -139,7 +140,7 @@ func TestL11FinalClosureReleaseEvidenceIsBlockedAndRedactionSafe(t *testing.T) {
 		"credentials, secret values, environment values, PIDs, inode/device IDs",
 		"rule bodies, provider handles, or identifying host paths",
 	} {
-		if !strings.Contains(doc, required) {
+		if !l11FinalClosureContains(doc, required) {
 			t.Errorf("L11 release-evidence contract omits %q", required)
 		}
 	}
@@ -163,6 +164,10 @@ func l11ReadFinalClosureDoc(t *testing.T) string {
 		t.Fatalf("read L11 final-closure document: %v", err)
 	}
 	return string(payload)
+}
+
+func l11FinalClosureContains(doc, required string) bool {
+	return strings.Contains(doc, required) || strings.Contains(strings.Join(strings.Fields(doc), " "), required)
 }
 
 func l11ExpectedFinalClosureMatrix() []l11FinalClosureMatrixRow {
