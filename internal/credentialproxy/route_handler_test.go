@@ -256,6 +256,118 @@ func TestL8D3AzureResponsesRouteRejectsUnsafeDNSAndTLSBeforeSourceAccess(t *test
 	}
 }
 
+func TestL8D3AzureResponsesRouteCloseClearsOwnedTicketAndLiveSources(t *testing.T) {
+	handler, ticket, _ := l8D3RequestValidationRoute(t)
+	store := handler.state.config.TicketStore
+	digest, err := store.digestJobTicket(context.Background(), ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := handler.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if err := handler.Close(context.Background()); err != nil {
+		t.Fatalf("idempotent Close() error: %v", err)
+	}
+	handler.state.mu.Lock()
+	routeSourceRetained := handler.state.config.Source != nil
+	routeTicketRetained := handler.state.ticket != nil
+	routeStoreRetained := handler.state.config.TicketStore != nil
+	routeProofRetained := handler.state.config.NetworkProof != nil
+	handler.state.mu.Unlock()
+	store.state.mu.Lock()
+	entry := store.state.entries[digest]
+	storeSourceRetained := entry != nil && entry.source != nil
+	store.state.mu.Unlock()
+	if routeSourceRetained || routeTicketRetained || routeStoreRetained || routeProofRetained || storeSourceRetained {
+		t.Fatalf("closed route retained live capabilities: routeSource=%t routeTicket=%t routeStore=%t routeProof=%t storeSource=%t",
+			routeSourceRetained, routeTicketRetained, routeStoreRetained, routeProofRetained, storeSourceRetained)
+	}
+}
+
+func TestL8D3AzureResponsesRouteCloseFailureRetainsOnlyRetryTombstone(t *testing.T) {
+	handler, ticket, _ := l8D3RequestValidationRoute(t)
+	store := handler.state.config.TicketStore
+	correlation := handler.state.config.Correlation
+	lease := l8D3AcquireTicket(t, store, ticket, correlation)
+	closer := &l8D3TicketCloser{failures: 1}
+	if err := lease.OwnConnection(closer); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := handler.Close(context.Background()); !errors.Is(err, ErrRouteCleanup) {
+		t.Fatalf("first Close() error = %v, want cleanup incomplete", err)
+	}
+	handler.state.mu.Lock()
+	firstSourceRetained := handler.state.config.Source != nil
+	firstTicketRetained := handler.state.ticket != nil
+	firstStoreRetained := handler.state.config.TicketStore != nil
+	firstProofRetained := handler.state.config.NetworkProof != nil
+	firstResolverRetained := handler.state.resolver != nil
+	firstDialRetained := handler.state.dial != nil
+	firstRootsRetained := handler.state.roots != nil
+	handler.state.mu.Unlock()
+	if firstSourceRetained || !firstTicketRetained || !firstStoreRetained || firstProofRetained || firstResolverRetained || firstDialRetained || firstRootsRetained {
+		t.Fatalf("cleanup retry retained more than tombstone: source=%t ticket=%t store=%t proof=%t resolver=%t dial=%t roots=%t",
+			firstSourceRetained, firstTicketRetained, firstStoreRetained, firstProofRetained, firstResolverRetained, firstDialRetained, firstRootsRetained)
+	}
+	if err := handler.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close() error: %v", err)
+	}
+	if closer.Count() != 2 {
+		t.Fatalf("route cleanup close attempts = %d, want retained retry", closer.Count())
+	}
+	handler.state.mu.Lock()
+	finalTicketRetained := handler.state.ticket != nil
+	finalStoreRetained := handler.state.config.TicketStore != nil
+	handler.state.mu.Unlock()
+	if finalTicketRetained || finalStoreRetained {
+		t.Fatalf("completed route cleanup retained tombstone: ticket=%t store=%t", finalTicketRetained, finalStoreRetained)
+	}
+}
+
+func TestL8D3AzureResponsesRouteConcurrentCloseConvergesCleanup(t *testing.T) {
+	handler, ticket, _ := l8D3RequestValidationRoute(t)
+	store := handler.state.config.TicketStore
+	correlation := handler.state.config.Correlation
+	lease := l8D3AcquireTicket(t, store, ticket, correlation)
+	closer := &l8D3TicketCloser{failures: 1}
+	if err := lease.OwnConnection(closer); err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 16
+	errorsSeen := make(chan error, callers)
+	var group sync.WaitGroup
+	for index := 0; index < callers; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			errorsSeen <- handler.Close(context.Background())
+		}()
+	}
+	group.Wait()
+	close(errorsSeen)
+	for closeErr := range errorsSeen {
+		if closeErr != nil && !errors.Is(closeErr, ErrRouteCleanup) {
+			t.Errorf("concurrent Close() error = %v", closeErr)
+		}
+	}
+	if err := handler.Close(context.Background()); err != nil {
+		t.Fatalf("final Close() error: %v", err)
+	}
+	if closer.Count() != 2 {
+		t.Fatalf("concurrent route close attempts = %d, want one failure and one retry", closer.Count())
+	}
+	handler.state.mu.Lock()
+	retained := handler.state.ticket != nil || handler.state.config.Source != nil || handler.state.config.TicketStore != nil
+	handler.state.mu.Unlock()
+	if retained {
+		t.Fatal("concurrent route cleanup retained live capabilities")
+	}
+}
+
 func l8D3RequestValidationRoute(t *testing.T) (*AzureResponsesRoute, *JobTicket, *l8D3CountingSecretSource) {
 	t.Helper()
 	return l8D3RouteWithDeps(t, azureResponsesRouteDeps{

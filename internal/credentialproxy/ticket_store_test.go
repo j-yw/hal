@@ -267,6 +267,134 @@ func TestL8D3TicketExpiryClosesEveryInflightConnection(t *testing.T) {
 	}
 }
 
+func TestL8D3TicketRevokeClearsLiveSourceAndRetriesFailedReleaseConnection(t *testing.T) {
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{
+		now: func() time.Time { return now }, entropy: bytes.NewReader(bytes.Repeat([]byte{0x68}, 64)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	activation := l8D3TicketActivation(t, now)
+	ticket, err := store.Issue(context.Background(), activation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := store.digestJobTicket(context.Background(), ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := l8D3AcquireTicket(t, store, ticket, activation.Correlation)
+	closer := &l8D3TicketCloser{failures: 1}
+	if err := lease.OwnConnection(closer); err != nil {
+		t.Fatal(err)
+	}
+
+	lease.Release()
+	if closer.Count() != 1 {
+		t.Fatalf("release close attempts = %d, want 1", closer.Count())
+	}
+	if err := store.Revoke(context.Background(), ticket, activation.Correlation); err != nil {
+		t.Fatalf("Revoke() retry error: %v", err)
+	}
+	if closer.Count() != 2 {
+		t.Fatalf("close attempts after revoke = %d, want retained retry", closer.Count())
+	}
+	store.state.mu.Lock()
+	entry := store.state.entries[digest]
+	sourceRetained := entry != nil && entry.source != nil
+	store.state.mu.Unlock()
+	if sourceRetained {
+		t.Fatal("revoked ticket entry retained live secret source")
+	}
+}
+
+func TestL8D3TicketConcurrentRevokeConvergesFailedConnectionCleanup(t *testing.T) {
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{
+		now: func() time.Time { return now }, entropy: bytes.NewReader(bytes.Repeat([]byte{0x69}, 64)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	activation := l8D3TicketActivation(t, now)
+	ticket, err := store.Issue(context.Background(), activation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := l8D3AcquireTicket(t, store, ticket, activation.Correlation)
+	closer := &l8D3TicketCloser{failures: 1}
+	if err := lease.OwnConnection(closer); err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 16
+	errorsSeen := make(chan error, callers)
+	var group sync.WaitGroup
+	for index := 0; index < callers; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			errorsSeen <- store.Revoke(context.Background(), ticket, activation.Correlation)
+		}()
+	}
+	group.Wait()
+	close(errorsSeen)
+	succeeded := 0
+	for revokeErr := range errorsSeen {
+		if revokeErr == nil {
+			succeeded++
+		} else if !errors.Is(revokeErr, ErrTicketCleanup) {
+			t.Errorf("concurrent Revoke() error = %v", revokeErr)
+		}
+	}
+	if succeeded == 0 {
+		t.Fatal("concurrent revoke never completed cleanup")
+	}
+	if closer.Count() != 2 {
+		t.Fatalf("concurrent close attempts = %d, want one failure and one retry", closer.Count())
+	}
+}
+
+func TestL8D3TicketStoreCloseRetriesFailedOwnedConnection(t *testing.T) {
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{
+		now: func() time.Time { return now }, entropy: bytes.NewReader(bytes.Repeat([]byte{0x6a}, 64)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activation := l8D3TicketActivation(t, now)
+	ticket, err := store.Issue(context.Background(), activation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := l8D3AcquireTicket(t, store, ticket, activation.Correlation)
+	closer := &l8D3TicketCloser{failures: 1}
+	if err := lease.OwnConnection(closer); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Close(context.Background()); !errors.Is(err, ErrTicketCleanup) {
+		t.Fatalf("first Close() error = %v, want cleanup incomplete", err)
+	}
+	if err := store.Close(context.Background()); err != nil {
+		t.Fatalf("retry Close() error: %v", err)
+	}
+	if closer.Count() != 2 {
+		t.Fatalf("store close attempts = %d, want retained retry", closer.Count())
+	}
+	store.state.mu.Lock()
+	entries := len(store.state.entries)
+	key := store.state.key
+	store.state.mu.Unlock()
+	if entries != 0 || key != nil {
+		t.Fatalf("completed store cleanup retained entries/key: entries=%d key=%t", entries, key != nil)
+	}
+}
+
 func TestL8D3TicketConcurrentIssueSerializesEntropyAndProducesUniqueCapabilities(t *testing.T) {
 	const count = 64
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
@@ -375,14 +503,19 @@ func (l8D3LiveSecretSource) FillSecret(context.Context, sandboxruntime.JobCreden
 }
 
 type l8D3TicketCloser struct {
-	mu    sync.Mutex
-	count int
+	mu       sync.Mutex
+	count    int
+	failures int
 }
 
 func (closer *l8D3TicketCloser) Close() error {
 	closer.mu.Lock()
+	defer closer.mu.Unlock()
 	closer.count++
-	closer.mu.Unlock()
+	if closer.failures > 0 {
+		closer.failures--
+		return errors.New("raw close failure api-key=canary")
+	}
 	return nil
 }
 
