@@ -39,7 +39,7 @@ func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(
 	if !ok || fingerprint != lease.sourceFingerprint {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
-	if err := lease.confirmSourceLocked(); err != nil {
+	if err := confirmL8RetainedParentSourceIdentity(lease); err != nil {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
 
@@ -72,6 +72,9 @@ func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(
 	if err != nil {
 		return assetbuild.L8ParentL7Evidence{}, err
 	}
+	if err := validateL8RetainedParentAssetLocks(lease.sourceDescriptor, first); err != nil {
+		return assetbuild.L8ParentL7Evidence{}, err
+	}
 	var currentManifest assetbuild.DistributionManifest
 	if err := decodeL8RetainedParentJSON(metadata[distributionManifestName], &currentManifest); err != nil ||
 		assetbuild.ValidateDistributionManifest(currentManifest) != nil || !l8JSONEqual(currentManifest, manifest) {
@@ -92,7 +95,7 @@ func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(
 	if err := confirmL8RetainedParentMetadata(lease.root, metadata); err != nil {
 		return assetbuild.L8ParentL7Evidence{}, err
 	}
-	if err := lease.confirmSourceLocked(); err != nil {
+	if err := confirmL8RetainedParentSourceIdentity(lease); err != nil {
 		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
 	}
 
@@ -108,6 +111,56 @@ func (lease *VerifiedL7AssetLease) measureL8ParentEvidence(
 	}
 	result.EvidenceSHA256 = calculateL8ParentEvidenceSHA256(result)
 	return result, nil
+}
+
+func confirmL8RetainedParentSourceIdentity(lease *VerifiedL7AssetLease) error {
+	if lease == nil || lease.root == nil || lease.kernel == nil || lease.rootfs == nil {
+		return ErrFileUnavailable
+	}
+	currentRoot, _, err := openRequestedDistributionRoot(lease.rootDir)
+	if err != nil {
+		return ErrAssetLockMismatch
+	}
+	retainedRootInfo, retainedRootErr := lease.root.Stat()
+	currentRootInfo, currentRootErr := currentRoot.Stat()
+	rootCloseErr := currentRoot.Close()
+	if retainedRootErr != nil || currentRootErr != nil || rootCloseErr != nil || !os.SameFile(retainedRootInfo, currentRootInfo) {
+		return ErrAssetLockMismatch
+	}
+	for _, entry := range []struct {
+		name     string
+		retained *os.File
+	}{
+		{name: "vmlinux", retained: lease.kernel},
+		{name: "rootfs.ext4", retained: lease.rootfs},
+	} {
+		current, err := openDistributionFileNoFollow(lease.root, entry.name)
+		if err != nil {
+			return ErrAssetLockMismatch
+		}
+		retainedInfo, retainedErr := entry.retained.Stat()
+		currentInfo, currentErr := current.Stat()
+		closeErr := current.Close()
+		if retainedErr != nil || currentErr != nil || closeErr != nil || !os.SameFile(retainedInfo, currentInfo) {
+			return ErrAssetLockMismatch
+		}
+	}
+	return nil
+}
+
+func validateL8RetainedParentAssetLocks(
+	descriptor assets.LaunchDescriptor,
+	measured map[string]l8RetainedFileMeasurement,
+) error {
+	for _, role := range []assets.AssetRole{assets.AssetRoleKernel, assets.AssetRoleRootfs} {
+		asset, name, ok := l7LeaseAsset(descriptor, role)
+		measurement := measured[name]
+		if !ok || asset.Lock.Digest.Algorithm != assets.DigestAlgorithmSHA256 ||
+			asset.Lock.SizeBytes != measurement.size || asset.Lock.Digest.Value != measurement.digest {
+			return ErrAssetLockMismatch
+		}
+	}
+	return nil
 }
 
 func measureL8RetainedParentFiles(files map[string]*os.File) (map[string]l8RetainedFileMeasurement, error) {
