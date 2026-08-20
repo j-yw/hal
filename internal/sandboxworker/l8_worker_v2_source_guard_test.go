@@ -98,6 +98,8 @@ func TestL8WorkerV2SourceGuardAllowsOnlyRequestContextAtNeutralRuntimeBindingCal
 	}{
 		{name: "bind background context", old: "service.binder.Bind(ctx,", new: "service.binder.Bind(context.Background(),"},
 		{name: "preflight background context", old: "binding.Preflight(ctx)", new: "binding.Preflight(context.Background())"},
+		{name: "reassign request context before bind", old: "binding, err := service.binder.Bind(ctx,", new: "ctx = context.Background()\n\tbinding, err := service.binder.Bind(ctx,"},
+		{name: "reassign request context before preflight", old: "preflight, err := binding.Preflight(ctx)", new: "ctx = context.Background()\n\tpreflight, err := binding.Preflight(ctx)"},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			mutated := l8CloneWorkerV2GuardSources(sources)
@@ -7032,7 +7034,7 @@ func l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope l8WorkerV2Guard
 	}
 	receiver := l8WorkerV2ExactReceiverObject(function, "L8Service", true, info)
 	parameters := l8WorkerV2FunctionParameterObjects(function, info)
-	if receiver == nil || len(parameters) != 2 || parameters[0] == nil || l8WorkerV2ExpressionObject(call.Args[0], info) != parameters[0] {
+	if receiver == nil || len(parameters) != 2 || parameters[0] == nil || l8WorkerV2ExpressionObject(call.Args[0], info) != parameters[0] || !l8WorkerV2ObjectRemainsReadOnly(function, parameters[0], info) {
 		return false
 	}
 	called := l8WorkerV2CalledObject(call.Fun, info)
@@ -7052,6 +7054,39 @@ func l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope l8WorkerV2Guard
 	default:
 		return false
 	}
+}
+
+func l8WorkerV2ObjectRemainsReadOnly(function *ast.FuncDecl, object types.Object, info *types.Info) bool {
+	if function == nil || function.Body == nil || object == nil {
+		return false
+	}
+	readOnly := true
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if !readOnly {
+			return false
+		}
+		switch typed := node.(type) {
+		case *ast.AssignStmt:
+			for _, target := range typed.Lhs {
+				if l8WorkerV2ExpressionObject(target, info) == object {
+					readOnly = false
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			readOnly = l8WorkerV2ExpressionObject(typed.X, info) != object
+		case *ast.RangeStmt:
+			if typed.Tok == token.ASSIGN && (l8WorkerV2ExpressionObject(typed.Key, info) == object || l8WorkerV2ExpressionObject(typed.Value, info) == object) {
+				readOnly = false
+			}
+		case *ast.UnaryExpr:
+			if typed.Op == token.AND && l8WorkerV2ExpressionObject(typed.X, info) == object {
+				readOnly = false
+			}
+		}
+		return readOnly
+	})
+	return readOnly
 }
 
 func l8WorkerV2ObjectComesFromExactL8BindingCall(function *ast.FuncDecl, binding types.Object, scope l8WorkerV2GuardScope, info *types.Info) bool {
