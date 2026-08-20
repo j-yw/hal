@@ -112,7 +112,10 @@ func newRegistry(options RegistryOptions, source clock) (*Registry, error) {
 			return nil, ErrDependencyRequired
 		}
 		identity, policy, policyIdentity, err := inspectEntry(candidate)
-		if err != nil || identity.daemonGeneration != daemonGeneration {
+		if err != nil {
+			return nil, err
+		}
+		if identity.daemonGeneration != daemonGeneration {
 			return nil, ErrIdentityMismatch
 		}
 		if _, duplicate := entries[identity.entryID]; duplicate {

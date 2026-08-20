@@ -6,6 +6,8 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 )
 
+const maxLivePolicyRules = credentialprotocol.SSHAgentMaxIdentities * 2
+
 type livePolicy struct {
 	liveValue
 	identity PolicyIdentity
@@ -20,7 +22,7 @@ type livePolicyRule struct {
 
 // NewLivePolicy validates and freezes one nonempty host-admin allowlist.
 func NewLivePolicy(identity PolicyIdentity, rules []PolicyRule) (LivePolicy, error) {
-	if !validPolicyIdentity(identity) || len(rules) == 0 {
+	if !validPolicyIdentity(identity) || len(rules) == 0 || len(rules) > maxLivePolicyRules {
 		return nil, ErrPolicyInvalid
 	}
 	frozen := make([]livePolicyRule, 0, len(rules)*2)

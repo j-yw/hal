@@ -48,6 +48,14 @@ type redEntry struct {
 	newAgent func() *redAgentConnection
 }
 
+type invalidLivePolicy struct{ identity PolicyIdentity }
+
+func (policy *invalidLivePolicy) Identity() PolicyIdentity { return policy.identity }
+func (*invalidLivePolicy) FilterIdentities([]credentialprotocol.SSHAgentIdentity) ([]credentialprotocol.SSHAgentIdentity, error) {
+	return nil, nil
+}
+func (*invalidLivePolicy) AuthorizeSign(*credentialprotocol.SSHAgentSignRequest) error { return nil }
+
 func (entry *redEntry) Identity() ConfigIdentity { return entry.identity }
 func (entry *redEntry) Policy() LivePolicy       { return entry.policy }
 func (entry *redEntry) Open(context.Context) (AgentConnection, error) {
@@ -122,6 +130,11 @@ func TestRegistryRejectsInvalidFrozenConfiguration(t *testing.T) {
 	config := mustConfigIdentity(t, "entry-a", "daemon-a", "entry-generation-a", 1)
 	policy := mustPolicy(t, "policy-a", 1)
 	entry := &redEntry{identity: config, policy: policy}
+	policyIdentity, err := NewPolicyIdentity("policy-b", 1)
+	if err != nil {
+		t.Fatalf("NewPolicyIdentity(): %v", err)
+	}
+	invalidPolicyEntry := &redEntry{identity: config, policy: &invalidLivePolicy{identity: policyIdentity}}
 	typedNil := (*redEntry)(nil)
 
 	tests := []struct {
@@ -132,6 +145,7 @@ func TestRegistryRejectsInvalidFrozenConfiguration(t *testing.T) {
 		{name: "invalid daemon", options: RegistryOptions{DaemonGeneration: "not safe", Entries: []LiveHostAgentEntry{entry}}, want: ErrInvalidArgument},
 		{name: "generation mismatch", options: RegistryOptions{DaemonGeneration: "daemon-b", Entries: []LiveHostAgentEntry{entry}}, want: ErrIdentityMismatch},
 		{name: "typed nil", options: RegistryOptions{DaemonGeneration: "daemon-a", Entries: []LiveHostAgentEntry{typedNil}}, want: ErrDependencyRequired},
+		{name: "unissued empty policy", options: RegistryOptions{DaemonGeneration: "daemon-a", Entries: []LiveHostAgentEntry{invalidPolicyEntry}}, want: ErrPolicyInvalid},
 		{name: "duplicate entry", options: RegistryOptions{DaemonGeneration: "daemon-a", Entries: []LiveHostAgentEntry{entry, entry}}, want: ErrDuplicateEntry},
 	}
 	for _, test := range tests {
