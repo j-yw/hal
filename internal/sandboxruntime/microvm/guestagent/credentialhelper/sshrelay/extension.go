@@ -52,6 +52,7 @@ func (helperFactory) Open(ctx context.Context, request credentialhelper.Extensio
 }
 
 type helperSession struct {
+	helperLiveValue
 	host        credentialhelper.ExtensionHost
 	lifetimeCtx context.Context
 	cancel      context.CancelFunc
