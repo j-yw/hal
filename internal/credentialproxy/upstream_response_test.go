@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestL8D3AzureResponsesRejectsMalformedJSONEncodingAndEventStreamFraming(t *testing.T) {
@@ -89,6 +91,57 @@ func TestL8D3AzureResponsesAcceptsExactJSONAndEventStreamWithoutChangingBody(t *
 	}
 }
 
+func TestL8D3AzureResponsesOverlimitResponseClosesWithoutBodyDrain(t *testing.T) {
+	definition := l8D3AzureResponsesDefinition(t)
+	definition.limits.MaxResponseBodyBytes = 8
+	tests := []struct {
+		name          string
+		wire          []byte
+		wantBodyReads int
+	}{
+		{
+			name: "declared fixed length",
+			wire: []byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n"),
+		},
+		{
+			name:          "chunked max plus one",
+			wire:          []byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\na\r\n123456789"),
+			wantBodyReads: 12,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connection := newL8D3BlockingResponseConn(tt.wire)
+			done := make(chan error, 1)
+			go func() {
+				response, err := readAzureResponsesResponse(connection, definition)
+				if response.Body != nil {
+					_ = response.Body.Close()
+				}
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("overlimit response was accepted")
+				}
+			case <-time.After(200 * time.Millisecond):
+				_ = connection.Close()
+				<-done
+				t.Fatal("overlimit response blocked while draining beyond bound")
+			}
+			if !connection.Closed() {
+				t.Fatal("rejected response did not close owned connection")
+			}
+			headerEnd := bytes.Index(tt.wire, []byte("\r\n\r\n")) + 4
+			bodyReads := connection.ReadCount() - headerEnd
+			if bodyReads != tt.wantBodyReads {
+				t.Fatalf("body wire bytes read = %d, want %d", bodyReads, tt.wantBodyReads)
+			}
+		})
+	}
+}
+
 type httpResponseSpec struct {
 	contentType string
 	extra       string
@@ -129,3 +182,57 @@ func l8D3AzureResponsesDefinition(t *testing.T) ServiceDefinition {
 	}
 	return definition
 }
+
+type l8D3BlockingResponseConn struct {
+	mu        sync.Mutex
+	wire      []byte
+	offset    int
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newL8D3BlockingResponseConn(wire []byte) *l8D3BlockingResponseConn {
+	return &l8D3BlockingResponseConn{wire: append([]byte(nil), wire...), closed: make(chan struct{})}
+}
+
+func (connection *l8D3BlockingResponseConn) Read(destination []byte) (int, error) {
+	connection.mu.Lock()
+	if connection.offset < len(connection.wire) {
+		count := copy(destination, connection.wire[connection.offset:])
+		connection.offset += count
+		connection.mu.Unlock()
+		return count, nil
+	}
+	connection.mu.Unlock()
+	<-connection.closed
+	return 0, io.EOF
+}
+
+func (*l8D3BlockingResponseConn) Write(body []byte) (int, error) { return len(body), nil }
+func (connection *l8D3BlockingResponseConn) Close() error {
+	connection.closeOnce.Do(func() { close(connection.closed) })
+	return nil
+}
+func (*l8D3BlockingResponseConn) LocalAddr() net.Addr              { return l8D3ResponseAddr("local") }
+func (*l8D3BlockingResponseConn) RemoteAddr() net.Addr             { return l8D3ResponseAddr("remote") }
+func (*l8D3BlockingResponseConn) SetDeadline(time.Time) error      { return nil }
+func (*l8D3BlockingResponseConn) SetReadDeadline(time.Time) error  { return nil }
+func (*l8D3BlockingResponseConn) SetWriteDeadline(time.Time) error { return nil }
+func (connection *l8D3BlockingResponseConn) ReadCount() int {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	return connection.offset
+}
+func (connection *l8D3BlockingResponseConn) Closed() bool {
+	select {
+	case <-connection.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+type l8D3ResponseAddr string
+
+func (address l8D3ResponseAddr) Network() string { return "tcp" }
+func (address l8D3ResponseAddr) String() string  { return string(address) }
