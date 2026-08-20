@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/applicationroute"
@@ -171,6 +172,38 @@ func TestL8D3PolicyProxyApplicationRouteCleanupRetriesBeforeStopped(t *testing.T
 	}
 	if route.CloseCount() != 2 {
 		t.Fatalf("route close attempts = %d, want 2", route.CloseCount())
+	}
+}
+
+func TestL8D3PolicyProxyExactStopRetriesRouteCleanupAfterUnexpectedListenerLoss(t *testing.T) {
+	route := &l8D3PolicyProxyRoute{closeFailures: 1}
+	adapter := newL8D3PolicyProxyAdapterUnstarted(t, route, nil)
+	request := l8D3LifecycleRequest()
+	if _, err := adapter.StartProxyListener(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, ok := adapter.LiveEndpoint()
+	if !ok {
+		t.Fatal("live endpoint unavailable")
+	}
+	adapter.mu.Lock()
+	listener := adapter.listener
+	adapter.mu.Unlock()
+	if listener == nil || listener.Close() != nil {
+		t.Fatal("failed to inject listener loss")
+	}
+	select {
+	case <-endpoint.Loss():
+	case <-time.After(time.Second):
+		t.Fatal("listener loss was not reported")
+	}
+
+	metadata, err := adapter.StopLiveEndpoint(context.Background(), endpoint, request)
+	if err != nil || metadata.Status != "stopped" {
+		t.Fatalf("exact cleanup retry = (%#v, %v), want stopped", metadata, err)
+	}
+	if route.CloseCount() != 2 {
+		t.Fatalf("route close attempts = %d, want unexpected-loss attempt plus exact retry", route.CloseCount())
 	}
 }
 
