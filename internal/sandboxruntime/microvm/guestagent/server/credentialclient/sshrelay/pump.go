@@ -142,7 +142,7 @@ func (pump *clientPump) writeResponse(response *credentialmemory.LockedMapping) 
 
 func (pump *clientPump) cleanup(transferred, fatal bool) {
 	pump.cancel()
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), clientRelayCleanupTimeout)
+	cleanupCtx, cancel := pump.session.pumpCleanupContext()
 	defer cancel()
 	if transferred {
 		if safeGuestShutdown(cleanupCtx, pump.guest, credentialclient.SSHShutdownBoth) != nil {

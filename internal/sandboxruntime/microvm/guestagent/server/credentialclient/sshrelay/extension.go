@@ -50,10 +50,13 @@ func (factory clientFactory) Open(ctx context.Context, request credentialclient.
 		cancel()
 		return nil, ErrInvalidArgument
 	}
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	return &clientSession{
 		relay:            factory.relay,
 		lifetimeCtx:      lifetimeCtx,
 		cancel:           cancel,
+		cleanupCtx:       cleanupCtx,
+		cleanupCancel:    cleanupCancel,
 		pumps:            make(map[*clientPump]struct{}),
 		drainStarted:     make(chan struct{}),
 		ownershipTimeout: clientRelayCleanupTimeout,
@@ -62,9 +65,11 @@ func (factory clientFactory) Open(ctx context.Context, request credentialclient.
 
 type clientSession struct {
 	liveValue
-	relay       Relay
-	lifetimeCtx context.Context
-	cancel      context.CancelFunc
+	relay         Relay
+	lifetimeCtx   context.Context
+	cancel        context.CancelFunc
+	cleanupCtx    context.Context
+	cleanupCancel context.CancelFunc
 
 	handleMu         sync.Mutex
 	closeMu          sync.Mutex
@@ -72,6 +77,9 @@ type clientSession struct {
 	pumps            map[*clientPump]struct{}
 	retained         []RelayConnection
 	drainStarted     chan struct{}
+	drainCtx         context.Context
+	drainCancel      context.CancelFunc
+	drainCleanupStop func() bool
 	ownershipTimeout time.Duration
 	closing          bool
 	closed           bool
@@ -132,7 +140,7 @@ func (session *clientSession) handleAccepted(ctx context.Context, accepted accep
 	if ownershipTimeout <= 0 || ownershipTimeout > clientRelayCleanupTimeout {
 		ownershipTimeout = clientRelayCleanupTimeout
 	}
-	ownershipCtx, ownershipCancel := context.WithTimeout(context.Background(), ownershipTimeout)
+	ownershipCtx, ownershipCancel := context.WithTimeout(session.cleanupCtx, ownershipTimeout)
 	pump := &clientPump{
 		session:         session,
 		accepted:        accepted,
@@ -165,10 +173,20 @@ func (session *clientSession) handleAccepted(ctx context.Context, accepted accep
 }
 
 func (session *clientSession) Close(ctx context.Context) error {
-	done, _, contextValid := contextSnapshot(ctx)
+	_, _, contextValid := contextSnapshot(ctx)
 	if session == nil || !contextValid {
 		return ErrInvalidArgument
 	}
+	drainCtx, drainCancel, contextValid := newSharedDrainContext(ctx)
+	if !contextValid {
+		return ErrInvalidArgument
+	}
+	drainAccepted := false
+	defer func() {
+		if !drainAccepted {
+			drainCancel()
+		}
+	}()
 	session.closeMu.Lock()
 	defer session.closeMu.Unlock()
 
@@ -180,7 +198,14 @@ func (session *clientSession) Close(ctx context.Context) error {
 		return nil
 	}
 	if !session.closing {
+		drainAccepted = true
 		session.closing = true
+		session.drainCtx = drainCtx
+		session.drainCancel = drainCancel
+		session.drainCleanupStop = context.AfterFunc(drainCtx, session.cleanupCancel)
+		if drainCtx.Err() != nil {
+			session.cleanupCancel()
+		}
 		session.cancel()
 		close(session.drainStarted)
 	}
@@ -193,35 +218,64 @@ func (session *clientSession) Close(ctx context.Context) error {
 	session.handleMu.Unlock()
 
 	for _, pump := range pumps {
-		select {
-		case <-pump.done:
-		case <-done:
-			return ErrCleanupIncomplete
-		}
+		<-pump.done
 	}
 
 	session.mu.Lock()
 	retained := append([]RelayConnection(nil), session.retained...)
+	cleanupCtx := session.drainCtx
+	if cleanupCtx == nil {
+		cleanupCtx = session.cleanupCtx
+	}
 	session.mu.Unlock()
 	remaining := make([]RelayConnection, 0, len(retained))
 	for _, connection := range retained {
-		if safeRelayClose(ctx, connection) != nil {
+		if safeRelayClose(cleanupCtx, connection) != nil {
 			remaining = append(remaining, connection)
 		}
 	}
 	session.mu.Lock()
 	session.retained = remaining
-	_, canceled, contextStillValid := contextSnapshot(ctx)
-	complete := len(session.pumps) == 0 && len(session.retained) == 0 && !session.fatal && contextStillValid && !canceled
+	drainExpired := session.drainCtx == nil || session.drainCtx.Err() != nil
+	if drainExpired {
+		session.fatal = true
+	}
+	complete := len(session.pumps) == 0 && len(session.retained) == 0 && !session.fatal && !drainExpired
+	var cleanupStop func() bool
+	var acceptedDrainCancel context.CancelFunc
 	if complete {
 		session.closed = true
 		session.relay = nil
+		cleanupStop = session.drainCleanupStop
+		acceptedDrainCancel = session.drainCancel
+		session.drainCtx = nil
+		session.drainCancel = nil
+		session.drainCleanupStop = nil
 	}
 	session.mu.Unlock()
+	if complete {
+		if cleanupStop != nil {
+			cleanupStop()
+		}
+		if acceptedDrainCancel != nil {
+			acceptedDrainCancel()
+		}
+		session.cleanupCancel()
+	}
 	if !complete {
 		return ErrCleanupIncomplete
 	}
 	return nil
+}
+
+func (session *clientSession) pumpCleanupContext() (context.Context, context.CancelFunc) {
+	session.mu.Lock()
+	parent := session.drainCtx
+	if parent == nil {
+		parent = session.cleanupCtx
+	}
+	session.mu.Unlock()
+	return context.WithTimeout(parent, clientRelayCleanupTimeout)
 }
 
 func (session *clientSession) rejectRelayConnection(connection RelayConnection) error {
@@ -355,6 +409,43 @@ func contextSnapshot(ctx context.Context) (done <-chan struct{}, canceled bool, 
 	done = ctx.Done()
 	canceled = ctx.Err() != nil
 	return done, canceled, true
+}
+
+func newSharedDrainContext(parent context.Context) (drain context.Context, cancel context.CancelFunc, valid bool) {
+	if !configured(parent) {
+		return nil, nil, false
+	}
+	var derivedCancel context.CancelFunc
+	var propagationStop func() bool
+	defer func() {
+		if recover() == nil {
+			return
+		}
+		if propagationStop != nil {
+			propagationStop()
+		}
+		if derivedCancel != nil {
+			derivedCancel()
+		}
+		drain = nil
+		cancel = nil
+		valid = false
+	}()
+	deadline, hasDeadline := parent.Deadline()
+	if hasDeadline {
+		drain, derivedCancel = context.WithDeadline(context.Background(), deadline)
+	} else {
+		drain, derivedCancel = context.WithCancel(context.Background())
+	}
+	propagationStop = context.AfterFunc(parent, derivedCancel)
+	if parent.Err() != nil {
+		derivedCancel()
+	}
+	cancel = func() {
+		propagationStop()
+		derivedCancel()
+	}
+	return drain, cancel, true
 }
 
 var _ credentialclient.ExtensionFactory = clientFactory{}
