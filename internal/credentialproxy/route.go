@@ -259,16 +259,29 @@ func (route *AzureResponsesRoute) Close(ctx context.Context) error {
 	}
 	state.started = false
 	state.cleanupPending = true
-	config := state.config
+	store := state.config.TicketStore
+	correlation := state.config.Correlation
 	ticket := state.ticket
+	state.config = AzureResponsesRouteConfig{
+		TicketStore: store,
+		Correlation: correlation,
+	}
+	state.resolver = nil
+	state.dial = nil
+	state.roots = nil
 	state.mu.Unlock()
 
-	err := config.TicketStore.Revoke(ctx, ticket, config.Correlation)
+	err := store.Revoke(ctx, ticket, correlation)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if err != nil {
+		if state.closed && !state.cleanupPending {
+			return nil
+		}
 		return ErrRouteCleanup
 	}
+	state.ticket = nil
+	state.config = AzureResponsesRouteConfig{Correlation: correlation}
 	state.cleanupPending = false
 	state.closed = true
 	return nil

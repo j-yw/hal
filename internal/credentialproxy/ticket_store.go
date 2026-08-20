@@ -53,13 +53,16 @@ type TicketStore struct {
 type ticketStoreState struct {
 	mu               sync.Mutex
 	digestMu         sync.Mutex
+	cleanupMu        sync.Mutex
 	daemonGeneration string
 	key              *credentialmemory.LockedMapping
 	entries          map[[32]byte]*ticketStoreEntry
+	pendingCleanup   []io.Closer
 	now              func() time.Time
 	entropy          io.Reader
 	nextLeaseID      uint64
 	closed           bool
+	closeComplete    bool
 }
 
 type ticketStoreEntry struct {
@@ -72,6 +75,7 @@ type ticketStoreEntry struct {
 	concurrent  int
 	revoked     bool
 	leases      map[uint64]*TicketRequestLease
+	pending     []io.Closer
 }
 
 type TicketRequestLease struct {
@@ -173,12 +177,14 @@ func (store *TicketStore) Renew(ctx context.Context, ticket *JobTicket, correlat
 	if state == nil {
 		return ErrTicketStoreInvalid
 	}
+	state.cleanupMu.Lock()
+	defer state.cleanupMu.Unlock()
 	state.mu.Lock()
 	now := state.now().UTC()
 	entry, connections, err := state.validEntryLocked(digest, correlation, now)
 	if err != nil {
 		state.mu.Unlock()
-		_ = closeTicketConnections(connections)
+		state.closeAndRetainEntryConnections(entry, connections)
 		return err
 	}
 	renewed := now.Add(JobTicketLeaseDuration)
@@ -201,10 +207,12 @@ func (store *TicketStore) Validate(ctx context.Context, ticket *JobTicket, corre
 	if state == nil {
 		return ErrTicketStoreInvalid
 	}
+	state.cleanupMu.Lock()
+	defer state.cleanupMu.Unlock()
 	state.mu.Lock()
-	_, connections, err := state.validEntryLocked(digest, correlation, state.now().UTC())
+	entry, connections, err := state.validEntryLocked(digest, correlation, state.now().UTC())
 	state.mu.Unlock()
-	_ = closeTicketConnections(connections)
+	state.closeAndRetainEntryConnections(entry, connections)
 	return err
 }
 
@@ -217,6 +225,8 @@ func (store *TicketStore) Revoke(ctx context.Context, ticket *JobTicket, correla
 	if state == nil {
 		return ErrTicketStoreInvalid
 	}
+	state.cleanupMu.Lock()
+	defer state.cleanupMu.Unlock()
 	state.mu.Lock()
 	entry, ok := state.entries[digest]
 	if !ok {
@@ -227,10 +237,12 @@ func (store *TicketStore) Revoke(ctx context.Context, ticket *JobTicket, correla
 		state.mu.Unlock()
 		return ErrTicketCorrelation
 	}
-	entry.revoked = true
-	connections := entry.takeConnectionsLocked()
+	connections := entry.revokeLocked()
 	state.mu.Unlock()
-	return closeTicketConnections(connections)
+	if state.closeAndRetainEntryConnections(entry, connections) {
+		return ErrTicketCleanup
+	}
+	return nil
 }
 
 func (store *TicketStore) acquirePresentedTicket(ctx context.Context, presentation credentialmemory.BorrowedView, correlation TicketCorrelation) (*TicketRequestLease, error) {
@@ -246,11 +258,13 @@ func (store *TicketStore) acquirePresentedTicket(ctx context.Context, presentati
 	if state == nil {
 		return nil, ErrTicketStoreInvalid
 	}
+	state.cleanupMu.Lock()
+	defer state.cleanupMu.Unlock()
 	state.mu.Lock()
 	entry, connections, err := state.validEntryLocked(digest, correlation, state.now().UTC())
 	if err != nil {
 		state.mu.Unlock()
-		_ = closeTicketConnections(connections)
+		state.closeAndRetainEntryConnections(entry, connections)
 		return nil, err
 	}
 	if entry.concurrent >= JobTicketMaxConcurrentRequests {
@@ -281,11 +295,13 @@ func (lease *TicketRequestLease) Revalidate(ctx context.Context, correlation Tic
 	if state == nil {
 		return ErrTicketStoreInvalid
 	}
+	state.cleanupMu.Lock()
+	defer state.cleanupMu.Unlock()
 	state.mu.Lock()
 	entry, connections, err := state.validEntryLocked(lease.digest, correlation, state.now().UTC())
 	if err != nil {
 		state.mu.Unlock()
-		_ = closeTicketConnections(connections)
+		state.closeAndRetainEntryConnections(entry, connections)
 		return err
 	}
 	if current, ok := entry.leases[lease.id]; !ok || current != lease || lease.released {
@@ -306,7 +322,7 @@ func (lease *TicketRequestLease) FillSecret(ctx context.Context, correlation Tic
 	state := lease.store.sharedState()
 	state.mu.Lock()
 	entry, ok := state.entries[lease.digest]
-	if !ok || entry.revoked || lease.released || entry.leases[lease.id] != lease {
+	if !ok || entry.revoked || entry.source == nil || typedNil(entry.source) || lease.released || entry.leases[lease.id] != lease {
 		state.mu.Unlock()
 		return ErrTicketRevoked
 	}
@@ -327,11 +343,21 @@ func (lease *TicketRequestLease) OwnConnection(connection io.Closer) error {
 		_ = connection.Close()
 		return ErrTicketConnectionTransition
 	}
+	state.cleanupMu.Lock()
+	defer state.cleanupMu.Unlock()
 	state.mu.Lock()
 	entry, ok := state.entries[lease.digest]
 	if !ok || entry.revoked || lease.released || entry.leases[lease.id] != lease || lease.connection != nil {
 		state.mu.Unlock()
-		_ = connection.Close()
+		if failed := closeTicketConnectionsRetaining([]io.Closer{connection}); len(failed) != 0 {
+			state.mu.Lock()
+			if entry != nil {
+				entry.pending = append(entry.pending, failed...)
+			} else {
+				state.pendingCleanup = append(state.pendingCleanup, failed...)
+			}
+			state.mu.Unlock()
+		}
 		return ErrTicketConnectionTransition
 	}
 	lease.connection = connection
@@ -347,15 +373,22 @@ func (lease *TicketRequestLease) Release() {
 	if state == nil {
 		return
 	}
+	state.cleanupMu.Lock()
+	defer state.cleanupMu.Unlock()
 	state.mu.Lock()
-	if lease.released {
-		state.mu.Unlock()
-		return
+	entry := state.entries[lease.digest]
+	connections := make([]io.Closer, 0, 1)
+	if entry != nil {
+		connections = append(connections, entry.takePendingLocked()...)
 	}
-	lease.released = true
-	connection := lease.connection
-	lease.connection = nil
-	if entry, ok := state.entries[lease.digest]; ok {
+	if !lease.released {
+		lease.released = true
+		if lease.connection != nil {
+			connections = append(connections, lease.connection)
+			lease.connection = nil
+		}
+	}
+	if entry != nil {
 		if entry.leases[lease.id] == lease {
 			delete(entry.leases, lease.id)
 			if entry.concurrent > 0 {
@@ -364,9 +397,7 @@ func (lease *TicketRequestLease) Release() {
 		}
 	}
 	state.mu.Unlock()
-	if connection != nil {
-		_ = connection.Close()
-	}
+	state.closeAndRetainEntryConnections(entry, connections)
 }
 
 func (store *TicketStore) Close(ctx context.Context) error {
@@ -374,30 +405,42 @@ func (store *TicketStore) Close(ctx context.Context) error {
 	if state == nil || ctx == nil {
 		return ErrTicketStoreInvalid
 	}
+	state.cleanupMu.Lock()
+	defer state.cleanupMu.Unlock()
 	state.mu.Lock()
-	if state.closed {
+	if state.closeComplete {
 		state.mu.Unlock()
 		return nil
 	}
 	state.closed = true
-	connections := make([]io.Closer, 0)
+	connections := append([]io.Closer(nil), state.pendingCleanup...)
+	state.pendingCleanup = nil
 	for _, entry := range state.entries {
-		entry.revoked = true
-		connections = append(connections, entry.takeConnectionsLocked()...)
+		connections = append(connections, entry.revokeLocked()...)
 	}
-	state.entries = make(map[[32]byte]*ticketStoreEntry)
-	key := state.key
-	state.key = nil
 	state.mu.Unlock()
 
-	closeErr := closeTicketConnections(connections)
-	keyErr := error(nil)
-	if key != nil {
-		keyErr = key.Destroy()
-	}
-	if closeErr != nil || keyErr != nil {
+	failed := closeTicketConnectionsRetaining(connections)
+	if len(failed) != 0 {
+		state.mu.Lock()
+		state.pendingCleanup = append(state.pendingCleanup, failed...)
+		state.mu.Unlock()
 		return ErrTicketCleanup
 	}
+
+	state.mu.Lock()
+	state.entries = make(map[[32]byte]*ticketStoreEntry)
+	key := state.key
+	state.mu.Unlock()
+	if key != nil && key.Destroy() != nil {
+		return ErrTicketCleanup
+	}
+	state.mu.Lock()
+	if state.key == key {
+		state.key = nil
+	}
+	state.closeComplete = true
+	state.mu.Unlock()
 	return nil
 }
 
@@ -450,13 +493,28 @@ func (state *ticketStoreState) validEntryLocked(digest [32]byte, correlation Tic
 		return nil, nil, ErrTicketCorrelation
 	}
 	if entry.revoked {
-		return nil, nil, ErrTicketRevoked
+		return entry, entry.takePendingLocked(), ErrTicketRevoked
 	}
 	if !now.Before(entry.leaseExpiry) || !now.Before(entry.hardExpiry) {
-		entry.revoked = true
-		return nil, entry.takeConnectionsLocked(), ErrTicketExpired
+		return entry, entry.revokeLocked(), ErrTicketExpired
 	}
 	return entry, nil, nil
+}
+
+func (entry *ticketStoreEntry) revokeLocked() []io.Closer {
+	entry.revoked = true
+	entry.source = nil
+	connections := entry.takePendingLocked()
+	return append(connections, entry.takeConnectionsLocked()...)
+}
+
+func (entry *ticketStoreEntry) takePendingLocked() []io.Closer {
+	if entry == nil || len(entry.pending) == 0 {
+		return nil
+	}
+	connections := append([]io.Closer(nil), entry.pending...)
+	entry.pending = nil
+	return connections
 }
 
 func (entry *ticketStoreEntry) takeConnectionsLocked() []io.Closer {
@@ -530,17 +588,41 @@ func sameTicketCorrelationWithoutDigest(left, right TicketCorrelation) bool {
 		left.ListenerGeneration == right.ListenerGeneration
 }
 
-func closeTicketConnections(connections []io.Closer) error {
-	failed := false
+func (state *ticketStoreState) closeAndRetainEntryConnections(entry *ticketStoreEntry, connections []io.Closer) bool {
+	failed := closeTicketConnectionsRetaining(connections)
+	if len(failed) == 0 {
+		return false
+	}
+	state.mu.Lock()
+	if entry != nil {
+		entry.pending = append(entry.pending, failed...)
+	} else {
+		state.pendingCleanup = append(state.pendingCleanup, failed...)
+	}
+	state.mu.Unlock()
+	return true
+}
+
+func closeTicketConnectionsRetaining(connections []io.Closer) []io.Closer {
+	failed := make([]io.Closer, 0)
 	for _, connection := range connections {
-		if connection != nil && connection.Close() != nil {
-			failed = true
+		if connection != nil && closeTicketConnection(connection) != nil {
+			failed = append(failed, connection)
 		}
 	}
-	if failed {
-		return ErrTicketCleanup
+	return failed
+}
+
+func closeTicketConnection(connection io.Closer) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = ErrTicketCleanup
+		}
+	}()
+	if connection == nil {
+		return nil
 	}
-	return nil
+	return connection.Close()
 }
 
 func typedNil(value any) bool {
