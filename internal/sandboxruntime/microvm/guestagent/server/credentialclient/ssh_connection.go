@@ -120,17 +120,38 @@ func (packet SSHAcceptedPacket) Connection() SSHConnectionCapability { return pa
 // post-Handle ownership transfer or made that transfer impossible. Observation
 // never changes ownership and only a committed transfer returns success.
 func (packet SSHAcceptedPacket) WaitTransferred(ctx context.Context) error {
-	if packet.ownership == nil || !validSSHContext(ctx) {
+	if packet.ownership == nil {
 		return ErrExtensionPacketOwnership
 	}
 	ownership := packet.ownership
 	ownership.mu.Lock()
-	defer ownership.mu.Unlock()
-	if ownership.phase == sshConnectionClientOwned {
-		_ = waitSSHConnectionLocked(ctx, ownership, func() bool {
-			return ownership.phase != sshConnectionClientOwned
-		})
+	switch ownership.phase {
+	case sshConnectionTransferred:
+		ownership.mu.Unlock()
+		return nil
+	case sshConnectionClientOwned:
+		ownership.mu.Unlock()
+	default:
+		ownership.mu.Unlock()
+		return ErrExtensionPacketOwnership
 	}
+
+	contextValid := validSSHContext(ctx)
+	ownership.mu.Lock()
+	defer ownership.mu.Unlock()
+	switch ownership.phase {
+	case sshConnectionTransferred:
+		return nil
+	case sshConnectionClientOwned:
+		if !contextValid {
+			return ErrExtensionPacketOwnership
+		}
+	default:
+		return ErrExtensionPacketOwnership
+	}
+	_ = waitSSHConnectionLocked(ctx, ownership, func() bool {
+		return ownership.phase != sshConnectionClientOwned
+	})
 	if ownership.phase != sshConnectionTransferred {
 		return ErrExtensionPacketOwnership
 	}

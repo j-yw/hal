@@ -64,13 +64,15 @@ func newExtensionPacket(
 	packetType credentialprotocol.PacketType,
 	metadata extensionPacketMetadata,
 	capability SSHConnectionCapability,
-) (ExtensionPacket, error) {
+) (packet ExtensionPacket, resultErr error) {
 	capabilitySupplied := configuredDependency(capability)
 	capabilityRetained := false
 	if capabilitySupplied {
 		defer func() {
 			if !capabilityRetained {
-				closeRejectedSSHCapability(capability)
+				if cleanupErr := closeRejectedSSHCapability(capability); cleanupErr != nil {
+					resultErr = errors.Join(resultErr, cleanupErr)
+				}
 			}
 		}()
 	}
@@ -94,7 +96,7 @@ func newExtensionPacket(
 	if !valid || capabilityDigest == ([32]byte{}) || subtle.ConstantTimeCompare(capabilityDigest[:], metadata.capabilitySHA256[:]) != 1 {
 		return ExtensionPacket{}, ErrExtensionPacketMetadata
 	}
-	packet := ExtensionPacket{
+	packet = ExtensionPacket{
 		packetType: packetType,
 		metadata:   metadata,
 		ownership:  newSSHConnectionOwnership(capabilityDigest, capability),
@@ -171,11 +173,14 @@ func closeOwnedExtensionPacket(ctx context.Context, packet ExtensionPacket) erro
 	}
 }
 
-func closeRejectedSSHCapability(capability SSHConnectionCapability) {
+func closeRejectedSSHCapability(capability SSHConnectionCapability) error {
 	if !configuredDependency(capability) {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sshConnectionCleanupTimeout)
 	defer cancel()
-	_ = safeSSHIssuerClose(ctx, capability)
+	if err := safeSSHIssuerClose(ctx, capability); err != nil {
+		return ErrExtensionPacketOwnership
+	}
+	return nil
 }

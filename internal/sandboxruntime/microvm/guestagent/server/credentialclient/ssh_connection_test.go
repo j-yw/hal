@@ -169,6 +169,52 @@ func TestSSHAcceptedPacketWaitTransferredObservesOwnershipWithoutTransferringIt(
 	}
 }
 
+func TestSSHAcceptedPacketWaitTransferredReturnsLatchedTransferBeforeInspectingContext(t *testing.T) {
+	digest := [32]byte{0x50}
+	packet := mustSSHTestPacket(t, digest, &sshTestIssuer{digest: digest})
+	accepted, _ := packet.SSHAccepted()
+	if err := commitExtensionPacketOwnership(packet); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	var typedNil *sshTestContext
+	contextChecks := &atomic.Uint32{}
+	for name, ctx := range map[string]context.Context{
+		"nil":                   nil,
+		"typed nil":             typedNil,
+		"cancelled":             cancelled,
+		"must not be inspected": sshCloseValidationContext{checks: contextChecks},
+	} {
+		if err := accepted.WaitTransferred(ctx); err != nil {
+			t.Errorf("WaitTransferred(%s) error = %v, want latched transfer", name, err)
+		}
+	}
+	if got := contextChecks.Load(); got != 0 {
+		t.Fatalf("latched WaitTransferred inspected replacement context %d times", got)
+	}
+	if err := accepted.Connection().Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSSHAcceptedPacketWaitTransferredReturnsTerminalStateBeforeInspectingContext(t *testing.T) {
+	digest := [32]byte{0x53}
+	packet := mustSSHTestPacket(t, digest, &sshTestIssuer{digest: digest})
+	accepted, _ := packet.SSHAccepted()
+	if err := closeOwnedExtensionPacket(context.Background(), packet); err != nil {
+		t.Fatal(err)
+	}
+	contextChecks := &atomic.Uint32{}
+	if err := accepted.WaitTransferred(sshCloseValidationContext{checks: contextChecks}); !errors.Is(err, ErrExtensionPacketOwnership) {
+		t.Fatalf("WaitTransferred() error = %v, want terminal ownership rejection", err)
+	}
+	if got := contextChecks.Load(); got != 0 {
+		t.Fatalf("terminal WaitTransferred inspected replacement context %d times", got)
+	}
+}
+
 func TestSSHAcceptedPacketWaitTransferredWakesOnCancellationAndClientClose(t *testing.T) {
 	t.Parallel()
 
@@ -718,6 +764,108 @@ func TestSSHConnectionConstructorClosesEverySuppliedCapabilityOnEveryFailure(t *
 			}
 			if got := issuer.closes.Load(); got != 1 {
 				t.Fatalf("issuer Close calls = %d, want exactly 1", got)
+			}
+		})
+	}
+}
+
+func TestSSHConnectionConstructorJoinsSanitizedRejectedCapabilityCleanupFailure(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name       string
+		packetType credentialprotocol.PacketType
+		metadata   extensionPacketMetadata
+		issuer     *sshTestIssuer
+		primary    error
+	}{
+		{
+			name:       "unknown type and cleanup error",
+			packetType: 0,
+			metadata:   sshTestPacketMetadata([32]byte{0x54}),
+			issuer:     &sshTestIssuer{digest: [32]byte{0x54}, closeErr: errors.New("raw-cleanup-error-secret")},
+			primary:    credentialprotocol.ErrUnknownPacketType,
+		},
+		{
+			name:       "known core type and cleanup panic",
+			packetType: credentialprotocol.PacketTypeResponse,
+			metadata:   sshTestPacketMetadata([32]byte{0x55}),
+			issuer:     &sshTestIssuer{digest: [32]byte{0x55}, closePanic: true},
+			primary:    ErrExtensionPacketType,
+		},
+		{
+			name:       "invalid metadata and cleanup error",
+			packetType: credentialprotocol.PacketTypeSSHAcceptedFD,
+			metadata:   extensionPacketMetadata{},
+			issuer:     &sshTestIssuer{digest: [32]byte{0x56}, closeErr: errors.New("raw-cleanup-error-secret")},
+			primary:    ErrExtensionPacketMetadata,
+		},
+		{
+			name:       "digest mismatch and cleanup panic",
+			packetType: credentialprotocol.PacketTypeSSHAcceptedFD,
+			metadata:   sshTestPacketMetadata([32]byte{0x57}),
+			issuer:     &sshTestIssuer{digest: [32]byte{0x58}, closePanic: true},
+			primary:    ErrExtensionPacketMetadata,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			packet, err := newExtensionPacket(test.packetType, test.metadata, test.issuer)
+			if packet != (ExtensionPacket{}) || !errors.Is(err, test.primary) || !errors.Is(err, ErrExtensionPacketOwnership) {
+				t.Fatalf("newExtensionPacket() = (%v, %v), want zero and joined primary/cleanup errors", packet, err)
+			}
+			for _, secret := range []string{"raw-cleanup-error-secret", "raw-close-panic-secret"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("newExtensionPacket() error exposed cleanup cause: %v", err)
+				}
+			}
+			if got := test.issuer.closes.Load(); got != 1 {
+				t.Fatalf("issuer Close calls = %d, want exactly 1", got)
+			}
+		})
+	}
+}
+
+func TestSSHConnectionConstructorDoesNotClaimCleanupFailureAfterSuccessfulOrAbsentCleanup(t *testing.T) {
+	t.Parallel()
+
+	digest := [32]byte{0x59}
+	issuer := &sshTestIssuer{digest: digest}
+	packet, err := newExtensionPacket(0, sshTestPacketMetadata(digest), issuer)
+	if packet != (ExtensionPacket{}) || !errors.Is(err, credentialprotocol.ErrUnknownPacketType) || errors.Is(err, ErrExtensionPacketOwnership) {
+		t.Fatalf("successful cleanup result = (%v, %v), want primary error only", packet, err)
+	}
+	if got := issuer.closes.Load(); got != 1 {
+		t.Fatalf("issuer Close calls = %d, want exactly 1", got)
+	}
+
+	packet, err = newExtensionPacket(credentialprotocol.PacketTypeSSHAcceptedFD, sshTestPacketMetadata(digest), nil)
+	if packet != (ExtensionPacket{}) || !errors.Is(err, ErrExtensionRightRequired) || errors.Is(err, ErrExtensionPacketOwnership) {
+		t.Fatalf("absent capability result = (%v, %v), want right-required error only", packet, err)
+	}
+}
+
+func TestCloseRejectedSSHCapabilityReturnsOnlySanitizedCleanupResult(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *sshTestIssuer
+	for _, test := range []struct {
+		name    string
+		issuer  SSHConnectionCapability
+		wantErr bool
+	}{
+		{name: "absent"},
+		{name: "typed nil", issuer: typedNil},
+		{name: "success", issuer: &sshTestIssuer{digest: [32]byte{1}}},
+		{name: "error", issuer: &sshTestIssuer{digest: [32]byte{1}, closeErr: errors.New("raw-cleanup-error-secret")}, wantErr: true},
+		{name: "panic", issuer: &sshTestIssuer{digest: [32]byte{1}, closePanic: true}, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := closeRejectedSSHCapability(test.issuer)
+			if errors.Is(err, ErrExtensionPacketOwnership) != test.wantErr {
+				t.Fatalf("closeRejectedSSHCapability() error = %v, want ownership=%t", err, test.wantErr)
+			}
+			if err != nil && (strings.Contains(err.Error(), "raw-cleanup-error-secret") || strings.Contains(err.Error(), "raw-close-panic-secret")) {
+				t.Fatalf("closeRejectedSSHCapability() exposed cleanup cause: %v", err)
 			}
 		})
 	}
