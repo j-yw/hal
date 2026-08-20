@@ -56,11 +56,11 @@ func (ticket *JobTicket) CopyTo(destination []byte) (int, error) {
 	return JobTicketEncodedBytes, nil
 }
 
-func (*JobTicket) MarshalJSON() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
-func (*JobTicket) MarshalText() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
-func (*JobTicket) String() string               { return "credentialproxy.JobTicket{live}" }
-func (*JobTicket) GoString() string             { return "credentialproxy.JobTicket{live}" }
-func (*JobTicket) Format(state fmt.State, _ rune) {
+func (JobTicket) MarshalJSON() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (JobTicket) MarshalText() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (JobTicket) String() string               { return "credentialproxy.JobTicket{live}" }
+func (JobTicket) GoString() string             { return "credentialproxy.JobTicket{live}" }
+func (JobTicket) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("credentialproxy.JobTicket{live}"))
 }
 

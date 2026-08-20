@@ -49,6 +49,22 @@ type AzureResponsesRouteConfig struct {
 	NetworkProof   CredentialRouteNetworkProof
 }
 
+func (AzureResponsesRouteConfig) MarshalJSON() ([]byte, error) {
+	return nil, ErrLiveRouteNotSerializable
+}
+func (AzureResponsesRouteConfig) MarshalText() ([]byte, error) {
+	return nil, ErrLiveRouteNotSerializable
+}
+func (AzureResponsesRouteConfig) String() string {
+	return "credentialproxy.AzureResponsesRouteConfig{live}"
+}
+func (AzureResponsesRouteConfig) GoString() string {
+	return "credentialproxy.AzureResponsesRouteConfig{live}"
+}
+func (AzureResponsesRouteConfig) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("credentialproxy.AzureResponsesRouteConfig{live}"))
+}
+
 type azureResponsesRouteDeps struct {
 	resolver AzureResponsesResolver
 	dial     AzureResponsesDialer
@@ -280,11 +296,11 @@ func (route *AzureResponsesRoute) sharedState() *azureResponsesRouteState {
 	return route.state
 }
 
-func (*AzureResponsesRoute) MarshalJSON() ([]byte, error) { return nil, ErrLiveRouteNotSerializable }
-func (*AzureResponsesRoute) MarshalText() ([]byte, error) { return nil, ErrLiveRouteNotSerializable }
-func (*AzureResponsesRoute) String() string               { return "credentialproxy.AzureResponsesRoute{live}" }
-func (*AzureResponsesRoute) GoString() string             { return "credentialproxy.AzureResponsesRoute{live}" }
-func (*AzureResponsesRoute) Format(state fmt.State, _ rune) {
+func (AzureResponsesRoute) MarshalJSON() ([]byte, error) { return nil, ErrLiveRouteNotSerializable }
+func (AzureResponsesRoute) MarshalText() ([]byte, error) { return nil, ErrLiveRouteNotSerializable }
+func (AzureResponsesRoute) String() string               { return "credentialproxy.AzureResponsesRoute{live}" }
+func (AzureResponsesRoute) GoString() string             { return "credentialproxy.AzureResponsesRoute{live}" }
+func (AzureResponsesRoute) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("credentialproxy.AzureResponsesRoute{live}"))
 }
 

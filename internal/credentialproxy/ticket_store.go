@@ -38,6 +38,14 @@ type TicketActivation struct {
 	Source      sandboxruntime.LiveSecretSource
 }
 
+func (TicketActivation) MarshalJSON() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (TicketActivation) MarshalText() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (TicketActivation) String() string               { return "credentialproxy.TicketActivation{live}" }
+func (TicketActivation) GoString() string             { return "credentialproxy.TicketActivation{live}" }
+func (TicketActivation) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("credentialproxy.TicketActivation{live}"))
+}
+
 type TicketStore struct {
 	state *ticketStoreState
 }
@@ -554,18 +562,18 @@ func (store *TicketStore) sharedState() *ticketStoreState {
 	return store.state
 }
 
-func (*TicketStore) MarshalJSON() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
-func (*TicketStore) MarshalText() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
-func (*TicketStore) String() string               { return "credentialproxy.TicketStore{live}" }
-func (*TicketStore) GoString() string             { return "credentialproxy.TicketStore{live}" }
-func (*TicketStore) Format(state fmt.State, _ rune) {
+func (TicketStore) MarshalJSON() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (TicketStore) MarshalText() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (TicketStore) String() string               { return "credentialproxy.TicketStore{live}" }
+func (TicketStore) GoString() string             { return "credentialproxy.TicketStore{live}" }
+func (TicketStore) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("credentialproxy.TicketStore{live}"))
 }
 
-func (*TicketRequestLease) MarshalJSON() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
-func (*TicketRequestLease) MarshalText() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
-func (*TicketRequestLease) String() string               { return "credentialproxy.TicketRequestLease{live}" }
-func (*TicketRequestLease) GoString() string             { return "credentialproxy.TicketRequestLease{live}" }
-func (*TicketRequestLease) Format(state fmt.State, _ rune) {
+func (TicketRequestLease) MarshalJSON() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (TicketRequestLease) MarshalText() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (TicketRequestLease) String() string               { return "credentialproxy.TicketRequestLease{live}" }
+func (TicketRequestLease) GoString() string             { return "credentialproxy.TicketRequestLease{live}" }
+func (TicketRequestLease) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("credentialproxy.TicketRequestLease{live}"))
 }

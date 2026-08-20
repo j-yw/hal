@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -734,6 +735,22 @@ func (headers *applicationRequestHeaders) CopyValue(name string, index int, dest
 	}
 	copy(destination, values[index])
 	return len(values[index]), nil
+}
+
+func (applicationRequestHeaders) MarshalJSON() ([]byte, error) {
+	return nil, applicationroute.ErrLiveRouteStateNotSerializable
+}
+func (applicationRequestHeaders) MarshalText() ([]byte, error) {
+	return nil, applicationroute.ErrLiveRouteStateNotSerializable
+}
+func (applicationRequestHeaders) String() string {
+	return "policyproxy.applicationRequestHeaders{live}"
+}
+func (applicationRequestHeaders) GoString() string {
+	return "policyproxy.applicationRequestHeaders{live}"
+}
+func (applicationRequestHeaders) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("policyproxy.applicationRequestHeaders{live}"))
 }
 
 func applicationRequestHeaderBytes(request *http.Request) (int64, bool) {

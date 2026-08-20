@@ -36,6 +36,22 @@ type AzureResponsesPiInvocationConfig struct {
 	DirectoryProof       PiCodingAgentDirectoryProof
 }
 
+func (AzureResponsesPiInvocationConfig) MarshalJSON() ([]byte, error) {
+	return nil, ErrLivePiInvocationNotSerializable
+}
+func (AzureResponsesPiInvocationConfig) MarshalText() ([]byte, error) {
+	return nil, ErrLivePiInvocationNotSerializable
+}
+func (AzureResponsesPiInvocationConfig) String() string {
+	return "credentialproxy.AzureResponsesPiInvocationConfig{live}"
+}
+func (AzureResponsesPiInvocationConfig) GoString() string {
+	return "credentialproxy.AzureResponsesPiInvocationConfig{live}"
+}
+func (AzureResponsesPiInvocationConfig) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("credentialproxy.AzureResponsesPiInvocationConfig{live}"))
+}
+
 type AzureResponsesPiInvocation struct {
 	config    AzureResponsesPiInvocationConfig
 	arguments []string
@@ -152,18 +168,18 @@ func (sink *piEnvironmentValueSink) WriteCredential(value []byte) error {
 	return nil
 }
 
-func (*AzureResponsesPiInvocation) MarshalJSON() ([]byte, error) {
+func (AzureResponsesPiInvocation) MarshalJSON() ([]byte, error) {
 	return nil, ErrLivePiInvocationNotSerializable
 }
-func (*AzureResponsesPiInvocation) MarshalText() ([]byte, error) {
+func (AzureResponsesPiInvocation) MarshalText() ([]byte, error) {
 	return nil, ErrLivePiInvocationNotSerializable
 }
-func (*AzureResponsesPiInvocation) String() string {
+func (AzureResponsesPiInvocation) String() string {
 	return "credentialproxy.AzureResponsesPiInvocation{live}"
 }
-func (*AzureResponsesPiInvocation) GoString() string {
+func (AzureResponsesPiInvocation) GoString() string {
 	return "credentialproxy.AzureResponsesPiInvocation{live}"
 }
-func (*AzureResponsesPiInvocation) Format(state fmt.State, _ rune) {
+func (AzureResponsesPiInvocation) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("credentialproxy.AzureResponsesPiInvocation{live}"))
 }
