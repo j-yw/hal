@@ -296,8 +296,8 @@ func (value *lease) OpenVerifiedConnection(ctx context.Context) (VerifiedAgentCo
 
 	agent, openErr := safeEntryOpen(opCtx, value.entry)
 	if openErr != nil || !configuredDependency(agent) {
-		relayConnection.Close()
 		if !configuredDependency(agent) {
+			relayConnection.Close()
 			if opCtx.Err() != nil {
 				return nil, value.cancellationError()
 			}

@@ -97,6 +97,11 @@ func (connection *verifiedConnection) RoundTrip(ctx context.Context, request []b
 		terminal = true
 		return nil, ErrRequestRejected
 	}
+	if errors.Is(err, ErrAgentIO) {
+		credentialprotocol.WipeSSHAgentBytes(response)
+		terminal = true
+		return nil, ErrAgentIO
+	}
 	response, resultErr = connection.completeRequest(response, err)
 	return connection.finishOperation(operationCtx, response, resultErr, &terminal)
 }

@@ -284,6 +284,9 @@ func (session *helperSession) acceptLoop(endpoint credentialhelper.SSHAgentEndpo
 	for {
 		connection, err := safeEndpointAccept(session.lifetimeCtx, endpoint)
 		if err != nil {
+			if configured(connection) {
+				session.closeOrRetainConnection(connection)
+			}
 			if session.lifetimeCtx.Err() == nil {
 				session.mu.Lock()
 				session.acceptFailed = true
