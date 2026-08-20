@@ -994,6 +994,8 @@ func TestL8CredentialDeliverySourceGuardsLiveMarkerIsolation(t *testing.T) {
 		"TestL8PreparedLinuxCredentialDeliveryPrerequisites": true,
 		"TestL8PreparedLinuxCredentialDeliveryE2E":           true,
 	}
+	const ownedLiveCatalog = "internal/credentialproxy/fixturetest/catalog_l8_live.go"
+	const ownedLiveCatalogGuard = "internal/credentialproxy/import_boundary_test.go"
 	for _, root := range []string{"cmd", "internal", "tools"} {
 		err := filepath.WalkDir(filepath.Join("..", root), func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
@@ -1023,6 +1025,14 @@ func TestL8CredentialDeliverySourceGuardsLiveMarkerIsolation(t *testing.T) {
 			rel, err := filepath.Rel("..", path)
 			if err != nil {
 				return err
+			}
+			rel = filepath.ToSlash(rel)
+			if rel == ownedLiveCatalogGuard {
+				return nil
+			}
+			if rel == ownedLiveCatalog {
+				assertL8ExactLiveBuildConstraint(t, rel, source, liveTag)
+				return nil
 			}
 			if !strings.HasSuffix(path, "_live_test.go") {
 				t.Errorf("%s contains the L8 live marker outside an isolated live test", filepath.ToSlash(rel))

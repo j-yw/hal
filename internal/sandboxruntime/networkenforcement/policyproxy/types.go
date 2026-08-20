@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/applicationroute"
 )
 
 var (
@@ -75,10 +76,11 @@ type Limits struct {
 // Config contains live-only listener dependencies and validation-only policy.
 // ListenAddress and all dependency errors are excluded from durable contracts.
 type Config struct {
-	Policy        networkenforcement.PolicyProxyPolicyInput
-	ListenAddress string
-	Resolver      ResolverFunc
-	DialContext   DialFunc
+	Policy            networkenforcement.PolicyProxyPolicyInput
+	ListenAddress     string
+	Resolver          ResolverFunc
+	DialContext       DialFunc
+	ApplicationRoutes applicationroute.Handler
 	// DecisionSink must return without blocking. Panics are isolated from
 	// enforcement; callers that persist records own their bounded queue.
 	DecisionSink func(networkenforcement.PolicyProxyDecisionLogRecord)

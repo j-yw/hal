@@ -38,7 +38,8 @@ func TestL6PolicyProxyImportBoundary(t *testing.T) {
 }
 
 func allowedL6PolicyProxyImport(importPath string) bool {
-	if importPath == "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement" {
+	if importPath == "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement" ||
+		importPath == "github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/applicationroute" {
 		return true
 	}
 	return !strings.Contains(importPath, ".") && importPath != "os/exec" && importPath != "syscall"
