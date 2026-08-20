@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,9 +17,11 @@ const (
 )
 
 type l11FinalClosureMatrixRow struct {
-	ordinal int
-	id      string
-	state   string
+	ordinal         int
+	id              string
+	runtimeBoundary string
+	observation     string
+	state           string
 }
 
 func TestL11FinalClosureDocumentationIsNormative(t *testing.T) {
@@ -96,6 +99,44 @@ func TestL11FinalClosureMatrixGuardRejectsMutations(t *testing.T) {
 	}
 }
 
+func TestL11FinalClosureMatrixParserRejectsMarkdownMutations(t *testing.T) {
+	doc := l11ReadFinalClosureDoc(t)
+	lastRow := "| 9 | `zero_resource_leaks` | Both runtime classes | Repeated terminal recovery and cleanup leave the exact owned-resource census at zero | `blocked` |"
+	mutations := []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "backtick ordinal", old: "| 1 | `rootless_advisory_success`", new: "| `1` | `rootless_advisory_success`"},
+		{name: "leading zero ordinal", old: "| 1 | `rootless_advisory_success`", new: "| 01 | `rootless_advisory_success`"},
+		{name: "double backtick scenario ID", old: "`rootless_advisory_success`", new: "``rootless_advisory_success``"},
+		{name: "unquoted blocked state", old: "| `blocked` |", new: "| blocked |"},
+		{name: "double backtick blocked state", old: "| `blocked` |", new: "| ``blocked`` |"},
+		{name: "spaced backtick blocked state", old: "| `blocked` |", new: "| ` blocked ` |"},
+		{name: "malformed header", old: "| Phase | Scenario ID | Runtime boundary | Required live observation | Initial state |", new: "| Phase | Scenario | Runtime boundary | Required live observation | Initial state |"},
+		{name: "malformed separator", old: "|---|---|---|---|---|", new: "|---|---|---|---|"},
+		{name: "runtime boundary drift", old: "| Rootless Podman |", new: "| Rootless Other |"},
+		{name: "observation drift", old: "Production execution succeeds, remains advisory, and cannot obtain strict selection", new: "Production execution is simulated"},
+		{name: "extra malformed row", old: lastRow, new: lastRow + "\n| extra | malformed | row |"},
+		{name: "extra skipped row", old: lastRow, new: lastRow + "\n| neighbor | `ignored_by_old_parser` | Both | observation | `blocked` |"},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := strings.Replace(doc, mutation.old, mutation.new, 1)
+			if mutated == doc {
+				t.Fatal("matrix markdown mutation did not change the document")
+			}
+			rows, err := l11ParseFinalClosureMatrix(mutated)
+			if err == nil {
+				err = l11ValidateFinalClosureMatrix(rows)
+			}
+			if err == nil {
+				t.Fatal("malformed L11 matrix markdown passed validation")
+			}
+		})
+	}
+}
+
 func TestL11FinalClosureVerificationCommandsAreExact(t *testing.T) {
 	doc := l11ReadFinalClosureDoc(t)
 	commands := l11FinalClosureDocumentedShellCommands(doc)
@@ -131,6 +172,9 @@ func TestL11FinalClosureVerificationCommandsAreExact(t *testing.T) {
 
 func TestL11FinalClosureReleaseEvidenceIsBlockedAndRedactionSafe(t *testing.T) {
 	doc := l11ReadFinalClosureDoc(t)
+	if err := l11ValidateFinalClosureDocumentSafety(doc); err != nil {
+		t.Fatal(err)
+	}
 	for _, required := range []string{
 		"exact aggregate base, L11 head and tree, accepted aggregate merge",
 		"zero selected-test skips",
@@ -157,6 +201,31 @@ func TestL11FinalClosureReleaseEvidenceIsBlockedAndRedactionSafe(t *testing.T) {
 	}
 }
 
+func TestL11FinalClosureReleaseEvidenceGuardRejectsMutations(t *testing.T) {
+	doc := l11ReadFinalClosureDoc(t)
+	mutations := []struct {
+		name   string
+		marker string
+	}{
+		{name: "premature production live acceptance", marker: "\nProduction-live acceptance: accepted.\n"},
+		{name: "premature live pass", marker: "\nThe L11 production live lane passed.\n"},
+		{name: "release URL", marker: "\nRelease endpoint: https://release.invalid/result/1\n"},
+		{name: "release token", marker: "\nRelease token: ghp_0123456789abcdefghijklmnopqrstuvwxyz\n"},
+		{name: "release environment value", marker: "\nHCLOUD_TOKEN=release-secret\n"},
+		{name: "release host path", marker: "\nRelease artifact: /private/l11/result.json\n"},
+		{name: "home-relative host path", marker: "\nRelease artifact: ~/.ssh/release-key\n"},
+		{name: "windows host path", marker: "\nRelease artifact: C:\\private\\l11\\result.json\n"},
+		{name: "windows UNC host path", marker: "\nRelease artifact: \\\\release-host\\private\\result.json\n"},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			if err := l11ValidateFinalClosureDocumentSafety(doc + mutation.marker); err == nil {
+				t.Fatal("unsafe or prematurely accepted release evidence passed validation")
+			}
+		})
+	}
+}
+
 func l11ReadFinalClosureDoc(t *testing.T) string {
 	t.Helper()
 	payload, err := os.ReadFile(filepath.Join("..", "docs", "design", l11FinalClosureDocPath))
@@ -171,60 +240,102 @@ func l11FinalClosureContains(doc, required string) bool {
 }
 
 func l11ExpectedFinalClosureMatrix() []l11FinalClosureMatrixRow {
-	ids := []string{
-		"rootless_advisory_success",
-		"rootless_client_loss_reconnect",
-		"rootless_daemon_restart_recovery",
-		"strict_firecracker_success",
-		"strict_remove_one_proof",
-		"strict_runtime_loss_reconnect",
-		"strict_credential_loss_recovery",
-		"artifact_integrity_and_safe_handoff",
-		"zero_resource_leaks",
+	return []l11FinalClosureMatrixRow{
+		{ordinal: 1, id: "rootless_advisory_success", runtimeBoundary: "Rootless Podman", observation: "Production execution succeeds, remains advisory, and cannot obtain strict selection", state: "blocked"},
+		{ordinal: 2, id: "rootless_client_loss_reconnect", runtimeBoundary: "Rootless Podman", observation: "Initiating client is lost after durable admission; reconnect observes one continuing job with no rerun", state: "blocked"},
+		{ordinal: 3, id: "rootless_daemon_restart_recovery", runtimeBoundary: "Rootless Podman", observation: "Worker daemon restarts; durable recovery, artifacts, lease release, and teardown converge once", state: "blocked"},
+		{ordinal: 4, id: "strict_firecracker_success", runtimeBoundary: "Strict Firecracker", observation: "Exact live L5/L7/L8/L9/L10 conjunction selects strict, executes, and reaches terminal complete", state: "blocked"},
+		{ordinal: 5, id: "strict_remove_one_proof", runtimeBoundary: "Strict Firecracker", observation: "Each required live proof is independently removed or corrupted and strict selection fails closed", state: "blocked"},
+		{ordinal: 6, id: "strict_runtime_loss_reconnect", runtimeBoundary: "Strict Firecracker", observation: "Client, worker, guest/Firecracker, and retained-network loss paths reconnect or recover without rerun", state: "blocked"},
+		{ordinal: 7, id: "strict_credential_loss_recovery", runtimeBoundary: "Strict Firecracker", observation: "Proxy/helper/relay/credential loss revokes authority, proves absence, and never retains strict active state", state: "blocked"},
+		{ordinal: 8, id: "artifact_integrity_and_safe_handoff", runtimeBoundary: "Both runtime classes", observation: "Durable artifacts, recovery, sync-out, digest validation, and explicit safe handoff remain contained and exact", state: "blocked"},
+		{ordinal: 9, id: "zero_resource_leaks", runtimeBoundary: "Both runtime classes", observation: "Repeated terminal recovery and cleanup leave the exact owned-resource census at zero", state: "blocked"},
 	}
-	rows := make([]l11FinalClosureMatrixRow, len(ids))
-	for index, id := range ids {
-		rows[index] = l11FinalClosureMatrixRow{ordinal: index + 1, id: id, state: "blocked"}
-	}
-	return rows
 }
 
 func l11ParseFinalClosureMatrix(doc string) ([]l11FinalClosureMatrixRow, error) {
-	var rows []l11FinalClosureMatrixRow
-	inMatrix := false
-	for _, raw := range strings.Split(doc, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "### Exact nine-phase final matrix" {
-			inMatrix = true
+	const (
+		heading   = "### Exact nine-phase final matrix"
+		headerRow = "| Phase | Scenario ID | Runtime boundary | Required live observation | Initial state |"
+		separator = "|---|---|---|---|---|"
+	)
+	lines := strings.Split(doc, "\n")
+	headingIndex := -1
+	for index, line := range lines {
+		if line != heading {
 			continue
 		}
-		if inMatrix && strings.HasPrefix(line, "#") {
-			break
+		if headingIndex >= 0 {
+			return nil, &l11FinalClosureGuardError{message: "L11 final matrix heading is duplicated"}
 		}
-		if !inMatrix {
-			continue
-		}
-		if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
-			continue
-		}
-		cells := strings.Split(strings.Trim(line, "|"), "|")
-		if len(cells) != 5 {
-			continue
-		}
-		ordinal, err := strconv.Atoi(strings.TrimSpace(cells[0]))
-		if err != nil {
-			continue
-		}
-		rows = append(rows, l11FinalClosureMatrixRow{
-			ordinal: ordinal,
-			id:      strings.Trim(strings.TrimSpace(cells[1]), "`"),
-			state:   strings.Trim(strings.TrimSpace(cells[4]), "`"),
-		})
+		headingIndex = index
 	}
-	if len(rows) == 0 {
+	if headingIndex < 0 {
 		return nil, &l11FinalClosureGuardError{message: "L11 final matrix is missing"}
 	}
+	rowStart := headingIndex + 4
+	wantRows := l11ExpectedFinalClosureMatrix()
+	if headingIndex+3 >= len(lines) || lines[headingIndex+1] != "" || lines[headingIndex+2] != headerRow || lines[headingIndex+3] != separator {
+		return nil, &l11FinalClosureGuardError{message: "L11 final matrix header is malformed"}
+	}
+	if rowStart+len(wantRows) >= len(lines) {
+		return nil, &l11FinalClosureGuardError{message: "L11 final matrix row count changed"}
+	}
+	rows := make([]l11FinalClosureMatrixRow, 0, len(wantRows))
+	for index := range wantRows {
+		row, err := l11ParseFinalClosureMatrixRow(lines[rowStart+index])
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	afterRows := rowStart + len(wantRows)
+	if lines[afterRows] != "" {
+		return nil, &l11FinalClosureGuardError{message: "L11 final matrix contains an extra or malformed row"}
+	}
+	for _, line := range lines[afterRows+1:] {
+		if strings.HasPrefix(line, "## ") {
+			break
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "|") {
+			return nil, &l11FinalClosureGuardError{message: "L11 final matrix contains an extra or malformed row"}
+		}
+	}
 	return rows, nil
+}
+
+func l11ParseFinalClosureMatrixRow(line string) (l11FinalClosureMatrixRow, error) {
+	if !strings.HasPrefix(line, "| ") || !strings.HasSuffix(line, " |") {
+		return l11FinalClosureMatrixRow{}, &l11FinalClosureGuardError{message: "L11 final matrix row is malformed"}
+	}
+	cells := strings.Split(line[2:len(line)-2], " | ")
+	if len(cells) != 5 {
+		return l11FinalClosureMatrixRow{}, &l11FinalClosureGuardError{message: "L11 final matrix row is malformed"}
+	}
+	ordinal, err := strconv.Atoi(cells[0])
+	if err != nil || strconv.Itoa(ordinal) != cells[0] {
+		return l11FinalClosureMatrixRow{}, &l11FinalClosureGuardError{message: "L11 final matrix ordinal is malformed"}
+	}
+	id, ok := l11ExactSingleBacktickCell(cells[1])
+	if !ok {
+		return l11FinalClosureMatrixRow{}, &l11FinalClosureGuardError{message: "L11 final matrix scenario ID is malformed"}
+	}
+	state, ok := l11ExactSingleBacktickCell(cells[4])
+	if !ok || state != "blocked" {
+		return l11FinalClosureMatrixRow{}, &l11FinalClosureGuardError{message: "L11 final matrix blocked state is malformed"}
+	}
+	if cells[2] == "" || cells[3] == "" {
+		return l11FinalClosureMatrixRow{}, &l11FinalClosureGuardError{message: "L11 final matrix row is incomplete"}
+	}
+	return l11FinalClosureMatrixRow{ordinal: ordinal, id: id, runtimeBoundary: cells[2], observation: cells[3], state: state}, nil
+}
+
+func l11ExactSingleBacktickCell(cell string) (string, bool) {
+	if len(cell) < 3 || cell[0] != '`' || cell[len(cell)-1] != '`' {
+		return "", false
+	}
+	value := cell[1 : len(cell)-1]
+	return value, value != "" && value == strings.TrimSpace(value) && !strings.Contains(value, "`")
 }
 
 func l11ValidateFinalClosureMatrix(rows []l11FinalClosureMatrixRow) error {
@@ -240,6 +351,46 @@ func l11ValidateFinalClosureMatrix(rows []l11FinalClosureMatrixRow) error {
 		seen[row.id] = true
 		if row != want[index] {
 			return &l11FinalClosureGuardError{message: "L11 final matrix identity or blocked state changed"}
+		}
+	}
+	return nil
+}
+
+var (
+	l11PrematureProductionLiveAcceptance = regexp.MustCompile(`(?im)(?:^|\n)\s*(?:production[- ]live acceptance\s*:\s*(?:accepted|passed|complete|completed)|(?:the\s+)?L11 production[- ]live (?:lane|closure)\s+(?:is\s+|was\s+|has been\s+)?(?:accepted|passed|complete|completed))\b`)
+	l11UnsafeReleaseURL                  = regexp.MustCompile(`(?i)\b(?:https?|ssh|file)://\S+`)
+	l11UnsafeReleaseToken                = regexp.MustCompile(`(?i)\b(?:gh[pousr]_[A-Za-z0-9]{20,}|hcloud_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b`)
+	l11UnsafeReleaseEnvironmentValue     = regexp.MustCompile(`(?im)\b(?:HCLOUD_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|DIGITALOCEAN_ACCESS_TOKEN|GOOGLE_APPLICATION_CREDENTIALS)\s*=\s*\S+`)
+	l11UnsafeReleaseUnixPath             = regexp.MustCompile("(?m)(?:^|[\\s\"'(])(?:~/(?:[^\\s`|,;)]+)?|/(?:home|root|tmp|var|run|private|etc|opt|srv|mnt|Users)(?:/[^\\s`|,;)]*)?)")
+	l11UnsafeReleaseWindowsPath          = regexp.MustCompile("(?im)(?:^|[\\s\"'(])(?:[A-Z]:\\\\|\\\\\\\\)[^\\s`|,;)]+")
+)
+
+func l11ValidateFinalClosureDocumentSafety(doc string) error {
+	for _, required := range []string{
+		l11FinalClosureCurrentStateLine,
+		"No acceptance is claimed by this document.",
+		"All nine rows are unmet and `blocked`.",
+		"No L11 production live wiring is added by this contract-only slice.",
+	} {
+		if strings.Count(doc, required) != 1 {
+			return &l11FinalClosureGuardError{message: "L11 blocked contract marker changed"}
+		}
+	}
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "current closure state:") && strings.TrimSpace(line) != l11FinalClosureCurrentStateLine {
+			return &l11FinalClosureGuardError{message: "L11 closure state is not exactly blocked"}
+		}
+	}
+	for _, pattern := range []*regexp.Regexp{
+		l11PrematureProductionLiveAcceptance,
+		l11UnsafeReleaseURL,
+		l11UnsafeReleaseToken,
+		l11UnsafeReleaseEnvironmentValue,
+		l11UnsafeReleaseUnixPath,
+		l11UnsafeReleaseWindowsPath,
+	} {
+		if pattern.MatchString(doc) {
+			return &l11FinalClosureGuardError{message: "L11 release evidence contains a premature acceptance or unsafe value"}
 		}
 	}
 	return nil
