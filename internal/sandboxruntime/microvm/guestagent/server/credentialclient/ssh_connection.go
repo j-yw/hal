@@ -15,6 +15,26 @@ var (
 	ErrSSHShutdownDirection = errors.New("credential client SSH shutdown direction is invalid")
 )
 
+func sshContractError(legacy error, code ClientContractErrorCode, field ClientContractField) error {
+	return errors.Join(legacy, clientError(code, field))
+}
+
+func sshOwnershipError() error {
+	return sshContractError(ErrExtensionPacketOwnership, ClientContractOwnership, ClientFieldLifecycle)
+}
+
+func sshCleanupError() error {
+	return sshContractError(ErrExtensionPacketOwnership, ClientContractCleanup, ClientFieldRight)
+}
+
+func sshIOResultError() error {
+	return sshContractError(ErrSSHIOResult, ClientContractPacket, ClientFieldBody)
+}
+
+func sshShutdownDirectionError() error {
+	return sshContractError(ErrSSHShutdownDirection, ClientContractPacket, ClientFieldLifecycle)
+}
+
 const sshConnectionCleanupTimeout = 30 * time.Second
 
 // SSHIOResult is bounded non-authority I/O metadata. Its constructor validates
@@ -31,7 +51,7 @@ type SSHIOResult struct {
 // operation, caller capacity, EOF matrix, or full-write claim.
 func NewSSHIOResult(byteCount uint64, eof, truncated bool) (SSHIOResult, error) {
 	if byteCount > uint64(credentialprotocol.SSHAgentMaxFrameBytes) {
-		return SSHIOResult{}, ErrSSHIOResult
+		return SSHIOResult{}, sshIOResultError()
 	}
 	return SSHIOResult{byteCount: byteCount, eof: eof, truncated: truncated}, nil
 }
@@ -61,7 +81,7 @@ func ValidateSSHShutdownDirection(direction SSHShutdownDirection) error {
 	case SSHShutdownRead, SSHShutdownWrite, SSHShutdownBoth:
 		return nil
 	default:
-		return ErrSSHShutdownDirection
+		return sshShutdownDirectionError()
 	}
 }
 
@@ -121,7 +141,7 @@ func (packet SSHAcceptedPacket) Connection() SSHConnectionCapability { return pa
 // never changes ownership and only a committed transfer returns success.
 func (packet SSHAcceptedPacket) WaitTransferred(ctx context.Context) error {
 	if packet.ownership == nil {
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	ownership := packet.ownership
 	ownership.mu.Lock()
@@ -133,7 +153,7 @@ func (packet SSHAcceptedPacket) WaitTransferred(ctx context.Context) error {
 		ownership.mu.Unlock()
 	default:
 		ownership.mu.Unlock()
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 
 	contextValid := validSSHContext(ctx)
@@ -144,16 +164,16 @@ func (packet SSHAcceptedPacket) WaitTransferred(ctx context.Context) error {
 		return nil
 	case sshConnectionClientOwned:
 		if !contextValid {
-			return ErrExtensionPacketOwnership
+			return sshOwnershipError()
 		}
 	default:
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	_ = waitSSHConnectionLocked(ctx, ownership, func() bool {
 		return ownership.phase != sshConnectionClientOwned
 	})
 	if ownership.phase != sshConnectionTransferred {
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	return nil
 }
@@ -211,13 +231,13 @@ func (view sshConnectionView) Read(ctx context.Context, sink credentialmemory.Cr
 	if !valid || capacity < 0 || capacity > credentialprotocol.SSHAgentMaxFrameBytes {
 		view.endOperation()
 		view.terminateAfterContractFailure()
-		return SSHIOResult{}, ErrExtensionPacketOwnership
+		return SSHIOResult{}, sshOwnershipError()
 	}
 	result, issuerErr := safeSSHIssuerRead(ctx, issuer, sink)
 	view.endOperation()
 	if issuerErr != nil || !validSSHReadResult(result, uint64(capacity)) {
 		view.terminateAfterContractFailure()
-		return SSHIOResult{}, ErrExtensionPacketOwnership
+		return SSHIOResult{}, sshOwnershipError()
 	}
 	return result, nil
 }
@@ -231,20 +251,20 @@ func (view sshConnectionView) Write(ctx context.Context, source credentialmemory
 	if !valid || length <= 0 || length > credentialprotocol.SSHAgentMaxFrameBytes {
 		view.endOperation()
 		view.terminateAfterContractFailure()
-		return SSHIOResult{}, ErrExtensionPacketOwnership
+		return SSHIOResult{}, sshOwnershipError()
 	}
 	result, issuerErr := safeSSHIssuerWrite(ctx, issuer, source)
 	view.endOperation()
 	if issuerErr != nil || result.eof || result.truncated || result.byteCount != uint64(length) {
 		view.terminateAfterContractFailure()
-		return SSHIOResult{}, ErrExtensionPacketOwnership
+		return SSHIOResult{}, sshOwnershipError()
 	}
 	return result, nil
 }
 
 func (view sshConnectionView) Shutdown(ctx context.Context, direction SSHShutdownDirection) error {
-	if ValidateSSHShutdownDirection(direction) != nil {
-		return ErrSSHShutdownDirection
+	if err := ValidateSSHShutdownDirection(direction); err != nil {
+		return err
 	}
 	issuer, err := view.beginOperation(ctx)
 	if err != nil {
@@ -254,7 +274,7 @@ func (view sshConnectionView) Shutdown(ctx context.Context, direction SSHShutdow
 	view.endOperation()
 	if issuerErr != nil {
 		view.terminateAfterContractFailure()
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	return nil
 }
@@ -263,7 +283,7 @@ func (view sshConnectionView) Shutdown(ctx context.Context, direction SSHShutdow
 // operations under the supplied context, and invokes the private issuer once.
 func (view sshConnectionView) Close(ctx context.Context) error {
 	if view.ownership == nil {
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	ownership := view.ownership
 	ownership.mu.Lock()
@@ -274,13 +294,13 @@ func (view sshConnectionView) Close(ctx context.Context) error {
 	}
 	ownership.mu.Unlock()
 	if !validSSHContext(ctx) {
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	ownership.mu.Lock()
 	switch ownership.phase {
 	case sshConnectionClientOwned:
 		ownership.mu.Unlock()
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	case sshConnectionTransferred:
 		ownership.phase = sshConnectionClosing
 		ownership.cond.Broadcast()
@@ -291,14 +311,14 @@ func (view sshConnectionView) Close(ctx context.Context) error {
 		return err
 	default:
 		ownership.mu.Unlock()
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 
 	if !waitSSHConnectionLocked(ctx, ownership, func() bool {
 		return ownership.activeOps == 0 && (!ownership.closeStarted || ownership.phase == sshConnectionClosed)
 	}) {
 		ownership.mu.Unlock()
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	if ownership.phase == sshConnectionClosed {
 		err := ownership.closeErr
@@ -311,7 +331,7 @@ func (view sshConnectionView) Close(ctx context.Context) error {
 
 	closeErr := safeSSHIssuerClose(ctx, issuer)
 	if closeErr != nil {
-		closeErr = ErrExtensionPacketOwnership
+		closeErr = sshOwnershipError()
 	}
 	ownership.mu.Lock()
 	ownership.issuer = nil
@@ -324,13 +344,13 @@ func (view sshConnectionView) Close(ctx context.Context) error {
 
 func (view sshConnectionView) beginOperation(ctx context.Context) (SSHConnectionCapability, error) {
 	if !validSSHContext(ctx) || view.ownership == nil {
-		return nil, ErrExtensionPacketOwnership
+		return nil, sshOwnershipError()
 	}
 	ownership := view.ownership
 	ownership.mu.Lock()
 	defer ownership.mu.Unlock()
 	if ownership.phase != sshConnectionTransferred || !configuredDependency(ownership.issuer) {
-		return nil, ErrExtensionPacketOwnership
+		return nil, sshOwnershipError()
 	}
 	ownership.activeOps++
 	return ownership.issuer, nil
@@ -440,7 +460,7 @@ func safeSSHIssuerRead(ctx context.Context, issuer SSHConnectionCapability, sink
 	defer func() {
 		if recover() != nil {
 			result = SSHIOResult{}
-			err = ErrExtensionPacketOwnership
+			err = sshOwnershipError()
 		}
 	}()
 	return issuer.Read(ctx, sink)
@@ -450,7 +470,7 @@ func safeSSHIssuerWrite(ctx context.Context, issuer SSHConnectionCapability, sou
 	defer func() {
 		if recover() != nil {
 			result = SSHIOResult{}
-			err = ErrExtensionPacketOwnership
+			err = sshOwnershipError()
 		}
 	}()
 	return issuer.Write(ctx, source)
@@ -459,7 +479,7 @@ func safeSSHIssuerWrite(ctx context.Context, issuer SSHConnectionCapability, sou
 func safeSSHIssuerShutdown(ctx context.Context, issuer SSHConnectionCapability, direction SSHShutdownDirection) (err error) {
 	defer func() {
 		if recover() != nil {
-			err = ErrExtensionPacketOwnership
+			err = sshOwnershipError()
 		}
 	}()
 	return issuer.Shutdown(ctx, direction)
@@ -467,11 +487,11 @@ func safeSSHIssuerShutdown(ctx context.Context, issuer SSHConnectionCapability, 
 
 func safeSSHIssuerClose(ctx context.Context, issuer SSHConnectionCapability) (err error) {
 	if !configuredDependency(issuer) {
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	defer func() {
 		if recover() != nil {
-			err = ErrExtensionPacketOwnership
+			err = sshOwnershipError()
 		}
 	}()
 	return issuer.Close(ctx)

@@ -77,24 +77,32 @@ func newExtensionPacket(
 		}()
 	}
 	if err := credentialprotocol.ValidatePacketType(packetType); err != nil {
-		return ExtensionPacket{}, err
+		return ExtensionPacket{}, sshContractError(err, ClientContractPacket, ClientFieldPacketType)
 	}
 	if packetType != credentialprotocol.PacketTypeSSHAcceptedFD {
-		return ExtensionPacket{}, ErrExtensionPacketType
+		return ExtensionPacket{}, sshContractError(ErrExtensionPacketType, ClientContractPacket, ClientFieldPacketType)
 	}
-	if metadata.identityDigest == ([32]byte{}) ||
-		metadata.revision == 0 ||
-		metadata.bindingIndex >= maxExtensionPacketBindings ||
-		metadata.ordinal == 0 || metadata.ordinal > maxSSHConnectionOrdinal ||
-		metadata.capabilitySHA256 == ([32]byte{}) {
-		return ExtensionPacket{}, ErrExtensionPacketMetadata
+	if metadata.identityDigest == ([32]byte{}) {
+		return ExtensionPacket{}, sshContractError(ErrExtensionPacketMetadata, ClientContractCorrelation, ClientFieldIdentity)
+	}
+	if metadata.revision == 0 {
+		return ExtensionPacket{}, sshContractError(ErrExtensionPacketMetadata, ClientContractCorrelation, ClientFieldRevision)
+	}
+	if metadata.bindingIndex >= maxExtensionPacketBindings || metadata.ordinal == 0 || metadata.ordinal > maxSSHConnectionOrdinal {
+		return ExtensionPacket{}, sshContractError(ErrExtensionPacketMetadata, ClientContractLimit, ClientFieldBody)
+	}
+	if metadata.capabilitySHA256 == ([32]byte{}) {
+		return ExtensionPacket{}, sshContractError(ErrExtensionPacketMetadata, ClientContractDescriptor, ClientFieldRight)
 	}
 	if !capabilitySupplied {
-		return ExtensionPacket{}, ErrExtensionRightRequired
+		return ExtensionPacket{}, sshContractError(ErrExtensionRightRequired, ClientContractDependency, ClientFieldRight)
 	}
 	capabilityDigest, valid := safeSSHIssuerDigest(capability)
-	if !valid || capabilityDigest == ([32]byte{}) || subtle.ConstantTimeCompare(capabilityDigest[:], metadata.capabilitySHA256[:]) != 1 {
-		return ExtensionPacket{}, ErrExtensionPacketMetadata
+	if !valid {
+		return ExtensionPacket{}, sshContractError(ErrExtensionPacketMetadata, ClientContractPanic, ClientFieldRight)
+	}
+	if capabilityDigest == ([32]byte{}) || subtle.ConstantTimeCompare(capabilityDigest[:], metadata.capabilitySHA256[:]) != 1 {
+		return ExtensionPacket{}, sshContractError(ErrExtensionPacketMetadata, ClientContractDescriptor, ClientFieldRight)
 	}
 	packet = ExtensionPacket{
 		packetType: packetType,
@@ -109,12 +117,12 @@ func newExtensionPacket(
 // deliberately exposes neither the capability nor a public transfer API.
 func commitExtensionPacketOwnership(packet ExtensionPacket) error {
 	if packet.ownership == nil {
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	packet.ownership.mu.Lock()
 	defer packet.ownership.mu.Unlock()
 	if packet.ownership.phase != sshConnectionClientOwned {
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	packet.ownership.phase = sshConnectionTransferred
 	packet.ownership.cond.Broadcast()
@@ -125,7 +133,7 @@ func commitExtensionPacketOwnership(packet ExtensionPacket) error {
 // latches only a sanitized result for every alias.
 func closeOwnedExtensionPacket(ctx context.Context, packet ExtensionPacket) error {
 	if packet.ownership == nil {
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 	packet.ownership.mu.Lock()
 	switch packet.ownership.phase {
@@ -135,13 +143,13 @@ func closeOwnedExtensionPacket(ctx context.Context, packet ExtensionPacket) erro
 		return err
 	case sshConnectionTransferred:
 		packet.ownership.mu.Unlock()
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	case sshConnectionClosing:
 		if !validSSHContext(ctx) || !waitSSHConnectionLocked(ctx, packet.ownership, func() bool {
 			return packet.ownership.phase == sshConnectionClosed
 		}) {
 			packet.ownership.mu.Unlock()
-			return ErrExtensionPacketOwnership
+			return sshOwnershipError()
 		}
 		err := packet.ownership.closeErr
 		packet.ownership.mu.Unlock()
@@ -149,7 +157,7 @@ func closeOwnedExtensionPacket(ctx context.Context, packet ExtensionPacket) erro
 	case sshConnectionClientOwned:
 		if !validSSHContext(ctx) {
 			packet.ownership.mu.Unlock()
-			return ErrExtensionPacketOwnership
+			return sshOwnershipError()
 		}
 		packet.ownership.phase = sshConnectionClosing
 		packet.ownership.closeStarted = true
@@ -158,7 +166,7 @@ func closeOwnedExtensionPacket(ctx context.Context, packet ExtensionPacket) erro
 		packet.ownership.mu.Unlock()
 		closeErr := safeSSHIssuerClose(ctx, capability)
 		if closeErr != nil {
-			closeErr = ErrExtensionPacketOwnership
+			closeErr = sshOwnershipError()
 		}
 		packet.ownership.mu.Lock()
 		packet.ownership.issuer = nil
@@ -169,7 +177,7 @@ func closeOwnedExtensionPacket(ctx context.Context, packet ExtensionPacket) erro
 		return closeErr
 	default:
 		packet.ownership.mu.Unlock()
-		return ErrExtensionPacketOwnership
+		return sshOwnershipError()
 	}
 }
 
@@ -180,7 +188,7 @@ func closeRejectedSSHCapability(capability SSHConnectionCapability) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sshConnectionCleanupTimeout)
 	defer cancel()
 	if err := safeSSHIssuerClose(ctx, capability); err != nil {
-		return ErrExtensionPacketOwnership
+		return sshCleanupError()
 	}
 	return nil
 }
