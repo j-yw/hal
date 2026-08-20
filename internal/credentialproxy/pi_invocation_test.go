@@ -96,6 +96,45 @@ func TestL8D3PiAzureResponsesInvocationIsSealedAndWritesTransientBinding(t *test
 	}
 }
 
+func TestL8D3PiAzureResponsesInvocationRejectsTicketFromDifferentLocalAuthority(t *testing.T) {
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	definition, err := NewAzureOpenAIResponsesV1Definition("example.com", 443, "example.com", TLSRootPolicySystem, "deployment-one", "2026-06-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := NewStaticServiceCatalog("catalog-generation-01", CatalogOwnerHostAdmin, definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{
+		now:     func() time.Time { return now },
+		entropy: bytes.NewReader(bytes.Repeat([]byte{0x93}, 64)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	correlation := l8D3TicketActivation(t, now).Correlation
+	route, ticket, err := NewAzureResponsesRoute(AzureResponsesRouteConfig{
+		Catalog: catalog, TicketStore: store, Correlation: correlation,
+		LocalAuthority: "runtime-credential.internal:8080", IssuedAt: now,
+		Source: l8D3LiveSecretSource{}, NetworkProof: &l8D3NetworkProof{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = route.Close(context.Background()) })
+
+	invocation, err := NewAzureResponsesPiInvocation(AzureResponsesPiInvocationConfig{
+		Definition: definition, LocalAuthority: "attacker.invalid:8443", Ticket: ticket,
+		TicketStore: store, Correlation: correlation,
+		CodingAgentDirectory: "/run/hal/pi-empty/job-one", DirectoryProof: &l8D3CodingAgentDirectory{},
+	})
+	if !errors.Is(err, ErrPiInvocationConfig) || invocation != nil {
+		t.Fatalf("cross-authority invocation = (%v, %v), want configuration rejection", invocation, err)
+	}
+}
+
 func TestL8D3PiAzureResponsesInvocationFailsBeforeEnvironmentWhenDirectoryProofIsAbsent(t *testing.T) {
 	definition, err := NewAzureOpenAIResponsesV1Definition("example.com", 443, "example.com", TLSRootPolicySystem, "deployment-one", "2026-06-01")
 	if err != nil {
