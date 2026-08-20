@@ -21,7 +21,7 @@ func TestL8D7ArtifactGenerationIsDeterministicAndMatchesCheckedInOutputs(t *test
 	if err != nil {
 		t.Fatalf("generate second copy: %v", err)
 	}
-	if !bytes.Equal(first.artifact, second.artifact) || !bytes.Equal(first.guestSource, second.guestSource) {
+	if !bytes.Equal(first.artifact, second.artifact) || !bytes.Equal(first.guestSource, second.guestSource) || !bytes.Equal(first.d4InstallSource, second.d4InstallSource) {
 		t.Fatal("identical locked inputs produced different D7 outputs")
 	}
 	for path, want := range first.files() {

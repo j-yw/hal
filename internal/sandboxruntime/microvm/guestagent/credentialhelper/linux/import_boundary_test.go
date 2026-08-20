@@ -12,11 +12,16 @@ import (
 
 func TestCoreFoundationImportBoundary(t *testing.T) {
 	allowed := map[string]bool{
-		"context": true,
-		"reflect": true,
-		"sync":    true,
+		"context":         true,
+		"crypto/sha256":   true,
+		"crypto/subtle":   true,
+		"encoding/binary": true,
+		"reflect":         true,
+		"sync":            true,
 		"github.com/jywlabs/hal/internal/credentialmemory":                                   true,
 		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialhelper": true,
+		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/rolebootstrap":    true,
+		"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy":    true,
 	}
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -41,6 +46,8 @@ func TestCoreFoundationImportBoundary(t *testing.T) {
 
 	assertCorePlatformTag(t, "core_linux.go", "linux")
 	assertCorePlatformTag(t, "core_other.go", "!linux")
+	assertCorePlatformTag(t, "syscall_policy_kernel_linux.go", "linux")
+	assertCorePlatformTag(t, "syscall_policy_kernel_other.go", "!linux")
 }
 
 func assertCorePlatformTag(t *testing.T, name, want string) {

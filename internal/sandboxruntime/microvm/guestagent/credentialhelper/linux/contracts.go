@@ -6,6 +6,7 @@ import (
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialhelper"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/rolebootstrap"
 )
 
 // CoreKernel is the injected D4 boundary for Linux credential-helper resource
@@ -24,6 +25,14 @@ type CoreKernel interface {
 // CoreOptions contains the complete explicit dependency set for NewCore.
 type CoreOptions struct {
 	Kernel CoreKernel
+}
+
+// SyscallPolicyCoreKernelOptions binds the injected kernel to the exact D7
+// native agent install plan. The constructor loads guest policy authority
+// internally; callers cannot pass or mint a policy artifact or profile.
+type SyscallPolicyCoreKernelOptions struct {
+	Kernel      CoreKernel
+	InstallPlan rolebootstrap.InstallPlan
 }
 
 func coreKernelDependencyError(kernel CoreKernel) error {
