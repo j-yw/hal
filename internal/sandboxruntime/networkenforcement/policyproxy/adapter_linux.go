@@ -31,7 +31,8 @@ var _ networkenforcement.ProxyListenerAdapter = (*Adapter)(nil)
 
 // Adapter owns one explicitly configured Linux loopback policy proxy.
 type Adapter struct {
-	config Config
+	config                      Config
+	applicationRouteDefinitions []applicationroute.Definition
 
 	lifecycleMu                     sync.Mutex
 	mu                              sync.Mutex
@@ -69,7 +70,8 @@ func New(config Config) (*Adapter, error) {
 	if config.ListenAddress == "" {
 		config.ListenAddress = "127.0.0.1:0"
 	}
-	if !validLimits(config.Limits) || !validLoopbackListenAddress(config.ListenAddress) || !validApplicationRoutes(config.ApplicationRoutes) {
+	applicationRouteDefinitions, applicationRoutesValid := validatedApplicationRouteDefinitions(config.ApplicationRoutes)
+	if !validLimits(config.Limits) || !validLoopbackListenAddress(config.ListenAddress) || !applicationRoutesValid {
 		return nil, ErrInvalidConfig
 	}
 	plan := config.Policy.PlanMetadata()
@@ -84,9 +86,10 @@ func New(config Config) (*Adapter, error) {
 		config.DialContext = dialer.DialContext
 	}
 	return &Adapter{
-		config:      config,
-		sem:         make(chan struct{}, config.Limits.MaxConcurrent),
-		connections: make(map[net.Conn]struct{}),
+		config:                      config,
+		applicationRouteDefinitions: applicationRouteDefinitions,
+		sem:                         make(chan struct{}, config.Limits.MaxConcurrent),
+		connections:                 make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -574,34 +577,38 @@ func (a *Adapter) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	a.serveHTTP(w, request, generation)
 }
 
-func validApplicationRoutes(handler applicationroute.Handler) (valid bool) {
+func validatedApplicationRouteDefinitions(handler applicationroute.Handler) (definitions []applicationroute.Definition, valid bool) {
 	if handler == nil {
-		return true
+		return nil, true
 	}
 	value := reflect.ValueOf(handler)
-	if value.Kind() == reflect.Pointer && value.IsNil() {
-		return false
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		if value.IsNil() {
+			return nil, false
+		}
 	}
 	defer func() {
 		if recover() != nil {
+			definitions = nil
 			valid = false
 		}
 	}()
-	definitions := handler.Definitions()
+	definitions = append([]applicationroute.Definition(nil), handler.Definitions()...)
 	if len(definitions) == 0 {
-		return false
+		return nil, false
 	}
 	for index, definition := range definitions {
 		if applicationroute.ValidateDefinition(definition) != nil {
-			return false
+			return nil, false
 		}
 		for prior := 0; prior < index; prior++ {
 			if definitions[prior].ID == definition.ID || strings.HasPrefix(definitions[prior].Prefix, definition.Prefix) || strings.HasPrefix(definition.Prefix, definitions[prior].Prefix) {
-				return false
+				return nil, false
 			}
 		}
 	}
-	return true
+	return definitions, true
 }
 
 func (a *Adapter) rollbackApplicationRoutes() {
@@ -628,7 +635,7 @@ func (a *Adapter) applicationRouteForRequest(request *http.Request) (application
 	if a.config.ApplicationRoutes == nil {
 		return "", true
 	}
-	for _, definition := range a.config.ApplicationRoutes.Definitions() {
+	for _, definition := range a.applicationRouteDefinitions {
 		if strings.HasPrefix(path, definition.Prefix) {
 			return definition.ID, true
 		}
@@ -690,7 +697,7 @@ func (a *Adapter) applicationRouteDefinition(id applicationroute.RouteID) (appli
 	if a.config.ApplicationRoutes == nil {
 		return applicationroute.Definition{}, false
 	}
-	for _, definition := range a.config.ApplicationRoutes.Definitions() {
+	for _, definition := range a.applicationRouteDefinitions {
 		if definition.ID == id {
 			return definition, true
 		}
