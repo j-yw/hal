@@ -138,7 +138,6 @@ func validateL8BundleState(
 	parentManifest assetbuild.DistributionManifest,
 	parentProvenance assetbuild.Provenance,
 	parentDescriptor assets.LaunchDescriptor,
-	parentRootDir string,
 	parentProfile VerifiedL7Profile,
 	parentLease *VerifiedL7AssetLease,
 ) (descriptor assets.LaunchDescriptor, rootDir string, parentL7EvidenceSHA256 [32]byte, retErr error) {
@@ -150,10 +149,10 @@ func validateL8BundleState(
 			retErr = errors.Join(retErr, ErrFileUnavailable)
 		}
 	}()
-	if !VerifiedL7ProfileMatches(&parentProfile, &parentDescriptor) || parentLease.ConfirmCurrent(&parentDescriptor) != nil {
+	if !VerifiedL7ProfileMatches(&parentProfile, &parentDescriptor) {
 		return assets.LaunchDescriptor{}, "", [32]byte{}, ErrAssetLockMismatch
 	}
-	parentEvidence, err := measureL8ParentEvidence(parentManifest, parentProvenance, parentRootDir)
+	parentEvidence, err := parentLease.measureL8ParentEvidence(parentManifest, parentProvenance, parentDescriptor)
 	if err != nil {
 		return assets.LaunchDescriptor{}, "", [32]byte{}, err
 	}
@@ -199,7 +198,7 @@ func validateL8BundleState(
 	if err != nil || rootfsDigest != finalInspection.RootfsSHA256 {
 		return assets.LaunchDescriptor{}, "", [32]byte{}, ErrAssetLockMismatch
 	}
-	descriptor, err = resolveDistributionFromRoot(root, cleanRoot, request.LockedAtUnixMillis, manifest)
+	descriptor, err = resolveL8DistributionFromRoot(root, cleanRoot, request.LockedAtUnixMillis, manifest)
 	if err != nil {
 		return assets.LaunchDescriptor{}, "", [32]byte{}, err
 	}
@@ -256,62 +255,6 @@ func verifyL8DistributionChecksums(root *os.File) error {
 		}
 	}
 	return nil
-}
-
-func measureL8ParentEvidence(manifest assetbuild.DistributionManifest, provenance assetbuild.Provenance, rootDir string) (assetbuild.L8ParentL7Evidence, error) {
-	if manifest.ImageProfile != assetbuild.ImageProfileL7Network || provenance.ImageProfile != assetbuild.ImageProfileL7Network {
-		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
-	}
-	root, _, err := openRequestedDistributionRoot(rootDir)
-	if err != nil {
-		return assetbuild.L8ParentL7Evidence{}, err
-	}
-	defer root.Close()
-	manifestSize, manifestDigest, err := digestL8DistributionFile(root, distributionManifestName)
-	if err != nil || manifestSize <= 0 {
-		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
-	}
-	provenanceSize, provenanceDigest, err := digestL8DistributionFile(root, distributionProvenanceName)
-	if err != nil || provenanceSize <= 0 {
-		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
-	}
-	checksumsSize, checksumsDigest, err := digestL8DistributionFile(root, distributionChecksumsName)
-	if err != nil || checksumsSize <= 0 {
-		return assetbuild.L8ParentL7Evidence{}, ErrAssetLockMismatch
-	}
-	kernelSize, kernelDigest, err := digestL8DistributionFile(root, "vmlinux")
-	if err != nil {
-		return assetbuild.L8ParentL7Evidence{}, err
-	}
-	rootfsSize, rootfsDigest, err := digestL8DistributionFile(root, "rootfs.ext4")
-	if err != nil {
-		return assetbuild.L8ParentL7Evidence{}, err
-	}
-	result := assetbuild.L8ParentL7Evidence{
-		ImageProfile: assetbuild.ImageProfileL7Network, ManifestSHA256: manifestDigest,
-		ProvenanceSHA256: provenanceDigest, ChecksumsSHA256: checksumsDigest,
-		KernelSizeBytes: kernelSize, KernelSHA256: kernelDigest,
-		RootfsSizeBytes: rootfsSize, RootfsSHA256: rootfsDigest,
-	}
-	var preimage bytes.Buffer
-	l8WriteToken(&preimage, "hal/l8/image-profile/parent-l7-evidence/v1")
-	l8WriteToken(&preimage, result.ImageProfile)
-	for _, digest := range []string{result.ManifestSHA256, result.ProvenanceSHA256, result.ChecksumsSHA256} {
-		decoded, decodeErr := decodeL8Digest(digest)
-		if decodeErr != nil {
-			return assetbuild.L8ParentL7Evidence{}, decodeErr
-		}
-		preimage.Write(decoded[:])
-	}
-	l8WriteUint64(&preimage, uint64(result.KernelSizeBytes))
-	kernel, _ := decodeL8Digest(result.KernelSHA256)
-	preimage.Write(kernel[:])
-	l8WriteUint64(&preimage, uint64(result.RootfsSizeBytes))
-	rootfs, _ := decodeL8Digest(result.RootfsSHA256)
-	preimage.Write(rootfs[:])
-	evidenceDigest := sha256.Sum256(preimage.Bytes())
-	result.EvidenceSHA256 = hex.EncodeToString(evidenceDigest[:])
-	return result, nil
 }
 
 func buildL8EvidenceFingerprint(request DistributionRequest, manifest assetbuild.DistributionManifest, provenance assetbuild.Provenance, sourceLock assetbuild.L8SourceLock, finalInspection assetbuild.L8FinalInspection, parentL7EvidenceSHA256 [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) ([32]byte, [32]byte, error) {
@@ -456,6 +399,66 @@ func digestL8DistributionFile(root *os.File, name string) (size int64, digest st
 	}
 	var trailing [1]byte
 	if count, readErr := file.Read(trailing[:]); count != 0 || readErr != io.EOF {
+		return 0, "", ErrAssetLockMismatch
+	}
+	return written, hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func resolveL8DistributionFromRoot(
+	root *os.File,
+	cleanRoot string,
+	lockedAtUnixMillis int64,
+	manifest assetbuild.DistributionManifest,
+) (assets.LaunchDescriptor, error) {
+	return resolveDistributionFromRootWithDigester(
+		root,
+		cleanRoot,
+		lockedAtUnixMillis,
+		manifest,
+		digestExpectedL8DistributionAsset,
+	)
+}
+
+func digestExpectedL8DistributionAsset(root *os.File, asset assetbuild.DistributionAsset) (size int64, digest string, retErr error) {
+	if asset.SizeBytes <= 0 || asset.SizeBytes > l8MaxPinnedAssetBytes {
+		return 0, "", ErrAssetLockMismatch
+	}
+	file, err := openDistributionFileNoFollow(root, asset.Key)
+	if err != nil {
+		return 0, "", ErrFileUnavailable
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, ErrFileUnavailable)
+		}
+	}()
+	before, err := file.Stat()
+	if err != nil || !before.Mode().IsRegular() {
+		return 0, "", ErrFileUnavailable
+	}
+	if before.Size() != asset.SizeBytes {
+		return 0, "", ErrAssetLockMismatch
+	}
+	hash := sha256.New()
+	written, err := io.CopyN(hash, file, asset.SizeBytes)
+	if err != nil || written != asset.SizeBytes {
+		return 0, "", ErrFileUnavailable
+	}
+	var trailing [1]byte
+	if count, readErr := file.Read(trailing[:]); count != 0 || readErr != io.EOF {
+		return 0, "", ErrAssetLockMismatch
+	}
+	after, err := file.Stat()
+	if err != nil || after.Size() != asset.SizeBytes || !os.SameFile(before, after) {
+		return 0, "", ErrAssetLockMismatch
+	}
+	current, err := openDistributionFileNoFollow(root, asset.Key)
+	if err != nil {
+		return 0, "", ErrAssetLockMismatch
+	}
+	currentInfo, currentStatErr := current.Stat()
+	currentCloseErr := current.Close()
+	if currentStatErr != nil || currentCloseErr != nil || !os.SameFile(after, currentInfo) {
 		return 0, "", ErrAssetLockMismatch
 	}
 	return written, hex.EncodeToString(hash.Sum(nil)), nil

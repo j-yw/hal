@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/printer"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1108,7 +1110,9 @@ func TestL8D2ImageProfilePolicyCompositionPackageFixtureDeclarationsRejectBuildC
 	canonicalFixture := `package localresolver
 import "testing"
 func materializeValidL8DistributionRequestFixture(t *testing.T) L8DistributionRequest { return L8DistributionRequest{} }
-func replaceL8DistributionPolicyCompositionField(request DistributionRequest, document, field, replacement string) error { return nil }`
+func replaceL8DistributionPolicyCompositionField(request DistributionRequest, document, field, replacement string) error { return nil }
+func buildCompleteValidL8DistributionRequestFixture(t *testing.T) L8DistributionRequest { return L8DistributionRequest{} }
+func rewriteExactL8PolicyCompositionField(request DistributionRequest, document, field, replacement string) error { return nil }`
 	canonical := map[string]string{"l8_distribution_policy_composition_fixture_test.go": canonicalFixture}
 	if issues := l8D2PolicyCompositionPackageFixtureDeclarationIssues(canonical); len(issues) != 0 {
 		t.Fatalf("canonical package fixture declarations rejected: %v", issues)
@@ -1121,6 +1125,13 @@ func materializeValidL8DistributionRequestFixture(t *testing.T) L8DistributionRe
 		"mutator": `//go:build alternate
 package localresolver
 func replaceL8DistributionPolicyCompositionField(request DistributionRequest, document, field, replacement string) error { return nil }`,
+		"complete builder": `//go:build alternate
+package localresolver
+import "testing"
+func buildCompleteValidL8DistributionRequestFixture(t *testing.T) L8DistributionRequest { return L8DistributionRequest{} }`,
+		"exact rewrite": `//go:build alternate
+package localresolver
+func rewriteExactL8PolicyCompositionField(request DistributionRequest, document, field, replacement string) error { return nil }`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			mutated := map[string]string{"l8_distribution_policy_composition_fixture_test.go": canonicalFixture, "alternate_fixture_test.go": duplicate}
@@ -1128,6 +1139,52 @@ func replaceL8DistributionPolicyCompositionField(request DistributionRequest, do
 				t.Fatal("package fixture declaration guard accepted a build-context duplicate")
 			}
 		})
+	}
+}
+
+func TestL8D2ImageProfileCompleteFixtureCompilesWithIssuerOverlay(t *testing.T) {
+	repositoryRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	temporary := t.TempDir()
+	issuerSourcePath := filepath.Join(temporary, "composed_d7_issuer_overlay.go")
+	issuerSource := `//go:build l8_verified_policy_artifact && l8_verified_pinned_callsite_evidence
+
+package syscallpolicy
+
+// Compile-only declarations deliberately issue no artifact or evidence value.
+func EmbeddedVerifiedPolicyArtifact() (VerifiedPolicyArtifact, error) { panic("compile-only") }
+func EmbeddedExpectedPinnedCallsiteEvidence() (ExpectedPinnedCallsiteEvidence, error) { panic("compile-only") }
+`
+	if err := os.WriteFile(issuerSourcePath, []byte(issuerSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	virtualIssuerPath := filepath.Join(
+		repositoryRoot,
+		"internal", "sandboxruntime", "microvm", "guestagent", "syscallpolicy",
+		"composed_d7_issuer_overlay.go",
+	)
+	overlayPath := filepath.Join(temporary, "overlay.json")
+	overlayBytes, err := json.Marshal(struct {
+		Replace map[string]string `json:"Replace"`
+	}{Replace: map[string]string{virtualIssuerPath: issuerSourcePath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overlayPath, overlayBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(
+		"go", "test",
+		"-overlay="+overlayPath,
+		"-tags=l8_verified_policy_artifact l8_verified_pinned_callsite_evidence",
+		"./internal/sandboxruntime/microvm/assets/localresolver",
+		"-run=^$", "-count=1",
+	)
+	command.Dir = repositoryRoot
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("complete L8 fixture does not type-check with the downstream issuer overlay: %v\n%s", err, output)
 	}
 }
 
@@ -2300,11 +2357,13 @@ func l8D2FileContainsTestTermination(source string, file *ast.File) bool {
 
 func l8D2PolicyCompositionSourcesContainPartialLanding(sources map[string]string) bool {
 	protected := map[string]struct{}{
-		"sealVerifiedL8Profile":                        {},
-		"sealVerifiedL8Distribution":                   {},
-		"AcquireL8AssetLease":                          {},
-		"materializeValidL8DistributionRequestFixture": {},
-		"replaceL8DistributionPolicyCompositionField":  {},
+		"sealVerifiedL8Profile":                          {},
+		"sealVerifiedL8Distribution":                     {},
+		"AcquireL8AssetLease":                            {},
+		"materializeValidL8DistributionRequestFixture":   {},
+		"replaceL8DistributionPolicyCompositionField":    {},
+		"buildCompleteValidL8DistributionRequestFixture": {},
+		"rewriteExactL8PolicyCompositionField":           {},
 	}
 	for path, source := range sources {
 		parsed, err := parser.ParseFile(token.NewFileSet(), path, source, parser.ParseComments)
@@ -2324,8 +2383,10 @@ func l8D2PolicyCompositionSourcesContainPartialLanding(sources map[string]string
 
 func l8D2PolicyCompositionPackageFixtureDeclarationIssues(sources map[string]string) []string {
 	counts := map[string]int{
-		"materializeValidL8DistributionRequestFixture": 0,
-		"replaceL8DistributionPolicyCompositionField":  0,
+		"materializeValidL8DistributionRequestFixture":   0,
+		"replaceL8DistributionPolicyCompositionField":    0,
+		"buildCompleteValidL8DistributionRequestFixture": 0,
+		"rewriteExactL8PolicyCompositionField":           0,
 	}
 	var issues []string
 	for path, source := range sources {
@@ -2341,10 +2402,29 @@ func l8D2PolicyCompositionPackageFixtureDeclarationIssues(sources map[string]str
 			}
 			if _, protected := counts[function.Name.Name]; protected {
 				counts[function.Name.Name]++
+				switch function.Name.Name {
+				case "buildCompleteValidL8DistributionRequestFixture":
+					if function.Recv != nil || function.Type.TypeParams != nil ||
+						!l8D2ExactNamedFields(function.Type.Params, []string{"t:*testing.T"}) ||
+						!l8D2ExactNamedFields(function.Type.Results, []string{"<unnamed>:L8DistributionRequest"}) {
+						issues = append(issues, "complete L8 fixture builder signature is not exact")
+					}
+				case "rewriteExactL8PolicyCompositionField":
+					if function.Recv != nil || function.Type.TypeParams != nil ||
+						!l8D2ExactNamedFields(function.Type.Params, []string{"request:DistributionRequest", "document:string", "field:string", "replacement:string"}) ||
+						!l8D2ExactNamedFields(function.Type.Results, []string{"<unnamed>:error"}) {
+						issues = append(issues, "exact L8 fixture rewrite signature is not exact")
+					}
+				}
 			}
 		}
 	}
-	for _, name := range []string{"materializeValidL8DistributionRequestFixture", "replaceL8DistributionPolicyCompositionField"} {
+	for _, name := range []string{
+		"materializeValidL8DistributionRequestFixture",
+		"replaceL8DistributionPolicyCompositionField",
+		"buildCompleteValidL8DistributionRequestFixture",
+		"rewriteExactL8PolicyCompositionField",
+	} {
 		if counts[name] != 1 {
 			issues = append(issues, "underlying L8 fixture declaration count across all build contexts is not exactly one: "+name)
 		}

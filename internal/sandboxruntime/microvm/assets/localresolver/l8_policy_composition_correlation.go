@@ -56,6 +56,28 @@ func validateL8PolicyCompositionCorrelation(
 	return nil
 }
 
+func validateL8DocumentPolicyCompositionCorrelation(
+	manifest, provenance, finalInspection assetbuild.L8ProcessCompositionFacts,
+) error {
+	manifestDigests, err := decodeL8PolicyCompositionDigests(manifest)
+	if err != nil {
+		return err
+	}
+	provenanceDigests, err := decodeL8PolicyCompositionDigests(provenance)
+	if err != nil {
+		return err
+	}
+	finalInspectionDigests, err := decodeL8PolicyCompositionDigests(finalInspection)
+	if err != nil {
+		return err
+	}
+	if !l8PolicyCompositionDigestsEqual(manifestDigests, provenanceDigests) ||
+		!l8PolicyCompositionDigestsEqual(manifestDigests, finalInspectionDigests) {
+		return l8PolicyCompositionCorrelationMismatch()
+	}
+	return nil
+}
+
 func l8PolicyCompositionCorrelationMismatch() error {
 	return &assetbuild.L8ValidationError{
 		Code:  assetbuild.L8ValidationCode("correlation_mismatch"),

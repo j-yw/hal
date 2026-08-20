@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	assetbuild "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/build"
 )
 
 func TestDigestL8DistributionFileEnforcesPerFileBoundsBeforeReading(t *testing.T) {
@@ -39,5 +41,60 @@ func TestDigestL8DistributionFileEnforcesPerFileBoundsBeforeReading(t *testing.T
 	}
 	if size, digest, err := digestL8DistributionFile(root, "rootfs.ext4"); err != nil || size != 2 || len(digest) != 64 {
 		t.Fatalf("small rootfs measurement = (%d, %q, %v), want exact digest", size, digest, err)
+	}
+}
+
+func TestResolveL8DistributionFromRootRejectsOversizedReplacementBeforeReading(t *testing.T) {
+	rootPath := t.TempDir()
+	kernel := []byte("bounded-kernel")
+	rootfs := []byte("bounded-rootfs")
+	writeL5DistributionFile(t, rootPath, "vmlinux", kernel)
+	writeL5DistributionFile(t, rootPath, "rootfs.ext4", rootfs)
+	manifest := l5DistributionManifest(kernel, rootfs)
+	manifest.ImageProfile = assetbuild.ImageProfileL8ProductionCredentials
+
+	replacement, err := os.Create(filepath.Join(rootPath, "rootfs.ext4.replacement"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replacement.Truncate(l8MaxPinnedAssetBytes + 1); err != nil {
+		_ = replacement.Close()
+		t.Fatal(err)
+	}
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(rootPath, "rootfs.ext4.replacement"), filepath.Join(rootPath, "rootfs.ext4")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.Open(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+
+	_, err = resolveL8DistributionFromRoot(root, rootPath, 1, manifest)
+	if !errors.Is(err, ErrAssetLockMismatch) {
+		t.Fatalf("resolveL8DistributionFromRoot() error = %v, want bounded mismatch", err)
+	}
+}
+
+func TestResolveL8DistributionFromRootRejectsTrailingBytesAgainstExpectedSize(t *testing.T) {
+	rootPath := t.TempDir()
+	kernel := []byte("bounded-kernel")
+	rootfs := []byte("bounded-rootfs")
+	writeL5DistributionFile(t, rootPath, "vmlinux", kernel)
+	writeL5DistributionFile(t, rootPath, "rootfs.ext4", append(append([]byte(nil), rootfs...), '!'))
+	manifest := l5DistributionManifest(kernel, rootfs)
+	manifest.ImageProfile = assetbuild.ImageProfileL8ProductionCredentials
+	root, err := os.Open(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+
+	_, err = resolveL8DistributionFromRoot(root, rootPath, 1, manifest)
+	if !errors.Is(err, ErrAssetLockMismatch) {
+		t.Fatalf("resolveL8DistributionFromRoot() error = %v, want trailing-byte mismatch", err)
 	}
 }

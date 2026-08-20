@@ -30,6 +30,13 @@ func VerifyL8DistributionBundle(request L8DistributionRequest) (VerifiedDistribu
 	if err != nil {
 		return VerifiedDistribution{}, classifyL8FinalInspectionError(err)
 	}
+	if err := validateL8DocumentPolicyCompositionCorrelation(
+		manifest.L8Profile.ProcessComposition,
+		provenance.L8Profile.ProcessComposition,
+		finalInspection.ProcessComposition,
+	); err != nil {
+		return VerifiedDistribution{}, classifyL8DocumentPolicyCompositionCorrelationError(err)
+	}
 	parentL7Profile, ok := request.ParentL7.L7Profile()
 	if !ok {
 		return VerifiedDistribution{}, classifyL8ParentError(ErrAssetLockMismatch)
@@ -38,7 +45,7 @@ func VerifyL8DistributionBundle(request L8DistributionRequest) (VerifiedDistribu
 	if err != nil {
 		return VerifiedDistribution{}, classifyL8ParentError(err)
 	}
-	descriptor, rootDir, parentL7EvidenceSHA256, err := validateL8BundleState(request.DistributionRequest, manifest, provenance, sourceLock, finalInspection, request.ParentL7.Manifest, request.ParentL7.Provenance, request.ParentL7.Descriptor, request.ParentL7.rootDir, parentL7Profile, parentL7Lease)
+	descriptor, rootDir, parentL7EvidenceSHA256, err := validateL8BundleState(request.DistributionRequest, manifest, provenance, sourceLock, finalInspection, request.ParentL7.Manifest, request.ParentL7.Provenance, request.ParentL7.Descriptor, parentL7Profile, parentL7Lease)
 	if err != nil {
 		return VerifiedDistribution{}, classifyL8BundleStateError(err)
 	}
@@ -144,6 +151,10 @@ func classifyL8PolicyCompositionDigestError(_ error) error {
 }
 
 func classifyL8PolicyCompositionCorrelationError(_ error) error {
+	return newResolverError(ErrorCodeAssetLockMismatch, "processComposition", "", "L8 policy composition correlation mismatch", ErrAssetLockMismatch)
+}
+
+func classifyL8DocumentPolicyCompositionCorrelationError(_ error) error {
 	return newResolverError(ErrorCodeAssetLockMismatch, "processComposition", "", "L8 policy composition correlation mismatch", ErrAssetLockMismatch)
 }
 

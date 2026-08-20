@@ -295,6 +295,26 @@ func resolveDistributionFromRoot(
 	lockedAtUnixMillis int64,
 	manifest assetbuild.DistributionManifest,
 ) (assets.LaunchDescriptor, error) {
+	return resolveDistributionFromRootWithDigester(
+		root,
+		cleanRoot,
+		lockedAtUnixMillis,
+		manifest,
+		func(root *os.File, asset assetbuild.DistributionAsset) (int64, string, error) {
+			return digestDistributionFile(root, asset.Key)
+		},
+	)
+}
+
+type distributionAssetDigester func(*os.File, assetbuild.DistributionAsset) (int64, string, error)
+
+func resolveDistributionFromRootWithDigester(
+	root *os.File,
+	cleanRoot string,
+	lockedAtUnixMillis int64,
+	manifest assetbuild.DistributionManifest,
+	digestAsset distributionAssetDigester,
+) (assets.LaunchDescriptor, error) {
 	if lockedAtUnixMillis < 0 {
 		return assets.LaunchDescriptor{}, newResolverError(
 			ErrorCodeInvalidRequest,
@@ -317,7 +337,7 @@ func resolveDistributionFromRoot(
 		descriptor.Labels = append(descriptor.Labels, "network-profile", "production-credentials-profile")
 	}
 	for _, asset := range manifest.Assets {
-		size, digest, err := digestDistributionFile(root, asset.Key)
+		size, digest, err := digestAsset(root, asset)
 		if err != nil {
 			return assets.LaunchDescriptor{}, err
 		}
