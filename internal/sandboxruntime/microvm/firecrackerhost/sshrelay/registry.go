@@ -75,7 +75,13 @@ func (entry *liveHostAgentEntry) Open(ctx context.Context) (AgentConnection, err
 		return nil, ErrAgentOpen
 	}
 	connection, err := entry.dialer.Open(ctx)
-	if err != nil || !configuredDependency(connection) {
+	if err != nil {
+		if errors.Is(err, ErrCleanupIncomplete) {
+			return connection, errors.Join(ErrAgentOpen, ErrCleanupIncomplete)
+		}
+		return connection, ErrAgentOpen
+	}
+	if !configuredDependency(connection) {
 		return connection, ErrAgentOpen
 	}
 	if ctx.Err() != nil {
@@ -386,7 +392,7 @@ func (value *lease) beginOpen() error {
 	if value.closed {
 		return ErrLeaseClosed
 	}
-	if len(value.connections) >= credentialprotocol.SSHAgentRelayMaxConcurrentConnections {
+	if len(value.connections)+value.inflightOpens >= credentialprotocol.SSHAgentRelayMaxConcurrentConnections {
 		return ErrConnectionLimit
 	}
 	if value.inflightOpens == 0 {
