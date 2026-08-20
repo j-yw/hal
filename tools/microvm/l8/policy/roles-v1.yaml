@@ -1,0 +1,23 @@
+{
+  "schema": "hal-l8-policy-roles-v1",
+  "roles": [
+    {"id": 1, "name": "launch-bootstrap", "stage": 4, "origin": 1, "path": 1, "syscall": "read"},
+    {"id": 2, "name": "launch-base", "stage": 4, "origin": 3, "path": 3, "syscall": "read", "pinnedRuntimeCallsite": true},
+    {"id": 3, "name": "controller-bootstrap", "stage": 4, "origin": 1, "path": 1, "syscall": "read"},
+    {"id": 4, "name": "steady-controller", "stage": 4, "origin": 1, "path": 1, "syscall": "read"},
+    {"id": 5, "name": "agent-bootstrap", "stage": 4, "origin": 1, "path": 1, "syscall": "read"},
+    {"id": 6, "name": "steady-agent", "stage": 4, "origin": 1, "path": 1, "syscall": "read"},
+    {"id": 7, "name": "monitor-bootstrap", "stage": 4, "origin": 1, "path": 1, "syscall": "read"},
+    {"id": 8, "name": "steady-monitor", "stage": 4, "origin": 1, "path": 1, "syscall": "read"},
+    {"id": 9, "name": "workload-transition", "stage": 4, "origin": 1, "path": 1, "syscall": "read"},
+    {"id": 10, "name": "workload", "stage": 4, "origin": 2, "path": 1, "syscall": "read"}
+  ],
+  "pinnedCallsite": {
+    "sourceUnit": "src/internal/runtime/syscall/asm_linux_amd64.s",
+    "sourceUnitSHA256": "dd6191356bf0c18b3c9862b19e4014f06e217987b225823612b6da56fb6e193a",
+    "symbol": "internal/runtime/syscall.Syscall6",
+    "instructionHex": "0f05",
+    "instructionOffsetInSymbol": 12,
+    "argumentTemplate": "linux-amd64-syscall-abi-v1"
+  }
+}

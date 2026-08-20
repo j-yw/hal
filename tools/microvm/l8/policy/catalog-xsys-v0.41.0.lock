@@ -1,0 +1,5 @@
+format=hal-l8-catalog-lock-v1
+module=golang.org/x/sys@v0.41.0
+source_path=unix/zsysnum_linux_amd64.go
+source_sha256=d12bc509fbe79afd804a66297c7517076eea6f3c8d82780630cd07f561b043b6
+kernel_ceiling=450
