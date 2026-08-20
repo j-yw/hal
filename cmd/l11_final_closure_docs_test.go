@@ -367,11 +367,20 @@ func l11ValidateFinalClosureMatrix(rows []l11FinalClosureMatrixRow) error {
 
 var (
 	l11PrematureProductionLiveAcceptance = regexp.MustCompile(`(?im)(?:^|\n)\s*(?:production[- ]live acceptance\s*:\s*(?:accepted|passed|complete|completed)|(?:the\s+)?L11 production[- ]live (?:lane|closure)\s+(?:is\s+|was\s+|has been\s+)?(?:accepted|passed|complete|completed))\b`)
+	l11ContradictoryReleaseSuccess       = regexp.MustCompile(`(?im)^\s*(?:(?:current|final)\s+)?release\s+(?:result|status|state)\s*:\s*(?:accepted|passed|complete|completed)\.?\s*$|^\s*all nine rows passed\.?\s*$`)
 	l11UnsafeReleaseURL                  = regexp.MustCompile(`(?i)\b(?:https?|ssh|file)://\S+`)
 	l11UnsafeReleaseToken                = regexp.MustCompile(`(?i)\b(?:gh[pousr]_[A-Za-z0-9]{20,}|hcloud_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b`)
 	l11UnsafeReleaseEnvironmentValue     = regexp.MustCompile(`(?im)\b(?:HCLOUD_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|DIGITALOCEAN_ACCESS_TOKEN|GOOGLE_APPLICATION_CREDENTIALS)\s*=\s*\S+`)
 	l11UnsafeReleaseUnixPath             = regexp.MustCompile("(?m)(?:^|[\\s\"'(])(?:~/(?:[^\\s`|,;)]+)?|/(?:home|root|tmp|var|run|private|etc|opt|srv|mnt|Users)(?:/[^\\s`|,;)]*)?)")
 	l11UnsafeReleaseWindowsPath          = regexp.MustCompile("(?im)(?:^|[\\s\"'(])(?:[A-Z]:\\\\|\\\\\\\\)[^\\s`|,;)]+")
+	l11UnsafeReleaseHostname             = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|dev|cloud|internal|local|invalid|example)\b`)
+	l11UnsafeReleaseIPv4                 = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
+	l11UnsafeReleaseIPv6                 = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]{1,39}\b`)
+	l11UnsafeReleasePort                 = regexp.MustCompile(`(?im)\b(?:listener\s+)?port\s*[:=]\s*[0-9]{1,5}\b`)
+	l11UnsafeReleaseAbstractSocket       = regexp.MustCompile(`(?im)\b(?:socket|endpoint)\s*[:=]\s*(?:@|\\x00)[^\s` + "`" + `|,;)]+`)
+	l11UnsafeReleasePID                  = regexp.MustCompile(`(?im)\bpid\s*[:=]\s*[0-9]+\b`)
+	l11UnsafeReleaseProviderHandle       = regexp.MustCompile(`(?im)\bprovider\s+handle\s*[:=]\s*[^\s` + "`" + `|,;)]+`)
+	l11UnsafeReleaseBearer               = regexp.MustCompile(`(?im)\b(?:authorization|proxy-authorization)\s*:\s*bearer\s+[^\s` + "`" + `|,;)]+`)
 )
 
 func l11ValidateFinalClosureDocumentSafety(doc string) error {
@@ -392,11 +401,20 @@ func l11ValidateFinalClosureDocumentSafety(doc string) error {
 	}
 	for _, pattern := range []*regexp.Regexp{
 		l11PrematureProductionLiveAcceptance,
+		l11ContradictoryReleaseSuccess,
 		l11UnsafeReleaseURL,
 		l11UnsafeReleaseToken,
 		l11UnsafeReleaseEnvironmentValue,
 		l11UnsafeReleaseUnixPath,
 		l11UnsafeReleaseWindowsPath,
+		l11UnsafeReleaseHostname,
+		l11UnsafeReleaseIPv4,
+		l11UnsafeReleaseIPv6,
+		l11UnsafeReleasePort,
+		l11UnsafeReleaseAbstractSocket,
+		l11UnsafeReleasePID,
+		l11UnsafeReleaseProviderHandle,
+		l11UnsafeReleaseBearer,
 	} {
 		if pattern.MatchString(doc) {
 			return &l11FinalClosureGuardError{message: "L11 release evidence contains a premature acceptance or unsafe value"}
