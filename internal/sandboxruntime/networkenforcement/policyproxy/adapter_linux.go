@@ -14,12 +14,14 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/applicationroute"
 )
 
 const productionAdapterID = "production-policy-proxy"
@@ -30,24 +32,26 @@ var _ networkenforcement.ProxyListenerAdapter = (*Adapter)(nil)
 type Adapter struct {
 	config Config
 
-	lifecycleMu           sync.Mutex
-	mu                    sync.Mutex
-	server                *http.Server
-	listener              net.Listener
-	endpoint              string
-	cancel                context.CancelFunc
-	done                  chan error
-	sem                   chan struct{}
-	connections           map[net.Conn]struct{}
-	generation            uint64
-	loss                  chan struct{}
-	lossOnce              *sync.Once
-	lastStoppedGeneration uint64
-	lastStoppedAddress    string
-	reservation           *os.File
-	reservationGeneration uint64
-	reservationAddress    string
-	stopping              bool
+	lifecycleMu                     sync.Mutex
+	mu                              sync.Mutex
+	server                          *http.Server
+	listener                        net.Listener
+	endpoint                        string
+	cancel                          context.CancelFunc
+	done                            chan error
+	sem                             chan struct{}
+	connections                     map[net.Conn]struct{}
+	generation                      uint64
+	loss                            chan struct{}
+	lossOnce                        *sync.Once
+	lastStoppedGeneration           uint64
+	lastStoppedAddress              string
+	reservation                     *os.File
+	reservationGeneration           uint64
+	reservationAddress              string
+	stopping                        bool
+	applicationRoutesStarted        bool
+	applicationRoutesCleanupPending bool
 
 	// beforeTunnelTrack is a package-test synchronization seam. Production
 	// construction leaves it nil.
@@ -64,7 +68,7 @@ func New(config Config) (*Adapter, error) {
 	if config.ListenAddress == "" {
 		config.ListenAddress = "127.0.0.1:0"
 	}
-	if !validLimits(config.Limits) || !validLoopbackListenAddress(config.ListenAddress) {
+	if !validLimits(config.Limits) || !validLoopbackListenAddress(config.ListenAddress) || !validApplicationRoutes(config.ApplicationRoutes) {
 		return nil, ErrInvalidConfig
 	}
 	plan := config.Policy.PlanMetadata()
@@ -121,22 +125,40 @@ func (a *Adapter) StartProxyListener(ctx context.Context, request networkenforce
 	}
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.listener != nil {
 		select {
 		case <-a.done:
+			a.mu.Unlock()
 			return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("start")
 		default:
 		}
+		a.mu.Unlock()
 		return a.metadata(request, networkenforcement.LifecycleStatusStarting, networkenforcement.LifecycleReasonStarted), nil
 	}
-	if a.reservation != nil {
+	if a.reservation != nil || a.applicationRoutesCleanupPending {
+		a.mu.Unlock()
 		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("start")
+	}
+	a.mu.Unlock()
+
+	if a.config.ApplicationRoutes != nil {
+		if err := a.config.ApplicationRoutes.Start(ctx); err != nil {
+			closeErr := a.config.ApplicationRoutes.Close(ctx)
+			a.mu.Lock()
+			a.applicationRoutesStarted = false
+			a.applicationRoutesCleanupPending = closeErr != nil
+			a.mu.Unlock()
+			return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("start")
+		}
+		a.mu.Lock()
+		a.applicationRoutesStarted = true
+		a.mu.Unlock()
 	}
 
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", a.config.ListenAddress)
 	if err != nil {
+		a.rollbackApplicationRoutes()
 		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("start")
 	}
 	listener = newConnectionLimitListener(listener, a.config.Limits.MaxConcurrent)
@@ -153,6 +175,7 @@ func (a *Adapter) StartProxyListener(ctx context.Context, request networkenforce
 		},
 	}
 	done := make(chan error, 1)
+	a.mu.Lock()
 	a.generation++
 	generation := a.generation
 	loss := make(chan struct{})
@@ -165,6 +188,7 @@ func (a *Adapter) StartProxyListener(ctx context.Context, request networkenforce
 	a.done = done
 	a.loss = loss
 	a.lossOnce = lossOnce
+	a.mu.Unlock()
 	go func() {
 		serveErr := server.Serve(listener)
 		if errors.Is(serveErr, http.ErrServerClosed) {
@@ -217,7 +241,7 @@ func (a *Adapter) stopProxyListener(request networkenforcement.ProxyListenerLife
 
 	a.mu.Lock()
 	if expected != nil {
-		if expected.generation != 0 && expected.generation == a.lastStoppedGeneration && expected.address != "" && expected.address == a.lastStoppedAddress && a.listener == nil {
+		if expected.generation != 0 && expected.generation == a.lastStoppedGeneration && expected.address != "" && expected.address == a.lastStoppedAddress && a.listener == nil && !a.applicationRoutesCleanupPending {
 			reservation := a.takeExactReservationLocked(*expected)
 			a.mu.Unlock()
 			if reservation != nil {
@@ -238,6 +262,9 @@ func (a *Adapter) stopProxyListener(request networkenforcement.ProxyListenerLife
 	done := a.done
 	loss := a.loss
 	lossOnce := a.lossOnce
+	applicationRoutesNeedClose := a.applicationRoutesStarted || a.applicationRoutesCleanupPending
+	a.applicationRoutesStarted = false
+	a.applicationRoutesCleanupPending = applicationRoutesNeedClose
 	var reservation *os.File
 	if expected != nil {
 		reservation = a.takeExactReservationLocked(*expected)
@@ -293,13 +320,25 @@ func (a *Adapter) stopProxyListener(request networkenforcement.ProxyListenerLife
 			}
 		}
 	}
+	applicationRoutesErr := error(nil)
+	if applicationRoutesNeedClose && a.config.ApplicationRoutes != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), a.config.Limits.ShutdownTimeout)
+		applicationRoutesErr = a.config.ApplicationRoutes.Close(cleanupCtx)
+		cleanupCancel()
+	}
 	a.mu.Lock()
 	if a.generation == generation && a.server == nil {
 		for conn := range a.connections {
 			delete(a.connections, conn)
 		}
 	}
+	if applicationRoutesNeedClose {
+		a.applicationRoutesCleanupPending = applicationRoutesErr != nil
+	}
 	a.mu.Unlock()
+	if applicationRoutesErr != nil {
+		return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonAdapterFailed), safeAdapterError("stop")
+	}
 	return a.metadata(request, networkenforcement.LifecycleStatusStopped, networkenforcement.LifecycleReasonStopped), nil
 }
 
@@ -351,6 +390,9 @@ func (a *Adapter) superviseServeExit(generation uint64, server *http.Server, lis
 	a.done = nil
 	loss := a.loss
 	lossOnce := a.lossOnce
+	applicationRoutesNeedClose := a.applicationRoutesStarted || a.applicationRoutesCleanupPending
+	a.applicationRoutesStarted = false
+	a.applicationRoutesCleanupPending = applicationRoutesNeedClose
 	a.loss = nil
 	a.lossOnce = nil
 	a.mu.Unlock()
@@ -364,6 +406,14 @@ func (a *Adapter) superviseServeExit(generation uint64, server *http.Server, lis
 	}
 	_ = listener.Close()
 	_ = server.Close()
+	if applicationRoutesNeedClose && a.config.ApplicationRoutes != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), a.config.Limits.ShutdownTimeout)
+		closeErr := a.config.ApplicationRoutes.Close(cleanupCtx)
+		cleanupCancel()
+		a.mu.Lock()
+		a.applicationRoutesCleanupPending = closeErr != nil
+		a.mu.Unlock()
+	}
 }
 
 // Endpoint returns the live-only listener endpoint for explicit L7 topology
@@ -503,10 +553,210 @@ func (a *Adapter) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	defer cancel()
 	request = request.WithContext(ctx)
 	if request.Method == http.MethodConnect {
+		if len(request.Header.Values("api-key")) != 0 {
+			a.emitSyntheticDecision(networkenforcement.PolicyProxyDecisionReasonProxyUnsupported, "")
+			safeHTTPError(w, http.StatusForbidden)
+			return
+		}
 		a.serveConnect(w, request, generation)
 		return
 	}
+	if routeID, reserved := a.applicationRouteForRequest(request); reserved {
+		if routeID == "" || a.config.ApplicationRoutes == nil {
+			a.emitSyntheticDecision(networkenforcement.PolicyProxyDecisionReasonProxyUnsupported, "")
+			safeHTTPError(w, http.StatusForbidden)
+			return
+		}
+		a.serveApplicationRoute(w, request, routeID)
+		return
+	}
 	a.serveHTTP(w, request, generation)
+}
+
+func validApplicationRoutes(handler applicationroute.Handler) (valid bool) {
+	if handler == nil {
+		return true
+	}
+	value := reflect.ValueOf(handler)
+	if value.Kind() == reflect.Pointer && value.IsNil() {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			valid = false
+		}
+	}()
+	definitions := handler.Definitions()
+	if len(definitions) == 0 {
+		return false
+	}
+	for index, definition := range definitions {
+		if applicationroute.ValidateDefinition(definition) != nil {
+			return false
+		}
+		for prior := 0; prior < index; prior++ {
+			if definitions[prior].ID == definition.ID || strings.HasPrefix(definitions[prior].Prefix, definition.Prefix) || strings.HasPrefix(definition.Prefix, definitions[prior].Prefix) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (a *Adapter) rollbackApplicationRoutes() {
+	if a.config.ApplicationRoutes == nil {
+		return
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), a.config.Limits.ShutdownTimeout)
+	err := a.config.ApplicationRoutes.Close(cleanupCtx)
+	cleanupCancel()
+	a.mu.Lock()
+	a.applicationRoutesStarted = false
+	a.applicationRoutesCleanupPending = err != nil
+	a.mu.Unlock()
+}
+
+func (a *Adapter) applicationRouteForRequest(request *http.Request) (applicationroute.RouteID, bool) {
+	if request == nil || request.URL == nil {
+		return "", false
+	}
+	path := request.URL.EscapedPath()
+	if !strings.HasPrefix(path, applicationroute.CredentialHTTPV1Prefix) {
+		return "", false
+	}
+	if a.config.ApplicationRoutes == nil {
+		return "", true
+	}
+	for _, definition := range a.config.ApplicationRoutes.Definitions() {
+		if strings.HasPrefix(path, definition.Prefix) {
+			return definition.ID, true
+		}
+	}
+	return "", true
+}
+
+func (a *Adapter) serveApplicationRoute(w http.ResponseWriter, request *http.Request, routeID applicationroute.RouteID) {
+	if request == nil || request.URL == nil || request.URL.IsAbs() || request.ProtoMajor != 1 || request.ProtoMinor != 1 ||
+		request.Host == "" || strings.ContainsAny(request.Host, "@/\\?# \t\r\n") || request.ContentLength < 0 ||
+		len(request.TransferEncoding) != 0 || len(request.Trailer) != 0 || request.Header.Get("Upgrade") != "" {
+		safeHTTPError(w, http.StatusBadRequest)
+		return
+	}
+	definition, ok := a.applicationRouteDefinition(routeID)
+	if !ok {
+		safeHTTPError(w, http.StatusForbidden)
+		return
+	}
+	headerBytes, ok := applicationRequestHeaderBytes(request)
+	if !ok || headerBytes > definition.Limits.MaxRequestHeaderBytes {
+		safeHTTPError(w, http.StatusRequestHeaderFieldsTooLarge)
+		return
+	}
+	headers := newApplicationRequestHeaders(request.Header)
+	response, err := a.config.ApplicationRoutes.Handle(request.Context(), routeID, applicationroute.Request{
+		Metadata: applicationroute.RequestMetadata{
+			Method: request.Method, ContentType: request.Header.Get("Content-Type"),
+			HeaderBytes: headerBytes, ContentLength: request.ContentLength,
+		},
+		Target: applicationroute.RequestTarget{
+			Authority: request.Host, Path: request.URL.EscapedPath(), RawQuery: request.URL.RawQuery,
+		},
+		Headers: headers,
+		Body:    request.Body,
+	})
+	if err != nil {
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		safeHTTPError(w, http.StatusForbidden)
+		return
+	}
+	if response.Body != nil {
+		defer response.Body.Close()
+	}
+	payload, tooLarge, readErr := readBounded(response.Body, definition.Limits.MaxResponseBodyBytes)
+	if readErr != nil || tooLarge || int64(len(payload)) != response.Metadata.ContentLength || response.Metadata.StatusCode < 200 || response.Metadata.StatusCode > 599 {
+		safeHTTPError(w, http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", response.Metadata.ContentType)
+	w.Header().Set("Connection", "close")
+	w.WriteHeader(response.Metadata.StatusCode)
+	_, _ = w.Write(payload)
+}
+
+func (a *Adapter) applicationRouteDefinition(id applicationroute.RouteID) (applicationroute.Definition, bool) {
+	if a.config.ApplicationRoutes == nil {
+		return applicationroute.Definition{}, false
+	}
+	for _, definition := range a.config.ApplicationRoutes.Definitions() {
+		if definition.ID == id {
+			return definition, true
+		}
+	}
+	return applicationroute.Definition{}, false
+}
+
+type applicationRequestHeaders struct {
+	header http.Header
+	names  []string
+}
+
+func newApplicationRequestHeaders(header http.Header) *applicationRequestHeaders {
+	names := make([]string, 0, len(header))
+	for name := range header {
+		names = append(names, strings.ToLower(name))
+	}
+	sort.Strings(names)
+	return &applicationRequestHeaders{header: header, names: names}
+}
+
+func (headers *applicationRequestHeaders) Names() []string {
+	return append([]string(nil), headers.names...)
+}
+
+func (headers *applicationRequestHeaders) ValueCount(name string) int {
+	if headers == nil {
+		return 0
+	}
+	return len(headers.header.Values(name))
+}
+
+func (headers *applicationRequestHeaders) CopyValue(name string, index int, destination []byte) (int, error) {
+	if headers == nil || index < 0 {
+		wipeApplicationHeaderDestination(destination)
+		return 0, applicationroute.ErrHandlerDispatch
+	}
+	values := headers.header.Values(name)
+	if index >= len(values) || len(destination) < len(values[index]) {
+		wipeApplicationHeaderDestination(destination)
+		return 0, applicationroute.ErrHandlerDispatch
+	}
+	copy(destination, values[index])
+	return len(values[index]), nil
+}
+
+func applicationRequestHeaderBytes(request *http.Request) (int64, bool) {
+	if request == nil {
+		return 0, false
+	}
+	total := int64(len(request.Method) + len(request.RequestURI) + len(request.Proto) + len(request.Host) + 8)
+	for name, values := range request.Header {
+		for _, value := range values {
+			addition := int64(len(name) + len(value) + 4)
+			if addition < 0 || total > int64(maxHeaderBytes)-addition {
+				return 0, false
+			}
+			total += addition
+		}
+	}
+	return total, true
+}
+
+func wipeApplicationHeaderDestination(destination []byte) {
+	for index := range destination {
+		destination[index] = 0
+	}
 }
 
 func (a *Adapter) serveHTTP(w http.ResponseWriter, request *http.Request, generation uint64) {
