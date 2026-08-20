@@ -681,6 +681,7 @@ func phase50ApprovedLiveMarkerFiles() map[string]bool {
 		"cmd/us004_default_harness_guard_test.go":                                                         true,
 		"internal/credentialdelivery/activation_diagnostics_test.go":                                      true,
 		"internal/credentialdelivery/import_boundary_test.go":                                             true,
+		"internal/credentialproxy/import_boundary_test.go":                                                true,
 		"internal/livegate/contracts.go":                                                                  true,
 		"internal/livegate/contracts_test.go":                                                             true,
 		"internal/livegate/evaluator_test.go":                                                             true,
