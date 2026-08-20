@@ -5707,6 +5707,8 @@ type HelperOptions struct {
 	Core      credentialhelper.Core
 	Transport credentialhelper.Transport
 	Policy    credentialhelper.Policy
+	Host      credentialhelper.ExtensionHost
+	Runtime   credentialhelper.ServiceRuntime
 	SSH       credentialhelper.ExtensionRegistration
 }
 
@@ -5752,6 +5754,15 @@ is one canonical bounded binary form with strict field order, exact contract
 version `l8-process-composition-v1`, closed roles, no unknown/trailing fields,
 and SHA-256 over the complete encoding. It contains no live handle, path, FD,
 PID, endpoint, secret, config value, or JSON tag.
+
+`HelperOptions.Host` and `HelperOptions.Runtime` are explicit because
+`credentialhelper.NewService` requires the D4-owned `ExtensionHost` and
+`ServiceRuntime` independently from `Core`. `NewHelper` applies the same
+typed-nil-aware dependency validation to `Core`, `Transport`, `Policy`, `Host`,
+and `Runtime`, passes those exact five values plus its locally constructed
+extension registry to `credentialhelper.NewService`, and never recovers either
+dependency through a type assertion on `Core`. `SSH` remains the sole explicit
+extension registration and cannot replace a service dependency.
 
 For the agent process, D6 creates and validates one immutable client
 `ProcessDescriptor` before either D4 bootstrap or credentialclient construction.

@@ -460,7 +460,9 @@ Required focused areas are:
   and absence proof;
 - immutable matching helper/client extension registries, typed-nil and
   duplicate-claim rejection, exact helper/client/core/transport/policy/host
-  method sets, implementation-ready private-field Core request/result layouts,
+  method sets, explicit `HelperOptions.Host` and `HelperOptions.Runtime`
+  dependencies with no hidden Core type assertion, implementation-ready
+  private-field Core request/result layouts,
   canonical relative-path and lifecycle correlation capabilities, synchronous
   borrowed private-binding input, exact receive/send packet unions and
   body/right budget ownership, closed helper-policy operation/rejection and

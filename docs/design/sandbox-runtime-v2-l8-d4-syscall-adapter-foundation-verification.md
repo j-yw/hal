@@ -23,15 +23,20 @@ The generator also emits the adapter-callsite inventory from exact
 rows, so the adapter-callsite inventory is empty and cannot enable a live constructor.
 
 `credentialhelper/linux.NewSyscallPolicyCoreKernel` accepts only an injected
-`CoreKernel` and an opaque `rolebootstrap.InstallPlan`. It loads the embedded
-HL8Q and expected HL8E authority internally, requires a D2 ticket for every
-generated adapter-callsite input, requires the D7-issued native artifact, and
-correlates the policy and install-table digests. Callers cannot supply a policy,
-profile, expected evidence marker, or generated native artifact.
+`CoreKernel` and an opaque `rolebootstrap.InstallPlan`. The guest-side
+constructor loads and validates only the embedded HL8Q artifact and source-lock
+authority, requires a D2 ticket for every generated adapter-callsite input,
+requires the D7-issued native artifact, and correlates the policy and
+install-table digests. The guest-side constructor never loads or imports HL8E.
+The local resolver remains the sole production consumer of the host-only expected HL8E issuer
+and binds imported final-binary evidence into the opaque host profile. Callers
+cannot supply a policy, profile, expected evidence marker, or generated native
+artifact.
 
 The current constructor returns the stable sanitized dependency failure before
 retaining or calling the injected kernel because the adapter-callsite
-inventory, expected HL8E marker, and native generated artifact are incomplete.
+inventory and native generated artifact are incomplete. Removing guest access
+to the host-only evidence issuer does not activate this constructor.
 The non-Linux constructor rejects without inspecting its inputs.
 
 ## Green gates

@@ -13,8 +13,9 @@ import (
 // NewSyscallPolicyCoreKernel is the fail-closed D4 junction for the later live
 // wrapper. This slice validates only D2/D7-issued immutable authority. It does
 // not retain the injected kernel and cannot return a live CoreKernel until D7
-// emits complete adapter callsites, expected final-binary evidence, and the
-// native role-bootstrap artifact.
+// emits complete adapter callsites and the native role-bootstrap artifact.
+// Host-only final-binary evidence remains exclusively at the local-resolver
+// profile boundary and is never loaded by this guest-side constructor.
 func NewSyscallPolicyCoreKernel(options SyscallPolicyCoreKernelOptions) (CoreKernel, error) {
 	if err := coreKernelDependencyError(options.Kernel); err != nil {
 		return nil, err
@@ -29,10 +30,6 @@ func NewSyscallPolicyCoreKernel(options SyscallPolicyCoreKernelOptions) (CoreKer
 	}
 	policy, err := syscallpolicy.NewPolicy(artifact)
 	if err != nil || !policyAdapterCallsiteInventoryReady(policy) {
-		return nil, credentialhelper.ErrContractDependency
-	}
-	expectedEvidence, err := syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()
-	if err != nil || expectedEvidence.SHA256() == ([32]byte{}) {
 		return nil, credentialhelper.ErrContractDependency
 	}
 	generatedArtifact, err := rolebootstrap.EmbeddedGeneratedArtifact()

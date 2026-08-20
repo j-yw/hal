@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"path/filepath"
@@ -8,6 +10,104 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *testing.T) {
+	document := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-guest-extension-seams.md"))
+	block := l8D6HelperOptionsBlock(t, document)
+	if err := validateL8D6HelperOptionsContract(block); err != nil {
+		t.Fatal(err)
+	}
+
+	mutations := []struct {
+		name    string
+		old     string
+		replace string
+	}{
+		{name: "missing host", old: "\tHost      credentialhelper.ExtensionHost\n", replace: ""},
+		{name: "missing runtime", old: "\tRuntime   credentialhelper.ServiceRuntime\n", replace: ""},
+		{name: "host hidden in core", old: "credentialhelper.ExtensionHost", replace: "credentialhelper.Core"},
+		{name: "runtime hidden in core", old: "credentialhelper.ServiceRuntime", replace: "credentialhelper.Core"},
+		{name: "host runtime reordered", old: "\tHost      credentialhelper.ExtensionHost\n\tRuntime   credentialhelper.ServiceRuntime\n", replace: "\tRuntime   credentialhelper.ServiceRuntime\n\tHost      credentialhelper.ExtensionHost\n"},
+		{name: "extra dependency", old: "\tSSH       credentialhelper.ExtensionRegistration\n", replace: "\tSSH       credentialhelper.ExtensionRegistration\n\tHidden    credentialhelper.Core\n"},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := strings.Replace(block, mutation.old, mutation.replace, 1)
+			if mutated == block {
+				t.Fatal("mutation did not change HelperOptions contract")
+			}
+			if err := validateL8D6HelperOptionsContract(mutated); err == nil {
+				t.Fatal("HelperOptions contract guard accepted mutation")
+			}
+		})
+	}
+}
+
+func l8D6HelperOptionsBlock(t *testing.T, document string) string {
+	t.Helper()
+	const startMarker = "type HelperOptions struct {"
+	start := strings.Index(document, startMarker)
+	if start < 0 {
+		t.Fatal("extension-seam document omits HelperOptions")
+	}
+	rest := document[start:]
+	end := strings.Index(rest, "\n}")
+	if end < 0 {
+		t.Fatal("extension-seam document has unterminated HelperOptions")
+	}
+	return rest[:end+2]
+}
+
+func validateL8D6HelperOptionsContract(source string) error {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "helper_options_contract.go", "package contract\n"+source, 0)
+	if err != nil {
+		return fmt.Errorf("parse HelperOptions contract: %w", err)
+	}
+	want := []struct {
+		name      string
+		qualifier string
+		typeName  string
+	}{
+		{name: "Core", qualifier: "credentialhelper", typeName: "Core"},
+		{name: "Transport", qualifier: "credentialhelper", typeName: "Transport"},
+		{name: "Policy", qualifier: "credentialhelper", typeName: "Policy"},
+		{name: "Host", qualifier: "credentialhelper", typeName: "ExtensionHost"},
+		{name: "Runtime", qualifier: "credentialhelper", typeName: "ServiceRuntime"},
+		{name: "SSH", qualifier: "credentialhelper", typeName: "ExtensionRegistration"},
+	}
+	var fields []*ast.Field
+	for _, declaration := range parsed.Decls {
+		generic, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, specification := range generic.Specs {
+			typeSpec, ok := specification.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			structure, structureOK := typeSpec.Type.(*ast.StructType)
+			if structureOK && typeSpec.Name.Name == "HelperOptions" {
+				fields = structure.Fields.List
+			}
+		}
+	}
+	if len(fields) != len(want) {
+		return fmt.Errorf("HelperOptions has %d fields, want %d exact dependencies", len(fields), len(want))
+	}
+	for index, expected := range want {
+		field := fields[index]
+		if len(field.Names) != 1 || field.Names[0].Name != expected.name || field.Tag != nil {
+			return fmt.Errorf("HelperOptions field %d is not exact %s", index, expected.name)
+		}
+		selector, ok := field.Type.(*ast.SelectorExpr)
+		qualifier, qualifierOK := selector.X.(*ast.Ident)
+		if !ok || !qualifierOK || qualifier.Name != expected.qualifier || selector.Sel.Name != expected.typeName {
+			return fmt.Errorf("HelperOptions.%s has the wrong dependency type", expected.name)
+		}
+	}
+	return nil
+}
 
 func TestL8D2GuestHelperContractsAreNormative(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8CredentialArchitectureDoc))

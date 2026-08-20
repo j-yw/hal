@@ -743,9 +743,12 @@ argument-template and instruction digest, prove the callsite lies at the exact
 offset in the bound guest binary text, and emit the matching
 `PinnedCallsiteEvidenceView`. Its final-binary disassembly and call-graph guard
 also proves that no unlisted callsite can reach the pinned rule's scalar allow.
-D4/D6 may consume that evidence only as an opaque
-verified profile binding and cannot add a callsite or reinterpret it as a live
-pointer check. A missing/mismatched evidence record disables the guest/profile.
+D6 host composition may consume that evidence only through the opaque verified
+profile binding and cannot add a callsite or reinterpret it as a live pointer
+check. D4 guest code consumes only the embedded HL8Q artifact and source-lock
+authority; it never loads the host-only expected HL8E issuer or imports HL8E.
+A missing/mismatched evidence record disables host profile issuance and thus
+the composed guest launch.
 Pointer-bearing pinned Go runtime sites are always
 `RuleOriginRuntime`/`EnforcementPathPinnedDirect`; D7 source plus final-binary
 evidence is authoritative and D4 trace is verification evidence only, never
