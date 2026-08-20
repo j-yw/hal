@@ -37,7 +37,7 @@ func generateEvidence(root, binaryPath string, outputs generatedOutputs) (genera
 	if err != nil {
 		return generatedEvidence{}, err
 	}
-	runtimeLock, err := readLock(filepath.Join(root, policyDir, "runtime-go1.25.7.lock"))
+	runtimeLock, err := readExactLock(filepath.Join(root, policyDir, "runtime-go1.25.7.lock"), exactRuntimeLockValues(), "runtime-go1.25.7.lock")
 	if err != nil {
 		return generatedEvidence{}, err
 	}

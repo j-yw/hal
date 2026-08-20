@@ -71,6 +71,63 @@ type catalogEntry struct {
 	name   string
 }
 
+func exactWorkloadLockValues() map[string]string {
+	return map[string]string{
+		"format":    "hal-l8-workload-lock-v1",
+		"l4_path":   "internal/sandboxruntime/microvm/guestagent/server/isolation_linux.go",
+		"l4_sha256": "565a7c1dd6ae9618428580b8f11de5a504032c394c32b6f4ad8a4368df2f8cd3",
+		"l7_path":   "internal/sandboxruntime/microvm/guestagent/l8composition/agent_supervisor.go",
+		"l7_sha256": "05a7118b6468c1390cbc15ecbd22db87cd01e2e55098e90492f64c0a3565f859",
+	}
+}
+
+func exactRuntimeLockValues() map[string]string {
+	return map[string]string{
+		"format":                   "hal-l8-runtime-lock-v1",
+		"go_version":               "go1.25.7",
+		"toolchain_module":         "golang.org/toolchain@v0.0.1-go1.25.7.linux-amd64",
+		"toolchain_archive_sha256": "43a6a44615934ab4533b010735fc39757accc93f421ffafa67a34f73c5703e7b",
+		"runtime_source_path":      "src/internal/runtime/syscall/asm_linux_amd64.s",
+		"runtime_source_sha256":    "dd6191356bf0c18b3c9862b19e4014f06e217987b225823612b6da56fb6e193a",
+	}
+}
+
+func exactCatalogLockValues() map[string]string {
+	return map[string]string{
+		"format":         "hal-l8-catalog-lock-v1",
+		"module":         "golang.org/x/sys@v0.41.0",
+		"source_path":    "unix/zsysnum_linux_amd64.go",
+		"source_sha256":  "d12bc509fbe79afd804a66297c7517076eea6f3c8d82780630cd07f561b043b6",
+		"kernel_ceiling": "450",
+	}
+}
+
+func exactRoles() []roleInput {
+	return []roleInput{
+		{ID: 1, Name: "launch-bootstrap", Stage: 4, Origin: 1, Path: 1, Syscall: "read"},
+		{ID: 2, Name: "launch-base", Stage: 4, Origin: 3, Path: 3, Syscall: "read", PinnedRuntimeCallsite: true},
+		{ID: 3, Name: "controller-bootstrap", Stage: 4, Origin: 1, Path: 1, Syscall: "read"},
+		{ID: 4, Name: "steady-controller", Stage: 4, Origin: 1, Path: 1, Syscall: "read"},
+		{ID: 5, Name: "agent-bootstrap", Stage: 4, Origin: 1, Path: 1, Syscall: "read"},
+		{ID: 6, Name: "steady-agent", Stage: 4, Origin: 1, Path: 1, Syscall: "read"},
+		{ID: 7, Name: "monitor-bootstrap", Stage: 4, Origin: 1, Path: 1, Syscall: "read"},
+		{ID: 8, Name: "steady-monitor", Stage: 4, Origin: 1, Path: 1, Syscall: "read"},
+		{ID: 9, Name: "workload-transition", Stage: 4, Origin: 1, Path: 1, Syscall: "read"},
+		{ID: 10, Name: "workload", Stage: 4, Origin: 2, Path: 1, Syscall: "read"},
+	}
+}
+
+func exactPinnedCallsite() callsiteInput {
+	return callsiteInput{
+		SourceUnit:                "src/internal/runtime/syscall/asm_linux_amd64.s",
+		SourceUnitSHA256:          "dd6191356bf0c18b3c9862b19e4014f06e217987b225823612b6da56fb6e193a",
+		Symbol:                    "internal/runtime/syscall.Syscall6",
+		InstructionHex:            "0f05",
+		InstructionOffsetInSymbol: 12,
+		ArgumentTemplate:          "linux-amd64-syscall-abi-v1",
+	}
+}
+
 func main() {
 	rootFlag := flag.String("root", "", "repository root (defaults to discovery from the current directory)")
 	check := flag.Bool("check", false, "verify checked-in outputs without writing")
@@ -130,15 +187,15 @@ func generate(root string) (generatedOutputs, error) {
 	if err != nil {
 		return generatedOutputs{}, err
 	}
-	workload, err := readLock(filepath.Join(root, policyDir, "workload-v1.lock"))
+	workload, err := readExactLock(filepath.Join(root, policyDir, "workload-v1.lock"), exactWorkloadLockValues(), "workload-v1.lock")
 	if err != nil {
 		return generatedOutputs{}, err
 	}
-	runtimeLock, err := readLock(filepath.Join(root, policyDir, "runtime-go1.25.7.lock"))
+	runtimeLock, err := readExactLock(filepath.Join(root, policyDir, "runtime-go1.25.7.lock"), exactRuntimeLockValues(), "runtime-go1.25.7.lock")
 	if err != nil {
 		return generatedOutputs{}, err
 	}
-	catalogLock, err := readLock(filepath.Join(root, policyDir, "catalog-xsys-v0.41.0.lock"))
+	catalogLock, err := readExactLock(filepath.Join(root, policyDir, "catalog-xsys-v0.41.0.lock"), exactCatalogLockValues(), "catalog-xsys-v0.41.0.lock")
 	if err != nil {
 		return generatedOutputs{}, err
 	}
@@ -278,17 +335,21 @@ func decodeRoles(encoded []byte) (rolesDocument, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return rolesDocument{}, errors.New("roles-v1.yaml has trailing or malformed JSON")
 	}
-	if document.Schema != "hal-l8-policy-roles-v1" || len(document.Roles) != 10 {
+	wantRoles := exactRoles()
+	if document.Schema != "hal-l8-policy-roles-v1" || len(document.Roles) != len(wantRoles) {
 		return rolesDocument{}, errors.New("roles-v1.yaml does not contain the exact ten-role schema")
 	}
 	for index, role := range document.Roles {
-		if role.ID != uint8(index+1) || role.Name == "" || role.Stage == 0 || role.Origin < 1 || role.Origin > 3 || role.Path < 1 || role.Path > 3 || role.Syscall == "" {
-			return rolesDocument{}, fmt.Errorf("role row %d is invalid", index)
+		if role != wantRoles[index] {
+			return rolesDocument{}, fmt.Errorf("role row %d does not match the exact ordered D7 rule", index)
 		}
 	}
+	if document.PinnedCallsite != exactPinnedCallsite() {
+		return rolesDocument{}, errors.New("pinned callsite record does not match the exact D7 input")
+	}
 	instruction, err := hex.DecodeString(document.PinnedCallsite.InstructionHex)
-	if err != nil || len(instruction) == 0 || len(instruction) > 4096 || document.PinnedCallsite.Symbol == "" || document.PinnedCallsite.ArgumentTemplate == "" {
-		return rolesDocument{}, errors.New("pinned callsite record is invalid")
+	if err != nil || len(instruction) == 0 || len(instruction) > 4096 {
+		return rolesDocument{}, errors.New("pinned callsite instruction is invalid")
 	}
 	return document, nil
 }
@@ -632,21 +693,43 @@ func hashPaths(root string, paths []string) ([32]byte, error) {
 	return framedSHA256("hal/l8/phase-source-set/linux-amd64/v1", preimage.Bytes()), nil
 }
 
-func readLock(path string) (map[string]string, error) {
+func readExactLock(path string, expected map[string]string, label string) (map[string]string, error) {
 	encoded, err := readBounded(path, 1<<20)
 	if err != nil {
 		return nil, err
 	}
+	return decodeExactLock(encoded, expected, label)
+}
+
+func decodeExactLock(encoded []byte, expected map[string]string, label string) (map[string]string, error) {
+	if len(encoded) == 0 || encoded[len(encoded)-1] != '\n' || bytes.ContainsRune(encoded, '\r') {
+		return nil, fmt.Errorf("%s must end in one LF and contain no CR", label)
+	}
 	result := make(map[string]string)
-	for lineIndex, line := range strings.Split(strings.TrimSuffix(string(encoded), "\n"), "\n") {
+	for lineIndex, line := range strings.Split(string(encoded[:len(encoded)-1]), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok || key == "" || value == "" || strings.TrimSpace(key) != key || strings.TrimSpace(value) != value {
-			return nil, fmt.Errorf("invalid lock line %d in %s", lineIndex+1, filepath.Base(path))
+			return nil, fmt.Errorf("invalid lock line %d in %s", lineIndex+1, label)
 		}
 		if _, duplicate := result[key]; duplicate {
 			return nil, fmt.Errorf("duplicate lock key %q", key)
 		}
+		want, allowed := expected[key]
+		if !allowed {
+			return nil, fmt.Errorf("unknown lock key %q in %s", key, label)
+		}
+		if value != want {
+			return nil, fmt.Errorf("lock key %q in %s does not match its exact value", key, label)
+		}
 		result[key] = value
+	}
+	if len(result) != len(expected) {
+		return nil, fmt.Errorf("%s has %d keys, want %d", label, len(result), len(expected))
+	}
+	for key := range expected {
+		if _, present := result[key]; !present {
+			return nil, fmt.Errorf("%s is missing lock key %q", label, key)
+		}
 	}
 	return result, nil
 }

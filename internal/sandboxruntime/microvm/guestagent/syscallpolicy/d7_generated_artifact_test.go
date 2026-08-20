@@ -4,13 +4,14 @@ package syscallpolicy
 
 import (
 	"crypto/sha256"
+	"errors"
 	"testing"
 )
 
 func TestL8D7GeneratedArtifactImportsCanonicalNonzeroAuthority(t *testing.T) {
 	artifact, err := EmbeddedVerifiedPolicyArtifact()
 	if err != nil {
-		t.Fatalf("EmbeddedVerifiedPolicyArtifact() error code = %v", contractErrorCode(err))
+		t.Fatalf("EmbeddedVerifiedPolicyArtifact() error code = %v", d7ContractErrorCode(err))
 	}
 	if artifact.SHA256() == ([sha256.Size]byte{}) || artifact.SourceLockSHA256() == ([sha256.Size]byte{}) {
 		t.Fatal("generated D7 artifact returned zero authority")
@@ -48,7 +49,15 @@ func TestL8D7GeneratedArtifactInputMutationFailsClosed(t *testing.T) {
 	if artifact.artifact != nil || artifact.SHA256() != ([sha256.Size]byte{}) {
 		t.Fatal("mutated generated artifact returned authority")
 	}
-	if got := contractErrorCode(err); got != ErrorCodeDigestMismatch {
+	if got := d7ContractErrorCode(err); got != ErrorCodeDigestMismatch {
 		t.Fatalf("mutated generated artifact error = %v, want digest-mismatch", got)
 	}
+}
+
+func d7ContractErrorCode(err error) ErrorCode {
+	var contractError *ContractError
+	if !errors.As(err, &contractError) {
+		return 0
+	}
+	return contractError.Code()
 }
