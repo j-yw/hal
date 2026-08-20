@@ -42,6 +42,7 @@ func (connection *failingHelperConnection) Close(context.Context) error {
 
 type acceptSequenceEndpoint struct {
 	connection credentialhelper.SSHAgentConnection
+	firstError error
 	accepted   bool
 }
 
@@ -49,7 +50,7 @@ func (*acceptSequenceEndpoint) ExecBinding() credentialhelper.ExecBindingCapabil
 func (endpoint *acceptSequenceEndpoint) Accept(context.Context) (credentialhelper.SSHAgentConnection, error) {
 	if !endpoint.accepted && endpoint.connection != nil {
 		endpoint.accepted = true
-		return endpoint.connection, nil
+		return endpoint.connection, endpoint.firstError
 	}
 	return nil, errors.New("accept loop canary")
 }
@@ -202,6 +203,39 @@ func TestAcceptLoopRetainsFailedConnectionCloseForSessionCleanup(t *testing.T) {
 	}
 	if connection.closeCalls != 2 {
 		t.Fatalf("accepted connection close calls = %d, want retained retry count 2", connection.closeCalls)
+	}
+}
+
+func TestAcceptLoopClosesAndRetainsConnectionReturnedWithError(t *testing.T) {
+	lifetime, cancel := context.WithCancel(context.Background())
+	connection := &failingHelperConnection{closeFailures: 2}
+	endpoint := &acceptSequenceEndpoint{
+		connection: connection,
+		firstError: errors.New("raw accept canary"),
+	}
+	session := &helperSession{
+		host:        &fakeHost{},
+		lifetimeCtx: lifetime,
+		cancel:      cancel,
+		endpoint:    endpoint,
+		identity:    [32]byte{1},
+		revision:    1,
+		acceptDone:  make(chan struct{}),
+		prepared:    true,
+	}
+	go session.acceptLoop(endpoint)
+	<-session.acceptDone
+	if err := session.Close(context.Background()); !errors.Is(err, ErrCleanupIncomplete) || strings.Contains(err.Error(), "raw") {
+		t.Fatalf("first Close() error = %v, want sanitized cleanup failure", err)
+	}
+	if connection.closeCalls != 2 || len(session.cleanupConnections) != 1 {
+		t.Fatalf("failed connection cleanup = calls:%d retained:%d, want 2/1", connection.closeCalls, len(session.cleanupConnections))
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry: %v", err)
+	}
+	if connection.closeCalls != 3 || len(session.cleanupConnections) != 0 {
+		t.Fatalf("retried connection cleanup = calls:%d retained:%d, want 3/0", connection.closeCalls, len(session.cleanupConnections))
 	}
 }
 
