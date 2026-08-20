@@ -12,27 +12,16 @@ import (
 // child must not bypass that seam or edit the D2 parent package.
 func TestCredentialClientParentExposesTransferSafeSSHAcceptedArm(t *testing.T) {
 	packet := reflect.TypeOf(credentialclient.ExtensionPacket{})
+	const minimumParentAPI = `
+credentialclient.ExtensionPacket.Type() credentialprotocol.PacketType
+credentialclient.ExtensionPacket.SSHAccepted() (credentialclient.SSHAcceptedPacket, bool)
+credentialclient.SSHAcceptedPacket accessors: Revision, BindingIndex, Ordinal, CapabilitySHA256, Connection
+credentialclient.SSHConnectionCapability methods: SHA256, Read, Write, Shutdown, Close
+credentialclient.NewSSHIOResult and the closed SSHShutdownDirection catalog
+parent-owned clientOwned -> transferred -> closing -> closed shared ownership state`
 	for _, method := range []string{"Type", "SSHAccepted"} {
 		if _, ok := packet.MethodByName(method); !ok {
-			t.Errorf("credentialclient.ExtensionPacket is missing %s", method)
+			t.Errorf("credentialclient.ExtensionPacket is missing %s; minimum required seam:%s", method, minimumParentAPI)
 		}
-	}
-
-	packagePath := packet.PkgPath()
-	requiredTypes := []string{
-		"SSHAcceptedPacket",
-		"SSHConnectionCapability",
-		"SSHIOResult",
-		"SSHShutdownDirection",
-	}
-	for _, name := range requiredTypes {
-		t.Run(name, func(t *testing.T) {
-			// Go reflection cannot enumerate package declarations. Keep the
-			// required parent-owned declarations visible in the failure while
-			// the method checks above provide executable red evidence.
-			if packagePath == "" {
-				t.Fatalf("missing %s", name)
-			}
-		})
 	}
 }
