@@ -411,7 +411,12 @@ func l10WorkspaceEvidence(identity sandboxruntime.JobCredentialIdentity, observe
 			Recovery:  sandboxworkspace.SyncOutRecoveryState{Status: sandboxworkspace.SyncOutRecoveryStatusCollected},
 			Apply:     sandboxworkspace.SyncOutApplyDecision{Eligible: true, Mode: sandboxworkspace.SyncOutApplyModePatch, ArtifactID: artifact.ID, Reasons: []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonEligiblePatch}},
 		},
-		SafeApply: &sandboxworkspace.SafeApplyResult{Status: sandboxworkspace.SafeApplyStatusDryRunPassed, DryRunPassed: true, Mode: sandboxworkspace.SyncOutApplyModePatch, ArtifactID: artifact.ID, DisplayName: artifact.DisplayName, DisplayPath: artifact.DisplayPath},
+		SafeApply: &sandboxworkspace.SafeApplyResult{
+			Status: sandboxworkspace.SafeApplyStatusDryRunPassed, DryRunPassed: true,
+			Mode: sandboxworkspace.SyncOutApplyModePatch, ArtifactID: artifact.ID,
+			DisplayName: artifact.DisplayName, DisplayPath: artifact.DisplayPath,
+			Reasons: []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonEligiblePatch},
+		},
 	}
 }
 

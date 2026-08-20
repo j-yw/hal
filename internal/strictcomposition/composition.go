@@ -199,6 +199,9 @@ func EvaluateTerminal(ctx context.Context, request TerminalRequest) sandbox.Sand
 	if ctx == nil || request.Now.IsZero() || sandboxruntime.ValidateJobCredentialIdentity(request.Identity) != nil || request.CredentialRevision == 0 {
 		return blocked(sandbox.SandboxStrictCompositionCodeIdentityInvalid)
 	}
+	if ctx.Err() != nil {
+		return blocked(sandbox.SandboxStrictCompositionCodeAttestationStale)
+	}
 	if request.Identity.RuntimeDriver != sandbox.SandboxRuntimeDriverMicroVM {
 		return blocked(sandbox.SandboxStrictCompositionCodeIdentityMismatch)
 	}
@@ -254,7 +257,7 @@ func EvaluateTerminal(ctx context.Context, request TerminalRequest) sandbox.Sand
 	}
 
 	state.mu.Lock()
-	if state.consumed {
+	if state.consumed || ctx.Err() != nil {
 		state.mu.Unlock()
 		return blocked(sandbox.SandboxStrictCompositionCodeAttestationStale)
 	}
@@ -438,7 +441,8 @@ func workspaceApplyArtifact(summary sandboxworkspace.SyncOutSummary) *sandboxwor
 
 func safeApplyExact(result sandboxworkspace.SafeApplyResult, apply sandboxworkspace.SyncOutApplyDecision) bool {
 	if len(result.Warnings) != 0 || len(result.HandoffInstructions) != 0 || !result.DryRunPassed ||
-		result.Mode != apply.Mode || result.ArtifactID != apply.ArtifactID {
+		result.Mode != apply.Mode || result.ArtifactID != apply.ArtifactID ||
+		!exactEligibleApplyReasons(result.Mode, result.Reasons) {
 		return false
 	}
 	switch result.Status {

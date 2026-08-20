@@ -19,7 +19,6 @@ func TestL10StrictCompositionDecisionSanitizesAndCannotCarryLiveAuthority(t *tes
 			{Kind: SandboxStrictCompositionEvidenceCredential, State: SandboxStrictCompositionStateActive, Code: SandboxStrictCompositionCodeReady},
 			{Kind: SandboxStrictCompositionEvidenceTemplate, State: SandboxStrictCompositionStateActive, Code: SandboxStrictCompositionCodeReady},
 			{Kind: SandboxStrictCompositionEvidenceWorkspace, State: SandboxStrictCompositionStateActive, Code: SandboxStrictCompositionCodeReady},
-			{Kind: "https://unsafe.invalid/token", State: SandboxStrictCompositionStateActive},
 		},
 	})
 	payload, err := json.Marshal(&SandboxSecurity{StrictComposition: &decision})
@@ -34,6 +33,14 @@ func TestL10StrictCompositionDecisionSanitizesAndCannotCarryLiveAuthority(t *tes
 	}
 	if len(decision.Evidence) != 4 {
 		t.Fatalf("evidence count = %d, want bounded 4", len(decision.Evidence))
+	}
+	unsafe := decision
+	unsafe.Evidence = append(unsafe.Evidence, SandboxStrictCompositionEvidence{
+		Kind: "https://unsafe.invalid/token", State: SandboxStrictCompositionStateActive,
+	})
+	unsafe = SanitizeSandboxStrictCompositionDecision(unsafe)
+	if unsafe.State != SandboxStrictCompositionStateBlocked || unsafe.Code != SandboxStrictCompositionCodeIdentityInvalid {
+		t.Fatalf("unsafe extra evidence decision = %#v, want blocked identity_invalid", unsafe)
 	}
 }
 
@@ -91,5 +98,28 @@ func TestL10StrictCompositionDecisionSanitizerEnforcesAuthoritySemantics(t *test
 	}
 	if got.CompositionID != "" || !got.ObservedAt.IsZero() || !got.ExpiresAt.IsZero() || len(got.Evidence) != 0 {
 		t.Fatalf("blocked decision retained non-authoritative fields: %#v", got)
+	}
+}
+
+func TestL10StrictCompositionDecisionProjectionEnforcesActiveWindow(t *testing.T) {
+	observedAt := time.Unix(1_900_000_000, 0).UTC()
+	active := SandboxStrictCompositionDecision{
+		State: SandboxStrictCompositionStateActive, Code: SandboxStrictCompositionCodeReady,
+		CompositionID: "composition-primary", ObservedAt: observedAt, ExpiresAt: observedAt.Add(30 * time.Second),
+		Evidence: []SandboxStrictCompositionEvidence{
+			{Kind: SandboxStrictCompositionEvidenceRuntime, State: SandboxStrictCompositionStateActive, Code: SandboxStrictCompositionCodeReady},
+			{Kind: SandboxStrictCompositionEvidenceCredential, State: SandboxStrictCompositionStateActive, Code: SandboxStrictCompositionCodeReady},
+			{Kind: SandboxStrictCompositionEvidenceTemplate, State: SandboxStrictCompositionStateActive, Code: SandboxStrictCompositionCodeReady},
+			{Kind: SandboxStrictCompositionEvidenceWorkspace, State: SandboxStrictCompositionStateActive, Code: SandboxStrictCompositionCodeReady},
+		},
+	}
+	if got := ProjectSandboxStrictCompositionDecision(active, observedAt); got.State != SandboxStrictCompositionStateActive {
+		t.Fatalf("active projection = %#v, want active at observation time", got)
+	}
+	for _, now := range []time.Time{observedAt.Add(-time.Nanosecond), active.ExpiresAt} {
+		got := ProjectSandboxStrictCompositionDecision(active, now)
+		if got.State != SandboxStrictCompositionStateBlocked || got.Code != SandboxStrictCompositionCodeAttestationStale {
+			t.Fatalf("projection at %s = %#v, want blocked attestation_stale", now, got)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"strings"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
 )
@@ -23,7 +24,7 @@ func sanitizeCommandSandboxSecurityWithNetworkProof(security *sandbox.SandboxSec
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: capabilityReadinessDiagnostics,
 		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
-		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
+		StrictComposition:              sandbox.ProjectSandboxStrictCompositionDecisionPtr(security.StrictComposition, time.Now().UTC()),
 		Network:                        sanitizeCommandSandboxNetworkSecurityWithProof(security.Network, proof),
 	}
 	clone.Secrets = sanitizeCommandSandboxSecretSecurity(security.Secrets)

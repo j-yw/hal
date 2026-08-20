@@ -130,7 +130,11 @@ func l10TargetSelectionAuthority(t *testing.T, target *sandbox.SandboxState) (*S
 			Committed: sandboxworkspace.SyncOutCommittedArtifacts{Patch: &artifact}, Recovery: sandboxworkspace.SyncOutRecoveryState{Status: sandboxworkspace.SyncOutRecoveryStatusCollected},
 			Apply: sandboxworkspace.SyncOutApplyDecision{Eligible: true, Mode: sandboxworkspace.SyncOutApplyModePatch, ArtifactID: artifact.ID, Reasons: []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonEligiblePatch}},
 		},
-		SafeApply: &sandboxworkspace.SafeApplyResult{Status: sandboxworkspace.SafeApplyStatusDryRunPassed, DryRunPassed: true, Mode: sandboxworkspace.SyncOutApplyModePatch, ArtifactID: artifact.ID},
+		SafeApply: &sandboxworkspace.SafeApplyResult{
+			Status: sandboxworkspace.SafeApplyStatusDryRunPassed, DryRunPassed: true,
+			Mode: sandboxworkspace.SyncOutApplyModePatch, ArtifactID: artifact.ID,
+			Reasons: []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonEligiblePatch},
+		},
 	}
 	attestation, decision := strictcomposition.EvaluateActive(context.Background(), strictcomposition.ActiveRequest{
 		Now: now, Identity: identity, CredentialRevision: revision,

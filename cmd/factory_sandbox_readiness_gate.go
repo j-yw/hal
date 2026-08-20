@@ -77,6 +77,14 @@ func factorySandboxReadinessGateDiagnostics(record *factory.RunRecord) *sandbox.
 }
 
 func factorySandboxReadinessGateDecision(req factorySandboxExecutorRequest, record *factory.RunRecord) sandbox.SandboxSecurityCapabilityReadinessGateDecision {
+	if req.SecurityReadinessGateMode == sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
+		// Factory requests do not yet carry the opaque live L10 authority.
+		// Durable readiness and strict-composition metadata are status only.
+		return sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
+			req.SecurityReadinessGateMode,
+			nil,
+		)
+	}
 	if record != nil {
 		if decision := factory.SecurityReadinessGateDecision(*record); decision != nil && decision.PolicyMode == req.SecurityReadinessGateMode {
 			return *decision

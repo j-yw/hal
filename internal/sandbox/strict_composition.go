@@ -71,42 +71,66 @@ type SandboxStrictCompositionDecision struct {
 	Evidence      []SandboxStrictCompositionEvidence `json:"evidence,omitempty"`
 }
 
-// SanitizeSandboxStrictCompositionDecision returns a bounded safe copy.
+var sandboxStrictCompositionEvidenceKinds = [...]SandboxStrictCompositionEvidenceKind{
+	SandboxStrictCompositionEvidenceRuntime,
+	SandboxStrictCompositionEvidenceCredential,
+	SandboxStrictCompositionEvidenceTemplate,
+	SandboxStrictCompositionEvidenceWorkspace,
+}
+
+// SanitizeSandboxStrictCompositionDecision returns a bounded safe copy and
+// fails closed when authority-shaped state is internally inconsistent.
 func SanitizeSandboxStrictCompositionDecision(input SandboxStrictCompositionDecision) SandboxStrictCompositionDecision {
 	state := sanitizeSandboxStrictCompositionState(input.State)
 	code := sanitizeSandboxStrictCompositionCode(input.Code)
-	compositionID := sanitizeSandboxSecurityCapabilityIdentifier(input.CompositionID)
 	if state == "" || code == "" {
+		return invalidSandboxStrictCompositionDecision()
+	}
+	if state == SandboxStrictCompositionStateBlocked {
+		if code == SandboxStrictCompositionCodeReady || code == SandboxStrictCompositionCodeComplete {
+			return invalidSandboxStrictCompositionDecision()
+		}
+		return SandboxStrictCompositionDecision{State: state, Code: code}
+	}
+
+	compositionID := sanitizeSandboxSecurityCapabilityIdentifier(input.CompositionID)
+	observedAt := input.ObservedAt.UTC()
+	if compositionID == "" || observedAt.IsZero() {
+		return invalidSandboxStrictCompositionDecision()
+	}
+	expiresAt := input.ExpiresAt.UTC()
+	switch state {
+	case SandboxStrictCompositionStateActive:
+		if code != SandboxStrictCompositionCodeReady || expiresAt.IsZero() || !expiresAt.After(observedAt) {
+			return invalidSandboxStrictCompositionDecision()
+		}
+	case SandboxStrictCompositionStateComplete:
+		if code != SandboxStrictCompositionCodeComplete || !input.ExpiresAt.IsZero() {
+			return invalidSandboxStrictCompositionDecision()
+		}
+		expiresAt = time.Time{}
+	default:
+		return invalidSandboxStrictCompositionDecision()
+	}
+	evidence, ok := sanitizeSandboxStrictCompositionEvidence(input.Evidence, state, code)
+	if !ok {
+		return invalidSandboxStrictCompositionDecision()
+	}
+	return SandboxStrictCompositionDecision{
+		State: state, Code: code, CompositionID: compositionID,
+		ObservedAt: observedAt, ExpiresAt: expiresAt, Evidence: evidence,
+	}
+}
+
+// ProjectSandboxStrictCompositionDecision returns status-safe metadata at the
+// supplied observation time. Expired or not-yet-active decisions fail closed.
+func ProjectSandboxStrictCompositionDecision(input SandboxStrictCompositionDecision, now time.Time) SandboxStrictCompositionDecision {
+	output := SanitizeSandboxStrictCompositionDecision(input)
+	if output.State == SandboxStrictCompositionStateActive &&
+		(now.IsZero() || now.Before(output.ObservedAt) || !now.Before(output.ExpiresAt)) {
 		return SandboxStrictCompositionDecision{
 			State: SandboxStrictCompositionStateBlocked,
-			Code:  SandboxStrictCompositionCodeIdentityInvalid,
-		}
-	}
-	output := SandboxStrictCompositionDecision{
-		State:         state,
-		Code:          code,
-		CompositionID: compositionID,
-		ObservedAt:    input.ObservedAt.UTC(),
-		ExpiresAt:     input.ExpiresAt.UTC(),
-	}
-	if output.ObservedAt.IsZero() {
-		output.ObservedAt = time.Time{}
-	}
-	if output.ExpiresAt.IsZero() || output.ExpiresAt.Before(output.ObservedAt) {
-		output.ExpiresAt = time.Time{}
-	}
-	for _, evidence := range input.Evidence {
-		kind := sanitizeSandboxStrictCompositionEvidenceKind(evidence.Kind)
-		evidenceState := sanitizeSandboxStrictCompositionState(evidence.State)
-		evidenceCode := sanitizeSandboxStrictCompositionCode(evidence.Code)
-		if kind == "" || evidenceState == "" {
-			continue
-		}
-		output.Evidence = append(output.Evidence, SandboxStrictCompositionEvidence{
-			Kind: kind, State: evidenceState, Code: evidenceCode,
-		})
-		if len(output.Evidence) == 4 {
-			break
+			Code:  SandboxStrictCompositionCodeAttestationStale,
 		}
 	}
 	return output
@@ -119,6 +143,49 @@ func CloneSandboxStrictCompositionDecisionPtr(input *SandboxStrictCompositionDec
 	}
 	output := SanitizeSandboxStrictCompositionDecision(*input)
 	return &output
+}
+
+// ProjectSandboxStrictCompositionDecisionPtr returns a time-aware sanitized
+// deep copy for command, status, and factory projection boundaries.
+func ProjectSandboxStrictCompositionDecisionPtr(input *SandboxStrictCompositionDecision, now time.Time) *SandboxStrictCompositionDecision {
+	if input == nil {
+		return nil
+	}
+	output := ProjectSandboxStrictCompositionDecision(*input, now)
+	return &output
+}
+
+func sanitizeSandboxStrictCompositionEvidence(input []SandboxStrictCompositionEvidence, state SandboxStrictCompositionState, code SandboxStrictCompositionCode) ([]SandboxStrictCompositionEvidence, bool) {
+	if len(input) != len(sandboxStrictCompositionEvidenceKinds) {
+		return nil, false
+	}
+	byKind := make(map[SandboxStrictCompositionEvidenceKind]SandboxStrictCompositionEvidence, len(input))
+	for _, evidence := range input {
+		kind := sanitizeSandboxStrictCompositionEvidenceKind(evidence.Kind)
+		if kind == "" || evidence.State != state || evidence.Code != code {
+			return nil, false
+		}
+		if _, exists := byKind[kind]; exists {
+			return nil, false
+		}
+		byKind[kind] = SandboxStrictCompositionEvidence{Kind: kind, State: state, Code: code}
+	}
+	output := make([]SandboxStrictCompositionEvidence, 0, len(sandboxStrictCompositionEvidenceKinds))
+	for _, kind := range sandboxStrictCompositionEvidenceKinds {
+		evidence, exists := byKind[kind]
+		if !exists {
+			return nil, false
+		}
+		output = append(output, evidence)
+	}
+	return output, true
+}
+
+func invalidSandboxStrictCompositionDecision() SandboxStrictCompositionDecision {
+	return SandboxStrictCompositionDecision{
+		State: SandboxStrictCompositionStateBlocked,
+		Code:  SandboxStrictCompositionCodeIdentityInvalid,
+	}
 }
 
 func sanitizeSandboxStrictCompositionState(value SandboxStrictCompositionState) SandboxStrictCompositionState {
