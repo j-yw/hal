@@ -395,6 +395,83 @@ func TestL8D3TicketStoreCloseRetriesFailedOwnedConnection(t *testing.T) {
 	}
 }
 
+func TestL8D3TicketCleanupJoinsInflightSourceCalls(t *testing.T) {
+	for _, operation := range []string{"revoke", "close", "expiry"} {
+		t.Run(operation, func(t *testing.T) {
+			now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+			clock := now
+			var clockMu sync.Mutex
+			source := &l8D3BlockingSecretSource{entered: make(chan struct{}), release: make(chan struct{})}
+			store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{
+				now: func() time.Time {
+					clockMu.Lock()
+					defer clockMu.Unlock()
+					return clock
+				},
+				entropy: bytes.NewReader(bytes.Repeat([]byte{0x6b}, 64)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close(context.Background()) }()
+			activation := l8D3TicketActivation(t, now)
+			activation.Source = source
+			ticket, err := store.Issue(context.Background(), activation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lease := l8D3AcquireTicket(t, store, ticket, activation.Correlation)
+			fillDone := make(chan error, 1)
+			go func() {
+				fillDone <- lease.FillSecret(context.Background(), activation.Correlation, l8D3TestCredentialSink{})
+			}()
+			select {
+			case <-source.entered:
+			case <-time.After(time.Second):
+				t.Fatal("source call did not enter")
+			}
+			if operation == "expiry" {
+				clockMu.Lock()
+				clock = now.Add(JobTicketLeaseDuration)
+				clockMu.Unlock()
+			}
+
+			cleanupDone := make(chan error, 1)
+			go func() {
+				switch operation {
+				case "revoke":
+					cleanupDone <- store.Revoke(context.Background(), ticket, activation.Correlation)
+				case "close":
+					cleanupDone <- store.Close(context.Background())
+				case "expiry":
+					cleanupDone <- store.Validate(context.Background(), ticket, activation.Correlation)
+				}
+			}()
+			select {
+			case cleanupErr := <-cleanupDone:
+				close(source.release)
+				t.Fatalf("%s returned before source call joined: %v", operation, cleanupErr)
+			case <-time.After(50 * time.Millisecond):
+			}
+			close(source.release)
+			cleanupErr := <-cleanupDone
+			switch operation {
+			case "revoke", "close":
+				if cleanupErr != nil {
+					t.Fatalf("%s error: %v", operation, cleanupErr)
+				}
+			case "expiry":
+				if !errors.Is(cleanupErr, ErrTicketExpired) {
+					t.Fatalf("expiry error = %v, want expired", cleanupErr)
+				}
+			}
+			if fillErr := <-fillDone; fillErr == nil {
+				t.Fatal("source call succeeded after cleanup began")
+			}
+		})
+	}
+}
+
 func TestL8D3TicketConcurrentIssueSerializesEntropyAndProducesUniqueCapabilities(t *testing.T) {
 	const count = 64
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
@@ -499,6 +576,25 @@ func l8D3AcquireTicketError(store *TicketStore, ticket *JobTicket, correlation T
 type l8D3LiveSecretSource struct{}
 
 func (l8D3LiveSecretSource) FillSecret(context.Context, sandboxruntime.JobCredentialSecretSink) error {
+	return nil
+}
+
+type l8D3BlockingSecretSource struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (source *l8D3BlockingSecretSource) FillSecret(_ context.Context, sink sandboxruntime.JobCredentialSecretSink) error {
+	source.once.Do(func() { close(source.entered) })
+	<-source.release
+	return sink.WriteCredential([]byte("secret"))
+}
+
+type l8D3TestCredentialSink struct{}
+
+func (l8D3TestCredentialSink) MaxCredentialBytes() int { return 32 }
+func (l8D3TestCredentialSink) WriteCredential([]byte) error {
 	return nil
 }
 
