@@ -139,6 +139,11 @@ func TestPhase34DefaultFirecrackerGuardRejectsLiveBootFixtures(t *testing.T) {
 			want:   "Firecracker live boot options",
 		},
 		{
+			name:   "L8 live config provider field",
+			source: `package cmd; func defaultPath(provider any) { _ = BackendOptions{L8LiveConfigProvider: provider} }`,
+			want:   "Firecracker live boot options",
+		},
+		{
 			name:   "process launch adapter literal",
 			source: `package cmd; func defaultPath(starter any) { _ = ProcessLaunchAdapter{Starter: starter} }`,
 			want:   "Firecracker process adapter construction",
@@ -221,6 +226,7 @@ func phase34DefaultFirecrackerLiveBootBoundaryMessage(fileName, source string, f
 		{token: "LiveStart:", label: "Firecracker live boot options"},
 		{token: "BootAcceptanceWaiter:", label: "Firecracker live boot options"},
 		{token: "LiveProcessManager:", label: "Firecracker live boot options"},
+		{token: "L8LiveConfigProvider:", label: "Firecracker live boot options"},
 		{token: "ProcessAdapter:", label: "Firecracker process adapter construction"},
 		{token: "ProcessLaunchAdapter{", label: "Firecracker process adapter construction"},
 		{token: "ProcessRunnerStartRequest{", label: "Firecracker process adapter construction"},
