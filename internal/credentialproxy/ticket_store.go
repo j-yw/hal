@@ -171,6 +171,23 @@ func (store *TicketStore) Renew(ctx context.Context, ticket *JobTicket, correlat
 	return nil
 }
 
+// Validate proves that a retained ticket is current without extending its
+// lease or consuming a request slot.
+func (store *TicketStore) Validate(ctx context.Context, ticket *JobTicket, correlation TicketCorrelation) error {
+	digest, err := store.digestJobTicket(ctx, ticket)
+	if err != nil {
+		return err
+	}
+	state := store.sharedState()
+	if state == nil {
+		return ErrTicketStoreInvalid
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	_, err = state.validEntryLocked(digest, correlation, state.now().UTC())
+	return err
+}
+
 func (store *TicketStore) Revoke(ctx context.Context, ticket *JobTicket, correlation TicketCorrelation) error {
 	digest, err := store.digestJobTicket(ctx, ticket)
 	if err != nil {

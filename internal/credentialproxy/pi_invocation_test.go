@@ -32,6 +32,7 @@ func TestL8D3PiAzureResponsesInvocationIsSealedAndWritesTransientBinding(t *test
 	directory := &l8D3CodingAgentDirectory{}
 	invocation, err := NewAzureResponsesPiInvocation(AzureResponsesPiInvocationConfig{
 		Definition: definition, LocalAuthority: "runtime-credential.internal:8080", Ticket: ticket,
+		TicketStore: store, Correlation: activation.Correlation,
 		CodingAgentDirectory: "/run/hal/pi-empty/job-one", DirectoryProof: directory,
 	})
 	if err != nil {
@@ -100,10 +101,21 @@ func TestL8D3PiAzureResponsesInvocationFailsBeforeEnvironmentWhenDirectoryProofI
 	if err != nil {
 		t.Fatal(err)
 	}
-	ticket := newJobTicket([32]byte{1, 2, 3})
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{now: func() time.Time { return now }, entropy: bytes.NewReader(bytes.Repeat([]byte{0x92}, 64))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	activation := l8D3TicketActivation(t, now)
+	ticket, err := store.Issue(context.Background(), activation)
+	if err != nil {
+		t.Fatal(err)
+	}
 	proof := &l8D3CodingAgentDirectory{err: errors.New("raw path /home/user/.pi api-key=canary")}
 	invocation, err := NewAzureResponsesPiInvocation(AzureResponsesPiInvocationConfig{
 		Definition: definition, LocalAuthority: "runtime-credential.internal:8080", Ticket: ticket,
+		TicketStore: store, Correlation: activation.Correlation,
 		CodingAgentDirectory: "/run/hal/pi-empty/job-one", DirectoryProof: proof,
 	})
 	if err != nil {
