@@ -54,6 +54,10 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 		{name: "runtime recovered from core", suffix: "\n\nHelperOptions.Runtime may be recovered from HelperOptions.Core.\n"},
 		{name: "core substitutes service dependencies", suffix: "\n\nCore may implement ExtensionHost and ServiceRuntime instead of the explicit fields.\n"},
 		{name: "core supplies hidden dependencies", suffix: "\n\nHost and Runtime may be obtained using Core.\n"},
+		{name: "core acquires explicit fields", suffix: "\n\nNewHelper may acquire HelperOptions.Host and HelperOptions.Runtime through HelperOptions.Core when the explicit fields are unavailable.\n"},
+		{name: "core yields service interfaces", suffix: "\n\nHelperOptions.Core may yield credentialhelper.ExtensionHost and credentialhelper.ServiceRuntime.\n"},
+		{name: "core resolves host", suffix: "\n\nNewHelper may resolve HelperOptions.Host from HelperOptions.Core.\n"},
+		{name: "core casts runtime", suffix: "\n\nNewHelper may cast HelperOptions.Core to HelperOptions.Runtime.\n"},
 	}
 	for _, mutation := range documentMutations {
 		t.Run(mutation.name, func(t *testing.T) {
@@ -68,6 +72,22 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 			t.Fatal("HelperOptions documentation guard accepted duplicate normative rule")
 		}
 	})
+
+	benignAdditions := []struct {
+		name   string
+		suffix string
+	}{
+		{name: "core only", suffix: "\n\n`HelperOptions.Core` remains an explicit mandatory dependency.\n"},
+		{name: "service dependencies only", suffix: "\n\n`HelperOptions.Host` and `HelperOptions.Runtime` remain explicit mandatory dependencies.\n"},
+		{name: "unrelated words", suffix: "\n\nThe runtime reports one processor core to diagnostics.\n"},
+	}
+	for _, addition := range benignAdditions {
+		t.Run("benign "+addition.name, func(t *testing.T) {
+			if err := validateL8D6HelperCompositionDocument(document + addition.suffix); err != nil {
+				t.Fatalf("HelperOptions documentation guard rejected benign addition: %v", err)
+			}
+		})
+	}
 }
 
 const l8D6HelperIndependentServiceDependencyRule = "`HelperOptions.Host` and `HelperOptions.Runtime` are explicit, independent, mandatory service dependencies. `HelperOptions.Core` is accepted only as `credentialhelper.Core` and supplies neither dependency. The Host and Runtime fields are the sole sources of `credentialhelper.ExtensionHost` and `credentialhelper.ServiceRuntime`; `NewHelper` validates them independently and passes those exact values directly to `credentialhelper.NewService`. `SSH` is only an extension registration and cannot replace either service dependency."

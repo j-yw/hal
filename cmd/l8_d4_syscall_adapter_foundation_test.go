@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-func TestL8D4HostEvidenceHasOneProductionConsumerOutsideGuest(t *testing.T) {
-	sources := readL8D4ProductionSources(t, filepath.Join("..", "internal", "sandboxruntime", "microvm"))
-	if err := validateL8D4ProductionHostEvidenceBoundary(sources); err != nil {
+func TestL8D4HostEvidenceHasOneRepositoryWideProductionConsumer(t *testing.T) {
+	sources := readL8D4RepositoryProductionSources(t, "..")
+	if err := validateL8D4RepositoryHostEvidenceBoundary(sources); err != nil {
 		t.Fatal(err)
 	}
 
@@ -23,7 +23,7 @@ func TestL8D4HostEvidenceHasOneProductionConsumerOutsideGuest(t *testing.T) {
 	}{
 		{
 			name: "extra guest issuer call",
-			path: "guestagent/credentialhelper/linux/reviewer_mutation.go",
+			path: "internal/sandboxruntime/microvm/guestagent/credentialhelper/linux/reviewer_mutation.go",
 			source: `package linux
 import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
 func reviewerMutation() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence() }
@@ -31,7 +31,7 @@ func reviewerMutation() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvi
 		},
 		{
 			name: "extra guest evidence import",
-			path: "guestagent/credentialhelper/linux/reviewer_mutation.go",
+			path: "internal/sandboxruntime/microvm/guestagent/credentialhelper/linux/reviewer_mutation.go",
 			source: `package linux
 import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
 func reviewerMutation() { _, _ = syscallpolicy.ImportPinnedCallsiteEvidence(nil, syscallpolicy.VerifiedPolicyArtifact{}, syscallpolicy.ExpectedPinnedCallsiteEvidence{}) }
@@ -39,7 +39,7 @@ func reviewerMutation() { _, _ = syscallpolicy.ImportPinnedCallsiteEvidence(nil,
 		},
 		{
 			name: "guest issuer alias",
-			path: "guestagent/credentialhelper/linux/reviewer_mutation.go",
+			path: "internal/sandboxruntime/microvm/guestagent/credentialhelper/linux/reviewer_mutation.go",
 			source: `package linux
 import policy "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
 var reviewerMutation = policy.EmbeddedExpectedPinnedCallsiteEvidence
@@ -47,7 +47,7 @@ var reviewerMutation = policy.EmbeddedExpectedPinnedCallsiteEvidence
 		},
 		{
 			name: "guest dot import",
-			path: "guestagent/credentialhelper/linux/reviewer_mutation.go",
+			path: "internal/sandboxruntime/microvm/guestagent/credentialhelper/linux/reviewer_mutation.go",
 			source: `package linux
 import . "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
 func reviewerMutation() { _, _ = EmbeddedExpectedPinnedCallsiteEvidence() }
@@ -55,10 +55,29 @@ func reviewerMutation() { _, _ = EmbeddedExpectedPinnedCallsiteEvidence() }
 		},
 		{
 			name: "second host consumer",
-			path: "firecrackerhost/reviewer_mutation.go",
+			path: "internal/sandboxruntime/microvm/firecrackerhost/reviewer_mutation.go",
 			source: `package firecrackerhost
 import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
 func reviewerMutation() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence() }
+`,
+		},
+		{
+			name: "outside microvm cmd consumer",
+			path: "cmd/reviewer_mutation.go",
+			source: `package cmd
+import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+func reviewerOutsideMicroVM() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence() }
+`,
+		},
+		{
+			name: "outside microvm build tagged consumer",
+			path: "cmd/reviewer_mutation_variant.go",
+			source: `//go:build reviewer_guard_variant
+
+package cmd
+
+import policy "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+func reviewerBuildVariant() { _, _ = policy.EmbeddedExpectedPinnedCallsiteEvidence() }
 `,
 		},
 	}
@@ -66,7 +85,7 @@ func reviewerMutation() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvi
 		t.Run(mutation.name, func(t *testing.T) {
 			mutated := cloneL8D4ProductionSources(sources)
 			mutated[mutation.path] = mutation.source
-			if err := validateL8D4ProductionHostEvidenceBoundary(mutated); err == nil {
+			if err := validateL8D4RepositoryHostEvidenceBoundary(mutated); err == nil {
 				t.Fatal("host-evidence production guard accepted mutation")
 			}
 		})
@@ -74,27 +93,60 @@ func reviewerMutation() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvi
 
 	t.Run("missing sole localresolver issuer", func(t *testing.T) {
 		mutated := cloneL8D4ProductionSources(sources)
-		const path = "assets/localresolver/l8_distribution_verifier.go"
+		const path = "internal/sandboxruntime/microvm/assets/localresolver/l8_distribution_verifier.go"
 		mutated[path] = strings.Replace(mutated[path], "expectedEvidence, err := syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()", "var expectedEvidence syscallpolicy.ExpectedPinnedCallsiteEvidence", 1)
 		if mutated[path] == sources[path] {
 			t.Fatal("mutation did not remove localresolver issuer")
 		}
-		if err := validateL8D4ProductionHostEvidenceBoundary(mutated); err == nil {
+		if err := validateL8D4RepositoryHostEvidenceBoundary(mutated); err == nil {
 			t.Fatal("host-evidence production guard accepted missing sole issuer")
 		}
 	})
 
 	t.Run("localresolver issuer receiver substitution", func(t *testing.T) {
 		mutated := cloneL8D4ProductionSources(sources)
-		const path = "assets/localresolver/l8_distribution_verifier.go"
+		const path = "internal/sandboxruntime/microvm/assets/localresolver/l8_distribution_verifier.go"
 		mutated[path] = strings.Replace(mutated[path], "syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()", "reviewerEvidence.EmbeddedExpectedPinnedCallsiteEvidence()", 1)
 		if mutated[path] == sources[path] {
 			t.Fatal("mutation did not substitute localresolver issuer receiver")
 		}
-		if err := validateL8D4ProductionHostEvidenceBoundary(mutated); err == nil {
+		if err := validateL8D4RepositoryHostEvidenceBoundary(mutated); err == nil {
 			t.Fatal("host-evidence production guard accepted a non-syscallpolicy issuer receiver")
 		}
 	})
+
+	benignSources := []struct {
+		name   string
+		path   string
+		source string
+	}{
+		{
+			name: "unrelated same named method",
+			path: "cmd/reviewer_unrelated.go",
+			source: `package cmd
+type reviewerEvidence struct{}
+func (reviewerEvidence) EmbeddedExpectedPinnedCallsiteEvidence() {}
+func reviewerUnrelatedName() { reviewerEvidence{}.EmbeddedExpectedPinnedCallsiteEvidence() }
+`,
+		},
+		{
+			name: "test consumer excluded",
+			path: "cmd/reviewer_mutation_test.go",
+			source: `package cmd
+import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+func reviewerTestOnly() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence() }
+`,
+		},
+	}
+	for _, benign := range benignSources {
+		t.Run(benign.name, func(t *testing.T) {
+			mutated := cloneL8D4ProductionSources(sources)
+			mutated[benign.path] = benign.source
+			if err := validateL8D4RepositoryHostEvidenceBoundary(mutated); err != nil {
+				t.Fatalf("host-evidence production guard rejected benign source: %v", err)
+			}
+		})
+	}
 }
 
 func readL8D4ProductionSources(t *testing.T, root string) map[string]string {
