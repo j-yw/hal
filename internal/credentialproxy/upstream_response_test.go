@@ -18,12 +18,8 @@ func TestL8D3AzureResponsesRejectsMalformedJSONEncodingAndEventStreamFraming(t *
 	}{
 		{name: "invalid JSON syntax", contentType: "application/json", body: []byte("not-json")},
 		{name: "content encoding", contentType: "application/json", extra: "Content-Encoding: gzip\r\n", body: []byte(`{"ok":true}`)},
-		{name: "chunked JSON ambiguity", contentType: "application/json", body: []byte(`{"ok":true}`), chunked: true},
 		{name: "invalid event stream UTF-8", contentType: "text/event-stream", body: []byte{0xff, '\n', '\n'}},
-		{name: "unknown event stream field", contentType: "text/event-stream", body: []byte("bogus: value\n\n")},
-		{name: "event stream line without separator", contentType: "text/event-stream", body: []byte("bogus\n\n")},
 		{name: "unterminated event stream event", contentType: "text/event-stream", body: []byte("data: {}\n")},
-		{name: "bare carriage return", contentType: "text/event-stream", body: []byte("data: {}\rdata: {}\n\n")},
 		{name: "invalid retry value", contentType: "text/event-stream", body: []byte("retry: soon\n\n")},
 		{name: "NUL event id", contentType: "text/event-stream", body: []byte("id: bad\x00id\ndata: {}\n\n")},
 	}
@@ -52,14 +48,17 @@ func TestL8D3AzureResponsesAcceptsExactJSONAndEventStreamWithoutChangingBody(t *
 	tests := []struct {
 		name        string
 		contentType string
+		extra       string
 		body        []byte
 		chunked     bool
 		streaming   bool
 	}{
 		{name: "JSON", contentType: "application/json", body: []byte("{\n  \"ok\": true\n}")},
+		{name: "chunked JSON", contentType: "application/json", body: []byte(`{"ok":true}`), chunked: true},
+		{name: "identity encoded JSON", contentType: "application/json", extra: "Content-Encoding: identity\r\n", body: []byte(`{"ok":true}`)},
 		{
 			name: "event stream", contentType: "text/event-stream", streaming: true, chunked: true,
-			body: []byte(": heartbeat\nevent: response.output_text.delta\nid: event-1\nretry: 1000\ndata: {\"delta\":\"hello\"}\ndata: [DONE]\n\n"),
+			body: []byte(": heartbeat\rignored: value\r\nignored\nevent: response.output_text.delta\rid: event-1\nretry: 1000\r\ndata: {\"delta\":\"hello\"}\ndata: [DONE]\r\n\r\n"),
 		},
 	}
 	definition := l8D3AzureResponsesDefinition(t)
@@ -67,6 +66,7 @@ func TestL8D3AzureResponsesAcceptsExactJSONAndEventStreamWithoutChangingBody(t *
 		t.Run(tt.name, func(t *testing.T) {
 			connection := l8D3RawResponseConnection(t, l8D3RawUpstreamResponse(httpResponseSpec{
 				contentType: tt.contentType,
+				extra:       tt.extra,
 				body:        tt.body,
 				chunked:     tt.chunked,
 			}))

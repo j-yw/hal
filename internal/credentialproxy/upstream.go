@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -109,12 +112,16 @@ func readAzureResponsesResponse(connection net.Conn, definition ServiceDefinitio
 	}
 	defer response.Body.Close()
 	if response.ProtoMajor != 1 || response.ProtoMinor != 1 || response.StatusCode < 200 ||
-		response.Header.Get("Upgrade") != "" || len(response.Trailer) != 0 {
+		response.Header.Get("Upgrade") != "" || len(response.Trailer) != 0 ||
+		!validAzureResponsesContentEncoding(response) || response.Uncompressed {
 		return applicationroute.Response{}, ErrRouteResponseRejected
 	}
 	contentType := response.Header.Get("Content-Type")
 	streaming := contentType == "text/event-stream"
 	if contentType != "application/json" && !streaming {
+		return applicationroute.Response{}, ErrRouteResponseRejected
+	}
+	if !validAzureResponsesTransferFraming(response) {
 		return applicationroute.Response{}, ErrRouteResponseRejected
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, limits.MaxResponseBodyBytes+1))
@@ -130,6 +137,9 @@ func readAzureResponsesResponse(connection net.Conn, definition ServiceDefinitio
 			wipeBytes(body)
 			return applicationroute.Response{}, ErrRouteResponseRejected
 		}
+	} else if !json.Valid(body) {
+		wipeBytes(body)
+		return applicationroute.Response{}, ErrRouteResponseRejected
 	}
 	return applicationroute.Response{
 		Metadata: applicationroute.ResponseMetadata{
@@ -138,6 +148,24 @@ func readAzureResponsesResponse(connection net.Conn, definition ServiceDefinitio
 		},
 		Body: io.NopCloser(bytes.NewReader(body)),
 	}, nil
+}
+
+func validAzureResponsesTransferFraming(response *http.Response) bool {
+	if response == nil {
+		return false
+	}
+	if len(response.TransferEncoding) == 0 {
+		return response.ContentLength >= -1
+	}
+	return len(response.TransferEncoding) == 1 && response.TransferEncoding[0] == "chunked" && response.ContentLength == -1
+}
+
+func validAzureResponsesContentEncoding(response *http.Response) bool {
+	if response == nil {
+		return false
+	}
+	values := response.Header.Values("Content-Encoding")
+	return len(values) == 0 || (len(values) == 1 && strings.EqualFold(strings.TrimSpace(values[0]), "identity"))
 }
 
 func readHTTPResponseHeader(reader io.Reader, maximum int64) ([]byte, error) {
@@ -164,37 +192,98 @@ func readHTTPResponseHeader(reader io.Reader, maximum int64) ([]byte, error) {
 }
 
 func validateSSEEvents(body []byte, maximum int64) (int64, error) {
+	if len(body) == 0 || maximum <= 0 || !utf8.Valid(body) {
+		return 0, ErrRouteResponseRejected
+	}
 	current := int64(0)
 	observed := int64(0)
 	lineStart := 0
-	for index := 0; index <= len(body); index++ {
-		if index < len(body) && body[index] != '\n' {
-			continue
+	terminatedEvent := false
+	for lineStart < len(body) {
+		lineEnd, nextLine, ok := nextSSELine(body, lineStart)
+		if !ok {
+			return 0, ErrRouteResponseRejected
 		}
-		line := body[lineStart:index]
-		if len(line) > 0 && line[len(line)-1] == '\r' {
-			line = line[:len(line)-1]
-		}
+		line := body[lineStart:lineEnd]
 		if len(line) == 0 {
 			if current > observed {
 				observed = current
 			}
 			current = 0
+			terminatedEvent = true
 		} else {
-			current += int64(index-lineStart) + 1
+			if !validSSELine(line) {
+				return 0, ErrRouteResponseRejected
+			}
+			terminatedEvent = false
+			current += int64(nextLine - lineStart)
 			if current > maximum {
 				return 0, ErrRouteResponseRejected
 			}
 		}
-		lineStart = index + 1
+		lineStart = nextLine
 	}
-	if current > observed {
-		observed = current
-	}
-	if observed > maximum {
+	if !terminatedEvent || current != 0 || observed > maximum {
 		return 0, ErrRouteResponseRejected
 	}
 	return observed, nil
+}
+
+func nextSSELine(body []byte, start int) (lineEnd, next int, ok bool) {
+	if start < 0 || start >= len(body) {
+		return 0, 0, false
+	}
+	for index := start; index < len(body); index++ {
+		switch body[index] {
+		case '\n':
+			return index, index + 1, true
+		case '\r':
+			if index+1 < len(body) && body[index+1] == '\n' {
+				return index, index + 2, true
+			}
+			return index, index + 1, true
+		}
+	}
+	return 0, 0, false
+}
+
+func validSSELine(line []byte) bool {
+	if len(line) == 0 {
+		return true
+	}
+	if line[0] == ':' {
+		return true
+	}
+	field := line
+	value := []byte(nil)
+	if separator := bytes.IndexByte(line, ':'); separator >= 0 {
+		field = line[:separator]
+		value = line[separator+1:]
+		if len(value) > 0 && value[0] == ' ' {
+			value = value[1:]
+		}
+	}
+	if len(field) == 0 {
+		return false
+	}
+	switch string(field) {
+	case "id":
+		return bytes.IndexByte(value, 0) < 0
+	case "data", "event":
+		return true
+	case "retry":
+		if len(value) == 0 {
+			return false
+		}
+		for _, digit := range value {
+			if digit < '0' || digit > '9' {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
 }
 
 type lockedMappingCredentialSink struct {
