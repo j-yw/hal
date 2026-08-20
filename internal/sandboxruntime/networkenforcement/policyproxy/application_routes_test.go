@@ -121,6 +121,39 @@ func TestL8D3PolicyProxyApplicationRouteLifecycleAndTypedNil(t *testing.T) {
 	}
 }
 
+func TestL8D3PolicyProxySnapshotsValidatedApplicationRouteDefinitions(t *testing.T) {
+	route := &l8D3PolicyProxyRoute{}
+	adapter := newL8D3PolicyProxyAdapterUnstarted(t, route, func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("generic dial must not run")
+	})
+	route.SetDefinitions([]applicationroute.Definition{{
+		ID: "replacement-route", Prefix: "/.well-known/hal/replacement/",
+		Limits: applicationroute.StreamLimits{
+			MaxRequestHeaderBytes: 1, MaxRequestBodyBytes: 1,
+			MaxResponseHeaderBytes: 1, MaxResponseBodyBytes: 1, MaxEventBytes: 1,
+		},
+	}})
+	request := l8D3LifecycleRequest()
+	if _, err := adapter.StartProxyListener(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = adapter.StopProxyListener(context.Background(), request) })
+
+	httpRequest := httptest.NewRequest(http.MethodPost, "http://runtime-route.invalid/.well-known/hal/credential-http/v1/service/deployments/model/responses?api-version=v1", bytes.NewReader([]byte(`{"model":"model"}`)))
+	httpRequest.URL.Scheme = ""
+	httpRequest.URL.Host = ""
+	httpRequest.RequestURI = "/.well-known/hal/credential-http/v1/service/deployments/model/responses?api-version=v1"
+	httpRequest.Host = "runtime-route.invalid"
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("api-key", "opaque-ticket")
+	httpResponse := httptest.NewRecorder()
+
+	adapter.ServeHTTP(httpResponse, httpRequest)
+	if httpResponse.Code != http.StatusCreated {
+		t.Fatalf("response status = %d, want snapshotted route dispatch", httpResponse.Code)
+	}
+}
+
 func TestL8D3PolicyProxyApplicationRouteCleanupRetriesBeforeStopped(t *testing.T) {
 	route := &l8D3PolicyProxyRoute{closeFailures: 1}
 	adapter := newL8D3PolicyProxyAdapterUnstarted(t, route, nil)
@@ -186,6 +219,7 @@ func l8D3LifecycleRequest() networkenforcement.ProxyListenerLifecycleRequest {
 type l8D3PolicyProxyRoute struct {
 	mu            sync.Mutex
 	started       bool
+	definitions   []applicationroute.Definition
 	request       applicationroute.Request
 	startCount    int
 	closeCount    int
@@ -193,7 +227,12 @@ type l8D3PolicyProxyRoute struct {
 	closeFailures int
 }
 
-func (*l8D3PolicyProxyRoute) Definitions() []applicationroute.Definition {
+func (route *l8D3PolicyProxyRoute) Definitions() []applicationroute.Definition {
+	route.mu.Lock()
+	defer route.mu.Unlock()
+	if route.definitions != nil {
+		return append([]applicationroute.Definition(nil), route.definitions...)
+	}
 	return []applicationroute.Definition{{
 		ID: applicationroute.RouteCredentialHTTPV1, Prefix: applicationroute.CredentialHTTPV1Prefix,
 		Limits: applicationroute.StreamLimits{
@@ -201,6 +240,12 @@ func (*l8D3PolicyProxyRoute) Definitions() []applicationroute.Definition {
 			MaxResponseHeaderBytes: 32 << 10, MaxResponseBodyBytes: 64 << 20, MaxEventBytes: 2 << 20,
 		},
 	}}
+}
+
+func (route *l8D3PolicyProxyRoute) SetDefinitions(definitions []applicationroute.Definition) {
+	route.mu.Lock()
+	defer route.mu.Unlock()
+	route.definitions = append([]applicationroute.Definition(nil), definitions...)
 }
 
 func (route *l8D3PolicyProxyRoute) Start(context.Context) error {
