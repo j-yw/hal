@@ -245,7 +245,9 @@ func (a *Adapter) stopProxyListener(request networkenforcement.ProxyListenerLife
 
 	a.mu.Lock()
 	if expected != nil {
-		if expected.generation != 0 && expected.generation == a.lastStoppedGeneration && expected.address != "" && expected.address == a.lastStoppedAddress && a.listener == nil && !a.applicationRoutesCleanupPending {
+		matchesLastStopped := expected.generation != 0 && expected.generation == a.lastStoppedGeneration &&
+			expected.address != "" && expected.address == a.lastStoppedAddress && a.listener == nil
+		if matchesLastStopped && !a.applicationRoutesCleanupPending {
 			reservation := a.takeExactReservationLocked(*expected)
 			a.mu.Unlock()
 			if reservation != nil {
@@ -253,7 +255,7 @@ func (a *Adapter) stopProxyListener(request networkenforcement.ProxyListenerLife
 			}
 			return a.metadata(request, networkenforcement.LifecycleStatusStopped, networkenforcement.LifecycleReasonStopped), nil
 		}
-		if expected.generation == 0 || expected.generation != a.generation || expected.address == "" || expected.address != a.endpoint {
+		if !matchesLastStopped && (expected.generation == 0 || expected.generation != a.generation || expected.address == "" || expected.address != a.endpoint) {
 			a.mu.Unlock()
 			return a.metadata(request, networkenforcement.LifecycleStatusFailed, networkenforcement.LifecycleReasonProofMismatch), safeAdapterError("stop")
 		}
