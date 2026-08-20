@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -758,7 +759,10 @@ func checkOutputs(root string, outputs generatedOutputs) error {
 
 func checkFileMap(root string, files map[string][]byte) error {
 	for path, want := range files {
-		got, err := os.ReadFile(filepath.Join(root, path))
+		if len(want) == 0 {
+			return fmt.Errorf("D7 output %s is unexpectedly empty", path)
+		}
+		got, err := readBounded(filepath.Join(root, path), int64(len(want)))
 		if err != nil {
 			return fmt.Errorf("read output %s: %w", path, err)
 		}
@@ -825,16 +829,63 @@ func discoverRepositoryRoot() (string, error) {
 }
 
 func readBounded(path string, maximum int64) ([]byte, error) {
-	info, err := os.Stat(path)
+	return readBoundedWithIdentityHook(path, maximum, nil)
+}
+
+// readBoundedWithIdentityHook pins one regular-file identity before reading it.
+// The hook exists only so tests can deterministically replace the pathname
+// after the descriptor has been pinned; production callers always pass nil.
+func readBoundedWithIdentityHook(path string, maximum int64, afterOpen func()) ([]byte, error) {
+	if maximum <= 0 || maximum == int64(^uint64(0)>>1) {
+		return nil, fmt.Errorf("file %s has an invalid read bound", path)
+	}
+	initial, err := os.Lstat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
-	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maximum {
+	if initial.Mode()&os.ModeSymlink != 0 || !initial.Mode().IsRegular() || initial.Size() <= 0 || initial.Size() > maximum {
 		return nil, fmt.Errorf("file %s is outside bounds", path)
 	}
-	encoded, err := os.ReadFile(path)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open no-follow %s: %w", path, err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, fmt.Errorf("open no-follow %s returned no file", path)
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("fstat %s: %w", path, err)
+	}
+	if !opened.Mode().IsRegular() || opened.Size() <= 0 || opened.Size() > maximum || !os.SameFile(initial, opened) {
+		return nil, fmt.Errorf("file %s changed identity or is outside bounds", path)
+	}
+	if afterOpen != nil {
+		afterOpen()
+	}
+	encoded, err := io.ReadAll(io.LimitReader(file, maximum+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if int64(len(encoded)) != opened.Size() || int64(len(encoded)) > maximum {
+		return nil, fmt.Errorf("file %s changed size or has trailing bytes", path)
+	}
+	afterRead, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("fstat after read %s: %w", path, err)
+	}
+	if !os.SameFile(opened, afterRead) || afterRead.Size() != opened.Size() || !afterRead.Mode().IsRegular() {
+		return nil, fmt.Errorf("file %s changed while being read", path)
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("restat %s: %w", path, err)
+	}
+	if current.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, current) {
+		return nil, fmt.Errorf("file %s changed pathname identity while being read", path)
 	}
 	return encoded, nil
 }

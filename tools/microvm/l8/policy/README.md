@@ -15,9 +15,14 @@ executables, checks the independently locked generator digest, regenerates the
 HL8Q outputs in memory, and verifies the checked-in bytes through the D2
 importer. Untagged builds remain fail closed.
 
-HL8E issuance is intentionally later than artifact generation. After D4/D6
-produce a final Go 1.25.7 guest role binary that actually embeds the exact
-generated HL8Q, run:
+HL8E issuance is intentionally later than artifact generation and is disabled
+in this slice. A single ELF that happens to embed HL8Q and a generic Go runtime
+syscall symbol does not prove its role identity, the complete final binary set,
+or the required unique/reachable callsite graph. Consequently, even supplying
+`-evidence-binary` fails closed until D4/D6 provide the final linked inputs and
+D7 can bind and inspect that complete set.
+
+The reserved future invocation is:
 
 ```sh
 go run ./tools/microvm/l8/policy/generate \
@@ -25,8 +30,7 @@ go run ./tools/microvm/l8/policy/generate \
   -evidence-binary /absolute/path/to/final/guest-role-binary
 ```
 
-The issuer rejects an unlinked artifact, the wrong Go version, a non-amd64 ELF,
-missing or ambiguous symbols, source/template drift, and instruction offsets
-outside the exact symbol or executable text. Only a successful inspection
-writes `verified-pinned-callsites.hl8e`, its digest, and the host-only tagged
-expected-evidence source.
+The current generator always rejects that invocation and never writes
+`verified-pinned-callsites.hl8e`, its digest, or the host-only tagged
+expected-evidence source. Future issuance must first pin every permitted
+role/binary identity and prove the documented final-binary call graph.
