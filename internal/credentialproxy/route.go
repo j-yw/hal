@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -107,7 +107,7 @@ func newAzureResponsesRoute(config AzureResponsesRouteConfig, deps azureResponse
 		ticket:     ticket,
 		resolver:   deps.resolver,
 		dial:       deps.dial,
-		roots:      deps.roots,
+		roots:      cloneX509Roots(deps.roots),
 	}}
 	return route, ticket, nil
 }
@@ -269,7 +269,8 @@ func validLocalRuntimeAuthority(authority string) bool {
 		return false
 	}
 	host, port, err := net.SplitHostPort(authority)
-	return err == nil && host != "" && validCatalogIdentifier(strings.ReplaceAll(port, "0", "a"))
+	portNumber, portErr := strconv.Atoi(port)
+	return err == nil && portErr == nil && host != "" && portNumber > 0 && portNumber <= 65535
 }
 
 func (route *AzureResponsesRoute) sharedState() *azureResponsesRouteState {
@@ -335,9 +336,11 @@ func startVerifiedAzureResponsesTLS(ctx context.Context, raw net.Conn, definitio
 		RootCAs:    cloneX509Roots(roots),
 		NextProtos: []string{"http/1.1"},
 	})
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = secure.SetDeadline(deadline)
+	deadline := time.Now().Add(definition.Limits().ReadIdleTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
 	}
+	_ = secure.SetDeadline(deadline)
 	if err := secure.HandshakeContext(ctx); err != nil {
 		return nil, ErrRouteUpstreamUnavailable
 	}
@@ -371,5 +374,3 @@ func copySafeHeaderValue(headers applicationroute.RequestHeaderValues, name stri
 	}
 	return value[:count], nil
 }
-
-var _ = reflect.TypeOf

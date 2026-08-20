@@ -120,6 +120,9 @@ func (invocation *AzureResponsesPiInvocation) WriteTransientEnvironment(ctx cont
 	if writeErr != nil {
 		return ErrPiInvocationEnvironment
 	}
+	if err := config.TicketStore.Validate(ctx, config.Ticket, config.Correlation); err != nil {
+		return ErrPiInvocationEnvironment
+	}
 	return nil
 }
 

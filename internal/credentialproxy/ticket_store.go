@@ -44,6 +44,7 @@ type TicketStore struct {
 
 type ticketStoreState struct {
 	mu               sync.Mutex
+	digestMu         sync.Mutex
 	daemonGeneration string
 	key              *credentialmemory.LockedMapping
 	entries          map[[32]byte]*ticketStoreEntry
@@ -118,10 +119,17 @@ func (store *TicketStore) Issue(ctx context.Context, activation TicketActivation
 		return nil, ErrTicketCorrelation
 	}
 	var raw [JobTicketRawBytes]byte
+	state.mu.Lock()
+	if state.closed {
+		state.mu.Unlock()
+		return nil, ErrTicketStoreInvalid
+	}
 	if _, err := io.ReadFull(state.entropy, raw[:]); err != nil {
+		state.mu.Unlock()
 		wipeBytes(raw[:])
 		return nil, ErrTicketStoreInvalid
 	}
+	state.mu.Unlock()
 	ticket := newJobTicket(raw)
 	wipeBytes(raw[:])
 	digest, err := store.digestEncoded(ctx, ticket.encoded[:])
@@ -158,9 +166,10 @@ func (store *TicketStore) Renew(ctx context.Context, ticket *JobTicket, correlat
 		return ErrTicketStoreInvalid
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
-	entry, err := state.validEntryLocked(digest, correlation, state.now().UTC())
+	entry, connections, err := state.validEntryLocked(digest, correlation, state.now().UTC())
 	if err != nil {
+		state.mu.Unlock()
+		_ = closeTicketConnections(connections)
 		return err
 	}
 	renewed := state.now().UTC().Add(JobTicketLeaseDuration)
@@ -168,6 +177,7 @@ func (store *TicketStore) Renew(ctx context.Context, ticket *JobTicket, correlat
 		renewed = entry.hardExpiry
 	}
 	entry.leaseExpiry = renewed
+	state.mu.Unlock()
 	return nil
 }
 
@@ -183,8 +193,9 @@ func (store *TicketStore) Validate(ctx context.Context, ticket *JobTicket, corre
 		return ErrTicketStoreInvalid
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
-	_, err = state.validEntryLocked(digest, correlation, state.now().UTC())
+	_, connections, err := state.validEntryLocked(digest, correlation, state.now().UTC())
+	state.mu.Unlock()
+	_ = closeTicketConnections(connections)
 	return err
 }
 
@@ -227,15 +238,18 @@ func (store *TicketStore) acquirePresentedTicket(ctx context.Context, presentati
 		return nil, ErrTicketStoreInvalid
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
-	entry, err := state.validEntryLocked(digest, correlation, state.now().UTC())
+	entry, connections, err := state.validEntryLocked(digest, correlation, state.now().UTC())
 	if err != nil {
+		state.mu.Unlock()
+		_ = closeTicketConnections(connections)
 		return nil, err
 	}
 	if entry.concurrent >= JobTicketMaxConcurrentRequests {
+		state.mu.Unlock()
 		return nil, ErrTicketConcurrencyLimit
 	}
 	if entry.total >= JobTicketMaxTotalRequests {
+		state.mu.Unlock()
 		return nil, ErrTicketRequestLimit
 	}
 	state.nextLeaseID++
@@ -243,6 +257,7 @@ func (store *TicketStore) acquirePresentedTicket(ctx context.Context, presentati
 	entry.concurrent++
 	entry.total++
 	entry.leases[lease.id] = lease
+	state.mu.Unlock()
 	return lease, nil
 }
 
@@ -258,14 +273,17 @@ func (lease *TicketRequestLease) Revalidate(ctx context.Context, correlation Tic
 		return ErrTicketStoreInvalid
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
-	entry, err := state.validEntryLocked(lease.digest, correlation, state.now().UTC())
+	entry, connections, err := state.validEntryLocked(lease.digest, correlation, state.now().UTC())
 	if err != nil {
+		state.mu.Unlock()
+		_ = closeTicketConnections(connections)
 		return err
 	}
 	if current, ok := entry.leases[lease.id]; !ok || current != lease || lease.released {
+		state.mu.Unlock()
 		return ErrTicketRevoked
 	}
+	state.mu.Unlock()
 	return nil
 }
 
@@ -278,7 +296,11 @@ func (lease *TicketRequestLease) FillSecret(ctx context.Context, correlation Tic
 	}
 	state := lease.store.sharedState()
 	state.mu.Lock()
-	entry := state.entries[lease.digest]
+	entry, ok := state.entries[lease.digest]
+	if !ok || entry.revoked || lease.released || entry.leases[lease.id] != lease {
+		state.mu.Unlock()
+		return ErrTicketRevoked
+	}
 	source := entry.source
 	state.mu.Unlock()
 	if err := source.FillSecret(ctx, sink); err != nil {
@@ -389,6 +411,14 @@ func (store *TicketStore) digestEncoded(ctx context.Context, encoded []byte) ([3
 	if closed || key == nil {
 		return [32]byte{}, ErrTicketStoreInvalid
 	}
+	state.digestMu.Lock()
+	defer state.digestMu.Unlock()
+	state.mu.Lock()
+	if state.closed || state.key != key {
+		state.mu.Unlock()
+		return [32]byte{}, ErrTicketStoreInvalid
+	}
+	state.mu.Unlock()
 	sink := &ticketHMACKeySink{encoded: encoded}
 	if err := key.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
 		return view.WriteTo(ctx, sink)
@@ -398,26 +428,26 @@ func (store *TicketStore) digestEncoded(ctx context.Context, encoded []byte) ([3
 	return sink.digest, nil
 }
 
-func (state *ticketStoreState) validEntryLocked(digest [32]byte, correlation TicketCorrelation, now time.Time) (*ticketStoreEntry, error) {
+func (state *ticketStoreState) validEntryLocked(digest [32]byte, correlation TicketCorrelation, now time.Time) (*ticketStoreEntry, []io.Closer, error) {
 	if state.closed {
-		return nil, ErrTicketStoreInvalid
+		return nil, nil, ErrTicketStoreInvalid
 	}
 	entry, ok := state.entries[digest]
 	if !ok {
-		return nil, ErrTicketInvalid
+		return nil, nil, ErrTicketInvalid
 	}
 	if subtle.ConstantTimeCompare(entry.correlation.JobIdentityDigest[:], correlation.JobIdentityDigest[:]) != 1 ||
 		!sameTicketCorrelationWithoutDigest(entry.correlation, correlation) {
-		return nil, ErrTicketCorrelation
+		return nil, nil, ErrTicketCorrelation
 	}
 	if entry.revoked {
-		return nil, ErrTicketRevoked
+		return nil, nil, ErrTicketRevoked
 	}
 	if !now.Before(entry.leaseExpiry) || !now.Before(entry.hardExpiry) {
 		entry.revoked = true
-		return nil, ErrTicketExpired
+		return nil, entry.takeConnectionsLocked(), ErrTicketExpired
 	}
-	return entry, nil
+	return entry, nil, nil
 }
 
 func (entry *ticketStoreEntry) takeConnectionsLocked() []io.Closer {

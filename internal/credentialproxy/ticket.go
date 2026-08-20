@@ -48,7 +48,7 @@ func (ticket *JobTicket) Len() int {
 }
 
 func (ticket *JobTicket) CopyTo(destination []byte) (int, error) {
-	if ticket == nil || !validEncodedTicket(ticket.encoded[:]) || len(destination) < JobTicketEncodedBytes {
+	if ticket == nil || !validEncodedTicket(ticket.encoded[:]) || len(destination) != JobTicketEncodedBytes {
 		wipeBytes(destination)
 		return 0, ErrTicketInvalid
 	}
