@@ -194,6 +194,91 @@ func TestL8D3TicketRevocationClosesInflightAndPreventsRenewal(t *testing.T) {
 	}
 }
 
+func TestL8D3TicketExpiryClosesEveryInflightConnection(t *testing.T) {
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	clock := now
+	store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{
+		now: func() time.Time { return clock }, entropy: bytes.NewReader(bytes.Repeat([]byte{0x67}, 64)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	activation := l8D3TicketActivation(t, now)
+	ticket, err := store.Issue(context.Background(), activation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := l8D3AcquireTicket(t, store, ticket, activation.Correlation)
+	closer := &l8D3TicketCloser{}
+	if err := lease.OwnConnection(closer); err != nil {
+		t.Fatal(err)
+	}
+	clock = now.Add(JobTicketLeaseDuration)
+	if err := store.Validate(context.Background(), ticket, activation.Correlation); !errors.Is(err, ErrTicketExpired) {
+		t.Fatalf("Validate() at expiry = %v, want expired", err)
+	}
+	if closer.Count() != 1 {
+		t.Fatalf("expiry close count = %d, want 1", closer.Count())
+	}
+	if err := lease.Revalidate(context.Background(), activation.Correlation); !errors.Is(err, ErrTicketRevoked) {
+		t.Fatalf("Revalidate() after expiry cleanup = %v, want revoked", err)
+	}
+}
+
+func TestL8D3TicketConcurrentIssueSerializesEntropyAndProducesUniqueCapabilities(t *testing.T) {
+	const count = 64
+	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
+	entropy := make([]byte, (count+1)*JobTicketRawBytes)
+	for block := 0; block <= count; block++ {
+		for index := 0; index < JobTicketRawBytes; index++ {
+			entropy[block*JobTicketRawBytes+index] = byte(block + index)
+		}
+	}
+	store, err := newTicketStore("daemon-generation-01", ticketStoreDeps{
+		now: func() time.Time { return now }, entropy: bytes.NewReader(entropy),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	activation := l8D3TicketActivation(t, now)
+
+	values := make(chan string, count)
+	errorsSeen := make(chan error, count)
+	var group sync.WaitGroup
+	for index := 0; index < count; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			ticket, issueErr := store.Issue(context.Background(), activation)
+			if issueErr != nil {
+				errorsSeen <- issueErr
+				return
+			}
+			encoded := make([]byte, JobTicketEncodedBytes)
+			if _, copyErr := ticket.CopyTo(encoded); copyErr != nil {
+				errorsSeen <- copyErr
+				return
+			}
+			values <- string(encoded)
+		}()
+	}
+	group.Wait()
+	close(values)
+	close(errorsSeen)
+	for err := range errorsSeen {
+		t.Errorf("concurrent Issue() error: %v", err)
+	}
+	unique := make(map[string]bool, count)
+	for value := range values {
+		unique[value] = true
+	}
+	if len(unique) != count {
+		t.Fatalf("unique concurrent tickets = %d, want %d", len(unique), count)
+	}
+}
+
 func l8D3TicketActivation(t *testing.T, now time.Time) TicketActivation {
 	t.Helper()
 	return TicketActivation{

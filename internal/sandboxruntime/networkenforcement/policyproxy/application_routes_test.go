@@ -113,6 +113,26 @@ func TestL8D3PolicyProxyApplicationRouteLifecycleAndTypedNil(t *testing.T) {
 	}
 }
 
+func TestL8D3PolicyProxyApplicationRouteCleanupRetriesBeforeStopped(t *testing.T) {
+	route := &l8D3PolicyProxyRoute{closeFailures: 1}
+	adapter := newL8D3PolicyProxyAdapterUnstarted(t, route, nil)
+	request := l8D3LifecycleRequest()
+	if _, err := adapter.StartProxyListener(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := adapter.StopProxyListener(context.Background(), request)
+	if err == nil || metadata.Status != "failed" {
+		t.Fatalf("first StopProxyListener() = (%#v, %v), want cleanup failure", metadata, err)
+	}
+	metadata, err = adapter.StopProxyListener(context.Background(), request)
+	if err != nil || metadata.Status != "stopped" {
+		t.Fatalf("retry StopProxyListener() = (%#v, %v), want stopped", metadata, err)
+	}
+	if route.CloseCount() != 2 {
+		t.Fatalf("route close attempts = %d, want 2", route.CloseCount())
+	}
+}
+
 func newL8D3PolicyProxyAdapter(t *testing.T, route applicationroute.Handler, dial DialFunc) *Adapter {
 	t.Helper()
 	adapter := newL8D3PolicyProxyAdapterUnstarted(t, route, dial)
@@ -156,12 +176,13 @@ func l8D3LifecycleRequest() networkenforcement.ProxyListenerLifecycleRequest {
 }
 
 type l8D3PolicyProxyRoute struct {
-	mu         sync.Mutex
-	started    bool
-	request    applicationroute.Request
-	startCount int
-	closeCount int
-	startErr   error
+	mu            sync.Mutex
+	started       bool
+	request       applicationroute.Request
+	startCount    int
+	closeCount    int
+	startErr      error
+	closeFailures int
 }
 
 func (*l8D3PolicyProxyRoute) Definitions() []applicationroute.Definition {
@@ -199,6 +220,10 @@ func (route *l8D3PolicyProxyRoute) Close(context.Context) error {
 	route.mu.Lock()
 	defer route.mu.Unlock()
 	route.closeCount++
+	if route.closeFailures > 0 {
+		route.closeFailures--
+		return errors.New("raw close api-key=canary")
+	}
 	route.started = false
 	return nil
 }
