@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
@@ -1147,45 +1148,134 @@ func TestL8D2ImageProfileCompleteFixtureCompilesWithIssuerOverlay(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	issuerDeclarations, err := l8D2MissingGeneratedIssuerDeclarations(repositoryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	temporary := t.TempDir()
-	issuerSourcePath := filepath.Join(temporary, "composed_d7_issuer_overlay.go")
-	issuerSource := `//go:build l8_verified_policy_artifact && l8_verified_pinned_callsite_evidence
+	commandArguments := []string{"test"}
+	if issuerDeclarations != "" {
+		issuerSourcePath := filepath.Join(temporary, "composed_d7_issuer_overlay.go")
+		issuerSource := `//go:build l8_verified_policy_artifact && l8_verified_pinned_callsite_evidence
 
 package syscallpolicy
 
 // Compile-only declarations deliberately issue no artifact or evidence value.
-func EmbeddedVerifiedPolicyArtifact() (VerifiedPolicyArtifact, error) { panic("compile-only") }
-func EmbeddedExpectedPinnedCallsiteEvidence() (ExpectedPinnedCallsiteEvidence, error) { panic("compile-only") }
-`
-	if err := os.WriteFile(issuerSourcePath, []byte(issuerSource), 0o600); err != nil {
-		t.Fatal(err)
+	`
+		issuerSource += issuerDeclarations
+		if err := os.WriteFile(issuerSourcePath, []byte(issuerSource), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		virtualIssuerPath := filepath.Join(
+			repositoryRoot,
+			"internal", "sandboxruntime", "microvm", "guestagent", "syscallpolicy",
+			"composed_d7_issuer_overlay.go",
+		)
+		overlayPath := filepath.Join(temporary, "overlay.json")
+		overlayBytes, err := json.Marshal(struct {
+			Replace map[string]string `json:"Replace"`
+		}{Replace: map[string]string{virtualIssuerPath: issuerSourcePath}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(overlayPath, overlayBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		commandArguments = append(commandArguments, "-overlay="+overlayPath)
 	}
-	virtualIssuerPath := filepath.Join(
-		repositoryRoot,
-		"internal", "sandboxruntime", "microvm", "guestagent", "syscallpolicy",
-		"composed_d7_issuer_overlay.go",
-	)
-	overlayPath := filepath.Join(temporary, "overlay.json")
-	overlayBytes, err := json.Marshal(struct {
-		Replace map[string]string `json:"Replace"`
-	}{Replace: map[string]string{virtualIssuerPath: issuerSourcePath}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(overlayPath, overlayBytes, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command(
-		"go", "test",
-		"-overlay="+overlayPath,
+	commandArguments = append(commandArguments,
 		"-tags=l8_verified_policy_artifact l8_verified_pinned_callsite_evidence",
 		"./internal/sandboxruntime/microvm/assets/localresolver",
 		"-run=^$", "-count=1",
 	)
+	command := exec.Command("go", commandArguments...)
 	command.Dir = repositoryRoot
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("complete L8 fixture does not type-check with the downstream issuer overlay: %v\n%s", err, output)
 	}
+}
+
+func l8D2MissingGeneratedIssuerDeclarations(repositoryRoot string) (string, error) {
+	syscallPolicyDirectory := filepath.Join(
+		repositoryRoot,
+		"internal", "sandboxruntime", "microvm", "guestagent", "syscallpolicy",
+	)
+	issuers := []struct {
+		file        string
+		declaration string
+	}{
+		{
+			file:        "artifact_expected_d7_gen.go",
+			declaration: "func EmbeddedVerifiedPolicyArtifact() (VerifiedPolicyArtifact, error) { panic(\"compile-only\") }\n",
+		},
+		{
+			file:        "pinned_callsite_evidence_expected_d7_gen.go",
+			declaration: "func EmbeddedExpectedPinnedCallsiteEvidence() (ExpectedPinnedCallsiteEvidence, error) { panic(\"compile-only\") }\n",
+		},
+	}
+	var declarations strings.Builder
+	for _, issuer := range issuers {
+		path := filepath.Join(syscallPolicyDirectory, issuer.file)
+		info, err := os.Lstat(path)
+		switch {
+		case err == nil && info.Mode().IsRegular():
+			continue
+		case err == nil:
+			return "", fmt.Errorf("generated L8 issuer %s is not a regular file", issuer.file)
+		case os.IsNotExist(err):
+			declarations.WriteString(issuer.declaration)
+		default:
+			return "", fmt.Errorf("inspect generated L8 issuer %s: %w", issuer.file, err)
+		}
+	}
+	return declarations.String(), nil
+}
+
+func TestL8D2ImageProfileCompleteFixtureIssuerOverlayTracksGeneratedIssuers(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		generatedFiles     []string
+		wantArtifact       bool
+		wantPinnedEvidence bool
+	}{
+		{name: "neither generated", wantArtifact: true, wantPinnedEvidence: true},
+		{name: "artifact generated", generatedFiles: []string{"artifact_expected_d7_gen.go"}, wantPinnedEvidence: true},
+		{name: "both generated", generatedFiles: []string{"artifact_expected_d7_gen.go", "pinned_callsite_evidence_expected_d7_gen.go"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repositoryRoot := t.TempDir()
+			directory := filepath.Join(repositoryRoot, "internal", "sandboxruntime", "microvm", "guestagent", "syscallpolicy")
+			if err := os.MkdirAll(directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range test.generatedFiles {
+				if err := os.WriteFile(filepath.Join(directory, file), []byte("package syscallpolicy\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			declarations, err := l8D2MissingGeneratedIssuerDeclarations(repositoryRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(declarations, "EmbeddedVerifiedPolicyArtifact"); got != test.wantArtifact {
+				t.Fatalf("artifact overlay declaration presence = %t, want %t", got, test.wantArtifact)
+			}
+			if got := strings.Contains(declarations, "EmbeddedExpectedPinnedCallsiteEvidence"); got != test.wantPinnedEvidence {
+				t.Fatalf("pinned evidence overlay declaration presence = %t, want %t", got, test.wantPinnedEvidence)
+			}
+		})
+	}
+
+	t.Run("non-regular generated issuer", func(t *testing.T) {
+		repositoryRoot := t.TempDir()
+		path := filepath.Join(repositoryRoot, "internal", "sandboxruntime", "microvm", "guestagent", "syscallpolicy", "artifact_expected_d7_gen.go")
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := l8D2MissingGeneratedIssuerDeclarations(repositoryRoot); err == nil {
+			t.Fatal("non-regular generated issuer was accepted")
+		}
+	})
 }
 
 func TestL8D2ImageProfilePolicyCompositionUnderlyingFixtureGuardRejectsBypasses(t *testing.T) {
