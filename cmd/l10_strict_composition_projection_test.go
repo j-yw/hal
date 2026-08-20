@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
 )
 
@@ -92,5 +93,23 @@ func TestL10StrictCompositionProjectionsExpireActiveDecisions(t *testing.T) {
 		if got.CompositionID != "" || !got.ObservedAt.IsZero() || !got.ExpiresAt.IsZero() || len(got.Evidence) != 0 {
 			t.Fatalf("%s expired projection retained authority-shaped fields: %#v", label, got)
 		}
+	}
+}
+
+func TestL10FactoryStrictGateRejectsLegacyAllowedMetadataWithoutLiveAuthority(t *testing.T) {
+	legacyAllowed := sandbox.SandboxSecurityCapabilityReadinessGateDecision{
+		Code:       sandbox.SandboxSecurityCapabilityReadinessGateCodeAllowed,
+		Outcome:    sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed,
+		PolicyMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+		Reason:     sandbox.SandboxSecurityCapabilityReadinessGateReasonReadinessReady,
+	}
+	record := &factory.RunRecord{Sandbox: &factory.SandboxMetadata{Security: &factory.SandboxSecurityMetadata{
+		SecurityReadinessGate: &legacyAllowed,
+	}}}
+	got := factorySandboxReadinessGateDecision(factorySandboxExecutorRequest{
+		SecurityReadinessGateMode: sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+	}, record)
+	if got.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked || got.Code != sandbox.SandboxSecurityCapabilityReadinessGateCodeBlocked {
+		t.Fatalf("factory strict decision = %#v, want blocked without live strict-composition authority", got)
 	}
 }
