@@ -52,9 +52,10 @@ func TestClientSSHRelayRegistrationAndFactoryContract(t *testing.T) {
 func TestClientSSHRelayPassesOnlyAuthenticatedSafeOpenMetadata(t *testing.T) {
 	relay := &testRelay{connections: []RelayConnection{&testRelayConnection{}}}
 	session := newTestSession(t, relay)
+	terminal := make(chan struct{})
 	accepted := &testAcceptedPacket{
 		revision: 17, binding: 3, ordinal: 9, digest: [32]byte{0x7a},
-		connection: &testClientConnection{digest: [32]byte{0x7a}}, transferred: make(chan struct{}),
+		connection: &testClientConnection{digest: [32]byte{0x7a}}, transferred: make(chan struct{}), terminal: terminal,
 	}
 	if err := session.handleAccepted(context.Background(), accepted); err != nil {
 		t.Fatalf("handleAccepted() error = %v", err)
@@ -66,6 +67,7 @@ func TestClientSSHRelayPassesOnlyAuthenticatedSafeOpenMetadata(t *testing.T) {
 		requests[0].Ordinal() != 9 || requests[0].CapabilitySHA256() != ([32]byte{0x7a}) {
 		t.Fatalf("relay open requests = %#v", requests)
 	}
+	close(terminal)
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
@@ -131,20 +133,23 @@ func TestClientSSHRelayWaitsForCommittedTransferAndSerializesRoundTrips(t *testi
 	}
 }
 
-func TestClientSSHRelayCloseCancelsUncommittedTransferAndRetriesAbsence(t *testing.T) {
+func TestClientSSHRelayParentTerminalRetriesRelayAbsence(t *testing.T) {
 	connection := &testClientConnection{}
 	relayConnection := &testRelayConnection{closeFailures: 2}
 	session := newTestSession(t, &testRelay{connections: []RelayConnection{relayConnection}})
+	terminal := make(chan struct{})
 	accepted := &testAcceptedPacket{
 		revision:    1,
 		ordinal:     1,
 		digest:      [32]byte{1},
 		connection:  connection,
 		transferred: make(chan struct{}),
+		terminal:    terminal,
 	}
 	if err := session.handleAccepted(context.Background(), accepted); err != nil {
 		t.Fatalf("handleAccepted() error = %v", err)
 	}
+	close(terminal)
 	if err := session.Close(context.Background()); !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatalf("first Close() error = %v, want cleanup incomplete", err)
 	}
@@ -156,6 +161,70 @@ func TestClientSSHRelayCloseCancelsUncommittedTransferAndRetriesAbsence(t *testi
 	}
 	if got := relayConnection.closeCalls.Load(); got != 3 {
 		t.Fatalf("relay cleanup attempts = %d, want 3", got)
+	}
+}
+
+func TestClientSSHRelayOwnershipTimeoutLatchesCleanupIncomplete(t *testing.T) {
+	connection := &testClientConnection{}
+	session := newTestSession(t, &testRelay{connections: []RelayConnection{&testRelayConnection{}}})
+	session.ownershipTimeout = 10 * time.Millisecond
+	transferred := make(chan struct{})
+	accepted := &testAcceptedPacket{
+		revision: 1, ordinal: 1, digest: [32]byte{1}, connection: connection, transferred: transferred,
+	}
+	if err := session.handleAccepted(context.Background(), accepted); err != nil {
+		t.Fatalf("handleAccepted() error = %v", err)
+	}
+	if err := session.Close(context.Background()); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Close() after ownership timeout error = %v, want cleanup incomplete", err)
+	}
+	close(transferred)
+	if err := session.Close(context.Background()); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Close() after late transfer error = %v, want latched cleanup incomplete", err)
+	}
+	if got := connection.closeCalls.Load(); got != 0 {
+		t.Fatalf("unobserved late-transfer guest close calls = %d, want 0 with fatal escalation", got)
+	}
+}
+
+func TestClientSSHRelayDrainBeforeParentCommitStillOwnsTransferredGuest(t *testing.T) {
+	connection := &testClientConnection{reads: []testRead{{eof: true}}, closedDone: make(chan struct{})}
+	relayConnection := &testRelayConnection{}
+	session := newTestSession(t, &testRelay{connections: []RelayConnection{relayConnection}})
+	transferred := make(chan struct{})
+	accepted := &testAcceptedPacket{
+		revision: 1, ordinal: 1, digest: [32]byte{1}, connection: connection,
+		transferred: transferred, waitEntered: make(chan struct{}),
+	}
+	if err := session.handleAccepted(context.Background(), accepted); err != nil {
+		t.Fatalf("handleAccepted() error = %v", err)
+	}
+	select {
+	case <-accepted.waitEntered:
+	case <-time.After(time.Second):
+		t.Fatal("ownership watcher did not start")
+	}
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- session.Close(context.Background()) }()
+	select {
+	case <-session.drainStarted:
+	case <-time.After(time.Second):
+		t.Fatal("session drain did not start")
+	}
+
+	// This is the exact parent ordering: Handle returned nil, drain began, and
+	// only then did the parent commit the accepted capability to the extension.
+	close(transferred)
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not converge after parent transfer")
+	}
+	if got := connection.closeCalls.Load(); got != 1 {
+		t.Fatalf("transferred guest close calls = %d, want 1", got)
 	}
 }
 
@@ -233,14 +302,17 @@ func TestClientSSHRelayGuestCleanupFailureKeepsAbsenceIncomplete(t *testing.T) {
 
 func TestClientSSHRelayCancelledCloseStartsDrainAndCanBeRetried(t *testing.T) {
 	session := newTestSession(t, &testRelay{connections: []RelayConnection{&testRelayConnection{}}})
+	terminal := make(chan struct{})
 	accepted := &testAcceptedPacket{
 		revision: 1, ordinal: 1, digest: [32]byte{1}, connection: &testClientConnection{}, transferred: make(chan struct{}),
+		terminal: terminal,
 	}
 	if err := session.handleAccepted(context.Background(), accepted); err != nil {
 		t.Fatalf("handleAccepted() error = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	close(terminal)
 	if err := session.Close(ctx); !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatalf("Close(cancelled) error = %v, want cleanup incomplete", err)
 	}
@@ -365,6 +437,8 @@ type testAcceptedPacket struct {
 	digest      [32]byte
 	connection  credentialclient.SSHConnectionCapability
 	transferred <-chan struct{}
+	terminal    <-chan struct{}
+	waitEntered chan struct{}
 }
 
 func (packet *testAcceptedPacket) Revision() uint64           { return packet.revision }
@@ -375,9 +449,23 @@ func (packet *testAcceptedPacket) Connection() credentialclient.SSHConnectionCap
 	return packet.connection
 }
 func (packet *testAcceptedPacket) WaitTransferred(ctx context.Context) error {
+	if packet.waitEntered != nil {
+		select {
+		case <-packet.waitEntered:
+		default:
+			close(packet.waitEntered)
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return errors.New("raw-transfer-canary")
+	default:
+	}
 	select {
 	case <-packet.transferred:
 		return nil
+	case <-packet.terminal:
+		return errors.New("raw-terminal-canary")
 	case <-ctx.Done():
 		return errors.New("raw-transfer-canary")
 	}
