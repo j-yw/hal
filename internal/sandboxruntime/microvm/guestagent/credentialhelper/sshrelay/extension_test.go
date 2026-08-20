@@ -2,7 +2,10 @@ package sshrelay
 
 import (
 	"context"
+	"encoding"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -13,6 +16,16 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialhelper"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 )
+
+type traversalHost struct{ secret string }
+
+func (*traversalHost) CreateSSHAgentEndpoint(context.Context, credentialhelper.SSHAgentEndpointRequest) (credentialhelper.SSHAgentEndpoint, error) {
+	return nil, errors.New("unused")
+}
+
+func (*traversalHost) PublishSSHAcceptedConnection(context.Context, credentialhelper.SSHAcceptedPublication, credentialhelper.SSHAgentConnection) error {
+	return errors.New("unused")
+}
 
 type failingHelperConnection struct {
 	mu            sync.Mutex
@@ -104,6 +117,38 @@ func TestNewHelperExtensionReturnsExactSideEffectFreeRegistration(t *testing.T) 
 	}
 	if registration.Factory == nil {
 		t.Fatal("NewHelperExtension() returned a nil factory")
+	}
+}
+
+func TestHelperSessionDeniesFormattingAndSerializationTraversal(t *testing.T) {
+	const secret = "helper-session-traversal-canary"
+	lifetime, cancel := context.WithCancel(context.Background())
+	session := &helperSession{
+		host:        &traversalHost{secret: secret},
+		lifetimeCtx: lifetime,
+		cancel:      cancel,
+		acceptDone:  closedSignal(),
+	}
+	rendered := fmt.Sprintf("%v %#v %+v", session, session, session)
+	if strings.Contains(rendered, secret) || !strings.Contains(rendered, "sshrelay.live[redacted]") {
+		t.Errorf("helper session formatting traversed live state: %q", rendered)
+	}
+	if encoded, err := json.Marshal(session); encoded != nil || !errors.Is(err, credentialhelper.ErrExtensionSerialization) {
+		t.Fatalf("json.Marshal(helper session) = (%q, %v)", encoded, err)
+	}
+	textMarshaler, textOK := any(session).(encoding.TextMarshaler)
+	binaryMarshaler, binaryOK := any(session).(encoding.BinaryMarshaler)
+	if !textOK || !binaryOK {
+		t.Fatalf("helper session marshal interfaces = text:%v binary:%v", textOK, binaryOK)
+	}
+	if encoded, err := textMarshaler.MarshalText(); encoded != nil || !errors.Is(err, credentialhelper.ErrExtensionSerialization) {
+		t.Fatalf("MarshalText(helper session) = (%q, %v)", encoded, err)
+	}
+	if encoded, err := binaryMarshaler.MarshalBinary(); encoded != nil || !errors.Is(err, credentialhelper.ErrExtensionSerialization) {
+		t.Fatalf("MarshalBinary(helper session) = (%q, %v)", encoded, err)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatalf("Close(): %v", err)
 	}
 }
 
