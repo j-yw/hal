@@ -226,7 +226,12 @@ func TestL8D3AzureResponsesRouteRejectsUnsafeDNSAndTLSBeforeSourceAccess(t *test
 			},
 			dial: func(context.Context, string, string) (net.Conn, error) {
 				client, server := net.Pipe()
-				go func() { defer server.Close(); _, _ = server.Write([]byte("not TLS")) }()
+				go func() {
+					defer server.Close()
+					var hello [4096]byte
+					_, _ = server.Read(hello[:])
+					_, _ = server.Write([]byte("not TLS"))
+				}()
 				return client, nil
 			},
 		},
