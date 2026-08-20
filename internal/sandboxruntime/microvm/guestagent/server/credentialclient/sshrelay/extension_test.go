@@ -300,7 +300,7 @@ func TestClientSSHRelayGuestCleanupFailureKeepsAbsenceIncomplete(t *testing.T) {
 	}
 }
 
-func TestClientSSHRelayCancelledCloseStartsDrainAndCanBeRetried(t *testing.T) {
+func TestClientSSHRelayCancelledCloseLatchesExpiredDrain(t *testing.T) {
 	session := newTestSession(t, &testRelay{connections: []RelayConnection{&testRelayConnection{}}})
 	terminal := make(chan struct{})
 	accepted := &testAcceptedPacket{
@@ -316,8 +316,77 @@ func TestClientSSHRelayCancelledCloseStartsDrainAndCanBeRetried(t *testing.T) {
 	if err := session.Close(ctx); !errors.Is(err, ErrCleanupIncomplete) {
 		t.Fatalf("Close(cancelled) error = %v, want cleanup incomplete", err)
 	}
-	if err := session.Close(context.Background()); err != nil {
-		t.Fatalf("Close(retry) error = %v", err)
+	if err := session.Close(context.Background()); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Close(retry) error = %v, want latched cleanup incomplete", err)
+	}
+}
+
+func TestClientSSHRelayDeadlineCloseJoinsPumpAndCleanupBeforeReturn(t *testing.T) {
+	releaseCleanup := make(chan struct{})
+	defer close(releaseCleanup)
+	connection := &testClientConnection{
+		readEntered:  make(chan struct{}),
+		blockRead:    true,
+		closeEntered: make(chan struct{}),
+		closeExited:  make(chan struct{}),
+		closeRelease: releaseCleanup,
+	}
+	relayConnection := &testRelayConnection{
+		closeEntered: make(chan struct{}),
+		closeExited:  make(chan struct{}),
+		closeRelease: releaseCleanup,
+	}
+	session := newTestSession(t, &testRelay{connections: []RelayConnection{relayConnection}})
+	transferred := make(chan struct{})
+	close(transferred)
+	accepted := &testAcceptedPacket{
+		revision: 1, ordinal: 1, digest: [32]byte{1}, connection: connection, transferred: transferred,
+	}
+	if err := session.handleAccepted(context.Background(), accepted); err != nil {
+		t.Fatalf("handleAccepted() error = %v", err)
+	}
+	select {
+	case <-connection.readEntered:
+	case <-time.After(time.Second):
+		t.Fatal("transferred pump did not begin reading")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := session.Close(ctx); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("Close(deadline) error = %v, want cleanup incomplete", err)
+	}
+	select {
+	case <-connection.closeEntered:
+	default:
+		t.Fatal("Close returned before guest cleanup began")
+	}
+	select {
+	case <-connection.closeExited:
+	default:
+		t.Fatal("Close returned while guest cleanup remained live")
+	}
+	session.mu.Lock()
+	livePumps := len(session.pumps)
+	session.mu.Unlock()
+	if livePumps != 0 {
+		t.Fatalf("Close returned with %d live pumps", livePumps)
+	}
+	if got := relayConnection.closeCalls.Load(); got == 0 {
+		t.Fatal("Close returned before relay cleanup was attempted")
+	}
+	select {
+	case <-relayConnection.closeEntered:
+	default:
+		t.Fatal("Close returned before relay cleanup began")
+	}
+	select {
+	case <-relayConnection.closeExited:
+	default:
+		t.Fatal("Close returned while relay cleanup remained live")
+	}
+	if got := relayConnection.closeInflight.Load(); got != 0 {
+		t.Fatalf("Close returned with %d live relay cleanup calls", got)
 	}
 }
 
@@ -505,7 +574,11 @@ type testRelayConnection struct {
 	entered        chan struct{}
 	release        chan struct{}
 	closeFailures  int
+	closeEntered   chan struct{}
+	closeExited    chan struct{}
+	closeRelease   <-chan struct{}
 	closeCalls     atomic.Int32
+	closeInflight  atomic.Int32
 	inflight       atomic.Int32
 	maxInflight    atomic.Int32
 	roundTripCalls atomic.Int32
@@ -548,10 +621,35 @@ func (connection *testRelayConnection) RoundTrip(ctx context.Context, request cr
 	return response.WriteCredential(connection.response)
 }
 
-func (connection *testRelayConnection) Close(context.Context) error {
+func (connection *testRelayConnection) Close(ctx context.Context) error {
 	call := int(connection.closeCalls.Add(1))
+	connection.closeInflight.Add(1)
+	defer connection.closeInflight.Add(-1)
+	if connection.closeEntered != nil {
+		select {
+		case <-connection.closeEntered:
+		default:
+			close(connection.closeEntered)
+		}
+	}
+	if connection.closeRelease != nil {
+		select {
+		case <-ctx.Done():
+		case <-connection.closeRelease:
+		}
+	}
+	if connection.closeExited != nil {
+		select {
+		case <-connection.closeExited:
+		default:
+			close(connection.closeExited)
+		}
+	}
 	if call <= connection.closeFailures {
 		return errors.New("raw-relay-close-canary")
+	}
+	if ctx.Err() != nil {
+		return errors.New("raw-relay-close-deadline-canary")
 	}
 	return nil
 }
@@ -578,6 +676,9 @@ type testClientConnection struct {
 	readEntered   chan struct{}
 	writeDone     chan struct{}
 	closedDone    chan struct{}
+	closeEntered  chan struct{}
+	closeExited   chan struct{}
+	closeRelease  <-chan struct{}
 	blockRead     bool
 	closeError    bool
 	readCalls     atomic.Int32
@@ -644,8 +745,28 @@ func (connection *testClientConnection) Shutdown(context.Context, credentialclie
 	return nil
 }
 
-func (connection *testClientConnection) Close(context.Context) error {
+func (connection *testClientConnection) Close(ctx context.Context) error {
 	connection.closeCalls.Add(1)
+	if connection.closeEntered != nil {
+		select {
+		case <-connection.closeEntered:
+		default:
+			close(connection.closeEntered)
+		}
+	}
+	if connection.closeRelease != nil {
+		select {
+		case <-ctx.Done():
+		case <-connection.closeRelease:
+		}
+	}
+	if connection.closeExited != nil {
+		select {
+		case <-connection.closeExited:
+		default:
+			close(connection.closeExited)
+		}
+	}
 	if connection.closedDone != nil {
 		select {
 		case <-connection.closedDone:
@@ -655,6 +776,9 @@ func (connection *testClientConnection) Close(context.Context) error {
 	}
 	if connection.closeError {
 		return errors.New("raw-guest-close-canary")
+	}
+	if ctx.Err() != nil {
+		return errors.New("raw-guest-close-deadline-canary")
 	}
 	return nil
 }
