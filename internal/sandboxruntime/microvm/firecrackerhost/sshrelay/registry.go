@@ -386,6 +386,9 @@ func (value *lease) beginOpen() error {
 	if value.closed {
 		return ErrLeaseClosed
 	}
+	if len(value.connections) >= credentialprotocol.SSHAgentRelayMaxConcurrentConnections {
+		return ErrConnectionLimit
+	}
 	if value.inflightOpens == 0 {
 		value.inflightZero = make(chan struct{})
 	}

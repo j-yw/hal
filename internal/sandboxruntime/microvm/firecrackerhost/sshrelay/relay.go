@@ -32,6 +32,7 @@ func (connection *verifiedConnection) RoundTrip(ctx context.Context, request []b
 	}
 	connection.operationMu.Lock()
 	if ctx.Err() != nil {
+		connection.latchTerminal()
 		connection.operationMu.Unlock()
 		cleanupCtx, cancel := cleanupContext(ctx)
 		cleanupErr := connection.Close(cleanupCtx)
@@ -55,6 +56,9 @@ func (connection *verifiedConnection) RoundTrip(ctx context.Context, request []b
 			<-lifetimeDone
 		}
 		cancel()
+		if terminal {
+			connection.latchTerminal()
+		}
 		connection.endOperation()
 		connection.operationMu.Unlock()
 		if terminal {
@@ -71,19 +75,20 @@ func (connection *verifiedConnection) RoundTrip(ctx context.Context, request []b
 		return nil, ErrRequestRejected
 	}
 	if err := connection.relay.PermitRead(now); err != nil {
+		terminal = true
 		return nil, ErrRequestRejected
 	}
 	metadata, err := credentialprotocol.ValidateSSHAgentOuterFrame(request)
 	if err != nil || metadata.Class != credentialprotocol.SSHAgentMessageClassClientRequest {
 		response = credentialprotocol.EncodeSSHAgentFailure()
-		response, resultErr = connection.completeRequest(response, nil)
+		response, resultErr = connection.completeRequest(response, nil, &terminal)
 		return connection.finishOperation(operationCtx, response, resultErr, &terminal)
 	}
 	switch metadata.MessageType {
 	case credentialprotocol.SSHAgentMessageRequestIdentities:
 		if credentialprotocol.ValidateSSHAgentIdentitiesRequest(request) != nil {
 			response = credentialprotocol.EncodeSSHAgentFailure()
-			response, resultErr = connection.completeRequest(response, nil)
+			response, resultErr = connection.completeRequest(response, nil, &terminal)
 			return connection.finishOperation(operationCtx, response, resultErr, &terminal)
 		}
 		response, err = connection.identities(operationCtx, request)
@@ -102,7 +107,7 @@ func (connection *verifiedConnection) RoundTrip(ctx context.Context, request []b
 		terminal = true
 		return nil, ErrAgentIO
 	}
-	response, resultErr = connection.completeRequest(response, err)
+	response, resultErr = connection.completeRequest(response, err, &terminal)
 	return connection.finishOperation(operationCtx, response, resultErr, &terminal)
 }
 
@@ -115,9 +120,10 @@ func (connection *verifiedConnection) finishOperation(ctx context.Context, respo
 	return nil, ErrRequestRejected
 }
 
-func (connection *verifiedConnection) completeRequest(response []byte, operationErr error) ([]byte, error) {
+func (connection *verifiedConnection) completeRequest(response []byte, operationErr error, terminal *bool) ([]byte, error) {
 	if err := connection.relay.CompleteRequest(connection.clock.Now()); err != nil {
 		credentialprotocol.WipeSSHAgentBytes(response)
+		*terminal = true
 		return nil, ErrRequestRejected
 	}
 	return response, operationErr
@@ -232,6 +238,12 @@ func (connection *verifiedConnection) endOperation() {
 	if connection.inflight == 0 {
 		close(connection.inflightZero)
 	}
+	connection.mu.Unlock()
+}
+
+func (connection *verifiedConnection) latchTerminal() {
+	connection.mu.Lock()
+	connection.closing = true
 	connection.mu.Unlock()
 }
 
