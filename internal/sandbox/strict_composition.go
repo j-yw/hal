@@ -2,6 +2,10 @@ package sandbox
 
 import "time"
 
+// SandboxStrictCompositionMaxActiveAge bounds durable active projections to
+// the same short window as the opaque live attestation.
+const SandboxStrictCompositionMaxActiveAge = 30 * time.Second
+
 // SandboxStrictCompositionState is the durable state of one sanitized L10
 // decision. It is data only and never authorizes a live operation.
 type SandboxStrictCompositionState string
@@ -101,7 +105,8 @@ func SanitizeSandboxStrictCompositionDecision(input SandboxStrictCompositionDeci
 	expiresAt := input.ExpiresAt.UTC()
 	switch state {
 	case SandboxStrictCompositionStateActive:
-		if code != SandboxStrictCompositionCodeReady || expiresAt.IsZero() || !expiresAt.After(observedAt) {
+		if code != SandboxStrictCompositionCodeReady || expiresAt.IsZero() || !expiresAt.After(observedAt) ||
+			expiresAt.Sub(observedAt) > SandboxStrictCompositionMaxActiveAge {
 			return invalidSandboxStrictCompositionDecision()
 		}
 	case SandboxStrictCompositionStateComplete:

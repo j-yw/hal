@@ -64,6 +64,9 @@ func TestL10StrictCompositionDecisionSanitizerEnforcesAuthoritySemantics(t *test
 		{name: "active missing evidence", mutate: func(d *SandboxStrictCompositionDecision) { d.Evidence = d.Evidence[:3] }},
 		{name: "active duplicate evidence", mutate: func(d *SandboxStrictCompositionDecision) { d.Evidence[3] = d.Evidence[2] }},
 		{name: "active invalid expiry", mutate: func(d *SandboxStrictCompositionDecision) { d.ExpiresAt = d.ObservedAt }},
+		{name: "active unbounded expiry", mutate: func(d *SandboxStrictCompositionDecision) {
+			d.ExpiresAt = d.ObservedAt.Add(SandboxStrictCompositionMaxActiveAge + time.Nanosecond)
+		}},
 		{name: "complete retains expiry", mutate: func(d *SandboxStrictCompositionDecision) {
 			d.State = SandboxStrictCompositionStateComplete
 			d.Code = SandboxStrictCompositionCodeComplete

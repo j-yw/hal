@@ -62,7 +62,7 @@ func TestL10StrictCompositionProjectionsExpireActiveDecisions(t *testing.T) {
 	now := time.Now().UTC()
 	decision := sandbox.SandboxStrictCompositionDecision{
 		State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady,
-		CompositionID: "composition-l10-expired", ObservedAt: now.Add(-time.Minute), ExpiresAt: now.Add(-time.Second),
+		CompositionID: "composition-l10-expired", ObservedAt: now.Add(-20 * time.Second), ExpiresAt: now.Add(-time.Second),
 		Evidence: []sandbox.SandboxStrictCompositionEvidence{
 			{Kind: sandbox.SandboxStrictCompositionEvidenceRuntime, State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady},
 			{Kind: sandbox.SandboxStrictCompositionEvidenceCredential, State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady},

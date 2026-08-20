@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	MaxActiveAttestationAge = 30 * time.Second
+	MaxActiveAttestationAge = sandbox.SandboxStrictCompositionMaxActiveAge
 	MaxWorkspaceEvidenceAge = 5 * time.Minute
 )
 
