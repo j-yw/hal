@@ -174,13 +174,14 @@ func (store *TicketStore) Renew(ctx context.Context, ticket *JobTicket, correlat
 		return ErrTicketStoreInvalid
 	}
 	state.mu.Lock()
-	entry, connections, err := state.validEntryLocked(digest, correlation, state.now().UTC())
+	now := state.now().UTC()
+	entry, connections, err := state.validEntryLocked(digest, correlation, now)
 	if err != nil {
 		state.mu.Unlock()
 		_ = closeTicketConnections(connections)
 		return err
 	}
-	renewed := state.now().UTC().Add(JobTicketLeaseDuration)
+	renewed := now.Add(JobTicketLeaseDuration)
 	if renewed.After(entry.hardExpiry) {
 		renewed = entry.hardExpiry
 	}
