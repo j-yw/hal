@@ -23,6 +23,9 @@ func TestL8JobCredentialLiveHandlesUseOnlySafeFormattingAndDenialCodecs(t *testi
 		"JobCredentialLifecycle":                {},
 		"JobCredentialActiveProof":              {},
 		"JobCredentialCleanupProof":             {},
+		"JobCredentialRuntimeBinder":            {},
+		"JobCredentialRuntimeBinding":           {},
+		"JobCredentialRuntimePreflightBinding":  {},
 	}
 	formatLiterals := l8JobCredentialFormatLiterals()
 	for _, path := range matches {
@@ -283,6 +286,9 @@ func l8JobCredentialFormatLiterals() map[string]string {
 		"JobCredentialLifecycle":                "<sandboxruntime.JobCredentialLifecycle>",
 		"JobCredentialActiveProof":              "<sandboxruntime.JobCredentialActiveProof>",
 		"JobCredentialCleanupProof":             "<sandboxruntime.JobCredentialCleanupProof>",
+		"JobCredentialRuntimeBinder":            "<sandboxruntime.JobCredentialRuntimeBinder>",
+		"JobCredentialRuntimeBinding":           "<sandboxruntime.JobCredentialRuntimeBinding>",
+		"JobCredentialRuntimePreflightBinding":  "<sandboxruntime.JobCredentialRuntimePreflightBinding>",
 	}
 }
 

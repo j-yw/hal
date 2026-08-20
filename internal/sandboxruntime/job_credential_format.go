@@ -101,3 +101,63 @@ func (JobCredentialCleanupProof) MarshalText() ([]byte, error) {
 func (JobCredentialCleanupProof) Format(state fmt.State, verb rune) {
 	fmt.Fprint(state, "<sandboxruntime.JobCredentialCleanupProof>")
 }
+
+func (*JobCredentialRuntimeBinder) String() string {
+	return "<sandboxruntime.JobCredentialRuntimeBinder>"
+}
+
+func (*JobCredentialRuntimeBinder) GoString() string {
+	return "<sandboxruntime.JobCredentialRuntimeBinder>"
+}
+
+func (*JobCredentialRuntimeBinder) MarshalJSON() ([]byte, error) {
+	return nil, ErrJobCredentialSerialization
+}
+
+func (*JobCredentialRuntimeBinder) MarshalText() ([]byte, error) {
+	return nil, ErrJobCredentialSerialization
+}
+
+func (*JobCredentialRuntimeBinder) Format(state fmt.State, verb rune) {
+	fmt.Fprint(state, "<sandboxruntime.JobCredentialRuntimeBinder>")
+}
+
+func (*JobCredentialRuntimeBinding) String() string {
+	return "<sandboxruntime.JobCredentialRuntimeBinding>"
+}
+
+func (*JobCredentialRuntimeBinding) GoString() string {
+	return "<sandboxruntime.JobCredentialRuntimeBinding>"
+}
+
+func (*JobCredentialRuntimeBinding) MarshalJSON() ([]byte, error) {
+	return nil, ErrJobCredentialSerialization
+}
+
+func (*JobCredentialRuntimeBinding) MarshalText() ([]byte, error) {
+	return nil, ErrJobCredentialSerialization
+}
+
+func (*JobCredentialRuntimeBinding) Format(state fmt.State, verb rune) {
+	fmt.Fprint(state, "<sandboxruntime.JobCredentialRuntimeBinding>")
+}
+
+func (*JobCredentialRuntimePreflightBinding) String() string {
+	return "<sandboxruntime.JobCredentialRuntimePreflightBinding>"
+}
+
+func (*JobCredentialRuntimePreflightBinding) GoString() string {
+	return "<sandboxruntime.JobCredentialRuntimePreflightBinding>"
+}
+
+func (*JobCredentialRuntimePreflightBinding) MarshalJSON() ([]byte, error) {
+	return nil, ErrJobCredentialSerialization
+}
+
+func (*JobCredentialRuntimePreflightBinding) MarshalText() ([]byte, error) {
+	return nil, ErrJobCredentialSerialization
+}
+
+func (*JobCredentialRuntimePreflightBinding) Format(state fmt.State, verb rune) {
+	fmt.Fprint(state, "<sandboxruntime.JobCredentialRuntimePreflightBinding>")
+}
