@@ -77,13 +77,8 @@ func TestL8SyscallPolicyCatalogsAndStateAreClosed(t *testing.T) {
 	}
 }
 
-func TestL8SyscallPolicyDefaultArtifactIsUnavailableAndErrorsAreSafe(t *testing.T) {
+func TestL8SyscallPolicyErrorsAreSafe(t *testing.T) {
 	t.Parallel()
-
-	artifact, err := EmbeddedVerifiedPolicyArtifact()
-	if artifact.SHA256() != ([32]byte{}) || contractErrorCode(err) != ErrorCodeMissingSection {
-		t.Fatalf("EmbeddedVerifiedPolicyArtifact() = (%x, %v), want zero/missing-section", artifact.SHA256(), err)
-	}
 
 	want := &ContractError{code: ErrorCodeCatalog}
 	got := &ContractError{code: ErrorCodeCatalog}

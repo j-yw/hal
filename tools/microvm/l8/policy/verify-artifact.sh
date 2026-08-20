@@ -29,5 +29,4 @@ fi
 go test -count=1 ./tools/microvm/l8/policy/generate
 go test -count=1 ./internal/sandboxruntime/microvm/guestagent/syscallpolicy
 go test -count=1 -tags=l8_verified_policy_artifact \
-  ./internal/sandboxruntime/microvm/guestagent/syscallpolicy \
-  -run '^TestL8D7GeneratedArtifact'
+  ./internal/sandboxruntime/microvm/guestagent/syscallpolicy
