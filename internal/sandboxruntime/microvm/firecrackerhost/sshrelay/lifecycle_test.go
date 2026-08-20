@@ -14,7 +14,7 @@ import (
 )
 
 func TestVerifiedConnectionOperationIdleAndHardLimits(t *testing.T) {
-	start := time.Unix(1_700_000_000, 0)
+	start := time.Now()
 	clock := &fakeClock{now: start}
 	config := mustConfigIdentity(t, "entry-a", "daemon-a", "entry-generation-a", 1)
 	entry := &redEntry{identity: config, policy: mustPolicy(t, "policy-a", 1)}

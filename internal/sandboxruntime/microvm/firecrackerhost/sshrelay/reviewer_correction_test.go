@@ -36,6 +36,32 @@ func TestOpenVerificationCleanupFailureIsPropagatedAndRetried(t *testing.T) {
 	}
 }
 
+func TestOpenPropagatesDependencyCleanupFailureAfterOwnedRetrySucceeds(t *testing.T) {
+	config := mustConfigIdentity(t, "entry-a", "daemon-a", "entry-generation-a", 1)
+	agent := &redAgentConnection{}
+	entry := &redEntry{
+		identity: config,
+		policy:   mustPolicy(t, "policy-a", 1),
+		openFunc: func(context.Context) (AgentConnection, error) {
+			return agent, errors.Join(ErrAgentOpen, ErrCleanupIncomplete, errors.New("raw open canary"))
+		},
+	}
+	lease := mustLease(t, mustRegistry(t, entry), config)
+	connection, err := lease.OpenVerifiedConnection(context.Background())
+	if connection != nil || !errors.Is(err, ErrAgentOpen) || !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("OpenVerifiedConnection() = (%v, %v), want open+cleanup failure", connection, err)
+	}
+	if strings.Contains(err.Error(), "raw open canary") {
+		t.Fatalf("OpenVerifiedConnection() exposed raw dependency error: %v", err)
+	}
+	if agent.closed != 1 {
+		t.Fatalf("owned cleanup retry calls = %d, want 1", agent.closed)
+	}
+	if err := lease.Close(context.Background()); err != nil {
+		t.Fatalf("Lease.Close(): %v", err)
+	}
+}
+
 func TestOpenCloseRaceRetainsAndPropagatesFailedCleanup(t *testing.T) {
 	config := mustConfigIdentity(t, "entry-a", "daemon-a", "entry-generation-a", 1)
 	agent := &redAgentConnection{closeFailures: 1}
@@ -100,6 +126,61 @@ func TestOpenChecksCancellationAfterDependencyAndCleansConnection(t *testing.T) 
 	}
 }
 
+func TestOpenRejectsPreCancelledContextWithoutOpeningAgent(t *testing.T) {
+	config := mustConfigIdentity(t, "entry-a", "daemon-a", "entry-generation-a", 1)
+	entry := &redEntry{identity: config, policy: mustPolicy(t, "policy-a", 1)}
+	lease := mustLease(t, mustRegistry(t, entry), config)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if connection, err := lease.OpenVerifiedConnection(ctx); connection != nil || !errors.Is(err, ErrRequestRejected) {
+		t.Fatalf("OpenVerifiedConnection(pre-cancelled) = (%v, %v)", connection, err)
+	}
+	if entry.opens != 0 {
+		t.Fatalf("pre-cancelled open calls = %d, want 0", entry.opens)
+	}
+	if err := lease.Close(context.Background()); err != nil {
+		t.Fatalf("Lease.Close(): %v", err)
+	}
+}
+
+func TestOpenDerivesDeadlineAndJoinsOperationContext(t *testing.T) {
+	start := time.Now().Add(time.Minute)
+	clock := &fakeClock{now: start}
+	config := mustConfigIdentity(t, "entry-a", "daemon-a", "entry-generation-a", 1)
+	agent := &redAgentConnection{}
+	var operationCtx context.Context
+	entry := &redEntry{
+		identity: config,
+		policy:   mustPolicy(t, "policy-a", 1),
+		openFunc: func(ctx context.Context) (AgentConnection, error) {
+			operationCtx = ctx
+			return agent, nil
+		},
+	}
+	registry, err := newRegistry(RegistryOptions{DaemonGeneration: "daemon-a", Entries: []LiveHostAgentEntry{entry}}, clock)
+	if err != nil {
+		t.Fatalf("newRegistry(): %v", err)
+	}
+	lease := mustLease(t, registry, config)
+	connection, err := lease.OpenVerifiedConnection(context.Background())
+	if err != nil {
+		t.Fatalf("OpenVerifiedConnection(): %v", err)
+	}
+	deadline, ok := operationCtx.Deadline()
+	want := start.Add(credentialprotocol.SSHAgentRelayIdleTimeout)
+	if !ok || !deadline.Equal(want) {
+		t.Fatalf("open deadline = (%v, %v), want %v", deadline, ok, want)
+	}
+	select {
+	case <-operationCtx.Done():
+	default:
+		t.Fatal("open operation context was not cancelled and joined before return")
+	}
+	_ = connection.Close(context.Background())
+	_ = lease.Close(context.Background())
+	_ = registry.Close(context.Background())
+}
+
 func TestVerifiedRoundTripDerivesIdleDeadlineAndCancelsOperationContext(t *testing.T) {
 	start := time.Now().Add(time.Minute)
 	clock := &fakeClock{now: start}
@@ -140,6 +221,45 @@ func TestVerifiedRoundTripDerivesIdleDeadlineAndCancelsOperationContext(t *testi
 	_ = registry.Close(context.Background())
 }
 
+func TestVerifiedRoundTripCapsDeadlineAtLeaseHardHorizon(t *testing.T) {
+	start := time.Now()
+	clock := &fakeClock{now: start}
+	response, err := credentialprotocol.EncodeSSHAgentIdentitiesAnswer(nil)
+	if err != nil {
+		t.Fatalf("EncodeSSHAgentIdentitiesAnswer(): %v", err)
+	}
+	defer credentialprotocol.WipeSSHAgentBytes(response)
+	var operationCtx context.Context
+	agent := &redAgentConnection{roundTripFunc: func(ctx context.Context, _ []byte) ([]byte, error) {
+		operationCtx = ctx
+		return append([]byte(nil), response...), nil
+	}}
+	config := mustConfigIdentity(t, "entry-a", "daemon-a", "entry-generation-a", 1)
+	entry := &redEntry{identity: config, policy: mustPolicy(t, "policy-a", 1), newAgent: func() *redAgentConnection { return agent }}
+	registry, err := newRegistry(RegistryOptions{DaemonGeneration: "daemon-a", Entries: []LiveHostAgentEntry{entry}}, clock)
+	if err != nil {
+		t.Fatalf("newRegistry(): %v", err)
+	}
+	lease := mustLease(t, registry, config)
+	clock.now = start.Add(credentialprotocol.SSHAgentRelayHardLifetime - time.Minute)
+	connection, err := lease.OpenVerifiedConnection(context.Background())
+	if err != nil {
+		t.Fatalf("OpenVerifiedConnection(): %v", err)
+	}
+	request := []byte{0, 0, 0, 1, byte(credentialprotocol.SSHAgentMessageRequestIdentities)}
+	if _, err := connection.RoundTrip(context.Background(), request); err != nil {
+		t.Fatalf("RoundTrip(): %v", err)
+	}
+	deadline, ok := operationCtx.Deadline()
+	want := start.Add(credentialprotocol.SSHAgentRelayHardLifetime)
+	if !ok || !deadline.Equal(want) {
+		t.Fatalf("operation deadline = (%v, %v), want hard horizon %v", deadline, ok, want)
+	}
+	_ = connection.Close(context.Background())
+	_ = lease.Close(context.Background())
+	_ = registry.Close(context.Background())
+}
+
 func TestVerifiedRoundTripChecksPostIOCancellationAndCleansConnection(t *testing.T) {
 	response, err := credentialprotocol.EncodeSSHAgentIdentitiesAnswer(nil)
 	if err != nil {
@@ -163,6 +283,26 @@ func TestVerifiedRoundTripChecksPostIOCancellationAndCleansConnection(t *testing
 	}
 }
 
+func TestVerifiedRoundTripChecksPreIOCancellationAndCleansConnection(t *testing.T) {
+	config := mustConfigIdentity(t, "entry-a", "daemon-a", "entry-generation-a", 1)
+	agent := &redAgentConnection{}
+	entry := &redEntry{
+		identity: config,
+		policy:   mustPolicy(t, "policy-a", 1),
+		newAgent: func() *redAgentConnection { return agent },
+	}
+	connection := mustVerifiedConnection(t, entry)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := []byte{0, 0, 0, 1, byte(credentialprotocol.SSHAgentMessageRequestIdentities)}
+	if response, err := connection.RoundTrip(ctx, request); response != nil || !errors.Is(err, ErrRequestRejected) {
+		t.Fatalf("RoundTrip(pre-cancelled) = (%v, %v)", response, err)
+	}
+	if agent.closed != 1 || agent.roundTrips != 0 {
+		t.Fatalf("pre-cancelled agent calls = close:%d roundtrip:%d, want 1/0", agent.closed, agent.roundTrips)
+	}
+}
+
 func TestPolicyBoundsFlagCardinalityBeforeCloneAndSort(t *testing.T) {
 	source, err := os.ReadFile("policy.go")
 	if err != nil {
@@ -172,6 +312,28 @@ func TestPolicyBoundsFlagCardinalityBeforeCloneAndSort(t *testing.T) {
 	clone := strings.Index(string(source), "append([]credentialprotocol.SSHAgentRSAFlags(nil), rule.Flags...)")
 	if bound < 0 || clone < 0 || bound > clone {
 		t.Fatalf("flag bound/clone order = %d/%d, want bound before clone", bound, clone)
+	}
+}
+
+func TestPolicyAcceptsExactRSAFlagCardinalityAndRejectsPlusOne(t *testing.T) {
+	identity, err := NewPolicyIdentity("policy-a", 1)
+	if err != nil {
+		t.Fatalf("NewPolicyIdentity(): %v", err)
+	}
+	base := PolicyRule{
+		Fingerprint:  "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		KeyAlgorithm: credentialprotocol.SSHAgentKeyAlgorithmRSA,
+		Flags: []credentialprotocol.SSHAgentRSAFlags{
+			credentialprotocol.SSHAgentRSAFlagSHA256,
+			credentialprotocol.SSHAgentRSAFlagSHA512,
+		},
+	}
+	if policy, err := NewLivePolicy(identity, []PolicyRule{base}); err != nil || policy == nil {
+		t.Fatalf("NewLivePolicy(exact flags) = (%v, %v)", policy, err)
+	}
+	base.Flags = append(base.Flags, credentialprotocol.SSHAgentRSAFlagSHA256)
+	if policy, err := NewLivePolicy(identity, []PolicyRule{base}); policy != nil || !errors.Is(err, ErrPolicyInvalid) {
+		t.Fatalf("NewLivePolicy(plus-one flags) = (%v, %v), want nil/%v", policy, err, ErrPolicyInvalid)
 	}
 }
 

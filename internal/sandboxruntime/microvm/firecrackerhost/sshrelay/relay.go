@@ -2,6 +2,7 @@ package sshrelay
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
@@ -25,38 +26,88 @@ type verifiedConnection struct {
 	closed       bool
 }
 
-func (connection *verifiedConnection) RoundTrip(ctx context.Context, request []byte) ([]byte, error) {
+func (connection *verifiedConnection) RoundTrip(ctx context.Context, request []byte) (response []byte, resultErr error) {
 	if connection == nil || !configuredDependency(ctx) {
 		return nil, ErrInvalidArgument
 	}
 	connection.operationMu.Lock()
-	defer connection.operationMu.Unlock()
+	if ctx.Err() != nil {
+		connection.operationMu.Unlock()
+		cleanupCtx, cancel := cleanupContext(ctx)
+		cleanupErr := connection.Close(cleanupCtx)
+		cancel()
+		return nil, errors.Join(ErrRequestRejected, cleanupErr)
+	}
 	if err := connection.beginOperation(); err != nil {
+		connection.operationMu.Unlock()
 		return nil, err
 	}
-	defer connection.endOperation()
-	if err := connection.relay.PermitRead(connection.clock.Now()); err != nil {
+	now := connection.clock.Now()
+	operationCtx, cancel := context.WithDeadline(ctx, connection.lease.ioDeadline(now))
+	lifetimeDone := make(chan struct{})
+	stopLifetime := context.AfterFunc(connection.lease.lifetimeCtx, func() {
+		cancel()
+		close(lifetimeDone)
+	})
+	terminal := false
+	defer func() {
+		if !stopLifetime() {
+			<-lifetimeDone
+		}
+		cancel()
+		connection.endOperation()
+		connection.operationMu.Unlock()
+		if terminal {
+			credentialprotocol.WipeSSHAgentBytes(response)
+			response = nil
+			cleanupCtx, cleanupCancel := cleanupContext(ctx)
+			cleanupErr := connection.Close(cleanupCtx)
+			cleanupCancel()
+			resultErr = errors.Join(resultErr, cleanupErr)
+		}
+	}()
+	if operationCtx.Err() != nil {
+		terminal = true
+		return nil, ErrRequestRejected
+	}
+	if err := connection.relay.PermitRead(now); err != nil {
 		return nil, ErrRequestRejected
 	}
 	metadata, err := credentialprotocol.ValidateSSHAgentOuterFrame(request)
-	var response []byte
 	if err != nil || metadata.Class != credentialprotocol.SSHAgentMessageClassClientRequest {
 		response = credentialprotocol.EncodeSSHAgentFailure()
-		return connection.completeRequest(response, nil)
+		response, resultErr = connection.completeRequest(response, nil)
+		return connection.finishOperation(operationCtx, response, resultErr, &terminal)
 	}
 	switch metadata.MessageType {
 	case credentialprotocol.SSHAgentMessageRequestIdentities:
 		if credentialprotocol.ValidateSSHAgentIdentitiesRequest(request) != nil {
 			response = credentialprotocol.EncodeSSHAgentFailure()
-			return connection.completeRequest(response, nil)
+			response, resultErr = connection.completeRequest(response, nil)
+			return connection.finishOperation(operationCtx, response, resultErr, &terminal)
 		}
-		response, err = connection.identities(ctx, request)
+		response, err = connection.identities(operationCtx, request)
 	case credentialprotocol.SSHAgentMessageSignRequest:
-		response, err = connection.sign(ctx, request)
+		response, err = connection.sign(operationCtx, request)
 	default:
 		response = credentialprotocol.EncodeSSHAgentFailure()
 	}
-	return connection.completeRequest(response, err)
+	if operationCtx.Err() != nil {
+		credentialprotocol.WipeSSHAgentBytes(response)
+		terminal = true
+		return nil, ErrRequestRejected
+	}
+	response, resultErr = connection.completeRequest(response, err)
+	return connection.finishOperation(operationCtx, response, resultErr, &terminal)
+}
+
+func (connection *verifiedConnection) finishOperation(ctx context.Context, response []byte, err error, terminal *bool) ([]byte, error) {
+	if ctx.Err() == nil {
+		return response, err
+	}
+	credentialprotocol.WipeSSHAgentBytes(response)
+	*terminal = true
+	return nil, ErrRequestRejected
 }
 
 func (connection *verifiedConnection) completeRequest(response []byte, operationErr error) ([]byte, error) {

@@ -159,6 +159,28 @@ func TestHelperCloseRetainsEndpointAfterFailureForRetry(t *testing.T) {
 	}
 }
 
+func TestRejectedEndpointCleanupFailureIsRetainedForSessionClose(t *testing.T) {
+	lifetime, cancel := context.WithCancel(context.Background())
+	endpoint := &closeRetryEndpoint{}
+	session := &helperSession{
+		lifetimeCtx: lifetime,
+		cancel:      cancel,
+		acceptDone:  closedSignal(),
+	}
+	if err := session.rejectEndpoint(context.Background(), endpoint); !errors.Is(err, ErrCleanupIncomplete) {
+		t.Fatalf("rejectEndpoint() error = %v, want %v", err, ErrCleanupIncomplete)
+	}
+	if len(session.cleanupEndpoints) != 1 || endpoint.calls != 1 {
+		t.Fatalf("rejected endpoint ownership = retained:%d calls:%d, want 1/1", len(session.cleanupEndpoints), endpoint.calls)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry: %v", err)
+	}
+	if len(session.cleanupEndpoints) != 0 || endpoint.calls != 2 {
+		t.Fatalf("rejected endpoint cleanup = retained:%d calls:%d, want 0/2", len(session.cleanupEndpoints), endpoint.calls)
+	}
+}
+
 func TestAcceptLoopRetainsFailedConnectionCloseForSessionCleanup(t *testing.T) {
 	lifetime, cancel := context.WithCancel(context.Background())
 	connection := &failingHelperConnection{closeFailures: 1}

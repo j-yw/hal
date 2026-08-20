@@ -13,11 +13,18 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 )
 
-const maxUnixEndpointPathBytes = 4096
+const maxUnixEndpointPathBytes = len(syscall.RawSockaddrUnix{}.Path) - 1
+
+type peerCredentialReader interface {
+	Read(uintptr, []byte) (int, error)
+}
+
+type syscallPeerCredentialReader struct{}
 
 type linuxAgentDialer struct {
 	liveValue
@@ -30,6 +37,7 @@ type linuxPeerVerifier struct {
 	liveValue
 	expectedUID uint32
 	expectedGID uint32
+	reader      peerCredentialReader
 }
 
 type linuxAgentConnection struct {
@@ -38,6 +46,13 @@ type linuxAgentConnection struct {
 	ioMu       sync.Mutex
 	closeMu    sync.Mutex
 	mu         sync.Mutex
+	closed     bool
+}
+
+type rejectedNetConnection struct {
+	liveValue
+	connection net.Conn
+	closeMu    sync.Mutex
 	closed     bool
 }
 
@@ -53,7 +68,11 @@ func NewLinuxAgentDialer(options LinuxAgentDialerOptions) (AgentDialer, error) {
 }
 
 func NewLinuxPeerVerifier(options LinuxPeerVerifierOptions) (PeerVerifier, error) {
-	return &linuxPeerVerifier{expectedUID: options.ExpectedUID, expectedGID: options.ExpectedGID}, nil
+	return &linuxPeerVerifier{
+		expectedUID: options.ExpectedUID,
+		expectedGID: options.ExpectedGID,
+		reader:      syscallPeerCredentialReader{},
+	}, nil
 }
 
 func (dialer *linuxAgentDialer) Open(ctx context.Context) (AgentConnection, error) {
@@ -70,10 +89,13 @@ func (dialer *linuxAgentDialer) Open(ctx context.Context) (AgentConnection, erro
 	}
 	unixConnection, ok := connection.(*net.UnixConn)
 	if !ok || unixConnection == nil {
-		_ = connection.Close()
-		return nil, ErrAgentOpen
+		return &rejectedNetConnection{connection: connection}, ErrAgentOpen
 	}
-	return &linuxAgentConnection{connection: unixConnection}, nil
+	result := &linuxAgentConnection{connection: unixConnection}
+	if ctx.Err() != nil {
+		return result, ErrAgentOpen
+	}
+	return result, nil
 }
 
 func (verifier *linuxPeerVerifier) Verify(ctx context.Context, connection AgentConnection, identity ConfigIdentity) (PeerProof, error) {
@@ -94,15 +116,49 @@ func (verifier *linuxPeerVerifier) Verify(ctx context.Context, connection AgentC
 	if err != nil {
 		return PeerProof{}, ErrAgentPeer
 	}
-	var credentials *syscall.Ucred
 	var controlErr error
 	if err := raw.Control(func(descriptor uintptr) {
-		credentials, controlErr = syscall.GetsockoptUcred(int(descriptor), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-	}); err != nil || controlErr != nil || credentials == nil || credentials.Pid <= 0 ||
-		credentials.Uid != verifier.expectedUID || credentials.Gid != verifier.expectedGID {
+		controlErr = verifier.verifyDescriptor(descriptor)
+	}); err != nil || controlErr != nil || ctx.Err() != nil {
 		return PeerProof{}, ErrAgentPeer
 	}
 	return NewPeerProof(identity, connection)
+}
+
+func (verifier *linuxPeerVerifier) verifyDescriptor(descriptor uintptr) error {
+	if verifier == nil || !configuredDependency(verifier.reader) {
+		return ErrAgentPeer
+	}
+	var credentials syscall.Ucred
+	encoded := unsafe.Slice((*byte)(unsafe.Pointer(&credentials)), int(unsafe.Sizeof(credentials)))
+	count, err := verifier.reader.Read(descriptor, encoded)
+	if err != nil || count != len(encoded) {
+		return ErrAgentPeer
+	}
+	if credentials.Pid <= 0 || credentials.Uid != verifier.expectedUID || credentials.Gid != verifier.expectedGID {
+		return ErrAgentPeer
+	}
+	return nil
+}
+
+func (syscallPeerCredentialReader) Read(descriptor uintptr, destination []byte) (int, error) {
+	if len(destination) == 0 {
+		return 0, ErrAgentPeer
+	}
+	length := uint32(len(destination))
+	_, _, errno := syscall.Syscall6(
+		syscall.SYS_GETSOCKOPT,
+		descriptor,
+		uintptr(syscall.SOL_SOCKET),
+		uintptr(syscall.SO_PEERCRED),
+		uintptr(unsafe.Pointer(&destination[0])),
+		uintptr(unsafe.Pointer(&length)),
+		0,
+	)
+	if errno != 0 {
+		return int(length), errno
+	}
+	return int(length), nil
 }
 
 func (connection *linuxAgentConnection) RoundTrip(ctx context.Context, request []byte) ([]byte, error) {
@@ -142,8 +198,14 @@ func (connection *linuxAgentConnection) RoundTrip(ctx context.Context, request [
 	if err := writeFull(unixConnection, request); err != nil {
 		return nil, ErrAgentIO
 	}
+	if ctx.Err() != nil {
+		return nil, ErrAgentIO
+	}
 	var header [credentialprotocol.SSHAgentFrameHeaderBytes]byte
 	if _, err := io.ReadFull(unixConnection, header[:]); err != nil {
+		return nil, ErrAgentIO
+	}
+	if ctx.Err() != nil {
 		return nil, ErrAgentIO
 	}
 	payloadLength := binary.BigEndian.Uint32(header[:])
@@ -156,8 +218,16 @@ func (connection *linuxAgentConnection) RoundTrip(ctx context.Context, request [
 		credentialprotocol.WipeSSHAgentBytes(response)
 		return nil, ErrAgentIO
 	}
+	if ctx.Err() != nil {
+		credentialprotocol.WipeSSHAgentBytes(response)
+		return nil, ErrAgentIO
+	}
 	metadata, err = credentialprotocol.ValidateSSHAgentOuterFrame(response)
 	if err != nil || metadata.Class != credentialprotocol.SSHAgentMessageClassResponse {
+		credentialprotocol.WipeSSHAgentBytes(response)
+		return nil, ErrAgentIO
+	}
+	if ctx.Err() != nil {
 		credentialprotocol.WipeSSHAgentBytes(response)
 		return nil, ErrAgentIO
 	}
@@ -186,6 +256,27 @@ func (connection *linuxAgentConnection) Close(ctx context.Context) error {
 	connection.closed = true
 	connection.connection = nil
 	connection.mu.Unlock()
+	return nil
+}
+
+func (*rejectedNetConnection) RoundTrip(context.Context, []byte) ([]byte, error) {
+	return nil, ErrAgentIO
+}
+
+func (connection *rejectedNetConnection) Close(ctx context.Context) error {
+	if connection == nil || !configuredDependency(ctx) {
+		return ErrInvalidArgument
+	}
+	connection.closeMu.Lock()
+	defer connection.closeMu.Unlock()
+	if connection.closed {
+		return nil
+	}
+	if !configuredDependency(connection.connection) || connection.connection.Close() != nil {
+		return ErrCleanupIncomplete
+	}
+	connection.connection = nil
+	connection.closed = true
 	return nil
 }
 
@@ -220,3 +311,4 @@ func writeFull(writer io.Writer, value []byte) error {
 var _ AgentDialer = (*linuxAgentDialer)(nil)
 var _ PeerVerifier = (*linuxPeerVerifier)(nil)
 var _ AgentConnection = (*linuxAgentConnection)(nil)
+var _ AgentConnection = (*rejectedNetConnection)(nil)

@@ -4,6 +4,7 @@ package sshrelay
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,22 @@ import (
 	"strings"
 	"testing"
 )
+
+type fixedPeerCredentialReader struct {
+	count int
+	pid   int32
+	uid   uint32
+	gid   uint32
+}
+
+func (reader fixedPeerCredentialReader) Read(_ uintptr, destination []byte) (int, error) {
+	if len(destination) >= 12 {
+		binary.NativeEndian.PutUint32(destination[0:4], uint32(reader.pid))
+		binary.NativeEndian.PutUint32(destination[4:8], reader.uid)
+		binary.NativeEndian.PutUint32(destination[8:12], reader.gid)
+	}
+	return reader.count, nil
+}
 
 func TestLinuxAgentAdaptersValidatePrivateConfigurationWithoutOpening(t *testing.T) {
 	for _, path := range []string{"", "relative.sock", "/tmp/../agent.sock", "/tmp/agent\x00.sock"} {
@@ -50,6 +67,30 @@ func TestLinuxPeerVerifierUsesRawExactLengthCredentialSeam(t *testing.T) {
 	text := string(source)
 	if strings.Contains(text, "syscall.GetsockoptUcred") || !strings.Contains(text, "SYS_GETSOCKOPT") || !strings.Contains(text, "peerCredentialReader") {
 		t.Fatal("Linux peer verifier does not use an injectable raw exact-length SO_PEERCRED seam")
+	}
+}
+
+func TestLinuxPeerVerifierRequiresExactRawCredentialLength(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		count int
+		want  error
+	}{
+		{name: "short", count: 11, want: ErrAgentPeer},
+		{name: "exact", count: 12},
+		{name: "long", count: 13, want: ErrAgentPeer},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			verifier := &linuxPeerVerifier{
+				expectedUID: 1000,
+				expectedGID: 1000,
+				reader:      fixedPeerCredentialReader{count: test.count, pid: 7, uid: 1000, gid: 1000},
+			}
+			err := verifier.verifyDescriptor(1)
+			if !errors.Is(err, test.want) || (test.want == nil && err != nil) {
+				t.Fatalf("verifyDescriptor(count=%d) error = %v, want %v", test.count, err, test.want)
+			}
+		})
 	}
 }
 

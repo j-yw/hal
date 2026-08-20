@@ -71,15 +71,15 @@ func (entry *liveHostAgentEntry) Policy() LivePolicy {
 }
 
 func (entry *liveHostAgentEntry) Open(ctx context.Context) (AgentConnection, error) {
-	if entry == nil || !configuredDependency(ctx) {
+	if entry == nil || !configuredDependency(ctx) || ctx.Err() != nil {
 		return nil, ErrAgentOpen
 	}
 	connection, err := entry.dialer.Open(ctx)
 	if err != nil || !configuredDependency(connection) {
-		if configuredDependency(connection) {
-			_ = safeAgentClose(ctx, connection)
-		}
-		return nil, ErrAgentOpen
+		return connection, ErrAgentOpen
+	}
+	if ctx.Err() != nil {
+		return connection, ErrAgentOpen
 	}
 	return connection, nil
 }
@@ -154,6 +154,9 @@ func (registry *Registry) Acquire(ctx context.Context, request AcquireRequest) (
 	if registry.closed {
 		return nil, ErrRegistryClosed
 	}
+	if ctx.Err() != nil {
+		return nil, ErrRegistryClosed
+	}
 	entry, ok := registry.entries[request.config.entryID]
 	if !ok || !ConfigIdentityEqual(entry.identity, request.config) {
 		return nil, ErrIdentityMismatch
@@ -172,11 +175,17 @@ func (registry *Registry) Acquire(ctx context.Context, request AcquireRequest) (
 		entry:        entry.entry,
 		clock:        registry.clock,
 		state:        state,
+		startedAt:    startedAt,
 		request:      request,
 		lifetimeCtx:  lifetimeCtx,
 		cancel:       cancel,
 		connections:  make(map[*verifiedConnection]struct{}),
 		inflightZero: closedSignal(),
+	}
+	if ctx.Err() != nil {
+		cancel()
+		state.Close()
+		return nil, ErrRegistryClosed
 	}
 	registry.leases[value] = struct{}{}
 	return value, nil
@@ -217,14 +226,15 @@ func (registry *Registry) releaseLease(value *lease) {
 
 type lease struct {
 	liveValue
-	registry *Registry
-	identity ConfigIdentity
-	policyID PolicyIdentity
-	policy   LivePolicy
-	entry    LiveHostAgentEntry
-	clock    clock
-	state    *credentialprotocol.SSHAgentRelayState
-	request  AcquireRequest
+	registry  *Registry
+	identity  ConfigIdentity
+	policyID  PolicyIdentity
+	policy    LivePolicy
+	entry     LiveHostAgentEntry
+	clock     clock
+	state     *credentialprotocol.SSHAgentRelayState
+	startedAt time.Time
+	request   AcquireRequest
 
 	closeMu         sync.Mutex
 	mu              sync.Mutex
@@ -255,57 +265,119 @@ func (value *lease) OpenVerifiedConnection(ctx context.Context) (VerifiedAgentCo
 	if value == nil || !configuredDependency(ctx) {
 		return nil, ErrInvalidArgument
 	}
+	if ctx.Err() != nil {
+		return nil, ErrRequestRejected
+	}
 	if err := value.beginOpen(); err != nil {
 		return nil, err
 	}
 	defer value.endOpen()
 
-	relayConnection, err := value.state.OpenConnection(value.clock.Now())
+	now := value.clock.Now()
+	relayConnection, err := value.state.OpenConnection(now)
 	if err != nil {
 		if errors.Is(err, credentialprotocol.ErrSSHAgentRelayHardLifetime) {
 			return nil, ErrLeaseExpired
 		}
 		return nil, ErrConnectionLimit
 	}
-	opCtx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(value.lifetimeCtx, cancel)
+	opCtx, cancel := context.WithDeadline(ctx, value.ioDeadline(now))
+	lifetimeDone := make(chan struct{})
+	stop := context.AfterFunc(value.lifetimeCtx, func() {
+		cancel()
+		close(lifetimeDone)
+	})
 	defer func() {
-		stop()
+		if !stop() {
+			<-lifetimeDone
+		}
 		cancel()
 	}()
 
 	agent, openErr := safeEntryOpen(opCtx, value.entry)
 	if openErr != nil || !configuredDependency(agent) {
 		relayConnection.Close()
-		if configuredDependency(agent) {
-			_ = safeAgentClose(opCtx, agent)
+		if !configuredDependency(agent) {
+			if opCtx.Err() != nil {
+				return nil, value.cancellationError()
+			}
+			return nil, ErrAgentOpen
 		}
-		return nil, ErrAgentOpen
+		connection := value.adoptConnection(agent, relayConnection)
+		var dependencyCleanup error
+		if errors.Is(openErr, ErrCleanupIncomplete) {
+			dependencyCleanup = ErrCleanupIncomplete
+		}
+		if opCtx.Err() != nil {
+			return nil, errors.Join(value.cancellationError(), dependencyCleanup, value.rejectConnection(ctx, connection))
+		}
+		return nil, errors.Join(ErrAgentOpen, dependencyCleanup, value.rejectConnection(ctx, connection))
+	}
+	connection := value.adoptConnection(agent, relayConnection)
+	if opCtx.Err() != nil {
+		return nil, errors.Join(value.cancellationError(), value.rejectConnection(ctx, connection))
 	}
 	proof, proofErr := safeEntryVerifyPeer(opCtx, value.entry, agent)
-	if proofErr != nil || consumePeerProof(proof, value.identity, agent) != nil {
-		relayConnection.Close()
-		_ = safeAgentClose(opCtx, agent)
-		return nil, ErrAgentPeer
+	if proofErr != nil {
+		return nil, errors.Join(ErrAgentPeer, value.rejectConnection(ctx, connection))
 	}
+	if opCtx.Err() != nil {
+		return nil, errors.Join(value.cancellationError(), value.rejectConnection(ctx, connection))
+	}
+	if consumePeerProof(proof, value.identity, agent) != nil {
+		return nil, errors.Join(ErrAgentPeer, value.rejectConnection(ctx, connection))
+	}
+	if opCtx.Err() != nil {
+		return nil, errors.Join(value.cancellationError(), value.rejectConnection(ctx, connection))
+	}
+	value.mu.Lock()
+	closed := value.closed
+	value.mu.Unlock()
+	if closed {
+		return nil, errors.Join(ErrLeaseClosed, value.rejectConnection(ctx, connection))
+	}
+	return connection, nil
+}
 
+func (value *lease) ioDeadline(now time.Time) time.Time {
+	deadline := now.Add(credentialprotocol.SSHAgentRelayIdleTimeout)
+	hardDeadline := value.startedAt.Add(credentialprotocol.SSHAgentRelayHardLifetime)
+	if hardDeadline.Before(deadline) {
+		deadline = hardDeadline
+	}
+	return deadline
+}
+
+func (value *lease) cancellationError() error {
+	value.mu.Lock()
+	closed := value.closed
+	value.mu.Unlock()
+	if closed {
+		return ErrLeaseClosed
+	}
+	return ErrRequestRejected
+}
+
+func (value *lease) adoptConnection(agent AgentConnection, relay *credentialprotocol.SSHAgentRelayConnection) *verifiedConnection {
 	connection := &verifiedConnection{
 		lease:        value,
 		agent:        agent,
 		policy:       value.policy,
 		clock:        value.clock,
-		relay:        relayConnection,
+		relay:        relay,
 		inflightZero: closedSignal(),
 	}
 	value.mu.Lock()
-	if value.closed {
-		value.mu.Unlock()
-		_ = connection.Close(opCtx)
-		return nil, ErrLeaseClosed
-	}
 	value.connections[connection] = struct{}{}
 	value.mu.Unlock()
-	return connection, nil
+	return connection
+}
+
+func (value *lease) rejectConnection(ctx context.Context, connection *verifiedConnection) error {
+	cleanupCtx, cancel := cleanupContext(ctx)
+	err := connection.Close(cleanupCtx)
+	cancel()
+	return err
 }
 
 func (value *lease) beginOpen() error {
@@ -347,22 +419,24 @@ func (value *lease) Close(ctx context.Context) error {
 		value.state.Close()
 	}
 	inflightZero := value.inflightZero
+	value.mu.Unlock()
+
+	select {
+	case <-inflightZero:
+	case <-ctx.Done():
+		return ErrCleanupIncomplete
+	}
+	value.mu.Lock()
 	connections := make([]*verifiedConnection, 0, len(value.connections))
 	for connection := range value.connections {
 		connections = append(connections, connection)
 	}
 	value.mu.Unlock()
-
 	var incomplete bool
 	for _, connection := range connections {
 		if err := connection.Close(ctx); err != nil {
 			incomplete = true
 		}
-	}
-	select {
-	case <-inflightZero:
-	case <-ctx.Done():
-		return ErrCleanupIncomplete
 	}
 
 	value.mu.Lock()
@@ -442,6 +516,10 @@ func safeAgentClose(ctx context.Context, connection AgentConnection) (err error)
 		return ErrCleanupIncomplete
 	}
 	return nil
+}
+
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), credentialprotocol.SSHAgentRelayIdleTimeout)
 }
 
 var _ Lease = (*lease)(nil)

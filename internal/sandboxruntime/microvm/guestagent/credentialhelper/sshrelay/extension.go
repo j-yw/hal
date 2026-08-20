@@ -39,6 +39,10 @@ func (helperFactory) Open(ctx context.Context, request credentialhelper.Extensio
 		return nil, ErrInvalidArgument
 	}
 	lifetimeCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if ctx.Err() != nil {
+		cancel()
+		return nil, ErrInvalidArgument
+	}
 	return &helperSession{
 		host:        request.Host(),
 		lifetimeCtx: lifetimeCtx,
@@ -52,26 +56,28 @@ type helperSession struct {
 	lifetimeCtx context.Context
 	cancel      context.CancelFunc
 
-	operationMu     sync.Mutex
-	mu              sync.Mutex
-	endpoint        credentialhelper.SSHAgentEndpoint
-	identity        [32]byte
-	revision        uint64
-	expires         int64
-	bindingID       credentialprotocol.SafeID
-	bindingIndex    uint16
-	execBinding     credentialhelper.ExecBindingCapability
-	ordinal         uint8
-	acceptDone      chan struct{}
-	prepared        bool
-	revoked         bool
-	closed          bool
-	cleanupComplete bool
-	acceptFailed    bool
+	operationMu        sync.Mutex
+	mu                 sync.Mutex
+	endpoint           credentialhelper.SSHAgentEndpoint
+	identity           [32]byte
+	revision           uint64
+	expires            int64
+	bindingID          credentialprotocol.SafeID
+	bindingIndex       uint16
+	execBinding        credentialhelper.ExecBindingCapability
+	ordinal            uint8
+	acceptDone         chan struct{}
+	prepared           bool
+	revoked            bool
+	closed             bool
+	cleanupComplete    bool
+	acceptFailed       bool
+	cleanupEndpoints   []credentialhelper.SSHAgentEndpoint
+	cleanupConnections []credentialhelper.SSHAgentConnection
 }
 
 func (session *helperSession) Prepare(ctx context.Context, request credentialhelper.ExtensionPrepareRequest) (credentialhelper.ExtensionPrepareResult, error) {
-	if session == nil || !configured(ctx) || request.Mode() != credentialprotocol.DeliveryModeSSHAgent ||
+	if session == nil || !configured(ctx) || ctx.Err() != nil || request.Mode() != credentialprotocol.DeliveryModeSSHAgent ||
 		request.IdentityDigest() == ([32]byte{}) || request.Revision() == 0 || request.ExpiresUnixNano() <= 0 ||
 		credentialprotocol.ValidateSafeID(request.BindingID()) != nil || request.BindingIndex() >= credentialprotocol.MaxHelperBindings || request.ExecBinding() == nil {
 		return credentialhelper.ExtensionPrepareResult{}, ErrInvalidArgument
@@ -79,7 +85,7 @@ func (session *helperSession) Prepare(ctx context.Context, request credentialhel
 	session.operationMu.Lock()
 	defer session.operationMu.Unlock()
 	session.mu.Lock()
-	if session.prepared || session.revoked || session.closed {
+	if session.prepared || session.revoked || session.closed || len(session.cleanupEndpoints) != 0 || len(session.cleanupConnections) != 0 {
 		session.mu.Unlock()
 		return credentialhelper.ExtensionPrepareResult{}, ErrLifecycle
 	}
@@ -94,25 +100,28 @@ func (session *helperSession) Prepare(ctx context.Context, request credentialhel
 	endpoint, err := safeCreateEndpoint(ctx, session.host, endpointRequest)
 	if err != nil || !configured(endpoint) {
 		if configured(endpoint) {
-			_, _ = safeEndpointClose(ctx, endpoint)
+			return credentialhelper.ExtensionPrepareResult{}, errors.Join(ErrDependency, session.rejectEndpoint(ctx, endpoint))
 		}
 		return credentialhelper.ExtensionPrepareResult{}, ErrDependency
 	}
+	if ctx.Err() != nil {
+		return credentialhelper.ExtensionPrepareResult{}, errors.Join(ErrLifecycle, session.rejectEndpoint(ctx, endpoint))
+	}
 	if !sameExecBinding(safeEndpointExecBinding(endpoint), request.ExecBinding()) {
-		_, _ = safeEndpointClose(ctx, endpoint)
-		return credentialhelper.ExtensionPrepareResult{}, ErrDependency
+		return credentialhelper.ExtensionPrepareResult{}, errors.Join(ErrDependency, session.rejectEndpoint(ctx, endpoint))
+	}
+	if ctx.Err() != nil {
+		return credentialhelper.ExtensionPrepareResult{}, errors.Join(ErrLifecycle, session.rejectEndpoint(ctx, endpoint))
 	}
 	result, err := credentialhelper.NewExtensionPrepareResult(request.ExecBinding())
 	if err != nil {
-		_, _ = safeEndpointClose(ctx, endpoint)
-		return credentialhelper.ExtensionPrepareResult{}, ErrInvalidArgument
+		return credentialhelper.ExtensionPrepareResult{}, errors.Join(ErrInvalidArgument, session.rejectEndpoint(ctx, endpoint))
 	}
 
 	session.mu.Lock()
-	if session.closed || session.revoked || session.prepared {
+	if ctx.Err() != nil || session.closed || session.revoked || session.prepared {
 		session.mu.Unlock()
-		_, _ = safeEndpointClose(ctx, endpoint)
-		return credentialhelper.ExtensionPrepareResult{}, ErrLifecycle
+		return credentialhelper.ExtensionPrepareResult{}, errors.Join(ErrLifecycle, session.rejectEndpoint(ctx, endpoint))
 	}
 	session.endpoint = endpoint
 	session.identity = request.IdentityDigest()
@@ -129,13 +138,13 @@ func (session *helperSession) Prepare(ctx context.Context, request credentialhel
 }
 
 func (session *helperSession) BindExec(ctx context.Context, request credentialhelper.ExtensionExecRequest) (credentialhelper.ExtensionExecResult, error) {
-	if session == nil || !configured(ctx) {
+	if session == nil || !configured(ctx) || ctx.Err() != nil {
 		return credentialhelper.ExtensionExecResult{}, ErrInvalidArgument
 	}
 	session.operationMu.Lock()
 	defer session.operationMu.Unlock()
 	session.mu.Lock()
-	valid := session.prepared && !session.revoked && !session.closed &&
+	valid := session.prepared && !session.revoked && !session.closed && !session.acceptFailed &&
 		request.IdentityDigest() == session.identity && request.Revision() == session.revision &&
 		request.ExecBindingID() == session.bindingID && sameExecBinding(request.ExecBinding(), session.execBinding)
 	binding := session.execBinding
@@ -147,18 +156,21 @@ func (session *helperSession) BindExec(ctx context.Context, request credentialhe
 	if err != nil {
 		return credentialhelper.ExtensionExecResult{}, ErrInvalidArgument
 	}
+	if ctx.Err() != nil {
+		return credentialhelper.ExtensionExecResult{}, ErrLifecycle
+	}
 	return result, nil
 }
 
 func (session *helperSession) Renew(ctx context.Context, request credentialhelper.ExtensionRenewRequest) error {
-	if session == nil || !configured(ctx) {
+	if session == nil || !configured(ctx) || ctx.Err() != nil {
 		return ErrInvalidArgument
 	}
 	session.operationMu.Lock()
 	defer session.operationMu.Unlock()
 	session.mu.Lock()
 	defer session.mu.Unlock()
-	if !session.prepared || session.revoked || session.closed || request.IdentityDigest() != session.identity ||
+	if ctx.Err() != nil || !session.prepared || session.revoked || session.closed || session.acceptFailed || request.IdentityDigest() != session.identity ||
 		request.Revision() != session.revision+1 || request.ExpiresUnixNano() <= 0 {
 		return ErrLifecycle
 	}
@@ -178,26 +190,30 @@ func (session *helperSession) Revoke(ctx context.Context, request credentialhelp
 		session.mu.Unlock()
 		return credentialhelper.ExtensionCleanupResult{}, ErrLifecycle
 	}
-	session.revoked = true
-	session.cancel()
+	if !session.revoked {
+		session.revoked = true
+		session.cancel()
+	}
 	endpoint := session.endpoint
 	done := session.acceptDone
 	session.mu.Unlock()
 
-	result, err := safeEndpointClose(ctx, endpoint)
-	if err != nil {
-		return credentialhelper.ExtensionCleanupResult{}, ErrCleanupIncomplete
+	result, endpointComplete := closeEndpoint(ctx, endpoint)
+	if endpointComplete {
+		session.mu.Lock()
+		session.endpoint = nil
+		session.mu.Unlock()
 	}
 	select {
 	case <-done:
 	case <-ctx.Done():
 		return credentialhelper.ExtensionCleanupResult{}, ErrCleanupIncomplete
 	}
-	if !result.ResourcesAbsent() || result.Category() != credentialhelper.ExtensionCleanupComplete {
-		return result, nil
+	connectionsComplete := session.closeRetainedConnections(ctx)
+	if !endpointComplete || !connectionsComplete {
+		return result, ErrCleanupIncomplete
 	}
 	session.mu.Lock()
-	session.endpoint = nil
 	session.execBinding = nil
 	session.identity = [32]byte{}
 	session.bindingID = ""
@@ -222,27 +238,44 @@ func (session *helperSession) Close(ctx context.Context) error {
 	}
 	endpoint := session.endpoint
 	done := session.acceptDone
+	cleanupEndpoints := append([]credentialhelper.SSHAgentEndpoint(nil), session.cleanupEndpoints...)
 	session.mu.Unlock()
 
+	endpointComplete := true
 	if configured(endpoint) {
-		result, err := safeEndpointClose(ctx, endpoint)
-		if err != nil || !result.ResourcesAbsent() || result.Category() != credentialhelper.ExtensionCleanupComplete {
-			return ErrCleanupIncomplete
+		_, endpointComplete = closeEndpoint(ctx, endpoint)
+	}
+	remainingEndpoints := make([]credentialhelper.SSHAgentEndpoint, 0, len(cleanupEndpoints))
+	for _, cleanupEndpoint := range cleanupEndpoints {
+		if _, complete := closeEndpoint(ctx, cleanupEndpoint); !complete {
+			remainingEndpoints = append(remainingEndpoints, cleanupEndpoint)
 		}
 	}
+	session.mu.Lock()
+	session.cleanupEndpoints = remainingEndpoints
+	if endpointComplete {
+		session.endpoint = nil
+	}
+	session.mu.Unlock()
 	select {
 	case <-done:
 	case <-ctx.Done():
 		return ErrCleanupIncomplete
 	}
+	connectionsComplete := session.closeRetainedConnections(ctx)
 	session.mu.Lock()
-	session.endpoint = nil
-	session.execBinding = nil
-	session.identity = [32]byte{}
-	session.bindingID = ""
-	session.host = nil
-	session.cleanupComplete = true
+	complete := endpointComplete && connectionsComplete && len(session.cleanupEndpoints) == 0 && len(session.cleanupConnections) == 0
+	if complete {
+		session.execBinding = nil
+		session.identity = [32]byte{}
+		session.bindingID = ""
+		session.host = nil
+		session.cleanupComplete = true
+	}
 	session.mu.Unlock()
+	if !complete {
+		return ErrCleanupIncomplete
+	}
 	return nil
 }
 
@@ -267,7 +300,7 @@ func (session *helperSession) acceptLoop(endpoint credentialhelper.SSHAgentEndpo
 		session.mu.Lock()
 		if session.ordinal == credentialprotocol.SSHAgentRelayMaxLifetimeConnections || session.revoked || session.closed {
 			session.mu.Unlock()
-			_ = safeConnectionClose(session.lifetimeCtx, connection)
+			session.closeOrRetainConnection(connection)
 			return
 		}
 		session.ordinal++
@@ -281,7 +314,7 @@ func (session *helperSession) acceptLoop(endpoint credentialhelper.SSHAgentEndpo
 		digest := relayCapabilityDigest(identity, revision, bindingIndex, ordinal)
 		publication, publicationErr := credentialhelper.NewSSHAcceptedPublication(identity, revision, bindingIndex, ordinal, digest, binding)
 		if publicationErr != nil || safePublishConnection(session.lifetimeCtx, session.host, publication, connection) != nil {
-			_ = safeConnectionClose(session.lifetimeCtx, connection)
+			session.closeOrRetainConnection(connection)
 			if publicationErr != nil || session.lifetimeCtx.Err() == nil {
 				session.mu.Lock()
 				session.acceptFailed = true
@@ -290,6 +323,50 @@ func (session *helperSession) acceptLoop(endpoint credentialhelper.SSHAgentEndpo
 			return
 		}
 	}
+}
+
+func (session *helperSession) rejectEndpoint(ctx context.Context, endpoint credentialhelper.SSHAgentEndpoint) error {
+	_, complete := closeEndpoint(ctx, endpoint)
+	if complete {
+		return nil
+	}
+	session.mu.Lock()
+	session.cleanupEndpoints = append(session.cleanupEndpoints, endpoint)
+	session.mu.Unlock()
+	return ErrCleanupIncomplete
+}
+
+func (session *helperSession) closeOrRetainConnection(connection credentialhelper.SSHAgentConnection) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(session.lifetimeCtx), credentialprotocol.SSHAgentRelayIdleTimeout)
+	err := safeConnectionClose(cleanupCtx, connection)
+	cancel()
+	if err == nil {
+		return
+	}
+	session.mu.Lock()
+	session.cleanupConnections = append(session.cleanupConnections, connection)
+	session.mu.Unlock()
+}
+
+func (session *helperSession) closeRetainedConnections(ctx context.Context) bool {
+	session.mu.Lock()
+	connections := append([]credentialhelper.SSHAgentConnection(nil), session.cleanupConnections...)
+	session.mu.Unlock()
+	remaining := make([]credentialhelper.SSHAgentConnection, 0, len(connections))
+	for _, connection := range connections {
+		if err := safeConnectionClose(ctx, connection); err != nil {
+			remaining = append(remaining, connection)
+		}
+	}
+	session.mu.Lock()
+	session.cleanupConnections = remaining
+	session.mu.Unlock()
+	return len(remaining) == 0
+}
+
+func closeEndpoint(ctx context.Context, endpoint credentialhelper.SSHAgentEndpoint) (credentialhelper.ExtensionCleanupResult, bool) {
+	result, err := safeEndpointClose(ctx, endpoint)
+	return result, err == nil && result.ResourcesAbsent() && result.Category() == credentialhelper.ExtensionCleanupComplete
 }
 
 func relayCapabilityDigest(identity [32]byte, revision uint64, bindingIndex uint16, ordinal uint8) [32]byte {

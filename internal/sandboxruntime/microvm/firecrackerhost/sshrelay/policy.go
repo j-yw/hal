@@ -32,6 +32,15 @@ func NewLivePolicy(identity PolicyIdentity, rules []PolicyRule) (LivePolicy, err
 			wipeLivePolicyRules(frozen)
 			return nil, ErrPolicyInvalid
 		}
+		maxFlags := 1
+		if rule.KeyAlgorithm == credentialprotocol.SSHAgentKeyAlgorithmRSA {
+			maxFlags = 2
+		}
+		if len(rule.Flags) > maxFlags {
+			fingerprint.Wipe()
+			wipeLivePolicyRules(frozen)
+			return nil, ErrPolicyInvalid
+		}
 		flags := append([]credentialprotocol.SSHAgentRSAFlags(nil), rule.Flags...)
 		sort.Slice(flags, func(left, right int) bool { return flags[left] < flags[right] })
 		for index, flag := range flags {
