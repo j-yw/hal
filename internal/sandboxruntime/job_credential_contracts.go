@@ -247,6 +247,43 @@ type JobCredentialLoss struct {
 	Code     JobCredentialFailureCode
 }
 
+// JobCredentialRuntimeBindingRequest contains only the worker-owned job and
+// admission identity that a retained runtime target must complete with its
+// live Firecracker, guest, image, and network generations. Target may carry
+// live connection state and must never be serialized with the returned
+// binding.
+type JobCredentialRuntimeBindingRequest struct {
+	Target                 Target
+	WorkerID               string
+	WorkerJobID            string
+	SubmissionID           string
+	ExecutionID            string
+	PlanID                 string
+	AdmissionGrantID       string
+	AdmissionGrantRevision uint64
+	PrincipalID            string
+	TemplatePolicyID       string
+	WorkspacePolicyID      string
+	BindingIDs             []string
+	DeliveryModes          []JobCredentialDeliveryMode
+	IssuedAt               time.Time
+}
+
+// JobCredentialRuntimeBinding is a live, non-serializable association between
+// one complete credential identity seed and the exact retained runtime that
+// owns those generations.
+type JobCredentialRuntimeBinding struct {
+	Seed    JobCredentialIdentitySeed
+	Runtime JobCredentialRuntime
+}
+
+// JobCredentialRuntimeBindingProvider is implemented only by runtime drivers
+// that retain the authority needed to complete a credential identity. Worker
+// code must not derive generations from sanitized target metadata.
+type JobCredentialRuntimeBindingProvider interface {
+	BindJobCredentialRuntime(context.Context, JobCredentialRuntimeBindingRequest) (JobCredentialRuntimeBinding, error)
+}
+
 type JobCredentialRuntime interface {
 	PreflightJobCredentials(context.Context, JobCredentialIdentitySeed) (JobCredentialRuntimePreflight, error)
 	RecoverJobCredentials(context.Context, JobCredentialRecoveryRequest) (JobCredentialCleanupProof, error)

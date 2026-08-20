@@ -961,11 +961,13 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 	}
 	job := l8WorkerV2QueuedJob()
 	job.SubmissionKey = jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, request)
+	credentialState := l8StoredJobCredentialStateForTest(t, job, principalID)
 	state := storedJobStateV2{
 		JobV2:            job,
 		RequestKey:       requestKey,
 		PrincipalID:      principalID,
 		DaemonGeneration: l8WorkerV2DaemonGeneration,
+		CredentialState:  credentialState,
 	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("valid private durable v2 state: %v", err)
@@ -975,6 +977,7 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 		`RequestKey|string|json:"requestKey"`,
 		`PrincipalID|string|json:"principalId"`,
 		`DaemonGeneration|string|json:"daemonGeneration"`,
+		`CredentialState|*sandboxworker.storedJobCredentialStateV2|json:"credentialState,omitempty"`,
 	}
 	for _, allowed := range l8WorkerV2CrossPhaseSafeIDCases() {
 		t.Run("accepts daemon generation "+allowed.name, func(t *testing.T) {
@@ -1004,6 +1007,7 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 		t.Run("accepts principal "+allowed.name, func(t *testing.T) {
 			candidate := state
 			candidate.PrincipalID = allowed.value
+			candidate.CredentialState = l8StoredJobCredentialStateForTest(t, candidate.JobV2, allowed.value)
 			candidate.JobV2.SubmissionKey = jobSubmissionKeyV2(allowed.value, l8WorkerV2DaemonGeneration, request)
 			requestKey, keyErr := jobRequestKeyV2(RuntimeDriverMicroVM, allowed.value, l8WorkerV2DaemonGeneration, request)
 			if keyErr != nil {
@@ -1148,6 +1152,7 @@ func TestL8WorkerV2StoreRejectsInvalidOrMismatchedDurableStateBeforeReconciliati
 		DaemonGeneration: l8WorkerV2DaemonGeneration,
 	}
 	validState.JobV2.SubmissionKey = jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, request)
+	validState.CredentialState = l8StoredJobCredentialStateForTest(t, validState.JobV2, principalID)
 	if err := validState.Validate(); err != nil {
 		t.Fatalf("valid private durable v2 state: %v", err)
 	}
@@ -1245,6 +1250,7 @@ func TestL8WorkerV2StoreJobIDVocabularyIsContractAndPersistenceConsistent(t *tes
 		DaemonGeneration: l8WorkerV2DaemonGeneration,
 	}
 	base.JobV2.SubmissionKey = jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, request)
+	base.CredentialState = l8StoredJobCredentialStateForTest(t, base.JobV2, principalID)
 
 	for _, jobID := range []string{
 		"job-primary",
@@ -1256,6 +1262,7 @@ func TestL8WorkerV2StoreJobIDVocabularyIsContractAndPersistenceConsistent(t *tes
 		t.Run("accepted "+jobID, func(t *testing.T) {
 			state := base
 			state.JobV2.ID = jobID
+			state.CredentialState = l8StoredJobCredentialStateForTest(t, state.JobV2, principalID)
 			if err := state.Validate(); err != nil {
 				t.Fatalf("contract rejected accepted V2 job ID %q: %v", jobID, err)
 			}

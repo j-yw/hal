@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 const defaultMaxRequestBytes int64 = 1 << 20
@@ -34,18 +36,33 @@ func (fn RequestHandlerFunc) HandleRequest(ctx context.Context, req Request) Res
 	return fn(ctx, req)
 }
 
+// AuthenticatedRequestHandler is the explicit L8 server boundary. The server
+// calls it only after peer credentials have been validated and a principal has
+// been issued by the configured live authority.
+type AuthenticatedRequestHandler interface {
+	HandlesAuthenticatedRequest(Request) bool
+	HandleAuthenticatedRequest(context.Context, sandboxruntime.AuthenticatedWorkerPrincipal, Request) Response
+}
+
 // Server serves worker protocol requests over a local Unix socket.
 type Server struct {
-	socketPath      string
-	handler         RequestHandler
-	maxRequestBytes int64
+	socketPath           string
+	handler              RequestHandler
+	authenticatedHandler AuthenticatedRequestHandler
+	maxRequestBytes      int64
+	principalAuthority   *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
 }
 
 // ServerOptions configures a local worker socket server.
 type ServerOptions struct {
-	SocketPath      string
-	Handler         RequestHandler
-	MaxRequestBytes int64
+	SocketPath           string
+	Handler              RequestHandler
+	AuthenticatedHandler AuthenticatedRequestHandler
+	MaxRequestBytes      int64
+	// PrincipalAuthority enables the explicit L8 worker service path. When it
+	// is absent, the server authenticates its Unix peer as before but does not
+	// mint a credential-admission principal.
+	PrincipalAuthority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
 }
 
 // NewServer returns a worker server configured for a local Unix socket.
@@ -60,14 +77,23 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if !requestHandlerConfigured(options.Handler) {
 		return nil, fmt.Errorf("worker server handler is required")
 	}
+	if options.PrincipalAuthority != nil {
+		if options.AuthenticatedHandler == nil {
+			return nil, fmt.Errorf("worker server authenticated handler is required")
+		}
+	} else if options.AuthenticatedHandler != nil {
+		return nil, fmt.Errorf("worker server principal authority is required")
+	}
 	maxRequestBytes := options.MaxRequestBytes
 	if maxRequestBytes <= 0 {
 		maxRequestBytes = defaultMaxRequestBytes
 	}
 	return &Server{
-		socketPath:      filepath.Clean(socketPath),
-		handler:         options.Handler,
-		maxRequestBytes: maxRequestBytes,
+		socketPath:           filepath.Clean(socketPath),
+		handler:              options.Handler,
+		authenticatedHandler: options.AuthenticatedHandler,
+		maxRequestBytes:      maxRequestBytes,
+		principalAuthority:   options.PrincipalAuthority,
 	}, nil
 }
 
@@ -171,16 +197,33 @@ func (server *Server) serve(ctx context.Context, listener net.Listener, filesyst
 			_ = conn.Close()
 			continue
 		}
+		var principal sandboxruntime.AuthenticatedWorkerPrincipal
+		if server.principalAuthority != nil {
+			peerUID, peerGID, err := workerPeerCredentials(conn)
+			if err != nil {
+				_ = conn.Close()
+				continue
+			}
+			principal, err = server.principalAuthority.IssueAuthenticatedWorkerPrincipal("local-unix-peer", peerUID, peerGID)
+			if err != nil {
+				_ = conn.Close()
+				continue
+			}
+		}
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			server.handleConnection(ctx, conn)
+			server.handleAuthenticatedConnection(ctx, conn, principal)
 		}()
 	}
 }
 
 func (server *Server) handleConnection(ctx context.Context, conn net.Conn) {
+	server.handleAuthenticatedConnection(ctx, conn, nil)
+}
+
+func (server *Server) handleAuthenticatedConnection(ctx context.Context, conn net.Conn, principal sandboxruntime.AuthenticatedWorkerPrincipal) {
 	defer conn.Close()
 
 	done := make(chan struct{})
@@ -199,7 +242,12 @@ func (server *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	resp := server.handler.HandleRequest(ctx, req)
+	var resp Response
+	if principal != nil && server.authenticatedHandler.HandlesAuthenticatedRequest(req) {
+		resp = server.authenticatedHandler.HandleAuthenticatedRequest(ctx, principal, req)
+	} else {
+		resp = server.handler.HandleRequest(ctx, req)
+	}
 	resp = normalizeHandlerResponse(req, resp)
 	if err := resp.Validate(); err != nil {
 		resp = protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeInternal, "worker handler returned invalid response")

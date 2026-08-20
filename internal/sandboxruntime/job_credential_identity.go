@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const maxJobCredentialIdentityBindings = 16
+
 // ValidateJobCredentialIdentitySeed validates the pre-authentication identity
 // fields without changing the supplied value.
 func ValidateJobCredentialIdentitySeed(seed JobCredentialIdentitySeed) error {
@@ -28,7 +30,7 @@ func ValidateJobCredentialIdentitySeed(seed JobCredentialIdentitySeed) error {
 		}
 	}
 	if !validJobCredentialGuestImageDigest(seed.GuestImageDigest) || seed.AdmissionGrantRevision == 0 || seed.IssuedAt.IsZero() ||
-		len(seed.BindingIDs) == 0 || len(seed.BindingIDs) != len(seed.DeliveryModes) {
+		len(seed.BindingIDs) == 0 || len(seed.BindingIDs) > maxJobCredentialIdentityBindings || len(seed.BindingIDs) != len(seed.DeliveryModes) {
 		return ErrJobCredentialIdentityMismatch
 	}
 	httpBindings := 0

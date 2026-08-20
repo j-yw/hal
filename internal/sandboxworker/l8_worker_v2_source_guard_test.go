@@ -73,6 +73,35 @@ func TestL8WorkerV2SourceGuardsRejectSecretAndLiveAuthoritySurfaces(t *testing.T
 	}
 }
 
+func TestL8WorkerV2SourceGuardLocksSharedProcessOwnershipImplementation(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := make(map[string]string)
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		matched, matchErr := build.Default.MatchFile(".", path)
+		if matchErr != nil {
+			t.Fatal(matchErr)
+		}
+		if matched {
+			sources[path] = l8ReadWorkerSource(t, path)
+		}
+	}
+	lockSource := sources["job_state_lock_unix.go"]
+	mutated := strings.Replace(lockSource, "syscall.LOCK_EX|syscall.LOCK_NB", "syscall.LOCK_EX", 1)
+	if mutated == lockSource {
+		t.Fatal("shared process ownership mutation was not applied")
+	}
+	sources["job_state_lock_unix.go"] = mutated
+	if err := l8AuditWorkerV2Sources(sources, l8WorkerV2ProductionGuardPolicy()); err == nil || !strings.Contains(err.Error(), "outside the exact allowlist") {
+		t.Fatalf("worker-v2 guard accepted blocking/shared state ownership mutation: %v", err)
+	}
+}
+
 func TestL8WorkerV2GuardAddingD1CDeclarationsPreservesRealV1Production(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -4023,7 +4052,8 @@ import (
 	"time"
 )
 type JobV2 struct { SubmittedAt time.Time ` + "`json:\"submittedAt\"`" + ` }
-type storedJobStateV2 struct { JobV2 JobV2; RequestKey string ` + "`json:\"requestKey\"`" + `; PrincipalID string ` + "`json:\"principalId\"`" + `; DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + ` }
+type storedJobCredentialStateV2 struct { ContractVersion string ` + "`json:\"contractVersion\"`" + ` }
+type storedJobStateV2 struct { JobV2 JobV2; RequestKey string ` + "`json:\"requestKey\"`" + `; PrincipalID string ` + "`json:\"principalId\"`" + `; DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + `; CredentialState *storedJobCredentialStateV2 ` + "`json:\"credentialState,omitempty\"`" + ` }
 	func encodeStoredJobStateV2(state storedJobStateV2) ([]byte, error) { return json.Marshal(state) }`
 	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_store_v2.go": storeSource}, keyPolicy)
 	aliasedStoreSource := strings.Replace(storeSource, "type JobV2 struct { SubmittedAt time.Time", "type auditedTimeV2 = time.Time\ntype JobV2 struct { SubmittedAt auditedTimeV2", 1)
@@ -4398,14 +4428,17 @@ type l8WorkerV2GuardPolicy struct {
 func l8WorkerV2ProductionGuardPolicy() l8WorkerV2GuardPolicy {
 	return l8WorkerV2GuardPolicy{
 		dedicated: map[string]bool{
-			"job_manager_v2.go":  true,
-			"job_service_v2.go":  true,
-			"job_store_v2.go":    true,
-			"job_v2_client.go":   true,
-			"job_v2_helpers.go":  true,
-			"job_v2_service.go":  true,
-			"job_v2_types.go":    true,
-			"protocol_decode.go": true,
+			"job_manager_v2.go":       true,
+			"job_service_v2.go":       true,
+			"job_state_lock.go":       true,
+			"job_state_lock_unix.go":  true,
+			"job_state_lock_other.go": true,
+			"job_store_v2.go":         true,
+			"job_v2_client.go":        true,
+			"job_v2_helpers.go":       true,
+			"job_v2_service.go":       true,
+			"job_v2_types.go":         true,
+			"protocol_decode.go":      true,
 		},
 		mixed: map[string]bool{
 			"client.go":      true,
@@ -4516,6 +4549,18 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 		filesByAST[parsed] = file
 
 		base := filepath.Base(path)
+		if base == "job_state_lock.go" || base == "job_state_lock_unix.go" || base == "job_state_lock_other.go" {
+			for _, declaration := range parsed.Decls {
+				if generated, ok := declaration.(*ast.GenDecl); ok && generated.Tok == token.IMPORT {
+					continue
+				}
+				for _, unit := range l8WorkerV2DeclarationUnits(declaration) {
+					if !l8WorkerV2ExactJobStateLockCompatibilityDeclaration(l8WorkerV2GuardScope{file: file, node: unit}) {
+						return fmt.Errorf("worker-v2 shared process ownership declaration in %s is outside the exact allowlist", path)
+					}
+				}
+			}
+		}
 		containsV2 := l8WorkerV2ASTContainsMarker(parsed)
 		if containsV2 && !policy.allows(path) {
 			return fmt.Errorf("production file %s contains worker-v2 declarations/references outside the exact allowlist", path)
@@ -4731,6 +4776,9 @@ func l8WorkerV2AllowedCompatibilityDeclaration(scope l8WorkerV2GuardScope) bool 
 		return false
 	}
 	base := filepath.Base(scope.file.path)
+	if l8WorkerV2ExactJobStateLockCompatibilityDeclaration(scope) {
+		return true
+	}
 	switch typed := scope.node.(type) {
 	case *ast.TypeSpec:
 		return (base == "exec.go" && typed.Name.Name == "ExecRequest" && l8WorkerV2DeclarationDigest(scope) == "44d05fedce4c14a73f3a0436d59bc7d6dd829c1b937c393755ee8a37717e87b8") ||
@@ -5238,6 +5286,9 @@ func l8WorkerV2LockedV1CompatibilityDeclaration(scope l8WorkerV2GuardScope) bool
 	if l8WorkerV2ExactSharedEnvelopeValidateDeclaration(scope) {
 		return true
 	}
+	if l8WorkerV2ExactJobStateLockCompatibilityDeclaration(scope) {
+		return true
+	}
 	if l8WorkerV2ASTContainsMarker(scope.node) {
 		return false
 	}
@@ -5268,6 +5319,32 @@ func l8WorkerV2LockedV1CompatibilityDeclaration(scope l8WorkerV2GuardScope) bool
 	default:
 		return false
 	}
+}
+
+func l8WorkerV2ExactJobStateLockCompatibilityDeclaration(scope l8WorkerV2GuardScope) bool {
+	if scope.file == nil {
+		return false
+	}
+	expected := map[string]map[string]bool{
+		"job_state_lock.go": {
+			"1ac0cb2a023457a08e0614d1f103adb7a52245284c762d557bf545f4fe619a83": true,
+			"6b34a2601f0c0ef98a3b88aaa0d21da5ed366fc56117dbb915a9669c014fdde6": true,
+			"3efbfb63a9526fd8ea39c449e0ecb23a21a6df8d4f9f7d11e0b67727471286f8": true,
+			"e406749a06041c754c12ac930fdaf19fa93ff3d5512226b87e4b7f5a2c17ce40": true,
+		},
+		"job_state_lock_unix.go": {
+			"3a19b4b98cfe39d09dc568e282e0c5a9b7280bdd212624bd90cb075a04413bd4": true,
+			"5a8a2a8b5511875175fd0c804de252ff3f7417c8409b68c8d3ae0b17b880e864": true,
+			"b5008814b93b953166983681bc6c54c507c5a775048de312578562c728ce872f": true,
+			"5cadf1a0f72147f92c997128f53e5e3cc41ba13f77fbb9d06f6fd87bb4f0c7b2": true,
+		},
+		"job_state_lock_other.go": {
+			"0c7be1dac66f47b4cd181c60466e1b3617ddb0ae526f7e74857d97ba76af1e76": true,
+			"827863579722b246fd7978d3a4ea0943338b1f26ec741205f8d957f506265649": true,
+			"50d3b00bb3a67a072319d19fd78da6ec18fec4877fb992ea7c4b268f6930a41a": true,
+		},
+	}
+	return expected[filepath.Base(scope.file.path)][l8WorkerV2DeclarationDigest(scope)]
 }
 
 func l8WorkerV2ExactSharedEnvelopeValidateDeclaration(scope l8WorkerV2GuardScope) bool {
@@ -6896,7 +6973,7 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 			inspectionErr = fmt.Errorf("worker-v2 production path in %s declaration %s violates exact decoder caller composition", scope.file.path, scopeName)
 			return false
 		}
-		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) && !l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info) {
+		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) && !l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info) && !l8WorkerV2AllowedExactPrincipalAuthorityCall(scope, call, info) {
 			scopeName := "declaration"
 			if function, ok := scope.node.(*ast.FuncDecl); ok {
 				scopeName = function.Name.Name
@@ -6932,6 +7009,34 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 		return true
 	})
 	return inspectionErr
+}
+
+func l8WorkerV2AllowedExactPrincipalAuthorityCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "job_v2_service.go" || function.Name.Name != "HandleAuthenticatedRequest" || !l8WorkerV2ReceiverNamed(function, "L8Service", info) || len(call.Args) != 1 {
+		return false
+	}
+	called := l8WorkerV2CalledObject(call.Fun, info)
+	if called == nil || called.Pkg() == nil || called.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxruntime" || called.Name() != "AuthenticatedWorkerPrincipalID" {
+		return false
+	}
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if len(parameters) != 3 || l8WorkerV2ExpressionObject(call.Args[0], info) != parameters[1] {
+		return false
+	}
+	callee, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	receiverField, ok := l8WorkerV2UnparenExpression(callee.X).(*ast.SelectorExpr)
+	if !ok || receiverField.Sel.Name != "principalAuthority" {
+		return false
+	}
+	if function.Recv == nil || len(function.Recv.List) != 1 || len(function.Recv.List[0].Names) != 1 {
+		return false
+	}
+	receiver := info.Defs[function.Recv.List[0].Names[0]]
+	return receiver != nil && l8WorkerV2ExpressionObject(receiverField.X, info) == receiver
 }
 
 func l8WorkerV2AllowedExactClientRoundTripFormatting(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
@@ -11556,13 +11661,25 @@ func l8WorkerV2ExactEmptyStringAndObjectReturn(statement ast.Stmt, object types.
 
 func l8WorkerV2IsExactStoredJobStateSchema(typ types.Type) bool {
 	structure, ok := l8WorkerV2ExactNamedStructUnderlying(typ, "storedJobStateV2")
-	if !ok || structure.NumFields() != 4 {
+	if !ok || structure.NumFields() != 5 {
 		return false
 	}
 	return l8WorkerV2IsExactNamedStructField(structure, 0, "JobV2", "JobV2", "") &&
 		l8WorkerV2IsExactStructField(structure, 1, "RequestKey", types.Universe.Lookup("string").Type(), `json:"requestKey"`) &&
 		l8WorkerV2IsExactStructField(structure, 2, "PrincipalID", types.Universe.Lookup("string").Type(), `json:"principalId"`) &&
-		l8WorkerV2IsExactStructField(structure, 3, "DaemonGeneration", types.Universe.Lookup("string").Type(), `json:"daemonGeneration"`)
+		l8WorkerV2IsExactStructField(structure, 3, "DaemonGeneration", types.Universe.Lookup("string").Type(), `json:"daemonGeneration"`) &&
+		l8WorkerV2IsExactLocalNamedStructPointerField(structure, 4, "CredentialState", "storedJobCredentialStateV2", `json:"credentialState,omitempty"`)
+}
+
+func l8WorkerV2IsExactLocalNamedStructPointerField(structure *types.Struct, index int, fieldName, typeName, tag string) bool {
+	field := structure.Field(index)
+	pointer, ok := types.Unalias(field.Type()).(*types.Pointer)
+	if !ok || field.Name() != fieldName || field.Embedded() || structure.Tag(index) != tag {
+		return false
+	}
+	named, ok := types.Unalias(pointer.Elem()).(*types.Named)
+	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" &&
+		named.Obj().Name() == typeName && named.TypeArgs().Len() == 0
 }
 
 func l8WorkerV2ExactNamedStructUnderlying(typ types.Type, name string) (*types.Struct, bool) {
@@ -14482,6 +14599,12 @@ type jobRequestIdentityV2 struct {
 type storedJobStateV2 struct {
 	PrincipalID string ` + "`json:\"principalId\"`" + `
 	DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + `
+}
+type storedJobCredentialIdentitySeedV1 struct {
+	PrincipalID string ` + "`json:\"principalId\"`" + `
+}
+type storedJobCredentialIdentityV1 struct {
+	PrincipalID string ` + "`json:\"principalId\"`" + `
 }`,
 	}
 	if err := l8AuditWorkerV2PrivateJSONIdentityTags(allowed); err != nil {
@@ -14556,9 +14679,12 @@ func l8AuditWorkerV2PrivateJSONIdentityTags(sources map[string]string) error {
 					}
 					privateDurableIdentity := filepath.Base(path) == "job_store_v2.go" && typeSpec.Name.Name == "storedJobStateV2" && len(field.Names) == 1 &&
 						(jsonTag == "principalId" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemonGeneration" && field.Names[0].Name == "DaemonGeneration")
+					privateCredentialIdentity := filepath.Base(path) == "job_store_v2.go" &&
+						(typeSpec.Name.Name == "storedJobCredentialIdentitySeedV1" || typeSpec.Name.Name == "storedJobCredentialIdentityV1") &&
+						len(field.Names) == 1 && jsonTag == "principalId" && field.Names[0].Name == "PrincipalID"
 					privateHashIdentity := filepath.Base(path) == "job_v2_helpers.go" && typeSpec.Name.Name == "jobRequestIdentityV2" && len(field.Names) == 1 &&
 						(jsonTag == "principalId" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemonGeneration" && field.Names[0].Name == "DaemonGeneration")
-					if privateDurableIdentity || privateHashIdentity {
+					if privateDurableIdentity || privateCredentialIdentity || privateHashIdentity {
 						continue
 					}
 					if strings.Contains(normalizedTag, "principal") || strings.Contains(normalizedTag, "daemongeneration") || strings.Contains(normalizedTag, "daemon_generation") {

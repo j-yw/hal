@@ -35,3 +35,28 @@ func validateWorkerPeerCredentials(conn net.Conn, _ bool) error {
 	}
 	return validateWorkerPeerUID(peerUID, uint32(os.Geteuid()))
 }
+
+func workerPeerCredentials(conn net.Conn) (uint32, uint32, error) {
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return 0, 0, errors.New("worker peer identity is unavailable")
+	}
+	rawConn, err := unixConn.SyscallConn()
+	if err != nil {
+		return 0, 0, errors.New("worker peer identity is unavailable")
+	}
+	var credentialErr error
+	var peerUID, peerGID uint32
+	if err := rawConn.Control(func(fd uintptr) {
+		credentials, err := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+		if err != nil || credentials == nil {
+			credentialErr = errors.New("worker peer identity is unavailable")
+			return
+		}
+		peerUID = credentials.Uid
+		peerGID = credentials.Gid
+	}); err != nil || credentialErr != nil {
+		return 0, 0, errors.New("worker peer identity is unavailable")
+	}
+	return peerUID, peerGID, nil
+}
