@@ -35,6 +35,12 @@ type liveValue struct{}
 
 func (liveValue) MarshalJSON() ([]byte, error) { return nil, ErrLiveValueSerialization }
 func (liveValue) MarshalText() ([]byte, error) { return nil, ErrLiveValueSerialization }
+func (liveValue) MarshalBinary() ([]byte, error) {
+	return nil, ErrLiveValueSerialization
+}
+func (liveValue) UnmarshalJSON([]byte) error   { return ErrLiveValueSerialization }
+func (liveValue) UnmarshalText([]byte) error   { return ErrLiveValueSerialization }
+func (liveValue) UnmarshalBinary([]byte) error { return ErrLiveValueSerialization }
 func (liveValue) String() string               { return "credentialclient.live[redacted]" }
 func (liveValue) GoString() string             { return "credentialclient.live[redacted]" }
 func (liveValue) Format(state fmt.State, _ rune) {

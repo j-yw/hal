@@ -65,6 +65,15 @@ func newExtensionPacket(
 	metadata extensionPacketMetadata,
 	capability SSHConnectionCapability,
 ) (ExtensionPacket, error) {
+	capabilitySupplied := configuredDependency(capability)
+	capabilityRetained := false
+	if capabilitySupplied {
+		defer func() {
+			if !capabilityRetained {
+				closeRejectedSSHCapability(capability)
+			}
+		}()
+	}
 	if err := credentialprotocol.ValidatePacketType(packetType); err != nil {
 		return ExtensionPacket{}, err
 	}
@@ -78,19 +87,20 @@ func newExtensionPacket(
 		metadata.capabilitySHA256 == ([32]byte{}) {
 		return ExtensionPacket{}, ErrExtensionPacketMetadata
 	}
-	if !configuredDependency(capability) {
+	if !capabilitySupplied {
 		return ExtensionPacket{}, ErrExtensionRightRequired
 	}
 	capabilityDigest, valid := safeSSHIssuerDigest(capability)
 	if !valid || capabilityDigest == ([32]byte{}) || subtle.ConstantTimeCompare(capabilityDigest[:], metadata.capabilitySHA256[:]) != 1 {
-		closeRejectedSSHCapability(capability)
 		return ExtensionPacket{}, ErrExtensionPacketMetadata
 	}
-	return ExtensionPacket{
+	packet := ExtensionPacket{
 		packetType: packetType,
 		metadata:   metadata,
 		ownership:  newSSHConnectionOwnership(capabilityDigest, capability),
-	}, nil
+	}
+	capabilityRetained = true
+	return packet, nil
 }
 
 // commitExtensionPacketOwnership records the post-Handle(nil) transfer. It
@@ -141,6 +151,7 @@ func closeOwnedExtensionPacket(ctx context.Context, packet ExtensionPacket) erro
 		}
 		packet.ownership.phase = sshConnectionClosing
 		packet.ownership.closeStarted = true
+		packet.ownership.cond.Broadcast()
 		capability := packet.ownership.issuer
 		packet.ownership.mu.Unlock()
 		closeErr := safeSSHIssuerClose(ctx, capability)

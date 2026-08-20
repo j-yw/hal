@@ -116,6 +116,27 @@ func (packet SSHAcceptedPacket) CapabilitySHA256() [32]byte { return packet.capa
 // Connection returns a shared parent-owned view, never the Transport issuer.
 func (packet SSHAcceptedPacket) Connection() SSHConnectionCapability { return packet.connection }
 
+// WaitTransferred waits until the credential client has either committed the
+// post-Handle ownership transfer or made that transfer impossible. Observation
+// never changes ownership and only a committed transfer returns success.
+func (packet SSHAcceptedPacket) WaitTransferred(ctx context.Context) error {
+	if packet.ownership == nil || !validSSHContext(ctx) {
+		return ErrExtensionPacketOwnership
+	}
+	ownership := packet.ownership
+	ownership.mu.Lock()
+	defer ownership.mu.Unlock()
+	if ownership.phase == sshConnectionClientOwned {
+		_ = waitSSHConnectionLocked(ctx, ownership, func() bool {
+			return ownership.phase != sshConnectionClientOwned
+		})
+	}
+	if ownership.phase != sshConnectionTransferred {
+		return ErrExtensionPacketOwnership
+	}
+	return nil
+}
+
 type sshConnectionPhase uint8
 
 const (
@@ -220,10 +241,20 @@ func (view sshConnectionView) Shutdown(ctx context.Context, direction SSHShutdow
 // Close serializes all aliases, denies new operations, waits for in-flight
 // operations under the supplied context, and invokes the private issuer once.
 func (view sshConnectionView) Close(ctx context.Context) error {
-	if !validSSHContext(ctx) || view.ownership == nil {
+	if view.ownership == nil {
 		return ErrExtensionPacketOwnership
 	}
 	ownership := view.ownership
+	ownership.mu.Lock()
+	if ownership.phase == sshConnectionClosed {
+		err := ownership.closeErr
+		ownership.mu.Unlock()
+		return err
+	}
+	ownership.mu.Unlock()
+	if !validSSHContext(ctx) {
+		return ErrExtensionPacketOwnership
+	}
 	ownership.mu.Lock()
 	switch ownership.phase {
 	case sshConnectionClientOwned:
@@ -231,6 +262,7 @@ func (view sshConnectionView) Close(ctx context.Context) error {
 		return ErrExtensionPacketOwnership
 	case sshConnectionTransferred:
 		ownership.phase = sshConnectionClosing
+		ownership.cond.Broadcast()
 	case sshConnectionClosing:
 	case sshConnectionClosed:
 		err := ownership.closeErr

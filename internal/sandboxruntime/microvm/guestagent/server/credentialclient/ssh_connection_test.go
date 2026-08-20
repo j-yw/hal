@@ -2,6 +2,7 @@ package credentialclient
 
 import (
 	"context"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,24 @@ import (
 
 	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+)
+
+type sshSerializationDenialSurface interface {
+	json.Marshaler
+	encoding.TextMarshaler
+	encoding.BinaryMarshaler
+	json.Unmarshaler
+	encoding.TextUnmarshaler
+	encoding.BinaryUnmarshaler
+}
+
+var (
+	_ sshSerializationDenialSurface = SSHIOResult{}
+	_ sshSerializationDenialSurface = (*SSHIOResult)(nil)
+	_ sshSerializationDenialSurface = SSHAcceptedPacket{}
+	_ sshSerializationDenialSurface = (*SSHAcceptedPacket)(nil)
+	_ sshSerializationDenialSurface = sshConnectionView{}
+	_ sshSerializationDenialSurface = (*sshConnectionView)(nil)
 )
 
 func TestSSHConnectionCapabilityMethodSetIsExact(t *testing.T) {
@@ -110,6 +129,220 @@ func TestSSHAcceptedPacketExposesOnlySafeArmAndTransferredView(t *testing.T) {
 	}
 	if encoded, err := json.Marshal(connection); !errors.Is(err, ErrLiveValueSerialization) || strings.Contains(string(encoded), "issuer-secret") {
 		t.Fatalf("connection JSON = (%q, %v)", encoded, err)
+	}
+}
+
+func TestSSHAcceptedPacketWaitTransferredObservesOwnershipWithoutTransferringIt(t *testing.T) {
+	digest := [32]byte{0x4a}
+	issuer := &sshTestIssuer{digest: digest}
+	packet := mustSSHTestPacket(t, digest, issuer)
+	accepted, ok := packet.SSHAccepted()
+	if !ok {
+		t.Fatal("SSHAccepted() did not return the SSH arm")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{})
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- accepted.WaitTransferred(newSSHObservedContext(ctx, entered))
+	}()
+	<-entered
+	select {
+	case err := <-waitDone:
+		t.Fatalf("WaitTransferred returned before ownership changed: %v", err)
+	default:
+	}
+	packet.ownership.mu.Lock()
+	if packet.ownership.phase != sshConnectionClientOwned {
+		packet.ownership.mu.Unlock()
+		t.Fatal("WaitTransferred changed ownership")
+	}
+	packet.ownership.mu.Unlock()
+
+	if err := commitExtensionPacketOwnership(packet); err != nil {
+		t.Fatalf("commitExtensionPacketOwnership() error = %v", err)
+	}
+	if err := <-waitDone; err != nil {
+		t.Fatalf("WaitTransferred() error = %v", err)
+	}
+}
+
+func TestSSHAcceptedPacketWaitTransferredWakesOnCancellationAndClientClose(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		wake func(context.CancelFunc, ExtensionPacket) error
+	}{
+		{
+			name: "cancellation",
+			wake: func(cancel context.CancelFunc, _ ExtensionPacket) error {
+				cancel()
+				return nil
+			},
+		},
+		{
+			name: "client close",
+			wake: func(_ context.CancelFunc, packet ExtensionPacket) error {
+				return closeOwnedExtensionPacket(context.Background(), packet)
+			},
+		},
+		{
+			name: "failed client close",
+			wake: func(_ context.CancelFunc, packet ExtensionPacket) error {
+				packet.ownership.mu.Lock()
+				issuer := packet.ownership.issuer.(*sshTestIssuer)
+				issuer.closeErr = errors.New("raw-close-secret")
+				packet.ownership.mu.Unlock()
+				return closeOwnedExtensionPacket(context.Background(), packet)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			digest := [32]byte{0x4b}
+			issuer := &sshTestIssuer{digest: digest}
+			packet := mustSSHTestPacket(t, digest, issuer)
+			accepted, _ := packet.SSHAccepted()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			entered := make(chan struct{})
+			waitDone := make(chan error, 1)
+			go func() {
+				waitDone <- accepted.WaitTransferred(newSSHObservedContext(ctx, entered))
+			}()
+			<-entered
+			_ = test.wake(cancel, packet)
+			if err := <-waitDone; !errors.Is(err, ErrExtensionPacketOwnership) {
+				t.Fatalf("WaitTransferred() error = %v, want ownership rejection", err)
+			}
+			packet.ownership.mu.Lock()
+			phase := packet.ownership.phase
+			packet.ownership.mu.Unlock()
+			if phase == sshConnectionTransferred {
+				t.Fatal("WaitTransferred transferred ownership")
+			}
+		})
+	}
+}
+
+func TestSSHAcceptedPacketWaitTransferredWakesWhenClientCloseBegins(t *testing.T) {
+	digest := [32]byte{0x4f}
+	closeStarted := make(chan struct{})
+	closeRelease := make(chan struct{})
+	issuer := &sshTestIssuer{
+		digest:       digest,
+		closeStarted: closeStarted,
+		closeRelease: closeRelease,
+	}
+	packet := mustSSHTestPacket(t, digest, issuer)
+	accepted, _ := packet.SSHAccepted()
+	entered := make(chan struct{})
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- accepted.WaitTransferred(newSSHObservedContext(context.Background(), entered))
+	}()
+	<-entered
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- closeOwnedExtensionPacket(context.Background(), packet)
+	}()
+	<-closeStarted
+	select {
+	case err := <-waitDone:
+		if !errors.Is(err, ErrExtensionPacketOwnership) {
+			t.Errorf("WaitTransferred() error = %v, want ownership rejection", err)
+		}
+	case <-time.After(time.Second):
+		close(closeRelease)
+		t.Fatal("WaitTransferred remained blocked while client close was in progress")
+	}
+	close(closeRelease)
+	if err := <-closeDone; err != nil {
+		t.Fatalf("closeOwnedExtensionPacket() error = %v", err)
+	}
+}
+
+func TestSSHAcceptedPacketWaitTransferredBroadcastsToConcurrentWaiters(t *testing.T) {
+	for range 20 {
+		digest := [32]byte{0x4c}
+		packet := mustSSHTestPacket(t, digest, &sshTestIssuer{digest: digest})
+		accepted, _ := packet.SSHAccepted()
+		const waiterCount = 32
+		ready := make(chan struct{}, waiterCount)
+		results := make(chan error, waiterCount)
+		for range waiterCount {
+			go func() {
+				ready <- struct{}{}
+				results <- accepted.WaitTransferred(context.Background())
+			}()
+		}
+		for range waiterCount {
+			<-ready
+		}
+		if err := commitExtensionPacketOwnership(packet); err != nil {
+			t.Fatal(err)
+		}
+		for range waiterCount {
+			if err := <-results; err != nil {
+				t.Fatalf("concurrent WaitTransferred() error = %v", err)
+			}
+		}
+		accepted.Connection().Close(context.Background())
+	}
+}
+
+func TestSSHLiveWrappersDenyCompleteSerializationSurfaceWithoutMutation(t *testing.T) {
+	digest := [32]byte{0x4d}
+	packet := mustSSHTestPacket(t, digest, &sshTestIssuer{digest: digest})
+	accepted, _ := packet.SSHAccepted()
+	connection, ok := accepted.Connection().(sshConnectionView)
+	if !ok {
+		t.Fatalf("Connection() type = %T, want parent view", accepted.Connection())
+	}
+	result := mustSSHIOResult(t, 7, false, true)
+
+	assertSSHSerializationDeniedWithoutMutation(t, "I/O result", &result, func() any {
+		return [3]any{result.ByteCount(), result.EOF(), result.Truncated()}
+	})
+	assertSSHSerializationDeniedWithoutMutation(t, "accepted packet", &accepted, func() any {
+		return [6]any{accepted.Revision(), accepted.BindingIndex(), accepted.Ordinal(), accepted.CapabilitySHA256(), accepted.Connection(), accepted.ownership}
+	})
+	assertSSHSerializationDeniedWithoutMutation(t, "connection view", &connection, func() any {
+		return [2]any{connection.ownership, connection.SHA256()}
+	})
+	_ = closeOwnedExtensionPacket(context.Background(), packet)
+}
+
+func assertSSHSerializationDeniedWithoutMutation(t *testing.T, name string, value any, snapshot func() any) {
+	t.Helper()
+	surface, ok := value.(sshSerializationDenialSurface)
+	if !ok {
+		t.Fatalf("%s %T does not expose the complete serialization denial surface", name, value)
+	}
+	want := snapshot()
+	for operation, call := range map[string]func() ([]byte, error){
+		"JSON marshal":   surface.MarshalJSON,
+		"text marshal":   surface.MarshalText,
+		"binary marshal": surface.MarshalBinary,
+	} {
+		payload, err := call()
+		if payload != nil || !errors.Is(err, ErrLiveValueSerialization) {
+			t.Errorf("%s %s = (%q, %v), want empty serialization denial", name, operation, payload, err)
+		}
+	}
+	for operation, call := range map[string]func([]byte) error{
+		"JSON unmarshal":   surface.UnmarshalJSON,
+		"text unmarshal":   surface.UnmarshalText,
+		"binary unmarshal": surface.UnmarshalBinary,
+	} {
+		if err := call([]byte(`{"raw-secret":"canary"}`)); !errors.Is(err, ErrLiveValueSerialization) {
+			t.Errorf("%s %s error = %v, want serialization denial", name, operation, err)
+		}
+		if got := snapshot(); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s %s mutated wrapper: got %#v want %#v", name, operation, got, want)
+		}
 	}
 }
 
@@ -384,6 +617,42 @@ func TestSSHConnectionCloseSanitizesIssuerErrorAndPanic(t *testing.T) {
 	}
 }
 
+func TestSSHConnectionRepeatedCloseReturnsLatchedResultBeforeContextValidation(t *testing.T) {
+	t.Parallel()
+
+	digest := [32]byte{0x4e}
+	issuer := &sshTestIssuer{digest: digest}
+	packet := mustSSHTestPacket(t, digest, issuer)
+	if err := commitExtensionPacketOwnership(packet); err != nil {
+		t.Fatal(err)
+	}
+	accepted, _ := packet.SSHAccepted()
+	connection := accepted.Connection()
+	if err := connection.Close(context.Background()); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	var typedNil *sshTestContext
+	contextChecks := &atomic.Uint32{}
+	for name, ctx := range map[string]context.Context{
+		"nil":                   nil,
+		"typed nil":             typedNil,
+		"cancelled":             cancelled,
+		"must not be inspected": sshCloseValidationContext{checks: contextChecks},
+	} {
+		if err := connection.Close(ctx); err != nil {
+			t.Errorf("latched Close(%s) error = %v, want nil", name, err)
+		}
+	}
+	if got := issuer.closes.Load(); got != 1 {
+		t.Fatalf("issuer Close calls = %d, want 1", got)
+	}
+	if got := contextChecks.Load(); got != 0 {
+		t.Fatalf("latched Close inspected replacement context %d times", got)
+	}
+}
+
 func TestSSHConnectionConstructorRejectsDigestMismatchAndPanicsWithCleanup(t *testing.T) {
 	t.Parallel()
 
@@ -403,6 +672,52 @@ func TestSSHConnectionConstructorRejectsDigestMismatchAndPanicsWithCleanup(t *te
 			}
 			if got := test.issuer.closes.Load(); got != 1 {
 				t.Fatalf("issuer Close calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestSSHConnectionConstructorClosesEverySuppliedCapabilityOnEveryFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		packetType credentialprotocol.PacketType
+		configure  func(*extensionPacketMetadata, *sshTestIssuer)
+	}{
+		{name: "unknown packet type", packetType: 0},
+		{name: "known core packet type", packetType: credentialprotocol.PacketTypeResponse},
+		{name: "missing identity", packetType: credentialprotocol.PacketTypeSSHAcceptedFD, configure: func(metadata *extensionPacketMetadata, _ *sshTestIssuer) { metadata.identityDigest = [32]byte{} }},
+		{name: "missing revision", packetType: credentialprotocol.PacketTypeSSHAcceptedFD, configure: func(metadata *extensionPacketMetadata, _ *sshTestIssuer) { metadata.revision = 0 }},
+		{name: "binding out of range", packetType: credentialprotocol.PacketTypeSSHAcceptedFD, configure: func(metadata *extensionPacketMetadata, _ *sshTestIssuer) {
+			metadata.bindingIndex = maxExtensionPacketBindings
+		}},
+		{name: "missing ordinal", packetType: credentialprotocol.PacketTypeSSHAcceptedFD, configure: func(metadata *extensionPacketMetadata, _ *sshTestIssuer) { metadata.ordinal = 0 }},
+		{name: "ordinal out of range", packetType: credentialprotocol.PacketTypeSSHAcceptedFD, configure: func(metadata *extensionPacketMetadata, _ *sshTestIssuer) {
+			metadata.ordinal = maxSSHConnectionOrdinal + 1
+		}},
+		{name: "missing capability digest", packetType: credentialprotocol.PacketTypeSSHAcceptedFD, configure: func(metadata *extensionPacketMetadata, _ *sshTestIssuer) { metadata.capabilitySHA256 = [32]byte{} }},
+		{name: "capability digest mismatch", packetType: credentialprotocol.PacketTypeSSHAcceptedFD, configure: func(_ *extensionPacketMetadata, issuer *sshTestIssuer) { issuer.digest = [32]byte{0x5b} }},
+		{name: "capability digest panic", packetType: credentialprotocol.PacketTypeSSHAcceptedFD, configure: func(_ *extensionPacketMetadata, issuer *sshTestIssuer) { issuer.digestPanic = true }},
+		{name: "cleanup error", packetType: 0, configure: func(_ *extensionPacketMetadata, issuer *sshTestIssuer) {
+			issuer.closeErr = errors.New("raw-cleanup-secret")
+		}},
+		{name: "cleanup panic", packetType: 0, configure: func(_ *extensionPacketMetadata, issuer *sshTestIssuer) { issuer.closePanic = true }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			digest := [32]byte{0x5a}
+			metadata := sshTestPacketMetadata(digest)
+			issuer := &sshTestIssuer{digest: digest}
+			if test.configure != nil {
+				test.configure(&metadata, issuer)
+			}
+			packet, err := newExtensionPacket(test.packetType, metadata, issuer)
+			if err == nil || packet != (ExtensionPacket{}) {
+				t.Fatalf("newExtensionPacket() = (%v, %v), want zero/error", packet, err)
+			}
+			if got := issuer.closes.Load(); got != 1 {
+				t.Fatalf("issuer Close calls = %d, want exactly 1", got)
 			}
 		})
 	}
@@ -448,23 +763,26 @@ func assertEventually(t *testing.T, condition func() bool) {
 }
 
 type sshTestIssuer struct {
-	digest      [32]byte
-	digestPanic bool
-	readResult  SSHIOResult
-	readErr     error
-	readPanic   bool
-	writeResult SSHIOResult
-	writeErr    error
-	shutdownErr error
-	closeErr    error
-	closePanic  bool
-	readStarted chan struct{}
-	readRelease chan struct{}
-	startedOnce sync.Once
-	reads       atomic.Uint32
-	writes      atomic.Uint32
-	shutdowns   atomic.Uint32
-	closes      atomic.Uint32
+	digest           [32]byte
+	digestPanic      bool
+	readResult       SSHIOResult
+	readErr          error
+	readPanic        bool
+	writeResult      SSHIOResult
+	writeErr         error
+	shutdownErr      error
+	closeErr         error
+	closePanic       bool
+	closeStarted     chan struct{}
+	closeRelease     chan struct{}
+	readStarted      chan struct{}
+	readRelease      chan struct{}
+	startedOnce      sync.Once
+	closeStartedOnce sync.Once
+	reads            atomic.Uint32
+	writes           atomic.Uint32
+	shutdowns        atomic.Uint32
+	closes           atomic.Uint32
 }
 
 func (issuer *sshTestIssuer) SHA256() [32]byte {
@@ -502,6 +820,12 @@ func (issuer *sshTestIssuer) Close(context.Context) error {
 	issuer.closes.Add(1)
 	if issuer.closePanic {
 		panic("raw-close-panic-secret")
+	}
+	if issuer.closeStarted != nil {
+		issuer.closeStartedOnce.Do(func() { close(issuer.closeStarted) })
+	}
+	if issuer.closeRelease != nil {
+		<-issuer.closeRelease
 	}
 	return issuer.closeErr
 }
@@ -549,3 +873,28 @@ func (*sshTestContext) Deadline() (time.Time, bool) { return time.Time{}, false 
 func (*sshTestContext) Done() <-chan struct{}       { return nil }
 func (*sshTestContext) Err() error                  { return nil }
 func (*sshTestContext) Value(any) any               { return nil }
+
+type sshCloseValidationContext struct{ checks *atomic.Uint32 }
+
+func (sshCloseValidationContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (sshCloseValidationContext) Done() <-chan struct{}       { return nil }
+func (ctx sshCloseValidationContext) Err() error {
+	ctx.checks.Add(1)
+	return context.Canceled
+}
+func (sshCloseValidationContext) Value(any) any { return nil }
+
+type sshObservedContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func newSSHObservedContext(ctx context.Context, entered chan struct{}) *sshObservedContext {
+	return &sshObservedContext{Context: ctx, entered: entered}
+}
+
+func (ctx *sshObservedContext) Err() error {
+	ctx.once.Do(func() { close(ctx.entered) })
+	return ctx.Context.Err()
+}
