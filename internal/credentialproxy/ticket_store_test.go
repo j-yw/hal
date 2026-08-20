@@ -47,6 +47,7 @@ func TestL8D3TicketFormatHMACRetentionAndOpacity(t *testing.T) {
 	}
 	for _, rendered := range []string{
 		fmt.Sprint(ticket), fmt.Sprintf("%v", ticket), fmt.Sprintf("%+v", ticket), fmt.Sprintf("%#v", ticket),
+		fmt.Sprint(*ticket), fmt.Sprintf("%#v", *ticket),
 	} {
 		if rendered != "credentialproxy.JobTicket{live}" || bytes.Contains([]byte(rendered), encoded) {
 			t.Fatalf("ticket formatting = %q, want static live marker", rendered)
@@ -54,6 +55,17 @@ func TestL8D3TicketFormatHMACRetentionAndOpacity(t *testing.T) {
 	}
 	if _, err := json.Marshal(ticket); !errors.Is(err, ErrLiveTicketNotSerializable) {
 		t.Fatalf("Marshal(ticket) error = %v, want serialization denial", err)
+	}
+	if _, err := json.Marshal(*ticket); !errors.Is(err, ErrLiveTicketNotSerializable) {
+		t.Fatalf("Marshal(ticket value) error = %v, want serialization denial", err)
+	}
+	for _, value := range []any{store, *store, l8D3TicketActivation(t, now)} {
+		if rendered := fmt.Sprintf("%#v", value); bytes.Contains([]byte(rendered), encoded) || bytes.Contains([]byte(rendered), []byte("sk-live")) {
+			t.Fatalf("live ticket value formatting leaked payload: %q", rendered)
+		}
+		if _, err := json.Marshal(value); !errors.Is(err, ErrLiveTicketNotSerializable) {
+			t.Fatalf("Marshal(%T) error = %v, want denial", value, err)
+		}
 	}
 
 	state := reflect.ValueOf(store).Elem().FieldByName("state")

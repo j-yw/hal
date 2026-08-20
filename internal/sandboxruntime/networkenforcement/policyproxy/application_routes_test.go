@@ -5,7 +5,9 @@ package policyproxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -49,6 +51,12 @@ func TestL8D3PolicyProxyReservedOriginRouteDispatchesWithoutGenericDial(t *testi
 	destination := make([]byte, len("opaque-ticket"))
 	if count, err := got.Headers.CopyValue("api-key", 0, destination); err != nil || count != len(destination) || string(destination) != "opaque-ticket" {
 		t.Fatalf("CopyValue() = (%d, %v, %q)", count, err, destination)
+	}
+	if rendered := fmt.Sprintf("%#v", got.Headers); rendered != "policyproxy.applicationRequestHeaders{live}" || stringsContains(rendered, "opaque-ticket") {
+		t.Fatalf("header accessor formatting = %q", rendered)
+	}
+	if _, err := json.Marshal(got.Headers); !errors.Is(err, applicationroute.ErrLiveRouteStateNotSerializable) {
+		t.Fatalf("Marshal(header accessor) error = %v, want denial", err)
 	}
 }
 

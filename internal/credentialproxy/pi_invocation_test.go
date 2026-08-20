@@ -86,7 +86,7 @@ func TestL8D3PiAzureResponsesInvocationIsSealedAndWritesTransientBinding(t *test
 			t.Errorf("ambient provider key %s was not cleared", name)
 		}
 	}
-	for _, rendered := range []string{fmt.Sprint(invocation), fmt.Sprintf("%#v", invocation)} {
+	for _, rendered := range []string{fmt.Sprint(invocation), fmt.Sprintf("%#v", invocation), fmt.Sprintf("%#v", *invocation)} {
 		if rendered != "credentialproxy.AzureResponsesPiInvocation{live}" || bytes.Contains([]byte(rendered), ticketValue) {
 			t.Fatalf("invocation formatting = %q", rendered)
 		}

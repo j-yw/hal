@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -90,6 +91,11 @@ func TestL8D3AzureResponsesRouteUsesExactLocalFramingAndVerifiedTLS(t *testing.T
 	}
 	if err := handler.Start(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	for _, value := range []any{handler, *handler} {
+		if rendered := fmt.Sprintf("%#v", value); rendered != "credentialproxy.AzureResponsesRoute{live}" {
+			t.Fatalf("route formatting = %q", rendered)
+		}
 	}
 	t.Cleanup(func() { _ = handler.Close(context.Background()) })
 
