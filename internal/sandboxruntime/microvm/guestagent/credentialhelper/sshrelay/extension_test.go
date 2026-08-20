@@ -3,12 +3,59 @@ package sshrelay
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialhelper"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 )
+
+type failingHelperConnection struct {
+	mu            sync.Mutex
+	closeCalls    int
+	closeFailures int
+}
+
+func (*failingHelperConnection) Read(context.Context, credentialmemory.CredentialSink) (credentialhelper.SSHIOResult, error) {
+	return credentialhelper.NewSSHIOResult(0, true, false)
+}
+func (*failingHelperConnection) Write(context.Context, credentialmemory.BorrowedView) (credentialhelper.SSHIOResult, error) {
+	return credentialhelper.NewSSHIOResult(0, false, false)
+}
+func (*failingHelperConnection) Shutdown(context.Context, credentialhelper.SSHShutdownDirection) error {
+	return nil
+}
+func (connection *failingHelperConnection) Close(context.Context) error {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	connection.closeCalls++
+	if connection.closeFailures > 0 {
+		connection.closeFailures--
+		return errors.New("raw helper close canary")
+	}
+	return nil
+}
+
+type acceptSequenceEndpoint struct {
+	connection credentialhelper.SSHAgentConnection
+	accepted   bool
+}
+
+func (*acceptSequenceEndpoint) ExecBinding() credentialhelper.ExecBindingCapability { return nil }
+func (endpoint *acceptSequenceEndpoint) Accept(context.Context) (credentialhelper.SSHAgentConnection, error) {
+	if !endpoint.accepted && endpoint.connection != nil {
+		endpoint.accepted = true
+		return endpoint.connection, nil
+	}
+	return nil, errors.New("accept loop canary")
+}
+func (*acceptSequenceEndpoint) Close(context.Context) (credentialhelper.ExtensionCleanupResult, error) {
+	return credentialhelper.NewExtensionCleanupResult(true, credentialhelper.ExtensionCleanupComplete)
+}
 
 type typedNilContext struct{}
 
@@ -110,4 +157,63 @@ func TestHelperCloseRetainsEndpointAfterFailureForRetry(t *testing.T) {
 	if session.endpoint != nil || endpoint.calls != 2 {
 		t.Fatalf("completed cleanup ownership = endpoint:%v calls:%d", session.endpoint, endpoint.calls)
 	}
+}
+
+func TestAcceptLoopRetainsFailedConnectionCloseForSessionCleanup(t *testing.T) {
+	lifetime, cancel := context.WithCancel(context.Background())
+	connection := &failingHelperConnection{closeFailures: 1}
+	endpoint := &acceptSequenceEndpoint{connection: connection}
+	session := &helperSession{
+		host:        &fakeHost{},
+		lifetimeCtx: lifetime,
+		cancel:      cancel,
+		endpoint:    endpoint,
+		identity:    [32]byte{1},
+		revision:    1,
+		acceptDone:  make(chan struct{}),
+		prepared:    true,
+	}
+	go session.acceptLoop(endpoint)
+	<-session.acceptDone
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatalf("Close() retry: %v", err)
+	}
+	if connection.closeCalls != 2 {
+		t.Fatalf("accepted connection close calls = %d, want retained retry count 2", connection.closeCalls)
+	}
+}
+
+func TestRenewAndBindExecFailAfterAcceptLoopFailure(t *testing.T) {
+	identity := [32]byte{1}
+	lifetime, cancel := context.WithCancel(context.Background())
+	endpoint := &acceptSequenceEndpoint{}
+	session := &helperSession{
+		host:        &fakeHost{},
+		lifetimeCtx: lifetime,
+		cancel:      cancel,
+		endpoint:    endpoint,
+		identity:    identity,
+		revision:    1,
+		acceptDone:  make(chan struct{}),
+		prepared:    true,
+	}
+	go session.acceptLoop(endpoint)
+	<-session.acceptDone
+	request, err := credentialhelper.NewExtensionRenewRequest(identity, 2, 100)
+	if err != nil {
+		t.Fatalf("NewExtensionRenewRequest(): %v", err)
+	}
+	if err := session.Renew(context.Background(), request); !errors.Is(err, ErrLifecycle) {
+		t.Fatalf("Renew(after accept failure) error = %v, want %v", err, ErrLifecycle)
+	}
+	source, err := os.ReadFile("extension.go")
+	if err != nil {
+		t.Fatalf("ReadFile(): %v", err)
+	}
+	bindStart := strings.Index(string(source), "func (session *helperSession) BindExec")
+	renewStart := strings.Index(string(source), "func (session *helperSession) Renew")
+	if bindStart < 0 || renewStart < bindStart || !strings.Contains(string(source[bindStart:renewStart]), "acceptFailed") {
+		t.Fatal("BindExec does not reject the latched accept-loop failure")
+	}
+	_ = session.Close(context.Background())
 }

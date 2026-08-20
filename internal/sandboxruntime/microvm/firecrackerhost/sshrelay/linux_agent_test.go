@@ -31,6 +31,28 @@ func TestLinuxAgentAdaptersValidatePrivateConfigurationWithoutOpening(t *testing
 	}
 }
 
+func TestLinuxUnixPathUsesSockaddrUnPathnameBound(t *testing.T) {
+	exact := "/" + strings.Repeat("a", 106)
+	plusOne := "/" + strings.Repeat("a", 107)
+	if !validUnixEndpointPath(exact) {
+		t.Fatalf("exact sockaddr_un pathname length %d rejected", len(exact))
+	}
+	if validUnixEndpointPath(plusOne) {
+		t.Fatalf("sockaddr_un pathname plus one length %d accepted", len(plusOne))
+	}
+}
+
+func TestLinuxPeerVerifierUsesRawExactLengthCredentialSeam(t *testing.T) {
+	source, err := os.ReadFile("linux_agent_linux.go")
+	if err != nil {
+		t.Fatalf("ReadFile(): %v", err)
+	}
+	text := string(source)
+	if strings.Contains(text, "syscall.GetsockoptUcred") || !strings.Contains(text, "SYS_GETSOCKOPT") || !strings.Contains(text, "peerCredentialReader") {
+		t.Fatal("Linux peer verifier does not use an injectable raw exact-length SO_PEERCRED seam")
+	}
+}
+
 func TestLinuxAgentSourceHasNoEnvironmentFallbackOrGenericNetworkDial(t *testing.T) {
 	source, err := os.ReadFile("linux_agent_linux.go")
 	if err != nil {

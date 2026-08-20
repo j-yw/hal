@@ -20,13 +20,20 @@ type redAgentConnection struct {
 	roundTrips     int
 	response       []byte
 	roundTripError error
+	roundTripFunc  func(context.Context, []byte) ([]byte, error)
 }
 
-func (connection *redAgentConnection) RoundTrip(context.Context, []byte) ([]byte, error) {
+func (connection *redAgentConnection) RoundTrip(ctx context.Context, request []byte) ([]byte, error) {
 	connection.mu.Lock()
-	defer connection.mu.Unlock()
 	connection.roundTrips++
-	return append([]byte(nil), connection.response...), connection.roundTripError
+	callback := connection.roundTripFunc
+	response := append([]byte(nil), connection.response...)
+	err := connection.roundTripError
+	connection.mu.Unlock()
+	if callback != nil {
+		return callback(ctx, request)
+	}
+	return response, err
 }
 func (connection *redAgentConnection) Close(context.Context) error {
 	connection.mu.Lock()
@@ -46,6 +53,7 @@ type redEntry struct {
 	opened   []*redAgentConnection
 	verify   func(AgentConnection) (PeerProof, error)
 	newAgent func() *redAgentConnection
+	openFunc func(context.Context) (AgentConnection, error)
 }
 
 type invalidLivePolicy struct{ identity PolicyIdentity }
@@ -58,8 +66,11 @@ func (*invalidLivePolicy) AuthorizeSign(*credentialprotocol.SSHAgentSignRequest)
 
 func (entry *redEntry) Identity() ConfigIdentity { return entry.identity }
 func (entry *redEntry) Policy() LivePolicy       { return entry.policy }
-func (entry *redEntry) Open(context.Context) (AgentConnection, error) {
+func (entry *redEntry) Open(ctx context.Context) (AgentConnection, error) {
 	entry.opens++
+	if entry.openFunc != nil {
+		return entry.openFunc(ctx)
+	}
 	connection := &redAgentConnection{}
 	if entry.newAgent != nil {
 		connection = entry.newAgent()
