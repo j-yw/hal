@@ -73,6 +73,44 @@ func TestL8WorkerV2SourceGuardsRejectSecretAndLiveAuthoritySurfaces(t *testing.T
 	}
 }
 
+func TestL8WorkerV2SourceGuardAllowsOnlyRequestContextAtNeutralRuntimeBindingCalls(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := make(map[string]string)
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		matched, matchErr := build.Default.MatchFile(".", path)
+		if matchErr != nil {
+			t.Fatalf("match production file %s: %v", path, matchErr)
+		}
+		if matched {
+			sources[path] = l8ReadWorkerSource(t, path)
+		}
+	}
+	for _, mutation := range []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "bind background context", old: "service.binder.Bind(ctx,", new: "service.binder.Bind(context.Background(),"},
+		{name: "preflight background context", old: "binding.Preflight(ctx)", new: "binding.Preflight(context.Background())"},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := l8CloneWorkerV2GuardSources(sources)
+			mutatedSource := strings.Replace(mutated["job_v2_service.go"], mutation.old, mutation.new, 1)
+			if mutatedSource == mutated["job_v2_service.go"] {
+				t.Fatalf("mutation did not change job_v2_service.go")
+			}
+			mutated["job_v2_service.go"] = mutatedSource
+			l8AssertWorkerV2GuardRejects(t, mutated, l8WorkerV2ProductionGuardPolicy(), "forbidden implicit interface callback")
+		})
+	}
+}
+
 func TestL8WorkerV2GuardAddingD1CDeclarationsPreservesRealV1Production(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -6896,7 +6934,7 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 			inspectionErr = fmt.Errorf("worker-v2 production path in %s declaration %s violates exact decoder caller composition", scope.file.path, scopeName)
 			return false
 		}
-		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) && !l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info) {
+		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) && !l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info) {
 			scopeName := "declaration"
 			if function, ok := scope.node.(*ast.FuncDecl); ok {
 				scopeName = function.Name.Name
@@ -6985,6 +7023,50 @@ func l8WorkerV2AllowedExactClientContextClassification(scope l8WorkerV2GuardScop
 	}
 	secondObject := info.Uses[second.Sel]
 	return secondObject != nil && secondObject.Pkg() != nil && secondObject.Pkg().Path() == "context"
+}
+
+func l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+	function := l8WorkerV2ScopeFunction(scope)
+	if function == nil || filepath.Base(scope.file.path) != "job_v2_service.go" || function.Name.Name != "HandleRequest" || len(call.Args) == 0 {
+		return false
+	}
+	receiver := l8WorkerV2ExactReceiverObject(function, "L8Service", true, info)
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if receiver == nil || len(parameters) != 2 || parameters[0] == nil || l8WorkerV2ExpressionObject(call.Args[0], info) != parameters[0] {
+		return false
+	}
+	called := l8WorkerV2CalledObject(call.Fun, info)
+	if called == nil || called.Pkg() == nil || called.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxruntime" {
+		return false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	switch called.Name() {
+	case "Bind":
+		return len(call.Args) == 2 && l8WorkerV2ExactSelectorRoot(selector.X, receiver, "binder", info)
+	case "Preflight":
+		binding := l8WorkerV2ExpressionObject(selector.X, info)
+		return len(call.Args) == 1 && binding != nil && l8WorkerV2ObjectComesFromExactL8BindingCall(function, binding, scope, info)
+	default:
+		return false
+	}
+}
+
+func l8WorkerV2ObjectComesFromExactL8BindingCall(function *ast.FuncDecl, binding types.Object, scope l8WorkerV2GuardScope, info *types.Info) bool {
+	if function == nil || function.Body == nil || binding == nil {
+		return false
+	}
+	for _, statement := range function.Body.List {
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 || l8WorkerV2ExpressionObject(assignment.Lhs[0], info) != binding {
+			continue
+		}
+		bind, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+		return ok && l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope, bind, info)
+	}
+	return false
 }
 
 func l8WorkerV2AllowedExactClientTransportCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {

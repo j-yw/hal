@@ -31,18 +31,24 @@ func (service *L8Service) HandleRequest(ctx context.Context, request Request) Re
 	if request.Operation != OperationJobStartV2 || request.JobStartV2 == nil || !request.JobStartV2.ProductionCredentialsRequested {
 		return unsupportedOperationResponse(request)
 	}
-	if err := request.JobStartV2.Validate(); err != nil {
+	if err := request.Validate(); err != nil {
 		return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeMalformedRequest, "malformed worker L8 job start request")
 	}
-	binding, err := service.binder.BindTarget(l8JobCredentialRuntimeTarget(request.JobStartV2.Exec.Target))
+	binding, err := service.binder.Bind(ctx, l8JobCredentialRuntimeTarget(request.JobStartV2.Exec.Target))
 	if err != nil {
+		if response, ok := contextErrorResponse(ctx, request); ok {
+			return response
+		}
 		return l8ServiceFailureResponse(request)
 	}
-	preflight, err := binding.PreflightNow()
+	preflight, err := binding.Preflight(ctx)
 	if err != nil {
+		if response, ok := contextErrorResponse(ctx, request); ok {
+			return response
+		}
 		return l8ServiceFailureResponse(request)
 	}
-	if _, err := preflight.AbortNow(); err != nil {
+	if _, err := preflight.AbortBounded(); err != nil {
 		return l8ServiceFailureResponse(request)
 	}
 	return unsupportedOperationResponse(request)

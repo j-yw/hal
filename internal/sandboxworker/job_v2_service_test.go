@@ -187,6 +187,77 @@ func TestL8ServiceClassifiesCanceledRequestBeforeProviderBinding(t *testing.T) {
 	}
 }
 
+func TestL8ServicePropagatesCancellationThroughBindingAndPreflight(t *testing.T) {
+	for _, phase := range []string{"binding", "preflight"} {
+		t.Run(phase, func(t *testing.T) {
+			seed := l8WorkerBindingSeed(t)
+			identity, err := sandboxruntime.CompleteJobCredentialIdentity(seed, l8WorkerGuestSessionGeneration(), "helper-generation-worker")
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := make(chan struct{})
+			release := make(chan struct{})
+			provider := &l8WorkerBindingProvider{seed: seed}
+			if phase == "binding" {
+				provider.started = started
+				provider.release = release
+			} else {
+				provider.runtime = &l8WorkerBindingRuntime{
+					preflight: &l8WorkerBindingPreflight{identity: identity, loss: make(chan sandboxruntime.JobCredentialLoss)},
+					started:   started,
+					release:   release,
+				}
+			}
+			binder, err := sandboxruntime.NewJobCredentialRuntimeBinder(provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			l8, err := NewL8Service(binder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			request := l8WorkerV2RequestPayloadFixturesForTest(t).v2Requests()[0].req
+			response := make(chan Response, 1)
+			go func() { response <- l8.HandleRequest(ctx, request) }()
+			<-started
+			cancel()
+			select {
+			case got := <-response:
+				if got.OK || got.Error == nil || got.Error.Code != ErrorCodeRequestCanceled {
+					t.Fatalf("canceled %s response = %#v, want request_canceled", phase, got)
+				}
+			case <-time.After(100 * time.Millisecond):
+				close(release)
+				<-response
+				t.Fatalf("%s did not observe request cancellation", phase)
+			}
+		})
+	}
+}
+
+func TestL8ServiceRejectsMismatchedOuterV2EnvelopeBeforeBinding(t *testing.T) {
+	provider := &l8WorkerBindingProvider{panicValue: "provider must not be called"}
+	binder, err := sandboxruntime.NewJobCredentialRuntimeBinder(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l8, err := NewL8Service(binder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := l8WorkerV2RequestPayloadFixturesForTest(t)
+	request := fixtures.v2Requests()[0].req
+	request.JobStatusV2 = &fixtures.statusV2
+	response := l8.HandleRequest(context.Background(), request)
+	if response.OK || response.Error == nil || response.Error.Code != ErrorCodeMalformedRequest {
+		t.Fatalf("smuggled outer response = %#v, want malformed_request", response)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider calls = %d, want zero for a mismatched outer envelope", provider.calls)
+	}
+}
+
 func TestNewL8ServiceRejectsMissingBinder(t *testing.T) {
 	service, err := NewL8Service(nil)
 	if service != nil || !errors.Is(err, ErrL8ServiceUnavailable) {
@@ -217,22 +288,44 @@ type l8WorkerBindingProvider struct {
 	panicValue any
 	target     sandboxruntime.Target
 	calls      int
+	started    chan struct{}
+	release    chan struct{}
 }
 
-func (provider *l8WorkerBindingProvider) BindJobCredentialRuntime(_ context.Context, target sandboxruntime.Target) (sandboxruntime.JobCredentialIdentitySeed, sandboxruntime.JobCredentialRuntime, error) {
+func (provider *l8WorkerBindingProvider) BindJobCredentialRuntime(ctx context.Context, target sandboxruntime.Target) (sandboxruntime.JobCredentialIdentitySeed, sandboxruntime.JobCredentialRuntime, error) {
 	provider.calls++
 	if provider.panicValue != nil {
 		panic(provider.panicValue)
 	}
 	provider.target = target
+	if provider.started != nil {
+		close(provider.started)
+		select {
+		case <-ctx.Done():
+			return sandboxruntime.JobCredentialIdentitySeed{}, nil, ctx.Err()
+		case <-provider.release:
+			return sandboxruntime.JobCredentialIdentitySeed{}, nil, errors.New("released blocked provider")
+		}
+	}
 	return provider.seed, provider.runtime, nil
 }
 
 type l8WorkerBindingRuntime struct {
 	preflight sandboxruntime.JobCredentialRuntimePreflight
+	started   chan struct{}
+	release   chan struct{}
 }
 
-func (runtime *l8WorkerBindingRuntime) PreflightJobCredentials(context.Context, sandboxruntime.JobCredentialIdentitySeed) (sandboxruntime.JobCredentialRuntimePreflight, error) {
+func (runtime *l8WorkerBindingRuntime) PreflightJobCredentials(ctx context.Context, _ sandboxruntime.JobCredentialIdentitySeed) (sandboxruntime.JobCredentialRuntimePreflight, error) {
+	if runtime.started != nil {
+		close(runtime.started)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-runtime.release:
+			return nil, errors.New("released blocked preflight")
+		}
+	}
 	return runtime.preflight, nil
 }
 

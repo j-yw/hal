@@ -5,7 +5,10 @@ import (
 	"errors"
 	"reflect"
 	"sync"
+	"time"
 )
+
+const jobCredentialRuntimeNeutralCleanupTimeout = 5 * time.Second
 
 var (
 	ErrJobCredentialRuntimeBindingUnavailable = errors.New("job credential runtime binding unavailable")
@@ -48,7 +51,7 @@ type JobCredentialRuntimeBinding struct {
 type JobCredentialRuntimePreflightBinding struct {
 	identity   JobCredentialIdentity
 	preflight  JobCredentialRuntimePreflight
-	loss       <-chan JobCredentialLoss
+	loss       *jobCredentialRuntimeLossLatch
 	abortOnce  sync.Once
 	abortProof JobCredentialCleanupProof
 	abortErr   error
@@ -74,12 +77,6 @@ func (binder *JobCredentialRuntimeBinder) Bind(ctx context.Context, target Targe
 		return nil, ErrJobCredentialRuntimeBindingInvalid
 	}
 	return &JobCredentialRuntimeBinding{seed: cloned, runtime: runtime}, nil
-}
-
-// BindTarget is the context-free protocol adapter for callers whose request
-// context was already classified at their boundary.
-func (binder *JobCredentialRuntimeBinder) BindTarget(target Target) (*JobCredentialRuntimeBinding, error) {
-	return binder.Bind(context.Background(), target)
 }
 
 func (binding *JobCredentialRuntimeBinding) Seed() JobCredentialIdentitySeed {
@@ -115,7 +112,7 @@ func (binding *JobCredentialRuntimeBinding) Preflight(ctx context.Context) (*Job
 	preflight, err := callJobCredentialRuntimePreflight(runtime, ctx, seed)
 	if err != nil {
 		if !jobCredentialBindingValueIsNil(preflight) {
-			cleanupErr := abortInvalidJobCredentialRuntimePreflight(ctx, preflight)
+			cleanupErr := abortInvalidJobCredentialRuntimePreflight(preflight)
 			if cleanupErr != nil {
 				return nil, errJobCredentialRuntimeInvalidCleanup
 			}
@@ -129,7 +126,7 @@ func (binding *JobCredentialRuntimeBinding) Preflight(ctx context.Context) (*Job
 
 	loss, lossErr := callJobCredentialRuntimePreflightLoss(preflight)
 	if lossErr != nil || loss == nil {
-		cleanupErr := abortInvalidJobCredentialRuntimePreflight(ctx, preflight)
+		cleanupErr := abortInvalidJobCredentialRuntimePreflight(preflight)
 		if cleanupErr != nil {
 			return nil, errJobCredentialRuntimeInvalidCleanup
 		}
@@ -138,9 +135,13 @@ func (binding *JobCredentialRuntimeBinding) Preflight(ctx context.Context) (*Job
 	latchedLoss := latchJobCredentialRuntimePreflightLoss(loss)
 	identity, identityErr := callJobCredentialRuntimePreflightIdentity(preflight)
 	if identityErr != nil || ValidateJobCredentialIdentityCompletion(seed, identity) != nil {
-		cleanupErr := abortInvalidJobCredentialRuntimePreflight(ctx, preflight)
+		cleanupErr := abortInvalidJobCredentialRuntimePreflight(preflight)
+		lossErr := latchedLoss.stopAndWait()
 		if cleanupErr != nil {
 			return nil, errJobCredentialRuntimeInvalidCleanup
+		}
+		if lossErr != nil {
+			return nil, ErrJobCredentialRuntimeBindingInvalid
 		}
 		return nil, ErrJobCredentialRuntimeBindingInvalid
 	}
@@ -149,11 +150,6 @@ func (binding *JobCredentialRuntimeBinding) Preflight(ctx context.Context) (*Job
 		preflight: preflight,
 		loss:      latchedLoss,
 	}, nil
-}
-
-// PreflightNow is the context-free protocol adapter paired with BindTarget.
-func (binding *JobCredentialRuntimeBinding) PreflightNow() (*JobCredentialRuntimePreflightBinding, error) {
-	return binding.Preflight(context.Background())
 }
 
 func (binding *JobCredentialRuntimePreflightBinding) Identity() JobCredentialIdentity {
@@ -169,7 +165,7 @@ func (binding *JobCredentialRuntimePreflightBinding) Loss() <-chan JobCredential
 	if binding == nil {
 		return nil
 	}
-	return binding.loss
+	return binding.loss.output
 }
 
 func (binding *JobCredentialRuntimePreflightBinding) Abort(ctx context.Context) (JobCredentialCleanupProof, error) {
@@ -178,12 +174,25 @@ func (binding *JobCredentialRuntimePreflightBinding) Abort(ctx context.Context) 
 	}
 	binding.abortOnce.Do(func() {
 		if jobCredentialBindingValueIsNil(ctx) {
-			binding.abortErr = ErrJobCredentialRuntimeCleanupIncomplete
+			if binding.loss.stopAndWait() != nil {
+				binding.abortErr = errJobCredentialRuntimeInvalidCleanup
+			} else {
+				binding.abortErr = ErrJobCredentialRuntimeCleanupIncomplete
+			}
 			return
 		}
 		proof, err := callJobCredentialRuntimePreflightAbort(binding.preflight, ctx)
+		lossErr := binding.loss.stopAndWait()
 		if err != nil || CleanupProofKind(proof) == "" {
-			binding.abortErr = ErrJobCredentialRuntimeCleanupIncomplete
+			if lossErr != nil {
+				binding.abortErr = errJobCredentialRuntimeInvalidCleanup
+			} else {
+				binding.abortErr = ErrJobCredentialRuntimeCleanupIncomplete
+			}
+			return
+		}
+		if lossErr != nil {
+			binding.abortErr = ErrJobCredentialRuntimeBindingInvalid
 			return
 		}
 		binding.abortProof = proof
@@ -191,9 +200,17 @@ func (binding *JobCredentialRuntimePreflightBinding) Abort(ctx context.Context) 
 	return binding.abortProof, binding.abortErr
 }
 
-// AbortNow is the context-free protocol adapter paired with PreflightNow.
-func (binding *JobCredentialRuntimePreflightBinding) AbortNow() (JobCredentialCleanupProof, error) {
-	return binding.Abort(context.Background())
+// AbortBounded uses a caller-independent cleanup context. Runtime
+// implementations are trusted to honor this fixed neutral-boundary deadline;
+// full D6 composition replaces it with the remaining owned cleanup budget.
+func (binding *JobCredentialRuntimePreflightBinding) AbortBounded() (JobCredentialCleanupProof, error) {
+	ctx, cancel := jobCredentialRuntimeNeutralCleanupContext()
+	defer cancel()
+	return binding.Abort(ctx)
+}
+
+func jobCredentialRuntimeNeutralCleanupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), jobCredentialRuntimeNeutralCleanupTimeout)
 }
 
 func callJobCredentialRuntimeBindingProvider(provider JobCredentialRuntimeBindingProvider, ctx context.Context, target Target) (seed JobCredentialIdentitySeed, runtime JobCredentialRuntime, err error) {
@@ -247,10 +264,12 @@ func callJobCredentialRuntimePreflightAbort(preflight JobCredentialRuntimePrefli
 	return preflight.Abort(ctx)
 }
 
-func abortInvalidJobCredentialRuntimePreflight(ctx context.Context, preflight JobCredentialRuntimePreflight) error {
-	if jobCredentialBindingValueIsNil(preflight) || jobCredentialBindingValueIsNil(ctx) {
+func abortInvalidJobCredentialRuntimePreflight(preflight JobCredentialRuntimePreflight) error {
+	if jobCredentialBindingValueIsNil(preflight) {
 		return ErrJobCredentialRuntimeCleanupIncomplete
 	}
+	ctx, cancel := jobCredentialRuntimeNeutralCleanupContext()
+	defer cancel()
 	proof, err := callJobCredentialRuntimePreflightAbort(preflight, ctx)
 	if err != nil || CleanupProofKind(proof) == "" {
 		return ErrJobCredentialRuntimeCleanupIncomplete
@@ -258,17 +277,60 @@ func abortInvalidJobCredentialRuntimePreflight(ctx context.Context, preflight Jo
 	return nil
 }
 
-func latchJobCredentialRuntimePreflightLoss(source <-chan JobCredentialLoss) <-chan JobCredentialLoss {
-	latched := make(chan JobCredentialLoss, 1)
-	go func() {
-		loss, ok := <-source
-		if ok {
-			loss.Identity = cloneJobCredentialIdentity(loss.Identity)
-			latched <- loss
+type jobCredentialRuntimeLossLatch struct {
+	output      chan JobCredentialLoss
+	stop        chan struct{}
+	done        chan struct{}
+	stopOnce    sync.Once
+	mu          sync.Mutex
+	contractErr error
+}
+
+func latchJobCredentialRuntimePreflightLoss(source <-chan JobCredentialLoss) *jobCredentialRuntimeLossLatch {
+	latch := &jobCredentialRuntimeLossLatch{
+		output: make(chan JobCredentialLoss, 1),
+		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
+	}
+	go latch.run(source)
+	return latch
+}
+
+func (latch *jobCredentialRuntimeLossLatch) run(source <-chan JobCredentialLoss) {
+	defer close(latch.done)
+	defer close(latch.output)
+	select {
+	case loss, ok := <-source:
+		latch.recordSourceResult(loss, ok)
+	case <-latch.stop:
+		select {
+		case loss, ok := <-source:
+			latch.recordSourceResult(loss, ok)
+		default:
 		}
-		close(latched)
-	}()
-	return latched
+	}
+}
+
+func (latch *jobCredentialRuntimeLossLatch) recordSourceResult(loss JobCredentialLoss, ok bool) {
+	if !ok {
+		latch.mu.Lock()
+		latch.contractErr = ErrJobCredentialRuntimeBindingInvalid
+		latch.mu.Unlock()
+		return
+	}
+	loss.Identity = cloneJobCredentialIdentity(loss.Identity)
+	latch.output <- loss
+}
+
+func (latch *jobCredentialRuntimeLossLatch) stopAndWait() error {
+	if latch == nil {
+		return ErrJobCredentialRuntimeBindingInvalid
+	}
+	latch.stopOnce.Do(func() { close(latch.stop) })
+	<-latch.done
+	latch.mu.Lock()
+	defer latch.mu.Unlock()
+	return latch.contractErr
 }
 
 func jobCredentialBindingTarget(target Target) Target {

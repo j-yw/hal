@@ -188,6 +188,9 @@ func TestJobCredentialRuntimeBindingPreflightRejectsTypedNilAndInvalidIdentityWi
 				if concrete.abortCalls != tt.wantAbort {
 					t.Fatalf("Abort calls = %d, want %d", concrete.abortCalls, tt.wantAbort)
 				}
+				if tt.wantAbort != 0 && (concrete.abortContextErr != nil || !concrete.abortHadDeadline) {
+					t.Fatalf("invalid preflight abort context = err %v, deadline %t; want live independent bounded context", concrete.abortContextErr, concrete.abortHadDeadline)
+				}
 				close(concrete.loss)
 			}
 		})
@@ -225,8 +228,13 @@ func TestJobCredentialRuntimeBindingContainsPreflightFailureMatrix(t *testing.T)
 			if strings.Contains(err.Error(), "preflight-secret") || strings.Contains(err.Error(), "/private") {
 				t.Fatalf("Preflight() leaked implementation detail: %v", err)
 			}
-			if concrete, ok := tt.runtime.preflight.(*l8BindingPreflight); ok && concrete.abortCalls != tt.wantAbort {
-				t.Fatalf("Abort calls = %d, want %d", concrete.abortCalls, tt.wantAbort)
+			if concrete, ok := tt.runtime.preflight.(*l8BindingPreflight); ok {
+				if concrete.abortCalls != tt.wantAbort {
+					t.Fatalf("Abort calls = %d, want %d", concrete.abortCalls, tt.wantAbort)
+				}
+				if tt.wantAbort != 0 && (concrete.abortContextErr != nil || !concrete.abortHadDeadline) {
+					t.Fatalf("failed preflight abort context = err %v, deadline %t; want live independent bounded context", concrete.abortContextErr, concrete.abortHadDeadline)
+				}
 			}
 		})
 	}
@@ -293,6 +301,129 @@ func TestJobCredentialRuntimePreflightBindingLatchesAbortOwnership(t *testing.T)
 	close(failedLoss)
 }
 
+func TestJobCredentialRuntimePreflightBindingAbortJoinsLossWatcher(t *testing.T) {
+	seed := d2JobCredentialIdentitySeed(time.Date(2026, time.August, 21, 4, 30, 0, 0, time.UTC))
+	identity, err := CompleteJobCredentialIdentity(seed, d2GuestSessionGeneration(10), "helper-generation-10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := NewJobCredentialCleanupProof(JobCredentialCleanupProofInput{
+		ProofID:            "cleanup-neutral-watcher",
+		Identity:           identity,
+		Revision:           1,
+		RevokedAt:          identity.IssuedAt.Add(time.Second),
+		AbsenceInspectedAt: identity.IssuedAt.Add(2 * time.Second),
+		AuthorityAbsent:    true,
+		ResourcesAbsent:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loss := make(chan JobCredentialLoss)
+	preflight := &l8BindingPreflight{identity: identity, loss: loss, abortProof: proof}
+	binder, err := NewJobCredentialRuntimeBinder(&l8BindingProvider{seed: seed, runtime: &l8BindingRuntime{preflight: preflight}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := binder.Bind(context.Background(), l8BindingTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := binding.Preflight(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	latched := handle.Loss()
+	if _, err := handle.Abort(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case _, ok := <-latched:
+		if ok {
+			t.Fatal("abort synthesized a loss")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Abort returned before joining the loss watcher")
+	}
+}
+
+func TestJobCredentialRuntimePreflightBindingAbortBoundedUsesIndependentDeadline(t *testing.T) {
+	seed := d2JobCredentialIdentitySeed(time.Date(2026, time.August, 21, 4, 40, 0, 0, time.UTC))
+	identity, err := CompleteJobCredentialIdentity(seed, d2GuestSessionGeneration(12), "helper-generation-12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := NewJobCredentialCleanupProof(JobCredentialCleanupProofInput{
+		ProofID:            "cleanup-neutral-independent",
+		Identity:           identity,
+		Revision:           1,
+		RevokedAt:          identity.IssuedAt.Add(time.Second),
+		AbsenceInspectedAt: identity.IssuedAt.Add(2 * time.Second),
+		AuthorityAbsent:    true,
+		ResourcesAbsent:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflight := &l8BindingPreflight{identity: identity, loss: make(chan JobCredentialLoss), abortProof: proof}
+	binder, err := NewJobCredentialRuntimeBinder(&l8BindingProvider{seed: seed, runtime: &l8BindingRuntime{preflight: preflight}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := binder.Bind(context.Background(), l8BindingTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := binding.Preflight(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, abortErr := handle.AbortBounded(); abortErr != nil || got != proof {
+		t.Fatalf("AbortBounded() = %#v, %v; want proof", got, abortErr)
+	}
+	if preflight.abortContextErr != nil || !preflight.abortHadDeadline {
+		t.Fatalf("abort context = err %v, deadline %t; want live independent bounded context", preflight.abortContextErr, preflight.abortHadDeadline)
+	}
+}
+
+func TestJobCredentialRuntimePreflightBindingRejectsEmptyLossCloseAtFinalization(t *testing.T) {
+	seed := d2JobCredentialIdentitySeed(time.Date(2026, time.August, 21, 4, 45, 0, 0, time.UTC))
+	identity, err := CompleteJobCredentialIdentity(seed, d2GuestSessionGeneration(11), "helper-generation-11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := NewJobCredentialCleanupProof(JobCredentialCleanupProofInput{
+		ProofID:            "cleanup-neutral-empty-loss",
+		Identity:           identity,
+		Revision:           1,
+		RevokedAt:          identity.IssuedAt.Add(time.Second),
+		AbsenceInspectedAt: identity.IssuedAt.Add(2 * time.Second),
+		AuthorityAbsent:    true,
+		ResourcesAbsent:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loss := make(chan JobCredentialLoss)
+	close(loss)
+	preflight := &l8BindingPreflight{identity: identity, loss: loss, abortProof: proof}
+	binder, err := NewJobCredentialRuntimeBinder(&l8BindingProvider{seed: seed, runtime: &l8BindingRuntime{preflight: preflight}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := binder.Bind(context.Background(), l8BindingTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := binding.Preflight(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof, abortErr := handle.Abort(context.Background()); proof != (JobCredentialCleanupProof{}) || !errors.Is(abortErr, ErrJobCredentialRuntimeBindingInvalid) {
+		t.Fatalf("Abort(empty loss close) = %#v, %v; want invalid contract", proof, abortErr)
+	}
+}
+
 type l8BindingProvider struct {
 	seed       JobCredentialIdentitySeed
 	runtime    JobCredentialRuntime
@@ -341,12 +472,14 @@ func (*l8BindingRuntime) RecoverJobCredentials(context.Context, JobCredentialRec
 }
 
 type l8BindingPreflight struct {
-	identity   JobCredentialIdentity
-	loss       chan JobCredentialLoss
-	abortProof JobCredentialCleanupProof
-	abortErr   error
-	abortCalls int
-	events     *[]string
+	identity         JobCredentialIdentity
+	loss             chan JobCredentialLoss
+	abortProof       JobCredentialCleanupProof
+	abortErr         error
+	abortCalls       int
+	abortContextErr  error
+	abortHadDeadline bool
+	events           *[]string
 }
 
 func (preflight *l8BindingPreflight) Identity() JobCredentialIdentity {
@@ -360,8 +493,10 @@ func (*l8BindingPreflight) PrepareJobCredentials(context.Context, JobCredentialP
 	panic("neutral binding must not prepare credentials")
 }
 
-func (preflight *l8BindingPreflight) Abort(context.Context) (JobCredentialCleanupProof, error) {
+func (preflight *l8BindingPreflight) Abort(ctx context.Context) (JobCredentialCleanupProof, error) {
 	preflight.abortCalls++
+	preflight.abortContextErr = ctx.Err()
+	_, preflight.abortHadDeadline = ctx.Deadline()
 	return preflight.abortProof, preflight.abortErr
 }
 
