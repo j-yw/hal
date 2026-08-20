@@ -140,6 +140,37 @@ func TestL8CredentialProxyPackageProductionSourceHasNoFixtureOrOverrideMaterial(
 	}
 }
 
+func TestL8D3CredentialProxyFixturePackageHasExactLiveTagAndConstructor(t *testing.T) {
+	path := filepath.Join("fixturetest", "catalog_l8_live.go")
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error: %v", path, err)
+	}
+	if !strings.HasPrefix(string(source), "//go:build l8_production_credential_delivery_live\n\n") {
+		t.Fatalf("%s is not isolated behind the exact L8 live build tag", path)
+	}
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	constructors := 0
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Recv != nil {
+			continue
+		}
+		if function.Name.Name == "NewOwnedAzureResponsesCatalog" {
+			constructors++
+		}
+		if strings.HasPrefix(function.Name.Name, "New") && function.Name.Name != "NewOwnedAzureResponsesCatalog" {
+			t.Errorf("fixture package exposes additional constructor %q", function.Name.Name)
+		}
+	}
+	if constructors != 1 {
+		t.Fatalf("NewOwnedAzureResponsesCatalog declarations = %d, want 1", constructors)
+	}
+}
+
 func TestL8CredentialProxyPackageFixtureGuardRejectsSemanticBypassesWithoutSubstringFalsePositives(t *testing.T) {
 	conventionalTestOnlyTokens := []string{
 		"fixture", "fixtures",
@@ -429,7 +460,11 @@ func credentialProxyProductionFilesUnder(root string) ([]string, error) {
 }
 
 func credentialProxyTestOnlyPathSegment(path string) string {
-	parts := strings.Split(filepath.ToSlash(filepath.Clean(path)), "/")
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if clean == "fixturetest/catalog_l8_live.go" {
+		return ""
+	}
+	parts := strings.Split(clean, "/")
 	if len(parts) > 0 {
 		parts = parts[:len(parts)-1]
 	}
