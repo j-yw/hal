@@ -2,8 +2,8 @@ package credentialclient
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
-	"sync"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 )
@@ -20,10 +20,6 @@ const (
 	maxSSHConnectionOrdinal    uint8  = 64
 )
 
-type extensionRightCapability interface {
-	Close(context.Context) error
-}
-
 type extensionPacketMetadata struct {
 	identityDigest   [32]byte
 	revision         uint64
@@ -32,20 +28,6 @@ type extensionPacketMetadata struct {
 	capabilitySHA256 [32]byte
 }
 
-type extensionRightOwnership struct {
-	mu         sync.Mutex
-	state      extensionRightState
-	capability extensionRightCapability
-}
-
-type extensionRightState uint8
-
-const (
-	extensionRightClientOwned extensionRightState = iota
-	extensionRightTransferred
-	extensionRightClosed
-)
-
 // ExtensionPacket is the authenticated, client-owned extension union. D2
 // permits only the SSH accepted-connection packet and an opaque inspected
 // rights capability; it never stores a numeric descriptor or generic body.
@@ -53,13 +35,35 @@ type ExtensionPacket struct {
 	liveValue
 	packetType credentialprotocol.PacketType
 	metadata   extensionPacketMetadata
-	ownership  *extensionRightOwnership
+	ownership  *sshConnectionOwnership
+}
+
+// Type returns the already-authenticated closed packet type.
+func (packet ExtensionPacket) Type() credentialprotocol.PacketType {
+	return packet.packetType
+}
+
+// SSHAccepted returns the sole typed extension arm. The connection is a
+// parent-owned transfer view and never the Transport-issued capability.
+func (packet ExtensionPacket) SSHAccepted() (SSHAcceptedPacket, bool) {
+	if packet.packetType != credentialprotocol.PacketTypeSSHAcceptedFD || packet.ownership == nil {
+		return SSHAcceptedPacket{}, false
+	}
+	view := sshConnectionView{ownership: packet.ownership}
+	return SSHAcceptedPacket{
+		revision:         packet.metadata.revision,
+		bindingIndex:     packet.metadata.bindingIndex,
+		ordinal:          packet.metadata.ordinal,
+		capabilitySHA256: packet.metadata.capabilitySHA256,
+		connection:       view,
+		ownership:        packet.ownership,
+	}, true
 }
 
 func newExtensionPacket(
 	packetType credentialprotocol.PacketType,
 	metadata extensionPacketMetadata,
-	capability extensionRightCapability,
+	capability SSHConnectionCapability,
 ) (ExtensionPacket, error) {
 	if err := credentialprotocol.ValidatePacketType(packetType); err != nil {
 		return ExtensionPacket{}, err
@@ -77,13 +81,15 @@ func newExtensionPacket(
 	if !configuredDependency(capability) {
 		return ExtensionPacket{}, ErrExtensionRightRequired
 	}
+	capabilityDigest, valid := safeSSHIssuerDigest(capability)
+	if !valid || capabilityDigest == ([32]byte{}) || subtle.ConstantTimeCompare(capabilityDigest[:], metadata.capabilitySHA256[:]) != 1 {
+		closeRejectedSSHCapability(capability)
+		return ExtensionPacket{}, ErrExtensionPacketMetadata
+	}
 	return ExtensionPacket{
 		packetType: packetType,
 		metadata:   metadata,
-		ownership: &extensionRightOwnership{
-			state:      extensionRightClientOwned,
-			capability: capability,
-		},
+		ownership:  newSSHConnectionOwnership(capabilityDigest, capability),
 	}, nil
 }
 
@@ -95,33 +101,70 @@ func commitExtensionPacketOwnership(packet ExtensionPacket) error {
 	}
 	packet.ownership.mu.Lock()
 	defer packet.ownership.mu.Unlock()
-	if packet.ownership.state != extensionRightClientOwned {
+	if packet.ownership.phase != sshConnectionClientOwned {
 		return ErrExtensionPacketOwnership
 	}
-	packet.ownership.state = extensionRightTransferred
+	packet.ownership.phase = sshConnectionTransferred
+	packet.ownership.cond.Broadcast()
 	return nil
 }
 
-// closeOwnedExtensionPacket closes a still-client-owned right exactly once.
-// A close failure retains client ownership so bounded cleanup can retry.
+// closeOwnedExtensionPacket closes a still-client-owned right exactly once and
+// latches only a sanitized result for every alias.
 func closeOwnedExtensionPacket(ctx context.Context, packet ExtensionPacket) error {
 	if packet.ownership == nil {
 		return ErrExtensionPacketOwnership
 	}
 	packet.ownership.mu.Lock()
-	defer packet.ownership.mu.Unlock()
-	switch packet.ownership.state {
-	case extensionRightClosed:
-		return nil
-	case extensionRightTransferred:
+	switch packet.ownership.phase {
+	case sshConnectionClosed:
+		err := packet.ownership.closeErr
+		packet.ownership.mu.Unlock()
+		return err
+	case sshConnectionTransferred:
+		packet.ownership.mu.Unlock()
 		return ErrExtensionPacketOwnership
-	case extensionRightClientOwned:
-		if err := packet.ownership.capability.Close(ctx); err != nil {
-			return err
+	case sshConnectionClosing:
+		if !validSSHContext(ctx) || !waitSSHConnectionLocked(ctx, packet.ownership, func() bool {
+			return packet.ownership.phase == sshConnectionClosed
+		}) {
+			packet.ownership.mu.Unlock()
+			return ErrExtensionPacketOwnership
 		}
-		packet.ownership.state = extensionRightClosed
-		return nil
+		err := packet.ownership.closeErr
+		packet.ownership.mu.Unlock()
+		return err
+	case sshConnectionClientOwned:
+		if !validSSHContext(ctx) {
+			packet.ownership.mu.Unlock()
+			return ErrExtensionPacketOwnership
+		}
+		packet.ownership.phase = sshConnectionClosing
+		packet.ownership.closeStarted = true
+		capability := packet.ownership.issuer
+		packet.ownership.mu.Unlock()
+		closeErr := safeSSHIssuerClose(ctx, capability)
+		if closeErr != nil {
+			closeErr = ErrExtensionPacketOwnership
+		}
+		packet.ownership.mu.Lock()
+		packet.ownership.issuer = nil
+		packet.ownership.closeErr = closeErr
+		packet.ownership.phase = sshConnectionClosed
+		packet.ownership.cond.Broadcast()
+		packet.ownership.mu.Unlock()
+		return closeErr
 	default:
+		packet.ownership.mu.Unlock()
 		return ErrExtensionPacketOwnership
 	}
+}
+
+func closeRejectedSSHCapability(capability SSHConnectionCapability) {
+	if !configuredDependency(capability) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sshConnectionCleanupTimeout)
+	defer cancel()
+	_ = safeSSHIssuerClose(ctx, capability)
 }

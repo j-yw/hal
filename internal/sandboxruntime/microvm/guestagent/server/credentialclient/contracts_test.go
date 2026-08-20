@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 )
 
@@ -116,7 +117,7 @@ func TestExtensionPacketIsExactSSHAcceptedCapabilityAndOwnershipIsExplicit(t *te
 	if packet.packetType != credentialprotocol.PacketTypeSSHAcceptedFD || packet.metadata != metadata {
 		t.Fatal("newExtensionPacket() did not preserve authenticated safe metadata")
 	}
-	if packet.ownership == nil || packet.ownership.capability != right {
+	if packet.ownership == nil || packet.ownership.issuer != right {
 		t.Fatal("newExtensionPacket() did not retain the opaque right capability")
 	}
 	assertFailsClosed(t, packet)
@@ -153,7 +154,7 @@ func TestExtensionPacketFormattingNeverTraversesRightCapability(t *testing.T) {
 	const secret = "raw-right-secret-canary"
 	packet, err := newExtensionPacket(
 		credentialprotocol.PacketTypeSSHAcceptedFD,
-		extensionPacketMetadata{identityDigest: [32]byte{1}, revision: 1, ordinal: 1, capabilitySHA256: [32]byte{2}},
+		extensionPacketMetadata{identityDigest: [32]byte{1}, revision: 1, ordinal: 1, capabilitySHA256: [32]byte{4}},
 		&leakingRight{secret: secret},
 	)
 	if err != nil {
@@ -174,12 +175,12 @@ func TestExtensionPacketFormattingNeverTraversesRightCapability(t *testing.T) {
 func TestExtensionPacketRejectsUnknownCoreAndTypedNilRights(t *testing.T) {
 	t.Parallel()
 
-	metadata := extensionPacketMetadata{identityDigest: [32]byte{1}, revision: 1, ordinal: 1, capabilitySHA256: [32]byte{2}}
+	metadata := extensionPacketMetadata{identityDigest: [32]byte{1}, revision: 1, ordinal: 1, capabilitySHA256: [32]byte{4}}
 	var typedNil *countingRight
 	tests := []struct {
 		name       string
 		packetType credentialprotocol.PacketType
-		right      extensionRightCapability
+		right      SSHConnectionCapability
 		want       error
 	}{
 		{name: "zero packet", packetType: 0, right: &countingRight{}, want: credentialprotocol.ErrUnknownPacketType},
@@ -202,7 +203,7 @@ func TestExtensionPacketRejectsUnknownCoreAndTypedNilRights(t *testing.T) {
 func TestExtensionPacketSSHBindingAndOrdinalBounds(t *testing.T) {
 	t.Parallel()
 
-	base := extensionPacketMetadata{identityDigest: [32]byte{1}, revision: 1, capabilitySHA256: [32]byte{2}}
+	base := extensionPacketMetadata{identityDigest: [32]byte{1}, revision: 1, capabilitySHA256: [32]byte{4}}
 	for _, test := range []struct {
 		name         string
 		bindingIndex uint16
@@ -308,10 +309,18 @@ type leakingRight struct {
 	secret string
 }
 
-func (right *leakingRight) Close(context.Context) error  { return nil }
-func (right *leakingRight) String() string               { return right.secret }
-func (right *leakingRight) GoString() string             { return right.secret }
-func (right *leakingRight) MarshalJSON() ([]byte, error) { return []byte(right.secret), nil }
+func (right *leakingRight) Close(context.Context) error { return nil }
+func (*leakingRight) SHA256() [32]byte                  { return [32]byte{4} }
+func (*leakingRight) Read(context.Context, credentialmemory.CredentialSink) (SSHIOResult, error) {
+	return SSHIOResult{}, nil
+}
+func (*leakingRight) Write(context.Context, credentialmemory.BorrowedView) (SSHIOResult, error) {
+	return SSHIOResult{}, nil
+}
+func (*leakingRight) Shutdown(context.Context, SSHShutdownDirection) error { return nil }
+func (right *leakingRight) String() string                                 { return right.secret }
+func (right *leakingRight) GoString() string                               { return right.secret }
+func (right *leakingRight) MarshalJSON() ([]byte, error)                   { return []byte(right.secret), nil }
 
 type leakingFactory struct {
 	secret string
@@ -328,3 +337,15 @@ func (right *countingRight) Close(context.Context) error {
 	right.closes.Add(1)
 	return nil
 }
+
+func (*countingRight) SHA256() [32]byte { return [32]byte{4} }
+
+func (*countingRight) Read(context.Context, credentialmemory.CredentialSink) (SSHIOResult, error) {
+	return SSHIOResult{}, nil
+}
+
+func (*countingRight) Write(context.Context, credentialmemory.BorrowedView) (SSHIOResult, error) {
+	return SSHIOResult{}, nil
+}
+
+func (*countingRight) Shutdown(context.Context, SSHShutdownDirection) error { return nil }

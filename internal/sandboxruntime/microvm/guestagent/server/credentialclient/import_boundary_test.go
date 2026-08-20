@@ -19,6 +19,7 @@ func TestFoundationGuardScopeExcludesFutureLifecycleFiles(t *testing.T) {
 		"contracts.go",
 		"extension_packet.go",
 		"registry.go",
+		"ssh_connection.go",
 	} {
 		if !isFoundationProductionFile(name) {
 			t.Errorf("isFoundationProductionFile(%q) = false, want true", name)
@@ -46,6 +47,7 @@ func TestCredentialClientImportBoundaryAndNoGlobalRegistration(t *testing.T) {
 		t.Fatalf("ReadDir: %v", err)
 	}
 	const protocolImport = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+	const credentialMemoryImport = "github.com/jywlabs/hal/internal/credentialmemory"
 	forbiddenStandardLibrary := map[string]bool{
 		"net": true, "net/http": true, "net/url": true,
 		"os": true, "os/exec": true, "path/filepath": true,
@@ -71,12 +73,12 @@ func TestCredentialClientImportBoundaryAndNoGlobalRegistration(t *testing.T) {
 			if !isFoundationProductionFile(path) {
 				continue
 			}
-			if name == protocolImport {
+			if name == protocolImport || (name == credentialMemoryImport && filepath.Base(path) == "ssh_connection.go") {
 				continue
 			}
 			standardPackage, standardErr := build.Default.Import(name, ".", build.FindOnly)
 			if standardErr != nil || !standardPackage.Goroot || forbiddenStandardLibrary[name] {
-				t.Errorf("production file %s imports %q; credentialclient permits standard library plus credentialprotocol only", path, name)
+				t.Errorf("production file %s imports %q; credentialclient permits standard library plus credentialprotocol, and credentialmemory only in ssh_connection.go", path, name)
 			}
 		}
 		for _, declaration := range file.Decls {
@@ -114,7 +116,7 @@ func TestCredentialClientImportBoundaryAndNoGlobalRegistration(t *testing.T) {
 
 func isFoundationProductionFile(name string) bool {
 	switch filepath.Base(name) {
-	case "contracts.go", "extension_packet.go", "registry.go":
+	case "contracts.go", "extension_packet.go", "registry.go", "ssh_connection.go":
 		return true
 	default:
 		return false
@@ -139,7 +141,12 @@ func TestExtensionPacketAndRightsSourceShapeIsClosed(t *testing.T) {
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch typed := node.(type) {
 			case *ast.TypeSpec:
-				if typed.Name.Name != "ExtensionPacket" && !strings.Contains(strings.ToLower(typed.Name.Name), "right") {
+				protected := typed.Name.Name == "ExtensionPacket" ||
+					typed.Name.Name == "SSHAcceptedPacket" ||
+					typed.Name.Name == "sshConnectionOwnership" ||
+					typed.Name.Name == "sshConnectionView" ||
+					strings.Contains(strings.ToLower(typed.Name.Name), "right")
+				if !protected {
 					return true
 				}
 				if structure, ok := typed.Type.(*ast.StructType); ok {
