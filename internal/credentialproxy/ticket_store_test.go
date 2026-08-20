@@ -396,7 +396,7 @@ func TestL8D3TicketStoreCloseRetriesFailedOwnedConnection(t *testing.T) {
 }
 
 func TestL8D3TicketCleanupJoinsInflightSourceCalls(t *testing.T) {
-	for _, operation := range []string{"revoke", "close", "expiry"} {
+	for _, operation := range []string{"revoke", "close", "expiry", "release"} {
 		t.Run(operation, func(t *testing.T) {
 			now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
 			clock := now
@@ -445,6 +445,9 @@ func TestL8D3TicketCleanupJoinsInflightSourceCalls(t *testing.T) {
 					cleanupDone <- store.Close(context.Background())
 				case "expiry":
 					cleanupDone <- store.Validate(context.Background(), ticket, activation.Correlation)
+				case "release":
+					lease.Release()
+					cleanupDone <- nil
 				}
 			}()
 			select {
@@ -456,7 +459,7 @@ func TestL8D3TicketCleanupJoinsInflightSourceCalls(t *testing.T) {
 			close(source.release)
 			cleanupErr := <-cleanupDone
 			switch operation {
-			case "revoke", "close":
+			case "revoke", "close", "release":
 				if cleanupErr != nil {
 					t.Fatalf("%s error: %v", operation, cleanupErr)
 				}
