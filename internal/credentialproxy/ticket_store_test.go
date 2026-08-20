@@ -59,8 +59,9 @@ func TestL8D3TicketFormatHMACRetentionAndOpacity(t *testing.T) {
 	if _, err := json.Marshal(*ticket); !errors.Is(err, ErrLiveTicketNotSerializable) {
 		t.Fatalf("Marshal(ticket value) error = %v, want serialization denial", err)
 	}
-	for _, value := range []any{store, *store, l8D3TicketActivation(t, now)} {
-		if rendered := fmt.Sprintf("%#v", value); bytes.Contains([]byte(rendered), encoded) || bytes.Contains([]byte(rendered), []byte("sk-live")) {
+	for _, value := range []any{store, *store, l8D3TicketActivation(t, now), l8D3TicketActivation(t, now).Correlation} {
+		if rendered := fmt.Sprintf("%#v", value); bytes.Contains([]byte(rendered), encoded) || bytes.Contains([]byte(rendered), []byte("sk-live")) ||
+			bytes.Contains([]byte(rendered), []byte("runtime-credential.internal")) {
 			t.Fatalf("live ticket value formatting leaked payload: %q", rendered)
 		}
 		if _, err := json.Marshal(value); !errors.Is(err, ErrLiveTicketNotSerializable) {
@@ -123,6 +124,11 @@ func TestL8D3TicketLeaseRenewalHardExpiryAndExactCorrelation(t *testing.T) {
 	wrong.BindingID = "neighbor-binding"
 	if _, err := l8D3AcquireTicketError(store, second, wrong); !errors.Is(err, ErrTicketCorrelation) {
 		t.Fatalf("neighbor correlation error = %v, want mismatch", err)
+	}
+	wrong = activation.Correlation
+	wrong.LocalAuthority = "neighbor.internal:8080"
+	if _, err := l8D3AcquireTicketError(store, second, wrong); !errors.Is(err, ErrTicketCorrelation) {
+		t.Fatalf("neighbor authority correlation error = %v, want mismatch", err)
 	}
 
 	clock = now.Add(JobTicketHardLifetime)
@@ -538,6 +544,7 @@ func l8D3TicketActivation(t *testing.T, now time.Time) TicketActivation {
 			ActivationGeneration: "activation-generation-01",
 			CatalogGeneration:    "catalog-generation-01",
 			ListenerGeneration:   7,
+			LocalAuthority:       "runtime-credential.internal:8080",
 		},
 		IssuedAt: now,
 		Source:   l8D3LiveSecretSource{},

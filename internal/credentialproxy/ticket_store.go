@@ -30,6 +30,15 @@ type TicketCorrelation struct {
 	ActivationGeneration string
 	CatalogGeneration    string
 	ListenerGeneration   uint64
+	LocalAuthority       string
+}
+
+func (TicketCorrelation) MarshalJSON() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (TicketCorrelation) MarshalText() ([]byte, error) { return nil, ErrLiveTicketNotSerializable }
+func (TicketCorrelation) String() string               { return "credentialproxy.TicketCorrelation{live}" }
+func (TicketCorrelation) GoString() string             { return "credentialproxy.TicketCorrelation{live}" }
+func (TicketCorrelation) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("credentialproxy.TicketCorrelation{live}"))
 }
 
 type TicketActivation struct {
@@ -605,7 +614,8 @@ func validTicketActivation(activation TicketActivation, now time.Time) bool {
 func validTicketCorrelation(correlation TicketCorrelation) bool {
 	return correlation.JobIdentityDigest != [32]byte{} && correlation.ServiceID == ServiceIDAzureOpenAIResponsesV1 &&
 		validCatalogIdentifier(correlation.BindingID) && validCatalogIdentifier(correlation.ActivationGeneration) &&
-		validCatalogIdentifier(correlation.CatalogGeneration) && correlation.ListenerGeneration > 0
+		validCatalogIdentifier(correlation.CatalogGeneration) && correlation.ListenerGeneration > 0 &&
+		validLocalRuntimeAuthority(correlation.LocalAuthority)
 }
 
 func sameTicketCorrelation(left, right TicketCorrelation) bool {
@@ -616,7 +626,7 @@ func sameTicketCorrelation(left, right TicketCorrelation) bool {
 func sameTicketCorrelationWithoutDigest(left, right TicketCorrelation) bool {
 	return left.ServiceID == right.ServiceID && left.BindingID == right.BindingID &&
 		left.ActivationGeneration == right.ActivationGeneration && left.CatalogGeneration == right.CatalogGeneration &&
-		left.ListenerGeneration == right.ListenerGeneration
+		left.ListenerGeneration == right.ListenerGeneration && left.LocalAuthority == right.LocalAuthority
 }
 
 func (entry *ticketStoreEntry) waitForSourceCallsLocked() {

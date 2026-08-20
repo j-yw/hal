@@ -60,7 +60,7 @@ type AzureResponsesPiInvocation struct {
 
 func NewAzureResponsesPiInvocation(config AzureResponsesPiInvocationConfig) (*AzureResponsesPiInvocation, error) {
 	if ValidateServiceDefinition(config.Definition) != nil || !validLocalRuntimeAuthority(config.LocalAuthority) ||
-		config.Ticket == nil || config.TicketStore == nil || !validTicketCorrelation(config.Correlation) ||
+		config.LocalAuthority != config.Correlation.LocalAuthority || config.Ticket == nil || config.TicketStore == nil || !validTicketCorrelation(config.Correlation) ||
 		!validPrivateCodingAgentDirectory(config.CodingAgentDirectory) || config.DirectoryProof == nil || typedNil(config.DirectoryProof) {
 		return nil, ErrPiInvocationConfig
 	}

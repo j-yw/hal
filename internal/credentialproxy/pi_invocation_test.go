@@ -115,6 +115,14 @@ func TestL8D3PiAzureResponsesInvocationRejectsTicketFromDifferentLocalAuthority(
 	}
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	correlation := l8D3TicketActivation(t, now).Correlation
+	wrongRoute, wrongTicket, err := NewAzureResponsesRoute(AzureResponsesRouteConfig{
+		Catalog: catalog, TicketStore: store, Correlation: correlation,
+		LocalAuthority: "attacker.invalid:8443", IssuedAt: now,
+		Source: l8D3LiveSecretSource{}, NetworkProof: &l8D3NetworkProof{},
+	})
+	if !errors.Is(err, ErrRouteConfigInvalid) || wrongRoute != nil || wrongTicket != nil {
+		t.Fatalf("cross-authority route = (%v, %v, %v), want configuration rejection", wrongRoute, wrongTicket, err)
+	}
 	route, ticket, err := NewAzureResponsesRoute(AzureResponsesRouteConfig{
 		Catalog: catalog, TicketStore: store, Correlation: correlation,
 		LocalAuthority: "runtime-credential.internal:8080", IssuedAt: now,

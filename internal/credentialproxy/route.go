@@ -289,7 +289,7 @@ func (route *AzureResponsesRoute) Close(ctx context.Context) error {
 
 func validAzureResponsesRouteConfig(config AzureResponsesRouteConfig) bool {
 	return config.Catalog != nil && config.TicketStore != nil && validTicketCorrelation(config.Correlation) &&
-		validLocalRuntimeAuthority(config.LocalAuthority) && !config.IssuedAt.IsZero() &&
+		validLocalRuntimeAuthority(config.LocalAuthority) && config.LocalAuthority == config.Correlation.LocalAuthority && !config.IssuedAt.IsZero() &&
 		config.Source != nil && !typedNil(config.Source) && config.NetworkProof != nil && !typedNil(config.NetworkProof)
 }
 

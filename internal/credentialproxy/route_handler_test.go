@@ -66,7 +66,7 @@ func TestL8D3AzureResponsesRouteUsesExactLocalFramingAndVerifiedTLS(t *testing.T
 	}
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 	correlation := l8D3TicketActivation(t, now).Correlation
-	network := &l8D3NetworkProof{}
+	network := &l8D3NetworkProof{wantLocalAuthority: "runtime-credential.internal:8080"}
 	source := &l8D3CountingSecretSource{value: []byte(secret)}
 	handler, ticket, err := newAzureResponsesRoute(AzureResponsesRouteConfig{
 		Catalog:        catalog,
@@ -148,6 +148,9 @@ func TestL8D3AzureResponsesRouteUsesExactLocalFramingAndVerifiedTLS(t *testing.T
 	}
 	if network.Count() != 2 {
 		t.Fatalf("network proof inspections = %d, want before DNS and immediately before source", network.Count())
+	}
+	if network.LastLocalAuthority() != "runtime-credential.internal:8080" {
+		t.Fatalf("network proof local authority = %q, want exact route binding", network.LastLocalAuthority())
 	}
 }
 
@@ -560,15 +563,21 @@ func (source *l8D3CountingSecretSource) Count() int {
 }
 
 type l8D3NetworkProof struct {
-	mu    sync.Mutex
-	count int
-	err   error
+	mu                 sync.Mutex
+	count              int
+	err                error
+	wantLocalAuthority string
+	lastLocalAuthority string
 }
 
-func (proof *l8D3NetworkProof) InspectActiveCredentialRoute(context.Context, TicketCorrelation) error {
+func (proof *l8D3NetworkProof) InspectActiveCredentialRoute(_ context.Context, correlation TicketCorrelation) error {
 	proof.mu.Lock()
 	defer proof.mu.Unlock()
 	proof.count++
+	proof.lastLocalAuthority = correlation.LocalAuthority
+	if proof.wantLocalAuthority != "" && correlation.LocalAuthority != proof.wantLocalAuthority {
+		return errors.New("local authority binding mismatch")
+	}
 	return proof.err
 }
 
@@ -576,4 +585,10 @@ func (proof *l8D3NetworkProof) Count() int {
 	proof.mu.Lock()
 	defer proof.mu.Unlock()
 	return proof.count
+}
+
+func (proof *l8D3NetworkProof) LastLocalAuthority() string {
+	proof.mu.Lock()
+	defer proof.mu.Unlock()
+	return proof.lastLocalAuthority
 }
