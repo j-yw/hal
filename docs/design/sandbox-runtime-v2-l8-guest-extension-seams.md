@@ -5755,14 +5755,13 @@ version `l8-process-composition-v1`, closed roles, no unknown/trailing fields,
 and SHA-256 over the complete encoding. It contains no live handle, path, FD,
 PID, endpoint, secret, config value, or JSON tag.
 
-`HelperOptions.Host` and `HelperOptions.Runtime` are explicit because
-`credentialhelper.NewService` requires the D4-owned `ExtensionHost` and
-`ServiceRuntime` independently from `Core`. `NewHelper` applies the same
-typed-nil-aware dependency validation to `Core`, `Transport`, `Policy`, `Host`,
-and `Runtime`, passes those exact five values plus its locally constructed
-extension registry to `credentialhelper.NewService`, and never recovers either
-dependency through a type assertion on `Core`. `SSH` remains the sole explicit
-extension registration and cannot replace a service dependency.
+`HelperOptions.Host` and `HelperOptions.Runtime` are explicit, independent,
+mandatory service dependencies. `HelperOptions.Core` is accepted only as
+`credentialhelper.Core` and supplies neither dependency. The Host and Runtime
+fields are the sole sources of `credentialhelper.ExtensionHost` and
+`credentialhelper.ServiceRuntime`; `NewHelper` validates them independently and
+passes those exact values directly to `credentialhelper.NewService`. `SSH` is
+only an extension registration and cannot replace either service dependency.
 
 For the agent process, D6 creates and validates one immutable client
 `ProcessDescriptor` before either D4 bootstrap or credentialclient construction.
