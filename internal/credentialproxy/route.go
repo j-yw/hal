@@ -318,7 +318,8 @@ func (AzureResponsesRoute) Format(state fmt.State, _ rune) {
 }
 
 func copyPresentedTicket(ctx context.Context, headers applicationroute.RequestHeaderValues, name string) (*credentialmemory.LockedMapping, error) {
-	if headers == nil || typedNil(headers) || headers.ValueCount(name) != 1 {
+	count, countOK := requestHeaderValueCount(headers, name)
+	if headers == nil || typedNil(headers) || !countOK || count != 1 {
 		return nil, ErrRouteRequestRejected
 	}
 	mapping, err := credentialmemory.NewLockedMapping(JobTicketEncodedBytes)
@@ -334,7 +335,8 @@ func copyPresentedTicket(ctx context.Context, headers applicationroute.RequestHe
 			}
 		}()
 		count, result = headers.CopyValue(name, 0, destination)
-		if result != nil || count != JobTicketEncodedBytes || !validEncodedTicket(destination[:count]) {
+		finalCount, finalCountOK := requestHeaderValueCount(headers, name)
+		if result != nil || count != JobTicketEncodedBytes || !finalCountOK || finalCount != 1 || !validEncodedTicket(destination[:count]) {
 			wipeBytes(destination)
 			return 0, ErrRouteRequestRejected
 		}
@@ -391,15 +393,40 @@ func requestHeaderNames(headers applicationroute.RequestHeaderValues) (names []s
 	return names, true
 }
 
-func copySafeHeaderValue(headers applicationroute.RequestHeaderValues, name string, maximum int) ([]byte, error) {
-	if maximum <= 0 || headers.ValueCount(name) != 1 {
+func requestHeaderValueCount(headers applicationroute.RequestHeaderValues, name string) (count int, ok bool) {
+	if headers == nil || typedNil(headers) {
+		return 0, false
+	}
+	defer func() {
+		if recover() != nil {
+			count = 0
+			ok = false
+		}
+	}()
+	return headers.ValueCount(name), true
+}
+
+func copySafeHeaderValue(headers applicationroute.RequestHeaderValues, name string, maximum int) (value []byte, result error) {
+	if maximum <= 0 || headers == nil || typedNil(headers) {
 		return nil, ErrRouteRequestRejected
 	}
-	value := make([]byte, maximum)
-	count, err := headers.CopyValue(name, 0, value)
-	if err != nil || count <= 0 || count > maximum {
-		wipeBytes(value)
+	scratch := make([]byte, maximum)
+	defer wipeBytes(scratch)
+	defer func() {
+		if recover() != nil {
+			value = nil
+			result = ErrRouteRequestRejected
+		}
+	}()
+	initialCount, initialCountOK := requestHeaderValueCount(headers, name)
+	if !initialCountOK || initialCount != 1 {
 		return nil, ErrRouteRequestRejected
 	}
-	return value[:count], nil
+	count, err := headers.CopyValue(name, 0, scratch)
+	finalCount, finalCountOK := requestHeaderValueCount(headers, name)
+	if err != nil || count <= 0 || count > len(scratch) || !finalCountOK || finalCount != initialCount {
+		return nil, ErrRouteRequestRejected
+	}
+	value = append([]byte(nil), scratch[:count]...)
+	return value, nil
 }

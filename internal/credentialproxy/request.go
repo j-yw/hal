@@ -34,7 +34,12 @@ func validateAzureResponsesRequest(request applicationroute.Request, localAuthor
 	return body, nil
 }
 
-func validateAzureResponsesHeaders(headers applicationroute.RequestHeaderValues, definition ServiceDefinition) error {
+func validateAzureResponsesHeaders(headers applicationroute.RequestHeaderValues, definition ServiceDefinition) (result error) {
+	defer func() {
+		if recover() != nil {
+			result = ErrRouteRequestRejected
+		}
+	}()
 	names, ok := requestHeaderNames(headers)
 	if !ok || len(names) == 0 || len(names) > 128 {
 		return ErrRouteRequestRejected
@@ -43,7 +48,8 @@ func validateAzureResponsesHeaders(headers applicationroute.RequestHeaderValues,
 	seenContentType := false
 	previous := ""
 	for _, name := range names {
-		if name <= previous || headers.ValueCount(name) != 1 {
+		count, countOK := requestHeaderValueCount(headers, name)
+		if name <= previous || !countOK || count != 1 {
 			return ErrRouteRequestRejected
 		}
 		previous = name
