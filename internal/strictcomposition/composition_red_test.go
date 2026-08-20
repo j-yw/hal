@@ -197,6 +197,36 @@ func TestL10EvaluateActiveCancellationAndSourceErrorsFailClosedWithoutLeaking(t 
 	}
 }
 
+func TestL10EvaluateTerminalCancellationFailsWithoutConsumingAuthority(t *testing.T) {
+	activeRequest := l10CompleteActiveRequest(t)
+	attestation, active := EvaluateActive(context.Background(), activeRequest)
+	if active.State != sandbox.SandboxStrictCompositionStateActive {
+		t.Fatalf("active decision = %#v, want active", active)
+	}
+	terminalNow := activeRequest.Now.Add(2 * time.Second)
+	request := TerminalRequest{
+		Now: terminalNow, Identity: activeRequest.Identity, CredentialRevision: activeRequest.CredentialRevision,
+		Attestation: attestation, CredentialCleanup: l10CleanupProof(t, activeRequest.Identity, activeRequest.CredentialRevision, terminalNow),
+		TemplatePolicyID: activeRequest.TemplatePolicyID, Template: activeRequest.Template,
+		TemplateBinding: activeRequest.TemplateBinding, Workspace: activeRequest.Workspace,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceled := EvaluateTerminal(ctx, request)
+	if canceled.State != sandbox.SandboxStrictCompositionStateBlocked || canceled.Code != sandbox.SandboxStrictCompositionCodeAttestationStale {
+		t.Fatalf("canceled EvaluateTerminal() = %#v, want blocked attestation_stale", canceled)
+	}
+	if !AttestationValid(attestation, activeRequest.Identity.SandboxID, activeRequest.Identity.ExecutionID, activeRequest.Identity.RuntimeID, terminalNow) {
+		t.Fatal("canceled EvaluateTerminal() consumed the live authority")
+	}
+
+	completed := EvaluateTerminal(context.Background(), request)
+	if completed.State != sandbox.SandboxStrictCompositionStateComplete || completed.Code != sandbox.SandboxStrictCompositionCodeComplete {
+		t.Fatalf("retry EvaluateTerminal() = %#v, want complete", completed)
+	}
+}
+
 func TestL10EvaluateTerminalRequiresExactPriorAttestationAndCleanupProof(t *testing.T) {
 	activeRequest := l10CompleteActiveRequest(t)
 	attestation, active := EvaluateActive(context.Background(), activeRequest)
