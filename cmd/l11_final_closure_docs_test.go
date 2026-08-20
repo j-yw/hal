@@ -44,7 +44,7 @@ func TestL11FinalClosureDocumentationIsNormative(t *testing.T) {
 		"### Exact nine-phase final matrix",
 		"## 7. Non-goals and final handoff",
 		l11FinalClosureCurrentStateLine,
-		"No L11 production live wiring is added by this contract-only slice.",
+		"No L11 production live wiring is added by this safe-now test-only slice.",
 		"Accepted L8 live credential authority",
 		"accepted L10 strict-composition authority",
 		"A durable L10 decision cannot recreate live authority.",
@@ -175,7 +175,9 @@ func TestL11FinalClosureVerificationCommandsAreExact(t *testing.T) {
 		"exactly one run and one pass event for the selected top-level test",
 		"exactly one run and one pass event for each of the nine required rows",
 		"reject every skip event",
-		"do not exist in this contract-only slice",
+		"The wrapper now exists, but the future selected test does not.",
+		"Those results never feed the selected wrapper or release acceptance.",
+		"The four strict rows remain exactly `dependency_unaccepted`",
 	} {
 		if !l11FinalClosureContains(doc, required) {
 			t.Errorf("L11 final-closure live verification contract omits %q", required)
@@ -817,7 +819,7 @@ func l11ValidateFinalClosureDocumentSafety(doc string) error {
 		l11FinalClosureCurrentStateLine,
 		"No acceptance is claimed by this document.",
 		"All nine rows are unmet and `blocked`.",
-		"No L11 production live wiring is added by this contract-only slice.",
+		"No L11 production live wiring is added by this safe-now test-only slice.",
 	} {
 		if strings.Count(doc, required) != 1 {
 			return &l11FinalClosureGuardError{message: "L11 blocked contract marker changed"}

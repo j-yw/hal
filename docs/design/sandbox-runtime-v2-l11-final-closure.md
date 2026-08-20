@@ -10,10 +10,14 @@ Current closure state: `blocked`.
 <!-- hal:l11-closure-state=blocked -->
 
 No acceptance is claimed by this document. All nine rows are unmet and
-`blocked`. No L11 production live wiring is added by this contract-only slice.
-The selected L11 test, wrapper, prepared-host results, and final release record
-are future work after the L8 and L10 dependencies described below are accepted
-on the aggregate.
+`blocked`.
+
+No L11 production live wiring is added by this safe-now test-only slice.
+The selected L11 test, prepared-host results, and final release record remain
+future work after the L8 and L10 dependencies described below are accepted on
+the aggregate. A safe-now fake rootless/resource harness and a fail-closed
+selected-test wrapper now exist, but they are harness coverage only and cannot
+produce acceptance evidence.
 
 The exact machine marker above is the sole repository-wide declaration of L11
 closure state. Prose is not release authority. A filename-independent inventory
@@ -108,8 +112,8 @@ Existing component owners remain authoritative:
   digest trust;
 - `internal/sandboxexecution` and `internal/sandboxworkspace` own durable
   finalization, artifact containment, sync-out, and explicit safe apply; and
-- the future `tools/microvm/l11/verify-selected-live.sh` wrapper owns exact test
-  discovery, JSON result counting, and rejection of skips.
+- the test-only `tools/microvm/l11/verify-selected-live.sh` wrapper owns exact
+  future-test discovery, JSON result counting, and rejection of skips.
 
 L11 must not recreate any of those authorities in a new package. In
 particular, `cmd` cannot mint active/cleanup credential proofs, reconstruct the
@@ -117,8 +121,9 @@ L10 attestation from JSON, infer strict state from a driver label, or interpret
 resource names as ownership. Any production defect found by the matrix is fixed
 and reviewed in its existing owner before the L11 lane is rerun.
 
-The present slice contains only this design note and static `_test.go` guards.
-It adds no production import, constructor, live marker, test transport,
+The present safe-now slice contains this design note, static `_test.go` guards,
+Linux fake rootless/resource harness coverage, and the fail-closed selected-test
+wrapper. It adds no production import, constructor, live marker, test transport,
 provider, process, listener, namespace, rule, mount, credential, or release
 projection.
 
@@ -234,21 +239,28 @@ A selected required live test that skips is a blocker, never a pass. Neither
 the top-level test nor any reachable helper may call `t.Skip`, `t.Skipf`, or
 `t.SkipNow`.
 
-The future selected wrapper must first discover exactly one selected top-level
-test. It must capture `go test -json`, wait for the child process, reject every
+The selected wrapper must first discover exactly one selected top-level test.
+It must capture `go test -json`, wait for the child process, reject every
 skip event, require exactly one run and one pass event for the selected
 top-level test, and require exactly one run and one pass event for each of the
 nine required rows. A missing row, duplicate result, child failure, cleanup
 failure, or nonzero final resource count fails the wrapper.
 
-The reserved future command is:
+The reserved command is:
 
 ```sh
 tools/microvm/l11/verify-selected-live.sh matrix
 ```
 
-That wrapper and selected test do not exist in this contract-only slice. Their
-absence is `required_test_missing`, so the current closure remains blocked.
+The wrapper now exists, but the future selected test does not. Therefore the
+checked-in `matrix` command cannot pass today: exact discovery fails with
+`required_test_missing`, and the current closure remains blocked. The default
+Linux fake harness covers rows `rootless_advisory_success`,
+`rootless_client_loss_reconnect`, `rootless_daemon_restart_recovery`, the
+rootless portion of `artifact_integrity_and_safe_handoff`, and the test-only
+`zero_resource_leaks` census. Those results never feed the selected wrapper or
+release acceptance. The four strict rows remain exactly
+`dependency_unaccepted` until accepted L8 and L10 authority exists.
 
 Red-first guard coverage locks the document sections, exact row catalog and
 initial state, duplicate/missing/renamed mutations, premature pass/completion
@@ -298,8 +310,10 @@ lanes:
 2. L10 must be reconciled onto that accepted aggregate, consume real L8-issued
    proof values rather than synthetic constructors, pass its exact remove-one-
    proof matrix, and produce accepted no-skip prepared-Linux evidence.
-3. L11 may then implement the selected nine-row test, owned-resource census,
-   wrapper, machine-contract audit, and final sanitized release record.
+3. L11 may then implement the selected nine-row live test, production
+   owned-resource probes, machine-contract audit, and final sanitized release
+   record. The safe-now fake harness and fail-closed wrapper are not substitutes
+   for those deliverables.
 
 Hetzner and Lightsail remain deferred to a separately authorized issue if
 accounts and billing authority later exist. Until all three handoffs close, the
