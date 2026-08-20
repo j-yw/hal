@@ -35,7 +35,7 @@ func NewHelperExtension(HelperOptions) (credentialhelper.ExtensionRegistration, 
 type helperFactory struct{}
 
 func (helperFactory) Open(ctx context.Context, request credentialhelper.ExtensionOpenRequest) (credentialhelper.ExtensionSession, error) {
-	if ctx == nil || ctx.Err() != nil || !credentialprotocol.ExtensionDescriptorEqual(request.Descriptor(), credentialprotocol.SSHRelayV1ExtensionDescriptor()) || !configured(request.Host()) {
+	if !configured(ctx) || ctx.Err() != nil || !credentialprotocol.ExtensionDescriptorEqual(request.Descriptor(), credentialprotocol.SSHRelayV1ExtensionDescriptor()) || !configured(request.Host()) {
 		return nil, ErrInvalidArgument
 	}
 	lifetimeCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -71,7 +71,7 @@ type helperSession struct {
 }
 
 func (session *helperSession) Prepare(ctx context.Context, request credentialhelper.ExtensionPrepareRequest) (credentialhelper.ExtensionPrepareResult, error) {
-	if session == nil || ctx == nil || request.Mode() != credentialprotocol.DeliveryModeSSHAgent ||
+	if session == nil || !configured(ctx) || request.Mode() != credentialprotocol.DeliveryModeSSHAgent ||
 		request.IdentityDigest() == ([32]byte{}) || request.Revision() == 0 || request.ExpiresUnixNano() <= 0 ||
 		credentialprotocol.ValidateSafeID(request.BindingID()) != nil || request.BindingIndex() >= credentialprotocol.MaxHelperBindings || request.ExecBinding() == nil {
 		return credentialhelper.ExtensionPrepareResult{}, ErrInvalidArgument
@@ -129,7 +129,7 @@ func (session *helperSession) Prepare(ctx context.Context, request credentialhel
 }
 
 func (session *helperSession) BindExec(ctx context.Context, request credentialhelper.ExtensionExecRequest) (credentialhelper.ExtensionExecResult, error) {
-	if session == nil || ctx == nil {
+	if session == nil || !configured(ctx) {
 		return credentialhelper.ExtensionExecResult{}, ErrInvalidArgument
 	}
 	session.operationMu.Lock()
@@ -151,7 +151,7 @@ func (session *helperSession) BindExec(ctx context.Context, request credentialhe
 }
 
 func (session *helperSession) Renew(ctx context.Context, request credentialhelper.ExtensionRenewRequest) error {
-	if session == nil || ctx == nil {
+	if session == nil || !configured(ctx) {
 		return ErrInvalidArgument
 	}
 	session.operationMu.Lock()
@@ -168,7 +168,7 @@ func (session *helperSession) Renew(ctx context.Context, request credentialhelpe
 }
 
 func (session *helperSession) Revoke(ctx context.Context, request credentialhelper.ExtensionRevokeRequest) (credentialhelper.ExtensionCleanupResult, error) {
-	if session == nil || ctx == nil {
+	if session == nil || !configured(ctx) {
 		return credentialhelper.ExtensionCleanupResult{}, ErrInvalidArgument
 	}
 	session.operationMu.Lock()
@@ -206,7 +206,7 @@ func (session *helperSession) Revoke(ctx context.Context, request credentialhelp
 }
 
 func (session *helperSession) Close(ctx context.Context) error {
-	if session == nil || ctx == nil {
+	if session == nil || !configured(ctx) {
 		return ErrInvalidArgument
 	}
 	session.operationMu.Lock()

@@ -71,7 +71,7 @@ func (entry *liveHostAgentEntry) Policy() LivePolicy {
 }
 
 func (entry *liveHostAgentEntry) Open(ctx context.Context) (AgentConnection, error) {
-	if entry == nil || ctx == nil {
+	if entry == nil || !configuredDependency(ctx) {
 		return nil, ErrAgentOpen
 	}
 	connection, err := entry.dialer.Open(ctx)
@@ -85,7 +85,7 @@ func (entry *liveHostAgentEntry) Open(ctx context.Context) (AgentConnection, err
 }
 
 func (entry *liveHostAgentEntry) VerifyPeer(ctx context.Context, connection AgentConnection) (PeerProof, error) {
-	if entry == nil || ctx == nil || !configuredDependency(connection) {
+	if entry == nil || !configuredDependency(ctx) || !configuredDependency(connection) {
 		return PeerProof{}, ErrAgentPeer
 	}
 	proof, err := entry.verifier.Verify(ctx, connection, entry.identity)
@@ -143,7 +143,7 @@ func newRegistry(options RegistryOptions, source clock) (*Registry, error) {
 }
 
 func (registry *Registry) Acquire(ctx context.Context, request AcquireRequest) (Lease, error) {
-	if registry == nil || ctx == nil || !validAcquireRequest(request) {
+	if registry == nil || !configuredDependency(ctx) || !validAcquireRequest(request) {
 		return nil, ErrInvalidArgument
 	}
 	if err := ctx.Err(); err != nil {
@@ -183,7 +183,7 @@ func (registry *Registry) Acquire(ctx context.Context, request AcquireRequest) (
 }
 
 func (registry *Registry) Close(ctx context.Context) error {
-	if registry == nil || ctx == nil {
+	if registry == nil || !configuredDependency(ctx) {
 		return ErrInvalidArgument
 	}
 	registry.mu.Lock()
@@ -252,7 +252,7 @@ func (value *lease) PolicyIdentity() PolicyIdentity {
 }
 
 func (value *lease) OpenVerifiedConnection(ctx context.Context) (VerifiedAgentConnection, error) {
-	if value == nil || ctx == nil {
+	if value == nil || !configuredDependency(ctx) {
 		return nil, ErrInvalidArgument
 	}
 	if err := value.beginOpen(); err != nil {
@@ -331,7 +331,7 @@ func (value *lease) endOpen() {
 }
 
 func (value *lease) Close(ctx context.Context) error {
-	if value == nil || ctx == nil {
+	if value == nil || !configuredDependency(ctx) {
 		return ErrInvalidArgument
 	}
 	value.closeMu.Lock()

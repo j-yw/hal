@@ -26,7 +26,7 @@ type verifiedConnection struct {
 }
 
 func (connection *verifiedConnection) RoundTrip(ctx context.Context, request []byte) ([]byte, error) {
-	if connection == nil || ctx == nil {
+	if connection == nil || !configuredDependency(ctx) {
 		return nil, ErrInvalidArgument
 	}
 	connection.operationMu.Lock()
@@ -180,7 +180,7 @@ func (connection *verifiedConnection) endOperation() {
 }
 
 func (connection *verifiedConnection) Close(ctx context.Context) error {
-	if connection == nil || ctx == nil {
+	if connection == nil || !configuredDependency(ctx) {
 		return ErrInvalidArgument
 	}
 	connection.closeMu.Lock()

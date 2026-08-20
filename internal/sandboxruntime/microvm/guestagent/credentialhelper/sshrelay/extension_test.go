@@ -4,10 +4,18 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialhelper"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 )
+
+type typedNilContext struct{}
+
+func (*typedNilContext) Deadline() (time.Time, bool) { panic("typed nil context called") }
+func (*typedNilContext) Done() <-chan struct{}       { panic("typed nil context called") }
+func (*typedNilContext) Err() error                  { panic("typed nil context called") }
+func (*typedNilContext) Value(any) any               { panic("typed nil context called") }
 
 type fakeHost struct {
 	creates   int
@@ -73,6 +81,10 @@ func TestHelperFactoryOpenCreatesNoEndpointAndRejectsUnissuedPrepare(t *testing.
 	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatalf("Close(): %v", err)
+	}
+	var typedNil *typedNilContext
+	if session, err := registration.Factory.Open(typedNil, request); session != nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Factory.Open(typed nil context) = (%v, %v)", session, err)
 	}
 }
 
