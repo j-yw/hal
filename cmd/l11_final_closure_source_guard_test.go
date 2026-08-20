@@ -90,6 +90,29 @@ func TestL11FinalClosureSelectedPreparedTestsUseNoSyntheticAuthorityOrSkip(t *te
 	}
 }
 
+func TestL11FinalClosureTaggedSelectedSourceCannotHideSkip(t *testing.T) {
+	root := t.TempDir()
+	source := `//go:build l11_final_closure_integration
+
+package fixture
+
+import "testing"
+
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { t.Skip("missing") }
+`
+	if err := os.WriteFile(filepath.Join(root, "l11_tagged_test.go"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	packages, err := l11LoadSelectedTestPackages([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := l11SelectedPreparedTestIssues(packages)
+	if len(issues) != 1 || !strings.Contains(issues[0], "skip call") {
+		t.Fatalf("issues = %v, want one tagged selected-test skip issue", issues)
+	}
+}
+
 func TestL11FinalClosureSelectedPreparedSourceGuardRejectsMutations(t *testing.T) {
 	clean := `package fixture
 import "testing"
@@ -178,12 +201,104 @@ func skipMissing(t *testing.T) { t.Skip("missing") }
 			wantIssue: "skip call", wantIssues: 1,
 		},
 		{
+			name: "testing TB skip helper",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { skipMissing(t) }
+func skipMissing(t testing.TB) { t.Skip("missing") }
+`,
+			wantIssue: "skip call", wantIssues: 1,
+		},
+		{
+			name: "callback carried proof constructor",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { invoke(mint) }
+func invoke(callback func()) { callback() }
+func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "method expression proof constructor",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type helper struct{}
+func (helper) mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { mint := helper.mint; mint(helper{}) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "dot imported helper chain",
+			sources: map[string]string{
+				"root/fixture_test.go": `package fixture
+import (. "example.invalid/helper"; "testing")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { MintCleanup() }
+`,
+				"helper/helper.go": `package helper
+import "example.invalid/sandboxruntime"
+func MintCleanup() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
+var input any
+`,
+			},
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "returned closure proof constructor",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { returnedMint()() }
+func returnedMint() func() { return func() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) } }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
 			name: "billed cloud marker",
 			source: `package fixture
 import "testing"
 func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = "HCLOUD_TOKEN" }
 `,
 			wantIssue: "cloud/provider marker", wantIssues: 1,
+		},
+		{
+			name: "blank cloud provider import",
+			source: `package fixture
+import (_ "example.invalid/hetzner"; "testing")
+func TestL11PreparedLinuxFinalClosure(*testing.T) {}
+`,
+			wantIssue: "cloud/provider marker", wantIssues: 1,
+		},
+		{
+			name: "imported package init cloud access",
+			sources: map[string]string{
+				"root/fixture_test.go": `package fixture
+import (_ "example.invalid/helper"; "testing")
+func TestL11PreparedLinuxFinalClosure(*testing.T) {}
+`,
+				"helper/helper.go": `package helper
+func init() { _ = "HCLOUD_TOKEN" }
+`,
+			},
+			wantIssue: "cloud/provider marker", wantIssues: 1,
+		},
+		{
+			name: "split cloud provider literal",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(*testing.T) { provider := "het" + "zner"; _ = provider }
+`,
+			wantIssue: "cloud/provider marker", wantIssues: 1,
+		},
+		{
+			name: "negative cloud text is not provider selection",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = "Hetzner remains disabled" }
+`,
 		},
 		{
 			name: "generic Hetzner provider selection",
@@ -250,6 +365,28 @@ func unitFixtureOnly() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input
 				t.Fatalf("issue = %q, want fragment %q", issues[0], test.wantIssue)
 			}
 		})
+	}
+}
+
+func TestL11FinalClosureCallableAliasReassignmentConvergesAndFailsClosed(t *testing.T) {
+	source := `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	run := safe
+	run = unsafe
+	run()
+}
+func safe() {}
+func unsafe() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`
+	packages, err := l11ParseSelectedTestSources(map[string]string{"fixture_test.go": source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := l11SelectedPreparedTestIssues(packages)
+	if len(issues) != 1 || !strings.Contains(issues[0], "synthetic credential proof constructor") {
+		t.Fatalf("issues = %v, want one reassigned-alias proof issue", issues)
 	}
 }
 

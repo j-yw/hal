@@ -216,6 +216,15 @@ func TestL11FinalClosureReleaseEvidenceGuardRejectsMutations(t *testing.T) {
 		{name: "home-relative host path", marker: "\nRelease artifact: ~/.ssh/release-key\n"},
 		{name: "windows host path", marker: "\nRelease artifact: C:\\private\\l11\\result.json\n"},
 		{name: "windows UNC host path", marker: "\nRelease artifact: \\\\release-host\\private\\result.json\n"},
+		{name: "release hostname", marker: "\nRelease worker: sandbox-17.corp.example\n"},
+		{name: "release port", marker: "\nRelease listener port: 48217\n"},
+		{name: "release IPv4 address", marker: "\nRelease worker IP: 192.0.2.42\n"},
+		{name: "release IPv6 address", marker: "\nRelease worker IP: 2001:db8::42\n"},
+		{name: "release abstract socket", marker: "\nRelease socket: @hal-l11-worker\n"},
+		{name: "release PID", marker: "\nRelease PID: 4242\n"},
+		{name: "release provider handle", marker: "\nProvider handle: srv-01HZX8W9\n"},
+		{name: "release bearer credential", marker: "\nAuthorization: Bearer release-secret-value\n"},
+		{name: "contradictory release success", marker: "\nRelease result: passed.\n"},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {
