@@ -89,7 +89,9 @@ func TestL8AndL7LiveConfigProvidersAreMutuallyExclusiveBeforeEitherCall(t *testi
 		Config:    validMicroVMConfig(),
 		Target:    l7LiveConfigTestTarget("runtime-l8-mutual-exclusion"),
 	})
-	if err == nil || !strings.Contains(err.Error(), "live boot") {
+	var operationErr *microvm.OperationError
+	if err == nil || !errors.As(err, &operationErr) || operationErr.Field != "liveConfigProvider" ||
+		!errors.Is(err, microvm.ErrInvalidConfig) {
 		t.Fatalf("Start() error = %v, want sanitized provider mutual-exclusion error", err)
 	}
 	if l7Provider.calls != 0 || l8Provider.calls != 0 || adapter.prepareCalls != 0 || adapter.startCalls != 0 {
@@ -232,6 +234,31 @@ func TestBackendConfigJSONNeverProjectsL8Authority(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("BackendConfig JSON projected L8 authority marker %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestL8LiveConfigProviderDoesNotProjectTargetMetadata(t *testing.T) {
+	provider := &recordingL8LiveConfigProvider{panicOnCall: true}
+	backend := NewBackend(BackendOptions{L8LiveConfigProvider: provider})
+	target, err := backend.Create(context.Background(), microvm.BackendCreateRequest{
+		Operation: microvm.OperationCreate,
+		Name:      "l8-metadata-inert",
+		Config:    validMicroVMConfig(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"VerifiedL8", "verifiedL8", "l8Profile", "l8Assets", "production-credentials-profile"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("Target metadata projected L8 authority marker %q: %s", forbidden, encoded)
+		}
+	}
+	if provider.calls != 0 {
+		t.Fatalf("Create called default-off L8 provider %d times", provider.calls)
 	}
 }
 

@@ -35,8 +35,8 @@ Broad compile-only and quality checks remain:
 go test -run '^$' ./...
 go vet ./internal/sandboxruntime/microvm/firecracker ./cmd
 GOOS=linux GOARCH=amd64 go test -run '^$' ./internal/sandboxruntime/microvm/firecracker
-GOOS=darwin GOARCH=arm64 go test -run '^$' ./internal/sandboxruntime/microvm/firecracker
-GOOS=windows GOARCH=amd64 go test -run '^$' ./internal/sandboxruntime/microvm/firecracker
+GOOS=darwin GOARCH=arm64 go test -c -o /tmp/hal-l8-d6-firecracker-darwin-arm64.test ./internal/sandboxruntime/microvm/firecracker
+GOOS=windows GOARCH=amd64 go test -c -o /tmp/hal-l8-d6-firecracker-windows-amd64.test.exe ./internal/sandboxruntime/microvm/firecracker
 make build
 ```
 

@@ -11,7 +11,8 @@ func TestL8D6FirecrackerOverlayFoundationDocumentsTruthfulBoundary(t *testing.T)
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-d6-firecracker-overlay-foundation-verification.md"))
 	for _, required := range []string{
 		"Planning-only/default construction remains inert.",
-		"L8 authority is omitted from JSON and runtime target metadata",
+		"L8 authority is omitted from",
+		"JSON and runtime target metadata;",
 		"positive accepted-profile start path is deliberately unaccepted",
 		"EmbeddedExpectedPinnedCallsiteEvidence",
 		"l8_d6_live_firecracker_overlay",
