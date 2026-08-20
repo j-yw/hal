@@ -10,9 +10,10 @@ import (
 )
 
 func TestL10StrictCompositionProjectsSanitizedDecisionAcrossCommandFactoryAndStatus(t *testing.T) {
+	observedAt := time.Now().UTC()
 	decision := sandbox.SandboxStrictCompositionDecision{
 		State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady,
-		CompositionID: "composition-l10-projection", ObservedAt: time.Unix(1_900_200_000, 0), ExpiresAt: time.Unix(1_900_200_030, 0),
+		CompositionID: "composition-l10-projection", ObservedAt: observedAt, ExpiresAt: observedAt.Add(30 * time.Second),
 		Evidence: []sandbox.SandboxStrictCompositionEvidence{
 			{Kind: sandbox.SandboxStrictCompositionEvidenceRuntime, State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady},
 			{Kind: sandbox.SandboxStrictCompositionEvidenceCredential, State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady},
@@ -52,6 +53,44 @@ func TestL10StrictCompositionProjectsSanitizedDecisionAcrossCommandFactoryAndSta
 			if strings.Contains(string(payload), forbidden) {
 				t.Fatalf("%s projection leaked %q: %s", label, forbidden, payload)
 			}
+		}
+	}
+}
+
+func TestL10StrictCompositionProjectionsExpireActiveDecisions(t *testing.T) {
+	now := time.Now().UTC()
+	decision := sandbox.SandboxStrictCompositionDecision{
+		State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady,
+		CompositionID: "composition-l10-expired", ObservedAt: now.Add(-time.Minute), ExpiresAt: now.Add(-time.Second),
+		Evidence: []sandbox.SandboxStrictCompositionEvidence{
+			{Kind: sandbox.SandboxStrictCompositionEvidenceRuntime, State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady},
+			{Kind: sandbox.SandboxStrictCompositionEvidenceCredential, State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady},
+			{Kind: sandbox.SandboxStrictCompositionEvidenceTemplate, State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady},
+			{Kind: sandbox.SandboxStrictCompositionEvidenceWorkspace, State: sandbox.SandboxStrictCompositionStateActive, Code: sandbox.SandboxStrictCompositionCodeReady},
+		},
+	}
+	input := &sandbox.SandboxSecurity{StrictComposition: &decision}
+	command := sanitizeCommandSandboxSecurity(input)
+	status := newSandboxRuntimeSecuritySummary(input)
+	factoryMetadata := factorySandboxSecurityMetadata(input)
+	timeline := factorySandboxSecurityTimelineMetadata(factoryMetadata)
+
+	projected := map[string]*sandbox.SandboxStrictCompositionDecision{
+		"command": command.StrictComposition,
+		"status":  status.StrictComposition,
+		"factory": factoryMetadata.StrictComposition,
+	}
+	if value, ok := timeline["strictComposition"].(*sandbox.SandboxStrictCompositionDecision); ok {
+		projected["timeline"] = value
+	} else {
+		t.Fatalf("timeline strict composition = %#v, want decision pointer", timeline["strictComposition"])
+	}
+	for label, got := range projected {
+		if got == nil || got.State != sandbox.SandboxStrictCompositionStateBlocked || got.Code != sandbox.SandboxStrictCompositionCodeAttestationStale {
+			t.Fatalf("%s strict composition = %#v, want blocked attestation_stale", label, got)
+		}
+		if got.CompositionID != "" || !got.ObservedAt.IsZero() || !got.ExpiresAt.IsZero() || len(got.Evidence) != 0 {
+			t.Fatalf("%s expired projection retained authority-shaped fields: %#v", label, got)
 		}
 	}
 }
