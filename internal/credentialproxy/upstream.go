@@ -110,7 +110,13 @@ func readAzureResponsesResponse(connection net.Conn, definition ServiceDefinitio
 	if err != nil {
 		return applicationroute.Response{}, ErrRouteResponseRejected
 	}
-	defer response.Body.Close()
+	accepted := false
+	defer func() {
+		if !accepted {
+			_ = connection.Close()
+		}
+		_ = response.Body.Close()
+	}()
 	if response.ProtoMajor != 1 || response.ProtoMinor != 1 || response.StatusCode < 200 ||
 		response.Header.Get("Upgrade") != "" || len(response.Trailer) != 0 ||
 		!validAzureResponsesContentEncoding(response) || response.Uncompressed {
@@ -122,6 +128,9 @@ func readAzureResponsesResponse(connection net.Conn, definition ServiceDefinitio
 		return applicationroute.Response{}, ErrRouteResponseRejected
 	}
 	if !validAzureResponsesTransferFraming(response) {
+		return applicationroute.Response{}, ErrRouteResponseRejected
+	}
+	if response.ContentLength > limits.MaxResponseBodyBytes {
 		return applicationroute.Response{}, ErrRouteResponseRejected
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, limits.MaxResponseBodyBytes+1))
@@ -141,6 +150,7 @@ func readAzureResponsesResponse(connection net.Conn, definition ServiceDefinitio
 		wipeBytes(body)
 		return applicationroute.Response{}, ErrRouteResponseRejected
 	}
+	accepted = true
 	return applicationroute.Response{
 		Metadata: applicationroute.ResponseMetadata{
 			StatusCode: response.StatusCode, ContentType: contentType, HeaderBytes: int64(len(header)),
