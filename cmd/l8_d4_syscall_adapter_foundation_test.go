@@ -10,6 +10,116 @@ import (
 	"testing"
 )
 
+func TestL8D4HostEvidenceHasOneProductionConsumerOutsideGuest(t *testing.T) {
+	sources := readL8D4ProductionSources(t, filepath.Join("..", "internal", "sandboxruntime", "microvm"))
+	if err := validateL8D4ProductionHostEvidenceBoundary(sources); err != nil {
+		t.Fatal(err)
+	}
+
+	mutations := []struct {
+		name   string
+		path   string
+		source string
+	}{
+		{
+			name: "extra guest issuer call",
+			path: "guestagent/credentialhelper/linux/reviewer_mutation.go",
+			source: `package linux
+import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+func reviewerMutation() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence() }
+`,
+		},
+		{
+			name: "extra guest evidence import",
+			path: "guestagent/credentialhelper/linux/reviewer_mutation.go",
+			source: `package linux
+import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+func reviewerMutation() { _, _ = syscallpolicy.ImportPinnedCallsiteEvidence(nil, syscallpolicy.VerifiedPolicyArtifact{}, syscallpolicy.ExpectedPinnedCallsiteEvidence{}) }
+`,
+		},
+		{
+			name: "guest issuer alias",
+			path: "guestagent/credentialhelper/linux/reviewer_mutation.go",
+			source: `package linux
+import policy "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+var reviewerMutation = policy.EmbeddedExpectedPinnedCallsiteEvidence
+`,
+		},
+		{
+			name: "guest dot import",
+			path: "guestagent/credentialhelper/linux/reviewer_mutation.go",
+			source: `package linux
+import . "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+func reviewerMutation() { _, _ = EmbeddedExpectedPinnedCallsiteEvidence() }
+`,
+		},
+		{
+			name: "second host consumer",
+			path: "firecrackerhost/reviewer_mutation.go",
+			source: `package firecrackerhost
+import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+func reviewerMutation() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence() }
+`,
+		},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := cloneL8D4ProductionSources(sources)
+			mutated[mutation.path] = mutation.source
+			if err := validateL8D4ProductionHostEvidenceBoundary(mutated); err == nil {
+				t.Fatal("host-evidence production guard accepted mutation")
+			}
+		})
+	}
+
+	t.Run("missing sole localresolver issuer", func(t *testing.T) {
+		mutated := cloneL8D4ProductionSources(sources)
+		const path = "assets/localresolver/l8_distribution_verifier.go"
+		mutated[path] = strings.Replace(mutated[path], "expectedEvidence, err := syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()", "var expectedEvidence syscallpolicy.ExpectedPinnedCallsiteEvidence", 1)
+		if mutated[path] == sources[path] {
+			t.Fatal("mutation did not remove localresolver issuer")
+		}
+		if err := validateL8D4ProductionHostEvidenceBoundary(mutated); err == nil {
+			t.Fatal("host-evidence production guard accepted missing sole issuer")
+		}
+	})
+}
+
+func readL8D4ProductionSources(t *testing.T, root string) map[string]string {
+	t.Helper()
+	sources := make(map[string]string)
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		sources[filepath.ToSlash(relative)] = string(payload)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read D4 production sources: %v", err)
+	}
+	return sources
+}
+
+func cloneL8D4ProductionSources(source map[string]string) map[string]string {
+	clone := make(map[string]string, len(source)+1)
+	for path, text := range source {
+		clone[path] = text
+	}
+	return clone
+}
+
 func TestL8D4SyscallAdapterFoundationIsTruthfullyDocumented(t *testing.T) {
 	document := readL8D4SyscallAdapterFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-d4-syscall-adapter-foundation-verification.md"))
 	for _, marker := range []string{

@@ -17,6 +17,9 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 	if err := validateL8D6HelperOptionsContract(block); err != nil {
 		t.Fatal(err)
 	}
+	if err := validateL8D6HelperCompositionDocument(document); err != nil {
+		t.Fatal(err)
+	}
 
 	mutations := []struct {
 		name    string
@@ -41,7 +44,33 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 			}
 		})
 	}
+
+	documentMutations := []struct {
+		name   string
+		suffix string
+	}{
+		{name: "host runtime type assertion", suffix: "\n\nNewHelper may recover Host and Runtime through a type assertion on Core.\n"},
+		{name: "host derived from core", suffix: "\n\nHelperOptions.Host may be derived from HelperOptions.Core.\n"},
+		{name: "runtime recovered from core", suffix: "\n\nHelperOptions.Runtime may be recovered from HelperOptions.Core.\n"},
+		{name: "core substitutes service dependencies", suffix: "\n\nCore may implement ExtensionHost and ServiceRuntime instead of the explicit fields.\n"},
+		{name: "core supplies hidden dependencies", suffix: "\n\nHost and Runtime may be obtained using Core.\n"},
+	}
+	for _, mutation := range documentMutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			if err := validateL8D6HelperCompositionDocument(document + mutation.suffix); err == nil {
+				t.Fatal("HelperOptions documentation guard accepted hidden service dependency")
+			}
+		})
+	}
+
+	t.Run("duplicate normative rule", func(t *testing.T) {
+		if err := validateL8D6HelperCompositionDocument(document + "\n\n" + l8D6HelperIndependentServiceDependencyRule + "\n"); err == nil {
+			t.Fatal("HelperOptions documentation guard accepted duplicate normative rule")
+		}
+	})
 }
+
+const l8D6HelperIndependentServiceDependencyRule = "`HelperOptions.Host` and `HelperOptions.Runtime` are explicit, independent, mandatory service dependencies. `HelperOptions.Core` is accepted only as `credentialhelper.Core` and supplies neither dependency. The Host and Runtime fields are the sole sources of `credentialhelper.ExtensionHost` and `credentialhelper.ServiceRuntime`; `NewHelper` validates them independently and passes those exact values directly to `credentialhelper.NewService`. `SSH` is only an extension registration and cannot replace either service dependency."
 
 func l8D6HelperOptionsBlock(t *testing.T, document string) string {
 	t.Helper()
