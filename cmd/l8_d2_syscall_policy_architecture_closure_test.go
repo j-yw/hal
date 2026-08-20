@@ -46,6 +46,7 @@ func TestL8D2GuestHelperSyscallPolicyArchitectureClosureIsNormative(t *testing.T
 		"golang.org/x/sys@v0.41.0",
 		"d12bc509fbe79afd804a66297c7517076eea6f3c8d82780630cd07f561b043b6",
 		"kernel ceiling:u32=450",
+		"the exact legacy row `156,_sysctl`",
 		"`cgroup.kill` with exactly `O_WRONLY|O_CLOEXEC`",
 		"`cgroup.events` with exactly `O_RDONLY|O_CLOEXEC`",
 		"`O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC` and mode `0600`",

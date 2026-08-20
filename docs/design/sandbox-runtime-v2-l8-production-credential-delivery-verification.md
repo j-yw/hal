@@ -98,10 +98,13 @@ Guards must prove:
 - image and syscall coordination guards require the six policy/evidence
   process-composition digests in the exact manifest/provenance/final-inspection/
   fingerprint order; nonzero private profile/lease correlation of the four
-  host-authority bindings plus measured rootfs image digest; preservation
+  host-authority bindings plus measured rootfs image digest; the fingerprint
+  builder returns the measured image digest separately and the sole profile
+  sealer receives it explicitly; preservation
   through acquisition and `PrepareLaunch`; and no public digest accessor;
 - `L8DistributionRequest.PinnedCallsiteEvidence` is non-nil, nonempty, at most
-  16 MiB, copied before hash/import, mutation-isolated, imported only with
+  16 MiB with that bound checked before snapshot allocation, copied before
+  hash/import, mutation-isolated, imported only with
   `EmbeddedVerifiedPolicyArtifact` and
   `EmbeddedExpectedPinnedCallsiteEvidence`, and not retained as caller bytes or
   an evidence graph after sealing. D7 supplies fixed HL8E bytes while the
@@ -124,7 +127,9 @@ Guards must prove:
   evidence import, whose result feeds derivation; three independently decoded
   document records feed the controlling validation, its error dominates all
   fingerprint/profile/distribution sealing, and protected values are not
-  reassigned. The verifier mints no lease; failed validation returns no
+  reassigned. The sole distribution sealer also receives the already validated
+  manifest, provenance, normalized descriptor, and clean root directory; it
+  never reconstructs lease source state from a cache or mutable path. The verifier mints no lease; failed validation returns no
   distribution from which `AcquireL8AssetLease` could later issue one. Seeded dead/discarded/unreachable/noncontrolling/late,
   aliased/lookalike/wrong-receiver paths all reject. It also parses the exact
   runnable product test and ordered 3x6 table, rejects comment/string/dead,

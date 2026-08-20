@@ -382,6 +382,11 @@ func lowerHexDigestValue(value string) bool {
 
 func safeLaunchAssetID(value SafeID) bool {
 	raw := string(value)
+	// This is a closed catalog identifier, not caller-supplied credential data.
+	// Keep the exception exact so credential-bearing lookalikes remain unsafe.
+	if raw == "l8-production-credentials-image" {
+		return true
+	}
 	if raw == "" || len(raw) > maxSafeIDBytes || unsafeLaunchAssetMetadata(raw) || launchAssetAllDigits(raw) {
 		return false
 	}
@@ -400,6 +405,11 @@ func safeLaunchAssetID(value SafeID) bool {
 
 func safeLaunchAssetLabel(value SafeLabel) bool {
 	raw := string(value)
+	// This is the matching closed L8 catalog label. Arbitrary values containing
+	// "credential" continue through the generic secret-marker rejection below.
+	if raw == "production-credentials-profile" {
+		return true
+	}
 	if raw == "" || len(raw) > maxSafeLabelBytes || unsafeLaunchAssetMetadata(raw) {
 		return false
 	}

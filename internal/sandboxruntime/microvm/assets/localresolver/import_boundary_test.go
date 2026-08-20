@@ -187,6 +187,18 @@ func TestLocalResolverAllowsReadOnlyFilesystemAndHashingImports(t *testing.T) {
 	}
 }
 
+func TestLocalResolverConfinesL8PolicyAuthorityImport(t *testing.T) {
+	const policyPath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+	for _, fileName := range []string{"l8_distribution_verifier.go", "l8_policy_composition_correlation.go"} {
+		if message := localResolverProductionImportBoundaryMessage(fileName, policyPath); message != "" {
+			t.Fatalf("exact L8 authority file %q rejected: %s", fileName, message)
+		}
+	}
+	if message := localResolverProductionImportBoundaryMessage("resolver.go", policyPath); !strings.Contains(message, "unapproved L8 policy authority dependency") {
+		t.Fatalf("ordinary resolver policy import = %q, want exact-file rejection", message)
+	}
+}
+
 func localResolverProductionFiles(t *testing.T) []string {
 	t.Helper()
 
@@ -221,6 +233,14 @@ func localResolverProductionImportBoundaryMessage(fileName, importPath string) s
 	}
 	if importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/build" {
 		return ""
+	}
+	if importPath == "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy" {
+		switch filepath.Base(fileName) {
+		case "l8_distribution_verifier.go", "l8_policy_composition_correlation.go":
+			return ""
+		default:
+			return fmt.Sprintf("package %s file %s imports unapproved L8 policy authority dependency %q", localResolverPackagePath, fileName, importPath)
+		}
 	}
 	if importPath == "golang.org/x/sys/unix" {
 		return ""

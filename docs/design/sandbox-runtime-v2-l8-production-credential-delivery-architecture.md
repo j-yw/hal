@@ -5416,7 +5416,9 @@ its external HL8E evidence; the first two fields are immutable views derived
 from the sole HL8Q artifact, never separate artifacts. Private launch-material
 preparation may remint only the descriptor fingerprint and must copy the
 evidence fingerprint, four host-authority bindings, and measured rootfs image
-digest unchanged. This prevents
+digest unchanged. The fingerprint builder returns that independently measured
+image digest separately from the evidence fingerprint, and the sole profile
+sealer receives both as distinct arguments. This prevents
 evidence substitution through a descriptor-only proof while preserving the L7
 API and artifacts byte-for-byte.
 
@@ -5480,7 +5482,8 @@ enable production.
 
 The local-resolver request has final field
 `PinnedCallsiteEvidence []byte`. It is non-nil, nonempty, and at most 16 MiB;
-the resolver deep-snapshots `PinnedCallsiteEvidence` before hashing or import,
+the resolver checks that bound before allocating the snapshot and then
+deep-snapshots `PinnedCallsiteEvidence` before hashing or import,
 so caller mutation cannot affect verification. It accepts authority only from
 `EmbeddedVerifiedPolicyArtifact` and
 `EmbeddedExpectedPinnedCallsiteEvidence`, imports that copied HL8E against the
@@ -5510,7 +5513,10 @@ accessor or comparison marker calls do not satisfy the guard.
 The AST closure crosses the helper/issuer boundary. It parses exact production
 file `localresolver/l8_distribution_verifier.go` and the real top-level
 `VerifyL8DistributionBundle`, whose protected imported/decoded/derived values
-are single-assignment and whose exact contiguous authority block passes the
+are single-assignment. The same closure protects the normalized descriptor and
+validated clean root directory and passes them, with the validated manifest and
+provenance, to the sole distribution sealer; lease source state is never
+recovered from a cache or an unvalidated path. Its exact contiguous authority block passes the
 successful embedded HL8Q result plus the separately checked embedded expected-
 HL8E result and copied HL8E bytes to import, then passes the imported evidence
 with the artifact to derivation. Its

@@ -6148,6 +6148,10 @@ The exact L8 distribution contains exactly seven regular files, in byte-order:
 `provenance.json`, `rootfs.ext4`, `sources.lock.json`, and `vmlinux`.
 `SHA256SUMS` contains exactly the other six names in that order. The evidence
 fingerprint uses the digest and size measured from every no-follow-opened file:
+each of the five metadata files is nonempty and at most 4 MiB, and each of
+`vmlinux` and `rootfs.ext4` is nonempty and at most 1 GiB. Size is checked from
+the opened regular file before hashing and an extra trailing byte is rejected,
+so an oversized installed file cannot force an unbounded digest pass.
 
 ```text
 SHA256(
@@ -6307,7 +6311,8 @@ func VerifyL8DistributionBundle(L8DistributionRequest) (VerifiedDistribution, er
 ```
 
 The final request field is exact. `PinnedCallsiteEvidence` must be non-nil,
-nonempty, and at most 16 MiB (`16777216` bytes). The resolver deep-snapshots
+nonempty, and at most 16 MiB (`16777216` bytes). The resolver checks that
+bound before allocating the snapshot, then deep-snapshots
 `PinnedCallsiteEvidence` before hashing or import, so caller mutation cannot
 affect verification, a returned value, or an error. It obtains the sole policy
 authority only from `syscallpolicy.EmbeddedVerifiedPolicyArtifact()` and the
@@ -6422,6 +6427,7 @@ the exact production file
 `VerifyL8DistributionBundle(request L8DistributionRequest)
 (VerifiedDistribution, error)` body owns these protected one-assignment values:
 `manifest`, `provenance`, `sourceLock`, `finalInspection`,
+`descriptor`, `rootDir`,
 `pinnedCallsiteEvidenceBytes`, `artifact`, `expectedEvidence`, `evidence`,
 `manifestPolicyComposition`, `provenancePolicyComposition`,
 `finalInspectionPolicyComposition`, `derivedPolicyComposition`,
@@ -6430,7 +6436,9 @@ The four exact bounded decoder/error pairs form an ordered prelude, not the
 closed authority block. Their assignments and immediately following matching
 error returns are ordered, while all existing pure document, parent, checksum,
 catalog, and final-inspection validation occurs after those decodes and before
-the authority block. It may not reassign a protected value, branch around an
+the authority block. That validation produces one normalized `descriptor` and
+one validated, clean `rootDir`; both are protected one-assignment values. It may
+not reassign a protected value, branch around an
 anchor, or construct or return L8 authority before correlation succeeds.
 
 The prelude obtains `manifest`, `provenance`, `sourceLock`, and
@@ -6443,7 +6451,11 @@ contiguous, ordered top-level authority block; each import/process-composition
 decode is followed immediately by its nonnil-error return:
 
 ```go
-pinnedCallsiteEvidenceBytes := append([]byte(nil), request.PinnedCallsiteEvidence...)
+pinnedCallsiteEvidenceBytes, err := snapshotL8PinnedCallsiteEvidence(
+	request.PinnedCallsiteEvidence,
+)
+if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceError(err) }
+defer wipeL8PinnedEvidence(pinnedCallsiteEvidenceBytes)
 artifact, err := syscallpolicy.EmbeddedVerifiedPolicyArtifact()
 if err != nil { return VerifiedDistribution{}, classifyL8PolicyArtifactError(err) }
 expectedEvidence, err := syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()
@@ -6454,9 +6466,9 @@ evidence, err := syscallpolicy.ImportPinnedCallsiteEvidence(
 	expectedEvidence,
 )
 if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceError(err) }
-manifestPolicyComposition, err := decodeL8PolicyCompositionDigests(manifest.ProcessComposition)
+manifestPolicyComposition, err := decodeL8PolicyCompositionDigests(manifest.L8Profile.ProcessComposition)
 if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }
-provenancePolicyComposition, err := decodeL8PolicyCompositionDigests(provenance.ProcessComposition)
+provenancePolicyComposition, err := decodeL8PolicyCompositionDigests(provenance.L8Profile.ProcessComposition)
 if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }
 finalInspectionPolicyComposition, err := decodeL8PolicyCompositionDigests(finalInspection.ProcessComposition)
 if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }
@@ -6498,8 +6510,21 @@ That controlling top-level validation must precede the first
 `buildL8EvidenceFingerprint`, `sealVerifiedL8Profile`,
 or `sealVerifiedL8Distribution` call and every successful
 `(VerifiedDistribution, nil)` return. The derived value is passed to the
-fingerprint and profile seal; the profile, fingerprint, and derived authority
-are passed to the sole successful distribution seal. The verifier does not
+fingerprint builder. That builder returns the evidence fingerprint and the
+independently measured rootfs `imageSHA256`; it receives only the already
+validated `parentL7EvidenceSHA256`, never the parent distribution authority.
+The exact profile seal is
+`sealVerifiedL8Profile(descriptorFingerprint, evidenceFingerprint,
+imageSHA256, derivedPolicyComposition)`, where `descriptorFingerprint` is
+computed once from the already normalized descriptor and protected from
+reassignment.
+The profile, fingerprint, and derived authority are passed to the sole
+successful distribution seal together with the already validated manifest,
+provenance, descriptor, and clean root directory:
+`sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint,
+derivedPolicyComposition, manifest, provenance, descriptor, rootDir)`. This is
+the only point that installs the public bundle projection and private lease
+source state; no package cache or later path rediscovery supplies them. The verifier does not
 mint a `VerifiedL8AssetLease`: only a successfully returned verified
 distribution can later service `AcquireL8AssetLease`, so correlation failure
 transitively makes lease issuance unreachable. Discarding the error, placing validation in unreachable or
@@ -6520,8 +6545,7 @@ retain `AcquireL8AssetLease`, `PrepareLaunch`, or any case-insensitive
 `mint`, `new`, `create`, `construct`, `make`, `build`, `issue`, `seal`,
 `acquire`, `prepare`, or `remint`-prefixed API whose name contains
 `VerifiedL8Profile`, `VerifiedDistribution`, or `VerifiedL8AssetLease`.
-The guard treats `VerifiedL8Profile`, `VerifiedDistribution`,
-`VerifiedL8AssetLease`, `verifiedL8ProfileSeal`,
+The guard treats `VerifiedL8Profile`, `VerifiedL8AssetLease`, `verifiedL8ProfileSeal`,
 `verifiedL8PolicyAuthorityBindings`, `verifiedL8ProfileCorrelation`,
 `verifiedL8LeaseCorrelation`, and `verifiedL8AssetLeaseState` as the closed
 authority-owner graph. Exact signature-locked profile/distribution sealers and
@@ -6551,7 +6575,13 @@ conservatively, and marks a name authority-containing when any definition can
 reach authority. Cyclic, aliased, and generic-instantiated definitions converge
 under the same rule, so a benign alternate definition cannot mask an
 authority-bearing one in another build context.
-Zero `VerifiedDistribution{}` error returns remain non-authority.
+The pre-existing generic `VerifiedDistribution` carrier remains usable by its
+L5/L7 verifier and resolver paths: it becomes L8 authority only when a keyed
+literal installs one of its private `l8Profile`, `l8EvidenceFingerprint`, or
+`l8PolicyComposition` fields. Unkeyed literals are rejected. Zero and ordinary
+L5/L7 keyed `VerifiedDistribution` values remain non-authority, so the L8 guard
+does not break the already-landed lower-profile verifier while still confining
+the sole L8 distribution seal.
 
 The complete runtime regression is exact file
 `localresolver/l8_distribution_verifier_test.go`. The sole runnable test owns
@@ -6635,8 +6665,9 @@ is uncertain.
 The opaque value contains one active private seal and the exact
 `verifiedL8ProfileCorrelation` above. The policy authority record contains the
 four host-only authority bindings plus the measured rootfs image digest; every
-member is nonzero. `imageSHA256` is the measured rootfs image digest from the
-no-follow-opened `rootfs.ext4`, not a manifest-only claim. There is no public
+member is nonzero. `imageSHA256` is the measured rootfs image digest returned
+separately from the evidence fingerprint after no-follow opening
+`rootfs.ext4`, not a manifest-only claim. There is no public
 digest accessor. `VerifiedL8ProfileMatches` validates and
 normalizes the candidate and compares only against the sealed descriptor
 fingerprint; the evidence fingerprint is intentionally not caller-readable.
@@ -6684,6 +6715,10 @@ plus a sanitized error and does not call `Close`; failure leaves writer
 ownership with the caller.
 A failed call does not consume the successful single-use latch;
 the caller may retry only with a new writer after closing the failed writer.
+Every `L8LaunchMaterialWriter` callback is panic-contained. A `WriteAsset` panic
+is a sanitized file-unavailable failure, a `Validate` panic is an asset-lock
+mismatch, and a `Close` panic is retained as sanitized cleanup failure while
+the lease continues closing every pinned source handle.
 The Firecracker caller closes the failed writer exactly once and joins the sanitized
 close error with the primary error without replacing it. Only after
 all validation and final confirmation succeed does `PrepareLaunch` latch the

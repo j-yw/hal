@@ -369,7 +369,9 @@ The module and path are exactly
 SHA-256 is
 `d12bc509fbe79afd804a66297c7517076eea6f3c8d82780630cd07f561b043b6`,
 and kernel ceiling:u32=450. Module/path lengths are their exact byte lengths;
-names match `^[a-z][a-z0-9_]{0,63}$`. D7 derives the catalog from that pinned module source, never
+names match `^[a-z][a-z0-9_]{0,63}$`, except that the exact legacy row `156,_sysctl`
+is derived from `SYS__SYSCTL`; no other row may begin with an underscore and row
+156 may have no other name. D7 derives the catalog from that pinned module source, never
 host headers, including every and only `SYS_*` assignment whose number is at
 most 450 and converting its suffix to lowercase. Constants above 450 are source
 evidence for the closed ceiling but are not catalog rows. D2 verifies grammar, order, uniqueness, bounds, source identity,
@@ -2156,7 +2158,8 @@ The exact private field is `policyAuthority verifiedL8PolicyAuthorityBindings`.
 
 The local-resolver `L8DistributionRequest` has final field
 `PinnedCallsiteEvidence []byte`. It must be non-nil, nonempty, and at most 16
-MiB. The resolver deep-snapshots `PinnedCallsiteEvidence` before hashing or
+MiB. The resolver checks that bound before allocating the snapshot, then
+deep-snapshots `PinnedCallsiteEvidence` before hashing or
 import, so caller mutation cannot affect verification. It imports only against
 `EmbeddedVerifiedPolicyArtifact` and
 `EmbeddedExpectedPinnedCallsiteEvidence`, retains no caller slice or imported
@@ -2231,6 +2234,12 @@ seal, distribution seal, and successful return. The verifier mints no lease;
 without a successful verified distribution, later `AcquireL8AssetLease` is
 unreachable. Protected values are assigned once. Dead, unreachable, discarded, aliased, reassigned,
 lookalike, or post-issuance validation fails the AST guard.
+The fingerprint builder returns both `evidenceFingerprint` and the
+independently measured rootfs `imageSHA256`. The sole exact profile-seal call
+is `sealVerifiedL8Profile(descriptorFingerprint, evidenceFingerprint,
+imageSHA256, derivedPolicyComposition)`; the descriptor fingerprint comes from
+the already normalized launch descriptor, and an evidence fingerprint or document digest cannot
+stand in for measured image authority.
 Package-wide parsed reference guards have no basename-wide allowlist: they
 parse every production declaration and permit each protected fingerprint,
 profile-seal, distribution-seal, and correlation-classifier reference only as

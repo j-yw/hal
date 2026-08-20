@@ -25,12 +25,16 @@ var requiredVersions = Versions{
 
 // ValidateDistributionManifest validates the stable L5 distribution shape.
 func ValidateDistributionManifest(manifest DistributionManifest) error {
+	if manifest.ImageProfile == ImageProfileL8ProductionCredentials {
+		return ValidateL8DistributionManifest(manifest)
+	}
 	if manifest.SchemaVersion != SchemaVersionV1 ||
 		manifest.Architecture != "x86_64" ||
 		!validVersions(manifest.Versions) ||
 		manifest.GuestAgent.Protocol != "guest-agent-v1" ||
 		!equalStrings(manifest.GuestAgent.Features, requiredFeatures) ||
-		!validImageNetworkProfile(manifest.ImageProfile, manifest.GuestNetwork) {
+		!validImageNetworkProfile(manifest.ImageProfile, manifest.GuestNetwork) ||
+		manifest.L8Profile != nil {
 		return errInvalidDistribution
 	}
 	if len(manifest.Assets) != 2 {
@@ -66,6 +70,9 @@ func ValidateDistributionManifest(manifest DistributionManifest) error {
 
 // ValidateProvenance validates the path-free deterministic provenance shape.
 func ValidateProvenance(provenance Provenance) error {
+	if provenance.ImageProfile == ImageProfileL8ProductionCredentials {
+		return ValidateL8Provenance(provenance)
+	}
 	if provenance.SchemaVersion != SchemaVersionV1 ||
 		!validHex(provenance.SourceRevision, 40) ||
 		!safeSourceTree(provenance.SourceTree) ||
@@ -77,6 +84,7 @@ func ValidateProvenance(provenance Provenance) error {
 		provenance.GuestAgent.Protocol != "guest-agent-v1" ||
 		!equalStrings(provenance.GuestAgent.Features, requiredFeatures) ||
 		!validImageNetworkProfile(provenance.ImageProfile, provenance.GuestNetwork) ||
+		provenance.L8Profile != nil ||
 		len(provenance.Outputs) != 2 {
 		return errInvalidProvenance
 	}
@@ -101,6 +109,9 @@ func ValidateProvenance(provenance Provenance) error {
 
 // ValidateProvenanceAgainstManifest requires every duplicated fact to match.
 func ValidateProvenanceAgainstManifest(provenance Provenance, manifest DistributionManifest) error {
+	if provenance.ImageProfile == ImageProfileL8ProductionCredentials || manifest.ImageProfile == ImageProfileL8ProductionCredentials {
+		return ValidateL8ProvenanceAgainstManifest(provenance, manifest)
+	}
 	if err := ValidateProvenance(provenance); err != nil {
 		return err
 	}

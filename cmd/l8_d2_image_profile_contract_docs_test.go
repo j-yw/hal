@@ -41,6 +41,9 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 		"exactly these 22 records",
 		"l8-production-credentials-image",
 		"exactly seven regular files",
+		"five metadata files is nonempty and at most 4 MiB",
+		"`vmlinux` and `rootfs.ext4` is nonempty and at most 1 GiB",
+		"an oversized installed file cannot force an unbounded digest pass",
 		"final-inspection.json",
 		"sources.lock.json",
 		"parent L7 evidence fingerprint",
@@ -57,6 +60,7 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 		"failure leaves writer",
 		"ownership with the caller",
 		"failed call does not consume the successful single-use latch",
+		"Every `L8LaunchMaterialWriter` callback is panic-contained",
 		"success atomically transfers writer ownership to the lease",
 		"joins the sanitized",
 		"close error with the primary error",
@@ -126,9 +130,12 @@ func TestL8D2ImageProfileContractClosureIsImplementationReady(t *testing.T) {
 		"type verifiedL8PolicyAuthorityBindings struct",
 		"policyAuthority verifiedL8PolicyAuthorityBindings",
 		"measured rootfs image digest",
+		"provenance, descriptor, and clean root directory",
 		"PinnedCallsiteEvidence []byte",
 		"non-nil, nonempty, and at most 16 MiB",
+		"checks that bound before allocating the snapshot",
 		"deep-snapshots `PinnedCallsiteEvidence` before hashing or import",
+		"defer wipeL8PinnedEvidence(pinnedCallsiteEvidenceBytes)",
 		"caller mutation cannot affect verification",
 		"EmbeddedVerifiedPolicyArtifact",
 		"EmbeddedExpectedPinnedCallsiteEvidence",
@@ -463,16 +470,20 @@ func VerifyL8DistributionBundle(request L8DistributionRequest) (VerifiedDistribu
 	if err != nil { return VerifiedDistribution{}, classifyL8SourceLockError(err) }
 	finalInspection, err := decodeL8FinalInspection(request.DistributionRequest)
 	if err != nil { return VerifiedDistribution{}, classifyL8FinalInspectionError(err) }
-	pinnedCallsiteEvidenceBytes := append([]byte(nil), request.PinnedCallsiteEvidence...)
+	descriptor, rootDir, parentL7EvidenceSHA256, err := validateL8BundleState(request.DistributionRequest, manifest, provenance, sourceLock, finalInspection, request.ParentL7)
+	if err != nil { return VerifiedDistribution{}, classifyL8BundleStateError(err) }
+	pinnedCallsiteEvidenceBytes, err := snapshotL8PinnedCallsiteEvidence(request.PinnedCallsiteEvidence)
+	if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceError(err) }
+	defer wipeL8PinnedEvidence(pinnedCallsiteEvidenceBytes)
 	artifact, err := syscallpolicy.EmbeddedVerifiedPolicyArtifact()
 	if err != nil { return VerifiedDistribution{}, classifyL8PolicyArtifactError(err) }
 	expectedEvidence, err := syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()
 	if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceExpectationError(err) }
 	evidence, err := syscallpolicy.ImportPinnedCallsiteEvidence(pinnedCallsiteEvidenceBytes, artifact, expectedEvidence)
 	if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceError(err) }
-	manifestPolicyComposition, err := decodeL8PolicyCompositionDigests(manifest.ProcessComposition)
+	manifestPolicyComposition, err := decodeL8PolicyCompositionDigests(manifest.L8Profile.ProcessComposition)
 	if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }
-	provenancePolicyComposition, err := decodeL8PolicyCompositionDigests(provenance.ProcessComposition)
+	provenancePolicyComposition, err := decodeL8PolicyCompositionDigests(provenance.L8Profile.ProcessComposition)
 	if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }
 	finalInspectionPolicyComposition, err := decodeL8PolicyCompositionDigests(finalInspection.ProcessComposition)
 	if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }
@@ -480,11 +491,17 @@ func VerifyL8DistributionBundle(request L8DistributionRequest) (VerifiedDistribu
 	if err := validateL8PolicyCompositionCorrelation(derivedPolicyComposition, manifestPolicyComposition, provenancePolicyComposition, finalInspectionPolicyComposition); err != nil {
 		return VerifiedDistribution{}, classifyL8PolicyCompositionCorrelationError(err)
 	}
-	evidenceFingerprint, err := buildL8EvidenceFingerprint(manifest, provenance, sourceLock, finalInspection, request.ParentL7, derivedPolicyComposition)
+	evidenceFingerprint, imageSHA256, err := buildL8EvidenceFingerprint(request.DistributionRequest, manifest, provenance, sourceLock, finalInspection, parentL7EvidenceSHA256, derivedPolicyComposition)
 	if err != nil { return VerifiedDistribution{}, classifyL8EvidenceFingerprintError(err) }
-	verifiedL8Profile, err := sealVerifiedL8Profile(evidenceFingerprint, derivedPolicyComposition)
+	descriptorFingerprint, err := buildL8DescriptorFingerprint(descriptor)
 	if err != nil { return VerifiedDistribution{}, classifyL8ProfileSealError(err) }
-	return sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition), nil
+	verifiedL8Profile, err := sealVerifiedL8Profile(descriptorFingerprint, evidenceFingerprint, imageSHA256, derivedPolicyComposition)
+	if err != nil { return VerifiedDistribution{}, classifyL8ProfileSealError(err) }
+	return sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition, manifest, provenance, descriptor, rootDir), nil
+}
+func snapshotL8PinnedCallsiteEvidence(source []byte) ([]byte, error) {
+	if len(source) == 0 || len(source) > l8MaxPinnedEvidenceBytes { return nil, ErrAssetLockMismatch }
+	return append([]byte(nil), source...), nil
 }
 func classifyL8PolicyCompositionCorrelationError(_ error) error {
 	return newResolverError(ErrorCodeAssetLockMismatch, "processComposition", "", "L8 policy composition correlation mismatch", ErrAssetLockMismatch)
@@ -496,7 +513,7 @@ func classifyL8PolicyCompositionCorrelationError(_ error) error {
 	validation := `if err := validateL8PolicyCompositionCorrelation(derivedPolicyComposition, manifestPolicyComposition, provenancePolicyComposition, finalInspectionPolicyComposition); err != nil {
 		return VerifiedDistribution{}, classifyL8PolicyCompositionCorrelationError(err)
 	}`
-	fingerprint := `evidenceFingerprint, err := buildL8EvidenceFingerprint(manifest, provenance, sourceLock, finalInspection, request.ParentL7, derivedPolicyComposition)
+	fingerprint := `evidenceFingerprint, imageSHA256, err := buildL8EvidenceFingerprint(request.DistributionRequest, manifest, provenance, sourceLock, finalInspection, parentL7EvidenceSHA256, derivedPolicyComposition)
 	if err != nil { return VerifiedDistribution{}, classifyL8EvidenceFingerprintError(err) }`
 	for name, mutated := range map[string]string{
 		"dead helper":                   strings.Replace(canonical, "func VerifyL8DistributionBundle", "func deadVerifyL8DistributionBundle", 1),
@@ -506,16 +523,19 @@ func classifyL8PolicyCompositionCorrelationError(_ error) error {
 		"lookalike artifact":            strings.Replace(canonical, "deriveL8PolicyCompositionDigests(artifact, evidence)", "deriveL8PolicyCompositionDigests(otherArtifact, evidence)", 1),
 		"wrong imported evidence":       strings.Replace(canonical, "deriveL8PolicyCompositionDigests(artifact, evidence)", "deriveL8PolicyCompositionDigests(artifact, otherEvidence)", 1),
 		"wrong expected evidence":       strings.Replace(canonical, "pinnedCallsiteEvidenceBytes, artifact, expectedEvidence", "pinnedCallsiteEvidenceBytes, artifact, otherExpectedEvidence", 1),
+		"unbounded evidence snapshot":   strings.Replace(canonical, "snapshotL8PinnedCallsiteEvidence(request.PinnedCallsiteEvidence)", "append([]byte(nil), request.PinnedCallsiteEvidence...)", 1),
+		"unchecked evidence snapshot":   strings.Replace(canonical, "if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceError(err) }\n\tdefer wipeL8PinnedEvidence", "defer wipeL8PinnedEvidence", 1),
 		"uncopied evidence import":      strings.Replace(canonical, "ImportPinnedCallsiteEvidence(pinnedCallsiteEvidenceBytes, artifact", "ImportPinnedCallsiteEvidence(request.PinnedCallsiteEvidence, artifact", 1),
-		"aliased decoded source":        strings.Replace(canonical, "finalInspection.ProcessComposition", "provenance.ProcessComposition", 1),
+		"unwiped evidence copy":         strings.Replace(canonical, "\tdefer wipeL8PinnedEvidence(pinnedCallsiteEvidenceBytes)\n", "", 1),
+		"aliased decoded source":        strings.Replace(canonical, "finalInspection.ProcessComposition", "provenance.L8Profile.ProcessComposition", 1),
 		"protected reassignment":        strings.Replace(canonical, "derivedPolicyComposition :=", "artifact = otherArtifact\n\tderivedPolicyComposition :=", 1),
-		"early successful issuance":     strings.Replace(canonical, validation, "if ready { return sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition), nil }\n\t"+validation, 1),
+		"early successful issuance":     strings.Replace(canonical, validation, "if ready { return sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition, manifest, provenance, descriptor, rootDir), nil }\n\t"+validation, 1),
 		"unreachable validation":        strings.Replace(canonical, validation, "if false {\n\t\t"+validation+"\n\t}", 1),
 		"noncontrolling validation":     strings.Replace(canonical, validation, "if err := validateL8PolicyCompositionCorrelation(derivedPolicyComposition, manifestPolicyComposition, provenancePolicyComposition, finalInspectionPolicyComposition); err != nil { _ = err }", 1),
 		"unsafe correlation classifier": strings.Replace(canonical, `return newResolverError(ErrorCodeAssetLockMismatch, "processComposition", "", "L8 policy composition correlation mismatch", ErrAssetLockMismatch)`, `return err`, 1),
 		"prevalidation function value":  strings.Replace(canonical, validation, "issueEarly := sealVerifiedL8Profile\n\t_ = issueEarly\n\t"+validation, 1),
-		"exact-name lookalike":          strings.Replace(canonical, "sealVerifiedL8Profile(evidenceFingerprint", "sealVerifiedL8ProfileLookalike(evidenceFingerprint", 1),
-		"trailing unreachable return":   strings.Replace(canonical, "\treturn sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition), nil\n}", "\treturn sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition), nil\n\treturn VerifiedDistribution{}, nil\n}", 1),
+		"exact-name lookalike":          strings.Replace(canonical, "sealVerifiedL8Profile(descriptorFingerprint", "sealVerifiedL8ProfileLookalike(descriptorFingerprint", 1),
+		"trailing unreachable return":   strings.Replace(canonical, "\treturn sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition, manifest, provenance, descriptor, rootDir), nil\n}", "\treturn sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition, manifest, provenance, descriptor, rootDir), nil\n\treturn VerifiedDistribution{}, nil\n}", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if issues := l8D2PolicyCompositionIssuerASTIssues(mutated); len(issues) == 0 {
@@ -563,7 +583,7 @@ func TestVerifyL8DistributionBundleRejectsPolicyCompositionMutations(t *testing.
 			request := validL8DistributionRequest(t)
 			if _, err := VerifyL8DistributionBundle(request); err != nil { t.Fatalf("valid per-case L8 baseline rejected: %v", err) }
 			before, beforeNonPolicy := snapshotL8PolicyCompositionFields(t, request)
-			mutateL8PolicyCompositionFixture(&request, mutation.document, mutation.field)
+			mutateL8PolicyCompositionFixture(t, &request, mutation.document, mutation.field)
 			after, afterNonPolicy := snapshotL8PolicyCompositionFields(t, request)
 			assertExactlyOneL8PolicyCompositionFieldChanged(t, before, after, beforeNonPolicy, afterNonPolicy, mutationIndex)
 			_, err := VerifyL8DistributionBundle(request)
@@ -590,12 +610,12 @@ func snapshotL8PolicyCompositionFields(t *testing.T, request L8DistributionReque
 	finalInspection, err := decodeL8FinalInspection(request.DistributionRequest)
 	if err != nil { t.Fatalf("decode L8 final-inspection snapshot: %v", err) }
 	fields := [18]string{
-		manifest.ProcessComposition.WorkloadSnapshotSHA256, manifest.ProcessComposition.RuntimeProfileSHA256, manifest.ProcessComposition.PolicyArtifactSHA256, manifest.ProcessComposition.PolicySourceLockSHA256, manifest.ProcessComposition.PolicyBinaryBindingSetSHA256, manifest.ProcessComposition.PinnedCallsiteEvidenceSHA256,
-		provenance.ProcessComposition.WorkloadSnapshotSHA256, provenance.ProcessComposition.RuntimeProfileSHA256, provenance.ProcessComposition.PolicyArtifactSHA256, provenance.ProcessComposition.PolicySourceLockSHA256, provenance.ProcessComposition.PolicyBinaryBindingSetSHA256, provenance.ProcessComposition.PinnedCallsiteEvidenceSHA256,
+		manifest.L8Profile.ProcessComposition.WorkloadSnapshotSHA256, manifest.L8Profile.ProcessComposition.RuntimeProfileSHA256, manifest.L8Profile.ProcessComposition.PolicyArtifactSHA256, manifest.L8Profile.ProcessComposition.PolicySourceLockSHA256, manifest.L8Profile.ProcessComposition.PolicyBinaryBindingSetSHA256, manifest.L8Profile.ProcessComposition.PinnedCallsiteEvidenceSHA256,
+		provenance.L8Profile.ProcessComposition.WorkloadSnapshotSHA256, provenance.L8Profile.ProcessComposition.RuntimeProfileSHA256, provenance.L8Profile.ProcessComposition.PolicyArtifactSHA256, provenance.L8Profile.ProcessComposition.PolicySourceLockSHA256, provenance.L8Profile.ProcessComposition.PolicyBinaryBindingSetSHA256, provenance.L8Profile.ProcessComposition.PinnedCallsiteEvidenceSHA256,
 		finalInspection.ProcessComposition.WorkloadSnapshotSHA256, finalInspection.ProcessComposition.RuntimeProfileSHA256, finalInspection.ProcessComposition.PolicyArtifactSHA256, finalInspection.ProcessComposition.PolicySourceLockSHA256, finalInspection.ProcessComposition.PolicyBinaryBindingSetSHA256, finalInspection.ProcessComposition.PinnedCallsiteEvidenceSHA256,
 	}
-	manifest.ProcessComposition = L8ProcessCompositionFacts{}
-	provenance.ProcessComposition = L8ProcessCompositionFacts{}
+	manifest.L8Profile.ProcessComposition = L8ProcessCompositionFacts{}
+	provenance.L8Profile.ProcessComposition = L8ProcessCompositionFacts{}
 	finalInspection.ProcessComposition = L8ProcessCompositionFacts{}
 	nonPolicy := [3][32]byte{
 		canonicalL8NonPolicyDocumentSHA256(t, manifest),
@@ -645,8 +665,8 @@ func assertL8PolicyCompositionCorrelationMismatch(t *testing.T, err error) {
 		"ignored baseline err":      strings.Replace(canonical, `if _, err := VerifyL8DistributionBundle(baseline); err != nil { t.Fatalf("valid L8 baseline rejected: %v", err) }`, `_, _ = VerifyL8DistributionBundle(baseline)`, 1),
 		"no-op mutator":             strings.Replace(canonical, `if err := replaceL8DistributionPolicyCompositionField(request.DistributionRequest, document, field, "0101010101010101010101010101010101010101010101010101010101010101"); err != nil { t.Fatalf("mutate L8 policy composition: %v", err) }`, `_ = request; _ = document; _ = field`, 1),
 		"fixed-field mutator":       strings.Replace(canonical, "request.DistributionRequest, document, field,", `request.DistributionRequest, "manifest", "policyArtifactSha256",`, 1),
-		"alternate mutator":         strings.Replace(canonical, "mutateL8PolicyCompositionFixture(&request", "alternateMutationFixture(&request", 1),
-		"lying snapshot":            strings.Replace(canonical, "manifest.ProcessComposition.WorkloadSnapshotSHA256", `"synthetic"`, 1),
+		"alternate mutator":         strings.Replace(canonical, "mutateL8PolicyCompositionFixture(t, &request", "alternateMutationFixture(t, &request", 1),
+		"lying snapshot":            strings.Replace(canonical, "manifest.L8Profile.ProcessComposition.WorkloadSnapshotSHA256", `"synthetic"`, 1),
 		"missing per-case baseline": strings.Replace(canonical, `if _, err := VerifyL8DistributionBundle(request); err != nil { t.Fatalf("valid per-case L8 baseline rejected: %v", err) }`, `_, _ = VerifyL8DistributionBundle(request)`, 1),
 		"missing change proof":      strings.Replace(canonical, "assertExactlyOneL8PolicyCompositionFieldChanged(t, before, after, beforeNonPolicy, afterNonPolicy, mutationIndex)", `_ = before; _ = after; _ = beforeNonPolicy; _ = afterNonPolicy`, 1),
 		"wrong selected index":      strings.Replace(canonical, "beforeNonPolicy, afterNonPolicy, mutationIndex)", "beforeNonPolicy, afterNonPolicy, 0)", 1),
@@ -673,11 +693,11 @@ func TestL8D2ImageProfilePolicyCompositionExternalReferenceGuardRejectsBypasses(
 	}{
 		"direct profile seal": {
 			path:   "l8_authority.go",
-			source: `package localresolver; func sealVerifiedL8Profile(evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{seal: verifiedL8ProfileSeal{}, correlation: verifiedL8ProfileCorrelation{evidenceFingerprint: evidenceFingerprint, policyAuthority: verifiedL8PolicyAuthorityBindings{policyArtifactSHA256: policyComposition.policyArtifactSHA256}}}, nil }`,
+			source: `package localresolver; func sealVerifiedL8Profile(descriptorFingerprint [32]byte, evidenceFingerprint [32]byte, imageSHA256 [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{seal: verifiedL8ProfileSeal{}, correlation: verifiedL8ProfileCorrelation{descriptorFingerprint: descriptorFingerprint, evidenceFingerprint: evidenceFingerprint, policyAuthority: verifiedL8PolicyAuthorityBindings{policyArtifactSHA256: policyComposition.policyArtifactSHA256, imageSHA256: imageSHA256}}}, nil }`,
 		},
 		"direct distribution seal": {
 			path:   "l8_authority.go",
-			source: `package localresolver; func sealVerifiedL8Distribution(profile VerifiedL8Profile, evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) VerifiedDistribution { return VerifiedDistribution{l8Profile: profile} }`,
+			source: `package localresolver; func sealVerifiedL8Distribution(profile VerifiedL8Profile, evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests, manifest assetbuild.DistributionManifest, provenance assetbuild.Provenance, descriptor assets.LaunchDescriptor, rootDir string) VerifiedDistribution { return VerifiedDistribution{l8Profile: profile} }`,
 		},
 		"direct lease acquisition": {
 			path:   "l8_authority.go",
@@ -902,8 +922,8 @@ func init() { mutationAlias = [18]struct { document string; field string }{} }`,
 func TestL8D2ImageProfilePolicyCompositionPackageTopologyRejectsBuildContextDuplicates(t *testing.T) {
 	canonical := map[string]string{
 		"l8_authority.go": `package localresolver
-func sealVerifiedL8Profile(evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{}, nil }
-func sealVerifiedL8Distribution(profile VerifiedL8Profile, evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) VerifiedDistribution { return VerifiedDistribution{} }
+func sealVerifiedL8Profile(descriptorFingerprint [32]byte, evidenceFingerprint [32]byte, imageSHA256 [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{}, nil }
+func sealVerifiedL8Distribution(profile VerifiedL8Profile, evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests, manifest assetbuild.DistributionManifest, provenance assetbuild.Provenance, descriptor assets.LaunchDescriptor, rootDir string) VerifiedDistribution { return VerifiedDistribution{} }
 func (distribution VerifiedDistribution) AcquireL8AssetLease() (*VerifiedL8AssetLease, error) { return &VerifiedL8AssetLease{}, nil }`,
 	}
 	if issues := l8D2PolicyCompositionPackageDeclarationIssues(canonical); len(issues) != 0 {
@@ -912,10 +932,10 @@ func (distribution VerifiedDistribution) AcquireL8AssetLease() (*VerifiedL8Asset
 	for name, extra := range map[string]string{
 		"build-tagged profile sealer": `//go:build alternate
 package localresolver
-func sealVerifiedL8Profile(evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{}, nil }`,
+func sealVerifiedL8Profile(descriptorFingerprint [32]byte, evidenceFingerprint [32]byte, imageSHA256 [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{}, nil }`,
 		"build-tagged distribution sealer": `//go:build alternate
 package localresolver
-func sealVerifiedL8Distribution(profile VerifiedL8Profile, evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) VerifiedDistribution { return VerifiedDistribution{} }`,
+func sealVerifiedL8Distribution(profile VerifiedL8Profile, evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests, manifest assetbuild.DistributionManifest, provenance assetbuild.Provenance, descriptor assets.LaunchDescriptor, rootDir string) VerifiedDistribution { return VerifiedDistribution{} }`,
 		"build-tagged lease acquirer": `//go:build alternate
 package localresolver
 func (distribution VerifiedDistribution) AcquireL8AssetLease() (*VerifiedL8AssetLease, error) { return &VerifiedL8AssetLease{}, nil }`,
@@ -929,6 +949,103 @@ func (distribution VerifiedDistribution) AcquireL8AssetLease() (*VerifiedL8Asset
 				t.Fatal("package authority declaration guard accepted a build-context duplicate")
 			}
 		})
+	}
+}
+
+func TestL8D2ImageProfileSealerRequiresMeasuredImageDigest(t *testing.T) {
+	t.Helper()
+	parseSealer := func(source string) *ast.FuncDecl {
+		file, err := parser.ParseFile(token.NewFileSet(), "l8_profile.go", source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l8D2TopLevelFunction(file, "sealVerifiedL8Profile")
+	}
+
+	withImage := parseSealer(`package localresolver
+func sealVerifiedL8Profile(descriptorFingerprint [32]byte, evidenceFingerprint [32]byte, imageSHA256 [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{}, nil }`)
+	if !l8D2PolicyCompositionAuthorityDefinitionAllowed(withImage) {
+		t.Fatal("profile sealer cannot receive the independently measured rootfs digest")
+	}
+
+	withoutImage := parseSealer(`package localresolver
+func sealVerifiedL8Profile(descriptorFingerprint [32]byte, evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{}, nil }`)
+	if l8D2PolicyCompositionAuthorityDefinitionAllowed(withoutImage) {
+		t.Fatal("profile sealer can mint image authority without the measured rootfs digest")
+	}
+}
+
+func TestL8D2ImageProfileIssuerDoesNotCollideWithLegacyVerifier(t *testing.T) {
+	legacySource, err := os.ReadFile(filepath.Join("..", "internal", "sandboxruntime", "microvm", "assets", "localresolver", "distribution.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(legacySource), "func VerifyDistributionBundle(request DistributionRequest) (VerifiedDistribution, error)") {
+		t.Fatal("legacy L5/L7 distribution verifier signature changed")
+	}
+
+	canonical := `package localresolver
+func VerifyL8DistributionBundle(request L8DistributionRequest) (VerifiedDistribution, error) { return VerifiedDistribution{}, nil }`
+	parsed, err := parser.ParseFile(token.NewFileSet(), "l8_distribution_verifier.go", canonical, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l8D2TopLevelFunction(parsed, "VerifyL8DistributionBundle") == nil {
+		t.Fatal("L8 issuer must use its distinct compileable function name")
+	}
+	if l8D2TopLevelFunction(parsed, "VerifyDistributionBundle") != nil {
+		t.Fatal("L8 issuer collides with the legacy L5/L7 verifier")
+	}
+	for _, issue := range l8D2PolicyCompositionIssuerASTIssues(canonical) {
+		if issue == "sole issuer signature is not exact" {
+			t.Fatal("policy-composition guard still requires the colliding legacy verifier name")
+		}
+	}
+}
+
+func TestL8D2ImageProfileDistributionSealerRetainsVerifiedBundleState(t *testing.T) {
+	parseSealer := func(source string) *ast.FuncDecl {
+		t.Helper()
+		file, err := parser.ParseFile(token.NewFileSet(), "l8_distribution_verifier.go", source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l8D2TopLevelFunction(file, "sealVerifiedL8Distribution")
+	}
+
+	withState := parseSealer(`package localresolver
+func sealVerifiedL8Distribution(profile VerifiedL8Profile, evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests, manifest assetbuild.DistributionManifest, provenance assetbuild.Provenance, descriptor assets.LaunchDescriptor, rootDir string) VerifiedDistribution { return VerifiedDistribution{} }`)
+	if !l8D2PolicyCompositionAuthorityDefinitionAllowed(withState) {
+		t.Fatal("distribution sealer cannot retain the verified bundle state required by lease issuance")
+	}
+
+	withoutState := parseSealer(`package localresolver
+func sealVerifiedL8Distribution(profile VerifiedL8Profile, evidenceFingerprint [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) VerifiedDistribution { return VerifiedDistribution{} }`)
+	if l8D2PolicyCompositionAuthorityDefinitionAllowed(withoutState) {
+		t.Fatal("distribution sealer can issue authority without retaining verified bundle state")
+	}
+}
+
+func TestL8D2ImageProfileSealerReceivesDescriptorFingerprint(t *testing.T) {
+	parseSealer := func(source string) *ast.FuncDecl {
+		t.Helper()
+		file, err := parser.ParseFile(token.NewFileSet(), "l8_authority.go", source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l8D2TopLevelFunction(file, "sealVerifiedL8Profile")
+	}
+
+	withDescriptor := parseSealer(`package localresolver
+func sealVerifiedL8Profile(descriptorFingerprint [32]byte, evidenceFingerprint [32]byte, imageSHA256 [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{}, nil }`)
+	if !l8D2PolicyCompositionAuthorityDefinitionAllowed(withDescriptor) {
+		t.Fatal("profile sealer cannot bind the normalized launch descriptor")
+	}
+
+	withoutDescriptor := parseSealer(`package localresolver
+func sealVerifiedL8Profile(evidenceFingerprint [32]byte, imageSHA256 [32]byte, policyComposition l8VerifiedPolicyCompositionDigests) (VerifiedL8Profile, error) { return VerifiedL8Profile{}, nil }`)
+	if l8D2PolicyCompositionAuthorityDefinitionAllowed(withoutDescriptor) {
+		t.Fatal("profile sealer can issue a profile without its descriptor fingerprint")
 	}
 }
 
@@ -1069,29 +1186,41 @@ func l8D2PolicyCompositionIssuerASTIssues(source string) []string {
 		"if err != nil { return VerifiedDistribution{}, classifyL8FinalInspectionError(err) }",
 	}
 	authorityAnchors := []string{
-		"pinnedCallsiteEvidenceBytes := append([]byte(nil), request.PinnedCallsiteEvidence...)",
+		"pinnedCallsiteEvidenceBytes, err := snapshotL8PinnedCallsiteEvidence(request.PinnedCallsiteEvidence)",
+		"if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceError(err) }",
+		"defer wipeL8PinnedEvidence(pinnedCallsiteEvidenceBytes)",
 		"artifact, err := syscallpolicy.EmbeddedVerifiedPolicyArtifact()",
 		"if err != nil { return VerifiedDistribution{}, classifyL8PolicyArtifactError(err) }",
 		"expectedEvidence, err := syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()",
 		"if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceExpectationError(err) }",
 		"evidence, err := syscallpolicy.ImportPinnedCallsiteEvidence(pinnedCallsiteEvidenceBytes, artifact, expectedEvidence)",
 		"if err != nil { return VerifiedDistribution{}, classifyL8PinnedCallsiteEvidenceError(err) }",
-		"manifestPolicyComposition, err := decodeL8PolicyCompositionDigests(manifest.ProcessComposition)",
+		"manifestPolicyComposition, err := decodeL8PolicyCompositionDigests(manifest.L8Profile.ProcessComposition)",
 		"if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }",
-		"provenancePolicyComposition, err := decodeL8PolicyCompositionDigests(provenance.ProcessComposition)",
+		"provenancePolicyComposition, err := decodeL8PolicyCompositionDigests(provenance.L8Profile.ProcessComposition)",
 		"if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }",
 		"finalInspectionPolicyComposition, err := decodeL8PolicyCompositionDigests(finalInspection.ProcessComposition)",
 		"if err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionDigestError(err) }",
 		"derivedPolicyComposition := deriveL8PolicyCompositionDigests(artifact, evidence)",
 		"if err := validateL8PolicyCompositionCorrelation(derivedPolicyComposition, manifestPolicyComposition, provenancePolicyComposition, finalInspectionPolicyComposition); err != nil { return VerifiedDistribution{}, classifyL8PolicyCompositionCorrelationError(err) }",
-		"evidenceFingerprint, err := buildL8EvidenceFingerprint(manifest, provenance, sourceLock, finalInspection, request.ParentL7, derivedPolicyComposition)",
+		"evidenceFingerprint, imageSHA256, err := buildL8EvidenceFingerprint(request.DistributionRequest, manifest, provenance, sourceLock, finalInspection, parentL7EvidenceSHA256, derivedPolicyComposition)",
 		"if err != nil { return VerifiedDistribution{}, classifyL8EvidenceFingerprintError(err) }",
-		"verifiedL8Profile, err := sealVerifiedL8Profile(evidenceFingerprint, derivedPolicyComposition)",
+		"descriptorFingerprint, err := buildL8DescriptorFingerprint(descriptor)",
 		"if err != nil { return VerifiedDistribution{}, classifyL8ProfileSealError(err) }",
-		"return sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition), nil",
+		"verifiedL8Profile, err := sealVerifiedL8Profile(descriptorFingerprint, evidenceFingerprint, imageSHA256, derivedPolicyComposition)",
+		"if err != nil { return VerifiedDistribution{}, classifyL8ProfileSealError(err) }",
+		"return sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition, manifest, provenance, descriptor, rootDir), nil",
 	}
 	if issuer.Body == nil {
 		return append(issues, "issuer body is absent")
+	}
+	snapshot := l8D2TopLevelFunction(parsed, "snapshotL8PinnedCallsiteEvidence")
+	wantSnapshot := `{
+		if len(source) == 0 || len(source) > l8MaxPinnedEvidenceBytes { return nil, ErrAssetLockMismatch }
+		return append([]byte(nil), source...), nil
+	}`
+	if snapshot == nil || snapshot.Recv != nil || snapshot.Type.TypeParams != nil || !l8D2ExactNamedFields(snapshot.Type.Params, []string{"source:[]byte"}) || !l8D2ExactNamedFields(snapshot.Type.Results, []string{"<unnamed>:[]byte", "<unnamed>:error"}) || snapshot.Body == nil || l8D2CompactGo(l8D2RenderNode(snapshot.Body)) != l8D2CompactGo(wantSnapshot) {
+		issues = append(issues, "issuer evidence snapshot does not enforce the exact bound before copying")
 	}
 	previous := -1
 	for anchorIndex, anchor := range decoderPrelude {
@@ -1115,7 +1244,7 @@ func l8D2PolicyCompositionIssuerASTIssues(source string) []string {
 	if previous != len(issuer.Body.List)-1 {
 		issues = append(issues, "issuer authority block does not end at the sole successful return")
 	}
-	validationPosition := positions[14]
+	validationPosition := positions[15]
 	ast.Inspect(issuer.Body, func(node ast.Node) bool {
 		if _, branch := node.(*ast.BranchStmt); branch {
 			issues = append(issues, "issuer may not bypass correlation with branch control")
@@ -1127,7 +1256,7 @@ func l8D2PolicyCompositionIssuerASTIssues(source string) []string {
 			issues = append(issues, "issuer can return or construct authority before correlation validation")
 		}
 	}
-	protected := []string{"manifest", "provenance", "sourceLock", "finalInspection", "pinnedCallsiteEvidenceBytes", "artifact", "expectedEvidence", "evidence", "manifestPolicyComposition", "provenancePolicyComposition", "finalInspectionPolicyComposition", "derivedPolicyComposition", "evidenceFingerprint", "verifiedL8Profile"}
+	protected := []string{"manifest", "provenance", "sourceLock", "finalInspection", "descriptor", "rootDir", "parentL7EvidenceSHA256", "pinnedCallsiteEvidenceBytes", "artifact", "expectedEvidence", "evidence", "manifestPolicyComposition", "provenancePolicyComposition", "finalInspectionPolicyComposition", "derivedPolicyComposition", "evidenceFingerprint", "imageSHA256", "descriptorFingerprint", "verifiedL8Profile"}
 	for _, name := range protected {
 		if count := l8D2AssignmentCount(issuer.Body, name); count != 1 {
 			issues = append(issues, "issuer protected value is absent or reassigned: "+name)
@@ -1213,9 +1342,9 @@ func l8D2PolicyCompositionExternalReferenceIssuesWithTypes(path, source string, 
 	}
 	parents := l8D2ASTParents(parsed)
 	allowedIssuerCalls := map[string]string{
-		"buildL8EvidenceFingerprint":                  "buildL8EvidenceFingerprint(manifest, provenance, sourceLock, finalInspection, request.ParentL7, derivedPolicyComposition)",
-		"sealVerifiedL8Profile":                       "sealVerifiedL8Profile(evidenceFingerprint, derivedPolicyComposition)",
-		"sealVerifiedL8Distribution":                  "sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition)",
+		"buildL8EvidenceFingerprint":                  "buildL8EvidenceFingerprint(request.DistributionRequest, manifest, provenance, sourceLock, finalInspection, parentL7EvidenceSHA256, derivedPolicyComposition)",
+		"sealVerifiedL8Profile":                       "sealVerifiedL8Profile(descriptorFingerprint, evidenceFingerprint, imageSHA256, derivedPolicyComposition)",
+		"sealVerifiedL8Distribution":                  "sealVerifiedL8Distribution(verifiedL8Profile, evidenceFingerprint, derivedPolicyComposition, manifest, provenance, descriptor, rootDir)",
 		"classifyL8PolicyCompositionCorrelationError": "classifyL8PolicyCompositionCorrelationError(err)",
 	}
 	allowedCounts := make(map[string]int, len(allowedIssuerCalls))
@@ -1229,7 +1358,7 @@ func l8D2PolicyCompositionExternalReferenceIssuesWithTypes(path, source string, 
 						issues = append(issues, "L8 authority types may not be aliased or used as derived-type underlays")
 					}
 					if _, containsAuthority := authorityTypes[typeSpec.Name.Name]; containsAuthority && l8D2PolicyCompositionAuthorityTypeName(typeSpec.Name) == "" {
-						issues = append(issues, "additional named wrappers around the closed L8 authority-owner graph are forbidden")
+						issues = append(issues, "additional named wrappers around the closed L8 authority-owner graph are forbidden: "+typeSpec.Name.Name)
 					}
 				}
 				valueSpec, valueOK := specification.(*ast.ValueSpec)
@@ -1245,7 +1374,7 @@ func l8D2PolicyCompositionExternalReferenceIssuesWithTypes(path, source string, 
 			}
 			ast.Inspect(general, func(node ast.Node) bool {
 				if literal, literalOK := node.(*ast.CompositeLit); literalOK {
-					if authorityType := l8D2PolicyCompositionAuthorityTypeName(literal.Type); authorityType != "" && (authorityType != "VerifiedDistribution" || len(literal.Elts) != 0) {
+					if authorityType := l8D2PolicyCompositionAuthorityTypeName(literal.Type); authorityType != "" && l8D2AuthorityLiteralCarriesL8Authority(literal, authorityType) {
 						issues = append(issues, "L8 authority value is constructed in package-level data")
 					} else if l8D2ExpressionContainsPolicyCompositionAuthorityTypeWithTypes(literal.Type, authorityTypes) {
 						issues = append(issues, "nested L8 authority-owner value is constructed in package-level data")
@@ -1296,7 +1425,7 @@ func l8D2PolicyCompositionExternalReferenceIssuesWithTypes(path, source string, 
 		issues = append(issues, l8D2PolicyCompositionAuthorityEscapeIssues(function, parents, authorityTypes)...)
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			if literal, literalOK := node.(*ast.CompositeLit); literalOK {
-				if authorityType := l8D2PolicyCompositionAuthorityTypeName(literal.Type); authorityType != "" && (authorityType != "VerifiedDistribution" || len(literal.Elts) != 0) && !l8D2PolicyCompositionAuthorityLiteralAllowed(function, authorityType) {
+				if authorityType := l8D2PolicyCompositionAuthorityTypeName(literal.Type); authorityType != "" && l8D2AuthorityLiteralCarriesL8Authority(literal, authorityType) && !l8D2PolicyCompositionAuthorityLiteralAllowed(function, authorityType) {
 					issues = append(issues, "L8 authority value is constructed outside its exact private sealing/acquisition function")
 				} else if authorityType == "" && l8D2ExpressionContainsPolicyCompositionAuthorityTypeWithTypes(literal.Type, authorityTypes) {
 					issues = append(issues, "nested L8 authority-owner value is constructed outside the closed direct-return graph")
@@ -1373,6 +1502,30 @@ func l8D2PolicyCompositionExternalReferenceIssuesWithTypes(path, source string, 
 	return issues
 }
 
+func l8D2AuthorityLiteralCarriesL8Authority(literal *ast.CompositeLit, authorityType string) bool {
+	if literal == nil {
+		return false
+	}
+	if authorityType != "VerifiedDistribution" {
+		return len(literal.Elts) != 0
+	}
+	for _, element := range literal.Elts {
+		keyed, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		identifier, ok := keyed.Key.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		switch identifier.Name {
+		case "l8Profile", "l8EvidenceFingerprint", "l8PolicyComposition":
+			return true
+		}
+	}
+	return false
+}
+
 func l8D2ExactLocalPolicyCompositionMutationBodyIssues(body *ast.BlockStmt) []string {
 	if body == nil || len(body.List) != 6 {
 		return []string{"mutation test must have the exact baseline, local-array, counter, range, and count-check statements"}
@@ -1421,7 +1574,7 @@ func l8D2ExactLocalPolicyCompositionMutationBodyIssues(body *ast.BlockStmt) []st
 			request := validL8DistributionRequest(t)
 			if _, err := VerifyL8DistributionBundle(request); err != nil { t.Fatalf("valid per-case L8 baseline rejected: %v", err) }
 			before, beforeNonPolicy := snapshotL8PolicyCompositionFields(t, request)
-			mutateL8PolicyCompositionFixture(&request, mutation.document, mutation.field)
+			mutateL8PolicyCompositionFixture(t, &request, mutation.document, mutation.field)
 			after, afterNonPolicy := snapshotL8PolicyCompositionFields(t, request)
 			assertExactlyOneL8PolicyCompositionFieldChanged(t, before, after, beforeNonPolicy, afterNonPolicy, mutationIndex)
 			_, err := VerifyL8DistributionBundle(request)
@@ -1471,9 +1624,9 @@ func l8D2ExactPolicyCompositionFixtureHelperIssues(file *ast.File) []string {
 				if err != nil { t.Fatalf("decode L8 provenance snapshot: %v", err) }
 				finalInspection, err := decodeL8FinalInspection(request.DistributionRequest)
 				if err != nil { t.Fatalf("decode L8 final-inspection snapshot: %v", err) }
-				fields := [18]string{ manifest.ProcessComposition.WorkloadSnapshotSHA256, manifest.ProcessComposition.RuntimeProfileSHA256, manifest.ProcessComposition.PolicyArtifactSHA256, manifest.ProcessComposition.PolicySourceLockSHA256, manifest.ProcessComposition.PolicyBinaryBindingSetSHA256, manifest.ProcessComposition.PinnedCallsiteEvidenceSHA256, provenance.ProcessComposition.WorkloadSnapshotSHA256, provenance.ProcessComposition.RuntimeProfileSHA256, provenance.ProcessComposition.PolicyArtifactSHA256, provenance.ProcessComposition.PolicySourceLockSHA256, provenance.ProcessComposition.PolicyBinaryBindingSetSHA256, provenance.ProcessComposition.PinnedCallsiteEvidenceSHA256, finalInspection.ProcessComposition.WorkloadSnapshotSHA256, finalInspection.ProcessComposition.RuntimeProfileSHA256, finalInspection.ProcessComposition.PolicyArtifactSHA256, finalInspection.ProcessComposition.PolicySourceLockSHA256, finalInspection.ProcessComposition.PolicyBinaryBindingSetSHA256, finalInspection.ProcessComposition.PinnedCallsiteEvidenceSHA256 }
-				manifest.ProcessComposition = L8ProcessCompositionFacts{}
-				provenance.ProcessComposition = L8ProcessCompositionFacts{}
+				fields := [18]string{ manifest.L8Profile.ProcessComposition.WorkloadSnapshotSHA256, manifest.L8Profile.ProcessComposition.RuntimeProfileSHA256, manifest.L8Profile.ProcessComposition.PolicyArtifactSHA256, manifest.L8Profile.ProcessComposition.PolicySourceLockSHA256, manifest.L8Profile.ProcessComposition.PolicyBinaryBindingSetSHA256, manifest.L8Profile.ProcessComposition.PinnedCallsiteEvidenceSHA256, provenance.L8Profile.ProcessComposition.WorkloadSnapshotSHA256, provenance.L8Profile.ProcessComposition.RuntimeProfileSHA256, provenance.L8Profile.ProcessComposition.PolicyArtifactSHA256, provenance.L8Profile.ProcessComposition.PolicySourceLockSHA256, provenance.L8Profile.ProcessComposition.PolicyBinaryBindingSetSHA256, provenance.L8Profile.ProcessComposition.PinnedCallsiteEvidenceSHA256, finalInspection.ProcessComposition.WorkloadSnapshotSHA256, finalInspection.ProcessComposition.RuntimeProfileSHA256, finalInspection.ProcessComposition.PolicyArtifactSHA256, finalInspection.ProcessComposition.PolicySourceLockSHA256, finalInspection.ProcessComposition.PolicyBinaryBindingSetSHA256, finalInspection.ProcessComposition.PinnedCallsiteEvidenceSHA256 }
+				manifest.L8Profile.ProcessComposition = L8ProcessCompositionFacts{}
+				provenance.L8Profile.ProcessComposition = L8ProcessCompositionFacts{}
 				finalInspection.ProcessComposition = L8ProcessCompositionFacts{}
 				nonPolicy := [3][32]byte{ canonicalL8NonPolicyDocumentSHA256(t, manifest), canonicalL8NonPolicyDocumentSHA256(t, provenance), canonicalL8NonPolicyDocumentSHA256(t, finalInspection) }
 				return fields, nonPolicy
@@ -1636,11 +1789,11 @@ func l8D2PolicyCompositionAuthorityDefinitionAllowed(function *ast.FuncDecl) boo
 	switch function.Name.Name {
 	case "sealVerifiedL8Profile":
 		return function.Recv == nil &&
-			l8D2ExactNamedFields(function.Type.Params, []string{"evidenceFingerprint:[32]byte", "policyComposition:l8VerifiedPolicyCompositionDigests"}) &&
+			l8D2ExactNamedFields(function.Type.Params, []string{"descriptorFingerprint:[32]byte", "evidenceFingerprint:[32]byte", "imageSHA256:[32]byte", "policyComposition:l8VerifiedPolicyCompositionDigests"}) &&
 			l8D2ExactNamedFields(function.Type.Results, []string{"<unnamed>:VerifiedL8Profile", "<unnamed>:error"})
 	case "sealVerifiedL8Distribution":
 		return function.Recv == nil &&
-			l8D2ExactNamedFields(function.Type.Params, []string{"profile:VerifiedL8Profile", "evidenceFingerprint:[32]byte", "policyComposition:l8VerifiedPolicyCompositionDigests"}) &&
+			l8D2ExactNamedFields(function.Type.Params, []string{"profile:VerifiedL8Profile", "evidenceFingerprint:[32]byte", "policyComposition:l8VerifiedPolicyCompositionDigests", "manifest:assetbuild.DistributionManifest", "provenance:assetbuild.Provenance", "descriptor:assets.LaunchDescriptor", "rootDir:string"}) &&
 			l8D2ExactNamedFields(function.Type.Results, []string{"<unnamed>:VerifiedDistribution"})
 	case "AcquireL8AssetLease":
 		return l8D2ExactReceiverType(function, "VerifiedDistribution") &&
@@ -1713,11 +1866,11 @@ func l8D2PolicyCompositionAuthorityEscapeIssues(function *ast.FuncDecl, parents 
 			}
 		case *ast.CallExpr:
 			if selector, ok := typed.Fun.(*ast.SelectorExpr); ok && l8D2ExpressionCarriesPolicyCompositionAuthority(selector.X, authorityNames, authorityTypes) && !l8D2AllowedPolicyCompositionAuthorityCall(function, typed) {
-				issues = append(issues, "L8 authority is used as the receiver of an arbitrary helper")
+				issues = append(issues, "L8 authority is used as the receiver of an arbitrary helper: "+function.Name.Name+":"+l8D2CompactGo(l8D2RenderNode(typed)))
 			}
 			for _, argument := range typed.Args {
 				if l8D2ExpressionCarriesPolicyCompositionAuthority(argument, authorityNames, authorityTypes) && !l8D2AllowedPolicyCompositionAuthorityCall(function, typed) {
-					issues = append(issues, "L8 authority is passed to an arbitrary helper or container")
+					issues = append(issues, "L8 authority is passed to an arbitrary helper or container: "+function.Name.Name+":"+l8D2CompactGo(l8D2RenderNode(typed)))
 				}
 			}
 		case *ast.CompositeLit:
@@ -1802,11 +1955,13 @@ func l8D2PolicyCompositionAuthorityParameterAllowed(function *ast.FuncDecl) bool
 		return false
 	}
 	switch function.Name.Name {
+	case "VerifyL8DistributionBundle":
+		return function.Recv == nil
 	case "sealVerifiedL8Distribution", "VerifiedL8ProfileMatches", "VerifiedL8ProfileMatchesLease":
 		return function.Recv == nil
 	case "L8Profile", "AcquireL8AssetLease":
 		return l8D2ExactReceiverType(function, "VerifiedDistribution")
-	case "ConfirmCurrent", "PrepareLaunch", "Close":
+	case "ConfirmCurrent", "PrepareLaunch", "Close", "confirmCurrentLocked", "confirmSourceLocked":
 		return l8D2ExactPointerReceiverType(function, "VerifiedL8AssetLease")
 	default:
 		return false
@@ -1910,7 +2065,7 @@ func l8D2PolicyCompositionAuthorityConstructionDirectlyReturned(node ast.Node, p
 }
 
 func l8D2ExactIssuerProfileAssignment(function *ast.FuncDecl, assignment *ast.AssignStmt) bool {
-	return function != nil && function.Name.Name == "VerifyL8DistributionBundle" && function.Recv == nil && l8D2CompactGo(l8D2RenderNode(assignment)) == "verifiedL8Profile,err:=sealVerifiedL8Profile(evidenceFingerprint,derivedPolicyComposition)"
+	return function != nil && function.Name.Name == "VerifyL8DistributionBundle" && function.Recv == nil && l8D2CompactGo(l8D2RenderNode(assignment)) == "verifiedL8Profile,err:=sealVerifiedL8Profile(descriptorFingerprint,evidenceFingerprint,imageSHA256,derivedPolicyComposition)"
 }
 
 func l8D2AllowedPolicyCompositionAuthorityCall(function *ast.FuncDecl, call *ast.CallExpr) bool {
@@ -1919,6 +2074,23 @@ func l8D2AllowedPolicyCompositionAuthorityCall(function *ast.FuncDecl, call *ast
 		return true
 	}
 	if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
+		if l8D2ExactPointerReceiverType(function, "VerifiedL8AssetLease") {
+			rendered := l8D2CompactGo(l8D2RenderNode(call))
+			switch function.Name.Name {
+			case "ConfirmCurrent":
+				if rendered == "lease.confirmCurrentLocked(descriptor)" {
+					return true
+				}
+			case "PrepareLaunch":
+				if rendered == "lease.confirmCurrentLocked(descriptor)" || rendered == "lease.confirmSourceLocked()" {
+					return true
+				}
+			case "confirmCurrentLocked":
+				if rendered == "lease.confirmSourceLocked()" {
+					return true
+				}
+			}
+		}
 		switch selector.Sel.Name {
 		case "L8Profile", "AcquireL8AssetLease", "ConfirmCurrent", "PrepareLaunch", "Close":
 			return true
@@ -1950,7 +2122,7 @@ func l8D2PolicyCompositionAuthorityTypeName(expression ast.Expr) string {
 func l8D2BasePolicyCompositionAuthorityTypes() map[string]struct{} {
 	result := make(map[string]struct{})
 	for _, name := range []string{
-		"VerifiedL8Profile", "VerifiedDistribution", "VerifiedL8AssetLease",
+		"VerifiedL8Profile", "VerifiedL8AssetLease",
 		"verifiedL8ProfileSeal", "verifiedL8PolicyAuthorityBindings", "verifiedL8ProfileCorrelation",
 		"verifiedL8LeaseCorrelation", "verifiedL8AssetLeaseState",
 	} {
@@ -1993,6 +2165,9 @@ func l8D2PolicyCompositionAuthorityTypesForSources(sources map[string]string) ma
 		}
 		sort.Strings(names)
 		for _, name := range names {
+			if name == "VerifiedDistribution" {
+				continue
+			}
 			if _, alreadyKnown := result[name]; alreadyKnown {
 				continue
 			}
@@ -2183,7 +2358,7 @@ func l8D2PolicyCompositionAuthorityLiteralAllowed(function *ast.FuncDecl, author
 	}
 	switch authorityType {
 	case "VerifiedL8Profile", "verifiedL8ProfileSeal", "verifiedL8ProfileCorrelation":
-		return l8D2PolicyCompositionAuthorityDefinitionAllowed(function) && function.Name.Name == "sealVerifiedL8Profile"
+		return l8D2PolicyCompositionAuthorityDefinitionAllowed(function) && (function.Name.Name == "sealVerifiedL8Profile" || function.Name.Name == "PrepareLaunch")
 	case "verifiedL8PolicyAuthorityBindings":
 		return l8D2PolicyCompositionAuthorityDefinitionAllowed(function) && (function.Name.Name == "sealVerifiedL8Profile" || function.Name.Name == "AcquireL8AssetLease")
 	case "VerifiedDistribution":

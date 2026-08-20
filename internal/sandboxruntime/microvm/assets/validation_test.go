@@ -197,6 +197,36 @@ func TestValidateLaunchDescriptorRejectsUnsafeIDsAndLabels(t *testing.T) {
 	}
 }
 
+func TestValidateLaunchDescriptorAllowsOnlyExactL8CredentialCatalogTokens(t *testing.T) {
+	descriptor := validLaunchDescriptorForTest()
+	descriptor.ID = "l8-production-credentials-image"
+	descriptor.Labels = append(descriptor.Labels, "production-credentials-profile")
+	if err := ValidateLaunchDescriptor(descriptor); err != nil {
+		t.Fatalf("exact L8 catalog tokens rejected: %v", err)
+	}
+
+	for _, mutation := range []struct {
+		name string
+		run  func(*LaunchDescriptor)
+	}{
+		{name: "id lookalike", run: func(value *LaunchDescriptor) { value.ID = "l8-production-credentials-image-copy" }},
+		{name: "label lookalike", run: func(value *LaunchDescriptor) {
+			value.Labels[len(value.Labels)-1] = "production-credentials-profile-copy"
+		}},
+		{name: "arbitrary credential id", run: func(value *LaunchDescriptor) { value.ID = "credential-cache" }},
+		{name: "arbitrary credential label", run: func(value *LaunchDescriptor) { value.Labels[len(value.Labels)-1] = "credential-cache" }},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			candidate := descriptor
+			candidate.Labels = append([]SafeLabel(nil), descriptor.Labels...)
+			mutation.run(&candidate)
+			if err := ValidateLaunchDescriptor(candidate); err == nil {
+				t.Fatal("credential-bearing catalog lookalike accepted")
+			}
+		})
+	}
+}
+
 func TestValidateLaunchDescriptorRejectsUnsupportedMetadata(t *testing.T) {
 	tests := []struct {
 		name     string

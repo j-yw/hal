@@ -38,11 +38,14 @@ type DistributionRequest struct {
 
 // VerifiedDistribution is a fully correlated installed L5 distribution.
 type VerifiedDistribution struct {
-	Manifest   assetbuild.DistributionManifest
-	Provenance assetbuild.Provenance
-	Descriptor assets.LaunchDescriptor
-	l7Profile  VerifiedL7Profile
-	rootDir    string
+	Manifest              assetbuild.DistributionManifest
+	Provenance            assetbuild.Provenance
+	Descriptor            assets.LaunchDescriptor
+	l7Profile             VerifiedL7Profile
+	l8Profile             VerifiedL8Profile
+	l8EvidenceFingerprint [sha256.Size]byte
+	l8PolicyComposition   l8VerifiedPolicyCompositionDigests
+	rootDir               string
 }
 
 // ResolveDistribution verifies the manifest and installed launch assets, then
@@ -309,6 +312,9 @@ func resolveDistributionFromRoot(
 	if manifest.ImageProfile == assetbuild.ImageProfileL7Network {
 		descriptor.ID = "l7-network-image"
 		descriptor.Labels = append(descriptor.Labels, "network-profile")
+	} else if manifest.ImageProfile == assetbuild.ImageProfileL8ProductionCredentials {
+		descriptor.ID = "l8-production-credentials-image"
+		descriptor.Labels = append(descriptor.Labels, "network-profile", "production-credentials-profile")
 	}
 	for _, asset := range manifest.Assets {
 		size, digest, err := digestDistributionFile(root, asset.Key)
