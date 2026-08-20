@@ -38,6 +38,8 @@ type BackendConfig struct {
 	LaunchDescriptor  *assets.LaunchDescriptor            `json:"-"`
 	VerifiedL7Profile *localresolver.VerifiedL7Profile    `json:"-"`
 	VerifiedL7Assets  *localresolver.VerifiedL7AssetLease `json:"-"`
+	VerifiedL8Profile *localresolver.VerifiedL8Profile    `json:"-"`
+	VerifiedL8Assets  *localresolver.VerifiedL8AssetLease `json:"-"`
 	CPUCount          int                                 `json:"cpuCount,omitempty"`
 	MemoryMiB         int                                 `json:"memoryMiB,omitempty"`
 	GuestWorkDir      GuestWorkDirMetadata                `json:"guestWorkDir,omitempty"`

@@ -166,6 +166,60 @@ func TestL8LiveBootConfigProviderErrorRetainsReturnedLeaseOwnership(t *testing.T
 	}
 }
 
+func TestL8LiveBootConfigRejectsBaseL7AuthorityBeforeProviderCall(t *testing.T) {
+	base := validL7NetworkBackendConfig(t)
+	base.RuntimeID = "runtime-l8-base-l7"
+	provider := &recordingL8LiveConfigProvider{panicOnCall: true}
+	if _, owned, err := prepareL8LiveBootConfig(context.Background(), provider, base); err == nil || owned != nil {
+		t.Fatalf("prepareL8LiveBootConfig(L7 base) = owned %#v, err %v", owned, err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("L7/L8 config mutual exclusion called provider %d times", provider.calls)
+	}
+	if err := base.VerifiedL7Assets.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCloneL8LaunchDescriptorDeepCopiesAndPreservesSliceShape(t *testing.T) {
+	source := assets.LaunchDescriptor{
+		ID:     "l8-production-credentials-image",
+		Labels: []assets.SafeLabel{},
+		Assets: []assets.LaunchAsset{{
+			ID:     "kernel",
+			Role:   assets.AssetRoleKernel,
+			Kind:   assets.AssetKindKernelImage,
+			Labels: []assets.SafeLabel{"image"},
+			Source: assets.AssetSource{
+				Type:     assets.SourceTypeLocalFile,
+				HostPath: &assets.HostPathMetadata{Path: "/private/kernel", Role: assets.HostPathRoleResolvedLocalAsset},
+			},
+			InitConfig:  &assets.InitConfigMetadata{Labels: []assets.SafeLabel{}},
+			AgentConfig: &assets.AgentConfigMetadata{Features: []assets.SafeLabel{"credential_delivery_v2"}},
+			Resources: []assets.ResourceMetadata{{
+				ID: "resource", Labels: []assets.SafeLabel{"locked"},
+			}},
+		}},
+	}
+	cloned := cloneL8LaunchDescriptor(source)
+	if cloned.Labels == nil || cloned.Assets[0].InitConfig.Labels == nil {
+		t.Fatal("deep clone collapsed explicit empty slices to nil")
+	}
+	cloned.Assets[0].Labels[0] = "changed"
+	cloned.Assets[0].Source.HostPath.Path = "/changed"
+	cloned.Assets[0].AgentConfig.Features[0] = "changed"
+	cloned.Assets[0].Resources[0].Labels[0] = "changed"
+	if source.Assets[0].Labels[0] != "image" || source.Assets[0].Source.HostPath.Path != "/private/kernel" ||
+		source.Assets[0].AgentConfig.Features[0] != "credential_delivery_v2" ||
+		source.Assets[0].Resources[0].Labels[0] != "locked" {
+		t.Fatal("deep clone aliases caller-owned nested metadata")
+	}
+	if cloneL8LaunchDescriptor(assets.LaunchDescriptor{}).Labels != nil ||
+		cloneL8LaunchDescriptor(assets.LaunchDescriptor{}).Assets != nil {
+		t.Fatal("deep clone changed nil slice shape")
+	}
+}
+
 func TestBackendConfigJSONNeverProjectsL8Authority(t *testing.T) {
 	config := validFirecrackerOperationConfig(t)
 	config.VerifiedL8Profile = &localresolver.VerifiedL8Profile{}

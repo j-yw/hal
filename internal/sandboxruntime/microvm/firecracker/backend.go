@@ -57,6 +57,7 @@ type BackendOptions struct {
 	ProductionVsock      bool
 	ProductionBridge     ProductionVsockBridge
 	L7LiveConfigProvider L7LiveBootConfigProvider
+	L8LiveConfigProvider L8LiveBootConfigProvider
 }
 
 // BootAcceptanceWaiter is the injected host-side readiness boundary for an
@@ -116,6 +117,7 @@ type Backend struct {
 	productionVsock      bool
 	productionBridge     ProductionVsockBridge
 	l7LiveConfigProvider L7LiveBootConfigProvider
+	l8LiveConfigProvider L8LiveBootConfigProvider
 	liveSessions         *liveSessionRegistry
 }
 
@@ -133,6 +135,7 @@ func NewBackend(options BackendOptions) *Backend {
 		productionVsock:      options.ProductionVsock,
 		productionBridge:     options.ProductionBridge,
 		l7LiveConfigProvider: options.L7LiveConfigProvider,
+		l8LiveConfigProvider: options.L8LiveConfigProvider,
 	}
 	if options.ProductionVsock {
 		backend.liveSessions = newLiveSessionRegistry()
@@ -205,6 +208,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 	var productionVsock bool
 	var productionBridge ProductionVsockBridge
 	var l7LiveConfigProvider L7LiveBootConfigProvider
+	var l8LiveConfigProvider L8LiveBootConfigProvider
 	var liveSessions *liveSessionRegistry
 	if b != nil {
 		baseStateDir = b.baseStateDir
@@ -217,6 +221,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		productionVsock = b.productionVsock
 		productionBridge = b.productionBridge
 		l7LiveConfigProvider = b.l7LiveConfigProvider
+		l8LiveConfigProvider = b.l8LiveConfigProvider
 		liveSessions = b.liveSessions
 	}
 	return firecrackerController{
@@ -231,6 +236,7 @@ func (b *Backend) Controller(_ context.Context, req microvm.ControllerRequest) (
 		productionVsock:      productionVsock,
 		productionBridge:     productionBridge,
 		l7LiveConfigProvider: l7LiveConfigProvider,
+		l8LiveConfigProvider: l8LiveConfigProvider,
 		liveSessions:         liveSessions,
 	}, nil
 }
@@ -247,6 +253,7 @@ type firecrackerController struct {
 	productionVsock      bool
 	productionBridge     ProductionVsockBridge
 	l7LiveConfigProvider L7LiveBootConfigProvider
+	l8LiveConfigProvider L8LiveBootConfigProvider
 	liveSessions         *liveSessionRegistry
 }
 
@@ -259,6 +266,7 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 		return nil, err
 	}
 	var pendingL7Lease *localresolver.VerifiedL7AssetLease
+	var pendingL8Lease *localresolver.VerifiedL8AssetLease
 	if c.liveStart && c.l7LiveConfigProvider != nil {
 		config, pendingL7Lease, err = prepareL7LiveBootConfig(ctx, c.l7LiveConfigProvider, config)
 		if err != nil {
@@ -270,6 +278,20 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 			}
 			if cleanupErr := closeBackendOwnedL7Lease(pendingL7Lease); cleanupErr != nil {
 				retErr = joinL7StartCleanup(retErr, cleanupErr)
+			}
+		}()
+	}
+	if c.liveStart && c.l8LiveConfigProvider != nil {
+		config, pendingL8Lease, err = prepareL8LiveBootConfig(ctx, c.l8LiveConfigProvider, config)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if pendingL8Lease == nil {
+				return
+			}
+			if cleanupErr := closeBackendOwnedL8Lease(pendingL8Lease); cleanupErr != nil {
+				retErr = joinL8StartCleanup(retErr, cleanupErr)
 			}
 		}()
 	}
@@ -324,10 +346,16 @@ func (c firecrackerController) validateLiveBootContract() error {
 		return newLiveBootContractError("liveProcessManager", "live boot requires an injected live process manager")
 	case c.productionVsock && c.productionBridge == nil:
 		return newLiveBootContractError("productionVsockBridge", "production vsock requires a host-owned bridge")
+	case c.l7LiveConfigProvider != nil && c.l8LiveConfigProvider != nil:
+		return newLiveBootContractError("liveConfigProvider", "L7 and L8 live config providers are mutually exclusive")
 	case c.l7LiveConfigProvider != nil && liveConfigProviderIsNil(c.l7LiveConfigProvider):
 		return newLiveBootContractError("l7LiveConfigProvider", "L7 live config provider is unavailable")
 	case c.l7LiveConfigProvider != nil && !c.productionVsock:
 		return newLiveBootContractError("l7LiveConfigProvider", "L7 live config requires production vsock")
+	case c.l8LiveConfigProvider != nil && l8LiveConfigProviderIsNil(c.l8LiveConfigProvider):
+		return newLiveBootContractError("l8LiveConfigProvider", "L8 live config provider is unavailable")
+	case c.l8LiveConfigProvider != nil && !c.productionVsock:
+		return newLiveBootContractError("l8LiveConfigProvider", "L8 live config requires production vsock")
 	default:
 		return nil
 	}
