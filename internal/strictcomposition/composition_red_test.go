@@ -156,6 +156,12 @@ func TestL10EvaluateActiveRejectsEachMissingCorruptOrWeakProof(t *testing.T) {
 		{name: "workspace mixed eligibility reasons", mutate: func(r *ActiveRequest) {
 			r.Workspace.SyncOut.Apply.Reasons = append(r.Workspace.SyncOut.Apply.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonEligibleBundle)
 		}, code: sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe},
+		{name: "safe apply dirty worktree reason", mutate: func(r *ActiveRequest) {
+			r.Workspace.SafeApply.Reasons = []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonDirtyWorktree}
+		}, code: sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe},
+		{name: "safe apply unsafe artifact reason", mutate: func(r *ActiveRequest) {
+			r.Workspace.SafeApply.Reasons = []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonUnsafeArtifact}
+		}, code: sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe},
 		{name: "warning bearing", mutate: func(r *ActiveRequest) { r.WarningCodes = []string{"partial"} }, code: sandbox.SandboxStrictCompositionCodeWarningBearing},
 		{name: "fallback", mutate: func(r *ActiveRequest) { r.FallbackUsed = true }, code: sandbox.SandboxStrictCompositionCodeFallbackForbidden},
 		{name: "simulation", mutate: func(r *ActiveRequest) { r.Simulated = true }, code: sandbox.SandboxStrictCompositionCodeSimulationForbidden},
