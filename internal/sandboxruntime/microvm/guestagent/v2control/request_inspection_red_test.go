@@ -61,7 +61,8 @@ func TestL8D6GuestV2InspectedRequestDeniesGenericSerialization(t *testing.T) {
 	if _, err := json.Marshal(request); !errors.Is(err, ErrCredentialRequestInspectionSerialization) {
 		t.Fatalf("MarshalJSON() error = %v", err)
 	}
-	if got := len(reflect.VisibleFields(reflect.TypeOf(request))); got != 4 {
-		t.Fatalf("InspectedRequest field count = %d, want exact private bodyless shape", got)
+	fields := reflect.VisibleFields(reflect.TypeOf(request))
+	if len(fields) != 1 || fields[0].Name != "state" || fields[0].Type != reflect.TypeOf((*inspectedRequestState)(nil)) {
+		t.Fatalf("InspectedRequest fields = %#v, want one private owned state pointer", fields)
 	}
 }

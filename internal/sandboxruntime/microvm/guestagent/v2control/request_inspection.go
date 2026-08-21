@@ -16,10 +16,14 @@ var (
 // complete canonical credential request root. Production inspection behavior
 // is frozen by the D6 RED contract and intentionally remains unimplemented.
 type InspectedRequest struct {
-	operation      OperationToken
+	state *inspectedRequestState
+}
+
+type inspectedRequestState struct {
+	operationToken OperationToken
 	requestID      RequestID
 	identityDigest IdentityDigest
-	known          Operation
+	knownOperation Operation
 }
 
 // InspectCredentialRequestRoot is the sole future two-stage request-root
@@ -34,12 +38,32 @@ func DecodeInitialCredentialPrepareRequest([32]byte, []byte) (CredentialPrepareR
 	return CredentialPrepareRequest{}, ErrCredentialRequestInspectionDependencyUnaccepted
 }
 
-func (request InspectedRequest) OperationToken() OperationToken { return request.operation }
-func (request InspectedRequest) RequestID() RequestID           { return request.requestID }
-func (request InspectedRequest) IdentityDigest() IdentityDigest { return request.identityDigest }
+func (request InspectedRequest) OperationToken() OperationToken {
+	if request.state == nil {
+		return OperationToken{}
+	}
+	return request.state.operationToken
+}
+
+func (request InspectedRequest) RequestID() RequestID {
+	if request.state == nil {
+		return RequestID{}
+	}
+	return request.state.requestID
+}
+
+func (request InspectedRequest) IdentityDigest() IdentityDigest {
+	if request.state == nil {
+		return IdentityDigest{}
+	}
+	return request.state.identityDigest
+}
 
 func (request InspectedRequest) KnownOperation() (Operation, bool) {
-	return request.known, validKnownOperation(request.known)
+	if request.state == nil {
+		return Operation(""), false
+	}
+	return request.state.knownOperation, validKnownOperation(request.state.knownOperation)
 }
 
 func (InspectedRequest) MarshalJSON() ([]byte, error) {
