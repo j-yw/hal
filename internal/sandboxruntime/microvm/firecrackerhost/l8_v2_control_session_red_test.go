@@ -1,6 +1,7 @@
 package firecrackerhost
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -366,6 +368,105 @@ func TestL8D6V2ControlFoundationRejectsAuthenticatedWrongIdentity(t *testing.T) 
 	case <-guestResult:
 	case <-time.After(time.Second):
 		t.Fatal("wrong-identity guest did not terminate")
+	}
+}
+
+func TestL8D6V2ControlFoundationProductionConnectorBindsPortAndRetainedOwnership(t *testing.T) {
+	fixture := newL5ProductionBridgeFixture(t, os.Getpid())
+	listener := l5ListenBridgeSocket(t, fixture.paths.VsockSocketPath)
+	seed := l8D6V2ControlSeed(t)
+	seed.RuntimeID = "fc-production-test"
+	key, nonce := l8D6V2ControlAuthority(t)
+	connectLines := make(chan string, 2)
+	guestResult := make(chan l8D6V2ControlGuestResult, 1)
+	serverErr := make(chan error, 1)
+	go func() {
+		first, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		firstReader := bufio.NewReader(first)
+		line, err := firstReader.ReadString('\n')
+		if err == nil {
+			connectLines <- line
+			_, err = io.WriteString(first, "OK 1073741824\n")
+		}
+		if err == nil {
+			_, err = frame.Read(firstReader, 1024)
+		}
+		if err == nil {
+			err = frame.Write(first, []byte(`{"protocolVersion":"guest-agent-v1","operation":"readiness","ready":true,"status":"ready"}`), 1024)
+		}
+		_ = first.Close()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+
+		second, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		secondReader := bufio.NewReader(second)
+		line, err = secondReader.ReadString('\n')
+		if err == nil {
+			connectLines <- line
+			_, err = io.WriteString(second, "OK 1073741824\n")
+		}
+		if err != nil {
+			_ = second.Close()
+			serverErr <- err
+			return
+		}
+		serverErr <- nil
+		l8D6ServeV2ControlGuest(second, seed, key.Public().(ed25519.PublicKey), nonce, guestResult)
+	}()
+
+	_, generation, err := fixture.bridge.ActivateSession(context.Background(), firecracker.ProductionVsockSessionRequest{
+		Handle: fixture.handle, RuntimeID: seed.RuntimeID, SocketPath: fixture.paths.VsockSocketPath,
+	})
+	if err != nil {
+		t.Fatalf("ActivateSession: %v", err)
+	}
+	target := l8D6V2ControlTarget(seed)
+	target.Runtime.Metadata = &sandboxruntime.RuntimeMetadata{ProcessLaunch: &sandboxruntime.RuntimeProcessLaunchMetadata{
+		ProcessID: fixture.handle.ID, ProcessIDSource: fixture.handle.Source,
+	}}
+	bridge, err := NewProductionL8V2ControlBridge(fixture.bridge, seed, key, nonce)
+	if err != nil {
+		t.Fatalf("NewProductionL8V2ControlBridge: %v", err)
+	}
+	session, err := bridge.OpenReadiness(context.Background(), target)
+	if err != nil {
+		t.Fatalf("OpenReadiness: %v", err)
+	}
+	if serverFailure := <-serverErr; serverFailure != nil {
+		t.Fatalf("serve production connector: %v", serverFailure)
+	}
+	if result := <-guestResult; result.err != nil {
+		t.Fatalf("guest protocol: %v", result.err)
+	}
+	if got, want := []string{<-connectLines, <-connectLines}, []string{"CONNECT 1024\n", "CONNECT 1025\n"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("connect lines = %#v, want %#v", got, want)
+	}
+	retainedSession := fixture.bridge.session(seed.RuntimeID)
+	retainedSession.wire.mu.Lock()
+	retained := len(retainedSession.wire.active)
+	retainedSession.wire.mu.Unlock()
+	if retained != 1 {
+		t.Fatalf("retained port-1025 streams = %d, want 1", retained)
+	}
+
+	fixture.bridge.InvalidateSession(firecracker.ProductionVsockSessionRequest{Handle: fixture.handle, RuntimeID: seed.RuntimeID}, generation)
+	select {
+	case <-session.Done():
+	case <-time.After(time.Second):
+		t.Fatal("retained socket authority loss did not terminalize owner")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("session Close after invalidation: %v", err)
 	}
 }
 
