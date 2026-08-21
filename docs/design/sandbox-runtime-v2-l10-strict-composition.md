@@ -1,12 +1,18 @@
-# Sandbox Runtime v2 L10 Strict Composition and Default Selection
+# Sandbox Runtime v2 L10 Strict Composition and Default Selection (Preparatory)
 
 ## Authority and phase boundary
 
-L10 implements issue #49's locked strict-composition node. The authoritative
-inputs are issue comments `5068151561`, `5068157402`, and `5068162708`, the
-Linux-completion architecture, and the accepted L3, L5, L7, L8, and L9
-handoffs. The exact integration base is
-`357090101f8479ed11a6a84976787a9c09a1f4ff`.
+L10 remains unaccepted and default-off. This slice prepares issue #49's locked
+strict-composition evaluator, durable projection, and fail-closed selection
+consumer without claiming live authority. The authoritative design inputs are
+issue comments `5068151561`, `5068157402`, and `5068162708` and the
+Linux-completion architecture. The exact recompose base is
+`c3922c2dc0b11d2e731d451e669d8c3c1ba1444b`.
+
+The required L8 runtime-owned credential lifecycle and its dependent live
+handoffs are not accepted on this base. No selected L10 live lane exists in this preparatory slice.
+The evaluator is exercised only by fake-safe package tests; nothing in this
+slice turns those tests or durable metadata into release evidence.
 
 Strict success is a conjunction. It is never inferred from a score, a runtime
 name, cached readiness labels, requested policy, or independently successful
@@ -22,9 +28,9 @@ cleanup-incomplete evidence into strict readiness.
 
 ## Package ownership and import boundary
 
-`internal/strictcomposition` owns the sole live conjunction evaluator and the
-opaque, short-lived active attestation. It may import only the existing pure or
-live authority contracts in `internal/sandbox`, `internal/sandboxruntime`,
+`internal/strictcomposition` owns the future live conjunction evaluator and
+the opaque, short-lived active attestation. It may import only the existing
+pure or live authority contracts in `internal/sandbox`, `internal/sandboxruntime`,
 `internal/sandboxruntime/microvm/firecrackerhost/l7network`,
 `internal/sandboxtemplate/selection`, and `internal/sandboxworkspace`, plus the
 standard library. It must not import `cmd`, factory orchestration, workers,
@@ -45,14 +51,21 @@ The existing authorities remain authoritative:
   behind one minimal L10 correlation envelope.
 
 `internal/sandbox` owns only the durable, redaction-safe decision projection.
-`internal/sandboxtarget` consumes a fresh opaque active attestation for strict
-default selection. `cmd` and `internal/factory` only wire the evaluator and
-render or persist the sanitized projection. They must not recreate the
-conjunction or accept a durable projection as live authority.
+`internal/sandboxtarget` contains the future consumer of a fresh opaque active
+attestation for strict default selection and fails closed while none is
+supplied. `cmd` and `internal/factory` may render or persist only the sanitized
+projection. They must not recreate the conjunction or accept a durable
+projection as live authority.
+
+No production caller invokes `EvaluateActive` or `EvaluateTerminal`.
+Production code does not construct `JobCredentialActiveProof` or `JobCredentialCleanupProof` for L10.
+The command, factory, scheduler, runtime, worker, and provider paths do not
+populate live strict-composition authority, so existing default behavior stays
+off and strict selection cannot become authorized by this slice.
 
 ## Exact inputs
 
-The live active request contains:
+A later accepted live active request must contain:
 
 1. a non-nil context and a non-zero trusted observation time;
 2. one complete `sandboxruntime.JobCredentialIdentity` whose runtime driver is
@@ -116,20 +129,21 @@ not produce an attestation.
 
 ## Active and terminal lifecycle
 
-`EvaluateActive` performs the fresh live conjunction and returns `active` only
-after every check succeeds. A strict default may be selected only while that
-exact attestation remains valid for the selected sandbox, execution, and
-runtime. Selection must also reject any fallback path and any non-Firecracker
-runtime. Projection code may downgrade a claim, but cannot create or extend an
-attestation.
+When it is eventually wired from accepted authorities, `EvaluateActive`
+performs the fresh live conjunction and returns `active` only after every check
+succeeds. A strict default may be selected only while that exact attestation
+remains valid for the selected sandbox, execution, and runtime. Selection must
+also reject any fallback path and any non-Firecracker runtime. Projection code
+may downgrade a claim, but cannot create or extend an attestation. This
+preparatory slice has no caller capable of reaching that success path.
 
-`EvaluateTerminal` consumes the exact active attestation after execution. It
-requires the active credential proof to have been discarded and the mutually
-exclusive, fresh `JobCredentialCleanupProof` for the same complete identity and
-revision. It revalidates immutable template/workspace correlation and rejects
-warnings or cleanup uncertainty. It never accepts both active and cleanup
-proofs. A successful terminal decision is `complete`; it is not reusable for
-strict default selection.
+In the future accepted flow, `EvaluateTerminal` consumes the exact active
+attestation after execution. It requires the active credential proof to have
+been discarded and the mutually exclusive, fresh `JobCredentialCleanupProof`
+for the same complete identity and revision. It revalidates immutable
+template/workspace correlation and rejects warnings or cleanup uncertainty. It
+never accepts both active and cleanup proofs. A successful terminal decision
+is `complete`; it is not reusable for strict default selection.
 
 L10 terminal completion establishes the L8 credential-absence boundary and
 the immutable/correlated decision history. L11 separately proves whole-system
@@ -170,9 +184,11 @@ The first L10 tests must be red before implementation and must cover:
 - deterministic output and cancellation/error redaction;
 - import-boundary and JSON-shape guards.
 
-The fake matrix validates the pure conjunction. Prepared-Linux acceptance must
-also run the real L5/L7/L8/L9 authorities and remove or corrupt each live proof
-one at a time. Fake or simulated sources can never satisfy that live lane.
+The fake matrix validates the fail-closed conjunction contract but does not
+accept L10. Fake or simulated sources never establish live authority. A future
+prepared-Linux acceptance lane must be added only after its prerequisite L8
+authority is independently accepted, then run the real L5/L7/L8/L9 authorities
+and remove or corrupt each live proof one at a time.
 
 ## Durable/schema projection
 
@@ -187,43 +203,39 @@ creates data only; it cannot recreate selection authority.
 
 ## Verification and L11 handoff
 
-Focused fake-safe verification will cover `internal/strictcomposition`,
+Focused fake-safe verification covers `internal/strictcomposition`,
 `internal/sandboxtarget`, command/factory projection, redaction, import guards,
 and the full remove-one-proof matrix. Relevant race and repeated runs are
-required. Prepared-Linux verification composes the real L5/L7/L8/L9 scenario;
-a skip is a boundary failure, not a pass.
+required. No prepared-Linux L10 command or selected test is part of this slice.
 
 Broad gates are `go test ./...`, typecheck-only tests, `go vet ./...`,
 `make docs-check`, `make build`, base-relative lint when installed, gofmt, and
 `git diff --check`.
 
-The exact fake-safe and prepared-Linux commands are:
+The exact preparatory commands are:
 
 ```sh
 go test -count=1 ./internal/strictcomposition ./internal/sandbox ./internal/sandboxtarget ./internal/factory ./cmd -run '^TestL10'
-go test -race -count=1 ./internal/strictcomposition ./internal/sandboxtarget -run '^TestL10'
+go test -race -count=1 ./internal/strictcomposition ./internal/sandboxtarget ./cmd -run '^TestL10'
 go test -count=10 ./internal/strictcomposition ./internal/sandboxtarget -run '^TestL10'
-go test -count=1 -tags=l10_strict_composition_integration ./internal/strictcomposition -run '^TestL10PreparedLinuxStrictCompositionE2E$'
-go test -count=1 ./...
+go test -count=1 ./cmd -run '^TestL11FinalClosure'
 go test -count=1 -run '^$' ./...
 go vet ./...
 make docs-check
 make build
-git diff --check
+git diff --check c3922c2dc0b11d2e731d451e669d8c3c1ba1444b..HEAD
 ```
 
-The explicitly selected prepared-Linux test must fail, rather than skip, when
-its local Firecracker binary, immutable kernel/rootfs, KVM, proxy, Linux-rule,
-credential-helper, registry, or isolated-workspace prerequisites are absent.
-It makes no cloud or billed provider call. The prepared lane must use the real
-retained L5/L7/L8/L9 authorities; a fake `RuntimeProofSource`, synthesized
-proof token, cached readiness projection, or simulated template/workspace
-record cannot satisfy it.
+These commands are fake-safe and make no cloud or billed provider call. The
+omitted live lane must eventually use the real retained L5/L7/L8/L9 authorities;
+a fake `RuntimeProofSource`, synthesized proof token, cached readiness
+projection, or simulated template/workspace record cannot satisfy it.
 
 L10 does not implement new Firecracker, networking, credential, registry,
 workspace-collection, provider, or cloud behavior. It makes no billed provider
-call. L11 receives the strict active/complete decision and runs the final
-rootless-advisory and strict-Firecracker matrix, crash/reconnect negatives,
-artifact integrity, resource-absence cleanup, docs/contracts, and release
-evidence. Hetzner and Lightsail remain deferred until accounts exist or their
-verification is moved to a separate issue.
+call. L11 remains dependency-blocked on accepted L8 and L10 live authority.
+Only after those handoffs exist can L11 receive a strict active/complete
+decision and run the final rootless-advisory and strict-Firecracker matrix,
+crash/reconnect negatives, artifact integrity, resource-absence cleanup,
+docs/contracts, and release evidence. Hetzner and Lightsail remain deferred
+until accounts exist or their verification is moved to a separate issue.
