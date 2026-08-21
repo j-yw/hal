@@ -1,9 +1,10 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ const (
 	l11FinalClosureSelectedTest     = "TestL11PreparedLinuxFinalClosure"
 	l11FinalClosureIntegrationTag   = "l11_final_closure_integration"
 	l11FinalClosureCurrentStateLine = "Current closure state: `blocked`."
+	l11FinalClosureBlockedDocSHA256 = "0340918278e06a2e1368a8c0ed1eb406c75fdbba47642b4f5adc9777bdeb5892"
 )
 
 type l11FinalClosureMatrixRow struct {
@@ -375,24 +377,6 @@ func l11ValidateFinalClosureMatrix(rows []l11FinalClosureMatrixRow) error {
 	return nil
 }
 
-var (
-	l11PrematureProductionLiveAcceptance = regexp.MustCompile(`(?im)(?:^|\n)\s*(?:production[- ]live acceptance\s*:\s*(?:accepted|passed|complete|completed)|(?:the\s+)?L11 production[- ]live (?:lane|closure)\s+(?:is\s+|was\s+|has been\s+)?(?:accepted|passed|complete|completed))\b`)
-	l11ContradictoryReleaseSuccess       = regexp.MustCompile(`(?im)^\s*(?:(?:current|final)\s+)?release\s+(?:result|status|state)\s*:\s*(?:accepted|passed|complete|completed)\.?\s*$|^\s*all nine rows passed\.?\s*$`)
-	l11UnsafeReleaseURL                  = regexp.MustCompile(`(?i)\b(?:https?|ssh|file)://\S+`)
-	l11UnsafeReleaseToken                = regexp.MustCompile(`(?i)\b(?:gh[pousr]_[A-Za-z0-9]{20,}|hcloud_[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b`)
-	l11UnsafeReleaseEnvironmentValue     = regexp.MustCompile(`(?im)\b(?:HCLOUD_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|DIGITALOCEAN_ACCESS_TOKEN|GOOGLE_APPLICATION_CREDENTIALS)\s*=\s*\S+`)
-	l11UnsafeReleaseUnixPath             = regexp.MustCompile("(?m)(?:^|[\\s\"'(])(?:~/(?:[^\\s`|,;)]+)?|/(?:home|root|tmp|var|run|private|etc|opt|srv|mnt|Users)(?:/[^\\s`|,;)]*)?)")
-	l11UnsafeReleaseWindowsPath          = regexp.MustCompile("(?im)(?:^|[\\s\"'(])(?:[A-Z]:\\\\|\\\\\\\\)[^\\s`|,;)]+")
-	l11UnsafeReleaseHostname             = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|dev|cloud|internal|local|invalid|example)\b`)
-	l11UnsafeReleaseIPv4                 = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
-	l11UnsafeReleaseIPv6                 = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{1,4}:){2,}[0-9a-f:]{1,39}\b`)
-	l11UnsafeReleasePort                 = regexp.MustCompile(`(?im)\b(?:listener\s+)?port\s*[:=]\s*[0-9]{1,5}\b`)
-	l11UnsafeReleaseAbstractSocket       = regexp.MustCompile(`(?im)\b(?:socket|endpoint)\s*[:=]\s*(?:@|\\x00)[^\s` + "`" + `|,;)]+`)
-	l11UnsafeReleasePID                  = regexp.MustCompile(`(?im)\bpid\s*[:=]\s*[0-9]+\b`)
-	l11UnsafeReleaseProviderHandle       = regexp.MustCompile(`(?im)\bprovider\s+handle\s*[:=]\s*[^\s` + "`" + `|,;)]+`)
-	l11UnsafeReleaseBearer               = regexp.MustCompile(`(?im)\b(?:authorization|proxy-authorization)\s*:\s*bearer\s+[^\s` + "`" + `|,;)]+`)
-)
-
 func l11ValidateFinalClosureDocumentSafety(doc string) error {
 	for _, required := range []string{
 		l11FinalClosureCurrentStateLine,
@@ -409,26 +393,11 @@ func l11ValidateFinalClosureDocumentSafety(doc string) error {
 			return &l11FinalClosureGuardError{message: "L11 closure state is not exactly blocked"}
 		}
 	}
-	for _, pattern := range []*regexp.Regexp{
-		l11PrematureProductionLiveAcceptance,
-		l11ContradictoryReleaseSuccess,
-		l11UnsafeReleaseURL,
-		l11UnsafeReleaseToken,
-		l11UnsafeReleaseEnvironmentValue,
-		l11UnsafeReleaseUnixPath,
-		l11UnsafeReleaseWindowsPath,
-		l11UnsafeReleaseHostname,
-		l11UnsafeReleaseIPv4,
-		l11UnsafeReleaseIPv6,
-		l11UnsafeReleasePort,
-		l11UnsafeReleaseAbstractSocket,
-		l11UnsafeReleasePID,
-		l11UnsafeReleaseProviderHandle,
-		l11UnsafeReleaseBearer,
-	} {
-		if pattern.MatchString(doc) {
-			return &l11FinalClosureGuardError{message: "L11 release evidence contains a premature acceptance or unsafe value"}
-		}
+	// This slice has no release record. Its only valid state is the exact reviewed
+	// blocked contract; any added field or prose is an unreviewed evidence shape.
+	digest := sha256.Sum256([]byte(doc))
+	if hex.EncodeToString(digest[:]) != l11FinalClosureBlockedDocSHA256 {
+		return &l11FinalClosureGuardError{message: "L11 blocked document is not the exact source-locked contract"}
 	}
 	return nil
 }

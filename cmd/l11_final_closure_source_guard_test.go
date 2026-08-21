@@ -24,10 +24,11 @@ var l11SelectedPreparedTests = map[string]bool{
 }
 
 type l11SelectedFunction struct {
-	declaration *ast.FuncDecl
-	literal     *ast.FuncLit
-	file        *l11SelectedFile
-	pkg         *l11SelectedPackage
+	declaration        *ast.FuncDecl
+	literal            *ast.FuncLit
+	file               *l11SelectedFile
+	pkg                *l11SelectedPackage
+	packageInitializer bool
 }
 
 type l11SelectedFile struct {
@@ -48,6 +49,16 @@ type l11SelectedPackage struct {
 	files     []*l11SelectedFile
 	functions map[string][]*l11SelectedFunction
 	methods   map[string]map[string][]*l11SelectedFunction
+	values    []*l11SelectedPackageValue
+	callables map[string][]l11SelectedCallable
+	constants map[string]string
+}
+
+type l11SelectedPackageValue struct {
+	file   *l11SelectedFile
+	token  token.Token
+	names  []*ast.Ident
+	values []ast.Expr
 }
 
 type l11SelectedCallable struct {
@@ -55,6 +66,20 @@ type l11SelectedCallable struct {
 	proof    bool
 	skip     bool
 	cloud    bool
+}
+
+type l11SelectedResolutionState struct {
+	objects  map[*ast.Object]bool
+	returns  map[ast.Node]bool
+	aliasing map[ast.Node]bool
+}
+
+func l11NewSelectedResolutionState() *l11SelectedResolutionState {
+	return &l11SelectedResolutionState{
+		objects:  make(map[*ast.Object]bool),
+		returns:  make(map[ast.Node]bool),
+		aliasing: make(map[ast.Node]bool),
+	}
 }
 
 func TestL11FinalClosureContractOnlyAddsNoProductionWiring(t *testing.T) {
@@ -353,6 +378,17 @@ var input any
 			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
 		},
 		{
+			name: "discarded multi return proof callable remains unreachable",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func choices() (func(), func()) { return unsafe, safe }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _, run := choices(); run() }
+func safe() {}
+func unsafe() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
+var input any
+`,
+		},
+		{
 			name: "init reassigned global callable proof constructor",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
@@ -629,6 +665,8 @@ func l11ParseSelectedTestSources(sources map[string]string) (map[string]*l11Sele
 				name:      parsed.Name.Name,
 				functions: make(map[string][]*l11SelectedFunction),
 				methods:   make(map[string]map[string][]*l11SelectedFunction),
+				callables: make(map[string][]l11SelectedCallable),
+				constants: make(map[string]string),
 			}
 			packages[key] = pkg
 		}
@@ -640,6 +678,15 @@ func l11ParseSelectedTestSources(sources map[string]string) (map[string]*l11Sele
 		}
 		pkg.files = append(pkg.files, file)
 		for _, declaration := range parsed.Decls {
+			if generated, ok := declaration.(*ast.GenDecl); ok && (generated.Tok == token.CONST || generated.Tok == token.VAR) {
+				for _, spec := range generated.Specs {
+					value, ok := spec.(*ast.ValueSpec)
+					if ok {
+						pkg.values = append(pkg.values, &l11SelectedPackageValue{file: file, token: generated.Tok, names: value.Names, values: value.Values})
+					}
+				}
+				continue
+			}
 			function, ok := declaration.(*ast.FuncDecl)
 			if !ok || function.Body == nil {
 				continue
@@ -694,6 +741,132 @@ func l11SelectedFileImportPaths(file *ast.File) map[string]string {
 	return imports
 }
 
+func l11PrepareSelectedPackageFacts(packages map[string]*l11SelectedPackage, literals map[*ast.FuncLit]*l11SelectedFunction) {
+	for _, pkg := range packages {
+		pkg.callables = make(map[string][]l11SelectedCallable)
+		pkg.constants = make(map[string]string)
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, pkg := range packages {
+			for _, declaration := range pkg.values {
+				if declaration.token != token.CONST || len(declaration.names) != len(declaration.values) {
+					continue
+				}
+				for index, name := range declaration.names {
+					literal, ok := l11SelectedStringConstant(pkg, declaration.values[index])
+					if ok && pkg.constants[name.Name] != literal {
+						pkg.constants[name.Name] = literal
+						changed = true
+					}
+				}
+			}
+		}
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for _, pkg := range packages {
+			for _, declaration := range pkg.values {
+				if declaration.token != token.VAR {
+					continue
+				}
+				context := l11SelectedPackageExpressionContext(pkg, declaration.file)
+				if l11MergeSelectedPackageValueCallables(packages, pkg, context, declaration.names, declaration.values, nil, literals) {
+					changed = true
+				}
+			}
+			for _, initializer := range pkg.functions["init"] {
+				aliases := l11SelectedCallableAliases(packages, initializer, literals)
+				ast.Inspect(initializer.body(), func(node ast.Node) bool {
+					if _, nested := node.(*ast.FuncLit); nested {
+						return false
+					}
+					assignment, ok := node.(*ast.AssignStmt)
+					if !ok {
+						return true
+					}
+					var names []*ast.Ident
+					for _, expression := range assignment.Lhs {
+						name, ok := expression.(*ast.Ident)
+						if !ok || (name.Name != "_" && !l11SelectedPackageAssignmentTarget(pkg, name, assignment.Tok)) {
+							return true
+						}
+						names = append(names, name)
+					}
+					if l11MergeSelectedPackageValueCallables(packages, pkg, initializer, names, assignment.Rhs, aliases, literals) {
+						changed = true
+					}
+					return true
+				})
+			}
+		}
+	}
+}
+
+func l11SelectedPackageExpressionContext(pkg *l11SelectedPackage, file *l11SelectedFile) *l11SelectedFunction {
+	return &l11SelectedFunction{
+		literal: &ast.FuncLit{Body: &ast.BlockStmt{}},
+		file:    file,
+		pkg:     pkg,
+	}
+}
+
+func l11MergeSelectedPackageValueCallables(packages map[string]*l11SelectedPackage, pkg *l11SelectedPackage, current *l11SelectedFunction, names []*ast.Ident, values []ast.Expr, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction) bool {
+	changed := false
+	state := l11NewSelectedResolutionState()
+	for index, name := range names {
+		if name.Name == "_" {
+			continue
+		}
+		var resolved []l11SelectedCallable
+		if len(values) == 1 && len(names) > 1 {
+			if call, ok := values[0].(*ast.CallExpr); ok {
+				results := l11ResolveSelectedCallableResultsWithState(packages, current, call, aliases, literals, state)
+				if index < len(results) {
+					resolved = results[index]
+				}
+			}
+		} else if index < len(values) {
+			resolved = l11ResolveSelectedCallablesWithState(packages, current, values[index], aliases, literals, state)
+		}
+		merged := l11MergeSelectedCallables(pkg.callables[name.Name], resolved)
+		if len(merged) != len(pkg.callables[name.Name]) {
+			pkg.callables[name.Name] = merged
+			changed = true
+		}
+	}
+	return changed
+}
+
+func l11SelectedPackageAssignmentTarget(pkg *l11SelectedPackage, name *ast.Ident, assignment token.Token) bool {
+	if name.Obj != nil {
+		return l11SelectedPackageOwnsObject(pkg, name.Obj)
+	}
+	if assignment == token.DEFINE {
+		return false
+	}
+	for _, declaration := range pkg.values {
+		for _, declared := range declaration.names {
+			if declared.Name == name.Name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func l11SelectedPackageOwnsObject(pkg *l11SelectedPackage, object *ast.Object) bool {
+	for _, declaration := range pkg.values {
+		for _, name := range declaration.names {
+			if name.Obj == object {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func l11SelectedPreparedTestIssues(packages map[string]*l11SelectedPackage) []string {
 	var issues []string
 	for _, pkg := range packages {
@@ -710,7 +883,11 @@ func l11SelectedPreparedTestIssues(packages map[string]*l11SelectedPackage) []st
 func l11SelectedFunctionIssues(packages map[string]*l11SelectedPackage, root *l11SelectedFunction) []string {
 	queue := []*l11SelectedFunction{root}
 	reachable := make(map[ast.Node]bool)
-	literals := make(map[*ast.FuncLit]*l11SelectedFunction)
+	literals := l11SelectedFunctionLiterals(packages)
+	l11PrepareSelectedPackageFacts(packages, literals)
+	packageInitializers := l11SelectedPackageInitializers(packages)
+	invokedParameters := l11SelectedInvokedParameters(packages, literals)
+	packagesQueued := make(map[*l11SelectedPackage]bool)
 	var issues []string
 	recordCallable := func(callable l11SelectedCallable) {
 		switch {
@@ -724,6 +901,27 @@ func l11SelectedFunctionIssues(packages map[string]*l11SelectedPackage, root *l1
 			queue = append(queue, callable.function)
 		}
 	}
+	var queuePackage func(*l11SelectedPackage)
+	queuePackage = func(pkg *l11SelectedPackage) {
+		if pkg == nil || packagesQueued[pkg] {
+			return
+		}
+		packagesQueued[pkg] = true
+		for _, file := range pkg.files {
+			for _, imported := range file.imports {
+				if l11ForbiddenCloudImport(imported.path) {
+					recordCallable(l11SelectedCallable{cloud: true})
+				}
+				queuePackage(l11SelectedImportedPackage(packages, imported.path))
+			}
+		}
+		for _, initializer := range pkg.functions["init"] {
+			recordCallable(l11SelectedCallable{function: initializer})
+		}
+		for _, initializer := range packageInitializers[pkg] {
+			recordCallable(l11SelectedCallable{function: initializer})
+		}
+	}
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
@@ -733,25 +931,17 @@ func l11SelectedFunctionIssues(packages map[string]*l11SelectedPackage, root *l1
 		}
 		reachable[node] = true
 		aliases := l11SelectedCallableAliases(packages, current, literals)
-		for _, initializer := range current.pkg.functions["init"] {
-			recordCallable(l11SelectedCallable{function: initializer})
-		}
-		for _, imported := range current.file.imports {
-			if l11ForbiddenCloudImport(imported.path) {
-				recordCallable(l11SelectedCallable{cloud: true})
-			}
-			if importedPackage := l11SelectedImportedPackage(packages, imported.path); importedPackage != nil {
-				for _, initializer := range importedPackage.functions["init"] {
-					recordCallable(l11SelectedCallable{function: initializer})
-				}
-			}
-		}
+		queuePackage(current.pkg)
 		ast.Inspect(current.body(), func(node ast.Node) bool {
 			switch value := node.(type) {
 			case *ast.FuncLit:
 				return false
 			case *ast.BinaryExpr:
-				if literal, ok := l11SelectedStringConstant(value); ok {
+				if !current.packageInitializer {
+					literal, ok := l11SelectedStringConstant(current.pkg, value)
+					if !ok {
+						break
+					}
 					if l11ForbiddenCloudLiteral(literal) {
 						recordCallable(l11SelectedCallable{cloud: true})
 					}
@@ -768,23 +958,45 @@ func l11SelectedFunctionIssues(packages map[string]*l11SelectedPackage, root *l1
 				if l11SelectedDotImportedProof(current.file, value) {
 					issues = append(issues, fmt.Sprintf("%s reaches synthetic credential proof constructor", root.declaration.Name.Name))
 				}
-				if value.Obj == nil && l11ForbiddenCloudLiteral(value.Name) {
+				if !current.packageInitializer && value.Obj == nil && l11ForbiddenCloudLiteral(value.Name) {
 					issues = append(issues, fmt.Sprintf("%s reaches a cloud/provider marker", root.declaration.Name.Name))
 				}
+				if !current.packageInitializer {
+					literal, ok := l11SelectedStringConstant(current.pkg, value)
+					if ok && l11ForbiddenCloudLiteral(literal) {
+						recordCallable(l11SelectedCallable{cloud: true})
+					}
+				}
 			case *ast.BasicLit:
-				if value.Kind == token.STRING {
+				if !current.packageInitializer && value.Kind == token.STRING {
 					literal, err := strconv.Unquote(value.Value)
 					if err == nil && l11ForbiddenCloudLiteral(literal) {
 						issues = append(issues, fmt.Sprintf("%s reaches a cloud/provider marker", root.declaration.Name.Name))
 					}
 				}
 			case *ast.CallExpr:
-				for _, callable := range l11ResolveSelectedCallables(packages, current, value.Fun, aliases, literals) {
+				callables := l11ResolveSelectedCallables(packages, current, value.Fun, aliases, literals)
+				resolvedLocal := false
+				for _, callable := range callables {
 					recordCallable(callable)
+					if callable.function == nil {
+						continue
+					}
+					resolvedLocal = true
+					for parameter := range invokedParameters[callable.function.node()] {
+						if parameter >= len(value.Args) {
+							continue
+						}
+						for _, argument := range l11ResolveSelectedCallables(packages, current, value.Args[parameter], aliases, literals) {
+							recordCallable(argument)
+						}
+					}
 				}
-				for _, argument := range value.Args {
-					for _, callable := range l11ResolveSelectedCallables(packages, current, argument, aliases, literals) {
-						recordCallable(callable)
+				if !resolvedLocal {
+					for _, expression := range value.Args {
+						for _, argument := range l11ResolveSelectedCallables(packages, current, expression, aliases, literals) {
+							recordCallable(argument)
+						}
 					}
 				}
 			}
@@ -792,6 +1004,201 @@ func l11SelectedFunctionIssues(packages map[string]*l11SelectedPackage, root *l1
 		})
 	}
 	return l11UniqueStrings(issues)
+}
+
+func l11SelectedPackageInitializers(packages map[string]*l11SelectedPackage) map[*l11SelectedPackage][]*l11SelectedFunction {
+	initializers := make(map[*l11SelectedPackage][]*l11SelectedFunction)
+	for _, pkg := range packages {
+		for _, declaration := range pkg.values {
+			if declaration.token != token.VAR {
+				continue
+			}
+			for _, expression := range declaration.values {
+				initializers[pkg] = append(initializers[pkg], &l11SelectedFunction{
+					literal:            &ast.FuncLit{Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ExprStmt{X: expression}}}},
+					file:               declaration.file,
+					pkg:                pkg,
+					packageInitializer: true,
+				})
+			}
+		}
+	}
+	return initializers
+}
+
+func l11SelectedFunctionLiterals(packages map[string]*l11SelectedPackage) map[*ast.FuncLit]*l11SelectedFunction {
+	literals := make(map[*ast.FuncLit]*l11SelectedFunction)
+	for _, pkg := range packages {
+		for _, functions := range pkg.functions {
+			for _, function := range functions {
+				ast.Inspect(function.body(), func(node ast.Node) bool {
+					literal, ok := node.(*ast.FuncLit)
+					if ok && literals[literal] == nil {
+						literals[literal] = &l11SelectedFunction{literal: literal, file: function.file, pkg: pkg}
+					}
+					return true
+				})
+			}
+		}
+	}
+	return literals
+}
+
+func l11SelectedInvokedParameters(packages map[string]*l11SelectedPackage, literals map[*ast.FuncLit]*l11SelectedFunction) map[ast.Node]map[int]bool {
+	functions := make([]*l11SelectedFunction, 0)
+	for _, pkg := range packages {
+		for _, declarations := range pkg.functions {
+			functions = append(functions, declarations...)
+		}
+	}
+	for _, literal := range literals {
+		functions = append(functions, literal)
+	}
+
+	invoked := make(map[ast.Node]map[int]bool, len(functions))
+	for changed := true; changed; {
+		changed = false
+		for _, function := range functions {
+			parameters := l11SelectedParameterObjects(function)
+			if len(parameters) == 0 {
+				continue
+			}
+			sources := l11SelectedParameterAliases(function, parameters)
+			aliases := l11SelectedCallableAliases(packages, function, literals)
+			ast.Inspect(function.body(), func(node ast.Node) bool {
+				if _, nested := node.(*ast.FuncLit); nested {
+					return false
+				}
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				for parameter := range l11SelectedParameterSources(call.Fun, sources) {
+					if l11AddSelectedParameter(invoked, function.node(), parameter) {
+						changed = true
+					}
+				}
+				for _, callable := range l11ResolveSelectedCallables(packages, function, call.Fun, aliases, literals) {
+					if callable.function == nil {
+						continue
+					}
+					for calleeParameter := range invoked[callable.function.node()] {
+						if calleeParameter >= len(call.Args) {
+							continue
+						}
+						for parameter := range l11SelectedParameterSources(call.Args[calleeParameter], sources) {
+							if l11AddSelectedParameter(invoked, function.node(), parameter) {
+								changed = true
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	return invoked
+}
+
+func l11SelectedParameterObjects(function *l11SelectedFunction) []*ast.Object {
+	var fields *ast.FieldList
+	if function.declaration != nil {
+		fields = function.declaration.Type.Params
+	} else {
+		fields = function.literal.Type.Params
+	}
+	if fields == nil {
+		return nil
+	}
+	var parameters []*ast.Object
+	for _, field := range fields.List {
+		for _, name := range field.Names {
+			parameters = append(parameters, name.Obj)
+		}
+	}
+	return parameters
+}
+
+func l11SelectedParameterAliases(function *l11SelectedFunction, parameters []*ast.Object) map[*ast.Object]map[int]bool {
+	sources := make(map[*ast.Object]map[int]bool)
+	for index, object := range parameters {
+		if object != nil {
+			sources[object] = map[int]bool{index: true}
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		ast.Inspect(function.body(), func(node ast.Node) bool {
+			if _, nested := node.(*ast.FuncLit); nested {
+				return false
+			}
+			var names []*ast.Ident
+			var values []ast.Expr
+			switch declaration := node.(type) {
+			case *ast.AssignStmt:
+				if len(declaration.Lhs) != len(declaration.Rhs) {
+					return true
+				}
+				for _, expression := range declaration.Lhs {
+					name, ok := expression.(*ast.Ident)
+					if !ok {
+						return true
+					}
+					names = append(names, name)
+				}
+				values = declaration.Rhs
+			case *ast.ValueSpec:
+				if len(declaration.Names) != len(declaration.Values) {
+					return true
+				}
+				names, values = declaration.Names, declaration.Values
+			default:
+				return true
+			}
+			for index, name := range names {
+				if name.Obj == nil {
+					continue
+				}
+				for parameter := range l11SelectedParameterSources(values[index], sources) {
+					if sources[name.Obj] == nil {
+						sources[name.Obj] = make(map[int]bool)
+					}
+					if !sources[name.Obj][parameter] {
+						sources[name.Obj][parameter] = true
+						changed = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	return sources
+}
+
+func l11SelectedParameterSources(expression ast.Expr, sources map[*ast.Object]map[int]bool) map[int]bool {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		return sources[value.Obj]
+	case *ast.ParenExpr:
+		return l11SelectedParameterSources(value.X, sources)
+	case *ast.IndexExpr:
+		return l11SelectedParameterSources(value.X, sources)
+	case *ast.IndexListExpr:
+		return l11SelectedParameterSources(value.X, sources)
+	default:
+		return nil
+	}
+}
+
+func l11AddSelectedParameter(invoked map[ast.Node]map[int]bool, function ast.Node, parameter int) bool {
+	if invoked[function] == nil {
+		invoked[function] = make(map[int]bool)
+	}
+	if invoked[function][parameter] {
+		return false
+	}
+	invoked[function][parameter] = true
+	return true
 }
 
 func (function *l11SelectedFunction) node() ast.Node {
@@ -809,7 +1216,16 @@ func (function *l11SelectedFunction) body() *ast.BlockStmt {
 }
 
 func l11SelectedCallableAliases(packages map[string]*l11SelectedPackage, function *l11SelectedFunction, literals map[*ast.FuncLit]*l11SelectedFunction) map[*ast.Object][]l11SelectedCallable {
+	return l11SelectedCallableAliasesWithState(packages, function, literals, l11NewSelectedResolutionState())
+}
+
+func l11SelectedCallableAliasesWithState(packages map[string]*l11SelectedPackage, function *l11SelectedFunction, literals map[*ast.FuncLit]*l11SelectedFunction, state *l11SelectedResolutionState) map[*ast.Object][]l11SelectedCallable {
 	aliases := make(map[*ast.Object][]l11SelectedCallable)
+	if state.aliasing[function.node()] {
+		return aliases
+	}
+	state.aliasing[function.node()] = true
+	defer delete(state.aliasing, function.node())
 	for changed := true; changed; {
 		changed = false
 		ast.Inspect(function.body(), func(node ast.Node) bool {
@@ -820,7 +1236,7 @@ func l11SelectedCallableAliases(packages map[string]*l11SelectedPackage, functio
 			var values []ast.Expr
 			switch declaration := node.(type) {
 			case *ast.AssignStmt:
-				if len(declaration.Lhs) != len(declaration.Rhs) {
+				if len(declaration.Lhs) != len(declaration.Rhs) && len(declaration.Rhs) != 1 {
 					return true
 				}
 				for _, expression := range declaration.Lhs {
@@ -832,7 +1248,7 @@ func l11SelectedCallableAliases(packages map[string]*l11SelectedPackage, functio
 				}
 				values = declaration.Rhs
 			case *ast.ValueSpec:
-				if len(declaration.Names) != len(declaration.Values) {
+				if len(declaration.Names) != len(declaration.Values) && len(declaration.Values) != 1 {
 					return true
 				}
 				names, values = declaration.Names, declaration.Values
@@ -843,7 +1259,17 @@ func l11SelectedCallableAliases(packages map[string]*l11SelectedPackage, functio
 				if name.Obj == nil {
 					continue
 				}
-				resolved := l11ResolveSelectedCallables(packages, function, values[index], aliases, literals)
+				var resolved []l11SelectedCallable
+				if len(values) == 1 && len(names) > 1 {
+					if call, ok := values[0].(*ast.CallExpr); ok {
+						results := l11ResolveSelectedCallableResultsWithState(packages, function, call, aliases, literals, state)
+						if index < len(results) {
+							resolved = results[index]
+						}
+					}
+				} else if index < len(values) {
+					resolved = l11ResolveSelectedCallablesWithState(packages, function, values[index], aliases, literals, state)
+				}
 				merged := l11MergeSelectedCallables(aliases[name.Obj], resolved)
 				if len(merged) != len(aliases[name.Obj]) {
 					aliases[name.Obj] = merged
@@ -857,13 +1283,17 @@ func l11SelectedCallableAliases(packages map[string]*l11SelectedPackage, functio
 }
 
 func l11ResolveSelectedCallables(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction) []l11SelectedCallable {
-	return l11ResolveSelectedCallablesWithStack(packages, current, expression, aliases, literals, make(map[*ast.Object]bool), make(map[ast.Node]bool))
+	return l11ResolveSelectedCallablesWithState(packages, current, expression, aliases, literals, l11NewSelectedResolutionState())
 }
 
-func l11ResolveSelectedCallablesWithStack(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction, resolving map[*ast.Object]bool, returning map[ast.Node]bool) []l11SelectedCallable {
+func l11ResolveSelectedCallablesWithState(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction, state *l11SelectedResolutionState) []l11SelectedCallable {
 	switch value := expression.(type) {
 	case *ast.ParenExpr:
-		return l11ResolveSelectedCallablesWithStack(packages, current, value.X, aliases, literals, resolving, returning)
+		return l11ResolveSelectedCallablesWithState(packages, current, value.X, aliases, literals, state)
+	case *ast.IndexExpr:
+		return l11ResolveSelectedCallablesWithState(packages, current, value.X, aliases, literals, state)
+	case *ast.IndexListExpr:
+		return l11ResolveSelectedCallablesWithState(packages, current, value.X, aliases, literals, state)
 	case *ast.FuncLit:
 		function := literals[value]
 		if function == nil {
@@ -876,14 +1306,19 @@ func l11ResolveSelectedCallablesWithStack(packages map[string]*l11SelectedPackag
 			if resolved := aliases[value.Obj]; len(resolved) > 0 {
 				return resolved
 			}
+			if l11SelectedPackageOwnsObject(current.pkg, value.Obj) {
+				if resolved := current.pkg.callables[value.Name]; len(resolved) > 0 {
+					return resolved
+				}
+			}
 			if declaration, ok := value.Obj.Decl.(*ast.FuncDecl); ok {
 				return l11SelectedDeclaredFunction(current.pkg, declaration)
 			}
-			if declaration, ok := value.Obj.Decl.(*ast.ValueSpec); ok && !resolving[value.Obj] {
+			if declaration, ok := value.Obj.Decl.(*ast.ValueSpec); ok && !state.objects[value.Obj] {
 				if initializer := l11SelectedValueInitializer(value.Obj, declaration); initializer != nil {
-					resolving[value.Obj] = true
-					resolved := l11ResolveSelectedCallablesWithStack(packages, current, initializer, aliases, literals, resolving, returning)
-					delete(resolving, value.Obj)
+					state.objects[value.Obj] = true
+					resolved := l11ResolveSelectedCallablesWithState(packages, current, initializer, aliases, literals, state)
+					delete(state.objects, value.Obj)
 					return resolved
 				}
 			}
@@ -902,32 +1337,16 @@ func l11ResolveSelectedCallablesWithStack(packages map[string]*l11SelectedPackag
 				}
 			}
 		}
+		if resolved := current.pkg.callables[value.Name]; len(resolved) > 0 {
+			return resolved
+		}
 		return l11SelectedFunctions(current.pkg.functions[value.Name])
 	case *ast.CallExpr:
-		var result []l11SelectedCallable
-		for _, callable := range l11ResolveSelectedCallablesWithStack(packages, current, value.Fun, aliases, literals, resolving, returning) {
-			if callable.function == nil || returning[callable.function.node()] {
-				continue
-			}
-			returning[callable.function.node()] = true
-			returnedAliases := l11SelectedCallableAliases(packages, callable.function, literals)
-			ast.Inspect(callable.function.body(), func(node ast.Node) bool {
-				if _, nested := node.(*ast.FuncLit); nested {
-					return false
-				}
-				statement, ok := node.(*ast.ReturnStmt)
-				if !ok {
-					return true
-				}
-				for _, returned := range statement.Results {
-					resolved := l11ResolveSelectedCallablesWithStack(packages, callable.function, returned, returnedAliases, literals, resolving, returning)
-					result = l11MergeSelectedCallables(result, resolved)
-				}
-				return false
-			})
-			delete(returning, callable.function.node())
+		var flattened []l11SelectedCallable
+		for _, result := range l11ResolveSelectedCallableResultsWithState(packages, current, value, aliases, literals, state) {
+			flattened = l11MergeSelectedCallables(flattened, result)
 		}
-		return result
+		return flattened
 	case *ast.SelectorExpr:
 		if identifier, ok := value.X.(*ast.Ident); ok {
 			if importPath, imported := current.file.importPaths[identifier.Name]; imported && identifier.Obj == nil {
@@ -967,6 +1386,54 @@ func l11ResolveSelectedCallablesWithStack(packages map[string]*l11SelectedPackag
 		}
 	}
 	return nil
+}
+
+func l11ResolveSelectedCallableResultsWithState(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, call *ast.CallExpr, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction, state *l11SelectedResolutionState) [][]l11SelectedCallable {
+	var results [][]l11SelectedCallable
+	for _, callable := range l11ResolveSelectedCallablesWithState(packages, current, call.Fun, aliases, literals, state) {
+		if callable.function == nil || state.returns[callable.function.node()] {
+			continue
+		}
+		state.returns[callable.function.node()] = true
+		returnedAliases := l11SelectedCallableAliasesWithState(packages, callable.function, literals, state)
+		ast.Inspect(callable.function.body(), func(node ast.Node) bool {
+			if _, nested := node.(*ast.FuncLit); nested {
+				return false
+			}
+			statement, ok := node.(*ast.ReturnStmt)
+			if !ok {
+				return true
+			}
+			if len(statement.Results) == 1 {
+				if nestedCall, ok := statement.Results[0].(*ast.CallExpr); ok {
+					nested := l11ResolveSelectedCallableResultsWithState(packages, callable.function, nestedCall, returnedAliases, literals, state)
+					results = l11MergeSelectedCallableResults(results, nested)
+					return false
+				}
+			}
+			for index, returned := range statement.Results {
+				for len(results) <= index {
+					results = append(results, nil)
+				}
+				resolved := l11ResolveSelectedCallablesWithState(packages, callable.function, returned, returnedAliases, literals, state)
+				results[index] = l11MergeSelectedCallables(results[index], resolved)
+			}
+			return false
+		})
+		delete(state.returns, callable.function.node())
+	}
+	return results
+}
+
+func l11MergeSelectedCallableResults(left, right [][]l11SelectedCallable) [][]l11SelectedCallable {
+	result := append([][]l11SelectedCallable(nil), left...)
+	for len(result) < len(right) {
+		result = append(result, nil)
+	}
+	for index := range right {
+		result[index] = l11MergeSelectedCallables(result[index], right[index])
+	}
+	return result
 }
 
 func l11SelectedValueInitializer(object *ast.Object, declaration *ast.ValueSpec) ast.Expr {
@@ -1052,6 +1519,8 @@ func l11SelectedReceiverType(function *ast.FuncDecl) string {
 
 func l11SelectedExpressionType(file *l11SelectedFile, expression ast.Expr) string {
 	switch value := expression.(type) {
+	case *ast.StarExpr:
+		return l11SelectedExpressionType(file, value.X)
 	case *ast.CompositeLit:
 		return l11SelectedTypeName(file, value.Type)
 	case *ast.ParenExpr:
@@ -1093,6 +1562,13 @@ func l11SelectedTypeName(file *l11SelectedFile, expression ast.Expr) string {
 	case *ast.StarExpr:
 		return l11SelectedTypeName(file, value.X)
 	case *ast.Ident:
+		if value.Obj == nil && file != nil {
+			for _, imported := range file.imports {
+				if imported.name == "." && pathpkg.Base(imported.path) == "testing" && (value.Name == "T" || value.Name == "TB") {
+					return "testing." + value.Name
+				}
+			}
+		}
 		return value.Name
 	case *ast.SelectorExpr:
 		if identifier, ok := value.X.(*ast.Ident); ok {
@@ -1131,7 +1607,15 @@ func l11SelectedCloudSelector(file *l11SelectedFile, selector *ast.SelectorExpr)
 }
 
 func l11SelectedDotImportedProof(file *l11SelectedFile, identifier *ast.Ident) bool {
-	return identifier.Obj == nil && pathpkg.Base(file.importPaths["."]) == "sandboxruntime" && l11SelectedProofConstructor(identifier.Name)
+	if identifier.Obj != nil || !l11SelectedProofConstructor(identifier.Name) {
+		return false
+	}
+	for _, imported := range file.imports {
+		if imported.name == "." && pathpkg.Base(imported.path) == "sandboxruntime" {
+			return true
+		}
+	}
+	return false
 }
 
 func l11SelectedProofConstructor(name string) bool {
@@ -1149,7 +1633,7 @@ func l11ForbiddenCloudImport(importPath string) bool {
 }
 
 func l11ForbiddenCloudLiteral(value string) bool {
-	lower := strings.ToLower(value)
+	lower := strings.ToLower(strings.TrimSpace(value))
 	for _, marker := range []string{
 		"hcloud_token",
 		"aws_access_key_id",
@@ -1169,7 +1653,7 @@ func l11ForbiddenCloudLiteral(value string) bool {
 		"hetzner remains deferred",
 		"lightsail remains deferred",
 	} {
-		if strings.Contains(lower, safeStatement) {
+		if lower == safeStatement {
 			return false
 		}
 	}
@@ -1188,7 +1672,7 @@ func l11ForbiddenCloudLiteral(value string) bool {
 	return false
 }
 
-func l11SelectedStringConstant(expression ast.Expr) (string, bool) {
+func l11SelectedStringConstant(pkg *l11SelectedPackage, expression ast.Expr) (string, bool) {
 	switch value := expression.(type) {
 	case *ast.BasicLit:
 		if value.Kind != token.STRING {
@@ -1196,15 +1680,18 @@ func l11SelectedStringConstant(expression ast.Expr) (string, bool) {
 		}
 		literal, err := strconv.Unquote(value.Value)
 		return literal, err == nil
+	case *ast.Ident:
+		literal, ok := pkg.constants[value.Name]
+		return literal, ok
 	case *ast.BinaryExpr:
 		if value.Op != token.ADD {
 			return "", false
 		}
-		left, leftOK := l11SelectedStringConstant(value.X)
-		right, rightOK := l11SelectedStringConstant(value.Y)
+		left, leftOK := l11SelectedStringConstant(pkg, value.X)
+		right, rightOK := l11SelectedStringConstant(pkg, value.Y)
 		return left + right, leftOK && rightOK
 	case *ast.ParenExpr:
-		return l11SelectedStringConstant(value.X)
+		return l11SelectedStringConstant(pkg, value.X)
 	default:
 		return "", false
 	}
