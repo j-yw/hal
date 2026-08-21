@@ -50,17 +50,18 @@ type l8V2ControlStream interface {
 // for the authenticated port-1025 readiness session. It is not a credential
 // lifecycle runtime and is never constructed by default paths.
 type ProductionL8V2ControlBridge struct {
-	mu        sync.Mutex
-	connector l8V2ControlConnector
-	seed      sandboxruntime.JobCredentialIdentitySeed
-	signing   ed25519.PrivateKey
-	bootNonce [32]byte
-	random    io.Reader
-	now       func() time.Time
-	attempted bool
-	closed    bool
-	active    *L8V2ControlReadinessSession
-	closeErr  error
+	mu            sync.Mutex
+	connector     l8V2ControlConnector
+	seed          sandboxruntime.JobCredentialIdentitySeed
+	signing       ed25519.PrivateKey
+	bootNonce     [32]byte
+	random        io.Reader
+	now           func() time.Time
+	attemptCancel context.CancelFunc
+	attempted     bool
+	closed        bool
+	active        *L8V2ControlReadinessSession
+	closeErr      error
 }
 
 // L8V2ControlReadiness exposes only the two authenticated safe generations
@@ -147,6 +148,8 @@ func (bridge *ProductionL8V2ControlBridge) OpenReadiness(
 		return nil, ErrL8V2ControlInvalid
 	}
 	bridge.attempted = true
+	attemptCtx, attemptCancel := context.WithCancel(ctx)
+	bridge.attemptCancel = attemptCancel
 	connector := bridge.connector
 	seed, seedErr := sandboxruntime.CloneJobCredentialIdentitySeed(bridge.seed)
 	signing := append(ed25519.PrivateKey(nil), bridge.signing...)
@@ -160,7 +163,15 @@ func (bridge *ProductionL8V2ControlBridge) OpenReadiness(
 		return nil, ErrL8V2ControlInvalid
 	}
 
-	stream, openErr := callL8V2ControlConnector(connector, ctx, target)
+	stream, openErr := callL8V2ControlConnector(connector, attemptCtx, target)
+	if bridge.attemptIsClosed() {
+		if !l8V2ControlValueIsNil(stream) {
+			_ = closeL8V2ControlStream(stream)
+		}
+		bridge.finishAttempt(nil, ErrL8V2ControlUnavailable)
+		zeroL8V2ControlBytes(signing)
+		return nil, ErrL8V2ControlUnavailable
+	}
 	if openErr != nil || l8V2ControlValueIsNil(stream) {
 		if !l8V2ControlValueIsNil(stream) {
 			_ = closeL8V2ControlStream(stream)
@@ -189,7 +200,7 @@ func (bridge *ProductionL8V2ControlBridge) OpenReadiness(
 	default:
 	}
 
-	readiness, state, readinessErr := callL8V2ControlReadiness(ctx, stream, seed, signing, nonce, randomSource, now)
+	readiness, state, readinessErr := callL8V2ControlReadiness(attemptCtx, stream, seed, signing, nonce, randomSource, now)
 	zeroL8V2ControlBytes(signing)
 	if readinessErr != nil || state == nil {
 		_ = closeL8V2ControlStream(stream)
@@ -234,19 +245,30 @@ func (bridge *ProductionL8V2ControlBridge) targetMatchesSeed(target sandboxrunti
 		target.Runtime.Driver == sandboxruntime.DriverMicroVM && target.Runtime.RuntimeID == seed.RuntimeID
 }
 
-func (bridge *ProductionL8V2ControlBridge) finishAttempt(session *L8V2ControlReadinessSession, _ error) bool {
+func (bridge *ProductionL8V2ControlBridge) attemptIsClosed() bool {
 	bridge.mu.Lock()
 	defer bridge.mu.Unlock()
+	return bridge.closed
+}
+
+func (bridge *ProductionL8V2ControlBridge) finishAttempt(session *L8V2ControlReadinessSession, _ error) bool {
+	bridge.mu.Lock()
+	cancel := bridge.attemptCancel
+	bridge.attemptCancel = nil
 	zeroL8V2ControlBytes(bridge.signing)
 	bridge.signing = nil
 	bridge.bootNonce = [32]byte{}
 	bridge.random = nil
 	bridge.connector = nil
-	if bridge.closed || session == nil {
-		return false
+	published := !bridge.closed && session != nil
+	if published {
+		bridge.active = session
 	}
-	bridge.active = session
-	return true
+	bridge.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return published
 }
 
 func (bridge *ProductionL8V2ControlBridge) sessionClosed(session *L8V2ControlReadinessSession, err error) {
@@ -272,6 +294,8 @@ func (bridge *ProductionL8V2ControlBridge) Close() error {
 	bridge.mu.Lock()
 	bridge.closed = true
 	active := bridge.active
+	cancel := bridge.attemptCancel
+	bridge.attemptCancel = nil
 	zeroL8V2ControlBytes(bridge.signing)
 	bridge.signing = nil
 	bridge.bootNonce = [32]byte{}
@@ -279,6 +303,9 @@ func (bridge *ProductionL8V2ControlBridge) Close() error {
 	bridge.connector = nil
 	latched := bridge.closeErr
 	bridge.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if active != nil {
 		if err := active.Close(); err != nil && latched == nil {
 			latched = sanitizeL8V2ControlError(err)
@@ -458,6 +485,9 @@ func performL8V2ControlReadiness(
 			err = ErrL8V2ControlUnavailable
 		}
 	}()
+	if ctx.Err() != nil {
+		return L8V2ControlReadiness{}, nil, ErrL8V2ControlUnavailable
+	}
 	identity, err := l8V2ControlExpectedIdentity(seed, nonce)
 	if err != nil {
 		return L8V2ControlReadiness{}, nil, ErrL8V2ControlInvalid
