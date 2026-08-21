@@ -114,6 +114,25 @@ func TestL8D4FullSyscallWrapperSourceGuardRejectsMutations(t *testing.T) {
 		{name: "invokes pre authorization through closure", old: "permit, pre, err := policy.AuthorizePre(ticket, wrapper.bindings, wrapper)", replacement: "authorizePre := func() (syscallpolicy.AdapterPermit, syscallpolicy.AdapterDecision, error) { return policy.AuthorizePre(ticket, wrapper.bindings, wrapper) }\n\tpermit, pre, err := authorizePre()"},
 		{name: "captures executor method in closure", old: "execution, err = executor.execute(ctx)", replacement: "_ = func() any { return executor.execute }\n\texecution, err = executor.execute(ctx)"},
 		{name: "invokes executor through closure", old: "execution, err = executor.execute(ctx)", replacement: "executeLater := func() (syscallExecution, error) { return executor.execute(ctx) }\n\texecution, err = executeLater()"},
+		{
+			name: "repeats executor through backward goto",
+			old:  "execution, err = executor.execute(ctx)\n\treturn execution, err",
+			replacement: "reviewerRepeatExecutor:\n" +
+				"\treviewerRepeatExecutorCall = reviewerRepeatExecutorCall\n" +
+				"\texecution, err = executor.execute(ctx)\n" +
+				"\tif reviewerRepeatExecutorCall {\n" +
+				"\t\treviewerRepeatExecutorCall = false\n" +
+				"\t\tgoto reviewerRepeatExecutor\n" +
+				"\t}\n" +
+				"\treturn execution, err",
+			suffix: "\nvar reviewerRepeatExecutorCall = true\n",
+		},
+		{
+			name:        "retains policy authority container",
+			old:         "bindings, err := policy.NewAdapterBindings(ticket, wrapper)",
+			replacement: "reviewerRetainedPolicies = append(reviewerRetainedPolicies, policy)\n\tbindings, err := policy.NewAdapterBindings(ticket, wrapper)",
+			suffix:      "\nvar reviewerRetainedPolicies []*syscallpolicy.Policy\n",
+		},
 		{name: "references abort method value", old: "decision, err := terminal.policy.AbortPermit(permit.value, phase)", replacement: "_ = terminal.policy.AbortPermit\n\tdecision, err := terminal.policy.AbortPermit(permit.value, phase)"},
 		{name: "invokes concrete abort through closure", old: "decision, err := terminal.policy.AbortPermit(permit.value, phase)", replacement: "abort := func() (syscallpolicy.AdapterDecision, error) { return terminal.policy.AbortPermit(permit.value, phase) }\n\tdecision, err := abort()"},
 		{name: "stores post method value", old: "decision, err := terminal.policy.AuthorizePost(permit.value, source)", replacement: "_ = []any{terminal.policy.AuthorizePost}\n\tdecision, err := terminal.policy.AuthorizePost(permit.value, source)"},
