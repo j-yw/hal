@@ -17,7 +17,7 @@ const (
 	l11FinalClosureSelectedTest     = "TestL11PreparedLinuxFinalClosure"
 	l11FinalClosureIntegrationTag   = "l11_final_closure_integration"
 	l11FinalClosureCurrentStateLine = "Current closure state: `blocked`."
-	l11FinalClosureBlockedDocSHA256 = "12183fe75a9dfb264af2e287d74cfebbc8e611e6bd48360511a7755b3c4e7515"
+	l11FinalClosureBlockedDocSHA256 = "06756366d54ab1785a2d45d9d5b9b9c196274eb4ce5956502d163d5d9d57ae90"
 )
 
 type l11FinalClosureMatrixRow struct {
@@ -384,10 +384,10 @@ func TestL11FinalClosureRepositoryInventoryRejectsEveryContradictoryDocument(t *
 			if err := os.WriteFile(target, []byte("L11 release passed.\n"), 0o600); err != nil {
 				return err
 			}
-			return os.Symlink(target, filepath.Join(root, "notes.md"))
+			return os.Symlink(target, filepath.Join(root, "l11-release.md"))
 		}},
 		{name: "secondary document nonregular", build: func(root string) error {
-			return os.Mkdir(filepath.Join(root, "notes.markdown"), 0o700)
+			return os.Mkdir(filepath.Join(root, "l11-release.markdown"), 0o700)
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -436,19 +436,25 @@ func l11ValidateFinalClosureRepository(repoRoot string) error {
 			return err
 		}
 		relative = filepath.Clean(relative)
-		if relative == "." || relative == canonical || entry.IsDir() {
+		if relative == "." || relative == canonical {
 			return nil
 		}
-		if strings.ToLower(filepath.Ext(relative)) != ".md" {
+		if !l11FinalClosureDocumentExtension(relative) {
+			if entry.IsDir() {
+				return nil
+			}
 			return nil
 		}
 		if l11FinalClosureSecondaryDocumentPath(relative) {
 			return &l11FinalClosureGuardError{message: "secondary L11 final-closure or release document is forbidden"}
 		}
+		if entry.IsDir() {
+			return nil
+		}
 		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
 			return nil
 		}
-		candidate, err := os.ReadFile(path)
+		candidate, err := l11ReadFinalClosureDocumentNoFollow(path, entry)
 		if err != nil {
 			return err
 		}
@@ -457,12 +463,78 @@ func l11ValidateFinalClosureRepository(repoRoot string) error {
 			strings.Contains(text, l11FinalClosureCurrentStateLine) {
 			return &l11FinalClosureGuardError{message: "duplicate L11 final-closure document is forbidden"}
 		}
+		if l11FinalClosureContradictoryReleaseClaim(text) {
+			return &l11FinalClosureGuardError{message: "contradictory L11 release document is forbidden"}
+		}
 		return nil
 	})
 }
 
+func l11ValidateFinalClosureCanonicalPath(repoRoot string) error {
+	absoluteRoot, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return &l11FinalClosureGuardError{message: "canonical L11 repository root is invalid"}
+	}
+	absoluteRoot = filepath.Clean(absoluteRoot)
+	canonical := filepath.Join(absoluteRoot, "docs", "design", l11FinalClosureDocPath)
+	relative, err := filepath.Rel(absoluteRoot, canonical)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return &l11FinalClosureGuardError{message: "canonical L11 document is outside the repository root"}
+	}
+
+	components := []struct {
+		path      string
+		directory bool
+	}{
+		{path: absoluteRoot, directory: true},
+		{path: filepath.Join(absoluteRoot, "docs"), directory: true},
+		{path: filepath.Join(absoluteRoot, "docs", "design"), directory: true},
+		{path: canonical},
+	}
+	for _, component := range components {
+		info, err := os.Lstat(component.path)
+		if err != nil {
+			return fmt.Errorf("lstat canonical L11 path component: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || component.directory != info.IsDir() {
+			return &l11FinalClosureGuardError{message: "canonical L11 path contains a symlink or invalid component"}
+		}
+		if !component.directory && !info.Mode().IsRegular() {
+			return &l11FinalClosureGuardError{message: "canonical L11 final-closure document is not a regular file"}
+		}
+	}
+	return nil
+}
+
+func l11ReadFinalClosureDocumentNoFollow(path string, entry os.DirEntry) ([]byte, error) {
+	const maxDocumentBytes = 1 << 20
+	linkInfo, err := entry.Info()
+	if err != nil || !linkInfo.Mode().IsRegular() {
+		return nil, &l11FinalClosureGuardError{message: "secondary documentation entry is not a regular file"}
+	}
+	file, err := l11OpenFinalClosureNoFollow(path)
+	if err != nil {
+		return nil, &l11FinalClosureGuardError{message: "secondary documentation entry could not be opened without following links"}
+	}
+	openedInfo, statErr := file.Stat()
+	if statErr != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(linkInfo, openedInfo) {
+		_ = file.Close()
+		return nil, &l11FinalClosureGuardError{message: "secondary documentation entry identity changed"}
+	}
+	payload, readErr := io.ReadAll(io.LimitReader(file, maxDocumentBytes+1))
+	afterInfo, afterErr := file.Stat()
+	closeErr := file.Close()
+	if readErr != nil || afterErr != nil || closeErr != nil || len(payload) > maxDocumentBytes || !afterInfo.Mode().IsRegular() || !os.SameFile(openedInfo, afterInfo) || afterInfo.Size() != int64(len(payload)) {
+		return nil, &l11FinalClosureGuardError{message: "secondary documentation entry read was not exact"}
+	}
+	return payload, nil
+}
+
 func l11ReadFinalClosureCanonical(repoRoot string) ([]byte, error) {
 	const maxDocumentBytes = 1 << 20
+	if err := l11ValidateFinalClosureCanonicalPath(repoRoot); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(repoRoot, "docs", "design", l11FinalClosureDocPath)
 	linkInfo, err := os.Lstat(path)
 	if err != nil {
@@ -498,9 +570,37 @@ func l11FinalClosureSecondaryDocumentPath(relative string) bool {
 	if !strings.Contains(normalized, "l11") {
 		return false
 	}
-	return strings.Contains(normalized, "final-closure") ||
-		strings.Contains(normalized, "final-release") ||
-		strings.Contains(normalized, "release-evidence")
+	return strings.Contains(normalized, "closure") || strings.Contains(normalized, "release")
+}
+
+func l11FinalClosureDocumentExtension(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".markdown":
+		return true
+	default:
+		return false
+	}
+}
+
+func l11FinalClosureContradictoryReleaseClaim(doc string) bool {
+	for _, line := range strings.Split(doc, "\n") {
+		normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(line)), " "))
+		normalized = strings.Trim(normalized, "`*_#> ")
+		switch normalized {
+		case "production-live acceptance: accepted.",
+			"the l11 production live lane passed.",
+			"release result: passed.",
+			"l11 release passed.",
+			"all nine scenarios passed.",
+			"all nine rows passed.",
+			"l11 is complete.",
+			"current closure state: passed.",
+			"current closure state: complete.",
+			"current closure state: accepted.":
+			return true
+		}
+	}
+	return false
 }
 
 func l11FinalClosureContains(doc, required string) bool {

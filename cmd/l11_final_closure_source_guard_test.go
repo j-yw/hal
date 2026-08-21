@@ -30,6 +30,7 @@ type l11SelectedFunction struct {
 	pkg                *l11SelectedPackage
 	packageInitializer bool
 	captures           map[*ast.Object][]l11SelectedCallable
+	concrete           map[*ast.Object][]l11SelectedTypeRef
 }
 
 type l11SelectedFile struct {
@@ -55,6 +56,7 @@ type l11SelectedPackage struct {
 	callables map[string][]l11SelectedCallable
 	strings   map[string]l11SelectedStringFact
 	types     map[string]l11SelectedTypeAlias
+	typeDefs  map[string][]l11SelectedTypeAlias
 }
 
 type l11SelectedTypeAlias struct {
@@ -624,6 +626,19 @@ var input any
 			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
 		},
 		{
+			name: "concrete interface implementation passed to helper",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type minter struct{}
+func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func invoke(selected runner) { selected.Run() }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { invoke(minter{}) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
 			name: "defined interface embedding testing TB skip",
 			source: `package fixture
 import "testing"
@@ -652,6 +667,39 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { promoted{}.Mint() }
 var input any
 `,
 			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "uninvoked nested callback remains unreachable",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func ignore(callback func()) { _ = func() { callback() } }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { ignore(mint) }
+func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+		},
+		{
+			name: "safe concrete interface dispatch excludes unused implementation",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type safeRunner struct{}
+type unusedMinter struct{}
+func (safeRunner) Run() {}
+func (unusedMinter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { var selected runner = safeRunner{}; selected.Run() }
+var input any
+`,
+		},
+		{
+			name: "unrelated defined interface method named Skip",
+			source: `package fixture
+import "testing"
+type skipper interface { Skip(...any) }
+type helper struct{}
+func (helper) Skip(...any) {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { var selected skipper = helper{}; selected.Skip("safe") }
+`,
 		},
 		{
 			name: "imported pointer method expression proof constructor",
@@ -938,6 +986,7 @@ func l11ParseSelectedTestSources(sources map[string]string) (map[string]*l11Sele
 				callables: make(map[string][]l11SelectedCallable),
 				strings:   make(map[string]l11SelectedStringFact),
 				types:     make(map[string]l11SelectedTypeAlias),
+				typeDefs:  make(map[string][]l11SelectedTypeAlias),
 			}
 			packages[key] = pkg
 		}
@@ -955,8 +1004,12 @@ func l11ParseSelectedTestSources(sources map[string]string) (map[string]*l11Sele
 					if value, ok := spec.(*ast.ValueSpec); ok && (generated.Tok == token.CONST || generated.Tok == token.VAR) {
 						pkg.values = append(pkg.values, &l11SelectedPackageValue{file: file, token: generated.Tok, names: value.Names, values: value.Values})
 					}
-					if typeSpec, ok := spec.(*ast.TypeSpec); ok && typeSpec.Assign.IsValid() {
-						pkg.types[typeSpec.Name.Name] = l11SelectedTypeAlias{file: file, expression: typeSpec.Type}
+					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+						definition := l11SelectedTypeAlias{file: file, expression: typeSpec.Type}
+						pkg.typeDefs[typeSpec.Name.Name] = append(pkg.typeDefs[typeSpec.Name.Name], definition)
+						if typeSpec.Assign.IsValid() {
+							pkg.types[typeSpec.Name.Name] = definition
+						}
 					}
 				}
 				continue
@@ -1260,6 +1313,20 @@ func l11SelectedFunctionIssues(packages map[string]*l11SelectedPackage, root *l1
 						if callable.function == nil {
 							continue
 						}
+						if callable.function.concrete == nil {
+							callable.function.concrete = make(map[*ast.Object][]l11SelectedTypeRef)
+						}
+						for parameterIndex, parameter := range l11SelectedPositionalParameterObjects(callable.function) {
+							if parameter == nil || parameterIndex >= len(value.Args) {
+								continue
+							}
+							argumentTypes := l11SelectedConcreteExpressionTypes(packages, current, value.Args[parameterIndex], make(map[*ast.Object]bool), 0)
+							merged := l11MergeSelectedTypeRefs(callable.function.concrete[parameter], argumentTypes)
+							if len(merged) != len(callable.function.concrete[parameter]) {
+								callable.function.concrete[parameter] = merged
+								factsChanged = true
+							}
+						}
 						for parameter := range invokedParameters[callable.function.node()] {
 							if parameter >= len(value.Args) {
 								continue
@@ -1362,39 +1429,86 @@ func l11SelectedInvokedParameters(packages map[string]*l11SelectedPackage, liter
 			}
 			sources := l11SelectedParameterAliases(function, parameters)
 			aliases := l11SelectedCallableAliases(packages, function, literals)
-			ast.Inspect(function.body(), func(node ast.Node) bool {
-				if _, nested := node.(*ast.FuncLit); nested {
-					return false
-				}
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				for parameter := range l11SelectedParameterSources(call.Fun, sources) {
-					if l11AddSelectedParameter(invoked, function.node(), parameter) {
-						changed = true
-					}
-				}
-				for _, callable := range l11ResolveSelectedCallables(packages, function, call.Fun, aliases, literals) {
-					if callable.function == nil {
-						continue
-					}
-					for calleeParameter := range invoked[callable.function.node()] {
-						if calleeParameter >= len(call.Args) {
-							continue
-						}
-						for parameter := range l11SelectedParameterSources(call.Args[calleeParameter], sources) {
-							if l11AddSelectedParameter(invoked, function.node(), parameter) {
-								changed = true
-							}
-						}
-					}
-				}
-				return true
-			})
+			if l11MergeSelectedInvokedParameters(
+				packages,
+				function,
+				function.body(),
+				sources,
+				aliases,
+				literals,
+				invoked,
+				make(map[ast.Node]bool),
+			) {
+				changed = true
+			}
 		}
 	}
 	return invoked
+}
+
+func l11MergeSelectedInvokedParameters(
+	packages map[string]*l11SelectedPackage,
+	owner *l11SelectedFunction,
+	body *ast.BlockStmt,
+	sources map[*ast.Object]map[int]bool,
+	aliases map[*ast.Object][]l11SelectedCallable,
+	literals map[*ast.FuncLit]*l11SelectedFunction,
+	invoked map[ast.Node]map[int]bool,
+	visiting map[ast.Node]bool,
+) bool {
+	if body == nil || visiting[body] {
+		return false
+	}
+	visiting[body] = true
+	defer delete(visiting, body)
+
+	changed := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		for parameter := range l11SelectedParameterSources(call.Fun, sources) {
+			if l11AddSelectedParameter(invoked, owner.node(), parameter) {
+				changed = true
+			}
+		}
+		for _, callable := range l11ResolveSelectedCallables(packages, owner, call.Fun, aliases, literals) {
+			if callable.function == nil {
+				continue
+			}
+			for calleeParameter := range invoked[callable.function.node()] {
+				if calleeParameter >= len(call.Args) {
+					continue
+				}
+				for parameter := range l11SelectedParameterSources(call.Args[calleeParameter], sources) {
+					if l11AddSelectedParameter(invoked, owner.node(), parameter) {
+						changed = true
+					}
+				}
+			}
+			if callable.function.literal != nil {
+				nestedAliases := l11SelectedCallableAliases(packages, callable.function, literals)
+				if l11MergeSelectedInvokedParameters(
+					packages,
+					owner,
+					callable.function.body(),
+					sources,
+					nestedAliases,
+					literals,
+					invoked,
+					visiting,
+				) {
+					changed = true
+				}
+			}
+		}
+		return true
+	})
+	return changed
 }
 
 func l11SelectedParameterObjects(function *l11SelectedFunction) []*ast.Object {
@@ -1641,9 +1755,9 @@ func l11ResolveSelectedCallablesWithState(packages map[string]*l11SelectedPackag
 				if functions := importedPackage.functions[value.Name]; len(functions) > 0 {
 					return l11SelectedFunctions(functions)
 				}
-				if l11InModuleImport(imported.path) {
-					return []l11SelectedCallable{{unresolved: true}}
-				}
+			}
+			if l11InModuleImport(imported.path) {
+				return []l11SelectedCallable{{unresolved: true}}
 			}
 		}
 		if resolved := current.pkg.callables[value.Name]; len(resolved) > 0 {
@@ -1683,8 +1797,8 @@ func l11ResolveSelectedCallablesWithState(packages map[string]*l11SelectedPackag
 			if packageName, ok := typeSelector.X.(*ast.Ident); ok && packageName.Obj == nil {
 				if importPath := current.file.importPaths[packageName.Name]; importPath != "" {
 					if importedPackage := l11SelectedImportedPackage(packages, importPath); importedPackage != nil {
-						if methods := importedPackage.methods[typeSelector.Sel.Name][value.Sel.Name]; len(methods) > 0 {
-							return l11SelectedFunctions(methods)
+						if methods := l11SelectedMethodsForType(packages, l11SelectedTypeRef{pkg: importedPackage, name: typeSelector.Sel.Name}, value.Sel.Name, make(map[l11SelectedTypeRef]bool)); len(methods) > 0 {
+							return methods
 						}
 						return []l11SelectedCallable{{unresolved: true}}
 					}
@@ -1694,15 +1808,22 @@ func l11ResolveSelectedCallablesWithState(packages map[string]*l11SelectedPackag
 				}
 			}
 		}
-		if l11SelectedTestingSkip(current.file, value) {
+		if l11SelectedTestingSkip(packages, current.file, value) {
 			return []l11SelectedCallable{{skip: true}}
+		}
+		var resolved []l11SelectedCallable
+		for _, concrete := range l11SelectedConcreteExpressionTypes(packages, current, value.X, make(map[*ast.Object]bool), 0) {
+			resolved = l11MergeSelectedCallables(resolved, l11SelectedMethodsForType(packages, concrete, value.Sel.Name, make(map[l11SelectedTypeRef]bool)))
+		}
+		if len(resolved) > 0 {
+			return resolved
 		}
 		if receiver := l11SelectedExpressionType(current.file, value.X); receiver != "" {
 			if packageName, typeName, imported := strings.Cut(receiver, "."); imported {
 				if importPath := current.file.importPaths[packageName]; importPath != "" {
 					if importedPackage := l11SelectedImportedPackage(packages, importPath); importedPackage != nil {
-						if methods := importedPackage.methods[typeName][value.Sel.Name]; len(methods) > 0 {
-							return l11SelectedFunctions(methods)
+						if methods := l11SelectedMethodsForType(packages, l11SelectedTypeRef{pkg: importedPackage, name: typeName}, value.Sel.Name, make(map[l11SelectedTypeRef]bool)); len(methods) > 0 {
+							return methods
 						}
 						return []l11SelectedCallable{{unresolved: true}}
 					}
@@ -1711,7 +1832,7 @@ func l11ResolveSelectedCallablesWithState(packages map[string]*l11SelectedPackag
 					}
 				}
 			}
-			return l11SelectedFunctions(current.pkg.methods[receiver][value.Sel.Name])
+			return l11SelectedMethodsForType(packages, l11SelectedTypeRef{pkg: current.pkg, name: receiver}, value.Sel.Name, make(map[l11SelectedTypeRef]bool))
 		}
 	}
 	return nil
@@ -1996,14 +2117,217 @@ func l11SelectedTypeNameDepth(file *l11SelectedFile, expression ast.Expr, visiti
 	return ""
 }
 
-func l11SelectedTestingSkip(file *l11SelectedFile, selector *ast.SelectorExpr) bool {
+type l11SelectedTypeRef struct {
+	pkg  *l11SelectedPackage
+	name string
+}
+
+func l11SelectedTypeRefForExpression(packages map[string]*l11SelectedPackage, file *l11SelectedFile, expression ast.Expr) (l11SelectedTypeRef, bool) {
+	switch value := expression.(type) {
+	case *ast.StarExpr:
+		return l11SelectedTypeRefForExpression(packages, file, value.X)
+	case *ast.ParenExpr:
+		return l11SelectedTypeRefForExpression(packages, file, value.X)
+	case *ast.Ident:
+		if value.Name == "" {
+			return l11SelectedTypeRef{}, false
+		}
+		return l11SelectedTypeRef{pkg: file.pkg, name: value.Name}, true
+	case *ast.SelectorExpr:
+		identifier, ok := value.X.(*ast.Ident)
+		if !ok || identifier.Obj != nil {
+			return l11SelectedTypeRef{}, false
+		}
+		importPath := file.importPaths[identifier.Name]
+		if importPath == "" {
+			return l11SelectedTypeRef{}, false
+		}
+		if imported := l11SelectedImportedPackage(packages, importPath); imported != nil {
+			return l11SelectedTypeRef{pkg: imported, name: value.Sel.Name}, true
+		}
+		return l11SelectedTypeRef{name: pathpkg.Base(importPath) + "." + value.Sel.Name}, true
+	default:
+		return l11SelectedTypeRef{}, false
+	}
+}
+
+func l11SelectedMethodsForType(packages map[string]*l11SelectedPackage, ref l11SelectedTypeRef, method string, visiting map[l11SelectedTypeRef]bool) []l11SelectedCallable {
+	if ref.pkg == nil || ref.name == "" || visiting[ref] {
+		return nil
+	}
+	visiting[ref] = true
+	defer delete(visiting, ref)
+
+	resolved := l11SelectedFunctions(ref.pkg.methods[ref.name][method])
+	definitions := ref.pkg.typeDefs[ref.name]
+	if len(definitions) == 0 {
+		return resolved
+	}
+	for _, definition := range definitions {
+		switch expression := definition.expression.(type) {
+		case *ast.StructType:
+			for _, field := range expression.Fields.List {
+				if len(field.Names) != 0 {
+					continue
+				}
+				if embedded, ok := l11SelectedTypeRefForExpression(packages, definition.file, field.Type); ok {
+					resolved = l11MergeSelectedCallables(resolved, l11SelectedMethodsForType(packages, embedded, method, visiting))
+				}
+			}
+		default:
+			if underlying, ok := l11SelectedTypeRefForExpression(packages, definition.file, expression); ok && underlying != ref {
+				resolved = l11MergeSelectedCallables(resolved, l11SelectedMethodsForType(packages, underlying, method, visiting))
+			}
+		}
+	}
+	return resolved
+}
+
+func l11SelectedConcreteExpressionTypes(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, visiting map[*ast.Object]bool, depth int) []l11SelectedTypeRef {
+	if expression == nil || depth > 32 {
+		return nil
+	}
+	switch value := expression.(type) {
+	case *ast.ParenExpr:
+		return l11SelectedConcreteExpressionTypes(packages, current, value.X, visiting, depth+1)
+	case *ast.UnaryExpr:
+		return l11SelectedConcreteExpressionTypes(packages, current, value.X, visiting, depth+1)
+	case *ast.CompositeLit:
+		if ref, ok := l11SelectedTypeRefForExpression(packages, current.file, value.Type); ok && !l11SelectedTypeIsInterface(ref, make(map[l11SelectedTypeRef]bool)) {
+			return []l11SelectedTypeRef{ref}
+		}
+	case *ast.Ident:
+		if value.Obj == nil || visiting[value.Obj] {
+			return nil
+		}
+		visiting[value.Obj] = true
+		defer delete(visiting, value.Obj)
+		resolved := l11MergeSelectedTypeRefs(nil, current.concrete[value.Obj])
+		switch declaration := value.Obj.Decl.(type) {
+		case *ast.ValueSpec:
+			if initializer := l11SelectedValueInitializer(value.Obj, declaration); initializer != nil {
+				resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypes(packages, current, initializer, visiting, depth+1))
+			}
+			if declaration.Type != nil {
+				if ref, ok := l11SelectedTypeRefForExpression(packages, current.file, declaration.Type); ok && !l11SelectedTypeIsInterface(ref, make(map[l11SelectedTypeRef]bool)) {
+					resolved = l11MergeSelectedTypeRefs(resolved, []l11SelectedTypeRef{ref})
+				}
+			}
+		case *ast.AssignStmt:
+			for index, target := range declaration.Lhs {
+				identifier, ok := target.(*ast.Ident)
+				if !ok || identifier.Obj != value.Obj || index >= len(declaration.Rhs) {
+					continue
+				}
+				resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypes(packages, current, declaration.Rhs[index], visiting, depth+1))
+			}
+		}
+		ast.Inspect(current.body(), func(node ast.Node) bool {
+			if _, nested := node.(*ast.FuncLit); nested {
+				return false
+			}
+			assignment, ok := node.(*ast.AssignStmt)
+			if !ok || len(assignment.Lhs) != len(assignment.Rhs) {
+				return true
+			}
+			for index, target := range assignment.Lhs {
+				identifier, ok := target.(*ast.Ident)
+				if ok && identifier.Obj == value.Obj {
+					resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypes(packages, current, assignment.Rhs[index], visiting, depth+1))
+				}
+			}
+			return true
+		})
+		return resolved
+	}
+	return nil
+}
+
+func l11SelectedTypeIsInterface(ref l11SelectedTypeRef, visiting map[l11SelectedTypeRef]bool) bool {
+	if ref.pkg == nil || visiting[ref] {
+		return false
+	}
+	visiting[ref] = true
+	defer delete(visiting, ref)
+	definitions := ref.pkg.typeDefs[ref.name]
+	if len(definitions) == 0 {
+		return false
+	}
+	for _, definition := range definitions {
+		if _, ok := definition.expression.(*ast.InterfaceType); ok {
+			return true
+		}
+		underlying, ok := l11SelectedTypeRefForExpression(nil, definition.file, definition.expression)
+		if ok && underlying != ref && l11SelectedTypeIsInterface(underlying, visiting) {
+			return true
+		}
+	}
+	return false
+}
+
+func l11MergeSelectedTypeRefs(left, right []l11SelectedTypeRef) []l11SelectedTypeRef {
+	result := append([]l11SelectedTypeRef(nil), left...)
+	for _, candidate := range right {
+		found := false
+		for _, existing := range result {
+			if existing == candidate {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, candidate)
+		}
+	}
+	return result
+}
+
+func l11SelectedTestingSkip(packages map[string]*l11SelectedPackage, file *l11SelectedFile, selector *ast.SelectorExpr) bool {
 	switch selector.Sel.Name {
 	case "Skip", "Skipf", "SkipNow":
 		receiver := l11SelectedExpressionType(file, selector.X)
-		return receiver == "testing.T" || receiver == "testing.TB"
+		if receiver == "testing.T" || receiver == "testing.TB" {
+			return true
+		}
+		ref, ok := l11SelectedTypeRefForExpression(packages, file, &ast.Ident{Name: receiver})
+		return ok && l11SelectedTypeEmbedsTestingTB(packages, ref, make(map[l11SelectedTypeRef]bool))
 	default:
 		return false
 	}
+}
+
+func l11SelectedTypeEmbedsTestingTB(packages map[string]*l11SelectedPackage, ref l11SelectedTypeRef, visiting map[l11SelectedTypeRef]bool) bool {
+	if ref.name == "testing.T" || ref.name == "testing.TB" {
+		return true
+	}
+	if ref.pkg == nil || visiting[ref] {
+		return false
+	}
+	visiting[ref] = true
+	defer delete(visiting, ref)
+	definitions := ref.pkg.typeDefs[ref.name]
+	if len(definitions) == 0 {
+		return false
+	}
+	for _, definition := range definitions {
+		if embedded, ok := l11SelectedTypeRefForExpression(packages, definition.file, definition.expression); ok && embedded != ref && l11SelectedTypeEmbedsTestingTB(packages, embedded, visiting) {
+			return true
+		}
+		interfaceType, ok := definition.expression.(*ast.InterfaceType)
+		if !ok {
+			continue
+		}
+		for _, field := range interfaceType.Methods.List {
+			if len(field.Names) != 0 {
+				continue
+			}
+			embedded, ok := l11SelectedTypeRefForExpression(packages, definition.file, field.Type)
+			if ok && l11SelectedTypeEmbedsTestingTB(packages, embedded, visiting) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func l11SelectedProofSelector(file *l11SelectedFile, selector *ast.SelectorExpr) bool {
