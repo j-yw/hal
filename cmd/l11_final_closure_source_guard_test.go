@@ -24,13 +24,9 @@ var l11SelectedPreparedTests = map[string]bool{
 }
 
 type l11SelectedFunction struct {
-	declaration        *ast.FuncDecl
-	literal            *ast.FuncLit
-	file               *l11SelectedFile
-	pkg                *l11SelectedPackage
-	packageInitializer bool
-	captures           map[*ast.Object][]l11SelectedCallable
-	concrete           map[*ast.Object][]l11SelectedTypeRef
+	declaration *ast.FuncDecl
+	file        *l11SelectedFile
+	pkg         *l11SelectedPackage
 }
 
 type l11SelectedFile struct {
@@ -51,9 +47,7 @@ type l11SelectedPackage struct {
 	name      string
 	files     []*l11SelectedFile
 	functions map[string][]*l11SelectedFunction
-	methods   map[string]map[string][]*l11SelectedFunction
 	values    []*l11SelectedPackageValue
-	callables map[string][]l11SelectedCallable
 	strings   map[string]l11SelectedStringFact
 	types     map[string]l11SelectedTypeAlias
 	typeDefs  map[string][]l11SelectedTypeAlias
@@ -72,31 +66,12 @@ type l11SelectedStringFact struct {
 
 type l11SelectedPackageValue struct {
 	file   *l11SelectedFile
-	token  token.Token
 	names  []*ast.Ident
 	values []ast.Expr
 }
 
 type l11SelectedCallable struct {
-	function   *l11SelectedFunction
-	proof      bool
-	skip       bool
-	cloud      bool
-	unresolved bool
-}
-
-type l11SelectedResolutionState struct {
-	objects  map[*ast.Object]bool
-	returns  map[ast.Node]bool
-	aliasing map[ast.Node]bool
-}
-
-func l11NewSelectedResolutionState() *l11SelectedResolutionState {
-	return &l11SelectedResolutionState{
-		objects:  make(map[*ast.Object]bool),
-		returns:  make(map[ast.Node]bool),
-		aliasing: make(map[ast.Node]bool),
-	}
+	function *l11SelectedFunction
 }
 
 func TestL11FinalClosureContractOnlyAddsNoProductionWiring(t *testing.T) {
@@ -300,7 +275,7 @@ var input any
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
-			name: "ignored callback remains unreachable",
+			name: "ignored callback shape is forbidden",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
 func TestL11PreparedLinuxFinalClosure(*testing.T) { ignore(mint) }
@@ -396,7 +371,7 @@ var input any
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
-			name: "discarded multi return proof callable remains unreachable",
+			name: "discarded multi return callable shape is forbidden",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
 func choices() (func(), func()) { return unsafe, safe }
@@ -545,7 +520,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { provider := "hetzner"; _ = p
 			wantIssue: "cloud/provider marker", wantIssues: 1,
 		},
 		{
-			name: "uninvoked closure is unreachable",
+			name: "uninvoked closure shape is forbidden",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
 func TestL11PreparedLinuxFinalClosure(*testing.T) {
@@ -570,7 +545,7 @@ var input any
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
-			name: "unreachable global callable reassignment remains unreachable",
+			name: "global callable variable shape is forbidden",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
 var run = safe
@@ -668,6 +643,58 @@ var input any
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
+			name: "predeclared any conversion is forbidden",
+			source: `package fixture
+import "testing"
+type minter struct{}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = any(minter{}) }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "imported package function value is forbidden",
+			sources: map[string]string{
+				"root/fixture_test.go": `package fixture
+import ("testing"; "example.invalid/helper")
+func invoke(func()) {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { invoke(helper.Run) }
+`,
+				"helper/helper.go": `package helper
+func Run() {}
+`,
+			},
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "test package global function value is forbidden",
+			source: `package fixture
+import "testing"
+var callback = safe
+func safe() {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) {}
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "ordinary indexed data remains allowed",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(*testing.T) { values := []string{"safe"}; _ = values[0] }
+`,
+		},
+		{
+			name: "unreachable production package dynamics remain outside selected graph",
+			sources: map[string]string{
+				"cmd/fixture_test.go": `package cmd
+import "testing"
+func TestL11PreparedLinuxFinalClosure(*testing.T) {}
+`,
+				"internal/unused/unused.go": `package unused
+func Invoke(callback func()) { callback() }
+`,
+			},
+		},
+		{
 			name: "interface dispatch after nested branch assignment is forbidden",
 			source: `package fixture
 import "testing"
@@ -741,7 +768,7 @@ var input any
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
-			name: "uninvoked nested callback remains unreachable",
+			name: "uninvoked nested callback shape is forbidden",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
 func ignore(callback func()) { _ = func() { callback() } }
@@ -770,7 +797,7 @@ var input any
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
-			name: "definite concrete overwrite kills stale implementation",
+			name: "definite interface overwrite remains forbidden",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
 type runner interface { Run() }
@@ -788,7 +815,7 @@ var input any
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
-			name: "conditional concrete overwrite preserves unsafe reaching implementation",
+			name: "conditional interface overwrite remains forbidden",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
 type runner interface { Run() }
@@ -807,7 +834,7 @@ var input any
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
-			name: "definite concrete overwrite reaches captured IIFE safely",
+			name: "captured IIFE after definite overwrite remains forbidden",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
 type runner interface { Run() }
@@ -825,7 +852,7 @@ var input any
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
-			name: "safe concrete interface dispatch excludes unused implementation",
+			name: "concrete interface dispatch remains forbidden",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
 type runner interface { Run() }
@@ -1170,8 +1197,6 @@ func l11ParseSelectedTestSources(sources map[string]string) (map[string]*l11Sele
 				dir:       dir,
 				name:      parsed.Name.Name,
 				functions: make(map[string][]*l11SelectedFunction),
-				methods:   make(map[string]map[string][]*l11SelectedFunction),
-				callables: make(map[string][]l11SelectedCallable),
 				strings:   make(map[string]l11SelectedStringFact),
 				types:     make(map[string]l11SelectedTypeAlias),
 				typeDefs:  make(map[string][]l11SelectedTypeAlias),
@@ -1190,7 +1215,7 @@ func l11ParseSelectedTestSources(sources map[string]string) (map[string]*l11Sele
 			if generated, ok := declaration.(*ast.GenDecl); ok && (generated.Tok == token.CONST || generated.Tok == token.VAR || generated.Tok == token.TYPE) {
 				for _, spec := range generated.Specs {
 					if value, ok := spec.(*ast.ValueSpec); ok && (generated.Tok == token.CONST || generated.Tok == token.VAR) {
-						pkg.values = append(pkg.values, &l11SelectedPackageValue{file: file, token: generated.Tok, names: value.Names, values: value.Values})
+						pkg.values = append(pkg.values, &l11SelectedPackageValue{file: file, names: value.Names, values: value.Values})
 					}
 					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
 						definition := l11SelectedTypeAlias{file: file, expression: typeSpec.Type}
@@ -1211,11 +1236,7 @@ func l11ParseSelectedTestSources(sources map[string]string) (map[string]*l11Sele
 				file:        file,
 				pkg:         pkg,
 			}
-			if receiver := l11SelectedReceiverType(function); receiver != "" {
-				if pkg.methods[receiver] == nil {
-					pkg.methods[receiver] = make(map[string][]*l11SelectedFunction)
-				}
-				pkg.methods[receiver][function.Name.Name] = append(pkg.methods[receiver][function.Name.Name], selected)
+			if function.Recv != nil {
 				continue
 			}
 			pkg.functions[function.Name.Name] = append(pkg.functions[function.Name.Name], selected)
@@ -1256,135 +1277,34 @@ func l11SelectedFileImportPaths(file *ast.File) map[string]string {
 	return imports
 }
 
-func l11PrepareSelectedPackageFacts(packages map[string]*l11SelectedPackage, literals map[*ast.FuncLit]*l11SelectedFunction) {
-	for _, pkg := range packages {
-		pkg.callables = make(map[string][]l11SelectedCallable)
-		pkg.strings = make(map[string]l11SelectedStringFact)
-	}
-	for changed := true; changed; {
-		changed = false
-		for _, pkg := range packages {
-			for _, declaration := range pkg.values {
-				if len(declaration.names) != len(declaration.values) {
-					for _, name := range declaration.names {
-						if l11MergeSelectedStringFactInto(pkg.strings, name.Name, l11SelectedStringFact{unknown: true}) {
-							changed = true
-						}
-					}
-					continue
-				}
-				context := l11SelectedPackageExpressionContext(pkg, declaration.file)
-				for index, name := range declaration.names {
-					fact := l11ResolveSelectedStringFact(packages, context, declaration.values[index], make(map[*ast.Object]bool), 0)
-					if l11MergeSelectedStringFactInto(pkg.strings, name.Name, fact) {
-						changed = true
-					}
-				}
-			}
-		}
-	}
-
-	for changed := true; changed; {
-		changed = false
-		for _, pkg := range packages {
-			for _, declaration := range pkg.values {
-				if declaration.token != token.VAR {
-					continue
-				}
-				context := l11SelectedPackageExpressionContext(pkg, declaration.file)
-				if l11MergeSelectedPackageValueCallables(packages, pkg, context, declaration.names, declaration.values, nil, literals) {
-					changed = true
-				}
-			}
-			for _, initializer := range pkg.functions["init"] {
-				aliases := l11SelectedCallableAliases(packages, initializer, literals)
-				ast.Inspect(initializer.body(), func(node ast.Node) bool {
-					if _, nested := node.(*ast.FuncLit); nested {
-						return false
-					}
-					assignment, ok := node.(*ast.AssignStmt)
-					if !ok {
-						return true
-					}
-					var names []*ast.Ident
-					for _, expression := range assignment.Lhs {
-						name, ok := expression.(*ast.Ident)
-						if !ok || (name.Name != "_" && !l11SelectedPackageAssignmentTarget(pkg, name, assignment.Tok)) {
-							return true
-						}
-						names = append(names, name)
-					}
-					if l11MergeSelectedPackageValueCallables(packages, pkg, initializer, names, assignment.Rhs, aliases, literals) {
-						changed = true
-					}
-					return true
-				})
-			}
-		}
-	}
-}
-
 func l11SelectedPackageExpressionContext(pkg *l11SelectedPackage, file *l11SelectedFile) *l11SelectedFunction {
 	return &l11SelectedFunction{
-		literal: &ast.FuncLit{Body: &ast.BlockStmt{}},
-		file:    file,
-		pkg:     pkg,
+		file: file,
+		pkg:  pkg,
 	}
 }
 
-func l11MergeSelectedPackageValueCallables(packages map[string]*l11SelectedPackage, pkg *l11SelectedPackage, current *l11SelectedFunction, names []*ast.Ident, values []ast.Expr, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction) bool {
-	changed := false
-	state := l11NewSelectedResolutionState()
-	for index, name := range names {
-		if name.Name == "_" {
-			continue
-		}
-		var resolved []l11SelectedCallable
-		if len(values) == 1 && len(names) > 1 {
-			if call, ok := values[0].(*ast.CallExpr); ok {
-				results := l11ResolveSelectedCallableResultsWithState(packages, current, call, aliases, literals, state)
-				if index < len(results) {
-					resolved = results[index]
-				}
-			}
-		} else if index < len(values) {
-			resolved = l11ResolveSelectedCallablesWithState(packages, current, values[index], aliases, literals, state)
-		}
-		merged := l11MergeSelectedCallables(pkg.callables[name.Name], resolved)
-		if len(merged) != len(pkg.callables[name.Name]) {
-			pkg.callables[name.Name] = merged
-			changed = true
-		}
+func (function *l11SelectedFunction) node() ast.Node {
+	if function == nil {
+		return nil
 	}
-	return changed
+	return function.declaration
 }
 
-func l11SelectedPackageAssignmentTarget(pkg *l11SelectedPackage, name *ast.Ident, assignment token.Token) bool {
-	if name.Obj != nil {
-		return l11SelectedPackageOwnsObject(pkg, name.Obj)
+func (function *l11SelectedFunction) body() *ast.BlockStmt {
+	if function == nil || function.declaration == nil {
+		return nil
 	}
-	if assignment == token.DEFINE {
-		return false
-	}
-	for _, declaration := range pkg.values {
-		for _, declared := range declaration.names {
-			if declared.Name == name.Name {
-				return true
-			}
-		}
-	}
-	return false
+	return function.declaration.Body
 }
 
-func l11SelectedPackageOwnsObject(pkg *l11SelectedPackage, object *ast.Object) bool {
-	for _, declaration := range pkg.values {
-		for _, name := range declaration.names {
-			if name.Obj == object {
-				return true
-			}
+func l11SelectedValueInitializer(object *ast.Object, declaration *ast.ValueSpec) ast.Expr {
+	for index, name := range declaration.Names {
+		if name.Obj == object && index < len(declaration.Values) {
+			return declaration.Values[index]
 		}
 	}
-	return false
+	return nil
 }
 
 func l11SelectedPreparedTestIssues(packages map[string]*l11SelectedPackage) []string {
@@ -1401,780 +1321,425 @@ func l11SelectedPreparedTestIssues(packages map[string]*l11SelectedPackage) []st
 }
 
 func l11SelectedFunctionIssues(packages map[string]*l11SelectedPackage, root *l11SelectedFunction) []string {
-	literals := l11SelectedFunctionLiterals(packages)
-	l11PrepareSelectedPackageFacts(packages, literals)
-	packageInitializers := l11SelectedPackageInitializers(packages)
-	invokedParameters := l11SelectedInvokedParameters(packages, literals)
+	l11PrepareSelectedStringFacts(packages)
 	var issues []string
-	for factsChanged := true; factsChanged; {
-		factsChanged = false
-		queue := []*l11SelectedFunction{root}
-		reachable := make(map[ast.Node]bool)
-		packagesQueued := make(map[*l11SelectedPackage]bool)
-		var recordCallable func(l11SelectedCallable)
-		recordCallable = func(callable l11SelectedCallable) {
-			switch {
-			case callable.proof:
-				issues = append(issues, fmt.Sprintf("%s reaches synthetic credential proof constructor", root.declaration.Name.Name))
-			case callable.skip:
-				issues = append(issues, fmt.Sprintf("%s reaches a skip call", root.declaration.Name.Name))
-			case callable.cloud:
-				issues = append(issues, fmt.Sprintf("%s reaches a cloud/provider marker", root.declaration.Name.Name))
-			case callable.unresolved:
-				issues = append(issues, fmt.Sprintf("%s reaches an unresolved in-module call", root.declaration.Name.Name))
-			case callable.function != nil && !reachable[callable.function.node()]:
-				queue = append(queue, callable.function)
-			}
+	queue := []*l11SelectedFunction{root}
+	reachable := make(map[ast.Node]bool)
+	packagesChecked := make(map[*l11SelectedPackage]bool)
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current == nil || reachable[current.node()] {
+			continue
 		}
-		recordStringFact := func(current *l11SelectedFunction, expression ast.Expr) {
-			fact := l11ResolveSelectedStringFact(packages, current, expression, make(map[*ast.Object]bool), 0)
-			for literal := range fact.values {
-				if l11ForbiddenCloudLiteral(literal) {
-					recordCallable(l11SelectedCallable{cloud: true})
-				}
-			}
+		reachable[current.node()] = true
+		issues = append(issues, l11SelectedClosedPackageIssues(packages, root, current.pkg, packagesChecked, &queue)...)
+		issues = append(issues, l11SelectedClosedFunctionIssues(packages, root, current, &queue)...)
+	}
+	return l11UniqueStrings(issues)
+}
+
+var l11SelectedAllowedDirectProductionFunctions = map[string]bool{}
+
+var l11SelectedAllowedDirectProductionMethods = map[string]bool{}
+
+var l11SelectedAllowedTestingTMethods = map[string]bool{
+	"Error": true, "Errorf": true, "Fail": true, "FailNow": true,
+	"Failed": true, "Fatal": true, "Fatalf": true, "Helper": true,
+	"Log": true, "Logf": true, "Name": true, "TempDir": true,
+}
+
+func l11SelectedClosedPackageIssues(packages map[string]*l11SelectedPackage, root *l11SelectedFunction, pkg *l11SelectedPackage, checked map[*l11SelectedPackage]bool, queue *[]*l11SelectedFunction) []string {
+	if pkg == nil || checked[pkg] {
+		return nil
+	}
+	checked[pkg] = true
+	var issues []string
+	for _, file := range pkg.files {
+		if !l11SelectedClosedFileOwned(root, pkg, file) {
+			continue
 		}
-		var queuePackage func(*l11SelectedPackage)
-		queuePackage = func(pkg *l11SelectedPackage) {
-			if pkg == nil || packagesQueued[pkg] {
-				return
+		for _, imported := range file.imports {
+			if l11ForbiddenCloudImport(imported.path) {
+				issues = append(issues, l11SelectedClosedIssue(root, "cloud/provider marker"))
 			}
-			packagesQueued[pkg] = true
-			for _, file := range pkg.files {
-				for _, imported := range file.imports {
-					if l11ForbiddenCloudImport(imported.path) {
-						recordCallable(l11SelectedCallable{cloud: true})
+			if imported.name == "_" {
+				importedPackage := l11SelectedImportedPackage(packages, imported.path)
+				if importedPackage != nil {
+					if l11InModuleImport(imported.path) {
+						issues = append(issues, l11SelectedClosedIssue(root, "unresolved in-module call"))
+					} else {
+						issues = append(issues, l11SelectedClosedPackageIssues(packages, root, importedPackage, checked, queue)...)
+						for _, initializer := range importedPackage.functions["init"] {
+							*queue = append(*queue, initializer)
+						}
 					}
-					queuePackage(l11SelectedImportedPackage(packages, imported.path))
 				}
 			}
-			for _, initializer := range pkg.functions["init"] {
-				recordCallable(l11SelectedCallable{function: initializer})
-			}
-			for _, initializer := range packageInitializers[pkg] {
-				recordCallable(l11SelectedCallable{function: initializer})
-			}
 		}
-		for len(queue) > 0 {
-			current := queue[0]
-			queue = queue[1:]
-			node := current.node()
-			if reachable[node] {
-				continue
+	}
+	for _, declaration := range pkg.values {
+		if !l11SelectedClosedFileOwned(root, pkg, declaration.file) {
+			continue
+		}
+		current := l11SelectedPackageExpressionContext(pkg, declaration.file)
+		for _, expression := range declaration.values {
+			if l11SelectedCallableValueExpression(packages, current, expression, make(map[*ast.Object]bool)) {
+				issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
 			}
-			reachable[node] = true
-			aliases := l11SelectedCallableAliases(packages, current, literals)
-			if l11MergeReachablePackageCallableAssignments(packages, current, aliases, literals) {
-				factsChanged = true
-			}
-			queuePackage(current.pkg)
-			ast.Inspect(current.body(), func(node ast.Node) bool {
+			ast.Inspect(expression, func(node ast.Node) bool {
 				switch value := node.(type) {
-				case *ast.FuncLit:
-					return false
-				case *ast.BinaryExpr:
-					recordStringFact(current, value)
-					return false
-				case *ast.SelectorExpr:
-					if l11SelectedProofSelector(current.file, value) {
-						recordCallable(l11SelectedCallable{proof: true})
-					}
-					if l11SelectedCloudSelector(current.file, value) {
-						recordCallable(l11SelectedCallable{cloud: true})
-					}
-					recordStringFact(current, value)
-				case *ast.Ident:
-					if l11SelectedDotImportedProof(current.file, value) {
-						recordCallable(l11SelectedCallable{proof: true})
-					}
-					if value.Obj == nil && l11ForbiddenCloudLiteral(value.Name) {
-						recordCallable(l11SelectedCallable{cloud: true})
-					}
-					recordStringFact(current, value)
-				case *ast.BasicLit:
-					if value.Kind == token.STRING {
-						recordStringFact(current, value)
-					}
 				case *ast.CallExpr:
-					for _, callable := range l11ResolveSelectedCallables(packages, current, value.Fun, aliases, literals) {
-						recordCallable(callable)
-						if callable.function == nil {
-							continue
-						}
-						if callable.function.literal != nil && l11MergeSelectedConcreteCaptures(packages, current, callable.function, value.Pos()) {
-							factsChanged = true
-						}
-						if callable.function.concrete == nil {
-							callable.function.concrete = make(map[*ast.Object][]l11SelectedTypeRef)
-						}
-						for parameterIndex, parameter := range l11SelectedPositionalParameterObjects(callable.function) {
-							if parameter == nil || parameterIndex >= len(value.Args) {
-								continue
-							}
-							argumentTypes := l11SelectedConcreteExpressionTypes(packages, current, value.Args[parameterIndex], make(map[*ast.Object]bool), 0)
-							merged := l11MergeSelectedTypeRefs(callable.function.concrete[parameter], argumentTypes)
-							if len(merged) != len(callable.function.concrete[parameter]) {
-								callable.function.concrete[parameter] = merged
-								factsChanged = true
-							}
-						}
-						for parameter := range invokedParameters[callable.function.node()] {
-							if parameter >= len(value.Args) {
-								continue
-							}
-							for _, argument := range l11ResolveSelectedCallables(packages, current, value.Args[parameter], aliases, literals) {
-								recordCallable(argument)
-							}
-						}
+					if l11SelectedClosedProofCall(current.file, value.Fun) {
+						issues = append(issues, l11SelectedClosedIssue(root, "synthetic credential proof constructor"))
+					}
+				case ast.Expr:
+					if l11SelectedClosedCloudExpression(packages, current, value) {
+						issues = append(issues, l11SelectedClosedIssue(root, "cloud/provider marker"))
 					}
 				}
 				return true
 			})
 		}
 	}
+	for _, initializer := range pkg.functions["init"] {
+		if pkg != root.pkg || l11SelectedTestOwnedFunction(initializer) || l11SelectedToolHelperFunction(initializer) {
+			*queue = append(*queue, initializer)
+		}
+	}
 	return l11UniqueStrings(issues)
 }
 
-func l11MergeSelectedConcreteCaptures(packages map[string]*l11SelectedPackage, current, closure *l11SelectedFunction, use token.Pos) bool {
-	if current == nil || closure == nil || closure.literal == nil || current.node() == closure.node() {
-		return false
-	}
-	if closure.concrete == nil {
-		closure.concrete = make(map[*ast.Object][]l11SelectedTypeRef)
-	}
-	changed := false
-	ast.Inspect(closure.body(), func(node ast.Node) bool {
-		if literal, nested := node.(*ast.FuncLit); nested && literal != closure.literal {
-			return false
-		}
-		identifier, ok := node.(*ast.Ident)
-		if !ok || identifier.Obj == nil || l11SelectedObjectDeclaredWithin(identifier.Obj, closure.node()) {
-			return true
-		}
-		resolved := l11SelectedConcreteObjectTypesAt(packages, current, identifier.Obj, use, make(map[*ast.Object]bool), make(map[ast.Node]bool), 0)
-		merged := l11MergeSelectedTypeRefs(closure.concrete[identifier.Obj], resolved)
-		if len(merged) != len(closure.concrete[identifier.Obj]) {
-			closure.concrete[identifier.Obj] = merged
-			changed = true
-		}
+func l11SelectedClosedFileOwned(root *l11SelectedFunction, pkg *l11SelectedPackage, file *l11SelectedFile) bool {
+	if root == nil || pkg != root.pkg {
 		return true
-	})
-	return changed
+	}
+	return file != nil && (strings.HasSuffix(file.path, "_test.go") || l11SelectedToolHelperPath(file.path))
 }
 
-func l11SelectedObjectDeclaredWithin(object *ast.Object, scope ast.Node) bool {
-	declaration, ok := object.Decl.(ast.Node)
-	return ok && declaration.Pos() >= scope.Pos() && declaration.End() <= scope.End()
-}
-
-func l11MergeReachablePackageCallableAssignments(packages map[string]*l11SelectedPackage, function *l11SelectedFunction, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction) bool {
-	changed := false
-	ast.Inspect(function.body(), func(node ast.Node) bool {
-		if _, nested := node.(*ast.FuncLit); nested {
+func l11SelectedClosedFunctionIssues(packages map[string]*l11SelectedPackage, root, current *l11SelectedFunction, queue *[]*l11SelectedFunction) []string {
+	var issues []string
+	if l11SelectedFunctionHasCallableSignature(current) {
+		issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
+	}
+	ast.Inspect(current.body(), func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.FuncLit:
+			issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
 			return false
-		}
-		assignment, ok := node.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		var names []*ast.Ident
-		for _, expression := range assignment.Lhs {
-			name, ok := expression.(*ast.Ident)
-			if !ok || (name.Name != "_" && !l11SelectedPackageAssignmentTarget(function.pkg, name, assignment.Tok)) {
-				return true
-			}
-			names = append(names, name)
-		}
-		if l11MergeSelectedPackageValueCallables(packages, function.pkg, function, names, assignment.Rhs, aliases, literals) {
-			changed = true
-		}
-		return true
-	})
-	return changed
-}
-
-func l11SelectedPackageInitializers(packages map[string]*l11SelectedPackage) map[*l11SelectedPackage][]*l11SelectedFunction {
-	initializers := make(map[*l11SelectedPackage][]*l11SelectedFunction)
-	for _, pkg := range packages {
-		for _, declaration := range pkg.values {
-			if declaration.token != token.VAR {
-				continue
-			}
-			for _, expression := range declaration.values {
-				initializers[pkg] = append(initializers[pkg], &l11SelectedFunction{
-					literal:            &ast.FuncLit{Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ExprStmt{X: expression}}}},
-					file:               declaration.file,
-					pkg:                pkg,
-					packageInitializer: true,
-				})
-			}
-		}
-	}
-	return initializers
-}
-
-func l11SelectedFunctionLiterals(packages map[string]*l11SelectedPackage) map[*ast.FuncLit]*l11SelectedFunction {
-	literals := make(map[*ast.FuncLit]*l11SelectedFunction)
-	for _, pkg := range packages {
-		for _, functions := range pkg.functions {
-			for _, function := range functions {
-				ast.Inspect(function.body(), func(node ast.Node) bool {
-					literal, ok := node.(*ast.FuncLit)
-					if ok && literals[literal] == nil {
-						literals[literal] = &l11SelectedFunction{literal: literal, file: function.file, pkg: pkg}
-					}
-					return true
-				})
-			}
-		}
-	}
-	return literals
-}
-
-func l11SelectedInvokedParameters(packages map[string]*l11SelectedPackage, literals map[*ast.FuncLit]*l11SelectedFunction) map[ast.Node]map[int]bool {
-	functions := make([]*l11SelectedFunction, 0)
-	for _, pkg := range packages {
-		for _, declarations := range pkg.functions {
-			functions = append(functions, declarations...)
-		}
-	}
-	for _, literal := range literals {
-		functions = append(functions, literal)
-	}
-
-	invoked := make(map[ast.Node]map[int]bool, len(functions))
-	for changed := true; changed; {
-		changed = false
-		for _, function := range functions {
-			parameters := l11SelectedParameterObjects(function)
-			if len(parameters) == 0 {
-				continue
-			}
-			sources := l11SelectedParameterAliases(function, parameters)
-			aliases := l11SelectedCallableAliases(packages, function, literals)
-			if l11MergeSelectedInvokedParameters(
-				packages,
-				function,
-				function.body(),
-				sources,
-				aliases,
-				literals,
-				invoked,
-				make(map[ast.Node]bool),
-			) {
-				changed = true
-			}
-		}
-	}
-	return invoked
-}
-
-func l11MergeSelectedInvokedParameters(
-	packages map[string]*l11SelectedPackage,
-	owner *l11SelectedFunction,
-	body *ast.BlockStmt,
-	sources map[*ast.Object]map[int]bool,
-	aliases map[*ast.Object][]l11SelectedCallable,
-	literals map[*ast.FuncLit]*l11SelectedFunction,
-	invoked map[ast.Node]map[int]bool,
-	visiting map[ast.Node]bool,
-) bool {
-	if body == nil || visiting[body] {
-		return false
-	}
-	visiting[body] = true
-	defer delete(visiting, body)
-
-	changed := false
-	ast.Inspect(body, func(node ast.Node) bool {
-		if _, nested := node.(*ast.FuncLit); nested {
+		case *ast.FuncType:
+			issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
 			return false
-		}
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		for parameter := range l11SelectedParameterSources(call.Fun, sources) {
-			if l11AddSelectedParameter(invoked, owner.node(), parameter) {
-				changed = true
-			}
-		}
-		for _, callable := range l11ResolveSelectedCallables(packages, owner, call.Fun, aliases, literals) {
-			if callable.function == nil {
-				continue
-			}
-			for calleeParameter := range invoked[callable.function.node()] {
-				if calleeParameter >= len(call.Args) {
-					continue
-				}
-				for parameter := range l11SelectedParameterSources(call.Args[calleeParameter], sources) {
-					if l11AddSelectedParameter(invoked, owner.node(), parameter) {
-						changed = true
-					}
+		case *ast.CallExpr:
+			issues = append(issues, l11SelectedClosedCallIssues(packages, root, current, value, queue)...)
+		case *ast.AssignStmt:
+			for _, expression := range value.Rhs {
+				if l11SelectedCallableValueExpression(packages, current, expression, make(map[*ast.Object]bool)) {
+					issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
 				}
 			}
-			if callable.function.literal != nil {
-				nestedAliases := l11SelectedCallableAliases(packages, callable.function, literals)
-				if l11MergeSelectedInvokedParameters(
-					packages,
-					owner,
-					callable.function.body(),
-					sources,
-					nestedAliases,
-					literals,
-					invoked,
-					visiting,
-				) {
-					changed = true
+		case *ast.ValueSpec:
+			for _, expression := range value.Values {
+				if l11SelectedCallableValueExpression(packages, current, expression, make(map[*ast.Object]bool)) {
+					issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
 				}
+			}
+		case ast.Expr:
+			if l11SelectedClosedCloudExpression(packages, current, value) {
+				issues = append(issues, l11SelectedClosedIssue(root, "cloud/provider marker"))
 			}
 		}
 		return true
 	})
-	return changed
+	return l11UniqueStrings(issues)
 }
 
-func l11SelectedParameterObjects(function *l11SelectedFunction) []*ast.Object {
-	var fields *ast.FieldList
-	if function.declaration != nil {
-		fields = function.declaration.Type.Params
-	} else {
-		fields = function.literal.Type.Params
-	}
-	if fields == nil {
-		return nil
-	}
-	var parameters []*ast.Object
-	for _, field := range fields.List {
-		for _, name := range field.Names {
-			parameters = append(parameters, name.Obj)
+func l11SelectedClosedCallIssues(packages map[string]*l11SelectedPackage, root, current *l11SelectedFunction, call *ast.CallExpr, queue *[]*l11SelectedFunction) []string {
+	for _, argument := range call.Args {
+		if l11SelectedCallableValueExpression(packages, current, argument, make(map[*ast.Object]bool)) {
+			return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
 		}
 	}
-	return parameters
-}
-
-func l11SelectedParameterAliases(function *l11SelectedFunction, parameters []*ast.Object) map[*ast.Object]map[int]bool {
-	sources := make(map[*ast.Object]map[int]bool)
-	for index, object := range parameters {
-		if object != nil {
-			sources[object] = map[int]bool{index: true}
-		}
-	}
-	for changed := true; changed; {
-		changed = false
-		ast.Inspect(function.body(), func(node ast.Node) bool {
-			if _, nested := node.(*ast.FuncLit); nested {
-				return false
-			}
-			var names []*ast.Ident
-			var values []ast.Expr
-			switch declaration := node.(type) {
-			case *ast.AssignStmt:
-				if len(declaration.Lhs) != len(declaration.Rhs) {
-					return true
-				}
-				for _, expression := range declaration.Lhs {
-					name, ok := expression.(*ast.Ident)
-					if !ok {
-						return true
-					}
-					names = append(names, name)
-				}
-				values = declaration.Rhs
-			case *ast.ValueSpec:
-				if len(declaration.Names) != len(declaration.Values) {
-					return true
-				}
-				names, values = declaration.Names, declaration.Values
-			default:
-				return true
-			}
-			for index, name := range names {
-				if name.Obj == nil {
-					continue
-				}
-				for parameter := range l11SelectedParameterSources(values[index], sources) {
-					if sources[name.Obj] == nil {
-						sources[name.Obj] = make(map[int]bool)
-					}
-					if !sources[name.Obj][parameter] {
-						sources[name.Obj][parameter] = true
-						changed = true
-					}
-				}
-			}
-			return true
-		})
-	}
-	return sources
-}
-
-func l11SelectedParameterSources(expression ast.Expr, sources map[*ast.Object]map[int]bool) map[int]bool {
-	switch value := expression.(type) {
+	switch function := call.Fun.(type) {
+	case *ast.IndexExpr, *ast.IndexListExpr, *ast.CallExpr, *ast.FuncLit:
+		return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
 	case *ast.Ident:
-		return sources[value.Obj]
-	case *ast.ParenExpr:
-		return l11SelectedParameterSources(value.X, sources)
-	case *ast.IndexExpr:
-		return l11SelectedParameterSources(value.X, sources)
-	case *ast.IndexListExpr:
-		return l11SelectedParameterSources(value.X, sources)
-	default:
-		return nil
-	}
-}
-
-func l11AddSelectedParameter(invoked map[ast.Node]map[int]bool, function ast.Node, parameter int) bool {
-	if invoked[function] == nil {
-		invoked[function] = make(map[int]bool)
-	}
-	if invoked[function][parameter] {
-		return false
-	}
-	invoked[function][parameter] = true
-	return true
-}
-
-func (function *l11SelectedFunction) node() ast.Node {
-	if function.declaration != nil {
-		return function.declaration
-	}
-	return function.literal
-}
-
-func (function *l11SelectedFunction) body() *ast.BlockStmt {
-	if function.declaration != nil {
-		return function.declaration.Body
-	}
-	return function.literal.Body
-}
-
-func l11SelectedCallableAliases(packages map[string]*l11SelectedPackage, function *l11SelectedFunction, literals map[*ast.FuncLit]*l11SelectedFunction) map[*ast.Object][]l11SelectedCallable {
-	return l11SelectedCallableAliasesWithState(packages, function, literals, l11NewSelectedResolutionState())
-}
-
-func l11SelectedCallableAliasesWithState(packages map[string]*l11SelectedPackage, function *l11SelectedFunction, literals map[*ast.FuncLit]*l11SelectedFunction, state *l11SelectedResolutionState) map[*ast.Object][]l11SelectedCallable {
-	aliases := make(map[*ast.Object][]l11SelectedCallable, len(function.captures))
-	for object, captured := range function.captures {
-		aliases[object] = l11MergeSelectedCallables(nil, captured)
-	}
-	if state.aliasing[function.node()] {
-		return aliases
-	}
-	state.aliasing[function.node()] = true
-	defer delete(state.aliasing, function.node())
-	for changed := true; changed; {
-		changed = false
-		ast.Inspect(function.body(), func(node ast.Node) bool {
-			if _, nested := node.(*ast.FuncLit); nested {
-				return false
-			}
-			var names []*ast.Ident
-			var values []ast.Expr
-			switch declaration := node.(type) {
-			case *ast.AssignStmt:
-				if len(declaration.Lhs) != len(declaration.Rhs) && len(declaration.Rhs) != 1 {
-					return true
-				}
-				for _, expression := range declaration.Lhs {
-					identifier, ok := expression.(*ast.Ident)
-					if !ok {
-						return true
-					}
-					names = append(names, identifier)
-				}
-				values = declaration.Rhs
-			case *ast.ValueSpec:
-				if len(declaration.Names) != len(declaration.Values) && len(declaration.Values) != 1 {
-					return true
-				}
-				names, values = declaration.Names, declaration.Values
+		if l11SelectedProofConstructor(function.Name) && l11SelectedDotImportedProof(current.file, function) {
+			return []string{l11SelectedClosedIssue(root, "synthetic credential proof constructor")}
+		}
+		if function.Obj != nil {
+			switch declaration := function.Obj.Decl.(type) {
+			case *ast.FuncDecl:
+				targets := l11SelectedDeclaredFunction(current.pkg, declaration)
+				return l11SelectedClosedDirectTargets(root, current, targets, current.pkg.name+"."+function.Name, queue)
+			case *ast.TypeSpec:
+				return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
 			default:
-				return true
+				return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
 			}
-			for index, name := range names {
-				if name.Obj == nil {
-					continue
-				}
-				var resolved []l11SelectedCallable
-				if len(values) == 1 && len(names) > 1 {
-					if call, ok := values[0].(*ast.CallExpr); ok {
-						results := l11ResolveSelectedCallableResultsWithState(packages, function, call, aliases, literals, state)
-						if index < len(results) {
-							resolved = results[index]
-						}
-					}
-				} else if index < len(values) {
-					resolved = l11ResolveSelectedCallablesWithState(packages, function, values[index], aliases, literals, state)
-				}
-				merged := l11MergeSelectedCallables(aliases[name.Obj], resolved)
-				if len(merged) != len(aliases[name.Obj]) {
-					aliases[name.Obj] = merged
-					changed = true
-				}
-			}
-			return true
-		})
-	}
-	return aliases
-}
-
-func l11ResolveSelectedCallables(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction) []l11SelectedCallable {
-	return l11ResolveSelectedCallablesWithState(packages, current, expression, aliases, literals, l11NewSelectedResolutionState())
-}
-
-func l11ResolveSelectedCallablesWithState(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction, state *l11SelectedResolutionState) []l11SelectedCallable {
-	switch value := expression.(type) {
-	case *ast.ParenExpr:
-		return l11ResolveSelectedCallablesWithState(packages, current, value.X, aliases, literals, state)
-	case *ast.IndexExpr:
-		return l11ResolveSelectedCallablesWithState(packages, current, value.X, aliases, literals, state)
-	case *ast.IndexListExpr:
-		return l11ResolveSelectedCallablesWithState(packages, current, value.X, aliases, literals, state)
-	case *ast.FuncLit:
-		function := literals[value]
-		if function == nil {
-			function = &l11SelectedFunction{literal: value, file: current.file, pkg: current.pkg}
-			literals[value] = function
 		}
-		if function.captures == nil {
-			function.captures = make(map[*ast.Object][]l11SelectedCallable)
+		if function.Name == "any" || function.Name == "error" || function.Name == "comparable" {
+			return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
 		}
-		for object, captured := range aliases {
-			function.captures[object] = l11MergeSelectedCallables(function.captures[object], captured)
-		}
-		return []l11SelectedCallable{{function: function}}
-	case *ast.Ident:
-		if value.Obj != nil {
-			if resolved := aliases[value.Obj]; len(resolved) > 0 {
-				return resolved
-			}
-			if l11SelectedPackageOwnsObject(current.pkg, value.Obj) {
-				if resolved := current.pkg.callables[value.Name]; len(resolved) > 0 {
-					return resolved
-				}
-			}
-			if declaration, ok := value.Obj.Decl.(*ast.FuncDecl); ok {
-				return l11SelectedDeclaredFunction(current.pkg, declaration)
-			}
-			if declaration, ok := value.Obj.Decl.(*ast.ValueSpec); ok && !state.objects[value.Obj] {
-				if initializer := l11SelectedValueInitializer(value.Obj, declaration); initializer != nil {
-					state.objects[value.Obj] = true
-					resolved := l11ResolveSelectedCallablesWithState(packages, current, initializer, aliases, literals, state)
-					delete(state.objects, value.Obj)
-					return resolved
-				}
-			}
+		if l11SelectedAllowedBuiltin(function.Name) {
 			return nil
 		}
-		if l11SelectedDotImportedProof(current.file, value) {
-			return []l11SelectedCallable{{proof: true}}
-		}
+		var targets []*l11SelectedFunction
+		key := ""
 		for _, imported := range current.file.imports {
 			if imported.name != "." {
 				continue
 			}
 			if importedPackage := l11SelectedImportedPackage(packages, imported.path); importedPackage != nil {
-				if functions := importedPackage.functions[value.Name]; len(functions) > 0 {
-					return l11SelectedFunctions(functions)
+				matches := importedPackage.functions[function.Name]
+				if len(matches) > 0 {
+					targets = append(targets, matches...)
+					key = imported.path + "." + function.Name
 				}
 			}
-			if l11InModuleImport(imported.path) {
-				return []l11SelectedCallable{{unresolved: true}}
-			}
 		}
-		if resolved := current.pkg.callables[value.Name]; len(resolved) > 0 {
-			return resolved
+		if len(targets) == 1 {
+			return l11SelectedClosedDirectTargets(root, current, l11SelectedFunctions(targets), key, queue)
 		}
-		return l11SelectedFunctions(current.pkg.functions[value.Name])
-	case *ast.CallExpr:
-		var flattened []l11SelectedCallable
-		for _, result := range l11ResolveSelectedCallableResultsWithState(packages, current, value, aliases, literals, state) {
-			flattened = l11MergeSelectedCallables(flattened, result)
-		}
-		return flattened
+		return []string{l11SelectedClosedIssue(root, "unresolved in-module call")}
 	case *ast.SelectorExpr:
-		if identifier, ok := value.X.(*ast.Ident); ok {
-			if importPath, imported := current.file.importPaths[identifier.Name]; imported && identifier.Obj == nil {
-				switch {
-				case l11SelectedProofConstructor(value.Sel.Name) && pathpkg.Base(importPath) == "sandboxruntime":
-					return []l11SelectedCallable{{proof: true}}
-				case l11ForbiddenCloudImport(importPath):
-					return []l11SelectedCallable{{cloud: true}}
-				}
+		if l11SelectedProofSelector(current.file, function) {
+			return []string{l11SelectedClosedIssue(root, "synthetic credential proof constructor")}
+		}
+		if l11SelectedCloudSelector(current.file, function) {
+			return []string{l11SelectedClosedIssue(root, "cloud/provider marker")}
+		}
+		if identifier, ok := function.X.(*ast.Ident); ok && identifier.Obj == nil {
+			if importPath := current.file.importPaths[identifier.Name]; importPath != "" {
 				if importedPackage := l11SelectedImportedPackage(packages, importPath); importedPackage != nil {
-					if functions := importedPackage.functions[value.Sel.Name]; len(functions) > 0 {
-						return l11SelectedFunctions(functions)
+					if len(importedPackage.typeDefs[function.Sel.Name]) > 0 {
+						return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
 					}
-					if l11InModuleImport(importPath) {
-						return []l11SelectedCallable{{unresolved: true}}
+					targets := importedPackage.functions[function.Sel.Name]
+					if len(targets) == 1 {
+						return l11SelectedClosedDirectTargets(root, current, l11SelectedFunctions(targets), importPath+"."+function.Sel.Name, queue)
 					}
 				}
-				if l11InModuleImport(importPath) {
-					return []l11SelectedCallable{{unresolved: true}}
+				if l11SelectedAllowedDirectProductionFunctions[importPath+"."+function.Sel.Name] {
+					return nil
 				}
+				return []string{l11SelectedClosedIssue(root, "unresolved in-module call")}
+			}
+		}
+		receiver := l11SelectedExpressionType(current.file, function.X)
+		if receiver == "testing.T" {
+			switch function.Sel.Name {
+			case "Skip", "Skipf", "SkipNow":
+				return []string{l11SelectedClosedIssue(root, "skip call")}
+			}
+			if l11SelectedAllowedTestingTMethods[function.Sel.Name] {
 				return nil
 			}
 		}
-		if typeSelector, ok := value.X.(*ast.SelectorExpr); ok {
-			if packageName, ok := typeSelector.X.(*ast.Ident); ok && packageName.Obj == nil {
-				if importPath := current.file.importPaths[packageName.Name]; importPath != "" {
-					if importedPackage := l11SelectedImportedPackage(packages, importPath); importedPackage != nil {
-						if methods := l11SelectedMethodsForType(packages, l11SelectedTypeRef{pkg: importedPackage, name: typeSelector.Sel.Name}, value.Sel.Name, make(map[l11SelectedTypeRef]bool)); len(methods) > 0 {
-							return methods
-						}
-						return []l11SelectedCallable{{unresolved: true}}
-					}
-					if l11InModuleImport(importPath) {
-						return []l11SelectedCallable{{unresolved: true}}
-					}
+		if l11SelectedAllowedDirectProductionMethods[receiver+"."+function.Sel.Name] {
+			return nil
+		}
+		return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
+	default:
+		return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
+	}
+}
+
+func l11SelectedClosedDirectTargets(root, current *l11SelectedFunction, targets []l11SelectedCallable, key string, queue *[]*l11SelectedFunction) []string {
+	if len(targets) != 1 || targets[0].function == nil {
+		if l11SelectedAllowedDirectProductionFunctions[key] {
+			return nil
+		}
+		return []string{l11SelectedClosedIssue(root, "unresolved in-module call")}
+	}
+	target := targets[0].function
+	if l11SelectedTestOwnedFunction(target) || l11SelectedToolHelperFunction(target) || (target.pkg != current.pkg && !strings.HasPrefix(key, "github.com/jywlabs/hal/")) {
+		*queue = append(*queue, target)
+		return nil
+	}
+	if l11SelectedAllowedDirectProductionFunctions[key] {
+		return nil
+	}
+	return []string{l11SelectedClosedIssue(root, "unresolved in-module call")}
+}
+
+func l11SelectedTestOwnedFunction(function *l11SelectedFunction) bool {
+	return function != nil && function.file != nil && strings.HasSuffix(function.file.path, "_test.go")
+}
+
+func l11SelectedToolHelperFunction(function *l11SelectedFunction) bool {
+	if function == nil || function.file == nil {
+		return false
+	}
+	return l11SelectedToolHelperPath(function.file.path)
+}
+
+func l11SelectedToolHelperPath(filePath string) bool {
+	path := filepath.ToSlash(filePath)
+	return strings.Contains(path, "/tools/l11") || strings.HasPrefix(path, "tools/l11")
+}
+
+func l11SelectedFunctionHasCallableSignature(function *l11SelectedFunction) bool {
+	if function == nil || function.declaration == nil {
+		return false
+	}
+	found := false
+	for _, fields := range []*ast.FieldList{function.declaration.Type.Params, function.declaration.Type.Results} {
+		if fields == nil {
+			continue
+		}
+		for _, field := range fields.List {
+			ast.Inspect(field.Type, func(node ast.Node) bool {
+				if _, ok := node.(*ast.FuncType); ok {
+					found = true
+					return false
 				}
-			}
-		}
-		if l11SelectedTestingSkip(packages, current.file, value) {
-			return []l11SelectedCallable{{skip: true}}
-		}
-		var resolved []l11SelectedCallable
-		for _, concrete := range l11SelectedConcreteExpressionTypes(packages, current, value.X, make(map[*ast.Object]bool), 0) {
-			resolved = l11MergeSelectedCallables(resolved, l11SelectedMethodsForType(packages, concrete, value.Sel.Name, make(map[l11SelectedTypeRef]bool)))
-		}
-		if len(resolved) > 0 {
-			return resolved
-		}
-		if receiver := l11SelectedExpressionType(current.file, value.X); receiver != "" {
-			if packageName, typeName, imported := strings.Cut(receiver, "."); imported {
-				if importPath := current.file.importPaths[packageName]; importPath != "" {
-					if importedPackage := l11SelectedImportedPackage(packages, importPath); importedPackage != nil {
-						if methods := l11SelectedMethodsForType(packages, l11SelectedTypeRef{pkg: importedPackage, name: typeName}, value.Sel.Name, make(map[l11SelectedTypeRef]bool)); len(methods) > 0 {
-							return methods
-						}
-						return []l11SelectedCallable{{unresolved: true}}
-					}
-					if l11InModuleImport(importPath) {
-						return []l11SelectedCallable{{unresolved: true}}
-					}
-				}
-			}
-			return l11SelectedMethodsForType(packages, l11SelectedTypeRef{pkg: current.pkg, name: receiver}, value.Sel.Name, make(map[l11SelectedTypeRef]bool))
+				return true
+			})
 		}
 	}
-	return nil
+	return found
+}
+
+func l11SelectedCallableValueExpression(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, visiting map[*ast.Object]bool) bool {
+	if expression == nil || current == nil || current.file == nil {
+		return false
+	}
+	switch value := expression.(type) {
+	case *ast.FuncLit:
+		return true
+	case *ast.ParenExpr:
+		return l11SelectedCallableValueExpression(packages, current, value.X, visiting)
+	case *ast.IndexExpr:
+		return l11SelectedCallableValueExpression(packages, current, value.X, visiting)
+	case *ast.IndexListExpr:
+		return l11SelectedCallableValueExpression(packages, current, value.X, visiting)
+	case *ast.Ident:
+		if value.Obj == nil || visiting[value.Obj] {
+			return false
+		}
+		switch declaration := value.Obj.Decl.(type) {
+		case *ast.FuncDecl:
+			return true
+		case *ast.Field:
+			found := false
+			ast.Inspect(declaration.Type, func(node ast.Node) bool {
+				if _, ok := node.(*ast.FuncType); ok {
+					found = true
+					return false
+				}
+				return true
+			})
+			return found
+		case *ast.ValueSpec:
+			visiting[value.Obj] = true
+			defer delete(visiting, value.Obj)
+			return l11SelectedCallableValueExpression(packages, current, l11SelectedValueInitializer(value.Obj, declaration), visiting)
+		case *ast.AssignStmt:
+			visiting[value.Obj] = true
+			defer delete(visiting, value.Obj)
+			for index, target := range declaration.Lhs {
+				identifier, ok := target.(*ast.Ident)
+				if ok && identifier.Obj == value.Obj && index < len(declaration.Rhs) {
+					return l11SelectedCallableValueExpression(packages, current, declaration.Rhs[index], visiting)
+				}
+			}
+		}
+		return false
+	case *ast.SelectorExpr:
+		if identifier, ok := value.X.(*ast.Ident); ok && identifier.Obj == nil {
+			if importPath := current.file.importPaths[identifier.Name]; importPath != "" {
+				importedPackage := l11SelectedImportedPackage(packages, importPath)
+				return importedPackage != nil && len(importedPackage.functions[value.Sel.Name]) > 0
+			}
+		}
+		return l11SelectedExpressionType(current.file, value.X) != ""
+	default:
+		return false
+	}
+}
+
+func l11SelectedAllowedBuiltin(name string) bool {
+	switch name {
+	case "append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len", "make", "max", "min", "new", "panic", "print", "println", "real", "recover":
+		return true
+	case "bool", "byte", "float32", "float64", "int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr":
+		return true
+	default:
+		return false
+	}
+}
+
+func l11SelectedClosedProofCall(file *l11SelectedFile, expression ast.Expr) bool {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		return l11SelectedDotImportedProof(file, value)
+	case *ast.SelectorExpr:
+		return l11SelectedProofSelector(file, value)
+	default:
+		return false
+	}
+}
+
+func l11SelectedClosedCloudExpression(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr) bool {
+	fact := l11ResolveSelectedStringFact(packages, current, expression, make(map[*ast.Object]bool), 0)
+	for literal := range fact.values {
+		if l11ForbiddenCloudLiteral(literal) {
+			return true
+		}
+	}
+	return false
+}
+
+func l11SelectedClosedIssue(root *l11SelectedFunction, detail string) string {
+	name := "selected test"
+	if root != nil && root.declaration != nil {
+		name = root.declaration.Name.Name
+	}
+	switch detail {
+	case "skip call":
+		return fmt.Sprintf("%s reaches a skip call", name)
+	case "cloud/provider marker":
+		return fmt.Sprintf("%s reaches a cloud/provider marker", name)
+	case "unresolved in-module call":
+		return fmt.Sprintf("%s reaches an unresolved in-module call", name)
+	case "synthetic credential proof constructor":
+		return fmt.Sprintf("%s reaches synthetic credential proof constructor", name)
+	default:
+		return fmt.Sprintf("%s reaches a forbidden dynamic selected helper graph", name)
+	}
+}
+
+func l11PrepareSelectedStringFacts(packages map[string]*l11SelectedPackage) {
+	for _, pkg := range packages {
+		pkg.strings = make(map[string]l11SelectedStringFact)
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, pkg := range packages {
+			for _, declaration := range pkg.values {
+				if len(declaration.names) != len(declaration.values) {
+					for _, name := range declaration.names {
+						if l11MergeSelectedStringFactInto(pkg.strings, name.Name, l11SelectedStringFact{unknown: true}) {
+							changed = true
+						}
+					}
+					continue
+				}
+				current := l11SelectedPackageExpressionContext(pkg, declaration.file)
+				for index, name := range declaration.names {
+					fact := l11ResolveSelectedStringFact(packages, current, declaration.values[index], make(map[*ast.Object]bool), 0)
+					if l11MergeSelectedStringFactInto(pkg.strings, name.Name, fact) {
+						changed = true
+					}
+				}
+			}
+		}
+	}
 }
 
 func l11InModuleImport(importPath string) bool {
 	return strings.HasPrefix(importPath, "github.com/jywlabs/hal/")
-}
-
-func l11ResolveSelectedCallableResultsWithState(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, call *ast.CallExpr, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction, state *l11SelectedResolutionState) [][]l11SelectedCallable {
-	var results [][]l11SelectedCallable
-	for _, callable := range l11ResolveSelectedCallablesWithState(packages, current, call.Fun, aliases, literals, state) {
-		if callable.function == nil || state.returns[callable.function.node()] {
-			continue
-		}
-		state.returns[callable.function.node()] = true
-		returnedAliases := l11SelectedCallableAliasesWithState(packages, callable.function, literals, state)
-		for index, parameter := range l11SelectedPositionalParameterObjects(callable.function) {
-			if parameter == nil || index >= len(call.Args) {
-				continue
-			}
-			resolved := l11ResolveSelectedCallablesWithState(packages, current, call.Args[index], aliases, literals, state)
-			returnedAliases[parameter] = l11MergeSelectedCallables(returnedAliases[parameter], resolved)
-		}
-		ast.Inspect(callable.function.body(), func(node ast.Node) bool {
-			if _, nested := node.(*ast.FuncLit); nested {
-				return false
-			}
-			statement, ok := node.(*ast.ReturnStmt)
-			if !ok {
-				return true
-			}
-			if len(statement.Results) == 0 {
-				for index, result := range l11SelectedPositionalResultObjects(callable.function) {
-					for len(results) <= index {
-						results = append(results, nil)
-					}
-					if result != nil {
-						results[index] = l11MergeSelectedCallables(results[index], returnedAliases[result])
-					}
-				}
-				return false
-			}
-			if len(statement.Results) == 1 {
-				if nestedCall, ok := statement.Results[0].(*ast.CallExpr); ok {
-					nested := l11ResolveSelectedCallableResultsWithState(packages, callable.function, nestedCall, returnedAliases, literals, state)
-					results = l11MergeSelectedCallableResults(results, nested)
-					return false
-				}
-			}
-			for index, returned := range statement.Results {
-				for len(results) <= index {
-					results = append(results, nil)
-				}
-				resolved := l11ResolveSelectedCallablesWithState(packages, callable.function, returned, returnedAliases, literals, state)
-				results[index] = l11MergeSelectedCallables(results[index], resolved)
-			}
-			return false
-		})
-		delete(state.returns, callable.function.node())
-	}
-	return results
-}
-
-func l11SelectedPositionalParameterObjects(function *l11SelectedFunction) []*ast.Object {
-	var fields *ast.FieldList
-	if function.declaration != nil {
-		fields = function.declaration.Type.Params
-	} else {
-		fields = function.literal.Type.Params
-	}
-	return l11SelectedPositionalFieldObjects(fields)
-}
-
-func l11SelectedPositionalResultObjects(function *l11SelectedFunction) []*ast.Object {
-	var fields *ast.FieldList
-	if function.declaration != nil {
-		fields = function.declaration.Type.Results
-	} else {
-		fields = function.literal.Type.Results
-	}
-	return l11SelectedPositionalFieldObjects(fields)
-}
-
-func l11SelectedPositionalFieldObjects(fields *ast.FieldList) []*ast.Object {
-	if fields == nil {
-		return nil
-	}
-	var objects []*ast.Object
-	for _, field := range fields.List {
-		if len(field.Names) == 0 {
-			objects = append(objects, nil)
-			continue
-		}
-		for _, name := range field.Names {
-			objects = append(objects, name.Obj)
-		}
-	}
-	return objects
-}
-
-func l11MergeSelectedCallableResults(left, right [][]l11SelectedCallable) [][]l11SelectedCallable {
-	result := append([][]l11SelectedCallable(nil), left...)
-	for len(result) < len(right) {
-		result = append(result, nil)
-	}
-	for index := range right {
-		result[index] = l11MergeSelectedCallables(result[index], right[index])
-	}
-	return result
-}
-
-func l11SelectedValueInitializer(object *ast.Object, declaration *ast.ValueSpec) ast.Expr {
-	for index, name := range declaration.Names {
-		if name.Obj == object && index < len(declaration.Values) {
-			return declaration.Values[index]
-		}
-	}
-	return nil
 }
 
 func l11SelectedFunctions(functions []*l11SelectedFunction) []l11SelectedCallable {
@@ -2223,30 +1788,6 @@ func l11SelectedImportedPackage(packages map[string]*l11SelectedPackage, importP
 		match = pkg
 	}
 	return match
-}
-
-func l11MergeSelectedCallables(left, right []l11SelectedCallable) []l11SelectedCallable {
-	result := append([]l11SelectedCallable(nil), left...)
-	for _, candidate := range right {
-		found := false
-		for _, existing := range result {
-			if existing == candidate {
-				found = true
-				break
-			}
-		}
-		if !found {
-			result = append(result, candidate)
-		}
-	}
-	return result
-}
-
-func l11SelectedReceiverType(function *ast.FuncDecl) string {
-	if function.Recv == nil || len(function.Recv.List) != 1 {
-		return ""
-	}
-	return l11SelectedTypeName(nil, function.Recv.List[0].Type)
 }
 
 func l11SelectedExpressionType(file *l11SelectedFile, expression ast.Expr) string {
@@ -2331,338 +1872,13 @@ func l11SelectedTypeNameDepth(file *l11SelectedFile, expression ast.Expr, visiti
 		if identifier, ok := value.X.(*ast.Ident); ok {
 			if file != nil {
 				if importPath := file.importPaths[identifier.Name]; importPath != "" {
-					return pathpkg.Base(importPath) + "." + value.Sel.Name
+					return importPath + "." + value.Sel.Name
 				}
 			}
 			return identifier.Name + "." + value.Sel.Name
 		}
 	}
 	return ""
-}
-
-type l11SelectedTypeRef struct {
-	pkg  *l11SelectedPackage
-	name string
-}
-
-func l11SelectedTypeRefForExpression(packages map[string]*l11SelectedPackage, file *l11SelectedFile, expression ast.Expr) (l11SelectedTypeRef, bool) {
-	switch value := expression.(type) {
-	case *ast.StarExpr:
-		return l11SelectedTypeRefForExpression(packages, file, value.X)
-	case *ast.ParenExpr:
-		return l11SelectedTypeRefForExpression(packages, file, value.X)
-	case *ast.Ident:
-		if value.Name == "" {
-			return l11SelectedTypeRef{}, false
-		}
-		return l11SelectedTypeRef{pkg: file.pkg, name: value.Name}, true
-	case *ast.SelectorExpr:
-		identifier, ok := value.X.(*ast.Ident)
-		if !ok || identifier.Obj != nil {
-			return l11SelectedTypeRef{}, false
-		}
-		importPath := file.importPaths[identifier.Name]
-		if importPath == "" {
-			return l11SelectedTypeRef{}, false
-		}
-		if imported := l11SelectedImportedPackage(packages, importPath); imported != nil {
-			return l11SelectedTypeRef{pkg: imported, name: value.Sel.Name}, true
-		}
-		return l11SelectedTypeRef{name: pathpkg.Base(importPath) + "." + value.Sel.Name}, true
-	default:
-		return l11SelectedTypeRef{}, false
-	}
-}
-
-func l11SelectedMethodsForType(packages map[string]*l11SelectedPackage, ref l11SelectedTypeRef, method string, visiting map[l11SelectedTypeRef]bool) []l11SelectedCallable {
-	if ref.pkg == nil || ref.name == "" || visiting[ref] {
-		return nil
-	}
-	visiting[ref] = true
-	defer delete(visiting, ref)
-
-	resolved := l11SelectedFunctions(ref.pkg.methods[ref.name][method])
-	definitions := ref.pkg.typeDefs[ref.name]
-	if len(definitions) == 0 {
-		return resolved
-	}
-	for _, definition := range definitions {
-		switch expression := definition.expression.(type) {
-		case *ast.StructType:
-			for _, field := range expression.Fields.List {
-				if len(field.Names) != 0 {
-					continue
-				}
-				if embedded, ok := l11SelectedTypeRefForExpression(packages, definition.file, field.Type); ok {
-					resolved = l11MergeSelectedCallables(resolved, l11SelectedMethodsForType(packages, embedded, method, visiting))
-				}
-			}
-		default:
-			if underlying, ok := l11SelectedTypeRefForExpression(packages, definition.file, expression); ok && underlying != ref {
-				resolved = l11MergeSelectedCallables(resolved, l11SelectedMethodsForType(packages, underlying, method, visiting))
-			}
-		}
-	}
-	return resolved
-}
-
-func l11SelectedConcreteExpressionTypes(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, visiting map[*ast.Object]bool, depth int) []l11SelectedTypeRef {
-	return l11SelectedConcreteExpressionTypesWithReturns(packages, current, expression, visiting, make(map[ast.Node]bool), depth)
-}
-
-func l11SelectedConcreteExpressionTypesWithReturns(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) []l11SelectedTypeRef {
-	if expression == nil || depth > 32 {
-		return nil
-	}
-	switch value := expression.(type) {
-	case *ast.ParenExpr:
-		return l11SelectedConcreteExpressionTypesWithReturns(packages, current, value.X, visiting, returning, depth+1)
-	case *ast.UnaryExpr:
-		return l11SelectedConcreteExpressionTypesWithReturns(packages, current, value.X, visiting, returning, depth+1)
-	case *ast.CompositeLit:
-		if ref, ok := l11SelectedTypeRefForExpression(packages, current.file, value.Type); ok && !l11SelectedTypeIsInterface(ref, make(map[l11SelectedTypeRef]bool)) {
-			return []l11SelectedTypeRef{ref}
-		}
-	case *ast.CallExpr:
-		if converted, ok := l11SelectedConcreteConversionTypes(packages, current, value, visiting, returning, depth+1); ok {
-			return converted
-		}
-		literals := l11SelectedFunctionLiterals(packages)
-		aliases := l11SelectedCallableAliases(packages, current, literals)
-		var resolved []l11SelectedTypeRef
-		for _, callable := range l11ResolveSelectedCallables(packages, current, value.Fun, aliases, literals) {
-			if callable.function == nil || returning[callable.function.node()] {
-				continue
-			}
-			returning[callable.function.node()] = true
-			for _, result := range l11SelectedConcreteFunctionReturns(packages, callable.function, visiting, returning, depth+1) {
-				resolved = l11MergeSelectedTypeRefs(resolved, result)
-			}
-			delete(returning, callable.function.node())
-		}
-		return resolved
-	case *ast.Ident:
-		return l11SelectedConcreteObjectTypesAt(packages, current, value.Obj, value.Pos(), visiting, returning, depth+1)
-	}
-	return nil
-}
-
-func l11SelectedConcreteConversionTypes(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, call *ast.CallExpr, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) ([]l11SelectedTypeRef, bool) {
-	if len(call.Args) != 1 {
-		return nil, false
-	}
-	ref, ok := l11SelectedTypeRefForExpression(packages, current.file, call.Fun)
-	if !ok || ref.pkg == nil || len(ref.pkg.typeDefs[ref.name]) == 0 {
-		return nil, false
-	}
-	if l11SelectedTypeIsInterface(ref, make(map[l11SelectedTypeRef]bool)) {
-		return l11SelectedConcreteExpressionTypesWithReturns(packages, current, call.Args[0], visiting, returning, depth+1), true
-	}
-	return []l11SelectedTypeRef{ref}, true
-}
-
-func l11SelectedConcreteFunctionReturns(packages map[string]*l11SelectedPackage, function *l11SelectedFunction, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) [][]l11SelectedTypeRef {
-	var results [][]l11SelectedTypeRef
-	ast.Inspect(function.body(), func(node ast.Node) bool {
-		if _, nested := node.(*ast.FuncLit); nested {
-			return false
-		}
-		statement, ok := node.(*ast.ReturnStmt)
-		if !ok {
-			return true
-		}
-		for index, expression := range statement.Results {
-			for len(results) <= index {
-				results = append(results, nil)
-			}
-			resolved := l11SelectedConcreteExpressionTypesWithReturns(packages, function, expression, visiting, returning, depth+1)
-			results[index] = l11MergeSelectedTypeRefs(results[index], resolved)
-		}
-		return false
-	})
-	return results
-}
-
-func l11SelectedConcreteObjectTypesAt(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, object *ast.Object, use token.Pos, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) []l11SelectedTypeRef {
-	if object == nil || visiting[object] || depth > 32 {
-		return nil
-	}
-	visiting[object] = true
-	defer delete(visiting, object)
-
-	resolved := l11MergeSelectedTypeRefs(nil, current.concrete[object])
-	if len(resolved) == 0 {
-		switch declaration := object.Decl.(type) {
-		case *ast.ValueSpec:
-			if initializer := l11SelectedValueInitializer(object, declaration); initializer != nil {
-				resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypesWithReturns(packages, current, initializer, visiting, returning, depth+1))
-			}
-			if declaration.Type != nil {
-				if ref, ok := l11SelectedTypeRefForExpression(packages, current.file, declaration.Type); ok && !l11SelectedTypeIsInterface(ref, make(map[l11SelectedTypeRef]bool)) {
-					resolved = l11MergeSelectedTypeRefs(resolved, []l11SelectedTypeRef{ref})
-				}
-			}
-		case *ast.AssignStmt:
-			resolved = l11SelectedConcreteAssignmentValue(packages, current, object, declaration.Lhs, declaration.Rhs, resolved, visiting, returning, depth+1)
-		}
-	}
-
-	for _, statement := range current.body().List {
-		if statement.Pos() >= use {
-			break
-		}
-		if statement.End() >= use {
-			break
-		}
-		switch statement := statement.(type) {
-		case *ast.AssignStmt:
-			resolved = l11SelectedConcreteAssignmentValue(packages, current, object, statement.Lhs, statement.Rhs, resolved, visiting, returning, depth+1)
-		case *ast.DeclStmt:
-			declaration, ok := statement.Decl.(*ast.GenDecl)
-			if !ok {
-				continue
-			}
-			for _, spec := range declaration.Specs {
-				value, ok := spec.(*ast.ValueSpec)
-				if ok {
-					resolved = l11SelectedConcreteAssignmentValue(packages, current, object, l11SelectedIdentifiersToExpressions(value.Names), value.Values, resolved, visiting, returning, depth+1)
-				}
-			}
-		default:
-			resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedNestedConcreteAssignments(packages, current, object, statement, visiting, returning, depth+1))
-		}
-	}
-	return resolved
-}
-
-func l11SelectedConcreteAssignmentValue(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, object *ast.Object, left, right []ast.Expr, previous []l11SelectedTypeRef, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) []l11SelectedTypeRef {
-	if len(left) != len(right) {
-		return previous
-	}
-	for index, target := range left {
-		identifier, ok := target.(*ast.Ident)
-		if !ok || identifier.Obj != object {
-			continue
-		}
-		return l11SelectedConcreteExpressionTypesWithReturns(packages, current, right[index], visiting, returning, depth+1)
-	}
-	return previous
-}
-
-func l11SelectedNestedConcreteAssignments(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, object *ast.Object, statement ast.Stmt, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) []l11SelectedTypeRef {
-	var resolved []l11SelectedTypeRef
-	ast.Inspect(statement, func(node ast.Node) bool {
-		if _, nested := node.(*ast.FuncLit); nested {
-			return false
-		}
-		assignment, ok := node.(*ast.AssignStmt)
-		if !ok || len(assignment.Lhs) != len(assignment.Rhs) {
-			return true
-		}
-		for index, target := range assignment.Lhs {
-			identifier, ok := target.(*ast.Ident)
-			if ok && identifier.Obj == object {
-				resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypesWithReturns(packages, current, assignment.Rhs[index], visiting, returning, depth+1))
-			}
-		}
-		return true
-	})
-	return resolved
-}
-
-func l11SelectedIdentifiersToExpressions(identifiers []*ast.Ident) []ast.Expr {
-	result := make([]ast.Expr, len(identifiers))
-	for index, identifier := range identifiers {
-		result[index] = identifier
-	}
-	return result
-}
-
-func l11SelectedTypeIsInterface(ref l11SelectedTypeRef, visiting map[l11SelectedTypeRef]bool) bool {
-	if ref.pkg == nil || visiting[ref] {
-		return false
-	}
-	visiting[ref] = true
-	defer delete(visiting, ref)
-	definitions := ref.pkg.typeDefs[ref.name]
-	if len(definitions) == 0 {
-		return false
-	}
-	for _, definition := range definitions {
-		if _, ok := definition.expression.(*ast.InterfaceType); ok {
-			return true
-		}
-		underlying, ok := l11SelectedTypeRefForExpression(nil, definition.file, definition.expression)
-		if ok && underlying != ref && l11SelectedTypeIsInterface(underlying, visiting) {
-			return true
-		}
-	}
-	return false
-}
-
-func l11MergeSelectedTypeRefs(left, right []l11SelectedTypeRef) []l11SelectedTypeRef {
-	result := append([]l11SelectedTypeRef(nil), left...)
-	for _, candidate := range right {
-		found := false
-		for _, existing := range result {
-			if existing == candidate {
-				found = true
-				break
-			}
-		}
-		if !found {
-			result = append(result, candidate)
-		}
-	}
-	return result
-}
-
-func l11SelectedTestingSkip(packages map[string]*l11SelectedPackage, file *l11SelectedFile, selector *ast.SelectorExpr) bool {
-	switch selector.Sel.Name {
-	case "Skip", "Skipf", "SkipNow":
-		receiver := l11SelectedExpressionType(file, selector.X)
-		if receiver == "testing.T" || receiver == "testing.TB" {
-			return true
-		}
-		ref, ok := l11SelectedTypeRefForExpression(packages, file, &ast.Ident{Name: receiver})
-		return ok && l11SelectedTypeEmbedsTestingTB(packages, ref, make(map[l11SelectedTypeRef]bool))
-	default:
-		return false
-	}
-}
-
-func l11SelectedTypeEmbedsTestingTB(packages map[string]*l11SelectedPackage, ref l11SelectedTypeRef, visiting map[l11SelectedTypeRef]bool) bool {
-	if ref.name == "testing.T" || ref.name == "testing.TB" {
-		return true
-	}
-	if ref.pkg == nil || visiting[ref] {
-		return false
-	}
-	visiting[ref] = true
-	defer delete(visiting, ref)
-	definitions := ref.pkg.typeDefs[ref.name]
-	if len(definitions) == 0 {
-		return false
-	}
-	for _, definition := range definitions {
-		if embedded, ok := l11SelectedTypeRefForExpression(packages, definition.file, definition.expression); ok && embedded != ref && l11SelectedTypeEmbedsTestingTB(packages, embedded, visiting) {
-			return true
-		}
-		interfaceType, ok := definition.expression.(*ast.InterfaceType)
-		if !ok {
-			continue
-		}
-		for _, field := range interfaceType.Methods.List {
-			if len(field.Names) != 0 {
-				continue
-			}
-			embedded, ok := l11SelectedTypeRefForExpression(packages, definition.file, field.Type)
-			if ok && l11SelectedTypeEmbedsTestingTB(packages, embedded, visiting) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func l11SelectedProofSelector(file *l11SelectedFile, selector *ast.SelectorExpr) bool {

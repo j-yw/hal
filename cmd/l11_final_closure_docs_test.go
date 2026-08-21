@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"unicode"
 )
 
 const (
@@ -20,7 +19,7 @@ const (
 	l11FinalClosureCurrentStateLine = "Current closure state: `blocked`."
 	l11FinalClosureStateMarker      = "<!-- hal:l11-closure-state=blocked -->"
 	l11FinalClosureMarkerNamespace  = "hal:l11-closure-state"
-	l11FinalClosureBlockedDocSHA256 = "e955be0fa5fd8033b1af60e19bb4c4f2e24bfc32b4a9cfe5d7a4ceb9bd32eec4"
+	l11FinalClosureBlockedDocSHA256 = "2d8c124a52ecd77fd816baf6c3ba6b6d473b4f8478edefe1c5319367ab4fb4e7"
 )
 
 type l11FinalClosureMatrixRow struct {
@@ -475,7 +474,9 @@ func l11ValidateFinalClosureRepository(repoRoot string) error {
 		return err
 	}
 	canonical := filepath.Clean(filepath.Join("docs", "design", l11FinalClosureDocPath))
-	return filepath.WalkDir(repoRoot, func(path string, entry os.DirEntry, walkErr error) error {
+	inventoried := make(map[string]bool)
+	var mirrors []string
+	err = filepath.WalkDir(repoRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -487,20 +488,21 @@ func l11ValidateFinalClosureRepository(repoRoot string) error {
 		if relative == "." || relative == canonical {
 			return nil
 		}
+		if entry.Type()&os.ModeSymlink != 0 && l11FinalClosurePromptMirrorParent(filepath.ToSlash(relative)) {
+			return &l11FinalClosureGuardError{message: "prompt mirror parent is a symlink"}
+		}
 		if !l11FinalClosureDocumentExtension(relative) {
 			if entry.IsDir() {
 				return nil
 			}
 			return nil
 		}
-		if l11FinalClosureSecondaryDocumentPath(relative) {
-			return &l11FinalClosureGuardError{message: "secondary L11 final-closure or release document is forbidden"}
-		}
 		if entry.IsDir() {
 			return &l11FinalClosureGuardError{message: "secondary documentation entry is not a regular file"}
 		}
 		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
-			if l11FinalClosureTrustedMirroredDocument(repoRoot, relative, entry) {
+			if _, ok := l11FinalClosurePromptMirrorTargets[filepath.ToSlash(relative)]; ok && entry.Type()&os.ModeSymlink != 0 {
+				mirrors = append(mirrors, filepath.ToSlash(relative))
 				return nil
 			}
 			return &l11FinalClosureGuardError{message: "secondary documentation entry is not a regular file"}
@@ -510,37 +512,71 @@ func l11ValidateFinalClosureRepository(repoRoot string) error {
 			return err
 		}
 		text := string(candidate)
-		if strings.Contains(text, "# Sandbox Runtime v2 L11 Final Closure") ||
-			strings.Contains(text, l11FinalClosureCurrentStateLine) {
-			return &l11FinalClosureGuardError{message: "duplicate L11 final-closure document is forbidden"}
+		if l11FinalClosureContainsMarkerNamespace(text) {
+			return &l11FinalClosureGuardError{message: "L11 closure-state marker is forbidden outside the canonical document"}
 		}
-		if l11FinalClosureContradictoryReleaseClaim(text) {
-			return &l11FinalClosureGuardError{message: "contradictory L11 release document is forbidden"}
-		}
+		inventoried[filepath.ToSlash(relative)] = true
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	for _, mirror := range mirrors {
+		if !l11FinalClosureTrustedMirroredDocument(repoRoot, mirror, inventoried) {
+			return &l11FinalClosureGuardError{message: "prompt mirror is not an exact contained alias of an inventoried regular document"}
+		}
+	}
+	return nil
 }
 
-func l11FinalClosureTrustedMirroredDocument(repoRoot, relative string, entry os.DirEntry) bool {
-	if entry.Type()&os.ModeSymlink == 0 {
+var l11FinalClosurePromptMirrorTargets = map[string]string{
+	".pi/prompts/discover-standards.md": ".hal/commands/discover-standards.md",
+	".pi/prompts/index-standards.md":    ".hal/commands/index-standards.md",
+	".pi/prompts/inject-standards.md":   ".hal/commands/inject-standards.md",
+}
+
+func l11FinalClosurePromptMirrorParent(relative string) bool {
+	switch relative {
+	case ".pi", ".pi/prompts", ".hal", ".hal/commands":
+		return true
+	default:
 		return false
 	}
-	normalized := filepath.ToSlash(filepath.Clean(relative))
-	if !strings.HasPrefix(normalized, ".pi/prompts/") || strings.Contains(strings.TrimPrefix(normalized, ".pi/prompts/"), "/") {
+}
+
+func l11FinalClosureTrustedMirroredDocument(repoRoot, relative string, inventoried map[string]bool) bool {
+	targetRelative, ok := l11FinalClosurePromptMirrorTargets[relative]
+	if !ok || !inventoried[targetRelative] {
 		return false
 	}
-	linkPath := filepath.Join(repoRoot, filepath.FromSlash(normalized))
+	linkPath := filepath.Join(repoRoot, filepath.FromSlash(relative))
 	target, err := os.Readlink(linkPath)
 	if err != nil || filepath.IsAbs(target) {
 		return false
 	}
 	resolved := filepath.Clean(filepath.Join(filepath.Dir(linkPath), target))
-	expected := filepath.Clean(filepath.Join(repoRoot, ".hal", "commands", filepath.Base(normalized)))
+	expected := filepath.Clean(filepath.Join(repoRoot, filepath.FromSlash(targetRelative)))
 	if resolved != expected {
 		return false
 	}
-	info, err := os.Lstat(resolved)
-	return err == nil && info.Mode().IsRegular()
+	components := []struct {
+		path      string
+		directory bool
+	}{
+		{path: filepath.Clean(repoRoot), directory: true},
+		{path: filepath.Join(repoRoot, ".pi"), directory: true},
+		{path: filepath.Join(repoRoot, ".pi", "prompts"), directory: true},
+		{path: filepath.Join(repoRoot, ".hal"), directory: true},
+		{path: filepath.Join(repoRoot, ".hal", "commands"), directory: true},
+		{path: expected},
+	}
+	for _, component := range components {
+		info, err := os.Lstat(component.path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || component.directory != info.IsDir() || (!component.directory && !info.Mode().IsRegular()) {
+			return false
+		}
+	}
+	return true
 }
 
 func l11ValidateFinalClosureCanonicalPath(repoRoot string) error {
@@ -637,15 +673,6 @@ func l11ReadFinalClosureCanonical(repoRoot string) ([]byte, error) {
 	return payload, nil
 }
 
-func l11FinalClosureSecondaryDocumentPath(relative string) bool {
-	lower := strings.ToLower(filepath.ToSlash(relative))
-	normalized := strings.NewReplacer("_", "-", " ", "-").Replace(lower)
-	if !strings.Contains(normalized, "l11") {
-		return false
-	}
-	return strings.Contains(normalized, "closure") || strings.Contains(normalized, "release")
-}
-
 func l11FinalClosureDocumentExtension(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".md", ".markdown":
@@ -655,42 +682,9 @@ func l11FinalClosureDocumentExtension(path string) bool {
 	}
 }
 
-func l11FinalClosureContradictoryReleaseClaim(doc string) bool {
-	for _, line := range strings.Split(doc, "\n") {
-		tokens := strings.FieldsFunc(strings.ToLower(line), func(r rune) bool {
-			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-		})
-		words := make(map[string]bool, len(tokens))
-		for _, token := range tokens {
-			words[token] = true
-		}
-		context := words["l11"] && (words["release"] || words["closure"] || (words["production"] && words["live"]))
-		context = context || (words["all"] && words["nine"] && (words["rows"] || words["scenarios"]))
-		context = context || (words["production"] && words["live"] && words["acceptance"])
-		if context && l11FinalClosurePositiveState(tokens) {
-			return true
-		}
-	}
-	return false
-}
-
-func l11FinalClosurePositiveState(tokens []string) bool {
-	for index, token := range tokens {
-		switch token {
-		case "pass", "passed", "passing", "success", "successful", "succeeded", "complete", "completed", "accepted", "approved":
-			negated := false
-			for cursor := index - 1; cursor >= 0 && cursor >= index-3; cursor-- {
-				switch tokens[cursor] {
-				case "no", "not", "never", "without", "cannot", "blocked", "pending":
-					negated = true
-				}
-			}
-			if !negated {
-				return true
-			}
-		}
-	}
-	return false
+func l11FinalClosureContainsMarkerNamespace(doc string) bool {
+	compact := strings.Join(strings.Fields(strings.ToLower(doc)), "")
+	return strings.Contains(compact, l11FinalClosureMarkerNamespace)
 }
 
 func l11FinalClosureContains(doc, required string) bool {
@@ -816,6 +810,7 @@ func l11ValidateFinalClosureMatrix(rows []l11FinalClosureMatrixRow) error {
 
 func l11ValidateFinalClosureDocumentSafety(doc string) error {
 	for _, required := range []string{
+		l11FinalClosureStateMarker,
 		l11FinalClosureCurrentStateLine,
 		"No acceptance is claimed by this document.",
 		"All nine rows are unmet and `blocked`.",

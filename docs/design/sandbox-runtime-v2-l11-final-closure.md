@@ -7,6 +7,7 @@ on the prepared Linux machine, exercises the exact final matrix below, and
 records sanitized release evidence.
 
 Current closure state: `blocked`.
+<!-- hal:l11-closure-state=blocked -->
 
 No acceptance is claimed by this document. All nine rows are unmet and
 `blocked`. No L11 production live wiring is added by this contract-only slice.
@@ -14,18 +15,19 @@ The selected L11 test, wrapper, prepared-host results, and final release record
 are future work after the L8 and L10 dependencies described below are accepted
 on the aggregate.
 
-The canonical blocked document is protected by a same-repository SHA-256
-tripwire, repository-root containment, no-follow checks on every canonical path
-component, and regular-file identity checks. A repository-wide inventory also
-examines regular `.md` and `.markdown` documents regardless of filename and
-rejects contradictory L11 release claims plus every nonregular document entry
-in that inventory. The existing `.pi/prompts` compatibility aliases are outside
-the inventory only while each exact relative symlink resolves to its
-independently inventoried regular `.hal/commands` document. The tripwire detects
-accidental or uncoordinated drift, but it cannot defend against a coordinated
-edit of both the document and its checked-in digest. Code review and external
-branch protection remain required trust boundaries for every change to this
-contract.
+The exact machine marker above is the sole repository-wide declaration of L11
+closure state. Prose is not release authority. A filename-independent inventory
+of every `.md` and `.markdown` entry rejects that marker namespace outside this
+canonical document and rejects every nonregular entry. The only exceptions are
+the exact `.pi/prompts` compatibility symlinks: every path component must remain
+unsymlinked and contained, and the exact regular `.hal/commands` target must be
+independently present in the inventory. The canonical blocked document is also
+protected by a same-repository SHA-256 tripwire, repository-root containment,
+no-follow checks on every canonical path component, and regular-file identity
+checks. The tripwire detects accidental or uncoordinated drift, but it cannot
+defend against a coordinated edit of both the document and its checked-in
+digest. Code review and external branch protection remain required trust
+boundaries for every change to this contract.
 
 ## 1. Inputs, outputs, states, and failure codes
 
@@ -119,6 +121,17 @@ The present slice contains only this design note and static `_test.go` guards.
 It adds no production import, constructor, live marker, test transport,
 provider, process, listener, namespace, rule, mount, credential, or release
 projection.
+
+The selected L10/L11 test-owned helper graph is deliberately closed and
+statically auditable. A selected helper may use only statically resolved direct
+calls to another selected test helper, an exact allowlisted production
+entrypoint, or the enumerated concrete `testing.T` operations required by the
+future harness. Interface dispatch, function values, closures and function
+literals, callbacks, generic instantiation, method values or expressions,
+dynamic conversions, and every unresolved graph edge fail closed. Accepted
+production entrypoints are terminal authority boundaries: their transitive
+production-package implementations are not treated as selected helpers and are
+not subjected to this test-graph shape restriction.
 
 ## 3. Durable and machine-contract schema changes
 
