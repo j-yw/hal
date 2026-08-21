@@ -31,8 +31,8 @@ they cannot be configured through `BackendOptions` or command wiring.
 Focused verification:
 
 ```text
-go test -count=20 ./internal/sandboxruntime/microvm/firecracker -run '^(TestL8|TestBackendConfigJSONNeverProjectsL8Authority)'
-go test -race -count=5 ./internal/sandboxruntime/microvm/firecracker -run '^(TestL8|TestBackendConfigJSONNeverProjectsL8Authority)'
+go test -count=20 ./internal/sandboxruntime/microvm/firecracker -run '^(TestL8.*|TestBackendConfigJSONNeverProjectsL8Authority)$'
+go test -race -count=5 ./internal/sandboxruntime/microvm/firecracker -run '^(TestL8.*|TestBackendConfigJSONNeverProjectsL8Authority)$'
 go test -count=20 ./cmd -run '^(TestL8D6FirecrackerOverlayFoundation|TestPhase34DefaultFirecracker)'
 ```
 

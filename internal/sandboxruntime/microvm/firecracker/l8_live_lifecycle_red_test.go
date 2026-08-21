@@ -273,24 +273,33 @@ type l8LifecycleProcessManager struct {
 	terminated           bool
 	cleanupCalls         int
 	stopCalls            int
+	deleteCalls          int
+	lastHandle           ProcessHandleMetadata
 	cleanupOrder         int
 	sequence             *l8LifecycleSequence
 }
 
-func (manager *l8LifecycleProcessManager) CleanupLiveProcess(context.Context, LiveProcessRequest) error {
+func (manager *l8LifecycleProcessManager) CleanupLiveProcess(_ context.Context, request LiveProcessRequest) error {
 	manager.cleanupCalls++
-	manager.cleanupOrder = manager.sequence.Next()
+	manager.lastHandle = request.Handle
+	if manager.sequence != nil {
+		manager.cleanupOrder = manager.sequence.Next()
+	}
 	manager.terminated = manager.cleanupProvesAbsence
 	return nil
 }
 
-func (manager *l8LifecycleProcessManager) StopLiveProcess(context.Context, LiveProcessRequest) error {
+func (manager *l8LifecycleProcessManager) StopLiveProcess(_ context.Context, request LiveProcessRequest) error {
 	manager.stopCalls++
+	manager.lastHandle = request.Handle
 	manager.terminated = true
 	return nil
 }
 
-func (*l8LifecycleProcessManager) DeleteLiveProcess(context.Context, LiveProcessRequest) error {
+func (manager *l8LifecycleProcessManager) DeleteLiveProcess(_ context.Context, request LiveProcessRequest) error {
+	manager.deleteCalls++
+	manager.lastHandle = request.Handle
+	manager.terminated = true
 	return nil
 }
 
