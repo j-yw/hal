@@ -18,11 +18,14 @@ The canonical blocked document is protected by a same-repository SHA-256
 tripwire, repository-root containment, no-follow checks on every canonical path
 component, and regular-file identity checks. A repository-wide inventory also
 examines regular `.md` and `.markdown` documents regardless of filename and
-rejects contradictory L11 release claims plus L11 closure/release-named
-symlinks or nonregular entries. The tripwire detects accidental or uncoordinated
-drift, but it cannot defend against a coordinated edit of both the document and
-its checked-in digest. Code review and external branch protection remain
-required trust boundaries for every change to this contract.
+rejects contradictory L11 release claims plus every nonregular document entry
+in that inventory. The existing `.pi/prompts` compatibility aliases are outside
+the inventory only while each exact relative symlink resolves to its
+independently inventoried regular `.hal/commands` document. The tripwire detects
+accidental or uncoordinated drift, but it cannot defend against a coordinated
+edit of both the document and its checked-in digest. Code review and external
+branch protection remain required trust boundaries for every change to this
+contract.
 
 ## 1. Inputs, outputs, states, and failure codes
 

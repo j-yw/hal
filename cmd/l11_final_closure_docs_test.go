@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 const (
@@ -17,7 +18,7 @@ const (
 	l11FinalClosureSelectedTest     = "TestL11PreparedLinuxFinalClosure"
 	l11FinalClosureIntegrationTag   = "l11_final_closure_integration"
 	l11FinalClosureCurrentStateLine = "Current closure state: `blocked`."
-	l11FinalClosureBlockedDocSHA256 = "06756366d54ab1785a2d45d9d5b9b9c196274eb4ce5956502d163d5d9d57ae90"
+	l11FinalClosureBlockedDocSHA256 = "e955be0fa5fd8033b1af60e19bb4c4f2e24bfc32b4a9cfe5d7a4ceb9bd32eec4"
 )
 
 type l11FinalClosureMatrixRow struct {
@@ -415,6 +416,25 @@ func TestL11FinalClosureRepositoryInventoryRejectsEveryContradictoryDocument(t *
 	}
 }
 
+func TestL11FinalClosureRepositoryInventoryPreservesBlockedReleaseDiscussion(t *testing.T) {
+	doc := l11ReadFinalClosureDoc(t)
+	root := t.TempDir()
+	canonical := filepath.Join(root, "docs", "design", l11FinalClosureDocPath)
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(canonical, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	safe := "# Notes\n\nL11 release remains blocked.\nThe L11 release has not passed.\n"
+	if err := os.WriteFile(filepath.Join(root, "notes.markdown"), []byte(safe), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := l11ValidateFinalClosureRepository(root); err != nil {
+		t.Fatalf("blocked L11 release discussion failed repository validation: %v", err)
+	}
+}
+
 func l11ReadFinalClosureDoc(t *testing.T) string {
 	t.Helper()
 	payload, err := l11ReadFinalClosureCanonical("..")
@@ -455,10 +475,13 @@ func l11ValidateFinalClosureRepository(repoRoot string) error {
 			return &l11FinalClosureGuardError{message: "secondary L11 final-closure or release document is forbidden"}
 		}
 		if entry.IsDir() {
-			return nil
+			return &l11FinalClosureGuardError{message: "secondary documentation entry is not a regular file"}
 		}
 		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
-			return nil
+			if l11FinalClosureTrustedMirroredDocument(repoRoot, relative, entry) {
+				return nil
+			}
+			return &l11FinalClosureGuardError{message: "secondary documentation entry is not a regular file"}
 		}
 		candidate, err := l11ReadFinalClosureDocumentNoFollow(path, entry)
 		if err != nil {
@@ -474,6 +497,28 @@ func l11ValidateFinalClosureRepository(repoRoot string) error {
 		}
 		return nil
 	})
+}
+
+func l11FinalClosureTrustedMirroredDocument(repoRoot, relative string, entry os.DirEntry) bool {
+	if entry.Type()&os.ModeSymlink == 0 {
+		return false
+	}
+	normalized := filepath.ToSlash(filepath.Clean(relative))
+	if !strings.HasPrefix(normalized, ".pi/prompts/") || strings.Contains(strings.TrimPrefix(normalized, ".pi/prompts/"), "/") {
+		return false
+	}
+	linkPath := filepath.Join(repoRoot, filepath.FromSlash(normalized))
+	target, err := os.Readlink(linkPath)
+	if err != nil || filepath.IsAbs(target) {
+		return false
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(linkPath), target))
+	expected := filepath.Clean(filepath.Join(repoRoot, ".hal", "commands", filepath.Base(normalized)))
+	if resolved != expected {
+		return false
+	}
+	info, err := os.Lstat(resolved)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func l11ValidateFinalClosureCanonicalPath(repoRoot string) error {
@@ -590,20 +635,37 @@ func l11FinalClosureDocumentExtension(path string) bool {
 
 func l11FinalClosureContradictoryReleaseClaim(doc string) bool {
 	for _, line := range strings.Split(doc, "\n") {
-		normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(line)), " "))
-		normalized = strings.Trim(normalized, "`*_#> ")
-		switch normalized {
-		case "production-live acceptance: accepted.",
-			"the l11 production live lane passed.",
-			"release result: passed.",
-			"l11 release passed.",
-			"all nine scenarios passed.",
-			"all nine rows passed.",
-			"l11 is complete.",
-			"current closure state: passed.",
-			"current closure state: complete.",
-			"current closure state: accepted.":
+		tokens := strings.FieldsFunc(strings.ToLower(line), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		})
+		words := make(map[string]bool, len(tokens))
+		for _, token := range tokens {
+			words[token] = true
+		}
+		context := words["l11"] && (words["release"] || words["closure"] || (words["production"] && words["live"]))
+		context = context || (words["all"] && words["nine"] && (words["rows"] || words["scenarios"]))
+		context = context || (words["production"] && words["live"] && words["acceptance"])
+		if context && l11FinalClosurePositiveState(tokens) {
 			return true
+		}
+	}
+	return false
+}
+
+func l11FinalClosurePositiveState(tokens []string) bool {
+	for index, token := range tokens {
+		switch token {
+		case "pass", "passed", "passing", "success", "successful", "succeeded", "complete", "completed", "accepted", "approved":
+			negated := false
+			for cursor := index - 1; cursor >= 0 && cursor >= index-3; cursor-- {
+				switch tokens[cursor] {
+				case "no", "not", "never", "without", "cannot", "blocked", "pending":
+					negated = true
+				}
+			}
+			if !negated {
+				return true
+			}
 		}
 	}
 	return false

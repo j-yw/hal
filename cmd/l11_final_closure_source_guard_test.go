@@ -739,6 +739,42 @@ var input any
 `,
 		},
 		{
+			name: "conditional concrete overwrite preserves unsafe reaching implementation",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type safeRunner struct{}
+type minter struct{}
+func (safeRunner) Run() {}
+func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	var selected runner = minter{}
+	if condition { selected = safeRunner{} }
+	selected.Run()
+}
+var condition bool
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "definite concrete overwrite reaches captured IIFE safely",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type safeRunner struct{}
+type minter struct{}
+func (safeRunner) Run() {}
+func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	var selected runner = minter{}
+	selected = safeRunner{}
+	func() { selected.Run() }()
+}
+var input any
+`,
+		},
+		{
 			name: "safe concrete interface dispatch excludes unused implementation",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
@@ -955,6 +991,43 @@ func second() func() { returned := first(); return returned }
 	}
 	if err != nil {
 		t.Fatalf("cyclic callable analysis failed: %v: %s", err, output)
+	}
+}
+
+func TestL11FinalClosureConcreteReturnCycleTerminatesAndFailsClosed(t *testing.T) {
+	const helperEnvironment = "HAL_L11_CONCRETE_RETURN_CYCLE_HELPER"
+	if os.Getenv(helperEnvironment) == "1" {
+		source := `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type minter struct{}
+func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func first(condition bool) runner { if condition { return minter{} }; return second(condition) }
+func second(condition bool) runner { return first(condition) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { selected := first(true); selected.Run() }
+var input any
+`
+		packages, err := l11ParseSelectedTestSources(map[string]string{"fixture_test.go": source})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issues := l11SelectedPreparedTestIssues(packages)
+		if len(issues) != 1 || !strings.Contains(issues[0], "synthetic credential proof constructor") {
+			t.Fatalf("issues = %v, want one concrete return-cycle proof issue", issues)
+		}
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestL11FinalClosureConcreteReturnCycleTerminatesAndFailsClosed$")
+	command.Env = append(os.Environ(), helperEnvironment+"=1")
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("concrete return-cycle analysis did not terminate within two seconds: %s", output)
+	}
+	if err != nil {
+		t.Fatalf("concrete return-cycle analysis failed: %v: %s", err, output)
 	}
 }
 
@@ -1373,6 +1446,9 @@ func l11SelectedFunctionIssues(packages map[string]*l11SelectedPackage, root *l1
 						if callable.function == nil {
 							continue
 						}
+						if callable.function.literal != nil && l11MergeSelectedConcreteCaptures(packages, current, callable.function, value.Pos()) {
+							factsChanged = true
+						}
 						if callable.function.concrete == nil {
 							callable.function.concrete = make(map[*ast.Object][]l11SelectedTypeRef)
 						}
@@ -1402,6 +1478,38 @@ func l11SelectedFunctionIssues(packages map[string]*l11SelectedPackage, root *l1
 		}
 	}
 	return l11UniqueStrings(issues)
+}
+
+func l11MergeSelectedConcreteCaptures(packages map[string]*l11SelectedPackage, current, closure *l11SelectedFunction, use token.Pos) bool {
+	if current == nil || closure == nil || closure.literal == nil || current.node() == closure.node() {
+		return false
+	}
+	if closure.concrete == nil {
+		closure.concrete = make(map[*ast.Object][]l11SelectedTypeRef)
+	}
+	changed := false
+	ast.Inspect(closure.body(), func(node ast.Node) bool {
+		if literal, nested := node.(*ast.FuncLit); nested && literal != closure.literal {
+			return false
+		}
+		identifier, ok := node.(*ast.Ident)
+		if !ok || identifier.Obj == nil || l11SelectedObjectDeclaredWithin(identifier.Obj, closure.node()) {
+			return true
+		}
+		resolved := l11SelectedConcreteObjectTypesAt(packages, current, identifier.Obj, use, make(map[*ast.Object]bool), make(map[ast.Node]bool), 0)
+		merged := l11MergeSelectedTypeRefs(closure.concrete[identifier.Obj], resolved)
+		if len(merged) != len(closure.concrete[identifier.Obj]) {
+			closure.concrete[identifier.Obj] = merged
+			changed = true
+		}
+		return true
+	})
+	return changed
+}
+
+func l11SelectedObjectDeclaredWithin(object *ast.Object, scope ast.Node) bool {
+	declaration, ok := object.Decl.(ast.Node)
+	return ok && declaration.Pos() >= scope.Pos() && declaration.End() <= scope.End()
 }
 
 func l11MergeReachablePackageCallableAssignments(packages map[string]*l11SelectedPackage, function *l11SelectedFunction, aliases map[*ast.Object][]l11SelectedCallable, literals map[*ast.FuncLit]*l11SelectedFunction) bool {
@@ -2244,29 +2352,95 @@ func l11SelectedMethodsForType(packages map[string]*l11SelectedPackage, ref l11S
 }
 
 func l11SelectedConcreteExpressionTypes(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, visiting map[*ast.Object]bool, depth int) []l11SelectedTypeRef {
+	return l11SelectedConcreteExpressionTypesWithReturns(packages, current, expression, visiting, make(map[ast.Node]bool), depth)
+}
+
+func l11SelectedConcreteExpressionTypesWithReturns(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, expression ast.Expr, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) []l11SelectedTypeRef {
 	if expression == nil || depth > 32 {
 		return nil
 	}
 	switch value := expression.(type) {
 	case *ast.ParenExpr:
-		return l11SelectedConcreteExpressionTypes(packages, current, value.X, visiting, depth+1)
+		return l11SelectedConcreteExpressionTypesWithReturns(packages, current, value.X, visiting, returning, depth+1)
 	case *ast.UnaryExpr:
-		return l11SelectedConcreteExpressionTypes(packages, current, value.X, visiting, depth+1)
+		return l11SelectedConcreteExpressionTypesWithReturns(packages, current, value.X, visiting, returning, depth+1)
 	case *ast.CompositeLit:
 		if ref, ok := l11SelectedTypeRefForExpression(packages, current.file, value.Type); ok && !l11SelectedTypeIsInterface(ref, make(map[l11SelectedTypeRef]bool)) {
 			return []l11SelectedTypeRef{ref}
 		}
-	case *ast.Ident:
-		if value.Obj == nil || visiting[value.Obj] {
-			return nil
+	case *ast.CallExpr:
+		if converted, ok := l11SelectedConcreteConversionTypes(packages, current, value, visiting, returning, depth+1); ok {
+			return converted
 		}
-		visiting[value.Obj] = true
-		defer delete(visiting, value.Obj)
-		resolved := l11MergeSelectedTypeRefs(nil, current.concrete[value.Obj])
-		switch declaration := value.Obj.Decl.(type) {
+		literals := l11SelectedFunctionLiterals(packages)
+		aliases := l11SelectedCallableAliases(packages, current, literals)
+		var resolved []l11SelectedTypeRef
+		for _, callable := range l11ResolveSelectedCallables(packages, current, value.Fun, aliases, literals) {
+			if callable.function == nil || returning[callable.function.node()] {
+				continue
+			}
+			returning[callable.function.node()] = true
+			for _, result := range l11SelectedConcreteFunctionReturns(packages, callable.function, visiting, returning, depth+1) {
+				resolved = l11MergeSelectedTypeRefs(resolved, result)
+			}
+			delete(returning, callable.function.node())
+		}
+		return resolved
+	case *ast.Ident:
+		return l11SelectedConcreteObjectTypesAt(packages, current, value.Obj, value.Pos(), visiting, returning, depth+1)
+	}
+	return nil
+}
+
+func l11SelectedConcreteConversionTypes(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, call *ast.CallExpr, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) ([]l11SelectedTypeRef, bool) {
+	if len(call.Args) != 1 {
+		return nil, false
+	}
+	ref, ok := l11SelectedTypeRefForExpression(packages, current.file, call.Fun)
+	if !ok || ref.pkg == nil || len(ref.pkg.typeDefs[ref.name]) == 0 {
+		return nil, false
+	}
+	if l11SelectedTypeIsInterface(ref, make(map[l11SelectedTypeRef]bool)) {
+		return l11SelectedConcreteExpressionTypesWithReturns(packages, current, call.Args[0], visiting, returning, depth+1), true
+	}
+	return []l11SelectedTypeRef{ref}, true
+}
+
+func l11SelectedConcreteFunctionReturns(packages map[string]*l11SelectedPackage, function *l11SelectedFunction, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) [][]l11SelectedTypeRef {
+	var results [][]l11SelectedTypeRef
+	ast.Inspect(function.body(), func(node ast.Node) bool {
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		statement, ok := node.(*ast.ReturnStmt)
+		if !ok {
+			return true
+		}
+		for index, expression := range statement.Results {
+			for len(results) <= index {
+				results = append(results, nil)
+			}
+			resolved := l11SelectedConcreteExpressionTypesWithReturns(packages, function, expression, visiting, returning, depth+1)
+			results[index] = l11MergeSelectedTypeRefs(results[index], resolved)
+		}
+		return false
+	})
+	return results
+}
+
+func l11SelectedConcreteObjectTypesAt(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, object *ast.Object, use token.Pos, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) []l11SelectedTypeRef {
+	if object == nil || visiting[object] || depth > 32 {
+		return nil
+	}
+	visiting[object] = true
+	defer delete(visiting, object)
+
+	resolved := l11MergeSelectedTypeRefs(nil, current.concrete[object])
+	if len(resolved) == 0 {
+		switch declaration := object.Decl.(type) {
 		case *ast.ValueSpec:
-			if initializer := l11SelectedValueInitializer(value.Obj, declaration); initializer != nil {
-				resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypes(packages, current, initializer, visiting, depth+1))
+			if initializer := l11SelectedValueInitializer(object, declaration); initializer != nil {
+				resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypesWithReturns(packages, current, initializer, visiting, returning, depth+1))
 			}
 			if declaration.Type != nil {
 				if ref, ok := l11SelectedTypeRefForExpression(packages, current.file, declaration.Type); ok && !l11SelectedTypeIsInterface(ref, make(map[l11SelectedTypeRef]bool)) {
@@ -2274,33 +2448,79 @@ func l11SelectedConcreteExpressionTypes(packages map[string]*l11SelectedPackage,
 				}
 			}
 		case *ast.AssignStmt:
-			for index, target := range declaration.Lhs {
-				identifier, ok := target.(*ast.Ident)
-				if !ok || identifier.Obj != value.Obj || index >= len(declaration.Rhs) {
-					continue
+			resolved = l11SelectedConcreteAssignmentValue(packages, current, object, declaration.Lhs, declaration.Rhs, resolved, visiting, returning, depth+1)
+		}
+	}
+
+	for _, statement := range current.body().List {
+		if statement.Pos() >= use {
+			break
+		}
+		if statement.End() >= use {
+			break
+		}
+		switch statement := statement.(type) {
+		case *ast.AssignStmt:
+			resolved = l11SelectedConcreteAssignmentValue(packages, current, object, statement.Lhs, statement.Rhs, resolved, visiting, returning, depth+1)
+		case *ast.DeclStmt:
+			declaration, ok := statement.Decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range declaration.Specs {
+				value, ok := spec.(*ast.ValueSpec)
+				if ok {
+					resolved = l11SelectedConcreteAssignmentValue(packages, current, object, l11SelectedIdentifiersToExpressions(value.Names), value.Values, resolved, visiting, returning, depth+1)
 				}
-				resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypes(packages, current, declaration.Rhs[index], visiting, depth+1))
+			}
+		default:
+			resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedNestedConcreteAssignments(packages, current, object, statement, visiting, returning, depth+1))
+		}
+	}
+	return resolved
+}
+
+func l11SelectedConcreteAssignmentValue(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, object *ast.Object, left, right []ast.Expr, previous []l11SelectedTypeRef, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) []l11SelectedTypeRef {
+	if len(left) != len(right) {
+		return previous
+	}
+	for index, target := range left {
+		identifier, ok := target.(*ast.Ident)
+		if !ok || identifier.Obj != object {
+			continue
+		}
+		return l11SelectedConcreteExpressionTypesWithReturns(packages, current, right[index], visiting, returning, depth+1)
+	}
+	return previous
+}
+
+func l11SelectedNestedConcreteAssignments(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, object *ast.Object, statement ast.Stmt, visiting map[*ast.Object]bool, returning map[ast.Node]bool, depth int) []l11SelectedTypeRef {
+	var resolved []l11SelectedTypeRef
+	ast.Inspect(statement, func(node ast.Node) bool {
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok || len(assignment.Lhs) != len(assignment.Rhs) {
+			return true
+		}
+		for index, target := range assignment.Lhs {
+			identifier, ok := target.(*ast.Ident)
+			if ok && identifier.Obj == object {
+				resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypesWithReturns(packages, current, assignment.Rhs[index], visiting, returning, depth+1))
 			}
 		}
-		ast.Inspect(current.body(), func(node ast.Node) bool {
-			if _, nested := node.(*ast.FuncLit); nested {
-				return false
-			}
-			assignment, ok := node.(*ast.AssignStmt)
-			if !ok || len(assignment.Lhs) != len(assignment.Rhs) {
-				return true
-			}
-			for index, target := range assignment.Lhs {
-				identifier, ok := target.(*ast.Ident)
-				if ok && identifier.Obj == value.Obj {
-					resolved = l11MergeSelectedTypeRefs(resolved, l11SelectedConcreteExpressionTypes(packages, current, assignment.Rhs[index], visiting, depth+1))
-				}
-			}
-			return true
-		})
-		return resolved
+		return true
+	})
+	return resolved
+}
+
+func l11SelectedIdentifiersToExpressions(identifiers []*ast.Ident) []ast.Expr {
+	result := make([]ast.Expr, len(identifiers))
+	for index, identifier := range identifiers {
+		result[index] = identifier
 	}
-	return nil
+	return result
 }
 
 func l11SelectedTypeIsInterface(ref l11SelectedTypeRef, visiting map[l11SelectedTypeRef]bool) bool {
