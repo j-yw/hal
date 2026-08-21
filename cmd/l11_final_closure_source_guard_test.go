@@ -601,6 +601,59 @@ var input any
 			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
 		},
 		{
+			name: "callback invoked by nested IIFE",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func invoke(callback func()) { func() { callback() }() }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { invoke(mint) }
+func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "concrete implementation behind interface dispatch",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type minter struct{}
+func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { var selected runner = minter{}; selected.Run() }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "defined interface embedding testing TB skip",
+			source: `package fixture
+import "testing"
+type testTB interface { testing.TB }
+func skipMissing(t testTB) { t.Skip("missing") }
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { skipMissing(t) }
+`,
+			wantIssue: "skip call", wantIssues: 1,
+		},
+		{
+			name: "unresolved dot imported in module call fails closed",
+			source: `package fixture
+import (. "github.com/jywlabs/hal/tools/missinghelper"; "testing")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { Run() }
+`,
+			wantIssue: "unresolved in-module call", wantIssues: 1,
+		},
+		{
+			name: "promoted embedded proof method",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type minter struct{}
+func (minter) Mint() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
+type promoted struct { minter }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { promoted{}.Mint() }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
 			name: "imported pointer method expression proof constructor",
 			sources: map[string]string{
 				"root/fixture_test.go": `package fixture

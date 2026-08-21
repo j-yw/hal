@@ -310,6 +310,105 @@ func TestL11FinalClosureCanonicalDocumentRejectsSymlinkAndNonregularFiles(t *tes
 	}
 }
 
+func TestL11FinalClosureCanonicalDocumentRejectsSymlinkedAncestors(t *testing.T) {
+	doc := l11ReadFinalClosureDoc(t)
+	for _, test := range []struct {
+		name  string
+		build func(string, string) (string, error)
+	}{
+		{name: "repository root", build: func(base, canonical string) (string, error) {
+			realRoot := filepath.Join(base, "real-repository")
+			if err := os.MkdirAll(filepath.Join(realRoot, "docs", "design"), 0o700); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(realRoot, "docs", "design", l11FinalClosureDocPath), []byte(doc), 0o600); err != nil {
+				return "", err
+			}
+			return canonical, os.Symlink(realRoot, canonical)
+		}},
+		{name: "docs directory", build: func(base, canonical string) (string, error) {
+			realDocs := filepath.Join(base, "outside-docs")
+			if err := os.MkdirAll(filepath.Join(realDocs, "design"), 0o700); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(realDocs, "design", l11FinalClosureDocPath), []byte(doc), 0o600); err != nil {
+				return "", err
+			}
+			if err := os.Mkdir(canonical, 0o700); err != nil {
+				return "", err
+			}
+			return canonical, os.Symlink(realDocs, filepath.Join(canonical, "docs"))
+		}},
+		{name: "design directory", build: func(base, canonical string) (string, error) {
+			realDesign := filepath.Join(base, "outside-design")
+			if err := os.MkdirAll(realDesign, 0o700); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(realDesign, l11FinalClosureDocPath), []byte(doc), 0o600); err != nil {
+				return "", err
+			}
+			if err := os.MkdirAll(filepath.Join(canonical, "docs"), 0o700); err != nil {
+				return "", err
+			}
+			return canonical, os.Symlink(realDesign, filepath.Join(canonical, "docs", "design"))
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			repoRoot := filepath.Join(base, "repository")
+			repoRoot, err := test.build(base, repoRoot)
+			if err != nil {
+				t.Skipf("symlink fixture is unavailable: %v", err)
+			}
+			if err := l11ValidateFinalClosureRepository(repoRoot); err == nil {
+				t.Fatal("canonical L11 document below a symlinked ancestor passed repository validation")
+			}
+		})
+	}
+}
+
+func TestL11FinalClosureRepositoryInventoryRejectsEveryContradictoryDocument(t *testing.T) {
+	doc := l11ReadFinalClosureDoc(t)
+	for _, test := range []struct {
+		name  string
+		build func(string) error
+	}{
+		{name: "innocuous markdown filename", build: func(root string) error {
+			return os.WriteFile(filepath.Join(root, "notes.md"), []byte("# Notes\n\nL11 release passed.\n"), 0o600)
+		}},
+		{name: "long markdown extension", build: func(root string) error {
+			return os.WriteFile(filepath.Join(root, "notes.markdown"), []byte("# Notes\n\nAll nine scenarios passed.\n"), 0o600)
+		}},
+		{name: "secondary document symlink", build: func(root string) error {
+			target := filepath.Join(filepath.Dir(root), "outside-release.md")
+			if err := os.WriteFile(target, []byte("L11 release passed.\n"), 0o600); err != nil {
+				return err
+			}
+			return os.Symlink(target, filepath.Join(root, "notes.md"))
+		}},
+		{name: "secondary document nonregular", build: func(root string) error {
+			return os.Mkdir(filepath.Join(root, "notes.markdown"), 0o700)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			canonical := filepath.Join(root, "docs", "design", l11FinalClosureDocPath)
+			if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(canonical, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := test.build(root); err != nil {
+				t.Skipf("secondary document fixture is unavailable: %v", err)
+			}
+			if err := l11ValidateFinalClosureRepository(root); err == nil {
+				t.Fatal("unsafe secondary L11 release document passed repository validation")
+			}
+		})
+	}
+}
+
 func l11ReadFinalClosureDoc(t *testing.T) string {
 	t.Helper()
 	payload, err := l11ReadFinalClosureCanonical("..")
