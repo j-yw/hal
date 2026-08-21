@@ -156,6 +156,36 @@ func TestL10EvaluateActiveRejectsEachMissingCorruptOrWeakProof(t *testing.T) {
 		{name: "template trust error", mutate: func(r *ActiveRequest) {
 			r.Template.Trust.Errors = []acquisition.TrustPolicyError{{Code: acquisition.TrustPolicyErrorCode("unsafe_error")}}
 		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "template provenance document warning", mutate: func(r *ActiveRequest) {
+			r.Template.Provenance = &acquisition.TemplateProvenanceProjection{Document: &acquisition.TemplateProvenanceEntry{WarningCodes: []string{"unsafe_warning"}}}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "template provenance reference warning", mutate: func(r *ActiveRequest) {
+			r.Template.Provenance = &acquisition.TemplateProvenanceProjection{TemplateReference: &acquisition.TemplateProvenanceEntry{WarningCodes: []string{"unsafe_warning"}}}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "template provenance runtime image warning", mutate: func(r *ActiveRequest) {
+			r.Template.Provenance = &acquisition.TemplateProvenanceProjection{RuntimeImage: &acquisition.TemplateProvenanceEntry{WarningCodes: []string{"unsafe_warning"}}}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "template provenance source artifact warning", mutate: func(r *ActiveRequest) {
+			r.Template.Provenance = &acquisition.TemplateProvenanceProjection{SourceArtifact: &acquisition.TemplateProvenanceEntry{WarningCodes: []string{"unsafe_warning"}}}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "runtime document warning", mutate: func(r *ActiveRequest) {
+			r.Template.RuntimeMetadata.Document = &sandboxruntime.RuntimeTemplateLockEntryMetadata{WarningCodes: []string{"unsafe_warning"}}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "runtime template reference warning", mutate: func(r *ActiveRequest) {
+			r.Template.RuntimeMetadata.TemplateReference.WarningCodes = []string{"unsafe_warning"}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "runtime image warning", mutate: func(r *ActiveRequest) {
+			r.Template.RuntimeMetadata.RuntimeImage = &sandboxruntime.RuntimeTemplateLockEntryMetadata{WarningCodes: []string{"unsafe_warning"}}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "runtime source artifact warning", mutate: func(r *ActiveRequest) {
+			r.Template.RuntimeMetadata.SourceArtifact = &sandboxruntime.RuntimeTemplateLockEntryMetadata{WarningCodes: []string{"unsafe_warning"}}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "runtime trust warning", mutate: func(r *ActiveRequest) {
+			r.Template.RuntimeMetadata.TrustPolicy.WarningCodes = []string{"unsafe_warning"}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "runtime trust error", mutate: func(r *ActiveRequest) {
+			r.Template.RuntimeMetadata.TrustPolicy.ErrorCodes = []string{"unsafe_error"}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
 		{name: "workspace identity mismatch", mutate: func(r *ActiveRequest) { r.Workspace.ExecutionID = "execution-other" }, code: sandbox.SandboxStrictCompositionCodeWorkspaceProofMismatch},
 		{name: "direct workspace", mutate: func(r *ActiveRequest) {
 			r.Workspace.Workspace.Mode = sandbox.SandboxWorkspaceModeDirect
@@ -343,6 +373,62 @@ func TestL10EvaluateTerminalRejectsFreshCleanupAtDifferentRevision(t *testing.T)
 	}
 	if !AttestationValid(attestation, activeRequest.Identity.SandboxID, activeRequest.Identity.ExecutionID, activeRequest.Identity.RuntimeID, terminalNow) {
 		t.Fatal("different-revision terminal attempt consumed the active attestation")
+	}
+}
+
+func TestL10EvaluateTerminalRejectsTemplateFindingAliasDrift(t *testing.T) {
+	activeRequest := l10CompleteActiveRequest(t)
+	attestation, active := EvaluateActive(context.Background(), activeRequest)
+	if active.State != sandbox.SandboxStrictCompositionStateActive {
+		t.Fatalf("active decision = %#v, want active", active)
+	}
+	terminalNow := activeRequest.Now.Add(2 * time.Second)
+	template := activeRequest.Template
+	runtimeMetadata := *template.RuntimeMetadata
+	trustPolicy := *runtimeMetadata.TrustPolicy
+	trustPolicy.ErrorCodes = []string{"unsafe_error"}
+	runtimeMetadata.TrustPolicy = &trustPolicy
+	template.RuntimeMetadata = &runtimeMetadata
+	decision := EvaluateTerminal(context.Background(), TerminalRequest{
+		Now: terminalNow, Identity: activeRequest.Identity, CredentialRevision: activeRequest.CredentialRevision,
+		Attestation: attestation, CredentialCleanup: l10CleanupProof(t, activeRequest.Identity, activeRequest.CredentialRevision, terminalNow),
+		TemplatePolicyID: activeRequest.TemplatePolicyID, Template: template,
+		TemplateBinding: activeRequest.TemplateBinding, Workspace: activeRequest.Workspace,
+	})
+	if decision.State != sandbox.SandboxStrictCompositionStateBlocked || decision.Code != sandbox.SandboxStrictCompositionCodeTemplateProofRejected {
+		t.Fatalf("template finding drift decision = %#v, want template_proof_rejected", decision)
+	}
+	if !AttestationValid(attestation, activeRequest.Identity.SandboxID, activeRequest.Identity.ExecutionID, activeRequest.Identity.RuntimeID, terminalNow) {
+		t.Fatal("template finding drift consumed the active attestation")
+	}
+}
+
+func TestL10EvaluateActiveAllowsNilAndExplicitEmptyTemplateFindingAliases(t *testing.T) {
+	for _, explicitEmpty := range []bool{false, true} {
+		t.Run(map[bool]string{false: "nil", true: "empty"}[explicitEmpty], func(t *testing.T) {
+			request := l10CompleteActiveRequest(t)
+			if explicitEmpty {
+				request.Template.Lock.Warnings = []acquisition.LockReasonCode{}
+				request.Template.Trust.Warnings = []acquisition.TrustPolicyWarning{}
+				request.Template.Trust.Errors = []acquisition.TrustPolicyError{}
+				request.Template.Provenance = &acquisition.TemplateProvenanceProjection{
+					Document:          &acquisition.TemplateProvenanceEntry{WarningCodes: []string{}},
+					TemplateReference: &acquisition.TemplateProvenanceEntry{WarningCodes: []string{}},
+					RuntimeImage:      &acquisition.TemplateProvenanceEntry{WarningCodes: []string{}},
+					SourceArtifact:    &acquisition.TemplateProvenanceEntry{WarningCodes: []string{}},
+				}
+				request.Template.RuntimeMetadata.Document = &sandboxruntime.RuntimeTemplateLockEntryMetadata{WarningCodes: []string{}}
+				request.Template.RuntimeMetadata.TemplateReference.WarningCodes = []string{}
+				request.Template.RuntimeMetadata.RuntimeImage = &sandboxruntime.RuntimeTemplateLockEntryMetadata{WarningCodes: []string{}}
+				request.Template.RuntimeMetadata.SourceArtifact = &sandboxruntime.RuntimeTemplateLockEntryMetadata{WarningCodes: []string{}}
+				request.Template.RuntimeMetadata.TrustPolicy.WarningCodes = []string{}
+				request.Template.RuntimeMetadata.TrustPolicy.ErrorCodes = []string{}
+			}
+			_, decision := EvaluateActive(context.Background(), request)
+			if decision.State != sandbox.SandboxStrictCompositionStateActive || decision.Code != sandbox.SandboxStrictCompositionCodeReady {
+				t.Fatalf("EvaluateActive() = %#v, want strict_ready", decision)
+			}
+		})
 	}
 }
 
