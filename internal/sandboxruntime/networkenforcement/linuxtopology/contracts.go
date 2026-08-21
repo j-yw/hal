@@ -48,6 +48,7 @@ type Status string
 
 const (
 	StatusPrepared          Status = "prepared"
+	StatusRecoveryOnly      Status = "recovery_only"
 	StatusLost              Status = "lost"
 	StatusStopping          Status = "stopping"
 	StatusStopped           Status = "stopped"
@@ -94,6 +95,14 @@ type StartRequest struct {
 	Mapping  Mapping  `json:"-"`
 }
 
+// RecoveryRequest carries the exact externally retained namespace authority
+// required to reopen one topology for cleanup after daemon restart. Namespace
+// remains caller-owned; Recover duplicates it before retaining any authority.
+type RecoveryRequest struct {
+	Identity  Identity         `json:"identity"`
+	Namespace *NamespaceHandle `json:"-"`
+}
+
 // ToolPaths are live-only absolute executable paths.
 type ToolPaths struct {
 	Unshare string `json:"-"`
@@ -137,6 +146,22 @@ type ReachabilityProber interface {
 
 type OwnershipStore interface {
 	Acquire(context.Context, Identity) (OwnershipLease, error)
+}
+
+// RecoveryOwnershipStore is implemented only by stores that can claim and
+// validate a complete private ownership journal under its exclusive lock.
+type RecoveryOwnershipStore interface {
+	AcquireRecovery(context.Context, RecoveryRequest) (RecoveredOwnership, error)
+}
+
+// RecoveredOwnership contains cleanup authority only. Nil process handles mean
+// the exact recorded process was positively absent while the supplied
+// namespace capability continued to retain the recorded namespace.
+type RecoveredOwnership struct {
+	Lease     OwnershipLease
+	Keeper    ProcessHandle
+	Mapper    ProcessHandle
+	Namespace *NamespaceHandle
 }
 
 type OwnershipLease interface {

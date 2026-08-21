@@ -11,6 +11,19 @@ import (
 
 type LinuxTopology struct{ lifecycle *linuxtopology.Lifecycle }
 
+// LinuxRecoveryNamespaceProvider returns a fresh caller-owned duplicate of the
+// exact supervisor-retained user/network namespace authority for one recovery.
+type LinuxRecoveryNamespaceProvider interface {
+	AcquireLinuxRecoveryNamespace(context.Context, Identity) (*linuxtopology.NamespaceHandle, error)
+}
+
+// LinuxRecoveryTopology adapts cleanup-only linuxtopology recovery to the
+// Reconciler's exact-ownership boundary.
+type LinuxRecoveryTopology struct {
+	lifecycle *linuxtopology.Lifecycle
+	provider  LinuxRecoveryNamespaceProvider
+}
+
 type linuxTopologySession struct{ session *linuxtopology.Session }
 
 type linuxNamespaceLease struct {
@@ -23,6 +36,17 @@ func NewLinuxTopology(lifecycle *linuxtopology.Lifecycle) (*LinuxTopology, error
 		return nil, ErrInvalidConfiguration
 	}
 	return &LinuxTopology{lifecycle: lifecycle}, nil
+}
+
+func NewLinuxRecoveryTopology(lifecycle *linuxtopology.Lifecycle, provider LinuxRecoveryNamespaceProvider) (*LinuxRecoveryTopology, error) {
+	if lifecycle == nil || interfaceIsNil(provider) {
+		return nil, ErrInvalidConfiguration
+	}
+	return &LinuxRecoveryTopology{lifecycle: lifecycle, provider: provider}, nil
+}
+
+func (t *LinuxRecoveryTopology) Recover(context.Context, Identity) (TopologyLifecycle, TopologySession, error) {
+	return nil, nil, ErrStaleTopologyUnverified
 }
 
 func (t *LinuxTopology) Start(ctx context.Context, request linuxtopology.StartRequest) (TopologySession, error) {

@@ -77,6 +77,41 @@ func TestFirecrackerHostTopologyReconcilerFailsClosedWithoutExactRecoveryProof(t
 	}
 }
 
+func TestFirecrackerHostTopologyReconcilerRejectsPreparedProofAsRecoveryAuthority(t *testing.T) {
+	sequence := &callSequence{}
+	identity := testIdentity()
+	spec := staticTAPSpec(identity, netip.MustParseAddr("192.0.2.2"), 43123)
+	record := journalRecord{identity: identity, stage: journalStageInspected, tapName: spec.name,
+		tapFingerprint: spec.fingerprint(), tapIfIndex: 41, proxyAddress: spec.proxyAddress.String(), proxyPort: spec.proxyPort}
+	topology := newFakeTopology(sequence)
+	reconciler, err := NewReconciler(ReconcilerOptions{
+		Recovery: &preparedRecoveryTopology{sequence: sequence, lifecycle: topology},
+		TAP:      &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+		Journal:       &loadedJournalStore{sequence: sequence, record: record},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session, recoverErr := reconciler.Recover(context.Background(), identity); session != nil || !errors.Is(recoverErr, ErrStaleTopologyUnverified) {
+		t.Fatalf("Recover(prepared proof) = %T, %v; want cleanup-only rejection", session, recoverErr)
+	}
+	if contains(sequence.snapshot(), "rules_quarantine") {
+		t.Fatalf("prepared proof authorized recovery mutation: %#v", sequence.snapshot())
+	}
+}
+
+type preparedRecoveryTopology struct {
+	sequence  *callSequence
+	lifecycle *fakeTopology
+}
+
+func (r *preparedRecoveryTopology) Recover(_ context.Context, identity Identity) (TopologyLifecycle, TopologySession, error) {
+	r.sequence.add("recovery_open")
+	r.lifecycle.session.identity = topologyIdentity(identity)
+	return r.lifecycle, r.lifecycle.session, nil
+}
+
 type fakeRecoveryTopology struct {
 	sequence  *callSequence
 	lifecycle *fakeTopology

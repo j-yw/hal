@@ -27,19 +27,20 @@ type sandboxOperationLock struct {
 }
 
 type Session struct {
-	mu          sync.Mutex
-	identity    Identity
-	mapping     Mapping
-	metadata    Metadata
-	keeper      ProcessHandle
-	mapper      ProcessHandle
-	namespace   *NamespaceHandle
-	losses      chan Loss
-	lossOnce    sync.Once
-	stopping    bool
-	stopAttempt *lifecycleStopAttempt
-	borrows     sync.WaitGroup
-	ownership   OwnershipLease
+	mu           sync.Mutex
+	identity     Identity
+	mapping      Mapping
+	metadata     Metadata
+	keeper       ProcessHandle
+	mapper       ProcessHandle
+	namespace    *NamespaceHandle
+	losses       chan Loss
+	lossOnce     sync.Once
+	stopping     bool
+	stopAttempt  *lifecycleStopAttempt
+	borrows      sync.WaitGroup
+	ownership    OwnershipLease
+	recoveryOnly bool
 }
 
 type lifecycleStopAttempt struct {
@@ -238,6 +239,13 @@ func (l *Lifecycle) Start(ctx context.Context, request StartRequest) (*Session, 
 	go session.watch(ProcessRoleKeeper, keeper)
 	go session.watch(ProcessRoleMapping, mapper)
 	return session, nil
+}
+
+// Recover reopens exact durable topology authority for cleanup only. The
+// implementation is intentionally frozen red until the ownership journal can
+// prove boot, process, and namespace correlation under its exclusive lock.
+func (l *Lifecycle) Recover(context.Context, RecoveryRequest) (*Session, error) {
+	return nil, ErrStaleTopologyUnverified
 }
 
 func (l *Lifecycle) Stop(_ context.Context, identity Identity) (Metadata, error) {
