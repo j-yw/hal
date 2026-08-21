@@ -178,6 +178,36 @@ func runRootlessAdvisorySuccess(*selectedT) {}
 `,
 		},
 		{
+			name: "exact selected subtest callback permits dereferenced testing T receiver",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { (*t).Run("rootless_advisory_success", runRootlessAdvisorySuccess) }
+func runRootlessAdvisorySuccess(*testing.T) {}
+`,
+		},
+		{
+			name: "exact selected subtest callback permits sibling testing T type alias",
+			sources: map[string]string{
+				"root/alias_test.go": `package fixture
+import stdtesting "testing"
+type selectedT = stdtesting.T
+`,
+				"root/fixture_test.go": `package fixture
+func TestL11PreparedLinuxFinalClosure(t *selectedT) { t.Run("rootless_advisory_success", runRootlessAdvisorySuccess) }
+func runRootlessAdvisorySuccess(*selectedT) {}
+`,
+			},
+		},
+		{
+			name: "exact selected subtest callback permits testing T pointer type alias",
+			source: `package fixture
+import "testing"
+type selectedPointerT = *testing.T
+func TestL11PreparedLinuxFinalClosure(t selectedPointerT) { t.Run("rootless_advisory_success", runRootlessAdvisorySuccess) }
+func runRootlessAdvisorySuccess(selectedPointerT) {}
+`,
+		},
+		{
 			name: "local testing field cannot impersonate testing T Run",
 			source: `package fixture
 import (stdtesting "testing"; "example.invalid/sandboxruntime")
