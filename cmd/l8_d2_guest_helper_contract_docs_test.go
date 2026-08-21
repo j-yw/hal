@@ -58,6 +58,8 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 		{name: "core yields service interfaces", suffix: "\n\nHelperOptions.Core may yield credentialhelper.ExtensionHost and credentialhelper.ServiceRuntime.\n"},
 		{name: "core resolves host", suffix: "\n\nNewHelper may resolve HelperOptions.Host from HelperOptions.Core.\n"},
 		{name: "core casts runtime", suffix: "\n\nNewHelper may cast HelperOptions.Core to HelperOptions.Runtime.\n"},
+		{name: "text fence hides core recovery", suffix: "\n\n```text\nNewHelper may acquire HelperOptions.Host and HelperOptions.Runtime through HelperOptions.Core.\n```\n"},
+		{name: "go fence comment hides core recovery", suffix: "\n\n```go\n// NewHelper may acquire HelperOptions.Host and HelperOptions.Runtime through HelperOptions.Core.\n```\n"},
 	}
 	for _, mutation := range documentMutations {
 		t.Run(mutation.name, func(t *testing.T) {
@@ -73,6 +75,23 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 		}
 	})
 
+	t.Run("canonical go fence rejects injected contradiction", func(t *testing.T) {
+		const closing = "func DecodeProcessDescriptor([]byte) (ProcessDescriptor, error)\n```"
+		mutated := strings.Replace(document, closing, "func DecodeProcessDescriptor([]byte) (ProcessDescriptor, error)\n// NewHelper may acquire HelperOptions.Host through HelperOptions.Core.\n```", 1)
+		if mutated == document {
+			t.Fatal("mutation did not alter canonical HelperOptions code fence")
+		}
+		if err := validateL8D6HelperCompositionDocument(mutated); err == nil {
+			t.Fatal("HelperOptions documentation guard accepted a contradiction inside the canonical code fence")
+		}
+	})
+
+	t.Run("canonical go fence remains accepted", func(t *testing.T) {
+		if err := validateL8D6HelperCompositionDocument(document); err != nil {
+			t.Fatalf("HelperOptions documentation guard rejected the canonical code fence: %v", err)
+		}
+	})
+
 	benignAdditions := []struct {
 		name   string
 		suffix string
@@ -80,6 +99,8 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 		{name: "core only", suffix: "\n\n`HelperOptions.Core` remains an explicit mandatory dependency.\n"},
 		{name: "service dependencies only", suffix: "\n\n`HelperOptions.Host` and `HelperOptions.Runtime` remain explicit mandatory dependencies.\n"},
 		{name: "unrelated words", suffix: "\n\nThe runtime reports one processor core to diagnostics.\n"},
+		{name: "unrelated text fence", suffix: "\n\n```text\nThe runtime reports one processor core to diagnostics.\n```\n"},
+		{name: "unrelated go fence", suffix: "\n\n```go\ntype reviewerDiagnostic struct {\n\tProcessorCoreCount int\n\tRuntimeLabel string\n}\n```\n"},
 	}
 	for _, addition := range benignAdditions {
 		t.Run("benign "+addition.name, func(t *testing.T) {
