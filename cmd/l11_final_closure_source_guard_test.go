@@ -114,7 +114,7 @@ func TestL11FinalClosureContractOnlyAddsNoProductionWiring(t *testing.T) {
 }
 
 func TestL11FinalClosureSelectedPreparedTestsUseNoSyntheticAuthorityOrSkip(t *testing.T) {
-	packages, err := l11LoadSelectedTestPackages([]string{".", filepath.Join("..", "internal")})
+	packages, err := l11LoadRepositorySelectedTestPackages("..")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,6 +481,28 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = providerName }
 			wantIssue: "cloud/provider marker", wantIssues: 1,
 		},
 		{
+			name: "package string variable cloud provider",
+			source: `package fixture
+import "testing"
+var providerName = "hetzner"
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = providerName }
+`,
+			wantIssue: "cloud/provider marker", wantIssues: 1,
+		},
+		{
+			name: "imported string constant cloud provider",
+			sources: map[string]string{
+				"root/fixture_test.go": `package fixture
+import ("testing"; "github.com/jywlabs/hal/tools/providerfacts")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = providerfacts.ProviderName }
+`,
+				"tools/providerfacts/facts.go": `package providerfacts
+const ProviderName = "hetzner"
+`,
+			},
+			wantIssue: "cloud/provider marker", wantIssues: 1,
+		},
+		{
 			name: "negative cloud text is not provider selection",
 			source: `package fixture
 import "testing"
@@ -513,6 +535,108 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {
 }
 var input any
 `,
+		},
+		{
+			name: "reachable non init global callable reassignment",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+var run = safe
+func selectUnsafe() { run = unsafe }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { selectUnsafe(); run() }
+func safe() {}
+func unsafe() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "unreachable global callable reassignment remains unreachable",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+var run = safe
+func selectUnsafe() { run = unsafe }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { run() }
+func safe() {}
+func unsafe() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+		},
+		{
+			name: "returned callback immediately invoked",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func returnCallback(callback func()) func() { return callback }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { returnCallback(mint)() }
+func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "callback captured and invoked in IIFE",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	callback := mint
+	func() { callback() }()
+}
+func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "imported pointer method expression proof constructor",
+			sources: map[string]string{
+				"root/fixture_test.go": `package fixture
+import ("testing"; "github.com/jywlabs/hal/tools/proofhelper")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { mint := (*proofhelper.Minter).Mint; mint(&proofhelper.Minter{}) }
+`,
+				"tools/proofhelper/helper.go": `package proofhelper
+import "example.invalid/sandboxruntime"
+type Minter struct{}
+func (*Minter) Mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+			},
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "bare named result callable proof constructor",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func returned() (run func()) { run = mint; return }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { returned()() }
+func mint() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "testing TB type alias skip",
+			source: `package fixture
+import "testing"
+type testTB = testing.TB
+func skipMissing(t testTB) { t.Skip("missing") }
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { skipMissing(t) }
+`,
+			wantIssue: "skip call", wantIssues: 1,
+		},
+		{
+			name: "testing T pointer method expression skip",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { skip := (*testing.T).Skip; skip(t, "missing") }
+`,
+			wantIssue: "skip call", wantIssues: 1,
+		},
+		{
+			name: "unresolved in module helper call fails closed",
+			source: `package fixture
+import ("testing"; "github.com/jywlabs/hal/tools/missinghelper")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { missinghelper.Run() }
+`,
+			wantIssue: "unresolved in-module call", wantIssues: 1,
 		},
 		{
 			name: "unrelated method named Skip",
@@ -560,6 +684,39 @@ func unitFixtureOnly() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input
 				t.Fatalf("issue = %q, want fragment %q", issues[0], test.wantIssue)
 			}
 		})
+	}
+}
+
+func TestL11FinalClosureRepositoryInventoryIncludesToolsHelpers(t *testing.T) {
+	root := t.TempDir()
+	for path, source := range map[string]string{
+		"cmd/fixture_test.go": `package cmd
+import ("testing"; "github.com/jywlabs/hal/tools/l11proof")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { l11proof.Mint() }
+`,
+		"internal/placeholder/placeholder.go": `package placeholder
+`,
+		"tools/l11proof/proof.go": `package l11proof
+import "example.invalid/sandboxruntime"
+func Mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+	} {
+		fullPath := filepath.Join(root, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	packages, err := l11LoadRepositorySelectedTestPackages(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := l11SelectedPreparedTestIssues(packages)
+	if len(issues) != 1 || !strings.Contains(issues[0], "synthetic credential proof constructor") {
+		t.Fatalf("issues = %v, want tools helper proof issue", issues)
 	}
 }
 
@@ -623,6 +780,51 @@ func second() func() { returned := first(); return returned }
 	if err != nil {
 		t.Fatalf("cyclic callable analysis failed: %v: %s", err, output)
 	}
+}
+
+func TestL11FinalClosureConflictingBuildTagFactsTerminateAndFailClosed(t *testing.T) {
+	const helperEnvironment = "HAL_L11_CONFLICTING_FACTS_HELPER"
+	if os.Getenv(helperEnvironment) == "1" {
+		sources := map[string]string{
+			"fixture_test.go": `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = providerName }
+`,
+			"provider_linux.go": `//go:build linux
+package fixture
+const providerName = "disabled"
+`,
+			"provider_windows.go": `//go:build windows
+package fixture
+const providerName = "hetzner"
+`,
+		}
+		packages, err := l11ParseSelectedTestSources(sources)
+		if err != nil {
+			t.Fatal(err)
+		}
+		issues := l11SelectedPreparedTestIssues(packages)
+		if len(issues) != 1 || !strings.Contains(issues[0], "cloud/provider marker") {
+			t.Fatalf("issues = %v, want conflicting cloud fact issue", issues)
+		}
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestL11FinalClosureConflictingBuildTagFactsTerminateAndFailClosed$")
+	command.Env = append(os.Environ(), helperEnvironment+"=1")
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("conflicting build-tag fact analysis did not terminate within two seconds: %s", output)
+	}
+	if err != nil {
+		t.Fatalf("conflicting build-tag fact analysis failed: %v: %s", err, output)
+	}
+}
+
+func l11LoadRepositorySelectedTestPackages(repoRoot string) (map[string]*l11SelectedPackage, error) {
+	return l11LoadSelectedTestPackages([]string{filepath.Join(repoRoot, "cmd"), filepath.Join(repoRoot, "internal")})
 }
 
 func l11LoadSelectedTestPackages(roots []string) (map[string]*l11SelectedPackage, error) {

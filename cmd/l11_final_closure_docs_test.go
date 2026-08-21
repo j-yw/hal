@@ -247,6 +247,62 @@ func TestL11FinalClosureReleaseEvidenceGuardRejectsMutations(t *testing.T) {
 	}
 }
 
+func TestL11FinalClosureRepositoryRejectsSecondaryDocuments(t *testing.T) {
+	doc := l11ReadFinalClosureDoc(t)
+	root := t.TempDir()
+	canonical := filepath.Join(root, "docs", "design", l11FinalClosureDocPath)
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(canonical, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secondary := filepath.Join(root, "docs", "l11-final-release.md")
+	if err := os.WriteFile(secondary, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := l11ValidateFinalClosureRepository(root); err == nil {
+		t.Fatal("secondary L11 final/release document passed repository validation")
+	}
+}
+
+func TestL11FinalClosureCanonicalDocumentRejectsSymlinkAndNonregularFiles(t *testing.T) {
+	doc := l11ReadFinalClosureDoc(t)
+	for _, test := range []struct {
+		name  string
+		build func(string, string) error
+	}{
+		{name: "symlink", build: func(root, canonical string) error {
+			target := filepath.Join(root, "blocked-contract.md")
+			if err := os.WriteFile(target, []byte(doc), 0o600); err != nil {
+				return err
+			}
+			return os.Symlink(target, canonical)
+		}},
+		{name: "directory", build: func(_ string, canonical string) error {
+			return os.Mkdir(canonical, 0o700)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			canonical := filepath.Join(root, "docs", "design", l11FinalClosureDocPath)
+			if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := test.build(root, canonical); err != nil {
+				t.Fatal(err)
+			}
+			if err := l11ValidateFinalClosureRepository(root); err == nil {
+				t.Fatal("symlink or nonregular canonical L11 document passed repository validation")
+			}
+		})
+	}
+}
+
+// Red-first placeholder: repository topology and canonical-file identity are
+// implemented only after the mutation cases above demonstrate the gap.
+func l11ValidateFinalClosureRepository(string) error { return nil }
+
 func l11ReadFinalClosureDoc(t *testing.T) string {
 	t.Helper()
 	payload, err := os.ReadFile(filepath.Join("..", "docs", "design", l11FinalClosureDocPath))
