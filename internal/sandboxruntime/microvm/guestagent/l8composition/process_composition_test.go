@@ -377,6 +377,13 @@ func assertServiceSSHRegistrationIdentity(t *testing.T, service *credentialhelpe
 	if factory.Kind() != reflect.Interface || factory.IsNil() || factory.Elem().Kind() != reflect.Pointer || factory.Elem().Pointer() != reflect.ValueOf(wantFactory).Pointer() {
 		t.Fatal("Service does not own the exact observable SSH session factory")
 	}
+	session, err := wantFactory.Open(context.Background(), credentialhelper.ExtensionOpenRequest{})
+	if err != nil || session != wantFactory.session {
+		t.Fatalf("retained SSH factory session = (%v, %v), want exact bounded session", session, err)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatalf("retained SSH session close error = %v", err)
+	}
 }
 
 func assertCompositionSerializationDenied(t *testing.T, value any) {

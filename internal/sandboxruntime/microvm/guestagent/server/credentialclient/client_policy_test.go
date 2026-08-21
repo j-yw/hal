@@ -233,6 +233,7 @@ func TestClientProductionPolicyRejectsMalformedOperationsAcrossIdentities(t *tes
 		{},
 		{1},
 		{2},
+		{9},
 		{1, 2, 3},
 		{31: 9},
 	}
@@ -273,6 +274,9 @@ func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
 		t.Fatalf("ReadDir: %v", err)
 	}
 	owners := make([]string, 0, 1)
+	allowConstructors := make([]string, 0, 1)
+	allowReferences := make([]string, 0, 1)
+	allowLiterals := make([]string, 0, 1)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
@@ -287,6 +291,24 @@ func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
 				if typed.Name.Name == "NewClientPolicy" {
 					owners = append(owners, entry.Name())
 				}
+				if typed.Name.Name == "newClientPolicyAllowDecision" {
+					allowConstructors = append(allowConstructors, entry.Name())
+				}
+				if typed.Body != nil {
+					ast.Inspect(typed.Body, func(node ast.Node) bool {
+						switch value := node.(type) {
+						case *ast.Ident:
+							if value.Name == "newClientPolicyAllowDecision" {
+								allowReferences = append(allowReferences, entry.Name()+":"+typed.Name.Name)
+							}
+						case *ast.CompositeLit:
+							if clientPolicyDecisionLiteralAllows(value) {
+								allowLiterals = append(allowLiterals, entry.Name()+":"+typed.Name.Name)
+							}
+						}
+						return true
+					})
+				}
 			case *ast.GenDecl:
 				for _, specification := range typed.Specs {
 					value, ok := specification.(*ast.ValueSpec)
@@ -297,6 +319,9 @@ func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
 						if name.Name == "NewClientPolicy" {
 							owners = append(owners, entry.Name())
 						}
+						if name.Name == "newClientPolicyAllowDecision" {
+							allowConstructors = append(allowConstructors, entry.Name())
+						}
 					}
 				}
 			}
@@ -304,6 +329,15 @@ func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
 	}
 	if !reflect.DeepEqual(owners, []string{"client_policy.go"}) {
 		t.Fatalf("NewClientPolicy production owners = %v, want [client_policy.go]", owners)
+	}
+	if !reflect.DeepEqual(allowConstructors, []string{"contracts.go"}) {
+		t.Errorf("allow-decision constructors = %v, want [contracts.go]", allowConstructors)
+	}
+	if !reflect.DeepEqual(allowReferences, []string{"client_policy.go:Authorize"}) {
+		t.Errorf("allow-decision constructor references = %v, want sole canonical policy site", allowReferences)
+	}
+	if !reflect.DeepEqual(allowLiterals, []string{"contracts.go:newClientPolicyAllowDecision"}) {
+		t.Errorf("direct allow literals = %v, want sole private issuer", allowLiterals)
 	}
 }
 
@@ -329,6 +363,9 @@ func validateClientProductionPolicySource(source []byte) error {
 	if got := clientPolicyExpressionText(constructor.Type.Results.List[0].Type); got != "Policy" {
 		return fmt.Errorf("client policy constructor result = %s, want Policy", got)
 	}
+	if err := validateClientPolicyAuthorizeControlFlow(file); err != nil {
+		return err
+	}
 	normalized := strings.Join(strings.Fields(string(source)), " ")
 	for _, required := range []struct {
 		text  string
@@ -346,6 +383,150 @@ func validateClientProductionPolicySource(source []byte) error {
 		}
 	}
 	return nil
+}
+
+func validateClientPolicyAuthorizeControlFlow(file *ast.File) error {
+	var authorize *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "Authorize" || function.Recv == nil || len(function.Recv.List) != 1 || clientPolicyExpressionText(function.Recv.List[0].Type) != "clientPolicy" {
+			continue
+		}
+		if authorize != nil {
+			return errors.New("client policy declares duplicate Authorize methods")
+		}
+		authorize = function
+	}
+	if authorize == nil || authorize.Body == nil || len(authorize.Body.List) != 3 {
+		return errors.New("client policy Authorize control flow is not exact")
+	}
+	common, ok := authorize.Body.List[0].(*ast.IfStmt)
+	if !ok || !clientPolicyRejectingIf(common, "request.identityDigest == ([32]byte{}) || request.revision == 0 || request.fixedLimitSetID != clientPolicyLimitSetID || !credentialprotocol.ExtensionDescriptorEqual(request.descriptor, credentialprotocol.SSHRelayV1ExtensionDescriptor())") {
+		return errors.New("client policy common validation does not dominate allow")
+	}
+	operationSwitch, ok := authorize.Body.List[1].(*ast.SwitchStmt)
+	if !ok || operationSwitch.Init != nil || normalizeClientPolicyExpression(operationSwitch.Tag) != "request.operation" || operationSwitch.Body == nil || len(operationSwitch.Body.List) != 3 {
+		return errors.New("client policy transition switch is not exact")
+	}
+	prepareExec, ok := operationSwitch.Body.List[0].(*ast.CaseClause)
+	if !ok || !clientPolicyCaseNamesEqual(prepareExec.List, []string{"credentialprotocol.PacketTypePrepareBegin", "credentialprotocol.PacketTypeExec"}) || len(prepareExec.Body) != 2 {
+		return errors.New("client policy prepare/exec transition case is not exact")
+	}
+	prepareRevision, revisionOK := prepareExec.Body[0].(*ast.IfStmt)
+	bindings, bindingsOK := prepareExec.Body[1].(*ast.IfStmt)
+	if !revisionOK || !bindingsOK ||
+		!clientPolicyRejectingIf(prepareRevision, "request.operation == credentialprotocol.PacketTypePrepareBegin && request.revision != 1") ||
+		!clientPolicyRejectingIf(bindings, "!validClientPolicyBindings(request.bindingIDs, request.bindingModes)") {
+		return errors.New("client policy prepare/exec validation does not dominate allow")
+	}
+	renewRevoke, ok := operationSwitch.Body.List[1].(*ast.CaseClause)
+	if !ok || !clientPolicyCaseNamesEqual(renewRevoke.List, []string{"credentialprotocol.PacketTypeRenew", "credentialprotocol.PacketTypeRevoke"}) || len(renewRevoke.Body) != 1 {
+		return errors.New("client policy renew/revoke transition case is not exact")
+	}
+	emptyBindings, ok := renewRevoke.Body[0].(*ast.IfStmt)
+	if !ok || !clientPolicyRejectingIf(emptyBindings, "request.bindingIDs != nil || request.bindingModes != nil") {
+		return errors.New("client policy renew/revoke validation does not dominate allow")
+	}
+	defaultCase, ok := operationSwitch.Body.List[2].(*ast.CaseClause)
+	if !ok || defaultCase.List != nil || len(defaultCase.Body) != 1 || !clientPolicyRejectReturn(defaultCase.Body[0]) {
+		return errors.New("client policy default transition is not a closed rejection")
+	}
+	if !clientPolicyAllowReturn(authorize.Body.List[2]) {
+		return errors.New("client policy sole allow is not the final post-validation statement")
+	}
+
+	allowReferences := 0
+	directAllows := 0
+	forbiddenFlow := false
+	ast.Inspect(authorize.Body, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.Ident:
+			if value.Name == "newClientPolicyAllowDecision" {
+				allowReferences++
+			}
+		case *ast.CompositeLit:
+			if clientPolicyDecisionLiteralAllows(value) {
+				directAllows++
+			}
+		case *ast.BranchStmt, *ast.GoStmt, *ast.DeferStmt, *ast.FuncLit:
+			forbiddenFlow = true
+		}
+		return true
+	})
+	if allowReferences != 1 || directAllows != 0 || forbiddenFlow {
+		return errors.New("client policy contains an alternate allow or control-flow site")
+	}
+	return nil
+}
+
+func clientPolicyRejectingIf(statement *ast.IfStmt, condition string) bool {
+	return statement != nil && statement.Init == nil && statement.Else == nil &&
+		normalizeClientPolicyExpression(statement.Cond) == strings.Join(strings.Fields(condition), " ") &&
+		statement.Body != nil && len(statement.Body.List) == 1 && clientPolicyRejectReturn(statement.Body.List[0])
+}
+
+func clientPolicyRejectReturn(statement ast.Stmt) bool {
+	result, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(result.Results) != 1 {
+		return false
+	}
+	call, ok := result.Results[0].(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	identifier, identifierOK := call.Fun.(*ast.Ident)
+	return identifierOK && identifier.Name == "rejectClientPolicyRequest" && len(call.Args) == 0
+}
+
+func clientPolicyAllowReturn(statement ast.Stmt) bool {
+	result, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(result.Results) != 2 {
+		return false
+	}
+	call, ok := result.Results[0].(*ast.CallExpr)
+	if !ok || len(call.Args) != 0 {
+		return false
+	}
+	constructor, ok := call.Fun.(*ast.Ident)
+	nilResult, nilOK := result.Results[1].(*ast.Ident)
+	return ok && constructor.Name == "newClientPolicyAllowDecision" && nilOK && nilResult.Name == "nil"
+}
+
+func clientPolicyCaseNamesEqual(expressions []ast.Expr, want []string) bool {
+	if len(expressions) != len(want) {
+		return false
+	}
+	for index := range expressions {
+		if normalizeClientPolicyExpression(expressions[index]) != want[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func clientPolicyDecisionLiteralAllows(literal *ast.CompositeLit) bool {
+	if literal == nil || normalizeClientPolicyExpression(literal.Type) != "ClientPolicyDecision" {
+		return false
+	}
+	for index, element := range literal.Elts {
+		if field, ok := element.(*ast.KeyValueExpr); ok {
+			key, keyOK := field.Key.(*ast.Ident)
+			value, valueOK := field.Value.(*ast.Ident)
+			if keyOK && valueOK && key.Name == "allow" && value.Name == "true" {
+				return true
+			}
+			continue
+		}
+		value, ok := element.(*ast.Ident)
+		if index == 1 && ok && value.Name == "true" {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeClientPolicyExpression(expression ast.Expr) string {
+	return strings.Join(strings.Fields(clientPolicyExpressionText(expression)), " ")
 }
 
 func clientPolicyExpressionText(expression ast.Expr) string {

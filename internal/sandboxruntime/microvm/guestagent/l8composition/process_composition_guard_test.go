@@ -214,6 +214,24 @@ func validateL8D6CompositionSource(source []byte) error {
 	if typeAssertion {
 		return fmt.Errorf("D6 composition uses a hidden type assertion")
 	}
+	if err := validateL8D6RegistryFlow(file, l8D6RegistryFlowSpec{
+		function:              "NewHelper",
+		registryQualifier:     "credentialhelper",
+		downstreamConstructor: "NewService",
+		downstreamOptionsType: "ServiceOptions",
+		descriptorRole:        "ProcessRoleHelper",
+	}); err != nil {
+		return err
+	}
+	if err := validateL8D6RegistryFlow(file, l8D6RegistryFlowSpec{
+		function:              "NewClient",
+		registryQualifier:     "credentialclient",
+		downstreamConstructor: "NewClient",
+		downstreamOptionsType: "ClientOptions",
+		descriptorRole:        "ProcessRoleClient",
+	}); err != nil {
+		return err
+	}
 
 	normalized := strings.Join(strings.Fields(string(source)), " ")
 	for _, required := range []struct {
@@ -251,6 +269,271 @@ func validateL8D6CompositionSource(source []byte) error {
 		}
 	}
 	return nil
+}
+
+type l8D6RegistryFlowSpec struct {
+	function              string
+	registryQualifier     string
+	downstreamConstructor string
+	downstreamOptionsType string
+	descriptorRole        string
+}
+
+func validateL8D6RegistryFlow(file *ast.File, spec l8D6RegistryFlowSpec) error {
+	function := findL8D6Function(file, spec.function)
+	if function == nil || function.Body == nil {
+		return fmt.Errorf("D6 composition omits %s body", spec.function)
+	}
+	parents := l8D6ParentMap(function.Body)
+	allowedRegistry := make(map[*ast.Ident]bool)
+	allowedExtensions := make(map[*ast.Ident]bool)
+	registryDefinitions := 0
+	extensionDefinitions := 0
+	invalidDefinition := false
+
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for index, left := range assignment.Lhs {
+			identifier, ok := left.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			switch identifier.Name {
+			case "registry":
+				registryDefinitions++
+				if assignment.Tok != token.DEFINE || index != 0 || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 || !l8D6ExactRegistryConstructor(assignment.Rhs[0], spec.registryQualifier) {
+					invalidDefinition = true
+					return false
+				}
+				allowedRegistry[identifier] = true
+			case "extensions":
+				extensionDefinitions++
+				if assignment.Tok != token.DEFINE || index != 0 || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+					invalidDefinition = true
+					return false
+				}
+				call, ok := assignment.Rhs[0].(*ast.CallExpr)
+				selector, selectorOK := call.Fun.(*ast.SelectorExpr)
+				registry, registryOK := selector.X.(*ast.Ident)
+				if !ok || !selectorOK || !registryOK || registry.Name != "registry" || selector.Sel.Name != "Descriptors" || len(call.Args) != 0 {
+					invalidDefinition = true
+					return false
+				}
+				allowedExtensions[identifier] = true
+				allowedRegistry[registry] = true
+			}
+		}
+		return true
+	})
+	if invalidDefinition || registryDefinitions != 1 || extensionDefinitions != 1 {
+		return fmt.Errorf("%s registry/descriptors are not single-assignment", spec.function)
+	}
+
+	downstreamRegistry, err := l8D6DownstreamRegistryUse(function, spec)
+	if err != nil {
+		return err
+	}
+	allowedRegistry[downstreamRegistry] = true
+	descriptorExtension, err := l8D6DescriptorExtensionUse(function, spec.descriptorRole)
+	if err != nil {
+		return err
+	}
+	allowedExtensions[descriptorExtension] = true
+	checkExtension, err := l8D6ExactExtensionCheckUse(function)
+	if err != nil {
+		return err
+	}
+	allowedExtensions[checkExtension] = true
+
+	var unexpected string
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		identifier, ok := node.(*ast.Ident)
+		if !ok || (identifier.Name != "registry" && identifier.Name != "extensions") {
+			return true
+		}
+		if identifier.Name == "registry" && allowedRegistry[identifier] {
+			return true
+		}
+		if identifier.Name == "extensions" && allowedExtensions[identifier] {
+			return true
+		}
+		parent := parents[identifier]
+		unexpected = fmt.Sprintf("%s has unexpected %s use under %T", spec.function, identifier.Name, parent)
+		return false
+	})
+	if unexpected != "" {
+		return fmt.Errorf("%s", unexpected)
+	}
+	return nil
+}
+
+func findL8D6Function(file *ast.File, name string) *ast.FuncDecl {
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Recv == nil && function.Name.Name == name {
+			return function
+		}
+	}
+	return nil
+}
+
+func l8D6ParentMap(root ast.Node) map[ast.Node]ast.Node {
+	parents := make(map[ast.Node]ast.Node)
+	stack := make([]ast.Node, 0, 32)
+	ast.Inspect(root, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		if len(stack) > 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	return parents
+}
+
+func l8D6ExactRegistryConstructor(expression ast.Expr, qualifier string) bool {
+	call, ok := expression.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 || !l8D6Selector(call.Fun, qualifier, "NewExtensionRegistry") {
+		return false
+	}
+	selector, ok := call.Args[0].(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	options, optionsOK := selector.X.(*ast.Ident)
+	return optionsOK && options.Name == "options" && selector.Sel.Name == "SSH"
+}
+
+func l8D6DownstreamRegistryUse(function *ast.FuncDecl, spec l8D6RegistryFlowSpec) (*ast.Ident, error) {
+	var result *ast.Ident
+	var invalid bool
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || !l8D6Selector(call.Fun, spec.registryQualifier, spec.downstreamConstructor) {
+			return true
+		}
+		if result != nil || len(call.Args) != 1 {
+			invalid = true
+			return false
+		}
+		literal, ok := call.Args[0].(*ast.CompositeLit)
+		if !ok || !l8D6Selector(literal.Type, spec.registryQualifier, spec.downstreamOptionsType) {
+			invalid = true
+			return false
+		}
+		for _, element := range literal.Elts {
+			field, ok := element.(*ast.KeyValueExpr)
+			key, keyOK := field.Key.(*ast.Ident)
+			if !ok || !keyOK || key.Name != "Extensions" {
+				continue
+			}
+			identifier, identifierOK := field.Value.(*ast.Ident)
+			if !identifierOK || identifier.Name != "registry" || result != nil {
+				invalid = true
+				return false
+			}
+			result = identifier
+		}
+		return true
+	})
+	if invalid || result == nil {
+		return nil, fmt.Errorf("%s does not pass the exact registry directly to %s.%s", spec.function, spec.registryQualifier, spec.downstreamConstructor)
+	}
+	return result, nil
+}
+
+func l8D6DescriptorExtensionUse(function *ast.FuncDecl, role string) (*ast.Ident, error) {
+	var result *ast.Ident
+	var descriptorCount int
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		literal, ok := node.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		typeName, ok := literal.Type.(*ast.Ident)
+		if !ok || typeName.Name != "ProcessDescriptor" {
+			return true
+		}
+		hasRoleField := false
+		roleMatches := false
+		for _, element := range literal.Elts {
+			field, ok := element.(*ast.KeyValueExpr)
+			key, keyOK := field.Key.(*ast.Ident)
+			if !ok || !keyOK {
+				continue
+			}
+			if key.Name == "Role" {
+				hasRoleField = true
+				identifier, identifierOK := field.Value.(*ast.Ident)
+				roleMatches = identifierOK && identifier.Name == role
+			}
+			if key.Name != "Extensions" {
+				continue
+			}
+			call, callOK := field.Value.(*ast.CallExpr)
+			if !callOK || len(call.Args) != 1 || !l8D6Selector(call.Fun, "credentialprotocol", "CloneExtensionDescriptors") {
+				continue
+			}
+			identifier, identifierOK := call.Args[0].(*ast.Ident)
+			if identifierOK && identifier.Name == "extensions" {
+				result = identifier
+			}
+		}
+		if !hasRoleField {
+			return true
+		}
+		descriptorCount++
+		if !roleMatches {
+			result = nil
+		}
+		return true
+	})
+	if descriptorCount != 1 || result == nil {
+		return nil, fmt.Errorf("%s does not snapshot the exact extensions into its %s descriptor", function.Name.Name, role)
+	}
+	return result, nil
+}
+
+func l8D6ExactExtensionCheckUse(function *ast.FuncDecl) (*ast.Ident, error) {
+	var result *ast.Ident
+	var count int
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		identifier, identifierOK := call.Fun.(*ast.Ident)
+		if !identifierOK || identifier.Name != "exactSSHCompositionExtensions" {
+			return true
+		}
+		count++
+		if len(call.Args) == 1 {
+			candidate, candidateOK := call.Args[0].(*ast.Ident)
+			if candidateOK && candidate.Name == "extensions" {
+				result = candidate
+			}
+		}
+		return true
+	})
+	if count != 1 || result == nil {
+		return nil, fmt.Errorf("%s does not validate its exact extension snapshot once", function.Name.Name)
+	}
+	return result, nil
+}
+
+func l8D6Selector(expression ast.Expr, qualifier, name string) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	identifier, identifierOK := selector.X.(*ast.Ident)
+	return identifierOK && identifier.Name == qualifier && selector.Sel.Name == name
 }
 
 func typeContainsMutableCompositionState(expression ast.Expr) bool {
