@@ -307,6 +307,10 @@ func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
 		{name: "anonymous struct assign statement", source: credentialProtocolImport + "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow = " + anonymousDecisionType + "{allow: true} }"},
 		{name: "anonymous struct multi assignment", source: credentialProtocolImport + "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow, _ = " + anonymousDecisionType + "{allow: true}, 0 }"},
 		{name: "anonymous struct return", source: credentialProtocolImport + "func alternateClientPolicyAllow() ClientPolicyDecision { return " + anonymousDecisionType + "{allow: true} }"},
+		{name: "anonymous embedded allow value", source: "type allow bool\nvar alternateClientPolicyAllow = struct{ allow }{}"},
+		{name: "anonymous embedded allow pointer", source: "type allow bool\nvar alternateClientPolicyAllow = struct{ *allow }{}"},
+		{name: "anonymous embedded allow indexed pointer", source: "type allow[T any] struct{ value T }\nvar alternateClientPolicyAllow = struct{ *allow[int] }{}"},
+		{name: "anonymous embedded allow index-list pointer", source: "type allow[T, U any] struct{ first T; second U }\nvar alternateClientPolicyAllow = struct{ *allow[int, string] }{}"},
 		{name: "allow field assignment", source: "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow.allow = true }"},
 		{name: "allow field multi assignment", source: "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow.allow, _ = true, 0 }"},
 		{name: "allow field address escape", source: "var alternateClientPolicyAllow ClientPolicyDecision\nvar alternateClientPolicyAllowAddress = &alternateClientPolicyAllow.allow"},
@@ -318,6 +322,31 @@ func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
 			directory := writeClientPolicyProductionFixture(t, mutatedSource)
 			if err := validateClientProductionPolicyPackage(directory); err == nil {
 				t.Fatal("package-wide allow guard accepted adversarial declaration/reference")
+			}
+		})
+	}
+}
+
+func TestClientProductionPolicyDirectNamedTypeUnwrapsEmbeddedAllowForms(t *testing.T) {
+	t.Parallel()
+
+	allow := func() *ast.Ident { return &ast.Ident{Name: "allow"} }
+	cases := []struct {
+		name       string
+		expression ast.Expr
+	}{
+		{name: "value", expression: allow()},
+		{name: "pointer", expression: &ast.StarExpr{X: allow()}},
+		{name: "parenthesized pointer", expression: &ast.ParenExpr{X: &ast.StarExpr{X: allow()}}},
+		{name: "indexed pointer", expression: &ast.StarExpr{X: &ast.IndexExpr{X: allow(), Index: &ast.Ident{Name: "int"}}}},
+		{name: "index-list parenthesized pointer", expression: &ast.ParenExpr{X: &ast.StarExpr{X: &ast.IndexListExpr{X: allow(), Indices: []ast.Expr{&ast.Ident{Name: "int"}, &ast.Ident{Name: "string"}}}}}},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			name, ok := clientPolicyDirectNamedType(testCase.expression)
+			if !ok || name != "allow" {
+				t.Fatalf("clientPolicyDirectNamedType() = (%q, %t), want (allow, true)", name, ok)
 			}
 		})
 	}
