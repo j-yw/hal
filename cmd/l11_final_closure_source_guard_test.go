@@ -1782,7 +1782,7 @@ func l11SelectedClosedCallIssues(packages map[string]*l11SelectedPackage, root, 
 			}
 		}
 		receiver := l11SelectedExpressionType(current.file, function.X)
-		if l11SelectedExpressionHasExactTestingTType(current.file, function.X, make(map[*ast.Object]bool), 0) {
+		if l11SelectedExpressionHasExactTestingTType(current.file, function.X, l11SelectedNewTestingTResolution(), 0) {
 			if function.Sel.Name == "Run" {
 				callback, ok := l11SelectedExactSubtestCallback(current, call)
 				if !ok {
@@ -1823,7 +1823,7 @@ func l11SelectedExactSubtestCallback(current *l11SelectedFunction, call *ast.Cal
 		return nil, false
 	}
 	selector, ok := l11SelectedUnwrapCallFunction(call.Fun).(*ast.SelectorExpr)
-	if !ok || selector.Sel.Name != "Run" || !l11SelectedExpressionHasExactTestingTType(current.file, selector.X, make(map[*ast.Object]bool), 0) {
+	if !ok || selector.Sel.Name != "Run" || !l11SelectedExpressionHasExactTestingTType(current.file, selector.X, l11SelectedNewTestingTResolution(), 0) {
 		return nil, false
 	}
 	scenario, ok := call.Args[0].(*ast.BasicLit)
@@ -1866,42 +1866,61 @@ func l11SelectedTestingTCallback(function *l11SelectedFunction) bool {
 	if parameters == nil || len(parameters.List) != 1 || len(parameters.List[0].Names) > 1 {
 		return false
 	}
-	pointer, ok := parameters.List[0].Type.(*ast.StarExpr)
-	return ok && l11SelectedExactTestingTType(function.file, pointer.X, make(map[*ast.Object]bool), 0)
+	pointers, exact := l11SelectedTestingTPointerDepth(function.file, parameters.List[0].Type, l11SelectedNewTestingTResolution(), 0)
+	return exact && pointers == 1
 }
 
-func l11SelectedExpressionHasExactTestingTType(file *l11SelectedFile, expression ast.Expr, visiting map[*ast.Object]bool, depth int) bool {
+type l11SelectedTestingTAliasKey struct {
+	pkg  *l11SelectedPackage
+	name string
+}
+
+type l11SelectedTestingTResolution struct {
+	objects map[*ast.Object]bool
+	aliases map[l11SelectedTestingTAliasKey]bool
+}
+
+func l11SelectedNewTestingTResolution() *l11SelectedTestingTResolution {
+	return &l11SelectedTestingTResolution{
+		objects: make(map[*ast.Object]bool),
+		aliases: make(map[l11SelectedTestingTAliasKey]bool),
+	}
+}
+
+func l11SelectedExpressionHasExactTestingTType(file *l11SelectedFile, expression ast.Expr, resolution *l11SelectedTestingTResolution, depth int) bool {
 	if expression == nil || depth > 32 {
 		return false
 	}
 	switch value := expression.(type) {
 	case *ast.ParenExpr:
-		return l11SelectedExpressionHasExactTestingTType(file, value.X, visiting, depth+1)
+		return l11SelectedExpressionHasExactTestingTType(file, value.X, resolution, depth+1)
+	case *ast.StarExpr:
+		return l11SelectedExpressionHasExactTestingTType(file, value.X, resolution, depth+1)
 	case *ast.UnaryExpr:
-		return l11SelectedExpressionHasExactTestingTType(file, value.X, visiting, depth+1)
+		return l11SelectedExpressionHasExactTestingTType(file, value.X, resolution, depth+1)
 	case *ast.Ident:
-		if value.Obj == nil || visiting[value.Obj] {
+		if value.Obj == nil || resolution.objects[value.Obj] {
 			return false
 		}
-		visiting[value.Obj] = true
-		defer delete(visiting, value.Obj)
+		resolution.objects[value.Obj] = true
+		defer delete(resolution.objects, value.Obj)
 		switch declaration := value.Obj.Decl.(type) {
 		case *ast.Field:
-			return l11SelectedExactTestingTType(file, declaration.Type, visiting, depth+1)
+			return l11SelectedHasExactTestingTType(file, declaration.Type, resolution, depth+1)
 		case *ast.ValueSpec:
 			if declaration.Type != nil {
-				return l11SelectedExactTestingTType(file, declaration.Type, visiting, depth+1)
+				return l11SelectedHasExactTestingTType(file, declaration.Type, resolution, depth+1)
 			}
 			for index, name := range declaration.Names {
 				if name.Obj == value.Obj && index < len(declaration.Values) {
-					return l11SelectedExpressionHasExactTestingTType(file, declaration.Values[index], visiting, depth+1)
+					return l11SelectedExpressionHasExactTestingTType(file, declaration.Values[index], resolution, depth+1)
 				}
 			}
 		case *ast.AssignStmt:
 			for index, name := range declaration.Lhs {
 				identifier, ok := name.(*ast.Ident)
 				if ok && identifier.Obj == value.Obj && index < len(declaration.Rhs) {
-					return l11SelectedExpressionHasExactTestingTType(file, declaration.Rhs[index], visiting, depth+1)
+					return l11SelectedExpressionHasExactTestingTType(file, declaration.Rhs[index], resolution, depth+1)
 				}
 			}
 		}
@@ -1909,41 +1928,60 @@ func l11SelectedExpressionHasExactTestingTType(file *l11SelectedFile, expression
 	return false
 }
 
-func l11SelectedExactTestingTType(file *l11SelectedFile, expression ast.Expr, visiting map[*ast.Object]bool, depth int) bool {
+func l11SelectedHasExactTestingTType(file *l11SelectedFile, expression ast.Expr, resolution *l11SelectedTestingTResolution, depth int) bool {
+	_, exact := l11SelectedTestingTPointerDepth(file, expression, resolution, depth)
+	return exact
+}
+
+func l11SelectedTestingTPointerDepth(file *l11SelectedFile, expression ast.Expr, resolution *l11SelectedTestingTResolution, depth int) (int, bool) {
 	if file == nil || expression == nil || depth > 32 {
-		return false
+		return 0, false
 	}
 	switch value := expression.(type) {
 	case *ast.StarExpr:
-		return l11SelectedExactTestingTType(file, value.X, visiting, depth+1)
+		pointers, exact := l11SelectedTestingTPointerDepth(file, value.X, resolution, depth+1)
+		return pointers + 1, exact
 	case *ast.ParenExpr:
-		return l11SelectedExactTestingTType(file, value.X, visiting, depth+1)
+		return l11SelectedTestingTPointerDepth(file, value.X, resolution, depth+1)
 	case *ast.Ident:
 		if value.Obj != nil {
-			if visiting[value.Obj] {
-				return false
+			if resolution.objects[value.Obj] {
+				return 0, false
 			}
 			typeSpec, ok := value.Obj.Decl.(*ast.TypeSpec)
 			if !ok || !typeSpec.Assign.IsValid() {
-				return false
+				return 0, false
 			}
-			visiting[value.Obj] = true
-			defer delete(visiting, value.Obj)
-			return l11SelectedExactTestingTType(file, typeSpec.Type, visiting, depth+1)
+			resolution.objects[value.Obj] = true
+			defer delete(resolution.objects, value.Obj)
+			return l11SelectedTestingTPointerDepth(file, typeSpec.Type, resolution, depth+1)
+		}
+		if file.pkg != nil && len(file.pkg.typeDefs[value.Name]) > 0 {
+			alias, ok := file.pkg.types[value.Name]
+			if !ok || len(file.pkg.typeDefs[value.Name]) != 1 {
+				return 0, false
+			}
+			key := l11SelectedTestingTAliasKey{pkg: file.pkg, name: value.Name}
+			if resolution.aliases[key] {
+				return 0, false
+			}
+			resolution.aliases[key] = true
+			defer delete(resolution.aliases, key)
+			return l11SelectedTestingTPointerDepth(alias.file, alias.expression, resolution, depth+1)
 		}
 		if value.Name != "T" {
-			return false
+			return 0, false
 		}
 		for _, imported := range file.imports {
 			if imported.name == "." && imported.path == "testing" {
-				return true
+				return 0, true
 			}
 		}
 	case *ast.SelectorExpr:
 		identifier, ok := value.X.(*ast.Ident)
-		return ok && identifier.Obj == nil && value.Sel.Name == "T" && file.importPaths[identifier.Name] == "testing"
+		return 0, ok && identifier.Obj == nil && value.Sel.Name == "T" && file.importPaths[identifier.Name] == "testing"
 	}
-	return false
+	return 0, false
 }
 
 func l11SelectedClosedDirectTargets(root, current *l11SelectedFunction, targets []l11SelectedCallable, key string, queue *[]*l11SelectedFunction) []string {
