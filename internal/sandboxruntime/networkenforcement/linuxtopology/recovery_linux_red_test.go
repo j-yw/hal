@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,7 +52,12 @@ func TestLinuxTopologyOwnershipJournalIsBootBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	bootID, ok := raw["hostBootId"].(string)
-	if !ok || bootID == "" {
+	expectedBootIDBytes, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedBootID := strings.TrimSuffix(string(expectedBootIDBytes), "\n")
+	if !ok || bootID != expectedBootID || string(expectedBootIDBytes) != bootID+"\n" {
 		t.Fatalf("ownership journal = %s, want exact hostBootId", payload)
 	}
 }

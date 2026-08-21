@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -151,6 +154,140 @@ func TestLinuxTopologyRecoveryRejectsBootAndProcessIdentityMismatch(t *testing.T
 	}
 }
 
+func TestLinuxTopologyRecoveryRejectsExactZombieAndPermissionUncertainty(t *testing.T) {
+	t.Run("zombie mapper", func(t *testing.T) {
+		fixture := newFileRecoveryFixture(t)
+		zombie, start := startDeterministicZombie(t)
+		defer zombie.Wait()
+		fixture.rewriteJournal(t, func(raw map[string]any) {
+			raw["mapper"] = map[string]any{"pid": zombie.Process.Pid, "startTime": start}
+		})
+		assertRecoveryRejectedAndRetained(t, fixture, fixture.identity, fixture.namespace)
+	})
+	t.Run("foreign namespace permission or mismatch", func(t *testing.T) {
+		fixture := newFileRecoveryFixture(t)
+		start, err := readProcessStartTime(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.rewriteJournal(t, func(raw map[string]any) {
+			raw["keeper"] = map[string]any{"pid": 1, "startTime": start}
+		})
+		assertRecoveryRejectedAndRetained(t, fixture, fixture.identity, fixture.namespace)
+		if _, err := os.Stat("/proc/1"); err != nil {
+			t.Fatalf("recovery disturbed foreign process 1: %v", err)
+		}
+	})
+}
+
+func startDeterministicZombie(t *testing.T) (*exec.Cmd, string) {
+	t.Helper()
+	gateRead, gateWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("/bin/sh", "-c", "read ignored <&3")
+	command.ExtraFiles = []*os.File{gateRead}
+	if err := command.Start(); err != nil {
+		gateRead.Close()
+		gateWrite.Close()
+		t.Fatal(err)
+	}
+	gateRead.Close()
+	start, err := readProcessStartTime(command.Process.Pid)
+	if err != nil {
+		gateWrite.Close()
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal(err)
+	}
+	if err := gateWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		payload, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(command.Process.Pid), "stat"))
+		if err != nil {
+			_ = command.Wait()
+			t.Fatalf("zombie disappeared before inspection: %v", err)
+		}
+		closing := strings.LastIndexByte(string(payload), ')')
+		fields := strings.Fields(string(payload[closing+1:]))
+		if len(fields) > 0 && fields[0] == "Z" {
+			return command, start
+		}
+		if time.Now().After(deadline) {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			t.Fatal("child did not enter zombie state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestLinuxTopologyRecoveryProcessExitRaceNeverAuthorizesReplacement(t *testing.T) {
+	for attempt := 0; attempt < 12; attempt++ {
+		fixture := newFileRecoveryFixture(t)
+		done := make(chan struct{})
+		go func() {
+			runtime.Gosched()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			_ = fixture.mapper.Terminate(ctx)
+			cancel()
+			close(done)
+		}()
+		recovered, err := fixture.recoveryStore(t).AcquireRecovery(context.Background(), RecoveryRequest{Identity: fixture.identity, Namespace: fixture.namespace})
+		<-done
+		if err == nil {
+			if recovered.Lease == nil || recovered.Namespace == nil || !recovered.Namespace.Correlates(fixture.namespace) {
+				t.Fatalf("race recovery returned uncorrelated authority: %#v", recovered)
+			}
+			_ = recovered.Namespace.Close()
+			_ = recovered.Lease.Release()
+		} else if !errors.Is(err, ErrStaleTopologyUnverified) && !errors.Is(err, ErrIdentityMismatch) {
+			t.Fatalf("race recovery leaked unstable outcome: %v", err)
+		}
+		if fixture.namespace.Closed() {
+			t.Fatal("race recovery consumed caller namespace")
+		}
+	}
+}
+
+func TestLinuxTopologyRecoveryClosesEveryFailedClaimHandle(t *testing.T) {
+	fixture := newFileRecoveryFixture(t)
+	wrong := newFakeNamespaces(t, nil).base
+	before := countOpenFileDescriptors(t)
+	for range 32 {
+		recovered, err := fixture.recoveryStore(t).AcquireRecovery(context.Background(), RecoveryRequest{Identity: fixture.identity, Namespace: wrong})
+		if err == nil {
+			if recovered.Namespace != nil {
+				_ = recovered.Namespace.Close()
+			}
+			if recovered.Lease != nil {
+				_ = recovered.Lease.Release()
+			}
+			t.Fatal("wrong namespace recovery succeeded")
+		}
+	}
+	runtime.GC()
+	after := countOpenFileDescriptors(t)
+	if after > before {
+		t.Fatalf("failed recovery leaked descriptors: before=%d after=%d", before, after)
+	}
+	if _, err := syscall.Getpgid(os.Getpid()); err != nil {
+		t.Fatalf("process state changed during handle-close matrix: %v", err)
+	}
+}
+
+func countOpenFileDescriptors(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(entries)
+}
+
 func TestLinuxTopologyRecoveryAcceptsDefinitelyAbsentHelpersWithRetainedNamespace(t *testing.T) {
 	fixture := newFileRecoveryFixture(t)
 	terminateTestProcess(t, fixture.mapper)
@@ -163,6 +300,96 @@ func TestLinuxTopologyRecoveryAcceptsDefinitelyAbsentHelpersWithRetainedNamespac
 	defer recovered.Lease.Release()
 	if recovered.Keeper != nil || recovered.Mapper != nil || recovered.Namespace == nil || !recovered.Namespace.Correlates(fixture.namespace) {
 		t.Fatalf("absent recovery = keeper %T mapper %T namespace %T", recovered.Keeper, recovered.Mapper, recovered.Namespace)
+	}
+}
+
+func TestLinuxTopologyFreshLifecycleRecoverStopProductionStoreMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		stopKeeper bool
+		stopMapper bool
+		wantKeeper bool
+		wantMapper bool
+	}{
+		{name: "live", wantKeeper: true, wantMapper: true},
+		{name: "partial keeper only", stopMapper: true, wantKeeper: true},
+		{name: "partial mapper only", stopKeeper: true, wantMapper: true},
+		{name: "absent", stopKeeper: true, stopMapper: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFileRecoveryFixture(t)
+			keeperPID, mapperPID := fixture.keeper.PID(), fixture.mapper.PID()
+			if test.stopKeeper {
+				terminateTestProcess(t, fixture.keeper)
+			}
+			if test.stopMapper {
+				terminateTestProcess(t, fixture.mapper)
+			}
+			lifecycle, _ := newSerializedRecoveryLifecycle(t, fixture.store)
+			session, err := lifecycle.Recover(context.Background(), RecoveryRequest{Identity: fixture.identity, Namespace: fixture.namespace})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (session.keeper != nil) != test.wantKeeper || (session.mapper != nil) != test.wantMapper {
+				t.Fatalf("recovered processes = keeper %T mapper %T", session.keeper, session.mapper)
+			}
+			metadata := session.Metadata()
+			if metadata.Status != StatusRecoveryOnly || metadata.StructuralInspected || metadata.MappingReachable {
+				t.Fatalf("recovered metadata = %#v", metadata)
+			}
+			owned := session.namespace
+			stopped, err := lifecycle.Stop(context.Background(), fixture.identity)
+			if err != nil || stopped.Status != StatusStopped {
+				t.Fatalf("Stop(recovered) = %#v, %v", stopped, err)
+			}
+			if owned == nil || !owned.Closed() {
+				t.Fatal("Stop did not close lifecycle-owned namespace duplicate")
+			}
+			if fixture.namespace.Closed() {
+				t.Fatal("Stop consumed supervisor-owned namespace authority")
+			}
+			assertProcessPathAbsent(t, keeperPID)
+			assertProcessPathAbsent(t, mapperPID)
+			if _, err := os.Lstat(fixture.journalPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("ownership journal remains after Stop: %v", err)
+			}
+			retired := filepath.Join(filepath.Dir(fixture.journalPath), "retired-"+fixture.identity.TopologyGenerationID)
+			if info, err := os.Lstat(retired); err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				t.Fatalf("retirement tombstone = %#v, %v", info, err)
+			}
+			if lease, err := fixture.store.acquire(context.Background(), fixture.identity); lease != nil || !errors.Is(err, ErrStaleGeneration) {
+				t.Fatalf("retired generation claim = %T, %v", lease, err)
+			}
+			fresh := fixture.identity
+			fresh.ExecutionID = "execution-after-recovery"
+			fresh.ProxyGenerationID = "proxy-generation-after-recovery"
+			fresh.TopologyGenerationID = "topology-gen-after-recovery"
+			lease, err := fixture.store.acquire(context.Background(), fresh)
+			if err != nil {
+				t.Fatalf("ownership lock remained held: %v", err)
+			}
+			if err := lease.Release(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func assertProcessPathAbsent(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, err := os.Stat(filepath.Join("/proc", fmtInt(pid)))
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("inspect process %d: %v", pid, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d remained after recovered Stop", pid)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -213,15 +440,135 @@ func TestLinuxTopologyRecoveryRejectsIncompleteOrAmbiguousJournal(t *testing.T) 
 }
 
 func TestLinuxTopologyRecoveryRejectsStaleCompleteIdentity(t *testing.T) {
-	for _, mutate := range []func(*Identity){
-		func(identity *Identity) { identity.ExecutionID = "execution-replaced" },
-		func(identity *Identity) { identity.TopologyGenerationID = "topology-gen-replaced" },
+	for _, test := range []struct {
+		name   string
+		mutate func(*Identity)
+	}{
+		{name: "sandbox", mutate: func(identity *Identity) { identity.SandboxID = "sandbox-replaced" }},
+		{name: "execution", mutate: func(identity *Identity) { identity.ExecutionID = "execution-replaced" }},
+		{name: "worker", mutate: func(identity *Identity) { identity.WorkerID = "worker-replaced" }},
+		{name: "runtime", mutate: func(identity *Identity) { identity.RuntimeID = "runtime-replaced" }},
+		{name: "plan", mutate: func(identity *Identity) { identity.PlanID = "plan-replaced" }},
+		{name: "policy", mutate: func(identity *Identity) { identity.PolicySnapshotID = "policy-replaced" }},
+		{name: "proxy session", mutate: func(identity *Identity) { identity.ProxySessionID = "proxy-session-replaced" }},
+		{name: "proxy generation", mutate: func(identity *Identity) { identity.ProxyGenerationID = "proxy-generation-replaced" }},
+		{name: "topology generation", mutate: func(identity *Identity) { identity.TopologyGenerationID = "topology-gen-replaced" }},
 	} {
-		fixture := newFileRecoveryFixture(t)
-		identity := fixture.identity
-		mutate(&identity)
-		assertRecoveryRejectedAndRetained(t, fixture, identity, fixture.namespace)
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFileRecoveryFixture(t)
+			identity := fixture.identity
+			test.mutate(&identity)
+			assertRecoveryRejectedAndRetained(t, fixture, identity, fixture.namespace)
+		})
 	}
+}
+
+func TestLinuxTopologyRecoveryRejectsIndependentUserOrNetworkNamespaceMismatch(t *testing.T) {
+	for _, mismatch := range []string{"user", "network"} {
+		t.Run(mismatch, func(t *testing.T) {
+			fixture := newFileRecoveryFixture(t)
+			user, err := os.Open(filepath.Join("/proc", fmtInt(fixture.keeper.PID()), "ns", "user"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			network, err := os.Open(filepath.Join("/proc", fmtInt(fixture.keeper.PID()), "ns", "net"))
+			if err != nil {
+				user.Close()
+				t.Fatal(err)
+			}
+			wrong, err := os.CreateTemp(t.TempDir(), mismatch+"-mismatch-")
+			if err != nil {
+				user.Close()
+				network.Close()
+				t.Fatal(err)
+			}
+			if mismatch == "user" {
+				user.Close()
+				user = wrong
+			} else {
+				network.Close()
+				network = wrong
+			}
+			handle, err := NewNamespaceHandle(user, network)
+			if err != nil {
+				user.Close()
+				network.Close()
+				t.Fatal(err)
+			}
+			defer handle.Close()
+			assertRecoveryRejectedAndRetained(t, fixture, fixture.identity, handle)
+		})
+	}
+}
+
+func TestLinuxTopologyRecoveryStrictJournalFieldMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		mutate  func(map[string]any)
+		rewrite func([]byte) []byte
+	}{
+		{name: "missing version", mutate: func(raw map[string]any) { delete(raw, "version") }},
+		{name: "missing boot", mutate: func(raw map[string]any) { delete(raw, "hostBootId") }},
+		{name: "missing identity", mutate: func(raw map[string]any) { delete(raw, "identity") }},
+		{name: "missing keeper", mutate: func(raw map[string]any) { delete(raw, "keeper") }},
+		{name: "missing mapper", mutate: func(raw map[string]any) { delete(raw, "mapper") }},
+		{name: "missing namespace", mutate: func(raw map[string]any) { delete(raw, "namespace") }},
+		{name: "unknown top level", mutate: func(raw map[string]any) { raw["endpoint"] = "private.example" }},
+		{name: "unknown identity", mutate: func(raw map[string]any) { raw["identity"].(map[string]any)["pid"] = 42 }},
+		{name: "unknown keeper", mutate: func(raw map[string]any) { raw["keeper"].(map[string]any)["path"] = "/private" }},
+		{name: "unknown namespace", mutate: func(raw map[string]any) { raw["namespace"].(map[string]any)["fd"] = 9 }},
+		{name: "stray creator", mutate: func(raw map[string]any) { raw["mappingCreator"] = raw["keeper"] }},
+		{name: "trailing object", rewrite: func(payload []byte) []byte { return append(payload, []byte(`{}`)...) }},
+		{name: "nested duplicate keeper pid", rewrite: func(payload []byte) []byte { return duplicateFirstJSONField(payload, "pid") }},
+		{name: "nested duplicate identity", rewrite: func(payload []byte) []byte { return duplicateFirstJSONField(payload, "sandboxId") }},
+		{name: "nested case variant", rewrite: func(payload []byte) []byte {
+			return bytes.Replace(payload, []byte(`"startTime"`), []byte(`"StartTime"`), 1)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFileRecoveryFixture(t)
+			if test.mutate != nil {
+				fixture.rewriteJournal(t, test.mutate)
+			} else {
+				payload, err := os.ReadFile(fixture.journalPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writePrivateAtomic(fixture.journalPath, test.rewrite(payload)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertRecoveryRejectedAndRetained(t, fixture, fixture.identity, fixture.namespace)
+		})
+	}
+}
+
+func duplicateFirstJSONField(payload []byte, field string) []byte {
+	marker := []byte(`"` + field + `":`)
+	at := bytes.Index(payload, marker)
+	if at < 0 {
+		return payload
+	}
+	valueStart := at + len(marker)
+	valueEnd := valueStart
+	if valueEnd < len(payload) && payload[valueEnd] == '"' {
+		valueEnd++
+		for valueEnd < len(payload) && payload[valueEnd] != '"' {
+			valueEnd++
+		}
+		if valueEnd < len(payload) {
+			valueEnd++
+		}
+	} else {
+		for valueEnd < len(payload) && payload[valueEnd] >= '0' && payload[valueEnd] <= '9' {
+			valueEnd++
+		}
+	}
+	duplicate := append(append([]byte(nil), marker...), payload[valueStart:valueEnd]...)
+	result := append([]byte(nil), payload[:valueEnd]...)
+	result = append(result, ',')
+	result = append(result, duplicate...)
+	return append(result, payload[valueEnd:]...)
 }
 
 func TestLinuxTopologyRecoveryRejectsUnsafeJournalFile(t *testing.T) {
@@ -258,6 +605,12 @@ func TestLinuxTopologyRecoveryRejectsUnsafeJournalFile(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{name: "multiple links", mutate: func(t *testing.T, fixture *fileRecoveryFixture) {
+			outside := filepath.Join(filepath.Dir(filepath.Dir(fixture.journalPath)), "journal-hardlink")
+			if err := os.Link(fixture.journalPath, outside); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newFileRecoveryFixture(t)
@@ -267,6 +620,45 @@ func TestLinuxTopologyRecoveryRejectsUnsafeJournalFile(t *testing.T) {
 	}
 }
 
+func TestLinuxTopologyRecoveryRejectsRootAndSandboxAncestorReplacement(t *testing.T) {
+	for _, ancestor := range []string{"root", "sandbox"} {
+		t.Run(ancestor, func(t *testing.T) {
+			fixture := newFileRecoveryFixture(t)
+			var path string
+			if ancestor == "root" {
+				path = fixture.store.root
+			} else {
+				path = filepath.Dir(fixture.journalPath)
+			}
+			real := path + "-replaced"
+			if err := os.Rename(path, real); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(real, path); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = os.Remove(path)
+				_ = os.Rename(real, path)
+			})
+			assertRecoveryRejectedAndRetained(t, fixture, fixture.identity, fixture.namespace)
+		})
+	}
+	t.Run("fresh store through root symlink", func(t *testing.T) {
+		fixture := newFileRecoveryFixture(t)
+		link := fixture.store.root + "-link"
+		if err := os.Symlink(fixture.store.root, link); err != nil {
+			t.Fatal(err)
+		}
+		store, err := newFileOwnershipStore(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.store = store
+		assertRecoveryRejectedAndRetained(t, fixture, fixture.identity, fixture.namespace)
+	})
+}
+
 func TestLinuxTopologyRecoverySourceRetainsPrivateOwnerAndPIDFDGuards(t *testing.T) {
 	payload, err := os.ReadFile("ownership_linux.go")
 	if err != nil {
@@ -274,8 +666,8 @@ func TestLinuxTopologyRecoverySourceRetainsPrivateOwnerAndPIDFDGuards(t *testing
 	}
 	text := string(payload)
 	for _, required := range []string{
-		"AcquireRecovery", "stat.Uid != uint32(os.Geteuid())", "sysPIDFDOpen", "readProcessStartTime",
-		"recordedNamespaceMatches", "HostBootID", "DisallowUnknownFields",
+		"AcquireRecovery", "stat.Uid != uint32(os.Geteuid())", "stat.Nlink != 1", "syscall.O_NOFOLLOW",
+		"sysPIDFDOpen", "readProcessStartTime", "recordedNamespaceMatches", "HostBootID", "DisallowUnknownFields",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("production recovery source lacks %q", required)
@@ -284,12 +676,13 @@ func TestLinuxTopologyRecoverySourceRetainsPrivateOwnerAndPIDFDGuards(t *testing
 }
 
 type serializedRecoveryStore struct {
-	base       *memoryOwnershipStore
-	entered    chan struct{}
-	release    chan struct{}
-	once       sync.Once
-	mu         sync.Mutex
-	recoveries int
+	base           *memoryOwnershipStore
+	entered        chan struct{}
+	release        chan struct{}
+	once           sync.Once
+	mu             sync.Mutex
+	recoveries     int
+	blockedSandbox string
 }
 
 func newSerializedRecoveryStore() *serializedRecoveryStore {
@@ -304,11 +697,13 @@ func (s *serializedRecoveryStore) AcquireRecovery(ctx context.Context, request R
 	s.mu.Lock()
 	s.recoveries++
 	s.mu.Unlock()
-	s.once.Do(func() { close(s.entered) })
-	select {
-	case <-s.release:
-	case <-ctx.Done():
-		return RecoveredOwnership{}, ctx.Err()
+	if s.blockedSandbox == "" || s.blockedSandbox == request.Identity.SandboxID {
+		s.once.Do(func() { close(s.entered) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return RecoveredOwnership{}, ctx.Err()
+		}
 	}
 	lease, err := s.base.Acquire(ctx, request.Identity)
 	if err != nil {
@@ -320,6 +715,29 @@ func (s *serializedRecoveryStore) AcquireRecovery(ctx context.Context, request R
 		return RecoveredOwnership{}, err
 	}
 	return RecoveredOwnership{Lease: lease, Namespace: namespace}, nil
+}
+
+func TestLinuxTopologyStartFirstRejectsRecoveryWithoutClaim(t *testing.T) {
+	store := newSerializedRecoveryStore()
+	close(store.release)
+	lifecycle, namespace := newSerializedRecoveryLifecycle(t, store)
+	request := testRequest("topology-gen-start-first-recovery")
+	started, err := lifecycle.Start(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := lifecycle.Recover(context.Background(), RecoveryRequest{Identity: request.Identity, Namespace: namespace}); recovered != nil || err == nil {
+		t.Fatalf("Recover(after Start) = %T, %v", recovered, err)
+	}
+	if store.count() != 0 {
+		t.Fatalf("Recover after live Start reached durable recovery store %d times", store.count())
+	}
+	if namespace.Closed() {
+		t.Fatal("Recover after Start consumed caller namespace")
+	}
+	if _, err := lifecycle.Stop(context.Background(), started.identity); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (s *serializedRecoveryStore) count() int {
@@ -412,6 +830,110 @@ func TestLinuxTopologySerializesAndCoalescesExactRecovery(t *testing.T) {
 	}
 	if store.count() != 1 {
 		t.Fatalf("durable recovery claims = %d, want one", store.count())
+	}
+	_, _ = lifecycle.Stop(context.Background(), identity)
+}
+
+func TestLinuxTopologyRecoveryNeverCoalescesMismatchedIdentityOrNamespace(t *testing.T) {
+	store := newSerializedRecoveryStore()
+	close(store.release)
+	lifecycle, namespace := newSerializedRecoveryLifecycle(t, store)
+	identity := testIdentity("topology-gen-no-unsafe-coalesce")
+	first, err := lifecycle.Recover(context.Background(), RecoveryRequest{Identity: identity, Namespace: namespace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongIdentity := identity
+	wrongIdentity.ExecutionID = "execution-no-coalesce"
+	wrongNamespace := newFakeNamespaces(t, nil).base
+	for _, request := range []RecoveryRequest{
+		{Identity: wrongIdentity, Namespace: namespace},
+		{Identity: identity, Namespace: wrongNamespace},
+	} {
+		if session, err := lifecycle.Recover(context.Background(), request); session != nil || err == nil {
+			t.Fatalf("unsafe coalesced Recover = %T, %v", session, err)
+		}
+		if request.Namespace.Closed() {
+			t.Fatal("noncoalesced recovery consumed caller namespace")
+		}
+	}
+	if store.count() != 1 {
+		t.Fatalf("mismatched recovery reached store: claims=%d", store.count())
+	}
+	if first.Metadata().Status != StatusRecoveryOnly {
+		t.Fatalf("first recovery metadata changed: %#v", first.Metadata())
+	}
+	_, _ = lifecycle.Stop(context.Background(), identity)
+}
+
+func TestLinuxTopologyRecoveryDoesNotBlockIndependentSandbox(t *testing.T) {
+	firstIdentity := testIdentity("topology-gen-independent-recovery-a")
+	firstIdentity.SandboxID = "sandbox-recovery-a"
+	store := newSerializedRecoveryStore()
+	store.blockedSandbox = firstIdentity.SandboxID
+	lifecycle, namespace := newSerializedRecoveryLifecycle(t, store)
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := lifecycle.Recover(context.Background(), RecoveryRequest{Identity: firstIdentity, Namespace: namespace})
+		firstResult <- err
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("first recovery did not block at ownership claim")
+	}
+	secondIdentity := testIdentity("topology-gen-independent-recovery-b")
+	secondIdentity.SandboxID = "sandbox-recovery-b"
+	secondIdentity.ExecutionID = "execution-recovery-b"
+	secondIdentity.ProxyGenerationID = "proxy-generation-recovery-b"
+	second, err := lifecycle.Recover(context.Background(), RecoveryRequest{Identity: secondIdentity, Namespace: namespace})
+	if err != nil || second == nil {
+		close(store.release)
+		t.Fatalf("independent recovery = %T, %v", second, err)
+	}
+	close(store.release)
+	if err := <-firstResult; err != nil {
+		t.Fatal(err)
+	}
+	_, _ = lifecycle.Stop(context.Background(), firstIdentity)
+	_, _ = lifecycle.Stop(context.Background(), secondIdentity)
+}
+
+func TestLinuxTopologyCanceledRecoveryWaiterCannotCoalesce(t *testing.T) {
+	store := newSerializedRecoveryStore()
+	lifecycle, namespace := newSerializedRecoveryLifecycle(t, store)
+	identity := testIdentity("topology-gen-canceled-waiter")
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := lifecycle.Recover(context.Background(), RecoveryRequest{Identity: identity, Namespace: namespace})
+		firstResult <- err
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("first recovery did not enter claim")
+	}
+	waiterContext, cancel := context.WithCancel(context.Background())
+	waiterResult := make(chan error, 1)
+	go func() {
+		_, err := lifecycle.Recover(waiterContext, RecoveryRequest{Identity: identity, Namespace: namespace})
+		waiterResult <- err
+	}()
+	cancel()
+	close(store.release)
+	if err := <-firstResult; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-waiterResult:
+		if err == nil {
+			t.Fatal("canceled recovery waiter coalesced live authority")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("canceled recovery waiter remained blocked")
+	}
+	if namespace.Closed() {
+		t.Fatal("canceled waiter consumed caller namespace")
 	}
 	_, _ = lifecycle.Stop(context.Background(), identity)
 }

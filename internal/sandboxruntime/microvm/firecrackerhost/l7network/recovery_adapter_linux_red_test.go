@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"syscall"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"
@@ -15,6 +16,14 @@ type adapterRecoveryProvider struct {
 	namespace *linuxtopology.NamespaceHandle
 	err       error
 	returned  *linuxtopology.NamespaceHandle
+}
+
+type adversarialRecoveryProvider struct {
+	acquire func(context.Context, Identity) (*linuxtopology.NamespaceHandle, error)
+}
+
+func (p *adversarialRecoveryProvider) AcquireLinuxRecoveryNamespace(ctx context.Context, identity Identity) (*linuxtopology.NamespaceHandle, error) {
+	return p.acquire(ctx, identity)
 }
 
 func (p *adapterRecoveryProvider) AcquireLinuxRecoveryNamespace(context.Context, Identity) (*linuxtopology.NamespaceHandle, error) {
@@ -143,6 +152,97 @@ func TestLinuxRecoveryTopologyRejectsTypedNilProvider(t *testing.T) {
 	}
 	if recovery, err := NewLinuxRecoveryTopology(lifecycle, provider); recovery != nil || !errors.Is(err, ErrInvalidConfiguration) {
 		t.Fatalf("NewLinuxRecoveryTopology(typed nil) = %T, %v", recovery, err)
+	}
+}
+
+func TestLinuxRecoveryTopologyProviderAdversarialMatrix(t *testing.T) {
+	privateErr := errors.New("private provider detail")
+	for _, test := range []struct {
+		name    string
+		acquire func(*testing.T) (*linuxtopology.NamespaceHandle, error)
+	}{
+		{name: "panic", acquire: func(*testing.T) (*linuxtopology.NamespaceHandle, error) { panic("private provider panic") }},
+		{name: "nil", acquire: func(*testing.T) (*linuxtopology.NamespaceHandle, error) { return nil, nil }},
+		{name: "nil plus error", acquire: func(*testing.T) (*linuxtopology.NamespaceHandle, error) { return nil, privateErr }},
+		{name: "closed", acquire: func(t *testing.T) (*linuxtopology.NamespaceHandle, error) {
+			namespace := newAdapterRecoveryNamespace(t)
+			if err := namespace.Close(); err != nil {
+				t.Fatal(err)
+			}
+			return namespace, nil
+		}},
+		{name: "value plus error", acquire: func(t *testing.T) (*linuxtopology.NamespaceHandle, error) {
+			return newAdapterRecoveryNamespace(t), privateErr
+		}},
+		{name: "close failure", acquire: func(t *testing.T) (*linuxtopology.NamespaceHandle, error) {
+			user, err := os.CreateTemp(t.TempDir(), "provider-user-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			network, err := os.CreateTemp(t.TempDir(), "provider-net-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			namespace, err := linuxtopology.NewNamespaceHandle(user, network)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = syscall.Close(int(user.Fd()))
+			_ = syscall.Close(int(network.Fd()))
+			return namespace, privateErr
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &adversarialRecoveryProvider{acquire: func(context.Context, Identity) (*linuxtopology.NamespaceHandle, error) {
+				return test.acquire(t)
+			}}
+			lifecycle, err := linuxtopology.New(linuxtopology.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recovery, err := NewLinuxRecoveryTopology(lifecycle, provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var topology TopologyLifecycle
+			var session TopologySession
+			var recoverErr error
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						t.Fatalf("LinuxRecoveryTopology.Recover panicked: %v", recovered)
+					}
+				}()
+				topology, session, recoverErr = recovery.Recover(context.Background(), testIdentity())
+			}()
+			if topology != nil || session != nil || !errors.Is(recoverErr, ErrStaleTopologyUnverified) || recoverErr.Error() != ErrStaleTopologyUnverified.Error() {
+				t.Fatalf("Recover(%s) = %T, %T, %v", test.name, topology, session, recoverErr)
+			}
+		})
+	}
+}
+
+func TestLinuxRecoveryTopologyRejectsReusedProviderHandle(t *testing.T) {
+	namespace := newAdapterRecoveryNamespace(t)
+	provider := &adversarialRecoveryProvider{acquire: func(context.Context, Identity) (*linuxtopology.NamespaceHandle, error) {
+		return namespace, nil
+	}}
+	lifecycle, err := linuxtopology.New(linuxtopology.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := NewLinuxRecoveryTopology(lifecycle, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if topology, session, err := recovery.Recover(context.Background(), testIdentity()); topology != nil || session != nil ||
+			!errors.Is(err, ErrStaleTopologyUnverified) {
+			t.Fatalf("Recover(reused handle %d) = %T, %T, %v", attempt, topology, session, err)
+		}
+	}
+	if !namespace.Closed() {
+		t.Fatal("adapter did not consume first provider transfer")
 	}
 }
 

@@ -528,6 +528,7 @@ type retryNamespaceRecovery struct{ topology *retryNamespaceTopology }
 
 func (r *retryNamespaceRecovery) Recover(_ context.Context, identity Identity) (TopologyLifecycle, TopologySession, error) {
 	r.topology.session.identity = topologyIdentity(identity)
+	r.topology.session.recoveryOnly = true
 	return r.topology, r.topology.session, nil
 }
 
@@ -585,12 +586,16 @@ func (t *typedNilNamespaceTopology) Stop(context.Context, linuxtopology.Identity
 }
 
 type typedNilBorrowSession struct {
-	sequence *callSequence
-	identity linuxtopology.Identity
-	losses   chan linuxtopology.Loss
+	sequence     *callSequence
+	identity     linuxtopology.Identity
+	losses       chan linuxtopology.Loss
+	recoveryOnly bool
 }
 
 func (s *typedNilBorrowSession) Metadata() linuxtopology.Metadata {
+	if s.recoveryOnly {
+		return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusRecoveryOnly}
+	}
 	return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusPrepared, StructuralInspected: true, MappingReachable: true}
 }
 func (s *typedNilBorrowSession) Losses() <-chan linuxtopology.Loss { return s.losses }
@@ -623,9 +628,10 @@ func (r *typedNilRecoveryResult) Recover(_ context.Context, identity Identity) (
 		lifecycle = value
 	}
 	var session TopologySession = &typedNilBorrowSession{
-		sequence: r.sequence,
-		identity: topologyIdentity(identity),
-		losses:   make(chan linuxtopology.Loss, 1),
+		sequence:     r.sequence,
+		identity:     topologyIdentity(identity),
+		losses:       make(chan linuxtopology.Loss, 1),
+		recoveryOnly: true,
 	}
 	if r.sessionNil {
 		var value *typedNilBorrowSession

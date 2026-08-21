@@ -619,13 +619,17 @@ func (t *fakeTopology) Stop(context.Context, linuxtopology.Identity) (linuxtopol
 }
 
 type fakeTopologySession struct {
-	sequence  *callSequence
-	identity  linuxtopology.Identity
-	borrowErr error
-	losses    chan linuxtopology.Loss
+	sequence     *callSequence
+	identity     linuxtopology.Identity
+	borrowErr    error
+	losses       chan linuxtopology.Loss
+	recoveryOnly bool
 }
 
 func (s *fakeTopologySession) Metadata() linuxtopology.Metadata {
+	if s.recoveryOnly {
+		return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusRecoveryOnly}
+	}
 	return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusPrepared, StructuralInspected: true, MappingReachable: true}
 }
 func (s *fakeTopologySession) BorrowNamespace() (NamespaceLease, error) {
@@ -674,14 +678,18 @@ func (t *retryNamespaceTopology) Stop(context.Context, linuxtopology.Identity) (
 }
 
 type retryNamespaceSession struct {
-	sequence  *callSequence
-	identity  linuxtopology.Identity
-	lease     *retryNamespaceLease
-	borrowErr error
-	losses    chan linuxtopology.Loss
+	sequence     *callSequence
+	identity     linuxtopology.Identity
+	lease        *retryNamespaceLease
+	borrowErr    error
+	losses       chan linuxtopology.Loss
+	recoveryOnly bool
 }
 
 func (s *retryNamespaceSession) Metadata() linuxtopology.Metadata {
+	if s.recoveryOnly {
+		return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusRecoveryOnly}
+	}
 	return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusPrepared, StructuralInspected: true, MappingReachable: true}
 }
 

@@ -172,6 +172,7 @@ func (r *fakeRecoveryTopology) Recover(_ context.Context, identity Identity) (To
 		return nil, nil, r.err
 	}
 	r.lifecycle.session.identity = topologyIdentity(identity)
+	r.lifecycle.session.recoveryOnly = true
 	return r.lifecycle, r.lifecycle.session, nil
 }
 
