@@ -3,6 +3,8 @@ package cmd
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,7 +17,7 @@ const (
 	l11FinalClosureSelectedTest     = "TestL11PreparedLinuxFinalClosure"
 	l11FinalClosureIntegrationTag   = "l11_final_closure_integration"
 	l11FinalClosureCurrentStateLine = "Current closure state: `blocked`."
-	l11FinalClosureBlockedDocSHA256 = "0340918278e06a2e1368a8c0ed1eb406c75fdbba47642b4f5adc9777bdeb5892"
+	l11FinalClosureBlockedDocSHA256 = "12183fe75a9dfb264af2e287d74cfebbc8e611e6bd48360511a7755b3c4e7515"
 )
 
 type l11FinalClosureMatrixRow struct {
@@ -47,8 +49,11 @@ func TestL11FinalClosureDocumentationIsNormative(t *testing.T) {
 		"A selected required live test that skips is a blocker, never a pass.",
 		"Hetzner, Lightsail, and every other billed cloud call remain unauthorized.",
 		"No acceptance is claimed by this document.",
+		"same-repository SHA-256 tripwire",
+		"cannot defend against a coordinated edit",
+		"external branch protection",
 	} {
-		if !strings.Contains(doc, required) {
+		if !l11FinalClosureContains(doc, required) {
 			t.Errorf("L11 final-closure document omits %q", required)
 		}
 	}
@@ -266,6 +271,12 @@ func TestL11FinalClosureRepositoryRejectsSecondaryDocuments(t *testing.T) {
 	}
 }
 
+func TestL11FinalClosureRepositoryHasOneCanonicalDocument(t *testing.T) {
+	if err := l11ValidateFinalClosureRepository(".."); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestL11FinalClosureCanonicalDocumentRejectsSymlinkAndNonregularFiles(t *testing.T) {
 	doc := l11ReadFinalClosureDoc(t)
 	for _, test := range []struct {
@@ -299,17 +310,98 @@ func TestL11FinalClosureCanonicalDocumentRejectsSymlinkAndNonregularFiles(t *tes
 	}
 }
 
-// Red-first placeholder: repository topology and canonical-file identity are
-// implemented only after the mutation cases above demonstrate the gap.
-func l11ValidateFinalClosureRepository(string) error { return nil }
-
 func l11ReadFinalClosureDoc(t *testing.T) string {
 	t.Helper()
-	payload, err := os.ReadFile(filepath.Join("..", "docs", "design", l11FinalClosureDocPath))
+	payload, err := l11ReadFinalClosureCanonical("..")
 	if err != nil {
 		t.Fatalf("read L11 final-closure document: %v", err)
 	}
 	return string(payload)
+}
+
+func l11ValidateFinalClosureRepository(repoRoot string) error {
+	payload, err := l11ReadFinalClosureCanonical(repoRoot)
+	if err != nil {
+		return err
+	}
+	if err := l11ValidateFinalClosureDocumentSafety(string(payload)); err != nil {
+		return err
+	}
+	canonical := filepath.Clean(filepath.Join("docs", "design", l11FinalClosureDocPath))
+	return filepath.WalkDir(repoRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(repoRoot, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.Clean(relative)
+		if relative == "." || relative == canonical || entry.IsDir() {
+			return nil
+		}
+		if strings.ToLower(filepath.Ext(relative)) != ".md" {
+			return nil
+		}
+		if l11FinalClosureSecondaryDocumentPath(relative) {
+			return &l11FinalClosureGuardError{message: "secondary L11 final-closure or release document is forbidden"}
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return nil
+		}
+		candidate, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		text := string(candidate)
+		if strings.Contains(text, "# Sandbox Runtime v2 L11 Final Closure") ||
+			strings.Contains(text, l11FinalClosureCurrentStateLine) {
+			return &l11FinalClosureGuardError{message: "duplicate L11 final-closure document is forbidden"}
+		}
+		return nil
+	})
+}
+
+func l11ReadFinalClosureCanonical(repoRoot string) ([]byte, error) {
+	const maxDocumentBytes = 1 << 20
+	path := filepath.Join(repoRoot, "docs", "design", l11FinalClosureDocPath)
+	linkInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("lstat canonical L11 final-closure document: %w", err)
+	}
+	if !linkInfo.Mode().IsRegular() {
+		return nil, &l11FinalClosureGuardError{message: "canonical L11 final-closure document is not a regular file"}
+	}
+	file, err := l11OpenFinalClosureNoFollow(path)
+	if err != nil {
+		return nil, fmt.Errorf("open canonical L11 final-closure document without following links: %w", err)
+	}
+	openedInfo, statErr := file.Stat()
+	if statErr != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(linkInfo, openedInfo) {
+		_ = file.Close()
+		return nil, &l11FinalClosureGuardError{message: "canonical L11 final-closure document identity changed"}
+	}
+	payload, readErr := io.ReadAll(io.LimitReader(file, maxDocumentBytes+1))
+	afterInfo, afterErr := file.Stat()
+	closeErr := file.Close()
+	if readErr != nil || afterErr != nil || closeErr != nil {
+		return nil, &l11FinalClosureGuardError{message: "canonical L11 final-closure document read was not exact"}
+	}
+	if len(payload) > maxDocumentBytes || !afterInfo.Mode().IsRegular() || !os.SameFile(openedInfo, afterInfo) || afterInfo.Size() != int64(len(payload)) {
+		return nil, &l11FinalClosureGuardError{message: "canonical L11 final-closure document bytes changed during read"}
+	}
+	return payload, nil
+}
+
+func l11FinalClosureSecondaryDocumentPath(relative string) bool {
+	lower := strings.ToLower(filepath.ToSlash(relative))
+	normalized := strings.NewReplacer("_", "-", " ", "-").Replace(lower)
+	if !strings.Contains(normalized, "l11") {
+		return false
+	}
+	return strings.Contains(normalized, "final-closure") ||
+		strings.Contains(normalized, "final-release") ||
+		strings.Contains(normalized, "release-evidence")
 }
 
 func l11FinalClosureContains(doc, required string) bool {

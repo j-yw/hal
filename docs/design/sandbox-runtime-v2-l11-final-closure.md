@@ -14,6 +14,12 @@ The selected L11 test, wrapper, prepared-host results, and final release record
 are future work after the L8 and L10 dependencies described below are accepted
 on the aggregate.
 
+The canonical blocked document is protected by a same-repository SHA-256
+tripwire plus regular-file identity checks. That tripwire detects accidental or
+uncoordinated drift, but it cannot defend against a coordinated edit of both the
+document and its checked-in digest. Code review and external branch protection
+remain required trust boundaries for every change to this contract.
+
 ## 1. Inputs, outputs, states, and failure codes
 
 ### Required inputs
