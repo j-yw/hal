@@ -521,6 +521,7 @@ func validateL8D4FullSyscallWrapperSource(source string) error {
 	exportedFunctions := 0
 	var executorInterfaces []*ast.InterfaceType
 	var executeMethods []*ast.FuncDecl
+	var callTerminalSafelyFunctions []*ast.FuncDecl
 	for _, declaration := range parsed.Decls {
 		if function, ok := declaration.(*ast.FuncDecl); ok {
 			if function.Name.IsExported() && function.Recv == nil {
@@ -528,6 +529,9 @@ func validateL8D4FullSyscallWrapperSource(source string) error {
 			}
 			if function.Name.Name == "execute" && l8D4FullWrapperReceiverShape(function) == "*syscallPolicyWrapper" {
 				executeMethods = append(executeMethods, function)
+			}
+			if function.Name.Name == "callTerminalSafely" && function.Recv == nil {
+				callTerminalSafelyFunctions = append(callTerminalSafelyFunctions, function)
 			}
 		}
 		generation, ok := declaration.(*ast.GenDecl)
@@ -574,6 +578,7 @@ func validateL8D4FullSyscallWrapperSource(source string) error {
 		"commitNoObject":     true,
 		"finishLocked":       true,
 	}
+	parents := l8D4FullWrapperParentMap(parsed)
 	approvedSelectorReferences := make(map[*ast.SelectorExpr]bool)
 	selectorReferences := make(map[string]int)
 	ast.Inspect(parsed, func(node ast.Node) bool {
@@ -589,13 +594,16 @@ func validateL8D4FullSyscallWrapperSource(source string) error {
 		}
 		shape := l8D4FullWrapperCallShape(call)
 		callShapes[shape]++
-		if selector, direct := call.Fun.(*ast.SelectorExpr); direct && expectedGuardedCalls[shape] != 0 {
+		if selector, direct := call.Fun.(*ast.SelectorExpr); direct && expectedGuardedCalls[shape] != 0 && l8D4FullWrapperGuardedCallContext(call, parents) {
 			approvedSelectorReferences[selector] = true
 		}
 		return true
 	})
 	if len(executorInterfaces) != 1 || !l8D4ExactSyscallExecutorInterface(executorInterfaces[0]) {
 		return errors.New("live wrapper must contain one exact private one-method executor")
+	}
+	if len(callTerminalSafelyFunctions) != 1 || !l8D4ExactCallTerminalSafely(callTerminalSafelyFunctions[0]) {
+		return errors.New("live wrapper terminal callback may escape its immediate invocation")
 	}
 	for callShape, want := range expectedGuardedCalls {
 		if callShapes[callShape] != want {
@@ -625,6 +633,175 @@ func validateL8D4FullSyscallWrapperSource(source string) error {
 		return errors.New("live wrapper changed its mutually exclusive finalization paths")
 	}
 	return nil
+}
+
+func l8D4FullWrapperGuardedCallContext(call *ast.CallExpr, parents map[ast.Node]ast.Node) bool {
+	shape := l8D4FullWrapperCallShape(call)
+	owner, insideLiteral := l8D4FullWrapperCallOwner(call, parents)
+	ownerShape := l8D4FullWrapperFunctionShape(owner)
+	switch shape {
+	case "policy.NewAdapterBindings(ticket,wrapper)":
+		return !insideLiteral && ownerShape == "newSyscallPolicyWrapper" && l8D4FullWrapperDirectAssignment(call, parents, owner, "bindings,err", token.DEFINE)
+	case "policy.AuthorizePre(ticket,wrapper.bindings,wrapper)":
+		return !insideLiteral && ownerShape == "newSyscallPolicyWrapper" && l8D4FullWrapperDirectAssignment(call, parents, owner, "permit,pre,err", token.DEFINE)
+	case "terminal.policy.AbortPermit(permit.value,phase)":
+		return !insideLiteral && ownerShape == "*d2SyscallPolicyTerminal.abortPermit" && l8D4FullWrapperDirectAssignment(call, parents, owner, "decision,err", token.DEFINE)
+	case "terminal.policy.AuthorizePost(permit.value,source)":
+		return !insideLiteral && ownerShape == "*d2SyscallPolicyTerminal.authorizePost" && l8D4FullWrapperDirectAssignment(call, parents, owner, "decision,err", token.DEFINE)
+	case "terminal.policy.CommitNoObject(permit.value)":
+		return !insideLiteral && ownerShape == "*d2SyscallPolicyTerminal.commitNoObject" && l8D4FullWrapperDirectAssignment(call, parents, owner, "decision,err", token.DEFINE)
+	case "executor.execute(ctx)":
+		return !insideLiteral && ownerShape == "executeSyscallSafely" && l8D4FullWrapperDirectAssignment(call, parents, owner, "execution,err", token.ASSIGN)
+	case "terminal.abortPermit(permit,syscallpolicy.AdapterPhasePre)":
+		return insideLiteral && ownerShape == "*syscallPolicyWrapper.execute" && l8D4FullWrapperImmediateTerminalCallback(call, parents, token.DEFINE)
+	case "terminal.abortPermit(permit,syscallpolicy.AdapterPhasePost)",
+		"terminal.authorizePost(permit,postSource)",
+		"terminal.commitNoObject(permit)":
+		return insideLiteral && ownerShape == "*syscallPolicyWrapper.execute" && l8D4FullWrapperImmediateTerminalCallback(call, parents, token.ASSIGN)
+	case "wrapper.finishLocked()":
+		_, directStatement := parents[call].(*ast.ExprStmt)
+		return !insideLiteral && ownerShape == "*syscallPolicyWrapper.execute" && directStatement
+	default:
+		return false
+	}
+}
+
+func l8D4FullWrapperParentMap(root ast.Node) map[ast.Node]ast.Node {
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
+	ast.Inspect(root, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return false
+		}
+		if len(stack) != 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	return parents
+}
+
+func l8D4FullWrapperCallOwner(call *ast.CallExpr, parents map[ast.Node]ast.Node) (*ast.FuncDecl, bool) {
+	insideLiteral := false
+	for node := parents[call]; node != nil; node = parents[node] {
+		switch node := node.(type) {
+		case *ast.FuncLit:
+			insideLiteral = true
+		case *ast.FuncDecl:
+			return node, insideLiteral
+		}
+	}
+	return nil, insideLiteral
+}
+
+func l8D4FullWrapperFunctionShape(function *ast.FuncDecl) string {
+	if function == nil {
+		return ""
+	}
+	receiver := l8D4FullWrapperReceiverShape(function)
+	if receiver == "" {
+		return function.Name.Name
+	}
+	return receiver + "." + function.Name.Name
+}
+
+func l8D4FullWrapperDirectAssignment(call *ast.CallExpr, parents map[ast.Node]ast.Node, owner *ast.FuncDecl, left string, operator token.Token) bool {
+	assignment, ok := parents[call].(*ast.AssignStmt)
+	if !ok || assignment.Tok != operator || len(assignment.Rhs) != 1 || assignment.Rhs[0] != call || l8D4FullWrapperExpressionListShape(assignment.Lhs) != left {
+		return false
+	}
+	block, ok := parents[assignment].(*ast.BlockStmt)
+	return ok && owner != nil && block == owner.Body
+}
+
+func l8D4FullWrapperImmediateTerminalCallback(call *ast.CallExpr, parents map[ast.Node]ast.Node, operator token.Token) bool {
+	result, ok := parents[call].(*ast.ReturnStmt)
+	if !ok || len(result.Results) != 1 || result.Results[0] != call {
+		return false
+	}
+	body, ok := parents[result].(*ast.BlockStmt)
+	if !ok || len(body.List) != 1 || body.List[0] != result {
+		return false
+	}
+	literal, ok := parents[body].(*ast.FuncLit)
+	if !ok || literal.Body != body || l8D4FullWrapperFieldShapes(literal.Type.Params) != "" || l8D4FullWrapperFieldShapes(literal.Type.Results) != "syscallTerminalResult" {
+		return false
+	}
+	protectedCall, ok := parents[literal].(*ast.CallExpr)
+	if !ok || l8D4FullWrapperExpressionShape(protectedCall.Fun) != "callTerminalSafely" || len(protectedCall.Args) != 1 || protectedCall.Args[0] != literal {
+		return false
+	}
+	assignment, ok := parents[protectedCall].(*ast.AssignStmt)
+	return ok && assignment.Tok == operator && len(assignment.Lhs) == 1 && l8D4FullWrapperExpressionShape(assignment.Lhs[0]) == "terminalResult" && len(assignment.Rhs) == 1 && assignment.Rhs[0] == protectedCall
+}
+
+func l8D4ExactCallTerminalSafely(function *ast.FuncDecl) bool {
+	if function == nil || function.Type == nil || function.Body == nil ||
+		l8D4FullWrapperFieldNameShapes(function.Type.Params) != "call:func" ||
+		!l8D4ExactTerminalCallbackParameter(function.Type.Params) ||
+		l8D4FullWrapperFieldNameShapes(function.Type.Results) != "result:syscallTerminalResult" ||
+		len(function.Body.List) != 2 {
+		return false
+	}
+	deferred, ok := function.Body.List[0].(*ast.DeferStmt)
+	if !ok || deferred.Call == nil || len(deferred.Call.Args) != 0 {
+		return false
+	}
+	if _, ok := deferred.Call.Fun.(*ast.FuncLit); !ok {
+		return false
+	}
+	result, ok := function.Body.List[1].(*ast.ReturnStmt)
+	if !ok || len(result.Results) != 1 {
+		return false
+	}
+	call, ok := result.Results[0].(*ast.CallExpr)
+	if !ok || l8D4FullWrapperCallShape(call) != "call()" {
+		return false
+	}
+	callReferences := 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		identifier, ok := node.(*ast.Ident)
+		if ok && identifier.Name == "call" {
+			callReferences++
+		}
+		return true
+	})
+	return callReferences == 1
+}
+
+func l8D4ExactTerminalCallbackParameter(fields *ast.FieldList) bool {
+	if fields == nil || len(fields.List) != 1 || len(fields.List[0].Names) != 1 || fields.List[0].Names[0].Name != "call" {
+		return false
+	}
+	function, ok := fields.List[0].Type.(*ast.FuncType)
+	return ok && l8D4FullWrapperFieldShapes(function.Params) == "" && l8D4FullWrapperFieldShapes(function.Results) == "syscallTerminalResult"
+}
+
+func l8D4FullWrapperFieldNameShapes(fields *ast.FieldList) string {
+	if fields == nil {
+		return ""
+	}
+	var shapes []string
+	for _, field := range fields.List {
+		if len(field.Names) == 0 {
+			shapes = append(shapes, ":"+l8D4FullWrapperExpressionShape(field.Type))
+			continue
+		}
+		for _, name := range field.Names {
+			shapes = append(shapes, name.Name+":"+l8D4FullWrapperExpressionShape(field.Type))
+		}
+	}
+	return strings.Join(shapes, ",")
+}
+
+func l8D4FullWrapperExpressionListShape(expressions []ast.Expr) string {
+	shapes := make([]string, 0, len(expressions))
+	for _, expression := range expressions {
+		shapes = append(shapes, l8D4FullWrapperExpressionShape(expression))
+	}
+	return strings.Join(shapes, ",")
 }
 
 func validateL8D4FullWrapperConvergence(execute *ast.FuncDecl) error {
@@ -864,6 +1041,8 @@ func l8D4FullWrapperExpressionShape(expression ast.Expr) string {
 		return l8D4FullWrapperExpressionShape(expression.X) + "." + expression.Sel.Name
 	case *ast.StarExpr:
 		return "*" + l8D4FullWrapperExpressionShape(expression.X)
+	case *ast.FuncType:
+		return "func"
 	}
 	return ""
 }
