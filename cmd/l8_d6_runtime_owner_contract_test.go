@@ -1,6 +1,11 @@
 package cmd
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,6 +43,7 @@ const l8D6RuntimeOwnerRecordDocBlock = `type firecrackerRuntimeOwnerRecordV1 str
 	ContractVersion              string ` + "`json:\"contractVersion\"`" + `
 	Revision                     uint64 ` + "`json:\"revision\"`" + `
 	State                        string ` + "`json:\"state\"`" + `
+	HostBootID                   string ` + "`json:\"hostBootId\"`" + `
 	SupervisorGeneration         string ` + "`json:\"supervisorGeneration\"`" + `
 	SupervisorPID                uint32 ` + "`json:\"supervisorPid\"`" + `
 	SupervisorStartTime          uint64 ` + "`json:\"supervisorStartTime\"`" + `
@@ -81,13 +87,18 @@ func TestL8D6RuntimeOwnerContractArchitectureIsExact(t *testing.T) {
 		"exactly one live controller",
 		"TERM -> KILL -> Wait/reap",
 		"one shared 30-second budget",
+		"private bootstrap pipe and start gate",
+		"revision-one `starting` durability",
+		"`AbortStart`",
 		"`PR_SET_PDEATHSIG`",
 		"`pidfd_open`",
+		"`/proc/sys/kernel/random/boot_id`",
 		"PID reuse",
 		"`l7network.NewReconciler`",
 		"`CleanupAfterVMQuiesced`",
 		"private recovered `TerminatedVMBinding`",
 		"owner record is retired only after",
+		"mandatory for both seed-only and complete-identity restart",
 		"The digest has no accessor",
 		"Close does not imply process or resource absence",
 		"Non-Linux implementations fail closed",
@@ -118,11 +129,58 @@ func TestL8D6RuntimeOwnerContractVerificationIsFrozen(t *testing.T) {
 		"does not add the neutral root API",
 		"does not open a listener, launch or signal a process, access `/proc`, or call pidfd syscalls",
 		"does not wire worker, command, provider, scheduler, or default runtime paths",
+		"bootstrap pipe/start-gate loss before revision-one publication",
 		"No test requires KVM, root, Firecracker, a live guest, or a daemon.",
 	} {
 		if !strings.Contains(doc, required) {
 			t.Fatalf("L8 D6 runtime-owner verification omits %q", required)
 		}
+	}
+}
+
+func TestL8D6RuntimeOwnerContractProofConstructorHasOneProductionOwner(t *testing.T) {
+	const allowed = "../internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go"
+	err := filepath.WalkDir(filepath.Join("..", "internal"), func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, payload, 0)
+		if err != nil {
+			return err
+		}
+		var forbidden bool
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			name := ""
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				name = fun.Name
+			case *ast.SelectorExpr:
+				name = fun.Sel.Name
+			}
+			if name == "NewJobCredentialRuntimeAbsenceProof" && filepath.ToSlash(path) != allowed {
+				forbidden = true
+				return false
+			}
+			return true
+		})
+		if forbidden {
+			t.Fatalf("production proof constructor call outside sole owner %s: %s", allowed, filepath.ToSlash(path))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan production proof constructor calls: %v", err)
 	}
 }
 
