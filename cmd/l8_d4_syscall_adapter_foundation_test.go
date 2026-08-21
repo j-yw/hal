@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"go/ast"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"os"
@@ -296,14 +297,20 @@ func cloneL8D4ProductionSources(source map[string]string) map[string]string {
 func validateL8D4RepositoryHostEvidenceBoundary(sources map[string]string) error {
 	const syscallPolicyImportPath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
 	const embeddedDeclarationPath = "internal/sandboxruntime/microvm/guestagent/syscallpolicy/pinned_evidence_default.go"
+	const generatedDeclarationPath = "internal/sandboxruntime/microvm/guestagent/syscallpolicy/pinned_callsite_evidence_expected_d7_gen.go"
 	const importDeclarationPath = "internal/sandboxruntime/microvm/guestagent/syscallpolicy/pinned_evidence.go"
 	const localResolverPath = "internal/sandboxruntime/microvm/assets/localresolver/l8_distribution_verifier.go"
+	const evidenceBuildTag = "l8_verified_pinned_callsite_evidence"
 	guardedNames := []string{
 		"EmbeddedExpectedPinnedCallsiteEvidence",
 		"ImportPinnedCallsiteEvidence",
 	}
 	expectedSpellings := map[string]map[string]int{
 		embeddedDeclarationPath: {
+			"EmbeddedExpectedPinnedCallsiteEvidence": 1,
+			"ImportPinnedCallsiteEvidence":           0,
+		},
+		generatedDeclarationPath: {
 			"EmbeddedExpectedPinnedCallsiteEvidence": 1,
 			"ImportPinnedCallsiteEvidence":           0,
 		},
@@ -317,6 +324,7 @@ func validateL8D4RepositoryHostEvidenceBoundary(sources map[string]string) error
 		},
 	}
 	seenAllowedFiles := make(map[string]int)
+	issuerConstraints := make(map[string]constraint.Expr)
 
 	for path, source := range sources {
 		path = filepath.ToSlash(filepath.Clean(path))
@@ -343,6 +351,20 @@ func validateL8D4RepositoryHostEvidenceBoundary(sources map[string]string) error
 		}
 		switch path {
 		case embeddedDeclarationPath:
+			buildConstraint, err := validateL8D4HostEvidenceBuildConstraint(source, evidenceBuildTag, false)
+			if err != nil {
+				return err
+			}
+			issuerConstraints[path] = buildConstraint
+			if err := validateL8D4HostEvidenceDeclaration(parsed, "EmbeddedExpectedPinnedCallsiteEvidence", nil, []string{"ExpectedPinnedCallsiteEvidence", "error"}); err != nil {
+				return err
+			}
+		case generatedDeclarationPath:
+			buildConstraint, err := validateL8D4HostEvidenceBuildConstraint(source, evidenceBuildTag, true)
+			if err != nil {
+				return err
+			}
+			issuerConstraints[path] = buildConstraint
 			if err := validateL8D4HostEvidenceDeclaration(parsed, "EmbeddedExpectedPinnedCallsiteEvidence", nil, []string{"ExpectedPinnedCallsiteEvidence", "error"}); err != nil {
 				return err
 			}
@@ -357,9 +379,73 @@ func validateL8D4RepositoryHostEvidenceBoundary(sources map[string]string) error
 		}
 	}
 
-	for path := range expectedSpellings {
+	for _, path := range []string{embeddedDeclarationPath, importDeclarationPath, localResolverPath} {
 		if seenAllowedFiles[path] != 1 {
 			return &l8D4GuestAuthorityGuardError{"host-evidence frozen production file is missing or duplicated"}
+		}
+	}
+	if err := validateL8D4HostEvidenceBuildContexts(issuerConstraints, embeddedDeclarationPath, generatedDeclarationPath, evidenceBuildTag); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateL8D4HostEvidenceBuildConstraint(source, tag string, positive bool) (constraint.Expr, error) {
+	var buildLines []string
+	for _, line := range strings.Split(source, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//go:build") {
+			buildLines = append(buildLines, trimmed)
+		}
+		if trimmed != "" && !strings.HasPrefix(trimmed, "//") {
+			break
+		}
+	}
+	if len(buildLines) != 1 {
+		return nil, &l8D4GuestAuthorityGuardError{"host-evidence issuer must have one exact build constraint"}
+	}
+	expression, err := constraint.Parse(buildLines[0])
+	if err != nil {
+		return nil, &l8D4GuestAuthorityGuardError{"host-evidence issuer has a malformed build constraint"}
+	}
+	if positive {
+		tagExpression, ok := expression.(*constraint.TagExpr)
+		if !ok || tagExpression.Tag != tag {
+			return nil, &l8D4GuestAuthorityGuardError{"generated host-evidence issuer must use the exact positive build constraint"}
+		}
+		return expression, nil
+	}
+	negation, ok := expression.(*constraint.NotExpr)
+	if !ok {
+		return nil, &l8D4GuestAuthorityGuardError{"default host-evidence issuer must use the exact negative build constraint"}
+	}
+	tagExpression, ok := negation.X.(*constraint.TagExpr)
+	if !ok || tagExpression.Tag != tag {
+		return nil, &l8D4GuestAuthorityGuardError{"default host-evidence issuer must use the exact negative build constraint"}
+	}
+	return expression, nil
+}
+
+func validateL8D4HostEvidenceBuildContexts(constraints map[string]constraint.Expr, defaultPath, generatedPath, tag string) error {
+	if constraints[defaultPath] == nil {
+		return &l8D4GuestAuthorityGuardError{"default host-evidence issuer build context is missing"}
+	}
+	contexts := []bool{false}
+	if constraints[generatedPath] != nil {
+		contexts = append(contexts, true)
+	}
+	for _, enabled := range contexts {
+		active := 0
+		for _, path := range []string{defaultPath, generatedPath} {
+			expression := constraints[path]
+			if expression != nil && expression.Eval(func(candidate string) bool {
+				return candidate == tag && enabled
+			}) {
+				active++
+			}
+		}
+		if active != 1 {
+			return &l8D4GuestAuthorityGuardError{"host-evidence build context must select exactly one issuer declaration"}
 		}
 	}
 	return nil
@@ -516,6 +602,10 @@ func TestL8D4SyscallAdapterFoundationIsTruthfullyDocumented(t *testing.T) {
 		"repository root",
 		"every non-test Go file",
 		"every other production file to have zero guarded spellings",
+		"pinned_evidence_default.go",
+		"pinned_callsite_evidence_expected_d7_gen.go",
+		"!l8_verified_pinned_callsite_evidence",
+		"constraints select exactly one issuer declaration in each build context",
 		"go:linkname",
 		"strconv.Unquote",
 		"stable sanitized dependency failure",

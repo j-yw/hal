@@ -6330,7 +6330,13 @@ sole expected evidence issuer only from
 `syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence()`. It checks that
 issuer's separate error before passing the returned exact expectation to
 `syscallpolicy.ImportPinnedCallsiteEvidence` with the copied snapshot and
-artifact. A missing default
+artifact. The issuer has mutually exclusive leaf declarations: the exact
+default `syscallpolicy/pinned_evidence_default.go` declaration is constrained
+by `!l8_verified_pinned_callsite_evidence`, while a future D7-generated
+`syscallpolicy/pinned_callsite_evidence_expected_d7_gen.go` declaration is
+constrained by `l8_verified_pinned_callsite_evidence`. The generated sibling is
+absent until D7 possesses real final-binary authority; once present, exactly
+one declaration is active in each complementary build context. A missing default
 embedded artifact/issuer, zero or oversized evidence, or any import mismatch
 fails before profile issuance. No caller can supply an expected digest or
 artifact issuer. After sealing the four host-authority digests, the resolver

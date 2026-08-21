@@ -157,7 +157,7 @@ const l8D6CanonicalHelperOptionsBlock = "type HelperOptions struct {\n" +
 	"}"
 
 // l8D6GuestExtensionSeamsSHA256 changes only with an explicit review of the complete normative document.
-const l8D6GuestExtensionSeamsSHA256 = "5c51bbab2d17140fc334a7fd3cf404021f91c737062566ddd258a5908cab60e8"
+const l8D6GuestExtensionSeamsSHA256 = "97cef3d6bd397a5580847d759c97cd667061ceba37ab5d49c5ba33cf87964c3b"
 
 func validateL8D6HelperCompositionDocument(document string) error {
 	digest := sha256.Sum256([]byte(document))

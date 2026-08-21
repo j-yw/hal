@@ -36,11 +36,20 @@ artifact.
 The package-wide production guard parses every non-test Go file from the
 repository root, including build-tagged variants. It first requires every other
 production file to have zero guarded spellings, including `go:linkname`
-directive targets, then permits one spelling in each frozen leaf declaration
-and one spelling per exact local-resolver call. The three allowed files are
-parsed independently: declaration signatures and objects stay exact, the sole
-`syscallpolicy` import is decoded with `strconv.Unquote`, and the only two bound
-direct calls remain in `localresolver.VerifyL8DistributionBundle`.
+directive targets, then permits one spelling in each frozen issuer leaf, one
+spelling in the import leaf, and one spelling per exact local-resolver call.
+The default issuer is exactly
+`syscallpolicy/pinned_evidence_default.go` under
+`!l8_verified_pinned_callsite_evidence`. The mutually exclusive future D7
+issuer is allowed only at exact generated path
+`syscallpolicy/pinned_callsite_evidence_expected_d7_gen.go` under
+`l8_verified_pinned_callsite_evidence`; it remains absent until D7 has real
+final-binary authority. When that generated file is present, the complementary
+constraints select exactly one issuer declaration in each build context. The
+allowed files are parsed independently: declaration signatures and objects
+stay exact, the sole `syscallpolicy` import is decoded with `strconv.Unquote`,
+and the only two bound direct calls remain in
+`localresolver.VerifyL8DistributionBundle`.
 
 The current constructor returns the stable sanitized dependency failure before
 retaining or calling the injected kernel because the adapter-callsite
@@ -54,7 +63,7 @@ The non-Linux constructor rejects without inspecting its inputs.
 go run ./tools/microvm/l8/policy/generate -root . -check
 go test -count=1 ./internal/sandboxruntime/microvm/guestagent/credentialhelper/linux ./internal/sandboxruntime/microvm/guestagent/rolebootstrap ./tools/microvm/l8/policy/generate
 go test -count=1 -tags=l8_verified_policy_artifact ./internal/sandboxruntime/microvm/guestagent/syscallpolicy ./internal/sandboxruntime/microvm/guestagent/credentialhelper/linux
-go test -count=1 ./cmd -run '^TestL8D4SyscallAdapterFoundation'
+go test -count=1 ./cmd -run '^TestL8D4(SyscallAdapterFoundation.*|HostEvidenceHasOneRepositoryWideProductionConsumer)$'
 ```
 
 The later full-wrapper red gate is intentionally separate:
