@@ -267,24 +267,17 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	if err != nil {
 		return nil, err
 	}
-	if c.liveStart && c.liveSessions != nil {
-		_, ownershipState, owned := c.liveSessions.L8ProcessOwnership(config.RuntimeID)
-		if owned {
-			switch ownershipState {
-			case l8ProcessOwnershipActive:
-				return nil, newProcessBoundaryError("runtime", "live process is already active")
-			case l8ProcessOwnershipProvisional:
-				return nil, newProcessBoundaryError("runtime", "live lifecycle operation is already in progress")
-			case l8ProcessOwnershipCleanupUncertain:
-				releaseLifecycle, reserveErr := c.reserveLiveLifecycle(config.RuntimeID)
-				if reserveErr != nil {
-					return nil, reserveErr
-				}
-				defer releaseLifecycle()
-				return nil, c.retryRetainedL8StartCleanup(ctx, config)
-			default:
-				return nil, newProcessBoundaryError("runtime", "live process ownership state is unavailable")
-			}
+	l8LifecycleReserved := false
+	if c.liveStart && c.liveSessions != nil &&
+		(c.l8LiveConfigProvider != nil || c.liveSessions.HasAnyL8Lease(config.RuntimeID)) {
+		releaseLifecycle, reserveErr := c.reserveLiveLifecycle(config.RuntimeID)
+		if reserveErr != nil {
+			return nil, c.l8StartReservationFailure(config.RuntimeID, reserveErr)
+		}
+		defer releaseLifecycle()
+		l8LifecycleReserved = true
+		if ownershipErr := c.resolveL8StartOwnership(ctx, config); ownershipErr != nil {
+			return nil, ownershipErr
 		}
 	}
 	var pendingL7Lease *localresolver.VerifiedL7AssetLease
@@ -318,11 +311,13 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 			}
 		}()
 	}
-	releaseLifecycle, err := c.reserveLiveLifecycle(config.RuntimeID)
-	if err != nil {
-		return nil, err
+	if !l8LifecycleReserved {
+		releaseLifecycle, reserveErr := c.reserveLiveLifecycle(config.RuntimeID)
+		if reserveErr != nil {
+			return nil, reserveErr
+		}
+		defer releaseLifecycle()
 	}
-	defer releaseLifecycle()
 	if c.liveStart {
 		if err := c.rejectActiveProductionVsockSession(config.RuntimeID); err != nil {
 			return nil, err
@@ -362,6 +357,45 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 		guestReadiness = liveStart.guestReadiness
 	}
 	return firecrackerStartTarget(req.Target, operation.ProcessDescriptor, processLaunch, guestReadiness, c.networkEnforcement), nil
+}
+
+func (c firecrackerController) resolveL8StartOwnership(ctx context.Context, config BackendConfig) error {
+	proof, ownershipState, owned := c.liveSessions.L8ProcessOwnership(config.RuntimeID)
+	if !owned {
+		if c.liveSessions.HasAnyL8Lease(config.RuntimeID) {
+			return newProcessBoundaryError("runtime", "live process ownership state is unavailable")
+		}
+		return nil
+	}
+	switch ownershipState {
+	case l8ProcessOwnershipProvisional:
+		return newProcessBoundaryError("runtime", "live lifecycle operation is already in progress")
+	case l8ProcessOwnershipCleanupUncertain:
+		return c.retryRetainedL8StartCleanup(ctx, config)
+	case l8ProcessOwnershipActive:
+		request := liveProcessRequestFromProof(proof, config.Paths)
+		verifier, verifierOK := liveProcessTerminalVerifier(c.liveProcessManager)
+		terminated, verifyErr := callLiveProcessTerminalVerifier(verifier, request)
+		if !verifierOK || verifyErr != nil || !terminated {
+			return newProcessBoundaryError("runtime", "live process is already active")
+		}
+		return c.invalidateLiveProcessProof(proof)
+	default:
+		return newProcessBoundaryError("runtime", "live process ownership state is unavailable")
+	}
+}
+
+func (c firecrackerController) l8StartReservationFailure(runtimeID string, reserveErr error) error {
+	_, ownershipState, owned := c.liveSessions.L8ProcessOwnership(runtimeID)
+	if owned {
+		switch ownershipState {
+		case l8ProcessOwnershipActive:
+			return newProcessBoundaryError("runtime", "live process is already active")
+		case l8ProcessOwnershipProvisional:
+			return newProcessBoundaryError("runtime", "live lifecycle operation is already in progress")
+		}
+	}
+	return reserveErr
 }
 
 func (c firecrackerController) validateLiveBootContract() error {

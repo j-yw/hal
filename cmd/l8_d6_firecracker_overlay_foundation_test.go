@@ -18,6 +18,10 @@ func TestL8D6FirecrackerFocusedSelectorListsCausalCoverage(t *testing.T) {
 	}
 	listed := string(payload)
 	for _, required := range []string{
+		"TestL8TerminalActiveProcessIsRetiredAndRestartedUnderOneLifecycle",
+		"TestL8ActiveTerminalProofFailureIsNonmutating",
+		"TestL8TerminalActiveInvalidationUncertaintyEntersCleanupOnlyState",
+		"TestL8ConcurrentTerminalRestartStartsExactlyOneReplacement",
 		"TestL8DuplicateStartDoesNotCleanupHealthyActiveRuntime",
 		"TestL8ConcurrentDuplicateStartCannotEnterUncertainCleanupRoute",
 		"TestL8StartValueAndErrorCleansLiveHandleBeforeLease",
@@ -46,6 +50,10 @@ func TestL8D6FirecrackerOverlayFoundationDocumentsTruthfulBoundary(t *testing.T)
 		"cleanup-uncertain ownership are distinct registry states",
 		"duplicate Start on a",
 		"healthy active runtime is a stable nonmutating rejection",
+		"Active ownership is re-read under one",
+		"serialized lifecycle reservation.",
+		"positive terminal proof invalidates the old",
+		"to exactly one replacement launch without releasing that reservation.",
 		"EmbeddedExpectedPinnedCallsiteEvidence",
 		"l8_d6_live_firecracker_overlay",
 		"dependency_unaccepted",

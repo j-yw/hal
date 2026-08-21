@@ -16,7 +16,11 @@ explicit retry-required error after proving absence, so it cannot launch a
 second process in the same invocation. Provisional, active, and
 cleanup-uncertain ownership are distinct registry states: duplicate Start on a
 healthy active runtime is a stable nonmutating rejection and only the
-cleanup-uncertain state enters recovery.
+cleanup-uncertain state enters recovery. Active ownership is re-read under one
+serialized lifecycle reservation. Missing, false, or panicking terminal proof
+keeps the active runtime unchanged; positive terminal proof invalidates the old
+bridge session, closes its lease, removes its registry ownership, and proceeds
+to exactly one replacement launch without releasing that reservation.
 
 The foundation does not wire a command, worker, or `firecrackerhost` provider.
 Planning-only/default construction remains inert. L8 authority is omitted from
