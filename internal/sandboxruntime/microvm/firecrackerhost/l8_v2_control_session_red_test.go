@@ -285,6 +285,114 @@ func TestL8D6V2ControlFoundationCloseWinsConcurrentOpenPublication(t *testing.T)
 	}
 }
 
+func TestL8D6V2ControlFoundationCloseSynchronouslyOwnsAdmittedHandshakeStream(t *testing.T) {
+	seed := l8D6V2ControlSeed(t)
+	key, nonce := l8D6V2ControlAuthority(t)
+	host, guest := net.Pipe()
+	processDone := make(chan struct{})
+	stream := &l8D6V2ControlBlockingCloseStream{
+		l8D6V2ControlTestStream: &l8D6V2ControlTestStream{Conn: host, processDone: processDone},
+		closeEntered:            make(chan struct{}),
+		closeRelease:            make(chan struct{}),
+	}
+	bridge, err := newProductionL8V2ControlBridgeWithDependencies(
+		&l8D6V2ControlTestConnector{stream: stream},
+		seed,
+		key,
+		nonce,
+		bytes.NewReader(bytes.Repeat([]byte{0x5a}, 64)),
+		time.Now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prefaceRead := make(chan struct{})
+	releaseGuest := make(chan struct{})
+	guestResult := make(chan error, 1)
+	go func() {
+		defer guest.Close()
+		preface, readErr := frame.Read(guest, l8V2ControlCompatibilityLimit)
+		if readErr == nil && string(preface) != l8V2ControlCompatibilityPayload {
+			readErr = errors.New("unexpected compatibility preface")
+		}
+		close(prefaceRead)
+		<-releaseGuest
+		if readErr != nil {
+			guestResult <- readErr
+			return
+		}
+		identity, identityErr := l8D6V2ControlSessionIdentity(seed, nonce)
+		if identityErr != nil {
+			guestResult <- identityErr
+			return
+		}
+		_, hello, helloErr := guestsession.NewGuestHandshake(guestsession.GuestHandshakeConfig{
+			Identity: identity, PinnedControllerPublicKey: key.Public().(ed25519.PublicKey),
+		})
+		if helloErr != nil {
+			guestResult <- helloErr
+			return
+		}
+		_, writeErr := guest.Write(hello)
+		guestsession.DestroyBytes(hello)
+		guestResult <- writeErr
+	}()
+
+	type openResult struct {
+		session *L8V2ControlReadinessSession
+		err     error
+	}
+	opened := make(chan openResult, 1)
+	go func() {
+		session, openErr := bridge.OpenReadiness(context.Background(), l8D6V2ControlTarget(seed))
+		opened <- openResult{session: session, err: openErr}
+	}()
+	select {
+	case <-prefaceRead:
+	case <-time.After(time.Second):
+		t.Fatal("guest did not observe compatibility preface")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- bridge.Close() }()
+	select {
+	case <-stream.closeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("bridge Close did not close admitted stream")
+	}
+	returnedEarly := false
+	var closeErr error
+	select {
+	case closeErr = <-closed:
+		returnedEarly = true
+	default:
+	}
+	close(stream.closeRelease)
+	if !returnedEarly {
+		closeErr = <-closed
+	}
+	close(releaseGuest)
+	result := <-opened
+	guestErr := <-guestResult
+
+	if returnedEarly {
+		t.Fatal("bridge Close returned before admitted stream Close completed")
+	}
+	if closeErr != nil {
+		t.Fatalf("bridge Close: %v", closeErr)
+	}
+	if result.session != nil || !errors.Is(result.err, ErrL8V2ControlUnavailable) {
+		t.Fatalf("OpenReadiness after concurrent Close = %#v, %v", result.session, result.err)
+	}
+	if guestErr == nil {
+		t.Fatal("guest wrote handshake bytes after bridge Close returned")
+	}
+	if got := stream.closeCalls(); got != 1 {
+		t.Fatalf("admitted stream Close calls = %d, want 1", got)
+	}
+}
+
 func TestL8D6V2ControlFoundationZeroValueSessionCloseIsTotal(t *testing.T) {
 	result := make(chan any, 1)
 	go func() {
@@ -580,6 +688,19 @@ type l8D6V2ControlTestStream struct {
 	processDone <-chan struct{}
 	mu          sync.Mutex
 	closes      int
+}
+
+type l8D6V2ControlBlockingCloseStream struct {
+	*l8D6V2ControlTestStream
+	closeEntered chan struct{}
+	closeRelease chan struct{}
+	enterOnce    sync.Once
+}
+
+func (stream *l8D6V2ControlBlockingCloseStream) Close() error {
+	stream.enterOnce.Do(func() { close(stream.closeEntered) })
+	<-stream.closeRelease
+	return stream.l8D6V2ControlTestStream.Close()
 }
 
 func (stream *l8D6V2ControlTestStream) ProcessDone() <-chan struct{} {
