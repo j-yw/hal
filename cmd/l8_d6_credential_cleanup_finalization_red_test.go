@@ -17,6 +17,13 @@ func TestL8D6CredentialCleanupBlocksEveryLaterFinalizationEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadManifest() error: %v", err)
 	}
+	if manifest.Finalization == nil {
+		manifest.Finalization = &sandboxexecution.FinalizationMetadata{
+			ContractVersion: sandboxexecution.FinalizationContractVersion,
+			State:           sandboxexecution.FinalizationStatePending,
+			UpdatedAt:       terminal.SubmittedAt,
+		}
+	}
 	manifest.Finalization.Checkpoints.CredentialCleanup = &sandboxexecution.FinalizationCheckpoint{}
 	if err := store.SaveManifest(manifest); err != nil {
 		t.Fatalf("SaveManifest() error: %v", err)

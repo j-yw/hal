@@ -115,6 +115,17 @@ func finalizeSandboxL3Execution(
 		if err := locked.SaveManifest(manifest); err != nil {
 			return errors.New("finalization_state_write_failed: durable finalization state is unavailable")
 		}
+		if finalization.Checkpoints.CredentialCleanup != nil &&
+			!finalization.Checkpoints.CredentialCleanup.Completed {
+			return blockSandboxL3Finalization(
+				locked,
+				manifest,
+				job,
+				requestSyncOut,
+				"credential_cleanup_incomplete",
+				deps.now().UTC(),
+			)
+		}
 
 		// A completed artifact checkpoint proves terminal logs were drained
 		// before artifact collection on an earlier attempt.
@@ -414,7 +425,8 @@ func sandboxL3FinalizationProvenTerminalJobState(state string) bool {
 }
 
 func sandboxL3AnyFinalizationCheckpoint(checkpoints sandboxexecution.FinalizationCheckpoints) bool {
-	return checkpoints.Artifacts.Completed ||
+	return checkpoints.CredentialCleanup != nil && checkpoints.CredentialCleanup.Completed ||
+		checkpoints.Artifacts.Completed ||
 		checkpoints.SyncOut.Completed ||
 		checkpoints.LeaseRelease.Completed ||
 		checkpoints.TerminalPublication.Completed

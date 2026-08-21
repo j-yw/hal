@@ -219,6 +219,11 @@ func cloneSandboxWorkerJobFinalization(metadata *sandboxexecution.FinalizationMe
 	cloned.StartedAt = cloneSandboxWorkerJobTime(metadata.StartedAt)
 	cloned.UpdatedAt = metadata.UpdatedAt
 	cloned.CompletedAt = cloneSandboxWorkerJobTime(metadata.CompletedAt)
+	if metadata.Checkpoints.CredentialCleanup != nil {
+		checkpoint := *metadata.Checkpoints.CredentialCleanup
+		checkpoint.CompletedAt = cloneSandboxWorkerJobTime(metadata.Checkpoints.CredentialCleanup.CompletedAt)
+		cloned.Checkpoints.CredentialCleanup = &checkpoint
+	}
 	cloned.Checkpoints.Artifacts.CompletedAt = cloneSandboxWorkerJobTime(metadata.Checkpoints.Artifacts.CompletedAt)
 	cloned.Checkpoints.SyncOut.CompletedAt = cloneSandboxWorkerJobTime(metadata.Checkpoints.SyncOut.CompletedAt)
 	cloned.Checkpoints.LeaseRelease.CompletedAt = cloneSandboxWorkerJobTime(metadata.Checkpoints.LeaseRelease.CompletedAt)

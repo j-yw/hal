@@ -27,10 +27,11 @@ type FinalizationCheckpoint struct {
 
 // FinalizationCheckpoints records the ordered, durable finalization steps.
 type FinalizationCheckpoints struct {
-	Artifacts           FinalizationCheckpoint `json:"artifacts"`
-	SyncOut             FinalizationCheckpoint `json:"syncOut"`
-	LeaseRelease        FinalizationCheckpoint `json:"leaseRelease"`
-	TerminalPublication FinalizationCheckpoint `json:"terminalPublication"`
+	CredentialCleanup   *FinalizationCheckpoint `json:"credentialCleanup,omitempty"`
+	Artifacts           FinalizationCheckpoint  `json:"artifacts"`
+	SyncOut             FinalizationCheckpoint  `json:"syncOut"`
+	LeaseRelease        FinalizationCheckpoint  `json:"leaseRelease"`
+	TerminalPublication FinalizationCheckpoint  `json:"terminalPublication"`
 }
 
 // FinalizationMetadata is the safe durable finalization intent and checkpoint
@@ -48,6 +49,11 @@ type FinalizationMetadata struct {
 }
 
 var finalizationReasonCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,127}$`)
+
+type namedFinalizationCheckpoint struct {
+	name       string
+	checkpoint FinalizationCheckpoint
+}
 
 func validateFinalizationMetadata(metadata *FinalizationMetadata) error {
 	if metadata == nil {
@@ -85,15 +91,19 @@ func validateFinalizationMetadata(metadata *FinalizationMetadata) error {
 		return fmt.Errorf("sandbox execution finalization syncOut checkpoint completed without requested intent")
 	}
 
-	checkpoints := []struct {
-		name       string
-		checkpoint FinalizationCheckpoint
-	}{
-		{name: "artifacts", checkpoint: metadata.Checkpoints.Artifacts},
-		{name: "syncOut", checkpoint: metadata.Checkpoints.SyncOut},
-		{name: "leaseRelease", checkpoint: metadata.Checkpoints.LeaseRelease},
-		{name: "terminalPublication", checkpoint: metadata.Checkpoints.TerminalPublication},
+	checkpoints := make([]namedFinalizationCheckpoint, 0, 5)
+	if metadata.Checkpoints.CredentialCleanup != nil {
+		checkpoints = append(checkpoints, namedFinalizationCheckpoint{
+			name:       "credentialCleanup",
+			checkpoint: *metadata.Checkpoints.CredentialCleanup,
+		})
 	}
+	checkpoints = append(checkpoints,
+		namedFinalizationCheckpoint{name: "artifacts", checkpoint: metadata.Checkpoints.Artifacts},
+		namedFinalizationCheckpoint{name: "syncOut", checkpoint: metadata.Checkpoints.SyncOut},
+		namedFinalizationCheckpoint{name: "leaseRelease", checkpoint: metadata.Checkpoints.LeaseRelease},
+		namedFinalizationCheckpoint{name: "terminalPublication", checkpoint: metadata.Checkpoints.TerminalPublication},
+	)
 	for _, item := range checkpoints {
 		if err := validateFinalizationCheckpoint(item.name, item.checkpoint, metadata.StartedAt, metadata.UpdatedAt); err != nil {
 			return err
@@ -127,6 +137,10 @@ func validateFinalizationMetadata(metadata *FinalizationMetadata) error {
 			!metadata.Checkpoints.LeaseRelease.Completed ||
 			!metadata.Checkpoints.TerminalPublication.Completed {
 			return fmt.Errorf("sandbox execution completed finalization has incomplete checkpoints")
+		}
+		if metadata.Checkpoints.CredentialCleanup != nil &&
+			!metadata.Checkpoints.CredentialCleanup.Completed {
+			return fmt.Errorf("sandbox execution completed finalization has incomplete credential cleanup checkpoint")
 		}
 		if metadata.SyncOutRequested && !metadata.Checkpoints.SyncOut.Completed {
 			return fmt.Errorf("sandbox execution completed finalization has incomplete syncOut checkpoint")
@@ -189,6 +203,11 @@ func validateFinalizationCheckpoint(name string, checkpoint FinalizationCheckpoi
 
 func validateFinalizationCheckpointOrder(metadata *FinalizationMetadata) error {
 	checkpoints := metadata.Checkpoints
+	if checkpoints.CredentialCleanup != nil &&
+		checkpoints.Artifacts.Completed &&
+		!checkpoints.CredentialCleanup.Completed {
+		return fmt.Errorf("sandbox execution finalization artifacts checkpoint precedes credential cleanup")
+	}
 	if checkpoints.SyncOut.Completed && !checkpoints.Artifacts.Completed {
 		return fmt.Errorf("sandbox execution finalization syncOut checkpoint precedes artifacts")
 	}
@@ -206,19 +225,27 @@ func validateFinalizationCheckpointOrder(metadata *FinalizationMetadata) error {
 		return fmt.Errorf("sandbox execution finalization terminalPublication checkpoint precedes leaseRelease")
 	}
 
-	ordered := []FinalizationCheckpoint{
+	ordered := make([]FinalizationCheckpoint, 0, 5)
+	if checkpoints.CredentialCleanup != nil {
+		ordered = append(ordered, *checkpoints.CredentialCleanup)
+	}
+	ordered = append(ordered,
 		checkpoints.Artifacts,
 		checkpoints.SyncOut,
 		checkpoints.LeaseRelease,
 		checkpoints.TerminalPublication,
-	}
+	)
 	if postPublicationSyncOutCheckpoint(metadata) {
-		ordered = []FinalizationCheckpoint{
+		ordered = ordered[:0]
+		if checkpoints.CredentialCleanup != nil {
+			ordered = append(ordered, *checkpoints.CredentialCleanup)
+		}
+		ordered = append(ordered,
 			checkpoints.Artifacts,
 			checkpoints.LeaseRelease,
 			checkpoints.TerminalPublication,
 			checkpoints.SyncOut,
-		}
+		)
 	}
 	var previous *time.Time
 	for _, checkpoint := range ordered {
@@ -261,7 +288,8 @@ func postPublicationSyncOutCheckpoint(metadata *FinalizationMetadata) bool {
 }
 
 func anyFinalizationCheckpointComplete(checkpoints FinalizationCheckpoints) bool {
-	return checkpoints.Artifacts.Completed ||
+	return checkpoints.CredentialCleanup != nil && checkpoints.CredentialCleanup.Completed ||
+		checkpoints.Artifacts.Completed ||
 		checkpoints.SyncOut.Completed ||
 		checkpoints.LeaseRelease.Completed ||
 		checkpoints.TerminalPublication.Completed
