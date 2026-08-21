@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -166,6 +167,7 @@ func validateL8D6RuntimeOwnerArchitecture(doc string) error {
 		"`storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime`",
 		"direct selector on the exact receipt-typed parameter object",
 		"Reflection, unsafe conversion, receipt aliases, receiver methods, closures, and helper escape are forbidden",
+		"A receipt-bearing allowlisted file also fails if it imports `reflect` or `unsafe`",
 		"The root validator and owner verifier land together; the private-store converter remains optional until worker receipt persistence lands",
 		"The digest has no accessor",
 		l8D6RuntimeOwnerCloseRule,
@@ -414,6 +416,7 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		"outside unsafe":                   []byte("package sandboxworker\nimport (\"unsafe\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\nfunc leak(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) unsafe.Pointer { return unsafe.Pointer(&receipt) }\n"),
 		"outside direct type":              []byte("package sandboxworker\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) uint64 { return receipt.FinalizedRevision }\n"),
 		"outside import alias":             []byte("package sandboxworker\nimport runtimeapi \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(receipt runtimeapi.JobCredentialRuntimeRecoveryCommitReceipt) any { return receipt }\n"),
+		"outside raw import":               []byte("package sandboxworker\nimport runtimeapi `github.com/jywlabs/hal/internal/sandboxruntime`\nfunc leak(receipt runtimeapi.JobCredentialRuntimeRecoveryCommitReceipt) any { return receipt }\n"),
 		"outside dot import":               []byte("package sandboxworker\nimport . \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(receipt JobCredentialRuntimeRecoveryCommitReceipt) any { return receipt }\n"),
 		"outside type alias":               []byte("package sandboxworker\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype leakedReceipt = sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt\n"),
 	}
@@ -470,6 +473,7 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 		})
 		return true
 	})
+	receiptTypeReferences := l8D6RuntimeOwnerReceiptTypeReferences(file, expected.rootType)
 	var target *ast.FuncDecl
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
@@ -483,6 +487,9 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 		target = function
 	}
 	if target == nil {
+		if len(receiptTypeReferences) != 0 {
+			audit.issues = append(audit.issues, "receipt type referenced outside an allowlisted function and file")
+		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "CommitID" {
 				audit.issues = append(audit.issues, "CommitID selector outside expected function")
@@ -492,6 +499,18 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 		return audit, nil
 	}
 	audit.present = true
+	for _, reference := range receiptTypeReferences {
+		if l8D6RuntimeOwnerReceiptTypeAlias(reference, parents) {
+			audit.issues = append(audit.issues, "receipt type alias is forbidden")
+			continue
+		}
+		if !expected.rootType && !l8D6RuntimeOwnerReceiptTypeIsTargetParameter(reference, target) {
+			audit.issues = append(audit.issues, "receipt type referenced outside the exact allowlisted function parameter")
+		}
+	}
+	if len(receiptTypeReferences) != 0 && l8D6RuntimeOwnerHasIndirectAccessImport(file) {
+		audit.issues = append(audit.issues, "receipt file imports reflection or unsafe access")
+	}
 	if target.Recv != nil {
 		audit.issues = append(audit.issues, "expected package function is a receiver method")
 	}
@@ -546,10 +565,90 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 	return audit, nil
 }
 
+func l8D6RuntimeOwnerReceiptTypeReferences(file *ast.File, rootType bool) []ast.Expr {
+	aliases := make(map[string]bool)
+	dotImport := false
+	for _, spec := range file.Imports {
+		if l8D6RuntimeOwnerImportPath(spec) != "github.com/jywlabs/hal/internal/sandboxruntime" {
+			continue
+		}
+		alias := "sandboxruntime"
+		if spec.Name != nil {
+			alias = spec.Name.Name
+		}
+		if alias == "." {
+			dotImport = true
+			continue
+		}
+		aliases[alias] = true
+	}
+	var references []ast.Expr
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.SelectorExpr:
+			qualifier, ok := value.X.(*ast.Ident)
+			if ok && aliases[qualifier.Name] && value.Sel.Name == "JobCredentialRuntimeRecoveryCommitReceipt" {
+				references = append(references, value)
+				return false
+			}
+		case *ast.Ident:
+			if value.Name != "JobCredentialRuntimeRecoveryCommitReceipt" {
+				return true
+			}
+			if rootType && value.Obj != nil {
+				references = append(references, value)
+			} else if dotImport && value.Obj == nil {
+				references = append(references, value)
+			}
+		}
+		return true
+	})
+	return references
+}
+
+func l8D6RuntimeOwnerReceiptTypeAlias(reference ast.Expr, parents map[ast.Node]ast.Node) bool {
+	for current := ast.Node(reference); current != nil; current = parents[current] {
+		typeSpec, ok := current.(*ast.TypeSpec)
+		if ok {
+			return typeSpec.Assign.IsValid()
+		}
+	}
+	return false
+}
+
+func l8D6RuntimeOwnerReceiptTypeIsTargetParameter(reference ast.Expr, target *ast.FuncDecl) bool {
+	for _, field := range target.Type.Params.List {
+		if field.Type == reference {
+			return true
+		}
+	}
+	return false
+}
+
+func l8D6RuntimeOwnerHasIndirectAccessImport(file *ast.File) bool {
+	for _, spec := range file.Imports {
+		if path := l8D6RuntimeOwnerImportPath(spec); path == "reflect" || path == "unsafe" {
+			return true
+		}
+	}
+	return false
+}
+
+func l8D6RuntimeOwnerImportPath(spec *ast.ImportSpec) string {
+	if spec == nil || spec.Path == nil {
+		return ""
+	}
+	path, err := strconv.Unquote(spec.Path.Value)
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
 func l8D6RuntimeOwnerReceiptParameterObjects(file *ast.File, function *ast.FuncDecl, rootType bool) []*ast.Object {
 	aliases := make(map[string]bool)
 	for _, spec := range file.Imports {
-		if spec.Path.Value != `"github.com/jywlabs/hal/internal/sandboxruntime"` {
+		if l8D6RuntimeOwnerImportPath(spec) != "github.com/jywlabs/hal/internal/sandboxruntime" {
 			continue
 		}
 		alias := "sandboxruntime"

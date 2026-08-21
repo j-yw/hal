@@ -53,7 +53,10 @@ object and exact package-function signature. It rejects same-name unrelated
 fields, value/type aliases, methods, closures, helper escape, reflection,
 unsafe conversion, wrong results, and indirect field access. The root validator
 and owner verifier must land together; the worker converter remains absent
-until worker persistence wiring lands.
+until worker persistence wiring lands. Outside those allowlisted files and
+functions, even naming the receipt type through an explicit alias, dot import,
+or raw-string import fails. Receipt-bearing allowlisted files cannot import
+`reflect` or `unsafe`, so a selector-free indirect read is rejected repo-wide.
 Its commit ID is an HMAC over the full-seed digest and finalized revision under
 one stable mode-0600 owner-root key. That constant key is durable before any
 owner record and never projected or rotated while receipts exist. Post-record-

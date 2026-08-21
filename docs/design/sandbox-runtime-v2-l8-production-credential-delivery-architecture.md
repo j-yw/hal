@@ -717,7 +717,11 @@ receipt into the private DTO. Reflection, unsafe conversion, receipt aliases, re
 as are same-name functions with an unrelated `CommitID` field, a receipt type
 alias, a wrong signature, or an indirect field read. Worker services, statuses,
 commands, runtime metadata, and every other file cannot project it, including
-through a cross-file alias.
+through a cross-file alias. Any production file outside the three allowlisted
+files/functions that names the receipt type through a default, explicit, dot,
+or raw-string import fails the guard. A receipt-bearing allowlisted file also
+fails if it imports `reflect` or `unsafe`; reflection cannot hide a field read
+that has no `CommitID` selector.
 
 The worker rebinds from the receipt's validated seed and calls
 `CommitJobCredentialRuntimeRecovery` with the exact commit receipt. Commit is
