@@ -126,12 +126,16 @@ The selected L10/L11 test-owned helper graph is deliberately closed and
 statically auditable. A selected helper may use only statically resolved direct
 calls to another selected test helper, an exact allowlisted production
 entrypoint, or the enumerated concrete `testing.T` operations required by the
-future harness. Interface dispatch, function values, closures and function
-literals, callbacks, generic instantiation, method values or expressions,
-dynamic conversions, and every unresolved graph edge fail closed. Accepted
-production entrypoints are terminal authority boundaries: their transitive
-production-package implementations are not treated as selected helpers and are
-not subjected to this test-graph shape restriction.
+future harness. The sole callback exception is concrete `(*testing.T).Run`
+with an exact matrix scenario-ID literal and a direct named selected-test-owned
+`func(*testing.T)` helper; the guard traverses that helper. All other interface
+dispatch, function values, closures and function literals, callbacks, generic
+instantiation, method values or expressions, dynamic conversions, and every
+unresolved graph edge fail closed. Blank imports in the selected or test-tool
+graph fail closed. Deferred and goroutine invocation modes fail closed.
+Accepted production entrypoints are terminal authority boundaries:
+their transitive production-package implementations are not treated as selected
+helpers and are not subjected to this test-graph shape restriction.
 
 ## 3. Durable and machine-contract schema changes
 

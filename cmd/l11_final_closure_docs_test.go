@@ -19,7 +19,7 @@ const (
 	l11FinalClosureCurrentStateLine = "Current closure state: `blocked`."
 	l11FinalClosureStateMarker      = "<!-- hal:l11-closure-state=blocked -->"
 	l11FinalClosureMarkerNamespace  = "hal:l11-closure-state"
-	l11FinalClosureBlockedDocSHA256 = "2d8c124a52ecd77fd816baf6c3ba6b6d473b4f8478edefe1c5319367ab4fb4e7"
+	l11FinalClosureBlockedDocSHA256 = "9a1724f7be33cf3283d512a121bd68967fd2491fb9f6c9240183fd638610d21a"
 )
 
 type l11FinalClosureMatrixRow struct {
@@ -55,6 +55,9 @@ func TestL11FinalClosureDocumentationIsNormative(t *testing.T) {
 		"same-repository SHA-256 tripwire",
 		"cannot defend against a coordinated edit",
 		"external branch protection",
+		"The sole callback exception is concrete `(*testing.T).Run`",
+		"Blank imports in the selected or test-tool graph fail closed.",
+		"Deferred and goroutine invocation modes fail closed.",
 	} {
 		if !l11FinalClosureContains(doc, required) {
 			t.Errorf("L11 final-closure document omits %q", required)

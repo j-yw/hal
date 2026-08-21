@@ -188,6 +188,16 @@ func TestL11PreparedLinuxFinalClosure(t *testing.T) { t.Run("rootless_advisory_s
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
+			name: "matrix shaped non subtest callback is forbidden",
+			source: `package fixture
+import "testing"
+func invoke(string, any) {}
+func callback() {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { invoke("rootless_advisory_success", callback) }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
 			name: "selected subtest production callback is forbidden",
 			sources: map[string]string{
 				"root/fixture_test.go": `package fixture
@@ -772,6 +782,16 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { value := payload{Callback: s
 import "testing"
 func helper() {}
 func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = []any{helper} }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "function identifier in package composite is forbidden",
+			source: `package fixture
+import "testing"
+func helper() {}
+var escaped = []any{helper}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = escaped }
 `,
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
@@ -1509,21 +1529,12 @@ func l11SelectedClosedPackageIssues(packages map[string]*l11SelectedPackage, roo
 			continue
 		}
 		for _, imported := range file.imports {
+			if imported.name == "_" {
+				issues = append(issues, l11SelectedClosedIssue(root, "blank import"))
+				continue
+			}
 			if l11ForbiddenCloudImport(imported.path) {
 				issues = append(issues, l11SelectedClosedIssue(root, "cloud/provider marker"))
-			}
-			if imported.name == "_" {
-				importedPackage := l11SelectedImportedPackage(packages, imported.path)
-				if importedPackage != nil {
-					if l11InModuleImport(imported.path) {
-						issues = append(issues, l11SelectedClosedIssue(root, "unresolved in-module call"))
-					} else {
-						issues = append(issues, l11SelectedClosedPackageIssues(packages, root, importedPackage, checked, queue)...)
-						for _, initializer := range importedPackage.functions["init"] {
-							*queue = append(*queue, initializer)
-						}
-					}
-				}
 			}
 		}
 	}
@@ -1533,16 +1544,21 @@ func l11SelectedClosedPackageIssues(packages map[string]*l11SelectedPackage, roo
 		}
 		current := l11SelectedPackageExpressionContext(pkg, declaration.file)
 		for _, expression := range declaration.values {
-			if l11SelectedCallableValueExpression(packages, current, expression, make(map[*ast.Object]bool)) {
-				issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
-			}
+			directCallExpressions := make(map[ast.Expr]bool)
 			ast.Inspect(expression, func(node ast.Node) bool {
 				switch value := node.(type) {
+				case *ast.FuncLit, *ast.FuncType:
+					issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
+					return false
 				case *ast.CallExpr:
-					if l11SelectedClosedProofCall(current.file, value.Fun) {
+					l11SelectedMarkDirectCallExpressions(directCallExpressions, value.Fun)
+					if l11SelectedClosedProofCall(current.file, l11SelectedUnwrapCallFunction(value.Fun)) {
 						issues = append(issues, l11SelectedClosedIssue(root, "synthetic credential proof constructor"))
 					}
 				case ast.Expr:
+					if !directCallExpressions[value] && l11SelectedCallableValueExpression(packages, current, value, make(map[*ast.Object]bool)) {
+						issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
+					}
 					if l11SelectedClosedCloudExpression(packages, current, value) {
 						issues = append(issues, l11SelectedClosedIssue(root, "cloud/provider marker"))
 					}
@@ -1571,8 +1587,13 @@ func l11SelectedClosedFunctionIssues(packages map[string]*l11SelectedPackage, ro
 	if l11SelectedFunctionHasCallableSignature(current) {
 		issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
 	}
+	directCallExpressions := make(map[ast.Expr]bool)
+	subtestCallbacks := make(map[ast.Expr]bool)
 	ast.Inspect(current.body(), func(node ast.Node) bool {
 		switch value := node.(type) {
+		case *ast.DeferStmt, *ast.GoStmt:
+			issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
+			return false
 		case *ast.FuncLit:
 			issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
 			return false
@@ -1580,20 +1601,15 @@ func l11SelectedClosedFunctionIssues(packages map[string]*l11SelectedPackage, ro
 			issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
 			return false
 		case *ast.CallExpr:
+			l11SelectedMarkDirectCallExpressions(directCallExpressions, value.Fun)
+			if _, ok := l11SelectedExactSubtestCallback(current, value); ok {
+				subtestCallbacks[value.Args[1]] = true
+			}
 			issues = append(issues, l11SelectedClosedCallIssues(packages, root, current, value, queue)...)
-		case *ast.AssignStmt:
-			for _, expression := range value.Rhs {
-				if l11SelectedCallableValueExpression(packages, current, expression, make(map[*ast.Object]bool)) {
-					issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
-				}
-			}
-		case *ast.ValueSpec:
-			for _, expression := range value.Values {
-				if l11SelectedCallableValueExpression(packages, current, expression, make(map[*ast.Object]bool)) {
-					issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
-				}
-			}
 		case ast.Expr:
+			if !directCallExpressions[value] && !subtestCallbacks[value] && l11SelectedCallableValueExpression(packages, current, value, make(map[*ast.Object]bool)) {
+				issues = append(issues, l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph"))
+			}
 			if l11SelectedClosedCloudExpression(packages, current, value) {
 				issues = append(issues, l11SelectedClosedIssue(root, "cloud/provider marker"))
 			}
@@ -1603,13 +1619,15 @@ func l11SelectedClosedFunctionIssues(packages map[string]*l11SelectedPackage, ro
 	return l11UniqueStrings(issues)
 }
 
-func l11SelectedClosedCallIssues(packages map[string]*l11SelectedPackage, root, current *l11SelectedFunction, call *ast.CallExpr, queue *[]*l11SelectedFunction) []string {
-	for _, argument := range call.Args {
-		if l11SelectedCallableValueExpression(packages, current, argument, make(map[*ast.Object]bool)) {
-			return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
-		}
+func l11SelectedMarkDirectCallExpressions(marked map[ast.Expr]bool, expression ast.Expr) {
+	marked[expression] = true
+	if parenthesized, ok := expression.(*ast.ParenExpr); ok {
+		l11SelectedMarkDirectCallExpressions(marked, parenthesized.X)
 	}
-	switch function := call.Fun.(type) {
+}
+
+func l11SelectedClosedCallIssues(packages map[string]*l11SelectedPackage, root, current *l11SelectedFunction, call *ast.CallExpr, queue *[]*l11SelectedFunction) []string {
+	switch function := l11SelectedUnwrapCallFunction(call.Fun).(type) {
 	case *ast.IndexExpr, *ast.IndexListExpr, *ast.CallExpr, *ast.FuncLit:
 		return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
 	case *ast.Ident:
@@ -1677,6 +1695,14 @@ func l11SelectedClosedCallIssues(packages map[string]*l11SelectedPackage, root, 
 		}
 		receiver := l11SelectedExpressionType(current.file, function.X)
 		if receiver == "testing.T" {
+			if function.Sel.Name == "Run" {
+				callback, ok := l11SelectedExactSubtestCallback(current, call)
+				if !ok {
+					return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
+				}
+				*queue = append(*queue, callback)
+				return nil
+			}
 			switch function.Sel.Name {
 			case "Skip", "Skipf", "SkipNow":
 				return []string{l11SelectedClosedIssue(root, "skip call")}
@@ -1694,6 +1720,68 @@ func l11SelectedClosedCallIssues(packages map[string]*l11SelectedPackage, root, 
 	}
 }
 
+func l11SelectedUnwrapCallFunction(expression ast.Expr) ast.Expr {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			return expression
+		}
+		expression = parenthesized.X
+	}
+}
+
+func l11SelectedExactSubtestCallback(current *l11SelectedFunction, call *ast.CallExpr) (*l11SelectedFunction, bool) {
+	if current == nil || current.file == nil || len(call.Args) != 2 {
+		return nil, false
+	}
+	selector, ok := l11SelectedUnwrapCallFunction(call.Fun).(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Run" || l11SelectedExpressionType(current.file, selector.X) != "testing.T" {
+		return nil, false
+	}
+	scenario, ok := call.Args[0].(*ast.BasicLit)
+	if !ok || scenario.Kind != token.STRING {
+		return nil, false
+	}
+	name, err := strconv.Unquote(scenario.Value)
+	if err != nil || !l11SelectedFinalScenario(name) {
+		return nil, false
+	}
+	callbackName, ok := call.Args[1].(*ast.Ident)
+	if !ok || callbackName.Obj == nil {
+		return nil, false
+	}
+	declaration, ok := callbackName.Obj.Decl.(*ast.FuncDecl)
+	if !ok {
+		return nil, false
+	}
+	targets := l11SelectedDeclaredFunction(current.pkg, declaration)
+	if len(targets) != 1 || targets[0].function == nil || !l11SelectedTestOwnedFunction(targets[0].function) || !l11SelectedTestingTCallback(targets[0].function) {
+		return nil, false
+	}
+	return targets[0].function, true
+}
+
+func l11SelectedFinalScenario(name string) bool {
+	for _, row := range l11ExpectedFinalClosureMatrix() {
+		if row.id == name {
+			return true
+		}
+	}
+	return false
+}
+
+func l11SelectedTestingTCallback(function *l11SelectedFunction) bool {
+	if function == nil || function.declaration == nil || function.declaration.Type.TypeParams != nil || function.declaration.Type.Results != nil {
+		return false
+	}
+	parameters := function.declaration.Type.Params
+	if parameters == nil || len(parameters.List) != 1 || len(parameters.List[0].Names) > 1 {
+		return false
+	}
+	pointer, ok := parameters.List[0].Type.(*ast.StarExpr)
+	return ok && l11SelectedTypeName(function.file, pointer.X) == "testing.T"
+}
+
 func l11SelectedClosedDirectTargets(root, current *l11SelectedFunction, targets []l11SelectedCallable, key string, queue *[]*l11SelectedFunction) []string {
 	if len(targets) != 1 || targets[0].function == nil {
 		if l11SelectedAllowedDirectProductionFunctions[key] {
@@ -1702,6 +1790,9 @@ func l11SelectedClosedDirectTargets(root, current *l11SelectedFunction, targets 
 		return []string{l11SelectedClosedIssue(root, "unresolved in-module call")}
 	}
 	target := targets[0].function
+	if target.declaration != nil && target.declaration.Type.TypeParams != nil && len(target.declaration.Type.TypeParams.List) > 0 {
+		return []string{l11SelectedClosedIssue(root, "forbidden dynamic selected helper graph")}
+	}
 	if l11SelectedTestOwnedFunction(target) || l11SelectedToolHelperFunction(target) || (target.pkg != current.pkg && !strings.HasPrefix(key, "github.com/jywlabs/hal/")) {
 		*queue = append(*queue, target)
 		return nil
@@ -1802,7 +1893,81 @@ func l11SelectedCallableValueExpression(packages map[string]*l11SelectedPackage,
 				return importedPackage != nil && len(importedPackage.functions[value.Sel.Name]) > 0
 			}
 		}
+		if found, callable := l11SelectedStructFieldKind(packages, current, value.X, value.Sel.Name); found {
+			return callable
+		}
 		return l11SelectedExpressionType(current.file, value.X) != ""
+	default:
+		return false
+	}
+}
+
+func l11SelectedStructFieldKind(packages map[string]*l11SelectedPackage, current *l11SelectedFunction, receiver ast.Expr, fieldName string) (bool, bool) {
+	if current == nil || current.pkg == nil || current.file == nil {
+		return false, false
+	}
+	typeName := l11SelectedExpressionType(current.file, receiver)
+	pkg := current.pkg
+	if separator := strings.LastIndex(typeName, "."); separator >= 0 {
+		pkg = l11SelectedImportedPackage(packages, typeName[:separator])
+		typeName = typeName[separator+1:]
+	}
+	return l11SelectedNamedFieldKind(pkg, typeName, fieldName, make(map[string]bool))
+}
+
+func l11SelectedNamedFieldKind(pkg *l11SelectedPackage, typeName, fieldName string, visiting map[string]bool) (bool, bool) {
+	if pkg == nil || typeName == "" || visiting[typeName] {
+		return false, false
+	}
+	visiting[typeName] = true
+	defer delete(visiting, typeName)
+	for _, definition := range pkg.typeDefs[typeName] {
+		switch expression := definition.expression.(type) {
+		case *ast.StructType:
+			for _, field := range expression.Fields.List {
+				for _, name := range field.Names {
+					if name.Name == fieldName {
+						return true, l11SelectedCallableType(field.Type, make(map[*ast.Object]bool))
+					}
+				}
+			}
+		case *ast.InterfaceType:
+			for _, field := range expression.Methods.List {
+				for _, name := range field.Names {
+					if name.Name == fieldName {
+						return true, true
+					}
+				}
+			}
+		case *ast.Ident:
+			if found, callable := l11SelectedNamedFieldKind(pkg, expression.Name, fieldName, visiting); found {
+				return true, callable
+			}
+		}
+	}
+	return false, false
+}
+
+func l11SelectedCallableType(expression ast.Expr, visiting map[*ast.Object]bool) bool {
+	if expression == nil {
+		return false
+	}
+	switch value := expression.(type) {
+	case *ast.FuncType:
+		return true
+	case *ast.ParenExpr:
+		return l11SelectedCallableType(value.X, visiting)
+	case *ast.Ident:
+		if value.Obj == nil || visiting[value.Obj] {
+			return false
+		}
+		typeSpec, ok := value.Obj.Decl.(*ast.TypeSpec)
+		if !ok {
+			return false
+		}
+		visiting[value.Obj] = true
+		defer delete(visiting, value.Obj)
+		return l11SelectedCallableType(typeSpec.Type, visiting)
 	default:
 		return false
 	}
@@ -1852,6 +2017,8 @@ func l11SelectedClosedIssue(root *l11SelectedFunction, detail string) string {
 		return fmt.Sprintf("%s reaches a cloud/provider marker", name)
 	case "unresolved in-module call":
 		return fmt.Sprintf("%s reaches an unresolved in-module call", name)
+	case "blank import":
+		return fmt.Sprintf("%s reaches a forbidden blank import", name)
 	case "synthetic credential proof constructor":
 		return fmt.Sprintf("%s reaches synthetic credential proof constructor", name)
 	default:
