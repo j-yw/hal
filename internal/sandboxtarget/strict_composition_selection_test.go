@@ -113,7 +113,10 @@ func l10TargetSelectionAuthority(t *testing.T, target *sandbox.SandboxState) (*S
 		},
 		Lock: acquisition.TemplateLock{SourceKind: acquisition.SourceKindOCIArtifact, ReferenceKind: sandboxtemplate.ReferenceKindOCIArtifact, Status: acquisition.LockStatusLocked,
 			References: []acquisition.ReferenceLock{{Field: "metadata.reference", Kind: sandboxtemplate.ReferenceKindOCIArtifact, Status: acquisition.LockStatusLocked, Digest: digest}}},
-		Trust: acquisition.TrustPolicyResult{Mode: acquisition.TrustPolicyModeStrict, Decision: acquisition.TrustPolicyDecisionTrusted},
+		Trust: acquisition.TrustPolicyResult{
+			Mode: acquisition.TrustPolicyModeStrict, Decision: acquisition.TrustPolicyDecisionTrusted,
+			Enforcement: &acquisition.TrustPolicyEnforcementMetadata{StrictlyEnforced: true},
+		},
 		RuntimeMetadata: &sandboxruntime.RuntimeTemplateLockMetadata{
 			TemplateReference: &sandboxruntime.RuntimeTemplateLockEntryMetadata{SourceKind: "template_reference", ReferenceKind: "oci_artifact", Status: "locked", DigestAlgorithm: "sha256", DigestValue: digest.Value},
 			TrustPolicy:       &sandboxruntime.RuntimeTemplateTrustPolicyMetadata{Mode: "strict", Decision: "trusted", SourceKind: "oci_artifact", ReferenceKind: "oci_artifact", Status: "locked", DigestAlgorithm: "sha256", DigestValue: digest.Value},
