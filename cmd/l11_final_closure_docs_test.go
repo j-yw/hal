@@ -19,7 +19,7 @@ const (
 	l11FinalClosureCurrentStateLine = "Current closure state: `blocked`."
 	l11FinalClosureStateMarker      = "<!-- hal:l11-closure-state=blocked -->"
 	l11FinalClosureMarkerNamespace  = "hal:l11-closure-state"
-	l11FinalClosureBlockedDocSHA256 = "9a1724f7be33cf3283d512a121bd68967fd2491fb9f6c9240183fd638610d21a"
+	l11FinalClosureBlockedDocSHA256 = "8161e4fe1950c860baab540571780eb956149b323013e07cd4a292d9a143ce77"
 )
 
 type l11FinalClosureMatrixRow struct {
@@ -157,6 +157,8 @@ func TestL11FinalClosureVerificationCommandsAreExact(t *testing.T) {
 		"go test -count=1 ./cmd -run '^TestL11FinalClosure'",
 		"go test -race -count=1 ./cmd -run '^TestL11FinalClosure'",
 		"go test -count=20 ./cmd -run '^TestL11FinalClosure'",
+		"go test -count=20 ./cmd -run '^TestL11(RootlessPreparedLinux|ResourceCensus|StrictRows|SelectedWrapper)'",
+		"go test -race -count=1 ./cmd -run '^TestL11(RootlessPreparedLinux|ResourceCensus|StrictRows|SelectedWrapper)'",
 		"tools/microvm/l11/verify-selected-live.sh matrix",
 		"go test -count=1 ./...",
 		"go test -count=1 -run '^$' ./...",

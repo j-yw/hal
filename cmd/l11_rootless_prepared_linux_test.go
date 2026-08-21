@@ -26,6 +26,118 @@ import (
 )
 
 func TestL11RootlessPreparedLinuxHarness(t *testing.T) {
+	t.Run("rootless_advisory_success", l11RunRootlessAdvisorySuccess)
+	t.Run("rootless_client_loss_reconnect", l11RunRootlessClientLossReconnect)
+	t.Run("rootless_daemon_restart_recovery", l11RunRootlessDaemonRestartRecovery)
+	t.Run("artifact_integrity_and_safe_handoff", l11RunArtifactIntegrityAndSafeHandoff)
+}
+
+func l11RunRootlessAdvisorySuccess(t *testing.T) {
+	harness, baseline := l11NewRootlessScenario(t)
+	result, err := harness.AdmitRootless()
+	if err != nil {
+		t.Fatalf("admit rootless: %v", err)
+	}
+	if result.ScenarioID != "rootless_advisory_success" || result.Runtime != "rootless_podman" {
+		t.Fatalf("scenario/runtime = %q/%q, want exact rootless row", result.ScenarioID, result.Runtime)
+	}
+	if !result.Advisory || result.StrictSelected {
+		t.Fatalf("advisory/strict = %t/%t, want true/false", result.Advisory, result.StrictSelected)
+	}
+	if result.PolicyMode != "advisory" || result.NetworkEnforcement != "best_effort" || result.StrictReason != "dependency_unaccepted" {
+		t.Fatalf("rootless policy/enforcement/reason = %q/%q/%q", result.PolicyMode, result.NetworkEnforcement, result.StrictReason)
+	}
+	if result.AdmissionCount != 1 || !result.Connected {
+		t.Fatalf("rootless admission/connected = %d/%t, want 1/true", result.AdmissionCount, result.Connected)
+	}
+	l11CleanupRootlessScenario(t, harness, baseline)
+}
+
+func l11RunRootlessClientLossReconnect(t *testing.T) {
+	harness, baseline := l11NewRootlessScenario(t)
+	if _, err := harness.AdmitRootless(); err != nil {
+		t.Fatalf("admit rootless: %v", err)
+	}
+	if err := harness.LoseClient(); err != nil {
+		t.Fatalf("lose initiating client: %v", err)
+	}
+	result, err := harness.Reconnect()
+	if err != nil {
+		t.Fatalf("reconnect after client loss: %v", err)
+	}
+	if result.ScenarioID != "rootless_client_loss_reconnect" || !result.SameDurableJob || result.AdmissionCount != 1 || !result.Connected {
+		t.Fatalf("reconnect scenario/same-job/admission/connected = %q/%t/%d/%t", result.ScenarioID, result.SameDurableJob, result.AdmissionCount, result.Connected)
+	}
+	l11CleanupRootlessScenario(t, harness, baseline)
+}
+
+func l11RunRootlessDaemonRestartRecovery(t *testing.T) {
+	harness, baseline := l11NewRootlessScenario(t)
+	if _, err := harness.AdmitRootless(); err != nil {
+		t.Fatalf("admit rootless: %v", err)
+	}
+	if err := harness.RestartDaemon(); err != nil {
+		t.Fatalf("restart fake prepared daemon: %v", err)
+	}
+	result, err := harness.RecoverAfterRestart()
+	if err != nil {
+		t.Fatalf("recover after daemon restart: %v", err)
+	}
+	if result.ScenarioID != "rootless_daemon_restart_recovery" || !result.SameDurableJob ||
+		result.AdmissionCount != 1 || result.DaemonGeneration != 2 || result.FinalizationCount != 1 || !result.LeaseReleased {
+		t.Fatalf("restart recovery result = %#v", result)
+	}
+	repeated, err := harness.RecoverAfterRestart()
+	if err != nil {
+		t.Fatalf("repeat recovery after daemon restart: %v", err)
+	}
+	if repeated.AdmissionCount != 1 || repeated.FinalizationCount != 1 {
+		t.Fatalf("repeated recovery admission/finalization = %d/%d, want 1/1", repeated.AdmissionCount, repeated.FinalizationCount)
+	}
+	l11CleanupRootlessScenario(t, harness, baseline)
+}
+
+func l11RunArtifactIntegrityAndSafeHandoff(t *testing.T) {
+	harness, baseline := l11NewRootlessScenario(t)
+	if _, err := harness.AdmitRootless(); err != nil {
+		t.Fatalf("admit rootless: %v", err)
+	}
+	if err := harness.RestartDaemon(); err != nil {
+		t.Fatalf("restart fake prepared daemon: %v", err)
+	}
+	if _, err := harness.RecoverAfterRestart(); err != nil {
+		t.Fatalf("recover before artifact finalization: %v", err)
+	}
+	evidence, err := harness.FinalizeArtifact([]byte("diff --git a/result.txt b/result.txt\nnew file mode 100644\n"))
+	if err != nil {
+		t.Fatalf("finalize artifact: %v", err)
+	}
+	if evidence.ScenarioID != "artifact_integrity_and_safe_handoff" || evidence.ArtifactID != "rootless-result" || evidence.SizeBytes <= 0 || len(evidence.Digest) != 64 {
+		t.Fatalf("artifact evidence = %#v", evidence)
+	}
+	if err := harness.VerifyArtifact(evidence); err != nil {
+		t.Fatalf("verify durable artifact: %v", err)
+	}
+	corrupted := evidence
+	corrupted.Digest = strings.Repeat("0", 64)
+	if err := harness.VerifyArtifact(corrupted); !errors.Is(err, errL11ArtifactInvalid) {
+		t.Fatalf("corrupt digest error = %v, want artifact_invalid", err)
+	}
+	if evidence.Handoff.Applied || evidence.Handoff.DryRunPassed || evidence.Handoff.ArtifactID != evidence.ArtifactID {
+		t.Fatal("safe handoff outcome is not disabled and artifact-bound")
+	}
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatalf("marshal safe artifact evidence: %v", err)
+	}
+	if strings.Contains(string(encoded), harness.PrivateRoot()) || strings.Contains(string(encoded), "storedPath") {
+		t.Fatal("public artifact evidence exposed a private or store-relative path")
+	}
+	l11CleanupRootlessScenario(t, harness, baseline)
+}
+
+func l11NewRootlessScenario(t *testing.T) (*l11RootlessPreparedHarness, l11ResourceCensus) {
+	t.Helper()
 	harness := newL11RootlessPreparedHarness(t)
 	baseline, err := harness.CaptureBaseline()
 	if err != nil {
@@ -34,105 +146,11 @@ func TestL11RootlessPreparedLinuxHarness(t *testing.T) {
 	if baseline.OwnedTotal() != 0 {
 		t.Fatalf("baseline owned total = %d, want 0", baseline.OwnedTotal())
 	}
+	return harness, baseline
+}
 
-	t.Run("rootless_advisory_success", func(t *testing.T) {
-		result, err := harness.AdmitRootless()
-		if err != nil {
-			t.Fatalf("admit rootless: %v", err)
-		}
-		if result.ScenarioID != "rootless_advisory_success" || result.Runtime != "rootless_podman" {
-			t.Fatalf("scenario/runtime = %q/%q, want exact rootless row", result.ScenarioID, result.Runtime)
-		}
-		if !result.Advisory || result.StrictSelected {
-			t.Fatalf("advisory/strict = %t/%t, want true/false", result.Advisory, result.StrictSelected)
-		}
-		if result.PolicyMode != "advisory" || result.NetworkEnforcement != "best_effort" || result.StrictReason != "dependency_unaccepted" {
-			t.Fatalf("rootless policy/enforcement/reason = %q/%q/%q", result.PolicyMode, result.NetworkEnforcement, result.StrictReason)
-		}
-		if result.AdmissionCount != 1 {
-			t.Fatalf("admission count = %d, want 1", result.AdmissionCount)
-		}
-		if !result.Connected {
-			t.Fatal("rootless client is not connected after admission")
-		}
-	})
-
-	t.Run("rootless_client_loss_reconnect", func(t *testing.T) {
-		if err := harness.LoseClient(); err != nil {
-			t.Fatalf("lose initiating client: %v", err)
-		}
-		result, err := harness.Reconnect()
-		if err != nil {
-			t.Fatalf("reconnect after client loss: %v", err)
-		}
-		if result.ScenarioID != "rootless_client_loss_reconnect" || !result.SameDurableJob {
-			t.Fatalf("scenario/same durable job = %q/%t", result.ScenarioID, result.SameDurableJob)
-		}
-		if result.AdmissionCount != 1 {
-			t.Fatalf("admission count after reconnect = %d, want 1", result.AdmissionCount)
-		}
-		if !result.Connected {
-			t.Fatal("rootless client is not connected after recovery")
-		}
-	})
-
-	t.Run("rootless_daemon_restart_recovery", func(t *testing.T) {
-		if err := harness.RestartDaemon(); err != nil {
-			t.Fatalf("restart fake prepared daemon: %v", err)
-		}
-		result, err := harness.RecoverAfterRestart()
-		if err != nil {
-			t.Fatalf("recover after daemon restart: %v", err)
-		}
-		if result.ScenarioID != "rootless_daemon_restart_recovery" || !result.SameDurableJob {
-			t.Fatalf("scenario/same durable job = %q/%t", result.ScenarioID, result.SameDurableJob)
-		}
-		if result.AdmissionCount != 1 || result.DaemonGeneration != 2 {
-			t.Fatalf("admission/generation = %d/%d, want 1/2", result.AdmissionCount, result.DaemonGeneration)
-		}
-		if result.FinalizationCount != 1 || !result.LeaseReleased {
-			t.Fatalf("finalization/lease released = %d/%t, want 1/true", result.FinalizationCount, result.LeaseReleased)
-		}
-		repeated, err := harness.RecoverAfterRestart()
-		if err != nil {
-			t.Fatalf("repeat recovery after daemon restart: %v", err)
-		}
-		if repeated.AdmissionCount != 1 || repeated.FinalizationCount != 1 {
-			t.Fatalf("repeated recovery admission/finalization = %d/%d, want 1/1", repeated.AdmissionCount, repeated.FinalizationCount)
-		}
-	})
-
-	t.Run("artifact_integrity_and_safe_handoff", func(t *testing.T) {
-		evidence, err := harness.FinalizeArtifact([]byte("diff --git a/result.txt b/result.txt\nnew file mode 100644\n"))
-		if err != nil {
-			t.Fatalf("finalize artifact: %v", err)
-		}
-		if evidence.ScenarioID != "artifact_integrity_and_safe_handoff" || evidence.ArtifactID != "rootless-result" {
-			t.Fatalf("scenario/artifact = %q/%q", evidence.ScenarioID, evidence.ArtifactID)
-		}
-		if evidence.SizeBytes <= 0 || len(evidence.Digest) != 64 {
-			t.Fatalf("artifact size/digest length = %d/%d", evidence.SizeBytes, len(evidence.Digest))
-		}
-		if err := harness.VerifyArtifact(evidence); err != nil {
-			t.Fatalf("verify durable artifact: %v", err)
-		}
-		corrupted := evidence
-		corrupted.Digest = strings.Repeat("0", 64)
-		if err := harness.VerifyArtifact(corrupted); !errors.Is(err, errL11ArtifactInvalid) {
-			t.Fatalf("corrupt digest error = %v, want artifact_invalid", err)
-		}
-		if evidence.Handoff.Applied || evidence.Handoff.DryRunPassed || evidence.Handoff.ArtifactID != evidence.ArtifactID {
-			t.Fatalf("safe handoff outcome is not disabled and artifact-bound")
-		}
-		encoded, err := json.Marshal(evidence)
-		if err != nil {
-			t.Fatalf("marshal safe artifact evidence: %v", err)
-		}
-		if strings.Contains(string(encoded), harness.PrivateRoot()) || strings.Contains(string(encoded), "storedPath") {
-			t.Fatal("public artifact evidence exposed a private or store-relative path")
-		}
-	})
-
+func l11CleanupRootlessScenario(t *testing.T, harness *l11RootlessPreparedHarness, baseline l11ResourceCensus) {
+	t.Helper()
 	if err := harness.Cleanup(); err != nil {
 		t.Fatalf("cleanup rootless harness: %v", err)
 	}
@@ -222,18 +240,13 @@ func TestL11SelectedWrapperRequiresExactFutureMatrixAndRejectsMutations(t *testi
 		{name: "unexpected row", mode: "exact", events: append(append([]l11WrapperEvent(nil), exact...), l11WrapperEvent{Action: "pass", Test: l11FinalClosureSelectedTest + "/extra_row"}), wantCode: "evidence_mismatch"},
 	}
 	for _, mutation := range mutations {
-		t.Run(mutation.name, func(t *testing.T) {
-			output, err := runL11SelectedWrapperFake(t, wrapper, mutation.mode, mutation.events)
-			if err == nil {
-				t.Fatalf("mutated wrapper event stream passed; output=%q", output)
-			}
-			if !strings.Contains(output, mutation.wantCode) {
-				t.Fatalf("wrapper output = %q, want code %q", output, mutation.wantCode)
-			}
-			if strings.Contains(output, t.TempDir()) {
-				t.Fatal("wrapper failure exposed a private test path")
-			}
-		})
+		output, err := runL11SelectedWrapperFake(t, wrapper, mutation.mode, mutation.events)
+		if err == nil {
+			t.Fatalf("%s: mutated wrapper event stream passed; output=%q", mutation.name, output)
+		}
+		if !strings.Contains(output, mutation.wantCode) {
+			t.Fatalf("%s: wrapper output = %q, want code %q", mutation.name, output, mutation.wantCode)
+		}
 	}
 }
 

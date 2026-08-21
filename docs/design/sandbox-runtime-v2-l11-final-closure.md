@@ -92,7 +92,7 @@ Stable sanitized failure codes are:
 - `evidence_unsafe`.
 
 These codes describe verification outcomes. They do not expand a public runtime
-or command schema in this contract-only slice.
+or command schema in this safe-now test-only slice.
 
 ## 2. Package ownership and import boundaries
 
@@ -144,7 +144,7 @@ helpers and are not subjected to this test-graph shape restriction.
 
 ## 3. Durable and machine-contract schema changes
 
-This contract-only slice changes no durable or public machine schema. It does
+This safe-now test-only slice changes no durable or public machine schema. It does
 not add an L11 field to manifests, jobs, sandbox state, factory records,
 timeline events, status output, or runtime inspection output.
 
@@ -261,6 +261,11 @@ rootless portion of `artifact_integrity_and_safe_handoff`, and the test-only
 `zero_resource_leaks` census. Those results never feed the selected wrapper or
 release acceptance. The four strict rows remain exactly
 `dependency_unaccepted` until accepted L8 and L10 authority exists.
+Each fake harness row is isolated and invoked through concrete
+`(*testing.T).Run` with its literal matrix scenario ID and a direct named
+`func(*testing.T)` callback declared in `_test.go`. The blocked strict rows are
+data assertions only; the harness does not simulate them or emit passing row
+events.
 
 Red-first guard coverage locks the document sections, exact row catalog and
 initial state, duplicate/missing/renamed mutations, premature pass/completion
@@ -275,6 +280,8 @@ Static contract verification commands are:
 go test -count=1 ./cmd -run '^TestL11FinalClosure'
 go test -race -count=1 ./cmd -run '^TestL11FinalClosure'
 go test -count=20 ./cmd -run '^TestL11FinalClosure'
+go test -count=20 ./cmd -run '^TestL11(RootlessPreparedLinux|ResourceCensus|StrictRows|SelectedWrapper)'
+go test -race -count=1 ./cmd -run '^TestL11(RootlessPreparedLinux|ResourceCensus|StrictRows|SelectedWrapper)'
 ```
 
 Broad fake-safe release gates are:
@@ -301,7 +308,7 @@ cloud provider, or automatic host mutation. It does not upgrade rootless
 Podman, accept simulated or metadata-only authority, make live tests default,
 publish a release, or treat an optional/required skip as success.
 
-This contract-only slice hands off three explicitly blocked implementation
+This safe-now test-only slice hands off three explicitly blocked implementation
 lanes:
 
 1. L8 must land its production credential runtime, full D4 wrapper, root

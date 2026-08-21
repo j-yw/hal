@@ -11,6 +11,10 @@ import (
 )
 
 func TestL11ResourceCensusPreparedLinux(t *testing.T) {
+	t.Run("zero_resource_leaks", l11RunZeroResourceLeaks)
+}
+
+func l11RunZeroResourceLeaks(t *testing.T) {
 	owner := l11ResourceOwner{Scope: "rootless-harness", Generation: 2}
 	historical := l11ResourceOwner{Scope: owner.Scope, Generation: 1}
 	inventory := newL11ResourceInventory()
@@ -24,32 +28,29 @@ func TestL11ResourceCensusPreparedLinux(t *testing.T) {
 	if baseline.OwnedTotal() != 0 || baseline.Total() != len(l11ExactOwnedResourceKinds()) {
 		t.Fatalf("baseline owned/all totals = %d/%d", baseline.OwnedTotal(), baseline.Total())
 	}
+	for _, kind := range l11ExactOwnedResourceKinds() {
+		inventory.Add(owner, kind)
+	}
+	active, err := inventory.Capture(owner)
+	if err != nil {
+		t.Fatalf("capture active census: %v", err)
+	}
+	if active.OwnedTotal() != len(l11ExactOwnedResourceKinds()) {
+		t.Fatalf("active owned total = %d, want %d", active.OwnedTotal(), len(l11ExactOwnedResourceKinds()))
+	}
 
-	t.Run("zero_resource_leaks", func(t *testing.T) {
-		for _, kind := range l11ExactOwnedResourceKinds() {
-			inventory.Add(owner, kind)
-		}
-		active, err := inventory.Capture(owner)
-		if err != nil {
-			t.Fatalf("capture active census: %v", err)
-		}
-		if active.OwnedTotal() != len(l11ExactOwnedResourceKinds()) {
-			t.Fatalf("active owned total = %d, want %d", active.OwnedTotal(), len(l11ExactOwnedResourceKinds()))
-		}
-
-		inventory.Cleanup(owner)
-		inventory.Cleanup(owner)
-		final, err := inventory.Capture(owner)
-		if err != nil {
-			t.Fatalf("capture final census: %v", err)
-		}
-		if err := l11RequireExactResourceZero(baseline, final); err != nil {
-			t.Fatalf("exact zero census: %v", err)
-		}
-		if final.Total() != baseline.Total() {
-			t.Fatalf("unrelated resource total changed = %d, want %d", final.Total(), baseline.Total())
-		}
-	})
+	inventory.Cleanup(owner)
+	inventory.Cleanup(owner)
+	final, err := inventory.Capture(owner)
+	if err != nil {
+		t.Fatalf("capture final census: %v", err)
+	}
+	if err := l11RequireExactResourceZero(baseline, final); err != nil {
+		t.Fatalf("exact zero census: %v", err)
+	}
+	if final.Total() != baseline.Total() {
+		t.Fatalf("unrelated resource total changed = %d, want %d", final.Total(), baseline.Total())
+	}
 }
 
 func TestL11ResourceCensusRejectsLeaksAndInventoryDrift(t *testing.T) {
