@@ -135,6 +135,17 @@ func TestLinuxRecoveryTopologyClosesNamespaceReturnedWithError(t *testing.T) {
 	}
 }
 
+func TestLinuxRecoveryTopologyRejectsTypedNilProvider(t *testing.T) {
+	var provider *adapterRecoveryProvider
+	lifecycle, err := linuxtopology.New(linuxtopology.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovery, err := NewLinuxRecoveryTopology(lifecycle, provider); recovery != nil || !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("NewLinuxRecoveryTopology(typed nil) = %T, %v", recovery, err)
+	}
+}
+
 func newAdapterRecoveryNamespace(t *testing.T) *linuxtopology.NamespaceHandle {
 	t.Helper()
 	user, err := os.CreateTemp(t.TempDir(), "user-ns-")
