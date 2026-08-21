@@ -323,6 +323,7 @@ func validateTemplate(identity sandboxruntime.JobCredentialIdentity, policyID st
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeTemplateProofMismatch
 	}
 	if string(result.Trust.Mode) != "strict" || string(result.Trust.Decision) != "trusted" ||
+		result.Trust.Enforcement == nil || !result.Trust.Enforcement.StrictlyEnforced ||
 		!templateFindingAliasesEmpty(result) {
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeTemplateProofRejected
 	}
@@ -345,9 +346,9 @@ func validateTemplate(identity sandboxruntime.JobCredentialIdentity, policyID st
 	writeDigestString(digest, string(binding.ManifestDigest.Algorithm))
 	writeDigestString(digest, binding.ManifestDigest.Value)
 	// Nil and explicit-empty finding lists represent the same canonical strict
-	// state. Terminal evaluation revalidates this predicate before comparing the
-	// fingerprint, so a post-active warning or error cannot reach completion.
-	writeDigestString(digest, "template-finding-aliases-empty-v1")
+	// state. Terminal evaluation revalidates this predicate and explicit strict
+	// enforcement before comparing the fingerprint, so drift cannot complete.
+	writeDigestString(digest, "template-strict-state-v1")
 	var fingerprint [32]byte
 	copy(fingerprint[:], digest.Sum(nil))
 	return fingerprint, ""
@@ -376,7 +377,9 @@ func runtimeTemplateFindingsEmpty(metadata *sandboxruntime.RuntimeTemplateLockMe
 		runtimeTemplateEntryWarningsEmpty(metadata.RuntimeImage) &&
 		runtimeTemplateEntryWarningsEmpty(metadata.SourceArtifact) &&
 		(metadata.TrustPolicy == nil ||
-			(len(metadata.TrustPolicy.WarningCodes) == 0 && len(metadata.TrustPolicy.ErrorCodes) == 0))
+			(len(metadata.TrustPolicy.WarningCodes) == 0 &&
+				len(metadata.TrustPolicy.ErrorCodes) == 0 &&
+				len(metadata.TrustPolicy.ReasonCodes) == 0))
 }
 
 func runtimeTemplateEntryWarningsEmpty(entry *sandboxruntime.RuntimeTemplateLockEntryMetadata) bool {
