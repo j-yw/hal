@@ -162,6 +162,8 @@ func validateL8D6RuntimeOwnerArchitecture(doc string) error {
 		"String and every fmt verb return only `[job-credential-runtime-recovery-commit-receipt]`",
 		"JSON, gob, text, and binary encoding fail closed; XML encoding omits the field",
 		"only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`",
+		"`firecrackerhost.commitJobCredentialRuntimeRecovery`",
+		"`storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime`",
 		"The digest has no accessor",
 		l8D6RuntimeOwnerCloseRule,
 		"Non-Linux implementations fail closed",
@@ -326,7 +328,11 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		ownerVerifier = "../internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go"
 		privateStore  = "../internal/sandboxworker/job_store_v2.go"
 	)
-	allowed := map[string]bool{rootValidator: true, ownerVerifier: true, privateStore: true}
+	expectedFunction := map[string]string{
+		rootValidator: "ValidateJobCredentialRuntimeRecoveryCommitReceipt",
+		ownerVerifier: "commitJobCredentialRuntimeRecovery",
+		privateStore:  "storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime",
+	}
 	references := make(map[string]int)
 	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -345,16 +351,16 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		if err != nil {
 			return err
 		}
-		count, err := l8D6RuntimeOwnerCommitReceiptProjections(payload)
+		functions, err := l8D6RuntimeOwnerCommitReceiptProjectionFunctions(payload)
 		if err != nil {
 			return err
 		}
 		normalizedPath := filepath.ToSlash(path)
-		if count > 0 && !allowed[normalizedPath] {
-			t.Fatalf("runtime recovery commit receipt accessed outside exact validator, owner, and private store: %s", normalizedPath)
-		}
-		if count > 0 {
-			references[normalizedPath] += count
+		for _, function := range functions {
+			if expectedFunction[normalizedPath] != function {
+				t.Fatalf("runtime recovery commit receipt accessed outside exact function: %s:%s", normalizedPath, function)
+			}
+			references[normalizedPath]++
 		}
 		return nil
 	})
@@ -365,34 +371,40 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		if len(references) != 0 {
 			t.Fatalf("contract-only commit receipt accesses = %#v, want zero", references)
 		}
-	} else if err != nil || references[rootValidator] == 0 || references[ownerVerifier] == 0 || references[privateStore] != 1 {
-		t.Fatalf("production commit receipt accesses = %#v, root API error %v; want validator and owner reads plus one exact private-store copy", references, err)
+	} else if err != nil || references[rootValidator] != 1 || references[ownerVerifier] != 1 || references[privateStore] != 1 {
+		t.Fatalf("production commit receipt accesses = %#v, root API error %v; want one read in each exact validator, owner, and private-store function", references, err)
 	}
 
 	allowedFixture := []byte("package sandboxworker\nfunc store(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) { _ = receipt.CommitID }\n")
-	if count, err := l8D6RuntimeOwnerCommitReceiptProjections(allowedFixture); err != nil || count != 1 {
-		t.Fatalf("private-store projection fixture count = %d, error %v", count, err)
+	if functions, err := l8D6RuntimeOwnerCommitReceiptProjectionFunctions(allowedFixture); err != nil || len(functions) != 1 || functions[0] != "store" {
+		t.Fatalf("private-store projection fixture functions = %#v, error %v", functions, err)
 	}
-	wrongFixture := []byte("package cmd\nfunc expose(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) { _ = receipt.CommitID }\n")
-	if count, err := l8D6RuntimeOwnerCommitReceiptProjections(wrongFixture); err != nil || count != 1 {
-		t.Fatalf("public projection fixture count = %d, error %v", count, err)
+	wrongFixture := []byte("package cmd\nvar leak = receipt.CommitID\nfunc expose(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) { _ = receipt.CommitID }\n")
+	if functions, err := l8D6RuntimeOwnerCommitReceiptProjectionFunctions(wrongFixture); err != nil || len(functions) != 2 || functions[0] != "" || functions[1] != "expose" {
+		t.Fatalf("public projection fixture functions = %#v, error %v", functions, err)
 	}
 }
 
-func l8D6RuntimeOwnerCommitReceiptProjections(payload []byte) (int, error) {
+func l8D6RuntimeOwnerCommitReceiptProjectionFunctions(payload []byte) ([]string, error) {
 	file, err := parser.ParseFile(token.NewFileSet(), "receipt.go", payload, 0)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	count := 0
-	ast.Inspect(file, func(node ast.Node) bool {
-		selector, ok := node.(*ast.SelectorExpr)
-		if ok && selector.Sel.Name == "CommitID" {
-			count++
+	var functions []string
+	for _, declaration := range file.Decls {
+		functionName := ""
+		if function, ok := declaration.(*ast.FuncDecl); ok {
+			functionName = function.Name.Name
 		}
-		return true
-	})
-	return count, nil
+		ast.Inspect(declaration, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if ok && selector.Sel.Name == "CommitID" {
+				functions = append(functions, functionName)
+			}
+			return true
+		})
+	}
+	return functions, nil
 }
 
 type l8D6RuntimeOwnerProofConstructorUsage struct {

@@ -700,8 +700,10 @@ tag `json:"credentialRecoveryReceipt,omitempty"`. Recovery-state validation
 requires exactly one of CredentialState or CredentialRecoveryReceipt until
 commit has acknowledged the exact receipt, and forbids the receipt for jobs
 without live L8 credential intent. A repo-wide AST guard permits `CommitID`
-reads only in the exact root validator, concrete `firecrackerhost` owner
-verifier, and `internal/sandboxworker/job_store_v2.go`; only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`
+reads exactly once in each of the root
+`ValidateJobCredentialRuntimeRecoveryCommitReceipt`, concrete
+`firecrackerhost.commitJobCredentialRuntimeRecovery`, and private-store
+`storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime` functions; only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`
 from the neutral receipt into the private DTO. Worker services, statuses,
 commands, runtime metadata, and any other file cannot project it, including
 through a cross-file alias.
