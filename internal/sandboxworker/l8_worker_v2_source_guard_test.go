@@ -412,6 +412,60 @@ func TestL8WorkerV2GuardLocksOnlyExactProtocolErrorResponse(t *testing.T) {
 	})
 }
 
+func TestL8WorkerV2GuardLocksExactAuthenticatedTransportComposition(t *testing.T) {
+	serverSource := l8ReadWorkerSource(t, "server.go")
+	l8AssertWorkerV2ExactFunctionLockAndMutations(t, "server.go", serverSource, "serve", "readRequest", []l8WorkerV2ExactFunctionMutation{
+		{name: "peer authentication bypassed", old: "peer, err := authenticateWorkerPeerCredentials(conn, filesystemBoundaryProven)", replace: "peer, err := workerPeerIdentity{}, error(nil)"},
+		{name: "peer failure accepted", old: "if err != nil {\n\t\t\t_ = conn.Close()\n\t\t\tcontinue\n\t\t}", replace: "if err == nil {\n\t\t\t_ = conn.Close()\n\t\t\tcontinue\n\t\t}"},
+		{name: "principal issued before peer authentication", old: "peer, err := authenticateWorkerPeerCredentials(conn, filesystemBoundaryProven)", replace: "_ = server.principalAuthority\n\t\tpeer, err := authenticateWorkerPeerCredentials(conn, filesystemBoundaryProven)"},
+		{name: "principal omitted from dispatch", old: "server.handleAuthenticatedConnection(ctx, conn, principal)", replace: "server.handleConnection(ctx, conn)"},
+	})
+	l8AssertWorkerV2ExactFunctionLockAndMutations(t, "server.go", serverSource, "handleAuthenticatedConnection", "readRequest", []l8WorkerV2ExactFunctionMutation{
+		{name: "ordinary operation routed to L8", old: "server.authenticatedHandler.HandlesAuthenticatedRequest(req)", replace: "!server.authenticatedHandler.HandlesAuthenticatedRequest(req)"},
+		{name: "missing principal accepted", old: "principal != nil", replace: "principal == nil"},
+		{name: "request principal path bypassed", old: "HandleAuthenticatedRequest(ctx, principal, req)", replace: "HandleRequest(ctx, req)"},
+	})
+	l8AssertWorkerV2ExactFunctionLockAndMutations(t, "server.go", serverSource, "issueWorkerConnectionPrincipal", "readRequest", []l8WorkerV2ExactFunctionMutation{
+		{name: "unsafe principal id accepted", old: "!validWorkerV2SafeID(principalID)", replace: "validWorkerV2SafeID(principalID)"},
+		{name: "peer uid replaced", old: "principalID, peer.uid, peer.gid", replace: "principalID, peer.gid, peer.gid"},
+		{name: "peer gid replaced", old: "principalID, peer.uid, peer.gid", replace: "principalID, peer.uid, peer.uid"},
+	})
+
+	peerSource := l8ReadWorkerSource(t, "server_peer.go")
+	validateScope := l8ParseWorkerV2ExactFunctionScope(t, "server_peer.go", peerSource, "validateWorkerPeerIdentity")
+	if !l8WorkerV2AllowedCompatibilityDeclaration(validateScope) || !l8WorkerV2LockedV1CompatibilityDeclaration(validateScope) {
+		t.Fatal("exact UID/GID peer validator was not locked")
+	}
+	for _, mutation := range []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "uid comparison removed", old: "validateWorkerPeerUID(peer.uid, currentUID) != nil || ", new: ""},
+		{name: "gid comparison removed", old: " || peer.gid != currentGID", new: ""},
+		{name: "either mismatch tolerated", old: " != nil || peer.gid != ", new: " != nil && peer.gid != "},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := strings.Replace(peerSource, mutation.old, mutation.new, 1)
+			if mutated == peerSource {
+				t.Fatalf("mutation did not change server_peer.go")
+			}
+			mutatedScope := l8ParseWorkerV2ExactFunctionScope(t, "server_peer.go", mutated, "validateWorkerPeerIdentity")
+			if l8WorkerV2AllowedCompatibilityDeclaration(mutatedScope) || l8WorkerV2LockedV1CompatibilityDeclaration(mutatedScope) {
+				t.Errorf("%s retained exact authenticated transport lock", mutation.name)
+			}
+		})
+	}
+
+	linuxSource := l8ReadWorkerSource(t, "server_peer_linux.go")
+	l8AssertWorkerV2ExactFunctionLockAndMutations(t, "server_peer_linux.go", linuxSource, "authenticateWorkerPeerCredentials", "validateWorkerPeerCredentials", []l8WorkerV2ExactFunctionMutation{
+		{name: "kernel credential lookup removed", old: "syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)", replace: "(*syscall.Ucred)(nil), error(nil)"},
+		{name: "effective uid replaced", old: "uint32(os.Geteuid())", replace: "peer.uid"},
+		{name: "effective gid replaced", old: "uint32(os.Getegid())", replace: "peer.gid"},
+		{name: "identity comparison removed", old: "if err := validateWorkerPeerIdentity(peer, uint32(os.Geteuid()), uint32(os.Getegid())); err != nil {", replace: "if err := error(nil); err != nil {"},
+	})
+}
+
 func TestL8WorkerV2GuardLocksOnlyExactContextErrorResponse(t *testing.T) {
 	source := l8ReadWorkerSource(t, "handler.go")
 	timeoutReturn := `return protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeRequestTimeout, "worker request timed out"), true`
@@ -4063,7 +4117,8 @@ import (
 	"time"
 )
 type JobV2 struct { SubmittedAt time.Time ` + "`json:\"submittedAt\"`" + ` }
-type storedJobStateV2 struct { JobV2 JobV2; RequestKey string ` + "`json:\"requestKey\"`" + `; PrincipalID string ` + "`json:\"principalId\"`" + `; DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + ` }
+type storedJobCredentialStateV2 struct { ContractVersion string ` + "`json:\"contractVersion\"`" + ` }
+type storedJobStateV2 struct { JobV2 JobV2; RequestKey string ` + "`json:\"requestKey\"`" + `; PrincipalID string ` + "`json:\"principalId\"`" + `; DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + `; CredentialState *storedJobCredentialStateV2 ` + "`json:\"credentialState,omitempty\"`" + ` }
 	func encodeStoredJobStateV2(state storedJobStateV2) ([]byte, error) { return json.Marshal(state) }`
 	l8AssertWorkerV2GuardAllows(t, map[string]string{"job_store_v2.go": storeSource}, keyPolicy)
 	aliasedStoreSource := strings.Replace(storeSource, "type JobV2 struct { SubmittedAt time.Time", "type auditedTimeV2 = time.Time\ntype JobV2 struct { SubmittedAt auditedTimeV2", 1)
@@ -4438,14 +4493,17 @@ type l8WorkerV2GuardPolicy struct {
 func l8WorkerV2ProductionGuardPolicy() l8WorkerV2GuardPolicy {
 	return l8WorkerV2GuardPolicy{
 		dedicated: map[string]bool{
-			"job_manager_v2.go":  true,
-			"job_service_v2.go":  true,
-			"job_store_v2.go":    true,
-			"job_v2_client.go":   true,
-			"job_v2_helpers.go":  true,
-			"job_v2_service.go":  true,
-			"job_v2_types.go":    true,
-			"protocol_decode.go": true,
+			"job_manager_v2.go":       true,
+			"job_service_v2.go":       true,
+			"job_state_lock.go":       true,
+			"job_state_lock_unix.go":  true,
+			"job_state_lock_other.go": true,
+			"job_store_v2.go":         true,
+			"job_v2_client.go":        true,
+			"job_v2_helpers.go":       true,
+			"job_v2_service.go":       true,
+			"job_v2_types.go":         true,
+			"protocol_decode.go":      true,
 		},
 		mixed: map[string]bool{
 			"client.go":      true,
@@ -4556,6 +4614,18 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 		filesByAST[parsed] = file
 
 		base := filepath.Base(path)
+		if base == "job_state_lock.go" || base == "job_state_lock_unix.go" || base == "job_state_lock_other.go" {
+			for _, declaration := range parsed.Decls {
+				if generated, ok := declaration.(*ast.GenDecl); ok && generated.Tok == token.IMPORT {
+					continue
+				}
+				for _, unit := range l8WorkerV2DeclarationUnits(declaration) {
+					if !l8WorkerV2ExactJobStateLockCompatibilityDeclaration(l8WorkerV2GuardScope{file: file, node: unit}) {
+						return fmt.Errorf("worker-v2 shared process ownership declaration in %s is outside the exact allowlist", path)
+					}
+				}
+			}
+		}
 		containsV2 := l8WorkerV2ASTContainsMarker(parsed)
 		if containsV2 && !policy.allows(path) {
 			return fmt.Errorf("production file %s contains worker-v2 declarations/references outside the exact allowlist", path)
@@ -4767,7 +4837,16 @@ func l8AuditWorkerV2Sources(sources map[string]string, policy l8WorkerV2GuardPol
 }
 
 func l8WorkerV2AllowedCompatibilityDeclaration(scope l8WorkerV2GuardScope) bool {
-	if scope.file == nil || l8WorkerV2ASTContainsMarker(scope.node) {
+	if scope.file == nil {
+		return false
+	}
+	if l8WorkerV2ExactAuthenticatedTransportCompatibilityDeclaration(scope) {
+		return true
+	}
+	if l8WorkerV2ExactJobStateLockCompatibilityDeclaration(scope) {
+		return true
+	}
+	if l8WorkerV2ASTContainsMarker(scope.node) {
 		return false
 	}
 	base := filepath.Base(scope.file.path)
@@ -5275,7 +5354,13 @@ func l8WorkerV2LockedV1CompatibilityDeclaration(scope l8WorkerV2GuardScope) bool
 	if scope.file == nil || scope.file.parsed == nil {
 		return false
 	}
+	if l8WorkerV2ExactAuthenticatedTransportCompatibilityDeclaration(scope) {
+		return true
+	}
 	if l8WorkerV2ExactSharedEnvelopeValidateDeclaration(scope) {
+		return true
+	}
+	if l8WorkerV2ExactJobStateLockCompatibilityDeclaration(scope) {
 		return true
 	}
 	if l8WorkerV2ASTContainsMarker(scope.node) {
@@ -5308,6 +5393,73 @@ func l8WorkerV2LockedV1CompatibilityDeclaration(scope l8WorkerV2GuardScope) bool
 	default:
 		return false
 	}
+}
+
+// l8WorkerV2ExactAuthenticatedTransportCompatibilityDeclaration freezes the
+// narrow Unix-peer authentication bridge used by the explicit L8 router. The
+// transport necessarily owns net/syscall behavior, so it is admitted only as
+// whole exact declarations; any reordered authentication, principal issuance,
+// routing, UID/GID comparison, or platform fallback changes the digest.
+func l8WorkerV2ExactAuthenticatedTransportCompatibilityDeclaration(scope l8WorkerV2GuardScope) bool {
+	if scope.file == nil || scope.file.parsed == nil {
+		return false
+	}
+	if function := l8WorkerV2ScopeFunction(scope); function != nil {
+		scope.node = function
+	}
+	expected := map[string]map[string]bool{
+		"server.go": {
+			"7fedb1dcd347351fbdbad1e02a1ededa2e1cff398b46bffba8dbda2864237043": true,
+			"b6f873b8a8a8ce68f18d52c141afd0c9c223eb0a54eb887954bcca3213335d54": true,
+			"9c3659f1496d02829e4ff2dbb06ed6548aedac61a079107a64425adcfdeb4f20": true,
+			"84319b2549b1f16c30c5d6039dfc6d46f847a0f6e581d2bc7e0041bffede8c40": true,
+			"a03c39ecd72524c12191189921bcb2c1e193bb7fdd73de12e945b54a16d7bd6c": true,
+			"dc7c6a220ed83192e425826e2e9a665765bb927f78b18b905d9398e436a369dc": true,
+			"eb9c8379a0e2ee29eafbb97093d374d3963220b5880e98a19044beef451f0418": true,
+		},
+		"server_peer.go": {
+			"c5c276d5967f991e04d01739b4881c546b4cae1571a7c0a95d9ef245144a3111": true,
+			"c6912568adb6f7e126dacfed4d0913e4156c53c4192c0ef3dc5f5f2e368702b6": true,
+			"6beb70580519d3c582096a0640cecb184a99f655f9b208d096d130bc823f7dcf": true,
+			"7fb72cac21edd9a895c9bceb691086a82cb8ad520a4eaea0690deaf21126b59b": true,
+		},
+		"server_peer_linux.go": {
+			"dbc510537aa8c78ab67feb4e6838a06f37a1804655e5c257a8e8d9a9ca1932ac": true,
+		},
+		"server_peer_other.go": {
+			"7dddcbedb91d322fbb550f3faeea4deda7f9d424288697df17cd04f60710a035": true,
+		},
+		"server_peer_unix_other.go": {
+			"7dddcbedb91d322fbb550f3faeea4deda7f9d424288697df17cd04f60710a035": true,
+		},
+	}
+	return expected[filepath.Base(scope.file.path)][l8WorkerV2DeclarationDigest(scope)]
+}
+
+func l8WorkerV2ExactJobStateLockCompatibilityDeclaration(scope l8WorkerV2GuardScope) bool {
+	if scope.file == nil {
+		return false
+	}
+	expected := map[string]map[string]bool{
+		"job_state_lock.go": {
+			"1ac0cb2a023457a08e0614d1f103adb7a52245284c762d557bf545f4fe619a83": true,
+			"6b34a2601f0c0ef98a3b88aaa0d21da5ed366fc56117dbb915a9669c014fdde6": true,
+			"3efbfb63a9526fd8ea39c449e0ecb23a21a6df8d4f9f7d11e0b67727471286f8": true,
+			"e406749a06041c754c12ac930fdaf19fa93ff3d5512226b87e4b7f5a2c17ce40": true,
+		},
+		"job_state_lock_unix.go": {
+			"3a19b4b98cfe39d09dc568e282e0c5a9b7280bdd212624bd90cb075a04413bd4": true,
+			"5a8a2a8b5511875175fd0c804de252ff3f7417c8409b68c8d3ae0b17b880e864": true,
+			"b5008814b93b953166983681bc6c54c507c5a775048de312578562c728ce872f": true,
+			"5cadf1a0f72147f92c997128f53e5e3cc41ba13f77fbb9d06f6fd87bb4f0c7b2": true,
+		},
+		"job_state_lock_other.go": {
+			"0c7be1dac66f47b4cd181c60466e1b3617ddb0ae526f7e74857d97ba76af1e76": true,
+			"827863579722b246fd7978d3a4ea0943338b1f26ec741205f8d957f506265649": true,
+			"50d3b00bb3a67a072319d19fd78da6ec18fec4877fb992ea7c4b268f6930a41a": true,
+		},
+	}
+	return expected[filepath.Base(scope.file.path)][l8WorkerV2DeclarationDigest(scope)]
 }
 
 func l8WorkerV2ExactSharedEnvelopeValidateDeclaration(scope l8WorkerV2GuardScope) bool {
@@ -6936,7 +7088,7 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 			inspectionErr = fmt.Errorf("worker-v2 production path in %s declaration %s violates exact decoder caller composition", scope.file.path, scopeName)
 			return false
 		}
-		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) && !l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info) {
+		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) && !l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info) && !l8WorkerV2AllowedExactPrincipalAuthorityCall(scope, call, info) {
 			scopeName := "declaration"
 			if function, ok := scope.node.(*ast.FuncDecl); ok {
 				scopeName = function.Name.Name
@@ -6972,6 +7124,23 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 		return true
 	})
 	return inspectionErr
+}
+
+func l8WorkerV2AllowedExactPrincipalAuthorityCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
+	function, ok := scope.node.(*ast.FuncDecl)
+	if !ok || filepath.Base(scope.file.path) != "job_v2_service.go" || function.Name.Name != "l8AuthenticatedPrincipalIdentity" || function.Recv != nil || len(call.Args) != 1 {
+		return false
+	}
+	called := l8WorkerV2CalledObject(call.Fun, info)
+	if called == nil || called.Pkg() == nil || called.Pkg().Path() != "github.com/jywlabs/hal/internal/sandboxruntime" || called.Name() != "AuthenticatedWorkerPrincipalID" {
+		return false
+	}
+	parameters := l8WorkerV2FunctionParameterObjects(function, info)
+	if len(parameters) != 2 || l8WorkerV2ExpressionObject(call.Args[0], info) != parameters[1] {
+		return false
+	}
+	selector, ok := l8WorkerV2UnparenExpression(call.Fun).(*ast.SelectorExpr)
+	return ok && l8WorkerV2ExpressionObject(selector.X, info) == parameters[0]
 }
 
 func l8WorkerV2AllowedExactClientRoundTripFormatting(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
@@ -7029,12 +7198,17 @@ func l8WorkerV2AllowedExactClientContextClassification(scope l8WorkerV2GuardScop
 
 func l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope l8WorkerV2GuardScope, call *ast.CallExpr, info *types.Info) bool {
 	function := l8WorkerV2ScopeFunction(scope)
-	if function == nil || filepath.Base(scope.file.path) != "job_v2_service.go" || function.Name.Name != "HandleRequest" || len(call.Args) == 0 {
+	if function == nil || filepath.Base(scope.file.path) != "job_v2_service.go" ||
+		(function.Name.Name != "HandleRequest" && function.Name.Name != "HandleAuthenticatedRequest") {
 		return false
 	}
 	receiver := l8WorkerV2ExactReceiverObject(function, "L8Service", true, info)
 	parameters := l8WorkerV2FunctionParameterObjects(function, info)
-	if receiver == nil || len(parameters) != 2 || parameters[0] == nil || l8WorkerV2ExpressionObject(call.Args[0], info) != parameters[0] || !l8WorkerV2ObjectRemainsReadOnly(function, parameters[0], info) {
+	wantParameters := 2
+	if function.Name.Name == "HandleAuthenticatedRequest" {
+		wantParameters = 3
+	}
+	if receiver == nil || len(parameters) != wantParameters || parameters[0] == nil || !l8WorkerV2ObjectRemainsReadOnly(function, parameters[0], info) {
 		return false
 	}
 	called := l8WorkerV2CalledObject(call.Fun, info)
@@ -7047,10 +7221,16 @@ func l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope l8WorkerV2Guard
 	}
 	switch called.Name() {
 	case "Bind":
-		return len(call.Args) == 2 && l8WorkerV2ExactSelectorRoot(selector.X, receiver, "binder", info)
+		return len(call.Args) == 2 && l8WorkerV2ExpressionObject(call.Args[0], info) == parameters[0] && l8WorkerV2ExactSelectorRoot(selector.X, receiver, "binder", info)
 	case "Preflight":
 		binding := l8WorkerV2ExpressionObject(selector.X, info)
-		return len(call.Args) == 1 && binding != nil && l8WorkerV2ObjectComesFromExactL8BindingCall(function, binding, scope, info)
+		return len(call.Args) == 1 && l8WorkerV2ExpressionObject(call.Args[0], info) == parameters[0] && binding != nil && l8WorkerV2ObjectComesFromExactL8BindingCall(function, binding, scope, info)
+	case "Seed":
+		binding := l8WorkerV2ExpressionObject(selector.X, info)
+		return len(call.Args) == 0 && binding != nil && l8WorkerV2ObjectComesFromExactL8BindingCall(function, binding, scope, info)
+	case "Identity", "AbortBounded":
+		preflight := l8WorkerV2ExpressionObject(selector.X, info)
+		return len(call.Args) == 0 && preflight != nil && l8WorkerV2ObjectComesFromExactL8PreflightCall(function, preflight, scope, info)
 	default:
 		return false
 	}
@@ -7100,6 +7280,21 @@ func l8WorkerV2ObjectComesFromExactL8BindingCall(function *ast.FuncDecl, binding
 		}
 		bind, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
 		return ok && l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope, bind, info)
+	}
+	return false
+}
+
+func l8WorkerV2ObjectComesFromExactL8PreflightCall(function *ast.FuncDecl, preflight types.Object, scope l8WorkerV2GuardScope, info *types.Info) bool {
+	if function == nil || function.Body == nil || preflight == nil {
+		return false
+	}
+	for _, statement := range function.Body.List {
+		assignment, ok := statement.(*ast.AssignStmt)
+		if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 2 || len(assignment.Rhs) != 1 || l8WorkerV2ExpressionObject(assignment.Lhs[0], info) != preflight {
+			continue
+		}
+		preflightCall, ok := l8WorkerV2UnparenExpression(assignment.Rhs[0]).(*ast.CallExpr)
+		return ok && l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope, preflightCall, info)
 	}
 	return false
 }
@@ -11673,13 +11868,25 @@ func l8WorkerV2ExactEmptyStringAndObjectReturn(statement ast.Stmt, object types.
 
 func l8WorkerV2IsExactStoredJobStateSchema(typ types.Type) bool {
 	structure, ok := l8WorkerV2ExactNamedStructUnderlying(typ, "storedJobStateV2")
-	if !ok || structure.NumFields() != 4 {
+	if !ok || structure.NumFields() != 5 {
 		return false
 	}
 	return l8WorkerV2IsExactNamedStructField(structure, 0, "JobV2", "JobV2", "") &&
 		l8WorkerV2IsExactStructField(structure, 1, "RequestKey", types.Universe.Lookup("string").Type(), `json:"requestKey"`) &&
 		l8WorkerV2IsExactStructField(structure, 2, "PrincipalID", types.Universe.Lookup("string").Type(), `json:"principalId"`) &&
-		l8WorkerV2IsExactStructField(structure, 3, "DaemonGeneration", types.Universe.Lookup("string").Type(), `json:"daemonGeneration"`)
+		l8WorkerV2IsExactStructField(structure, 3, "DaemonGeneration", types.Universe.Lookup("string").Type(), `json:"daemonGeneration"`) &&
+		l8WorkerV2IsExactLocalNamedStructPointerField(structure, 4, "CredentialState", "storedJobCredentialStateV2", `json:"credentialState,omitempty"`)
+}
+
+func l8WorkerV2IsExactLocalNamedStructPointerField(structure *types.Struct, index int, fieldName, typeName, tag string) bool {
+	field := structure.Field(index)
+	pointer, ok := types.Unalias(field.Type()).(*types.Pointer)
+	if !ok || field.Name() != fieldName || field.Embedded() || structure.Tag(index) != tag {
+		return false
+	}
+	named, ok := types.Unalias(pointer.Elem()).(*types.Named)
+	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "github.com/jywlabs/hal/internal/sandboxworker" &&
+		named.Obj().Name() == typeName && named.TypeArgs().Len() == 0
 }
 
 func l8WorkerV2ExactNamedStructUnderlying(typ types.Type, name string) (*types.Struct, bool) {
@@ -14599,6 +14806,12 @@ type jobRequestIdentityV2 struct {
 type storedJobStateV2 struct {
 	PrincipalID string ` + "`json:\"principalId\"`" + `
 	DaemonGeneration string ` + "`json:\"daemonGeneration\"`" + `
+}
+type storedJobCredentialIdentitySeedV1 struct {
+	PrincipalID string ` + "`json:\"principalId\"`" + `
+}
+type storedJobCredentialIdentityV1 struct {
+	PrincipalID string ` + "`json:\"principalId\"`" + `
 }`,
 	}
 	if err := l8AuditWorkerV2PrivateJSONIdentityTags(allowed); err != nil {
@@ -14673,9 +14886,12 @@ func l8AuditWorkerV2PrivateJSONIdentityTags(sources map[string]string) error {
 					}
 					privateDurableIdentity := filepath.Base(path) == "job_store_v2.go" && typeSpec.Name.Name == "storedJobStateV2" && len(field.Names) == 1 &&
 						(jsonTag == "principalId" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemonGeneration" && field.Names[0].Name == "DaemonGeneration")
+					privateCredentialIdentity := filepath.Base(path) == "job_store_v2.go" &&
+						(typeSpec.Name.Name == "storedJobCredentialIdentitySeedV1" || typeSpec.Name.Name == "storedJobCredentialIdentityV1") &&
+						len(field.Names) == 1 && jsonTag == "principalId" && field.Names[0].Name == "PrincipalID"
 					privateHashIdentity := filepath.Base(path) == "job_v2_helpers.go" && typeSpec.Name.Name == "jobRequestIdentityV2" && len(field.Names) == 1 &&
 						(jsonTag == "principalId" && field.Names[0].Name == "PrincipalID" || jsonTag == "daemonGeneration" && field.Names[0].Name == "DaemonGeneration")
-					if privateDurableIdentity || privateHashIdentity {
+					if privateDurableIdentity || privateCredentialIdentity || privateHashIdentity {
 						continue
 					}
 					if strings.Contains(normalizedTag, "principal") || strings.Contains(normalizedTag, "daemongeneration") || strings.Contains(normalizedTag, "daemon_generation") {

@@ -10,3 +10,7 @@ import (
 func validateWorkerPeerCredentials(net.Conn, bool) error {
 	return errors.New("worker peer identity is unavailable")
 }
+
+func authenticateWorkerPeerCredentials(net.Conn, bool) (workerPeerIdentity, error) {
+	return workerPeerIdentity{}, errors.New("worker peer identity is unavailable")
+}

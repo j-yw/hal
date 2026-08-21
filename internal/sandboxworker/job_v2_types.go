@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	JobContractVersionV2 = "sandboxjob-v2"
+	JobContractVersionV2       = "sandboxjob-v2"
+	maxJobCredentialBindingsV2 = 16
 
 	OperationJobStartV2   = "job_start_v2"
 	OperationJobResolveV2 = "job_resolve_v2"
@@ -199,7 +200,8 @@ func (intent JobCredentialIntentV2) Validate() error {
 			return fmt.Errorf("worker job credential intent identity is invalid")
 		}
 	}
-	if intent.AdmissionGrantRevision == 0 || len(intent.SourceReferenceIDs) == 0 || len(intent.Bindings) == 0 {
+	if intent.AdmissionGrantRevision == 0 || len(intent.SourceReferenceIDs) == 0 || len(intent.SourceReferenceIDs) > maxJobCredentialBindingsV2 ||
+		len(intent.Bindings) == 0 || len(intent.Bindings) > maxJobCredentialBindingsV2 {
 		return fmt.Errorf("worker job credential intent is incomplete")
 	}
 	sources := make(map[string]bool, len(intent.SourceReferenceIDs))

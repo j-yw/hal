@@ -102,6 +102,21 @@ func (authority *AuthenticatedWorkerPrincipalAuthority) ValidateAuthenticatedWor
 	return nil
 }
 
+// AuthenticatedWorkerPrincipalID returns the safe identifier only after
+// proving ownership by this exact authority. Worker code need not dispatch an
+// accessor through an untrusted principal interface.
+func (authority *AuthenticatedWorkerPrincipalAuthority) AuthenticatedWorkerPrincipalID(principal AuthenticatedWorkerPrincipal) (string, error) {
+	if err := authority.ValidateAuthenticatedWorkerPrincipal(principal); err != nil {
+		return "", err
+	}
+	issued := principal.(*authenticatedWorkerPrincipal)
+	state, ok := loadAuthenticatedWorkerPrincipalState(issued)
+	if !ok {
+		return "", ErrAuthenticatedWorkerPrincipal
+	}
+	return state.id, nil
+}
+
 func (*authenticatedWorkerPrincipal) IsAuthenticatedWorkerPrincipal() {}
 
 func (principal *authenticatedWorkerPrincipal) ID() string {

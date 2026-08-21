@@ -24,6 +24,26 @@ func TestValidateWorkerPeerUID(t *testing.T) {
 	}
 }
 
+func TestValidateWorkerPeerIdentityRequiresExactUIDAndGID(t *testing.T) {
+	currentUID := uint32(os.Geteuid())
+	currentGID := uint32(os.Getegid())
+	if err := validateWorkerPeerIdentity(workerPeerIdentity{uid: currentUID, gid: currentGID}, currentUID, currentGID); err != nil {
+		t.Fatalf("validateWorkerPeerIdentity(exact owner) error: %v", err)
+	}
+	for _, peer := range []workerPeerIdentity{
+		{uid: currentUID + 1, gid: currentGID},
+		{uid: currentUID, gid: currentGID + 1},
+	} {
+		err := validateWorkerPeerIdentity(peer, currentUID, currentGID)
+		if err == nil {
+			t.Fatalf("validateWorkerPeerIdentity(%#v) error = nil", peer)
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "uid") || strings.Contains(strings.ToLower(err.Error()), "gid") {
+			t.Fatalf("validateWorkerPeerIdentity() exposed identity detail: %v", err)
+		}
+	}
+}
+
 func TestValidateWorkerPeerCredentialsAcceptsSameUser(t *testing.T) {
 	parent := filepath.Join(resolvedWorkerTempDir(t), "private")
 	if err := os.Mkdir(parent, 0o700); err != nil {

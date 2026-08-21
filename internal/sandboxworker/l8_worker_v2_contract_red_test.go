@@ -966,6 +966,7 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 		RequestKey:       requestKey,
 		PrincipalID:      principalID,
 		DaemonGeneration: l8WorkerV2DaemonGeneration,
+		CredentialState:  l8D6StoredCredentialStateForJob(t, job, principalID),
 	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("valid private durable v2 state: %v", err)
@@ -975,6 +976,7 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 		`RequestKey|string|json:"requestKey"`,
 		`PrincipalID|string|json:"principalId"`,
 		`DaemonGeneration|string|json:"daemonGeneration"`,
+		`CredentialState|*sandboxworker.storedJobCredentialStateV2|json:"credentialState,omitempty"`,
 	}
 	for _, allowed := range l8WorkerV2CrossPhaseSafeIDCases() {
 		t.Run("accepts daemon generation "+allowed.name, func(t *testing.T) {
@@ -1004,6 +1006,7 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 		t.Run("accepts principal "+allowed.name, func(t *testing.T) {
 			candidate := state
 			candidate.PrincipalID = allowed.value
+			candidate.CredentialState = l8D6StoredCredentialStateForJob(t, candidate.JobV2, allowed.value)
 			candidate.JobV2.SubmissionKey = jobSubmissionKeyV2(allowed.value, l8WorkerV2DaemonGeneration, request)
 			requestKey, keyErr := jobRequestKeyV2(RuntimeDriverMicroVM, allowed.value, l8WorkerV2DaemonGeneration, request)
 			if keyErr != nil {
@@ -1095,26 +1098,15 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 	}
 	l8AssertWorkerV2PrivateStateIdentity(t, listed[0], state)
 
-	restartAt := job.SubmittedAt.Add(time.Minute)
-	reconciled, err := reconcileJobStoreV2AtStartup(restartedStore, restartAt)
-	if err != nil {
-		t.Fatalf("consume private durable v2 state during startup reconciliation: %v", err)
-	}
-	if len(reconciled) != 1 {
-		t.Fatalf("reconciled private durable v2 states = %d, want 1", len(reconciled))
-	}
-	if reconciled[0].JobV2.State != JobStateInterrupted || reconciled[0].JobV2.FailureCode != "daemon_restarted_before_start" || reconciled[0].JobV2.FinishedAt == nil || !reconciled[0].JobV2.FinishedAt.Equal(restartAt) {
-		t.Fatalf("startup reconciliation did not consume queued v2 state: %#v", reconciled[0].JobV2)
-	}
-	if reconciled[0].PrincipalID != principalID || reconciled[0].RequestKey != requestKey || reconciled[0].DaemonGeneration != l8WorkerV2DaemonGeneration {
-		t.Fatalf("startup reconciliation lost private v2 identity: %#v", reconciled[0])
+	if reconciled, err := reconcileJobStoreV2AtStartup(restartedStore, job.SubmittedAt.Add(time.Minute)); reconciled != nil || !errors.Is(err, ErrL8RecoveryDependency) {
+		t.Fatalf("credential startup reconciliation = %#v, %v, want retained recovery dependency", reconciled, err)
 	}
 	persistedReconciliation, err := restartedStore.load(job.ID)
 	if err != nil {
 		t.Fatalf("reload reconciled private durable v2 state: %v", err)
 	}
-	if !reflect.DeepEqual(persistedReconciliation, reconciled[0]) {
-		t.Fatalf("startup reconciliation was not durably persisted: got %#v want %#v", persistedReconciliation, reconciled[0])
+	if !reflect.DeepEqual(persistedReconciliation, state) {
+		t.Fatalf("failed-closed startup reconciliation mutated retained ownership: got %#v want %#v", persistedReconciliation, state)
 	}
 
 	publicValues := []any{
@@ -1148,6 +1140,7 @@ func TestL8WorkerV2StoreRejectsInvalidOrMismatchedDurableStateBeforeReconciliati
 		DaemonGeneration: l8WorkerV2DaemonGeneration,
 	}
 	validState.JobV2.SubmissionKey = jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, request)
+	validState.CredentialState = l8D6StoredCredentialStateForJob(t, validState.JobV2, principalID)
 	if err := validState.Validate(); err != nil {
 		t.Fatalf("valid private durable v2 state: %v", err)
 	}
@@ -1245,6 +1238,7 @@ func TestL8WorkerV2StoreJobIDVocabularyIsContractAndPersistenceConsistent(t *tes
 		DaemonGeneration: l8WorkerV2DaemonGeneration,
 	}
 	base.JobV2.SubmissionKey = jobSubmissionKeyV2(principalID, l8WorkerV2DaemonGeneration, request)
+	base.CredentialState = l8D6StoredCredentialStateForJob(t, base.JobV2, principalID)
 
 	for _, jobID := range []string{
 		"job-primary",
@@ -1256,6 +1250,7 @@ func TestL8WorkerV2StoreJobIDVocabularyIsContractAndPersistenceConsistent(t *tes
 		t.Run("accepted "+jobID, func(t *testing.T) {
 			state := base
 			state.JobV2.ID = jobID
+			state.CredentialState = l8D6StoredCredentialStateForJob(t, state.JobV2, principalID)
 			if err := state.Validate(); err != nil {
 				t.Fatalf("contract rejected accepted V2 job ID %q: %v", jobID, err)
 			}

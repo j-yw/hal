@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 const defaultMaxRequestBytes int64 = 1 << 20
@@ -36,9 +38,12 @@ func (fn RequestHandlerFunc) HandleRequest(ctx context.Context, req Request) Res
 
 // Server serves worker protocol requests over a local Unix socket.
 type Server struct {
-	socketPath      string
-	handler         RequestHandler
-	maxRequestBytes int64
+	socketPath               string
+	handler                  RequestHandler
+	authenticatedHandler     *L8Service
+	principalAuthority       *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
+	authenticatedPrincipalID string
+	maxRequestBytes          int64
 }
 
 // ServerOptions configures a local worker socket server.
@@ -167,20 +172,33 @@ func (server *Server) serve(ctx context.Context, listener net.Listener, filesyst
 			}
 			return fmt.Errorf("worker server could not accept a Unix connection")
 		}
-		if err := validateWorkerPeerCredentials(conn, filesystemBoundaryProven); err != nil {
+		peer, err := authenticateWorkerPeerCredentials(conn, filesystemBoundaryProven)
+		if err != nil {
 			_ = conn.Close()
 			continue
+		}
+		var principal sandboxruntime.AuthenticatedWorkerPrincipal
+		if server.principalAuthority != nil {
+			principal, err = issueWorkerConnectionPrincipal(server.principalAuthority, server.authenticatedPrincipalID, peer)
+			if err != nil {
+				_ = conn.Close()
+				continue
+			}
 		}
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			server.handleConnection(ctx, conn)
+			server.handleAuthenticatedConnection(ctx, conn, principal)
 		}()
 	}
 }
 
 func (server *Server) handleConnection(ctx context.Context, conn net.Conn) {
+	server.handleAuthenticatedConnection(ctx, conn, nil)
+}
+
+func (server *Server) handleAuthenticatedConnection(ctx context.Context, conn net.Conn, principal sandboxruntime.AuthenticatedWorkerPrincipal) {
 	defer conn.Close()
 
 	done := make(chan struct{})
@@ -199,12 +217,24 @@ func (server *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	resp := server.handler.HandleRequest(ctx, req)
+	var resp Response
+	if principal != nil && server.authenticatedHandler != nil && server.authenticatedHandler.HandlesAuthenticatedRequest(req) {
+		resp = server.authenticatedHandler.HandleAuthenticatedRequest(ctx, principal, req)
+	} else {
+		resp = server.handler.HandleRequest(ctx, req)
+	}
 	resp = normalizeHandlerResponse(req, resp)
 	if err := resp.Validate(); err != nil {
 		resp = protocolErrorResponse(req.RequestID, req.Operation, ErrorCodeInternal, "worker handler returned invalid response")
 	}
 	server.writeResponse(conn, resp)
+}
+
+func issueWorkerConnectionPrincipal(authority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority, principalID string, peer workerPeerIdentity) (sandboxruntime.AuthenticatedWorkerPrincipal, error) {
+	if authority == nil || !validWorkerV2SafeID(principalID) {
+		return nil, sandboxruntime.ErrAuthenticatedWorkerPrincipal
+	}
+	return authority.IssueAuthenticatedWorkerPrincipal(principalID, peer.uid, peer.gid)
 }
 
 func (server *Server) readRequest(r io.Reader) (Request, *Response) {

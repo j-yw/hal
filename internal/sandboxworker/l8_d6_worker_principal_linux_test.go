@@ -4,96 +4,98 @@ package sandboxworker
 
 import (
 	"context"
-	"os"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
 
 func TestL8D6WorkerServerPassesSameOwnerPrincipalOutOfBand(t *testing.T) {
+	request := l8D6WorkerStartRequest(t)
+	seed := l8D6WorkerSeed(t, request)
+	seed.PrincipalID = "local-unix-owner"
+	identity, err := sandboxruntime.CompleteJobCredentialIdentity(seed, l8WorkerGuestSessionGeneration(), "helper-generation-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflight := &l8D6WorkerPreflight{
+		identity: identity, loss: make(chan sandboxruntime.JobCredentialLoss), cleanup: l8WorkerCleanupProof(t, identity),
+	}
+	binder, err := sandboxruntime.NewJobCredentialRuntimeBinder(&l8D6WorkerProvider{
+		seed: seed, runtime: &l8D6WorkerRuntime{preflight: preflight},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	authority, err := sandboxruntime.NewAuthenticatedWorkerPrincipalAuthority("worker-peer-authority", l8WorkerV2DaemonGeneration)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := make(chan sandboxruntime.AuthenticatedWorkerPrincipal, 1)
-	handler := &l8D6PrincipalCaptureHandler{authority: authority, seen: seen}
-	server, err := NewServer(ServerOptions{
-		SocketPath:               testWorkerSocketPath(t),
-		Handler:                  RequestHandlerFunc(func(_ context.Context, request Request) Response { return unsupportedOperationResponse(request) }),
-		AuthenticatedHandler:     handler,
-		PrincipalAuthority:       authority,
-		AuthenticatedPrincipalID: "local-unix-owner",
+	service, err := NewL8DurableService(L8DurableServiceOptions{
+		WorkerID: seed.WorkerID, DaemonGeneration: l8WorkerV2DaemonGeneration,
+		StateDir: t.TempDir() + "/jobs-v2", Binder: binder, PrincipalAuthority: authority,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(service.Close)
+	var fallbackCalls atomic.Int32
+	server, err := NewL8AuthenticatedServer(L8AuthenticatedServerOptions{
+		Server: ServerOptions{
+			SocketPath: testWorkerSocketPath(t),
+			Handler: RequestHandlerFunc(func(_ context.Context, request Request) Response {
+				fallbackCalls.Add(1)
+				return unsupportedOperationResponse(request)
+			}),
+		},
+		Service: service, PrincipalID: "local-unix-owner",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cancel, errCh := runTestServer(t, server)
 	defer stopTestServer(t, cancel, errCh)
-	response := roundTripWorkerRequest(t, server.socketPath, Request{
-		RequestID: "request-peer", Operation: OperationJobStatusV2,
-		JobStatusV2: &JobStatusRequestV2{ContractVersion: JobContractVersionV2, JobID: "job-peer"},
-	})
-	if response.OK || response.Error == nil || response.Error.Code != ErrorCodeJobNotFound {
+	response := roundTripWorkerRequest(t, server.socketPath, request)
+	if response.OK || response.Error == nil || response.Error.Code != ErrorCodeUnsupportedOp {
 		t.Fatalf("authenticated response = %#v", response)
 	}
-	principal := <-seen
-	if err := authority.ValidateAuthenticatedWorkerPrincipal(principal); err != nil {
-		t.Fatalf("transport principal is not owned by configured authority: %v", err)
+	if calls := fallbackCalls.Load(); calls != 0 {
+		t.Fatalf("ordinary handler calls = %d, want authenticated V2 dispatch only", calls)
 	}
-	if principal.ID() != "local-unix-owner" || principal.UID() != uint32(os.Geteuid()) || principal.GID() != uint32(os.Getegid()) {
-		t.Fatalf("transport principal identity = %q/%d/%d", principal.ID(), principal.UID(), principal.GID())
+	stored, err := service.jobs.store.load(seed.WorkerJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PrincipalID != "local-unix-owner" || stored.CredentialState == nil || stored.CredentialState.Identity == nil {
+		t.Fatalf("transport principal was not privately correlated: %#v", stored)
 	}
 }
 
 func TestL8D6WorkerServerPrincipalInjectionIsExplicitAndPaired(t *testing.T) {
-	authority, err := sandboxruntime.NewAuthenticatedWorkerPrincipalAuthority("worker-peer-authority", l8WorkerV2DaemonGeneration)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := &l8D6PrincipalCaptureHandler{authority: authority, seen: make(chan sandboxruntime.AuthenticatedWorkerPrincipal, 1)}
 	base := ServerOptions{SocketPath: testWorkerSocketPath(t), Handler: RequestHandlerFunc(func(_ context.Context, request Request) Response {
 		return unsupportedOperationResponse(request)
 	})}
+	binder, err := sandboxruntime.NewJobCredentialRuntimeBinder(&l8D6WorkerProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	neutral, err := NewL8Service(binder)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
-		name   string
-		mutate func(*ServerOptions)
+		name    string
+		options L8AuthenticatedServerOptions
 	}{
-		{name: "handler without authority", mutate: func(options *ServerOptions) { options.AuthenticatedHandler = handler }},
-		{name: "authority without handler", mutate: func(options *ServerOptions) {
-			options.PrincipalAuthority = authority
-			options.AuthenticatedPrincipalID = "local-unix-owner"
-		}},
-		{name: "authority without principal id", mutate: func(options *ServerOptions) {
-			options.PrincipalAuthority = authority
-			options.AuthenticatedHandler = handler
-		}},
+		{name: "missing service", options: L8AuthenticatedServerOptions{Server: base, PrincipalID: "local-unix-owner"}},
+		{name: "neutral service", options: L8AuthenticatedServerOptions{Server: base, Service: neutral, PrincipalID: "local-unix-owner"}},
+		{name: "missing principal id", options: L8AuthenticatedServerOptions{Server: base, Service: &L8Service{jobs: &jobManagerV2{}, principalAuthority: &sandboxruntime.AuthenticatedWorkerPrincipalAuthority{}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			options := base
-			tt.mutate(&options)
-			if server, err := NewServer(options); err == nil || server != nil {
-				t.Fatalf("NewServer() = %#v, %v, want paired explicit injection failure", server, err)
+			if server, err := NewL8AuthenticatedServer(tt.options); err == nil || server != nil {
+				t.Fatalf("NewL8AuthenticatedServer() = %#v, %v", server, err)
 			}
 		})
 	}
 }
-
-type l8D6PrincipalCaptureHandler struct {
-	authority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
-	seen      chan<- sandboxruntime.AuthenticatedWorkerPrincipal
-}
-
-func (*l8D6PrincipalCaptureHandler) HandlesAuthenticatedRequest(request Request) bool {
-	return isWorkerV2Operation(request.Operation)
-}
-
-func (handler *l8D6PrincipalCaptureHandler) HandleAuthenticatedRequest(_ context.Context, principal sandboxruntime.AuthenticatedWorkerPrincipal, request Request) Response {
-	if err := handler.authority.ValidateAuthenticatedWorkerPrincipal(principal); err != nil {
-		return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeInternal, "authenticated worker principal was rejected")
-	}
-	handler.seen <- principal
-	return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeJobNotFound, "worker v2 job was not found")
-}
-
-var _ AuthenticatedRequestHandler = (*l8D6PrincipalCaptureHandler)(nil)

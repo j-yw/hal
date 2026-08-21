@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
@@ -236,6 +235,60 @@ func TestL8D6WorkerRestartRetainsOwnershipAndRequiresRecoveryDependency(t *testi
 	}
 }
 
+func TestL8D6WorkerRestartRetainsCompleteIdentityWithoutCleanupFabrication(t *testing.T) {
+	stateDir := t.TempDir() + "/jobs-v2"
+	manager, err := newJobManagerV2(jobManagerV2Options{
+		StateDir: stateDir, WorkerID: "worker-l8-neutral", DaemonGeneration: l8WorkerV2DaemonGeneration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := l8D6WorkerStartRequest(t).JobStartV2
+	seed := l8D6WorkerSeed(t, Request{DriverID: RuntimeDriverMicroVM, JobStartV2: request})
+	job, existing, err := manager.acceptCredentialSeed(RuntimeDriverMicroVM, "principal-l8-worker", *request, seed)
+	if err != nil || existing {
+		t.Fatalf("accept seed = %#v, %t, %v", job, existing, err)
+	}
+	identity, err := sandboxruntime.CompleteJobCredentialIdentity(seed, l8WorkerGuestSessionGeneration(), "helper-generation-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.persistCredentialIdentity(job.ID, "principal-l8-worker", identity); err != nil {
+		t.Fatal(err)
+	}
+	manager.close()
+
+	path := stateDir + "/" + job.ID + ".json"
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := newJobManagerV2(jobManagerV2Options{
+		StateDir: stateDir, WorkerID: "worker-l8-neutral", DaemonGeneration: l8WorkerV2DaemonGeneration,
+	})
+	if restarted != nil || !errors.Is(err, ErrL8RecoveryDependency) {
+		t.Fatalf("restart = %#v, %v, want recovery dependency", restarted, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("failed-closed restart mutated complete retained credential identity")
+	}
+	store, err := newJobStoreV2(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := store.load(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained.JobV2.State != JobStateQueued || retained.JobV2.FinishedAt != nil || retained.CredentialState == nil || retained.CredentialState.Identity == nil {
+		t.Fatalf("restart fabricated terminal cleanup: %#v", retained)
+	}
+}
+
 func TestL8D6WorkerRejectsInvalidPrincipalAndSeedBeforePreflight(t *testing.T) {
 	request := l8D6WorkerStartRequest(t)
 	seed := l8D6WorkerSeed(t, request)
@@ -297,6 +350,31 @@ func TestL8D6WorkerCredentialBindingBoundIsSixteen(t *testing.T) {
 	}
 }
 
+func TestL8D6WorkerCredentialBindingBoundAcceptsExactlySixteen(t *testing.T) {
+	request := l8WorkerV2StartRequest()
+	request.SourceReferenceIDs = make([]string, 16)
+	request.Bindings = make([]JobCredentialBindingV2, 16)
+	seed := l8WorkerBindingSeed(t)
+	seed.BindingIDs = make([]string, 16)
+	seed.DeliveryModes = make([]sandboxruntime.JobCredentialDeliveryMode, 16)
+	seed.NetworkPlanID, seed.PolicySnapshotID, seed.ProxySessionID = "", "", ""
+	seed.ProxyGenerationID, seed.TopologyGenerationID, seed.RuleGenerationID = "", "", ""
+	for index := 0; index < 16; index++ {
+		bindingID := "binding-" + string(rune('a'+index))
+		sourceID := "source-" + string(rune('a'+index))
+		request.SourceReferenceIDs[index] = sourceID
+		request.Bindings[index] = JobCredentialBindingV2{BindingID: bindingID, SourceReferenceID: sourceID, Mode: CredentialModeFileTmpfs}
+		seed.BindingIDs[index] = bindingID
+		seed.DeliveryModes[index] = sandboxruntime.JobCredentialDeliveryModeFileTmpfs
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("worker request rejected exactly sixteen credential bindings: %v", err)
+	}
+	if err := sandboxruntime.ValidateJobCredentialIdentitySeed(seed); err != nil {
+		t.Fatalf("durable seed rejected exactly sixteen credential bindings: %v", err)
+	}
+}
+
 func l8D6AssertPrivateSchema(t *testing.T, typ reflect.Type, want []string) {
 	t.Helper()
 	if typ.NumField() != len(want) {
@@ -354,6 +432,39 @@ func l8D6WorkerPrincipal(t *testing.T) (*sandboxruntime.AuthenticatedWorkerPrinc
 		t.Fatal(err)
 	}
 	return authority, principal
+}
+
+func l8D6StoredCredentialStateForJob(t *testing.T, job JobV2, principalID string) *storedJobCredentialStateV2 {
+	t.Helper()
+	seed := l8WorkerBindingSeed(t)
+	seed.WorkerID = job.WorkerID
+	seed.HostID = job.HostID
+	seed.RuntimeDriver = job.RuntimeDriver
+	seed.RuntimeID = job.RuntimeID
+	seed.WorkerJobID = job.ID
+	seed.PlanID = job.CredentialIntent.PlanID
+	seed.AdmissionGrantID = job.CredentialIntent.AdmissionGrantID
+	seed.AdmissionGrantRevision = job.CredentialIntent.AdmissionGrantRevision
+	seed.PrincipalID = principalID
+	seed.TemplatePolicyID = job.CredentialIntent.TemplatePolicyID
+	seed.WorkspacePolicyID = job.CredentialIntent.WorkspacePolicyID
+	seed.BindingIDs = make([]string, len(job.CredentialIntent.Bindings))
+	seed.DeliveryModes = make([]sandboxruntime.JobCredentialDeliveryMode, len(job.CredentialIntent.Bindings))
+	hasHTTP := false
+	for index, binding := range job.CredentialIntent.Bindings {
+		seed.BindingIDs[index] = binding.BindingID
+		seed.DeliveryModes[index] = sandboxruntime.JobCredentialDeliveryMode(binding.Mode)
+		hasHTTP = hasHTTP || seed.DeliveryModes[index] == sandboxruntime.JobCredentialDeliveryModeHTTPProxy
+	}
+	if !hasHTTP {
+		seed.NetworkPlanID, seed.PolicySnapshotID, seed.ProxySessionID = "", "", ""
+		seed.ProxyGenerationID, seed.TopologyGenerationID, seed.RuleGenerationID = "", "", ""
+	}
+	state, err := newStoredJobCredentialStateV2(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
 }
 
 type l8D6OrderRecorder struct {
