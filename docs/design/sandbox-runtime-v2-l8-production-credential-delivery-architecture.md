@@ -803,7 +803,13 @@ The sole production call to `NewJobCredentialRuntimeAbsenceProof` is owned by
 after its private owner has proved exact absence. Root defines the constructor;
 tests may call it, but no worker, command, metadata adapter, other runtime file,
 or provider wrapper may become a second production issuer. An AST guard locks
-that one-callsite rule.
+that one-callsite rule. Until a concrete private owner has implemented
+`StopReapJobCredentialRuntime` and causally produced that exact validated
+absence fact, the default-off R1 foundation contains no host production constructor call;
+caller-supplied booleans, timestamps, or nominal observation
+DTOs cannot stand in for the missing fact. The guard must be tightened from
+zero to exactly one only in the same reviewed slice that lands that concrete
+stop/reap owner.
 
 `Close` releases only the reconnect controller binding. It is idempotent,
 panic-contained, caller-independent after entry, and bounded by

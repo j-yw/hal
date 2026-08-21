@@ -94,8 +94,11 @@ type JobCredentialRuntimeRecoveryCommitReceipt struct {
 
 func ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt JobCredentialRuntimeRecoveryCommitReceipt) error {
 	commitID := receipt.CommitID
+	if len(commitID) != 43 || receipt.FinalizedRevision == 0 {
+		return ErrJobCredentialProofInvalid
+	}
 	decoded, err := base64.RawURLEncoding.DecodeString(commitID)
-	if err != nil || len(decoded) != sha256.Size || base64.RawURLEncoding.EncodeToString(decoded) != commitID || receipt.FinalizedRevision == 0 {
+	if err != nil || len(decoded) != sha256.Size || base64.RawURLEncoding.EncodeToString(decoded) != commitID {
 		return ErrJobCredentialProofInvalid
 	}
 	return nil

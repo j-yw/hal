@@ -64,37 +64,36 @@ func TestL8RuntimeOwnerCommitIDUsesExactNormativeTranscript(t *testing.T) {
 	}
 }
 
-func TestL8RuntimeOwnerProofIssuerAndCommitVerifierRemainSeedBound(t *testing.T) {
+func TestL8RuntimeOwnerCommitVerifierRecomputesSeedBoundHMAC(t *testing.T) {
 	seed := l8RuntimeOwnerTestSeed()
-	inspectedAt := seed.IssuedAt.Add(time.Minute)
-	proof, err := newL8RuntimeOwnerAbsenceProof(seed, inspectedAt)
-	if err != nil {
-		t.Fatalf("new owner absence proof: %v", err)
-	}
-	if err := sandboxruntime.ValidateJobCredentialRuntimeAbsenceProof(proof, seed, inspectedAt.Add(time.Minute)); err != nil {
-		t.Fatalf("validate owner absence proof: %v", err)
-	}
 	digest, err := l8RuntimeOwnerSeedDigest(seed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	commitID, err := l8RuntimeOwnerCommitID([]byte("0123456789abcdef0123456789abcdef"), digest, 8)
+	key := []byte("0123456789abcdef0123456789abcdef")
+	commitID, err := l8RuntimeOwnerCommitID(key, digest, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
 	receipt := sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{CommitID: commitID, FinalizedRevision: 8}
-	if err := commitJobCredentialRuntimeRecovery(receipt, commitID, 8); err != nil {
+	if err := commitJobCredentialRuntimeRecovery(receipt, key, seed, 8); err != nil {
 		t.Fatalf("commit verifier: %v", err)
 	}
-	if err := commitJobCredentialRuntimeRecovery(receipt, l8RuntimeOwnerTestToken(9), 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+	wrongKey := []byte("1123456789abcdef0123456789abcdef")
+	if err := commitJobCredentialRuntimeRecovery(receipt, wrongKey, seed, 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("wrong commit verifier = %v", err)
 	}
-	if err := commitJobCredentialRuntimeRecovery(receipt, commitID, 9); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+	if err := commitJobCredentialRuntimeRecovery(receipt, key, seed, 9); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("replayed revision verifier = %v", err)
+	}
+	mutatedSeed := seed
+	mutatedSeed.RuntimeID = "runtime-neighbor"
+	if err := commitJobCredentialRuntimeRecovery(receipt, key, mutatedSeed, 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("substituted seed verifier = %v", err)
 	}
 	forgedID := l8RuntimeOwnerTestToken(9)
 	forged := sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{CommitID: forgedID, FinalizedRevision: 8}
-	if err := commitJobCredentialRuntimeRecovery(forged, forgedID, 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+	if err := commitJobCredentialRuntimeRecovery(forged, key, seed, 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("caller-selected commit ID verifier = %v, want invalid", err)
 	}
 }
@@ -126,8 +125,8 @@ func TestL8RuntimeOwnerRecordValidationRejectsSubstitutionAndPIDReuse(t *testing
 	if err := validateFirecrackerRuntimeOwnerRecordV1(record, seed, bootID); err != nil {
 		t.Fatalf("valid record: %v", err)
 	}
-	supervisor := l8RuntimeOwnerProcessObservation{PID: record.SupervisorPID, StartTime: record.SupervisorStartTime, state: 'S', pidfd: 10}
-	firecracker := l8RuntimeOwnerProcessObservation{PID: record.FirecrackerPID, StartTime: record.FirecrackerStartTime, state: 'S', pidfd: 11}
+	supervisor := l8RuntimeOwnerProcessObservation{PID: record.SupervisorPID, StartTime: record.SupervisorStartTime, state: 'S', pidfd: 10, pidfdOwned: true}
+	firecracker := l8RuntimeOwnerProcessObservation{PID: record.FirecrackerPID, StartTime: record.FirecrackerStartTime, state: 'S', pidfd: 11, pidfdOwned: true}
 	if err := validateL8RuntimeOwnerProcessCorrelation(record, supervisor, firecracker); err != nil {
 		t.Fatalf("valid process correlation: %v", err)
 	}
@@ -136,6 +135,7 @@ func TestL8RuntimeOwnerRecordValidationRejectsSubstitutionAndPIDReuse(t *testing
 		"replaced PID":  func(value *l8RuntimeOwnerProcessObservation) { value.PID++ },
 		"zombie":        func(value *l8RuntimeOwnerProcessObservation) { value.state = 'Z' },
 		"missing pidfd": func(value *l8RuntimeOwnerProcessObservation) { value.pidfd = -1 },
+		"unowned pidfd": func(value *l8RuntimeOwnerProcessObservation) { value.pidfdOwned = false },
 	} {
 		t.Run("process "+name, func(t *testing.T) {
 			mutated := firecracker
@@ -237,11 +237,17 @@ func TestL8RuntimeOwnerLinuxStoreAndProcessInspectionArePrivate(t *testing.T) {
 	}
 	seed := l8RuntimeOwnerTestSeed()
 	record := l8RuntimeOwnerTestRecord(t, seed, bootID)
-	if err := writeL8RuntimeOwnerRecord(directory, record, seed, bootID); err != nil {
+	genesis := l8RuntimeOwnerTestGenesis(record)
+	if err := writeL8RuntimeOwnerRecord(directory, genesis, seed, bootID); err != nil {
+		t.Fatalf("write owner genesis: %v", err)
+	}
+	stored := record
+	stored.Revision = 1
+	if err := writeL8RuntimeOwnerRecord(directory, stored, seed, bootID); err != nil {
 		t.Fatalf("write owner record: %v", err)
 	}
 	loaded, err := readL8RuntimeOwnerRecord(directory, seed, bootID)
-	if err != nil || loaded != record {
+	if err != nil || loaded != stored {
 		t.Fatalf("read owner record = %#v, %v", loaded, err)
 	}
 	info, err := os.Lstat(filepath.Join(directory, l8RuntimeOwnerRecordName))
@@ -319,6 +325,14 @@ func l8RuntimeOwnerTestRecord(t *testing.T, seed sandboxruntime.JobCredentialIde
 		ProxyGenerationID: seed.ProxyGenerationID, TopologyGenerationID: seed.TopologyGenerationID, RuleGenerationID: seed.RuleGenerationID,
 		ReconnectListenerIdentity: l8RuntimeOwnerTestToken(2), ReconnectSecret: l8RuntimeOwnerTestToken(3),
 	}
+}
+
+func l8RuntimeOwnerTestGenesis(record firecrackerRuntimeOwnerRecordV1) firecrackerRuntimeOwnerRecordV1 {
+	record.Revision = 0
+	record.State = "starting"
+	record.FirecrackerPID = 0
+	record.FirecrackerStartTime = 0
+	return record
 }
 
 func l8RuntimeOwnerTestToken(fill byte) string {

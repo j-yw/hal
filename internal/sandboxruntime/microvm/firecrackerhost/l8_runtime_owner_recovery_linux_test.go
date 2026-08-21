@@ -44,34 +44,41 @@ func TestL8RuntimeOwnerStoreRejectsDirectoryModeAndHardlinks(t *testing.T) {
 	}
 	seed := l8RuntimeOwnerTestSeed()
 	record := l8RuntimeOwnerTestRecord(t, seed, bootID)
+	genesis := l8RuntimeOwnerTestGenesis(record)
 	directory := t.TempDir()
 	if err := os.Chmod(directory, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeL8RuntimeOwnerRecord(directory, record, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+	if err := writeL8RuntimeOwnerRecord(directory, genesis, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("write through broad directory = %v", err)
 	}
 	if err := os.Chmod(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeL8RuntimeOwnerRecord(directory, record, seed, bootID); err != nil {
+	if err := writeL8RuntimeOwnerRecord(directory, genesis, seed, bootID); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeL8RuntimeOwnerRecord(directory, record, seed, bootID); err != nil {
+	if err := writeL8RuntimeOwnerRecord(directory, genesis, seed, bootID); err != nil {
 		t.Fatalf("idempotent record replay: %v", err)
 	}
-	stale := record
-	stale.Revision--
-	if err := writeL8RuntimeOwnerRecord(directory, stale, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
-		t.Fatalf("stale record replay = %v", err)
+	if err := writeL8RuntimeOwnerRecord(directory, record, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("revision jump = %v", err)
 	}
 	next := record
-	next.Revision++
+	next.Revision = 1
 	if err := writeL8RuntimeOwnerRecord(directory, next, seed, bootID); err != nil {
 		t.Fatalf("next revision write: %v", err)
 	}
-	if err := writeL8RuntimeOwnerRecord(directory, record, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+	if err := writeL8RuntimeOwnerRecord(directory, genesis, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("old revision replay after advance = %v", err)
+	}
+	nextAgain := next
+	nextAgain.Revision = 2
+	if err := writeL8RuntimeOwnerRecord(directory, nextAgain, seed, bootID); err != nil {
+		t.Fatalf("second revision write: %v", err)
+	}
+	if err := writeL8RuntimeOwnerRecord(directory, next, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("old revision-one replay = %v", err)
 	}
 	recordPath := filepath.Join(directory, l8RuntimeOwnerRecordName)
 	if err := os.Link(recordPath, filepath.Join(directory, "record-hardlink")); err != nil {

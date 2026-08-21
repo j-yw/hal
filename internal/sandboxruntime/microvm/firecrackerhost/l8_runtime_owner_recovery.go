@@ -12,7 +12,6 @@ import (
 	"errors"
 	"hash"
 	"io"
-	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
@@ -71,24 +70,26 @@ type l8RuntimeOwnerRecoveryBinding struct {
 }
 
 type l8RuntimeOwnerProcessObservation struct {
-	PID       uint32
-	StartTime uint64
-	state     byte
-	pidfd     int
+	PID        uint32
+	StartTime  uint64
+	state      byte
+	pidfd      int
+	pidfdOwned bool
 }
 
 func (observation *l8RuntimeOwnerProcessObservation) Close() error {
-	if observation == nil || observation.pidfd < 0 {
+	if observation == nil || !observation.pidfdOwned {
 		return nil
 	}
 	fd := observation.pidfd
+	observation.pidfdOwned = false
 	observation.pidfd = -1
 	return closeL8RuntimeOwnerProcessFD(fd)
 }
 
 func validateL8RuntimeOwnerProcessCorrelation(record firecrackerRuntimeOwnerRecordV1, supervisor, firecracker l8RuntimeOwnerProcessObservation) error {
-	if supervisor.PID != record.SupervisorPID || supervisor.StartTime != record.SupervisorStartTime || supervisor.pidfd < 0 || supervisor.state == 'Z' ||
-		firecracker.PID != record.FirecrackerPID || firecracker.StartTime != record.FirecrackerStartTime || firecracker.pidfd < 0 || firecracker.state == 'Z' {
+	if supervisor.PID != record.SupervisorPID || supervisor.StartTime != record.SupervisorStartTime || !supervisor.pidfdOwned || supervisor.pidfd < 0 || supervisor.state == 'Z' ||
+		firecracker.PID != record.FirecrackerPID || firecracker.StartTime != record.FirecrackerStartTime || !firecracker.pidfdOwned || firecracker.pidfd < 0 || firecracker.state == 'Z' {
 		return errL8RuntimeOwnerInvalid
 	}
 	return nil
@@ -143,16 +144,24 @@ func l8RuntimeOwnerCommitID(key []byte, seedDigest [32]byte, revision uint64) (s
 	digest := hmac.New(sha256.New, key)
 	l8RuntimeOwnerWriteString(digest, l8RuntimeOwnerCommitDomain)
 	l8RuntimeOwnerWriteString(digest, l8RuntimeOwnerContractVersion)
-	l8RuntimeOwnerWriteBytes(digest, keyGeneration)
-	l8RuntimeOwnerWriteBytes(digest, seedDigest[:])
+	_, _ = digest.Write(keyGeneration)
+	_, _ = digest.Write(seedDigest[:])
 	var numeric [8]byte
 	binary.BigEndian.PutUint64(numeric[:], revision)
 	_, _ = digest.Write(numeric[:])
 	return base64.RawURLEncoding.EncodeToString(digest.Sum(nil)), nil
 }
 
-func commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, expectedCommitID string, expectedRevision uint64) error {
+func commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, key []byte, seed sandboxruntime.JobCredentialIdentitySeed, expectedRevision uint64) error {
 	if sandboxruntime.ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt) != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	seedDigest, err := l8RuntimeOwnerSeedDigest(seed)
+	if err != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	expectedCommitID, err := l8RuntimeOwnerCommitID(key, seedDigest, expectedRevision)
+	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
 	commitID := receipt.CommitID
@@ -161,12 +170,6 @@ func commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRunt
 		return errL8RuntimeOwnerInvalid
 	}
 	return nil
-}
-
-func newL8RuntimeOwnerAbsenceProof(seed sandboxruntime.JobCredentialIdentitySeed, inspectedAt time.Time) (sandboxruntime.JobCredentialRuntimeAbsenceProof, error) {
-	return sandboxruntime.NewJobCredentialRuntimeAbsenceProof(sandboxruntime.JobCredentialRuntimeAbsenceProofInput{
-		Seed: seed, AbsenceInspectedAt: inspectedAt,
-	})
 }
 
 func validateFirecrackerRuntimeOwnerRecordV1(record firecrackerRuntimeOwnerRecordV1, seed sandboxruntime.JobCredentialIdentitySeed, currentBootID string) error {
@@ -233,6 +236,17 @@ func decodeFirecrackerRuntimeOwnerRecordV1(payload []byte, seed sandboxruntime.J
 }
 
 func l8RuntimeOwnerUniqueJSONObject(payload []byte) bool {
+	allowed := map[string]bool{
+		"contractVersion": true, "revision": true, "state": true, "hostBootId": true,
+		"seedCorrelationDigest": true, "supervisorGeneration": true, "supervisorPid": true,
+		"supervisorStartTime": true, "firecrackerPid": true, "firecrackerStartTime": true,
+		"finalizedCommitId": true, "sandboxId": true, "executionId": true, "workerId": true,
+		"hostId": true, "runtimeDriver": true, "runtimeId": true, "runtimeGeneration": true,
+		"firecrackerProcessGeneration": true, "vsockGeneration": true, "networkPlanId": true,
+		"policySnapshotId": true, "proxySessionId": true, "proxyGenerationId": true,
+		"topologyGenerationId": true, "ruleGenerationId": true,
+		"reconnectListenerIdentity": true, "reconnectSecret": true,
+	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	token, err := decoder.Token()
 	if err != nil || token != json.Delim('{') {
@@ -242,7 +256,7 @@ func l8RuntimeOwnerUniqueJSONObject(payload []byte) bool {
 	for decoder.More() {
 		key, err := decoder.Token()
 		name, ok := key.(string)
-		if err != nil || !ok || seen[name] {
+		if err != nil || !ok || !allowed[name] || seen[name] {
 			return false
 		}
 		seen[name] = true
@@ -252,7 +266,7 @@ func l8RuntimeOwnerUniqueJSONObject(payload []byte) bool {
 		}
 	}
 	token, err = decoder.Token()
-	return err == nil && token == json.Delim('}')
+	return err == nil && token == json.Delim('}') && len(seen) == len(allowed)
 }
 
 func validL8RuntimeOwnerState(state string) bool {

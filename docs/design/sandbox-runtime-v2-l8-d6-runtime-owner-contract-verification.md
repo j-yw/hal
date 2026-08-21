@@ -44,8 +44,11 @@ hex form for anti-substitution. The proof is useful
 only as the fresh validated return of the injected seed-bound recovery binding;
 it cannot be transported through metadata to create authority. Binding `Close`
 is idempotent and bounded but never means process or resource absence.
-The exact `firecrackerhost/l8_runtime_owner_recovery.go` file owns the sole
-production constructor call; an AST guard prevents a second production issuer.
+R1 has no production absence-proof constructor call: the concrete stop/reap
+owner and its causal validated-absence fact do not exist yet. The AST guard
+requires zero host issuers in this dependency-unaccepted state. A later slice
+may tighten it to the sole exact owner call only together with the real
+stop/reap observation; a caller-provided boolean or time is not a substitute.
 The commit receipt's exported persistence bridge is locked to
 `json:"-" xml:"-"`, redacted string/fmt output, fail-closed
 JSON/gob/text/binary encoding, XML field omission, and one exact
@@ -200,9 +203,10 @@ mutation, crash, and selected Linux acceptance matrices.
 This is the exact `dependency_unaccepted` boundary for concrete recovery.
 
 R1 adds only the neutral proof, receipt, validation, and denial-codec API; the
-private record, seed-digest, HMAC, strict store, boot-ID, pidfd/start-time, and
-proof-issuer primitives; and non-Linux fail-closed stubs. All are unreferenced
-and default-off. It reserves the private type `l8RuntimeOwnerRecoveryBinding`
+private record, seed-digest, HMAC, strict store, boot-ID, and pidfd/start-time
+primitives; and non-Linux fail-closed stubs. The host layer deliberately has no
+absence-proof issuer. All are unreferenced and default-off. It reserves the
+private type `l8RuntimeOwnerRecoveryBinding`
 but does not implement `FinalizeJobCredentialRuntimeRecovery`, a concrete
 provider, process signaling, supervisor control, or L7 cleanup.
 
@@ -213,3 +217,16 @@ absence correlated to the recovered L7 journal. R1 therefore cannot honestly
 finalize or satisfy the neutral binding. Old-boot journal retirement also
 remains unavailable and fail-closed; no private `l7network` schema is copied or
 invented here.
+
+The strict Linux store walks every absolute path component with `openat` plus
+`O_NOFOLLOW`, takes a nonblocking exclusive directory lock around the complete
+read/check/replace/sync transaction, accepts only revision-zero `starting` as a
+missing-record genesis, and serializes concurrent next-revision writers. The
+decoder requires every canonical JSON key exactly once, so case aliases cannot
+overwrite a field. Process inspection opens and checks the pidfd before any
+`/proc/<pid>` read, then repeats nonterminal pidfd checks around the double stat
+read; the retained descriptor therefore cannot be correlated to a replacement
+PID. A zero observation owns no file descriptor. The HMAC fixed vector locks
+raw key-generation and seed-digest bytes after the two length-prefixed strings,
+and commit validation recomputes that HMAC from the stable key, full seed, and
+finalized revision rather than trusting a caller-supplied expected token.

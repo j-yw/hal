@@ -45,6 +45,19 @@ func inspectL8RuntimeOwnerProcess(pid uint32) (l8RuntimeOwnerProcessObservation,
 	if pid == 0 || uint64(pid) > uint64(^uint(0)>>1) {
 		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
 	}
+	pidfd, err := unix.PidfdOpen(int(pid), 0)
+	if err != nil {
+		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = unix.Close(pidfd)
+		}
+	}()
+	if !l8RuntimeOwnerProcessAlive(pidfd) {
+		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
+	}
 	procfd, err := unix.Open("/proc", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
@@ -56,25 +69,24 @@ func inspectL8RuntimeOwnerProcess(pid uint32) (l8RuntimeOwnerProcessObservation,
 	}
 	defer unix.Close(processfd)
 	beforeStart, beforeState, err := readL8RuntimeOwnerProcStat(processfd, pid)
-	if err != nil {
+	if err != nil || !l8RuntimeOwnerProcessAlive(pidfd) {
 		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
 	}
-	pidfd, err := unix.PidfdOpen(int(pid), 0)
-	if err != nil {
-		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
-	}
-	failed := true
-	defer func() {
-		if failed {
-			_ = unix.Close(pidfd)
-		}
-	}()
 	afterStart, afterState, err := readL8RuntimeOwnerProcStat(processfd, pid)
-	if err != nil || afterStart != beforeStart || afterState != beforeState {
+	if err != nil || afterStart != beforeStart || afterState != beforeState || !l8RuntimeOwnerProcessAlive(pidfd) {
 		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
 	}
 	failed = false
-	return l8RuntimeOwnerProcessObservation{PID: pid, StartTime: afterStart, state: afterState, pidfd: pidfd}, nil
+	return l8RuntimeOwnerProcessObservation{PID: pid, StartTime: afterStart, state: afterState, pidfd: pidfd, pidfdOwned: true}, nil
+}
+
+func l8RuntimeOwnerProcessAlive(pidfd int) bool {
+	if pidfd < 0 || uint64(pidfd) > uint64(^uint32(0)>>1) {
+		return false
+	}
+	poll := []unix.PollFd{{Fd: int32(pidfd), Events: unix.POLLIN}}
+	ready, err := unix.Poll(poll, 0)
+	return err == nil && ready == 0 && poll[0].Revents == 0
 }
 
 func readL8RuntimeOwnerProcStat(processfd int, pid uint32) (uint64, byte, error) {
@@ -125,17 +137,26 @@ func writeL8RuntimeOwnerRecord(directory string, record firecrackerRuntimeOwnerR
 		return errL8RuntimeOwnerInvalid
 	}
 	defer unix.Close(directoryFD)
+	if unix.Flock(directoryFD, unix.LOCK_EX|unix.LOCK_NB) != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	defer unix.Flock(directoryFD, unix.LOCK_UN)
 	existing, exists, err := readL8RuntimeOwnerRecordAt(directoryFD, seed, currentBootID)
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
 	if exists {
 		if existing == record {
+			if unix.Fsync(directoryFD) != nil {
+				return errL8RuntimeOwnerInvalid
+			}
 			return nil
 		}
 		if existing.Revision == ^uint64(0) || record.Revision != existing.Revision+1 {
 			return errL8RuntimeOwnerInvalid
 		}
+	} else if record.Revision != 0 || record.State != "starting" || record.FirecrackerPID != 0 || record.FirecrackerStartTime != 0 {
+		return errL8RuntimeOwnerInvalid
 	}
 	var random [16]byte
 	if _, err := io.ReadFull(rand.Reader, random[:]); err != nil {
@@ -174,6 +195,10 @@ func readL8RuntimeOwnerRecord(directory string, seed sandboxruntime.JobCredentia
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
 	}
 	defer unix.Close(directoryFD)
+	if unix.Flock(directoryFD, unix.LOCK_SH|unix.LOCK_NB) != nil {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	defer unix.Flock(directoryFD, unix.LOCK_UN)
 	record, exists, err := readL8RuntimeOwnerRecordAt(directoryFD, seed, currentBootID)
 	if err != nil || !exists {
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
@@ -213,9 +238,21 @@ func openL8RuntimeOwnerDirectory(directory string) (int, error) {
 	if directory == "" || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || strings.ContainsAny(directory, "\x00\r\n") {
 		return -1, errL8RuntimeOwnerInvalid
 	}
-	fd, err := unix.Open(directory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return -1, errL8RuntimeOwnerInvalid
+	}
+	for _, component := range strings.Split(strings.TrimPrefix(directory, "/"), "/") {
+		if component == "" || component == "." || component == ".." {
+			_ = unix.Close(fd)
+			return -1, errL8RuntimeOwnerInvalid
+		}
+		next, err := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		_ = unix.Close(fd)
+		if err != nil {
+			return -1, errL8RuntimeOwnerInvalid
+		}
+		fd = next
 	}
 	var stat unix.Stat_t
 	if unix.Fstat(fd, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 || stat.Uid != uint32(os.Geteuid()) {

@@ -101,6 +101,7 @@ const (
 	l8D6RuntimeOwnerCloseRule        = "Close does not imply process or resource absence"
 	l8D6RuntimeOwnerFinalizeRule     = "The worker validates the retained absence proof before calling `FinalizeJobCredentialRuntimeRecovery`."
 	l8D6RuntimeOwnerCommitRule       = "A rename followed by directory-sync failure is commit-uncertain"
+	l8D6RuntimeOwnerNoIssuerRule     = "the default-off R1 foundation contains no host production constructor call"
 )
 
 func TestL8D6RuntimeOwnerContractArchitectureIsExact(t *testing.T) {
@@ -150,6 +151,7 @@ func validateL8D6RuntimeOwnerArchitecture(doc string) error {
 		l8D6RuntimeOwnerCompleteStopRule,
 		l8D6RuntimeOwnerFinalizeRule,
 		l8D6RuntimeOwnerCommitRule,
+		l8D6RuntimeOwnerNoIssuerRule,
 		"atomically replaces CredentialState with a private recovery receipt",
 		"`CredentialRecoveryReceipt *storedJobCredentialRuntimeRecoveryReceiptV1`",
 		"exactly one of CredentialState or CredentialRecoveryReceipt",
@@ -200,6 +202,7 @@ func TestL8D6RuntimeOwnerContractArchitectureMutationGuards(t *testing.T) {
 		{name: "worker cannot finalize after proof validation", before: l8D6RuntimeOwnerFinalizeRule, after: "StopReap retires all recovery ownership before returning."},
 		{name: "rename sync failure retries old record", before: l8D6RuntimeOwnerCommitRule, after: "A directory-sync failure always retains the old record."},
 		{name: "close implies absence", before: l8D6RuntimeOwnerCloseRule, after: "Close implies process and resource absence"},
+		{name: "premature proof issuer", before: l8D6RuntimeOwnerNoIssuerRule, after: "the default-off R1 foundation contains a caller-provided production constructor call"},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {
@@ -296,7 +299,7 @@ func TestL8D6RuntimeOwnerContractProofConstructorHasNoPrematureProductionIssuer(
 	}
 }
 
-func TestL8D6RuntimeOwnerContractProofConstructorGuardRejectsSecondIssuer(t *testing.T) {
+func TestL8D6RuntimeOwnerContractProofConstructorGuardRejectsPrematureOrSecondIssuer(t *testing.T) {
 	const (
 		declarationOwner = "../internal/sandboxruntime/job_credential_runtime_recovery.go"
 		issuerOwner      = "../internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go"
@@ -586,6 +589,7 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 		return true
 	})
 	if receiptObject != nil {
+		runtimeAliases := l8D6RuntimeOwnerImportAliases(file, "github.com/jywlabs/hal/internal/sandboxruntime")
 		ast.Inspect(target.Body, func(node ast.Node) bool {
 			identifier, ok := node.(*ast.Ident)
 			if !ok || identifier.Obj != receiptObject {
@@ -596,7 +600,7 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 			if selector, ok := parent.(*ast.SelectorExpr); ok && selector.X == identifier && (selector.Sel.Name == "CommitID" || selector.Sel.Name == "FinalizedRevision") && !l8D6RuntimeOwnerInsideClosure(selector, target, parents) {
 				return true
 			}
-			if call, ok := parent.(*ast.CallExpr); ok && l8D6RuntimeOwnerIsReceiptValidatorCall(call.Fun) && !expected.rootType {
+			if call, ok := parent.(*ast.CallExpr); ok && l8D6RuntimeOwnerIsReceiptValidatorCall(call.Fun, runtimeAliases) && !expected.rootType {
 				return true
 			}
 			audit.issues = append(audit.issues, "receipt parameter escapes direct field validation")
@@ -840,15 +844,30 @@ func l8D6RuntimeOwnerInsideClosure(node ast.Node, function *ast.FuncDecl, parent
 	return false
 }
 
-func l8D6RuntimeOwnerIsReceiptValidatorCall(expression ast.Expr) bool {
-	switch value := expression.(type) {
-	case *ast.Ident:
-		return value.Name == "ValidateJobCredentialRuntimeRecoveryCommitReceipt"
-	case *ast.SelectorExpr:
-		return value.Sel.Name == "ValidateJobCredentialRuntimeRecoveryCommitReceipt"
-	default:
+func l8D6RuntimeOwnerIsReceiptValidatorCall(expression ast.Expr, runtimeAliases map[string]bool) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "ValidateJobCredentialRuntimeRecoveryCommitReceipt" {
 		return false
 	}
+	qualifier, ok := selector.X.(*ast.Ident)
+	return ok && qualifier.Obj == nil && runtimeAliases[qualifier.Name]
+}
+
+func l8D6RuntimeOwnerImportAliases(file *ast.File, path string) map[string]bool {
+	aliases := make(map[string]bool)
+	for _, spec := range file.Imports {
+		if l8D6RuntimeOwnerImportPath(spec) != path {
+			continue
+		}
+		alias := filepath.Base(path)
+		if spec.Name != nil {
+			alias = spec.Name.Name
+		}
+		if alias != "." && alias != "_" {
+			aliases[alias] = true
+		}
+	}
+	return aliases
 }
 
 type l8D6RuntimeOwnerProofConstructorUsage struct {
@@ -859,6 +878,7 @@ type l8D6RuntimeOwnerProofConstructorUsage struct {
 }
 
 func l8D6RuntimeOwnerProofConstructorReferences(path string, payload []byte, declarationOwner, issuerOwner string) (l8D6RuntimeOwnerProofConstructorUsage, error) {
+	_ = issuerOwner
 	file, err := parser.ParseFile(token.NewFileSet(), path, payload, 0)
 	if err != nil {
 		return l8D6RuntimeOwnerProofConstructorUsage{}, err
@@ -895,9 +915,7 @@ func l8D6RuntimeOwnerProofConstructorReferences(path string, payload []byte, dec
 			if directReferences[value] {
 				usage.directCalls++
 			}
-			if filepath.ToSlash(path) != issuerOwner || !directReferences[value] {
-				usage.forbidden = true
-			}
+			usage.forbidden = true
 			return false
 		case *ast.Ident:
 			if value.Name != "NewJobCredentialRuntimeAbsenceProof" || declarationNames[value] {
@@ -907,9 +925,7 @@ func l8D6RuntimeOwnerProofConstructorReferences(path string, payload []byte, dec
 			if directReferences[value] {
 				usage.directCalls++
 			}
-			if filepath.ToSlash(path) != issuerOwner || !directReferences[value] {
-				usage.forbidden = true
-			}
+			usage.forbidden = true
 		}
 		return true
 	})
