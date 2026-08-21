@@ -30,13 +30,24 @@ type networkInterfacePayload struct {
 }
 
 func renderNetworkInterfaces(config BackendConfig) ([]networkInterfacePayload, *StaticNetworkBootConfig, error) {
+	return renderNetworkInterfacesWithL8Authority(config, productionL8AuthorityOperations())
+}
+
+func renderNetworkInterfacesWithL8Authority(
+	config BackendConfig,
+	authority l8AuthorityOperations,
+) ([]networkInterfacePayload, *StaticNetworkBootConfig, error) {
 	mode := config.NetworkMode
 	if strings.TrimSpace(string(mode)) == "" {
 		mode = microvm.NetworkModeNoLiveNetworking
 	}
+	l7Authority, l8Authority, err := liveBootAuthoritySelection(config)
+	if err != nil {
+		return nil, nil, err
+	}
 	switch mode {
 	case microvm.NetworkModeNoLiveNetworking:
-		if len(config.NetworkInterfaces) != 0 || config.StaticNetwork != nil || config.AssetChildFDStart != 0 {
+		if l7Authority || l8Authority || len(config.NetworkInterfaces) != 0 || config.StaticNetwork != nil || config.AssetChildFDStart != 0 {
 			return nil, nil, newLiveBootRenderConfigError("networkMode", "network configuration requires explicit L7 network mode")
 		}
 		return nil, nil, nil
@@ -47,8 +58,17 @@ func renderNetworkInterfaces(config BackendConfig) ([]networkInterfacePayload, *
 		if !config.ProductionVsock {
 			return nil, nil, newLiveBootRenderConfigError("networkMode", "L7 network mode requires production guest readiness")
 		}
-		if err := validateL7LaunchDescriptor(config.LaunchDescriptor, config.VerifiedL7Profile, config.VerifiedL7Assets); err != nil {
-			return nil, nil, err
+		switch {
+		case l7Authority:
+			if err := validateL7LaunchDescriptor(config.LaunchDescriptor, config.VerifiedL7Profile, config.VerifiedL7Assets); err != nil {
+				return nil, nil, err
+			}
+		case l8Authority:
+			if err := validateL8LaunchDescriptor(config.LaunchDescriptor, config.VerifiedL8Profile, config.VerifiedL8Assets, authority); err != nil {
+				return nil, nil, err
+			}
+		default:
+			return nil, nil, newLiveBootRenderConfigError("launchDescriptor", "verified network image authority is required")
 		}
 		if len(config.NetworkInterfaces) != 1 {
 			return nil, nil, newLiveBootRenderConfigError("networkInterfaces", "exactly one network interface is required")
@@ -68,6 +88,36 @@ func renderNetworkInterfaces(config BackendConfig) ([]networkInterfacePayload, *
 	default:
 		return nil, nil, newLiveBootRenderConfigError("networkMode", "network mode is unsupported")
 	}
+}
+
+func validateL8LaunchDescriptor(
+	descriptor *assets.LaunchDescriptor,
+	profile *localresolver.VerifiedL8Profile,
+	lease *localresolver.VerifiedL8AssetLease,
+	authority l8AuthorityOperations,
+) error {
+	if !authority.valid() {
+		return newLiveBootRenderConfigError("launchDescriptor", "verified L8 authority is unavailable")
+	}
+	launchAssets, err := firecrackerLaunchDescriptorAssets(descriptor, liveBootRenderOperation)
+	if err != nil {
+		return err
+	}
+	if descriptor == nil ||
+		launchAssets.Descriptor.ID != assets.SafeID("l8-production-credentials-image") ||
+		!equalSafeLabels(launchAssets.Descriptor.Labels, []assets.SafeLabel{"firecracker", "reproducible", "network-profile", "production-credentials-profile"}) ||
+		launchAssets.HasInitrd ||
+		launchAssets.Kernel.ID != assets.SafeID("kernel") ||
+		launchAssets.Rootfs.ID != assets.SafeID("rootfs") ||
+		profile == nil || lease == nil ||
+		!authority.profileMatches(profile, &launchAssets.Descriptor) ||
+		!authority.profileMatchesLease(profile, lease) {
+		return newLiveBootRenderConfigError("launchDescriptor", "verified L8 production credential image profile is required")
+	}
+	if err := authority.confirmCurrent(lease, &launchAssets.Descriptor); err != nil {
+		return newLiveBootRenderConfigError("launchDescriptor", "current verified L8 production credential image assets are required")
+	}
+	return nil
 }
 
 func normalizedL7AssetChildFDStart(value int) (int, error) {

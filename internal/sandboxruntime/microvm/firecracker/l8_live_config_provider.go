@@ -45,11 +45,55 @@ type L8LiveBootConfigProvider interface {
 	ProvideL8LiveBootConfig(context.Context, L8LiveBootConfigRequest) (L8LiveBootConfigOverlay, error)
 }
 
+type l8AuthorityOperations struct {
+	profileMatches      func(*localresolver.VerifiedL8Profile, *assets.LaunchDescriptor) bool
+	profileMatchesLease func(*localresolver.VerifiedL8Profile, *localresolver.VerifiedL8AssetLease) bool
+	confirmCurrent      func(*localresolver.VerifiedL8AssetLease, *assets.LaunchDescriptor) error
+	prepareLaunch       func(*localresolver.VerifiedL8AssetLease, *assets.LaunchDescriptor, localresolver.L8LaunchMaterialWriter) (assets.LaunchDescriptor, localresolver.VerifiedL8Profile, error)
+	closeLease          func(*localresolver.VerifiedL8AssetLease) error
+}
+
+func productionL8AuthorityOperations() l8AuthorityOperations {
+	return l8AuthorityOperations{
+		profileMatches:      localresolver.VerifiedL8ProfileMatches,
+		profileMatchesLease: localresolver.VerifiedL8ProfileMatchesLease,
+		confirmCurrent: func(lease *localresolver.VerifiedL8AssetLease, descriptor *assets.LaunchDescriptor) error {
+			return lease.ConfirmCurrent(descriptor)
+		},
+		prepareLaunch: func(lease *localresolver.VerifiedL8AssetLease, descriptor *assets.LaunchDescriptor, writer localresolver.L8LaunchMaterialWriter) (assets.LaunchDescriptor, localresolver.VerifiedL8Profile, error) {
+			return lease.PrepareLaunch(descriptor, writer)
+		},
+		closeLease: func(lease *localresolver.VerifiedL8AssetLease) error {
+			return lease.Close()
+		},
+	}
+}
+
+func (operations l8AuthorityOperations) valid() bool {
+	return operations.profileMatches != nil &&
+		operations.profileMatchesLease != nil &&
+		operations.confirmCurrent != nil &&
+		operations.prepareLaunch != nil &&
+		operations.closeLease != nil
+}
+
 func prepareL8LiveBootConfig(
 	ctx context.Context,
 	provider L8LiveBootConfigProvider,
 	base BackendConfig,
 ) (BackendConfig, *localresolver.VerifiedL8AssetLease, error) {
+	return prepareL8LiveBootConfigWithAuthority(ctx, provider, base, productionL8AuthorityOperations())
+}
+
+func prepareL8LiveBootConfigWithAuthority(
+	ctx context.Context,
+	provider L8LiveBootConfigProvider,
+	base BackendConfig,
+	authority l8AuthorityOperations,
+) (BackendConfig, *localresolver.VerifiedL8AssetLease, error) {
+	if !authority.valid() {
+		return BackendConfig{}, nil, newL8LiveConfigError("authority", "L8 live config authority is unavailable", nil)
+	}
 	if l8LiveConfigProviderIsNil(provider) {
 		return BackendConfig{}, nil, newL8LiveConfigError("provider", "L8 live config provider is unavailable", nil)
 	}
@@ -57,8 +101,8 @@ func prepareL8LiveBootConfig(
 		base.VerifiedL8Profile != nil || base.VerifiedL8Assets != nil {
 		return BackendConfig{}, nil, newL8LiveConfigError("overlay", "L7 and L8 live config authority is mutually exclusive", nil)
 	}
-	runtimeID := strings.TrimSpace(base.RuntimeID)
-	if safeFirecrackerMetadataToken(runtimeID) != runtimeID || !base.ProductionVsock {
+	runtimeID := base.RuntimeID
+	if runtimeID == "" || safeFirecrackerMetadataToken(runtimeID) != runtimeID || !base.ProductionVsock {
 		return BackendConfig{}, nil, newL8LiveConfigError("runtimeGenerationId", "L8 live runtime identity is invalid", nil)
 	}
 
@@ -81,7 +125,7 @@ func prepareL8LiveBootConfig(
 		if lease == nil {
 			return BackendConfig{}, nil, primary
 		}
-		if closeErr := closeBackendOwnedL8Lease(lease); closeErr != nil {
+		if closeErr := closeBackendOwnedL8LeaseWithAuthority(lease, authority); closeErr != nil {
 			return BackendConfig{}, nil, errors.Join(primary, closeErr)
 		}
 		return BackendConfig{}, nil, primary
@@ -101,7 +145,7 @@ func prepareL8LiveBootConfig(
 	profile := *overlay.VerifiedL8Profile
 	interfaces := cloneL8NetworkInterfaces(overlay.NetworkInterfaces)
 	staticNetwork := *overlay.StaticNetwork
-	if err := validateL8LiveOverlaySnapshot(&descriptor, &profile, lease, interfaces, &staticNetwork); err != nil {
+	if err := validateL8LiveOverlaySnapshot(&descriptor, &profile, lease, interfaces, &staticNetwork, authority); err != nil {
 		return fail("overlay", "L8 live config overlay validation failed", err)
 	}
 
@@ -136,6 +180,7 @@ func validateL8LiveOverlaySnapshot(
 	lease *localresolver.VerifiedL8AssetLease,
 	interfaces []NetworkInterfaceConfig,
 	staticNetwork *StaticNetworkBootConfig,
+	authority l8AuthorityOperations,
 ) error {
 	launchAssets, err := firecrackerLaunchDescriptorAssets(descriptor, l8LiveConfigOperation)
 	if err != nil {
@@ -147,11 +192,11 @@ func validateL8LiveOverlaySnapshot(
 		launchAssets.HasInitrd ||
 		launchAssets.Kernel.ID != assets.SafeID("kernel") ||
 		launchAssets.Rootfs.ID != assets.SafeID("rootfs") ||
-		!localresolver.VerifiedL8ProfileMatches(profile, &launchAssets.Descriptor) ||
-		!localresolver.VerifiedL8ProfileMatchesLease(profile, lease) {
+		!authority.profileMatches(profile, &launchAssets.Descriptor) ||
+		!authority.profileMatchesLease(profile, lease) {
 		return newL8LiveConfigError("launchDescriptor", "verified L8 production credential image profile is required", nil)
 	}
-	if err := lease.ConfirmCurrent(&launchAssets.Descriptor); err != nil {
+	if err := authority.confirmCurrent(lease, &launchAssets.Descriptor); err != nil {
 		return newL8LiveConfigError("launchDescriptor", "current verified L8 production credential image assets are required", err)
 	}
 	*descriptor = cloneL8LaunchDescriptor(launchAssets.Descriptor)
@@ -179,15 +224,25 @@ func validateL8LiveOverlaySnapshot(
 }
 
 func closeBackendOwnedL8Lease(lease *localresolver.VerifiedL8AssetLease) (retErr error) {
+	return closeBackendOwnedL8LeaseWithAuthority(lease, productionL8AuthorityOperations())
+}
+
+func closeBackendOwnedL8LeaseWithAuthority(
+	lease *localresolver.VerifiedL8AssetLease,
+	authority l8AuthorityOperations,
+) (retErr error) {
 	if lease == nil {
 		return nil
+	}
+	if !authority.valid() {
+		return newL8LiveConfigError("authority", "L8 live config authority is unavailable", nil)
 	}
 	defer func() {
 		if recover() != nil {
 			retErr = newL8LiveConfigError("l8Assets", "L8 live asset lease cleanup failed", errL8LiveAssetCleanupPanic)
 		}
 	}()
-	if err := lease.Close(); err != nil {
+	if err := authority.closeLease(lease); err != nil {
 		return newL8LiveConfigError("l8Assets", "L8 live asset lease cleanup failed", err)
 	}
 	return nil

@@ -20,6 +20,7 @@ type sealedL7LaunchMaterial struct {
 	closed    bool
 	closeErr  error
 	childFD   int
+	nameLayer string
 }
 
 type sealedL7Asset struct {
@@ -29,10 +30,25 @@ type sealedL7Asset struct {
 }
 
 func newSealedL7LaunchMaterial(_ string, childFD int) (*sealedL7LaunchMaterial, error) {
+	return newSealedLaunchMaterial(childFD, "l7")
+}
+
+func newSealedL8LaunchMaterial(_ string, childFD int) (*sealedL7LaunchMaterial, error) {
+	return newSealedLaunchMaterial(childFD, "l8")
+}
+
+func newSealedLaunchMaterial(childFD int, nameLayer string) (*sealedL7LaunchMaterial, error) {
 	if childFD != l7KernelChildFD && childFD != l7NamespaceKernelChildFD {
 		return nil, errUnsafeLiveBootStateEntry
 	}
-	return &sealedL7LaunchMaterial{assets: make(map[assets.AssetRole]*sealedL7Asset, 2), childFD: childFD}, nil
+	if nameLayer != "l7" && nameLayer != "l8" {
+		return nil, errUnsafeLiveBootStateEntry
+	}
+	return &sealedL7LaunchMaterial{
+		assets:    make(map[assets.AssetRole]*sealedL7Asset, 2),
+		childFD:   childFD,
+		nameLayer: nameLayer,
+	}, nil
 }
 
 func (material *sealedL7LaunchMaterial) WriteAsset(role assets.AssetRole, source io.Reader) (string, error) {
@@ -45,13 +61,17 @@ func (material *sealedL7LaunchMaterial) WriteAsset(role assets.AssetRole, source
 		return "", errUnsafeLiveBootStateEntry
 	}
 	name := ""
+	nameLayer := material.nameLayer
+	if nameLayer == "" {
+		nameLayer = "l7"
+	}
 	childFD := 0
 	switch role {
 	case assets.AssetRoleKernel:
-		name = "hal-l7-kernel"
+		name = "hal-" + nameLayer + "-kernel"
 		childFD = material.childFD
 	case assets.AssetRoleRootfs:
-		name = "hal-l7-rootfs"
+		name = "hal-" + nameLayer + "-rootfs"
 		childFD = material.childFD + 1
 	default:
 		return "", errUnsafeLiveBootStateEntry

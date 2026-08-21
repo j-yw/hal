@@ -5,7 +5,11 @@ the Firecracker runtime. It accepts only the resolver-owned opaque
 `VerifiedL8Profile` and `VerifiedL8AssetLease` pair, keeps L7 and L8 authority
 mutually exclusive, snapshots caller-mutable overlay data, contains provider
 panics, and closes a provisionally transferred lease on every rejection or
-later start failure.
+pre-handoff start failure. The L8 render path is mutually exclusive with L7,
+revalidates currentness immediately before and after synchronous process start,
+and transfers the lease into process-keyed ownership until stop, delete, or
+start-failure cleanup positively proves that the process is absent. Cleanup
+uncertainty retains both process and lease ownership.
 
 The foundation does not wire a command, worker, or `firecrackerhost` provider.
 Planning-only/default construction remains inert. L8 authority is omitted from
@@ -18,8 +22,11 @@ aggregate does not yet provide truthful D7 HL8E through
 produce the accepted profile/lease fixture required by this lane. The tagged
 `l8_d6_live_firecracker_overlay` dependency test therefore remains red with
 `dependency_unaccepted` until D7 lands the exact host-only evidence. This slice
-does not add a fake issuer, synthetic proof, active L8 claim, process start, or
-command default change.
+does not add a production fake issuer, synthetic production proof, active L8
+claim, real Firecracker process start, or command default change. Package-local
+direct state fixtures exercise render, handoff, close-error, close-panic,
+successful-stop, post-start drift, and uncertain-cleanup ownership semantics;
+they cannot be configured through `BackendOptions` or command wiring.
 
 Focused verification:
 

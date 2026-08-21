@@ -1,6 +1,10 @@
 package firecracker
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/localresolver"
+)
 
 const (
 	unverifiedProcessGeneration = "opaque-unverified"
@@ -19,6 +23,18 @@ type liveProcessProof struct {
 	ProcessGeneration string
 	ProcessSource     string
 	unverified        bool
+}
+
+type liveProcessKey struct {
+	runtimeID         string
+	processGeneration string
+	processSource     string
+}
+
+type l8OwnedAssetLease struct {
+	proof     liveProcessProof
+	lease     *localresolver.VerifiedL8AssetLease
+	authority l8AuthorityOperations
 }
 
 func liveProcessProofFromHandle(runtimeID string, handle ProcessHandleMetadata) (liveProcessProof, bool) {
@@ -41,6 +57,7 @@ type liveSessionRegistry struct {
 	sessions  map[string]liveSessionProof
 	processes map[string]liveProcessProof
 	lifecycle map[string]struct{}
+	l8Leases  map[liveProcessKey]l8OwnedAssetLease
 }
 
 func newLiveSessionRegistry() *liveSessionRegistry {
@@ -48,7 +65,92 @@ func newLiveSessionRegistry() *liveSessionRegistry {
 		sessions:  make(map[string]liveSessionProof),
 		processes: make(map[string]liveProcessProof),
 		lifecycle: make(map[string]struct{}),
+		l8Leases:  make(map[liveProcessKey]l8OwnedAssetLease),
 	}
+}
+
+func (registry *liveSessionRegistry) TrackL8Lease(
+	proof liveProcessProof,
+	lease *localresolver.VerifiedL8AssetLease,
+	authority l8AuthorityOperations,
+) bool {
+	if registry == nil || proof.RuntimeID == "" || proof.ProcessGeneration == "" ||
+		proof.ProcessSource == "" || lease == nil || !authority.valid() {
+		return false
+	}
+	key := liveProcessKey{
+		runtimeID:         proof.RuntimeID,
+		processGeneration: proof.ProcessGeneration,
+		processSource:     proof.ProcessSource,
+	}
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if _, exists := registry.l8Leases[key]; exists {
+		return false
+	}
+	registry.l8Leases[key] = l8OwnedAssetLease{proof: proof, lease: lease, authority: authority}
+	return true
+}
+
+func (registry *liveSessionRegistry) HasAnyL8Lease(runtimeID string) bool {
+	if registry == nil || runtimeID == "" {
+		return false
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	for key := range registry.l8Leases {
+		if key.runtimeID == runtimeID {
+			return true
+		}
+	}
+	return false
+}
+
+func (registry *liveSessionRegistry) HasL8Lease(runtimeID, processGeneration string) bool {
+	if registry == nil {
+		return false
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	for key := range registry.l8Leases {
+		if key.runtimeID == runtimeID && key.processGeneration == processGeneration {
+			return true
+		}
+	}
+	return false
+}
+
+func (registry *liveSessionRegistry) takeL8Lease(proof liveProcessProof) (l8OwnedAssetLease, bool) {
+	if registry == nil {
+		return l8OwnedAssetLease{}, false
+	}
+	key := liveProcessKey{
+		runtimeID:         proof.RuntimeID,
+		processGeneration: proof.ProcessGeneration,
+		processSource:     proof.ProcessSource,
+	}
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	owned, ok := registry.l8Leases[key]
+	if ok {
+		delete(registry.l8Leases, key)
+	}
+	return owned, ok
+}
+
+func (registry *liveSessionRegistry) l8LeaseForProcess(proof liveProcessProof) (l8OwnedAssetLease, bool) {
+	if registry == nil {
+		return l8OwnedAssetLease{}, false
+	}
+	key := liveProcessKey{
+		runtimeID:         proof.RuntimeID,
+		processGeneration: proof.ProcessGeneration,
+		processSource:     proof.ProcessSource,
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	owned, ok := registry.l8Leases[key]
+	return owned, ok
 }
 
 func (registry *liveSessionRegistry) ReserveLifecycle(runtimeID string) bool {

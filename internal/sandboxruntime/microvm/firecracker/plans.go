@@ -152,6 +152,13 @@ type DeleteOperationPlan struct {
 // RenderStartOperationPlan derives a fake-testable Firecracker start plan. It
 // validates payload renderability but stores only payload references.
 func RenderStartOperationPlan(config BackendConfig) (StartOperationPlan, error) {
+	return renderStartOperationPlanWithL8Authority(config, productionL8AuthorityOperations())
+}
+
+func renderStartOperationPlanWithL8Authority(
+	config BackendConfig,
+	authority l8AuthorityOperations,
+) (StartOperationPlan, error) {
 	if config.LaunchDescriptor != nil {
 		if _, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, OperationPlanningOperation); err != nil {
 			return StartOperationPlan{}, err
@@ -177,7 +184,7 @@ func RenderStartOperationPlan(config BackendConfig) (StartOperationPlan, error) 
 	if err != nil {
 		return StartOperationPlan{}, err
 	}
-	payloads, err := validateOperationPayloadReferences(config)
+	payloads, err := validateOperationPayloadReferencesWithL8Authority(config, authority)
 	if err != nil {
 		return StartOperationPlan{}, err
 	}
@@ -339,10 +346,17 @@ func operationPathReference(role OperationPathRole, path string, field string) (
 }
 
 func validateOperationPayloadReferences(config BackendConfig) ([]OperationPayloadReference, error) {
+	return validateOperationPayloadReferencesWithL8Authority(config, productionL8AuthorityOperations())
+}
+
+func validateOperationPayloadReferencesWithL8Authority(
+	config BackendConfig,
+	authority l8AuthorityOperations,
+) ([]OperationPayloadReference, error) {
 	if _, err := RenderMachineConfigPayload(config); err != nil {
 		return nil, operationPlanPayloadError(err)
 	}
-	if _, err := RenderBootSourcePayload(config); err != nil {
+	if _, err := renderBootSourcePayloadWithL8Authority(config, authority); err != nil {
 		return nil, operationPlanPayloadError(err)
 	}
 	if _, err := RenderRootDrivePayload(config); err != nil {

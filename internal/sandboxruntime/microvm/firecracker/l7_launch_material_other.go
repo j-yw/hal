@@ -14,6 +14,10 @@ func newSealedL7LaunchMaterial(string, int) (*sealedL7LaunchMaterial, error) {
 	return nil, errors.New("sealed L7 launch material requires Linux")
 }
 
+func newSealedL8LaunchMaterial(string, int) (*sealedL7LaunchMaterial, error) {
+	return nil, errors.New("sealed L8 launch material requires Linux")
+}
+
 type sealedL7LaunchMaterial struct{}
 
 func (*sealedL7LaunchMaterial) WriteAsset(assets.AssetRole, io.Reader) (string, error) {

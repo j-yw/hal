@@ -33,82 +33,117 @@ type vsockDevicePayload struct {
 type entropyDevicePayload struct{}
 
 func renderLiveBootFiles(config BackendConfig) error {
-	files, err := renderLiveBootFilesForStart(config)
+	files, _, err := renderLiveBootFilesForStartWithL8Authority(config, productionL8AuthorityOperations())
 	if len(files) > 0 {
 		err = joinLiveBootRenderCleanup(err, closeProcessInheritedFiles(files))
 		if config.VerifiedL7Assets != nil {
 			err = joinLiveBootRenderCleanup(err, config.VerifiedL7Assets.Close())
 		}
 	}
+	if config.VerifiedL8Assets != nil {
+		err = joinLiveBootRenderL8Cleanup(err, closeBackendOwnedL8Lease(config.VerifiedL8Assets))
+	}
 	return err
 }
 
-func renderLiveBootFilesForStart(config BackendConfig) (files []*os.File, retErr error) {
+func renderLiveBootFilesForStart(config BackendConfig) ([]*os.File, error) {
+	files, _, err := renderLiveBootFilesForStartWithL8Authority(config, productionL8AuthorityOperations())
+	return files, err
+}
+
+func renderLiveBootFilesForStartWithL8Authority(
+	config BackendConfig,
+	authority l8AuthorityOperations,
+) (files []*os.File, effective BackendConfig, retErr error) {
 	if config.LaunchDescriptor != nil {
 		if _, err := firecrackerLaunchDescriptorAssets(config.LaunchDescriptor, liveBootRenderOperation); err != nil {
-			return nil, err
+			return nil, BackendConfig{}, err
 		}
 	}
 	paths, err := validateLiveBootRenderPaths(config.Paths)
 	if err != nil {
-		return nil, err
+		return nil, BackendConfig{}, err
 	}
 	config.Paths = paths
 	var material *sealedL7LaunchMaterial
-	prepared := false
+	l7Prepared := false
 	l7Lease := config.VerifiedL7Assets
-	ownsL7Lease := config.NetworkMode == microvm.NetworkModeL7PolicyProxy && l7Lease != nil
+	l7Authority, l8Authority, err := liveBootAuthoritySelection(config)
+	if err != nil {
+		return nil, BackendConfig{}, err
+	}
+	ownsL7Lease := config.NetworkMode == microvm.NetworkModeL7PolicyProxy && l7Authority && l7Lease != nil
 	defer func() {
-		if ownsL7Lease && !prepared {
+		if ownsL7Lease && !l7Prepared {
 			retErr = joinLiveBootRenderCleanup(retErr, l7Lease.Close())
 		}
 	}()
 	if config.NetworkMode == microvm.NetworkModeL7PolicyProxy {
 		if err := ensureLiveBootStateDir(paths.StateDir); err != nil {
-			return nil, err
+			return nil, BackendConfig{}, err
 		}
-		config, material, err = prepareVerifiedL7LaunchMaterial(config)
+		switch {
+		case l7Authority:
+			config, material, err = prepareVerifiedL7LaunchMaterial(config)
+		case l8Authority:
+			config, material, err = prepareVerifiedL8LaunchMaterial(config, authority)
+		default:
+			err = newLiveBootRenderConfigError("launchDescriptor", "verified network image authority is required")
+		}
 		if err != nil {
-			return nil, err
+			return nil, BackendConfig{}, err
 		}
 	}
-	rendered, err := liveBootConfig(config)
+	rendered, err := liveBootConfigWithL8Authority(config, authority)
 	if err != nil {
-		return nil, err
+		return nil, BackendConfig{}, err
 	}
 	encoded, err := json.Marshal(rendered)
 	if err != nil {
-		return nil, newLiveBootRenderFailure("config", "boot config encoding failed", err)
+		return nil, BackendConfig{}, newLiveBootRenderFailure("config", "boot config encoding failed", err)
 	}
 	encoded = append(encoded, '\n')
 
 	if err := ensureLiveBootStateDir(paths.StateDir); err != nil {
-		return nil, err
+		return nil, BackendConfig{}, err
 	}
 	if config.ProductionVsock {
 		if err := renderProductionLiveBootFiles(paths, encoded); err != nil {
-			return nil, err
+			return nil, BackendConfig{}, err
 		}
 		if material == nil {
-			return nil, nil
+			return nil, config, nil
 		}
 		files, err := material.inheritedFiles()
 		if err != nil {
-			return nil, newLiveBootRenderFailure("launchDescriptor", "sealed L7 launch assets are unavailable", err)
+			message := "sealed L7 launch assets are unavailable"
+			if l8Authority {
+				message = "sealed L8 launch assets are unavailable"
+			}
+			return nil, BackendConfig{}, newLiveBootRenderFailure("launchDescriptor", message, err)
 		}
-		prepared = true
-		return files, nil
+		l7Prepared = l7Authority
+		return files, config, nil
 	}
 	if err := writeLiveBootFile(paths.ConfigPath, encoded, "configPath", "boot config write failed"); err != nil {
-		return nil, err
+		return nil, BackendConfig{}, err
 	}
 	if err := writeLiveBootSupportFile(paths.LogPath, "logPath", "log file preparation failed"); err != nil {
-		return nil, err
+		return nil, BackendConfig{}, err
 	}
 	if err := writeLiveBootSupportFile(paths.MetricsPath, "metricsPath", "metrics file preparation failed"); err != nil {
-		return nil, err
+		return nil, BackendConfig{}, err
 	}
-	return nil, nil
+	return nil, config, nil
+}
+
+func liveBootAuthoritySelection(config BackendConfig) (l7, l8 bool, err error) {
+	l7 = config.VerifiedL7Profile != nil || config.VerifiedL7Assets != nil
+	l8 = config.VerifiedL8Profile != nil || config.VerifiedL8Assets != nil
+	if l7 && l8 {
+		return false, false, newLiveBootRenderConfigError("launchDescriptor", "L7 and L8 launch authority is mutually exclusive")
+	}
+	return l7, l8, nil
 }
 
 func prepareVerifiedL7LaunchMaterial(config BackendConfig) (BackendConfig, *sealedL7LaunchMaterial, error) {
@@ -134,10 +169,45 @@ func prepareVerifiedL7LaunchMaterial(config BackendConfig) (BackendConfig, *seal
 	return config, material, nil
 }
 
+func prepareVerifiedL8LaunchMaterial(
+	config BackendConfig,
+	authority l8AuthorityOperations,
+) (BackendConfig, *sealedL7LaunchMaterial, error) {
+	if !authority.valid() || config.VerifiedL8Assets == nil || config.VerifiedL8Profile == nil || config.LaunchDescriptor == nil {
+		return BackendConfig{}, nil, newLiveBootRenderConfigError("launchDescriptor", "verified L8 asset authority is required")
+	}
+	if err := validateL8LaunchDescriptor(config.LaunchDescriptor, config.VerifiedL8Profile, config.VerifiedL8Assets, authority); err != nil {
+		return BackendConfig{}, nil, err
+	}
+	if config.AssetChildFDStart != l7NamespaceKernelChildFD {
+		return BackendConfig{}, nil, newLiveBootRenderConfigError("assetChildFDStart", "L8 asset child descriptor mapping is invalid")
+	}
+	material, err := newSealedL8LaunchMaterial(config.Paths.StateDir, config.AssetChildFDStart)
+	if err != nil {
+		return BackendConfig{}, nil, newLiveBootRenderFailure("launchDescriptor", "private L8 launch material preparation failed", err)
+	}
+	descriptor, profile, err := authority.prepareLaunch(config.VerifiedL8Assets, config.LaunchDescriptor, material)
+	if err != nil {
+		prepareErr := newLiveBootRenderL8PrepareError(err)
+		prepareErr = joinLiveBootRenderL8Cleanup(prepareErr, material.Close())
+		return BackendConfig{}, nil, prepareErr
+	}
+	config.LaunchDescriptor = &descriptor
+	config.VerifiedL8Profile = &profile
+	return config, material, nil
+}
+
 func newLiveBootRenderL7PrepareError(cause error) error {
 	err := microvm.NewInvalidConfigError(liveBootRenderOperation, sanitizedLiveBootL7PrepareCause{cause: cause})
 	err.Field = "launchDescriptor"
 	err.Message = "current verified L7 network image assets are required"
+	return err
+}
+
+func newLiveBootRenderL8PrepareError(cause error) error {
+	err := microvm.NewInvalidConfigError(liveBootRenderOperation, sanitizedLiveBootL7PrepareCause{cause: cause})
+	err.Field = "launchDescriptor"
+	err.Message = "current verified L8 production credential image assets are required"
 	return err
 }
 
@@ -172,7 +242,26 @@ func joinLiveBootRenderCleanup(primary, cleanupErr error) error {
 	return errors.Join(primary, uncertain)
 }
 
+func joinLiveBootRenderL8Cleanup(primary, cleanupErr error) error {
+	if cleanupErr == nil {
+		return primary
+	}
+	uncertain := newLiveBootRenderFailure(
+		"launchDescriptor",
+		"sealed L8 launch asset cleanup was not confirmed",
+		cleanupErr,
+	)
+	if primary == nil {
+		return uncertain
+	}
+	return errors.Join(primary, uncertain)
+}
+
 func liveBootConfig(config BackendConfig) (liveBootConfigFile, error) {
+	return liveBootConfigWithL8Authority(config, productionL8AuthorityOperations())
+}
+
+func liveBootConfigWithL8Authority(config BackendConfig, authority l8AuthorityOperations) (liveBootConfigFile, error) {
 	if config.ProductionVsock && strings.TrimSpace(config.Paths.VsockSocketPath) == "" {
 		return liveBootConfigFile{}, newLiveBootRenderConfigError("vsockSocketPath", "vsock socket path is required")
 	}
@@ -180,12 +269,12 @@ func liveBootConfig(config BackendConfig) (liveBootConfigFile, error) {
 	if err != nil {
 		return liveBootConfigFile{}, liveBootRenderPayloadError(err)
 	}
-	networkInterfaces, staticNetwork, err := renderNetworkInterfaces(config)
+	networkInterfaces, staticNetwork, err := renderNetworkInterfacesWithL8Authority(config, authority)
 	if err != nil {
 		return liveBootConfigFile{}, err
 	}
 	config.StaticNetwork = staticNetwork
-	bootSource, err := RenderBootSourcePayload(config)
+	bootSource, err := renderBootSourcePayloadWithL8Authority(config, authority)
 	if err != nil {
 		return liveBootConfigFile{}, liveBootRenderPayloadError(err)
 	}

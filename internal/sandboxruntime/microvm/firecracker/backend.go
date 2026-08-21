@@ -255,6 +255,7 @@ type firecrackerController struct {
 	l7LiveConfigProvider L7LiveBootConfigProvider
 	l8LiveConfigProvider L8LiveBootConfigProvider
 	liveSessions         *liveSessionRegistry
+	l8Authority          *l8AuthorityOperations
 }
 
 func (c firecrackerController) Start(ctx context.Context, req microvm.ControllerLifecycleRequest) (_ *sandboxruntime.Target, retErr error) {
@@ -267,6 +268,7 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	}
 	var pendingL7Lease *localresolver.VerifiedL7AssetLease
 	var pendingL8Lease *localresolver.VerifiedL8AssetLease
+	l8Authority := c.l8AuthorityOperations()
 	if c.liveStart && c.l7LiveConfigProvider != nil {
 		config, pendingL7Lease, err = prepareL7LiveBootConfig(ctx, c.l7LiveConfigProvider, config)
 		if err != nil {
@@ -282,7 +284,7 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 		}()
 	}
 	if c.liveStart && c.l8LiveConfigProvider != nil {
-		config, pendingL8Lease, err = prepareL8LiveBootConfig(ctx, c.l8LiveConfigProvider, config)
+		config, pendingL8Lease, err = prepareL8LiveBootConfigWithAuthority(ctx, c.l8LiveConfigProvider, config, l8Authority)
 		if err != nil {
 			return nil, err
 		}
@@ -290,7 +292,7 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 			if pendingL8Lease == nil {
 				return
 			}
-			if cleanupErr := closeBackendOwnedL8Lease(pendingL8Lease); cleanupErr != nil {
+			if cleanupErr := closeBackendOwnedL8LeaseWithAuthority(pendingL8Lease, l8Authority); cleanupErr != nil {
 				retErr = joinL8StartCleanup(retErr, cleanupErr)
 			}
 		}()
@@ -309,19 +311,29 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	if adapter == nil {
 		adapter = startPlanningProcessAdapter{}
 	}
-	operation, err := planFirecrackerStartOperation(ctx, adapter, config)
+	operation, err := planFirecrackerStartOperationWithL8Authority(ctx, adapter, config, l8Authority)
 	if err != nil {
 		return nil, err
 	}
 	processLaunch := processBoundaryAvailableRuntimeMetadata()
 	var guestReadiness *sandboxruntime.RuntimeGuestReadinessMetadata
 	if c.liveStart {
-		inheritedFiles, err := renderLiveBootFilesForStart(config)
+		inheritedFiles, effectiveConfig, err := renderLiveBootFilesForStartWithL8Authority(config, l8Authority)
 		if err != nil {
 			return nil, err
 		}
+		config = effectiveConfig
 		pendingL7Lease = nil
-		liveStart, err := c.startLiveProcessWithInheritedFiles(ctx, operation.ProcessDescriptor, config, inheritedFiles)
+		liveStart, l8OwnershipTransferred, err := c.startLiveProcessWithInheritedFilesAndL8Authority(
+			ctx,
+			operation.ProcessDescriptor,
+			config,
+			inheritedFiles,
+			l8Authority,
+		)
+		if l8OwnershipTransferred {
+			pendingL8Lease = nil
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -356,6 +368,8 @@ func (c firecrackerController) validateLiveBootContract() error {
 		return newLiveBootContractError("l8LiveConfigProvider", "L8 live config provider is unavailable")
 	case c.l8LiveConfigProvider != nil && !c.productionVsock:
 		return newLiveBootContractError("l8LiveConfigProvider", "L8 live config requires production vsock")
+	case c.l8LiveConfigProvider != nil && c.liveSessions == nil:
+		return newLiveBootContractError("l8LiveConfigProvider", "L8 live config requires process ownership tracking")
 	default:
 		return nil
 	}
@@ -376,8 +390,32 @@ func (c firecrackerController) startLiveProcessWithInheritedFiles(
 	config BackendConfig,
 	inheritedFiles []*os.File,
 ) (firecrackerLiveStartResult, error) {
+	result, _, err := c.startLiveProcessWithInheritedFilesAndL8Authority(
+		ctx,
+		descriptor,
+		config,
+		inheritedFiles,
+		c.l8AuthorityOperations(),
+	)
+	return result, err
+}
+
+func (c firecrackerController) startLiveProcessWithInheritedFilesAndL8Authority(
+	ctx context.Context,
+	descriptor ProcessCommandDescriptor,
+	config BackendConfig,
+	inheritedFiles []*os.File,
+	authority l8AuthorityOperations,
+) (firecrackerLiveStartResult, bool, error) {
+	_, l8Selected, selectionErr := liveBootAuthoritySelection(config)
+	if selectionErr != nil {
+		return firecrackerLiveStartResult{}, false, joinL8StartCleanup(selectionErr, cleanupL8StartInheritedFiles(inheritedFiles))
+	}
 	if err := c.rejectActiveProductionVsockSession(config.RuntimeID); err != nil {
-		return firecrackerLiveStartResult{}, joinL7StartCleanup(err, cleanupL7StartAssets(config, inheritedFiles))
+		if l8Selected {
+			return firecrackerLiveStartResult{}, false, joinL8StartCleanup(err, cleanupL8StartInheritedFiles(inheritedFiles))
+		}
+		return firecrackerLiveStartResult{}, false, joinL7StartCleanup(err, cleanupL7StartAssets(config, inheritedFiles))
 	}
 	if c.liveSessions != nil {
 		if active, ok := c.liveSessions.ProofForRuntime(config.RuntimeID); ok && c.productionBridge != nil {
@@ -389,17 +427,28 @@ func (c firecrackerController) startLiveProcessWithInheritedFiles(
 		}
 		c.liveSessions.InvalidateRuntime(config.RuntimeID)
 	}
+	if l8Selected {
+		if err := validateL8LaunchDescriptor(config.LaunchDescriptor, config.VerifiedL8Profile, config.VerifiedL8Assets, authority); err != nil {
+			return firecrackerLiveStartResult{}, false, joinL8StartCleanup(err, cleanupL8StartInheritedFiles(inheritedFiles))
+		}
+	}
 	handle, err := startProcessWithInheritedFiles(ctx, c.processAdapter, descriptor, inheritedFiles)
+	if l8Selected {
+		if err != nil {
+			return firecrackerLiveStartResult{}, false, joinL8StartCleanup(err, cleanupL8StartInheritedFiles(inheritedFiles))
+		}
+		return c.finishL8LiveStartAfterProcessHandoff(ctx, handle, config, inheritedFiles, authority)
+	}
 	assetCleanupErr := cleanupL7StartAssets(config, inheritedFiles)
 	if err != nil {
-		return firecrackerLiveStartResult{}, joinL7StartCleanup(err, assetCleanupErr)
+		return firecrackerLiveStartResult{}, false, joinL7StartCleanup(err, assetCleanupErr)
 	}
 	processProof, terminalVerifiable := liveProcessProofFromHandle(config.RuntimeID, handle)
 	if assetCleanupErr != nil {
 		if c.liveSessions != nil {
 			c.liveSessions.TrackProcess(processProof)
 		}
-		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(
+		return firecrackerLiveStartResult{}, false, c.cleanupLiveProcessAfterStartFailure(
 			ctx,
 			handle,
 			processProof,
@@ -411,7 +460,7 @@ func (c firecrackerController) startLiveProcessWithInheritedFiles(
 	if c.liveSessions != nil {
 		c.liveSessions.TrackProcess(processProof)
 		if !terminalVerifiable {
-			return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(
+			return firecrackerLiveStartResult{}, false, c.cleanupLiveProcessAfterStartFailure(
 				ctx,
 				handle,
 				processProof,
@@ -423,11 +472,11 @@ func (c firecrackerController) startLiveProcessWithInheritedFiles(
 	}
 	launch, err := c.waitForBootAcceptance(ctx, handle, config.Paths)
 	if err != nil {
-		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, processProof, true, config.Paths, err)
+		return firecrackerLiveStartResult{}, false, c.cleanupLiveProcessAfterStartFailure(ctx, handle, processProof, true, config.Paths, err)
 	}
 	guestReadiness, bridgeGeneration, err := c.waitForGuestReadiness(ctx, handle, config.RuntimeID, config.Paths)
 	if err != nil {
-		return firecrackerLiveStartResult{}, c.cleanupLiveProcessAfterStartFailure(ctx, handle, processProof, true, config.Paths, err)
+		return firecrackerLiveStartResult{}, false, c.cleanupLiveProcessAfterStartFailure(ctx, handle, processProof, true, config.Paths, err)
 	}
 	if c.liveSessions != nil && guestReadiness != nil {
 		c.liveSessions.Activate(liveSessionProof{
@@ -437,7 +486,132 @@ func (c firecrackerController) startLiveProcessWithInheritedFiles(
 	return firecrackerLiveStartResult{
 		processLaunch:  launch,
 		guestReadiness: guestReadiness,
-	}, nil
+	}, false, nil
+}
+
+func (c firecrackerController) finishL8LiveStartAfterProcessHandoff(
+	ctx context.Context,
+	handle ProcessHandleMetadata,
+	config BackendConfig,
+	inheritedFiles []*os.File,
+	authority l8AuthorityOperations,
+) (firecrackerLiveStartResult, bool, error) {
+	processProof, terminalVerifiable := liveProcessProofFromHandle(config.RuntimeID, handle)
+	if c.liveSessions == nil {
+		startErr := newProcessBoundaryError("processHandle", "live process handle is unavailable")
+		return firecrackerLiveStartResult{}, false, c.cleanupLiveProcessAfterStartFailure(
+			ctx,
+			handle,
+			processProof,
+			false,
+			config.Paths,
+			joinL8StartCleanup(startErr, cleanupL8StartInheritedFiles(inheritedFiles)),
+		)
+	}
+	c.liveSessions.TrackProcess(processProof)
+	if !c.liveSessions.TrackL8Lease(processProof, config.VerifiedL8Assets, authority) {
+		startErr := newProcessBoundaryError("l8Assets", "L8 live asset ownership transfer failed")
+		return firecrackerLiveStartResult{}, false, c.cleanupLiveProcessAfterStartFailure(
+			ctx,
+			handle,
+			processProof,
+			true,
+			config.Paths,
+			joinL8StartCleanup(startErr, cleanupL8StartInheritedFiles(inheritedFiles)),
+		)
+	}
+	transferred := true
+	if err := validateL8LaunchDescriptor(config.LaunchDescriptor, config.VerifiedL8Profile, config.VerifiedL8Assets, authority); err != nil {
+		return firecrackerLiveStartResult{}, transferred, c.cleanupL8ProcessAfterStartFailure(
+			ctx, handle, processProof, terminalVerifiable, config.Paths, inheritedFiles, err,
+		)
+	}
+	if !terminalVerifiable {
+		startErr := newProcessBoundaryError("processHandle", "live process handle is unavailable")
+		return firecrackerLiveStartResult{}, transferred, c.cleanupL8ProcessAfterStartFailure(
+			ctx, handle, processProof, false, config.Paths, inheritedFiles, startErr,
+		)
+	}
+	if err := cleanupL8StartInheritedFiles(inheritedFiles); err != nil {
+		return firecrackerLiveStartResult{}, transferred, c.cleanupL8ProcessAfterStartFailure(
+			ctx, handle, processProof, true, config.Paths, nil, err,
+		)
+	}
+	launch, err := c.waitForBootAcceptance(ctx, handle, config.Paths)
+	if err != nil {
+		return firecrackerLiveStartResult{}, transferred, c.cleanupL8ProcessAfterStartFailure(
+			ctx, handle, processProof, true, config.Paths, nil, err,
+		)
+	}
+	guestReadiness, bridgeGeneration, err := c.waitForGuestReadiness(ctx, handle, config.RuntimeID, config.Paths)
+	if err != nil {
+		return firecrackerLiveStartResult{}, transferred, c.cleanupL8ProcessAfterStartFailure(
+			ctx, handle, processProof, true, config.Paths, nil, err,
+		)
+	}
+	if guestReadiness != nil {
+		c.liveSessions.Activate(liveSessionProof{
+			RuntimeID: config.RuntimeID, ProcessGeneration: handle.ID, ProcessSource: handle.Source, BridgeGeneration: bridgeGeneration,
+		})
+	}
+	return firecrackerLiveStartResult{processLaunch: launch, guestReadiness: guestReadiness}, transferred, nil
+}
+
+func cleanupL8StartInheritedFiles(inheritedFiles []*os.File) error {
+	if len(inheritedFiles) == 0 {
+		return nil
+	}
+	if err := closeProcessInheritedFiles(inheritedFiles); err != nil {
+		return newProcessBoundaryAdapterError(
+			"inheritedFiles",
+			"sealed L8 launch asset descriptor cleanup was not confirmed",
+			err,
+		)
+	}
+	return nil
+}
+
+func (c firecrackerController) cleanupL8ProcessAfterStartFailure(
+	ctx context.Context,
+	handle ProcessHandleMetadata,
+	processProof liveProcessProof,
+	terminalVerifiable bool,
+	paths PathPlan,
+	inheritedFiles []*os.File,
+	startErr error,
+) error {
+	cleanupErr := c.cleanupLiveProcessAfterStartFailure(ctx, handle, processProof, terminalVerifiable, paths, startErr)
+	cleanupErr = joinL8StartCleanup(cleanupErr, cleanupL8StartInheritedFiles(inheritedFiles))
+	if _, processStillTracked := c.liveSessions.Process(processProof.RuntimeID, processProof.ProcessGeneration); processStillTracked {
+		return cleanupErr
+	}
+	if closeErr := c.closeTrackedL8Lease(processProof); closeErr != nil {
+		c.liveSessions.TrackProcess(processProof)
+		return joinL8StartCleanup(cleanupErr, closeErr)
+	}
+	return cleanupErr
+}
+
+func (c firecrackerController) l8AuthorityOperations() l8AuthorityOperations {
+	if c.l8Authority != nil {
+		return *c.l8Authority
+	}
+	return productionL8AuthorityOperations()
+}
+
+func (c firecrackerController) closeTrackedL8Lease(proof liveProcessProof) error {
+	if c.liveSessions == nil {
+		return nil
+	}
+	owned, ok := c.liveSessions.l8LeaseForProcess(proof)
+	if !ok {
+		return nil
+	}
+	if err := closeBackendOwnedL8LeaseWithAuthority(owned.lease, owned.authority); err != nil {
+		return err
+	}
+	c.liveSessions.takeL8Lease(proof)
+	return nil
 }
 
 func joinL7StartCleanup(primary, cleanupErr error) error {
@@ -483,7 +657,12 @@ func (c firecrackerController) rejectActiveProductionVsockSession(runtimeID stri
 		if !verifierOK || !verifier.LiveProcessTerminated(request) {
 			return newProcessBoundaryError("runtime", "live process is already active")
 		}
-		c.invalidateLiveProcessProof(process)
+		if err := c.invalidateLiveProcessProof(process); err != nil {
+			return err
+		}
+	}
+	if c.liveSessions.HasAnyL8Lease(runtimeID) {
+		return newProcessBoundaryError("runtime", "live process ownership is still retained")
 	}
 	active, ok := c.liveSessions.ProofForRuntime(runtimeID)
 	if !ok {
@@ -629,7 +808,9 @@ func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerL
 		if err := c.stopLiveProcess(ctx, liveReq); err != nil {
 			return nil, err
 		}
-		c.invalidateLiveProcess(req.Target)
+		if err := c.finalizeLiveProcessAbsence(req.Target, liveReq); err != nil {
+			return nil, err
+		}
 	}
 	return firecrackerLifecycleTarget(req.Target, plan.Summary(), sandbox.StatusStopped, c.networkEnforcement), nil
 }
@@ -665,7 +846,9 @@ func (c firecrackerController) Delete(ctx context.Context, req microvm.Controlle
 		if err := c.deleteLiveProcess(ctx, liveReq); err != nil {
 			return err
 		}
-		c.invalidateLiveProcess(req.Target)
+		if err := c.finalizeLiveProcessAbsence(req.Target, liveReq); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -836,24 +1019,37 @@ func (c firecrackerController) invalidateGuestSession(target sandboxruntime.Targ
 	c.liveSessions.Invalidate(proof)
 }
 
-func (c firecrackerController) invalidateLiveProcess(target sandboxruntime.Target) {
+func (c firecrackerController) finalizeLiveProcessAbsence(target sandboxruntime.Target, request LiveProcessRequest) error {
 	if c.liveSessions == nil || target.Runtime.Metadata == nil {
-		return
+		return nil
 	}
 	process := sanitizeRuntimeProcessLaunchMetadata(target.Runtime.Metadata.ProcessLaunch)
 	if process == nil {
-		return
+		return nil
 	}
 	proof, ok := c.liveSessions.Process(firecrackerStartRuntimeID(target), process.ProcessID)
 	if !ok {
-		return
+		return nil
 	}
-	c.invalidateLiveProcessProof(proof)
+	if _, hasL8Lease := c.liveSessions.l8LeaseForProcess(proof); hasL8Lease {
+		verifier, verifierOK := c.liveProcessManager.(LiveProcessTerminalVerifier)
+		if !verifierOK || !verifier.LiveProcessTerminated(request) {
+			return newLiveProcessManagerFailure(
+				"liveProcessManager",
+				"live process cleanup terminal state was not verified",
+				errLiveProcessTerminalNotVerified,
+			)
+		}
+	}
+	return c.invalidateLiveProcessProof(proof)
 }
 
-func (c firecrackerController) invalidateLiveProcessProof(proof liveProcessProof) {
+func (c firecrackerController) invalidateLiveProcessProof(proof liveProcessProof) error {
 	if c.liveSessions == nil {
-		return
+		return nil
+	}
+	if err := c.closeTrackedL8Lease(proof); err != nil {
+		return err
 	}
 	if session, ok := c.liveSessions.Proof(proof.RuntimeID, proof.ProcessGeneration); ok {
 		if c.productionBridge != nil {
@@ -868,6 +1064,7 @@ func (c firecrackerController) invalidateLiveProcessProof(proof liveProcessProof
 		c.liveSessions.Invalidate(session)
 	}
 	c.liveSessions.InvalidateProcess(proof)
+	return nil
 }
 
 type firecrackerStartOperation struct {
@@ -902,7 +1099,16 @@ func (c firecrackerController) startBackendConfig(input microvm.Config, target s
 }
 
 func planFirecrackerStartOperation(ctx context.Context, adapter ProcessAdapter, config BackendConfig) (firecrackerStartOperation, error) {
-	plan, err := RenderStartOperationPlan(config)
+	return planFirecrackerStartOperationWithL8Authority(ctx, adapter, config, productionL8AuthorityOperations())
+}
+
+func planFirecrackerStartOperationWithL8Authority(
+	ctx context.Context,
+	adapter ProcessAdapter,
+	config BackendConfig,
+	authority l8AuthorityOperations,
+) (firecrackerStartOperation, error) {
+	plan, err := renderStartOperationPlanWithL8Authority(config, authority)
 	if err != nil {
 		return firecrackerStartOperation{}, err
 	}

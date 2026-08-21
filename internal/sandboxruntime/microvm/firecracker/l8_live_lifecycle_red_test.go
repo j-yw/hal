@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -25,8 +27,8 @@ func TestL8RenderUsesExclusiveAuthorityBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 2 || probe.prepareCalls != 1 || probe.confirmCalls != 2 {
-		t.Fatalf("L8 render = files %d prepare %d confirm %d, want 2/1/2", len(files), probe.prepareCalls, probe.confirmCalls)
+	if len(files) != 2 || probe.prepareCalls != 1 || probe.confirmCalls != 3 {
+		t.Fatalf("L8 render = files %d prepare %d confirm %d, want 2/1/3", len(files), probe.prepareCalls, probe.confirmCalls)
 	}
 	if effective.VerifiedL7Profile != nil || effective.VerifiedL7Assets != nil ||
 		effective.VerifiedL8Profile == nil || effective.VerifiedL8Assets != config.VerifiedL8Assets {
@@ -72,7 +74,7 @@ func TestL8StartTransfersLeaseUntilProvedStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if provider.calls != 1 || probe.prepareCalls != 1 || probe.confirmCalls != 5 || probe.closeCalls != 0 {
+	if provider.calls != 1 || probe.prepareCalls != 1 || probe.confirmCalls != 7 || probe.closeCalls != 0 {
 		t.Fatalf("successful L8 start calls = provider %d prepare %d confirm %d close %d", provider.calls, probe.prepareCalls, probe.confirmCalls, probe.closeCalls)
 	}
 	if !controller.liveSessions.HasL8Lease(target.Runtime.RuntimeID, "fake-pid") {
@@ -93,8 +95,50 @@ func TestL8StartTransfersLeaseUntilProvedStop(t *testing.T) {
 	}
 }
 
+func TestL8ProvedStopRetainsOwnershipWhenLeaseCloseIsUncertain(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		closeError error
+		closePanic bool
+	}{
+		{name: "error", closeError: errors.New("private stop close error /host/path token=secret")},
+		{name: "panic", closePanic: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			probe := &l8AuthorityLifecycleProbe{closeError: test.closeError, closePanic: test.closePanic}
+			manager := &l8LifecycleProcessManager{cleanupProvesAbsence: true}
+			controller, _, target := l8LifecycleController(t, probe, manager, "runtime-l8-stop-close-"+test.name)
+			started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+				Operation: microvm.OperationStart,
+				Config:    validMicroVMConfig(),
+				Target:    target,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{
+				Operation: microvm.OperationStop,
+				Target:    *started,
+			})
+			if err == nil {
+				t.Fatalf("uncertain lease close %s error = nil", test.name)
+			}
+			if strings.Contains(err.Error(), "/host/path") || strings.Contains(err.Error(), "token=secret") {
+				t.Fatalf("uncertain lease close %s leaked private failure: %v", test.name, err)
+			}
+			if manager.stopCalls != 1 || probe.closeCalls != 1 ||
+				!controller.liveSessions.HasL8Lease(target.Runtime.RuntimeID, "fake-pid") {
+				t.Fatalf("uncertain lease close %s = stop %d close %d owned %t", test.name, manager.stopCalls, probe.closeCalls, controller.liveSessions.HasL8Lease(target.Runtime.RuntimeID, "fake-pid"))
+			}
+			if _, tracked := controller.liveSessions.Process(target.Runtime.RuntimeID, "fake-pid"); !tracked {
+				t.Fatalf("uncertain lease close %s discarded process-keyed ownership", test.name)
+			}
+		})
+	}
+}
+
 func TestL8PostStartDriftStopsBeforeLeaseClose(t *testing.T) {
-	probe := &l8AuthorityLifecycleProbe{confirmErrorAt: 5}
+	probe := &l8AuthorityLifecycleProbe{confirmErrorAt: 7}
 	manager := &l8LifecycleProcessManager{cleanupProvesAbsence: true}
 	controller, _, target := l8LifecycleController(t, probe, manager, "runtime-l8-post-start-drift")
 	if _, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
@@ -113,7 +157,7 @@ func TestL8PostStartDriftStopsBeforeLeaseClose(t *testing.T) {
 }
 
 func TestL8PostStartCleanupUncertaintyRetainsLease(t *testing.T) {
-	probe := &l8AuthorityLifecycleProbe{confirmErrorAt: 5}
+	probe := &l8AuthorityLifecycleProbe{confirmErrorAt: 7}
 	manager := &l8LifecycleProcessManager{cleanupProvesAbsence: false}
 	controller, _, target := l8LifecycleController(t, probe, manager, "runtime-l8-post-start-uncertain")
 	_, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
@@ -142,9 +186,13 @@ func TestL8ProvisionallyOwnedLeaseCleanupErrorsAndPanicsAreObserved(t *testing.T
 		{name: "panic", closePanic: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			config := l8LifecycleConfig(t, "runtime-l8-close-"+test.name)
+			runtimeID := "runtime-l8-close-" + test.name
+			overlayConfig := l8LifecycleConfig(t, runtimeID)
+			config := validFirecrackerOperationConfig(t)
+			config.RuntimeID = runtimeID
+			config.ProductionVsock = true
 			probe := &l8AuthorityLifecycleProbe{closeError: test.closeError, closePanic: test.closePanic}
-			provider := &recordingL8LiveConfigProvider{overlay: l8LifecycleOverlay(config)}
+			provider := &recordingL8LiveConfigProvider{overlay: l8LifecycleOverlay(overlayConfig)}
 			provider.overlay.RuntimeGenerationID = "runtime-mismatch"
 			_, owned, err := prepareL8LiveBootConfigWithAuthority(context.Background(), provider, config, probe.operations())
 			if err == nil || owned != nil || probe.closeCalls != 1 {
@@ -303,12 +351,17 @@ func l8LifecycleConfig(t *testing.T, runtimeID string) BackendConfig {
 	}
 	config := validFirecrackerOperationConfig(t)
 	config.RuntimeID = runtimeID
-	config.Paths.StateDir = t.TempDir()
-	config.Paths.APISocketPath = config.Paths.StateDir + "/api.sock"
-	config.Paths.ConfigPath = config.Paths.StateDir + "/config.json"
-	config.Paths.LogPath = config.Paths.StateDir + "/firecracker.log"
-	config.Paths.MetricsPath = config.Paths.StateDir + "/firecracker.metrics"
-	config.Paths.VsockSocketPath = config.Paths.StateDir + "/guest.vsock"
+	baseDir, err := os.MkdirTemp("", "hal-l8-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+	config.Paths.StateDir = filepath.Join(baseDir, "state")
+	config.Paths.APISocketPath = filepath.Join(config.Paths.StateDir, "api.sock")
+	config.Paths.ConfigPath = filepath.Join(config.Paths.StateDir, "config.json")
+	config.Paths.LogPath = filepath.Join(config.Paths.StateDir, "firecracker.log")
+	config.Paths.MetricsPath = filepath.Join(config.Paths.StateDir, "firecracker.metrics")
+	config.Paths.VsockSocketPath = filepath.Join(config.Paths.StateDir, "guest.vsock")
 	config.ProductionVsock = true
 	config.LaunchDescriptor = descriptor
 	config.VerifiedL8Profile = &localresolver.VerifiedL8Profile{}

@@ -24,6 +24,12 @@ func TestL8LiveBootConfigContractFieldsAreExactAndAdjacent(t *testing.T) {
 	assertAdjacentL8Fields(t, reflect.TypeFor[Backend](), "l7LiveConfigProvider", []fieldContract{
 		{name: "l8LiveConfigProvider", typeName: "firecracker.L8LiveBootConfigProvider"},
 	})
+	if _, ok := reflect.TypeFor[BackendOptions]().FieldByName("L8Authority"); ok {
+		t.Fatal("BackendOptions exposes package-local L8 authority operations")
+	}
+	if _, ok := reflect.TypeFor[Backend]().FieldByName("l8Authority"); ok {
+		t.Fatal("Backend persists package-local L8 authority operations")
+	}
 
 	requestType := reflect.TypeFor[L8LiveBootConfigRequest]()
 	assertExactL8StructFields(t, requestType, []fieldContract{
@@ -340,6 +346,7 @@ func l8LiveConfigTestController(adapter ProcessAdapter, provider L8LiveBootConfi
 		productionVsock:      true,
 		productionBridge:     l5ConcurrentStartBridge{},
 		l8LiveConfigProvider: provider,
+		liveSessions:         newLiveSessionRegistry(),
 	}
 }
 
