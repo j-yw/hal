@@ -639,6 +639,31 @@ var input any
 			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
 		},
 		{
+			name: "concrete interface implementation returned by helper",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type minter struct{}
+func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func choose() runner { return minter{} }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { selected := choose(); selected.Run() }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "explicit interface conversion preserves concrete implementation",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type minter struct{}
+func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { selected := runner(minter{}); selected.Run() }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
 			name: "defined interface embedding testing TB skip",
 			source: `package fixture
 import "testing"
@@ -675,6 +700,41 @@ import ("testing"; "example.invalid/sandboxruntime")
 func ignore(callback func()) { _ = func() { callback() } }
 func TestL11PreparedLinuxFinalClosure(*testing.T) { ignore(mint) }
 func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+		},
+		{
+			name: "outer concrete reassignment captured by invoked IIFE",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type safeRunner struct{}
+type minter struct{}
+func (safeRunner) Run() {}
+func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	var selected runner = safeRunner{}
+	selected = minter{}
+	func() { selected.Run() }()
+}
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "definite concrete overwrite kills stale implementation",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type runner interface { Run() }
+type safeRunner struct{}
+type minter struct{}
+func (safeRunner) Run() {}
+func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	var selected runner = minter{}
+	selected = safeRunner{}
+	selected.Run()
+}
 var input any
 `,
 		},

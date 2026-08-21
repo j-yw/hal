@@ -384,10 +384,16 @@ func TestL11FinalClosureRepositoryInventoryRejectsEveryContradictoryDocument(t *
 			if err := os.WriteFile(target, []byte("L11 release passed.\n"), 0o600); err != nil {
 				return err
 			}
-			return os.Symlink(target, filepath.Join(root, "l11-release.md"))
+			return os.Symlink(target, filepath.Join(root, "notes.md"))
 		}},
 		{name: "secondary document nonregular", build: func(root string) error {
-			return os.Mkdir(filepath.Join(root, "l11-release.markdown"), 0o700)
+			return os.Mkdir(filepath.Join(root, "notes.markdown"), 0o700)
+		}},
+		{name: "punctuated contradictory release claim", build: func(root string) error {
+			return os.WriteFile(filepath.Join(root, "release-notes.md"), []byte("# Notes\n\nL11 release passed!\n"), 0o600)
+		}},
+		{name: "semantic contradictory release claim", build: func(root string) error {
+			return os.WriteFile(filepath.Join(root, "status.markdown"), []byte("# Status\n\nFinal status for the L11 release: SUCCESS.\n"), 0o600)
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
