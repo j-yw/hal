@@ -53,7 +53,7 @@ func TestL8D6V2ControlFoundationFixedPortAndConnectorOwnership(t *testing.T) {
 }
 
 func TestL8D6V2ControlFoundationRemainsDefaultInert(t *testing.T) {
-	root := filepath.Clean(filepath.Join("..", "..", "..", "..", ".."))
+	root := filepath.Clean(filepath.Join("..", "..", "..", ".."))
 	set := token.NewFileSet()
 	callers := 0
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {

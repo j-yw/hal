@@ -71,7 +71,7 @@ func TestL8D6V2ControlFoundationAuthenticatesCanonicalReadinessAndOwnsOneSession
 	processDone := make(chan struct{})
 	stream := &l8D6V2ControlTestStream{Conn: host, processDone: processDone}
 	connector := &l8D6V2ControlTestConnector{stream: stream}
-	bridge, err := newProductionL8V2ControlBridgeWithDependencies(connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x51}, 16)), time.Now)
+	bridge, err := newProductionL8V2ControlBridgeWithDependencies(connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x51}, 64)), time.Now)
 	if err != nil {
 		t.Fatalf("new bridge: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestL8D6V2ControlFoundationReturnMatrixAndPanicContainment(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bridge, err := newProductionL8V2ControlBridgeWithDependencies(tt.connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x52}, 16)), time.Now)
+			bridge, err := newProductionL8V2ControlBridgeWithDependencies(tt.connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x52}, 64)), time.Now)
 			if err != nil {
 				t.Fatalf("new bridge: %v", err)
 			}
@@ -186,7 +186,7 @@ func TestL8D6V2ControlFoundationRejectsIdentityBeforeConnector(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			connector := &l8D6V2ControlTestConnector{}
-			bridge, err := newProductionL8V2ControlBridgeWithDependencies(connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x53}, 16)), time.Now)
+			bridge, err := newProductionL8V2ControlBridgeWithDependencies(connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x53}, 64)), time.Now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -209,7 +209,7 @@ func TestL8D6V2ControlFoundationProcessLossTerminalizesOwner(t *testing.T) {
 	processDone := make(chan struct{})
 	stream := &l8D6V2ControlTestStream{Conn: host, processDone: processDone}
 	connector := &l8D6V2ControlTestConnector{stream: stream}
-	bridge, err := newProductionL8V2ControlBridgeWithDependencies(connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x54}, 16)), time.Now)
+	bridge, err := newProductionL8V2ControlBridgeWithDependencies(connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x54}, 64)), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,15 +233,151 @@ func TestL8D6V2ControlFoundationProcessLossTerminalizesOwner(t *testing.T) {
 	}
 }
 
+func TestL8D6V2ControlFoundationCloseWinsConcurrentOpenPublication(t *testing.T) {
+	seed := l8D6V2ControlSeed(t)
+	key, nonce := l8D6V2ControlAuthority(t)
+	host, guest := net.Pipe()
+	processDone := make(chan struct{})
+	connector := &l8D6V2ControlBlockingConnector{
+		stream:  &l8D6V2ControlTestStream{Conn: host, processDone: processDone},
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	bridge, err := newProductionL8V2ControlBridgeWithDependencies(connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x56}, 64)), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type openResult struct {
+		session *L8V2ControlReadinessSession
+		err     error
+	}
+	opened := make(chan openResult, 1)
+	go func() {
+		session, openErr := bridge.OpenReadiness(context.Background(), l8D6V2ControlTarget(seed))
+		opened <- openResult{session: session, err: openErr}
+	}()
+	<-connector.entered
+	if err := bridge.Close(); err != nil {
+		t.Fatalf("concurrent bridge Close: %v", err)
+	}
+	guestResult := make(chan l8D6V2ControlGuestResult, 1)
+	go l8D6ServeV2ControlGuest(guest, seed, key.Public().(ed25519.PublicKey), nonce, guestResult)
+	close(connector.release)
+
+	result := <-opened
+	if result.session != nil {
+		_ = result.session.Close()
+		t.Fatalf("OpenReadiness published a session after Close: %#v", result.session)
+	}
+	if !errors.Is(result.err, ErrL8V2ControlUnavailable) {
+		t.Fatalf("OpenReadiness error = %v, want ErrL8V2ControlUnavailable", result.err)
+	}
+	select {
+	case <-guestResult:
+	case <-time.After(time.Second):
+		t.Fatal("guest exchange did not terminate after close won publication")
+	}
+}
+
+func TestL8D6V2ControlFoundationZeroValueSessionCloseIsTotal(t *testing.T) {
+	result := make(chan any, 1)
+	go func() {
+		defer func() { result <- recover() }()
+		if err := (&L8V2ControlReadinessSession{}).Close(); err != nil {
+			result <- err
+		}
+	}()
+	select {
+	case got := <-result:
+		if got != nil {
+			t.Fatalf("zero-value Close result = %v, want nil without panic", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("zero-value Close blocked")
+	}
+}
+
+func TestL8D6V2ControlFoundationContainsStreamPanics(t *testing.T) {
+	seed := l8D6V2ControlSeed(t)
+	key, nonce := l8D6V2ControlAuthority(t)
+	stream := &l8D6V2ControlPanicStream{processDone: make(chan struct{}), closePanic: errors.New("/private/close secret")}
+	connector := &l8D6V2ControlTestConnector{stream: stream}
+	bridge, err := newProductionL8V2ControlBridgeWithDependencies(connector, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x57}, 64)), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session, openErr := bridge.OpenReadiness(context.Background(), l8D6V2ControlTarget(seed)); session != nil || !errors.Is(openErr, ErrL8V2ControlUnavailable) {
+		t.Fatalf("OpenReadiness = %#v, %v", session, openErr)
+	}
+	if stream.closeCalls != 1 {
+		t.Fatalf("panic stream Close calls = %d, want 1", stream.closeCalls)
+	}
+}
+
+func TestL8D6V2ControlFoundationLegacyUnsupportedEnvelopeIsExact(t *testing.T) {
+	seed := l8D6V2ControlSeed(t)
+	key, nonce := l8D6V2ControlAuthority(t)
+	tests := []struct {
+		name    string
+		payload string
+		want    error
+	}{
+		{name: "exact", payload: l8V2ControlLegacyUnsupported, want: ErrL8V2ControlUnsupported},
+		{name: "noncanonical whitespace", payload: l8V2ControlLegacyUnsupported + "\n", want: ErrL8V2ControlInvalid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, guest := net.Pipe()
+			stream := &l8D6V2ControlTestStream{Conn: host, processDone: make(chan struct{})}
+			bridge, err := newProductionL8V2ControlBridgeWithDependencies(&l8D6V2ControlTestConnector{stream: stream}, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x58}, 64)), time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			go func() {
+				defer guest.Close()
+				_, _ = frame.Read(guest, l8V2ControlCompatibilityLimit)
+				_ = frame.Write(guest, []byte(tt.payload), l8V2ControlCompatibilityLimit)
+			}()
+			if session, openErr := bridge.OpenReadiness(context.Background(), l8D6V2ControlTarget(seed)); session != nil || !errors.Is(openErr, tt.want) {
+				t.Fatalf("OpenReadiness = %#v, %v, want %v", session, openErr, tt.want)
+			}
+		})
+	}
+}
+
+func TestL8D6V2ControlFoundationRejectsAuthenticatedWrongIdentity(t *testing.T) {
+	seed := l8D6V2ControlSeed(t)
+	guestSeed := seed
+	guestSeed.RuntimeGeneration = "wrong-runtime-generation"
+	key, nonce := l8D6V2ControlAuthority(t)
+	host, guest := net.Pipe()
+	stream := &l8D6V2ControlTestStream{Conn: host, processDone: make(chan struct{})}
+	bridge, err := newProductionL8V2ControlBridgeWithDependencies(&l8D6V2ControlTestConnector{stream: stream}, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x59}, 64)), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestResult := make(chan l8D6V2ControlGuestResult, 1)
+	go l8D6ServeV2ControlGuest(guest, guestSeed, key.Public().(ed25519.PublicKey), nonce, guestResult)
+	if session, openErr := bridge.OpenReadiness(context.Background(), l8D6V2ControlTarget(seed)); session != nil || !errors.Is(openErr, ErrL8V2ControlInvalid) {
+		t.Fatalf("OpenReadiness = %#v, %v", session, openErr)
+	}
+	select {
+	case <-guestResult:
+	case <-time.After(time.Second):
+		t.Fatal("wrong-identity guest did not terminate")
+	}
+}
+
 func TestL8D6V2ControlFoundationValuesDenyProjection(t *testing.T) {
 	seed := l8D6V2ControlSeed(t)
 	key, nonce := l8D6V2ControlAuthority(t)
-	bridge, err := newProductionL8V2ControlBridgeWithDependencies(&l8D6V2ControlTestConnector{}, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x55}, 16)), time.Now)
+	bridge, err := newProductionL8V2ControlBridgeWithDependencies(&l8D6V2ControlTestConnector{}, seed, key, nonce, bytes.NewReader(bytes.Repeat([]byte{0x55}, 64)), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	readiness := L8V2ControlReadiness{guestSessionGeneration: "session-generation", guestHelperGeneration: "helper-generation"}
-	values := []any{bridge, (*L8V2ControlReadinessSession)(nil), readiness}
+	values := []any{bridge, &L8V2ControlReadinessSession{}, readiness}
 	for _, value := range values {
 		if encoded, marshalErr := json.Marshal(value); marshalErr == nil || encoded != nil || !errors.Is(marshalErr, ErrL8V2ControlSerialization) {
 			t.Fatalf("json.Marshal(%T) = %q, %v", value, encoded, marshalErr)
@@ -312,6 +448,18 @@ type l8D6V2ControlTestConnector struct {
 	targets    []sandboxruntime.Target
 }
 
+type l8D6V2ControlBlockingConnector struct {
+	stream  l8V2ControlStream
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (connector *l8D6V2ControlBlockingConnector) OpenL8V2Control(context.Context, sandboxruntime.Target) (l8V2ControlStream, error) {
+	close(connector.entered)
+	<-connector.release
+	return connector.stream, nil
+}
+
 func (connector *l8D6V2ControlTestConnector) OpenL8V2Control(_ context.Context, target sandboxruntime.Target) (l8V2ControlStream, error) {
 	connector.mu.Lock()
 	defer connector.mu.Unlock()
@@ -355,6 +503,23 @@ func (stream *l8D6V2ControlTestStream) closeCalls() int {
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
 	return stream.closes
+}
+
+type l8D6V2ControlPanicStream struct {
+	processDone <-chan struct{}
+	closePanic  any
+	closeCalls  int
+}
+
+func (*l8D6V2ControlPanicStream) Read([]byte) (int, error)  { panic("read panic") }
+func (*l8D6V2ControlPanicStream) Write([]byte) (int, error) { panic("write panic") }
+func (*l8D6V2ControlPanicStream) SetDeadline(time.Time) error {
+	panic("deadline panic")
+}
+func (stream *l8D6V2ControlPanicStream) ProcessDone() <-chan struct{} { return stream.processDone }
+func (stream *l8D6V2ControlPanicStream) Close() error {
+	stream.closeCalls++
+	panic(stream.closePanic)
 }
 
 type l8D6V2ControlGuestResult struct {
