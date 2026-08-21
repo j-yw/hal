@@ -1008,6 +1008,164 @@ state and control boundary.
 
 ### Reconnect and replay state machine
 
+The default-off owner executable is exactly
+`hal-firecracker-runtime-owner`. It accepts no flags or environment-derived
+configuration and has exactly two private modes: `supervise` and `child-gate`.
+The complete argv is exactly `[resolved-binary-path, "supervise"]` or
+`[resolved-binary-path, "child-gate"]`; empty, extra, repeated, or alternate
+arguments fail closed.
+The supervisor mode receives an already-connected daemon bootstrap
+`SOCK_SEQPACKET` socket as fd 3, the pinned mode-`0700` owner directory as fd
+4, a sealed bounded supervisor configuration memfd as fd 5, and exactly two
+sealed launch-asset descriptors as fd 6 then fd 7 in kernel-then-rootfs order.
+The supervisor owns those descriptors before acknowledging bootstrap and
+retains them until it has either transferred duplicates into the child or
+completed bounded abort containment. The child-gate
+mode receives its supervisor gate `SOCK_SEQPACKET` socket as fd 3, the same
+sealed configuration memfd as fd 4, and the exact Firecracker inherited
+descriptors starting at fd 5 in user-namespace, network-namespace, kernel, and
+rootfs order. Every other inherited
+descriptor is closed before entering either mode. The supervisor configuration
+is at most 32 KiB, strictly decoded, contains the complete validated seed plus
+the clean absolute namespace-wrapper and Firecracker executable paths, exact
+arguments, and the fixed inherited-descriptor count of two, and is
+never durable or projected. The executable path is clean and absolute, the
+environment is exactly empty, and the helper replaces itself with the exact
+namespace wrapper through `execve` only after the release gate. Its argv is
+exactly `nsenter --preserve-credentials --keep-caps --user=/proc/self/fd/3
+--net=/proc/self/fd/4 -- firecracker` followed by the validated Firecracker
+arguments. The child first duplicates its inherited user, network, kernel, and
+rootfs sources from fds 5, 6, 7, and 8 to four collision-free private
+`F_DUPFD_CLOEXEC` temporaries at fd 9 or higher. It then maps those temporaries
+to fds 3, 4, 5, and 6 with `dup3`, closes the temporaries plus the old gate,
+configuration, and source descriptors, clears close-on-exec only on 3 through
+6, and closes every descriptor above 6 before `execve`. It never overwrites fd
+3 or fd 4 before the gate/config reads complete and never maps in-place across
+an as-yet-unduplicated source. Non-Linux builds return exit code
+127 before reading an inherited descriptor. Configuration and asset memfds are
+regular anonymous zero-link descriptors with `FD_CLOEXEC`; the configuration memfd
+requires exactly `F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE`. Kernel
+and rootfs asset descriptors require those four seals, read-only access,
+distinct device/inode identity, and exact identity/digest correlation supplied
+by the validated live launch lease. A wrong type, seal, access mode,
+descriptor identity, order, count, or correlation closes every accepted
+duplicate and fails before revision-zero publication.
+
+The private wire ABI is big-endian and exact:
+
+```go
+const (
+	l8RuntimeOwnerProtocolMagic = "HL8OWNR1"
+	l8RuntimeOwnerProtocolVersion uint16 = 1
+	l8RuntimeOwnerPacketHeaderSize = 24
+	l8RuntimeOwnerPacketLimit = 512
+	l8RuntimeOwnerHandshakeTimeout = 5 * time.Second
+
+	l8RuntimeOwnerOpcodeBootstrapStart uint16 = 1
+	l8RuntimeOwnerOpcodeBootstrapPublished uint16 = 2
+	l8RuntimeOwnerOpcodeChildArmed uint16 = 3
+	l8RuntimeOwnerOpcodeChildRelease uint16 = 4
+	l8RuntimeOwnerOpcodeHandshake uint16 = 5
+	l8RuntimeOwnerOpcodeAbortStart uint16 = 6
+	l8RuntimeOwnerOpcodeInspect uint16 = 7
+	l8RuntimeOwnerOpcodeStopReap uint16 = 8
+	l8RuntimeOwnerOpcodeAcquireNamespaces uint16 = 9
+	l8RuntimeOwnerOpcodeFinalize uint16 = 10
+	l8RuntimeOwnerOpcodeCommit uint16 = 11
+	l8RuntimeOwnerOpcodeClose uint16 = 12
+
+	l8RuntimeOwnerStatusOK uint16 = 0
+	l8RuntimeOwnerStatusRejected uint16 = 1
+	l8RuntimeOwnerStatusInvalidState uint16 = 2
+	l8RuntimeOwnerStatusUncertain uint16 = 3
+	l8RuntimeOwnerStatusUnsupported uint16 = 4
+)
+
+type l8RuntimeOwnerPacketHeaderV1 struct {
+	Magic [8]byte
+	Version uint16
+	Opcode uint16
+	Status uint16
+	BodyLength uint16
+	Sequence uint64
+}
+```
+
+Every packet is one complete `SOCK_SEQPACKET` datagram. Truncation,
+`MSG_TRUNC`, `MSG_CTRUNC`, a packet longer than 512 bytes, a noncanonical
+header, an unknown opcode/status, a nonzero request status, an unexpected
+sequence, or a body whose exact length does not match its opcode is rejected.
+The 24-byte header is the eight ASCII magic bytes, version, opcode, status,
+body length, and sequence in that order. There are no padding or reserved
+bytes. A rejected authentication or malformed packet receives the same empty
+body with `StatusRejected`; field-specific diagnostics never cross the socket.
+
+The bootstrap-start packet has sequence zero and a 32-byte body of four
+big-endian uint64 values: user-namespace device, user-namespace inode,
+network-namespace device, and network-namespace inode. It carries exactly two
+`SCM_RIGHTS` descriptors in user-then-network order. The supervisor requires
+both descriptors to be `NSFS_MAGIC` namespace files and to match the supplied
+device/inode correlation, sets `FD_CLOEXEC`, and retains them before it forks
+the child. Missing, duplicate, extra, reordered, non-namespace, or mismatched
+descriptors close every received descriptor and fail publication. The
+bootstrap-published reply has sequence zero and exactly an eight-byte durable
+record revision. Child-armed and child-release packets have sequence zero,
+empty bodies, and no rights.
+
+The handshake packet has sequence zero. Its body is the exact 43-byte
+supervisor generation, a two-byte runtime-generation length followed by one to
+128 validated safe-ID bytes, an eight-byte record revision, and the exact
+43-byte reconnect secret. The successful response body is the new 43-byte
+controller-session generation followed by the new eight-byte controlled
+record revision. `AbortStart` is accepted only before ordinary controller
+admission and otherwise uses the request shape below.
+
+Every authenticated controller request body is exactly its 43-byte
+controller-session generation. Its header sequence starts at one. Successful
+inspect, abort-start, stop/reap, and close responses have an exact 24-byte body:
+one owner-state byte, one absence-kind byte, six zero bytes, the record
+revision, and a signed Unix-nanosecond observation encoded in an eight-byte
+two's-complement field. Observation and absence kind are nonzero only for an
+exact `absent` stop/reap result. Acquire-namespaces has the same 24-byte body
+with zero observation fields and carries exactly two freshly duplicated
+`SCM_RIGHTS` descriptors in user-then-network order. Its immediate replay
+returns the byte-identical body plus fresh duplicates of the same retained
+handles; this is an idempotent read, not a transfer of ownership from the
+supervisor. Send failure closes only the duplicates. The supervisor retains
+the originals through daemon restart, Firecracker absence, and same-boot
+Finalize; supervisor loss makes namespace recovery uncertain. All receive,
+validation, replay, controller-loss, and rejection paths close unaccepted or
+created descriptors exactly once.
+
+The exact state-byte mapping is `starting=1`, `unclaimed=2`, `controlled=3`,
+`stopping=4`, `absent=5`, `finalized=6`, and `uncertain=7`. Absence kind is
+zero for none, one for direct-child `Wait`, and two for replacement-owner
+double-`/proc` absence. No packet transports an absence proof.
+
+Finalize and commit remain protocol-complete even before their L7 caller is
+wired. Finalize is accepted only on the authenticated controller after an
+Acquire-namespaces response and only while the exact durable state is `absent`.
+Its request body is the 43-byte controller-session generation, the eight-byte
+absence record revision, and the signed eight-byte Unix-nanosecond observation
+that must equal the supervisor's private fresh absence observation. It is sent
+only after the daemon-side binding has validated the neutral absence proof and
+completed correlated same-boot L7 cleanup. The supervisor closes both retained
+namespace originals, persists `finalized` with the HMAC commit ID, and returns
+exactly that 43-byte commit ID plus the eight-byte finalized revision. Failure
+to close either namespace descriptor or persist the record returns uncertain
+and retains the record; it never reports finalized.
+
+Commit is accepted only for `finalized`. Its request body is the 43-byte
+controller-session generation, the exact 43-byte commit ID, and the eight-byte
+finalized revision. The supervisor verifies the owner-root HMAC, atomically
+retires the per-runtime owner record, closes and removes its reconnect socket,
+acknowledges success, and exits. The stable owner-root HMAC key is not a
+per-runtime artifact and is not removed by this request. A response-loss replay
+with record absent is authenticated by that stable key and is idempotent.
+Controller Close is distinct: it has only the 43-byte session body, rotates to
+`unclaimed`, and never closes namespace originals, retires owner state, or
+implies process/L7 absence.
+
 The reconnect transport is a private Linux Unix `SOCK_SEQPACKET` listener. The
 supervisor first obtains peer credentials and requires the exact daemon service
 UID through same-UID `SO_PEERCRED`; request fields cannot supply or override the

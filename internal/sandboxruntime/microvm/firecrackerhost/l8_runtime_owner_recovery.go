@@ -71,6 +71,7 @@ type l8RuntimeOwnerRecoveryBinding struct {
 
 type l8RuntimeOwnerProcessObservation struct {
 	PID        uint32
+	ParentPID  uint32
 	StartTime  uint64
 	state      byte
 	pidfd      int

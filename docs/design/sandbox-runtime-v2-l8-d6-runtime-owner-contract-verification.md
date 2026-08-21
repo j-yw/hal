@@ -237,3 +237,30 @@ PID. A zero observation owns no file descriptor. The HMAC fixed vector locks
 raw key-generation and seed-digest bytes after the two length-prefixed strings,
 and commit validation recomputes that HMAC from the stable key, full seed, and
 finalized revision rather than trusting a caller-supplied expected token.
+
+## R2 supervisor/bootstrap/reconnect prerequisite
+
+R2 adds only the explicit default-off `hal-firecracker-runtime-owner`
+executable, its strict sealed configuration and inherited-fd ABI, the bounded
+private `SOCK_SEQPACKET` codec, namespace-fd retention/transfer, the durable
+owner transition/CAS machinery, and direct-parent plus replacement-owner
+containment primitives. It does not construct the executable from a default
+runtime, publish an absence proof, implement the neutral recovery provider,
+perform L7 recovery/finalization, persist a worker receipt, or wire command,
+worker, sandboxd, factory, or profile selection.
+
+Focused fake-safe verification is:
+
+```bash
+go test ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner(Protocol|Transition|CommitUncertain|Containment|SupervisorConfig|Seqpacket|NamespaceTransfer|Executable|Process|Replacement)'
+go test ./cmd -run '^TestL8D6RuntimeOwnerSupervisor'
+go test -count=20 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner(Protocol|Transition|CommitUncertain|Containment|SupervisorConfig|Seqpacket|NamespaceTransfer|Executable|Process|Replacement)'
+go test -race -count=5 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner(Protocol|Transition|CommitUncertain|Containment|SupervisorConfig|Seqpacket|NamespaceTransfer|Executable|Process|Replacement)'
+```
+
+The standalone executable is compiled on Linux and cross-compiled on a
+non-Linux target. Linux tests use only local socketpairs, sealed memfds,
+namespace descriptor duplication, and direct child processes; they require no
+KVM, Firecracker binary, network access, cloud account, guest image, worker, or
+daemon. The production absence-proof constructor call count remains zero until
+the later provider/L7 integration slice.

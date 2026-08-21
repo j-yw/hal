@@ -125,8 +125,8 @@ func TestL8RuntimeOwnerRecordValidationRejectsSubstitutionAndPIDReuse(t *testing
 	if err := validateFirecrackerRuntimeOwnerRecordV1(record, seed, bootID); err != nil {
 		t.Fatalf("valid record: %v", err)
 	}
-	supervisor := l8RuntimeOwnerProcessObservation{PID: record.SupervisorPID, StartTime: record.SupervisorStartTime, state: 'S', pidfd: 10, pidfdOwned: true}
-	firecracker := l8RuntimeOwnerProcessObservation{PID: record.FirecrackerPID, StartTime: record.FirecrackerStartTime, state: 'S', pidfd: 11, pidfdOwned: true}
+	supervisor := l8RuntimeOwnerProcessObservation{PID: record.SupervisorPID, ParentPID: 1, StartTime: record.SupervisorStartTime, state: 'S', pidfd: 10, pidfdOwned: true}
+	firecracker := l8RuntimeOwnerProcessObservation{PID: record.FirecrackerPID, ParentPID: record.SupervisorPID, StartTime: record.FirecrackerStartTime, state: 'S', pidfd: 11, pidfdOwned: true}
 	if err := validateL8RuntimeOwnerProcessCorrelation(record, supervisor, firecracker); err != nil {
 		t.Fatalf("valid process correlation: %v", err)
 	}
