@@ -225,6 +225,16 @@ func TestL11FinalClosureReleaseEvidenceGuardRejectsMutations(t *testing.T) {
 		{name: "release provider handle", marker: "\nProvider handle: srv-01HZX8W9\n"},
 		{name: "release bearer credential", marker: "\nAuthorization: Bearer release-secret-value\n"},
 		{name: "contradictory release success", marker: "\nRelease result: passed.\n"},
+		{name: "release host and port", marker: "\nRelease endpoint: sandbox-17:48217\n"},
+		{name: "release compressed IPv6", marker: "\nRelease worker IP: ::1\n"},
+		{name: "release arbitrary absolute path", marker: "\nRelease artifact: /data/l11/result.json\n"},
+		{name: "release process ID", marker: "\nProcess ID: process-01HZX8W9\n"},
+		{name: "release server ID", marker: "\nServer ID: server-01HZX8W9\n"},
+		{name: "release generic bearer", marker: "\nBearer release-secret-value\n"},
+		{name: "release generic service token", marker: "\nSERVICE_TOKEN=release-secret-value\n"},
+		{name: "contradictory L11 release success", marker: "\nL11 release passed.\n"},
+		{name: "contradictory scenario success", marker: "\nAll nine scenarios passed.\n"},
+		{name: "unrecognized blocked-document appendix", marker: "\nHarmless appendix.\n"},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {

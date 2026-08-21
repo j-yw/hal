@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
 	"os"
+	"os/exec"
 	pathpkg "path"
 	"path/filepath"
 	"sort"
@@ -162,6 +164,15 @@ var input any
 			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
 		},
 		{
+			name: "multiple dot imports cannot mask proof constructor",
+			source: `package fixture
+import (. "example.invalid/sandboxruntime"; . "example.invalid/helper"; "testing")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _, _ = NewJobCredentialActiveProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
 			name: "called local function alias",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
@@ -216,6 +227,14 @@ func skipMissing(t testing.TB) { t.Skip("missing") }
 			wantIssue: "skip call", wantIssues: 1,
 		},
 		{
+			name: "dot imported testing T skip",
+			source: `package fixture
+import . "testing"
+func TestL11PreparedLinuxFinalClosure(t *T) { t.Skip("missing") }
+`,
+			wantIssue: "skip call", wantIssues: 1,
+		},
+		{
 			name: "callback carried proof constructor",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
@@ -225,6 +244,28 @@ func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
 			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "forwarded callback proof constructor",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { forward(mint) }
+func forward(callback func()) { invoke(callback) }
+func invoke(callback func()) { callback() }
+func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "ignored callback remains unreachable",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func TestL11PreparedLinuxFinalClosure(*testing.T) { ignore(mint) }
+func ignore(func()) {}
+func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
 		},
 		{
 			name: "method expression proof constructor",
@@ -254,6 +295,27 @@ var input any
 			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
 		},
 		{
+			name: "pointer method expression proof constructor",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type helper struct{}
+func (*helper) mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { mint := (*helper).mint; mint(&helper{}) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "generic helper call proof constructor",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func mint[T any]() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { mint[any]() }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
 			name: "dot imported helper chain",
 			sources: map[string]string{
 				"root/fixture_test.go": `package fixture
@@ -279,6 +341,41 @@ var input any
 			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
 		},
 		{
+			name: "multi return callable proof constructor",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func choices() (func(), func()) { return safe, unsafe }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _, run := choices(); run() }
+func safe() {}
+func unsafe() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "init reassigned global callable proof constructor",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+var run = safe
+func init() { run = unsafe }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { run() }
+func safe() {}
+func unsafe() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "package scope proof initializer",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+var initialized, _ = sandboxruntime.NewJobCredentialActiveProof(input)
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = initialized }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
 			name: "billed cloud marker",
 			source: `package fixture
 import "testing"
@@ -292,6 +389,19 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = "HCLOUD_TOKEN" }
 import (_ "example.invalid/hetzner"; "testing")
 func TestL11PreparedLinuxFinalClosure(*testing.T) {}
 `,
+			wantIssue: "cloud/provider marker", wantIssues: 1,
+		},
+		{
+			name: "sibling file blank cloud provider import",
+			sources: map[string]string{
+				"root/fixture_test.go": `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(*testing.T) {}
+`,
+				"root/provider_test.go": `package fixture
+import _ "example.invalid/hetzner"
+`,
+			},
 			wantIssue: "cloud/provider marker", wantIssues: 1,
 		},
 		{
@@ -325,11 +435,29 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { provider := "het" + "zner"; 
 			wantIssue: "cloud/provider marker", wantIssues: 1,
 		},
 		{
+			name: "package constant cloud provider composition",
+			source: `package fixture
+import "testing"
+const providerPrefix = "het"
+const providerName = providerPrefix + "zner"
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = providerName }
+`,
+			wantIssue: "cloud/provider marker", wantIssues: 1,
+		},
+		{
 			name: "negative cloud text is not provider selection",
 			source: `package fixture
 import "testing"
 func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = "Hetzner remains disabled" }
 `,
+		},
+		{
+			name: "unsafe provider selection cannot hide behind negative substring",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = "Hetzner remains disabled; provider=hetzner" }
+`,
+			wantIssue: "cloud/provider marker", wantIssues: 1,
 		},
 		{
 			name: "generic Hetzner provider selection",
@@ -426,6 +554,38 @@ var input any
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("reassigned callable analysis did not converge within two seconds")
+	}
+}
+
+func TestL11FinalClosureReturnedCallableCycleTerminates(t *testing.T) {
+	const helperEnvironment = "HAL_L11_RETURNED_CALLABLE_CYCLE_HELPER"
+	if os.Getenv(helperEnvironment) == "1" {
+		source := `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(*testing.T) { first()() }
+func first() func() { returned := second(); return returned }
+func second() func() { returned := first(); return returned }
+`
+		packages, err := l11ParseSelectedTestSources(map[string]string{"fixture_test.go": source})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if issues := l11SelectedPreparedTestIssues(packages); len(issues) != 0 {
+			t.Fatalf("issues = %v, want a clean cyclic callable graph", issues)
+		}
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestL11FinalClosureReturnedCallableCycleTerminates$")
+	command.Env = append(os.Environ(), helperEnvironment+"=1")
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("cyclic callable analysis did not terminate within two seconds: %s", output)
+	}
+	if err != nil {
+		t.Fatalf("cyclic callable analysis failed: %v: %s", err, output)
 	}
 }
 
