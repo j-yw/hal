@@ -57,8 +57,11 @@ supplied. `cmd` and `internal/factory` may render or persist only the sanitized
 projection. They must not recreate the conjunction or accept a durable
 projection as live authority.
 
-No production caller invokes `EvaluateActive` or `EvaluateTerminal`.
-Production code does not construct `JobCredentialActiveProof` or `JobCredentialCleanupProof` for L10.
+No production code references `EvaluateActive` or `EvaluateTerminal`.
+Production code does not reference or construct `JobCredentialActiveProof` or `JobCredentialCleanupProof` for L10.
+The repository guard binds those symbols to their exact import paths and owner
+packages and rejects direct calls, aliases, callbacks, method values, indirect
+arguments, and linkname wiring while allowing unrelated same-named methods.
 The command, factory, scheduler, runtime, worker, and provider paths do not
 populate live strict-composition authority, so existing default behavior stays
 off and strict selection cannot become authorized by this slice.

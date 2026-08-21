@@ -142,8 +142,8 @@ func EvaluateActive(ctx context.Context, request ActiveRequest) (ActiveAttestati
 	if err := ctx.Err(); err != nil {
 		return ActiveAttestation{}, blocked(sandbox.SandboxStrictCompositionCodeRuntimeProofStale)
 	}
-	metadata, err := request.Runtime.Inspect(ctx, expectedNetwork)
-	if err != nil || ctx.Err() != nil {
+	metadata, inspected := inspectRuntimeProof(ctx, request.Runtime, expectedNetwork)
+	if !inspected || ctx.Err() != nil {
 		return ActiveAttestation{}, blocked(sandbox.SandboxStrictCompositionCodeRuntimeProofStale)
 	}
 	if !runtimeMetadataExact(metadata, expectedNetwork) {
@@ -217,6 +217,7 @@ func EvaluateTerminal(ctx context.Context, request TerminalRequest) sandbox.Sand
 	identityMismatch := state.identityDigest != identityDigest ||
 		state.identity.SandboxID != request.Identity.SandboxID || state.identity.ExecutionID != request.Identity.ExecutionID ||
 		state.identity.RuntimeID != request.Identity.RuntimeID
+	revisionMismatch := state.credentialRevision != request.CredentialRevision
 	stale := state.consumed || request.Now.Before(state.observedAt)
 	state.mu.Unlock()
 	if identityMismatch {
@@ -224,6 +225,9 @@ func EvaluateTerminal(ctx context.Context, request TerminalRequest) sandbox.Sand
 	}
 	if stale {
 		return blocked(sandbox.SandboxStrictCompositionCodeAttestationStale)
+	}
+	if revisionMismatch {
+		return blocked(sandbox.SandboxStrictCompositionCodeCredentialProofMismatch)
 	}
 	if len(request.WarningCodes) != 0 {
 		return blocked(sandbox.SandboxStrictCompositionCodeWarningBearing)
@@ -318,7 +322,8 @@ func validateTemplate(identity sandboxruntime.JobCredentialIdentity, policyID st
 		bindingRequest.IsolationLevel != sandbox.SandboxIsolationLevelVM {
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeTemplateProofMismatch
 	}
-	if string(result.Trust.Mode) != "strict" || string(result.Trust.Decision) != "trusted" {
+	if string(result.Trust.Mode) != "strict" || string(result.Trust.Decision) != "trusted" ||
+		len(result.Lock.Warnings) != 0 || len(result.Trust.Warnings) != 0 || len(result.Trust.Errors) != 0 {
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeTemplateProofRejected
 	}
 	binding, err := selection.Bind(result, bindingRequest)
@@ -483,6 +488,17 @@ func runtimeSourceNil(source RuntimeProofSource) bool {
 	}
 	value := reflect.ValueOf(source)
 	return (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface || value.Kind() == reflect.Map || value.Kind() == reflect.Func || value.Kind() == reflect.Slice) && value.IsNil()
+}
+
+func inspectRuntimeProof(ctx context.Context, source RuntimeProofSource, identity l7network.Identity) (metadata l7network.Metadata, inspected bool) {
+	defer func() {
+		if recover() != nil {
+			metadata = l7network.Metadata{}
+			inspected = false
+		}
+	}()
+	metadata, err := source.Inspect(ctx, identity)
+	return metadata, err == nil
 }
 
 func activeProofFailureCode(err error) sandbox.SandboxStrictCompositionCode {
