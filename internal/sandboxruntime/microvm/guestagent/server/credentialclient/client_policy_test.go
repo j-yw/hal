@@ -269,9 +269,47 @@ func TestClientProductionPolicyRejectsMalformedOperationsAcrossIdentities(t *tes
 func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
 	t.Parallel()
 
+	if err := validateClientProductionPolicyPackage("."); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(entry.Name())
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", entry.Name(), err)
+		}
+		if err := os.WriteFile(directory+"/"+entry.Name(), source, 0o600); err != nil {
+			t.Fatalf("WriteFile(%s): %v", entry.Name(), err)
+		}
+	}
+	if err := os.WriteFile(
+		directory+"/allow_alias.go",
+		[]byte("package credentialclient\n\nvar alternateClientPolicyAllow = newClientPolicyAllowDecision\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("WriteFile(allow_alias.go): %v", err)
+	}
+	if err := validateClientProductionPolicyPackage(directory); err == nil {
+		t.Fatal("package-wide allow guard accepted GenDecl function-value alias")
+	}
+}
+
+func validateClientProductionPolicyPackage(directory string) error {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("read package: %w", err)
 	}
 	owners := make([]string, 0, 1)
 	allowConstructors := make([]string, 0, 1)
@@ -281,9 +319,9 @@ func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), entry.Name(), nil, 0)
+		file, err := parser.ParseFile(token.NewFileSet(), directory+"/"+entry.Name(), nil, 0)
 		if err != nil {
-			t.Fatalf("parse %s: %v", entry.Name(), err)
+			return fmt.Errorf("parse %s: %w", entry.Name(), err)
 		}
 		for _, declaration := range file.Decls {
 			switch typed := declaration.(type) {
@@ -328,17 +366,18 @@ func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
 		}
 	}
 	if !reflect.DeepEqual(owners, []string{"client_policy.go"}) {
-		t.Fatalf("NewClientPolicy production owners = %v, want [client_policy.go]", owners)
+		return fmt.Errorf("NewClientPolicy production owners = %v, want [client_policy.go]", owners)
 	}
 	if !reflect.DeepEqual(allowConstructors, []string{"contracts.go"}) {
-		t.Errorf("allow-decision constructors = %v, want [contracts.go]", allowConstructors)
+		return fmt.Errorf("allow-decision constructors = %v, want [contracts.go]", allowConstructors)
 	}
 	if !reflect.DeepEqual(allowReferences, []string{"client_policy.go:Authorize"}) {
-		t.Errorf("allow-decision constructor references = %v, want sole canonical policy site", allowReferences)
+		return fmt.Errorf("allow-decision constructor references = %v, want sole canonical policy site", allowReferences)
 	}
 	if !reflect.DeepEqual(allowLiterals, []string{"contracts.go:newClientPolicyAllowDecision"}) {
-		t.Errorf("direct allow literals = %v, want sole private issuer", allowLiterals)
+		return fmt.Errorf("direct allow literals = %v, want sole private issuer", allowLiterals)
 	}
+	return nil
 }
 
 func validateClientProductionPolicySource(source []byte) error {
