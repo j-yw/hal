@@ -153,6 +153,55 @@ func useAcceptedAuthorities(*testing.T) {}
 	}{
 		{name: "clean accepted authority seam", source: clean},
 		{
+			name: "exact selected subtest callback is allowed",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { t.Run("rootless_advisory_success", runRootlessAdvisorySuccess) }
+func runRootlessAdvisorySuccess(*testing.T) {}
+`,
+		},
+		{
+			name: "exact selected subtest callback is traversed",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { t.Run("strict_firecracker_success", runStrictFirecrackerSuccess) }
+func runStrictFirecrackerSuccess(*testing.T) { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+		},
+		{
+			name: "unknown selected subtest name is forbidden",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { t.Run("not_in_the_matrix", runUnknown) }
+func runUnknown(*testing.T) {}
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "selected subtest closure is forbidden",
+			source: `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { t.Run("rootless_advisory_success", func(*testing.T) {}) }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "selected subtest production callback is forbidden",
+			sources: map[string]string{
+				"root/fixture_test.go": `package fixture
+import "testing"
+func TestL11PreparedLinuxFinalClosure(t *testing.T) { t.Run("rootless_advisory_success", productionScenario) }
+`,
+				"root/scenario.go": `package fixture
+import "testing"
+func productionScenario(*testing.T) {}
+`,
+			},
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
 			name: "direct active proof constructor",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
@@ -414,15 +463,15 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = "HCLOUD_TOKEN" }
 			wantIssue: "cloud/provider marker", wantIssues: 1,
 		},
 		{
-			name: "blank cloud provider import",
+			name: "blank cloud provider import is forbidden",
 			source: `package fixture
 import (_ "example.invalid/hetzner"; "testing")
 func TestL11PreparedLinuxFinalClosure(*testing.T) {}
 `,
-			wantIssue: "cloud/provider marker", wantIssues: 1,
+			wantIssue: "blank import", wantIssues: 1,
 		},
 		{
-			name: "sibling file blank cloud provider import",
+			name: "sibling file blank cloud provider import is forbidden",
 			sources: map[string]string{
 				"root/fixture_test.go": `package fixture
 import "testing"
@@ -432,10 +481,10 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {}
 import _ "example.invalid/hetzner"
 `,
 			},
-			wantIssue: "cloud/provider marker", wantIssues: 1,
+			wantIssue: "blank import", wantIssues: 1,
 		},
 		{
-			name: "imported package init cloud access",
+			name: "resolved external blank import is forbidden",
 			sources: map[string]string{
 				"root/fixture_test.go": `package fixture
 import (_ "example.invalid/helper"; "testing")
@@ -445,7 +494,15 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {}
 func init() { _ = "HCLOUD_TOKEN" }
 `,
 			},
-			wantIssue: "cloud/provider marker", wantIssues: 1,
+			wantIssue: "blank import", wantIssues: 1,
+		},
+		{
+			name: "unresolved external blank import is forbidden",
+			source: `package fixture
+import (_ "example.invalid/unresolved"; "testing")
+func TestL11PreparedLinuxFinalClosure(*testing.T) {}
+`,
+			wantIssue: "blank import", wantIssues: 1,
 		},
 		{
 			name: "selected package init cloud access",
@@ -652,6 +709,15 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = any(minter{}) }
 			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
+			name: "implicitly instantiated generic direct helper is forbidden",
+			source: `package fixture
+import "testing"
+func generic[T ~int](T) {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { generic(1) }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
 			name: "imported package function value is forbidden",
 			sources: map[string]string{
 				"root/fixture_test.go": `package fixture
@@ -681,6 +747,89 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {}
 import "testing"
 func TestL11PreparedLinuxFinalClosure(*testing.T) { values := []string{"safe"}; _ = values[0] }
 `,
+		},
+		{
+			name: "ordinary struct field read remains allowed",
+			source: `package fixture
+import "testing"
+type payload struct { Name string }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { value := payload{Name: "safe"}; _ = value.Name }
+`,
+		},
+		{
+			name: "function typed struct field is forbidden",
+			source: `package fixture
+import "testing"
+type payload struct { Callback func() }
+func safe() {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { value := payload{Callback: safe}; _ = value.Callback }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "function identifier in composite element is forbidden",
+			source: `package fixture
+import "testing"
+func helper() {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = []any{helper} }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "function identifier in return is forbidden",
+			source: `package fixture
+import "testing"
+func helper() {}
+func escape() any { return helper }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { _ = escape() }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "function identifier in send is forbidden",
+			source: `package fixture
+import "testing"
+func helper() {}
+func escape(ch chan any) { ch <- helper }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { escape(make(chan any, 1)) }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "deferred direct helper is forbidden",
+			source: `package fixture
+import "testing"
+func helper() {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { defer helper() }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "goroutine direct helper is forbidden",
+			source: `package fixture
+import "testing"
+func helper() {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { go helper() }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "parenthesized direct helper remains allowed",
+			source: `package fixture
+import "testing"
+func helper() {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) { (helper)() }
+`,
+		},
+		{
+			name: "parenthesized direct helper is traversed",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+func helper() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { (((helper)))() }
+var input any
+`,
+			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
 		},
 		{
 			name: "unreachable production package dynamics remain outside selected graph",
