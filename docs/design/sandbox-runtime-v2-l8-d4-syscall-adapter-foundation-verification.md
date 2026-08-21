@@ -34,11 +34,13 @@ cannot supply a policy, profile, expected evidence marker, or generated native
 artifact.
 
 The package-wide production guard parses every non-test Go file from the
-repository root, including build-tagged variants. It binds references to the
-exact `syscallpolicy` import/object, permits only the frozen leaf declarations,
-and requires the sole direct issuer/import calls to remain in
-`localresolver.VerifyL8DistributionBundle`; every other production package has
-zero references to either host-evidence function.
+repository root, including build-tagged variants. It first requires every other
+production file to have zero guarded spellings, including `go:linkname`
+directive targets, then permits one spelling in each frozen leaf declaration
+and one spelling per exact local-resolver call. The three allowed files are
+parsed independently: declaration signatures and objects stay exact, the sole
+`syscallpolicy` import is decoded with `strconv.Unquote`, and the only two bound
+direct calls remain in `localresolver.VerifyL8DistributionBundle`.
 
 The current constructor returns the stable sanitized dependency failure before
 retaining or calling the injected kernel because the adapter-callsite

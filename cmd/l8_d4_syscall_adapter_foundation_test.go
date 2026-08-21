@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -226,154 +227,211 @@ func cloneL8D4ProductionSources(source map[string]string) map[string]string {
 }
 
 func validateL8D4RepositoryHostEvidenceBoundary(sources map[string]string) error {
-	const syscallPolicyImportPath = `"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"`
-	const syscallPolicyDirectory = "internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+	const syscallPolicyImportPath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+	const embeddedDeclarationPath = "internal/sandboxruntime/microvm/guestagent/syscallpolicy/pinned_evidence_default.go"
+	const importDeclarationPath = "internal/sandboxruntime/microvm/guestagent/syscallpolicy/pinned_evidence.go"
 	const localResolverPath = "internal/sandboxruntime/microvm/assets/localresolver/l8_distribution_verifier.go"
-	const localResolverFunction = "VerifyL8DistributionBundle"
-	definitions := map[string]string{
-		"EmbeddedExpectedPinnedCallsiteEvidence": syscallPolicyDirectory + "/pinned_evidence_default.go",
-		"ImportPinnedCallsiteEvidence":           syscallPolicyDirectory + "/pinned_evidence.go",
+	guardedNames := []string{
+		"EmbeddedExpectedPinnedCallsiteEvidence",
+		"ImportPinnedCallsiteEvidence",
 	}
-	definitionCounts := make(map[string]int)
-	referenceCounts := make(map[string]int)
-	consumerCallCounts := make(map[string]int)
-	consumerFunctionCount := 0
+	expectedSpellings := map[string]map[string]int{
+		embeddedDeclarationPath: {
+			"EmbeddedExpectedPinnedCallsiteEvidence": 1,
+			"ImportPinnedCallsiteEvidence":           0,
+		},
+		importDeclarationPath: {
+			"EmbeddedExpectedPinnedCallsiteEvidence": 0,
+			"ImportPinnedCallsiteEvidence":           1,
+		},
+		localResolverPath: {
+			"EmbeddedExpectedPinnedCallsiteEvidence": 1,
+			"ImportPinnedCallsiteEvidence":           1,
+		},
+	}
+	seenAllowedFiles := make(map[string]int)
 
 	for path, source := range sources {
 		path = filepath.ToSlash(filepath.Clean(path))
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		parsed, err := parser.ParseFile(token.NewFileSet(), path, source, 0)
+		allowedCounts, allowed := expectedSpellings[path]
+		for _, name := range guardedNames {
+			want := 0
+			if allowed {
+				want = allowedCounts[name]
+			}
+			if strings.Count(source, name) != want {
+				return &l8D4GuestAuthorityGuardError{"host-evidence authority spelling escaped its frozen production location"}
+			}
+		}
+		if !allowed {
+			continue
+		}
+		seenAllowedFiles[path]++
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, source, parser.ParseComments)
 		if err != nil {
 			return err
 		}
-		syscallPolicyAliases := make(map[string]bool)
-		syscallPolicyDotImport := false
-		for _, imported := range parsed.Imports {
-			if imported.Path.Value != syscallPolicyImportPath {
-				continue
+		switch path {
+		case embeddedDeclarationPath:
+			if err := validateL8D4HostEvidenceDeclaration(parsed, "EmbeddedExpectedPinnedCallsiteEvidence", nil, []string{"ExpectedPinnedCallsiteEvidence", "error"}); err != nil {
+				return err
 			}
-			if imported.Name == nil {
-				syscallPolicyAliases["syscallpolicy"] = true
-				continue
+		case importDeclarationPath:
+			if err := validateL8D4HostEvidenceDeclaration(parsed, "ImportPinnedCallsiteEvidence", []string{"[]byte", "VerifiedPolicyArtifact", "ExpectedPinnedCallsiteEvidence"}, []string{"PinnedCallsiteEvidenceSet", "error"}); err != nil {
+				return err
 			}
-			if imported.Name.Name == "." {
-				syscallPolicyDotImport = true
-				continue
+		case localResolverPath:
+			if err := validateL8D4HostEvidenceConsumer(parsed, syscallPolicyImportPath, guardedNames); err != nil {
+				return err
 			}
-			if imported.Name.Name != "_" {
-				syscallPolicyAliases[imported.Name.Name] = true
-			}
-		}
-		insideSyscallPolicy := filepath.ToSlash(filepath.Dir(path)) == syscallPolicyDirectory && parsed.Name.Name == "syscallpolicy"
-		declarationPositions := make(map[token.Pos]bool)
-		selectorPositions := make(map[token.Pos]bool)
-		allowedReferencePositions := make(map[token.Pos]string)
-		unexpectedReference := false
-		for _, declaration := range parsed.Decls {
-			function, ok := declaration.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			if expectedPath, guarded := definitions[function.Name.Name]; guarded && insideSyscallPolicy {
-				if path != expectedPath {
-					return &l8D4GuestAuthorityGuardError{"host-evidence authority declaration moved outside its frozen leaf"}
-				}
-				definitionCounts[function.Name.Name]++
-				declarationPositions[function.Name.Pos()] = true
-			}
-			if path == localResolverPath && function.Name.Name == localResolverFunction && function.Body != nil {
-				consumerFunctionCount++
-				ast.Inspect(function.Body, func(node ast.Node) bool {
-					if _, nested := node.(*ast.FuncLit); nested {
-						return false
-					}
-					call, ok := node.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					name, position, bound := l8D4BoundHostEvidenceReference(call.Fun, definitions, syscallPolicyAliases, syscallPolicyDotImport, false)
-					if bound {
-						consumerCallCounts[name]++
-						allowedReferencePositions[position] = name
-					}
-					return true
-				})
-			}
-		}
-		ast.Inspect(parsed, func(node ast.Node) bool {
-			selector, ok := node.(*ast.SelectorExpr)
-			if ok {
-				selectorPositions[selector.Sel.Pos()] = true
-				name, position, bound := l8D4BoundHostEvidenceReference(selector, definitions, syscallPolicyAliases, syscallPolicyDotImport, insideSyscallPolicy)
-				if bound {
-					referenceCounts[name]++
-					if allowedReferencePositions[position] != name {
-						unexpectedReference = true
-						return false
-					}
-				}
-			}
-			return true
-		})
-		ast.Inspect(parsed, func(node ast.Node) bool {
-			identifier, ok := node.(*ast.Ident)
-			if !ok || declarationPositions[identifier.Pos()] || selectorPositions[identifier.Pos()] {
-				return true
-			}
-			name, position, bound := l8D4BoundHostEvidenceReference(identifier, definitions, syscallPolicyAliases, syscallPolicyDotImport, insideSyscallPolicy)
-			if bound {
-				referenceCounts[name]++
-				if allowedReferencePositions[position] != name {
-					unexpectedReference = true
-					return false
-				}
-			}
-			return true
-		})
-		if unexpectedReference {
-			return &l8D4GuestAuthorityGuardError{"host-evidence authority has a production reference outside localresolver VerifyL8DistributionBundle"}
 		}
 	}
 
-	if consumerFunctionCount != 1 {
-		return &l8D4GuestAuthorityGuardError{"localresolver must have one frozen VerifyL8DistributionBundle consumer function"}
-	}
-	for name := range definitions {
-		if definitionCounts[name] != 1 {
-			return &l8D4GuestAuthorityGuardError{"host-evidence authority must have one frozen leaf declaration"}
-		}
-		if referenceCounts[name] != 1 || consumerCallCounts[name] != 1 {
-			return &l8D4GuestAuthorityGuardError{"localresolver VerifyL8DistributionBundle must be the sole direct production consumer of host evidence"}
+	for path := range expectedSpellings {
+		if seenAllowedFiles[path] != 1 {
+			return &l8D4GuestAuthorityGuardError{"host-evidence frozen production file is missing or duplicated"}
 		}
 	}
 	return nil
 }
 
-func l8D4BoundHostEvidenceReference(expression ast.Expr, definitions map[string]string, syscallPolicyAliases map[string]bool, syscallPolicyDotImport, insideSyscallPolicy bool) (string, token.Pos, bool) {
-	switch reference := expression.(type) {
-	case *ast.SelectorExpr:
-		if _, guarded := definitions[reference.Sel.Name]; !guarded {
-			return "", token.NoPos, false
-		}
-		receiver, ok := reference.X.(*ast.Ident)
-		if !ok || !syscallPolicyAliases[receiver.Name] || (receiver.Obj != nil && receiver.Obj.Kind != ast.Pkg) {
-			return "", token.NoPos, false
-		}
-		return reference.Sel.Name, reference.Sel.Pos(), true
-	case *ast.Ident:
-		if _, guarded := definitions[reference.Name]; !guarded {
-			return "", token.NoPos, false
-		}
-		if syscallPolicyDotImport && (reference.Obj == nil || reference.Obj.Kind == ast.Pkg) {
-			return reference.Name, reference.Pos(), true
-		}
-		if insideSyscallPolicy && (reference.Obj == nil || reference.Obj.Kind == ast.Fun) {
-			return reference.Name, reference.Pos(), true
+func validateL8D4HostEvidenceDeclaration(file *ast.File, name string, parameterTypes, resultTypes []string) error {
+	if file.Name.Name != "syscallpolicy" {
+		return &l8D4GuestAuthorityGuardError{"host-evidence declaration left the syscallpolicy package"}
+	}
+	var matched []*ast.FuncDecl
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == name {
+			matched = append(matched, function)
 		}
 	}
-	return "", token.NoPos, false
+	if len(matched) != 1 {
+		return &l8D4GuestAuthorityGuardError{"host-evidence frozen leaf must contain one exact declaration"}
+	}
+	function := matched[0]
+	if function.Recv != nil || function.Body == nil || function.Name.Obj == nil || function.Name.Obj.Kind != ast.Fun || function.Name.Obj.Decl != function {
+		return &l8D4GuestAuthorityGuardError{"host-evidence declaration is not the bound concrete function"}
+	}
+	if !l8D4SameTypeSpellings(l8D4FieldTypeSpellings(function.Type.Params), parameterTypes) ||
+		!l8D4SameTypeSpellings(l8D4FieldTypeSpellings(function.Type.Results), resultTypes) {
+		return &l8D4GuestAuthorityGuardError{"host-evidence declaration signature changed"}
+	}
+	return nil
+}
+
+func validateL8D4HostEvidenceConsumer(file *ast.File, importPath string, guardedNames []string) error {
+	if file.Name.Name != "localresolver" {
+		return &l8D4GuestAuthorityGuardError{"host-evidence consumer left the localresolver package"}
+	}
+	alias := ""
+	importCount := 0
+	for _, imported := range file.Imports {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			return &l8D4GuestAuthorityGuardError{"localresolver has a malformed syscallpolicy import"}
+		}
+		if path != importPath {
+			continue
+		}
+		importCount++
+		alias = "syscallpolicy"
+		if imported.Name != nil {
+			alias = imported.Name.Name
+		}
+		if alias == "." || alias == "_" {
+			return &l8D4GuestAuthorityGuardError{"localresolver syscallpolicy import must be named"}
+		}
+	}
+	if importCount != 1 {
+		return &l8D4GuestAuthorityGuardError{"localresolver must import syscallpolicy exactly once"}
+	}
+	var consumers []*ast.FuncDecl
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == "VerifyL8DistributionBundle" {
+			consumers = append(consumers, function)
+		}
+	}
+	if len(consumers) != 1 || consumers[0].Recv != nil || consumers[0].Body == nil ||
+		consumers[0].Name.Obj == nil || consumers[0].Name.Obj.Kind != ast.Fun || consumers[0].Name.Obj.Decl != consumers[0] {
+		return &l8D4GuestAuthorityGuardError{"localresolver must have one concrete VerifyL8DistributionBundle consumer"}
+	}
+	callCounts := make(map[string]int)
+	ast.Inspect(consumers[0].Body, func(node ast.Node) bool {
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		receiver, ok := selector.X.(*ast.Ident)
+		if !ok || receiver.Name != alias || (receiver.Obj != nil && receiver.Obj.Kind != ast.Pkg) {
+			return true
+		}
+		for _, name := range guardedNames {
+			if selector.Sel.Name == name {
+				callCounts[name]++
+			}
+		}
+		return true
+	})
+	for _, name := range guardedNames {
+		if callCounts[name] != 1 {
+			return &l8D4GuestAuthorityGuardError{"localresolver must make one exact direct host-evidence call"}
+		}
+	}
+	return nil
+}
+
+func l8D4FieldTypeSpellings(fields *ast.FieldList) []string {
+	if fields == nil {
+		return nil
+	}
+	var spellings []string
+	for _, field := range fields.List {
+		spelling := l8D4TypeSpelling(field.Type)
+		count := len(field.Names)
+		if count == 0 {
+			count = 1
+		}
+		for index := 0; index < count; index++ {
+			spellings = append(spellings, spelling)
+		}
+	}
+	return spellings
+}
+
+func l8D4TypeSpelling(expression ast.Expr) string {
+	switch typed := expression.(type) {
+	case *ast.Ident:
+		return typed.Name
+	case *ast.ArrayType:
+		if typed.Len == nil {
+			return "[]" + l8D4TypeSpelling(typed.Elt)
+		}
+	}
+	return ""
+}
+
+func l8D4SameTypeSpellings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestL8D4SyscallAdapterFoundationIsTruthfullyDocumented(t *testing.T) {
@@ -390,7 +448,9 @@ func TestL8D4SyscallAdapterFoundationIsTruthfullyDocumented(t *testing.T) {
 		"package-wide production guard",
 		"repository root",
 		"every non-test Go file",
-		"every other production package has zero references",
+		"every other production file to have zero guarded spellings",
+		"go:linkname",
+		"strconv.Unquote",
 		"stable sanitized dependency failure",
 		"l8_d4_full_syscall_adapter",
 		"unstarted -> claimed -> executed -> finalized",

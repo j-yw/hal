@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -155,159 +156,29 @@ const l8D6CanonicalHelperOptionsBlock = "type HelperOptions struct {\n" +
 	"\tSSH       credentialhelper.ExtensionRegistration\n" +
 	"}"
 
-type l8D6HelperDocumentSection struct {
-	content  string
-	fenced   bool
-	language string
-}
+// l8D6GuestExtensionSeamsSHA256 changes only with an explicit review of the complete normative document.
+const l8D6GuestExtensionSeamsSHA256 = "5c51bbab2d17140fc334a7fd3cf404021f91c737062566ddd258a5908cab60e8"
 
 func validateL8D6HelperCompositionDocument(document string) error {
-	sections, err := l8D6HelperDocumentSections(document)
-	if err != nil {
+	digest := sha256.Sum256([]byte(document))
+	if fmt.Sprintf("%x", digest) != l8D6GuestExtensionSeamsSHA256 {
+		return fmt.Errorf("L8 guest extension-seam document does not match its reviewed source lock")
+	}
+	if strings.Count(document, l8D6CanonicalHelperOptionsBlock) != 1 ||
+		strings.Count(document, "type HelperOptions struct {") != 1 ||
+		strings.Count(document, "```go\n"+l8D6CanonicalHelperOptionsBlock+"\n\n") != 1 {
+		return fmt.Errorf("HelperOptions documentation does not contain one canonical Go declaration")
+	}
+	block, found := l8D6HelperOptionsSourceBlock(document)
+	if !found || block != l8D6CanonicalHelperOptionsBlock {
+		return fmt.Errorf("HelperOptions documentation has a noncanonical HelperOptions declaration")
+	}
+	if err := validateL8D6HelperOptionsContract(block); err != nil {
 		return err
 	}
-	normativeRuleCount := 0
-	canonicalHelperOptionsCount := 0
-	for _, section := range sections {
-		content := section.content
-		if strings.Contains(content, "type HelperOptions struct {") {
-			block, found := l8D6HelperOptionsSourceBlock(content)
-			if !found || block != l8D6CanonicalHelperOptionsBlock || section.language != "go" {
-				return fmt.Errorf("HelperOptions documentation has a noncanonical HelperOptions code block")
-			}
-			if err := validateL8D6HelperOptionsContract(block); err != nil {
-				return err
-			}
-			canonicalHelperOptionsCount++
-			content = strings.Replace(content, block, "", 1)
-			if strings.Contains(content, "type HelperOptions struct {") {
-				return fmt.Errorf("HelperOptions documentation has multiple HelperOptions declarations")
-			}
-		}
-
-		if section.fenced {
-			if err := validateL8D6HelperFencedSection(section.language, content); err != nil {
-				return err
-			}
-			continue
-		}
-		for _, paragraph := range strings.Split(content, "\n\n") {
-			collapsed := strings.Join(strings.Fields(paragraph), " ")
-			if collapsed == l8D6HelperIndependentServiceDependencyRule {
-				normativeRuleCount++
-				continue
-			}
-			if l8D6HelperDependencyContradiction(collapsed) {
-				return fmt.Errorf("HelperOptions documentation discusses Core with Host or Runtime outside the canonical rule")
-			}
-		}
-	}
-	if canonicalHelperOptionsCount != 1 {
-		return fmt.Errorf("HelperOptions documentation has %d canonical HelperOptions code blocks, want exactly 1", canonicalHelperOptionsCount)
-	}
-	if normativeRuleCount != 1 {
-		return fmt.Errorf("HelperOptions documentation has %d independent service dependency rules, want exactly 1", normativeRuleCount)
-	}
-	return nil
-}
-
-func l8D6HelperDependencyContradiction(text string) bool {
-	lowered := strings.ToLower(strings.ReplaceAll(text, "`", ""))
-	normalized := strings.NewReplacer(
-		".", " ",
-		",", " ",
-		";", " ",
-		":", " ",
-		"/", " ",
-		"(", " ",
-		")", " ",
-	).Replace(lowered)
-	words := " " + strings.Join(strings.Fields(normalized), " ") + " "
-	discussesCore := strings.Contains(lowered, "helperoptions.core") ||
-		strings.Contains(lowered, "credentialhelper.core") ||
-		strings.Contains(words, " core ")
-	discussesServiceDependency := strings.Contains(lowered, "helperoptions.host") ||
-		strings.Contains(lowered, "helperoptions.runtime") ||
-		strings.Contains(lowered, "credentialhelper.extensionhost") ||
-		strings.Contains(lowered, "credentialhelper.serviceruntime") ||
-		(strings.Contains(normalized, "extensionhost") && strings.Contains(normalized, "serviceruntime")) ||
-		strings.Contains(normalized, "host and runtime") ||
-		strings.Contains(normalized, "host runtime") ||
-		(strings.Contains(normalized, "newhelper") &&
-			(strings.Contains(words, " host ") || strings.Contains(words, " runtime ")))
-	return discussesCore && discussesServiceDependency
-}
-
-func l8D6HelperDocumentSections(document string) ([]l8D6HelperDocumentSection, error) {
-	var sections []l8D6HelperDocumentSection
-	var lines []string
-	inFence := false
-	language := ""
-	flush := func(fenced bool) {
-		if len(lines) == 0 {
-			return
-		}
-		sections = append(sections, l8D6HelperDocumentSection{
-			content:  strings.Join(lines, "\n"),
-			fenced:   fenced,
-			language: language,
-		})
-		lines = nil
-	}
-	for _, line := range strings.Split(document, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !inFence && strings.HasPrefix(trimmed, "```") {
-			flush(false)
-			inFence = true
-			language = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
-			continue
-		}
-		if inFence && trimmed == "```" {
-			flush(true)
-			inFence = false
-			language = ""
-			continue
-		}
-		lines = append(lines, line)
-	}
-	if inFence {
-		return nil, fmt.Errorf("HelperOptions documentation has an unterminated fenced block")
-	}
-	flush(false)
-	return sections, nil
-}
-
-func validateL8D6HelperFencedSection(language, content string) error {
-	if language != "go" {
-		if l8D6HelperDependencyContradiction(content) {
-			return fmt.Errorf("HelperOptions fenced documentation discusses Core with Host or Runtime")
-		}
-		return nil
-	}
-	parsed, err := parser.ParseFile(token.NewFileSet(), "helper_options_fence.go", "package contract\n"+content, parser.ParseComments)
-	if err != nil {
-		if l8D6HelperDependencyContradiction(content) {
-			return fmt.Errorf("HelperOptions fenced documentation discusses Core with Host or Runtime")
-		}
-		return nil
-	}
-	var textFragments []string
-	for _, commentGroup := range parsed.Comments {
-		textFragments = append(textFragments, commentGroup.Text())
-	}
-	ast.Inspect(parsed, func(node ast.Node) bool {
-		literal, ok := node.(*ast.BasicLit)
-		if !ok || literal.Kind != token.STRING {
-			return true
-		}
-		value, err := strconv.Unquote(literal.Value)
-		if err == nil {
-			textFragments = append(textFragments, value)
-		}
-		return true
-	})
-	if l8D6HelperDependencyContradiction(strings.Join(textFragments, "\n")) {
-		return fmt.Errorf("HelperOptions Go-fence text discusses Core with Host or Runtime")
+	normalizedDocument := strings.Join(strings.Fields(document), " ")
+	if strings.Count(normalizedDocument, l8D6HelperIndependentServiceDependencyRule) != 1 {
+		return fmt.Errorf("HelperOptions documentation does not contain one independent service dependency rule")
 	}
 	return nil
 }
