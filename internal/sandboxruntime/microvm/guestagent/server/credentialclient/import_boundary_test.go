@@ -17,6 +17,7 @@ func TestFoundationGuardScopeExcludesFutureLifecycleFiles(t *testing.T) {
 
 	for _, name := range []string{
 		"contracts.go",
+		"client_policy.go",
 		"extension_packet.go",
 		"registry.go",
 		"ssh_connection.go",
@@ -116,7 +117,7 @@ func TestCredentialClientImportBoundaryAndNoGlobalRegistration(t *testing.T) {
 
 func isFoundationProductionFile(name string) bool {
 	switch filepath.Base(name) {
-	case "contracts.go", "extension_packet.go", "registry.go", "ssh_connection.go":
+	case "contracts.go", "client_policy.go", "extension_packet.go", "registry.go", "ssh_connection.go":
 		return true
 	default:
 		return false

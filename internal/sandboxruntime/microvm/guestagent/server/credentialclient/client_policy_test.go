@@ -211,15 +211,19 @@ func validateClientProductionPolicySource(source []byte) error {
 		return fmt.Errorf("client policy constructor result = %s, want Policy", got)
 	}
 	normalized := strings.Join(strings.Fields(string(source)), " ")
-	for _, required := range []string{
-		"return clientPolicy{}",
-		"return rejectClientPolicyRequest()",
-		"case credentialprotocol.PacketTypePrepareBegin, credentialprotocol.PacketTypeExec:",
-		"case credentialprotocol.PacketTypeRenew, credentialprotocol.PacketTypeRevoke:",
-		"credentialprotocol.ExtensionDescriptorEqual(request.descriptor, credentialprotocol.SSHRelayV1ExtensionDescriptor())",
+	for _, required := range []struct {
+		text  string
+		count int
+	}{
+		{text: "return clientPolicy{}", count: 1},
+		{text: "return rejectClientPolicyRequest()", count: 5},
+		{text: "return newClientPolicyAllowDecision(), nil", count: 1},
+		{text: "case credentialprotocol.PacketTypePrepareBegin, credentialprotocol.PacketTypeExec:", count: 1},
+		{text: "case credentialprotocol.PacketTypeRenew, credentialprotocol.PacketTypeRevoke:", count: 1},
+		{text: "credentialprotocol.ExtensionDescriptorEqual(request.descriptor, credentialprotocol.SSHRelayV1ExtensionDescriptor())", count: 1},
 	} {
-		if strings.Count(normalized, strings.Join(strings.Fields(required), " ")) != 1 {
-			return fmt.Errorf("client policy source does not contain one exact %q", required)
+		if strings.Count(normalized, strings.Join(strings.Fields(required.text), " ")) != required.count {
+			return fmt.Errorf("client policy source does not contain %d exact %q", required.count, required.text)
 		}
 	}
 	return nil
