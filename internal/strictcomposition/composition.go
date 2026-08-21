@@ -323,7 +323,7 @@ func validateTemplate(identity sandboxruntime.JobCredentialIdentity, policyID st
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeTemplateProofMismatch
 	}
 	if string(result.Trust.Mode) != "strict" || string(result.Trust.Decision) != "trusted" ||
-		len(result.Lock.Warnings) != 0 || len(result.Trust.Warnings) != 0 || len(result.Trust.Errors) != 0 {
+		!templateFindingAliasesEmpty(result) {
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeTemplateProofRejected
 	}
 	binding, err := selection.Bind(result, bindingRequest)
@@ -344,9 +344,43 @@ func validateTemplate(identity sandboxruntime.JobCredentialIdentity, policyID st
 	writeDigestString(digest, binding.RuntimeImage)
 	writeDigestString(digest, string(binding.ManifestDigest.Algorithm))
 	writeDigestString(digest, binding.ManifestDigest.Value)
+	// Nil and explicit-empty finding lists represent the same canonical strict
+	// state. Terminal evaluation revalidates this predicate before comparing the
+	// fingerprint, so a post-active warning or error cannot reach completion.
+	writeDigestString(digest, "template-finding-aliases-empty-v1")
 	var fingerprint [32]byte
 	copy(fingerprint[:], digest.Sum(nil))
 	return fingerprint, ""
+}
+
+func templateFindingAliasesEmpty(result selection.Result) bool {
+	if len(result.Lock.Warnings) != 0 || len(result.Trust.Warnings) != 0 || len(result.Trust.Errors) != 0 {
+		return false
+	}
+	if provenance := result.Provenance; provenance != nil &&
+		((provenance.Document != nil && len(provenance.Document.WarningCodes) != 0) ||
+			(provenance.TemplateReference != nil && len(provenance.TemplateReference.WarningCodes) != 0) ||
+			(provenance.RuntimeImage != nil && len(provenance.RuntimeImage.WarningCodes) != 0) ||
+			(provenance.SourceArtifact != nil && len(provenance.SourceArtifact.WarningCodes) != 0)) {
+		return false
+	}
+	return runtimeTemplateFindingsEmpty(result.RuntimeMetadata)
+}
+
+func runtimeTemplateFindingsEmpty(metadata *sandboxruntime.RuntimeTemplateLockMetadata) bool {
+	if metadata == nil {
+		return true
+	}
+	return runtimeTemplateEntryWarningsEmpty(metadata.Document) &&
+		runtimeTemplateEntryWarningsEmpty(metadata.TemplateReference) &&
+		runtimeTemplateEntryWarningsEmpty(metadata.RuntimeImage) &&
+		runtimeTemplateEntryWarningsEmpty(metadata.SourceArtifact) &&
+		(metadata.TrustPolicy == nil ||
+			(len(metadata.TrustPolicy.WarningCodes) == 0 && len(metadata.TrustPolicy.ErrorCodes) == 0))
+}
+
+func runtimeTemplateEntryWarningsEmpty(entry *sandboxruntime.RuntimeTemplateLockEntryMetadata) bool {
+	return entry == nil || len(entry.WarningCodes) == 0
 }
 
 func validateWorkspace(now time.Time, identity sandboxruntime.JobCredentialIdentity, evidence WorkspaceEvidence) ([32]byte, sandbox.SandboxStrictCompositionCode) {
