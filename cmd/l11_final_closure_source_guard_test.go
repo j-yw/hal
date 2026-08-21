@@ -1237,6 +1237,66 @@ func unitFixtureOnly() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input
 	}
 }
 
+func TestL11FinalClosureExcludedSiblingAliasCannotOverrideActiveDotImport(t *testing.T) {
+	sources := map[string]string{
+		"cmd/fixture_test.go": `package cmd
+import ("testing"; . "github.com/jywlabs/hal/internal/l11fake")
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	var selected T
+	selected.Run("rootless_advisory_success", runRootlessAdvisorySuccess)
+}
+func runRootlessAdvisorySuccess(*testing.T) {}
+`,
+		"cmd/alias_decoy_test.go": `//go:build l11_alias_decoy
+
+package cmd
+import stdtesting "testing"
+type T = stdtesting.T
+`,
+		"internal/l11fake/fake.go": `package l11fake
+import ("testing"; "github.com/jywlabs/hal/internal/sandboxruntime")
+type T struct{}
+func (T) Run(string, func(*testing.T)) bool {
+	_, _ = sandboxruntime.NewJobCredentialActiveProof(nil)
+	return true
+}
+`,
+		"internal/sandboxruntime/proof.go": `package sandboxruntime
+func NewJobCredentialActiveProof(any) (any, error) { return nil, nil }
+`,
+	}
+
+	root := t.TempDir()
+	module := "module github.com/jywlabs/hal\n\ngo 1.25.0\n"
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(module), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for path, source := range sources {
+		fullPath := filepath.Join(root, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.Command("go", "test", "./...")
+	command.Dir = root
+	command.Env = append(os.Environ(), "GOWORK=off")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("default-tag causal fixture must compile and run: %v: %s", err, output)
+	}
+
+	packages, err := l11ParseSelectedTestSources(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := l11SelectedPreparedTestIssues(packages)
+	if len(issues) != 1 || !strings.Contains(issues[0], "forbidden dynamic selected helper graph") {
+		t.Fatalf("issues = %v, want one forbidden dynamic-graph issue", issues)
+	}
+}
+
 func TestL11FinalClosureRepositoryInventoryIncludesToolsHelpers(t *testing.T) {
 	root := t.TempDir()
 	for path, source := range map[string]string{
