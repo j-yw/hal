@@ -164,6 +164,9 @@ func validateL8D6RuntimeOwnerArchitecture(doc string) error {
 		"only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`",
 		"`firecrackerhost.commitJobCredentialRuntimeRecovery`",
 		"`storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime`",
+		"direct selector on the exact receipt-typed parameter object",
+		"Reflection, unsafe conversion, receipt aliases, receiver methods, closures, and helper escape are forbidden",
+		"The root validator and owner verifier land together; the private-store converter remains optional until worker receipt persistence lands",
 		"The digest has no accessor",
 		l8D6RuntimeOwnerCloseRule,
 		"Non-Linux implementations fail closed",
@@ -328,12 +331,12 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		ownerVerifier = "../internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go"
 		privateStore  = "../internal/sandboxworker/job_store_v2.go"
 	)
-	expectedFunction := map[string]string{
-		rootValidator: "ValidateJobCredentialRuntimeRecoveryCommitReceipt",
-		ownerVerifier: "commitJobCredentialRuntimeRecovery",
-		privateStore:  "storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime",
+	expected := map[string]l8D6RuntimeOwnerCommitReceiptFunction{
+		rootValidator: {name: "ValidateJobCredentialRuntimeRecoveryCommitReceipt", rootType: true, exactOneParameter: true},
+		ownerVerifier: {name: "commitJobCredentialRuntimeRecovery"},
+		privateStore:  {name: "storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime", optional: true},
 	}
-	references := make(map[string]int)
+	audits := make(map[string]l8D6RuntimeOwnerCommitReceiptAudit)
 	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -351,16 +354,16 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		if err != nil {
 			return err
 		}
-		functions, err := l8D6RuntimeOwnerCommitReceiptProjectionFunctions(payload)
+		normalizedPath := filepath.ToSlash(path)
+		audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(payload, expected[normalizedPath])
 		if err != nil {
 			return err
 		}
-		normalizedPath := filepath.ToSlash(path)
-		for _, function := range functions {
-			if expectedFunction[normalizedPath] != function {
-				t.Fatalf("runtime recovery commit receipt accessed outside exact function: %s:%s", normalizedPath, function)
-			}
-			references[normalizedPath]++
+		if len(audit.issues) != 0 {
+			t.Fatalf("runtime recovery commit receipt access is not exact in %s: %s", normalizedPath, strings.Join(audit.issues, "; "))
+		}
+		if audit.present || audit.receiptReferences != 0 {
+			audits[normalizedPath] = audit
 		}
 		return nil
 	})
@@ -368,43 +371,258 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		t.Fatalf("scan runtime recovery commit receipt projections: %v", err)
 	}
 	if _, err := os.Stat(rootValidator); os.IsNotExist(err) {
-		if len(references) != 0 {
-			t.Fatalf("contract-only commit receipt accesses = %#v, want zero", references)
+		if len(audits) != 0 {
+			t.Fatalf("contract-only commit receipt accesses = %#v, want zero", audits)
 		}
-	} else if err != nil || references[rootValidator] != 1 || references[ownerVerifier] != 1 || references[privateStore] != 1 {
-		t.Fatalf("production commit receipt accesses = %#v, root API error %v; want one read in each exact validator, owner, and private-store function", references, err)
+	} else if err != nil || !audits[rootValidator].exact() || !audits[ownerVerifier].exact() {
+		t.Fatalf("production commit receipt accesses = %#v, root API error %v; want exact root and owner functions", audits, err)
+	} else if private, ok := audits[privateStore]; ok && !private.exact() {
+		t.Fatalf("private-store commit receipt access = %#v, want absent or exact future converter", private)
 	}
 
-	allowedFixture := []byte("package sandboxworker\nfunc store(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) { _ = receipt.CommitID }\n")
-	if functions, err := l8D6RuntimeOwnerCommitReceiptProjectionFunctions(allowedFixture); err != nil || len(functions) != 1 || functions[0] != "store" {
-		t.Fatalf("private-store projection fixture functions = %#v, error %v", functions, err)
+	validFixture := []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { commitID := receipt.CommitID; _ = commitID; return nil }\n")
+	if audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(validFixture, expected[ownerVerifier]); err != nil || !audit.exact() || len(audit.issues) != 0 {
+		t.Fatalf("valid owner fixture audit = %#v, error %v", audit, err)
 	}
-	wrongFixture := []byte("package cmd\nvar leak = receipt.CommitID\nfunc expose(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) { _ = receipt.CommitID }\n")
-	if functions, err := l8D6RuntimeOwnerCommitReceiptProjectionFunctions(wrongFixture); err != nil || len(functions) != 2 || functions[0] != "" || functions[1] != "expose" {
-		t.Fatalf("public projection fixture functions = %#v, error %v", functions, err)
+	fixtures := map[string][]byte{
+		"function name spoof":      []byte("package firecrackerhost\ntype unrelated struct { CommitID string }\nfunc commitJobCredentialRuntimeRecovery(value unrelated) error { _ = value.CommitID; return nil }\n"),
+		"unrelated field":          []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype unrelated struct { CommitID string }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = unrelated{}.CommitID; return nil }\n"),
+		"reflection field":         []byte("package firecrackerhost\nimport (\"reflect\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = reflect.ValueOf(receipt).Field(0).String(); return nil }\n"),
+		"reflection field by name": []byte("package firecrackerhost\nimport (\"reflect\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = reflect.ValueOf(receipt).FieldByName(\"CommitID\").String(); return nil }\n"),
+		"unsafe conversion":        []byte("package firecrackerhost\nimport (\"unsafe\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = unsafe.Pointer(&receipt); return nil }\n"),
+		"receipt value alias":      []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { alias := receipt; _ = alias.CommitID; return nil }\n"),
+		"receipt type alias":       []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype receiptAlias = sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt\nfunc commitJobCredentialRuntimeRecovery(receipt receiptAlias) error { _ = receipt.CommitID; return nil }\n"),
+		"same name wrong result":   []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) int { _ = receipt.CommitID; return 0 }\n"),
+		"receiver method":          []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype owner struct{}\nfunc (owner) commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
+		"closure escape":           []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { leak := func() string { return receipt.CommitID }; _ = leak; return nil }\n"),
+		"helper escape":            []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(any) {}\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { leak(receipt); return nil }\n"),
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(fixture, expected[ownerVerifier])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if audit.exact() && len(audit.issues) == 0 {
+				t.Fatalf("bypass fixture passed audit: %#v", audit)
+			}
+		})
 	}
 }
 
-func l8D6RuntimeOwnerCommitReceiptProjectionFunctions(payload []byte) ([]string, error) {
+type l8D6RuntimeOwnerCommitReceiptFunction struct {
+	name              string
+	rootType          bool
+	exactOneParameter bool
+	optional          bool
+}
+
+type l8D6RuntimeOwnerCommitReceiptAudit struct {
+	present           bool
+	commitIDReads     int
+	receiptReferences int
+	issues            []string
+}
+
+func (audit l8D6RuntimeOwnerCommitReceiptAudit) exact() bool {
+	return audit.present && audit.commitIDReads == 1 && audit.receiptReferences >= 1 && len(audit.issues) == 0
+}
+
+func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6RuntimeOwnerCommitReceiptFunction) (l8D6RuntimeOwnerCommitReceiptAudit, error) {
 	file, err := parser.ParseFile(token.NewFileSet(), "receipt.go", payload, 0)
 	if err != nil {
-		return nil, err
+		return l8D6RuntimeOwnerCommitReceiptAudit{}, err
 	}
-	var functions []string
-	for _, declaration := range file.Decls {
-		functionName := ""
-		if function, ok := declaration.(*ast.FuncDecl); ok {
-			functionName = function.Name.Name
+	audit := l8D6RuntimeOwnerCommitReceiptAudit{}
+	parents := make(map[ast.Node]ast.Node)
+	ast.Inspect(file, func(node ast.Node) bool {
+		if node == nil {
+			return true
 		}
-		ast.Inspect(declaration, func(node ast.Node) bool {
-			selector, ok := node.(*ast.SelectorExpr)
-			if ok && selector.Sel.Name == "CommitID" {
-				functions = append(functions, functionName)
+		ast.Inspect(node, func(child ast.Node) bool {
+			if child != nil && child != node {
+				if _, exists := parents[child]; !exists {
+					parents[child] = node
+				}
+				return false
 			}
 			return true
 		})
+		return true
+	})
+	var target *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != expected.name {
+			continue
+		}
+		if target != nil {
+			audit.issues = append(audit.issues, "duplicate expected function")
+			continue
+		}
+		target = function
 	}
-	return functions, nil
+	if target == nil {
+		ast.Inspect(file, func(node ast.Node) bool {
+			if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "CommitID" {
+				audit.issues = append(audit.issues, "CommitID selector outside expected function")
+			}
+			return true
+		})
+		return audit, nil
+	}
+	audit.present = true
+	if target.Recv != nil {
+		audit.issues = append(audit.issues, "expected package function is a receiver method")
+	}
+	receiptObjects := l8D6RuntimeOwnerReceiptParameterObjects(file, target, expected.rootType)
+	if len(receiptObjects) != 1 {
+		audit.issues = append(audit.issues, fmt.Sprintf("receipt-typed parameter count = %d", len(receiptObjects)))
+	}
+	if expected.exactOneParameter && l8D6RuntimeOwnerParameterNameCount(target) != 1 {
+		audit.issues = append(audit.issues, "root validator signature is not one parameter")
+	}
+	if !l8D6RuntimeOwnerReturnsOnlyError(target) {
+		audit.issues = append(audit.issues, "expected function does not return only error")
+	}
+	receiptObject := (*ast.Object)(nil)
+	if len(receiptObjects) == 1 {
+		receiptObject = receiptObjects[0]
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "CommitID" {
+			return true
+		}
+		owner := l8D6RuntimeOwnerContainingFunction(selector, parents)
+		identifier, direct := selector.X.(*ast.Ident)
+		if owner != target || !direct || receiptObject == nil || identifier.Obj != receiptObject || l8D6RuntimeOwnerInsideClosure(selector, target, parents) {
+			audit.issues = append(audit.issues, "CommitID read is not the direct receipt parameter in the exact function")
+			return true
+		}
+		audit.commitIDReads++
+		return true
+	})
+	if receiptObject != nil {
+		ast.Inspect(target.Body, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if !ok || identifier.Obj != receiptObject {
+				return true
+			}
+			audit.receiptReferences++
+			parent := parents[identifier]
+			if selector, ok := parent.(*ast.SelectorExpr); ok && selector.X == identifier && (selector.Sel.Name == "CommitID" || selector.Sel.Name == "FinalizedRevision") && !l8D6RuntimeOwnerInsideClosure(selector, target, parents) {
+				return true
+			}
+			if call, ok := parent.(*ast.CallExpr); ok && l8D6RuntimeOwnerIsReceiptValidatorCall(call.Fun) && !expected.rootType {
+				return true
+			}
+			audit.issues = append(audit.issues, "receipt parameter escapes direct field validation")
+			return true
+		})
+	}
+	return audit, nil
+}
+
+func l8D6RuntimeOwnerReceiptParameterObjects(file *ast.File, function *ast.FuncDecl, rootType bool) []*ast.Object {
+	aliases := make(map[string]bool)
+	for _, spec := range file.Imports {
+		if spec.Path.Value != `"github.com/jywlabs/hal/internal/sandboxruntime"` {
+			continue
+		}
+		alias := "sandboxruntime"
+		if spec.Name != nil {
+			alias = spec.Name.Name
+		}
+		aliases[alias] = true
+	}
+	var objects []*ast.Object
+	for _, field := range function.Type.Params.List {
+		exactType := false
+		if rootType {
+			identifier, ok := field.Type.(*ast.Ident)
+			exactType = ok && identifier.Name == "JobCredentialRuntimeRecoveryCommitReceipt" && l8D6RuntimeOwnerExactRootReceiptType(identifier)
+		} else if selector, ok := field.Type.(*ast.SelectorExpr); ok && selector.Sel.Name == "JobCredentialRuntimeRecoveryCommitReceipt" {
+			qualifier, ok := selector.X.(*ast.Ident)
+			exactType = ok && aliases[qualifier.Name]
+		}
+		if !exactType || len(field.Names) != 1 || field.Names[0].Obj == nil {
+			continue
+		}
+		objects = append(objects, field.Names[0].Obj)
+	}
+	return objects
+}
+
+func l8D6RuntimeOwnerExactRootReceiptType(identifier *ast.Ident) bool {
+	if identifier == nil || identifier.Obj == nil {
+		return false
+	}
+	typeSpec, ok := identifier.Obj.Decl.(*ast.TypeSpec)
+	if !ok || typeSpec.Assign.IsValid() || typeSpec.Name.Name != "JobCredentialRuntimeRecoveryCommitReceipt" {
+		return false
+	}
+	structure, ok := typeSpec.Type.(*ast.StructType)
+	if !ok || len(structure.Fields.List) != 2 {
+		return false
+	}
+	return len(structure.Fields.List[0].Names) == 1 && structure.Fields.List[0].Names[0].Name == "CommitID" &&
+		l8D6RuntimeOwnerTypeName(structure.Fields.List[0].Type) == "string" &&
+		len(structure.Fields.List[1].Names) == 1 && structure.Fields.List[1].Names[0].Name == "FinalizedRevision" &&
+		l8D6RuntimeOwnerTypeName(structure.Fields.List[1].Type) == "uint64"
+}
+
+func l8D6RuntimeOwnerTypeName(expression ast.Expr) string {
+	identifier, _ := expression.(*ast.Ident)
+	if identifier == nil {
+		return ""
+	}
+	return identifier.Name
+}
+
+func l8D6RuntimeOwnerParameterNameCount(function *ast.FuncDecl) int {
+	count := 0
+	for _, field := range function.Type.Params.List {
+		count += len(field.Names)
+	}
+	return count
+}
+
+func l8D6RuntimeOwnerReturnsOnlyError(function *ast.FuncDecl) bool {
+	if function.Type.Results == nil || len(function.Type.Results.List) != 1 {
+		return false
+	}
+	field := function.Type.Results.List[0]
+	return len(field.Names) == 0 && l8D6RuntimeOwnerTypeName(field.Type) == "error"
+}
+
+func l8D6RuntimeOwnerContainingFunction(node ast.Node, parents map[ast.Node]ast.Node) *ast.FuncDecl {
+	for current := node; current != nil; current = parents[current] {
+		if function, ok := current.(*ast.FuncDecl); ok {
+			return function
+		}
+	}
+	return nil
+}
+
+func l8D6RuntimeOwnerInsideClosure(node ast.Node, function *ast.FuncDecl, parents map[ast.Node]ast.Node) bool {
+	for current := parents[node]; current != nil && current != function; current = parents[current] {
+		if _, ok := current.(*ast.FuncLit); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func l8D6RuntimeOwnerIsReceiptValidatorCall(expression ast.Expr) bool {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		return value.Name == "ValidateJobCredentialRuntimeRecoveryCommitReceipt"
+	case *ast.SelectorExpr:
+		return value.Sel.Name == "ValidateJobCredentialRuntimeRecoveryCommitReceipt"
+	default:
+		return false
+	}
 }
 
 type l8D6RuntimeOwnerProofConstructorUsage struct {
