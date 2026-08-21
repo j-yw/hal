@@ -35,6 +35,11 @@ type firecrackerRuntimeOwnerRecordV1 struct {
 	ContractVersion              string `json:"contractVersion"`
 	Revision                     uint64 `json:"revision"`
 	State                        string `json:"state"`
+	ControllerState              string `json:"controllerState"`
+	AbsenceKind                  string `json:"absenceKind"`
+	AbsenceRevision              uint64 `json:"absenceRevision"`
+	AbsenceObservedAtUnixNano    int64  `json:"absenceObservedAtUnixNano"`
+	FinalizeTargetRevision       uint64 `json:"finalizeTargetRevision"`
 	HostBootID                   string `json:"hostBootId"`
 	SeedCorrelationDigest        string `json:"seedCorrelationDigest"`
 	SupervisorGeneration         string `json:"supervisorGeneration"`
@@ -238,7 +243,9 @@ func decodeFirecrackerRuntimeOwnerRecordV1(payload []byte, seed sandboxruntime.J
 
 func l8RuntimeOwnerUniqueJSONObject(payload []byte) bool {
 	allowed := map[string]bool{
-		"contractVersion": true, "revision": true, "state": true, "hostBootId": true,
+		"contractVersion": true, "revision": true, "state": true, "controllerState": true,
+		"absenceKind": true, "absenceRevision": true, "absenceObservedAtUnixNano": true,
+		"finalizeTargetRevision": true, "hostBootId": true,
 		"seedCorrelationDigest": true, "supervisorGeneration": true, "supervisorPid": true,
 		"supervisorStartTime": true, "firecrackerPid": true, "firecrackerStartTime": true,
 		"finalizedCommitId": true, "sandboxId": true, "executionId": true, "workerId": true,
@@ -275,8 +282,11 @@ func l8RuntimeOwnerJSONFieldTypeValid(name string, payload json.RawMessage) bool
 		return false
 	}
 	switch name {
-	case "revision", "supervisorStartTime", "firecrackerStartTime":
+	case "revision", "absenceRevision", "finalizeTargetRevision", "supervisorStartTime", "firecrackerStartTime":
 		var value uint64
+		return json.Unmarshal(payload, &value) == nil
+	case "absenceObservedAtUnixNano":
+		var value int64
 		return json.Unmarshal(payload, &value) == nil
 	case "supervisorPid", "firecrackerPid":
 		var value uint32
@@ -289,7 +299,16 @@ func l8RuntimeOwnerJSONFieldTypeValid(name string, payload json.RawMessage) bool
 
 func validL8RuntimeOwnerState(state string) bool {
 	switch state {
-	case "starting", "unclaimed", "controlled", "stopping", "absent", "finalized", "uncertain":
+	case "starting", "running", "stopping", "absent", "finalizing", "finalized", "uncertain":
+		return true
+	default:
+		return false
+	}
+}
+
+func validL8RuntimeOwnerControllerState(state string) bool {
+	switch state {
+	case "none", "unclaimed", "controlled":
 		return true
 	default:
 		return false

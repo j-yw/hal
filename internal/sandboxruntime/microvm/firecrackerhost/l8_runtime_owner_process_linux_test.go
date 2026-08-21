@@ -5,12 +5,15 @@ package firecrackerhost
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestL8RuntimeOwnerProcessIdentityIncludesExactParentAndStart(t *testing.T) {
@@ -33,6 +36,40 @@ func TestL8RuntimeOwnerProcessIdentityIncludesExactParentAndStart(t *testing.T) 
 			t.Fatalf("malformed process identity = %v", err)
 		}
 	}
+}
+
+func TestL8RuntimeOwnerReplacementClosesEveryOwnedPidfdOnFailure(t *testing.T) {
+	seed := l8RuntimeOwnerTestSeed()
+	record := l8RuntimeOwnerTestRecord(t, seed, "01234567-89ab-cdef-0123-456789abcdef")
+	record.State, record.ControllerState, record.Revision = "running", "unclaimed", 2
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	fd := int(reader.Fd())
+	observation := l8RuntimeOwnerProcessObservation{PID: record.FirecrackerPID, ParentPID: 1, StartTime: record.FirecrackerStartTime, state: 'S', pidfd: fd, pidfdOwned: true}
+	_, gotErr := containL8RuntimeOwnerReplacement(record, l8RuntimeOwnerReplacementOps{
+		CurrentBootID: func() (string, error) { return record.HostBootID, nil },
+		InspectSupervisor: func(uint32) (l8RuntimeOwnerProcessObservation, bool, error) {
+			return l8RuntimeOwnerProcessObservation{}, false, nil
+		},
+		InspectChild:       func(uint32) (l8RuntimeOwnerProcessObservation, bool, error) { return observation, true, nil },
+		SignalKill:         func(l8RuntimeOwnerProcessObservation) error { return errors.New("private signal path") },
+		WaitTerminal:       func(context.Context, l8RuntimeOwnerProcessObservation) error { return errors.New("private wait path") },
+		ProcessAbsent:      func(uint32) (bool, error) { return false, nil },
+		AcquisitionBarrier: func() error { return nil },
+		RecordAbsent:       func(l8RuntimeOwnerAbsenceObservation) (uint64, error) { return 0, errors.New("must not record absent") },
+		RecordUncertain:    func() (uint64, error) { return 3, nil },
+		Now:                func() time.Time { return time.Unix(1, 0) },
+	})
+	if !errors.Is(gotErr, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("replacement = %v", gotErr)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("pidfd still open: %v", err)
+	}
+	_ = reader.Close()
 }
 
 func TestL8RuntimeOwnerPidfdSignalTerminalAndProcAbsenceAreDistinct(t *testing.T) {

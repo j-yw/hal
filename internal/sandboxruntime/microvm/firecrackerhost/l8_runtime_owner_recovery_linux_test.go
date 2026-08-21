@@ -66,6 +66,8 @@ func TestL8RuntimeOwnerStoreRejectsDirectoryModeAndHardlinks(t *testing.T) {
 	}
 	next := record
 	next.Revision = 1
+	next.State, next.ControllerState = "starting", "none"
+	next.AbsenceKind, next.AbsenceRevision, next.AbsenceObservedAtUnixNano = "", 0, 0
 	if err := writeL8RuntimeOwnerRecord(directory, next, seed, bootID); err != nil {
 		t.Fatalf("next revision write: %v", err)
 	}
@@ -74,6 +76,7 @@ func TestL8RuntimeOwnerStoreRejectsDirectoryModeAndHardlinks(t *testing.T) {
 	}
 	nextAgain := next
 	nextAgain.Revision = 2
+	nextAgain.State, nextAgain.ControllerState = "running", "unclaimed"
 	if err := writeL8RuntimeOwnerRecord(directory, nextAgain, seed, bootID); err != nil {
 		t.Fatalf("second revision write: %v", err)
 	}
@@ -120,9 +123,7 @@ func TestL8RuntimeOwnerStoreRequiresGenesisAndExclusiveCAS(t *testing.T) {
 		t.Fatalf("missing-record non-genesis write = %v", err)
 	}
 
-	genesis := nonGenesis
-	genesis.Revision, genesis.State = 0, "starting"
-	genesis.FirecrackerPID, genesis.FirecrackerStartTime = 0, 0
+	genesis := l8RuntimeOwnerTestGenesis(nonGenesis)
 	directoryFD, err := unix.Open(directory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -153,6 +154,7 @@ func TestL8RuntimeOwnerStoreRequiresGenesisAndExclusiveCAS(t *testing.T) {
 			<-start
 			next := genesis
 			next.Revision = 1
+			next.State, next.ControllerState = "starting", "none"
 			next.FirecrackerPID, next.FirecrackerStartTime = 303, 404
 			next.ReconnectSecret = l8RuntimeOwnerTestToken(byte(index + 10))
 			results <- writeL8RuntimeOwnerRecord(directory, next, seed, bootID)

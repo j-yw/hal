@@ -60,6 +60,11 @@ const l8D6RuntimeOwnerRecordDocBlock = `type firecrackerRuntimeOwnerRecordV1 str
 	ContractVersion              string ` + "`json:\"contractVersion\"`" + `
 	Revision                     uint64 ` + "`json:\"revision\"`" + `
 	State                        string ` + "`json:\"state\"`" + `
+	ControllerState              string ` + "`json:\"controllerState\"`" + `
+	AbsenceKind                  string ` + "`json:\"absenceKind\"`" + `
+	AbsenceRevision              uint64 ` + "`json:\"absenceRevision\"`" + `
+	AbsenceObservedAtUnixNano    int64 ` + "`json:\"absenceObservedAtUnixNano\"`" + `
+	FinalizeTargetRevision       uint64 ` + "`json:\"finalizeTargetRevision\"`" + `
 	HostBootID                   string ` + "`json:\"hostBootId\"`" + `
 	SeedCorrelationDigest        string ` + "`json:\"seedCorrelationDigest\"`" + `
 	SupervisorGeneration         string ` + "`json:\"supervisorGeneration\"`" + `

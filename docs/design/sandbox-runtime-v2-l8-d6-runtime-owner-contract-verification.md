@@ -240,7 +240,7 @@ finalized revision rather than trusting a caller-supplied expected token.
 
 ## R2 supervisor/bootstrap/reconnect prerequisite
 
-R2 adds only the explicit default-off `hal-firecracker-runtime-owner`
+The R2 RED contract freezes only the explicit default-off `hal-firecracker-runtime-owner`
 executable, its strict sealed configuration and inherited-fd ABI, the bounded
 private `SOCK_SEQPACKET` codec, namespace-fd retention/transfer, the durable
 owner transition/CAS machinery, and direct-parent plus replacement-owner
@@ -249,13 +249,14 @@ runtime, publish an absence proof, implement the neutral recovery provider,
 perform L7 recovery/finalization, persist a worker receipt, or wire command,
 worker, sandboxd, factory, or profile selection.
 
-Focused fake-safe verification is:
+The causal RED selector is expected to fail until the reviewed GREEN
+implementation exists; the command guard is expected to pass:
 
 ```bash
-go test ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner(Protocol|Transition|CommitUncertain|Containment|SupervisorConfig|Seqpacket|NamespaceTransfer|Executable|Process|Replacement)'
+go test ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner'
 go test ./cmd -run '^TestL8D6RuntimeOwnerSupervisor'
-go test -count=20 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner(Protocol|Transition|CommitUncertain|Containment|SupervisorConfig|Seqpacket|NamespaceTransfer|Executable|Process|Replacement)'
-go test -race -count=5 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner(Protocol|Transition|CommitUncertain|Containment|SupervisorConfig|Seqpacket|NamespaceTransfer|Executable|Process|Replacement)'
+go test -count=20 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner'
+go test -race -count=5 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner'
 ```
 
 The standalone executable is compiled on Linux and cross-compiled on a

@@ -874,6 +874,11 @@ type firecrackerRuntimeOwnerRecordV1 struct {
 	ContractVersion              string `json:"contractVersion"`
 	Revision                     uint64 `json:"revision"`
 	State                        string `json:"state"`
+	ControllerState              string `json:"controllerState"`
+	AbsenceKind                  string `json:"absenceKind"`
+	AbsenceRevision              uint64 `json:"absenceRevision"`
+	AbsenceObservedAtUnixNano    int64 `json:"absenceObservedAtUnixNano"`
+	FinalizeTargetRevision       uint64 `json:"finalizeTargetRevision"`
 	HostBootID                   string `json:"hostBootId"`
 	SeedCorrelationDigest        string `json:"seedCorrelationDigest"`
 	SupervisorGeneration         string `json:"supervisorGeneration"`
@@ -902,18 +907,41 @@ type firecrackerRuntimeOwnerRecordV1 struct {
 }
 ```
 
-`ContractVersion` is exactly `firecracker-runtime-owner-private-v1`. `State` is
-exactly one of `starting`, `unclaimed`, `controlled`, `stopping`, `absent`,
-`finalized`, or `uncertain`. `HostBootID` is the exact lowercase canonical UUID read from
+`ContractVersion` is exactly `firecracker-runtime-owner-private-v1`. Lifecycle
+`State` is exactly one of `starting`, `running`, `stopping`, `absent`,
+`finalizing`, `finalized`, or `uncertain`. `ControllerState` is independently
+exactly one of `none`, `unclaimed`, or `controlled`. Revision-zero and
+revision-one `starting` use `none`; publication changes lifecycle to `running`
+and controller state to `unclaimed`. Handshake, EOF, and Close rotate only
+`ControllerState` plus the one-use secret and preserve lifecycle `State`,
+including while `stopping`, `absent`, `uncertain`, `finalizing`, or `finalized`.
+A controller claim is never process-liveness authority. `HostBootID` is the exact lowercase canonical UUID read from
 `/proc/sys/kernel/random/boot_id` through a bounded no-symlink Linux reader.
 `SeedCorrelationDigest` is the exact private lowercase-hex digest defined for
 the absence token. Before binding, reconnect, signal, absence inspection, or
 cleanup, the owner recomputes it from every `JobCredentialIdentitySeed` field
 and rejects any mismatch; the safe L7 subset alone is never sufficient
 authority.
-`FinalizedCommitID` is empty in every state except `finalized`. The transition
-to `finalized` computes it from the exact target revision and persists the
-state, target revision, and commit ID atomically before returning the same
+`AbsenceKind`, `AbsenceRevision`, and `AbsenceObservedAtUnixNano` are zero in
+`starting`, `running`, and `stopping`. An `absent`, `finalizing`, or `finalized`
+record carries exactly `direct_wait` or `replacement_proc_absence`, binds
+`AbsenceRevision` to the revision at which that fresh observation was
+persisted, and carries a positive signed Unix-nanosecond observation no earlier
+than the seed. Repeated StopReap against `absent` must reobserve exact absence
+and persist a new `absent` revision/time before reissuing it; it never returns a
+cached stale observation. `uncertain` may retain the last complete absence
+tuple only as non-authoritative history and may move to `absent` only after a
+new exact direct Wait or double-`/proc` observation.
+
+`FinalizedCommitID` and `FinalizeTargetRevision` are empty/zero outside
+`finalizing` and `finalized`. After correlated L7 cleanup, Finalize computes the
+commit ID for the exact target revision, atomically persists `finalizing` with
+that ID and target first, then closes the retained namespace originals, and
+only then persists `finalized` at the exact target revision. Restart from
+`finalizing` verifies the HMAC and completed L7-cleanup intent, treats lost
+supervisor-owned namespace descriptors as closed, and retries only the final
+transition; it never returns a receipt from the intent record. The transition
+to `finalized` persists the state, target revision, and commit ID before returning the same
 `CommitID` and `FinalizedRevision` in the worker receipt. A finalized record
 with an empty, malformed, or recomputation-mismatched commit ID is uncertain.
 Supervisor PID/start identity is always nonzero. Firecracker PID and start time
@@ -984,7 +1012,8 @@ revision-one `starting` record, and only then releases the child's pre-exec gate
 and sends the publication acknowledgement. The revision-one `starting` record is durable before Firecracker publication or acknowledgement.
 No backend handle, readiness bridge,
 worker reference, or status is published before that acknowledgement. The
-supervisor atomically changes the record to `unclaimed` before admitting the
+supervisor atomically changes lifecycle to `running` and controller state to
+`unclaimed` before admitting the
 ordinary reconnect controller.
 
 Bootstrap pipe, daemon controller, supervisor, child-armed acknowledgement, record-write, child-gate, or
@@ -992,15 +1021,21 @@ acknowledgement loss before durable publication requires the supervisor to
 TERM/KILL and `Wait` the child under the shared bounded containment path, write
 `absent` if possible, close the bootstrap channel, and exit. It cannot leave an
 unrecorded surviving supervisor or child. `AbortStart` is the only recovery
-command accepted for a `starting` record: an exact live supervisor proves it
-never forked the child or kills and waits that child before replying. A new
-owner encountering revision-zero `starting` verifies the exact supervisor and
-either commands `AbortStart` or, after proving that supervisor absent, accepts
-only the start-gate/Pdeathsig proof that no Firecracker exec could survive. A
-revision-one `starting` record additionally requires exact recorded-child pidfd
-absence or successful supervisor abort. It never launches, publishes, adopts,
-or replaces a runtime from `starting`. Any uncertain gate, supervisor, child,
-or record observation retains the record and quarantine.
+command accepted for a `starting` record. For revision zero, the exact live
+supervisor must prove from its serialized bootstrap FSM that it has not forked
+the child and that the start-gate packet was not consumed; while holding the
+owner lock it then closes retained namespace/assets, unlinks the exact genesis
+record, syncs the directory, acknowledges retirement, and exits. Directory
+sync uncertainty receives no acknowledgement and retains quarantine. A new
+owner may request this causal retirement from that exact supervisor, but an
+absent supervisor plus revision zero is not enough: no unrecorded PID is
+available to inspect, so replacement retains the record rather than fabricating
+never-launched absence. For revision one, AbortStart first persists `stopping`
+at revision two, then TERM/KILL/Waits the exact child and persists `absent` with
+fresh direct-Wait evidence at revision three before replying. It never jumps
+revision-one `starting` directly to `absent`, launches, publishes, adopts, or
+replaces a runtime from `starting`. Any uncertain gate, supervisor, child,
+record-unlink, or record observation retains quarantine.
 
 No PID, start time, host boot ID, listener identity, secret, record pathname,
 live descriptor, bootstrap capability, or raw capability leaves this owner-only
@@ -1018,13 +1053,24 @@ The supervisor mode receives an already-connected daemon bootstrap
 `SOCK_SEQPACKET` socket as fd 3, the pinned mode-`0700` owner directory as fd
 4, a sealed bounded supervisor configuration memfd as fd 5, and exactly two
 sealed launch-asset descriptors as fd 6 then fd 7 in kernel-then-rootfs order.
+Fd 8 is an already-open read-only handle to the stable owner-root
+`receipt-hmac.key`. Before supervisor launch the daemon opens the pinned owner
+root component-by-component with `openat` plus `O_NOFOLLOW`, then opens that
+exact basename relative to the pinned root with
+`O_RDONLY|O_CLOEXEC|O_NOFOLLOW`. Both daemon and supervisor require a regular
+mode-`0600`, current-service-UID, single-link file, read exactly 32 bytes by
+`pread`, and reject size change, replacement, wrong inode identity, or any
+read/close uncertainty. The key is never named in argv/config, sent through a
+packet, or inherited by child-gate/Firecracker. Missing or invalid fd 8 fails
+before revision-zero creation; the supervisor never creates or replaces the
+stable key.
 The supervisor owns those descriptors before acknowledging bootstrap and
 retains them until it has either transferred duplicates into the child or
 completed bounded abort containment. The child-gate
 mode receives its supervisor gate `SOCK_SEQPACKET` socket as fd 3, the same
 sealed configuration memfd as fd 4, and the exact Firecracker inherited
 descriptors starting at fd 5 in user-namespace, network-namespace, kernel, and
-rootfs order. Every other inherited
+rootfs order. Child-gate has no key descriptor. Every other inherited
 descriptor is closed before entering either mode. The supervisor configuration
 is at most 32 KiB, strictly decoded, contains the complete validated seed plus
 the clean absolute namespace-wrapper and Firecracker executable paths, exact
@@ -1061,6 +1107,7 @@ const (
 	l8RuntimeOwnerPacketLimit = 512
 	l8RuntimeOwnerHandshakeTimeout = 5 * time.Second
 
+	l8RuntimeOwnerOpcodeReject uint16 = 0
 	l8RuntimeOwnerOpcodeBootstrapStart uint16 = 1
 	l8RuntimeOwnerOpcodeBootstrapPublished uint16 = 2
 	l8RuntimeOwnerOpcodeChildArmed uint16 = 3
@@ -1099,6 +1146,28 @@ The 24-byte header is the eight ASCII magic bytes, version, opcode, status,
 body length, and sequence in that order. There are no padding or reserved
 bytes. A rejected authentication or malformed packet receives the same empty
 body with `StatusRejected`; field-specific diagnostics never cross the socket.
+Opcode zero is response-only generic Reject: status rejected, sequence zero,
+empty body, and no rights. For a structurally valid authenticated request, an
+invalid-state, uncertain, or unsupported response echoes its opcode and
+sequence, carries the corresponding nonzero status, and has empty body/no
+rights. No request may carry nonzero status and no successful response may use
+an unlisted body or rights role.
+
+The complete role matrix is exact: BootstrapStart request `(seq=0,body=32,rights=2)`;
+BootstrapPublished response `(seq=0,body=8,rights=0)`; ChildArmed request and
+ChildRelease response `(seq=0,body=0,rights=0)`; Handshake request
+`(seq=0,body=97..224,rights=0)` and response `(seq=0,body=51,rights=0)`;
+AbortStart, Inspect, StopReap, AcquireNamespaces, and Close requests
+`(seq>=1,body=43,rights=0)`; AbortStart, Inspect, StopReap, and Close successful
+responses `(same seq,body=24,rights=0)`; AcquireNamespaces successful response
+`(same seq,body=24,rights=2)`; Finalize request `(seq>=1,body=59,rights=0)` and
+response `(same seq,body=51,rights=0)`; Commit request
+`(seq>=1,body=94,rights=0)` and response `(same seq,body=8,rights=0)`. The role
+validator is applied before body decoding or descriptor adoption. Rights on
+any other role, missing rights on a rights-bearing role, multiple control
+messages, non-`SCM_RIGHTS` control data, and any received descriptor count
+other than the exact role count are rejected and all received descriptors are
+closed.
 
 The bootstrap-start packet has sequence zero and a 32-byte body of four
 big-endian uint64 values: user-namespace device, user-namespace inode,
@@ -1116,7 +1185,7 @@ The handshake packet has sequence zero. Its body is the exact 43-byte
 supervisor generation, a two-byte runtime-generation length followed by one to
 128 validated safe-ID bytes, an eight-byte record revision, and the exact
 43-byte reconnect secret. The successful response body is the new 43-byte
-controller-session generation followed by the new eight-byte controlled
+controller-session generation followed by the new eight-byte controller-claim
 record revision. `AbortStart` is accepted only before ordinary controller
 admission and otherwise uses the request shape below.
 
@@ -1137,8 +1206,9 @@ Finalize; supervisor loss makes namespace recovery uncertain. All receive,
 validation, replay, controller-loss, and rejection paths close unaccepted or
 created descriptors exactly once.
 
-The exact state-byte mapping is `starting=1`, `unclaimed=2`, `controlled=3`,
-`stopping=4`, `absent=5`, `finalized=6`, and `uncertain=7`. Absence kind is
+The exact lifecycle state-byte mapping is `starting=1`, `running=2`,
+`stopping=3`, `absent=4`, `finalizing=5`, `finalized=6`, and `uncertain=7`.
+Controller state is not encoded in the 24-byte lifecycle response. Absence kind is
 zero for none, one for direct-child `Wait`, and two for replacement-owner
 double-`/proc` absence. No packet transports an absence proof.
 
@@ -1162,8 +1232,8 @@ retires the per-runtime owner record, closes and removes its reconnect socket,
 acknowledges success, and exits. The stable owner-root HMAC key is not a
 per-runtime artifact and is not removed by this request. A response-loss replay
 with record absent is authenticated by that stable key and is idempotent.
-Controller Close is distinct: it has only the 43-byte session body, rotates to
-`unclaimed`, and never closes namespace originals, retires owner state, or
+Controller Close is distinct: it has only the 43-byte session body, rotates
+controller state to `unclaimed` without changing lifecycle, and never closes namespace originals, retires owner state, or
 implies process/L7 absence.
 
 The reconnect transport is a private Linux Unix `SOCK_SEQPACKET` listener. The
@@ -1178,14 +1248,15 @@ does not disclose which field failed.
 
 At most one handshake and exactly one live controller are admitted. Before
 acknowledging a successful handshake, the supervisor generates a new one-use
-secret, atomically persists the next `controlled` revision, invalidates the old
+secret, atomically persists the next lifecycle-preserving controller
+`controlled` revision, invalidates the old
 secret, and binds a new random controller-session generation to that
 connection. If persistence fails, it sends no success and the prior record
 is reconciled under the commit-uncertain rule above. If success persistence completed but the acknowledgement is
 lost, the daemon must reread the record and reconnect with the replacement
 secret; replaying the consumed secret always fails. EOF or authenticated
-controller close changes `controlled` to `unclaimed` with another atomic secret
-rotation while leaving the Firecracker child owned and running.
+controller close changes only controller state from `controlled` to `unclaimed`
+with another atomic secret rotation while leaving lifecycle unchanged.
 
 Controller requests carry the controller-session generation and an unsigned
 64-bit sequence starting at one. Exactly one request may be outstanding. The
@@ -1194,9 +1265,11 @@ returns the byte-identical cached sanitized response without repeating its
 side effect; older, skipped, wrapped, cross-session, or concurrently outstanding
 sequences fail closed. A lost connection never transfers a response cache to a
 new session. New-session inspection and stop/reap are idempotent against the
-durable owner FSM, so recovery resumes from `unclaimed`, `stopping`, `absent`,
-or `uncertain` without replaying an unproved transition. No request can move
-`uncertain` back to running or `absent` back to live.
+durable owner FSM, so recovery resumes from lifecycle `running`, `stopping`,
+`absent`, `uncertain`, `finalizing`, or `finalized` without replaying an
+unproved transition. Admission never changes lifecycle. No request can move
+`uncertain` to `absent` without a new exact absence observation or move
+`absent` back to live.
 
 ### Stop, reap, supervisor loss, and L7 cleanup
 
@@ -1235,7 +1308,10 @@ supervisor and Firecracker PIDs, compares each pinned process's exact proc start
 time with the record, and reinspects after every signal or poll. An exact
 surviving supervisor is reconnected, never replaced. If the recorded supervisor
 is absent and the exact recorded Firecracker incarnation remains, the
-replacement sends SIGKILL through that pidfd and waits for pidfd terminal
+replacement additionally requires its observed parent PID to be exactly one.
+This slice does not assume or authorize an unrecorded subreaper; any other
+parent after exact supervisor absence is a replacement/mismatch and remains
+uncertain without signalling. The replacement sends SIGKILL through that pidfd and waits for pidfd terminal
 readiness. Readiness alone, including a zombie, never proves reap. Replacement
 may record externally reaped absence only after the exact `/proc/<pid>` entry
 is absent in two inspections separated by the acquisition barrier; it does not

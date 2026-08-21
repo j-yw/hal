@@ -3,8 +3,10 @@
 package firecrackerhost
 
 import (
+	"context"
 	"errors"
 	"os"
+	"reflect"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -103,6 +105,90 @@ func TestL8RuntimeOwnerNamespaceTransferRejectsCountOrderKindAndCorrelation(t *t
 			t.Fatalf("correlation length %d = %v", len(body), err)
 		}
 	}
+}
+
+func TestL8RuntimeOwnerBootstrapPublishesOnlyAfterArmedChildRevisionOne(t *testing.T) {
+	user, err := os.Open("/proc/self/ns/user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer user.Close()
+	network, err := os.Open("/proc/self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer network.Close()
+	correlation := l8RuntimeOwnerTestNamespaceCorrelation(t, user, network)
+	genesis := l8RuntimeOwnerTestGenesis(l8RuntimeOwnerTestRecord(t, l8RuntimeOwnerTestSeed(), "01234567-89ab-cdef-0123-456789abcdef"))
+	store := &l8RuntimeOwnerTestStore{}
+	var events []string
+	owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{
+		Store: store, GenesisRecord: genesis, ExpectedUID: uint32(os.Geteuid()), CommitKey: make([]byte, 32),
+		StartChild: func() (l8RuntimeOwnerStartedChild, error) {
+			events = append(events, "armed")
+			return l8RuntimeOwnerStartedChild{
+				Observation: l8RuntimeOwnerProcessObservation{PID: 5001, ParentPID: genesis.SupervisorPID, StartTime: 7001, state: 'S', pidfd: 10, pidfdOwned: true},
+				Release: func() error {
+					events = append(events, "release")
+					if store.record.Revision != 1 || store.record.State != "starting" {
+						t.Fatalf("released before revision one: %#v", store.record)
+					}
+					return nil
+				},
+				Abort: func() error { events = append(events, "abort"); return nil },
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := owner.HandleBootstrap(context.Background(), uint32(os.Geteuid()), l8RuntimeOwnerReceivedPacketV1{Packet: l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeBootstrapStart, Body: encodeL8RuntimeOwnerNamespaceCorrelation(correlation)}, Files: []*os.File{user, network}})
+	if err != nil || result.Packet.Opcode != l8RuntimeOwnerOpcodeBootstrapPublished || store.record.Revision != 2 || store.record.State != "running" || store.record.ControllerState != "unclaimed" || !reflect.DeepEqual(events, []string{"armed", "release"}) {
+		t.Fatalf("bootstrap = %#v record %#v events %v err %v", result, store.record, events, err)
+	}
+}
+
+func TestL8RuntimeOwnerBootstrapFailureAbortsAndNeverAcknowledgesPublication(t *testing.T) {
+	for _, scenario := range []struct {
+		name          string
+		releaseErr    bool
+		transitionErr bool
+	}{
+		{name: "release failure", releaseErr: true}, {name: "revision one durability", transitionErr: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			genesis := l8RuntimeOwnerTestGenesis(l8RuntimeOwnerTestRecord(t, l8RuntimeOwnerTestSeed(), "01234567-89ab-cdef-0123-456789abcdef"))
+			store := &l8RuntimeOwnerFailingTransitionStore{l8RuntimeOwnerTestStore: l8RuntimeOwnerTestStore{}, failTransition: scenario.transitionErr}
+			aborts := 0
+			owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{Store: store, GenesisRecord: genesis, ExpectedUID: 1000, CommitKey: make([]byte, 32), StartChild: func() (l8RuntimeOwnerStartedChild, error) {
+				return l8RuntimeOwnerStartedChild{Observation: l8RuntimeOwnerProcessObservation{PID: 5, ParentPID: genesis.SupervisorPID, StartTime: 7, state: 'S', pidfd: 9, pidfdOwned: true}, Release: func() error {
+					if scenario.releaseErr {
+						return errors.New("private release")
+					}
+					return nil
+				}, Abort: func() error { aborts++; return nil }}, nil
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := owner.HandleBootstrap(context.Background(), 1000, l8RuntimeOwnerReceivedPacketV1{Packet: l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeBootstrapStart, Body: make([]byte, 32)}, Files: make([]*os.File, 2)})
+			if !errors.Is(err, errL8RuntimeOwnerInvalid) || result.Packet.Opcode == l8RuntimeOwnerOpcodeBootstrapPublished || aborts != 1 {
+				t.Fatalf("bootstrap failure = %#v, %v aborts %d", result, err, aborts)
+			}
+		})
+	}
+}
+
+type l8RuntimeOwnerFailingTransitionStore struct {
+	l8RuntimeOwnerTestStore
+	failTransition bool
+}
+
+func (store *l8RuntimeOwnerFailingTransitionStore) Transition(ctx context.Context, expected uint64, next firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, error) {
+	if store.failTransition {
+		return firecrackerRuntimeOwnerRecordV1{}, errors.New("private durable path")
+	}
+	return store.l8RuntimeOwnerTestStore.Transition(ctx, expected, next)
 }
 
 func l8RuntimeOwnerTestNamespaceCorrelation(t *testing.T, user, network *os.File) l8RuntimeOwnerNamespaceCorrelationV1 {

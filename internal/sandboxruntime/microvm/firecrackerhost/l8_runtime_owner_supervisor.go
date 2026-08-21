@@ -14,6 +14,7 @@ const (
 	l8RuntimeOwnerPacketLimit             = 512
 	l8RuntimeOwnerHandshakeTimeout        = 5 * time.Second
 
+	l8RuntimeOwnerOpcodeReject             uint16 = 0
 	l8RuntimeOwnerOpcodeBootstrapStart     uint16 = 1
 	l8RuntimeOwnerOpcodeBootstrapPublished uint16 = 2
 	l8RuntimeOwnerOpcodeChildArmed         uint16 = 3
@@ -64,6 +65,27 @@ type l8RuntimeOwnerHandshakeAckV1 struct {
 	RecordRevision              uint64
 }
 
+type l8RuntimeOwnerControllerRequestV1 struct {
+	ControllerSessionGeneration string
+}
+
+type l8RuntimeOwnerFinalizeRequestV1 struct {
+	ControllerSessionGeneration string
+	AbsenceRevision             uint64
+	ObservedAtUnixNano          int64
+}
+
+type l8RuntimeOwnerFinalizeAckV1 struct {
+	CommitID          string
+	FinalizedRevision uint64
+}
+
+type l8RuntimeOwnerCommitRequestV1 struct {
+	ControllerSessionGeneration string
+	CommitID                    string
+	FinalizedRevision           uint64
+}
+
 type l8RuntimeOwnerResponseV1 struct {
 	State              byte
 	AbsenceKind        byte
@@ -77,13 +99,57 @@ type l8RuntimeOwnerAbsenceObservation struct {
 	ObservedAt time.Time
 }
 
+type l8RuntimeOwnerRecordStore interface {
+	Load(context.Context) (firecrackerRuntimeOwnerRecordV1, error)
+	CreateGenesis(context.Context, firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, error)
+	Transition(context.Context, uint64, firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, error)
+	RetireStartingZero(context.Context, uint64) error
+	RetireFinalized(context.Context, uint64, string) error
+}
+
+type l8RuntimeOwnerTransactionOps struct {
+	Lock           func(context.Context) error
+	Unlock         func() error
+	Read           func() (firecrackerRuntimeOwnerRecordV1, bool, error)
+	WriteAndRename func(firecrackerRuntimeOwnerRecordV1) error
+	SyncDirectory  func() error
+}
+
+type l8RuntimeOwnerControlResult struct {
+	Packet l8RuntimeOwnerPacketV1
+	Files  []int
+	Exit   bool
+}
+
+type l8RuntimeOwnerStartedChild struct {
+	Observation l8RuntimeOwnerProcessObservation
+	Release     func() error
+	Abort       func() error
+}
+
+type l8RuntimeOwnerSupervisorOptions struct {
+	Store               l8RuntimeOwnerRecordStore
+	GenesisRecord       firecrackerRuntimeOwnerRecordV1
+	ExpectedUID         uint32
+	RandomToken         func() (string, error)
+	StartChild          func() (l8RuntimeOwnerStartedChild, error)
+	ContainChild        func() (l8RuntimeOwnerAbsenceObservation, error)
+	ReinspectAbsence    func() (l8RuntimeOwnerAbsenceObservation, error)
+	DuplicateNamespaces func() ([]int, error)
+	CloseNamespaces     func() error
+	AbortStartingZero   func() error
+	CommitKey           []byte
+}
+
+type l8RuntimeOwnerSupervisor struct{}
+
 type l8RuntimeOwnerContainmentOps struct {
-	RecordStopping  func() error
+	RecordStopping  func() (uint64, error)
 	Terminate       func() error
 	Wait            func(context.Context) (bool, error)
 	Kill            func() error
-	RecordAbsent    func(l8RuntimeOwnerAbsenceObservation) error
-	RecordUncertain func() error
+	RecordAbsent    func(l8RuntimeOwnerAbsenceObservation) (uint64, error)
+	RecordUncertain func() (uint64, error)
 	Now             func() time.Time
 }
 
@@ -102,8 +168,8 @@ type l8RuntimeOwnerReplacementOps struct {
 	WaitTerminal       func(context.Context, l8RuntimeOwnerProcessObservation) error
 	ProcessAbsent      func(uint32) (bool, error)
 	AcquisitionBarrier func() error
-	RecordAbsent       func(l8RuntimeOwnerAbsenceObservation) error
-	RecordUncertain    func() error
+	RecordAbsent       func(l8RuntimeOwnerAbsenceObservation) (uint64, error)
+	RecordUncertain    func() (uint64, error)
 	Now                func() time.Time
 }
 
@@ -139,12 +205,52 @@ func decodeL8RuntimeOwnerResponse([]byte) (l8RuntimeOwnerResponseV1, error) {
 	return l8RuntimeOwnerResponseV1{}, errL8RuntimeOwnerProtocol
 }
 
+func encodeL8RuntimeOwnerControllerRequest(l8RuntimeOwnerControllerRequestV1) ([]byte, error) {
+	return nil, errL8RuntimeOwnerProtocol
+}
+
+func decodeL8RuntimeOwnerControllerRequest([]byte) (l8RuntimeOwnerControllerRequestV1, error) {
+	return l8RuntimeOwnerControllerRequestV1{}, errL8RuntimeOwnerProtocol
+}
+
+func encodeL8RuntimeOwnerFinalizeRequest(l8RuntimeOwnerFinalizeRequestV1) ([]byte, error) {
+	return nil, errL8RuntimeOwnerProtocol
+}
+
+func decodeL8RuntimeOwnerFinalizeRequest([]byte) (l8RuntimeOwnerFinalizeRequestV1, error) {
+	return l8RuntimeOwnerFinalizeRequestV1{}, errL8RuntimeOwnerProtocol
+}
+
+func encodeL8RuntimeOwnerFinalizeAck(l8RuntimeOwnerFinalizeAckV1) ([]byte, error) {
+	return nil, errL8RuntimeOwnerProtocol
+}
+
+func decodeL8RuntimeOwnerFinalizeAck([]byte) (l8RuntimeOwnerFinalizeAckV1, error) {
+	return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerProtocol
+}
+
+func encodeL8RuntimeOwnerCommitRequest(l8RuntimeOwnerCommitRequestV1) ([]byte, error) {
+	return nil, errL8RuntimeOwnerProtocol
+}
+
+func decodeL8RuntimeOwnerCommitRequest([]byte) (l8RuntimeOwnerCommitRequestV1, error) {
+	return l8RuntimeOwnerCommitRequestV1{}, errL8RuntimeOwnerProtocol
+}
+
+func validateL8RuntimeOwnerPacketRole(l8RuntimeOwnerPacketV1, bool, int) error {
+	return errL8RuntimeOwnerProtocol
+}
+
 func validL8RuntimeOwnerTransition(firecrackerRuntimeOwnerRecordV1, firecrackerRuntimeOwnerRecordV1) bool {
 	return false
 }
 
 func reconcileL8RuntimeOwnerCommitUncertain(firecrackerRuntimeOwnerRecordV1, firecrackerRuntimeOwnerRecordV1, firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, bool, error) {
 	return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
+}
+
+func transitionL8RuntimeOwnerRecordLocked(context.Context, l8RuntimeOwnerTransactionOps, uint64, firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, error) {
+	return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
 }
 
 func containL8RuntimeOwnerChild(l8RuntimeOwnerContainmentOps) (l8RuntimeOwnerAbsenceObservation, error) {
@@ -164,4 +270,28 @@ func (controller *l8RuntimeOwnerContainmentController) Stop(ops l8RuntimeOwnerCo
 
 func containL8RuntimeOwnerReplacement(firecrackerRuntimeOwnerRecordV1, l8RuntimeOwnerReplacementOps) (l8RuntimeOwnerAbsenceObservation, error) {
 	return l8RuntimeOwnerAbsenceObservation{}, errL8RuntimeOwnerInvalid
+}
+
+func newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions) (*l8RuntimeOwnerSupervisor, error) {
+	return nil, errL8RuntimeOwnerInvalid
+}
+
+func (*l8RuntimeOwnerSupervisor) HandleBootstrap(context.Context, uint32, l8RuntimeOwnerReceivedPacketV1) (l8RuntimeOwnerControlResult, error) {
+	return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
+}
+
+func (*l8RuntimeOwnerSupervisor) AbortStart(context.Context, uint32, l8RuntimeOwnerReceivedPacketV1) (l8RuntimeOwnerControlResult, error) {
+	return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
+}
+
+func (*l8RuntimeOwnerSupervisor) AdmitController(context.Context, uint32, l8RuntimeOwnerReceivedPacketV1) (l8RuntimeOwnerControlResult, error) {
+	return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
+}
+
+func (*l8RuntimeOwnerSupervisor) HandleController(context.Context, l8RuntimeOwnerReceivedPacketV1) (l8RuntimeOwnerControlResult, error) {
+	return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
+}
+
+func (*l8RuntimeOwnerSupervisor) ControllerLost(context.Context) error {
+	return errL8RuntimeOwnerInvalid
 }

@@ -101,7 +101,8 @@ func TestL8RuntimeOwnerCommitVerifierRecomputesSeedBoundHMAC(t *testing.T) {
 func TestL8RuntimeOwnerRecordSchemaIsExact(t *testing.T) {
 	typeOf := reflect.TypeOf(firecrackerRuntimeOwnerRecordV1{})
 	want := []string{
-		"ContractVersion", "Revision", "State", "HostBootID", "SeedCorrelationDigest", "SupervisorGeneration",
+		"ContractVersion", "Revision", "State", "ControllerState", "AbsenceKind", "AbsenceRevision", "AbsenceObservedAtUnixNano", "FinalizeTargetRevision",
+		"HostBootID", "SeedCorrelationDigest", "SupervisorGeneration",
 		"SupervisorPID", "SupervisorStartTime", "FirecrackerPID", "FirecrackerStartTime", "FinalizedCommitID",
 		"SandboxID", "ExecutionID", "WorkerID", "HostID", "RuntimeDriver", "RuntimeID", "RuntimeGeneration",
 		"FirecrackerProcessGeneration", "VsockGeneration", "NetworkPlanID", "PolicySnapshotID", "ProxySessionID",
@@ -164,8 +165,7 @@ func TestL8RuntimeOwnerRecordValidationRejectsSubstitutionAndPIDReuse(t *testing
 			}
 		})
 	}
-	starting := record
-	starting.Revision, starting.State, starting.FirecrackerPID, starting.FirecrackerStartTime = 0, "starting", 0, 0
+	starting := l8RuntimeOwnerTestGenesis(record)
 	if err := validateFirecrackerRuntimeOwnerRecordV1(starting, seed, bootID); err != nil {
 		t.Fatalf("revision-zero starting: %v", err)
 	}
@@ -321,7 +321,8 @@ func l8RuntimeOwnerTestRecord(t *testing.T, seed sandboxruntime.JobCredentialIde
 		t.Fatal(err)
 	}
 	return firecrackerRuntimeOwnerRecordV1{
-		ContractVersion: "firecracker-runtime-owner-private-v1", Revision: 8, State: "absent", HostBootID: bootID,
+		ContractVersion: "firecracker-runtime-owner-private-v1", Revision: 8, State: "absent", ControllerState: "unclaimed",
+		AbsenceKind: "direct_wait", AbsenceRevision: 8, AbsenceObservedAtUnixNano: seed.IssuedAt.Add(time.Second).UnixNano(), HostBootID: bootID,
 		SeedCorrelationDigest: hex.EncodeToString(digest[:]), SupervisorGeneration: l8RuntimeOwnerTestToken(1),
 		SupervisorPID: 101, SupervisorStartTime: 202, FirecrackerPID: 303, FirecrackerStartTime: 404,
 		SandboxID: seed.SandboxID, ExecutionID: seed.ExecutionID, WorkerID: seed.WorkerID, HostID: seed.HostID,
@@ -336,6 +337,11 @@ func l8RuntimeOwnerTestRecord(t *testing.T, seed sandboxruntime.JobCredentialIde
 func l8RuntimeOwnerTestGenesis(record firecrackerRuntimeOwnerRecordV1) firecrackerRuntimeOwnerRecordV1 {
 	record.Revision = 0
 	record.State = "starting"
+	record.ControllerState = "none"
+	record.AbsenceKind = ""
+	record.AbsenceRevision = 0
+	record.AbsenceObservedAtUnixNano = 0
+	record.FinalizeTargetRevision = 0
 	record.FirecrackerPID = 0
 	record.FirecrackerStartTime = 0
 	return record
