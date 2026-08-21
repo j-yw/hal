@@ -277,32 +277,48 @@ func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
 func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
 	t.Parallel()
 
-	directory := t.TempDir()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
+	mutations := []struct {
+		name   string
+		source string
+	}{
+		{name: "package alias", source: "var alternateClientPolicyAllow = newClientPolicyAllowDecision"},
+		{name: "typed function value", source: "var alternateClientPolicyAllow func() ClientPolicyDecision = newClientPolicyAllowDecision"},
+		{name: "stored call result", source: "var alternateClientPolicyAllow = newClientPolicyAllowDecision()"},
+		{name: "function value composite", source: "var alternateClientPolicyAllow = []func() ClientPolicyDecision{newClientPolicyAllowDecision}"},
+		{name: "struct function value composite", source: "var alternateClientPolicyAllow = struct{ issue func() ClientPolicyDecision }{issue: newClientPolicyAllowDecision}"},
+		{name: "closure call", source: "var alternateClientPolicyAllow = func() ClientPolicyDecision { return newClientPolicyAllowDecision() }"},
+		{name: "address escape", source: "var alternateClientPolicyAllow = &newClientPolicyAllowDecision"},
+		{name: "local alias", source: "func init() { alternateClientPolicyAllow := newClientPolicyAllowDecision; _ = alternateClientPolicyAllow }"},
+		{name: "direct allow composite", source: "var alternateClientPolicyAllow = ClientPolicyDecision{allow: true}"},
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
-		}
-		source, err := os.ReadFile(entry.Name())
-		if err != nil {
-			t.Fatalf("ReadFile(%s): %v", entry.Name(), err)
-		}
-		if err := os.WriteFile(directory+"/"+entry.Name(), source, 0o600); err != nil {
-			t.Fatalf("WriteFile(%s): %v", entry.Name(), err)
-		}
-	}
-	if err := os.WriteFile(
-		directory+"/allow_alias.go",
-		[]byte("package credentialclient\n\nvar alternateClientPolicyAllow = newClientPolicyAllowDecision\n"),
-		0o600,
-	); err != nil {
-		t.Fatalf("WriteFile(allow_alias.go): %v", err)
-	}
-	if err := validateClientProductionPolicyPackage(directory); err == nil {
-		t.Fatal("package-wide allow guard accepted GenDecl function-value alias")
+	for _, mutation := range mutations {
+		mutation := mutation
+		t.Run(mutation.name, func(t *testing.T) {
+			directory := t.TempDir()
+			entries, err := os.ReadDir(".")
+			if err != nil {
+				t.Fatalf("ReadDir: %v", err)
+			}
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+					continue
+				}
+				source, err := os.ReadFile(entry.Name())
+				if err != nil {
+					t.Fatalf("ReadFile(%s): %v", entry.Name(), err)
+				}
+				if err := os.WriteFile(directory+"/"+entry.Name(), source, 0o600); err != nil {
+					t.Fatalf("WriteFile(%s): %v", entry.Name(), err)
+				}
+			}
+			mutatedSource := "package credentialclient\n\n" + mutation.source + "\n"
+			if err := os.WriteFile(directory+"/allow_mutation.go", []byte(mutatedSource), 0o600); err != nil {
+				t.Fatalf("WriteFile(allow_mutation.go): %v", err)
+			}
+			if err := validateClientProductionPolicyPackage(directory); err == nil {
+				t.Fatal("package-wide allow guard accepted adversarial declaration/reference")
+			}
+		})
 	}
 }
 
@@ -313,8 +329,11 @@ func validateClientProductionPolicyPackage(directory string) error {
 	}
 	owners := make([]string, 0, 1)
 	allowConstructors := make([]string, 0, 1)
-	allowReferences := make([]string, 0, 1)
-	allowLiterals := make([]string, 0, 1)
+	unexpectedAllowReferences := make([]string, 0, 1)
+	unexpectedAllowLiterals := make([]string, 0, 1)
+	var canonicalAllowDeclaration *ast.Ident
+	var canonicalAllowCall *ast.Ident
+	var canonicalAllowLiteral *ast.CompositeLit
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
@@ -331,21 +350,18 @@ func validateClientProductionPolicyPackage(directory string) error {
 				}
 				if typed.Name.Name == "newClientPolicyAllowDecision" {
 					allowConstructors = append(allowConstructors, entry.Name())
-				}
-				if typed.Body != nil {
-					ast.Inspect(typed.Body, func(node ast.Node) bool {
-						switch value := node.(type) {
-						case *ast.Ident:
-							if value.Name == "newClientPolicyAllowDecision" {
-								allowReferences = append(allowReferences, entry.Name()+":"+typed.Name.Name)
-							}
-						case *ast.CompositeLit:
-							if clientPolicyDecisionLiteralAllows(value) {
-								allowLiterals = append(allowLiterals, entry.Name()+":"+typed.Name.Name)
-							}
+					if entry.Name() == "contracts.go" {
+						literal, ok := clientPolicyCanonicalAllowConstructor(typed)
+						if ok && canonicalAllowDeclaration == nil {
+							canonicalAllowDeclaration = typed.Name
+							canonicalAllowLiteral = literal
 						}
-						return true
-					})
+					}
+				}
+				if entry.Name() == "client_policy.go" {
+					if identifier := clientPolicyCanonicalAllowCallIdentifier(typed); identifier != nil && canonicalAllowCall == nil {
+						canonicalAllowCall = identifier
+					}
 				}
 			case *ast.GenDecl:
 				for _, specification := range typed.Specs {
@@ -364,6 +380,19 @@ func validateClientProductionPolicyPackage(directory string) error {
 				}
 			}
 		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch value := node.(type) {
+			case *ast.Ident:
+				if value.Name == "newClientPolicyAllowDecision" && value != canonicalAllowDeclaration && value != canonicalAllowCall {
+					unexpectedAllowReferences = append(unexpectedAllowReferences, entry.Name())
+				}
+			case *ast.CompositeLit:
+				if clientPolicyDecisionLiteralAllows(value) && value != canonicalAllowLiteral {
+					unexpectedAllowLiterals = append(unexpectedAllowLiterals, entry.Name())
+				}
+			}
+			return true
+		})
 	}
 	if !reflect.DeepEqual(owners, []string{"client_policy.go"}) {
 		return fmt.Errorf("NewClientPolicy production owners = %v, want [client_policy.go]", owners)
@@ -371,13 +400,52 @@ func validateClientProductionPolicyPackage(directory string) error {
 	if !reflect.DeepEqual(allowConstructors, []string{"contracts.go"}) {
 		return fmt.Errorf("allow-decision constructors = %v, want [contracts.go]", allowConstructors)
 	}
-	if !reflect.DeepEqual(allowReferences, []string{"client_policy.go:Authorize"}) {
-		return fmt.Errorf("allow-decision constructor references = %v, want sole canonical policy site", allowReferences)
+	if canonicalAllowDeclaration == nil || canonicalAllowCall == nil || canonicalAllowLiteral == nil {
+		return errors.New("canonical allow declaration/call is absent or malformed")
 	}
-	if !reflect.DeepEqual(allowLiterals, []string{"contracts.go:newClientPolicyAllowDecision"}) {
-		return fmt.Errorf("direct allow literals = %v, want sole private issuer", allowLiterals)
+	if len(unexpectedAllowReferences) != 0 {
+		return fmt.Errorf("allow-decision constructor has noncanonical references in %v", unexpectedAllowReferences)
+	}
+	if len(unexpectedAllowLiterals) != 0 {
+		return fmt.Errorf("direct allow literals have noncanonical issuers in %v", unexpectedAllowLiterals)
 	}
 	return nil
+}
+
+func clientPolicyCanonicalAllowConstructor(function *ast.FuncDecl) (*ast.CompositeLit, bool) {
+	if function == nil || function.Recv != nil || function.Name.Name != "newClientPolicyAllowDecision" ||
+		function.Type.Params.NumFields() != 0 || function.Type.Results == nil || function.Type.Results.NumFields() != 1 ||
+		normalizeClientPolicyExpression(function.Type.Results.List[0].Type) != "ClientPolicyDecision" ||
+		function.Body == nil || len(function.Body.List) != 1 {
+		return nil, false
+	}
+	result, ok := function.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(result.Results) != 1 {
+		return nil, false
+	}
+	literal, ok := result.Results[0].(*ast.CompositeLit)
+	return literal, ok && normalizeClientPolicyExpression(literal) == "ClientPolicyDecision{allow: true}"
+}
+
+func clientPolicyCanonicalAllowCallIdentifier(function *ast.FuncDecl) *ast.Ident {
+	if function == nil || function.Name.Name != "Authorize" || function.Recv == nil || len(function.Recv.List) != 1 ||
+		clientPolicyExpressionText(function.Recv.List[0].Type) != "clientPolicy" || function.Body == nil || len(function.Body.List) == 0 {
+		return nil
+	}
+	result, ok := function.Body.List[len(function.Body.List)-1].(*ast.ReturnStmt)
+	if !ok || len(result.Results) != 2 {
+		return nil
+	}
+	call, ok := result.Results[0].(*ast.CallExpr)
+	if !ok || len(call.Args) != 0 {
+		return nil
+	}
+	identifier, ok := call.Fun.(*ast.Ident)
+	nilResult, nilOK := result.Results[1].(*ast.Ident)
+	if !ok || identifier.Name != "newClientPolicyAllowDecision" || !nilOK || nilResult.Name != "nil" {
+		return nil
+	}
+	return identifier
 }
 
 func validateClientProductionPolicySource(source []byte) error {
