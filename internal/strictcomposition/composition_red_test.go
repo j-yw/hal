@@ -147,6 +147,15 @@ func TestL10EvaluateActiveRejectsEachMissingCorruptOrWeakProof(t *testing.T) {
 			r.Template.Trust.Mode = acquisition.TrustPolicyModeAdvisory
 			r.Template.Trust.Decision = acquisition.TrustPolicyDecisionAdvisory
 		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "template lock warning", mutate: func(r *ActiveRequest) {
+			r.Template.Lock.Warnings = []acquisition.LockReasonCode{acquisition.LockReasonUnsupportedSource}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "template trust warning", mutate: func(r *ActiveRequest) {
+			r.Template.Trust.Warnings = []acquisition.TrustPolicyWarning{{Code: acquisition.TrustPolicyWarningCode("unsafe_warning")}}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "template trust error", mutate: func(r *ActiveRequest) {
+			r.Template.Trust.Errors = []acquisition.TrustPolicyError{{Code: acquisition.TrustPolicyErrorCode("unsafe_error")}}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
 		{name: "workspace identity mismatch", mutate: func(r *ActiveRequest) { r.Workspace.ExecutionID = "execution-other" }, code: sandbox.SandboxStrictCompositionCodeWorkspaceProofMismatch},
 		{name: "direct workspace", mutate: func(r *ActiveRequest) {
 			r.Workspace.Workspace.Mode = sandbox.SandboxWorkspaceModeDirect
@@ -200,6 +209,23 @@ func TestL10EvaluateActiveCancellationAndSourceErrorsFailClosedWithoutLeaking(t 
 	_, decision = EvaluateActive(ctx, request)
 	if decision.State != sandbox.SandboxStrictCompositionStateBlocked || decision.Code != sandbox.SandboxStrictCompositionCodeRuntimeProofStale {
 		t.Fatalf("canceled decision = %#v, want runtime_proof_stale", decision)
+	}
+}
+
+func TestL10EvaluateActiveContainsRuntimeSourcePanic(t *testing.T) {
+	defer func() {
+		if value := recover(); value != nil {
+			t.Fatalf("EvaluateActive() leaked runtime source panic: %T", value)
+		}
+	}()
+	request := l10CompleteActiveRequest(t)
+	request.Runtime = l10PanickingRuntimeProofSource{}
+	attestation, decision := EvaluateActive(context.Background(), request)
+	if decision.State != sandbox.SandboxStrictCompositionStateBlocked || decision.Code != sandbox.SandboxStrictCompositionCodeRuntimeProofStale {
+		t.Fatalf("runtime source panic decision = %#v, want runtime_proof_stale", decision)
+	}
+	if AttestationValid(attestation, request.Identity.SandboxID, request.Identity.ExecutionID, request.Identity.RuntimeID, request.Now) {
+		t.Fatal("runtime source panic returned a valid attestation")
 	}
 }
 
@@ -298,9 +324,37 @@ func TestL10EvaluateTerminalRequiresExactPriorAttestationAndCleanupProof(t *test
 	}
 }
 
+func TestL10EvaluateTerminalRejectsFreshCleanupAtDifferentRevision(t *testing.T) {
+	activeRequest := l10CompleteActiveRequest(t)
+	attestation, active := EvaluateActive(context.Background(), activeRequest)
+	if active.State != sandbox.SandboxStrictCompositionStateActive {
+		t.Fatalf("active decision = %#v, want active", active)
+	}
+	terminalNow := activeRequest.Now.Add(2 * time.Second)
+	cleanupRevision := activeRequest.CredentialRevision + 1
+	decision := EvaluateTerminal(context.Background(), TerminalRequest{
+		Now: terminalNow, Identity: activeRequest.Identity, CredentialRevision: cleanupRevision,
+		Attestation: attestation, CredentialCleanup: l10CleanupProof(t, activeRequest.Identity, cleanupRevision, terminalNow),
+		TemplatePolicyID: activeRequest.TemplatePolicyID, Template: activeRequest.Template,
+		TemplateBinding: activeRequest.TemplateBinding, Workspace: activeRequest.Workspace,
+	})
+	if decision.State != sandbox.SandboxStrictCompositionStateBlocked || decision.Code != sandbox.SandboxStrictCompositionCodeCredentialProofMismatch {
+		t.Fatalf("different-revision terminal decision = %#v, want credential_proof_mismatch", decision)
+	}
+	if !AttestationValid(attestation, activeRequest.Identity.SandboxID, activeRequest.Identity.ExecutionID, activeRequest.Identity.RuntimeID, terminalNow) {
+		t.Fatal("different-revision terminal attempt consumed the active attestation")
+	}
+}
+
 type l10RuntimeProofSource struct {
 	metadata l7network.Metadata
 	err      error
+}
+
+type l10PanickingRuntimeProofSource struct{}
+
+func (l10PanickingRuntimeProofSource) Inspect(context.Context, l7network.Identity) (l7network.Metadata, error) {
+	panic(&l10UnsafeError{})
 }
 
 func (source l10RuntimeProofSource) Inspect(context.Context, l7network.Identity) (l7network.Metadata, error) {

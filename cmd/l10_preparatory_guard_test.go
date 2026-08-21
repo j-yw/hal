@@ -110,6 +110,54 @@ func TestL10PreparatoryRepositoryHasNoSelectedLiveLaneOrProductionAuthorityMinti
 	}
 }
 
+func TestL10PreparatoryGuardRejectsEveryAuthorityReference(t *testing.T) {
+	tests := []struct {
+		name, path, source string
+		wantForbidden      bool
+	}{
+		{
+			name: "evaluator function alias", path: "../cmd/wire.go", wantForbidden: true,
+			source: "package cmd\nimport composition \"github.com/jywlabs/hal/internal/strictcomposition\"\nvar evaluate = composition.EvaluateActive\n",
+		},
+		{
+			name: "evaluator passed indirectly", path: "../cmd/wire.go", wantForbidden: true,
+			source: "package cmd\nimport . \"github.com/jywlabs/hal/internal/strictcomposition\"\nfunc accept(any) {}\nfunc wire() { accept((EvaluateTerminal)) }\n",
+		},
+		{
+			name: "proof constructor method value", path: "../internal/factory/wire.go", wantForbidden: true,
+			source: "package factory\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nvar mint = runtimeproof.NewJobCredentialActiveProof\n",
+		},
+		{
+			name: "proof constructor indirect argument", path: "../internal/factory/wire.go", wantForbidden: true,
+			source: "package factory\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc accept(any) {}\nfunc wire() { accept(runtimeproof.NewJobCredentialCleanupProof) }\n",
+		},
+		{
+			name: "same package evaluator alias", path: "../internal/strictcomposition/wire.go", wantForbidden: true,
+			source: "package strictcomposition\nfunc EvaluateActive() {}\nvar evaluate = EvaluateActive\n",
+		},
+		{
+			name: "shadowed import alias", path: "../cmd/safe.go",
+			source: "package cmd\nimport composition \"github.com/jywlabs/hal/internal/strictcomposition\"\ntype fake struct{}\nfunc (fake) EvaluateActive() {}\nfunc safe() { composition := fake{}; _ = composition.EvaluateActive }\n",
+		},
+		{
+			name: "unrelated method value", path: "../cmd/safe.go",
+			source: "package cmd\ntype fake struct{}\nfunc (fake) EvaluateTerminal() {}\nvar safe = fake{}.EvaluateTerminal\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, err := parser.ParseFile(token.NewFileSet(), test.path, test.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			forbidden := l10ForbiddenProductionCall(parsed, filepath.ToSlash(test.path)) != ""
+			if forbidden != test.wantForbidden {
+				t.Fatalf("guard forbidden = %t, want %t", forbidden, test.wantForbidden)
+			}
+		})
+	}
+}
+
 func l10ForbiddenProductionCall(file *ast.File, path string) string {
 	imports := make(map[string]string, len(file.Imports))
 	for _, spec := range file.Imports {
