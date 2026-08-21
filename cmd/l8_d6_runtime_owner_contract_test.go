@@ -408,6 +408,26 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 			}
 		})
 	}
+	outsideFixtures := map[string][]byte{
+		"outside reflection field":         []byte("package sandboxworker\nimport (\"reflect\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\nfunc leak(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) string { return reflect.ValueOf(receipt).Field(0).String() }\n"),
+		"outside reflection field by name": []byte("package sandboxworker\nimport (\"reflect\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\nfunc leak(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) string { return reflect.ValueOf(receipt).FieldByName(\"CommitID\").String() }\n"),
+		"outside unsafe":                   []byte("package sandboxworker\nimport (\"unsafe\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\nfunc leak(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) unsafe.Pointer { return unsafe.Pointer(&receipt) }\n"),
+		"outside direct type":              []byte("package sandboxworker\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) uint64 { return receipt.FinalizedRevision }\n"),
+		"outside import alias":             []byte("package sandboxworker\nimport runtimeapi \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(receipt runtimeapi.JobCredentialRuntimeRecoveryCommitReceipt) any { return receipt }\n"),
+		"outside dot import":               []byte("package sandboxworker\nimport . \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(receipt JobCredentialRuntimeRecoveryCommitReceipt) any { return receipt }\n"),
+		"outside type alias":               []byte("package sandboxworker\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype leakedReceipt = sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt\n"),
+	}
+	for name, fixture := range outsideFixtures {
+		t.Run(name, func(t *testing.T) {
+			audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(fixture, l8D6RuntimeOwnerCommitReceiptFunction{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(audit.issues) == 0 {
+				t.Fatalf("outside-file receipt access passed audit: %#v", audit)
+			}
+		})
+	}
 }
 
 type l8D6RuntimeOwnerCommitReceiptFunction struct {
