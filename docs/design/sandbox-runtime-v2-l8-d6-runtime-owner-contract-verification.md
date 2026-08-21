@@ -1,7 +1,9 @@
 # L8 D6 Restart-Stable Runtime Owner Contract Verification
 
-This slice changes documentation and documentation guards only. It corrects
-the L8 restart architecture by requiring a separate Linux runtime-owner
+The original contract slice changed documentation and documentation guards
+only. R1 now adds the exact neutral recovery contracts plus default-off private
+record, digest, HMAC, store, boot, and process-inspection foundations. It keeps
+the L8 restart architecture requirement for a separate Linux runtime-owner
 supervisor that directly parents Firecracker and remains reconnectable across a
 sandbox-daemon restart. The main L8 architecture is the normative contract for
 the exact neutral recovery API, private owner record, reconnect/replay FSM,
@@ -57,6 +59,11 @@ until worker persistence wiring lands. Outside those allowlisted files and
 functions, even naming the receipt type through an explicit alias, dot import,
 or raw-string import fails. Receipt-bearing allowlisted files cannot import
 `reflect` or `unsafe`, so a selector-free indirect read is rejected repo-wide.
+The only frozen future result-type exception is the exact pointer method
+`(*l8RuntimeOwnerRecoveryBinding).FinalizeJobCredentialRuntimeRecovery` in the
+common owner file. Its parameters and two results are source locked and its
+body may not access a receipt field; wrong receiver, file, signature, alias, or
+field-read mutations fail.
 Its commit ID is an HMAC over the full-seed digest and finalized revision under
 one stable mode-0600 owner-root key. That constant key is durable before any
 owner record and never projected or rotated while receipts exist. Post-record-
@@ -167,13 +174,15 @@ git diff --check
 `make docs-check` continues to verify generated CLI documentation; the focused
 `cmd` test above is the authoritative design-document guard. Reviewers also
 confirm that the aggregate base, red commit, green commit, and final tree are
-exact and that no production source changed.
+exact and that production changes remain confined to the four R1 foundation
+files plus the neutral codec guard correction.
 
 ## Fake-only scope and non-goals
 
 No test requires KVM, root, Firecracker, a live guest, or a daemon. This slice
-does not implement the supervisor, does not add the neutral root API, and
-does not open a listener, launch or signal a process, access `/proc`, or call pidfd syscalls.
+does not implement the supervisor and does not open a listener, launch, signal,
+stop, or reap a process. R1 adds the neutral root API and exercises only bounded
+read-only `/proc` plus pidfd identity inspection of the test process.
 It does not wire worker, command, provider, scheduler, or default runtime paths.
 It does not implement prepare/session transfer, guest packets, credential
 delivery, live L7 recovery, active proof, cleanup proof, or selected prepared-
@@ -185,3 +194,22 @@ Firecracker constructors remain inert. The contract does not claim actual live
 restart cleanup until a production supervisor, reacquirer, exact-process
 verifier, and L7 recovered-binding implementation pass the later fake, race,
 mutation, crash, and selected Linux acceptance matrices.
+
+## R1 foundation dependency-unaccepted
+
+This is the exact `dependency_unaccepted` boundary for concrete recovery.
+
+R1 adds only the neutral proof, receipt, validation, and denial-codec API; the
+private record, seed-digest, HMAC, strict store, boot-ID, pidfd/start-time, and
+proof-issuer primitives; and non-Linux fail-closed stubs. All are unreferenced
+and default-off. It reserves the private type `l8RuntimeOwnerRecoveryBinding`
+but does not implement `FinalizeJobCredentialRuntimeRecovery`, a concrete
+provider, process signaling, supervisor control, or L7 cleanup.
+
+The recovered `l7network.TerminatedVMBinding` constructor remains absent.
+Existing production termination bindings depend on the same-process in-memory
+process tracker, while the restart path needs independently reacquired process
+absence correlated to the recovered L7 journal. R1 therefore cannot honestly
+finalize or satisfy the neutral binding. Old-boot journal retirement also
+remains unavailable and fail-closed; no private `l7network` schema is copied or
+invented here.

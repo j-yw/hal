@@ -1,6 +1,8 @@
 package firecrackerhost
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -48,6 +50,56 @@ func TestL8RuntimeOwnerSeedDigestBindsEveryFieldAndCommitReplay(t *testing.T) {
 	}
 }
 
+func TestL8RuntimeOwnerProofIssuerAndCommitVerifierRemainSeedBound(t *testing.T) {
+	seed := l8RuntimeOwnerTestSeed()
+	inspectedAt := seed.IssuedAt.Add(time.Minute)
+	proof, err := newL8RuntimeOwnerAbsenceProof(seed, inspectedAt)
+	if err != nil {
+		t.Fatalf("new owner absence proof: %v", err)
+	}
+	if err := sandboxruntime.ValidateJobCredentialRuntimeAbsenceProof(proof, seed, inspectedAt.Add(time.Minute)); err != nil {
+		t.Fatalf("validate owner absence proof: %v", err)
+	}
+	digest, err := l8RuntimeOwnerSeedDigest(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitID, err := l8RuntimeOwnerCommitID([]byte("0123456789abcdef0123456789abcdef"), digest, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{CommitID: commitID, FinalizedRevision: 8}
+	if err := commitJobCredentialRuntimeRecovery(receipt, commitID, 8); err != nil {
+		t.Fatalf("commit verifier: %v", err)
+	}
+	if err := commitJobCredentialRuntimeRecovery(receipt, l8RuntimeOwnerTestToken(9), 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("wrong commit verifier = %v", err)
+	}
+	if err := commitJobCredentialRuntimeRecovery(receipt, commitID, 9); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("replayed revision verifier = %v", err)
+	}
+}
+
+func TestL8RuntimeOwnerRecordSchemaIsExact(t *testing.T) {
+	typeOf := reflect.TypeOf(firecrackerRuntimeOwnerRecordV1{})
+	want := []string{
+		"ContractVersion", "Revision", "State", "HostBootID", "SeedCorrelationDigest", "SupervisorGeneration",
+		"SupervisorPID", "SupervisorStartTime", "FirecrackerPID", "FirecrackerStartTime", "FinalizedCommitID",
+		"SandboxID", "ExecutionID", "WorkerID", "HostID", "RuntimeDriver", "RuntimeID", "RuntimeGeneration",
+		"FirecrackerProcessGeneration", "VsockGeneration", "NetworkPlanID", "PolicySnapshotID", "ProxySessionID",
+		"ProxyGenerationID", "TopologyGenerationID", "RuleGenerationID", "ReconnectListenerIdentity", "ReconnectSecret",
+	}
+	if typeOf.NumField() != len(want) {
+		t.Fatalf("record fields = %d, want %d", typeOf.NumField(), len(want))
+	}
+	for index, name := range want {
+		field := typeOf.Field(index)
+		if field.Name != name || field.Tag.Get("json") == "" {
+			t.Errorf("record field %d = %s %q", index, field.Name, field.Tag)
+		}
+	}
+}
+
 func TestL8RuntimeOwnerRecordValidationRejectsSubstitutionAndPIDReuse(t *testing.T) {
 	seed := l8RuntimeOwnerTestSeed()
 	bootID := "12345678-1234-4abc-8def-1234567890ab"
@@ -55,13 +107,30 @@ func TestL8RuntimeOwnerRecordValidationRejectsSubstitutionAndPIDReuse(t *testing
 	if err := validateFirecrackerRuntimeOwnerRecordV1(record, seed, bootID); err != nil {
 		t.Fatalf("valid record: %v", err)
 	}
+	supervisor := l8RuntimeOwnerProcessObservation{PID: record.SupervisorPID, StartTime: record.SupervisorStartTime, state: 'S', pidfd: 10}
+	firecracker := l8RuntimeOwnerProcessObservation{PID: record.FirecrackerPID, StartTime: record.FirecrackerStartTime, state: 'S', pidfd: 11}
+	if err := validateL8RuntimeOwnerProcessCorrelation(record, supervisor, firecracker); err != nil {
+		t.Fatalf("valid process correlation: %v", err)
+	}
+	for name, mutate := range map[string]func(*l8RuntimeOwnerProcessObservation){
+		"PID reuse":     func(value *l8RuntimeOwnerProcessObservation) { value.StartTime++ },
+		"replaced PID":  func(value *l8RuntimeOwnerProcessObservation) { value.PID++ },
+		"zombie":        func(value *l8RuntimeOwnerProcessObservation) { value.state = 'Z' },
+		"missing pidfd": func(value *l8RuntimeOwnerProcessObservation) { value.pidfd = -1 },
+	} {
+		t.Run("process "+name, func(t *testing.T) {
+			mutated := firecracker
+			mutate(&mutated)
+			if err := validateL8RuntimeOwnerProcessCorrelation(record, supervisor, mutated); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+				t.Fatalf("correlation = %v", err)
+			}
+		})
+	}
 	mutations := map[string]func(*firecrackerRuntimeOwnerRecordV1){
 		"old boot": func(value *firecrackerRuntimeOwnerRecordV1) {
 			value.HostBootID = "22345678-1234-4abc-8def-1234567890ab"
 		},
 		"seed substitution":      func(value *firecrackerRuntimeOwnerRecordV1) { value.SeedCorrelationDigest = strings.Repeat("0", 64) },
-		"supervisor PID reuse":   func(value *firecrackerRuntimeOwnerRecordV1) { value.SupervisorStartTime++ },
-		"firecracker PID reuse":  func(value *firecrackerRuntimeOwnerRecordV1) { value.FirecrackerStartTime++ },
 		"partial child identity": func(value *firecrackerRuntimeOwnerRecordV1) { value.FirecrackerStartTime = 0 },
 		"bad state":              func(value *firecrackerRuntimeOwnerRecordV1) { value.State = "running" },
 		"finalized ID in absent": func(value *firecrackerRuntimeOwnerRecordV1) { value.FinalizedCommitID = l8RuntimeOwnerTestToken(9) },
@@ -211,7 +280,7 @@ func l8RuntimeOwnerTestRecord(t *testing.T, seed sandboxruntime.JobCredentialIde
 	}
 	return firecrackerRuntimeOwnerRecordV1{
 		ContractVersion: "firecracker-runtime-owner-private-v1", Revision: 8, State: "absent", HostBootID: bootID,
-		SeedCorrelationDigest: strings.ToLower(fmtHex(digest[:])), SupervisorGeneration: l8RuntimeOwnerTestToken(1),
+		SeedCorrelationDigest: hex.EncodeToString(digest[:]), SupervisorGeneration: l8RuntimeOwnerTestToken(1),
 		SupervisorPID: 101, SupervisorStartTime: 202, FirecrackerPID: 303, FirecrackerStartTime: 404,
 		SandboxID: seed.SandboxID, ExecutionID: seed.ExecutionID, WorkerID: seed.WorkerID, HostID: seed.HostID,
 		RuntimeDriver: seed.RuntimeDriver, RuntimeID: seed.RuntimeID, RuntimeGeneration: seed.RuntimeGeneration,
@@ -223,95 +292,5 @@ func l8RuntimeOwnerTestRecord(t *testing.T, seed sandboxruntime.JobCredentialIde
 }
 
 func l8RuntimeOwnerTestToken(fill byte) string {
-	return strings.TrimRight(base64URL([]byte(strings.Repeat(string([]byte{fill}), 32))), "=")
-}
-
-// Test-only red stubs. Green production removes this block unchanged from the
-// behavioral tests above.
-var errL8RuntimeOwnerInvalid = errors.New("runtime owner invalid")
-var errL8RuntimeOwnerUnsupported = errors.New("runtime owner unsupported")
-
-const l8RuntimeOwnerRecordName = "runtime-owner.json"
-
-type firecrackerRuntimeOwnerRecordV1 struct {
-	ContractVersion, State, HostBootID, SeedCorrelationDigest, SupervisorGeneration string
-	Revision                                                                        uint64
-	SupervisorPID                                                                   uint32
-	SupervisorStartTime                                                             uint64
-	FirecrackerPID                                                                  uint32
-	FirecrackerStartTime                                                            uint64
-	FinalizedCommitID, SandboxID, ExecutionID, WorkerID, HostID, RuntimeDriver      string
-	RuntimeID, RuntimeGeneration, FirecrackerProcessGeneration, VsockGeneration     string
-	NetworkPlanID, PolicySnapshotID, ProxySessionID, ProxyGenerationID              string
-	TopologyGenerationID, RuleGenerationID, ReconnectListenerIdentity               string
-	ReconnectSecret                                                                 string
-}
-
-type l8RuntimeOwnerProcessObservation struct {
-	PID       uint32
-	StartTime uint64
-}
-
-func (l8RuntimeOwnerProcessObservation) Close() error { return nil }
-func l8RuntimeOwnerSeedDigest(sandboxruntime.JobCredentialIdentitySeed) ([32]byte, error) {
-	return [32]byte{}, errL8RuntimeOwnerInvalid
-}
-func l8RuntimeOwnerCommitID([]byte, [32]byte, uint64) (string, error) {
-	return "", errL8RuntimeOwnerInvalid
-}
-func validateFirecrackerRuntimeOwnerRecordV1(firecrackerRuntimeOwnerRecordV1, sandboxruntime.JobCredentialIdentitySeed, string) error {
-	return errL8RuntimeOwnerInvalid
-}
-func encodeFirecrackerRuntimeOwnerRecordV1(firecrackerRuntimeOwnerRecordV1, sandboxruntime.JobCredentialIdentitySeed, string) ([]byte, error) {
-	return nil, errL8RuntimeOwnerInvalid
-}
-func decodeFirecrackerRuntimeOwnerRecordV1([]byte, sandboxruntime.JobCredentialIdentitySeed, string) (firecrackerRuntimeOwnerRecordV1, error) {
-	return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
-}
-func l8RuntimeOwnerPlatformSupported() bool { return false }
-func readL8RuntimeOwnerHostBootID() (string, error) {
-	return "", errL8RuntimeOwnerInvalid
-}
-func validL8RuntimeOwnerHostBootID(string) bool { return false }
-func inspectL8RuntimeOwnerProcess(uint32) (l8RuntimeOwnerProcessObservation, error) {
-	return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
-}
-func writeL8RuntimeOwnerRecord(string, firecrackerRuntimeOwnerRecordV1, sandboxruntime.JobCredentialIdentitySeed, string) error {
-	return errL8RuntimeOwnerInvalid
-}
-func readL8RuntimeOwnerRecord(string, sandboxruntime.JobCredentialIdentitySeed, string) (firecrackerRuntimeOwnerRecordV1, error) {
-	return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
-}
-
-func fmtHex(value []byte) string {
-	const alphabet = "0123456789abcdef"
-	output := make([]byte, len(value)*2)
-	for index, item := range value {
-		output[index*2], output[index*2+1] = alphabet[item>>4], alphabet[item&15]
-	}
-	return string(output)
-}
-
-func base64URL(value []byte) string {
-	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-	var result strings.Builder
-	for index := 0; index < len(value); index += 3 {
-		remaining := len(value) - index
-		chunk := uint32(value[index]) << 16
-		if remaining > 1 {
-			chunk |= uint32(value[index+1]) << 8
-		}
-		if remaining > 2 {
-			chunk |= uint32(value[index+2])
-		}
-		result.WriteByte(alphabet[(chunk>>18)&63])
-		result.WriteByte(alphabet[(chunk>>12)&63])
-		if remaining > 1 {
-			result.WriteByte(alphabet[(chunk>>6)&63])
-		}
-		if remaining > 2 {
-			result.WriteByte(alphabet[chunk&63])
-		}
-	}
-	return result.String()
+	return base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat(string([]byte{fill}), 32)))
 }

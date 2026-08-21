@@ -34,6 +34,24 @@ func TestJobCredentialRuntimeRecoveryProofBindsEverySeedField(t *testing.T) {
 	if proof == (JobCredentialRuntimeAbsenceProof{}) {
 		t.Fatal("absence proof is zero")
 	}
+	want := "<sandboxruntime.JobCredentialRuntimeAbsenceProof>"
+	for _, rendered := range []string{proof.String(), proof.GoString(), fmt.Sprint(proof), fmt.Sprintf("%+v", proof), fmt.Sprintf("%#v", proof)} {
+		if rendered != want {
+			t.Errorf("proof rendering = %q", rendered)
+		}
+	}
+	if payload, err := json.Marshal(proof); err == nil || payload != nil {
+		t.Fatalf("proof JSON projection = %q, %v", payload, err)
+	}
+	if payload, err := proof.MarshalText(); err == nil || payload != nil {
+		t.Fatalf("proof text projection = %q, %v", payload, err)
+	}
+	if payload, err := proof.MarshalBinary(); err == nil || payload != nil {
+		t.Fatalf("proof binary projection = %q, %v", payload, err)
+	}
+	if payload, err := proof.GobEncode(); err == nil || payload != nil {
+		t.Fatalf("proof gob projection = %q, %v", payload, err)
+	}
 }
 
 func TestJobCredentialRuntimeRecoveryProofRejectsStaleFutureAndMalformed(t *testing.T) {
@@ -100,7 +118,7 @@ func TestJobCredentialRuntimeRecoveryCommitReceiptValidationAndRedaction(t *test
 		t.Fatalf("gob encoder exposed receipt: %v", err)
 	}
 	xmlPayload, err := xml.Marshal(receipt)
-	if err != nil || strings.Contains(string(xmlPayload), receipt.CommitID) {
+	if strings.Contains(string(xmlPayload), receipt.CommitID) {
 		t.Fatalf("XML projection = %q, %v", xmlPayload, err)
 	}
 }
@@ -136,60 +154,3 @@ func (recoveryBindingContractFake) CommitJobCredentialRuntimeRecovery(context.Co
 	return nil
 }
 func (recoveryBindingContractFake) Close(context.Context) error { return nil }
-
-// Test-only red stubs. Green production removes this block unchanged from the
-// behavioral tests above.
-const (
-	MaxJobCredentialRuntimeAbsenceObservationAge = 5 * time.Minute
-	JobCredentialRuntimeStopReapTimeout          = 30 * time.Second
-	JobCredentialRuntimeRecoveryCloseTimeout     = 5 * time.Second
-)
-
-type JobCredentialRuntimeAbsenceProofInput struct {
-	Seed               JobCredentialIdentitySeed
-	AbsenceInspectedAt time.Time
-}
-
-type JobCredentialRuntimeAbsenceProof struct{ token [41]byte }
-
-type JobCredentialRuntimeRecoveryCommitReceipt struct {
-	CommitID          string `json:"-" xml:"-"`
-	FinalizedRevision uint64 `json:"-" xml:"-"`
-}
-
-type JobCredentialRuntimeRecoveryProvider interface {
-	BindJobCredentialRuntimeRecovery(context.Context, JobCredentialIdentitySeed) (JobCredentialRuntimeRecoveryBinding, error)
-}
-
-type JobCredentialRuntimeRecoveryBinding interface {
-	RecoverJobCredentials(context.Context, JobCredentialRecoveryRequest) (JobCredentialCleanupProof, error)
-	StopReapJobCredentialRuntime(context.Context) (JobCredentialRuntimeAbsenceProof, error)
-	FinalizeJobCredentialRuntimeRecovery(context.Context, JobCredentialRuntimeAbsenceProof) (JobCredentialRuntimeRecoveryCommitReceipt, error)
-	CommitJobCredentialRuntimeRecovery(context.Context, JobCredentialRuntimeRecoveryCommitReceipt) error
-	Close(context.Context) error
-}
-
-func NewJobCredentialRuntimeAbsenceProof(JobCredentialRuntimeAbsenceProofInput) (JobCredentialRuntimeAbsenceProof, error) {
-	return JobCredentialRuntimeAbsenceProof{}, ErrJobCredentialProofInvalid
-}
-func ValidateJobCredentialRuntimeAbsenceProof(JobCredentialRuntimeAbsenceProof, JobCredentialIdentitySeed, time.Time) error {
-	return ErrJobCredentialProofInvalid
-}
-func ValidateJobCredentialRuntimeRecoveryCommitReceipt(JobCredentialRuntimeRecoveryCommitReceipt) error {
-	return ErrJobCredentialProofInvalid
-}
-func (JobCredentialRuntimeRecoveryCommitReceipt) String() string         { return "stub" }
-func (JobCredentialRuntimeRecoveryCommitReceipt) GoString() string       { return "stub" }
-func (JobCredentialRuntimeRecoveryCommitReceipt) Format(fmt.State, rune) {}
-func (JobCredentialRuntimeRecoveryCommitReceipt) MarshalJSON() ([]byte, error) {
-	return nil, ErrJobCredentialSerialization
-}
-func (JobCredentialRuntimeRecoveryCommitReceipt) MarshalText() ([]byte, error) {
-	return nil, ErrJobCredentialSerialization
-}
-func (JobCredentialRuntimeRecoveryCommitReceipt) MarshalBinary() ([]byte, error) {
-	return nil, ErrJobCredentialSerialization
-}
-func (JobCredentialRuntimeRecoveryCommitReceipt) GobEncode() ([]byte, error) {
-	return nil, ErrJobCredentialSerialization
-}

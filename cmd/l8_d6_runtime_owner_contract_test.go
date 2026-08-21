@@ -168,6 +168,7 @@ func validateL8D6RuntimeOwnerArchitecture(doc string) error {
 		"direct selector on the exact receipt-typed parameter object",
 		"Reflection, unsafe conversion, receipt aliases, receiver methods, closures, and helper escape are forbidden",
 		"A receipt-bearing allowlisted file also fails if it imports `reflect` or `unsafe`",
+		"func (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error)",
 		"The root validator and owner verifier land together; the private-store converter remains optional until worker receipt persistence lands",
 		"The digest has no accessor",
 		l8D6RuntimeOwnerCloseRule,
@@ -217,7 +218,7 @@ func TestL8D6RuntimeOwnerContractVerificationIsFrozen(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-d6-runtime-owner-contract-verification.md"))
 	for _, required := range []string{
 		"# L8 D6 Restart-Stable Runtime Owner Contract Verification",
-		"This slice changes documentation and documentation guards only.",
+		"R1 now adds the exact neutral recovery contracts plus default-off private",
 		"TestL8D6RuntimeOwnerContractArchitectureIsExact",
 		"TestL8D6RuntimeOwnerContractVerificationIsFrozen",
 		"TestL8D6RuntimeOwnerContractDefaultsRemainInert",
@@ -229,8 +230,8 @@ func TestL8D6RuntimeOwnerContractVerificationIsFrozen(t *testing.T) {
 		"make build",
 		"git diff --check",
 		"does not implement the supervisor",
-		"does not add the neutral root API",
-		"does not open a listener, launch or signal a process, access `/proc`, or call pidfd syscalls",
+		"does not open a listener, launch, signal,",
+		"read-only `/proc` plus pidfd identity inspection",
 		"does not wire worker, command, provider, scheduler, or default runtime paths",
 		"bootstrap pipe/start-gate loss before revision-one publication",
 		"No test requires KVM, root, Firecracker, a live guest, or a daemon.",
@@ -335,7 +336,7 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 	)
 	expected := map[string]l8D6RuntimeOwnerCommitReceiptFunction{
 		rootValidator: {name: "ValidateJobCredentialRuntimeRecoveryCommitReceipt", rootType: true, exactOneParameter: true},
-		ownerVerifier: {name: "commitJobCredentialRuntimeRecovery"},
+		ownerVerifier: {name: "commitJobCredentialRuntimeRecovery", allowFinalizerResult: true},
 		privateStore:  {name: "storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime", storeConverter: true},
 	}
 	audits := make(map[string]l8D6RuntimeOwnerCommitReceiptAudit)
@@ -404,6 +405,7 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		"helper escape":            []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(any) {}\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { leak(receipt); return nil }\n"),
 		"finalizer wrong receiver": []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) { panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
 		"finalizer wrong input":    []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialIdentitySeed) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) { panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
+		"finalizer wrong result":   []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (string, error) { panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
 		"finalizer field read":     []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) { receipt := sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{}; _ = receipt.CommitID; panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
 	}
 	for name, fixture := range fixtures {
@@ -450,10 +452,11 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 }
 
 type l8D6RuntimeOwnerCommitReceiptFunction struct {
-	name              string
-	rootType          bool
-	exactOneParameter bool
-	storeConverter    bool
+	name                 string
+	rootType             bool
+	exactOneParameter    bool
+	storeConverter       bool
+	allowFinalizerResult bool
 }
 
 type l8D6RuntimeOwnerCommitReceiptAudit struct {
@@ -515,12 +518,32 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 		return audit, nil
 	}
 	audit.present = true
+	if expected.allowFinalizerResult {
+		finalizers, exactFinalizers := 0, 0
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Name.Name != "FinalizeJobCredentialRuntimeRecovery" {
+				continue
+			}
+			finalizers++
+			for _, reference := range receiptTypeReferences {
+				if l8D6RuntimeOwnerContainingFunction(reference, parents) == function && l8D6RuntimeOwnerReceiptTypeIsExactFinalizerResult(file, reference, parents) {
+					exactFinalizers++
+					break
+				}
+			}
+		}
+		if finalizers != exactFinalizers {
+			audit.issues = append(audit.issues, "future finalizer signature is not exact")
+		}
+	}
 	for _, reference := range receiptTypeReferences {
 		if l8D6RuntimeOwnerReceiptTypeAlias(reference, parents) {
 			audit.issues = append(audit.issues, "receipt type alias is forbidden")
 			continue
 		}
-		if !expected.rootType && !l8D6RuntimeOwnerReceiptTypeIsTargetParameter(reference, target) {
+		if !expected.rootType && !l8D6RuntimeOwnerReceiptTypeIsTargetParameter(reference, target) &&
+			!(expected.allowFinalizerResult && l8D6RuntimeOwnerReceiptTypeIsExactFinalizerResult(file, reference, parents)) {
 			audit.issues = append(audit.issues, "receipt type referenced outside the exact allowlisted function parameter")
 		}
 	}
@@ -639,6 +662,61 @@ func l8D6RuntimeOwnerReceiptTypeIsTargetParameter(reference ast.Expr, target *as
 		}
 	}
 	return false
+}
+
+func l8D6RuntimeOwnerReceiptTypeIsExactFinalizerResult(file *ast.File, reference ast.Expr, parents map[ast.Node]ast.Node) bool {
+	function := l8D6RuntimeOwnerContainingFunction(reference, parents)
+	if function == nil || function.Name.Name != "FinalizeJobCredentialRuntimeRecovery" || function.Recv == nil || len(function.Recv.List) != 1 ||
+		function.Type.Params == nil || len(function.Type.Params.List) != 2 || function.Type.Results == nil || len(function.Type.Results.List) != 2 {
+		return false
+	}
+	receiver := function.Recv.List[0]
+	pointer, ok := receiver.Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	receiverType, ok := pointer.X.(*ast.Ident)
+	if !ok || receiverType.Name != "l8RuntimeOwnerRecoveryBinding" || receiverType.Obj == nil {
+		return false
+	}
+	typeSpec, ok := receiverType.Obj.Decl.(*ast.TypeSpec)
+	if !ok || typeSpec.Assign.IsValid() || typeSpec.Name.Name != "l8RuntimeOwnerRecoveryBinding" {
+		return false
+	}
+	contextAliases, runtimeAliases := map[string]bool{}, map[string]bool{}
+	for _, spec := range file.Imports {
+		alias := ""
+		switch l8D6RuntimeOwnerImportPath(spec) {
+		case "context":
+			alias = "context"
+			if spec.Name != nil {
+				alias = spec.Name.Name
+			}
+			contextAliases[alias] = true
+		case "github.com/jywlabs/hal/internal/sandboxruntime":
+			alias = "sandboxruntime"
+			if spec.Name != nil {
+				alias = spec.Name.Name
+			}
+			runtimeAliases[alias] = true
+		}
+	}
+	firstParameter := l8D6RuntimeOwnerExactImportedType(function.Type.Params.List[0].Type, contextAliases, "Context")
+	secondParameter := l8D6RuntimeOwnerExactImportedType(function.Type.Params.List[1].Type, runtimeAliases, "JobCredentialRuntimeAbsenceProof")
+	firstResult := function.Type.Results.List[0]
+	secondResult := function.Type.Results.List[1]
+	return len(function.Type.Params.List[0].Names) == 0 && len(function.Type.Params.List[1].Names) == 0 &&
+		len(firstResult.Names) == 0 && firstResult.Type == reference &&
+		len(secondResult.Names) == 0 && l8D6RuntimeOwnerTypeName(secondResult.Type) == "error" && firstParameter && secondParameter
+}
+
+func l8D6RuntimeOwnerExactImportedType(expression ast.Expr, aliases map[string]bool, name string) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != name {
+		return false
+	}
+	qualifier, ok := selector.X.(*ast.Ident)
+	return ok && aliases[qualifier.Name] && qualifier.Obj == nil
 }
 
 func l8D6RuntimeOwnerHasIndirectAccessImport(file *ast.File) bool {

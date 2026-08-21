@@ -723,6 +723,23 @@ or raw-string import fails the guard. A receipt-bearing allowlisted file also
 fails if it imports `reflect` or `unsafe`; reflection cannot hide a field read
 that has no `CommitID` selector.
 
+The sole future concrete exception is frozen to the package-private
+`type l8RuntimeOwnerRecoveryBinding` in
+`internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go`
+and this exact pointer-receiver signature:
+
+```go
+func (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error)
+```
+
+The guard permits the receipt type only as that exact first result. It permits
+no `CommitID` or other receipt-field access in the method, rejects a value or
+different receiver, file, parameter, result, alias, or additional receipt type
+reference, and leaves `commitJobCredentialRuntimeRecovery` as the sole owner
+field reader. The method remains absent until `l7network` exposes a truthful
+recovered `TerminatedVMBinding`; freezing its future shape is not a cleanup or
+provider implementation claim.
+
 The worker rebinds from the receipt's validated seed and calls
 `CommitJobCredentialRuntimeRecovery` with the exact commit receipt. Commit is
 the only transition that may retire the finalized owner tombstone; it checks

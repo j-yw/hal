@@ -18,14 +18,20 @@ func TestL8JobCredentialLiveHandlesUseOnlySafeFormattingAndDenialCodecs(t *testi
 	}
 	liveProduction := 0
 	denialMethods := map[string]map[string]bool{
-		"AuthenticatedWorkerPrincipalAuthority": {},
-		"authenticatedWorkerPrincipal":          {},
-		"JobCredentialLifecycle":                {},
-		"JobCredentialActiveProof":              {},
-		"JobCredentialCleanupProof":             {},
-		"JobCredentialRuntimeBinder":            {},
-		"JobCredentialRuntimeBinding":           {},
-		"JobCredentialRuntimePreflightBinding":  {},
+		"AuthenticatedWorkerPrincipalAuthority":     {},
+		"authenticatedWorkerPrincipal":              {},
+		"JobCredentialLifecycle":                    {},
+		"JobCredentialActiveProof":                  {},
+		"JobCredentialCleanupProof":                 {},
+		"JobCredentialRuntimeBinder":                {},
+		"JobCredentialRuntimeBinding":               {},
+		"JobCredentialRuntimePreflightBinding":      {},
+		"JobCredentialRuntimeAbsenceProof":          {},
+		"JobCredentialRuntimeRecoveryCommitReceipt": {},
+	}
+	binaryDenialMethods := map[string]map[string]bool{
+		"JobCredentialRuntimeAbsenceProof":          {},
+		"JobCredentialRuntimeRecoveryCommitReceipt": {},
 	}
 	formatLiterals := l8JobCredentialFormatLiterals()
 	for _, path := range matches {
@@ -86,7 +92,14 @@ func TestL8JobCredentialLiveHandlesUseOnlySafeFormattingAndDenialCodecs(t *testi
 					return true
 				}
 				switch typed.Name.Name {
-				case "MarshalBinary", "GobEncode", "Bytes", "Value", "Unwrap":
+				case "MarshalBinary", "GobEncode":
+					allowed, ok := binaryDenialMethods[receiver]
+					if !ok {
+						t.Errorf("live job credential receiver %s defines forbidden method %s", receiver, typed.Name.Name)
+					} else {
+						allowed[typed.Name.Name] = true
+					}
+				case "Bytes", "Value", "Unwrap":
 					t.Errorf("live job credential receiver %s defines forbidden method %s", receiver, typed.Name.Name)
 				case "String", "GoString", "MarshalJSON", "MarshalText", "Format":
 					allowed, ok := denialMethods[receiver]
@@ -107,6 +120,13 @@ func TestL8JobCredentialLiveHandlesUseOnlySafeFormattingAndDenialCodecs(t *testi
 		for _, required := range []string{"String", "GoString", "MarshalJSON", "MarshalText", "Format"} {
 			if !found[required] {
 				t.Errorf("live job credential receiver %s omits safe/denial method %s", receiver, required)
+			}
+		}
+	}
+	for receiver, found := range binaryDenialMethods {
+		for _, required := range []string{"MarshalBinary", "GobEncode"} {
+			if !found[required] {
+				t.Errorf("live job credential receiver %s omits denial method %s", receiver, required)
 			}
 		}
 	}
@@ -281,14 +301,16 @@ func l8JobCredentialAssertFmtFixture(t *testing.T, source, requiredFormat string
 
 func l8JobCredentialFormatLiterals() map[string]string {
 	return map[string]string{
-		"AuthenticatedWorkerPrincipalAuthority": "<sandboxruntime.AuthenticatedWorkerPrincipalAuthority>",
-		"authenticatedWorkerPrincipal":          "<sandboxruntime.authenticatedWorkerPrincipal>",
-		"JobCredentialLifecycle":                "<sandboxruntime.JobCredentialLifecycle>",
-		"JobCredentialActiveProof":              "<sandboxruntime.JobCredentialActiveProof>",
-		"JobCredentialCleanupProof":             "<sandboxruntime.JobCredentialCleanupProof>",
-		"JobCredentialRuntimeBinder":            "<sandboxruntime.JobCredentialRuntimeBinder>",
-		"JobCredentialRuntimeBinding":           "<sandboxruntime.JobCredentialRuntimeBinding>",
-		"JobCredentialRuntimePreflightBinding":  "<sandboxruntime.JobCredentialRuntimePreflightBinding>",
+		"AuthenticatedWorkerPrincipalAuthority":     "<sandboxruntime.AuthenticatedWorkerPrincipalAuthority>",
+		"authenticatedWorkerPrincipal":              "<sandboxruntime.authenticatedWorkerPrincipal>",
+		"JobCredentialLifecycle":                    "<sandboxruntime.JobCredentialLifecycle>",
+		"JobCredentialActiveProof":                  "<sandboxruntime.JobCredentialActiveProof>",
+		"JobCredentialCleanupProof":                 "<sandboxruntime.JobCredentialCleanupProof>",
+		"JobCredentialRuntimeBinder":                "<sandboxruntime.JobCredentialRuntimeBinder>",
+		"JobCredentialRuntimeBinding":               "<sandboxruntime.JobCredentialRuntimeBinding>",
+		"JobCredentialRuntimePreflightBinding":      "<sandboxruntime.JobCredentialRuntimePreflightBinding>",
+		"JobCredentialRuntimeAbsenceProof":          "<sandboxruntime.JobCredentialRuntimeAbsenceProof>",
+		"JobCredentialRuntimeRecoveryCommitReceipt": "[job-credential-runtime-recovery-commit-receipt]",
 	}
 }
 
