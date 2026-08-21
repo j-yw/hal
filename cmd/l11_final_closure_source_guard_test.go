@@ -222,7 +222,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { mint := mintActive; mint() }
 func mintActive() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "called package function alias",
@@ -233,7 +233,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { mint() }
 func mintActive() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "imported helper chain",
@@ -266,7 +266,7 @@ import "testing"
 func TestL11PreparedLinuxFinalClosure(t *testing.T) { skipMissing(t) }
 func skipMissing(t testing.TB) { t.Skip("missing") }
 `,
-			wantIssue: "skip call", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "dot imported testing T skip",
@@ -285,7 +285,7 @@ func invoke(callback func()) { callback() }
 func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "forwarded callback proof constructor",
@@ -297,7 +297,7 @@ func invoke(callback func()) { callback() }
 func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "ignored callback remains unreachable",
@@ -308,6 +308,7 @@ func ignore(func()) {}
 func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "method expression proof constructor",
@@ -318,7 +319,7 @@ func (helper) mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) 
 func TestL11PreparedLinuxFinalClosure(*testing.T) { mint := helper.mint; mint(helper{}) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "imported method expression proof constructor",
@@ -334,7 +335,7 @@ func (Minter) Mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) 
 var input any
 `,
 			},
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "pointer method expression proof constructor",
@@ -345,7 +346,7 @@ func (*helper) mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input)
 func TestL11PreparedLinuxFinalClosure(*testing.T) { mint := (*helper).mint; mint(&helper{}) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "generic helper call proof constructor",
@@ -355,7 +356,7 @@ func mint[T any]() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 func TestL11PreparedLinuxFinalClosure(*testing.T) { mint[any]() }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "dot imported helper chain",
@@ -380,7 +381,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { returnedMint()() }
 func returnedMint() func() { return func() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) } }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "multi return callable proof constructor",
@@ -392,7 +393,7 @@ func safe() {}
 func unsafe() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "discarded multi return proof callable remains unreachable",
@@ -404,6 +405,7 @@ func safe() {}
 func unsafe() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
 var input any
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "init reassigned global callable proof constructor",
@@ -416,7 +418,7 @@ func safe() {}
 func unsafe() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "package scope proof initializer",
@@ -552,6 +554,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {
 }
 var input any
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "reachable non init global callable reassignment",
@@ -564,7 +567,7 @@ func safe() {}
 func unsafe() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "unreachable global callable reassignment remains unreachable",
@@ -577,6 +580,7 @@ func safe() {}
 func unsafe() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "returned callback immediately invoked",
@@ -587,7 +591,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { returnCallback(mint)() }
 func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "callback captured and invoked in IIFE",
@@ -600,7 +604,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {
 func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "callback invoked by nested IIFE",
@@ -611,7 +615,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { invoke(mint) }
 func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "concrete implementation behind interface dispatch",
@@ -623,7 +627,7 @@ func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 func TestL11PreparedLinuxFinalClosure(*testing.T) { var selected runner = minter{}; selected.Run() }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "concrete interface implementation passed to helper",
@@ -636,7 +640,7 @@ func invoke(selected runner) { selected.Run() }
 func TestL11PreparedLinuxFinalClosure(*testing.T) { invoke(minter{}) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "concrete interface implementation returned by helper",
@@ -649,7 +653,7 @@ func choose() runner { return minter{} }
 func TestL11PreparedLinuxFinalClosure(*testing.T) { selected := choose(); selected.Run() }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "explicit interface conversion preserves concrete implementation",
@@ -661,7 +665,50 @@ func (minter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 func TestL11PreparedLinuxFinalClosure(*testing.T) { selected := runner(minter{}); selected.Run() }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "interface dispatch after nested branch assignment is forbidden",
+			source: `package fixture
+import "testing"
+type runner interface { Run() }
+type safeRunner struct{}
+func (safeRunner) Run() {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	var selected runner
+	if condition { selected = safeRunner{} } else { selected = safeRunner{} }
+	selected.Run()
+}
+var condition bool
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "interface dispatch after loop assignment is forbidden",
+			source: `package fixture
+import "testing"
+type runner interface { Run() }
+type safeRunner struct{}
+func (safeRunner) Run() {}
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	var selected runner
+	for index := 0; index < 1; index++ { selected = safeRunner{} }
+	selected.Run()
+}
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "interface implementation from named return is forbidden",
+			source: `package fixture
+import "testing"
+type runner interface { Run() }
+type safeRunner struct{}
+func (safeRunner) Run() {}
+func choose() (selected runner) { selected = safeRunner{}; return }
+func TestL11PreparedLinuxFinalClosure(*testing.T) { selected := choose(); selected.Run() }
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "defined interface embedding testing TB skip",
@@ -671,7 +718,7 @@ type testTB interface { testing.TB }
 func skipMissing(t testTB) { t.Skip("missing") }
 func TestL11PreparedLinuxFinalClosure(t *testing.T) { skipMissing(t) }
 `,
-			wantIssue: "skip call", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "unresolved dot imported in module call fails closed",
@@ -691,7 +738,7 @@ type promoted struct { minter }
 func TestL11PreparedLinuxFinalClosure(*testing.T) { promoted{}.Mint() }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "uninvoked nested callback remains unreachable",
@@ -702,6 +749,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { ignore(mint) }
 func mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input) }
 var input any
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "outer concrete reassignment captured by invoked IIFE",
@@ -719,7 +767,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {
 }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "definite concrete overwrite kills stale implementation",
@@ -737,6 +785,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {
 }
 var input any
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "conditional concrete overwrite preserves unsafe reaching implementation",
@@ -755,7 +804,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {
 var condition bool
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "definite concrete overwrite reaches captured IIFE safely",
@@ -773,6 +822,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {
 }
 var input any
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "safe concrete interface dispatch excludes unused implementation",
@@ -786,6 +836,7 @@ func (unusedMinter) Run() { _, _ = sandboxruntime.NewJobCredentialActiveProof(in
 func TestL11PreparedLinuxFinalClosure(*testing.T) { var selected runner = safeRunner{}; selected.Run() }
 var input any
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "unrelated defined interface method named Skip",
@@ -796,6 +847,7 @@ type helper struct{}
 func (helper) Skip(...any) {}
 func TestL11PreparedLinuxFinalClosure(*testing.T) { var selected skipper = helper{}; selected.Skip("safe") }
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "imported pointer method expression proof constructor",
@@ -811,7 +863,7 @@ func (*Minter) Mint() { _, _ = sandboxruntime.NewJobCredentialActiveProof(input)
 var input any
 `,
 			},
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "bare named result callable proof constructor",
@@ -822,7 +874,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) { returned()() }
 func mint() { _, _ = sandboxruntime.NewJobCredentialCleanupProof(input) }
 var input any
 `,
-			wantIssue: "synthetic credential proof constructor", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "testing TB type alias skip",
@@ -832,7 +884,7 @@ type testTB = testing.TB
 func skipMissing(t testTB) { t.Skip("missing") }
 func TestL11PreparedLinuxFinalClosure(t *testing.T) { skipMissing(t) }
 `,
-			wantIssue: "skip call", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "testing T pointer method expression skip",
@@ -840,7 +892,7 @@ func TestL11PreparedLinuxFinalClosure(t *testing.T) { skipMissing(t) }
 import "testing"
 func TestL11PreparedLinuxFinalClosure(t *testing.T) { skip := (*testing.T).Skip; skip(t, "missing") }
 `,
-			wantIssue: "skip call", wantIssues: 1,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "unresolved in module helper call fails closed",
@@ -858,6 +910,7 @@ type helper struct{}
 func (helper) Skip() {}
 func TestL11PreparedLinuxFinalClosure(*testing.T) { helper{}.Skip() }
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "shadowed import alias is local",
@@ -870,6 +923,7 @@ func TestL11PreparedLinuxFinalClosure(*testing.T) {
 	_, _ = sandboxruntime.NewJobCredentialActiveProof(nil)
 }
 `,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
 		},
 		{
 			name: "unreachable fake helper is outside selected authority",
@@ -954,8 +1008,8 @@ var input any
 	}()
 	select {
 	case issues := <-result:
-		if len(issues) != 1 || !strings.Contains(issues[0], "synthetic credential proof constructor") {
-			t.Fatalf("issues = %v, want one reassigned-alias proof issue", issues)
+		if len(issues) != 1 || !strings.Contains(issues[0], "forbidden dynamic selected helper graph") {
+			t.Fatalf("issues = %v, want one forbidden dynamic-graph issue", issues)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("reassigned callable analysis did not converge within two seconds")
@@ -975,8 +1029,9 @@ func second() func() { returned := first(); return returned }
 		if err != nil {
 			t.Fatal(err)
 		}
-		if issues := l11SelectedPreparedTestIssues(packages); len(issues) != 0 {
-			t.Fatalf("issues = %v, want a clean cyclic callable graph", issues)
+		issues := l11SelectedPreparedTestIssues(packages)
+		if len(issues) != 1 || !strings.Contains(issues[0], "forbidden dynamic selected helper graph") {
+			t.Fatalf("issues = %v, want one forbidden dynamic-graph issue", issues)
 		}
 		return
 	}
@@ -1012,8 +1067,8 @@ var input any
 			t.Fatal(err)
 		}
 		issues := l11SelectedPreparedTestIssues(packages)
-		if len(issues) != 1 || !strings.Contains(issues[0], "synthetic credential proof constructor") {
-			t.Fatalf("issues = %v, want one concrete return-cycle proof issue", issues)
+		if len(issues) != 1 || !strings.Contains(issues[0], "forbidden dynamic selected helper graph") {
+			t.Fatalf("issues = %v, want one forbidden dynamic-graph issue", issues)
 		}
 		return
 	}

@@ -18,6 +18,8 @@ const (
 	l11FinalClosureSelectedTest     = "TestL11PreparedLinuxFinalClosure"
 	l11FinalClosureIntegrationTag   = "l11_final_closure_integration"
 	l11FinalClosureCurrentStateLine = "Current closure state: `blocked`."
+	l11FinalClosureStateMarker      = "<!-- hal:l11-closure-state=blocked -->"
+	l11FinalClosureMarkerNamespace  = "hal:l11-closure-state"
 	l11FinalClosureBlockedDocSHA256 = "e955be0fa5fd8033b1af60e19bb4c4f2e24bfc32b4a9cfe5d7a4ceb9bd32eec4"
 )
 
@@ -33,6 +35,7 @@ func TestL11FinalClosureDocumentationIsNormative(t *testing.T) {
 	doc := l11ReadFinalClosureDoc(t)
 	for _, required := range []string{
 		"# Sandbox Runtime v2 L11 Final Closure",
+		l11FinalClosureStateMarker,
 		"## 1. Inputs, outputs, states, and failure codes",
 		"## 2. Package ownership and import boundaries",
 		"## 3. Durable and machine-contract schema changes",
@@ -375,10 +378,10 @@ func TestL11FinalClosureRepositoryInventoryRejectsEveryContradictoryDocument(t *
 		build func(string) error
 	}{
 		{name: "innocuous markdown filename", build: func(root string) error {
-			return os.WriteFile(filepath.Join(root, "notes.md"), []byte("# Notes\n\nL11 release passed.\n"), 0o600)
+			return os.WriteFile(filepath.Join(root, "notes.md"), []byte("# Notes\n\n"+l11FinalClosureStateMarker+"\n"), 0o600)
 		}},
 		{name: "long markdown extension", build: func(root string) error {
-			return os.WriteFile(filepath.Join(root, "notes.markdown"), []byte("# Notes\n\nAll nine scenarios passed.\n"), 0o600)
+			return os.WriteFile(filepath.Join(root, "notes.markdown"), []byte("# Notes\n\n"+l11FinalClosureStateMarker+"\n"), 0o600)
 		}},
 		{name: "secondary document symlink", build: func(root string) error {
 			target := filepath.Join(filepath.Dir(root), "outside-release.md")
@@ -390,11 +393,30 @@ func TestL11FinalClosureRepositoryInventoryRejectsEveryContradictoryDocument(t *
 		{name: "secondary document nonregular", build: func(root string) error {
 			return os.Mkdir(filepath.Join(root, "notes.markdown"), 0o700)
 		}},
-		{name: "punctuated contradictory release claim", build: func(root string) error {
-			return os.WriteFile(filepath.Join(root, "release-notes.md"), []byte("# Notes\n\nL11 release passed!\n"), 0o600)
+		{name: "prompt mirror with symlinked target parent", build: func(root string) error {
+			outside := filepath.Join(filepath.Dir(root), "outside-hal")
+			if err := os.MkdirAll(filepath.Join(outside, "commands"), 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(outside, "commands", "discover-standards.md"), []byte("# Prompt\n"), 0o600); err != nil {
+				return err
+			}
+			if err := os.Symlink(outside, filepath.Join(root, ".hal")); err != nil {
+				return err
+			}
+			promptDir := filepath.Join(root, ".pi", "prompts")
+			if err := os.MkdirAll(promptDir, 0o700); err != nil {
+				return err
+			}
+			return os.Symlink("../../.hal/commands/discover-standards.md", filepath.Join(promptDir, "discover-standards.md"))
 		}},
-		{name: "semantic contradictory release claim", build: func(root string) error {
-			return os.WriteFile(filepath.Join(root, "status.markdown"), []byte("# Status\n\nFinal status for the L11 release: SUCCESS.\n"), 0o600)
+		{name: "blocked then passed marker", build: func(root string) error {
+			payload := "# Notes\n\n" + l11FinalClosureStateMarker + "\n<!-- hal:l11-closure-state=passed -->\n"
+			return os.WriteFile(filepath.Join(root, "release-notes.md"), []byte(payload), 0o600)
+		}},
+		{name: "multiline passed marker", build: func(root string) error {
+			payload := "# Status\n\n<!-- hal:l11-\nclosure-state=passed -->\n"
+			return os.WriteFile(filepath.Join(root, "status.markdown"), []byte(payload), 0o600)
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -426,7 +448,7 @@ func TestL11FinalClosureRepositoryInventoryPreservesBlockedReleaseDiscussion(t *
 	if err := os.WriteFile(canonical, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	safe := "# Notes\n\nL11 release remains blocked.\nThe L11 release has not passed.\n"
+	safe := "# Notes\n\nL11 release remains blocked.\nThe L11 release has not passed.\nL11 release passed!\nFinal status for the L11 release: SUCCESS.\n"
 	if err := os.WriteFile(filepath.Join(root, "notes.markdown"), []byte(safe), 0o600); err != nil {
 		t.Fatal(err)
 	}
