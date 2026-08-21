@@ -1752,7 +1752,7 @@ func l11SelectedClosedCallIssues(packages map[string]*l11SelectedPackage, root, 
 			}
 		}
 		receiver := l11SelectedExpressionType(current.file, function.X)
-		if receiver == "testing.T" {
+		if l11SelectedExpressionHasExactTestingTType(current.file, function.X, make(map[*ast.Object]bool), 0) {
 			if function.Sel.Name == "Run" {
 				callback, ok := l11SelectedExactSubtestCallback(current, call)
 				if !ok {
@@ -1793,7 +1793,7 @@ func l11SelectedExactSubtestCallback(current *l11SelectedFunction, call *ast.Cal
 		return nil, false
 	}
 	selector, ok := l11SelectedUnwrapCallFunction(call.Fun).(*ast.SelectorExpr)
-	if !ok || selector.Sel.Name != "Run" || l11SelectedExpressionType(current.file, selector.X) != "testing.T" {
+	if !ok || selector.Sel.Name != "Run" || !l11SelectedExpressionHasExactTestingTType(current.file, selector.X, make(map[*ast.Object]bool), 0) {
 		return nil, false
 	}
 	scenario, ok := call.Args[0].(*ast.BasicLit)
@@ -1837,7 +1837,83 @@ func l11SelectedTestingTCallback(function *l11SelectedFunction) bool {
 		return false
 	}
 	pointer, ok := parameters.List[0].Type.(*ast.StarExpr)
-	return ok && l11SelectedTypeName(function.file, pointer.X) == "testing.T"
+	return ok && l11SelectedExactTestingTType(function.file, pointer.X, make(map[*ast.Object]bool), 0)
+}
+
+func l11SelectedExpressionHasExactTestingTType(file *l11SelectedFile, expression ast.Expr, visiting map[*ast.Object]bool, depth int) bool {
+	if expression == nil || depth > 32 {
+		return false
+	}
+	switch value := expression.(type) {
+	case *ast.ParenExpr:
+		return l11SelectedExpressionHasExactTestingTType(file, value.X, visiting, depth+1)
+	case *ast.UnaryExpr:
+		return l11SelectedExpressionHasExactTestingTType(file, value.X, visiting, depth+1)
+	case *ast.Ident:
+		if value.Obj == nil || visiting[value.Obj] {
+			return false
+		}
+		visiting[value.Obj] = true
+		defer delete(visiting, value.Obj)
+		switch declaration := value.Obj.Decl.(type) {
+		case *ast.Field:
+			return l11SelectedExactTestingTType(file, declaration.Type, visiting, depth+1)
+		case *ast.ValueSpec:
+			if declaration.Type != nil {
+				return l11SelectedExactTestingTType(file, declaration.Type, visiting, depth+1)
+			}
+			for index, name := range declaration.Names {
+				if name.Obj == value.Obj && index < len(declaration.Values) {
+					return l11SelectedExpressionHasExactTestingTType(file, declaration.Values[index], visiting, depth+1)
+				}
+			}
+		case *ast.AssignStmt:
+			for index, name := range declaration.Lhs {
+				identifier, ok := name.(*ast.Ident)
+				if ok && identifier.Obj == value.Obj && index < len(declaration.Rhs) {
+					return l11SelectedExpressionHasExactTestingTType(file, declaration.Rhs[index], visiting, depth+1)
+				}
+			}
+		}
+	}
+	return false
+}
+
+func l11SelectedExactTestingTType(file *l11SelectedFile, expression ast.Expr, visiting map[*ast.Object]bool, depth int) bool {
+	if file == nil || expression == nil || depth > 32 {
+		return false
+	}
+	switch value := expression.(type) {
+	case *ast.StarExpr:
+		return l11SelectedExactTestingTType(file, value.X, visiting, depth+1)
+	case *ast.ParenExpr:
+		return l11SelectedExactTestingTType(file, value.X, visiting, depth+1)
+	case *ast.Ident:
+		if value.Obj != nil {
+			if visiting[value.Obj] {
+				return false
+			}
+			typeSpec, ok := value.Obj.Decl.(*ast.TypeSpec)
+			if !ok || !typeSpec.Assign.IsValid() {
+				return false
+			}
+			visiting[value.Obj] = true
+			defer delete(visiting, value.Obj)
+			return l11SelectedExactTestingTType(file, typeSpec.Type, visiting, depth+1)
+		}
+		if value.Name != "T" {
+			return false
+		}
+		for _, imported := range file.imports {
+			if imported.name == "." && imported.path == "testing" {
+				return true
+			}
+		}
+	case *ast.SelectorExpr:
+		identifier, ok := value.X.(*ast.Ident)
+		return ok && identifier.Obj == nil && value.Sel.Name == "T" && file.importPaths[identifier.Name] == "testing"
+	}
+	return false
 }
 
 func l11SelectedClosedDirectTargets(root, current *l11SelectedFunction, targets []l11SelectedCallable, key string, queue *[]*l11SelectedFunction) []string {
