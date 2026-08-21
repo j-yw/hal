@@ -723,6 +723,14 @@ or raw-string import fails the guard. A receipt-bearing allowlisted file also
 fails if it imports `reflect` or `unsafe`; reflection cannot hide a field read
 that has no `CommitID` selector.
 
+Inside the root neutral API file, receipt-type references are confined to the exact type declaration,
+the exact validator parameter, the unnamed receivers
+of the sealed `String`, `GoString`, `Format`, JSON/text/binary/gob denial
+methods, and the exact Finalize result plus Commit parameter in
+`JobCredentialRuntimeRecoveryBinding`. No other root helper, value, assignment,
+receiver, parameter, result, interface method, or `any` retention may name or
+capture the receipt.
+
 The sole future concrete exception is frozen to the package-private
 `type l8RuntimeOwnerRecoveryBinding` in
 `internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go`
@@ -937,7 +945,7 @@ RuleGenerationID     = Seed.RuleGenerationID
 ```
 
 File decoding rejects unknown or duplicate fields, trailing bytes, oversize
-input, invalid modes, numeric values outside the exact revision-zero `starting`
+input, `null` or a wrong JSON scalar type, invalid modes, numeric values outside the exact revision-zero `starting`
 exception, overflow, invalid safe IDs, wrong ownership/mode/link count,
 symlinks, host-boot mismatch at a same-boot operation, a noncanonical or
 mismatched seed digest, and any seed/L7 mismatch. The

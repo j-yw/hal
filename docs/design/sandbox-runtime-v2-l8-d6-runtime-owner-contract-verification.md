@@ -62,6 +62,11 @@ until worker persistence wiring lands. Outside those allowlisted files and
 functions, even naming the receipt type through an explicit alias, dot import,
 or raw-string import fails. Receipt-bearing allowlisted files cannot import
 `reflect` or `unsafe`, so a selector-free indirect read is rejected repo-wide.
+Root-file receipt references are separately confined to the exact type
+declaration, validator parameter, unnamed sealed redaction/denial receivers,
+and the exact Finalize/Commit positions in the recovery interface. Extra root
+helpers, methods, assignments, values, parameters, results, and `any` retention
+are rejected.
 The only frozen future result-type exception is the exact pointer method
 `(*l8RuntimeOwnerRecoveryBinding).FinalizeJobCredentialRuntimeRecovery` in the
 common owner file. Its parameters and two results are source locked and its
@@ -223,7 +228,8 @@ The strict Linux store walks every absolute path component with `openat` plus
 read/check/replace/sync transaction, accepts only revision-zero `starting` as a
 missing-record genesis, and serializes concurrent next-revision writers. The
 decoder requires every canonical JSON key exactly once, so case aliases cannot
-overwrite a field. Process inspection opens and checks the pidfd before any
+overwrite a field, and it rejects `null` or the wrong JSON scalar type before
+typed decoding. Process inspection opens and checks the pidfd before any
 `/proc/<pid>` read, then repeats nonterminal pidfd checks around the double stat
 read; the retained descriptor therefore cannot be correlated to a replacement
 PID. A zero observation owns no file descriptor. The HMAC fixed vector locks

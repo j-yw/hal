@@ -102,6 +102,8 @@ const (
 	l8D6RuntimeOwnerFinalizeRule     = "The worker validates the retained absence proof before calling `FinalizeJobCredentialRuntimeRecovery`."
 	l8D6RuntimeOwnerCommitRule       = "A rename followed by directory-sync failure is commit-uncertain"
 	l8D6RuntimeOwnerNoIssuerRule     = "the default-off R1 foundation contains no host production constructor call"
+	l8D6RuntimeOwnerRootReceiptRule  = "receipt-type references are confined to the exact type declaration"
+	l8D6RuntimeOwnerJSONTypeRule     = "`null` or a wrong JSON scalar type"
 )
 
 func TestL8D6RuntimeOwnerContractArchitectureIsExact(t *testing.T) {
@@ -152,6 +154,8 @@ func validateL8D6RuntimeOwnerArchitecture(doc string) error {
 		l8D6RuntimeOwnerFinalizeRule,
 		l8D6RuntimeOwnerCommitRule,
 		l8D6RuntimeOwnerNoIssuerRule,
+		l8D6RuntimeOwnerRootReceiptRule,
+		l8D6RuntimeOwnerJSONTypeRule,
 		"atomically replaces CredentialState with a private recovery receipt",
 		"`CredentialRecoveryReceipt *storedJobCredentialRuntimeRecoveryReceiptV1`",
 		"exactly one of CredentialState or CredentialRecoveryReceipt",
@@ -203,6 +207,8 @@ func TestL8D6RuntimeOwnerContractArchitectureMutationGuards(t *testing.T) {
 		{name: "rename sync failure retries old record", before: l8D6RuntimeOwnerCommitRule, after: "A directory-sync failure always retains the old record."},
 		{name: "close implies absence", before: l8D6RuntimeOwnerCloseRule, after: "Close implies process and resource absence"},
 		{name: "premature proof issuer", before: l8D6RuntimeOwnerNoIssuerRule, after: "the default-off R1 foundation contains a caller-provided production constructor call"},
+		{name: "root receipt helper escape", before: l8D6RuntimeOwnerRootReceiptRule, after: "receipt-type references may appear in arbitrary root helpers"},
+		{name: "nullable owner fields", before: l8D6RuntimeOwnerJSONTypeRule, after: "`null` may represent a scalar zero value"},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {
@@ -565,6 +571,10 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 			audit.issues = append(audit.issues, "receipt type alias is forbidden")
 			continue
 		}
+		if expected.rootType && !l8D6RuntimeOwnerRootReceiptReferenceIsExact(file, reference, target, parents) {
+			audit.issues = append(audit.issues, "root receipt type referenced outside the exact declaration, validator, redaction methods, or recovery interface")
+			continue
+		}
 		if !expected.rootType && !l8D6RuntimeOwnerReceiptTypeIsTargetParameter(reference, target) &&
 			!(expected.allowFinalizerResult && l8D6RuntimeOwnerReceiptTypeIsExactFinalizerResult(file, reference, parents)) {
 			audit.issues = append(audit.issues, "receipt type referenced outside the exact allowlisted function parameter")
@@ -686,6 +696,105 @@ func l8D6RuntimeOwnerReceiptTypeIsTargetParameter(reference ast.Expr, target *as
 		}
 	}
 	return false
+}
+
+func l8D6RuntimeOwnerRootReceiptReferenceIsExact(file *ast.File, reference ast.Expr, target *ast.FuncDecl, parents map[ast.Node]ast.Node) bool {
+	if l8D6RuntimeOwnerReceiptTypeIsTargetParameter(reference, target) {
+		return true
+	}
+	if identifier, ok := reference.(*ast.Ident); ok {
+		if typeSpec, ok := parents[identifier].(*ast.TypeSpec); ok && typeSpec.Name == identifier && l8D6RuntimeOwnerExactRootReceiptType(identifier) {
+			return true
+		}
+	}
+	return l8D6RuntimeOwnerRootReceiptMethodIsExact(file, reference, parents) ||
+		l8D6RuntimeOwnerRootReceiptInterfaceReferenceIsExact(file, reference, parents)
+}
+
+func l8D6RuntimeOwnerRootReceiptMethodIsExact(file *ast.File, reference ast.Expr, parents map[ast.Node]ast.Node) bool {
+	function := l8D6RuntimeOwnerContainingFunction(reference, parents)
+	if function == nil || function.Recv == nil || len(function.Recv.List) != 1 || len(function.Recv.List[0].Names) != 0 ||
+		function.Recv.List[0].Type != reference || function.Type.Params == nil {
+		return false
+	}
+	identifier, ok := reference.(*ast.Ident)
+	if !ok || !l8D6RuntimeOwnerExactRootReceiptType(identifier) {
+		return false
+	}
+	switch function.Name.Name {
+	case "String", "GoString":
+		return len(function.Type.Params.List) == 0 && l8D6RuntimeOwnerReturnsExactType(function, "string")
+	case "MarshalJSON", "MarshalText", "MarshalBinary", "GobEncode":
+		return len(function.Type.Params.List) == 0 && l8D6RuntimeOwnerReturnsBytesAndError(function)
+	case "Format":
+		if function.Type.Results != nil && len(function.Type.Results.List) != 0 || len(function.Type.Params.List) != 2 {
+			return false
+		}
+		fmtAliases := l8D6RuntimeOwnerImportAliases(file, "fmt")
+		return l8D6RuntimeOwnerExactImportedType(function.Type.Params.List[0].Type, fmtAliases, "State") &&
+			l8D6RuntimeOwnerTypeName(function.Type.Params.List[1].Type) == "rune"
+	default:
+		return false
+	}
+}
+
+func l8D6RuntimeOwnerRootReceiptInterfaceReferenceIsExact(file *ast.File, reference ast.Expr, parents map[ast.Node]ast.Node) bool {
+	var field *ast.Field
+	var typeSpec *ast.TypeSpec
+	for current := ast.Node(reference); current != nil; current = parents[current] {
+		switch value := current.(type) {
+		case *ast.Field:
+			if len(value.Names) == 1 {
+				field = value
+			}
+		case *ast.TypeSpec:
+			typeSpec = value
+			current = nil
+		}
+		if typeSpec != nil {
+			break
+		}
+	}
+	if field == nil || typeSpec == nil || typeSpec.Name.Name != "JobCredentialRuntimeRecoveryBinding" || typeSpec.Assign.IsValid() || len(field.Names) != 1 {
+		return false
+	}
+	if _, ok := typeSpec.Type.(*ast.InterfaceType); !ok {
+		return false
+	}
+	function, ok := field.Type.(*ast.FuncType)
+	if !ok || function.Params == nil || len(function.Params.List) != 2 || function.Results == nil {
+		return false
+	}
+	contextAliases := l8D6RuntimeOwnerImportAliases(file, "context")
+	if !l8D6RuntimeOwnerExactImportedType(function.Params.List[0].Type, contextAliases, "Context") {
+		return false
+	}
+	switch field.Names[0].Name {
+	case "FinalizeJobCredentialRuntimeRecovery":
+		return function.Results != nil && len(function.Results.List) == 2 && function.Results.List[0].Type == reference &&
+			l8D6RuntimeOwnerTypeName(function.Params.List[1].Type) == "JobCredentialRuntimeAbsenceProof" &&
+			l8D6RuntimeOwnerTypeName(function.Results.List[1].Type) == "error"
+	case "CommitJobCredentialRuntimeRecovery":
+		return function.Params.List[1].Type == reference && len(function.Results.List) == 1 &&
+			l8D6RuntimeOwnerTypeName(function.Results.List[0].Type) == "error"
+	default:
+		return false
+	}
+}
+
+func l8D6RuntimeOwnerReturnsExactType(function *ast.FuncDecl, name string) bool {
+	return function.Type.Results != nil && len(function.Type.Results.List) == 1 &&
+		len(function.Type.Results.List[0].Names) == 0 && l8D6RuntimeOwnerTypeName(function.Type.Results.List[0].Type) == name
+}
+
+func l8D6RuntimeOwnerReturnsBytesAndError(function *ast.FuncDecl) bool {
+	if function.Type.Results == nil || len(function.Type.Results.List) != 2 {
+		return false
+	}
+	bytesResult, ok := function.Type.Results.List[0].Type.(*ast.ArrayType)
+	return ok && bytesResult.Len == nil && l8D6RuntimeOwnerTypeName(bytesResult.Elt) == "byte" &&
+		len(function.Type.Results.List[0].Names) == 0 && len(function.Type.Results.List[1].Names) == 0 &&
+		l8D6RuntimeOwnerTypeName(function.Type.Results.List[1].Type) == "error"
 }
 
 func l8D6RuntimeOwnerReceiptTypeIsExactFinalizerResult(file *ast.File, reference ast.Expr, parents map[ast.Node]ast.Node) bool {

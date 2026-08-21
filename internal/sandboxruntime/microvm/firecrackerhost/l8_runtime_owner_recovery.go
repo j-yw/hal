@@ -261,12 +261,29 @@ func l8RuntimeOwnerUniqueJSONObject(payload []byte) bool {
 		}
 		seen[name] = true
 		var value json.RawMessage
-		if decoder.Decode(&value) != nil {
+		if decoder.Decode(&value) != nil || !l8RuntimeOwnerJSONFieldTypeValid(name, value) {
 			return false
 		}
 	}
 	token, err = decoder.Token()
 	return err == nil && token == json.Delim('}') && len(seen) == len(allowed)
+}
+
+func l8RuntimeOwnerJSONFieldTypeValid(name string, payload json.RawMessage) bool {
+	if bytes.Equal(bytes.TrimSpace(payload), []byte("null")) {
+		return false
+	}
+	switch name {
+	case "revision", "supervisorStartTime", "firecrackerStartTime":
+		var value uint64
+		return json.Unmarshal(payload, &value) == nil
+	case "supervisorPid", "firecrackerPid":
+		var value uint32
+		return json.Unmarshal(payload, &value) == nil
+	default:
+		var value string
+		return json.Unmarshal(payload, &value) == nil
+	}
 }
 
 func validL8RuntimeOwnerState(state string) bool {
