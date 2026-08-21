@@ -13,7 +13,10 @@ uncertainty retains both process and lease ownership. Retained cleanup is
 reachable through the original target's Start, Stop, or Delete operation and
 is serialized by runtime generation. A cleanup-only Start always returns an
 explicit retry-required error after proving absence, so it cannot launch a
-second process in the same invocation.
+second process in the same invocation. Provisional, active, and
+cleanup-uncertain ownership are distinct registry states: duplicate Start on a
+healthy active runtime is a stable nonmutating rejection and only the
+cleanup-uncertain state enters recovery.
 
 The foundation does not wire a command, worker, or `firecrackerhost` provider.
 Planning-only/default construction remains inert. L8 authority is omitted from

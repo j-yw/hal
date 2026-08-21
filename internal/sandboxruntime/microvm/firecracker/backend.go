@@ -267,13 +267,25 @@ func (c firecrackerController) Start(ctx context.Context, req microvm.Controller
 	if err != nil {
 		return nil, err
 	}
-	if c.liveStart && c.liveSessions != nil && c.liveSessions.HasAnyL8Lease(config.RuntimeID) {
-		releaseLifecycle, reserveErr := c.reserveLiveLifecycle(config.RuntimeID)
-		if reserveErr != nil {
-			return nil, reserveErr
+	if c.liveStart && c.liveSessions != nil {
+		_, ownershipState, owned := c.liveSessions.L8ProcessOwnership(config.RuntimeID)
+		if owned {
+			switch ownershipState {
+			case l8ProcessOwnershipActive:
+				return nil, newProcessBoundaryError("runtime", "live process is already active")
+			case l8ProcessOwnershipProvisional:
+				return nil, newProcessBoundaryError("runtime", "live lifecycle operation is already in progress")
+			case l8ProcessOwnershipCleanupUncertain:
+				releaseLifecycle, reserveErr := c.reserveLiveLifecycle(config.RuntimeID)
+				if reserveErr != nil {
+					return nil, reserveErr
+				}
+				defer releaseLifecycle()
+				return nil, c.retryRetainedL8StartCleanup(ctx, config)
+			default:
+				return nil, newProcessBoundaryError("runtime", "live process ownership state is unavailable")
+			}
 		}
-		defer releaseLifecycle()
-		return nil, c.retryRetainedL8StartCleanup(ctx, config)
 	}
 	var pendingL7Lease *localresolver.VerifiedL7AssetLease
 	var pendingL8Lease *localresolver.VerifiedL8AssetLease
@@ -570,6 +582,7 @@ func (c firecrackerController) finishL8LiveStartAfterProcessHandoff(
 		// ambiguous, so retain process-keyed lease ownership for an explicit
 		// serialized lifecycle recovery instead of retrying those descriptors.
 		c.liveSessions.TrackProcess(processProof)
+		c.liveSessions.MarkL8CleanupUncertain(processProof)
 		return firecrackerLiveStartResult{}, transferred, cleanupErr
 	}
 	launch, err := c.waitForBootAcceptance(ctx, handle, config.Paths)
@@ -585,9 +598,14 @@ func (c firecrackerController) finishL8LiveStartAfterProcessHandoff(
 		)
 	}
 	if guestReadiness != nil {
-		c.liveSessions.Activate(liveSessionProof{
+		if !c.liveSessions.ActivateL8(liveSessionProof{
 			RuntimeID: config.RuntimeID, ProcessGeneration: handle.ID, ProcessSource: handle.Source, BridgeGeneration: bridgeGeneration,
-		})
+		}) {
+			startErr := newProcessBoundaryError("runtime", "live process ownership activation failed")
+			return firecrackerLiveStartResult{}, transferred, c.cleanupL8ProcessAfterStartFailure(
+				ctx, handle, processProof, true, config.Paths, nil, startErr,
+			)
+		}
 	}
 	return firecrackerLiveStartResult{processLaunch: launch, guestReadiness: guestReadiness}, transferred, nil
 }
@@ -620,13 +638,16 @@ func (c firecrackerController) cleanupL8ProcessAfterStartFailure(
 	cleanupErr = joinL8StartCleanup(cleanupErr, inheritedCleanupErr)
 	if inheritedCleanupErr != nil {
 		c.liveSessions.TrackProcess(processProof)
+		c.liveSessions.MarkL8CleanupUncertain(processProof)
 		return cleanupErr
 	}
 	if _, processStillTracked := c.liveSessions.Process(processProof.RuntimeID, processProof.ProcessGeneration); processStillTracked {
+		c.liveSessions.MarkL8CleanupUncertain(processProof)
 		return cleanupErr
 	}
 	if closeErr := c.closeTrackedL8Lease(processProof); closeErr != nil {
 		c.liveSessions.TrackProcess(processProof)
+		c.liveSessions.MarkL8CleanupUncertain(processProof)
 		return joinL8StartCleanup(cleanupErr, closeErr)
 	}
 	return cleanupErr
@@ -1004,6 +1025,7 @@ func (c firecrackerController) Stop(ctx context.Context, req microvm.ControllerL
 	}
 	if live {
 		if err := c.stopLiveProcess(ctx, liveReq); err != nil {
+			c.markL8CleanupUncertain(firecrackerStartRuntimeID(req.Target))
 			return nil, err
 		}
 		if err := c.finalizeLiveProcessAbsence(req.Target, liveReq); err != nil {
@@ -1042,6 +1064,7 @@ func (c firecrackerController) Delete(ctx context.Context, req microvm.Controlle
 	}
 	if live {
 		if err := c.deleteLiveProcess(ctx, liveReq); err != nil {
+			c.markL8CleanupUncertain(firecrackerStartRuntimeID(req.Target))
 			return err
 		}
 		if err := c.finalizeLiveProcessAbsence(req.Target, liveReq); err != nil {
@@ -1070,8 +1093,8 @@ func (c firecrackerController) liveProcessRequestForLifecycle(target sandboxrunt
 	if !activeExists {
 		return request, accepted, nil
 	}
-	_, retainedL8 := c.liveSessions.l8LeaseForProcess(active)
-	if retainedL8 {
+	_, ownershipState, retainedL8 := c.liveSessions.L8ProcessOwnership(active.RuntimeID)
+	if retainedL8 && ownershipState == l8ProcessOwnershipCleanupUncertain {
 		if accepted && (active.unverified || request.Handle.ID != active.ProcessGeneration || request.Handle.Source != active.ProcessSource) {
 			return LiveProcessRequest{}, false, newProcessBoundaryError(
 				"processHandle",
@@ -1087,6 +1110,16 @@ func (c firecrackerController) liveProcessRequestForLifecycle(target sandboxrunt
 		)
 	}
 	return request, true, nil
+}
+
+func (c firecrackerController) markL8CleanupUncertain(runtimeID string) {
+	if c.liveSessions == nil {
+		return
+	}
+	proof, _, ok := c.liveSessions.L8ProcessOwnership(runtimeID)
+	if ok {
+		c.liveSessions.MarkL8CleanupUncertain(proof)
+	}
 }
 
 func (c firecrackerController) reserveLiveLifecycle(runtimeID string) (func(), error) {
@@ -1242,6 +1275,7 @@ func (c firecrackerController) finalizeLiveProcessAbsence(target sandboxruntime.
 		verifier, verifierOK := liveProcessTerminalVerifier(c.liveProcessManager)
 		terminated, verifyErr := callLiveProcessTerminalVerifier(verifier, request)
 		if !verifierOK || verifyErr != nil || !terminated {
+			c.liveSessions.MarkL8CleanupUncertain(proof)
 			return newLiveProcessManagerFailure(
 				"liveProcessManager",
 				"live process cleanup terminal state was not verified",
@@ -1265,11 +1299,13 @@ func (c firecrackerController) invalidateLiveProcessProof(proof liveProcessProof
 				},
 				RuntimeID: proof.RuntimeID,
 			}, session.BridgeGeneration); err != nil {
+				c.liveSessions.MarkL8CleanupUncertain(proof)
 				return newLiveGuestReadinessFailure("productionVsockBridge", "guest readiness invalidation failed", err)
 			}
 		}
 	}
 	if err := c.closeTrackedL8Lease(proof); err != nil {
+		c.liveSessions.MarkL8CleanupUncertain(proof)
 		return err
 	}
 	if session, ok := c.liveSessions.Proof(proof.RuntimeID, proof.ProcessGeneration); ok {
