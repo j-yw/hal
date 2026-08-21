@@ -291,7 +291,17 @@ func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
 		{name: "local alias", source: "func init() { alternateClientPolicyAllow := newClientPolicyAllowDecision; _ = alternateClientPolicyAllow }"},
 		{name: "direct allow composite", source: "var alternateClientPolicyAllow = ClientPolicyDecision{allow: true}"},
 		{name: "aliased direct allow composite", source: "type alternateClientPolicyDecision = ClientPolicyDecision\nvar alternateClientPolicyAllow = alternateClientPolicyDecision{allow: true}"},
+		{name: "alias chain direct allow composite", source: "type firstAlternateClientPolicyDecision = ClientPolicyDecision\ntype secondAlternateClientPolicyDecision = firstAlternateClientPolicyDecision\nvar alternateClientPolicyAllow = secondAlternateClientPolicyDecision{allow: true}"},
+		{name: "local alias direct allow composite", source: "func alternateClientPolicyAllow() { type alternateClientPolicyDecision = ClientPolicyDecision; _ = alternateClientPolicyDecision{allow: true} }"},
+		{name: "defined wrapper direct allow composite", source: "type alternateClientPolicyDecision ClientPolicyDecision\nvar alternateClientPolicyAllow = alternateClientPolicyDecision{allow: true}"},
+		{name: "defined wrapper chain direct allow composite", source: "type firstAlternateClientPolicyDecision ClientPolicyDecision\ntype secondAlternateClientPolicyDecision firstAlternateClientPolicyDecision\nvar alternateClientPolicyAllow = secondAlternateClientPolicyDecision{allow: true}"},
+		{name: "generic defined wrapper direct allow composite", source: "type alternateClientPolicyDecision[T any] ClientPolicyDecision\nvar alternateClientPolicyAllow = alternateClientPolicyDecision[int]{allow: true}"},
+		{name: "keyed allow constant", source: "const alternateClientPolicyAllowValue = true\nvar alternateClientPolicyAllow = ClientPolicyDecision{allow: alternateClientPolicyAllowValue}"},
+		{name: "unkeyed allow composite", source: "var alternateClientPolicyAllow = ClientPolicyDecision{liveValue{}, true, \"\"}"},
+		{name: "struct conversion", source: "import \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\"\nvar alternateClientPolicyAllow = ClientPolicyDecision(struct { liveValue; allow bool; rejectionCode credentialprotocol.SafeID }{allow: true})"},
 		{name: "allow field assignment", source: "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow.allow = true }"},
+		{name: "allow field multi assignment", source: "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow.allow, _ = true, 0 }"},
+		{name: "allow field address escape", source: "var alternateClientPolicyAllow ClientPolicyDecision\nvar alternateClientPolicyAllowAddress = &alternateClientPolicyAllow.allow"},
 	}
 	for _, mutation := range mutations {
 		mutation := mutation
@@ -329,13 +339,7 @@ func validateClientProductionPolicyPackage(directory string) error {
 	if err != nil {
 		return fmt.Errorf("read package: %w", err)
 	}
-	owners := make([]string, 0, 1)
-	allowConstructors := make([]string, 0, 1)
-	unexpectedAllowReferences := make([]string, 0, 1)
-	unexpectedAllowLiterals := make([]string, 0, 1)
-	var canonicalAllowDeclaration *ast.Ident
-	var canonicalAllowCall *ast.Ident
-	var canonicalAllowLiteral *ast.CompositeLit
+	files := make([]clientPolicyProductionFile, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
@@ -344,15 +348,31 @@ func validateClientProductionPolicyPackage(directory string) error {
 		if err != nil {
 			return fmt.Errorf("parse %s: %w", entry.Name(), err)
 		}
+		files = append(files, clientPolicyProductionFile{name: entry.Name(), syntax: file})
+	}
+	decisionTypeNames, decisionTypeWrappers := clientPolicyDecisionTypeClosure(files)
+	if len(decisionTypeWrappers) != 0 {
+		return fmt.Errorf("ClientPolicyDecision has forbidden production aliases/wrappers %v", decisionTypeWrappers)
+	}
+	owners := make([]string, 0, 1)
+	allowConstructors := make([]string, 0, 1)
+	unexpectedAllowReferences := make([]string, 0, 1)
+	unexpectedAllowValueSites := make([]string, 0, 1)
+	var canonicalAllowDeclaration *ast.Ident
+	var canonicalAllowCall *ast.Ident
+	var canonicalAllowLiteral *ast.CompositeLit
+	for _, productionFile := range files {
+		entryName := productionFile.name
+		file := productionFile.syntax
 		for _, declaration := range file.Decls {
 			switch typed := declaration.(type) {
 			case *ast.FuncDecl:
 				if typed.Name.Name == "NewClientPolicy" {
-					owners = append(owners, entry.Name())
+					owners = append(owners, entryName)
 				}
 				if typed.Name.Name == "newClientPolicyAllowDecision" {
-					allowConstructors = append(allowConstructors, entry.Name())
-					if entry.Name() == "contracts.go" {
+					allowConstructors = append(allowConstructors, entryName)
+					if entryName == "contracts.go" {
 						literal, ok := clientPolicyCanonicalAllowConstructor(typed)
 						if ok && canonicalAllowDeclaration == nil {
 							canonicalAllowDeclaration = typed.Name
@@ -360,7 +380,7 @@ func validateClientProductionPolicyPackage(directory string) error {
 						}
 					}
 				}
-				if entry.Name() == "client_policy.go" {
+				if entryName == "client_policy.go" {
 					if identifier := clientPolicyCanonicalAllowCallIdentifier(typed); identifier != nil && canonicalAllowCall == nil {
 						canonicalAllowCall = identifier
 					}
@@ -373,10 +393,10 @@ func validateClientProductionPolicyPackage(directory string) error {
 					}
 					for _, name := range value.Names {
 						if name.Name == "NewClientPolicy" {
-							owners = append(owners, entry.Name())
+							owners = append(owners, entryName)
 						}
 						if name.Name == "newClientPolicyAllowDecision" {
-							allowConstructors = append(allowConstructors, entry.Name())
+							allowConstructors = append(allowConstructors, entryName)
 						}
 					}
 				}
@@ -386,11 +406,27 @@ func validateClientProductionPolicyPackage(directory string) error {
 			switch value := node.(type) {
 			case *ast.Ident:
 				if value.Name == "newClientPolicyAllowDecision" && value != canonicalAllowDeclaration && value != canonicalAllowCall {
-					unexpectedAllowReferences = append(unexpectedAllowReferences, entry.Name())
+					unexpectedAllowReferences = append(unexpectedAllowReferences, entryName)
 				}
 			case *ast.CompositeLit:
-				if clientPolicyDecisionLiteralAllows(value) && value != canonicalAllowLiteral {
-					unexpectedAllowLiterals = append(unexpectedAllowLiterals, entry.Name())
+				if clientPolicyDecisionLiteralOwnsAllow(value, decisionTypeNames) && value != canonicalAllowLiteral {
+					unexpectedAllowValueSites = append(unexpectedAllowValueSites, entryName)
+				}
+			case *ast.AssignStmt:
+				if clientPolicyAssignmentWritesAllow(value) {
+					unexpectedAllowValueSites = append(unexpectedAllowValueSites, entryName)
+				}
+			case *ast.CallExpr:
+				if name, ok := clientPolicyDirectNamedType(value.Fun); ok && decisionTypeNames[name] {
+					unexpectedAllowValueSites = append(unexpectedAllowValueSites, entryName)
+				}
+			case *ast.UnaryExpr:
+				if value.Op == token.AND && clientPolicyExpressionSelectsAllow(value.X) {
+					unexpectedAllowValueSites = append(unexpectedAllowValueSites, entryName)
+				}
+			case *ast.IncDecStmt:
+				if clientPolicyExpressionSelectsAllow(value.X) {
+					unexpectedAllowValueSites = append(unexpectedAllowValueSites, entryName)
 				}
 			}
 			return true
@@ -408,10 +444,116 @@ func validateClientProductionPolicyPackage(directory string) error {
 	if len(unexpectedAllowReferences) != 0 {
 		return fmt.Errorf("allow-decision constructor has noncanonical references in %v", unexpectedAllowReferences)
 	}
-	if len(unexpectedAllowLiterals) != 0 {
-		return fmt.Errorf("direct allow literals have noncanonical issuers in %v", unexpectedAllowLiterals)
+	if len(unexpectedAllowValueSites) != 0 {
+		return fmt.Errorf("allow value has noncanonical construction/write sites in %v", unexpectedAllowValueSites)
 	}
 	return nil
+}
+
+type clientPolicyProductionFile struct {
+	name   string
+	syntax *ast.File
+}
+
+type clientPolicyTypeDefinition struct {
+	name       string
+	expression ast.Expr
+}
+
+func clientPolicyDecisionTypeClosure(files []clientPolicyProductionFile) (map[string]bool, []string) {
+	definitions := make([]clientPolicyTypeDefinition, 0)
+	for _, productionFile := range files {
+		ast.Inspect(productionFile.syntax, func(node ast.Node) bool {
+			typeSpec, ok := node.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name == "ClientPolicyDecision" {
+				return true
+			}
+			definitions = append(definitions, clientPolicyTypeDefinition{name: typeSpec.Name.Name, expression: typeSpec.Type})
+			return true
+		})
+	}
+
+	decisionTypes := map[string]bool{"ClientPolicyDecision": true}
+	wrappers := make([]string, 0)
+	for changed := true; changed; {
+		changed = false
+		for _, definition := range definitions {
+			if decisionTypes[definition.name] {
+				continue
+			}
+			underlyingName, ok := clientPolicyDirectNamedType(definition.expression)
+			if !ok || !decisionTypes[underlyingName] {
+				continue
+			}
+			decisionTypes[definition.name] = true
+			wrappers = append(wrappers, definition.name)
+			changed = true
+		}
+	}
+	return decisionTypes, wrappers
+}
+
+func clientPolicyDirectNamedType(expression ast.Expr) (string, bool) {
+	switch typed := expression.(type) {
+	case *ast.Ident:
+		return typed.Name, true
+	case *ast.ParenExpr:
+		return clientPolicyDirectNamedType(typed.X)
+	case *ast.IndexExpr:
+		return clientPolicyDirectNamedType(typed.X)
+	case *ast.IndexListExpr:
+		return clientPolicyDirectNamedType(typed.X)
+	default:
+		return "", false
+	}
+}
+
+func clientPolicyDecisionLiteralOwnsAllow(literal *ast.CompositeLit, decisionTypes map[string]bool) bool {
+	if literal == nil {
+		return false
+	}
+	typeName, ok := clientPolicyDirectNamedType(literal.Type)
+	if !ok || !decisionTypes[typeName] {
+		return false
+	}
+	for index, element := range literal.Elts {
+		if field, ok := element.(*ast.KeyValueExpr); ok {
+			key, keyOK := field.Key.(*ast.Ident)
+			if keyOK && key.Name == "allow" {
+				return true
+			}
+			continue
+		}
+		if index == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func clientPolicyAssignmentWritesAllow(assignment *ast.AssignStmt) bool {
+	if assignment == nil {
+		return false
+	}
+	for _, expression := range assignment.Lhs {
+		writesAllow := false
+		ast.Inspect(expression, func(node ast.Node) bool {
+			if clientPolicyExpressionSelectsAllow(node) {
+				writesAllow = true
+				return false
+			}
+			return true
+		})
+		if writesAllow {
+			return true
+		}
+	}
+	return false
+}
+
+func clientPolicyExpressionSelectsAllow(value ast.Node) bool {
+	selector, ok := value.(*ast.SelectorExpr)
+	return ok && selector.Sel.Name == "allow"
 }
 
 func clientPolicyCanonicalAllowConstructor(function *ast.FuncDecl) (*ast.CompositeLit, bool) {
