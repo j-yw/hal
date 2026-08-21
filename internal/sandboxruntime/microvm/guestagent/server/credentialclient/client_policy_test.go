@@ -605,6 +605,8 @@ func clientPolicyDirectNamedType(expression ast.Expr) (string, bool) {
 		return typed.Name, true
 	case *ast.ParenExpr:
 		return clientPolicyDirectNamedType(typed.X)
+	case *ast.StarExpr:
+		return clientPolicyDirectNamedType(typed.X)
 	case *ast.IndexExpr:
 		return clientPolicyDirectNamedType(typed.X)
 	case *ast.IndexListExpr:
