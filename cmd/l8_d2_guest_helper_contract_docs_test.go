@@ -294,7 +294,7 @@ func TestL8D2GuestHelperContractsAreNormative(t *testing.T) {
 		"credentialState,omitempty",
 		"sandboxjob-credential-private-v1",
 		"Abort(context.Context) (JobCredentialCleanupProof, error)",
-		"There is deliberately no seed digest",
+		"There is deliberately no public or reusable seed digest",
 		"prefix `sha256-` followed by exactly 64",
 		"GuestCredentialSessionIdentity",
 		"CLONE_INTO_CGROUP",
