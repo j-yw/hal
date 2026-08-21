@@ -227,6 +227,15 @@ func (client *Client) Serve(ctx context.Context) error {
 	state.phase = clientPhaseServing
 	completion := state.completion
 	state.mu.Unlock()
+	if _, operational := client.transport.(authenticatedTransport); operational {
+		dispatchErr := client.serveCredentialLifecycle(ctx)
+		client.startDrain()
+		<-completion
+		if cleanupErr := client.latchedError(); cleanupErr != nil {
+			return cleanupErr
+		}
+		return dispatchErr
+	}
 
 	select {
 	case <-completion:

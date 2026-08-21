@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server/credentialclient"
 )
 
 const (
@@ -193,6 +194,7 @@ type LinuxBackendOptions struct {
 type Options struct {
 	Transport                       Transport
 	Backend                         Backend
+	CredentialClient                *credentialclient.Client
 	EnvironmentResolver             EnvironmentResolver
 	MaxRequestBytes                 int64
 	MaxResponseBytes                int64

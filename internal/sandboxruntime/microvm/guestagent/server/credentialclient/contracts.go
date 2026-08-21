@@ -65,7 +65,7 @@ type ControllerPacket struct {
 	sequence  uint64
 	sessionID [32]byte
 	arm       controllerPacketArm
-	body      ControllerBodyCapability
+	body      controllerBodyCapability
 }
 
 // ControllerSendPacket is a core-built closed controller union.
@@ -96,7 +96,7 @@ type HelperPacket struct {
 	liveValue
 	header credentialprotocol.HelperPacketHeader
 	arm    helperPacketArm
-	body   HelperBodyCapability
+	body   helperBodyCapability
 	right  SSHConnectionCapability
 }
 
