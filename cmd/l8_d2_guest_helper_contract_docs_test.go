@@ -60,6 +60,11 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 		{name: "core casts runtime", suffix: "\n\nNewHelper may cast HelperOptions.Core to HelperOptions.Runtime.\n"},
 		{name: "text fence hides core recovery", suffix: "\n\n```text\nNewHelper may acquire HelperOptions.Host and HelperOptions.Runtime through HelperOptions.Core.\n```\n"},
 		{name: "go fence comment hides core recovery", suffix: "\n\n```go\n// NewHelper may acquire HelperOptions.Host and HelperOptions.Runtime through HelperOptions.Core.\n```\n"},
+		{name: "reformatted duplicate HelperOptions", suffix: "\n\n```go\ntype HelperOptions struct{\n\tCore credentialhelper.Core\n\tTransport credentialhelper.Transport\n\tPolicy credentialhelper.Policy\n\tHost credentialhelper.ExtensionHost\n\tRuntime credentialhelper.ServiceRuntime\n\tSSH credentialhelper.ExtensionRegistration\n}\n```\n"},
+		{name: "malformed Go fence", suffix: "\n\n```go\nfunc reviewerMalformed(\n```\n"},
+		{name: "split Go strings", suffix: "\n\n```go\nconst reviewerCore = \"HelperOptions.\" + \"Core\"\nconst reviewerHost = \"HelperOptions.\" + \"Host\"\nconst reviewerRuntime = \"HelperOptions.\" + \"Runtime\"\n```\n"},
+		{name: "indented pseudo fence", suffix: "\n\n    ```text\n    reviewer documentation edit\n    ```\n"},
+		{name: "valid four backtick fence edit", suffix: "\n\n````text\nreviewer documentation edit\n````\n"},
 	}
 	for _, mutation := range documentMutations {
 		t.Run(mutation.name, func(t *testing.T) {
@@ -86,13 +91,41 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 		}
 	})
 
+	t.Run("canonical block comment is rejected", func(t *testing.T) {
+		mutated := strings.Replace(document, l8D6CanonicalHelperOptionsBlock, "/*\n"+l8D6CanonicalHelperOptionsBlock+"\n*/", 1)
+		if mutated == document {
+			t.Fatal("mutation did not wrap canonical HelperOptions in a block comment")
+		}
+		if err := validateL8D6HelperCompositionDocument(mutated); err == nil {
+			t.Fatal("HelperOptions documentation guard accepted a commented-out canonical block")
+		}
+	})
+
+	t.Run("canonical raw string is rejected", func(t *testing.T) {
+		mutated := strings.Replace(document, l8D6CanonicalHelperOptionsBlock, "var reviewerHelperOptions = `"+l8D6CanonicalHelperOptionsBlock+"`", 1)
+		if mutated == document {
+			t.Fatal("mutation did not wrap canonical HelperOptions in a raw string")
+		}
+		if err := validateL8D6HelperCompositionDocument(mutated); err == nil {
+			t.Fatal("HelperOptions documentation guard accepted a raw-string canonical block")
+		}
+	})
+
+	t.Run("moved canonical block is rejected", func(t *testing.T) {
+		mutated := strings.Replace(document, l8D6CanonicalHelperOptionsBlock, "", 1)
+		mutated += "\n\n```go\n" + l8D6CanonicalHelperOptionsBlock + "\n```\n"
+		if err := validateL8D6HelperCompositionDocument(mutated); err == nil {
+			t.Fatal("HelperOptions documentation guard accepted a moved canonical block")
+		}
+	})
+
 	t.Run("canonical go fence remains accepted", func(t *testing.T) {
 		if err := validateL8D6HelperCompositionDocument(document); err != nil {
 			t.Fatalf("HelperOptions documentation guard rejected the canonical code fence: %v", err)
 		}
 	})
 
-	benignAdditions := []struct {
+	lockedDocumentEdits := []struct {
 		name   string
 		suffix string
 	}{
@@ -102,10 +135,10 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 		{name: "unrelated text fence", suffix: "\n\n```text\nThe runtime reports one processor core to diagnostics.\n```\n"},
 		{name: "unrelated go fence", suffix: "\n\n```go\ntype reviewerDiagnostic struct {\n\tProcessorCoreCount int\n\tRuntimeLabel string\n}\n```\n"},
 	}
-	for _, addition := range benignAdditions {
-		t.Run("benign "+addition.name, func(t *testing.T) {
-			if err := validateL8D6HelperCompositionDocument(document + addition.suffix); err != nil {
-				t.Fatalf("HelperOptions documentation guard rejected benign addition: %v", err)
+	for _, edit := range lockedDocumentEdits {
+		t.Run("source lock "+edit.name, func(t *testing.T) {
+			if err := validateL8D6HelperCompositionDocument(document + edit.suffix); err == nil {
+				t.Fatal("HelperOptions documentation guard accepted an unreviewed document edit")
 			}
 		})
 	}

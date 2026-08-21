@@ -80,9 +80,59 @@ import policy "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent
 func reviewerBuildVariant() { _, _ = policy.EmbeddedExpectedPinnedCallsiteEvidence() }
 `,
 		},
+		{
+			name:   "raw string syscallpolicy import",
+			path:   "cmd/reviewer_raw_import.go",
+			source: "package cmd\nimport policy `github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy`\nfunc reviewerRawImport() { _, _ = policy.EmbeddedExpectedPinnedCallsiteEvidence() }\n",
+		},
+		{
+			name:   "raw dot syscallpolicy import",
+			path:   "cmd/reviewer_raw_dot_import.go",
+			source: "package cmd\nimport . `github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy`\nfunc reviewerRawDotImport() { _, _ = EmbeddedExpectedPinnedCallsiteEvidence() }\n",
+		},
+		{
+			name:   "escaped syscallpolicy import",
+			path:   "cmd/reviewer_escaped_import.go",
+			source: "package cmd\nimport policy \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolic\\u0079\"\nfunc reviewerEscapedImport() { _, _ = policy.EmbeddedExpectedPinnedCallsiteEvidence() }\n",
+		},
+		{
+			name: "go linkname issuer alias",
+			path: "cmd/reviewer_linkname.go",
+			source: `package cmd
+import _ "unsafe"
+//go:linkname reviewerIssuer github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence
+func reviewerIssuer() (any, error)
+`,
+		},
+		{
+			name: "unrelated same named production method",
+			path: "cmd/reviewer_unrelated.go",
+			source: `package cmd
+type reviewerEvidence struct{}
+func (reviewerEvidence) EmbeddedExpectedPinnedCallsiteEvidence() {}
+func reviewerUnrelatedName() { reviewerEvidence{}.EmbeddedExpectedPinnedCallsiteEvidence() }
+`,
+		},
+		{
+			name: "shadowed import receiver spelling",
+			path: "cmd/reviewer_shadowed_import.go",
+			source: `package cmd
+import policy "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
+type reviewerShadowEvidence struct{}
+func (reviewerShadowEvidence) EmbeddedExpectedPinnedCallsiteEvidence() {}
+func reviewerShadowedImport() {
+	_ = policy.VerifiedPolicyArtifact{}
+	policy := reviewerShadowEvidence{}
+	policy.EmbeddedExpectedPinnedCallsiteEvidence()
+}
+`,
+		},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {
+			if _, err := parser.ParseFile(token.NewFileSet(), mutation.path, mutation.source, parser.ParseComments); err != nil {
+				t.Fatalf("reviewer mutation must be valid Go syntax: %v", err)
+			}
 			mutated := cloneL8D4ProductionSources(sources)
 			mutated[mutation.path] = mutation.source
 			if err := validateL8D4RepositoryHostEvidenceBoundary(mutated); err == nil {
@@ -121,34 +171,11 @@ func reviewerBuildVariant() { _, _ = policy.EmbeddedExpectedPinnedCallsiteEviden
 		source string
 	}{
 		{
-			name: "unrelated same named method",
-			path: "cmd/reviewer_unrelated.go",
-			source: `package cmd
-type reviewerEvidence struct{}
-func (reviewerEvidence) EmbeddedExpectedPinnedCallsiteEvidence() {}
-func reviewerUnrelatedName() { reviewerEvidence{}.EmbeddedExpectedPinnedCallsiteEvidence() }
-`,
-		},
-		{
 			name: "test consumer excluded",
 			path: "cmd/reviewer_mutation_test.go",
 			source: `package cmd
 import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
 func reviewerTestOnly() { _, _ = syscallpolicy.EmbeddedExpectedPinnedCallsiteEvidence() }
-`,
-		},
-		{
-			name: "shadowed import receiver is unrelated",
-			path: "cmd/reviewer_shadowed_import.go",
-			source: `package cmd
-import policy "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
-type reviewerShadowEvidence struct{}
-func (reviewerShadowEvidence) EmbeddedExpectedPinnedCallsiteEvidence() {}
-func reviewerShadowedImport() {
-	_ = policy.VerifiedPolicyArtifact{}
-	policy := reviewerShadowEvidence{}
-	policy.EmbeddedExpectedPinnedCallsiteEvidence()
-}
 `,
 		},
 	}
