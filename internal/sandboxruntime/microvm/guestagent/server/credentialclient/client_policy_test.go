@@ -290,6 +290,8 @@ func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
 		{name: "address escape", source: "var alternateClientPolicyAllow = &newClientPolicyAllowDecision"},
 		{name: "local alias", source: "func init() { alternateClientPolicyAllow := newClientPolicyAllowDecision; _ = alternateClientPolicyAllow }"},
 		{name: "direct allow composite", source: "var alternateClientPolicyAllow = ClientPolicyDecision{allow: true}"},
+		{name: "aliased direct allow composite", source: "type alternateClientPolicyDecision = ClientPolicyDecision\nvar alternateClientPolicyAllow = alternateClientPolicyDecision{allow: true}"},
+		{name: "allow field assignment", source: "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow.allow = true }"},
 	}
 	for _, mutation := range mutations {
 		mutation := mutation
