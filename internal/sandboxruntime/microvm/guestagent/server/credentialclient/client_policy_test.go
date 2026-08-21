@@ -209,6 +209,7 @@ func TestClientProductionPolicySourceShapeAndMutationGuard(t *testing.T) {
 		{name: "default allow", old: "return rejectClientPolicyRequest()", new: "return newClientPolicyAllowDecision(), nil"},
 		{name: "accept extension packet", old: "case credentialprotocol.PacketTypePrepareBegin, credentialprotocol.PacketTypeExec:", new: "case credentialprotocol.PacketTypePrepareBegin, credentialprotocol.PacketTypeExec, credentialprotocol.PacketTypeSSHAcceptedFD:"},
 		{name: "drop exact descriptor", old: "credentialprotocol.ExtensionDescriptorEqual(request.descriptor, credentialprotocol.SSHRelayV1ExtensionDescriptor())", new: "credentialprotocol.ValidateExtensionDescriptor(request.descriptor) == nil"},
+		{name: "identity selective direct allow", old: "func (clientPolicy) Authorize(request ClientPolicyRequest) (ClientPolicyDecision, error) {", new: "func (clientPolicy) Authorize(request ClientPolicyRequest) (ClientPolicyDecision, error) {\n\tif request.identityDigest == ([32]byte{9}) {\n\t\treturn ClientPolicyDecision{allow: true}, nil\n\t}"},
 	}
 	for _, mutation := range mutations {
 		mutation := mutation
@@ -221,6 +222,46 @@ func TestClientProductionPolicySourceShapeAndMutationGuard(t *testing.T) {
 				t.Fatal("source guard accepted adversarial mutation")
 			}
 		})
+	}
+}
+
+func TestClientProductionPolicyRejectsMalformedOperationsAcrossIdentities(t *testing.T) {
+	t.Parallel()
+
+	policy := NewClientPolicy()
+	identities := [][32]byte{
+		{},
+		{1},
+		{2},
+		{1, 2, 3},
+		{31: 9},
+	}
+	allowed := map[credentialprotocol.PacketType]bool{
+		credentialprotocol.PacketTypePrepareBegin: true,
+		credentialprotocol.PacketTypeRenew:        true,
+		credentialprotocol.PacketTypeRevoke:       true,
+		credentialprotocol.PacketTypeExec:         true,
+	}
+	for identityIndex, identity := range identities {
+		for raw := 0; raw <= 255; raw++ {
+			operation := credentialprotocol.PacketType(raw)
+			if allowed[operation] && identity != ([32]byte{}) {
+				continue
+			}
+			request := newClientPolicyRequest(
+				operation,
+				identity,
+				1,
+				[]credentialprotocol.SafeID{"binding-1"},
+				[]credentialprotocol.DeliveryMode{credentialprotocol.DeliveryModeSSHAgent},
+				credentialprotocol.SSHRelayV1ExtensionDescriptor(),
+				"helper-limits-v1",
+			)
+			decision, err := policy.Authorize(request)
+			if err != nil || decision.allow || decision.rejectionCode != "malformed_request" {
+				t.Errorf("Authorize(identity %d, packet 0x%02x) = (%#v, %v), want closed rejection", identityIndex, raw, decision, err)
+			}
+		}
 	}
 }
 

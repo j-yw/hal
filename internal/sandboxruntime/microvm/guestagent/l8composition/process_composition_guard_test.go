@@ -45,6 +45,12 @@ func TestL8D6CompositionSourceGuardRejectsAuthorityMutations(t *testing.T) {
 		{name: "replace explicit runtime", old: "Runtime:    options.Runtime,", new: "Runtime:    nil,"},
 		{name: "drop client descriptor view", old: "Descriptor: view,", new: "Descriptor: nil,"},
 		{name: "default SSH helper", old: "registry, err := credentialhelper.NewExtensionRegistry(options.SSH)", new: "registration, _ := sshrelay.NewHelperExtension(sshrelay.HelperOptions{})\nregistry, err := credentialhelper.NewExtensionRegistry(registration)"},
+		{name: "reassign helper registry", old: "service, err := credentialhelper.NewService", new: "registry, _ = credentialhelper.NewExtensionRegistry()\n\tservice, err := credentialhelper.NewService"},
+		{name: "alias helper registry", old: "service, err := credentialhelper.NewService", new: "registryAlias := registry\n\tregistry = registryAlias\n\tservice, err := credentialhelper.NewService"},
+		{name: "shadow helper registry", old: "service, err := credentialhelper.NewService", new: "{\n\t\tregistry, _ := credentialhelper.NewExtensionRegistry()\n\t\t_ = registry\n\t}\n\tservice, err := credentialhelper.NewService"},
+		{name: "address escape helper registry", old: "service, err := credentialhelper.NewService", new: "registryAddress := &registry\n\t_ = registryAddress\n\tservice, err := credentialhelper.NewService"},
+		{name: "reassign client registry", old: "client, err := credentialclient.NewClient", new: "registry, _ = credentialclient.NewExtensionRegistry()\n\tclient, err := credentialclient.NewClient"},
+		{name: "alias client registry", old: "client, err := credentialclient.NewClient", new: "registryAlias := registry\n\tregistry = registryAlias\n\tclient, err := credentialclient.NewClient"},
 	}
 	for _, mutation := range mutations {
 		mutation := mutation

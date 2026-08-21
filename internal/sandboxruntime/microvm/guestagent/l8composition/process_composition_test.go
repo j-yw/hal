@@ -42,7 +42,8 @@ func TestL8D6NewHelperBuildsExactLocalRegistryAndDescriptor(t *testing.T) {
 	policy := &compositionHelperPolicy{underlying: credentialhelper.NewHelperPolicy()}
 	host := &compositionHelperHost{}
 	runtime := &compositionHelperRuntime{}
-	factory := &compositionHelperFactory{}
+	session := &compositionHelperSession{}
+	factory := &compositionHelperFactory{session: session}
 	registration := credentialhelper.ExtensionRegistration{Descriptor: credentialprotocol.SSHRelayV1ExtensionDescriptor(), Factory: factory}
 	service, descriptor, err := NewHelper(HelperOptions{Core: core, Transport: transport, Policy: policy, Host: host, Runtime: runtime, SSH: registration})
 	if err != nil {
@@ -63,6 +64,7 @@ func TestL8D6NewHelperBuildsExactLocalRegistryAndDescriptor(t *testing.T) {
 	assertServiceDependencyIdentity(t, service, "policy", policy)
 	assertServiceDependencyIdentity(t, service, "host", host)
 	assertServiceDependencyIdentity(t, service, "runtime", runtime)
+	assertServiceSSHRegistrationIdentity(t, service, factory)
 
 	registration.Descriptor.Modes[0] = credentialprotocol.DeliveryModeFileTmpfs
 	descriptor.Extensions[0].Modes[0] = credentialprotocol.DeliveryModeHTTPProxy
@@ -356,6 +358,27 @@ func assertServiceDependencyIdentity(t *testing.T, service *credentialhelper.Ser
 	}
 }
 
+func assertServiceSSHRegistrationIdentity(t *testing.T, service *credentialhelper.Service, wantFactory *compositionHelperFactory) {
+	t.Helper()
+	extensions := reflect.ValueOf(service).Elem().FieldByName("extensions")
+	if !extensions.IsValid() || extensions.Kind() != reflect.Slice || extensions.Len() != 1 {
+		t.Fatalf("Service extension count = %d, want exact SSH registration", extensions.Len())
+	}
+	entry := extensions.Index(0)
+	descriptor := entry.FieldByName("descriptor")
+	id := descriptor.FieldByName("ID")
+	modes := descriptor.FieldByName("Modes")
+	agentPackets := descriptor.FieldByName("AgentToHelperPacketTypes")
+	helperPackets := descriptor.FieldByName("HelperToAgentPacketTypes")
+	if id.String() != string(credentialprotocol.ExtensionIDSSHRelayV1) || modes.Len() != 1 || modes.Index(0).Uint() != uint64(credentialprotocol.DeliveryModeSSHAgent) || agentPackets.Len() != 0 || helperPackets.Len() != 1 || helperPackets.Index(0).Uint() != uint64(credentialprotocol.PacketTypeSSHAcceptedFD) {
+		t.Fatal("Service does not own the exact SSH extension descriptor")
+	}
+	factory := entry.FieldByName("factory")
+	if factory.Kind() != reflect.Interface || factory.IsNil() || factory.Elem().Kind() != reflect.Pointer || factory.Elem().Pointer() != reflect.ValueOf(wantFactory).Pointer() {
+		t.Fatal("Service does not own the exact observable SSH session factory")
+	}
+}
+
 func assertCompositionSerializationDenied(t *testing.T, value any) {
 	t.Helper()
 	encoded, err := json.Marshal(value)
@@ -477,11 +500,17 @@ func (policy *compositionHelperPolicy) Descriptor() credentialhelper.PolicyDescr
 	return policy.underlying.Descriptor()
 }
 
-type compositionHelperFactory struct{ opens atomic.Uint32 }
+type compositionHelperFactory struct {
+	session *compositionHelperSession
+	opens   atomic.Uint32
+}
 
 func (factory *compositionHelperFactory) Open(context.Context, credentialhelper.ExtensionOpenRequest) (credentialhelper.ExtensionSession, error) {
 	factory.opens.Add(1)
-	return &compositionHelperSession{}, nil
+	if factory.session == nil {
+		return &compositionHelperSession{}, nil
+	}
+	return factory.session, nil
 }
 
 type compositionHelperSession struct{}
