@@ -78,6 +78,19 @@ func TestL8LiveBootConfigTypedNilProviderFailsBeforePlanning(t *testing.T) {
 	}
 }
 
+func TestL8LiveBootConfigEmptyRuntimeFailsBeforeProviderCall(t *testing.T) {
+	base := validFirecrackerOperationConfig(t)
+	base.RuntimeID = ""
+	base.ProductionVsock = true
+	provider := &recordingL8LiveConfigProvider{panicOnCall: true}
+	if _, owned, err := prepareL8LiveBootConfig(context.Background(), provider, base); err == nil || owned != nil {
+		t.Fatalf("prepareL8LiveBootConfig(empty runtime) = owned %#v, err %v", owned, err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("empty runtime called provider %d times", provider.calls)
+	}
+}
+
 func TestL8AndL7LiveConfigProvidersAreMutuallyExclusiveBeforeEitherCall(t *testing.T) {
 	l7Provider := &panickingL7LiveConfigProvider{}
 	l8Provider := &recordingL8LiveConfigProvider{panicOnCall: true}
