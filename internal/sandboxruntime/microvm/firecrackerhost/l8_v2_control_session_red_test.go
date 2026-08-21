@@ -276,7 +276,10 @@ func TestL8D6V2ControlFoundationCloseWinsConcurrentOpenPublication(t *testing.T)
 		t.Fatalf("OpenReadiness error = %v, want ErrL8V2ControlUnavailable", result.err)
 	}
 	select {
-	case <-guestResult:
+	case guestState := <-guestResult:
+		if guestState.err == nil {
+			t.Fatal("guest completed authenticated readiness after bridge Close")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("guest exchange did not terminate after close won publication")
 	}
