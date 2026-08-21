@@ -114,6 +114,9 @@ func TestL8D4FullSyscallWrapperSourceGuardRejectsMutations(t *testing.T) {
 		{name: "references abort method value", old: "decision, err := terminal.policy.AbortPermit(permit.value, phase)", replacement: "_ = terminal.policy.AbortPermit\n\tdecision, err := terminal.policy.AbortPermit(permit.value, phase)"},
 		{name: "stores post method value", old: "decision, err := terminal.policy.AuthorizePost(permit.value, source)", replacement: "_ = []any{terminal.policy.AuthorizePost}\n\tdecision, err := terminal.policy.AuthorizePost(permit.value, source)"},
 		{name: "passes commit method as callback", old: "decision, err := terminal.policy.CommitNoObject(permit.value)", replacement: "func(callback any) {}(terminal.policy.CommitNoObject)\n\tdecision, err := terminal.policy.CommitNoObject(permit.value)"},
+		{name: "references pre-abort terminal method", old: "return terminal.abortPermit(permit, syscallpolicy.AdapterPhasePre)", replacement: "_ = terminal.abortPermit\n\t\t\treturn terminal.abortPermit(permit, syscallpolicy.AdapterPhasePre)"},
+		{name: "references post terminal method", old: "return terminal.authorizePost(permit, postSource)", replacement: "_ = terminal.authorizePost\n\t\t\t\treturn terminal.authorizePost(permit, postSource)"},
+		{name: "references commit terminal method", old: "return terminal.commitNoObject(permit)", replacement: "_ = terminal.commitNoObject\n\t\t\treturn terminal.commitNoObject(permit)"},
 		{
 			name:        "stores abort method in generic box",
 			old:         "decision, err := terminal.policy.AbortPermit(permit.value, phase)",
@@ -121,6 +124,7 @@ func TestL8D4FullSyscallWrapperSourceGuardRejectsMutations(t *testing.T) {
 			suffix:      "\ntype reviewerMethodBox[T any] struct { value T }\n",
 		},
 		{name: "finalizes early before cleanup", old: "decision, terminalErr := checkedTerminalResult(terminalResult)", replacement: "wrapper.mu.Lock()\n\twrapper.finishLocked()\n\twrapper.mu.Unlock()\n\tdecision, terminalErr := checkedTerminalResult(terminalResult)"},
+		{name: "invokes aliased finalizer before cleanup", old: "decision, terminalErr := checkedTerminalResult(terminalResult)", replacement: "finalizeEarly := wrapper.finishLocked\n\tfinalizeEarly()\n\tdecision, terminalErr := checkedTerminalResult(terminalResult)"},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {
@@ -490,16 +494,20 @@ func validateL8D4FullSyscallWrapperSource(source string) error {
 	if err != nil {
 		return err
 	}
-	selectorCalls := make(map[string]int)
-	identifierCalls := make(map[string]int)
 	identifierRefs := make(map[string]int)
 	callShapes := make(map[string]int)
 	exportedTypes := 0
 	exportedFunctions := 0
 	var executorInterfaces []*ast.InterfaceType
+	var executeMethods []*ast.FuncDecl
 	for _, declaration := range parsed.Decls {
-		if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.IsExported() && function.Recv == nil {
-			exportedFunctions++
+		if function, ok := declaration.(*ast.FuncDecl); ok {
+			if function.Name.IsExported() && function.Recv == nil {
+				exportedFunctions++
+			}
+			if function.Name.Name == "execute" && l8D4FullWrapperReceiverShape(function) == "*syscallPolicyWrapper" {
+				executeMethods = append(executeMethods, function)
+			}
 		}
 		generation, ok := declaration.(*ast.GenDecl)
 		if !ok {
@@ -520,64 +528,272 @@ func validateL8D4FullSyscallWrapperSource(source string) error {
 			}
 		}
 	}
+	expectedGuardedCalls := map[string]int{
+		"policy.NewAdapterBindings(ticket,wrapper)":                   1,
+		"policy.AuthorizePre(ticket,wrapper.bindings,wrapper)":        1,
+		"terminal.policy.AbortPermit(permit.value,phase)":             1,
+		"terminal.policy.AuthorizePost(permit.value,source)":          1,
+		"terminal.policy.CommitNoObject(permit.value)":                1,
+		"executor.execute(ctx)":                                       1,
+		"terminal.abortPermit(permit,syscallpolicy.AdapterPhasePre)":  1,
+		"terminal.abortPermit(permit,syscallpolicy.AdapterPhasePost)": 6,
+		"terminal.authorizePost(permit,postSource)":                   1,
+		"terminal.commitNoObject(permit)":                             1,
+		"wrapper.finishLocked()":                                      2,
+	}
+	guardedSelectors := map[string]bool{
+		"NewAdapterBindings": true,
+		"AuthorizePre":       true,
+		"AbortPermit":        true,
+		"AuthorizePost":      true,
+		"CommitNoObject":     true,
+		"execute":            true,
+		"abortPermit":        true,
+		"authorizePost":      true,
+		"commitNoObject":     true,
+		"finishLocked":       true,
+	}
+	approvedSelectorReferences := make(map[*ast.SelectorExpr]bool)
+	selectorReferences := make(map[string]int)
 	ast.Inspect(parsed, func(node ast.Node) bool {
 		if identifier, ok := node.(*ast.Ident); ok {
 			identifierRefs[identifier.Name]++
+		}
+		if selector, ok := node.(*ast.SelectorExpr); ok {
+			selectorReferences[selector.Sel.Name]++
 		}
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		switch function := call.Fun.(type) {
-		case *ast.SelectorExpr:
-			selectorCalls[function.Sel.Name]++
-		case *ast.Ident:
-			identifierCalls[function.Name]++
+		shape := l8D4FullWrapperCallShape(call)
+		callShapes[shape]++
+		if selector, direct := call.Fun.(*ast.SelectorExpr); direct && expectedGuardedCalls[shape] != 0 {
+			approvedSelectorReferences[selector] = true
 		}
-		callShapes[l8D4FullWrapperCallShape(call)]++
 		return true
 	})
 	if len(executorInterfaces) != 1 || !l8D4ExactSyscallExecutorInterface(executorInterfaces[0]) {
 		return errors.New("live wrapper must contain one exact private one-method executor")
 	}
-	for name, want := range map[string]int{
-		"NewAdapterBindings": 1,
-		"AuthorizePre":       1,
-		"AbortPermit":        1,
-		"AuthorizePost":      1,
-		"CommitNoObject":     1,
-		"execute":            1,
-	} {
-		if selectorCalls[name] != want {
-			return errors.New("live wrapper must contain each concrete D2/executor call exactly once")
-		}
-	}
-	for _, callShape := range []string{
-		"policy.NewAdapterBindings(ticket,wrapper)",
-		"policy.AuthorizePre(ticket,wrapper.bindings,wrapper)",
-		"terminal.policy.AbortPermit(permit.value,phase)",
-		"terminal.policy.AuthorizePost(permit.value,source)",
-		"terminal.policy.CommitNoObject(permit.value)",
-		"executor.execute(ctx)",
-	} {
-		if callShapes[callShape] != 1 {
+	for callShape, want := range expectedGuardedCalls {
+		if callShapes[callShape] != want {
 			return errors.New("live wrapper changed an exact D2 or executor call")
 		}
 	}
+	var unapprovedSelector bool
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if ok && guardedSelectors[selector.Sel.Name] && !approvedSelectorReferences[selector] {
+			unapprovedSelector = true
+		}
+		return true
+	})
+	if unapprovedSelector {
+		return errors.New("live wrapper stores or aliases guarded D2 or executor authority")
+	}
 	for _, forbidden := range []string{"Syscall", "Syscall6", "RawSyscall", "RawSyscall6", "EmbeddedVerifiedPolicyArtifact", "EmbeddedExpectedPinnedCallsiteEvidence"} {
-		if selectorCalls[forbidden] != 0 {
+		if selectorReferences[forbidden] != 0 {
 			return errors.New("live wrapper reached forbidden raw or issuer authority")
 		}
 	}
-	if identifierCalls["NewSyscallPolicyCoreKernel"] != 0 || identifierRefs["NewSyscallPolicyCoreKernel"] != 0 || exportedTypes != 0 || exportedFunctions != 0 {
+	if identifierRefs["NewSyscallPolicyCoreKernel"] != 0 || exportedTypes != 0 || exportedFunctions != 0 {
 		return errors.New("live wrapper escaped or connected default-off authority")
 	}
-	cleanupIndex := strings.LastIndex(source, "cleanupErr := closeReturnedObjectSafely(object)")
-	finalizeIndex := strings.LastIndex(source, "wrapper.finishLocked()")
-	if cleanupIndex < 0 || finalizeIndex < cleanupIndex {
-		return errors.New("live wrapper must clean returned objects before convergence")
+	if len(executeMethods) != 1 || validateL8D4FullWrapperConvergence(executeMethods[0]) != nil {
+		return errors.New("live wrapper changed its mutually exclusive finalization paths")
 	}
 	return nil
+}
+
+func validateL8D4FullWrapperConvergence(execute *ast.FuncDecl) error {
+	if execute == nil || execute.Body == nil || len(execute.Body.List) < 7 {
+		return errors.New("live wrapper execute body is unavailable")
+	}
+	statements := execute.Body.List
+	terminalSwitch, ok := statements[len(statements)-7].(*ast.SwitchStmt)
+	if !ok || !l8D4FullWrapperTerminalSwitchAssignsEveryPath(terminalSwitch) {
+		return errors.New("live wrapper terminal selection must precede convergence")
+	}
+	if l8D4FullWrapperAssignedCallShape(statements[len(statements)-6]) != "checkedTerminalResult(terminalResult)" ||
+		l8D4FullWrapperAssignedCallShape(statements[len(statements)-5]) != "closeReturnedObjectSafely(object)" ||
+		l8D4FullWrapperStatementCallShape(statements[len(statements)-4]) != "wrapper.mu.Lock()" ||
+		l8D4FullWrapperStatementCallShape(statements[len(statements)-3]) != "wrapper.finishLocked()" ||
+		l8D4FullWrapperStatementCallShape(statements[len(statements)-2]) != "wrapper.mu.Unlock()" ||
+		l8D4FullWrapperReturnShape(statements[len(statements)-1]) != "decision,joinWrapperErrors(primaryErr,terminalErr,cleanupErr)" {
+		return errors.New("live wrapper must terminalize, clean, and then finalize")
+	}
+
+	var finishCalls, preAbortCalls, postAbortCalls, postCalls, commitCalls []*ast.CallExpr
+	ast.Inspect(execute.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch l8D4FullWrapperCallShape(call) {
+		case "wrapper.finishLocked()":
+			finishCalls = append(finishCalls, call)
+		case "terminal.abortPermit(permit,syscallpolicy.AdapterPhasePre)":
+			preAbortCalls = append(preAbortCalls, call)
+		case "terminal.abortPermit(permit,syscallpolicy.AdapterPhasePost)":
+			postAbortCalls = append(postAbortCalls, call)
+		case "terminal.authorizePost(permit,postSource)":
+			postCalls = append(postCalls, call)
+		case "terminal.commitNoObject(permit)":
+			commitCalls = append(commitCalls, call)
+		}
+		return true
+	})
+	if len(finishCalls) != 2 || len(preAbortCalls) != 1 || len(postAbortCalls) != 6 || len(postCalls) != 1 || len(commitCalls) != 1 {
+		return errors.New("live wrapper finalization or terminal call count changed")
+	}
+	postFinish := l8D4FullWrapperStatementCall(statements[len(statements)-3])
+	if postFinish == nil || finishCalls[1] != postFinish || !l8D4FullWrapperCallsWithin(terminalSwitch, postAbortCalls, postCalls, commitCalls) {
+		return errors.New("live wrapper post-execution convergence escaped its terminal switch")
+	}
+
+	var preAbortBranch *ast.IfStmt
+	for _, statement := range statements[:len(statements)-7] {
+		branch, ok := statement.(*ast.IfStmt)
+		if ok && l8D4FullWrapperNodesWithin(branch, preAbortCalls[0], finishCalls[0]) {
+			if preAbortBranch != nil {
+				return errors.New("live wrapper has multiple pre-abort finalization branches")
+			}
+			preAbortBranch = branch
+		}
+	}
+	if preAbortBranch == nil || preAbortBranch.Else != nil || l8D4FullWrapperConditionShape(preAbortBranch.Cond) != "ctxErr!=nil" || len(preAbortBranch.Body.List) != 5 {
+		return errors.New("live wrapper pre-abort finalization branch is unavailable")
+	}
+	if !l8D4FullWrapperTerminalResultAssignment(preAbortBranch.Body.List[0]) ||
+		l8D4FullWrapperAssignedCallShape(preAbortBranch.Body.List[1]) != "checkedTerminalResult(terminalResult)" ||
+		l8D4FullWrapperStatementCallShape(preAbortBranch.Body.List[2]) != "wrapper.finishLocked()" ||
+		l8D4FullWrapperStatementCallShape(preAbortBranch.Body.List[3]) != "wrapper.mu.Unlock()" ||
+		l8D4FullWrapperReturnShape(preAbortBranch.Body.List[4]) != "decision,joinWrapperErrors(ctxErr,terminalErr)" ||
+		preAbortBranch.End() >= terminalSwitch.Pos() {
+		return errors.New("live wrapper pre-abort path must return before post-execution terminalization")
+	}
+	return nil
+}
+
+func l8D4FullWrapperTerminalSwitchAssignsEveryPath(terminalSwitch *ast.SwitchStmt) bool {
+	if terminalSwitch == nil || terminalSwitch.Init != nil || terminalSwitch.Tag != nil || terminalSwitch.Body == nil || len(terminalSwitch.Body.List) != 7 {
+		return false
+	}
+	simpleCases, splitCases := 0, 0
+	for _, statement := range terminalSwitch.Body.List {
+		clause, ok := statement.(*ast.CaseClause)
+		if !ok || len(clause.Body) == 0 {
+			return false
+		}
+		last := clause.Body[len(clause.Body)-1]
+		if l8D4FullWrapperTerminalResultAssignment(last) {
+			simpleCases++
+			continue
+		}
+		branch, ok := last.(*ast.IfStmt)
+		elseBlock, elseOK := branchElseBlock(branch)
+		if !ok || !elseOK || branch.Body == nil || len(branch.Body.List) == 0 || len(elseBlock.List) == 0 ||
+			!l8D4FullWrapperTerminalResultAssignment(branch.Body.List[len(branch.Body.List)-1]) ||
+			!l8D4FullWrapperTerminalResultAssignment(elseBlock.List[len(elseBlock.List)-1]) {
+			return false
+		}
+		splitCases++
+	}
+	return simpleCases == 6 && splitCases == 1
+}
+
+func branchElseBlock(branch *ast.IfStmt) (*ast.BlockStmt, bool) {
+	if branch == nil {
+		return nil, false
+	}
+	block, ok := branch.Else.(*ast.BlockStmt)
+	return block, ok
+}
+
+func l8D4FullWrapperTerminalResultAssignment(statement ast.Stmt) bool {
+	assignment, ok := statement.(*ast.AssignStmt)
+	if !ok || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || l8D4FullWrapperExpressionShape(assignment.Lhs[0]) != "terminalResult" {
+		return false
+	}
+	call, ok := assignment.Rhs[0].(*ast.CallExpr)
+	return ok && l8D4FullWrapperExpressionShape(call.Fun) == "callTerminalSafely" && len(call.Args) == 1
+}
+
+func l8D4FullWrapperConditionShape(expression ast.Expr) string {
+	binary, ok := expression.(*ast.BinaryExpr)
+	if !ok {
+		return l8D4FullWrapperExpressionShape(expression)
+	}
+	return l8D4FullWrapperExpressionShape(binary.X) + binary.Op.String() + l8D4FullWrapperExpressionShape(binary.Y)
+}
+
+func l8D4FullWrapperReceiverShape(function *ast.FuncDecl) string {
+	if function == nil || function.Recv == nil || len(function.Recv.List) != 1 {
+		return ""
+	}
+	return l8D4FullWrapperExpressionShape(function.Recv.List[0].Type)
+}
+
+func l8D4FullWrapperAssignedCallShape(statement ast.Stmt) string {
+	assignment, ok := statement.(*ast.AssignStmt)
+	if !ok || len(assignment.Rhs) != 1 {
+		return ""
+	}
+	call, _ := assignment.Rhs[0].(*ast.CallExpr)
+	return l8D4FullWrapperCallShape(call)
+}
+
+func l8D4FullWrapperStatementCall(statement ast.Stmt) *ast.CallExpr {
+	expression, ok := statement.(*ast.ExprStmt)
+	if !ok {
+		return nil
+	}
+	call, _ := expression.X.(*ast.CallExpr)
+	return call
+}
+
+func l8D4FullWrapperStatementCallShape(statement ast.Stmt) string {
+	return l8D4FullWrapperCallShape(l8D4FullWrapperStatementCall(statement))
+}
+
+func l8D4FullWrapperReturnShape(statement ast.Stmt) string {
+	result, ok := statement.(*ast.ReturnStmt)
+	if !ok {
+		return ""
+	}
+	shapes := make([]string, 0, len(result.Results))
+	for _, expression := range result.Results {
+		if call, ok := expression.(*ast.CallExpr); ok {
+			shapes = append(shapes, l8D4FullWrapperCallShape(call))
+		} else {
+			shapes = append(shapes, l8D4FullWrapperExpressionShape(expression))
+		}
+	}
+	return strings.Join(shapes, ",")
+}
+
+func l8D4FullWrapperNodesWithin(parent ast.Node, children ...ast.Node) bool {
+	if parent == nil {
+		return false
+	}
+	for _, child := range children {
+		if child == nil || child.Pos() < parent.Pos() || child.End() > parent.End() {
+			return false
+		}
+	}
+	return true
+}
+
+func l8D4FullWrapperCallsWithin(parent ast.Node, groups ...[]*ast.CallExpr) bool {
+	for _, group := range groups {
+		for _, call := range group {
+			if !l8D4FullWrapperNodesWithin(parent, call) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func l8D4ExactSyscallExecutorInterface(executor *ast.InterfaceType) bool {
@@ -625,6 +841,8 @@ func l8D4FullWrapperExpressionShape(expression ast.Expr) string {
 		return expression.Name
 	case *ast.SelectorExpr:
 		return l8D4FullWrapperExpressionShape(expression.X) + "." + expression.Sel.Name
+	case *ast.StarExpr:
+		return "*" + l8D4FullWrapperExpressionShape(expression.X)
 	}
 	return ""
 }
