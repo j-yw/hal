@@ -277,6 +277,8 @@ func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
 func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
 	t.Parallel()
 
+	const credentialProtocolImport = "import \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\"\n"
+	const anonymousDecisionType = "struct { liveValue; allow bool; rejectionCode credentialprotocol.SafeID }"
 	mutations := []struct {
 		name   string
 		source string
@@ -298,7 +300,12 @@ func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
 		{name: "generic defined wrapper direct allow composite", source: "type alternateClientPolicyDecision[T any] ClientPolicyDecision\nvar alternateClientPolicyAllow = alternateClientPolicyDecision[int]{allow: true}"},
 		{name: "keyed allow constant", source: "const alternateClientPolicyAllowValue = true\nvar alternateClientPolicyAllow = ClientPolicyDecision{allow: alternateClientPolicyAllowValue}"},
 		{name: "unkeyed allow composite", source: "var alternateClientPolicyAllow = ClientPolicyDecision{liveValue{}, true, \"\"}"},
-		{name: "struct conversion", source: "import \"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol\"\nvar alternateClientPolicyAllow = ClientPolicyDecision(struct { liveValue; allow bool; rejectionCode credentialprotocol.SafeID }{allow: true})"},
+		{name: "struct conversion", source: credentialProtocolImport + "var alternateClientPolicyAllow = ClientPolicyDecision(" + anonymousDecisionType + "{allow: true})"},
+		{name: "anonymous struct package assignment", source: credentialProtocolImport + "var alternateClientPolicyAllow ClientPolicyDecision = " + anonymousDecisionType + "{allow: true}"},
+		{name: "anonymous struct local assignment", source: credentialProtocolImport + "func alternateClientPolicyAllow() { var decision ClientPolicyDecision = " + anonymousDecisionType + "{allow: true}; _ = decision }"},
+		{name: "anonymous struct assign statement", source: credentialProtocolImport + "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow = " + anonymousDecisionType + "{allow: true} }"},
+		{name: "anonymous struct multi assignment", source: credentialProtocolImport + "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow, _ = " + anonymousDecisionType + "{allow: true}, 0 }"},
+		{name: "anonymous struct return", source: credentialProtocolImport + "func alternateClientPolicyAllow() ClientPolicyDecision { return " + anonymousDecisionType + "{allow: true} }"},
 		{name: "allow field assignment", source: "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow.allow = true }"},
 		{name: "allow field multi assignment", source: "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow.allow, _ = true, 0 }"},
 		{name: "allow field address escape", source: "var alternateClientPolicyAllow ClientPolicyDecision\nvar alternateClientPolicyAllowAddress = &alternateClientPolicyAllow.allow"},
