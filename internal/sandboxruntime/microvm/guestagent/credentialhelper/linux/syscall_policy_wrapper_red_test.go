@@ -86,6 +86,7 @@ func TestL8D4FullSyscallWrapperSourceGuardRejectsMutations(t *testing.T) {
 		name        string
 		old         string
 		replacement string
+		suffix      string
 	}{
 		{name: "drops amd64 gate", old: "//go:build linux && amd64 && l8_d4_full_syscall_adapter", replacement: "//go:build linux && l8_d4_full_syscall_adapter"},
 		{name: "drops binding claim", old: "bindings, err := policy.NewAdapterBindings(ticket, wrapper)", replacement: "var bindings syscallpolicy.AdapterBindings\n\tvar err error"},
@@ -107,10 +108,23 @@ func TestL8D4FullSyscallWrapperSourceGuardRejectsMutations(t *testing.T) {
 		{name: "exports wrapper constructor", old: "func newSyscallPolicyWrapper(", replacement: "func NewSyscallPolicyWrapper("},
 		{name: "exports executor authority", old: "type syscallExecutor interface {", replacement: "type SyscallExecutor interface {"},
 		{name: "adds raw syscall", old: "execution, err = executor.execute(ctx)", replacement: "_, _, _ = syscall.Syscall(0, 0, 0, 0)\n\texecution, err = executor.execute(ctx)"},
+		{name: "stores binding method alias", old: "bindings, err := policy.NewAdapterBindings(ticket, wrapper)", replacement: "bindingMethod := policy.NewAdapterBindings\n\t_ = bindingMethod\n\tbindings, err := policy.NewAdapterBindings(ticket, wrapper)"},
+		{name: "references pre method value", old: "permit, pre, err := policy.AuthorizePre(ticket, wrapper.bindings, wrapper)", replacement: "_ = policy.AuthorizePre\n\tpermit, pre, err := policy.AuthorizePre(ticket, wrapper.bindings, wrapper)"},
+		{name: "captures executor method in closure", old: "execution, err = executor.execute(ctx)", replacement: "_ = func() any { return executor.execute }\n\texecution, err = executor.execute(ctx)"},
+		{name: "references abort method value", old: "decision, err := terminal.policy.AbortPermit(permit.value, phase)", replacement: "_ = terminal.policy.AbortPermit\n\tdecision, err := terminal.policy.AbortPermit(permit.value, phase)"},
+		{name: "stores post method value", old: "decision, err := terminal.policy.AuthorizePost(permit.value, source)", replacement: "_ = []any{terminal.policy.AuthorizePost}\n\tdecision, err := terminal.policy.AuthorizePost(permit.value, source)"},
+		{name: "passes commit method as callback", old: "decision, err := terminal.policy.CommitNoObject(permit.value)", replacement: "func(callback any) {}(terminal.policy.CommitNoObject)\n\tdecision, err := terminal.policy.CommitNoObject(permit.value)"},
+		{
+			name:        "stores abort method in generic box",
+			old:         "decision, err := terminal.policy.AbortPermit(permit.value, phase)",
+			replacement: "_ = reviewerMethodBox[func(syscallpolicy.AdapterPermit, syscallpolicy.AdapterPhase) (syscallpolicy.AdapterDecision, error)]{value: terminal.policy.AbortPermit}\n\tdecision, err := terminal.policy.AbortPermit(permit.value, phase)",
+			suffix:      "\ntype reviewerMethodBox[T any] struct { value T }\n",
+		},
+		{name: "finalizes early before cleanup", old: "decision, terminalErr := checkedTerminalResult(terminalResult)", replacement: "wrapper.mu.Lock()\n\twrapper.finishLocked()\n\twrapper.mu.Unlock()\n\tdecision, terminalErr := checkedTerminalResult(terminalResult)"},
 	}
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {
-			mutated := strings.Replace(source, mutation.old, mutation.replacement, 1)
+			mutated := strings.Replace(source, mutation.old, mutation.replacement, 1) + mutation.suffix
 			if mutated == source {
 				t.Fatal("mutation did not change source")
 			}
