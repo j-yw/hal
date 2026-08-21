@@ -386,6 +386,10 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 	if audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(validFixture, expected[ownerVerifier]); err != nil || !audit.exact() || len(audit.issues) != 0 {
 		t.Fatalf("valid owner fixture audit = %#v, error %v", audit, err)
 	}
+	allowedFinalizeFixture := []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) { panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n")
+	if audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(allowedFinalizeFixture, expected[ownerVerifier]); err != nil || !audit.exact() || len(audit.issues) != 0 {
+		t.Fatalf("exact future finalizer fixture audit = %#v, error %v", audit, err)
+	}
 	fixtures := map[string][]byte{
 		"function name spoof":      []byte("package firecrackerhost\ntype unrelated struct { CommitID string }\nfunc commitJobCredentialRuntimeRecovery(value unrelated) error { _ = value.CommitID; return nil }\n"),
 		"unrelated field":          []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype unrelated struct { CommitID string }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = unrelated{}.CommitID; return nil }\n"),
@@ -398,6 +402,9 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		"receiver method":          []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype owner struct{}\nfunc (owner) commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
 		"closure escape":           []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { leak := func() string { return receipt.CommitID }; _ = leak; return nil }\n"),
 		"helper escape":            []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(any) {}\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { leak(receipt); return nil }\n"),
+		"finalizer wrong receiver": []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) { panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
+		"finalizer wrong input":    []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialIdentitySeed) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) { panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
+		"finalizer field read":     []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) { receipt := sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{}; _ = receipt.CommitID; panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
 	}
 	for name, fixture := range fixtures {
 		t.Run(name, func(t *testing.T) {
@@ -410,6 +417,15 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 			}
 		})
 	}
+	t.Run("finalizer wrong file", func(t *testing.T) {
+		audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(allowedFinalizeFixture, l8D6RuntimeOwnerCommitReceiptFunction{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(audit.issues) == 0 {
+			t.Fatalf("future finalizer passed outside owner file: %#v", audit)
+		}
+	})
 	outsideFixtures := map[string][]byte{
 		"outside reflection field":         []byte("package sandboxworker\nimport (\"reflect\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\nfunc leak(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) string { return reflect.ValueOf(receipt).Field(0).String() }\n"),
 		"outside reflection field by name": []byte("package sandboxworker\nimport (\"reflect\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\nfunc leak(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) string { return reflect.ValueOf(receipt).FieldByName(\"CommitID\").String() }\n"),
