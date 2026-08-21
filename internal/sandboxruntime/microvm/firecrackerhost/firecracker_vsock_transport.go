@@ -44,6 +44,7 @@ type firecrackerVsockTransport struct {
 
 	mu     sync.Mutex
 	closed bool
+	done   chan struct{}
 	active map[*net.UnixConn]struct{}
 }
 
@@ -78,6 +79,7 @@ func newFirecrackerVsockTransport(options firecrackerVsockTransportOptions) (*fi
 		socketPath: path, guestPort: options.guestPort, expectedPeerPID: options.expectedPeerPID,
 		handshakeTimeout: timeout, responseLimit: options.responseLimit,
 		operationTimeout: operationTimeout, socketIdentity: identity,
+		done:   make(chan struct{}),
 		active: make(map[*net.UnixConn]struct{}),
 	}, nil
 }
@@ -203,6 +205,7 @@ func (transport *firecrackerVsockTransport) Close() {
 		return
 	}
 	transport.closed = true
+	close(transport.done)
 	connections := make([]*net.UnixConn, 0, len(transport.active))
 	for conn := range transport.active {
 		connections = append(connections, conn)

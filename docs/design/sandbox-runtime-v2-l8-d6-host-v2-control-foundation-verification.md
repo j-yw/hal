@@ -4,17 +4,18 @@
 
 This default-off D6 foundation owns one process-local host session on the
 fixed guest-agent v2 control port 1025. It uses the existing retained
-`ProductionVsockBridge` authority to correlate the exact live Firecracker
-process, private VSOCK socket identity, and safe runtime target before opening
-the stream. It then performs only the already-frozen canonical compatibility
-preface, controller-authenticated session handshake, Finished exchange, and
-readiness request/response.
+`ProductionVsockBridge` authority to correlate the exact live Firecracker process,
+private VSOCK socket identity, and safe runtime target before opening the stream.
+It then performs only the already-frozen canonical compatibility preface,
+controller-authenticated session handshake, Finished exchange, and readiness
+request/response.
 
 The owner is one-shot. One admitted open consumes the bridge whether it
 succeeds or fails. A successful session retains the stream and cryptographic
-state until explicit close, bridge close, or exact process loss. Close is
-terminal and idempotent. Public values expose only the authenticated guest
-session and helper generation through nonserializable, redacted values.
+state until explicit close, bridge close, retained VSOCK-session invalidation,
+or exact process loss. Close is terminal and idempotent. Public values expose
+only the authenticated guest session and helper generation through
+nonserializable, redacted values.
 
 This slice does not implement or claim `JobCredentialRuntime`, a runtime
 provider, a preflight, prepare/renew/revoke/exec dispatch, active or cleanup
@@ -28,8 +29,8 @@ this foundation is a prerequisite rather than L8 runtime completion.
 ```sh
 go test -count=20 ./internal/sandboxruntime/microvm/firecrackerhost -run 'TestL8D6V2ControlFoundation'
 go test -race -count=5 ./internal/sandboxruntime/microvm/firecrackerhost -run 'TestL8D6V2ControlFoundation'
-GOOS=linux GOARCH=amd64 go test ./internal/sandboxruntime/microvm/firecrackerhost -run '^$'
-GOOS=windows GOARCH=amd64 go test ./internal/sandboxruntime/microvm/firecrackerhost -run '^$'
+GOOS=linux GOARCH=amd64 go test -c -o /tmp/hal-firecrackerhost-linux.test ./internal/sandboxruntime/microvm/firecrackerhost
+GOOS=windows GOARCH=amd64 go test -c -o /tmp/hal-firecrackerhost-windows.test.exe ./internal/sandboxruntime/microvm/firecrackerhost
 ```
 
 ## Broad verification
