@@ -334,7 +334,7 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 	expected := map[string]l8D6RuntimeOwnerCommitReceiptFunction{
 		rootValidator: {name: "ValidateJobCredentialRuntimeRecoveryCommitReceipt", rootType: true, exactOneParameter: true},
 		ownerVerifier: {name: "commitJobCredentialRuntimeRecovery"},
-		privateStore:  {name: "storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime", optional: true},
+		privateStore:  {name: "storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime", storeConverter: true},
 	}
 	audits := make(map[string]l8D6RuntimeOwnerCommitReceiptAudit)
 	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, walkErr error) error {
@@ -414,7 +414,7 @@ type l8D6RuntimeOwnerCommitReceiptFunction struct {
 	name              string
 	rootType          bool
 	exactOneParameter bool
-	optional          bool
+	storeConverter    bool
 }
 
 type l8D6RuntimeOwnerCommitReceiptAudit struct {
@@ -482,7 +482,9 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 	if expected.exactOneParameter && l8D6RuntimeOwnerParameterNameCount(target) != 1 {
 		audit.issues = append(audit.issues, "root validator signature is not one parameter")
 	}
-	if !l8D6RuntimeOwnerReturnsOnlyError(target) {
+	if expected.storeConverter && !l8D6RuntimeOwnerReturnsStoredReceiptAndError(target) {
+		audit.issues = append(audit.issues, "private-store converter result signature is not exact")
+	} else if !expected.storeConverter && !l8D6RuntimeOwnerReturnsOnlyError(target) {
 		audit.issues = append(audit.issues, "expected function does not return only error")
 	}
 	receiptObject := (*ast.Object)(nil)
@@ -594,6 +596,15 @@ func l8D6RuntimeOwnerReturnsOnlyError(function *ast.FuncDecl) bool {
 	}
 	field := function.Type.Results.List[0]
 	return len(field.Names) == 0 && l8D6RuntimeOwnerTypeName(field.Type) == "error"
+}
+
+func l8D6RuntimeOwnerReturnsStoredReceiptAndError(function *ast.FuncDecl) bool {
+	if function.Type.Results == nil || len(function.Type.Results.List) != 2 {
+		return false
+	}
+	first, second := function.Type.Results.List[0], function.Type.Results.List[1]
+	return len(first.Names) == 0 && l8D6RuntimeOwnerTypeName(first.Type) == "storedJobCredentialRuntimeRecoveryReceiptV1" &&
+		len(second.Names) == 0 && l8D6RuntimeOwnerTypeName(second.Type) == "error"
 }
 
 func l8D6RuntimeOwnerContainingFunction(node ast.Node, parents map[ast.Node]ast.Node) *ast.FuncDecl {

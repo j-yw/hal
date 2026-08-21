@@ -47,7 +47,13 @@ production constructor call; an AST guard prevents a second production issuer.
 The commit receipt's exported persistence bridge is locked to
 `json:"-" xml:"-"`, redacted string/fmt output, fail-closed
 JSON/gob/text/binary encoding, XML field omission, and one exact
-`sandboxworker/job_store_v2.go` private DTO copy site.
+future `sandboxworker/job_store_v2.go` private DTO copy site. The repo-wide
+guard binds each permitted `CommitID` read to the exact receipt-typed parameter
+object and exact package-function signature. It rejects same-name unrelated
+fields, value/type aliases, methods, closures, helper escape, reflection,
+unsafe conversion, wrong results, and indirect field access. The root validator
+and owner verifier must land together; the worker converter remains absent
+until worker persistence wiring lands.
 Its commit ID is an HMAC over the full-seed digest and finalized revision under
 one stable mode-0600 owner-root key. That constant key is durable before any
 owner record and never projected or rotated while receipts exist. Post-record-

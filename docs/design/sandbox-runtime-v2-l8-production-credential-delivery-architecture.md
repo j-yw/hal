@@ -699,13 +699,24 @@ type storedJobCredentialRuntimeRecoveryReceiptV1 struct {
 tag `json:"credentialRecoveryReceipt,omitempty"`. Recovery-state validation
 requires exactly one of CredentialState or CredentialRecoveryReceipt until
 commit has acknowledged the exact receipt, and forbids the receipt for jobs
-without live L8 credential intent. A repo-wide AST guard permits `CommitID`
-reads exactly once in each of the root
-`ValidateJobCredentialRuntimeRecoveryCommitReceipt`, concrete
-`firecrackerhost.commitJobCredentialRuntimeRecovery`, and private-store
-`storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime` functions; only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`
-from the neutral receipt into the private DTO. Worker services, statuses,
-commands, runtime metadata, and any other file cannot project it, including
+without live L8 credential intent. A repo-wide AST guard permits a `CommitID`
+read only as one direct selector on the exact receipt-typed parameter object.
+The permitted package functions have no receiver, contain exactly one
+receipt-typed parameter whose type object is the canonical root receipt or the
+exact imported root receipt, return only `error`, and read that parameter's
+`CommitID` exactly once. The root validator has no other parameter. The future
+private-store converter instead returns exactly
+`(storedJobCredentialRuntimeRecoveryReceiptV1, error)` so it can copy the
+validated receipt plus seed into the private DTO. The functions are:
+the root `ValidateJobCredentialRuntimeRecoveryCommitReceipt`, concrete
+`firecrackerhost.commitJobCredentialRuntimeRecovery`, and, when worker receipt
+persistence lands, private-store
+`storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime`. The root validator and owner verifier land together; the private-store converter remains optional until worker receipt persistence lands.
+Accordingly, only `internal/sandboxworker/job_store_v2.go` may copy `CommitID` from the neutral
+receipt into the private DTO. Reflection, unsafe conversion, receipt aliases, receiver methods, closures, and helper escape are forbidden,
+as are same-name functions with an unrelated `CommitID` field, a receipt type
+alias, a wrong signature, or an indirect field read. Worker services, statuses,
+commands, runtime metadata, and every other file cannot project it, including
 through a cross-file alias.
 
 The worker rebinds from the receipt's validated seed and calls
