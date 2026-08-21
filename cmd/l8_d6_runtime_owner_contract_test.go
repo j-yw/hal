@@ -344,7 +344,7 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		privateStore  = "../internal/sandboxworker/job_store_v2.go"
 	)
 	expected := map[string]l8D6RuntimeOwnerCommitReceiptFunction{
-		rootValidator: {name: "ValidateJobCredentialRuntimeRecoveryCommitReceipt", rootType: true, exactOneParameter: true},
+		rootValidator: {name: "ValidateJobCredentialRuntimeRecoveryCommitReceipt", rootType: true, rootPackage: true, exactOneParameter: true},
 		ownerVerifier: {name: "commitJobCredentialRuntimeRecovery", allowFinalizerResult: true},
 		privateStore:  {name: "storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime", storeConverter: true},
 	}
@@ -367,7 +367,11 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 			return err
 		}
 		normalizedPath := filepath.ToSlash(path)
-		audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(payload, expected[normalizedPath])
+		specification := expected[normalizedPath]
+		if filepath.ToSlash(filepath.Dir(normalizedPath)) == "../internal/sandboxruntime" {
+			specification.rootPackage = true
+		}
+		audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(payload, specification)
 		if err != nil {
 			return err
 		}
@@ -528,7 +532,7 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 		})
 		return true
 	})
-	receiptTypeReferences := l8D6RuntimeOwnerReceiptTypeReferences(file, expected.rootType)
+	receiptTypeReferences := l8D6RuntimeOwnerReceiptTypeReferences(file, expected.rootType, expected.rootPackage)
 	var target *ast.FuncDecl
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
@@ -645,7 +649,7 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 	return audit, nil
 }
 
-func l8D6RuntimeOwnerReceiptTypeReferences(file *ast.File, rootType bool) []ast.Expr {
+func l8D6RuntimeOwnerReceiptTypeReferences(file *ast.File, rootType, rootPackage bool) []ast.Expr {
 	aliases := make(map[string]bool)
 	dotImport := false
 	for _, spec := range file.Imports {
@@ -677,7 +681,7 @@ func l8D6RuntimeOwnerReceiptTypeReferences(file *ast.File, rootType bool) []ast.
 			}
 			if rootType && value.Obj != nil {
 				references = append(references, value)
-			} else if dotImport && value.Obj == nil {
+			} else if (rootPackage || dotImport) && value.Obj == nil {
 				references = append(references, value)
 			}
 		}

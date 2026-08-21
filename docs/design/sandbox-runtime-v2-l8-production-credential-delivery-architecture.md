@@ -729,7 +729,9 @@ of the sealed `String`, `GoString`, `Format`, JSON/text/binary/gob denial
 methods, and the exact Finalize result plus Commit parameter in
 `JobCredentialRuntimeRecoveryBinding`. No other root helper, value, assignment,
 receiver, parameter, result, interface method, or `any` retention may name or
-capture the receipt.
+capture the receipt. This confinement includes unresolved bare cross-file type
+identifiers in every sibling production file of the root `sandboxruntime`
+package; a file-local object is not required for the guard to reject them.
 
 The sole future concrete exception is frozen to the package-private
 `type l8RuntimeOwnerRecoveryBinding` in

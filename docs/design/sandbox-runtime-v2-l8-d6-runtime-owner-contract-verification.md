@@ -66,7 +66,8 @@ Root-file receipt references are separately confined to the exact type
 declaration, validator parameter, unnamed sealed redaction/denial receivers,
 and the exact Finalize/Commit positions in the recovery interface. Extra root
 helpers, methods, assignments, values, parameters, results, and `any` retention
-are rejected.
+are rejected, including bare cross-file receipt identifiers in sibling root
+package files where parser object resolution is unavailable.
 The only frozen future result-type exception is the exact pointer method
 `(*l8RuntimeOwnerRecoveryBinding).FinalizeJobCredentialRuntimeRecovery` in the
 common owner file. Its parameters and two results are source locked and its
