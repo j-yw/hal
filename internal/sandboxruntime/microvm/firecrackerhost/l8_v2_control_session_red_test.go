@@ -393,6 +393,69 @@ func TestL8D6V2ControlFoundationCloseSynchronouslyOwnsAdmittedHandshakeStream(t 
 	}
 }
 
+func TestL8D6V2ControlFoundationClosePanicDoesNotDeadlockAdmittedAttempt(t *testing.T) {
+	seed := l8D6V2ControlSeed(t)
+	key, nonce := l8D6V2ControlAuthority(t)
+	host, guest := net.Pipe()
+	stream := &l8D6V2ControlPanicCloseStream{
+		l8D6V2ControlTestStream: &l8D6V2ControlTestStream{Conn: host, processDone: make(chan struct{})},
+	}
+	bridge, err := newProductionL8V2ControlBridgeWithDependencies(
+		&l8D6V2ControlTestConnector{stream: stream}, seed, key, nonce,
+		bytes.NewReader(bytes.Repeat([]byte{0x5b}, 64)), time.Now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefaceRead := make(chan struct{})
+	go func() {
+		_, _ = frame.Read(guest, l8V2ControlCompatibilityLimit)
+		close(prefaceRead)
+		_, _ = io.Copy(io.Discard, guest)
+	}()
+	type openResult struct {
+		session *L8V2ControlReadinessSession
+		err     error
+	}
+	opened := make(chan openResult, 1)
+	go func() {
+		session, openErr := bridge.OpenReadiness(context.Background(), l8D6V2ControlTarget(seed))
+		opened <- openResult{session: session, err: openErr}
+	}()
+	select {
+	case <-prefaceRead:
+	case <-time.After(time.Second):
+		_ = guest.Close()
+		t.Fatal("guest did not observe compatibility preface")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- bridge.Close() }()
+	var closeErr error
+	returned := false
+	select {
+	case closeErr = <-closed:
+		returned = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	_ = guest.Close()
+	if !returned {
+		closeErr = <-closed
+	}
+	result := <-opened
+	if !returned {
+		t.Fatal("bridge Close deadlocked after admitted stream Close panic")
+	}
+	if !errors.Is(closeErr, ErrL8V2ControlUnavailable) {
+		t.Fatalf("bridge Close error = %v, want ErrL8V2ControlUnavailable", closeErr)
+	}
+	if result.session != nil || !errors.Is(result.err, ErrL8V2ControlUnavailable) {
+		t.Fatalf("OpenReadiness after Close panic = %#v, %v", result.session, result.err)
+	}
+	if got := stream.closeCalls; got != 1 {
+		t.Fatalf("panic stream Close calls = %d, want 1", got)
+	}
+}
+
 func TestL8D6V2ControlFoundationZeroValueSessionCloseIsTotal(t *testing.T) {
 	result := make(chan any, 1)
 	go func() {
@@ -701,6 +764,16 @@ func (stream *l8D6V2ControlBlockingCloseStream) Close() error {
 	stream.enterOnce.Do(func() { close(stream.closeEntered) })
 	<-stream.closeRelease
 	return stream.l8D6V2ControlTestStream.Close()
+}
+
+type l8D6V2ControlPanicCloseStream struct {
+	*l8D6V2ControlTestStream
+	closeCalls int
+}
+
+func (stream *l8D6V2ControlPanicCloseStream) Close() error {
+	stream.closeCalls++
+	panic("close panic")
 }
 
 func (stream *l8D6V2ControlTestStream) ProcessDone() <-chan struct{} {
