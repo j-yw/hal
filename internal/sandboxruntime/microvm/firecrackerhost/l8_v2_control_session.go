@@ -58,10 +58,20 @@ type ProductionL8V2ControlBridge struct {
 	random        io.Reader
 	now           func() time.Time
 	attemptCancel context.CancelFunc
+	attemptDone   chan struct{}
+	inFlight      *l8V2ControlInFlight
 	attempted     bool
 	closed        bool
+	closeDone     chan struct{}
 	active        *L8V2ControlReadinessSession
 	closeErr      error
+}
+
+type l8V2ControlInFlight struct {
+	stream    l8V2ControlStream
+	closing   bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // L8V2ControlReadiness exposes only the two authenticated safe generations
@@ -121,12 +131,13 @@ func newProductionL8V2ControlBridgeWithDependencies(
 		return nil, ErrL8V2ControlInvalid
 	}
 	return &ProductionL8V2ControlBridge{
-		connector: connector,
-		seed:      cloned,
-		signing:   append(ed25519.PrivateKey(nil), signingKey...),
-		bootNonce: bootNonce,
-		random:    random,
-		now:       now,
+		connector:   connector,
+		seed:        cloned,
+		signing:     append(ed25519.PrivateKey(nil), signingKey...),
+		bootNonce:   bootNonce,
+		random:      random,
+		now:         now,
+		attemptDone: make(chan struct{}),
 	}, nil
 }
 
@@ -150,6 +161,7 @@ func (bridge *ProductionL8V2ControlBridge) OpenReadiness(
 	bridge.attempted = true
 	attemptCtx, attemptCancel := context.WithCancel(ctx)
 	bridge.attemptCancel = attemptCancel
+	attemptDone := bridge.attemptDone
 	connector := bridge.connector
 	seed, seedErr := sandboxruntime.CloneJobCredentialIdentitySeed(bridge.seed)
 	signing := append(ed25519.PrivateKey(nil), bridge.signing...)
@@ -157,8 +169,9 @@ func (bridge *ProductionL8V2ControlBridge) OpenReadiness(
 	randomSource := bridge.random
 	now := bridge.now
 	bridge.mu.Unlock()
+	defer close(attemptDone)
 	if seedErr != nil {
-		bridge.finishAttempt(nil, ErrL8V2ControlInvalid)
+		bridge.finishAttempt(nil, nil)
 		zeroL8V2ControlBytes(signing)
 		return nil, ErrL8V2ControlInvalid
 	}
@@ -168,7 +181,7 @@ func (bridge *ProductionL8V2ControlBridge) OpenReadiness(
 		if !l8V2ControlValueIsNil(stream) {
 			_ = closeL8V2ControlStream(stream)
 		}
-		bridge.finishAttempt(nil, ErrL8V2ControlUnavailable)
+		bridge.finishAttempt(nil, nil)
 		zeroL8V2ControlBytes(signing)
 		return nil, ErrL8V2ControlUnavailable
 	}
@@ -180,21 +193,32 @@ func (bridge *ProductionL8V2ControlBridge) OpenReadiness(
 		if openErr != nil {
 			resultErr = ErrL8V2ControlUnavailable
 		}
-		bridge.finishAttempt(nil, resultErr)
+		bridge.finishAttempt(nil, nil)
 		zeroL8V2ControlBytes(signing)
 		return nil, resultErr
 	}
+	inFlight, admitted := bridge.admitInFlight(stream)
+	if !admitted {
+		_ = closeL8V2ControlStream(stream)
+		bridge.finishAttempt(nil, nil)
+		zeroL8V2ControlBytes(signing)
+		return nil, ErrL8V2ControlUnavailable
+	}
+	stopCancellation := context.AfterFunc(attemptCtx, func() {
+		_ = bridge.closeInFlight(inFlight)
+	})
+	defer stopCancellation()
 	processDone, doneErr := callL8V2ControlProcessDone(stream)
 	if doneErr != nil || processDone == nil {
-		_ = closeL8V2ControlStream(stream)
-		bridge.finishAttempt(nil, ErrL8V2ControlInvalid)
+		_ = bridge.closeInFlight(inFlight)
+		bridge.finishAttempt(inFlight, nil)
 		zeroL8V2ControlBytes(signing)
 		return nil, ErrL8V2ControlInvalid
 	}
 	select {
 	case <-processDone:
-		_ = closeL8V2ControlStream(stream)
-		bridge.finishAttempt(nil, ErrL8V2ControlUnavailable)
+		_ = bridge.closeInFlight(inFlight)
+		bridge.finishAttempt(inFlight, nil)
 		zeroL8V2ControlBytes(signing)
 		return nil, ErrL8V2ControlUnavailable
 	default:
@@ -203,16 +227,16 @@ func (bridge *ProductionL8V2ControlBridge) OpenReadiness(
 	readiness, state, readinessErr := callL8V2ControlReadiness(attemptCtx, stream, seed, signing, nonce, randomSource, now)
 	zeroL8V2ControlBytes(signing)
 	if readinessErr != nil || state == nil {
-		_ = closeL8V2ControlStream(stream)
+		_ = bridge.closeInFlight(inFlight)
 		resultErr := sanitizeL8V2ControlError(readinessErr)
-		bridge.finishAttempt(nil, resultErr)
+		bridge.finishAttempt(inFlight, nil)
 		return nil, resultErr
 	}
 	select {
 	case <-processDone:
 		state.Revoke()
-		_ = closeL8V2ControlStream(stream)
-		bridge.finishAttempt(nil, ErrL8V2ControlUnavailable)
+		_ = bridge.closeInFlight(inFlight)
+		bridge.finishAttempt(inFlight, nil)
 		return nil, ErrL8V2ControlUnavailable
 	default:
 	}
@@ -226,11 +250,13 @@ func (bridge *ProductionL8V2ControlBridge) OpenReadiness(
 		watchDone: make(chan struct{}),
 	}
 	owned.onClose = bridge.sessionClosed
-	go owned.watchProcess(processDone)
-	if !bridge.finishAttempt(owned, nil) {
-		_ = owned.Close()
+	if !bridge.finishAttempt(inFlight, owned) {
+		state.Revoke()
+		owned.state = nil
+		owned.stream = nil
 		return nil, ErrL8V2ControlUnavailable
 	}
+	go owned.watchProcess(processDone)
 	return owned, nil
 }
 
@@ -251,7 +277,45 @@ func (bridge *ProductionL8V2ControlBridge) attemptIsClosed() bool {
 	return bridge.closed
 }
 
-func (bridge *ProductionL8V2ControlBridge) finishAttempt(session *L8V2ControlReadinessSession, _ error) bool {
+func (bridge *ProductionL8V2ControlBridge) admitInFlight(stream l8V2ControlStream) (*l8V2ControlInFlight, bool) {
+	inFlight := &l8V2ControlInFlight{stream: stream}
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if bridge.closed || bridge.inFlight != nil {
+		return nil, false
+	}
+	bridge.inFlight = inFlight
+	return inFlight, true
+}
+
+func (bridge *ProductionL8V2ControlBridge) closeInFlight(inFlight *l8V2ControlInFlight) error {
+	if bridge == nil || inFlight == nil {
+		return nil
+	}
+	bridge.mu.Lock()
+	if bridge.inFlight != inFlight {
+		bridge.mu.Unlock()
+		return nil
+	}
+	inFlight.closing = true
+	bridge.mu.Unlock()
+	return inFlight.close()
+}
+
+func (inFlight *l8V2ControlInFlight) close() error {
+	if inFlight == nil {
+		return nil
+	}
+	inFlight.closeOnce.Do(func() {
+		inFlight.closeErr = closeL8V2ControlStream(inFlight.stream)
+	})
+	return inFlight.closeErr
+}
+
+func (bridge *ProductionL8V2ControlBridge) finishAttempt(
+	inFlight *l8V2ControlInFlight,
+	session *L8V2ControlReadinessSession,
+) bool {
 	bridge.mu.Lock()
 	cancel := bridge.attemptCancel
 	bridge.attemptCancel = nil
@@ -260,9 +324,13 @@ func (bridge *ProductionL8V2ControlBridge) finishAttempt(session *L8V2ControlRea
 	bridge.bootNonce = [32]byte{}
 	bridge.random = nil
 	bridge.connector = nil
-	published := !bridge.closed && session != nil
+	published := !bridge.closed && session != nil && inFlight != nil &&
+		bridge.inFlight == inFlight && !inFlight.closing
 	if published {
 		bridge.active = session
+	}
+	if inFlight != nil && bridge.inFlight == inFlight {
+		bridge.inFlight = nil
 	}
 	bridge.mu.Unlock()
 	if cancel != nil {
@@ -292,8 +360,28 @@ func (bridge *ProductionL8V2ControlBridge) Close() error {
 		return nil
 	}
 	bridge.mu.Lock()
+	if bridge.closed {
+		done := bridge.closeDone
+		bridge.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		bridge.mu.Lock()
+		latched := bridge.closeErr
+		bridge.mu.Unlock()
+		return latched
+	}
 	bridge.closed = true
+	if bridge.closeDone == nil {
+		bridge.closeDone = make(chan struct{})
+	}
+	closeDone := bridge.closeDone
 	active := bridge.active
+	inFlight := bridge.inFlight
+	if inFlight != nil {
+		inFlight.closing = true
+	}
+	attemptDone := bridge.attemptDone
 	cancel := bridge.attemptCancel
 	bridge.attemptCancel = nil
 	zeroL8V2ControlBytes(bridge.signing)
@@ -306,6 +394,15 @@ func (bridge *ProductionL8V2ControlBridge) Close() error {
 	if cancel != nil {
 		cancel()
 	}
+	if inFlight != nil {
+		inFlightCloseErr := inFlight.close()
+		if inFlightCloseErr != nil && latched == nil {
+			latched = sanitizeL8V2ControlError(inFlightCloseErr)
+		}
+		if inFlightCloseErr == nil && attemptDone != nil {
+			<-attemptDone
+		}
+	}
 	if active != nil {
 		if err := active.Close(); err != nil && latched == nil {
 			latched = sanitizeL8V2ControlError(err)
@@ -316,6 +413,7 @@ func (bridge *ProductionL8V2ControlBridge) Close() error {
 		bridge.closeErr = latched
 	}
 	latched = bridge.closeErr
+	close(closeDone)
 	bridge.mu.Unlock()
 	return latched
 }
@@ -507,8 +605,6 @@ func performL8V2ControlReadiness(
 	if stream.SetDeadline(deadline) != nil {
 		return L8V2ControlReadiness{}, nil, ErrL8V2ControlUnavailable
 	}
-	stopCancellation := context.AfterFunc(ctx, func() { _ = closeL8V2ControlStream(stream) })
-	defer stopCancellation()
 	if err := frame.Write(stream, []byte(l8V2ControlCompatibilityPayload), l8V2ControlCompatibilityLimit); err != nil {
 		return L8V2ControlReadiness{}, nil, ErrL8V2ControlUnavailable
 	}
