@@ -2016,6 +2016,18 @@ func l11SelectedTestingTPointerDepth(file *l11SelectedFile, expression ast.Expr,
 			defer delete(resolution.objects, value.Obj)
 			return l11SelectedTestingTPointerDepth(file, typeSpec.Type, resolution, depth+1)
 		}
+		dotImports := 0
+		dotImportsTesting := false
+		for _, imported := range file.imports {
+			if imported.name != "." {
+				continue
+			}
+			dotImports++
+			dotImportsTesting = imported.path == "testing"
+		}
+		if dotImports > 0 {
+			return 0, dotImports == 1 && dotImportsTesting && value.Name == "T"
+		}
 		if file.pkg != nil && len(file.pkg.typeDefs[value.Name]) > 0 {
 			alias, ok := file.pkg.types[value.Name]
 			if !ok || len(file.pkg.typeDefs[value.Name]) != 1 {
@@ -2028,14 +2040,6 @@ func l11SelectedTestingTPointerDepth(file *l11SelectedFile, expression ast.Expr,
 			resolution.aliases[key] = true
 			defer delete(resolution.aliases, key)
 			return l11SelectedTestingTPointerDepth(alias.file, alias.expression, resolution, depth+1)
-		}
-		if value.Name != "T" {
-			return 0, false
-		}
-		for _, imported := range file.imports {
-			if imported.name == "." && imported.path == "testing" {
-				return 0, true
-			}
 		}
 	case *ast.SelectorExpr:
 		identifier, ok := value.X.(*ast.Ident)
