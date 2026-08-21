@@ -156,6 +156,12 @@ func TestL10EvaluateActiveRejectsEachMissingCorruptOrWeakProof(t *testing.T) {
 		{name: "template trust error", mutate: func(r *ActiveRequest) {
 			r.Template.Trust.Errors = []acquisition.TrustPolicyError{{Code: acquisition.TrustPolicyErrorCode("unsafe_error")}}
 		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "template trust enforcement missing", mutate: func(r *ActiveRequest) {
+			r.Template.Trust.Enforcement = nil
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "template trust enforcement disabled", mutate: func(r *ActiveRequest) {
+			r.Template.Trust.Enforcement.StrictlyEnforced = false
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
 		{name: "template provenance document warning", mutate: func(r *ActiveRequest) {
 			r.Template.Provenance = &acquisition.TemplateProvenanceProjection{Document: &acquisition.TemplateProvenanceEntry{WarningCodes: []string{"unsafe_warning"}}}
 		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
@@ -185,6 +191,9 @@ func TestL10EvaluateActiveRejectsEachMissingCorruptOrWeakProof(t *testing.T) {
 		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
 		{name: "runtime trust error", mutate: func(r *ActiveRequest) {
 			r.Template.RuntimeMetadata.TrustPolicy.ErrorCodes = []string{"unsafe_error"}
+		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
+		{name: "runtime trust reason", mutate: func(r *ActiveRequest) {
+			r.Template.RuntimeMetadata.TrustPolicy.ReasonCodes = []string{"unsafe_reason"}
 		}, code: sandbox.SandboxStrictCompositionCodeTemplateProofRejected},
 		{name: "workspace identity mismatch", mutate: func(r *ActiveRequest) { r.Workspace.ExecutionID = "execution-other" }, code: sandbox.SandboxStrictCompositionCodeWorkspaceProofMismatch},
 		{name: "direct workspace", mutate: func(r *ActiveRequest) {
@@ -376,30 +385,55 @@ func TestL10EvaluateTerminalRejectsFreshCleanupAtDifferentRevision(t *testing.T)
 	}
 }
 
-func TestL10EvaluateTerminalRejectsTemplateFindingAliasDrift(t *testing.T) {
-	activeRequest := l10CompleteActiveRequest(t)
-	attestation, active := EvaluateActive(context.Background(), activeRequest)
-	if active.State != sandbox.SandboxStrictCompositionStateActive {
-		t.Fatalf("active decision = %#v, want active", active)
+func TestL10EvaluateTerminalRejectsTemplateStrictStateDrift(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*selection.Result)
+	}{
+		{name: "runtime trust error", mutate: func(template *selection.Result) {
+			runtimeMetadata := *template.RuntimeMetadata
+			trustPolicy := *runtimeMetadata.TrustPolicy
+			trustPolicy.ErrorCodes = []string{"unsafe_error"}
+			runtimeMetadata.TrustPolicy = &trustPolicy
+			template.RuntimeMetadata = &runtimeMetadata
+		}},
+		{name: "runtime trust reason", mutate: func(template *selection.Result) {
+			runtimeMetadata := *template.RuntimeMetadata
+			trustPolicy := *runtimeMetadata.TrustPolicy
+			trustPolicy.ReasonCodes = []string{"unsafe_reason"}
+			runtimeMetadata.TrustPolicy = &trustPolicy
+			template.RuntimeMetadata = &runtimeMetadata
+		}},
+		{name: "strict enforcement missing", mutate: func(template *selection.Result) {
+			template.Trust.Enforcement = nil
+		}},
+		{name: "strict enforcement disabled", mutate: func(template *selection.Result) {
+			template.Trust.Enforcement = &acquisition.TrustPolicyEnforcementMetadata{}
+		}},
 	}
-	terminalNow := activeRequest.Now.Add(2 * time.Second)
-	template := activeRequest.Template
-	runtimeMetadata := *template.RuntimeMetadata
-	trustPolicy := *runtimeMetadata.TrustPolicy
-	trustPolicy.ErrorCodes = []string{"unsafe_error"}
-	runtimeMetadata.TrustPolicy = &trustPolicy
-	template.RuntimeMetadata = &runtimeMetadata
-	decision := EvaluateTerminal(context.Background(), TerminalRequest{
-		Now: terminalNow, Identity: activeRequest.Identity, CredentialRevision: activeRequest.CredentialRevision,
-		Attestation: attestation, CredentialCleanup: l10CleanupProof(t, activeRequest.Identity, activeRequest.CredentialRevision, terminalNow),
-		TemplatePolicyID: activeRequest.TemplatePolicyID, Template: template,
-		TemplateBinding: activeRequest.TemplateBinding, Workspace: activeRequest.Workspace,
-	})
-	if decision.State != sandbox.SandboxStrictCompositionStateBlocked || decision.Code != sandbox.SandboxStrictCompositionCodeTemplateProofRejected {
-		t.Fatalf("template finding drift decision = %#v, want template_proof_rejected", decision)
-	}
-	if !AttestationValid(attestation, activeRequest.Identity.SandboxID, activeRequest.Identity.ExecutionID, activeRequest.Identity.RuntimeID, terminalNow) {
-		t.Fatal("template finding drift consumed the active attestation")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			activeRequest := l10CompleteActiveRequest(t)
+			attestation, active := EvaluateActive(context.Background(), activeRequest)
+			if active.State != sandbox.SandboxStrictCompositionStateActive {
+				t.Fatalf("active decision = %#v, want active", active)
+			}
+			terminalNow := activeRequest.Now.Add(2 * time.Second)
+			template := activeRequest.Template
+			tt.mutate(&template)
+			decision := EvaluateTerminal(context.Background(), TerminalRequest{
+				Now: terminalNow, Identity: activeRequest.Identity, CredentialRevision: activeRequest.CredentialRevision,
+				Attestation: attestation, CredentialCleanup: l10CleanupProof(t, activeRequest.Identity, activeRequest.CredentialRevision, terminalNow),
+				TemplatePolicyID: activeRequest.TemplatePolicyID, Template: template,
+				TemplateBinding: activeRequest.TemplateBinding, Workspace: activeRequest.Workspace,
+			})
+			if decision.State != sandbox.SandboxStrictCompositionStateBlocked || decision.Code != sandbox.SandboxStrictCompositionCodeTemplateProofRejected {
+				t.Fatalf("template strict-state drift decision = %#v, want template_proof_rejected", decision)
+			}
+			if !AttestationValid(attestation, activeRequest.Identity.SandboxID, activeRequest.Identity.ExecutionID, activeRequest.Identity.RuntimeID, terminalNow) {
+				t.Fatal("template strict-state drift consumed the active attestation")
+			}
+		})
 	}
 }
 
@@ -423,6 +457,7 @@ func TestL10EvaluateActiveAllowsNilAndExplicitEmptyTemplateFindingAliases(t *tes
 				request.Template.RuntimeMetadata.SourceArtifact = &sandboxruntime.RuntimeTemplateLockEntryMetadata{WarningCodes: []string{}}
 				request.Template.RuntimeMetadata.TrustPolicy.WarningCodes = []string{}
 				request.Template.RuntimeMetadata.TrustPolicy.ErrorCodes = []string{}
+				request.Template.RuntimeMetadata.TrustPolicy.ReasonCodes = []string{}
 			}
 			_, decision := EvaluateActive(context.Background(), request)
 			if decision.State != sandbox.SandboxStrictCompositionStateActive || decision.Code != sandbox.SandboxStrictCompositionCodeReady {
@@ -524,7 +559,10 @@ func l10TemplateEvidence(identity sandboxruntime.JobCredentialIdentity) (selecti
 			SourceKind: acquisition.SourceKindOCIArtifact, ReferenceKind: sandboxtemplate.ReferenceKindOCIArtifact, Status: acquisition.LockStatusLocked,
 			References: []acquisition.ReferenceLock{{Field: "metadata.reference", Kind: sandboxtemplate.ReferenceKindOCIArtifact, Status: acquisition.LockStatusLocked, Digest: digest}},
 		},
-		Trust: acquisition.TrustPolicyResult{Mode: acquisition.TrustPolicyModeStrict, Decision: acquisition.TrustPolicyDecisionTrusted},
+		Trust: acquisition.TrustPolicyResult{
+			Mode: acquisition.TrustPolicyModeStrict, Decision: acquisition.TrustPolicyDecisionTrusted,
+			Enforcement: &acquisition.TrustPolicyEnforcementMetadata{StrictlyEnforced: true},
+		},
 		RuntimeMetadata: &sandboxruntime.RuntimeTemplateLockMetadata{
 			TemplateReference: &sandboxruntime.RuntimeTemplateLockEntryMetadata{SourceKind: "template_reference", ReferenceKind: "oci_artifact", Status: "locked", DigestAlgorithm: "sha256", DigestValue: digest.Value},
 			TrustPolicy:       &sandboxruntime.RuntimeTemplateTrustPolicyMetadata{Mode: "strict", Decision: "trusted", SourceKind: "oci_artifact", ReferenceKind: "oci_artifact", Status: "locked", DigestAlgorithm: "sha256", DigestValue: digest.Value},
