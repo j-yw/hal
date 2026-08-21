@@ -35,14 +35,14 @@ func TestL8D6CompositionSourceGuardRejectsAuthorityMutations(t *testing.T) {
 		old  string
 		new  string
 	}{
-		{name: "derive host from core", old: "Host: options.Host,", new: "Host: options.Core.(credentialhelper.ExtensionHost),"},
-		{name: "derive runtime from core", old: "Runtime: options.Runtime,", new: "Runtime: options.Core.(credentialhelper.ServiceRuntime),"},
+		{name: "derive host from core", old: "Host:       options.Host,", new: "Host:       options.Core.(credentialhelper.ExtensionHost),"},
+		{name: "derive runtime from core", old: "Runtime:    options.Runtime,", new: "Runtime:    options.Core.(credentialhelper.ServiceRuntime),"},
 		{name: "omit helper registration", old: "credentialhelper.NewExtensionRegistry(options.SSH)", new: "credentialhelper.NewExtensionRegistry()"},
 		{name: "extra helper registration", old: "credentialhelper.NewExtensionRegistry(options.SSH)", new: "credentialhelper.NewExtensionRegistry(options.SSH, options.SSH)"},
 		{name: "omit client registration", old: "credentialclient.NewExtensionRegistry(options.SSH)", new: "credentialclient.NewExtensionRegistry()"},
 		{name: "extra client registration", old: "credentialclient.NewExtensionRegistry(options.SSH)", new: "credentialclient.NewExtensionRegistry(options.SSH, options.SSH)"},
-		{name: "replace explicit host", old: "Host: options.Host,", new: "Host: nil,"},
-		{name: "replace explicit runtime", old: "Runtime: options.Runtime,", new: "Runtime: nil,"},
+		{name: "replace explicit host", old: "Host:       options.Host,", new: "Host:       nil,"},
+		{name: "replace explicit runtime", old: "Runtime:    options.Runtime,", new: "Runtime:    nil,"},
 		{name: "drop client descriptor view", old: "Descriptor: view,", new: "Descriptor: nil,"},
 		{name: "default SSH helper", old: "registry, err := credentialhelper.NewExtensionRegistry(options.SSH)", new: "registration, _ := sshrelay.NewHelperExtension(sshrelay.HelperOptions{})\nregistry, err := credentialhelper.NewExtensionRegistry(registration)"},
 	}
@@ -94,6 +94,68 @@ func TestL8D6CredentialClientDescriptorMappingIsDestroyedAndNotRetained(t *testi
 					t.Fatalf("credentialclient.Client retains descriptor authority as %s", text)
 				}
 			}
+		}
+	}
+}
+
+func TestL8D6CompositionDeclarationsHaveOnePackageWideOwner(t *testing.T) {
+	t.Parallel()
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	want := map[string]string{
+		"HelperOptions": "process_composition.go",
+		"ClientOptions": "process_composition.go",
+		"NewHelper":     "process_composition.go",
+		"NewClient":     "process_composition.go",
+	}
+	owners := make(map[string][]string, len(want))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), entry.Name(), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", entry.Name(), err)
+		}
+		for _, imported := range file.Imports {
+			path, err := strconv.Unquote(imported.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import in %s: %v", entry.Name(), err)
+			}
+			if strings.HasSuffix(path, "/credentialhelper/sshrelay") || strings.HasSuffix(path, "/credentialclient/sshrelay") {
+				t.Errorf("%s imports a default SSH extension constructor", entry.Name())
+			}
+		}
+		for _, declaration := range file.Decls {
+			switch typed := declaration.(type) {
+			case *ast.FuncDecl:
+				if _, protected := want[typed.Name.Name]; protected {
+					owners[typed.Name.Name] = append(owners[typed.Name.Name], entry.Name())
+				}
+			case *ast.GenDecl:
+				for _, specification := range typed.Specs {
+					switch value := specification.(type) {
+					case *ast.TypeSpec:
+						if _, protected := want[value.Name.Name]; protected {
+							owners[value.Name.Name] = append(owners[value.Name.Name], entry.Name())
+						}
+					case *ast.ValueSpec:
+						for _, name := range value.Names {
+							if _, protected := want[name.Name]; protected {
+								owners[name.Name] = append(owners[name.Name], entry.Name())
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	for name, owner := range want {
+		if got := owners[name]; len(got) != 1 || got[0] != owner {
+			t.Errorf("%s production owners = %v, want [%s]", name, got, owner)
 		}
 	}
 }

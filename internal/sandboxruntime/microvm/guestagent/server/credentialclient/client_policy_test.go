@@ -154,6 +154,42 @@ func TestClientProductionPolicyRejectsEveryMalformedDimension(t *testing.T) {
 	}
 }
 
+func TestClientProductionPolicyPacketCatalogIsClosed(t *testing.T) {
+	t.Parallel()
+
+	policy := NewClientPolicy()
+	allowed := map[credentialprotocol.PacketType]bool{
+		credentialprotocol.PacketTypePrepareBegin: true,
+		credentialprotocol.PacketTypeRenew:        true,
+		credentialprotocol.PacketTypeRevoke:       true,
+		credentialprotocol.PacketTypeExec:         true,
+	}
+	for raw := 0; raw <= 255; raw++ {
+		operation := credentialprotocol.PacketType(raw)
+		revision := uint64(2)
+		var ids []credentialprotocol.SafeID
+		var modes []credentialprotocol.DeliveryMode
+		if operation == credentialprotocol.PacketTypePrepareBegin {
+			revision = 1
+		}
+		if operation == credentialprotocol.PacketTypePrepareBegin || operation == credentialprotocol.PacketTypeExec {
+			ids = []credentialprotocol.SafeID{"binding-1"}
+			modes = []credentialprotocol.DeliveryMode{credentialprotocol.DeliveryModeSSHAgent}
+		}
+		request := newClientPolicyRequest(operation, [32]byte{1}, revision, ids, modes, credentialprotocol.SSHRelayV1ExtensionDescriptor(), "helper-limits-v1")
+		decision, err := policy.Authorize(request)
+		if allowed[operation] {
+			if err != nil || !decision.allow || decision.rejectionCode != "" {
+				t.Errorf("Authorize(packet 0x%02x) = (%#v, %v), want allow", raw, decision, err)
+			}
+			continue
+		}
+		if err != nil || decision.allow || decision.rejectionCode != "malformed_request" {
+			t.Errorf("Authorize(packet 0x%02x) = (%#v, %v), want closed rejection", raw, decision, err)
+		}
+	}
+}
+
 func TestClientProductionPolicySourceShapeAndMutationGuard(t *testing.T) {
 	t.Parallel()
 
@@ -185,6 +221,48 @@ func TestClientProductionPolicySourceShapeAndMutationGuard(t *testing.T) {
 				t.Fatal("source guard accepted adversarial mutation")
 			}
 		})
+	}
+}
+
+func TestClientProductionPolicyConstructorHasOnePackageWideOwner(t *testing.T) {
+	t.Parallel()
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	owners := make([]string, 0, 1)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), entry.Name(), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", entry.Name(), err)
+		}
+		for _, declaration := range file.Decls {
+			switch typed := declaration.(type) {
+			case *ast.FuncDecl:
+				if typed.Name.Name == "NewClientPolicy" {
+					owners = append(owners, entry.Name())
+				}
+			case *ast.GenDecl:
+				for _, specification := range typed.Specs {
+					value, ok := specification.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for _, name := range value.Names {
+						if name.Name == "NewClientPolicy" {
+							owners = append(owners, entry.Name())
+						}
+					}
+				}
+			}
+		}
+	}
+	if !reflect.DeepEqual(owners, []string{"client_policy.go"}) {
+		t.Fatalf("NewClientPolicy production owners = %v, want [client_policy.go]", owners)
 	}
 }
 

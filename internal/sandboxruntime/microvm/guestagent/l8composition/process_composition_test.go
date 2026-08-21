@@ -111,7 +111,7 @@ func TestL8D6NewHelperRejectsDependenciesRegistrationAndPolicyBeforeAssembly(t *
 			options := valid
 			test.mutate(&options)
 			service, descriptor, err := NewHelper(options)
-			if service != nil || descriptor != (ProcessDescriptor{}) || !errors.Is(err, test.want) {
+			if service != nil || !reflect.DeepEqual(descriptor, ProcessDescriptor{}) || !errors.Is(err, test.want) {
 				t.Fatalf("NewHelper() = (%v, %#v, %v), want nil/zero/%v", service, descriptor, err, test.want)
 			}
 			if strings.Contains(fmt.Sprint(err), "secret-canary") {
@@ -123,12 +123,12 @@ func TestL8D6NewHelperRejectsDependenciesRegistrationAndPolicyBeforeAssembly(t *
 	panicPolicy := &compositionHelperPolicy{underlying: credentialhelper.NewHelperPolicy(), panicAt: 1}
 	options := valid
 	options.Policy = panicPolicy
-	if service, descriptor, err := NewHelper(options); service != nil || descriptor != (ProcessDescriptor{}) || !errors.Is(err, ErrCompositionPanic) || strings.Contains(fmt.Sprint(err), "secret-canary") {
+	if service, descriptor, err := NewHelper(options); service != nil || !reflect.DeepEqual(descriptor, ProcessDescriptor{}) || !errors.Is(err, ErrCompositionPanic) || strings.Contains(fmt.Sprint(err), "secret-canary") {
 		t.Fatalf("NewHelper(panic) = (%v, %#v, %v), want sanitized panic rejection", service, descriptor, err)
 	}
 	changingPolicy := &compositionHelperPolicy{underlying: credentialhelper.NewHelperPolicy(), zeroAt: 2}
 	options.Policy = changingPolicy
-	if service, descriptor, err := NewHelper(options); service != nil || descriptor != (ProcessDescriptor{}) || !errors.Is(err, ErrCompositionPolicy) {
+	if service, descriptor, err := NewHelper(options); service != nil || !reflect.DeepEqual(descriptor, ProcessDescriptor{}) || !errors.Is(err, ErrCompositionPolicy) {
 		t.Fatalf("NewHelper(changing policy) = (%v, %#v, %v), want policy rejection", service, descriptor, err)
 	}
 }
@@ -175,11 +175,47 @@ func TestL8D6NewClientPinsCanonicalDescriptorAndOwnsFactoryErrors(t *testing.T) 
 		Policy:    credentialclient.NewClientPolicy(),
 		SSH:       credentialclient.ExtensionRegistration{Descriptor: credentialprotocol.SSHRelayV1ExtensionDescriptor(), Factory: badFactory},
 	})
-	if failed != nil || failedDescriptor != (ProcessDescriptor{}) || !errors.Is(err, ErrCompositionClient) || strings.Contains(fmt.Sprint(err), "secret-canary") {
+	if failed != nil || !reflect.DeepEqual(failedDescriptor, ProcessDescriptor{}) || !errors.Is(err, ErrCompositionClient) || strings.Contains(fmt.Sprint(err), "secret-canary") {
 		t.Fatalf("NewClient(factory error) = (%v, %#v, %v), want sanitized client failure", failed, failedDescriptor, err)
 	}
 	if badSession.closes.Load() != 1 {
 		t.Fatalf("non-nil/error session closes = %d, want 1", badSession.closes.Load())
+	}
+}
+
+func TestL8D6NewClientOwnsEveryFactoryReturnAndPanicRow(t *testing.T) {
+	t.Parallel()
+
+	var typedNilSession *compositionClientSession
+	tests := []struct {
+		name    string
+		factory *compositionClientFactory
+	}{
+		{name: "nil nil", factory: &compositionClientFactory{}},
+		{name: "nil error", factory: &compositionClientFactory{err: errors.New("secret-canary")}},
+		{name: "typed nil nil", factory: &compositionClientFactory{session: typedNilSession}},
+		{name: "typed nil error", factory: &compositionClientFactory{session: typedNilSession, err: errors.New("secret-canary")}},
+		{name: "panic", factory: &compositionClientFactory{panicOnOpen: true}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			client, descriptor, err := NewClient(ClientOptions{
+				Transport: &compositionClientTransport{},
+				Policy:    credentialclient.NewClientPolicy(),
+				SSH: credentialclient.ExtensionRegistration{
+					Descriptor: credentialprotocol.SSHRelayV1ExtensionDescriptor(),
+					Factory:    test.factory,
+				},
+			})
+			if client != nil || !reflect.DeepEqual(descriptor, ProcessDescriptor{}) || !errors.Is(err, ErrCompositionClient) || strings.Contains(fmt.Sprint(err), "secret-canary") {
+				t.Fatalf("NewClient() = (%v, %#v, %v), want sanitized client failure", client, descriptor, err)
+			}
+			if calls := test.factory.opens.Load(); calls != 1 {
+				t.Fatalf("factory opens = %d, want 1", calls)
+			}
+		})
 	}
 }
 
@@ -210,7 +246,7 @@ func TestL8D6NewClientRejectsTypedNilPanicAndRegistrationFailures(t *testing.T) 
 			options := valid
 			test.mutate(&options)
 			client, descriptor, err := NewClient(options)
-			if client != nil || descriptor != (ProcessDescriptor{}) || !errors.Is(err, test.want) {
+			if client != nil || !reflect.DeepEqual(descriptor, ProcessDescriptor{}) || !errors.Is(err, test.want) {
 				t.Fatalf("NewClient() = (%v, %#v, %v), want nil/zero/%v", client, descriptor, err, test.want)
 			}
 		})
@@ -218,15 +254,15 @@ func TestL8D6NewClientRejectsTypedNilPanicAndRegistrationFailures(t *testing.T) 
 
 	options := valid
 	options.Policy = &compositionClientPolicy{underlying: credentialclient.NewClientPolicy(), panicAt: 1}
-	if client, descriptor, err := NewClient(options); client != nil || descriptor != (ProcessDescriptor{}) || !errors.Is(err, ErrCompositionPanic) || strings.Contains(fmt.Sprint(err), "secret-canary") {
+	if client, descriptor, err := NewClient(options); client != nil || !reflect.DeepEqual(descriptor, ProcessDescriptor{}) || !errors.Is(err, ErrCompositionPanic) || strings.Contains(fmt.Sprint(err), "secret-canary") {
 		t.Fatalf("NewClient(panic) = (%v, %#v, %v), want sanitized panic rejection", client, descriptor, err)
 	}
 	options.Policy = &compositionClientPolicy{underlying: credentialclient.NewClientPolicy(), zeroAt: 2}
-	if client, descriptor, err := NewClient(options); client != nil || descriptor != (ProcessDescriptor{}) || !errors.Is(err, ErrCompositionPolicy) {
+	if client, descriptor, err := NewClient(options); client != nil || !reflect.DeepEqual(descriptor, ProcessDescriptor{}) || !errors.Is(err, ErrCompositionPolicy) {
 		t.Fatalf("NewClient(changing policy) = (%v, %#v, %v), want policy rejection", client, descriptor, err)
 	}
 	options.Policy = &compositionClientPolicy{underlying: credentialclient.NewClientPolicy(), zeroAt: 3}
-	if client, descriptor, err := NewClient(options); client != nil || descriptor != (ProcessDescriptor{}) || !errors.Is(err, ErrCompositionClient) {
+	if client, descriptor, err := NewClient(options); client != nil || !reflect.DeepEqual(descriptor, ProcessDescriptor{}) || !errors.Is(err, ErrCompositionClient) {
 		t.Fatalf("NewClient(downstream policy drift) = (%v, %#v, %v), want client rejection", client, descriptor, err)
 	}
 }
