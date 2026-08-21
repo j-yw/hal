@@ -67,6 +67,15 @@ the executor. The wrapper then permits one execution and one exact terminal D2
 call, cleans every returned object before final convergence, and clears its
 bindings, permit, executor, and terminal references before returning.
 
+The tagged source-contract gate closes this sole production wrapper behind the
+exact full-file SHA-256 lock
+`f202fcca96b376a2efa46d7d317dd04dba214a6c0040da5337495d3a5a0c6aa7`.
+It reads one bounded regular file through a no-follow descriptor and verifies
+the descriptor and pathname identity before accepting the locked bytes. This
+checked-in lock is a code-review tripwire, not runtime or policy authority. A
+coordinated wrapper-and-lock update requires explicit code review and protected
+branch enforcement; changing both values locally is not independent proof.
+
 The positive lifecycle harness is test-only because the current D7 artifact
 truthfully issues no adapter row or permit. It neither mints D2 authority nor
 enters a production call graph. `NewSyscallPolicyCoreKernel` remains
