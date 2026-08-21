@@ -507,6 +507,19 @@ Required focused areas are:
   policy/error matrices with a policy-subset error allowlist, pure v2/helper conversion functions, and SSH connection-capability ownership before and
   after extension transfer;
 - Firecracker process/vsock/network/credential generation composition;
+- restart-stable Firecracker owner contract guards covering the private atomic
+  bootstrap/start-gated pre-publication owner record, exact host-boot identity,
+  full-seed private digest anti-substitution, child-armed acknowledgement,
+  same-UID one-use-secret reconnect/replay FSM,
+  direct-parent shared-budget stop/kill/wait/reap, supervisor-crash Pdeathsig,
+  pidfd/start-time anti-reuse reacquisition, exact proc-disappearance proof for
+  externally reaped non-children, opaque seed-bound absence proof, exact
+  same-boot L7 reconciler correlation, old-boot fail-closed retention,
+  commit-uncertain record reconciliation, and finalized tombstone retirement
+  only through the worker's private two-phase seed-plus-HMAC-commit receipt,
+  with post-retirement replay requiring the stable owner-root key and exact
+  per-job owner-record absence while relying on the authenticated Finalize fact
+  that same-boot L7 cleanup already succeeded;
 - worker durable seed-before-preflight ordering, the exact preflight return and
   ownership matrix, immediate continuously latched loss watching, complete
   identity persistence before source resolution, proof-bearing idempotent
@@ -563,9 +576,19 @@ exact generation/network/descriptor correlation, and the rule that a
 post-return validation failure closes the lease exactly once. They also prove
 that L7 and L8 providers cannot be configured together and that retries never
 recall the provider or remint opaque authority.
-An injected post-start revalidation failure forces stop/reap and proved process
-absence before lease closure and error return; the test rejects any returned
-live handle or surviving process.
+An injected post-start revalidation failure forces same-process stop/reap and
+proved process absence before lease closure and error return; the test rejects
+any returned live handle or surviving process. That overlay test does not prove
+daemon-restart reacquisition. The separate D6 runtime-owner matrix must prove
+supervisor reconnect, secret replay rejection, exact new-owner PID/start
+and host-boot verification, seed-only stop/reap, complete-identity recovery
+followed by mandatory stop/reap on both success and failure, worker proof
+validation, same-boot L7 finalize, atomic credential-state-to-private-receipt
+replacement, explicit receipt commit before owner-record retirement, and
+receipt clear. It must retain old-boot state until a
+real L7-owned journal-retirement API exists and retain finalized tombstones
+across receipt-before-commit crashes while allowing exact post-commit receipt
+replay to complete idempotently.
 Manifest/provenance mutation vectors independently change the L8 guest-agent
 protocol and every ordered feature position, count, duplicate, case, and
 cross-document value. All must fail under the L8-aware validator while the

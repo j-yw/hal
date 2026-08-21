@@ -367,9 +367,12 @@ validates the result. Completion validation independently compares every seed
 field and ordered slice before accepting both added generations. `Identity()`
 returns a defensive deep copy. `GuestSessionGeneration` is exactly 43
 unpadded-base64url characters that decode to 32 bytes; helper generation uses
-the safe-ID grammar. There is deliberately no seed digest: a seed is not a
-proof, wire identity, authorization token, or bearer capability, and only the
-complete identity has the canonical digest below.
+the safe-ID grammar. There is deliberately no public or reusable seed digest:
+a seed is not a proof, wire identity, authorization token, or bearer
+capability, and only the complete identity has the canonical digest below. The
+sole exception is the sealed, domain-separated seed-correlation digest inside
+the private runtime-absence proof defined below. It has no accessor or
+independent authority.
 
 The worker persists the validated, privately cloned seed with the queued job
 before calling preflight. The durable representation is the package-private
@@ -575,6 +578,488 @@ Stable failure codes include:
 
 Messages remain generic and do not attach raw causes from a provider, HTTP
 server, filesystem, mount tool, SSH agent, guest, or runtime.
+
+## Restart-stable Firecracker runtime owner
+
+D6 uses a separate Linux host runtime-owner supervisor. The supervisor, not the
+sandbox daemon, directly starts and remains the parent of the exact Firecracker
+process. It remains alive when the daemon exits and exposes one private,
+reconnectable control plane. A daemon restart therefore reacquires authority
+from the supervisor; it never reconstructs authority from `Target.Metadata`, a
+process name, a public status record, or the worker's credential state alone.
+Daemon-death containment by itself is not the normal recovery design.
+
+The additive neutral recovery API has these exact names and declaration order:
+
+```go
+const (
+	MaxJobCredentialRuntimeAbsenceObservationAge = 5 * time.Minute
+	JobCredentialRuntimeStopReapTimeout          = 30 * time.Second
+	JobCredentialRuntimeRecoveryCloseTimeout     = 5 * time.Second
+)
+
+type JobCredentialRuntimeAbsenceProofInput struct {
+	Seed               JobCredentialIdentitySeed
+	AbsenceInspectedAt time.Time
+}
+
+type JobCredentialRuntimeAbsenceProof struct {
+	token [41]byte
+}
+
+func NewJobCredentialRuntimeAbsenceProof(JobCredentialRuntimeAbsenceProofInput) (JobCredentialRuntimeAbsenceProof, error)
+func ValidateJobCredentialRuntimeAbsenceProof(JobCredentialRuntimeAbsenceProof, JobCredentialIdentitySeed, time.Time) error
+
+type JobCredentialRuntimeRecoveryCommitReceipt struct {
+	CommitID string `json:"-" xml:"-"`
+	FinalizedRevision uint64 `json:"-" xml:"-"`
+}
+
+func ValidateJobCredentialRuntimeRecoveryCommitReceipt(JobCredentialRuntimeRecoveryCommitReceipt) error
+func (JobCredentialRuntimeRecoveryCommitReceipt) String() string
+func (JobCredentialRuntimeRecoveryCommitReceipt) Format(fmt.State, rune)
+func (JobCredentialRuntimeRecoveryCommitReceipt) MarshalJSON() ([]byte, error)
+func (JobCredentialRuntimeRecoveryCommitReceipt) MarshalText() ([]byte, error)
+func (JobCredentialRuntimeRecoveryCommitReceipt) MarshalBinary() ([]byte, error)
+func (JobCredentialRuntimeRecoveryCommitReceipt) GobEncode() ([]byte, error)
+
+type JobCredentialRuntimeRecoveryProvider interface {
+	BindJobCredentialRuntimeRecovery(context.Context, JobCredentialIdentitySeed) (JobCredentialRuntimeRecoveryBinding, error)
+}
+
+type JobCredentialRuntimeRecoveryBinding interface {
+	RecoverJobCredentials(context.Context, JobCredentialRecoveryRequest) (JobCredentialCleanupProof, error)
+	StopReapJobCredentialRuntime(context.Context) (JobCredentialRuntimeAbsenceProof, error)
+	FinalizeJobCredentialRuntimeRecovery(context.Context, JobCredentialRuntimeAbsenceProof) (JobCredentialRuntimeRecoveryCommitReceipt, error)
+	CommitJobCredentialRuntimeRecovery(context.Context, JobCredentialRuntimeRecoveryCommitReceipt) error
+	Close(context.Context) error
+}
+```
+
+The root binder validates and defensively clones the seed before calling
+`BindJobCredentialRuntimeRecovery`. A nil or typed-nil provider, binding, or
+context; a panic; a value plus error; or a seed mismatch returns only a stable
+sanitized root error. No provider is called for a job without live L8 intent.
+The provider receives the validated seed directly and never a `Target`; target
+metadata, endpoints, runtime labels, caller-carried proofs, and public job
+fields cannot select or recreate recovery authority.
+
+The returned binding is seed-bound. `RecoverJobCredentials` accepts a complete
+identity only after `ValidateJobCredentialIdentityCompletion` proves exact
+equality with that seed, and otherwise does not call the concrete runtime.
+`StopReapJobCredentialRuntime` takes no caller identity because the binding
+already owns the exact cloned seed. It returns only a nonzero, validated
+`JobCredentialRuntimeAbsenceProof` whose observation is not in the future and
+is no older than `MaxJobCredentialRuntimeAbsenceObservationAge` at worker
+acceptance. Error-plus-proof, zero-proof success, typed nils, and panics are
+contract violations and retain cleanup uncertainty. Stop/reap retains the
+private owner record, exact seed binding, L7 correlation, and absence evidence;
+it does not clean L7 state or retire ownership before the caller can validate
+the proof.
+
+The worker validates the retained absence proof before calling `FinalizeJobCredentialRuntimeRecovery`.
+Finalize revalidates the exact bound seed, proof kind, correlation digest,
+observation time, and current owner revision. It then performs the correlated
+same-boot L7 cleanup and durably persists the idempotent `finalized` tombstone
+and its owner-authenticated commit ID before returning a nonzero validated
+`JobCredentialRuntimeRecoveryCommitReceipt`. The commit ID is the 32-byte HMAC
+defined below, encoded as exactly 43 unpadded-base64url characters, and
+`FinalizedRevision` is the exact finalized record revision. It is not a public safe ID:
+the receipt is accepted only from this exact injected binding, and `CommitID` carries `json:"-" xml:"-"`.
+String and every fmt verb return only `[job-credential-runtime-recovery-commit-receipt]`.
+JSON, gob, text, and binary encoding fail closed; XML encoding omits the field
+and cannot expose the ID. Failures use the stable redaction error and no bytes.
+The ID is persisted only in the private worker recovery receipt described below.
+A value plus error, zero/malformed receipt, or panic is failure. A crash after stop/reap but before finalize leaves
+the `absent` owner state retryable. Repeated stop/reap in that state performs no
+signal and returns a newly inspected proof; repeated finalize against the exact
+proof or already-finalized correlation succeeds without repeating resource
+removal and returns the exact same receipt. After finalize succeeds, one atomic
+worker-store replacement removes the complete credential state and writes a
+private `job-credential-runtime-recovery-receipt-v1` containing the validated
+safe seed plus exact commit ID and finalized revision. In other words, the worker atomically replaces CredentialState with a private recovery receipt;
+there is never a durable state containing neither. The receipt is bounded,
+mode/ownership protected with the existing private worker store, excluded from
+`JobV2`, status, runtime metadata, manifests, logs, and errors, and contains no
+complete identity, credential, endpoint, path, live handle, or process data.
+Its exact private DTO is:
+
+```go
+type storedJobCredentialRuntimeRecoveryReceiptV1 struct {
+	ContractVersion string `json:"contractVersion"`
+	Seed storedJobCredentialIdentitySeedV1 `json:"seed"`
+	CommitID string `json:"commitId"`
+	FinalizedRevision uint64 `json:"finalizedRevision"`
+}
+```
+
+`storedJobStateV2` adds
+`CredentialRecoveryReceipt *storedJobCredentialRuntimeRecoveryReceiptV1` with
+tag `json:"credentialRecoveryReceipt,omitempty"`. Recovery-state validation
+requires exactly one of CredentialState or CredentialRecoveryReceipt until
+commit has acknowledged the exact receipt, and forbids the receipt for jobs
+without live L8 credential intent. An AST guard requires that only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`
+from the neutral receipt into this private DTO; worker services, statuses,
+commands, runtime metadata, and any other store file cannot project it.
+
+The worker rebinds from the receipt's validated seed and calls
+`CommitJobCredentialRuntimeRecovery` with the exact commit receipt. Commit is
+the only transition that may retire the finalized owner tombstone; it checks
+the bound seed, finalized revision, and HMAC commit ID, performs no process or
+L7 cleanup. With a finalized record present, Commit requires that record's
+exact seed digest, finalized revision, and commit ID. That HMAC could only have
+been durably minted by Finalize after correlated same-boot L7 cleanup succeeded.
+Commit then durably unlinks the per-job owner record and syncs its directory.
+
+After that per-job record is retired, `BindJobCredentialRuntimeRecovery` may
+return only a commit-only/record-absent binding for the validated receipt seed.
+Every other method on that binding fails closed. Commit recomputes the full-seed
+digest, verifies the HMAC and finalized revision with the stable owner-root key,
+and requires the exact per-job owner record still absent under lock. The valid
+HMAC proves that Finalize minted the receipt only after its L7 cleanup; replay
+does not reopen the now-removed private L7 journal or invent a new absence API.
+Only all of those facts return idempotent committed success. Missing/wrong key,
+wrong HMAC, revision, seed, any reappearing or nonfinalized record, boot
+mismatch, or panic/error retains
+the worker receipt and fails sanitized; the caller-held ID alone is never a
+bearer authority and no per-job committed tombstone is fabricated.
+
+The owner record is retired only after
+same-boot L7 finalization and the worker's atomic private-receipt replacement
+have both succeeded. The worker then
+atomically clears its private receipt. If it crashes after receipt replacement
+but before commit, restart rebinds and commits it. If it crashes after commit
+but before receipt clear, post-commit restart validates the same receipt and accepts the idempotent committed result
+without reconstructing process or cleanup proof, then clears the receipt. Thus
+no timeout or `Close` acts as acknowledgement and no permanent finalized record
+or unbounded receipt is required. A stale, substituted, expired, or mismatched
+proof, or any finalize panic/error/deadline, leaves the record and credential
+state cleanup-incomplete.
+
+The absence token is exactly 41 bytes: kind byte `0x03`, a 32-byte internal
+seed-correlation digest, and the signed `AbsenceInspectedAt.UnixNano()` encoded
+as eight-byte big-endian. The digest is SHA-256 over the length-prefixed domain
+`hal/job-credential-runtime-absence/seed/v1`, followed by a length-prefixed
+encoding of every `JobCredentialIdentitySeed` field. Each length prefix and
+the binding count is an unsigned big-endian 32-bit byte count. First, every
+string field from `SandboxID` through `GuestImageDigest` is encoded in exact
+declaration order as byte length then bytes. Next,
+`AdmissionGrantRevision` is one unsigned big-endian 64-bit value. The adjacent
+`BindingIDs` and `DeliveryModes` slices are then encoded as one count followed
+by exactly that many ordered pairs, each pair containing the length-prefixed
+binding ID followed by the length-prefixed delivery mode. Last, `IssuedAt` is
+its signed UnixNano value encoded as its two's-complement big-endian 64-bit
+representation, never time text, zone, or location. This is their exact
+declaration position: `IssuedAt` follows both parallel slices. No zero, empty,
+or optional scalar is omitted. The constructor validates the seed and requires a nonzero observation
+not before `Seed.IssuedAt`; the validator recomputes the digest and enforces the
+freshness bound. The digest has no accessor, is never a public seed-digest API,
+and the token implements no JSON, text, or binary projection. The same digest,
+encoded as exactly 64 lowercase hexadecimal characters, is permitted only in
+the private owner record to prevent seed substitution; it has no other durable
+or public projection. A proof supplied
+through metadata or by a caller has no authority; the worker accepts one only
+as the validated result of the injected binding's exact stop/reap call.
+The sole production call to `NewJobCredentialRuntimeAbsenceProof` is owned by
+`internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go`
+after its private owner has proved exact absence. Root defines the constructor;
+tests may call it, but no worker, command, metadata adapter, other runtime file,
+or provider wrapper may become a second production issuer. An AST guard locks
+that one-callsite rule.
+
+`Close` releases only the reconnect controller binding. It is idempotent,
+panic-contained, caller-independent after entry, and bounded by
+`JobCredentialRuntimeRecoveryCloseTimeout`. Close does not imply process or resource absence
+and never manufactures either proof. A close error is joined
+only through stable sanitized sentinels and leaves the owner record available
+for retry. Close cannot retire an `absent`, unacknowledged, or nonfinalized
+record and cannot stand in for finalize.
+
+### Private owner record and publication
+
+Each explicit Linux D6 composition supplies one private owner-state root owned
+by the daemon service UID. The root and its per-runtime child are existing or
+new real directories at mode `0700`, opened component-by-component without
+following symlinks. Before any supervisor or per-runtime record can be created,
+the root contains one stable private owner-root HMAC key file named
+`receipt-hmac.key`. It is exactly 32 random bytes in a root-owned, mode-`0600`,
+regular, single-link, no-symlink file, created through exclusive sibling write,
+file sync, atomic rename, and root-directory sync. It is a constant baseline
+resource, never copied into a per-runtime record, worker state, proof, receipt,
+status, log, error, or public projection, and is never automatically replaced,
+rotated, or removed while any worker recovery receipt can exist. A missing,
+replaced, malformed, wrongly owned, or uncertain key fails closed; an owner
+root with any prior state never generates a replacement key.
+
+The commit ID is `HMAC-SHA256` under that key. Its preimage uses the
+length-prefixed domain `firecracker-runtime-owner-receipt-hmac-v1`, then the
+length-prefixed owner contract version, the private key generation, the raw
+32-byte full-seed correlation digest, and the finalized revision as unsigned
+big-endian 64 bits. The private key generation is
+`SHA-256(length-prefix("firecracker-runtime-owner-receipt-key-generation-v1") || key)`;
+it never leaves the owner boundary. All length prefixes here and in the seed
+digest are unsigned big-endian 32-bit byte counts. HMAC verification is
+constant-time.
+
+The sole per-runtime record is a regular, single-link file at mode
+`0600`; its strict JSON encoding is bounded to exactly 16 KiB including the
+trailing newline. The package-private DTO and field order are exact:
+
+```go
+type firecrackerRuntimeOwnerRecordV1 struct {
+	ContractVersion              string `json:"contractVersion"`
+	Revision                     uint64 `json:"revision"`
+	State                        string `json:"state"`
+	HostBootID                   string `json:"hostBootId"`
+	SeedCorrelationDigest        string `json:"seedCorrelationDigest"`
+	SupervisorGeneration         string `json:"supervisorGeneration"`
+	SupervisorPID                uint32 `json:"supervisorPid"`
+	SupervisorStartTime          uint64 `json:"supervisorStartTime"`
+	FirecrackerPID               uint32 `json:"firecrackerPid"`
+	FirecrackerStartTime         uint64 `json:"firecrackerStartTime"`
+	FinalizedCommitID            string `json:"finalizedCommitId"`
+	SandboxID                    string `json:"sandboxId"`
+	ExecutionID                  string `json:"executionId"`
+	WorkerID                     string `json:"workerId"`
+	HostID                       string `json:"hostId"`
+	RuntimeDriver                string `json:"runtimeDriver"`
+	RuntimeID                    string `json:"runtimeId"`
+	RuntimeGeneration            string `json:"runtimeGeneration"`
+	FirecrackerProcessGeneration string `json:"firecrackerProcessGeneration"`
+	VsockGeneration              string `json:"vsockGeneration"`
+	NetworkPlanID                string `json:"networkPlanId"`
+	PolicySnapshotID             string `json:"policySnapshotId"`
+	ProxySessionID               string `json:"proxySessionId"`
+	ProxyGenerationID            string `json:"proxyGenerationId"`
+	TopologyGenerationID         string `json:"topologyGenerationId"`
+	RuleGenerationID             string `json:"ruleGenerationId"`
+	ReconnectListenerIdentity    string `json:"reconnectListenerIdentity"`
+	ReconnectSecret              string `json:"reconnectSecret"`
+}
+```
+
+`ContractVersion` is exactly `firecracker-runtime-owner-private-v1`. `State` is
+exactly one of `starting`, `unclaimed`, `controlled`, `stopping`, `absent`,
+`finalized`, or `uncertain`. `HostBootID` is the exact lowercase canonical UUID read from
+`/proc/sys/kernel/random/boot_id` through a bounded no-symlink Linux reader.
+`SeedCorrelationDigest` is the exact private lowercase-hex digest defined for
+the absence token. Before binding, reconnect, signal, absence inspection, or
+cleanup, the owner recomputes it from every `JobCredentialIdentitySeed` field
+and rejects any mismatch; the safe L7 subset alone is never sufficient
+authority.
+`FinalizedCommitID` is empty in every state except `finalized`. The transition
+to `finalized` computes it from the exact target revision and persists the
+state, target revision, and commit ID atomically before returning the same
+`CommitID` and `FinalizedRevision` in the worker receipt. A finalized record
+with an empty, malformed, or recomputation-mismatched commit ID is uncertain.
+Supervisor PID/start identity is always nonzero. Firecracker PID and start time
+are either both zero only for a revision-zero prelaunch `starting` record or are
+both nonzero; every other combination is invalid. Revision one is the first
+record containing the exact child PID/start identity, and every later state or
+secret replacement increments it by exactly one. Both start times are the
+unsigned field-22 start-time clock ticks read from the corresponding proc stat
+record while an already-open pidfd pins the inspected process incarnation. The
+supervisor generation, reconnect-listener identity, and reconnect secret are
+independently generated 32-byte random values encoded as exactly 43
+unpadded-base64url characters. `ReconnectSecret` is a one-use reconnect secret,
+not a safe ID or bearer value outside this owner protocol.
+
+Every stored safe identity field equals its corresponding validated seed field.
+Fields not projected into the record remain bound by `SeedCorrelationDigest`;
+no omitted field may be substituted while retaining the same L7 subset. The
+exact L7 identity is derived without fallback as follows:
+
+```text
+SandboxID            = Seed.SandboxID
+ExecutionID          = Seed.ExecutionID
+WorkerID             = Seed.WorkerID
+RuntimeGenerationID  = Seed.RuntimeGeneration
+PlanID               = Seed.NetworkPlanID
+PolicySnapshotID     = Seed.PolicySnapshotID
+ProxySessionID       = Seed.ProxySessionID
+ProxyGenerationID    = Seed.ProxyGenerationID
+TopologyGenerationID = Seed.TopologyGenerationID
+RuleGenerationID     = Seed.RuleGenerationID
+```
+
+File decoding rejects unknown or duplicate fields, trailing bytes, oversize
+input, invalid modes, numeric values outside the exact revision-zero `starting`
+exception, overflow, invalid safe IDs, wrong ownership/mode/link count,
+symlinks, host-boot mismatch at a same-boot operation, a noncanonical or
+mismatched seed digest, and any seed/L7 mismatch. The
+private reconnect socket pathname is derived inside the owned directory from
+the listener identity; neither that pathname nor any endpoint is stored in the
+record.
+
+Every create or replacement writes a new sibling with exclusive creation and
+mode `0600`, writes the complete bounded payload, syncs it, atomically renames
+it over the prior record without a visibility gap, and syncs the directory.
+A failure before rename leaves the exact prior record. A rename followed by directory-sync failure is commit-uncertain:
+the owner closes the controller without acknowledgement, retains quarantine,
+and reopens the record under the exclusive directory lock. It accepts only the
+strict byte-valid prior revision/digest or the exact intended next
+revision/digest, and aligns the in-memory FSM and reconnect secret to that
+observed value before retry. A missing, third, malformed, or mismatched value
+stays `uncertain`; it is never overwritten, signalled through, or described as
+the prior record. Crash recovery uses the same reconciliation rule.
+
+Startup closes the pre-publication crash window through a
+private bootstrap pipe and start gate. The daemon retains live ownership of the supervisor process
+and bootstrap pipe until revision-one `starting` durability and publication
+acknowledgement. The supervisor first persists a revision-zero `starting` record
+with the exact host boot and supervisor identity and zero Firecracker PID/start
+fields. It cannot fork or exec Firecracker until the daemon sends the sole
+authenticated start-gate packet. It then forks the direct child with a separate
+private pre-exec gate. Before reading that gate, the child installs
+`PR_SET_PDEATHSIG=SIGKILL`, rechecks that the expected supervisor is still its
+parent, and sends a child-armed acknowledgement over the private bootstrap
+pipe. Gate EOF, bootstrap loss, parent mismatch, or setup error exits without
+executing Firecracker. The supervisor must receive the child-armed acknowledgement,
+then opens the child pidfd, validates its exact start time, atomically persists the
+revision-one `starting` record, and only then releases the child's pre-exec gate
+and sends the publication acknowledgement. The revision-one `starting` record is durable before Firecracker publication or acknowledgement.
+No backend handle, readiness bridge,
+worker reference, or status is published before that acknowledgement. The
+supervisor atomically changes the record to `unclaimed` before admitting the
+ordinary reconnect controller.
+
+Bootstrap pipe, daemon controller, supervisor, child-armed acknowledgement, record-write, child-gate, or
+acknowledgement loss before durable publication requires the supervisor to
+TERM/KILL and `Wait` the child under the shared bounded containment path, write
+`absent` if possible, close the bootstrap channel, and exit. It cannot leave an
+unrecorded surviving supervisor or child. `AbortStart` is the only recovery
+command accepted for a `starting` record: an exact live supervisor proves it
+never forked the child or kills and waits that child before replying. A new
+owner encountering revision-zero `starting` verifies the exact supervisor and
+either commands `AbortStart` or, after proving that supervisor absent, accepts
+only the start-gate/Pdeathsig proof that no Firecracker exec could survive. A
+revision-one `starting` record additionally requires exact recorded-child pidfd
+absence or successful supervisor abort. It never launches, publishes, adopts,
+or replaces a runtime from `starting`. Any uncertain gate, supervisor, child,
+or record observation retains the record and quarantine.
+
+No PID, start time, host boot ID, listener identity, secret, record pathname,
+live descriptor, bootstrap capability, or raw capability leaves this owner-only
+state and control boundary.
+
+### Reconnect and replay state machine
+
+The reconnect transport is a private Linux Unix `SOCK_SEQPACKET` listener. The
+supervisor first obtains peer credentials and requires the exact daemon service
+UID through same-UID `SO_PEERCRED`; request fields cannot supply or override the
+peer. The first packet carries the fixed protocol version, supervisor
+generation, runtime generation, record revision, and current one-use secret in
+that order. Every comparison is exact and the secret comparison is constant
+time. Wrong UID, malformed input, stale revision/generation, wrong secret,
+timeout, extra packet, or concurrent claimant returns a generic rejection and
+does not disclose which field failed.
+
+At most one handshake and exactly one live controller are admitted. Before
+acknowledging a successful handshake, the supervisor generates a new one-use
+secret, atomically persists the next `controlled` revision, invalidates the old
+secret, and binds a new random controller-session generation to that
+connection. If persistence fails, it sends no success and the prior record
+is reconciled under the commit-uncertain rule above. If success persistence completed but the acknowledgement is
+lost, the daemon must reread the record and reconnect with the replacement
+secret; replaying the consumed secret always fails. EOF or authenticated
+controller close changes `controlled` to `unclaimed` with another atomic secret
+rotation while leaving the Firecracker child owned and running.
+
+Controller requests carry the controller-session generation and an unsigned
+64-bit sequence starting at one. Exactly one request may be outstanding. The
+next sequence executes once; a duplicate of the immediately preceding sequence
+returns the byte-identical cached sanitized response without repeating its
+side effect; older, skipped, wrapped, cross-session, or concurrently outstanding
+sequences fail closed. A lost connection never transfers a response cache to a
+new session. New-session inspection and stop/reap are idempotent against the
+durable owner FSM, so recovery resumes from `unclaimed`, `stopping`, `absent`,
+or `uncertain` without replaying an unproved transition. No request can move
+`uncertain` back to running or `absent` back to live.
+
+### Stop, reap, supervisor loss, and L7 cleanup
+
+Normal containment is owned by the still-parent supervisor. One internal
+caller-independent deadline supplies one shared 30-second budget for the entire
+`TERM -> KILL -> Wait/reap` sequence. The supervisor atomically records
+`stopping`, sends TERM, waits for at most the first five seconds while consuming
+that same budget, then sends KILL if terminal state was not observed and spends
+only the remaining budget in the child's `Wait`. A signal error does not skip
+KILL or Wait. Caller cancellation after admission does not detach cleanup or
+shorten the internal budget. Only successful `Wait` of the exact child changes
+the normal parent-owned state to `absent` and returns the private exact-absence observation. Deadline,
+panic, signal failure without later confirmed reap, wait failure, controller
+loss, record-write failure, or any ambiguous return records `uncertain`, returns
+only a sanitized error, and preserves every owner and quarantine artifact.
+
+Before exec, the supervisor sets Firecracker's Linux `PR_SET_PDEATHSIG` to
+`SIGKILL` in the child and rechecks that its parent PID is still the expected
+supervisor before exec. This is the exceptional containment path if the
+supervisor itself crashes; it is not a substitute for normal direct-parent
+reaping. A replacement owner serializes acquisition with the private directory
+lock and reads the current `/proc/sys/kernel/random/boot_id` before inspecting a
+PID. If it differs from `HostBootID`, no process from the recorded boot can
+survive, but the owner never signals any current PID and never retires state on
+that fact alone. A host-boot mismatch never authorizes signaling a current PID.
+It retains quarantine and performs the exact seed-derived L7
+cleanup correlation check, but the existing `l7network.Reconciler` cannot
+reconstruct a vanished old-boot namespace or access its unexported journal
+schema. This slice freezes no invented retirement authority. Old-boot owner and L7 journals remain quarantined
+and finalize fails closed until a later `l7network`-owned old-boot durable
+journal retirement API with exact proof input is separately designed and
+implemented.
+
+On the same recorded boot, the replacement uses `pidfd_open` for the recorded
+supervisor and Firecracker PIDs, compares each pinned process's exact proc start
+time with the record, and reinspects after every signal or poll. An exact
+surviving supervisor is reconnected, never replaced. If the recorded supervisor
+is absent and the exact recorded Firecracker incarnation remains, the
+replacement sends SIGKILL through that pidfd and waits for pidfd terminal
+readiness. Readiness alone, including a zombie, never proves reap. Replacement
+may record externally reaped absence only after the exact `/proc/<pid>` entry
+is absent in two inspections separated by the acquisition barrier; it does not
+claim that the replacement called `Wait` for a non-child. If the PID is already
+absent, the same two inspections are required. A
+different start time, PID reuse, replaced process, partial record,
+supervisor/child mismatch, zombie, present proc entry, unavailable pidfd,
+permission error, inspection race,
+or uncertain terminal observation retains the record and L7 quarantine; it
+neither signals the mismatched process nor returns absence.
+
+During same-boot finalize after exact Firecracker absence, D6 constructs the exact seed-derived
+`l7network.Identity` above and calls `l7network.NewReconciler`. The recovered
+VM-termination verifier receives a private recovered `TerminatedVMBinding`
+correlated to that identity and the exact supervisor/pidfd absence observation;
+the binding, PID data, and termination proof ID are never worker or status
+metadata. D6 calls `CleanupAfterVMQuiesced` with that identity and binding. It
+accepts cleanup only after existing L7 recovery has quarantined the exact rule
+generation and positively removed the correlated proxy, rules, TAP, namespace,
+and topology journal. Finalize then persists `finalized` before returning. The
+owner record is retired only by the later post-worker-clear commit and only
+after that call and all required L7 release/record operations succeed. Missing topology state,
+correlation mismatch, typed nil, panic, stale proof, cleanup error, or deadline
+retains quarantine and the owner record for bounded retry.
+
+On complete-identity restart, the binding first calls its exact credential
+`RecoverJobCredentials` and validates any returned cleanup proof. Whether that
+call succeeds, fails, panics, returns an invalid proof, or times out, the worker
+then calls the same seed-bound `StopReapJobCredentialRuntime` and validates its
+fresh absence proof, calls `FinalizeJobCredentialRuntimeRecovery`, durably
+clears credential state, and calls `CommitJobCredentialRuntimeRecovery`. A failed recovery proof is
+never trusted, but it cannot skip containment. Seed-only restart never calls
+ordinary credential recovery and immediately follows that same stop/reap,
+validation, finalize, durable-clear, and commit order.
+Complete-identity recovery always proceeds to `StopReapJobCredentialRuntime` after `RecoverJobCredentials`, including after a valid cleanup proof.
+Stop/reap is mandatory for both seed-only and complete-identity restart because
+daemon reconciliation never resumes execution. Neither route recreates tickets,
+sources, guest sessions, live handles, or execution.
+
+This contract is Linux-only and explicit. Non-Linux implementations fail closed
+with stable unsupported/dependency errors before creating a record, listener,
+provider binding, or proof. Default and v1 constructors remain byte-for-byte inert
+and do not start a supervisor, read owner state, import the concrete owner, bind
+recovery, or project capability. This contract correction does not implement
+the supervisor, neutral root API, Firecracker wrapper, provider, worker recovery
+wiring, guest protocol, prepare/session transfer, or live verification.
 
 ## Worker job protocol v2
 
@@ -5386,11 +5871,19 @@ tickets and buffers are already unusable after process death; reconciliation
 does not reconstruct a secret or resume an exec. It reinspects and removes
 owned guest/runtime resources. A job with a durable seed but no complete
 identity is never passed to ordinary credential recovery: the worker uses the
-seed's exact runtime identity to stop/reap the runtime and proves process
-absence before cleanup. A job with a complete identity calls
-`RecoverJobCredentials`; failure to reauthenticate or produce valid absence
-proof similarly stops/reaps or quarantines the exact runtime, and process
-termination is proved before cleanup can complete.
+validated seed to bind `JobCredentialRuntimeRecoveryBinding`, calls its
+`StopReapJobCredentialRuntime`, and validates the returned exact runtime-
+absence proof before calling `FinalizeJobCredentialRuntimeRecovery`. After
+finalize durably records the tombstone, the worker durably clears credential
+state and calls `CommitJobCredentialRuntimeRecovery`; only commit may retire
+the owner record. A job with a complete identity binds through the
+same seed and calls `RecoverJobCredentials`; failure to reauthenticate or
+produce valid absence proof is retained as cleanup uncertainty. Success or
+failure then invokes the same mandatory seed-bound stop/reap, validate,
+finalize, durable-clear, and commit order; any uncertainty
+quarantines the exact runtime. Process termination and L7 cleanup are proved
+before credential state clears, and durable clear is acknowledged before the
+owner tombstone can be retired.
 
 ## L8 guest asset profile
 
@@ -5675,6 +6168,11 @@ strict composition.
 
 ## Durable and status projection
 
+The owner-only supervisor record above is private operational authority, not a
+worker, execution, factory, manifest, runtime-metadata, status, proof, or command
+projection. Its narrowly permitted PID/start-time/listener/secret fields do not
+relax any public or ordinary durable schema.
+
 Additive durable metadata is limited to safe identities, mode/state enums,
 timestamps/expiry, revisions, reason/warning codes, and proof/cleanup
 references. It excludes values, secret names, tickets, service authorities,
@@ -5806,6 +6304,10 @@ agent, stop a VM, add HTTP behavior, or wire a production command.
 ### D6 — Firecracker and worker lifecycle
 
 - Compose v2, HTTP, tmpfs, relay, process/vsock, and L7 generations.
+- Implement the explicit Linux runtime-owner supervisor and neutral recovery
+  API exactly as frozen above: private atomic owner state before publication,
+  same-UID one-use-secret reconnect, direct-parent bounded stop/reap, pidfd
+  replacement-owner containment, and L7 reconciliation before record retirement.
 - Own the sole production `guestagent/l8composition` junction and exact guest
   command wiring; construct helper/client objects only in their own processes
   and have PID1 validate their canonical process descriptors before releasing

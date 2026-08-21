@@ -30,6 +30,19 @@ type JobCredentialRuntimeAbsenceProof struct {
 func NewJobCredentialRuntimeAbsenceProof(JobCredentialRuntimeAbsenceProofInput) (JobCredentialRuntimeAbsenceProof, error)
 func ValidateJobCredentialRuntimeAbsenceProof(JobCredentialRuntimeAbsenceProof, JobCredentialIdentitySeed, time.Time) error
 
+type JobCredentialRuntimeRecoveryCommitReceipt struct {
+	CommitID string ` + "`json:\"-\" xml:\"-\"`" + `
+	FinalizedRevision uint64 ` + "`json:\"-\" xml:\"-\"`" + `
+}
+
+func ValidateJobCredentialRuntimeRecoveryCommitReceipt(JobCredentialRuntimeRecoveryCommitReceipt) error
+func (JobCredentialRuntimeRecoveryCommitReceipt) String() string
+func (JobCredentialRuntimeRecoveryCommitReceipt) Format(fmt.State, rune)
+func (JobCredentialRuntimeRecoveryCommitReceipt) MarshalJSON() ([]byte, error)
+func (JobCredentialRuntimeRecoveryCommitReceipt) MarshalText() ([]byte, error)
+func (JobCredentialRuntimeRecoveryCommitReceipt) MarshalBinary() ([]byte, error)
+func (JobCredentialRuntimeRecoveryCommitReceipt) GobEncode() ([]byte, error)
+
 type JobCredentialRuntimeRecoveryProvider interface {
 	BindJobCredentialRuntimeRecovery(context.Context, JobCredentialIdentitySeed) (JobCredentialRuntimeRecoveryBinding, error)
 }
@@ -37,7 +50,8 @@ type JobCredentialRuntimeRecoveryProvider interface {
 type JobCredentialRuntimeRecoveryBinding interface {
 	RecoverJobCredentials(context.Context, JobCredentialRecoveryRequest) (JobCredentialCleanupProof, error)
 	StopReapJobCredentialRuntime(context.Context) (JobCredentialRuntimeAbsenceProof, error)
-	FinalizeJobCredentialRuntimeRecovery(context.Context, JobCredentialRuntimeAbsenceProof) error
+	FinalizeJobCredentialRuntimeRecovery(context.Context, JobCredentialRuntimeAbsenceProof) (JobCredentialRuntimeRecoveryCommitReceipt, error)
+	CommitJobCredentialRuntimeRecovery(context.Context, JobCredentialRuntimeRecoveryCommitReceipt) error
 	Close(context.Context) error
 }`
 
@@ -52,6 +66,7 @@ const l8D6RuntimeOwnerRecordDocBlock = `type firecrackerRuntimeOwnerRecordV1 str
 	SupervisorStartTime          uint64 ` + "`json:\"supervisorStartTime\"`" + `
 	FirecrackerPID               uint32 ` + "`json:\"firecrackerPid\"`" + `
 	FirecrackerStartTime         uint64 ` + "`json:\"firecrackerStartTime\"`" + `
+	FinalizedCommitID            string ` + "`json:\"finalizedCommitId\"`" + `
 	SandboxID                    string ` + "`json:\"sandboxId\"`" + `
 	ExecutionID                  string ` + "`json:\"executionId\"`" + `
 	WorkerID                     string ` + "`json:\"workerId\"`" + `
@@ -71,6 +86,13 @@ const l8D6RuntimeOwnerRecordDocBlock = `type firecrackerRuntimeOwnerRecordV1 str
 	ReconnectSecret              string ` + "`json:\"reconnectSecret\"`" + `
 }`
 
+const l8D6RuntimeOwnerWorkerReceiptDocBlock = `type storedJobCredentialRuntimeRecoveryReceiptV1 struct {
+	ContractVersion string ` + "`json:\"contractVersion\"`" + `
+	Seed storedJobCredentialIdentitySeedV1 ` + "`json:\"seed\"`" + `
+	CommitID string ` + "`json:\"commitId\"`" + `
+	FinalizedRevision uint64 ` + "`json:\"finalizedRevision\"`" + `
+}`
+
 const (
 	l8D6RuntimeOwnerBootMismatchRule = "A host-boot mismatch never authorizes signaling a current PID."
 	l8D6RuntimeOwnerPublicationRule  = "The revision-one `starting` record is durable before Firecracker publication or acknowledgement."
@@ -88,7 +110,7 @@ func TestL8D6RuntimeOwnerContractArchitectureIsExact(t *testing.T) {
 }
 
 func validateL8D6RuntimeOwnerArchitecture(doc string) error {
-	for _, block := range []string{l8D6RuntimeOwnerRecoveryAPIDocBlock, l8D6RuntimeOwnerRecordDocBlock} {
+	for _, block := range []string{l8D6RuntimeOwnerRecoveryAPIDocBlock, l8D6RuntimeOwnerRecordDocBlock, l8D6RuntimeOwnerWorkerReceiptDocBlock} {
 		if strings.Count(doc, "```go\n"+block+"\n```") != 1 {
 			return fmt.Errorf("L8 D6 runtime-owner architecture must contain one exact canonical block:\n%s", block)
 		}
@@ -119,7 +141,7 @@ func validateL8D6RuntimeOwnerArchitecture(doc string) error {
 		"`CleanupAfterVMQuiesced`",
 		"private recovered `TerminatedVMBinding`",
 		"owner record is retired only after",
-		"`L7OldBootJournalRetirer`",
+		"Old-boot owner and L7 journals remain quarantined",
 		"child-armed acknowledgement",
 		"mandatory for both seed-only and complete-identity restart",
 		l8D6RuntimeOwnerBootMismatchRule,
@@ -127,6 +149,17 @@ func validateL8D6RuntimeOwnerArchitecture(doc string) error {
 		l8D6RuntimeOwnerCompleteStopRule,
 		l8D6RuntimeOwnerFinalizeRule,
 		l8D6RuntimeOwnerCommitRule,
+		"atomically replaces CredentialState with a private recovery receipt",
+		"`CredentialRecoveryReceipt *storedJobCredentialRuntimeRecoveryReceiptV1`",
+		"exactly one of CredentialState or CredentialRecoveryReceipt",
+		"post-commit restart validates the same receipt and accepts the idempotent committed result",
+		"firecracker-runtime-owner-receipt-hmac-v1",
+		"stable private owner-root HMAC key",
+		"commit-only/record-absent binding",
+		"`CommitID` carries `json:\"-\" xml:\"-\"`",
+		"String and every fmt verb return only `[job-credential-runtime-recovery-commit-receipt]`",
+		"JSON, gob, text, and binary encoding fail closed; XML encoding omits the field",
+		"only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`",
 		"The digest has no accessor",
 		l8D6RuntimeOwnerCloseRule,
 		"Non-Linux implementations fail closed",
@@ -147,6 +180,9 @@ func TestL8D6RuntimeOwnerContractArchitectureMutationGuards(t *testing.T) {
 	}{
 		{name: "missing host boot ID", before: "\tHostBootID                   string `json:\"hostBootId\"`\n", after: ""},
 		{name: "missing seed correlation digest", before: "\tSeedCorrelationDigest        string `json:\"seedCorrelationDigest\"`\n", after: ""},
+		{name: "missing finalized commit ID", before: "\tFinalizedCommitID            string `json:\"finalizedCommitId\"`\n", after: ""},
+		{name: "ephemeral receipt key", before: "stable private owner-root HMAC key", after: "ephemeral per-runtime HMAC key"},
+		{name: "missing commit-only replay", before: "commit-only/record-absent binding", after: "caller-provided commit result"},
 		{name: "boot mismatch may signal", before: l8D6RuntimeOwnerBootMismatchRule, after: "A host-boot mismatch may authorize signaling a current PID."},
 		{name: "publication precedes revision one", before: l8D6RuntimeOwnerPublicationRule, after: "Firecracker publication may precede revision-one durability."},
 		{name: "complete recovery skips stop reap", before: l8D6RuntimeOwnerCompleteStopRule, after: "A valid recovery proof permits the runtime to remain live."},
@@ -279,6 +315,74 @@ func TestL8D6RuntimeOwnerContractProofConstructorGuardRejectsSecondIssuer(t *tes
 			}
 		})
 	}
+}
+
+func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *testing.T) {
+	const allowed = "../internal/sandboxworker/job_store_v2.go"
+	var references int
+	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		count, err := l8D6RuntimeOwnerCommitReceiptProjections(payload)
+		if err != nil {
+			return err
+		}
+		if count > 0 && filepath.ToSlash(path) != allowed {
+			t.Fatalf("runtime recovery commit receipt projected outside exact private store owner %s: %s", allowed, filepath.ToSlash(path))
+		}
+		references += count
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan runtime recovery commit receipt projections: %v", err)
+	}
+	rootAPI := filepath.Join("..", "internal", "sandboxruntime", "job_credential_runtime_recovery.go")
+	if _, err := os.Stat(rootAPI); os.IsNotExist(err) {
+		if references != 0 {
+			t.Fatalf("contract-only commit receipt projections = %d, want zero", references)
+		}
+	} else if err != nil || references != 1 {
+		t.Fatalf("production commit receipt projections = %d, root API error %v; want one exact private-store CommitID copy", references, err)
+	}
+
+	allowedFixture := []byte("package sandboxworker\nfunc store(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) { _ = receipt.CommitID }\n")
+	if count, err := l8D6RuntimeOwnerCommitReceiptProjections(allowedFixture); err != nil || count != 1 {
+		t.Fatalf("private-store projection fixture count = %d, error %v", count, err)
+	}
+	wrongFixture := []byte("package cmd\nfunc expose(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) { _ = receipt.CommitID }\n")
+	if count, err := l8D6RuntimeOwnerCommitReceiptProjections(wrongFixture); err != nil || count != 1 {
+		t.Fatalf("public projection fixture count = %d, error %v", count, err)
+	}
+}
+
+func l8D6RuntimeOwnerCommitReceiptProjections(payload []byte) (int, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), "receipt.go", payload, 0)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	ast.Inspect(file, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if ok && selector.Sel.Name == "CommitID" {
+			count++
+		}
+		return true
+	})
+	return count, nil
 }
 
 type l8D6RuntimeOwnerProofConstructorUsage struct {

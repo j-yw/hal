@@ -22,6 +22,12 @@ keeps the active runtime unchanged; positive terminal proof invalidates the old
 bridge session, closes its lease, removes its registry ownership, and proceeds
 to exactly one replacement launch without releasing that reservation.
 
+This recovery is limited to the same backend process and its private in-memory
+registry. It is not daemon-restart process reacquisition, does not persist an
+owner handle, and does not prove restart-stable stop/reap. Those guarantees
+belong to the separate D6 runtime-owner supervisor contract and remain
+unimplemented in this foundation.
+
 The foundation does not wire a command, worker, or `firecrackerhost` provider.
 Planning-only/default construction remains inert. L8 authority is omitted from
 JSON and runtime target metadata; no label, target metadata field, descriptor,
