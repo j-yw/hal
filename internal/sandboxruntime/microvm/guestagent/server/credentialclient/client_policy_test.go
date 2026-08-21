@@ -302,6 +302,7 @@ func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
 		{name: "unkeyed allow composite", source: "var alternateClientPolicyAllow = ClientPolicyDecision{liveValue{}, true, \"\"}"},
 		{name: "struct conversion", source: credentialProtocolImport + "var alternateClientPolicyAllow = ClientPolicyDecision(" + anonymousDecisionType + "{allow: true})"},
 		{name: "anonymous struct package assignment", source: credentialProtocolImport + "var alternateClientPolicyAllow ClientPolicyDecision = " + anonymousDecisionType + "{allow: true}"},
+		{name: "anonymous struct alias package assignment", source: credentialProtocolImport + "type alternateClientPolicyDecision = " + anonymousDecisionType + "\nvar alternateClientPolicyAllow ClientPolicyDecision = alternateClientPolicyDecision{allow: true}"},
 		{name: "anonymous struct local assignment", source: credentialProtocolImport + "func alternateClientPolicyAllow() { var decision ClientPolicyDecision = " + anonymousDecisionType + "{allow: true}; _ = decision }"},
 		{name: "anonymous struct assign statement", source: credentialProtocolImport + "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow = " + anonymousDecisionType + "{allow: true} }"},
 		{name: "anonymous struct multi assignment", source: credentialProtocolImport + "var alternateClientPolicyAllow ClientPolicyDecision\nfunc init() { alternateClientPolicyAllow, _ = " + anonymousDecisionType + "{allow: true}, 0 }"},
@@ -313,32 +314,49 @@ func TestClientProductionPolicyPackageWideAllowGuardMutations(t *testing.T) {
 	for _, mutation := range mutations {
 		mutation := mutation
 		t.Run(mutation.name, func(t *testing.T) {
-			directory := t.TempDir()
-			entries, err := os.ReadDir(".")
-			if err != nil {
-				t.Fatalf("ReadDir: %v", err)
-			}
-			for _, entry := range entries {
-				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-					continue
-				}
-				source, err := os.ReadFile(entry.Name())
-				if err != nil {
-					t.Fatalf("ReadFile(%s): %v", entry.Name(), err)
-				}
-				if err := os.WriteFile(directory+"/"+entry.Name(), source, 0o600); err != nil {
-					t.Fatalf("WriteFile(%s): %v", entry.Name(), err)
-				}
-			}
 			mutatedSource := "package credentialclient\n\n" + mutation.source + "\n"
-			if err := os.WriteFile(directory+"/allow_mutation.go", []byte(mutatedSource), 0o600); err != nil {
-				t.Fatalf("WriteFile(allow_mutation.go): %v", err)
-			}
+			directory := writeClientPolicyProductionFixture(t, mutatedSource)
 			if err := validateClientProductionPolicyPackage(directory); err == nil {
 				t.Fatal("package-wide allow guard accepted adversarial declaration/reference")
 			}
 		})
 	}
+}
+
+func TestClientProductionPolicyPackageWideAllowGuardPermitsUnrelatedAnonymousStruct(t *testing.T) {
+	t.Parallel()
+
+	source := "package credentialclient\n\nvar unrelatedClientPolicyFixture = struct { ready bool; code string }{ready: true, code: \"safe\"}\n"
+	directory := writeClientPolicyProductionFixture(t, source)
+	if err := validateClientProductionPolicyPackage(directory); err != nil {
+		t.Fatalf("package-wide allow guard rejected unrelated anonymous struct: %v", err)
+	}
+}
+
+func writeClientPolicyProductionFixture(t *testing.T, extraSource string) string {
+	t.Helper()
+
+	directory := t.TempDir()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(entry.Name())
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", entry.Name(), err)
+		}
+		if err := os.WriteFile(directory+"/"+entry.Name(), source, 0o600); err != nil {
+			t.Fatalf("WriteFile(%s): %v", entry.Name(), err)
+		}
+	}
+	if err := os.WriteFile(directory+"/allow_guard_fixture.go", []byte(extraSource), 0o600); err != nil {
+		t.Fatalf("WriteFile(allow_guard_fixture.go): %v", err)
+	}
+	return directory
 }
 
 func validateClientProductionPolicyPackage(directory string) error {
@@ -360,6 +378,30 @@ func validateClientProductionPolicyPackage(directory string) error {
 	decisionTypeNames, decisionTypeWrappers := clientPolicyDecisionTypeClosure(files)
 	if len(decisionTypeWrappers) != 0 {
 		return fmt.Errorf("ClientPolicyDecision has forbidden production aliases/wrappers %v", decisionTypeWrappers)
+	}
+	namedStructs := make(map[*ast.StructType]bool)
+	var canonicalDecisionStruct *ast.StructType
+	for _, productionFile := range files {
+		ast.Inspect(productionFile.syntax, func(node ast.Node) bool {
+			typeSpec, ok := node.(*ast.TypeSpec)
+			if !ok {
+				return true
+			}
+			structure, ok := typeSpec.Type.(*ast.StructType)
+			if !ok {
+				return true
+			}
+			if !typeSpec.Assign.IsValid() {
+				namedStructs[structure] = true
+			}
+			if productionFile.name == "contracts.go" && clientPolicyCanonicalDecisionStruct(typeSpec) {
+				canonicalDecisionStruct = structure
+			}
+			return true
+		})
+	}
+	if canonicalDecisionStruct == nil {
+		return errors.New("canonical ClientPolicyDecision struct is absent or malformed")
 	}
 	owners := make([]string, 0, 1)
 	allowConstructors := make([]string, 0, 1)
@@ -419,6 +461,10 @@ func validateClientProductionPolicyPackage(directory string) error {
 				if clientPolicyDecisionLiteralOwnsAllow(value, decisionTypeNames) && value != canonicalAllowLiteral {
 					unexpectedAllowValueSites = append(unexpectedAllowValueSites, entryName)
 				}
+			case *ast.StructType:
+				if value != canonicalDecisionStruct && !namedStructs[value] && clientPolicyStructDeclaresField(value, "allow") {
+					unexpectedAllowValueSites = append(unexpectedAllowValueSites, entryName)
+				}
 			case *ast.AssignStmt:
 				if clientPolicyAssignmentWritesAllow(value) {
 					unexpectedAllowValueSites = append(unexpectedAllowValueSites, entryName)
@@ -455,6 +501,30 @@ func validateClientProductionPolicyPackage(directory string) error {
 		return fmt.Errorf("allow value has noncanonical construction/write sites in %v", unexpectedAllowValueSites)
 	}
 	return nil
+}
+
+func clientPolicyCanonicalDecisionStruct(typeSpec *ast.TypeSpec) bool {
+	return typeSpec != nil && typeSpec.Name.Name == "ClientPolicyDecision" && !typeSpec.Assign.IsValid() &&
+		normalizeClientPolicyExpression(typeSpec.Type) == "struct { liveValue allow bool rejectionCode credentialprotocol.SafeID }"
+}
+
+func clientPolicyStructDeclaresField(structure *ast.StructType, name string) bool {
+	if structure == nil || structure.Fields == nil {
+		return false
+	}
+	for _, field := range structure.Fields.List {
+		for _, fieldName := range field.Names {
+			if fieldName.Name == name {
+				return true
+			}
+		}
+		if len(field.Names) == 0 {
+			if embeddedName, ok := clientPolicyDirectNamedType(field.Type); ok && embeddedName == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type clientPolicyProductionFile struct {
