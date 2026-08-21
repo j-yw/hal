@@ -93,32 +93,14 @@ func TestL8D2GuestHelperCompositionOptionsExposeExactServiceDependencies(t *test
 const l8D6HelperIndependentServiceDependencyRule = "`HelperOptions.Host` and `HelperOptions.Runtime` are explicit, independent, mandatory service dependencies. `HelperOptions.Core` is accepted only as `credentialhelper.Core` and supplies neither dependency. The Host and Runtime fields are the sole sources of `credentialhelper.ExtensionHost` and `credentialhelper.ServiceRuntime`; `NewHelper` validates them independently and passes those exact values directly to `credentialhelper.NewService`. `SSH` is only an extension registration and cannot replace either service dependency."
 
 func validateL8D6HelperCompositionDocument(document string) error {
-	forbiddenRecoveryLanguage := []string{
-		"assert",
-		"recover",
-		"deriv",
-		"obtain",
-		"extract",
-		"infer",
-		"substitut",
-		"instead",
-		"implement",
-		"provide",
-		"suppl",
-		"source of",
-		"source for",
-		"furnish",
-		"from core",
-		"through core",
-		"using core",
-		"via core",
-		"core as",
-	}
 	normativeRuleCount := 0
 	for _, paragraph := range strings.Split(document, "\n\n") {
 		collapsed := strings.Join(strings.Fields(paragraph), " ")
 		if collapsed == l8D6HelperIndependentServiceDependencyRule {
 			normativeRuleCount++
+			continue
+		}
+		if strings.HasPrefix(collapsed, "```") {
 			continue
 		}
 
@@ -133,20 +115,20 @@ func validateL8D6HelperCompositionDocument(document string) error {
 			")", " ",
 		).Replace(lowered)
 		words := " " + strings.Join(strings.Fields(normalized), " ") + " "
-		hasCore := strings.Contains(lowered, "helperoptions.core") || strings.Contains(words, " core ")
-		hasServiceDependency := strings.Contains(lowered, "helperoptions.host") ||
+		discussesCore := strings.Contains(lowered, "helperoptions.core") ||
+			strings.Contains(lowered, "credentialhelper.core") ||
+			strings.Contains(words, " core ")
+		discussesServiceDependency := strings.Contains(lowered, "helperoptions.host") ||
 			strings.Contains(lowered, "helperoptions.runtime") ||
-			strings.Contains(normalized, "extensionhost") ||
-			strings.Contains(normalized, "serviceruntime") ||
+			strings.Contains(lowered, "credentialhelper.extensionhost") ||
+			strings.Contains(lowered, "credentialhelper.serviceruntime") ||
+			(strings.Contains(normalized, "extensionhost") && strings.Contains(normalized, "serviceruntime")) ||
 			strings.Contains(normalized, "host and runtime") ||
-			strings.Contains(normalized, "host runtime")
-		if !hasCore || !hasServiceDependency {
-			continue
-		}
-		for _, forbidden := range forbiddenRecoveryLanguage {
-			if strings.Contains(normalized, forbidden) {
-				return fmt.Errorf("HelperOptions documentation permits Host or Runtime recovery through Core")
-			}
+			strings.Contains(normalized, "host runtime") ||
+			(strings.Contains(normalized, "newhelper") &&
+				(strings.Contains(words, " host ") || strings.Contains(words, " runtime ")))
+		if discussesCore && discussesServiceDependency {
+			return fmt.Errorf("HelperOptions documentation discusses Core with Host or Runtime outside the canonical rule")
 		}
 	}
 	if normativeRuleCount != 1 {

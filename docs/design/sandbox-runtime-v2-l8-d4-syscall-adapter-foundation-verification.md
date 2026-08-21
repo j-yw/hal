@@ -33,11 +33,12 @@ and binds imported final-binary evidence into the opaque host profile. Callers
 cannot supply a policy, profile, expected evidence marker, or generated native
 artifact.
 
-The package-wide production guard parses every non-test Go file below the
-microVM boundary, including build-tagged variants. It permits only the frozen
-leaf declarations and requires the sole direct issuer/import calls to remain in
-`localresolver.VerifyL8DistributionBundle`; every guest package has zero guest
-references to either host-evidence function.
+The package-wide production guard parses every non-test Go file from the
+repository root, including build-tagged variants. It binds references to the
+exact `syscallpolicy` import/object, permits only the frozen leaf declarations,
+and requires the sole direct issuer/import calls to remain in
+`localresolver.VerifyL8DistributionBundle`; every other production package has
+zero references to either host-evidence function.
 
 The current constructor returns the stable sanitized dependency failure before
 retaining or calling the injected kernel because the adapter-callsite
