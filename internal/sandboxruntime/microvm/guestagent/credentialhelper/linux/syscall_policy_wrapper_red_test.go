@@ -139,6 +139,66 @@ func TestL8D4FullSyscallWrapperSourceGuardRejectsMutations(t *testing.T) {
 			suffix:      "\nvar reviewerRetainedTerminalCallback func() syscallTerminalResult\n",
 		},
 		{
+			name: "retains pre-abort assignment behind dummy convergence",
+			old:  "terminalResult := callTerminalSafely(func() syscallTerminalResult {\n\t\t\treturn terminal.abortPermit(permit, syscallpolicy.AdapterPhasePre)\n\t\t})",
+			replacement: "terminalResult := callTerminalSafely(func() syscallTerminalResult {\n" +
+				"\t\t\treviewerRetainedOuterTerminal = func() syscallTerminalResult {\n" +
+				"\t\t\t\tterminalResult := callTerminalSafely(func() syscallTerminalResult {\n" +
+				"\t\t\t\t\treturn terminal.abortPermit(permit, syscallpolicy.AdapterPhasePre)\n" +
+				"\t\t\t\t})\n" +
+				"\t\t\t\treturn terminalResult\n" +
+				"\t\t\t}\n" +
+				"\t\t\t_ = reviewerRetainedOuterTerminal()\n" +
+				"\t\t\treturn syscallTerminalResult{valid: true}\n" +
+				"\t\t})",
+			suffix: "\nvar reviewerRetainedOuterTerminal func() syscallTerminalResult\n",
+		},
+		{
+			name: "retains post-abort assignment behind dummy convergence",
+			old:  "terminalResult = callTerminalSafely(func() syscallTerminalResult {\n\t\t\treturn terminal.abortPermit(permit, syscallpolicy.AdapterPhasePost)\n\t\t})",
+			replacement: "reviewerRetainedOuterTerminal = func() syscallTerminalResult {\n" +
+				"\t\t\tterminalResult = callTerminalSafely(func() syscallTerminalResult {\n" +
+				"\t\t\t\treturn terminal.abortPermit(permit, syscallpolicy.AdapterPhasePost)\n" +
+				"\t\t\t})\n" +
+				"\t\t\treturn terminalResult\n" +
+				"\t\t}\n" +
+				"\t\t_ = reviewerRetainedOuterTerminal()\n" +
+				"\t\tterminalResult = callTerminalSafely(func() syscallTerminalResult {\n" +
+				"\t\t\treturn syscallTerminalResult{valid: true}\n" +
+				"\t\t})",
+			suffix: "\nvar reviewerRetainedOuterTerminal func() syscallTerminalResult\n",
+		},
+		{
+			name: "retains private post assignment behind dummy convergence",
+			old:  "terminalResult = callTerminalSafely(func() syscallTerminalResult {\n\t\t\t\treturn terminal.authorizePost(permit, postSource)\n\t\t\t})",
+			replacement: "reviewerRetainedOuterTerminal = func() syscallTerminalResult {\n" +
+				"\t\t\t\tterminalResult = callTerminalSafely(func() syscallTerminalResult {\n" +
+				"\t\t\t\t\treturn terminal.authorizePost(permit, postSource)\n" +
+				"\t\t\t\t})\n" +
+				"\t\t\t\treturn terminalResult\n" +
+				"\t\t\t}\n" +
+				"\t\t\t_ = reviewerRetainedOuterTerminal()\n" +
+				"\t\t\tterminalResult = callTerminalSafely(func() syscallTerminalResult {\n" +
+				"\t\t\t\treturn syscallTerminalResult{valid: true}\n" +
+				"\t\t\t})",
+			suffix: "\nvar reviewerRetainedOuterTerminal func() syscallTerminalResult\n",
+		},
+		{
+			name: "retains private commit assignment behind dummy convergence",
+			old:  "terminalResult = callTerminalSafely(func() syscallTerminalResult {\n\t\t\treturn terminal.commitNoObject(permit)\n\t\t})",
+			replacement: "reviewerRetainedOuterTerminal = func() syscallTerminalResult {\n" +
+				"\t\t\tterminalResult = callTerminalSafely(func() syscallTerminalResult {\n" +
+				"\t\t\t\treturn terminal.commitNoObject(permit)\n" +
+				"\t\t\t})\n" +
+				"\t\t\treturn terminalResult\n" +
+				"\t\t}\n" +
+				"\t\t_ = reviewerRetainedOuterTerminal()\n" +
+				"\t\tterminalResult = callTerminalSafely(func() syscallTerminalResult {\n" +
+				"\t\t\treturn syscallTerminalResult{valid: true}\n" +
+				"\t\t})",
+			suffix: "\nvar reviewerRetainedOuterTerminal func() syscallTerminalResult\n",
+		},
+		{
 			name:        "stores abort method in generic box",
 			old:         "decision, err := terminal.policy.AbortPermit(permit.value, phase)",
 			replacement: "_ = reviewerMethodBox[func(syscallpolicy.AdapterPermit, syscallpolicy.AdapterPhase) (syscallpolicy.AdapterDecision, error)]{value: terminal.policy.AbortPermit}\n\tdecision, err := terminal.policy.AbortPermit(permit.value, phase)",
