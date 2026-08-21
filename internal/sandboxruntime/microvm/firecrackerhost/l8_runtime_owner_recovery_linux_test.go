@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestL8RuntimeOwnerProcStatParserUsesExactField22(t *testing.T) {
@@ -76,5 +79,110 @@ func TestL8RuntimeOwnerStoreRejectsDirectoryModeAndHardlinks(t *testing.T) {
 	}
 	if _, err := readL8RuntimeOwnerRecord(directory, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("read hardlinked record = %v", err)
+	}
+}
+
+func TestL8RuntimeOwnerProcessInspectionPinsPidfdBeforeProcReads(t *testing.T) {
+	payload, err := os.ReadFile("l8_runtime_owner_recovery_linux.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(payload)
+	pidfdOpen := strings.Index(source, "unix.PidfdOpen")
+	procOpen := strings.Index(source, "unix.Openat(procfd")
+	if pidfdOpen < 0 || procOpen < 0 || pidfdOpen > procOpen {
+		t.Fatalf("pidfd/proc inspection order is unsafe: pidfd=%d proc=%d", pidfdOpen, procOpen)
+	}
+	if count := strings.Count(source, "l8RuntimeOwnerProcessAlive(pidfd)"); count < 2 {
+		t.Fatalf("pidfd liveness barriers = %d, want at least two", count)
+	}
+}
+
+func TestL8RuntimeOwnerStoreRequiresGenesisAndExclusiveCAS(t *testing.T) {
+	bootID, err := readL8RuntimeOwnerHostBootID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := l8RuntimeOwnerTestSeed()
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	nonGenesis := l8RuntimeOwnerTestRecord(t, seed, bootID)
+	if err := writeL8RuntimeOwnerRecord(directory, nonGenesis, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("missing-record non-genesis write = %v", err)
+	}
+
+	genesis := nonGenesis
+	genesis.Revision, genesis.State = 0, "starting"
+	genesis.FirecrackerPID, genesis.FirecrackerStartTime = 0, 0
+	directoryFD, err := unix.Open(directory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(directoryFD)
+	if err := unix.Flock(directoryFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeL8RuntimeOwnerRecord(directory, genesis, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("write while directory lock held = %v", err)
+	}
+	if err := unix.Flock(directoryFD, unix.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeL8RuntimeOwnerRecord(directory, genesis, seed, bootID); err != nil {
+		t.Fatalf("genesis write: %v", err)
+	}
+
+	const writers = 16
+	start := make(chan struct{})
+	results := make(chan error, writers)
+	var ready sync.WaitGroup
+	ready.Add(writers)
+	for index := 0; index < writers; index++ {
+		index := index
+		go func() {
+			ready.Done()
+			<-start
+			next := genesis
+			next.Revision = 1
+			next.FirecrackerPID, next.FirecrackerStartTime = 303, 404
+			next.ReconnectSecret = l8RuntimeOwnerTestToken(byte(index + 10))
+			results <- writeL8RuntimeOwnerRecord(directory, next, seed, bootID)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	successes := 0
+	for index := 0; index < writers; index++ {
+		if err := <-results; err == nil {
+			successes++
+		} else if !errors.Is(err, errL8RuntimeOwnerInvalid) {
+			t.Fatalf("concurrent writer error = %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent revision-one successes = %d, want exactly one", successes)
+	}
+}
+
+func TestL8RuntimeOwnerDirectoryRejectsSymlinkedAncestor(t *testing.T) {
+	root := t.TempDir()
+	realParent := filepath.Join(root, "real")
+	realOwner := filepath.Join(realParent, "owner")
+	if err := os.MkdirAll(realOwner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkParent := filepath.Join(root, "link")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := openL8RuntimeOwnerDirectory(filepath.Join(linkParent, "owner"))
+	if err == nil {
+		_ = unix.Close(fd)
+		t.Fatal("owner directory accepted a symlinked ancestor")
+	}
+	if !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("symlinked ancestor error = %v", err)
 	}
 }

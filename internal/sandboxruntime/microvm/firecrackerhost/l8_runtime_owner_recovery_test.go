@@ -1,6 +1,7 @@
 package firecrackerhost
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -50,6 +51,19 @@ func TestL8RuntimeOwnerSeedDigestBindsEveryFieldAndCommitReplay(t *testing.T) {
 	}
 }
 
+func TestL8RuntimeOwnerCommitIDUsesExactNormativeTranscript(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	seedDigest := sha256.Sum256([]byte("fixed seed digest fixture"))
+	commitID, err := l8RuntimeOwnerCommitID(key, seedDigest, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "WfQnAOYWC8pklZuzUEQTCC74p5hO44wup40eWKANEmw"
+	if commitID != want {
+		t.Fatalf("commit ID vector = %q, want %q", commitID, want)
+	}
+}
+
 func TestL8RuntimeOwnerProofIssuerAndCommitVerifierRemainSeedBound(t *testing.T) {
 	seed := l8RuntimeOwnerTestSeed()
 	inspectedAt := seed.IssuedAt.Add(time.Minute)
@@ -77,6 +91,11 @@ func TestL8RuntimeOwnerProofIssuerAndCommitVerifierRemainSeedBound(t *testing.T)
 	}
 	if err := commitJobCredentialRuntimeRecovery(receipt, commitID, 9); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("replayed revision verifier = %v", err)
+	}
+	forgedID := l8RuntimeOwnerTestToken(9)
+	forged := sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{CommitID: forgedID, FinalizedRevision: 8}
+	if err := commitJobCredentialRuntimeRecovery(forged, forgedID, 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("caller-selected commit ID verifier = %v, want invalid", err)
 	}
 }
 
@@ -167,6 +186,7 @@ func TestL8RuntimeOwnerRecordCodecIsStrictBoundedAndPanicFree(t *testing.T) {
 	badPayloads := [][]byte{
 		nil,
 		[]byte(`{"contractVersion":"firecracker-runtime-owner-private-v1","contractVersion":"duplicate"}` + "\n"),
+		[]byte(strings.Replace(string(payload), `"contractVersion":`, `"ContractVersion":"substitution","contractVersion":`, 1)),
 		append(append([]byte(nil), payload[:len(payload)-2]...), []byte(`,"unknown":true}`+"\n")...),
 		append(append([]byte(nil), payload...), 'x'),
 		[]byte(strings.Repeat("x", (16<<10)+1)),
@@ -182,6 +202,16 @@ func TestL8RuntimeOwnerRecordCodecIsStrictBoundedAndPanicFree(t *testing.T) {
 				t.Errorf("decode malformed %d = %v", index, err)
 			}
 		}()
+	}
+}
+
+func TestL8RuntimeOwnerZeroProcessObservationDoesNotOwnFileDescriptor(t *testing.T) {
+	if _, ok := reflect.TypeOf(l8RuntimeOwnerProcessObservation{}).FieldByName("pidfdOwned"); !ok {
+		t.Fatal("process observation lacks explicit pidfd ownership")
+	}
+	observation := l8RuntimeOwnerProcessObservation{}
+	if err := observation.Close(); err != nil {
+		t.Fatalf("close zero observation: %v", err)
 	}
 }
 

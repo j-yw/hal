@@ -242,7 +242,7 @@ func TestL8D6RuntimeOwnerContractVerificationIsFrozen(t *testing.T) {
 	}
 }
 
-func TestL8D6RuntimeOwnerContractProofConstructorHasOneProductionOwner(t *testing.T) {
+func TestL8D6RuntimeOwnerContractProofConstructorHasNoPrematureProductionIssuer(t *testing.T) {
 	const (
 		declarationOwner = "../internal/sandboxruntime/job_credential_runtime_recovery.go"
 		issuerOwner      = "../internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go"
@@ -291,8 +291,8 @@ func TestL8D6RuntimeOwnerContractProofConstructorHasOneProductionOwner(t *testin
 		}
 		return
 	}
-	if declarationErr != nil || issuerErr != nil || total.declarations != 1 || total.references != 1 || total.directCalls != 1 {
-		t.Fatalf("production proof constructor usage = %#v, declaration error %v, issuer error %v; want one declaration and one direct owner call", total, declarationErr, issuerErr)
+	if declarationErr != nil || issuerErr != nil || total.declarations != 1 || total.references != 0 || total.directCalls != 0 {
+		t.Fatalf("production proof constructor usage = %#v, declaration error %v, issuer error %v; want the root declaration and no issuer before StopReap", total, declarationErr, issuerErr)
 	}
 }
 
@@ -308,8 +308,8 @@ func TestL8D6RuntimeOwnerContractProofConstructorGuardRejectsSecondIssuer(t *tes
 	}
 	directCall := []byte("package firecrackerhost\nfunc mint() { sandboxruntime.NewJobCredentialRuntimeAbsenceProof(sandboxruntime.JobCredentialRuntimeAbsenceProofInput{}) }\n")
 	usage, err = l8D6RuntimeOwnerProofConstructorReferences(issuerOwner, directCall, declarationOwner, issuerOwner)
-	if err != nil || usage != (l8D6RuntimeOwnerProofConstructorUsage{references: 1, directCalls: 1}) {
-		t.Fatalf("direct owner call fixture = %#v, error %v", usage, err)
+	if err != nil || usage.references != 1 || usage.directCalls != 1 || !usage.forbidden {
+		t.Fatalf("premature direct owner call fixture = %#v, error %v", usage, err)
 	}
 	for name, fixture := range map[string][]byte{
 		"second issuer":  []byte("package sandboxworker\nfunc mint() { sandboxruntime.NewJobCredentialRuntimeAbsenceProof(sandboxruntime.JobCredentialRuntimeAbsenceProofInput{}) }\n"),
@@ -403,6 +403,8 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		"receiver method":          []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype owner struct{}\nfunc (owner) commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
 		"closure escape":           []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { leak := func() string { return receipt.CommitID }; _ = leak; return nil }\n"),
 		"helper escape":            []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc leak(any) {}\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { leak(receipt); return nil }\n"),
+		"validator package spoof":  []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype leakValidator struct{}\nvar retained any\nfunc (leakValidator) ValidateJobCredentialRuntimeRecoveryCommitReceipt(value any) error { retained = value; return nil }\nvar leak leakValidator\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return leak.ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt) }\n"),
+		"validator variable spoof": []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nvar retained any\nvar ValidateJobCredentialRuntimeRecoveryCommitReceipt = func(value any) error { retained = value; return nil }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt) }\n"),
 		"finalizer wrong receiver": []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) { panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
 		"finalizer wrong input":    []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialIdentitySeed) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) { panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),
 		"finalizer wrong result":   []byte("package firecrackerhost\nimport (\"context\"; sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\")\ntype l8RuntimeOwnerRecoveryBinding struct{}\nfunc (*l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (string, error) { panic(\"fixture\") }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"),

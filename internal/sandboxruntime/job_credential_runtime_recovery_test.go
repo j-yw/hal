@@ -95,6 +95,14 @@ func TestJobCredentialRuntimeRecoveryCommitReceiptValidationAndRedaction(t *test
 			t.Errorf("malformed receipt validation = %v", err)
 		}
 	}
+	oversize := JobCredentialRuntimeRecoveryCommitReceipt{
+		CommitID: strings.Repeat("A", 1<<20), FinalizedRevision: 7,
+	}
+	if allocations := testing.AllocsPerRun(10, func() {
+		_ = ValidateJobCredentialRuntimeRecoveryCommitReceipt(oversize)
+	}); allocations != 0 {
+		t.Fatalf("oversize receipt validation allocations = %v, want zero before decode", allocations)
+	}
 	want := "[job-credential-runtime-recovery-commit-receipt]"
 	for _, rendered := range []string{receipt.String(), receipt.GoString(), fmt.Sprint(receipt), fmt.Sprintf("%+v", receipt), fmt.Sprintf("%#v", receipt)} {
 		if rendered != want || strings.Contains(rendered, receipt.CommitID) {
