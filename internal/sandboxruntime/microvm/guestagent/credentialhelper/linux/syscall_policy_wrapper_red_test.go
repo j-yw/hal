@@ -689,7 +689,7 @@ func validateL8D4FullSyscallWrapperSource(source string) error {
 	if identifierRefs["NewSyscallPolicyCoreKernel"] != 0 || exportedTypes != 0 || exportedFunctions != 0 {
 		return errors.New("live wrapper escaped or connected default-off authority")
 	}
-	if len(executeMethods) != 1 || validateL8D4FullWrapperConvergence(executeMethods[0]) != nil {
+	if len(executeMethods) != 1 || validateL8D4FullWrapperConvergence(executeMethods[0], parents) != nil {
 		return errors.New("live wrapper changed its mutually exclusive finalization paths")
 	}
 	return nil
@@ -777,24 +777,45 @@ func l8D4FullWrapperDirectAssignment(call *ast.CallExpr, parents map[ast.Node]as
 }
 
 func l8D4FullWrapperImmediateTerminalCallback(call *ast.CallExpr, parents map[ast.Node]ast.Node, operator token.Token) bool {
+	assignment := l8D4FullWrapperProtectedTerminalAssignment(call, parents)
+	return assignment != nil && assignment.Tok == operator &&
+		l8D4FullWrapperDirectFunctionChain(assignment, parents, "*syscallPolicyWrapper.execute")
+}
+
+func l8D4FullWrapperProtectedTerminalAssignment(call *ast.CallExpr, parents map[ast.Node]ast.Node) *ast.AssignStmt {
 	result, ok := parents[call].(*ast.ReturnStmt)
 	if !ok || len(result.Results) != 1 || result.Results[0] != call {
-		return false
+		return nil
 	}
 	body, ok := parents[result].(*ast.BlockStmt)
 	if !ok || len(body.List) != 1 || body.List[0] != result {
-		return false
+		return nil
 	}
 	literal, ok := parents[body].(*ast.FuncLit)
 	if !ok || literal.Body != body || l8D4FullWrapperFieldShapes(literal.Type.Params) != "" || l8D4FullWrapperFieldShapes(literal.Type.Results) != "syscallTerminalResult" {
-		return false
+		return nil
 	}
 	protectedCall, ok := parents[literal].(*ast.CallExpr)
 	if !ok || l8D4FullWrapperExpressionShape(protectedCall.Fun) != "callTerminalSafely" || len(protectedCall.Args) != 1 || protectedCall.Args[0] != literal {
-		return false
+		return nil
 	}
 	assignment, ok := parents[protectedCall].(*ast.AssignStmt)
-	return ok && assignment.Tok == operator && len(assignment.Lhs) == 1 && l8D4FullWrapperExpressionShape(assignment.Lhs[0]) == "terminalResult" && len(assignment.Rhs) == 1 && assignment.Rhs[0] == protectedCall
+	if !ok || len(assignment.Lhs) != 1 || l8D4FullWrapperExpressionShape(assignment.Lhs[0]) != "terminalResult" || len(assignment.Rhs) != 1 || assignment.Rhs[0] != protectedCall {
+		return nil
+	}
+	return assignment
+}
+
+func l8D4FullWrapperDirectFunctionChain(node ast.Node, parents map[ast.Node]ast.Node, ownerShape string) bool {
+	for parent := parents[node]; parent != nil; parent = parents[parent] {
+		switch parent := parent.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.FuncDecl:
+			return l8D4FullWrapperFunctionShape(parent) == ownerShape
+		}
+	}
+	return false
 }
 
 func l8D4ExactCallTerminalSafely(function *ast.FuncDecl) bool {
@@ -864,13 +885,13 @@ func l8D4FullWrapperExpressionListShape(expressions []ast.Expr) string {
 	return strings.Join(shapes, ",")
 }
 
-func validateL8D4FullWrapperConvergence(execute *ast.FuncDecl) error {
+func validateL8D4FullWrapperConvergence(execute *ast.FuncDecl, parents map[ast.Node]ast.Node) error {
 	if execute == nil || execute.Body == nil || len(execute.Body.List) < 7 {
 		return errors.New("live wrapper execute body is unavailable")
 	}
 	statements := execute.Body.List
 	terminalSwitch, ok := statements[len(statements)-7].(*ast.SwitchStmt)
-	if !ok || !l8D4FullWrapperTerminalSwitchAssignsEveryPath(terminalSwitch) {
+	if !ok {
 		return errors.New("live wrapper terminal selection must precede convergence")
 	}
 	if l8D4FullWrapperAssignedCallShape(statements[len(statements)-6]) != "checkedTerminalResult(terminalResult)" ||
@@ -905,6 +926,19 @@ func validateL8D4FullWrapperConvergence(execute *ast.FuncDecl) error {
 	if len(finishCalls) != 2 || len(preAbortCalls) != 1 || len(postAbortCalls) != 6 || len(postCalls) != 1 || len(commitCalls) != 1 {
 		return errors.New("live wrapper finalization or terminal call count changed")
 	}
+	protectedPostAssignments := make(map[ast.Stmt]string)
+	for _, calls := range [][]*ast.CallExpr{postAbortCalls, postCalls, commitCalls} {
+		for _, call := range calls {
+			assignment := l8D4FullWrapperProtectedTerminalAssignment(call, parents)
+			if assignment == nil {
+				return errors.New("live wrapper terminal call escaped its protected assignment")
+			}
+			protectedPostAssignments[assignment] = l8D4FullWrapperCallShape(call)
+		}
+	}
+	if len(protectedPostAssignments) != 8 || !l8D4FullWrapperTerminalSwitchAssignsEveryPath(terminalSwitch, protectedPostAssignments) {
+		return errors.New("live wrapper terminal selection substituted its convergence assignment")
+	}
 	postFinish := l8D4FullWrapperStatementCall(statements[len(statements)-3])
 	if postFinish == nil || finishCalls[1] != postFinish || !l8D4FullWrapperCallsWithin(terminalSwitch, postAbortCalls, postCalls, commitCalls) {
 		return errors.New("live wrapper post-execution convergence escaped its terminal switch")
@@ -923,7 +957,9 @@ func validateL8D4FullWrapperConvergence(execute *ast.FuncDecl) error {
 	if preAbortBranch == nil || preAbortBranch.Else != nil || l8D4FullWrapperConditionShape(preAbortBranch.Cond) != "ctxErr!=nil" || len(preAbortBranch.Body.List) != 5 {
 		return errors.New("live wrapper pre-abort finalization branch is unavailable")
 	}
-	if !l8D4FullWrapperTerminalResultAssignment(preAbortBranch.Body.List[0]) ||
+	preAbortAssignment := l8D4FullWrapperProtectedTerminalAssignment(preAbortCalls[0], parents)
+	if preAbortAssignment == nil || preAbortBranch.Body.List[0] != preAbortAssignment ||
+		!l8D4FullWrapperTerminalResultAssignment(preAbortBranch.Body.List[0]) ||
 		l8D4FullWrapperAssignedCallShape(preAbortBranch.Body.List[1]) != "checkedTerminalResult(terminalResult)" ||
 		l8D4FullWrapperStatementCallShape(preAbortBranch.Body.List[2]) != "wrapper.finishLocked()" ||
 		l8D4FullWrapperStatementCallShape(preAbortBranch.Body.List[3]) != "wrapper.mu.Unlock()" ||
@@ -934,31 +970,65 @@ func validateL8D4FullWrapperConvergence(execute *ast.FuncDecl) error {
 	return nil
 }
 
-func l8D4FullWrapperTerminalSwitchAssignsEveryPath(terminalSwitch *ast.SwitchStmt) bool {
+func l8D4FullWrapperTerminalSwitchAssignsEveryPath(terminalSwitch *ast.SwitchStmt, protectedAssignments map[ast.Stmt]string) bool {
 	if terminalSwitch == nil || terminalSwitch.Init != nil || terminalSwitch.Tag != nil || terminalSwitch.Body == nil || len(terminalSwitch.Body.List) != 7 {
 		return false
 	}
+	expectedConditions := []string{
+		"executionErr!=nil",
+		"objectErr!=nil",
+		"ctxErr!=nil",
+		"permit.requiresPost&&object==nil",
+		"!permit.requiresPost&&object!=nil",
+		"permit.requiresPost",
+		"",
+	}
+	const (
+		postAbortShape = "terminal.abortPermit(permit,syscallpolicy.AdapterPhasePost)"
+		postShape      = "terminal.authorizePost(permit,postSource)"
+		commitShape    = "terminal.commitNoObject(permit)"
+	)
 	simpleCases, splitCases := 0, 0
-	for _, statement := range terminalSwitch.Body.List {
+	matchedAssignments := make(map[ast.Stmt]bool)
+	for index, statement := range terminalSwitch.Body.List {
 		clause, ok := statement.(*ast.CaseClause)
-		if !ok || len(clause.Body) == 0 {
+		if !ok || len(clause.Body) == 0 || l8D4FullWrapperCaseConditionShape(clause) != expectedConditions[index] {
 			return false
 		}
 		last := clause.Body[len(clause.Body)-1]
-		if l8D4FullWrapperTerminalResultAssignment(last) {
+		wantShape := postAbortShape
+		if index == 6 {
+			wantShape = commitShape
+		}
+		if index != 5 && l8D4FullWrapperTerminalResultAssignment(last) && protectedAssignments[last] == wantShape {
+			matchedAssignments[last] = true
 			simpleCases++
 			continue
 		}
 		branch, ok := last.(*ast.IfStmt)
 		elseBlock, elseOK := branchElseBlock(branch)
-		if !ok || !elseOK || branch.Body == nil || len(branch.Body.List) == 0 || len(elseBlock.List) == 0 ||
+		if index != 5 || !ok || !elseOK || branch.Init != nil || l8D4FullWrapperConditionShape(branch.Cond) != "err!=nil" || branch.Body == nil || len(branch.Body.List) == 0 || len(elseBlock.List) == 0 ||
 			!l8D4FullWrapperTerminalResultAssignment(branch.Body.List[len(branch.Body.List)-1]) ||
-			!l8D4FullWrapperTerminalResultAssignment(elseBlock.List[len(elseBlock.List)-1]) {
+			protectedAssignments[branch.Body.List[len(branch.Body.List)-1]] != postAbortShape ||
+			!l8D4FullWrapperTerminalResultAssignment(elseBlock.List[len(elseBlock.List)-1]) ||
+			protectedAssignments[elseBlock.List[len(elseBlock.List)-1]] != postShape {
 			return false
 		}
+		matchedAssignments[branch.Body.List[len(branch.Body.List)-1]] = true
+		matchedAssignments[elseBlock.List[len(elseBlock.List)-1]] = true
 		splitCases++
 	}
-	return simpleCases == 6 && splitCases == 1
+	return simpleCases == 6 && splitCases == 1 && len(matchedAssignments) == len(protectedAssignments)
+}
+
+func l8D4FullWrapperCaseConditionShape(clause *ast.CaseClause) string {
+	if clause == nil || len(clause.List) > 1 {
+		return "invalid"
+	}
+	if len(clause.List) == 0 {
+		return ""
+	}
+	return l8D4FullWrapperConditionShape(clause.List[0])
 }
 
 func branchElseBlock(branch *ast.IfStmt) (*ast.BlockStmt, bool) {
@@ -979,11 +1049,16 @@ func l8D4FullWrapperTerminalResultAssignment(statement ast.Stmt) bool {
 }
 
 func l8D4FullWrapperConditionShape(expression ast.Expr) string {
-	binary, ok := expression.(*ast.BinaryExpr)
-	if !ok {
+	switch expression := expression.(type) {
+	case *ast.BinaryExpr:
+		return l8D4FullWrapperConditionShape(expression.X) + expression.Op.String() + l8D4FullWrapperConditionShape(expression.Y)
+	case *ast.UnaryExpr:
+		return expression.Op.String() + l8D4FullWrapperConditionShape(expression.X)
+	case *ast.ParenExpr:
+		return "(" + l8D4FullWrapperConditionShape(expression.X) + ")"
+	default:
 		return l8D4FullWrapperExpressionShape(expression)
 	}
-	return l8D4FullWrapperExpressionShape(binary.X) + binary.Op.String() + l8D4FullWrapperExpressionShape(binary.Y)
 }
 
 func l8D4FullWrapperReceiverShape(function *ast.FuncDecl) string {
