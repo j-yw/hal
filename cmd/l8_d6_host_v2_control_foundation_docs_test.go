@@ -23,7 +23,8 @@ func TestL8D6HostV2ControlFoundationVerificationContract(t *testing.T) {
 		"dependency_unaccepted",
 		"go test -count=20 ./internal/sandboxruntime/microvm/firecrackerhost -run 'TestL8D6V2ControlFoundation'",
 		"go test -race -count=5 ./internal/sandboxruntime/microvm/firecrackerhost -run 'TestL8D6V2ControlFoundation'",
-		"GOOS=windows GOARCH=amd64 go test ./internal/sandboxruntime/microvm/firecrackerhost -run '^$'",
+		"GOOS=linux GOARCH=amd64 go test -c -o /tmp/hal-firecrackerhost-linux.test ./internal/sandboxruntime/microvm/firecrackerhost",
+		"GOOS=windows GOARCH=amd64 go test -c -o /tmp/hal-firecrackerhost-windows.test.exe ./internal/sandboxruntime/microvm/firecrackerhost",
 		"go test ./...", "go vet ./...", "make docs-check", "make build", "git diff --check",
 		"command -v golangci-lint",
 	} {
