@@ -133,6 +133,12 @@ func TestL8D4FullSyscallWrapperSourceGuardRejectsMutations(t *testing.T) {
 			suffix:      "\nvar reviewerRetainedTerminal func() syscallTerminalResult\n",
 		},
 		{
+			name:        "retains approved terminal callback after finalization",
+			old:         "return call()\n}",
+			replacement: "reviewerRetainedTerminalCallback = call\n\treturn call()\n}",
+			suffix:      "\nvar reviewerRetainedTerminalCallback func() syscallTerminalResult\n",
+		},
+		{
 			name:        "stores abort method in generic box",
 			old:         "decision, err := terminal.policy.AbortPermit(permit.value, phase)",
 			replacement: "_ = reviewerMethodBox[func(syscallpolicy.AdapterPermit, syscallpolicy.AdapterPhase) (syscallpolicy.AdapterDecision, error)]{value: terminal.policy.AbortPermit}\n\tdecision, err := terminal.policy.AbortPermit(permit.value, phase)",
