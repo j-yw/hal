@@ -394,6 +394,24 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 	if audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(allowedFinalizeFixture, expected[ownerVerifier]); err != nil || !audit.exact() || len(audit.issues) != 0 {
 		t.Fatalf("exact future finalizer fixture audit = %#v, error %v", audit, err)
 	}
+	rootReceiptType := "type JobCredentialRuntimeRecoveryCommitReceipt struct { CommitID string; FinalizedRevision uint64 }\n"
+	rootValidatorFunction := "func ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt JobCredentialRuntimeRecoveryCommitReceipt) error { _ = receipt.CommitID; return nil }\n"
+	rootFixtures := map[string][]byte{
+		"extra root helper":  []byte("package sandboxruntime\n" + rootReceiptType + rootValidatorFunction + "func retain(receipt JobCredentialRuntimeRecoveryCommitReceipt) { _ = receipt.FinalizedRevision }\n"),
+		"root any retention": []byte("package sandboxruntime\n" + rootReceiptType + rootValidatorFunction + "var retained any\nfunc retain(receipt JobCredentialRuntimeRecoveryCommitReceipt) { retained = receipt }\n"),
+		"extra root method":  []byte("package sandboxruntime\n" + rootReceiptType + rootValidatorFunction + "func (receipt JobCredentialRuntimeRecoveryCommitReceipt) Expose() any { return receipt }\n"),
+	}
+	for name, fixture := range rootFixtures {
+		t.Run(name, func(t *testing.T) {
+			audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(fixture, expected[rootValidator])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if audit.exact() && len(audit.issues) == 0 {
+				t.Fatalf("root-file receipt helper passed audit: %#v", audit)
+			}
+		})
+	}
 	fixtures := map[string][]byte{
 		"function name spoof":      []byte("package firecrackerhost\ntype unrelated struct { CommitID string }\nfunc commitJobCredentialRuntimeRecovery(value unrelated) error { _ = value.CommitID; return nil }\n"),
 		"unrelated field":          []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype unrelated struct { CommitID string }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = unrelated{}.CommitID; return nil }\n"),

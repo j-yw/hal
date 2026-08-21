@@ -183,10 +183,16 @@ func TestL8RuntimeOwnerRecordCodecIsStrictBoundedAndPanicFree(t *testing.T) {
 	if err != nil || decoded != record {
 		t.Fatalf("decode record = %#v, %v", decoded, err)
 	}
+	genesisPayload, err := encodeFirecrackerRuntimeOwnerRecordV1(l8RuntimeOwnerTestGenesis(record), seed, bootID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	badPayloads := [][]byte{
 		nil,
 		[]byte(`{"contractVersion":"firecracker-runtime-owner-private-v1","contractVersion":"duplicate"}` + "\n"),
 		[]byte(strings.Replace(string(payload), `"contractVersion":`, `"ContractVersion":"substitution","contractVersion":`, 1)),
+		[]byte(strings.Replace(string(genesisPayload), `"revision":0`, `"revision":null`, 1)),
+		[]byte(strings.Replace(string(payload), `"finalizedCommitId":""`, `"finalizedCommitId":null`, 1)),
 		append(append([]byte(nil), payload[:len(payload)-2]...), []byte(`,"unknown":true}`+"\n")...),
 		append(append([]byte(nil), payload...), 'x'),
 		[]byte(strings.Repeat("x", (16<<10)+1)),
