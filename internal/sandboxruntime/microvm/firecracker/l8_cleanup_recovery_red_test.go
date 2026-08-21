@@ -61,6 +61,88 @@ func TestL8StartValueAndErrorCleansLiveHandleBeforeLease(t *testing.T) {
 	}
 }
 
+func TestL8DuplicateStartDoesNotCleanupHealthyActiveRuntime(t *testing.T) {
+	probe := &l8AuthorityLifecycleProbe{}
+	manager := &l8LifecycleProcessManager{cleanupProvesAbsence: true}
+	controller, provider, target := l8LifecycleController(t, probe, manager, "runtime-l8-duplicate-active")
+	adapter := controller.processAdapter.(*fakeProcessAdapter)
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    target,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    target,
+	})
+	if err == nil || !strings.Contains(err.Error(), "already active") {
+		t.Fatalf("duplicate Start() error = %v, want stable active-runtime rejection", err)
+	}
+	if provider.calls != 1 || adapter.startCalls != 1 || manager.cleanupCalls != 0 || probe.closeCalls != 0 {
+		t.Fatalf("duplicate Start() mutated active runtime: providers %d starts %d cleanup %d close %d", provider.calls, adapter.startCalls, manager.cleanupCalls, probe.closeCalls)
+	}
+	if !controller.liveSessions.HasL8Lease(target.Runtime.RuntimeID, "fake-pid") {
+		t.Fatal("duplicate Start() discarded active L8 ownership")
+	}
+	if _, err := controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStop, Target: *started}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestL8ConcurrentDuplicateStartCannotEnterUncertainCleanupRoute(t *testing.T) {
+	probe := &l8AuthorityLifecycleProbe{}
+	controller, provider, target := l8LifecycleController(t, probe, &l8LifecycleProcessManager{}, "runtime-l8-concurrent-active")
+	manager := &l8PanicProcessManager{terminated: false}
+	controller.liveProcessManager = manager
+	adapter := controller.processAdapter.(*fakeProcessAdapter)
+	started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+		Operation: microvm.OperationStart,
+		Config:    validMicroVMConfig(),
+		Target:    target,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const duplicates = 12
+	errorsByCall := make(chan error, duplicates)
+	var wait sync.WaitGroup
+	for range duplicates {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, duplicateErr := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{
+				Operation: microvm.OperationStart,
+				Config:    validMicroVMConfig(),
+				Target:    target,
+			})
+			errorsByCall <- duplicateErr
+		}()
+	}
+	wait.Wait()
+	close(errorsByCall)
+	for duplicateErr := range errorsByCall {
+		if duplicateErr == nil || !strings.Contains(duplicateErr.Error(), "already active") {
+			t.Fatalf("concurrent duplicate Start() error = %v", duplicateErr)
+		}
+	}
+	manager.mu.Lock()
+	cleanupCalls := manager.cleanupCalls
+	manager.terminated = true
+	manager.mu.Unlock()
+	if provider.calls != 1 || adapter.startCalls != 1 || cleanupCalls != 0 || probe.closeCalls != 0 {
+		t.Fatalf("concurrent active/uncertain control = providers %d starts %d cleanup %d close %d", provider.calls, adapter.startCalls, cleanupCalls, probe.closeCalls)
+	}
+	if _, err := controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStop, Target: *started}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestL8ProcessLaunchAdapterPreservesValueAndContainsStarterPanicAndTypedNil(t *testing.T) {
 	plan := validFirecrackerStartOperationPlan(t)
 	descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
