@@ -418,6 +418,12 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 			}
 		})
 	}
+	crossFileRootFixture := []byte("package sandboxruntime\nvar retained any\nfunc retain(receipt JobCredentialRuntimeRecoveryCommitReceipt) { retained = receipt }\n")
+	if audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(crossFileRootFixture, l8D6RuntimeOwnerCommitReceiptFunction{rootPackage: true}); err != nil {
+		t.Fatal(err)
+	} else if len(audit.issues) == 0 {
+		t.Fatalf("cross-file root-package receipt retention passed audit: %#v", audit)
+	}
 	fixtures := map[string][]byte{
 		"function name spoof":      []byte("package firecrackerhost\ntype unrelated struct { CommitID string }\nfunc commitJobCredentialRuntimeRecovery(value unrelated) error { _ = value.CommitID; return nil }\n"),
 		"unrelated field":          []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype unrelated struct { CommitID string }\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { _ = unrelated{}.CommitID; return nil }\n"),
@@ -483,6 +489,7 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 type l8D6RuntimeOwnerCommitReceiptFunction struct {
 	name                 string
 	rootType             bool
+	rootPackage          bool
 	exactOneParameter    bool
 	storeConverter       bool
 	allowFinalizerResult bool
