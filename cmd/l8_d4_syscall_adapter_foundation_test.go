@@ -610,6 +610,10 @@ func TestL8D4SyscallAdapterFoundationIsTruthfullyDocumented(t *testing.T) {
 		"strconv.Unquote",
 		"stable sanitized dependency failure",
 		"l8_d4_full_syscall_adapter",
+		"private one-method `syscallExecutor`",
+		"linux && amd64 && l8_d4_full_syscall_adapter",
+		"positive lifecycle harness is test-only",
+		"NewSyscallPolicyCoreKernel` remains",
 		"unstarted -> claimed -> executed -> finalized",
 		"No D7 rule",
 	} {
@@ -663,7 +667,7 @@ func TestL8D4SyscallAdapterFoundationConstructorIsFailClosed(t *testing.T) {
 		}
 		position += next + 1
 	}
-	for _, forbidden := range []string{"return options.Kernel", "syscall.Syscall", "unix.Syscall", "unsafe.Pointer", "os/exec", "EmbeddedExpectedPinnedCallsiteEvidence", "ImportPinnedCallsiteEvidence", "ExpectedPinnedCallsiteEvidence"} {
+	for _, forbidden := range []string{"return options.Kernel", "syscall.Syscall", "unix.Syscall", "unsafe.Pointer", "os/exec", "EmbeddedExpectedPinnedCallsiteEvidence", "ImportPinnedCallsiteEvidence", "ExpectedPinnedCallsiteEvidence", "newSyscallPolicyWrapper"} {
 		if strings.Contains(source, forbidden) {
 			t.Errorf("D4 foundation contains forbidden live behavior %q", forbidden)
 		}

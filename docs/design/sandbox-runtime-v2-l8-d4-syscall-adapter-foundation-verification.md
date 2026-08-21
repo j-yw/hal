@@ -57,6 +57,22 @@ inventory and native generated artifact are incomplete. Removing guest access
 to the host-only evidence issuer does not activate this constructor.
 The non-Linux constructor rejects without inspecting its inputs.
 
+The one-shot wrapper now exists only in
+`syscall_policy_wrapper_linux.go` under the exact
+`linux && amd64 && l8_d4_full_syscall_adapter` build constraint. Its only live
+operation injection is the private one-method `syscallExecutor`; it contains no
+raw syscall implementation. The private constructor uses the concrete D2
+`Policy.NewAdapterBindings` and `Policy.AuthorizePre` methods before installing
+the executor. The wrapper then permits one execution and one exact terminal D2
+call, cleans every returned object before final convergence, and clears its
+bindings, permit, executor, and terminal references before returning.
+
+The positive lifecycle harness is test-only because the current D7 artifact
+truthfully issues no adapter row or permit. It neither mints D2 authority nor
+enters a production call graph. `NewSyscallPolicyCoreKernel` remains
+unavailable, default builds exclude the wrapper, and no active policy proof is
+claimed.
+
 ## Green gates
 
 ```sh
@@ -66,18 +82,19 @@ go test -count=1 -tags=l8_verified_policy_artifact ./internal/sandboxruntime/mic
 go test -count=1 ./cmd -run '^TestL8D4(SyscallAdapterFoundation.*|HostEvidenceHasOneRepositoryWideProductionConsumer)$'
 ```
 
-The later full-wrapper red gate is intentionally separate:
+The default-off full-wrapper gate is intentionally separate:
 
 ```sh
 go test -count=1 -tags=l8_d4_full_syscall_adapter ./internal/sandboxruntime/microvm/guestagent/credentialhelper/linux -run '^TestL8D4FullSyscallWrapper'
 ```
 
-It must fail until the sole private wrapper implements the exact
-`unstarted -> claimed -> executed -> finalized` lifecycle, makes one syscall,
-uses the same D2 permit for its sole terminal call, closes any rejected returned
-object, and passes the context, typed-nil, panic, error, cleanup, concurrency,
-reuse, and no-object-escape matrices. A passing default gate is not a substitute
-for that later tagged gate.
+It proves the sole private wrapper's exact
+`unstarted -> claimed -> executed -> finalized` lifecycle, one executor call,
+same-permit terminal call, pre/post cancellation phase, returned-object cleanup,
+typed-nil and panic containment, concurrent/reentrant/reuse rejection, and
+post-finalization authority erasure. The package-private positive harness is
+not a D7 issuer and a passing tagged gate is not evidence that the unavailable
+constructor or any default path is live.
 
 ## Non-goals
 
@@ -85,5 +102,7 @@ for that later tagged gate.
   command, worker, factory, provider, or Firecracker behavior is added.
 - No D7 rule, expected evidence marker, native source digest, callsite digest,
   binary identity, permit, or active proof is fabricated.
+- No exported executor, wrapper, ticket, permit, binding, returned object, or
+  tagged-constructor callsite is added.
 - `credentialhelper/linux.NewCore` remains the existing explicit injected-core
   boundary; root commands and sandboxd do not select this constructor.

@@ -16,6 +16,7 @@ func TestCoreFoundationImportBoundary(t *testing.T) {
 		"crypto/sha256":   true,
 		"crypto/subtle":   true,
 		"encoding/binary": true,
+		"errors":          true,
 		"reflect":         true,
 		"sync":            true,
 		"github.com/jywlabs/hal/internal/credentialmemory":                                   true,
@@ -48,6 +49,7 @@ func TestCoreFoundationImportBoundary(t *testing.T) {
 	assertCorePlatformTag(t, "core_other.go", "!linux")
 	assertCorePlatformTag(t, "syscall_policy_kernel_linux.go", "linux")
 	assertCorePlatformTag(t, "syscall_policy_kernel_other.go", "!linux")
+	assertCorePlatformTag(t, "syscall_policy_wrapper_linux.go", "linux && amd64 && l8_d4_full_syscall_adapter")
 }
 
 func assertCorePlatformTag(t *testing.T, name, want string) {

@@ -1,4 +1,4 @@
-//go:build linux && l8_d4_full_syscall_adapter
+//go:build linux && amd64 && l8_d4_full_syscall_adapter
 
 package linux
 
@@ -25,13 +25,13 @@ func TestL8D4FullSyscallWrapperSourceContract(t *testing.T) {
 	}
 	text := string(payload)
 	for _, marker := range []string{
-		"//go:build linux && l8_d4_full_syscall_adapter",
+		"//go:build linux && amd64 && l8_d4_full_syscall_adapter",
 		"type syscallExecutor interface",
 		"execute(context.Context) (syscallExecution, error)",
 		"type wrapperState uint8",
 		"wrapperStateUnstarted wrapperState = 1",
-		"wrapperStateClaimed wrapperState = 2",
-		"wrapperStateExecuted wrapperState = 3",
+		"wrapperStateClaimed   wrapperState = 2",
+		"wrapperStateExecuted  wrapperState = 3",
 		"wrapperStateFinalized wrapperState = 4",
 		"NewAdapterBindings",
 		"AuthorizePre",
@@ -48,10 +48,18 @@ func TestL8D4FullSyscallWrapperSourceContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse sole live wrapper: %v", err)
 	}
+	allowedInterfaceMethods := map[string]bool{
+		"ObserveBinding":  true,
+		"ObserveState":    true,
+		"ObserveFD":       true,
+		"ObservePointer":  true,
+		"ObserveObject":   true,
+		"ReinspectObject": true,
+	}
 	for _, declaration := range parsed.Decls {
 		switch declaration := declaration.(type) {
 		case *ast.FuncDecl:
-			if declaration.Name.IsExported() {
+			if declaration.Name.IsExported() && (declaration.Recv == nil || !allowedInterfaceMethods[declaration.Name.Name]) {
 				t.Errorf("live wrapper exports function or method %s", declaration.Name.Name)
 			}
 		case *ast.GenDecl:
@@ -62,6 +70,76 @@ func TestL8D4FullSyscallWrapperSourceContract(t *testing.T) {
 				}
 			}
 		}
+	}
+	if err := validateL8D4FullSyscallWrapperSource(string(payload)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestL8D4FullSyscallWrapperSourceGuardRejectsMutations(t *testing.T) {
+	payload, err := os.ReadFile("syscall_policy_wrapper_linux.go")
+	if err != nil {
+		t.Fatalf("read sole live wrapper: %v", err)
+	}
+	source := string(payload)
+	mutations := []struct {
+		name        string
+		old         string
+		replacement string
+	}{
+		{name: "drops amd64 gate", old: "//go:build linux && amd64 && l8_d4_full_syscall_adapter", replacement: "//go:build linux && l8_d4_full_syscall_adapter"},
+		{name: "drops binding claim", old: "bindings, err := policy.NewAdapterBindings(ticket, wrapper)", replacement: "var bindings syscallpolicy.AdapterBindings\n\tvar err error"},
+		{name: "duplicates binding claim", old: "bindings, err := policy.NewAdapterBindings(ticket, wrapper)", replacement: "_, _ = policy.NewAdapterBindings(ticket, wrapper)\n\tbindings, err := policy.NewAdapterBindings(ticket, wrapper)"},
+		{name: "substitutes binding source", old: "policy.NewAdapterBindings(ticket, wrapper)", replacement: "policy.NewAdapterBindings(ticket, observations)"},
+		{name: "duplicates pre authorization", old: "permit, pre, err := policy.AuthorizePre(ticket, wrapper.bindings, wrapper)", replacement: "_, _, _ = policy.AuthorizePre(ticket, wrapper.bindings, wrapper)\n\tpermit, pre, err := policy.AuthorizePre(ticket, wrapper.bindings, wrapper)"},
+		{name: "substitutes pre bindings", old: "policy.AuthorizePre(ticket, wrapper.bindings, wrapper)", replacement: "policy.AuthorizePre(ticket, syscallpolicy.AdapterBindings{}, wrapper)"},
+		{name: "substitutes pre source", old: "policy.AuthorizePre(ticket, wrapper.bindings, wrapper)", replacement: "policy.AuthorizePre(ticket, wrapper.bindings, observations)"},
+		{name: "duplicates executor call", old: "execution, err = executor.execute(ctx)", replacement: "_, _ = executor.execute(ctx)\n\texecution, err = executor.execute(ctx)"},
+		{name: "substitutes executor context", old: "executor.execute(ctx)", replacement: "executor.execute(context.Background())"},
+		{name: "duplicates abort terminal", old: "decision, err := terminal.policy.AbortPermit(permit.value, phase)", replacement: "_, _ = terminal.policy.AbortPermit(permit.value, phase)\n\tdecision, err := terminal.policy.AbortPermit(permit.value, phase)"},
+		{name: "substitutes abort permit", old: "terminal.policy.AbortPermit(permit.value, phase)", replacement: "terminal.policy.AbortPermit(syscallpolicy.AdapterPermit{}, phase)"},
+		{name: "duplicates post terminal", old: "decision, err := terminal.policy.AuthorizePost(permit.value, source)", replacement: "_, _ = terminal.policy.AuthorizePost(permit.value, source)\n\tdecision, err := terminal.policy.AuthorizePost(permit.value, source)"},
+		{name: "substitutes post permit", old: "terminal.policy.AuthorizePost(permit.value, source)", replacement: "terminal.policy.AuthorizePost(syscallpolicy.AdapterPermit{}, source)"},
+		{name: "duplicates commit terminal", old: "decision, err := terminal.policy.CommitNoObject(permit.value)", replacement: "_, _ = terminal.policy.CommitNoObject(permit.value)\n\tdecision, err := terminal.policy.CommitNoObject(permit.value)"},
+		{name: "substitutes commit permit", old: "terminal.policy.CommitNoObject(permit.value)", replacement: "terminal.policy.CommitNoObject(syscallpolicy.AdapterPermit{})"},
+		{name: "finalizes before object cleanup", old: "cleanupErr := closeReturnedObjectSafely(object)\n\twrapper.mu.Lock()\n\twrapper.finishLocked()", replacement: "wrapper.mu.Lock()\n\twrapper.finishLocked()\n\twrapper.mu.Unlock()\n\tcleanupErr := closeReturnedObjectSafely(object)\n\twrapper.mu.Lock()"},
+		{name: "connects default constructor", old: "type syscallExecutor interface {", replacement: "var _ = NewSyscallPolicyCoreKernel\n\ntype syscallExecutor interface {"},
+		{name: "exports wrapper constructor", old: "func newSyscallPolicyWrapper(", replacement: "func NewSyscallPolicyWrapper("},
+		{name: "exports executor authority", old: "type syscallExecutor interface {", replacement: "type SyscallExecutor interface {"},
+		{name: "adds raw syscall", old: "execution, err = executor.execute(ctx)", replacement: "_, _, _ = syscall.Syscall(0, 0, 0, 0)\n\texecution, err = executor.execute(ctx)"},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutated := strings.Replace(source, mutation.old, mutation.replacement, 1)
+			if mutated == source {
+				t.Fatal("mutation did not change source")
+			}
+			if err := validateL8D4FullSyscallWrapperSource(mutated); err == nil {
+				t.Fatal("source guard accepted mutation")
+			}
+		})
+	}
+}
+
+func TestL8D4FullSyscallWrapperConstructorFailsBeforeAuthority(t *testing.T) {
+	observations := &wrapperObservationFake{}
+	executor := &wrapperExecutorFake{}
+	wrapper, decision, err := newSyscallPolicyWrapper(nil, syscallpolicy.AdapterTicket{}, observations, executor)
+	var policyErr *syscallpolicy.ContractError
+	if wrapper != nil || decision.Final() || !errors.As(err, &policyErr) || policyErr.Code() != syscallpolicy.ErrorCodeOwnership {
+		t.Fatalf("new wrapper with absent policy = (%#v, %#v, %v)", wrapper, decision, err)
+	}
+	if executor.calls.Load() != 0 {
+		t.Fatalf("executor calls = %d before claim", executor.calls.Load())
+	}
+
+	var typedNilObservations *wrapperObservationFake
+	if wrapper, _, err := newSyscallPolicyWrapper(nil, syscallpolicy.AdapterTicket{}, typedNilObservations, executor); wrapper != nil || !errors.Is(err, credentialhelper.ErrContractTypedNil) {
+		t.Fatalf("new wrapper with typed-nil observations = (%#v, %v)", wrapper, err)
+	}
+	var typedNilExecutor *wrapperExecutorFake
+	if wrapper, _, err := newSyscallPolicyWrapper(nil, syscallpolicy.AdapterTicket{}, observations, typedNilExecutor); wrapper != nil || !errors.Is(err, credentialhelper.ErrContractTypedNil) {
+		t.Fatalf("new wrapper with typed-nil executor = (%#v, %v)", wrapper, err)
 	}
 }
 
@@ -77,8 +155,8 @@ func TestL8D4FullSyscallWrapperSuccessUsesOneTerminalAndCleansObject(t *testing.
 		}
 		assertWrapperFinalizedAndEmpty(t, wrapper)
 		terminal.assertOneCall(t, wrapperTerminalPost, syscallpolicy.AdapterPhasePost, permit)
-		if executor.calls.Load() != 1 || object.closes.Load() != 1 {
-			t.Fatalf("executor calls = %d, object closes = %d", executor.calls.Load(), object.closes.Load())
+		if executor.calls.Load() != 1 || object.numberCalls.Load() != 1 || object.closes.Load() != 1 {
+			t.Fatalf("executor calls = %d, object number reads = %d, object closes = %d", executor.calls.Load(), object.numberCalls.Load(), object.closes.Load())
 		}
 	})
 
@@ -99,6 +177,21 @@ func TestL8D4FullSyscallWrapperSuccessUsesOneTerminalAndCleansObject(t *testing.
 }
 
 func TestL8D4FullSyscallWrapperCancellationUsesExactAbortPhase(t *testing.T) {
+	t.Run("nil context", func(t *testing.T) {
+		executor := &wrapperExecutorFake{}
+		terminal := newWrapperTerminalFake()
+		wrapper, permit := newClaimedWrapperForTest(false, executor, terminal)
+
+		if _, err := wrapper.execute(nil); !errors.Is(err, credentialhelper.ErrContractTypedNil) {
+			t.Fatalf("execute() error = %v, want typed-nil context", err)
+		}
+		assertWrapperFinalizedAndEmpty(t, wrapper)
+		terminal.assertOneCall(t, wrapperTerminalAbort, syscallpolicy.AdapterPhasePre, permit)
+		if executor.calls.Load() != 0 {
+			t.Fatalf("executor calls = %d, want 0", executor.calls.Load())
+		}
+	})
+
 	t.Run("pre call", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -184,21 +277,54 @@ func TestL8D4FullSyscallWrapperContainsTypedNilPanicAndError(t *testing.T) {
 	terminal.assertOneCall(t, wrapperTerminalAbort, syscallpolicy.AdapterPhasePost, permit)
 }
 
+func TestL8D4FullSyscallWrapperRejectsReturnedObjectMatrixMismatch(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		requiresPost bool
+		object       *wrapperReturnedObjectFake
+		wantErr      error
+	}{
+		{name: "missing required object", requiresPost: true, wantErr: credentialhelper.ErrContractResultMatrix},
+		{name: "unexpected object", object: &wrapperReturnedObjectFake{number: 44}, wantErr: credentialhelper.ErrContractResultMatrix},
+		{name: "invalid object number", requiresPost: true, object: &wrapperReturnedObjectFake{number: -1}, wantErr: credentialhelper.ErrContractInvalidArgument},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			executor := &wrapperExecutorFake{}
+			if test.object != nil {
+				executor.result.returnedObject = test.object
+			}
+			terminal := newWrapperTerminalFake()
+			wrapper, permit := newClaimedWrapperForTest(test.requiresPost, executor, terminal)
+			if _, err := wrapper.execute(context.Background()); !errors.Is(err, test.wantErr) {
+				t.Fatalf("execute() error = %v, want %v", err, test.wantErr)
+			}
+			assertWrapperFinalizedAndEmpty(t, wrapper)
+			terminal.assertOneCall(t, wrapperTerminalAbort, syscallpolicy.AdapterPhasePost, permit)
+			if test.object != nil && test.object.closes.Load() != 1 {
+				t.Fatalf("object closes = %d, want 1", test.object.closes.Load())
+			}
+		})
+	}
+}
+
 func TestL8D4FullSyscallWrapperCleansReturnedObjectOnEveryConvergence(t *testing.T) {
 	for _, test := range []struct {
 		name          string
+		executorErr   error
 		terminalPanic bool
 		closeErr      error
 		closePanic    bool
+		terminalKind  wrapperTerminalKind
 	}{
-		{name: "terminal error"},
-		{name: "terminal panic", terminalPanic: true},
-		{name: "cleanup error", closeErr: errors.New("secret cleanup detail")},
-		{name: "cleanup panic", closePanic: true},
+		{name: "executor error with object", executorErr: errors.New("secret executor detail"), terminalKind: wrapperTerminalAbort},
+		{name: "terminal error", terminalKind: wrapperTerminalPost},
+		{name: "terminal panic", terminalPanic: true, terminalKind: wrapperTerminalPost},
+		{name: "cleanup error", closeErr: errors.New("secret cleanup detail"), terminalKind: wrapperTerminalPost},
+		{name: "cleanup panic", closePanic: true, terminalKind: wrapperTerminalPost},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			object := &wrapperReturnedObjectFake{number: 43, closeErr: test.closeErr, closePanic: test.closePanic}
-			executor := &wrapperExecutorFake{result: syscallExecution{returnedObject: object}}
+			executor := &wrapperExecutorFake{result: syscallExecution{returnedObject: object}, err: test.executorErr}
 			terminal := newWrapperTerminalFake()
 			terminal.panicCall = test.terminalPanic
 			if test.name == "terminal error" {
@@ -210,7 +336,7 @@ func TestL8D4FullSyscallWrapperCleansReturnedObjectOnEveryConvergence(t *testing
 				t.Fatalf("execute() error = %v", err)
 			}
 			assertWrapperFinalizedAndEmpty(t, wrapper)
-			terminal.assertOneCall(t, wrapperTerminalPost, syscallpolicy.AdapterPhasePost, permit)
+			terminal.assertOneCall(t, test.terminalKind, syscallpolicy.AdapterPhasePost, permit)
 			if object.closes.Load() != 1 {
 				t.Fatalf("object closes = %d, want 1", object.closes.Load())
 			}
@@ -303,7 +429,24 @@ func TestL8D4FullSyscallWrapperHasNoRawBypass(t *testing.T) {
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		payload, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		wrapperReferences := strings.Count(string(payload), "newSyscallPolicyWrapper")
+		if name == "syscall_policy_wrapper_linux.go" {
+			if wrapperReferences != 1 {
+				t.Errorf("%s wrapper constructor spellings = %d, want sole declaration", name, wrapperReferences)
+			}
+		} else if wrapperReferences != 0 {
+			t.Errorf("%s connects the default-off wrapper", name)
+		}
+		for _, rawMarker := range []string{"syscall.", "unix.", "RawSyscall", "//go:linkname"} {
+			if strings.Contains(string(payload), rawMarker) {
+				t.Errorf("%s contains raw syscall authority marker %q", name, rawMarker)
+			}
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), name, payload, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
@@ -325,11 +468,180 @@ func TestL8D4FullSyscallWrapperHasNoRawBypass(t *testing.T) {
 	}
 }
 
+func validateL8D4FullSyscallWrapperSource(source string) error {
+	if !strings.HasPrefix(source, "//go:build linux && amd64 && l8_d4_full_syscall_adapter\n") {
+		return errors.New("live wrapper must remain Linux/amd64/tag gated")
+	}
+	parsed, err := parser.ParseFile(token.NewFileSet(), "syscall_policy_wrapper_linux.go", source, 0)
+	if err != nil {
+		return err
+	}
+	selectorCalls := make(map[string]int)
+	identifierCalls := make(map[string]int)
+	identifierRefs := make(map[string]int)
+	callShapes := make(map[string]int)
+	exportedTypes := 0
+	exportedFunctions := 0
+	var executorInterfaces []*ast.InterfaceType
+	for _, declaration := range parsed.Decls {
+		if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.IsExported() && function.Recv == nil {
+			exportedFunctions++
+		}
+		generation, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, specification := range generation.Specs {
+			typeSpec, ok := specification.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			if typeSpec.Name.IsExported() {
+				exportedTypes++
+			}
+			if typeSpec.Name.Name == "syscallExecutor" {
+				if executorInterface, ok := typeSpec.Type.(*ast.InterfaceType); ok {
+					executorInterfaces = append(executorInterfaces, executorInterface)
+				}
+			}
+		}
+	}
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		if identifier, ok := node.(*ast.Ident); ok {
+			identifierRefs[identifier.Name]++
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch function := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			selectorCalls[function.Sel.Name]++
+		case *ast.Ident:
+			identifierCalls[function.Name]++
+		}
+		callShapes[l8D4FullWrapperCallShape(call)]++
+		return true
+	})
+	if len(executorInterfaces) != 1 || !l8D4ExactSyscallExecutorInterface(executorInterfaces[0]) {
+		return errors.New("live wrapper must contain one exact private one-method executor")
+	}
+	for name, want := range map[string]int{
+		"NewAdapterBindings": 1,
+		"AuthorizePre":       1,
+		"AbortPermit":        1,
+		"AuthorizePost":      1,
+		"CommitNoObject":     1,
+		"execute":            1,
+	} {
+		if selectorCalls[name] != want {
+			return errors.New("live wrapper must contain each concrete D2/executor call exactly once")
+		}
+	}
+	for _, callShape := range []string{
+		"policy.NewAdapterBindings(ticket,wrapper)",
+		"policy.AuthorizePre(ticket,wrapper.bindings,wrapper)",
+		"terminal.policy.AbortPermit(permit.value,phase)",
+		"terminal.policy.AuthorizePost(permit.value,source)",
+		"terminal.policy.CommitNoObject(permit.value)",
+		"executor.execute(ctx)",
+	} {
+		if callShapes[callShape] != 1 {
+			return errors.New("live wrapper changed an exact D2 or executor call")
+		}
+	}
+	for _, forbidden := range []string{"Syscall", "Syscall6", "RawSyscall", "RawSyscall6", "EmbeddedVerifiedPolicyArtifact", "EmbeddedExpectedPinnedCallsiteEvidence"} {
+		if selectorCalls[forbidden] != 0 {
+			return errors.New("live wrapper reached forbidden raw or issuer authority")
+		}
+	}
+	if identifierCalls["NewSyscallPolicyCoreKernel"] != 0 || identifierRefs["NewSyscallPolicyCoreKernel"] != 0 || exportedTypes != 0 || exportedFunctions != 0 {
+		return errors.New("live wrapper escaped or connected default-off authority")
+	}
+	cleanupIndex := strings.LastIndex(source, "cleanupErr := closeReturnedObjectSafely(object)")
+	finalizeIndex := strings.LastIndex(source, "wrapper.finishLocked()")
+	if cleanupIndex < 0 || finalizeIndex < cleanupIndex {
+		return errors.New("live wrapper must clean returned objects before convergence")
+	}
+	return nil
+}
+
+func l8D4ExactSyscallExecutorInterface(executor *ast.InterfaceType) bool {
+	if executor == nil || executor.Methods == nil || len(executor.Methods.List) != 1 {
+		return false
+	}
+	method := executor.Methods.List[0]
+	function, ok := method.Type.(*ast.FuncType)
+	return ok && len(method.Names) == 1 && method.Names[0].Name == "execute" &&
+		l8D4FullWrapperFieldShapes(function.Params) == "context.Context" &&
+		l8D4FullWrapperFieldShapes(function.Results) == "syscallExecution,error"
+}
+
+func l8D4FullWrapperFieldShapes(fields *ast.FieldList) string {
+	if fields == nil {
+		return ""
+	}
+	var shapes []string
+	for _, field := range fields.List {
+		count := len(field.Names)
+		if count == 0 {
+			count = 1
+		}
+		for index := 0; index < count; index++ {
+			shapes = append(shapes, l8D4FullWrapperExpressionShape(field.Type))
+		}
+	}
+	return strings.Join(shapes, ",")
+}
+
+func l8D4FullWrapperCallShape(call *ast.CallExpr) string {
+	if call == nil {
+		return ""
+	}
+	arguments := make([]string, 0, len(call.Args))
+	for _, argument := range call.Args {
+		arguments = append(arguments, l8D4FullWrapperExpressionShape(argument))
+	}
+	return l8D4FullWrapperExpressionShape(call.Fun) + "(" + strings.Join(arguments, ",") + ")"
+}
+
+func l8D4FullWrapperExpressionShape(expression ast.Expr) string {
+	switch expression := expression.(type) {
+	case *ast.Ident:
+		return expression.Name
+	case *ast.SelectorExpr:
+		return l8D4FullWrapperExpressionShape(expression.X) + "." + expression.Sel.Name
+	}
+	return ""
+}
+
 type wrapperExecutorFake struct {
 	calls  atomic.Int32
 	result syscallExecution
 	err    error
 	run    func(context.Context) (syscallExecution, error)
+}
+
+type wrapperObservationFake struct{}
+
+func (*wrapperObservationFake) ObserveBinding(syscallpolicy.BindingQuery) (syscallpolicy.BindingObservation, error) {
+	return syscallpolicy.BindingObservation{}, nil
+}
+
+func (*wrapperObservationFake) ObserveState(syscallpolicy.StateQuery) (syscallpolicy.StateObservation, error) {
+	return syscallpolicy.StateObservation{}, nil
+}
+
+func (*wrapperObservationFake) ObserveFD(syscallpolicy.FDQuery) (syscallpolicy.FDObservation, error) {
+	return syscallpolicy.FDObservation{}, nil
+}
+
+func (*wrapperObservationFake) ObservePointer(syscallpolicy.PointerQuery) (syscallpolicy.PointerObservation, error) {
+	return syscallpolicy.PointerObservation{}, nil
+}
+
+func (*wrapperObservationFake) ObserveObject(syscallpolicy.ObjectQuery) (syscallpolicy.ObjectObservation, error) {
+	return syscallpolicy.ObjectObservation{}, nil
 }
 
 func (executor *wrapperExecutorFake) execute(ctx context.Context) (syscallExecution, error) {
@@ -341,13 +653,17 @@ func (executor *wrapperExecutorFake) execute(ctx context.Context) (syscallExecut
 }
 
 type wrapperReturnedObjectFake struct {
-	number     int32
-	closes     atomic.Int32
-	closeErr   error
-	closePanic bool
+	number      int32
+	numberCalls atomic.Int32
+	closes      atomic.Int32
+	closeErr    error
+	closePanic  bool
 }
 
-func (object *wrapperReturnedObjectFake) numberValue() int32 { return object.number }
+func (object *wrapperReturnedObjectFake) numberValue() int32 {
+	object.numberCalls.Add(1)
+	return object.number
+}
 
 func (object *wrapperReturnedObjectFake) inspectObject(syscallpolicy.ObjectQuery) (syscallObjectInspection, error) {
 	return syscallObjectInspection{}, nil
@@ -442,7 +758,7 @@ func assertWrapperFinalizedAndEmpty(t *testing.T, wrapper *syscallPolicyWrapper)
 	if wrapper.state != wrapperStateFinalized {
 		t.Fatalf("wrapper state = %v, want finalized", wrapper.state)
 	}
-	if wrapper.permit.identity != nil || wrapper.permit.value.SHA256() != ([32]byte{}) || wrapper.executor != nil || wrapper.terminal != nil {
+	if wrapper.observations != nil || wrapper.bindings.SHA256() != ([32]byte{}) || wrapper.permit.identity != nil || wrapper.permit.value.SHA256() != ([32]byte{}) || wrapper.executor != nil || wrapper.terminal != nil {
 		t.Fatalf("finalized wrapper retained authority or object dependency")
 	}
 }

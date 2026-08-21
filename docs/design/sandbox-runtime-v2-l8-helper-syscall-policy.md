@@ -1417,6 +1417,26 @@ const (
 )
 ```
 
+The concrete D4 lifecycle implementation is default-off and exists only for
+`linux && amd64 && l8_d4_full_syscall_adapter`. Its exact injected operation
+surface is private and one-method:
+
+```go
+type syscallExecutor interface {
+	execute(context.Context) (syscallExecution, error)
+}
+```
+
+This seam does not import or call a raw syscall package and exports neither the
+executor nor its result. Its private production constructor takes the concrete
+D2 policy and ticket, passes its own wrapper identity to `NewAdapterBindings`
+and `AuthorizePre`, and installs the executor only after a nonzero ready permit.
+Because the current D7 artifact contains no adapter rows, positive lifecycle
+coverage uses only a package test harness that starts from a private claimed
+state; it does not mint a ticket or permit. The wrapper is absent from default
+builds, has no `NewSyscallPolicyCoreKernel` callsite, and cannot make the empty
+adapter inventory live.
+
 #### Exact inert-wrapper construction and ownership matrix
 
 D4 allocates one private inert `unstarted` wrapper identity before `NewAdapterBindings`. That exact identity is the sole production `BindingSource`. Its identity is its private allocation and lifetime, not a
