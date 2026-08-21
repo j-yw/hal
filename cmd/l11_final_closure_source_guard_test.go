@@ -161,6 +161,64 @@ func runRootlessAdvisorySuccess(*testing.T) {}
 `,
 		},
 		{
+			name: "exact selected subtest callback permits testing import alias",
+			source: `package fixture
+import stdtesting "testing"
+func TestL11PreparedLinuxFinalClosure(t *stdtesting.T) { t.Run("rootless_advisory_success", runRootlessAdvisorySuccess) }
+func runRootlessAdvisorySuccess(*stdtesting.T) {}
+`,
+		},
+		{
+			name: "exact selected subtest callback permits testing T type alias",
+			source: `package fixture
+import stdtesting "testing"
+type selectedT = stdtesting.T
+func TestL11PreparedLinuxFinalClosure(t *selectedT) { t.Run("rootless_advisory_success", runRootlessAdvisorySuccess) }
+func runRootlessAdvisorySuccess(*selectedT) {}
+`,
+		},
+		{
+			name: "local testing field cannot impersonate testing T Run",
+			source: `package fixture
+import (stdtesting "testing"; "example.invalid/sandboxruntime")
+type fakeT struct{}
+func (fakeT) Run(string, func(*stdtesting.T)) bool { _, _ = sandboxruntime.NewJobCredentialActiveProof(input); return true }
+func TestL11PreparedLinuxFinalClosure(*stdtesting.T) {
+	testing := struct{ T fakeT }{}
+	testing.T.Run("rootless_advisory_success", runRootlessAdvisorySuccess)
+}
+func runRootlessAdvisorySuccess(*stdtesting.T) {}
+var input any
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "shadowed testing import cannot impersonate testing T Run",
+			source: `package fixture
+import ("testing"; "example.invalid/sandboxruntime")
+type fakeT struct{}
+func (fakeT) Run(string, func(*testing.T)) bool { _, _ = sandboxruntime.NewJobCredentialActiveProof(input); return true }
+func TestL11PreparedLinuxFinalClosure(*testing.T) {
+	testing := struct{ T fakeT }{}
+	testing.T.Run("rootless_advisory_success", runRootlessAdvisorySuccess)
+}
+func runRootlessAdvisorySuccess(*testing.T) {}
+var input any
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
+			name: "fake Run method is not a selected subtest seam",
+			source: `package fixture
+import stdtesting "testing"
+type fakeT struct{}
+func (fakeT) Run(string, func(*stdtesting.T)) bool { return true }
+func TestL11PreparedLinuxFinalClosure(*stdtesting.T) { fakeT{}.Run("rootless_advisory_success", runRootlessAdvisorySuccess) }
+func runRootlessAdvisorySuccess(*stdtesting.T) {}
+`,
+			wantIssue: "forbidden dynamic selected helper graph", wantIssues: 1,
+		},
+		{
 			name: "exact selected subtest callback is traversed",
 			source: `package fixture
 import ("testing"; "example.invalid/sandboxruntime")
