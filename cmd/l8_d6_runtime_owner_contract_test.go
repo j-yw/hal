@@ -155,6 +155,8 @@ func validateL8D6RuntimeOwnerArchitecture(doc string) error {
 		"post-commit restart validates the same receipt and accepts the idempotent committed result",
 		"firecracker-runtime-owner-receipt-hmac-v1",
 		"stable private owner-root HMAC key",
+		"`renameat2(RENAME_NOREPLACE)`",
+		"strictly reopens and validates the winner",
 		"commit-only/record-absent binding",
 		"`CommitID` carries `json:\"-\" xml:\"-\"`",
 		"String and every fmt verb return only `[job-credential-runtime-recovery-commit-receipt]`",
@@ -182,6 +184,7 @@ func TestL8D6RuntimeOwnerContractArchitectureMutationGuards(t *testing.T) {
 		{name: "missing seed correlation digest", before: "\tSeedCorrelationDigest        string `json:\"seedCorrelationDigest\"`\n", after: ""},
 		{name: "missing finalized commit ID", before: "\tFinalizedCommitID            string `json:\"finalizedCommitId\"`\n", after: ""},
 		{name: "ephemeral receipt key", before: "stable private owner-root HMAC key", after: "ephemeral per-runtime HMAC key"},
+		{name: "overwriting key publication", before: "`renameat2(RENAME_NOREPLACE)`", after: "ordinary replacing rename"},
 		{name: "missing commit-only replay", before: "commit-only/record-absent binding", after: "caller-provided commit result"},
 		{name: "boot mismatch may signal", before: l8D6RuntimeOwnerBootMismatchRule, after: "A host-boot mismatch may authorize signaling a current PID."},
 		{name: "publication precedes revision one", before: l8D6RuntimeOwnerPublicationRule, after: "Firecracker publication may precede revision-one durability."},
@@ -318,8 +321,13 @@ func TestL8D6RuntimeOwnerContractProofConstructorGuardRejectsSecondIssuer(t *tes
 }
 
 func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *testing.T) {
-	const allowed = "../internal/sandboxworker/job_store_v2.go"
-	var references int
+	const (
+		rootValidator = "../internal/sandboxruntime/job_credential_runtime_recovery.go"
+		ownerVerifier = "../internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go"
+		privateStore  = "../internal/sandboxworker/job_store_v2.go"
+	)
+	allowed := map[string]bool{rootValidator: true, ownerVerifier: true, privateStore: true}
+	references := make(map[string]int)
 	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -341,22 +349,24 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		if err != nil {
 			return err
 		}
-		if count > 0 && filepath.ToSlash(path) != allowed {
-			t.Fatalf("runtime recovery commit receipt projected outside exact private store owner %s: %s", allowed, filepath.ToSlash(path))
+		normalizedPath := filepath.ToSlash(path)
+		if count > 0 && !allowed[normalizedPath] {
+			t.Fatalf("runtime recovery commit receipt accessed outside exact validator, owner, and private store: %s", normalizedPath)
 		}
-		references += count
+		if count > 0 {
+			references[normalizedPath] += count
+		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("scan runtime recovery commit receipt projections: %v", err)
 	}
-	rootAPI := filepath.Join("..", "internal", "sandboxruntime", "job_credential_runtime_recovery.go")
-	if _, err := os.Stat(rootAPI); os.IsNotExist(err) {
-		if references != 0 {
-			t.Fatalf("contract-only commit receipt projections = %d, want zero", references)
+	if _, err := os.Stat(rootValidator); os.IsNotExist(err) {
+		if len(references) != 0 {
+			t.Fatalf("contract-only commit receipt accesses = %#v, want zero", references)
 		}
-	} else if err != nil || references != 1 {
-		t.Fatalf("production commit receipt projections = %d, root API error %v; want one exact private-store CommitID copy", references, err)
+	} else if err != nil || references[rootValidator] == 0 || references[ownerVerifier] == 0 || references[privateStore] != 1 {
+		t.Fatalf("production commit receipt accesses = %#v, root API error %v; want validator and owner reads plus one exact private-store copy", references, err)
 	}
 
 	allowedFixture := []byte("package sandboxworker\nfunc store(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) { _ = receipt.CommitID }\n")

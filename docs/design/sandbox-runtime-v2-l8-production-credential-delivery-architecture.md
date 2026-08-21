@@ -669,7 +669,8 @@ the receipt is accepted only from this exact injected binding, and `CommitID` ca
 String and every fmt verb return only `[job-credential-runtime-recovery-commit-receipt]`.
 JSON, gob, text, and binary encoding fail closed; XML encoding omits the field
 and cannot expose the ID. Failures use the stable redaction error and no bytes.
-The ID is persisted only in the private worker recovery receipt described below.
+Outside the private owner record's `FinalizedCommitID`, the ID is persisted only
+in the private worker recovery receipt described below.
 A value plus error, zero/malformed receipt, or panic is failure. A crash after stop/reap but before finalize leaves
 the `absent` owner state retryable. Repeated stop/reap in that state performs no
 signal and returns a newly inspected proof; repeated finalize against the exact
@@ -698,9 +699,12 @@ type storedJobCredentialRuntimeRecoveryReceiptV1 struct {
 tag `json:"credentialRecoveryReceipt,omitempty"`. Recovery-state validation
 requires exactly one of CredentialState or CredentialRecoveryReceipt until
 commit has acknowledged the exact receipt, and forbids the receipt for jobs
-without live L8 credential intent. An AST guard requires that only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`
-from the neutral receipt into this private DTO; worker services, statuses,
-commands, runtime metadata, and any other store file cannot project it.
+without live L8 credential intent. A repo-wide AST guard permits `CommitID`
+reads only in the exact root validator, concrete `firecrackerhost` owner
+verifier, and `internal/sandboxworker/job_store_v2.go`; only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`
+from the neutral receipt into the private DTO. Worker services, statuses,
+commands, runtime metadata, and any other file cannot project it, including
+through a cross-file alias.
 
 The worker rebinds from the receipt's validated seed and calls
 `CommitJobCredentialRuntimeRecovery` with the exact commit receipt. Commit is
@@ -719,8 +723,8 @@ and requires the exact per-job owner record still absent under lock. The valid
 HMAC proves that Finalize minted the receipt only after its L7 cleanup; replay
 does not reopen the now-removed private L7 journal or invent a new absence API.
 Only all of those facts return idempotent committed success. Missing/wrong key,
-wrong HMAC, revision, seed, any reappearing or nonfinalized record, boot
-mismatch, or panic/error retains
+wrong HMAC, revision, seed, any reappearing or nonfinalized record, or
+panic/error retains
 the worker receipt and fails sanitized; the caller-held ID alone is never a
 bearer authority and no per-job committed tombstone is fabricated.
 
@@ -784,7 +788,17 @@ following symlinks. Before any supervisor or per-runtime record can be created,
 the root contains one stable private owner-root HMAC key file named
 `receipt-hmac.key`. It is exactly 32 random bytes in a root-owned, mode-`0600`,
 regular, single-link, no-symlink file, created through exclusive sibling write,
-file sync, atomic rename, and root-directory sync. It is a constant baseline
+file sync, Linux `renameat2(RENAME_NOREPLACE)`, and root-directory sync. Initial
+provisioning is permitted only while the locked root is provably empty of any
+key, per-runtime record, or recovery artifact. `EEXIST` never overwrites: the
+loser destroys its temporary file and strictly reopens and validates the
+winner. A successful no-replace rename followed by directory-sync failure is
+commit-uncertain; while retaining the same intended key bytes, initialization
+reopens the key path with no-follow checks and accepts either that exact key or
+another strictly valid concurrent winner. If the path is absent it retries the
+same intended bytes within the bounded initialization attempt; a malformed,
+replaced, or otherwise ambiguous path fails closed. It never generates a new
+candidate during reconciliation. The winning key is a constant baseline
 resource, never copied into a per-runtime record, worker state, proof, receipt,
 status, log, error, or public projection, and is never automatically replaced,
 rotated, or removed while any worker recovery receipt can exist. A missing,
