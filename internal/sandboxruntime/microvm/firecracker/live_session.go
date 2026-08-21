@@ -69,27 +69,66 @@ func newLiveSessionRegistry() *liveSessionRegistry {
 	}
 }
 
-func (registry *liveSessionRegistry) TrackL8Lease(
-	proof liveProcessProof,
+func (registry *liveSessionRegistry) ClaimL8StartOwnership(
+	runtimeID string,
 	lease *localresolver.VerifiedL8AssetLease,
 	authority l8AuthorityOperations,
-) bool {
-	if registry == nil || proof.RuntimeID == "" || proof.ProcessGeneration == "" ||
-		proof.ProcessSource == "" || lease == nil || !authority.valid() {
-		return false
+) (liveProcessProof, bool) {
+	proof, _ := liveProcessProofFromHandle(runtimeID, ProcessHandleMetadata{})
+	if registry == nil || runtimeID == "" || lease == nil || !authority.valid() {
+		return liveProcessProof{}, false
 	}
-	key := liveProcessKey{
-		runtimeID:         proof.RuntimeID,
-		processGeneration: proof.ProcessGeneration,
-		processSource:     proof.ProcessSource,
-	}
+	key := liveProcessKey{runtimeID: proof.RuntimeID, processGeneration: proof.ProcessGeneration, processSource: proof.ProcessSource}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	if _, exists := registry.processes[runtimeID]; exists {
+		return liveProcessProof{}, false
+	}
 	if _, exists := registry.l8Leases[key]; exists {
+		return liveProcessProof{}, false
+	}
+	registry.processes[runtimeID] = proof
+	registry.l8Leases[key] = l8OwnedAssetLease{proof: proof, lease: lease, authority: authority}
+	return proof, true
+}
+
+func (registry *liveSessionRegistry) RebindL8StartOwnership(from, to liveProcessProof) bool {
+	if registry == nil || from.RuntimeID == "" || from.RuntimeID != to.RuntimeID ||
+		to.ProcessGeneration == "" || to.ProcessSource == "" || to.unverified {
 		return false
 	}
-	registry.l8Leases[key] = l8OwnedAssetLease{proof: proof, lease: lease, authority: authority}
+	fromKey := liveProcessKey{runtimeID: from.RuntimeID, processGeneration: from.ProcessGeneration, processSource: from.ProcessSource}
+	toKey := liveProcessKey{runtimeID: to.RuntimeID, processGeneration: to.ProcessGeneration, processSource: to.ProcessSource}
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	active, activeOK := registry.processes[from.RuntimeID]
+	owned, leaseOK := registry.l8Leases[fromKey]
+	if !activeOK || active != from || !leaseOK {
+		return false
+	}
+	if _, exists := registry.l8Leases[toKey]; exists {
+		return false
+	}
+	delete(registry.l8Leases, fromKey)
+	owned.proof = to
+	registry.l8Leases[toKey] = owned
+	registry.processes[to.RuntimeID] = to
 	return true
+}
+
+func (registry *liveSessionRegistry) RetainedL8Process(runtimeID string) (liveProcessProof, bool) {
+	if registry == nil || runtimeID == "" {
+		return liveProcessProof{}, false
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	proof, ok := registry.processes[runtimeID]
+	if !ok {
+		return liveProcessProof{}, false
+	}
+	key := liveProcessKey{runtimeID: proof.RuntimeID, processGeneration: proof.ProcessGeneration, processSource: proof.ProcessSource}
+	_, leased := registry.l8Leases[key]
+	return proof, leased
 }
 
 func (registry *liveSessionRegistry) HasAnyL8Lease(runtimeID string) bool {

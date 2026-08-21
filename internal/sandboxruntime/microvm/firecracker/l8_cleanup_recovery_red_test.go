@@ -20,8 +20,10 @@ func TestL8StartValueAndErrorCleansLiveHandleBeforeLease(t *testing.T) {
 	controller, _, target := l8LifecycleController(t, probe, manager, "runtime-l8-value-error")
 	adapter := &fakeProcessAdapter{}
 	var borrowed []*os.File
+	claimedDuringStart := false
 	adapter.start = func(_ context.Context, request ProcessStartRequest) (ProcessHandleMetadata, error) {
 		borrowed = append([]*os.File(nil), request.InheritedFiles...)
+		claimedDuringStart = controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID)
 		return ProcessHandleMetadata{ID: "value-error-pid", Source: "fake"}, errors.New("private start failure /host/path token=secret")
 	}
 	controller.processAdapter = adapter
@@ -40,6 +42,9 @@ func TestL8StartValueAndErrorCleansLiveHandleBeforeLease(t *testing.T) {
 	if manager.cleanupCalls != 1 || manager.lastHandle.ID != "value-error-pid" {
 		t.Fatalf("value+error cleanup = calls %d handle %#v", manager.cleanupCalls, manager.lastHandle)
 	}
+	if !claimedDuringStart {
+		t.Fatal("L8 process and lease ownership was not claimed before ProcessAdapter call")
+	}
 	if probe.closeCalls != 1 || manager.cleanupOrder >= probe.closeOrder {
 		t.Fatalf("cleanup/lease order = cleanup %d@%d close %d@%d", manager.cleanupCalls, manager.cleanupOrder, probe.closeCalls, probe.closeOrder)
 	}
@@ -54,6 +59,169 @@ func TestL8StartValueAndErrorCleansLiveHandleBeforeLease(t *testing.T) {
 	if controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID) {
 		t.Fatal("proved value+error cleanup retained L8 lease")
 	}
+}
+
+func TestL8ProcessLaunchAdapterPreservesValueAndContainsStarterPanicAndTypedNil(t *testing.T) {
+	plan := validFirecrackerStartOperationPlan(t)
+	descriptor, err := ProcessCommandDescriptorFromStartPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("value_and_error", func(t *testing.T) {
+		starter := &fakeProcessStarter{start: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+			return ProcessHandleMetadata{ID: "starter-pid", Source: "starter"}, errors.New("private starter failure /host/path token=secret")
+		}}
+		handle, startErr := (ProcessLaunchAdapter{Starter: starter}).StartProcess(context.Background(), ProcessStartRequest{Descriptor: descriptor})
+		if startErr == nil || handle.ID != "starter-pid" || handle.Source != "starter" {
+			t.Fatalf("value+error = handle %#v error %v", handle, startErr)
+		}
+		if strings.Contains(startErr.Error(), "/host/path") || strings.Contains(startErr.Error(), "token=secret") {
+			t.Fatalf("starter error leaked: %v", startErr)
+		}
+	})
+	t.Run("panic", func(t *testing.T) {
+		starter := &fakeProcessStarter{start: func(context.Context, ProcessRunnerStartRequest) (ProcessHandleMetadata, error) {
+			panic("private starter panic /host/path token=secret")
+		}}
+		_, startErr := (ProcessLaunchAdapter{Starter: starter}).StartProcess(context.Background(), ProcessStartRequest{Descriptor: descriptor})
+		if startErr == nil || strings.Contains(startErr.Error(), "private") || strings.Contains(startErr.Error(), "/host/path") {
+			t.Fatalf("starter panic error = %v", startErr)
+		}
+	})
+	t.Run("typed_nil", func(t *testing.T) {
+		var starter *fakeProcessStarter
+		_, startErr := (ProcessLaunchAdapter{Starter: starter}).StartProcess(context.Background(), ProcessStartRequest{Descriptor: descriptor})
+		if startErr == nil {
+			t.Fatal("typed-nil starter error = nil")
+		}
+	})
+}
+
+func TestL8CleanupErrorAndPanicRetainUntilEventualRetrySuccess(t *testing.T) {
+	for _, failure := range []string{"error", "panic"} {
+		t.Run(failure, func(t *testing.T) {
+			probe := &l8AuthorityLifecycleProbe{}
+			manager := &l8PanicProcessManager{terminated: true}
+			if failure == "error" {
+				manager.cleanupErr = errors.New("private cleanup error /host/path token=secret")
+			} else {
+				manager.cleanupPanic = true
+			}
+			controller, _, target := l8LifecycleController(t, probe, &l8LifecycleProcessManager{}, "runtime-l8-cleanup-"+failure)
+			controller.liveProcessManager = manager
+			controller.processAdapter = &fakeProcessAdapter{start: func(context.Context, ProcessStartRequest) (ProcessHandleMetadata, error) {
+				return ProcessHandleMetadata{ID: "cleanup-pid", Source: "fake"}, errors.New("private start failure")
+			}}
+
+			_, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStart, Config: validMicroVMConfig(), Target: target})
+			if err == nil || strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "/host/path") || strings.Contains(err.Error(), "token=secret") {
+				t.Fatalf("initial cleanup %s error = %v", failure, err)
+			}
+			if !controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID) || probe.closeCalls != 0 {
+				t.Fatalf("cleanup %s uncertainty = retained %t close %d", failure, controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID), probe.closeCalls)
+			}
+
+			manager.mu.Lock()
+			manager.cleanupErr = nil
+			manager.cleanupPanic = false
+			manager.mu.Unlock()
+			if _, err := controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStop, Target: target}); err != nil {
+				t.Fatal(err)
+			}
+			if controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID) || probe.closeCalls != 1 {
+				t.Fatalf("eventual cleanup %s = retained %t close %d", failure, controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID), probe.closeCalls)
+			}
+		})
+	}
+}
+
+func TestL8StopAndDeletePanicsRetainUntilEventualRetrySuccess(t *testing.T) {
+	for _, operation := range []string{"stop", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			probe := &l8AuthorityLifecycleProbe{}
+			manager := &l8PanicProcessManager{terminated: false}
+			controller, _, target := l8LifecycleController(t, probe, &l8LifecycleProcessManager{}, "runtime-l8-manager-panic-"+operation)
+			controller.liveProcessManager = manager
+			controller.processAdapter = &fakeProcessAdapter{start: func(context.Context, ProcessStartRequest) (ProcessHandleMetadata, error) {
+				return ProcessHandleMetadata{ID: "manager-pid", Source: "fake"}, errors.New("start failure")
+			}}
+			if _, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStart, Config: validMicroVMConfig(), Target: target}); err == nil {
+				t.Fatal("initial Start() error = nil")
+			}
+			manager.mu.Lock()
+			manager.terminated = true
+			manager.stopPanic = operation == "stop"
+			manager.deletePanic = operation == "delete"
+			manager.mu.Unlock()
+
+			var err error
+			if operation == "stop" {
+				_, err = controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStop, Target: target})
+			} else {
+				err = controller.Delete(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationDelete, Target: target})
+			}
+			if err == nil || strings.Contains(err.Error(), "private") || !controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID) {
+				t.Fatalf("%s panic result = err %v retained %t", operation, err, controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID))
+			}
+
+			manager.mu.Lock()
+			manager.stopPanic = false
+			manager.deletePanic = false
+			manager.mu.Unlock()
+			if operation == "stop" {
+				_, err = controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStop, Target: target})
+			} else {
+				err = controller.Delete(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationDelete, Target: target})
+			}
+			if err != nil || controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID) || probe.closeCalls != 1 {
+				t.Fatalf("eventual %s = err %v retained %t close %d", operation, err, controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID), probe.closeCalls)
+			}
+		})
+	}
+}
+
+func TestL8BridgeInspectionAndInvalidationPanicsRetainOwnership(t *testing.T) {
+	t.Run("session_active", func(t *testing.T) {
+		bridge := &l8ControlledBridge{sessionActivePanic: true}
+		controller := firecrackerController{
+			productionVsock:  true,
+			productionBridge: bridge,
+			liveSessions:     newLiveSessionRegistry(),
+		}
+		proof := liveSessionProof{RuntimeID: "runtime-l8-bridge-active", ProcessGeneration: "bridge-pid", ProcessSource: "fake", BridgeGeneration: "bridge-generation"}
+		controller.liveSessions.Activate(proof)
+		controller.liveSessions.InvalidateProcess(liveProcessProof{RuntimeID: proof.RuntimeID, ProcessGeneration: proof.ProcessGeneration, ProcessSource: proof.ProcessSource})
+		err := controller.rejectActiveProductionVsockSession(proof.RuntimeID)
+		if err == nil || strings.Contains(err.Error(), "private") {
+			t.Fatalf("SessionActive panic error = %v", err)
+		}
+		if _, ok := controller.liveSessions.ProofForRuntime(proof.RuntimeID); !ok {
+			t.Fatal("SessionActive panic discarded session ownership")
+		}
+	})
+
+	t.Run("invalidate", func(t *testing.T) {
+		probe := &l8AuthorityLifecycleProbe{}
+		manager := &l8LifecycleProcessManager{cleanupProvesAbsence: true}
+		controller, _, target := l8LifecycleController(t, probe, manager, "runtime-l8-bridge-invalidate")
+		bridge := &l8ControlledBridge{invalidatePanic: true}
+		controller.productionBridge = bridge
+		started, err := controller.Start(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStart, Config: validMicroVMConfig(), Target: target})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStop, Target: *started})
+		if err == nil || strings.Contains(err.Error(), "private") || !controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID) || probe.closeCalls != 0 {
+			t.Fatalf("Invalidate panic = err %v retained %t close %d", err, controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID), probe.closeCalls)
+		}
+		bridge.invalidatePanic = false
+		if _, err := controller.Stop(context.Background(), microvm.ControllerLifecycleRequest{Operation: microvm.OperationStop, Target: target}); err != nil {
+			t.Fatal(err)
+		}
+		if controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID) || probe.closeCalls != 1 {
+			t.Fatalf("eventual bridge invalidation = retained %t close %d", controller.liveSessions.HasAnyL8Lease(target.Runtime.RuntimeID), probe.closeCalls)
+		}
+	})
 }
 
 func TestL8RetainedCleanupIsReachableFromOriginalTarget(t *testing.T) {
@@ -241,6 +409,7 @@ func TestL8ConcurrentRetainedCleanupRetryIsSerializedAndIdempotent(t *testing.T)
 type l8PanicProcessManager struct {
 	mu           sync.Mutex
 	cleanupPanic bool
+	cleanupErr   error
 	stopPanic    bool
 	deletePanic  bool
 	verifyPanic  bool
@@ -256,11 +425,12 @@ func (manager *l8PanicProcessManager) CleanupLiveProcess(context.Context, LivePr
 	manager.mu.Lock()
 	manager.cleanupCalls++
 	panicNow := manager.cleanupPanic
+	cleanupErr := manager.cleanupErr
 	manager.mu.Unlock()
 	if panicNow {
 		panic("private cleanup panic /host/path token=secret")
 	}
-	return nil
+	return cleanupErr
 }
 
 func (manager *l8PanicProcessManager) StopLiveProcess(context.Context, LiveProcessRequest) error {
@@ -325,4 +495,25 @@ func (*l8PanickingBridge) InvalidateSession(ProductionVsockSessionRequest, strin
 	panic("private bridge invalidate panic /host/path token=secret")
 }
 
-var _ sandboxruntime.RuntimeGuestReadinessState = sandboxruntime.RuntimeGuestReadinessStateReady
+type l8ControlledBridge struct {
+	l5NoopGuestTransport
+	sessionActivePanic bool
+	invalidatePanic    bool
+}
+
+func (*l8ControlledBridge) ActivateSession(context.Context, ProductionVsockSessionRequest) (GuestReadinessResult, string, error) {
+	return NewGuestReadinessResult(sandboxruntime.RuntimeGuestReadinessStateReady, "vsock", []string{"protocol_v1", "runtime_bound", "probe_ok"}), "bridge-generation", nil
+}
+
+func (bridge *l8ControlledBridge) SessionActive(ProductionVsockSessionRequest, string) bool {
+	if bridge.sessionActivePanic {
+		panic("private bridge active panic /host/path token=secret")
+	}
+	return false
+}
+
+func (bridge *l8ControlledBridge) InvalidateSession(ProductionVsockSessionRequest, string) {
+	if bridge.invalidatePanic {
+		panic("private bridge invalidate panic /host/path token=secret")
+	}
+}

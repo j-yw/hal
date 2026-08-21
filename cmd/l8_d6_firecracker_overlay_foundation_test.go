@@ -47,6 +47,8 @@ func TestL8D6FirecrackerOverlayFoundationDocumentsTruthfulBoundary(t *testing.T)
 		"they cannot be configured through `BackendOptions` or command wiring.",
 		"go test -count=20 ./internal/sandboxruntime/microvm/firecracker",
 		"go test -race -count=5 ./internal/sandboxruntime/microvm/firecracker",
+		"go test -count=20 ./internal/sandboxruntime/microvm/firecracker -run '^(TestL8.*|TestBackendConfigJSONNeverProjectsL8Authority)$'",
+		"go test -race -count=5 ./internal/sandboxruntime/microvm/firecracker -run '^(TestL8.*|TestBackendConfigJSONNeverProjectsL8Authority)$'",
 		"GOOS=darwin GOARCH=arm64",
 		"GOOS=windows GOARCH=amd64",
 		"make build",

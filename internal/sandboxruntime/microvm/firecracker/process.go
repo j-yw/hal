@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -20,6 +21,7 @@ var (
 	processBoundaryPIDDetailPattern     = regexp.MustCompile(`(?i)\b(?:pid|process[_ -]?id)\s*[:=]\s*\d+\b`)
 	processBoundarySecretEnvPattern     = regexp.MustCompile(`(?i)\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|APIKEY|CREDENTIAL|AUTHORIZATION|BEARER)[A-Z0-9_]*=\[redacted\]`)
 	processBoundarySecretEnvNamePattern = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY|CREDENTIAL|AUTHORIZATION|BEARER)[A-Z0-9_]*\b`)
+	errProcessAdapterPanic              = errors.New("process adapter panicked")
 )
 
 // ProcessAdapter is the injectable boundary for Firecracker process and
@@ -67,10 +69,10 @@ type ProcessHandleMetadata struct {
 // injected adapter and validates the returned descriptor without starting a
 // process.
 func PrepareStartCommand(ctx context.Context, adapter ProcessAdapter, plan StartOperationPlan) (ProcessCommandDescriptor, error) {
-	if adapter == nil {
+	if dependencyIsNil(adapter) {
 		return ProcessCommandDescriptor{}, newProcessBoundaryError("processAdapter", "process adapter is required")
 	}
-	descriptor, err := adapter.PrepareStartCommand(processContext(ctx), ProcessStartCommandRequest{Plan: plan})
+	descriptor, err := callProcessAdapterPrepare(adapter, processContext(ctx), ProcessStartCommandRequest{Plan: plan})
 	if err != nil {
 		return ProcessCommandDescriptor{}, newProcessBoundaryAdapterError("processAdapter", "process command preparation failed", err)
 	}
@@ -98,7 +100,7 @@ func startProcessWithInheritedFiles(
 	descriptor ProcessCommandDescriptor,
 	files []*os.File,
 ) (ProcessHandleMetadata, error) {
-	if adapter == nil {
+	if dependencyIsNil(adapter) {
 		return ProcessHandleMetadata{}, newProcessBoundaryError("processAdapter", "process adapter is required")
 	}
 	if err := validateProcessCommandDescriptor(descriptor); err != nil {
@@ -107,7 +109,7 @@ func startProcessWithInheritedFiles(
 	if err := validateProcessInheritedFiles(files); err != nil {
 		return ProcessHandleMetadata{}, err
 	}
-	handle, err := adapter.StartProcess(processContext(ctx), ProcessStartRequest{
+	handle, err := callProcessAdapterStart(adapter, processContext(ctx), ProcessStartRequest{
 		Descriptor:     descriptor,
 		InheritedFiles: append([]*os.File(nil), files...),
 	})
@@ -115,6 +117,77 @@ func startProcessWithInheritedFiles(
 		return ProcessHandleMetadata{}, newProcessBoundaryAdapterError("processAdapter", "process start failed", err)
 	}
 	return sanitizeProcessHandleMetadata(handle), nil
+}
+
+// startProcessWithInheritedFilesPreservingHandle is reserved for ownership
+// paths which must treat a sanitized handle returned with an error as live.
+// Compatibility callers continue to receive a zero handle on failure through
+// startProcessWithInheritedFiles.
+func startProcessWithInheritedFilesPreservingHandle(
+	ctx context.Context,
+	adapter ProcessAdapter,
+	descriptor ProcessCommandDescriptor,
+	files []*os.File,
+) (ProcessHandleMetadata, error) {
+	if dependencyIsNil(adapter) {
+		return ProcessHandleMetadata{}, newProcessBoundaryError("processAdapter", "process adapter is required")
+	}
+	if err := validateProcessCommandDescriptor(descriptor); err != nil {
+		return ProcessHandleMetadata{}, err
+	}
+	if err := validateProcessInheritedFiles(files); err != nil {
+		return ProcessHandleMetadata{}, err
+	}
+	handle, err := callProcessAdapterStart(adapter, processContext(ctx), ProcessStartRequest{
+		Descriptor:     descriptor,
+		InheritedFiles: append([]*os.File(nil), files...),
+	})
+	handle = sanitizeProcessHandleMetadata(handle)
+	if err != nil {
+		return handle, newProcessBoundaryAdapterError("processAdapter", "process start failed", err)
+	}
+	return handle, nil
+}
+
+func callProcessAdapterPrepare(
+	adapter ProcessAdapter,
+	ctx context.Context,
+	request ProcessStartCommandRequest,
+) (descriptor ProcessCommandDescriptor, retErr error) {
+	defer func() {
+		if recover() != nil {
+			descriptor = ProcessCommandDescriptor{}
+			retErr = errProcessAdapterPanic
+		}
+	}()
+	return adapter.PrepareStartCommand(ctx, request)
+}
+
+func callProcessAdapterStart(
+	adapter ProcessAdapter,
+	ctx context.Context,
+	request ProcessStartRequest,
+) (handle ProcessHandleMetadata, retErr error) {
+	defer func() {
+		if recover() != nil {
+			handle = ProcessHandleMetadata{}
+			retErr = errProcessAdapterPanic
+		}
+	}()
+	return adapter.StartProcess(ctx, request)
+}
+
+func dependencyIsNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func validateProcessInheritedFiles(files []*os.File) error {

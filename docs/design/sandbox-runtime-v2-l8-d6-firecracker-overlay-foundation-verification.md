@@ -9,7 +9,11 @@ pre-handoff start failure. The L8 render path is mutually exclusive with L7,
 revalidates currentness immediately before and after synchronous process start,
 and transfers the lease into process-keyed ownership until stop, delete, or
 start-failure cleanup positively proves that the process is absent. Cleanup
-uncertainty retains both process and lease ownership.
+uncertainty retains both process and lease ownership. Retained cleanup is
+reachable through the original target's Start, Stop, or Delete operation and
+is serialized by runtime generation. A cleanup-only Start always returns an
+explicit retry-required error after proving absence, so it cannot launch a
+second process in the same invocation.
 
 The foundation does not wire a command, worker, or `firecrackerhost` provider.
 Planning-only/default construction remains inert. L8 authority is omitted from
@@ -25,8 +29,9 @@ produce the accepted profile/lease fixture required by this lane. The tagged
 does not add a production fake issuer, synthetic production proof, active L8
 claim, real Firecracker process start, or command default change. Package-local
 direct state fixtures exercise render, handoff, close-error, close-panic,
-successful-stop, post-start drift, and uncertain-cleanup ownership semantics;
-they cannot be configured through `BackendOptions` or command wiring.
+successful-stop, value-plus-error process handles, typed-nil and panic
+boundaries, post-start drift, concurrent retry, eventual cleanup, and
+uncertain-cleanup ownership semantics; they cannot be configured through `BackendOptions` or command wiring.
 
 Focused verification:
 

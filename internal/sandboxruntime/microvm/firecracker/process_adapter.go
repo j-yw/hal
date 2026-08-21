@@ -2,8 +2,11 @@ package firecracker
 
 import (
 	"context"
+	"errors"
 	"os"
 )
+
+var errProcessStarterPanic = errors.New("process starter panicked")
 
 // ProcessStarter is the narrow injected boundary that accepts a concrete
 // Firecracker runner request and performs process startup.
@@ -36,7 +39,7 @@ func (ProcessLaunchAdapter) PrepareStartCommand(_ context.Context, req ProcessSt
 // StartProcess validates and converts the prepared descriptor before crossing
 // the injected process starter boundary.
 func (adapter ProcessLaunchAdapter) StartProcess(ctx context.Context, req ProcessStartRequest) (ProcessHandleMetadata, error) {
-	if adapter.Starter == nil {
+	if dependencyIsNil(adapter.Starter) {
 		return ProcessHandleMetadata{}, newProcessBoundaryError("processStarter", "process starter is required")
 	}
 	if err := validateProcessCommandDescriptor(req.Descriptor); err != nil {
@@ -53,11 +56,25 @@ func (adapter ProcessLaunchAdapter) StartProcess(ctx context.Context, req Proces
 	if err != nil {
 		return ProcessHandleMetadata{}, err
 	}
-	handle, err := adapter.Starter.StartProcess(ctx, startReq)
+	handle, err := callProcessStarter(adapter.Starter, ctx, startReq)
 	if err != nil {
-		return ProcessHandleMetadata{}, newProcessBoundaryAdapterError("processStarter", "process start failed", err)
+		return sanitizeProcessHandleMetadata(handle), newProcessBoundaryAdapterError("processStarter", "process start failed", err)
 	}
 	return sanitizeProcessHandleMetadata(handle), nil
+}
+
+func callProcessStarter(
+	starter ProcessStarter,
+	ctx context.Context,
+	request ProcessRunnerStartRequest,
+) (handle ProcessHandleMetadata, retErr error) {
+	defer func() {
+		if recover() != nil {
+			handle = ProcessHandleMetadata{}
+			retErr = errProcessStarterPanic
+		}
+	}()
+	return starter.StartProcess(ctx, request)
 }
 
 func processRunnerStartRequest(descriptor ProcessCommandDescriptor, files []*os.File) (ProcessRunnerStartRequest, error) {
