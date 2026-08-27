@@ -113,7 +113,7 @@ func TestPhase54NoSchemaOrContractExpansionRequired(t *testing.T) {
 			typ:   reflect.TypeOf(factory.SandboxSecurityMetadata{}),
 			want: []string{
 				"network,omitempty", "secrets,omitempty", "capabilityReadiness,omitempty",
-				"capabilityReadinessDiagnostics,omitempty", "securityReadinessGate,omitempty",
+				"capabilityReadinessDiagnostics,omitempty", "securityReadinessGate,omitempty", "strictComposition,omitempty",
 			},
 		},
 		{
@@ -220,7 +220,7 @@ func TestPhase54NoSchemaOrContractExpansionRequired(t *testing.T) {
 			typ:   reflect.TypeOf(SandboxRuntimeSecuritySummary{}),
 			want: []string{
 				"requested", "enforced", "networkEnforcementProof,omitempty", "networkPolicyResult,omitempty", "capabilityReadiness,omitempty",
-				"capabilityReadinessDiagnostics,omitempty", "securityReadinessGate,omitempty",
+				"capabilityReadinessDiagnostics,omitempty", "securityReadinessGate,omitempty", "strictComposition,omitempty",
 			},
 		},
 		{

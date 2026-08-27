@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,7 +20,6 @@ func TestUS011FactorySandboxRecordsAndTimelineUseSharedSecureDefaultDecision(t *
 	tests := []struct {
 		name    string
 		fixture securedefaultfixtures.EvidenceSet
-		wantErr bool
 	}{
 		{
 			name:    "accepted complete evidence",
@@ -32,7 +30,6 @@ func TestUS011FactorySandboxRecordsAndTimelineUseSharedSecureDefaultDecision(t *
 			fixture: securedefaultfixtures.CompleteAcceptedEvidenceSet(
 				securedefaultfixtures.OmitProof(securedefaultfixtures.ProofProxyFirewallEnforcement),
 			),
-			wantErr: true,
 		},
 	}
 
@@ -66,16 +63,8 @@ func TestUS011FactorySandboxRecordsAndTimelineUseSharedSecureDefaultDecision(t *
 					return fakeFactorySandboxProvider{}, nil
 				},
 				resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
-					if tt.wantErr {
-						t.Fatal("runtime driver should not be resolved after rejected secure-default decision")
-					}
-					return fakeFactorySandboxRuntimeDriver{
-						id: sandboxruntime.DriverMicroVM,
-						execFn: func(_ context.Context, _ sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
-							_, _ = io.WriteString(&remoteOutput, "us011 accepted\n")
-							return &sandboxruntime.ExecResult{}, nil
-						},
-					}, nil
+					t.Fatal("runtime driver should not be resolved without live L10 authority")
+					return nil, nil
 				},
 				persistSandboxState: func(*sandbox.SandboxState) error { return nil },
 				engineAuthFiles:     func() []factorySandboxAuthFile { return nil },
@@ -83,11 +72,8 @@ func TestUS011FactorySandboxRecordsAndTimelineUseSharedSecureDefaultDecision(t *
 					return factory.BootstrapResult{}, nil
 				},
 			})
-			if tt.wantErr && err == nil {
-				t.Fatalf("runFactorySandboxExecutorWithDeps() error = nil, want rejected secure-default decision")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("runFactorySandboxExecutorWithDeps() unexpected error = %v\nremote=%s", err, remoteOutput.String())
+			if err == nil {
+				t.Fatal("runFactorySandboxExecutorWithDeps() error = nil, want block without live L10 authority")
 			}
 
 			storedRun, err := store.LoadRun(runID)
@@ -97,7 +83,11 @@ func TestUS011FactorySandboxRecordsAndTimelineUseSharedSecureDefaultDecision(t *
 			if storedRun.Sandbox == nil || storedRun.Sandbox.Security == nil {
 				t.Fatalf("stored sandbox security = %#v, want secure-default metadata", storedRun.Sandbox)
 			}
-			us011AssertFactoryGateMatchesFixture(t, "factory run record", storedRun.Sandbox.Security.SecurityReadinessGate, tt.fixture.Gate)
+			expected := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
+				sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
+				nil,
+			)
+			us011AssertFactoryGateMatchesFixture(t, "factory run record", storedRun.Sandbox.Security.SecurityReadinessGate, expected)
 			us009AssertRunSurfaceSafe(t, "factory run record security", storedRun.Sandbox.Security)
 
 			events, err := store.LoadEvents(runID)
@@ -105,11 +95,13 @@ func TestUS011FactorySandboxRecordsAndTimelineUseSharedSecureDefaultDecision(t *
 				t.Fatalf("LoadEvents() error = %v", err)
 			}
 			securityGate := us011FactorySecurityTimelineGate(t, events)
+			// The initial security event preserves sanitized capability metadata for
+			// status, but that durable decision cannot authorize the strict gate.
 			us011AssertFactoryGateMatchesFixture(t, "factory security policy timeline", securityGate, tt.fixture.Gate)
 			us009AssertRunSurfaceSafe(t, "factory security policy timeline", events)
 
 			readinessEvent := us007RequireFactoryReadinessGateEvent(t, store, runID)
-			us007AssertFactoryPolicyEventMatchesDecision(t, readinessEvent, sandbox.SanitizeSandboxSecurityCapabilityReadinessGateDecision(tt.fixture.Gate))
+			us007AssertFactoryPolicyEventMatchesDecision(t, readinessEvent, expected)
 			us009AssertRunSurfaceSafe(t, "factory readiness policy timeline", readinessEvent)
 		})
 	}
