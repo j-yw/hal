@@ -2,13 +2,11 @@ package credentialclient
 
 import (
 	"context"
-	"errors"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/session"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/v2control"
 )
-
-var ErrClientDispatchDependencyUnaccepted = errors.New("credential client dispatcher dependency is unaccepted")
 
 func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) {
 	defer func() {
@@ -24,12 +22,16 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 		return clientError(ClientContractDependency, ClientFieldDependency)
 	}
 	identity := authenticated.Identity()
+	if identity.sessionIDValue() == ([32]byte{}) || !validControlSessionIdentity(identity.sessionIdentity()) ||
+		identity.hardExpiryValue().IsZero() || credentialprotocol.ValidateSafeID(identity.helperGenerationValue()) != nil {
+		return clientError(ClientContractDependency, ClientFieldDependency)
+	}
 	nextSequence := uint64(1)
 	for {
 		if client.drainStarted() {
 			return nil
 		}
-		receive, receiveErr := newControlReceiveRequest(nextSequence, v2control.IdentityDigest{}, false, session.MaxControlPlaintextBytes)
+		receive, receiveErr := newControlReceiveRequest(nextSequence, v2control.NewIdentityDigest(identity.sessionIDValue()), true, session.MaxControlPlaintextBytes)
 		if receiveErr != nil {
 			return clientError(ClientContractPacket, ClientFieldPacketType)
 		}
@@ -41,6 +43,9 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			if client.drainStarted() || ctx.Err() != nil {
 				return nil
 			}
+			return clientError(ClientContractPacket, ClientFieldPacketType)
+		}
+		if packet.sessionIDValue() != identity.sessionIDValue() {
 			return clientError(ClientContractPacket, ClientFieldPacketType)
 		}
 		nextSequence++

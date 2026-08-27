@@ -17,8 +17,7 @@ var (
 const maxCredentialRequestRootJSONDepth = 5
 
 // InspectedRequest is the nonserializable, bodyless result of inspecting one
-// complete canonical credential request root. Production inspection behavior
-// is frozen by the D6 RED contract and intentionally remains unimplemented.
+// complete canonical credential request root.
 type InspectedRequest struct {
 	state *inspectedRequestState
 }
@@ -71,7 +70,7 @@ func DecodeInitialCredentialPrepareRequest(sessionID [32]byte, wire []byte) (Cre
 }
 
 func inspectCredentialRequestRoot(wire []byte) (InspectedRequest, []byte, error) {
-	if len(wire) == 0 || len(wire) > maxReadinessJSONBytes || !utf8.Valid(wire) {
+	if len(wire) == 0 || len(wire) > maxReadinessJSONBytes || !utf8.Valid(wire) || rejectDuplicateJSONKeysAtDepth(wire, maxCredentialRequestRootJSONDepth+1) != nil {
 		return InspectedRequest{}, nil, ErrInvalidCredentialRequestRootJSON
 	}
 	rest, ok := consumeExactBytes(wire, `{"protocolVersion":"`+ProtocolVersion+`","operation":"`)

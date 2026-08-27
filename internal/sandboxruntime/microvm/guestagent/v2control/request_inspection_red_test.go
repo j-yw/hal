@@ -33,6 +33,11 @@ func TestL8D6GuestV2RequestInspectorFreezesBodylessCanonicalDispatch(t *testing.
 	if err != nil || encodedOperation != "future_operation" {
 		t.Fatalf("unknown operation = %q, %v", encodedOperation, err)
 	}
+
+	maximumDepthWire := []byte(`{"protocolVersion":"guest-agent-v2","operation":"future_operation","requestId":"AQIDBAUGBwgJCgsMDQ4PEA","identityDigest":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","body":[[[[[0]]]]]}`)
+	if _, err := InspectCredentialRequestRoot(maximumDepthWire); err != nil {
+		t.Fatalf("InspectCredentialRequestRoot(maximum depth) error = %v", err)
+	}
 }
 
 func TestL8D6GuestV2InitialPrepareDerivesIdentityOnlyFromSessionAndBody(t *testing.T) {

@@ -32,8 +32,8 @@ func TestL8D6GuestCredentialClientServeDispatchesCanonicalReadiness(t *testing.T
 		receiveCount++
 		if receiveCount == 1 {
 			expected, set := receive.expectedIdentityValue()
-			if receive.nextSequenceValue() != 1 || set || expected != (v2control.IdentityDigest{}) || receive.maximumPlaintextBytesValue() != session.MaxControlPlaintextBytes {
-				return ControllerPacket{}, errors.New("readiness admission was not the exact unbound first receive")
+			if receive.nextSequenceValue() != 1 || !set || expected != v2control.NewIdentityDigest(identity.sessionID) || receive.maximumPlaintextBytesValue() != session.MaxControlPlaintextBytes {
+				return ControllerPacket{}, errors.New("readiness admission was not bound to the authenticated session")
 			}
 			return ControllerPacket{
 				sequence:  1,

@@ -25,4 +25,7 @@ func TestL8D6GuestControlREDVerificationDocumentFreezesScopeAndSelectors(t *test
 			t.Fatalf("verification document omits %q", required)
 		}
 	}
+	if strings.Contains(text, "tests are intentionally RED") {
+		t.Fatal("verification document still describes implemented focused tests as intentionally RED")
+	}
 }

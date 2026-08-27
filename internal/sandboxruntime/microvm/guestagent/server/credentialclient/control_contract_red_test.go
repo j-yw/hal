@@ -248,7 +248,7 @@ func TestL8D6GuestControllerUnionConsumesOneExactReceiveRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receive, err := newControlReceiveRequest(1, v2control.NewIdentityDigest(sessionID), false, session.MaxControlPlaintextBytes)
+	receive, err := newControlReceiveRequest(1, v2control.NewIdentityDigest(sessionID), true, session.MaxControlPlaintextBytes)
 	if err != nil {
 		t.Fatalf("newControlReceiveRequest() error = %v", err)
 	}

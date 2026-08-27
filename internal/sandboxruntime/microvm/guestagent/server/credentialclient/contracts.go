@@ -173,30 +173,6 @@ func encodeOpaque16(value string) []byte {
 	return encoded
 }
 
-func newControllerReceiveRequest(sequence uint64, identityDigest [32]byte) ControllerReceiveRequest {
-	return ControllerReceiveRequest{nextSequence: sequence, expectedIdentity: v2control.NewIdentityDigest(identityDigest), expectedIdentitySet: true, maximumPlaintextBytes: 1, state: &controllerReceiveRequestState{}}
-}
-
-func newControllerPacket(sequence uint64, identityDigest [32]byte) ControllerPacket {
-	return ControllerPacket{sequence: sequence, sessionID: identityDigest}
-}
-
-func newControllerSendPacket(sequence uint64, identityDigest [32]byte) ControllerSendPacket {
-	return ControllerSendPacket{sequence: sequence, sessionID: identityDigest}
-}
-
-func newHelperReceiveRequest(sequence uint64, identityDigest [32]byte) HelperReceiveRequest {
-	return HelperReceiveRequest{nextSequence: sequence, expectedIdentity: identityDigest, state: &helperReceiveRequestState{}}
-}
-
-func newHelperPacket(packetType credentialprotocol.PacketType, sequence uint64, identityDigest [32]byte) HelperPacket {
-	return HelperPacket{header: credentialprotocol.HelperPacketHeader{Type: packetType, Sequence: sequence, GuestCredentialIdentityDigest: identityDigest}}
-}
-
-func newHelperSendPacket(packetType credentialprotocol.PacketType, sequence uint64, identityDigest [32]byte) HelperSendPacket {
-	return HelperSendPacket{header: credentialprotocol.HelperPacketHeader{Type: packetType, Sequence: sequence, GuestCredentialIdentityDigest: identityDigest}}
-}
-
 func newClientPolicyRequest(
 	operation credentialprotocol.PacketType,
 	identityDigest [32]byte,

@@ -44,16 +44,20 @@ func DecodeJobIdentity(wire []byte) (JobIdentity, error) {
 }
 
 func rejectDuplicateJSONKeys(wire []byte) error {
+	return rejectDuplicateJSONKeysAtDepth(wire, maxIdentityJSONDepth)
+}
+
+func rejectDuplicateJSONKeysAtDepth(wire []byte, maximumDepth int) error {
 	decoder := json.NewDecoder(bytes.NewReader(wire))
 	decoder.UseNumber()
-	if err := scanJSONValue(decoder, 0); err != nil {
+	if err := scanJSONValue(decoder, 0, maximumDepth); err != nil {
 		return err
 	}
 	return requireJSONEOF(decoder)
 }
 
-func scanJSONValue(decoder *json.Decoder, depth int) error {
-	if depth > maxIdentityJSONDepth {
+func scanJSONValue(decoder *json.Decoder, depth, maximumDepth int) error {
+	if depth > maximumDepth {
 		return ErrInvalidJobIdentityJSON
 	}
 	token, err := decoder.Token()
@@ -77,7 +81,7 @@ func scanJSONValue(decoder *json.Decoder, depth int) error {
 				return ErrInvalidJobIdentityJSON
 			}
 			seen[key] = struct{}{}
-			if err := scanJSONValue(decoder, depth+1); err != nil {
+			if err := scanJSONValue(decoder, depth+1, maximumDepth); err != nil {
 				return err
 			}
 		}
@@ -87,7 +91,7 @@ func scanJSONValue(decoder *json.Decoder, depth int) error {
 		}
 	case '[':
 		for decoder.More() {
-			if err := scanJSONValue(decoder, depth+1); err != nil {
+			if err := scanJSONValue(decoder, depth+1, maximumDepth); err != nil {
 				return err
 			}
 		}

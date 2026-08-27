@@ -38,15 +38,15 @@ func TestL8CredentialClientPinsDescriptorAndUsesSingleServeLifecycle(t *testing.
 	if descriptor.projections.Load() != 12 || descriptor.writes.Load() != 1 {
 		t.Fatalf("descriptor calls = projections %d writes %d, want 12/1", descriptor.projections.Load(), descriptor.writes.Load())
 	}
+	if client.ServeStarted() {
+		t.Fatal("ServeStarted() reported ownership before Serve")
+	}
 
 	serveResult := make(chan error, 1)
 	go func() { serveResult <- client.Serve(context.Background()) }()
 	deadline := time.After(2 * time.Second)
 	for {
-		client.state.mu.Lock()
-		serveCalled := client.state.serveCalled
-		client.state.mu.Unlock()
-		if serveCalled {
+		if client.ServeStarted() {
 			break
 		}
 		select {

@@ -210,11 +210,13 @@ type Options struct {
 	RequireNetworkProofBeforeWork bool
 }
 
-type lifecycleCloser interface {
+type credentialLifecycle interface {
+	Serve(context.Context) error
+	ServeStarted() bool
 	Close(context.Context) error
 }
 
-func (options Options) lifecycleCloser() lifecycleCloser {
+func (options Options) credentialLifecycle() credentialLifecycle {
 	if options.CredentialClient == nil {
 		return nil
 	}

@@ -1,9 +1,9 @@
-# L8 D6 guest control contract RED verification
+# L8 D6 guest control contract verification
 
-This candidate freezes only the missing default-off guest-side contracts for a
-persistent authenticated control session on fixed VSOCK port 1025. All
-operational entrypoints remain `dependency_unaccepted`; these tests are
-intentionally RED until independent contract review accepts implementation.
+This candidate implements the accepted default-off guest-side request inspector,
+readiness dispatcher, and process-local lifecycle composition around the frozen
+contracts for a persistent authenticated control session on fixed VSOCK port
+1025. Operations beyond readiness remain `dependency_unaccepted`.
 
 The frozen surface is limited to:
 
@@ -19,7 +19,7 @@ The frozen surface is limited to:
   `l8composition.Agent` wrapper. A nil credential client preserves the existing
   v1 lifecycle and default entrypoints.
 
-Focused RED selectors:
+Focused selectors:
 
 ```sh
 go test ./internal/sandboxruntime/microvm/guestagent/v2control -run '^TestL8D6GuestV2' -count=1

@@ -248,6 +248,18 @@ func (client *Client) Serve(ctx context.Context) error {
 	}
 }
 
+// ServeStarted reports whether the sole Serve entrypoint has accepted lifecycle
+// ownership. It exists only so the process-local root server can serialize an
+// immediate shutdown behind that ownership handoff.
+func (client *Client) ServeStarted() bool {
+	if client == nil || client.state == nil {
+		return false
+	}
+	client.state.mu.Lock()
+	defer client.state.mu.Unlock()
+	return client.state.serveCalled
+}
+
 // Close starts or joins the sole internally bounded drain. Caller cancellation
 // never shortens or abandons cleanup.
 func (client *Client) Close(ctx context.Context) error {
