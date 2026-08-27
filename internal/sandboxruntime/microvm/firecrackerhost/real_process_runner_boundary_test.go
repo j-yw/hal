@@ -15,7 +15,10 @@ import (
 
 func TestOSExecImportIsConfinedToRealProcessRunner(t *testing.T) {
 	paths := firecrackerHostProductionFiles(t)
-	found := false
+	allowed := map[string]bool{
+		"real_process_runner.go":               false,
+		"l8_runtime_owner_executable_linux.go": false,
+	}
 
 	for _, path := range paths {
 		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
@@ -30,15 +33,17 @@ func TestOSExecImportIsConfinedToRealProcessRunner(t *testing.T) {
 			if importPath != "os/exec" {
 				continue
 			}
-			if path != "real_process_runner.go" {
-				t.Fatalf("%s imports os/exec; real Firecracker process launch must stay in real_process_runner.go", path)
+			if _, ok := allowed[path]; !ok {
+				t.Fatalf("%s imports os/exec; Firecracker process launch must stay in an exact reviewed owner", path)
 			}
-			found = true
+			allowed[path] = true
 		}
 	}
 
-	if !found {
-		t.Fatal("real_process_runner.go does not import os/exec; US-005 requires the real host runner to own that boundary")
+	for path, found := range allowed {
+		if !found {
+			t.Fatalf("%s does not import os/exec; an exact Firecracker launch owner disappeared", path)
+		}
 	}
 }
 
