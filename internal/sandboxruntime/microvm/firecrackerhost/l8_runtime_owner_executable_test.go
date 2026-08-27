@@ -276,11 +276,13 @@ func TestL8RuntimeOwnerSupervisorConfigIsStrictBoundedAndComplete(t *testing.T) 
 		t.Fatalf("decode config = %#v, %v", decoded, err)
 	}
 	for name, candidate := range map[string][]byte{
-		"null":      []byte("null\n"),
-		"unknown":   bytes.Replace(payload, []byte("\"daemonUid\":"), []byte("\"unknown\":1,\"daemonUid\":"), 1),
-		"duplicate": bytes.Replace(payload, []byte("\"daemonUid\":"), []byte("\"daemonUid\":1,\"daemonUid\":"), 1),
-		"trailing":  append(append([]byte(nil), payload...), 'x'),
-		"oversize":  make([]byte, l8RuntimeOwnerSupervisorConfigLimit+1),
+		"null":           []byte("null\n"),
+		"unknown":        bytes.Replace(payload, []byte("\"daemonUid\":"), []byte("\"unknown\":1,\"daemonUid\":"), 1),
+		"duplicate":      bytes.Replace(payload, []byte("\"daemonUid\":"), []byte("\"daemonUid\":1,\"daemonUid\":"), 1),
+		"case duplicate": bytes.Replace(payload, []byte("\"daemonUid\":"), []byte("\"DaemonUid\":1,\"daemonUid\":"), 1),
+		"null uid":       bytes.Replace(payload, []byte("\"daemonUid\":1000"), []byte("\"daemonUid\":null"), 1),
+		"trailing":       append(append([]byte(nil), payload...), 'x'),
+		"oversize":       make([]byte, l8RuntimeOwnerSupervisorConfigLimit+1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodeL8RuntimeOwnerSupervisorConfig(candidate); !errors.Is(err, errL8RuntimeOwnerInvalid) {

@@ -154,7 +154,18 @@ func TestL8RuntimeOwnerRecordValidationRejectsSubstitutionAndPIDReuse(t *testing
 		"partial child identity": func(value *firecrackerRuntimeOwnerRecordV1) { value.FirecrackerStartTime = 0 },
 		"bad state":              func(value *firecrackerRuntimeOwnerRecordV1) { value.State = "running" },
 		"finalized ID in absent": func(value *firecrackerRuntimeOwnerRecordV1) { value.FinalizedCommitID = l8RuntimeOwnerTestToken(9) },
-		"safe field mismatch":    func(value *firecrackerRuntimeOwnerRecordV1) { value.RuntimeID = "runtime-neighbor" },
+		"invalid controller":     func(value *firecrackerRuntimeOwnerRecordV1) { value.ControllerState = "claimable" },
+		"missing absence kind":   func(value *firecrackerRuntimeOwnerRecordV1) { value.AbsenceKind = "" },
+		"wrong absence kind":     func(value *firecrackerRuntimeOwnerRecordV1) { value.AbsenceKind = "replacement_proc_absence" },
+		"future absence revision": func(value *firecrackerRuntimeOwnerRecordV1) {
+			value.AbsenceRevision = value.Revision + 1
+		},
+		"zero absence time": func(value *firecrackerRuntimeOwnerRecordV1) { value.AbsenceObservedAtUnixNano = 0 },
+		"pre-seed absence time": func(value *firecrackerRuntimeOwnerRecordV1) {
+			value.AbsenceObservedAtUnixNano = seed.IssuedAt.Add(-time.Nanosecond).UnixNano()
+		},
+		"finalize target in absent": func(value *firecrackerRuntimeOwnerRecordV1) { value.FinalizeTargetRevision = value.Revision + 1 },
+		"safe field mismatch":       func(value *firecrackerRuntimeOwnerRecordV1) { value.RuntimeID = "runtime-neighbor" },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
@@ -168,6 +179,63 @@ func TestL8RuntimeOwnerRecordValidationRejectsSubstitutionAndPIDReuse(t *testing
 	starting := l8RuntimeOwnerTestGenesis(record)
 	if err := validateFirecrackerRuntimeOwnerRecordV1(starting, seed, bootID); err != nil {
 		t.Fatalf("revision-zero starting: %v", err)
+	}
+	revisionOne := starting
+	revisionOne.Revision, revisionOne.FirecrackerPID, revisionOne.FirecrackerStartTime = 1, record.FirecrackerPID, record.FirecrackerStartTime
+	if err := validateFirecrackerRuntimeOwnerRecordV1(revisionOne, seed, bootID); err != nil {
+		t.Fatalf("revision-one starting: %v", err)
+	}
+	for name, candidate := range map[string]firecrackerRuntimeOwnerRecordV1{
+		"starting revision two": func() firecrackerRuntimeOwnerRecordV1 { value := revisionOne; value.Revision = 2; return value }(),
+		"starting claimed": func() firecrackerRuntimeOwnerRecordV1 {
+			value := starting
+			value.ControllerState = "unclaimed"
+			return value
+		}(),
+		"running revision one": func() firecrackerRuntimeOwnerRecordV1 {
+			value := revisionOne
+			value.State = "running"
+			value.ControllerState = "unclaimed"
+			return value
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateFirecrackerRuntimeOwnerRecordV1(candidate, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+				t.Fatalf("validation = %v", err)
+			}
+		})
+	}
+
+	finalizing := record
+	finalizing.State = "finalizing"
+	finalizing.Revision++
+	finalizing.FinalizeTargetRevision = finalizing.Revision + 1
+	finalizing.FinalizedCommitID = l8RuntimeOwnerTestToken(10)
+	if err := validateFirecrackerRuntimeOwnerRecordV1(finalizing, seed, bootID); err != nil {
+		t.Fatalf("valid finalizing: %v", err)
+	}
+	finalized := finalizing
+	finalized.State = "finalized"
+	finalized.Revision = finalizing.FinalizeTargetRevision
+	if err := validateFirecrackerRuntimeOwnerRecordV1(finalized, seed, bootID); err != nil {
+		t.Fatalf("valid finalized: %v", err)
+	}
+	for name, mutate := range map[string]func(*firecrackerRuntimeOwnerRecordV1){
+		"finalizing wrong target": func(value *firecrackerRuntimeOwnerRecordV1) { value.FinalizeTargetRevision++ },
+		"finalizing missing ID":   func(value *firecrackerRuntimeOwnerRecordV1) { value.FinalizedCommitID = "" },
+		"finalized future target": func(value *firecrackerRuntimeOwnerRecordV1) { value.FinalizeTargetRevision = value.Revision + 1 },
+		"finalized malformed ID":  func(value *firecrackerRuntimeOwnerRecordV1) { value.FinalizedCommitID = "not-a-token" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := finalizing
+			if strings.HasPrefix(name, "finalized") {
+				candidate = finalized
+			}
+			mutate(&candidate)
+			if err := validateFirecrackerRuntimeOwnerRecordV1(candidate, seed, bootID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+				t.Fatalf("validation = %v", err)
+			}
+		})
 	}
 }
 

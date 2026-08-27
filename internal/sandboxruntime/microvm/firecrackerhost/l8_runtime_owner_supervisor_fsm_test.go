@@ -60,7 +60,12 @@ func TestL8RuntimeOwnerAdmissionPreservesLifecycleAndRotatesOneUseSecret(t *test
 				record.AbsenceKind, record.AbsenceRevision, record.AbsenceObservedAtUnixNano = "direct_wait", 6, time.Unix(600, 0).UnixNano()
 			}
 			if state == "finalizing" || state == "finalized" {
-				record.FinalizedCommitID, record.FinalizeTargetRevision = l8RuntimeOwnerTestToken(8), 8
+				record.FinalizedCommitID = l8RuntimeOwnerTestToken(8)
+				if state == "finalizing" {
+					record.FinalizeTargetRevision = 8
+				} else {
+					record.FinalizeTargetRevision = 7
+				}
 			}
 			store := &l8RuntimeOwnerTestStore{record: record}
 			owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{Store: store, ExpectedUID: 1000, RandomToken: func() (string, error) { return l8RuntimeOwnerTestToken(9), nil }, CommitKey: make([]byte, 32)})
@@ -85,6 +90,95 @@ func TestL8RuntimeOwnerAdmissionPreservesLifecycleAndRotatesOneUseSecret(t *test
 				t.Fatalf("lost record = %#v", store.record)
 			}
 		})
+	}
+}
+
+func TestL8RuntimeOwnerFinalizeRetriesBothDurablePhasesAndPreservesReceiptAcrossReconnect(t *testing.T) {
+	record := l8RuntimeOwnerTestRecord(t, l8RuntimeOwnerTestSeed(), "01234567-89ab-cdef-0123-456789abcdef")
+	record.State, record.ControllerState, record.Revision = "absent", "controlled", 12
+	record.AbsenceKind, record.AbsenceRevision, record.AbsenceObservedAtUnixNano = "direct_wait", 12, time.Unix(12, 0).UnixNano()
+	store := &l8RuntimeOwnerTestStore{record: record}
+	closeCalls := 0
+	closeFails := true
+	owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{
+		Store: store, ExpectedUID: 1000, CommitKey: make([]byte, 32),
+		CloseNamespaces: func() error {
+			closeCalls++
+			if closeFails {
+				closeFails = false
+				return errors.New("private close uncertainty")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := l8RuntimeOwnerFinalizeRequestV1{
+		ControllerSessionGeneration: l8RuntimeOwnerTestToken(1),
+		AbsenceRevision:             record.AbsenceRevision,
+		ObservedAtUnixNano:          record.AbsenceObservedAtUnixNano,
+	}
+	if _, err := owner.finalize(context.Background(), record, request); !errors.Is(err, errL8RuntimeOwnerInvalid) || store.record.State != "finalizing" {
+		t.Fatalf("first finalize = %#v, %v", store.record, err)
+	}
+	ack, err := owner.finalize(context.Background(), store.record, request)
+	if err != nil || store.record.State != "finalized" || store.record.Revision != ack.FinalizedRevision || closeCalls != 2 {
+		t.Fatalf("retry finalize = %#v, %#v, calls %d, %v", store.record, ack, closeCalls, err)
+	}
+	transitions := len(store.transitions)
+	replayed, err := owner.finalize(context.Background(), store.record, request)
+	if err != nil || replayed != ack || len(store.transitions) != transitions || closeCalls != 2 {
+		t.Fatalf("finalized replay = %#v, transitions %d, calls %d, %v", replayed, len(store.transitions), closeCalls, err)
+	}
+
+	store.record.ControllerState = "unclaimed"
+	store.record.Revision++
+	owner.opts.RandomToken = func() (string, error) { return l8RuntimeOwnerTestToken(byte(20 + store.record.Revision)), nil }
+	body, _ := encodeL8RuntimeOwnerHandshake(l8RuntimeOwnerHandshakeV1{
+		SupervisorGeneration: store.record.SupervisorGeneration,
+		RuntimeGeneration:    store.record.RuntimeGeneration,
+		RecordRevision:       store.record.Revision,
+		ReconnectSecret:      store.record.ReconnectSecret,
+	})
+	admitted, err := owner.AdmitController(context.Background(), 1000, l8RuntimeOwnerReceivedPacketV1{Packet: l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeHandshake, Body: body}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshake, err := decodeL8RuntimeOwnerHandshakeAck(admitted.Packet.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitBody, _ := encodeL8RuntimeOwnerCommitRequest(l8RuntimeOwnerCommitRequestV1{
+		ControllerSessionGeneration: handshake.ControllerSessionGeneration,
+		CommitID:                    ack.CommitID,
+		FinalizedRevision:           ack.FinalizedRevision,
+	})
+	committed, err := owner.HandleController(context.Background(), l8RuntimeOwnerReceivedPacketV1{Packet: l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeCommit, Sequence: 1, Body: commitBody}})
+	if err != nil || !committed.Exit || !store.retiredFinal {
+		t.Fatalf("commit after reconnect = %#v, %v", committed, err)
+	}
+}
+
+func TestL8RuntimeOwnerReplayRequiresByteIdenticalRequest(t *testing.T) {
+	record := l8RuntimeOwnerTestRecord(t, l8RuntimeOwnerTestSeed(), "01234567-89ab-cdef-0123-456789abcdef")
+	record.State, record.ControllerState, record.Revision = "absent", "controlled", 5
+	store := &l8RuntimeOwnerTestStore{record: record}
+	owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{Store: store, ExpectedUID: 1000, CommitKey: make([]byte, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.sessionGeneration = l8RuntimeOwnerTestToken(1)
+	body, _ := encodeL8RuntimeOwnerControllerRequest(l8RuntimeOwnerControllerRequestV1{ControllerSessionGeneration: owner.sessionGeneration})
+	request := l8RuntimeOwnerReceivedPacketV1{Packet: l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeInspect, Sequence: 1, Body: body}}
+	if _, err := owner.HandleController(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	mutated := request
+	mutated.Packet.Body = append([]byte(nil), body...)
+	mutated.Packet.Body[0] ^= 1
+	if _, err := owner.HandleController(context.Background(), mutated); !errors.Is(err, errL8RuntimeOwnerProtocol) {
+		t.Fatalf("mutated replay = %v", err)
 	}
 }
 
