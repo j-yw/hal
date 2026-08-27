@@ -225,6 +225,29 @@ func TestRecoveredProcessClosesOwnedDescriptorZero(t *testing.T) {
 	}
 }
 
+func TestRecordedProcessSnapshotAllowsLiveStateTransition(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		beforeStart          string
+		beforeState          byte
+		afterStart           string
+		afterState           byte
+		wantExactLiveProcess bool
+	}{
+		{name: "sleeping to runnable", beforeStart: "41", beforeState: 'S', afterStart: "41", afterState: 'R', wantExactLiveProcess: true},
+		{name: "runnable to sleeping", beforeStart: "41", beforeState: 'R', afterStart: "41", afterState: 'S', wantExactLiveProcess: true},
+		{name: "pid reused", beforeStart: "41", beforeState: 'S', afterStart: "42", afterState: 'S'},
+		{name: "became zombie", beforeStart: "41", beforeState: 'S', afterStart: "41", afterState: 'Z'},
+		{name: "was zombie", beforeStart: "41", beforeState: 'Z', afterStart: "41", afterState: 'S'},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := recordedProcessSnapshotsMatch(test.beforeStart, test.beforeState, test.afterStart, test.afterState); got != test.wantExactLiveProcess {
+				t.Fatalf("recordedProcessSnapshotsMatch() = %t, want %t", got, test.wantExactLiveProcess)
+			}
+		})
+	}
+}
+
 func TestLinuxTopologyRecoveryRejectsExactZombieAndPermissionUncertainty(t *testing.T) {
 	t.Run("zombie mapper", func(t *testing.T) {
 		fixture := newFileRecoveryFixture(t)
