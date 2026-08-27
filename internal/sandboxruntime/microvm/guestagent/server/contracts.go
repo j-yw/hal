@@ -209,3 +209,14 @@ type Options struct {
 	// readiness request that omits RequireNetworkProof.
 	RequireNetworkProofBeforeWork bool
 }
+
+type lifecycleCloser interface {
+	Close(context.Context) error
+}
+
+func (options Options) lifecycleCloser() lifecycleCloser {
+	if options.CredentialClient == nil {
+		return nil
+	}
+	return options.CredentialClient
+}

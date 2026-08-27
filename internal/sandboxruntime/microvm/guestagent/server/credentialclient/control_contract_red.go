@@ -13,7 +13,14 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/v2control"
 )
 
-var ErrClientControlDependencyUnaccepted = errors.New("credential client control dependency is unaccepted")
+var (
+	ErrClientControlDependencyUnaccepted = errors.New("credential client control dependency is unaccepted")
+	errInvalidControlAcceptExpectation   = errors.New("credential client control accept expectation is invalid")
+	errInvalidTransportIdentity          = errors.New("credential client transport identity is invalid")
+	errInvalidControlReceiveRequest      = errors.New("credential client control receive request is invalid")
+	errInvalidControllerPacket           = errors.New("credential client controller packet is invalid")
+	errInvalidControllerSendPacket       = errors.New("credential client controller send packet is invalid")
+)
 
 // ControlAcceptExpectation is the private-snapshot expectation presented only
 // to the inherited, preopened control listener owner. It carries no FD.
@@ -22,10 +29,11 @@ type ControlAcceptExpectation struct {
 	identity session.Identity
 }
 
-// newControlAcceptExpectation is frozen by D6 RED tests. Production issuance
-// remains dependency_unaccepted until the runtime-owned boot identity lands.
-func newControlAcceptExpectation(session.Identity) (ControlAcceptExpectation, error) {
-	return ControlAcceptExpectation{}, ErrClientControlDependencyUnaccepted
+func newControlAcceptExpectation(identity session.Identity) (ControlAcceptExpectation, error) {
+	if !validControlSessionIdentity(identity) {
+		return ControlAcceptExpectation{}, errInvalidControlAcceptExpectation
+	}
+	return ControlAcceptExpectation{identity: identity}, nil
 }
 
 func (expectation ControlAcceptExpectation) Identity() session.Identity { return expectation.identity }
@@ -64,10 +72,40 @@ type authenticatedTransport interface {
 	Identity() transportIdentity
 }
 
-// newTransportIdentity is a RED contract stub. The future implementation must
-// validate all base identity fields and helper/session correlation.
-func newTransportIdentity([32]byte, session.Identity, time.Time, credentialprotocol.SafeID) (transportIdentity, error) {
-	return transportIdentity{}, ErrClientControlDependencyUnaccepted
+func newTransportIdentity(sessionID [32]byte, identity session.Identity, hardExpiry time.Time, helperGeneration credentialprotocol.SafeID) (transportIdentity, error) {
+	if sessionID == ([32]byte{}) || !validControlSessionIdentity(identity) || hardExpiry.IsZero() ||
+		credentialprotocol.ValidateSafeID(helperGeneration) != nil {
+		return transportIdentity{}, errInvalidTransportIdentity
+	}
+	return transportIdentity{
+		sessionID:        sessionID,
+		identity:         identity,
+		hardExpiry:       hardExpiry.UTC(),
+		helperGeneration: helperGeneration,
+	}, nil
+}
+
+func validControlSessionIdentity(identity session.Identity) bool {
+	if identity.Channel != session.ChannelControl || identity.GuestCID != session.GuestCID ||
+		identity.GuestPort != session.ControlPort || identity.JobGeneration != "" ||
+		identity.ActivationGeneration != "" || identity.RelayGeneration != "" ||
+		identity.GuestBootNonce == ([32]byte{}) || identity.ImageSHA256 == ([32]byte{}) {
+		return false
+	}
+	for _, token := range []string{
+		identity.ControllerKeyGeneration,
+		identity.RuntimeID,
+		identity.RuntimeGeneration,
+		identity.FirecrackerProcessGeneration,
+		identity.VsockGeneration,
+		identity.BootGeneration,
+		identity.ImageGeneration,
+	} {
+		if credentialprotocol.ValidateSafeID(credentialprotocol.SafeID(token)) != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (identity transportIdentity) sessionIDValue() [32]byte          { return identity.sessionID }
@@ -292,8 +330,33 @@ type helperSendPacketOwner struct {
 	body helperBodyCapability
 }
 
-func newControlReceiveRequest(uint64, v2control.IdentityDigest, bool, uint32) (ControllerReceiveRequest, error) {
-	return ControllerReceiveRequest{}, ErrClientControlDependencyUnaccepted
+func newControlReceiveRequest(sequence uint64, identity v2control.IdentityDigest, identitySet bool, maximumPlaintextBytes uint32) (ControllerReceiveRequest, error) {
+	if sequence == 0 || maximumPlaintextBytes < 1 || maximumPlaintextBytes > session.MaxControlPlaintextBytes {
+		return ControllerReceiveRequest{}, errInvalidControlReceiveRequest
+	}
+	if identitySet && identity == (v2control.IdentityDigest{}) {
+		return ControllerReceiveRequest{}, errInvalidControlReceiveRequest
+	}
+	return ControllerReceiveRequest{
+		nextSequence:          sequence,
+		expectedIdentity:      identity,
+		expectedIdentitySet:   identitySet,
+		maximumPlaintextBytes: maximumPlaintextBytes,
+		state:                 &controllerReceiveRequestState{},
+	}, nil
+}
+
+func consumeControllerReceiveRequest(request ControllerReceiveRequest) error {
+	if request.state == nil {
+		return errInvalidControlReceiveRequest
+	}
+	request.state.mu.Lock()
+	defer request.state.mu.Unlock()
+	if request.state.consumed {
+		return errInvalidControlReceiveRequest
+	}
+	request.state.consumed = true
+	return nil
 }
 
 func newHelperControlReceiveRequest(uint64, uint32, uint32, [16]byte, bool, [32]byte) (HelperReceiveRequest, error) {
@@ -326,8 +389,38 @@ func newControllerMalformedKnownPacket(ControllerReceiveRequest, uint64, [32]byt
 	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
 }
 
-func newControllerReadinessPacket(ControllerReceiveRequest, uint64, [32]byte, v2control.ReadinessRequest) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
+func newControllerReadinessPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, readiness v2control.ReadinessRequest) (ControllerPacket, error) {
+	if err := consumeControllerReceiveRequest(request); err != nil {
+		return ControllerPacket{}, err
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) ||
+		v2control.ValidateReadinessRequest(readiness) != nil ||
+		readiness.IdentityDigest() != v2control.NewIdentityDigest(sessionID) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if request.expectedIdentitySet && request.expectedIdentity != readiness.IdentityDigest() {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: sessionID,
+		arm:       controllerPacketArm{kind: controllerPacketArmReadiness, readiness: readiness},
+	}, nil
+}
+
+func newControllerReadinessSendPacket(sequence uint64, sessionID [32]byte, response v2control.ReadinessSuccessResponse) (ControllerSendPacket, error) {
+	if sequence == 0 || sessionID == ([32]byte{}) || v2control.ValidateReadinessSuccessResponse(response) != nil ||
+		response.IdentityDigest() != v2control.NewIdentityDigest(sessionID) {
+		return ControllerSendPacket{}, errInvalidControllerSendPacket
+	}
+	return ControllerSendPacket{
+		sequence:  sequence,
+		sessionID: sessionID,
+		arm:       controllerSendArmReadiness,
+		state: &controllerSendPacketState{
+			owner: &controllerSendPacketOwner{arm: controllerSendArm{readiness: response}},
+		},
+	}, nil
 }
 
 func newControllerPreparePacket(ControllerReceiveRequest, uint64, [32]byte, v2control.CredentialPrepareRequest) (ControllerPacket, error) {

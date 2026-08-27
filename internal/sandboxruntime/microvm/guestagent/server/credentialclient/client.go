@@ -118,14 +118,15 @@ type openedClientExtension struct {
 }
 
 type clientState struct {
-	mu              sync.Mutex
-	phase           clientPhase
-	serveCalled     bool
-	closeStarted    bool
-	transportClosed bool
-	opened          []openedClientExtension
-	terminalError   error
-	completion      chan struct{}
+	mu               sync.Mutex
+	phase            clientPhase
+	serveCalled      bool
+	closeStarted     bool
+	transportClosed  bool
+	opened           []openedClientExtension
+	terminalError    error
+	completion       chan struct{}
+	admittedReceives sync.WaitGroup
 }
 
 type clientDescriptorSnapshot struct {
@@ -283,6 +284,7 @@ func (client *Client) startDrain() {
 	if closeClientTransport(cleanupCtx, client.transport) {
 		cleanupFailed = true
 	}
+	client.state.admittedReceives.Wait()
 	if cleanupCtx.Err() != nil {
 		cleanupFailed = true
 	}

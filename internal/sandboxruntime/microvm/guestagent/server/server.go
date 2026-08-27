@@ -41,6 +41,7 @@ type Server struct {
 	cleanupDone chan struct{}
 	terminal    State
 	cleanupErr  error
+	closer      lifecycleCloser
 }
 
 // New constructs a server without starting its transport.
@@ -124,6 +125,7 @@ func New(options Options) (*Server, error) {
 		operationCancel:                 operationCancel,
 		transportDone:                   make(chan struct{}),
 		cleanupDone:                     make(chan struct{}),
+		closer:                          options.lifecycleCloser(),
 	}, nil
 }
 
@@ -293,7 +295,13 @@ func (server *Server) cleanup() {
 	go func() {
 		<-server.transportDone
 		server.operations.Wait()
-		cleanupResult <- server.backend.Close(cleanupCtx)
+		err := server.backend.Close(cleanupCtx)
+		if server.closer != nil {
+			if closeErr := server.closer.Close(cleanupCtx); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}
+		cleanupResult <- err
 	}()
 
 	var cleanupErr error

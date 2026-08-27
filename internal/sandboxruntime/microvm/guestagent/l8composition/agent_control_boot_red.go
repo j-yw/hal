@@ -8,7 +8,10 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/session"
 )
 
-var ErrAgentControlBootDependencyUnaccepted = errors.New("L8 agent control boot identity dependency is unaccepted")
+var (
+	ErrAgentControlBootDependencyUnaccepted = errors.New("L8 agent control boot identity dependency is unaccepted")
+	ErrInvalidAgentControlBootIdentity      = errors.New("L8 agent control boot identity is invalid")
+)
 
 // AgentControlBootIdentity is the immutable process-local join between the
 // authenticated PID1 agent config and runtime-owned control-session config.
@@ -20,16 +23,27 @@ type AgentControlBootIdentity struct {
 	helperGeneration    credentialprotocol.SafeID
 }
 
-// NewAgentControlBootIdentity is frozen as a RED contract. The future
-// implementation must correlate the runtime-owned identity with the accepted
-// AgentSupervisorAgentConfigBody and must not reuse its helper-local nonce as
-// the distinct guest-session boot nonce.
 func NewAgentControlBootIdentity(
-	AgentSupervisorAgentConfigBody,
-	session.Identity,
-	[ed25519.PublicKeySize]byte,
+	config AgentSupervisorAgentConfigBody,
+	identity session.Identity,
+	controllerPublicKey [ed25519.PublicKeySize]byte,
 ) (AgentControlBootIdentity, error) {
-	return AgentControlBootIdentity{}, ErrAgentControlBootDependencyUnaccepted
+	if controllerPublicKey == ([ed25519.PublicKeySize]byte{}) ||
+		identity.Channel != session.ChannelControl ||
+		identity.GuestCID != session.GuestCID ||
+		identity.GuestPort != session.ControlPort ||
+		identity.BootGeneration != config.BootGeneration ||
+		identity.VsockGeneration != config.VSockGeneration ||
+		identity.GuestBootNonce == config.BootNonce ||
+		identity.GuestBootNonce == ([32]byte{}) ||
+		credentialprotocol.ValidateSafeID(credentialprotocol.SafeID(config.HelperGeneration)) != nil {
+		return AgentControlBootIdentity{}, ErrInvalidAgentControlBootIdentity
+	}
+	return AgentControlBootIdentity{
+		identity:            identity,
+		controllerPublicKey: controllerPublicKey,
+		helperGeneration:    credentialprotocol.SafeID(config.HelperGeneration),
+	}, nil
 }
 
 func (identity AgentControlBootIdentity) SessionIdentity() session.Identity {
