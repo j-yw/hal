@@ -213,7 +213,7 @@ func phase49FinalRequiredFocusedTests() []phase34FocusedTest {
 		{pkg: "./cmd", file: "default_fake_only_e2e_test.go", testName: "TestUS006DefaultFakeOnlyE2ERunAutoAndFactoryPaths"},
 		{pkg: "./cmd", file: "sandbox_default_fake_only_guard_test.go", testName: "TestUS006DefaultFakeOnlyE2ETestStaysInDefaultSuite"},
 		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007FactoryStrictSecureDefaultBlockedGatePropagatesDecisionToRunRecord"},
-		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007FactoryStrictSecureDefaultProofCompletePropagatesAllowedDecision"},
+		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007FactoryStrictSecureDefaultProofCompleteBlocksWithoutL10Authority"},
 		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007RunAndAutoDefaultSecureDefaultReadinessPersistsAdvisoryDecision"},
 		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007RunAndAutoStrictSecureDefaultSelectionBlocksAndPersistsDecision"},
 		{pkg: "./cmd", file: "status_progress_redaction_us007_test.go", testName: "TestUS007SandboxRuntimeListStatusRedactSeededHostStatusMetadata"},

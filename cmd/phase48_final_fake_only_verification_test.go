@@ -178,7 +178,7 @@ func phase48FinalRequiredFocusedTests() []phase34FocusedTest {
 		phase48FinalFocusedTest("./internal/sandboxtarget", "internal/sandboxtarget/import_boundary_test.go", "TestSandboxtargetForbiddenImportListCoversCommandCouplingSurfaces"),
 		phase48FinalFocusedTest("./internal/sandboxtarget", "internal/sandboxtarget/scheduler_import_boundary_test.go", "TestSchedulerImportBoundaryRejectsWorkerProviderAndNetworkCoupling"),
 		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007FactoryStrictSecureDefaultBlockedGatePropagatesDecisionToRunRecord"},
-		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007FactoryStrictSecureDefaultProofCompletePropagatesAllowedDecision"},
+		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007FactoryStrictSecureDefaultProofCompleteBlocksWithoutL10Authority"},
 		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007RunAndAutoDefaultSecureDefaultReadinessPersistsAdvisoryDecision"},
 		{pkg: "./cmd", file: "secure_default_propagation_red_test.go", testName: "TestUS007RunAndAutoStrictSecureDefaultSelectionBlocksAndPersistsDecision"},
 		{pkg: "./cmd", file: "sandbox_runtime_secure_default_red_test.go", testName: "TestUS009SandboxRuntimeListJSONSurfacesStrictAndCompatibilitySecureDefaultDecisions"},

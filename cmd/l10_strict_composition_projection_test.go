@@ -32,21 +32,23 @@ func TestL10StrictCompositionProjectsSanitizedDecisionAcrossCommandFactoryAndSta
 	if status.StrictComposition == nil || status.StrictComposition.CompositionID != decision.CompositionID {
 		t.Fatalf("status strict composition = %#v, want sanitized decision", status.StrictComposition)
 	}
-	factoryMetadata := factorySandboxSecurityMetadata(input)
-	timeline := factorySandboxSecurityTimelineMetadata(factoryMetadata)
+	factory := factorySandboxSecurityMetadata(input)
+	if factory == nil || factory.StrictComposition == nil || factory.StrictComposition.CompositionID != decision.CompositionID {
+		t.Fatalf("factory strict composition = %#v, want sanitized decision", factory)
+	}
+	timeline := factorySandboxSecurityTimelineMetadata(factory)
+	if timeline == nil || timeline["strictComposition"] == nil {
+		t.Fatalf("factory timeline = %#v, want strictComposition", timeline)
+	}
+
 	decision.Evidence[0].Kind = "https://unsafe.invalid/token"
 	if command.StrictComposition.Evidence[0].Kind != sandbox.SandboxStrictCompositionEvidenceRuntime {
 		t.Fatal("command projection retained caller-owned evidence storage")
 	}
-	for label, value := range map[string]any{"command": command, "status": status, "factory": factoryMetadata, "timeline": timeline} {
+	for label, value := range map[string]any{"command": command, "status": status, "factory": factory, "timeline": timeline} {
 		payload, err := json.Marshal(value)
 		if err != nil {
 			t.Fatalf("json.Marshal(%s) error = %v", label, err)
-		}
-		if label == "factory" || label == "status" || label == "timeline" {
-			if strings.Contains(string(payload), "strictComposition") {
-				t.Fatalf("%s JSON expanded Phase 54 schema with strictComposition: %s", label, payload)
-			}
 		}
 		for _, forbidden := range []string{"unsafe.invalid", "token=", "/home/", ".sock", "Authorization"} {
 			if strings.Contains(string(payload), forbidden) {
@@ -73,19 +75,16 @@ func TestL10StrictCompositionProjectionsExpireActiveDecisions(t *testing.T) {
 	status := newSandboxRuntimeSecuritySummary(input)
 	factoryMetadata := factorySandboxSecurityMetadata(input)
 	timeline := factorySandboxSecurityTimelineMetadata(factoryMetadata)
-	for label, payload := range map[string]any{"factory": factoryMetadata, "timeline": timeline, "statusJSON": status} {
-		encoded, err := json.Marshal(payload)
-		if err != nil {
-			t.Fatalf("json.Marshal(%s) error = %v", label, err)
-		}
-		if strings.Contains(string(encoded), "strictComposition") {
-			t.Fatalf("%s JSON expanded Phase 54 schema with strictComposition: %s", label, encoded)
-		}
-	}
 
 	projected := map[string]*sandbox.SandboxStrictCompositionDecision{
 		"command": command.StrictComposition,
 		"status":  status.StrictComposition,
+		"factory": factoryMetadata.StrictComposition,
+	}
+	if value, ok := timeline["strictComposition"].(*sandbox.SandboxStrictCompositionDecision); ok {
+		projected["timeline"] = value
+	} else {
+		t.Fatalf("timeline strict composition = %#v, want decision pointer", timeline["strictComposition"])
 	}
 	for label, got := range projected {
 		if got == nil || got.State != sandbox.SandboxStrictCompositionStateBlocked || got.Code != sandbox.SandboxStrictCompositionCodeAttestationStale {
