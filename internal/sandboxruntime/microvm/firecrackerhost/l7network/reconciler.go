@@ -84,7 +84,7 @@ func (r *Reconciler) Recover(ctx context.Context, identity Identity) (*Session, 
 		return session, nil
 	}
 	lifecycle, topology, err := r.options.Recovery.Recover(ctx, identity)
-	if err != nil || interfaceIsNil(lifecycle) || interfaceIsNil(topology) || !topologyMetadataMatches(topology.Metadata(), topologyIdentity(identity)) {
+	if err != nil || interfaceIsNil(lifecycle) || interfaceIsNil(topology) || !recoveryTopologyMetadataMatches(topology.Metadata(), topologyIdentity(identity)) {
 		return coordinator.releaseRecoveryJournal(session, ErrStaleTopologyUnverified)
 	}
 	coordinator.options.Topology = lifecycle

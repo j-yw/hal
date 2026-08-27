@@ -112,22 +112,10 @@ func TestLinuxTopologyFileOwnershipRecoversExactSuppliedNamespace(t *testing.T) 
 	if recovered.Keeper == nil || recovered.Mapper == nil || !recovered.Namespace.Correlates(namespace) {
 		t.Fatalf("recovered authority = keeper %T mapper %T namespace %T", recovered.Keeper, recovered.Mapper, recovered.Namespace)
 	}
-	wrongUser, err := os.Open(filepath.Join("/proc", "self", "ns", "user"))
-	if err != nil {
-		t.Fatal(err)
+	wrong := newFakeNamespaces(t, nil).base
+	if wrong.Correlates(namespace) {
+		t.Fatal("wrong-namespace fixture accidentally correlates")
 	}
-	wrongNet, err := os.Open(filepath.Join("/proc", "1", "ns", "net"))
-	if err != nil {
-		wrongUser.Close()
-		t.Fatal(err)
-	}
-	wrong, err := NewNamespaceHandle(wrongUser, wrongNet)
-	if err != nil {
-		wrongUser.Close()
-		wrongNet.Close()
-		t.Fatal(err)
-	}
-	defer wrong.Close()
 	if _, err := recoveryStore.AcquireRecovery(context.Background(), RecoveryRequest{Identity: identity, Namespace: wrong}); !errors.Is(err, ErrTopologyCollision) {
 		// The first exact claim intentionally retains the journal lock; a second
 		// caller cannot inspect or mutate it, even with wrong namespace authority.

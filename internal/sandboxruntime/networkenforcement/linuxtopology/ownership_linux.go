@@ -3,6 +3,7 @@
 package linuxtopology
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -49,6 +51,7 @@ type privateNamespaceRecord struct {
 
 type privateOwnershipJournal struct {
 	Version        int                     `json:"version"`
+	HostBootID     string                  `json:"hostBootId,omitempty"`
 	Identity       Identity                `json:"identity"`
 	Keeper         *privateProcessRecord   `json:"keeper,omitempty"`
 	Mapper         *privateProcessRecord   `json:"mapper,omitempty"`
@@ -66,6 +69,84 @@ func newFileOwnershipStore(root string) (*fileOwnershipStore, error) {
 
 func (s *fileOwnershipStore) Acquire(ctx context.Context, identity Identity) (OwnershipLease, error) {
 	return s.acquire(ctx, identity)
+}
+
+func (s *fileOwnershipStore) AcquireRecovery(ctx context.Context, request RecoveryRequest) (RecoveredOwnership, error) {
+	if s == nil || !validIdentity(request.Identity) || request.Namespace == nil || request.Namespace.Closed() {
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	if err := verifyExistingPrivateDirectory(s.root); err != nil {
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	dir := filepath.Join(s.root, request.Identity.SandboxID)
+	if err := verifyExistingPrivateDirectory(dir); err != nil {
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	lock, err := openPrivateRegular(filepath.Join(dir, "ownership.lock"), syscall.O_RDWR, 0o600)
+	if err != nil {
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return RecoveredOwnership{}, ErrTopologyCollision
+		}
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	lease := &fileOwnershipLease{
+		store: s, identity: request.Identity, dir: dir,
+		journalPath: filepath.Join(dir, "ownership.json"), lock: lock,
+	}
+	retired := filepath.Join(dir, "retired-"+request.Identity.TopologyGenerationID)
+	if marker, err := openPrivateRegular(retired, syscall.O_RDONLY, 0o600); err == nil {
+		_ = marker.Close()
+		_ = lease.Release()
+		return RecoveredOwnership{}, ErrStaleGeneration
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		_ = lease.Release()
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	if ctx.Err() != nil {
+		_ = lease.Release()
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	journal, err := loadRecoveryJournal(lease.journalPath)
+	if err != nil {
+		_ = lease.Release()
+		return RecoveredOwnership{}, err
+	}
+	if journal.Identity != request.Identity {
+		_ = lease.Release()
+		return RecoveredOwnership{}, ErrIdentityMismatch
+	}
+	bootID, err := readHostBootID()
+	if err != nil || journal.HostBootID != bootID {
+		_ = lease.Release()
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	if !namespaceMatchesRecord(request.Namespace, *journal.Namespace) {
+		_ = lease.Release()
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	owned, err := request.Namespace.Duplicate()
+	if err != nil {
+		_ = lease.Release()
+		return RecoveredOwnership{}, ErrStaleTopologyUnverified
+	}
+	keeper, err := claimRecordedProcess(*journal.Keeper, journal.Namespace)
+	if err != nil {
+		_ = owned.Close()
+		_ = lease.Release()
+		return RecoveredOwnership{}, err
+	}
+	mapper, err := claimRecordedProcess(*journal.Mapper, nil)
+	if err != nil {
+		closeRecoveredProcesses(keeper)
+		_ = owned.Close()
+		_ = lease.Release()
+		return RecoveredOwnership{}, err
+	}
+	return RecoveredOwnership{Lease: lease, Keeper: keeper, Mapper: mapper, Namespace: owned}, nil
 }
 
 func (s *fileOwnershipStore) acquire(ctx context.Context, identity Identity) (*fileOwnershipLease, error) {
@@ -169,8 +250,11 @@ func (l *fileOwnershipLease) Record(_ context.Context, keeper, mapper ProcessHan
 	if l == nil || l.lock == nil || l.released {
 		return ErrCleanupIncomplete
 	}
-	journal := privateOwnershipJournal{Version: privateJournalVersion, Identity: l.identity}
-	var err error
+	bootID, err := readHostBootID()
+	if err != nil {
+		return ErrCleanupIncomplete
+	}
+	journal := privateOwnershipJournal{Version: privateJournalVersion, HostBootID: bootID, Identity: l.identity}
 	if keeper != nil {
 		journal.Keeper, err = recordProcess(keeper)
 		if err != nil {
@@ -215,8 +299,12 @@ func (l *fileOwnershipLease) ArmMapping(_ context.Context, keeper ProcessHandle,
 	if err != nil {
 		return ErrCleanupIncomplete
 	}
+	bootID, bootErr := readHostBootID()
+	if bootErr != nil {
+		return ErrCleanupIncomplete
+	}
 	journal := privateOwnershipJournal{
-		Version: privateJournalVersion, Identity: l.identity,
+		Version: privateJournalVersion, HostBootID: bootID, Identity: l.identity,
 		Keeper: keeperRecord, Namespace: namespaceRecord,
 		MappingArmed: true, MappingCreator: creatorRecord,
 	}
@@ -484,4 +572,294 @@ func recordedNamespaceMatches(pid int, record privateNamespaceRecord) bool {
 	netStat, netOK := network.Sys().(*syscall.Stat_t)
 	return userOK && netOK && uint64(userStat.Dev) == record.UserDevice && userStat.Ino == record.UserInode &&
 		uint64(netStat.Dev) == record.NetDevice && netStat.Ino == record.NetInode
+}
+
+func verifyExistingPrivateDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() {
+		return ErrStaleTopologyUnverified
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		return ErrStaleTopologyUnverified
+	}
+	return nil
+}
+
+func loadRecoveryJournal(path string) (privateOwnershipJournal, error) {
+	payload, err := readPrivateBounded(path, maxOutputLimit)
+	if err != nil || len(payload) == 0 {
+		return privateOwnershipJournal{}, ErrStaleTopologyUnverified
+	}
+	if !strictRecoveryJournalKeys(payload) {
+		return privateOwnershipJournal{}, ErrStaleTopologyUnverified
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var journal privateOwnershipJournal
+	if decoder.Decode(&journal) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		journal.Version != privateJournalVersion || journal.HostBootID == "" || !validIdentity(journal.Identity) ||
+		journal.Keeper == nil || journal.Mapper == nil || journal.Namespace == nil || journal.MappingArmed ||
+		journal.MappingCreator != nil {
+		return privateOwnershipJournal{}, ErrStaleTopologyUnverified
+	}
+	return journal, nil
+}
+
+func strictRecoveryJournalKeys(payload []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return false
+	}
+	allowed := map[string]bool{
+		"version": true, "hostBootId": true, "identity": true, "keeper": true, "mapper": true,
+		"namespace": true, "mappingArmed": true, "mappingCreator": true,
+	}
+	required := []string{"version", "hostBootId", "identity", "keeper", "mapper", "namespace"}
+	seen := map[string]bool{}
+	for decoder.More() {
+		key, err := decoder.Token()
+		name, ok := key.(string)
+		if err != nil || !ok || !allowed[name] || seen[name] {
+			return false
+		}
+		seen[name] = true
+		switch name {
+		case "identity":
+			if !consumeExactObject(decoder, identityJournalKeys(), identityJournalKeys()) {
+				return false
+			}
+		case "keeper", "mapper", "mappingCreator":
+			if !consumeExactObject(decoder, map[string]bool{"pid": true, "startTime": true}, map[string]bool{"pid": true, "startTime": true}) {
+				return false
+			}
+		case "namespace":
+			if !consumeExactObject(decoder, map[string]bool{
+				"userDevice": true, "userInode": true, "netDevice": true, "netInode": true,
+			}, map[string]bool{"userDevice": true, "userInode": true, "netDevice": true, "netInode": true}) {
+				return false
+			}
+		default:
+			var raw json.RawMessage
+			if decoder.Decode(&raw) != nil {
+				return false
+			}
+		}
+	}
+	token, err = decoder.Token()
+	if err != nil || token != json.Delim('}') {
+		return false
+	}
+	for _, name := range required {
+		if !seen[name] {
+			return false
+		}
+	}
+	if seen["mappingArmed"] || seen["mappingCreator"] {
+		return false
+	}
+	_, err = decoder.Token()
+	return err == io.EOF
+}
+
+func identityJournalKeys() map[string]bool {
+	return map[string]bool{
+		"sandboxId": true, "executionId": true, "workerId": true, "runtimeId": true, "planId": true,
+		"policySnapshotId": true, "proxySessionId": true, "proxyGenerationId": true, "topologyGenerationId": true,
+	}
+}
+
+func consumeExactObject(decoder *json.Decoder, allowed, required map[string]bool) bool {
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return false
+	}
+	seen := map[string]bool{}
+	for decoder.More() {
+		key, err := decoder.Token()
+		name, ok := key.(string)
+		if err != nil || !ok || !allowed[name] || seen[name] {
+			return false
+		}
+		seen[name] = true
+		var raw json.RawMessage
+		if decoder.Decode(&raw) != nil {
+			return false
+		}
+	}
+	token, err = decoder.Token()
+	if err != nil || token != json.Delim('}') {
+		return false
+	}
+	for name := range required {
+		if !seen[name] {
+			return false
+		}
+	}
+	return true
+}
+
+func namespaceMatchesRecord(namespace *NamespaceHandle, record privateNamespaceRecord) bool {
+	if namespace == nil {
+		return false
+	}
+	namespace.mu.Lock()
+	defer namespace.mu.Unlock()
+	if namespace.closed || namespace.userInfo == nil || namespace.netInfo == nil {
+		return false
+	}
+	user, userOK := namespace.userInfo.Sys().(*syscall.Stat_t)
+	network, networkOK := namespace.netInfo.Sys().(*syscall.Stat_t)
+	return userOK && networkOK && uint64(user.Dev) == record.UserDevice && user.Ino == record.UserInode &&
+		uint64(network.Dev) == record.NetDevice && network.Ino == record.NetInode
+}
+
+func readHostBootID() (string, error) {
+	payload, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSuffix(string(payload), "\n")
+	if string(payload) != value+"\n" || !validHostBootID(value) {
+		return "", ErrStaleTopologyUnverified
+	}
+	return value, nil
+}
+
+func validHostBootID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if character != '-' {
+				return false
+			}
+			continue
+		}
+		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+type recoveredProcess struct {
+	mu     sync.Mutex
+	record privateProcessRecord
+	pidfd  int
+	done   chan struct{}
+	once   sync.Once
+}
+
+func claimRecordedProcess(record privateProcessRecord, namespace *privateNamespaceRecord) (ProcessHandle, error) {
+	if record.PID <= 1 || record.StartTime == "" {
+		return nil, ErrStaleTopologyUnverified
+	}
+	pidfd, _, errno := syscall.Syscall(uintptr(sysPIDFDOpen), uintptr(record.PID), 0, 0)
+	if errno == syscall.ESRCH {
+		return nil, nil
+	}
+	if errno != 0 {
+		return nil, ErrStaleTopologyUnverified
+	}
+	start, state, err := inspectProcessStat(record.PID)
+	if errors.Is(err, fs.ErrNotExist) {
+		_ = syscall.Close(int(pidfd))
+		return nil, nil
+	}
+	if err != nil {
+		_ = syscall.Close(int(pidfd))
+		return nil, ErrStaleTopologyUnverified
+	}
+	if start != record.StartTime {
+		_ = syscall.Close(int(pidfd))
+		return nil, ErrIdentityMismatch
+	}
+	if state == 'Z' || state == 'X' {
+		_ = syscall.Close(int(pidfd))
+		return nil, ErrStaleTopologyUnverified
+	}
+	if namespace != nil && !recordedNamespaceMatches(record.PID, *namespace) {
+		_ = syscall.Close(int(pidfd))
+		return nil, ErrIdentityMismatch
+	}
+	startAfter, stateAfter, err := inspectProcessStat(record.PID)
+	if err != nil || startAfter != record.StartTime || stateAfter != state {
+		_ = syscall.Close(int(pidfd))
+		return nil, ErrStaleTopologyUnverified
+	}
+	if errno := pidfdSignal(int(pidfd), 0); errno == syscall.ESRCH {
+		_ = syscall.Close(int(pidfd))
+		return nil, nil
+	} else if errno != 0 {
+		_ = syscall.Close(int(pidfd))
+		return nil, ErrStaleTopologyUnverified
+	}
+	return &recoveredProcess{record: record, pidfd: int(pidfd), done: make(chan struct{})}, nil
+}
+
+func inspectProcessStat(pid int) (string, byte, error) {
+	payload, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return "", 0, err
+	}
+	closing := strings.LastIndexByte(string(payload), ')')
+	if closing < 0 {
+		return "", 0, ErrStaleTopologyUnverified
+	}
+	fields := strings.Fields(string(payload[closing+1:]))
+	if len(fields) <= 19 || len(fields[0]) != 1 {
+		return "", 0, ErrStaleTopologyUnverified
+	}
+	if _, err := strconv.ParseUint(fields[19], 10, 64); err != nil {
+		return "", 0, ErrStaleTopologyUnverified
+	}
+	return fields[19], fields[0][0], nil
+}
+
+func (p *recoveredProcess) PID() int {
+	if p == nil {
+		return 0
+	}
+	return p.record.PID
+}
+
+func (p *recoveredProcess) Done() <-chan struct{} {
+	if p == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
+	return p.done
+}
+
+func (p *recoveredProcess) Terminate(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	err := terminateRecordedProcess(ctx, p.record, nil)
+	p.closePIDFD()
+	p.once.Do(func() { close(p.done) })
+	if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ESRCH) {
+		if errors.Is(err, ErrIdentityMismatch) {
+			return ErrCleanupIncomplete
+		}
+		return err
+	}
+	return nil
+}
+
+func (p *recoveredProcess) closePIDFD() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pidfd == 0 {
+		return
+	}
+	_ = syscall.Close(p.pidfd)
+	p.pidfd = 0
 }

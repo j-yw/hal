@@ -11,6 +11,9 @@ func newFileOwnershipStore(string) (*fileOwnershipStore, error) { return nil, Er
 func (*fileOwnershipStore) Acquire(context.Context, Identity) (OwnershipLease, error) {
 	return nil, ErrUnsupported
 }
+func (*fileOwnershipStore) AcquireRecovery(context.Context, RecoveryRequest) (RecoveredOwnership, error) {
+	return RecoveredOwnership{}, ErrUnsupported
+}
 func (*fileOwnershipStore) acquire(context.Context, Identity) (*fileOwnershipLease, error) {
 	return nil, ErrUnsupported
 }
