@@ -1,6 +1,7 @@
 package firecrackerhost
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/binary"
@@ -168,6 +169,7 @@ type l8RuntimeOwnerSupervisor struct {
 	lastSequence      uint64
 	lastOpcode        uint16
 	lastPacket        l8RuntimeOwnerPacketV1
+	lastRequestBody   []byte
 	hasLast           bool
 }
 
@@ -731,14 +733,17 @@ func containL8RuntimeOwnerReplacement(record firecrackerRuntimeOwnerRecordV1, op
 	}
 	supervisor, supervisorExists, err := ops.InspectSupervisor(record.SupervisorPID)
 	if err != nil {
+		_ = supervisor.Close()
 		return fail()
 	}
 	if supervisorExists {
 		_ = supervisor.Close()
 		return fail()
 	}
+	_ = supervisor.Close()
 	child, childExists, err := ops.InspectChild(record.FirecrackerPID)
 	if err != nil {
+		_ = child.Close()
 		return fail()
 	}
 	if childExists {
@@ -752,6 +757,8 @@ func containL8RuntimeOwnerReplacement(record firecrackerRuntimeOwnerRecordV1, op
 		if ops.WaitTerminal != nil {
 			_ = l8RuntimeOwnerCall(func() error { return ops.WaitTerminal(context.Background(), child) })
 		}
+	} else {
+		_ = child.Close()
 	}
 	firstAbsent, err := ops.ProcessAbsent(record.FirecrackerPID)
 	if err != nil || !firstAbsent {
@@ -929,6 +936,9 @@ func (owner *l8RuntimeOwnerSupervisor) AdmitController(ctx context.Context, uid 
 	next.Revision = record.Revision + 1
 	next.ControllerState = "controlled"
 	next.ReconnectSecret = secret
+	if err := owner.refreshFinalizingIntent(&next); err != nil {
+		return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
+	}
 	if _, err := owner.opts.Store.Transition(ctx, record.Revision, next); err != nil {
 		return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
 	}
@@ -942,6 +952,7 @@ func (owner *l8RuntimeOwnerSupervisor) AdmitController(ctx context.Context, uid 
 	owner.sessionGeneration = session
 	owner.hasLast = false
 	owner.lastSequence = 0
+	owner.lastRequestBody = nil
 	return l8RuntimeOwnerControlResult{Packet: l8RuntimeOwnerPacketV1{
 		Opcode: l8RuntimeOwnerOpcodeHandshake,
 		Status: l8RuntimeOwnerStatusOK,
@@ -956,6 +967,9 @@ func (owner *l8RuntimeOwnerSupervisor) HandleController(ctx context.Context, rec
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
 	if owner.hasLast && received.Packet.Sequence == owner.lastSequence && received.Packet.Opcode == owner.lastOpcode {
+		if received.Packet.Status != l8RuntimeOwnerStatusOK || !bytes.Equal(received.Packet.Body, owner.lastRequestBody) {
+			return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
+		}
 		result := l8RuntimeOwnerControlResult{Packet: owner.lastPacket}
 		if received.Packet.Opcode == l8RuntimeOwnerOpcodeAcquireNamespaces {
 			files, err := owner.duplicateNamespaces()
@@ -989,6 +1003,7 @@ func (owner *l8RuntimeOwnerSupervisor) HandleController(ctx context.Context, rec
 	owner.lastSequence = received.Packet.Sequence
 	owner.lastOpcode = received.Packet.Opcode
 	owner.lastPacket = result.Packet
+	owner.lastRequestBody = append(owner.lastRequestBody[:0], received.Packet.Body...)
 	owner.hasLast = true
 	return result, nil
 }
@@ -1009,6 +1024,7 @@ func (owner *l8RuntimeOwnerSupervisor) ControllerLost(ctx context.Context) error
 	owner.sessionGeneration = ""
 	owner.hasLast = false
 	owner.lastSequence = 0
+	owner.lastRequestBody = nil
 	return nil
 }
 
@@ -1045,10 +1061,11 @@ func (owner *l8RuntimeOwnerSupervisor) dispatchController(ctx context.Context, r
 		}
 		return owner.controllerOK(received.Packet, body, files, false), nil
 	case l8RuntimeOwnerOpcodeClose:
-		if _, err := owner.unclaim(ctx, record); err != nil {
+		next, err := owner.unclaim(ctx, record)
+		if err != nil {
 			return l8RuntimeOwnerControlResult{}, err
 		}
-		body, err := encodeL8RuntimeOwnerResponse(l8RuntimeOwnerResponseFromRecord(record, false))
+		body, err := encodeL8RuntimeOwnerResponse(l8RuntimeOwnerResponseFromRecord(next, false))
 		if err != nil {
 			return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
 		}
@@ -1076,7 +1093,7 @@ func (owner *l8RuntimeOwnerSupervisor) dispatchController(ctx context.Context, r
 		expected := l8RuntimeOwnerCommitRequestV1{
 			ControllerSessionGeneration: owner.sessionGeneration,
 			CommitID:                    record.FinalizedCommitID,
-			FinalizedRevision:           record.Revision,
+			FinalizedRevision:           record.FinalizeTargetRevision,
 		}
 		if record.State != "finalized" || request != expected {
 			return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
@@ -1085,7 +1102,7 @@ func (owner *l8RuntimeOwnerSupervisor) dispatchController(ctx context.Context, r
 			return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerInvalid
 		}
 		body := make([]byte, 8)
-		binary.BigEndian.PutUint64(body, record.Revision)
+		binary.BigEndian.PutUint64(body, record.FinalizeTargetRevision)
 		return owner.controllerOK(received.Packet, body, nil, true), nil
 	case l8RuntimeOwnerOpcodeAbortStart:
 		return l8RuntimeOwnerControlResult{}, errL8RuntimeOwnerProtocol
@@ -1129,6 +1146,9 @@ func (owner *l8RuntimeOwnerSupervisor) unclaim(ctx context.Context, record firec
 		}
 		next.ReconnectSecret = secret
 	}
+	if err := owner.refreshFinalizingIntent(&next); err != nil {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
 	updated, err := owner.opts.Store.Transition(ctx, record.Revision, next)
 	if err != nil {
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
@@ -1158,7 +1178,8 @@ func (owner *l8RuntimeOwnerSupervisor) reinspectAbsence(ctx context.Context, rec
 }
 
 func (owner *l8RuntimeOwnerSupervisor) finalize(ctx context.Context, record firecrackerRuntimeOwnerRecordV1, request l8RuntimeOwnerFinalizeRequestV1) (l8RuntimeOwnerFinalizeAckV1, error) {
-	if record.State != "absent" || request.AbsenceRevision != record.AbsenceRevision || request.ObservedAtUnixNano != record.AbsenceObservedAtUnixNano {
+	if (record.State != "absent" && record.State != "finalizing" && record.State != "finalized") ||
+		request.AbsenceRevision != record.AbsenceRevision || request.ObservedAtUnixNano != record.AbsenceObservedAtUnixNano {
 		return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
 	}
 	digestBytes, err := hex.DecodeString(record.SeedCorrelationDigest)
@@ -1167,29 +1188,67 @@ func (owner *l8RuntimeOwnerSupervisor) finalize(ctx context.Context, record fire
 	}
 	var seedDigest [32]byte
 	copy(seedDigest[:], digestBytes)
-	finalizedRevision := record.Revision + 2
-	commitID, err := l8RuntimeOwnerCommitID(owner.opts.CommitKey, seedDigest, finalizedRevision)
-	if err != nil {
-		return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
+	if record.State == "finalized" {
+		expected, err := l8RuntimeOwnerCommitID(owner.opts.CommitKey, seedDigest, record.FinalizeTargetRevision)
+		if err != nil || subtle.ConstantTimeCompare([]byte(expected), []byte(record.FinalizedCommitID)) != 1 {
+			return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
+		}
+		return l8RuntimeOwnerFinalizeAckV1{CommitID: record.FinalizedCommitID, FinalizedRevision: record.FinalizeTargetRevision}, nil
 	}
+
 	finalizing := record
-	finalizing.Revision = record.Revision + 1
-	finalizing.State = "finalizing"
-	finalizing.FinalizeTargetRevision = finalizedRevision
-	finalizing.FinalizedCommitID = commitID
-	if _, err := owner.opts.Store.Transition(ctx, record.Revision, finalizing); err != nil {
-		return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
+	if record.State == "absent" {
+		if record.Revision > ^uint64(0)-2 {
+			return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
+		}
+		finalizing.Revision = record.Revision + 1
+		finalizing.State = "finalizing"
+		finalizing.FinalizeTargetRevision = record.Revision + 2
+		finalizing.FinalizedCommitID, err = l8RuntimeOwnerCommitID(owner.opts.CommitKey, seedDigest, finalizing.FinalizeTargetRevision)
+		if err != nil {
+			return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
+		}
+		if _, err := owner.opts.Store.Transition(ctx, record.Revision, finalizing); err != nil {
+			return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
+		}
+	} else {
+		expected, err := l8RuntimeOwnerCommitID(owner.opts.CommitKey, seedDigest, record.FinalizeTargetRevision)
+		if err != nil || record.Revision == ^uint64(0) || record.FinalizeTargetRevision != record.Revision+1 ||
+			subtle.ConstantTimeCompare([]byte(expected), []byte(record.FinalizedCommitID)) != 1 {
+			return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
+		}
 	}
 	if owner.opts.CloseNamespaces == nil || owner.opts.CloseNamespaces() != nil {
 		return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
 	}
 	finalized := finalizing
-	finalized.Revision = finalizedRevision
+	finalized.Revision = finalizing.FinalizeTargetRevision
 	finalized.State = "finalized"
 	if _, err := owner.opts.Store.Transition(ctx, finalizing.Revision, finalized); err != nil {
 		return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
 	}
-	return l8RuntimeOwnerFinalizeAckV1{CommitID: commitID, FinalizedRevision: finalizedRevision}, nil
+	return l8RuntimeOwnerFinalizeAckV1{CommitID: finalized.FinalizedCommitID, FinalizedRevision: finalized.FinalizeTargetRevision}, nil
+}
+
+func (owner *l8RuntimeOwnerSupervisor) refreshFinalizingIntent(record *firecrackerRuntimeOwnerRecordV1) error {
+	if record == nil || record.State != "finalizing" {
+		return nil
+	}
+	if record.Revision == ^uint64(0) {
+		return errL8RuntimeOwnerInvalid
+	}
+	digestBytes, err := hex.DecodeString(record.SeedCorrelationDigest)
+	if err != nil || len(digestBytes) != 32 {
+		return errL8RuntimeOwnerInvalid
+	}
+	var seedDigest [32]byte
+	copy(seedDigest[:], digestBytes)
+	record.FinalizeTargetRevision = record.Revision + 1
+	record.FinalizedCommitID, err = l8RuntimeOwnerCommitID(owner.opts.CommitKey, seedDigest, record.FinalizeTargetRevision)
+	if err != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	return nil
 }
 
 func l8RuntimeOwnerControllerSession(packet l8RuntimeOwnerPacketV1) (string, error) {

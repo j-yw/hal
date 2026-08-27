@@ -107,6 +107,27 @@ func TestL8RuntimeOwnerNamespaceTransferRejectsCountOrderKindAndCorrelation(t *t
 	}
 }
 
+func TestL8RuntimeOwnerSeqpacketRejectsMultipleRightsMessagesWithoutLeakingDescriptors(t *testing.T) {
+	first, err := unix.Dup(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := unix.Dup(0)
+	if err != nil {
+		_ = unix.Close(first)
+		t.Fatal(err)
+	}
+	oob := append(unix.UnixRights(first), unix.UnixRights(second)...)
+	if files, err := l8RuntimeOwnerFilesFromControl(oob); !errors.Is(err, errL8RuntimeOwnerProtocol) || len(files) != 0 {
+		t.Fatalf("multiple rights = %v, %v", files, err)
+	}
+	for _, fd := range []int{first, second} {
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+			t.Fatalf("received fd %d remains open: %v", fd, err)
+		}
+	}
+}
+
 func TestL8RuntimeOwnerBootstrapPublishesOnlyAfterArmedChildRevisionOne(t *testing.T) {
 	user, err := os.Open("/proc/self/ns/user")
 	if err != nil {

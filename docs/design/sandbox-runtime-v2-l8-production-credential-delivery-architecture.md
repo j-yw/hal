@@ -924,7 +924,7 @@ and rejects any mismatch; the safe L7 subset alone is never sufficient
 authority.
 `AbsenceKind`, `AbsenceRevision`, and `AbsenceObservedAtUnixNano` are zero in
 `starting`, `running`, and `stopping`. An `absent`, `finalizing`, or `finalized`
-record carries exactly `direct_wait` or `replacement_proc_absence`, binds
+record carries exactly `direct_wait` or `replacement_proc`, binds
 `AbsenceRevision` to the revision at which that fresh observation was
 persisted, and carries a positive signed Unix-nanosecond observation no earlier
 than the seed. Repeated StopReap against `absent` must reobserve exact absence
@@ -1219,8 +1219,9 @@ Its request body is the 43-byte controller-session generation, the eight-byte
 absence record revision, and the signed eight-byte Unix-nanosecond observation
 that must equal the supervisor's private fresh absence observation. It is sent
 only after the daemon-side binding has validated the neutral absence proof and
-completed correlated same-boot L7 cleanup. The supervisor closes both retained
-namespace originals, persists `finalized` with the HMAC commit ID, and returns
+completed correlated same-boot L7 cleanup. The supervisor first persists
+`finalizing` with the HMAC commit ID and exact target revision, closes both
+retained namespace originals, then persists `finalized`, and returns
 exactly that 43-byte commit ID plus the eight-byte finalized revision. Failure
 to close either namespace descriptor or persist the record returns uncertain
 and retains the record; it never reports finalized.

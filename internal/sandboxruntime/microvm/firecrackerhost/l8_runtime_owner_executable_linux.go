@@ -7,12 +7,11 @@ import (
 	"os/exec"
 	"runtime"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 func runPrivateL8RuntimeOwnerExecutable(arguments []string, file func(uintptr, string) *os.File) int {
 	_ = launchPrivateL8RuntimeOwnerLinuxChild
+	openedFiles := make(map[int]*os.File)
 	return runPrivateL8RuntimeOwnerExecutableWithOps(arguments, l8RuntimeOwnerExecutableOps{
 		OpenFD: func(fd uintptr, role string) (int, error) {
 			if file == nil {
@@ -22,13 +21,21 @@ func runPrivateL8RuntimeOwnerExecutable(arguments []string, file func(uintptr, s
 			if opened == nil {
 				return -1, errL8RuntimeOwnerInvalid
 			}
-			return int(opened.Fd()), nil
+			openedFD := int(opened.Fd())
+			if openedFD < 0 {
+				_ = opened.Close()
+				return -1, errL8RuntimeOwnerInvalid
+			}
+			openedFiles[openedFD] = opened
+			return openedFD, nil
 		},
 		CloseFD: func(fd int) error {
 			if fd < 0 {
 				return nil
 			}
-			if err := unix.Close(fd); err != nil {
+			opened := openedFiles[fd]
+			delete(openedFiles, fd)
+			if opened == nil || opened.Close() != nil {
 				return errL8RuntimeOwnerInvalid
 			}
 			return nil

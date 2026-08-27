@@ -195,10 +195,17 @@ func validateFirecrackerRuntimeOwnerRecordV1(record firecrackerRuntimeOwnerRecor
 		record.RuleGenerationID != seed.RuleGenerationID {
 		return errL8RuntimeOwnerInvalid
 	}
-	if !validL8RuntimeOwnerState(record.State) {
+	if !validL8RuntimeOwnerState(record.State) || !validL8RuntimeOwnerControllerState(record.ControllerState) {
 		return errL8RuntimeOwnerInvalid
 	}
 	prelaunch := record.State == "starting" && record.Revision == 0
+	if record.State == "starting" {
+		if record.ControllerState != "none" || record.Revision > 1 {
+			return errL8RuntimeOwnerInvalid
+		}
+	} else if record.Revision < 2 {
+		return errL8RuntimeOwnerInvalid
+	}
 	if prelaunch {
 		if record.FirecrackerPID != 0 || record.FirecrackerStartTime != 0 {
 			return errL8RuntimeOwnerInvalid
@@ -206,11 +213,17 @@ func validateFirecrackerRuntimeOwnerRecordV1(record firecrackerRuntimeOwnerRecor
 	} else if record.Revision == 0 || record.FirecrackerPID == 0 || record.FirecrackerStartTime == 0 {
 		return errL8RuntimeOwnerInvalid
 	}
-	if record.State == "finalized" {
-		if !validL8RuntimeOwnerToken(record.FinalizedCommitID) {
+	if record.State == "finalizing" || record.State == "finalized" {
+		if !validL8RuntimeOwnerToken(record.FinalizedCommitID) || record.FinalizeTargetRevision == 0 {
 			return errL8RuntimeOwnerInvalid
 		}
-	} else if record.FinalizedCommitID != "" {
+		if record.State == "finalizing" && (record.ControllerState == "none" || record.Revision == ^uint64(0) || record.FinalizeTargetRevision != record.Revision+1) {
+			return errL8RuntimeOwnerInvalid
+		}
+		if record.State == "finalized" && (record.ControllerState == "none" || record.FinalizeTargetRevision > record.Revision) {
+			return errL8RuntimeOwnerInvalid
+		}
+	} else if record.FinalizedCommitID != "" || record.FinalizeTargetRevision != 0 {
 		return errL8RuntimeOwnerInvalid
 	}
 	switch record.State {
@@ -218,8 +231,25 @@ func validateFirecrackerRuntimeOwnerRecordV1(record firecrackerRuntimeOwnerRecor
 		if record.AbsenceKind != "" || record.AbsenceRevision != 0 || record.AbsenceObservedAtUnixNano != 0 {
 			return errL8RuntimeOwnerInvalid
 		}
+	case "absent", "finalizing", "finalized":
+		if !validL8RuntimeOwnerAbsence(record, seed) {
+			return errL8RuntimeOwnerInvalid
+		}
+	case "uncertain":
+		absentHistory := record.AbsenceKind != "" || record.AbsenceRevision != 0 || record.AbsenceObservedAtUnixNano != 0
+		if absentHistory && !validL8RuntimeOwnerAbsence(record, seed) {
+			return errL8RuntimeOwnerInvalid
+		}
 	}
 	return nil
+}
+
+func validL8RuntimeOwnerAbsence(record firecrackerRuntimeOwnerRecordV1, seed sandboxruntime.JobCredentialIdentitySeed) bool {
+	if record.AbsenceKind != "direct_wait" && record.AbsenceKind != "replacement_proc" {
+		return false
+	}
+	return record.AbsenceRevision > 0 && record.AbsenceRevision <= record.Revision &&
+		record.AbsenceObservedAtUnixNano >= seed.IssuedAt.UnixNano()
 }
 
 func encodeFirecrackerRuntimeOwnerRecordV1(record firecrackerRuntimeOwnerRecordV1, seed sandboxruntime.JobCredentialIdentitySeed, currentBootID string) ([]byte, error) {

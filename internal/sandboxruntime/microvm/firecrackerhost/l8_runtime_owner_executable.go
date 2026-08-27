@@ -94,7 +94,8 @@ func encodeL8RuntimeOwnerSupervisorConfig(config l8RuntimeOwnerSupervisorConfigV
 }
 
 func decodeL8RuntimeOwnerSupervisorConfig(payload []byte) (l8RuntimeOwnerSupervisorConfigV1, error) {
-	if len(payload) == 0 || len(payload) > l8RuntimeOwnerSupervisorConfigLimit || !l8RuntimeOwnerJSONNoDuplicateKeys(payload) {
+	if len(payload) == 0 || len(payload) > l8RuntimeOwnerSupervisorConfigLimit || !l8RuntimeOwnerJSONNoDuplicateKeys(payload) ||
+		!l8RuntimeOwnerSupervisorConfigJSONExact(payload) {
 		return l8RuntimeOwnerSupervisorConfigV1{}, errL8RuntimeOwnerInvalid
 	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
@@ -104,6 +105,38 @@ func decodeL8RuntimeOwnerSupervisorConfig(payload []byte) (l8RuntimeOwnerSupervi
 		return l8RuntimeOwnerSupervisorConfigV1{}, errL8RuntimeOwnerInvalid
 	}
 	return config, nil
+}
+
+func l8RuntimeOwnerSupervisorConfigJSONExact(payload []byte) bool {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(payload, &object) != nil || len(object) != 9 {
+		return false
+	}
+	stringFields := []string{"contractVersion", "namespaceWrapperExecutable", "firecrackerExecutable"}
+	for _, name := range stringFields {
+		var value string
+		if raw, ok := object[name]; !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &value) != nil {
+			return false
+		}
+	}
+	var daemonUID uint32
+	if raw, ok := object["daemonUid"]; !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &daemonUID) != nil {
+		return false
+	}
+	var inherited uint16
+	if raw, ok := object["inheritedDescriptorCount"]; !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &inherited) != nil {
+		return false
+	}
+	for _, name := range []string{"seed", "kernel", "rootfs"} {
+		raw, ok := object[name]
+		trimmed := bytes.TrimSpace(raw)
+		if !ok || len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
+			return false
+		}
+	}
+	raw, ok := object["firecrackerArguments"]
+	trimmed := bytes.TrimSpace(raw)
+	return ok && len(trimmed) >= 2 && trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']'
 }
 
 func runPrivateL8RuntimeOwnerExecutableWithOps(arguments []string, ops l8RuntimeOwnerExecutableOps) int {
@@ -172,11 +205,32 @@ func remapAndExecL8RuntimeOwnerChild(config l8RuntimeOwnerSupervisorConfigV1, so
 	if err := validateL8RuntimeOwnerSupervisorConfig(config); err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
-	var temps [4]int
+	temps := [4]int{-1, -1, -1, -1}
+	defer func() {
+		for _, temporary := range temps {
+			if temporary >= 0 {
+				_ = ops.Close(temporary)
+			}
+		}
+	}()
 	for index, source := range sources {
 		temporary, err := ops.DuplicateAtLeast(source, 9)
-		if err != nil {
+		if err != nil || temporary < 9 {
+			if temporary >= 0 {
+				alreadyOwned := false
+				for prior := 0; prior < index; prior++ {
+					alreadyOwned = alreadyOwned || temps[prior] == temporary
+				}
+				if !alreadyOwned {
+					_ = ops.Close(temporary)
+				}
+			}
 			return errL8RuntimeOwnerInvalid
+		}
+		for prior := 0; prior < index; prior++ {
+			if temps[prior] == temporary {
+				return errL8RuntimeOwnerInvalid
+			}
 		}
 		temps[index] = temporary
 	}
@@ -185,8 +239,11 @@ func remapAndExecL8RuntimeOwnerChild(config l8RuntimeOwnerSupervisorConfigV1, so
 			return errL8RuntimeOwnerInvalid
 		}
 	}
-	for _, temporary := range temps {
-		_ = ops.Close(temporary)
+	for index, temporary := range temps {
+		temps[index] = -1
+		if err := ops.Close(temporary); err != nil {
+			return errL8RuntimeOwnerInvalid
+		}
 	}
 	if err := ops.CloseFrom(7); err != nil {
 		return errL8RuntimeOwnerInvalid
@@ -320,10 +377,11 @@ func l8RuntimeOwnerJSONNoDuplicateValue(decoder *json.Decoder) bool {
 		for decoder.More() {
 			key, err := decoder.Token()
 			name, ok := key.(string)
-			if err != nil || !ok || seen[name] {
+			canonicalName := strings.ToLower(name)
+			if err != nil || !ok || seen[canonicalName] {
 				return false
 			}
-			seen[name] = true
+			seen[canonicalName] = true
 			if !l8RuntimeOwnerJSONNoDuplicateValue(decoder) {
 				return false
 			}

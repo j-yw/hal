@@ -315,8 +315,10 @@ func TestL8RuntimeOwnerLinuxStoreAndProcessInspectionArePrivate(t *testing.T) {
 	if err := writeL8RuntimeOwnerRecord(directory, genesis, seed, bootID); err != nil {
 		t.Fatalf("write owner genesis: %v", err)
 	}
-	stored := record
+	stored := genesis
 	stored.Revision = 1
+	stored.FirecrackerPID = record.FirecrackerPID
+	stored.FirecrackerStartTime = record.FirecrackerStartTime
 	if err := writeL8RuntimeOwnerRecord(directory, stored, seed, bootID); err != nil {
 		t.Fatalf("write owner record: %v", err)
 	}

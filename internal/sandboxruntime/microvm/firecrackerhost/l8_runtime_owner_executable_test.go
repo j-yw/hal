@@ -167,6 +167,62 @@ func TestL8RuntimeOwnerChildGateRemapsCollisionFreeAndExecsNamespaceWrapper(t *t
 	}
 }
 
+func TestL8RuntimeOwnerChildGateClosesEveryTemporaryOnFailure(t *testing.T) {
+	config := l8RuntimeOwnerTestSupervisorConfig()
+	for _, scenario := range []struct {
+		name        string
+		failDupAt   int
+		failMapAt   int
+		failCloseAt int
+	}{
+		{name: "duplicate", failDupAt: 2},
+		{name: "map", failMapAt: 2},
+		{name: "close", failCloseAt: 2},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			next := 9
+			duplicateCalls := 0
+			mapCalls := 0
+			closeCalls := make(map[int]int)
+			err := remapAndExecL8RuntimeOwnerChild(config, [4]int{5, 6, 7, 8}, l8RuntimeOwnerFDRemapOps{
+				DuplicateAtLeast: func(int, int) (int, error) {
+					duplicateCalls++
+					if duplicateCalls == scenario.failDupAt {
+						return -1, errors.New("private duplicate")
+					}
+					fd := next
+					next++
+					return fd, nil
+				},
+				Dup3: func(int, int, int) error {
+					mapCalls++
+					if mapCalls == scenario.failMapAt {
+						return errors.New("private map")
+					}
+					return nil
+				},
+				Close: func(fd int) error {
+					closeCalls[fd]++
+					if fd == 10 && scenario.failCloseAt != 0 {
+						return errors.New("private close")
+					}
+					return nil
+				},
+				CloseFrom: func(int) error { return nil },
+				Exec:      func(string, []string, []string) error { return nil },
+			})
+			if !errors.Is(err, errL8RuntimeOwnerInvalid) {
+				t.Fatalf("failure = %v", err)
+			}
+			for fd := 9; fd < next; fd++ {
+				if closeCalls[fd] != 1 {
+					t.Fatalf("temporary %d close count = %d", fd, closeCalls[fd])
+				}
+			}
+		})
+	}
+}
+
 func TestL8RuntimeOwnerChildGateArmsBeforeAcknowledgementAndRelease(t *testing.T) {
 	for _, scenario := range []struct{ name, fail string }{
 		{name: "success"}, {name: "arm", fail: "arm"}, {name: "armed ack", fail: "armed"}, {name: "gate eof", fail: "release"}, {name: "exec", fail: "exec"},

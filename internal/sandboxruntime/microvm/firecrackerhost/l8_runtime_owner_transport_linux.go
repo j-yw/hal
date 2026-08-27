@@ -74,10 +74,11 @@ func receiveL8RuntimeOwnerSeqpacket(fd int) (l8RuntimeOwnerReceivedPacketV1, err
 	buf := make([]byte, l8RuntimeOwnerPacketLimit)
 	oob := make([]byte, unix.CmsgSpace(4*4))
 	n, oobn, flags, _, err := unix.Recvmsg(fd, buf, oob, unix.MSG_CMSG_CLOEXEC)
+	files, fileErr := l8RuntimeOwnerFilesFromControl(oob[:oobn])
 	if err != nil || flags&unix.MSG_TRUNC != 0 || flags&unix.MSG_CTRUNC != 0 || n < l8RuntimeOwnerPacketHeaderSize {
+		closeL8RuntimeOwnerFiles(files)
 		return l8RuntimeOwnerReceivedPacketV1{}, errL8RuntimeOwnerProtocol
 	}
-	files, fileErr := l8RuntimeOwnerFilesFromControl(oob[:oobn])
 	packet, packetErr := decodeL8RuntimeOwnerPacket(buf[:n])
 	if fileErr != nil || packetErr != nil {
 		closeL8RuntimeOwnerFiles(files)
@@ -91,34 +92,45 @@ func l8RuntimeOwnerFilesFromControl(oob []byte) ([]*os.File, error) {
 		return nil, nil
 	}
 	messages, err := unix.ParseSocketControlMessage(oob)
-	if err != nil || len(messages) != 1 {
-		return nil, errL8RuntimeOwnerProtocol
-	}
-	if messages[0].Header.Type != unix.SCM_RIGHTS {
-		return nil, errL8RuntimeOwnerProtocol
-	}
-	rights, err := unix.ParseUnixRights(&messages[0])
 	if err != nil {
 		return nil, errL8RuntimeOwnerProtocol
 	}
-	files := make([]*os.File, 0, len(rights))
+	allRights := make([]int, 0, 4)
+	valid := len(messages) == 1
+	for index := range messages {
+		if messages[index].Header.Level != unix.SOL_SOCKET || messages[index].Header.Type != unix.SCM_RIGHTS {
+			valid = false
+			continue
+		}
+		rights, parseErr := unix.ParseUnixRights(&messages[index])
+		if parseErr != nil {
+			valid = false
+			continue
+		}
+		allRights = append(allRights, rights...)
+	}
+	if !valid {
+		for _, fd := range allRights {
+			_ = unix.Close(fd)
+		}
+		return nil, errL8RuntimeOwnerProtocol
+	}
+	files := make([]*os.File, 0, len(allRights))
 	failed := true
 	defer func() {
 		if failed {
 			closeL8RuntimeOwnerFiles(files)
-			for _, fd := range rights[len(files):] {
+			for _, fd := range allRights[len(files):] {
 				_ = unix.Close(fd)
 			}
 		}
 	}()
-	for _, fd := range rights {
+	for _, fd := range allRights {
 		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
-			_ = unix.Close(fd)
 			return nil, errL8RuntimeOwnerProtocol
 		}
 		file := os.NewFile(uintptr(fd), "runtime-owner-fd")
 		if file == nil {
-			_ = unix.Close(fd)
 			return nil, errL8RuntimeOwnerProtocol
 		}
 		files = append(files, file)
