@@ -68,16 +68,16 @@ func inspectL8RuntimeOwnerProcess(pid uint32) (l8RuntimeOwnerProcessObservation,
 		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
 	}
 	defer unix.Close(processfd)
-	beforeStart, beforeState, err := readL8RuntimeOwnerProcStat(processfd, pid)
+	beforeParent, beforeStart, beforeState, err := readL8RuntimeOwnerProcStat(processfd, pid)
 	if err != nil || !l8RuntimeOwnerProcessAlive(pidfd) {
 		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
 	}
-	afterStart, afterState, err := readL8RuntimeOwnerProcStat(processfd, pid)
-	if err != nil || afterStart != beforeStart || afterState != beforeState || !l8RuntimeOwnerProcessAlive(pidfd) {
+	afterParent, afterStart, afterState, err := readL8RuntimeOwnerProcStat(processfd, pid)
+	if err != nil || afterParent != beforeParent || afterStart != beforeStart || afterState != beforeState || !l8RuntimeOwnerProcessAlive(pidfd) {
 		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
 	}
 	failed = false
-	return l8RuntimeOwnerProcessObservation{PID: pid, StartTime: afterStart, state: afterState, pidfd: pidfd, pidfdOwned: true}, nil
+	return l8RuntimeOwnerProcessObservation{PID: pid, ParentPID: afterParent, StartTime: afterStart, state: afterState, pidfd: pidfd, pidfdOwned: true}, nil
 }
 
 func l8RuntimeOwnerProcessAlive(pidfd int) bool {
@@ -89,42 +89,28 @@ func l8RuntimeOwnerProcessAlive(pidfd int) bool {
 	return err == nil && ready == 0 && poll[0].Revents == 0
 }
 
-func readL8RuntimeOwnerProcStat(processfd int, pid uint32) (uint64, byte, error) {
+func readL8RuntimeOwnerProcStat(processfd int, pid uint32) (uint32, uint64, byte, error) {
 	statfd, err := unix.Openat(processfd, "stat", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return 0, 0, errL8RuntimeOwnerInvalid
+		return 0, 0, 0, errL8RuntimeOwnerInvalid
 	}
 	statFile := os.NewFile(uintptr(statfd), "process-stat")
 	if statFile == nil {
 		_ = unix.Close(statfd)
-		return 0, 0, errL8RuntimeOwnerInvalid
+		return 0, 0, 0, errL8RuntimeOwnerInvalid
 	}
 	payload, readErr := io.ReadAll(io.LimitReader(statFile, 4097))
 	closeErr := statFile.Close()
-	startTime, state, parseErr := parseL8RuntimeOwnerProcStat(payload, pid)
+	parent, startTime, state, parseErr := parseL8RuntimeOwnerProcIdentity(payload, pid)
 	if readErr != nil || closeErr != nil || len(payload) > 4096 || parseErr != nil {
-		return 0, 0, errL8RuntimeOwnerInvalid
+		return 0, 0, 0, errL8RuntimeOwnerInvalid
 	}
-	return startTime, state, nil
+	return parent, startTime, state, nil
 }
 
 func parseL8RuntimeOwnerProcStat(payload []byte, expectedPID uint32) (uint64, byte, error) {
-	value := strings.TrimSuffix(string(payload), "\n")
-	open := strings.IndexByte(value, '(')
-	close := strings.LastIndexByte(value, ')')
-	if open <= 0 || close <= open || strings.TrimSpace(value[close+1:]) == "" {
-		return 0, 0, errL8RuntimeOwnerInvalid
-	}
-	parsedPID, err := strconv.ParseUint(strings.TrimSpace(value[:open]), 10, 32)
-	fields := strings.Fields(value[close+1:])
-	if err != nil || uint32(parsedPID) != expectedPID || len(fields) < 20 || len(fields[0]) != 1 {
-		return 0, 0, errL8RuntimeOwnerInvalid
-	}
-	startTime, err := strconv.ParseUint(fields[19], 10, 64)
-	if err != nil || startTime == 0 {
-		return 0, 0, errL8RuntimeOwnerInvalid
-	}
-	return startTime, fields[0][0], nil
+	_, startTime, state, err := parseL8RuntimeOwnerProcIdentity(payload, expectedPID)
+	return startTime, state, err
 }
 
 func writeL8RuntimeOwnerRecord(directory string, record firecrackerRuntimeOwnerRecordV1, seed sandboxruntime.JobCredentialIdentitySeed, currentBootID string) error {

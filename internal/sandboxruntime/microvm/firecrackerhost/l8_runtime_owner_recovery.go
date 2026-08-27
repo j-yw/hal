@@ -213,6 +213,12 @@ func validateFirecrackerRuntimeOwnerRecordV1(record firecrackerRuntimeOwnerRecor
 	} else if record.FinalizedCommitID != "" {
 		return errL8RuntimeOwnerInvalid
 	}
+	switch record.State {
+	case "starting", "running", "stopping":
+		if record.AbsenceKind != "" || record.AbsenceRevision != 0 || record.AbsenceObservedAtUnixNano != 0 {
+			return errL8RuntimeOwnerInvalid
+		}
+	}
 	return nil
 }
 
