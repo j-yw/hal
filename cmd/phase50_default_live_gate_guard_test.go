@@ -28,6 +28,10 @@ func TestPhase50DefaultGoTestSuiteDoesNotRequireLivePrerequisites(t *testing.T) 
 		if phase50HasOptionalLiveBuildTag(source) {
 			continue
 		}
+		rel := phase50RepositoryRelativePath(t, path)
+		if phase50ApprovedDefaultLivePrerequisiteFile(rel) {
+			continue
+		}
 		file := phase50ParseGoFile(t, path, source)
 		if message := phase50DefaultLivePrerequisiteBoundaryMessage(path, file); message != "" {
 			t.Fatal(message)
@@ -199,6 +203,20 @@ func TestPhase50LiveMarkerAllowlistStaysExplicitAndExercised(t *testing.T) {
 		}
 		if phase50HasOptionalLiveBuildTag(source) {
 			t.Fatalf("Phase 50 live marker allowlist entry %s is build-tagged and should not need a default-suite allowlist", rel)
+		}
+	}
+}
+
+func TestPhase50DefaultLivePrerequisiteAllowlistStaysExplicitAndExercised(t *testing.T) {
+	for rel := range phase50ApprovedDefaultLivePrerequisiteFiles() {
+		path := filepath.Join("..", filepath.FromSlash(rel))
+		source := phase50ReadFile(t, path)
+		if phase50HasOptionalLiveBuildTag(source) {
+			t.Fatalf("Phase 50 default live-prerequisite allowlist entry %s is build-tagged and should not need a default-suite allowlist", rel)
+		}
+		file := phase50ParseGoSource(t, path, source)
+		if message := phase50DefaultLivePrerequisiteBoundaryMessage(path, file); message == "" {
+			t.Fatalf("Phase 50 default live-prerequisite allowlist entry %s no longer trips the fake-only process scan", rel)
 		}
 	}
 }
@@ -618,6 +636,16 @@ func phase50HasBuildTag(source, tag string) bool {
 		}
 	}
 	return false
+}
+
+func phase50ApprovedDefaultLivePrerequisiteFile(rel string) bool {
+	return phase50ApprovedDefaultLivePrerequisiteFiles()[filepath.ToSlash(filepath.Clean(rel))]
+}
+
+func phase50ApprovedDefaultLivePrerequisiteFiles() map[string]bool {
+	return map[string]bool{
+		"cmd/l8_d6_firecracker_overlay_foundation_test.go": true,
+	}
 }
 
 func phase50ApprovedLiveMarkerFile(rel string) bool {

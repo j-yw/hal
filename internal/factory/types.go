@@ -394,7 +394,6 @@ type SandboxSecurityMetadata struct {
 	CapabilityReadiness            *sandbox.SandboxSecurityCapabilityReadinessOutput            `json:"capabilityReadiness,omitempty"`
 	CapabilityReadinessDiagnostics *sandbox.SandboxSecurityCapabilityReadinessDiagnosticSummary `json:"capabilityReadinessDiagnostics,omitempty"`
 	SecurityReadinessGate          *sandbox.SandboxSecurityCapabilityReadinessGateDecision      `json:"securityReadinessGate,omitempty"`
-	StrictComposition              *sandbox.SandboxStrictCompositionDecision                    `json:"strictComposition,omitempty"`
 }
 
 // SecurityReadinessGateDecision returns the sanitized durable readiness-gate

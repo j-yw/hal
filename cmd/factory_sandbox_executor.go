@@ -2735,7 +2735,6 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: capabilityReadinessDiagnostics,
 		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
-		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
 	}
 	if security.Network != nil {
 		metadata.Network = &factory.SandboxNetworkSecurityMetadata{
@@ -2751,7 +2750,7 @@ func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.
 			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
 		}
 	}
-	if metadata.Network == nil && metadata.Secrets == nil && metadata.CapabilityReadiness == nil && metadata.SecurityReadinessGate == nil && metadata.StrictComposition == nil {
+	if metadata.Network == nil && metadata.Secrets == nil && metadata.CapabilityReadiness == nil && metadata.SecurityReadinessGate == nil {
 		return nil
 	}
 	return metadata
@@ -2883,9 +2882,6 @@ func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMet
 	if gate := sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate); gate != nil {
 		out["securityReadinessGate"] = gate
 	}
-	if composition := sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition); composition != nil {
-		out["strictComposition"] = composition
-	}
 	if len(out) == 0 {
 		return nil
 	}
@@ -2923,7 +2919,6 @@ func cloneFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetada
 		CapabilityReadiness:            capabilityReadiness,
 		CapabilityReadinessDiagnostics: capabilityReadinessDiagnostics,
 		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
-		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
 	}
 	if security.Network != nil {
 		clone.Network = &factory.SandboxNetworkSecurityMetadata{
@@ -2939,7 +2934,7 @@ func cloneFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetada
 			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
 		}
 	}
-	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil && clone.SecurityReadinessGate == nil && clone.StrictComposition == nil {
+	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil && clone.SecurityReadinessGate == nil {
 		return nil
 	}
 	return clone
@@ -2955,7 +2950,6 @@ func sanitizeFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMet
 		CapabilityReadiness:            sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
 		CapabilityReadinessDiagnostics: cloneCommandSandboxSecurityCapabilityReadinessDiagnostics(security.CapabilityReadinessDiagnostics),
 		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
-		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
 		Secrets:                        factorySandboxSecretSecurityToSandbox(security.Secrets),
 	})
 	if sanitized == nil {

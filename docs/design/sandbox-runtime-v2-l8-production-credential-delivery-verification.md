@@ -576,8 +576,9 @@ exact generation/network/descriptor correlation, and the rule that a
 post-return validation failure closes the lease exactly once. They also prove
 that L7 and L8 providers cannot be configured together and that retries never
 recall the provider or remint opaque authority.
-An injected post-start revalidation failure forces same-process stop/reap and
-proved process absence before lease closure and error return; the test rejects
+An injected post-start revalidation failure forces stop/reap in the same
+process and proved process absence before lease closure and error return; the
+test rejects
 any returned live handle or surviving process. That overlay test does not prove
 daemon-restart reacquisition. The separate D6 runtime-owner matrix must prove
 supervisor reconnect, secret replay rejection, exact new-owner PID/start

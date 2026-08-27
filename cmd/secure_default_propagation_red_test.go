@@ -91,7 +91,7 @@ func TestUS007FactoryStrictSecureDefaultBlockedGatePropagatesDecisionToRunRecord
 	}
 	expected := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
 		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
-		nil,
+		storedRun.Sandbox.Security.CapabilityReadinessDiagnostics,
 	)
 	gate := us007RequireSecurityReadinessGate(t, "factory blocked run record", storedRun.Sandbox.Security)
 	us007AssertSecurityReadinessGateDecision(t, "factory blocked run record", gate, expected)
@@ -102,7 +102,7 @@ func TestUS007FactoryStrictSecureDefaultBlockedGatePropagatesDecisionToRunRecord
 	us007AssertSecureDefaultDecisionSafe(t, "factory blocked policy event", event.Metadata, fixture.ForbiddenValues()...)
 }
 
-func TestUS007FactoryStrictSecureDefaultProofCompleteBlocksWithoutL10Authority(t *testing.T) {
+func TestUS007FactoryStrictSecureDefaultProofCompletePropagatesAllowedDecision(t *testing.T) {
 	now := time.Date(2026, 7, 3, 22, 25, 0, 0, time.UTC)
 	store := factory.NewStore(t.TempDir())
 	target := us007UnsafeFactoryReadinessTarget(&sandbox.SandboxSecurity{
@@ -132,10 +132,9 @@ func TestUS007FactoryStrictSecureDefaultProofCompleteBlocksWithoutL10Authority(t
 	}
 	if err := enforceFactorySandboxReadinessGate(store, factorySandboxExecutorDeps{
 		now:         func() time.Time { return now },
-		saveRun:     saveFactorySandboxRunRecord,
 		appendEvent: appendFactorySandboxTimelineEvent,
-	}, req, &record, factory.RunSecretRedactor{}); err == nil {
-		t.Fatal("enforceFactorySandboxReadinessGate() error = nil, want block without live L10 authority")
+	}, req, &record, factory.RunSecretRedactor{}); err != nil {
+		t.Fatalf("enforceFactorySandboxReadinessGate() unexpected error for proof-complete strict metadata: %v", err)
 	}
 	storedRun, err := store.LoadRun(record.RunID)
 	if err != nil {
@@ -146,14 +145,14 @@ func TestUS007FactoryStrictSecureDefaultProofCompleteBlocksWithoutL10Authority(t
 	}
 	expected := sandbox.EvaluateSandboxSecurityCapabilityReadinessGateFromDiagnosticsPtr(
 		sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict,
-		nil,
+		storedRun.Sandbox.Security.CapabilityReadinessDiagnostics,
 	)
-	if expected.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeBlocked {
-		t.Fatalf("missing L10 authority decision = %#v, want blocked", expected)
+	if expected.Outcome != sandbox.SandboxSecurityCapabilityReadinessGateOutcomeAllowed {
+		t.Fatalf("proof-complete fixture decision = %#v, want allowed", expected)
 	}
-	gate := us007RequireSecurityReadinessGate(t, "factory blocked run record", storedRun.Sandbox.Security)
-	us007AssertSecurityReadinessGateDecision(t, "factory blocked run record", gate, expected)
-	us007AssertSecureDefaultDecisionSafe(t, "factory blocked run record", gate)
+	gate := us007RequireSecurityReadinessGate(t, "factory allowed run record", storedRun.Sandbox.Security)
+	us007AssertSecurityReadinessGateDecision(t, "factory allowed run record", gate, expected)
+	us007AssertSecureDefaultDecisionSafe(t, "factory allowed run record", gate)
 
 	event := us007RequireFactoryReadinessGateEvent(t, store, record.RunID)
 	us007AssertFactoryPolicyEventMatchesDecision(t, event, expected)
