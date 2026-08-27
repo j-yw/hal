@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,6 +152,41 @@ func TestL8D6GuestCredentialClientDispatcherContainsDependencyErrorAndPanic(t *t
 				t.Fatalf("Serve() error = %v, want sanitized code %d", err, test.code)
 			}
 		})
+	}
+}
+
+func TestL8D6GuestCredentialClientRejectsCrossSessionReadinessPacket(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	otherSessionID := identity.sessionID
+	otherSessionID[0] ^= 0xff
+	requestID, err := v2control.NewRequestID([16]byte{9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := v2control.NewReadinessRequest(requestID, v2control.NewIdentityDigest(otherSessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sends atomic.Uint32
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+		return ControllerPacket{
+			sequence:  1,
+			sessionID: otherSessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmReadiness, readiness: request},
+		}, nil
+	}
+	transport.sendController = func(context.Context, ControllerSendPacket) error {
+		sends.Add(1)
+		return errors.New("cross-session response must not be sent")
+	}
+	client := newDispatchRedClient(t, transport)
+	if err := client.Serve(context.Background()); clientContractCode(err) != ClientContractPacket {
+		t.Fatalf("Serve() error = %v, want packet rejection", err)
+	}
+	if sends.Load() != 0 {
+		t.Fatalf("cross-session readiness sends = %d, want zero", sends.Load())
 	}
 }
 

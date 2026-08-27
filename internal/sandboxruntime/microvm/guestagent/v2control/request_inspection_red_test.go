@@ -66,3 +66,14 @@ func TestL8D6GuestV2InspectedRequestDeniesGenericSerialization(t *testing.T) {
 		t.Fatalf("InspectedRequest fields = %#v, want one private owned state pointer", fields)
 	}
 }
+
+func TestL8D6GuestV2RequestInspectorRejectsInvalidOrDuplicateBodyJSON(t *testing.T) {
+	for _, wire := range [][]byte{
+		[]byte(`{"protocolVersion":"guest-agent-v2","operation":"future_operation","requestId":"AQIDBAUGBwgJCgsMDQ4PEA","identityDigest":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","body":{"value":"\q"}}`),
+		[]byte(`{"protocolVersion":"guest-agent-v2","operation":"future_operation","requestId":"AQIDBAUGBwgJCgsMDQ4PEA","identityDigest":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","body":{"value":1,"value":2}}`),
+	} {
+		if _, err := InspectCredentialRequestRoot(wire); !errors.Is(err, ErrInvalidCredentialRequestRootJSON) {
+			t.Fatalf("InspectCredentialRequestRoot(%s) error = %v, want invalid JSON", wire, err)
+		}
+	}
+}

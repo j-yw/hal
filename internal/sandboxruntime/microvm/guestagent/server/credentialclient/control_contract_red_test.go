@@ -71,6 +71,29 @@ func TestL8D6GuestPacketIssuersRemainPackagePrivate(t *testing.T) {
 	}
 }
 
+func TestL8D6GuestPacketAuthorityHasNoLegacyParallelConstructors(t *testing.T) {
+	for _, name := range []string{
+		"newControllerReceiveRequest", "newControllerPacket", "newControllerSendPacket",
+		"newHelperReceiveRequest", "newHelperPacket", "newHelperSendPacket",
+	} {
+		if _, ok := reflect.TypeOf(struct{}{}).MethodByName(name); ok {
+			t.Fatalf("unexpected reflected method %s", name)
+		}
+	}
+	source, err := os.ReadFile("contracts.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"newControllerReceiveRequest", "newControllerPacket", "newControllerSendPacket",
+		"newHelperReceiveRequest", "newHelperPacket", "newHelperSendPacket",
+	} {
+		if strings.Contains(string(source), "func "+name+"(") {
+			t.Fatalf("contracts.go retains parallel packet constructor %s", name)
+		}
+	}
+}
+
 func TestL8D6GuestPacketAuthorityHasNoExternalProductionReferences(t *testing.T) {
 	repositoryRoot := guestControlRepositoryRoot(t)
 	protected := map[string]bool{
