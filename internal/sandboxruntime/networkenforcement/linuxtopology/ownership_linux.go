@@ -209,6 +209,10 @@ func (l *fileOwnershipLease) Reconcile(ctx context.Context) error {
 	if json.Unmarshal(payload, &journal) != nil || journal.Version != privateJournalVersion || !validIdentity(journal.Identity) {
 		return ErrStaleTopologyUnverified
 	}
+	bootID, err := readHostBootID()
+	if err != nil || journal.HostBootID == "" || journal.HostBootID != bootID {
+		return ErrStaleTopologyUnverified
+	}
 	if journal.Identity.SandboxID != l.identity.SandboxID {
 		return ErrIdentityMismatch
 	}
@@ -746,11 +750,12 @@ func validHostBootID(value string) bool {
 }
 
 type recoveredProcess struct {
-	mu     sync.Mutex
-	record privateProcessRecord
-	pidfd  int
-	done   chan struct{}
-	once   sync.Once
+	mu        sync.Mutex
+	record    privateProcessRecord
+	pidfd     int
+	pidfdOpen bool
+	done      chan struct{}
+	once      sync.Once
 }
 
 func claimRecordedProcess(record privateProcessRecord, namespace *privateNamespaceRecord) (ProcessHandle, error) {
@@ -777,16 +782,12 @@ func claimRecordedProcess(record privateProcessRecord, namespace *privateNamespa
 		_ = syscall.Close(int(pidfd))
 		return nil, ErrIdentityMismatch
 	}
-	if state == 'Z' || state == 'X' {
-		_ = syscall.Close(int(pidfd))
-		return nil, ErrStaleTopologyUnverified
-	}
 	if namespace != nil && !recordedNamespaceMatches(record.PID, *namespace) {
 		_ = syscall.Close(int(pidfd))
 		return nil, ErrIdentityMismatch
 	}
 	startAfter, stateAfter, err := inspectProcessStat(record.PID)
-	if err != nil || startAfter != record.StartTime || stateAfter != state {
+	if err != nil || !recordedProcessSnapshotsMatch(start, state, startAfter, stateAfter) {
 		_ = syscall.Close(int(pidfd))
 		return nil, ErrStaleTopologyUnverified
 	}
@@ -797,7 +798,12 @@ func claimRecordedProcess(record privateProcessRecord, namespace *privateNamespa
 		_ = syscall.Close(int(pidfd))
 		return nil, ErrStaleTopologyUnverified
 	}
-	return &recoveredProcess{record: record, pidfd: int(pidfd), done: make(chan struct{})}, nil
+	return &recoveredProcess{record: record, pidfd: int(pidfd), pidfdOpen: true, done: make(chan struct{})}, nil
+}
+
+func recordedProcessSnapshotsMatch(beforeStart string, beforeState byte, afterStart string, afterState byte) bool {
+	return beforeStart != "" && beforeStart == afterStart &&
+		beforeState != 'Z' && beforeState != 'X' && afterState != 'Z' && afterState != 'X'
 }
 
 func inspectProcessStat(pid int) (string, byte, error) {
@@ -857,9 +863,11 @@ func (p *recoveredProcess) closePIDFD() {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.pidfd == 0 {
+	if !p.pidfdOpen {
 		return
 	}
-	_ = syscall.Close(p.pidfd)
-	p.pidfd = 0
+	pidfd := p.pidfd
+	p.pidfd = -1
+	p.pidfdOpen = false
+	_ = syscall.Close(pidfd)
 }

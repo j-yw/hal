@@ -199,7 +199,7 @@ func acceptRecoveredOwnership(request RecoveryRequest, recovered RecoveredOwners
 	if err != nil || owned == nil || !owned.Correlates(request.Namespace) {
 		return nil, recoveredProcesses{}, false
 	}
-	if closeErr := recovered.Namespace.Close(); closeErr != nil {
+	if closeErr := guardedCleanup(recovered.Namespace.Close); closeErr != nil {
 		_ = owned.Close()
 		return nil, recoveredProcesses{}, false
 	}
@@ -226,20 +226,22 @@ func sameProcessPID(left, right ProcessHandle) bool {
 }
 
 func abandonRecoveredOwnership(request RecoveryRequest, recovered RecoveredOwnership) {
-	defer func() { _ = recover() }()
 	if recovered.Namespace != nil && recovered.Namespace != request.Namespace {
-		_ = recovered.Namespace.Close()
+		_ = guardedCleanup(recovered.Namespace.Close)
 	}
 	closeRecoveredProcesses(recovered.Keeper, recovered.Mapper)
 	if recovered.Lease != nil && !valueIsNil(recovered.Lease) {
-		_ = recovered.Lease.Release()
+		_ = guardedCleanup(recovered.Lease.Release)
 	}
 }
 
 func closeRecoveredProcesses(handles ...ProcessHandle) {
 	for _, handle := range handles {
 		if closer, ok := handle.(interface{ closePIDFD() }); ok {
-			closer.closePIDFD()
+			_ = guardedCleanup(func() error {
+				closer.closePIDFD()
+				return nil
+			})
 		}
 	}
 }
