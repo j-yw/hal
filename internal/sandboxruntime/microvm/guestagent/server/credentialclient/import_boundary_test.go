@@ -49,6 +49,8 @@ func TestCredentialClientImportBoundaryAndNoGlobalRegistration(t *testing.T) {
 	}
 	const protocolImport = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 	const credentialMemoryImport = "github.com/jywlabs/hal/internal/credentialmemory"
+	const sessionImport = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/session"
+	const controlImport = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/v2control"
 	forbiddenStandardLibrary := map[string]bool{
 		"net": true, "net/http": true, "net/url": true,
 		"os": true, "os/exec": true, "path/filepath": true,
@@ -71,15 +73,18 @@ func TestCredentialClientImportBoundaryAndNoGlobalRegistration(t *testing.T) {
 			if imported.Name != nil && (imported.Name.Name == "_" || imported.Name.Name == ".") {
 				t.Errorf("production file %s uses side-effect/implicit import %q", path, name)
 			}
-			if !isFoundationProductionFile(path) {
+			if !isFoundationProductionFile(path) && !isGuestControlContractProductionFile(path) {
 				continue
 			}
-			if name == protocolImport || (name == credentialMemoryImport && filepath.Base(path) == "ssh_connection.go") {
+			if name == protocolImport ||
+				(name == credentialMemoryImport && (filepath.Base(path) == "ssh_connection.go" || filepath.Base(path) == "control_contract_red.go")) ||
+				(name == sessionImport && filepath.Base(path) == "control_contract_red.go") ||
+				(name == controlImport && (filepath.Base(path) == "contracts.go" || filepath.Base(path) == "control_contract_red.go")) {
 				continue
 			}
 			standardPackage, standardErr := build.Default.Import(name, ".", build.FindOnly)
 			if standardErr != nil || !standardPackage.Goroot || forbiddenStandardLibrary[name] {
-				t.Errorf("production file %s imports %q; credentialclient permits standard library plus credentialprotocol, and credentialmemory only in ssh_connection.go", path, name)
+				t.Errorf("production file %s imports %q outside the exact credentialclient contract boundary", path, name)
 			}
 		}
 		for _, declaration := range file.Decls {
@@ -118,6 +123,15 @@ func TestCredentialClientImportBoundaryAndNoGlobalRegistration(t *testing.T) {
 func isFoundationProductionFile(name string) bool {
 	switch filepath.Base(name) {
 	case "contracts.go", "client_policy.go", "extension_packet.go", "registry.go", "ssh_connection.go":
+		return true
+	default:
+		return false
+	}
+}
+
+func isGuestControlContractProductionFile(name string) bool {
+	switch filepath.Base(name) {
+	case "contracts.go", "control_contract_red.go":
 		return true
 	default:
 		return false

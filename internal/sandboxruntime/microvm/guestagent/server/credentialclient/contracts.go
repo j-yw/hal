@@ -6,8 +6,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/v2control"
 )
 
 var ErrLiveValueSerialization = errors.New("credential client live value serialization is forbidden")
@@ -47,47 +49,75 @@ func (liveValue) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("credentialclient.live[redacted]"))
 }
 
-type packetCorrelation struct {
-	sequence       uint64
-	identityDigest [32]byte
-}
-
 // ControllerReceiveRequest is a private-constructor, non-JSON receive union.
 type ControllerReceiveRequest struct {
 	liveValue
-	correlation packetCorrelation
+	nextSequence          uint64
+	expectedIdentity      v2control.IdentityDigest
+	expectedIdentitySet   bool
+	maximumPlaintextBytes uint32
+	state                 *controllerReceiveRequestState
 }
 
 // ControllerPacket is an authenticated closed controller union.
 type ControllerPacket struct {
 	liveValue
-	correlation packetCorrelation
+	sequence  uint64
+	sessionID [32]byte
+	arm       controllerPacketArm
+	body      controllerBodyCapability
 }
 
 // ControllerSendPacket is a core-built closed controller union.
 type ControllerSendPacket struct {
 	liveValue
-	correlation packetCorrelation
+	sequence          uint64
+	sessionID         [32]byte
+	arm               controllerSendArmKind
+	encodedBodyLength uint32
+	bodySHA256        [32]byte
+	state             *controllerSendPacketState
 }
 
 // HelperReceiveRequest is a private-constructor, non-JSON receive union.
 type HelperReceiveRequest struct {
 	liveValue
-	correlation packetCorrelation
+	nextSequence         uint64
+	maximumBodyBytes     uint32
+	maximumRights        uint32
+	expectedRequestID    [16]byte
+	expectedRequestIDSet bool
+	expectedIdentity     [32]byte
+	state                *helperReceiveRequestState
 }
 
 // HelperPacket is an authenticated closed helper union.
 type HelperPacket struct {
 	liveValue
-	packetType  credentialprotocol.PacketType
-	correlation packetCorrelation
+	header credentialprotocol.HelperPacketHeader
+	arm    helperPacketArm
+	body   helperBodyCapability
+	right  SSHConnectionCapability
 }
 
 // HelperSendPacket is a core-built closed helper union.
 type HelperSendPacket struct {
 	liveValue
-	packetType  credentialprotocol.PacketType
-	correlation packetCorrelation
+	header            credentialprotocol.HelperPacketHeader
+	arm               helperSendArmKind
+	encodedBodyLength uint32
+	bodySHA256        [32]byte
+	state             *helperSendPacketState
+}
+
+type controllerReceiveRequestState struct {
+	mu       sync.Mutex
+	consumed bool
+}
+
+type helperReceiveRequestState struct {
+	mu       sync.Mutex
+	consumed bool
 }
 
 // ClientPolicyRequest contains only canonical safe policy inputs. The private
@@ -141,30 +171,6 @@ func encodeOpaque16(value string) []byte {
 	binary.BigEndian.PutUint16(encoded[:2], uint16(len(value)))
 	copy(encoded[2:], value)
 	return encoded
-}
-
-func newControllerReceiveRequest(sequence uint64, identityDigest [32]byte) ControllerReceiveRequest {
-	return ControllerReceiveRequest{correlation: packetCorrelation{sequence: sequence, identityDigest: identityDigest}}
-}
-
-func newControllerPacket(sequence uint64, identityDigest [32]byte) ControllerPacket {
-	return ControllerPacket{correlation: packetCorrelation{sequence: sequence, identityDigest: identityDigest}}
-}
-
-func newControllerSendPacket(sequence uint64, identityDigest [32]byte) ControllerSendPacket {
-	return ControllerSendPacket{correlation: packetCorrelation{sequence: sequence, identityDigest: identityDigest}}
-}
-
-func newHelperReceiveRequest(sequence uint64, identityDigest [32]byte) HelperReceiveRequest {
-	return HelperReceiveRequest{correlation: packetCorrelation{sequence: sequence, identityDigest: identityDigest}}
-}
-
-func newHelperPacket(packetType credentialprotocol.PacketType, sequence uint64, identityDigest [32]byte) HelperPacket {
-	return HelperPacket{packetType: packetType, correlation: packetCorrelation{sequence: sequence, identityDigest: identityDigest}}
-}
-
-func newHelperSendPacket(packetType credentialprotocol.PacketType, sequence uint64, identityDigest [32]byte) HelperSendPacket {
-	return HelperSendPacket{packetType: packetType, correlation: packetCorrelation{sequence: sequence, identityDigest: identityDigest}}
 }
 
 func newClientPolicyRequest(

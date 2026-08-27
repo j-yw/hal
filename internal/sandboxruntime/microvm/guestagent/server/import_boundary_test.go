@@ -14,6 +14,7 @@ import (
 )
 
 const l4GuestAgentProtocolImport = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
+const l8CredentialClientImport = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server/credentialclient"
 
 func TestL4GuestAgentServerProductionImportsStayBounded(t *testing.T) {
 	for _, path := range l4GuestAgentServerProductionFiles(t) {
@@ -29,7 +30,7 @@ func TestL4GuestAgentServerProductionImportsStayBounded(t *testing.T) {
 			if reason := l4GuestAgentServerForbiddenImport(importPath); reason != "" {
 				t.Fatalf("%s imports forbidden %s %q", path, reason, importPath)
 			}
-			if !l4GuestAgentServerAllowedImport(importPath) {
+			if !l4GuestAgentServerAllowedImportForFile(path, importPath) {
 				t.Fatalf("%s imports unapproved dependency %q", path, importPath)
 			}
 		}
@@ -98,6 +99,13 @@ func TestL4GuestAgentServerForbiddenImportGuardCoversRequiredBoundaries(t *testi
 			t.Fatalf("allowed import %q was not approved", allowed)
 		}
 	}
+}
+
+func l4GuestAgentServerAllowedImportForFile(path, importPath string) bool {
+	if importPath == l8CredentialClientImport {
+		return filepath.Base(path) == "contracts.go"
+	}
+	return l4GuestAgentServerAllowedImport(importPath)
 }
 
 func TestL4GuestAgentServerForbiddenSourceGuardCoversRequiredBoundaries(t *testing.T) {

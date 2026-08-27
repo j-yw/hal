@@ -118,14 +118,15 @@ type openedClientExtension struct {
 }
 
 type clientState struct {
-	mu              sync.Mutex
-	phase           clientPhase
-	serveCalled     bool
-	closeStarted    bool
-	transportClosed bool
-	opened          []openedClientExtension
-	terminalError   error
-	completion      chan struct{}
+	mu               sync.Mutex
+	phase            clientPhase
+	serveCalled      bool
+	closeStarted     bool
+	transportClosed  bool
+	opened           []openedClientExtension
+	terminalError    error
+	completion       chan struct{}
+	admittedReceives sync.WaitGroup
 }
 
 type clientDescriptorSnapshot struct {
@@ -227,6 +228,15 @@ func (client *Client) Serve(ctx context.Context) error {
 	state.phase = clientPhaseServing
 	completion := state.completion
 	state.mu.Unlock()
+	if _, operational := client.transport.(authenticatedTransport); operational {
+		dispatchErr := client.serveCredentialLifecycle(ctx)
+		client.startDrain()
+		<-completion
+		if cleanupErr := client.latchedError(); cleanupErr != nil {
+			return cleanupErr
+		}
+		return dispatchErr
+	}
 
 	select {
 	case <-completion:
@@ -236,6 +246,18 @@ func (client *Client) Serve(ctx context.Context) error {
 		<-completion
 		return client.latchedError()
 	}
+}
+
+// ServeStarted reports whether the sole Serve entrypoint has accepted lifecycle
+// ownership. It exists only so the process-local root server can serialize an
+// immediate shutdown behind that ownership handoff.
+func (client *Client) ServeStarted() bool {
+	if client == nil || client.state == nil {
+		return false
+	}
+	client.state.mu.Lock()
+	defer client.state.mu.Unlock()
+	return client.state.serveCalled
 }
 
 // Close starts or joins the sole internally bounded drain. Caller cancellation
@@ -274,6 +296,7 @@ func (client *Client) startDrain() {
 	if closeClientTransport(cleanupCtx, client.transport) {
 		cleanupFailed = true
 	}
+	client.state.admittedReceives.Wait()
 	if cleanupCtx.Err() != nil {
 		cleanupFailed = true
 	}

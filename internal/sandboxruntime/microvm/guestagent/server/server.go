@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -41,6 +42,9 @@ type Server struct {
 	cleanupDone chan struct{}
 	terminal    State
 	cleanupErr  error
+
+	credentialLifecycle credentialLifecycle
+	credentialDone      <-chan error
 }
 
 // New constructs a server without starting its transport.
@@ -124,6 +128,7 @@ func New(options Options) (*Server, error) {
 		operationCancel:                 operationCancel,
 		transportDone:                   make(chan struct{}),
 		cleanupDone:                     make(chan struct{}),
+		credentialLifecycle:             options.credentialLifecycle(),
 	}, nil
 }
 
@@ -157,6 +162,18 @@ func (server *Server) Serve(ctx context.Context) error {
 	server.serveUsed = true
 	server.serveCancel = cancel
 	server.state = StateServing
+	var credentialDone chan error
+	if server.credentialLifecycle != nil {
+		credentialDone = make(chan error, 1)
+		credentialFinished := make(chan struct{})
+		server.credentialDone = credentialDone
+		go func() {
+			credentialDone <- callCredentialLifecycleServe(serveCtx, server.credentialLifecycle)
+			close(credentialFinished)
+			cancel()
+		}()
+		waitCredentialLifecycleStart(server.credentialLifecycle, credentialFinished)
+	}
 	server.mu.Unlock()
 
 	transportErr := server.transport.Serve(serveCtx, server.limits, server)
@@ -293,7 +310,23 @@ func (server *Server) cleanup() {
 	go func() {
 		<-server.transportDone
 		server.operations.Wait()
-		cleanupResult <- server.backend.Close(cleanupCtx)
+		err := server.backend.Close(cleanupCtx)
+		if server.credentialLifecycle != nil {
+			if closeErr := callCredentialLifecycleClose(cleanupCtx, server.credentialLifecycle); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+			if server.credentialDone != nil {
+				select {
+				case serveErr := <-server.credentialDone:
+					if serveErr != nil {
+						err = errors.Join(err, serveErr)
+					}
+				case <-cleanupCtx.Done():
+					err = errors.Join(err, cleanupCtx.Err())
+				}
+			}
+		}
+		cleanupResult <- err
 	}()
 
 	var cleanupErr error
@@ -405,6 +438,51 @@ func configuredDependency(value any) bool {
 	default:
 		return true
 	}
+}
+
+var errCredentialLifecyclePanic = errors.New("guest-agent credential lifecycle panicked")
+
+func callCredentialLifecycleServe(ctx context.Context, lifecycle credentialLifecycle) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errCredentialLifecyclePanic
+		}
+	}()
+	return lifecycle.Serve(ctx)
+}
+
+func callCredentialLifecycleClose(ctx context.Context, lifecycle credentialLifecycle) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errCredentialLifecyclePanic
+		}
+	}()
+	return lifecycle.Close(ctx)
+}
+
+func waitCredentialLifecycleStart(lifecycle credentialLifecycle, finished <-chan struct{}) {
+	for {
+		started, panicked := callCredentialLifecycleServeStarted(lifecycle)
+		if started || panicked {
+			return
+		}
+		select {
+		case <-finished:
+			return
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func callCredentialLifecycleServeStarted(lifecycle credentialLifecycle) (started, panicked bool) {
+	defer func() {
+		if recover() != nil {
+			started = false
+			panicked = true
+		}
+	}()
+	return lifecycle.ServeStarted(), false
 }
 
 type serverFailure struct {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server/credentialclient"
 )
 
 const (
@@ -193,6 +194,7 @@ type LinuxBackendOptions struct {
 type Options struct {
 	Transport                       Transport
 	Backend                         Backend
+	CredentialClient                *credentialclient.Client
 	EnvironmentResolver             EnvironmentResolver
 	MaxRequestBytes                 int64
 	MaxResponseBytes                int64
@@ -206,4 +208,17 @@ type Options struct {
 	// implies RequireIsolationProofBeforeWork and cannot be weakened by a
 	// readiness request that omits RequireNetworkProof.
 	RequireNetworkProofBeforeWork bool
+}
+
+type credentialLifecycle interface {
+	Serve(context.Context) error
+	ServeStarted() bool
+	Close(context.Context) error
+}
+
+func (options Options) credentialLifecycle() credentialLifecycle {
+	if options.CredentialClient == nil {
+		return nil
+	}
+	return options.CredentialClient
 }

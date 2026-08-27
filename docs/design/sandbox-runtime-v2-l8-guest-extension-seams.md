@@ -4413,6 +4413,7 @@ type Client struct {
 
 func NewClient(ClientOptions) (*Client, error)
 func (c *Client) Serve(context.Context) error
+func (c *Client) ServeStarted() bool
 func (c *Client) Close(context.Context) error
 
 type ClientProcessDescriptor interface {
@@ -4522,6 +4523,11 @@ request, sequence and identity correlation, Policy calls, extension sessions,
 body/right transfer, and drain. It returns only after the Client is closed and
 all Client-owned live values are destroyed or after an absence-unproved cleanup
 failure requiring VM stop/reap.
+
+`ServeStarted` exposes only whether that one `Serve` call has accepted its
+lifecycle ownership. The process-local root server uses it to serialize an
+immediate concurrent shutdown behind the `Serve` handoff; it grants no packet,
+transport, extension, or cleanup authority.
 
 `Close` is safe before, during, or after `Serve`. Its context must be non-nil,
 but its deadline and cancellation do not select, shorten, or abandon cleanup.
