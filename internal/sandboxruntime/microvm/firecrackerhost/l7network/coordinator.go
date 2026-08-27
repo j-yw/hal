@@ -551,11 +551,11 @@ func (s *Session) quarantineOnDrift(ctx context.Context, primary error) (Metadat
 			s.metadata = failedMetadata(s.identity)
 			return s.metadata, errors.Join(primary, ErrQuarantineFailed)
 		}
-		s.quarantined = true
-		s.metadata = Metadata{Identity: s.identity, Status: StatusQuarantined}
 		if err := s.save(ctx, journalStageQuarantined); err != nil {
 			return s.metadata, errors.Join(primary, ErrCleanupIncomplete)
 		}
+		s.quarantined = true
+		s.metadata = Metadata{Identity: s.identity, Status: StatusQuarantined}
 	}
 	return s.metadata, primary
 }
@@ -573,11 +573,11 @@ func (s *Session) Quarantine(ctx context.Context, identity Identity) error {
 		s.metadata = failedMetadata(s.identity)
 		return ErrQuarantineFailed
 	}
-	s.quarantined = true
-	s.metadata = Metadata{Identity: s.identity, Status: StatusQuarantined}
 	if err := s.save(ctx, journalStageQuarantined); err != nil {
 		return ErrCleanupIncomplete
 	}
+	s.quarantined = true
+	s.metadata = Metadata{Identity: s.identity, Status: StatusQuarantined}
 	return nil
 }
 
@@ -645,20 +645,20 @@ func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, b
 			s.metadata = failedMetadata(s.identity)
 			return ErrCleanupIncomplete
 		}
-		s.rulesRemoved = true
 		if err := s.save(ctx, journalStageRulesRemoved); err != nil {
 			return ErrCleanupIncomplete
 		}
+		s.rulesRemoved = true
 	}
 	if !s.tapRemoved && s.tap.name != "" {
 		if err := s.coordinator.options.TAP.Delete(ctx, s.namespace, s.tap, s.tapSpec); err != nil {
 			s.metadata = failedMetadata(s.identity)
 			return ErrCleanupIncomplete
 		}
-		s.tapRemoved = true
 		if err := s.save(ctx, journalStageTAPRemoved); err != nil {
 			return ErrCleanupIncomplete
 		}
+		s.tapRemoved = true
 	}
 	if !s.topologyRemoved {
 		if !interfaceIsNil(s.namespace) {
@@ -673,10 +673,10 @@ func (s *Session) CleanupAfterVMQuiesced(_ context.Context, identity Identity, b
 				return ErrCleanupIncomplete
 			}
 		}
-		s.topologyRemoved = true
 		if err := s.save(ctx, journalStageTopologyRemoved); err != nil {
 			return ErrCleanupIncomplete
 		}
+		s.topologyRemoved = true
 	}
 	if !s.proxyStopped && !interfaceIsNil(s.proxy) {
 		if err := s.coordinator.options.Proxy.Stop(ctx, s.plan, s.proxy); err != nil {
@@ -891,6 +891,11 @@ func validatedProxyEndpoint(endpoint string) (netip.Addr, uint16, netip.Addr, er
 func topologyMetadataMatches(metadata linuxtopology.Metadata, identity linuxtopology.Identity) bool {
 	return metadata.Identity == identity && metadata.Status == linuxtopology.StatusPrepared &&
 		metadata.StructuralInspected && metadata.MappingReachable
+}
+
+func recoveryTopologyMetadataMatches(metadata linuxtopology.Metadata, identity linuxtopology.Identity) bool {
+	return metadata.Identity == identity && metadata.Status == linuxtopology.StatusRecoveryOnly &&
+		!metadata.StructuralInspected && !metadata.MappingReachable
 }
 
 func inspectedRuleDigest(metadata networkenforcement.RuleLifecycleMetadata, expected networkenforcement.EnforcementCorrelation) (string, error) {

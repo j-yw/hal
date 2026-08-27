@@ -27,19 +27,20 @@ type sandboxOperationLock struct {
 }
 
 type Session struct {
-	mu          sync.Mutex
-	identity    Identity
-	mapping     Mapping
-	metadata    Metadata
-	keeper      ProcessHandle
-	mapper      ProcessHandle
-	namespace   *NamespaceHandle
-	losses      chan Loss
-	lossOnce    sync.Once
-	stopping    bool
-	stopAttempt *lifecycleStopAttempt
-	borrows     sync.WaitGroup
-	ownership   OwnershipLease
+	mu           sync.Mutex
+	identity     Identity
+	mapping      Mapping
+	metadata     Metadata
+	keeper       ProcessHandle
+	mapper       ProcessHandle
+	namespace    *NamespaceHandle
+	losses       chan Loss
+	lossOnce     sync.Once
+	stopping     bool
+	stopAttempt  *lifecycleStopAttempt
+	borrows      sync.WaitGroup
+	ownership    OwnershipLease
+	recoveryOnly bool
 }
 
 type lifecycleStopAttempt struct {
@@ -507,10 +508,10 @@ func (l *Lifecycle) acquireSandboxOperation(sandboxID string) func() {
 }
 
 func finalizeOwnership(lease OwnershipLease, identity Identity) error {
-	if err := lease.Retire(identity); err != nil {
+	if err := guardedCleanup(func() error { return lease.Retire(identity) }); err != nil {
 		return err
 	}
-	return lease.Release()
+	return guardedCleanup(func() error { return lease.Release() })
 }
 
 func sanitizeOwnershipError(err error) error {
@@ -531,13 +532,13 @@ func (l *Lifecycle) cleanup(mapper ProcessHandle, owned *NamespaceHandle, keeper
 	defer cancel()
 	var result error
 	if mapper != nil {
-		result = errors.Join(result, mapper.Terminate(ctx))
+		result = errors.Join(result, guardedCleanup(func() error { return mapper.Terminate(ctx) }))
 	}
 	if owned != nil {
-		result = errors.Join(result, owned.Close())
+		result = errors.Join(result, guardedCleanup(func() error { return owned.Close() }))
 	}
 	if keeper != nil {
-		result = errors.Join(result, keeper.Terminate(ctx))
+		result = errors.Join(result, guardedCleanup(func() error { return keeper.Terminate(ctx) }))
 	}
 	return result
 }
@@ -566,8 +567,14 @@ func (s *Session) NamespaceHandle() (*NamespaceHandle, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.namespace == nil || s.stopping || s.metadata.Status != StatusPrepared ||
-		!s.metadata.StructuralInspected || !s.metadata.MappingReachable {
+	if s.namespace == nil || s.stopping {
+		return nil, ErrStopped
+	}
+	if s.recoveryOnly {
+		if s.metadata.Status != StatusRecoveryOnly {
+			return nil, ErrStopped
+		}
+	} else if s.metadata.Status != StatusPrepared || !s.metadata.StructuralInspected || !s.metadata.MappingReachable {
 		return nil, ErrStopped
 	}
 	s.borrows.Add(1)

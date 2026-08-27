@@ -11,6 +11,19 @@ import (
 
 type LinuxTopology struct{ lifecycle *linuxtopology.Lifecycle }
 
+// LinuxRecoveryNamespaceProvider returns a fresh caller-owned duplicate of the
+// exact supervisor-retained user/network namespace authority for one recovery.
+type LinuxRecoveryNamespaceProvider interface {
+	AcquireLinuxRecoveryNamespace(context.Context, Identity) (*linuxtopology.NamespaceHandle, error)
+}
+
+// LinuxRecoveryTopology adapts cleanup-only linuxtopology recovery to the
+// Reconciler's exact-ownership boundary.
+type LinuxRecoveryTopology struct {
+	lifecycle *linuxtopology.Lifecycle
+	provider  LinuxRecoveryNamespaceProvider
+}
+
 type linuxTopologySession struct{ session *linuxtopology.Session }
 
 type linuxNamespaceLease struct {
@@ -23,6 +36,38 @@ func NewLinuxTopology(lifecycle *linuxtopology.Lifecycle) (*LinuxTopology, error
 		return nil, ErrInvalidConfiguration
 	}
 	return &LinuxTopology{lifecycle: lifecycle}, nil
+}
+
+func NewLinuxRecoveryTopology(lifecycle *linuxtopology.Lifecycle, provider LinuxRecoveryNamespaceProvider) (*LinuxRecoveryTopology, error) {
+	if lifecycle == nil || interfaceIsNil(provider) {
+		return nil, ErrInvalidConfiguration
+	}
+	return &LinuxRecoveryTopology{lifecycle: lifecycle, provider: provider}, nil
+}
+
+func (t *LinuxRecoveryTopology) Recover(ctx context.Context, identity Identity) (topology TopologyLifecycle, session TopologySession, err error) {
+	defer func() {
+		if panicked := recover(); panicked != nil {
+			topology, session, err = nil, nil, ErrStaleTopologyUnverified
+		}
+	}()
+	if t == nil || t.lifecycle == nil || interfaceIsNil(t.provider) || !validIdentity(identity) {
+		return nil, nil, ErrStaleTopologyUnverified
+	}
+	namespace, acquireErr := t.provider.AcquireLinuxRecoveryNamespace(ctx, identity)
+	if namespace != nil {
+		defer func() { _ = namespace.Close() }()
+	}
+	if acquireErr != nil || namespace == nil || namespace.Closed() {
+		return nil, nil, ErrStaleTopologyUnverified
+	}
+	recovered, recoverErr := t.lifecycle.Recover(ctx, linuxtopology.RecoveryRequest{
+		Identity: topologyIdentity(identity), Namespace: namespace,
+	})
+	if recoverErr != nil || recovered == nil {
+		return nil, nil, ErrStaleTopologyUnverified
+	}
+	return &LinuxTopology{lifecycle: t.lifecycle}, &linuxTopologySession{session: recovered}, nil
 }
 
 func (t *LinuxTopology) Start(ctx context.Context, request linuxtopology.StartRequest) (TopologySession, error) {

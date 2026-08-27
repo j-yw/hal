@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxtopology"
 )
 
 func TestFirecrackerHostTopologyReconcilerQuarantinesBeforeVMStopHandoff(t *testing.T) {
@@ -29,8 +32,10 @@ func TestFirecrackerHostTopologyReconcilerQuarantinesBeforeVMStopHandoff(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.Metadata().Status != StatusQuarantined || session.Metadata().Status == StatusActive {
-		t.Fatalf("recovered metadata = %#v", session.Metadata())
+	metadata := session.Metadata()
+	if metadata.Status != StatusQuarantined || metadata.Status == StatusActive || metadata.StructuralInspected ||
+		metadata.TAPInspected || metadata.RulesInspected || metadata.RawPacketIsolationVerified || metadata.RuleDigest != "" {
+		t.Fatalf("recovered metadata = %#v, want quarantine without active/inspection proof", metadata)
 	}
 	if got, want := sequence.snapshot(), []string{"journal_acquire", "journal_load", "recovery_open", "topology_borrow", "rules_quarantine", "journal_save_quarantined"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("recovery sequence = %#v, want %#v", got, want)
@@ -77,6 +82,84 @@ func TestFirecrackerHostTopologyReconcilerFailsClosedWithoutExactRecoveryProof(t
 	}
 }
 
+func TestFirecrackerHostTopologyReconcilerRejectsPreparedProofAsRecoveryAuthority(t *testing.T) {
+	sequence := &callSequence{}
+	identity := testIdentity()
+	spec := staticTAPSpec(identity, netip.MustParseAddr("192.0.2.2"), 43123)
+	record := journalRecord{identity: identity, stage: journalStageInspected, tapName: spec.name,
+		tapFingerprint: spec.fingerprint(), tapIfIndex: 41, proxyAddress: spec.proxyAddress.String(), proxyPort: spec.proxyPort}
+	topology := newFakeTopology(sequence)
+	reconciler, err := NewReconciler(ReconcilerOptions{
+		Recovery: &preparedRecoveryTopology{sequence: sequence, lifecycle: topology},
+		TAP:      &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		VMTermination: &fakeVMTerminationVerifier{stopped: true, reaped: true},
+		Journal:       &loadedJournalStore{sequence: sequence, record: record},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session, recoverErr := reconciler.Recover(context.Background(), identity); session != nil || !errors.Is(recoverErr, ErrStaleTopologyUnverified) {
+		t.Fatalf("Recover(prepared proof) = %T, %v; want cleanup-only rejection", session, recoverErr)
+	}
+	if contains(sequence.snapshot(), "rules_quarantine") {
+		t.Fatalf("prepared proof authorized recovery mutation: %#v", sequence.snapshot())
+	}
+}
+
+type preparedRecoveryTopology struct {
+	sequence  *callSequence
+	lifecycle *fakeTopology
+}
+
+func TestFirecrackerHostTopologyPrepareRejectsCleanupOnlyRecoveryMetadata(t *testing.T) {
+	sequence := &callSequence{}
+	options := validCoordinatorOptions(sequence)
+	options.Topology = &cleanupOnlyStartTopology{sequence: sequence}
+	coordinator := mustCoordinator(t, options)
+	if session, err := coordinator.Prepare(context.Background(), PrepareRequest{Identity: testIdentity(), Plan: testPlan()}); session != nil || !errors.Is(err, ErrProofMismatch) {
+		t.Fatalf("Prepare(cleanup-only topology) = %T, %v", session, err)
+	}
+	if contains(sequence.snapshot(), "tap_create") || contains(sequence.snapshot(), "rules_apply_inspect") {
+		t.Fatalf("cleanup-only metadata reached proof-producing steps: %#v", sequence.snapshot())
+	}
+}
+
+type cleanupOnlyStartTopology struct{ sequence *callSequence }
+
+func (t *cleanupOnlyStartTopology) Start(_ context.Context, request linuxtopology.StartRequest) (TopologySession, error) {
+	t.sequence.add("topology_start")
+	return &cleanupOnlyTopologySession{sequence: t.sequence, identity: request.Identity}, nil
+}
+
+func (t *cleanupOnlyStartTopology) Stop(context.Context, linuxtopology.Identity) (linuxtopology.Metadata, error) {
+	t.sequence.add("topology_stop")
+	return linuxtopology.Metadata{Status: linuxtopology.StatusStopped}, nil
+}
+
+type cleanupOnlyTopologySession struct {
+	sequence *callSequence
+	identity linuxtopology.Identity
+}
+
+func (s *cleanupOnlyTopologySession) Metadata() linuxtopology.Metadata {
+	return linuxtopology.Metadata{Identity: s.identity, Status: linuxtopology.StatusRecoveryOnly}
+}
+func (*cleanupOnlyTopologySession) Losses() <-chan linuxtopology.Loss {
+	losses := make(chan linuxtopology.Loss)
+	close(losses)
+	return losses
+}
+func (s *cleanupOnlyTopologySession) BorrowNamespace() (NamespaceLease, error) {
+	s.sequence.add("topology_borrow")
+	return &fakeNamespaceLease{rules: linuxrules.NewNamespaceHandle(10, 11)}, nil
+}
+
+func (r *preparedRecoveryTopology) Recover(_ context.Context, identity Identity) (TopologyLifecycle, TopologySession, error) {
+	r.sequence.add("recovery_open")
+	r.lifecycle.session.identity = topologyIdentity(identity)
+	return r.lifecycle, r.lifecycle.session, nil
+}
+
 type fakeRecoveryTopology struct {
 	sequence  *callSequence
 	lifecycle *fakeTopology
@@ -89,6 +172,7 @@ func (r *fakeRecoveryTopology) Recover(_ context.Context, identity Identity) (To
 		return nil, nil, r.err
 	}
 	r.lifecycle.session.identity = topologyIdentity(identity)
+	r.lifecycle.session.recoveryOnly = true
 	return r.lifecycle, r.lifecycle.session, nil
 }
 
