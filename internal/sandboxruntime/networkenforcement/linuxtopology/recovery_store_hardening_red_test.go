@@ -154,6 +154,77 @@ func TestLinuxTopologyRecoveryRejectsBootAndProcessIdentityMismatch(t *testing.T
 	}
 }
 
+func TestLinuxTopologyReconcileRejectsCrossBootJournalBeforeCleanup(t *testing.T) {
+	fixture := newFileRecoveryFixture(t)
+	fixture.rewriteJournal(t, func(raw map[string]any) {
+		raw["hostBootId"] = "00000000-0000-4000-8000-000000000000"
+	})
+
+	replacement := fixture.identity
+	replacement.ExecutionID = "execution-cross-boot-reconcile"
+	replacement.ProxyGenerationID = "proxy-generation-cross-boot-reconcile"
+	replacement.TopologyGenerationID = "topology-generation-cross-boot-reconcile"
+	lease, err := fixture.store.acquire(context.Background(), replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+
+	if err := lease.Reconcile(context.Background()); !errors.Is(err, ErrStaleTopologyUnverified) {
+		t.Fatalf("Reconcile(cross-boot journal) = %v, want fail-closed", err)
+	}
+	if processDone(fixture.keeper) || processDone(fixture.mapper) {
+		t.Fatal("cross-boot journal authorized process cleanup")
+	}
+}
+
+func TestRecoveredProcessClosesOwnedDescriptorZero(t *testing.T) {
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(sleep, "30")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	}()
+	start, err := readProcessStartTime(command.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backup, err := syscall.Dup(0)
+	if err != nil {
+		t.Skipf("stdin is unavailable for descriptor-zero ownership test: %v", err)
+	}
+	defer syscall.Close(backup)
+	defer func() {
+		if err := syscall.Dup2(backup, 0); err != nil {
+			t.Errorf("restore stdin: %v", err)
+		}
+	}()
+	if err := syscall.Close(0); err != nil {
+		t.Fatal(err)
+	}
+
+	handle, err := claimRecordedProcess(privateProcessRecord{PID: command.Process.Pid, StartTime: start}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, ok := handle.(*recoveredProcess)
+	if !ok || recovered.pidfd != 0 {
+		t.Fatalf("recovered process = %T pidfd=%d, want owned descriptor zero", handle, recovered.pidfd)
+	}
+	recovered.closePIDFD()
+	var stat syscall.Stat_t
+	if err := syscall.Fstat(0, &stat); !errors.Is(err, syscall.EBADF) {
+		t.Fatalf("owned pidfd zero remained open: %v", err)
+	}
+}
+
 func TestLinuxTopologyRecoveryRejectsExactZombieAndPermissionUncertainty(t *testing.T) {
 	t.Run("zombie mapper", func(t *testing.T) {
 		fixture := newFileRecoveryFixture(t)

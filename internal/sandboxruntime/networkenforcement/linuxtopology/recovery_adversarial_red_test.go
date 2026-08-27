@@ -61,6 +61,19 @@ type adversarialRecoveryProcess struct {
 	terminatePanic bool
 }
 
+type adversarialRecoveryCloseProcess struct {
+	*adversarialRecoveryProcess
+	closeCalls int
+	closePanic bool
+}
+
+func (p *adversarialRecoveryCloseProcess) closePIDFD() {
+	p.closeCalls++
+	if p.closePanic {
+		panic("private process close panic")
+	}
+}
+
 func newAdversarialRecoveryProcess(pid int) *adversarialRecoveryProcess {
 	return &adversarialRecoveryProcess{pid: pid, done: make(chan struct{})}
 }
@@ -204,6 +217,43 @@ func TestLinuxTopologyRecoveryStorePanicAndCleanupPanicMatrix(t *testing.T) {
 			}
 			if namespace.Closed() {
 				t.Fatal("panic path consumed caller namespace")
+			}
+		})
+	}
+}
+
+func TestLinuxTopologyRecoveryAbandonContinuesAfterCleanupPanic(t *testing.T) {
+	privateErr := errors.New("private recovery failure")
+	for _, test := range []struct {
+		name           string
+		namespacePanic bool
+		keeperPanic    bool
+	}{
+		{name: "namespace close panic", namespacePanic: true},
+		{name: "first process close panic", keeperPanic: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lease := &adversarialRecoveryLease{}
+			keeper := &adversarialRecoveryCloseProcess{adversarialRecoveryProcess: newAdversarialRecoveryProcess(8111), closePanic: test.keeperPanic}
+			mapper := &adversarialRecoveryCloseProcess{adversarialRecoveryProcess: newAdversarialRecoveryProcess(8112)}
+			store := &adversarialRecoveryStore{base: newMemoryOwnershipStore()}
+			store.recover = func(_ context.Context, request RecoveryRequest) (RecoveredOwnership, error) {
+				namespace := duplicateRecoveryNamespace(t, request.Namespace)
+				if test.namespacePanic {
+					namespace.release = func() { panic("private namespace close panic") }
+				}
+				return RecoveredOwnership{Lease: lease, Keeper: keeper, Mapper: mapper, Namespace: namespace}, privateErr
+			}
+			lifecycle, namespace := newAdversarialRecoveryLifecycle(t, store)
+			session, err := callLifecycleRecoverNoPanic(t, lifecycle, RecoveryRequest{Identity: testIdentity("topology-gen-cleanup-panic"), Namespace: namespace})
+			if session != nil || !errors.Is(err, ErrStaleTopologyUnverified) {
+				t.Fatalf("Recover(cleanup panic) = %T, %v", session, err)
+			}
+			if keeper.closeCalls != 1 || mapper.closeCalls != 1 || lease.releaseCalls != 1 {
+				t.Fatalf("cleanup attempts = keeper %d mapper %d lease %d, want all exactly once", keeper.closeCalls, mapper.closeCalls, lease.releaseCalls)
+			}
+			if namespace.Closed() {
+				t.Fatal("cleanup panic consumed caller namespace")
 			}
 		})
 	}
