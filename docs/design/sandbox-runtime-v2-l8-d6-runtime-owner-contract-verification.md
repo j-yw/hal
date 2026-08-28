@@ -266,3 +266,18 @@ namespace descriptor duplication, and direct child processes; they require no
 KVM, Firecracker binary, network access, cloud account, guest image, worker, or
 daemon. The production absence-proof constructor call count remains zero until
 the later provider/L7 integration slice.
+
+## Recovery binding issuer
+
+This reviewed slice implements `l8RuntimeOwnerRecoveryBinding` as a real
+`JobCredentialRuntimeRecoveryBinding`. Complete-identity
+`RecoverJobCredentials` validates seed equality, attempts ordinary credential
+recovery without implementing host Preflight/Prepare/Session, and always
+invokes `StopReapJobCredentialRuntime`. `StopReapJobCredentialRuntime` is the
+sole production `NewJobCredentialRuntimeAbsenceProof` callsite in
+`l8_runtime_owner_recovery.go`, and it issues a proof only after the private
+owner has proved exact absence by direct-parent Wait or replacement
+double-`/proc`. The AST guard is tightened from zero host issuers to exactly
+that one StopReap callsite. Finalize fail-closes without a recovered L7 `TerminatedVMBinding`; old-boot journal retirement remains fail-closed.
+`commitJobCredentialRuntimeRecovery` remains the sole owner `CommitID` reader.
+Default constructors, sandboxd, and command execution stay unwired.
