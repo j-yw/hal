@@ -238,6 +238,18 @@ func TestL8JobCredentialFileTmpfsActivatorSanitizesSourceErrors(t *testing.T) {
 		t.Fatalf("source error = %#v, %v", handle, err)
 	}
 	l8JobCredentialFileTmpfsAssertSafeError(t, err, canary)
+
+	handle, err = activator.Materialize(context.Background(), identity, binding, &l8JobCredentialFileTmpfsSource{
+		payload:         append([]byte(nil), canary...),
+		panicAfterWrite: true,
+	})
+	if !l8JobCredentialRuntimeValueIsNil(handle) || !errors.Is(err, ErrL8JobCredentialRuntimeUnavailable) {
+		t.Fatalf("source panic = %#v, %v", handle, err)
+	}
+	l8JobCredentialFileTmpfsAssertSafeError(t, err, canary)
+	if files := l8JobCredentialFileTmpfsRegularFiles(t, activator.rootDir); len(files) != 0 {
+		t.Fatal("source panic created host files")
+	}
 }
 
 func TestL8JobCredentialFileTmpfsActivatorMaterializeMetadataReachesGuestPrepare(t *testing.T) {
@@ -333,12 +345,13 @@ func l8JobCredentialFileTmpfsAssertSafeError(t *testing.T, err error, canary []b
 }
 
 type l8JobCredentialFileTmpfsSource struct {
-	mu        sync.Mutex
-	payload   []byte
-	fills     int
-	skipWrite bool
-	ignoreMax bool
-	err       error
+	mu              sync.Mutex
+	payload         []byte
+	fills           int
+	skipWrite       bool
+	ignoreMax       bool
+	panicAfterWrite bool
+	err             error
 }
 
 func (source *l8JobCredentialFileTmpfsSource) FillSecret(ctx context.Context, sink sandboxruntime.JobCredentialSecretSink) error {
@@ -355,6 +368,12 @@ func (source *l8JobCredentialFileTmpfsSource) FillSecret(ctx context.Context, si
 	}
 	if source.skipWrite {
 		return nil
+	}
+	if source.panicAfterWrite {
+		if err := sink.WriteCredential(source.payload); err != nil {
+			return err
+		}
+		panic(string(source.payload))
 	}
 	if !source.ignoreMax && len(source.payload) > sink.MaxCredentialBytes() {
 		return ErrL8JobCredentialRuntimeInvalid

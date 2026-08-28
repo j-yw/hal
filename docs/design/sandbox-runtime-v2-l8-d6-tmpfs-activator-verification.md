@@ -24,6 +24,9 @@ defaults.
   records `DeclaredFileBytes` plus SHA-256 of the exact filled bytes.
 - Oversize, empty-when-required, identity mismatch, nil source, nil context,
   and cancellation fail closed before a durable host file is left behind.
+- A source panic, including one after filling the bounded sink, is contained;
+  the activator wipes its sink copy and returns only the stable unavailable
+  error.
 - `Revoke` overwrites then unlinks the host materialization. A failed revoke
   keeps ownership so a later retry can still wipe and unlink.
 - Non-Linux constructors and `Materialize` fail closed with
