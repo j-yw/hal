@@ -2,6 +2,7 @@ package credentialclient
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"sync"
@@ -413,30 +414,162 @@ func newControllerReadinessSendPacket(sequence uint64, sessionID [32]byte, respo
 		response.IdentityDigest() != v2control.NewIdentityDigest(sessionID) {
 		return ControllerSendPacket{}, errInvalidControllerSendPacket
 	}
-	return ControllerSendPacket{
+	return finishControllerJSONSendPacket(sequence, sessionID, controllerSendArmReadiness, controllerSendArm{readiness: response})
+}
+
+func newControllerPreparePacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, prepare v2control.CredentialPrepareRequest) (ControllerPacket, error) {
+	if err := consumeControllerReceiveRequest(request); err != nil {
+		return ControllerPacket{}, err
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) ||
+		v2control.ValidateCredentialPrepareRequest(prepare) != nil ||
+		!controllerIdentityMatchesSession(sessionID, prepare.Identity(), prepare.IdentityDigest()) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if request.expectedIdentitySet && request.expectedIdentity != prepare.IdentityDigest() {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	return ControllerPacket{
 		sequence:  sequence,
 		sessionID: sessionID,
-		arm:       controllerSendArmReadiness,
+		arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+	}, nil
+}
+
+func newControllerPrepareSendPacket(sequence uint64, sessionID [32]byte, response v2control.CredentialPrepareSuccessResponse) (ControllerSendPacket, error) {
+	if sequence == 0 || sessionID == ([32]byte{}) || v2control.ValidateCredentialPrepareSuccessResponse(response) != nil ||
+		response.IdentityDigest() == (v2control.IdentityDigest{}) {
+		return ControllerSendPacket{}, errInvalidControllerSendPacket
+	}
+	return finishControllerJSONSendPacket(sequence, sessionID, controllerSendArmPrepare, controllerSendArm{prepare: response})
+}
+
+func newControllerRenewPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, renew v2control.CredentialRenewRequest) (ControllerPacket, error) {
+	if err := consumeControllerReceiveRequest(request); err != nil {
+		return ControllerPacket{}, err
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) ||
+		v2control.ValidateCredentialRenewRequest(renew) != nil ||
+		!controllerIdentityMatchesSession(sessionID, renew.Identity(), renew.IdentityDigest()) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if request.expectedIdentitySet && request.expectedIdentity != renew.IdentityDigest() {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: sessionID,
+		arm:       controllerPacketArm{kind: controllerPacketArmRenew, renew: renew},
+	}, nil
+}
+
+func newControllerRenewSendPacket(sequence uint64, sessionID [32]byte, response v2control.CredentialRenewSuccessResponse) (ControllerSendPacket, error) {
+	if sequence == 0 || sessionID == ([32]byte{}) || v2control.ValidateCredentialRenewSuccessResponse(response) != nil ||
+		response.IdentityDigest() == (v2control.IdentityDigest{}) {
+		return ControllerSendPacket{}, errInvalidControllerSendPacket
+	}
+	return finishControllerJSONSendPacket(sequence, sessionID, controllerSendArmRenew, controllerSendArm{renew: response})
+}
+
+func newControllerRevokePacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, revoke v2control.CredentialRevokeRequest) (ControllerPacket, error) {
+	if err := consumeControllerReceiveRequest(request); err != nil {
+		return ControllerPacket{}, err
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) ||
+		v2control.ValidateCredentialRevokeRequest(revoke) != nil ||
+		!controllerIdentityMatchesSession(sessionID, revoke.Identity(), revoke.IdentityDigest()) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if request.expectedIdentitySet && request.expectedIdentity != revoke.IdentityDigest() {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: sessionID,
+		arm:       controllerPacketArm{kind: controllerPacketArmRevoke, revoke: revoke},
+	}, nil
+}
+
+func newControllerRevokeSendPacket(sequence uint64, sessionID [32]byte, response v2control.CredentialRevokeSuccessResponse) (ControllerSendPacket, error) {
+	if sequence == 0 || sessionID == ([32]byte{}) || v2control.ValidateCredentialRevokeSuccessResponse(response) != nil ||
+		response.IdentityDigest() == (v2control.IdentityDigest{}) {
+		return ControllerSendPacket{}, errInvalidControllerSendPacket
+	}
+	return finishControllerJSONSendPacket(sequence, sessionID, controllerSendArmRevoke, controllerSendArm{revoke: response})
+}
+
+func newControllerExecPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, exec v2control.CredentialExecRequest) (ControllerPacket, error) {
+	if err := consumeControllerReceiveRequest(request); err != nil {
+		return ControllerPacket{}, err
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) ||
+		v2control.ValidateCredentialExecRequest(exec) != nil ||
+		!controllerIdentityMatchesSession(sessionID, exec.Identity(), exec.IdentityDigest()) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if request.expectedIdentitySet && request.expectedIdentity != exec.IdentityDigest() {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: sessionID,
+		arm:       controllerPacketArm{kind: controllerPacketArmExec, exec: exec},
+	}, nil
+}
+
+func newControllerExecSendPacket(sequence uint64, sessionID [32]byte, response v2control.CredentialExecSuccessResponse) (ControllerSendPacket, error) {
+	if sequence == 0 || sessionID == ([32]byte{}) || v2control.ValidateCredentialExecSuccessResponse(response) != nil ||
+		response.IdentityDigest() == (v2control.IdentityDigest{}) {
+		return ControllerSendPacket{}, errInvalidControllerSendPacket
+	}
+	return finishControllerJSONSendPacket(sequence, sessionID, controllerSendArmExec, controllerSendArm{exec: response})
+}
+
+func controllerIdentityMatchesSession(sessionID [32]byte, jobIdentity v2control.JobIdentity, digest v2control.IdentityDigest) bool {
+	// Credential envelopes bind identityDigest to sessionID through GuestCredentialSessionIdentity, not the raw session bytes.
+	identity, err := v2control.NewGuestCredentialSessionIdentity(sessionID, jobIdentity)
+	if err != nil {
+		return false
+	}
+	computed, err := v2control.GuestCredentialSessionIdentityDigest(identity)
+	if err != nil {
+		return false
+	}
+	return digest == v2control.NewIdentityDigest(computed)
+}
+
+func finishControllerJSONSendPacket(sequence uint64, sessionID [32]byte, kind controllerSendArmKind, arm controllerSendArm) (ControllerSendPacket, error) {
+	body, err := encodeControllerSendCanonicalBody(kind, arm)
+	if err != nil || len(body) == 0 {
+		return ControllerSendPacket{}, errInvalidControllerSendPacket
+	}
+	return ControllerSendPacket{
+		sequence:          sequence,
+		sessionID:         sessionID,
+		arm:               kind,
+		encodedBodyLength: uint32(len(body)),
+		bodySHA256:        sha256.Sum256(body),
 		state: &controllerSendPacketState{
-			owner: &controllerSendPacketOwner{arm: controllerSendArm{readiness: response}},
+			owner: &controllerSendPacketOwner{arm: arm},
 		},
 	}, nil
 }
 
-func newControllerPreparePacket(ControllerReceiveRequest, uint64, [32]byte, v2control.CredentialPrepareRequest) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
-}
-
-func newControllerRenewPacket(ControllerReceiveRequest, uint64, [32]byte, v2control.CredentialRenewRequest) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
-}
-
-func newControllerRevokePacket(ControllerReceiveRequest, uint64, [32]byte, v2control.CredentialRevokeRequest) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
-}
-
-func newControllerExecPacket(ControllerReceiveRequest, uint64, [32]byte, v2control.CredentialExecRequest) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
+func encodeControllerSendCanonicalBody(kind controllerSendArmKind, arm controllerSendArm) ([]byte, error) {
+	switch kind {
+	case controllerSendArmReadiness:
+		return v2control.EncodeReadinessSuccessResponse(arm.readiness)
+	case controllerSendArmPrepare:
+		return v2control.EncodeCredentialPrepareSuccessResponse(arm.prepare)
+	case controllerSendArmRenew:
+		return v2control.EncodeCredentialRenewSuccessResponse(arm.renew)
+	case controllerSendArmRevoke:
+		return v2control.EncodeCredentialRevokeSuccessResponse(arm.revoke)
+	case controllerSendArmExec:
+		return v2control.EncodeCredentialExecSuccessResponse(arm.exec)
+	default:
+		return nil, ErrClientControlDependencyUnaccepted
+	}
 }
 
 func newControllerPrivatePacket(ControllerReceiveRequest, uint64, [32]byte, credentialprotocol.PrivateRecordKind, v2control.RequestID, v2control.IdentityDigest, uint16, uint16, uint16, uint32, [32]byte, controllerBodyCapability) (ControllerPacket, error) {
@@ -495,8 +628,40 @@ func (packet ControllerSendPacket) sequenceValue() uint64          { return pack
 func (packet ControllerSendPacket) sessionIDValue() [32]byte       { return packet.sessionID }
 func (packet ControllerSendPacket) encodedBodyLengthValue() uint32 { return packet.encodedBodyLength }
 func (packet ControllerSendPacket) bodySHA256Value() [32]byte      { return packet.bodySHA256 }
-func (packet ControllerSendPacket) writeCanonicalBody(bodySegmentSink) error {
-	return ErrClientControlDependencyUnaccepted
+func (packet ControllerSendPacket) writeCanonicalBody(sink bodySegmentSink) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errInvalidControllerSendPacket
+		}
+	}()
+	switch packet.arm {
+	case controllerSendArmReadiness, controllerSendArmPrepare, controllerSendArmRenew, controllerSendArmRevoke, controllerSendArmExec:
+	default:
+		return ErrClientControlDependencyUnaccepted
+	}
+	if packet.state == nil {
+		return errInvalidControllerSendPacket
+	}
+	packet.state.mu.Lock()
+	if packet.state.consumed || packet.state.owner == nil {
+		packet.state.mu.Unlock()
+		return errInvalidControllerSendPacket
+	}
+	owner := packet.state.owner
+	packet.state.consumed = true
+	packet.state.owner = nil
+	packet.state.mu.Unlock()
+	body, encodeErr := encodeControllerSendCanonicalBody(packet.arm, owner.arm)
+	if encodeErr != nil || uint64(len(body)) != uint64(packet.encodedBodyLength) || sha256.Sum256(body) != packet.bodySHA256 {
+		return errInvalidControllerSendPacket
+	}
+	if sink == nil || sink.Capacity() != packet.encodedBodyLength {
+		return errInvalidControllerSendPacket
+	}
+	if writeErr := sink.WriteSegment(0, body); writeErr != nil {
+		return errInvalidControllerSendPacket
+	}
+	return nil
 }
 func (packet ControllerSendPacket) readinessResponseValue() (v2control.ReadinessSuccessResponse, bool) {
 	return controllerSendArmValue(packet, controllerSendArmReadiness, func(arm controllerSendArm) v2control.ReadinessSuccessResponse { return arm.readiness })
