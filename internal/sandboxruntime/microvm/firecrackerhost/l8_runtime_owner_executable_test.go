@@ -29,6 +29,30 @@ func TestL8RuntimeOwnerLinuxLaunchSourceRetainsPdeathsigCreatingThread(t *testin
 	}
 }
 
+func TestL8RuntimeOwnerLinuxExecutableWiresProductionModes(t *testing.T) {
+	source, err := os.ReadFile("l8_runtime_owner_executable_linux.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, marker := range []string{
+		"RunSupervisor: runL8RuntimeOwnerSupervisorLinux",
+		"RunChildGate:  runL8RuntimeOwnerChildGateLinux",
+	} {
+		if strings.Count(text, marker) != 1 {
+			t.Fatalf("linux executable wiring count for %q = %d", marker, strings.Count(text, marker))
+		}
+	}
+	for _, forbidden := range []string{
+		"RunSupervisor: func([6]int) error",
+		"RunChildGate: func([6]int) error",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("linux executable retains failure callback %q", forbidden)
+		}
+	}
+}
+
 func TestL8RuntimeOwnerExecutableModesAndDescriptorABI(t *testing.T) {
 	for _, scenario := range []struct {
 		name    string
