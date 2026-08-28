@@ -135,9 +135,9 @@ func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observe
 }
 
 func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
-	// Helper receive is implemented; first helper receive after a controller
-	// credential op has no expected request ID yet. Helper send constructors
-	// remain unaccepted.
+	// Helper receive and metadata-only helper send constructors exist. Serve
+	// still fails closed here because payload-bearing helper send, SSH rights,
+	// and live helper transport remain unaccepted; do not mint proofs.
 	_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, [16]byte{}, false, identity.Bytes())
 	if err != nil {
 		return err

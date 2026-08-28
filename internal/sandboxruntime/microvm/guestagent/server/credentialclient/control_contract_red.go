@@ -418,12 +418,41 @@ func (request HelperReceiveRequest) expectedIdentityDigestValue() [32]byte {
 	return request.expectedIdentity
 }
 
-func newControllerUnknownOperationPacket(ControllerReceiveRequest, uint64, [32]byte, v2control.InspectedRequest) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
+func newControllerUnknownOperationPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, inspected v2control.InspectedRequest) (ControllerPacket, error) {
+	return newControllerInspectedPacket(request, sequence, sessionID, inspected, false, controllerPacketArmUnknown)
 }
 
-func newControllerMalformedKnownPacket(ControllerReceiveRequest, uint64, [32]byte, v2control.InspectedRequest) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
+func newControllerMalformedKnownPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, inspected v2control.InspectedRequest) (ControllerPacket, error) {
+	return newControllerInspectedPacket(request, sequence, sessionID, inspected, true, controllerPacketArmMalformed)
+}
+
+func newControllerInspectedPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, inspected v2control.InspectedRequest, requireKnown bool, kind controllerPacketArmKind) (ControllerPacket, error) {
+	if err := consumeControllerReceiveRequest(request); err != nil {
+		return ControllerPacket{}, err
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if _, err := v2control.EncodeOperationToken(inspected.OperationToken()); err != nil {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if _, err := v2control.EncodeRequestID(inspected.RequestID()); err != nil {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	_, known := inspected.KnownOperation()
+	if known != requireKnown {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if request.expectedIdentitySet && request.expectedIdentity != inspected.IdentityDigest() {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	packet := ControllerPacket{sequence: sequence, sessionID: sessionID}
+	if requireKnown {
+		packet.arm = controllerPacketArm{kind: kind, malformed: controllerMalformedKnown{inspected: inspected}}
+	} else {
+		packet.arm = controllerPacketArm{kind: kind, unknown: controllerUnknownOperation{inspected: inspected}}
+	}
+	return packet, nil
 }
 
 func newControllerReadinessPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, readiness v2control.ReadinessRequest) (ControllerPacket, error) {
@@ -640,20 +669,149 @@ func encodeControllerSendCanonicalBody(kind controllerSendArmKind, arm controlle
 	}
 }
 
-func newControllerPrivatePacket(ControllerReceiveRequest, uint64, [32]byte, credentialprotocol.PrivateRecordKind, v2control.RequestID, v2control.IdentityDigest, uint16, uint16, uint16, uint32, [32]byte, controllerBodyCapability) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
+func newControllerPrivatePacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, kind credentialprotocol.PrivateRecordKind, requestID v2control.RequestID, identityDigest v2control.IdentityDigest, bindingIndex, chunkIndex, chunkCount uint16, payloadLength uint32, payloadSHA256 [32]byte, body controllerBodyCapability) (packet ControllerPacket, err error) {
+	retainedBody := false
+	defer func() {
+		if err != nil && !retainedBody {
+			_ = destroyControllerBody(body)
+		}
+	}()
+	if consumeErr := consumeControllerReceiveRequest(request); consumeErr != nil {
+		return ControllerPacket{}, consumeErr
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) ||
+		!validControllerPrivateMetadata(kind, requestID, identityDigest, bindingIndex, chunkIndex, chunkCount, payloadLength, payloadSHA256) ||
+		!configuredDependency(body) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	length, digest, ok := controllerBodyMetadata(body)
+	if !ok || length != payloadLength || digest != payloadSHA256 {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if request.expectedIdentitySet && request.expectedIdentity != identityDigest {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	retainedBody = true
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: sessionID,
+		arm: controllerPacketArm{
+			kind: controllerPacketArmPrivate,
+			private: controllerPrivateRecord{
+				kind:           kind,
+				requestID:      requestID,
+				identityDigest: identityDigest,
+				bindingIndex:   bindingIndex,
+				chunkIndex:     chunkIndex,
+				chunkCount:     chunkCount,
+				payloadLength:  payloadLength,
+				payloadSHA256:  payloadSHA256,
+			},
+		},
+		body: body,
+	}, nil
 }
 
-func newControllerStreamPacket(ControllerReceiveRequest, uint64, [32]byte, credentialprotocol.HelperExecStreamKind, credentialprotocol.HelperExecStreamFlags, v2control.RequestID, v2control.IdentityDigest, uint64, uint32, [32]byte, controllerBodyCapability) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
+func newControllerStreamPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, kind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, requestID v2control.RequestID, identityDigest v2control.IdentityDigest, offset uint64, payloadLength uint32, payloadSHA256 [32]byte, body controllerBodyCapability) (packet ControllerPacket, err error) {
+	retainedBody := false
+	defer func() {
+		if err != nil && !retainedBody {
+			_ = destroyControllerBody(body)
+		}
+	}()
+	if consumeErr := consumeControllerReceiveRequest(request); consumeErr != nil {
+		return ControllerPacket{}, consumeErr
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) ||
+		!validControllerReceiveExecStream(kind, flags, payloadLength, payloadSHA256) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if _, err := v2control.EncodeRequestID(requestID); err != nil {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if identityDigest == (v2control.IdentityDigest{}) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if payloadLength == 0 {
+		if configuredDependency(body) {
+			return ControllerPacket{}, errInvalidControllerPacket
+		}
+	} else if !configuredDependency(body) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	} else {
+		length, digest, ok := controllerBodyMetadata(body)
+		if !ok || length != payloadLength || digest != payloadSHA256 {
+			return ControllerPacket{}, errInvalidControllerPacket
+		}
+	}
+	if request.expectedIdentitySet && request.expectedIdentity != identityDigest {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	retainedBody = configuredDependency(body)
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: sessionID,
+		arm: controllerPacketArm{
+			kind: controllerPacketArmStream,
+			stream: controllerStreamRecord{
+				kind:           kind,
+				flags:          flags,
+				requestID:      requestID,
+				identityDigest: identityDigest,
+				offset:         offset,
+				payloadLength:  payloadLength,
+				payloadSHA256:  payloadSHA256,
+			},
+		},
+		body: body,
+	}, nil
 }
 
-func newControllerCreditPacket(ControllerReceiveRequest, uint64, [32]byte, credentialprotocol.HelperExecStreamKind, v2control.RequestID, v2control.IdentityDigest, uint64) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
+func newControllerCreditPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, kind credentialprotocol.HelperExecStreamKind, requestID v2control.RequestID, identityDigest v2control.IdentityDigest, nextOffset uint64) (ControllerPacket, error) {
+	if err := consumeControllerReceiveRequest(request); err != nil {
+		return ControllerPacket{}, err
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) ||
+		!validControllerReceiveCredit(kind) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if _, err := v2control.EncodeRequestID(requestID); err != nil {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if identityDigest == (v2control.IdentityDigest{}) {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	if request.expectedIdentitySet && request.expectedIdentity != identityDigest {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: sessionID,
+		arm: controllerPacketArm{
+			kind: controllerPacketArmCredit,
+			credit: controllerCreditRecord{
+				kind:           kind,
+				requestID:      requestID,
+				identityDigest: identityDigest,
+				nextOffset:     nextOffset,
+			},
+		},
+	}, nil
 }
 
-func newControllerCloseNotifyPacket(ControllerReceiveRequest, uint64, [32]byte, credentialprotocol.CloseReason) (ControllerPacket, error) {
-	return ControllerPacket{}, ErrClientControlDependencyUnaccepted
+func newControllerCloseNotifyPacket(request ControllerReceiveRequest, sequence uint64, sessionID [32]byte, reason credentialprotocol.CloseReason) (ControllerPacket, error) {
+	if err := consumeControllerReceiveRequest(request); err != nil {
+		return ControllerPacket{}, err
+	}
+	if sequence == 0 || sequence != request.nextSequence || sessionID == ([32]byte{}) ||
+		credentialprotocol.ValidateCloseReason(reason) != nil {
+		return ControllerPacket{}, errInvalidControllerPacket
+	}
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: sessionID,
+		arm:       controllerPacketArm{kind: controllerPacketArmClose, close: reason},
+	}, nil
 }
 
 func (packet ControllerPacket) sequenceValue() uint64    { return packet.sequence }
@@ -997,6 +1155,21 @@ func validHelperReceiveExecStream(kind credentialprotocol.HelperExecStreamKind, 
 	if kind != credentialprotocol.HelperExecStreamStdout && kind != credentialprotocol.HelperExecStreamStderr {
 		return false
 	}
+	return validHelperExecStreamShape(flags, payloadLength, payloadSHA256)
+}
+
+func validControllerReceiveExecStream(kind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, payloadLength uint32, payloadSHA256 [32]byte) bool {
+	if kind != credentialprotocol.HelperExecStreamStdin {
+		return false
+	}
+	return validHelperExecStreamShape(flags, payloadLength, payloadSHA256)
+}
+
+func validControllerReceiveCredit(kind credentialprotocol.HelperExecStreamKind) bool {
+	return kind == credentialprotocol.HelperExecStreamStdout || kind == credentialprotocol.HelperExecStreamStderr
+}
+
+func validHelperExecStreamShape(flags credentialprotocol.HelperExecStreamFlags, payloadLength uint32, payloadSHA256 [32]byte) bool {
 	if flags != credentialprotocol.HelperExecStreamFlagsNone && flags != credentialprotocol.HelperExecStreamFlagEOF {
 		return false
 	}
@@ -1013,6 +1186,34 @@ func validHelperReceiveExecStream(kind credentialprotocol.HelperExecStreamKind, 
 		return payloadSHA256 == sha256.Sum256(nil)
 	}
 	return payloadSHA256 != ([32]byte{})
+}
+
+func validControllerPrivateMetadata(kind credentialprotocol.PrivateRecordKind, requestID v2control.RequestID, identityDigest v2control.IdentityDigest, bindingIndex, chunkIndex, chunkCount uint16, payloadLength uint32, payloadSHA256 [32]byte) bool {
+	if kind != credentialprotocol.PrivateRecordKindFileBytes && kind != credentialprotocol.PrivateRecordKindOpaqueExecBinding {
+		return false
+	}
+	if _, err := v2control.EncodeRequestID(requestID); err != nil {
+		return false
+	}
+	if identityDigest == (v2control.IdentityDigest{}) {
+		return false
+	}
+	if chunkIndex != 0 || chunkCount != 1 {
+		return false
+	}
+	if payloadLength < 1 || payloadLength > credentialprotocol.MaxPrivateRecordPayloadBytes {
+		return false
+	}
+	if payloadSHA256 == ([32]byte{}) {
+		return false
+	}
+	if kind == credentialprotocol.PrivateRecordKindFileBytes && bindingIndex >= credentialprotocol.MaxPreparePrivateRecordCount {
+		return false
+	}
+	if kind == credentialprotocol.PrivateRecordKindOpaqueExecBinding && bindingIndex != 0 {
+		return false
+	}
+	return true
 }
 
 func validateOptionalHelperBody(body helperBodyCapability, encoded []byte) error {
@@ -1044,6 +1245,17 @@ func validateOptionalHelperBodyLength(body helperBodyCapability, length uint32) 
 }
 
 func helperBodyMetadata(body helperBodyCapability) (length uint32, digest [32]byte, ok bool) {
+	return bodyCapabilityMetadata(body)
+}
+
+func controllerBodyMetadata(body controllerBodyCapability) (length uint32, digest [32]byte, ok bool) {
+	return bodyCapabilityMetadata(body)
+}
+
+func bodyCapabilityMetadata(body interface {
+	Len() uint32
+	SHA256() [32]byte
+}) (length uint32, digest [32]byte, ok bool) {
 	defer func() {
 		if recover() != nil {
 			length = 0
@@ -1054,19 +1266,29 @@ func helperBodyMetadata(body helperBodyCapability) (length uint32, digest [32]by
 	return body.Len(), body.SHA256(), true
 }
 
-func destroyHelperBody(body helperBodyCapability) (err error) {
+func destroyHelperBody(body helperBodyCapability) error {
+	return destroyOwnedBody(body, errInvalidHelperPacket)
+}
+
+func destroyControllerBody(body controllerBodyCapability) error {
+	return destroyOwnedBody(body, errInvalidControllerPacket)
+}
+
+func destroyOwnedBody(body interface {
+	Destroy(context.Context) error
+}, invalid error) (err error) {
 	if !configuredDependency(body) {
 		return nil
 	}
 	defer func() {
 		if recover() != nil {
-			err = errInvalidHelperPacket
+			err = invalid
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), sshConnectionCleanupTimeout)
 	defer cancel()
 	if destroyErr := body.Destroy(ctx); destroyErr != nil {
-		return errInvalidHelperPacket
+		return invalid
 	}
 	return nil
 }
@@ -1191,12 +1413,66 @@ func encodeHelperSendCanonicalBody(kind helperSendArmKind, arm helperSendArm) ([
 	case helperSendArmExec:
 		return credentialprotocol.EncodeHelperExecBody(arm.exec)
 	case helperSendArmExecCredit:
+		if arm.execCredit.StreamKind != credentialprotocol.HelperExecStreamStdout &&
+			arm.execCredit.StreamKind != credentialprotocol.HelperExecStreamStderr {
+			return nil, errInvalidHelperSendPacket
+		}
 		return credentialprotocol.EncodeHelperExecCreditBody(arm.execCredit)
 	case helperSendArmClose:
 		return credentialprotocol.EncodeHelperCloseNotifyBody(arm.close)
 	default:
 		return nil, ErrClientControlDependencyUnaccepted
 	}
+}
+
+func newHelperPrepareBeginSendPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperPrepareBeginBody) (HelperSendPacket, error) {
+	cloned := body
+	cloned.Bindings = cloneValues(body.Bindings)
+	return newHelperMetadataSendPacket(header, helperSendArmPrepareBegin, helperSendArm{kind: helperSendArmPrepareBegin, prepareBegin: cloned})
+}
+
+func newHelperPrepareCommitSendPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperPrepareCommitBody) (HelperSendPacket, error) {
+	return newHelperMetadataSendPacket(header, helperSendArmPrepareCommit, helperSendArm{kind: helperSendArmPrepareCommit, prepareCommit: body})
+}
+
+func newHelperRenewSendPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperRenewBody) (HelperSendPacket, error) {
+	return newHelperMetadataSendPacket(header, helperSendArmRenew, helperSendArm{kind: helperSendArmRenew, renew: body})
+}
+
+func newHelperRevokeSendPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperRevokeBody) (HelperSendPacket, error) {
+	return newHelperMetadataSendPacket(header, helperSendArmRevoke, helperSendArm{kind: helperSendArmRevoke, revoke: body})
+}
+
+func newHelperExecSendPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperExecBody) (HelperSendPacket, error) {
+	cloned := body
+	cloned.Plan.Arguments = cloneValues(body.Plan.Arguments)
+	cloned.Plan.Environment = cloneValues(body.Plan.Environment)
+	return newHelperMetadataSendPacket(header, helperSendArmExec, helperSendArm{kind: helperSendArmExec, exec: cloned})
+}
+
+func newHelperExecCreditSendPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperExecCreditBody) (HelperSendPacket, error) {
+	if body.StreamKind != credentialprotocol.HelperExecStreamStdout &&
+		body.StreamKind != credentialprotocol.HelperExecStreamStderr {
+		return HelperSendPacket{}, errInvalidHelperSendPacket
+	}
+	return newHelperMetadataSendPacket(header, helperSendArmExecCredit, helperSendArm{kind: helperSendArmExecCredit, execCredit: body})
+}
+
+func newHelperCloseNotifySendPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperCloseNotifyBody) (HelperSendPacket, error) {
+	return newHelperMetadataSendPacket(header, helperSendArmClose, helperSendArm{kind: helperSendArmClose, close: body})
+}
+
+func newHelperMetadataSendPacket(header credentialprotocol.HelperPacketHeader, kind helperSendArmKind, arm helperSendArm) (HelperSendPacket, error) {
+	if header.Sequence == 0 {
+		return HelperSendPacket{}, errInvalidHelperSendPacket
+	}
+	header.Type = helperSendArmPacketType(kind)
+	encoded, err := encodeHelperSendCanonicalBody(kind, arm)
+	if err != nil || len(encoded) == 0 {
+		return HelperSendPacket{}, errInvalidHelperSendPacket
+	}
+	header.BodyLength = uint32(len(encoded))
+	return finishHelperSendPacket(header, kind, arm)
 }
 
 func helperSendArmPacketType(kind helperSendArmKind) credentialprotocol.PacketType {
