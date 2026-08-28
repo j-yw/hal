@@ -12,11 +12,14 @@ the authenticated transport hard expiry; later receive expectations pin that
 digest rather than raw session bytes. Renew, revoke, and exec require
 `expectedIdentitySet`. Each success constructor consumes the exact originating
 controller packet as its sequence, session, request-ID, identity-digest, and
-lifecycle-correlation authority. Helper packets, unknown and malformed
-controller arms, private/stream/credit/close-notify controller packets, helper
-receive construction, and helper `writeCanonicalBody` remain
-`dependency_unaccepted`. Serve fails closed on that helper dependency instead of
-synthesizing proofs.
+lifecycle-correlation authority. Helper receive construction, helper packet
+unions, and helper `writeCanonicalBody` for non-payload send arms follow that
+same consume-once sequence and identity discipline as metadata constructors.
+Live helper transport, SCM_RIGHTS, bind/listen/dial, and helper send constructors
+remain unaccepted. Unknown and malformed controller arms and
+private/stream/credit/close-notify controller packets remain
+`dependency_unaccepted`. Serve fails closed when a later operation needs an
+unimplemented helper send issuer instead of synthesizing proofs.
 
 The frozen surface is limited to:
 
