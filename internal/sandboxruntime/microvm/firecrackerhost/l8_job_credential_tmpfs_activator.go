@@ -66,6 +66,16 @@ func NewProductionL8JobCredentialFileTmpfsActivator(options L8JobCredentialFileT
 }
 
 func (activator *L8JobCredentialFileTmpfsActivator) Materialize(ctx context.Context, identity sandboxruntime.JobCredentialIdentity, binding sandboxruntime.JobCredentialBindingRequest, source sandboxruntime.LiveSecretSource) (handle l8JobCredentialFileHandle, err error) {
+	var sink *l8JobCredentialFileTmpfsSink
+	defer func() {
+		if recover() != nil {
+			if sink != nil {
+				sink.wipe()
+			}
+			handle = nil
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
 	if activator == nil || activator.rootDir == "" {
 		return nil, ErrL8JobCredentialRuntimeInvalid
 	}
@@ -92,7 +102,7 @@ func (activator *L8JobCredentialFileTmpfsActivator) Materialize(ctx context.Cont
 		return nil, ErrL8JobCredentialRuntimeInvalid
 	}
 
-	sink := &l8JobCredentialFileTmpfsSink{max: l8JobCredentialFileTmpfsMaxBytes}
+	sink = &l8JobCredentialFileTmpfsSink{max: l8JobCredentialFileTmpfsMaxBytes}
 	fillErr := source.FillSecret(ctx, sink)
 	source = nil
 	if fillErr != nil {
@@ -275,22 +285,22 @@ func (sink *l8JobCredentialFileTmpfsSink) wipe() {
 	sink.payload = nil
 }
 
-func (*L8JobCredentialFileTmpfsActivator) String() string {
+func (L8JobCredentialFileTmpfsActivator) String() string {
 	return l8JobCredentialFileTmpfsValuePlaceholder
 }
-func (*L8JobCredentialFileTmpfsActivator) GoString() string {
+func (L8JobCredentialFileTmpfsActivator) GoString() string {
 	return l8JobCredentialFileTmpfsValuePlaceholder
 }
-func (*L8JobCredentialFileTmpfsActivator) Format(state fmt.State, _ rune) {
+func (L8JobCredentialFileTmpfsActivator) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, l8JobCredentialFileTmpfsValuePlaceholder)
 }
-func (*L8JobCredentialFileTmpfsActivator) MarshalJSON() ([]byte, error) {
+func (L8JobCredentialFileTmpfsActivator) MarshalJSON() ([]byte, error) {
 	return nil, ErrL8JobCredentialRuntimeSerialization
 }
-func (*L8JobCredentialFileTmpfsActivator) MarshalText() ([]byte, error) {
+func (L8JobCredentialFileTmpfsActivator) MarshalText() ([]byte, error) {
 	return nil, ErrL8JobCredentialRuntimeSerialization
 }
-func (*L8JobCredentialFileTmpfsActivator) MarshalBinary() ([]byte, error) {
+func (L8JobCredentialFileTmpfsActivator) MarshalBinary() ([]byte, error) {
 	return nil, ErrL8JobCredentialRuntimeSerialization
 }
 
@@ -318,5 +328,6 @@ var (
 	_ l8JobCredentialFileHandle              = (*l8JobCredentialFileHandleProduction)(nil)
 	_ sandboxruntime.JobCredentialSecretSink = (*l8JobCredentialFileTmpfsSink)(nil)
 	_ fmt.Stringer                           = (*L8JobCredentialFileTmpfsActivator)(nil)
+	_ fmt.Stringer                           = L8JobCredentialFileTmpfsActivator{}
 	_ fmt.Stringer                           = (*l8JobCredentialFileHandleProduction)(nil)
 )

@@ -108,6 +108,7 @@ func TestL8JobCredentialFileTmpfsActivatorRemainsDefaultOff(t *testing.T) {
 func TestL8JobCredentialFileHandleRedactsAndDeniesSerialization(t *testing.T) {
 	canary := "sk_live_tmpfs_canary /private/secret.sock /home/user/.hal/scratch"
 	values := []any{
+		L8JobCredentialFileTmpfsActivator{rootDir: "/home/user/.hal/scratch"},
 		&L8JobCredentialFileTmpfsActivator{rootDir: "/home/user/.hal/scratch"},
 		&l8JobCredentialFileHandleProduction{
 			targetPath: "binding-1",
