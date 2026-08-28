@@ -6,7 +6,9 @@ implements `firecrackerhost.l8JobCredentialHTTPProxyActivator` by wrapping
 `NewProductionL8JobCredentialHTTPProxyActivator` and inject it into the host
 JobCredentialRuntime. `sandboxd`, `hal run`, `hal auto`, factory, worker
 `Service`, and `NewProductionL8JobCredentialRuntime` do not invoke it unless
-the caller injects the activator.
+the caller injects the activator. Callers inject a non-nil TicketStore; the
+caller retains ownership and must Close it after every activator and handle
+has finished. The activator never creates or owns a TicketStore HMAC key.
 
 Activate requires HTTP-proxy delivery mode plus a valid identity, binding, and
 source, then issues a TicketStore ticket. The handle `ServiceID()` is the
