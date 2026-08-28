@@ -405,6 +405,7 @@ func TestL8D6GuestControllerCredentialPacketsMirrorReadinessDiscipline(t *testin
 func TestL8D6GuestControllerSendPacketsWriteCanonicalJSON(t *testing.T) {
 	sessionID := testCredentialPacketSessionID()
 	identity := testCredentialPacketSessionIdentity(t, sessionID)
+	digest := identityDigestForSession(t, identity)
 	requestID := testPacketRequestID(t)
 	prepareReq := testCredentialPreparePacketRequest(t, requestID, identity)
 	renewReq := testCredentialRenewPacketRequest(t, requestID, identity)
@@ -419,7 +420,27 @@ func TestL8D6GuestControllerSendPacketsWriteCanonicalJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	readinessPacket, err := newControllerReadinessPacket(mustControlReceiveRequest(t, 1, v2control.NewIdentityDigest(sessionID), true), 1, sessionID, readinessReq)
+	if err != nil {
+		t.Fatal(err)
+	}
 	readinessResp, err := v2control.NewReadinessSuccessResponse(readinessReq, "helper-generation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparePacket, err := newControllerPreparePacket(mustControlReceiveRequest(t, 1, digest, true), 1, sessionID, prepareReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewPacket, err := newControllerRenewPacket(mustControlReceiveRequest(t, 1, digest, true), 1, sessionID, renewReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokePacket, err := newControllerRevokePacket(mustControlReceiveRequest(t, 1, digest, true), 1, sessionID, revokeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execPacket, err := newControllerExecPacket(mustControlReceiveRequest(t, 1, digest, true), 1, sessionID, execReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +455,7 @@ func TestL8D6GuestControllerSendPacketsWriteCanonicalJSON(t *testing.T) {
 		{
 			name: "readiness",
 			issue: func() (ControllerSendPacket, error) {
-				return newControllerReadinessSendPacket(1, sessionID, readinessResp)
+				return newControllerReadinessSendPacket(readinessPacket, readinessResp)
 			},
 			want: mustEncode(t, func() ([]byte, error) { return v2control.EncodeReadinessSuccessResponse(readinessResp) }),
 			access: func(packet ControllerSendPacket) bool {
@@ -445,7 +466,7 @@ func TestL8D6GuestControllerSendPacketsWriteCanonicalJSON(t *testing.T) {
 		{
 			name: "prepare",
 			issue: func() (ControllerSendPacket, error) {
-				return newControllerPrepareSendPacket(1, sessionID, prepareResp)
+				return newControllerPrepareSendPacket(preparePacket, prepareResp)
 			},
 			want: mustEncode(t, func() ([]byte, error) { return v2control.EncodeCredentialPrepareSuccessResponse(prepareResp) }),
 			access: func(packet ControllerSendPacket) bool {
@@ -456,7 +477,7 @@ func TestL8D6GuestControllerSendPacketsWriteCanonicalJSON(t *testing.T) {
 		{
 			name: "renew",
 			issue: func() (ControllerSendPacket, error) {
-				return newControllerRenewSendPacket(1, sessionID, renewResp)
+				return newControllerRenewSendPacket(renewPacket, renewResp)
 			},
 			want: mustEncode(t, func() ([]byte, error) { return v2control.EncodeCredentialRenewSuccessResponse(renewResp) }),
 			access: func(packet ControllerSendPacket) bool {
@@ -467,7 +488,7 @@ func TestL8D6GuestControllerSendPacketsWriteCanonicalJSON(t *testing.T) {
 		{
 			name: "revoke",
 			issue: func() (ControllerSendPacket, error) {
-				return newControllerRevokeSendPacket(1, sessionID, revokeResp)
+				return newControllerRevokeSendPacket(revokePacket, revokeResp)
 			},
 			want: mustEncode(t, func() ([]byte, error) { return v2control.EncodeCredentialRevokeSuccessResponse(revokeResp) }),
 			access: func(packet ControllerSendPacket) bool {
@@ -478,7 +499,7 @@ func TestL8D6GuestControllerSendPacketsWriteCanonicalJSON(t *testing.T) {
 		{
 			name: "exec",
 			issue: func() (ControllerSendPacket, error) {
-				return newControllerExecSendPacket(1, sessionID, execResp)
+				return newControllerExecSendPacket(execPacket, execResp)
 			},
 			want: mustEncode(t, func() ([]byte, error) { return v2control.EncodeCredentialExecSuccessResponse(execResp) }),
 			access: func(packet ControllerSendPacket) bool {
@@ -516,8 +537,33 @@ func TestL8D6GuestControllerSendPacketsWriteCanonicalJSON(t *testing.T) {
 		})
 	}
 
-	if _, err := newControllerPrepareSendPacket(1, sessionID, v2control.CredentialPrepareSuccessResponse{}); !errors.Is(err, errInvalidControllerSendPacket) {
+	if _, err := newControllerPrepareSendPacket(preparePacket, v2control.CredentialPrepareSuccessResponse{}); !errors.Is(err, errInvalidControllerSendPacket) {
 		t.Fatalf("invalid prepare send error = %v", err)
+	}
+
+	otherSessionID := sessionID
+	otherSessionID[31] ^= 0xff
+	otherIdentity := testCredentialPacketSessionIdentity(t, otherSessionID)
+	otherPrepare := testCredentialPreparePacketResponse(t, testCredentialPreparePacketRequest(t, requestID, otherIdentity))
+	otherRenew := mustCredentialRenewSuccess(t, testCredentialRenewPacketRequest(t, requestID, otherIdentity))
+	otherRevoke := mustCredentialRevokeSuccess(t, testCredentialRevokePacketRequest(t, requestID, otherIdentity))
+	otherExec := mustCredentialExecSuccess(t, testCredentialExecPacketRequest(t, requestID, otherIdentity))
+	for _, mismatch := range []struct {
+		name  string
+		issue func() (ControllerSendPacket, error)
+	}{
+		{name: "prepare", issue: func() (ControllerSendPacket, error) {
+			return newControllerPrepareSendPacket(preparePacket, otherPrepare)
+		}},
+		{name: "renew", issue: func() (ControllerSendPacket, error) { return newControllerRenewSendPacket(renewPacket, otherRenew) }},
+		{name: "revoke", issue: func() (ControllerSendPacket, error) { return newControllerRevokeSendPacket(revokePacket, otherRevoke) }},
+		{name: "exec", issue: func() (ControllerSendPacket, error) { return newControllerExecSendPacket(execPacket, otherExec) }},
+	} {
+		t.Run(mismatch.name+"/cross-session-response", func(t *testing.T) {
+			if _, err := mismatch.issue(); !errors.Is(err, errInvalidControllerSendPacket) {
+				t.Fatalf("cross-session response error = %v", err)
+			}
+		})
 	}
 	if err := (ControllerSendPacket{}).writeCanonicalBody(&testCanonicalBodySink{capacity: 1}); !errors.Is(err, ErrClientControlDependencyUnaccepted) && !errors.Is(err, errInvalidControllerSendPacket) {
 		t.Fatalf("zero send packet write error = %v", err)
