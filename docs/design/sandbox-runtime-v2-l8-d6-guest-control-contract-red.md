@@ -1,15 +1,22 @@
 # L8 D6 guest control contract verification
 
 This candidate implements the accepted default-off guest-side request inspector,
-readiness dispatcher, and process-local lifecycle composition around the frozen
-contracts for a persistent authenticated control session on fixed VSOCK port
-1025. Controller credential operations prepare, renew, revoke, and exec are
-accepted packet constructors alongside readiness. Each success constructor
-consumes the exact originating controller packet as its sequence, session,
-request-ID, identity-digest, and lifecycle-correlation authority. Helper
-packets, unknown and malformed controller arms, private/stream/credit/close-notify controller
-packets, helper receive construction, and helper `writeCanonicalBody` remain
-`dependency_unaccepted`.
+readiness dispatcher, controller prepare/renew/revoke/exec identity dispatch, and
+process-local lifecycle composition around the frozen contracts for a persistent
+authenticated control session on fixed VSOCK port 1025. Controller credential
+operations prepare, renew, revoke, and exec are accepted packet constructors
+alongside readiness. First prepare is admitted with `expectedIdentitySet=false`
+and derives the session-bound credential digest through
+`DecodeInitialCredentialPrepareRequest`, while bounding the requested expiry by
+the authenticated transport hard expiry; later receive expectations pin that
+digest rather than raw session bytes. Renew, revoke, and exec require
+`expectedIdentitySet`. Each success constructor consumes the exact originating
+controller packet as its sequence, session, request-ID, identity-digest, and
+lifecycle-correlation authority. Helper packets, unknown and malformed
+controller arms, private/stream/credit/close-notify controller packets, helper
+receive construction, and helper `writeCanonicalBody` remain
+`dependency_unaccepted`. Serve fails closed on that helper dependency instead of
+synthesizing proofs.
 
 The frozen surface is limited to:
 

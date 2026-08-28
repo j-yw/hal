@@ -27,11 +27,13 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 		return clientError(ClientContractDependency, ClientFieldDependency)
 	}
 	nextSequence := uint64(1)
+	var expectedIdentity v2control.IdentityDigest
+	expectedIdentitySet := false
 	for {
 		if client.drainStarted() {
 			return nil
 		}
-		receive, receiveErr := newControlReceiveRequest(nextSequence, v2control.NewIdentityDigest(identity.sessionIDValue()), true, session.MaxControlPlaintextBytes)
+		receive, receiveErr := newControlReceiveRequest(nextSequence, expectedIdentity, expectedIdentitySet, session.MaxControlPlaintextBytes)
 		if receiveErr != nil {
 			return clientError(ClientContractPacket, ClientFieldPacketType)
 		}
@@ -45,21 +47,99 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			}
 			return clientError(ClientContractPacket, ClientFieldPacketType)
 		}
-		if packet.sessionIDValue() != identity.sessionIDValue() {
+		if packet.sequenceValue() != nextSequence || packet.sessionIDValue() != identity.sessionIDValue() {
 			return clientError(ClientContractPacket, ClientFieldPacketType)
 		}
 		nextSequence++
 		if readiness, ready := packet.readinessValue(); ready {
+			if expectedIdentitySet {
+				return clientError(ClientContractPacket, ClientFieldIdentity)
+			}
 			if sendErr := client.dispatchReadinessResponse(ctx, identity, packet, readiness); sendErr != nil {
 				return sendErr
 			}
 			continue
+		}
+		if prepare, ok := packet.prepareValue(); ok {
+			digest, digestErr := acceptControllerPrepareIdentity(identity.sessionIDValue(), identity.hardExpiryValue().UnixNano(), prepare, expectedIdentity, expectedIdentitySet)
+			if digestErr != nil {
+				return digestErr
+			}
+			expectedIdentity = digest
+			expectedIdentitySet = true
+			return helperPacketDependencyUnaccepted(expectedIdentity)
+		}
+		if renew, ok := packet.renewValue(); ok {
+			if err := requirePinnedCredentialIdentity(expectedIdentitySet, expectedIdentity, renew.IdentityDigest()); err != nil {
+				return err
+			}
+			return helperPacketDependencyUnaccepted(expectedIdentity)
+		}
+		if revoke, ok := packet.revokeValue(); ok {
+			if err := requirePinnedCredentialIdentity(expectedIdentitySet, expectedIdentity, revoke.IdentityDigest()); err != nil {
+				return err
+			}
+			return helperPacketDependencyUnaccepted(expectedIdentity)
+		}
+		if exec, ok := packet.execValue(); ok {
+			if err := requirePinnedCredentialIdentity(expectedIdentitySet, expectedIdentity, exec.IdentityDigest()); err != nil {
+				return err
+			}
+			return helperPacketDependencyUnaccepted(expectedIdentity)
 		}
 		if client.drainStarted() || ctx.Err() != nil {
 			return nil
 		}
 		return clientError(ClientContractPacket, ClientFieldPacketType)
 	}
+}
+
+func acceptControllerPrepareIdentity(sessionID [32]byte, hardExpiryUnixNano int64, prepare v2control.CredentialPrepareRequest, expectedIdentity v2control.IdentityDigest, expectedIdentitySet bool) (v2control.IdentityDigest, error) {
+	if expectedIdentitySet {
+		if prepare.IdentityDigest() != expectedIdentity {
+			return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
+		}
+		return expectedIdentity, nil
+	}
+	wire, err := v2control.EncodeCredentialPrepareRequest(prepare)
+	if err != nil {
+		return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
+	}
+	decoded, err := v2control.DecodeInitialCredentialPrepareRequest(sessionID, wire)
+	if err != nil {
+		return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
+	}
+	if v2control.ValidateCredentialPrepareRequestExpiry(decoded, hardExpiryUnixNano) != nil {
+		return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
+	}
+	reconstructed, err := v2control.NewGuestCredentialSessionIdentity(sessionID, decoded.Identity())
+	if err != nil {
+		return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
+	}
+	digestBytes, err := v2control.GuestCredentialSessionIdentityDigest(reconstructed)
+	if err != nil {
+		return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
+	}
+	digest := v2control.NewIdentityDigest(digestBytes)
+	if digest != decoded.IdentityDigest() || digest == v2control.NewIdentityDigest(sessionID) {
+		return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
+	}
+	return digest, nil
+}
+
+func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observed v2control.IdentityDigest) error {
+	if !expectedIdentitySet || expected == (v2control.IdentityDigest{}) || observed != expected {
+		return clientError(ClientContractPacket, ClientFieldIdentity)
+	}
+	return nil
+}
+
+func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
+	_, err := newHelperControlReceiveRequest(1, 1, 0, [16]byte{}, true, identity.Bytes())
+	if err != nil {
+		return err
+	}
+	return ErrClientControlDependencyUnaccepted
 }
 
 func (client *Client) dispatchReadinessResponse(ctx context.Context, identity transportIdentity, packet ControllerPacket, readiness v2control.ReadinessRequest) error {
