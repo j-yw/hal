@@ -13,6 +13,7 @@ import (
 const (
 	phase60OperatorVerificationDocPath = "sandbox-runtime-v2-phase60-operator-verification.md"
 	phase60DocsGuardFile               = "cmd/phase60_operator_verification_docs_test.go"
+	phase60IndependentD7LiveStub       = "internal/sandboxruntime/microvm/firecrackerhost/l8_prepared_linux_credential_delivery_live_test.go"
 )
 
 var (
@@ -56,6 +57,12 @@ func TestPhase60OperatorVerificationLiveBuildTagsMatchOptionalLiveTests(t *testi
 	phase60AssertSameStrings(t, "Phase 60 optional live test build tags", actualTags, phase60LiveGateBuildTags())
 	phase60AssertSameStrings(t, "Phase 60 documented live build tags", phase60DocumentedLiveBuildTags(doc), actualTags)
 	phase60AssertSameStrings(t, "Phase 60 optional live command build tags", phase60OptionalLiveCommandBuildTags(doc), actualTags)
+}
+
+func TestPhase60OperatorVerificationLeavesD7WithItsExactSelectedLiveGate(t *testing.T) {
+	if phase60OptionalLiveTestScope(phase60IndependentD7LiveStub) {
+		t.Fatal("independently selected D7 RED stub entered the legacy Phase 60 optional-live inventory")
+	}
 }
 
 func TestPhase60OperatorVerificationMarkerNamesMatchOptionalLiveChecks(t *testing.T) {
@@ -247,6 +254,9 @@ func phase60OptionalLiveTaggedTestFiles(t *testing.T) []string {
 
 func phase60OptionalLiveTestScope(rel string) bool {
 	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == phase60IndependentD7LiveStub {
+		return false
+	}
 	return strings.HasPrefix(rel, "internal/credentialdelivery/") ||
 		strings.HasPrefix(rel, "internal/sandboxruntime/microvm/") ||
 		strings.HasPrefix(rel, "internal/sandboxruntime/networkenforcement/")

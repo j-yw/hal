@@ -36,9 +36,13 @@ closures. They must not `t.Skip`. The stable failure text contains
    Expected helper, client, and composition digests would come from
    sealed `L8ProcessCompositionFacts` compiled or inherited at image
    issuance. That sealed channel does not exist.
-2. `live helper transport` — `credentialclient` packets remain
-   metadata-only. Production `control_contract_red.go` does not bind,
-   listen, dial, or pass `SCM_RIGHTS`.
+2. `live helper transport` — `credentialclient` already defines
+   non-serializable authenticated packet and capability contracts and
+   dispatches controller readiness through an injected transport. Helper
+   lifecycle exchange still fail-closes with
+   `ErrClientControlDependencyUnaccepted`; `control_contract_red.go` provides
+   contracts and packet constructors, not a production listener, dialer, or
+   `SCM_RIGHTS` transport adapter.
 3. `durable handle store` — `L8JobCredentialRuntime.RecoverJobCredentials`
    returns `dependency_unaccepted` and mints no cleanup proof. HTTP
    tickets, tmpfs files, and SSH leases exist only as in-memory handles
