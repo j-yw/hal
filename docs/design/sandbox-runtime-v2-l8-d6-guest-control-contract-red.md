@@ -4,8 +4,10 @@ This candidate implements the accepted default-off guest-side request inspector,
 readiness dispatcher, and process-local lifecycle composition around the frozen
 contracts for a persistent authenticated control session on fixed VSOCK port
 1025. Controller credential operations prepare, renew, revoke, and exec are
-accepted packet constructors alongside readiness. Helper packets, unknown and
-malformed controller arms, private/stream/credit/close-notify controller
+accepted packet constructors alongside readiness. Each success constructor
+consumes the exact originating controller packet as its sequence, session,
+request-ID, identity-digest, and lifecycle-correlation authority. Helper
+packets, unknown and malformed controller arms, private/stream/credit/close-notify controller
 packets, helper receive construction, and helper `writeCanonicalBody` remain
 `dependency_unaccepted`.
 
