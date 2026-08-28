@@ -27,6 +27,10 @@ type L8DurableServiceOptions struct {
 	StateDir           string
 	Binder             *sandboxruntime.JobCredentialRuntimeBinder
 	PrincipalAuthority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
+	// RecoveryProvider is the optional D6 restart adapter. A typed-nil value
+	// fails closed. A missing provider retains ErrL8RecoveryDependency when
+	// durable credential ownership is present.
+	RecoveryProvider sandboxruntime.JobCredentialRuntimeRecoveryProvider
 }
 
 // L8AuthenticatedServerOptions attaches one durable L8 service to the
