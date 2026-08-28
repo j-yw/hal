@@ -33,8 +33,8 @@ func TestL8JobCredentialRuntimeDoesNotProveCleanupWhenResourceRevokeFails(t *tes
 	if sandboxruntime.CleanupProofKind(proof) != "" || !errors.Is(err, ErrL8JobCredentialRuntimeUnavailable) {
 		t.Fatalf("cleanup failure returned proof=%#v err=%v", proof, err)
 	}
-	if sandboxruntime.ActiveProofKind(session.ActiveProof()) == "" {
-		t.Fatal("cleanup failure discarded the still-owned active proof")
+	if sandboxruntime.ActiveProofKind(session.ActiveProof()) != "" {
+		t.Fatal("cleanup failure left revoking authority projected as active")
 	}
 	if failing.revokes != 1 {
 		t.Fatalf("failing revoke calls=%d, want 1", failing.revokes)

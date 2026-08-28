@@ -153,22 +153,33 @@ func (runtime *L8JobCredentialRuntime) PreflightJobCredentials(ctx context.Conte
 	session, openErr := callL8JobCredentialGuestSessionOpener(deps.GuestSession, ctx, cloned)
 	if openErr != nil || l8JobCredentialRuntimeValueIsNil(session) {
 		if !l8JobCredentialRuntimeValueIsNil(session) {
-			_ = session.Close()
+			_ = callL8JobCredentialGuestClose(session)
 		}
 		if openErr != nil {
 			return nil, sanitizeL8JobCredentialRuntimeError(openErr)
 		}
 		return nil, ErrL8JobCredentialRuntimeInvalid
 	}
-	identity, err := sandboxruntime.CompleteJobCredentialIdentity(cloned, session.GuestSessionGeneration(), session.GuestHelperGeneration())
+	sessionGeneration, helperGeneration, generationErr := callL8JobCredentialGuestGenerations(session)
+	if generationErr != nil {
+		_ = callL8JobCredentialGuestClose(session)
+		return nil, sanitizeL8JobCredentialRuntimeError(generationErr)
+	}
+	identity, err := sandboxruntime.CompleteJobCredentialIdentity(cloned, sessionGeneration, helperGeneration)
 	if err != nil {
-		_ = session.Close()
+		_ = callL8JobCredentialGuestClose(session)
 		return nil, sandboxruntime.ErrJobCredentialIdentityMismatch
+	}
+	guestLoss, lossErr := callL8JobCredentialGuestLoss(session)
+	if lossErr != nil {
+		_ = callL8JobCredentialGuestClose(session)
+		return nil, sanitizeL8JobCredentialRuntimeError(lossErr)
 	}
 	preflight := &l8JobCredentialRuntimePreflight{
 		deps:      deps,
 		identity:  cloneL8JobCredentialIdentity(identity),
 		session:   session,
+		guestLoss: guestLoss,
 		loss:      make(chan sandboxruntime.JobCredentialLoss, 1),
 		stopWatch: make(chan struct{}),
 		watchDone: make(chan struct{}),
@@ -192,10 +203,12 @@ const (
 )
 
 type l8JobCredentialRuntimePreflight struct {
+	opMu            sync.Mutex
 	mu              sync.Mutex
 	deps            l8JobCredentialRuntimeDependencies
 	identity        sandboxruntime.JobCredentialIdentity
 	session         l8JobCredentialGuestSession
+	guestLoss       <-chan struct{}
 	loss            chan sandboxruntime.JobCredentialLoss
 	stopWatch       chan struct{}
 	watchDone       chan struct{}
@@ -203,15 +216,14 @@ type l8JobCredentialRuntimePreflight struct {
 	lossLatched     bool
 	lossOnce        sync.Once
 	stopOnce        sync.Once
-	abortOnce       sync.Once
 	cleanupProof    sandboxruntime.JobCredentialCleanupProof
-	abortErr        error
 	resources       *l8JobCredentialPreparedResources
 	owned           *l8JobCredentialRuntimeSession
 	currentRevision uint64
 }
 
 type l8JobCredentialRuntimeSession struct {
+	opMu         sync.Mutex
 	mu           sync.Mutex
 	preflight    *l8JobCredentialRuntimePreflight
 	identity     sandboxruntime.JobCredentialIdentity
@@ -223,6 +235,7 @@ type l8JobCredentialRuntimeSession struct {
 	guestProofID string
 	execBinding  l8JobCredentialExecBinding
 	resources    *l8JobCredentialPreparedResources
+	revoking     bool
 	revoked      bool
 }
 
@@ -257,8 +270,10 @@ func (preflight *l8JobCredentialRuntimePreflight) PrepareJobCredentials(ctx cont
 	if preflight == nil || l8JobCredentialRuntimeValueIsNil(ctx) {
 		return nil, ErrL8JobCredentialRuntimeInvalid
 	}
+	preflight.opMu.Lock()
+	defer preflight.opMu.Unlock()
 	preflight.mu.Lock()
-	if preflight.state != l8JobCredentialPreflightOpen || preflight.lossLatched {
+	if preflight.state != l8JobCredentialPreflightOpen || preflight.lossLatched || preflight.resources != nil {
 		preflight.mu.Unlock()
 		return nil, sandboxruntime.ErrJobCredentialTransition
 	}
@@ -274,21 +289,22 @@ func (preflight *l8JobCredentialRuntimePreflight) PrepareJobCredentials(ctx cont
 	}
 	resources, err := activateL8JobCredentialBindings(ctx, deps, identity, request)
 	if err != nil {
-		revokeL8JobCredentialResources(ctx, resources)
-		preflight.revertPrepare()
+		preflight.finishFailedPrepare(ctx, resources)
 		return nil, sanitizeL8JobCredentialRuntimeError(err)
 	}
-	now := deps.Now().UTC()
+	now, err := callL8JobCredentialNow(deps.Now)
+	if err != nil {
+		preflight.finishFailedPrepare(ctx, resources)
+		return nil, sanitizeL8JobCredentialRuntimeError(err)
+	}
 	expiresAt, err := l8JobCredentialRuntimeExpiry(identity, session, now, time.Time{})
 	if err != nil {
-		revokeL8JobCredentialResources(ctx, resources)
-		preflight.revertPrepare()
+		preflight.finishFailedPrepare(ctx, resources)
 		return nil, err
 	}
 	guestResult, err := callL8JobCredentialGuestPrepare(session, ctx, identity, expiresAt, resources.manifests)
-	if err != nil || guestResult.ActiveProofID == "" || guestResult.ExecBindingID == "" {
-		revokeL8JobCredentialResources(ctx, resources)
-		preflight.revertPrepare()
+	if err != nil || validateL8JobCredentialGuestPrepareResult(guestResult, resources.manifests) != nil {
+		preflight.finishFailedPrepare(ctx, resources)
 		if err != nil {
 			return nil, sanitizeL8JobCredentialRuntimeError(err)
 		}
@@ -298,18 +314,14 @@ func (preflight *l8JobCredentialRuntimePreflight) PrepareJobCredentials(ctx cont
 		ProofID: "active-1", Identity: identity, Revision: 1, IssuedAt: now, ExpiresAt: expiresAt,
 	})
 	if err != nil {
-		revokeL8JobCredentialResources(ctx, resources)
-		preflight.revertPrepare()
+		preflight.finishFailedPrepare(ctx, resources)
 		return nil, sandboxruntime.ErrJobCredentialProofInvalid
 	}
 
 	preflight.mu.Lock()
 	if preflight.state != l8JobCredentialPreflightPreparing || preflight.lossLatched {
-		if preflight.state == l8JobCredentialPreflightPreparing {
-			preflight.state = l8JobCredentialPreflightOpen
-		}
 		preflight.mu.Unlock()
-		revokeL8JobCredentialResources(ctx, resources)
+		preflight.finishFailedPrepare(ctx, resources)
 		return nil, sandboxruntime.ErrJobCredentialTransition
 	}
 	owned := &l8JobCredentialRuntimeSession{
@@ -335,49 +347,52 @@ func (preflight *l8JobCredentialRuntimePreflight) Abort(ctx context.Context) (sa
 	if preflight == nil {
 		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
 	}
-	preflight.abortOnce.Do(func() {
-		preflight.mu.Lock()
-		if preflight.state == l8JobCredentialPreflightTransferred {
-			preflight.mu.Unlock()
-			preflight.abortErr = sandboxruntime.ErrJobCredentialTransition
-			return
-		}
-		preflight.state = l8JobCredentialPreflightAborted
-		session := preflight.session
-		resources := preflight.resources
-		preflight.resources = nil
-		nowFn := preflight.deps.Now
-		identity := cloneL8JobCredentialIdentity(preflight.identity)
-		preflight.mu.Unlock()
-
-		preflight.stopLossWatch()
-		revokeL8JobCredentialResources(ctx, resources)
-		if !l8JobCredentialRuntimeValueIsNil(session) {
-			_ = session.Close()
-		}
-		observed := nowFn().UTC()
-		if observed.Before(identity.IssuedAt) {
-			observed = identity.IssuedAt
-		}
-		proof, err := sandboxruntime.NewJobCredentialCleanupProof(sandboxruntime.JobCredentialCleanupProofInput{
-			ProofID: "cleanup-2", Identity: identity, Revision: 2,
-			RevokedAt: observed, AbsenceInspectedAt: observed,
-			AuthorityAbsent: true, ResourcesAbsent: true,
-		})
-		preflight.mu.Lock()
-		preflight.cleanupProof = proof
-		preflight.abortErr = err
-		if err != nil {
-			preflight.abortErr = sandboxruntime.ErrJobCredentialProofInvalid
-		}
-		preflight.mu.Unlock()
-	})
+	preflight.opMu.Lock()
+	defer preflight.opMu.Unlock()
 	preflight.mu.Lock()
-	defer preflight.mu.Unlock()
-	if preflight.state == l8JobCredentialPreflightTransferred && preflight.abortErr == nil {
+	if preflight.state == l8JobCredentialPreflightTransferred {
+		preflight.mu.Unlock()
 		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialTransition
 	}
-	return preflight.cleanupProof, preflight.abortErr
+	if sandboxruntime.CleanupProofKind(preflight.cleanupProof) != "" {
+		proof := preflight.cleanupProof
+		preflight.mu.Unlock()
+		return proof, nil
+	}
+	preflight.state = l8JobCredentialPreflightAborted
+	session := preflight.session
+	resources := preflight.resources
+	nowFn := preflight.deps.Now
+	identity := cloneL8JobCredentialIdentity(preflight.identity)
+	preflight.mu.Unlock()
+
+	if err := revokeL8JobCredentialResources(ctx, resources); err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	if err := callL8JobCredentialGuestClose(session); err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	preflight.stopLossWatch()
+	observed, err := callL8JobCredentialNow(nowFn)
+	if err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	if observed.Before(identity.IssuedAt) {
+		observed = identity.IssuedAt
+	}
+	proof, err := sandboxruntime.NewJobCredentialCleanupProof(sandboxruntime.JobCredentialCleanupProofInput{
+		ProofID: "cleanup-2", Identity: identity, Revision: 2,
+		RevokedAt: observed, AbsenceInspectedAt: observed,
+		AuthorityAbsent: true, ResourcesAbsent: true,
+	})
+	if err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialProofInvalid
+	}
+	preflight.mu.Lock()
+	preflight.resources = nil
+	preflight.cleanupProof = proof
+	preflight.mu.Unlock()
+	return proof, nil
 }
 
 func (preflight *l8JobCredentialRuntimePreflight) revertPrepare() {
@@ -388,13 +403,25 @@ func (preflight *l8JobCredentialRuntimePreflight) revertPrepare() {
 	}
 }
 
+func (preflight *l8JobCredentialRuntimePreflight) finishFailedPrepare(ctx context.Context, resources *l8JobCredentialPreparedResources) {
+	cleanupErr := revokeL8JobCredentialResources(ctx, resources)
+	preflight.mu.Lock()
+	defer preflight.mu.Unlock()
+	if cleanupErr != nil {
+		preflight.resources = resources
+	}
+	if preflight.state == l8JobCredentialPreflightPreparing {
+		preflight.state = l8JobCredentialPreflightOpen
+	}
+}
+
 func (preflight *l8JobCredentialRuntimePreflight) watchLoss() {
 	defer close(preflight.watchDone)
-	if preflight.session == nil {
+	if preflight.guestLoss == nil {
 		return
 	}
 	select {
-	case <-preflight.session.Loss():
+	case <-preflight.guestLoss:
 		preflight.emitLoss(sandboxruntime.JobCredentialFailureGuestHelperUnavailable)
 	case <-preflight.stopWatch:
 	}
@@ -432,6 +459,9 @@ func (session *l8JobCredentialRuntimeSession) ExecBinding() sandboxruntime.JobCr
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
+	if session.revoking || session.revoked {
+		return nil
+	}
 	return session.execBinding
 }
 
@@ -441,6 +471,9 @@ func (session *l8JobCredentialRuntimeSession) ActiveProof() sandboxruntime.JobCr
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
+	if session.revoking || session.revoked {
+		return sandboxruntime.JobCredentialActiveProof{}
+	}
 	return session.activeProof
 }
 
@@ -455,8 +488,10 @@ func (session *l8JobCredentialRuntimeSession) Renew(ctx context.Context) (sandbo
 	if session == nil || l8JobCredentialRuntimeValueIsNil(ctx) {
 		return sandboxruntime.JobCredentialActiveProof{}, ErrL8JobCredentialRuntimeInvalid
 	}
+	session.opMu.Lock()
+	defer session.opMu.Unlock()
 	session.mu.Lock()
-	if session.revoked || sandboxruntime.ActiveProofKind(session.activeProof) == "" {
+	if session.revoking || session.revoked || sandboxruntime.ActiveProofKind(session.activeProof) == "" {
 		session.mu.Unlock()
 		return sandboxruntime.JobCredentialActiveProof{}, sandboxruntime.ErrJobCredentialTransition
 	}
@@ -470,7 +505,10 @@ func (session *l8JobCredentialRuntimeSession) Renew(ctx context.Context) (sandbo
 	nowFn := session.preflight.deps.Now
 	session.mu.Unlock()
 
-	now := nowFn().UTC()
+	now, err := callL8JobCredentialNow(nowFn)
+	if err != nil {
+		return sandboxruntime.JobCredentialActiveProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
 	if err := sandboxruntime.ValidateJobCredentialActiveProof(session.ActiveProof(), identity, revision, now); err != nil {
 		return sandboxruntime.JobCredentialActiveProof{}, err
 	}
@@ -500,7 +538,7 @@ func (session *l8JobCredentialRuntimeSession) Renew(ctx context.Context) (sandbo
 	}
 
 	session.mu.Lock()
-	if session.revoked || session.revision != revision {
+	if session.revoking || session.revoked || session.revision != revision {
 		session.mu.Unlock()
 		return sandboxruntime.JobCredentialActiveProof{}, sandboxruntime.ErrJobCredentialTransition
 	}
@@ -520,6 +558,8 @@ func (session *l8JobCredentialRuntimeSession) Revoke(ctx context.Context, reason
 	if session == nil {
 		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
 	}
+	session.opMu.Lock()
+	defer session.opMu.Unlock()
 	session.mu.Lock()
 	if session.revoked {
 		proof := session.cleanupProof
@@ -531,22 +571,33 @@ func (session *l8JobCredentialRuntimeSession) Revoke(ctx context.Context, reason
 	guest := session.preflight.session
 	resources := session.resources
 	nowFn := session.preflight.deps.Now
+	session.revoking = true
+	session.activeProof = sandboxruntime.JobCredentialActiveProof{}
 	session.mu.Unlock()
 
 	if l8JobCredentialRuntimeValueIsNil(ctx) {
 		ctx = context.Background()
 	}
 	if !l8JobCredentialRuntimeValueIsNil(guest) {
-		if _, err := callL8JobCredentialGuestRevoke(guest, ctx, identity, revision, reason); err != nil {
+		guestProofID, err := callL8JobCredentialGuestRevoke(guest, ctx, identity, revision, reason)
+		if err != nil {
 			return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
 		}
+		if !validL8JobCredentialRuntimeToken(guestProofID) {
+			return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
+		}
 	}
-	revokeL8JobCredentialResources(ctx, resources)
-	if !l8JobCredentialRuntimeValueIsNil(guest) {
-		_ = guest.Close()
+	if err := revokeL8JobCredentialResources(ctx, resources); err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	if err := callL8JobCredentialGuestClose(guest); err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
 	}
 	session.preflight.stopLossWatch()
-	observed := nowFn().UTC()
+	observed, err := callL8JobCredentialNow(nowFn)
+	if err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
 	if observed.Before(identity.IssuedAt) {
 		observed = identity.IssuedAt
 	}
@@ -560,7 +611,6 @@ func (session *l8JobCredentialRuntimeSession) Revoke(ctx context.Context, reason
 	}
 	session.mu.Lock()
 	session.revoked = true
-	session.activeProof = sandboxruntime.JobCredentialActiveProof{}
 	session.cleanupProof = proof
 	session.mu.Unlock()
 	return proof, nil
@@ -708,6 +758,179 @@ func callL8JobCredentialGuestRevoke(session l8JobCredentialGuestSession, ctx con
 	return session.Revoke(ctx, identity, revision, reason)
 }
 
+func callL8JobCredentialGuestGenerations(session l8JobCredentialGuestSession) (sessionGeneration, helperGeneration string, err error) {
+	defer func() {
+		if recover() != nil {
+			sessionGeneration, helperGeneration = "", ""
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	if l8JobCredentialRuntimeValueIsNil(session) {
+		return "", "", ErrL8JobCredentialRuntimeInvalid
+	}
+	return session.GuestSessionGeneration(), session.GuestHelperGeneration(), nil
+}
+
+func callL8JobCredentialGuestHardExpiry(session l8JobCredentialGuestSession) (hardExpiry time.Time, err error) {
+	defer func() {
+		if recover() != nil {
+			hardExpiry = time.Time{}
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	if l8JobCredentialRuntimeValueIsNil(session) {
+		return time.Time{}, ErrL8JobCredentialRuntimeInvalid
+	}
+	return session.HardExpiry(), nil
+}
+
+func callL8JobCredentialGuestLoss(session l8JobCredentialGuestSession) (loss <-chan struct{}, err error) {
+	defer func() {
+		if recover() != nil {
+			loss = nil
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	if l8JobCredentialRuntimeValueIsNil(session) {
+		return nil, ErrL8JobCredentialRuntimeInvalid
+	}
+	loss = session.Loss()
+	if loss == nil {
+		return nil, ErrL8JobCredentialRuntimeInvalid
+	}
+	return loss, nil
+}
+
+func callL8JobCredentialGuestClose(session l8JobCredentialGuestSession) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	if l8JobCredentialRuntimeValueIsNil(session) {
+		return nil
+	}
+	return session.Close()
+}
+
+func callL8JobCredentialNow(now func() time.Time) (value time.Time, err error) {
+	defer func() {
+		if recover() != nil {
+			value = time.Time{}
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	if now == nil {
+		return time.Time{}, ErrL8JobCredentialRuntimeInvalid
+	}
+	return now().UTC(), nil
+}
+
+func callL8JobCredentialHTTPActivate(activator l8JobCredentialHTTPProxyActivator, ctx context.Context, identity sandboxruntime.JobCredentialIdentity, binding sandboxruntime.JobCredentialBindingRequest, source sandboxruntime.LiveSecretSource) (handle l8JobCredentialHTTPProxyHandle, err error) {
+	defer func() {
+		if recover() != nil {
+			handle = nil
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return activator.Activate(ctx, identity, binding, source)
+}
+
+func callL8JobCredentialHTTPServiceID(handle l8JobCredentialHTTPProxyHandle) (serviceID string, err error) {
+	defer func() {
+		if recover() != nil {
+			serviceID = ""
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return handle.ServiceID(), nil
+}
+
+func callL8JobCredentialHTTPRenew(handle l8JobCredentialHTTPProxyHandle, ctx context.Context) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return handle.Renew(ctx)
+}
+
+func callL8JobCredentialHTTPRevoke(handle l8JobCredentialHTTPProxyHandle, ctx context.Context) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return handle.Revoke(ctx)
+}
+
+func callL8JobCredentialFileMaterialize(activator l8JobCredentialFileTmpfsActivator, ctx context.Context, identity sandboxruntime.JobCredentialIdentity, binding sandboxruntime.JobCredentialBindingRequest, source sandboxruntime.LiveSecretSource) (handle l8JobCredentialFileHandle, err error) {
+	defer func() {
+		if recover() != nil {
+			handle = nil
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return activator.Materialize(ctx, identity, binding, source)
+}
+
+func callL8JobCredentialFileMetadata(handle l8JobCredentialFileHandle) (targetPath string, declaredBytes uint32, digest string, err error) {
+	defer func() {
+		if recover() != nil {
+			targetPath, declaredBytes, digest = "", 0, ""
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return handle.TargetPath(), handle.DeclaredFileBytes(), handle.FileSHA256(), nil
+}
+
+func callL8JobCredentialFileRevoke(handle l8JobCredentialFileHandle, ctx context.Context) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return handle.Revoke(ctx)
+}
+
+func callL8JobCredentialSSHActivate(activator l8JobCredentialSSHRelayActivator, ctx context.Context, identity sandboxruntime.JobCredentialIdentity, binding sandboxruntime.JobCredentialBindingRequest) (handle l8JobCredentialSSHRelayHandle, err error) {
+	defer func() {
+		if recover() != nil {
+			handle = nil
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return activator.Activate(ctx, identity, binding)
+}
+
+func callL8JobCredentialSSHMetadata(handle l8JobCredentialSSHRelayHandle) (policyID string, revision uint64, err error) {
+	defer func() {
+		if recover() != nil {
+			policyID, revision = "", 0
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return handle.PolicyID(), handle.PolicyRevision(), nil
+}
+
+func callL8JobCredentialSSHRenew(handle l8JobCredentialSSHRelayHandle, ctx context.Context) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return handle.Renew(ctx)
+}
+
+func callL8JobCredentialSSHRevoke(handle l8JobCredentialSSHRelayHandle, ctx context.Context) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = ErrL8JobCredentialRuntimeUnavailable
+		}
+	}()
+	return handle.Revoke(ctx)
+}
+
 func cloneL8JobCredentialIdentity(identity sandboxruntime.JobCredentialIdentity) sandboxruntime.JobCredentialIdentity {
 	identity.BindingIDs = append([]string(nil), identity.BindingIDs...)
 	identity.DeliveryModes = append([]sandboxruntime.JobCredentialDeliveryMode(nil), identity.DeliveryModes...)
@@ -735,7 +958,11 @@ func l8JobCredentialRuntimeExpiry(identity sandboxruntime.JobCredentialIdentity,
 	}
 	sessionCap := identity.IssuedAt.Add(l8JobCredentialRuntimeSessionLifetime)
 	if !l8JobCredentialRuntimeValueIsNil(session) {
-		if hard := session.HardExpiry(); !hard.IsZero() && hard.Before(sessionCap) {
+		hard, err := callL8JobCredentialGuestHardExpiry(session)
+		if err != nil {
+			return time.Time{}, sanitizeL8JobCredentialRuntimeError(err)
+		}
+		if !hard.IsZero() && hard.Before(sessionCap) {
 			sessionCap = hard
 		}
 	}
@@ -827,6 +1054,32 @@ func validL8JobCredentialProductionMode(mode sandboxruntime.JobCredentialDeliver
 	}
 }
 
+func validateL8JobCredentialGuestPrepareResult(result l8JobCredentialGuestPrepareResult, manifests []l8JobCredentialGuestBindingManifest) error {
+	if !validL8JobCredentialRuntimeToken(result.ActiveProofID) || !validL8JobCredentialRuntimeToken(result.ExecBindingID) || len(result.BindingProofs) != len(manifests) {
+		return ErrL8JobCredentialRuntimeInvalid
+	}
+	for index, proof := range result.BindingProofs {
+		if proof.BindingID != manifests[index].BindingID || proof.Mode != manifests[index].Mode || !validL8JobCredentialRuntimeToken(proof.ProofID) {
+			return ErrL8JobCredentialRuntimeInvalid
+		}
+	}
+	return nil
+}
+
+func validL8JobCredentialRuntimeToken(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' ||
+			character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func activateL8JobCredentialBindings(ctx context.Context, deps l8JobCredentialRuntimeDependencies, identity sandboxruntime.JobCredentialIdentity, request sandboxruntime.JobCredentialPrepareRequest) (*l8JobCredentialPreparedResources, error) {
 	resources := &l8JobCredentialPreparedResources{}
 	sources := make(map[string]sandboxruntime.LiveSecretSource, len(request.AuthorizedSources))
@@ -840,47 +1093,65 @@ func activateL8JobCredentialBindings(ctx context.Context, deps l8JobCredentialRu
 			if l8JobCredentialRuntimeValueIsNil(deps.HTTPProxy) {
 				return resources, ErrL8JobCredentialRuntimeInvalid
 			}
-			handle, err := deps.HTTPProxy.Activate(ctx, identity, binding, sources[binding.SourceReferenceID])
+			handle, err := callL8JobCredentialHTTPActivate(deps.HTTPProxy, ctx, identity, binding, sources[binding.SourceReferenceID])
+			if !l8JobCredentialRuntimeValueIsNil(handle) {
+				resources.http = append(resources.http, handle)
+			}
 			if err != nil || l8JobCredentialRuntimeValueIsNil(handle) {
 				if err != nil {
 					return resources, err
 				}
 				return resources, ErrL8JobCredentialRuntimeInvalid
 			}
-			resources.http = append(resources.http, handle)
-			manifest.ServiceID = handle.ServiceID()
-			if manifest.ServiceID == "" {
-				manifest.ServiceID = binding.ServiceID
+			manifest.ServiceID, err = callL8JobCredentialHTTPServiceID(handle)
+			if err != nil || !validL8JobCredentialRuntimeToken(manifest.ServiceID) {
+				if err != nil {
+					return resources, err
+				}
+				return resources, ErrL8JobCredentialRuntimeInvalid
 			}
 		case sandboxruntime.JobCredentialDeliveryModeFileTmpfs:
 			if l8JobCredentialRuntimeValueIsNil(deps.FileTmpfs) {
 				return resources, ErrL8JobCredentialRuntimeInvalid
 			}
-			handle, err := deps.FileTmpfs.Materialize(ctx, identity, binding, sources[binding.SourceReferenceID])
+			handle, err := callL8JobCredentialFileMaterialize(deps.FileTmpfs, ctx, identity, binding, sources[binding.SourceReferenceID])
+			if !l8JobCredentialRuntimeValueIsNil(handle) {
+				resources.files = append(resources.files, handle)
+			}
 			if err != nil || l8JobCredentialRuntimeValueIsNil(handle) {
 				if err != nil {
 					return resources, err
 				}
 				return resources, ErrL8JobCredentialRuntimeInvalid
 			}
-			resources.files = append(resources.files, handle)
-			manifest.TargetPath = handle.TargetPath()
-			manifest.DeclaredFileBytes = handle.DeclaredFileBytes()
-			manifest.FileSHA256 = handle.FileSHA256()
+			manifest.TargetPath, manifest.DeclaredFileBytes, manifest.FileSHA256, err = callL8JobCredentialFileMetadata(handle)
+			if err != nil || manifest.TargetPath == "" || len(manifest.FileSHA256) != 64 {
+				if err != nil {
+					return resources, err
+				}
+				return resources, ErrL8JobCredentialRuntimeInvalid
+			}
 		case sandboxruntime.JobCredentialDeliveryModeSSHAgent:
 			if l8JobCredentialRuntimeValueIsNil(deps.SSHRelay) {
 				return resources, ErrL8JobCredentialRuntimeInvalid
 			}
-			handle, err := deps.SSHRelay.Activate(ctx, identity, binding)
+			handle, err := callL8JobCredentialSSHActivate(deps.SSHRelay, ctx, identity, binding)
+			if !l8JobCredentialRuntimeValueIsNil(handle) {
+				resources.ssh = append(resources.ssh, handle)
+			}
 			if err != nil || l8JobCredentialRuntimeValueIsNil(handle) {
 				if err != nil {
 					return resources, err
 				}
 				return resources, ErrL8JobCredentialRuntimeInvalid
 			}
-			resources.ssh = append(resources.ssh, handle)
-			manifest.SSHPolicyID = handle.PolicyID()
-			manifest.SSHPolicyRevision = handle.PolicyRevision()
+			manifest.SSHPolicyID, manifest.SSHPolicyRevision, err = callL8JobCredentialSSHMetadata(handle)
+			if err != nil || !validL8JobCredentialRuntimeToken(manifest.SSHPolicyID) || manifest.SSHPolicyRevision == 0 {
+				if err != nil {
+					return resources, err
+				}
+				return resources, ErrL8JobCredentialRuntimeInvalid
+			}
 		default:
 			return resources, ErrL8JobCredentialRuntimeInvalid
 		}
@@ -894,36 +1165,44 @@ func renewL8JobCredentialResources(ctx context.Context, resources *l8JobCredenti
 		return nil
 	}
 	for _, handle := range resources.http {
-		if err := handle.Renew(ctx); err != nil {
+		if err := callL8JobCredentialHTTPRenew(handle, ctx); err != nil {
 			return err
 		}
 	}
 	for _, handle := range resources.ssh {
-		if err := handle.Renew(ctx); err != nil {
+		if err := callL8JobCredentialSSHRenew(handle, ctx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func revokeL8JobCredentialResources(ctx context.Context, resources *l8JobCredentialPreparedResources) {
+func revokeL8JobCredentialResources(ctx context.Context, resources *l8JobCredentialPreparedResources) error {
 	if resources == nil {
-		return
+		return nil
 	}
 	if l8JobCredentialRuntimeValueIsNil(ctx) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 	}
+	var cleanupErr error
 	for index := len(resources.http) - 1; index >= 0; index-- {
-		_ = resources.http[index].Revoke(ctx)
+		if err := callL8JobCredentialHTTPRevoke(resources.http[index], ctx); err != nil {
+			cleanupErr = ErrL8JobCredentialRuntimeUnavailable
+		}
 	}
 	for index := len(resources.files) - 1; index >= 0; index-- {
-		_ = resources.files[index].Revoke(ctx)
+		if err := callL8JobCredentialFileRevoke(resources.files[index], ctx); err != nil {
+			cleanupErr = ErrL8JobCredentialRuntimeUnavailable
+		}
 	}
 	for index := len(resources.ssh) - 1; index >= 0; index-- {
-		_ = resources.ssh[index].Revoke(ctx)
+		if err := callL8JobCredentialSSHRevoke(resources.ssh[index], ctx); err != nil {
+			cleanupErr = ErrL8JobCredentialRuntimeUnavailable
+		}
 	}
+	return cleanupErr
 }
 
 var (
