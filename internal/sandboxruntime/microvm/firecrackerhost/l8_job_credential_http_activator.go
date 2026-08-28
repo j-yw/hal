@@ -21,7 +21,6 @@ const l8JobCredentialHTTPActivatorValuePlaceholder = "[firecracker-l8-job-creden
 // input for the TicketStore-backed HTTP activator. Zero values are rejected.
 type ProductionL8JobCredentialHTTPProxyActivatorConfig struct {
 	Store              *credentialproxy.TicketStore
-	DaemonGeneration   string
 	CatalogGeneration  string
 	ListenerGeneration uint64
 	LocalAuthority     string
@@ -56,27 +55,16 @@ var (
 // HTTP activator. It is never invoked by sandboxd, hal run, hal auto, factory,
 // worker Service, or NewProductionL8JobCredentialRuntime unless injected.
 func NewProductionL8JobCredentialHTTPProxyActivator(config ProductionL8JobCredentialHTTPProxyActivatorConfig) (*ProductionL8JobCredentialHTTPProxyActivator, error) {
-	if !validL8JobCredentialHTTPCatalogID(config.CatalogGeneration) || config.ListenerGeneration == 0 ||
+	if config.Store == nil || !validL8JobCredentialHTTPCatalogID(config.CatalogGeneration) || config.ListenerGeneration == 0 ||
 		!validL8JobCredentialHTTPLocalAuthority(config.LocalAuthority) {
 		return nil, ErrL8JobCredentialRuntimeInvalid
-	}
-	store := config.Store
-	if store == nil {
-		if !validL8JobCredentialHTTPCatalogID(config.DaemonGeneration) {
-			return nil, ErrL8JobCredentialRuntimeInvalid
-		}
-		created, err := credentialproxy.NewTicketStore(config.DaemonGeneration)
-		if err != nil {
-			return nil, ErrL8JobCredentialRuntimeInvalid
-		}
-		store = created
 	}
 	now := config.Now
 	if now == nil {
 		now = time.Now
 	}
 	return &ProductionL8JobCredentialHTTPProxyActivator{
-		store:              store,
+		store:              config.Store,
 		catalogGeneration:  config.CatalogGeneration,
 		listenerGeneration: config.ListenerGeneration,
 		localAuthority:     config.LocalAuthority,
@@ -275,22 +263,22 @@ func validL8JobCredentialHTTPLocalAuthority(authority string) bool {
 	return err == nil && portErr == nil && host != "" && portNumber > 0 && portNumber <= 65535
 }
 
-func (*ProductionL8JobCredentialHTTPProxyActivator) String() string {
+func (ProductionL8JobCredentialHTTPProxyActivator) String() string {
 	return l8JobCredentialHTTPActivatorValuePlaceholder
 }
-func (*ProductionL8JobCredentialHTTPProxyActivator) GoString() string {
+func (ProductionL8JobCredentialHTTPProxyActivator) GoString() string {
 	return l8JobCredentialHTTPActivatorValuePlaceholder
 }
-func (*ProductionL8JobCredentialHTTPProxyActivator) Format(state fmt.State, _ rune) {
+func (ProductionL8JobCredentialHTTPProxyActivator) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, l8JobCredentialHTTPActivatorValuePlaceholder)
 }
-func (*ProductionL8JobCredentialHTTPProxyActivator) MarshalJSON() ([]byte, error) {
+func (ProductionL8JobCredentialHTTPProxyActivator) MarshalJSON() ([]byte, error) {
 	return nil, ErrL8JobCredentialRuntimeSerialization
 }
-func (*ProductionL8JobCredentialHTTPProxyActivator) MarshalText() ([]byte, error) {
+func (ProductionL8JobCredentialHTTPProxyActivator) MarshalText() ([]byte, error) {
 	return nil, ErrL8JobCredentialRuntimeSerialization
 }
-func (*ProductionL8JobCredentialHTTPProxyActivator) MarshalBinary() ([]byte, error) {
+func (ProductionL8JobCredentialHTTPProxyActivator) MarshalBinary() ([]byte, error) {
 	return nil, ErrL8JobCredentialRuntimeSerialization
 }
 
