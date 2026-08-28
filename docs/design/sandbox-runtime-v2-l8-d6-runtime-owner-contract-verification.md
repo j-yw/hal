@@ -277,7 +277,11 @@ sole production `NewJobCredentialRuntimeAbsenceProof` callsite in
 `l8_runtime_owner_recovery.go`, and it issues a proof only after the private
 owner has proved exact absence by direct-parent Wait or replacement
 double-`/proc`. The AST guard is tightened from zero host issuers to exactly
-that one StopReap callsite. Finalize constructs `l7network.NewRecoveredVMTerminationBinding`
-and persists `finalized` only after same-boot `CleanupAfterVMQuiesced`; old-boot journal retirement remains fail-closed.
+that one StopReap callsite. Finalize constructs `l7network.NewRecoveredVMTerminationBinding`,
+persists the HMAC-bound `finalizing` intent before same-boot
+`CleanupAfterVMQuiesced`, and persists `finalized` only after cleanup. A retry
+from `finalizing` resumes the exact journal or accepts its exact
+full-identity-bound durable retired-generation marker without reopening
+removed topology. Legacy or mismatched markers remain stale-only; old-boot journal retirement remains fail-closed.
 `commitJobCredentialRuntimeRecovery` remains the sole owner `CommitID` reader.
 Default constructors, sandboxd, and command execution stay unwired.

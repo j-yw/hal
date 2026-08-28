@@ -54,8 +54,42 @@ func TestFirecrackerHostTopologyJournalIsPrivateAtomicAndGenerationOwned(t *test
 	if err := lease.Release(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Acquire(context.Background(), testIdentity()); !errors.Is(err, ErrStaleTopologyUnverified) {
+	if _, err := store.Acquire(context.Background(), testIdentity()); !errors.Is(err, ErrStaleTopologyUnverified) || !errors.Is(err, ErrJournalRetired) {
 		t.Fatalf("retired generation Acquire() = %v", err)
+	}
+	sequence := &callSequence{}
+	reconciler, err := NewReconciler(ReconcilerOptions{
+		Recovery: &fakeRecoveryTopology{sequence: sequence, lifecycle: newFakeTopology(sequence)},
+		TAP:      &fakeTAP{sequence: sequence}, Rules: &fakeRules{sequence: sequence},
+		VMTermination: NewRecoveredVMTerminationVerifier(), Journal: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session, err := reconciler.Recover(context.Background(), testIdentity()); session != nil || !errors.Is(err, ErrJournalRetired) {
+		t.Fatalf("retired generation Recover() = %T, %v", session, err)
+	}
+	if got := sequence.snapshot(); len(got) != 0 {
+		t.Fatalf("retired generation reopened live topology: %#v", got)
+	}
+	retired := filepath.Join(root, testIdentity().SandboxID, "retired-"+testIdentity().TopologyGenerationID)
+	mismatch := testIdentity()
+	mismatch.ExecutionID = "other-execution"
+	mismatchedMarker, err := journalRetiredMarker(mismatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(retired, mismatchedMarker, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Acquire(context.Background(), testIdentity()); !errors.Is(err, ErrStaleTopologyUnverified) || errors.Is(err, ErrJournalRetired) {
+		t.Fatalf("mismatched identity marker Acquire() = %v", err)
+	}
+	if err := os.WriteFile(retired, []byte("retired\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Acquire(context.Background(), testIdentity()); !errors.Is(err, ErrStaleTopologyUnverified) || errors.Is(err, ErrJournalRetired) {
+		t.Fatalf("unbound legacy marker Acquire() = %v", err)
 	}
 }
 

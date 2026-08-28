@@ -258,22 +258,6 @@ func (binding *l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecove
 		err = errL8RuntimeOwnerInvalid
 		return
 	}
-	identity := l8RuntimeOwnerL7Identity(seed)
-	terminated, bindErr := l7network.NewRecoveredVMTerminationBinding(l7network.RecoveredVMTerminationObservation{
-		Identity:             identity,
-		ProcessGeneration:    seed.FirecrackerProcessGeneration,
-		SupervisorGeneration: record.SupervisorGeneration,
-		Stopped:              true,
-		Reaped:               true,
-	})
-	if bindErr != nil || terminated == nil {
-		err = errL8RuntimeOwnerInvalid
-		return
-	}
-	if cleanupErr := l8RuntimeOwnerCleanupAfterVMQuiesced(ctx, identity, terminated, recoverNetwork, l7Options); cleanupErr != nil || ctx.Err() != nil {
-		err = errL8RuntimeOwnerInvalid
-		return
-	}
 	digest, digestErr := l8RuntimeOwnerSeedDigest(seed)
 	if digestErr != nil {
 		err = errL8RuntimeOwnerInvalid
@@ -288,7 +272,28 @@ func (binding *l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecove
 		err = errL8RuntimeOwnerInvalid
 		return
 	}
-	stored, persistErr := persistL8RuntimeOwnerFinalized(ctx, store, record, commitID, targetRevision)
+	finalizing, persistErr := persistL8RuntimeOwnerFinalizing(ctx, store, record, commitID, targetRevision)
+	if persistErr != nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	identity := l8RuntimeOwnerL7Identity(seed)
+	terminated, bindErr := l7network.NewRecoveredVMTerminationBinding(l7network.RecoveredVMTerminationObservation{
+		Identity:             identity,
+		ProcessGeneration:    seed.FirecrackerProcessGeneration,
+		SupervisorGeneration: finalizing.SupervisorGeneration,
+		Stopped:              true,
+		Reaped:               true,
+	})
+	if bindErr != nil || terminated == nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	if cleanupErr := l8RuntimeOwnerCleanupAfterVMQuiesced(ctx, identity, terminated, recoverNetwork, l7Options); (cleanupErr != nil && cleanupErr != l7network.ErrJournalRetired) || ctx.Err() != nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	stored, persistErr := persistL8RuntimeOwnerFinalized(ctx, store, finalizing, commitID, targetRevision)
 	if persistErr != nil {
 		err = errL8RuntimeOwnerInvalid
 		return
@@ -335,13 +340,16 @@ func l8RuntimeOwnerCleanupAfterVMQuiesced(
 		return err
 	}
 	session, err := reconciler.Recover(ctx, identity)
+	if session == nil && err == l7network.ErrJournalRetired {
+		return l7network.ErrJournalRetired
+	}
 	if err != nil || session == nil {
 		return errL8RuntimeOwnerInvalid
 	}
 	return session.CleanupAfterVMQuiesced(ctx, identity, terminated)
 }
 
-func persistL8RuntimeOwnerFinalized(ctx context.Context, store l8RuntimeOwnerRecordStore, record firecrackerRuntimeOwnerRecordV1, commitID string, targetRevision uint64) (firecrackerRuntimeOwnerRecordV1, error) {
+func persistL8RuntimeOwnerFinalizing(ctx context.Context, store l8RuntimeOwnerRecordStore, record firecrackerRuntimeOwnerRecordV1, commitID string, targetRevision uint64) (firecrackerRuntimeOwnerRecordV1, error) {
 	if store == nil || !validL8RuntimeOwnerToken(commitID) || targetRevision == 0 {
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
 	}
@@ -360,6 +368,15 @@ func persistL8RuntimeOwnerFinalized(ctx context.Context, store l8RuntimeOwnerRec
 		current = next
 	}
 	if current.State != "finalizing" || current.FinalizeTargetRevision != targetRevision ||
+		subtle.ConstantTimeCompare([]byte(current.FinalizedCommitID), []byte(commitID)) != 1 {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	return current, nil
+}
+
+func persistL8RuntimeOwnerFinalized(ctx context.Context, store l8RuntimeOwnerRecordStore, current firecrackerRuntimeOwnerRecordV1, commitID string, targetRevision uint64) (firecrackerRuntimeOwnerRecordV1, error) {
+	if store == nil || current.State != "finalizing" || current.FinalizeTargetRevision != targetRevision ||
+		!validL8RuntimeOwnerToken(commitID) || targetRevision == 0 ||
 		subtle.ConstantTimeCompare([]byte(current.FinalizedCommitID), []byte(commitID)) != 1 {
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
 	}

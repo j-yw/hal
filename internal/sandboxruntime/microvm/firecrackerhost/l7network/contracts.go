@@ -36,6 +36,9 @@ var (
 	ErrStaleTopologyUnverified = errors.New("Firecracker host topology stale state unverified")
 	ErrVMNotQuiesced           = errors.New("Firecracker VM is not confirmed quiesced")
 	ErrJournalNotFound         = errors.New("Firecracker host topology journal not found")
+	// ErrJournalRetired identifies the exact durable retired-generation marker.
+	// It is returned alone only after the marker lease was released cleanly.
+	ErrJournalRetired = errors.New("Firecracker host topology journal retired")
 )
 
 const defaultCleanupTimeout = 5 * time.Second
