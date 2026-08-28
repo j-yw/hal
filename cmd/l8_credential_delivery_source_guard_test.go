@@ -1053,6 +1053,10 @@ func TestL8CredentialDeliverySourceGuardsLiveMarkerIsolation(t *testing.T) {
 				assertL8ExactLiveBuildConstraint(t, rel, source, liveTag)
 				return nil
 			}
+			if rel == l8PreparedLinuxCredentialDeliveryLiveRel() {
+				assertL8PreparedLinuxLiveBuildConstraint(t, rel, source)
+				return nil
+			}
 			if !strings.HasSuffix(path, "_live_test.go") {
 				t.Errorf("%s contains the L8 live marker outside an isolated live test", filepath.ToSlash(rel))
 				return nil
@@ -1071,6 +1075,43 @@ func assertL8ExactLiveBuildConstraint(t *testing.T, path string, source []byte, 
 	if err := validateL8ExactLiveBuildConstraint(source, liveTag); err != nil {
 		t.Errorf("%s build constraint: %v", filepath.ToSlash(path), err)
 	}
+}
+
+func l8PreparedLinuxCredentialDeliveryLiveRel() string {
+	return "internal/sandboxruntime/microvm/firecrackerhost/l8_prepared_linux_" +
+		"credential_" + "delivery_" + "live_test.go"
+}
+
+func assertL8PreparedLinuxLiveBuildConstraint(t *testing.T, path string, source []byte) {
+	t.Helper()
+	if err := validateL8PreparedLinuxLiveBuildConstraint(source); err != nil {
+		t.Errorf("%s build constraint: %v", filepath.ToSlash(path), err)
+	}
+}
+
+func validateL8PreparedLinuxLiveBuildConstraint(source []byte) error {
+	want := "//go:build linux && " +
+		"firecracker" + "_" + "live" + " && " +
+		"network_enforcement" + "_" + "live" + " && " +
+		"l7_linux_network_integration && " +
+		"l8_production_" + "credential_" + "delivery_" + "live"
+	var buildLines []string
+	for _, line := range strings.Split(string(source), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//go:build") {
+			buildLines = append(buildLines, trimmed)
+		}
+		if trimmed != "" && !strings.HasPrefix(trimmed, "//") {
+			break
+		}
+	}
+	if len(buildLines) != 1 {
+		return fmt.Errorf("must contain exactly one L8 go:build constraint")
+	}
+	if buildLines[0] != want {
+		return fmt.Errorf("must be the D7 four-tag prepared-Linux constraint")
+	}
+	return nil
 }
 
 func validateL8ExactLiveBuildConstraint(source []byte, liveTag string) error {
