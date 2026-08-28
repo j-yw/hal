@@ -240,17 +240,18 @@ finalized revision rather than trusting a caller-supplied expected token.
 
 ## R2 supervisor/bootstrap/reconnect prerequisite
 
-The R2 RED contract freezes only the explicit default-off `hal-firecracker-runtime-owner`
-executable, its strict sealed configuration and inherited-fd ABI, the bounded
-private `SOCK_SEQPACKET` codec, namespace-fd retention/transfer, the durable
-owner transition/CAS machinery, and direct-parent plus replacement-owner
-containment primitives. It does not construct the executable from a default
-runtime, publish an absence proof, implement the neutral recovery provider,
-perform L7 recovery/finalization, persist a worker receipt, or wire command,
-worker, sandboxd, factory, or profile selection.
+R2 implements the explicit default-off `hal-firecracker-runtime-owner`
+executable over its strict sealed configuration and inherited-fd ABI, the
+bounded private `SOCK_SEQPACKET` codec, namespace-fd retention/transfer, the
+durable owner transition/CAS machinery, and direct-parent containment. The
+Linux executable callbacks construct the private record store and reconnect
+listener, execute the frozen bootstrap/controller FSM, and use the child gate
+to arm parent-death containment before the namespace-wrapper `execve`. No
+default runtime constructs this executable. R2 does not publish an absence
+proof, implement the neutral recovery provider, perform L7 recovery, persist a
+worker receipt, or wire worker, sandboxd, factory, or profile selection.
 
-The causal RED selector is expected to fail until the reviewed GREEN
-implementation exists; the command guard is expected to pass:
+The causal and command selectors pass on the reviewed GREEN implementation:
 
 ```bash
 go test ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL8RuntimeOwner'

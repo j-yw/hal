@@ -38,6 +38,45 @@ func TestL8RuntimeOwnerProcessIdentityIncludesExactParentAndStart(t *testing.T) 
 	}
 }
 
+func TestL8RuntimeOwnerProcessLivenessRetriesInterruptedPoll(t *testing.T) {
+	calls := 0
+	alive := l8RuntimeOwnerProcessAliveWithPoll(17, func(fds []unix.PollFd, timeout int) (int, error) {
+		calls++
+		if len(fds) != 1 || fds[0].Fd != 17 || fds[0].Events != unix.POLLIN || timeout != 0 {
+			t.Fatalf("poll input = %#v timeout %d", fds, timeout)
+		}
+		if calls == 1 {
+			return -1, unix.EINTR
+		}
+		return 0, nil
+	})
+	if !alive || calls != 2 {
+		t.Fatalf("interrupted liveness = %v calls %d", alive, calls)
+	}
+}
+
+func TestL8RuntimeOwnerProcessIdentityAllowsSchedulerStateChanges(t *testing.T) {
+	if !sameL8RuntimeOwnerProcessIdentity(10, 20, 'R', 10, 20, 'S') {
+		t.Fatal("scheduler state change rejected stable process identity")
+	}
+	for _, scenario := range []struct {
+		beforeParent uint32
+		beforeStart  uint64
+		beforeState  byte
+		afterParent  uint32
+		afterStart   uint64
+		afterState   byte
+	}{
+		{beforeParent: 10, beforeStart: 20, beforeState: 'R', afterParent: 11, afterStart: 20, afterState: 'S'},
+		{beforeParent: 10, beforeStart: 20, beforeState: 'R', afterParent: 10, afterStart: 21, afterState: 'S'},
+		{beforeParent: 10, beforeStart: 20, beforeState: 'Z', afterParent: 10, afterStart: 20, afterState: 'Z'},
+	} {
+		if sameL8RuntimeOwnerProcessIdentity(scenario.beforeParent, scenario.beforeStart, scenario.beforeState, scenario.afterParent, scenario.afterStart, scenario.afterState) {
+			t.Fatalf("unstable process identity accepted: %#v", scenario)
+		}
+	}
+}
+
 func TestL8RuntimeOwnerReplacementClosesEveryOwnedPidfdOnFailure(t *testing.T) {
 	seed := l8RuntimeOwnerTestSeed()
 	record := l8RuntimeOwnerTestRecord(t, seed, "01234567-89ab-cdef-0123-456789abcdef")

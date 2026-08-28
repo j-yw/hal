@@ -1157,20 +1157,57 @@ func (owner *l8RuntimeOwnerSupervisor) unclaim(ctx context.Context, record firec
 }
 
 func (owner *l8RuntimeOwnerSupervisor) reinspectAbsence(ctx context.Context, record firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, error) {
-	if record.State != "absent" || owner.opts.ReinspectAbsence == nil {
+	var observation l8RuntimeOwnerAbsenceObservation
+	var err error
+	prior := record
+	switch record.State {
+	case "running":
+		if owner.opts.ContainChild == nil {
+			return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+		}
+		stopping := record
+		stopping.Revision++
+		stopping.State = "stopping"
+		stopping.AbsenceKind = ""
+		stopping.AbsenceRevision = 0
+		stopping.AbsenceObservedAtUnixNano = 0
+		prior, err = owner.opts.Store.Transition(ctx, record.Revision, stopping)
+		if err != nil {
+			return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+		}
+		observation, err = owner.opts.ContainChild()
+	case "stopping", "uncertain":
+		if owner.opts.ContainChild == nil {
+			return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+		}
+		observation, err = owner.opts.ContainChild()
+	case "absent":
+		if owner.opts.ReinspectAbsence == nil {
+			return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+		}
+		observation, err = owner.opts.ReinspectAbsence()
+	default:
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
 	}
-	observation, err := owner.opts.ReinspectAbsence()
 	if err != nil {
+		if prior.State == "stopping" {
+			uncertain := prior
+			uncertain.Revision++
+			uncertain.State = "uncertain"
+			uncertain.AbsenceKind = ""
+			uncertain.AbsenceRevision = 0
+			uncertain.AbsenceObservedAtUnixNano = 0
+			_, _ = owner.opts.Store.Transition(ctx, prior.Revision, uncertain)
+		}
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
 	}
-	next := record
-	next.Revision = record.Revision + 1
+	next := prior
+	next.Revision = prior.Revision + 1
 	next.State = "absent"
 	next.AbsenceKind = l8RuntimeOwnerAbsenceKindName(observation.Kind)
 	next.AbsenceRevision = next.Revision
 	next.AbsenceObservedAtUnixNano = observation.ObservedAt.UnixNano()
-	updated, err := owner.opts.Store.Transition(ctx, record.Revision, next)
+	updated, err := owner.opts.Store.Transition(ctx, prior.Revision, next)
 	if err != nil {
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
 	}

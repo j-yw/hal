@@ -38,6 +38,7 @@ func TestL8RuntimeOwnerLinuxExecutableWiresProductionModes(t *testing.T) {
 	for _, marker := range []string{
 		"RunSupervisor: runL8RuntimeOwnerSupervisorLinux",
 		"RunChildGate:  runL8RuntimeOwnerChildGateLinux",
+		"observation.ParentPID != uint32(os.Getpid())",
 	} {
 		if strings.Count(text, marker) != 1 {
 			t.Fatalf("linux executable wiring count for %q = %d", marker, strings.Count(text, marker))

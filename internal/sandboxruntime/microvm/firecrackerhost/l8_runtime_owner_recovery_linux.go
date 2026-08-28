@@ -73,20 +73,37 @@ func inspectL8RuntimeOwnerProcess(pid uint32) (l8RuntimeOwnerProcessObservation,
 		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
 	}
 	afterParent, afterStart, afterState, err := readL8RuntimeOwnerProcStat(processfd, pid)
-	if err != nil || afterParent != beforeParent || afterStart != beforeStart || afterState != beforeState || !l8RuntimeOwnerProcessAlive(pidfd) {
+	if err != nil || !sameL8RuntimeOwnerProcessIdentity(beforeParent, beforeStart, beforeState, afterParent, afterStart, afterState) ||
+		!l8RuntimeOwnerProcessAlive(pidfd) {
 		return l8RuntimeOwnerProcessObservation{}, errL8RuntimeOwnerInvalid
 	}
 	failed = false
 	return l8RuntimeOwnerProcessObservation{PID: pid, ParentPID: afterParent, StartTime: afterStart, state: afterState, pidfd: pidfd, pidfdOwned: true}, nil
 }
 
+func sameL8RuntimeOwnerProcessIdentity(beforeParent uint32, beforeStart uint64, beforeState byte, afterParent uint32, afterStart uint64, afterState byte) bool {
+	return beforeParent == afterParent && beforeStart == afterStart && beforeState != 'Z' && afterState != 'Z'
+}
+
 func l8RuntimeOwnerProcessAlive(pidfd int) bool {
+	return l8RuntimeOwnerProcessAliveWithPoll(pidfd, unix.Poll)
+}
+
+func l8RuntimeOwnerProcessAliveWithPoll(pidfd int, poll func([]unix.PollFd, int) (int, error)) bool {
 	if pidfd < 0 || uint64(pidfd) > uint64(^uint32(0)>>1) {
 		return false
 	}
-	poll := []unix.PollFd{{Fd: int32(pidfd), Events: unix.POLLIN}}
-	ready, err := unix.Poll(poll, 0)
-	return err == nil && ready == 0 && poll[0].Revents == 0
+	if poll == nil {
+		return false
+	}
+	for {
+		fds := []unix.PollFd{{Fd: int32(pidfd), Events: unix.POLLIN}}
+		ready, err := poll(fds, 0)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		return err == nil && ready == 0 && fds[0].Revents == 0
+	}
 }
 
 func readL8RuntimeOwnerProcStat(processfd int, pid uint32) (uint32, uint64, byte, error) {

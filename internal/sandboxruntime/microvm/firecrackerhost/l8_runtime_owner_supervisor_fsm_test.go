@@ -300,6 +300,38 @@ func TestL8RuntimeOwnerStopReapContainsRunningChildBeforePublishingAbsence(t *te
 	}
 }
 
+func TestL8RuntimeOwnerStopReapResumesContainmentFromNonterminalRecoveryStates(t *testing.T) {
+	for _, state := range []string{"stopping", "uncertain"} {
+		t.Run(state, func(t *testing.T) {
+			record := l8RuntimeOwnerTestRecord(t, l8RuntimeOwnerTestSeed(), "01234567-89ab-cdef-0123-456789abcdef")
+			record.State, record.ControllerState, record.Revision = state, "controlled", 4
+			record.AbsenceKind, record.AbsenceRevision, record.AbsenceObservedAtUnixNano = "", 0, 0
+			store := &l8RuntimeOwnerTestStore{record: record}
+			containCalls := 0
+			owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{
+				Store: store, ExpectedUID: 1000, CommitKey: make([]byte, 32),
+				ContainChild: func() (l8RuntimeOwnerAbsenceObservation, error) {
+					containCalls++
+					return l8RuntimeOwnerAbsenceObservation{Kind: l8RuntimeOwnerAbsenceKindWait, ObservedAt: time.Unix(25, 0)}, nil
+				},
+				ReinspectAbsence: func() (l8RuntimeOwnerAbsenceObservation, error) {
+					t.Fatal("nonterminal recovery used passive absence inspection")
+					return l8RuntimeOwnerAbsenceObservation{}, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner.sessionGeneration = l8RuntimeOwnerTestToken(1)
+			body, _ := encodeL8RuntimeOwnerControllerRequest(l8RuntimeOwnerControllerRequestV1{ControllerSessionGeneration: owner.sessionGeneration})
+			result, err := owner.HandleController(context.Background(), l8RuntimeOwnerReceivedPacketV1{Packet: l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeStopReap, Sequence: 1, Body: body}})
+			if err != nil || result.Packet.Status != l8RuntimeOwnerStatusOK || containCalls != 1 || store.record.State != "absent" || store.record.Revision != 5 {
+				t.Fatalf("resumed stop/reap = %#v record %#v calls %d err %v", result, store.record, containCalls, err)
+			}
+		})
+	}
+}
+
 func TestL8RuntimeOwnerReplayReissuesFreshNamespaceDuplicatesAndClosePreservesOriginals(t *testing.T) {
 	record := l8RuntimeOwnerTestRecord(t, l8RuntimeOwnerTestSeed(), "01234567-89ab-cdef-0123-456789abcdef")
 	record.State, record.ControllerState, record.Revision = "absent", "unclaimed", 5
