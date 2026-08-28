@@ -84,6 +84,12 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 			if err != nil {
 				return fmt.Errorf("unquote command import in %s: %w", filepath.ToSlash(path), err)
 			}
+			if importPath == l8CompositionImportPath || strings.HasPrefix(importPath, l8CompositionImportPath+"/") {
+				if !l8GuestInitProductionFile(path) {
+					t.Errorf("command production file %s prematurely imports L8 live package %q", filepath.ToSlash(path), importPath)
+				}
+				continue
+			}
 			for _, forbidden := range []string{
 				"github.com/jywlabs/hal/internal/credentialmemory",
 				"github.com/jywlabs/hal/internal/credentialsource",
@@ -93,7 +99,6 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/session",
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/v2control",
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server/credentialclient",
-				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition",
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/rolebootstrap",
 				"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost/sshrelay",
 			} {
@@ -122,6 +127,20 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 	if err != nil {
 		t.Fatalf("walk command production files: %v", err)
 	}
+}
+
+const l8CompositionImportPath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition"
+
+func l8GuestInitProductionFile(path string) bool {
+	normalized := filepath.ToSlash(path)
+	if strings.HasPrefix(normalized, "./") {
+		normalized = normalized[2:]
+	}
+	const prefix = "hal-guest-init/"
+	if !strings.HasPrefix(normalized, prefix) || !strings.HasSuffix(normalized, ".go") || strings.HasSuffix(normalized, "_test.go") {
+		return false
+	}
+	return !strings.Contains(normalized[len(prefix):], "/")
 }
 
 func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t *testing.T) {
