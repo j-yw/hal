@@ -258,7 +258,7 @@ func (manager *jobManagerV2) persistCredentialRevision(jobID, principalID string
 	return nil
 }
 
-func (manager *jobManagerV2) clearCredentialState(jobID, principalID, jobState, failureCode string, finishedAt time.Time) (JobV2, error) {
+func (manager *jobManagerV2) clearCredentialState(jobID, principalID, jobState, failureCode string, finishedAt time.Time, cleanupProved bool) (JobV2, error) {
 	if manager == nil || manager.store == nil || !validWorkerV2JobState(jobState) {
 		return JobV2{}, errors.New("worker v2 credential state is invalid")
 	}
@@ -270,6 +270,9 @@ func (manager *jobManagerV2) clearCredentialState(jobID, principalID, jobState, 
 	state, ok := manager.states[jobID]
 	if !ok || state.PrincipalID != principalID {
 		return JobV2{}, errJobV2NotFound
+	}
+	if !cleanupProved && (state.CredentialState != nil || state.CredentialRecoveryReceipt != nil) {
+		return JobV2{}, ErrL8RecoveryDependency
 	}
 	state.CredentialState = nil
 	state.CredentialRecoveryReceipt = nil
@@ -292,17 +295,26 @@ func (manager *jobManagerV2) clearCredentialState(jobID, principalID, jobState, 
 	return cloneJobV2(state.JobV2), nil
 }
 
-func recoverStoredJobCredentialsV2(store *jobStoreV2, state storedJobStateV2, recovery sandboxruntime.JobCredentialRuntimeRecoveryProvider, now time.Time) (storedJobStateV2, error) {
+func recoverStoredJobCredentialsV2(store *jobStoreV2, state storedJobStateV2, recovery sandboxruntime.JobCredentialRuntimeRecoveryProvider, now time.Time) (recovered storedJobStateV2, resultErr error) {
+	defer func() {
+		if recover() != nil {
+			recovered = storedJobStateV2{}
+			resultErr = ErrL8RecoveryDependency
+		}
+	}()
 	if store == nil || sandboxruntime.JobCredentialRuntimeInterfaceNil(recovery) {
 		return storedJobStateV2{}, ErrL8RecoveryDependency
 	}
-	if state.CredentialRecoveryReceipt != nil && state.CredentialState == nil {
+	if state.CredentialState == nil && state.CredentialRecoveryReceipt == nil {
 		return storedJobStateV2{}, ErrL8RecoveryDependency
 	}
-	if state.CredentialState == nil {
-		return storedJobStateV2{}, ErrL8RecoveryDependency
+	storedSeed := storedJobCredentialIdentitySeedV1{}
+	if state.CredentialState != nil {
+		storedSeed = state.CredentialState.Seed
+	} else {
+		storedSeed = state.CredentialRecoveryReceipt.Seed
 	}
-	seed, err := state.CredentialState.Seed.runtimeSeed()
+	seed, err := storedSeed.runtimeSeed()
 	if err != nil {
 		return storedJobStateV2{}, ErrL8RecoveryDependency
 	}
@@ -312,6 +324,9 @@ func recoverStoredJobCredentialsV2(store *jobStoreV2, state storedJobStateV2, re
 		return storedJobStateV2{}, ErrL8RecoveryDependency
 	}
 	defer closeJobCredentialRuntimeRecoveryBinding(binding, ctx)
+	if state.CredentialRecoveryReceipt != nil {
+		return replayStoredJobCredentialRuntimeRecoveryReceiptV2(store, state, binding, now)
+	}
 	if state.CredentialState.Identity != nil {
 		identity, identityErr := state.CredentialState.Identity.runtimeIdentity()
 		if identityErr == nil && sandboxruntime.ValidateJobCredentialIdentityCompletion(seed, identity) == nil {
@@ -345,6 +360,25 @@ func recoverStoredJobCredentialsV2(store *jobStoreV2, state storedJobStateV2, re
 		return storedJobStateV2{}, err
 	}
 	if err := binding.CommitJobCredentialRuntimeRecovery(ctx, receipt); err != nil {
+		return storedJobStateV2{}, ErrL8RecoveryDependency
+	}
+	state.CredentialRecoveryReceipt = nil
+	finishedAt := now.UTC()
+	state.JobV2.State = JobStateInterrupted
+	state.JobV2.FailureCode = "daemon_restarted_before_start"
+	state.JobV2.FinishedAt = &finishedAt
+	if err := store.save(state); err != nil {
+		return storedJobStateV2{}, err
+	}
+	return cloneStoredJobStateV2(state), nil
+}
+
+func replayStoredJobCredentialRuntimeRecoveryReceiptV2(store *jobStoreV2, state storedJobStateV2, binding sandboxruntime.JobCredentialRuntimeRecoveryBinding, now time.Time) (storedJobStateV2, error) {
+	receipt, err := storedJobCredentialRuntimeRecoveryReceiptV1ToRuntime(*state.CredentialRecoveryReceipt)
+	if err != nil {
+		return storedJobStateV2{}, ErrL8RecoveryDependency
+	}
+	if err := binding.CommitJobCredentialRuntimeRecovery(context.Background(), receipt); err != nil {
 		return storedJobStateV2{}, ErrL8RecoveryDependency
 	}
 	state.CredentialRecoveryReceipt = nil

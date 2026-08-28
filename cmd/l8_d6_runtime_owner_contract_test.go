@@ -347,11 +347,13 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		rootValidator = "../internal/sandboxruntime/job_credential_runtime_recovery.go"
 		ownerVerifier = "../internal/sandboxruntime/microvm/firecrackerhost/l8_runtime_owner_recovery.go"
 		privateStore  = "../internal/sandboxworker/job_store_v2.go"
+		privateReplay = "../internal/sandboxworker/job_store_v2_recovery_receipt.go"
 	)
 	expected := map[string]l8D6RuntimeOwnerCommitReceiptFunction{
 		rootValidator: {name: "ValidateJobCredentialRuntimeRecoveryCommitReceipt", rootType: true, rootPackage: true, exactOneParameter: true},
 		ownerVerifier: {name: "commitJobCredentialRuntimeRecovery", allowFinalizerResult: true},
 		privateStore:  {name: "storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime", storeConverter: true},
+		privateReplay: {name: "storedJobCredentialRuntimeRecoveryReceiptV1ToRuntime", storeDecoder: true},
 	}
 	audits := make(map[string]l8D6RuntimeOwnerCommitReceiptAudit)
 	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, walkErr error) error {
@@ -399,6 +401,8 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 		t.Fatalf("production commit receipt accesses = %#v, root API error %v; want exact root and owner functions", audits, err)
 	} else if private, ok := audits[privateStore]; ok && !private.exact() {
 		t.Fatalf("private-store commit receipt access = %#v, want absent or exact future converter", private)
+	} else if replay, ok := audits[privateReplay]; ok && !replay.exact() {
+		t.Fatalf("private-store commit receipt replay = %#v, want absent or exact replay decoder", replay)
 	}
 
 	validFixture := []byte("package firecrackerhost\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error { commitID := receipt.CommitID; _ = commitID; return nil }\n")
@@ -493,6 +497,12 @@ func TestL8D6RuntimeOwnerContractCommitReceiptHasOnePrivateStoreProjection(t *te
 			}
 		})
 	}
+	decoderEscapeFixture := []byte("package sandboxworker\nimport sandboxruntime \"github.com/jywlabs/hal/internal/sandboxruntime\"\ntype storedJobCredentialRuntimeRecoveryReceiptV1 struct { ContractVersion string; CommitID string; FinalizedRevision uint64 }\nvar retained any\nfunc storedJobCredentialRuntimeRecoveryReceiptV1ToRuntime(stored storedJobCredentialRuntimeRecoveryReceiptV1) (receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, err error) { receipt.CommitID = stored.CommitID; receipt.FinalizedRevision = stored.FinalizedRevision; retained = receipt; return receipt, nil }\n")
+	if audit, err := l8D6RuntimeOwnerCommitReceiptAccessAudit(decoderEscapeFixture, expected[privateReplay]); err != nil {
+		t.Fatal(err)
+	} else if audit.exact() && len(audit.issues) == 0 {
+		t.Fatalf("private replay receipt escape passed audit: %#v", audit)
+	}
 }
 
 type l8D6RuntimeOwnerCommitReceiptFunction struct {
@@ -501,6 +511,7 @@ type l8D6RuntimeOwnerCommitReceiptFunction struct {
 	rootPackage          bool
 	exactOneParameter    bool
 	storeConverter       bool
+	storeDecoder         bool
 	allowFinalizerResult bool
 }
 
@@ -592,6 +603,7 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 			continue
 		}
 		if !expected.rootType && !l8D6RuntimeOwnerReceiptTypeIsTargetParameter(reference, target) &&
+			!(expected.storeDecoder && l8D6RuntimeOwnerReceiptTypeIsStoreDecoderResult(reference, target, parents)) &&
 			!(expected.allowFinalizerResult && l8D6RuntimeOwnerReceiptTypeIsExactFinalizerResult(file, reference, parents)) {
 			audit.issues = append(audit.issues, "receipt type referenced outside the exact allowlisted function parameter")
 		}
@@ -603,6 +615,9 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 		audit.issues = append(audit.issues, "expected package function is a receiver method")
 	}
 	receiptObjects := l8D6RuntimeOwnerReceiptParameterObjects(file, target, expected.rootType)
+	if expected.storeDecoder {
+		receiptObjects = l8D6RuntimeOwnerStoredReceiptParameterObjects(target)
+	}
 	if len(receiptObjects) != 1 {
 		audit.issues = append(audit.issues, fmt.Sprintf("receipt-typed parameter count = %d", len(receiptObjects)))
 	}
@@ -611,12 +626,18 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 	}
 	if expected.storeConverter && !l8D6RuntimeOwnerReturnsStoredReceiptAndError(target) {
 		audit.issues = append(audit.issues, "private-store converter result signature is not exact")
-	} else if !expected.storeConverter && !l8D6RuntimeOwnerReturnsOnlyError(target) {
+	} else if expected.storeDecoder && !l8D6RuntimeOwnerReturnsRuntimeReceiptAndError(target) {
+		audit.issues = append(audit.issues, "private-store replay decoder result signature is not exact")
+	} else if !expected.storeConverter && !expected.storeDecoder && !l8D6RuntimeOwnerReturnsOnlyError(target) {
 		audit.issues = append(audit.issues, "expected function does not return only error")
 	}
 	receiptObject := (*ast.Object)(nil)
 	if len(receiptObjects) == 1 {
 		receiptObject = receiptObjects[0]
+	}
+	resultObject := (*ast.Object)(nil)
+	if expected.storeDecoder && target.Type.Results != nil && len(target.Type.Results.List) == 2 && len(target.Type.Results.List[0].Names) == 1 {
+		resultObject = target.Type.Results.List[0].Names[0].Obj
 	}
 	ast.Inspect(file, func(node ast.Node) bool {
 		selector, ok := node.(*ast.SelectorExpr)
@@ -625,6 +646,10 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 		}
 		owner := l8D6RuntimeOwnerContainingFunction(selector, parents)
 		identifier, direct := selector.X.(*ast.Ident)
+		if expected.storeDecoder && owner == target && direct && resultObject != nil && identifier.Obj == resultObject &&
+			(selector.Sel.Name == "CommitID" || selector.Sel.Name == "FinalizedRevision") && l8D6RuntimeOwnerSelectorIsDirectAssignmentTarget(selector, parents) {
+			return true
+		}
 		if owner != target || !direct || receiptObject == nil || identifier.Obj != receiptObject || l8D6RuntimeOwnerInsideClosure(selector, target, parents) {
 			audit.issues = append(audit.issues, "CommitID read is not the direct receipt parameter in the exact function")
 			return true
@@ -641,13 +666,38 @@ func l8D6RuntimeOwnerCommitReceiptAccessAudit(payload []byte, expected l8D6Runti
 			}
 			audit.receiptReferences++
 			parent := parents[identifier]
-			if selector, ok := parent.(*ast.SelectorExpr); ok && selector.X == identifier && (selector.Sel.Name == "CommitID" || selector.Sel.Name == "FinalizedRevision") && !l8D6RuntimeOwnerInsideClosure(selector, target, parents) {
+			if selector, ok := parent.(*ast.SelectorExpr); ok && selector.X == identifier &&
+				(selector.Sel.Name == "CommitID" || selector.Sel.Name == "FinalizedRevision" || expected.storeDecoder && selector.Sel.Name == "ContractVersion") &&
+				!l8D6RuntimeOwnerInsideClosure(selector, target, parents) {
 				return true
 			}
 			if call, ok := parent.(*ast.CallExpr); ok && l8D6RuntimeOwnerIsReceiptValidatorCall(call.Fun, runtimeAliases) && !expected.rootType {
 				return true
 			}
 			audit.issues = append(audit.issues, "receipt parameter escapes direct field validation")
+			return true
+		})
+	}
+	if expected.storeDecoder && resultObject != nil {
+		runtimeAliases := l8D6RuntimeOwnerImportAliases(file, "github.com/jywlabs/hal/internal/sandboxruntime")
+		ast.Inspect(target.Body, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if !ok || identifier.Obj != resultObject {
+				return true
+			}
+			parent := parents[identifier]
+			if selector, ok := parent.(*ast.SelectorExpr); ok && selector.X == identifier &&
+				(selector.Sel.Name == "CommitID" || selector.Sel.Name == "FinalizedRevision") &&
+				l8D6RuntimeOwnerSelectorIsDirectAssignmentTarget(selector, parents) {
+				return true
+			}
+			if call, ok := parent.(*ast.CallExpr); ok && l8D6RuntimeOwnerIsReceiptValidatorCall(call.Fun, runtimeAliases) {
+				return true
+			}
+			if returned, ok := parent.(*ast.ReturnStmt); ok && len(returned.Results) == 2 && returned.Results[0] == identifier {
+				return true
+			}
+			audit.issues = append(audit.issues, "private replay receipt escapes the exact validator and return path")
 			return true
 		})
 	}
@@ -859,6 +909,14 @@ func l8D6RuntimeOwnerReceiptTypeIsExactFinalizerResult(file *ast.File, reference
 		len(secondResult.Names) == 0 && l8D6RuntimeOwnerTypeName(secondResult.Type) == "error" && firstParameter && secondParameter
 }
 
+func l8D6RuntimeOwnerReceiptTypeIsStoreDecoderResult(reference ast.Expr, function *ast.FuncDecl, parents map[ast.Node]ast.Node) bool {
+	if function == nil || l8D6RuntimeOwnerContainingFunction(reference, parents) != function || function.Type.Results == nil || len(function.Type.Results.List) != 2 {
+		return false
+	}
+	first := function.Type.Results.List[0]
+	return len(first.Names) == 1 && first.Names[0].Name == "receipt" && first.Type == reference
+}
+
 func l8D6RuntimeOwnerExactImportedType(expression ast.Expr, aliases map[string]bool, name string) bool {
 	selector, ok := expression.(*ast.SelectorExpr)
 	if !ok || selector.Sel.Name != name {
@@ -918,6 +976,18 @@ func l8D6RuntimeOwnerReceiptParameterObjects(file *ast.File, function *ast.FuncD
 	return objects
 }
 
+func l8D6RuntimeOwnerStoredReceiptParameterObjects(function *ast.FuncDecl) []*ast.Object {
+	if function == nil || function.Type.Params == nil || len(function.Type.Params.List) != 1 {
+		return nil
+	}
+	field := function.Type.Params.List[0]
+	identifier, ok := field.Type.(*ast.Ident)
+	if !ok || identifier.Name != "storedJobCredentialRuntimeRecoveryReceiptV1" || len(field.Names) != 1 || field.Names[0].Obj == nil {
+		return nil
+	}
+	return []*ast.Object{field.Names[0].Obj}
+}
+
 func l8D6RuntimeOwnerExactRootReceiptType(identifier *ast.Ident) bool {
 	if identifier == nil || identifier.Obj == nil {
 		return false
@@ -967,6 +1037,29 @@ func l8D6RuntimeOwnerReturnsStoredReceiptAndError(function *ast.FuncDecl) bool {
 	first, second := function.Type.Results.List[0], function.Type.Results.List[1]
 	return len(first.Names) == 0 && l8D6RuntimeOwnerTypeName(first.Type) == "storedJobCredentialRuntimeRecoveryReceiptV1" &&
 		len(second.Names) == 0 && l8D6RuntimeOwnerTypeName(second.Type) == "error"
+}
+
+func l8D6RuntimeOwnerReturnsRuntimeReceiptAndError(function *ast.FuncDecl) bool {
+	if function.Type.Results == nil || len(function.Type.Results.List) != 2 {
+		return false
+	}
+	first, second := function.Type.Results.List[0], function.Type.Results.List[1]
+	selector, ok := first.Type.(*ast.SelectorExpr)
+	return ok && len(first.Names) == 1 && first.Names[0].Name == "receipt" && selector.Sel.Name == "JobCredentialRuntimeRecoveryCommitReceipt" &&
+		len(second.Names) == 1 && second.Names[0].Name == "err" && l8D6RuntimeOwnerTypeName(second.Type) == "error"
+}
+
+func l8D6RuntimeOwnerSelectorIsDirectAssignmentTarget(selector *ast.SelectorExpr, parents map[ast.Node]ast.Node) bool {
+	assignment, ok := parents[selector].(*ast.AssignStmt)
+	if !ok || assignment.Tok != token.ASSIGN {
+		return false
+	}
+	for _, left := range assignment.Lhs {
+		if left == selector {
+			return true
+		}
+	}
+	return false
 }
 
 func l8D6RuntimeOwnerContainingFunction(node ast.Node, parents map[ast.Node]ast.Node) *ast.FuncDecl {

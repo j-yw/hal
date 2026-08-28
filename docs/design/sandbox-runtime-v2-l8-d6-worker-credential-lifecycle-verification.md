@@ -21,7 +21,9 @@ guest helper, or live source resolution.
   `StopReapJobCredentialRuntime`. Seed-only restart skips Recover and begins
   at stop/reap. Both routes validate absence, finalize, persist a private
   recovery receipt, commit, then clear credential state. Daemon restart never
-  resumes execution.
+  resumes execution. A restart from the private receipt-only crash state binds
+  the exact seed and calls only the idempotent commit operation before clearing
+  the receipt; it does not recreate process, L7, or credential cleanup work.
 
 ## Still unsupported / documented gaps
 

@@ -440,7 +440,7 @@ func TestL8D6WorkerReceiptOnlyRestartReplaysFinalizeAndCommit(t *testing.T) {
 		t.Fatalf("receipt-only recovery replay: %v", err)
 	}
 	t.Cleanup(service.Close)
-	if got, want := secondRecovery.order.snapshot(), []string{"stop-reap", "finalize", "commit"}; !reflect.DeepEqual(got, want) {
+	if got, want := secondRecovery.order.snapshot(), []string{"commit"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("receipt-only recovery order = %v, want %v", got, want)
 	}
 	stored, err := service.jobs.store.load(seed.WorkerJobID)
@@ -449,6 +449,41 @@ func TestL8D6WorkerReceiptOnlyRestartReplaysFinalizeAndCommit(t *testing.T) {
 	}
 	if stored.CredentialState != nil || stored.CredentialRecoveryReceipt != nil || stored.JobV2.State != JobStateInterrupted {
 		t.Fatalf("receipt-only replay did not retire durable ownership: %#v", stored)
+	}
+}
+
+func TestL8D6WorkerRecoveryPanicsFailClosed(t *testing.T) {
+	for _, panicAt := range []string{"stop-reap", "finalize", "commit", "close"} {
+		t.Run(panicAt, func(t *testing.T) {
+			stateDir := t.TempDir() + "/jobs-v2"
+			manager, err := newJobManagerV2(jobManagerV2Options{
+				StateDir: stateDir, WorkerID: "worker-l8-neutral", DaemonGeneration: l8WorkerV2DaemonGeneration,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := l8D6WorkerStartRequest(t).JobStartV2
+			seed := l8D6RecentLifecycleSeed(t, Request{DriverID: RuntimeDriverMicroVM, JobStartV2: request})
+			if _, existing, err := manager.acceptCredentialSeed(RuntimeDriverMicroVM, "principal-l8-worker", *request, seed); err != nil || existing {
+				t.Fatalf("accept seed = %t, %v", existing, err)
+			}
+			manager.close()
+
+			binder, err := sandboxruntime.NewJobCredentialRuntimeBinder(&l8D6WorkerProvider{seed: seed, runtime: &l8D6WorkerRuntime{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			authority, _ := l8D6WorkerPrincipal(t)
+			recovery := l8D6NewRecoveryProvider(t, seed, sandboxruntime.JobCredentialIdentity{})
+			recovery.panicAt = panicAt
+			service, err := NewL8DurableService(L8DurableServiceOptions{
+				WorkerID: seed.WorkerID, DaemonGeneration: l8WorkerV2DaemonGeneration,
+				StateDir: stateDir, Binder: binder, PrincipalAuthority: authority, RecoveryProvider: recovery,
+			})
+			if service != nil || !errors.Is(err, ErrL8RecoveryDependency) {
+				t.Fatalf("%s panic = %#v, %v; want sanitized recovery dependency", panicAt, service, err)
+			}
+		})
 	}
 }
 
@@ -722,6 +757,7 @@ type l8D6RecoveryProvider struct {
 	order        *l8D6OrderRecorder
 	recoverErr   error
 	commitErr    error
+	panicAt      string
 	binding      *l8D6RecoveryBinding
 	recoverCalls int
 }
@@ -784,18 +820,32 @@ func (binding *l8D6RecoveryBinding) RecoverJobCredentials(context.Context, sandb
 }
 
 func (binding *l8D6RecoveryBinding) StopReapJobCredentialRuntime(context.Context) (sandboxruntime.JobCredentialRuntimeAbsenceProof, error) {
+	if binding.provider.panicAt == "stop-reap" {
+		panic("token=stop-reap-secret")
+	}
 	binding.provider.order.add("stop-reap")
 	return binding.proof, nil
 }
 
 func (binding *l8D6RecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeAbsenceProof) (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, error) {
+	if binding.provider.panicAt == "finalize" {
+		panic("token=finalize-secret")
+	}
 	binding.provider.order.add("finalize")
 	return binding.receipt, nil
 }
 
 func (binding *l8D6RecoveryBinding) CommitJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error {
+	if binding.provider.panicAt == "commit" {
+		panic("token=commit-secret")
+	}
 	binding.provider.order.add("commit")
 	return binding.provider.commitErr
 }
 
-func (binding *l8D6RecoveryBinding) Close(context.Context) error { return nil }
+func (binding *l8D6RecoveryBinding) Close(context.Context) error {
+	if binding.provider.panicAt == "close" {
+		panic("token=close-secret")
+	}
+	return nil
+}
