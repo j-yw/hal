@@ -39,6 +39,21 @@ func TestL8D6WorkerPrepareTransfersSessionInsteadOfAbort(t *testing.T) {
 	l8D6AssertNoLiveCredentialLeak(t, publicJSON)
 }
 
+func TestL8D6WorkerPersistsActivatedCredentialRevision(t *testing.T) {
+	harness := newL8D6LifecycleHarness(t, l8D6LifecycleHarnessOptions{activeRevision: 7})
+	response := harness.service.HandleAuthenticatedRequest(context.Background(), harness.principal, harness.request)
+	if !response.OK || response.JobV2 == nil {
+		t.Fatalf("authenticated job start = %#v, want success", response)
+	}
+	stored, err := harness.service.jobs.store.load(harness.seed.WorkerJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CredentialState == nil || stored.CredentialState.Revision != 7 {
+		t.Fatalf("durable credential revision = %#v, want activated revision 7", stored.CredentialState)
+	}
+}
+
 func TestL8D6WorkerPrepareFailureAbortsPreflightAndDoesNotTransfer(t *testing.T) {
 	harness := newL8D6LifecycleHarness(t, l8D6LifecycleHarnessOptions{prepareErr: errors.New("token=prepare-secret path=/private/prepare.sock")})
 	response := harness.service.HandleAuthenticatedRequest(context.Background(), harness.principal, harness.request)
@@ -57,6 +72,13 @@ func TestL8D6WorkerPrepareFailureAbortsPreflightAndDoesNotTransfer(t *testing.T)
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("prepare failure leaked %q: %s", forbidden, encoded)
 		}
+	}
+	stored, err := harness.service.jobs.store.load(harness.seed.WorkerJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CredentialState != nil || stored.JobV2.State != JobStateFailed {
+		t.Fatalf("proved prepare abort retained live credential ownership: %#v", stored)
 	}
 }
 
@@ -88,6 +110,37 @@ func TestL8D6WorkerCancelRevokesTransferredSession(t *testing.T) {
 	}
 }
 
+func TestL8D6WorkerCancelRetainsOwnershipUntilRevokeIsProved(t *testing.T) {
+	harness := newL8D6LifecycleHarness(t, l8D6LifecycleHarnessOptions{revokeErr: errors.New("token=cleanup-secret path=/private/revoke.sock")})
+	if start := harness.service.HandleAuthenticatedRequest(context.Background(), harness.principal, harness.request); !start.OK {
+		t.Fatalf("start before cancel = %#v", start)
+	}
+	cancel := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "request-cancel-retry-v2",
+		Operation:       OperationJobCancelV2,
+		JobCancelV2:     &JobCancelRequestV2{ContractVersion: JobContractVersionV2, JobID: harness.seed.WorkerJobID},
+	}
+	if response := harness.service.HandleAuthenticatedRequest(context.Background(), harness.principal, cancel); response.OK || response.Error == nil {
+		t.Fatalf("failed revoke cancel = %#v, want internal failure", response)
+	}
+	stored, err := harness.service.jobs.store.load(harness.seed.WorkerJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CredentialState == nil {
+		t.Fatal("failed revoke cleared durable credential ownership")
+	}
+	harness.session.setRevokeError(nil)
+	response := harness.service.HandleAuthenticatedRequest(context.Background(), harness.principal, cancel)
+	if !response.OK || response.JobV2 == nil || response.JobV2.State != JobStateCanceled {
+		t.Fatalf("retry cancel = %#v, want canceled JobV2", response)
+	}
+	if harness.session.revokeCallCount() != 2 {
+		t.Fatalf("retry revoke calls = %d, want 2", harness.session.revokeCallCount())
+	}
+}
+
 func TestL8D6WorkerLossRevokesTransferredSession(t *testing.T) {
 	harness := newL8D6LifecycleHarness(t, l8D6LifecycleHarnessOptions{})
 	start := harness.service.HandleAuthenticatedRequest(context.Background(), harness.principal, harness.request)
@@ -108,6 +161,44 @@ func TestL8D6WorkerLossRevokesTransferredSession(t *testing.T) {
 	}
 	if harness.session.revokeCallCount() != 1 {
 		t.Fatalf("loss revoke calls = %d, want 1", harness.session.revokeCallCount())
+	}
+}
+
+func TestL8D6WorkerLossRetainsOwnershipWhenRevokeFails(t *testing.T) {
+	harness := newL8D6LifecycleHarness(t, l8D6LifecycleHarnessOptions{revokeErr: errors.New("cleanup unavailable")})
+	if start := harness.service.HandleAuthenticatedRequest(context.Background(), harness.principal, harness.request); !start.OK {
+		t.Fatalf("start before loss = %#v", start)
+	}
+	revoked := make(chan struct{})
+	harness.session.setOnRevoke(func() { close(revoked) })
+	harness.innerLoss <- sandboxruntime.JobCredentialLoss{
+		Identity: harness.identity,
+		Revision: 1,
+		Code:     sandboxruntime.JobCredentialFailureGuestHelperUnavailable,
+	}
+	select {
+	case <-revoked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("loss did not attempt to revoke the transferred session")
+	}
+	time.Sleep(50 * time.Millisecond)
+	stored, err := harness.service.jobs.store.load(harness.seed.WorkerJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CredentialState == nil {
+		t.Fatal("failed loss revoke cleared durable credential ownership")
+	}
+	harness.session.setOnRevoke(nil)
+	harness.session.setRevokeError(nil)
+	cancel := Request{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       "request-loss-cleanup-retry-v2",
+		Operation:       OperationJobCancelV2,
+		JobCancelV2:     &JobCancelRequestV2{ContractVersion: JobContractVersionV2, JobID: harness.seed.WorkerJobID},
+	}
+	if response := harness.service.HandleAuthenticatedRequest(context.Background(), harness.principal, cancel); !response.OK {
+		t.Fatalf("cleanup retry after loss = %#v, want success", response)
 	}
 }
 
@@ -299,6 +390,68 @@ func TestL8D6WorkerCompleteIdentityRestartRecoversThenAlwaysStopReaps(t *testing
 	}
 }
 
+func TestL8D6WorkerReceiptOnlyRestartReplaysFinalizeAndCommit(t *testing.T) {
+	stateDir := t.TempDir() + "/jobs-v2"
+	manager, err := newJobManagerV2(jobManagerV2Options{
+		StateDir: stateDir, WorkerID: "worker-l8-neutral", DaemonGeneration: l8WorkerV2DaemonGeneration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := l8D6WorkerStartRequest(t).JobStartV2
+	seed := l8D6RecentLifecycleSeed(t, Request{DriverID: RuntimeDriverMicroVM, JobStartV2: request})
+	if _, existing, err := manager.acceptCredentialSeed(RuntimeDriverMicroVM, "principal-l8-worker", *request, seed); err != nil || existing {
+		t.Fatalf("accept seed = %t, %v", existing, err)
+	}
+	manager.close()
+
+	binder, err := sandboxruntime.NewJobCredentialRuntimeBinder(&l8D6WorkerProvider{seed: seed, runtime: &l8D6WorkerRuntime{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, _ := l8D6WorkerPrincipal(t)
+	firstRecovery := l8D6NewRecoveryProvider(t, seed, sandboxruntime.JobCredentialIdentity{})
+	firstRecovery.commitErr = errors.New("commit unavailable")
+	service, err := NewL8DurableService(L8DurableServiceOptions{
+		WorkerID: seed.WorkerID, DaemonGeneration: l8WorkerV2DaemonGeneration,
+		StateDir: stateDir, Binder: binder, PrincipalAuthority: authority, RecoveryProvider: firstRecovery,
+	})
+	if service != nil || !errors.Is(err, ErrL8RecoveryDependency) {
+		t.Fatalf("first commit failure = %#v, %v; want retained recovery dependency", service, err)
+	}
+	store, err := newJobStoreV2(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := store.load(seed.WorkerJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained.CredentialState != nil || retained.CredentialRecoveryReceipt == nil {
+		t.Fatalf("commit failure state = %#v, want receipt-only replay state", retained)
+	}
+
+	secondRecovery := l8D6NewRecoveryProvider(t, seed, sandboxruntime.JobCredentialIdentity{})
+	service, err = NewL8DurableService(L8DurableServiceOptions{
+		WorkerID: seed.WorkerID, DaemonGeneration: l8WorkerV2DaemonGeneration,
+		StateDir: stateDir, Binder: binder, PrincipalAuthority: authority, RecoveryProvider: secondRecovery,
+	})
+	if err != nil {
+		t.Fatalf("receipt-only recovery replay: %v", err)
+	}
+	t.Cleanup(service.Close)
+	if got, want := secondRecovery.order.snapshot(), []string{"stop-reap", "finalize", "commit"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("receipt-only recovery order = %v, want %v", got, want)
+	}
+	stored, err := service.jobs.store.load(seed.WorkerJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CredentialState != nil || stored.CredentialRecoveryReceipt != nil || stored.JobV2.State != JobStateInterrupted {
+		t.Fatalf("receipt-only replay did not retire durable ownership: %#v", stored)
+	}
+}
+
 func TestL8D6WorkerIdentityMismatchFailsClosedBeforePrepare(t *testing.T) {
 	harness := newL8D6LifecycleHarness(t, l8D6LifecycleHarnessOptions{})
 	harness.provider.seed.WorkerID = "worker-neighbor"
@@ -342,8 +495,10 @@ func l8D6AssertNoLiveCredentialLeak(t *testing.T, payload []byte) {
 }
 
 type l8D6LifecycleHarnessOptions struct {
-	prepareErr error
-	neutral    bool
+	prepareErr     error
+	revokeErr      error
+	activeRevision uint64
+	neutral        bool
 }
 
 type l8D6LifecycleHarness struct {
@@ -369,10 +524,15 @@ func newL8D6LifecycleHarness(t *testing.T, options l8D6LifecycleHarnessOptions) 
 		t.Fatal(err)
 	}
 	innerLoss := make(chan sandboxruntime.JobCredentialLoss, 1)
+	revision := options.activeRevision
+	if revision == 0 {
+		revision = 1
+	}
 	session := &l8D6LifecycleSession{
-		proof:   l8D6LifecycleActiveProof(t, identity, 1),
-		cleanup: l8D6LifecycleCleanupProof(t, identity, 2),
-		loss:    innerLoss,
+		proof:     l8D6LifecycleActiveProof(t, identity, revision),
+		cleanup:   l8D6LifecycleCleanupProof(t, identity, revision+1),
+		revokeErr: options.revokeErr,
+		loss:      innerLoss,
 	}
 	preflight := &l8D6LifecyclePreflight{
 		identity:   identity,
@@ -507,6 +667,7 @@ type l8D6LifecycleSession struct {
 	loss        <-chan sandboxruntime.JobCredentialLoss
 	revokeCalls int
 	onRevoke    func()
+	revokeErr   error
 }
 
 func (*l8D6LifecycleSession) ExecBinding() sandboxruntime.JobCredentialExecBinding { return nil }
@@ -523,11 +684,12 @@ func (session *l8D6LifecycleSession) Revoke(context.Context, sandboxruntime.JobC
 	session.mu.Lock()
 	session.revokeCalls++
 	onRevoke := session.onRevoke
+	revokeErr := session.revokeErr
 	session.mu.Unlock()
 	if onRevoke != nil {
 		onRevoke()
 	}
-	return session.cleanup, nil
+	return session.cleanup, revokeErr
 }
 
 func (session *l8D6LifecycleSession) Loss() <-chan sandboxruntime.JobCredentialLoss {
@@ -540,6 +702,18 @@ func (session *l8D6LifecycleSession) revokeCallCount() int {
 	return session.revokeCalls
 }
 
+func (session *l8D6LifecycleSession) setRevokeError(err error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.revokeErr = err
+}
+
+func (session *l8D6LifecycleSession) setOnRevoke(onRevoke func()) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.onRevoke = onRevoke
+}
+
 type l8D6RecoveryProvider struct {
 	mu           sync.Mutex
 	seed         sandboxruntime.JobCredentialIdentitySeed
@@ -547,6 +721,7 @@ type l8D6RecoveryProvider struct {
 	cleanup      sandboxruntime.JobCredentialCleanupProof
 	order        *l8D6OrderRecorder
 	recoverErr   error
+	commitErr    error
 	binding      *l8D6RecoveryBinding
 	recoverCalls int
 }
@@ -620,7 +795,7 @@ func (binding *l8D6RecoveryBinding) FinalizeJobCredentialRuntimeRecovery(context
 
 func (binding *l8D6RecoveryBinding) CommitJobCredentialRuntimeRecovery(context.Context, sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) error {
 	binding.provider.order.add("commit")
-	return nil
+	return binding.provider.commitErr
 }
 
 func (binding *l8D6RecoveryBinding) Close(context.Context) error { return nil }
