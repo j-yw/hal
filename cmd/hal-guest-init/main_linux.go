@@ -51,6 +51,9 @@ func run(arguments []string) int {
 		}
 		childEnvironment = l7NetworkBootstrapEnvironment(network)
 	}
+	if code := releasePID1AgentStartGate(); code != 0 {
+		return code
+	}
 	signals := make(chan os.Signal, 32)
 	signal.Notify(signals, syscall.SIGCHLD, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT)
 	defer signal.Stop(signals)
