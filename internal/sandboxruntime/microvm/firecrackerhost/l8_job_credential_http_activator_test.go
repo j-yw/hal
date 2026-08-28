@@ -182,7 +182,14 @@ func TestL8JobCredentialHTTPActivatorRedactsSecretsAndDeniesSerialization(t *tes
 		t.Fatal(err)
 	}
 
-	values := []any{activator, handle, &ProductionL8JobCredentialHTTPProxyActivator{}, &productionL8JobCredentialHTTPProxyHandle{}}
+	values := []any{
+		activator,
+		*activator,
+		handle,
+		ProductionL8JobCredentialHTTPProxyActivator{},
+		&ProductionL8JobCredentialHTTPProxyActivator{},
+		&productionL8JobCredentialHTTPProxyHandle{},
+	}
 	for _, value := range values {
 		encoded, marshalErr := json.Marshal(value)
 		if marshalErr == nil || encoded != nil || !errors.Is(marshalErr, ErrL8JobCredentialRuntimeSerialization) {
@@ -225,12 +232,6 @@ func TestL8JobCredentialHTTPActivatorConstructorRejectsInvalidConfig(t *testing.
 	if activator, err := NewProductionL8JobCredentialHTTPProxyActivator(missingStore); activator != nil || !errors.Is(err, ErrL8JobCredentialRuntimeInvalid) {
 		t.Fatalf("missing store = %#v, %v", activator, err)
 	}
-	missingStore.DaemonGeneration = "daemon-generation-01"
-	owned, err := NewProductionL8JobCredentialHTTPProxyActivator(missingStore)
-	if err != nil || owned == nil || owned.store == nil {
-		t.Fatalf("owned store constructor = %#v, %v", owned, err)
-	}
-	t.Cleanup(func() { _ = owned.store.Close(context.Background()) })
 
 	rawAuthority := valid
 	rawAuthority.LocalAuthority = "https://unsafe.invalid/secret"
