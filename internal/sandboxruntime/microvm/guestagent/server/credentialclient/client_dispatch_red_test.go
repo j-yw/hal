@@ -32,8 +32,8 @@ func TestL8D6GuestCredentialClientServeDispatchesCanonicalReadiness(t *testing.T
 		receiveCount++
 		if receiveCount == 1 {
 			expected, set := receive.expectedIdentityValue()
-			if receive.nextSequenceValue() != 1 || !set || expected != v2control.NewIdentityDigest(identity.sessionID) || receive.maximumPlaintextBytesValue() != session.MaxControlPlaintextBytes {
-				return ControllerPacket{}, errors.New("readiness admission was not bound to the authenticated session")
+			if receive.nextSequenceValue() != 1 || set || expected != (v2control.IdentityDigest{}) || receive.maximumPlaintextBytesValue() != session.MaxControlPlaintextBytes {
+				return ControllerPacket{}, errors.New("readiness admission must use first-prepare-legal unset expected identity")
 			}
 			return ControllerPacket{
 				sequence:  1,
@@ -190,6 +190,160 @@ func TestL8D6GuestCredentialClientRejectsCrossSessionReadinessPacket(t *testing.
 	}
 }
 
+func TestL8D6GuestCredentialClientServeFirstPrepareUsesUnsetSessionBoundIdentity(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testDispatchPrepareRequest(t, identity)
+	digest := identityDigestForSession(t, testCredentialPacketSessionIdentity(t, identity.sessionID))
+	if digest == v2control.NewIdentityDigest(identity.sessionID) {
+		t.Fatal("fixture digest collided with raw session bytes")
+	}
+
+	var receiveCount atomic.Uint32
+	var sends atomic.Uint32
+	var helperSends atomic.Uint32
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(_ context.Context, receive ControllerReceiveRequest) (ControllerPacket, error) {
+		count := receiveCount.Add(1)
+		expected, set := receive.expectedIdentityValue()
+		if count != 1 || receive.nextSequenceValue() != 1 || set || expected != (v2control.IdentityDigest{}) ||
+			expected == v2control.NewIdentityDigest(identity.sessionID) || receive.maximumPlaintextBytesValue() != session.MaxControlPlaintextBytes {
+			return ControllerPacket{}, errors.New("first prepare was not admitted with expectedIdentitySet=false")
+		}
+		return ControllerPacket{
+			sequence:  1,
+			sessionID: identity.sessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+		}, nil
+	}
+	transport.sendController = func(context.Context, ControllerSendPacket) error {
+		sends.Add(1)
+		return errors.New("prepare success must not be sent without helper packets")
+	}
+	transport.sendHelper = func(context.Context, HelperSendPacket) error {
+		helperSends.Add(1)
+		return errors.New("helper send constructor is unaccepted")
+	}
+
+	err := newDispatchRedClient(t, transport).Serve(context.Background())
+	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("Serve() error = %v, want helper packet dependency unaccepted", err)
+	}
+	if receiveCount.Load() != 1 {
+		t.Fatalf("controller receives = %d, want 1; subsequent receive identity pin requires helper packets", receiveCount.Load())
+	}
+	if sends.Load() != 0 || helperSends.Load() != 0 {
+		t.Fatalf("controller/helper sends = %d/%d, want zero without helper constructors", sends.Load(), helperSends.Load())
+	}
+}
+
+func TestL8D6GuestCredentialClientServeRejectsFirstPrepareIdentityMismatch(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	otherSessionID := identity.sessionID
+	otherSessionID[31] ^= 0xff
+	prepare := testDispatchPrepareRequest(t, transportIdentity{sessionID: otherSessionID})
+
+	var sends atomic.Uint32
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+		return ControllerPacket{
+			sequence:  1,
+			sessionID: identity.sessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+		}, nil
+	}
+	transport.sendController = func(context.Context, ControllerSendPacket) error {
+		sends.Add(1)
+		return errors.New("mismatched first prepare must not be answered")
+	}
+	if err := newDispatchRedClient(t, transport).Serve(context.Background()); clientContractCode(err) != ClientContractPacket {
+		t.Fatalf("Serve() error = %v, want identity packet rejection", err)
+	}
+	if sends.Load() != 0 {
+		t.Fatalf("mismatched first prepare sends = %d, want zero", sends.Load())
+	}
+}
+
+func TestL8D6GuestCredentialClientServeRenewRevokeExecRequireExpectedIdentitySet(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	sessionIdentity := testCredentialPacketSessionIdentity(t, identity.sessionID)
+	requestID := testPacketRequestID(t)
+	cases := []struct {
+		name   string
+		packet ControllerPacket
+	}{
+		{
+			name: "renew",
+			packet: ControllerPacket{
+				sequence:  1,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmRenew, renew: testCredentialRenewPacketRequest(t, requestID, sessionIdentity)},
+			},
+		},
+		{
+			name: "revoke",
+			packet: ControllerPacket{
+				sequence:  1,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmRevoke, revoke: testCredentialRevokePacketRequest(t, requestID, sessionIdentity)},
+			},
+		},
+		{
+			name: "exec",
+			packet: ControllerPacket{
+				sequence:  1,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmExec, exec: testCredentialExecPacketRequest(t, requestID, sessionIdentity)},
+			},
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			var receiveCount atomic.Uint32
+			var sends atomic.Uint32
+			transport := &dispatchRedTransport{identity: identity}
+			transport.receiveController = func(_ context.Context, receive ControllerReceiveRequest) (ControllerPacket, error) {
+				receiveCount.Add(1)
+				if _, set := receive.expectedIdentityValue(); set {
+					return ControllerPacket{}, errors.New("renew/revoke/exec before prepare must not set expected identity")
+				}
+				return test.packet, nil
+			}
+			transport.sendController = func(context.Context, ControllerSendPacket) error {
+				sends.Add(1)
+				return errors.New("renew/revoke/exec without expectedIdentitySet must not be answered")
+			}
+			if err := newDispatchRedClient(t, transport).Serve(context.Background()); clientContractCode(err) != ClientContractPacket {
+				t.Fatalf("Serve() error = %v, want identity requirement", err)
+			}
+			if receiveCount.Load() != 1 || sends.Load() != 0 {
+				t.Fatalf("receives/sends = %d/%d, want 1/0", receiveCount.Load(), sends.Load())
+			}
+		})
+	}
+}
+
+func TestL8D6GuestCredentialClientServeCredentialOperationsRequireHelperPackets(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testDispatchPrepareRequest(t, identity)
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+		return ControllerPacket{
+			sequence:  1,
+			sessionID: identity.sessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+		}, nil
+	}
+	err := newDispatchRedClient(t, transport).Serve(context.Background())
+	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("Serve() error = %v, want named helper packet dependency", err)
+	}
+}
+
+func testDispatchPrepareRequest(t *testing.T, identity transportIdentity) v2control.CredentialPrepareRequest {
+	t.Helper()
+	return testCredentialPreparePacketRequest(t, testPacketRequestID(t), testCredentialPacketSessionIdentity(t, identity.sessionID))
+}
+
 func newDispatchRedClient(t *testing.T, transport Transport) *Client {
 	t.Helper()
 	registry, err := NewExtensionRegistry()
@@ -221,6 +375,7 @@ type dispatchRedTransport struct {
 	identity          transportIdentity
 	receiveController func(context.Context, ControllerReceiveRequest) (ControllerPacket, error)
 	sendController    func(context.Context, ControllerSendPacket) error
+	sendHelper        func(context.Context, HelperSendPacket) error
 	close             func(context.Context) error
 	closeOnce         sync.Once
 }
@@ -241,8 +396,11 @@ func (transport *dispatchRedTransport) SendController(ctx context.Context, packe
 func (*dispatchRedTransport) ReceiveHelper(context.Context, HelperReceiveRequest) (HelperPacket, error) {
 	return HelperPacket{}, errors.New("unexpected helper receive")
 }
-func (*dispatchRedTransport) SendHelper(context.Context, HelperSendPacket) error {
-	return errors.New("unexpected helper send")
+func (transport *dispatchRedTransport) SendHelper(ctx context.Context, packet HelperSendPacket) error {
+	if transport.sendHelper == nil {
+		return errors.New("unexpected helper send")
+	}
+	return transport.sendHelper(ctx, packet)
 }
 func (transport *dispatchRedTransport) Close(ctx context.Context) error {
 	if transport.close == nil {
