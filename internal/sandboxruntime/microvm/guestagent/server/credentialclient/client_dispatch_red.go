@@ -67,7 +67,7 @@ func (client *Client) dispatchReadinessResponse(ctx context.Context, identity tr
 	if err != nil {
 		return clientError(ClientContractPacket, ClientFieldPacketType)
 	}
-	send, err := newControllerReadinessSendPacket(packet.sequenceValue(), packet.sessionIDValue(), response)
+	send, err := newControllerReadinessSendPacket(packet, response)
 	if err != nil {
 		return clientError(ClientContractPacket, ClientFieldPacketType)
 	}
