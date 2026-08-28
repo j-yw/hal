@@ -3,6 +3,7 @@ package credentialclient
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"io"
 	"sync"
@@ -21,7 +22,12 @@ var (
 	errInvalidControlReceiveRequest      = errors.New("credential client control receive request is invalid")
 	errInvalidControllerPacket           = errors.New("credential client controller packet is invalid")
 	errInvalidControllerSendPacket       = errors.New("credential client controller send packet is invalid")
+	errInvalidHelperReceiveRequest       = errors.New("credential client helper receive request is invalid")
+	errInvalidHelperPacket               = errors.New("credential client helper packet is invalid")
+	errInvalidHelperSendPacket           = errors.New("credential client helper send packet is invalid")
 )
+
+const helperExecStreamCanonicalPrefixBytes = 56
 
 // ControlAcceptExpectation is the private-snapshot expectation presented only
 // to the inherited, preopened control listener owner. It carries no FD.
@@ -360,8 +366,38 @@ func consumeControllerReceiveRequest(request ControllerReceiveRequest) error {
 	return nil
 }
 
-func newHelperControlReceiveRequest(uint64, uint32, uint32, [16]byte, bool, [32]byte) (HelperReceiveRequest, error) {
-	return HelperReceiveRequest{}, ErrClientControlDependencyUnaccepted
+func newHelperControlReceiveRequest(sequence uint64, maximumBodyBytes, maximumRights uint32, expectedRequestID [16]byte, expectedRequestIDSet bool, expectedIdentity [32]byte) (HelperReceiveRequest, error) {
+	if sequence == 0 || maximumBodyBytes > credentialprotocol.MaxHelperPacketBodyBytes || maximumRights > 1 {
+		return HelperReceiveRequest{}, errInvalidHelperReceiveRequest
+	}
+	if expectedIdentity == ([32]byte{}) {
+		return HelperReceiveRequest{}, errInvalidHelperReceiveRequest
+	}
+	if expectedRequestIDSet != (expectedRequestID != ([16]byte{})) {
+		return HelperReceiveRequest{}, errInvalidHelperReceiveRequest
+	}
+	return HelperReceiveRequest{
+		nextSequence:         sequence,
+		maximumBodyBytes:     maximumBodyBytes,
+		maximumRights:        maximumRights,
+		expectedRequestID:    expectedRequestID,
+		expectedRequestIDSet: expectedRequestIDSet,
+		expectedIdentity:     expectedIdentity,
+		state:                &helperReceiveRequestState{},
+	}, nil
+}
+
+func consumeHelperReceiveRequest(request HelperReceiveRequest) error {
+	if request.state == nil {
+		return errInvalidHelperReceiveRequest
+	}
+	request.state.mu.Lock()
+	defer request.state.mu.Unlock()
+	if request.state.consumed {
+		return errInvalidHelperReceiveRequest
+	}
+	request.state.consumed = true
+	return nil
 }
 
 func (request ControllerReceiveRequest) nextSequenceValue() uint64 { return request.nextSequence }
@@ -736,23 +772,325 @@ func controllerSendArmValue[T any](packet ControllerSendPacket, expected control
 	return selectValue(packet.state.owner.arm), true
 }
 
-func newHelperResponsePacket(HelperReceiveRequest, credentialprotocol.HelperPacketHeader, helperBodyCapability, credentialprotocol.HelperResponseBody) (HelperPacket, error) {
-	return HelperPacket{}, ErrClientControlDependencyUnaccepted
+func newHelperResponsePacket(request HelperReceiveRequest, header credentialprotocol.HelperPacketHeader, body helperBodyCapability, response credentialprotocol.HelperResponseBody) (packet HelperPacket, err error) {
+	released := false
+	defer func() {
+		if err != nil && !released {
+			_ = destroyHelperBody(body)
+		}
+	}()
+	encoded, encodeErr := credentialprotocol.EncodeHelperResponseBody(response)
+	if consumeErr := consumeHelperReceiveRequest(request); consumeErr != nil {
+		return HelperPacket{}, consumeErr
+	}
+	if encodeErr != nil || validateHelperReceiveHeader(request, header, credentialprotocol.PacketTypeResponse, true, false, uint32(len(encoded))) != nil ||
+		validateOptionalHelperBody(body, encoded) != nil {
+		clear(encoded)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	clear(encoded)
+	released = true
+	if destroyErr := destroyHelperBody(body); destroyErr != nil {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	return HelperPacket{
+		header: header,
+		arm:    helperPacketArm{kind: helperPacketArmResponse, response: cloneHelperResponseBody(response)},
+	}, nil
 }
-func newHelperEventPacket(HelperReceiveRequest, credentialprotocol.HelperPacketHeader, helperBodyCapability, credentialprotocol.HelperEventBody) (HelperPacket, error) {
-	return HelperPacket{}, ErrClientControlDependencyUnaccepted
+
+func newHelperEventPacket(request HelperReceiveRequest, header credentialprotocol.HelperPacketHeader, body helperBodyCapability, event credentialprotocol.HelperEventBody) (packet HelperPacket, err error) {
+	released := false
+	defer func() {
+		if err != nil && !released {
+			_ = destroyHelperBody(body)
+		}
+	}()
+	encoded, encodeErr := credentialprotocol.EncodeHelperEventBody(event)
+	if consumeErr := consumeHelperReceiveRequest(request); consumeErr != nil {
+		return HelperPacket{}, consumeErr
+	}
+	if encodeErr != nil || validateHelperReceiveHeader(request, header, credentialprotocol.PacketTypeEvent, false, false, uint32(len(encoded))) != nil ||
+		validateOptionalHelperBody(body, encoded) != nil {
+		clear(encoded)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	clear(encoded)
+	released = true
+	if destroyErr := destroyHelperBody(body); destroyErr != nil {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	return HelperPacket{
+		header: header,
+		arm:    helperPacketArm{kind: helperPacketArmEvent, event: event},
+	}, nil
 }
-func newHelperExecStreamPacket(HelperReceiveRequest, credentialprotocol.HelperPacketHeader, helperBodyCapability, uint64, credentialprotocol.HelperExecStreamKind, credentialprotocol.HelperExecStreamFlags, uint64, uint32, [32]byte) (HelperPacket, error) {
-	return HelperPacket{}, ErrClientControlDependencyUnaccepted
+
+func newHelperExecStreamPacket(request HelperReceiveRequest, header credentialprotocol.HelperPacketHeader, body helperBodyCapability, revision uint64, kind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, offset uint64, payloadLength uint32, payloadSHA256 [32]byte) (packet HelperPacket, err error) {
+	retainedBody := false
+	defer func() {
+		if err != nil && !retainedBody {
+			_ = destroyHelperBody(body)
+		}
+	}()
+	if consumeErr := consumeHelperReceiveRequest(request); consumeErr != nil {
+		return HelperPacket{}, consumeErr
+	}
+	if !validHelperReceiveExecStream(kind, flags, payloadLength, payloadSHA256) || revision == 0 {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	bodyLength := helperExecStreamCanonicalPrefixBytes + payloadLength
+	if validateHelperReceiveHeader(request, header, credentialprotocol.PacketTypeExecStream, true, false, bodyLength) != nil ||
+		(payloadLength > 0 && !configuredDependency(body)) ||
+		validateOptionalHelperBodyLength(body, bodyLength) != nil {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	retainedBody = configuredDependency(body)
+	return HelperPacket{
+		header: header,
+		arm: helperPacketArm{
+			kind: helperPacketArmExecStream,
+			execStream: helperExecStreamRecord{
+				revision:      revision,
+				kind:          kind,
+				flags:         flags,
+				offset:        offset,
+				payloadLength: payloadLength,
+				payloadSHA256: payloadSHA256,
+			},
+		},
+		body: body,
+	}, nil
 }
-func newHelperExecCreditPacket(HelperReceiveRequest, credentialprotocol.HelperPacketHeader, helperBodyCapability, credentialprotocol.HelperExecCreditBody) (HelperPacket, error) {
-	return HelperPacket{}, ErrClientControlDependencyUnaccepted
+
+func newHelperExecCreditPacket(request HelperReceiveRequest, header credentialprotocol.HelperPacketHeader, body helperBodyCapability, credit credentialprotocol.HelperExecCreditBody) (packet HelperPacket, err error) {
+	released := false
+	defer func() {
+		if err != nil && !released {
+			_ = destroyHelperBody(body)
+		}
+	}()
+	encoded, encodeErr := credentialprotocol.EncodeHelperExecCreditBody(credit)
+	if consumeErr := consumeHelperReceiveRequest(request); consumeErr != nil {
+		return HelperPacket{}, consumeErr
+	}
+	if encodeErr != nil || credit.StreamKind != credentialprotocol.HelperExecStreamStdin ||
+		validateHelperReceiveHeader(request, header, credentialprotocol.PacketTypeExecCredit, true, false, uint32(len(encoded))) != nil ||
+		validateOptionalHelperBody(body, encoded) != nil {
+		clear(encoded)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	clear(encoded)
+	released = true
+	if destroyErr := destroyHelperBody(body); destroyErr != nil {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	return HelperPacket{
+		header: header,
+		arm:    helperPacketArm{kind: helperPacketArmExecCredit, execCredit: credit},
+	}, nil
 }
-func newHelperSSHAcceptedPacket(HelperReceiveRequest, credentialprotocol.HelperPacketHeader, helperBodyCapability, uint64, uint16, uint8, [32]byte, SSHConnectionCapability) (HelperPacket, error) {
-	return HelperPacket{}, ErrClientControlDependencyUnaccepted
+
+func newHelperSSHAcceptedPacket(request HelperReceiveRequest, header credentialprotocol.HelperPacketHeader, body helperBodyCapability, revision uint64, bindingIndex uint16, ordinal uint8, digest [32]byte, capability SSHConnectionCapability) (packet HelperPacket, err error) {
+	releasedBody := false
+	retainedRight := false
+	defer func() {
+		if err != nil && !releasedBody {
+			_ = destroyHelperBody(body)
+		}
+		if err != nil && !retainedRight && configuredDependency(capability) {
+			_ = closeRejectedSSHCapability(capability)
+		}
+	}()
+	encodedLength := credentialprotocol.HelperSSHAcceptedFDBodyEncodedLength()
+	encoded := make([]byte, encodedLength)
+	encodeErr := credentialprotocol.EncodeHelperSSHAcceptedFDBodyTo(encoded, revision, bindingIndex, ordinal, digest)
+	if consumeErr := consumeHelperReceiveRequest(request); consumeErr != nil {
+		clear(encoded)
+		return HelperPacket{}, consumeErr
+	}
+	if encodeErr != nil || request.maximumRights != 1 ||
+		validateHelperReceiveHeader(request, header, credentialprotocol.PacketTypeSSHAcceptedFD, false, false, encodedLength) != nil ||
+		validateOptionalHelperBody(body, encoded) != nil || !configuredDependency(capability) {
+		clear(encoded)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	clear(encoded)
+	capabilityDigest, valid := safeSSHIssuerDigest(capability)
+	if !valid || capabilityDigest == ([32]byte{}) || subtle.ConstantTimeCompare(capabilityDigest[:], digest[:]) != 1 {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	releasedBody = true
+	if destroyErr := destroyHelperBody(body); destroyErr != nil {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	ownership := newSSHConnectionOwnership(capabilityDigest, capability)
+	view := sshConnectionView{ownership: ownership}
+	retainedRight = true
+	return HelperPacket{
+		header: header,
+		arm: helperPacketArm{
+			kind: helperPacketArmSSHAccepted,
+			sshAccepted: SSHAcceptedPacket{
+				revision:         revision,
+				bindingIndex:     bindingIndex,
+				ordinal:          ordinal,
+				capabilitySHA256: digest,
+				connection:       view,
+				ownership:        ownership,
+			},
+		},
+		right: view,
+	}, nil
 }
-func newHelperCloseNotifyPacket(HelperReceiveRequest, credentialprotocol.HelperPacketHeader, helperBodyCapability, credentialprotocol.HelperCloseNotifyBody) (HelperPacket, error) {
-	return HelperPacket{}, ErrClientControlDependencyUnaccepted
+
+func newHelperCloseNotifyPacket(request HelperReceiveRequest, header credentialprotocol.HelperPacketHeader, body helperBodyCapability, closeBody credentialprotocol.HelperCloseNotifyBody) (packet HelperPacket, err error) {
+	released := false
+	defer func() {
+		if err != nil && !released {
+			_ = destroyHelperBody(body)
+		}
+	}()
+	encoded, encodeErr := credentialprotocol.EncodeHelperCloseNotifyBody(closeBody)
+	if consumeErr := consumeHelperReceiveRequest(request); consumeErr != nil {
+		return HelperPacket{}, consumeErr
+	}
+	if encodeErr != nil || validateHelperReceiveHeader(request, header, credentialprotocol.PacketTypeCloseNotify, false, true, uint32(len(encoded))) != nil ||
+		validateOptionalHelperBody(body, encoded) != nil {
+		clear(encoded)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	clear(encoded)
+	released = true
+	if destroyErr := destroyHelperBody(body); destroyErr != nil {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	return HelperPacket{
+		header: header,
+		arm:    helperPacketArm{kind: helperPacketArmClose, close: closeBody},
+	}, nil
+}
+
+func validateHelperReceiveHeader(request HelperReceiveRequest, header credentialprotocol.HelperPacketHeader, wantType credentialprotocol.PacketType, requireExpectedID, requireZeroRequestID bool, encodedLength uint32) error {
+	if header.Type != wantType || header.Sequence == 0 || header.Sequence != request.nextSequence ||
+		credentialprotocol.ValidateHelperPacketHeaderSemantics(header) != nil ||
+		header.BodyLength != encodedLength || header.BodyLength > request.maximumBodyBytes ||
+		header.GuestCredentialIdentityDigest != request.expectedIdentity {
+		return errInvalidHelperPacket
+	}
+	if requireExpectedID && !request.expectedRequestIDSet {
+		return errInvalidHelperPacket
+	}
+	if requireZeroRequestID {
+		if request.expectedRequestIDSet || header.RequestID != ([16]byte{}) {
+			return errInvalidHelperPacket
+		}
+		return nil
+	}
+	if request.expectedRequestIDSet && header.RequestID != request.expectedRequestID {
+		return errInvalidHelperPacket
+	}
+	return nil
+}
+
+func validHelperReceiveExecStream(kind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, payloadLength uint32, payloadSHA256 [32]byte) bool {
+	if kind != credentialprotocol.HelperExecStreamStdout && kind != credentialprotocol.HelperExecStreamStderr {
+		return false
+	}
+	if flags != credentialprotocol.HelperExecStreamFlagsNone && flags != credentialprotocol.HelperExecStreamFlagEOF {
+		return false
+	}
+	if payloadLength > credentialprotocol.MaxHelperExecStreamPayloadBytes {
+		return false
+	}
+	if flags == credentialprotocol.HelperExecStreamFlagsNone && payloadLength == 0 {
+		return false
+	}
+	if flags == credentialprotocol.HelperExecStreamFlagEOF && payloadLength != 0 {
+		return false
+	}
+	if payloadLength == 0 {
+		return payloadSHA256 == sha256.Sum256(nil)
+	}
+	return payloadSHA256 != ([32]byte{})
+}
+
+func validateOptionalHelperBody(body helperBodyCapability, encoded []byte) error {
+	if body == nil {
+		return nil
+	}
+	if !configuredDependency(body) {
+		return errInvalidHelperPacket
+	}
+	length, digest, ok := helperBodyMetadata(body)
+	if !ok || uint64(length) != uint64(len(encoded)) || digest != sha256.Sum256(encoded) {
+		return errInvalidHelperPacket
+	}
+	return nil
+}
+
+func validateOptionalHelperBodyLength(body helperBodyCapability, length uint32) error {
+	if body == nil {
+		return nil
+	}
+	if !configuredDependency(body) {
+		return errInvalidHelperPacket
+	}
+	got, _, ok := helperBodyMetadata(body)
+	if !ok || got != length {
+		return errInvalidHelperPacket
+	}
+	return nil
+}
+
+func helperBodyMetadata(body helperBodyCapability) (length uint32, digest [32]byte, ok bool) {
+	defer func() {
+		if recover() != nil {
+			length = 0
+			digest = [32]byte{}
+			ok = false
+		}
+	}()
+	return body.Len(), body.SHA256(), true
+}
+
+func destroyHelperBody(body helperBodyCapability) (err error) {
+	if !configuredDependency(body) {
+		return nil
+	}
+	defer func() {
+		if recover() != nil {
+			err = errInvalidHelperPacket
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), sshConnectionCleanupTimeout)
+	defer cancel()
+	if destroyErr := body.Destroy(ctx); destroyErr != nil {
+		return errInvalidHelperPacket
+	}
+	return nil
+}
+
+func cloneHelperResponseBody(body credentialprotocol.HelperResponseBody) credentialprotocol.HelperResponseBody {
+	clone := body
+	if body.Prepare != nil {
+		prepare := *body.Prepare
+		prepare.BindingProofs = cloneValues(body.Prepare.BindingProofs)
+		clone.Prepare = &prepare
+	}
+	if body.Renew != nil {
+		renew := *body.Renew
+		clone.Renew = &renew
+	}
+	if body.Revoke != nil {
+		revoke := *body.Revoke
+		clone.Revoke = &revoke
+	}
+	if body.Exec != nil {
+		exec := *body.Exec
+		clone.Exec = &exec
+	}
+	return clone
 }
 
 func (packet HelperPacket) packetTypeValue() credentialprotocol.PacketType { return packet.header.Type }
@@ -786,8 +1124,106 @@ func (packet HelperSendPacket) headerValue() credentialprotocol.HelperPacketHead
 }
 func (packet HelperSendPacket) encodedBodyLengthValue() uint32 { return packet.encodedBodyLength }
 func (packet HelperSendPacket) bodySHA256Value() [32]byte      { return packet.bodySHA256 }
-func (packet HelperSendPacket) writeCanonicalBody(bodySegmentSink) error {
-	return ErrClientControlDependencyUnaccepted
+func (packet HelperSendPacket) writeCanonicalBody(sink bodySegmentSink) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errInvalidHelperSendPacket
+		}
+	}()
+	switch packet.arm {
+	case helperSendArmPrepareBegin, helperSendArmPrepareCommit, helperSendArmRenew, helperSendArmRevoke, helperSendArmExec, helperSendArmExecCredit, helperSendArmClose:
+	default:
+		return ErrClientControlDependencyUnaccepted
+	}
+	if packet.state == nil {
+		return errInvalidHelperSendPacket
+	}
+	packet.state.mu.Lock()
+	if packet.state.consumed || packet.state.owner == nil {
+		packet.state.mu.Unlock()
+		return errInvalidHelperSendPacket
+	}
+	owner := packet.state.owner
+	packet.state.consumed = true
+	packet.state.owner = nil
+	packet.state.mu.Unlock()
+	defer func() { _ = destroyHelperBody(owner.body) }()
+	body, encodeErr := encodeHelperSendCanonicalBody(packet.arm, owner.arm)
+	if encodeErr != nil || uint64(len(body)) != uint64(packet.encodedBodyLength) || packet.header.BodyLength != packet.encodedBodyLength || sha256.Sum256(body) != packet.bodySHA256 {
+		return errInvalidHelperSendPacket
+	}
+	if sink == nil || sink.Capacity() != packet.encodedBodyLength {
+		return errInvalidHelperSendPacket
+	}
+	if writeErr := sink.WriteSegment(0, body); writeErr != nil {
+		return errInvalidHelperSendPacket
+	}
+	return nil
+}
+
+func finishHelperSendPacket(header credentialprotocol.HelperPacketHeader, kind helperSendArmKind, arm helperSendArm) (HelperSendPacket, error) {
+	body, err := encodeHelperSendCanonicalBody(kind, arm)
+	if err != nil || len(body) == 0 || header.BodyLength != uint32(len(body)) ||
+		credentialprotocol.ValidateHelperPacketHeaderSemantics(header) != nil || header.Type != helperSendArmPacketType(kind) {
+		return HelperSendPacket{}, errInvalidHelperSendPacket
+	}
+	return HelperSendPacket{
+		header:            header,
+		arm:               kind,
+		encodedBodyLength: uint32(len(body)),
+		bodySHA256:        sha256.Sum256(body),
+		state: &helperSendPacketState{
+			owner: &helperSendPacketOwner{arm: arm},
+		},
+	}, nil
+}
+
+func encodeHelperSendCanonicalBody(kind helperSendArmKind, arm helperSendArm) ([]byte, error) {
+	switch kind {
+	case helperSendArmPrepareBegin:
+		return credentialprotocol.EncodeHelperPrepareBeginBody(arm.prepareBegin)
+	case helperSendArmPrepareCommit:
+		return credentialprotocol.EncodeHelperPrepareCommitBody(arm.prepareCommit)
+	case helperSendArmRenew:
+		return credentialprotocol.EncodeHelperRenewBody(arm.renew)
+	case helperSendArmRevoke:
+		return credentialprotocol.EncodeHelperRevokeBody(arm.revoke)
+	case helperSendArmExec:
+		return credentialprotocol.EncodeHelperExecBody(arm.exec)
+	case helperSendArmExecCredit:
+		return credentialprotocol.EncodeHelperExecCreditBody(arm.execCredit)
+	case helperSendArmClose:
+		return credentialprotocol.EncodeHelperCloseNotifyBody(arm.close)
+	default:
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+}
+
+func helperSendArmPacketType(kind helperSendArmKind) credentialprotocol.PacketType {
+	switch kind {
+	case helperSendArmPrepareBegin:
+		return credentialprotocol.PacketTypePrepareBegin
+	case helperSendArmPrepareFile:
+		return credentialprotocol.PacketTypePrepareFile
+	case helperSendArmPrepareCommit:
+		return credentialprotocol.PacketTypePrepareCommit
+	case helperSendArmRenew:
+		return credentialprotocol.PacketTypeRenew
+	case helperSendArmRevoke:
+		return credentialprotocol.PacketTypeRevoke
+	case helperSendArmExec:
+		return credentialprotocol.PacketTypeExec
+	case helperSendArmExecPrivate:
+		return credentialprotocol.PacketTypeExecPrivate
+	case helperSendArmExecStream:
+		return credentialprotocol.PacketTypeExecStream
+	case helperSendArmExecCredit:
+		return credentialprotocol.PacketTypeExecCredit
+	case helperSendArmClose:
+		return credentialprotocol.PacketTypeCloseNotify
+	default:
+		return 0
+	}
 }
 
 var _ io.Reader = VerifiedControlStream(nil)

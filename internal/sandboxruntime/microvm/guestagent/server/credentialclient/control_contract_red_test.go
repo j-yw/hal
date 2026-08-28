@@ -1,6 +1,7 @@
 package credentialclient
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/credentialmemory"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/session"
@@ -592,14 +594,281 @@ func TestL8D6GuestControllerRemainingPacketsStayUnaccepted(t *testing.T) {
 	if _, err := newControllerCloseNotifyPacket(receive, 1, sessionID, 0); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("close notify packet error = %v", err)
 	}
-	if _, err := newHelperControlReceiveRequest(1, 1, 0, [16]byte{}, false, [32]byte{}); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("helper receive error = %v", err)
+}
+
+func TestL8D6GuestPacketHelperReceiveRequestMirrorsControlDiscipline(t *testing.T) {
+	identity := testHelperPacketIdentity()
+	requestID := testHelperPacketRequestID()
+	receive, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, requestID, true, identity)
+	if err != nil {
+		t.Fatalf("newHelperControlReceiveRequest() error = %v", err)
 	}
-	if _, err := newHelperResponsePacket(HelperReceiveRequest{}, credentialprotocol.HelperPacketHeader{}, nil, credentialprotocol.HelperResponseBody{}); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("helper response error = %v", err)
+	if receive.nextSequenceValue() != 1 || receive.maximumBodyBytesValue() != credentialprotocol.MaxHelperPacketBodyBytes || receive.maximumRightsValue() != 0 {
+		t.Fatal("helper receive request lost sequence or budget")
+	}
+	gotID, set := receive.expectedRequestIDValue()
+	if !set || gotID != requestID || receive.expectedIdentityDigestValue() != identity {
+		t.Fatal("helper receive request lost expected identity")
+	}
+	unset, err := newHelperControlReceiveRequest(2, 1, 1, [16]byte{}, false, identity)
+	if err != nil || unset.maximumRightsValue() != 1 {
+		t.Fatalf("unset request-id receive error = %v rights=%d", err, unset.maximumRightsValue())
+	}
+	if _, set := unset.expectedRequestIDValue(); set {
+		t.Fatal("unset expected request ID was reported set")
+	}
+
+	for _, test := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "zero sequence", call: func() error {
+			_, err := newHelperControlReceiveRequest(0, 1, 0, [16]byte{}, false, identity)
+			return err
+		}},
+		{name: "oversize body", call: func() error {
+			_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes+1, 0, [16]byte{}, false, identity)
+			return err
+		}},
+		{name: "too many rights", call: func() error {
+			_, err := newHelperControlReceiveRequest(1, 1, 2, [16]byte{}, false, identity)
+			return err
+		}},
+		{name: "zero identity", call: func() error {
+			_, err := newHelperControlReceiveRequest(1, 1, 0, [16]byte{}, false, [32]byte{})
+			return err
+		}},
+		{name: "expected id missing", call: func() error {
+			_, err := newHelperControlReceiveRequest(1, 1, 0, [16]byte{}, true, identity)
+			return err
+		}},
+		{name: "unexpected id present", call: func() error {
+			_, err := newHelperControlReceiveRequest(1, 1, 0, requestID, false, identity)
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(); !errors.Is(err, errInvalidHelperReceiveRequest) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestL8D6GuestPacketHelperUnionsMirrorReadinessDiscipline(t *testing.T) {
+	identity := testHelperPacketIdentity()
+	requestID := testHelperPacketRequestID()
+	nonce := testHelperPacketNonce()
+	response := testHelperPrepareResponseBody()
+	event := credentialprotocol.HelperEventBody{Code: credentialprotocol.EventCodeExpired, Revision: 1, EventID: "event:1"}
+	credit := credentialprotocol.HelperExecCreditBody{Revision: 1, StreamKind: credentialprotocol.HelperExecStreamStdin, NextOffset: 8}
+	closeBody := credentialprotocol.HelperCloseNotifyBody{Reason: credentialprotocol.CloseReasonNormal}
+	emptyPayloadDigest := sha256.Sum256(nil)
+	payloadDigest := sha256.Sum256([]byte("payload"))
+	encodedResponse := mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperResponseBody(response) })
+	encodedEvent := mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperEventBody(event) })
+	encodedCredit := mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperExecCreditBody(credit) })
+	encodedClose := mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperCloseNotifyBody(closeBody) })
+	otherIdentity := identity
+	otherIdentity[31] ^= 0xff
+
+	t.Run("response", func(t *testing.T) {
+		receive := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		header := testHelperHeader(credentialprotocol.PacketTypeResponse, 1, requestID, identity, nonce, uint32(len(encodedResponse)))
+		owned := &testHelperBody{length: uint32(len(encodedResponse)), digest: sha256.Sum256(encodedResponse)}
+		packet, err := newHelperResponsePacket(receive, header, owned, response)
+		if err != nil {
+			t.Fatalf("newHelperResponsePacket() error = %v", err)
+		}
+		arm, ok := packet.responseValue()
+		if !ok || arm.RequestType != credentialprotocol.PacketTypePrepareCommit || packet.packetTypeValue() != credentialprotocol.PacketTypeResponse || !owned.destroyed {
+			t.Fatal("response packet did not retain typed ownership or destroy the non-sensitive body")
+		}
+		if _, err := newHelperResponsePacket(receive, header, nil, response); !errors.Is(err, errInvalidHelperReceiveRequest) {
+			t.Fatalf("consume-once error = %v", err)
+		}
+		mismatch := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperResponsePacket(mismatch, testHelperHeader(credentialprotocol.PacketTypeResponse, 2, requestID, identity, nonce, uint32(len(encodedResponse))), nil, response); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("sequence mismatch error = %v", err)
+		}
+		if _, err := newHelperResponsePacket(mismatch, header, nil, response); !errors.Is(err, errInvalidHelperReceiveRequest) {
+			t.Fatalf("failed issue did not consume receive request: %v", err)
+		}
+		identityMismatch := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperResponsePacket(identityMismatch, testHelperHeader(credentialprotocol.PacketTypeResponse, 1, requestID, otherIdentity, nonce, uint32(len(encodedResponse))), nil, response); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("identity mismatch error = %v", err)
+		}
+		unset := mustHelperReceiveRequest(t, 1, [16]byte{}, false, identity, 0)
+		if _, err := newHelperResponsePacket(unset, testHelperHeader(credentialprotocol.PacketTypeResponse, 1, requestID, identity, nonce, uint32(len(encodedResponse))), nil, response); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("missing expected request ID error = %v", err)
+		}
+		invalid := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperResponsePacket(invalid, header, nil, credentialprotocol.HelperResponseBody{}); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("validator failure error = %v", err)
+		}
+	})
+
+	t.Run("event", func(t *testing.T) {
+		receive := mustHelperReceiveRequest(t, 1, [16]byte{}, false, identity, 0)
+		header := testHelperHeader(credentialprotocol.PacketTypeEvent, 1, requestID, identity, nonce, uint32(len(encodedEvent)))
+		packet, err := newHelperEventPacket(receive, header, nil, event)
+		if err != nil {
+			t.Fatalf("idle event error = %v", err)
+		}
+		arm, ok := packet.eventValue()
+		if !ok || arm.EventID != event.EventID {
+			t.Fatal("event packet did not retain typed ownership")
+		}
+		matched := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperEventPacket(matched, header, nil, event); err != nil {
+			t.Fatalf("correlated event error = %v", err)
+		}
+		invalid := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperEventPacket(invalid, header, nil, credentialprotocol.HelperEventBody{}); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("validator failure error = %v", err)
+		}
+	})
+
+	t.Run("exec-stream", func(t *testing.T) {
+		receive := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		header := testHelperHeader(credentialprotocol.PacketTypeExecStream, 1, requestID, identity, nonce, helperExecStreamCanonicalPrefixBytes+7)
+		body := &testHelperBody{length: helperExecStreamCanonicalPrefixBytes + 7, digest: payloadDigest}
+		packet, err := newHelperExecStreamPacket(receive, header, body, 3, credentialprotocol.HelperExecStreamStdout, credentialprotocol.HelperExecStreamFlagsNone, 0, 7, payloadDigest)
+		if err != nil {
+			t.Fatalf("exec stream error = %v", err)
+		}
+		arm, ok := packet.execStreamValue()
+		if !ok || arm.revision != 3 || arm.payloadLength != 7 || body.destroyed || packet.body == nil {
+			t.Fatal("exec stream did not retain live payload body")
+		}
+		eofReceive := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		eofHeader := testHelperHeader(credentialprotocol.PacketTypeExecStream, 1, requestID, identity, nonce, helperExecStreamCanonicalPrefixBytes)
+		eofPacket, err := newHelperExecStreamPacket(eofReceive, eofHeader, nil, 3, credentialprotocol.HelperExecStreamStderr, credentialprotocol.HelperExecStreamFlagEOF, 7, 0, emptyPayloadDigest)
+		if err != nil {
+			t.Fatalf("eof stream error = %v", err)
+		}
+		eofArm, ok := eofPacket.execStreamValue()
+		if !ok || eofArm.flags != credentialprotocol.HelperExecStreamFlagEOF {
+			t.Fatal("eof stream arm missing")
+		}
+		stdin := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperExecStreamPacket(stdin, header, nil, 3, credentialprotocol.HelperExecStreamStdin, credentialprotocol.HelperExecStreamFlagsNone, 0, 7, payloadDigest); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("stdin stream error = %v", err)
+		}
+		missingPayload := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperExecStreamPacket(missingPayload, header, nil, 3, credentialprotocol.HelperExecStreamStdout, credentialprotocol.HelperExecStreamFlagsNone, 0, 7, payloadDigest); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("nonempty stream without owned payload error = %v", err)
+		}
+		retryBody := &testHelperBody{length: helperExecStreamCanonicalPrefixBytes + 7, digest: payloadDigest}
+		if _, err := newHelperExecStreamPacket(missingPayload, header, retryBody, 3, credentialprotocol.HelperExecStreamStdout, credentialprotocol.HelperExecStreamFlagsNone, 0, 7, payloadDigest); !errors.Is(err, errInvalidHelperReceiveRequest) {
+			t.Fatalf("failed missing-payload issue did not consume receive request: %v", err)
+		}
+		if !retryBody.destroyed {
+			t.Fatal("replayed receive request did not destroy the newly supplied body")
+		}
+		var typedNilBody *testHelperBody
+		typedNilPayload := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperExecStreamPacket(typedNilPayload, header, typedNilBody, 3, credentialprotocol.HelperExecStreamStderr, credentialprotocol.HelperExecStreamFlagsNone, 0, 7, payloadDigest); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("nonempty stream with typed-nil payload error = %v", err)
+		}
+	})
+
+	t.Run("exec-credit", func(t *testing.T) {
+		receive := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		header := testHelperHeader(credentialprotocol.PacketTypeExecCredit, 1, requestID, identity, nonce, uint32(len(encodedCredit)))
+		packet, err := newHelperExecCreditPacket(receive, header, nil, credit)
+		if err != nil {
+			t.Fatalf("exec credit error = %v", err)
+		}
+		arm, ok := packet.execCreditValue()
+		if !ok || arm.NextOffset != 8 {
+			t.Fatal("exec credit packet did not retain typed ownership")
+		}
+		stdout := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		stdoutCredit := credit
+		stdoutCredit.StreamKind = credentialprotocol.HelperExecStreamStdout
+		if _, err := newHelperExecCreditPacket(stdout, header, nil, stdoutCredit); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("stdout credit error = %v", err)
+		}
+	})
+
+	t.Run("ssh-accepted", func(t *testing.T) {
+		digest := [32]byte{0x41}
+		issuer := &sshTestIssuer{digest: digest}
+		receive := mustHelperReceiveRequest(t, 1, requestID, true, identity, 1)
+		header := testHelperHeader(credentialprotocol.PacketTypeSSHAcceptedFD, 1, requestID, identity, nonce, credentialprotocol.HelperSSHAcceptedFDBodyEncodedLength())
+		packet, err := newHelperSSHAcceptedPacket(receive, header, nil, 7, 2, 3, digest, issuer)
+		if err != nil {
+			t.Fatalf("ssh accepted error = %v", err)
+		}
+		arm, ok := packet.sshAcceptedValue()
+		if !ok || arm.Revision() != 7 || arm.BindingIndex() != 2 || arm.Ordinal() != 3 || arm.CapabilitySHA256() != digest {
+			t.Fatal("ssh accepted packet lost metadata")
+		}
+		if reflect.TypeOf(arm.Connection()) == reflect.TypeOf(issuer) || issuer.closes.Load() != 0 {
+			t.Fatal("ssh accepted packet exposed the issuer or closed it")
+		}
+		idle := mustHelperReceiveRequest(t, 1, [16]byte{}, false, identity, 1)
+		idleIssuer := &sshTestIssuer{digest: digest}
+		if _, err := newHelperSSHAcceptedPacket(idle, header, nil, 7, 2, 3, digest, idleIssuer); err != nil {
+			t.Fatalf("idle ssh accepted error = %v", err)
+		}
+		noRight := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		closedIssuer := &sshTestIssuer{digest: digest}
+		if _, err := newHelperSSHAcceptedPacket(noRight, header, nil, 7, 2, 3, digest, closedIssuer); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("zero-rights ssh error = %v", err)
+		}
+		if closedIssuer.closes.Load() != 1 {
+			t.Fatalf("failed ssh constructor Close calls = %d, want 1", closedIssuer.closes.Load())
+		}
+	})
+
+	t.Run("close-notify", func(t *testing.T) {
+		receive := mustHelperReceiveRequest(t, 1, [16]byte{}, false, identity, 0)
+		header := testHelperHeader(credentialprotocol.PacketTypeCloseNotify, 1, [16]byte{}, identity, nonce, uint32(len(encodedClose)))
+		packet, err := newHelperCloseNotifyPacket(receive, header, nil, closeBody)
+		if err != nil {
+			t.Fatalf("close notify error = %v", err)
+		}
+		arm, ok := packet.closeNotifyValue()
+		if !ok || arm.Reason != credentialprotocol.CloseReasonNormal {
+			t.Fatal("close notify packet did not retain typed ownership")
+		}
+		outstanding := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperCloseNotifyPacket(outstanding, header, nil, closeBody); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("close with expected request ID error = %v", err)
+		}
+	})
+}
+
+func TestL8D6GuestPacketHelperSendWriteCanonicalBody(t *testing.T) {
+	identity := testHelperPacketIdentity()
+	nonce := testHelperPacketNonce()
+	closeBody := credentialprotocol.HelperCloseNotifyBody{Reason: credentialprotocol.CloseReasonShutdown}
+	encoded := mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperCloseNotifyBody(closeBody) })
+	header := testHelperHeader(credentialprotocol.PacketTypeCloseNotify, 1, [16]byte{}, identity, nonce, uint32(len(encoded)))
+	packet, err := finishHelperSendPacket(header, helperSendArmClose, helperSendArm{kind: helperSendArmClose, close: closeBody})
+	if err != nil {
+		t.Fatalf("finishHelperSendPacket() error = %v", err)
+	}
+	if packet.packetTypeValue() != credentialprotocol.PacketTypeCloseNotify || packet.encodedBodyLengthValue() != uint32(len(encoded)) || packet.bodySHA256Value() != sha256.Sum256(encoded) {
+		t.Fatal("helper send packet did not pin canonical body length and digest")
+	}
+	sink := &testCanonicalBodySink{capacity: packet.encodedBodyLengthValue()}
+	if err := packet.writeCanonicalBody(sink); err != nil {
+		t.Fatalf("writeCanonicalBody() error = %v", err)
+	}
+	if string(sink.buf) != string(encoded) {
+		t.Fatalf("canonical body = %s, want %s", sink.buf, encoded)
+	}
+	if err := packet.writeCanonicalBody(sink); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Fatalf("second writeCanonicalBody() error = %v", err)
 	}
 	if err := (HelperSendPacket{}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("helper writeCanonicalBody error = %v", err)
+		t.Fatalf("zero helper send write error = %v", err)
+	}
+	if err := (HelperSendPacket{arm: helperSendArmPrepareFile}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("payload helper send write error = %v", err)
 	}
 }
 
@@ -856,6 +1125,84 @@ func mustEncode(t *testing.T, encode func() ([]byte, error)) []byte {
 		t.Fatal(err)
 	}
 	return body
+}
+
+func testHelperPacketIdentity() [32]byte {
+	var identity [32]byte
+	for index := range identity {
+		identity[index] = byte(index + 1)
+	}
+	return identity
+}
+
+func testHelperPacketNonce() [32]byte {
+	var nonce [32]byte
+	for index := range nonce {
+		nonce[index] = byte(index + 17)
+	}
+	return nonce
+}
+
+func testHelperPacketRequestID() [16]byte {
+	var requestID [16]byte
+	for index := range requestID {
+		requestID[index] = byte(index + 3)
+	}
+	return requestID
+}
+
+func mustHelperReceiveRequest(t *testing.T, sequence uint64, requestID [16]byte, requestIDSet bool, identity [32]byte, maximumRights uint32) HelperReceiveRequest {
+	t.Helper()
+	receive, err := newHelperControlReceiveRequest(sequence, credentialprotocol.MaxHelperPacketBodyBytes, maximumRights, requestID, requestIDSet, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receive
+}
+
+func testHelperHeader(packetType credentialprotocol.PacketType, sequence uint64, requestID [16]byte, identity, nonce [32]byte, bodyLength uint32) credentialprotocol.HelperPacketHeader {
+	return credentialprotocol.HelperPacketHeader{
+		Type:                          packetType,
+		Sequence:                      sequence,
+		RequestID:                     requestID,
+		BodyLength:                    bodyLength,
+		GuestCredentialIdentityDigest: identity,
+		BootNonce:                     nonce,
+	}
+}
+
+func testHelperPrepareResponseBody() credentialprotocol.HelperResponseBody {
+	return credentialprotocol.HelperResponseBody{
+		RequestType: credentialprotocol.PacketTypePrepareCommit,
+		Disposition: credentialprotocol.ResponseDispositionAccepted,
+		Revision:    1,
+		FailureCode: credentialprotocol.FailureCodeNone,
+		Prepare: &credentialprotocol.HelperPrepareResponseResult{
+			ExpiresAtUnixNano: 1700000001123456789,
+			ActiveProofID:     "active-proof",
+			ExecBindingID:     "exec-binding",
+			BindingProofs: []credentialprotocol.HelperBindingProof{
+				{BindingID: "binding-http", Mode: credentialprotocol.DeliveryModeHTTPProxy, ProofID: "proof-http"},
+				{BindingID: "binding-file", Mode: credentialprotocol.DeliveryModeFileTmpfs, ProofID: "proof-file"},
+			},
+		},
+	}
+}
+
+type testHelperBody struct {
+	length    uint32
+	digest    [32]byte
+	destroyed bool
+}
+
+func (body *testHelperBody) Len() uint32      { return body.length }
+func (body *testHelperBody) SHA256() [32]byte { return body.digest }
+func (body *testHelperBody) Borrow(context.Context, func(credentialmemory.BorrowedView) error) error {
+	return nil
+}
+func (body *testHelperBody) Destroy(context.Context) error {
+	body.destroyed = true
+	return nil
 }
 
 type testCanonicalBodySink struct {
