@@ -87,6 +87,10 @@ type l8RuntimeOwnerRecoveryBinding struct {
 	commitOnly         bool
 }
 
+type l8RuntimeOwnerRecordAbsenceChecker interface {
+	RecordAbsent(context.Context) (bool, error)
+}
+
 var _ sandboxruntime.JobCredentialRuntimeRecoveryBinding = (*l8RuntimeOwnerRecoveryBinding)(nil)
 
 func (binding *l8RuntimeOwnerRecoveryBinding) RecoverJobCredentials(ctx context.Context, request sandboxruntime.JobCredentialRecoveryRequest) (proof sandboxruntime.JobCredentialCleanupProof, err error) {
@@ -243,19 +247,26 @@ func (binding *l8RuntimeOwnerRecoveryBinding) CommitJobCredentialRuntimeRecovery
 		return errL8RuntimeOwnerInvalid
 	}
 	binding.mu.Lock()
+	if binding.closed {
+		binding.mu.Unlock()
+		return errL8RuntimeOwnerInvalid
+	}
 	commitOnly := binding.commitOnly
 	key := binding.commitKey
 	seed := binding.seed
 	store := binding.store
 	binding.mu.Unlock()
 	if commitOnly {
-		if commitJobCredentialRuntimeRecovery(receipt, key, seed, receipt.FinalizedRevision) != nil {
+		if commitJobCredentialRuntimeRecovery(receipt, key, seed, receipt.FinalizedRevision, "") != nil {
 			return errL8RuntimeOwnerInvalid
 		}
-		if store != nil {
-			if _, err := store.Load(ctx); err == nil {
-				return errL8RuntimeOwnerInvalid
-			}
+		absenceStore, ok := store.(l8RuntimeOwnerRecordAbsenceChecker)
+		if !ok {
+			return errL8RuntimeOwnerInvalid
+		}
+		absent, absenceErr := absenceStore.RecordAbsent(ctx)
+		if absenceErr != nil || !absent {
+			return errL8RuntimeOwnerInvalid
 		}
 		return nil
 	}
@@ -266,7 +277,7 @@ func (binding *l8RuntimeOwnerRecoveryBinding) CommitJobCredentialRuntimeRecovery
 	if err != nil || record.State != "finalized" {
 		return errL8RuntimeOwnerInvalid
 	}
-	if commitJobCredentialRuntimeRecovery(receipt, key, seed, record.FinalizeTargetRevision) != nil {
+	if commitJobCredentialRuntimeRecovery(receipt, key, seed, record.FinalizeTargetRevision, record.FinalizedCommitID) != nil {
 		return errL8RuntimeOwnerInvalid
 	}
 	if err := store.RetireFinalized(ctx, record.Revision, record.FinalizedCommitID); err != nil {
@@ -275,13 +286,13 @@ func (binding *l8RuntimeOwnerRecoveryBinding) CommitJobCredentialRuntimeRecovery
 	return nil
 }
 
-func (binding *l8RuntimeOwnerRecoveryBinding) Close(context.Context) (err error) {
+func (binding *l8RuntimeOwnerRecoveryBinding) Close(ctx context.Context) (err error) {
 	defer func() {
 		if recover() != nil {
 			err = errL8RuntimeOwnerInvalid
 		}
 	}()
-	if binding == nil {
+	if binding == nil || ctx == nil {
 		return errL8RuntimeOwnerInvalid
 	}
 	_, cancel := context.WithTimeout(context.Background(), sandboxruntime.JobCredentialRuntimeRecoveryCloseTimeout)
@@ -376,7 +387,7 @@ func l8RuntimeOwnerCommitID(key []byte, seedDigest [32]byte, revision uint64) (s
 	return base64.RawURLEncoding.EncodeToString(digest.Sum(nil)), nil
 }
 
-func commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, key []byte, seed sandboxruntime.JobCredentialIdentitySeed, expectedRevision uint64) error {
+func commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, key []byte, seed sandboxruntime.JobCredentialIdentitySeed, expectedRevision uint64, recordedCommitID string) error {
 	if sandboxruntime.ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt) != nil {
 		return errL8RuntimeOwnerInvalid
 	}
@@ -391,6 +402,9 @@ func commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRunt
 	commitID := receipt.CommitID
 	if receipt.FinalizedRevision != expectedRevision || !validL8RuntimeOwnerToken(expectedCommitID) ||
 		subtle.ConstantTimeCompare([]byte(commitID), []byte(expectedCommitID)) != 1 {
+		return errL8RuntimeOwnerInvalid
+	}
+	if recordedCommitID != "" && subtle.ConstantTimeCompare([]byte(recordedCommitID), []byte(expectedCommitID)) != 1 {
 		return errL8RuntimeOwnerInvalid
 	}
 	return nil

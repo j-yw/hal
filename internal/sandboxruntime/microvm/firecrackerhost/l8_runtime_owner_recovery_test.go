@@ -76,24 +76,27 @@ func TestL8RuntimeOwnerCommitVerifierRecomputesSeedBoundHMAC(t *testing.T) {
 		t.Fatal(err)
 	}
 	receipt := sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{CommitID: commitID, FinalizedRevision: 8}
-	if err := commitJobCredentialRuntimeRecovery(receipt, key, seed, 8); err != nil {
+	if err := commitJobCredentialRuntimeRecovery(receipt, key, seed, 8, commitID); err != nil {
 		t.Fatalf("commit verifier: %v", err)
 	}
 	wrongKey := []byte("1123456789abcdef0123456789abcdef")
-	if err := commitJobCredentialRuntimeRecovery(receipt, wrongKey, seed, 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+	if err := commitJobCredentialRuntimeRecovery(receipt, wrongKey, seed, 8, commitID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("wrong commit verifier = %v", err)
 	}
-	if err := commitJobCredentialRuntimeRecovery(receipt, key, seed, 9); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+	if err := commitJobCredentialRuntimeRecovery(receipt, key, seed, 9, commitID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("replayed revision verifier = %v", err)
 	}
 	mutatedSeed := seed
 	mutatedSeed.RuntimeID = "runtime-neighbor"
-	if err := commitJobCredentialRuntimeRecovery(receipt, key, mutatedSeed, 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+	if err := commitJobCredentialRuntimeRecovery(receipt, key, mutatedSeed, 8, commitID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("substituted seed verifier = %v", err)
+	}
+	if err := commitJobCredentialRuntimeRecovery(receipt, key, seed, 8, l8RuntimeOwnerTestToken(10)); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("substituted record commit ID verifier = %v", err)
 	}
 	forgedID := l8RuntimeOwnerTestToken(9)
 	forged := sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{CommitID: forgedID, FinalizedRevision: 8}
-	if err := commitJobCredentialRuntimeRecovery(forged, key, seed, 8); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+	if err := commitJobCredentialRuntimeRecovery(forged, key, seed, 8, commitID); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("caller-selected commit ID verifier = %v, want invalid", err)
 	}
 }

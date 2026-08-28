@@ -28,9 +28,19 @@ func TestL8RuntimeOwnerLinuxRecordStorePersistsExactFSM(t *testing.T) {
 	seed := l8RuntimeOwnerTestSeed()
 	bootID := "01234567-89ab-cdef-0123-456789abcdef"
 	store := &l8RuntimeOwnerLinuxRecordStore{directoryFD: directoryFD, seed: seed, bootID: bootID}
+	if absent, err := store.RecordAbsent(context.Background()); err != nil || !absent {
+		t.Fatalf("initial record absence = %t, %v", absent, err)
+	}
 	genesis := l8RuntimeOwnerTestGenesis(l8RuntimeOwnerTestRecord(t, seed, bootID))
 	if created, err := store.CreateGenesis(context.Background(), genesis); err != nil || created != genesis {
 		t.Fatalf("create genesis = %#v, %v", created, err)
+	}
+	if absent, err := store.RecordAbsent(context.Background()); err != nil || absent {
+		t.Fatalf("present record absence = %t, %v", absent, err)
+	}
+	invalidStore := &l8RuntimeOwnerLinuxRecordStore{directoryFD: -1, seed: seed, bootID: bootID}
+	if absent, err := invalidStore.RecordAbsent(context.Background()); !errors.Is(err, errL8RuntimeOwnerInvalid) || absent {
+		t.Fatalf("uncertain record absence = %t, %v", absent, err)
 	}
 	if _, err := store.CreateGenesis(context.Background(), genesis); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("duplicate genesis = %v", err)

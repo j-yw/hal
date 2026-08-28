@@ -264,8 +264,9 @@ The standalone executable is compiled on Linux and cross-compiled on a
 non-Linux target. Linux tests use only local socketpairs, sealed memfds,
 namespace descriptor duplication, and direct child processes; they require no
 KVM, Firecracker binary, network access, cloud account, guest image, worker, or
-daemon. The production absence-proof constructor call count remains zero until
-the later provider/L7 integration slice.
+daemon. At the reviewed R2 boundary the production absence-proof constructor
+call count remained zero; the recovery-binding slice below adds the sole
+StopReap issuer without adding L7 finalization or default wiring.
 
 ## Recovery binding issuer
 

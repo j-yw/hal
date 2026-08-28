@@ -259,6 +259,13 @@ func TestL8RuntimeOwnerRecoveryBindingCommitUsesOwnerVerifier(t *testing.T) {
 		t.Fatalf("wrong HMAC commit = %v retired %t", err, store.retiredFinal)
 	}
 
+	store.retiredFinal = false
+	store.record = record
+	store.record.FinalizedCommitID = l8RuntimeOwnerTestToken(9)
+	if err := binding.CommitJobCredentialRuntimeRecovery(context.Background(), receipt); !errors.Is(err, errL8RuntimeOwnerInvalid) || store.retiredFinal {
+		t.Fatalf("receipt/record commit mismatch = %v retired %t", err, store.retiredFinal)
+	}
+
 	commitOnly := &l8RuntimeOwnerRecoveryBinding{seed: seed, commitKey: key, store: &l8RuntimeOwnerMissingStore{}, commitOnly: true}
 	if err := commitOnly.CommitJobCredentialRuntimeRecovery(context.Background(), receipt); err != nil {
 		t.Fatalf("commit-only: %v", err)
@@ -266,6 +273,19 @@ func TestL8RuntimeOwnerRecoveryBindingCommitUsesOwnerVerifier(t *testing.T) {
 	reappeared := &l8RuntimeOwnerRecoveryBinding{seed: seed, commitKey: key, store: store, commitOnly: true}
 	if err := reappeared.CommitJobCredentialRuntimeRecovery(context.Background(), receipt); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("commit-only with record = %v", err)
+	}
+	uncertain := &l8RuntimeOwnerRecoveryBinding{seed: seed, commitKey: key, store: l8RuntimeOwnerUncertainMissingStore{}, commitOnly: true}
+	if err := uncertain.CommitJobCredentialRuntimeRecovery(context.Background(), receipt); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("commit-only with uncertain record absence = %v", err)
+	}
+
+	store.record = record
+	store.retiredFinal = false
+	if err := binding.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := binding.CommitJobCredentialRuntimeRecovery(context.Background(), receipt); !errors.Is(err, errL8RuntimeOwnerInvalid) || store.retiredFinal {
+		t.Fatalf("commit after close = %v retired %t", err, store.retiredFinal)
 	}
 }
 
@@ -290,6 +310,9 @@ func TestL8RuntimeOwnerRecoveryBindingCloseDoesNotImplyAbsence(t *testing.T) {
 	}
 	if _, err := binding.StopReapJobCredentialRuntime(context.Background()); !errors.Is(err, errL8RuntimeOwnerInvalid) {
 		t.Fatalf("stop/reap after close = %v", err)
+	}
+	if err := binding.Close(nil); !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("close with nil context = %v", err)
 	}
 }
 
@@ -374,6 +397,10 @@ func bytes32(value string) []byte {
 
 type l8RuntimeOwnerMissingStore struct{}
 
+func (l8RuntimeOwnerMissingStore) RecordAbsent(context.Context) (bool, error) {
+	return true, nil
+}
+
 func (l8RuntimeOwnerMissingStore) Load(context.Context) (firecrackerRuntimeOwnerRecordV1, error) {
 	return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
 }
@@ -388,4 +415,12 @@ func (l8RuntimeOwnerMissingStore) RetireStartingZero(context.Context, uint64) er
 }
 func (l8RuntimeOwnerMissingStore) RetireFinalized(context.Context, uint64, string) error {
 	return errL8RuntimeOwnerInvalid
+}
+
+type l8RuntimeOwnerUncertainMissingStore struct {
+	l8RuntimeOwnerMissingStore
+}
+
+func (l8RuntimeOwnerUncertainMissingStore) RecordAbsent(context.Context) (bool, error) {
+	return false, errors.New("private record inspection failed")
 }
