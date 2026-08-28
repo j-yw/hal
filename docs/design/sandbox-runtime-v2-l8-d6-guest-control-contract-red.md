@@ -7,7 +7,8 @@ authenticated control session on fixed VSOCK port 1025. Controller credential
 operations prepare, renew, revoke, and exec are accepted packet constructors
 alongside readiness. First prepare is admitted with `expectedIdentitySet=false`
 and derives the session-bound credential digest through
-`DecodeInitialCredentialPrepareRequest`; later receive expectations pin that
+`DecodeInitialCredentialPrepareRequest`, while bounding the requested expiry by
+the authenticated transport hard expiry; later receive expectations pin that
 digest rather than raw session bytes. Renew, revoke, and exec require
 `expectedIdentitySet`. Each success constructor consumes the exact originating
 controller packet as its sequence, session, request-ID, identity-digest, and

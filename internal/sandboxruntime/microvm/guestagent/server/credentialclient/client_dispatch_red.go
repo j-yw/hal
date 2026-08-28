@@ -61,7 +61,7 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			continue
 		}
 		if prepare, ok := packet.prepareValue(); ok {
-			digest, digestErr := acceptControllerPrepareIdentity(identity.sessionIDValue(), prepare, expectedIdentity, expectedIdentitySet)
+			digest, digestErr := acceptControllerPrepareIdentity(identity.sessionIDValue(), identity.hardExpiryValue().UnixNano(), prepare, expectedIdentity, expectedIdentitySet)
 			if digestErr != nil {
 				return digestErr
 			}
@@ -94,7 +94,7 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 	}
 }
 
-func acceptControllerPrepareIdentity(sessionID [32]byte, prepare v2control.CredentialPrepareRequest, expectedIdentity v2control.IdentityDigest, expectedIdentitySet bool) (v2control.IdentityDigest, error) {
+func acceptControllerPrepareIdentity(sessionID [32]byte, hardExpiryUnixNano int64, prepare v2control.CredentialPrepareRequest, expectedIdentity v2control.IdentityDigest, expectedIdentitySet bool) (v2control.IdentityDigest, error) {
 	if expectedIdentitySet {
 		if prepare.IdentityDigest() != expectedIdentity {
 			return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
@@ -107,6 +107,9 @@ func acceptControllerPrepareIdentity(sessionID [32]byte, prepare v2control.Crede
 	}
 	decoded, err := v2control.DecodeInitialCredentialPrepareRequest(sessionID, wire)
 	if err != nil {
+		return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
+	}
+	if v2control.ValidateCredentialPrepareRequestExpiry(decoded, hardExpiryUnixNano) != nil {
 		return v2control.IdentityDigest{}, clientError(ClientContractPacket, ClientFieldIdentity)
 	}
 	reconstructed, err := v2control.NewGuestCredentialSessionIdentity(sessionID, decoded.Identity())

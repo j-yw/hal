@@ -263,6 +263,24 @@ func TestL8D6GuestCredentialClientServeRejectsFirstPrepareIdentityMismatch(t *te
 	}
 }
 
+func TestL8D6GuestCredentialClientServeRejectsPrepareBeyondSessionHardExpiry(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	identity.hardExpiry = time.Unix(0, 1700000000623456789).UTC()
+	prepare := testDispatchPrepareRequest(t, identity)
+
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+		return ControllerPacket{
+			sequence:  1,
+			sessionID: identity.sessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+		}, nil
+	}
+	if err := newDispatchRedClient(t, transport).Serve(context.Background()); clientContractCode(err) != ClientContractPacket {
+		t.Fatalf("Serve() error = %v, want expiry packet rejection", err)
+	}
+}
+
 func TestL8D6GuestCredentialClientServeRenewRevokeExecRequireExpectedIdentitySet(t *testing.T) {
 	identity := testDispatchTransportIdentity()
 	sessionIdentity := testCredentialPacketSessionIdentity(t, identity.sessionID)
@@ -367,7 +385,7 @@ func testDispatchTransportIdentity() transportIdentity {
 	sessionID[0] = 1
 	return transportIdentity{
 		sessionID: sessionID, identity: identity,
-		hardExpiry: time.Unix(1_700_000_000, 0).UTC(), helperGeneration: "helper-generation-1",
+		hardExpiry: time.Unix(0, 1700000001123456789).UTC(), helperGeneration: "helper-generation-1",
 	}
 }
 
