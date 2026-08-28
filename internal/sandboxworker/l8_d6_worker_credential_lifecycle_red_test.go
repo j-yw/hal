@@ -427,7 +427,7 @@ func l8D6LifecycleActiveProof(t *testing.T, identity sandboxruntime.JobCredentia
 		Identity:  identity,
 		Revision:  revision,
 		IssuedAt:  identity.IssuedAt.Add(time.Second),
-		ExpiresAt: identity.IssuedAt.Add(time.Minute),
+		ExpiresAt: identity.IssuedAt.Add(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -42,6 +42,12 @@ func TestL8D6WorkerCredentialPrivateSchemasAreExact(t *testing.T) {
 		`Identity|*sandboxworker.storedJobCredentialIdentityV1|json:"identity,omitempty"`,
 		`Revision|uint64|json:"revision"`,
 	})
+	l8D6AssertPrivateSchema(t, reflect.TypeOf(storedJobCredentialRuntimeRecoveryReceiptV1{}), []string{
+		`ContractVersion|string|json:"contractVersion"`,
+		`Seed|sandboxworker.storedJobCredentialIdentitySeedV1|json:"seed"`,
+		`CommitID|string|json:"commitId"`,
+		`FinalizedRevision|uint64|json:"finalizedRevision"`,
+	})
 
 	stored := reflect.TypeOf(storedJobStateV2{})
 	field, ok := stored.FieldByName("CredentialState")
@@ -50,6 +56,13 @@ func TestL8D6WorkerCredentialPrivateSchemasAreExact(t *testing.T) {
 	}
 	if _, public := reflect.TypeOf(JobV2{}).FieldByName("CredentialState"); public {
 		t.Fatal("private credential state escaped onto public JobV2")
+	}
+	receiptField, ok := stored.FieldByName("CredentialRecoveryReceipt")
+	if !ok || receiptField.Type != reflect.TypeOf((*storedJobCredentialRuntimeRecoveryReceiptV1)(nil)) || string(receiptField.Tag) != `json:"credentialRecoveryReceipt,omitempty"` {
+		t.Fatalf("storedJobStateV2 recovery receipt field = %#v, %t", receiptField, ok)
+	}
+	if _, public := reflect.TypeOf(JobV2{}).FieldByName("CredentialRecoveryReceipt"); public {
+		t.Fatal("private recovery receipt escaped onto public JobV2")
 	}
 	for _, root := range []reflect.Type{reflect.TypeOf(sandboxruntime.JobCredentialIdentitySeed{}), reflect.TypeOf(sandboxruntime.JobCredentialIdentity{})} {
 		for index := 0; index < root.NumField(); index++ {
@@ -60,10 +73,10 @@ func TestL8D6WorkerCredentialPrivateSchemasAreExact(t *testing.T) {
 	}
 }
 
-func TestL8D6WorkerPersistsSeedBeforePreflightAndIdentityBeforeBoundedAbort(t *testing.T) {
+func TestL8D6WorkerPersistsSeedBeforePreflightAndIdentityBeforePrepare(t *testing.T) {
 	stateDir := t.TempDir() + "/jobs-v2"
 	request := l8D6WorkerStartRequest(t)
-	seed := l8D6WorkerSeed(t, request)
+	seed := l8D6RecentLifecycleSeed(t, request)
 	identity, err := sandboxruntime.CompleteJobCredentialIdentity(seed, l8WorkerGuestSessionGeneration(), "helper-generation-worker")
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +87,7 @@ func TestL8D6WorkerPersistsSeedBeforePreflightAndIdentityBeforeBoundedAbort(t *t
 		identity: identity,
 		loss:     make(chan sandboxruntime.JobCredentialLoss),
 		cleanup:  l8WorkerCleanupProof(t, identity),
+		session:  &l8D6LifecycleSession{proof: l8D6LifecycleActiveProof(t, identity, 1), cleanup: l8D6LifecycleCleanupProof(t, identity, 2), loss: make(chan sandboxruntime.JobCredentialLoss)},
 		stateDir: stateDir,
 		jobID:    seed.WorkerJobID,
 		order:    order,
@@ -97,17 +111,15 @@ func TestL8D6WorkerPersistsSeedBeforePreflightAndIdentityBeforeBoundedAbort(t *t
 	}
 	t.Cleanup(service.Close)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	preflight.cancelRequest = cancel
-	response := service.HandleAuthenticatedRequest(ctx, principal, request)
-	if response.OK || response.Error == nil || response.Error.Code != ErrorCodeUnsupportedOp {
-		t.Fatalf("durable boundary response = %#v, want stable unsupported dependency", response)
+	response := service.HandleAuthenticatedRequest(context.Background(), principal, request)
+	if !response.OK || response.JobV2 == nil || response.Error != nil {
+		t.Fatalf("durable boundary response = %#v, want transferred JobV2", response)
 	}
-	if got, want := order.snapshot(), []string{"preflight-after-seed", "identity-after-seed", "abort-after-identity"}; !reflect.DeepEqual(got, want) {
+	if got, want := order.snapshot(), []string{"preflight-after-seed", "identity-after-seed", "prepare-after-identity"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("durable ordering = %v, want %v", got, want)
 	}
-	if !preflight.abortContextIndependent || preflight.abortCalls != 1 || runtime.preflightCalls != 1 || provider.calls != 1 {
-		t.Fatalf("ownership calls = bind:%d preflight:%d abort:%d independent:%t", provider.calls, runtime.preflightCalls, preflight.abortCalls, preflight.abortContextIndependent)
+	if preflight.abortCalls != 0 || preflight.prepareCalls != 1 || runtime.preflightCalls != 1 || provider.calls != 1 {
+		t.Fatalf("ownership calls = bind:%d preflight:%d prepare:%d abort:%d", provider.calls, runtime.preflightCalls, preflight.prepareCalls, preflight.abortCalls)
 	}
 	if provider.target.Runtime.Metadata != nil || provider.target.Connection != (sandboxruntime.ConnectionInfo{}) {
 		t.Fatalf("binding retained untrusted metadata/connection: %#v", provider.target)
@@ -117,7 +129,7 @@ func TestL8D6WorkerPersistsSeedBeforePreflightAndIdentityBeforeBoundedAbort(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.CredentialState == nil || stored.CredentialState.Identity == nil || stored.CredentialState.Revision != 0 {
+	if stored.CredentialState == nil || stored.CredentialState.Identity == nil || stored.CredentialState.Revision != 1 {
 		t.Fatalf("private durable credential state = %#v", stored.CredentialState)
 	}
 	runtimeSeed, err := stored.CredentialState.Seed.runtimeSeed()
@@ -142,12 +154,15 @@ func TestL8D6WorkerPersistsSeedBeforePreflightAndIdentityBeforeBoundedAbort(t *t
 func TestL8D6WorkerConcurrentReplayPreflightsExactlyOnce(t *testing.T) {
 	stateDir := t.TempDir() + "/jobs-v2"
 	request := l8D6WorkerStartRequest(t)
-	seed := l8D6WorkerSeed(t, request)
+	seed := l8D6RecentLifecycleSeed(t, request)
 	identity, err := sandboxruntime.CompleteJobCredentialIdentity(seed, l8WorkerGuestSessionGeneration(), "helper-generation-worker")
 	if err != nil {
 		t.Fatal(err)
 	}
-	preflight := &l8D6WorkerPreflight{identity: identity, loss: make(chan sandboxruntime.JobCredentialLoss), cleanup: l8WorkerCleanupProof(t, identity)}
+	preflight := &l8D6WorkerPreflight{
+		identity: identity, loss: make(chan sandboxruntime.JobCredentialLoss), cleanup: l8WorkerCleanupProof(t, identity),
+		session: &l8D6LifecycleSession{proof: l8D6LifecycleActiveProof(t, identity, 1), cleanup: l8D6LifecycleCleanupProof(t, identity, 2), loss: make(chan sandboxruntime.JobCredentialLoss)},
+	}
 	runtime := &l8D6WorkerRuntime{preflight: preflight}
 	binder, err := sandboxruntime.NewJobCredentialRuntimeBinder(&l8D6WorkerProvider{seed: seed, runtime: runtime})
 	if err != nil {
@@ -180,12 +195,12 @@ func TestL8D6WorkerConcurrentReplayPreflightsExactlyOnce(t *testing.T) {
 	callersWG.Wait()
 	close(responses)
 	for response := range responses {
-		if response.OK || response.Error == nil || response.Error.Code != ErrorCodeUnsupportedOp {
+		if !response.OK || response.JobV2 == nil {
 			t.Fatalf("concurrent response = %#v", response)
 		}
 	}
-	if runtime.preflightCallCount() != 1 || preflight.abortCallCount() != 1 {
-		t.Fatalf("concurrent ownership = preflight:%d abort:%d, want 1/1", runtime.preflightCallCount(), preflight.abortCallCount())
+	if runtime.preflightCallCount() != 1 || preflight.prepareCallCount() != 1 || preflight.abortCallCount() != 0 {
+		t.Fatalf("concurrent ownership = preflight:%d prepare:%d abort:%d, want 1/1/0", runtime.preflightCallCount(), preflight.prepareCallCount(), preflight.abortCallCount())
 	}
 }
 
@@ -544,10 +559,12 @@ type l8D6WorkerPreflight struct {
 	identity                sandboxruntime.JobCredentialIdentity
 	loss                    chan sandboxruntime.JobCredentialLoss
 	cleanup                 sandboxruntime.JobCredentialCleanupProof
+	session                 sandboxruntime.JobCredentialSession
 	stateDir                string
 	jobID                   string
 	order                   *l8D6OrderRecorder
 	cancelRequest           context.CancelFunc
+	prepareCalls            int
 	abortCalls              int
 	abortContextIndependent bool
 }
@@ -563,8 +580,27 @@ func (preflight *l8D6WorkerPreflight) Identity() sandboxruntime.JobCredentialIde
 	return preflight.identity
 }
 
-func (*l8D6WorkerPreflight) PrepareJobCredentials(context.Context, sandboxruntime.JobCredentialPrepareRequest) (sandboxruntime.JobCredentialSession, error) {
-	panic("worker identity slice must not prepare credential sources")
+func (preflight *l8D6WorkerPreflight) PrepareJobCredentials(context.Context, sandboxruntime.JobCredentialPrepareRequest) (sandboxruntime.JobCredentialSession, error) {
+	preflight.mu.Lock()
+	preflight.prepareCalls++
+	preflight.mu.Unlock()
+	if preflight.stateDir != "" {
+		state := l8D6LoadStoredStateForExternalCall(preflight.stateDir, preflight.jobID)
+		if state.CredentialState == nil || state.CredentialState.Identity == nil {
+			panic("prepare did not observe complete durable identity")
+		}
+		preflight.order.add("prepare-after-identity")
+	}
+	if preflight.session == nil {
+		return nil, errors.New("prepare is not configured")
+	}
+	return preflight.session, nil
+}
+
+func (preflight *l8D6WorkerPreflight) prepareCallCount() int {
+	preflight.mu.Lock()
+	defer preflight.mu.Unlock()
+	return preflight.prepareCalls
 }
 
 func (preflight *l8D6WorkerPreflight) Abort(ctx context.Context) (sandboxruntime.JobCredentialCleanupProof, error) {

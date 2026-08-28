@@ -977,6 +977,7 @@ func TestL8WorkerV2PrivateDurableIdentitySurvivesRestartRoundTrip(t *testing.T) 
 		`PrincipalID|string|json:"principalId"`,
 		`DaemonGeneration|string|json:"daemonGeneration"`,
 		`CredentialState|*sandboxworker.storedJobCredentialStateV2|json:"credentialState,omitempty"`,
+		`CredentialRecoveryReceipt|*sandboxworker.storedJobCredentialRuntimeRecoveryReceiptV1|json:"credentialRecoveryReceipt,omitempty"`,
 	}
 	for _, allowed := range l8WorkerV2CrossPhaseSafeIDCases() {
 		t.Run("accepts daemon generation "+allowed.name, func(t *testing.T) {
