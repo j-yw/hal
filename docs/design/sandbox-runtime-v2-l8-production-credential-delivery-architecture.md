@@ -942,13 +942,17 @@ tuple only as non-authoritative history and may move to `absent` only after a
 new exact direct Wait or double-`/proc` observation.
 
 `FinalizedCommitID` and `FinalizeTargetRevision` are empty/zero outside
-`finalizing` and `finalized`. After correlated L7 cleanup, Finalize computes the
-commit ID for the exact target revision, atomically persists `finalizing` with
-that ID and target first, then closes the retained namespace originals, and
-only then persists `finalized` at the exact target revision. Restart from
-`finalizing` verifies the HMAC and completed L7-cleanup intent, treats lost
-supervisor-owned namespace descriptors as closed, and retries only the final
-transition; it never returns a receipt from the intent record. The transition
+`finalizing` and `finalized`. Before correlated L7 cleanup, Finalize computes
+the commit ID for the exact target revision and atomically persists
+`finalizing` with that ID and target. It then performs the recovered
+`CleanupAfterVMQuiesced` and only then persists `finalized` at the
+exact target revision. Restart from `finalizing` verifies the HMAC and retries
+the cleanup while its exact journal remains. If cleanup already durably retired
+that journal, the exact private retired-generation marker, cryptographically
+bound to every L7 identity field, completes the retry without reopening
+topology or requiring a second successful Recover. Legacy, missing, malformed,
+or differently correlated state remains cleanup-incomplete. The
+intent record never returns a receipt. The transition
 to `finalized` persists the state, target revision, and commit ID before returning the same
 `CommitID` and `FinalizedRevision` in the worker receipt. A finalized record
 with an empty, malformed, or recomputation-mismatched commit ID is uncertain.
@@ -1340,7 +1344,11 @@ the binding, PID data, and termination proof ID are never worker or status
 metadata. D6 calls `CleanupAfterVMQuiesced` with that identity and binding. It
 accepts cleanup only after existing L7 recovery has quarantined the exact rule
 generation and positively removed the correlated proxy, rules, TAP, namespace,
-and topology journal. Finalize then persists `finalized` before returning. The
+and topology journal. Finalize persists `finalizing` before starting that
+cleanup and then persists `finalized` before returning. A retry from
+`finalizing` either resumes cleanup from the exact retained journal or accepts
+only its exact full-identity-bound durable retired-generation marker; it does
+not reopen a removed journal. The
 owner record is retired only by the later post-worker-clear commit and only
 after that call and all required L7 release/record operations succeed. Missing topology state,
 correlation mismatch, typed nil, panic, stale proof, cleanup error, or deadline

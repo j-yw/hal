@@ -3,8 +3,10 @@ package l7network
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/netip"
@@ -16,6 +18,8 @@ import (
 const (
 	journalVersion = 2
 	journalLimit   = 64 << 10
+
+	journalRetiredMarkerDomain = "hal/l7-topology-journal-retired/v1"
 )
 
 type fileJournalStore struct{ root string }
@@ -80,9 +84,15 @@ func (s *fileJournalStore) Acquire(ctx context.Context, identity Identity) (Jour
 	}
 	lease := &fileJournalLease{identity: identity, dir: dir, path: filepath.Join(dir, "host-topology.json"), lock: lock}
 	retired := filepath.Join(dir, "retired-"+identity.TopologyGenerationID)
-	if marker, err := openPrivateFile(retired, os.O_RDONLY, 0o600); err == nil {
-		_ = marker.Close()
+	expectedMarker, err := journalRetiredMarker(identity)
+	if err != nil {
 		return releaseJournalAfterAcquireFailure(lease, ErrStaleTopologyUnverified)
+	}
+	if marker, err := readPrivateFile(retired, int64(len(expectedMarker))); err == nil {
+		if !bytes.Equal(marker, expectedMarker) {
+			return releaseJournalAfterAcquireFailure(lease, ErrStaleTopologyUnverified)
+		}
+		return releaseJournalAfterAcquireFailure(lease, errors.Join(ErrStaleTopologyUnverified, ErrJournalRetired))
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return releaseJournalAfterAcquireFailure(lease, ErrCleanupIncomplete)
 	}
@@ -149,7 +159,11 @@ func (l *fileJournalLease) Remove() error {
 		return ErrCleanupIncomplete
 	}
 	retired := filepath.Join(l.dir, "retired-"+l.identity.TopologyGenerationID)
-	if err := writePrivateAtomic(retired, []byte("retired\n")); err != nil {
+	marker, err := journalRetiredMarker(l.identity)
+	if err != nil {
+		return ErrCleanupIncomplete
+	}
+	if err := writePrivateAtomic(retired, marker); err != nil {
 		return ErrCleanupIncomplete
 	}
 	if err := os.Remove(l.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -159,6 +173,20 @@ func (l *fileJournalLease) Remove() error {
 		return ErrCleanupIncomplete
 	}
 	return nil
+}
+
+func journalRetiredMarker(identity Identity) ([]byte, error) {
+	if !validIdentity(identity) {
+		return nil, ErrInvalidIdentity
+	}
+	payload, err := json.Marshal(identity)
+	if err != nil {
+		return nil, ErrInvalidIdentity
+	}
+	digest := sha256.New()
+	l7RecoveredWriteString(digest, journalRetiredMarkerDomain)
+	l7RecoveredWriteString(digest, string(payload))
+	return []byte(fmt.Sprintf("retired-v1:%x\n", digest.Sum(nil))), nil
 }
 
 func (l *fileJournalLease) Release() error {

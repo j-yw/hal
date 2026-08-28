@@ -86,12 +86,19 @@ func TestL8D6RuntimeOwnerFoundationDependenciesRemainUnaccepted(t *testing.T) {
 			t.Fatalf("Finalize forges recovered L7 termination authority with %q", forbidden)
 		}
 	}
+	if !strings.Contains(source, "l7network.NewRecoveredVMTerminationBinding") {
+		t.Fatal("Finalize must construct recovered L7 termination via l7network.NewRecoveredVMTerminationBinding")
+	}
+	if !strings.Contains(source, "CleanupAfterVMQuiesced") || !strings.Contains(source, "l7network.NewReconciler") {
+		t.Fatal("Finalize must drive same-boot L7 CleanupAfterVMQuiesced through NewReconciler")
+	}
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-d6-runtime-owner-contract-verification.md"))
 	for _, marker := range []string{
 		"R1 foundation dependency-unaccepted",
 		"type `l8RuntimeOwnerRecoveryBinding`",
-		"recovered `l7network.TerminatedVMBinding` constructor remains absent",
-		"Finalize fail-closes without a recovered L7 `TerminatedVMBinding`",
+		"Old-boot journal retirement also remains unavailable and fail-closed",
+		"Finalize constructs `l7network.NewRecoveredVMTerminationBinding`",
+		"old-boot journal retirement remains fail-closed",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("R1 verification omits dependency marker %q", marker)

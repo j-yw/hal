@@ -918,6 +918,8 @@ func sanitizeJournalAcquireError(err error) error {
 	switch {
 	case errors.Is(err, ErrTopologyCollision):
 		return ErrTopologyCollision
+	case errors.Is(err, ErrJournalRetired):
+		return ErrJournalRetired
 	case errors.Is(err, ErrStaleTopologyUnverified):
 		return ErrStaleTopologyUnverified
 	default:

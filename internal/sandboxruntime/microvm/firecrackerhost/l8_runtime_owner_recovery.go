@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost/l7network"
 )
 
 const (
@@ -72,8 +73,9 @@ type firecrackerRuntimeOwnerRecordV1 struct {
 
 // l8RuntimeOwnerRecoveryBinding is the seed-bound Firecracker runtime-owner
 // recovery binding. Stop/reap is the sole production issuer of
-// sandboxruntime.NewJobCredentialRuntimeAbsenceProof. Finalize fail-closes
-// without a recovered l7network.TerminatedVMBinding constructor.
+// sandboxruntime.NewJobCredentialRuntimeAbsenceProof. Finalize constructs a
+// recovered L7 VM-termination binding and persists finalized only after
+// same-boot CleanupAfterVMQuiesced.
 type l8RuntimeOwnerRecoveryBinding struct {
 	mu                 sync.Mutex
 	seed               sandboxruntime.JobCredentialIdentitySeed
@@ -83,6 +85,8 @@ type l8RuntimeOwnerRecoveryBinding struct {
 	recoverCredentials func(context.Context, sandboxruntime.JobCredentialRecoveryRequest) (sandboxruntime.JobCredentialCleanupProof, error)
 	currentBootID      func() (string, error)
 	now                func() time.Time
+	recoverNetwork     func(context.Context, l7network.Identity, l7network.TerminatedVMBinding) error
+	l7Reconciler       l7network.ReconcilerOptions
 	closed             bool
 	commitOnly         bool
 }
@@ -191,6 +195,7 @@ func (binding *l8RuntimeOwnerRecoveryBinding) StopReapJobCredentialRuntime(ctx c
 func (binding *l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(ctx context.Context, proof sandboxruntime.JobCredentialRuntimeAbsenceProof) (receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, err error) {
 	defer func() {
 		if recover() != nil {
+			receipt = sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{}
 			err = errL8RuntimeOwnerInvalid
 		}
 	}()
@@ -212,6 +217,9 @@ func (binding *l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecove
 	store := binding.store
 	nowFn := binding.now
 	bootFn := binding.currentBootID
+	key := binding.commitKey
+	recoverNetwork := binding.recoverNetwork
+	l7Options := binding.l7Reconciler
 	binding.mu.Unlock()
 	now := time.Now().UTC()
 	if nowFn != nil {
@@ -226,15 +234,163 @@ func (binding *l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecove
 		err = errL8RuntimeOwnerInvalid
 		return
 	}
-	if bootFn != nil {
-		bootID, bootErr := bootFn()
-		if bootErr != nil || bootID != record.HostBootID {
-			err = errL8RuntimeOwnerInvalid
-			return
-		}
+	if bootFn == nil {
+		err = errL8RuntimeOwnerInvalid
+		return
 	}
-	err = errL8RuntimeOwnerInvalid
+	bootID, bootErr := bootFn()
+	if bootErr != nil || bootID != record.HostBootID || validateFirecrackerRuntimeOwnerRecordV1(record, seed, bootID) != nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	if record.State == "finalized" {
+		receipt = sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{
+			CommitID:          record.FinalizedCommitID,
+			FinalizedRevision: record.FinalizeTargetRevision,
+		}
+		if commitJobCredentialRuntimeRecovery(receipt, key, seed, record.FinalizeTargetRevision, record.FinalizedCommitID) != nil {
+			receipt = sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{}
+			err = errL8RuntimeOwnerInvalid
+		}
+		return
+	}
+	if record.ControllerState != "controlled" || ctx.Err() != nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	digest, digestErr := l8RuntimeOwnerSeedDigest(seed)
+	if digestErr != nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	targetRevision := record.Revision + 2
+	if record.State == "finalizing" {
+		targetRevision = record.FinalizeTargetRevision
+	}
+	commitID, commitErr := l8RuntimeOwnerCommitID(key, digest, targetRevision)
+	if commitErr != nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	finalizing, persistErr := persistL8RuntimeOwnerFinalizing(ctx, store, record, commitID, targetRevision)
+	if persistErr != nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	identity := l8RuntimeOwnerL7Identity(seed)
+	terminated, bindErr := l7network.NewRecoveredVMTerminationBinding(l7network.RecoveredVMTerminationObservation{
+		Identity:             identity,
+		ProcessGeneration:    seed.FirecrackerProcessGeneration,
+		SupervisorGeneration: finalizing.SupervisorGeneration,
+		Stopped:              true,
+		Reaped:               true,
+	})
+	if bindErr != nil || terminated == nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	if cleanupErr := l8RuntimeOwnerCleanupAfterVMQuiesced(ctx, identity, terminated, recoverNetwork, l7Options); (cleanupErr != nil && cleanupErr != l7network.ErrJournalRetired) || ctx.Err() != nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	stored, persistErr := persistL8RuntimeOwnerFinalized(ctx, store, finalizing, commitID, targetRevision)
+	if persistErr != nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	receipt = sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{
+		CommitID:          stored.FinalizedCommitID,
+		FinalizedRevision: stored.FinalizeTargetRevision,
+	}
+	if commitJobCredentialRuntimeRecovery(receipt, key, seed, stored.FinalizeTargetRevision, stored.FinalizedCommitID) != nil {
+		receipt = sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{}
+		err = errL8RuntimeOwnerInvalid
+	}
 	return
+}
+
+func l8RuntimeOwnerL7Identity(seed sandboxruntime.JobCredentialIdentitySeed) l7network.Identity {
+	return l7network.Identity{
+		SandboxID:            seed.SandboxID,
+		ExecutionID:          seed.ExecutionID,
+		WorkerID:             seed.WorkerID,
+		RuntimeGenerationID:  seed.RuntimeGeneration,
+		PlanID:               seed.NetworkPlanID,
+		PolicySnapshotID:     seed.PolicySnapshotID,
+		ProxySessionID:       seed.ProxySessionID,
+		ProxyGenerationID:    seed.ProxyGenerationID,
+		TopologyGenerationID: seed.TopologyGenerationID,
+		RuleGenerationID:     seed.RuleGenerationID,
+	}
+}
+
+func l8RuntimeOwnerCleanupAfterVMQuiesced(
+	ctx context.Context,
+	identity l7network.Identity,
+	terminated l7network.TerminatedVMBinding,
+	recoverNetwork func(context.Context, l7network.Identity, l7network.TerminatedVMBinding) error,
+	options l7network.ReconcilerOptions,
+) error {
+	if recoverNetwork != nil {
+		return recoverNetwork(ctx, identity, terminated)
+	}
+	options.VMTermination = l7network.NewRecoveredVMTerminationVerifier()
+	reconciler, err := l7network.NewReconciler(options)
+	if err != nil {
+		return err
+	}
+	session, err := reconciler.Recover(ctx, identity)
+	if session == nil && err == l7network.ErrJournalRetired {
+		return l7network.ErrJournalRetired
+	}
+	if err != nil || session == nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	return session.CleanupAfterVMQuiesced(ctx, identity, terminated)
+}
+
+func persistL8RuntimeOwnerFinalizing(ctx context.Context, store l8RuntimeOwnerRecordStore, record firecrackerRuntimeOwnerRecordV1, commitID string, targetRevision uint64) (firecrackerRuntimeOwnerRecordV1, error) {
+	if store == nil || !validL8RuntimeOwnerToken(commitID) || targetRevision == 0 {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	current := record
+	if current.State == "absent" {
+		finalizing := current
+		finalizing.Revision = current.Revision + 1
+		finalizing.State = "finalizing"
+		finalizing.ControllerState = "controlled"
+		finalizing.FinalizedCommitID = commitID
+		finalizing.FinalizeTargetRevision = targetRevision
+		next, err := store.Transition(ctx, current.Revision, finalizing)
+		if err != nil {
+			return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+		}
+		current = next
+	}
+	if current.State != "finalizing" || current.FinalizeTargetRevision != targetRevision ||
+		subtle.ConstantTimeCompare([]byte(current.FinalizedCommitID), []byte(commitID)) != 1 {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	return current, nil
+}
+
+func persistL8RuntimeOwnerFinalized(ctx context.Context, store l8RuntimeOwnerRecordStore, current firecrackerRuntimeOwnerRecordV1, commitID string, targetRevision uint64) (firecrackerRuntimeOwnerRecordV1, error) {
+	if store == nil || current.State != "finalizing" || current.FinalizeTargetRevision != targetRevision ||
+		!validL8RuntimeOwnerToken(commitID) || targetRevision == 0 ||
+		subtle.ConstantTimeCompare([]byte(current.FinalizedCommitID), []byte(commitID)) != 1 {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	finalized := current
+	finalized.Revision = current.Revision + 1
+	finalized.State = "finalized"
+	finalized.ControllerState = "controlled"
+	finalized.FinalizedCommitID = current.FinalizedCommitID
+	finalized.FinalizeTargetRevision = current.FinalizeTargetRevision
+	stored, err := store.Transition(ctx, current.Revision, finalized)
+	if err != nil {
+		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
+	}
+	return stored, nil
 }
 
 func (binding *l8RuntimeOwnerRecoveryBinding) CommitJobCredentialRuntimeRecovery(ctx context.Context, receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) (err error) {

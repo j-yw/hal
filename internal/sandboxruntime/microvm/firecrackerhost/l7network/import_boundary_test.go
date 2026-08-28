@@ -52,7 +52,8 @@ func TestFirecrackerHostTopologyIsNotWiredIntoDefaultPaths(t *testing.T) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
-		if entry.Name() == "l7_runtime_controller.go" || entry.Name() == "l7_live_composition.go" {
+		if entry.Name() == "l7_runtime_controller.go" || entry.Name() == "l7_live_composition.go" ||
+			entry.Name() == "l8_runtime_owner_recovery.go" {
 			continue
 		}
 		payload, err := os.ReadFile(filepath.Join(parent, entry.Name()))
