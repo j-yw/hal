@@ -2,6 +2,7 @@ package credentialclient
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"strings"
 	"sync"
@@ -152,6 +153,104 @@ func TestL8D6GuestCredentialClientDispatcherContainsDependencyErrorAndPanic(t *t
 				t.Fatalf("Serve() error = %v, want sanitized code %d", err, test.code)
 			}
 		})
+	}
+}
+
+func TestL8D6GuestCredentialClientServeDestroysRejectedControllerBodies(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	payload := []byte("controller-private-payload")
+	digest := sha256.Sum256(payload)
+
+	for _, test := range []struct {
+		name     string
+		packet   func(*testHelperBody) ControllerPacket
+		err      error
+		body     *testHelperBody
+		wantCode ClientContractErrorCode
+	}{
+		{
+			name: "transport-error",
+			packet: func(body *testHelperBody) ControllerPacket {
+				return ControllerPacket{body: body}
+			},
+			err:      errors.New("receive failed"),
+			wantCode: ClientContractPacket,
+		},
+		{
+			name: "cross-session",
+			packet: func(body *testHelperBody) ControllerPacket {
+				otherSession := identity.sessionID
+				otherSession[0] ^= 0xff
+				return ControllerPacket{sequence: 1, sessionID: otherSession, body: body}
+			},
+			wantCode: ClientContractPacket,
+		},
+		{
+			name: "unsupported-private",
+			packet: func(body *testHelperBody) ControllerPacket {
+				return ControllerPacket{
+					sequence:  1,
+					sessionID: identity.sessionID,
+					arm:       controllerPacketArm{kind: controllerPacketArmPrivate},
+					body:      body,
+				}
+			},
+			wantCode: ClientContractPacket,
+		},
+		{
+			name: "unsupported-stream",
+			packet: func(body *testHelperBody) ControllerPacket {
+				return ControllerPacket{
+					sequence:  1,
+					sessionID: identity.sessionID,
+					arm:       controllerPacketArm{kind: controllerPacketArmStream},
+					body:      body,
+				}
+			},
+			wantCode: ClientContractPacket,
+		},
+		{
+			name: "destroy-error",
+			packet: func(body *testHelperBody) ControllerPacket {
+				return ControllerPacket{sequence: 1, sessionID: identity.sessionID, body: body}
+			},
+			body:     &testHelperBody{length: uint32(len(payload)), digest: digest, destroyErr: errors.New("destroy failed")},
+			wantCode: ClientContractCleanup,
+		},
+		{
+			name: "destroy-panic",
+			packet: func(body *testHelperBody) ControllerPacket {
+				return ControllerPacket{sequence: 1, sessionID: identity.sessionID, body: body}
+			},
+			body:     &testHelperBody{length: uint32(len(payload)), digest: digest, destroyPanic: true},
+			wantCode: ClientContractCleanup,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := test.body
+			if body == nil {
+				body = &testHelperBody{length: uint32(len(payload)), digest: digest}
+			}
+			transport := &dispatchRedTransport{identity: identity}
+			transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+				return test.packet(body), test.err
+			}
+			if err := newDispatchRedClient(t, transport).Serve(context.Background()); clientContractCode(err) != test.wantCode {
+				t.Fatalf("Serve() error = %v, want code %d", err, test.wantCode)
+			}
+			if !body.destroyed {
+				t.Fatal("Serve did not destroy the rejected controller body")
+			}
+		})
+	}
+
+	var typedNilBody *testHelperBody
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+		return ControllerPacket{sequence: 1, sessionID: identity.sessionID, body: typedNilBody}, nil
+	}
+	if err := newDispatchRedClient(t, transport).Serve(context.Background()); clientContractCode(err) != ClientContractPacket {
+		t.Fatalf("Serve() typed-nil body error = %v, want code %d", err, ClientContractPacket)
 	}
 }
 

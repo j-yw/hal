@@ -270,6 +270,12 @@ func TestL8D6GuestControllerUnionConsumesOneExactReceiveRequest(t *testing.T) {
 	if _, err := newControllerReadinessPacket(receive, 1, sessionID, readiness); err == nil {
 		t.Fatal("receive request was consumed twice")
 	}
+	if _, err := newControlReceiveRequest(uint64(^uint32(0))+1, v2control.NewIdentityDigest(sessionID), true, session.MaxControlPlaintextBytes); !errors.Is(err, errInvalidControlReceiveRequest) {
+		t.Fatalf("exhausted control receive sequence error = %v", err)
+	}
+	if _, err := newControlReceiveRequest(uint64(^uint32(0)), v2control.NewIdentityDigest(sessionID), true, session.MaxControlPlaintextBytes); err != nil {
+		t.Fatalf("last legal control receive sequence error = %v", err)
+	}
 }
 
 func TestL8D6GuestControllerCredentialPacketsMirrorReadinessDiscipline(t *testing.T) {
@@ -810,6 +816,9 @@ func TestL8D6GuestPacketHelperReceiveRequestMirrorsControlDiscipline(t *testing.
 	if _, set := unset.expectedRequestIDValue(); set {
 		t.Fatal("unset expected request ID was reported set")
 	}
+	if _, err := newHelperControlReceiveRequest(uint64(^uint32(0)), 1, 0, [16]byte{}, false, identity); err != nil {
+		t.Fatalf("last legal helper receive sequence error = %v", err)
+	}
 
 	for _, test := range []struct {
 		name string
@@ -817,6 +826,10 @@ func TestL8D6GuestPacketHelperReceiveRequestMirrorsControlDiscipline(t *testing.
 	}{
 		{name: "zero sequence", call: func() error {
 			_, err := newHelperControlReceiveRequest(0, 1, 0, [16]byte{}, false, identity)
+			return err
+		}},
+		{name: "exhausted sequence", call: func() error {
+			_, err := newHelperControlReceiveRequest(uint64(^uint32(0))+1, 1, 0, [16]byte{}, false, identity)
 			return err
 		}},
 		{name: "oversize body", call: func() error {
@@ -1162,8 +1175,22 @@ func TestL8D6GuestPacketHelperSendWriteCanonicalBody(t *testing.T) {
 	if _, err := newHelperPrepareBeginSendPacket(testHelperHeader(0, 1, [16]byte{}, identity, nonce, 0), begin); !errors.Is(err, errInvalidHelperSendPacket) {
 		t.Fatalf("zero request ID helper send error = %v", err)
 	}
+	if _, err := newHelperPrepareBeginSendPacket(testHelperHeader(0, uint64(^uint32(0))+1, requestID, identity, nonce, 0), begin); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Errorf("exhausted sequence helper send error = %v", err)
+	}
+	if _, err := newHelperPrepareBeginSendPacket(testHelperHeader(0, uint64(^uint32(0)), requestID, identity, nonce, 0), begin); err != nil {
+		t.Errorf("last legal helper send sequence error = %v", err)
+	}
 	if _, err := newHelperExecCreditSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), credentialprotocol.HelperExecCreditBody{Revision: 3, StreamKind: credentialprotocol.HelperExecStreamStdin, NextOffset: 8}); !errors.Is(err, errInvalidHelperSendPacket) {
 		t.Fatalf("stdin helper credit send error = %v", err)
+	}
+	if _, err := newHelperCloseNotifySendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), closeBody); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Errorf("nonzero request ID helper close send error = %v", err)
+	}
+	nonzeroCloseBody := mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperCloseNotifyBody(closeBody) })
+	nonzeroCloseHeader := testHelperHeader(credentialprotocol.PacketTypeCloseNotify, 1, requestID, identity, nonce, uint32(len(nonzeroCloseBody)))
+	if _, err := finishHelperSendPacket(nonzeroCloseHeader, helperSendArmClose, helperSendArm{kind: helperSendArmClose, close: closeBody}); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Errorf("direct nonzero request ID helper close finish error = %v", err)
 	}
 	if _, err := newHelperCloseNotifySendPacket(testHelperHeader(0, 1, [16]byte{}, identity, nonce, 0), credentialprotocol.HelperCloseNotifyBody{}); !errors.Is(err, errInvalidHelperSendPacket) {
 		t.Fatalf("unknown helper close send error = %v", err)
@@ -1534,9 +1561,11 @@ func testHelperPrepareResponseBody() credentialprotocol.HelperResponseBody {
 }
 
 type testHelperBody struct {
-	length    uint32
-	digest    [32]byte
-	destroyed bool
+	length       uint32
+	digest       [32]byte
+	destroyed    bool
+	destroyErr   error
+	destroyPanic bool
 }
 
 func (body *testHelperBody) Len() uint32      { return body.length }
@@ -1546,7 +1575,10 @@ func (body *testHelperBody) Borrow(context.Context, func(credentialmemory.Borrow
 }
 func (body *testHelperBody) Destroy(context.Context) error {
 	body.destroyed = true
-	return nil
+	if body.destroyPanic {
+		panic("test controller body destroy panic")
+	}
+	return body.destroyErr
 }
 
 type testCanonicalBodySink struct {

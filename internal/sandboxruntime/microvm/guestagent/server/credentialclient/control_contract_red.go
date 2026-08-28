@@ -338,7 +338,7 @@ type helperSendPacketOwner struct {
 }
 
 func newControlReceiveRequest(sequence uint64, identity v2control.IdentityDigest, identitySet bool, maximumPlaintextBytes uint32) (ControllerReceiveRequest, error) {
-	if sequence == 0 || maximumPlaintextBytes < 1 || maximumPlaintextBytes > session.MaxControlPlaintextBytes {
+	if sequence == 0 || sequence > uint64(^uint32(0)) || maximumPlaintextBytes < 1 || maximumPlaintextBytes > session.MaxControlPlaintextBytes {
 		return ControllerReceiveRequest{}, errInvalidControlReceiveRequest
 	}
 	if identitySet && identity == (v2control.IdentityDigest{}) {
@@ -367,7 +367,7 @@ func consumeControllerReceiveRequest(request ControllerReceiveRequest) error {
 }
 
 func newHelperControlReceiveRequest(sequence uint64, maximumBodyBytes, maximumRights uint32, expectedRequestID [16]byte, expectedRequestIDSet bool, expectedIdentity [32]byte) (HelperReceiveRequest, error) {
-	if sequence == 0 || maximumBodyBytes > credentialprotocol.MaxHelperPacketBodyBytes || maximumRights > 1 {
+	if sequence == 0 || sequence > uint64(^uint32(0)) || maximumBodyBytes > credentialprotocol.MaxHelperPacketBodyBytes || maximumRights > 1 {
 		return HelperReceiveRequest{}, errInvalidHelperReceiveRequest
 	}
 	if expectedIdentity == ([32]byte{}) {
@@ -1385,7 +1385,8 @@ func (packet HelperSendPacket) writeCanonicalBody(sink bodySegmentSink) (err err
 
 func finishHelperSendPacket(header credentialprotocol.HelperPacketHeader, kind helperSendArmKind, arm helperSendArm) (HelperSendPacket, error) {
 	body, err := encodeHelperSendCanonicalBody(kind, arm)
-	if err != nil || len(body) == 0 || header.BodyLength != uint32(len(body)) ||
+	if err != nil || len(body) == 0 || header.Sequence == 0 || header.Sequence > uint64(^uint32(0)) ||
+		(kind == helperSendArmClose && header.RequestID != ([16]byte{})) || header.BodyLength != uint32(len(body)) ||
 		credentialprotocol.ValidateHelperPacketHeaderSemantics(header) != nil || header.Type != helperSendArmPacketType(kind) {
 		return HelperSendPacket{}, errInvalidHelperSendPacket
 	}
