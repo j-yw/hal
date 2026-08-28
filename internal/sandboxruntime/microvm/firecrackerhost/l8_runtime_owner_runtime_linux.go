@@ -437,6 +437,16 @@ func (store *l8RuntimeOwnerLinuxRecordStore) Load(ctx context.Context) (firecrac
 	return record, nil
 }
 
+func (store *l8RuntimeOwnerLinuxRecordStore) RecordAbsent(ctx context.Context) (bool, error) {
+	_, present, err := store.withLock(ctx, unix.LOCK_SH, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
+		return readL8RuntimeOwnerRecordAt(store.directoryFD, store.seed, store.bootID)
+	})
+	if err != nil {
+		return false, errL8RuntimeOwnerInvalid
+	}
+	return !present, nil
+}
+
 func (store *l8RuntimeOwnerLinuxRecordStore) CreateGenesis(ctx context.Context, next firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, error) {
 	record, _, err := store.withLock(ctx, unix.LOCK_EX, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
 		_, present, readErr := readL8RuntimeOwnerRecordAt(store.directoryFD, store.seed, store.bootID)

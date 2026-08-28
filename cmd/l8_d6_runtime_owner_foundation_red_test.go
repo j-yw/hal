@@ -67,10 +67,23 @@ func TestL8D6RuntimeOwnerFoundationDependenciesRemainUnaccepted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var finalize *ast.FuncDecl
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
 		if ok && function.Name.Name == "FinalizeJobCredentialRuntimeRecovery" {
-			t.Fatal("R1 must not implement concrete finalize without a recovered L7 termination binding")
+			finalize = function
+		}
+	}
+	if finalize == nil {
+		t.Fatal("recovery binding must implement FinalizeJobCredentialRuntimeRecovery")
+	}
+	source := string(payload)
+	for _, forbidden := range []string{
+		"TerminatedVMBinding{", "newTerminatedVMBinding", "NewTerminatedVMBinding",
+		"productionL7TerminatedVMBinding",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("Finalize forges recovered L7 termination authority with %q", forbidden)
 		}
 	}
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-d6-runtime-owner-contract-verification.md"))
@@ -78,7 +91,7 @@ func TestL8D6RuntimeOwnerFoundationDependenciesRemainUnaccepted(t *testing.T) {
 		"R1 foundation dependency-unaccepted",
 		"type `l8RuntimeOwnerRecoveryBinding`",
 		"recovered `l7network.TerminatedVMBinding` constructor remains absent",
-		"does not implement `FinalizeJobCredentialRuntimeRecovery`",
+		"Finalize fail-closes without a recovered L7 `TerminatedVMBinding`",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("R1 verification omits dependency marker %q", marker)

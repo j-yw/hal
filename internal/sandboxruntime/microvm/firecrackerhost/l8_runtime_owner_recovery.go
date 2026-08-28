@@ -2,6 +2,7 @@ package firecrackerhost
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -12,6 +13,8 @@ import (
 	"errors"
 	"hash"
 	"io"
+	"sync"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
@@ -67,11 +70,237 @@ type firecrackerRuntimeOwnerRecordV1 struct {
 	ReconnectSecret              string `json:"reconnectSecret"`
 }
 
-// l8RuntimeOwnerRecoveryBinding is reserved for the exact future concrete
-// finalizer contract. R1 deliberately does not implement the neutral binding:
-// recovered L7 termination authority does not exist yet.
+// l8RuntimeOwnerRecoveryBinding is the seed-bound Firecracker runtime-owner
+// recovery binding. Stop/reap is the sole production issuer of
+// sandboxruntime.NewJobCredentialRuntimeAbsenceProof. Finalize fail-closes
+// without a recovered l7network.TerminatedVMBinding constructor.
 type l8RuntimeOwnerRecoveryBinding struct {
-	seed sandboxruntime.JobCredentialIdentitySeed
+	mu                 sync.Mutex
+	seed               sandboxruntime.JobCredentialIdentitySeed
+	commitKey          []byte
+	store              l8RuntimeOwnerRecordStore
+	proveAbsence       func(context.Context) (l8RuntimeOwnerAbsenceObservation, error)
+	recoverCredentials func(context.Context, sandboxruntime.JobCredentialRecoveryRequest) (sandboxruntime.JobCredentialCleanupProof, error)
+	currentBootID      func() (string, error)
+	now                func() time.Time
+	closed             bool
+	commitOnly         bool
+}
+
+type l8RuntimeOwnerRecordAbsenceChecker interface {
+	RecordAbsent(context.Context) (bool, error)
+}
+
+var _ sandboxruntime.JobCredentialRuntimeRecoveryBinding = (*l8RuntimeOwnerRecoveryBinding)(nil)
+
+func (binding *l8RuntimeOwnerRecoveryBinding) RecoverJobCredentials(ctx context.Context, request sandboxruntime.JobCredentialRecoveryRequest) (proof sandboxruntime.JobCredentialCleanupProof, err error) {
+	defer func() {
+		if recover() != nil {
+			proof = sandboxruntime.JobCredentialCleanupProof{}
+			err = errL8RuntimeOwnerInvalid
+		}
+	}()
+	if binding == nil || ctx == nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8RuntimeOwnerInvalid
+	}
+	binding.mu.Lock()
+	if binding.closed || binding.commitOnly {
+		binding.mu.Unlock()
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8RuntimeOwnerInvalid
+	}
+	seed := binding.seed
+	recoverFn := binding.recoverCredentials
+	binding.mu.Unlock()
+	if sandboxruntime.ValidateJobCredentialIdentityCompletion(seed, request.Identity) != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialIdentityMismatch
+	}
+	recovered, recoverErr := callL8RuntimeOwnerRecoverCredentials(recoverFn, ctx, request)
+	_, stopErr := binding.StopReapJobCredentialRuntime(ctx)
+	if stopErr != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8RuntimeOwnerInvalid
+	}
+	if recoverErr != nil || sandboxruntime.CleanupProofKind(recovered) == "" {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8RuntimeOwnerInvalid
+	}
+	return recovered, nil
+}
+
+func callL8RuntimeOwnerRecoverCredentials(
+	fn func(context.Context, sandboxruntime.JobCredentialRecoveryRequest) (sandboxruntime.JobCredentialCleanupProof, error),
+	ctx context.Context,
+	request sandboxruntime.JobCredentialRecoveryRequest,
+) (proof sandboxruntime.JobCredentialCleanupProof, err error) {
+	defer func() {
+		if recover() != nil {
+			proof = sandboxruntime.JobCredentialCleanupProof{}
+			err = errL8RuntimeOwnerInvalid
+		}
+	}()
+	if fn == nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8RuntimeOwnerInvalid
+	}
+	return fn(ctx, request)
+}
+
+func (binding *l8RuntimeOwnerRecoveryBinding) StopReapJobCredentialRuntime(ctx context.Context) (proof sandboxruntime.JobCredentialRuntimeAbsenceProof, err error) {
+	defer func() {
+		if recover() != nil {
+			proof = sandboxruntime.JobCredentialRuntimeAbsenceProof{}
+			err = errL8RuntimeOwnerInvalid
+		}
+	}()
+	if binding == nil || ctx == nil {
+		return sandboxruntime.JobCredentialRuntimeAbsenceProof{}, errL8RuntimeOwnerInvalid
+	}
+	if !l8RuntimeOwnerPlatformSupported() {
+		return sandboxruntime.JobCredentialRuntimeAbsenceProof{}, errL8RuntimeOwnerUnsupported
+	}
+	binding.mu.Lock()
+	if binding.closed || binding.commitOnly || binding.proveAbsence == nil {
+		binding.mu.Unlock()
+		return sandboxruntime.JobCredentialRuntimeAbsenceProof{}, errL8RuntimeOwnerInvalid
+	}
+	seed := binding.seed
+	prove := binding.proveAbsence
+	nowFn := binding.now
+	binding.mu.Unlock()
+	stopCtx, cancel := context.WithTimeout(context.Background(), sandboxruntime.JobCredentialRuntimeStopReapTimeout)
+	defer cancel()
+	observation, proveErr := prove(stopCtx)
+	if proveErr != nil || (observation.Kind != l8RuntimeOwnerAbsenceKindWait && observation.Kind != l8RuntimeOwnerAbsenceKindProc) ||
+		observation.ObservedAt.IsZero() || observation.ObservedAt.Before(seed.IssuedAt) {
+		return sandboxruntime.JobCredentialRuntimeAbsenceProof{}, errL8RuntimeOwnerInvalid
+	}
+	proof, err = sandboxruntime.NewJobCredentialRuntimeAbsenceProof(sandboxruntime.JobCredentialRuntimeAbsenceProofInput{
+		Seed:               seed,
+		AbsenceInspectedAt: observation.ObservedAt,
+	})
+	if err != nil {
+		return sandboxruntime.JobCredentialRuntimeAbsenceProof{}, errL8RuntimeOwnerInvalid
+	}
+	now := time.Now().UTC()
+	if nowFn != nil {
+		now = nowFn()
+	}
+	if err := sandboxruntime.ValidateJobCredentialRuntimeAbsenceProof(proof, seed, now); err != nil {
+		return sandboxruntime.JobCredentialRuntimeAbsenceProof{}, errL8RuntimeOwnerInvalid
+	}
+	return proof, nil
+}
+
+func (binding *l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecovery(ctx context.Context, proof sandboxruntime.JobCredentialRuntimeAbsenceProof) (receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, err error) {
+	defer func() {
+		if recover() != nil {
+			err = errL8RuntimeOwnerInvalid
+		}
+	}()
+	if binding == nil || ctx == nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	if !l8RuntimeOwnerPlatformSupported() {
+		err = errL8RuntimeOwnerUnsupported
+		return
+	}
+	binding.mu.Lock()
+	if binding.closed || binding.commitOnly {
+		binding.mu.Unlock()
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	seed := binding.seed
+	store := binding.store
+	nowFn := binding.now
+	bootFn := binding.currentBootID
+	binding.mu.Unlock()
+	now := time.Now().UTC()
+	if nowFn != nil {
+		now = nowFn()
+	}
+	if sandboxruntime.ValidateJobCredentialRuntimeAbsenceProof(proof, seed, now) != nil || store == nil {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	record, loadErr := store.Load(ctx)
+	if loadErr != nil || (record.State != "absent" && record.State != "finalizing" && record.State != "finalized") {
+		err = errL8RuntimeOwnerInvalid
+		return
+	}
+	if bootFn != nil {
+		bootID, bootErr := bootFn()
+		if bootErr != nil || bootID != record.HostBootID {
+			err = errL8RuntimeOwnerInvalid
+			return
+		}
+	}
+	err = errL8RuntimeOwnerInvalid
+	return
+}
+
+func (binding *l8RuntimeOwnerRecoveryBinding) CommitJobCredentialRuntimeRecovery(ctx context.Context, receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errL8RuntimeOwnerInvalid
+		}
+	}()
+	if binding == nil || ctx == nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	binding.mu.Lock()
+	if binding.closed {
+		binding.mu.Unlock()
+		return errL8RuntimeOwnerInvalid
+	}
+	commitOnly := binding.commitOnly
+	key := binding.commitKey
+	seed := binding.seed
+	store := binding.store
+	binding.mu.Unlock()
+	if commitOnly {
+		if commitJobCredentialRuntimeRecovery(receipt, key, seed, receipt.FinalizedRevision, "") != nil {
+			return errL8RuntimeOwnerInvalid
+		}
+		absenceStore, ok := store.(l8RuntimeOwnerRecordAbsenceChecker)
+		if !ok {
+			return errL8RuntimeOwnerInvalid
+		}
+		absent, absenceErr := absenceStore.RecordAbsent(ctx)
+		if absenceErr != nil || !absent {
+			return errL8RuntimeOwnerInvalid
+		}
+		return nil
+	}
+	if store == nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	record, err := store.Load(ctx)
+	if err != nil || record.State != "finalized" {
+		return errL8RuntimeOwnerInvalid
+	}
+	if commitJobCredentialRuntimeRecovery(receipt, key, seed, record.FinalizeTargetRevision, record.FinalizedCommitID) != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	if err := store.RetireFinalized(ctx, record.Revision, record.FinalizedCommitID); err != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	return nil
+}
+
+func (binding *l8RuntimeOwnerRecoveryBinding) Close(ctx context.Context) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errL8RuntimeOwnerInvalid
+		}
+	}()
+	if binding == nil || ctx == nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	_, cancel := context.WithTimeout(context.Background(), sandboxruntime.JobCredentialRuntimeRecoveryCloseTimeout)
+	defer cancel()
+	binding.mu.Lock()
+	binding.closed = true
+	binding.mu.Unlock()
+	return nil
 }
 
 type l8RuntimeOwnerProcessObservation struct {
@@ -158,7 +387,7 @@ func l8RuntimeOwnerCommitID(key []byte, seedDigest [32]byte, revision uint64) (s
 	return base64.RawURLEncoding.EncodeToString(digest.Sum(nil)), nil
 }
 
-func commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, key []byte, seed sandboxruntime.JobCredentialIdentitySeed, expectedRevision uint64) error {
+func commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt, key []byte, seed sandboxruntime.JobCredentialIdentitySeed, expectedRevision uint64, recordedCommitID string) error {
 	if sandboxruntime.ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt) != nil {
 		return errL8RuntimeOwnerInvalid
 	}
@@ -173,6 +402,9 @@ func commitJobCredentialRuntimeRecovery(receipt sandboxruntime.JobCredentialRunt
 	commitID := receipt.CommitID
 	if receipt.FinalizedRevision != expectedRevision || !validL8RuntimeOwnerToken(expectedCommitID) ||
 		subtle.ConstantTimeCompare([]byte(commitID), []byte(expectedCommitID)) != 1 {
+		return errL8RuntimeOwnerInvalid
+	}
+	if recordedCommitID != "" && subtle.ConstantTimeCompare([]byte(recordedCommitID), []byte(expectedCommitID)) != 1 {
 		return errL8RuntimeOwnerInvalid
 	}
 	return nil
