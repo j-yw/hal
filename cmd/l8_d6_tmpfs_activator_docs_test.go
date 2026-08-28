@@ -24,6 +24,8 @@ func TestL8D6TmpfsActivatorVerificationContract(t *testing.T) {
 		"JobCredentialDeliveryModeFileTmpfs",
 		"never a host absolute scratch path",
 		"does not retain the live source",
+		"A source panic",
+		"wipes its sink copy",
 		"failed revoke",
 		"keeps ownership",
 		"ErrL8JobCredentialRuntimeUnsupported",
