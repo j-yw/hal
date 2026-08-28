@@ -18,6 +18,8 @@ func TestL8D6HTTPActivatorVerificationContract(t *testing.T) {
 	for _, required := range []string{
 		"default-off",
 		"TicketStore",
+		"Callers inject a non-nil TicketStore",
+		"caller retains ownership and must Close it",
 		"NewProductionL8JobCredentialHTTPProxyActivator",
 		"fake-only",
 		"do not invoke it unless",
@@ -120,7 +122,6 @@ func TestL8D6HTTPActivatorProductionSourceIsTicketStoreBackedAndFakeOnly(t *test
 	source := readL8CredentialDeliveryFile(t, path)
 	for _, required := range []string{
 		"credentialproxy.TicketStore",
-		"credentialproxy.NewTicketStore",
 		"activator.store.Issue(",
 		"handle.store.Renew(",
 		"handle.store.Revoke(",
@@ -131,6 +132,7 @@ func TestL8D6HTTPActivatorProductionSourceIsTicketStoreBackedAndFakeOnly(t *test
 		}
 	}
 	for _, forbidden := range []string{
+		"credentialproxy.NewTicketStore",
 		"net.Listen", "net.Dial", "tls.Dial", "http.ListenAndServe", "http.Server{",
 		"kvm", "KVM", "os/exec", "firecracker.Start", "unix.KVM",
 	} {
