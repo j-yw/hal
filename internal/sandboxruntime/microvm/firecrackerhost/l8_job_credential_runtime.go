@@ -189,7 +189,23 @@ func (runtime *L8JobCredentialRuntime) PreflightJobCredentials(ctx context.Conte
 	return preflight, nil
 }
 
-func (runtime *L8JobCredentialRuntime) RecoverJobCredentials(context.Context, sandboxruntime.JobCredentialRecoveryRequest) (sandboxruntime.JobCredentialCleanupProof, error) {
+// RecoverJobCredentials is ordinary complete-identity recovery used before
+// StopReap. HTTP tickets, tmpfs files, and SSH leases exist only as in-memory
+// handles after Prepare. A durable handle store that could reacquire them after
+// restart remains unaccepted, so this method never mints a cleanup proof.
+func (runtime *L8JobCredentialRuntime) RecoverJobCredentials(ctx context.Context, request sandboxruntime.JobCredentialRecoveryRequest) (sandboxruntime.JobCredentialCleanupProof, error) {
+	if runtime == nil || l8JobCredentialRuntimeValueIsNil(ctx) {
+		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
+	}
+	if runtime.production && !l8JobCredentialRuntimePlatformSupported() {
+		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeUnsupported
+	}
+	if sandboxruntime.ValidateJobCredentialIdentity(request.Identity) != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialIdentityMismatch
+	}
+	if request.Revision == 0 {
+		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
+	}
 	return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
 }
 

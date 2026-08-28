@@ -329,22 +329,121 @@ func TestL8JobCredentialRuntimeLossEmitsOneValueThenCloses(t *testing.T) {
 	}
 }
 
-func TestL8JobCredentialRuntimeRecoverIsDependencyUnaccepted(t *testing.T) {
+func TestL8JobCredentialRuntimeRecoverFailsClosedWithoutDurableHandleStore(t *testing.T) {
 	now := l8JobCredentialRuntimeNow()
-	runtime := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, nil, nil, nil)
-	proof, err := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{})
+	_, identity, request := l8JobCredentialRuntimePrepareFixture(t, now)
+	guest := l8JobCredentialGuestSessionFakeForTest(t, now)
+	httpProxy := &l8JobCredentialHTTPProxyFake{}
+	tmpfs := &l8JobCredentialFileTmpfsFake{payload: []byte("tmpfs-canary")}
+	ssh := &l8JobCredentialSSHRelayFake{policyID: "ssh-policy-1", policyRevision: 4}
+	runtime := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: guest}, httpProxy, tmpfs, ssh)
+
+	proof, err := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 1,
+	})
 	if sandboxruntime.CleanupProofKind(proof) != "" || !errors.Is(err, errL8JobCredentialRuntimeDependencyUnaccepted) {
-		t.Fatalf("RecoverJobCredentials = %#v, %v", proof, err)
+		t.Fatalf("valid recover = %#v, %v", proof, err)
 	}
 	if err.Error() != "dependency_unaccepted" {
 		t.Fatalf("recover error = %q, want dependency_unaccepted", err)
 	}
+	l8JobCredentialRuntimeAssertSafeError(t, err)
+	if guest.prepares != 0 || guest.renews != 0 || guest.revokes != 0 || guest.closed != 0 {
+		t.Fatalf("recover opened guest state prepares=%d renews=%d revokes=%d closed=%d", guest.prepares, guest.renews, guest.revokes, guest.closed)
+	}
+	if httpProxy.activates != 0 || httpProxy.revokes != 0 || tmpfs.materializes != 0 || tmpfs.revokes != 0 || ssh.activates != 0 || ssh.revokes != 0 {
+		t.Fatalf("recover touched delivery adapters http=%d/%d tmpfs=%d/%d ssh=%d/%d", httpProxy.activates, httpProxy.revokes, tmpfs.materializes, tmpfs.revokes, ssh.activates, ssh.revokes)
+	}
+
+	empty, emptyErr := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{})
+	if sandboxruntime.CleanupProofKind(empty) != "" || !errors.Is(emptyErr, sandboxruntime.ErrJobCredentialIdentityMismatch) {
+		t.Fatalf("empty recover = %#v, %v", empty, emptyErr)
+	}
+	zeroRevision, zeroErr := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{Identity: identity})
+	if sandboxruntime.CleanupProofKind(zeroRevision) != "" || !errors.Is(zeroErr, ErrL8JobCredentialRuntimeInvalid) {
+		t.Fatalf("zero-revision recover = %#v, %v", zeroRevision, zeroErr)
+	}
+	nilCtx, nilCtxErr := runtime.RecoverJobCredentials(nil, sandboxruntime.JobCredentialRecoveryRequest{Identity: identity, Revision: 1})
+	if sandboxruntime.CleanupProofKind(nilCtx) != "" || !errors.Is(nilCtxErr, ErrL8JobCredentialRuntimeInvalid) {
+		t.Fatalf("nil-context recover = %#v, %v", nilCtx, nilCtxErr)
+	}
+	var nilRuntime *L8JobCredentialRuntime
+	nilProof, nilErr := nilRuntime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{Identity: identity, Revision: 1})
+	if sandboxruntime.CleanupProofKind(nilProof) != "" || !errors.Is(nilErr, ErrL8JobCredentialRuntimeInvalid) {
+		t.Fatalf("nil-runtime recover = %#v, %v", nilProof, nilErr)
+	}
+
+	seed := l8JobCredentialRuntimeSeed(t, now, []sandboxruntime.JobCredentialDeliveryMode{
+		sandboxruntime.JobCredentialDeliveryModeHTTPProxy,
+		sandboxruntime.JobCredentialDeliveryModeFileTmpfs,
+	})
+	preflight, err := runtime.PreflightJobCredentials(context.Background(), seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := preflight.PrepareJobCredentials(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveProof, liveErr := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 1,
+	})
+	if sandboxruntime.CleanupProofKind(liveProof) != "" || !errors.Is(liveErr, errL8JobCredentialRuntimeDependencyUnaccepted) {
+		t.Fatalf("live recover = %#v, %v", liveProof, liveErr)
+	}
+	if sandboxruntime.ActiveProofKind(session.ActiveProof()) == "" {
+		t.Fatal("fail-closed recover revoked a live session it does not own")
+	}
+	if httpProxy.revokes != 0 || tmpfs.revokes != 0 {
+		t.Fatalf("fail-closed recover revoked live handles http=%d tmpfs=%d", httpProxy.revokes, tmpfs.revokes)
+	}
+
 	source, err := os.ReadFile("l8_job_credential_runtime.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(source, []byte("NewJobCredentialRuntimeAbsenceProof")) {
 		t.Fatal("job credential runtime issued a runtime absence proof")
+	}
+	if !bytes.Contains(source, []byte("durable handle store")) || !bytes.Contains(source, []byte("remains unaccepted")) {
+		t.Fatal("recover does not document the missing durable handle store as unaccepted")
+	}
+	l8JobCredentialRuntimeAssertRecoverDoesNotMintProofs(t)
+}
+
+func l8JobCredentialRuntimeAssertRecoverDoesNotMintProofs(t *testing.T) {
+	t.Helper()
+	set := token.NewFileSet()
+	file, err := parser.ParseFile(set, "l8_job_credential_runtime.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	ast.Inspect(file, func(node ast.Node) bool {
+		fn, ok := node.(*ast.FuncDecl)
+		if !ok || fn.Name == nil || fn.Name.Name != "RecoverJobCredentials" || fn.Recv == nil {
+			return true
+		}
+		found = true
+		ast.Inspect(fn.Body, func(child ast.Node) bool {
+			name := ""
+			switch node := child.(type) {
+			case *ast.Ident:
+				name = node.Name
+			case *ast.SelectorExpr:
+				if node.Sel != nil {
+					name = node.Sel.Name
+				}
+			}
+			if name == "NewJobCredentialCleanupProof" || name == "NewJobCredentialRuntimeAbsenceProof" {
+				t.Fatalf("RecoverJobCredentials minted %s", name)
+			}
+			return true
+		})
+		return true
+	})
+	if !found {
+		t.Fatal("RecoverJobCredentials method not found")
 	}
 }
 

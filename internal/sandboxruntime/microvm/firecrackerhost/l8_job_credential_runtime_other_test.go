@@ -45,4 +45,18 @@ func TestL8JobCredentialRuntimeNonLinuxFailsClosedBeforeSession(t *testing.T) {
 	if opener.calls != 0 {
 		t.Fatalf("non-Linux production preflight opened a guest session: calls=%d", opener.calls)
 	}
+
+	identity, err := sandboxruntime.CompleteJobCredentialIdentity(seed, l8JobCredentialRuntimeGuestSessionGeneration(), "helper-generation-runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, recoverErr := production.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 1,
+	})
+	if sandboxruntime.CleanupProofKind(proof) != "" || !errors.Is(recoverErr, ErrL8JobCredentialRuntimeUnsupported) {
+		t.Fatalf("non-Linux production recover = %#v, %v", proof, recoverErr)
+	}
+	if opener.calls != 0 {
+		t.Fatalf("non-Linux production recover opened a guest session: calls=%d", opener.calls)
+	}
 }
