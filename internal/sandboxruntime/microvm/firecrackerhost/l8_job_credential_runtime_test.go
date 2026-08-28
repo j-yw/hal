@@ -33,14 +33,14 @@ func TestL8JobCredentialRuntimePublicAPIIsExact(t *testing.T) {
 	}
 	runtimeType := reflect.TypeOf((*L8JobCredentialRuntime)(nil))
 	l8D6AssertExactExportedMethodSet(t, runtimeType, map[string]reflect.Type{
-		"Format":                    reflect.TypeOf((func(*L8JobCredentialRuntime, fmt.State, rune))(nil)),
-		"GoString":                  reflect.TypeOf((func(*L8JobCredentialRuntime) string)(nil)),
-		"MarshalBinary":             reflect.TypeOf((func(*L8JobCredentialRuntime) ([]byte, error))(nil)),
-		"MarshalJSON":               reflect.TypeOf((func(*L8JobCredentialRuntime) ([]byte, error))(nil)),
-		"MarshalText":               reflect.TypeOf((func(*L8JobCredentialRuntime) ([]byte, error))(nil)),
-		"PreflightJobCredentials":   reflect.TypeOf((func(*L8JobCredentialRuntime, context.Context, sandboxruntime.JobCredentialIdentitySeed) (sandboxruntime.JobCredentialRuntimePreflight, error))(nil)),
-		"RecoverJobCredentials":     reflect.TypeOf((func(*L8JobCredentialRuntime, context.Context, sandboxruntime.JobCredentialRecoveryRequest) (sandboxruntime.JobCredentialCleanupProof, error))(nil)),
-		"String":                    reflect.TypeOf((func(*L8JobCredentialRuntime) string)(nil)),
+		"Format":                  reflect.TypeOf((func(*L8JobCredentialRuntime, fmt.State, rune))(nil)),
+		"GoString":                reflect.TypeOf((func(*L8JobCredentialRuntime) string)(nil)),
+		"MarshalBinary":           reflect.TypeOf((func(*L8JobCredentialRuntime) ([]byte, error))(nil)),
+		"MarshalJSON":             reflect.TypeOf((func(*L8JobCredentialRuntime) ([]byte, error))(nil)),
+		"MarshalText":             reflect.TypeOf((func(*L8JobCredentialRuntime) ([]byte, error))(nil)),
+		"PreflightJobCredentials": reflect.TypeOf((func(*L8JobCredentialRuntime, context.Context, sandboxruntime.JobCredentialIdentitySeed) (sandboxruntime.JobCredentialRuntimePreflight, error))(nil)),
+		"RecoverJobCredentials":   reflect.TypeOf((func(*L8JobCredentialRuntime, context.Context, sandboxruntime.JobCredentialRecoveryRequest) (sandboxruntime.JobCredentialCleanupProof, error))(nil)),
+		"String":                  reflect.TypeOf((func(*L8JobCredentialRuntime) string)(nil)),
 	})
 	var _ sandboxruntime.JobCredentialRuntime = (*L8JobCredentialRuntime)(nil)
 }
@@ -907,7 +907,7 @@ type l8JobCredentialSSHRelayHandleFake struct {
 	policyRevision uint64
 }
 
-func (handle *l8JobCredentialSSHRelayHandleFake) PolicyID() string     { return handle.policyID }
+func (handle *l8JobCredentialSSHRelayHandleFake) PolicyID() string { return handle.policyID }
 func (handle *l8JobCredentialSSHRelayHandleFake) PolicyRevision() uint64 {
 	return handle.policyRevision
 }
