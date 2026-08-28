@@ -391,7 +391,7 @@ func (service *L8Service) watchJobCredentialLoss(jobID, principalID string, sess
 	if !validWorkerV2SafeID(failureCode) {
 		failureCode = string(sandboxruntime.JobCredentialFailureCleanupIncomplete)
 	}
-	if _, err := service.jobs.clearCredentialState(jobID, principalID, JobStateFailed, failureCode, time.Now().UTC(), true); err != nil {
+	if _, err := service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, failureCode, time.Now().UTC(), true); err != nil {
 		return
 	}
 	live.finished = true
@@ -443,13 +443,19 @@ func (service *L8Service) completeFailedPreflight(jobID, principalID string, pre
 		return
 	}
 	proof, err := preflight.AbortBounded()
-	if err != nil || sandboxruntime.CleanupProofKind(proof) == "" || lifecycle.BeginRevoke() != nil {
+	if err != nil {
+		return
+	}
+	if sandboxruntime.CleanupProofKind(proof) == "" {
+		return
+	}
+	if err := lifecycle.BeginRevoke(); err != nil {
 		return
 	}
 	if _, err := lifecycle.Revoke(proof, time.Now().UTC()); err != nil {
 		return
 	}
-	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateFailed, string(sandboxruntime.JobCredentialFailureCleanupIncomplete), time.Now().UTC(), true)
+	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, string(sandboxruntime.JobCredentialFailureCleanupIncomplete), time.Now().UTC(), true)
 }
 
 func (service *L8Service) completeFailedSession(jobID, principalID string, session *sandboxruntime.JobCredentialSessionBinding, lifecycle *sandboxruntime.JobCredentialLifecycle) {
@@ -463,5 +469,5 @@ func (service *L8Service) completeFailedSession(jobID, principalID string, sessi
 	if _, err := lifecycle.Revoke(proof, time.Now().UTC()); err != nil {
 		return
 	}
-	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateFailed, string(sandboxruntime.JobCredentialFailureCleanupIncomplete), time.Now().UTC(), true)
+	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, string(sandboxruntime.JobCredentialFailureCleanupIncomplete), time.Now().UTC(), true)
 }

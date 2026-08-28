@@ -4494,17 +4494,18 @@ type l8WorkerV2GuardPolicy struct {
 func l8WorkerV2ProductionGuardPolicy() l8WorkerV2GuardPolicy {
 	return l8WorkerV2GuardPolicy{
 		dedicated: map[string]bool{
-			"job_manager_v2.go":       true,
-			"job_service_v2.go":       true,
-			"job_state_lock.go":       true,
-			"job_state_lock_unix.go":  true,
-			"job_state_lock_other.go": true,
-			"job_store_v2.go":         true,
-			"job_v2_client.go":        true,
-			"job_v2_helpers.go":       true,
-			"job_v2_service.go":       true,
-			"job_v2_types.go":         true,
-			"protocol_decode.go":      true,
+			"job_manager_v2.go":                true,
+			"job_service_v2.go":                true,
+			"job_state_lock.go":                true,
+			"job_state_lock_unix.go":           true,
+			"job_state_lock_other.go":          true,
+			"job_store_v2.go":                  true,
+			"job_store_v2_recovery_receipt.go": true,
+			"job_v2_client.go":                 true,
+			"job_v2_helpers.go":                true,
+			"job_v2_service.go":                true,
+			"job_v2_types.go":                  true,
+			"protocol_decode.go":               true,
 		},
 		mixed: map[string]bool{
 			"client.go":      true,
@@ -7253,9 +7254,9 @@ func l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope l8WorkerV2Guard
 		default:
 			return false
 		}
-	case "handleAuthenticatedJobCancelV2", "watchJobCredentialLoss", "Close":
+	case "handleAuthenticatedJobCancelV2", "watchJobCredentialLoss", "completeFailedPreflight", "completeFailedSession", "Close":
 		switch called.Name() {
-		case "Revoke", "Loss", "ActiveProof", "BeginRevoke", "ObserveLoss":
+		case "Revoke", "Loss", "ActiveProof", "BeginRevoke", "ObserveLoss", "AbortBounded":
 			return true
 		default:
 			return false
@@ -7271,7 +7272,7 @@ func l8WorkerV2AllowedExactJobCredentialRuntimeRecoveryCall(scope l8WorkerV2Guar
 		return false
 	}
 	base := filepath.Base(scope.file.path)
-	if base != "job_manager_v2.go" && base != "job_store_v2.go" && base != "job_v2_service.go" {
+	if base != "job_manager_v2.go" && base != "job_store_v2.go" && base != "job_store_v2_recovery_receipt.go" && base != "job_v2_service.go" {
 		return false
 	}
 	called := l8WorkerV2CalledObject(call.Fun, info)

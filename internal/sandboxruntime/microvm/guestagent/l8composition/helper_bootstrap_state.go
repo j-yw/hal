@@ -181,9 +181,9 @@ func ValidateHelperBootstrapRightKind(kind HelperBootstrapRightKind) error {
 
 // Accept authenticates one complete datagram and advances only the locked
 // helper-ready/bootstrap/ack/hello/ack transition. Every failure is terminal.
-// The composition coordinator must deliver agent_hello only after both HL8L
-// and HL8A composition acceptance. That cross-protocol precondition is outside
-// HL8P; completion here does not claim global composition or admission.
+// PID1StartGateState must release before agent_hello. That cross-protocol
+// precondition is outside HL8P; completion here does not claim global
+// composition or admission.
 func (machine *HelperBootstrapPreAdmissionState) Accept(metadata HelperBootstrapReceiveMetadata, encoded []byte) (HelperBootstrapDecision, error) {
 	if machine == nil || machine.state == nil {
 		return HelperBootstrapDecisionStopVM, ErrHelperBootstrapStateTerminal

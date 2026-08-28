@@ -77,7 +77,7 @@ func TestL8D6WorkerPrepareFailureAbortsPreflightAndDoesNotTransfer(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.CredentialState != nil || stored.JobV2.State != JobStateFailed {
+	if stored.CredentialState != nil || stored.JobV2.State != JobStateInterrupted {
 		t.Fatalf("proved prepare abort retained live credential ownership: %#v", stored)
 	}
 }
@@ -572,7 +572,7 @@ func newL8D6LifecycleHarness(t *testing.T, options l8D6LifecycleHarnessOptions) 
 	preflight := &l8D6LifecyclePreflight{
 		identity:   identity,
 		loss:       innerLoss,
-		cleanup:    l8WorkerCleanupProof(t, identity),
+		cleanup:    l8D6LifecycleCleanupProof(t, identity, 2),
 		session:    session,
 		prepareErr: options.prepareErr,
 	}

@@ -296,12 +296,7 @@ func (manager *jobManagerV2) clearCredentialState(jobID, principalID, jobState, 
 }
 
 func recoverStoredJobCredentialsV2(store *jobStoreV2, state storedJobStateV2, recovery sandboxruntime.JobCredentialRuntimeRecoveryProvider, now time.Time) (recovered storedJobStateV2, resultErr error) {
-	defer func() {
-		if recover() != nil {
-			recovered = storedJobStateV2{}
-			resultErr = ErrL8RecoveryDependency
-		}
-	}()
+	defer recoverStoredJobCredentialsV2Panic(&recovered, &resultErr)
 	if store == nil || sandboxruntime.JobCredentialRuntimeInterfaceNil(recovery) {
 		return storedJobStateV2{}, ErrL8RecoveryDependency
 	}
@@ -371,6 +366,14 @@ func recoverStoredJobCredentialsV2(store *jobStoreV2, state storedJobStateV2, re
 		return storedJobStateV2{}, err
 	}
 	return cloneStoredJobStateV2(state), nil
+}
+
+func recoverStoredJobCredentialsV2Panic(recovered *storedJobStateV2, resultErr *error) {
+	if recover() == nil || recovered == nil || resultErr == nil {
+		return
+	}
+	*recovered = storedJobStateV2{}
+	*resultErr = ErrL8RecoveryDependency
 }
 
 func replayStoredJobCredentialRuntimeRecoveryReceiptV2(store *jobStoreV2, state storedJobStateV2, binding sandboxruntime.JobCredentialRuntimeRecoveryBinding, now time.Time) (storedJobStateV2, error) {
