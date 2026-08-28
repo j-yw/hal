@@ -755,6 +755,22 @@ func TestL8D6GuestPacketHelperUnionsMirrorReadinessDiscipline(t *testing.T) {
 		if _, err := newHelperExecStreamPacket(stdin, header, nil, 3, credentialprotocol.HelperExecStreamStdin, credentialprotocol.HelperExecStreamFlagsNone, 0, 7, payloadDigest); !errors.Is(err, errInvalidHelperPacket) {
 			t.Fatalf("stdin stream error = %v", err)
 		}
+		missingPayload := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperExecStreamPacket(missingPayload, header, nil, 3, credentialprotocol.HelperExecStreamStdout, credentialprotocol.HelperExecStreamFlagsNone, 0, 7, payloadDigest); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("nonempty stream without owned payload error = %v", err)
+		}
+		retryBody := &testHelperBody{length: helperExecStreamCanonicalPrefixBytes + 7, digest: payloadDigest}
+		if _, err := newHelperExecStreamPacket(missingPayload, header, retryBody, 3, credentialprotocol.HelperExecStreamStdout, credentialprotocol.HelperExecStreamFlagsNone, 0, 7, payloadDigest); !errors.Is(err, errInvalidHelperReceiveRequest) {
+			t.Fatalf("failed missing-payload issue did not consume receive request: %v", err)
+		}
+		if !retryBody.destroyed {
+			t.Fatal("replayed receive request did not destroy the newly supplied body")
+		}
+		var typedNilBody *testHelperBody
+		typedNilPayload := mustHelperReceiveRequest(t, 1, requestID, true, identity, 0)
+		if _, err := newHelperExecStreamPacket(typedNilPayload, header, typedNilBody, 3, credentialprotocol.HelperExecStreamStderr, credentialprotocol.HelperExecStreamFlagsNone, 0, 7, payloadDigest); !errors.Is(err, errInvalidHelperPacket) {
+			t.Fatalf("nonempty stream with typed-nil payload error = %v", err)
+		}
 	})
 
 	t.Run("exec-credit", func(t *testing.T) {

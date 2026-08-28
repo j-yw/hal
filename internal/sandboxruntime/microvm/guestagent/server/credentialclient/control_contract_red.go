@@ -841,6 +841,7 @@ func newHelperExecStreamPacket(request HelperReceiveRequest, header credentialpr
 	}
 	bodyLength := helperExecStreamCanonicalPrefixBytes + payloadLength
 	if validateHelperReceiveHeader(request, header, credentialprotocol.PacketTypeExecStream, true, false, bodyLength) != nil ||
+		(payloadLength > 0 && !configuredDependency(body)) ||
 		validateOptionalHelperBodyLength(body, bodyLength) != nil {
 		return HelperPacket{}, errInvalidHelperPacket
 	}
