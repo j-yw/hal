@@ -77,7 +77,7 @@ func TestL8D6WorkerPrepareFailureAbortsPreflightAndDoesNotTransfer(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.CredentialState != nil || stored.JobV2.State != JobStateInterrupted {
+	if stored.CredentialState != nil || stored.JobV2.State != JobStateInterrupted || stored.JobV2.FailureCode != string(sandboxruntime.JobCredentialFailurePrepareFailed) {
 		t.Fatalf("proved prepare abort retained live credential ownership: %#v", stored)
 	}
 }

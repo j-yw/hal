@@ -455,7 +455,7 @@ func (service *L8Service) completeFailedPreflight(jobID, principalID string, pre
 	if _, err := lifecycle.Revoke(proof, time.Now().UTC()); err != nil {
 		return
 	}
-	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, string(sandboxruntime.JobCredentialFailureCleanupIncomplete), time.Now().UTC(), true)
+	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, string(sandboxruntime.JobCredentialFailurePrepareFailed), time.Now().UTC(), true)
 }
 
 func (service *L8Service) completeFailedSession(jobID, principalID string, session *sandboxruntime.JobCredentialSessionBinding, lifecycle *sandboxruntime.JobCredentialLifecycle) {
@@ -469,5 +469,5 @@ func (service *L8Service) completeFailedSession(jobID, principalID string, sessi
 	if _, err := lifecycle.Revoke(proof, time.Now().UTC()); err != nil {
 		return
 	}
-	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, string(sandboxruntime.JobCredentialFailureCleanupIncomplete), time.Now().UTC(), true)
+	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, string(sandboxruntime.JobCredentialFailurePrepareFailed), time.Now().UTC(), true)
 }
