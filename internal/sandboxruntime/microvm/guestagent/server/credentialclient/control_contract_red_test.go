@@ -270,6 +270,12 @@ func TestL8D6GuestControllerUnionConsumesOneExactReceiveRequest(t *testing.T) {
 	if _, err := newControllerReadinessPacket(receive, 1, sessionID, readiness); err == nil {
 		t.Fatal("receive request was consumed twice")
 	}
+	if _, err := newControlReceiveRequest(uint64(^uint32(0))+1, v2control.NewIdentityDigest(sessionID), true, session.MaxControlPlaintextBytes); !errors.Is(err, errInvalidControlReceiveRequest) {
+		t.Fatalf("exhausted control receive sequence error = %v", err)
+	}
+	if _, err := newControlReceiveRequest(uint64(^uint32(0)), v2control.NewIdentityDigest(sessionID), true, session.MaxControlPlaintextBytes); err != nil {
+		t.Fatalf("last legal control receive sequence error = %v", err)
+	}
 }
 
 func TestL8D6GuestControllerCredentialPacketsMirrorReadinessDiscipline(t *testing.T) {
@@ -572,28 +578,221 @@ func TestL8D6GuestControllerSendPacketsWriteCanonicalJSON(t *testing.T) {
 	}
 }
 
-func TestL8D6GuestControllerRemainingPacketsStayUnaccepted(t *testing.T) {
-	receive := mustControlReceiveRequest(t, 1, v2control.IdentityDigest{}, false)
-	var sessionID [32]byte
-	sessionID[0] = 1
-	if _, err := newControllerUnknownOperationPacket(receive, 1, sessionID, v2control.InspectedRequest{}); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("unknown packet error = %v", err)
-	}
-	if _, err := newControllerMalformedKnownPacket(receive, 1, sessionID, v2control.InspectedRequest{}); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("malformed packet error = %v", err)
-	}
-	if _, err := newControllerPrivatePacket(receive, 1, sessionID, 0, v2control.RequestID{}, v2control.IdentityDigest{}, 0, 0, 0, 0, [32]byte{}, nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("private packet error = %v", err)
-	}
-	if _, err := newControllerStreamPacket(receive, 1, sessionID, 0, 0, v2control.RequestID{}, v2control.IdentityDigest{}, 0, 0, [32]byte{}, nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("stream packet error = %v", err)
-	}
-	if _, err := newControllerCreditPacket(receive, 1, sessionID, 0, v2control.RequestID{}, v2control.IdentityDigest{}, 0); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("credit packet error = %v", err)
-	}
-	if _, err := newControllerCloseNotifyPacket(receive, 1, sessionID, 0); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("close notify packet error = %v", err)
-	}
+func TestL8D6GuestControllerRemainingPacketsMirrorReadinessDiscipline(t *testing.T) {
+	sessionID := testCredentialPacketSessionID()
+	identity := testCredentialPacketSessionIdentity(t, sessionID)
+	digest := identityDigestForSession(t, identity)
+	requestID := testPacketRequestID(t)
+	prepare := testCredentialPreparePacketRequest(t, requestID, identity)
+	unknown := testInspectedUnknownRequest(t, requestID, digest)
+	malformed := testInspectedKnownRequest(t, prepare)
+	payload := []byte("private-payload")
+	payloadDigest := sha256.Sum256(payload)
+	emptyDigest := sha256.Sum256(nil)
+	otherSessionID := sessionID
+	otherSessionID[31] ^= 0xff
+
+	t.Run("unknown", func(t *testing.T) {
+		receive := mustControlReceiveRequest(t, 1, digest, true)
+		packet, err := newControllerUnknownOperationPacket(receive, 1, sessionID, unknown)
+		if err != nil {
+			t.Fatalf("unknown packet error = %v", err)
+		}
+		arm, ok := packet.unknownOperationValue()
+		if !ok || arm.inspected.RequestID() != requestID || arm.inspected.IdentityDigest() != digest || packet.sequenceValue() != 1 {
+			t.Fatal("unknown packet did not retain inspected metadata")
+		}
+		if _, known := arm.inspected.KnownOperation(); known {
+			t.Fatal("unknown packet classified a safe unknown operation as known")
+		}
+		if _, err := newControllerUnknownOperationPacket(receive, 1, sessionID, unknown); !errors.Is(err, errInvalidControlReceiveRequest) {
+			t.Fatalf("consume-once error = %v", err)
+		}
+		unset := mustControlReceiveRequest(t, 1, v2control.IdentityDigest{}, false)
+		if _, err := newControllerUnknownOperationPacket(unset, 1, sessionID, unknown); err != nil {
+			t.Fatalf("unset expected identity unknown error = %v", err)
+		}
+		mismatch := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerUnknownOperationPacket(mismatch, 2, sessionID, unknown); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("sequence mismatch error = %v", err)
+		}
+		if _, err := newControllerUnknownOperationPacket(mismatch, 1, sessionID, unknown); !errors.Is(err, errInvalidControlReceiveRequest) {
+			t.Fatalf("failed issue did not consume receive request: %v", err)
+		}
+		identityMismatch := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerUnknownOperationPacket(identityMismatch, 1, sessionID, testInspectedUnknownRequest(t, requestID, v2control.NewIdentityDigest(sessionID))); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("expected identity mismatch error = %v", err)
+		}
+		zero := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerUnknownOperationPacket(zero, 1, sessionID, v2control.InspectedRequest{}); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("zero inspected unknown error = %v", err)
+		}
+		known := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerUnknownOperationPacket(known, 1, sessionID, malformed); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("known operation as unknown error = %v", err)
+		}
+	})
+
+	t.Run("malformed", func(t *testing.T) {
+		receive := mustControlReceiveRequest(t, 1, digest, true)
+		packet, err := newControllerMalformedKnownPacket(receive, 1, sessionID, malformed)
+		if err != nil {
+			t.Fatalf("malformed packet error = %v", err)
+		}
+		arm, ok := packet.malformedKnownValue()
+		if !ok || arm.inspected.RequestID() != requestID || arm.inspected.IdentityDigest() != digest {
+			t.Fatal("malformed packet did not retain inspected metadata")
+		}
+		operation, known := arm.inspected.KnownOperation()
+		if !known || operation != v2control.OperationCredentialPrepare {
+			t.Fatal("malformed packet lost known operation classification")
+		}
+		if _, err := newControllerMalformedKnownPacket(receive, 1, sessionID, malformed); !errors.Is(err, errInvalidControlReceiveRequest) {
+			t.Fatalf("consume-once error = %v", err)
+		}
+		unknownReceive := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerMalformedKnownPacket(unknownReceive, 1, sessionID, unknown); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("unknown operation as malformed error = %v", err)
+		}
+		zero := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerMalformedKnownPacket(zero, 1, sessionID, v2control.InspectedRequest{}); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("zero inspected malformed error = %v", err)
+		}
+	})
+
+	t.Run("private", func(t *testing.T) {
+		receive := mustControlReceiveRequest(t, 1, digest, true)
+		body := &testHelperBody{length: uint32(len(payload)), digest: payloadDigest}
+		packet, err := newControllerPrivatePacket(receive, 1, sessionID, credentialprotocol.PrivateRecordKindFileBytes, requestID, digest, 2, 0, 1, uint32(len(payload)), payloadDigest, body)
+		if err != nil {
+			t.Fatalf("private packet error = %v", err)
+		}
+		arm, ok := packet.privateValue()
+		if !ok || arm.kind != credentialprotocol.PrivateRecordKindFileBytes || arm.requestID != requestID || arm.identityDigest != digest || arm.bindingIndex != 2 || arm.chunkIndex != 0 || arm.chunkCount != 1 || arm.payloadLength != uint32(len(payload)) || body.destroyed || packet.body == nil {
+			t.Fatal("private packet did not retain payload body")
+		}
+		if _, err := newControllerPrivatePacket(receive, 1, sessionID, credentialprotocol.PrivateRecordKindFileBytes, requestID, digest, 2, 0, 1, uint32(len(payload)), payloadDigest, &testHelperBody{length: uint32(len(payload)), digest: payloadDigest}); !errors.Is(err, errInvalidControlReceiveRequest) {
+			t.Fatalf("consume-once error = %v", err)
+		}
+		execReceive := mustControlReceiveRequest(t, 1, digest, true)
+		execBody := &testHelperBody{length: uint32(len(payload)), digest: payloadDigest}
+		execPacket, err := newControllerPrivatePacket(execReceive, 1, sessionID, credentialprotocol.PrivateRecordKindOpaqueExecBinding, requestID, digest, 0, 0, 1, uint32(len(payload)), payloadDigest, execBody)
+		if err != nil || execPacket.body == nil {
+			t.Fatalf("opaque exec private error = %v", err)
+		}
+		failedBody := &testHelperBody{length: uint32(len(payload)), digest: payloadDigest}
+		invalid := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerPrivatePacket(invalid, 1, sessionID, 0, requestID, digest, 2, 0, 1, uint32(len(payload)), payloadDigest, failedBody); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("unknown kind error = %v", err)
+		}
+		if !failedBody.destroyed {
+			t.Fatal("failed private constructor did not destroy the supplied body")
+		}
+		missing := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerPrivatePacket(missing, 1, sessionID, credentialprotocol.PrivateRecordKindFileBytes, requestID, digest, 2, 0, 1, uint32(len(payload)), payloadDigest, nil); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("missing payload body error = %v", err)
+		}
+		execIndex := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerPrivatePacket(execIndex, 1, sessionID, credentialprotocol.PrivateRecordKindOpaqueExecBinding, requestID, digest, 1, 0, 1, uint32(len(payload)), payloadDigest, &testHelperBody{length: uint32(len(payload)), digest: payloadDigest}); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("opaque exec binding index error = %v", err)
+		}
+		identityMismatch := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerPrivatePacket(identityMismatch, 1, otherSessionID, credentialprotocol.PrivateRecordKindFileBytes, requestID, digest, 2, 0, 1, uint32(len(payload)), payloadDigest, &testHelperBody{length: uint32(len(payload)), digest: payloadDigest}); err != nil {
+			t.Fatalf("private packet does not bind payload identity to raw session bytes: %v", err)
+		}
+		expectedMismatch := mustControlReceiveRequest(t, 1, v2control.NewIdentityDigest(sessionID), true)
+		if _, err := newControllerPrivatePacket(expectedMismatch, 1, sessionID, credentialprotocol.PrivateRecordKindFileBytes, requestID, digest, 2, 0, 1, uint32(len(payload)), payloadDigest, &testHelperBody{length: uint32(len(payload)), digest: payloadDigest}); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("expected identity mismatch error = %v", err)
+		}
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		receive := mustControlReceiveRequest(t, 1, digest, true)
+		body := &testHelperBody{length: 7, digest: payloadDigest}
+		packet, err := newControllerStreamPacket(receive, 1, sessionID, credentialprotocol.HelperExecStreamStdin, credentialprotocol.HelperExecStreamFlagsNone, requestID, digest, 4, 7, payloadDigest, body)
+		if err != nil {
+			t.Fatalf("stream packet error = %v", err)
+		}
+		arm, ok := packet.streamValue()
+		if !ok || arm.kind != credentialprotocol.HelperExecStreamStdin || arm.offset != 4 || arm.payloadLength != 7 || body.destroyed || packet.body == nil {
+			t.Fatal("stdin stream did not retain live payload body")
+		}
+		eofReceive := mustControlReceiveRequest(t, 1, digest, true)
+		eofPacket, err := newControllerStreamPacket(eofReceive, 1, sessionID, credentialprotocol.HelperExecStreamStdin, credentialprotocol.HelperExecStreamFlagEOF, requestID, digest, 7, 0, emptyDigest, nil)
+		if err != nil {
+			t.Fatalf("eof stream error = %v", err)
+		}
+		eofArm, ok := eofPacket.streamValue()
+		if !ok || eofArm.flags != credentialprotocol.HelperExecStreamFlagEOF || eofPacket.body != nil {
+			t.Fatal("eof stream arm missing")
+		}
+		stdout := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerStreamPacket(stdout, 1, sessionID, credentialprotocol.HelperExecStreamStdout, credentialprotocol.HelperExecStreamFlagsNone, requestID, digest, 0, 7, payloadDigest, &testHelperBody{length: 7, digest: payloadDigest}); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("stdout stream error = %v", err)
+		}
+		missingPayload := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerStreamPacket(missingPayload, 1, sessionID, credentialprotocol.HelperExecStreamStdin, credentialprotocol.HelperExecStreamFlagsNone, requestID, digest, 0, 7, payloadDigest, nil); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("nonempty stream without owned payload error = %v", err)
+		}
+		retryBody := &testHelperBody{length: 7, digest: payloadDigest}
+		if _, err := newControllerStreamPacket(missingPayload, 1, sessionID, credentialprotocol.HelperExecStreamStdin, credentialprotocol.HelperExecStreamFlagsNone, requestID, digest, 0, 7, payloadDigest, retryBody); !errors.Is(err, errInvalidControlReceiveRequest) {
+			t.Fatalf("failed missing-payload issue did not consume receive request: %v", err)
+		}
+		if !retryBody.destroyed {
+			t.Fatal("replayed receive request did not destroy the newly supplied body")
+		}
+	})
+
+	t.Run("credit", func(t *testing.T) {
+		receive := mustControlReceiveRequest(t, 1, digest, true)
+		packet, err := newControllerCreditPacket(receive, 1, sessionID, credentialprotocol.HelperExecStreamStdout, requestID, digest, 8)
+		if err != nil {
+			t.Fatalf("credit packet error = %v", err)
+		}
+		arm, ok := packet.creditValue()
+		if !ok || arm.kind != credentialprotocol.HelperExecStreamStdout || arm.nextOffset != 8 || arm.requestID != requestID {
+			t.Fatal("credit packet did not retain typed ownership")
+		}
+		stderr := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerCreditPacket(stderr, 1, sessionID, credentialprotocol.HelperExecStreamStderr, requestID, digest, 0); err != nil {
+			t.Fatalf("stderr credit error = %v", err)
+		}
+		stdin := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerCreditPacket(stdin, 1, sessionID, credentialprotocol.HelperExecStreamStdin, requestID, digest, 8); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("stdin credit error = %v", err)
+		}
+		zero := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerCreditPacket(zero, 1, sessionID, credentialprotocol.HelperExecStreamStdout, v2control.RequestID{}, digest, 8); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("zero request ID credit error = %v", err)
+		}
+	})
+
+	t.Run("close-notify", func(t *testing.T) {
+		receive := mustControlReceiveRequest(t, 1, digest, true)
+		packet, err := newControllerCloseNotifyPacket(receive, 1, sessionID, credentialprotocol.CloseReasonNormal)
+		if err != nil {
+			t.Fatalf("close notify error = %v", err)
+		}
+		arm, ok := packet.closeNotifyValue()
+		if !ok || arm != credentialprotocol.CloseReasonNormal {
+			t.Fatal("close notify packet did not retain typed ownership")
+		}
+		if _, err := newControllerCloseNotifyPacket(receive, 1, sessionID, credentialprotocol.CloseReasonNormal); !errors.Is(err, errInvalidControlReceiveRequest) {
+			t.Fatalf("consume-once error = %v", err)
+		}
+		unset := mustControlReceiveRequest(t, 1, v2control.IdentityDigest{}, false)
+		if _, err := newControllerCloseNotifyPacket(unset, 1, sessionID, credentialprotocol.CloseReasonShutdown); err != nil {
+			t.Fatalf("close without expected identity error = %v", err)
+		}
+		unknown := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerCloseNotifyPacket(unknown, 1, sessionID, 0); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("unknown close reason error = %v", err)
+		}
+		sequence := mustControlReceiveRequest(t, 1, digest, true)
+		if _, err := newControllerCloseNotifyPacket(sequence, 2, sessionID, credentialprotocol.CloseReasonNormal); !errors.Is(err, errInvalidControllerPacket) {
+			t.Fatalf("sequence mismatch error = %v", err)
+		}
+	})
 }
 
 func TestL8D6GuestPacketHelperReceiveRequestMirrorsControlDiscipline(t *testing.T) {
@@ -617,6 +816,9 @@ func TestL8D6GuestPacketHelperReceiveRequestMirrorsControlDiscipline(t *testing.
 	if _, set := unset.expectedRequestIDValue(); set {
 		t.Fatal("unset expected request ID was reported set")
 	}
+	if _, err := newHelperControlReceiveRequest(uint64(^uint32(0)), 1, 0, [16]byte{}, false, identity); err != nil {
+		t.Fatalf("last legal helper receive sequence error = %v", err)
+	}
 
 	for _, test := range []struct {
 		name string
@@ -624,6 +826,10 @@ func TestL8D6GuestPacketHelperReceiveRequestMirrorsControlDiscipline(t *testing.
 	}{
 		{name: "zero sequence", call: func() error {
 			_, err := newHelperControlReceiveRequest(0, 1, 0, [16]byte{}, false, identity)
+			return err
+		}},
+		{name: "exhausted sequence", call: func() error {
+			_, err := newHelperControlReceiveRequest(uint64(^uint32(0))+1, 1, 0, [16]byte{}, false, identity)
 			return err
 		}},
 		{name: "oversize body", call: func() error {
@@ -844,31 +1050,162 @@ func TestL8D6GuestPacketHelperUnionsMirrorReadinessDiscipline(t *testing.T) {
 func TestL8D6GuestPacketHelperSendWriteCanonicalBody(t *testing.T) {
 	identity := testHelperPacketIdentity()
 	nonce := testHelperPacketNonce()
+	requestID := testHelperPacketRequestID()
+	fileDigest := sha256.Sum256([]byte("private-file"))
+	manifestDigest := sha256.Sum256([]byte("manifest"))
+	begin := credentialprotocol.HelperPrepareBeginBody{
+		Revision:       1,
+		ExpiryUnixNano: 1700000001123456789,
+		Bindings: []credentialprotocol.HelperBindingManifestRecord{
+			{BindingID: "binding-http", Mode: credentialprotocol.DeliveryModeHTTPProxy},
+			{BindingID: "binding-file", Mode: credentialprotocol.DeliveryModeFileTmpfs, TargetPath: "credentials/config", DeclaredFileBytes: 12, FileSHA256: fileDigest},
+		},
+	}
+	commit := credentialprotocol.HelperPrepareCommitBody{Revision: 1, ManifestSHA256: manifestDigest}
+	renew := credentialprotocol.HelperRenewBody{Revision: 2, ExpiryUnixNano: 1700000600123456789, PriorProofID: "proof-1"}
+	revoke := credentialprotocol.HelperRevokeBody{Revision: 2, Reason: credentialprotocol.RevokeReasonRequested}
+	execBody := credentialprotocol.HelperExecBody{
+		Revision:      3,
+		ExecBindingID: "exec-1",
+		Plan: credentialprotocol.HelperExecPlan{
+			Arguments:      []string{"/usr/bin/tool", "run"},
+			WorkDirectory:  "/workspace",
+			StdinMode:      credentialprotocol.HelperExecStreamModePipe,
+			StdoutMode:     credentialprotocol.HelperExecStreamModePipe,
+			StderrMode:     credentialprotocol.HelperExecStreamModePipe,
+			StdinMaxBytes:  1024,
+			StdoutMaxBytes: 2048,
+			StderrMaxBytes: 4096,
+			Timing:         credentialprotocol.HelperExecTiming{Kind: credentialprotocol.HelperExecTimingTimeoutMillis, Value: 1000},
+		},
+	}
+	credit := credentialprotocol.HelperExecCreditBody{Revision: 3, StreamKind: credentialprotocol.HelperExecStreamStdout, NextOffset: 8}
 	closeBody := credentialprotocol.HelperCloseNotifyBody{Reason: credentialprotocol.CloseReasonShutdown}
-	encoded := mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperCloseNotifyBody(closeBody) })
-	header := testHelperHeader(credentialprotocol.PacketTypeCloseNotify, 1, [16]byte{}, identity, nonce, uint32(len(encoded)))
-	packet, err := finishHelperSendPacket(header, helperSendArmClose, helperSendArm{kind: helperSendArmClose, close: closeBody})
-	if err != nil {
-		t.Fatalf("finishHelperSendPacket() error = %v", err)
+
+	type sendCase struct {
+		name  string
+		issue func() (HelperSendPacket, error)
+		want  []byte
+		typ   credentialprotocol.PacketType
 	}
-	if packet.packetTypeValue() != credentialprotocol.PacketTypeCloseNotify || packet.encodedBodyLengthValue() != uint32(len(encoded)) || packet.bodySHA256Value() != sha256.Sum256(encoded) {
-		t.Fatal("helper send packet did not pin canonical body length and digest")
+	cases := []sendCase{
+		{
+			name: "prepare-begin",
+			issue: func() (HelperSendPacket, error) {
+				return newHelperPrepareBeginSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), begin)
+			},
+			want: mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperPrepareBeginBody(begin) }),
+			typ:  credentialprotocol.PacketTypePrepareBegin,
+		},
+		{
+			name: "prepare-commit",
+			issue: func() (HelperSendPacket, error) {
+				return newHelperPrepareCommitSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), commit)
+			},
+			want: mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperPrepareCommitBody(commit) }),
+			typ:  credentialprotocol.PacketTypePrepareCommit,
+		},
+		{
+			name: "renew",
+			issue: func() (HelperSendPacket, error) {
+				return newHelperRenewSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), renew)
+			},
+			want: mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperRenewBody(renew) }),
+			typ:  credentialprotocol.PacketTypeRenew,
+		},
+		{
+			name: "revoke",
+			issue: func() (HelperSendPacket, error) {
+				return newHelperRevokeSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), revoke)
+			},
+			want: mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperRevokeBody(revoke) }),
+			typ:  credentialprotocol.PacketTypeRevoke,
+		},
+		{
+			name: "exec",
+			issue: func() (HelperSendPacket, error) {
+				return newHelperExecSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), execBody)
+			},
+			want: mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperExecBody(execBody) }),
+			typ:  credentialprotocol.PacketTypeExec,
+		},
+		{
+			name: "exec-credit",
+			issue: func() (HelperSendPacket, error) {
+				return newHelperExecCreditSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), credit)
+			},
+			want: mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperExecCreditBody(credit) }),
+			typ:  credentialprotocol.PacketTypeExecCredit,
+		},
+		{
+			name: "close",
+			issue: func() (HelperSendPacket, error) {
+				return newHelperCloseNotifySendPacket(testHelperHeader(0, 1, [16]byte{}, identity, nonce, 0), closeBody)
+			},
+			want: mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperCloseNotifyBody(closeBody) }),
+			typ:  credentialprotocol.PacketTypeCloseNotify,
+		},
 	}
-	sink := &testCanonicalBodySink{capacity: packet.encodedBodyLengthValue()}
-	if err := packet.writeCanonicalBody(sink); err != nil {
-		t.Fatalf("writeCanonicalBody() error = %v", err)
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			packet, err := test.issue()
+			if err != nil {
+				t.Fatalf("send constructor error = %v", err)
+			}
+			if packet.packetTypeValue() != test.typ || packet.encodedBodyLengthValue() != uint32(len(test.want)) || packet.bodySHA256Value() != sha256.Sum256(test.want) {
+				t.Fatal("helper send packet did not pin canonical body length and digest")
+			}
+			sink := &testCanonicalBodySink{capacity: packet.encodedBodyLengthValue()}
+			if err := packet.writeCanonicalBody(sink); err != nil {
+				t.Fatalf("writeCanonicalBody() error = %v", err)
+			}
+			if string(sink.buf) != string(test.want) {
+				t.Fatalf("canonical body = %x, want %x", sink.buf, test.want)
+			}
+			if err := packet.writeCanonicalBody(sink); !errors.Is(err, errInvalidHelperSendPacket) {
+				t.Fatalf("second writeCanonicalBody() error = %v", err)
+			}
+		})
 	}
-	if string(sink.buf) != string(encoded) {
-		t.Fatalf("canonical body = %s, want %s", sink.buf, encoded)
+
+	if _, err := newHelperPrepareBeginSendPacket(testHelperHeader(0, 0, requestID, identity, nonce, 0), begin); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Fatalf("zero sequence helper send error = %v", err)
 	}
-	if err := packet.writeCanonicalBody(sink); !errors.Is(err, errInvalidHelperSendPacket) {
-		t.Fatalf("second writeCanonicalBody() error = %v", err)
+	if _, err := newHelperPrepareBeginSendPacket(testHelperHeader(0, 1, [16]byte{}, identity, nonce, 0), begin); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Fatalf("zero request ID helper send error = %v", err)
+	}
+	if _, err := newHelperPrepareBeginSendPacket(testHelperHeader(0, uint64(^uint32(0))+1, requestID, identity, nonce, 0), begin); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Errorf("exhausted sequence helper send error = %v", err)
+	}
+	if _, err := newHelperPrepareBeginSendPacket(testHelperHeader(0, uint64(^uint32(0)), requestID, identity, nonce, 0), begin); err != nil {
+		t.Errorf("last legal helper send sequence error = %v", err)
+	}
+	if _, err := newHelperExecCreditSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), credentialprotocol.HelperExecCreditBody{Revision: 3, StreamKind: credentialprotocol.HelperExecStreamStdin, NextOffset: 8}); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Fatalf("stdin helper credit send error = %v", err)
+	}
+	if _, err := newHelperCloseNotifySendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), closeBody); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Errorf("nonzero request ID helper close send error = %v", err)
+	}
+	nonzeroCloseBody := mustEncode(t, func() ([]byte, error) { return credentialprotocol.EncodeHelperCloseNotifyBody(closeBody) })
+	nonzeroCloseHeader := testHelperHeader(credentialprotocol.PacketTypeCloseNotify, 1, requestID, identity, nonce, uint32(len(nonzeroCloseBody)))
+	if _, err := finishHelperSendPacket(nonzeroCloseHeader, helperSendArmClose, helperSendArm{kind: helperSendArmClose, close: closeBody}); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Errorf("direct nonzero request ID helper close finish error = %v", err)
+	}
+	if _, err := newHelperCloseNotifySendPacket(testHelperHeader(0, 1, [16]byte{}, identity, nonce, 0), credentialprotocol.HelperCloseNotifyBody{}); !errors.Is(err, errInvalidHelperSendPacket) {
+		t.Fatalf("unknown helper close send error = %v", err)
 	}
 	if err := (HelperSendPacket{}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("zero helper send write error = %v", err)
 	}
 	if err := (HelperSendPacket{arm: helperSendArmPrepareFile}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("payload helper send write error = %v", err)
+		t.Fatalf("prepare-file helper send write error = %v", err)
+	}
+	if err := (HelperSendPacket{arm: helperSendArmExecPrivate}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("exec-private helper send write error = %v", err)
+	}
+	if err := (HelperSendPacket{arm: helperSendArmExecStream}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("exec-stream helper send write error = %v", err)
 	}
 }
 
@@ -1171,6 +1508,40 @@ func testHelperHeader(packetType credentialprotocol.PacketType, sequence uint64,
 	}
 }
 
+func testInspectedUnknownRequest(t *testing.T, requestID v2control.RequestID, digest v2control.IdentityDigest) v2control.InspectedRequest {
+	t.Helper()
+	encodedID, err := v2control.EncodeRequestID(requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := []byte(`{"protocolVersion":"guest-agent-v2","operation":"future_operation","requestId":"` + encodedID + `","identityDigest":"` + v2control.EncodeIdentityDigest(digest) + `","body":{"uninterpreted":true}}`)
+	inspected, err := v2control.InspectCredentialRequestRoot(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, known := inspected.KnownOperation(); known {
+		t.Fatal("future_operation was classified as known")
+	}
+	return inspected
+}
+
+func testInspectedKnownRequest(t *testing.T, prepare v2control.CredentialPrepareRequest) v2control.InspectedRequest {
+	t.Helper()
+	wire, err := v2control.EncodeCredentialPrepareRequest(prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := v2control.InspectCredentialRequestRoot(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, known := inspected.KnownOperation()
+	if !known || operation != v2control.OperationCredentialPrepare {
+		t.Fatal("prepare request was not classified as known")
+	}
+	return inspected
+}
+
 func testHelperPrepareResponseBody() credentialprotocol.HelperResponseBody {
 	return credentialprotocol.HelperResponseBody{
 		RequestType: credentialprotocol.PacketTypePrepareCommit,
@@ -1190,9 +1561,11 @@ func testHelperPrepareResponseBody() credentialprotocol.HelperResponseBody {
 }
 
 type testHelperBody struct {
-	length    uint32
-	digest    [32]byte
-	destroyed bool
+	length       uint32
+	digest       [32]byte
+	destroyed    bool
+	destroyErr   error
+	destroyPanic bool
 }
 
 func (body *testHelperBody) Len() uint32      { return body.length }
@@ -1202,7 +1575,10 @@ func (body *testHelperBody) Borrow(context.Context, func(credentialmemory.Borrow
 }
 func (body *testHelperBody) Destroy(context.Context) error {
 	body.destroyed = true
-	return nil
+	if body.destroyPanic {
+		panic("test controller body destroy panic")
+	}
+	return body.destroyErr
 }
 
 type testCanonicalBodySink struct {

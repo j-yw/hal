@@ -41,6 +41,13 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 		if panicked {
 			return clientError(ClientContractPanic, ClientFieldPacketType)
 		}
+		bodyPresent, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		if bodyPresent {
+			return clientError(ClientContractPacket, ClientFieldBody)
+		}
 		if dispatchErr != nil {
 			if client.drainStarted() || ctx.Err() != nil {
 				return nil
@@ -94,6 +101,21 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 	}
 }
 
+// rejectControllerPacketBody closes the current default-off boundary: no
+// controller payload arm has a live consumer yet. Future payload forwarding
+// must explicitly transfer and clear this owner before dispatch continues.
+func rejectControllerPacketBody(packet *ControllerPacket) (present bool, cleanupErr error) {
+	if packet == nil || packet.body == nil {
+		return false, nil
+	}
+	body := packet.body
+	packet.body = nil
+	if !configuredDependency(body) {
+		return true, nil
+	}
+	return true, destroyControllerBody(body)
+}
+
 func acceptControllerPrepareIdentity(sessionID [32]byte, hardExpiryUnixNano int64, prepare v2control.CredentialPrepareRequest, expectedIdentity v2control.IdentityDigest, expectedIdentitySet bool) (v2control.IdentityDigest, error) {
 	if expectedIdentitySet {
 		if prepare.IdentityDigest() != expectedIdentity {
@@ -135,9 +157,9 @@ func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observe
 }
 
 func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
-	// Helper receive is implemented; first helper receive after a controller
-	// credential op has no expected request ID yet. Helper send constructors
-	// remain unaccepted.
+	// Helper receive and metadata-only helper send constructors exist. Serve
+	// still fails closed here because payload-bearing helper send, SSH rights,
+	// and live helper transport remain unaccepted; do not mint proofs.
 	_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, [16]byte{}, false, identity.Bytes())
 	if err != nil {
 		return err

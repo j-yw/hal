@@ -15,11 +15,21 @@ controller packet as its sequence, session, request-ID, identity-digest, and
 lifecycle-correlation authority. Helper receive construction, helper packet
 unions, and helper `writeCanonicalBody` for non-payload send arms follow that
 same consume-once sequence and identity discipline as metadata constructors.
-Live helper transport, SCM_RIGHTS, bind/listen/dial, and helper send constructors
-remain unaccepted. Unknown and malformed controller arms and
-private/stream/credit/close-notify controller packets remain
-`dependency_unaccepted`. Serve fails closed when a later operation needs an
-unimplemented helper send issuer instead of synthesizing proofs.
+Controller unknown, malformed-known, private, stream, credit, and close-notify
+packet constructors are accepted private issuers. Private and nonempty stdin
+packets retain one locked body capability; the current `Serve` path destroys and
+rejects every such body because live payload forwarding remains unaccepted.
+Helper send constructors
+for prepare-begin, prepare-commit, renew, revoke, exec, stdout/stderr exec-credit,
+and close-notify are accepted metadata-only issuers and write canonical bodies
+through `writeCanonicalBody`. Receive and helper-send sequences are bounded to
+the frozen `2^32` record cap, and helper close-notify uses an exact zero request
+ID. Live helper transport, SCM_RIGHTS, bind/listen/dial,
+SSH-accepted send, and payload-bearing helper send (prepare-file, exec-private,
+and nonempty exec-stream) remain `dependency_unaccepted` because they require
+live rights or locked payload delivery. Serve fails closed when a later
+operation needs an unimplemented helper payload send issuer instead of
+synthesizing proofs.
 
 The frozen surface is limited to:
 
