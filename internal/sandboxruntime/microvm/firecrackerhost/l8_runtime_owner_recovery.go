@@ -35,6 +35,11 @@ type firecrackerRuntimeOwnerRecordV1 struct {
 	ContractVersion              string `json:"contractVersion"`
 	Revision                     uint64 `json:"revision"`
 	State                        string `json:"state"`
+	ControllerState              string `json:"controllerState"`
+	AbsenceKind                  string `json:"absenceKind"`
+	AbsenceRevision              uint64 `json:"absenceRevision"`
+	AbsenceObservedAtUnixNano    int64  `json:"absenceObservedAtUnixNano"`
+	FinalizeTargetRevision       uint64 `json:"finalizeTargetRevision"`
 	HostBootID                   string `json:"hostBootId"`
 	SeedCorrelationDigest        string `json:"seedCorrelationDigest"`
 	SupervisorGeneration         string `json:"supervisorGeneration"`
@@ -71,6 +76,7 @@ type l8RuntimeOwnerRecoveryBinding struct {
 
 type l8RuntimeOwnerProcessObservation struct {
 	PID        uint32
+	ParentPID  uint32
 	StartTime  uint64
 	state      byte
 	pidfd      int
@@ -189,10 +195,17 @@ func validateFirecrackerRuntimeOwnerRecordV1(record firecrackerRuntimeOwnerRecor
 		record.RuleGenerationID != seed.RuleGenerationID {
 		return errL8RuntimeOwnerInvalid
 	}
-	if !validL8RuntimeOwnerState(record.State) {
+	if !validL8RuntimeOwnerState(record.State) || !validL8RuntimeOwnerControllerState(record.ControllerState) {
 		return errL8RuntimeOwnerInvalid
 	}
 	prelaunch := record.State == "starting" && record.Revision == 0
+	if record.State == "starting" {
+		if record.ControllerState != "none" || record.Revision > 1 {
+			return errL8RuntimeOwnerInvalid
+		}
+	} else if record.Revision < 2 {
+		return errL8RuntimeOwnerInvalid
+	}
 	if prelaunch {
 		if record.FirecrackerPID != 0 || record.FirecrackerStartTime != 0 {
 			return errL8RuntimeOwnerInvalid
@@ -200,14 +213,43 @@ func validateFirecrackerRuntimeOwnerRecordV1(record firecrackerRuntimeOwnerRecor
 	} else if record.Revision == 0 || record.FirecrackerPID == 0 || record.FirecrackerStartTime == 0 {
 		return errL8RuntimeOwnerInvalid
 	}
-	if record.State == "finalized" {
-		if !validL8RuntimeOwnerToken(record.FinalizedCommitID) {
+	if record.State == "finalizing" || record.State == "finalized" {
+		if !validL8RuntimeOwnerToken(record.FinalizedCommitID) || record.FinalizeTargetRevision == 0 {
 			return errL8RuntimeOwnerInvalid
 		}
-	} else if record.FinalizedCommitID != "" {
+		if record.State == "finalizing" && (record.ControllerState == "none" || record.Revision == ^uint64(0) || record.FinalizeTargetRevision != record.Revision+1) {
+			return errL8RuntimeOwnerInvalid
+		}
+		if record.State == "finalized" && (record.ControllerState == "none" || record.FinalizeTargetRevision > record.Revision) {
+			return errL8RuntimeOwnerInvalid
+		}
+	} else if record.FinalizedCommitID != "" || record.FinalizeTargetRevision != 0 {
 		return errL8RuntimeOwnerInvalid
 	}
+	switch record.State {
+	case "starting", "running", "stopping":
+		if record.AbsenceKind != "" || record.AbsenceRevision != 0 || record.AbsenceObservedAtUnixNano != 0 {
+			return errL8RuntimeOwnerInvalid
+		}
+	case "absent", "finalizing", "finalized":
+		if !validL8RuntimeOwnerAbsence(record, seed) {
+			return errL8RuntimeOwnerInvalid
+		}
+	case "uncertain":
+		absentHistory := record.AbsenceKind != "" || record.AbsenceRevision != 0 || record.AbsenceObservedAtUnixNano != 0
+		if absentHistory && !validL8RuntimeOwnerAbsence(record, seed) {
+			return errL8RuntimeOwnerInvalid
+		}
+	}
 	return nil
+}
+
+func validL8RuntimeOwnerAbsence(record firecrackerRuntimeOwnerRecordV1, seed sandboxruntime.JobCredentialIdentitySeed) bool {
+	if record.AbsenceKind != "direct_wait" && record.AbsenceKind != "replacement_proc" {
+		return false
+	}
+	return record.AbsenceRevision > 0 && record.AbsenceRevision <= record.Revision &&
+		record.AbsenceObservedAtUnixNano >= seed.IssuedAt.UnixNano()
 }
 
 func encodeFirecrackerRuntimeOwnerRecordV1(record firecrackerRuntimeOwnerRecordV1, seed sandboxruntime.JobCredentialIdentitySeed, currentBootID string) ([]byte, error) {
@@ -237,7 +279,9 @@ func decodeFirecrackerRuntimeOwnerRecordV1(payload []byte, seed sandboxruntime.J
 
 func l8RuntimeOwnerUniqueJSONObject(payload []byte) bool {
 	allowed := map[string]bool{
-		"contractVersion": true, "revision": true, "state": true, "hostBootId": true,
+		"contractVersion": true, "revision": true, "state": true, "controllerState": true,
+		"absenceKind": true, "absenceRevision": true, "absenceObservedAtUnixNano": true,
+		"finalizeTargetRevision": true, "hostBootId": true,
 		"seedCorrelationDigest": true, "supervisorGeneration": true, "supervisorPid": true,
 		"supervisorStartTime": true, "firecrackerPid": true, "firecrackerStartTime": true,
 		"finalizedCommitId": true, "sandboxId": true, "executionId": true, "workerId": true,
@@ -274,8 +318,11 @@ func l8RuntimeOwnerJSONFieldTypeValid(name string, payload json.RawMessage) bool
 		return false
 	}
 	switch name {
-	case "revision", "supervisorStartTime", "firecrackerStartTime":
+	case "revision", "absenceRevision", "finalizeTargetRevision", "supervisorStartTime", "firecrackerStartTime":
 		var value uint64
+		return json.Unmarshal(payload, &value) == nil
+	case "absenceObservedAtUnixNano":
+		var value int64
 		return json.Unmarshal(payload, &value) == nil
 	case "supervisorPid", "firecrackerPid":
 		var value uint32
@@ -288,7 +335,16 @@ func l8RuntimeOwnerJSONFieldTypeValid(name string, payload json.RawMessage) bool
 
 func validL8RuntimeOwnerState(state string) bool {
 	switch state {
-	case "starting", "unclaimed", "controlled", "stopping", "absent", "finalized", "uncertain":
+	case "starting", "running", "stopping", "absent", "finalizing", "finalized", "uncertain":
+		return true
+	default:
+		return false
+	}
+}
+
+func validL8RuntimeOwnerControllerState(state string) bool {
+	switch state {
+	case "none", "unclaimed", "controlled":
 		return true
 	default:
 		return false
