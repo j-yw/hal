@@ -12,7 +12,7 @@ import (
 
 func TestL8D6WorkerServerPassesSameOwnerPrincipalOutOfBand(t *testing.T) {
 	request := l8D6WorkerStartRequest(t)
-	seed := l8D6WorkerSeed(t, request)
+	seed := l8D6RecentLifecycleSeed(t, request)
 	seed.PrincipalID = "local-unix-owner"
 	identity, err := sandboxruntime.CompleteJobCredentialIdentity(seed, l8WorkerGuestSessionGeneration(), "helper-generation-worker")
 	if err != nil {
@@ -20,6 +20,7 @@ func TestL8D6WorkerServerPassesSameOwnerPrincipalOutOfBand(t *testing.T) {
 	}
 	preflight := &l8D6WorkerPreflight{
 		identity: identity, loss: make(chan sandboxruntime.JobCredentialLoss), cleanup: l8WorkerCleanupProof(t, identity),
+		session: &l8D6LifecycleSession{proof: l8D6LifecycleActiveProof(t, identity, 1), cleanup: l8D6LifecycleCleanupProof(t, identity, 2), loss: make(chan sandboxruntime.JobCredentialLoss)},
 	}
 	binder, err := sandboxruntime.NewJobCredentialRuntimeBinder(&l8D6WorkerProvider{
 		seed: seed, runtime: &l8D6WorkerRuntime{preflight: preflight},
@@ -56,7 +57,7 @@ func TestL8D6WorkerServerPassesSameOwnerPrincipalOutOfBand(t *testing.T) {
 	cancel, errCh := runTestServer(t, server)
 	defer stopTestServer(t, cancel, errCh)
 	response := roundTripWorkerRequest(t, server.socketPath, request)
-	if response.OK || response.Error == nil || response.Error.Code != ErrorCodeUnsupportedOp {
+	if !response.OK || response.JobV2 == nil {
 		t.Fatalf("authenticated response = %#v", response)
 	}
 	if calls := fallbackCalls.Load(); calls != 0 {

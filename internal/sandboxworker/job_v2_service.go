@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
@@ -17,6 +19,18 @@ type L8Service struct {
 	daemonGeneration   string
 	principalAuthority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
 	jobs               *jobManagerV2
+	liveMu             sync.Mutex
+	live               map[string]*l8LiveJobCredential
+	closed             bool
+}
+
+type l8LiveJobCredential struct {
+	mu        sync.Mutex
+	finished  bool
+	session   *sandboxruntime.JobCredentialSessionBinding
+	lifecycle *sandboxruntime.JobCredentialLifecycle
+	identity  sandboxruntime.JobCredentialIdentity
+	principal string
 }
 
 // L8DurableServiceOptions enables only the explicit authenticated worker-v2
@@ -27,6 +41,10 @@ type L8DurableServiceOptions struct {
 	StateDir           string
 	Binder             *sandboxruntime.JobCredentialRuntimeBinder
 	PrincipalAuthority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority
+	// RecoveryProvider is the optional D6 restart adapter. A typed-nil value
+	// fails closed. A missing provider retains ErrL8RecoveryDependency when
+	// durable credential ownership is present.
+	RecoveryProvider sandboxruntime.JobCredentialRuntimeRecoveryProvider
 }
 
 // L8AuthenticatedServerOptions attaches one durable L8 service to the
@@ -46,7 +64,8 @@ func NewL8Service(binder *sandboxruntime.JobCredentialRuntimeBinder) (*L8Service
 }
 
 // NewL8DurableService constructs the explicit authenticated worker-v2 router.
-// Startup fails while credential ownership needs a later D6 recovery adapter;
+// A typed-nil recovery provider fails closed. Missing recovery retains
+// ErrL8RecoveryDependency when durable credential ownership is present;
 // retained state is never reconciled through the legacy queued-job path.
 func NewL8DurableService(options L8DurableServiceOptions) (*L8Service, error) {
 	workerID := strings.TrimSpace(options.WorkerID)
@@ -54,15 +73,19 @@ func NewL8DurableService(options L8DurableServiceOptions) (*L8Service, error) {
 	if !validWorkerV2SafeID(workerID) || !validWorkerV2SafeID(daemonGeneration) || options.Binder == nil || options.PrincipalAuthority == nil {
 		return nil, ErrL8ServiceUnavailable
 	}
+	if options.RecoveryProvider != nil && sandboxruntime.JobCredentialRuntimeInterfaceNil(options.RecoveryProvider) {
+		return nil, ErrL8ServiceUnavailable
+	}
 	jobs, err := newJobManagerV2(jobManagerV2Options{
 		StateDir: options.StateDir, WorkerID: workerID, DaemonGeneration: daemonGeneration,
+		Recovery: options.RecoveryProvider,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &L8Service{
 		binder: options.Binder, workerID: workerID, daemonGeneration: daemonGeneration,
-		principalAuthority: options.PrincipalAuthority, jobs: jobs,
+		principalAuthority: options.PrincipalAuthority, jobs: jobs, live: make(map[string]*l8LiveJobCredential),
 	}, nil
 }
 
@@ -85,7 +108,29 @@ func NewL8AuthenticatedServer(options L8AuthenticatedServerOptions) (*Server, er
 // Close releases the explicit durable worker-v2 state owner. The neutral
 // default-off seam owns no durable state.
 func (service *L8Service) Close() {
-	if service != nil && service.jobs != nil {
+	if service == nil {
+		return
+	}
+	service.liveMu.Lock()
+	if service.closed {
+		service.liveMu.Unlock()
+		return
+	}
+	service.closed = true
+	live := service.live
+	service.live = nil
+	service.liveMu.Unlock()
+	for _, handle := range live {
+		if handle == nil {
+			continue
+		}
+		handle.mu.Lock()
+		if !handle.finished && handle.session != nil {
+			_, _ = handle.session.Revoke(context.Background(), "")
+		}
+		handle.mu.Unlock()
+	}
+	if service.jobs != nil {
 		service.jobs.close()
 	}
 }
@@ -145,16 +190,19 @@ func (service *L8Service) HandleAuthenticatedRequest(ctx context.Context, princi
 	if response, ok := contextErrorResponse(ctx, request); ok {
 		return response
 	}
+	if request.Operation == OperationJobCancelV2 {
+		return service.handleAuthenticatedJobCancelV2(ctx, principalID, request)
+	}
 	if request.Operation != OperationJobStartV2 || request.JobStartV2 == nil || !request.JobStartV2.ProductionCredentialsRequested {
 		return unsupportedOperationResponse(request)
 	}
 	if err := request.Validate(); err != nil {
 		return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeMalformedRequest, "malformed worker L8 job start request")
 	}
-	if _, existing, err := service.jobs.resolveAcceptedSubmission(request.DriverID, principalID, *request.JobStartV2); err != nil {
+	if job, existing, err := service.jobs.resolveAcceptedSubmission(request.DriverID, principalID, *request.JobStartV2); err != nil {
 		return l8ServiceFailureResponse(request)
 	} else if existing {
-		return unsupportedOperationResponse(request)
+		return l8JobV2SuccessResponse(request, job)
 	}
 
 	binding, err := service.binder.Bind(ctx, l8JobCredentialRuntimeTarget(request.JobStartV2.Exec.Target))
@@ -170,7 +218,7 @@ func (service *L8Service) HandleAuthenticatedRequest(ctx context.Context, princi
 		return l8ServiceFailureResponse(request)
 	}
 	if existing {
-		return unsupportedOperationResponse(request)
+		return l8JobV2SuccessResponse(request, job)
 	}
 	preflight, err := binding.Preflight(ctx)
 	if err != nil {
@@ -179,14 +227,43 @@ func (service *L8Service) HandleAuthenticatedRequest(ctx context.Context, princi
 		}
 		return l8ServiceFailureResponse(request)
 	}
-	if err := service.jobs.persistCredentialIdentity(job.ID, principalID, preflight.Identity()); err != nil {
+	identity := preflight.Identity()
+	if err := service.jobs.persistCredentialIdentity(job.ID, principalID, identity); err != nil {
 		_, _ = preflight.AbortBounded()
 		return l8ServiceFailureResponse(request)
 	}
-	if _, err := preflight.AbortBounded(); err != nil {
+	lifecycle, err := sandboxruntime.NewJobCredentialLifecycle(identity)
+	if err != nil {
+		_, _ = preflight.AbortBounded()
 		return l8ServiceFailureResponse(request)
 	}
-	return unsupportedOperationResponse(request)
+	if err := lifecycle.BeginPrepare(identity); err != nil {
+		_, _ = preflight.AbortBounded()
+		return l8ServiceFailureResponse(request)
+	}
+	session, err := preflight.Prepare(ctx, sandboxruntime.JobCredentialPrepareRequest{Identity: identity})
+	if err != nil {
+		service.completeFailedPreflight(job.ID, principalID, preflight, lifecycle)
+		if response, ok := contextErrorResponse(ctx, request); ok {
+			return response
+		}
+		return l8ServiceFailureResponse(request)
+	}
+	observedAt := time.Now().UTC()
+	if err := lifecycle.Activate(session.ActiveProof(), observedAt); err != nil {
+		service.completeFailedSession(job.ID, principalID, session, lifecycle)
+		return l8ServiceFailureResponse(request)
+	}
+	if err := service.jobs.persistCredentialRevision(job.ID, principalID, lifecycle.Revision()); err != nil {
+		service.completeFailedSession(job.ID, principalID, session, lifecycle)
+		return l8ServiceFailureResponse(request)
+	}
+	if !service.retainLiveJobCredential(job.ID, principalID, session, lifecycle, identity) {
+		service.completeFailedSession(job.ID, principalID, session, lifecycle)
+		return l8ServiceFailureResponse(request)
+	}
+	go service.watchJobCredentialLoss(job.ID, principalID, session)
+	return l8JobV2SuccessResponse(request, job)
 }
 
 func l8AuthenticatedPrincipalIdentity(authority *sandboxruntime.AuthenticatedWorkerPrincipalAuthority, principal sandboxruntime.AuthenticatedWorkerPrincipal) (string, bool) {
@@ -218,4 +295,179 @@ func l8ServiceFailureResponse(request Request) Response {
 
 func l8AuthenticatedPrincipalFailureResponse(request Request) Response {
 	return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeInternal, "authenticated worker principal was rejected")
+}
+
+func l8JobV2SuccessResponse(request Request, job JobV2) Response {
+	snapshot := cloneJobV2(job)
+	return Response{
+		ProtocolVersion: ProtocolVersion,
+		RequestID:       strings.TrimSpace(request.RequestID),
+		Operation:       request.Operation,
+		OK:              true,
+		JobV2:           &snapshot,
+	}
+}
+
+func (service *L8Service) handleAuthenticatedJobCancelV2(ctx context.Context, principalID string, request Request) Response {
+	if request.JobCancelV2 == nil {
+		return unsupportedOperationResponse(request)
+	}
+	if err := request.Validate(); err != nil {
+		return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeMalformedRequest, "malformed worker L8 job cancel request")
+	}
+	live := service.liveJobCredential(request.JobCancelV2.JobID, principalID)
+	if live != nil {
+		live.mu.Lock()
+		defer live.mu.Unlock()
+		if live.finished {
+			return l8ServiceFailureResponse(request)
+		}
+		proof, err := live.session.Revoke(ctx, "")
+		if err != nil || sandboxruntime.CleanupProofKind(proof) == "" {
+			return l8ServiceFailureResponse(request)
+		}
+		if live.lifecycle != nil {
+			if err := live.lifecycle.BeginRevoke(); err != nil {
+				return l8ServiceFailureResponse(request)
+			}
+			if _, err := live.lifecycle.Revoke(proof, time.Now().UTC()); err != nil {
+				return l8ServiceFailureResponse(request)
+			}
+		}
+	}
+	job, err := service.jobs.clearCredentialState(request.JobCancelV2.JobID, principalID, JobStateCanceled, "", time.Now().UTC(), live != nil)
+	if err != nil {
+		if err == errJobV2NotFound {
+			return protocolErrorResponse(request.RequestID, request.Operation, ErrorCodeJobNotFound, "worker job was not found")
+		}
+		return l8ServiceFailureResponse(request)
+	}
+	if live != nil {
+		live.finished = true
+		service.removeLiveJobCredential(request.JobCancelV2.JobID, live)
+	}
+	return l8JobV2SuccessResponse(request, job)
+}
+
+func (service *L8Service) watchJobCredentialLoss(jobID, principalID string, session *sandboxruntime.JobCredentialSessionBinding) {
+	if session == nil {
+		return
+	}
+	lossCh := session.Loss()
+	if lossCh == nil {
+		return
+	}
+	loss, ok := <-lossCh
+	if !ok {
+		return
+	}
+	live := service.liveJobCredential(jobID, principalID)
+	if live == nil {
+		return
+	}
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.finished {
+		return
+	}
+	if live.lifecycle != nil {
+		if err := live.lifecycle.ObserveLoss(loss); err != nil {
+			return
+		}
+	}
+	proof, err := live.session.Revoke(context.Background(), "")
+	if err != nil || sandboxruntime.CleanupProofKind(proof) == "" {
+		return
+	}
+	if live.lifecycle != nil {
+		if err := live.lifecycle.BeginRevoke(); err != nil {
+			return
+		}
+		if _, err := live.lifecycle.Revoke(proof, time.Now().UTC()); err != nil {
+			return
+		}
+	}
+	failureCode := string(loss.Code)
+	if !validWorkerV2SafeID(failureCode) {
+		failureCode = string(sandboxruntime.JobCredentialFailureCleanupIncomplete)
+	}
+	if _, err := service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, failureCode, time.Now().UTC(), true); err != nil {
+		return
+	}
+	live.finished = true
+	service.removeLiveJobCredential(jobID, live)
+}
+
+func (service *L8Service) retainLiveJobCredential(jobID, principalID string, session *sandboxruntime.JobCredentialSessionBinding, lifecycle *sandboxruntime.JobCredentialLifecycle, identity sandboxruntime.JobCredentialIdentity) bool {
+	if service == nil || jobID == "" || session == nil {
+		return false
+	}
+	service.liveMu.Lock()
+	defer service.liveMu.Unlock()
+	if service.closed || service.live == nil {
+		return false
+	}
+	service.live[jobID] = &l8LiveJobCredential{session: session, lifecycle: lifecycle, identity: identity, principal: principalID}
+	return true
+}
+
+func (service *L8Service) liveJobCredential(jobID, principalID string) *l8LiveJobCredential {
+	if service == nil {
+		return nil
+	}
+	service.liveMu.Lock()
+	defer service.liveMu.Unlock()
+	if service.live == nil {
+		return nil
+	}
+	handle := service.live[jobID]
+	if handle == nil || handle.principal != principalID {
+		return nil
+	}
+	return handle
+}
+
+func (service *L8Service) removeLiveJobCredential(jobID string, handle *l8LiveJobCredential) {
+	if service == nil || handle == nil {
+		return
+	}
+	service.liveMu.Lock()
+	defer service.liveMu.Unlock()
+	if service.live[jobID] == handle {
+		delete(service.live, jobID)
+	}
+}
+
+func (service *L8Service) completeFailedPreflight(jobID, principalID string, preflight *sandboxruntime.JobCredentialRuntimePreflightBinding, lifecycle *sandboxruntime.JobCredentialLifecycle) {
+	if service == nil || preflight == nil || lifecycle == nil {
+		return
+	}
+	proof, err := preflight.AbortBounded()
+	if err != nil {
+		return
+	}
+	if sandboxruntime.CleanupProofKind(proof) == "" {
+		return
+	}
+	if err := lifecycle.BeginRevoke(); err != nil {
+		return
+	}
+	if _, err := lifecycle.Revoke(proof, time.Now().UTC()); err != nil {
+		return
+	}
+	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, string(sandboxruntime.JobCredentialFailurePrepareFailed), time.Now().UTC(), true)
+}
+
+func (service *L8Service) completeFailedSession(jobID, principalID string, session *sandboxruntime.JobCredentialSessionBinding, lifecycle *sandboxruntime.JobCredentialLifecycle) {
+	if service == nil || session == nil || lifecycle == nil {
+		return
+	}
+	proof, err := session.Revoke(context.Background(), "")
+	if err != nil || sandboxruntime.CleanupProofKind(proof) == "" || lifecycle.BeginRevoke() != nil {
+		return
+	}
+	if _, err := lifecycle.Revoke(proof, time.Now().UTC()); err != nil {
+		return
+	}
+	_, _ = service.jobs.clearCredentialState(jobID, principalID, JobStateInterrupted, string(sandboxruntime.JobCredentialFailurePrepareFailed), time.Now().UTC(), true)
 }

@@ -704,20 +704,28 @@ read only as one direct selector on the exact receipt-typed parameter object.
 The permitted package functions have no receiver, contain exactly one
 receipt-typed parameter whose type object is the canonical root receipt or the
 exact imported root receipt, return only `error`, and read that parameter's
-`CommitID` exactly once. The root validator has no other parameter. The future
+`CommitID` exactly once. The root validator has no other parameter. The
 private-store converter instead returns exactly
 `(storedJobCredentialRuntimeRecoveryReceiptV1, error)` so it can copy the
 validated receipt plus seed into the private DTO. The functions are:
 the root `ValidateJobCredentialRuntimeRecoveryCommitReceipt`, concrete
 `firecrackerhost.commitJobCredentialRuntimeRecovery`, and, when worker receipt
 persistence lands, private-store
-`storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime`. The root validator and owner verifier land together; the private-store converter remains optional until worker receipt persistence lands.
-Accordingly, only `internal/sandboxworker/job_store_v2.go` may copy `CommitID` from the neutral
-receipt into the private DTO. Reflection, unsafe conversion, receipt aliases, receiver methods, closures, and helper escape are forbidden,
+`storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime`. Receipt replay is
+confined to the adjacent exact private-store decoder
+`storedJobCredentialRuntimeRecoveryReceiptV1ToRuntime`, which accepts only the
+private DTO, reconstructs and validates the sealed neutral receipt, and returns
+it only to the seed-bound recovery binding's commit call. The root validator
+and owner verifier land together; both private-store functions remain optional
+until worker receipt persistence lands.
+Accordingly, only `internal/sandboxworker/job_store_v2.go` may copy `CommitID`
+from the neutral receipt into the private DTO, and only
+`internal/sandboxworker/job_store_v2_recovery_receipt.go` may copy it back into
+the sealed neutral receipt for commit-only replay. Reflection, unsafe conversion, receipt aliases, receiver methods, closures, and helper escape are forbidden,
 as are same-name functions with an unrelated `CommitID` field, a receipt type
 alias, a wrong signature, or an indirect field read. Worker services, statuses,
 commands, runtime metadata, and every other file cannot project it, including
-through a cross-file alias. Any production file outside the three allowlisted
+through a cross-file alias. Any production file outside the four allowlisted
 files/functions that names the receipt type through a default, explicit, dot,
 or raw-string import fails the guard. A receipt-bearing allowlisted file also
 fails if it imports `reflect` or `unsafe`; reflection cannot hide a field read

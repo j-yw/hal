@@ -15,6 +15,8 @@ const maxStoredJobStateV2Bytes int64 = 64 << 10
 
 const storedJobCredentialContractVersionV2 = "sandboxjob-credential-private-v1"
 
+const storedJobCredentialRuntimeRecoveryReceiptContractV1 = "job-credential-runtime-recovery-receipt-v1"
+
 type storedJobCredentialIdentitySeedV1 struct {
 	SandboxID                    string    `json:"sandboxId"`
 	ExecutionID                  string    `json:"executionId"`
@@ -94,12 +96,20 @@ type storedJobCredentialStateV2 struct {
 	Revision        uint64                            `json:"revision"`
 }
 
+type storedJobCredentialRuntimeRecoveryReceiptV1 struct {
+	ContractVersion   string                            `json:"contractVersion"`
+	Seed              storedJobCredentialIdentitySeedV1 `json:"seed"`
+	CommitID          string                            `json:"commitId"`
+	FinalizedRevision uint64                            `json:"finalizedRevision"`
+}
+
 type storedJobStateV2 struct {
-	JobV2            JobV2
-	RequestKey       string                      `json:"requestKey"`
-	PrincipalID      string                      `json:"principalId"`
-	DaemonGeneration string                      `json:"daemonGeneration"`
-	CredentialState  *storedJobCredentialStateV2 `json:"credentialState,omitempty"`
+	JobV2                     JobV2
+	RequestKey                string                                       `json:"requestKey"`
+	PrincipalID               string                                       `json:"principalId"`
+	DaemonGeneration          string                                       `json:"daemonGeneration"`
+	CredentialState           *storedJobCredentialStateV2                  `json:"credentialState,omitempty"`
+	CredentialRecoveryReceipt *storedJobCredentialRuntimeRecoveryReceiptV1 `json:"credentialRecoveryReceipt,omitempty"`
 }
 
 type jobStoreV2 struct {
@@ -148,8 +158,19 @@ func (state storedJobStateV2) Validate() error {
 }
 
 func validateStoredJobCredentialStateV2(state storedJobStateV2) error {
+	if state.CredentialState != nil && state.CredentialRecoveryReceipt != nil {
+		return errors.New("stored worker job credential recovery state is invalid")
+	}
+	if state.CredentialRecoveryReceipt != nil {
+		if !state.JobV2.CredentialIntent.ProductionCredentialsRequested {
+			return errors.New("stored worker job credential recovery receipt is invalid")
+		}
+		return validateStoredJobCredentialRuntimeRecoveryReceiptV1(state)
+	}
 	if state.CredentialState == nil {
-		if state.JobV2.CredentialIntent.ProductionCredentialsRequested {
+		if state.JobV2.CredentialIntent.ProductionCredentialsRequested &&
+			state.JobV2.State != JobStateInterrupted && state.JobV2.State != JobStateCanceled &&
+			state.JobV2.State != JobStateFailed {
 			return errors.New("stored worker job credential state is required")
 		}
 		return nil
@@ -310,7 +331,49 @@ func cloneStoredJobCredentialStateV2(state *storedJobCredentialStateV2) *storedJ
 func cloneStoredJobStateV2(state storedJobStateV2) storedJobStateV2 {
 	state.JobV2 = cloneJobV2(state.JobV2)
 	state.CredentialState = cloneStoredJobCredentialStateV2(state.CredentialState)
+	state.CredentialRecoveryReceipt = cloneStoredJobCredentialRuntimeRecoveryReceiptV1(state.CredentialRecoveryReceipt)
 	return state
+}
+
+func cloneStoredJobCredentialRuntimeRecoveryReceiptV1(receipt *storedJobCredentialRuntimeRecoveryReceiptV1) *storedJobCredentialRuntimeRecoveryReceiptV1 {
+	if receipt == nil {
+		return nil
+	}
+	cloned := *receipt
+	cloned.Seed.BindingIDs = append([]string(nil), receipt.Seed.BindingIDs...)
+	cloned.Seed.DeliveryModes = append([]string(nil), receipt.Seed.DeliveryModes...)
+	return &cloned
+}
+
+func validateStoredJobCredentialRuntimeRecoveryReceiptV1(state storedJobStateV2) error {
+	receipt := state.CredentialRecoveryReceipt
+	if receipt.ContractVersion != storedJobCredentialRuntimeRecoveryReceiptContractV1 || receipt.FinalizedRevision == 0 {
+		return errors.New("stored worker job credential recovery receipt is invalid")
+	}
+	seed, err := receipt.Seed.runtimeSeed()
+	if err != nil || seed.WorkerID != state.JobV2.WorkerID || seed.WorkerJobID != state.JobV2.ID {
+		return errors.New("stored worker job credential recovery receipt is invalid")
+	}
+	return nil
+}
+
+func storedJobCredentialRuntimeRecoveryReceiptV1FromRuntime(seed storedJobCredentialIdentitySeedV1, receipt sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt) (storedJobCredentialRuntimeRecoveryReceiptV1, error) {
+	if err := sandboxruntime.ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt); err != nil {
+		return storedJobCredentialRuntimeRecoveryReceiptV1{}, errors.New("worker job credential recovery receipt is invalid")
+	}
+	clonedSeed := seed
+	clonedSeed.BindingIDs = append([]string(nil), seed.BindingIDs...)
+	clonedSeed.DeliveryModes = append([]string(nil), seed.DeliveryModes...)
+	if _, err := clonedSeed.runtimeSeed(); err != nil {
+		return storedJobCredentialRuntimeRecoveryReceiptV1{}, errors.New("worker job credential recovery receipt is invalid")
+	}
+	commitID := receipt.CommitID
+	return storedJobCredentialRuntimeRecoveryReceiptV1{
+		ContractVersion:   storedJobCredentialRuntimeRecoveryReceiptContractV1,
+		Seed:              clonedSeed,
+		CommitID:          commitID,
+		FinalizedRevision: receipt.FinalizedRevision,
+	}, nil
 }
 
 func storedJobCredentialBindingsExactV2(seed sandboxruntime.JobCredentialIdentitySeed, intent JobCredentialIntentV2) bool {
@@ -439,14 +502,26 @@ func (store *jobStoreV2) list() ([]storedJobStateV2, error) {
 }
 
 func reconcileJobStoreV2AtStartup(store *jobStoreV2, restartAt time.Time) ([]storedJobStateV2, error) {
+	return reconcileJobStoreV2AtStartupWithRecovery(store, restartAt, nil)
+}
+
+func reconcileJobStoreV2AtStartupWithRecovery(store *jobStoreV2, restartAt time.Time, recovery sandboxruntime.JobCredentialRuntimeRecoveryProvider) ([]storedJobStateV2, error) {
 	states, err := store.list()
 	if err != nil {
 		return nil, err
 	}
-	for _, state := range states {
-		if state.CredentialState != nil {
+	for index := range states {
+		if states[index].CredentialState == nil && states[index].CredentialRecoveryReceipt == nil {
+			continue
+		}
+		if sandboxruntime.JobCredentialRuntimeInterfaceNil(recovery) {
 			return nil, ErrL8RecoveryDependency
 		}
+		recovered, recoverErr := recoverStoredJobCredentialsV2(store, states[index], recovery, restartAt)
+		if recoverErr != nil {
+			return nil, recoverErr
+		}
+		states[index] = recovered
 	}
 	for index := range states {
 		if states[index].JobV2.State != JobStateQueued {

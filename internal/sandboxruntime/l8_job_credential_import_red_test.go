@@ -26,6 +26,7 @@ func TestL8JobCredentialLiveHandlesUseOnlySafeFormattingAndDenialCodecs(t *testi
 		"JobCredentialRuntimeBinder":                {},
 		"JobCredentialRuntimeBinding":               {},
 		"JobCredentialRuntimePreflightBinding":      {},
+		"JobCredentialSessionBinding":               {},
 		"JobCredentialRuntimeAbsenceProof":          {},
 		"JobCredentialRuntimeRecoveryCommitReceipt": {},
 	}
@@ -309,6 +310,7 @@ func l8JobCredentialFormatLiterals() map[string]string {
 		"JobCredentialRuntimeBinder":                "<sandboxruntime.JobCredentialRuntimeBinder>",
 		"JobCredentialRuntimeBinding":               "<sandboxruntime.JobCredentialRuntimeBinding>",
 		"JobCredentialRuntimePreflightBinding":      "<sandboxruntime.JobCredentialRuntimePreflightBinding>",
+		"JobCredentialSessionBinding":               "<sandboxruntime.JobCredentialSessionBinding>",
 		"JobCredentialRuntimeAbsenceProof":          "<sandboxruntime.JobCredentialRuntimeAbsenceProof>",
 		"JobCredentialRuntimeRecoveryCommitReceipt": "[job-credential-runtime-recovery-commit-receipt]",
 	}
