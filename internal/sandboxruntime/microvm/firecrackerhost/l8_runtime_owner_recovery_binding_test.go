@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecrackerhost/l7network"
 )
 
 func TestL8RuntimeOwnerRecoveryBindingSatisfiesInterface(t *testing.T) {
@@ -220,6 +221,109 @@ func TestL8RuntimeOwnerRecoveryBindingFinalizeFailClosesWithoutRecoveredL7Bindin
 	}
 	if store.record.State != "absent" {
 		t.Fatalf("old-boot retired state: %#v", store.record)
+	}
+
+	loadErr := &l8RuntimeOwnerRecoveryBinding{
+		seed: seed, commitKey: bytes32("0123456789abcdef0123456789abcdef"),
+		store: l8RuntimeOwnerMissingStore{}, now: func() time.Time { return now },
+		currentBootID: func() (string, error) { return record.HostBootID, nil },
+		recoverNetwork: func(context.Context, l7network.Identity, l7network.TerminatedVMBinding) error {
+			t.Fatal("load error must not be treated as absence")
+			return nil
+		},
+	}
+	if receipt, err := loadErr.FinalizeJobCredentialRuntimeRecovery(context.Background(), proof); receipt != (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{}) || !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("load-error finalize = %#v, %v", receipt, err)
+	}
+}
+
+func TestL8RuntimeOwnerRecoveryBindingFinalizePersistsFinalizedAfterSameBootCleanup(t *testing.T) {
+	if !l8RuntimeOwnerPlatformSupported() {
+		t.Skip("Linux-only recovery binding")
+	}
+	seed := l8RuntimeOwnerTestSeed()
+	now := seed.IssuedAt.Add(time.Minute)
+	record := l8RuntimeOwnerTestRecord(t, seed, "01234567-89ab-cdef-0123-456789abcdef")
+	record.State, record.ControllerState = "absent", "controlled"
+	binding, store := l8RuntimeOwnerTestRecoveryBinding(t, record, nil)
+	binding.now = func() time.Time { return now }
+	var cleaned l7network.Identity
+	var cleanedBinding l7network.TerminatedVMBinding
+	cleanupCalls := 0
+	binding.recoverNetwork = func(_ context.Context, identity l7network.Identity, terminated l7network.TerminatedVMBinding) error {
+		cleanupCalls++
+		cleaned = identity
+		cleanedBinding = terminated
+		return nil
+	}
+	proof, err := sandboxruntime.NewJobCredentialRuntimeAbsenceProof(sandboxruntime.JobCredentialRuntimeAbsenceProofInput{
+		Seed: seed, AbsenceInspectedAt: seed.IssuedAt.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := binding.FinalizeJobCredentialRuntimeRecovery(context.Background(), proof)
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if store.record.State != "finalized" || store.retiredFinal || cleanupCalls != 1 {
+		t.Fatalf("finalize state = %#v retired %t cleanup %d", store.record, store.retiredFinal, cleanupCalls)
+	}
+	if len(store.transitions) != 2 || store.transitions[0].State != "finalizing" || store.transitions[1].State != "finalized" {
+		t.Fatalf("finalize transitions = %#v", store.transitions)
+	}
+	if cleaned != l8RuntimeOwnerL7Identity(seed) || cleanedBinding == nil || cleanedBinding.VMTerminationProofID() == "" {
+		t.Fatalf("cleanup identity/binding = %#v %T", cleaned, cleanedBinding)
+	}
+	if err := sandboxruntime.ValidateJobCredentialRuntimeRecoveryCommitReceipt(receipt); err != nil {
+		t.Fatalf("receipt: %v", err)
+	}
+	if commitJobCredentialRuntimeRecovery(receipt, binding.commitKey, seed, store.record.FinalizeTargetRevision, store.record.FinalizedCommitID) != nil {
+		t.Fatal("receipt HMAC is not bound to the stored commit ID")
+	}
+	if err := binding.CommitJobCredentialRuntimeRecovery(context.Background(), receipt); err != nil {
+		t.Fatalf("commit after finalize: %v", err)
+	}
+	if !store.retiredFinal {
+		t.Fatal("commit did not retire finalized record")
+	}
+
+	store.retiredFinal = false
+	store.record.State, store.record.ControllerState = "finalized", "controlled"
+	again, err := binding.FinalizeJobCredentialRuntimeRecovery(context.Background(), proof)
+	if err != nil || cleanupCalls != 1 {
+		t.Fatalf("idempotent finalize: %v cleanup %d", err, cleanupCalls)
+	}
+	if commitJobCredentialRuntimeRecovery(again, binding.commitKey, seed, store.record.FinalizeTargetRevision, store.record.FinalizedCommitID) != nil {
+		t.Fatal("idempotent receipt is not bound to the stored commit ID")
+	}
+}
+
+func TestL8RuntimeOwnerRecoveryBindingFinalizeFailClosesWhenCleanupIncomplete(t *testing.T) {
+	if !l8RuntimeOwnerPlatformSupported() {
+		t.Skip("Linux-only recovery binding")
+	}
+	seed := l8RuntimeOwnerTestSeed()
+	now := seed.IssuedAt.Add(time.Minute)
+	record := l8RuntimeOwnerTestRecord(t, seed, "01234567-89ab-cdef-0123-456789abcdef")
+	record.State, record.ControllerState = "absent", "controlled"
+	binding, store := l8RuntimeOwnerTestRecoveryBinding(t, record, nil)
+	binding.now = func() time.Time { return now }
+	binding.recoverNetwork = func(context.Context, l7network.Identity, l7network.TerminatedVMBinding) error {
+		return l7network.ErrCleanupIncomplete
+	}
+	proof, err := sandboxruntime.NewJobCredentialRuntimeAbsenceProof(sandboxruntime.JobCredentialRuntimeAbsenceProofInput{
+		Seed: seed, AbsenceInspectedAt: seed.IssuedAt.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := binding.FinalizeJobCredentialRuntimeRecovery(context.Background(), proof)
+	if receipt != (sandboxruntime.JobCredentialRuntimeRecoveryCommitReceipt{}) || !errors.Is(err, errL8RuntimeOwnerInvalid) {
+		t.Fatalf("incomplete cleanup finalize = %#v, %v", receipt, err)
+	}
+	if store.record.State != "absent" || store.retiredFinal {
+		t.Fatalf("incomplete cleanup mutated owner state: %#v retired %t", store.record, store.retiredFinal)
 	}
 }
 

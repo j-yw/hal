@@ -216,12 +216,10 @@ private type `l8RuntimeOwnerRecoveryBinding`
 but does not implement `FinalizeJobCredentialRuntimeRecovery`, a concrete
 provider, process signaling, supervisor control, or L7 cleanup.
 
-The recovered `l7network.TerminatedVMBinding` constructor remains absent.
-Existing production termination bindings depend on the same-process in-memory
-process tracker, while the restart path needs independently reacquired process
-absence correlated to the recovered L7 journal. R1 therefore cannot honestly
-finalize or satisfy the neutral binding. Old-boot journal retirement also
-remains unavailable and fail-closed; no private `l7network` schema is copied or
+R1 left recovered L7 termination construction to a later slice because existing
+production termination bindings depend on the same-process in-memory process
+tracker, while the restart path needs independently reacquired process absence
+correlated to the recovered L7 journal. Old-boot journal retirement also remains unavailable and fail-closed; no private `l7network` schema is copied or
 invented here.
 
 The strict Linux store walks every absolute path component with `openat` plus
@@ -279,6 +277,7 @@ sole production `NewJobCredentialRuntimeAbsenceProof` callsite in
 `l8_runtime_owner_recovery.go`, and it issues a proof only after the private
 owner has proved exact absence by direct-parent Wait or replacement
 double-`/proc`. The AST guard is tightened from zero host issuers to exactly
-that one StopReap callsite. Finalize fail-closes without a recovered L7 `TerminatedVMBinding`; old-boot journal retirement remains fail-closed.
+that one StopReap callsite. Finalize constructs `l7network.NewRecoveredVMTerminationBinding`
+and persists `finalized` only after same-boot `CleanupAfterVMQuiesced`; old-boot journal retirement remains fail-closed.
 `commitJobCredentialRuntimeRecovery` remains the sole owner `CommitID` reader.
 Default constructors, sandboxd, and command execution stay unwired.
