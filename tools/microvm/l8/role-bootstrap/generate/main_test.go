@@ -168,11 +168,23 @@ func TestL8D7NativeRoleBootstrapELFIsFreestandingStaticExec(t *testing.T) {
 	if compiled.Action(0xc000003e, 231, [6]uint64{}) != syscallpolicy.ActionAllow {
 		t.Fatal("compiled launch-base filter does not allow exit_group")
 	}
+	if compiled.Action(0xc000003e, 435, [6]uint64{1, 88}) != syscallpolicy.ActionAllow {
+		t.Fatal("compiled launch-base filter does not allow the exact clone3 pointer/size template")
+	}
 	if compiled.Action(0xc000003e, 435, [6]uint64{}) != syscallpolicy.ActionErrnoEPERM {
-		t.Fatal("compiled launch-base filter does not fail-closed EPERM clone3 without an exact template")
+		t.Fatal("compiled launch-base filter does not fail-closed EPERM clone3 without matching the exact template")
+	}
+	if compiled.Action(0xc000003e, 435, [6]uint64{0, 88}) != syscallpolicy.ActionErrnoEPERM {
+		t.Fatal("compiled launch-base filter does not fail-closed EPERM clone3 with a missing clone_args pointer")
+	}
+	if compiled.Action(0xc000003e, 435, [6]uint64{1, 64}) != syscallpolicy.ActionErrnoEPERM {
+		t.Fatal("compiled launch-base filter does not fail-closed EPERM clone3 with the wrong clone_args size")
 	}
 	if compiled.Action(0xc000003e, 59, [6]uint64{}) != syscallpolicy.ActionErrnoEPERM {
-		t.Fatal("compiled launch-base filter does not fail-closed EPERM execve without an exact template")
+		t.Fatal("compiled launch-base filter does not fail-closed EPERM execve without an exact pathname template")
+	}
+	if compiled.Action(0xc000003e, 59, [6]uint64{1, 1, 0}) != syscallpolicy.ActionErrnoEPERM {
+		t.Fatal("compiled launch-base filter allowed execve; pathname strings are not HL8Q-scalar-encodable")
 	}
 
 	for _, args := range [][]string{
