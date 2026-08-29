@@ -345,6 +345,27 @@ func helperExecBodyFromExec(exec v2control.CredentialExecRequest) (credentialpro
 	return body, nil
 }
 
+func helperExecPrivateAdmission(exec v2control.CredentialExecRequest) (length uint32, digest [32]byte, ok bool) {
+	count := exec.PrivateRecordCount()
+	bytes := exec.PrivateAggregateBytes()
+	switch {
+	case count == 0 && bytes == 0:
+		digest, err := helperExecPrivateDigestFromControl(0, exec.PrivateAggregateSHA256())
+		if err != nil {
+			return 0, [32]byte{}, false
+		}
+		return 0, digest, true
+	case count == 1 && bytes >= 1 && bytes <= uint64(credentialprotocol.MaxHelperExecPrivateBytes):
+		digest, err := helperExecPrivateDigestFromControl(uint32(bytes), exec.PrivateAggregateSHA256())
+		if err != nil || digest == ([32]byte{}) {
+			return 0, [32]byte{}, false
+		}
+		return uint32(bytes), digest, true
+	default:
+		return 0, [32]byte{}, false
+	}
+}
+
 func helperExecPrivateDigestFromControl(length uint32, digestHex string) ([32]byte, error) {
 	var digest [32]byte
 	if len(digestHex) != hex.EncodedLen(len(digest)) || digestHex != strings.ToLower(digestHex) {

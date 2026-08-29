@@ -337,10 +337,41 @@ func wipeHelperPrepareFileOwner(owner *helperPrepareFileOwner) {
 	}
 }
 
+// helperExecPrivateOwner is the opaque wipeable owner for one admitted
+// exec-private payload. Value copies share wipe state. Private bytes are
+// defensively copied into cap==len storage, never logged or serialized.
+type helperExecPrivateOwner struct {
+	liveValue
+	body *credentialprotocol.HelperExecPrivateBody
+}
+
+func newHelperExecPrivateOwner(revision uint64, privateBindingSHA256 [32]byte, privateBytes []byte) (*helperExecPrivateOwner, error) {
+	body, err := credentialprotocol.NewHelperExecPrivateBody(revision, privateBindingSHA256, privateBytes)
+	if err != nil {
+		return nil, err
+	}
+	return &helperExecPrivateOwner{body: body}, nil
+}
+
+func (owner *helperExecPrivateOwner) Wipe() {
+	if owner == nil || owner.body == nil {
+		return
+	}
+	owner.body.Wipe()
+	owner.body = nil
+}
+
+func wipeHelperExecPrivateOwner(owner *helperExecPrivateOwner) {
+	if owner != nil {
+		owner.Wipe()
+	}
+}
+
 type helperExecPrivateArm struct {
 	revision             uint64
 	privateBindingLength uint32
 	privateBindingSHA256 [32]byte
+	owner                *helperExecPrivateOwner
 }
 
 type helperSendArm struct {
@@ -1330,6 +1361,11 @@ func (sink *exactPrivateByteSink) WriteCredential(source []byte) error {
 	return nil
 }
 
+func helperSendPrivateOwnerUnaccepted(kind helperSendArmKind, err error) bool {
+	return err != nil && errors.Is(err, ErrClientControlDependencyUnaccepted) &&
+		(kind == helperSendArmPrepareFile || kind == helperSendArmExecPrivate)
+}
+
 func copyControllerPrepareFileOwner(
 	ctx context.Context,
 	body controllerBodyCapability,
@@ -1371,6 +1407,54 @@ func copyControllerPrepareFileOwner(
 	})
 	if borrowErr != nil {
 		wipeHelperPrepareFileOwner(owner)
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	if owner == nil {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	return owner, nil
+}
+
+func copyControllerExecPrivateOwner(
+	ctx context.Context,
+	body controllerBodyCapability,
+	revision uint64,
+	privateBindingSHA256 [32]byte,
+	expectedLength uint32,
+) (*helperExecPrivateOwner, error) {
+	if ctx == nil || ctx.Err() != nil || !configuredDependency(body) ||
+		expectedLength == 0 || expectedLength > credentialprotocol.MaxHelperExecPrivateBytes {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	length, digest, ok := controllerBodyMetadata(body)
+	if !ok || length != expectedLength || digest != privateBindingSHA256 {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	var owner *helperExecPrivateOwner
+	borrowErr := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
+		if view == nil || view.Len() != int(expectedLength) {
+			return ErrClientControlDependencyUnaccepted
+		}
+		buf := make([]byte, expectedLength)
+		sink := &exactPrivateByteSink{target: buf}
+		if writeErr := view.WriteTo(ctx, sink); writeErr != nil {
+			clear(buf)
+			return writeErr
+		}
+		if sink.failed || sink.offset != len(buf) {
+			clear(buf)
+			return ErrClientControlDependencyUnaccepted
+		}
+		created, err := newHelperExecPrivateOwner(revision, privateBindingSHA256, buf)
+		clear(buf)
+		if err != nil {
+			return ErrClientControlDependencyUnaccepted
+		}
+		owner = created
+		return nil
+	})
+	if borrowErr != nil {
+		wipeHelperExecPrivateOwner(owner)
 		return nil, ErrClientControlDependencyUnaccepted
 	}
 	if owner == nil {
@@ -1459,7 +1543,7 @@ func (packet HelperSendPacket) writeCanonicalBody(sink bodySegmentSink) (err err
 	}()
 	switch packet.arm {
 	case helperSendArmPrepareBegin, helperSendArmPrepareCommit, helperSendArmRenew, helperSendArmRevoke, helperSendArmExec, helperSendArmExecCredit, helperSendArmClose:
-	case helperSendArmPrepareFile:
+	case helperSendArmPrepareFile, helperSendArmExecPrivate:
 		if packet.state == nil {
 			return ErrClientControlDependencyUnaccepted
 		}
@@ -1479,16 +1563,22 @@ func (packet HelperSendPacket) writeCanonicalBody(sink bodySegmentSink) (err err
 	packet.state.owner = nil
 	packet.state.mu.Unlock()
 	defer func() { _ = destroyHelperBody(owner.body) }()
-	if packet.arm == helperSendArmPrepareFile {
+	switch packet.arm {
+	case helperSendArmPrepareFile:
 		defer wipeHelperPrepareFileOwner(owner.arm.prepareFile.owner)
 		if owner.arm.prepareFile.owner == nil || owner.arm.prepareFile.owner.body == nil {
+			return ErrClientControlDependencyUnaccepted
+		}
+	case helperSendArmExecPrivate:
+		defer wipeHelperExecPrivateOwner(owner.arm.execPrivate.owner)
+		if owner.arm.execPrivate.owner == nil || owner.arm.execPrivate.owner.body == nil {
 			return ErrClientControlDependencyUnaccepted
 		}
 	}
 	body, encodeErr := encodeHelperSendCanonicalBody(packet.arm, owner.arm)
 	defer clear(body)
 	if encodeErr != nil || uint64(len(body)) != uint64(packet.encodedBodyLength) || packet.header.BodyLength != packet.encodedBodyLength || sha256.Sum256(body) != packet.bodySHA256 {
-		if packet.arm == helperSendArmPrepareFile && encodeErr != nil && errors.Is(encodeErr, ErrClientControlDependencyUnaccepted) {
+		if helperSendPrivateOwnerUnaccepted(packet.arm, encodeErr) {
 			return ErrClientControlDependencyUnaccepted
 		}
 		return errInvalidHelperSendPacket
@@ -1538,6 +1628,11 @@ func encodeHelperSendCanonicalBody(kind helperSendArmKind, arm helperSendArm) ([
 		return credentialprotocol.EncodeHelperRevokeBody(arm.revoke)
 	case helperSendArmExec:
 		return credentialprotocol.EncodeHelperExecBody(arm.exec)
+	case helperSendArmExecPrivate:
+		if arm.execPrivate.owner == nil || arm.execPrivate.owner.body == nil {
+			return nil, ErrClientControlDependencyUnaccepted
+		}
+		return credentialprotocol.EncodeHelperExecPrivateBody(arm.execPrivate.owner.body)
 	case helperSendArmExecCredit:
 		if arm.execCredit.StreamKind != credentialprotocol.HelperExecStreamStdout &&
 			arm.execCredit.StreamKind != credentialprotocol.HelperExecStreamStderr {
@@ -1593,6 +1688,22 @@ func newHelperExecSendPacket(header credentialprotocol.HelperPacketHeader, body 
 	return newHelperMetadataSendPacket(header, helperSendArmExec, helperSendArm{kind: helperSendArmExec, exec: cloned})
 }
 
+func newHelperExecPrivateSendPacket(header credentialprotocol.HelperPacketHeader, owner *helperExecPrivateOwner) (HelperSendPacket, error) {
+	if owner == nil || owner.body == nil {
+		return HelperSendPacket{}, ErrClientControlDependencyUnaccepted
+	}
+	body := owner.body
+	return newHelperMetadataSendPacket(header, helperSendArmExecPrivate, helperSendArm{
+		kind: helperSendArmExecPrivate,
+		execPrivate: helperExecPrivateArm{
+			revision:             body.Revision(),
+			privateBindingLength: body.PrivateBindingLength(),
+			privateBindingSHA256: body.PrivateBindingSHA256(),
+			owner:                owner,
+		},
+	})
+}
+
 func newHelperExecCreditSendPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperExecCreditBody) (HelperSendPacket, error) {
 	if body.StreamKind != credentialprotocol.HelperExecStreamStdout &&
 		body.StreamKind != credentialprotocol.HelperExecStreamStderr {
@@ -1613,7 +1724,7 @@ func newHelperMetadataSendPacket(header credentialprotocol.HelperPacketHeader, k
 	encoded, err := encodeHelperSendCanonicalBody(kind, arm)
 	if err != nil || len(encoded) == 0 {
 		clear(encoded)
-		if kind == helperSendArmPrepareFile && err != nil && errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		if helperSendPrivateOwnerUnaccepted(kind, err) {
 			return HelperSendPacket{}, ErrClientControlDependencyUnaccepted
 		}
 		return HelperSendPacket{}, errInvalidHelperSendPacket

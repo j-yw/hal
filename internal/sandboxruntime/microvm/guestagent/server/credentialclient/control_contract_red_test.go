@@ -1150,6 +1150,26 @@ func TestL8D6GuestPacketHelperSendWriteCanonicalBody(t *testing.T) {
 			typ:  credentialprotocol.PacketTypeExec,
 		},
 		{
+			name: "exec-private",
+			issue: func() (HelperSendPacket, error) {
+				owner, err := newHelperExecPrivateOwner(3, sha256.Sum256([]byte("exec-private")), []byte("exec-private"))
+				if err != nil {
+					return HelperSendPacket{}, err
+				}
+				t.Cleanup(owner.Wipe)
+				return newHelperExecPrivateSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), owner)
+			},
+			want: mustEncode(t, func() ([]byte, error) {
+				body, err := credentialprotocol.NewHelperExecPrivateBody(3, sha256.Sum256([]byte("exec-private")), []byte("exec-private"))
+				if err != nil {
+					return nil, err
+				}
+				defer body.Wipe()
+				return credentialprotocol.EncodeHelperExecPrivateBody(body)
+			}),
+			typ: credentialprotocol.PacketTypeExecPrivate,
+		},
+		{
 			name: "exec-credit",
 			issue: func() (HelperSendPacket, error) {
 				return newHelperExecCreditSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), credit)
@@ -1227,6 +1247,9 @@ func TestL8D6GuestPacketHelperSendWriteCanonicalBody(t *testing.T) {
 	if err := (HelperSendPacket{arm: helperSendArmExecPrivate}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("exec-private helper send write error = %v", err)
 	}
+	if _, err := newHelperExecPrivateSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("nil exec-private owner constructor error = %v", err)
+	}
 	if err := (HelperSendPacket{arm: helperSendArmExecStream}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("exec-stream helper send write error = %v", err)
 	}
@@ -1251,6 +1274,28 @@ func TestL8D7GuestHelperPrepareFileOwnerWipesAndDeniesSerialization(t *testing.T
 	}
 	if owner.body != nil {
 		t.Fatal("prepare-file owner retained private bytes after send")
+	}
+}
+
+func TestL8D7GuestHelperExecPrivateOwnerWipesAndDeniesSerialization(t *testing.T) {
+	payload := []byte("exec-private")
+	digest := sha256.Sum256(payload)
+	owner, err := newHelperExecPrivateOwner(1, digest, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFailsClosed(t, *owner)
+	assertFailsClosed(t, owner)
+	packet, err := newHelperExecPrivateSendPacket(testHelperHeader(0, 1, testHelperPacketRequestID(), testHelperPacketIdentity(), testHelperPacketNonce(), 0), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testCanonicalBodySink{capacity: packet.encodedBodyLengthValue()}
+	if err := packet.writeCanonicalBody(sink); err != nil {
+		t.Fatalf("writeCanonicalBody() error = %v", err)
+	}
+	if owner.body != nil {
+		t.Fatal("exec-private owner retained private bytes after send")
 	}
 }
 
