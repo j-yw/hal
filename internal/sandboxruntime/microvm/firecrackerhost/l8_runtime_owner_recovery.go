@@ -87,6 +87,7 @@ type l8RuntimeOwnerRecoveryBinding struct {
 	now                func() time.Time
 	recoverNetwork     func(context.Context, l7network.Identity, l7network.TerminatedVMBinding) error
 	l7Reconciler       l7network.ReconcilerOptions
+	l7SessionFactory   *ProductionL7RecoverySessionFactory
 	closed             bool
 	commitOnly         bool
 }
@@ -220,6 +221,7 @@ func (binding *l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecove
 	key := binding.commitKey
 	recoverNetwork := binding.recoverNetwork
 	l7Options := binding.l7Reconciler
+	factory := binding.l7SessionFactory
 	binding.mu.Unlock()
 	now := time.Now().UTC()
 	if nowFn != nil {
@@ -257,6 +259,14 @@ func (binding *l8RuntimeOwnerRecoveryBinding) FinalizeJobCredentialRuntimeRecove
 	if record.ControllerState != "controlled" || ctx.Err() != nil {
 		err = errL8RuntimeOwnerInvalid
 		return
+	}
+	if recoverNetwork == nil && factory != nil {
+		options, optErr := factory.ReconcilerOptions()
+		if optErr != nil {
+			err = errL8RuntimeOwnerInvalid
+			return
+		}
+		l7Options = options
 	}
 	digest, digestErr := l8RuntimeOwnerSeedDigest(seed)
 	if digestErr != nil {

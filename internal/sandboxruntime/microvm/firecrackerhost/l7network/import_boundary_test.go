@@ -53,7 +53,7 @@ func TestFirecrackerHostTopologyIsNotWiredIntoDefaultPaths(t *testing.T) {
 			continue
 		}
 		if entry.Name() == "l7_runtime_controller.go" || entry.Name() == "l7_live_composition.go" ||
-			entry.Name() == "l8_runtime_owner_recovery.go" {
+			entry.Name() == "l8_runtime_owner_recovery.go" || entry.Name() == "l8_l7_recovery_session_factory.go" {
 			continue
 		}
 		payload, err := os.ReadFile(filepath.Join(parent, entry.Name()))
