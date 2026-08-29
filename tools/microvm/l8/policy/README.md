@@ -34,17 +34,19 @@ and `runtime.*` is not a target set. Pinned-direct allow is only
 `internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Named Go
 PID1 extras are explicit D7 `runtimeEnvelope` / launch-base origin-3
 rows, not prefix membership. Named native `_start` identity-preflight
-plus PID1 listen-table, launch-base seccomp, clone3, and execve extras are
-explicit D7 `nativeEnvelope` / launch-bootstrap origin-1 rows, used only
-for the native bootstrap binary. Prefix is not authority. Reachable
+plus PID1 listen-table, launch-base seccomp, clone3, execve, and recvmsg
+extras are explicit D7 `nativeEnvelope` / launch-bootstrap origin-1 rows,
+used only for the native bootstrap binary. Prefix is not authority. Reachable
 `syscall.rawSyscallNoError.abi0` and `syscall.rawVforkSyscall.abi0`
 CALL/JMP sites recover the linux/amd64 trap/number from the direct
 caller's `MOVQ $imm` into the trap slot or AX; catalog-listed names
 are not extras, unlisted names remain extras, and unproven numbers
 stay `unknown:symbol`. Go `clone` and `clone3` remain extras because they
 are process-creation/shim authority without exact argument templates in
-the Go runtime envelope. Native `_start` catalogs `clone3` and `execve`
-for the bootstrap binary only.
+the Go runtime envelope. Native `_start` catalogs `clone3`, `execve`, and
+`recvmsg` for the bootstrap binary only. Launch-base does not allow
+`sendmsg`/`recvmsg` by catalog name: classic seccomp cannot see SCM_RIGHTS
+fd contents.
 `runtime.reviewerAuthority` is extra if reachable with an unlisted
 named syscall. A singular ELF that happens to embed HL8Q
 and a generic Go runtime syscall symbol does not prove its role identity

@@ -219,10 +219,10 @@ func TestL8D7NativeEnvelopeLockIsExactNamedNativeStartCatalog(t *testing.T) {
 	if !equalStringSlices(document.NativeEnvelope, want) {
 		t.Fatalf("nativeEnvelope = %v, want %v", document.NativeEnvelope, want)
 	}
-	if len(want) != 16 || want[0] != "getuid" || want[6] != "socket" || want[11] != "prctl" || want[12] != "seccomp" || want[13] != "clone3" || want[14] != "execve" || want[len(want)-1] != "exit_group" {
+	if len(want) != 17 || want[0] != "getuid" || want[6] != "socket" || want[11] != "prctl" || want[12] != "seccomp" || want[13] != "clone3" || want[14] != "execve" || want[15] != "recvmsg" || want[len(want)-1] != "exit_group" {
 		t.Fatalf("exactNativeEnvelope() = %v", want)
 	}
-	for _, name := range []string{"clone", "sendmsg", "recvmsg", "execveat"} {
+	for _, name := range []string{"clone", "sendmsg", "execveat"} {
 		for _, got := range want {
 			if got == name {
 				t.Fatalf("exactNativeEnvelope() includes forbidden syscall %s: %v", name, want)
@@ -313,13 +313,17 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesAreExactAndFailClosed(t *testing.T) 
 		{name: "execve monitor pathname registers", nr: 59, args: [6]uint64{3, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "execve shim pathname registers", nr: 59, args: [6]uint64{4, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "execve nonempty envp", nr: 59, args: [6]uint64{1, 1, 1}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "recvmsg empty", nr: 47, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "recvmsg fd 16 MSG_CMSG_CLOEXEC|MSG_DONTWAIT", nr: 47, args: [6]uint64{16, 1, 0x40000040}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "sendmsg empty", nr: 46, want: syscallpolicy.ActionKillProcess},
+		{name: "sendmsg catalog name only", nr: 46, args: [6]uint64{16, 1, 0}, want: syscallpolicy.ActionKillProcess},
 	} {
 		if got := compiled.Action(auditArch, test.nr, test.args); got != test.want {
 			t.Fatalf("%s Action() = %v, want %v", test.name, got, test.want)
 		}
 	}
 	for _, name := range exactRuntimeEnvelope() {
-		if name == "clone" || name == "clone3" || name == "execve" {
+		if name == "clone" || name == "clone3" || name == "execve" || name == "sendmsg" || name == "recvmsg" {
 			t.Fatalf("runtimeEnvelope includes process-creation syscall %s", name)
 		}
 	}

@@ -39,6 +39,8 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 
 	clone3HasTemplate := false
 	execveRuleCount := 0
+	sendmsgRuleCount := 0
+	recvmsgRuleCount := 0
 	for _, rule := range profile.Rules() {
 		switch rule.SyscallNumber() {
 		case 435:
@@ -48,6 +50,10 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 			}
 		case 59:
 			execveRuleCount++
+		case 46:
+			sendmsgRuleCount++
+		case 47:
+			recvmsgRuleCount++
 		}
 	}
 	if !clone3HasTemplate {
@@ -55,6 +61,9 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 	}
 	if execveRuleCount != 0 {
 		t.Fatal("launch-base filter encoded an execve row; pathname templates are not HL8Q-scalar-encodable so execve must stay unlisted EPERM")
+	}
+	if sendmsgRuleCount != 0 || recvmsgRuleCount != 0 {
+		t.Fatal("launch-base filter encoded a sendmsg/recvmsg row; SCM_RIGHTS cmsg contents are not HL8Q-scalar-encodable")
 	}
 
 	pathnames := []string{
@@ -86,6 +95,10 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 		{name: "clone3 catalog name only", nr: 435},
 		{name: "execve empty", nr: 59},
 		{name: "execve nonempty envp", nr: 59, args: [6]uint64{1, 1, 1}},
+		{name: "recvmsg empty", nr: 47},
+		{name: "recvmsg fd 16 MSG_CMSG_CLOEXEC|MSG_DONTWAIT", nr: 47, args: [6]uint64{16, 1, 0x40000040}},
+		{name: "sendmsg empty", nr: 46},
+		{name: "sendmsg catalog name only", nr: 46, args: [6]uint64{16, 1, 0}},
 	}
 	for _, test := range mismatches {
 		decision := profile.Decide(auditArch, test.nr, test.args)

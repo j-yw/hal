@@ -49,6 +49,7 @@
     "seccomp",
     "clone3",
     "execve",
+    "recvmsg",
     "exit_group"
   ],
   "pinnedCallsite": {

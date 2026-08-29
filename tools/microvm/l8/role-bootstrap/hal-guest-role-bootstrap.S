@@ -9,7 +9,9 @@
 # dup3/close subset, then prctl(NO_NEW_PRIVS) and seccomp(SECCOMP_SET_MODE_FILTER)
 # for launch-base, then exact clone3 plus pathname execve of image-pinned
 # role children. Negative syscall results fail-closed. SCM_RIGHTS monitor-ready
-# stays unimplemented and exit 127.
+# is an exact PID1 recvmsg of two rights on the recorded transient bootstrap
+# peer. Required FDs are absent on the default fake path, so the site
+# fail-closes with exit 127. This process does not exit 0.
 
 	.section .note.GNU-stack,"",@progbits
 	.include "launch_base_filter.inc"
@@ -64,7 +66,7 @@ _start:
 .Lpreflight:
 	# Shared identity preflight uses only the documented native syscall
 	# union. Live vsock proof, live cgroup fd 9, host-path exec, and
-	# SCM_RIGHTS monitor-ready are not claimed.
+	# live SCM_RIGHTS monitor-ready proof are not claimed.
 	movq	$102, %rax		# getuid
 	syscall
 	movq	$107, %rax		# geteuid
@@ -179,7 +181,7 @@ _start:
 	# seccomp(SECCOMP_SET_MODE_FILTER, 0, sock_fprog). The sock_fprog
 	# lives on this stack and points at image RO filter bytes. Negative
 	# results fail-closed. Exact clone3 plus pathname execve follow;
-	# SCM_RIGHTS stays unimplemented.
+	# SCM_RIGHTS monitor-ready is the later recvmsg site.
 .Lpid1_seccomp:
 	movq	$157, %rax		# prctl
 	movq	$38, %rdi		# PR_SET_NO_NEW_PRIVS
@@ -255,7 +257,7 @@ _start:
 	cmpq	$4, %rbx
 	jb	.Lpid1_clone3_loop
 	addq	$112, %rsp
-	jmp	.Lpid1_unimpl_scm_rights
+	jmp	.Lpid1_scm_rights
 
 .Lpid1_execve:
 	# Pathname execve of the image-pinned Go role child. argv is the
@@ -279,8 +281,50 @@ _start:
 	syscall
 	jmp	.Lfail_closed
 
-.Lpid1_unimpl_scm_rights:
-	# Unimplemented: SCM_RIGHTS monitor-ready.
+.Lpid1_scm_rights:
+	# Exact PID1 recvmsg of SCM_RIGHTS monitor-ready after clone3/execve.
+	# sockfd is compiled FD 16 (first transient slot: the PID1-held
+	# recorded bootstrap peer, not fixed FD 10 which remains the
+	# monitor pidfd). flags are MSG_CMSG_CLOEXEC|MSG_DONTWAIT.
+	# msghdr/iovec/cmsg live on this stack. Canonical monitor-ready
+	# is 211 bytes plus SCM_CREDENTIALS and two SCM_RIGHTS fds;
+	# iov 256 and cmsg 64 are bounded. Classic seccomp cannot see
+	# those cmsg contents, so launch-base keeps recvmsg EPERM.
+	# Required FDs and live sockets are absent on the default fake
+	# path. Negative recvmsg, empty payload, or MSG_TRUNC/MSG_CTRUNC
+	# fail-closed. Success is not live monitor-ready proof:
+	# reinspection and HL8L job_created relay stay unimplemented,
+	# so this process still exits 127 and does not exit 0.
+	subq	$400, %rsp
+	movl	$50, %ecx
+	movq	%rsp, %r8
+.Lpid1_scm_zero:
+	movq	$0, (%r8)
+	addq	$8, %r8
+	decl	%ecx
+	jnz	.Lpid1_scm_zero
+
+	leaq	72(%rsp), %r8
+	movq	%r8, 56(%rsp)
+	movq	$256, 64(%rsp)
+	leaq	56(%rsp), %r8
+	movq	%r8, 16(%rsp)
+	movq	$1, 24(%rsp)
+	leaq	328(%rsp), %r8
+	movq	%r8, 32(%rsp)
+	movq	$64, 40(%rsp)
+
+	movq	$16, %rdi
+	movq	%rsp, %rsi
+	movq	$0x40000040, %rdx
+	movq	$47, %rax		# recvmsg
+	syscall
+	testq	%rax, %rax
+	jle	.Lfail_closed
+	movl	48(%rsp), %eax
+	testl	$0x28, %eax		# MSG_TRUNC|MSG_CTRUNC
+	jnz	.Lfail_closed
+	addq	$400, %rsp
 	jmp	.Lfail_closed
 
 .Lcontroller_unimpl:
