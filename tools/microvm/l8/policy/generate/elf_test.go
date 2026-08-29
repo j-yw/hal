@@ -187,7 +187,7 @@ func TestL8D7EvidenceIssuanceRejectsCompleteRolesWithoutBoundedCallGraph(t *test
 	if !strings.Contains(message, "role binary "+guestBootstrapBinaryName+" has reachable extra syscalls from "+nativeBootstrapSymbol+":") {
 		t.Fatalf("complete-role error = %v, want named native extras from %s", err, nativeBootstrapSymbol)
 	}
-	for _, name := range []string{"getuid", "exit_group"} {
+	for _, name := range []string{"getuid", "exit_group", "socket"} {
 		if !strings.Contains(message, name) {
 			t.Fatalf("complete-role error = %v, want named native extra syscall %s", err, name)
 		}

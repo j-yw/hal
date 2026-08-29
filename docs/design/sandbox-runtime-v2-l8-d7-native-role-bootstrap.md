@@ -35,9 +35,21 @@ fixed read-only image tokens or bounded stack objects. There is no
 mutable global or general path/argv/env parameter. PID1 mode is image
 init. Child modes are selected only by the supervisor adapter closed
 enum (`rolebootstrap.Role`: PID1, Controller, Agent, Monitor,
-WorkloadShim) via compiled-in argv tokens. Unimplemented live PID1
-supervisor behavior (vsock listen table, clone3 shim, SCM_RIGHTS monitor
-ready) fails closed with exit 127.
+WorkloadShim) via compiled-in argv tokens.
+
+After shared identity preflight (`getuid`/`geteuid`/`getgid`/`getegid`/
+`capget`/read-only `prlimit64`), each role enters explicit remaining
+stages. PID1 attempts the exact D2 `socket`/`bind`/`listen`/`dup3`/
+`close` subset: three `AF_VSOCK`/`SOCK_STREAM|SOCK_NONBLOCK|SOCK_CLOEXEC`
+listeners at CID any, ports 1024/1025/1026, backlogs 64/1/4, then `dup3`
+onto FDs 12/13/14. Any negative syscall result fail-closes with exit
+127. A successful host bind is not live vsock proof and does not
+complete the listen table: PID1 then fail-closes through unimplemented
+`seccomp`, `execve`, `clone3` shim, and SCM_RIGHTS stages. Child roles
+fail-close after preflight at explicit unimplemented labels
+(controller, agent, monitor, workload-shim). Unimplemented live PID1
+supervisor behavior still fails closed with exit 127. This slice does
+not claim live vsock, clone3, SCM_RIGHTS, seccomp, or execve.
 
 D4 install bindings stay:
 
@@ -78,7 +90,7 @@ This slice does not:
 
 - accept D7 prepared-Linux live proof;
 - issue HL8E or enable `generateEvidence` success;
-- implement live PID1 vsock, clone3, or SCM_RIGHTS monitor ready;
+- complete live PID1 vsock, clone3, SCM_RIGHTS monitor ready, seccomp, or execve;
 - treat L5 images as L8 proof;
 - boot Firecracker or require KVM;
 - wire sandboxd, `hal run`, `hal auto`, or factory;
