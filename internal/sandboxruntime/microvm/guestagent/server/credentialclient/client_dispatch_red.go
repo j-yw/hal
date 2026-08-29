@@ -176,11 +176,9 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			if ledger == nil || !configuredDependency(helperStream) {
 				return helperPacketDependencyUnaccepted(expectedIdentity)
 			}
-			if exec.PrivateRecordCount() != 0 || exec.PrivateAggregateBytes() != 0 {
-				return helperPacketDependencyUnaccepted(expectedIdentity)
-			}
-			nextSend, nextReceive, execErr := client.dispatchHelperExec(
-				ctx, helperStream, packet, exec, identity, expectedIdentity, ledger, nextHelperSequence, nextHelperReceiveSequence,
+			nextSend, nextReceive, nextCtrl, execErr := client.dispatchHelperExec(
+				ctx, helperStream, packet, exec, identity, expectedIdentity, ledger,
+				nextHelperSequence, nextHelperReceiveSequence, nextSequence,
 			)
 			if execErr != nil {
 				return execErr
@@ -190,6 +188,7 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			}
 			nextHelperSequence = nextSend
 			nextHelperReceiveSequence = nextReceive
+			nextSequence = nextCtrl
 			continue
 		}
 		if client.drainStarted() || ctx.Err() != nil {
@@ -255,7 +254,7 @@ func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observe
 }
 
 func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
-	// Mismatched prepare-file payload, nonempty private exec, exec-stream
+	// Mismatched prepare-file or exec-private payload, nonempty exec-stream
 	// payload, SCM_RIGHTS SSH, JobCredential proof minting, and a nil
 	// HelperConnectionOwner stay unaccepted.
 	_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, [16]byte{}, false, identity.Bytes())
@@ -682,13 +681,17 @@ func (client *Client) dispatchHelperExec(
 	identity transportIdentity,
 	digest v2control.IdentityDigest,
 	ledger *helperActiveLedger,
-	sendSequence, receiveSequence uint64,
-) (uint64, uint64, error) {
+	sendSequence, receiveSequence, controllerSequence uint64,
+) (uint64, uint64, uint64, error) {
 	if ledger == nil || exec.Revision() != ledger.revision || exec.ExecBindingID() != ledger.execBindingID {
-		return sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldRevision)
+		return sendSequence, receiveSequence, controllerSequence, clientError(ClientContractCorrelation, ClientFieldRevision)
 	}
 	if authErr := client.authorizeHelperSend(credentialprotocol.PacketTypeExec, digest, exec.Revision(), ledger.bindings); authErr != nil {
-		return sendSequence, receiveSequence, authErr
+		return sendSequence, receiveSequence, controllerSequence, authErr
+	}
+	privateLength, privateDigest, admitted := helperExecPrivateAdmission(exec)
+	if !admitted {
+		return sendSequence, receiveSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 	}
 	if writeErr := client.writePinnedHelperMetadata(ctx, stream, sendSequence, identity, digest, exec.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
 		body, err := helperExecBodyFromExec(exec)
@@ -697,30 +700,183 @@ func (client *Client) dispatchHelperExec(
 		}
 		return newHelperExecSendPacket(header, body)
 	}); writeErr != nil {
-		return sendSequence, receiveSequence, writeErr
+		return sendSequence, receiveSequence, controllerSequence, writeErr
 	}
+	nextSend := sendSequence + 1
 	if client.drainStarted() || ctx.Err() != nil {
-		return sendSequence, receiveSequence, nil
+		return nextSend, receiveSequence, controllerSequence, nil
+	}
+	if privateLength > 0 {
+		nextPrivateSend, nextCtrl, privateErr := client.dispatchOneHelperExecPrivate(
+			ctx, stream, exec, identity, digest, privateLength, privateDigest, nextSend, controllerSequence,
+		)
+		if privateErr != nil {
+			return sendSequence, receiveSequence, controllerSequence, privateErr
+		}
+		nextSend = nextPrivateSend
+		controllerSequence = nextCtrl
+		if client.drainStarted() || ctx.Err() != nil {
+			return nextSend, receiveSequence, controllerSequence, nil
+		}
 	}
 	helperPacket, receiveErr := client.receiveHelperResponse(ctx, stream, receiveSequence, exec.RequestID().Bytes(), digest.Bytes())
 	if receiveErr != nil {
-		return sendSequence, receiveSequence, receiveErr
+		return nextSend, receiveSequence, controllerSequence, receiveErr
 	}
 	if client.drainStarted() || ctx.Err() != nil {
-		return sendSequence, receiveSequence, nil
+		return nextSend, receiveSequence, controllerSequence, nil
 	}
 	response, ok := helperPacket.responseValue()
 	if !ok {
-		return sendSequence, receiveSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+		return nextSend, receiveSequence, controllerSequence, clientError(ClientContractPacket, ClientFieldPacketType)
 	}
 	mapped, mapErr := mapHelperExecSuccessToV2(exec, helperPacket.headerValue(), response)
 	if mapErr != nil {
-		return sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldBody)
+		return nextSend, receiveSequence, controllerSequence, clientError(ClientContractCorrelation, ClientFieldBody)
 	}
 	if sendErr := client.sendControllerExecSuccess(ctx, controllerPacket, mapped); sendErr != nil {
-		return sendSequence, receiveSequence, sendErr
+		return nextSend, receiveSequence, controllerSequence, sendErr
 	}
-	return sendSequence + 1, receiveSequence + 1, nil
+	return nextSend, receiveSequence + 1, controllerSequence, nil
+}
+
+func (client *Client) dispatchOneHelperExecPrivate(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	exec v2control.CredentialExecRequest,
+	identity transportIdentity,
+	digest v2control.IdentityDigest,
+	privateLength uint32,
+	privateDigest [32]byte,
+	sendSequence, controllerSequence uint64,
+) (nextSendSequence, nextControllerSequence uint64, returnErr error) {
+	if !configuredDependency(stream) || privateLength == 0 || privateDigest == ([32]byte{}) {
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	receive, receiveErr := newControlReceiveRequest(controllerSequence, digest, true, session.MaxControlPlaintextBytes)
+	if receiveErr != nil {
+		return sendSequence, controllerSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	packet, dispatchErr, panicked := client.receiveControllerPacket(ctx, receive)
+	if panicked {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, clientError(ClientContractPanic, ClientFieldPacketType)
+	}
+	if dispatchErr != nil {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		if client.drainStarted() || ctx.Err() != nil {
+			return sendSequence, controllerSequence, nil
+		}
+		return sendSequence, controllerSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if packet.sequenceValue() != controllerSequence || packet.sessionIDValue() != identity.sessionIDValue() {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	controllerSequence++
+	if _, isPrepare := packet.prepareValue(); isPrepare {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	if _, isStream := packet.streamValue(); isStream {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	private, ok := packet.privateValue()
+	if !ok {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	body := packet.body
+	packet.body = nil
+	defer func() {
+		if cleanupErr := destroyControllerBody(body); cleanupErr != nil {
+			returnErr = clientError(ClientContractCleanup, ClientFieldBody)
+		}
+	}()
+	if private.kind != credentialprotocol.PrivateRecordKindOpaqueExecBinding ||
+		private.kind == credentialprotocol.PrivateRecordKindFileBytes ||
+		private.requestID != exec.RequestID() ||
+		private.identityDigest != digest ||
+		private.bindingIndex != 0 ||
+		private.chunkIndex != 0 ||
+		private.chunkCount != 1 ||
+		private.payloadLength != privateLength ||
+		private.payloadSHA256 != privateDigest {
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	owner, copyErr := copyControllerExecPrivateOwner(ctx, body, exec.Revision(), privateDigest, privateLength)
+	if copyErr != nil {
+		wipeHelperExecPrivateOwner(owner)
+		if client.drainStarted() || ctx.Err() != nil {
+			return sendSequence, controllerSequence, nil
+		}
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	defer wipeHelperExecPrivateOwner(owner)
+	if client.drainStarted() || ctx.Err() != nil {
+		return sendSequence, controllerSequence, nil
+	}
+	if writeErr := client.writePinnedHelperExecPrivate(ctx, stream, sendSequence, identity, digest, exec.RequestID().Bytes(), owner); writeErr != nil {
+		return sendSequence, controllerSequence, writeErr
+	}
+	return sendSequence + 1, controllerSequence, nil
+}
+
+func (client *Client) writePinnedHelperExecPrivate(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	sequence uint64,
+	identity transportIdentity,
+	digest v2control.IdentityDigest,
+	requestID [16]byte,
+	owner *helperExecPrivateOwner,
+) error {
+	if !configuredDependency(stream) || owner == nil || owner.body == nil {
+		return helperPacketDependencyUnaccepted(digest)
+	}
+	if sequence == 0 || sequence > uint64(^uint32(0)) {
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if !client.beginAdmittedOperation() {
+		return nil
+	}
+	defer client.endAdmittedOperation()
+	send, sendErr := newHelperExecPrivateSendPacket(injectedHelperSendHeader(sequence, requestID, digest, identity.sessionIdentity().GuestBootNonce), owner)
+	if sendErr != nil {
+		if errors.Is(sendErr, ErrClientControlDependencyUnaccepted) {
+			return helperPacketDependencyUnaccepted(digest)
+		}
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if writeErr := writeHelperSendPacket(ctx, stream, send); writeErr != nil {
+		if client.drainStarted() || ctx.Err() != nil {
+			return nil
+		}
+		if errors.Is(writeErr, ErrClientControlDependencyUnaccepted) {
+			return helperPacketDependencyUnaccepted(digest)
+		}
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	return nil
 }
 
 func (client *Client) writePinnedHelperMetadata(

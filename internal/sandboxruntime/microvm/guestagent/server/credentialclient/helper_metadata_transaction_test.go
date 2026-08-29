@@ -135,6 +135,23 @@ func TestL8D7GuestHelperExecPrivateDigestUsesExactFrozenSpelling(t *testing.T) {
 	}
 }
 
+func TestL8D7GuestHelperExecPrivateAdmissionUsesExactFrozenSpelling(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	httpIdentity := testHTTPOnlyDispatchSessionIdentity(t, identity)
+	execReq, payload, digest := testHTTPOnlyMatchingPrivateExecRequest(t, testPacketRequestIDSeed(t, 0x31), httpIdentity)
+	length, got, ok := helperExecPrivateAdmission(execReq)
+	if !ok || length != uint32(len(payload)) || got != digest {
+		t.Fatalf("admitted exec-private = %d %x ok=%t, want %d %x true", length, got, ok, len(payload), digest)
+	}
+
+	sshIdentity := testSSHOnlyDispatchSessionIdentity(t, identity)
+	sshExec := testSSHOnlyDispatchExecRequest(t, testPacketRequestIDSeed(t, 0x32), sshIdentity)
+	length, got, ok = helperExecPrivateAdmission(sshExec)
+	if !ok || length != 0 || got != ([32]byte{}) {
+		t.Fatalf("metadata-only exec-private = %d %x ok=%t, want empty admitted", length, got, ok)
+	}
+}
+
 func testHTTPOnlyDispatchSessionIdentity(t *testing.T, identity transportIdentity) v2control.GuestCredentialSessionIdentity {
 	t.Helper()
 	root := testCredentialPacketRoot(identity.sessionID)
