@@ -373,19 +373,22 @@ func (preflight *l8JobCredentialRuntimePreflight) PrepareJobCredentials(ctx cont
 		return nil, err
 	}
 	guestResult, err := callL8JobCredentialGuestPrepare(session, ctx, identity, expiresAt, resources.manifests)
-	if err != nil || validateL8JobCredentialGuestPrepareResult(guestResult, resources.manifests) != nil {
-		preflight.finishFailedPrepare(ctx, resources)
-		if err != nil {
-			return nil, sanitizeL8JobCredentialRuntimeError(err)
-		}
-		return nil, ErrL8JobCredentialRuntimeInvalid
-	}
-	proof, err := sandboxruntime.NewJobCredentialActiveProof(sandboxruntime.JobCredentialActiveProofInput{
-		ProofID: "active-1", Identity: identity, Revision: 1, IssuedAt: now, ExpiresAt: expiresAt,
-	})
 	if err != nil {
 		preflight.finishFailedPrepare(ctx, resources)
-		return nil, sandboxruntime.ErrJobCredentialProofInvalid
+		return nil, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	if guestResult.ActiveProofID == "" {
+		preflight.finishFailedPrepare(ctx, resources)
+		return nil, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	if validateL8JobCredentialGuestPrepareResult(guestResult, resources.manifests) != nil {
+		preflight.finishFailedPrepare(ctx, resources)
+		return nil, ErrL8JobCredentialRuntimeInvalid
+	}
+	proof, err := mintL8JobCredentialActiveProofFromAdmittedHelperSuccess(guestResult.ActiveProofID, identity, 1, now, expiresAt, now)
+	if err != nil {
+		preflight.finishFailedPrepare(ctx, resources)
+		return nil, err
 	}
 	if err := persistL8JobCredentialHandleRecord(ctx, deps.HandleStore, identity, 1, resources.manifests); err != nil {
 		preflight.finishFailedPrepare(ctx, resources)
@@ -597,18 +600,15 @@ func (session *l8JobCredentialRuntimeSession) Renew(ctx context.Context) (sandbo
 		return sandboxruntime.JobCredentialActiveProof{}, sanitizeL8JobCredentialRuntimeError(err)
 	}
 	replacement, err := callL8JobCredentialGuestRenew(guest, ctx, identity, revision, expiresAt, guestProofID)
-	if err != nil || replacement == "" {
-		if err != nil {
-			return sandboxruntime.JobCredentialActiveProof{}, sanitizeL8JobCredentialRuntimeError(err)
-		}
-		return sandboxruntime.JobCredentialActiveProof{}, ErrL8JobCredentialRuntimeInvalid
-	}
-	proof, err := sandboxruntime.NewJobCredentialActiveProof(sandboxruntime.JobCredentialActiveProofInput{
-		ProofID: fmt.Sprintf("active-%d", revision+1), Identity: identity, Revision: revision + 1,
-		IssuedAt: now, ExpiresAt: expiresAt,
-	})
 	if err != nil {
-		return sandboxruntime.JobCredentialActiveProof{}, sandboxruntime.ErrJobCredentialProofInvalid
+		return sandboxruntime.JobCredentialActiveProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	if replacement == "" {
+		return sandboxruntime.JobCredentialActiveProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	proof, err := mintL8JobCredentialActiveProofFromAdmittedHelperSuccess(replacement, identity, revision+1, now, expiresAt, now)
+	if err != nil {
+		return sandboxruntime.JobCredentialActiveProof{}, err
 	}
 	var manifests []l8JobCredentialGuestBindingManifest
 	if resources != nil {
@@ -659,14 +659,19 @@ func (session *l8JobCredentialRuntimeSession) Revoke(ctx context.Context, reason
 	if l8JobCredentialRuntimeValueIsNil(ctx) {
 		ctx = context.Background()
 	}
+	admittedCleanupProofID := ""
 	if !l8JobCredentialRuntimeValueIsNil(guest) {
 		guestProofID, err := callL8JobCredentialGuestRevoke(guest, ctx, identity, revision, reason)
 		if err != nil {
 			return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
 		}
+		if guestProofID == "" {
+			return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+		}
 		if !validL8JobCredentialRuntimeToken(guestProofID) {
 			return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
 		}
+		admittedCleanupProofID = guestProofID
 	}
 	if err := revokeL8JobCredentialResources(ctx, resources); err != nil {
 		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
@@ -682,13 +687,12 @@ func (session *l8JobCredentialRuntimeSession) Revoke(ctx context.Context, reason
 	if observed.Before(identity.IssuedAt) {
 		observed = identity.IssuedAt
 	}
-	proof, err := sandboxruntime.NewJobCredentialCleanupProof(sandboxruntime.JobCredentialCleanupProofInput{
-		ProofID: fmt.Sprintf("cleanup-%d", revision+1), Identity: identity, Revision: revision + 1,
-		RevokedAt: observed, AbsenceInspectedAt: observed,
-		AuthorityAbsent: true, ResourcesAbsent: true,
-	})
+	if admittedCleanupProofID == "" {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	proof, err := mintL8JobCredentialCleanupProofFromAdmittedHelperSuccess(admittedCleanupProofID, identity, revision+1, observed)
 	if err != nil {
-		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialProofInvalid
+		return sandboxruntime.JobCredentialCleanupProof{}, err
 	}
 	session.mu.Lock()
 	session.revoked = true
@@ -1133,6 +1137,72 @@ func validL8JobCredentialProductionMode(mode sandboxruntime.JobCredentialDeliver
 	default:
 		return false
 	}
+}
+
+func mintL8JobCredentialActiveProofFromAdmittedHelperSuccess(
+	proofID string,
+	identity sandboxruntime.JobCredentialIdentity,
+	revision uint64,
+	issuedAt, expiresAt, observedAt time.Time,
+) (sandboxruntime.JobCredentialActiveProof, error) {
+	if proofID == "" {
+		return sandboxruntime.JobCredentialActiveProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	if sandboxruntime.ValidateJobCredentialIdentity(identity) != nil {
+		return sandboxruntime.JobCredentialActiveProof{}, sandboxruntime.ErrJobCredentialIdentityMismatch
+	}
+	if revision == 0 {
+		return sandboxruntime.JobCredentialActiveProof{}, sandboxruntime.ErrJobCredentialRevisionStale
+	}
+	if !validL8JobCredentialRuntimeToken(proofID) {
+		return sandboxruntime.JobCredentialActiveProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	proof, err := sandboxruntime.NewJobCredentialActiveProof(sandboxruntime.JobCredentialActiveProofInput{
+		ProofID: proofID, Identity: cloneL8JobCredentialIdentity(identity), Revision: revision,
+		IssuedAt: issuedAt, ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		return sandboxruntime.JobCredentialActiveProof{}, sandboxruntime.ErrJobCredentialProofInvalid
+	}
+	if err := sandboxruntime.ValidateJobCredentialActiveProof(proof, identity, revision, observedAt); err != nil {
+		return sandboxruntime.JobCredentialActiveProof{}, err
+	}
+	return proof, nil
+}
+
+func mintL8JobCredentialCleanupProofFromAdmittedHelperSuccess(
+	proofID string,
+	identity sandboxruntime.JobCredentialIdentity,
+	revision uint64,
+	observed time.Time,
+) (sandboxruntime.JobCredentialCleanupProof, error) {
+	if proofID == "" {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	if sandboxruntime.ValidateJobCredentialIdentity(identity) != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialIdentityMismatch
+	}
+	if revision == 0 {
+		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialRevisionStale
+	}
+	if !validL8JobCredentialRuntimeToken(proofID) {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	if observed.Before(identity.IssuedAt) {
+		observed = identity.IssuedAt
+	}
+	proof, err := sandboxruntime.NewJobCredentialCleanupProof(sandboxruntime.JobCredentialCleanupProofInput{
+		ProofID: proofID, Identity: cloneL8JobCredentialIdentity(identity), Revision: revision,
+		RevokedAt: observed, AbsenceInspectedAt: observed,
+		AuthorityAbsent: true, ResourcesAbsent: true,
+	})
+	if err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialProofInvalid
+	}
+	if err := sandboxruntime.ValidateJobCredentialCleanupProof(proof, identity, revision, observed); err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, err
+	}
+	return proof, nil
 }
 
 func validateL8JobCredentialGuestPrepareResult(result l8JobCredentialGuestPrepareResult, manifests []l8JobCredentialGuestBindingManifest) error {

@@ -276,8 +276,9 @@ func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observe
 func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
 	// Mismatched prepare-file, exec-private, or exec-stream payload,
 	// helper-to-agent packets that are not an authenticated SCM_RIGHTS
-	// SSH accepted FD, JobCredential proof minting, and a nil
-	// HelperConnectionOwner stay unaccepted.
+	// SSH accepted FD, and a nil HelperConnectionOwner stay unaccepted.
+	// Guest credentialclient does not mint JobCredential proofs; the host
+	// L8JobCredentialRuntime mints after admitted helper-success identities.
 	_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, [16]byte{}, false, identity.Bytes())
 	if err != nil {
 		return err
