@@ -180,6 +180,10 @@ func (client *Client) dispatchHelperPrepareBegin(
 	if !configuredDependency(client.helper) {
 		return nil
 	}
+	if !client.beginAdmittedOperation() {
+		return nil
+	}
+	defer client.endAdmittedOperation()
 	expectation, err := newHelperAcceptExpectation(
 		identity.sessionIDValue(),
 		digest.Bytes(),
@@ -210,19 +214,11 @@ func (client *Client) dispatchHelperPrepareBegin(
 	if sendErr != nil {
 		return clientError(ClientContractPacket, ClientFieldPacketType)
 	}
-	if helperErr := client.transport.SendHelper(ctx, send); helperErr != nil {
+	if writeErr := writeHelperSendPacket(ctx, stream, send); writeErr != nil {
 		if client.drainStarted() || ctx.Err() != nil {
 			return nil
 		}
 		return clientError(ClientContractPacket, ClientFieldPacketType)
-	}
-	if helperSendPacketUnconsumed(send) {
-		if writeErr := writeHelperSendPacket(ctx, stream, send); writeErr != nil {
-			if client.drainStarted() || ctx.Err() != nil {
-				return nil
-			}
-			return clientError(ClientContractPacket, ClientFieldPacketType)
-		}
 	}
 	return nil
 }
@@ -246,10 +242,10 @@ func (client *Client) dispatchReadinessResponse(ctx context.Context, identity tr
 }
 
 func (client *Client) receiveControllerPacket(ctx context.Context, request ControllerReceiveRequest) (packet ControllerPacket, err error, panicked bool) {
-	if !client.beginAdmittedReceive() {
+	if !client.beginAdmittedOperation() {
 		return ControllerPacket{}, errInvalidControlReceiveRequest, false
 	}
-	defer client.endAdmittedReceive()
+	defer client.endAdmittedOperation()
 	defer func() {
 		if recover() != nil {
 			packet = ControllerPacket{}
@@ -261,19 +257,19 @@ func (client *Client) receiveControllerPacket(ctx context.Context, request Contr
 	return packet, err, false
 }
 
-func (client *Client) beginAdmittedReceive() bool {
+func (client *Client) beginAdmittedOperation() bool {
 	state := client.state
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.closeStarted {
 		return false
 	}
-	state.admittedReceives.Add(1)
+	state.admittedOperations.Add(1)
 	return true
 }
 
-func (client *Client) endAdmittedReceive() {
-	client.state.admittedReceives.Done()
+func (client *Client) endAdmittedOperation() {
+	client.state.admittedOperations.Done()
 }
 
 func (client *Client) drainStarted() bool {

@@ -106,31 +106,26 @@ func TestL8D7GuestHelperServeSendsPrepareBeginWhenOwnerInjected(t *testing.T) {
 		}, nil
 	}
 	transport.sendHelper = func(_ context.Context, packet HelperSendPacket) error {
-		if packet.packetTypeValue() != credentialprotocol.PacketTypePrepareBegin {
-			return errors.New("injected helper send must be prepare-begin")
-		}
-		header := packet.headerValue()
-		if header.Sequence != firstInjectedHelperSendSequence || header.RequestID != prepare.RequestID().Bytes() ||
-			header.GuestCredentialIdentityDigest != digest.Bytes() || header.BootNonce != identity.identity.GuestBootNonce {
-			return errors.New("prepare-begin header lost session correlation")
-		}
 		helperSends.Add(1)
-		return nil
+		body := make([]byte, packet.encodedBodyLengthValue())
+		return packet.writeCanonicalBody(&helperSendBodySink{buf: body})
 	}
 
 	err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
 	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("Serve() error = %v, want remaining helper payload/proofs unaccepted", err)
 	}
-	if owner.accepts.Load() != 1 || helperSends.Load() != 1 {
-		t.Fatalf("accepts/sends = %d/%d, want 1/1", owner.accepts.Load(), helperSends.Load())
+	if owner.accepts.Load() != 1 || helperSends.Load() != 0 {
+		t.Fatalf("accepts/legacy transport sends = %d/%d, want 1/0", owner.accepts.Load(), helperSends.Load())
 	}
 	datagram := stream.bytes()
 	header, err := credentialprotocol.ValidateHelperPacketDatagram(datagram)
 	if err != nil {
 		t.Fatalf("verified helper stream datagram error = %v", err)
 	}
-	if header.Type != credentialprotocol.PacketTypePrepareBegin || header.Sequence != firstInjectedHelperSendSequence {
+	if header.Type != credentialprotocol.PacketTypePrepareBegin || header.Sequence != firstInjectedHelperSendSequence ||
+		header.RequestID != prepare.RequestID().Bytes() || header.GuestCredentialIdentityDigest != digest.Bytes() ||
+		header.BootNonce != identity.identity.GuestBootNonce {
 		t.Fatalf("stream header = %#v", header)
 	}
 	decoded, err := credentialprotocol.DecodeHelperPrepareBeginBody(datagram[credentialprotocol.HelperPacketHeaderSize:])
@@ -167,6 +162,65 @@ func TestL8D7GuestHelperWriteCanonicalPrepareBeginPacket(t *testing.T) {
 	}
 	if helperSendPacketUnconsumed(packet) {
 		t.Fatal("writeHelperSendPacket left the send packet unconsumed")
+	}
+}
+
+func TestL8D7GuestHelperCloseWaitsForAdmittedPrepareBegin(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testDispatchPrepareRequest(t, identity)
+	stream := newFakeHelperStream()
+	owner := &blockingHelperOwner{
+		stream:        stream,
+		acceptEntered: make(chan struct{}),
+		allowAccept:   make(chan struct{}),
+		closeCalled:   make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-owner.allowAccept:
+		default:
+			close(owner.allowAccept)
+		}
+	}()
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+		return ControllerPacket{
+			sequence:  1,
+			sessionID: identity.sessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+		}, nil
+	}
+
+	client := newDispatchRedClientOpts(t, transport, owner)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- client.Serve(context.Background()) }()
+	select {
+	case <-owner.acceptEntered:
+	case err := <-serveDone:
+		t.Fatalf("Serve returned before helper admission: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("helper admission did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close(context.Background()) }()
+	select {
+	case <-owner.closeCalled:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not close the helper owner")
+	}
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before the admitted helper send terminated: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(owner.allowAccept)
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := <-serveDone; !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("Serve() error = %v, want remaining helper dependency unaccepted", err)
 	}
 }
 
@@ -233,6 +287,29 @@ type fakeHelperOwner struct {
 	accepts atomic.Uint32
 }
 
+type blockingHelperOwner struct {
+	stream        VerifiedHelperStream
+	acceptEntered chan struct{}
+	allowAccept   chan struct{}
+	closeCalled   chan struct{}
+	acceptOnce    sync.Once
+	closeOnce     sync.Once
+}
+
+func (owner *blockingHelperOwner) AcceptVerified(_ context.Context, expectation HelperAcceptExpectation) (VerifiedHelperStream, error) {
+	if !expectation.valid() || !configuredDependency(owner.stream) {
+		return nil, errInvalidHelperAcceptExpectation
+	}
+	owner.acceptOnce.Do(func() { close(owner.acceptEntered) })
+	<-owner.allowAccept
+	return owner.stream, nil
+}
+
+func (owner *blockingHelperOwner) Close(context.Context) error {
+	owner.closeOnce.Do(func() { close(owner.closeCalled) })
+	return nil
+}
+
 func (owner *fakeHelperOwner) AcceptVerified(_ context.Context, expectation HelperAcceptExpectation) (VerifiedHelperStream, error) {
 	if !expectation.valid() || !configuredDependency(owner.stream) {
 		return nil, errInvalidHelperAcceptExpectation
@@ -251,4 +328,5 @@ func (owner *fakeHelperOwner) Close(context.Context) error {
 var (
 	_ VerifiedHelperStream  = (*fakeHelperStream)(nil)
 	_ HelperConnectionOwner = (*fakeHelperOwner)(nil)
+	_ HelperConnectionOwner = (*blockingHelperOwner)(nil)
 )
