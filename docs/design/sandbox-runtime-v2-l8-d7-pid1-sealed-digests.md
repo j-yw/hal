@@ -6,18 +6,23 @@ not claim D7 live complete.
 
 ## Channel
 
-- Fixed inherited FD **15**. The syscall-policy table lists PID1 FD 15 as
-  Closed; this optional slot is the sealed composition-facts memfd when
-  inherited.
-- Descriptor requirements match the runtime-owner sealed memfd shape:
-  `FD_CLOEXEC`, regular, zero-link, not write-only, and
+- Fixed inherited FD **15**. This optional slot contains the sealed
+  composition-facts memfd only for the D7 handoff and cannot cross from PID1
+  into any child.
+- The inherited source necessarily has `FD_CLOEXEC` clear so it can cross the
+  PID1 exec boundary. PID1 first restores `FD_CLOEXEC`, uses
+  `F_DUPFD_CLOEXEC` into the private transient range, and validates only that
+  private snapshot. A valid sealed source is then closed and read from the
+  snapshot. The snapshot must be regular, zero-link, not write-only, and have
   `F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE`.
 - Bounded JSON (32 KiB) of `assetbuild.L8ProcessCompositionFacts` or the
   three-field subset `helperDescriptorSha256`, `clientDescriptorSha256`,
   `compositionSha256`. Hex-decode into
   `l8composition.PID1StartGateExpected`; reject aliases and zero.
 - Missing, wrong-type, empty, or unsealed FDs return absent
-  (`present=false`) and keep the L7 supervisor path.
+  (`present=false`) and keep the L7 supervisor path. Every supplied FD 15 is
+  either consumed or protected by `FD_CLOEXEC` before that classification, so
+  malformed ambient descriptors do not survive into the L7 child.
 - Invalid sealed payloads fail closed (exit 127).
 - Unsigned file, env, and cmdline digest inputs are rejected.
 

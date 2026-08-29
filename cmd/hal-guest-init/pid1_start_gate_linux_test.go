@@ -153,9 +153,11 @@ func TestL8PID1StartGateSealedMemfdLoadsExpectedAndAdmits(t *testing.T) {
 	if expected != fixture.expected {
 		t.Fatalf("loaded expected mismatch")
 	}
+	assertPID1StartGateSourceFDConsumed(t, fd)
 	if code := admitPID1StartGate(expected, fixture.helper, fixture.client); code != 0 {
 		t.Fatalf("admitPID1StartGate() = %d, want 0", code)
 	}
+	withPID1StartGateExpectedFD(t, newPID1StartGateTestSealedFD(t, pid1StartGateExpectedJSON(t, fixture.expected)))
 	if code := releasePID1AgentStartGate(); code != 127 {
 		t.Fatalf("releasePID1AgentStartGate() = %d, want 127 without authenticated descriptors", code)
 	}
@@ -199,44 +201,41 @@ func TestL8PID1StartGateUnsignedOrEmptyDescriptorsRemainAbsent(t *testing.T) {
 	payload := pid1StartGateExpectedJSON(t, fixture.expected)
 
 	t.Run("path backed file", func(t *testing.T) {
-		file, err := os.CreateTemp(t.TempDir(), "pid1-start-gate-*.json")
+		path := t.TempDir() + "/pid1-start-gate.json"
+		if err := os.WriteFile(path, payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fd, err := unix.Open(path, unix.O_RDONLY, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer file.Close()
-		if _, err := file.Write(payload); err != nil {
-			t.Fatal(err)
-		}
-		withPID1StartGateExpectedFD(t, int(file.Fd()))
-		assertPID1StartGateExpectedAbsent(t)
+		withPID1StartGateExpectedFD(t, fd)
+		assertPID1StartGateExpectedAbsentAndProtected(t, fd)
 	})
 	t.Run("empty sealed memfd", func(t *testing.T) {
-		withPID1StartGateExpectedFD(t, newPID1StartGateTestSealedFD(t, nil))
-		assertPID1StartGateExpectedAbsent(t)
+		fd := newPID1StartGateTestSealedFD(t, nil)
+		withPID1StartGateExpectedFD(t, fd)
+		assertPID1StartGateExpectedAbsentAndProtected(t, fd)
 	})
 	t.Run("unsealed memfd", func(t *testing.T) {
-		fd, err := unix.MemfdCreate("hal-pid1-start-gate-unsealed", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+		fd, err := unix.MemfdCreate("hal-pid1-start-gate-unsealed", unix.MFD_ALLOW_SEALING)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = unix.Close(fd) })
 		if _, err := unix.Write(fd, payload); err != nil {
 			t.Fatal(err)
 		}
 		withPID1StartGateExpectedFD(t, fd)
-		assertPID1StartGateExpectedAbsent(t)
+		assertPID1StartGateExpectedAbsentAndProtected(t, fd)
 	})
 	t.Run("socket", func(t *testing.T) {
-		fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+		fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			_ = unix.Close(fds[0])
-			_ = unix.Close(fds[1])
-		})
+		t.Cleanup(func() { _ = unix.Close(fds[1]) })
 		withPID1StartGateExpectedFD(t, fds[0])
-		assertPID1StartGateExpectedAbsent(t)
+		assertPID1StartGateExpectedAbsentAndProtected(t, fds[0])
 	})
 }
 
@@ -298,11 +297,14 @@ func TestL8PID1StartGateMutatedAndZeroDigestsFailClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			withPID1StartGateExpectedFD(t, newPID1StartGateTestSealedFD(t, payload))
+			fd := newPID1StartGateTestSealedFD(t, payload)
+			withPID1StartGateExpectedFD(t, fd)
 			expected, present, err := loadPID1StartGateExpected()
 			if !errors.Is(err, errPID1StartGateExpectedInvalid) || present || expected != (l8composition.PID1StartGateExpected{}) {
 				t.Fatalf("loadPID1StartGateExpected() = %#v, %t, %v, want invalid", expected, present, err)
 			}
+			assertPID1StartGateSourceFDConsumed(t, fd)
+			withPID1StartGateExpectedFD(t, newPID1StartGateTestSealedFD(t, payload))
 			if code := releasePID1AgentStartGate(); code != 127 {
 				t.Fatalf("releasePID1AgentStartGate() = %d, want 127", code)
 			}
@@ -311,7 +313,9 @@ func TestL8PID1StartGateMutatedAndZeroDigestsFailClosed(t *testing.T) {
 
 	mutated := fixture.expected
 	mutated.HelperDescriptorSHA256[0] ^= 0xff
-	withPID1StartGateExpectedFD(t, newPID1StartGateTestSealedFD(t, pid1StartGateExpectedJSON(t, mutated)))
+	mutatedPayload := pid1StartGateExpectedJSON(t, mutated)
+	fd := newPID1StartGateTestSealedFD(t, mutatedPayload)
+	withPID1StartGateExpectedFD(t, fd)
 	expected, present, err := loadPID1StartGateExpected()
 	if err != nil || !present || expected != mutated {
 		t.Fatalf("mutated canonical expected load = %#v, %t, %v", expected, present, err)
@@ -319,6 +323,8 @@ func TestL8PID1StartGateMutatedAndZeroDigestsFailClosed(t *testing.T) {
 	if code := admitPID1StartGate(expected, fixture.helper, fixture.client); code != 127 {
 		t.Fatalf("admitPID1StartGate() = %d, want 127 on mutated helper digest", code)
 	}
+	assertPID1StartGateSourceFDConsumed(t, fd)
+	withPID1StartGateExpectedFD(t, newPID1StartGateTestSealedFD(t, mutatedPayload))
 	if code := releasePID1AgentStartGate(); code != 127 {
 		t.Fatalf("releasePID1AgentStartGate() = %d, want 127", code)
 	}
@@ -402,14 +408,36 @@ func withPID1StartGateExpectedFD(t *testing.T, fd int) {
 	t.Cleanup(func() { pid1StartGateExpectedFD = previous })
 }
 
-func assertPID1StartGateExpectedAbsent(t *testing.T) {
+func assertPID1StartGateExpectedAbsentAndProtected(t *testing.T, fd int) {
 	t.Helper()
 	expected, present, err := loadPID1StartGateExpected()
 	if err != nil || present || expected != (l8composition.PID1StartGateExpected{}) {
 		t.Fatalf("loadPID1StartGateExpected() = %#v, %t, %v, want absent", expected, present, err)
 	}
+	assertPID1StartGateSourceFDProtected(t, fd)
 	if code := releasePID1AgentStartGate(); code != 0 {
 		t.Fatalf("releasePID1AgentStartGate() = %d, want L7 supervisor continue", code)
+	}
+}
+
+func assertPID1StartGateSourceFDProtected(t *testing.T, fd int) {
+	t.Helper()
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if errors.Is(err, unix.EBADF) {
+		return
+	}
+	if err != nil || flags&unix.FD_CLOEXEC == 0 {
+		t.Fatalf("inherited PID1 start-gate fd %d can cross child exec: flags=%d err=%v", fd, flags, err)
+	}
+	if err := unix.Close(fd); err != nil {
+		t.Fatalf("close protected PID1 start-gate fd %d: %v", fd, err)
+	}
+}
+
+func assertPID1StartGateSourceFDConsumed(t *testing.T, fd int) {
+	t.Helper()
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("inherited PID1 start-gate fd %d remains open: %v", fd, err)
 	}
 }
 
@@ -443,7 +471,7 @@ func pid1StartGateCompositionFactsJSON(t *testing.T, expected l8composition.PID1
 
 func newPID1StartGateTestSealedFD(t *testing.T, payload []byte) int {
 	t.Helper()
-	fd, err := unix.MemfdCreate("hal-pid1-start-gate", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	fd, err := unix.MemfdCreate("hal-pid1-start-gate", unix.MFD_ALLOW_SEALING)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,11 +485,10 @@ func newPID1StartGateTestSealedFD(t *testing.T, payload []byte) int {
 		_ = unix.Close(fd)
 		t.Fatal(err)
 	}
-	readOnly, err := unix.Open("/proc/self/fd/"+strconv.Itoa(fd), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	readOnly, err := unix.Open("/proc/self/fd/"+strconv.Itoa(fd), unix.O_RDONLY, 0)
 	_ = unix.Close(fd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = unix.Close(readOnly) })
 	return readOnly
 }
