@@ -60,6 +60,13 @@ type inspectedGuestBinary struct {
 	syscall6Found        bool
 	syscall6TextOffset   uint64
 	instruction          []byte
+	entry                string
+	syscalls             []decodedSyscallSite
+	reachableSyscalls    []decodedSyscallSite
+	extraSyscalls        []decodedSyscallSite
+	reachableFunctions   []string
+	unboundedIndirect    bool
+	graphErr             error
 }
 
 func requiredGuestRoleBinaries() []requiredGuestRoleBinary {
@@ -176,7 +183,7 @@ func requireCompleteHonestIssuanceInputs(binaries []inspectedGuestBinary) error 
 	if err := provePinnedGoRuntimeCallsite(launchBase); err != nil {
 		return err
 	}
-	if err := proveUniquePinnedSyscallGraph(launchBase); err != nil {
+	if err := proveBoundedReachableSyscallGraph(binaries); err != nil {
 		return err
 	}
 	return errors.New("unique/reachable D4/D6 call graph is unavailable")
@@ -196,14 +203,6 @@ func provePinnedGoRuntimeCallsite(binary inspectedGuestBinary) error {
 	got := binary.executableText[binary.syscall6TextOffset:end]
 	if !bytes.Equal(got, pinnedSyscallInstruction) {
 		return fmt.Errorf("role binary %s executable text does not contain source-derived 0f05 at the pinned offset", binary.name)
-	}
-	return nil
-}
-
-func proveUniquePinnedSyscallGraph(binary inspectedGuestBinary) error {
-	count := countInstruction(binary.executableText, pinnedSyscallInstruction)
-	if count != 1 {
-		return fmt.Errorf("role binary %s executable text has %d syscall instructions; unique/reachable D4/D6 call graph is unavailable", binary.name, count)
 	}
 	return nil
 }
@@ -282,6 +281,17 @@ func inspectLinuxAMD64ELF(name, path string) (inspectedGuestBinary, error) {
 		result.syscall6TextOffset = instructionTextOff
 		result.instruction = append([]byte(nil), instruction...)
 	}
+	graph, err := computeReachableSyscallGraph(file, encoded, result)
+	if err != nil {
+		result.graphErr = err
+		return result, nil
+	}
+	result.entry = graph.entry
+	result.syscalls = graph.allSites
+	result.reachableSyscalls = graph.reachableSites
+	result.extraSyscalls = graph.extraSites
+	result.reachableFunctions = graph.reachableNames
+	result.unboundedIndirect = graph.unboundedIndirect
 	return result, nil
 }
 
@@ -438,19 +448,9 @@ func lookupPclntabFunc(file *elf.File, name string) (value, size uint64, err err
 	if err != nil {
 		return 0, 0, fmt.Errorf("read gopclntab: %w", err)
 	}
-	textStart := uint64(0)
-	foundText := false
-	for _, prog := range file.Progs {
-		if prog.Type != elf.PT_LOAD || prog.Flags&elf.PF_X == 0 {
-			continue
-		}
-		if !foundText || prog.Vaddr < textStart {
-			textStart = prog.Vaddr
-			foundText = true
-		}
-	}
-	if !foundText {
-		return 0, 0, errors.New("executable text start is missing")
+	textStart, err := pclntabTextStart(file)
+	if err != nil {
+		return 0, 0, err
 	}
 	table, err := gosym.NewTable(nil, gosym.NewLineTable(data, textStart))
 	if err != nil {

@@ -718,6 +718,7 @@ func hashGeneratorSources(root string) ([32]byte, error) {
 	return hashPaths(root, []string{
 		filepath.Join(policyDir, "generate", "elf.go"),
 		filepath.Join(policyDir, "generate", "evidence.go"),
+		filepath.Join(policyDir, "generate", "graph.go"),
 		filepath.Join(policyDir, "generate", "main.go"),
 	})
 }
