@@ -150,50 +150,97 @@ func (sink *helperSendBodySink) WriteSegment(offset uint32, source []byte) error
 }
 
 func readHelperResponsePacket(ctx context.Context, stream VerifiedHelperStream, request HelperReceiveRequest) (HelperPacket, error) {
-	if ctx == nil || ctx.Err() != nil || !configuredDependency(stream) {
-		return HelperPacket{}, errInvalidHelperReceiveRequest
-	}
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = stream.SetDeadline(time.Now())
-		case <-stop:
-		}
-	}()
-	if deadline, ok := ctx.Deadline(); ok {
-		if deadlineErr := stream.SetDeadline(deadline); deadlineErr != nil {
-			return HelperPacket{}, errInvalidHelperPacket
-		}
-	}
-	datagram := make([]byte, credentialprotocol.MaxHelperPacketDatagramBytes)
-	n, readErr := stream.Read(datagram)
-	if readErr != nil || n < credentialprotocol.HelperPacketHeaderSize {
-		clear(datagram)
-		if ctx.Err() != nil {
-			return HelperPacket{}, ctx.Err()
-		}
-		return HelperPacket{}, errInvalidHelperPacket
-	}
-	received := datagram[:n]
-	header, err := credentialprotocol.ValidateHelperPacketDatagram(received)
-	if err != nil || header.Type != credentialprotocol.PacketTypeResponse {
-		clear(datagram)
-		return HelperPacket{}, errInvalidHelperPacket
-	}
-	body, err := credentialprotocol.DecodeHelperResponseBody(received[credentialprotocol.HelperPacketHeaderSize:])
+	received, rights, _, err := recvHelperDatagram(ctx, stream, false)
 	if err != nil {
-		clear(datagram)
+		closeReceivedHelperRights(rights)
+		return HelperPacket{}, err
+	}
+	if len(rights) != 0 {
+		closeReceivedHelperRights(rights)
+		clear(received)
 		return HelperPacket{}, errInvalidHelperPacket
 	}
-	clear(datagram)
+	header, headerErr := credentialprotocol.ValidateHelperPacketDatagram(received)
+	if headerErr != nil || header.Type != credentialprotocol.PacketTypeResponse {
+		clear(received)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	body, bodyErr := credentialprotocol.DecodeHelperResponseBody(received[credentialprotocol.HelperPacketHeaderSize:])
+	clear(received)
+	if bodyErr != nil {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
 	return newHelperResponsePacket(request, header, nil, body)
 }
 
 func readHelperExecCreditPacket(ctx context.Context, stream VerifiedHelperStream, request HelperReceiveRequest) (HelperPacket, error) {
+	received, rights, _, err := recvHelperDatagram(ctx, stream, false)
+	if err != nil {
+		closeReceivedHelperRights(rights)
+		return HelperPacket{}, err
+	}
+	if len(rights) != 0 {
+		closeReceivedHelperRights(rights)
+		clear(received)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	header, headerErr := credentialprotocol.ValidateHelperPacketDatagram(received)
+	if headerErr != nil || header.Type != credentialprotocol.PacketTypeExecCredit {
+		clear(received)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	credit, creditErr := credentialprotocol.DecodeHelperExecCreditBody(received[credentialprotocol.HelperPacketHeaderSize:])
+	clear(received)
+	if creditErr != nil {
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	return newHelperExecCreditPacket(request, header, nil, credit)
+}
+
+func tryReadHelperSSHAcceptedPacket(ctx context.Context, stream VerifiedHelperStream, request HelperReceiveRequest) (HelperPacket, bool, error) {
+	received, rights, wouldBlock, err := recvHelperDatagram(ctx, stream, true)
+	if err != nil {
+		closeReceivedHelperRights(rights)
+		return HelperPacket{}, false, err
+	}
+	if wouldBlock {
+		closeReceivedHelperRights(rights)
+		return HelperPacket{}, false, nil
+	}
+	header, headerErr := credentialprotocol.ValidateHelperPacketDatagram(received)
+	if headerErr != nil {
+		closeReceivedHelperRights(rights)
+		clear(received)
+		return HelperPacket{}, false, errInvalidHelperPacket
+	}
+	if header.Type != credentialprotocol.PacketTypeSSHAcceptedFD {
+		closeReceivedHelperRights(rights)
+		clear(received)
+		return HelperPacket{}, false, ErrClientControlDependencyUnaccepted
+	}
+	if len(rights) != 1 {
+		closeReceivedHelperRights(rights)
+		clear(received)
+		return HelperPacket{}, false, errInvalidHelperPacket
+	}
+	revision, bindingIndex, ordinal, digest, decodeErr := credentialprotocol.DecodeHelperSSHAcceptedFDBody(received[credentialprotocol.HelperPacketHeaderSize:])
+	clear(received)
+	if decodeErr != nil {
+		closeReceivedHelperRights(rights)
+		return HelperPacket{}, false, errInvalidHelperPacket
+	}
+	capability := newSSHAcceptedConnFromRight(rights[0], digest)
+	rights[0] = -1
+	packet, packetErr := newHelperSSHAcceptedPacket(request, header, nil, revision, bindingIndex, ordinal, digest, capability)
+	if packetErr != nil {
+		return HelperPacket{}, false, packetErr
+	}
+	return packet, true, nil
+}
+
+func recvHelperDatagram(ctx context.Context, stream VerifiedHelperStream, dontWait bool) ([]byte, []int, bool, error) {
 	if ctx == nil || ctx.Err() != nil || !configuredDependency(stream) {
-		return HelperPacket{}, errInvalidHelperReceiveRequest
+		return nil, nil, false, errInvalidHelperReceiveRequest
 	}
 	stop := make(chan struct{})
 	defer close(stop)
@@ -206,31 +253,28 @@ func readHelperExecCreditPacket(ctx context.Context, stream VerifiedHelperStream
 	}()
 	if deadline, ok := ctx.Deadline(); ok {
 		if deadlineErr := stream.SetDeadline(deadline); deadlineErr != nil {
-			return HelperPacket{}, errInvalidHelperPacket
+			return nil, nil, false, errInvalidHelperPacket
 		}
+	}
+	return recvHelperDatagramPlatform(ctx, stream, dontWait)
+}
+
+func recvHelperDatagramRead(ctx context.Context, stream VerifiedHelperStream, dontWait bool) ([]byte, []int, bool, error) {
+	if dontWait {
+		return nil, nil, true, nil
 	}
 	datagram := make([]byte, credentialprotocol.MaxHelperPacketDatagramBytes)
 	n, readErr := stream.Read(datagram)
 	if readErr != nil || n < credentialprotocol.HelperPacketHeaderSize {
 		clear(datagram)
 		if ctx.Err() != nil {
-			return HelperPacket{}, ctx.Err()
+			return nil, nil, false, ctx.Err()
 		}
-		return HelperPacket{}, errInvalidHelperPacket
+		return nil, nil, false, errInvalidHelperPacket
 	}
-	received := datagram[:n]
-	header, err := credentialprotocol.ValidateHelperPacketDatagram(received)
-	if err != nil || header.Type != credentialprotocol.PacketTypeExecCredit {
-		clear(datagram)
-		return HelperPacket{}, errInvalidHelperPacket
-	}
-	credit, err := credentialprotocol.DecodeHelperExecCreditBody(received[credentialprotocol.HelperPacketHeaderSize:])
-	if err != nil {
-		clear(datagram)
-		return HelperPacket{}, errInvalidHelperPacket
-	}
+	received := append([]byte(nil), datagram[:n]...)
 	clear(datagram)
-	return newHelperExecCreditPacket(request, header, nil, credit)
+	return received, nil, false, nil
 }
 
 func writeHelperSendPacket(ctx context.Context, stream VerifiedHelperStream, packet HelperSendPacket) error {
@@ -254,9 +298,24 @@ func writeHelperSendPacket(ctx context.Context, stream VerifiedHelperStream, pac
 			return errInvalidHelperSendPacket
 		}
 	}
-	wrote, writeErr := stream.Write(datagram)
+	if sendErr := sendHelperDatagram(ctx, stream, datagram); sendErr != nil {
+		clear(datagram)
+		return errInvalidHelperSendPacket
+	}
 	clear(datagram)
-	if writeErr != nil || wrote != credentialprotocol.HelperPacketHeaderSize+int(header.BodyLength) {
+	return nil
+}
+
+func sendHelperDatagram(ctx context.Context, stream VerifiedHelperStream, datagram []byte) error {
+	if ctx == nil || ctx.Err() != nil || !configuredDependency(stream) || len(datagram) == 0 {
+		return errInvalidHelperSendPacket
+	}
+	return sendHelperDatagramPlatform(ctx, stream, datagram)
+}
+
+func sendHelperDatagramWrite(_ context.Context, stream VerifiedHelperStream, datagram []byte) error {
+	wrote, writeErr := stream.Write(datagram)
+	if writeErr != nil || wrote != len(datagram) {
 		return errInvalidHelperSendPacket
 	}
 	return nil

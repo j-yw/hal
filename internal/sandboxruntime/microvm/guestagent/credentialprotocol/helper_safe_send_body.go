@@ -60,3 +60,20 @@ func EncodeHelperSSHAcceptedFDBodyTo(dst []byte, revision uint64, bindingIndex u
 	copy(dst[11:], relayCapabilitySHA256[:])
 	return nil
 }
+
+// DecodeHelperSSHAcceptedFDBody strictly decodes one exact 43-byte helper
+// SSH-accepted body. It returns only the closed safe fields; it does not
+// invent a right or file descriptor.
+func DecodeHelperSSHAcceptedFDBody(encoded []byte) (revision uint64, bindingIndex uint16, connectionOrdinal uint8, relayCapabilitySHA256 [32]byte, err error) {
+	if len(encoded) != helperSSHAcceptedFDBodyBytes {
+		return 0, 0, 0, [32]byte{}, ErrHelperSafeSendBodyLength
+	}
+	revision = binary.BigEndian.Uint64(encoded[:8])
+	bindingIndex = binary.BigEndian.Uint16(encoded[8:10])
+	connectionOrdinal = encoded[10]
+	copy(relayCapabilitySHA256[:], encoded[11:])
+	if revision == 0 || bindingIndex >= MaxHelperBindings || connectionOrdinal == 0 || connectionOrdinal > SSHAgentRelayMaxLifetimeConnections || relayCapabilitySHA256 == ([32]byte{}) {
+		return 0, 0, 0, [32]byte{}, ErrHelperSafeSendBodyValue
+	}
+	return revision, bindingIndex, connectionOrdinal, relayCapabilitySHA256, nil
+}
