@@ -1098,6 +1098,26 @@ func TestL8D6GuestPacketHelperSendWriteCanonicalBody(t *testing.T) {
 			typ:  credentialprotocol.PacketTypePrepareBegin,
 		},
 		{
+			name: "prepare-file",
+			issue: func() (HelperSendPacket, error) {
+				owner, err := newHelperPrepareFileOwner(1, 1, fileDigest, []byte("private-file"))
+				if err != nil {
+					return HelperSendPacket{}, err
+				}
+				t.Cleanup(owner.Wipe)
+				return newHelperPrepareFileSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), owner)
+			},
+			want: mustEncode(t, func() ([]byte, error) {
+				body, err := credentialprotocol.NewHelperPrepareFileBody(1, 1, fileDigest, []byte("private-file"))
+				if err != nil {
+					return nil, err
+				}
+				defer body.Wipe()
+				return credentialprotocol.EncodeHelperPrepareFileBody(body)
+			}),
+			typ: credentialprotocol.PacketTypePrepareFile,
+		},
+		{
 			name: "prepare-commit",
 			issue: func() (HelperSendPacket, error) {
 				return newHelperPrepareCommitSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), commit)
@@ -1201,11 +1221,36 @@ func TestL8D6GuestPacketHelperSendWriteCanonicalBody(t *testing.T) {
 	if err := (HelperSendPacket{arm: helperSendArmPrepareFile}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("prepare-file helper send write error = %v", err)
 	}
+	if _, err := newHelperPrepareFileSendPacket(testHelperHeader(0, 1, requestID, identity, nonce, 0), nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("nil prepare-file owner constructor error = %v", err)
+	}
 	if err := (HelperSendPacket{arm: helperSendArmExecPrivate}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("exec-private helper send write error = %v", err)
 	}
 	if err := (HelperSendPacket{arm: helperSendArmExecStream}).writeCanonicalBody(nil); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("exec-stream helper send write error = %v", err)
+	}
+}
+
+func TestL8D7GuestHelperPrepareFileOwnerWipesAndDeniesSerialization(t *testing.T) {
+	payload := []byte("private-file")
+	digest := sha256.Sum256(payload)
+	owner, err := newHelperPrepareFileOwner(1, 1, digest, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFailsClosed(t, *owner)
+	assertFailsClosed(t, owner)
+	packet, err := newHelperPrepareFileSendPacket(testHelperHeader(0, 1, testHelperPacketRequestID(), testHelperPacketIdentity(), testHelperPacketNonce(), 0), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &testCanonicalBodySink{capacity: packet.encodedBodyLengthValue()}
+	if err := packet.writeCanonicalBody(sink); err != nil {
+		t.Fatalf("writeCanonicalBody() error = %v", err)
+	}
+	if owner.body != nil {
+		t.Fatal("prepare-file owner retained private bytes after send")
 	}
 }
 
@@ -1563,6 +1608,7 @@ func testHelperPrepareResponseBody() credentialprotocol.HelperResponseBody {
 type testHelperBody struct {
 	length       uint32
 	digest       [32]byte
+	payload      []byte
 	destroyed    bool
 	destroyErr   error
 	destroyPanic bool
@@ -1570,8 +1616,14 @@ type testHelperBody struct {
 
 func (body *testHelperBody) Len() uint32      { return body.length }
 func (body *testHelperBody) SHA256() [32]byte { return body.digest }
-func (body *testHelperBody) Borrow(context.Context, func(credentialmemory.BorrowedView) error) error {
-	return nil
+func (body *testHelperBody) Borrow(_ context.Context, callback func(credentialmemory.BorrowedView) error) error {
+	if body.destroyed {
+		return errInvalidControllerPacket
+	}
+	if len(body.payload) == 0 {
+		return nil
+	}
+	return callback(testBorrowedView{payload: body.payload})
 }
 func (body *testHelperBody) Destroy(context.Context) error {
 	body.destroyed = true
@@ -1579,6 +1631,21 @@ func (body *testHelperBody) Destroy(context.Context) error {
 		panic("test controller body destroy panic")
 	}
 	return body.destroyErr
+}
+
+type testBorrowedView struct {
+	payload []byte
+}
+
+func (view testBorrowedView) Len() int { return len(view.payload) }
+func (view testBorrowedView) CopyTo(context.Context, *credentialmemory.LockedMapping) error {
+	return errInvalidControllerPacket
+}
+func (view testBorrowedView) WriteTo(_ context.Context, sink credentialmemory.CredentialSink) error {
+	if sink == nil || sink.MaxCredentialBytes() < len(view.payload) {
+		return errInvalidControllerPacket
+	}
+	return sink.WriteCredential(view.payload)
 }
 
 type testCanonicalBodySink struct {

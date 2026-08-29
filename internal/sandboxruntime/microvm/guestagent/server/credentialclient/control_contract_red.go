@@ -304,6 +304,37 @@ type helperPrepareFileArm struct {
 	bindingIndex uint16
 	fileLength   uint32
 	fileSHA256   [32]byte
+	owner        *helperPrepareFileOwner
+}
+
+// helperPrepareFileOwner is the opaque wipeable owner for one admitted
+// prepare-file payload. Value copies share wipe state. Private bytes are
+// defensively copied into cap==len storage, never logged or serialized.
+type helperPrepareFileOwner struct {
+	liveValue
+	body *credentialprotocol.HelperPrepareFileBody
+}
+
+func newHelperPrepareFileOwner(revision uint64, bindingIndex uint16, fileSHA256 [32]byte, privateBytes []byte) (*helperPrepareFileOwner, error) {
+	body, err := credentialprotocol.NewHelperPrepareFileBody(revision, bindingIndex, fileSHA256, privateBytes)
+	if err != nil {
+		return nil, err
+	}
+	return &helperPrepareFileOwner{body: body}, nil
+}
+
+func (owner *helperPrepareFileOwner) Wipe() {
+	if owner == nil || owner.body == nil {
+		return
+	}
+	owner.body.Wipe()
+	owner.body = nil
+}
+
+func wipeHelperPrepareFileOwner(owner *helperPrepareFileOwner) {
+	if owner != nil {
+		owner.Wipe()
+	}
 }
 
 type helperExecPrivateArm struct {
@@ -1274,6 +1305,80 @@ func destroyControllerBody(body controllerBodyCapability) error {
 	return destroyOwnedBody(body, errInvalidControllerPacket)
 }
 
+type exactPrivateByteSink struct {
+	target []byte
+	offset int
+	failed bool
+}
+
+func (sink *exactPrivateByteSink) MaxCredentialBytes() int {
+	if sink == nil || sink.failed {
+		return 0
+	}
+	return len(sink.target) - sink.offset
+}
+
+func (sink *exactPrivateByteSink) WriteCredential(source []byte) error {
+	if sink == nil || sink.failed || sink.offset+len(source) > len(sink.target) {
+		if sink != nil {
+			sink.failed = true
+		}
+		return errInvalidControllerPacket
+	}
+	copy(sink.target[sink.offset:], source)
+	sink.offset += len(source)
+	return nil
+}
+
+func copyControllerPrepareFileOwner(
+	ctx context.Context,
+	body controllerBodyCapability,
+	revision uint64,
+	bindingIndex uint16,
+	fileSHA256 [32]byte,
+	expectedLength uint32,
+) (*helperPrepareFileOwner, error) {
+	if ctx == nil || ctx.Err() != nil || !configuredDependency(body) ||
+		expectedLength == 0 || expectedLength > credentialprotocol.MaxHelperFileBytes {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	length, digest, ok := controllerBodyMetadata(body)
+	if !ok || length != expectedLength || digest != fileSHA256 {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	var owner *helperPrepareFileOwner
+	borrowErr := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
+		if view == nil || view.Len() != int(expectedLength) {
+			return ErrClientControlDependencyUnaccepted
+		}
+		buf := make([]byte, expectedLength)
+		sink := &exactPrivateByteSink{target: buf}
+		if writeErr := view.WriteTo(ctx, sink); writeErr != nil {
+			clear(buf)
+			return writeErr
+		}
+		if sink.failed || sink.offset != len(buf) {
+			clear(buf)
+			return ErrClientControlDependencyUnaccepted
+		}
+		created, err := newHelperPrepareFileOwner(revision, bindingIndex, fileSHA256, buf)
+		clear(buf)
+		if err != nil {
+			return ErrClientControlDependencyUnaccepted
+		}
+		owner = created
+		return nil
+	})
+	if borrowErr != nil {
+		wipeHelperPrepareFileOwner(owner)
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	if owner == nil {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	return owner, nil
+}
+
 func destroyOwnedBody(body interface {
 	Destroy(context.Context) error
 }, invalid error) (err error) {
@@ -1354,6 +1459,10 @@ func (packet HelperSendPacket) writeCanonicalBody(sink bodySegmentSink) (err err
 	}()
 	switch packet.arm {
 	case helperSendArmPrepareBegin, helperSendArmPrepareCommit, helperSendArmRenew, helperSendArmRevoke, helperSendArmExec, helperSendArmExecCredit, helperSendArmClose:
+	case helperSendArmPrepareFile:
+		if packet.state == nil {
+			return ErrClientControlDependencyUnaccepted
+		}
 	default:
 		return ErrClientControlDependencyUnaccepted
 	}
@@ -1370,8 +1479,18 @@ func (packet HelperSendPacket) writeCanonicalBody(sink bodySegmentSink) (err err
 	packet.state.owner = nil
 	packet.state.mu.Unlock()
 	defer func() { _ = destroyHelperBody(owner.body) }()
+	if packet.arm == helperSendArmPrepareFile {
+		defer wipeHelperPrepareFileOwner(owner.arm.prepareFile.owner)
+		if owner.arm.prepareFile.owner == nil || owner.arm.prepareFile.owner.body == nil {
+			return ErrClientControlDependencyUnaccepted
+		}
+	}
 	body, encodeErr := encodeHelperSendCanonicalBody(packet.arm, owner.arm)
+	defer clear(body)
 	if encodeErr != nil || uint64(len(body)) != uint64(packet.encodedBodyLength) || packet.header.BodyLength != packet.encodedBodyLength || sha256.Sum256(body) != packet.bodySHA256 {
+		if packet.arm == helperSendArmPrepareFile && encodeErr != nil && errors.Is(encodeErr, ErrClientControlDependencyUnaccepted) {
+			return ErrClientControlDependencyUnaccepted
+		}
 		return errInvalidHelperSendPacket
 	}
 	if sink == nil || sink.Capacity() != packet.encodedBodyLength {
@@ -1385,6 +1504,7 @@ func (packet HelperSendPacket) writeCanonicalBody(sink bodySegmentSink) (err err
 
 func finishHelperSendPacket(header credentialprotocol.HelperPacketHeader, kind helperSendArmKind, arm helperSendArm) (HelperSendPacket, error) {
 	body, err := encodeHelperSendCanonicalBody(kind, arm)
+	defer clear(body)
 	if err != nil || len(body) == 0 || header.Sequence == 0 || header.Sequence > uint64(^uint32(0)) ||
 		(kind == helperSendArmClose && header.RequestID != ([16]byte{})) || header.BodyLength != uint32(len(body)) ||
 		credentialprotocol.ValidateHelperPacketHeaderSemantics(header) != nil || header.Type != helperSendArmPacketType(kind) {
@@ -1405,6 +1525,11 @@ func encodeHelperSendCanonicalBody(kind helperSendArmKind, arm helperSendArm) ([
 	switch kind {
 	case helperSendArmPrepareBegin:
 		return credentialprotocol.EncodeHelperPrepareBeginBody(arm.prepareBegin)
+	case helperSendArmPrepareFile:
+		if arm.prepareFile.owner == nil || arm.prepareFile.owner.body == nil {
+			return nil, ErrClientControlDependencyUnaccepted
+		}
+		return credentialprotocol.EncodeHelperPrepareFileBody(arm.prepareFile.owner.body)
 	case helperSendArmPrepareCommit:
 		return credentialprotocol.EncodeHelperPrepareCommitBody(arm.prepareCommit)
 	case helperSendArmRenew:
@@ -1430,6 +1555,23 @@ func newHelperPrepareBeginSendPacket(header credentialprotocol.HelperPacketHeade
 	cloned := body
 	cloned.Bindings = cloneValues(body.Bindings)
 	return newHelperMetadataSendPacket(header, helperSendArmPrepareBegin, helperSendArm{kind: helperSendArmPrepareBegin, prepareBegin: cloned})
+}
+
+func newHelperPrepareFileSendPacket(header credentialprotocol.HelperPacketHeader, owner *helperPrepareFileOwner) (HelperSendPacket, error) {
+	if owner == nil || owner.body == nil {
+		return HelperSendPacket{}, ErrClientControlDependencyUnaccepted
+	}
+	body := owner.body
+	return newHelperMetadataSendPacket(header, helperSendArmPrepareFile, helperSendArm{
+		kind: helperSendArmPrepareFile,
+		prepareFile: helperPrepareFileArm{
+			revision:     body.Revision(),
+			bindingIndex: body.BindingIndex(),
+			fileLength:   body.FileLength(),
+			fileSHA256:   body.FileSHA256(),
+			owner:        owner,
+		},
+	})
 }
 
 func newHelperPrepareCommitSendPacket(header credentialprotocol.HelperPacketHeader, body credentialprotocol.HelperPrepareCommitBody) (HelperSendPacket, error) {
@@ -1470,10 +1612,16 @@ func newHelperMetadataSendPacket(header credentialprotocol.HelperPacketHeader, k
 	header.Type = helperSendArmPacketType(kind)
 	encoded, err := encodeHelperSendCanonicalBody(kind, arm)
 	if err != nil || len(encoded) == 0 {
+		clear(encoded)
+		if kind == helperSendArmPrepareFile && err != nil && errors.Is(err, ErrClientControlDependencyUnaccepted) {
+			return HelperSendPacket{}, ErrClientControlDependencyUnaccepted
+		}
 		return HelperSendPacket{}, errInvalidHelperSendPacket
 	}
 	header.BodyLength = uint32(len(encoded))
-	return finishHelperSendPacket(header, kind, arm)
+	packet, finishErr := finishHelperSendPacket(header, kind, arm)
+	clear(encoded)
+	return packet, finishErr
 }
 
 func helperSendArmPacketType(kind helperSendArmKind) credentialprotocol.PacketType {
