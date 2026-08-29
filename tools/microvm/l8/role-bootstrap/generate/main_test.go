@@ -190,6 +190,70 @@ func TestL8D7NativeRoleBootstrapELFIsFreestandingStaticExec(t *testing.T) {
 	}
 }
 
+func TestL8D7NativeRoleBootstrapBuildIgnoresCallerFilterShadow(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("native ELF assemble/link requires linux/amd64 as/ld")
+	}
+	if _, err := exec.LookPath("as"); err != nil {
+		t.Fatalf("as is required to prove the native ELF: %v", err)
+	}
+	if _, err := exec.LookPath("ld"); err != nil {
+		t.Fatalf("ld is required to prove the native ELF: %v", err)
+	}
+	root := repositoryRoot(t)
+	caller := t.TempDir()
+	shadow := []byte("\t.section .rodata, \"a\", @progbits\n\t.align 8\n\t.type\tlaunch_base_filter, @object\nlaunch_base_filter:\n\t.short\t0x0006\n\t.byte\t0\n\t.byte\t0\n\t.long\t0x7fff0000\n\t.size\tlaunch_base_filter, .-launch_base_filter\n\t.type\tlaunch_base_filter_len, @object\nlaunch_base_filter_len:\n\t.short\t1\n")
+	if err := os.WriteFile(filepath.Join(caller, "launch_base_filter.inc"), shadow, 0o600); err != nil {
+		t.Fatalf("write caller filter shadow: %v", err)
+	}
+	out := filepath.Join(caller, "out")
+	build := exec.Command("bash", filepath.Join(root, "tools/microvm/l8/role-bootstrap/build.sh"), out)
+	build.Dir = caller
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build.sh from caller directory: %v\n%s", err, output)
+	}
+	file, err := elf.Open(filepath.Join(out, "hal-guest-role-bootstrap"))
+	if err != nil {
+		t.Fatalf("open ELF: %v", err)
+	}
+	defer file.Close()
+	policySHA256, err := readDigestFile(filepath.Join(root, policyDigestRel))
+	if err != nil {
+		t.Fatalf("issued policy digest: %v", err)
+	}
+	policyBytes, err := os.ReadFile(filepath.Join(root, policyArtifactRel))
+	if err != nil {
+		t.Fatalf("issued policy artifact: %v", err)
+	}
+	compiled, err := syscallpolicy.CompileIssuedRoleFilter(policyBytes, policySHA256, syscallpolicy.RoleLaunchBase)
+	if err != nil {
+		t.Fatalf("compile launch-base filter: %v", err)
+	}
+	symbols, err := file.Symbols()
+	if err != nil {
+		t.Fatalf("ELF symbols: %v", err)
+	}
+	for _, symbol := range symbols {
+		if symbol.Name != "launch_base_filter" {
+			continue
+		}
+		section := file.Sections[symbol.Section]
+		sectionBytes, readErr := section.Data()
+		if readErr != nil {
+			t.Fatalf("read launch-base filter section: %v", readErr)
+		}
+		offset := symbol.Value - section.Addr
+		if symbol.Size != uint64(len(compiled.CanonicalBytes())) || offset+symbol.Size > uint64(len(sectionBytes)) {
+			t.Fatalf("launch-base filter symbol size/range = %d/%d", symbol.Size, len(sectionBytes))
+		}
+		if got := sectionBytes[offset : offset+symbol.Size]; !bytes.Equal(got, compiled.CanonicalBytes()) {
+			t.Fatal("caller working directory shadowed the issued launch-base filter")
+		}
+		return
+	}
+	t.Fatal("native ELF is missing launch_base_filter")
+}
+
 func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 	root := repositoryRoot(t)
 	source, err := os.ReadFile(filepath.Join(root, nativeSourceRel))
