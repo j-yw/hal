@@ -191,8 +191,41 @@ func TestL8D7RuntimeEnvelopeLockIsExactNamedGoPID1Catalog(t *testing.T) {
 	if !equalStringSlices(document.RuntimeEnvelope, want) {
 		t.Fatalf("runtimeEnvelope = %v, want %v", document.RuntimeEnvelope, want)
 	}
-	if len(want) != 18 || want[0] != "clock_gettime" || want[len(want)-1] != "write" {
+	if len(want) != 19 || want[0] != "clock_gettime" || want[4] != "getppid" || want[len(want)-1] != "write" {
 		t.Fatalf("exactRuntimeEnvelope() = %v", want)
+	}
+	for _, name := range []string{"clone", "clone3"} {
+		for _, got := range want {
+			if got == name {
+				t.Fatalf("exactRuntimeEnvelope() includes process-creation syscall %s: %v", name, want)
+			}
+		}
+	}
+}
+
+func TestL8D7NativeEnvelopeLockIsExactNamedNativeStartCatalog(t *testing.T) {
+	root := repositoryRoot(t)
+	encoded, err := os.ReadFile(filepath.Join(root, policyDir, "roles-v1.yaml"))
+	if err != nil {
+		t.Fatalf("read roles: %v", err)
+	}
+	document, err := decodeRoles(encoded)
+	if err != nil {
+		t.Fatalf("decodeRoles() error = %v", err)
+	}
+	want := exactNativeEnvelope()
+	if !equalStringSlices(document.NativeEnvelope, want) {
+		t.Fatalf("nativeEnvelope = %v, want %v", document.NativeEnvelope, want)
+	}
+	if len(want) != 12 || want[0] != "getuid" || want[6] != "socket" || want[len(want)-1] != "exit_group" {
+		t.Fatalf("exactNativeEnvelope() = %v", want)
+	}
+	for _, name := range []string{"clone", "clone3", "execve", "seccomp"} {
+		for _, got := range want {
+			if got == name {
+				t.Fatalf("exactNativeEnvelope() includes forbidden syscall %s: %v", name, want)
+			}
+		}
 	}
 }
 
@@ -220,6 +253,10 @@ func TestL8D7RolesDecoderRequiresExactOrderedRoleAndRuleSet(t *testing.T) {
 		"missing envelope": func(input *rolesDocument) {
 			input.RuntimeEnvelope = input.RuntimeEnvelope[:len(input.RuntimeEnvelope)-1]
 		},
+		"changed native envelope": func(input *rolesDocument) { input.NativeEnvelope[0] = "clone3" },
+		"missing native envelope": func(input *rolesDocument) {
+			input.NativeEnvelope = input.NativeEnvelope[:len(input.NativeEnvelope)-1]
+		},
 		"changed callsite": func(input *rolesDocument) { input.PinnedCallsite.Symbol = "internal/runtime/syscall.Other" },
 	}
 	for name, mutate := range mutations {
@@ -227,6 +264,7 @@ func TestL8D7RolesDecoderRequiresExactOrderedRoleAndRuleSet(t *testing.T) {
 			candidate := document
 			candidate.Roles = append([]roleInput(nil), document.Roles...)
 			candidate.RuntimeEnvelope = append([]string(nil), document.RuntimeEnvelope...)
+			candidate.NativeEnvelope = append([]string(nil), document.NativeEnvelope...)
 			mutate(&candidate)
 			encoded, err := json.Marshal(candidate)
 			if err != nil {

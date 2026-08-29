@@ -151,30 +151,42 @@ func TestL8D7ReachableGraphNamesNativeStartSyscalls(t *testing.T) {
 		}
 	}
 	got := extraReachableSyscallNames(inspected)
-	want := []string{"bind", "capget", "close", "dup3", "exit_group", "getegid", "geteuid", "getgid", "getuid", "listen", "prlimit64", "socket"}
+	want := exactNativeEnvelope()
 	if len(inspected.reachableSyscalls) < nativeBootstrapSyscallCount {
 		t.Fatalf("native reachable syscalls = %d (%v), lost shared identity preflight sites", len(inspected.reachableSyscalls), got)
 	}
 	if len(inspected.reachableSyscalls) != len(want) {
-		t.Fatalf("native reachable syscalls = %d (%v), want %d %v", len(inspected.reachableSyscalls), got, len(want), want)
+		t.Fatalf("native reachable syscalls = %d extras=%v, want %d catalog names %v", len(inspected.reachableSyscalls), got, len(want), want)
 	}
+	seen := make(map[string]struct{}, len(inspected.reachableSyscalls))
 	for _, site := range inspected.reachableSyscalls {
 		if site.symbol != nativeBootstrapSymbol || !site.numberKnown {
 			t.Fatalf("native reachable syscall %+v is not a named _start site", site)
 		}
+		name := linuxAMD64SyscallName(site.number)
+		seen[name] = struct{}{}
+		if extraReachableSyscallName(inspected, site) != "" {
+			t.Fatalf("catalog-listed native _start syscall %s treated as extra", name)
+		}
 	}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("native extra syscalls = %v, want %v", got, want)
+	for _, name := range want {
+		if _, ok := seen[name]; !ok {
+			t.Fatalf("native reachable syscalls missing catalog name %s", name)
+		}
+	}
+	if len(got) != 0 {
+		t.Fatalf("native extra syscalls = %v, want none after nativeEnvelope catalog bind", got)
 	}
 	for _, live := range []string{"clone3", "execve", "seccomp", "sendmsg", "recvmsg"} {
-		if strings.Contains(strings.Join(got, ","), live) {
+		if _, ok := seen[live]; ok {
+			t.Fatalf("native reachable syscalls claimed unimplemented live syscall %s", live)
+		}
+		if containsString(got, live) {
 			t.Fatalf("native extra syscalls = %v claimed unimplemented live syscall %s", got, live)
 		}
 	}
-	if err := proveBoundedReachableSyscallGraph([]inspectedGuestBinary{inspected}); err == nil {
-		t.Fatal("native bootstrap graph issued pinned-direct authority")
-	} else if !strings.Contains(err.Error(), "reachable extra syscalls from "+nativeBootstrapSymbol+":") || !strings.Contains(err.Error(), "exit_group") {
-		t.Fatalf("native graph error = %v, want named extras from _start", err)
+	if err := proveBoundedReachableSyscallGraph([]inspectedGuestBinary{inspected}); err != nil {
+		t.Fatalf("native bootstrap graph after nativeEnvelope bind error = %v", err)
 	}
 }
 
@@ -226,9 +238,12 @@ func TestL8D7ReachableGraphNamesGoLaunchBaseExtraSyscalls(t *testing.T) {
 			t.Fatalf("launch-base extras = %v still include unnumbered trampoline %s", extras, name)
 		}
 	}
-	wantExtras := []string{"clone", "clone3", "getppid"}
+	wantExtras := []string{"clone", "clone3"}
 	if strings.Join(extras, ",") != strings.Join(wantExtras, ",") {
-		t.Fatalf("launch-base extras = %v, want named trampoline syscalls %v", extras, wantExtras)
+		t.Fatalf("launch-base extras = %v, want process-creation extras %v", extras, wantExtras)
+	}
+	if containsString(extras, "getppid") {
+		t.Fatalf("launch-base extras = %v still include catalog-listed getppid", extras)
 	}
 	if err := proveBoundedReachableSyscallGraph([]inspectedGuestBinary{inspected}); err == nil {
 		t.Fatal("launch-base graph with extra reachable syscalls was accepted")
@@ -253,6 +268,7 @@ func TestL8D7RuntimeEnvelopeCatalogClassifiesNamedSyscallsWithoutPrefixAuthority
 		kind:         syscallKindSyscall,
 	}
 	listed := decodedSyscallSite{symbol: "runtime.futex", textOffset: 32, kind: syscallKindSyscall, numberKnown: true, number: 202}
+	listedPPID := decodedSyscallSite{symbol: "runtime.getppid", textOffset: 40, kind: syscallKindSyscall, numberKnown: true, number: 110}
 	unlisted := decodedSyscallSite{symbol: "runtime.reviewerAuthority", textOffset: 48, kind: syscallKindSyscall, numberKnown: true, number: 56}
 	trampoline := decodedSyscallSite{symbol: "syscall.rawSyscallNoError.abi0", textOffset: 64, kind: syscallKindSyscall}
 	namedTrampoline := decodedSyscallSite{symbol: "syscall.rawSyscallNoError.abi0", textOffset: 72, kind: syscallKindSyscall, numberKnown: true, number: 39}
@@ -261,6 +277,9 @@ func TestL8D7RuntimeEnvelopeCatalogClassifiesNamedSyscallsWithoutPrefixAuthority
 	}
 	if extra := extraReachableSyscallName(binary, listed); extra != "" {
 		t.Fatalf("catalog-listed named syscall treated as extra: %q", extra)
+	}
+	if extra := extraReachableSyscallName(binary, listedPPID); extra != "" {
+		t.Fatalf("catalog-listed getppid treated as extra: %q", extra)
 	}
 	if extra := extraReachableSyscallName(binary, unlisted); extra != "clone" {
 		t.Fatalf("unlisted named syscall extra = %q, want clone", extra)
@@ -282,6 +301,61 @@ func TestL8D7RuntimeEnvelopeCatalogClassifiesNamedSyscallsWithoutPrefixAuthority
 	want := []string{"clone", "unknown:syscall.rawSyscallNoError.abi0"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("launch-base extras = %v, want %v", got, want)
+	}
+}
+
+func TestL8D7NativeEnvelopeCatalogClassifiesNamedSyscallsWithoutPrefixAuthority(t *testing.T) {
+	binary := inspectedGuestBinary{
+		name:   guestBootstrapBinaryName,
+		native: true,
+		entry:  nativeBootstrapSymbol,
+	}
+	listed := decodedSyscallSite{symbol: nativeBootstrapSymbol, textOffset: 16, kind: syscallKindSyscall, numberKnown: true, number: 102}
+	listen := decodedSyscallSite{symbol: nativeBootstrapSymbol, textOffset: 32, kind: syscallKindSyscall, numberKnown: true, number: 50}
+	unlisted := decodedSyscallSite{symbol: "unix.reviewerAuthority", textOffset: 48, kind: syscallKindSyscall, numberKnown: true, number: 56}
+	unimplemented := decodedSyscallSite{symbol: nativeBootstrapSymbol, textOffset: 64, kind: syscallKindSyscall, numberKnown: true, number: 435}
+	if extra := extraReachableSyscallName(binary, listed); extra != "" {
+		t.Fatalf("catalog-listed native getuid treated as extra: %q", extra)
+	}
+	if extra := extraReachableSyscallName(binary, listen); extra != "" {
+		t.Fatalf("catalog-listed native listen treated as extra: %q", extra)
+	}
+	if extra := extraReachableSyscallName(binary, unlisted); extra != "clone" {
+		t.Fatalf("unlisted named syscall extra = %q, want clone", extra)
+	}
+	if extra := extraReachableSyscallName(binary, unimplemented); extra != "clone3" {
+		t.Fatalf("unimplemented clone3 extra = %q, want clone3", extra)
+	}
+	goPID1 := inspectedGuestBinary{name: guestInitBinaryName}
+	if extra := extraReachableSyscallName(goPID1, listed); extra != "getuid" {
+		t.Fatalf("Go PID1 native-envelope getuid extra = %q, want getuid because nativeEnvelope is bootstrap-only", extra)
+	}
+	generic := inspectedGuestBinary{name: "inspect-graph"}
+	if extra := extraReachableSyscallName(generic, listen); extra != "listen" {
+		t.Fatalf("generic binary native-envelope extra = %q, want listen because prefix/role union is empty", extra)
+	}
+	misnamed := inspectedGuestBinary{name: guestBootstrapBinaryName}
+	if extra := extraReachableSyscallName(misnamed, listed); extra != "getuid" {
+		t.Fatalf("non-native bootstrap filename extra = %q, want getuid because nativeEnvelope requires the native identity", extra)
+	}
+}
+
+func TestL8D7EnvelopesOmitProcessCreationAndUnimplementedLiveSyscalls(t *testing.T) {
+	for _, name := range []string{"clone", "clone3"} {
+		if containsString(exactRuntimeEnvelope(), name) {
+			t.Fatalf("runtimeEnvelope includes process-creation syscall %s", name)
+		}
+		if containsString(exactNativeEnvelope(), name) {
+			t.Fatalf("nativeEnvelope includes process-creation syscall %s", name)
+		}
+	}
+	for _, name := range []string{"clone3", "execve", "seccomp", "sendmsg", "recvmsg"} {
+		if containsString(exactNativeEnvelope(), name) {
+			t.Fatalf("nativeEnvelope includes unimplemented live syscall %s", name)
+		}
+	}
+	if !containsString(exactRuntimeEnvelope(), "getppid") {
+		t.Fatal("runtimeEnvelope omitted ordinary main.main extra getppid")
 	}
 }
 

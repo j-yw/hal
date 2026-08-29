@@ -14,7 +14,7 @@ import (
 const (
 	nativeBootstrapSymbol        = "_start"
 	goRoleEntrySymbol            = "main.main"
-	nativeBootstrapSyscallCount  = 7
+	nativeBootstrapSyscallCount  = 12
 	syscallKindSyscall           = "syscall"
 	syscallKindSysenter          = "sysenter"
 	syscallKindInt80             = "int80"
@@ -162,6 +162,11 @@ func binaryRoleUnionCatalog(binary inspectedGuestBinary) map[string]struct{} {
 			names[name] = struct{}{}
 		}
 	}
+	if binarySharesNativeEnvelope(binary) {
+		for _, name := range exactNativeEnvelope() {
+			names[name] = struct{}{}
+		}
+	}
 	for _, role := range exactRoles() {
 		if roleAppliesToBinary(role, binary) {
 			names[role.Syscall] = struct{}{}
@@ -180,6 +185,10 @@ func binarySharesGoRuntimeEnvelope(binary inspectedGuestBinary) bool {
 		}
 	}
 	return false
+}
+
+func binarySharesNativeEnvelope(binary inspectedGuestBinary) bool {
+	return binary.native && binary.name == guestBootstrapBinaryName
 }
 
 func roleAppliesToBinary(role roleInput, binary inspectedGuestBinary) bool {
