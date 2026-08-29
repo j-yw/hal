@@ -99,6 +99,7 @@ type l8JobCredentialRuntimeDependencies struct {
 	HTTPProxy    l8JobCredentialHTTPProxyActivator
 	FileTmpfs    l8JobCredentialFileTmpfsActivator
 	SSHRelay     l8JobCredentialSSHRelayActivator
+	HandleStore  l8JobCredentialHandleStore
 	Now          func() time.Time
 	Random       io.Reader
 }
@@ -190,9 +191,11 @@ func (runtime *L8JobCredentialRuntime) PreflightJobCredentials(ctx context.Conte
 }
 
 // RecoverJobCredentials is ordinary complete-identity recovery used before
-// StopReap. HTTP tickets, tmpfs files, and SSH leases exist only as in-memory
-// handles after Prepare. A durable handle store that could reacquire them after
-// restart remains unaccepted, so this method never mints a cleanup proof.
+// StopReap. A nil HandleStore, or a store with no metadata for this identity,
+// remains dependency_unaccepted and mints no cleanup proof. When durable
+// handle metadata is present, recovery attempts activator cleanup and may
+// return a real cleanup proof only after resources are proved absent or were
+// never durable. Invalid identity is still mismatch.
 func (runtime *L8JobCredentialRuntime) RecoverJobCredentials(ctx context.Context, request sandboxruntime.JobCredentialRecoveryRequest) (sandboxruntime.JobCredentialCleanupProof, error) {
 	if runtime == nil || l8JobCredentialRuntimeValueIsNil(ctx) {
 		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
@@ -206,7 +209,33 @@ func (runtime *L8JobCredentialRuntime) RecoverJobCredentials(ctx context.Context
 	if request.Revision == 0 {
 		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
 	}
-	return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	store := runtime.deps.HandleStore
+	if l8JobCredentialRuntimeValueIsNil(store) {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	record, present, err := loadL8JobCredentialHandleRecord(ctx, store, request.Identity)
+	if err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	if !present {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	if err := recoverL8JobCredentialStoredHandles(ctx, runtime.deps, request.Identity, record); err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	observed, err := callL8JobCredentialNow(runtime.deps.Now)
+	if err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	identity := cloneL8JobCredentialIdentity(request.Identity)
+	if observed.Before(identity.IssuedAt) {
+		observed = identity.IssuedAt
+	}
+	return sandboxruntime.NewJobCredentialCleanupProof(sandboxruntime.JobCredentialCleanupProofInput{
+		ProofID: fmt.Sprintf("cleanup-%d", record.Revision+1), Identity: identity, Revision: record.Revision + 1,
+		RevokedAt: observed, AbsenceInspectedAt: observed,
+		AuthorityAbsent: true, ResourcesAbsent: true,
+	})
 }
 
 type l8JobCredentialPreflightState uint8
@@ -332,6 +361,10 @@ func (preflight *l8JobCredentialRuntimePreflight) PrepareJobCredentials(ctx cont
 	if err != nil {
 		preflight.finishFailedPrepare(ctx, resources)
 		return nil, sandboxruntime.ErrJobCredentialProofInvalid
+	}
+	if err := persistL8JobCredentialHandleRecord(ctx, deps.HandleStore, identity, 1, resources.manifests); err != nil {
+		preflight.finishFailedPrepare(ctx, resources)
+		return nil, sanitizeL8JobCredentialRuntimeError(err)
 	}
 
 	preflight.mu.Lock()
@@ -551,6 +584,13 @@ func (session *l8JobCredentialRuntimeSession) Renew(ctx context.Context) (sandbo
 	})
 	if err != nil {
 		return sandboxruntime.JobCredentialActiveProof{}, sandboxruntime.ErrJobCredentialProofInvalid
+	}
+	var manifests []l8JobCredentialGuestBindingManifest
+	if resources != nil {
+		manifests = resources.manifests
+	}
+	if err := persistL8JobCredentialHandleRecord(ctx, session.preflight.deps.HandleStore, identity, revision+1, manifests); err != nil {
+		return sandboxruntime.JobCredentialActiveProof{}, sanitizeL8JobCredentialRuntimeError(err)
 	}
 
 	session.mu.Lock()

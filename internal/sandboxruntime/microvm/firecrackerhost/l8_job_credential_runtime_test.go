@@ -405,45 +405,94 @@ func TestL8JobCredentialRuntimeRecoverFailsClosedWithoutDurableHandleStore(t *te
 	if bytes.Contains(source, []byte("NewJobCredentialRuntimeAbsenceProof")) {
 		t.Fatal("job credential runtime issued a runtime absence proof")
 	}
-	if !bytes.Contains(source, []byte("durable handle store")) || !bytes.Contains(source, []byte("remains unaccepted")) {
-		t.Fatal("recover does not document the missing durable handle store as unaccepted")
+	if !bytes.Contains(source, []byte("HandleStore")) || !bytes.Contains(source, []byte("mints no cleanup proof")) {
+		t.Fatal("recover does not document that a missing handle store mints no cleanup proof")
 	}
-	l8JobCredentialRuntimeAssertRecoverDoesNotMintProofs(t)
 }
 
-func l8JobCredentialRuntimeAssertRecoverDoesNotMintProofs(t *testing.T) {
-	t.Helper()
-	set := token.NewFileSet()
-	file, err := parser.ParseFile(set, "l8_job_credential_runtime.go", nil, 0)
+func TestL8JobCredentialRuntimeRecoverMintsCleanupProofFromStoreMetadata(t *testing.T) {
+	now := l8JobCredentialRuntimeNow()
+	seed, identity, request := l8JobCredentialRuntimePrepareFixture(t, now)
+	store := newL8JobCredentialMemoryHandleStore()
+	guest := l8JobCredentialGuestSessionFakeForTest(t, now)
+	httpProxy := &l8JobCredentialHTTPProxyFake{}
+	tmpfs := &l8JobCredentialFileTmpfsFake{payload: []byte("file-bytes")}
+	runtime := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: guest}, httpProxy, tmpfs, nil)
+	runtime.deps.HandleStore = store
+
+	preflight, err := runtime.PreflightJobCredentials(context.Background(), seed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	ast.Inspect(file, func(node ast.Node) bool {
-		fn, ok := node.(*ast.FuncDecl)
-		if !ok || fn.Name == nil || fn.Name.Name != "RecoverJobCredentials" || fn.Recv == nil {
-			return true
-		}
-		found = true
-		ast.Inspect(fn.Body, func(child ast.Node) bool {
-			name := ""
-			switch node := child.(type) {
-			case *ast.Ident:
-				name = node.Name
-			case *ast.SelectorExpr:
-				if node.Sel != nil {
-					name = node.Sel.Name
-				}
-			}
-			if name == "NewJobCredentialCleanupProof" || name == "NewJobCredentialRuntimeAbsenceProof" {
-				t.Fatalf("RecoverJobCredentials minted %s", name)
-			}
-			return true
-		})
-		return true
+	if _, err := preflight.PrepareJobCredentials(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, present, err := store.Load(context.Background(), identity); err != nil || !present {
+		t.Fatalf("prepare did not persist handle metadata: present=%t err=%v", present, err)
+	}
+
+	recovered := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, httpProxy, tmpfs, nil)
+	recovered.deps.HandleStore = store
+	proof, err := recovered.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 1,
 	})
-	if !found {
-		t.Fatal("RecoverJobCredentials method not found")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sandboxruntime.ValidateJobCredentialCleanupProof(proof, identity, 2, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("store recover cleanup proof: %v", err)
+	}
+	if httpProxy.revokes != 1 || tmpfs.revokes != 1 {
+		t.Fatalf("store recover revokes http=%d tmpfs=%d, want 1/1", httpProxy.revokes, tmpfs.revokes)
+	}
+
+	missing := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, nil, nil, nil)
+	missing.deps.HandleStore = newL8JobCredentialMemoryHandleStore()
+	empty, emptyErr := missing.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 1,
+	})
+	if sandboxruntime.CleanupProofKind(empty) != "" || !errors.Is(emptyErr, errL8JobCredentialRuntimeDependencyUnaccepted) {
+		t.Fatalf("missing-metadata recover = %#v, %v", empty, emptyErr)
+	}
+
+	neighbor := identity
+	neighbor.WorkerJobID = "job-neighbor"
+	if err := sandboxruntime.ValidateJobCredentialIdentity(neighbor); err != nil {
+		t.Fatal(err)
+	}
+	foreign, foreignErr := recovered.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: neighbor, Revision: 1,
+	})
+	if sandboxruntime.CleanupProofKind(foreign) != "" || !errors.Is(foreignErr, errL8JobCredentialRuntimeDependencyUnaccepted) {
+		t.Fatalf("neighbor recover = %#v, %v", foreign, foreignErr)
+	}
+}
+
+func TestL8JobCredentialRuntimeRecoverDoesNotMintWhenStoredRevokeFails(t *testing.T) {
+	now := l8JobCredentialRuntimeNow()
+	seed, identity, request := l8JobCredentialRuntimePrepareFixture(t, now)
+	store := newL8JobCredentialMemoryHandleStore()
+	httpProxy := &l8JobCredentialHTTPProxyFake{revokeErr: errors.New("ticket=sk_live_canary path=/private/ticket.bin")}
+	tmpfs := &l8JobCredentialFileTmpfsFake{payload: []byte("file-bytes")}
+	runtime := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, httpProxy, tmpfs, nil)
+	runtime.deps.HandleStore = store
+	preflight, err := runtime.PreflightJobCredentials(context.Background(), seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := preflight.PrepareJobCredentials(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+
+	failed, failedErr := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 1,
+	})
+	if sandboxruntime.CleanupProofKind(failed) != "" || !errors.Is(failedErr, ErrL8JobCredentialRuntimeUnavailable) {
+		t.Fatalf("failed stored revoke = %#v, %v", failed, failedErr)
+	}
+	l8JobCredentialRuntimeAssertSafeError(t, failedErr)
+	if strings.Contains(failedErr.Error(), "sk_live") || strings.Contains(failedErr.Error(), "/private/") {
+		t.Fatalf("stored revoke leaked canary: %v", failedErr)
 	}
 }
 
@@ -900,6 +949,8 @@ type l8JobCredentialHTTPProxyFake struct {
 	renews    int
 	revokes   int
 	err       error
+	revokeErr error
+	handles   map[string]*l8JobCredentialHTTPProxyHandleFake
 }
 
 func (fake *l8JobCredentialHTTPProxyFake) Activate(_ context.Context, _ sandboxruntime.JobCredentialIdentity, binding sandboxruntime.JobCredentialBindingRequest, _ sandboxruntime.LiveSecretSource) (l8JobCredentialHTTPProxyHandle, error) {
@@ -909,11 +960,27 @@ func (fake *l8JobCredentialHTTPProxyFake) Activate(_ context.Context, _ sandboxr
 	if fake.err != nil {
 		return nil, fake.err
 	}
-	return &l8JobCredentialHTTPProxyHandleFake{parent: fake, serviceID: binding.ServiceID}, nil
+	handle := &l8JobCredentialHTTPProxyHandleFake{parent: fake, bindingID: binding.ID, serviceID: binding.ServiceID}
+	if fake.handles == nil {
+		fake.handles = map[string]*l8JobCredentialHTTPProxyHandleFake{}
+	}
+	fake.handles[binding.ID] = handle
+	return handle, nil
+}
+
+func (fake *l8JobCredentialHTTPProxyFake) RevokeStored(ctx context.Context, _ sandboxruntime.JobCredentialIdentity, binding l8JobCredentialStoredBindingV1) error {
+	fake.mu.Lock()
+	handle := fake.handles[binding.BindingID]
+	fake.mu.Unlock()
+	if handle == nil {
+		return nil
+	}
+	return handle.Revoke(ctx)
 }
 
 type l8JobCredentialHTTPProxyHandleFake struct {
 	parent    *l8JobCredentialHTTPProxyFake
+	bindingID string
 	serviceID string
 }
 
@@ -928,6 +995,12 @@ func (handle *l8JobCredentialHTTPProxyHandleFake) Revoke(context.Context) error 
 	handle.parent.mu.Lock()
 	defer handle.parent.mu.Unlock()
 	handle.parent.revokes++
+	if handle.parent.revokeErr != nil {
+		return handle.parent.revokeErr
+	}
+	if handle.parent.handles != nil {
+		delete(handle.parent.handles, handle.bindingID)
+	}
 	return nil
 }
 
@@ -937,6 +1010,8 @@ type l8JobCredentialFileTmpfsFake struct {
 	materializes int
 	revokes      int
 	err          error
+	revokeErr    error
+	handles      map[string]*l8JobCredentialFileHandleFake
 }
 
 func (fake *l8JobCredentialFileTmpfsFake) Materialize(ctx context.Context, identity sandboxruntime.JobCredentialIdentity, binding sandboxruntime.JobCredentialBindingRequest, source sandboxruntime.LiveSecretSource) (l8JobCredentialFileHandle, error) {
@@ -958,13 +1033,29 @@ func (fake *l8JobCredentialFileTmpfsFake) Materialize(ctx context.Context, ident
 	}
 	sum := sha256.Sum256(payload)
 	_ = identity
-	return &l8JobCredentialFileHandleFake{
-		parent: fake, targetPath: binding.ID, size: uint32(len(payload)), digest: hex.EncodeToString(sum[:]),
-	}, nil
+	handle := &l8JobCredentialFileHandleFake{
+		parent: fake, bindingID: binding.ID, targetPath: binding.ID, size: uint32(len(payload)), digest: hex.EncodeToString(sum[:]),
+	}
+	if fake.handles == nil {
+		fake.handles = map[string]*l8JobCredentialFileHandleFake{}
+	}
+	fake.handles[binding.ID] = handle
+	return handle, nil
+}
+
+func (fake *l8JobCredentialFileTmpfsFake) RevokeStored(ctx context.Context, _ sandboxruntime.JobCredentialIdentity, binding l8JobCredentialStoredBindingV1) error {
+	fake.mu.Lock()
+	handle := fake.handles[binding.BindingID]
+	fake.mu.Unlock()
+	if handle == nil {
+		return nil
+	}
+	return handle.Revoke(ctx)
 }
 
 type l8JobCredentialFileHandleFake struct {
 	parent     *l8JobCredentialFileTmpfsFake
+	bindingID  string
 	targetPath string
 	size       uint32
 	digest     string
@@ -977,6 +1068,12 @@ func (handle *l8JobCredentialFileHandleFake) Revoke(context.Context) error {
 	handle.parent.mu.Lock()
 	defer handle.parent.mu.Unlock()
 	handle.parent.revokes++
+	if handle.parent.revokeErr != nil {
+		return handle.parent.revokeErr
+	}
+	if handle.parent.handles != nil {
+		delete(handle.parent.handles, handle.bindingID)
+	}
 	return nil
 }
 
@@ -988,20 +1085,38 @@ type l8JobCredentialSSHRelayFake struct {
 	renews         int
 	revokes        int
 	err            error
+	revokeErr      error
+	handles        map[string]*l8JobCredentialSSHRelayHandleFake
 }
 
-func (fake *l8JobCredentialSSHRelayFake) Activate(context.Context, sandboxruntime.JobCredentialIdentity, sandboxruntime.JobCredentialBindingRequest) (l8JobCredentialSSHRelayHandle, error) {
+func (fake *l8JobCredentialSSHRelayFake) Activate(_ context.Context, _ sandboxruntime.JobCredentialIdentity, binding sandboxruntime.JobCredentialBindingRequest) (l8JobCredentialSSHRelayHandle, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	fake.activates++
 	if fake.err != nil {
 		return nil, fake.err
 	}
-	return &l8JobCredentialSSHRelayHandleFake{parent: fake, policyID: fake.policyID, policyRevision: fake.policyRevision}, nil
+	handle := &l8JobCredentialSSHRelayHandleFake{parent: fake, bindingID: binding.ID, policyID: fake.policyID, policyRevision: fake.policyRevision}
+	if fake.handles == nil {
+		fake.handles = map[string]*l8JobCredentialSSHRelayHandleFake{}
+	}
+	fake.handles[binding.ID] = handle
+	return handle, nil
+}
+
+func (fake *l8JobCredentialSSHRelayFake) RevokeStored(ctx context.Context, _ sandboxruntime.JobCredentialIdentity, binding l8JobCredentialStoredBindingV1) error {
+	fake.mu.Lock()
+	handle := fake.handles[binding.BindingID]
+	fake.mu.Unlock()
+	if handle == nil {
+		return nil
+	}
+	return handle.Revoke(ctx)
 }
 
 type l8JobCredentialSSHRelayHandleFake struct {
 	parent         *l8JobCredentialSSHRelayFake
+	bindingID      string
 	policyID       string
 	policyRevision uint64
 }
@@ -1020,6 +1135,12 @@ func (handle *l8JobCredentialSSHRelayHandleFake) Revoke(context.Context) error {
 	handle.parent.mu.Lock()
 	defer handle.parent.mu.Unlock()
 	handle.parent.revokes++
+	if handle.parent.revokeErr != nil {
+		return handle.parent.revokeErr
+	}
+	if handle.parent.handles != nil {
+		delete(handle.parent.handles, handle.bindingID)
+	}
 	return nil
 }
 
