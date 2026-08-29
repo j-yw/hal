@@ -2410,7 +2410,7 @@ does not authorize reusing its number for another object in that role.
 | 12 | Preopened v1 VSOCK listener until agent transfer. | Closed. | Closed. | Closed. | Closed. |
 | 13 | Preopened v2 control VSOCK listener until agent transfer. | Closed. | Closed. | Closed. | Closed. |
 | 14 | Preopened v2 SSH-relay VSOCK listener until agent transfer. | Closed. | Closed. | Closed. | Closed. |
-| 15 | Closed. | Closed. | Closed. | Closed. | Closed. |
+| 15 | Optional sealed D7 composition-facts memfd until PID1 protects and consumes it; otherwise closed. | Closed. | Closed. | Closed. | Closed. |
 
 Transient FDs are 16 through 255, consistent with the frozen maximum of 256
 descriptors per role. A newly returned lower-numbered FD MUST be moved
@@ -2462,7 +2462,11 @@ frozen descriptor table, anonymous seqpacket pairs, sealed config pipes,
 workload gate pipes, delegated cgroup root, verified proc root, fixed mount
 target, inherited VSOCK listeners, and image-profile-pinned executable identities
 before readiness. Go PID1 immediately reinspects FDs 12..14 and restores
-`FD_CLOEXEC` before any child launch. Only its exact agent `ForkExec` maps
+`FD_CLOEXEC` before any child launch. When the optional D7 composition-facts
+memfd is inherited at FD 15, PID1 first restores `FD_CLOEXEC`, duplicates it
+with `F_DUPFD_CLOEXEC` into the private transient range, and closes a valid
+sealed source before using the snapshot. An invalid shape remains
+close-on-exec and cannot cross into any child. Only its exact agent `ForkExec` maps
 copies to child FDs 5..7; the native agent retains them through its fixed second
 exec and Go agent adds `FD_CLOEXEC` before admission. No credential body or
 protocol/job-derived value exists at this point.

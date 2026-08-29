@@ -12,9 +12,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// pid1StartGateExpectedFDNumber is PID1 FD 15. The syscall-policy table lists
-// that slot as Closed; this optional D7 channel occupies it when a sealed
-// anonymous memfd is inherited.
+// pid1StartGateExpectedFDNumber is the optional PID1 D7 composition-facts
+// slot. It is made non-inheritable before PID1 starts any child.
 const pid1StartGateExpectedFDNumber = 15
 
 const pid1StartGateExpectedMaxBytes = 32 << 10
@@ -23,7 +22,7 @@ const pid1StartGateRequiredSeals = unix.F_SEAL_SEAL | unix.F_SEAL_SHRINK | unix.
 
 var errPID1StartGateExpectedInvalid = errors.New("L8 PID1 start-gate expected digest channel is invalid")
 
-// pid1StartGateExpectedFD is the inherited descriptor inspected for sealed
+// pid1StartGateExpectedFD is the inherited descriptor consumed for sealed
 // expected digests. Tests replace it; production keeps FD 15.
 var pid1StartGateExpectedFD = pid1StartGateExpectedFDNumber
 
@@ -93,28 +92,46 @@ func admitPID1StartGate(
 }
 
 func readPID1StartGateSealedFD(fd int) ([]byte, bool, error) {
-	var stat unix.Stat_t
-	flags, flagErr := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
-	access, accessErr := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
-	seals, sealErr := unix.FcntlInt(uintptr(fd), unix.F_GET_SEALS, 0)
-	if unix.Fstat(fd, &stat) != nil || flagErr != nil || accessErr != nil || sealErr != nil {
+	// An inherited descriptor must have close-on-exec cleared to reach PID1.
+	// Restore it before inspecting any property, so neither a valid nor malformed
+	// channel can cross the later child exec boundary. A valid sealed channel is
+	// then snapshotted into the private transient range and consumed.
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if err != nil {
 		return nil, false, nil
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 0 || flags&unix.FD_CLOEXEC == 0 ||
+	if flags&unix.FD_CLOEXEC == 0 {
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, flags|unix.FD_CLOEXEC); err != nil {
+			if unix.Close(fd) != nil {
+				return nil, false, errPID1StartGateExpectedInvalid
+			}
+			return nil, false, nil
+		}
+	}
+	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, pid1StartGateExpectedFDNumber+1)
+	if err != nil {
+		return nil, false, nil
+	}
+	defer func() { _ = unix.Close(dup) }()
+
+	var stat unix.Stat_t
+	snapshotFlags, flagErr := unix.FcntlInt(uintptr(dup), unix.F_GETFD, 0)
+	access, accessErr := unix.FcntlInt(uintptr(dup), unix.F_GETFL, 0)
+	seals, sealErr := unix.FcntlInt(uintptr(dup), unix.F_GET_SEALS, 0)
+	if unix.Fstat(dup, &stat) != nil || flagErr != nil || accessErr != nil || sealErr != nil {
+		return nil, false, nil
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 0 || snapshotFlags&unix.FD_CLOEXEC == 0 ||
 		access&unix.O_ACCMODE == unix.O_WRONLY || seals != pid1StartGateRequiredSeals || stat.Size < 0 {
 		return nil, false, nil
 	}
+	_ = unix.Close(fd)
 	if stat.Size == 0 {
 		return nil, false, nil
 	}
 	if stat.Size > pid1StartGateExpectedMaxBytes {
 		return nil, false, errPID1StartGateExpectedInvalid
 	}
-	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
-	if err != nil {
-		return nil, false, nil
-	}
-	defer func() { _ = unix.Close(dup) }()
 	payload := make([]byte, stat.Size)
 	read, err := unix.Pread(dup, payload, 0)
 	if err != nil || int64(read) != stat.Size {
