@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
 )
 
 func TestL8D7NativeIdentityGenerationIsDeterministicAndMatchesCheckedInOutput(t *testing.T) {
@@ -31,12 +33,14 @@ func TestL8D7NativeIdentityGenerationIsDeterministicAndMatchesCheckedInOutput(t 
 	if first.policySHA256 != second.policySHA256 || first.sourceSHA256 != second.sourceSHA256 || first.callsiteSHA256 != second.callsiteSHA256 || first.installTableSHA256 != second.installTableSHA256 {
 		t.Fatal("identical native inputs produced different digest fields")
 	}
-	got, err := os.ReadFile(filepath.Join(root, generatedArtifactRel))
-	if err != nil {
-		t.Fatalf("read checked-in generated artifact: %v", err)
-	}
-	if !bytes.Equal(got, first.source) {
-		t.Fatal("checked-in generated native artifact is stale")
+	for path, want := range first.files() {
+		got, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatalf("read checked-in generated output %s: %v", path, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("checked-in generated native output %s is stale", path)
+		}
 	}
 }
 
@@ -146,6 +150,27 @@ func TestL8D7NativeRoleBootstrapELFIsFreestandingStaticExec(t *testing.T) {
 			t.Fatalf("native ELF contains forbidden marker %q", marker)
 		}
 	}
+	policySHA256, err := readDigestFile(filepath.Join(root, policyDigestRel))
+	if err != nil {
+		t.Fatalf("issued policy digest: %v", err)
+	}
+	policyBytes, err := os.ReadFile(filepath.Join(root, policyArtifactRel))
+	if err != nil {
+		t.Fatalf("issued policy artifact: %v", err)
+	}
+	compiled, err := syscallpolicy.CompileIssuedRoleFilter(policyBytes, policySHA256, syscallpolicy.RoleLaunchBase)
+	if err != nil {
+		t.Fatalf("compile launch-base filter: %v", err)
+	}
+	if compiled.Len() == 0 || !bytes.Contains(payload, compiled.CanonicalBytes()) {
+		t.Fatal("native ELF is missing the compiled launch-base seccomp program")
+	}
+	if compiled.Action(0xc000003e, 231, [6]uint64{}) != syscallpolicy.ActionAllow {
+		t.Fatal("compiled launch-base filter does not allow exit_group")
+	}
+	if compiled.Action(0xc000003e, 435, [6]uint64{}) != syscallpolicy.ActionKillProcess {
+		t.Fatal("compiled launch-base filter does not kill clone3")
+	}
 
 	for _, args := range [][]string{
 		nil,
@@ -174,7 +199,7 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 	text := string(source)
 	for _, required := range []string{
 		".Lpid1_vsock:",
-		".Lpid1_unimpl_seccomp:",
+		".Lpid1_seccomp:",
 		".Lpid1_unimpl_execve:",
 		".Lpid1_unimpl_clone3:",
 		".Lpid1_unimpl_scm_rights:",
@@ -187,12 +212,15 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		"movq\t$50, %rax",
 		"movq\t$292, %rax",
 		"movq\t$3, %rax",
+		"movq\t$157, %rax",
+		"movq\t$317, %rax",
 		"movq\t$231, %rax",
 		"$0x80801",
 		"$0xffffffff",
 		"$1024",
 		"$1025",
 		"$1026",
+		"launch_base_filter",
 		"A successful bind is not live vsock proof",
 		"Unimplemented: pivot_root",
 		"Unimplemented: setresuid/setresgid",
@@ -207,7 +235,6 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		"movq\t$59, %rax",
 		"movq\t$322, %rax",
 		"movq\t$435, %rax",
-		"movq\t$317, %rax",
 		"movq\t$46, %rax",
 		"movq\t$47, %rax",
 		"movl\t$0, %edi",
@@ -229,7 +256,10 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 	if !strings.Contains(string(callsite), "6=socket:41:pid1:0f05") {
 		t.Fatal("callsite inventory is missing the PID1-only socket site")
 	}
-	if strings.Contains(string(callsite), "execve") || strings.Contains(string(callsite), "clone3") || strings.Contains(string(callsite), "seccomp") {
+	if !strings.Contains(string(callsite), "11=prctl:157:pid1:0f05") || !strings.Contains(string(callsite), "12=seccomp:317:pid1:0f05") {
+		t.Fatal("callsite inventory is missing the PID1 launch-base seccomp sites")
+	}
+	if strings.Contains(string(callsite), "execve") || strings.Contains(string(callsite), "clone3") {
 		t.Fatal("callsite inventory claimed an unimplemented live supervisor syscall")
 	}
 }

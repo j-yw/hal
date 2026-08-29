@@ -44,12 +44,13 @@ stages. PID1 attempts the exact D2 `socket`/`bind`/`listen`/`dup3`/
 listeners at CID any, ports 1024/1025/1026, backlogs 64/1/4, then `dup3`
 onto FDs 12/13/14. Any negative syscall result fail-closes with exit
 127. A successful host bind is not live vsock proof and does not
-complete the listen table: PID1 then fail-closes through unimplemented
-`seccomp`, `execve`, `clone3` shim, and SCM_RIGHTS stages. Child roles
-fail-close after preflight at explicit unimplemented labels
-(controller, agent, monitor, workload-shim). Unimplemented live PID1
-supervisor behavior still fails closed with exit 127. This slice does
-not claim live vsock, clone3, SCM_RIGHTS, seccomp, or execve.
+complete the listen table: PID1 then installs the launch-base seccomp
+filter and fail-closes through unimplemented `execve`, `clone3` shim,
+and SCM_RIGHTS stages. Child roles fail-close after preflight at
+explicit unimplemented labels (controller, agent, monitor,
+workload-shim). Unimplemented live PID1 supervisor behavior still
+fails closed with exit 127. This slice does not claim live vsock,
+clone3, SCM_RIGHTS, or execve.
 
 D4 install bindings stay:
 
@@ -90,7 +91,7 @@ This slice does not:
 
 - accept D7 prepared-Linux live proof;
 - issue HL8E or enable `generateEvidence` success;
-- complete live PID1 vsock, clone3, SCM_RIGHTS monitor ready, seccomp, or execve;
+- complete live PID1 vsock, clone3, SCM_RIGHTS monitor ready, or execve;
 - treat L5 images as L8 proof;
 - boot Firecracker or require KVM;
 - wire sandboxd, `hal run`, `hal auto`, or factory;
