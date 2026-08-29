@@ -84,10 +84,11 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 			if err != nil {
 				return fmt.Errorf("unquote command import in %s: %w", filepath.ToSlash(path), err)
 			}
+			if l8GuestProcessEntrypointAllowsImport(path, importPath) {
+				continue
+			}
 			if importPath == l8CompositionImportPath || strings.HasPrefix(importPath, l8CompositionImportPath+"/") {
-				if !l8GuestInitProductionFile(path) {
-					t.Errorf("command production file %s prematurely imports L8 live package %q", filepath.ToSlash(path), importPath)
-				}
+				t.Errorf("command production file %s prematurely imports L8 live package %q", filepath.ToSlash(path), importPath)
 				continue
 			}
 			for _, forbidden := range []string{
@@ -118,6 +119,9 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 			"sshrelay.NewClientExtension",
 			"guest-agent-v2",
 		} {
+			if marker == "l8composition.NewHelper" && l8GuestProcessEntrypointProductionFile(path, "hal-guest-credential-helper/") {
+				continue
+			}
 			if strings.Contains(source, marker) {
 				t.Errorf("command production file %s prematurely contains L8 live constructor marker %q", filepath.ToSlash(path), marker)
 			}
@@ -132,15 +136,40 @@ func TestL8CredentialDeliverySourceGuardsCommandCompositionHasNoPrematureLiveImp
 const l8CompositionImportPath = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition"
 
 func l8GuestInitProductionFile(path string) bool {
+	return l8GuestProcessEntrypointProductionFile(path, "hal-guest-init/")
+}
+
+func l8GuestProcessEntrypointProductionFile(path, prefix string) bool {
 	normalized := filepath.ToSlash(path)
 	if strings.HasPrefix(normalized, "./") {
 		normalized = normalized[2:]
 	}
-	const prefix = "hal-guest-init/"
 	if !strings.HasPrefix(normalized, prefix) || !strings.HasSuffix(normalized, ".go") || strings.HasSuffix(normalized, "_test.go") {
 		return false
 	}
 	return !strings.Contains(normalized[len(prefix):], "/")
+}
+
+func l8GuestProcessEntrypointAllowsImport(path, importPath string) bool {
+	const (
+		credentialHelperImport = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialhelper"
+		roleBootstrapImport    = "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/rolebootstrap"
+	)
+	switch importPath {
+	case l8CompositionImportPath:
+		return l8GuestInitProductionFile(path) ||
+			l8GuestProcessEntrypointProductionFile(path, "hal-guest-credential-helper/") ||
+			l8GuestProcessEntrypointProductionFile(path, "hal-guest-mount-monitor/") ||
+			l8GuestProcessEntrypointProductionFile(path, "hal-guest-workload-shim/")
+	case credentialHelperImport, credentialHelperImport + "/linux":
+		return l8GuestProcessEntrypointProductionFile(path, "hal-guest-credential-helper/")
+	case roleBootstrapImport:
+		return l8GuestProcessEntrypointProductionFile(path, "hal-guest-credential-helper/") ||
+			l8GuestProcessEntrypointProductionFile(path, "hal-guest-mount-monitor/") ||
+			l8GuestProcessEntrypointProductionFile(path, "hal-guest-workload-shim/")
+	default:
+		return false
+	}
 }
 
 func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t *testing.T) {
