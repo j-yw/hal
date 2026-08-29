@@ -159,11 +159,10 @@ func TestL8BuildScriptsRejectUnsafeArgumentsWithoutBuildroot(t *testing.T) {
 	}
 }
 
-func TestL8BuildFailsClosedWhenHL8EUnissued(t *testing.T) {
-	if _, err := os.Stat("policy/verified-pinned-callsites.hl8e"); err == nil {
-		t.Fatal("HL8E must remain unissued; do not generate verified-pinned-callsites.hl8e from a fixture")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		t.Fatal(err)
+func TestL8BuildFailsClosedAfterIssuedHL8E(t *testing.T) {
+	info, err := os.Stat("policy/verified-pinned-callsites.hl8e")
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		t.Fatalf("issued HL8E is missing: %v", err)
 	}
 
 	cache := filepath.Join("/tmp", "hal-l8-profile-cache")
@@ -172,14 +171,18 @@ func TestL8BuildFailsClosedWhenHL8EUnissued(t *testing.T) {
 	payload, err := command.CombinedOutput()
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || exitErr.ExitCode() == 2 {
-		t.Fatalf("build.sh HL8E gate exit = %v output = %s, want fail-closed", err, payload)
+		t.Fatalf("build.sh fail-closed exit = %v output = %s, want native/parent fail-closed", err, payload)
 	}
-	if !strings.Contains(string(payload), "HL8E is unissued") {
-		t.Fatalf("build.sh output = %s, want HL8E fail-closed message", payload)
+	if strings.Contains(string(payload), "HL8E is unissued") {
+		t.Fatalf("build.sh output = %s, issued HL8E must not trip the unissued gate", payload)
 	}
 }
 
-func TestL8FinalImageVerifierFailsClosedWhenHL8EUnissued(t *testing.T) {
+func TestL8FinalImageVerifierFailsClosedAfterIssuedHL8E(t *testing.T) {
+	info, err := os.Stat("policy/verified-pinned-callsites.hl8e")
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		t.Fatalf("issued HL8E is missing: %v", err)
+	}
 	root := t.TempDir()
 	image := filepath.Join(root, "rootfs.ext4")
 	if err := os.WriteFile(image, []byte("not-an-ext-image"), 0o600); err != nil {
@@ -189,10 +192,10 @@ func TestL8FinalImageVerifierFailsClosedWhenHL8EUnissued(t *testing.T) {
 	payload, err := command.CombinedOutput()
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || exitErr.ExitCode() == 2 {
-		t.Fatalf("verify-final-image.sh HL8E gate exit = %v output = %s, want fail-closed", err, payload)
+		t.Fatalf("verify-final-image.sh fail-closed exit = %v output = %s", err, payload)
 	}
-	if !strings.Contains(string(payload), "HL8E is unissued") {
-		t.Fatalf("verify-final-image.sh output = %s, want HL8E fail-closed message", payload)
+	if strings.Contains(string(payload), "HL8E is unissued") {
+		t.Fatalf("verify-final-image.sh output = %s, issued HL8E must not trip the unissued gate", payload)
 	}
 }
 

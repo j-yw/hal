@@ -38,6 +38,9 @@ func TestL8D7FinalBinaryInspectorLocatesPinnedSyscall6(t *testing.T) {
 	if countInstruction(inspected.executableText, pinnedSyscallInstruction) < 2 {
 		t.Fatal("generic Go runtime unexpectedly has a unique syscall instruction")
 	}
+	if err := proveUniqueReachableSyscallGraph(inspected); err != nil {
+		t.Fatalf("generic Go runtime unique graph error = %v", err)
+	}
 	if _, err := generateEvidence(root, binaryPath, mustGenerate(t, root)); !errors.Is(err, errEvidenceInputsUnavailable) {
 		t.Fatalf("generateEvidence(generic Go binary) error = %v", err)
 	}
@@ -141,6 +144,9 @@ func TestL8D7FinalBinaryInspectorRejectsNativeGoConfusion(t *testing.T) {
 	if !inspected.native || inspected.hasGoRuntime || inspected.syscall6Found || inspected.goPath != "" {
 		t.Fatalf("native identity = %#v", inspected)
 	}
+	if err := proveUniqueReachableSyscallGraph(inspected); err != nil {
+		t.Fatalf("native unique graph error = %v", err)
+	}
 	goBinary := buildLinuxAMD64GoBinary(t, t.TempDir(), "not-native", linuxAMD64Syscall6Source())
 	goInspected, err := inspectLinuxAMD64ELF(guestBootstrapBinaryName, goBinary)
 	if err != nil {
@@ -148,6 +154,61 @@ func TestL8D7FinalBinaryInspectorRejectsNativeGoConfusion(t *testing.T) {
 	}
 	if err := matchRequiredGuestRoleIdentity(requiredGuestRoleBinary{name: guestBootstrapBinaryName, native: true}, goInspected); err == nil {
 		t.Fatal("Go runtime binary was accepted as native bootstrap identity")
+	}
+}
+
+func TestL8D7UniqueCallGraphClassifiesPinnedAndRuntimeSyscallSites(t *testing.T) {
+	binaryPath := buildLinuxAMD64GoBinary(t, t.TempDir(), "classify-graph", linuxAMD64Syscall6Source())
+	inspected, err := inspectLinuxAMD64ELF(filepath.Base(binaryPath), binaryPath)
+	if err != nil {
+		t.Fatalf("inspectLinuxAMD64ELF() error = %v", err)
+	}
+	if err := proveUniqueReachableSyscallGraph(inspected); err != nil {
+		t.Fatalf("proveUniqueReachableSyscallGraph() error = %v", err)
+	}
+	pinned := 0
+	for _, site := range inspected.syscalls {
+		if site.symbol == pinnedGoRuntimeSymbol {
+			if site.symbolOffset != pinnedInstructionOffset {
+				t.Fatalf("pinned Syscall6 symbol offset = %d, want %d", site.symbolOffset, pinnedInstructionOffset)
+			}
+			pinned++
+			continue
+		}
+		if !classifiedNonAuthoritySyscallSymbol(site.symbol) {
+			t.Fatalf("unclassified syscall site %s", site.symbol)
+		}
+	}
+	if pinned != 1 || len(inspected.syscalls) < 2 {
+		t.Fatalf("decoded syscall graph = pinned:%d total:%d", pinned, len(inspected.syscalls))
+	}
+	if classifiedNonAuthoritySyscallSymbol("main.rawCall") || classifiedNonAuthoritySyscallSymbol(pinnedGoRuntimeSymbol) {
+		t.Fatal("classifier accepted an unclassified or pinned symbol as non-authority")
+	}
+}
+
+func TestL8D7EvidenceIssuanceFromCompleteGuestRoleBinaries(t *testing.T) {
+	root := repositoryRoot(t)
+	outputs := mustGenerate(t, root)
+	dir := buildCompleteGuestRoleBinariesDir(t, root)
+	evidence, err := generateEvidenceFromInputs(root, evidenceInputs{binariesDir: dir}, outputs)
+	if err != nil {
+		t.Fatalf("generateEvidenceFromInputs(complete guest roles) error = %v", err)
+	}
+	if len(evidence.encoded) != 352 || string(evidence.encoded[:4]) != "HL8E" || evidence.sha256 == ([32]byte{}) || len(evidence.source) == 0 {
+		t.Fatalf("issued HL8E envelope is malformed: len=%d magic=%q", len(evidence.encoded), evidence.encoded[:min(4, len(evidence.encoded))])
+	}
+	if !bytes.Contains(evidence.source, []byte("l8_verified_pinned_callsite_evidence")) || !bytes.Contains(evidence.source, []byte("expectedEvidenceIssuer{issued: true}")) {
+		t.Fatal("generated expected-evidence source is not the host-only tagged issuer")
+	}
+	for path, want := range evidence.files() {
+		got, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatalf("read issued D7 evidence output %s: %v", path, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("checked-in D7 evidence output %s is stale", path)
+		}
 	}
 }
 
@@ -182,6 +243,44 @@ func main() {
 	os.Exit(0)
 }
 `
+}
+
+func buildCompleteGuestRoleBinariesDir(t *testing.T, root string) string {
+	t.Helper()
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("complete guest role issuance requires linux/amd64 as/ld and Go 1.25.7")
+	}
+	if _, err := exec.LookPath("as"); err != nil {
+		t.Fatalf("as is required to issue HL8E from native bootstrap: %v", err)
+	}
+	if _, err := exec.LookPath("ld"); err != nil {
+		t.Fatalf("ld is required to issue HL8E from native bootstrap: %v", err)
+	}
+	dir := t.TempDir()
+	packages := []struct {
+		name string
+		pkg  string
+	}{
+		{guestInitBinaryName, "./cmd/hal-guest-init"},
+		{guestAgentBinaryName, "./cmd/hal-guest-agent"},
+		{guestHelperBinaryName, "./cmd/hal-guest-credential-helper"},
+		{guestMonitorBinaryName, "./cmd/hal-guest-mount-monitor"},
+		{guestShimBinaryName, "./cmd/hal-guest-workload-shim"},
+	}
+	for _, role := range packages {
+		command := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", filepath.Join(dir, role.name), role.pkg)
+		command.Dir = root
+		command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "GOTOOLCHAIN=go1.25.7", "GOPROXY=off")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", role.name, err, output)
+		}
+	}
+	build := exec.Command("bash", filepath.Join(root, "tools/microvm/l8/role-bootstrap/build.sh"), dir)
+	build.Dir = root
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build native bootstrap: %v\n%s", err, output)
+	}
+	return dir
 }
 
 func buildLinuxAMD64GoBinary(t *testing.T, dir, name, source string) string {
