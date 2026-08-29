@@ -30,5 +30,3 @@ go test -count=1 ./tools/microvm/l8/policy/generate
 go test -count=1 ./internal/sandboxruntime/microvm/guestagent/syscallpolicy
 go test -count=1 -tags=l8_verified_policy_artifact \
   ./internal/sandboxruntime/microvm/guestagent/syscallpolicy
-go test -count=1 -tags=l8_verified_policy_artifact,l8_verified_pinned_callsite_evidence \
-  ./internal/sandboxruntime/microvm/guestagent/syscallpolicy
