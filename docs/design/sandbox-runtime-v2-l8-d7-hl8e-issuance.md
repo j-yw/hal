@@ -30,11 +30,11 @@ complete binaries-dir set is the image-pipeline names:
 - `hal-guest-workload-shim` → `github.com/jywlabs/hal/cmd/hal-guest-workload-shim`
 - `hal-guest-role-bootstrap` → native `hal-guest-role-bootstrap`
 
-This tree still lacks `cmd/hal-guest-credential-helper`,
-`cmd/hal-guest-mount-monitor`, and `cmd/hal-guest-workload-shim`. A
-missing-role directory fails closed. Unrelated binaries staged under
-those filenames fail identity. Generic Go runtimes have many `syscall`
-instructions, so the unique/reachable D4/D6 call graph is unavailable.
+This tree still lacks a complete final role-binaries directory bound to
+an image. A missing-role directory fails closed, and unrelated binaries
+staged under the required filenames fail identity. Generic Go runtimes
+have many `syscall` instructions, so the unique/reachable D4/D6 call
+graph is unavailable.
 
 The generator never writes `verified-pinned-callsites.hl8e`, its
 digest, or `pinned_callsite_evidence_expected_d7_gen.go` from a fixture.

@@ -265,8 +265,9 @@ func inspectLinuxAMD64ELF(name, path string) (inspectedGuestBinary, error) {
 		if err != nil {
 			return inspectedGuestBinary{}, err
 		}
-		if uint64(len(pinnedSyscallInstruction)) > size && size != 0 {
-			return inspectedGuestBinary{}, fmt.Errorf("%s is shorter than the pinned instruction", pinnedGoRuntimeSymbol)
+		pinnedInstructionEnd := pinnedInstructionOffset + uint64(len(pinnedSyscallInstruction))
+		if pinnedInstructionEnd < pinnedInstructionOffset || size < pinnedInstructionEnd {
+			return inspectedGuestBinary{}, fmt.Errorf("%s is shorter than the pinned offset and instruction", pinnedGoRuntimeSymbol)
 		}
 		instructionFileOff := fileOff + pinnedInstructionOffset
 		if instructionFileOff < fileOff || instructionFileOff+uint64(len(pinnedSyscallInstruction)) > uint64(len(encoded)) {
