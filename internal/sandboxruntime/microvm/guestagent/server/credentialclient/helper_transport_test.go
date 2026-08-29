@@ -165,6 +165,65 @@ func TestL8D7GuestHelperWriteCanonicalPrepareBeginPacket(t *testing.T) {
 	}
 }
 
+func TestL8D7GuestHelperCloseWaitsForAdmittedPrepareBegin(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testDispatchPrepareRequest(t, identity)
+	stream := newFakeHelperStream()
+	owner := &blockingHelperOwner{
+		stream:        stream,
+		acceptEntered: make(chan struct{}),
+		allowAccept:   make(chan struct{}),
+		closeCalled:   make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-owner.allowAccept:
+		default:
+			close(owner.allowAccept)
+		}
+	}()
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+		return ControllerPacket{
+			sequence:  1,
+			sessionID: identity.sessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+		}, nil
+	}
+
+	client := newDispatchRedClientOpts(t, transport, owner)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- client.Serve(context.Background()) }()
+	select {
+	case <-owner.acceptEntered:
+	case err := <-serveDone:
+		t.Fatalf("Serve returned before helper admission: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("helper admission did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close(context.Background()) }()
+	select {
+	case <-owner.closeCalled:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not close the helper owner")
+	}
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before the admitted helper send terminated: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(owner.allowAccept)
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := <-serveDone; !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("Serve() error = %v, want remaining helper dependency unaccepted", err)
+	}
+}
+
 func newDispatchRedClientOpts(t *testing.T, transport Transport, helper HelperConnectionOwner) *Client {
 	t.Helper()
 	registry, err := NewExtensionRegistry()
@@ -228,6 +287,29 @@ type fakeHelperOwner struct {
 	accepts atomic.Uint32
 }
 
+type blockingHelperOwner struct {
+	stream        VerifiedHelperStream
+	acceptEntered chan struct{}
+	allowAccept   chan struct{}
+	closeCalled   chan struct{}
+	acceptOnce    sync.Once
+	closeOnce     sync.Once
+}
+
+func (owner *blockingHelperOwner) AcceptVerified(_ context.Context, expectation HelperAcceptExpectation) (VerifiedHelperStream, error) {
+	if !expectation.valid() || !configuredDependency(owner.stream) {
+		return nil, errInvalidHelperAcceptExpectation
+	}
+	owner.acceptOnce.Do(func() { close(owner.acceptEntered) })
+	<-owner.allowAccept
+	return owner.stream, nil
+}
+
+func (owner *blockingHelperOwner) Close(context.Context) error {
+	owner.closeOnce.Do(func() { close(owner.closeCalled) })
+	return nil
+}
+
 func (owner *fakeHelperOwner) AcceptVerified(_ context.Context, expectation HelperAcceptExpectation) (VerifiedHelperStream, error) {
 	if !expectation.valid() || !configuredDependency(owner.stream) {
 		return nil, errInvalidHelperAcceptExpectation
@@ -246,4 +328,5 @@ func (owner *fakeHelperOwner) Close(context.Context) error {
 var (
 	_ VerifiedHelperStream  = (*fakeHelperStream)(nil)
 	_ HelperConnectionOwner = (*fakeHelperOwner)(nil)
+	_ HelperConnectionOwner = (*blockingHelperOwner)(nil)
 )
