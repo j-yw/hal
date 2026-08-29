@@ -3,6 +3,7 @@ package credentialclient
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"reflect"
@@ -97,43 +98,74 @@ func TestL8D7GuestHelperServeSendsPrepareBeginWhenOwnerInjected(t *testing.T) {
 	stream := newFakeHelperStream()
 	owner := &fakeHelperOwner{stream: stream}
 	var helperSends atomic.Uint32
+	closed := make(chan struct{})
+	continued := make(chan struct{})
 	transport := &dispatchRedTransport{identity: identity}
-	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
-		return ControllerPacket{
-			sequence:  1,
-			sessionID: identity.sessionID,
-			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
-		}, nil
+	var receiveCount atomic.Uint32
+	transport.receiveController = func(_ context.Context, receive ControllerReceiveRequest) (ControllerPacket, error) {
+		count := receiveCount.Add(1)
+		if count == 1 {
+			return ControllerPacket{
+				sequence:  1,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+			}, nil
+		}
+		expected, set := receive.expectedIdentityValue()
+		if count == 2 {
+			if !set || expected != digest || receive.nextSequenceValue() != 2 {
+				return ControllerPacket{}, errors.New("serve did not continue with pinned identity after prepare-begin")
+			}
+			close(continued)
+		}
+		<-closed
+		return ControllerPacket{}, errors.New("closed")
 	}
 	transport.sendHelper = func(_ context.Context, packet HelperSendPacket) error {
 		helperSends.Add(1)
 		body := make([]byte, packet.encodedBodyLengthValue())
 		return packet.writeCanonicalBody(&helperSendBodySink{buf: body})
 	}
+	transport.close = func(context.Context) error {
+		transport.closeOnce.Do(func() { close(closed) })
+		return nil
+	}
 
-	err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
-	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("Serve() error = %v, want remaining helper payload/proofs unaccepted", err)
+	client := newDispatchRedClientOpts(t, transport, owner)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- client.Serve(context.Background()) }()
+	select {
+	case <-continued:
+	case err := <-serveDone:
+		t.Fatalf("Serve returned before continuing after prepare-begin: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not continue after prepare-begin")
 	}
 	if owner.accepts.Load() != 1 || helperSends.Load() != 0 {
 		t.Fatalf("accepts/legacy transport sends = %d/%d, want 1/0", owner.accepts.Load(), helperSends.Load())
 	}
-	datagram := stream.bytes()
-	header, err := credentialprotocol.ValidateHelperPacketDatagram(datagram)
-	if err != nil {
-		t.Fatalf("verified helper stream datagram error = %v", err)
+	packets := decodeHelperDatagrams(t, stream.bytes())
+	if len(packets) != 1 {
+		t.Fatalf("helper datagrams = %d, want 1 prepare-begin", len(packets))
 	}
+	header := packets[0].header
 	if header.Type != credentialprotocol.PacketTypePrepareBegin || header.Sequence != firstInjectedHelperSendSequence ||
 		header.RequestID != prepare.RequestID().Bytes() || header.GuestCredentialIdentityDigest != digest.Bytes() ||
 		header.BootNonce != identity.identity.GuestBootNonce {
 		t.Fatalf("stream header = %#v", header)
 	}
-	decoded, err := credentialprotocol.DecodeHelperPrepareBeginBody(datagram[credentialprotocol.HelperPacketHeaderSize:])
+	decoded, err := credentialprotocol.DecodeHelperPrepareBeginBody(packets[0].body)
 	if err != nil {
 		t.Fatalf("DecodeHelperPrepareBeginBody() error = %v", err)
 	}
 	if decoded.Revision != 1 || len(decoded.Bindings) != 2 || decoded.Bindings[0].BindingID != "binding-http" {
 		t.Fatalf("stream prepare-begin body = %#v", decoded)
+	}
+	if err := client.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve() after continue/Close = %v", err)
 	}
 }
 
@@ -165,6 +197,281 @@ func TestL8D7GuestHelperWriteCanonicalPrepareBeginPacket(t *testing.T) {
 	}
 }
 
+func TestL8D7GuestHelperMetadataBodiesProjectFromController(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	sessionIdentity := testCredentialPacketSessionIdentity(t, identity.sessionID)
+	prepare := testDispatchPrepareRequest(t, identity)
+	requestID := testPacketRequestID(t)
+
+	commit, err := helperPrepareCommitBodyFromPrepare(prepare)
+	if err != nil {
+		t.Fatalf("helperPrepareCommitBodyFromPrepare() error = %v", err)
+	}
+	begin, err := helperPrepareBeginBodyFromPrepare(prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantManifest, err := credentialprotocol.ComputeHelperManifestSHA256(begin.Bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commit.Revision != prepare.Revision() || commit.ManifestSHA256 != wantManifest {
+		t.Fatalf("prepare-commit body = %#v", commit)
+	}
+
+	renew := testCredentialRenewPacketRequest(t, requestID, sessionIdentity)
+	renewBody, err := helperRenewBodyFromRenew(renew)
+	if err != nil {
+		t.Fatalf("helperRenewBodyFromRenew() error = %v", err)
+	}
+	if renewBody.Revision != renew.Revision() || renewBody.ExpiryUnixNano != renew.ExpiresAtUnixNano() || renewBody.PriorProofID != renew.PriorProofID() {
+		t.Fatalf("renew body = %#v", renewBody)
+	}
+
+	revoke := testCredentialRevokePacketRequest(t, requestID, sessionIdentity)
+	revokeBody, err := helperRevokeBodyFromRevoke(revoke)
+	if err != nil {
+		t.Fatalf("helperRevokeBodyFromRevoke() error = %v", err)
+	}
+	if revokeBody.Revision != revoke.Revision() || revokeBody.Reason != credentialprotocol.RevokeReasonRequested {
+		t.Fatalf("revoke body = %#v", revokeBody)
+	}
+
+	execReq := testCredentialExecPacketRequest(t, requestID, sessionIdentity)
+	execBody, err := helperExecBodyFromExec(execReq)
+	if err != nil {
+		t.Fatalf("helperExecBodyFromExec() error = %v", err)
+	}
+	if execBody.Revision != execReq.Revision() || execBody.ExecBindingID != execReq.ExecBindingID() ||
+		uint64(execBody.PrivateBindingLength) != execReq.PrivateAggregateBytes() ||
+		len(execBody.Plan.Arguments) != 2 || execBody.Plan.Arguments[0] != "/usr/bin/tool" {
+		t.Fatalf("exec body = %#v", execBody)
+	}
+}
+
+func TestL8D7GuestHelperServeSendsMetadataWhenLaterControllerPacketArrives(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	sessionIdentity := testCredentialPacketSessionIdentity(t, identity.sessionID)
+	prepare := testDispatchPrepareRequest(t, identity)
+	digest := identityDigestForSession(t, sessionIdentity)
+	laterRequestID := testPacketRequestID(t)
+
+	type laterCase struct {
+		name     string
+		packet   ControllerPacket
+		wantType credentialprotocol.PacketType
+		wantBody func(*testing.T, []byte)
+	}
+	cases := []laterCase{
+		{
+			name: "prepare-commit",
+			packet: ControllerPacket{
+				sequence:  2,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+			},
+			wantType: credentialprotocol.PacketTypePrepareCommit,
+			wantBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				decoded, err := credentialprotocol.DecodeHelperPrepareCommitBody(body)
+				if err != nil {
+					t.Fatalf("DecodeHelperPrepareCommitBody() error = %v", err)
+				}
+				want, err := helperPrepareCommitBodyFromPrepare(prepare)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if decoded != want {
+					t.Fatalf("prepare-commit body = %#v, want %#v", decoded, want)
+				}
+			},
+		},
+		{
+			name: "renew",
+			packet: ControllerPacket{
+				sequence:  2,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmRenew, renew: testCredentialRenewPacketRequest(t, laterRequestID, sessionIdentity)},
+			},
+			wantType: credentialprotocol.PacketTypeRenew,
+			wantBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				decoded, err := credentialprotocol.DecodeHelperRenewBody(body)
+				if err != nil {
+					t.Fatalf("DecodeHelperRenewBody() error = %v", err)
+				}
+				want, err := helperRenewBodyFromRenew(testCredentialRenewPacketRequest(t, laterRequestID, sessionIdentity))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if decoded != want {
+					t.Fatalf("renew body = %#v, want %#v", decoded, want)
+				}
+			},
+		},
+		{
+			name: "revoke",
+			packet: ControllerPacket{
+				sequence:  2,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmRevoke, revoke: testCredentialRevokePacketRequest(t, laterRequestID, sessionIdentity)},
+			},
+			wantType: credentialprotocol.PacketTypeRevoke,
+			wantBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				decoded, err := credentialprotocol.DecodeHelperRevokeBody(body)
+				if err != nil {
+					t.Fatalf("DecodeHelperRevokeBody() error = %v", err)
+				}
+				if decoded.Revision != 9 || decoded.Reason != credentialprotocol.RevokeReasonRequested {
+					t.Fatalf("revoke body = %#v", decoded)
+				}
+			},
+		},
+		{
+			name: "exec",
+			packet: ControllerPacket{
+				sequence:  2,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmExec, exec: testCredentialExecPacketRequest(t, laterRequestID, sessionIdentity)},
+			},
+			wantType: credentialprotocol.PacketTypeExec,
+			wantBody: func(t *testing.T, body []byte) {
+				t.Helper()
+				decoded, err := credentialprotocol.DecodeHelperExecBody(body)
+				if err != nil {
+					t.Fatalf("DecodeHelperExecBody() error = %v", err)
+				}
+				if decoded.Revision != 3 || decoded.ExecBindingID != "exec-binding-3" || decoded.Plan.WorkDirectory != "/workspace" {
+					t.Fatalf("exec body = %#v", decoded)
+				}
+			},
+		},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			stream := newFakeHelperStream()
+			owner := &fakeHelperOwner{stream: stream}
+			var helperSends atomic.Uint32
+			var receiveCount atomic.Uint32
+			transport := &dispatchRedTransport{identity: identity}
+			transport.receiveController = func(_ context.Context, receive ControllerReceiveRequest) (ControllerPacket, error) {
+				count := receiveCount.Add(1)
+				if count == 1 {
+					return ControllerPacket{
+						sequence:  1,
+						sessionID: identity.sessionID,
+						arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+					}, nil
+				}
+				expected, set := receive.expectedIdentityValue()
+				if count != 2 || !set || expected != digest || receive.nextSequenceValue() != 2 {
+					return ControllerPacket{}, errors.New("later metadata send was not admitted with the pinned identity")
+				}
+				return test.packet, nil
+			}
+			transport.sendController = func(context.Context, ControllerSendPacket) error {
+				return errors.New("controller success must not mint proofs")
+			}
+			transport.sendHelper = func(context.Context, HelperSendPacket) error {
+				helperSends.Add(1)
+				return errors.New("legacy transport helper send must stay unused")
+			}
+
+			err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
+			if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+				t.Fatalf("Serve() error = %v, want payload/proofs unaccepted after metadata send", err)
+			}
+			if owner.accepts.Load() != 1 || helperSends.Load() != 0 {
+				t.Fatalf("accepts/legacy helper sends = %d/%d, want 1/0", owner.accepts.Load(), helperSends.Load())
+			}
+			packets := decodeHelperDatagrams(t, stream.bytes())
+			if len(packets) != 2 {
+				t.Fatalf("helper datagrams = %d, want prepare-begin plus %s", len(packets), test.name)
+			}
+			if packets[0].header.Type != credentialprotocol.PacketTypePrepareBegin || packets[0].header.Sequence != firstInjectedHelperSendSequence {
+				t.Fatalf("first helper header = %#v", packets[0].header)
+			}
+			if packets[1].header.Type != test.wantType || packets[1].header.Sequence != firstInjectedHelperSendSequence+1 ||
+				packets[1].header.GuestCredentialIdentityDigest != digest.Bytes() ||
+				packets[1].header.BootNonce != identity.identity.GuestBootNonce {
+				t.Fatalf("later helper header = %#v", packets[1].header)
+			}
+			test.wantBody(t, packets[1].body)
+		})
+	}
+}
+
+func TestL8D7GuestHelperServeRejectsPayloadAfterPrepareBegin(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testDispatchPrepareRequest(t, identity)
+	payload := []byte("controller-private-payload")
+	digest := sha256.Sum256(payload)
+	body := &testHelperBody{length: uint32(len(payload)), digest: digest}
+	stream := newFakeHelperStream()
+	owner := &fakeHelperOwner{stream: stream}
+	var receiveCount atomic.Uint32
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+		if receiveCount.Add(1) == 1 {
+			return ControllerPacket{
+				sequence:  1,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+			}, nil
+		}
+		return ControllerPacket{
+			sequence:  2,
+			sessionID: identity.sessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmPrivate},
+			body:      body,
+		}, nil
+	}
+
+	err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
+	if clientContractCode(err) != ClientContractPacket {
+		t.Fatalf("Serve() error = %v, want payload packet rejection", err)
+	}
+	if !body.destroyed {
+		t.Fatal("Serve did not destroy the rejected controller payload body")
+	}
+	packets := decodeHelperDatagrams(t, stream.bytes())
+	if len(packets) != 1 || packets[0].header.Type != credentialprotocol.PacketTypePrepareBegin {
+		t.Fatalf("payload path sent extra helper packets: %#v", packets)
+	}
+}
+
+type helperDatagram struct {
+	header credentialprotocol.HelperPacketHeader
+	body   []byte
+}
+
+func decodeHelperDatagrams(t *testing.T, datagram []byte) []helperDatagram {
+	t.Helper()
+	var packets []helperDatagram
+	remaining := datagram
+	for len(remaining) > 0 {
+		if len(remaining) < credentialprotocol.HelperPacketHeaderSize {
+			t.Fatalf("truncated helper header: %d bytes", len(remaining))
+		}
+		header, err := credentialprotocol.DecodeHelperPacketHeader(remaining[:credentialprotocol.HelperPacketHeaderSize])
+		if err != nil {
+			t.Fatalf("DecodeHelperPacketHeader() error = %v", err)
+		}
+		total := credentialprotocol.HelperPacketHeaderSize + int(header.BodyLength)
+		if len(remaining) < total {
+			t.Fatalf("truncated helper body: have %d, want %d", len(remaining), total)
+		}
+		packets = append(packets, helperDatagram{
+			header: header,
+			body:   append([]byte(nil), remaining[credentialprotocol.HelperPacketHeaderSize:total]...),
+		})
+		remaining = remaining[total:]
+	}
+	return packets
+}
+
 func TestL8D7GuestHelperCloseWaitsForAdmittedPrepareBegin(t *testing.T) {
 	identity := testDispatchTransportIdentity()
 	prepare := testDispatchPrepareRequest(t, identity)
@@ -182,13 +489,27 @@ func TestL8D7GuestHelperCloseWaitsForAdmittedPrepareBegin(t *testing.T) {
 			close(owner.allowAccept)
 		}
 	}()
+	closed := make(chan struct{})
 	transport := &dispatchRedTransport{identity: identity}
+	var receiveCount atomic.Uint32
 	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
-		return ControllerPacket{
-			sequence:  1,
-			sessionID: identity.sessionID,
-			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
-		}, nil
+		if receiveCount.Add(1) == 1 {
+			return ControllerPacket{
+				sequence:  1,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+			}, nil
+		}
+		select {
+		case <-closed:
+			return ControllerPacket{}, errors.New("closed")
+		case <-time.After(2 * time.Second):
+			return ControllerPacket{}, errors.New("timed out waiting for close")
+		}
+	}
+	transport.close = func(context.Context) error {
+		transport.closeOnce.Do(func() { close(closed) })
+		return nil
 	}
 
 	client := newDispatchRedClientOpts(t, transport, owner)
@@ -219,8 +540,8 @@ func TestL8D7GuestHelperCloseWaitsForAdmittedPrepareBegin(t *testing.T) {
 	if err := <-closeDone; err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if err := <-serveDone; !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("Serve() error = %v, want remaining helper dependency unaccepted", err)
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve() after Close joined the in-flight helper send = %v", err)
 	}
 }
 

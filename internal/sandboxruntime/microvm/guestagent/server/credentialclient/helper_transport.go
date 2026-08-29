@@ -206,6 +206,164 @@ func helperPrepareBeginBodyFromPrepare(prepare v2control.CredentialPrepareReques
 	return body, nil
 }
 
+func helperPrepareCommitBodyFromPrepare(prepare v2control.CredentialPrepareRequest) (credentialprotocol.HelperPrepareCommitBody, error) {
+	begin, err := helperPrepareBeginBodyFromPrepare(prepare)
+	if err != nil {
+		return credentialprotocol.HelperPrepareCommitBody{}, err
+	}
+	manifest, err := credentialprotocol.ComputeHelperManifestSHA256(begin.Bindings)
+	if err != nil {
+		return credentialprotocol.HelperPrepareCommitBody{}, err
+	}
+	body := credentialprotocol.HelperPrepareCommitBody{Revision: prepare.Revision(), ManifestSHA256: manifest}
+	if _, err := credentialprotocol.EncodeHelperPrepareCommitBody(body); err != nil {
+		return credentialprotocol.HelperPrepareCommitBody{}, err
+	}
+	return body, nil
+}
+
+func helperRenewBodyFromRenew(renew v2control.CredentialRenewRequest) (credentialprotocol.HelperRenewBody, error) {
+	body := credentialprotocol.HelperRenewBody{
+		Revision:       renew.Revision(),
+		ExpiryUnixNano: renew.ExpiresAtUnixNano(),
+		PriorProofID:   renew.PriorProofID(),
+	}
+	if _, err := credentialprotocol.EncodeHelperRenewBody(body); err != nil {
+		return credentialprotocol.HelperRenewBody{}, err
+	}
+	return body, nil
+}
+
+func helperRevokeBodyFromRevoke(revoke v2control.CredentialRevokeRequest) (credentialprotocol.HelperRevokeBody, error) {
+	reason, err := helperRevokeReasonFromControl(revoke.Reason())
+	if err != nil {
+		return credentialprotocol.HelperRevokeBody{}, err
+	}
+	body := credentialprotocol.HelperRevokeBody{Revision: revoke.Revision(), Reason: reason}
+	if _, err := credentialprotocol.EncodeHelperRevokeBody(body); err != nil {
+		return credentialprotocol.HelperRevokeBody{}, err
+	}
+	return body, nil
+}
+
+func helperRevokeReasonFromControl(reason v2control.CredentialRevokeReason) (credentialprotocol.RevokeReason, error) {
+	switch reason {
+	case v2control.CredentialRevokeReasonRequested:
+		return credentialprotocol.RevokeReasonRequested, nil
+	case v2control.CredentialRevokeReasonExpired:
+		return credentialprotocol.RevokeReasonExpired, nil
+	case v2control.CredentialRevokeReasonSessionLoss:
+		return credentialprotocol.RevokeReasonSessionLoss, nil
+	case v2control.CredentialRevokeReasonSourceRevoked:
+		return credentialprotocol.RevokeReasonSourceRevoked, nil
+	case v2control.CredentialRevokeReasonWorkerCancel:
+		return credentialprotocol.RevokeReasonWorkerCancel, nil
+	case v2control.CredentialRevokeReasonDaemonShutdown:
+		return credentialprotocol.RevokeReasonDaemonShutdown, nil
+	default:
+		return 0, errInvalidHelperSendPacket
+	}
+}
+
+func helperExecBodyFromExec(exec v2control.CredentialExecRequest) (credentialprotocol.HelperExecBody, error) {
+	plan, err := helperExecPlanFromControl(exec.Plan())
+	if err != nil {
+		return credentialprotocol.HelperExecBody{}, err
+	}
+	length := exec.PrivateAggregateBytes()
+	if length > uint64(^uint32(0)) {
+		return credentialprotocol.HelperExecBody{}, errInvalidHelperSendPacket
+	}
+	digest, err := helperExecPrivateDigestFromControl(uint32(length), exec.PrivateAggregateSHA256())
+	if err != nil {
+		return credentialprotocol.HelperExecBody{}, err
+	}
+	body := credentialprotocol.HelperExecBody{
+		Revision:             exec.Revision(),
+		ExecBindingID:        exec.ExecBindingID(),
+		PrivateBindingLength: uint32(length),
+		PrivateBindingSHA256: digest,
+		Plan:                 plan,
+	}
+	if _, err := credentialprotocol.EncodeHelperExecBody(body); err != nil {
+		return credentialprotocol.HelperExecBody{}, err
+	}
+	return body, nil
+}
+
+func helperExecPrivateDigestFromControl(length uint32, digestHex string) ([32]byte, error) {
+	var digest [32]byte
+	if length == 0 {
+		return digest, nil
+	}
+	decoded, err := hex.DecodeString(digestHex)
+	if err != nil || len(decoded) != 32 {
+		return [32]byte{}, errInvalidHelperSendPacket
+	}
+	copy(digest[:], decoded)
+	return digest, nil
+}
+
+func helperExecPlanFromControl(plan v2control.ExecPlan) (credentialprotocol.HelperExecPlan, error) {
+	environment := plan.Environment()
+	mapped := make([]credentialprotocol.HelperExecEnvironment, 0, len(environment))
+	for _, entry := range environment {
+		source, err := helperExecEnvironmentSourceFromControl(entry.Source())
+		if err != nil {
+			return credentialprotocol.HelperExecPlan{}, err
+		}
+		mapped = append(mapped, credentialprotocol.HelperExecEnvironment{
+			Name:   entry.Name(),
+			Source: source,
+			Value:  entry.Value(),
+		})
+	}
+	timing, err := helperExecTimingFromControl(plan.Timing())
+	if err != nil {
+		return credentialprotocol.HelperExecPlan{}, err
+	}
+	result := credentialprotocol.HelperExecPlan{
+		Arguments:      plan.Args(),
+		Environment:    mapped,
+		WorkDirectory:  plan.WorkDirectory(),
+		StdinMode:      credentialprotocol.HelperExecStreamModePipe,
+		StdoutMode:     credentialprotocol.HelperExecStreamModePipe,
+		StderrMode:     credentialprotocol.HelperExecStreamModePipe,
+		StdinMaxBytes:  plan.StdinMaxBytes(),
+		StdoutMaxBytes: plan.StdoutMaxBytes(),
+		StderrMaxBytes: plan.StderrMaxBytes(),
+		Timing:         timing,
+	}
+	if err := credentialprotocol.ValidateHelperExecPlan(result); err != nil {
+		return credentialprotocol.HelperExecPlan{}, errInvalidHelperSendPacket
+	}
+	return result, nil
+}
+
+func helperExecEnvironmentSourceFromControl(source v2control.ExecEnvironmentSource) (credentialprotocol.HelperExecEnvironmentSource, error) {
+	switch source {
+	case v2control.ExecEnvironmentLiteral:
+		return credentialprotocol.HelperExecEnvironmentLiteral, nil
+	case v2control.ExecEnvironmentInherited:
+		return credentialprotocol.HelperExecEnvironmentInherited, nil
+	case v2control.ExecEnvironmentGenerated:
+		return credentialprotocol.HelperExecEnvironmentGenerated, nil
+	default:
+		return 0, errInvalidHelperSendPacket
+	}
+}
+
+func helperExecTimingFromControl(timing v2control.ExecTiming) (credentialprotocol.HelperExecTiming, error) {
+	switch timing.Kind() {
+	case v2control.ExecTimingTimeoutMillis:
+		return credentialprotocol.HelperExecTiming{Kind: credentialprotocol.HelperExecTimingTimeoutMillis, Value: timing.Value()}, nil
+	case v2control.ExecTimingDeadlineUnixMillis:
+		return credentialprotocol.HelperExecTiming{Kind: credentialprotocol.HelperExecTimingDeadlineUnixMillis, Value: timing.Value()}, nil
+	default:
+		return credentialprotocol.HelperExecTiming{}, errInvalidHelperSendPacket
+	}
+}
+
 func helperBindingRecordFromManifest(manifest v2control.BindingManifest) (credentialprotocol.HelperBindingManifestRecord, error) {
 	record := credentialprotocol.HelperBindingManifestRecord{BindingID: manifest.BindingID()}
 	switch manifest.Mode() {

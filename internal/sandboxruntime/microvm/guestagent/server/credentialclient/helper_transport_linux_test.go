@@ -61,14 +61,25 @@ func TestL8D7GuestHelperPreopenedOwnerRevalidatesSeqpacketSocketpair(t *testing.
 	if err := writeHelperSendPacket(context.Background(), stream, packet); err != nil {
 		t.Fatalf("writeHelperSendPacket() error = %v", err)
 	}
-	buf := make([]byte, credentialprotocol.MaxHelperPacketDatagramBytes)
-	n, err := peerConn.Read(buf)
+	commit := credentialprotocol.HelperPrepareCommitBody{Revision: 1}
+	commit.ManifestSHA256[0] = 7
+	commitPacket, err := newHelperPrepareCommitSendPacket(testHelperHeader(0, 2, testHelperPacketRequestID(), digest.Bytes(), identity.identity.GuestBootNonce, 0), commit)
 	if err != nil {
-		t.Fatalf("peer Read() error = %v", err)
+		t.Fatal(err)
 	}
-	header, err := credentialprotocol.ValidateHelperPacketDatagram(buf[:n])
-	if err != nil || header.Type != credentialprotocol.PacketTypePrepareBegin {
-		t.Fatalf("seqpacket datagram header = %#v, %v", header, err)
+	if err := writeHelperSendPacket(context.Background(), stream, commitPacket); err != nil {
+		t.Fatalf("later writeHelperSendPacket() error = %v", err)
+	}
+	for _, wantType := range []credentialprotocol.PacketType{credentialprotocol.PacketTypePrepareBegin, credentialprotocol.PacketTypePrepareCommit} {
+		buf := make([]byte, credentialprotocol.MaxHelperPacketDatagramBytes)
+		n, err := peerConn.Read(buf)
+		if err != nil {
+			t.Fatalf("peer Read() error = %v", err)
+		}
+		header, err := credentialprotocol.ValidateHelperPacketDatagram(buf[:n])
+		if err != nil || header.Type != wantType {
+			t.Fatalf("seqpacket datagram header = %#v, %v, want %v", header, err, wantType)
+		}
 	}
 	if err := owner.Close(context.Background()); err != nil {
 		t.Fatalf("Close() error = %v", err)
