@@ -12,10 +12,15 @@ import (
 )
 
 func TestL5GuestInitSupervisesAgentProcessGroupAndReapsAllChildren(t *testing.T) {
-	source, err := os.ReadFile("main_linux.go")
+	shared, err := os.ReadFile("main_linux.go")
 	if err != nil {
 		t.Fatalf("ReadFile(main_linux.go) error = %v", err)
 	}
+	l7, err := os.ReadFile("main_linux_l7.go")
+	if err != nil {
+		t.Fatalf("ReadFile(main_linux_l7.go) error = %v", err)
+	}
+	text := string(shared) + "\n" + string(l7)
 	for _, marker := range []string{
 		"os.Getpid() != 1",
 		"Setpgid: true",
@@ -26,7 +31,7 @@ func TestL5GuestInitSupervisesAgentProcessGroupAndReapsAllChildren(t *testing.T)
 		"unix.SIGKILL",
 		"waitForKilledChildren(reapContext, childPID, unix.Wait4)",
 	} {
-		if !strings.Contains(string(source), marker) {
+		if !strings.Contains(text, marker) {
 			t.Errorf("guest PID1 supervisor missing %q", marker)
 		}
 	}
