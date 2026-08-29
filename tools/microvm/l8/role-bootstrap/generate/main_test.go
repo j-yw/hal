@@ -180,11 +180,23 @@ func TestL8D7NativeRoleBootstrapELFIsFreestandingStaticExec(t *testing.T) {
 	if compiled.Action(0xc000003e, 435, [6]uint64{1, 64}) != syscallpolicy.ActionErrnoEPERM {
 		t.Fatal("compiled launch-base filter does not fail-closed EPERM clone3 with the wrong clone_args size")
 	}
-	if compiled.Action(0xc000003e, 59, [6]uint64{}) != syscallpolicy.ActionErrnoEPERM {
-		t.Fatal("compiled launch-base filter does not fail-closed EPERM execve without an exact pathname template")
+	if compiled.Action(0xc000003e, 322, [6]uint64{5, 1, 0, 0, 0x1000}) != syscallpolicy.ActionAllow {
+		t.Fatal("compiled launch-base filter does not allow the exact monitor execveat FD 5 AT_EMPTY_PATH template")
 	}
-	if compiled.Action(0xc000003e, 59, [6]uint64{1, 1, 0}) != syscallpolicy.ActionErrnoEPERM {
-		t.Fatal("compiled launch-base filter allowed execve; pathname strings are not HL8Q-scalar-encodable")
+	if compiled.Action(0xc000003e, 322, [6]uint64{6, 1, 0, 0, 0x1000}) != syscallpolicy.ActionAllow {
+		t.Fatal("compiled launch-base filter does not allow the exact shim execveat FD 6 AT_EMPTY_PATH template")
+	}
+	if compiled.Action(0xc000003e, 322, [6]uint64{}) != syscallpolicy.ActionErrnoEPERM {
+		t.Fatal("compiled launch-base filter does not fail-closed EPERM execveat without the exact FD+AT_EMPTY_PATH template")
+	}
+	if compiled.Action(0xc000003e, 322, [6]uint64{5, 1, 0, 0, 0}) != syscallpolicy.ActionErrnoEPERM {
+		t.Fatal("compiled launch-base filter allowed execveat without AT_EMPTY_PATH")
+	}
+	if compiled.Action(0xc000003e, 59, [6]uint64{}) != syscallpolicy.ActionKillProcess {
+		t.Fatal("compiled launch-base filter does not fail-closed kill pathname execve after nativeEnvelope dropped it")
+	}
+	if compiled.Action(0xc000003e, 59, [6]uint64{1, 1, 0}) != syscallpolicy.ActionKillProcess {
+		t.Fatal("compiled launch-base filter allowed pathname execve; it is no longer a native _start site")
 	}
 	if compiled.Action(0xc000003e, 47, [6]uint64{}) != syscallpolicy.ActionErrnoEPERM {
 		t.Fatal("compiled launch-base filter does not fail-closed EPERM recvmsg without an exact SCM_RIGHTS template")
@@ -289,7 +301,7 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		".Lpid1_vsock:",
 		".Lpid1_seccomp:",
 		".Lpid1_clone3:",
-		".Lpid1_execve:",
+		".Lpid1_execveat:",
 		".Lpid1_scm_rights:",
 		".Lcontroller_unimpl:",
 		".Lagent_unimpl:",
@@ -303,7 +315,7 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		"movq\t$157, %rax",
 		"movq\t$317, %rax",
 		"movq\t$435, %rax",
-		"movq\t$59, %rax",
+		"movq\t$322, %rax",
 		"movq\t$47, %rax",
 		"movq\t$16, %rdi",
 		"movq\t$0x40000040, %rdx",
@@ -318,10 +330,14 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		"$0x200005100",
 		"movq\t$9, 80(%rsp)",
 		"movq\t$17, 32(%rsp)",
-		"/usr/bin/hal-guest-credential-helper",
-		"/usr/bin/hal-guest-agent",
-		"/usr/bin/hal-guest-mount-monitor",
-		"/usr/bin/hal-guest-workload-shim",
+		"movq\t$5, %rdi",
+		"movq\t$6, %rdi",
+		"leaq\ttoken_monitor(%rip), %r9",
+		"leaq\ttoken_workload_shim(%rip), %r9",
+		"movq\t%r9, 96(%rsp)",
+		"movq\t$0, 104(%rsp)",
+		"movq\t$0x1000, %r8",
+		"empty_path",
 		"launch_base_filter",
 		"A successful bind is not live vsock proof",
 		"Native PID1 is the image-init supervisor",
@@ -331,15 +347,21 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		"Unimplemented: SCM_RIGHTS monitor-ready, execve",
 		"Unimplemented: setns/ioctl",
 		"reinspection and HL8L job_created relay stay unimplemented",
+		"Controller/agent have no admitted sealed executable FD",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("native supervisor source omits %q", required)
 		}
 	}
 	for _, forbidden := range []string{
-		"movq\t$322, %rax",
+		"movq\t$59, %rax",
 		"movq\t$46, %rax",
+		"movq\t$0, 96(%rsp)",
 		"movl\t$0, %edi",
+		"/usr/bin/hal-guest-credential-helper",
+		"/usr/bin/hal-guest-agent",
+		"/usr/bin/hal-guest-mount-monitor",
+		"/usr/bin/hal-guest-workload-shim",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("native supervisor source contains forbidden live marker %q", forbidden)
@@ -361,14 +383,37 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 	if !strings.Contains(string(callsite), "11=prctl:157:pid1:0f05") || !strings.Contains(string(callsite), "12=seccomp:317:pid1:0f05") {
 		t.Fatal("callsite inventory is missing the PID1 launch-base seccomp sites")
 	}
-	if !strings.Contains(string(callsite), "13=clone3:435:pid1:0f05") || !strings.Contains(string(callsite), "14=execve:59:pid1:0f05") {
-		t.Fatal("callsite inventory is missing the PID1 clone3 and execve sites")
+	if !strings.Contains(string(callsite), "13=clone3:435:pid1:0f05") || !strings.Contains(string(callsite), "14=execveat:322:pid1:0f05") {
+		t.Fatal("callsite inventory is missing the PID1 clone3 and execveat sites")
 	}
 	if !strings.Contains(string(callsite), "15=recvmsg:47:pid1:0f05") {
 		t.Fatal("callsite inventory is missing the PID1 recvmsg SCM_RIGHTS site")
 	}
-	if strings.Contains(string(callsite), "sendmsg") || strings.Contains(string(callsite), "execveat") {
+	if strings.Contains(string(callsite), "sendmsg") || strings.Contains(string(callsite), "14=execve:59") {
 		t.Fatal("callsite inventory claimed an unimplemented live supervisor syscall")
+	}
+}
+
+func TestL8D7NativeExecveatRetainsOneImageOwnedArgv0(t *testing.T) {
+	root := repositoryRoot(t)
+	source, err := os.ReadFile(filepath.Join(root, nativeSourceRel))
+	if err != nil {
+		t.Fatalf("read native source: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"leaq\ttoken_monitor(%rip), %r9",
+		"leaq\ttoken_workload_shim(%rip), %r9",
+		"movq\t%r9, 96(%rsp)",
+		"movq\t$0, 104(%rsp)",
+		"leaq\t96(%rsp), %rdx",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("native execveat argv omits %q", required)
+		}
+	}
+	if strings.Contains(text, "movq\t$0, 96(%rsp)") {
+		t.Fatal("native execveat passes argc zero to admitted Go role children")
 	}
 }
 

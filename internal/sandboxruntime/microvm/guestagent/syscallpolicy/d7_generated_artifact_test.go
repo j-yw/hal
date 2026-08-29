@@ -22,7 +22,7 @@ func TestL8D7GeneratedArtifactImportsCanonicalNonzeroAuthority(t *testing.T) {
 	if len(embeddedVerifiedPolicyArtifactBytes) == 0 || len(embeddedVerifiedPolicyArtifactBytes) > MaxVerifiedPolicyArtifactBytes {
 		t.Fatalf("generated D7 artifact byte length = %d", len(embeddedVerifiedPolicyArtifactBytes))
 	}
-	if len(artifact.Catalog()) < 300 || len(artifact.Rules()) != 46 || len(artifact.Transitions()) != 9 {
+	if len(artifact.Catalog()) < 300 || len(artifact.Rules()) != 47 || len(artifact.Transitions()) != 9 {
 		t.Fatalf("generated D7 topology = catalog:%d rules:%d transitions:%d", len(artifact.Catalog()), len(artifact.Rules()), len(artifact.Transitions()))
 	}
 	if len(artifact.Workload().Rules()) != 1 || len(artifact.Runtime().Rules()) != 19 || artifact.Runtime().GoVersion() != "go1.25.7" {
@@ -69,8 +69,20 @@ func TestL8D7GeneratedLaunchBaseClone3ExecveTemplates(t *testing.T) {
 	if got := compiled.Action(0xc000003e, 435, exact); got != decision.Action() {
 		t.Fatalf("generated compiled clone3 Action() = %v, want Decide %v", got, decision.Action())
 	}
-	if got := profile.Decide(0xc000003e, 59, [6]uint64{1, 1, 0}); got.Action() != ActionErrnoEPERM {
-		t.Fatalf("generated launch-base execve Decide() = %v, want eperm", got.Action())
+	if got := profile.Decide(0xc000003e, 322, [6]uint64{5, 1, 0, 0, 0x1000}); !got.Allowed() {
+		t.Fatalf("generated launch-base execveat FD 5 Decide() = %v/%v, want allow", got.Action(), got.Reason())
+	}
+	if got := profile.Decide(0xc000003e, 322, [6]uint64{6, 1, 0, 0, 0x1000}); !got.Allowed() {
+		t.Fatalf("generated launch-base execveat FD 6 Decide() = %v/%v, want allow", got.Action(), got.Reason())
+	}
+	if got := compiled.Action(0xc000003e, 322, [6]uint64{5, 1, 0, 0, 0x1000}); got != ActionAllow {
+		t.Fatalf("generated compiled execveat FD 5 Action() = %v, want allow", got)
+	}
+	if got := profile.Decide(0xc000003e, 322, [6]uint64{}); got.Action() != ActionErrnoEPERM {
+		t.Fatalf("generated launch-base empty execveat Decide() = %v, want eperm", got.Action())
+	}
+	if got := profile.Decide(0xc000003e, 59, [6]uint64{1, 1, 0}); got.Action() != ActionKillProcess {
+		t.Fatalf("generated launch-base execve Decide() = %v, want kill", got.Action())
 	}
 	if got := profile.Decide(0xc000003e, 47, [6]uint64{16, 1, 0x40000040}); got.Action() != ActionErrnoEPERM {
 		t.Fatalf("generated launch-base recvmsg Decide() = %v, want eperm", got.Action())

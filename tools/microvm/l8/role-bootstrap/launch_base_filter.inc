@@ -158,7 +158,7 @@ launch_base_filter:
 	.short	0x0015
 	.byte	0
 	.byte	1
-	.long	0x0000003b
+	.long	0x00000066
 	.short	0x0005
 	.byte	0
 	.byte	0
@@ -166,7 +166,7 @@ launch_base_filter:
 	.short	0x0015
 	.byte	0
 	.byte	1
-	.long	0x00000066
+	.long	0x00000068
 	.short	0x0005
 	.byte	0
 	.byte	0
@@ -174,7 +174,7 @@ launch_base_filter:
 	.short	0x0015
 	.byte	0
 	.byte	1
-	.long	0x00000068
+	.long	0x0000006b
 	.short	0x0005
 	.byte	0
 	.byte	0
@@ -182,7 +182,7 @@ launch_base_filter:
 	.short	0x0015
 	.byte	0
 	.byte	1
-	.long	0x0000006b
+	.long	0x0000006c
 	.short	0x0005
 	.byte	0
 	.byte	0
@@ -190,7 +190,7 @@ launch_base_filter:
 	.short	0x0015
 	.byte	0
 	.byte	1
-	.long	0x0000006c
+	.long	0x0000006e
 	.short	0x0005
 	.byte	0
 	.byte	0
@@ -198,19 +198,11 @@ launch_base_filter:
 	.short	0x0015
 	.byte	0
 	.byte	1
-	.long	0x0000006e
-	.short	0x0005
-	.byte	0
-	.byte	0
-	.long	0x000000b3
-	.short	0x0015
-	.byte	0
-	.byte	1
 	.long	0x0000007d
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000bf
+	.long	0x000000c0
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -218,7 +210,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000be
+	.long	0x000000bf
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -226,7 +218,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000bd
+	.long	0x000000be
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -234,7 +226,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000c9
+	.long	0x000000ca
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -242,7 +234,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000d5
+	.long	0x000000d6
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -250,7 +242,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000e1
+	.long	0x000000e2
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -258,7 +250,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000ed
+	.long	0x000000ee
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -266,7 +258,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000f9
+	.long	0x000000fa
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -274,7 +266,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000105
+	.long	0x00000106
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -282,7 +274,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000111
+	.long	0x00000112
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -290,7 +282,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x0000011d
+	.long	0x0000011e
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -298,11 +290,19 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x0000011c
+	.long	0x0000011d
 	.short	0x0015
 	.byte	0
 	.byte	1
 	.long	0x0000013d
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x0000011c
+	.short	0x0015
+	.byte	0
+	.byte	1
+	.long	0x00000142
 	.short	0x0005
 	.byte	0
 	.byte	0
@@ -314,7 +314,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x0000011a
+	.long	0x00000149
 	.short	0x0006
 	.byte	0
 	.byte	0
@@ -883,10 +883,6 @@ launch_base_filter:
 	.byte	0
 	.byte	0
 	.long	0x7fff0000
-	.short	0x0006
-	.byte	0
-	.byte	0
-	.long	0x00050001
 	.short	0x0006
 	.byte	0
 	.byte	0
@@ -1466,6 +1462,198 @@ launch_base_filter:
 	.short	0x0015
 	.byte	1
 	.byte	0
+	.long	0x00000005
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000003
+	.short	0x0020
+	.byte	0
+	.byte	0
+	.long	0x00000014
+	.short	0x0015
+	.byte	0
+	.byte	1
+	.long	0x00000000
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000007
+	.short	0x0020
+	.byte	0
+	.byte	0
+	.long	0x00000010
+	.short	0x0015
+	.byte	1
+	.byte	0
+	.long	0x00000006
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000003
+	.short	0x0020
+	.byte	0
+	.byte	0
+	.long	0x00000014
+	.short	0x0015
+	.byte	0
+	.byte	1
+	.long	0x00000000
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000002
+	.short	0x0000
+	.byte	0
+	.byte	0
+	.long	0x00000000
+	.short	0x0002
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0020
+	.byte	0
+	.byte	0
+	.long	0x00000028
+	.short	0x0015
+	.byte	1
+	.byte	0
+	.long	0x00000000
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000004
+	.short	0x0020
+	.byte	0
+	.byte	0
+	.long	0x0000002c
+	.short	0x0015
+	.byte	1
+	.byte	0
+	.long	0x00000000
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000002
+	.short	0x0000
+	.byte	0
+	.byte	0
+	.long	0x00000000
+	.short	0x0002
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0020
+	.byte	0
+	.byte	0
+	.long	0x00000030
+	.short	0x0015
+	.byte	1
+	.byte	0
+	.long	0x00001000
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000004
+	.short	0x0020
+	.byte	0
+	.byte	0
+	.long	0x00000034
+	.short	0x0015
+	.byte	1
+	.byte	0
+	.long	0x00000000
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000002
+	.short	0x0000
+	.byte	0
+	.byte	0
+	.long	0x00000000
+	.short	0x0002
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0060
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0015
+	.byte	0
+	.byte	1
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000006
+	.short	0x0060
+	.byte	0
+	.byte	0
+	.long	0x00000000
+	.short	0x0015
+	.byte	0
+	.byte	1
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0006
+	.byte	0
+	.byte	0
+	.long	0x80000000
+	.short	0x0006
+	.byte	0
+	.byte	0
+	.long	0x00050001
+	.short	0x0006
+	.byte	0
+	.byte	0
+	.long	0x7fff0000
+	.short	0x0000
+	.byte	0
+	.byte	0
+	.long	0x00000000
+	.short	0x0002
+	.byte	0
+	.byte	0
+	.long	0x00000000
+	.short	0x0000
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0002
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0020
+	.byte	0
+	.byte	0
+	.long	0x00000010
+	.short	0x0015
+	.byte	1
+	.byte	0
 	.long	0x00000000
 	.short	0x0005
 	.byte	0
@@ -1574,4 +1762,4 @@ launch_base_filter:
 	.size	launch_base_filter, .-launch_base_filter
 	.type	launch_base_filter_len, @object
 launch_base_filter_len:
-	.short	392
+	.short	439

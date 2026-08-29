@@ -14,6 +14,6 @@ count=17
 11=prctl:157:pid1:0f05
 12=seccomp:317:pid1:0f05
 13=clone3:435:pid1:0f05
-14=execve:59:pid1:0f05
+14=execveat:322:pid1:0f05
 15=recvmsg:47:pid1:0f05
 16=exit_group:231:shared:0f05

@@ -219,10 +219,10 @@ func TestL8D7NativeEnvelopeLockIsExactNamedNativeStartCatalog(t *testing.T) {
 	if !equalStringSlices(document.NativeEnvelope, want) {
 		t.Fatalf("nativeEnvelope = %v, want %v", document.NativeEnvelope, want)
 	}
-	if len(want) != 17 || want[0] != "getuid" || want[6] != "socket" || want[11] != "prctl" || want[12] != "seccomp" || want[13] != "clone3" || want[14] != "execve" || want[15] != "recvmsg" || want[len(want)-1] != "exit_group" {
+	if len(want) != 17 || want[0] != "getuid" || want[6] != "socket" || want[11] != "prctl" || want[12] != "seccomp" || want[13] != "clone3" || want[14] != "execveat" || want[15] != "recvmsg" || want[len(want)-1] != "exit_group" {
 		t.Fatalf("exactNativeEnvelope() = %v", want)
 	}
-	for _, name := range []string{"clone", "sendmsg", "execveat"} {
+	for _, name := range []string{"clone", "sendmsg", "execve"} {
 		for _, got := range want {
 			if got == name {
 				t.Fatalf("exactNativeEnvelope() includes forbidden syscall %s: %v", name, want)
@@ -296,6 +296,12 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesAreExactAndFailClosed(t *testing.T) 
 			t.Fatalf("launch-base clone3 %s Action() = %v, want allow for pointer/size template (flags %#x cgroup %d live in clone_args)", op.name, got, op.flags, op.cgroup)
 		}
 	}
+	for _, op := range launchBaseExecveatNativeOperations() {
+		exact := [6]uint64{op.fd, 1, 0, 0, atEmptyPath}
+		if got := compiled.Action(auditArch, execveatSyscallNumber, exact); got != syscallpolicy.ActionAllow {
+			t.Fatalf("launch-base execveat %s Action() = %v, want allow for FD %d AT_EMPTY_PATH", op.name, got, op.fd)
+		}
+	}
 	for _, test := range []struct {
 		name string
 		nr   uint32
@@ -307,12 +313,17 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesAreExactAndFailClosed(t *testing.T) 
 		{name: "clone3 wrong size 64", nr: clone3SyscallNumber, args: [6]uint64{1, 64}, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "clone3 wrong size 0", nr: clone3SyscallNumber, args: [6]uint64{1, 0}, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "clone3 catalog name only", nr: clone3SyscallNumber, want: syscallpolicy.ActionErrnoEPERM},
-		{name: "execve empty", nr: 59, want: syscallpolicy.ActionErrnoEPERM},
-		{name: "execve helper pathname registers", nr: 59, args: [6]uint64{1, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
-		{name: "execve agent pathname registers", nr: 59, args: [6]uint64{2, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
-		{name: "execve monitor pathname registers", nr: 59, args: [6]uint64{3, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
-		{name: "execve shim pathname registers", nr: 59, args: [6]uint64{4, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
-		{name: "execve nonempty envp", nr: 59, args: [6]uint64{1, 1, 1}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execve empty", nr: 59, want: syscallpolicy.ActionKillProcess},
+		{name: "execve helper pathname registers", nr: 59, args: [6]uint64{1, 1, 0}, want: syscallpolicy.ActionKillProcess},
+		{name: "execve agent pathname registers", nr: 59, args: [6]uint64{2, 1, 0}, want: syscallpolicy.ActionKillProcess},
+		{name: "execve monitor pathname registers", nr: 59, args: [6]uint64{3, 1, 0}, want: syscallpolicy.ActionKillProcess},
+		{name: "execve shim pathname registers", nr: 59, args: [6]uint64{4, 1, 0}, want: syscallpolicy.ActionKillProcess},
+		{name: "execve nonempty envp", nr: 59, args: [6]uint64{1, 1, 1}, want: syscallpolicy.ActionKillProcess},
+		{name: "execveat empty", nr: execveatSyscallNumber, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execveat catalog name only", nr: execveatSyscallNumber, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execveat wrong fd 16", nr: execveatSyscallNumber, args: [6]uint64{16, 1, 0, 0, atEmptyPath}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execveat missing AT_EMPTY_PATH", nr: execveatSyscallNumber, args: [6]uint64{5, 1, 0, 0, 0}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execveat nonempty envp", nr: execveatSyscallNumber, args: [6]uint64{5, 1, 0, 1, atEmptyPath}, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "recvmsg empty", nr: 47, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "recvmsg fd 16 MSG_CMSG_CLOEXEC|MSG_DONTWAIT", nr: 47, args: [6]uint64{16, 1, 0x40000040}, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "sendmsg empty", nr: 46, want: syscallpolicy.ActionKillProcess},
@@ -323,7 +334,7 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesAreExactAndFailClosed(t *testing.T) 
 		}
 	}
 	for _, name := range exactRuntimeEnvelope() {
-		if name == "clone" || name == "clone3" || name == "execve" || name == "sendmsg" || name == "recvmsg" {
+		if name == "clone" || name == "clone3" || name == "execve" || name == "execveat" || name == "sendmsg" || name == "recvmsg" {
 			t.Fatalf("runtimeEnvelope includes process-creation syscall %s", name)
 		}
 	}
