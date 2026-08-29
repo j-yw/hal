@@ -374,6 +374,49 @@ type helperExecPrivateArm struct {
 	owner                *helperExecPrivateOwner
 }
 
+// helperExecStreamOwner is the opaque wipeable owner for one admitted
+// exec-stream payload. Value copies share wipe state. Stream bytes are
+// defensively copied into cap==len storage, never logged or serialized.
+type helperExecStreamOwner struct {
+	liveValue
+	body *credentialprotocol.HelperExecStreamBody
+}
+
+func newHelperExecStreamOwner(revision uint64, kind credentialprotocol.HelperExecStreamKind, flags credentialprotocol.HelperExecStreamFlags, offset uint64, payloadSHA256 [32]byte, payload []byte) (*helperExecStreamOwner, error) {
+	if kind != credentialprotocol.HelperExecStreamStdin {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	body, err := credentialprotocol.NewHelperExecStreamBody(revision, kind, flags, offset, payloadSHA256, payload)
+	if err != nil {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	return &helperExecStreamOwner{body: body}, nil
+}
+
+func (owner *helperExecStreamOwner) Wipe() {
+	if owner == nil || owner.body == nil {
+		return
+	}
+	owner.body.Wipe()
+	owner.body = nil
+}
+
+func wipeHelperExecStreamOwner(owner *helperExecStreamOwner) {
+	if owner != nil {
+		owner.Wipe()
+	}
+}
+
+type helperExecStreamArm struct {
+	revision      uint64
+	kind          credentialprotocol.HelperExecStreamKind
+	flags         credentialprotocol.HelperExecStreamFlags
+	offset        uint64
+	payloadLength uint32
+	payloadSHA256 [32]byte
+	owner         *helperExecStreamOwner
+}
+
 type helperSendArm struct {
 	kind          helperSendArmKind
 	prepareBegin  credentialprotocol.HelperPrepareBeginBody
@@ -383,7 +426,7 @@ type helperSendArm struct {
 	revoke        credentialprotocol.HelperRevokeBody
 	exec          credentialprotocol.HelperExecBody
 	execPrivate   helperExecPrivateArm
-	execStream    helperExecStreamRecord
+	execStream    helperExecStreamArm
 	execCredit    credentialprotocol.HelperExecCreditBody
 	close         credentialprotocol.HelperCloseNotifyBody
 }
@@ -1363,7 +1406,7 @@ func (sink *exactPrivateByteSink) WriteCredential(source []byte) error {
 
 func helperSendPrivateOwnerUnaccepted(kind helperSendArmKind, err error) bool {
 	return err != nil && errors.Is(err, ErrClientControlDependencyUnaccepted) &&
-		(kind == helperSendArmPrepareFile || kind == helperSendArmExecPrivate)
+		(kind == helperSendArmPrepareFile || kind == helperSendArmExecPrivate || kind == helperSendArmExecStream)
 }
 
 func copyControllerPrepareFileOwner(
@@ -1463,6 +1506,72 @@ func copyControllerExecPrivateOwner(
 	return owner, nil
 }
 
+func copyControllerExecStreamOwner(
+	ctx context.Context,
+	body controllerBodyCapability,
+	revision uint64,
+	kind credentialprotocol.HelperExecStreamKind,
+	flags credentialprotocol.HelperExecStreamFlags,
+	offset uint64,
+	payloadSHA256 [32]byte,
+	expectedLength uint32,
+) (*helperExecStreamOwner, error) {
+	if ctx == nil || ctx.Err() != nil || kind != credentialprotocol.HelperExecStreamStdin ||
+		!validControllerReceiveExecStream(kind, flags, expectedLength, payloadSHA256) {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	if flags == credentialprotocol.HelperExecStreamFlagEOF {
+		if expectedLength != 0 || configuredDependency(body) || payloadSHA256 != sha256.Sum256(nil) {
+			return nil, ErrClientControlDependencyUnaccepted
+		}
+		owner, err := newHelperExecStreamOwner(revision, kind, flags, offset, payloadSHA256, nil)
+		if err != nil {
+			wipeHelperExecStreamOwner(owner)
+			return nil, ErrClientControlDependencyUnaccepted
+		}
+		return owner, nil
+	}
+	if expectedLength == 0 || expectedLength > credentialprotocol.MaxHelperExecStreamPayloadBytes ||
+		!configuredDependency(body) {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	length, digest, ok := controllerBodyMetadata(body)
+	if !ok || length != expectedLength || digest != payloadSHA256 {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	var owner *helperExecStreamOwner
+	borrowErr := body.Borrow(ctx, func(view credentialmemory.BorrowedView) error {
+		if view == nil || view.Len() != int(expectedLength) {
+			return ErrClientControlDependencyUnaccepted
+		}
+		buf := make([]byte, expectedLength)
+		sink := &exactPrivateByteSink{target: buf}
+		if writeErr := view.WriteTo(ctx, sink); writeErr != nil {
+			clear(buf)
+			return writeErr
+		}
+		if sink.failed || sink.offset != len(buf) {
+			clear(buf)
+			return ErrClientControlDependencyUnaccepted
+		}
+		created, err := newHelperExecStreamOwner(revision, kind, flags, offset, payloadSHA256, buf)
+		clear(buf)
+		if err != nil {
+			return ErrClientControlDependencyUnaccepted
+		}
+		owner = created
+		return nil
+	})
+	if borrowErr != nil {
+		wipeHelperExecStreamOwner(owner)
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	if owner == nil {
+		return nil, ErrClientControlDependencyUnaccepted
+	}
+	return owner, nil
+}
+
 func destroyOwnedBody(body interface {
 	Destroy(context.Context) error
 }, invalid error) (err error) {
@@ -1543,7 +1652,7 @@ func (packet HelperSendPacket) writeCanonicalBody(sink bodySegmentSink) (err err
 	}()
 	switch packet.arm {
 	case helperSendArmPrepareBegin, helperSendArmPrepareCommit, helperSendArmRenew, helperSendArmRevoke, helperSendArmExec, helperSendArmExecCredit, helperSendArmClose:
-	case helperSendArmPrepareFile, helperSendArmExecPrivate:
+	case helperSendArmPrepareFile, helperSendArmExecPrivate, helperSendArmExecStream:
 		if packet.state == nil {
 			return ErrClientControlDependencyUnaccepted
 		}
@@ -1572,6 +1681,11 @@ func (packet HelperSendPacket) writeCanonicalBody(sink bodySegmentSink) (err err
 	case helperSendArmExecPrivate:
 		defer wipeHelperExecPrivateOwner(owner.arm.execPrivate.owner)
 		if owner.arm.execPrivate.owner == nil || owner.arm.execPrivate.owner.body == nil {
+			return ErrClientControlDependencyUnaccepted
+		}
+	case helperSendArmExecStream:
+		defer wipeHelperExecStreamOwner(owner.arm.execStream.owner)
+		if owner.arm.execStream.owner == nil || owner.arm.execStream.owner.body == nil {
 			return ErrClientControlDependencyUnaccepted
 		}
 	}
@@ -1633,6 +1747,14 @@ func encodeHelperSendCanonicalBody(kind helperSendArmKind, arm helperSendArm) ([
 			return nil, ErrClientControlDependencyUnaccepted
 		}
 		return credentialprotocol.EncodeHelperExecPrivateBody(arm.execPrivate.owner.body)
+	case helperSendArmExecStream:
+		if arm.execStream.owner == nil || arm.execStream.owner.body == nil {
+			return nil, ErrClientControlDependencyUnaccepted
+		}
+		if arm.execStream.owner.body.StreamKind() != credentialprotocol.HelperExecStreamStdin {
+			return nil, ErrClientControlDependencyUnaccepted
+		}
+		return credentialprotocol.EncodeHelperExecStreamBody(arm.execStream.owner.body)
 	case helperSendArmExecCredit:
 		if arm.execCredit.StreamKind != credentialprotocol.HelperExecStreamStdout &&
 			arm.execCredit.StreamKind != credentialprotocol.HelperExecStreamStderr {
@@ -1700,6 +1822,28 @@ func newHelperExecPrivateSendPacket(header credentialprotocol.HelperPacketHeader
 			privateBindingLength: body.PrivateBindingLength(),
 			privateBindingSHA256: body.PrivateBindingSHA256(),
 			owner:                owner,
+		},
+	})
+}
+
+func newHelperExecStreamSendPacket(header credentialprotocol.HelperPacketHeader, owner *helperExecStreamOwner) (HelperSendPacket, error) {
+	if owner == nil || owner.body == nil {
+		return HelperSendPacket{}, ErrClientControlDependencyUnaccepted
+	}
+	body := owner.body
+	if body.StreamKind() != credentialprotocol.HelperExecStreamStdin {
+		return HelperSendPacket{}, ErrClientControlDependencyUnaccepted
+	}
+	return newHelperMetadataSendPacket(header, helperSendArmExecStream, helperSendArm{
+		kind: helperSendArmExecStream,
+		execStream: helperExecStreamArm{
+			revision:      body.Revision(),
+			kind:          body.StreamKind(),
+			flags:         body.Flags(),
+			offset:        body.Offset(),
+			payloadLength: body.PayloadLength(),
+			payloadSHA256: body.PayloadSHA256(),
+			owner:         owner,
 		},
 	})
 }

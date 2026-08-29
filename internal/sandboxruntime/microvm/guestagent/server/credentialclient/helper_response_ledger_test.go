@@ -486,6 +486,7 @@ func TestL8D7GuestHelperRenewRevokeExecAfterLedger(t *testing.T) {
 		transport.receiveController = blockingControllerAfter(t, []ControllerPacket{
 			{sequence: 1, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare}},
 			{sequence: 2, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmExec, exec: execReq}},
+			testControllerExecStreamEOFPacket(3, identity, execReq, digest, 0),
 		}, closed)
 		transport.sendController = func(_ context.Context, packet ControllerSendPacket) error {
 			count := sends.Add(1)
@@ -519,6 +520,7 @@ func TestL8D7GuestHelperRenewRevokeExecAfterLedger(t *testing.T) {
 			credentialprotocol.PacketTypePrepareBegin,
 			credentialprotocol.PacketTypePrepareCommit,
 			credentialprotocol.PacketTypeExec,
+			credentialprotocol.PacketTypeExecStream,
 		)
 	})
 }
@@ -529,11 +531,13 @@ func TestL8D7GuestHelperNonemptyExecPrivateSendsPrivateThenExecResponse(t *testi
 	sessionIdentity := testHTTPOnlyDispatchSessionIdentity(t, identity)
 	digest := identityDigestForSession(t, sessionIdentity)
 	execReq, payload, privateDigest := testHTTPOnlyMatchingPrivateExecRequest(t, testPacketRequestIDSeed(t, 0x24), sessionIdentity)
+	streamPayload, streamDigest := testMatchingExecStreamPayload()
 	stream := newFakeHelperStream()
 	nonce := identity.identity.GuestBootNonce
 	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 1, prepare.RequestID().Bytes(), digest.Bytes(), nonce, matchingHTTPPrepareHelperResponse(t, prepare)))
 	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, matchingHTTPExecHelperResponse(t, execReq)))
 	privateBody := testControllerPrepareFileBody(payload, privateDigest)
+	streamBody := testControllerPrepareFileBody(streamPayload, streamDigest)
 	closed := make(chan struct{})
 	var sends atomic.Uint32
 	transport := &dispatchRedTransport{identity: identity}
@@ -541,6 +545,8 @@ func TestL8D7GuestHelperNonemptyExecPrivateSendsPrivateThenExecResponse(t *testi
 		{sequence: 1, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare}},
 		{sequence: 2, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmExec, exec: execReq}},
 		testControllerPrivateExecPacket(3, identity, execReq, digest, payload, privateDigest, privateBody),
+		testControllerExecStreamPacket(4, identity, execReq, digest, 0, streamPayload, streamDigest, credentialprotocol.HelperExecStreamFlagsNone, streamBody),
+		testControllerExecStreamEOFPacket(5, identity, execReq, digest, uint64(len(streamPayload))),
 	}, closed)
 	transport.sendController = func(_ context.Context, packet ControllerSendPacket) error {
 		count := sends.Add(1)
@@ -570,14 +576,16 @@ func TestL8D7GuestHelperNonemptyExecPrivateSendsPrivateThenExecResponse(t *testi
 	if err := <-serveDone; err != nil {
 		t.Fatalf("Serve() after nonempty exec-private = %v", err)
 	}
-	if !privateBody.destroyed {
-		t.Fatal("admitted exec-private controller body was not destroyed")
+	if !privateBody.destroyed || !streamBody.destroyed {
+		t.Fatal("admitted exec-private or exec-stream controller body was not destroyed")
 	}
 	assertHelperPacketTypes(t, stream,
 		credentialprotocol.PacketTypePrepareBegin,
 		credentialprotocol.PacketTypePrepareCommit,
 		credentialprotocol.PacketTypeExec,
 		credentialprotocol.PacketTypeExecPrivate,
+		credentialprotocol.PacketTypeExecStream,
+		credentialprotocol.PacketTypeExecStream,
 	)
 	packets := decodeHelperDatagrams(t, stream.bytes())
 	decoded, err := credentialprotocol.DecodeHelperExecPrivateBody(packets[3].body)
@@ -592,9 +600,12 @@ func TestL8D7GuestHelperNonemptyExecPrivateSendsPrivateThenExecResponse(t *testi
 	if n, copyErr := decoded.CopyPrivateBinding(got); copyErr != nil || n != len(payload) || sha256.Sum256(got) != privateDigest {
 		t.Fatal("exec-private private bytes did not match the admitted payload digest")
 	}
+	assertDecodedExecStream(t, packets[4].body, execReq.Revision(), 0, streamPayload, streamDigest, credentialprotocol.HelperExecStreamFlagsNone)
+	assertDecodedExecStream(t, packets[5].body, execReq.Revision(), uint64(len(streamPayload)), nil, sha256.Sum256(nil), credentialprotocol.HelperExecStreamFlagEOF)
 	if packets[2].header.RequestID != execReq.RequestID().Bytes() || packets[3].header.RequestID != execReq.RequestID().Bytes() ||
-		packets[2].header.Sequence != 3 || packets[3].header.Sequence != 4 {
-		t.Fatalf("exec helper headers = %#v %#v", packets[2].header, packets[3].header)
+		packets[4].header.RequestID != execReq.RequestID().Bytes() || packets[5].header.RequestID != execReq.RequestID().Bytes() ||
+		packets[2].header.Sequence != 3 || packets[3].header.Sequence != 4 || packets[4].header.Sequence != 5 || packets[5].header.Sequence != 6 {
+		t.Fatalf("exec helper headers = %#v %#v %#v %#v", packets[2].header, packets[3].header, packets[4].header, packets[5].header)
 	}
 }
 
@@ -770,6 +781,270 @@ func TestL8D7GuestHelperExecPrivateMismatchesFailClosed(t *testing.T) {
 			err := newDispatchRedClientOpts(t, transport, &fakeHelperOwner{stream: stream}).Serve(context.Background())
 			if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 				t.Fatalf("Serve() error = %v, want exec-private mismatch unaccepted", err)
+			}
+			if sends.Load() != 1 {
+				t.Fatalf("controller sends = %d, want prepare success only", sends.Load())
+			}
+			if receives.Load() != 3 {
+				t.Fatalf("controller receives = %d, want prepare, exec, and one payload attempt", receives.Load())
+			}
+			assertHelperPacketTypes(t, stream,
+				credentialprotocol.PacketTypePrepareBegin,
+				credentialprotocol.PacketTypePrepareCommit,
+				credentialprotocol.PacketTypeExec,
+			)
+		})
+	}
+}
+
+func TestL8D7GuestHelperNonemptyExecStreamSendsStreamThenExecResponse(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testSSHOnlyDispatchPrepareRequest(t, identity)
+	sessionIdentity := testSSHOnlyDispatchSessionIdentity(t, identity)
+	digest := identityDigestForSession(t, sessionIdentity)
+	execReq := testSSHOnlyDispatchExecRequest(t, testPacketRequestIDSeed(t, 0x27), sessionIdentity)
+	first, firstDigest := testMatchingExecStreamPayload()
+	second := []byte("!")
+	secondDigest := sha256.Sum256(second)
+	firstBody := testControllerPrepareFileBody(first, firstDigest)
+	secondBody := testControllerPrepareFileBody(second, secondDigest)
+	stream := newFakeHelperStream()
+	nonce := identity.identity.GuestBootNonce
+	empty := sha256.Sum256(nil)
+	txn := sha256.Sum256([]byte("exec-txn"))
+	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 1, prepare.RequestID().Bytes(), digest.Bytes(), nonce, matchingSSHPrepareHelperResponse(t, prepare)))
+	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, credentialprotocol.HelperResponseBody{
+		RequestType: credentialprotocol.PacketTypeExec,
+		Disposition: credentialprotocol.ResponseDispositionAccepted,
+		Revision:    1,
+		FailureCode: credentialprotocol.FailureCodeNone,
+		Exec: &credentialprotocol.HelperExecResponseResult{
+			ExitCode: 0, StdinBytes: 0, StdinSHA256: empty,
+			StdoutBytes: 0, StdoutSHA256: empty, StderrBytes: 0, StderrSHA256: empty,
+			ExecTransactionSHA256: txn,
+		},
+	}))
+	closed := make(chan struct{})
+	var sends atomic.Uint32
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = blockingControllerAfter(t, []ControllerPacket{
+		{sequence: 1, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare}},
+		{sequence: 2, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmExec, exec: execReq}},
+		testControllerExecStreamPacket(3, identity, execReq, digest, 0, first, firstDigest, credentialprotocol.HelperExecStreamFlagsNone, firstBody),
+		testControllerExecStreamPacket(4, identity, execReq, digest, uint64(len(first)), second, secondDigest, credentialprotocol.HelperExecStreamFlagsNone, secondBody),
+		testControllerExecStreamEOFPacket(5, identity, execReq, digest, uint64(len(first)+len(second))),
+	}, closed)
+	transport.sendController = func(_ context.Context, packet ControllerSendPacket) error {
+		count := sends.Add(1)
+		if count == 1 {
+			if _, ok := packet.prepareResponseValue(); !ok {
+				return errors.New("first controller send must be prepare success")
+			}
+			return nil
+		}
+		response, ok := packet.execResponseValue()
+		if !ok || response.RequestID() != execReq.RequestID() {
+			return errors.New("exec success lost helper mapping")
+		}
+		return nil
+	}
+	transport.close = func(context.Context) error {
+		transport.closeOnce.Do(func() { close(closed) })
+		return nil
+	}
+	client := newDispatchRedClientOpts(t, transport, &fakeHelperOwner{stream: stream})
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- client.Serve(context.Background()) }()
+	waitForControllerSends(t, &sends, 2, serveDone)
+	if err := client.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve() after nonempty exec-stream = %v", err)
+	}
+	if !firstBody.destroyed || !secondBody.destroyed {
+		t.Fatal("admitted exec-stream controller bodies were not destroyed")
+	}
+	assertHelperPacketTypes(t, stream,
+		credentialprotocol.PacketTypePrepareBegin,
+		credentialprotocol.PacketTypePrepareCommit,
+		credentialprotocol.PacketTypeExec,
+		credentialprotocol.PacketTypeExecStream,
+		credentialprotocol.PacketTypeExecStream,
+		credentialprotocol.PacketTypeExecStream,
+	)
+	packets := decodeHelperDatagrams(t, stream.bytes())
+	assertDecodedExecStream(t, packets[3].body, execReq.Revision(), 0, first, firstDigest, credentialprotocol.HelperExecStreamFlagsNone)
+	assertDecodedExecStream(t, packets[4].body, execReq.Revision(), uint64(len(first)), second, secondDigest, credentialprotocol.HelperExecStreamFlagsNone)
+	assertDecodedExecStream(t, packets[5].body, execReq.Revision(), uint64(len(first)+len(second)), nil, sha256.Sum256(nil), credentialprotocol.HelperExecStreamFlagEOF)
+	if packets[3].header.RequestID != execReq.RequestID().Bytes() || packets[4].header.RequestID != execReq.RequestID().Bytes() ||
+		packets[5].header.RequestID != execReq.RequestID().Bytes() ||
+		packets[2].header.Sequence != 3 || packets[3].header.Sequence != 4 || packets[4].header.Sequence != 5 || packets[5].header.Sequence != 6 {
+		t.Fatalf("exec-stream helper headers = %#v %#v %#v %#v", packets[2].header, packets[3].header, packets[4].header, packets[5].header)
+	}
+}
+
+func TestL8D7GuestHelperExecStreamBodyCleanupFailureStopsBeforeControllerSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		destroyErr error
+		panic      bool
+	}{
+		{name: "error", destroyErr: errors.New("destroy failed")},
+		{name: "panic", panic: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := testDispatchTransportIdentity()
+			prepare := testSSHOnlyDispatchPrepareRequest(t, identity)
+			sessionIdentity := testSSHOnlyDispatchSessionIdentity(t, identity)
+			digest := identityDigestForSession(t, sessionIdentity)
+			execReq := testSSHOnlyDispatchExecRequest(t, testPacketRequestIDSeed(t, 0x28), sessionIdentity)
+			payload, payloadDigest := testMatchingExecStreamPayload()
+			stream := newFakeHelperStream()
+			nonce := identity.identity.GuestBootNonce
+			stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 1, prepare.RequestID().Bytes(), digest.Bytes(), nonce, matchingSSHPrepareHelperResponse(t, prepare)))
+			stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, matchingHTTPExecHelperResponse(t, execReq)))
+			streamBody := testControllerPrepareFileBody(payload, payloadDigest)
+			streamBody.destroyErr = test.destroyErr
+			streamBody.destroyPanic = test.panic
+			var receives atomic.Uint32
+			var sends atomic.Uint32
+			transport := &dispatchRedTransport{identity: identity}
+			transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+				switch receives.Add(1) {
+				case 1:
+					return ControllerPacket{sequence: 1, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare}}, nil
+				case 2:
+					return ControllerPacket{sequence: 2, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmExec, exec: execReq}}, nil
+				case 3:
+					return testControllerExecStreamPacket(3, identity, execReq, digest, 0, payload, payloadDigest, credentialprotocol.HelperExecStreamFlagsNone, streamBody), nil
+				default:
+					return ControllerPacket{}, errors.New("stop")
+				}
+			}
+			transport.sendController = func(_ context.Context, packet ControllerSendPacket) error {
+				if _, ok := packet.execResponseValue(); ok {
+					sends.Add(1)
+					return errors.New("cleanup failure must not mint exec success")
+				}
+				if _, ok := packet.prepareResponseValue(); ok {
+					sends.Add(1)
+				}
+				return nil
+			}
+			err := newDispatchRedClientOpts(t, transport, &fakeHelperOwner{stream: stream}).Serve(context.Background())
+			if clientContractCode(err) != ClientContractCleanup {
+				t.Fatalf("Serve() error = %v, want cleanup", err)
+			}
+			if sends.Load() != 1 {
+				t.Fatalf("controller sends = %d, want prepare success only", sends.Load())
+			}
+			assertHelperPacketTypes(t, stream,
+				credentialprotocol.PacketTypePrepareBegin,
+				credentialprotocol.PacketTypePrepareCommit,
+				credentialprotocol.PacketTypeExec,
+				credentialprotocol.PacketTypeExecStream,
+			)
+		})
+	}
+}
+
+func TestL8D7GuestHelperExecStreamMismatchesFailClosed(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testSSHOnlyDispatchPrepareRequest(t, identity)
+	sessionIdentity := testSSHOnlyDispatchSessionIdentity(t, identity)
+	digest := identityDigestForSession(t, sessionIdentity)
+	execReq := testSSHOnlyDispatchExecRequest(t, testPacketRequestIDSeed(t, 0x29), sessionIdentity)
+	payload, payloadDigest := testMatchingExecStreamPayload()
+	wrongDigest := sha256.Sum256([]byte("wrong-exec-stream"))
+	wrongPayload := []byte("secret!!")
+	wrongPayloadDigest := sha256.Sum256(wrongPayload)
+
+	cases := []struct {
+		name   string
+		packet ControllerPacket
+	}{
+		{
+			name: "digest",
+			packet: testControllerExecStreamPacket(3, identity, execReq, digest, 0, payload, wrongDigest, credentialprotocol.HelperExecStreamFlagsNone, &testHelperBody{
+				length: uint32(len(payload)), digest: wrongDigest, payload: append([]byte(nil), payload...),
+			}),
+		},
+		{
+			name: "kind",
+			packet: ControllerPacket{
+				sequence:  3,
+				sessionID: identity.sessionID,
+				arm: controllerPacketArm{kind: controllerPacketArmStream, stream: controllerStreamRecord{
+					kind: credentialprotocol.HelperExecStreamStdout, flags: credentialprotocol.HelperExecStreamFlagsNone,
+					requestID: execReq.RequestID(), identityDigest: digest, offset: 0,
+					payloadLength: uint32(len(payload)), payloadSHA256: payloadDigest,
+				}},
+				body: testControllerPrepareFileBody(payload, payloadDigest),
+			},
+		},
+		{
+			name:   "length",
+			packet: testControllerExecStreamPacket(3, identity, execReq, digest, 0, payload, payloadDigest, credentialprotocol.HelperExecStreamFlagsNone, testControllerPrepareFileBody(wrongPayload, wrongPayloadDigest)),
+		},
+		{
+			name:   "offset",
+			packet: testControllerExecStreamPacket(3, identity, execReq, digest, 4, payload, payloadDigest, credentialprotocol.HelperExecStreamFlagsNone, testControllerPrepareFileBody(payload, payloadDigest)),
+		},
+		{
+			name:   "exec-private",
+			packet: testControllerPrivateExecPacket(3, identity, execReq, digest, payload, payloadDigest, testControllerPrepareFileBody(payload, payloadDigest)),
+		},
+		{
+			name: "second-prepare",
+			packet: ControllerPacket{
+				sequence:  3,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+			},
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			stream := newFakeHelperStream()
+			stream.queueHelperDatagram(encodeHelperResponseDatagram(
+				t, 1, prepare.RequestID().Bytes(), digest.Bytes(), identity.identity.GuestBootNonce,
+				matchingSSHPrepareHelperResponse(t, prepare),
+			))
+			var sends atomic.Uint32
+			var receives atomic.Uint32
+			transport := &dispatchRedTransport{identity: identity}
+			transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+				switch receives.Add(1) {
+				case 1:
+					return ControllerPacket{
+						sequence:  1,
+						sessionID: identity.sessionID,
+						arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+					}, nil
+				case 2:
+					return ControllerPacket{
+						sequence:  2,
+						sessionID: identity.sessionID,
+						arm:       controllerPacketArm{kind: controllerPacketArmExec, exec: execReq},
+					}, nil
+				default:
+					return test.packet, nil
+				}
+			}
+			transport.sendController = func(_ context.Context, packet ControllerSendPacket) error {
+				if _, ok := packet.execResponseValue(); ok {
+					sends.Add(1)
+					return errors.New("mismatched exec-stream must not mint proofs or answer exec")
+				}
+				if _, ok := packet.prepareResponseValue(); ok {
+					sends.Add(1)
+				}
+				return nil
+			}
+			err := newDispatchRedClientOpts(t, transport, &fakeHelperOwner{stream: stream}).Serve(context.Background())
+			if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+				t.Fatalf("Serve() error = %v, want exec-stream mismatch unaccepted", err)
 			}
 			if sends.Load() != 1 {
 				t.Fatalf("controller sends = %d, want prepare success only", sends.Load())
@@ -1212,6 +1487,11 @@ func testMatchingExecPrivatePayload() ([]byte, [32]byte) {
 	return payload, sha256.Sum256(payload)
 }
 
+func testMatchingExecStreamPayload() ([]byte, [32]byte) {
+	payload := []byte("exec-stream")
+	return payload, sha256.Sum256(payload)
+}
+
 func testHTTPOnlyMatchingPrivateExecRequest(t *testing.T, requestID v2control.RequestID, identity v2control.GuestCredentialSessionIdentity) (v2control.CredentialExecRequest, []byte, [32]byte) {
 	t.Helper()
 	payload, digest := testMatchingExecPrivatePayload()
@@ -1262,6 +1542,77 @@ func testControllerPrivateExecPacket(
 			payloadSHA256:  privateDigest,
 		}},
 		body: body,
+	}
+}
+
+func testControllerExecStreamPacket(
+	sequence uint64,
+	identity transportIdentity,
+	exec v2control.CredentialExecRequest,
+	digest v2control.IdentityDigest,
+	offset uint64,
+	payload []byte,
+	payloadDigest [32]byte,
+	flags credentialprotocol.HelperExecStreamFlags,
+	body *testHelperBody,
+) ControllerPacket {
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: identity.sessionID,
+		arm: controllerPacketArm{kind: controllerPacketArmStream, stream: controllerStreamRecord{
+			kind:           credentialprotocol.HelperExecStreamStdin,
+			flags:          flags,
+			requestID:      exec.RequestID(),
+			identityDigest: digest,
+			offset:         offset,
+			payloadLength:  uint32(len(payload)),
+			payloadSHA256:  payloadDigest,
+		}},
+		body: body,
+	}
+}
+
+func testControllerExecStreamEOFPacket(
+	sequence uint64,
+	identity transportIdentity,
+	exec v2control.CredentialExecRequest,
+	digest v2control.IdentityDigest,
+	offset uint64,
+) ControllerPacket {
+	empty := sha256.Sum256(nil)
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: identity.sessionID,
+		arm: controllerPacketArm{kind: controllerPacketArmStream, stream: controllerStreamRecord{
+			kind:           credentialprotocol.HelperExecStreamStdin,
+			flags:          credentialprotocol.HelperExecStreamFlagEOF,
+			requestID:      exec.RequestID(),
+			identityDigest: digest,
+			offset:         offset,
+			payloadLength:  0,
+			payloadSHA256:  empty,
+		}},
+	}
+}
+
+func assertDecodedExecStream(t *testing.T, encoded []byte, revision, offset uint64, payload []byte, digest [32]byte, flags credentialprotocol.HelperExecStreamFlags) {
+	t.Helper()
+	decoded, err := credentialprotocol.DecodeHelperExecStreamBody(encoded)
+	if err != nil {
+		t.Fatalf("DecodeHelperExecStreamBody() error = %v", err)
+	}
+	defer decoded.Wipe()
+	if decoded.Revision() != revision || decoded.StreamKind() != credentialprotocol.HelperExecStreamStdin ||
+		decoded.Flags() != flags || decoded.Offset() != offset || decoded.PayloadLength() != uint32(len(payload)) ||
+		decoded.PayloadSHA256() != digest {
+		t.Fatal("exec-stream metadata did not match the admitted controller record")
+	}
+	if len(payload) == 0 {
+		return
+	}
+	got := make([]byte, len(payload))
+	if n, copyErr := decoded.CopyPayload(got); copyErr != nil || n != len(payload) || sha256.Sum256(got) != digest {
+		t.Fatal("exec-stream payload bytes did not match the admitted payload digest")
 	}
 }
 
