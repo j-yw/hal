@@ -388,7 +388,7 @@ func TestL8JobCredentialRuntimeRecoverFailsClosedWithoutDurableHandleStore(t *te
 	liveProof, liveErr := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
 		Identity: identity, Revision: 1,
 	})
-	if sandboxruntime.CleanupProofKind(liveProof) != "" || !errors.Is(liveErr, errL8JobCredentialRuntimeDependencyUnaccepted) {
+	if sandboxruntime.CleanupProofKind(liveProof) != "" || !errors.Is(liveErr, sandboxruntime.ErrJobCredentialTransition) {
 		t.Fatalf("live recover = %#v, %v", liveProof, liveErr)
 	}
 	if sandboxruntime.ActiveProofKind(session.ActiveProof()) == "" {
@@ -431,8 +431,51 @@ func TestL8JobCredentialRuntimeRecoverMintsCleanupProofFromStoreMetadata(t *test
 		t.Fatalf("prepare did not persist handle metadata: present=%t err=%v", present, err)
 	}
 
+	liveProof, liveErr := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 1,
+	})
+	if sandboxruntime.CleanupProofKind(liveProof) != "" || !errors.Is(liveErr, sandboxruntime.ErrJobCredentialTransition) {
+		t.Fatalf("same-runtime recover = %#v, %v", liveProof, liveErr)
+	}
+	if httpProxy.revokes != 0 || tmpfs.revokes != 0 {
+		t.Fatalf("same-runtime recover revoked live handles http=%d tmpfs=%d", httpProxy.revokes, tmpfs.revokes)
+	}
+
 	recovered := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, httpProxy, tmpfs, nil)
 	recovered.deps.HandleStore = store
+	stale, staleErr := recovered.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 2,
+	})
+	if sandboxruntime.CleanupProofKind(stale) != "" || !errors.Is(staleErr, sandboxruntime.ErrJobCredentialRevisionStale) {
+		t.Fatalf("stale-revision recover = %#v, %v", stale, staleErr)
+	}
+	if httpProxy.revokes != 0 || tmpfs.revokes != 0 {
+		t.Fatalf("stale-revision recover revoked handles http=%d tmpfs=%d", httpProxy.revokes, tmpfs.revokes)
+	}
+
+	missingRevoker := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, nil, tmpfs, nil)
+	missingRevoker.deps.HandleStore = store
+	unproved, unprovedErr := missingRevoker.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 1,
+	})
+	if sandboxruntime.CleanupProofKind(unproved) != "" || !errors.Is(unprovedErr, errL8JobCredentialRuntimeDependencyUnaccepted) {
+		t.Fatalf("missing-revoker recover = %#v, %v", unproved, unprovedErr)
+	}
+	if httpProxy.revokes != 0 || tmpfs.revokes != 0 {
+		t.Fatalf("missing-revoker recover partially revoked handles http=%d tmpfs=%d", httpProxy.revokes, tmpfs.revokes)
+	}
+	missingLaterRevoker := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, httpProxy, nil, nil)
+	missingLaterRevoker.deps.HandleStore = store
+	unproved, unprovedErr = missingLaterRevoker.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+		Identity: identity, Revision: 1,
+	})
+	if sandboxruntime.CleanupProofKind(unproved) != "" || !errors.Is(unprovedErr, errL8JobCredentialRuntimeDependencyUnaccepted) {
+		t.Fatalf("missing-later-revoker recover = %#v, %v", unproved, unprovedErr)
+	}
+	if httpProxy.revokes != 0 || tmpfs.revokes != 0 {
+		t.Fatalf("missing-later-revoker partially revoked handles http=%d tmpfs=%d", httpProxy.revokes, tmpfs.revokes)
+	}
+
 	proof, err := recovered.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
 		Identity: identity, Revision: 1,
 	})
@@ -444,6 +487,9 @@ func TestL8JobCredentialRuntimeRecoverMintsCleanupProofFromStoreMetadata(t *test
 	}
 	if httpProxy.revokes != 1 || tmpfs.revokes != 1 {
 		t.Fatalf("store recover revokes http=%d tmpfs=%d, want 1/1", httpProxy.revokes, tmpfs.revokes)
+	}
+	if next, nextErr := recovered.PreflightJobCredentials(context.Background(), seed); !l8JobCredentialRuntimeValueIsNil(next) || !errors.Is(nextErr, sandboxruntime.ErrJobCredentialTransition) {
+		t.Fatalf("preflight after recovery = %#v, %v", next, nextErr)
 	}
 
 	missing := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, nil, nil, nil)
@@ -460,7 +506,9 @@ func TestL8JobCredentialRuntimeRecoverMintsCleanupProofFromStoreMetadata(t *test
 	if err := sandboxruntime.ValidateJobCredentialIdentity(neighbor); err != nil {
 		t.Fatal(err)
 	}
-	foreign, foreignErr := recovered.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+	foreignRuntime := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, httpProxy, tmpfs, nil)
+	foreignRuntime.deps.HandleStore = store
+	foreign, foreignErr := foreignRuntime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
 		Identity: neighbor, Revision: 1,
 	})
 	if sandboxruntime.CleanupProofKind(foreign) != "" || !errors.Is(foreignErr, errL8JobCredentialRuntimeDependencyUnaccepted) {
@@ -484,7 +532,9 @@ func TestL8JobCredentialRuntimeRecoverDoesNotMintWhenStoredRevokeFails(t *testin
 		t.Fatal(err)
 	}
 
-	failed, failedErr := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+	recovered := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, httpProxy, tmpfs, nil)
+	recovered.deps.HandleStore = store
+	failed, failedErr := recovered.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
 		Identity: identity, Revision: 1,
 	})
 	if sandboxruntime.CleanupProofKind(failed) != "" || !errors.Is(failedErr, ErrL8JobCredentialRuntimeUnavailable) {
