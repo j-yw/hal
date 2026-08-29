@@ -13,7 +13,190 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/v2control"
 )
+
+func TestL8D7GuestHelperSCMRightsTryReadNoopsOnNonConnStream(t *testing.T) {
+	identity := [32]byte{1}
+	identity[31] = 2
+	request, err := newHelperControlReceiveRequest(1, credentialprotocol.HelperSSHAcceptedFDBodyEncodedLength(), 1, [16]byte{}, false, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, received, readErr := tryReadHelperSSHAcceptedPacket(context.Background(), newFakeHelperStream(), request)
+	if readErr != nil || received {
+		t.Fatalf("tryReadHelperSSHAcceptedPacket(fake stream) = %#v, %v, %v", packet, received, readErr)
+	}
+}
+
+func TestL8D7GuestHelperSSHAcceptedCleanupOverridesHandleError(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testSSHOnlyDispatchPrepareRequest(t, identity)
+	digest := identityDigestForSession(t, testSSHOnlyDispatchSessionIdentity(t, identity))
+	records, manifest, err := projectV2ManifestToHelperRecords(prepare.Bindings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := newHelperActiveLedger(
+		digest, prepare.RequestID().Bytes(), identity.helperGeneration, manifest,
+		prepare.Revision(), prepare.ExpiresAtUnixNano(),
+		[]credentialprotocol.HelperBindingProof{{BindingID: "binding-ssh", Mode: credentialprotocol.DeliveryModeSSHAgent, ProofID: "proof-ssh"}},
+		records, prepare.Bindings(), "active-proof", "exec-binding",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityDigest := [32]byte{0x41}
+	issuer := &sshTestIssuer{digest: capabilityDigest, closeErr: errors.New("close failed")}
+	receive := mustHelperReceiveRequest(t, 1, [16]byte{}, false, digest.Bytes(), 1)
+	header := testHelperHeader(credentialprotocol.PacketTypeSSHAcceptedFD, 1, [16]byte{9}, digest.Bytes(), identity.identity.GuestBootNonce, credentialprotocol.HelperSSHAcceptedFDBodyEncodedLength())
+	packet, err := newHelperSSHAcceptedPacket(receive, header, nil, 1, 0, 1, capabilityDigest, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &recordingSSHSession{handleErr: errors.New("handle failed")}
+	client := newDispatchRedClientWithSSHSession(t, &dispatchRedTransport{identity: identity}, nil, session)
+	err = client.dispatchHelperSSHAccepted(context.Background(), packet, digest, ledger)
+	if clientContractCode(err) != ClientContractCleanup {
+		t.Fatalf("dispatchHelperSSHAccepted() error = %v, want cleanup override", err)
+	}
+	if issuer.closes.Load() != 1 {
+		t.Fatalf("issuer closes = %d, want 1", issuer.closes.Load())
+	}
+}
+
+func TestL8D7GuestHelperSSHAcceptedCancellationClosesBeforeTransfer(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testSSHOnlyDispatchPrepareRequest(t, identity)
+	digest := identityDigestForSession(t, testSSHOnlyDispatchSessionIdentity(t, identity))
+	ledger := testSSHActiveLedger(t, identity, prepare, digest)
+	capabilityDigest := [32]byte{0x43}
+	issuer := &sshTestIssuer{digest: capabilityDigest}
+	packet := testSSHAcceptedHelperPacket(t, identity, digest, capabilityDigest, issuer)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &recordingSSHSession{handleHook: cancel}
+	client := newDispatchRedClientWithSSHSession(t, &dispatchRedTransport{identity: identity}, nil, session)
+	err := client.dispatchHelperSSHAccepted(ctx, packet, digest, ledger)
+	if err == nil {
+		t.Fatal("canceled SSH dispatch transferred ownership")
+	}
+	if issuer.closes.Load() != 1 {
+		t.Fatalf("issuer closes = %d, want 1", issuer.closes.Load())
+	}
+	if err := session.acceptedPacket(t).WaitTransferred(context.Background()); err == nil {
+		t.Fatal("canceled SSH packet reported transferred ownership")
+	}
+}
+
+func TestL8D7GuestHelperSSHAcceptedClientDrainClosesBeforeTransfer(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testSSHOnlyDispatchPrepareRequest(t, identity)
+	digest := identityDigestForSession(t, testSSHOnlyDispatchSessionIdentity(t, identity))
+	ledger := testSSHActiveLedger(t, identity, prepare, digest)
+	capabilityDigest := [32]byte{0x44}
+	issuer := &sshTestIssuer{digest: capabilityDigest}
+	packet := testSSHAcceptedHelperPacket(t, identity, digest, capabilityDigest, issuer)
+	session := &gatedSSHSession{
+		handleStarted: make(chan struct{}),
+		handleRelease: make(chan struct{}),
+		closed:        make(chan struct{}),
+	}
+	client := newDispatchRedClientWithSSHSession(t, &dispatchRedTransport{identity: identity}, nil, session)
+	if !client.beginAdmittedOperation() {
+		t.Fatal("failed to admit SSH dispatch")
+	}
+	dispatchDone := make(chan error, 1)
+	go func() {
+		defer client.endAdmittedOperation()
+		dispatchDone <- client.dispatchHelperSSHAccepted(context.Background(), packet, digest, ledger)
+	}()
+	<-session.handleStarted
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close(context.Background()) }()
+	<-session.closed
+	close(session.handleRelease)
+	if err := <-dispatchDone; err == nil {
+		t.Fatal("draining client transferred SSH ownership after extension close")
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if issuer.closes.Load() != 1 {
+		t.Fatalf("issuer closes = %d, want 1", issuer.closes.Load())
+	}
+	if err := session.acceptedPacket(t).WaitTransferred(context.Background()); err == nil {
+		t.Fatal("drained SSH packet reported transferred ownership")
+	}
+}
+
+func testSSHActiveLedger(t *testing.T, identity transportIdentity, prepare v2control.CredentialPrepareRequest, digest v2control.IdentityDigest) *helperActiveLedger {
+	t.Helper()
+	records, manifest, err := projectV2ManifestToHelperRecords(prepare.Bindings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := newHelperActiveLedger(
+		digest, prepare.RequestID().Bytes(), identity.helperGeneration, manifest,
+		prepare.Revision(), prepare.ExpiresAtUnixNano(),
+		[]credentialprotocol.HelperBindingProof{{BindingID: "binding-ssh", Mode: credentialprotocol.DeliveryModeSSHAgent, ProofID: "proof-ssh"}},
+		records, prepare.Bindings(), "active-proof", "exec-binding",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ledger
+}
+
+func testSSHAcceptedHelperPacket(t *testing.T, identity transportIdentity, digest v2control.IdentityDigest, capabilityDigest [32]byte, issuer SSHConnectionCapability) HelperPacket {
+	t.Helper()
+	receive := mustHelperReceiveRequest(t, 1, [16]byte{}, false, digest.Bytes(), 1)
+	header := testHelperHeader(credentialprotocol.PacketTypeSSHAcceptedFD, 1, [16]byte{9}, digest.Bytes(), identity.identity.GuestBootNonce, credentialprotocol.HelperSSHAcceptedFDBodyEncodedLength())
+	packet, err := newHelperSSHAcceptedPacket(receive, header, nil, 1, 0, 1, capabilityDigest, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return packet
+}
+
+func TestL8D7GuestHelperSSHAcceptedDispatchesAndTransfersOwnership(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testSSHOnlyDispatchPrepareRequest(t, identity)
+	digest := identityDigestForSession(t, testSSHOnlyDispatchSessionIdentity(t, identity))
+	records, manifest, err := projectV2ManifestToHelperRecords(prepare.Bindings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := newHelperActiveLedger(
+		digest, prepare.RequestID().Bytes(), identity.helperGeneration, manifest,
+		prepare.Revision(), prepare.ExpiresAtUnixNano(),
+		[]credentialprotocol.HelperBindingProof{{BindingID: "binding-ssh", Mode: credentialprotocol.DeliveryModeSSHAgent, ProofID: "proof-ssh"}},
+		records, prepare.Bindings(), "active-proof", "exec-binding",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityDigest := [32]byte{0x42}
+	issuer := &sshTestIssuer{digest: capabilityDigest}
+	receive := mustHelperReceiveRequest(t, 2, [16]byte{}, false, digest.Bytes(), 1)
+	header := testHelperHeader(credentialprotocol.PacketTypeSSHAcceptedFD, 2, [16]byte{9}, digest.Bytes(), identity.identity.GuestBootNonce, credentialprotocol.HelperSSHAcceptedFDBodyEncodedLength())
+	packet, err := newHelperSSHAcceptedPacket(receive, header, nil, 1, 0, 1, capabilityDigest, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &recordingSSHSession{}
+	client := newDispatchRedClientWithSSHSession(t, &dispatchRedTransport{identity: identity}, nil, session)
+	if err := client.dispatchHelperSSHAccepted(context.Background(), packet, digest, ledger); err != nil {
+		t.Fatalf("dispatchHelperSSHAccepted() error = %v", err)
+	}
+	accepted := session.acceptedPacket(t)
+	if err := accepted.WaitTransferred(context.Background()); err != nil {
+		t.Fatalf("WaitTransferred() error = %v", err)
+	}
+	if issuer.closes.Load() != 0 {
+		t.Fatal("successful dispatch closed the issuer")
+	}
+}
 
 func TestL8D7GuestHelperOwnerIsVerifiedPreopened(t *testing.T) {
 	owner := reflect.TypeOf((*HelperConnectionOwner)(nil)).Elem()
@@ -551,6 +734,112 @@ func newDispatchRedClientOpts(t *testing.T, transport Transport, helper HelperCo
 		t.Fatal(err)
 	}
 	return client
+}
+
+func newDispatchRedClientWithSSHSession(t *testing.T, transport Transport, helper HelperConnectionOwner, session ExtensionSession) *Client {
+	t.Helper()
+	registry, err := NewExtensionRegistry(ExtensionRegistration{
+		Descriptor: credentialprotocol.SSHRelayV1ExtensionDescriptor(),
+		Factory:    staticSSHFactory{session: session},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := NewClientPolicy()
+	client, err := NewClient(ClientOptions{
+		Transport: transport, Policy: policy, Extensions: registry,
+		Descriptor: newLifecycleDescriptor(policy.Descriptor(), registry.Descriptors()),
+		Helper:     helper,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+type staticSSHFactory struct {
+	session ExtensionSession
+}
+
+func (factory staticSSHFactory) Open(context.Context, ExtensionOpenRequest) (ExtensionSession, error) {
+	return factory.session, nil
+}
+
+type recordingSSHSession struct {
+	mu         sync.Mutex
+	handled    atomic.Uint32
+	accepted   SSHAcceptedPacket
+	handleErr  error
+	handleHook func()
+	handledCh  chan struct{}
+}
+
+func (session *recordingSSHSession) Handle(_ context.Context, packet ExtensionPacket) error {
+	accepted, ok := packet.SSHAccepted()
+	if !ok {
+		return errors.New("missing SSH accepted arm")
+	}
+	session.mu.Lock()
+	session.accepted = accepted
+	session.mu.Unlock()
+	session.handled.Add(1)
+	if session.handledCh != nil {
+		select {
+		case <-session.handledCh:
+		default:
+			close(session.handledCh)
+		}
+	}
+	if session.handleHook != nil {
+		session.handleHook()
+	}
+	return session.handleErr
+}
+
+func (session *recordingSSHSession) Close(context.Context) error { return nil }
+
+func (session *recordingSSHSession) acceptedPacket(t *testing.T) SSHAcceptedPacket {
+	t.Helper()
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.handled.Load() == 0 {
+		t.Fatal("SSH extension Handle was not called")
+	}
+	return session.accepted
+}
+
+type gatedSSHSession struct {
+	mu            sync.Mutex
+	accepted      SSHAcceptedPacket
+	handleStarted chan struct{}
+	handleRelease chan struct{}
+	closed        chan struct{}
+	closeOnce     sync.Once
+}
+
+func (session *gatedSSHSession) Handle(_ context.Context, packet ExtensionPacket) error {
+	accepted, ok := packet.SSHAccepted()
+	if !ok {
+		return errors.New("missing SSH accepted arm")
+	}
+	session.mu.Lock()
+	session.accepted = accepted
+	session.mu.Unlock()
+	close(session.handleStarted)
+	<-session.handleRelease
+	return nil
+}
+
+func (session *gatedSSHSession) Close(context.Context) error {
+	session.closeOnce.Do(func() { close(session.closed) })
+	return nil
+}
+
+func (session *gatedSSHSession) acceptedPacket(t *testing.T) SSHAcceptedPacket {
+	t.Helper()
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.accepted
 }
 
 type fakeHelperStream struct {

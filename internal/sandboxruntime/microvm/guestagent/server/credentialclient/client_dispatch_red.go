@@ -38,6 +38,16 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 		if client.drainStarted() {
 			return nil
 		}
+		if ledger != nil && configuredDependency(helperStream) {
+			nextReceive, sshErr := client.drainIdleHelperSSHAccepted(ctx, helperStream, expectedIdentity, ledger, nextHelperReceiveSequence)
+			if sshErr != nil {
+				return sshErr
+			}
+			nextHelperReceiveSequence = nextReceive
+			if client.drainStarted() || ctx.Err() != nil {
+				return nil
+			}
+		}
 		receive, receiveErr := newControlReceiveRequest(nextSequence, expectedIdentity, expectedIdentitySet, session.MaxControlPlaintextBytes)
 		if receiveErr != nil {
 			return clientError(ClientContractPacket, ClientFieldPacketType)
@@ -63,6 +73,16 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			return clientError(ClientContractPacket, ClientFieldPacketType)
 		}
 		nextSequence++
+		if ledger != nil && configuredDependency(helperStream) {
+			nextReceive, sshErr := client.drainIdleHelperSSHAccepted(ctx, helperStream, expectedIdentity, ledger, nextHelperReceiveSequence)
+			if sshErr != nil {
+				return sshErr
+			}
+			nextHelperReceiveSequence = nextReceive
+			if client.drainStarted() || ctx.Err() != nil {
+				return nil
+			}
+		}
 		if readiness, ready := packet.readinessValue(); ready {
 			if expectedIdentitySet {
 				return clientError(ClientContractPacket, ClientFieldIdentity)
@@ -255,13 +275,189 @@ func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observe
 
 func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
 	// Mismatched prepare-file, exec-private, or exec-stream payload,
-	// SCM_RIGHTS SSH, JobCredential proof minting, and a nil
+	// helper-to-agent packets that are not an authenticated SCM_RIGHTS
+	// SSH accepted FD, JobCredential proof minting, and a nil
 	// HelperConnectionOwner stay unaccepted.
 	_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, [16]byte{}, false, identity.Bytes())
 	if err != nil {
 		return err
 	}
 	return ErrClientControlDependencyUnaccepted
+}
+
+func (client *Client) drainIdleHelperSSHAccepted(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	digest v2control.IdentityDigest,
+	ledger *helperActiveLedger,
+	receiveSequence uint64,
+) (uint64, error) {
+	if !configuredDependency(stream) || ledger == nil {
+		return receiveSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return receiveSequence, nil
+	}
+	request, err := newHelperControlReceiveRequest(
+		receiveSequence,
+		credentialprotocol.HelperSSHAcceptedFDBodyEncodedLength(),
+		1,
+		[16]byte{},
+		false,
+		digest.Bytes(),
+	)
+	if err != nil {
+		return receiveSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if !client.beginAdmittedOperation() {
+		return receiveSequence, nil
+	}
+	defer client.endAdmittedOperation()
+	packet, received, readErr := tryReadHelperSSHAcceptedPacket(ctx, stream, request)
+	if readErr != nil {
+		closeErr := closeHelperSSHAccepted(packet)
+		if client.drainStarted() || ctx.Err() != nil {
+			return receiveSequence, nil
+		}
+		if closeErr != nil {
+			return receiveSequence, clientError(ClientContractCleanup, ClientFieldRight)
+		}
+		if errors.Is(readErr, ErrClientControlDependencyUnaccepted) {
+			return receiveSequence, helperPacketDependencyUnaccepted(digest)
+		}
+		return receiveSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if !received {
+		return receiveSequence, nil
+	}
+	dispatchErr := client.dispatchHelperSSHAccepted(ctx, packet, digest, ledger)
+	if dispatchErr != nil {
+		return receiveSequence, dispatchErr
+	}
+	return receiveSequence + 1, nil
+}
+
+func (client *Client) dispatchHelperSSHAccepted(
+	ctx context.Context,
+	packet HelperPacket,
+	digest v2control.IdentityDigest,
+	ledger *helperActiveLedger,
+) (err error) {
+	extension, converted := extensionPacketFromHelperSSH(packet, digest)
+	defer func() {
+		if recover() != nil {
+			if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
+				err = clientError(ClientContractCleanup, ClientFieldRight)
+				return
+			}
+			err = clientError(ClientContractPanic, ClientFieldExtension)
+		}
+	}()
+	if !converted {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
+			return clientError(ClientContractCleanup, ClientFieldRight)
+		}
+		return helperPacketDependencyUnaccepted(digest)
+	}
+	if ledger == nil || ledger.identityDigest != digest ||
+		packet.headerValue().GuestCredentialIdentityDigest != digest.Bytes() ||
+		packet.headerValue().Sequence == 0 {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
+			return clientError(ClientContractCleanup, ClientFieldRight)
+		}
+		return helperPacketDependencyUnaccepted(digest)
+	}
+	accepted, ok := extension.SSHAccepted()
+	if !ok || accepted.Revision() != ledger.revision {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
+			return clientError(ClientContractCleanup, ClientFieldRight)
+		}
+		return helperPacketDependencyUnaccepted(digest)
+	}
+	if int(accepted.BindingIndex()) >= len(ledger.records) ||
+		ledger.records[accepted.BindingIndex()].Mode != credentialprotocol.DeliveryModeSSHAgent {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
+			return clientError(ClientContractCleanup, ClientFieldRight)
+		}
+		return helperPacketDependencyUnaccepted(digest)
+	}
+	session, found := client.sshExtensionSession()
+	if !found || !configuredDependency(session) {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
+			return clientError(ClientContractCleanup, ClientFieldRight)
+		}
+		return helperPacketDependencyUnaccepted(digest)
+	}
+	handleErr := session.Handle(ctx, extension)
+	if handleErr != nil || !validSSHContext(ctx) {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
+			return clientError(ClientContractCleanup, ClientFieldRight)
+		}
+		return helperPacketDependencyUnaccepted(digest)
+	}
+	if commitErr := client.commitHelperSSHAcceptedOwnership(extension); commitErr != nil {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
+			return clientError(ClientContractCleanup, ClientFieldRight)
+		}
+		return clientError(ClientContractOwnership, ClientFieldRight)
+	}
+	return nil
+}
+
+func (client *Client) commitHelperSSHAcceptedOwnership(extension ExtensionPacket) error {
+	if client == nil || client.state == nil {
+		return sshOwnershipError()
+	}
+	client.state.mu.Lock()
+	defer client.state.mu.Unlock()
+	if client.state.closeStarted {
+		return sshOwnershipError()
+	}
+	return commitExtensionPacketOwnership(extension)
+}
+
+func extensionPacketFromHelperSSH(packet HelperPacket, digest v2control.IdentityDigest) (ExtensionPacket, bool) {
+	accepted, ok := packet.sshAcceptedValue()
+	if !ok || accepted.ownership == nil {
+		return ExtensionPacket{}, false
+	}
+	return ExtensionPacket{
+		packetType: credentialprotocol.PacketTypeSSHAcceptedFD,
+		metadata: extensionPacketMetadata{
+			identityDigest:   digest.Bytes(),
+			revision:         accepted.Revision(),
+			bindingIndex:     accepted.BindingIndex(),
+			ordinal:          accepted.Ordinal(),
+			capabilitySHA256: accepted.CapabilitySHA256(),
+		},
+		ownership: accepted.ownership,
+	}, true
+}
+
+func closeHelperSSHAccepted(packet HelperPacket) error {
+	accepted, ok := packet.sshAcceptedValue()
+	if !ok || accepted.ownership == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sshConnectionCleanupTimeout)
+	defer cancel()
+	return closeOwnedExtensionPacket(ctx, ExtensionPacket{ownership: accepted.ownership})
+}
+
+func (client *Client) sshExtensionSession() (ExtensionSession, bool) {
+	if client == nil || client.state == nil {
+		return nil, false
+	}
+	client.state.mu.Lock()
+	defer client.state.mu.Unlock()
+	for _, opened := range client.state.opened {
+		for _, packetType := range opened.descriptor.HelperToAgentPacketTypes {
+			if packetType == credentialprotocol.PacketTypeSSHAcceptedFD && configuredDependency(opened.session) {
+				return opened.session, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func (client *Client) dispatchHelperPrepareFiles(

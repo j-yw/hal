@@ -161,6 +161,29 @@ func TestHelperSafeSendBodyWritersDoNotTouchDestinationOnInvalidValue(t *testing
 	}
 }
 
+func TestHelperSSHAcceptedFDDecodeRoundTripAndRejectsUnsafeShape(t *testing.T) {
+	digest := sha256.Sum256([]byte("relay capability"))
+	encoded := helperSafeSSHAcceptedVector(digest)
+	revision, binding, ordinal, gotDigest, err := DecodeHelperSSHAcceptedFDBody(encoded)
+	if err != nil || revision != 7 || binding != 2 || ordinal != 1 || gotDigest != digest {
+		t.Fatalf("DecodeHelperSSHAcceptedFDBody() = %d %d %d %x %v", revision, binding, ordinal, gotDigest, err)
+	}
+	if !bytes.Equal(encoded, helperSafeSSHAcceptedVector(digest)) {
+		t.Fatal("DecodeHelperSSHAcceptedFDBody mutated caller source")
+	}
+	if _, _, _, _, err := DecodeHelperSSHAcceptedFDBody(encoded[:len(encoded)-1]); !errors.Is(err, ErrHelperSafeSendBodyLength) {
+		t.Fatalf("short body error = %v, want ErrHelperSafeSendBodyLength", err)
+	}
+	if _, _, _, _, err := DecodeHelperSSHAcceptedFDBody(append(append([]byte(nil), encoded...), 0)); !errors.Is(err, ErrHelperSafeSendBodyLength) {
+		t.Fatalf("long body error = %v, want ErrHelperSafeSendBodyLength", err)
+	}
+	zero := append([]byte(nil), encoded...)
+	clear(zero)
+	if _, _, _, _, err := DecodeHelperSSHAcceptedFDBody(zero); !errors.Is(err, ErrHelperSafeSendBodyValue) {
+		t.Fatalf("zero body error = %v, want ErrHelperSafeSendBodyValue", err)
+	}
+}
+
 func TestHelperSSHAcceptedFDWriterConnectionOrdinalBounds(t *testing.T) {
 	digest := sha256.Sum256([]byte("relay capability"))
 	for _, tc := range []struct {
