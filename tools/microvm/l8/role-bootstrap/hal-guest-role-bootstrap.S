@@ -1,13 +1,15 @@
 # Freestanding static Linux-amd64 _start for hal-guest-role-bootstrap.
 # No libc, dynamic loader, Go runtime, allocator, TLS, signals, or threads.
-# Pointers address only this image's read-only tokens or bounded stack objects.
-# Child roles are selected only by the supervisor's closed argv token catalog.
-# PID1 mode is image init (argc < 2). After shared identity preflight each
-# role enters explicit remaining stages. PID1 attempts the exact D2
-# socket/bind/listen/dup3/close subset, then fail-closes. Live seccomp,
-# execve, clone3, and SCM_RIGHTS are unimplemented and exit 127.
+# Pointers address only this image's read-only tokens, compiled launch-base
+# filter, or bounded stack objects. Child roles are selected only by the
+# supervisor's closed argv token catalog. PID1 mode is image init (argc < 2).
+# After shared identity preflight each role enters explicit remaining stages.
+# PID1 attempts the exact D2 socket/bind/listen/dup3/close subset, then
+# prctl(NO_NEW_PRIVS) and seccomp(SECCOMP_SET_MODE_FILTER) for launch-base.
+# execve, clone3, and SCM_RIGHTS stay unimplemented and exit 127.
 
 	.section .note.GNU-stack,"",@progbits
+	.include "launch_base_filter.inc"
 	.section .text
 	.globl	_start
 	.type	_start, @function
@@ -58,7 +60,7 @@ _start:
 
 .Lpreflight:
 	# Shared identity preflight uses only the documented native syscall
-	# union. Live vsock/clone3/seccomp/execve paths are not completed.
+	# union. Live vsock/clone3/execve paths are not completed.
 	movq	$102, %rax		# getuid
 	syscall
 	movq	$107, %rax		# geteuid
@@ -168,9 +170,40 @@ _start:
 	cmpq	$3, %rbx
 	jb	.Lpid1_vsock_loop
 
-	# Remaining PID1 supervisor stages are unimplemented.
-	jmp	.Lpid1_unimpl_seccomp
-.Lpid1_unimpl_seccomp:
+	# Launch-base ancestor filter after a successful listen-table.
+	# prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) then
+	# seccomp(SECCOMP_SET_MODE_FILTER, 0, sock_fprog). The sock_fprog
+	# lives on this stack and points at image RO filter bytes. Negative
+	# results fail-closed. Remaining execve/clone3/SCM_RIGHTS stages
+	# stay unimplemented.
+.Lpid1_seccomp:
+	movq	$157, %rax		# prctl
+	movq	$38, %rdi		# PR_SET_NO_NEW_PRIVS
+	movq	$1, %rsi
+	xorl	%edx, %edx
+	xorl	%r10d, %r10d
+	xorl	%r8d, %r8d
+	syscall
+	testq	%rax, %rax
+	js	.Lfail_closed
+
+	subq	$16, %rsp
+	movq	$0, (%rsp)
+	movq	$0, 8(%rsp)
+	movzwq	launch_base_filter_len(%rip), %rax
+	movw	%ax, (%rsp)
+	leaq	launch_base_filter(%rip), %rax
+	movq	%rax, 8(%rsp)
+
+	movq	$317, %rax		# seccomp
+	movq	$1, %rdi		# SECCOMP_SET_MODE_FILTER
+	xorl	%esi, %esi
+	movq	%rsp, %rdx
+	syscall
+	testq	%rax, %rax
+	js	.Lfail_closed
+	addq	$16, %rsp
+
 	jmp	.Lpid1_unimpl_execve
 .Lpid1_unimpl_execve:
 	jmp	.Lpid1_unimpl_clone3

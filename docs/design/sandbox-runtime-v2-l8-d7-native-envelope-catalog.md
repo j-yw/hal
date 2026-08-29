@@ -30,12 +30,13 @@ role syscalls plus the Go runtime envelope plus this native envelope;
 other x/sys names stay Fatal.
 
 The native envelope names are the identity preflight plus the PID1
-listen-table subset: `getuid`, `geteuid`, `getgid`, `getegid`, `capget`,
-`prlimit64`, `socket`, `bind`, `listen`, `dup3`, `close`, and
+listen-table subset plus launch-base seccomp install: `getuid`,
+`geteuid`, `getgid`, `getegid`, `capget`, `prlimit64`, `socket`,
+`bind`, `listen`, `dup3`, `close`, `prctl`, `seccomp`, and
 `exit_group`. They are not extras for the native bootstrap binary.
-`clone3`, `execve`, and `seccomp` are not added: they stay unimplemented
-on `_start` and still exit 127 after listen. They are not reachable
-syscall sites.
+`clone3` and `execve` are not added: they stay unimplemented on
+`_start` and still exit 127 after listen-table and launch-base
+seccomp install. They are not reachable syscall sites.
 
 A reachable named syscall is extra only if it is not the pinned-direct
 `internal/runtime/syscall.Syscall6` `0f05` at offset 12 and is not listed
@@ -86,7 +87,7 @@ This slice does not:
 - issue HL8E or enable `generateEvidence` success;
 - generate `verified-pinned-callsites.hl8e` from a fixture;
 - add `clone` or `clone3` to the Go runtime envelope;
-- add `clone3`, `execve`, or `seccomp` to the native envelope;
+- add `clone3` or `execve` to the native envelope;
 - treat L5 images as L8 proof;
 - boot Firecracker or require KVM;
 - wire sandboxd, `hal run`, `hal auto`, or factory;

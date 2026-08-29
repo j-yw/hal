@@ -178,13 +178,19 @@ func TestL8D7ReachableGraphNamesNativeStartSyscalls(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("native extra syscalls = %v, want none after nativeEnvelope catalog bind", got)
 	}
-	for _, live := range []string{"clone3", "execve", "seccomp", "sendmsg", "recvmsg"} {
+	for _, live := range []string{"clone3", "execve", "sendmsg", "recvmsg"} {
 		if _, ok := seen[live]; ok {
 			t.Fatalf("native reachable syscalls claimed unimplemented live syscall %s", live)
 		}
 		if containsString(got, live) {
 			t.Fatalf("native extra syscalls = %v claimed unimplemented live syscall %s", got, live)
 		}
+	}
+	if _, ok := seen["prctl"]; !ok {
+		t.Fatal("native reachable syscalls missing prctl")
+	}
+	if _, ok := seen["seccomp"]; !ok {
+		t.Fatal("native reachable syscalls missing seccomp")
 	}
 	if err := proveBoundedReachableSyscallGraph([]inspectedGuestBinary{inspected}); err != nil {
 		t.Fatalf("native bootstrap graph after nativeEnvelope bind error = %v", err)
@@ -397,10 +403,13 @@ func TestL8D7EnvelopesOmitProcessCreationAndUnimplementedLiveSyscalls(t *testing
 			t.Fatalf("nativeEnvelope includes process-creation syscall %s", name)
 		}
 	}
-	for _, name := range []string{"clone3", "execve", "seccomp", "sendmsg", "recvmsg"} {
+	for _, name := range []string{"clone3", "execve", "sendmsg", "recvmsg"} {
 		if containsString(exactNativeEnvelope(), name) {
 			t.Fatalf("nativeEnvelope includes unimplemented live syscall %s", name)
 		}
+	}
+	if !containsString(exactNativeEnvelope(), "prctl") || !containsString(exactNativeEnvelope(), "seccomp") {
+		t.Fatal("nativeEnvelope omitted launch-base seccomp install syscalls")
 	}
 	if !containsString(exactRuntimeEnvelope(), "getppid") {
 		t.Fatal("runtimeEnvelope omitted ordinary main.main extra getppid")

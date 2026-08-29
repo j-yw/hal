@@ -176,6 +176,8 @@ func exactNativeEnvelope() []string {
 		"listen",
 		"dup3",
 		"close",
+		"prctl",
+		"seccomp",
 		"exit_group",
 	}
 }

@@ -34,9 +34,9 @@ and `runtime.*` is not a target set. Pinned-direct allow is only
 `internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Named Go
 PID1 extras are explicit D7 `runtimeEnvelope` / launch-base origin-3
 rows, not prefix membership. Named native `_start` identity-preflight
-plus PID1 listen-table extras are explicit D7 `nativeEnvelope` /
-launch-bootstrap origin-1 rows, used only for the native bootstrap
-binary. Prefix is not authority. Reachable
+plus PID1 listen-table and launch-base seccomp extras are explicit D7
+`nativeEnvelope` / launch-bootstrap origin-1 rows, used only for the
+native bootstrap binary. Prefix is not authority. Reachable
 `syscall.rawSyscallNoError.abi0` and `syscall.rawVforkSyscall.abi0`
 CALL/JMP sites recover the linux/amd64 trap/number from the direct
 caller's `MOVQ $imm` into the trap slot or AX; catalog-listed names

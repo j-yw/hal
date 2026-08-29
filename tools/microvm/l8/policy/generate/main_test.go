@@ -217,10 +217,10 @@ func TestL8D7NativeEnvelopeLockIsExactNamedNativeStartCatalog(t *testing.T) {
 	if !equalStringSlices(document.NativeEnvelope, want) {
 		t.Fatalf("nativeEnvelope = %v, want %v", document.NativeEnvelope, want)
 	}
-	if len(want) != 12 || want[0] != "getuid" || want[6] != "socket" || want[len(want)-1] != "exit_group" {
+	if len(want) != 14 || want[0] != "getuid" || want[6] != "socket" || want[11] != "prctl" || want[12] != "seccomp" || want[len(want)-1] != "exit_group" {
 		t.Fatalf("exactNativeEnvelope() = %v", want)
 	}
-	for _, name := range []string{"clone", "clone3", "execve", "seccomp"} {
+	for _, name := range []string{"clone", "clone3", "execve"} {
 		for _, got := range want {
 			if got == name {
 				t.Fatalf("exactNativeEnvelope() includes forbidden syscall %s: %v", name, want)

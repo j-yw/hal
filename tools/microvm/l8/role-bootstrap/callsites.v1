@@ -1,5 +1,5 @@
 format=hal-l8-native-callsite-inventory-v1
-count=12
+count=14
 0=getuid:102:shared:0f05
 1=geteuid:107:shared:0f05
 2=getgid:104:shared:0f05
@@ -11,4 +11,6 @@ count=12
 8=listen:50:pid1:0f05
 9=dup3:292:pid1:0f05
 10=close:3:pid1:0f05
-11=exit_group:231:shared:0f05
+11=prctl:157:pid1:0f05
+12=seccomp:317:pid1:0f05
+13=exit_group:231:shared:0f05

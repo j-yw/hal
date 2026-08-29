@@ -10,9 +10,10 @@ fi
 
 out_dir="$1"
 mkdir -p -- "$out_dir"
+out_dir="$(cd -- "$out_dir" && pwd)"
 src_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-as --64 -o "$out_dir/hal-guest-role-bootstrap.o" "$src_dir/hal-guest-role-bootstrap.S"
+(cd -- "$src_dir" && as --64 -I "$src_dir" -o "$out_dir/hal-guest-role-bootstrap.o" hal-guest-role-bootstrap.S)
 ld -m elf_x86_64 -static -nostdlib --no-dynamic-linker -z noexecstack -e _start \
   -o "$out_dir/hal-guest-role-bootstrap" \
   "$out_dir/hal-guest-role-bootstrap.o"
