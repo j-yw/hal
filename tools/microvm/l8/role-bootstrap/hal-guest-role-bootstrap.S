@@ -8,9 +8,14 @@
 # explicit remaining stages. PID1 attempts the exact D2 socket/bind/listen/
 # dup3/close subset, then prctl(NO_NEW_PRIVS) and seccomp(SECCOMP_SET_MODE_FILTER)
 # for launch-base, then exact clone3 plus execveat(AT_EMPTY_PATH) of
-# image-init pinned executable FDs 5 (monitor) and 6 (shim). Controller
-# and agent have no PID1-held sealed executable FD in that plan; those
-# children fail-closed without inventing a live open of host paths.
+# image-init pinned executable FDs 5 (monitor) and 6 (shim). The frozen
+# PID1 descriptor plan does not name sealed executable FDs for controller
+# or agent: FD 3 is the controller supervisor endpoint and FD 4 is the
+# delegated cgroup-v2 root, not the same kind of pinned FD as monitor=5
+# and shim=6. rbx 0 (controller) and rbx 1 (agent) therefore FAIL CLOSED
+# before execveat as the remaining admission gap. Controller/agent have
+# no admitted sealed executable FD; do not invent a live open of
+# /usr/bin/hal-guest-* and do not allow-all execveat.
 # Negative syscall results and absent FDs fail-closed. SCM_RIGHTS
 # monitor-ready is an exact PID1 recvmsg of two rights on the recorded
 # transient bootstrap peer. Required FDs are absent on the default fake
@@ -269,9 +274,11 @@ _start:
 	# PID1-held pinned executable FD. Classic seccomp can see dirfd and
 	# AT_EMPTY_PATH (0x1000); it cannot see pathname bytes. The image-init
 	# plan names only FD 5 (mount-monitor) and FD 6 (workload-shim).
-	# Controller/agent have no admitted sealed executable FD; do not
-	# invent a live open of /usr/bin/hal-guest-*. Absent FDs and
-	# negative results fail-closed with exit 127.
+	# rbx 0 controller and rbx 1 agent have no admitted sealed executable
+	# FD; that remaining admission gap FAIL CLOSED without inventing a
+	# live open of /usr/bin/hal-guest-* and without allow-all execveat.
+	# Controller/agent have no admitted sealed executable FD. Absent FDs
+	# and negative results fail-closed with exit 127.
 	cmpq	$2, %rbx
 	jb	.Lfail_closed
 	movq	$5, %rdi		# monitor pinned executable FD

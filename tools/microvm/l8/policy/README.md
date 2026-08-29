@@ -49,6 +49,10 @@ the Go runtime envelope. Native `_start` catalogs `clone3`, `execveat`, and
 it does not allow unrestricted `execve`/`execveat` or `sendmsg`/`recvmsg`
 by catalog name: classic seccomp cannot see pathname bytes or SCM_RIGHTS
 fd contents. Pathname `execve` is no longer a native `_start` site.
+Controller and agent have no PID1-held sealed executable FD in the frozen
+image-init plan; rbx 0/1 clone3 children FAIL CLOSED before execveat as
+the remaining admission gap. Launch-base does not extend ScalarOneOf
+beyond `{5, 6}` and does not allow-all execveat.
 `runtime.reviewerAuthority` is extra if reachable with an unlisted
 named syscall. A singular ELF that happens to embed HL8Q
 and a generic Go runtime syscall symbol does not prove its role identity

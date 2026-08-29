@@ -296,7 +296,11 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesAreExactAndFailClosed(t *testing.T) 
 			t.Fatalf("launch-base clone3 %s Action() = %v, want allow for pointer/size template (flags %#x cgroup %d live in clone_args)", op.name, got, op.flags, op.cgroup)
 		}
 	}
-	for _, op := range launchBaseExecveatNativeOperations() {
+	execveatOps := launchBaseExecveatNativeOperations()
+	if len(execveatOps) != 2 || execveatOps[0].name != "monitor" || execveatOps[0].fd != pid1MonitorExecutableFD || execveatOps[1].name != "shim" || execveatOps[1].fd != pid1ShimExecutableFD {
+		t.Fatalf("launch-base execveat native operations = %#v, want only monitor FD 5 and shim FD 6", execveatOps)
+	}
+	for _, op := range execveatOps {
 		exact := [6]uint64{op.fd, 1, 0, 0, atEmptyPath}
 		if got := compiled.Action(auditArch, execveatSyscallNumber, exact); got != syscallpolicy.ActionAllow {
 			t.Fatalf("launch-base execveat %s Action() = %v, want allow for FD %d AT_EMPTY_PATH", op.name, got, op.fd)
@@ -321,6 +325,8 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesAreExactAndFailClosed(t *testing.T) 
 		{name: "execve nonempty envp", nr: 59, args: [6]uint64{1, 1, 1}, want: syscallpolicy.ActionKillProcess},
 		{name: "execveat empty", nr: execveatSyscallNumber, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "execveat catalog name only", nr: execveatSyscallNumber, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execveat controller candidate fd 3", nr: execveatSyscallNumber, args: [6]uint64{3, 1, 0, 0, atEmptyPath}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execveat agent candidate fd 4", nr: execveatSyscallNumber, args: [6]uint64{4, 1, 0, 0, atEmptyPath}, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "execveat wrong fd 16", nr: execveatSyscallNumber, args: [6]uint64{16, 1, 0, 0, atEmptyPath}, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "execveat missing AT_EMPTY_PATH", nr: execveatSyscallNumber, args: [6]uint64{5, 1, 0, 0, 0}, want: syscallpolicy.ActionErrnoEPERM},
 		{name: "execveat nonempty envp", nr: execveatSyscallNumber, args: [6]uint64{5, 1, 0, 1, atEmptyPath}, want: syscallpolicy.ActionErrnoEPERM},

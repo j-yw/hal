@@ -227,6 +227,10 @@ func validateNativeSource(encoded []byte) error {
 		"movq\t%r9, 96(%rsp)",
 		"movq\t$0, 104(%rsp)",
 		"movq\t$0x1000, %r8",
+		"cmpq\t$2, %rbx",
+		"remaining admission gap",
+		"Controller/agent have no admitted sealed executable FD",
+		"do not allow-all execveat",
 		"empty_path",
 		"launch_base_filter",
 	} {
@@ -236,14 +240,18 @@ func validateNativeSource(encoded []byte) error {
 	}
 	for _, forbidden := range []string{
 		"__libc", "main.main", "runtime.main", "dlopen", "getenv", "malloc",
-		"movq\t$59, %rax", // pathname execve
-		"movq\t$46, %rax", // sendmsg
+		"movq\t$59, %rax",    // pathname execve
+		"movq\t$46, %rax",    // sendmsg
 		"movq\t$0, 96(%rsp)", // argc zero for admitted Go children
 		"movl\t$0, %edi",
 		"/usr/bin/hal-guest-credential-helper",
 		"/usr/bin/hal-guest-agent",
 		"/usr/bin/hal-guest-mount-monitor",
 		"/usr/bin/hal-guest-workload-shim",
+		"movq\t$3, %rdi",
+		"movq\t$4, %rdi",
+		"leaq\ttoken_controller(%rip), %r9",
+		"leaq\ttoken_agent(%rip), %r9",
 	} {
 		if bytes.Contains(encoded, []byte(forbidden)) {
 			return fmt.Errorf("native source contains forbidden marker %q", forbidden)
