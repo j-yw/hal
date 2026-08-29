@@ -42,7 +42,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x0000003f
+	.long	0x00000043
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -50,7 +50,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x0000004b
+	.long	0x0000004f
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -58,7 +58,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000057
+	.long	0x0000005b
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -66,7 +66,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000056
+	.long	0x0000005a
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -74,7 +74,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000062
+	.long	0x00000066
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -82,7 +82,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x0000006e
+	.long	0x00000072
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -90,7 +90,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x0000007a
+	.long	0x0000007e
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -98,7 +98,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000086
+	.long	0x0000008a
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -106,7 +106,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000092
+	.long	0x00000096
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -114,7 +114,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x0000009e
+	.long	0x000000a2
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -122,7 +122,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000aa
+	.long	0x000000ae
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -130,7 +130,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000b6
+	.long	0x000000ba
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -138,7 +138,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000b5
+	.long	0x000000b9
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -146,7 +146,15 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000b4
+	.long	0x000000b8
+	.short	0x0015
+	.byte	0
+	.byte	1
+	.long	0x0000003b
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x000000b7
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -154,7 +162,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000b3
+	.long	0x000000b6
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -162,7 +170,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000b2
+	.long	0x000000b5
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -170,7 +178,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000b1
+	.long	0x000000b4
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -178,7 +186,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000b0
+	.long	0x000000b3
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -186,7 +194,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000af
+	.long	0x000000b2
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -194,7 +202,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000bb
+	.long	0x000000be
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -202,7 +210,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000ba
+	.long	0x000000bd
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -210,7 +218,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000b9
+	.long	0x000000bc
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -218,7 +226,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000c5
+	.long	0x000000c8
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -226,7 +234,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000d1
+	.long	0x000000d4
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -234,7 +242,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000dd
+	.long	0x000000e0
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -242,7 +250,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000e9
+	.long	0x000000ec
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -250,7 +258,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x000000f5
+	.long	0x000000f8
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -258,7 +266,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000101
+	.long	0x00000104
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -266,7 +274,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x0000010d
+	.long	0x00000110
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -274,7 +282,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000119
+	.long	0x0000011c
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -282,7 +290,7 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000118
+	.long	0x0000011b
 	.short	0x0015
 	.byte	0
 	.byte	1
@@ -290,7 +298,15 @@ launch_base_filter:
 	.short	0x0005
 	.byte	0
 	.byte	0
-	.long	0x00000117
+	.long	0x0000011a
+	.short	0x0015
+	.byte	0
+	.byte	1
+	.long	0x000001b3
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000119
 	.short	0x0006
 	.byte	0
 	.byte	0
@@ -887,66 +903,6 @@ launch_base_filter:
 	.byte	0
 	.byte	0
 	.long	0x00050001
-	.short	0x0000
-	.byte	0
-	.byte	0
-	.long	0x00000000
-	.short	0x0002
-	.byte	0
-	.byte	0
-	.long	0x00000000
-	.short	0x0000
-	.byte	0
-	.byte	0
-	.long	0x00000001
-	.short	0x0002
-	.byte	0
-	.byte	0
-	.long	0x00000001
-	.short	0x0060
-	.byte	0
-	.byte	0
-	.long	0x00000001
-	.short	0x0015
-	.byte	0
-	.byte	1
-	.long	0x00000001
-	.short	0x0005
-	.byte	0
-	.byte	0
-	.long	0x00000006
-	.short	0x0060
-	.byte	0
-	.byte	0
-	.long	0x00000000
-	.short	0x0015
-	.byte	0
-	.byte	1
-	.long	0x00000001
-	.short	0x0005
-	.byte	0
-	.byte	0
-	.long	0x00000001
-	.short	0x0005
-	.byte	0
-	.byte	0
-	.long	0x00000001
-	.short	0x0006
-	.byte	0
-	.byte	0
-	.long	0x80000000
-	.short	0x0006
-	.byte	0
-	.byte	0
-	.long	0x00050001
-	.short	0x0006
-	.byte	0
-	.byte	0
-	.long	0x7fff0000
-	.short	0x0006
-	.byte	0
-	.byte	0
-	.long	0x00050001
 	.short	0x0006
 	.byte	0
 	.byte	0
@@ -1007,6 +963,14 @@ launch_base_filter:
 	.byte	0
 	.byte	0
 	.long	0x7fff0000
+	.short	0x0006
+	.byte	0
+	.byte	0
+	.long	0x00050001
+	.short	0x0006
+	.byte	0
+	.byte	0
+	.long	0x00050001
 	.short	0x0000
 	.byte	0
 	.byte	0
@@ -1399,6 +1363,66 @@ launch_base_filter:
 	.byte	0
 	.byte	0
 	.long	0x7fff0000
+	.short	0x0000
+	.byte	0
+	.byte	0
+	.long	0x00000000
+	.short	0x0002
+	.byte	0
+	.byte	0
+	.long	0x00000000
+	.short	0x0000
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0002
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0060
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0015
+	.byte	0
+	.byte	1
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000006
+	.short	0x0060
+	.byte	0
+	.byte	0
+	.long	0x00000000
+	.short	0x0015
+	.byte	0
+	.byte	1
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0005
+	.byte	0
+	.byte	0
+	.long	0x00000001
+	.short	0x0006
+	.byte	0
+	.byte	0
+	.long	0x80000000
+	.short	0x0006
+	.byte	0
+	.byte	0
+	.long	0x00050001
+	.short	0x0006
+	.byte	0
+	.byte	0
+	.long	0x7fff0000
+	.short	0x0006
+	.byte	0
+	.byte	0
+	.long	0x00050001
 	.short	0x0006
 	.byte	0
 	.byte	0
@@ -1414,4 +1438,4 @@ launch_base_filter:
 	.size	launch_base_filter, .-launch_base_filter
 	.type	launch_base_filter_len, @object
 launch_base_filter_len:
-	.short	352
+	.short	358

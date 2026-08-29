@@ -147,7 +147,9 @@ func exactNativeCallsites() []nativeCallsite {
 		{index: 10, name: "close", number: 3, scope: "pid1", insnHex: "0f05"},
 		{index: 11, name: "prctl", number: 157, scope: "pid1", insnHex: "0f05"},
 		{index: 12, name: "seccomp", number: 317, scope: "pid1", insnHex: "0f05"},
-		{index: 13, name: "exit_group", number: 231, scope: "shared", insnHex: "0f05"},
+		{index: 13, name: "clone3", number: 435, scope: "pid1", insnHex: "0f05"},
+		{index: 14, name: "execve", number: 59, scope: "pid1", insnHex: "0f05"},
+		{index: 15, name: "exit_group", number: 231, scope: "shared", insnHex: "0f05"},
 	}
 }
 
@@ -196,8 +198,8 @@ func validateNativeSource(encoded []byte) error {
 	for _, required := range []string{
 		".Lpid1_vsock:",
 		".Lpid1_seccomp:",
-		".Lpid1_unimpl_execve:",
-		".Lpid1_unimpl_clone3:",
+		".Lpid1_clone3:",
+		".Lpid1_execve:",
 		".Lpid1_unimpl_scm_rights:",
 		".Lcontroller_unimpl:",
 		".Lagent_unimpl:",
@@ -206,6 +208,18 @@ func validateNativeSource(encoded []byte) error {
 		".Lfail_closed:",
 		"movq\t$157, %rax",
 		"movq\t$317, %rax",
+		"movq\t$435, %rax",
+		"movq\t$59, %rax",
+		"movq\t$88, %rsi",
+		"movq\t$0x5100, %r13",
+		"movq\t$0x25100, %r13",
+		"movq\t$0x200005100, %r13",
+		"movq\t$9, 80(%rsp)",
+		"movq\t$17, 32(%rsp)",
+		"/usr/bin/hal-guest-credential-helper",
+		"/usr/bin/hal-guest-agent",
+		"/usr/bin/hal-guest-mount-monitor",
+		"/usr/bin/hal-guest-workload-shim",
 		"launch_base_filter",
 	} {
 		if !bytes.Contains(encoded, []byte(required)) {
@@ -214,11 +228,10 @@ func validateNativeSource(encoded []byte) error {
 	}
 	for _, forbidden := range []string{
 		"__libc", "main.main", "runtime.main", "dlopen", "getenv", "malloc",
-		"movq\t$59, %rax",  // execve
 		"movq\t$322, %rax", // execveat
-		"movq\t$435, %rax", // clone3
 		"movq\t$46, %rax",  // sendmsg
 		"movq\t$47, %rax",  // recvmsg
+		"movl\t$0, %edi",
 	} {
 		if bytes.Contains(encoded, []byte(forbidden)) {
 			return fmt.Errorf("native source contains forbidden marker %q", forbidden)

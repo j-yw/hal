@@ -178,7 +178,7 @@ func TestL8D7ReachableGraphNamesNativeStartSyscalls(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("native extra syscalls = %v, want none after nativeEnvelope catalog bind", got)
 	}
-	for _, live := range []string{"clone3", "execve", "sendmsg", "recvmsg"} {
+	for _, live := range []string{"sendmsg", "recvmsg", "execveat"} {
 		if _, ok := seen[live]; ok {
 			t.Fatalf("native reachable syscalls claimed unimplemented live syscall %s", live)
 		}
@@ -191,6 +191,12 @@ func TestL8D7ReachableGraphNamesNativeStartSyscalls(t *testing.T) {
 	}
 	if _, ok := seen["seccomp"]; !ok {
 		t.Fatal("native reachable syscalls missing seccomp")
+	}
+	if _, ok := seen["clone3"]; !ok {
+		t.Fatal("native reachable syscalls missing clone3")
+	}
+	if _, ok := seen["execve"]; !ok {
+		t.Fatal("native reachable syscalls missing execve")
 	}
 	if err := proveBoundedReachableSyscallGraph([]inspectedGuestBinary{inspected}); err != nil {
 		t.Fatalf("native bootstrap graph after nativeEnvelope bind error = %v", err)
@@ -367,7 +373,9 @@ func TestL8D7NativeEnvelopeCatalogClassifiesNamedSyscallsWithoutPrefixAuthority(
 	listed := decodedSyscallSite{symbol: nativeBootstrapSymbol, textOffset: 16, kind: syscallKindSyscall, numberKnown: true, number: 102}
 	listen := decodedSyscallSite{symbol: nativeBootstrapSymbol, textOffset: 32, kind: syscallKindSyscall, numberKnown: true, number: 50}
 	unlisted := decodedSyscallSite{symbol: "unix.reviewerAuthority", textOffset: 48, kind: syscallKindSyscall, numberKnown: true, number: 56}
-	unimplemented := decodedSyscallSite{symbol: nativeBootstrapSymbol, textOffset: 64, kind: syscallKindSyscall, numberKnown: true, number: 435}
+	clone3 := decodedSyscallSite{symbol: nativeBootstrapSymbol, textOffset: 64, kind: syscallKindSyscall, numberKnown: true, number: 435}
+	execve := decodedSyscallSite{symbol: nativeBootstrapSymbol, textOffset: 72, kind: syscallKindSyscall, numberKnown: true, number: 59}
+	unimplemented := decodedSyscallSite{symbol: nativeBootstrapSymbol, textOffset: 80, kind: syscallKindSyscall, numberKnown: true, number: 46}
 	if extra := extraReachableSyscallName(binary, listed); extra != "" {
 		t.Fatalf("catalog-listed native getuid treated as extra: %q", extra)
 	}
@@ -377,8 +385,14 @@ func TestL8D7NativeEnvelopeCatalogClassifiesNamedSyscallsWithoutPrefixAuthority(
 	if extra := extraReachableSyscallName(binary, unlisted); extra != "clone" {
 		t.Fatalf("unlisted named syscall extra = %q, want clone", extra)
 	}
-	if extra := extraReachableSyscallName(binary, unimplemented); extra != "clone3" {
-		t.Fatalf("unimplemented clone3 extra = %q, want clone3", extra)
+	if extra := extraReachableSyscallName(binary, clone3); extra != "" {
+		t.Fatalf("catalog-listed native clone3 treated as extra: %q", extra)
+	}
+	if extra := extraReachableSyscallName(binary, execve); extra != "" {
+		t.Fatalf("catalog-listed native execve treated as extra: %q", extra)
+	}
+	if extra := extraReachableSyscallName(binary, unimplemented); extra != "sendmsg" {
+		t.Fatalf("unimplemented sendmsg extra = %q, want sendmsg", extra)
 	}
 	goPID1 := inspectedGuestBinary{name: guestInitBinaryName}
 	if extra := extraReachableSyscallName(goPID1, listed); extra != "getuid" {
@@ -399,17 +413,20 @@ func TestL8D7EnvelopesOmitProcessCreationAndUnimplementedLiveSyscalls(t *testing
 		if containsString(exactRuntimeEnvelope(), name) {
 			t.Fatalf("runtimeEnvelope includes process-creation syscall %s", name)
 		}
-		if containsString(exactNativeEnvelope(), name) {
-			t.Fatalf("nativeEnvelope includes process-creation syscall %s", name)
-		}
 	}
-	for _, name := range []string{"clone3", "execve", "sendmsg", "recvmsg"} {
+	if containsString(exactNativeEnvelope(), "clone") {
+		t.Fatal("nativeEnvelope includes clone; native PID1 catalogs clone3 only")
+	}
+	for _, name := range []string{"sendmsg", "recvmsg", "execveat"} {
 		if containsString(exactNativeEnvelope(), name) {
 			t.Fatalf("nativeEnvelope includes unimplemented live syscall %s", name)
 		}
 	}
 	if !containsString(exactNativeEnvelope(), "prctl") || !containsString(exactNativeEnvelope(), "seccomp") {
 		t.Fatal("nativeEnvelope omitted launch-base seccomp install syscalls")
+	}
+	if !containsString(exactNativeEnvelope(), "clone3") || !containsString(exactNativeEnvelope(), "execve") {
+		t.Fatal("nativeEnvelope omitted PID1 clone3 and execve")
 	}
 	if !containsString(exactRuntimeEnvelope(), "getppid") {
 		t.Fatal("runtimeEnvelope omitted ordinary main.main extra getppid")

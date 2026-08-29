@@ -178,6 +178,8 @@ func exactNativeEnvelope() []string {
 		"close",
 		"prctl",
 		"seccomp",
+		"clone3",
+		"execve",
 		"exit_group",
 	}
 }
