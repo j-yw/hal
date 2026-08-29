@@ -170,8 +170,13 @@ func TestL8D7EvidenceIssuanceRejectsCompleteRolesWithoutBoundedCallGraph(t *test
 		t.Fatalf("complete-role error = %v, want launch-base extras from %s", err, goRoleEntrySymbol)
 	}
 	for _, name := range []string{"unknown:syscall.rawSyscallNoError.abi0", "unknown:syscall.rawVforkSyscall.abi0"} {
+		if strings.Contains(message, name) {
+			t.Fatalf("complete-role error = %v still includes unnumbered trampoline %s", err, name)
+		}
+	}
+	for _, name := range []string{"clone", "clone3", "getppid"} {
 		if !strings.Contains(message, name) {
-			t.Fatalf("complete-role error = %v, want unknown trampoline %s", err, name)
+			t.Fatalf("complete-role error = %v, want named trampoline syscall %s", err, name)
 		}
 	}
 	for _, name := range []string{"futex", "mmap", "clock_gettime"} {

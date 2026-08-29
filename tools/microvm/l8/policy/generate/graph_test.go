@@ -80,7 +80,7 @@ func TestL8D7ReachableGraphIncludesEveryRelativeBranchTarget(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fn := executableFunction{name: goRoleEntrySymbol, start: 0x1000, end: 0x1000 + uint64(len(test.code))}
-			_, targets, _, err := decodeFunctionSyscallGraph(fn, test.code, 0)
+			_, targets, _, _, err := decodeFunctionSyscallGraph(fn, test.code, 0)
 			if err != nil {
 				t.Fatalf("decode relative branch: %v", err)
 			}
@@ -94,7 +94,7 @@ func TestL8D7ReachableGraphIncludesEveryRelativeBranchTarget(t *testing.T) {
 func TestL8D7ReachableGraphRejectsTruncatedControlTransfers(t *testing.T) {
 	for _, code := range [][]byte{{0xe8}, {0xe9}, {0xeb}, {0x75}} {
 		fn := executableFunction{name: goRoleEntrySymbol, start: 0x1000, end: 0x1000 + uint64(len(code))}
-		if _, _, _, err := decodeFunctionSyscallGraph(fn, code, 0); err == nil {
+		if _, _, _, _, err := decodeFunctionSyscallGraph(fn, code, 0); err == nil {
 			t.Fatalf("truncated control transfer %x was accepted as harmless padding", code)
 		}
 	}
@@ -214,14 +214,18 @@ func TestL8D7ReachableGraphNamesGoLaunchBaseExtraSyscalls(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"unknown:syscall.rawSyscallNoError.abi0", "unknown:syscall.rawVforkSyscall.abi0"} {
-		if !containsString(extras, name) {
-			t.Fatalf("launch-base extras = %v, want unknown trampoline %s", extras, name)
+		if containsString(extras, name) {
+			t.Fatalf("launch-base extras = %v still include unnumbered trampoline %s", extras, name)
 		}
+	}
+	wantExtras := []string{"clone", "clone3", "getppid"}
+	if strings.Join(extras, ",") != strings.Join(wantExtras, ",") {
+		t.Fatalf("launch-base extras = %v, want named trampoline syscalls %v", extras, wantExtras)
 	}
 	if err := proveBoundedReachableSyscallGraph([]inspectedGuestBinary{inspected}); err == nil {
 		t.Fatal("launch-base graph with extra reachable syscalls was accepted")
-	} else if !strings.Contains(err.Error(), "reachable extra syscalls from "+goRoleEntrySymbol+":") || !strings.Contains(err.Error(), "unknown:syscall.rawVforkSyscall.abi0") {
-		t.Fatalf("launch-base graph error = %v, want unknown trampoline extras from %s", err, goRoleEntrySymbol)
+	} else if !strings.Contains(err.Error(), "reachable extra syscalls from "+goRoleEntrySymbol+":") || !strings.Contains(err.Error(), "clone") {
+		t.Fatalf("launch-base graph error = %v, want named trampoline extras from %s", err, goRoleEntrySymbol)
 	}
 }
 
@@ -243,6 +247,7 @@ func TestL8D7RuntimeEnvelopeCatalogClassifiesNamedSyscallsWithoutPrefixAuthority
 	listed := decodedSyscallSite{symbol: "runtime.futex", textOffset: 32, kind: syscallKindSyscall, numberKnown: true, number: 202}
 	unlisted := decodedSyscallSite{symbol: "runtime.reviewerAuthority", textOffset: 48, kind: syscallKindSyscall, numberKnown: true, number: 56}
 	trampoline := decodedSyscallSite{symbol: "syscall.rawSyscallNoError.abi0", textOffset: 64, kind: syscallKindSyscall}
+	namedTrampoline := decodedSyscallSite{symbol: "syscall.rawSyscallNoError.abi0", textOffset: 72, kind: syscallKindSyscall, numberKnown: true, number: 39}
 	if extra := extraReachableSyscallName(binary, pinned); extra != "" {
 		t.Fatalf("pinned-direct extra = %q", extra)
 	}
@@ -254,6 +259,9 @@ func TestL8D7RuntimeEnvelopeCatalogClassifiesNamedSyscallsWithoutPrefixAuthority
 	}
 	if extra := extraReachableSyscallName(binary, trampoline); extra != "unknown:syscall.rawSyscallNoError.abi0" {
 		t.Fatalf("unknown trampoline extra = %q", extra)
+	}
+	if extra := extraReachableSyscallName(binary, namedTrampoline); extra != "" {
+		t.Fatalf("catalog-listed trampoline getpid treated as extra: %q", extra)
 	}
 	generic := binary
 	generic.name = "inspect-graph"
@@ -310,6 +318,136 @@ func TestL8D7GenericGoBinaryKeepsSingularEvidenceRejection(t *testing.T) {
 	}
 	if _, err := generateEvidence(root, binaryPath, mustGenerate(t, root)); !errors.Is(err, errEvidenceInputsUnavailable) {
 		t.Fatalf("generateEvidence(generic Go binary) error = %v", err)
+	}
+}
+
+func TestL8D7SyscallTrampolineRecoversTrapSlotImmediateFromDirectCall(t *testing.T) {
+	code := []byte{
+		0x48, 0xc7, 0x04, 0x24, 0x27, 0x00, 0x00, 0x00,
+		0x44, 0x0f, 0x11, 0x7c, 0x24, 0x08,
+		0x48, 0xc7, 0x44, 0x24, 0x18, 0x00, 0x00, 0x00, 0x00,
+		0xe8, 0x03, 0x00, 0x00, 0x00,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	_, targets, transfers, _, err := decodeFunctionSyscallGraph(fn, code, 32)
+	if err != nil {
+		t.Fatalf("decode trampoline caller: %v", err)
+	}
+	if len(targets) != 1 || len(transfers) != 1 {
+		t.Fatalf("trampoline caller transfers = %d targets = %#x", len(transfers), targets)
+	}
+	if !transfers[0].trapSlotKnown || transfers[0].trapSlot != 39 {
+		t.Fatalf("trap-slot immediate = known:%v nr:%d, want 39", transfers[0].trapSlotKnown, transfers[0].trapSlot)
+	}
+	functions := []executableFunction{
+		fn,
+		{name: syscallRawSyscallNoErrorABI0, start: transfers[0].target, end: transfers[0].target + 16},
+	}
+	sites := trampolineSyscallSites(transfers, functions)
+	if len(sites) != 1 || sites[0].symbol != syscallRawSyscallNoErrorABI0 || !sites[0].numberKnown || sites[0].number != 39 {
+		t.Fatalf("classified trampoline site = %+v", sites)
+	}
+	launchBase := inspectedGuestBinary{name: guestInitBinaryName}
+	if extra := extraReachableSyscallName(launchBase, sites[0]); extra != "" {
+		t.Fatalf("catalog-listed trampoline getpid extra = %q", extra)
+	}
+}
+
+func TestL8D7SyscallTrampolineKeepsUnknownWhenTrapNumberIsUnproven(t *testing.T) {
+	code := []byte{0xe8, 0x04, 0x00, 0x00, 0x00}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	_, _, transfers, _, err := decodeFunctionSyscallGraph(fn, code, 0)
+	if err != nil {
+		t.Fatalf("decode unproven trampoline caller: %v", err)
+	}
+	functions := []executableFunction{
+		fn,
+		{name: syscallRawVforkSyscallABI0, start: transfers[0].target, end: transfers[0].target + 16},
+	}
+	sites := trampolineSyscallSites(transfers, functions)
+	if len(sites) != 1 || sites[0].numberKnown {
+		t.Fatalf("unproven trampoline site = %+v", sites)
+	}
+	if extra := extraReachableSyscallName(inspectedGuestBinary{name: guestInitBinaryName}, sites[0]); extra != "unknown:syscall.rawVforkSyscall.abi0" {
+		t.Fatalf("unproven trampoline extra = %q", extra)
+	}
+}
+
+func TestL8D7SyscallTrampolinePrefersTrapSlotOverLeftoverAX(t *testing.T) {
+	code := []byte{
+		0x48, 0xc7, 0xc0, 0x38, 0x00, 0x00, 0x00,
+		0x48, 0xc7, 0x04, 0x24, 0xb3, 0x01, 0x00, 0x00,
+		0xe8, 0x04, 0x00, 0x00, 0x00,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	_, _, transfers, _, err := decodeFunctionSyscallGraph(fn, code, 0)
+	if err != nil {
+		t.Fatalf("decode mixed trap/AX caller: %v", err)
+	}
+	if len(transfers) != 1 || !transfers[0].trapSlotKnown || transfers[0].trapSlot != 435 {
+		t.Fatalf("trap-slot/AX transfer = %+v, want clone3 435", transfers)
+	}
+	number, ok := provenTrampolineNumber(transfers[0])
+	if !ok || number != 435 {
+		t.Fatalf("proven trampoline number = (%d, %v), want clone3", number, ok)
+	}
+}
+
+func TestL8D7SyscallTrampolineUsesAXWhenTrapSlotIsAbsent(t *testing.T) {
+	code := []byte{
+		0xb8, 0x38, 0x00, 0x00, 0x00,
+		0xe8, 0x04, 0x00, 0x00, 0x00,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	_, _, transfers, _, err := decodeFunctionSyscallGraph(fn, code, 0)
+	if err != nil {
+		t.Fatalf("decode AX trampoline caller: %v", err)
+	}
+	if len(transfers) != 1 || !transfers[0].raxKnown || transfers[0].rax != 56 || transfers[0].trapSlotKnown {
+		t.Fatalf("AX-only transfer = %+v, want clone 56", transfers)
+	}
+	functions := []executableFunction{
+		fn,
+		{name: syscallRawVforkSyscallABI0, start: transfers[0].target, end: transfers[0].target + 8},
+	}
+	sites := trampolineSyscallSites(transfers, functions)
+	if len(sites) != 1 || !sites[0].numberKnown || sites[0].number != 56 {
+		t.Fatalf("AX trampoline site = %+v", sites)
+	}
+	if extra := extraReachableSyscallName(inspectedGuestBinary{name: guestInitBinaryName}, sites[0]); extra != "clone" {
+		t.Fatalf("unlisted trampoline clone extra = %q", extra)
+	}
+}
+
+func TestL8D7SyscallTrampolineDoesNotClassifyByPrefix(t *testing.T) {
+	if isSyscallNumberTrampoline("syscall.reviewerAuthority") || isSyscallNumberTrampoline("syscall.RawSyscall.abi0") || isSyscallNumberTrampoline("runtime.rawSyscallNoError.abi0") {
+		t.Fatal("prefix or similarly named symbol was treated as a number trampoline")
+	}
+	if !isSyscallNumberTrampoline(syscallRawSyscallNoErrorABI0) || !isSyscallNumberTrampoline(syscallRawVforkSyscallABI0) {
+		t.Fatal("exact ABI0 trampoline names were not recognized")
+	}
+}
+
+func TestL8D7HonestIssuanceFailsClosedEvenIfExtrasAreEmpty(t *testing.T) {
+	for _, name := range []string{"elf.go", "evidence.go"} {
+		encoded, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(encoded)
+		if name == "elf.go" && !strings.Contains(text, `return errors.New("unique/reachable D4/D6 call graph is unavailable")`) {
+			t.Fatal("requireCompleteHonestIssuanceInputs lost the fail-closed last return")
+		}
+		if name == "evidence.go" && !strings.Contains(text, "errEvidenceInputsUnavailable") {
+			t.Fatal("generateEvidence lost errEvidenceInputsUnavailable")
+		}
+	}
+	encoded, err := os.ReadFile("elf.go")
+	if err != nil {
+		t.Fatalf("read elf.go: %v", err)
+	}
+	if !strings.Contains(string(encoded), `return generatedEvidence{}, fmt.Errorf("%w: unique/reachable D4/D6 call graph is unavailable", errEvidenceInputsUnavailable)`) {
+		t.Fatal("generateEvidenceFromInputs lost the fail-closed empty-extra return")
 	}
 }
 
