@@ -717,20 +717,17 @@ func TestL8D7RegisterIndirectCallRemainsUnboundedWithoutProvenTarget(t *testing.
 	}
 }
 
-func TestL8D7RIPRelativeLEACallIsExactListedFunction(t *testing.T) {
+func TestL8D7RIPRelativeLEARegisterCallRemainsUnbounded(t *testing.T) {
 	code := []byte{0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00, 0xff, 0xd0}
 	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
 	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
 	resolver := &goTextResolver{functions: []executableFunction{fn, callee}}
-	_, targets, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
 	if err != nil {
 		t.Fatalf("decode LEA/CALL: %v", err)
 	}
-	if unbounded {
-		t.Fatal("CALL of a RIP-relative listed function remained unbounded")
-	}
-	if len(targets) != 1 || targets[0] != 0x3000 {
-		t.Fatalf("LEA/CALL targets = %#x, want [0x3000]", targets)
+	if !unbounded {
+		t.Fatal("RIP-relative LEA followed by CALL RAX was treated as an allowed relative transfer")
 	}
 }
 
@@ -757,6 +754,149 @@ func TestL8D7JumpTableWithoutProvenLengthStaysUnbounded(t *testing.T) {
 	}
 	if !unbounded {
 		t.Fatal("jump table without AND/CMP length was treated as bounded")
+	}
+}
+
+func TestL8D7JumpTableRejectsBranchSkippedFacts(t *testing.T) {
+	code := []byte{
+		0xeb, 0x0a,
+		0x83, 0xe1, 0x01,
+		0x48, 0x8d, 0x15, 0xf4, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+	}
+	fn := executableFunction{name: "kindSwitch", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 || va == 0x2008 {
+				return 0x100c, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode branch-skipped jump table facts: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("branch-skipped AND/LEA facts bounded an indirect jump")
+	}
+}
+
+func TestL8D7JumpTableRejectsJAGuardIntoDispatch(t *testing.T) {
+	code := []byte{
+		0x48, 0x83, 0xf9, 0x01,
+		0x77, 0x07,
+		0x48, 0x8d, 0x15, 0xf3, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+	}
+	fn := executableFunction{name: "kindSwitch", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 || va == 0x2008 {
+				return 0x100d, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode invalid JA guard: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("JA into the indirect jump was treated as an upper-bound guard")
+	}
+}
+
+func TestL8D7JumpTableRejectsIndexedIndirectCall(t *testing.T) {
+	code := []byte{
+		0x83, 0xe1, 0x01,
+		0x48, 0x8d, 0x15, 0xf6, 0x0f, 0x00, 0x00,
+		0xff, 0x14, 0xca,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn, callee},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 || va == 0x2008 {
+				return callee.start, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode indexed indirect CALL: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("indexed indirect CALL was accepted as a proven JMP table")
+	}
+}
+
+func TestL8D7JumpTableRejectsZeroAndUnlistedEntries(t *testing.T) {
+	code := []byte{
+		0x83, 0xe1, 0x01,
+		0x48, 0x8d, 0x15, 0xf6, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+	}
+	fn := executableFunction{name: "kindSwitch", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	for _, invalid := range []uint64{0, 0x9999} {
+		resolver := &goTextResolver{
+			functions: []executableFunction{fn},
+			loadU64: func(va uint64) (uint64, bool) {
+				if va == 0x2000 {
+					return fn.start, true
+				}
+				if va == 0x2008 {
+					return invalid, true
+				}
+				return 0, false
+			},
+		}
+		_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+		if err != nil {
+			t.Fatalf("decode table with entry %#x: %v", invalid, err)
+		}
+		if !unbounded {
+			t.Fatalf("table entry %#x outside every listed span was accepted", invalid)
+		}
+	}
+}
+
+func TestL8D7JumpTableRequiresCanonicalRegisterBaseAnd64BitCMP(t *testing.T) {
+	tests := []struct {
+		name string
+		code []byte
+	}{
+		{
+			name: "segment override",
+			code: []byte{0x83, 0xe1, 0x01, 0x48, 0x8d, 0x15, 0xf6, 0x0f, 0x00, 0x00, 0x64, 0xff, 0x24, 0xca},
+		},
+		{
+			name: "SIB without base",
+			code: []byte{0x83, 0xe1, 0x01, 0x48, 0x8d, 0x2d, 0xf6, 0x0f, 0x00, 0x00, 0xff, 0x24, 0xcd, 0x00, 0x20, 0x00, 0x00},
+		},
+		{
+			name: "32-bit CMP for 64-bit index",
+			code: []byte{0x83, 0xf9, 0x01, 0x77, 0x0a, 0x48, 0x8d, 0x15, 0xf4, 0x0f, 0x00, 0x00, 0xff, 0x24, 0xca, 0x90, 0x90},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fn := executableFunction{name: "kindSwitch", start: 0x1000, end: 0x1000 + uint64(len(test.code))}
+			resolver := &goTextResolver{functions: []executableFunction{fn}, loadU64: func(va uint64) (uint64, bool) {
+				return fn.start, true
+			}}
+			_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, test.code, 0, resolver)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if !unbounded {
+				t.Fatal("noncanonical table proof was accepted")
+			}
+		})
 	}
 }
 
