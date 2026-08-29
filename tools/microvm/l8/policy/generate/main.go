@@ -152,6 +152,7 @@ func main() {
 	rootFlag := flag.String("root", "", "repository root (defaults to discovery from the current directory)")
 	check := flag.Bool("check", false, "verify checked-in outputs without writing")
 	evidenceBinary := flag.String("evidence-binary", "", "final Go 1.25.7 guest role binary used to issue host-only HL8E")
+	evidenceBinariesDir := flag.String("evidence-binaries-dir", "", "directory of complete final linux/amd64 guest role binaries used to issue host-only HL8E")
 	flag.Parse()
 
 	root := *rootFlag
@@ -167,8 +168,8 @@ func main() {
 		fatal(err)
 	}
 	var evidence generatedEvidence
-	if *evidenceBinary != "" {
-		evidence, err = generateEvidence(root, *evidenceBinary, outputs)
+	if *evidenceBinary != "" || *evidenceBinariesDir != "" {
+		evidence, err = generateEvidenceFromInputs(root, evidenceInputs{binaryPath: *evidenceBinary, binariesDir: *evidenceBinariesDir}, outputs)
 		if err != nil {
 			fatal(err)
 		}
@@ -177,7 +178,7 @@ func main() {
 		if err := checkOutputs(root, outputs); err != nil {
 			fatal(err)
 		}
-		if *evidenceBinary != "" {
+		if *evidenceBinary != "" || *evidenceBinariesDir != "" {
 			if err := checkFileMap(root, evidence.files()); err != nil {
 				fatal(err)
 			}
@@ -187,7 +188,7 @@ func main() {
 	if err := writeOutputs(root, outputs); err != nil {
 		fatal(err)
 	}
-	if *evidenceBinary != "" {
+	if *evidenceBinary != "" || *evidenceBinariesDir != "" {
 		if err := writeFileMap(root, evidence.files()); err != nil {
 			fatal(err)
 		}
@@ -715,6 +716,7 @@ func parseCatalog(source []byte, ceiling uint32) ([]catalogEntry, error) {
 
 func hashGeneratorSources(root string) ([32]byte, error) {
 	return hashPaths(root, []string{
+		filepath.Join(policyDir, "generate", "elf.go"),
 		filepath.Join(policyDir, "generate", "evidence.go"),
 		filepath.Join(policyDir, "generate", "main.go"),
 	})
