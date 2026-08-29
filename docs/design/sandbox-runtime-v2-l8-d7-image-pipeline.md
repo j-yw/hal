@@ -17,6 +17,10 @@ bootstrap path, or required phase-head guest binaries are missing. Node
 22.22.0 and `@earendil-works/pi-coding-agent` 0.82.1 are fail-closed required
 cache filenames (`node-v22.22.0.tar.xz`, `pi-coding-agent-0.82.1.tgz`,
 `pi-shrinkwrap-0.82.1.json`). This slice does not download them.
+Exact L8 cache digests are still unissued, so L8 `cache.manifest` remains
+absent and `verify-cache.sh` fails closed. A later source-locking slice must
+author that manifest with the exact Node, Pi, shrinkwrap, and every transitive
+npm archive filename, size, and SHA-256 before this pipeline can build.
 
 The seven-file bundle layout is:
 
@@ -39,8 +43,9 @@ Pinned docker image:
 `registry.gitlab.com/buildroot.org/buildroot/base@sha256:f1e7f009dad6b6f44bf5fcb4b0b89c9228e42f9fe689142774b1db802d4c93c6`.
 Builds use `--pull=never --network=none`, a clean git tree, absolute
 cache/output outside the repo, distinct cache/output, and `0700` parents.
-L5 `cache.manifest` / `verify-cache.sh` remain the source-cache baseline;
-L8 adds the required runtime filenames without inventing their digests.
+L5 `cache.manifest` remains the source-cache baseline. The L8 verifier requires
+a separate exact L8 manifest and never accepts runtime files by filename or
+nonempty-file checks alone.
 
 This slice does not claim D7 live, does not claim L8 complete, does not claim
 L10, and does not claim L11. It does not change live D7 stub fatals.
