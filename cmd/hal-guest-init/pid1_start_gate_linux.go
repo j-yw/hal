@@ -140,15 +140,14 @@ func readPID1StartGateSealedFD(fd int) ([]byte, bool, error) {
 	}
 	if flags&unix.FD_CLOEXEC == 0 {
 		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, flags|unix.FD_CLOEXEC); err != nil {
-			if unix.Close(fd) != nil {
-				return nil, false, errPID1StartGateExpectedInvalid
-			}
-			return nil, false, nil
+			_ = unix.Close(fd)
+			return nil, false, errPID1StartGateExpectedInvalid
 		}
 	}
 	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, pid1StartGateClientFDNumber+1)
 	if err != nil {
-		return nil, false, nil
+		_ = unix.Close(fd)
+		return nil, false, errPID1StartGateExpectedInvalid
 	}
 	defer func() { _ = unix.Close(dup) }()
 

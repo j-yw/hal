@@ -255,6 +255,33 @@ func TestL8PID1StartGateReleaseFailsClosedWithoutInheritedHelperOrClient(t *test
 	}
 }
 
+func TestL8PID1StartGateClaimedExpectedDuplicationFailureFailsClosed(t *testing.T) {
+	fixture := newPID1GuestInitStartGateFixture(t)
+	withPID1StartGateExpectedFD(t, newPID1StartGateTestSealedFD(t, pid1StartGateExpectedJSON(t, fixture.expected)))
+	withPID1StartGateHelperFD(t, newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.helper)))
+	withPID1StartGateClientFD(t, newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.client)))
+
+	var original unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &original); err != nil {
+		t.Fatal(err)
+	}
+	if original.Cur <= pid1StartGateClientFDNumber+1 {
+		t.Skip("RLIMIT_NOFILE is already too small for the deterministic duplicate-failure probe")
+	}
+	limited := original
+	limited.Cur = pid1StartGateClientFDNumber + 1
+	if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &limited); err != nil {
+		t.Fatal(err)
+	}
+	code := releasePID1AgentStartGate()
+	if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &original); err != nil {
+		t.Fatalf("restore RLIMIT_NOFILE: %v", err)
+	}
+	if code != 127 {
+		t.Fatalf("releasePID1AgentStartGate() = %d, want 127 when a claimed sealed channel cannot be snapshotted", code)
+	}
+}
+
 func TestL8PID1StartGateMissingExpectedIgnoresInheritedDescriptors(t *testing.T) {
 	fixture := newPID1GuestInitStartGateFixture(t)
 	expectedFD := newPID1StartGateClosedFD(t)
