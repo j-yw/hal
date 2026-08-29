@@ -916,15 +916,21 @@ type l8JobCredentialGuestSessionFake struct {
 	loss              chan struct{}
 	lossOnce          sync.Once
 
-	mu            sync.Mutex
-	prepares      int
-	renews        int
-	revokes       int
-	closed        int
-	lastManifests []l8JobCredentialGuestBindingManifest
-	prepareErr    error
-	renewErr      error
-	revokeErr     error
+	mu                sync.Mutex
+	prepares          int
+	renews            int
+	revokes           int
+	closed            int
+	lastManifests     []l8JobCredentialGuestBindingManifest
+	prepareErr        error
+	renewErr          error
+	revokeErr         error
+	omitActiveProofID bool
+	omitRenewProofID  bool
+	omitRevokeProofID bool
+	activeProofID     string
+	renewProofID      string
+	revokeProofID     string
 }
 
 func l8JobCredentialGuestSessionFakeForTest(t *testing.T, now time.Time) *l8JobCredentialGuestSessionFake {
@@ -962,7 +968,13 @@ func (session *l8JobCredentialGuestSessionFake) Prepare(_ context.Context, _ san
 	for index, manifest := range manifests {
 		proofs[index] = l8JobCredentialGuestBindingProof{BindingID: manifest.BindingID, Mode: manifest.Mode, ProofID: "guest-" + manifest.BindingID}
 	}
-	return l8JobCredentialGuestPrepareResult{ActiveProofID: "guest-active-1", ExecBindingID: "exec-binding-1", BindingProofs: proofs}, nil
+	activeProofID := session.activeProofID
+	if session.omitActiveProofID {
+		activeProofID = ""
+	} else if activeProofID == "" {
+		activeProofID = "guest-active-1"
+	}
+	return l8JobCredentialGuestPrepareResult{ActiveProofID: activeProofID, ExecBindingID: "exec-binding-1", BindingProofs: proofs}, nil
 }
 func (session *l8JobCredentialGuestSessionFake) Renew(context.Context, sandboxruntime.JobCredentialIdentity, uint64, time.Time, string) (string, error) {
 	session.mu.Lock()
@@ -970,6 +982,12 @@ func (session *l8JobCredentialGuestSessionFake) Renew(context.Context, sandboxru
 	session.renews++
 	if session.renewErr != nil {
 		return "", session.renewErr
+	}
+	if session.omitRenewProofID {
+		return "", nil
+	}
+	if session.renewProofID != "" {
+		return session.renewProofID, nil
 	}
 	return "guest-active-2", nil
 }
@@ -979,6 +997,12 @@ func (session *l8JobCredentialGuestSessionFake) Revoke(context.Context, sandboxr
 	session.revokes++
 	if session.revokeErr != nil {
 		return "", session.revokeErr
+	}
+	if session.omitRevokeProofID {
+		return "", nil
+	}
+	if session.revokeProofID != "" {
+		return session.revokeProofID, nil
 	}
 	return "guest-cleanup-1", nil
 }
