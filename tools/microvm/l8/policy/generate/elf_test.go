@@ -151,6 +151,22 @@ func TestL8D7FinalBinaryInspectorRejectsNativeGoConfusion(t *testing.T) {
 	}
 }
 
+func TestL8D7EvidenceIssuanceRejectsCompleteRolesWithoutBoundedCallGraph(t *testing.T) {
+	root := repositoryRoot(t)
+	outputs := mustGenerate(t, root)
+	dir := buildCompleteGuestRoleBinariesDir(t, root)
+	evidence, err := generateEvidenceFromInputs(root, evidenceInputs{binariesDir: dir}, outputs)
+	if !errors.Is(err, errEvidenceInputsUnavailable) {
+		t.Fatalf("generateEvidenceFromInputs(complete guest roles) = (%d bytes, %v), want no evidence/dependency unaccepted", len(evidence.encoded), err)
+	}
+	if len(evidence.encoded) != 0 || len(evidence.source) != 0 || evidence.sha256 != ([32]byte{}) {
+		t.Fatal("complete role filenames and identities issued evidence without a bounded reachable call graph")
+	}
+	if !strings.Contains(err.Error(), "unique/reachable D4/D6 call graph is unavailable") {
+		t.Fatalf("complete-role error = %v, want unavailable bounded-call-graph reason", err)
+	}
+}
+
 func TestL8D7EvidenceIssuanceRejectsMutuallyExclusiveBinaryInputs(t *testing.T) {
 	root := repositoryRoot(t)
 	outputs := mustGenerate(t, root)
@@ -182,6 +198,44 @@ func main() {
 	os.Exit(0)
 }
 `
+}
+
+func buildCompleteGuestRoleBinariesDir(t *testing.T, root string) string {
+	t.Helper()
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("complete guest role inspection requires linux/amd64 as/ld and Go 1.25.7")
+	}
+	if _, err := exec.LookPath("as"); err != nil {
+		t.Fatalf("as is required to inspect the native bootstrap: %v", err)
+	}
+	if _, err := exec.LookPath("ld"); err != nil {
+		t.Fatalf("ld is required to inspect the native bootstrap: %v", err)
+	}
+	dir := t.TempDir()
+	packages := []struct {
+		name string
+		pkg  string
+	}{
+		{guestInitBinaryName, "./cmd/hal-guest-init"},
+		{guestAgentBinaryName, "./cmd/hal-guest-agent"},
+		{guestHelperBinaryName, "./cmd/hal-guest-credential-helper"},
+		{guestMonitorBinaryName, "./cmd/hal-guest-mount-monitor"},
+		{guestShimBinaryName, "./cmd/hal-guest-workload-shim"},
+	}
+	for _, role := range packages {
+		command := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", filepath.Join(dir, role.name), role.pkg)
+		command.Dir = root
+		command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "GOTOOLCHAIN=go1.25.7", "GOPROXY=off")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", role.name, err, output)
+		}
+	}
+	build := exec.Command("bash", filepath.Join(root, "tools/microvm/l8/role-bootstrap/build.sh"), dir)
+	build.Dir = root
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build native bootstrap: %v\n%s", err, output)
+	}
+	return dir
 }
 
 func buildLinuxAMD64GoBinary(t *testing.T, dir, name, source string) string {
