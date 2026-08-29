@@ -23,11 +23,13 @@ const (
 var errClientDescriptorWrite = errors.New("credential client descriptor write rejected")
 
 // ClientOptions contains the complete construction-time dependency set.
+// Helper is optional and default-off; a nil owner keeps helper send unaccepted.
 type ClientOptions struct {
 	Transport  Transport
 	Policy     Policy
 	Extensions *ExtensionRegistry
 	Descriptor ClientProcessDescriptor
+	Helper     HelperConnectionOwner
 }
 
 func (ClientOptions) MarshalJSON() ([]byte, error) {
@@ -75,6 +77,7 @@ type Client struct {
 	policyDescriptor PolicyDescriptor
 	extensions       []credentialprotocol.ExtensionDescriptor
 	descriptorSHA256 [32]byte
+	helper           HelperConnectionOwner
 	state            *clientState
 }
 
@@ -145,6 +148,13 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if !configuredDependency(options.Transport) || !configuredDependency(options.Policy) || !configuredDependency(options.Descriptor) || options.Extensions == nil {
 		return nil, clientError(ClientContractDependency, ClientFieldDependency)
 	}
+	if options.Helper != nil && !configuredDependency(options.Helper) {
+		return nil, clientError(ClientContractDependency, ClientFieldDependency)
+	}
+	var helper HelperConnectionOwner
+	if configuredDependency(options.Helper) {
+		helper = options.Helper
+	}
 
 	firstPolicy, panicked := readPolicyDescriptor(options.Policy)
 	if panicked {
@@ -203,6 +213,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 		policyDescriptor: firstPolicy,
 		extensions:       credentialprotocol.CloneExtensionDescriptors(stableExtensions),
 		descriptorSHA256: descriptorDigest,
+		helper:           helper,
 		state: &clientState{
 			phase:      clientPhaseNew,
 			opened:     opened,
@@ -288,6 +299,9 @@ func (client *Client) startDrain() {
 		if closeClientExtension(cleanupCtx, state.opened[index].session) {
 			cleanupFailed = true
 		}
+	}
+	if closeClientHelper(cleanupCtx, client.helper) {
+		cleanupFailed = true
 	}
 
 	state.mu.Lock()
@@ -541,6 +555,18 @@ func closeClientExtension(ctx context.Context, session ExtensionSession) (failed
 		}
 	}()
 	return session.Close(ctx) != nil
+}
+
+func closeClientHelper(ctx context.Context, helper HelperConnectionOwner) (failed bool) {
+	if !configuredDependency(helper) {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			failed = true
+		}
+	}()
+	return helper.Close(ctx) != nil
 }
 
 func closeClientTransport(ctx context.Context, transport Transport) (failed bool) {

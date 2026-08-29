@@ -74,6 +74,9 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			}
 			expectedIdentity = digest
 			expectedIdentitySet = true
+			if sendErr := client.dispatchHelperPrepareBegin(ctx, identity, prepare, digest); sendErr != nil {
+				return sendErr
+			}
 			return helperPacketDependencyUnaccepted(expectedIdentity)
 		}
 		if renew, ok := packet.renewValue(); ok {
@@ -157,14 +160,71 @@ func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observe
 }
 
 func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
-	// Helper receive and metadata-only helper send constructors exist. Serve
-	// still fails closed here because payload-bearing helper send, SSH rights,
-	// and live helper transport remain unaccepted; do not mint proofs.
+	// Helper receive and metadata-only helper send constructors exist. An
+	// injected HelperConnectionOwner may send prepare-begin. Payload-bearing
+	// helper send, SCM_RIGHTS SSH send, and JobCredential proofs remain
+	// unaccepted; do not mint proofs.
 	_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, [16]byte{}, false, identity.Bytes())
 	if err != nil {
 		return err
 	}
 	return ErrClientControlDependencyUnaccepted
+}
+
+func (client *Client) dispatchHelperPrepareBegin(
+	ctx context.Context,
+	identity transportIdentity,
+	prepare v2control.CredentialPrepareRequest,
+	digest v2control.IdentityDigest,
+) error {
+	if !configuredDependency(client.helper) {
+		return nil
+	}
+	expectation, err := newHelperAcceptExpectation(
+		identity.sessionIDValue(),
+		digest.Bytes(),
+		identity.helperGenerationValue(),
+		identity.sessionIdentity().GuestBootNonce,
+	)
+	if err != nil {
+		return clientError(ClientContractDependency, ClientFieldDependency)
+	}
+	stream, acceptErr := client.helper.AcceptVerified(ctx, expectation)
+	if acceptErr != nil || !configuredDependency(stream) {
+		if client.drainStarted() || ctx.Err() != nil {
+			return nil
+		}
+		return clientError(ClientContractDependency, ClientFieldDependency)
+	}
+	body, bodyErr := helperPrepareBeginBodyFromPrepare(prepare)
+	if bodyErr != nil {
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	header := credentialprotocol.HelperPacketHeader{
+		Sequence:                      firstInjectedHelperSendSequence,
+		RequestID:                     prepare.RequestID().Bytes(),
+		GuestCredentialIdentityDigest: digest.Bytes(),
+		BootNonce:                     identity.sessionIdentity().GuestBootNonce,
+	}
+	send, sendErr := newHelperPrepareBeginSendPacket(header, body)
+	if sendErr != nil {
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if helperErr := client.transport.SendHelper(ctx, send); helperErr != nil {
+		if client.drainStarted() || ctx.Err() != nil {
+			return nil
+		}
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if helperSendPacketUnconsumed(send) {
+		if writeErr := writeHelperSendPacket(ctx, stream, send); writeErr != nil {
+			if client.drainStarted() || ctx.Err() != nil {
+				return nil
+			}
+			return clientError(ClientContractPacket, ClientFieldPacketType)
+		}
+	}
+	return nil
 }
 
 func (client *Client) dispatchReadinessResponse(ctx context.Context, identity transportIdentity, packet ControllerPacket, readiness v2control.ReadinessRequest) error {
