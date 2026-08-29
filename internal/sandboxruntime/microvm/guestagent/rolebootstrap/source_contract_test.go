@@ -28,6 +28,33 @@ func TestRoleBootstrapProductionGoFilesHaveNoImports(t *testing.T) {
 	}
 }
 
+func TestRoleBootstrapGeneratedArtifactIssuerSplit(t *testing.T) {
+	tests := []struct {
+		name string
+		tag  string
+	}{
+		{name: "generated_artifact_default.go", tag: "!l8_verified_native_artifact"},
+		{name: "generated_artifact_d7_gen.go", tag: "l8_verified_native_artifact"},
+	}
+	for _, test := range tests {
+		payload, err := os.ReadFile(test.name)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", test.name, err)
+		}
+		want := "//go:build " + test.tag
+		found := ""
+		for _, line := range strings.Split(string(payload), "\n") {
+			if strings.HasPrefix(line, "//go:build ") {
+				found = line
+				break
+			}
+		}
+		if found != want {
+			t.Errorf("%s build tag = %q, want exact %q split", test.name, found, want)
+		}
+	}
+}
+
 func TestRoleBootstrapExactPlatformSplit(t *testing.T) {
 	tests := []struct {
 		name string

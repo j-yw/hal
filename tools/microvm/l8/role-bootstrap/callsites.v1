@@ -1,0 +1,9 @@
+format=hal-l8-native-callsite-inventory-v1
+count=7
+0=getuid:102:shared:0f05
+1=geteuid:107:shared:0f05
+2=getgid:104:shared:0f05
+3=getegid:108:shared:0f05
+4=capget:125:shared:0f05
+5=prlimit64:302:shared:0f05
+6=exit_group:231:shared:0f05
