@@ -256,6 +256,61 @@ func TestL8D7GuestHelperFileBearingPrepareSendsFileThenCommitAndLedger(t *testin
 	}
 }
 
+func TestL8D7GuestHelperPrepareFileBodyCleanupFailureStopsBeforeCommit(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		destroyErr error
+		panic      bool
+	}{
+		{name: "error", destroyErr: errors.New("destroy failed")},
+		{name: "panic", panic: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := testDispatchTransportIdentity()
+			prepare, payload, fileDigest := testFileBearingDispatchPrepareRequest(t, identity)
+			digest := identityDigestForSession(t, testCredentialPacketSessionIdentity(t, identity.sessionID))
+			stream := newFakeHelperStream()
+			owner := &fakeHelperOwner{stream: stream}
+			stream.queueHelperDatagram(encodeHelperResponseDatagram(
+				t, 1, prepare.RequestID().Bytes(), digest.Bytes(), identity.identity.GuestBootNonce,
+				matchingFileBearingPrepareHelperResponse(t, prepare),
+			))
+			privateBody := testControllerPrepareFileBody(payload, fileDigest)
+			privateBody.destroyErr = test.destroyErr
+			privateBody.destroyPanic = test.panic
+			var receives atomic.Uint32
+			var sends atomic.Uint32
+			transport := &dispatchRedTransport{identity: identity}
+			transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+				switch receives.Add(1) {
+				case 1:
+					return ControllerPacket{sequence: 1, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare}}, nil
+				case 2:
+					return testControllerPrivateFilePacket(2, identity, prepare, digest, 1, payload, fileDigest, privateBody), nil
+				default:
+					return ControllerPacket{}, errors.New("stop")
+				}
+			}
+			transport.sendController = func(context.Context, ControllerSendPacket) error {
+				sends.Add(1)
+				return nil
+			}
+
+			err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
+			if clientContractCode(err) != ClientContractCleanup {
+				t.Fatalf("Serve() error = %v, want cleanup", err)
+			}
+			if sends.Load() != 0 {
+				t.Fatalf("controller sends = %d, want 0", sends.Load())
+			}
+			assertHelperPacketTypes(t, stream,
+				credentialprotocol.PacketTypePrepareBegin,
+				credentialprotocol.PacketTypePrepareFile,
+			)
+		})
+	}
+}
+
 func TestL8D7GuestHelperNilOwnerDoesNotSendHelper(t *testing.T) {
 	identity := testDispatchTransportIdentity()
 	prepare := testHTTPOnlyDispatchPrepareRequest(t, identity)
