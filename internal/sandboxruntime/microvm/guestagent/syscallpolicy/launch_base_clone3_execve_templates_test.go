@@ -117,6 +117,8 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 		{name: "execve nonempty envp", nr: 59, args: [6]uint64{1, 1, 1}},
 		{name: "execveat empty", nr: 322},
 		{name: "execveat catalog name only", nr: 322},
+		{name: "execveat controller candidate fd 3", nr: 322, args: [6]uint64{3, 1, 0, 0, 0x1000}},
+		{name: "execveat agent candidate fd 4", nr: 322, args: [6]uint64{4, 1, 0, 0, 0x1000}},
 		{name: "execveat wrong fd 16", nr: 322, args: [6]uint64{16, 1, 0, 0, 0x1000}},
 		{name: "execveat missing AT_EMPTY_PATH", nr: 322, args: [6]uint64{5, 1, 0, 0, 0}},
 		{name: "execveat nonempty envp", nr: 322, args: [6]uint64{5, 1, 0, 1, 0x1000}},

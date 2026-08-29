@@ -186,6 +186,12 @@ func TestL8D7NativeRoleBootstrapELFIsFreestandingStaticExec(t *testing.T) {
 	if compiled.Action(0xc000003e, 322, [6]uint64{6, 1, 0, 0, 0x1000}) != syscallpolicy.ActionAllow {
 		t.Fatal("compiled launch-base filter does not allow the exact shim execveat FD 6 AT_EMPTY_PATH template")
 	}
+	if compiled.Action(0xc000003e, 322, [6]uint64{3, 1, 0, 0, 0x1000}) != syscallpolicy.ActionErrnoEPERM {
+		t.Fatal("compiled launch-base filter allowed invented controller execveat FD 3")
+	}
+	if compiled.Action(0xc000003e, 322, [6]uint64{4, 1, 0, 0, 0x1000}) != syscallpolicy.ActionErrnoEPERM {
+		t.Fatal("compiled launch-base filter allowed invented agent execveat FD 4")
+	}
 	if compiled.Action(0xc000003e, 322, [6]uint64{}) != syscallpolicy.ActionErrnoEPERM {
 		t.Fatal("compiled launch-base filter does not fail-closed EPERM execveat without the exact FD+AT_EMPTY_PATH template")
 	}
@@ -348,6 +354,11 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		"Unimplemented: setns/ioctl",
 		"reinspection and HL8L job_created relay stay unimplemented",
 		"Controller/agent have no admitted sealed executable FD",
+		"remaining admission gap",
+		"do not allow-all execveat",
+		"controller supervisor endpoint",
+		"delegated cgroup-v2 root",
+		"cmpq\t$2, %rbx",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("native supervisor source omits %q", required)
@@ -414,6 +425,73 @@ func TestL8D7NativeExecveatRetainsOneImageOwnedArgv0(t *testing.T) {
 	}
 	if strings.Contains(text, "movq\t$0, 96(%rsp)") {
 		t.Fatal("native execveat passes argc zero to admitted Go role children")
+	}
+}
+
+func TestL8D7NativeControllerAgentExecFDsRemainFailClosed(t *testing.T) {
+	root := repositoryRoot(t)
+	source, err := os.ReadFile(filepath.Join(root, nativeSourceRel))
+	if err != nil {
+		t.Fatalf("read native source: %v", err)
+	}
+	text := string(source)
+	start := strings.Index(text, ".Lpid1_execveat:")
+	end := strings.Index(text, ".Lpid1_scm_rights:")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatal("native source is missing the PID1 execveat/scm-rights stage labels")
+	}
+	block := text[start:end]
+	for _, required := range []string{
+		"cmpq\t$2, %rbx",
+		"jb\t.Lfail_closed",
+		"movq\t$5, %rdi",
+		"movq\t$6, %rdi",
+		"leaq\ttoken_monitor(%rip), %r9",
+		"leaq\ttoken_workload_shim(%rip), %r9",
+		"remaining admission gap",
+		"Controller/agent have no admitted sealed executable FD",
+	} {
+		if !strings.Contains(block, required) {
+			t.Fatalf("native execveat stage omits fail-closed controller/agent marker %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"token_controller",
+		"token_agent",
+		"movq\t$3, %rdi",
+		"movq\t$4, %rdi",
+		"/usr/bin/hal-guest-credential-helper",
+		"/usr/bin/hal-guest-agent",
+		"movq\t$59, %rax",
+	} {
+		if strings.Contains(block, forbidden) {
+			t.Fatalf("native execveat admitted controller/agent without a named sealed FD via %q", forbidden)
+		}
+	}
+
+	policySHA256, err := readDigestFile(filepath.Join(root, policyDigestRel))
+	if err != nil {
+		t.Fatalf("issued policy digest: %v", err)
+	}
+	policyBytes, err := os.ReadFile(filepath.Join(root, policyArtifactRel))
+	if err != nil {
+		t.Fatalf("issued policy artifact: %v", err)
+	}
+	compiled, err := syscallpolicy.CompileIssuedRoleFilter(policyBytes, policySHA256, syscallpolicy.RoleLaunchBase)
+	if err != nil {
+		t.Fatalf("compile launch-base filter: %v", err)
+	}
+	auditArch := uint32(0xc000003e)
+	if compiled.Action(auditArch, 322, [6]uint64{5, 1, 0, 0, 0x1000}) != syscallpolicy.ActionAllow {
+		t.Fatal("launch-base execveat no longer Allows the named monitor FD 5")
+	}
+	if compiled.Action(auditArch, 322, [6]uint64{6, 1, 0, 0, 0x1000}) != syscallpolicy.ActionAllow {
+		t.Fatal("launch-base execveat no longer Allows the named shim FD 6")
+	}
+	for _, fd := range []uint64{3, 4, 7, 8, 16} {
+		if compiled.Action(auditArch, 322, [6]uint64{fd, 1, 0, 0, 0x1000}) != syscallpolicy.ActionErrnoEPERM {
+			t.Fatalf("launch-base execveat Allowed unnamed controller/agent candidate FD %d", fd)
+		}
 	}
 }
 

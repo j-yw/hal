@@ -78,6 +78,12 @@ func TestL8D7GeneratedLaunchBaseClone3ExecveTemplates(t *testing.T) {
 	if got := compiled.Action(0xc000003e, 322, [6]uint64{5, 1, 0, 0, 0x1000}); got != ActionAllow {
 		t.Fatalf("generated compiled execveat FD 5 Action() = %v, want allow", got)
 	}
+	if got := profile.Decide(0xc000003e, 322, [6]uint64{3, 1, 0, 0, 0x1000}); got.Action() != ActionErrnoEPERM {
+		t.Fatalf("generated launch-base execveat FD 3 Decide() = %v, want eperm remaining controller admission gap", got.Action())
+	}
+	if got := profile.Decide(0xc000003e, 322, [6]uint64{4, 1, 0, 0, 0x1000}); got.Action() != ActionErrnoEPERM {
+		t.Fatalf("generated launch-base execveat FD 4 Decide() = %v, want eperm remaining agent admission gap", got.Action())
+	}
 	if got := profile.Decide(0xc000003e, 322, [6]uint64{}); got.Action() != ActionErrnoEPERM {
 		t.Fatalf("generated launch-base empty execveat Decide() = %v, want eperm", got.Action())
 	}
