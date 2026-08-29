@@ -168,8 +168,11 @@ func TestL8D7NativeRoleBootstrapELFIsFreestandingStaticExec(t *testing.T) {
 	if compiled.Action(0xc000003e, 231, [6]uint64{}) != syscallpolicy.ActionAllow {
 		t.Fatal("compiled launch-base filter does not allow exit_group")
 	}
-	if compiled.Action(0xc000003e, 435, [6]uint64{}) != syscallpolicy.ActionKillProcess {
-		t.Fatal("compiled launch-base filter does not kill clone3")
+	if compiled.Action(0xc000003e, 435, [6]uint64{}) != syscallpolicy.ActionErrnoEPERM {
+		t.Fatal("compiled launch-base filter does not fail-closed EPERM clone3 without an exact template")
+	}
+	if compiled.Action(0xc000003e, 59, [6]uint64{}) != syscallpolicy.ActionErrnoEPERM {
+		t.Fatal("compiled launch-base filter does not fail-closed EPERM execve without an exact template")
 	}
 
 	for _, args := range [][]string{
@@ -264,8 +267,8 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 	for _, required := range []string{
 		".Lpid1_vsock:",
 		".Lpid1_seccomp:",
-		".Lpid1_unimpl_execve:",
-		".Lpid1_unimpl_clone3:",
+		".Lpid1_clone3:",
+		".Lpid1_execve:",
 		".Lpid1_unimpl_scm_rights:",
 		".Lcontroller_unimpl:",
 		".Lagent_unimpl:",
@@ -278,14 +281,27 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		"movq\t$3, %rax",
 		"movq\t$157, %rax",
 		"movq\t$317, %rax",
+		"movq\t$435, %rax",
+		"movq\t$59, %rax",
 		"movq\t$231, %rax",
 		"$0x80801",
 		"$0xffffffff",
 		"$1024",
 		"$1025",
 		"$1026",
+		"$0x5100",
+		"$0x25100",
+		"$0x200005100",
+		"movq\t$9, 80(%rsp)",
+		"movq\t$17, 32(%rsp)",
+		"/usr/bin/hal-guest-credential-helper",
+		"/usr/bin/hal-guest-agent",
+		"/usr/bin/hal-guest-mount-monitor",
+		"/usr/bin/hal-guest-workload-shim",
 		"launch_base_filter",
 		"A successful bind is not live vsock proof",
+		"Native PID1 is the image-init supervisor",
+		"Go PID1 remains ForkExec-free",
 		"Unimplemented: pivot_root",
 		"Unimplemented: setresuid/setresgid",
 		"Unimplemented: SCM_RIGHTS monitor-ready",
@@ -296,9 +312,7 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"movq\t$59, %rax",
 		"movq\t$322, %rax",
-		"movq\t$435, %rax",
 		"movq\t$46, %rax",
 		"movq\t$47, %rax",
 		"movl\t$0, %edi",
@@ -323,7 +337,10 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 	if !strings.Contains(string(callsite), "11=prctl:157:pid1:0f05") || !strings.Contains(string(callsite), "12=seccomp:317:pid1:0f05") {
 		t.Fatal("callsite inventory is missing the PID1 launch-base seccomp sites")
 	}
-	if strings.Contains(string(callsite), "execve") || strings.Contains(string(callsite), "clone3") {
+	if !strings.Contains(string(callsite), "13=clone3:435:pid1:0f05") || !strings.Contains(string(callsite), "14=execve:59:pid1:0f05") {
+		t.Fatal("callsite inventory is missing the PID1 clone3 and execve sites")
+	}
+	if strings.Contains(string(callsite), "sendmsg") || strings.Contains(string(callsite), "recvmsg") || strings.Contains(string(callsite), "execveat") {
 		t.Fatal("callsite inventory claimed an unimplemented live supervisor syscall")
 	}
 }

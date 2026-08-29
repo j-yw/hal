@@ -1,12 +1,15 @@
 # Freestanding static Linux-amd64 _start for hal-guest-role-bootstrap.
 # No libc, dynamic loader, Go runtime, allocator, TLS, signals, or threads.
 # Pointers address only this image's read-only tokens, compiled launch-base
-# filter, or bounded stack objects. Child roles are selected only by the
-# supervisor's closed argv token catalog. PID1 mode is image init (argc < 2).
-# After shared identity preflight each role enters explicit remaining stages.
-# PID1 attempts the exact D2 socket/bind/listen/dup3/close subset, then
-# prctl(NO_NEW_PRIVS) and seccomp(SECCOMP_SET_MODE_FILTER) for launch-base.
-# execve, clone3, and SCM_RIGHTS stay unimplemented and exit 127.
+# filter, image-pinned role pathnames, or bounded stack objects. Child roles
+# are selected only by the supervisor's closed argv token catalog. PID1 mode
+# is image init (argc < 2). Native PID1 is the image-init supervisor.
+# Go PID1 remains ForkExec-free. After shared identity preflight each role enters
+# explicit remaining stages. PID1 attempts the exact D2 socket/bind/listen/
+# dup3/close subset, then prctl(NO_NEW_PRIVS) and seccomp(SECCOMP_SET_MODE_FILTER)
+# for launch-base, then exact clone3 plus pathname execve of image-pinned
+# role children. Negative syscall results fail-closed. SCM_RIGHTS monitor-ready
+# stays unimplemented and exit 127.
 
 	.section .note.GNU-stack,"",@progbits
 	.include "launch_base_filter.inc"
@@ -60,7 +63,8 @@ _start:
 
 .Lpreflight:
 	# Shared identity preflight uses only the documented native syscall
-	# union. Live vsock/clone3/execve paths are not completed.
+	# union. Live vsock proof, live cgroup fd 9, host-path exec, and
+	# SCM_RIGHTS monitor-ready are not claimed.
 	movq	$102, %rax		# getuid
 	syscall
 	movq	$107, %rax		# geteuid
@@ -174,8 +178,8 @@ _start:
 	# prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) then
 	# seccomp(SECCOMP_SET_MODE_FILTER, 0, sock_fprog). The sock_fprog
 	# lives on this stack and points at image RO filter bytes. Negative
-	# results fail-closed. Remaining execve/clone3/SCM_RIGHTS stages
-	# stay unimplemented.
+	# results fail-closed. Exact clone3 plus pathname execve follow;
+	# SCM_RIGHTS stays unimplemented.
 .Lpid1_seccomp:
 	movq	$157, %rax		# prctl
 	movq	$38, %rdi		# PR_SET_NO_NEW_PRIVS
@@ -204,12 +208,79 @@ _start:
 	js	.Lfail_closed
 	addq	$16, %rsp
 
-	jmp	.Lpid1_unimpl_execve
-.Lpid1_unimpl_execve:
-	jmp	.Lpid1_unimpl_clone3
-.Lpid1_unimpl_clone3:
+	# Exact clone3 of image-pinned role children after launch-base.
+	# clone_args size is the pinned Go 1.25.7 ABI (88). pidfd pointer
+	# is the clone_args.pidfd field. Negative clone3/execve results
+	# fail-closed. Missing cgroup fd 9 or image path is not success.
+.Lpid1_clone3:
+	subq	$112, %rsp
+	xorl	%ebx, %ebx
+.Lpid1_clone3_loop:
+	movl	$14, %ecx
+	movq	%rsp, %r8
+.Lpid1_clone3_zero:
+	movq	$0, (%r8)
+	addq	$8, %r8
+	decl	%ecx
+	jnz	.Lpid1_clone3_zero
+
+	# Boot-only controller/agent: CLONE_VFORK|CLONE_VM|CLONE_PIDFD,
+	# exit_signal=SIGCHLD, no namespace/cgroup flag.
+	movq	$0x5100, %r13
+	testq	%rbx, %rbx
+	jz	.Lpid1_clone3_store
+	cmpq	$1, %rbx
+	je	.Lpid1_clone3_store
+	# Monitor: CLONE_VFORK|CLONE_VM|CLONE_NEWNS|CLONE_PIDFD, SIGCHLD.
+	movq	$0x25100, %r13
+	cmpq	$2, %rbx
+	je	.Lpid1_clone3_store
+	# Shim: CLONE_VFORK|CLONE_VM|CLONE_PIDFD|CLONE_INTO_CGROUP,
+	# exit_signal=SIGCHLD, cgroup=9, every other field zero.
+	movq	$0x200005100, %r13
+	movq	$9, 80(%rsp)
+.Lpid1_clone3_store:
+	movq	%r13, (%rsp)
+	leaq	88(%rsp), %r13
+	movq	%r13, 8(%rsp)
+	movq	$17, 32(%rsp)
+	movq	%rsp, %rdi
+	movq	$88, %rsi
+	movq	$435, %rax		# clone3
+	syscall
+	testq	%rax, %rax
+	js	.Lfail_closed
+	jz	.Lpid1_execve
+	incq	%rbx
+	cmpq	$4, %rbx
+	jb	.Lpid1_clone3_loop
+	addq	$112, %rsp
 	jmp	.Lpid1_unimpl_scm_rights
+
+.Lpid1_execve:
+	# Pathname execve of the image-pinned Go role child. argv is the
+	# closed path token only. envp is NULL. execve failure exits 127.
+	leaq	path_controller(%rip), %rdi
+	testq	%rbx, %rbx
+	jz	.Lpid1_execve_do
+	leaq	path_agent(%rip), %rdi
+	cmpq	$1, %rbx
+	je	.Lpid1_execve_do
+	leaq	path_monitor(%rip), %rdi
+	cmpq	$2, %rbx
+	je	.Lpid1_execve_do
+	leaq	path_shim(%rip), %rdi
+.Lpid1_execve_do:
+	movq	%rdi, 96(%rsp)
+	movq	$0, 104(%rsp)
+	leaq	96(%rsp), %rsi
+	xorl	%edx, %edx
+	movq	$59, %rax		# execve
+	syscall
+	jmp	.Lfail_closed
+
 .Lpid1_unimpl_scm_rights:
+	# Unimplemented: SCM_RIGHTS monitor-ready.
 	jmp	.Lfail_closed
 
 .Lcontroller_unimpl:
@@ -270,3 +341,15 @@ token_monitor:
 	.type	token_workload_shim, @object
 token_workload_shim:
 	.asciz	"workload-shim"
+	.type	path_controller, @object
+path_controller:
+	.asciz	"/usr/bin/hal-guest-credential-helper"
+	.type	path_agent, @object
+path_agent:
+	.asciz	"/usr/bin/hal-guest-agent"
+	.type	path_monitor, @object
+path_monitor:
+	.asciz	"/usr/bin/hal-guest-mount-monitor"
+	.type	path_shim, @object
+path_shim:
+	.asciz	"/usr/bin/hal-guest-workload-shim"

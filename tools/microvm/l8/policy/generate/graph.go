@@ -14,7 +14,7 @@ import (
 const (
 	nativeBootstrapSymbol        = "_start"
 	goRoleEntrySymbol            = "main.main"
-	nativeBootstrapSyscallCount  = 14
+	nativeBootstrapSyscallCount  = 16
 	syscallKindSyscall           = "syscall"
 	syscallKindSysenter          = "sysenter"
 	syscallKindInt80             = "int80"
