@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"debug/elf"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,6 +40,29 @@ func TestL8D7FinalBinaryInspectorLocatesPinnedSyscall6(t *testing.T) {
 	}
 	if _, err := generateEvidence(root, binaryPath, mustGenerate(t, root)); !errors.Is(err, errEvidenceInputsUnavailable) {
 		t.Fatalf("generateEvidence(generic Go binary) error = %v", err)
+	}
+}
+
+func TestL8D7FinalBinaryInspectorRejectsPinnedInstructionOutsideSymbol(t *testing.T) {
+	binaryPath := buildLinuxAMD64GoBinary(t, t.TempDir(), "short-syscall6", linuxAMD64Syscall6Source())
+	encoded, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("read test ELF: %v", err)
+	}
+	for _, symbolSize := range []uint64{0, pinnedInstructionOffset + uint64(len(pinnedSyscallInstruction)) - 1} {
+		t.Run(fmt.Sprintf("size_%d", symbolSize), func(t *testing.T) {
+			mutated := append([]byte(nil), encoded...)
+			if err := setELFSymbolSize(mutated, pinnedGoRuntimeSymbol, symbolSize); err != nil {
+				t.Fatalf("set symbol size: %v", err)
+			}
+			mutatedPath := filepath.Join(t.TempDir(), "short-syscall6")
+			if err := os.WriteFile(mutatedPath, mutated, 0o755); err != nil {
+				t.Fatalf("write mutated ELF: %v", err)
+			}
+			if _, err := inspectLinuxAMD64ELF(filepath.Base(mutatedPath), mutatedPath); err == nil {
+				t.Fatal("inspector accepted an instruction extending beyond the declared Syscall6 symbol")
+			}
+		})
 	}
 }
 
@@ -181,4 +207,38 @@ func copyFileOverwrite(t *testing.T, source, destination string) error {
 		return err
 	}
 	return os.WriteFile(destination, encoded, 0o755)
+}
+
+func setELFSymbolSize(encoded []byte, name string, size uint64) error {
+	file, err := elf.NewFile(bytes.NewReader(encoded))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	symbols := file.Section(".symtab")
+	if symbols == nil || int(symbols.Link) >= len(file.Sections) || symbols.Entsize != 24 {
+		return errors.New("ELF symbol table is unavailable")
+	}
+	names, err := file.Sections[symbols.Link].Data()
+	if err != nil {
+		return err
+	}
+	start := symbols.Offset
+	end := start + symbols.Size
+	if end < start || end > uint64(len(encoded)) {
+		return errors.New("ELF symbol table is outside the file")
+	}
+	for offset := start + symbols.Entsize; offset+symbols.Entsize <= end; offset += symbols.Entsize {
+		nameOffset := uint64(binary.LittleEndian.Uint32(encoded[offset : offset+4]))
+		if nameOffset >= uint64(len(names)) {
+			continue
+		}
+		nameEnd := bytes.IndexByte(names[nameOffset:], 0)
+		if nameEnd < 0 || string(names[nameOffset:nameOffset+uint64(nameEnd)]) != name {
+			continue
+		}
+		binary.LittleEndian.PutUint64(encoded[offset+16:offset+24], size)
+		return nil
+	}
+	return fmt.Errorf("ELF symbol %s is missing", name)
 }
