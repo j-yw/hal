@@ -330,7 +330,7 @@ func (client *Client) dispatchOneHelperPrepareFile(
 	record credentialprotocol.HelperBindingManifestRecord,
 	bindingIndex uint16,
 	sendSequence, controllerSequence uint64,
-) (uint64, uint64, error) {
+) (nextSendSequence, nextControllerSequence uint64, returnErr error) {
 	if !configuredDependency(stream) {
 		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 	}
@@ -340,7 +340,10 @@ func (client *Client) dispatchOneHelperPrepareFile(
 	}
 	packet, dispatchErr, panicked := client.receiveControllerPacket(ctx, receive)
 	if panicked {
-		_, _ = rejectControllerPacketBody(&packet)
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
 		return sendSequence, controllerSequence, clientError(ClientContractPanic, ClientFieldPacketType)
 	}
 	if dispatchErr != nil {
@@ -362,21 +365,34 @@ func (client *Client) dispatchOneHelperPrepareFile(
 	}
 	controllerSequence++
 	if _, isPrepare := packet.prepareValue(); isPrepare {
-		_, _ = rejectControllerPacketBody(&packet)
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
 		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 	}
 	if _, isStream := packet.streamValue(); isStream {
-		_, _ = rejectControllerPacketBody(&packet)
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
 		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 	}
 	private, ok := packet.privateValue()
 	if !ok {
-		_, _ = rejectControllerPacketBody(&packet)
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
 		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 	}
 	body := packet.body
 	packet.body = nil
-	defer func() { _ = destroyControllerBody(body) }()
+	defer func() {
+		if cleanupErr := destroyControllerBody(body); cleanupErr != nil {
+			returnErr = clientError(ClientContractCleanup, ClientFieldBody)
+		}
+	}()
 	if private.kind != credentialprotocol.PrivateRecordKindFileBytes ||
 		private.kind == credentialprotocol.PrivateRecordKindOpaqueExecBinding ||
 		private.requestID != prepare.RequestID() ||
