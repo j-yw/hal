@@ -6,20 +6,31 @@ PID1 admits canonical helper then client process descriptors through
 before `os.StartProcess`. It does not construct helper or client objects
 (`l8composition.NewHelper` / `l8composition.NewClient`).
 
-## Honest RED: missing sealed expected-digest channel
+## Sealed inherited memfd expected-digest channel
 
-Expected helper, client, and composition digests must come from sealed
+Expected helper, client, and composition digests come from sealed
 image-profile process-composition correlation already owned by PID1:
 `L8ProcessCompositionFacts.helperDescriptorSha256`,
-`clientDescriptorSha256`, and `compositionSha256`, compiled or inherited at
-D7 image issuance, or from the native-bootstrap sealed config pipe specified
-in the syscall-policy FD table.
+`clientDescriptorSha256`, and `compositionSha256`.
 
-This binary has **no** such sealed channel. `loadPID1StartGateExpected`
-returns absent. Unsigned file/env/cmdline parsing is rejected. Missing
-expected leaves the L7 supervisor path so `--require-l7-network` is not
-regressed. A claimed expected without authenticated helper-then-client
-descriptors fails closed (exit 127). This slice does not claim live start-gate release.
+Linux PID1 reopens and inspects a sealed inherited anonymous memfd at
+fixed FD 15 (`FD_CLOEXEC`, regular, zero-link, not write-only, seals
+`F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE`). The syscall-policy
+FD table lists PID1 FD 15 as Closed; this optional D7 channel occupies
+that slot when the memfd is inherited. Bounded JSON copies those three
+lowercase hex digests into `l8composition.PID1StartGateExpected`.
+Unsigned file/env/cmdline parsing is rejected.
+
+Missing sealed FD remains the L7 path so `--require-l7-network` is not
+regressed. Wrong-type, empty, or unsealed descriptors also stay absent.
+Present-but-invalid or zero/aliased digests fail closed (exit 127). A
+claimed expected without authenticated helper-then-client descriptors
+fails closed (exit 127). This slice does not claim live start-gate release
+and does not claim D7 live complete.
+
+The native-bootstrap sealed config pipe specified in the syscall-policy
+FD table is not this channel; PID1 has no dedicated composition-facts
+pipe there.
 
 Authenticated HL8L `controller_attestation` and HL8A `client_attestation`
 receive paths are also absent from PID1; tests inject descriptors into the
