@@ -124,6 +124,61 @@ func TestL8D7GuestProcessEntrypointsNewHelperOwnership(t *testing.T) {
 	}
 }
 
+func TestL8D7GuestProcessEntrypointsNewHelperOwnershipRejectsAliasedReferences(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name:   "direct call",
+			source: `package fixture; import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition"; func run(options l8composition.HelperOptions) { _, _, _ = l8composition.NewHelper(options) }`,
+		},
+		{
+			name:   "aliased call",
+			source: `package fixture; import composition "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition"; func run(options composition.HelperOptions) { _, _, _ = composition.NewHelper(options) }`,
+		},
+		{
+			name:   "aliased method value",
+			source: `package fixture; import composition "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition"; var retained = composition.NewHelper`,
+		},
+		{
+			name:   "dot imported call",
+			source: `package fixture; import . "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition"; func run(options HelperOptions) { _, _, _ = NewHelper(options) }`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := l8D7GuestProcessEntrypointNewHelperReferences(t, test.source); got != 1 {
+				t.Fatalf("NewHelper references = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func l8D7GuestProcessEntrypointNewHelperReferences(t *testing.T, source string) int {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "NewHelper" {
+			return true
+		}
+		ident, ok := selector.X.(*ast.Ident)
+		if ok && ident.Name == "l8composition" {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
 func TestL8D7GuestProcessEntrypointsRemainDefaultOff(t *testing.T) {
 	targets := []string{
 		"run.go", "run_sandbox.go", "auto.go", "auto_sandbox.go",

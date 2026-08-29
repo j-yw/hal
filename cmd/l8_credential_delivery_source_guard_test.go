@@ -172,6 +172,12 @@ func l8GuestProcessEntrypointAllowsImport(path, importPath string) bool {
 	}
 }
 
+func TestL8CredentialDeliverySourceGuardsGuestProcessImportAllowlistIsExact(t *testing.T) {
+	if l8GuestProcessEntrypointAllowsImport("hal-guest-workload-shim/run.go", l8CompositionImportPath) {
+		t.Fatal("workload shim may import l8composition despite its rolebootstrap-only contract")
+	}
+}
+
 func TestL8CredentialDeliverySourceGuardsV1SchemasCannotCarryProductionIntent(t *testing.T) {
 	checks := []struct {
 		path    string
