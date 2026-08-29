@@ -304,7 +304,7 @@ const l8ProductionPID1Tag = "l8_production_pid1"
 
 func linuxAMD64GoBuildEnv(t *testing.T) []string {
 	t.Helper()
-	root := filepath.Join("/home/v/.cache", "hal-l8-d7-pid1-no-forkexec")
+	root := t.TempDir()
 	gotmp := filepath.Join(root, "gotmp")
 	gocache := filepath.Join(root, "gocache")
 	tmp := filepath.Join(root, "tmp")
