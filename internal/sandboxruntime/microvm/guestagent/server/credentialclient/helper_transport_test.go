@@ -106,31 +106,26 @@ func TestL8D7GuestHelperServeSendsPrepareBeginWhenOwnerInjected(t *testing.T) {
 		}, nil
 	}
 	transport.sendHelper = func(_ context.Context, packet HelperSendPacket) error {
-		if packet.packetTypeValue() != credentialprotocol.PacketTypePrepareBegin {
-			return errors.New("injected helper send must be prepare-begin")
-		}
-		header := packet.headerValue()
-		if header.Sequence != firstInjectedHelperSendSequence || header.RequestID != prepare.RequestID().Bytes() ||
-			header.GuestCredentialIdentityDigest != digest.Bytes() || header.BootNonce != identity.identity.GuestBootNonce {
-			return errors.New("prepare-begin header lost session correlation")
-		}
 		helperSends.Add(1)
-		return nil
+		body := make([]byte, packet.encodedBodyLengthValue())
+		return packet.writeCanonicalBody(&helperSendBodySink{buf: body})
 	}
 
 	err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
 	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("Serve() error = %v, want remaining helper payload/proofs unaccepted", err)
 	}
-	if owner.accepts.Load() != 1 || helperSends.Load() != 1 {
-		t.Fatalf("accepts/sends = %d/%d, want 1/1", owner.accepts.Load(), helperSends.Load())
+	if owner.accepts.Load() != 1 || helperSends.Load() != 0 {
+		t.Fatalf("accepts/legacy transport sends = %d/%d, want 1/0", owner.accepts.Load(), helperSends.Load())
 	}
 	datagram := stream.bytes()
 	header, err := credentialprotocol.ValidateHelperPacketDatagram(datagram)
 	if err != nil {
 		t.Fatalf("verified helper stream datagram error = %v", err)
 	}
-	if header.Type != credentialprotocol.PacketTypePrepareBegin || header.Sequence != firstInjectedHelperSendSequence {
+	if header.Type != credentialprotocol.PacketTypePrepareBegin || header.Sequence != firstInjectedHelperSendSequence ||
+		header.RequestID != prepare.RequestID().Bytes() || header.GuestCredentialIdentityDigest != digest.Bytes() ||
+		header.BootNonce != identity.identity.GuestBootNonce {
 		t.Fatalf("stream header = %#v", header)
 	}
 	decoded, err := credentialprotocol.DecodeHelperPrepareBeginBody(datagram[credentialprotocol.HelperPacketHeaderSize:])
