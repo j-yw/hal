@@ -27,6 +27,11 @@ unless a caller injects it.
 - `RecoverJobCredentials` with a nil store, or with no metadata for
   this identity, still returns `dependency_unaccepted` and mints no
   cleanup proof. Invalid identity is still mismatch.
+- Recovery requires the request revision to match the stored revision
+  exactly and requires a non-nil stored-handle revoker for every binding
+  before touching any binding. A missing revoker stays
+  `dependency_unaccepted`; a runtime that has already attempted preflight
+  rejects recovery as an invalid lifecycle transition.
 - When metadata is present, recovery attempts revoke/cleanup through
   injected activators if they still hold the resource. If every
   resource can be proved absent, or was never durable in this process,

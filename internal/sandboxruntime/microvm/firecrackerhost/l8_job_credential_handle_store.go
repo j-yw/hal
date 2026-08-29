@@ -96,7 +96,8 @@ func recoverL8JobCredentialStoredHandles(
 	if l8JobCredentialRuntimeValueIsNil(ctx) {
 		return ErrL8JobCredentialRuntimeInvalid
 	}
-	for _, binding := range record.Bindings {
+	revokers := make([]l8JobCredentialStoredHandleRevoker, len(record.Bindings))
+	for index, binding := range record.Bindings {
 		var revoker l8JobCredentialStoredHandleRevoker
 		switch sandboxruntime.JobCredentialDeliveryMode(binding.Mode) {
 		case sandboxruntime.JobCredentialDeliveryModeHTTPProxy:
@@ -108,6 +109,13 @@ func recoverL8JobCredentialStoredHandles(
 		default:
 			return ErrL8JobCredentialRuntimeInvalid
 		}
+		if l8JobCredentialRuntimeValueIsNil(revoker) {
+			return errL8JobCredentialRuntimeDependencyUnaccepted
+		}
+		revokers[index] = revoker
+	}
+	for index, binding := range record.Bindings {
+		revoker := revokers[index]
 		if err := callL8JobCredentialRevokeStored(revoker, ctx, identity, binding); err != nil {
 			return err
 		}
@@ -424,7 +432,7 @@ func callL8JobCredentialRevokeStored(
 		}
 	}()
 	if l8JobCredentialRuntimeValueIsNil(revoker) {
-		return nil
+		return errL8JobCredentialRuntimeDependencyUnaccepted
 	}
 	return revoker.RevokeStored(ctx, identity, binding)
 }

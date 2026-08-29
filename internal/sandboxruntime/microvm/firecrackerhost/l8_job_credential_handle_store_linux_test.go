@@ -65,7 +65,9 @@ func TestL8JobCredentialLinuxHandleStorePersistsMetadataBesideOwnerDirectory(t *
 		t.Fatalf("linux load = %#v present=%t err=%v", loaded, present, err)
 	}
 
-	proof, recoverErr := runtime.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
+	recovered := l8JobCredentialRuntimeForTest(t, now, &l8JobCredentialGuestSessionOpenerFake{session: l8JobCredentialGuestSessionFakeForTest(t, now)}, httpProxy, tmpfs, nil)
+	recovered.deps.HandleStore = store
+	proof, recoverErr := recovered.RecoverJobCredentials(context.Background(), sandboxruntime.JobCredentialRecoveryRequest{
 		Identity: identity, Revision: 1,
 	})
 	if recoverErr != nil {
