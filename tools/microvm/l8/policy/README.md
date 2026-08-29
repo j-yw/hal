@@ -20,8 +20,17 @@ and prefers a complete `-evidence-binaries-dir` over a singular
 `-evidence-binary`. Authority is an entry-point plus call-edge reachable
 graph from `main.main` or `_start`, not `runtime.*` / `syscall.*` prefix
 classification. Pclntab spans are authoritative, every relative branch
-target is followed, and ambiguous symbols, truncated transfers, and
-indirect control flow fail closed. Pinned-direct allow is only
+target is followed, and a relative CALL/JMP into a listed `STT_FUNC` /
+pclntab span is that known function (including ABI0 interiors such as
+`runtime.duffcopy`, `runtime.duffzero`, and `indexbytebody`). Proven
+canonical RIP-relative `JMP [base+index*8]` kind-switch tables with an
+unskippable AND or 64-bit CMP/forward-JA length, a unique non-writable
+mapping, and listed-span entries are known targets. Indexed indirect
+CALL, branch-skipped facts, ambiguous symbols, truncated transfers,
+and unproven register-indirect `CALL`/`JMP`
+(including `FF D0`/`FF D1`/`FF D6` map hash, interface equal, defer,
+and exithook function values) fail closed. Prefix is not authority
+and `runtime.*` is not a target set. Pinned-direct allow is only
 `internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Named Go
 PID1 extras are explicit D7 `runtimeEnvelope` / launch-base origin-3
 rows, not prefix membership. Named native `_start` identity-preflight
@@ -39,8 +48,8 @@ named syscall. A singular ELF that happens to embed HL8Q
 and a generic Go runtime syscall symbol does not prove its role identity
 or the complete final binary set. Missing helper, monitor, or shim role
 binaries fail closed. Consequently, even supplying `-evidence-binary` or
-a complete binaries dir fails closed while extra reachable syscalls
-remain.
+a complete binaries dir fails closed while extra reachable syscalls or
+unproven register-indirect CALL remain.
 
 The reserved future invocation is:
 

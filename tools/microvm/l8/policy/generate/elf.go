@@ -405,6 +405,40 @@ func mapVirtualAddress(file *elf.File, encoded []byte, value uint64) (fileOff, t
 	return 0, 0, errors.New("virtual address is outside executable text")
 }
 
+func mapReadOnlyLoadAddress(file *elf.File, encoded []byte, value, width uint64) (uint64, error) {
+	if width == 0 || value+width < value {
+		return 0, errors.New("loadable ELF range is invalid")
+	}
+	var found bool
+	var result uint64
+	for _, prog := range file.Progs {
+		if prog.Type != elf.PT_LOAD || prog.Filesz == 0 {
+			continue
+		}
+		segmentEnd := prog.Vaddr + prog.Filesz
+		if segmentEnd < prog.Vaddr || value < prog.Vaddr || value+width > segmentEnd {
+			continue
+		}
+		if prog.Flags&elf.PF_W != 0 {
+			return 0, errors.New("loadable ELF range is writable")
+		}
+		delta := value - prog.Vaddr
+		off := prog.Off + delta
+		if off < prog.Off || off+width < off || off+width > uint64(len(encoded)) {
+			return 0, errors.New("virtual address maps outside the ELF")
+		}
+		if found {
+			return 0, errors.New("virtual address has ambiguous loadable ELF mappings")
+		}
+		found = true
+		result = off
+	}
+	if found {
+		return result, nil
+	}
+	return 0, errors.New("virtual address is outside loadable ELF contents")
+}
+
 func lookupGoFunc(file *elf.File, name string) (value, size uint64, err error) {
 	if value, size, err := lookupELFSymbol(file, name); err == nil {
 		return value, size, nil
