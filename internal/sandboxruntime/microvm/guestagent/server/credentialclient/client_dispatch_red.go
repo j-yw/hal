@@ -2,6 +2,7 @@ package credentialclient
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/session"
@@ -98,11 +99,19 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 				return nil
 			}
 			nextHelperSequence++
-			if prepare.PrivateRecordCount() != 0 || prepare.PrivateAggregateBytes() != 0 {
-				return helperPacketDependencyUnaccepted(expectedIdentity)
+			sendSequence := nextHelperSequence
+			var fileErr error
+			sendSequence, nextSequence, fileErr = client.dispatchHelperPrepareFiles(
+				ctx, stream, prepare, identity, digest, sendSequence, nextSequence,
+			)
+			if fileErr != nil {
+				return fileErr
+			}
+			if client.drainStarted() || ctx.Err() != nil {
+				return nil
 			}
 			installed, nextSend, nextReceive, commitErr := client.dispatchMetadataOnlyPrepareCommit(
-				ctx, stream, packet, prepare, identity, digest, nextHelperSequence, nextHelperReceiveSequence,
+				ctx, stream, packet, prepare, identity, digest, sendSequence, nextHelperReceiveSequence,
 			)
 			if commitErr != nil {
 				return commitErr
@@ -246,14 +255,210 @@ func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observe
 }
 
 func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
-	// File-bearing prepare, nonempty private exec, exec-stream payload,
-	// SCM_RIGHTS SSH, and a nil HelperConnectionOwner stay unaccepted. Do not
-	// mint JobCredential proofs.
+	// Mismatched prepare-file payload, nonempty private exec, exec-stream
+	// payload, SCM_RIGHTS SSH, JobCredential proof minting, and a nil
+	// HelperConnectionOwner stay unaccepted.
 	_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, [16]byte{}, false, identity.Bytes())
 	if err != nil {
 		return err
 	}
 	return ErrClientControlDependencyUnaccepted
+}
+
+func (client *Client) dispatchHelperPrepareFiles(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	prepare v2control.CredentialPrepareRequest,
+	identity transportIdentity,
+	digest v2control.IdentityDigest,
+	sendSequence, controllerSequence uint64,
+) (uint64, uint64, error) {
+	records, _, err := projectV2ManifestToHelperRecords(prepare.Bindings())
+	if err != nil {
+		return sendSequence, controllerSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	indexes, aggregate, aggErr := helperOrderedFileTmpfsIndexes(records)
+	if aggErr != nil {
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	if uint32(len(indexes)) != prepare.PrivateRecordCount() || aggregate != prepare.PrivateAggregateBytes() {
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	if len(indexes) == 0 {
+		return sendSequence, controllerSequence, nil
+	}
+	if !configuredDependency(stream) {
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	var running uint64
+	for _, bindingIndex := range indexes {
+		if client.drainStarted() || ctx.Err() != nil {
+			return sendSequence, controllerSequence, nil
+		}
+		if int(bindingIndex) >= len(records) {
+			return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+		}
+		record := records[bindingIndex]
+		if record.Mode != credentialprotocol.DeliveryModeFileTmpfs {
+			return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+		}
+		if running > credentialprotocol.MaxHelperFileAggregateBytes-uint64(record.DeclaredFileBytes) {
+			return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+		}
+		running += uint64(record.DeclaredFileBytes)
+		nextSend, nextCtrl, sendErr := client.dispatchOneHelperPrepareFile(
+			ctx, stream, prepare, identity, digest, record, bindingIndex, sendSequence, controllerSequence,
+		)
+		if sendErr != nil {
+			return sendSequence, controllerSequence, sendErr
+		}
+		sendSequence = nextSend
+		controllerSequence = nextCtrl
+	}
+	if running != prepare.PrivateAggregateBytes() || running > credentialprotocol.MaxHelperFileAggregateBytes {
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	return sendSequence, controllerSequence, nil
+}
+
+func (client *Client) dispatchOneHelperPrepareFile(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	prepare v2control.CredentialPrepareRequest,
+	identity transportIdentity,
+	digest v2control.IdentityDigest,
+	record credentialprotocol.HelperBindingManifestRecord,
+	bindingIndex uint16,
+	sendSequence, controllerSequence uint64,
+) (nextSendSequence, nextControllerSequence uint64, returnErr error) {
+	if !configuredDependency(stream) {
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	receive, receiveErr := newControlReceiveRequest(controllerSequence, digest, true, session.MaxControlPlaintextBytes)
+	if receiveErr != nil {
+		return sendSequence, controllerSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	packet, dispatchErr, panicked := client.receiveControllerPacket(ctx, receive)
+	if panicked {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, clientError(ClientContractPanic, ClientFieldPacketType)
+	}
+	if dispatchErr != nil {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		if client.drainStarted() || ctx.Err() != nil {
+			return sendSequence, controllerSequence, nil
+		}
+		return sendSequence, controllerSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if packet.sequenceValue() != controllerSequence || packet.sessionIDValue() != identity.sessionIDValue() {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	controllerSequence++
+	if _, isPrepare := packet.prepareValue(); isPrepare {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	if _, isStream := packet.streamValue(); isStream {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	private, ok := packet.privateValue()
+	if !ok {
+		_, cleanupErr := rejectControllerPacketBody(&packet)
+		if cleanupErr != nil {
+			return sendSequence, controllerSequence, clientError(ClientContractCleanup, ClientFieldBody)
+		}
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	body := packet.body
+	packet.body = nil
+	defer func() {
+		if cleanupErr := destroyControllerBody(body); cleanupErr != nil {
+			returnErr = clientError(ClientContractCleanup, ClientFieldBody)
+		}
+	}()
+	if private.kind != credentialprotocol.PrivateRecordKindFileBytes ||
+		private.kind == credentialprotocol.PrivateRecordKindOpaqueExecBinding ||
+		private.requestID != prepare.RequestID() ||
+		private.identityDigest != digest ||
+		private.bindingIndex != bindingIndex ||
+		private.chunkIndex != 0 ||
+		private.chunkCount != 1 ||
+		record.Mode != credentialprotocol.DeliveryModeFileTmpfs ||
+		private.payloadLength != record.DeclaredFileBytes ||
+		private.payloadSHA256 != record.FileSHA256 {
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	owner, copyErr := copyControllerPrepareFileOwner(ctx, body, prepare.Revision(), bindingIndex, record.FileSHA256, record.DeclaredFileBytes)
+	if copyErr != nil {
+		wipeHelperPrepareFileOwner(owner)
+		if client.drainStarted() || ctx.Err() != nil {
+			return sendSequence, controllerSequence, nil
+		}
+		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+	}
+	defer wipeHelperPrepareFileOwner(owner)
+	if client.drainStarted() || ctx.Err() != nil {
+		return sendSequence, controllerSequence, nil
+	}
+	if writeErr := client.writePinnedHelperPrepareFile(ctx, stream, sendSequence, identity, digest, prepare.RequestID().Bytes(), owner); writeErr != nil {
+		return sendSequence, controllerSequence, writeErr
+	}
+	return sendSequence + 1, controllerSequence, nil
+}
+
+func (client *Client) writePinnedHelperPrepareFile(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	sequence uint64,
+	identity transportIdentity,
+	digest v2control.IdentityDigest,
+	requestID [16]byte,
+	owner *helperPrepareFileOwner,
+) error {
+	if !configuredDependency(stream) || owner == nil || owner.body == nil {
+		return helperPacketDependencyUnaccepted(digest)
+	}
+	if sequence == 0 || sequence > uint64(^uint32(0)) {
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if !client.beginAdmittedOperation() {
+		return nil
+	}
+	defer client.endAdmittedOperation()
+	send, sendErr := newHelperPrepareFileSendPacket(injectedHelperSendHeader(sequence, requestID, digest, identity.sessionIdentity().GuestBootNonce), owner)
+	if sendErr != nil {
+		if errors.Is(sendErr, ErrClientControlDependencyUnaccepted) {
+			return helperPacketDependencyUnaccepted(digest)
+		}
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if writeErr := writeHelperSendPacket(ctx, stream, send); writeErr != nil {
+		if client.drainStarted() || ctx.Err() != nil {
+			return nil
+		}
+		if errors.Is(writeErr, ErrClientControlDependencyUnaccepted) {
+			return helperPacketDependencyUnaccepted(digest)
+		}
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	return nil
 }
 
 func (client *Client) dispatchHelperPrepareBegin(

@@ -91,44 +91,53 @@ func TestL8D7GuestHelperServeNilOwnerRemainsUnaccepted(t *testing.T) {
 	}
 }
 
-func TestL8D7GuestHelperServeSendsPrepareBeginThenFailsClosedAtFilePayload(t *testing.T) {
+func TestL8D7GuestHelperServeSendsPrepareBeginFileAndCommit(t *testing.T) {
 	identity := testDispatchTransportIdentity()
-	prepare := testDispatchPrepareRequest(t, identity)
+	prepare, payload, fileDigest := testFileBearingDispatchPrepareRequest(t, identity)
 	digest := identityDigestForSession(t, testCredentialPacketSessionIdentity(t, identity.sessionID))
 	stream := newFakeHelperStream()
 	owner := &fakeHelperOwner{stream: stream}
+	stream.queueHelperDatagram(encodeHelperResponseDatagram(
+		t, 1, prepare.RequestID().Bytes(), digest.Bytes(), identity.identity.GuestBootNonce,
+		matchingFileBearingPrepareHelperResponse(t, prepare),
+	))
+	privateBody := testControllerPrepareFileBody(payload, fileDigest)
 	var helperSends atomic.Uint32
+	var controllerSends atomic.Uint32
+	closed := make(chan struct{})
 	transport := &dispatchRedTransport{identity: identity}
-	var receiveCount atomic.Uint32
-	transport.receiveController = func(_ context.Context, receive ControllerReceiveRequest) (ControllerPacket, error) {
-		count := receiveCount.Add(1)
-		if count != 1 {
-			return ControllerPacket{}, errors.New("file prepare requested a second controller packet")
-		}
-		return ControllerPacket{
-			sequence:  1,
-			sessionID: identity.sessionID,
-			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
-		}, nil
+	transport.receiveController = blockingControllerAfter(t, []ControllerPacket{
+		{sequence: 1, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare}},
+		testControllerPrivateFilePacket(2, identity, prepare, digest, 1, payload, fileDigest, privateBody),
+	}, closed)
+	transport.sendController = func(context.Context, ControllerSendPacket) error {
+		controllerSends.Add(1)
+		return nil
 	}
 	transport.sendHelper = func(_ context.Context, packet HelperSendPacket) error {
 		helperSends.Add(1)
-		body := make([]byte, packet.encodedBodyLengthValue())
-		return packet.writeCanonicalBody(&helperSendBodySink{buf: body})
+		return errors.New("legacy transport helper send must stay unused")
 	}
-	err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
-	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("Serve() error = %v, want prepare-file dependency unaccepted", err)
+	transport.close = func(context.Context) error {
+		transport.closeOnce.Do(func() { close(closed) })
+		return nil
+	}
+	client := newDispatchRedClientOpts(t, transport, owner)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- client.Serve(context.Background()) }()
+	waitForControllerSends(t, &controllerSends, 1, serveDone)
+	if err := client.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve() error = %v", err)
 	}
 	if owner.accepts.Load() != 1 || helperSends.Load() != 0 {
 		t.Fatalf("accepts/legacy transport sends = %d/%d, want 1/0", owner.accepts.Load(), helperSends.Load())
 	}
-	if receiveCount.Load() != 1 {
-		t.Fatalf("controller receives = %d, want one logical prepare", receiveCount.Load())
-	}
 	packets := decodeHelperDatagrams(t, stream.bytes())
-	if len(packets) != 1 {
-		t.Fatalf("helper datagrams = %d, want 1 prepare-begin", len(packets))
+	if len(packets) != 3 {
+		t.Fatalf("helper datagrams = %d, want begin+file+commit", len(packets))
 	}
 	header := packets[0].header
 	if header.Type != credentialprotocol.PacketTypePrepareBegin || header.Sequence != firstInjectedHelperSendSequence ||
@@ -142,6 +151,14 @@ func TestL8D7GuestHelperServeSendsPrepareBeginThenFailsClosedAtFilePayload(t *te
 	}
 	if decoded.Revision != 1 || len(decoded.Bindings) != 2 || decoded.Bindings[0].BindingID != "binding-http" {
 		t.Fatalf("stream prepare-begin body = %#v", decoded)
+	}
+	fileBody, err := credentialprotocol.DecodeHelperPrepareFileBody(packets[1].body)
+	if err != nil {
+		t.Fatalf("DecodeHelperPrepareFileBody() error = %v", err)
+	}
+	defer fileBody.Wipe()
+	if fileBody.BindingIndex() != 1 || fileBody.FileSHA256() != fileDigest {
+		t.Fatal("prepare-file body did not match the admitted file binding")
 	}
 }
 
@@ -362,8 +379,8 @@ func TestL8D7GuestHelperServeDoesNotInterleaveLaterMetadataWithPrepare(t *testin
 			if owner.accepts.Load() != 1 || helperSends.Load() != 0 {
 				t.Fatalf("accepts/legacy helper sends = %d/%d, want 1/0", owner.accepts.Load(), helperSends.Load())
 			}
-			if receiveCount.Load() != 1 {
-				t.Fatalf("controller receives = %d, want one outstanding prepare", receiveCount.Load())
+			if receiveCount.Load() != 2 {
+				t.Fatalf("controller receives = %d, want prepare plus rejected later %s", receiveCount.Load(), test.name)
 			}
 			packets := decodeHelperDatagrams(t, stream.bytes())
 			if len(packets) != 1 {
@@ -406,8 +423,8 @@ func TestL8D7GuestHelperServeStopsBeforeControllerPayloadAfterPrepareBegin(t *te
 	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("Serve() error = %v, want prepare-file dependency unaccepted", err)
 	}
-	if body.destroyed || receiveCount.Load() != 1 {
-		t.Fatalf("later payload was received before prepare completed: destroyed=%t receives=%d", body.destroyed, receiveCount.Load())
+	if !body.destroyed || receiveCount.Load() != 2 {
+		t.Fatalf("malformed later payload was not consumed fail-closed: destroyed=%t receives=%d", body.destroyed, receiveCount.Load())
 	}
 	packets := decodeHelperDatagrams(t, stream.bytes())
 	if len(packets) != 1 || packets[0].header.Type != credentialprotocol.PacketTypePrepareBegin {

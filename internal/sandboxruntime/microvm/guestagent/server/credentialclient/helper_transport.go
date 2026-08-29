@@ -229,6 +229,25 @@ func helperSendPacketUnconsumed(packet HelperSendPacket) bool {
 	return !packet.state.consumed && packet.state.owner != nil
 }
 
+func helperOrderedFileTmpfsIndexes(records []credentialprotocol.HelperBindingManifestRecord) ([]uint16, uint64, error) {
+	indexes := make([]uint16, 0, len(records))
+	var aggregate uint64
+	for index, record := range records {
+		if record.Mode != credentialprotocol.DeliveryModeFileTmpfs {
+			continue
+		}
+		if record.DeclaredFileBytes == 0 || record.DeclaredFileBytes > credentialprotocol.MaxHelperFileBytes {
+			return nil, 0, ErrClientControlDependencyUnaccepted
+		}
+		if aggregate > credentialprotocol.MaxHelperFileAggregateBytes-uint64(record.DeclaredFileBytes) {
+			return nil, 0, ErrClientControlDependencyUnaccepted
+		}
+		aggregate += uint64(record.DeclaredFileBytes)
+		indexes = append(indexes, uint16(index))
+	}
+	return indexes, aggregate, nil
+}
+
 func helperPrepareBeginBodyFromPrepare(prepare v2control.CredentialPrepareRequest) (credentialprotocol.HelperPrepareBeginBody, error) {
 	records, _, err := projectV2ManifestToHelperRecords(prepare.Bindings())
 	if err != nil {

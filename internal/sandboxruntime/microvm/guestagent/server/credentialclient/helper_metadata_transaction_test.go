@@ -35,8 +35,8 @@ func TestL8D7GuestHelperFilePrepareNeverInventsSecondControllerPrepare(t *testin
 	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
 		t.Fatalf("Serve() error = %v, want file payload dependency unaccepted", err)
 	}
-	if receives.Load() != 1 {
-		t.Fatalf("controller receives = %d, want one logical prepare request", receives.Load())
+	if receives.Load() != 2 {
+		t.Fatalf("controller receives = %d, want prepare plus rejected second prepare", receives.Load())
 	}
 	packets := decodeHelperDatagrams(t, stream.bytes())
 	if len(packets) != 1 || packets[0].header.Type != credentialprotocol.PacketTypePrepareBegin {

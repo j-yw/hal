@@ -182,32 +182,133 @@ func TestL8D7GuestHelperPrepareResponseMismatchInstallsNoActiveLedger(t *testing
 	}
 }
 
-func TestL8D7GuestHelperFileBearingPrepareStillUnaccepted(t *testing.T) {
+func TestL8D7GuestHelperFileBearingPrepareSendsFileThenCommitAndLedger(t *testing.T) {
 	identity := testDispatchTransportIdentity()
-	prepare := testDispatchPrepareRequest(t, identity)
+	prepare, payload, fileDigest := testFileBearingDispatchPrepareRequest(t, identity)
+	sessionIdentity := testCredentialPacketSessionIdentity(t, identity.sessionID)
+	digest := identityDigestForSession(t, sessionIdentity)
 	stream := newFakeHelperStream()
 	owner := &fakeHelperOwner{stream: stream}
-	var sends atomic.Uint32
+	stream.queueHelperDatagram(encodeHelperResponseDatagram(
+		t, 1, prepare.RequestID().Bytes(), digest.Bytes(), identity.identity.GuestBootNonce,
+		matchingFileBearingPrepareHelperResponse(t, prepare),
+	))
+	privateBody := testControllerPrepareFileBody(payload, fileDigest)
+	var controllerSends atomic.Uint32
+	closed := make(chan struct{})
 	transport := &dispatchRedTransport{identity: identity}
-	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
-		return ControllerPacket{
-			sequence:  1,
-			sessionID: identity.sessionID,
-			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
-		}, nil
+	transport.receiveController = blockingControllerAfter(t, []ControllerPacket{
+		{sequence: 1, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare}},
+		testControllerPrivateFilePacket(2, identity, prepare, digest, 1, payload, fileDigest, privateBody),
+	}, closed)
+	transport.sendController = func(_ context.Context, packet ControllerSendPacket) error {
+		response, ok := packet.prepareResponseValue()
+		if !ok || response.ActiveProofID() != "active-proof" || response.ExecBindingID() != "exec-binding" {
+			return errors.New("file-bearing prepare success lost helper proof mapping")
+		}
+		proofs := response.BindingProofs()
+		if len(proofs) != 2 || proofs[0].BindingID() != "binding-http" || proofs[1].BindingID() != "binding-file" ||
+			proofs[1].ProofID() != "proof-file" {
+			return errors.New("file-bearing prepare proofs were not copied after exact match")
+		}
+		controllerSends.Add(1)
+		return nil
 	}
-	transport.sendController = func(context.Context, ControllerSendPacket) error {
-		sends.Add(1)
-		return errors.New("file-bearing prepare must not answer the controller")
+	transport.close = func(context.Context) error {
+		transport.closeOnce.Do(func() { close(closed) })
+		return nil
 	}
-	err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
-	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("Serve() error = %v, want file payload unaccepted", err)
+
+	client := newDispatchRedClientOpts(t, transport, owner)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- client.Serve(context.Background()) }()
+	waitForControllerSends(t, &controllerSends, 1, serveDone)
+	if err := client.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
-	if sends.Load() != 0 {
-		t.Fatalf("controller sends = %d, want 0", sends.Load())
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve() after file-bearing ledger install = %v", err)
 	}
-	assertHelperPacketTypes(t, stream, credentialprotocol.PacketTypePrepareBegin)
+	if !privateBody.destroyed {
+		t.Fatal("admitted prepare-file controller body was not destroyed")
+	}
+	assertHelperPacketTypes(t, stream,
+		credentialprotocol.PacketTypePrepareBegin,
+		credentialprotocol.PacketTypePrepareFile,
+		credentialprotocol.PacketTypePrepareCommit,
+	)
+	packets := decodeHelperDatagrams(t, stream.bytes())
+	decoded, err := credentialprotocol.DecodeHelperPrepareFileBody(packets[1].body)
+	if err != nil {
+		t.Fatalf("DecodeHelperPrepareFileBody() error = %v", err)
+	}
+	defer decoded.Wipe()
+	if decoded.Revision() != 1 || decoded.BindingIndex() != 1 || decoded.FileLength() != uint32(len(payload)) || decoded.FileSHA256() != fileDigest {
+		t.Fatal("prepare-file metadata did not match the begin manifest")
+	}
+	got := make([]byte, len(payload))
+	if n, copyErr := decoded.CopyPrivateBytes(got); copyErr != nil || n != len(payload) || sha256.Sum256(got) != fileDigest {
+		t.Fatal("prepare-file private bytes did not match the admitted payload digest")
+	}
+	if packets[0].header.RequestID != prepare.RequestID().Bytes() || packets[1].header.RequestID != prepare.RequestID().Bytes() ||
+		packets[2].header.RequestID != prepare.RequestID().Bytes() || packets[1].header.Sequence != 2 || packets[2].header.Sequence != 3 {
+		t.Fatalf("file-bearing helper headers = %#v %#v %#v", packets[0].header, packets[1].header, packets[2].header)
+	}
+}
+
+func TestL8D7GuestHelperPrepareFileBodyCleanupFailureStopsBeforeCommit(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		destroyErr error
+		panic      bool
+	}{
+		{name: "error", destroyErr: errors.New("destroy failed")},
+		{name: "panic", panic: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := testDispatchTransportIdentity()
+			prepare, payload, fileDigest := testFileBearingDispatchPrepareRequest(t, identity)
+			digest := identityDigestForSession(t, testCredentialPacketSessionIdentity(t, identity.sessionID))
+			stream := newFakeHelperStream()
+			owner := &fakeHelperOwner{stream: stream}
+			stream.queueHelperDatagram(encodeHelperResponseDatagram(
+				t, 1, prepare.RequestID().Bytes(), digest.Bytes(), identity.identity.GuestBootNonce,
+				matchingFileBearingPrepareHelperResponse(t, prepare),
+			))
+			privateBody := testControllerPrepareFileBody(payload, fileDigest)
+			privateBody.destroyErr = test.destroyErr
+			privateBody.destroyPanic = test.panic
+			var receives atomic.Uint32
+			var sends atomic.Uint32
+			transport := &dispatchRedTransport{identity: identity}
+			transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+				switch receives.Add(1) {
+				case 1:
+					return ControllerPacket{sequence: 1, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare}}, nil
+				case 2:
+					return testControllerPrivateFilePacket(2, identity, prepare, digest, 1, payload, fileDigest, privateBody), nil
+				default:
+					return ControllerPacket{}, errors.New("stop")
+				}
+			}
+			transport.sendController = func(context.Context, ControllerSendPacket) error {
+				sends.Add(1)
+				return nil
+			}
+
+			err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
+			if clientContractCode(err) != ClientContractCleanup {
+				t.Fatalf("Serve() error = %v, want cleanup", err)
+			}
+			if sends.Load() != 0 {
+				t.Fatalf("controller sends = %d, want 0", sends.Load())
+			}
+			assertHelperPacketTypes(t, stream,
+				credentialprotocol.PacketTypePrepareBegin,
+				credentialprotocol.PacketTypePrepareFile,
+			)
+		})
+	}
 }
 
 func TestL8D7GuestHelperNilOwnerDoesNotSendHelper(t *testing.T) {
@@ -588,6 +689,204 @@ func encodeHelperResponseDatagram(t *testing.T, sequence uint64, requestID [16]b
 	copy(datagram, encodedHeader[:])
 	copy(datagram[len(encodedHeader):], encoded)
 	return datagram
+}
+
+func TestL8D7GuestHelperPrepareFileMismatchesFailClosed(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare, payload, fileDigest := testFileBearingDispatchPrepareRequest(t, identity)
+	digest := identityDigestForSession(t, testCredentialPacketSessionIdentity(t, identity.sessionID))
+	wrongDigest := sha256.Sum256([]byte("wrong-file-payload"))
+	wrongPayload := []byte("secret!!")
+	wrongPayloadDigest := sha256.Sum256(wrongPayload)
+
+	cases := []struct {
+		name   string
+		packet ControllerPacket
+	}{
+		{
+			name: "digest",
+			packet: testControllerPrivateFilePacket(2, identity, prepare, digest, 1, payload, wrongDigest, &testHelperBody{
+				length: uint32(len(payload)), digest: wrongDigest, payload: append([]byte(nil), payload...),
+			}),
+		},
+		{
+			name:   "index",
+			packet: testControllerPrivateFilePacket(2, identity, prepare, digest, 0, payload, fileDigest, testControllerPrepareFileBody(payload, fileDigest)),
+		},
+		{
+			name:   "mode",
+			packet: testControllerPrivateFilePacket(2, identity, prepare, digest, 0, payload, fileDigest, testControllerPrepareFileBody(payload, fileDigest)),
+		},
+		{
+			name:   "length",
+			packet: testControllerPrivateFilePacket(2, identity, prepare, digest, 1, wrongPayload, wrongPayloadDigest, testControllerPrepareFileBody(wrongPayload, wrongPayloadDigest)),
+		},
+		{
+			name: "exec-private",
+			packet: ControllerPacket{
+				sequence:  2,
+				sessionID: identity.sessionID,
+				arm: controllerPacketArm{kind: controllerPacketArmPrivate, private: controllerPrivateRecord{
+					kind: credentialprotocol.PrivateRecordKindOpaqueExecBinding, requestID: prepare.RequestID(),
+					identityDigest: digest, chunkIndex: 0, chunkCount: 1, payloadLength: uint32(len(payload)), payloadSHA256: fileDigest,
+				}},
+				body: testControllerPrepareFileBody(payload, fileDigest),
+			},
+		},
+		{
+			name: "exec-stream",
+			packet: ControllerPacket{
+				sequence:  2,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmStream},
+				body:      testControllerPrepareFileBody(payload, fileDigest),
+			},
+		},
+		{
+			name: "second-prepare",
+			packet: ControllerPacket{
+				sequence:  2,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+			},
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			stream := newFakeHelperStream()
+			owner := &fakeHelperOwner{stream: stream}
+			var sends atomic.Uint32
+			var receives atomic.Uint32
+			transport := &dispatchRedTransport{identity: identity}
+			transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+				count := receives.Add(1)
+				if count == 1 {
+					return ControllerPacket{
+						sequence:  1,
+						sessionID: identity.sessionID,
+						arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+					}, nil
+				}
+				return test.packet, nil
+			}
+			transport.sendController = func(context.Context, ControllerSendPacket) error {
+				sends.Add(1)
+				return errors.New("mismatched prepare-file must not mint proofs or answer the controller")
+			}
+			err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
+			if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+				t.Fatalf("Serve() error = %v, want prepare-file mismatch unaccepted", err)
+			}
+			if sends.Load() != 0 {
+				t.Fatalf("controller sends = %d, want 0", sends.Load())
+			}
+			if receives.Load() != 2 {
+				t.Fatalf("controller receives = %d, want prepare plus one payload attempt", receives.Load())
+			}
+			assertHelperPacketTypes(t, stream, credentialprotocol.PacketTypePrepareBegin)
+		})
+	}
+}
+
+func TestL8D7GuestHelperPrepareFileAggregateBound(t *testing.T) {
+	exact := make([]credentialprotocol.HelperBindingManifestRecord, 16)
+	for index := range exact {
+		exact[index] = credentialprotocol.HelperBindingManifestRecord{
+			BindingID:         "file",
+			Mode:              credentialprotocol.DeliveryModeFileTmpfs,
+			TargetPath:        "credentials/config",
+			DeclaredFileBytes: credentialprotocol.MaxHelperFileBytes,
+			FileSHA256:        sha256.Sum256([]byte{byte(index)}),
+		}
+	}
+	indexes, aggregate, err := helperOrderedFileTmpfsIndexes(exact)
+	if err != nil || len(indexes) != 16 || aggregate != credentialprotocol.MaxHelperFileAggregateBytes {
+		t.Fatalf("exact aggregate = %d indexes %d err %v", aggregate, len(indexes), err)
+	}
+	over := append(append([]credentialprotocol.HelperBindingManifestRecord{}, exact...), credentialprotocol.HelperBindingManifestRecord{
+		BindingID: "file-over", Mode: credentialprotocol.DeliveryModeFileTmpfs, TargetPath: "over",
+		DeclaredFileBytes: 1, FileSHA256: sha256.Sum256([]byte("over")),
+	})
+	if _, _, err := helperOrderedFileTmpfsIndexes(over); !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("aggregate overflow error = %v, want unaccepted", err)
+	}
+}
+
+func matchingFileBearingPrepareHelperResponse(t *testing.T, prepare v2control.CredentialPrepareRequest) credentialprotocol.HelperResponseBody {
+	t.Helper()
+	return credentialprotocol.HelperResponseBody{
+		RequestType: credentialprotocol.PacketTypePrepareCommit,
+		Disposition: credentialprotocol.ResponseDispositionAccepted,
+		Revision:    prepare.Revision(),
+		FailureCode: credentialprotocol.FailureCodeNone,
+		Prepare: &credentialprotocol.HelperPrepareResponseResult{
+			ExpiresAtUnixNano: prepare.ExpiresAtUnixNano(),
+			ActiveProofID:     "active-proof",
+			ExecBindingID:     "exec-binding",
+			BindingProofs: []credentialprotocol.HelperBindingProof{
+				{BindingID: "binding-http", Mode: credentialprotocol.DeliveryModeHTTPProxy, ProofID: "proof-http"},
+				{BindingID: "binding-file", Mode: credentialprotocol.DeliveryModeFileTmpfs, ProofID: "proof-file"},
+			},
+		},
+	}
+}
+
+func testMatchingFilePayload() ([]byte, [32]byte) {
+	payload := []byte("secret!")
+	return payload, sha256.Sum256(payload)
+}
+
+func testFileBearingDispatchPrepareRequest(t *testing.T, identity transportIdentity) (v2control.CredentialPrepareRequest, []byte, [32]byte) {
+	t.Helper()
+	payload, digest := testMatchingFilePayload()
+	sessionIdentity := testCredentialPacketSessionIdentity(t, identity.sessionID)
+	httpBinding, err := v2control.NewHTTPBindingManifest("binding-http", "azure-openai-responses-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileBinding, err := v2control.NewFileBindingManifest("binding-file", "credentials/config", uint32(len(payload)), hex.EncodeToString(digest[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepare, err := v2control.NewCredentialPrepareRequest(
+		testPacketRequestID(t), sessionIdentity, 1, 1700000001123456789,
+		[]v2control.BindingManifest{httpBinding, fileBinding}, 1, uint64(len(payload)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return prepare, payload, digest
+}
+
+func testControllerPrepareFileBody(payload []byte, digest [32]byte) *testHelperBody {
+	return &testHelperBody{length: uint32(len(payload)), digest: digest, payload: append([]byte(nil), payload...)}
+}
+
+func testControllerPrivateFilePacket(
+	sequence uint64,
+	identity transportIdentity,
+	prepare v2control.CredentialPrepareRequest,
+	digest v2control.IdentityDigest,
+	bindingIndex uint16,
+	payload []byte,
+	fileDigest [32]byte,
+	body *testHelperBody,
+) ControllerPacket {
+	return ControllerPacket{
+		sequence:  sequence,
+		sessionID: identity.sessionID,
+		arm: controllerPacketArm{kind: controllerPacketArmPrivate, private: controllerPrivateRecord{
+			kind:           credentialprotocol.PrivateRecordKindFileBytes,
+			requestID:      prepare.RequestID(),
+			identityDigest: digest,
+			bindingIndex:   bindingIndex,
+			chunkIndex:     0,
+			chunkCount:     1,
+			payloadLength:  uint32(len(payload)),
+			payloadSHA256:  fileDigest,
+		}},
+		body: body,
+	}
 }
 
 func matchingHTTPPrepareHelperResponse(t *testing.T, prepare v2control.CredentialPrepareRequest) credentialprotocol.HelperResponseBody {
