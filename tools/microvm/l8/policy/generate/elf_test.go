@@ -174,23 +174,21 @@ func TestL8D7EvidenceIssuanceRejectsCompleteRolesWithoutBoundedCallGraph(t *test
 			t.Fatalf("complete-role error = %v still includes unnumbered trampoline %s", err, name)
 		}
 	}
-	for _, name := range []string{"clone", "clone3", "getppid"} {
+	for _, name := range []string{"clone", "clone3"} {
 		if !strings.Contains(message, name) {
 			t.Fatalf("complete-role error = %v, want named trampoline syscall %s", err, name)
 		}
+	}
+	if strings.Contains(message, "getppid") {
+		t.Fatalf("complete-role error = %v leaked catalog-listed getppid", err)
 	}
 	for _, name := range []string{"futex", "mmap", "clock_gettime"} {
 		if strings.Contains(message, name+",") || strings.Contains(message, name+" ") || strings.HasSuffix(message, name) {
 			t.Fatalf("complete-role error = %v leaked catalog-listed runtime envelope syscall %s", err, name)
 		}
 	}
-	if !strings.Contains(message, "role binary "+guestBootstrapBinaryName+" has reachable extra syscalls from "+nativeBootstrapSymbol+":") {
-		t.Fatalf("complete-role error = %v, want named native extras from %s", err, nativeBootstrapSymbol)
-	}
-	for _, name := range []string{"getuid", "exit_group", "socket"} {
-		if !strings.Contains(message, name) {
-			t.Fatalf("complete-role error = %v, want named native extra syscall %s", err, name)
-		}
+	if strings.Contains(message, "role binary "+guestBootstrapBinaryName+" has reachable extra syscalls from "+nativeBootstrapSymbol+":") {
+		t.Fatalf("complete-role error = %v leaked nativeEnvelope catalog names as extras", err)
 	}
 	if strings.Contains(message, "runtime.reviewerAuthority") || strings.Contains(message, "classifiedNonAuthority") {
 		t.Fatalf("complete-role error used namespace classification: %v", err)

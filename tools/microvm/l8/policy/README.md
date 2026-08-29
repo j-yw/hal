@@ -24,14 +24,18 @@ target is followed, and ambiguous symbols, truncated transfers, and
 indirect control flow fail closed. Pinned-direct allow is only
 `internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Named Go
 PID1 extras are explicit D7 `runtimeEnvelope` / launch-base origin-3
-rows, not prefix membership. Reachable
+rows, not prefix membership. Named native `_start` identity-preflight
+plus PID1 listen-table extras are explicit D7 `nativeEnvelope` /
+launch-bootstrap origin-1 rows, used only for the native bootstrap
+binary. Prefix is not authority. Reachable
 `syscall.rawSyscallNoError.abi0` and `syscall.rawVforkSyscall.abi0`
 CALL/JMP sites recover the linux/amd64 trap/number from the direct
 caller's `MOVQ $imm` into the trap slot or AX; catalog-listed names
 are not extras, unlisted names remain extras, and unproven numbers
-stay `unknown:symbol`. Native `_start` extras (`getuid`/`exit_group`
-and the rest documented in the reachable-graph design) still fail
-closed. A singular ELF that happens to embed HL8Q
+stay `unknown:symbol`. `clone` and `clone3` remain extras because they
+are process-creation/shim authority without exact argument templates.
+`runtime.reviewerAuthority` is extra if reachable with an unlisted
+named syscall. A singular ELF that happens to embed HL8Q
 and a generic Go runtime syscall symbol does not prove its role identity
 or the complete final binary set. Missing helper, monitor, or shim role
 binaries fail closed. Consequently, even supplying `-evidence-binary` or

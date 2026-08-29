@@ -68,6 +68,7 @@ type rolesDocument struct {
 	Schema          string        `json:"schema"`
 	Roles           []roleInput   `json:"roles"`
 	RuntimeEnvelope []string      `json:"runtimeEnvelope"`
+	NativeEnvelope  []string      `json:"nativeEnvelope"`
 	PinnedCallsite  callsiteInput `json:"pinnedCallsite"`
 }
 
@@ -144,6 +145,7 @@ func exactRuntimeEnvelope() []string {
 		"exit_group",
 		"futex",
 		"getpid",
+		"getppid",
 		"gettid",
 		"madvise",
 		"mmap",
@@ -158,6 +160,23 @@ func exactRuntimeEnvelope() []string {
 		"timer_delete",
 		"timer_settime",
 		"write",
+	}
+}
+
+func exactNativeEnvelope() []string {
+	return []string{
+		"getuid",
+		"geteuid",
+		"getgid",
+		"getegid",
+		"capget",
+		"prlimit64",
+		"socket",
+		"bind",
+		"listen",
+		"dup3",
+		"close",
+		"exit_group",
 	}
 }
 
@@ -397,6 +416,9 @@ func decodeRoles(encoded []byte) (rolesDocument, error) {
 	if !equalStringSlices(document.RuntimeEnvelope, exactRuntimeEnvelope()) {
 		return rolesDocument{}, errors.New("runtimeEnvelope does not match the exact named Go PID1 catalog")
 	}
+	if !equalStringSlices(document.NativeEnvelope, exactNativeEnvelope()) {
+		return rolesDocument{}, errors.New("nativeEnvelope does not match the exact named native _start catalog")
+	}
 	if document.PinnedCallsite != exactPinnedCallsite() {
 		return rolesDocument{}, errors.New("pinned callsite record does not match the exact D7 input")
 	}
@@ -408,11 +430,14 @@ func decodeRoles(encoded []byte) (rolesDocument, error) {
 }
 
 func ordinaryCatalogNames(document rolesDocument) map[string]struct{} {
-	names := make(map[string]struct{}, len(document.Roles)+len(document.RuntimeEnvelope))
+	names := make(map[string]struct{}, len(document.Roles)+len(document.RuntimeEnvelope)+len(document.NativeEnvelope))
 	for _, role := range document.Roles {
 		names[role.Syscall] = struct{}{}
 	}
 	for _, name := range document.RuntimeEnvelope {
+		names[name] = struct{}{}
+	}
+	for _, name := range document.NativeEnvelope {
 		names[name] = struct{}{}
 	}
 	return names
@@ -471,7 +496,7 @@ func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA
 	var ruleIndex uint32
 	roleFilters := make(map[uint8][][]byte, len(document.Roles))
 	for _, role := range document.Roles {
-		rules, err := roleEncodedRules(role, document.RuntimeEnvelope, catalog)
+		rules, err := roleEncodedRules(role, document, catalog)
 		if err != nil {
 			return nil, 0, nil, nil, err
 		}
@@ -533,7 +558,7 @@ func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA
 	return body.Bytes(), workloadIndex, runtimeIndexes, roleFilters, nil
 }
 
-func roleEncodedRules(role roleInput, envelope []string, catalog map[string]uint32) ([]encodedRoleRule, error) {
+func roleEncodedRules(role roleInput, document rolesDocument, catalog map[string]uint32) ([]encodedRoleRule, error) {
 	number, ok := catalog[role.Syscall]
 	if !ok {
 		return nil, fmt.Errorf("role %s references absent syscall %q", role.Name, role.Syscall)
@@ -544,7 +569,8 @@ func roleEncodedRules(role roleInput, envelope []string, catalog map[string]uint
 		path:   role.Path,
 		pinned: role.PinnedRuntimeCallsite,
 	}}
-	if role.Origin != 3 {
+	envelope, label := roleEnvelope(role, document)
+	if len(envelope) == 0 {
 		return rules, nil
 	}
 	seen := map[string]struct{}{role.Syscall: {}}
@@ -554,7 +580,7 @@ func roleEncodedRules(role roleInput, envelope []string, catalog map[string]uint
 		}
 		envelopeNumber, ok := catalog[name]
 		if !ok {
-			return nil, fmt.Errorf("runtime envelope references absent syscall %q", name)
+			return nil, fmt.Errorf("%s references absent syscall %q", label, name)
 		}
 		seen[name] = struct{}{}
 		rules = append(rules, encodedRoleRule{
@@ -571,6 +597,16 @@ func roleEncodedRules(role roleInput, envelope []string, catalog map[string]uint
 		return rules[i].number < rules[j].number
 	})
 	return rules, nil
+}
+
+func roleEnvelope(role roleInput, document rolesDocument) ([]string, string) {
+	if role.Origin == 3 {
+		return document.RuntimeEnvelope, "runtime envelope"
+	}
+	if role.Name == "launch-bootstrap" {
+		return document.NativeEnvelope, "native envelope"
+	}
+	return nil, ""
 }
 
 func syscallFilterRow(number uint32) []byte {

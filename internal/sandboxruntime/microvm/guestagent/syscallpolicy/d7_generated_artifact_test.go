@@ -22,10 +22,10 @@ func TestL8D7GeneratedArtifactImportsCanonicalNonzeroAuthority(t *testing.T) {
 	if len(embeddedVerifiedPolicyArtifactBytes) == 0 || len(embeddedVerifiedPolicyArtifactBytes) > MaxVerifiedPolicyArtifactBytes {
 		t.Fatalf("generated D7 artifact byte length = %d", len(embeddedVerifiedPolicyArtifactBytes))
 	}
-	if len(artifact.Catalog()) < 300 || len(artifact.Rules()) != 27 || len(artifact.Transitions()) != 9 {
+	if len(artifact.Catalog()) < 300 || len(artifact.Rules()) != 40 || len(artifact.Transitions()) != 9 {
 		t.Fatalf("generated D7 topology = catalog:%d rules:%d transitions:%d", len(artifact.Catalog()), len(artifact.Rules()), len(artifact.Transitions()))
 	}
-	if len(artifact.Workload().Rules()) != 1 || len(artifact.Runtime().Rules()) != 18 || artifact.Runtime().GoVersion() != "go1.25.7" {
+	if len(artifact.Workload().Rules()) != 1 || len(artifact.Runtime().Rules()) != 19 || artifact.Runtime().GoVersion() != "go1.25.7" {
 		t.Fatal("generated D7 workload/runtime projections are incomplete")
 	}
 	legacyFound := false

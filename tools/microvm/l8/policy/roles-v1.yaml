@@ -17,6 +17,7 @@
     "exit_group",
     "futex",
     "getpid",
+    "getppid",
     "gettid",
     "madvise",
     "mmap",
@@ -31,6 +32,20 @@
     "timer_delete",
     "timer_settime",
     "write"
+  ],
+  "nativeEnvelope": [
+    "getuid",
+    "geteuid",
+    "getgid",
+    "getegid",
+    "capget",
+    "prlimit64",
+    "socket",
+    "bind",
+    "listen",
+    "dup3",
+    "close",
+    "exit_group"
   ],
   "pinnedCallsite": {
     "sourceUnit": "src/internal/runtime/syscall/asm_linux_amd64.s",
