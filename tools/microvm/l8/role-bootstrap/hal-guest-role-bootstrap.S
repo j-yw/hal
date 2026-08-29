@@ -264,7 +264,8 @@ _start:
 	jmp	.Lpid1_scm_rights
 
 .Lpid1_execveat:
-	# execveat(dirfd, "", empty argv, NULL, AT_EMPTY_PATH) of a compiled
+	# execveat(dirfd, "", one image-owned argv[0], NULL, AT_EMPTY_PATH)
+	# of a compiled
 	# PID1-held pinned executable FD. Classic seccomp can see dirfd and
 	# AT_EMPTY_PATH (0x1000); it cannot see pathname bytes. The image-init
 	# plan names only FD 5 (mount-monitor) and FD 6 (workload-shim).
@@ -274,11 +275,14 @@ _start:
 	cmpq	$2, %rbx
 	jb	.Lfail_closed
 	movq	$5, %rdi		# monitor pinned executable FD
+	leaq	token_monitor(%rip), %r9
 	je	.Lpid1_execveat_do
 	movq	$6, %rdi		# shim pinned executable FD
+	leaq	token_workload_shim(%rip), %r9
 .Lpid1_execveat_do:
 	leaq	empty_path(%rip), %rsi
-	movq	$0, 96(%rsp)
+	movq	%r9, 96(%rsp)		# argv[0]: image-owned role token
+	movq	$0, 104(%rsp)		# argv[1]: NULL
 	leaq	96(%rsp), %rdx
 	xorl	%r10d, %r10d		# envp NULL
 	movq	$0x1000, %r8		# AT_EMPTY_PATH

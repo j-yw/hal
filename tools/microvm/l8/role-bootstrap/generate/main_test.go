@@ -332,6 +332,10 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 		"movq\t$17, 32(%rsp)",
 		"movq\t$5, %rdi",
 		"movq\t$6, %rdi",
+		"leaq\ttoken_monitor(%rip), %r9",
+		"leaq\ttoken_workload_shim(%rip), %r9",
+		"movq\t%r9, 96(%rsp)",
+		"movq\t$0, 104(%rsp)",
 		"movq\t$0x1000, %r8",
 		"empty_path",
 		"launch_base_filter",
@@ -352,6 +356,7 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 	for _, forbidden := range []string{
 		"movq\t$59, %rax",
 		"movq\t$46, %rax",
+		"movq\t$0, 96(%rsp)",
 		"movl\t$0, %edi",
 		"/usr/bin/hal-guest-credential-helper",
 		"/usr/bin/hal-guest-agent",
@@ -386,6 +391,29 @@ func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
 	}
 	if strings.Contains(string(callsite), "sendmsg") || strings.Contains(string(callsite), "14=execve:59") {
 		t.Fatal("callsite inventory claimed an unimplemented live supervisor syscall")
+	}
+}
+
+func TestL8D7NativeExecveatRetainsOneImageOwnedArgv0(t *testing.T) {
+	root := repositoryRoot(t)
+	source, err := os.ReadFile(filepath.Join(root, nativeSourceRel))
+	if err != nil {
+		t.Fatalf("read native source: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"leaq\ttoken_monitor(%rip), %r9",
+		"leaq\ttoken_workload_shim(%rip), %r9",
+		"movq\t%r9, 96(%rsp)",
+		"movq\t$0, 104(%rsp)",
+		"leaq\t96(%rsp), %rdx",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("native execveat argv omits %q", required)
+		}
+	}
+	if strings.Contains(text, "movq\t$0, 96(%rsp)") {
+		t.Fatal("native execveat passes argc zero to admitted Go role children")
 	}
 }
 

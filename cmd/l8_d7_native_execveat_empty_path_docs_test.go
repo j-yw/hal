@@ -23,6 +23,8 @@ func TestL8D7NativeExecveatEmptyPathVerificationDocument(t *testing.T) {
 		"AT_EMPTY_PATH",
 		"FD 5",
 		"FD 6",
+		"argv is exactly one image-owned role token",
+		"valid argv[0] and no extra arguments",
 		"envp NULL",
 		"exit_group 127",
 		"does not exit 0",

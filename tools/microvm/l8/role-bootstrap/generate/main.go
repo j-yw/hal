@@ -222,6 +222,10 @@ func validateNativeSource(encoded []byte) error {
 		"movq\t$17, 32(%rsp)",
 		"movq\t$5, %rdi",
 		"movq\t$6, %rdi",
+		"leaq\ttoken_monitor(%rip), %r9",
+		"leaq\ttoken_workload_shim(%rip), %r9",
+		"movq\t%r9, 96(%rsp)",
+		"movq\t$0, 104(%rsp)",
 		"movq\t$0x1000, %r8",
 		"empty_path",
 		"launch_base_filter",
@@ -234,6 +238,7 @@ func validateNativeSource(encoded []byte) error {
 		"__libc", "main.main", "runtime.main", "dlopen", "getenv", "malloc",
 		"movq\t$59, %rax", // pathname execve
 		"movq\t$46, %rax", // sendmsg
+		"movq\t$0, 96(%rsp)", // argc zero for admitted Go children
 		"movl\t$0, %edi",
 		"/usr/bin/hal-guest-credential-helper",
 		"/usr/bin/hal-guest-agent",

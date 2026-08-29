@@ -19,15 +19,17 @@ Classic seccomp cannot see pathname bytes. The prior launch-base clone3
 and execve templates slice therefore FAIL CLOSED on pathname `execve`
 (59): encoding any execve row without an exact pathname scalar would
 allow every pathname. The honest BPF-visible alternative is
-`execveat(dirfd, "", empty argv, NULL, AT_EMPTY_PATH)` of an
+`execveat(dirfd, "", one image-owned argv[0], NULL, AT_EMPTY_PATH)` of an
 already-admitted sealed image FD.
 
 Exact ABI:
 
 - `execveat` (322). `args[0]` is a compiled PID1-held pinned executable
   FD. `args[4]` is `AT_EMPTY_PATH` (`0x1000`). `args[3]` is envp NULL.
-- pathname is the RO empty-path token `""`. argv is empty (pointer to a
-  closed NULL). envp is NULL. Pointers address only RO image tokens or
+- pathname is the RO empty-path token `""`. argv is exactly one
+  image-owned role token (`monitor` or `workload-shim`) followed by NULL,
+  so the admitted Go entrypoints receive a valid argv[0] and no extra
+  arguments. envp is NULL. Pointers address only RO image tokens or
   bounded stack. There is no libc and no gcc; `as`/`ld` only.
 - Image-init plan FDs: FD 5 is the pinned mount-monitor executable; FD 6
   is the pinned workload-shim executable. Launch-base Allows only those
