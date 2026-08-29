@@ -150,18 +150,26 @@ func TestL8D7ReachableGraphNamesNativeStartSyscalls(t *testing.T) {
 			t.Fatalf("native reachable functions = %v, want %s", inspected.reachableFunctions, nativeBootstrapSymbol)
 		}
 	}
-	if len(inspected.reachableSyscalls) != nativeBootstrapSyscallCount {
-		t.Fatalf("native reachable syscalls = %d (%v), want %d", len(inspected.reachableSyscalls), extraReachableSyscallNames(inspected), nativeBootstrapSyscallCount)
+	got := extraReachableSyscallNames(inspected)
+	want := []string{"bind", "capget", "close", "dup3", "exit_group", "getegid", "geteuid", "getgid", "getuid", "listen", "prlimit64", "socket"}
+	if len(inspected.reachableSyscalls) < nativeBootstrapSyscallCount {
+		t.Fatalf("native reachable syscalls = %d (%v), lost shared identity preflight sites", len(inspected.reachableSyscalls), got)
+	}
+	if len(inspected.reachableSyscalls) != len(want) {
+		t.Fatalf("native reachable syscalls = %d (%v), want %d %v", len(inspected.reachableSyscalls), got, len(want), want)
 	}
 	for _, site := range inspected.reachableSyscalls {
 		if site.symbol != nativeBootstrapSymbol || !site.numberKnown {
 			t.Fatalf("native reachable syscall %+v is not a named _start site", site)
 		}
 	}
-	got := extraReachableSyscallNames(inspected)
-	want := []string{"capget", "exit_group", "getegid", "geteuid", "getgid", "getuid", "prlimit64"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("native extra syscalls = %v, want %v", got, want)
+	}
+	for _, live := range []string{"clone3", "execve", "seccomp", "sendmsg", "recvmsg"} {
+		if strings.Contains(strings.Join(got, ","), live) {
+			t.Fatalf("native extra syscalls = %v claimed unimplemented live syscall %s", got, live)
+		}
 	}
 	if err := proveBoundedReachableSyscallGraph([]inspectedGuestBinary{inspected}); err == nil {
 		t.Fatal("native bootstrap graph issued pinned-direct authority")

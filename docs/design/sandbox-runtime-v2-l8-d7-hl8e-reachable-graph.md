@@ -48,10 +48,13 @@ number trampolines `syscall.rawSyscallNoError.abi0` and
 `syscall.rawVforkSyscall.abi0`. `clone` is not on this `main.main`
 direct-call graph; process creation is the `rawVforkSyscall` trampoline.
 
-Native bootstrap reachable syscalls are `_start` only: `getuid`,
-`geteuid`, `getgid`, `getegid`, `capget`, `prlimit64`, then
-`exit_group(127)`. That is fail-closed live behavior, not HL8E
-pinned-direct evidence for launch-base Go runtime.
+Native bootstrap reachable syscalls are `_start` only: shared
+`getuid`, `geteuid`, `getgid`, `getegid`, `capget`, `prlimit64`,
+PID1-only `socket`, `bind`, `listen`, `dup3`, `close`, then
+`exit_group(127)`. PID1 attempts that listen-table subset and still
+fail-closes; unimplemented `seccomp`, `execve`, `clone3`, and
+SCM_RIGHTS are not reachable syscall sites. That is fail-closed live
+behavior, not HL8E pinned-direct evidence for launch-base Go runtime.
 
 Generic Go binaries and a singular `-evidence-binary` stay rejected.
 Default untagged `EmbeddedExpectedPinnedCallsiteEvidence` stays

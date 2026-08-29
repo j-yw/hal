@@ -124,7 +124,12 @@ func exactNativeCallsites() []nativeCallsite {
 		{index: 3, name: "getegid", number: 108, scope: "shared", insnHex: "0f05"},
 		{index: 4, name: "capget", number: 125, scope: "shared", insnHex: "0f05"},
 		{index: 5, name: "prlimit64", number: 302, scope: "shared", insnHex: "0f05"},
-		{index: 6, name: "exit_group", number: 231, scope: "shared", insnHex: "0f05"},
+		{index: 6, name: "socket", number: 41, scope: "pid1", insnHex: "0f05"},
+		{index: 7, name: "bind", number: 49, scope: "pid1", insnHex: "0f05"},
+		{index: 8, name: "listen", number: 50, scope: "pid1", insnHex: "0f05"},
+		{index: 9, name: "dup3", number: 292, scope: "pid1", insnHex: "0f05"},
+		{index: 10, name: "close", number: 3, scope: "pid1", insnHex: "0f05"},
+		{index: 11, name: "exit_group", number: 231, scope: "shared", insnHex: "0f05"},
 	}
 }
 
@@ -170,8 +175,30 @@ func validateNativeSource(encoded []byte) error {
 	if count != len(want) {
 		return fmt.Errorf("native source has %d syscall instructions, want %d", count, len(want))
 	}
+	for _, required := range []string{
+		".Lpid1_vsock:",
+		".Lpid1_unimpl_seccomp:",
+		".Lpid1_unimpl_execve:",
+		".Lpid1_unimpl_clone3:",
+		".Lpid1_unimpl_scm_rights:",
+		".Lcontroller_unimpl:",
+		".Lagent_unimpl:",
+		".Lmonitor_unimpl:",
+		".Lshim_unimpl:",
+		".Lfail_closed:",
+	} {
+		if !bytes.Contains(encoded, []byte(required)) {
+			return fmt.Errorf("native source is missing fail-closed stage label %s", required)
+		}
+	}
 	for _, forbidden := range []string{
 		"__libc", "main.main", "runtime.main", "dlopen", "getenv", "malloc",
+		"movq\t$59, %rax",  // execve
+		"movq\t$322, %rax", // execveat
+		"movq\t$435, %rax", // clone3
+		"movq\t$317, %rax", // seccomp
+		"movq\t$46, %rax",  // sendmsg
+		"movq\t$47, %rax",  // recvmsg
 	} {
 		if bytes.Contains(encoded, []byte(forbidden)) {
 			return fmt.Errorf("native source contains forbidden marker %q", forbidden)

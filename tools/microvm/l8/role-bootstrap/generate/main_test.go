@@ -147,13 +147,90 @@ func TestL8D7NativeRoleBootstrapELFIsFreestandingStaticExec(t *testing.T) {
 		}
 	}
 
-	for _, args := range [][]string{nil, {"agent"}, {"not-a-role"}} {
+	for _, args := range [][]string{
+		nil,
+		{"controller"},
+		{"agent"},
+		{"monitor"},
+		{"workload-shim"},
+		{"not-a-role"},
+		{"controller", "extra"},
+	} {
 		command := exec.Command(binary, args...)
 		err := command.Run()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 127 {
 			t.Fatalf("native ELF args %v exit = %v, want 127", args, err)
 		}
+	}
+}
+
+func TestL8D7NativeSupervisorStagesRemainFailClosed(t *testing.T) {
+	root := repositoryRoot(t)
+	source, err := os.ReadFile(filepath.Join(root, nativeSourceRel))
+	if err != nil {
+		t.Fatalf("read native source: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		".Lpid1_vsock:",
+		".Lpid1_unimpl_seccomp:",
+		".Lpid1_unimpl_execve:",
+		".Lpid1_unimpl_clone3:",
+		".Lpid1_unimpl_scm_rights:",
+		".Lcontroller_unimpl:",
+		".Lagent_unimpl:",
+		".Lmonitor_unimpl:",
+		".Lshim_unimpl:",
+		"movq\t$41, %rax",
+		"movq\t$49, %rax",
+		"movq\t$50, %rax",
+		"movq\t$292, %rax",
+		"movq\t$3, %rax",
+		"movq\t$231, %rax",
+		"$0x80801",
+		"$0xffffffff",
+		"$1024",
+		"$1025",
+		"$1026",
+		"A successful bind is not live vsock proof",
+		"Unimplemented: pivot_root",
+		"Unimplemented: setresuid/setresgid",
+		"Unimplemented: SCM_RIGHTS monitor-ready",
+		"Unimplemented: setns/ioctl",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("native supervisor source omits %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"movq\t$59, %rax",
+		"movq\t$322, %rax",
+		"movq\t$435, %rax",
+		"movq\t$317, %rax",
+		"movq\t$46, %rax",
+		"movq\t$47, %rax",
+		"movl\t$0, %edi",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("native supervisor source contains forbidden live marker %q", forbidden)
+		}
+	}
+	if err := validateNativeSource(source); err != nil {
+		t.Fatalf("validateNativeSource(): %v", err)
+	}
+	callsite, err := os.ReadFile(filepath.Join(root, nativeCallsitesRel))
+	if err != nil {
+		t.Fatalf("read callsite inventory: %v", err)
+	}
+	if err := validateCallsiteInventory(callsite); err != nil {
+		t.Fatalf("validateCallsiteInventory(): %v", err)
+	}
+	if !strings.Contains(string(callsite), "6=socket:41:pid1:0f05") {
+		t.Fatal("callsite inventory is missing the PID1-only socket site")
+	}
+	if strings.Contains(string(callsite), "execve") || strings.Contains(string(callsite), "clone3") || strings.Contains(string(callsite), "seccomp") {
+		t.Fatal("callsite inventory claimed an unimplemented live supervisor syscall")
 	}
 }
 
