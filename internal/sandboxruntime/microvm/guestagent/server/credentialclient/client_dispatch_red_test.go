@@ -463,19 +463,7 @@ func testDispatchPrepareRequest(t *testing.T, identity transportIdentity) v2cont
 
 func newDispatchRedClient(t *testing.T, transport Transport) *Client {
 	t.Helper()
-	registry, err := NewExtensionRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	policy := NewClientPolicy()
-	client, err := NewClient(ClientOptions{
-		Transport: transport, Policy: policy, Extensions: registry,
-		Descriptor: newLifecycleDescriptor(policy.Descriptor(), nil),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return client
+	return newDispatchRedClientOpts(t, transport, nil)
 }
 
 func testDispatchTransportIdentity() transportIdentity {
