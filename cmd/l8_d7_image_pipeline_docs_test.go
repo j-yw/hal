@@ -35,6 +35,8 @@ func TestL8D7ImagePipelineVerificationContract(t *testing.T) {
 		"node-v22.22.0.tar.xz",
 		"pi-coding-agent-0.82.1.tgz",
 		"pi-shrinkwrap-0.82.1.json",
+		"Exact L8 cache digests are still unissued",
+		"L8 `cache.manifest`",
 		"tools/microvm/l8/verify-reproducible.sh",
 		"--cache \"$HAL_L8_BUILD_CACHE\"",
 		"--output \"$HAL_L8_DISTRIBUTION\"",

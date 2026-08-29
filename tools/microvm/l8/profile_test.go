@@ -114,14 +114,18 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
+		"cache.manifest",
+		"L8 cache manifest is unissued",
 		"node-v22.22.0.tar.xz",
 		"pi-coding-agent-0.82.1.tgz",
 		"pi-shrinkwrap-0.82.1.json",
-		"required L8 cache file",
 	} {
 		if !strings.Contains(cache, required) {
 			t.Errorf("verify-cache.sh missing %q", required)
 		}
+	}
+	if strings.Contains(cache, "l8_extra_count") || strings.Contains(cache, "manifest_count + l8_extra_count") {
+		t.Fatal("verify-cache.sh must not accept unpinned L8 files outside an exact manifest")
 	}
 }
 
@@ -185,6 +189,24 @@ func TestL8FinalImageVerifierFailsClosedWhenHL8EUnissued(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), "HL8E is unissued") {
 		t.Fatalf("verify-final-image.sh output = %s, want HL8E fail-closed message", payload)
+	}
+}
+
+func TestL8CacheVerifierFailsClosedWhileExactL8ManifestIsUnissued(t *testing.T) {
+	if _, err := os.Stat("cache.manifest"); err == nil {
+		t.Fatal("L8 cache manifest must remain unissued until exact Node/Pi/transitive digests are authored")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+
+	command := exec.Command("sh", "verify-cache.sh", "--cache", t.TempDir())
+	payload, err := command.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || exitErr.ExitCode() == 2 {
+		t.Fatalf("verify-cache.sh unissued L8 lock exit = %v output = %s, want fail-closed", err, payload)
+	}
+	if !strings.Contains(string(payload), "L8 cache manifest is unissued") {
+		t.Fatalf("verify-cache.sh output = %s, want unissued L8 cache-lock message", payload)
 	}
 }
 
