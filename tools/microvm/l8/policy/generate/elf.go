@@ -405,6 +405,24 @@ func mapVirtualAddress(file *elf.File, encoded []byte, value uint64) (fileOff, t
 	return 0, 0, errors.New("virtual address is outside executable text")
 }
 
+func mapLoadAddress(file *elf.File, encoded []byte, value uint64) (uint64, error) {
+	for _, prog := range file.Progs {
+		if prog.Type != elf.PT_LOAD || prog.Filesz == 0 {
+			continue
+		}
+		if value < prog.Vaddr || value >= prog.Vaddr+prog.Filesz {
+			continue
+		}
+		delta := value - prog.Vaddr
+		off := prog.Off + delta
+		if off < prog.Off || off > uint64(len(encoded)) {
+			return 0, errors.New("virtual address maps outside the ELF")
+		}
+		return off, nil
+	}
+	return 0, errors.New("virtual address is outside loadable ELF contents")
+}
+
 func lookupGoFunc(file *elf.File, name string) (value, size uint64, err error) {
 	if value, size, err := lookupELFSymbol(file, name); err == nil {
 		return value, size, nil

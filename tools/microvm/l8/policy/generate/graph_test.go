@@ -45,7 +45,7 @@ func TestL8D7PinnedDirectAllowIsExactSyscall6Callsite(t *testing.T) {
 }
 
 func TestL8D7ReachableGraphDoesNotClassifyByNamespacePrefix(t *testing.T) {
-	sources := []string{"elf.go", "evidence.go", "graph.go", "main.go"}
+	sources := []string{"elf.go", "evidence.go", "graph.go", "indirect.go", "main.go"}
 	for _, name := range sources {
 		encoded, err := os.ReadFile(name)
 		if err != nil {
@@ -287,6 +287,15 @@ func TestL8D7ProductionPID1OmitsCloneClone3ForkExecExtras(t *testing.T) {
 	}
 	if _, err := generateEvidence(root, filepath.Join(dir, guestInitBinaryName), mustGenerate(t, root)); !errors.Is(err, errEvidenceInputsUnavailable) {
 		t.Fatalf("generateEvidence(L8-tagged PID1) error = %v, want fail-closed HL8E", err)
+	}
+	if !containsString(inspected.reachableFunctions, "runtime.duffcopy") || !containsString(inspected.reachableFunctions, "runtime.duffzero") {
+		t.Fatalf("L8-tagged PID1 reachable functions = %v, want listed-span interiors duffcopy/duffzero", inspected.reachableFunctions)
+	}
+	if !inspected.unboundedIndirect {
+		t.Fatal("L8-tagged PID1 register-indirect CALL was treated as bounded")
+	}
+	if extras := extraReachableSyscallNames(inspected); len(extras) != 0 {
+		t.Fatalf("L8-tagged PID1 extras = %v, want empty after interior bind", extras)
 	}
 }
 
@@ -635,6 +644,119 @@ func TestL8D7SyscallTrampolineRejectsCallIntoSymbolInterior(t *testing.T) {
 	sites := trampolineSyscallSites([]decodedControlTransfer{transfer}, functions)
 	if len(sites) != 1 || sites[0].numberKnown {
 		t.Fatalf("interior trampoline target = %+v, want one unknown fail-closed site", sites)
+	}
+}
+
+func TestL8D7ListedSpanInteriorIsAKnownFunction(t *testing.T) {
+	functions := []executableFunction{
+		{name: "runtime.duffcopy", start: 0x2000, end: 0x2400},
+		{name: "indexbytebody", start: 0x3000, end: 0x3100},
+	}
+	callee, unbounded := followListedSpanTarget(functions, 0x232c)
+	if unbounded || callee == nil || callee.name != "runtime.duffcopy" || callee.start != 0x2000 {
+		t.Fatalf("duffcopy interior = %+v unbounded:%v", callee, unbounded)
+	}
+	callee, unbounded = followListedSpanTarget(functions, 0x3000)
+	if unbounded || callee == nil || callee.name != "indexbytebody" {
+		t.Fatalf("ABI0 stub start = %+v unbounded:%v", callee, unbounded)
+	}
+	if _, unbounded = followListedSpanTarget(functions, 0x9999); !unbounded {
+		t.Fatal("unlisted destination was treated as a known function")
+	}
+}
+
+func TestL8D7RIPRelativeJumpTableIsAKnownTargetSet(t *testing.T) {
+	code := []byte{
+		0x83, 0xe1, 0x01,
+		0x48, 0x8d, 0x15, 0xf6, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+		0x90, 0x90,
+	}
+	fn := executableFunction{name: "kindSwitch", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn},
+		loadU64: func(va uint64) (uint64, bool) {
+			switch va {
+			case 0x2000:
+				return 0x100d, true
+			case 0x2008:
+				return 0x100e, true
+			default:
+				return 0, false
+			}
+		},
+	}
+	_, extra, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode jump table: %v", err)
+	}
+	if unbounded {
+		t.Fatal("in-function RIP-relative jump table remained unbounded")
+	}
+	if len(extra) != 0 {
+		t.Fatalf("in-function jump table extra targets = %#x, want none", extra)
+	}
+}
+
+func TestL8D7RegisterIndirectCallRemainsUnboundedWithoutProvenTarget(t *testing.T) {
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1002}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraph(fn, []byte{0xff, 0xd0}, 0)
+	if err != nil {
+		t.Fatalf("decode CALL RAX: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("unproven CALL RAX was treated as a known target set")
+	}
+	_, _, _, unbounded, err = decodeFunctionSyscallGraph(fn, []byte{0xff, 0xd1}, 0)
+	if err != nil || !unbounded {
+		t.Fatalf("unproven CALL RCX unbounded=%v err=%v", unbounded, err)
+	}
+	_, _, _, unbounded, err = decodeFunctionSyscallGraph(fn, []byte{0xff, 0xd6}, 0)
+	if err != nil || !unbounded {
+		t.Fatalf("unproven CALL RSI unbounded=%v err=%v", unbounded, err)
+	}
+}
+
+func TestL8D7RIPRelativeLEACallIsExactListedFunction(t *testing.T) {
+	code := []byte{0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00, 0xff, 0xd0}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{functions: []executableFunction{fn, callee}}
+	_, targets, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode LEA/CALL: %v", err)
+	}
+	if unbounded {
+		t.Fatal("CALL of a RIP-relative listed function remained unbounded")
+	}
+	if len(targets) != 1 || targets[0] != 0x3000 {
+		t.Fatalf("LEA/CALL targets = %#x, want [0x3000]", targets)
+	}
+}
+
+func TestL8D7MethodTableEncodingWithoutProvenBaseStaysUnbounded(t *testing.T) {
+	fn := executableFunction{name: "iface", start: 0x1000, end: 0x1003}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraph(fn, []byte{0xff, 0x24, 0xd1}, 0)
+	if err != nil {
+		t.Fatalf("decode JMP [RCX+RDX*8]: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("FF 24 D1 without a proven table base was treated as bounded")
+	}
+}
+
+func TestL8D7JumpTableWithoutProvenLengthStaysUnbounded(t *testing.T) {
+	code := []byte{
+		0x48, 0x8d, 0x15, 0xf6, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+	}
+	fn := executableFunction{name: "kindSwitch", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraph(fn, code, 0)
+	if err != nil {
+		t.Fatalf("decode unproven jump table: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("jump table without AND/CMP length was treated as bounded")
 	}
 }
 

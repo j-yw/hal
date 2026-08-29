@@ -53,13 +53,31 @@ type amd64Insn struct {
 	int80            bool
 	callRel          bool
 	jmpRel           bool
+	ja               bool
 	indirect         bool
+	indirectReg      bool
+	sib              bool
+	nop              bool
 	movEAXImm        bool
 	movTrapSlotImm   bool
 	preserveTrapSlot bool
 	preserveRAX      bool
+	leaRIP           bool
+	andImm           bool
+	cmpImm           bool
 	rel              int64
 	imm              uint32
+	leaDisp          int32
+	andVal           uint32
+	cmpVal           uint32
+	leaReg           uint8
+	andReg           uint8
+	cmpReg           uint8
+	rmReg            uint8
+	modrmMod         uint8
+	sibBase          uint8
+	sibIndex         uint8
+	sibScale         uint8
 }
 
 type decodedControlTransfer struct {
@@ -309,7 +327,7 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 			result.decodeErr = fmt.Errorf("function %s is outside the ELF", fn.name)
 			return result
 		}
-		sites, targets, transfers, indirect, decodeErr := decodeFunctionSyscallGraph(fn, encoded[fileOff:fileOff+size], textOff)
+		sites, targets, transfers, indirect, decodeErr := decodeFunctionSyscallGraphWithResolver(fn, encoded[fileOff:fileOff+size], textOff, &goTextResolver{file: file, encoded: encoded, functions: functions})
 		if decodeErr != nil {
 			result.decodeErr = decodeErr
 			return result
@@ -349,12 +367,8 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 			}
 		}
 		for _, target := range body.targets {
-			callee := containingExecutableFunction(functions, target)
-			if callee == nil {
-				unbounded = true
-				continue
-			}
-			if target != callee.start {
+			callee, unknown := followListedSpanTarget(functions, target)
+			if unknown {
 				unbounded = true
 				continue
 			}
@@ -393,6 +407,10 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 }
 
 func decodeFunctionSyscallGraph(fn executableFunction, code []byte, textOff uint64) ([]decodedSyscallSite, []uint64, []decodedControlTransfer, bool, error) {
+	return decodeFunctionSyscallGraphWithResolver(fn, code, textOff, nil)
+}
+
+func decodeFunctionSyscallGraphWithResolver(fn executableFunction, code []byte, textOff uint64, resolver *goTextResolver) ([]decodedSyscallSite, []uint64, []decodedControlTransfer, bool, error) {
 	blockStarts, branchTargets, err := amd64ControlFlowBoundaries(fn, code)
 	if err != nil {
 		return nil, nil, nil, false, err
@@ -400,6 +418,7 @@ func decodeFunctionSyscallGraph(fn executableFunction, code []byte, textOff uint
 	var sites []decodedSyscallSite
 	var targets []uint64
 	var transfers []decodedControlTransfer
+	var history []decodedInsnSite
 	indirect := false
 	var raxImm *uint32
 	var transferRAXImm *uint32
@@ -464,8 +483,14 @@ func decodeFunctionSyscallGraph(fn executableFunction, code []byte, textOff uint
 			transferRAXSource = -1
 		}
 		if insn.indirect {
-			indirect = true
+			extra, resolved := resolveIndirectInsn(fn, insn, history, resolver)
+			if !resolved {
+				indirect = true
+			} else {
+				targets = append(targets, extra...)
+			}
 		}
+		history = append(history, decodedInsnSite{cursor: cursor, vaddr: vaddr, insn: insn})
 		if insn.callRel || insn.jmpRel {
 			target := int64(vaddr) + int64(insn.n) + insn.rel
 			if target < 0 {
@@ -834,6 +859,7 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 	index := 0
 	operand16 := false
 	rexW := false
+	rexR := false
 	rexB := false
 	rexX := false
 	nonCanonicalMemoryPrefix := false
@@ -853,6 +879,7 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 		}
 		if value >= 0x40 && value <= 0x4F {
 			rexW = value&0x08 != 0
+			rexR = value&0x04 != 0
 			rexX = value&0x02 != 0
 			rexB = value&0x01 != 0
 			index++
@@ -894,6 +921,10 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 		if secondary == 0x1F {
 			insn.preserveTrapSlot = true
 			insn.preserveRAX = true
+			insn.nop = true
+		}
+		if secondary == 0x87 {
+			insn.ja = true
 		}
 		if secondary == 0x11 && !nonCanonicalMemoryPrefix {
 			if displacement, ok := amd64RSPDisplacement(code, index+1, rexB, rexX); ok {
@@ -937,13 +968,79 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 		insn.rel = int64(int8(code[length-1]))
 		insn.preserveTrapSlot = true
 		insn.preserveRAX = true
+		if opcode == 0x77 {
+			insn.ja = true
+		}
 		return insn, true
 	}
 	if opcode == 0xFF && index < length {
-		reg := (code[index] >> 3) & 7
+		modrm := code[index]
+		reg := (modrm >> 3) & 7
 		if reg == 2 || reg == 4 {
 			insn.indirect = true
+			decodeIndirectModRM(&insn, code, index, length, rexR, rexX, rexB)
 		}
+		return insn, true
+	}
+	if opcode == 0x8D && index < length {
+		modrm := code[index]
+		mod := modrm >> 6
+		rm := modrm & 7
+		if mod == 0 && rm == 5 && length >= index+5 {
+			insn.leaRIP = true
+			insn.leaReg = (modrm >> 3) & 7
+			if rexR {
+				insn.leaReg += 8
+			}
+			insn.leaDisp = int32(binary.LittleEndian.Uint32(code[index+1 : index+5]))
+			insn.preserveTrapSlot = true
+			insn.preserveRAX = true
+		}
+		return insn, true
+	}
+	if (opcode == 0x81 || opcode == 0x83) && index < length {
+		modrm := code[index]
+		mod := modrm >> 6
+		op := (modrm >> 3) & 7
+		rm := modrm & 7
+		if mod == 3 && (op == 4 || op == 7) {
+			reg := rm
+			if rexB {
+				reg += 8
+			}
+			var imm uint32
+			if opcode == 0x83 {
+				if length < index+2 {
+					return insn, true
+				}
+				imm = uint32(int8(code[length-1]))
+			} else if length >= 4 {
+				imm = binary.LittleEndian.Uint32(code[length-4 : length])
+			} else {
+				return insn, true
+			}
+			if op == 4 {
+				insn.andImm = true
+				insn.andReg = reg
+				insn.andVal = imm
+			} else {
+				insn.cmpImm = true
+				insn.cmpReg = reg
+				insn.cmpVal = imm
+			}
+		}
+		return insn, true
+	}
+	if opcode == 0x25 && !rexB && length >= 5 {
+		insn.andImm = true
+		insn.andReg = 0
+		insn.andVal = binary.LittleEndian.Uint32(code[length-4 : length])
+		return insn, true
+	}
+	if opcode == 0x3D && !rexB && length >= 5 {
+		insn.cmpImm = true
+		insn.cmpReg = 0
+		insn.cmpVal = binary.LittleEndian.Uint32(code[length-4 : length])
 		return insn, true
 	}
 	if opcode&0xF8 == 0xB8 {
@@ -989,8 +1086,42 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 	if opcode == 0x90 {
 		insn.preserveTrapSlot = true
 		insn.preserveRAX = true
+		insn.nop = true
 	}
 	return insn, true
+}
+
+func decodeIndirectModRM(insn *amd64Insn, code []byte, index, length int, rexR, rexX, rexB bool) {
+	if index >= length {
+		return
+	}
+	modrm := code[index]
+	mod := modrm >> 6
+	rm := modrm & 7
+	insn.modrmMod = mod
+	if mod == 3 {
+		insn.indirectReg = true
+		insn.rmReg = rm
+		if rexB {
+			insn.rmReg += 8
+		}
+		return
+	}
+	if rm != 4 || index+1 >= length {
+		return
+	}
+	sib := code[index+1]
+	insn.sib = true
+	insn.sibScale = 1 << (sib >> 6)
+	insn.sibIndex = (sib >> 3) & 7
+	insn.sibBase = sib & 7
+	if rexX {
+		insn.sibIndex += 8
+	}
+	if rexB {
+		insn.sibBase += 8
+	}
+	_ = rexR
 }
 
 func amd64RSPDisplacement(code []byte, modrmIndex int, rexB, rexX bool) (int32, bool) {
