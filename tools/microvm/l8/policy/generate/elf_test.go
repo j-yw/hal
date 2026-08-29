@@ -162,8 +162,28 @@ func TestL8D7EvidenceIssuanceRejectsCompleteRolesWithoutBoundedCallGraph(t *test
 	if len(evidence.encoded) != 0 || len(evidence.source) != 0 || evidence.sha256 != ([32]byte{}) {
 		t.Fatal("complete role filenames and identities issued evidence without a bounded reachable call graph")
 	}
-	if !strings.Contains(err.Error(), "unique/reachable D4/D6 call graph is unavailable") {
+	message := err.Error()
+	if !strings.Contains(message, "unique/reachable D4/D6 call graph is unavailable") {
 		t.Fatalf("complete-role error = %v, want unavailable bounded-call-graph reason", err)
+	}
+	if !strings.Contains(message, "role binary "+guestInitBinaryName+" has reachable extra syscalls from "+goRoleEntrySymbol+":") {
+		t.Fatalf("complete-role error = %v, want named launch-base extras from %s", err, goRoleEntrySymbol)
+	}
+	for _, name := range []string{"futex", "mmap", "exit_group"} {
+		if !strings.Contains(message, name) {
+			t.Fatalf("complete-role error = %v, want named reachable extra syscall %s", err, name)
+		}
+	}
+	if !strings.Contains(message, "role binary "+guestBootstrapBinaryName+" has reachable extra syscalls from "+nativeBootstrapSymbol+":") {
+		t.Fatalf("complete-role error = %v, want named native extras from %s", err, nativeBootstrapSymbol)
+	}
+	for _, name := range []string{"getuid", "exit_group"} {
+		if !strings.Contains(message, name) {
+			t.Fatalf("complete-role error = %v, want named native extra syscall %s", err, name)
+		}
+	}
+	if strings.Contains(message, "runtime.reviewerAuthority") || strings.Contains(message, "classifiedNonAuthority") {
+		t.Fatalf("complete-role error used namespace classification: %v", err)
 	}
 }
 

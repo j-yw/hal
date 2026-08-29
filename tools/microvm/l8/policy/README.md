@@ -15,14 +15,22 @@ executables, checks the independently locked generator digest, regenerates the
 HL8Q outputs in memory, and verifies the checked-in bytes through the D2
 importer. Untagged builds remain fail closed.
 
-HL8E issuance is still disabled. The generator now inspects linux/amd64 ELFs
+HL8E issuance is still disabled. The generator inspects linux/amd64 ELFs
 and prefers a complete `-evidence-binaries-dir` over a singular
-`-evidence-binary`. A single ELF that happens to embed HL8Q and a generic Go
-runtime syscall symbol does not prove its role identity, the complete final
-binary set, or the required unique/reachable callsite graph. Missing helper,
-monitor, or shim role binaries fail closed. Consequently, even supplying
-`-evidence-binary` or an incomplete binaries dir fails closed until D4/D6
-provide the final linked inputs and D7 can bind that complete set.
+`-evidence-binary`. Authority is an entry-point plus call-edge reachable
+graph from `main.main` or `_start`, not `runtime.*` / `syscall.*` prefix
+classification. Pclntab spans are authoritative, every relative branch
+target is followed, and ambiguous symbols, truncated transfers, and
+indirect control flow fail closed. Pinned-direct allow is only
+`internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Reachable
+extra syscalls fail closed with named reasons (`futex`, `mmap`,
+`exit_group`, native `getuid`/`exit_group`, and the rest documented in
+the reachable-graph design). A singular ELF that happens to embed HL8Q
+and a generic Go runtime syscall symbol does not prove its role identity
+or the complete final binary set. Missing helper, monitor, or shim role
+binaries fail closed. Consequently, even supplying `-evidence-binary` or
+a complete binaries dir fails closed while extra reachable syscalls
+remain.
 
 The reserved future invocation is:
 
