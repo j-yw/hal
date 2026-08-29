@@ -15,10 +15,12 @@ inherited/preopened. This slice does not add `net.Listen`, `net.Dial`,
 `SOCK_SEQPACKET` socketpairs exist in tests only. Linux production code
 revalidates an injected `syscall.Conn` stream and never creates sockets.
 
-After a successful prepare-begin send, Serve continues on the same
-revalidated stream. Payload send (`prepare-file`, `exec-private`, nonempty
-`exec-stream`), SCM_RIGHTS SSH send, and JobCredential proofs remain
-`dependency_unaccepted`. This slice does not mint proofs.
+After a successful prepare-begin send, Serve retains the same revalidated
+stream for that one logical prepare. It emits same-request prepare-commit only
+when no ordered file payload is required; otherwise it fails closed before
+receiving another controller request. Payload send (`prepare-file`,
+`exec-private`, nonempty `exec-stream`), SCM_RIGHTS SSH send, and JobCredential
+proofs remain `dependency_unaccepted`. This slice does not mint proofs.
 
 Default command paths stay unwired. There is no sandboxd, `hal run`,
 `hal auto`, or factory helper-transport wiring.

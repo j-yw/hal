@@ -2,9 +2,11 @@ package credentialclient
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -293,14 +295,20 @@ func helperExecBodyFromExec(exec v2control.CredentialExecRequest) (credentialpro
 
 func helperExecPrivateDigestFromControl(length uint32, digestHex string) ([32]byte, error) {
 	var digest [32]byte
-	if length == 0 {
-		return digest, nil
+	if len(digestHex) != hex.EncodedLen(len(digest)) || digestHex != strings.ToLower(digestHex) {
+		return [32]byte{}, errInvalidHelperSendPacket
 	}
 	decoded, err := hex.DecodeString(digestHex)
-	if err != nil || len(decoded) != 32 {
+	if err != nil || len(decoded) != len(digest) {
 		return [32]byte{}, errInvalidHelperSendPacket
 	}
 	copy(digest[:], decoded)
+	if length == 0 {
+		if digest != sha256.Sum256(nil) {
+			return [32]byte{}, errInvalidHelperSendPacket
+		}
+		return [32]byte{}, nil
+	}
 	return digest, nil
 }
 

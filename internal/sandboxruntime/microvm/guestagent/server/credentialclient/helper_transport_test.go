@@ -91,58 +91,40 @@ func TestL8D7GuestHelperServeNilOwnerRemainsUnaccepted(t *testing.T) {
 	}
 }
 
-func TestL8D7GuestHelperServeSendsPrepareBeginWhenOwnerInjected(t *testing.T) {
+func TestL8D7GuestHelperServeSendsPrepareBeginThenFailsClosedAtFilePayload(t *testing.T) {
 	identity := testDispatchTransportIdentity()
 	prepare := testDispatchPrepareRequest(t, identity)
 	digest := identityDigestForSession(t, testCredentialPacketSessionIdentity(t, identity.sessionID))
 	stream := newFakeHelperStream()
 	owner := &fakeHelperOwner{stream: stream}
 	var helperSends atomic.Uint32
-	closed := make(chan struct{})
-	continued := make(chan struct{})
 	transport := &dispatchRedTransport{identity: identity}
 	var receiveCount atomic.Uint32
 	transport.receiveController = func(_ context.Context, receive ControllerReceiveRequest) (ControllerPacket, error) {
 		count := receiveCount.Add(1)
-		if count == 1 {
-			return ControllerPacket{
-				sequence:  1,
-				sessionID: identity.sessionID,
-				arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
-			}, nil
+		if count != 1 {
+			return ControllerPacket{}, errors.New("file prepare requested a second controller packet")
 		}
-		expected, set := receive.expectedIdentityValue()
-		if count == 2 {
-			if !set || expected != digest || receive.nextSequenceValue() != 2 {
-				return ControllerPacket{}, errors.New("serve did not continue with pinned identity after prepare-begin")
-			}
-			close(continued)
-		}
-		<-closed
-		return ControllerPacket{}, errors.New("closed")
+		return ControllerPacket{
+			sequence:  1,
+			sessionID: identity.sessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+		}, nil
 	}
 	transport.sendHelper = func(_ context.Context, packet HelperSendPacket) error {
 		helperSends.Add(1)
 		body := make([]byte, packet.encodedBodyLengthValue())
 		return packet.writeCanonicalBody(&helperSendBodySink{buf: body})
 	}
-	transport.close = func(context.Context) error {
-		transport.closeOnce.Do(func() { close(closed) })
-		return nil
-	}
-
-	client := newDispatchRedClientOpts(t, transport, owner)
-	serveDone := make(chan error, 1)
-	go func() { serveDone <- client.Serve(context.Background()) }()
-	select {
-	case <-continued:
-	case err := <-serveDone:
-		t.Fatalf("Serve returned before continuing after prepare-begin: %v", err)
-	case <-time.After(time.Second):
-		t.Fatal("Serve did not continue after prepare-begin")
+	err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
+	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("Serve() error = %v, want prepare-file dependency unaccepted", err)
 	}
 	if owner.accepts.Load() != 1 || helperSends.Load() != 0 {
 		t.Fatalf("accepts/legacy transport sends = %d/%d, want 1/0", owner.accepts.Load(), helperSends.Load())
+	}
+	if receiveCount.Load() != 1 {
+		t.Fatalf("controller receives = %d, want one logical prepare", receiveCount.Load())
 	}
 	packets := decodeHelperDatagrams(t, stream.bytes())
 	if len(packets) != 1 {
@@ -160,12 +142,6 @@ func TestL8D7GuestHelperServeSendsPrepareBeginWhenOwnerInjected(t *testing.T) {
 	}
 	if decoded.Revision != 1 || len(decoded.Bindings) != 2 || decoded.Bindings[0].BindingID != "binding-http" {
 		t.Fatalf("stream prepare-begin body = %#v", decoded)
-	}
-	if err := client.Close(context.Background()); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	if err := <-serveDone; err != nil {
-		t.Fatalf("Serve() after continue/Close = %v", err)
 	}
 }
 
@@ -249,7 +225,7 @@ func TestL8D7GuestHelperMetadataBodiesProjectFromController(t *testing.T) {
 	}
 }
 
-func TestL8D7GuestHelperServeSendsMetadataWhenLaterControllerPacketArrives(t *testing.T) {
+func TestL8D7GuestHelperServeDoesNotInterleaveLaterMetadataWithPrepare(t *testing.T) {
 	identity := testDispatchTransportIdentity()
 	sessionIdentity := testCredentialPacketSessionIdentity(t, identity.sessionID)
 	prepare := testDispatchPrepareRequest(t, identity)
@@ -386,24 +362,21 @@ func TestL8D7GuestHelperServeSendsMetadataWhenLaterControllerPacketArrives(t *te
 			if owner.accepts.Load() != 1 || helperSends.Load() != 0 {
 				t.Fatalf("accepts/legacy helper sends = %d/%d, want 1/0", owner.accepts.Load(), helperSends.Load())
 			}
+			if receiveCount.Load() != 1 {
+				t.Fatalf("controller receives = %d, want one outstanding prepare", receiveCount.Load())
+			}
 			packets := decodeHelperDatagrams(t, stream.bytes())
-			if len(packets) != 2 {
-				t.Fatalf("helper datagrams = %d, want prepare-begin plus %s", len(packets), test.name)
+			if len(packets) != 1 {
+				t.Fatalf("helper datagrams = %d, want prepare-begin only before %s", len(packets), test.name)
 			}
 			if packets[0].header.Type != credentialprotocol.PacketTypePrepareBegin || packets[0].header.Sequence != firstInjectedHelperSendSequence {
 				t.Fatalf("first helper header = %#v", packets[0].header)
 			}
-			if packets[1].header.Type != test.wantType || packets[1].header.Sequence != firstInjectedHelperSendSequence+1 ||
-				packets[1].header.GuestCredentialIdentityDigest != digest.Bytes() ||
-				packets[1].header.BootNonce != identity.identity.GuestBootNonce {
-				t.Fatalf("later helper header = %#v", packets[1].header)
-			}
-			test.wantBody(t, packets[1].body)
 		})
 	}
 }
 
-func TestL8D7GuestHelperServeRejectsPayloadAfterPrepareBegin(t *testing.T) {
+func TestL8D7GuestHelperServeStopsBeforeControllerPayloadAfterPrepareBegin(t *testing.T) {
 	identity := testDispatchTransportIdentity()
 	prepare := testDispatchPrepareRequest(t, identity)
 	payload := []byte("controller-private-payload")
@@ -430,11 +403,11 @@ func TestL8D7GuestHelperServeRejectsPayloadAfterPrepareBegin(t *testing.T) {
 	}
 
 	err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
-	if clientContractCode(err) != ClientContractPacket {
-		t.Fatalf("Serve() error = %v, want payload packet rejection", err)
+	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
+		t.Fatalf("Serve() error = %v, want prepare-file dependency unaccepted", err)
 	}
-	if !body.destroyed {
-		t.Fatal("Serve did not destroy the rejected controller payload body")
+	if body.destroyed || receiveCount.Load() != 1 {
+		t.Fatalf("later payload was received before prepare completed: destroyed=%t receives=%d", body.destroyed, receiveCount.Load())
 	}
 	packets := decodeHelperDatagrams(t, stream.bytes())
 	if len(packets) != 1 || packets[0].header.Type != credentialprotocol.PacketTypePrepareBegin {

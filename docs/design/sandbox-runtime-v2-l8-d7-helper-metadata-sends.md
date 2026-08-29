@@ -7,14 +7,20 @@ unaccepted. Live D7 remains unaccepted.
 
 `credentialclient` already defines helper packet constructors.
 `Client.Serve` now sends `PacketTypePrepareBegin` after the first controller
-prepare only when a `HelperConnectionOwner` is injected, then continues the
-Serve loop. A later controller prepare, renew, revoke, or exec with the pinned
-session identity digest sends the matching metadata-only helper packet on the
-same revalidated `VerifiedHelperStream` using `newHelperPrepareCommitSendPacket`,
-`newHelperRenewSendPacket`, `newHelperRevokeSendPacket`, and
-`newHelperExecSendPacket`. The packet types now sent are
-`PacketTypePrepareBegin`, `PacketTypePrepareCommit`, `PacketTypeRenew`,
-`PacketTypeRevoke`, and `PacketTypeExec`. A nil owner keeps
+prepare only when a `HelperConnectionOwner` is injected. For a prepare with no
+ordered file payload, it sends the matching `PacketTypePrepareCommit` on the
+same revalidated `VerifiedHelperStream`, with the same request ID and the next
+helper sequence. A file-bearing prepare stops at
+`ErrClientControlDependencyUnaccepted` after prepare-begin because
+`prepare-file` is not implemented. It never receives a second controller
+prepare to stand in for the outstanding transaction's commit.
+
+The private metadata projections and package-private constructors
+`newHelperPrepareCommitSendPacket`, `newHelperRenewSendPacket`,
+`newHelperRevokeSendPacket`, and `newHelperExecSendPacket` cover
+`PacketTypePrepareCommit`, `PacketTypeRenew`, `PacketTypeRevoke`, and
+`PacketTypeExec`. Serve does not send renew, revoke, or exec until the missing
+helper response path can establish the exact active ledger. A nil owner keeps
 `ErrClientControlDependencyUnaccepted` and does not call `SendHelper`.
 
 The owner returns one same-object revalidated `VerifiedHelperStream`. It is
@@ -25,8 +31,9 @@ revalidates an injected `syscall.Conn` stream and never creates sockets.
 
 Payload send (`prepare-file`, `exec-private`, nonempty `exec-stream`),
 SCM_RIGHTS SSH send, and JobCredential proofs remain `dependency_unaccepted`.
-If a later operation requires those, Serve fails closed the same way. This
-slice does not mint proofs.
+If an operation requires those, Serve fails closed the same way. This slice
+does not mint proofs and does not interleave a second controller operation with
+an outstanding prepare.
 
 Default command paths stay unwired. There is no sandboxd, `hal run`,
 `hal auto`, or factory helper-metadata-sends wiring.

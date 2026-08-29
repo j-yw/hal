@@ -28,7 +28,6 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 	}
 	nextSequence := uint64(1)
 	nextHelperSequence := firstInjectedHelperSendSequence
-	var helperStream VerifiedHelperStream
 	var expectedIdentity v2control.IdentityDigest
 	expectedIdentitySet := false
 	for {
@@ -70,28 +69,33 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			continue
 		}
 		if prepare, ok := packet.prepareValue(); ok {
+			if expectedIdentitySet {
+				return clientError(ClientContractCorrelation, ClientFieldRequestID)
+			}
 			digest, digestErr := acceptControllerPrepareIdentity(identity.sessionIDValue(), identity.hardExpiryValue().UnixNano(), prepare, expectedIdentity, expectedIdentitySet)
 			if digestErr != nil {
 				return digestErr
 			}
 			expectedIdentity = digest
 			expectedIdentitySet = true
-			if !configuredDependency(helperStream) {
-				stream, sendErr := client.dispatchHelperPrepareBegin(ctx, identity, prepare, digest, nextHelperSequence)
-				if sendErr != nil {
-					return sendErr
-				}
-				if !configuredDependency(stream) {
-					if client.drainStarted() || ctx.Err() != nil {
-						return nil
-					}
-					return helperPacketDependencyUnaccepted(expectedIdentity)
-				}
-				helperStream = stream
-				nextHelperSequence++
-				continue
+			stream, sendErr := client.dispatchHelperPrepareBegin(ctx, identity, prepare, digest, nextHelperSequence)
+			if sendErr != nil {
+				return sendErr
 			}
-			return client.dispatchPinnedHelperMetadataThenUnaccepted(ctx, helperStream, nextHelperSequence, identity, digest, prepare.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
+			if !configuredDependency(stream) {
+				if client.drainStarted() || ctx.Err() != nil {
+					return nil
+				}
+				return helperPacketDependencyUnaccepted(expectedIdentity)
+			}
+			if client.drainStarted() || ctx.Err() != nil {
+				return nil
+			}
+			nextHelperSequence++
+			if prepare.PrivateRecordCount() != 0 || prepare.PrivateAggregateBytes() != 0 {
+				return helperPacketDependencyUnaccepted(expectedIdentity)
+			}
+			return client.dispatchPinnedHelperMetadataThenUnaccepted(ctx, stream, nextHelperSequence, identity, digest, prepare.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
 				body, err := helperPrepareCommitBodyFromPrepare(prepare)
 				if err != nil {
 					return HelperSendPacket{}, err
@@ -103,37 +107,19 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			if err := requirePinnedCredentialIdentity(expectedIdentitySet, expectedIdentity, renew.IdentityDigest()); err != nil {
 				return err
 			}
-			return client.dispatchPinnedHelperMetadataThenUnaccepted(ctx, helperStream, nextHelperSequence, identity, expectedIdentity, renew.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
-				body, err := helperRenewBodyFromRenew(renew)
-				if err != nil {
-					return HelperSendPacket{}, err
-				}
-				return newHelperRenewSendPacket(header, body)
-			})
+			return helperPacketDependencyUnaccepted(expectedIdentity)
 		}
 		if revoke, ok := packet.revokeValue(); ok {
 			if err := requirePinnedCredentialIdentity(expectedIdentitySet, expectedIdentity, revoke.IdentityDigest()); err != nil {
 				return err
 			}
-			return client.dispatchPinnedHelperMetadataThenUnaccepted(ctx, helperStream, nextHelperSequence, identity, expectedIdentity, revoke.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
-				body, err := helperRevokeBodyFromRevoke(revoke)
-				if err != nil {
-					return HelperSendPacket{}, err
-				}
-				return newHelperRevokeSendPacket(header, body)
-			})
+			return helperPacketDependencyUnaccepted(expectedIdentity)
 		}
 		if exec, ok := packet.execValue(); ok {
 			if err := requirePinnedCredentialIdentity(expectedIdentitySet, expectedIdentity, exec.IdentityDigest()); err != nil {
 				return err
 			}
-			return client.dispatchPinnedHelperMetadataThenUnaccepted(ctx, helperStream, nextHelperSequence, identity, expectedIdentity, exec.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
-				body, err := helperExecBodyFromExec(exec)
-				if err != nil {
-					return HelperSendPacket{}, err
-				}
-				return newHelperExecSendPacket(header, body)
-			})
+			return helperPacketDependencyUnaccepted(expectedIdentity)
 		}
 		if client.drainStarted() || ctx.Err() != nil {
 			return nil
@@ -199,10 +185,10 @@ func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observe
 
 func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
 	// Helper receive and metadata-only helper send constructors exist. An
-	// injected HelperConnectionOwner may send prepare-begin and later
-	// prepare-commit/renew/revoke/exec metadata. Payload-bearing helper send,
-	// SCM_RIGHTS SSH send, and JobCredential proofs remain unaccepted; do
-	// not mint proofs.
+	// injected HelperConnectionOwner may send one correlated prepare-begin and,
+	// when no ordered file payload is required, its same-request prepare-commit.
+	// Later operational sends require a correlated helper response and active
+	// ledger that are still unaccepted; do not mint proofs.
 	_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, [16]byte{}, false, identity.Bytes())
 	if err != nil {
 		return err

@@ -3,6 +3,7 @@ package credentialclient
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -84,7 +85,7 @@ func TestL8D7GuestHelperMetadataOnlyPrepareCommitsSameControllerRequest(t *testi
 
 func TestL8D7GuestHelperExecPrivateDigestUsesExactFrozenSpelling(t *testing.T) {
 	empty := sha256.Sum256(nil)
-	emptyHex := strings.Repeat("0", 0) + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	emptyHex := hex.EncodeToString(empty[:])
 	if got, err := helperExecPrivateDigestFromControl(0, emptyHex); err != nil || got != ([32]byte{}) {
 		t.Fatalf("empty private digest = %x, %v", got, err)
 	}
@@ -93,9 +94,6 @@ func TestL8D7GuestHelperExecPrivateDigestUsesExactFrozenSpelling(t *testing.T) {
 	}
 	if _, err := helperExecPrivateDigestFromControl(1, strings.ToUpper(emptyHex)); !errors.Is(err, errInvalidHelperSendPacket) {
 		t.Fatalf("uppercase private digest error = %v", err)
-	}
-	if empty != sha256.Sum256(nil) {
-		t.Fatal("empty digest fixture changed")
 	}
 }
 
