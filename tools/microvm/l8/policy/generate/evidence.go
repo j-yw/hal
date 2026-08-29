@@ -27,10 +27,7 @@ func (evidence generatedEvidence) files() map[string][]byte {
 }
 
 func generateEvidence(root, binaryPath string, outputs generatedOutputs) (generatedEvidence, error) {
-	_ = root
-	_ = binaryPath
-	_ = outputs
-	return generatedEvidence{}, errEvidenceInputsUnavailable
+	return generateEvidenceFromInputs(root, evidenceInputs{binaryPath: binaryPath}, outputs)
 }
 
 func validatePinnedRuntimeSource(root string, callsite callsiteInput, runtimeLock map[string]string) error {

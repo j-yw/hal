@@ -15,19 +15,21 @@ executables, checks the independently locked generator digest, regenerates the
 HL8Q outputs in memory, and verifies the checked-in bytes through the D2
 importer. Untagged builds remain fail closed.
 
-HL8E issuance is intentionally later than artifact generation and is disabled
-in this slice. A single ELF that happens to embed HL8Q and a generic Go runtime
-syscall symbol does not prove its role identity, the complete final binary set,
-or the required unique/reachable callsite graph. Consequently, even supplying
-`-evidence-binary` fails closed until D4/D6 provide the final linked inputs and
-D7 can bind and inspect that complete set.
+HL8E issuance is still disabled. The generator now inspects linux/amd64 ELFs
+and prefers a complete `-evidence-binaries-dir` over a singular
+`-evidence-binary`. A single ELF that happens to embed HL8Q and a generic Go
+runtime syscall symbol does not prove its role identity, the complete final
+binary set, or the required unique/reachable callsite graph. Missing helper,
+monitor, or shim role binaries fail closed. Consequently, even supplying
+`-evidence-binary` or an incomplete binaries dir fails closed until D4/D6
+provide the final linked inputs and D7 can bind that complete set.
 
 The reserved future invocation is:
 
 ```sh
 go run ./tools/microvm/l8/policy/generate \
   -root "$PWD" \
-  -evidence-binary /absolute/path/to/final/guest-role-binary
+  -evidence-binaries-dir /absolute/path/to/final/guest-role-binaries
 ```
 
 The current generator always rejects that invocation and never writes
