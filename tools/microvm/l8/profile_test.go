@@ -1,10 +1,14 @@
 package l8profile
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -192,21 +196,147 @@ func TestL8FinalImageVerifierFailsClosedWhenHL8EUnissued(t *testing.T) {
 	}
 }
 
-func TestL8CacheVerifierFailsClosedWhileExactL8ManifestIsUnissued(t *testing.T) {
-	if _, err := os.Stat("cache.manifest"); err == nil {
-		t.Fatal("L8 cache manifest must remain unissued until exact Node/Pi/transitive digests are authored")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		t.Fatal(err)
+func TestL8CacheManifestLocksMeasuredNodePiAndTransitiveArchives(t *testing.T) {
+	data, err := os.ReadFile("cache.manifest")
+	if err != nil {
+		t.Fatalf("L8 cache.manifest must exist: %v", err)
+	}
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		t.Fatal("L8 cache.manifest must be a nonempty newline-terminated exact lock")
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(lines) != l8CacheManifestEntries {
+		t.Fatalf("L8 cache.manifest entries = %d, want %d measured Node/Pi/transitive locks", len(lines), l8CacheManifestEntries)
+	}
+	sorted := append([]string(nil), lines...)
+	sort.Strings(sorted)
+	if strings.Join(lines, "\n") != strings.Join(sorted, "\n") {
+		t.Fatal("L8 cache.manifest must be LC_ALL=C sorted")
 	}
 
-	command := exec.Command("sh", "verify-cache.sh", "--cache", t.TempDir())
-	payload, err := command.CombinedOutput()
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || exitErr.ExitCode() == 2 {
-		t.Fatalf("verify-cache.sh unissued L8 lock exit = %v output = %s, want fail-closed", err, payload)
+	l5Names := l8ManifestFilenames(t, readProfileFile(t, "../l5/cache.manifest"))
+	seen := make(map[string]struct{}, len(lines))
+	foundRequired := make(map[string]bool, len(l8RequiredCacheLocks))
+	npmArchives := 0
+	for i, line := range lines {
+		digest, size, filename, ok := l8SplitManifestRecord(line)
+		if !ok {
+			t.Fatalf("L8 cache.manifest line %d is not digest<TAB>size<TAB>filename", i+1)
+		}
+		if len(digest) != 64 || digest != strings.ToLower(digest) || strings.Trim(digest, "0123456789abcdef") != "" {
+			t.Fatalf("L8 cache.manifest line %d has an invalid digest", i+1)
+		}
+		if size == "" || size == "0" || strings.Trim(size, "0123456789") != "" || size[0] == '0' {
+			t.Fatalf("L8 cache.manifest line %d has an invalid size", i+1)
+		}
+		if filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, "/\\\t") {
+			t.Fatalf("L8 cache.manifest line %d has an unsafe filename", i+1)
+		}
+		if _, exists := seen[filename]; exists {
+			t.Fatalf("L8 cache.manifest duplicates filename %q", filename)
+		}
+		if _, exists := l5Names[filename]; exists {
+			t.Fatalf("L8 cache.manifest collides with L5 filename %q", filename)
+		}
+		if strings.HasPrefix(filename, "firecracker-") {
+			t.Fatalf("L8 cache.manifest must not reuse firecracker- L5 names, got %q", filename)
+		}
+		seen[filename] = struct{}{}
+		if want, required := l8RequiredCacheLocks[filename]; required {
+			if digest != want.digest || size != want.size {
+				t.Fatalf("required L8 lock %s = %s %s, want measured %s %s", filename, digest, size, want.digest, want.size)
+			}
+			foundRequired[filename] = true
+			continue
+		}
+		if !strings.HasSuffix(filename, ".tgz") {
+			t.Fatalf("L8 transitive archive %q must be a unique .tgz", filename)
+		}
+		npmArchives++
 	}
-	if !strings.Contains(string(payload), "L8 cache manifest is unissued") {
-		t.Fatalf("verify-cache.sh output = %s, want unissued L8 cache-lock message", payload)
+	for filename := range l8RequiredCacheLocks {
+		if !foundRequired[filename] {
+			t.Fatalf("L8 cache.manifest missing required name %q", filename)
+		}
+	}
+	if npmArchives != l8TransitiveNpmArchiveCount {
+		t.Fatalf("L8 transitive npm archives = %d, want %d shrinkwrap packs", npmArchives, l8TransitiveNpmArchiveCount)
+	}
+}
+
+func TestL8CacheVerifierFailsClosedOnMissingUnsortedAndDuplicateLocks(t *testing.T) {
+	t.Parallel()
+
+	t.Run("issued manifest missing cache files", func(t *testing.T) {
+		t.Parallel()
+		cache := t.TempDir()
+		if err := os.Chmod(cache, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command("sh", "verify-cache.sh", "--cache", cache)
+		payload, err := command.CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || exitErr.ExitCode() == 2 {
+			t.Fatalf("verify-cache.sh missing-files exit = %v output = %s, want fail-closed", err, payload)
+		}
+		if !strings.Contains(string(payload), "cache entry is missing or is not a regular file") {
+			t.Fatalf("verify-cache.sh output = %s, want missing cache-file fail-closed message", payload)
+		}
+	})
+
+	tests := []struct {
+		name    string
+		mutate  func(t *testing.T, h l8CacheHarness)
+		wantErr string
+		wantOK  bool
+	}{
+		{name: "valid synthetic exact set", wantOK: true},
+		{name: "missing file", mutate: func(t *testing.T, h l8CacheHarness) {
+			t.Helper()
+			if err := os.Remove(filepath.Join(h.cache, "chalk-5.6.2.tgz")); err != nil {
+				t.Fatal(err)
+			}
+		}, wantErr: "cache entry is missing or is not a regular file"},
+		{name: "unsorted", mutate: func(t *testing.T, h l8CacheHarness) {
+			t.Helper()
+			lines := strings.Split(strings.TrimSuffix(string(l8ReadFile(t, h.l8Manifest)), "\n"), "\n")
+			sort.Sort(sort.Reverse(sort.StringSlice(lines)))
+			l8WriteFile(t, h.l8Manifest, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+		}, wantErr: "L8 cache manifest must be sorted"},
+		{name: "duplicate filename", mutate: func(t *testing.T, h l8CacheHarness) {
+			t.Helper()
+			l5Line := strings.TrimSpace(string(l8ReadFile(t, h.l5Manifest)))
+			lines := strings.Split(strings.TrimSuffix(string(l8ReadFile(t, h.l8Manifest)), "\n"), "\n")
+			lines = append(lines, l5Line)
+			sort.Strings(lines)
+			l8WriteFile(t, h.l8Manifest, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+		}, wantErr: "L5 and L8 cache manifests contain a duplicate filename"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newL8CacheHarness(t)
+			if tt.mutate != nil {
+				tt.mutate(t, h)
+			}
+			command := exec.Command("sh", h.script, "--cache", h.cache)
+			payload, err := command.CombinedOutput()
+			if tt.wantOK {
+				if err != nil {
+					t.Fatalf("verify-cache.sh error = %v, output = %s", err, payload)
+				}
+				return
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || exitErr.ExitCode() == 2 {
+				t.Fatalf("verify-cache.sh %s exit = %v output = %s, want fail-closed", tt.name, err, payload)
+			}
+			if !strings.Contains(string(payload), tt.wantErr) {
+				t.Fatalf("verify-cache.sh %s output = %s, want %q", tt.name, payload, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -244,6 +374,131 @@ func TestL8PostBuildKeepsL7ToolsAndInstallsL8BinariesWithoutSecrets(t *testing.T
 			t.Errorf("post-build.sh missing %q", required)
 		}
 	}
+}
+
+const (
+	l8CacheManifestEntries      = 142
+	l8TransitiveNpmArchiveCount = 139
+)
+
+type l8RequiredLock struct {
+	digest string
+	size   string
+}
+
+var l8RequiredCacheLocks = map[string]l8RequiredLock{
+	"node-v22.22.0.tar.xz": {
+		digest: "4c138012bb5352f49822a8f3e6d1db71e00639d0c36d5b6756f91e4c6f30b683",
+		size:   "50902788",
+	},
+	"pi-coding-agent-0.82.1.tgz": {
+		digest: "8343ab95cbab5766f2f5d48844df8db13e772ead2e2976166cbb820a29dacb7d",
+		size:   "4978133",
+	},
+	"pi-shrinkwrap-0.82.1.json": {
+		digest: "ac68e6c713a3fa13b56d2e41855dcfce44fe2ca1645ccc90977bea3afbeaf50a",
+		size:   "61545",
+	},
+}
+
+type l8CacheHarness struct {
+	script     string
+	l5Manifest string
+	l8Manifest string
+	cache      string
+}
+
+func newL8CacheHarness(t *testing.T) l8CacheHarness {
+	t.Helper()
+	root := t.TempDir()
+	l5Dir := filepath.Join(root, "l5")
+	l8Dir := filepath.Join(root, "l8")
+	cache := filepath.Join(root, "cache")
+	h := l8CacheHarness{
+		script:     filepath.Join(l8Dir, "verify-cache.sh"),
+		l5Manifest: filepath.Join(l5Dir, "cache.manifest"),
+		l8Manifest: filepath.Join(l8Dir, "cache.manifest"),
+		cache:      cache,
+	}
+	if err := os.MkdirAll(l5Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(l8Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	l8WriteFile(t, h.script, l8ReadFile(t, "verify-cache.sh"), 0o755)
+
+	l5Payload := []byte("cache-a")
+	l8Files := []struct {
+		name    string
+		payload []byte
+	}{
+		{name: "node-v22.22.0.tar.xz", payload: []byte("synthetic-node")},
+		{name: "pi-coding-agent-0.82.1.tgz", payload: []byte("synthetic-pi")},
+		{name: "pi-shrinkwrap-0.82.1.json", payload: []byte("synthetic-shrinkwrap")},
+		{name: "chalk-5.6.2.tgz", payload: []byte("synthetic-chalk")},
+	}
+	l8WriteCacheFile(t, cache, "dep-a.tar", l5Payload)
+	l8WriteFile(t, h.l5Manifest, l8ManifestLine(l5Payload, "dep-a.tar"), 0o644)
+
+	var l8Lines []string
+	for _, file := range l8Files {
+		l8WriteCacheFile(t, cache, file.name, file.payload)
+		l8Lines = append(l8Lines, strings.TrimSuffix(string(l8ManifestLine(file.payload, file.name)), "\n"))
+	}
+	sort.Strings(l8Lines)
+	l8WriteFile(t, h.l8Manifest, []byte(strings.Join(l8Lines, "\n")+"\n"), 0o644)
+	return h
+}
+
+func l8WriteCacheFile(t *testing.T, cache, name string, payload []byte) {
+	t.Helper()
+	l8WriteFile(t, filepath.Join(cache, name), payload, 0o600)
+}
+
+func l8WriteFile(t *testing.T, path string, payload []byte, mode os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(path, payload, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func l8ReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func l8ManifestLine(payload []byte, filename string) []byte {
+	sum := sha256.Sum256(payload)
+	return []byte(fmt.Sprintf("%s\t%d\t%s\n", hex.EncodeToString(sum[:]), len(payload), filename))
+}
+
+func l8SplitManifestRecord(line string) (digest, size, filename string, ok bool) {
+	parts := strings.Split(line, "\t")
+	if len(parts) != 3 {
+		return "", "", "", false
+	}
+	return parts[0], parts[1], parts[2], true
+}
+
+func l8ManifestFilenames(t *testing.T, manifest string) map[string]struct{} {
+	t.Helper()
+	names := make(map[string]struct{})
+	for i, line := range strings.Split(strings.TrimSuffix(manifest, "\n"), "\n") {
+		_, _, filename, ok := l8SplitManifestRecord(line)
+		if !ok {
+			t.Fatalf("manifest line %d is not digest<TAB>size<TAB>filename", i+1)
+		}
+		names[filename] = struct{}{}
+	}
+	return names
 }
 
 func sevenFileBundle() []string {

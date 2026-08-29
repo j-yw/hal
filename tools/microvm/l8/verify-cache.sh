@@ -121,8 +121,8 @@ duplicate_name=$(awk -F "$tab" 'NF >= 3 { print $3 }' "$l5_manifest" "$l8_manife
 }
 
 # Node 22.22.0, Pi 0.82.1, its shrinkwrap, and every transitive archive must
-# be independently locked by the L8 manifest. This slice does not invent or
-# download their digests.
+# be independently locked by the exact L8 cache.manifest. Missing files,
+# unsorted records, and duplicate L5/L8 filenames fail closed.
 for filename in node-v22.22.0.tar.xz pi-coding-agent-0.82.1.tgz pi-shrinkwrap-0.82.1.json; do
 	awk -F "$tab" -v required="$filename" '$3 == required { found = 1 } END { exit !found }' "$l8_manifest" || {
 		echo "required L8 cache lock $filename is missing" >&2
