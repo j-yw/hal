@@ -1,3 +1,5 @@
+//go:build !l8_verified_native_artifact
+
 package rolebootstrap
 
 import (

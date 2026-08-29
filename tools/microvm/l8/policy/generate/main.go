@@ -733,7 +733,7 @@ func hashPhaseSources(root string) ([32]byte, error) {
 		}
 		for _, entry := range entries {
 			name := entry.Name()
-			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || name == "artifact_expected_d7_gen.go" || name == "pinned_callsite_evidence_expected_d7_gen.go" || name == "policy_install_inventory_d7_gen.go" {
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || name == "artifact_expected_d7_gen.go" || name == "pinned_callsite_evidence_expected_d7_gen.go" || name == "policy_install_inventory_d7_gen.go" || name == "generated_artifact_d7_gen.go" {
 				continue
 			}
 			paths = append(paths, filepath.Join(directory, name))
