@@ -149,7 +149,8 @@ func exactNativeCallsites() []nativeCallsite {
 		{index: 12, name: "seccomp", number: 317, scope: "pid1", insnHex: "0f05"},
 		{index: 13, name: "clone3", number: 435, scope: "pid1", insnHex: "0f05"},
 		{index: 14, name: "execve", number: 59, scope: "pid1", insnHex: "0f05"},
-		{index: 15, name: "exit_group", number: 231, scope: "shared", insnHex: "0f05"},
+		{index: 15, name: "recvmsg", number: 47, scope: "pid1", insnHex: "0f05"},
+		{index: 16, name: "exit_group", number: 231, scope: "shared", insnHex: "0f05"},
 	}
 }
 
@@ -200,7 +201,7 @@ func validateNativeSource(encoded []byte) error {
 		".Lpid1_seccomp:",
 		".Lpid1_clone3:",
 		".Lpid1_execve:",
-		".Lpid1_unimpl_scm_rights:",
+		".Lpid1_scm_rights:",
 		".Lcontroller_unimpl:",
 		".Lagent_unimpl:",
 		".Lmonitor_unimpl:",
@@ -210,6 +211,9 @@ func validateNativeSource(encoded []byte) error {
 		"movq\t$317, %rax",
 		"movq\t$435, %rax",
 		"movq\t$59, %rax",
+		"movq\t$47, %rax",
+		"movq\t$16, %rdi",
+		"movq\t$0x40000040, %rdx",
 		"movq\t$88, %rsi",
 		"movq\t$0x5100, %r13",
 		"movq\t$0x25100, %r13",
@@ -230,7 +234,6 @@ func validateNativeSource(encoded []byte) error {
 		"__libc", "main.main", "runtime.main", "dlopen", "getenv", "malloc",
 		"movq\t$322, %rax", // execveat
 		"movq\t$46, %rax",  // sendmsg
-		"movq\t$47, %rax",  // recvmsg
 		"movl\t$0, %edi",
 	} {
 		if bytes.Contains(encoded, []byte(forbidden)) {

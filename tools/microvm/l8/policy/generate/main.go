@@ -180,6 +180,7 @@ func exactNativeEnvelope() []string {
 		"seccomp",
 		"clone3",
 		"execve",
+		"recvmsg",
 		"exit_group",
 	}
 }
@@ -663,6 +664,9 @@ func launchBaseClone3Templates(catalog map[string]uint32) ([]encodedRoleRule, er
 	// exit_signal=SIGCHLD, pidfd, and cgroup live in pointed-to clone_args
 	// and are not scalar-visible. Pathname execve is omitted: encoding any
 	// execve row without an exact pathname scalar would allow every pathname.
+	// SCM_RIGHTS sendmsg/recvmsg are omitted: classic seccomp cannot see
+	// cmsg or passed fds, and encoding any row without that would allow
+	// unrestricted sendmsg/recvmsg by catalog name.
 	if len(launchBaseClone3NativeOperations()) != 4 {
 		return nil, errors.New("launch-base clone3 native operations drifted")
 	}
