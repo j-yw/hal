@@ -478,11 +478,37 @@ func encodeCatalog(entries []catalogEntry, lock map[string]string, ordinary map[
 }
 
 type encodedRoleRule struct {
-	name   string
-	number uint32
-	path   uint8
-	pinned bool
+	name    string
+	number  uint32
+	path    uint8
+	origin  uint8
+	pinned  bool
+	clauses []encodedScalarClause
 }
+
+type encodedScalarClause struct {
+	argumentIndex  uint8
+	operation      uint8
+	values         []uint64
+	mask           uint64
+	mismatchAction uint32
+	mismatchReason uint8
+}
+
+const (
+	policyScalarClauseBytes     = 84
+	scalarEqual                 = 1
+	scalarNonzero               = 6
+	actionErrnoEPERM            = 0x00050001
+	reasonScalarMismatch        = 12
+	ruleOriginRole              = 1
+	enforcementPathDirect       = 1
+	clone3SyscallNumber         = 435
+	go1257CloneArgsSize         = 88
+	cloneVforkVMPidfd           = 0x5100
+	cloneVforkVMNewnsPidfd      = 0x25100
+	cloneVforkVMPidfdIntoCgroup = 0x200005100
+)
 
 func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA256 [32]byte) ([]byte, uint32, []uint32, map[uint8][][]byte, error) {
 	edges := map[uint8][]uint8{
@@ -522,19 +548,27 @@ func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA
 			}
 		}
 		for _, rule := range rules {
+			origin := rule.origin
+			if origin == 0 {
+				origin = role.Origin
+			}
 			pinnedCount := byte(0)
 			var pinnedRow []byte
 			if rule.pinned {
 				pinnedCount = 1
-				row, err := encodePinnedRequirement(document.PinnedCallsite, toolchainSHA256, role.Origin == 3)
+				row, err := encodePinnedRequirement(document.PinnedCallsite, toolchainSHA256, origin == 3)
 				if err != nil {
 					return nil, 0, nil, nil, err
 				}
 				pinnedRow = row
 			}
+			clauseRows, err := encodeScalarClauses(rule.clauses)
+			if err != nil {
+				return nil, 0, nil, nil, err
+			}
 			body.WriteByte(role.ID)
 			body.WriteByte(role.Stage)
-			body.WriteByte(role.Origin)
+			body.WriteByte(origin)
 			body.WriteByte(rule.path)
 			body.WriteByte(1)
 			body.WriteByte(pinnedCount)
@@ -543,14 +577,16 @@ func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA
 			writeUint64(body, 0)
 			writeUint32(body, rule.number)
 			writeUint32(body, 0)
-			body.Write([]byte{0, 0, 0, 0})
+			body.WriteByte(byte(len(rule.clauses)))
+			body.Write([]byte{0, 0, 0})
+			body.Write(clauseRows)
 			body.Write(pinnedRow)
-			roleFilters[role.ID] = append(roleFilters[role.ID], syscallFilterRow(rule.number))
+			roleFilters[role.ID] = append(roleFilters[role.ID], syscallFilterRow(rule.number, clauseRows))
 			if role.Origin == 2 && !haveWorkload {
 				workloadIndex = ruleIndex
 				haveWorkload = true
 			}
-			if role.Origin == 3 {
+			if origin == 3 {
 				runtimeIndexes = append(runtimeIndexes, ruleIndex)
 			}
 			ruleIndex++
@@ -594,6 +630,19 @@ func roleEncodedRules(role roleInput, document rolesDocument, catalog map[string
 			pinned: false,
 		})
 	}
+	if role.Name == "launch-base" {
+		templates, err := launchBaseClone3Templates(catalog)
+		if err != nil {
+			return nil, err
+		}
+		for _, template := range templates {
+			if _, exists := seen[template.name]; exists {
+				return nil, fmt.Errorf("launch-base template %s collides with the Go runtime envelope", template.name)
+			}
+			seen[template.name] = struct{}{}
+			rules = append(rules, template)
+		}
+	}
 	sort.Slice(rules, func(i, j int) bool {
 		if rules[i].number == rules[j].number {
 			return rules[i].name < rules[j].name
@@ -601,6 +650,43 @@ func roleEncodedRules(role roleInput, document rolesDocument, catalog map[string
 		return rules[i].number < rules[j].number
 	})
 	return rules, nil
+}
+
+func launchBaseClone3Templates(catalog map[string]uint32) ([]encodedRoleRule, error) {
+	number, ok := catalog["clone3"]
+	if !ok || number != clone3SyscallNumber {
+		return nil, errors.New("launch-base clone3 template requires ordinary catalog clone3=435")
+	}
+	// One Direct/RoleOrigin filter row covers the three native PID1 clone3
+	// flag sets. HL8Q scalars can observe only clone3(2) registers: rdi is
+	// the clone_args pointer and rsi is the Go 1.25.7 size 88. Flags,
+	// exit_signal=SIGCHLD, pidfd, and cgroup live in pointed-to clone_args
+	// and are not scalar-visible. Pathname execve is omitted: encoding any
+	// execve row without an exact pathname scalar would allow every pathname.
+	if len(launchBaseClone3NativeOperations()) != 4 {
+		return nil, errors.New("launch-base clone3 native operations drifted")
+	}
+	return []encodedRoleRule{{
+		name:   "clone3",
+		number: number,
+		path:   enforcementPathDirect,
+		origin: ruleOriginRole,
+		clauses: []encodedScalarClause{
+			{
+				argumentIndex:  0,
+				operation:      scalarNonzero,
+				mismatchAction: actionErrnoEPERM,
+				mismatchReason: reasonScalarMismatch,
+			},
+			{
+				argumentIndex:  1,
+				operation:      scalarEqual,
+				values:         []uint64{go1257CloneArgsSize},
+				mismatchAction: actionErrnoEPERM,
+				mismatchReason: reasonScalarMismatch,
+			},
+		},
+	}}, nil
 }
 
 func roleEnvelope(role roleInput, document rolesDocument) ([]string, string) {
@@ -613,10 +699,56 @@ func roleEnvelope(role roleInput, document rolesDocument) ([]string, string) {
 	return nil, ""
 }
 
-func syscallFilterRow(number uint32) []byte {
-	row := make([]byte, 8)
+func launchBaseClone3NativeOperations() []struct {
+	name   string
+	flags  uint64
+	cgroup uint64
+} {
+	return []struct {
+		name   string
+		flags  uint64
+		cgroup uint64
+	}{
+		{name: "controller", flags: cloneVforkVMPidfd, cgroup: 0},
+		{name: "agent", flags: cloneVforkVMPidfd, cgroup: 0},
+		{name: "monitor", flags: cloneVforkVMNewnsPidfd, cgroup: 0},
+		{name: "shim", flags: cloneVforkVMPidfdIntoCgroup, cgroup: 9},
+	}
+}
+
+func syscallFilterRow(number uint32, clauseRows []byte) []byte {
+	row := make([]byte, 8, 8+len(clauseRows))
 	binary.BigEndian.PutUint32(row[:4], number)
-	return row
+	if len(clauseRows) > 0 {
+		row[4] = byte(len(clauseRows) / policyScalarClauseBytes)
+	}
+	return append(row, clauseRows...)
+}
+
+func encodeScalarClauses(clauses []encodedScalarClause) ([]byte, error) {
+	if len(clauses) > 6 {
+		return nil, errors.New("scalar clause count exceeds MaxPolicyScalarClausesPerRule")
+	}
+	encoded := make([]byte, 0, len(clauses)*policyScalarClauseBytes)
+	var previousArgument int = -1
+	for _, clause := range clauses {
+		if int(clause.argumentIndex) > 5 || int(clause.argumentIndex) <= previousArgument || len(clause.values) > 8 {
+			return nil, errors.New("scalar clause argument index or value count is invalid")
+		}
+		row := make([]byte, policyScalarClauseBytes)
+		row[0] = clause.argumentIndex
+		row[1] = clause.operation
+		row[2] = byte(len(clause.values))
+		binary.BigEndian.PutUint32(row[4:8], clause.mismatchAction)
+		row[8] = clause.mismatchReason
+		binary.BigEndian.PutUint64(row[12:20], clause.mask)
+		for index, value := range clause.values {
+			binary.BigEndian.PutUint64(row[20+index*8:28+index*8], value)
+		}
+		encoded = append(encoded, row...)
+		previousArgument = int(clause.argumentIndex)
+	}
+	return encoded, nil
 }
 
 func encodePinnedRequirement(callsite callsiteInput, toolchainSHA256 [32]byte, runtimeOrigin bool) ([]byte, error) {

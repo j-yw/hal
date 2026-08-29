@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/syscallpolicy"
 )
 
 func TestL8D7ArtifactGenerationIsDeterministicAndMatchesCheckedInOutputs(t *testing.T) {
@@ -274,6 +276,52 @@ func TestL8D7RolesDecoderRequiresExactOrderedRoleAndRuleSet(t *testing.T) {
 				t.Fatal("noncanonical roles document was accepted")
 			}
 		})
+	}
+}
+
+func TestL8D7LaunchBaseClone3ExecveTemplatesAreExactAndFailClosed(t *testing.T) {
+	root := repositoryRoot(t)
+	outputs, err := generate(root)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	compiled, err := syscallpolicy.CompileIssuedRoleFilter(outputs.artifact, outputs.artifactSHA256, syscallpolicy.RoleLaunchBase)
+	if err != nil {
+		t.Fatalf("CompileIssuedRoleFilter(launch-base): %v", err)
+	}
+	auditArch := uint32(0xc000003e)
+	exactClone3 := [6]uint64{1, go1257CloneArgsSize}
+	for _, op := range launchBaseClone3NativeOperations() {
+		if got := compiled.Action(auditArch, clone3SyscallNumber, exactClone3); got != syscallpolicy.ActionAllow {
+			t.Fatalf("launch-base clone3 %s Action() = %v, want allow for pointer/size template (flags %#x cgroup %d live in clone_args)", op.name, got, op.flags, op.cgroup)
+		}
+	}
+	for _, test := range []struct {
+		name string
+		nr   uint32
+		args [6]uint64
+		want syscallpolicy.Action
+	}{
+		{name: "clone3 empty args", nr: clone3SyscallNumber, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "clone3 missing pointer", nr: clone3SyscallNumber, args: [6]uint64{0, go1257CloneArgsSize}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "clone3 wrong size 64", nr: clone3SyscallNumber, args: [6]uint64{1, 64}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "clone3 wrong size 0", nr: clone3SyscallNumber, args: [6]uint64{1, 0}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "clone3 catalog name only", nr: clone3SyscallNumber, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execve empty", nr: 59, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execve helper pathname registers", nr: 59, args: [6]uint64{1, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execve agent pathname registers", nr: 59, args: [6]uint64{2, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execve monitor pathname registers", nr: 59, args: [6]uint64{3, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execve shim pathname registers", nr: 59, args: [6]uint64{4, 1, 0}, want: syscallpolicy.ActionErrnoEPERM},
+		{name: "execve nonempty envp", nr: 59, args: [6]uint64{1, 1, 1}, want: syscallpolicy.ActionErrnoEPERM},
+	} {
+		if got := compiled.Action(auditArch, test.nr, test.args); got != test.want {
+			t.Fatalf("%s Action() = %v, want %v", test.name, got, test.want)
+		}
+	}
+	for _, name := range exactRuntimeEnvelope() {
+		if name == "clone" || name == "clone3" || name == "execve" {
+			t.Fatalf("runtimeEnvelope includes process-creation syscall %s", name)
+		}
 	}
 }
 
