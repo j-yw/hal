@@ -134,6 +134,10 @@ func TestL8PID1StartGateSealedExpectedChannelIsMissing(t *testing.T) {
 		"AcceptHelperDescriptor",
 		"AcceptClientDescriptor",
 		"return l8composition.PID1StartGateExpected{}, false, nil",
+		"pid1StartGateHelperFDNumber",
+		"pid1StartGateClientFDNumber",
+		"DecodeProcessDescriptor",
+		"admitPID1StartGate(expected, helper, client)",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("PID1 start-gate omits %q", required)
@@ -161,6 +165,130 @@ func TestL8PID1StartGateSealedMemfdLoadsExpectedAndAdmits(t *testing.T) {
 	if code := releasePID1AgentStartGate(); code != 127 {
 		t.Fatalf("releasePID1AgentStartGate() = %d, want 127 without authenticated descriptors", code)
 	}
+}
+
+func TestL8PID1StartGateReleaseAdmitsInheritedHelperThenClientDescriptors(t *testing.T) {
+	fixture := newPID1GuestInitStartGateFixture(t)
+	expectedFD := newPID1StartGateTestSealedFD(t, pid1StartGateExpectedJSON(t, fixture.expected))
+	helperFD := newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.helper))
+	clientFD := newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.client))
+	withPID1StartGateExpectedFD(t, expectedFD)
+	withPID1StartGateHelperFD(t, helperFD)
+	withPID1StartGateClientFD(t, clientFD)
+
+	if code := releasePID1AgentStartGate(); code != 0 {
+		t.Fatalf("releasePID1AgentStartGate() = %d, want 0 after helper-then-client admit", code)
+	}
+	assertPID1StartGateSourceFDConsumed(t, expectedFD)
+	assertPID1StartGateSourceFDConsumed(t, helperFD)
+	assertPID1StartGateSourceFDConsumed(t, clientFD)
+}
+
+func TestL8PID1StartGateReleaseFailsClosedWithoutInheritedHelperOrClient(t *testing.T) {
+	fixture := newPID1GuestInitStartGateFixture(t)
+	tests := []struct {
+		name   string
+		helper func(*testing.T) int
+		client func(*testing.T) int
+	}{
+		{
+			name:   "missing helper",
+			helper: newPID1StartGateClosedFD,
+			client: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.client))
+			},
+		},
+		{
+			name: "missing client",
+			helper: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.helper))
+			},
+			client: newPID1StartGateClosedFD,
+		},
+		{
+			name: "swapped helper and client slots",
+			helper: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.client))
+			},
+			client: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.helper))
+			},
+		},
+		{
+			name: "helper digest mismatch",
+			helper: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, xorPID1DescriptorPolicy(fixture.helper)))
+			},
+			client: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.client))
+			},
+		},
+		{
+			name: "client digest mismatch",
+			helper: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.helper))
+			},
+			client: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, xorPID1DescriptorPolicy(fixture.client)))
+			},
+		},
+		{
+			name: "invalid helper payload",
+			helper: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, []byte("not-an-hl8d-descriptor"))
+			},
+			client: func(t *testing.T) int {
+				return newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.client))
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			withPID1StartGateExpectedFD(t, newPID1StartGateTestSealedFD(t, pid1StartGateExpectedJSON(t, fixture.expected)))
+			withPID1StartGateHelperFD(t, test.helper(t))
+			withPID1StartGateClientFD(t, test.client(t))
+			if code := releasePID1AgentStartGate(); code != 127 {
+				t.Fatalf("releasePID1AgentStartGate() = %d, want 127", code)
+			}
+		})
+	}
+}
+
+func TestL8PID1StartGateMissingExpectedIgnoresInheritedDescriptors(t *testing.T) {
+	fixture := newPID1GuestInitStartGateFixture(t)
+	expectedFD := newPID1StartGateClosedFD(t)
+	helperFD := newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.helper))
+	clientFD := newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.client))
+	withPID1StartGateExpectedFD(t, expectedFD)
+	withPID1StartGateHelperFD(t, helperFD)
+	withPID1StartGateClientFD(t, clientFD)
+
+	if code := releasePID1AgentStartGate(); code != 0 {
+		t.Fatalf("releasePID1AgentStartGate() = %d, want L7 supervisor continue", code)
+	}
+	assertPID1StartGateSourceFDConsumed(t, helperFD)
+	assertPID1StartGateSourceFDConsumed(t, clientFD)
+}
+
+func TestL8PID1StartGateUnsignedHelperDescriptorFailsClosedWhenExpectedPresent(t *testing.T) {
+	fixture := newPID1GuestInitStartGateFixture(t)
+	payload := pid1StartGateDescriptorBytes(t, fixture.helper)
+	path := t.TempDir() + "/pid1-helper.hl8d"
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	helperFD, err := unix.Open(path, unix.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPID1StartGateExpectedFD(t, newPID1StartGateTestSealedFD(t, pid1StartGateExpectedJSON(t, fixture.expected)))
+	withPID1StartGateHelperFD(t, helperFD)
+	withPID1StartGateClientFD(t, newPID1StartGateTestSealedFD(t, pid1StartGateDescriptorBytes(t, fixture.client)))
+	if code := releasePID1AgentStartGate(); code != 127 {
+		t.Fatalf("releasePID1AgentStartGate() = %d, want 127", code)
+	}
+	assertPID1StartGateSourceFDProtected(t, helperFD)
 }
 
 func TestL8PID1StartGateSealedMemfdAcceptsProcessCompositionFactsJSON(t *testing.T) {
@@ -406,6 +534,41 @@ func withPID1StartGateExpectedFD(t *testing.T, fd int) {
 	previous := pid1StartGateExpectedFD
 	pid1StartGateExpectedFD = fd
 	t.Cleanup(func() { pid1StartGateExpectedFD = previous })
+}
+
+func withPID1StartGateHelperFD(t *testing.T, fd int) {
+	t.Helper()
+	previous := pid1StartGateHelperFD
+	pid1StartGateHelperFD = fd
+	t.Cleanup(func() { pid1StartGateHelperFD = previous })
+}
+
+func withPID1StartGateClientFD(t *testing.T, fd int) {
+	t.Helper()
+	previous := pid1StartGateClientFD
+	pid1StartGateClientFD = fd
+	t.Cleanup(func() { pid1StartGateClientFD = previous })
+}
+
+func newPID1StartGateClosedFD(t *testing.T) int {
+	t.Helper()
+	fd, err := unix.MemfdCreate("hal-pid1-start-gate-closed", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Close(fd); err != nil {
+		t.Fatal(err)
+	}
+	return fd
+}
+
+func pid1StartGateDescriptorBytes(t *testing.T, descriptor l8composition.ProcessDescriptor) []byte {
+	t.Helper()
+	encoded, err := l8composition.EncodeProcessDescriptor(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func assertPID1StartGateExpectedAbsentAndProtected(t *testing.T, fd int) {
