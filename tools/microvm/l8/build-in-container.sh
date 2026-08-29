@@ -29,15 +29,10 @@ hl8e=$profile_root/policy/verified-pinned-callsites.hl8e
 	exit 1
 }
 
-native_bootstrap=
-if [[ -d "$source_root/cmd/hal-guest-role-bootstrap" ]]; then
-	native_bootstrap=$source_root/cmd/hal-guest-role-bootstrap
-elif [[ -f "$profile_root/native/hal-guest-role-bootstrap.c" ]]; then
-	native_bootstrap=$profile_root/native/hal-guest-role-bootstrap.c
-elif [[ -f "$profile_root/native/hal-guest-role-bootstrap.S" ]]; then
-	native_bootstrap=$profile_root/native/hal-guest-role-bootstrap.S
-fi
-[[ -n "$native_bootstrap" ]] || {
+native_source=$profile_root/role-bootstrap/hal-guest-role-bootstrap.S
+native_build=$profile_root/role-bootstrap/build.sh
+[[ -f "$native_source" && ! -L "$native_source" && -s "$native_source" &&
+	-f "$native_build" && ! -L "$native_build" && -s "$native_build" ]] || {
 	echo "native bootstrap path is missing; L8 builds fail closed" >&2
 	exit 1
 }
@@ -125,15 +120,11 @@ go -C "$source_root" build -mod=readonly -trimpath -buildvcs=false -ldflags=-bui
 go -C "$source_root" build -mod=readonly -trimpath -buildvcs=false -ldflags=-buildid= \
 	-o /build/guest-bin/hal-guest-workload-shim ./cmd/hal-guest-workload-shim
 
-if [[ -d "$native_bootstrap" ]]; then
-	go -C "$source_root" build -mod=readonly -trimpath -buildvcs=false -ldflags=-buildid= \
-		-o /build/guest-bin/hal-guest-role-bootstrap ./cmd/hal-guest-role-bootstrap
-elif [[ "$native_bootstrap" == *.c || "$native_bootstrap" == *.S ]]; then
-	${CC:-gcc} -static -nostdlib -fno-stack-protector -o /build/guest-bin/hal-guest-role-bootstrap "$native_bootstrap"
-else
+command -v as >/dev/null && command -v ld >/dev/null || {
 	echo "native bootstrap path is missing; L8 builds fail closed" >&2
 	exit 1
-fi
+}
+"$native_build" /build/guest-bin
 test -f /build/guest-bin/hal-guest-role-bootstrap
 test -f /build/guest-bin/hal-guest-agent
 test -f /build/guest-bin/hal-init

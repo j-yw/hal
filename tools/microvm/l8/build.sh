@@ -47,15 +47,10 @@ hl8e=$script_dir/policy/verified-pinned-callsites.hl8e
 	exit 1
 }
 
-native_bootstrap=
-if [[ -d "$repo_root/cmd/hal-guest-role-bootstrap" ]]; then
-	native_bootstrap=$repo_root/cmd/hal-guest-role-bootstrap
-elif [[ -f "$repo_root/tools/microvm/l8/native/hal-guest-role-bootstrap.c" ]]; then
-	native_bootstrap=$repo_root/tools/microvm/l8/native/hal-guest-role-bootstrap.c
-elif [[ -f "$repo_root/tools/microvm/l8/native/hal-guest-role-bootstrap.S" ]]; then
-	native_bootstrap=$repo_root/tools/microvm/l8/native/hal-guest-role-bootstrap.S
-fi
-[[ -n "$native_bootstrap" ]] || {
+native_source=$repo_root/tools/microvm/l8/role-bootstrap/hal-guest-role-bootstrap.S
+native_build=$repo_root/tools/microvm/l8/role-bootstrap/build.sh
+[[ -f "$native_source" && ! -L "$native_source" && -s "$native_source" &&
+	-f "$native_build" && ! -L "$native_build" && -s "$native_build" ]] || {
 	echo "native bootstrap path is missing; L8 builds fail closed" >&2
 	exit 1
 }
