@@ -149,6 +149,48 @@ func (sink *helperSendBodySink) WriteSegment(offset uint32, source []byte) error
 	return nil
 }
 
+func readHelperResponsePacket(ctx context.Context, stream VerifiedHelperStream, request HelperReceiveRequest) (HelperPacket, error) {
+	if ctx == nil || ctx.Err() != nil || !configuredDependency(stream) {
+		return HelperPacket{}, errInvalidHelperReceiveRequest
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = stream.SetDeadline(time.Now())
+		case <-stop:
+		}
+	}()
+	if deadline, ok := ctx.Deadline(); ok {
+		if deadlineErr := stream.SetDeadline(deadline); deadlineErr != nil {
+			return HelperPacket{}, errInvalidHelperPacket
+		}
+	}
+	datagram := make([]byte, credentialprotocol.MaxHelperPacketDatagramBytes)
+	n, readErr := stream.Read(datagram)
+	if readErr != nil || n < credentialprotocol.HelperPacketHeaderSize {
+		clear(datagram)
+		if ctx.Err() != nil {
+			return HelperPacket{}, ctx.Err()
+		}
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	received := datagram[:n]
+	header, err := credentialprotocol.ValidateHelperPacketDatagram(received)
+	if err != nil || header.Type != credentialprotocol.PacketTypeResponse {
+		clear(datagram)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	body, err := credentialprotocol.DecodeHelperResponseBody(received[credentialprotocol.HelperPacketHeaderSize:])
+	if err != nil {
+		clear(datagram)
+		return HelperPacket{}, errInvalidHelperPacket
+	}
+	clear(datagram)
+	return newHelperResponsePacket(request, header, nil, body)
+}
+
 func writeHelperSendPacket(ctx context.Context, stream VerifiedHelperStream, packet HelperSendPacket) error {
 	if ctx == nil || ctx.Err() != nil || !configuredDependency(stream) {
 		return errInvalidHelperSendPacket
@@ -188,14 +230,9 @@ func helperSendPacketUnconsumed(packet HelperSendPacket) bool {
 }
 
 func helperPrepareBeginBodyFromPrepare(prepare v2control.CredentialPrepareRequest) (credentialprotocol.HelperPrepareBeginBody, error) {
-	bindings := prepare.Bindings()
-	records := make([]credentialprotocol.HelperBindingManifestRecord, 0, len(bindings))
-	for _, binding := range bindings {
-		record, err := helperBindingRecordFromManifest(binding)
-		if err != nil {
-			return credentialprotocol.HelperPrepareBeginBody{}, err
-		}
-		records = append(records, record)
+	records, _, err := projectV2ManifestToHelperRecords(prepare.Bindings())
+	if err != nil {
+		return credentialprotocol.HelperPrepareBeginBody{}, err
 	}
 	body := credentialprotocol.HelperPrepareBeginBody{
 		Revision:       prepare.Revision(),
@@ -209,11 +246,7 @@ func helperPrepareBeginBodyFromPrepare(prepare v2control.CredentialPrepareReques
 }
 
 func helperPrepareCommitBodyFromPrepare(prepare v2control.CredentialPrepareRequest) (credentialprotocol.HelperPrepareCommitBody, error) {
-	begin, err := helperPrepareBeginBodyFromPrepare(prepare)
-	if err != nil {
-		return credentialprotocol.HelperPrepareCommitBody{}, err
-	}
-	manifest, err := credentialprotocol.ComputeHelperManifestSHA256(begin.Bindings)
+	_, manifest, err := projectV2ManifestToHelperRecords(prepare.Bindings())
 	if err != nil {
 		return credentialprotocol.HelperPrepareCommitBody{}, err
 	}

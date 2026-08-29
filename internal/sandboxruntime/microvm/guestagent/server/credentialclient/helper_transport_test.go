@@ -537,19 +537,42 @@ func newDispatchRedClientOpts(t *testing.T, transport Transport, helper HelperCo
 }
 
 type fakeHelperStream struct {
-	mu     sync.Mutex
-	buf    bytes.Buffer
-	closed bool
+	mu       sync.Mutex
+	cond     *sync.Cond
+	out      bytes.Buffer
+	inbound  [][]byte
+	closed   bool
+	deadline time.Time
 }
 
 func newFakeHelperStream() *fakeHelperStream {
-	return &fakeHelperStream{}
+	stream := &fakeHelperStream{}
+	stream.cond = sync.NewCond(&stream.mu)
+	return stream
 }
 
 func (stream *fakeHelperStream) Read(p []byte) (int, error) {
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	return stream.buf.Read(p)
+	for {
+		if stream.closed {
+			return 0, io.EOF
+		}
+		if stream.deadlineExpiredLocked() {
+			return 0, osErrDeadline()
+		}
+		if len(stream.inbound) > 0 {
+			datagram := stream.inbound[0]
+			n := copy(p, datagram)
+			if n == len(datagram) {
+				stream.inbound = stream.inbound[1:]
+			} else {
+				stream.inbound[0] = datagram[n:]
+			}
+			return n, nil
+		}
+		stream.cond.Wait()
+	}
 }
 
 func (stream *fakeHelperStream) Write(p []byte) (int, error) {
@@ -558,23 +581,47 @@ func (stream *fakeHelperStream) Write(p []byte) (int, error) {
 	if stream.closed {
 		return 0, io.ErrClosedPipe
 	}
-	return stream.buf.Write(p)
+	return stream.out.Write(p)
 }
 
-func (stream *fakeHelperStream) SetDeadline(time.Time) error { return nil }
+func (stream *fakeHelperStream) SetDeadline(deadline time.Time) error {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	stream.deadline = deadline
+	stream.cond.Broadcast()
+	return nil
+}
 
 func (stream *fakeHelperStream) Close() error {
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
 	stream.closed = true
+	stream.cond.Broadcast()
 	return nil
 }
 
 func (stream *fakeHelperStream) bytes() []byte {
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	return append([]byte(nil), stream.buf.Bytes()...)
+	return append([]byte(nil), stream.out.Bytes()...)
 }
+
+func (stream *fakeHelperStream) queueHelperDatagram(datagram []byte) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	stream.inbound = append(stream.inbound, append([]byte(nil), datagram...))
+	stream.cond.Signal()
+}
+
+func (stream *fakeHelperStream) deadlineExpiredLocked() bool {
+	return !stream.deadline.IsZero() && !stream.deadline.After(time.Now())
+}
+
+func osErrDeadline() error {
+	return errFakeHelperDeadline
+}
+
+var errFakeHelperDeadline = errors.New("fake helper stream deadline exceeded")
 
 type fakeHelperOwner struct {
 	stream  VerifiedHelperStream

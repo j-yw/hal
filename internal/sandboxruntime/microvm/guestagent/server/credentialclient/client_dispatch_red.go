@@ -28,8 +28,11 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 	}
 	nextSequence := uint64(1)
 	nextHelperSequence := firstInjectedHelperSendSequence
+	nextHelperReceiveSequence := firstInjectedHelperSendSequence
 	var expectedIdentity v2control.IdentityDigest
 	expectedIdentitySet := false
+	var helperStream VerifiedHelperStream
+	var ledger *helperActiveLedger
 	for {
 		if client.drainStarted() {
 			return nil
@@ -69,7 +72,7 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			continue
 		}
 		if prepare, ok := packet.prepareValue(); ok {
-			if expectedIdentitySet {
+			if expectedIdentitySet || ledger != nil {
 				return clientError(ClientContractCorrelation, ClientFieldRequestID)
 			}
 			digest, digestErr := acceptControllerPrepareIdentity(identity.sessionIDValue(), identity.hardExpiryValue().UnixNano(), prepare, expectedIdentity, expectedIdentitySet)
@@ -78,6 +81,9 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			}
 			expectedIdentity = digest
 			expectedIdentitySet = true
+			if authErr := client.authorizeHelperSend(credentialprotocol.PacketTypePrepareBegin, digest, prepare.Revision(), prepare.Bindings()); authErr != nil {
+				return authErr
+			}
 			stream, sendErr := client.dispatchHelperPrepareBegin(ctx, identity, prepare, digest, nextHelperSequence)
 			if sendErr != nil {
 				return sendErr
@@ -95,31 +101,87 @@ func (client *Client) serveCredentialLifecycle(ctx context.Context) (err error) 
 			if prepare.PrivateRecordCount() != 0 || prepare.PrivateAggregateBytes() != 0 {
 				return helperPacketDependencyUnaccepted(expectedIdentity)
 			}
-			return client.dispatchPinnedHelperMetadataThenUnaccepted(ctx, stream, nextHelperSequence, identity, digest, prepare.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
-				body, err := helperPrepareCommitBodyFromPrepare(prepare)
-				if err != nil {
-					return HelperSendPacket{}, err
-				}
-				return newHelperPrepareCommitSendPacket(header, body)
-			})
+			installed, nextSend, nextReceive, commitErr := client.dispatchMetadataOnlyPrepareCommit(
+				ctx, stream, packet, prepare, identity, digest, nextHelperSequence, nextHelperReceiveSequence,
+			)
+			if commitErr != nil {
+				return commitErr
+			}
+			if client.drainStarted() || ctx.Err() != nil {
+				return nil
+			}
+			if installed == nil {
+				return helperPacketDependencyUnaccepted(expectedIdentity)
+			}
+			helperStream = stream
+			ledger = installed
+			nextHelperSequence = nextSend
+			nextHelperReceiveSequence = nextReceive
+			continue
 		}
 		if renew, ok := packet.renewValue(); ok {
 			if err := requirePinnedCredentialIdentity(expectedIdentitySet, expectedIdentity, renew.IdentityDigest()); err != nil {
 				return err
 			}
-			return helperPacketDependencyUnaccepted(expectedIdentity)
+			if ledger == nil || !configuredDependency(helperStream) {
+				return helperPacketDependencyUnaccepted(expectedIdentity)
+			}
+			nextSend, nextReceive, renewErr := client.dispatchHelperRenew(
+				ctx, helperStream, packet, renew, identity, expectedIdentity, ledger, nextHelperSequence, nextHelperReceiveSequence,
+			)
+			if renewErr != nil {
+				return renewErr
+			}
+			if client.drainStarted() || ctx.Err() != nil {
+				return nil
+			}
+			nextHelperSequence = nextSend
+			nextHelperReceiveSequence = nextReceive
+			continue
 		}
 		if revoke, ok := packet.revokeValue(); ok {
 			if err := requirePinnedCredentialIdentity(expectedIdentitySet, expectedIdentity, revoke.IdentityDigest()); err != nil {
 				return err
 			}
-			return helperPacketDependencyUnaccepted(expectedIdentity)
+			if ledger == nil || !configuredDependency(helperStream) {
+				return helperPacketDependencyUnaccepted(expectedIdentity)
+			}
+			nextSend, nextReceive, revokeErr := client.dispatchHelperRevoke(
+				ctx, helperStream, packet, revoke, identity, expectedIdentity, ledger, nextHelperSequence, nextHelperReceiveSequence,
+			)
+			if revokeErr != nil {
+				return revokeErr
+			}
+			if client.drainStarted() || ctx.Err() != nil {
+				return nil
+			}
+			ledger = nil
+			nextHelperSequence = nextSend
+			nextHelperReceiveSequence = nextReceive
+			continue
 		}
 		if exec, ok := packet.execValue(); ok {
 			if err := requirePinnedCredentialIdentity(expectedIdentitySet, expectedIdentity, exec.IdentityDigest()); err != nil {
 				return err
 			}
-			return helperPacketDependencyUnaccepted(expectedIdentity)
+			if ledger == nil || !configuredDependency(helperStream) {
+				return helperPacketDependencyUnaccepted(expectedIdentity)
+			}
+			if exec.PrivateRecordCount() != 0 || exec.PrivateAggregateBytes() != 0 {
+				return helperPacketDependencyUnaccepted(expectedIdentity)
+			}
+			nextSend, nextReceive, execErr := client.dispatchHelperExec(
+				ctx, helperStream, packet, exec, identity, expectedIdentity, ledger, nextHelperSequence, nextHelperReceiveSequence,
+			)
+			if execErr != nil {
+				return execErr
+			}
+			if client.drainStarted() || ctx.Err() != nil {
+				return nil
+			}
+			nextHelperSequence = nextSend
+			nextHelperReceiveSequence = nextReceive
+			continue
 		}
 		if client.drainStarted() || ctx.Err() != nil {
 			return nil
@@ -184,11 +246,9 @@ func requirePinnedCredentialIdentity(expectedIdentitySet bool, expected, observe
 }
 
 func helperPacketDependencyUnaccepted(identity v2control.IdentityDigest) error {
-	// Helper receive and metadata-only helper send constructors exist. An
-	// injected HelperConnectionOwner may send one correlated prepare-begin and,
-	// when no ordered file payload is required, its same-request prepare-commit.
-	// Later operational sends require a correlated helper response and active
-	// ledger that are still unaccepted; do not mint proofs.
+	// File-bearing prepare, nonempty private exec, exec-stream payload,
+	// SCM_RIGHTS SSH, and a nil HelperConnectionOwner stay unaccepted. Do not
+	// mint JobCredential proofs.
 	_, err := newHelperControlReceiveRequest(1, credentialprotocol.MaxHelperPacketBodyBytes, 0, [16]byte{}, false, identity.Bytes())
 	if err != nil {
 		return err
@@ -243,7 +303,222 @@ func (client *Client) dispatchHelperPrepareBegin(
 	return stream, nil
 }
 
-func (client *Client) dispatchPinnedHelperMetadataThenUnaccepted(
+func (client *Client) dispatchMetadataOnlyPrepareCommit(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	controllerPacket ControllerPacket,
+	prepare v2control.CredentialPrepareRequest,
+	identity transportIdentity,
+	digest v2control.IdentityDigest,
+	sendSequence, receiveSequence uint64,
+) (*helperActiveLedger, uint64, uint64, error) {
+	records, manifestSHA256, projectErr := projectV2ManifestToHelperRecords(prepare.Bindings())
+	if projectErr != nil {
+		return nil, sendSequence, receiveSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if writeErr := client.writePinnedHelperMetadata(ctx, stream, sendSequence, identity, digest, prepare.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
+		body, err := helperPrepareCommitBodyFromPrepare(prepare)
+		if err != nil {
+			return HelperSendPacket{}, err
+		}
+		return newHelperPrepareCommitSendPacket(header, body)
+	}); writeErr != nil {
+		return nil, sendSequence, receiveSequence, writeErr
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return nil, sendSequence, receiveSequence, nil
+	}
+	helperPacket, receiveErr := client.receiveHelperResponse(ctx, stream, receiveSequence, prepare.RequestID().Bytes(), digest.Bytes())
+	if receiveErr != nil {
+		return nil, sendSequence, receiveSequence, receiveErr
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return nil, sendSequence, receiveSequence, nil
+	}
+	response, ok := helperPacket.responseValue()
+	if !ok || response.RequestType != credentialprotocol.PacketTypePrepareCommit || response.Prepare == nil {
+		return nil, sendSequence, receiveSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if !helperProofsMatchProjectedRecords(response.Prepare.BindingProofs, records) {
+		return nil, sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldBody)
+	}
+	mapped, mapErr := mapHelperPrepareSuccessToV2(prepare, helperPacket.headerValue(), response)
+	if mapErr != nil {
+		return nil, sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldBody)
+	}
+	installed, installErr := newHelperActiveLedger(
+		digest,
+		prepare.RequestID().Bytes(),
+		identity.helperGenerationValue(),
+		manifestSHA256,
+		prepare.Revision(),
+		prepare.ExpiresAtUnixNano(),
+		response.Prepare.BindingProofs,
+		records,
+		prepare.Bindings(),
+		response.Prepare.ActiveProofID,
+		response.Prepare.ExecBindingID,
+	)
+	if installErr != nil {
+		return nil, sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldBody)
+	}
+	if sendErr := client.sendControllerPrepareSuccess(ctx, controllerPacket, mapped); sendErr != nil {
+		return nil, sendSequence, receiveSequence, sendErr
+	}
+	return installed, sendSequence + 1, receiveSequence + 1, nil
+}
+
+func (client *Client) dispatchHelperRenew(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	controllerPacket ControllerPacket,
+	renew v2control.CredentialRenewRequest,
+	identity transportIdentity,
+	digest v2control.IdentityDigest,
+	ledger *helperActiveLedger,
+	sendSequence, receiveSequence uint64,
+) (uint64, uint64, error) {
+	if ledger == nil || renew.Revision() != ledger.revision+1 || renew.PriorProofID() != ledger.activeProofID {
+		return sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldRevision)
+	}
+	if authErr := client.authorizeHelperSend(credentialprotocol.PacketTypeRenew, digest, renew.Revision(), nil); authErr != nil {
+		return sendSequence, receiveSequence, authErr
+	}
+	if writeErr := client.writePinnedHelperMetadata(ctx, stream, sendSequence, identity, digest, renew.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
+		body, err := helperRenewBodyFromRenew(renew)
+		if err != nil {
+			return HelperSendPacket{}, err
+		}
+		return newHelperRenewSendPacket(header, body)
+	}); writeErr != nil {
+		return sendSequence, receiveSequence, writeErr
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return sendSequence, receiveSequence, nil
+	}
+	helperPacket, receiveErr := client.receiveHelperResponse(ctx, stream, receiveSequence, renew.RequestID().Bytes(), digest.Bytes())
+	if receiveErr != nil {
+		return sendSequence, receiveSequence, receiveErr
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return sendSequence, receiveSequence, nil
+	}
+	response, ok := helperPacket.responseValue()
+	if !ok {
+		return sendSequence, receiveSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	mapped, mapErr := mapHelperRenewSuccessToV2(renew, helperPacket.headerValue(), response)
+	if mapErr != nil {
+		return sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldBody)
+	}
+	if sendErr := client.sendControllerRenewSuccess(ctx, controllerPacket, mapped); sendErr != nil {
+		return sendSequence, receiveSequence, sendErr
+	}
+	ledger.revision = renew.Revision()
+	ledger.expiryUnixNano = renew.ExpiresAtUnixNano()
+	ledger.activeProofID = mapped.ReplacementActiveProofID()
+	return sendSequence + 1, receiveSequence + 1, nil
+}
+
+func (client *Client) dispatchHelperRevoke(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	controllerPacket ControllerPacket,
+	revoke v2control.CredentialRevokeRequest,
+	identity transportIdentity,
+	digest v2control.IdentityDigest,
+	ledger *helperActiveLedger,
+	sendSequence, receiveSequence uint64,
+) (uint64, uint64, error) {
+	if ledger == nil || revoke.Revision() != ledger.revision {
+		return sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldRevision)
+	}
+	if authErr := client.authorizeHelperSend(credentialprotocol.PacketTypeRevoke, digest, revoke.Revision(), nil); authErr != nil {
+		return sendSequence, receiveSequence, authErr
+	}
+	if writeErr := client.writePinnedHelperMetadata(ctx, stream, sendSequence, identity, digest, revoke.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
+		body, err := helperRevokeBodyFromRevoke(revoke)
+		if err != nil {
+			return HelperSendPacket{}, err
+		}
+		return newHelperRevokeSendPacket(header, body)
+	}); writeErr != nil {
+		return sendSequence, receiveSequence, writeErr
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return sendSequence, receiveSequence, nil
+	}
+	helperPacket, receiveErr := client.receiveHelperResponse(ctx, stream, receiveSequence, revoke.RequestID().Bytes(), digest.Bytes())
+	if receiveErr != nil {
+		return sendSequence, receiveSequence, receiveErr
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return sendSequence, receiveSequence, nil
+	}
+	response, ok := helperPacket.responseValue()
+	if !ok {
+		return sendSequence, receiveSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	mapped, mapErr := mapHelperRevokeSuccessToV2(revoke, helperPacket.headerValue(), response)
+	if mapErr != nil {
+		return sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldBody)
+	}
+	if sendErr := client.sendControllerRevokeSuccess(ctx, controllerPacket, mapped); sendErr != nil {
+		return sendSequence, receiveSequence, sendErr
+	}
+	return sendSequence + 1, receiveSequence + 1, nil
+}
+
+func (client *Client) dispatchHelperExec(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	controllerPacket ControllerPacket,
+	exec v2control.CredentialExecRequest,
+	identity transportIdentity,
+	digest v2control.IdentityDigest,
+	ledger *helperActiveLedger,
+	sendSequence, receiveSequence uint64,
+) (uint64, uint64, error) {
+	if ledger == nil || exec.Revision() != ledger.revision || exec.ExecBindingID() != ledger.execBindingID {
+		return sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldRevision)
+	}
+	if authErr := client.authorizeHelperSend(credentialprotocol.PacketTypeExec, digest, exec.Revision(), ledger.bindings); authErr != nil {
+		return sendSequence, receiveSequence, authErr
+	}
+	if writeErr := client.writePinnedHelperMetadata(ctx, stream, sendSequence, identity, digest, exec.RequestID().Bytes(), func(header credentialprotocol.HelperPacketHeader) (HelperSendPacket, error) {
+		body, err := helperExecBodyFromExec(exec)
+		if err != nil {
+			return HelperSendPacket{}, err
+		}
+		return newHelperExecSendPacket(header, body)
+	}); writeErr != nil {
+		return sendSequence, receiveSequence, writeErr
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return sendSequence, receiveSequence, nil
+	}
+	helperPacket, receiveErr := client.receiveHelperResponse(ctx, stream, receiveSequence, exec.RequestID().Bytes(), digest.Bytes())
+	if receiveErr != nil {
+		return sendSequence, receiveSequence, receiveErr
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return sendSequence, receiveSequence, nil
+	}
+	response, ok := helperPacket.responseValue()
+	if !ok {
+		return sendSequence, receiveSequence, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	mapped, mapErr := mapHelperExecSuccessToV2(exec, helperPacket.headerValue(), response)
+	if mapErr != nil {
+		return sendSequence, receiveSequence, clientError(ClientContractCorrelation, ClientFieldBody)
+	}
+	if sendErr := client.sendControllerExecSuccess(ctx, controllerPacket, mapped); sendErr != nil {
+		return sendSequence, receiveSequence, sendErr
+	}
+	return sendSequence + 1, receiveSequence + 1, nil
+}
+
+func (client *Client) writePinnedHelperMetadata(
 	ctx context.Context,
 	stream VerifiedHelperStream,
 	sequence uint64,
@@ -272,10 +547,80 @@ func (client *Client) dispatchPinnedHelperMetadataThenUnaccepted(
 		}
 		return clientError(ClientContractPacket, ClientFieldPacketType)
 	}
-	if client.drainStarted() || ctx.Err() != nil {
-		return nil
+	return nil
+}
+
+func (client *Client) receiveHelperResponse(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	sequence uint64,
+	requestID [16]byte,
+	identity [32]byte,
+) (HelperPacket, error) {
+	if !configuredDependency(stream) {
+		return HelperPacket{}, helperPacketDependencyUnaccepted(v2control.NewIdentityDigest(identity))
 	}
-	return helperPacketDependencyUnaccepted(digest)
+	if client.drainStarted() || ctx.Err() != nil {
+		return HelperPacket{}, nil
+	}
+	request, err := newHelperControlReceiveRequest(sequence, credentialprotocol.MaxHelperPacketBodyBytes, 0, requestID, true, identity)
+	if err != nil {
+		return HelperPacket{}, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if !client.beginAdmittedOperation() {
+		return HelperPacket{}, nil
+	}
+	defer client.endAdmittedOperation()
+	packet, receiveErr := readHelperResponsePacket(ctx, stream, request)
+	if receiveErr != nil {
+		if client.drainStarted() || ctx.Err() != nil {
+			return HelperPacket{}, nil
+		}
+		return HelperPacket{}, clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	return packet, nil
+}
+
+func (client *Client) sendControllerPrepareSuccess(ctx context.Context, packet ControllerPacket, response v2control.CredentialPrepareSuccessResponse) error {
+	send, err := newControllerPrepareSendPacket(packet, response)
+	if err != nil {
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	return client.sendControllerPacket(ctx, send)
+}
+
+func (client *Client) sendControllerRenewSuccess(ctx context.Context, packet ControllerPacket, response v2control.CredentialRenewSuccessResponse) error {
+	send, err := newControllerRenewSendPacket(packet, response)
+	if err != nil {
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	return client.sendControllerPacket(ctx, send)
+}
+
+func (client *Client) sendControllerRevokeSuccess(ctx context.Context, packet ControllerPacket, response v2control.CredentialRevokeSuccessResponse) error {
+	send, err := newControllerRevokeSendPacket(packet, response)
+	if err != nil {
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	return client.sendControllerPacket(ctx, send)
+}
+
+func (client *Client) sendControllerExecSuccess(ctx context.Context, packet ControllerPacket, response v2control.CredentialExecSuccessResponse) error {
+	send, err := newControllerExecSendPacket(packet, response)
+	if err != nil {
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	return client.sendControllerPacket(ctx, send)
+}
+
+func (client *Client) sendControllerPacket(ctx context.Context, send ControllerSendPacket) error {
+	if sendErr := client.transport.SendController(ctx, send); sendErr != nil {
+		if client.drainStarted() || ctx.Err() != nil {
+			return nil
+		}
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	return nil
 }
 
 func injectedHelperSendHeader(sequence uint64, requestID [16]byte, digest v2control.IdentityDigest, nonce [32]byte) credentialprotocol.HelperPacketHeader {
