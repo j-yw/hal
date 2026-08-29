@@ -3,7 +3,8 @@
 This document freezes D7 prepared-Linux acceptance as **unaccepted**.
 D7 prepared-Linux acceptance remains unaccepted after PRs 46–55.
 This slice does not claim L8 complete, does not claim L10, and does not claim L11.
-It does not implement live proofs, sealed PID1 digests, live
+The sealed PID1 expected-digest memfd loader exists and is default-off.
+It does not implement live proofs, live
 helper transport, a durable handle store, or a production L7 session
 factory.
 
@@ -32,10 +33,11 @@ closures. They must not `t.Skip`. The stable failure text contains
 `dependency_unaccepted` and these four names:
 
 1. `sealed PID1 expected digests` — `cmd/hal-guest-init/pid1_start_gate_linux.go`
-   `loadPID1StartGateExpected` still returns absent (`present` false).
-   Expected helper, client, and composition digests would come from
-   sealed `L8ProcessCompositionFacts` compiled or inherited at image
-   issuance. That sealed channel does not exist.
+   `loadPID1StartGateExpected` reads a sealed inherited anonymous memfd
+   when present. Missing or unsigned descriptors still return absent
+   (`present` false) and keep the L7 path. Expected helper, client, and
+   composition digests come from sealed `L8ProcessCompositionFacts` JSON
+   on that memfd. Live image issuance and command wiring remain unaccepted.
 2. `live helper transport` — `credentialclient` already defines
    non-serializable authenticated packet and capability contracts and
    dispatches controller readiness through an injected transport. Helper
@@ -67,10 +69,11 @@ tools/microvm/l8/verify-selected-live.sh e2e
 `file_tmpfs_only`, `ssh_agent_only`, `all_modes`, and
 `failure_recovery_matrix`.
 
-Until the four closures exist, those tests stay RED: they `t.Fatal` and
-must not `t.Skip`. A later GREEN slice may replace the fatal only after
-sealed PID1 expected digests, live helper transport, a durable handle
-store, and a production L7 session factory are actually accepted.
+Until live issuance plus the remaining closures exist, those tests stay
+RED: they `t.Fatal` and must not `t.Skip`. A later GREEN slice may
+replace the fatal only after sealed PID1 expected digests are live-issued
+and live helper transport, a durable handle store, and a production L7
+session factory are actually accepted.
 
 ## Image and digest handoff names
 
@@ -107,7 +110,7 @@ git diff --check
 This slice does not:
 
 - accept D7 prepared-Linux live proof;
-- implement sealed PID1 expected digests, live helper transport, a
+- implement live helper transport, a
   durable handle store, or a production L7 session factory;
 - claim L8, L10, or L11 complete;
 - treat environment delivery as strict proof;

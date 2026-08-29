@@ -2,25 +2,69 @@
 
 package main
 
-import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition"
+import (
+	"bytes"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 
-// loadPID1StartGateExpected would snapshot sealed image-profile helper, client,
-// and composition digests. This binary has no compiled-in or inherited sealed
-// digest channel; unsigned file/env/cmdline reads are rejected.
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/l8composition"
+	"golang.org/x/sys/unix"
+)
+
+// pid1StartGateExpectedFDNumber is the optional PID1 D7 composition-facts
+// slot. It is made non-inheritable before PID1 starts any child.
+const pid1StartGateExpectedFDNumber = 15
+
+const pid1StartGateExpectedMaxBytes = 32 << 10
+
+const pid1StartGateRequiredSeals = unix.F_SEAL_SEAL | unix.F_SEAL_SHRINK | unix.F_SEAL_GROW | unix.F_SEAL_WRITE
+
+var errPID1StartGateExpectedInvalid = errors.New("L8 PID1 start-gate expected digest channel is invalid")
+
+// pid1StartGateExpectedFD is the inherited descriptor consumed for sealed
+// expected digests. Tests replace it; production keeps FD 15.
+var pid1StartGateExpectedFD = pid1StartGateExpectedFDNumber
+
+// pid1StartGateSealedFacts is the JSON subset of
+// assetbuild.L8ProcessCompositionFacts copied into PID1StartGateExpected.
+type pid1StartGateSealedFacts struct {
+	HelperDescriptorSHA256 string `json:"helperDescriptorSha256"`
+	ClientDescriptorSHA256 string `json:"clientDescriptorSha256"`
+	CompositionSHA256      string `json:"compositionSha256"`
+}
+
+// loadPID1StartGateExpected snapshots helper, client, and composition digests
+// from a sealed inherited anonymous memfd. Missing or unsigned descriptors
+// stay absent. Invalid sealed payloads fail closed.
 func loadPID1StartGateExpected() (l8composition.PID1StartGateExpected, bool, error) {
-	return l8composition.PID1StartGateExpected{}, false, nil
+	payload, present, err := readPID1StartGateSealedFD(pid1StartGateExpectedFD)
+	if err != nil {
+		return l8composition.PID1StartGateExpected{}, false, err
+	}
+	if !present {
+		return l8composition.PID1StartGateExpected{}, false, nil
+	}
+	expected, err := decodePID1StartGateExpected(payload)
+	if err != nil {
+		return l8composition.PID1StartGateExpected{}, false, err
+	}
+	return expected, true, nil
 }
 
 // releasePID1AgentStartGate admits helper-then-client descriptors before the
 // L7 child start. Missing sealed expected leaves the L7 supervisor path;
 // a claimed expected without authenticated descriptors fails closed.
 func releasePID1AgentStartGate() int {
-	_, present, err := loadPID1StartGateExpected()
+	expected, present, err := loadPID1StartGateExpected()
 	if err != nil {
 		return 127
 	}
 	if !present {
 		return 0
+	}
+	if _, err := l8composition.NewPID1StartGateState(expected); err != nil {
+		return 127
 	}
 	return 127
 }
@@ -45,4 +89,97 @@ func admitPID1StartGate(
 		return 127
 	}
 	return 0
+}
+
+func readPID1StartGateSealedFD(fd int) ([]byte, bool, error) {
+	// An inherited descriptor must have close-on-exec cleared to reach PID1.
+	// Restore it before inspecting any property, so neither a valid nor malformed
+	// channel can cross the later child exec boundary. A valid sealed channel is
+	// then snapshotted into the private transient range and consumed.
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if err != nil {
+		return nil, false, nil
+	}
+	if flags&unix.FD_CLOEXEC == 0 {
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, flags|unix.FD_CLOEXEC); err != nil {
+			if unix.Close(fd) != nil {
+				return nil, false, errPID1StartGateExpectedInvalid
+			}
+			return nil, false, nil
+		}
+	}
+	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, pid1StartGateExpectedFDNumber+1)
+	if err != nil {
+		return nil, false, nil
+	}
+	defer func() { _ = unix.Close(dup) }()
+
+	var stat unix.Stat_t
+	snapshotFlags, flagErr := unix.FcntlInt(uintptr(dup), unix.F_GETFD, 0)
+	access, accessErr := unix.FcntlInt(uintptr(dup), unix.F_GETFL, 0)
+	seals, sealErr := unix.FcntlInt(uintptr(dup), unix.F_GET_SEALS, 0)
+	if unix.Fstat(dup, &stat) != nil || flagErr != nil || accessErr != nil || sealErr != nil {
+		return nil, false, nil
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 0 || snapshotFlags&unix.FD_CLOEXEC == 0 ||
+		access&unix.O_ACCMODE == unix.O_WRONLY || seals != pid1StartGateRequiredSeals || stat.Size < 0 {
+		return nil, false, nil
+	}
+	_ = unix.Close(fd)
+	if stat.Size == 0 {
+		return nil, false, nil
+	}
+	if stat.Size > pid1StartGateExpectedMaxBytes {
+		return nil, false, errPID1StartGateExpectedInvalid
+	}
+	payload := make([]byte, stat.Size)
+	read, err := unix.Pread(dup, payload, 0)
+	if err != nil || int64(read) != stat.Size {
+		return nil, false, errPID1StartGateExpectedInvalid
+	}
+	return payload, true, nil
+}
+
+func decodePID1StartGateExpected(payload []byte) (l8composition.PID1StartGateExpected, error) {
+	var expected l8composition.PID1StartGateExpected
+	if len(payload) == 0 || len(payload) > pid1StartGateExpectedMaxBytes {
+		return expected, errPID1StartGateExpectedInvalid
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	var facts pid1StartGateSealedFacts
+	if decoder.Decode(&facts) != nil || decoder.More() {
+		return expected, errPID1StartGateExpectedInvalid
+	}
+	helper, err := decodePID1StartGateDigest(facts.HelperDescriptorSHA256)
+	if err != nil {
+		return expected, err
+	}
+	client, err := decodePID1StartGateDigest(facts.ClientDescriptorSHA256)
+	if err != nil {
+		return expected, err
+	}
+	composition, err := decodePID1StartGateDigest(facts.CompositionSHA256)
+	if err != nil {
+		return expected, err
+	}
+	if helper == client {
+		return expected, errPID1StartGateExpectedInvalid
+	}
+	expected.HelperDescriptorSHA256 = helper
+	expected.ClientDescriptorSHA256 = client
+	expected.CompositionSHA256 = composition
+	return expected, nil
+}
+
+func decodePID1StartGateDigest(value string) ([32]byte, error) {
+	var digest [32]byte
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != len(digest) || hex.EncodeToString(decoded) != value {
+		return digest, errPID1StartGateExpectedInvalid
+	}
+	copy(digest[:], decoded)
+	if digest == [32]byte{} {
+		return digest, errPID1StartGateExpectedInvalid
+	}
+	return digest, nil
 }

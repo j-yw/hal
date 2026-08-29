@@ -150,23 +150,47 @@ func TestL8D7PreparedLinuxPID1StartGateExpectedRemainsAbsent(t *testing.T) {
 	if fn == nil {
 		t.Fatal("loadPID1StartGateExpected missing")
 	}
+	for _, forbidden := range []string{
+		"os.Getenv",
+		"os.LookupEnv",
+		"os.ReadFile",
+		"os.Open(",
+		"/proc/cmdline",
+		"go:embed",
+		"flag.String",
+		"flag.Parse",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("loadPID1StartGateExpected source uses unsigned digest input %q", forbidden)
+		}
+	}
 	if !strings.Contains(source, "return l8composition.PID1StartGateExpected{}, false, nil") {
-		t.Fatal("loadPID1StartGateExpected must still return absent present=false")
+		t.Fatal("missing or invalid sealed expected must still return present=false")
 	}
 	foundAbsent := false
+	foundPresent := false
 	ast.Inspect(fn, func(node ast.Node) bool {
 		ret, ok := node.(*ast.ReturnStmt)
 		if !ok || len(ret.Results) != 3 {
 			return true
 		}
 		ident, ok := ret.Results[1].(*ast.Ident)
-		if ok && ident.Name == "false" {
+		if !ok {
+			return true
+		}
+		switch ident.Name {
+		case "false":
 			foundAbsent = true
+		case "true":
+			foundPresent = true
 		}
 		return true
 	})
 	if !foundAbsent {
 		t.Fatal("loadPID1StartGateExpected body no longer returns present false")
+	}
+	if !foundPresent {
+		t.Fatal("loadPID1StartGateExpected sealed-FD present path is missing")
 	}
 }
 

@@ -13,7 +13,7 @@ import (
 func TestL8PID1GuestInitVerificationDocumentNamesMissingSealedChannel(t *testing.T) {
 	doc := readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", "sandbox-runtime-v2-l8-d6-pid1-guest-init-verification.md"))
 	for _, required := range []string{
-		"missing sealed expected-digest channel",
+		"sealed inherited anonymous memfd",
 		"L8ProcessCompositionFacts",
 		"helperDescriptorSha256",
 		"clientDescriptorSha256",
@@ -31,7 +31,9 @@ func TestL8PID1GuestInitVerificationDocumentNamesMissingSealedChannel(t *testing
 		"go test ./cmd -run 'L8CredentialDeliverySourceGuardsCommandComposition|PID1|GuestInit' -count=1",
 		"go vet ./cmd/hal-guest-init ./internal/sandboxruntime/microvm/guestagent/l8composition",
 		"does not claim live start-gate release",
+		"does not claim D7 live complete",
 		"Unsigned file/env/cmdline",
+		"Missing sealed FD remains the L7 path",
 	} {
 		if !strings.Contains(doc, required) {
 			t.Fatalf("PID1 guest-init verification omits %q", required)
@@ -116,5 +118,8 @@ func TestL8GuestInitDoesNotInventUnsignedExpectedDigestInputs(t *testing.T) {
 	}
 	if !strings.Contains(source, "return l8composition.PID1StartGateExpected{}, false, nil") {
 		t.Fatal("PID1 start-gate loader must fail closed to a missing sealed channel, not a fixture digest")
+	}
+	if !strings.Contains(source, "pid1StartGateExpectedFDNumber") {
+		t.Fatal("PID1 start-gate loader must inspect a fixed inherited sealed FD")
 	}
 }
