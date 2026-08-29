@@ -20,6 +20,11 @@ Go ABI0 stacks the trap/number as the first argument. Direct callers of
 those exact `.abi0` trampolines prove a number by `MOVQ $imm` into the
 trap slot (`0(SP)`) or AX before CALL/JMP. Recovery is bounded
 inter-procedural constant propagation from those direct callers only.
+The immediate and transfer must be in the same basic block. A branch
+target or fallthrough boundary, an intervening call, an unproved register
+or memory write, a stack-pointer change, a non-`MOVQ` trap-slot store, an
+indexed or segment-relative stack address, or a transfer into the middle
+of a trampoline clears the fact and keeps the site unknown.
 
 If the number is uniquely proven, the CALL/JMP classifies as that named
 linux/amd64 syscall. Catalog-listed names are not extras. Unlisted names

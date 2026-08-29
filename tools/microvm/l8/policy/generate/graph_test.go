@@ -428,6 +428,96 @@ func TestL8D7SyscallTrampolineDoesNotClassifyByPrefix(t *testing.T) {
 	}
 }
 
+func TestL8D7SyscallTrampolineRejectsUnprovenInstructionFlows(t *testing.T) {
+	tests := []struct {
+		name string
+		code []byte
+	}{
+		{
+			name: "jump skips trap-slot immediate",
+			code: []byte{
+				0xeb, 0x08,
+				0x48, 0xc7, 0x04, 0x24, 0x27, 0x00, 0x00, 0x00,
+				0xe8, 0x04, 0x00, 0x00, 0x00,
+			},
+		},
+		{
+			name: "conditional path skips trap-slot immediate",
+			code: []byte{
+				0x75, 0x08,
+				0x48, 0xc7, 0x04, 0x24, 0x27, 0x00, 0x00, 0x00,
+				0xe8, 0x04, 0x00, 0x00, 0x00,
+			},
+		},
+		{
+			name: "branch into trap-slot instruction",
+			code: []byte{
+				0xeb, 0x03,
+				0x48, 0xc7, 0x04, 0x24, 0x27, 0x00, 0x00, 0x00,
+				0xe8, 0x04, 0x00, 0x00, 0x00,
+			},
+		},
+		{
+			name: "movl is not the required movq",
+			code: []byte{
+				0xc7, 0x04, 0x24, 0x27, 0x00, 0x00, 0x00,
+				0xe8, 0x04, 0x00, 0x00, 0x00,
+			},
+		},
+		{
+			name: "indexed stack address is not zero sp",
+			code: []byte{
+				0x4a, 0xc7, 0x04, 0x24, 0x27, 0x00, 0x00, 0x00,
+				0xe8, 0x04, 0x00, 0x00, 0x00,
+			},
+		},
+		{
+			name: "segment-relative stack address is not zero sp",
+			code: []byte{
+				0x64, 0x48, 0xc7, 0x04, 0x24, 0x27, 0x00, 0x00, 0x00,
+				0xe8, 0x04, 0x00, 0x00, 0x00,
+			},
+		},
+		{
+			name: "ax overwrite kills immediate",
+			code: []byte{
+				0xb8, 0x27, 0x00, 0x00, 0x00,
+				0x31, 0xc0,
+				0xe8, 0x04, 0x00, 0x00, 0x00,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(test.code))}
+			_, _, transfers, _, err := decodeFunctionSyscallGraph(fn, test.code, 0)
+			if err != nil {
+				t.Fatalf("decode unproven trampoline caller: %v", err)
+			}
+			if len(transfers) == 0 {
+				t.Fatal("decoder omitted trampoline transfer")
+			}
+			transfer := transfers[len(transfers)-1]
+			if transfer.trapSlotKnown || transfer.raxKnown {
+				t.Fatalf("unproven transfer = %+v, want no recovered number", transfer)
+			}
+		})
+	}
+}
+
+func TestL8D7SyscallTrampolineRejectsCallIntoSymbolInterior(t *testing.T) {
+	transfer := decodedControlTransfer{
+		target:        0x2001,
+		trapSlotKnown: true,
+		trapSlot:      39,
+	}
+	functions := []executableFunction{{name: syscallRawSyscallNoErrorABI0, start: 0x2000, end: 0x2010}}
+	sites := trampolineSyscallSites([]decodedControlTransfer{transfer}, functions)
+	if len(sites) != 1 || sites[0].numberKnown {
+		t.Fatalf("interior trampoline target = %+v, want one unknown fail-closed site", sites)
+	}
+}
+
 func TestL8D7HonestIssuanceFailsClosedEvenIfExtrasAreEmpty(t *testing.T) {
 	for _, name := range []string{"elf.go", "evidence.go"} {
 		encoded, err := os.ReadFile(name)

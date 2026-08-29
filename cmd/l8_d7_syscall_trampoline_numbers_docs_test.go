@@ -28,6 +28,8 @@ func TestL8D7SyscallTrampolineNumbersVerificationDocument(t *testing.T) {
 		"`0(SP)`",
 		"bounded inter-procedural constant propagation",
 		"direct callers",
+		"same basic block",
+		"transfer into the middle",
 		"uniquely proven",
 		"`unknown:symbol`",
 		"`requireCompleteHonestIssuanceInputs`",
