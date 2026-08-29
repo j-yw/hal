@@ -82,10 +82,65 @@ func extraReachableSyscallName(binary inspectedGuestBinary, site decodedSyscallS
 	if isPinnedDirectSyscall(binary, site) {
 		return ""
 	}
-	if site.numberKnown {
-		return linuxAMD64SyscallName(site.number)
+	if !site.numberKnown {
+		return "unknown:" + site.symbol
 	}
-	return "unknown:" + site.symbol
+	name := linuxAMD64SyscallName(site.number)
+	if catalogAuthorityContains(binary, name) {
+		return ""
+	}
+	return name
+}
+
+func catalogAuthorityContains(binary inspectedGuestBinary, name string) bool {
+	_, ok := binaryRoleUnionCatalog(binary)[name]
+	return ok
+}
+
+func binaryRoleUnionCatalog(binary inspectedGuestBinary) map[string]struct{} {
+	names := make(map[string]struct{})
+	if binarySharesGoRuntimeEnvelope(binary) {
+		for _, name := range exactRuntimeEnvelope() {
+			names[name] = struct{}{}
+		}
+	}
+	for _, role := range exactRoles() {
+		if roleAppliesToBinary(role, binary) {
+			names[role.Syscall] = struct{}{}
+		}
+	}
+	return names
+}
+
+func binarySharesGoRuntimeEnvelope(binary inspectedGuestBinary) bool {
+	if binary.native {
+		return false
+	}
+	for _, role := range requiredGuestRoleBinaries() {
+		if !role.native && role.name == binary.name {
+			return true
+		}
+	}
+	return false
+}
+
+func roleAppliesToBinary(role roleInput, binary inspectedGuestBinary) bool {
+	switch binary.name {
+	case guestInitBinaryName:
+		return role.Name == "launch-base"
+	case guestBootstrapBinaryName:
+		return role.Name == "launch-bootstrap"
+	case guestAgentBinaryName:
+		return role.Name == "agent-bootstrap" || role.Name == "steady-agent"
+	case guestHelperBinaryName:
+		return role.Name == "controller-bootstrap" || role.Name == "steady-controller"
+	case guestMonitorBinaryName:
+		return role.Name == "monitor-bootstrap" || role.Name == "steady-monitor"
+	case guestShimBinaryName:
+		return role.Name == "workload-transition" || role.Name == "workload"
+	default:
+		return false
+	}
 }
 
 func extraReachableSyscallNames(binary inspectedGuestBinary) []string {

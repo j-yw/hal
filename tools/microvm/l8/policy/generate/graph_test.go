@@ -208,18 +208,64 @@ func TestL8D7ReachableGraphNamesGoLaunchBaseExtraSyscalls(t *testing.T) {
 	if len(extras) == 0 {
 		t.Fatal("launch-base reachable extra syscalls were empty; HL8E must not be issued without a named fail-closed reason")
 	}
-	wantExtras := []string{
-		"clock_gettime", "exit_group", "futex", "getpid", "gettid", "madvise", "mmap", "munmap", "nanosleep", "read",
-		"rt_sigaction", "rt_sigprocmask", "sched_yield", "tgkill", "timer_create", "timer_delete", "timer_settime",
-		"unknown:syscall.rawSyscallNoError.abi0", "unknown:syscall.rawVforkSyscall.abi0", "write",
+	for _, name := range exactRuntimeEnvelope() {
+		if containsString(extras, name) {
+			t.Fatalf("launch-base extras = %v include catalog-listed runtime envelope syscall %s", extras, name)
+		}
 	}
-	if strings.Join(extras, ",") != strings.Join(wantExtras, ",") {
-		t.Fatalf("launch-base extras = %v, want %v", extras, wantExtras)
+	for _, name := range []string{"unknown:syscall.rawSyscallNoError.abi0", "unknown:syscall.rawVforkSyscall.abi0"} {
+		if !containsString(extras, name) {
+			t.Fatalf("launch-base extras = %v, want unknown trampoline %s", extras, name)
+		}
 	}
 	if err := proveBoundedReachableSyscallGraph([]inspectedGuestBinary{inspected}); err == nil {
 		t.Fatal("launch-base graph with extra reachable syscalls was accepted")
-	} else if !strings.Contains(err.Error(), "reachable extra syscalls from "+goRoleEntrySymbol+":") {
-		t.Fatalf("launch-base graph error = %v, want named extras from %s", err, goRoleEntrySymbol)
+	} else if !strings.Contains(err.Error(), "reachable extra syscalls from "+goRoleEntrySymbol+":") || !strings.Contains(err.Error(), "unknown:syscall.rawVforkSyscall.abi0") {
+		t.Fatalf("launch-base graph error = %v, want unknown trampoline extras from %s", err, goRoleEntrySymbol)
+	}
+}
+
+func TestL8D7RuntimeEnvelopeCatalogClassifiesNamedSyscallsWithoutPrefixAuthority(t *testing.T) {
+	binary := inspectedGuestBinary{
+		name:               guestInitBinaryName,
+		entry:              goRoleEntrySymbol,
+		syscall6Found:      true,
+		syscall6TextOffset: 12,
+		textLength:         80,
+		executableText:     append(append(make([]byte, 12), pinnedSyscallInstruction...), make([]byte, 66)...),
+	}
+	pinned := decodedSyscallSite{
+		symbol:       pinnedGoRuntimeSymbol,
+		symbolOffset: pinnedInstructionOffset,
+		textOffset:   12,
+		kind:         syscallKindSyscall,
+	}
+	listed := decodedSyscallSite{symbol: "runtime.futex", textOffset: 32, kind: syscallKindSyscall, numberKnown: true, number: 202}
+	unlisted := decodedSyscallSite{symbol: "runtime.reviewerAuthority", textOffset: 48, kind: syscallKindSyscall, numberKnown: true, number: 56}
+	trampoline := decodedSyscallSite{symbol: "syscall.rawSyscallNoError.abi0", textOffset: 64, kind: syscallKindSyscall}
+	if extra := extraReachableSyscallName(binary, pinned); extra != "" {
+		t.Fatalf("pinned-direct extra = %q", extra)
+	}
+	if extra := extraReachableSyscallName(binary, listed); extra != "" {
+		t.Fatalf("catalog-listed named syscall treated as extra: %q", extra)
+	}
+	if extra := extraReachableSyscallName(binary, unlisted); extra != "clone" {
+		t.Fatalf("unlisted named syscall extra = %q, want clone", extra)
+	}
+	if extra := extraReachableSyscallName(binary, trampoline); extra != "unknown:syscall.rawSyscallNoError.abi0" {
+		t.Fatalf("unknown trampoline extra = %q", extra)
+	}
+	generic := binary
+	generic.name = "inspect-graph"
+	if extra := extraReachableSyscallName(generic, listed); extra != "futex" {
+		t.Fatalf("generic binary catalog-listed extra = %q, want futex because prefix/role union is empty", extra)
+	}
+	binary.reachableSyscalls = []decodedSyscallSite{pinned, listed, unlisted, trampoline}
+	binary.extraSyscalls = []decodedSyscallSite{listed, unlisted, trampoline}
+	got := extraReachableSyscallNames(binary)
+	want := []string{"clone", "unknown:syscall.rawSyscallNoError.abi0"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("launch-base extras = %v, want %v", got, want)
 	}
 }
 

@@ -167,11 +167,16 @@ func TestL8D7EvidenceIssuanceRejectsCompleteRolesWithoutBoundedCallGraph(t *test
 		t.Fatalf("complete-role error = %v, want unavailable bounded-call-graph reason", err)
 	}
 	if !strings.Contains(message, "role binary "+guestInitBinaryName+" has reachable extra syscalls from "+goRoleEntrySymbol+":") {
-		t.Fatalf("complete-role error = %v, want named launch-base extras from %s", err, goRoleEntrySymbol)
+		t.Fatalf("complete-role error = %v, want launch-base extras from %s", err, goRoleEntrySymbol)
 	}
-	for _, name := range []string{"futex", "mmap", "exit_group"} {
+	for _, name := range []string{"unknown:syscall.rawSyscallNoError.abi0", "unknown:syscall.rawVforkSyscall.abi0"} {
 		if !strings.Contains(message, name) {
-			t.Fatalf("complete-role error = %v, want named reachable extra syscall %s", err, name)
+			t.Fatalf("complete-role error = %v, want unknown trampoline %s", err, name)
+		}
+	}
+	for _, name := range []string{"futex", "mmap", "clock_gettime"} {
+		if strings.Contains(message, name+",") || strings.Contains(message, name+" ") || strings.HasSuffix(message, name) {
+			t.Fatalf("complete-role error = %v leaked catalog-listed runtime envelope syscall %s", err, name)
 		}
 	}
 	if !strings.Contains(message, "role binary "+guestBootstrapBinaryName+" has reachable extra syscalls from "+nativeBootstrapSymbol+":") {
