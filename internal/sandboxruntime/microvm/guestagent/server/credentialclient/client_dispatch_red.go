@@ -614,6 +614,10 @@ func (client *Client) sendControllerExecSuccess(ctx context.Context, packet Cont
 }
 
 func (client *Client) sendControllerPacket(ctx context.Context, send ControllerSendPacket) error {
+	if !client.beginAdmittedOperation() {
+		return nil
+	}
+	defer client.endAdmittedOperation()
 	if sendErr := client.transport.SendController(ctx, send); sendErr != nil {
 		if client.drainStarted() || ctx.Err() != nil {
 			return nil
@@ -641,13 +645,7 @@ func (client *Client) dispatchReadinessResponse(ctx context.Context, identity tr
 	if err != nil {
 		return clientError(ClientContractPacket, ClientFieldPacketType)
 	}
-	if sendErr := client.transport.SendController(ctx, send); sendErr != nil {
-		if client.drainStarted() || ctx.Err() != nil {
-			return nil
-		}
-		return clientError(ClientContractPacket, ClientFieldPacketType)
-	}
-	return nil
+	return client.sendControllerPacket(ctx, send)
 }
 
 func (client *Client) receiveControllerPacket(ctx context.Context, request ControllerReceiveRequest) (packet ControllerPacket, err error, panicked bool) {

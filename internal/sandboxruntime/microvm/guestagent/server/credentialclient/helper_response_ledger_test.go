@@ -67,6 +67,61 @@ func TestL8D7GuestHelperMetadataOnlyPrepareResponseInstallsExactActiveLedger(t *
 	assertHelperPacketTypes(t, stream, credentialprotocol.PacketTypePrepareBegin, credentialprotocol.PacketTypePrepareCommit)
 }
 
+func TestL8D7GuestHelperCloseWaitsForAdmittedControllerSuccess(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testHTTPOnlyDispatchPrepareRequest(t, identity)
+	digest := identityDigestForSession(t, testHTTPOnlyDispatchSessionIdentity(t, identity))
+	stream := newFakeHelperStream()
+	stream.queueHelperDatagram(encodeHelperResponseDatagram(
+		t, 1, prepare.RequestID().Bytes(), digest.Bytes(), identity.identity.GuestBootNonce,
+		matchingHTTPPrepareHelperResponse(t, prepare),
+	))
+
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	transport := &dispatchRedTransport{identity: identity}
+	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+		return ControllerPacket{
+			sequence:  1,
+			sessionID: identity.sessionID,
+			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+		}, nil
+	}
+	transport.sendController = func(context.Context, ControllerSendPacket) error {
+		close(sendStarted)
+		<-releaseSend
+		return nil
+	}
+
+	client := newDispatchRedClientOpts(t, transport, &fakeHelperOwner{stream: stream})
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- client.Serve(context.Background()) }()
+	select {
+	case <-sendStarted:
+	case err := <-serveDone:
+		t.Fatalf("Serve returned before controller success admission: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("controller success send did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close(context.Background()) }()
+	select {
+	case err := <-closeDone:
+		close(releaseSend)
+		<-serveDone
+		t.Fatalf("Close returned before admitted controller success completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseSend)
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve() after joined controller success = %v", err)
+	}
+}
+
 func TestL8D7GuestHelperPrepareResponseMismatchInstallsNoActiveLedger(t *testing.T) {
 	identity := testDispatchTransportIdentity()
 	prepare := testHTTPOnlyDispatchPrepareRequest(t, identity)
