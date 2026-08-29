@@ -312,9 +312,9 @@ func (client *Client) drainIdleHelperSSHAccepted(
 	if !client.beginAdmittedOperation() {
 		return receiveSequence, nil
 	}
+	defer client.endAdmittedOperation()
 	packet, received, readErr := tryReadHelperSSHAcceptedPacket(ctx, stream, request)
 	if readErr != nil {
-		client.endAdmittedOperation()
 		closeErr := closeHelperSSHAccepted(packet)
 		if client.drainStarted() || ctx.Err() != nil {
 			return receiveSequence, nil
@@ -328,11 +328,9 @@ func (client *Client) drainIdleHelperSSHAccepted(
 		return receiveSequence, clientError(ClientContractPacket, ClientFieldPacketType)
 	}
 	if !received {
-		client.endAdmittedOperation()
 		return receiveSequence, nil
 	}
 	dispatchErr := client.dispatchHelperSSHAccepted(ctx, packet, digest, ledger)
-	client.endAdmittedOperation()
 	if dispatchErr != nil {
 		return receiveSequence, dispatchErr
 	}
@@ -348,7 +346,7 @@ func (client *Client) dispatchHelperSSHAccepted(
 	extension, converted := extensionPacketFromHelperSSH(packet, digest)
 	defer func() {
 		if recover() != nil {
-			if closeErr := closeOwnedExtensionPacket(ctx, extension); closeErr != nil {
+			if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
 				err = clientError(ClientContractCleanup, ClientFieldRight)
 				return
 			}
@@ -364,46 +362,58 @@ func (client *Client) dispatchHelperSSHAccepted(
 	if ledger == nil || ledger.identityDigest != digest ||
 		packet.headerValue().GuestCredentialIdentityDigest != digest.Bytes() ||
 		packet.headerValue().Sequence == 0 {
-		if closeErr := closeOwnedExtensionPacket(ctx, extension); closeErr != nil {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
 			return clientError(ClientContractCleanup, ClientFieldRight)
 		}
 		return helperPacketDependencyUnaccepted(digest)
 	}
 	accepted, ok := extension.SSHAccepted()
 	if !ok || accepted.Revision() != ledger.revision {
-		if closeErr := closeOwnedExtensionPacket(ctx, extension); closeErr != nil {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
 			return clientError(ClientContractCleanup, ClientFieldRight)
 		}
 		return helperPacketDependencyUnaccepted(digest)
 	}
 	if int(accepted.BindingIndex()) >= len(ledger.records) ||
 		ledger.records[accepted.BindingIndex()].Mode != credentialprotocol.DeliveryModeSSHAgent {
-		if closeErr := closeOwnedExtensionPacket(ctx, extension); closeErr != nil {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
 			return clientError(ClientContractCleanup, ClientFieldRight)
 		}
 		return helperPacketDependencyUnaccepted(digest)
 	}
 	session, found := client.sshExtensionSession()
 	if !found || !configuredDependency(session) {
-		if closeErr := closeOwnedExtensionPacket(ctx, extension); closeErr != nil {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
 			return clientError(ClientContractCleanup, ClientFieldRight)
 		}
 		return helperPacketDependencyUnaccepted(digest)
 	}
 	handleErr := session.Handle(ctx, extension)
-	if handleErr != nil {
-		if closeErr := closeOwnedExtensionPacket(ctx, extension); closeErr != nil {
+	if handleErr != nil || !validSSHContext(ctx) {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
 			return clientError(ClientContractCleanup, ClientFieldRight)
 		}
 		return helperPacketDependencyUnaccepted(digest)
 	}
-	if commitErr := commitExtensionPacketOwnership(extension); commitErr != nil {
-		if closeErr := closeOwnedExtensionPacket(ctx, extension); closeErr != nil {
+	if commitErr := client.commitHelperSSHAcceptedOwnership(extension); commitErr != nil {
+		if closeErr := closeHelperSSHAccepted(packet); closeErr != nil {
 			return clientError(ClientContractCleanup, ClientFieldRight)
 		}
 		return clientError(ClientContractOwnership, ClientFieldRight)
 	}
 	return nil
+}
+
+func (client *Client) commitHelperSSHAcceptedOwnership(extension ExtensionPacket) error {
+	if client == nil || client.state == nil {
+		return sshOwnershipError()
+	}
+	client.state.mu.Lock()
+	defer client.state.mu.Unlock()
+	if client.state.closeStarted {
+		return sshOwnershipError()
+	}
+	return commitExtensionPacketOwnership(extension)
 }
 
 func extensionPacketFromHelperSSH(packet HelperPacket, digest v2control.IdentityDigest) (ExtensionPacket, bool) {

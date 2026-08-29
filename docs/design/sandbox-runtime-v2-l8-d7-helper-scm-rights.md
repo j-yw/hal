@@ -27,11 +27,14 @@ success.
 
 Dispatch maps the received arm onto the one registered SSH extension
 (`ExtensionSession.Handle`). Ownership transfers only after `Handle` returns
-nil (`commitExtensionPacketOwnership`). A nil `HelperConnectionOwner`, a
-non-`syscall.Conn` stream, missing/extra rights, a non-SSH idle helper
-packet, a missing SSH extension, or a binding/revision mismatch stays
-fail-closed (`ErrClientControlDependencyUnaccepted` or existing contract
-errors). This slice does not mint JobCredential proofs. JobCredential
+nil, the caller context remains valid, and the client drain latch is still
+clear (`commitExtensionPacketOwnership`). Cancellation and drain use an
+internal bounded cleanup context, so they close the still-client-owned right
+instead of transferring it to an extension whose `Close` already ran. A nil
+`HelperConnectionOwner`, a non-`syscall.Conn` stream, missing/extra rights, a
+non-SSH idle helper packet, a missing SSH extension, or a binding/revision
+mismatch stays fail-closed (`ErrClientControlDependencyUnaccepted` or existing
+contract errors). This slice does not mint JobCredential proofs. JobCredential
 active/cleanup proof minting stays unaccepted.
 
 This slice does not add `net.Listen`, `net.Dial`, `unix.Socket`, or
