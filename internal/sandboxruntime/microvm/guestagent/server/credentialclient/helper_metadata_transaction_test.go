@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/credentialprotocol"
@@ -46,27 +47,64 @@ func TestL8D7GuestHelperFilePrepareNeverInventsSecondControllerPrepare(t *testin
 func TestL8D7GuestHelperMetadataOnlyPrepareCommitsSameControllerRequest(t *testing.T) {
 	identity := testDispatchTransportIdentity()
 	prepare := testHTTPOnlyDispatchPrepareRequest(t, identity)
+	digest := identityDigestForSession(t, testHTTPOnlyDispatchSessionIdentity(t, identity))
 	stream := newFakeHelperStream()
 	owner := &fakeHelperOwner{stream: stream}
+	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 1, prepare.RequestID().Bytes(), digest.Bytes(), identity.identity.GuestBootNonce, matchingHTTPPrepareHelperResponse(t, prepare)))
 	var receives atomic.Uint32
+	sent := make(chan v2control.CredentialPrepareSuccessResponse, 1)
+	closed := make(chan struct{})
 	transport := &dispatchRedTransport{identity: identity}
-	transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
-		if receives.Add(1) != 1 {
-			return ControllerPacket{}, errors.New("same prepare transaction requested another controller packet")
+	transport.receiveController = func(ctx context.Context, _ ControllerReceiveRequest) (ControllerPacket, error) {
+		count := receives.Add(1)
+		if count == 1 {
+			return ControllerPacket{
+				sequence:  1,
+				sessionID: identity.sessionID,
+				arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
+			}, nil
 		}
-		return ControllerPacket{
-			sequence:  1,
-			sessionID: identity.sessionID,
-			arm:       controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare},
-		}, nil
+		select {
+		case <-closed:
+			return ControllerPacket{}, errors.New("closed")
+		case <-ctx.Done():
+			return ControllerPacket{}, ctx.Err()
+		}
+	}
+	transport.sendController = func(_ context.Context, packet ControllerSendPacket) error {
+		response, ok := packet.prepareResponseValue()
+		if !ok {
+			return errors.New("metadata-only prepare must answer with v2 prepare success")
+		}
+		sent <- response
+		return nil
+	}
+	transport.close = func(context.Context) error {
+		transport.closeOnce.Do(func() { close(closed) })
+		return nil
 	}
 
-	err := newDispatchRedClientOpts(t, transport, owner).Serve(context.Background())
-	if !errors.Is(err, ErrClientControlDependencyUnaccepted) {
-		t.Fatalf("Serve() error = %v, want helper response dependency unaccepted", err)
+	client := newDispatchRedClientOpts(t, transport, owner)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- client.Serve(context.Background()) }()
+	select {
+	case response := <-sent:
+		if response.RequestID() != prepare.RequestID() || response.ActiveProofID() != "active-proof" {
+			t.Fatalf("prepare success = %#v", response)
+		}
+	case err := <-serveDone:
+		t.Fatalf("Serve returned before prepare success: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("metadata-only prepare did not install a ledger and answer the controller")
 	}
-	if receives.Load() != 1 {
-		t.Fatalf("controller receives = %d, want one logical prepare request", receives.Load())
+	if err := client.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve() after ledger install = %v", err)
+	}
+	if receives.Load() < 1 {
+		t.Fatalf("controller receives = %d, want the original prepare", receives.Load())
 	}
 	packets := decodeHelperDatagrams(t, stream.bytes())
 	if len(packets) != 2 {
@@ -97,7 +135,7 @@ func TestL8D7GuestHelperExecPrivateDigestUsesExactFrozenSpelling(t *testing.T) {
 	}
 }
 
-func testHTTPOnlyDispatchPrepareRequest(t *testing.T, identity transportIdentity) v2control.CredentialPrepareRequest {
+func testHTTPOnlyDispatchSessionIdentity(t *testing.T, identity transportIdentity) v2control.GuestCredentialSessionIdentity {
 	t.Helper()
 	root := testCredentialPacketRoot(identity.sessionID)
 	root.BindingIDs = []string{"binding-http"}
@@ -106,6 +144,12 @@ func testHTTPOnlyDispatchPrepareRequest(t *testing.T, identity transportIdentity
 	if err != nil {
 		t.Fatal(err)
 	}
+	return sessionIdentity
+}
+
+func testHTTPOnlyDispatchPrepareRequest(t *testing.T, identity transportIdentity) v2control.CredentialPrepareRequest {
+	t.Helper()
+	sessionIdentity := testHTTPOnlyDispatchSessionIdentity(t, identity)
 	binding, err := v2control.NewHTTPBindingManifest("binding-http", "azure-openai-responses-v1")
 	if err != nil {
 		t.Fatal(err)
