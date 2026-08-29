@@ -343,9 +343,13 @@ func lookupExecutableFunction(functions []executableFunction, name string) (exec
 			continue
 		}
 		candidate := functions[index]
-		if !have || preferExecutableFunction(candidate, found) {
+		if !have {
 			found = candidate
 			have = true
+			continue
+		}
+		if candidate.start != found.start || candidate.end != found.end {
+			return executableFunction{}, fmt.Errorf("function %s is ambiguous", name)
 		}
 	}
 	if !have {
@@ -435,11 +439,21 @@ func listELFFunctions(file *elf.File) ([]executableFunction, error) {
 			}
 			candidate := executableFunction{name: symbol.Name, start: symbol.Value, end: end}
 			existing, ok := byStart[symbol.Value]
-			if !ok || preferExecutableFunction(candidate, existing) {
+			if !ok {
 				byStart[symbol.Value] = candidate
 				continue
 			}
-			if existing.name != candidate.name && existing.end == candidate.end && existing.end != 0 {
+			if existing.name == candidate.name && existing.end == candidate.end {
+				continue
+			}
+			if existing.name == candidate.name && existing.end == 0 && candidate.end != 0 {
+				byStart[symbol.Value] = candidate
+				continue
+			}
+			if existing.name == candidate.name && candidate.end == 0 {
+				continue
+			}
+			if existing != candidate {
 				return nil, fmt.Errorf("function start %#x is ambiguous", symbol.Value)
 			}
 		}
@@ -462,33 +476,70 @@ func listELFFunctions(file *elf.File) ([]executableFunction, error) {
 		}
 		functions[index].end = end
 	}
-	return functions, nil
+	return validateExecutableFunctions(functions)
 }
 
 func mergeExecutableFunctions(primary, extra []executableFunction) ([]executableFunction, error) {
-	byStart := make(map[uint64]executableFunction, len(primary)+len(extra))
-	for _, function := range primary {
-		byStart[function.start] = function
+	functions, err := validateExecutableFunctions(append([]executableFunction(nil), primary...))
+	if err != nil {
+		return nil, err
 	}
 	for _, function := range extra {
-		existing, ok := byStart[function.start]
-		if !ok {
-			byStart[function.start] = function
-			continue
-		}
-		if preferExecutableFunction(function, existing) {
-			byStart[function.start] = function
-		}
-	}
-	functions := make([]executableFunction, 0, len(byStart))
-	for _, function := range byStart {
 		if function.end <= function.start {
 			return nil, fmt.Errorf("function %s has inverted bounds", function.name)
 		}
-		functions = append(functions, function)
+		coveredByPrimary := false
+		for _, authoritative := range primary {
+			if executableFunctionsOverlap(function, authoritative) {
+				if function.start == authoritative.start && function.end <= authoritative.end && function.name == authoritative.name+".abi0" && authoritative.name != goRoleEntrySymbol {
+					for index := range functions {
+						if functions[index] == authoritative {
+							functions[index].name = function.name
+							break
+						}
+					}
+				}
+				coveredByPrimary = true
+				break
+			}
+		}
+		if coveredByPrimary {
+			continue
+		}
+		duplicate := false
+		for _, existing := range functions {
+			if existing == function {
+				duplicate = true
+				break
+			}
+			if executableFunctionsOverlap(function, existing) {
+				return nil, fmt.Errorf("functions %s and %s have ambiguous executable spans", existing.name, function.name)
+			}
+		}
+		if !duplicate {
+			functions = append(functions, function)
+		}
+	}
+	return validateExecutableFunctions(functions)
+}
+
+func validateExecutableFunctions(functions []executableFunction) ([]executableFunction, error) {
+	for _, function := range functions {
+		if function.end <= function.start {
+			return nil, fmt.Errorf("function %s has inverted bounds", function.name)
+		}
 	}
 	sort.Slice(functions, func(i, j int) bool { return functions[i].start < functions[j].start })
+	for index := 1; index < len(functions); index++ {
+		if executableFunctionsOverlap(functions[index-1], functions[index]) {
+			return nil, fmt.Errorf("functions %s and %s have ambiguous executable spans", functions[index-1].name, functions[index].name)
+		}
+	}
 	return functions, nil
+}
+
+func executableFunctionsOverlap(left, right executableFunction) bool {
+	return left.start < right.end && right.start < left.end
 }
 
 func skipExecutableFunctionName(name string) bool {
@@ -500,33 +551,14 @@ func skipExecutableFunctionName(name string) bool {
 	}
 }
 
-func preferExecutableFunction(candidate, existing executableFunction) bool {
-	if existing.name == candidate.name {
-		if existing.end == 0 && candidate.end != 0 {
-			return true
-		}
-		return false
-	}
-	if existing.end == 0 && candidate.end != 0 {
-		return true
-	}
-	if existing.end != 0 && candidate.end != 0 && candidate.end-candidate.start < existing.end-existing.start {
-		return true
-	}
-	return false
-}
-
 func containingExecutableFunction(functions []executableFunction, vaddr uint64) *executableFunction {
-	var best *executableFunction
 	for index := range functions {
 		if vaddr < functions[index].start || vaddr >= functions[index].end {
 			continue
 		}
-		if best == nil || functions[index].end-functions[index].start < best.end-best.start {
-			best = &functions[index]
-		}
+		return &functions[index]
 	}
-	return best
+	return nil
 }
 
 func isHarmlessFunctionTail(code []byte) bool {
@@ -543,8 +575,7 @@ func isHarmlessFunctionTail(code []byte) bool {
 	if pad {
 		return true
 	}
-	opcode := code[0]
-	return opcode == 0xE8 || opcode == 0xE9 || opcode == 0xEB || opcode >= 0x70 && opcode <= 0x7F
+	return false
 }
 
 func pclntabTextStart(file *elf.File) (uint64, error) {
@@ -612,11 +643,26 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 		if index >= length {
 			return amd64Insn{}, false
 		}
-		switch code[index] {
+		secondary := code[index]
+		switch secondary {
 		case 0x05:
 			insn.syscall = true
 		case 0x34:
 			insn.sysenter = true
+		case 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+			0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F:
+			insn.jmpRel = true
+			if operand16 {
+				if length < 4 {
+					return amd64Insn{}, false
+				}
+				insn.rel = int64(int16(binary.LittleEndian.Uint16(code[length-2 : length])))
+			} else {
+				if length < 6 {
+					return amd64Insn{}, false
+				}
+				insn.rel = int64(int32(binary.LittleEndian.Uint32(code[length-4 : length])))
+			}
 		}
 		return insn, true
 	}
@@ -635,6 +681,14 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 		return insn, true
 	}
 	if opcode == 0xEB && length >= 2 {
+		insn.jmpRel = true
+		insn.rel = int64(int8(code[length-1]))
+		return insn, true
+	}
+	if opcode >= 0x70 && opcode <= 0x7F || opcode >= 0xE0 && opcode <= 0xE3 {
+		if length < 2 {
+			return amd64Insn{}, false
+		}
 		insn.jmpRel = true
 		insn.rel = int64(int8(code[length-1]))
 		return insn, true

@@ -19,7 +19,9 @@ HL8E issuance is still disabled. The generator inspects linux/amd64 ELFs
 and prefers a complete `-evidence-binaries-dir` over a singular
 `-evidence-binary`. Authority is an entry-point plus call-edge reachable
 graph from `main.main` or `_start`, not `runtime.*` / `syscall.*` prefix
-classification. Pinned-direct allow is only
+classification. Pclntab spans are authoritative, every relative branch
+target is followed, and ambiguous symbols, truncated transfers, and
+indirect control flow fail closed. Pinned-direct allow is only
 `internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Reachable
 extra syscalls fail closed with named reasons (`futex`, `mmap`,
 `exit_group`, native `getuid`/`exit_group`, and the rest documented in

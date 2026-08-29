@@ -15,21 +15,23 @@ reachable path from the role entry.
 
 ## Reachable graph
 
-The inspector builds linux/amd64 guest packages with Go 1.25.7, lists
-functions from `runtime.text`-relocated pclntab plus ELF `STT_FUNC`
-symbols, and walks x86-64 instruction boundaries.
+The inspector builds linux/amd64 guest packages with Go 1.25.7, treats
+`runtime.text`-relocated pclntab spans as authoritative, supplements only
+non-overlapping ELF `STT_FUNC` spans, and walks x86-64 instruction
+boundaries. Ambiguous entry symbols and ELF spans fail closed.
 
 - Go role entry is `main.main`.
 - Native role entry is `_start`.
-- Direct `CALL` / out-of-function `JMP` are call edges.
+- Direct `CALL` and every out-of-function relative branch, including
+  conditional and loop branches, are graph edges.
 - Pinned-direct allow is only `internal/runtime/syscall.Syscall6` plus
   source-derived `0f05` at offset 12.
 - Any reachable extra raw syscall that is not that pinned-direct site
   fails closed with a bounded named reason.
 - Unreachable library syscalls are ignored because they are unreachable,
   not because of a prefix.
-- Unknown call targets and indirect `CALL`/`JMP` are unbounded; they
-  cannot issue HL8E.
+- Unknown branch targets, truncated transfers, and indirect `CALL`/`JMP`
+  are unbounded; they cannot issue HL8E.
 
 HL8E pinned binding is launch-base plus pinned Go runtime. The Go guest
 that carries launch-base is `cmd/hal-guest-init` (`hal-init`, PID1).

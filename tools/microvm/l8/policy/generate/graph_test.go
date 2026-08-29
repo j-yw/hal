@@ -67,6 +67,63 @@ func TestL8D7ReachableGraphDoesNotClassifyByNamespacePrefix(t *testing.T) {
 	}
 }
 
+func TestL8D7ReachableGraphIncludesEveryRelativeBranchTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		code []byte
+		want uint64
+	}{
+		{name: "near conditional", code: []byte{0x0f, 0x85, 0x04, 0, 0, 0}, want: 0x100a},
+		{name: "short conditional", code: []byte{0x75, 0x04}, want: 0x1006},
+		{name: "loop", code: []byte{0xe2, 0x04}, want: 0x1006},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fn := executableFunction{name: goRoleEntrySymbol, start: 0x1000, end: 0x1000 + uint64(len(test.code))}
+			_, targets, _, err := decodeFunctionSyscallGraph(fn, test.code, 0)
+			if err != nil {
+				t.Fatalf("decode relative branch: %v", err)
+			}
+			if len(targets) != 1 || targets[0] != test.want {
+				t.Fatalf("relative branch targets = %#x, want [%#x]", targets, test.want)
+			}
+		})
+	}
+}
+
+func TestL8D7ReachableGraphRejectsTruncatedControlTransfers(t *testing.T) {
+	for _, code := range [][]byte{{0xe8}, {0xe9}, {0xeb}, {0x75}} {
+		fn := executableFunction{name: goRoleEntrySymbol, start: 0x1000, end: 0x1000 + uint64(len(code))}
+		if _, _, _, err := decodeFunctionSyscallGraph(fn, code, 0); err == nil {
+			t.Fatalf("truncated control transfer %x was accepted as harmless padding", code)
+		}
+	}
+}
+
+func TestL8D7ReachableGraphRejectsAmbiguousEntrySymbols(t *testing.T) {
+	functions := []executableFunction{
+		{name: goRoleEntrySymbol, start: 0x1000, end: 0x1100},
+		{name: goRoleEntrySymbol, start: 0x2000, end: 0x2010},
+	}
+	if _, err := lookupExecutableFunction(functions, goRoleEntrySymbol); err == nil {
+		t.Fatal("duplicate entry symbol was accepted by size preference")
+	}
+}
+
+func TestL8D7ReachableGraphKeepsPclntabSpansAuthoritative(t *testing.T) {
+	primary := executableFunction{name: goRoleEntrySymbol, start: 0x1000, end: 0x1100}
+	merged, err := mergeExecutableFunctions([]executableFunction{primary}, []executableFunction{
+		{name: "reviewer.alias", start: 0x1000, end: 0x1010},
+	})
+	if err != nil {
+		t.Fatalf("merge executable functions: %v", err)
+	}
+	got, err := lookupExecutableFunction(merged, goRoleEntrySymbol)
+	if err != nil || got != primary {
+		t.Fatalf("authoritative pclntab entry was shadowed: got %+v, err %v", got, err)
+	}
+}
+
 func TestL8D7ReachableGraphNamesNativeStartSyscalls(t *testing.T) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skip("native ELF assemble/link requires linux/amd64 as/ld")
@@ -151,10 +208,13 @@ func TestL8D7ReachableGraphNamesGoLaunchBaseExtraSyscalls(t *testing.T) {
 	if len(extras) == 0 {
 		t.Fatal("launch-base reachable extra syscalls were empty; HL8E must not be issued without a named fail-closed reason")
 	}
-	for _, name := range []string{"futex", "mmap", "exit_group"} {
-		if !containsString(extras, name) {
-			t.Fatalf("launch-base extras = %v, want named reachable extra syscall %s", extras, name)
-		}
+	wantExtras := []string{
+		"clock_gettime", "exit_group", "futex", "getpid", "gettid", "madvise", "mmap", "munmap", "nanosleep", "read",
+		"rt_sigaction", "rt_sigprocmask", "sched_yield", "tgkill", "timer_create", "timer_delete", "timer_settime",
+		"unknown:syscall.rawSyscallNoError.abi0", "unknown:syscall.rawVforkSyscall.abi0", "write",
+	}
+	if strings.Join(extras, ",") != strings.Join(wantExtras, ",") {
+		t.Fatalf("launch-base extras = %v, want %v", extras, wantExtras)
 	}
 	if err := proveBoundedReachableSyscallGraph([]inspectedGuestBinary{inspected}); err == nil {
 		t.Fatal("launch-base graph with extra reachable syscalls was accepted")
