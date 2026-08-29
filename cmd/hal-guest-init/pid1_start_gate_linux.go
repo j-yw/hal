@@ -16,6 +16,15 @@ import (
 // slot. It is made non-inheritable before PID1 starts any child.
 const pid1StartGateExpectedFDNumber = 15
 
+// pid1StartGateHelperFDNumber is the optional PID1 D7 helper-descriptor
+// slot. Helper-then-client order is exact. It is made non-inheritable
+// before PID1 starts any child.
+const pid1StartGateHelperFDNumber = 16
+
+// pid1StartGateClientFDNumber is the optional PID1 D7 client-descriptor
+// slot. It is made non-inheritable before PID1 starts any child.
+const pid1StartGateClientFDNumber = 17
+
 const pid1StartGateExpectedMaxBytes = 32 << 10
 
 const pid1StartGateRequiredSeals = unix.F_SEAL_SEAL | unix.F_SEAL_SHRINK | unix.F_SEAL_GROW | unix.F_SEAL_WRITE
@@ -25,6 +34,14 @@ var errPID1StartGateExpectedInvalid = errors.New("L8 PID1 start-gate expected di
 // pid1StartGateExpectedFD is the inherited descriptor consumed for sealed
 // expected digests. Tests replace it; production keeps FD 15.
 var pid1StartGateExpectedFD = pid1StartGateExpectedFDNumber
+
+// pid1StartGateHelperFD is the inherited helper process-descriptor slot.
+// Tests replace it; production keeps FD 16.
+var pid1StartGateHelperFD = pid1StartGateHelperFDNumber
+
+// pid1StartGateClientFD is the inherited client process-descriptor slot.
+// Tests replace it; production keeps FD 17.
+var pid1StartGateClientFD = pid1StartGateClientFDNumber
 
 // pid1StartGateSealedFacts is the JSON subset of
 // assetbuild.L8ProcessCompositionFacts copied into PID1StartGateExpected.
@@ -57,16 +74,37 @@ func loadPID1StartGateExpected() (l8composition.PID1StartGateExpected, bool, err
 // a claimed expected without authenticated descriptors fails closed.
 func releasePID1AgentStartGate() int {
 	expected, present, err := loadPID1StartGateExpected()
+	helper, helperPresent, helperErr := loadPID1StartGateProcessDescriptor(pid1StartGateHelperFD)
+	client, clientPresent, clientErr := loadPID1StartGateProcessDescriptor(pid1StartGateClientFD)
 	if err != nil {
 		return 127
 	}
 	if !present {
 		return 0
 	}
-	if _, err := l8composition.NewPID1StartGateState(expected); err != nil {
+	if helperErr != nil || clientErr != nil || !helperPresent || !clientPresent {
 		return 127
 	}
-	return 127
+	return admitPID1StartGate(expected, helper, client)
+}
+
+// loadPID1StartGateProcessDescriptor snapshots one canonical HL8D process
+// descriptor from a sealed inherited anonymous memfd. Missing or unsigned
+// descriptors stay absent. Invalid sealed payloads fail closed. PID1 never
+// constructs helper or client processes.
+func loadPID1StartGateProcessDescriptor(fd int) (l8composition.ProcessDescriptor, bool, error) {
+	payload, present, err := readPID1StartGateSealedFD(fd)
+	if err != nil {
+		return l8composition.ProcessDescriptor{}, false, err
+	}
+	if !present {
+		return l8composition.ProcessDescriptor{}, false, nil
+	}
+	descriptor, err := l8composition.DecodeProcessDescriptor(payload)
+	if err != nil {
+		return l8composition.ProcessDescriptor{}, false, errPID1StartGateExpectedInvalid
+	}
+	return descriptor, true, nil
 }
 
 // admitPID1StartGate is the exact helper-then-client start-gate. Tests inject
@@ -102,15 +140,14 @@ func readPID1StartGateSealedFD(fd int) ([]byte, bool, error) {
 	}
 	if flags&unix.FD_CLOEXEC == 0 {
 		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, flags|unix.FD_CLOEXEC); err != nil {
-			if unix.Close(fd) != nil {
-				return nil, false, errPID1StartGateExpectedInvalid
-			}
-			return nil, false, nil
+			_ = unix.Close(fd)
+			return nil, false, errPID1StartGateExpectedInvalid
 		}
 	}
-	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, pid1StartGateExpectedFDNumber+1)
+	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, pid1StartGateClientFDNumber+1)
 	if err != nil {
-		return nil, false, nil
+		_ = unix.Close(fd)
+		return nil, false, errPID1StartGateExpectedInvalid
 	}
 	defer func() { _ = unix.Close(dup) }()
 
