@@ -177,6 +177,25 @@ func TestL8D7LockDecoderRejectsAnythingExceptExactClosedInputs(t *testing.T) {
 	}
 }
 
+func TestL8D7RuntimeEnvelopeLockIsExactNamedGoPID1Catalog(t *testing.T) {
+	root := repositoryRoot(t)
+	encoded, err := os.ReadFile(filepath.Join(root, policyDir, "roles-v1.yaml"))
+	if err != nil {
+		t.Fatalf("read roles: %v", err)
+	}
+	document, err := decodeRoles(encoded)
+	if err != nil {
+		t.Fatalf("decodeRoles() error = %v", err)
+	}
+	want := exactRuntimeEnvelope()
+	if !equalStringSlices(document.RuntimeEnvelope, want) {
+		t.Fatalf("runtimeEnvelope = %v, want %v", document.RuntimeEnvelope, want)
+	}
+	if len(want) != 18 || want[0] != "clock_gettime" || want[len(want)-1] != "write" {
+		t.Fatalf("exactRuntimeEnvelope() = %v", want)
+	}
+}
+
 func TestL8D7RolesDecoderRequiresExactOrderedRoleAndRuleSet(t *testing.T) {
 	root := repositoryRoot(t)
 	valid, err := os.ReadFile(filepath.Join(root, policyDir, "roles-v1.yaml"))
@@ -197,12 +216,17 @@ func TestL8D7RolesDecoderRequiresExactOrderedRoleAndRuleSet(t *testing.T) {
 		"missing role":        func(input *rolesDocument) { input.Roles = input.Roles[:len(input.Roles)-1] },
 		"changed rule":        func(input *rolesDocument) { input.Roles[3].Syscall = "write" },
 		"changed path":        func(input *rolesDocument) { input.Roles[3].Path = 2 },
-		"changed callsite":    func(input *rolesDocument) { input.PinnedCallsite.Symbol = "internal/runtime/syscall.Other" },
+		"changed envelope":    func(input *rolesDocument) { input.RuntimeEnvelope[2] = "clone" },
+		"missing envelope": func(input *rolesDocument) {
+			input.RuntimeEnvelope = input.RuntimeEnvelope[:len(input.RuntimeEnvelope)-1]
+		},
+		"changed callsite": func(input *rolesDocument) { input.PinnedCallsite.Symbol = "internal/runtime/syscall.Other" },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			candidate := document
 			candidate.Roles = append([]roleInput(nil), document.Roles...)
+			candidate.RuntimeEnvelope = append([]string(nil), document.RuntimeEnvelope...)
 			mutate(&candidate)
 			encoded, err := json.Marshal(candidate)
 			if err != nil {

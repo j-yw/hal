@@ -22,10 +22,12 @@ graph from `main.main` or `_start`, not `runtime.*` / `syscall.*` prefix
 classification. Pclntab spans are authoritative, every relative branch
 target is followed, and ambiguous symbols, truncated transfers, and
 indirect control flow fail closed. Pinned-direct allow is only
-`internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Reachable
-extra syscalls fail closed with named reasons (`futex`, `mmap`,
-`exit_group`, native `getuid`/`exit_group`, and the rest documented in
-the reachable-graph design). A singular ELF that happens to embed HL8Q
+`internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Named Go
+PID1 extras are explicit D7 `runtimeEnvelope` / launch-base origin-3
+rows, not prefix membership. Unknown-number trampolines
+(`syscall.rawSyscallNoError.abi0`, `syscall.rawVforkSyscall.abi0`) and
+native `_start` extras (`getuid`/`exit_group` and the rest documented
+in the reachable-graph design) still fail closed. A singular ELF that happens to embed HL8Q
 and a generic Go runtime syscall symbol does not prove its role identity
 or the complete final binary set. Missing helper, monitor, or shim role
 binaries fail closed. Consequently, even supplying `-evidence-binary` or

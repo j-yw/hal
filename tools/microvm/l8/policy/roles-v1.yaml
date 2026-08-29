@@ -12,6 +12,26 @@
     {"id": 9, "name": "workload-transition", "stage": 4, "origin": 1, "path": 1, "syscall": "read"},
     {"id": 10, "name": "workload", "stage": 4, "origin": 2, "path": 1, "syscall": "read"}
   ],
+  "runtimeEnvelope": [
+    "clock_gettime",
+    "exit_group",
+    "futex",
+    "getpid",
+    "gettid",
+    "madvise",
+    "mmap",
+    "munmap",
+    "nanosleep",
+    "read",
+    "rt_sigaction",
+    "rt_sigprocmask",
+    "sched_yield",
+    "tgkill",
+    "timer_create",
+    "timer_delete",
+    "timer_settime",
+    "write"
+  ],
   "pinnedCallsite": {
     "sourceUnit": "src/internal/runtime/syscall/asm_linux_amd64.s",
     "sourceUnitSHA256": "dd6191356bf0c18b3c9862b19e4014f06e217987b225823612b6da56fb6e193a",

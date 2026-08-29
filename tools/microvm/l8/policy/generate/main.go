@@ -65,9 +65,10 @@ type callsiteInput struct {
 }
 
 type rolesDocument struct {
-	Schema         string        `json:"schema"`
-	Roles          []roleInput   `json:"roles"`
-	PinnedCallsite callsiteInput `json:"pinnedCallsite"`
+	Schema          string        `json:"schema"`
+	Roles           []roleInput   `json:"roles"`
+	RuntimeEnvelope []string      `json:"runtimeEnvelope"`
+	PinnedCallsite  callsiteInput `json:"pinnedCallsite"`
 }
 
 type d4InstallBinding struct {
@@ -134,6 +135,29 @@ func exactD4InstallBindings() [5]d4InstallBinding {
 		{installRole: 3, policyRole: 5, binaryKind: 1},
 		{installRole: 4, policyRole: 7, binaryKind: 1},
 		{installRole: 5, policyRole: 9, binaryKind: 1},
+	}
+}
+
+func exactRuntimeEnvelope() []string {
+	return []string{
+		"clock_gettime",
+		"exit_group",
+		"futex",
+		"getpid",
+		"gettid",
+		"madvise",
+		"mmap",
+		"munmap",
+		"nanosleep",
+		"read",
+		"rt_sigaction",
+		"rt_sigprocmask",
+		"sched_yield",
+		"tgkill",
+		"timer_create",
+		"timer_delete",
+		"timer_settime",
+		"write",
 	}
 }
 
@@ -296,15 +320,15 @@ func generate(root string) (generatedOutputs, error) {
 	catalogPreimage = append(catalogPreimage, joinDigests(catalogSourceSHA256, generatorSourceSHA256)...)
 	catalogSourceLockSHA256 := framedSHA256("hal/l8/syscall-catalog-source-lock/linux-amd64/v1", catalogPreimage)
 
-	catalogBody, catalogNumbers, err := encodeCatalog(catalog, catalogLock)
+	catalogBody, catalogNumbers, err := encodeCatalog(catalog, catalogLock, ordinaryCatalogNames(roles))
 	if err != nil {
 		return generatedOutputs{}, err
 	}
-	rolesBody, workloadRuleIndex, runtimeRuleIndexes, err := encodeRoles(roles, catalogNumbers, toolchainSHA256)
+	rolesBody, workloadRuleIndex, runtimeRuleIndexes, roleFilters, err := encodeRoles(roles, catalogNumbers, toolchainSHA256)
 	if err != nil {
 		return generatedOutputs{}, err
 	}
-	ancestryBody := encodeAncestry()
+	ancestryBody := encodeAncestry(roleFilters)
 	workloadBody := encodeWorkload(workloadLockSHA256, l4SHA256, l7SHA256, workloadRuleIndex)
 	runtimeBody := encodeRuntime(runtimeSourceSHA256, runtimeSourceLockSHA256, runtimeRuleIndexes)
 	sections := [6][]byte{catalogBody, rolesBody, ancestryBody, workloadBody, runtimeBody}
@@ -370,6 +394,9 @@ func decodeRoles(encoded []byte) (rolesDocument, error) {
 			return rolesDocument{}, fmt.Errorf("role row %d does not match the exact ordered D7 rule", index)
 		}
 	}
+	if !equalStringSlices(document.RuntimeEnvelope, exactRuntimeEnvelope()) {
+		return rolesDocument{}, errors.New("runtimeEnvelope does not match the exact named Go PID1 catalog")
+	}
 	if document.PinnedCallsite != exactPinnedCallsite() {
 		return rolesDocument{}, errors.New("pinned callsite record does not match the exact D7 input")
 	}
@@ -380,7 +407,18 @@ func decodeRoles(encoded []byte) (rolesDocument, error) {
 	return document, nil
 }
 
-func encodeCatalog(entries []catalogEntry, lock map[string]string) ([]byte, map[string]uint32, error) {
+func ordinaryCatalogNames(document rolesDocument) map[string]struct{} {
+	names := make(map[string]struct{}, len(document.Roles)+len(document.RuntimeEnvelope))
+	for _, role := range document.Roles {
+		names[role.Syscall] = struct{}{}
+	}
+	for _, name := range document.RuntimeEnvelope {
+		names[name] = struct{}{}
+	}
+	return names
+}
+
+func encodeCatalog(entries []catalogEntry, lock map[string]string, ordinary map[string]struct{}) ([]byte, map[string]uint32, error) {
 	body := new(bytes.Buffer)
 	module := lock["module"]
 	path := lock["source_path"]
@@ -398,7 +436,7 @@ func encodeCatalog(entries []catalogEntry, lock map[string]string) ([]byte, map[
 		numbers[entry.name] = entry.number
 		writeUint32(body, entry.number)
 		class := byte(2)
-		if entry.name == "read" {
+		if _, ok := ordinary[entry.name]; ok {
 			class = 1
 		}
 		body.WriteByte(class)
@@ -410,7 +448,14 @@ func encodeCatalog(entries []catalogEntry, lock map[string]string) ([]byte, map[
 	return body.Bytes(), numbers, nil
 }
 
-func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA256 [32]byte) ([]byte, uint32, []uint32, error) {
+type encodedRoleRule struct {
+	name   string
+	number uint32
+	path   uint8
+	pinned bool
+}
+
+func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA256 [32]byte) ([]byte, uint32, []uint32, map[uint8][][]byte, error) {
 	edges := map[uint8][]uint8{
 		1: {2},
 		2: {3, 5, 7, 9},
@@ -421,17 +466,19 @@ func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA
 	}
 	body := new(bytes.Buffer)
 	var workloadIndex uint32
+	var haveWorkload bool
 	var runtimeIndexes []uint32
 	var ruleIndex uint32
+	roleFilters := make(map[uint8][][]byte, len(document.Roles))
 	for _, role := range document.Roles {
-		number, ok := catalog[role.Syscall]
-		if !ok {
-			return nil, 0, nil, fmt.Errorf("role %s references absent syscall %q", role.Name, role.Syscall)
+		rules, err := roleEncodedRules(role, document.RuntimeEnvelope, catalog)
+		if err != nil {
+			return nil, 0, nil, nil, err
 		}
 		body.WriteByte(role.ID)
 		body.WriteByte(1)
 		writeUint16(body, uint16(len(edges[role.ID])))
-		writeUint32(body, 1)
+		writeUint32(body, uint32(len(rules)))
 		body.WriteByte(role.Stage)
 		body.Write(make([]byte, 7))
 		writeUint64(body, 0)
@@ -445,41 +492,91 @@ func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA
 				writeUint64(body, 0)
 			}
 		}
-		body.WriteByte(role.ID)
-		body.WriteByte(role.Stage)
-		body.WriteByte(role.Origin)
-		body.WriteByte(role.Path)
-		body.WriteByte(1)
-		pinnedCount := byte(0)
-		if role.PinnedRuntimeCallsite {
-			pinnedCount = 1
-		}
-		body.WriteByte(pinnedCount)
-		writeUint16(body, 0)
-		writeUint64(body, 0)
-		writeUint64(body, 0)
-		writeUint32(body, number)
-		writeUint32(body, 0)
-		body.Write([]byte{0, 0, 0, 0})
-		if role.PinnedRuntimeCallsite {
-			row, err := encodePinnedRequirement(document.PinnedCallsite, toolchainSHA256, role.Origin == 3)
-			if err != nil {
-				return nil, 0, nil, err
+		for _, rule := range rules {
+			pinnedCount := byte(0)
+			var pinnedRow []byte
+			if rule.pinned {
+				pinnedCount = 1
+				row, err := encodePinnedRequirement(document.PinnedCallsite, toolchainSHA256, role.Origin == 3)
+				if err != nil {
+					return nil, 0, nil, nil, err
+				}
+				pinnedRow = row
 			}
-			body.Write(row)
+			body.WriteByte(role.ID)
+			body.WriteByte(role.Stage)
+			body.WriteByte(role.Origin)
+			body.WriteByte(rule.path)
+			body.WriteByte(1)
+			body.WriteByte(pinnedCount)
+			writeUint16(body, 0)
+			writeUint64(body, 0)
+			writeUint64(body, 0)
+			writeUint32(body, rule.number)
+			writeUint32(body, 0)
+			body.Write([]byte{0, 0, 0, 0})
+			body.Write(pinnedRow)
+			roleFilters[role.ID] = append(roleFilters[role.ID], syscallFilterRow(rule.number))
+			if role.Origin == 2 && !haveWorkload {
+				workloadIndex = ruleIndex
+				haveWorkload = true
+			}
+			if role.Origin == 3 {
+				runtimeIndexes = append(runtimeIndexes, ruleIndex)
+			}
+			ruleIndex++
 		}
-		if role.Origin == 2 {
-			workloadIndex = ruleIndex
-		}
-		if role.Origin == 3 {
-			runtimeIndexes = append(runtimeIndexes, ruleIndex)
-		}
-		ruleIndex++
 	}
-	if len(runtimeIndexes) == 0 || workloadIndex == 0 {
-		return nil, 0, nil, errors.New("roles omit runtime or workload authority")
+	if len(runtimeIndexes) == 0 || !haveWorkload {
+		return nil, 0, nil, nil, errors.New("roles omit runtime or workload authority")
 	}
-	return body.Bytes(), workloadIndex, runtimeIndexes, nil
+	return body.Bytes(), workloadIndex, runtimeIndexes, roleFilters, nil
+}
+
+func roleEncodedRules(role roleInput, envelope []string, catalog map[string]uint32) ([]encodedRoleRule, error) {
+	number, ok := catalog[role.Syscall]
+	if !ok {
+		return nil, fmt.Errorf("role %s references absent syscall %q", role.Name, role.Syscall)
+	}
+	rules := []encodedRoleRule{{
+		name:   role.Syscall,
+		number: number,
+		path:   role.Path,
+		pinned: role.PinnedRuntimeCallsite,
+	}}
+	if role.Origin != 3 {
+		return rules, nil
+	}
+	seen := map[string]struct{}{role.Syscall: {}}
+	for _, name := range envelope {
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		envelopeNumber, ok := catalog[name]
+		if !ok {
+			return nil, fmt.Errorf("runtime envelope references absent syscall %q", name)
+		}
+		seen[name] = struct{}{}
+		rules = append(rules, encodedRoleRule{
+			name:   name,
+			number: envelopeNumber,
+			path:   1,
+			pinned: false,
+		})
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].number == rules[j].number {
+			return rules[i].name < rules[j].name
+		}
+		return rules[i].number < rules[j].number
+	})
+	return rules, nil
+}
+
+func syscallFilterRow(number uint32) []byte {
+	row := make([]byte, 8)
+	binary.BigEndian.PutUint32(row[:4], number)
+	return row
 }
 
 func encodePinnedRequirement(callsite callsiteInput, toolchainSHA256 [32]byte, runtimeOrigin bool) ([]byte, error) {
@@ -513,12 +610,7 @@ func encodePinnedRequirement(callsite callsiteInput, toolchainSHA256 [32]byte, r
 	return row.Bytes(), nil
 }
 
-func encodeAncestry() []byte {
-	filterRow := make([]byte, 8)
-	preimage := make([]byte, 4, 12)
-	binary.BigEndian.PutUint32(preimage[:4], 1)
-	preimage = append(preimage, filterRow...)
-	unionSHA256 := framedSHA256("hal/l8/syscall-filter-projection/linux-amd64/v1", preimage)
+func encodeAncestry(filters map[uint8][][]byte) []byte {
 	body := new(bytes.Buffer)
 	for _, record := range []struct {
 		ancestor    uint8
@@ -527,6 +619,30 @@ func encodeAncestry() []byte {
 		{ancestor: 2, descendants: []uint8{3, 4, 5, 6, 7, 8, 9, 10}},
 		{ancestor: 9, descendants: []uint8{10}},
 	} {
+		included := map[uint8]struct{}{record.ancestor: {}}
+		for _, descendant := range record.descendants {
+			included[descendant] = struct{}{}
+		}
+		rows := make([][]byte, 0)
+		for role, roleRows := range filters {
+			if _, ok := included[role]; !ok {
+				continue
+			}
+			rows = append(rows, roleRows...)
+		}
+		sort.Slice(rows, func(i, j int) bool { return bytes.Compare(rows[i], rows[j]) < 0 })
+		deduplicated := rows[:0]
+		for _, encoded := range rows {
+			if len(deduplicated) == 0 || !bytes.Equal(deduplicated[len(deduplicated)-1], encoded) {
+				deduplicated = append(deduplicated, encoded)
+			}
+		}
+		preimage := make([]byte, 4, 4+len(deduplicated)*8)
+		binary.BigEndian.PutUint32(preimage[:4], uint32(len(deduplicated)))
+		for _, encoded := range deduplicated {
+			preimage = append(preimage, encoded...)
+		}
+		unionSHA256 := framedSHA256("hal/l8/syscall-filter-projection/linux-amd64/v1", preimage)
 		body.WriteByte(record.ancestor)
 		body.WriteByte(byte(len(record.descendants)))
 		writeUint16(body, 0)
@@ -986,6 +1102,18 @@ func parseDigest(value string) ([32]byte, error) {
 		return [32]byte{}, errors.New("digest must be nonzero")
 	}
 	return result, nil
+}
+
+func equalStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func equalHexDigest(left, right string) bool {
