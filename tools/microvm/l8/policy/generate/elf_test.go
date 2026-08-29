@@ -187,6 +187,32 @@ func TestL8D7UniqueCallGraphClassifiesPinnedAndRuntimeSyscallSites(t *testing.T)
 	}
 }
 
+func TestL8D7EvidenceIssuanceRejectsNamespaceWideSyscallClassification(t *testing.T) {
+	for _, symbol := range []string{
+		"runtime.reviewerAuthority",
+		"syscall.reviewerAuthority",
+		"golang.org/x/sys/unix.reviewerAuthority",
+		"internal/runtime/syscall.reviewerAuthority",
+	} {
+		if classifiedNonAuthoritySyscallSymbol(symbol) {
+			t.Errorf("classifiedNonAuthoritySyscallSymbol(%q) = true; namespace membership is not proof of non-authority", symbol)
+		}
+	}
+
+	binary := inspectedGuestBinary{
+		name:               guestInitBinaryName,
+		syscall6Found:      true,
+		syscall6TextOffset: 12,
+		syscalls: []decodedSyscallSite{
+			{symbol: pinnedGoRuntimeSymbol, symbolOffset: pinnedInstructionOffset, textOffset: 12},
+			{symbol: "runtime.reviewerAuthority", symbolOffset: 0, textOffset: 64},
+		},
+	}
+	if err := proveUniqueReachableSyscallGraph(binary); err == nil {
+		t.Fatal("unique/reachable graph accepted an extra syscall solely because its symbol used an allowlisted namespace")
+	}
+}
+
 func TestL8D7EvidenceIssuanceFromCompleteGuestRoleBinaries(t *testing.T) {
 	root := repositoryRoot(t)
 	outputs := mustGenerate(t, root)
