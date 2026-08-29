@@ -112,6 +112,7 @@ export GOPROXY=off
 go -C "$source_root" build -mod=readonly -trimpath -buildvcs=false -ldflags=-buildid= \
 	-o /build/guest-bin/hal-guest-agent ./cmd/hal-guest-agent
 go -C "$source_root" build -mod=readonly -trimpath -buildvcs=false -ldflags=-buildid= \
+	-tags=l8_production_pid1 \
 	-o /build/guest-bin/hal-init ./cmd/hal-guest-init
 go -C "$source_root" build -mod=readonly -trimpath -buildvcs=false -ldflags=-buildid= \
 	-o /build/guest-bin/hal-guest-credential-helper ./cmd/hal-guest-credential-helper

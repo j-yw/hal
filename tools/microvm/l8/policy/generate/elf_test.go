@@ -166,17 +166,30 @@ func TestL8D7EvidenceIssuanceRejectsCompleteRolesWithoutBoundedCallGraph(t *test
 	if !strings.Contains(message, "unique/reachable D4/D6 call graph is unavailable") {
 		t.Fatalf("complete-role error = %v, want unavailable bounded-call-graph reason", err)
 	}
-	if !strings.Contains(message, "role binary "+guestInitBinaryName+" has reachable extra syscalls from "+goRoleEntrySymbol+":") {
-		t.Fatalf("complete-role error = %v, want launch-base extras from %s", err, goRoleEntrySymbol)
-	}
 	for _, name := range []string{"unknown:syscall.rawSyscallNoError.abi0", "unknown:syscall.rawVforkSyscall.abi0"} {
 		if strings.Contains(message, name) {
 			t.Fatalf("complete-role error = %v still includes unnumbered trampoline %s", err, name)
 		}
 	}
+	initExtrasPrefix := "role binary " + guestInitBinaryName + " has reachable extra syscalls from " + goRoleEntrySymbol + ":"
+	if strings.Contains(message, initExtrasPrefix) {
+		initExtras := message[strings.Index(message, initExtrasPrefix)+len(initExtrasPrefix):]
+		if end := strings.Index(initExtras, ";"); end >= 0 {
+			initExtras = initExtras[:end]
+		}
+		for _, name := range []string{"clone", "clone3"} {
+			if containsString(strings.Split(strings.ReplaceAll(initExtras, " ", ""), ","), name) || strings.Contains(initExtras, name) {
+				t.Fatalf("complete-role error = %v still includes L8-tagged PID1 ForkExec extra %s", err, name)
+			}
+		}
+	}
+	inspected, inspectErr := inspectLinuxAMD64ELF(guestInitBinaryName, filepath.Join(dir, guestInitBinaryName))
+	if inspectErr != nil {
+		t.Fatalf("inspect L8-tagged PID1: %v", inspectErr)
+	}
 	for _, name := range []string{"clone", "clone3"} {
-		if !strings.Contains(message, name) {
-			t.Fatalf("complete-role error = %v, want named trampoline syscall %s", err, name)
+		if containsString(extraReachableSyscallNames(inspected), name) {
+			t.Fatalf("L8-tagged complete-role PID1 extras still include %s", name)
 		}
 	}
 	if strings.Contains(message, "getppid") {
@@ -251,9 +264,14 @@ func buildCompleteGuestRoleBinariesDir(t *testing.T, root string) string {
 		{guestShimBinaryName, "./cmd/hal-guest-workload-shim"},
 	}
 	for _, role := range packages {
-		command := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", filepath.Join(dir, role.name), role.pkg)
+		args := []string{"build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", filepath.Join(dir, role.name)}
+		if role.name == guestInitBinaryName {
+			args = append(args, "-tags="+l8ProductionPID1Tag)
+		}
+		args = append(args, role.pkg)
+		command := exec.Command("go", args...)
 		command.Dir = root
-		command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "GOTOOLCHAIN=go1.25.7", "GOPROXY=off")
+		command.Env = linuxAMD64GoBuildEnv(t)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("build %s: %v\n%s", role.name, err, output)
 		}
@@ -275,11 +293,36 @@ func buildLinuxAMD64GoBinary(t *testing.T, dir, name, source string) string {
 	}
 	command := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", binaryPath, sourcePath)
 	command.Dir = repositoryRoot(t)
-	command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "GOTOOLCHAIN=go1.25.7", "GOPROXY=off")
+	command.Env = linuxAMD64GoBuildEnv(t)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build %s: %v\n%s", name, err, output)
 	}
 	return binaryPath
+}
+
+const l8ProductionPID1Tag = "l8_production_pid1"
+
+func linuxAMD64GoBuildEnv(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Join("/home/v/.cache", "hal-l8-d7-pid1-no-forkexec")
+	gotmp := filepath.Join(root, "gotmp")
+	gocache := filepath.Join(root, "gocache")
+	tmp := filepath.Join(root, "tmp")
+	for _, dir := range []string{gotmp, gocache, tmp} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	return append(os.Environ(),
+		"CGO_ENABLED=0",
+		"GOOS=linux",
+		"GOARCH=amd64",
+		"GOTOOLCHAIN=go1.25.7",
+		"GOPROXY=off",
+		"GOTMPDIR="+gotmp,
+		"GOCACHE="+gocache,
+		"TMPDIR="+tmp,
+	)
 }
 
 func copyFileOverwrite(t *testing.T, source, destination string) error {

@@ -103,6 +103,23 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 	if strings.Contains(container, "VerifyL8DistributionBundle(") {
 		t.Fatal("build-in-container.sh must not call VerifyL8DistributionBundle")
 	}
+	if !strings.Contains(container, "-tags=l8_production_pid1") {
+		t.Fatal("build-in-container.sh must compile L8 hal-init with l8_production_pid1")
+	}
+	halInitBuild := l8HalInitBuildCommand(container)
+	if !strings.Contains(halInitBuild, "-tags=l8_production_pid1") || !strings.Contains(halInitBuild, "./cmd/hal-guest-init") {
+		t.Fatalf("L8 hal-init build is missing the ForkExec-omitting tag: %s", halInitBuild)
+	}
+	for _, pkg := range []string{
+		"./cmd/hal-guest-agent",
+		"./cmd/hal-guest-credential-helper",
+		"./cmd/hal-guest-mount-monitor",
+		"./cmd/hal-guest-workload-shim",
+	} {
+		if strings.Contains(l8GuestBuildCommand(container, pkg), "-tags=l8_production_pid1") {
+			t.Fatalf("L8 %s build must not use the PID1 ForkExec-omitting tag", pkg)
+		}
+	}
 	for _, forbidden := range []string{
 		"./cmd/hal-guest-role-bootstrap",
 		"${CC:-gcc}",
@@ -549,4 +566,33 @@ func linePresent(text, want string) bool {
 		}
 	}
 	return false
+}
+
+func l8HalInitBuildCommand(container string) string {
+	return l8GuestBuildCommand(container, "./cmd/hal-guest-init")
+}
+
+func l8GuestBuildCommand(container, pkg string) string {
+	marker := "-o /build/guest-bin/"
+	index := 0
+	for {
+		start := strings.Index(container[index:], marker)
+		if start < 0 {
+			return ""
+		}
+		start += index
+		end := strings.Index(container[start:], "\n")
+		if end < 0 {
+			end = len(container) - start
+		}
+		line := container[start : start+end]
+		if strings.Contains(line, pkg) {
+			blockStart := strings.LastIndex(container[:start], "go -C ")
+			if blockStart < 0 {
+				return line
+			}
+			return strings.TrimSpace(container[blockStart : start+end])
+		}
+		index = start + len(marker)
+	}
 }

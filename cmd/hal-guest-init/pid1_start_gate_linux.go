@@ -73,19 +73,28 @@ func loadPID1StartGateExpected() (l8composition.PID1StartGateExpected, bool, err
 // L7 child start. Missing sealed expected leaves the L7 supervisor path;
 // a claimed expected without authenticated descriptors fails closed.
 func releasePID1AgentStartGate() int {
+	_, code := pid1StartGateRelease()
+	return code
+}
+
+// pid1StartGateRelease reports whether helper-then-client admit succeeded.
+// Missing unsigned FD 15 is admitted=false, code=0 so only the untagged L7
+// binary may StartProcess. Successful admit is admitted=true, code=0.
+func pid1StartGateRelease() (admitted bool, code int) {
 	expected, present, err := loadPID1StartGateExpected()
 	helper, helperPresent, helperErr := loadPID1StartGateProcessDescriptor(pid1StartGateHelperFD)
 	client, clientPresent, clientErr := loadPID1StartGateProcessDescriptor(pid1StartGateClientFD)
 	if err != nil {
-		return 127
+		return false, 127
 	}
 	if !present {
-		return 0
+		return false, 0
 	}
 	if helperErr != nil || clientErr != nil || !helperPresent || !clientPresent {
-		return 127
+		return false, 127
 	}
-	return admitPID1StartGate(expected, helper, client)
+	code = admitPID1StartGate(expected, helper, client)
+	return code == 0, code
 }
 
 // loadPID1StartGateProcessDescriptor snapshots one canonical HL8D process

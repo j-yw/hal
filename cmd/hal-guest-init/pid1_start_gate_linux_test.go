@@ -107,6 +107,10 @@ func TestL8PID1StartGateSealedExpectedChannelIsMissing(t *testing.T) {
 	if code := releasePID1AgentStartGate(); code != 0 {
 		t.Fatalf("releasePID1AgentStartGate() = %d, want L7 supervisor continue", code)
 	}
+	admitted, code := pid1StartGateRelease()
+	if admitted || code != 0 {
+		t.Fatalf("pid1StartGateRelease() = %t, %d, want missing FD 15 L7 continue", admitted, code)
+	}
 
 	source, err := os.ReadFile("pid1_start_gate_linux.go")
 	if err != nil {
@@ -176,8 +180,9 @@ func TestL8PID1StartGateReleaseAdmitsInheritedHelperThenClientDescriptors(t *tes
 	withPID1StartGateHelperFD(t, helperFD)
 	withPID1StartGateClientFD(t, clientFD)
 
-	if code := releasePID1AgentStartGate(); code != 0 {
-		t.Fatalf("releasePID1AgentStartGate() = %d, want 0 after helper-then-client admit", code)
+	admitted, code := pid1StartGateRelease()
+	if !admitted || code != 0 {
+		t.Fatalf("pid1StartGateRelease() = %t, %d, want admitted helper-then-client", admitted, code)
 	}
 	assertPID1StartGateSourceFDConsumed(t, expectedFD)
 	assertPID1StartGateSourceFDConsumed(t, helperFD)
@@ -486,7 +491,7 @@ func TestL8PID1StartGateMutatedAndZeroDigestsFailClosed(t *testing.T) {
 }
 
 func TestL8PID1GuestInitReleasesStartGateBeforeChildStart(t *testing.T) {
-	source, err := os.ReadFile("main_linux.go")
+	source, err := os.ReadFile("main_linux_l7.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,10 +499,53 @@ func TestL8PID1GuestInitReleasesStartGateBeforeChildStart(t *testing.T) {
 	gate := strings.Index(text, "releasePID1AgentStartGate()")
 	child := strings.Index(text, "os.StartProcess(")
 	if gate < 0 || child < 0 || gate > child {
-		t.Fatal("PID1 must consult the start-gate before os.StartProcess")
+		t.Fatal("untagged L7 PID1 must consult the start-gate before os.StartProcess")
 	}
-	if !strings.Contains(text, requireL7NetworkArgument) {
+	shared, err := os.ReadFile("main_linux.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shared), requireL7NetworkArgument) || !strings.Contains(text, "requireL7NetworkArgument") {
 		t.Fatal("L7 --require-l7-network argument was removed")
+	}
+}
+
+func TestL8ProductionPID1OmitsForkExecAfterAdmit(t *testing.T) {
+	source, err := os.ReadFile("main_linux_l8.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "//go:build linux && l8_production_pid1") {
+		t.Fatal("L8 production PID1 is missing the ForkExec-omitting build tag")
+	}
+	if !strings.Contains(text, "pid1StartGateRelease()") {
+		t.Fatal("L8 production PID1 must consult the start-gate before supervising")
+	}
+	if !strings.Contains(text, "superviseAdmittedPID1()") {
+		t.Fatal("L8 production PID1 must supervise admitted children without ForkExec")
+	}
+	for _, forbidden := range []string{
+		"os/exec",
+		"os.StartProcess",
+		"exec.Command",
+		"exec.CommandContext",
+		"syscall.ForkExec",
+		"syscall.StartProcess",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("L8 production PID1 contains ForkExec marker %q", forbidden)
+		}
+	}
+	shared, err := os.ReadFile("main_linux.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedText := string(shared)
+	for _, forbidden := range []string{"os/exec", "os.StartProcess", "exec.CommandContext"} {
+		if strings.Contains(sharedText, forbidden) {
+			t.Fatalf("shared PID1 linux source contains ForkExec marker %q", forbidden)
+		}
 	}
 }
 

@@ -198,7 +198,7 @@ func TestL8D7ReachableGraphNamesGoLaunchBaseExtraSyscalls(t *testing.T) {
 	dir := t.TempDir()
 	command := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", filepath.Join(dir, guestInitBinaryName), "./cmd/hal-guest-init")
 	command.Dir = root
-	command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "GOTOOLCHAIN=go1.25.7", "GOPROXY=off")
+	command.Env = linuxAMD64GoBuildEnv(t)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build %s: %v\n%s", guestInitBinaryName, err, output)
 	}
@@ -249,6 +249,44 @@ func TestL8D7ReachableGraphNamesGoLaunchBaseExtraSyscalls(t *testing.T) {
 		t.Fatal("launch-base graph with extra reachable syscalls was accepted")
 	} else if !strings.Contains(err.Error(), "reachable extra syscalls from "+goRoleEntrySymbol+":") || !strings.Contains(err.Error(), "clone") {
 		t.Fatalf("launch-base graph error = %v, want named trampoline extras from %s", err, goRoleEntrySymbol)
+	}
+}
+
+func TestL8D7ProductionPID1OmitsCloneClone3ForkExecExtras(t *testing.T) {
+	root := repositoryRoot(t)
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("launch-base graph requires linux/amd64 Go 1.25.7")
+	}
+	dir := t.TempDir()
+	command := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-tags="+l8ProductionPID1Tag, "-o", filepath.Join(dir, guestInitBinaryName), "./cmd/hal-guest-init")
+	command.Dir = root
+	command.Env = linuxAMD64GoBuildEnv(t)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build tagged %s: %v\n%s", guestInitBinaryName, err, output)
+	}
+	inspected, err := inspectLinuxAMD64ELF(guestInitBinaryName, filepath.Join(dir, guestInitBinaryName))
+	if err != nil {
+		t.Fatalf("inspect L8-tagged PID1: %v", err)
+	}
+	if inspected.graphErr != nil {
+		t.Fatalf("L8-tagged PID1 reachable graph error = %v", inspected.graphErr)
+	}
+	if inspected.entry != goRoleEntrySymbol {
+		t.Fatalf("L8-tagged PID1 entry = %q, want %s", inspected.entry, goRoleEntrySymbol)
+	}
+	extras := extraReachableSyscallNames(inspected)
+	for _, name := range []string{"clone", "clone3"} {
+		if containsString(extras, name) {
+			t.Fatalf("L8-tagged PID1 extras = %v still include ForkExec syscall %s", extras, name)
+		}
+	}
+	for _, name := range []string{"unknown:syscall.rawSyscallNoError.abi0", "unknown:syscall.rawVforkSyscall.abi0"} {
+		if containsString(extras, name) {
+			t.Fatalf("L8-tagged PID1 extras = %v still include unnumbered trampoline %s", extras, name)
+		}
+	}
+	if _, err := generateEvidence(root, filepath.Join(dir, guestInitBinaryName), mustGenerate(t, root)); !errors.Is(err, errEvidenceInputsUnavailable) {
+		t.Fatalf("generateEvidence(L8-tagged PID1) error = %v, want fail-closed HL8E", err)
 	}
 }
 
