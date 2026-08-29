@@ -1,6 +1,7 @@
 package main
 
 import (
+	"debug/elf"
 	"errors"
 	"os"
 	"os/exec"
@@ -698,6 +699,33 @@ func TestL8D7RIPRelativeJumpTableIsAKnownTargetSet(t *testing.T) {
 	}
 }
 
+func TestL8D7RIPRelativeCMPJumpTableIsAKnownTargetSet(t *testing.T) {
+	code := []byte{
+		0x48, 0x83, 0xf9, 0x01,
+		0x77, 0x0a,
+		0x48, 0x8d, 0x15, 0xf3, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+		0x90,
+	}
+	fn := executableFunction{name: "kindSwitch", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 || va == 0x2008 {
+				return fn.start, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode CMP/JA jump table: %v", err)
+	}
+	if unbounded {
+		t.Fatal("64-bit CMP/forward-JA guarded jump table remained unbounded")
+	}
+}
+
 func TestL8D7RegisterIndirectCallRemainsUnboundedWithoutProvenTarget(t *testing.T) {
 	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1002}
 	_, _, _, unbounded, err := decodeFunctionSyscallGraph(fn, []byte{0xff, 0xd0}, 0)
@@ -780,6 +808,32 @@ func TestL8D7JumpTableRejectsBranchSkippedFacts(t *testing.T) {
 	}
 	if !unbounded {
 		t.Fatal("branch-skipped AND/LEA facts bounded an indirect jump")
+	}
+}
+
+func TestL8D7JumpTableRejectsExternalInteriorEntryThatSkipsFacts(t *testing.T) {
+	code := []byte{
+		0x83, 0xe1, 0x01,
+		0x48, 0x8d, 0x15, 0xf6, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+	}
+	fn := executableFunction{name: "kindSwitch", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	resolver := &goTextResolver{
+		functions:       []executableFunction{fn},
+		interiorEntries: map[uint64][]uint64{fn.start: {fn.start + 10}},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 || va == 0x2008 {
+				return fn.start, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode externally entered jump table: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("external listed-span interior entry skipped the AND/LEA proof")
 	}
 }
 
@@ -897,6 +951,33 @@ func TestL8D7JumpTableRequiresCanonicalRegisterBaseAnd64BitCMP(t *testing.T) {
 				t.Fatal("noncanonical table proof was accepted")
 			}
 		})
+	}
+}
+
+func TestL8D7JumpTableReadsOnlyOneCompleteReadOnlyMapping(t *testing.T) {
+	encoded := make([]byte, 32)
+	readOnly := &elf.Prog{ProgHeader: elf.ProgHeader{
+		Type:   elf.PT_LOAD,
+		Flags:  elf.PF_R,
+		Off:    0,
+		Vaddr:  0x2000,
+		Filesz: 16,
+	}}
+	file := &elf.File{Progs: []*elf.Prog{readOnly}}
+	if off, err := mapReadOnlyLoadAddress(file, encoded, 0x2000, 8); err != nil || off != 0 {
+		t.Fatalf("read-only mapping offset=%d err=%v", off, err)
+	}
+	if _, err := mapReadOnlyLoadAddress(file, encoded, 0x200c, 8); err == nil {
+		t.Fatal("entry crossing the mapped segment was accepted")
+	}
+	writable := &elf.Prog{ProgHeader: readOnly.ProgHeader}
+	writable.Flags |= elf.PF_W
+	if _, err := mapReadOnlyLoadAddress(&elf.File{Progs: []*elf.Prog{writable}}, encoded, 0x2000, 8); err == nil {
+		t.Fatal("writable jump-table mapping was accepted")
+	}
+	duplicate := &elf.Prog{ProgHeader: readOnly.ProgHeader}
+	if _, err := mapReadOnlyLoadAddress(&elf.File{Progs: []*elf.Prog{readOnly, duplicate}}, encoded, 0x2000, 8); err == nil {
+		t.Fatal("ambiguous jump-table mapping was accepted")
 	}
 }
 

@@ -23,10 +23,15 @@ destinations stay unbounded.
 
 A `JMP [base+index*8]` is a known target set only when the same
 function proves a RIP-relative `LEAQ` of the table into `base` and an
-AND/CMP length on `index`. Each table pointer must land in a listed
-span. In-function labels add no extra edges. Missing length, missing
-table base, or a pointer outside listed spans fail closed. `FF 24 D1`
-without that proof is not assumed to be an itab method table.
+AND/CMP length on `index`. Those facts must reach the dispatch without
+an incoming branch or listed-span interior entry skipping them. A CMP
+proof is 64-bit and its forward `JA` must bypass the dispatch. The
+canonical table is a complete, unique, non-writable ELF mapping, and
+every table word must resolve inside a listed span. In-function labels
+add no extra edges. Missing length, missing table base, a noncanonical
+memory prefix/base, an indexed indirect CALL, or a pointer outside
+listed spans fail closed. `FF 24 D1` without that proof is not assumed
+to be an itab method table.
 
 `.itablink` / `.typelink` method, `Equal`, and `Hasher` pointers are
 not a complete CALL-reg target set. Closures, `deferwrap`,
@@ -35,7 +40,8 @@ are pclntab functions that those tables do not uniquely name.
 Attaching every pclntab function to every `CALL RAX`/`RCX`/`RSI` would
 re-reach trampolines such as `syscall.rawVforkSyscall.abi0`. This
 slice does not guess that set. Unproven `FF D0`/`FF D1`/`FF D6`
-remain unbounded.
+remain unbounded. A preceding RIP-relative LEA does not turn a
+register-indirect CALL into one of the allowed relative CALL/JMP edges.
 
 `requireCompleteHonestIssuanceInputs` keeps the unique/reachable D4/D6
 fail-closed last return even if extras become empty.

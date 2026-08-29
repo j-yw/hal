@@ -55,8 +55,10 @@ type amd64Insn struct {
 	jmpRel           bool
 	ja               bool
 	indirect         bool
+	indirectJump     bool
 	indirectReg      bool
 	sib              bool
+	sibNoBase        bool
 	nop              bool
 	movEAXImm        bool
 	movTrapSlotImm   bool
@@ -73,7 +75,8 @@ type amd64Insn struct {
 	leaReg           uint8
 	andReg           uint8
 	cmpReg           uint8
-	rmReg            uint8
+	operand64        bool
+	nonCanonicalMem  bool
 	modrmMod         uint8
 	sibBase          uint8
 	sibIndex         uint8
@@ -302,6 +305,7 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 	if err != nil {
 		return reachableSyscallGraph{}, fmt.Errorf("role binary %s: %w", binary.name, err)
 	}
+	interiorEntries := listDirectInteriorEntries(file, encoded, functions)
 
 	type decodedFunction struct {
 		sites     []decodedSyscallSite
@@ -327,7 +331,12 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 			result.decodeErr = fmt.Errorf("function %s is outside the ELF", fn.name)
 			return result
 		}
-		sites, targets, transfers, indirect, decodeErr := decodeFunctionSyscallGraphWithResolver(fn, encoded[fileOff:fileOff+size], textOff, &goTextResolver{file: file, encoded: encoded, functions: functions})
+		sites, targets, transfers, indirect, decodeErr := decodeFunctionSyscallGraphWithResolver(fn, encoded[fileOff:fileOff+size], textOff, &goTextResolver{
+			file:            file,
+			encoded:         encoded,
+			functions:       functions,
+			interiorEntries: interiorEntries,
+		})
 		if decodeErr != nil {
 			result.decodeErr = decodeErr
 			return result
@@ -404,6 +413,32 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 		reachableNames:    names,
 		unboundedIndirect: unbounded,
 	}, nil
+}
+
+func listDirectInteriorEntries(file *elf.File, encoded []byte, functions []executableFunction) map[uint64][]uint64 {
+	entries := make(map[uint64][]uint64)
+	for _, fn := range functions {
+		fileOff, textOff, err := mapVirtualAddress(file, encoded, fn.start)
+		if err != nil {
+			continue
+		}
+		size := fn.end - fn.start
+		if fileOff+size < fileOff || fileOff+size > uint64(len(encoded)) {
+			continue
+		}
+		_, targets, _, _, err := decodeFunctionSyscallGraph(fn, encoded[fileOff:fileOff+size], textOff)
+		if err != nil {
+			continue
+		}
+		for _, target := range targets {
+			callee := containingExecutableFunction(functions, target)
+			if callee == nil || target == callee.start {
+				continue
+			}
+			entries[callee.start] = append(entries[callee.start], target)
+		}
+	}
+	return entries
 }
 
 func decodeFunctionSyscallGraph(fn executableFunction, code []byte, textOff uint64) ([]decodedSyscallSite, []uint64, []decodedControlTransfer, bool, error) {
@@ -483,7 +518,7 @@ func decodeFunctionSyscallGraphWithResolver(fn executableFunction, code []byte, 
 			transferRAXSource = -1
 		}
 		if insn.indirect {
-			extra, resolved := resolveIndirectInsn(fn, insn, history, resolver)
+			extra, resolved := resolveIndirectInsn(fn, insn, history, resolver, branchTargets, cursor)
 			if !resolved {
 				indirect = true
 			} else {
@@ -892,7 +927,11 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 	}
 	opcode := code[index]
 	index++
-	insn := amd64Insn{n: length}
+	insn := amd64Insn{
+		n:               length,
+		operand64:       rexW,
+		nonCanonicalMem: nonCanonicalMemoryPrefix || operand16,
+	}
 	if opcode == 0x0F {
 		if index >= length {
 			return amd64Insn{}, false
@@ -978,7 +1017,8 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 		reg := (modrm >> 3) & 7
 		if reg == 2 || reg == 4 {
 			insn.indirect = true
-			decodeIndirectModRM(&insn, code, index, length, rexR, rexX, rexB)
+			insn.indirectJump = reg == 4
+			decodeIndirectModRM(&insn, code, index, length, rexX, rexB)
 		}
 		return insn, true
 	}
@@ -1091,7 +1131,7 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 	return insn, true
 }
 
-func decodeIndirectModRM(insn *amd64Insn, code []byte, index, length int, rexR, rexX, rexB bool) {
+func decodeIndirectModRM(insn *amd64Insn, code []byte, index, length int, rexX, rexB bool) {
 	if index >= length {
 		return
 	}
@@ -1101,10 +1141,6 @@ func decodeIndirectModRM(insn *amd64Insn, code []byte, index, length int, rexR, 
 	insn.modrmMod = mod
 	if mod == 3 {
 		insn.indirectReg = true
-		insn.rmReg = rm
-		if rexB {
-			insn.rmReg += 8
-		}
 		return
 	}
 	if rm != 4 || index+1 >= length {
@@ -1112,6 +1148,7 @@ func decodeIndirectModRM(insn *amd64Insn, code []byte, index, length int, rexR, 
 	}
 	sib := code[index+1]
 	insn.sib = true
+	insn.sibNoBase = mod == 0 && sib&7 == 5
 	insn.sibScale = 1 << (sib >> 6)
 	insn.sibIndex = (sib >> 3) & 7
 	insn.sibBase = sib & 7
@@ -1121,7 +1158,6 @@ func decodeIndirectModRM(insn *amd64Insn, code []byte, index, length int, rexR, 
 	if rexB {
 		insn.sibBase += 8
 	}
-	_ = rexR
 }
 
 func amd64RSPDisplacement(code []byte, modrmIndex int, rexB, rexX bool) (int32, bool) {
