@@ -72,6 +72,8 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 		"HAL_L8_PARENT_L7",
 		"l7-firecracker-network-v1",
 		"L5 images are not L8 production images",
+		"tools/microvm/l8/role-bootstrap/hal-guest-role-bootstrap.S",
+		"tools/microvm/l8/role-bootstrap/build.sh",
 	} {
 		if !strings.Contains(build, required) {
 			t.Errorf("build.sh missing %q", required)
@@ -91,6 +93,8 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 		"cmd/hal-guest-init",
 		"cmd/hal-guest-agent",
 		"HL8E is unissued; L8 builds fail closed",
+		"role-bootstrap/hal-guest-role-bootstrap.S",
+		"role-bootstrap/build.sh",
 	} {
 		if !strings.Contains(container, required) {
 			t.Errorf("build-in-container.sh missing %q", required)
@@ -98,6 +102,22 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 	}
 	if strings.Contains(container, "VerifyL8DistributionBundle(") {
 		t.Fatal("build-in-container.sh must not call VerifyL8DistributionBundle")
+	}
+	for _, forbidden := range []string{
+		"./cmd/hal-guest-role-bootstrap",
+		"${CC:-gcc}",
+		"tools/microvm/l8/native/",
+		"profile_root/native/",
+	} {
+		if strings.Contains(container, forbidden) {
+			t.Fatalf("build-in-container.sh must not use %q as the native bootstrap identity", forbidden)
+		}
+	}
+	if _, err := os.Stat("role-bootstrap/hal-guest-role-bootstrap.S"); err != nil {
+		t.Fatalf("native bootstrap source is missing: %v", err)
+	}
+	if _, err := os.Stat("role-bootstrap/build.sh"); err != nil {
+		t.Fatalf("native bootstrap assembler is missing: %v", err)
 	}
 	for _, artifact := range sevenFileBundle() {
 		if !strings.Contains(reproducible, artifact) {

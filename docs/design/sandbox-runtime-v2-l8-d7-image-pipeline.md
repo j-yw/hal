@@ -13,7 +13,10 @@ required. The parent must be an already produced L7 distribution
 (`imageProfile` `l7-firecracker-network-v1`); missing parent L7 fails closed.
 
 HL8E is still unissued. Builds fail closed when HL8E, parent L7, the native
-bootstrap path, or required phase-head guest binaries are missing. Node
+bootstrap path, or required phase-head guest binaries are missing. Native
+bootstrap is assembled with `tools/microvm/l8/role-bootstrap/build.sh`
+(`as`/`ld` only) from `tools/microvm/l8/role-bootstrap/hal-guest-role-bootstrap.S`.
+A Go `cmd/hal-guest-role-bootstrap` package is not an L8 native identity. Node
 22.22.0 and `@earendil-works/pi-coding-agent` 0.82.1 are fail-closed required
 cache filenames (`node-v22.22.0.tar.xz`, `pi-coding-agent-0.82.1.tgz`,
 `pi-shrinkwrap-0.82.1.json`). This slice does not download them.
