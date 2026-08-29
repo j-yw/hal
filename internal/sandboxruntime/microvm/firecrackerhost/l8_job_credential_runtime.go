@@ -99,6 +99,7 @@ type l8JobCredentialRuntimeDependencies struct {
 	HTTPProxy    l8JobCredentialHTTPProxyActivator
 	FileTmpfs    l8JobCredentialFileTmpfsActivator
 	SSHRelay     l8JobCredentialSSHRelayActivator
+	HandleStore  l8JobCredentialHandleStore
 	Now          func() time.Time
 	Random       io.Reader
 }
@@ -106,6 +107,7 @@ type l8JobCredentialRuntimeDependencies struct {
 // L8JobCredentialRuntime is the default-off Firecracker host implementation of
 // sandboxruntime.JobCredentialRuntime. Callers must inject it explicitly.
 type L8JobCredentialRuntime struct {
+	opMu       sync.Mutex
 	mu         sync.Mutex
 	deps       l8JobCredentialRuntimeDependencies
 	attempted  bool
@@ -136,6 +138,8 @@ func (runtime *L8JobCredentialRuntime) PreflightJobCredentials(ctx context.Conte
 	if runtime.production && !l8JobCredentialRuntimePlatformSupported() {
 		return nil, ErrL8JobCredentialRuntimeUnsupported
 	}
+	runtime.opMu.Lock()
+	defer runtime.opMu.Unlock()
 	cloned, err := sandboxruntime.CloneJobCredentialIdentitySeed(seed)
 	if err != nil {
 		return nil, sandboxruntime.ErrJobCredentialIdentityMismatch
@@ -190,9 +194,14 @@ func (runtime *L8JobCredentialRuntime) PreflightJobCredentials(ctx context.Conte
 }
 
 // RecoverJobCredentials is ordinary complete-identity recovery used before
-// StopReap. HTTP tickets, tmpfs files, and SSH leases exist only as in-memory
-// handles after Prepare. A durable handle store that could reacquire them after
-// restart remains unaccepted, so this method never mints a cleanup proof.
+// StopReap. A nil HandleStore, or a store with no metadata for this identity,
+// remains dependency_unaccepted and mints no cleanup proof. When durable
+// handle metadata is present, recovery attempts activator cleanup and may
+// return a real cleanup proof only after resources are proved absent or were
+// never durable. Recovery is rejected when this runtime has already attempted
+// preflight, when the stored revision differs from the request, or when any
+// binding lacks an injected stored-handle revoker. Invalid identity is still
+// mismatch.
 func (runtime *L8JobCredentialRuntime) RecoverJobCredentials(ctx context.Context, request sandboxruntime.JobCredentialRecoveryRequest) (sandboxruntime.JobCredentialCleanupProof, error) {
 	if runtime == nil || l8JobCredentialRuntimeValueIsNil(ctx) {
 		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
@@ -200,13 +209,58 @@ func (runtime *L8JobCredentialRuntime) RecoverJobCredentials(ctx context.Context
 	if runtime.production && !l8JobCredentialRuntimePlatformSupported() {
 		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeUnsupported
 	}
+	runtime.opMu.Lock()
+	defer runtime.opMu.Unlock()
 	if sandboxruntime.ValidateJobCredentialIdentity(request.Identity) != nil {
 		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialIdentityMismatch
 	}
 	if request.Revision == 0 {
 		return sandboxruntime.JobCredentialCleanupProof{}, ErrL8JobCredentialRuntimeInvalid
 	}
-	return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	runtime.mu.Lock()
+	if runtime.attempted {
+		runtime.mu.Unlock()
+		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialTransition
+	}
+	deps := runtime.deps
+	runtime.mu.Unlock()
+	store := deps.HandleStore
+	if l8JobCredentialRuntimeValueIsNil(store) {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	record, present, err := loadL8JobCredentialHandleRecord(ctx, store, request.Identity)
+	if err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	if !present {
+		return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted
+	}
+	if record.Revision != request.Revision {
+		return sandboxruntime.JobCredentialCleanupProof{}, sandboxruntime.ErrJobCredentialRevisionStale
+	}
+	if err := recoverL8JobCredentialStoredHandles(ctx, deps, request.Identity, record); err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	observed, err := callL8JobCredentialNow(deps.Now)
+	if err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, sanitizeL8JobCredentialRuntimeError(err)
+	}
+	identity := cloneL8JobCredentialIdentity(request.Identity)
+	if observed.Before(identity.IssuedAt) {
+		observed = identity.IssuedAt
+	}
+	proof, err := sandboxruntime.NewJobCredentialCleanupProof(sandboxruntime.JobCredentialCleanupProofInput{
+		ProofID: fmt.Sprintf("cleanup-%d", record.Revision+1), Identity: identity, Revision: record.Revision + 1,
+		RevokedAt: observed, AbsenceInspectedAt: observed,
+		AuthorityAbsent: true, ResourcesAbsent: true,
+	})
+	if err != nil {
+		return sandboxruntime.JobCredentialCleanupProof{}, err
+	}
+	runtime.mu.Lock()
+	runtime.attempted = true
+	runtime.mu.Unlock()
+	return proof, nil
 }
 
 type l8JobCredentialPreflightState uint8
@@ -332,6 +386,10 @@ func (preflight *l8JobCredentialRuntimePreflight) PrepareJobCredentials(ctx cont
 	if err != nil {
 		preflight.finishFailedPrepare(ctx, resources)
 		return nil, sandboxruntime.ErrJobCredentialProofInvalid
+	}
+	if err := persistL8JobCredentialHandleRecord(ctx, deps.HandleStore, identity, 1, resources.manifests); err != nil {
+		preflight.finishFailedPrepare(ctx, resources)
+		return nil, sanitizeL8JobCredentialRuntimeError(err)
 	}
 
 	preflight.mu.Lock()
@@ -551,6 +609,13 @@ func (session *l8JobCredentialRuntimeSession) Renew(ctx context.Context) (sandbo
 	})
 	if err != nil {
 		return sandboxruntime.JobCredentialActiveProof{}, sandboxruntime.ErrJobCredentialProofInvalid
+	}
+	var manifests []l8JobCredentialGuestBindingManifest
+	if resources != nil {
+		manifests = resources.manifests
+	}
+	if err := persistL8JobCredentialHandleRecord(ctx, session.preflight.deps.HandleStore, identity, revision+1, manifests); err != nil {
+		return sandboxruntime.JobCredentialActiveProof{}, sanitizeL8JobCredentialRuntimeError(err)
 	}
 
 	session.mu.Lock()

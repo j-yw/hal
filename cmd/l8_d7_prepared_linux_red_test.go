@@ -206,18 +206,38 @@ func TestL8D7PreparedLinuxRecoverJobCredentialsRemainsDependencyUnaccepted(t *te
 		t.Fatal("RecoverJobCredentials missing")
 	}
 	if !strings.Contains(source, "return sandboxruntime.JobCredentialCleanupProof{}, errL8JobCredentialRuntimeDependencyUnaccepted") {
-		t.Fatal("RecoverJobCredentials must still return errL8JobCredentialRuntimeDependencyUnaccepted")
+		t.Fatal("nil store and missing store metadata must still return errL8JobCredentialRuntimeDependencyUnaccepted")
 	}
-	found := false
+	foundUnaccepted := false
+	foundStore := false
+	foundMint := false
 	ast.Inspect(fn, func(node ast.Node) bool {
-		ident, ok := node.(*ast.Ident)
-		if ok && ident.Name == "errL8JobCredentialRuntimeDependencyUnaccepted" {
-			found = true
+		switch typed := node.(type) {
+		case *ast.Ident:
+			switch typed.Name {
+			case "errL8JobCredentialRuntimeDependencyUnaccepted":
+				foundUnaccepted = true
+			case "present", "HandleStore":
+				foundStore = true
+			}
+		case *ast.SelectorExpr:
+			if typed.Sel == nil {
+				return true
+			}
+			switch typed.Sel.Name {
+			case "NewJobCredentialCleanupProof":
+				foundMint = true
+			case "HandleStore":
+				foundStore = true
+			}
 		}
 		return true
 	})
-	if !found {
-		t.Fatal("RecoverJobCredentials production body no longer returns errL8JobCredentialRuntimeDependencyUnaccepted")
+	if !foundUnaccepted {
+		t.Fatal("RecoverJobCredentials must still return errL8JobCredentialRuntimeDependencyUnaccepted when the store is nil or metadata is missing")
+	}
+	if foundMint && !foundStore {
+		t.Fatal("RecoverJobCredentials minted a cleanup proof without store metadata")
 	}
 }
 
