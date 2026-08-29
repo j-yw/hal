@@ -469,7 +469,8 @@ func TestL8D7GuestHelperRenewRevokeExecAfterLedger(t *testing.T) {
 		empty := sha256.Sum256(nil)
 		txn := sha256.Sum256([]byte("exec-txn"))
 		stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 1, prepare.RequestID().Bytes(), digest.Bytes(), nonce, matchingSSHPrepareHelperResponse(t, prepare)))
-		stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, credentialprotocol.HelperResponseBody{
+		stream.queueHelperDatagram(encodeHelperExecCreditDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision(), 0))
+		stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 3, execReq.RequestID().Bytes(), digest.Bytes(), nonce, credentialprotocol.HelperResponseBody{
 			RequestType: credentialprotocol.PacketTypeExec,
 			Disposition: credentialprotocol.ResponseDispositionAccepted,
 			Revision:    1,
@@ -535,7 +536,9 @@ func TestL8D7GuestHelperNonemptyExecPrivateSendsPrivateThenExecResponse(t *testi
 	stream := newFakeHelperStream()
 	nonce := identity.identity.GuestBootNonce
 	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 1, prepare.RequestID().Bytes(), digest.Bytes(), nonce, matchingHTTPPrepareHelperResponse(t, prepare)))
-	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, matchingHTTPExecHelperResponse(t, execReq)))
+	stream.queueHelperDatagram(encodeHelperExecCreditDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision(), 0))
+	stream.queueHelperDatagram(encodeHelperExecCreditDatagram(t, 3, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision(), uint64(len(streamPayload))))
+	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 4, execReq.RequestID().Bytes(), digest.Bytes(), nonce, matchingHTTPExecHelperResponse(t, execReq)))
 	privateBody := testControllerPrepareFileBody(payload, privateDigest)
 	streamBody := testControllerPrepareFileBody(streamPayload, streamDigest)
 	closed := make(chan struct{})
@@ -813,7 +816,10 @@ func TestL8D7GuestHelperNonemptyExecStreamSendsStreamThenExecResponse(t *testing
 	empty := sha256.Sum256(nil)
 	txn := sha256.Sum256([]byte("exec-txn"))
 	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 1, prepare.RequestID().Bytes(), digest.Bytes(), nonce, matchingSSHPrepareHelperResponse(t, prepare)))
-	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, credentialprotocol.HelperResponseBody{
+	stream.queueHelperDatagram(encodeHelperExecCreditDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision(), 0))
+	stream.queueHelperDatagram(encodeHelperExecCreditDatagram(t, 3, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision(), uint64(len(first))))
+	stream.queueHelperDatagram(encodeHelperExecCreditDatagram(t, 4, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision(), uint64(len(first)+len(second))))
+	stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 5, execReq.RequestID().Bytes(), digest.Bytes(), nonce, credentialprotocol.HelperResponseBody{
 		RequestType: credentialprotocol.PacketTypeExec,
 		Disposition: credentialprotocol.ResponseDispositionAccepted,
 		Revision:    1,
@@ -903,7 +909,7 @@ func TestL8D7GuestHelperExecStreamBodyCleanupFailureStopsBeforeControllerSuccess
 			stream := newFakeHelperStream()
 			nonce := identity.identity.GuestBootNonce
 			stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 1, prepare.RequestID().Bytes(), digest.Bytes(), nonce, matchingSSHPrepareHelperResponse(t, prepare)))
-			stream.queueHelperDatagram(encodeHelperResponseDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, matchingHTTPExecHelperResponse(t, execReq)))
+			stream.queueHelperDatagram(encodeHelperExecCreditDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision(), 0))
 			streamBody := testControllerPrepareFileBody(payload, payloadDigest)
 			streamBody.destroyErr = test.destroyErr
 			streamBody.destroyPanic = test.panic
@@ -1011,6 +1017,10 @@ func TestL8D7GuestHelperExecStreamMismatchesFailClosed(t *testing.T) {
 				t, 1, prepare.RequestID().Bytes(), digest.Bytes(), identity.identity.GuestBootNonce,
 				matchingSSHPrepareHelperResponse(t, prepare),
 			))
+			stream.queueHelperDatagram(encodeHelperExecCreditDatagram(
+				t, 2, execReq.RequestID().Bytes(), digest.Bytes(), identity.identity.GuestBootNonce,
+				execReq.Revision(), 0,
+			))
 			var sends atomic.Uint32
 			var receives atomic.Uint32
 			transport := &dispatchRedTransport{identity: identity}
@@ -1051,6 +1061,110 @@ func TestL8D7GuestHelperExecStreamMismatchesFailClosed(t *testing.T) {
 			}
 			if receives.Load() != 3 {
 				t.Fatalf("controller receives = %d, want prepare, exec, and one payload attempt", receives.Load())
+			}
+			assertHelperPacketTypes(t, stream,
+				credentialprotocol.PacketTypePrepareBegin,
+				credentialprotocol.PacketTypePrepareCommit,
+				credentialprotocol.PacketTypeExec,
+			)
+		})
+	}
+}
+
+func TestL8D7GuestHelperExecStreamRequiresExactHelperCredit(t *testing.T) {
+	identity := testDispatchTransportIdentity()
+	prepare := testSSHOnlyDispatchPrepareRequest(t, identity)
+	sessionIdentity := testSSHOnlyDispatchSessionIdentity(t, identity)
+	digest := identityDigestForSession(t, sessionIdentity)
+	execReq := testSSHOnlyDispatchExecRequest(t, testPacketRequestIDSeed(t, 0x2a), sessionIdentity)
+	nonce := identity.identity.GuestBootNonce
+	wrongRequestID := execReq.RequestID().Bytes()
+	wrongRequestID[0] ^= 0xff
+	wrongIdentity := digest.Bytes()
+	wrongIdentity[0] ^= 0xff
+
+	cases := []struct {
+		name     string
+		credit   func(*testing.T) []byte
+		wantCode ClientContractErrorCode
+	}{
+		{
+			name: "response_is_not_credit",
+			credit: func(t *testing.T) []byte {
+				return encodeHelperResponseDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, matchingHTTPExecHelperResponse(t, execReq))
+			},
+			wantCode: ClientContractPacket,
+		},
+		{
+			name: "sequence",
+			credit: func(t *testing.T) []byte {
+				return encodeHelperExecCreditDatagram(t, 3, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision(), 0)
+			},
+			wantCode: ClientContractPacket,
+		},
+		{
+			name: "request_id",
+			credit: func(t *testing.T) []byte {
+				return encodeHelperExecCreditDatagram(t, 2, wrongRequestID, digest.Bytes(), nonce, execReq.Revision(), 0)
+			},
+			wantCode: ClientContractPacket,
+		},
+		{
+			name: "identity",
+			credit: func(t *testing.T) []byte {
+				return encodeHelperExecCreditDatagram(t, 2, execReq.RequestID().Bytes(), wrongIdentity, nonce, execReq.Revision(), 0)
+			},
+			wantCode: ClientContractPacket,
+		},
+		{
+			name: "revision",
+			credit: func(t *testing.T) []byte {
+				return encodeHelperExecCreditDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision()+1, 0)
+			},
+			wantCode: ClientContractCorrelation,
+		},
+		{
+			name: "offset",
+			credit: func(t *testing.T) []byte {
+				return encodeHelperExecCreditDatagram(t, 2, execReq.RequestID().Bytes(), digest.Bytes(), nonce, execReq.Revision(), 1)
+			},
+			wantCode: ClientContractCorrelation,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			stream := newFakeHelperStream()
+			stream.queueHelperDatagram(encodeHelperResponseDatagram(
+				t, 1, prepare.RequestID().Bytes(), digest.Bytes(), nonce, matchingSSHPrepareHelperResponse(t, prepare),
+			))
+			stream.queueHelperDatagram(test.credit(t))
+			var receives atomic.Uint32
+			var sends atomic.Uint32
+			transport := &dispatchRedTransport{identity: identity}
+			transport.receiveController = func(context.Context, ControllerReceiveRequest) (ControllerPacket, error) {
+				switch receives.Add(1) {
+				case 1:
+					return ControllerPacket{sequence: 1, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmPrepare, prepare: prepare}}, nil
+				case 2:
+					return ControllerPacket{sequence: 2, sessionID: identity.sessionID, arm: controllerPacketArm{kind: controllerPacketArmExec, exec: execReq}}, nil
+				default:
+					return ControllerPacket{}, errors.New("helper credit mismatch must stop before controller stdin")
+				}
+			}
+			transport.sendController = func(_ context.Context, packet ControllerSendPacket) error {
+				if _, ok := packet.prepareResponseValue(); ok {
+					sends.Add(1)
+					return nil
+				}
+				sends.Add(1)
+				return errors.New("helper credit mismatch must not answer exec")
+			}
+			err := newDispatchRedClientOpts(t, transport, &fakeHelperOwner{stream: stream}).Serve(context.Background())
+			if clientContractCode(err) != test.wantCode {
+				t.Fatalf("Serve() error = %v, want %v", err, test.wantCode)
+			}
+			if receives.Load() != 2 || sends.Load() != 1 {
+				t.Fatalf("controller receives/sends = %d/%d, want 2/1", receives.Load(), sends.Load())
 			}
 			assertHelperPacketTypes(t, stream,
 				credentialprotocol.PacketTypePrepareBegin,
@@ -1182,6 +1296,31 @@ func encodeHelperResponseDatagram(t *testing.T, sequence uint64, requestID [16]b
 		t.Fatal(err)
 	}
 	header := testHelperHeader(credentialprotocol.PacketTypeResponse, sequence, requestID, identity, nonce, uint32(len(encoded)))
+	encodedHeader, err := credentialprotocol.EncodeHelperPacketHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	datagram := make([]byte, len(encodedHeader)+len(encoded))
+	copy(datagram, encodedHeader[:])
+	copy(datagram[len(encodedHeader):], encoded)
+	return datagram
+}
+
+func encodeHelperExecCreditDatagram(
+	t *testing.T,
+	sequence uint64,
+	requestID [16]byte,
+	identity, nonce [32]byte,
+	revision, nextOffset uint64,
+) []byte {
+	t.Helper()
+	encoded, err := credentialprotocol.EncodeHelperExecCreditBody(credentialprotocol.HelperExecCreditBody{
+		Revision: revision, StreamKind: credentialprotocol.HelperExecStreamStdin, NextOffset: nextOffset,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := testHelperHeader(credentialprotocol.PacketTypeExecCredit, sequence, requestID, identity, nonce, uint32(len(encoded)))
 	encodedHeader, err := credentialprotocol.EncodeHelperPacketHeader(header)
 	if err != nil {
 		t.Fatal(err)

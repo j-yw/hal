@@ -23,11 +23,15 @@ func TestL8D7HelperExecStreamVerificationContract(t *testing.T) {
 		"PacketTypeExec",
 		"PacketTypeExecPrivate",
 		"PacketTypeExecStream",
+		"PacketTypeExecCredit",
 		"PacketTypePrepareCommit",
 		"HelperConnectionOwner",
 		"VerifiedHelperStream",
 		"same request ID",
 		"one or more ordered",
+		"exactly one helper-to-client",
+		"exact next offset",
+		"No controller stream record is consumed until",
 		"EncodeHelperExecStreamBody",
 		"helperExecStreamOwner",
 		"HelperExecStreamBody",
@@ -127,7 +131,7 @@ func TestL8D7HelperExecStreamRemainsDefaultOff(t *testing.T) {
 			switch ident.Name {
 			case "HelperConnectionOwner", "VerifiedHelperStream", "newPreopenedHelperConnectionOwner",
 				"newHelperExecStreamSendPacket", "helperExecStreamOwner", "dispatchHelperExecStreams",
-				"dispatchOneHelperExecStream", "copyControllerExecStreamOwner":
+				"dispatchOneHelperExecStream", "copyControllerExecStreamOwner", "receiveHelperExecCredit":
 				t.Errorf("production file %s references helper exec-stream %s", normalized, ident.Name)
 			}
 			return true
@@ -159,6 +163,7 @@ func TestL8D7HelperExecStreamRemainsDefaultOff(t *testing.T) {
 			"newHelperExecStreamSendPacket",
 			"dispatchHelperExecStreams",
 			"dispatchOneHelperExecStream",
+			"receiveHelperExecCredit",
 			"EncodeHelperExecStreamBody",
 			"copyControllerExecStreamOwner",
 		} {

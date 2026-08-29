@@ -14,8 +14,12 @@ Serve keeps the same revalidated `VerifiedHelperStream`. Serve may send
 private exec binding, it then sends exactly one `PacketTypeExecPrivate` as
 today. After that metadata `PacketTypeExec` (and exec-private when admitted),
 Serve may send one or more ordered `PacketTypeExecStream` (`0x18`) payloads on
-that stream with the next helper sequence and the same request ID. Stream bytes
-come only from already-admitted controller stream records
+that stream with the next helper sequence and the same request ID. Before each
+data or EOF record, Serve consumes exactly one helper-to-client
+`PacketTypeExecCredit` for stdin with the next helper receive sequence and the
+same request ID, credential identity, revision, and exact next offset. No
+controller stream record is consumed until that bounded credit is validated.
+Stream bytes come only from already-admitted controller stream records
 (`controllerPacketArmStream`). Encode uses `EncodeHelperExecStreamBody` with
 canonical prefix `helperExecStreamCanonicalPrefixBytes` (56). An opaque
 wipeable `helperExecStreamOwner` matches `HelperExecStreamBody` (defensive
@@ -31,7 +35,8 @@ injected. A nil `HelperConnectionOwner` stays unaccepted and does not call
 The helper exec-stream path is fail-closed (`ErrClientControlDependencyUnaccepted`
 or existing contract errors) for missing/nil helper owner, a stream payload
 whose length/digest/kind do not match the admitted controller stream record,
-SCM_RIGHTS SSH send, and JobCredential active/cleanup proof minting. This
+missing or mismatched stdin credit, SCM_RIGHTS SSH send, and JobCredential
+active/cleanup proof minting. This
 slice does not mint JobCredential proofs. Serve does not receive a second
 controller prepare to stand in for an outstanding stream transaction.
 

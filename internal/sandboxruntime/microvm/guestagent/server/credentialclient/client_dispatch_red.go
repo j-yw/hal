@@ -719,13 +719,14 @@ func (client *Client) dispatchHelperExec(
 			return nextSend, receiveSequence, controllerSequence, nil
 		}
 	}
-	nextStreamSend, nextCtrl, streamErr := client.dispatchHelperExecStreams(
-		ctx, stream, exec, identity, digest, nextSend, controllerSequence,
+	nextStreamSend, nextStreamReceive, nextCtrl, streamErr := client.dispatchHelperExecStreams(
+		ctx, stream, exec, identity, digest, nextSend, receiveSequence, controllerSequence,
 	)
 	if streamErr != nil {
 		return sendSequence, receiveSequence, controllerSequence, streamErr
 	}
 	nextSend = nextStreamSend
+	receiveSequence = nextStreamReceive
 	controllerSequence = nextCtrl
 	if client.drainStarted() || ctx.Err() != nil {
 		return nextSend, receiveSequence, controllerSequence, nil
@@ -896,50 +897,97 @@ func (client *Client) dispatchHelperExecStreams(
 	exec v2control.CredentialExecRequest,
 	identity transportIdentity,
 	digest v2control.IdentityDigest,
-	sendSequence, controllerSequence uint64,
-) (uint64, uint64, error) {
+	sendSequence, receiveSequence, controllerSequence uint64,
+) (uint64, uint64, uint64, error) {
 	if !configuredDependency(stream) {
-		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+		return sendSequence, receiveSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 	}
 	stdinMax := uint64(exec.Plan().StdinMaxBytes())
 	if stdinMax < 1 || stdinMax > credentialprotocol.MaxHelperExecStreamAggregateBytes {
-		return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+		return sendSequence, receiveSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 	}
 	var offset uint64
 	var total uint64
 	var records uint32
 	for {
 		if client.drainStarted() || ctx.Err() != nil {
-			return sendSequence, controllerSequence, nil
+			return sendSequence, receiveSequence, controllerSequence, nil
 		}
 		if records == ^uint32(0) {
-			return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+			return sendSequence, receiveSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 		}
 		remaining := stdinMax - total
 		if total > credentialprotocol.MaxHelperExecStreamAggregateBytes {
-			return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+			return sendSequence, receiveSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 		}
 		if remaining > credentialprotocol.MaxHelperExecStreamAggregateBytes-total {
 			remaining = credentialprotocol.MaxHelperExecStreamAggregateBytes - total
+		}
+		if creditErr := client.receiveHelperExecCredit(
+			ctx, stream, receiveSequence, exec.RequestID().Bytes(), digest.Bytes(), exec.Revision(), offset,
+		); creditErr != nil {
+			return sendSequence, receiveSequence, controllerSequence, creditErr
+		}
+		receiveSequence++
+		if client.drainStarted() || ctx.Err() != nil {
+			return sendSequence, receiveSequence, controllerSequence, nil
 		}
 		nextSend, nextCtrl, flags, length, sendErr := client.dispatchOneHelperExecStream(
 			ctx, stream, exec, identity, digest, offset, remaining, sendSequence, controllerSequence,
 		)
 		if sendErr != nil {
-			return sendSequence, controllerSequence, sendErr
+			return sendSequence, receiveSequence, controllerSequence, sendErr
 		}
 		sendSequence = nextSend
 		controllerSequence = nextCtrl
 		records++
 		if flags == credentialprotocol.HelperExecStreamFlagEOF {
-			return sendSequence, controllerSequence, nil
+			return sendSequence, receiveSequence, controllerSequence, nil
 		}
 		if length == 0 || uint64(length) > remaining {
-			return sendSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
+			return sendSequence, receiveSequence, controllerSequence, helperPacketDependencyUnaccepted(digest)
 		}
 		total += uint64(length)
 		offset += uint64(length)
 	}
+}
+
+func (client *Client) receiveHelperExecCredit(
+	ctx context.Context,
+	stream VerifiedHelperStream,
+	sequence uint64,
+	requestID [16]byte,
+	identity [32]byte,
+	revision, offset uint64,
+) error {
+	if !configuredDependency(stream) {
+		return helperPacketDependencyUnaccepted(v2control.NewIdentityDigest(identity))
+	}
+	if client.drainStarted() || ctx.Err() != nil {
+		return nil
+	}
+	request, err := newHelperControlReceiveRequest(
+		sequence, credentialprotocol.HelperExecCreditBodyBytes, 0, requestID, true, identity,
+	)
+	if err != nil {
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	if !client.beginAdmittedOperation() {
+		return nil
+	}
+	defer client.endAdmittedOperation()
+	packet, receiveErr := readHelperExecCreditPacket(ctx, stream, request)
+	if receiveErr != nil {
+		if client.drainStarted() || ctx.Err() != nil {
+			return nil
+		}
+		return clientError(ClientContractPacket, ClientFieldPacketType)
+	}
+	credit, ok := packet.execCreditValue()
+	if !ok || credit.Revision != revision || credit.StreamKind != credentialprotocol.HelperExecStreamStdin || credit.NextOffset != offset {
+		return clientError(ClientContractCorrelation, ClientFieldBody)
+	}
+	return nil
 }
 
 func (client *Client) dispatchOneHelperExecStream(
