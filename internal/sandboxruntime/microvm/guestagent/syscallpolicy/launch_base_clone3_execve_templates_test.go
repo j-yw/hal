@@ -38,6 +38,7 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 	}
 
 	clone3HasTemplate := false
+	execveatHasTemplate := false
 	execveRuleCount := 0
 	sendmsgRuleCount := 0
 	recvmsgRuleCount := 0
@@ -47,6 +48,11 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 			clone3HasTemplate = true
 			if len(rule.ScalarClauses()) == 0 {
 				t.Fatal("launch-base clone3 is catalog-name-only with no argument template")
+			}
+		case 322:
+			execveatHasTemplate = true
+			if len(rule.ScalarClauses()) == 0 {
+				t.Fatal("launch-base execveat is catalog-name-only with no argument template")
 			}
 		case 59:
 			execveRuleCount++
@@ -59,11 +65,25 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 	if !clone3HasTemplate {
 		t.Fatal("launch-base filter is missing the clone3 argument template")
 	}
+	if !execveatHasTemplate {
+		t.Fatal("launch-base filter is missing the execveat FD+AT_EMPTY_PATH template")
+	}
 	if execveRuleCount != 0 {
-		t.Fatal("launch-base filter encoded an execve row; pathname templates are not HL8Q-scalar-encodable so execve must stay unlisted EPERM")
+		t.Fatal("launch-base filter encoded an execve row; pathname templates are not HL8Q-scalar-encodable so execve must stay unlisted")
 	}
 	if sendmsgRuleCount != 0 || recvmsgRuleCount != 0 {
 		t.Fatal("launch-base filter encoded a sendmsg/recvmsg row; SCM_RIGHTS cmsg contents are not HL8Q-scalar-encodable")
+	}
+
+	for _, fd := range []uint64{5, 6} {
+		args := [6]uint64{fd, 1, 0, 0, 0x1000}
+		decision := profile.Decide(auditArch, 322, args)
+		if !decision.Allowed() || decision.Reason() != ReasonExactRule {
+			t.Fatalf("Decide execveat fd %d AT_EMPTY_PATH = %v/%v, want allow/exact-rule", fd, decision.Action(), decision.Reason())
+		}
+		if got := compiled.Action(auditArch, 322, args); got != decision.Action() {
+			t.Fatalf("compiled execveat fd %d Action() = %v, want Decide %v", fd, got, decision.Action())
+		}
 	}
 
 	pathnames := []string{
@@ -75,8 +95,8 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 	for index, pathname := range pathnames {
 		args := [6]uint64{uint64(index + 1), 1, 0}
 		decision := profile.Decide(auditArch, 59, args)
-		if decision.Action() != ActionErrnoEPERM {
-			t.Fatalf("Decide execve pathname %s = %v, want eperm (HL8Q cannot encode pathname strings)", pathname, decision.Action())
+		if decision.Action() != ActionKillProcess {
+			t.Fatalf("Decide execve pathname %s = %v, want kill (pathname execve is no longer a native _start site)", pathname, decision.Action())
 		}
 		if got := compiled.Action(auditArch, 59, args); got != decision.Action() {
 			t.Fatalf("compiled execve pathname %s Action() = %v, want Decide %v", pathname, got, decision.Action())
@@ -95,6 +115,11 @@ func TestL8D7LaunchBaseClone3ExecveTemplatesMatchDecideAndCompiledBPF(t *testing
 		{name: "clone3 catalog name only", nr: 435},
 		{name: "execve empty", nr: 59},
 		{name: "execve nonempty envp", nr: 59, args: [6]uint64{1, 1, 1}},
+		{name: "execveat empty", nr: 322},
+		{name: "execveat catalog name only", nr: 322},
+		{name: "execveat wrong fd 16", nr: 322, args: [6]uint64{16, 1, 0, 0, 0x1000}},
+		{name: "execveat missing AT_EMPTY_PATH", nr: 322, args: [6]uint64{5, 1, 0, 0, 0}},
+		{name: "execveat nonempty envp", nr: 322, args: [6]uint64{5, 1, 0, 1, 0x1000}},
 		{name: "recvmsg empty", nr: 47},
 		{name: "recvmsg fd 16 MSG_CMSG_CLOEXEC|MSG_DONTWAIT", nr: 47, args: [6]uint64{16, 1, 0x40000040}},
 		{name: "sendmsg empty", nr: 46},

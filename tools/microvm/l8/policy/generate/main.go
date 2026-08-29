@@ -179,7 +179,7 @@ func exactNativeEnvelope() []string {
 		"prctl",
 		"seccomp",
 		"clone3",
-		"execve",
+		"execveat",
 		"recvmsg",
 		"exit_group",
 	}
@@ -505,10 +505,16 @@ const (
 	ruleOriginRole              = 1
 	enforcementPathDirect       = 1
 	clone3SyscallNumber         = 435
+	execveatSyscallNumber       = 322
 	go1257CloneArgsSize         = 88
 	cloneVforkVMPidfd           = 0x5100
 	cloneVforkVMNewnsPidfd      = 0x25100
 	cloneVforkVMPidfdIntoCgroup = 0x200005100
+	atEmptyPath                 = 0x1000
+	pid1MonitorExecutableFD     = 5
+	pid1ShimExecutableFD        = 6
+	scalarOneOf                 = 3
+	scalarZero                  = 5
 )
 
 func encodeRoles(document rolesDocument, catalog map[string]uint32, toolchainSHA256 [32]byte) ([]byte, uint32, []uint32, map[uint8][][]byte, error) {
@@ -632,7 +638,7 @@ func roleEncodedRules(role roleInput, document rolesDocument, catalog map[string
 		})
 	}
 	if role.Name == "launch-base" {
-		templates, err := launchBaseClone3Templates(catalog)
+		templates, err := launchBaseTemplates(catalog)
 		if err != nil {
 			return nil, err
 		}
@@ -651,6 +657,18 @@ func roleEncodedRules(role roleInput, document rolesDocument, catalog map[string
 		return rules[i].number < rules[j].number
 	})
 	return rules, nil
+}
+
+func launchBaseTemplates(catalog map[string]uint32) ([]encodedRoleRule, error) {
+	clone3, err := launchBaseClone3Templates(catalog)
+	if err != nil {
+		return nil, err
+	}
+	execveat, err := launchBaseExecveatTemplates(catalog)
+	if err != nil {
+		return nil, err
+	}
+	return append(clone3, execveat...), nil
 }
 
 func launchBaseClone3Templates(catalog map[string]uint32) ([]encodedRoleRule, error) {
@@ -693,6 +711,52 @@ func launchBaseClone3Templates(catalog map[string]uint32) ([]encodedRoleRule, er
 	}}, nil
 }
 
+func launchBaseExecveatTemplates(catalog map[string]uint32) ([]encodedRoleRule, error) {
+	number, ok := catalog["execveat"]
+	if !ok || number != execveatSyscallNumber {
+		return nil, errors.New("launch-base execveat template requires ordinary catalog execveat=322")
+	}
+	// One Direct/RoleOrigin filter row covers the two PID1-held pinned
+	// executable FDs from the image-init plan: FD 5 (mount-monitor) and
+	// FD 6 (workload-shim). HL8Q scalars can observe execveat(2) registers:
+	// rdi is dirfd, r8 is flags. Pathname bytes and argv tokens live in
+	// pointed-to memory. The honest template is therefore exact FD +
+	// envp NULL + AT_EMPTY_PATH (0x1000). Controller and agent have no
+	// admitted sealed executable FD; this slice does not invent those
+	// FDs or allow unrestricted execveat by catalog name.
+	if len(launchBaseExecveatNativeOperations()) != 2 {
+		return nil, errors.New("launch-base execveat native operations drifted")
+	}
+	return []encodedRoleRule{{
+		name:   "execveat",
+		number: number,
+		path:   enforcementPathDirect,
+		origin: ruleOriginRole,
+		clauses: []encodedScalarClause{
+			{
+				argumentIndex:  0,
+				operation:      scalarOneOf,
+				values:         []uint64{pid1MonitorExecutableFD, pid1ShimExecutableFD},
+				mismatchAction: actionErrnoEPERM,
+				mismatchReason: reasonScalarMismatch,
+			},
+			{
+				argumentIndex:  3,
+				operation:      scalarZero,
+				mismatchAction: actionErrnoEPERM,
+				mismatchReason: reasonScalarMismatch,
+			},
+			{
+				argumentIndex:  4,
+				operation:      scalarEqual,
+				values:         []uint64{atEmptyPath},
+				mismatchAction: actionErrnoEPERM,
+				mismatchReason: reasonScalarMismatch,
+			},
+		},
+	}}, nil
+}
+
 func roleEnvelope(role roleInput, document rolesDocument) ([]string, string) {
 	if role.Origin == 3 {
 		return document.RuntimeEnvelope, "runtime envelope"
@@ -717,6 +781,19 @@ func launchBaseClone3NativeOperations() []struct {
 		{name: "agent", flags: cloneVforkVMPidfd, cgroup: 0},
 		{name: "monitor", flags: cloneVforkVMNewnsPidfd, cgroup: 0},
 		{name: "shim", flags: cloneVforkVMPidfdIntoCgroup, cgroup: 9},
+	}
+}
+
+func launchBaseExecveatNativeOperations() []struct {
+	name string
+	fd   uint64
+} {
+	return []struct {
+		name string
+		fd   uint64
+	}{
+		{name: "monitor", fd: pid1MonitorExecutableFD},
+		{name: "shim", fd: pid1ShimExecutableFD},
 	}
 }
 

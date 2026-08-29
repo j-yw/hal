@@ -148,7 +148,7 @@ func exactNativeCallsites() []nativeCallsite {
 		{index: 11, name: "prctl", number: 157, scope: "pid1", insnHex: "0f05"},
 		{index: 12, name: "seccomp", number: 317, scope: "pid1", insnHex: "0f05"},
 		{index: 13, name: "clone3", number: 435, scope: "pid1", insnHex: "0f05"},
-		{index: 14, name: "execve", number: 59, scope: "pid1", insnHex: "0f05"},
+		{index: 14, name: "execveat", number: 322, scope: "pid1", insnHex: "0f05"},
 		{index: 15, name: "recvmsg", number: 47, scope: "pid1", insnHex: "0f05"},
 		{index: 16, name: "exit_group", number: 231, scope: "shared", insnHex: "0f05"},
 	}
@@ -200,7 +200,7 @@ func validateNativeSource(encoded []byte) error {
 		".Lpid1_vsock:",
 		".Lpid1_seccomp:",
 		".Lpid1_clone3:",
-		".Lpid1_execve:",
+		".Lpid1_execveat:",
 		".Lpid1_scm_rights:",
 		".Lcontroller_unimpl:",
 		".Lagent_unimpl:",
@@ -210,7 +210,7 @@ func validateNativeSource(encoded []byte) error {
 		"movq\t$157, %rax",
 		"movq\t$317, %rax",
 		"movq\t$435, %rax",
-		"movq\t$59, %rax",
+		"movq\t$322, %rax",
 		"movq\t$47, %rax",
 		"movq\t$16, %rdi",
 		"movq\t$0x40000040, %rdx",
@@ -220,10 +220,10 @@ func validateNativeSource(encoded []byte) error {
 		"movq\t$0x200005100, %r13",
 		"movq\t$9, 80(%rsp)",
 		"movq\t$17, 32(%rsp)",
-		"/usr/bin/hal-guest-credential-helper",
-		"/usr/bin/hal-guest-agent",
-		"/usr/bin/hal-guest-mount-monitor",
-		"/usr/bin/hal-guest-workload-shim",
+		"movq\t$5, %rdi",
+		"movq\t$6, %rdi",
+		"movq\t$0x1000, %r8",
+		"empty_path",
 		"launch_base_filter",
 	} {
 		if !bytes.Contains(encoded, []byte(required)) {
@@ -232,9 +232,13 @@ func validateNativeSource(encoded []byte) error {
 	}
 	for _, forbidden := range []string{
 		"__libc", "main.main", "runtime.main", "dlopen", "getenv", "malloc",
-		"movq\t$322, %rax", // execveat
-		"movq\t$46, %rax",  // sendmsg
+		"movq\t$59, %rax", // pathname execve
+		"movq\t$46, %rax", // sendmsg
 		"movl\t$0, %edi",
+		"/usr/bin/hal-guest-credential-helper",
+		"/usr/bin/hal-guest-agent",
+		"/usr/bin/hal-guest-mount-monitor",
+		"/usr/bin/hal-guest-workload-shim",
 	} {
 		if bytes.Contains(encoded, []byte(forbidden)) {
 			return fmt.Errorf("native source contains forbidden marker %q", forbidden)

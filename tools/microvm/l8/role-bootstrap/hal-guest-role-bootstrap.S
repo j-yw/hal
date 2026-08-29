@@ -1,17 +1,20 @@
 # Freestanding static Linux-amd64 _start for hal-guest-role-bootstrap.
 # No libc, dynamic loader, Go runtime, allocator, TLS, signals, or threads.
 # Pointers address only this image's read-only tokens, compiled launch-base
-# filter, image-pinned role pathnames, or bounded stack objects. Child roles
+# filter, empty-path token, or bounded stack objects. Child roles
 # are selected only by the supervisor's closed argv token catalog. PID1 mode
 # is image init (argc < 2). Native PID1 is the image-init supervisor.
 # Go PID1 remains ForkExec-free. After shared identity preflight each role enters
 # explicit remaining stages. PID1 attempts the exact D2 socket/bind/listen/
 # dup3/close subset, then prctl(NO_NEW_PRIVS) and seccomp(SECCOMP_SET_MODE_FILTER)
-# for launch-base, then exact clone3 plus pathname execve of image-pinned
-# role children. Negative syscall results fail-closed. SCM_RIGHTS monitor-ready
-# is an exact PID1 recvmsg of two rights on the recorded transient bootstrap
-# peer. Required FDs are absent on the default fake path, so the site
-# fail-closes with exit 127. This process does not exit 0.
+# for launch-base, then exact clone3 plus execveat(AT_EMPTY_PATH) of
+# image-init pinned executable FDs 5 (monitor) and 6 (shim). Controller
+# and agent have no PID1-held sealed executable FD in that plan; those
+# children fail-closed without inventing a live open of host paths.
+# Negative syscall results and absent FDs fail-closed. SCM_RIGHTS
+# monitor-ready is an exact PID1 recvmsg of two rights on the recorded
+# transient bootstrap peer. Required FDs are absent on the default fake
+# path, so the sites fail-close with exit 127. This process does not exit 0.
 
 	.section .note.GNU-stack,"",@progbits
 	.include "launch_base_filter.inc"
@@ -180,8 +183,9 @@ _start:
 	# prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) then
 	# seccomp(SECCOMP_SET_MODE_FILTER, 0, sock_fprog). The sock_fprog
 	# lives on this stack and points at image RO filter bytes. Negative
-	# results fail-closed. Exact clone3 plus pathname execve follow;
-	# SCM_RIGHTS monitor-ready is the later recvmsg site.
+	# results fail-closed. Exact clone3 plus execveat(AT_EMPTY_PATH)
+	# of pinned executable FDs follow; SCM_RIGHTS monitor-ready is the
+	# later recvmsg site.
 .Lpid1_seccomp:
 	movq	$157, %rax		# prctl
 	movq	$38, %rdi		# PR_SET_NO_NEW_PRIVS
@@ -212,8 +216,8 @@ _start:
 
 	# Exact clone3 of image-pinned role children after launch-base.
 	# clone_args size is the pinned Go 1.25.7 ABI (88). pidfd pointer
-	# is the clone_args.pidfd field. Negative clone3/execve results
-	# fail-closed. Missing cgroup fd 9 or image path is not success.
+	# is the clone_args.pidfd field. Negative clone3/execveat results
+	# fail-closed. Missing cgroup fd 9 or sealed executable FD is not success.
 .Lpid1_clone3:
 	subq	$112, %rsp
 	xorl	%ebx, %ebx
@@ -252,37 +256,38 @@ _start:
 	syscall
 	testq	%rax, %rax
 	js	.Lfail_closed
-	jz	.Lpid1_execve
+	jz	.Lpid1_execveat
 	incq	%rbx
 	cmpq	$4, %rbx
 	jb	.Lpid1_clone3_loop
 	addq	$112, %rsp
 	jmp	.Lpid1_scm_rights
 
-.Lpid1_execve:
-	# Pathname execve of the image-pinned Go role child. argv is the
-	# closed path token only. envp is NULL. execve failure exits 127.
-	leaq	path_controller(%rip), %rdi
-	testq	%rbx, %rbx
-	jz	.Lpid1_execve_do
-	leaq	path_agent(%rip), %rdi
-	cmpq	$1, %rbx
-	je	.Lpid1_execve_do
-	leaq	path_monitor(%rip), %rdi
+.Lpid1_execveat:
+	# execveat(dirfd, "", empty argv, NULL, AT_EMPTY_PATH) of a compiled
+	# PID1-held pinned executable FD. Classic seccomp can see dirfd and
+	# AT_EMPTY_PATH (0x1000); it cannot see pathname bytes. The image-init
+	# plan names only FD 5 (mount-monitor) and FD 6 (workload-shim).
+	# Controller/agent have no admitted sealed executable FD; do not
+	# invent a live open of /usr/bin/hal-guest-*. Absent FDs and
+	# negative results fail-closed with exit 127.
 	cmpq	$2, %rbx
-	je	.Lpid1_execve_do
-	leaq	path_shim(%rip), %rdi
-.Lpid1_execve_do:
-	movq	%rdi, 96(%rsp)
-	movq	$0, 104(%rsp)
-	leaq	96(%rsp), %rsi
-	xorl	%edx, %edx
-	movq	$59, %rax		# execve
+	jb	.Lfail_closed
+	movq	$5, %rdi		# monitor pinned executable FD
+	je	.Lpid1_execveat_do
+	movq	$6, %rdi		# shim pinned executable FD
+.Lpid1_execveat_do:
+	leaq	empty_path(%rip), %rsi
+	movq	$0, 96(%rsp)
+	leaq	96(%rsp), %rdx
+	xorl	%r10d, %r10d		# envp NULL
+	movq	$0x1000, %r8		# AT_EMPTY_PATH
+	movq	$322, %rax		# execveat
 	syscall
 	jmp	.Lfail_closed
 
 .Lpid1_scm_rights:
-	# Exact PID1 recvmsg of SCM_RIGHTS monitor-ready after clone3/execve.
+	# Exact PID1 recvmsg of SCM_RIGHTS monitor-ready after clone3/execveat.
 	# sockfd is compiled FD 16 (first transient slot: the PID1-held
 	# recorded bootstrap peer, not fixed FD 10 which remains the
 	# monitor pidfd). flags are MSG_CMSG_CLOEXEC|MSG_DONTWAIT.
@@ -385,15 +390,6 @@ token_monitor:
 	.type	token_workload_shim, @object
 token_workload_shim:
 	.asciz	"workload-shim"
-	.type	path_controller, @object
-path_controller:
-	.asciz	"/usr/bin/hal-guest-credential-helper"
-	.type	path_agent, @object
-path_agent:
-	.asciz	"/usr/bin/hal-guest-agent"
-	.type	path_monitor, @object
-path_monitor:
-	.asciz	"/usr/bin/hal-guest-mount-monitor"
-	.type	path_shim, @object
-path_shim:
-	.asciz	"/usr/bin/hal-guest-workload-shim"
+	.type	empty_path, @object
+empty_path:
+	.asciz	""
