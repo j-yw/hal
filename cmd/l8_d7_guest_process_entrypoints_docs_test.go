@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -98,22 +99,13 @@ func TestL8D7GuestProcessEntrypointsNewHelperOwnership(t *testing.T) {
 		if parseErr != nil {
 			return parseErr
 		}
-		ast.Inspect(file, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || selector.Sel.Name != "NewHelper" {
-				return true
-			}
-			ident, ok := selector.X.(*ast.Ident)
-			if !ok || ident.Name != "l8composition" {
-				return true
-			}
+		count, referenceErr := l8D7GuestProcessEntrypointNewHelperReferencesInFile(file)
+		if referenceErr != nil {
+			return referenceErr
+		}
+		for range count {
 			callers = append(callers, normalized)
-			return true
-		})
+		}
 		return nil
 	})
 	if err != nil {
@@ -160,23 +152,54 @@ func l8D7GuestProcessEntrypointNewHelperReferences(t *testing.T, source string) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	count, err := l8D7GuestProcessEntrypointNewHelperReferencesInFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func l8D7GuestProcessEntrypointNewHelperReferencesInFile(file *ast.File) (int, error) {
+	aliases := map[string]bool{}
+	dotImported := false
+	for _, spec := range file.Imports {
+		importPath, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			return 0, err
+		}
+		if importPath != l8CompositionImportPath {
+			continue
+		}
+		if spec.Name == nil {
+			aliases["l8composition"] = true
+			continue
+		}
+		switch spec.Name.Name {
+		case ".":
+			dotImported = true
+		case "_":
+		default:
+			aliases[spec.Name.Name] = true
+		}
+	}
+
 	count := 0
 	ast.Inspect(file, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || selector.Sel.Name != "NewHelper" {
-			return true
-		}
-		ident, ok := selector.X.(*ast.Ident)
-		if ok && ident.Name == "l8composition" {
-			count++
+		switch value := node.(type) {
+		case *ast.SelectorExpr:
+			identifier, ok := value.X.(*ast.Ident)
+			if ok && aliases[identifier.Name] && value.Sel.Name == "NewHelper" {
+				count++
+				return false
+			}
+		case *ast.Ident:
+			if dotImported && value.Name == "NewHelper" {
+				count++
+			}
 		}
 		return true
 	})
-	return count
+	return count, nil
 }
 
 func TestL8D7GuestProcessEntrypointsRemainDefaultOff(t *testing.T) {

@@ -159,8 +159,7 @@ func l8GuestProcessEntrypointAllowsImport(path, importPath string) bool {
 	case l8CompositionImportPath:
 		return l8GuestInitProductionFile(path) ||
 			l8GuestProcessEntrypointProductionFile(path, "hal-guest-credential-helper/") ||
-			l8GuestProcessEntrypointProductionFile(path, "hal-guest-mount-monitor/") ||
-			l8GuestProcessEntrypointProductionFile(path, "hal-guest-workload-shim/")
+			l8GuestProcessEntrypointProductionFile(path, "hal-guest-mount-monitor/")
 	case credentialHelperImport, credentialHelperImport + "/linux":
 		return l8GuestProcessEntrypointProductionFile(path, "hal-guest-credential-helper/")
 	case roleBootstrapImport:
