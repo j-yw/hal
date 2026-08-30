@@ -368,19 +368,10 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 		reachable = append(reachable, fn)
 		body := decodeOne(fn)
 		if body.decodeErr != nil {
-			if fn.start == start.start {
-				return reachableSyscallGraph{}, fmt.Errorf("role binary %s: %w", binary.name, body.decodeErr)
-			}
-			fileOff, _, mapErr := mapVirtualAddress(file, encoded, fn.start)
-			size := fn.end - fn.start
-			if mapErr != nil || fileOff+size < fileOff || fileOff+size > uint64(len(encoded)) {
-				unbounded = true
-				continue
-			}
-			code := encoded[fileOff : fileOff+size]
-			if codeContainsSyscallOpcode(code) {
-				unbounded = true
-			}
+			// An undecodable reachable function may still transfer to a syscall-
+			// bearing callee after the unknown instruction. Raw opcode absence in
+			// this body is therefore not a complete leaf proof.
+			unbounded = true
 			continue
 		}
 		if body.indirect {
@@ -538,10 +529,9 @@ func decodeFunctionSyscallGraphWithResolver(fn executableFunction, code []byte, 
 		}
 		if insn.indirect {
 			extra, resolved := resolveIndirectInsn(fn, insn, history, resolver, branchTargets, cursor)
+			targets = append(targets, extra...)
 			if !resolved {
 				indirect = true
-			} else {
-				targets = append(targets, extra...)
 			}
 		}
 		history = append(history, decodedInsnSite{cursor: cursor, vaddr: vaddr, insn: insn})

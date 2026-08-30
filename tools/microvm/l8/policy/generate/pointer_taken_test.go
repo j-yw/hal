@@ -50,8 +50,8 @@ func TestL8D7PointerTakenPID1Report(t *testing.T) {
 	if len(taken) == 0 {
 		t.Fatal("PID1 pointer-taken start set was empty")
 	}
-	if inspected.unboundedIndirect {
-		t.Fatal("PID1 still has a reachable unbounded indirect")
+	if !inspected.unboundedIndirect {
+		t.Fatal("PID1 static pointer inventory was treated as a complete register-indirect target proof")
 	}
 	if extras := extraReachableSyscallNames(inspected); len(extras) != 0 {
 		t.Fatalf("PID1 extras = %v, want empty", extras)
@@ -61,13 +61,14 @@ func TestL8D7PointerTakenPID1Report(t *testing.T) {
 	}
 }
 
-func TestL8D7CompleteGuestRoleBoundedGraphs(t *testing.T) {
+func TestL8D7CompleteGuestRoleGraphsRemainUnboundedWithoutPointsToProof(t *testing.T) {
 	root := repositoryRoot(t)
 	dir := buildCompleteGuestRoleBinariesDir(t, root)
 	binaries, err := inspectGuestRoleBinariesDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	unbounded := 0
 	for _, binary := range binaries {
 		extras := extraReachableSyscallNames(binary)
 		t.Logf("%s native=%v unbounded=%v extras=%v graphErr=%v", binary.name, binary.native, binary.unboundedIndirect, extras, binary.graphErr)
@@ -75,17 +76,20 @@ func TestL8D7CompleteGuestRoleBoundedGraphs(t *testing.T) {
 			t.Errorf("%s graph: %v", binary.name, binary.graphErr)
 		}
 		if binary.unboundedIndirect {
-			t.Errorf("%s still has a reachable unbounded indirect", binary.name)
+			unbounded++
 		}
 		if len(extras) != 0 {
 			t.Errorf("%s extras = %v, want empty", binary.name, extras)
 		}
 	}
-	if err := proveBoundedReachableSyscallGraph(binaries); err != nil {
-		t.Fatalf("proveBounded: %v", err)
+	if unbounded == 0 {
+		t.Fatal("complete guest role set claimed no reachable unbounded indirect")
 	}
-	if err := requireCompleteHonestIssuanceInputs(binaries); err == nil || err.Error() != "unique/reachable D4/D6 call graph is unavailable" {
-		t.Fatalf("requireCompleteHonestIssuanceInputs error = %v, want fail-closed last return", err)
+	if err := proveBoundedReachableSyscallGraph(binaries); err == nil {
+		t.Fatal("proveBounded accepted an incomplete register-indirect target proof")
+	}
+	if err := requireCompleteHonestIssuanceInputs(binaries); err == nil {
+		t.Fatal("requireCompleteHonestIssuanceInputs accepted an incomplete register-indirect target proof")
 	}
 }
 

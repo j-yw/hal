@@ -307,11 +307,11 @@ func TestL8D7ProductionPID1OmitsCloneClone3ForkExecExtras(t *testing.T) {
 	if !containsString(inspected.reachableFunctions, "runtime.duffcopy") || !containsString(inspected.reachableFunctions, "runtime.duffzero") {
 		t.Fatalf("L8-tagged PID1 reachable functions = %v, want listed-span interiors duffcopy/duffzero", inspected.reachableFunctions)
 	}
-	if inspected.unboundedIndirect {
-		t.Fatal("L8-tagged PID1 still has a reachable unbounded indirect")
+	if !inspected.unboundedIndirect {
+		t.Fatal("L8-tagged PID1 register-indirect target set was treated as complete")
 	}
 	if extras := extraReachableSyscallNames(inspected); len(extras) != 0 {
-		t.Fatalf("L8-tagged PID1 extras = %v, want empty after pointer-taken and jump-table bind", extras)
+		t.Fatalf("L8-tagged PID1 extras = %v, want empty after traversing the known pointer subset and jump-table bind", extras)
 	}
 }
 
@@ -863,7 +863,7 @@ func TestL8D7RegisterIndirectCallRemainsUnboundedWithoutProvenTarget(t *testing.
 	}
 }
 
-func TestL8D7RegisterIndirectCallUsesPointerTakenStarts(t *testing.T) {
+func TestL8D7RegisterIndirectCallReportsPointerTakenStartsWithoutClaimingCompleteness(t *testing.T) {
 	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1002}
 	hasher := executableFunction{name: "runtime.aeshashbody", start: 0x4000, end: 0x4100}
 	equal := executableFunction{name: "runtime.memequal", start: 0x5000, end: 0x5100}
@@ -873,8 +873,8 @@ func TestL8D7RegisterIndirectCallUsesPointerTakenStarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode CALL RAX: %v", err)
 	}
-	if unbounded {
-		t.Fatal("CALL RAX with a closed pointer-taken start set remained unbounded")
+	if !unbounded {
+		t.Fatal("CALL RAX static pointer inventory was treated as a complete target proof")
 	}
 	if len(targets) != 2 || targets[0] != hasher.start || targets[1] != equal.start {
 		t.Fatalf("CALL RAX targets = %v, want hasher and equal starts only", targets)

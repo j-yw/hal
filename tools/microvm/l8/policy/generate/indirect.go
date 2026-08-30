@@ -72,7 +72,12 @@ func resolvePointerTakenCallTargets(resolver *goTextResolver) ([]uint64, bool) {
 	if resolver == nil || len(resolver.pointerTaken) == 0 {
 		return nil, false
 	}
-	return append([]uint64(nil), resolver.pointerTaken...), true
+	// The static section inventory is a useful known subset, but it is not a
+	// complete points-to proof. Go may materialize closure code pointers at
+	// runtime (for example with a RIP-relative LEA) without storing the address
+	// in any inventoried section. Traverse the known subset while keeping the
+	// register-indirect transfer unbounded.
+	return append([]uint64(nil), resolver.pointerTaken...), false
 }
 
 func resolveSIBJumpTable(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) ([]uint64, bool) {

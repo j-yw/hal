@@ -31,14 +31,17 @@ length fact and dispatch; `0F BA /4 ib` has an imm8 length. Indexed
 indirect CALL, branch-skipped facts, ambiguous symbols, truncated
 transfers, and unproven register-indirect `CALL`/`JMP` fail closed.
 Register-indirect `CALL`/`JMP` (`FF D0`/`FF D1`/`FF D6` and other
-ModRM.mod=3 forms) is a known target set only when every destination is
-a listed function **start** whose address appears as an 8-byte pointer
-in `.noptrdata`, `.data`, or `.itablink`. Scanning `.gopclntab`,
+ModRM.mod=3 forms) remains unbounded. Listed function **start** addresses
+found as 8-byte values in `.noptrdata`, `.data`, or `.itablink` are a
+known subset to traverse, not a complete points-to proof: Go may
+materialize a runtime-created closure target with RIP-relative `LEA`.
+Scanning `.gopclntab`,
 `.rodata`, or `PF_X` contents, or attaching every pclntab function, is
 forbidden because that re-reaches trampolines such as
 `syscall.rawVforkSyscall.abi0`. 64-bit VEX/EVEX opcodes `C4`/`C5`/`62`
-fail decode; a non-entry body without `syscall`/`sysenter`/`int80`
-bytes is a non-syscall leaf. A relative transfer into unlisted
+fail decode; every reachable decode failure remains unbounded because raw
+syscall-opcode absence does not prove the body cannot transfer to a
+syscall-bearing callee. A relative transfer into unlisted
 executable text stays unbounded. Prefix is not authority and
 `runtime.*` is not a target set. Pinned-direct allow is only
 `internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Named Go

@@ -21,7 +21,7 @@ func TestL8D7GoCallRegPointerTakenVerificationDocument(t *testing.T) {
 		"`FF D0`",
 		"`FF D1`",
 		"`FF D6`",
-		"listed function **start**",
+		"function **start** addresses",
 		"`.noptrdata`",
 		"`.data`",
 		"`.itablink`",
@@ -36,7 +36,11 @@ func TestL8D7GoCallRegPointerTakenVerificationDocument(t *testing.T) {
 		"`C4`",
 		"`C5`",
 		"`62`",
-		"non-syscall leaf",
+		"runtime-created closure target",
+		"known subset",
+		"not a complete points-to proof",
+		"Every reachable function with a decode failure remains unbounded",
+		"does not prove it cannot transfer to a syscall-bearing callee",
 		"`proveBoundedReachableSyscallGraph`",
 		"`requireCompleteHonestIssuanceInputs`",
 		"unique/reachable D4/D6",
@@ -72,6 +76,8 @@ func TestL8D7GoCallRegPointerTakenVerificationDocument(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		"is a non-syscall leaf",
+		"accepts the six final guest role binaries",
 		"L8 is complete",
 		"L10 is complete",
 		"L11 is complete",
