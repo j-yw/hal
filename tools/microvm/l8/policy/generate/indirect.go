@@ -15,7 +15,10 @@ type goTextResolver struct {
 	// the interior of another listed span. A table fact cannot be used when one
 	// of those entry points can skip it and still reach the indirect jump.
 	interiorEntries map[uint64][]uint64
-	loadU64         func(uint64) (uint64, bool)
+	// pointerTaken is the closed set of listed function starts whose addresses
+	// appear as 8-byte pointers in non-executable, non-pclntab ELF contents.
+	pointerTaken []uint64
+	loadU64      func(uint64) (uint64, bool)
 }
 
 type decodedInsnSite struct {
@@ -53,13 +56,23 @@ func resolveIndirectInsn(fn executableFunction, insn amd64Insn, history []decode
 	if !insn.indirect {
 		return nil, true
 	}
-	if !insn.indirectJump || insn.indirectReg || insn.nonCanonicalMem {
+	if insn.nonCanonicalMem {
 		return nil, false
 	}
-	if insn.sib && !insn.sibNoBase && insn.sibScale == 8 && insn.modrmMod == 0 {
+	if insn.indirectReg {
+		return resolvePointerTakenCallTargets(resolver)
+	}
+	if insn.indirectJump && insn.sib && !insn.sibNoBase && insn.sibScale == 8 && insn.modrmMod == 0 {
 		return resolveSIBJumpTable(fn, insn, history, resolver, branchTargets, transferCursor)
 	}
 	return nil, false
+}
+
+func resolvePointerTakenCallTargets(resolver *goTextResolver) ([]uint64, bool) {
+	if resolver == nil || len(resolver.pointerTaken) == 0 {
+		return nil, false
+	}
+	return append([]uint64(nil), resolver.pointerTaken...), true
 }
 
 func resolveSIBJumpTable(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) ([]uint64, bool) {
@@ -196,7 +209,7 @@ func insnClobbersReg(insn amd64Insn, reg uint8) bool {
 	if insn.jmpRel || insn.cmpImm {
 		return false
 	}
-	if insn.nop {
+	if insn.nop || insn.flagsOnly || insn.memStore {
 		return false
 	}
 	if insn.leaRIP {

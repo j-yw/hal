@@ -77,6 +77,8 @@ type amd64Insn struct {
 	cmpReg           uint8
 	operand64        bool
 	nonCanonicalMem  bool
+	memStore         bool
+	flagsOnly        bool
 	modrmMod         uint8
 	sibBase          uint8
 	sibIndex         uint8
@@ -306,6 +308,7 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 		return reachableSyscallGraph{}, fmt.Errorf("role binary %s: %w", binary.name, err)
 	}
 	interiorEntries := listDirectInteriorEntries(file, encoded, functions)
+	pointerTaken := collectPointerTakenFunctionTargets(file, encoded, functions)
 
 	type decodedFunction struct {
 		sites     []decodedSyscallSite
@@ -336,6 +339,7 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 			encoded:         encoded,
 			functions:       functions,
 			interiorEntries: interiorEntries,
+			pointerTaken:    pointerTaken,
 		})
 		if decodeErr != nil {
 			result.decodeErr = decodeErr
@@ -364,7 +368,20 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 		reachable = append(reachable, fn)
 		body := decodeOne(fn)
 		if body.decodeErr != nil {
-			return reachableSyscallGraph{}, fmt.Errorf("role binary %s: %w", binary.name, body.decodeErr)
+			if fn.start == start.start {
+				return reachableSyscallGraph{}, fmt.Errorf("role binary %s: %w", binary.name, body.decodeErr)
+			}
+			fileOff, _, mapErr := mapVirtualAddress(file, encoded, fn.start)
+			size := fn.end - fn.start
+			if mapErr != nil || fileOff+size < fileOff || fileOff+size > uint64(len(encoded)) {
+				unbounded = true
+				continue
+			}
+			code := encoded[fileOff : fileOff+size]
+			if codeContainsSyscallOpcode(code) {
+				unbounded = true
+			}
+			continue
 		}
 		if body.indirect {
 			unbounded = true
@@ -378,7 +395,9 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 		for _, target := range body.targets {
 			callee, unknown := followListedSpanTarget(functions, target)
 			if unknown {
-				unbounded = true
+				if executableVirtualAddress(file, target) || functionContainsSyscallOpcode(file, encoded, fn) {
+					unbounded = true
+				}
 				continue
 			}
 			if _, seen := visited[callee.start]; seen {
@@ -844,6 +863,39 @@ func containingExecutableFunction(functions []executableFunction, vaddr uint64) 
 	return nil
 }
 
+func codeContainsSyscallOpcode(code []byte) bool {
+	return bytes.Contains(code, []byte{0x0f, 0x05}) || bytes.Contains(code, []byte{0x0f, 0x34}) || bytes.Contains(code, []byte{0xcd, 0x80})
+}
+
+func functionContainsSyscallOpcode(file *elf.File, encoded []byte, fn executableFunction) bool {
+	fileOff, _, err := mapVirtualAddress(file, encoded, fn.start)
+	if err != nil {
+		return true
+	}
+	size := fn.end - fn.start
+	if fileOff+size < fileOff || fileOff+size > uint64(len(encoded)) {
+		return true
+	}
+	return codeContainsSyscallOpcode(encoded[fileOff : fileOff+size])
+}
+
+func executableVirtualAddress(file *elf.File, va uint64) bool {
+	if file == nil {
+		return false
+	}
+	for _, prog := range file.Progs {
+		if prog.Type != elf.PT_LOAD || prog.Flags&elf.PF_X == 0 {
+			continue
+		}
+		end := prog.Vaddr + prog.Memsz
+		if end < prog.Vaddr || va < prog.Vaddr || va >= end {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func isHarmlessFunctionTail(code []byte) bool {
 	if len(code) == 0 {
 		return true
@@ -927,6 +979,9 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 	}
 	opcode := code[index]
 	index++
+	if opcode == 0x62 || opcode == 0xC4 || opcode == 0xC5 {
+		return amd64Insn{}, false
+	}
 	insn := amd64Insn{
 		n:               length,
 		operand64:       rexW,
@@ -964,6 +1019,12 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 		}
 		if secondary == 0x87 {
 			insn.ja = true
+		}
+		if secondary == 0xBA && index+1 < length {
+			modrm := code[index+1]
+			if (modrm>>3)&7 == 4 {
+				insn.flagsOnly = true
+			}
 		}
 		if secondary == 0x11 && !nonCanonicalMemoryPrefix {
 			if displacement, ok := amd64RSPDisplacement(code, index+1, rexB, rexX); ok {
@@ -1117,11 +1178,18 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 		}
 	}
 	if (opcode == 0x89 || opcode == 0x88 || opcode == 0xC6) && index < length {
+		modrm := code[index]
+		if modrm>>6 != 3 && !nonCanonicalMemoryPrefix {
+			insn.memStore = true
+		}
 		if displacement, ok := amd64RSPDisplacement(code, index, rexB, rexX); ok && !nonCanonicalMemoryPrefix {
 			if displacement != 0 {
 				insn.preserveTrapSlot = true
 			}
 		}
+	}
+	if (opcode == 0x85 || opcode == 0x84) && !nonCanonicalMemoryPrefix {
+		insn.flagsOnly = true
 	}
 	if opcode == 0x90 {
 		insn.preserveTrapSlot = true
@@ -1224,6 +1292,9 @@ func amd64InstructionLength(code []byte) (int, bool) {
 	}
 	opcode := code[index]
 	index++
+	if opcode == 0x62 || opcode == 0xC4 || opcode == 0xC5 {
+		return 0, false
+	}
 	twoByte := false
 	threeByte := byte(0)
 	if opcode == 0x0F {
@@ -1258,6 +1329,9 @@ func amd64InstructionLength(code []byte) (int, bool) {
 		} else {
 			imm = 4
 		}
+	case opcode == 0xBA:
+		hasModRM = true
+		imm = 1
 	case opcode == 0x05 || opcode == 0x06 || opcode == 0x07 || opcode == 0x08 || opcode == 0x09 || opcode == 0x0B || opcode == 0x30 || opcode == 0x31 || opcode == 0x32 || opcode == 0x33 || opcode == 0x34 || opcode == 0x35 || opcode == 0x37 || opcode == 0xA0 || opcode == 0xA1 || opcode == 0xA2 || opcode == 0xA8 || opcode == 0xA9 || opcode == 0xAA:
 	default:
 		hasModRM = true

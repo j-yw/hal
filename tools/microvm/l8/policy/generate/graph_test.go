@@ -307,11 +307,11 @@ func TestL8D7ProductionPID1OmitsCloneClone3ForkExecExtras(t *testing.T) {
 	if !containsString(inspected.reachableFunctions, "runtime.duffcopy") || !containsString(inspected.reachableFunctions, "runtime.duffzero") {
 		t.Fatalf("L8-tagged PID1 reachable functions = %v, want listed-span interiors duffcopy/duffzero", inspected.reachableFunctions)
 	}
-	if !inspected.unboundedIndirect {
-		t.Fatal("L8-tagged PID1 register-indirect CALL was treated as bounded")
+	if inspected.unboundedIndirect {
+		t.Fatal("L8-tagged PID1 still has a reachable unbounded indirect")
 	}
 	if extras := extraReachableSyscallNames(inspected); len(extras) != 0 {
-		t.Fatalf("L8-tagged PID1 extras = %v, want empty after interior bind", extras)
+		t.Fatalf("L8-tagged PID1 extras = %v, want empty after pointer-taken and jump-table bind", extras)
 	}
 }
 
@@ -762,6 +762,88 @@ func TestL8D7RIPRelativeCMPJumpTableIsAKnownTargetSet(t *testing.T) {
 	}
 }
 
+func TestL8D7JumpTableAllowsStackStoreTESTAndBTBetweenCMPAndDispatch(t *testing.T) {
+	tests := []struct {
+		name string
+		code []byte
+	}{
+		{
+			name: "near JA and stack store",
+			code: []byte{
+				0x48, 0x83, 0xfa, 0x01,
+				0x0f, 0x87, 0x0f, 0x00, 0x00, 0x00,
+				0x48, 0x89, 0x44, 0x24, 0x38,
+				0x48, 0x8d, 0x35, 0xea, 0x0f, 0x00, 0x00,
+				0xff, 0x24, 0xd6,
+				0x90,
+			},
+		},
+		{
+			name: "TEST between JA and LEA",
+			code: []byte{
+				0x48, 0x83, 0xfa, 0x01,
+				0x0f, 0x87, 0x0d, 0x00, 0x00, 0x00,
+				0x4d, 0x85, 0xc0,
+				0x48, 0x8d, 0x35, 0xec, 0x0f, 0x00, 0x00,
+				0xff, 0x24, 0xd6,
+				0x90,
+			},
+		},
+		{
+			name: "BT imm8 between JA and LEA",
+			code: []byte{
+				0x48, 0x83, 0xff, 0x01,
+				0x0f, 0x87, 0x0e, 0x00, 0x00, 0x00,
+				0x0f, 0xba, 0xe1, 0x09,
+				0x48, 0x8d, 0x05, 0xeb, 0x0f, 0x00, 0x00,
+				0xff, 0x24, 0xf8,
+				0x90,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fn := executableFunction{name: "kindSwitch", start: 0x1000, end: 0x1000 + uint64(len(test.code))}
+			resolver := &goTextResolver{
+				functions: []executableFunction{fn},
+				loadU64: func(va uint64) (uint64, bool) {
+					if va == 0x2000 || va == 0x2008 {
+						return fn.start, true
+					}
+					return 0, false
+				},
+			}
+			_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, test.code, 0, resolver)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if unbounded {
+				t.Fatal("CMP/near-JA jump table with flags-only or stack store remained unbounded")
+			}
+		})
+	}
+}
+
+func TestL8D7BitTestImmediateHasImm8Length(t *testing.T) {
+	code := []byte{0x0f, 0xba, 0xe1, 0x09, 0x90}
+	n, ok := amd64InstructionLength(code)
+	if !ok || n != 4 {
+		t.Fatalf("BT ECX, 9 length = %d ok=%v, want 4", n, ok)
+	}
+	insn, ok := amd64DecodeInsn(code)
+	if !ok || !insn.flagsOnly || insn.n != 4 {
+		t.Fatalf("BT decode flagsOnly=%v n=%d ok=%v", insn.flagsOnly, insn.n, ok)
+	}
+}
+
+func TestL8D7VEXPrefixFailsDecode(t *testing.T) {
+	for _, opcode := range []byte{0x62, 0xc4, 0xc5} {
+		if n, ok := amd64InstructionLength([]byte{opcode, 0xe2, 0x7d, 0x18}); ok {
+			t.Fatalf("opcode %#x length = %d, want decode failure", opcode, n)
+		}
+	}
+}
+
 func TestL8D7RegisterIndirectCallRemainsUnboundedWithoutProvenTarget(t *testing.T) {
 	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1002}
 	_, _, _, unbounded, err := decodeFunctionSyscallGraph(fn, []byte{0xff, 0xd0}, 0)
@@ -778,6 +860,29 @@ func TestL8D7RegisterIndirectCallRemainsUnboundedWithoutProvenTarget(t *testing.
 	_, _, _, unbounded, err = decodeFunctionSyscallGraph(fn, []byte{0xff, 0xd6}, 0)
 	if err != nil || !unbounded {
 		t.Fatalf("unproven CALL RSI unbounded=%v err=%v", unbounded, err)
+	}
+}
+
+func TestL8D7RegisterIndirectCallUsesPointerTakenStarts(t *testing.T) {
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1002}
+	hasher := executableFunction{name: "runtime.aeshashbody", start: 0x4000, end: 0x4100}
+	equal := executableFunction{name: "runtime.memequal", start: 0x5000, end: 0x5100}
+	vfork := executableFunction{name: syscallRawVforkSyscallABI0, start: 0x6000, end: 0x6100}
+	resolver := &goTextResolver{functions: []executableFunction{fn, hasher, equal, vfork}, pointerTaken: []uint64{hasher.start, equal.start}}
+	_, targets, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, []byte{0xff, 0xd0}, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode CALL RAX: %v", err)
+	}
+	if unbounded {
+		t.Fatal("CALL RAX with a closed pointer-taken start set remained unbounded")
+	}
+	if len(targets) != 2 || targets[0] != hasher.start || targets[1] != equal.start {
+		t.Fatalf("CALL RAX targets = %v, want hasher and equal starts only", targets)
+	}
+	for _, dest := range targets {
+		if dest == vfork.start {
+			t.Fatal("CALL RAX pointer-taken set included rawVforkSyscall.abi0")
+		}
 	}
 }
 
