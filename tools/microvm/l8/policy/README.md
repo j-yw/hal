@@ -25,12 +25,25 @@ pclntab span is that known function (including ABI0 interiors such as
 `runtime.duffcopy`, `runtime.duffzero`, and `indexbytebody`). Proven
 canonical RIP-relative `JMP [base+index*8]` kind-switch tables with an
 unskippable AND or 64-bit CMP/forward-JA length, a unique non-writable
-mapping, and listed-span entries are known targets. Indexed indirect
-CALL, branch-skipped facts, ambiguous symbols, truncated transfers,
-and unproven register-indirect `CALL`/`JMP`
-(including `FF D0`/`FF D1`/`FF D6` map hash, interface equal, defer,
-and exithook function values) fail closed. Prefix is not authority
-and `runtime.*` is not a target set. Pinned-direct allow is only
+mapping, and listed-span entries are known targets. Stack stores,
+`TEST`, and `BT` that do not write `base`/`index` may sit between the
+length fact and dispatch; `0F BA /4 ib` has an imm8 length. Indexed
+indirect CALL, branch-skipped facts, ambiguous symbols, truncated
+transfers, and unproven register-indirect `CALL`/`JMP` fail closed.
+Register-indirect `CALL`/`JMP` (`FF D0`/`FF D1`/`FF D6` and other
+ModRM.mod=3 forms) remains unbounded. Listed function **start** addresses
+found as 8-byte values in `.noptrdata`, `.data`, or `.itablink` are a
+known subset to traverse, not a complete points-to proof: Go may
+materialize a runtime-created closure target with RIP-relative `LEA`.
+Scanning `.gopclntab`,
+`.rodata`, or `PF_X` contents, or attaching every pclntab function, is
+forbidden because that re-reaches trampolines such as
+`syscall.rawVforkSyscall.abi0`. 64-bit VEX/EVEX opcodes `C4`/`C5`/`62`
+fail decode; every reachable decode failure remains unbounded because raw
+syscall-opcode absence does not prove the body cannot transfer to a
+syscall-bearing callee. A relative transfer into unlisted
+executable text stays unbounded. Prefix is not authority and
+`runtime.*` is not a target set. Pinned-direct allow is only
 `internal/runtime/syscall.Syscall6` plus `0f05` at offset 12. Named Go
 PID1 extras are explicit D7 `runtimeEnvelope` / launch-base origin-3
 rows, not prefix membership. Named native `_start` identity-preflight
