@@ -182,6 +182,13 @@ func resolveSIBJumpTable(fn executableFunction, insn amd64Insn, history []decode
 			localEntries = append(localEntries, int(dest-fn.start))
 			continue
 		}
+		// A cross-function interior entry may skip code-pointer facts at the
+		// start of the destination function. The graph currently traverses a
+		// listed callee from its canonical start, so only that exact start is a
+		// complete cross-function table target proof.
+		if dest != callee.start {
+			return nil, nil, false
+		}
 		extra = append(extra, dest)
 	}
 	return extra, localEntries, true

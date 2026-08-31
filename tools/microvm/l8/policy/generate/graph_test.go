@@ -962,6 +962,32 @@ func TestL8D7RIPRelativeMOVRegisterCallUnlistedDestStaysUnbounded(t *testing.T) 
 	}
 }
 
+func TestL8D7JumpTableRejectsCrossFunctionInteriorThatSkipsRIPRelativeMOV(t *testing.T) {
+	callerCode := []byte{
+		0x83, 0xe1, 0x00,
+		0x48, 0x8d, 0x15, 0xf6, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+	}
+	caller := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(callerCode))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{
+		functions: []executableFunction{caller, callee},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 {
+				return callee.start + 7, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(caller, callerCode, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode cross-function interior jump table: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("cross-function jump-table entry into a callee interior was treated as bounded")
+	}
+}
+
 func TestL8D7RIPRelativeLEARegisterCallClobberStaysUnbounded(t *testing.T) {
 	code := []byte{
 		0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00,
