@@ -63,7 +63,8 @@ func resolveIndirectInsn(fn executableFunction, insn amd64Insn, history []decode
 		return resolveRegisterIndirectTargets(fn, insn, history, resolver, branchTargets, transferCursor)
 	}
 	if insn.indirectJump && insn.sib && !insn.sibNoBase && insn.sibScale == 8 && insn.modrmMod == 0 {
-		return resolveSIBJumpTable(fn, insn, history, resolver, branchTargets, transferCursor)
+		targets, _, resolved := resolveSIBJumpTable(fn, insn, history, resolver, branchTargets, transferCursor)
+		return targets, resolved
 	}
 	return nil, false
 }
@@ -114,35 +115,58 @@ func provenRegisterCodePointer(fn executableFunction, reg uint8, history []decod
 	return 0, false
 }
 
-func resolveSIBJumpTable(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) ([]uint64, bool) {
+func resolvedLocalJumpTableEntries(fn executableFunction, code []byte, resolver *goTextResolver, branchTargets []int) []int {
+	if resolver == nil {
+		return nil
+	}
+	var entries []int
+	var history []decodedInsnSite
+	for cursor := 0; cursor < len(code); {
+		insn, ok := amd64DecodeInsn(code[cursor:])
+		if !ok || insn.n <= 0 {
+			return entries
+		}
+		if insn.indirectJump && !insn.nonCanonicalMem && insn.sib && !insn.sibNoBase && insn.sibScale == 8 && insn.modrmMod == 0 {
+			_, local, resolved := resolveSIBJumpTable(fn, insn, history, resolver, branchTargets, cursor)
+			if resolved {
+				entries = append(entries, local...)
+			}
+		}
+		history = append(history, decodedInsnSite{cursor: cursor, vaddr: fn.start + uint64(cursor), insn: insn})
+		cursor += insn.n
+	}
+	return entries
+}
+
+func resolveSIBJumpTable(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) (extra []uint64, localEntries []int, resolved bool) {
 	if resolver == nil || insn.sibIndex == 4 {
-		return nil, false
+		return nil, nil, false
 	}
 	tableVA, haveTable := provenJumpTableBase(fn, insn.sibBase, history, resolver, branchTargets, transferCursor)
 	length, haveLen := provenJumpTableLength(fn, insn.sibIndex, history, resolver, branchTargets, transferCursor, insn.n)
 	if !haveTable || !haveLen || length <= 0 || length > maxProvenJumpTableEntries {
-		return nil, false
+		return nil, nil, false
 	}
-	var extra []uint64
 	for index := 0; index < length; index++ {
 		entryVA := tableVA + uint64(index)*8
 		if entryVA < tableVA {
-			return nil, false
+			return nil, nil, false
 		}
 		dest, ok := resolver.readU64(entryVA)
 		if !ok {
-			return nil, false
+			return nil, nil, false
 		}
 		callee := containingExecutableFunction(resolver.functions, dest)
 		if callee == nil {
-			return nil, false
+			return nil, nil, false
 		}
 		if dest >= fn.start && dest < fn.end {
+			localEntries = append(localEntries, int(dest-fn.start))
 			continue
 		}
 		extra = append(extra, dest)
 	}
-	return extra, true
+	return extra, localEntries, true
 }
 
 func provenJumpTableBase(fn executableFunction, reg uint8, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) (uint64, bool) {

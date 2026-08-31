@@ -461,6 +461,10 @@ func decodeFunctionSyscallGraphWithResolver(fn executableFunction, code []byte, 
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
+	for _, entry := range resolvedLocalJumpTableEntries(fn, code, resolver, branchTargets) {
+		blockStarts[entry] = true
+		branchTargets = append(branchTargets, entry)
+	}
 	var sites []decodedSyscallSite
 	var targets []uint64
 	var transfers []decodedControlTransfer
