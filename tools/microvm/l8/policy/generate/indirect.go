@@ -108,6 +108,24 @@ func provenRegisterCodePointer(fn executableFunction, reg uint8, history []decod
 			}
 			return dest, true
 		}
+		if site.insn.movRIP && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == reg {
+			if !jumpTableFactReachesTransfer(fn, site.cursor, transferCursor, resolver, branchTargets) {
+				return 0, false
+			}
+			addr, ok := amd64RIPRelativeTarget(site)
+			if !ok {
+				return 0, false
+			}
+			dest, ok := resolver.readU64(addr)
+			if !ok {
+				return 0, false
+			}
+			callee := containingExecutableFunction(resolver.functions, dest)
+			if callee == nil || dest != callee.start {
+				return 0, false
+			}
+			return dest, true
+		}
 		if insnClobbersReg(site.insn, reg) {
 			return 0, false
 		}
@@ -163,6 +181,13 @@ func resolveSIBJumpTable(fn executableFunction, insn amd64Insn, history []decode
 		if dest >= fn.start && dest < fn.end {
 			localEntries = append(localEntries, int(dest-fn.start))
 			continue
+		}
+		// A cross-function interior entry may skip code-pointer facts at the
+		// start of the destination function. The graph currently traverses a
+		// listed callee from its canonical start, so only that exact start is a
+		// complete cross-function table target proof.
+		if dest != callee.start {
+			return nil, nil, false
 		}
 		extra = append(extra, dest)
 	}
@@ -247,7 +272,7 @@ func amd64RIPRelativeTarget(site decodedInsnSite) (uint64, bool) {
 	if next < site.vaddr {
 		return 0, false
 	}
-	if site.insn.leaRIP {
+	if site.insn.leaRIP || site.insn.movRIP {
 		return addSignedAMD64Displacement(next, int64(site.insn.leaDisp))
 	}
 	if site.insn.jmpRel {
@@ -275,7 +300,7 @@ func insnClobbersReg(insn amd64Insn, reg uint8) bool {
 	if insn.nop || insn.flagsOnly || insn.memStore {
 		return false
 	}
-	if insn.leaRIP {
+	if insn.leaRIP || insn.movRIP {
 		return insn.leaReg == reg
 	}
 	if insn.andImm {

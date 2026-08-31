@@ -916,6 +916,78 @@ func TestL8D7RIPRelativeLEARegisterCallUnlistedDestStaysUnbounded(t *testing.T) 
 	}
 }
 
+func TestL8D7RIPRelativeMOVRegisterCallIsAKnownStart(t *testing.T) {
+	code := []byte{0x48, 0x8b, 0x05, 0xf9, 0x0f, 0x00, 0x00, 0xff, 0xd0}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn, callee},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 {
+				return callee.start, true
+			}
+			return 0, false
+		},
+	}
+	_, targets, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode MOV/CALL: %v", err)
+	}
+	if unbounded {
+		t.Fatal("RIP-relative MOV of a listed function start followed by CALL RAX remained unbounded")
+	}
+	if len(targets) != 1 || targets[0] != callee.start {
+		t.Fatalf("MOV/CALL targets = %v, want listed start %#x", targets, callee.start)
+	}
+}
+
+func TestL8D7RIPRelativeMOVRegisterCallUnlistedDestStaysUnbounded(t *testing.T) {
+	code := []byte{0x48, 0x8b, 0x05, 0xf9, 0x0f, 0x00, 0x00, 0xff, 0xd0}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 {
+				return 0x9999, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode MOV/CALL: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("MOV of an unlisted destination was treated as a known CALL-reg target")
+	}
+}
+
+func TestL8D7JumpTableRejectsCrossFunctionInteriorThatSkipsRIPRelativeMOV(t *testing.T) {
+	callerCode := []byte{
+		0x83, 0xe1, 0x00,
+		0x48, 0x8d, 0x15, 0xf6, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+	}
+	caller := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(callerCode))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{
+		functions: []executableFunction{caller, callee},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 {
+				return callee.start + 7, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(caller, callerCode, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode cross-function interior jump table: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("cross-function jump-table entry into a callee interior was treated as bounded")
+	}
+}
+
 func TestL8D7RIPRelativeLEARegisterCallClobberStaysUnbounded(t *testing.T) {
 	code := []byte{
 		0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00,
