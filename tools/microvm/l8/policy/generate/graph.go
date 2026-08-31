@@ -66,6 +66,7 @@ type amd64Insn struct {
 	preserveTrapSlot bool
 	preserveRAX      bool
 	leaRIP           bool
+	movRIP           bool
 	andImm           bool
 	cmpImm           bool
 	rel              int64
@@ -1091,6 +1092,20 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 			insn.leaDisp = int32(binary.LittleEndian.Uint32(code[index+1 : index+5]))
 			insn.preserveTrapSlot = true
 			insn.preserveRAX = true
+		}
+		return insn, true
+	}
+	if opcode == 0x8B && index < length {
+		modrm := code[index]
+		mod := modrm >> 6
+		rm := modrm & 7
+		if rexW && mod == 0 && rm == 5 && !nonCanonicalMemoryPrefix && length >= index+5 {
+			insn.movRIP = true
+			insn.leaReg = (modrm >> 3) & 7
+			if rexR {
+				insn.leaReg += 8
+			}
+			insn.leaDisp = int32(binary.LittleEndian.Uint32(code[index+1 : index+5]))
 		}
 		return insn, true
 	}
