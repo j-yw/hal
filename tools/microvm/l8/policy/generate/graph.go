@@ -57,6 +57,7 @@ type amd64Insn struct {
 	indirect         bool
 	indirectJump     bool
 	indirectReg      bool
+	indirectRegID    uint8
 	sib              bool
 	sibNoBase        bool
 	nop              bool
@@ -1199,6 +1200,11 @@ func decodeIndirectModRM(insn *amd64Insn, code []byte, index, length int, rexX, 
 	insn.modrmMod = mod
 	if mod == 3 {
 		insn.indirectReg = true
+		reg := rm
+		if rexB {
+			reg += 8
+		}
+		insn.indirectRegID = reg
 		return
 	}
 	if rm != 4 || index+1 >= length {

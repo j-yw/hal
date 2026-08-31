@@ -886,17 +886,51 @@ func TestL8D7RegisterIndirectCallReportsPointerTakenStartsWithoutClaimingComplet
 	}
 }
 
-func TestL8D7RIPRelativeLEARegisterCallRemainsUnbounded(t *testing.T) {
+func TestL8D7RIPRelativeLEARegisterCallIsAKnownStart(t *testing.T) {
 	code := []byte{0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00, 0xff, 0xd0}
 	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
 	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
 	resolver := &goTextResolver{functions: []executableFunction{fn, callee}}
+	_, targets, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode LEA/CALL: %v", err)
+	}
+	if unbounded {
+		t.Fatal("RIP-relative LEA of a listed function start followed by CALL RAX remained unbounded")
+	}
+	if len(targets) != 1 || targets[0] != callee.start {
+		t.Fatalf("LEA/CALL targets = %v, want listed start %#x", targets, callee.start)
+	}
+}
+
+func TestL8D7RIPRelativeLEARegisterCallUnlistedDestStaysUnbounded(t *testing.T) {
+	code := []byte{0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00, 0xff, 0xd0}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	resolver := &goTextResolver{functions: []executableFunction{fn}}
 	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
 	if err != nil {
 		t.Fatalf("decode LEA/CALL: %v", err)
 	}
 	if !unbounded {
-		t.Fatal("RIP-relative LEA followed by CALL RAX was treated as an allowed relative transfer")
+		t.Fatal("LEA of an unlisted destination was treated as a known CALL-reg target")
+	}
+}
+
+func TestL8D7RIPRelativeLEARegisterCallClobberStaysUnbounded(t *testing.T) {
+	code := []byte{
+		0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00,
+		0x48, 0x89, 0xc0,
+		0xff, 0xd0,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{functions: []executableFunction{fn, callee}}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode clobbered LEA/CALL: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("clobbered LEA fact bounded CALL RAX")
 	}
 }
 

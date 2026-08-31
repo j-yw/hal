@@ -60,12 +60,19 @@ func resolveIndirectInsn(fn executableFunction, insn amd64Insn, history []decode
 		return nil, false
 	}
 	if insn.indirectReg {
-		return resolvePointerTakenCallTargets(resolver)
+		return resolveRegisterIndirectTargets(fn, insn, history, resolver, branchTargets, transferCursor)
 	}
 	if insn.indirectJump && insn.sib && !insn.sibNoBase && insn.sibScale == 8 && insn.modrmMod == 0 {
 		return resolveSIBJumpTable(fn, insn, history, resolver, branchTargets, transferCursor)
 	}
 	return nil, false
+}
+
+func resolveRegisterIndirectTargets(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) ([]uint64, bool) {
+	if dest, ok := provenRegisterCodePointer(fn, insn.indirectRegID, history, resolver, branchTargets, transferCursor); ok {
+		return []uint64{dest}, true
+	}
+	return resolvePointerTakenCallTargets(resolver)
 }
 
 func resolvePointerTakenCallTargets(resolver *goTextResolver) ([]uint64, bool) {
@@ -78,6 +85,33 @@ func resolvePointerTakenCallTargets(resolver *goTextResolver) ([]uint64, bool) {
 	// in any inventoried section. Traverse the known subset while keeping the
 	// register-indirect transfer unbounded.
 	return append([]uint64(nil), resolver.pointerTaken...), false
+}
+
+func provenRegisterCodePointer(fn executableFunction, reg uint8, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) (uint64, bool) {
+	if resolver == nil {
+		return 0, false
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		site := history[i]
+		if site.insn.leaRIP && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == reg {
+			if !jumpTableFactReachesTransfer(fn, site.cursor, transferCursor, resolver, branchTargets) {
+				return 0, false
+			}
+			dest, ok := amd64RIPRelativeTarget(site)
+			if !ok {
+				return 0, false
+			}
+			callee := containingExecutableFunction(resolver.functions, dest)
+			if callee == nil || dest != callee.start {
+				return 0, false
+			}
+			return dest, true
+		}
+		if insnClobbersReg(site.insn, reg) {
+			return 0, false
+		}
+	}
+	return 0, false
 }
 
 func resolveSIBJumpTable(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) ([]uint64, bool) {
