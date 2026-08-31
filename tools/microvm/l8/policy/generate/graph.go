@@ -57,6 +57,7 @@ type amd64Insn struct {
 	indirect         bool
 	indirectJump     bool
 	indirectReg      bool
+	indirectRegID    uint8
 	sib              bool
 	sibNoBase        bool
 	nop              bool
@@ -459,6 +460,10 @@ func decodeFunctionSyscallGraphWithResolver(fn executableFunction, code []byte, 
 	blockStarts, branchTargets, err := amd64ControlFlowBoundaries(fn, code)
 	if err != nil {
 		return nil, nil, nil, false, err
+	}
+	for _, entry := range resolvedLocalJumpTableEntries(fn, code, resolver, branchTargets) {
+		blockStarts[entry] = true
+		branchTargets = append(branchTargets, entry)
 	}
 	var sites []decodedSyscallSite
 	var targets []uint64
@@ -1199,6 +1204,11 @@ func decodeIndirectModRM(insn *amd64Insn, code []byte, index, length int, rexX, 
 	insn.modrmMod = mod
 	if mod == 3 {
 		insn.indirectReg = true
+		reg := rm
+		if rexB {
+			reg += 8
+		}
+		insn.indirectRegID = reg
 		return
 	}
 	if rm != 4 || index+1 >= length {

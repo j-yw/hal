@@ -60,12 +60,20 @@ func resolveIndirectInsn(fn executableFunction, insn amd64Insn, history []decode
 		return nil, false
 	}
 	if insn.indirectReg {
-		return resolvePointerTakenCallTargets(resolver)
+		return resolveRegisterIndirectTargets(fn, insn, history, resolver, branchTargets, transferCursor)
 	}
 	if insn.indirectJump && insn.sib && !insn.sibNoBase && insn.sibScale == 8 && insn.modrmMod == 0 {
-		return resolveSIBJumpTable(fn, insn, history, resolver, branchTargets, transferCursor)
+		targets, _, resolved := resolveSIBJumpTable(fn, insn, history, resolver, branchTargets, transferCursor)
+		return targets, resolved
 	}
 	return nil, false
+}
+
+func resolveRegisterIndirectTargets(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) ([]uint64, bool) {
+	if dest, ok := provenRegisterCodePointer(fn, insn.indirectRegID, history, resolver, branchTargets, transferCursor); ok {
+		return []uint64{dest}, true
+	}
+	return resolvePointerTakenCallTargets(resolver)
 }
 
 func resolvePointerTakenCallTargets(resolver *goTextResolver) ([]uint64, bool) {
@@ -80,35 +88,85 @@ func resolvePointerTakenCallTargets(resolver *goTextResolver) ([]uint64, bool) {
 	return append([]uint64(nil), resolver.pointerTaken...), false
 }
 
-func resolveSIBJumpTable(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) ([]uint64, bool) {
+func provenRegisterCodePointer(fn executableFunction, reg uint8, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) (uint64, bool) {
+	if resolver == nil {
+		return 0, false
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		site := history[i]
+		if site.insn.leaRIP && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == reg {
+			if !jumpTableFactReachesTransfer(fn, site.cursor, transferCursor, resolver, branchTargets) {
+				return 0, false
+			}
+			dest, ok := amd64RIPRelativeTarget(site)
+			if !ok {
+				return 0, false
+			}
+			callee := containingExecutableFunction(resolver.functions, dest)
+			if callee == nil || dest != callee.start {
+				return 0, false
+			}
+			return dest, true
+		}
+		if insnClobbersReg(site.insn, reg) {
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+func resolvedLocalJumpTableEntries(fn executableFunction, code []byte, resolver *goTextResolver, branchTargets []int) []int {
+	if resolver == nil {
+		return nil
+	}
+	var entries []int
+	var history []decodedInsnSite
+	for cursor := 0; cursor < len(code); {
+		insn, ok := amd64DecodeInsn(code[cursor:])
+		if !ok || insn.n <= 0 {
+			return entries
+		}
+		if insn.indirectJump && !insn.nonCanonicalMem && insn.sib && !insn.sibNoBase && insn.sibScale == 8 && insn.modrmMod == 0 {
+			_, local, resolved := resolveSIBJumpTable(fn, insn, history, resolver, branchTargets, cursor)
+			if resolved {
+				entries = append(entries, local...)
+			}
+		}
+		history = append(history, decodedInsnSite{cursor: cursor, vaddr: fn.start + uint64(cursor), insn: insn})
+		cursor += insn.n
+	}
+	return entries
+}
+
+func resolveSIBJumpTable(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) (extra []uint64, localEntries []int, resolved bool) {
 	if resolver == nil || insn.sibIndex == 4 {
-		return nil, false
+		return nil, nil, false
 	}
 	tableVA, haveTable := provenJumpTableBase(fn, insn.sibBase, history, resolver, branchTargets, transferCursor)
 	length, haveLen := provenJumpTableLength(fn, insn.sibIndex, history, resolver, branchTargets, transferCursor, insn.n)
 	if !haveTable || !haveLen || length <= 0 || length > maxProvenJumpTableEntries {
-		return nil, false
+		return nil, nil, false
 	}
-	var extra []uint64
 	for index := 0; index < length; index++ {
 		entryVA := tableVA + uint64(index)*8
 		if entryVA < tableVA {
-			return nil, false
+			return nil, nil, false
 		}
 		dest, ok := resolver.readU64(entryVA)
 		if !ok {
-			return nil, false
+			return nil, nil, false
 		}
 		callee := containingExecutableFunction(resolver.functions, dest)
 		if callee == nil {
-			return nil, false
+			return nil, nil, false
 		}
 		if dest >= fn.start && dest < fn.end {
+			localEntries = append(localEntries, int(dest-fn.start))
 			continue
 		}
 		extra = append(extra, dest)
 	}
-	return extra, true
+	return extra, localEntries, true
 }
 
 func provenJumpTableBase(fn executableFunction, reg uint8, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) (uint64, bool) {

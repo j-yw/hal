@@ -886,17 +886,107 @@ func TestL8D7RegisterIndirectCallReportsPointerTakenStartsWithoutClaimingComplet
 	}
 }
 
-func TestL8D7RIPRelativeLEARegisterCallRemainsUnbounded(t *testing.T) {
+func TestL8D7RIPRelativeLEARegisterCallIsAKnownStart(t *testing.T) {
 	code := []byte{0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00, 0xff, 0xd0}
 	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
 	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
 	resolver := &goTextResolver{functions: []executableFunction{fn, callee}}
+	_, targets, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode LEA/CALL: %v", err)
+	}
+	if unbounded {
+		t.Fatal("RIP-relative LEA of a listed function start followed by CALL RAX remained unbounded")
+	}
+	if len(targets) != 1 || targets[0] != callee.start {
+		t.Fatalf("LEA/CALL targets = %v, want listed start %#x", targets, callee.start)
+	}
+}
+
+func TestL8D7RIPRelativeLEARegisterCallUnlistedDestStaysUnbounded(t *testing.T) {
+	code := []byte{0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00, 0xff, 0xd0}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	resolver := &goTextResolver{functions: []executableFunction{fn}}
 	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
 	if err != nil {
 		t.Fatalf("decode LEA/CALL: %v", err)
 	}
 	if !unbounded {
-		t.Fatal("RIP-relative LEA followed by CALL RAX was treated as an allowed relative transfer")
+		t.Fatal("LEA of an unlisted destination was treated as a known CALL-reg target")
+	}
+}
+
+func TestL8D7RIPRelativeLEARegisterCallClobberStaysUnbounded(t *testing.T) {
+	code := []byte{
+		0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00,
+		0x48, 0x89, 0xc0,
+		0xff, 0xd0,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{functions: []executableFunction{fn, callee}}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode clobbered LEA/CALL: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("clobbered LEA fact bounded CALL RAX")
+	}
+}
+
+func TestL8D7RIPRelativeLEARegisterCallRejectsEarlierJumpTableEntryThatSkipsLEA(t *testing.T) {
+	code := []byte{
+		0x83, 0xe1, 0x01,
+		0x48, 0x8d, 0x15, 0xf6, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+		0x48, 0x8d, 0x05, 0xec, 0x1f, 0x00, 0x00,
+		0xff, 0xd0,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn, callee},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 || va == 0x2008 {
+				return fn.start + 20, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode jump-table-skipped LEA/CALL: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("same-function jump table entry skipped the LEA but bounded CALL RAX")
+	}
+}
+
+func TestL8D7RIPRelativeLEARegisterCallRejectsLaterJumpTableEntryThatSkipsLEA(t *testing.T) {
+	code := []byte{
+		0x48, 0x8d, 0x05, 0xf9, 0x1f, 0x00, 0x00,
+		0xff, 0xd0,
+		0x83, 0xe1, 0x00,
+		0x48, 0x8d, 0x15, 0xed, 0x0f, 0x00, 0x00,
+		0xff, 0x24, 0xca,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn, callee},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2000 {
+				return fn.start + 7, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode backward jump-table-skipped LEA/CALL: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("later same-function jump table entry skipped the LEA but bounded CALL RAX")
 	}
 }
 
