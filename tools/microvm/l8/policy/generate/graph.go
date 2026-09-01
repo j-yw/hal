@@ -68,6 +68,12 @@ type amd64Insn struct {
 	leaRIP           bool
 	movRIP           bool
 	movLoad          bool
+	leaRSP           bool
+	storeRSP         bool
+	storeReg         uint8
+	stackWrite       bool
+	stackWriteWidth  int32
+	movRegCopy       bool
 	andImm           bool
 	cmpImm           bool
 	rel              int64
@@ -96,6 +102,8 @@ type decodedControlTransfer struct {
 	trapSlot      uint32
 	raxKnown      bool
 	rax           uint32
+	funcvalKnown  bool
+	funcvalCode   uint64
 }
 
 func roleEntrySymbol(binary inspectedGuestBinary) string {
@@ -315,10 +323,12 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 	itabs := collectItabAddresses(file, encoded)
 
 	type decodedFunction struct {
-		sites     []decodedSyscallSite
-		targets   []uint64
-		indirect  bool
-		decodeErr error
+		sites      []decodedSyscallSite
+		targets    []uint64
+		transfers  []decodedControlTransfer
+		indirect   bool
+		trampoline bool
+		decodeErr  error
 	}
 	decoded := make(map[uint64]*decodedFunction, len(functions))
 	var decodeOne func(executableFunction) *decodedFunction
@@ -356,7 +366,16 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 		sites = append(sites, trampolineSyscallSites(transfers, functions)...)
 		result.sites = sites
 		result.targets = targets
+		result.transfers = transfers
 		result.indirect = indirect
+		result.trampoline = functionHasFuncvalTrampoline(fn, encoded[fileOff:fileOff+size], &goTextResolver{
+			file:            file,
+			encoded:         encoded,
+			functions:       functions,
+			interiorEntries: interiorEntries,
+			pointerTaken:    pointerTaken,
+			itabs:           itabs,
+		})
 		return result
 	}
 
@@ -382,6 +401,36 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 		if body.indirect {
 			unbounded = true
 		}
+		if fn.start == start.start && body.trampoline {
+			unbounded = true
+		}
+		directTargets := make(map[uint64]int, len(body.transfers))
+		for _, transfer := range body.transfers {
+			directTargets[transfer.target]++
+			callee, unknown := followListedSpanTarget(functions, transfer.target)
+			if unknown || callee == nil {
+				continue
+			}
+			calleeBody := decodeOne(*callee)
+			if calleeBody.decodeErr != nil || !calleeBody.trampoline {
+				continue
+			}
+			codeFn, proven := provenFuncvalTrampolineTarget(functions, transfer, callee.start)
+			if !proven {
+				unbounded = true
+				continue
+			}
+			if decodeOne(*codeFn).trampoline {
+				// The one-hop fact proves the code target, not the AX argument
+				// that a nested funcval trampoline would consume.
+				unbounded = true
+			}
+			if _, seen := visited[codeFn.start]; seen {
+				continue
+			}
+			visited[codeFn.start] = struct{}{}
+			queue = append(queue, *codeFn)
+		}
 		for _, site := range body.sites {
 			reachableSites = append(reachableSites, site)
 			if extraReachableSyscallName(binary, site) != "" {
@@ -395,6 +444,13 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 					unbounded = true
 				}
 				continue
+			}
+			if directTargets[target] > 0 {
+				directTargets[target]--
+			} else if decodeOne(*callee).trampoline {
+				// Resolved indirect edges do not carry the caller's AX
+				// funcval fact and cannot borrow one from a sibling edge.
+				unbounded = true
 			}
 			if _, seen := visited[callee.start]; seen {
 				continue
@@ -428,6 +484,17 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 		reachableNames:    names,
 		unboundedIndirect: unbounded,
 	}, nil
+}
+
+func provenFuncvalTrampolineTarget(functions []executableFunction, transfer decodedControlTransfer, trampolineStart uint64) (*executableFunction, bool) {
+	if transfer.target != trampolineStart || !transfer.funcvalKnown {
+		return nil, false
+	}
+	codeFn := containingExecutableFunction(functions, transfer.funcvalCode)
+	if codeFn == nil || transfer.funcvalCode != codeFn.start {
+		return nil, false
+	}
+	return codeFn, true
 }
 
 func listDirectInteriorEntries(file *elf.File, encoded []byte, functions []executableFunction) map[uint64][]uint64 {
@@ -536,11 +603,21 @@ func decodeFunctionSyscallGraphWithResolver(fn executableFunction, code []byte, 
 			transferRAXImm = nil
 			transferRAXSource = -1
 		}
+		var callFuncval registerFact
+		var callFuncvalOK bool
+		if insn.callRel {
+			callFuncval, callFuncvalOK = provenRegisterFact(fn, 0, history, resolver, branchTargets, cursor)
+		}
 		if insn.indirect {
 			extra, resolved := resolveIndirectInsn(fn, insn, history, resolver, branchTargets, cursor)
 			targets = append(targets, extra...)
 			if !resolved {
-				indirect = true
+				if funcvalTrampolineCall(fn, insn, history, resolver, branchTargets, cursor) {
+					// Bound from caller AX facts during BFS; do not treat as an
+					// unknown destination set here.
+				} else {
+					indirect = true
+				}
 			}
 		}
 		history = append(history, decodedInsnSite{cursor: cursor, vaddr: vaddr, insn: insn})
@@ -564,6 +641,10 @@ func decodeFunctionSyscallGraphWithResolver(fn executableFunction, code []byte, 
 				if transferRAXImm != nil && amd64ConstantFactReachesTransfer(transferRAXSource, cursor, branchTargets) {
 					transfer.raxKnown = true
 					transfer.rax = *transferRAXImm
+				}
+				if insn.callRel && callFuncvalOK && callFuncval.kind == registerFactFuncval {
+					transfer.funcvalKnown = true
+					transfer.funcvalCode = callFuncval.va
 				}
 				transfers = append(transfers, transfer)
 			}
@@ -1095,6 +1176,21 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 			insn.leaDisp = int32(binary.LittleEndian.Uint32(code[index+1 : index+5]))
 			insn.preserveTrapSlot = true
 			insn.preserveRAX = true
+		} else if rexW && !nonCanonicalMemoryPrefix && rm == 4 && index+1 < length {
+			sib := code[index+1]
+			if (sib>>3)&7 == 4 && sib&7 == 4 {
+				disp, ok := amd64RSPDisplacement(code, index, rexB, rexX)
+				if ok {
+					insn.leaRSP = true
+					insn.leaReg = (modrm >> 3) & 7
+					if rexR {
+						insn.leaReg += 8
+					}
+					insn.leaDisp = disp
+					insn.preserveTrapSlot = true
+					insn.preserveRAX = true
+				}
+			}
 		}
 		return insn, true
 	}
@@ -1211,10 +1307,26 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 			if displacement != 0 && !nonCanonicalMemoryPrefix {
 				insn.preserveTrapSlot = true
 			}
+			if rexW && !operand16 && !nonCanonicalMemoryPrefix {
+				insn.stackWrite = true
+				insn.stackWriteWidth = 8
+				insn.leaDisp = displacement
+			}
 		}
 	}
 	if (opcode == 0x89 || opcode == 0x88 || opcode == 0xC6) && index < length {
 		modrm := code[index]
+		if opcode == 0x89 && modrm>>6 == 3 && rexW {
+			insn.movRegCopy = true
+			insn.leaReg = modrm & 7
+			if rexB {
+				insn.leaReg += 8
+			}
+			insn.storeReg = (modrm >> 3) & 7
+			if rexR {
+				insn.storeReg += 8
+			}
+		}
 		if modrm>>6 != 3 && !nonCanonicalMemoryPrefix {
 			insn.memStore = true
 		}
@@ -1222,10 +1334,24 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 			if displacement != 0 {
 				insn.preserveTrapSlot = true
 			}
+			if opcode == 0x89 && rexW {
+				insn.storeRSP = true
+				insn.stackWrite = true
+				insn.stackWriteWidth = 8
+				insn.storeReg = (modrm >> 3) & 7
+				if rexR {
+					insn.storeReg += 8
+				}
+				insn.leaDisp = displacement
+			}
 		}
 	}
-	if (opcode == 0x85 || opcode == 0x84) && !nonCanonicalMemoryPrefix {
+	if (opcode == 0x85 || opcode == 0x84 || opcode == 0x39 || opcode == 0x3B) && !nonCanonicalMemoryPrefix {
 		insn.flagsOnly = true
+	}
+	if opcode >= 0x50 && opcode <= 0x57 {
+		insn.preserveTrapSlot = true
+		insn.preserveRAX = true
 	}
 	if opcode == 0x90 {
 		insn.preserveTrapSlot = true
