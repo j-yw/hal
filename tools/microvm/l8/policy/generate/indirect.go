@@ -30,6 +30,8 @@ const (
 	registerFactNone registerFactKind = iota
 	registerFactCode
 	registerFactItab
+	registerFactFuncval
+	registerFactArg0
 )
 
 type registerFact struct {
@@ -113,9 +115,6 @@ func provenRegisterCodePointer(fn executableFunction, reg uint8, history []decod
 }
 
 func provenRegisterFact(fn executableFunction, reg uint8, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) (registerFact, bool) {
-	if resolver == nil {
-		return registerFact{}, false
-	}
 	for i := len(history) - 1; i >= 0; i-- {
 		site := history[i]
 		if site.insn.leaRIP && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == reg {
@@ -136,11 +135,20 @@ func provenRegisterFact(fn executableFunction, reg uint8, history []decodedInsnS
 			if !ok {
 				return registerFact{}, false
 			}
+			if resolver == nil {
+				return registerFact{}, false
+			}
 			dest, ok := resolver.readU64(addr)
 			if !ok {
 				return registerFact{}, false
 			}
 			return classifyLoadedPointer(resolver, dest)
+		}
+		if site.insn.leaRSP && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == reg {
+			if !jumpTableFactReachesTransfer(fn, site.cursor, transferCursor, resolver, branchTargets) {
+				return registerFact{}, false
+			}
+			return stackFuncvalFact(fn, site.insn.leaDisp, history[:i], resolver, branchTargets, site.cursor)
 		}
 		if site.insn.movLoad && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == reg {
 			if !jumpTableFactReachesTransfer(fn, site.cursor, transferCursor, resolver, branchTargets) {
@@ -155,6 +163,9 @@ func provenRegisterFact(fn executableFunction, reg uint8, history []decodedInsnS
 				return registerFact{}, false
 			}
 			if base.kind == registerFactItab && disp >= itabFunOffset && disp%8 == 0 {
+				if resolver == nil {
+					return registerFact{}, false
+				}
 				methodVA := base.va + uint64(disp)
 				if methodVA < base.va {
 					return registerFact{}, false
@@ -165,13 +176,79 @@ func provenRegisterFact(fn executableFunction, reg uint8, history []decodedInsnS
 				}
 				return listedFunctionStart(resolver, dest)
 			}
+			if (base.kind == registerFactFuncval || base.kind == registerFactArg0) && disp == 0 {
+				if base.kind == registerFactFuncval {
+					return listedFunctionStart(resolver, base.va)
+				}
+				return registerFact{kind: registerFactArg0, va: 0}, true
+			}
 			return registerFact{}, false
 		}
 		if insnClobbersReg(site.insn, reg) {
 			return registerFact{}, false
 		}
 	}
+	if reg == 0 {
+		return registerFact{kind: registerFactArg0}, true
+	}
 	return registerFact{}, false
+}
+
+func stackFuncvalFact(fn executableFunction, disp int32, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, leaCursor int) (registerFact, bool) {
+	for i := len(history) - 1; i >= 0; i-- {
+		site := history[i]
+		if site.insn.storeRSP && site.insn.leaDisp == disp {
+			if !jumpTableFactReachesTransfer(fn, site.cursor, leaCursor, resolver, branchTargets) {
+				return registerFact{}, false
+			}
+			src, ok := provenRegisterFact(fn, site.insn.storeReg, history[:i], resolver, branchTargets, site.cursor)
+			if !ok || src.kind != registerFactCode {
+				return registerFact{}, false
+			}
+			return registerFact{kind: registerFactFuncval, va: src.va}, true
+		}
+	}
+	return registerFact{}, false
+}
+
+func funcvalTrampolineCall(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) bool {
+	if !insn.indirectReg {
+		return false
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		site := history[i]
+		if site.insn.movLoad && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == insn.indirectRegID && site.insn.sibBase == 0 && site.insn.leaDisp == 0 {
+			if !jumpTableFactReachesTransfer(fn, site.cursor, transferCursor, resolver, branchTargets) {
+				return false
+			}
+			base, ok := provenRegisterFact(fn, 0, history[:i], resolver, branchTargets, site.cursor)
+			return ok && base.kind == registerFactArg0
+		}
+		if insnClobbersReg(site.insn, insn.indirectRegID) {
+			return false
+		}
+	}
+	return false
+}
+
+func functionHasFuncvalTrampoline(fn executableFunction, code []byte, resolver *goTextResolver) bool {
+	_, branchTargets, err := amd64ControlFlowBoundaries(fn, code)
+	if err != nil {
+		return false
+	}
+	var history []decodedInsnSite
+	for cursor := 0; cursor < len(code); {
+		insn, ok := amd64DecodeInsn(code[cursor:])
+		if !ok || insn.n <= 0 {
+			return false
+		}
+		if insn.indirectReg && funcvalTrampolineCall(fn, insn, history, resolver, branchTargets, cursor) {
+			return true
+		}
+		history = append(history, decodedInsnSite{cursor: cursor, vaddr: fn.start + uint64(cursor), insn: insn})
+		cursor += insn.n
+	}
+	return false
 }
 
 func classifyLoadedPointer(resolver *goTextResolver, dest uint64) (registerFact, bool) {
@@ -361,7 +438,7 @@ func insnClobbersReg(insn amd64Insn, reg uint8) bool {
 	if insn.nop || insn.flagsOnly || insn.memStore {
 		return false
 	}
-	if insn.leaRIP || insn.movRIP || insn.movLoad {
+	if insn.leaRIP || insn.movRIP || insn.movLoad || insn.leaRSP || insn.movRegCopy {
 		return insn.leaReg == reg
 	}
 	if insn.andImm {

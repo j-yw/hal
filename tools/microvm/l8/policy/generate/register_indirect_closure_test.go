@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestL8D7RegisterIndirectCallRejectsRuntimeCreatedClosureOutsideStaticSections(t *testing.T) {
+func TestL8D7FuncvalTrampolineReachesRuntimeCreatedClosure(t *testing.T) {
 	source := `package main
 
 import "syscall"
@@ -30,8 +30,8 @@ func main() {
 	if inspected.graphErr != nil {
 		t.Fatal(inspected.graphErr)
 	}
-	if !inspected.unboundedIndirect {
-		t.Fatal("runtime-created closure outside the static section inventory was treated as a complete register-indirect target set")
+	if !containsString(inspected.reachableFunctions, "main.main.func1") {
+		t.Fatalf("funcval trampoline did not reach the closure; reachable=%v unbounded=%v extras=%v", inspected.reachableFunctions, inspected.unboundedIndirect, extraReachableSyscallNames(inspected))
 	}
 }
 

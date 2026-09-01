@@ -956,6 +956,29 @@ func TestL8D7RIPRelativeMOVRegisterCallIsAKnownStart(t *testing.T) {
 	}
 }
 
+func TestL8D7FuncvalStackLEAPassesCodeToRelativeCall(t *testing.T) {
+	code := []byte{
+		0x48, 0x8d, 0x0d, 0xf9, 0x1f, 0x00, 0x00,
+		0x48, 0x89, 0x4c, 0x24, 0x08,
+		0x48, 0x8d, 0x44, 0x24, 0x08,
+		0xe8, 0xea, 0x0f, 0x00, 0x00,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	invoke := executableFunction{name: "invoke", start: 0x2000, end: 0x2100}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{functions: []executableFunction{fn, invoke, callee}}
+	_, _, transfers, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode funcval setup: %v", err)
+	}
+	if unbounded {
+		t.Fatal("funcval stack setup was treated as unbounded")
+	}
+	if len(transfers) != 1 || !transfers[0].funcvalKnown || transfers[0].funcvalCode != callee.start {
+		t.Fatalf("funcval transfer = %#v, want known code %#x", transfers, callee.start)
+	}
+}
+
 func TestL8D7ItabMethodSlotCallIsAKnownStart(t *testing.T) {
 	code := []byte{
 		0x48, 0x8d, 0x05, 0xf9, 0x0f, 0x00, 0x00,
