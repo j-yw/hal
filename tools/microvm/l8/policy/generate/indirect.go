@@ -18,7 +18,23 @@ type goTextResolver struct {
 	// pointerTaken is the closed set of listed function starts whose addresses
 	// appear as 8-byte pointers in non-executable, non-pclntab ELF contents.
 	pointerTaken []uint64
+	itabs        map[uint64]struct{}
 	loadU64      func(uint64) (uint64, bool)
+}
+
+const itabFunOffset = 24
+
+type registerFactKind uint8
+
+const (
+	registerFactNone registerFactKind = iota
+	registerFactCode
+	registerFactItab
+)
+
+type registerFact struct {
+	kind registerFactKind
+	va   uint64
 }
 
 type decodedInsnSite struct {
@@ -89,48 +105,93 @@ func resolvePointerTakenCallTargets(resolver *goTextResolver) ([]uint64, bool) {
 }
 
 func provenRegisterCodePointer(fn executableFunction, reg uint8, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) (uint64, bool) {
-	if resolver == nil {
+	fact, ok := provenRegisterFact(fn, reg, history, resolver, branchTargets, transferCursor)
+	if !ok || fact.kind != registerFactCode {
 		return 0, false
+	}
+	return fact.va, true
+}
+
+func provenRegisterFact(fn executableFunction, reg uint8, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) (registerFact, bool) {
+	if resolver == nil {
+		return registerFact{}, false
 	}
 	for i := len(history) - 1; i >= 0; i-- {
 		site := history[i]
 		if site.insn.leaRIP && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == reg {
 			if !jumpTableFactReachesTransfer(fn, site.cursor, transferCursor, resolver, branchTargets) {
-				return 0, false
+				return registerFact{}, false
 			}
 			dest, ok := amd64RIPRelativeTarget(site)
 			if !ok {
-				return 0, false
+				return registerFact{}, false
 			}
-			callee := containingExecutableFunction(resolver.functions, dest)
-			if callee == nil || dest != callee.start {
-				return 0, false
-			}
-			return dest, true
+			return classifyLoadedPointer(resolver, dest)
 		}
 		if site.insn.movRIP && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == reg {
 			if !jumpTableFactReachesTransfer(fn, site.cursor, transferCursor, resolver, branchTargets) {
-				return 0, false
+				return registerFact{}, false
 			}
 			addr, ok := amd64RIPRelativeTarget(site)
 			if !ok {
-				return 0, false
+				return registerFact{}, false
 			}
 			dest, ok := resolver.readU64(addr)
 			if !ok {
-				return 0, false
+				return registerFact{}, false
 			}
-			callee := containingExecutableFunction(resolver.functions, dest)
-			if callee == nil || dest != callee.start {
-				return 0, false
+			return classifyLoadedPointer(resolver, dest)
+		}
+		if site.insn.movLoad && site.insn.operand64 && !site.insn.nonCanonicalMem && site.insn.leaReg == reg {
+			if !jumpTableFactReachesTransfer(fn, site.cursor, transferCursor, resolver, branchTargets) {
+				return registerFact{}, false
 			}
-			return dest, true
+			base, ok := provenRegisterFact(fn, site.insn.sibBase, history[:i], resolver, branchTargets, site.cursor)
+			if !ok {
+				return registerFact{}, false
+			}
+			disp := site.insn.leaDisp
+			if disp < 0 {
+				return registerFact{}, false
+			}
+			if base.kind == registerFactItab && disp >= itabFunOffset && disp%8 == 0 {
+				methodVA := base.va + uint64(disp)
+				if methodVA < base.va {
+					return registerFact{}, false
+				}
+				dest, ok := resolver.readU64(methodVA)
+				if !ok {
+					return registerFact{}, false
+				}
+				return listedFunctionStart(resolver, dest)
+			}
+			return registerFact{}, false
 		}
 		if insnClobbersReg(site.insn, reg) {
-			return 0, false
+			return registerFact{}, false
 		}
 	}
-	return 0, false
+	return registerFact{}, false
+}
+
+func classifyLoadedPointer(resolver *goTextResolver, dest uint64) (registerFact, bool) {
+	if resolver != nil {
+		if _, ok := resolver.itabs[dest]; ok {
+			return registerFact{kind: registerFactItab, va: dest}, true
+		}
+	}
+	return listedFunctionStart(resolver, dest)
+}
+
+func listedFunctionStart(resolver *goTextResolver, dest uint64) (registerFact, bool) {
+	if resolver == nil {
+		return registerFact{}, false
+	}
+	callee := containingExecutableFunction(resolver.functions, dest)
+	if callee == nil || dest != callee.start {
+		return registerFact{}, false
+	}
+	return registerFact{kind: registerFactCode, va: dest}, true
 }
 
 func resolvedLocalJumpTableEntries(fn executableFunction, code []byte, resolver *goTextResolver, branchTargets []int) []int {
@@ -300,7 +361,7 @@ func insnClobbersReg(insn amd64Insn, reg uint8) bool {
 	if insn.nop || insn.flagsOnly || insn.memStore {
 		return false
 	}
-	if insn.leaRIP || insn.movRIP {
+	if insn.leaRIP || insn.movRIP || insn.movLoad {
 		return insn.leaReg == reg
 	}
 	if insn.andImm {

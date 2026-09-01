@@ -1089,8 +1089,10 @@ func hashGeneratorSources(root string) ([32]byte, error) {
 		filepath.Join(policyDir, "generate", "evidence.go"),
 		filepath.Join(policyDir, "generate", "graph.go"),
 		filepath.Join(policyDir, "generate", "indirect.go"),
+		filepath.Join(policyDir, "generate", "itab.go"),
 		filepath.Join(policyDir, "generate", "main.go"),
 		filepath.Join(policyDir, "generate", "pointer_taken.go"),
+		filepath.Join(policyDir, "generate", "vex.go"),
 	})
 }
 

@@ -836,11 +836,26 @@ func TestL8D7BitTestImmediateHasImm8Length(t *testing.T) {
 	}
 }
 
-func TestL8D7VEXPrefixFailsDecode(t *testing.T) {
-	for _, opcode := range []byte{0x62, 0xc4, 0xc5} {
-		if n, ok := amd64InstructionLength([]byte{opcode, 0xe2, 0x7d, 0x18}); ok {
-			t.Fatalf("opcode %#x length = %d, want decode failure", opcode, n)
-		}
+func TestL8D7VZEROUPPERHasLengthThree(t *testing.T) {
+	n, ok := amd64InstructionLength([]byte{0xc5, 0xf8, 0x77})
+	if !ok || n != 3 {
+		t.Fatalf("VZEROUPPER length = %d ok=%v, want 3", n, ok)
+	}
+	insn, ok := amd64DecodeInsn([]byte{0xc5, 0xf8, 0x77, 0xe8, 0x00, 0x00, 0x00, 0x00})
+	if !ok || insn.n != 3 || insn.callRel {
+		t.Fatalf("VZEROUPPER decode n=%d callRel=%v ok=%v", insn.n, insn.callRel, ok)
+	}
+}
+
+func TestL8D7EVEXIncompletePrefixFailsDecode(t *testing.T) {
+	if n, ok := amd64InstructionLength([]byte{0x62, 0xe2, 0x7d, 0x18}); ok {
+		t.Fatalf("truncated EVEX length = %d, want failure", n)
+	}
+}
+
+func TestL8D7REXBeforeVEXFailsDecode(t *testing.T) {
+	if n, ok := amd64InstructionLength([]byte{0x48, 0xc5, 0xf8, 0x77}); ok {
+		t.Fatalf("REX+VEX length = %d, want failure", n)
 	}
 }
 
@@ -938,6 +953,63 @@ func TestL8D7RIPRelativeMOVRegisterCallIsAKnownStart(t *testing.T) {
 	}
 	if len(targets) != 1 || targets[0] != callee.start {
 		t.Fatalf("MOV/CALL targets = %v, want listed start %#x", targets, callee.start)
+	}
+}
+
+func TestL8D7ItabMethodSlotCallIsAKnownStart(t *testing.T) {
+	code := []byte{
+		0x48, 0x8d, 0x05, 0xf9, 0x0f, 0x00, 0x00,
+		0x48, 0x8b, 0x40, 0x18,
+		0xff, 0xd0,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn, callee},
+		itabs:     map[uint64]struct{}{0x2000: {}},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2018 {
+				return callee.start, true
+			}
+			return 0, false
+		},
+	}
+	_, targets, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode itab CALL: %v", err)
+	}
+	if unbounded {
+		t.Fatal("LEA of an itab plus method-slot MOV/CALL remained unbounded")
+	}
+	if len(targets) != 1 || targets[0] != callee.start {
+		t.Fatalf("itab CALL targets = %v, want listed start %#x", targets, callee.start)
+	}
+}
+
+func TestL8D7ItabNonMethodDisplacementStaysUnbounded(t *testing.T) {
+	code := []byte{
+		0x48, 0x8d, 0x05, 0xf9, 0x0f, 0x00, 0x00,
+		0x48, 0x8b, 0x40, 0x08,
+		0xff, 0xd0,
+	}
+	fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+	callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+	resolver := &goTextResolver{
+		functions: []executableFunction{fn, callee},
+		itabs:     map[uint64]struct{}{0x2000: {}},
+		loadU64: func(va uint64) (uint64, bool) {
+			if va == 0x2008 {
+				return callee.start, true
+			}
+			return 0, false
+		},
+	}
+	_, _, _, unbounded, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+	if err != nil {
+		t.Fatalf("decode itab Type load: %v", err)
+	}
+	if !unbounded {
+		t.Fatal("itab Type-field load was treated as a method slot")
 	}
 }
 
