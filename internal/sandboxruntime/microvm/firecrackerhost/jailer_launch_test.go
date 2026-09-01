@@ -1,6 +1,7 @@
 package firecrackerhost
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -59,8 +60,17 @@ func TestPlanStrictJailerLaunchFailsClosedAtEveryMissingBoundary(t *testing.T) {
 		edit  func(*strictJailerLaunchRequest)
 	}{
 		{name: "runtime identity", field: "runtimeId", edit: func(req *strictJailerLaunchRequest) { req.RuntimeID = "bad/runtime" }},
+		{name: "runtime short option", field: "runtimeId", edit: func(req *strictJailerLaunchRequest) { req.RuntimeID = "-h" }},
+		{name: "runtime help option", field: "runtimeId", edit: func(req *strictJailerLaunchRequest) { req.RuntimeID = "--help" }},
+		{name: "runtime version option", field: "runtimeId", edit: func(req *strictJailerLaunchRequest) { req.RuntimeID = "--version" }},
+		{name: "runtime separator", field: "runtimeId", edit: func(req *strictJailerLaunchRequest) { req.RuntimeID = "--" }},
 		{name: "jailer", field: "jailerPath", edit: func(req *strictJailerLaunchRequest) { req.JailerPath = "" }},
+		{name: "jailer root", field: "jailerPath", edit: func(req *strictJailerLaunchRequest) { req.JailerPath = "/" }},
 		{name: "Firecracker", field: "firecrackerPath", edit: func(req *strictJailerLaunchRequest) { req.CanonicalFirecrackerPath = "" }},
+		{name: "Firecracker root", field: "firecrackerPath", edit: func(req *strictJailerLaunchRequest) {
+			req.CanonicalFirecrackerPath = "/"
+			req.Firecracker.Executable = "/"
+		}},
 		{name: "root uid", field: "uid", edit: func(req *strictJailerLaunchRequest) { req.UID = 0 }},
 		{name: "root gid", field: "gid", edit: func(req *strictJailerLaunchRequest) { req.GID = 0 }},
 		{name: "chroot", field: "chrootBaseDir", edit: func(req *strictJailerLaunchRequest) { req.ChrootBaseDir = "/" }},
@@ -135,6 +145,19 @@ func TestPlanStrictJailerLaunchPreservesPCIInsideJailerBoundary(t *testing.T) {
 	}
 }
 
+func TestPlanStrictJailerLaunchRejectsPCIArgumentDrift(t *testing.T) {
+	for _, args := range [][]string{
+		append(validStrictJailerLaunchRequest().Firecracker.Args, "--enable-pci"),
+		append([]string{"--enable-pci", "--enable-pci"}, validStrictJailerLaunchRequest().Firecracker.Args...),
+	} {
+		request := validStrictJailerLaunchRequest()
+		request.Firecracker.Args = args
+
+		_, err := planStrictJailerLaunch(request)
+		assertStrictJailerLaunchError(t, err, "hostPaths")
+	}
+}
+
 func TestStrictJailerLaunchProcessRequestReturnsDefensiveCopies(t *testing.T) {
 	plan, err := planStrictJailerLaunch(validStrictJailerLaunchRequest())
 	if err != nil {
@@ -156,13 +179,17 @@ func TestStrictJailerLaunchHasNoPublicDurableShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanStrictJailerLaunch() error = %v, want nil", err)
 	}
-	if plan.mode != strictJailerLaunchMode || plan.runtimeID != "run-alpha" {
-		t.Fatalf("private plan identity = %q/%q, want jailer/run-alpha", plan.mode, plan.runtimeID)
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("json.Marshal(plan) error = %v", err)
+	}
+	if got := string(encoded); got != "{}" {
+		t.Fatalf("json.Marshal(plan) = %s, want no durable shape", got)
 	}
 }
 
 func TestStrictJailerLaunchErrorRejectsUnallowlistedFieldText(t *testing.T) {
-	err := newStrictJailerLaunchError("/Users/alice/private/jailer-secret")
+	err := &strictJailerLaunchError{field: "/Users/alice/private/jailer-secret"}
 	if got := err.Error(); got != errStrictJailerLaunchInvalid.Error() {
 		t.Fatalf("error = %q, want sanitized sentinel", got)
 	}

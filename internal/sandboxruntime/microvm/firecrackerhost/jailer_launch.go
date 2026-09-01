@@ -10,8 +10,6 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
 )
 
-const strictJailerLaunchMode = "jailer"
-
 // errStrictJailerLaunchInvalid is returned before process creation when a
 // strict host launch cannot be bound to one Jailer, Firecracker executable,
 // runtime identity, and separate host/jail path plans.
@@ -24,10 +22,14 @@ type strictJailerLaunchError struct {
 }
 
 func (err *strictJailerLaunchError) Error() string {
-	if err == nil || strings.TrimSpace(err.field) == "" {
+	if err == nil {
 		return errStrictJailerLaunchInvalid.Error()
 	}
-	return errStrictJailerLaunchInvalid.Error() + ": " + err.field
+	field := safeStrictJailerLaunchField(err.field)
+	if field == "" {
+		return errStrictJailerLaunchInvalid.Error()
+	}
+	return errStrictJailerLaunchInvalid.Error() + ": " + field
 }
 
 func (*strictJailerLaunchError) Unwrap() error {
@@ -63,8 +65,6 @@ type strictJailerLaunchRequest struct {
 // derives host ownership from Firecracker argv, while this plan's argv is
 // intentionally jail-visible.
 type strictJailerLaunchPlan struct {
-	mode      string
-	runtimeID string
 	process   firecracker.ProcessRunnerStartRequest
 	hostPaths firecracker.PathPlan
 	jailPaths firecracker.PathPlan
@@ -107,11 +107,11 @@ func planStrictJailerLaunch(request strictJailerLaunchRequest) (strictJailerLaun
 	}
 
 	jailerPath := strings.TrimSpace(request.JailerPath)
-	if !filepathIsCleanAbsolute(jailerPath) {
+	if !filepathIsCleanAbsolute(jailerPath) || cleanupFilesystemRoot(jailerPath) {
 		return strictJailerLaunchPlan{}, newStrictJailerLaunchError("jailerPath")
 	}
 	firecrackerPath := strings.TrimSpace(request.CanonicalFirecrackerPath)
-	if !filepathIsCleanAbsolute(firecrackerPath) || firecrackerPath == jailerPath {
+	if !filepathIsCleanAbsolute(firecrackerPath) || cleanupFilesystemRoot(firecrackerPath) || firecrackerPath == jailerPath {
 		return strictJailerLaunchPlan{}, newStrictJailerLaunchError("firecrackerPath")
 	}
 	if request.UID == 0 {
@@ -165,8 +165,6 @@ func planStrictJailerLaunch(request strictJailerLaunchRequest) (strictJailerLaun
 	jailerArgs = append(jailerArgs, strictFirecrackerPathArgs(jailPaths, enablePCI)...)
 
 	return strictJailerLaunchPlan{
-		mode:      strictJailerLaunchMode,
-		runtimeID: runtimeID,
 		process: firecracker.ProcessRunnerStartRequest{
 			Executable:     jailerPath,
 			Args:           jailerArgs,
@@ -194,6 +192,10 @@ func safeStrictJailerLaunchField(field string) string {
 
 func validStrictJailerRuntimeID(value string) bool {
 	if value == "" || len(value) > 64 {
+		return false
+	}
+	first := value[0]
+	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) {
 		return false
 	}
 	for _, r := range value {
