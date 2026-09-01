@@ -35,7 +35,7 @@ func main() {
 	}
 }
 
-func TestL8D7ReachableVEXDecodeFailureRemainsUnbounded(t *testing.T) {
+func TestL8D7ReachableVEXBodyFollowsRelativeCall(t *testing.T) {
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"go.mod": "module example.invalid/l8-vex-review\n\ngo 1.25.7\n",
@@ -80,7 +80,7 @@ TEXT ·vexCaller(SB), NOSPLIT, $0-0
 	if inspected.graphErr != nil {
 		t.Fatal(inspected.graphErr)
 	}
-	if !inspected.unboundedIndirect {
-		t.Fatal("reachable VEX decode failure was treated as a syscall-free leaf")
+	if !containsString(inspected.reachableFunctions, "main.syscallCallee") {
+		t.Fatalf("VEX body hid the relative CALL; reachable=%v extras=%v", inspected.reachableFunctions, extraReachableSyscallNames(inspected))
 	}
 }

@@ -67,6 +67,7 @@ type amd64Insn struct {
 	preserveRAX      bool
 	leaRIP           bool
 	movRIP           bool
+	movLoad          bool
 	andImm           bool
 	cmpImm           bool
 	rel              int64
@@ -311,6 +312,7 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 	}
 	interiorEntries := listDirectInteriorEntries(file, encoded, functions)
 	pointerTaken := collectPointerTakenFunctionTargets(file, encoded, functions)
+	itabs := collectItabAddresses(file, encoded)
 
 	type decodedFunction struct {
 		sites     []decodedSyscallSite
@@ -342,6 +344,7 @@ func computeReachableSyscallGraph(file *elf.File, encoded []byte, binary inspect
 			functions:       functions,
 			interiorEntries: interiorEntries,
 			pointerTaken:    pointerTaken,
+			itabs:           itabs,
 		})
 		if decodeErr != nil {
 			result.decodeErr = decodeErr
@@ -976,7 +979,7 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 	opcode := code[index]
 	index++
 	if opcode == 0x62 || opcode == 0xC4 || opcode == 0xC5 {
-		return amd64Insn{}, false
+		return amd64Insn{n: length}, true
 	}
 	insn := amd64Insn{
 		n:               length,
@@ -1098,14 +1101,37 @@ func amd64DecodeInsn(code []byte) (amd64Insn, bool) {
 	if opcode == 0x8B && index < length {
 		modrm := code[index]
 		mod := modrm >> 6
+		reg := (modrm >> 3) & 7
 		rm := modrm & 7
-		if rexW && mod == 0 && rm == 5 && !nonCanonicalMemoryPrefix && length >= index+5 {
-			insn.movRIP = true
-			insn.leaReg = (modrm >> 3) & 7
-			if rexR {
-				insn.leaReg += 8
+		if rexR {
+			reg += 8
+		}
+		if rexW && !nonCanonicalMemoryPrefix {
+			if mod == 0 && rm == 5 && length >= index+5 {
+				insn.movRIP = true
+				insn.leaReg = reg
+				insn.leaDisp = int32(binary.LittleEndian.Uint32(code[index+1 : index+5]))
+			} else if mod != 3 && rm != 4 {
+				base := rm
+				if rexB {
+					base += 8
+				}
+				insn.movLoad = true
+				insn.leaReg = reg
+				insn.sibBase = base
+				switch mod {
+				case 0:
+					insn.leaDisp = 0
+				case 1:
+					if length >= index+2 {
+						insn.leaDisp = int32(int8(code[index+1]))
+					}
+				case 2:
+					if length >= index+5 {
+						insn.leaDisp = int32(binary.LittleEndian.Uint32(code[index+1 : index+5]))
+					}
+				}
 			}
-			insn.leaDisp = int32(binary.LittleEndian.Uint32(code[index+1 : index+5]))
 		}
 		return insn, true
 	}
@@ -1282,6 +1308,7 @@ func amd64InstructionLength(code []byte) (int, bool) {
 	index := 0
 	operand16 := false
 	rexW := false
+	rexSeen := false
 	for prefix := 0; prefix < 15 && index < len(code); prefix++ {
 		value := code[index]
 		switch value {
@@ -1297,6 +1324,7 @@ func amd64InstructionLength(code []byte) (int, bool) {
 		}
 		if value >= 0x40 && value <= 0x4F {
 			rexW = value&0x08 != 0
+			rexSeen = true
 			index++
 			continue
 		}
@@ -1306,10 +1334,13 @@ func amd64InstructionLength(code []byte) (int, bool) {
 		return 0, false
 	}
 	opcode := code[index]
-	index++
 	if opcode == 0x62 || opcode == 0xC4 || opcode == 0xC5 {
-		return 0, false
+		if rexSeen {
+			return 0, false
+		}
+		return amd64VectorInstructionEnd(code, index, operand16)
 	}
+	index++
 	twoByte := false
 	threeByte := byte(0)
 	if opcode == 0x0F {
@@ -1338,18 +1369,8 @@ func amd64InstructionLength(code []byte) (int, bool) {
 		imm = 1
 	case threeByte == 0x38:
 		hasModRM = true
-	case opcode >= 0x80 && opcode <= 0x8F:
-		if operand16 {
-			imm = 2
-		} else {
-			imm = 4
-		}
-	case opcode == 0xBA:
-		hasModRM = true
-		imm = 1
-	case opcode == 0x05 || opcode == 0x06 || opcode == 0x07 || opcode == 0x08 || opcode == 0x09 || opcode == 0x0B || opcode == 0x30 || opcode == 0x31 || opcode == 0x32 || opcode == 0x33 || opcode == 0x34 || opcode == 0x35 || opcode == 0x37 || opcode == 0xA0 || opcode == 0xA1 || opcode == 0xA2 || opcode == 0xA8 || opcode == 0xA9 || opcode == 0xAA:
 	default:
-		hasModRM = true
+		hasModRM, imm = amd64TwoByte0FMeta(opcode, operand16)
 	}
 	var modrm byte
 	if hasModRM {
