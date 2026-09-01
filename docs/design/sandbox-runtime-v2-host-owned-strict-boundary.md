@@ -133,31 +133,48 @@ strict host command requires a configured Jailer, a distinct Firecracker
 binary, an unprivileged UID/GID, one safe runtime identity, and exact
 host-visible to jail-visible path correlation. It must reject environment
 delivery, inherited asset descriptors, argument drift, direct-executable
-substitution, and detached supervision while keeping public errors and
-summaries free of host paths. Keep the existing explicitly non-strict direct
-runner unchanged.
+substitution, and detached supervision while keeping errors free of host paths.
+The private command plan has no durable/public JSON shape. Keep the existing
+explicitly non-strict direct runner unchanged.
 
 ### 2. Implement the smallest Jailer-owned launch seam
 
-Keep the seam in `internal/sandboxruntime/microvm/firecrackerhost`, immediately
-before the existing process lifecycle manager. The first implementation slice
-builds one immutable Jailer command plan with separate host and jail path
+Keep the seam private to
+`internal/sandboxruntime/microvm/firecrackerhost`. The first implementation
+slice builds one immutable Jailer command plan with separate host and jail path
 plans, the exact Jailer/Firecracker pair, safe runtime identity, UID/GID, and
 chroot base. It never daemonizes, never creates a second PID namespace, never
 inherits environment or asset descriptors, and is not wired into production
-selection. This command-plan primitive is implemented; chroot resource staging,
-live launch, and strict authority remain blocked.
+selection. This command-plan primitive is implemented; chroot resource
+staging, live launch, and strict authority remain blocked.
+
+The private plan must not be passed to the current
+`ProcessLifecycleManager.StartProcess`. That compatibility entrypoint derives
+host cleanup ownership by parsing Firecracker argv; Jailer argv intentionally
+contains jail-visible paths. The next lifecycle entrypoint must consume the
+command and host path authority atomically so callers cannot mix generations
+or make cleanup target `/run` outside the jail.
 
 The next slice must stage the verified config, kernel, rootfs, vsock, and
 support files inside the per-runtime jail root without symlink or replacement
 races, then pass the exact retained Jailer process to the existing supervisor.
+It must canonicalize and pin the Jailer and Firecracker executables before
+deriving the jail root, require trusted non-unprivileged-writable parent paths,
+verify a matching released/static binary pair, and validate dedicated UID/GID
+ownership. It must also replace the current `NamespaceProcessRunner` contract:
+that runner requires two sealed asset descriptors, while the Jailer closes
+them. The accepted design must either enter the owned user/network namespaces
+before Jailer with no asset FDs, or pass a trusted network namespace to the
+Jailer; neither choice is implied by this slice.
 Do not add a second supervisor, scheduler, proof format, or command-side
 security evaluator. Do not change generic Firecracker planning to invoke the
 Jailer: that would disturb advisory compatibility without solving staging.
 
 The implementation must keep private paths and process arguments out of public
-metadata and errors. Partial launch failure revokes authority and cleans only
-the exactly owned VM, process, socket, namespace, cgroup, and state directory.
+metadata and errors, set bounded Jailer resource/cgroup controls, and retain
+the exact supervised process. Partial launch failure revokes authority and
+cleans only the exactly owned VM, process, socket, namespace, cgroup, jail root,
+and state directory.
 
 ### 3. Move the strict claim to host evidence
 
