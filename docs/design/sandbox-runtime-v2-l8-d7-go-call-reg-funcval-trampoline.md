@@ -23,8 +23,10 @@ is a function whose only unproven `CALL`-reg loads `(AX)` at displacement
 only for that trampoline callee, not for every relative `CALL` that
 happens to pass a funcval. A trampoline reached without a proven funcval
 argument stays unbounded. CMP/TEST/PUSH and `MOV reg,reg` clobber only
-their real destinations. A global pointer-taken inventory remains a
-traversed subset, not a complete points-to proof.
+their real destinations. Any intervening overlapping memory write or
+change to `RSP` invalidates the stack-slot fact, and every incoming
+trampoline call must carry its own proven funcval. A global pointer-taken
+inventory remains a traversed subset, not a complete points-to proof.
 
 `requireCompleteHonestIssuanceInputs` keeps the unique/reachable D4/D6
 fail-closed last return even if extras become empty.

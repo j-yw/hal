@@ -207,8 +207,37 @@ func stackFuncvalFact(fn executableFunction, disp int32, history []decodedInsnSi
 			}
 			return registerFact{kind: registerFactFuncval, va: src.va}, true
 		}
+		if !preservesStackFuncvalSlot(site.insn, disp) {
+			return registerFact{}, false
+		}
 	}
 	return registerFact{}, false
+}
+
+func preservesStackFuncvalSlot(insn amd64Insn, funcvalDisp int32) bool {
+	if insn.stackWrite {
+		writeStart := int64(insn.leaDisp)
+		writeEnd := writeStart + int64(insn.stackWriteWidth)
+		funcvalStart := int64(funcvalDisp)
+		funcvalEnd := funcvalStart + 8
+		return writeEnd <= funcvalStart || funcvalEnd <= writeStart
+	}
+	if insn.nop || insn.flagsOnly || insn.cmpImm {
+		return true
+	}
+	if insn.movEAXImm {
+		return true
+	}
+	if insn.movRegCopy {
+		return insn.leaReg != 4
+	}
+	if insn.leaRIP || insn.movRIP || insn.movLoad || insn.leaRSP {
+		return insn.leaReg != 4
+	}
+	if insn.andImm {
+		return insn.andReg != 4
+	}
+	return false
 }
 
 func funcvalTrampolineCall(fn executableFunction, insn amd64Insn, history []decodedInsnSite, resolver *goTextResolver, branchTargets []int, transferCursor int) bool {

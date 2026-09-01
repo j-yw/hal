@@ -979,6 +979,75 @@ func TestL8D7FuncvalStackLEAPassesCodeToRelativeCall(t *testing.T) {
 	}
 }
 
+func TestL8D7FuncvalStackFactRejectsInterveningMutation(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutation []byte
+	}{
+		{
+			name:     "overlapping stack write",
+			mutation: []byte{0x48, 0xc7, 0x44, 0x24, 0x08, 0x00, 0x40, 0x00, 0x00},
+		},
+		{
+			name:     "stack pointer change",
+			mutation: []byte{0x51},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			code := []byte{
+				0x48, 0x8d, 0x0d, 0xf9, 0x1f, 0x00, 0x00,
+				0x48, 0x89, 0x4c, 0x24, 0x08,
+			}
+			code = append(code, test.mutation...)
+			code = append(code,
+				0x48, 0x8d, 0x44, 0x24, 0x08,
+				0xe8, 0x00, 0x00, 0x00, 0x00,
+			)
+			fn := executableFunction{name: "caller", start: 0x1000, end: 0x1000 + uint64(len(code))}
+			callee := executableFunction{name: "callee", start: 0x3000, end: 0x3010}
+			resolver := &goTextResolver{functions: []executableFunction{fn, callee}}
+			_, _, transfers, _, err := decodeFunctionSyscallGraphWithResolver(fn, code, 0, resolver)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(transfers) != 1 {
+				t.Fatalf("funcval transfers = %#v", transfers)
+			}
+			if transfers[0].funcvalKnown {
+				t.Fatalf("mutated funcval remained proven: %#v", transfers[0])
+			}
+		})
+	}
+}
+
+func TestL8D7FuncvalTrampolineProofIsPerTransfer(t *testing.T) {
+	trampoline := executableFunction{name: "invoke", start: 0x2000, end: 0x2010}
+	code := executableFunction{name: "closure", start: 0x3000, end: 0x3010}
+	functions := []executableFunction{trampoline, code}
+
+	proven, ok := provenFuncvalTrampolineTarget(functions, decodedControlTransfer{
+		target:       trampoline.start,
+		funcvalKnown: true,
+		funcvalCode:  code.start,
+	}, trampoline.start)
+	if !ok || proven == nil || proven.start != code.start {
+		t.Fatalf("proven transfer = %+v, %v", proven, ok)
+	}
+	if unproven, ok := provenFuncvalTrampolineTarget(functions, decodedControlTransfer{
+		target: trampoline.start,
+	}, trampoline.start); ok || unproven != nil {
+		t.Fatalf("unproven sibling transfer borrowed authorization: %+v, %v", unproven, ok)
+	}
+	if interior, ok := provenFuncvalTrampolineTarget(functions, decodedControlTransfer{
+		target:       trampoline.start + 1,
+		funcvalKnown: true,
+		funcvalCode:  code.start,
+	}, trampoline.start); ok || interior != nil {
+		t.Fatalf("interior trampoline transfer was proven: %+v, %v", interior, ok)
+	}
+}
+
 func TestL8D7ItabMethodSlotCallIsAKnownStart(t *testing.T) {
 	code := []byte{
 		0x48, 0x8d, 0x05, 0xf9, 0x0f, 0x00, 0x00,
