@@ -108,7 +108,7 @@ func TestStrictJailerLaunchPublicShapeOmitsPathsAndArguments(t *testing.T) {
 		t.Fatalf("json.Marshal(plan) error = %v", err)
 	}
 	text := string(encoded)
-	for _, unsafe := range []string{"/opt/hal/private", "/srv/hal/private", "/run/hal", "--exec-file", "1001", "1002"} {
+	for _, unsafe := range []string{"/opt/hal/private", "/srv/hal/private", "/run/fc-run-alpha", "--exec-file", "1001", "1002"} {
 		if strings.Contains(text, unsafe) {
 			t.Fatalf("public plan leaked %q in %s", unsafe, text)
 		}
@@ -121,21 +121,22 @@ func TestStrictJailerLaunchPublicShapeOmitsPathsAndArguments(t *testing.T) {
 }
 
 func validStrictJailerLaunchRequest() StrictJailerLaunchRequest {
+	jailRoot := "/srv/hal/private/jailer/firecracker/run-alpha/root"
 	hostPaths := firecracker.PathPlan{
-		StateDir:        "/srv/hal/private/state/run-alpha",
-		APISocketPath:   "/srv/hal/private/state/run-alpha/firecracker.sock",
-		ConfigPath:      "/srv/hal/private/state/run-alpha/firecracker-config.json",
-		LogPath:         "/srv/hal/private/state/run-alpha/firecracker.log",
-		MetricsPath:     "/srv/hal/private/state/run-alpha/firecracker.metrics",
-		VsockSocketPath: "/srv/hal/private/state/run-alpha/guest.vsock",
+		StateDir:        jailRoot + "/run/fc-run-alpha",
+		APISocketPath:   jailRoot + "/run/fc-run-alpha/firecracker.sock",
+		ConfigPath:      jailRoot + "/run/fc-run-alpha/firecracker-config.json",
+		LogPath:         jailRoot + "/run/fc-run-alpha/firecracker.log",
+		MetricsPath:     jailRoot + "/run/fc-run-alpha/firecracker.metrics",
+		VsockSocketPath: jailRoot + "/run/fc-run-alpha/guest.vsock",
 	}
 	jailPaths := firecracker.PathPlan{
-		StateDir:        "/run/hal",
-		APISocketPath:   "/run/hal/firecracker.sock",
-		ConfigPath:      "/run/hal/firecracker-config.json",
-		LogPath:         "/run/hal/firecracker.log",
-		MetricsPath:     "/run/hal/firecracker.metrics",
-		VsockSocketPath: "/run/hal/guest.vsock",
+		StateDir:        "/run/fc-run-alpha",
+		APISocketPath:   "/run/fc-run-alpha/firecracker.sock",
+		ConfigPath:      "/run/fc-run-alpha/firecracker-config.json",
+		LogPath:         "/run/fc-run-alpha/firecracker.log",
+		MetricsPath:     "/run/fc-run-alpha/firecracker.metrics",
+		VsockSocketPath: "/run/fc-run-alpha/guest.vsock",
 	}
 	return StrictJailerLaunchRequest{
 		RuntimeID:       "run-alpha",

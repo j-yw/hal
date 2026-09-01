@@ -17,6 +17,11 @@ does not change the current blocked/default-off state.
 - Firecracker has a live process-launch path, but the current start plan can
   execute the configured Firecracker binary directly. `JailerPath` is optional
   configuration, not a strict launch requirement.
+- The current verified L7/L8 image path passes sealed kernel and rootfs files
+  as inherited descriptors. The Firecracker Jailer closes inherited
+  descriptors before exec, and Firecracker cannot resolve the current
+  host-absolute config, socket, log, metrics, vsock, kernel, or rootfs paths
+  after entering its chroot. Replacing only the executable would be broken.
 - Rootless Podman is implemented as a lower-isolation advisory runtime.
 - L1-L7 and L9 provide useful orchestration, recovery, guest, network,
   workspace, and immutable-template authorities that should be reused.
@@ -123,21 +128,32 @@ Compatibility behavior is explicit:
 
 ### 1. Lock the host launch contract
 
-Add focused failing tests before production changes. They must prove that a
-strict Firecracker plan requires a configured Jailer, launches through that
-Jailer rather than the raw Firecracker executable, rejects a direct-executable
-substitution, and keeps public errors and summaries free of host paths. Keep a
-passing compatibility test showing that the explicitly non-strict planning
-path has not been silently removed.
+Add focused failing tests before production changes. They must prove that the
+strict host command requires a configured Jailer, a distinct Firecracker
+binary, an unprivileged UID/GID, one safe runtime identity, and exact
+host-visible to jail-visible path correlation. It must reject environment
+delivery, inherited asset descriptors, argument drift, direct-executable
+substitution, and detached supervision while keeping public errors and
+summaries free of host paths. Keep the existing explicitly non-strict direct
+runner unchanged.
 
 ### 2. Implement the smallest Jailer-owned launch seam
 
-Extend the existing Firecracker config/start-plan/process-adapter boundary
-instead of adding another runtime package. Make strict intent explicit in the
-typed launch input. Validate it before process creation, build one immutable
-Jailer launch plan, and have the existing process runner execute that plan.
+Keep the seam in `internal/sandboxruntime/microvm/firecrackerhost`, immediately
+before the existing process lifecycle manager. The first implementation slice
+builds one immutable Jailer command plan with separate host and jail path
+plans, the exact Jailer/Firecracker pair, safe runtime identity, UID/GID, and
+chroot base. It never daemonizes, never creates a second PID namespace, never
+inherits environment or asset descriptors, and is not wired into production
+selection. This command-plan primitive is implemented; chroot resource staging,
+live launch, and strict authority remain blocked.
+
+The next slice must stage the verified config, kernel, rootfs, vsock, and
+support files inside the per-runtime jail root without symlink or replacement
+races, then pass the exact retained Jailer process to the existing supervisor.
 Do not add a second supervisor, scheduler, proof format, or command-side
-security evaluator.
+security evaluator. Do not change generic Firecracker planning to invoke the
+Jailer: that would disturb advisory compatibility without solving staging.
 
 The implementation must keep private paths and process arguments out of public
 metadata and errors. Partial launch failure revokes authority and cleans only
@@ -174,6 +190,7 @@ Default fake-safe checks for this boundary are:
 
 ```sh
 go test -count=1 ./cmd -run '^TestL8HostOwnedStrictBoundary'
+go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(PlanStrictJailerLaunch|StrictJailerLaunch)'
 go test -count=1 ./internal/sandboxruntime/microvm/firecracker
 go test -count=1 ./internal/strictcomposition ./internal/sandboxtarget
 go test -count=1 -run '^$' ./...
