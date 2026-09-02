@@ -10,7 +10,7 @@ import (
 
 const (
 	l8JailerFoundationVerificationDoc = "sandbox-runtime-v2-l8-jailer-foundation-verification.md"
-	l8JailerFoundationImplementation  = "c7d471d60a9e960306cce262cda8475569e4fef8"
+	l8JailerFoundationImplementation  = "41ac0cd332d9533b3105cfd38438e1e27709c892"
 )
 
 func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
@@ -35,6 +35,7 @@ func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
 		"Before finalization, cleanup removes only identity-recorded staged entries and quarantines unexpected/unrecorded descendants",
 		"recursive deletion of unrecorded Jailer output is reserved for a fully finalized generation",
 		"opened directory exact identity/type is verified before any metadata mutation",
+		"the initial opened file's pathname and FD are revalidated for exact identity, regular-file type, and single-link state before its first chmod and ledger insertion",
 		"every recorded intermediate parent and retained file/link authority is revalidated immediately before nested/file mutation",
 		"same-UID check-use race remains an explicit dedicated/quiescent UID prerequisite",
 		"does not provide durable recovery or live proof",
