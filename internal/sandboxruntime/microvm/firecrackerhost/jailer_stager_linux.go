@@ -293,7 +293,15 @@ func (root *linuxJailerStagingRoot) createFileExclusive(relative string) (jailer
 	}, nil
 }
 
-func secureLinuxJailerOpenedFile(fd, parentFD int, _ string, expected linuxJailerStagingEntry) error {
+func secureLinuxJailerOpenedFile(fd, parentFD int, name string, expected linuxJailerStagingEntry) error {
+	linked, err := linuxJailerFstatat(parentFD, name)
+	if err != nil || linked.Mode&unix.S_IFMT != unix.S_IFREG || linked.Nlink != 1 || !linuxJailerSameIdentity(linked, expected.id) {
+		return errJailerStagingFailed
+	}
+	opened, err := linuxJailerFstat(fd)
+	if err != nil || opened.Mode&unix.S_IFMT != unix.S_IFREG || opened.Nlink != 1 || !linuxJailerSameIdentity(opened, expected.id) {
+		return errJailerStagingFailed
+	}
 	if unix.Fchmod(fd, expected.mode) != nil || unix.Fsync(parentFD) != nil {
 		return errJailerStagingFailed
 	}
