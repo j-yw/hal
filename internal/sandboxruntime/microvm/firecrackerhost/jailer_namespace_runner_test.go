@@ -63,6 +63,18 @@ func TestStrictJailerNamespaceRunnerNeverEntersUserNamespace(t *testing.T) {
 			t.Fatalf("strict Jailer namespace runner missing network-only contract %q", required)
 		}
 	}
+	linuxSource, err := os.ReadFile("jailer_namespace_runner_linux.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(linuxSource), "CLONE_NEWUSER") {
+		t.Fatal("strict Jailer OS launcher retained a user namespace transition")
+	}
+	for _, required := range []string{"unix.Setns", "unix.CLONE_NEWNET"} {
+		if !strings.Contains(string(linuxSource), required) {
+			t.Fatalf("strict Jailer OS launcher missing network setns contract %q", required)
+		}
+	}
 }
 
 func TestStrictJailerNetworkNamespaceProviderCannotExpressDuplicateDescriptors(t *testing.T) {
@@ -202,8 +214,8 @@ func TestStrictJailerNamespaceRunnerContainsStartedProcessWhenNetworkCloseFails(
 	if containsAny(err.Error(), "/proc/self/fd/3", "bad file descriptor") {
 		t.Fatalf("network close error leaked cause: %q", err)
 	}
-	if strictJailerLifecycleStartCleanupUncertain(err) {
-		t.Fatal("contained close failure was classified cleanup-uncertain")
+	if !strictJailerLifecycleStartCleanupUncertain(err) {
+		t.Fatal("network close failure lost cleanup-uncertain classification")
 	}
 }
 

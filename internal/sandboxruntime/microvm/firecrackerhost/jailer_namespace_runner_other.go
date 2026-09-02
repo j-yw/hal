@@ -2,8 +2,11 @@
 
 package firecrackerhost
 
-import "os/exec"
+import (
+	"os"
+	"os/exec"
+)
 
-func startStrictJailerOSExecCommand(*exec.Cmd) (HostProcess, error) {
+func startStrictJailerOSExecCommand(*exec.Cmd, *os.File) (HostProcess, error) {
 	return nil, errStrictJailerNamespaceInvalidConfiguration
 }

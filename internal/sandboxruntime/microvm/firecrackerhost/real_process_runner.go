@@ -84,7 +84,7 @@ func (starter OSExecNamespaceProcessStarter) StartNamespaceProcess(ctx context.C
 	return newOSExecHostProcess(command), nil
 }
 
-// startStrictJailerNamespaceProcess is the real two-descriptor os/exec seam.
+// startStrictJailerNamespaceProcess is the real direct-Jailer os/exec seam.
 // The legacy exported StartNamespaceProcess method and its four-descriptor
 // validation are not changed or widened.
 func (starter OSExecNamespaceProcessStarter) startStrictJailerNamespaceProcess(
@@ -106,10 +106,10 @@ func (starter OSExecNamespaceProcessStarter) startStrictJailerNamespaceProcess(
 	command.Stdin = nil
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
-	command.ExtraFiles = append([]*os.File(nil), request.inheritedFiles...)
+	command.ExtraFiles = []*os.File{}
 	startCommand := starter.startCommand
 	if startCommand == nil {
-		return startStrictJailerOSExecCommand(command)
+		return startStrictJailerOSExecCommand(command, request.networkNamespace)
 	}
 	if err := startCommand(command); err != nil {
 		return nil, errStrictJailerNamespaceStartFailed

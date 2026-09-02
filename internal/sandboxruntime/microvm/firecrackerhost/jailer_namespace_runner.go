@@ -22,20 +22,19 @@ var (
 )
 
 type strictJailerNamespaceRunnerOptions struct {
-	namespace      NamespaceProcessFileProvider
+	namespace      strictJailerNetworkNamespaceProvider
 	starter        strictJailerNamespaceProcessStarter
-	nsenterPath    string
 	cleanupTimeout time.Duration
 }
 
-// strictJailerNamespaceRunner enters one existing user/network namespace pair
-// before execing the foreground Jailer. Unlike NamespaceProcessRunner, it
-// never accepts or forwards kernel/rootfs descriptors: staged jail paths are
-// the only future asset boundary compatible with Jailer descriptor closing.
+// strictJailerNamespaceRunner enters one existing network namespace before
+// execing the foreground Jailer directly. Unlike NamespaceProcessRunner, it
+// never enters a user namespace and never forwards namespace or asset
+// descriptors to the child. Jailer retains initial-user-namespace root for
+// its mount and device setup; staged jail paths are its only asset boundary.
 type strictJailerNamespaceRunner struct {
-	namespace      NamespaceProcessFileProvider
+	namespace      strictJailerNetworkNamespaceProvider
 	starter        strictJailerNamespaceProcessStarter
-	nsenterPath    string
 	cleanupTimeout time.Duration
 
 	mu       sync.Mutex
@@ -45,9 +44,16 @@ type strictJailerNamespaceRunner struct {
 var _ HostProcessRunner = (*strictJailerNamespaceRunner)(nil)
 
 type strictJailerNamespaceProcessStartRequest struct {
-	executable     string
-	args           []string
-	inheritedFiles []*os.File
+	executable       string
+	args             []string
+	networkNamespace *os.File
+}
+
+// strictJailerNetworkNamespaceProvider exposes one independently owned
+// network namespace authority. Its single-file shape cannot express the
+// legacy user/network pair or duplicate descriptor ambiguity.
+type strictJailerNetworkNamespaceProvider interface {
+	DuplicateNetworkNamespaceForStrictJailer() (*os.File, error)
 }
 
 // strictJailerNamespaceProcessStarter is deliberately distinct from
@@ -58,32 +64,27 @@ type strictJailerNamespaceProcessStarter interface {
 }
 
 func newStrictJailerNamespaceRunner(options strictJailerNamespaceRunnerOptions) (*strictJailerNamespaceRunner, error) {
-	nsenterPath := strings.TrimSpace(options.nsenterPath)
 	cleanupTimeout := options.cleanupTimeout
 	if cleanupTimeout == 0 {
 		cleanupTimeout = defaultNamespaceProcessCleanupTimeout
 	}
-	if interfaceValueIsNil(options.namespace) || interfaceValueIsNil(options.starter) ||
-		!filepathIsCleanAbsolute(nsenterPath) || cleanupFilesystemRoot(nsenterPath) ||
-		cleanupTimeout <= 0 || cleanupTimeout > time.Minute {
+	if interfaceValueIsNil(options.namespace) || interfaceValueIsNil(options.starter) || cleanupTimeout <= 0 || cleanupTimeout > time.Minute {
 		return nil, errStrictJailerNamespaceInvalidConfiguration
 	}
 	return &strictJailerNamespaceRunner{
-		namespace: options.namespace, starter: options.starter, nsenterPath: nsenterPath,
-		cleanupTimeout: cleanupTimeout,
+		namespace: options.namespace, starter: options.starter, cleanupTimeout: cleanupTimeout,
 	}, nil
 }
 
 func (runner *strictJailerNamespaceRunner) configured() bool {
 	return runner != nil && !interfaceValueIsNil(runner.namespace) && !interfaceValueIsNil(runner.starter) &&
-		filepathIsCleanAbsolute(runner.nsenterPath) && !cleanupFilesystemRoot(runner.nsenterPath) &&
 		runner.cleanupTimeout > 0 && runner.cleanupTimeout <= time.Minute
 }
 
 // StartHostProcess validates the exact foreground Jailer command, duplicates
-// only user/network namespace descriptors, and delegates one nsenter process.
-// Environment is required to be explicitly empty and no asset descriptor can
-// cross this boundary.
+// one private network namespace descriptor, and delegates direct Jailer exec.
+// The namespace descriptor is parent-side authority and is not inherited by
+// Jailer. Environment must be empty and no asset descriptor can cross here.
 func (runner *strictJailerNamespaceRunner) StartHostProcess(
 	ctx context.Context,
 	request firecracker.ProcessRunnerStartRequest,
@@ -106,29 +107,20 @@ func (runner *strictJailerNamespaceRunner) StartHostProcess(
 		return nil, errStrictJailerNamespaceCleanupIncomplete
 	}
 
-	user, network, duplicateErr := runner.namespace.DuplicateForNamespaceProcess()
-	if duplicateErr != nil || !validStrictJailerNamespaceFiles(user, network) {
-		if closeErr := closeStrictJailerNamespaceFiles(user, network); closeErr != nil {
+	network, duplicateErr := runner.namespace.DuplicateNetworkNamespaceForStrictJailer()
+	if duplicateErr != nil || !validStrictJailerNetworkNamespaceFile(network) {
+		if closeErr := closeStrictJailerNetworkNamespaceFile(network); closeErr != nil {
 			return nil, errors.Join(errStrictJailerNamespaceInvalid, errStrictJailerNamespaceCleanupIncomplete)
 		}
 		return nil, errStrictJailerNamespaceInvalid
 	}
 
-	wrapperArgs := []string{
-		"--preserve-credentials",
-		"--keep-caps",
-		"--user=/proc/self/fd/3",
-		"--net=/proc/self/fd/4",
-		"--",
-		command.jailerPath,
-	}
-	wrapperArgs = append(wrapperArgs, command.args...)
 	process, startErr := runner.starter.startStrictJailerNamespaceProcess(ctx, strictJailerNamespaceProcessStartRequest{
-		executable:     runner.nsenterPath,
-		args:           wrapperArgs,
-		inheritedFiles: []*os.File{user, network},
+		executable:       command.jailerPath,
+		args:             append([]string(nil), command.args...),
+		networkNamespace: network,
 	})
-	closeErr := closeStrictJailerNamespaceFiles(user, network)
+	closeErr := closeStrictJailerNetworkNamespaceFile(network)
 	if startErr == nil && interfaceValueIsNil(process) {
 		startErr = errStrictJailerNamespaceStartFailed
 	}
@@ -153,15 +145,12 @@ func (runner *strictJailerNamespaceRunner) StartHostProcess(
 
 func validateStrictJailerNamespaceProcessStartRequest(request strictJailerNamespaceProcessStartRequest) error {
 	if !filepathIsCleanAbsolute(request.executable) || cleanupFilesystemRoot(request.executable) ||
-		len(request.inheritedFiles) != 2 || !validStrictJailerNamespaceFiles(request.inheritedFiles[0], request.inheritedFiles[1]) ||
-		len(request.args) < 7 || request.args[0] != "--preserve-credentials" || request.args[1] != "--keep-caps" ||
-		request.args[2] != "--user=/proc/self/fd/3" || request.args[3] != "--net=/proc/self/fd/4" ||
-		request.args[4] != "--" {
+		!validStrictJailerNetworkNamespaceFile(request.networkNamespace) {
 		return errStrictJailerNamespaceRequestInvalid
 	}
 	_, err := parseStrictJailerCommand(firecracker.ProcessRunnerStartRequest{
-		Executable:     request.args[5],
-		Args:           append([]string(nil), request.args[6:]...),
+		Executable:     request.executable,
+		Args:           append([]string(nil), request.args...),
 		Environment:    []string{},
 		InheritedFiles: []*os.File{},
 	})
@@ -199,30 +188,20 @@ func (runner *strictJailerNamespaceRunner) terminateAndReap(process HostProcess)
 	return nil
 }
 
-func validStrictJailerNamespaceFiles(user, network *os.File) bool {
-	if user == nil || network == nil || user == network {
+func validStrictJailerNetworkNamespaceFile(network *os.File) bool {
+	if network == nil {
 		return false
 	}
-	userFD, networkFD := user.Fd(), network.Fd()
+	networkFD := network.Fd()
 	invalidFD := ^uintptr(0)
-	return userFD > 2 && networkFD > 2 && userFD != invalidFD && networkFD != invalidFD && userFD != networkFD
+	return networkFD > 2 && networkFD != invalidFD
 }
 
-func closeStrictJailerNamespaceFiles(files ...*os.File) error {
-	seen := make(map[uintptr]struct{}, len(files))
-	var result error
-	for _, file := range files {
-		if file == nil {
-			continue
-		}
-		fd := file.Fd()
-		if _, duplicate := seen[fd]; duplicate {
-			continue
-		}
-		seen[fd] = struct{}{}
-		result = errors.Join(result, file.Close())
+func closeStrictJailerNetworkNamespaceFile(network *os.File) error {
+	if network == nil {
+		return nil
 	}
-	return result
+	return network.Close()
 }
 
 type strictJailerCommand struct {

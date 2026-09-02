@@ -3,6 +3,7 @@
 package firecrackerhost
 
 import (
+	"os"
 	"os/exec"
 	"runtime"
 	"syscall"
@@ -13,6 +14,7 @@ import (
 type strictJailerOSExecLaunchOps struct {
 	lockOSThread         func()
 	unshareFilesystem    func() error
+	setNetworkNamespace  func() error
 	umask                func(int) int
 	armParentDeathSignal func()
 	start                func() error
@@ -25,15 +27,19 @@ type strictJailerOSExecLaunchOps struct {
 // foreground Jailer alive through Wait. Linux delivers Pdeathsig when that
 // creating thread dies, so returning from a short-lived locked goroutine after
 // Start would kill a healthy child and is not a valid containment model.
-// The thread is intentionally never unlocked after CLONE_FS; the Go runtime
-// retires it after the child exits instead of reusing its private fs context.
+// After CLONE_FS, setns changes only this locked OS thread's network namespace.
+// exec.Cmd.Start creates the child from the calling locked OS thread, so the
+// child inherits that network namespace; the namespace FD is not inherited.
+// The thread is intentionally never unlocked; the Go runtime retires it after
+// the child exits instead of reusing its private fs or network context. Jailer
+// remains root in the initial user namespace for its mount and device setup.
 //
 // This bounds the foreground Jailer launch but does not prove final
 // Firecracker orphan prevention: Linux may clear Pdeathsig across Jailer
 // credential changes. Production selection therefore remains blocked on
 // post-drop containment proof or a retained supervisor design.
 func runStrictJailerOSExecLaunch(ops strictJailerOSExecLaunchOps) {
-	if ops.lockOSThread == nil || ops.unshareFilesystem == nil || ops.umask == nil ||
+	if ops.lockOSThread == nil || ops.unshareFilesystem == nil || ops.setNetworkNamespace == nil || ops.umask == nil ||
 		ops.armParentDeathSignal == nil || ops.start == nil || ops.publishStarted == nil ||
 		ops.wait == nil || ops.publishCompleted == nil {
 		if ops.publishStarted != nil {
@@ -43,6 +49,10 @@ func runStrictJailerOSExecLaunch(ops strictJailerOSExecLaunchOps) {
 	}
 	ops.lockOSThread()
 	if err := ops.unshareFilesystem(); err != nil {
+		ops.publishStarted(errStrictJailerNamespaceStartFailed)
+		return
+	}
+	if err := ops.setNetworkNamespace(); err != nil {
 		ops.publishStarted(errStrictJailerNamespaceStartFailed)
 		return
 	}
@@ -64,8 +74,8 @@ func armStrictJailerParentDeathSignal(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 }
 
-func startStrictJailerOSExecCommand(command *exec.Cmd) (HostProcess, error) {
-	if command == nil {
+func startStrictJailerOSExecCommand(command *exec.Cmd, networkNamespace *os.File) (HostProcess, error) {
+	if command == nil || !validStrictJailerNetworkNamespaceFile(networkNamespace) {
 		return nil, errStrictJailerNamespaceStartFailed
 	}
 	process := &osExecHostProcess{cmd: command, done: make(chan struct{})}
@@ -73,7 +83,10 @@ func startStrictJailerOSExecCommand(command *exec.Cmd) (HostProcess, error) {
 	go runStrictJailerOSExecLaunch(strictJailerOSExecLaunchOps{
 		lockOSThread:      runtime.LockOSThread,
 		unshareFilesystem: func() error { return unix.Unshare(unix.CLONE_FS) },
-		umask:             unix.Umask,
+		setNetworkNamespace: func() error {
+			return unix.Setns(int(networkNamespace.Fd()), unix.CLONE_NEWNET)
+		},
+		umask: unix.Umask,
 		armParentDeathSignal: func() {
 			armStrictJailerParentDeathSignal(command)
 		},
