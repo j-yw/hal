@@ -75,6 +75,41 @@ func TestLinuxJailerStagerStagesAndRemovesExactOwnedGeneration(t *testing.T) {
 	}
 }
 
+func TestLinuxJailerStagerRetainsRootWhenPostMkdirStatFails(t *testing.T) {
+	request, _ := newLinuxJailerStagingRequest(t)
+	filesystem, err := newLinuxJailerStagingFilesystem(request.Authority)
+	if err != nil {
+		t.Fatalf("newLinuxJailerStagingFilesystem() error = %v, want nil", err)
+	}
+	linuxFilesystem := filesystem.(*linuxJailerStagingFilesystem)
+	realStatEntry := linuxFilesystem.statEntry
+	failRootStat := true
+	linuxFilesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
+		if name == "root" && failRootStat {
+			failRootStat = false
+			return unix.Stat_t{}, unix.EIO
+		}
+		return realStatEntry(parentFD, name)
+	}
+
+	result, err := stageStrictJailerResources(filesystem, request)
+	if !errors.Is(err, errJailerStagingFailed) || !errors.Is(err, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("stage error = %v, want failed and cleanup-incomplete", err)
+	}
+	if !result.retainsOwnedRoot() {
+		t.Fatal("post-mkdir stat failure discarded retained dirfd cleanup authority")
+	}
+	if _, statErr := os.Stat(request.Authority.JailRootHostPath); statErr != nil {
+		t.Fatalf("quarantined root is unavailable before retry: %v", statErr)
+	}
+	if releaseErr := result.releaseOwnedRoot(); releaseErr != nil {
+		t.Fatalf("releaseOwnedRoot() error = %v, want exact retry cleanup", releaseErr)
+	}
+	if _, statErr := os.Lstat(filepath.Dir(request.Authority.JailRootHostPath)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("runtime generation remains after terminal retry: %v", statErr)
+	}
+}
+
 func TestLinuxJailerStagerRequiresPrivatePreexistingCommonAuthority(t *testing.T) {
 	t.Run("missing common directory", func(t *testing.T) {
 		request, common := newLinuxJailerStagingRequestWithoutCommon(t)
