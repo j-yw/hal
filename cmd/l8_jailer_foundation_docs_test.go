@@ -9,7 +9,7 @@ import (
 
 const (
 	l8JailerFoundationVerificationDoc = "sandbox-runtime-v2-l8-jailer-foundation-verification.md"
-	l8JailerFoundationImplementation  = "2acbd01687844ada3a9d9c6ca6090aac9822e94c"
+	l8JailerFoundationImplementation  = "e55b5176fe6a14e728051eccfe55a525c9db2202"
 )
 
 func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
@@ -29,7 +29,11 @@ func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
 		"only correlated log, metrics, and optional initrd files",
 		"rejects network-interface and non-empty entropy configuration",
 		"retains exact root authority when staging and initial cleanup both fail",
-		"retains exact or quarantined directory authority after post-creation checks fail",
+		"returns a non-nil retry lease only when that rollback is incomplete",
+		"Creation-time quarantine removes only exact verified empty directories",
+		"terminal cleanup recursively removes correlated staged content and Jailer-created runtime output without following symlinks",
+		"unresolved identity blocks reuse rather than guessing by path",
+		"private and in-memory only and does not provide durable crash recovery",
 		"retires the exact terminal process record only after terminal root release",
 		"closed process completion as terminal proof regardless of exit status",
 		"close-on-exec namespace descriptor",
@@ -138,6 +142,7 @@ func TestL8JailerFoundationForbidsPrematureClaims(t *testing.T) {
 	for _, forbidden := range []string{
 		"prepared-Linux acceptance passed",
 		"strict Jailer is selected by default",
+		"retains exact or quarantined directory authority after post-creation checks fail",
 		"L8 is complete",
 		"HL8E is issued",
 		"L10 is complete",
