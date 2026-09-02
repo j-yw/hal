@@ -107,7 +107,7 @@ func TestL8JailerFoundationDefaultCommandsStayFakeOnly(t *testing.T) {
 	section := l8JailerFoundationSection(t, doc, "## Default fake-safe verification", "## Optional future prepared-Linux acceptance")
 	for _, required := range []string{
 		"go test -count=1 ./cmd -run '^TestL8JailerFoundation'",
-		"go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailerLaunch|StrictJailerLifecycle|StrictJailerNamespaceRunner|StrictJailerOSExecLaunch|StageStrictJailerResources|ValidateJailerStagingResources|JailerStaging|LinuxJailer|StrictJailerCoordinator)'",
+		"go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailer|StageStrictJailerResources|ValidateJailerStagingResources|JailerStaging|LinuxJailer)'",
 		"go test -count=1 -run '^$' ./...",
 		"go vet ./...",
 		"make docs-check",
@@ -151,6 +151,10 @@ func TestL8JailerFoundationFocusedSelectorIncludesCriticalRegressions(t *testing
 		"TestLinuxJailerStagerRejectsRenamedFileBeforeMutation",
 		"TestLinuxJailerStagerPreFinalizationCleanupPreservesUnrecordedEntries",
 		"TestLinuxJailerStagerQuarantinesRuntimeWhenPostMkdirStatCannotBePinned",
+		"TestStrictJailerCleanupAuthorityAllowsOnlyRootOrExpectedRuntimeUID",
+		"TestStrictJailerHostInspectionErrorsAreSanitized",
+		"TestStrictJailerHostInspectionHasNoDurableJSONShape",
+		"TestStrictJailerNetworkNamespaceProviderCannotExpressDuplicateDescriptors",
 	} {
 		if !strings.Contains(source.String(), "func "+testName+"(") {
 			t.Fatalf("critical Jailer regression %s no longer exists", testName)
