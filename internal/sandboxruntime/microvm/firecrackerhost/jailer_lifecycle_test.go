@@ -123,6 +123,67 @@ func TestStrictJailerLifecycleRejectsCrossGenerationHandlePaths(t *testing.T) {
 	}
 }
 
+func TestStrictJailerLifecycleForgetsOnlyExactTerminatedGeneration(t *testing.T) {
+	plan := atomicJailerTestPlan(t, "run-alpha")
+	process := newAtomicJailerTestProcess()
+	runner, _, _ := atomicJailerTestRunner(t, process, nil)
+	lifecycle, err := newStrictJailerLifecycle(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := lifecycle.start(context.Background(), strictJailerLifecycleStartRequest{
+		launchPlan: plan, hostPaths: plan.hostPathPlan(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := lifecycle.forgetTerminated(started); !errors.Is(err, errStrictJailerLifecycleInactive) {
+		t.Fatalf("forget(active) error = %v, want inactive", err)
+	}
+	if got := strictJailerLifecycleRecordCount(lifecycle); got != 1 {
+		t.Fatalf("records after active forget = %d, want 1", got)
+	}
+	if err := lifecycle.stop(context.Background(), started); err != nil {
+		t.Fatalf("stop() error = %v", err)
+	}
+
+	for name, mutate := range map[string]func(*strictJailerLifecycleProcess){
+		"handle": func(value *strictJailerLifecycleProcess) { value.handle.ID += "-other" },
+		"paths": func(value *strictJailerLifecycleProcess) {
+			value.hostPaths = atomicJailerTestPlan(t, "run-beta").hostPathPlan()
+		},
+		"uid": func(value *strictJailerLifecycleProcess) { value.runtimeUID++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged := started
+			mutate(&forged)
+			if err := lifecycle.forgetTerminated(forged); !errors.Is(err, errStrictJailerLifecycleInvalid) {
+				t.Fatalf("forget(forged) error = %v, want invalid", err)
+			}
+			if got := strictJailerLifecycleRecordCount(lifecycle); got != 1 {
+				t.Fatalf("records after forged forget = %d, want 1", got)
+			}
+		})
+	}
+
+	if err := lifecycle.forgetTerminated(started); err != nil {
+		t.Fatalf("forget(terminated) error = %v, want nil", err)
+	}
+	if got := strictJailerLifecycleRecordCount(lifecycle); got != 0 {
+		t.Fatalf("records after exact forget = %d, want 0", got)
+	}
+	if err := lifecycle.forgetTerminated(started); !errors.Is(err, errStrictJailerLifecycleInvalid) {
+		t.Fatalf("forget(already forgotten) error = %v, want fail closed invalid", err)
+	}
+}
+
+func strictJailerLifecycleRecordCount(lifecycle *strictJailerLifecycle) int {
+	lifecycle.manager.mu.Lock()
+	defer lifecycle.manager.mu.Unlock()
+	return len(lifecycle.manager.processes)
+}
+
 func TestStrictJailerLifecycleErrorsRemainSanitized(t *testing.T) {
 	plan := atomicJailerTestPlan(t, "run-alpha")
 	plan.process.Args[1] = "secret-generation-/Users/alice/private"

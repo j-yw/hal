@@ -67,6 +67,7 @@ type coordinatorFakeLifecycle struct {
 	startErr         error
 	stopErrors       []error
 	retryStartErrors []error
+	forgetErrors     []error
 	terminatedValues []bool
 	process          strictJailerLifecycleProcess
 	lastStart        strictJailerLifecycleStartRequest
@@ -94,6 +95,15 @@ func (lifecycle *coordinatorFakeLifecycle) terminated(strictJailerLifecycleProce
 	value := lifecycle.terminatedValues[0]
 	lifecycle.terminatedValues = lifecycle.terminatedValues[1:]
 	return value
+}
+func (lifecycle *coordinatorFakeLifecycle) forgetTerminated(strictJailerLifecycleProcess) error {
+	*lifecycle.events = append(*lifecycle.events, "forget")
+	if len(lifecycle.forgetErrors) == 0 {
+		return nil
+	}
+	err := lifecycle.forgetErrors[0]
+	lifecycle.forgetErrors = lifecycle.forgetErrors[1:]
+	return err
 }
 func (lifecycle *coordinatorFakeLifecycle) retryUncertainStartCleanup(context.Context) error {
 	*lifecycle.events = append(*lifecycle.events, "retry-process")
@@ -168,7 +178,7 @@ func TestStrictJailerCoordinatorStartsInExactOrderAndKeepsPrivateShape(t *testin
 	if err := coordinator.stop(context.Background(), session); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if got, want := events[len(events)-3:], []string{"stop", "terminated", "release"}; !reflect.DeepEqual(got, want) {
+	if got, want := events[len(events)-4:], []string{"stop", "terminated", "release", "forget"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("stop events = %v", got)
 	}
 }
@@ -317,21 +327,23 @@ func TestStrictJailerCoordinatorCleanupStateMachine(t *testing.T) {
 		stopErrors      []error
 		retryErrors     []error
 		removeErrors    []error
+		forgetErrors    []error
 		terminated      []bool
 		wantStartEvents []string
 		wantRetryEvents []string
 	}{
 		{name: "contained start", startErr: errors.New("sensitive contained failure"), wantStartEvents: []string{"start", "release"}},
 		{name: "uncertain start", startErr: errStrictJailerNamespaceCleanupIncomplete, wantStartEvents: []string{"start"}, wantRetryEvents: []string{"retry-process", "release"}},
-		{name: "stop retry", stopErrors: []error{errors.New("sensitive stop failure"), nil}, terminated: []bool{false, true}, wantStartEvents: []string{"start", "stop", "terminated"}, wantRetryEvents: []string{"stop", "terminated", "release"}},
-		{name: "stop error but terminal", stopErrors: []error{errors.New("sensitive stop failure")}, terminated: []bool{true}, wantStartEvents: []string{"start", "stop", "terminated", "release"}},
-		{name: "root retry", removeErrors: []error{errors.New("sensitive remove failure"), nil}, terminated: []bool{true}, wantStartEvents: []string{"start", "stop", "terminated", "release"}, wantRetryEvents: []string{"release"}},
+		{name: "stop retry", stopErrors: []error{errors.New("sensitive stop failure"), nil}, terminated: []bool{false, true}, wantStartEvents: []string{"start", "stop", "terminated"}, wantRetryEvents: []string{"stop", "terminated", "release", "forget"}},
+		{name: "stop error but terminal", stopErrors: []error{errors.New("sensitive stop failure")}, terminated: []bool{true}, wantStartEvents: []string{"start", "stop", "terminated", "release", "forget"}},
+		{name: "root retry", removeErrors: []error{errors.New("sensitive remove failure"), nil}, terminated: []bool{true}, wantStartEvents: []string{"start", "stop", "terminated", "release"}, wantRetryEvents: []string{"release", "forget"}},
+		{name: "forget retry", forgetErrors: []error{errors.New("sensitive forget failure"), nil}, terminated: []bool{true}, wantStartEvents: []string{"start", "stop", "terminated", "release", "forget"}, wantRetryEvents: []string{"forget"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			events := []string{}
 			root := &coordinatorFakeRoot{events: &events, removeErrors: append([]error(nil), test.removeErrors...)}
-			lifecycle := &coordinatorFakeLifecycle{events: &events, startErr: test.startErr, stopErrors: append([]error(nil), test.stopErrors...), retryStartErrors: append([]error(nil), test.retryErrors...), terminatedValues: append([]bool(nil), test.terminated...)}
+			lifecycle := &coordinatorFakeLifecycle{events: &events, startErr: test.startErr, stopErrors: append([]error(nil), test.stopErrors...), retryStartErrors: append([]error(nil), test.retryErrors...), forgetErrors: append([]error(nil), test.forgetErrors...), terminatedValues: append([]bool(nil), test.terminated...)}
 			coordinator := coordinatorForStateTest(&events, root, lifecycle)
 			session, startErr := coordinator.start(context.Background(), validStrictJailerCoordinatorRequest(t))
 			if test.startErr == nil {
@@ -339,7 +351,7 @@ func TestStrictJailerCoordinatorCleanupStateMachine(t *testing.T) {
 					t.Fatalf("start: %v", startErr)
 				}
 				stopErr := coordinator.stop(context.Background(), session)
-				if len(test.stopErrors) > 0 || len(test.removeErrors) > 0 {
+				if len(test.stopErrors) > 0 || len(test.removeErrors) > 0 || len(test.forgetErrors) > 0 {
 					if stopErr == nil {
 						t.Fatal("expected stop error")
 					}
@@ -386,9 +398,126 @@ func TestStrictJailerCoordinatorDoesNotReleaseWithoutPositiveTerminalProof(t *te
 	if err := coordinator.retryCleanup(context.Background(), session); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if got, want := events[len(events)-3:], []string{"stop", "terminated", "release"}; !reflect.DeepEqual(got, want) {
+	if got, want := events[len(events)-4:], []string{"stop", "terminated", "release", "forget"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("retry order = %v, want %v", got, want)
 	}
+}
+
+func TestStrictJailerCoordinatorForgetsOnlyAfterTerminalProcessAndRootProof(t *testing.T) {
+	t.Run("process cleanup uncertain", func(t *testing.T) {
+		events := []string{}
+		root := &coordinatorFakeRoot{events: &events}
+		lifecycle := &coordinatorFakeLifecycle{events: &events, terminatedValues: []bool{false}}
+		coordinator := coordinatorForStateTest(&events, root, lifecycle)
+		session, err := coordinator.start(context.Background(), validStrictJailerCoordinatorRequest(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := coordinator.stop(context.Background(), session); !errors.Is(err, errStrictJailerCoordinatorCleanupIncomplete) {
+			t.Fatalf("stop() error = %v, want cleanup incomplete", err)
+		}
+		if slicesContain(events, "forget") {
+			t.Fatalf("events = %v, process was forgotten without terminal proof", events)
+		}
+	})
+
+	t.Run("root cleanup uncertain", func(t *testing.T) {
+		events := []string{}
+		root := &coordinatorFakeRoot{events: &events, removeErrors: []error{errors.New("private removal failure")}}
+		lifecycle := &coordinatorFakeLifecycle{events: &events, terminatedValues: []bool{true}}
+		coordinator := coordinatorForStateTest(&events, root, lifecycle)
+		session, err := coordinator.start(context.Background(), validStrictJailerCoordinatorRequest(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := coordinator.stop(context.Background(), session); !errors.Is(err, errStrictJailerCoordinatorCleanupIncomplete) {
+			t.Fatalf("stop() error = %v, want cleanup incomplete", err)
+		}
+		if slicesContain(events, "forget") {
+			t.Fatalf("events = %v, process was forgotten without terminal root release", events)
+		}
+	})
+}
+
+func TestStrictJailerCoordinatorSuccessfulGenerationsDoNotRetainProcessRecords(t *testing.T) {
+	events := []string{}
+	lifecycle := newCoordinatorRetainedLifecycle(&events)
+	coordinator := newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+		inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
+			return validCoordinatorInspection(), nil
+		},
+		newFilesystem: func(jailerStagingAuthority) (jailerStagingFilesystem, error) {
+			return &coordinatorFakeFS{events: &events}, nil
+		},
+		stage: func(jailerStagingFilesystem, jailerStagingRequest) (jailerStagingResult, error) {
+			return jailerStagingResult{lease: &jailerStagingLease{root: &coordinatorFakeRoot{events: &events}}}, nil
+		},
+		plan: func(request strictJailerLaunchRequest) (strictJailerLaunchPlan, error) {
+			return strictJailerLaunchPlan{hostPaths: request.HostPaths}, nil
+		},
+		lifecycle: lifecycle,
+	})
+	request := validStrictJailerCoordinatorRequest(t)
+	for generation := 0; generation < 64; generation++ {
+		session, err := coordinator.start(context.Background(), request)
+		if err != nil {
+			t.Fatalf("generation %d start: %v", generation, err)
+		}
+		if err := coordinator.stop(context.Background(), session); err != nil {
+			t.Fatalf("generation %d stop: %v", generation, err)
+		}
+		if got := lifecycle.recordCount(); got != 0 {
+			t.Fatalf("generation %d retained process records = %d, want 0", generation, got)
+		}
+	}
+}
+
+type coordinatorRetainedLifecycle struct {
+	manager *ProcessLifecycleManager
+	events  *[]string
+}
+
+func newCoordinatorRetainedLifecycle(events *[]string) *coordinatorRetainedLifecycle {
+	return &coordinatorRetainedLifecycle{manager: NewProcessLifecycleManager(nil), events: events}
+}
+
+func (lifecycle *coordinatorRetainedLifecycle) start(_ context.Context, request strictJailerLifecycleStartRequest) (strictJailerLifecycleProcess, error) {
+	*lifecycle.events = append(*lifecycle.events, "start")
+	process := newAtomicJailerTestProcess()
+	handle := lifecycle.manager.storeStrictJailerProcess(process, request.hostPaths, privateStateDirIdentity{}, false, 1001)
+	return strictJailerLifecycleProcess{handle: handle, hostPaths: request.hostPaths, runtimeUID: 1001}, nil
+}
+
+func (lifecycle *coordinatorRetainedLifecycle) stop(ctx context.Context, process strictJailerLifecycleProcess) error {
+	*lifecycle.events = append(*lifecycle.events, "stop")
+	return lifecycle.manager.StopLiveProcess(ctx, firecracker.LiveProcessRequest{Handle: process.handle, Paths: process.hostPaths})
+}
+
+func (lifecycle *coordinatorRetainedLifecycle) terminated(process strictJailerLifecycleProcess) bool {
+	*lifecycle.events = append(*lifecycle.events, "terminated")
+	return lifecycle.manager.LiveProcessTerminated(firecracker.LiveProcessRequest{Handle: process.handle, Paths: process.hostPaths})
+}
+
+func (lifecycle *coordinatorRetainedLifecycle) forgetTerminated(process strictJailerLifecycleProcess) error {
+	*lifecycle.events = append(*lifecycle.events, "forget")
+	return lifecycle.manager.forgetTerminatedStrictJailerProcess(process.handle, process.hostPaths, process.runtimeUID)
+}
+
+func (*coordinatorRetainedLifecycle) retryUncertainStartCleanup(context.Context) error { return nil }
+
+func (lifecycle *coordinatorRetainedLifecycle) recordCount() int {
+	lifecycle.manager.mu.Lock()
+	defer lifecycle.manager.mu.Unlock()
+	return len(lifecycle.manager.processes)
+}
+
+func slicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestStrictJailerCoordinatorDoesNotRetainTerminalRootCloseFailure(t *testing.T) {
