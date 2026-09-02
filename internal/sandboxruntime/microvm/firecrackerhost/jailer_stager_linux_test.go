@@ -110,6 +110,98 @@ func TestLinuxJailerStagerRetainsRootWhenPostMkdirStatFails(t *testing.T) {
 	}
 }
 
+func TestLinuxJailerStagerRetainsRuntimeWhenPostMkdirStatFails(t *testing.T) {
+	request, _ := newLinuxJailerStagingRequest(t)
+	filesystem, err := newLinuxJailerStagingFilesystem(request.Authority)
+	if err != nil {
+		t.Fatalf("newLinuxJailerStagingFilesystem() error = %v, want nil", err)
+	}
+	linuxFilesystem := filesystem.(*linuxJailerStagingFilesystem)
+	realStatEntry := linuxFilesystem.statEntry
+	failRuntimeStat := true
+	linuxFilesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
+		if name == request.Authority.RuntimeID && failRuntimeStat {
+			failRuntimeStat = false
+			return unix.Stat_t{}, unix.EIO
+		}
+		return realStatEntry(parentFD, name)
+	}
+
+	result, err := stageStrictJailerResources(filesystem, request)
+	if !errors.Is(err, errJailerStagingFailed) || !errors.Is(err, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("stage error = %v, want failed and cleanup-incomplete", err)
+	}
+	if !result.retainsOwnedRoot() {
+		t.Fatal("runtime post-mkdir stat failure discarded retained dirfd cleanup authority")
+	}
+	runtimeRoot := filepath.Dir(request.Authority.JailRootHostPath)
+	if _, statErr := os.Stat(runtimeRoot); statErr != nil {
+		t.Fatalf("quarantined runtime is unavailable before retry: %v", statErr)
+	}
+	if releaseErr := result.releaseOwnedRoot(); releaseErr != nil {
+		t.Fatalf("releaseOwnedRoot() error = %v, want exact retry cleanup", releaseErr)
+	}
+	if _, statErr := os.Lstat(runtimeRoot); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("runtime generation remains after terminal retry: %v", statErr)
+	}
+}
+
+func TestLinuxJailerStagerQuarantinesRuntimeWhenPostMkdirStatCannotBePinned(t *testing.T) {
+	request, common := newLinuxJailerStagingRequest(t)
+	filesystem, err := newLinuxJailerStagingFilesystem(request.Authority)
+	if err != nil {
+		t.Fatalf("newLinuxJailerStagingFilesystem() error = %v, want nil", err)
+	}
+	linuxFilesystem := filesystem.(*linuxJailerStagingFilesystem)
+	realStatEntry := linuxFilesystem.statEntry
+	movedName := request.Authority.RuntimeID + "-moved"
+	failRuntimeStat := true
+	linuxFilesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
+		if name == request.Authority.RuntimeID && failRuntimeStat {
+			failRuntimeStat = false
+			if renameErr := unix.Renameat(parentFD, name, parentFD, movedName); renameErr != nil {
+				t.Fatalf("Renameat(runtime): %v", renameErr)
+			}
+			return unix.Stat_t{}, unix.EIO
+		}
+		return realStatEntry(parentFD, name)
+	}
+
+	result, err := stageStrictJailerResources(filesystem, request)
+	if !errors.Is(err, errJailerStagingFailed) || !errors.Is(err, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("stage error = %v, want failed and cleanup-incomplete", err)
+	}
+	if !result.retainsOwnedRoot() {
+		t.Fatal("unresolved runtime post-mkdir failure discarded quarantine authority")
+	}
+	t.Cleanup(func() {
+		if result.lease != nil && !interfaceValueIsNil(result.lease.root) {
+			_ = result.lease.root.close()
+		}
+	})
+
+	runtimeRoot := filepath.Dir(request.Authority.JailRootHostPath)
+	if mkdirErr := os.Mkdir(runtimeRoot, 0o700); mkdirErr != nil {
+		t.Fatalf("Mkdir(replacement runtime): %v", mkdirErr)
+	}
+	sentinel := filepath.Join(runtimeRoot, "unowned")
+	if writeErr := os.WriteFile(sentinel, []byte("preserve"), 0o600); writeErr != nil {
+		t.Fatalf("WriteFile(replacement sentinel): %v", writeErr)
+	}
+	if releaseErr := result.releaseOwnedRoot(); !errors.Is(releaseErr, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("releaseOwnedRoot() error = %v, want cleanup-incomplete", releaseErr)
+	}
+	if !result.retainsOwnedRoot() {
+		t.Fatal("failed pin cleanup did not retain quarantine authority")
+	}
+	if data, readErr := os.ReadFile(sentinel); readErr != nil || string(data) != "preserve" {
+		t.Fatalf("unknown replacement changed: data=%q error=%v", data, readErr)
+	}
+	if info, statErr := os.Stat(filepath.Join(common, movedName)); statErr != nil || !info.IsDir() {
+		t.Fatalf("unresolved created runtime changed: info=%v error=%v", info, statErr)
+	}
+}
+
 func TestLinuxJailerStagerRequiresPrivatePreexistingCommonAuthority(t *testing.T) {
 	t.Run("missing common directory", func(t *testing.T) {
 		request, common := newLinuxJailerStagingRequestWithoutCommon(t)
