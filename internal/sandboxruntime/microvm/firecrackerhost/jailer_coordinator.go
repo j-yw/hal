@@ -401,7 +401,8 @@ func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorReques
 	seen := make(map[string]int, len(resources))
 	for _, resource := range resources {
 		jailPath, _, pathErr := validateJailerStagingPath(resource.JailPath)
-		if pathErr != nil || jailPath == paths.APISocketPath || jailPath == paths.VsockSocketPath || jailPath == reservedExecutable ||
+		if pathErr != nil || jailerPathOverlapsEndpoint(jailPath, paths.APISocketPath) ||
+			jailerPathOverlapsEndpoint(jailPath, paths.VsockSocketPath) || jailerPathOverlapsEndpoint(jailPath, reservedExecutable) ||
 			jailPath == "/dev" || strings.HasPrefix(jailPath, "/dev/") {
 			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
 		}
@@ -431,6 +432,12 @@ func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorReques
 	return nil
 }
 
+func jailerPathOverlapsEndpoint(value, endpoint string) bool {
+	return endpoint != "" && (value == endpoint ||
+		strings.HasPrefix(value, endpoint+"/") ||
+		strings.HasPrefix(endpoint, value+"/"))
+}
+
 func validStrictJailerEntropy(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return true
@@ -453,7 +460,7 @@ func readStrictJailerConfig(resource jailerStagingResourceInput) (strictJailerCo
 		return strictJailerConfigFile{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	if strictJailerConfigHasDuplicateFields(data) {
+	if strictJailerConfigHasNoncanonicalOrDuplicateFields(data) {
 		return strictJailerConfigFile{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
 	}
 	decoder.DisallowUnknownFields()
@@ -468,7 +475,7 @@ func readStrictJailerConfig(resource jailerStagingResourceInput) (strictJailerCo
 	return rendered, nil
 }
 
-func strictJailerConfigHasDuplicateFields(data []byte) bool {
+func strictJailerConfigHasNoncanonicalOrDuplicateFields(data []byte) bool {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	var visit func(json.Token) bool
 	visit = func(token json.Token) bool {
@@ -482,7 +489,7 @@ func strictJailerConfigHasDuplicateFields(data []byte) bool {
 			for decoder.More() {
 				keyToken, err := decoder.Token()
 				key, keyOK := keyToken.(string)
-				if err != nil || !keyOK {
+				if err != nil || !keyOK || !canonicalStrictJailerConfigField(key) {
 					return true
 				}
 				if _, duplicate := seen[key]; duplicate {
@@ -511,6 +518,17 @@ func strictJailerConfigHasDuplicateFields(data []byte) bool {
 	}
 	first, err := decoder.Token()
 	return err != nil || visit(first)
+}
+
+func canonicalStrictJailerConfigField(field string) bool {
+	switch field {
+	case "machine-config", "boot-source", "drives", "vsock", "entropy",
+		"vcpu_count", "mem_size_mib", "kernel_image_path", "initrd_path", "boot_args",
+		"drive_id", "path_on_host", "is_root_device", "is_read_only", "guest_cid", "uds_path":
+		return true
+	default:
+		return false
+	}
 }
 
 func strictJailerCoordinatorAuthority(request strictJailerCoordinatorRequest, inspection strictJailerHostInspectionResult) (jailerStagingAuthority, firecracker.PathPlan, error) {

@@ -381,9 +381,8 @@ func validateJailerStagingResources(authority jailerStagingAuthority, request ja
 }
 
 func validateJailerStagingPath(value string) (string, string, error) {
-	value = strings.TrimSpace(value)
 	cleaned := path.Clean(value)
-	if value == "" || cleaned != value || !path.IsAbs(value) || value == "/" ||
+	if value == "" || strings.TrimSpace(value) != value || cleaned != value || !path.IsAbs(value) || value == "/" ||
 		strings.Contains(value, `\`) || hasOSExecProcessControl(value) {
 		return "", "", errJailerStagingInvalid
 	}
