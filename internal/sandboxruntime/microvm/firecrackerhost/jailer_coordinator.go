@@ -192,7 +192,20 @@ func (coordinator *strictJailerCoordinator) start(ctx context.Context, request s
 		Support:   append([]jailerStagingResourceInput(nil), request.support...),
 	})
 	if err != nil {
-		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "stage")
+		primary := error(newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "stage"))
+		cleanupErr := error(newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup"))
+		if staging.retainsOwnedRoot() {
+			coordinator.next++
+			generation := &strictJailerCoordinatorGeneration{
+				id: coordinator.next, state: strictJailerCoordinatorRootCleanupPending, staging: staging,
+			}
+			coordinator.generation = generation
+			return strictJailerSession{coordinator: coordinator, generation: generation.id}, errors.Join(primary, cleanupErr)
+		}
+		if errors.Is(err, errJailerStagingCleanupIncomplete) {
+			return strictJailerSession{}, errors.Join(primary, cleanupErr)
+		}
+		return strictJailerSession{}, primary
 	}
 
 	coordinator.next++

@@ -134,8 +134,9 @@ type jailerStagingResult struct {
 	lease        *jailerStagingLease
 }
 
-// jailerStagingLease retains the exact root authority across the staging to
-// process-lifecycle handoff. A copied result shares this one release state.
+// jailerStagingLease retains the exact root authority across either the
+// staging-to-process handoff or an uncertain staging-failure cleanup retry. A
+// copied result shares this one release state.
 type jailerStagingLease struct {
 	mu         sync.Mutex
 	root       jailerStagingRoot
@@ -146,6 +147,15 @@ type jailerStagingLease struct {
 
 func (result jailerStagingResult) pathCorrelations() []jailerStagingPathCorrelation {
 	return append([]jailerStagingPathCorrelation(nil), result.correlations...)
+}
+
+func (result jailerStagingResult) retainsOwnedRoot() bool {
+	if result.lease == nil {
+		return false
+	}
+	result.lease.mu.Lock()
+	defer result.lease.mu.Unlock()
+	return !result.lease.released && !interfaceValueIsNil(result.lease.root)
 }
 
 func (result jailerStagingResult) verifyOwnedRoot() error {
@@ -238,7 +248,9 @@ type validatedJailerStagingResource struct {
 // stageStrictJailerResources is an injected staging coordinator. Linux has a
 // retained-dirfd implementation, but no production path selects or launches
 // through it yet. It performs no process launch, runtime selection, security
-// projection, network operation, or credential delivery.
+// projection, network operation, or credential delivery. When staging and
+// exact removal both fail, the nonzero result carries retry-only root authority
+// which the caller must retain until releaseOwnedRoot reaches a terminal state.
 func stageStrictJailerResources(filesystem jailerStagingFilesystem, request jailerStagingRequest) (result jailerStagingResult, returnedErr error) {
 	if interfaceValueIsNil(filesystem) {
 		return jailerStagingResult{}, newJailerStagingError(errJailerStagingInvalid, "filesystem")
@@ -273,7 +285,7 @@ func stageStrictJailerResources(filesystem jailerStagingFilesystem, request jail
 
 	result, stageErr := stageJailerOwnedRoot(root, authority, resources)
 	if stageErr != nil {
-		return jailerStagingResult{}, cleanupFailedJailerStagingRoot(root, stageErr)
+		return cleanupFailedJailerStagingRoot(root, stageErr)
 	}
 	result.lease = &jailerStagingLease{root: root}
 	return result, nil
@@ -509,13 +521,17 @@ func writeAndVerifyJailerResource(file jailerStagingFile, authority jailerStagin
 	return nil
 }
 
-func cleanupFailedJailerStagingRoot(root jailerStagingRoot, primary error) error {
-	removeErr := root.removeOwned()
-	closeErr := root.close()
-	if removeErr != nil || closeErr != nil {
-		return errors.Join(primary, newJailerStagingError(errJailerStagingCleanupIncomplete, "root"))
+func cleanupFailedJailerStagingRoot(root jailerStagingRoot, primary error) (jailerStagingResult, error) {
+	if removeErr := root.removeOwned(); removeErr != nil {
+		return jailerStagingResult{lease: &jailerStagingLease{root: root, uncertain: true}}, errors.Join(
+			primary,
+			newJailerStagingError(errJailerStagingCleanupIncomplete, "root"),
+		)
 	}
-	return primary
+	if closeErr := root.close(); closeErr != nil {
+		return jailerStagingResult{}, errors.Join(primary, newJailerStagingError(errJailerStagingCleanupIncomplete, "root_close"))
+	}
+	return jailerStagingResult{}, primary
 }
 
 type jailerStagingError struct {
