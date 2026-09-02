@@ -66,8 +66,23 @@ func TestStageStrictJailerResourcesCreatesExactPrivateTree(t *testing.T) {
 	if inherited := result.processInheritedFiles(); inherited == nil || len(inherited) != 0 {
 		t.Fatalf("inherited files = %#v, want explicit empty list", inherited)
 	}
-	if filesystem.root.verifyCalls != 1 || filesystem.root.removeCalls != 0 || filesystem.root.closeCalls != 1 {
-		t.Fatalf("successful root cleanup/close calls = %d/%d, want 0/1", filesystem.root.removeCalls, filesystem.root.closeCalls)
+	if filesystem.root.verifyCalls != 1 || filesystem.root.removeCalls != 0 || filesystem.root.closeCalls != 0 {
+		t.Fatalf("successful root verify/remove/close calls = %d/%d/%d, want 1/0/0 retained", filesystem.root.verifyCalls, filesystem.root.removeCalls, filesystem.root.closeCalls)
+	}
+	if err := result.verifyOwnedRoot(); err != nil {
+		t.Fatalf("verifyOwnedRoot() error = %v, want nil", err)
+	}
+	if filesystem.root.verifyCalls != 2 {
+		t.Fatalf("root verify calls = %d, want staging plus pre-launch verification", filesystem.root.verifyCalls)
+	}
+	if err := result.releaseOwnedRoot(); err != nil {
+		t.Fatalf("releaseOwnedRoot() error = %v, want nil", err)
+	}
+	if err := result.releaseOwnedRoot(); err != nil {
+		t.Fatalf("second releaseOwnedRoot() error = %v, want idempotent nil", err)
+	}
+	if filesystem.root.removeCalls != 1 || filesystem.root.closeCalls != 1 {
+		t.Fatalf("terminal root remove/close calls = %d/%d, want exactly 1/1", filesystem.root.removeCalls, filesystem.root.closeCalls)
 	}
 }
 
@@ -210,6 +225,31 @@ func TestStageStrictJailerResourcesCleansOwnedPartialStateOnFailure(t *testing.T
 	assertJailerStagingErrorRedacted(t, err)
 }
 
+func TestJailerStagingLeaseCachesUncertainCleanupWithoutRetrying(t *testing.T) {
+	filesystem := newFakeJailerStagingFilesystem()
+	filesystem.removeErr = errors.New("cleanup failed at /srv/private/jail-secret")
+	result, err := stageStrictJailerResources(filesystem, validJailerStagingRequest())
+	if err != nil {
+		t.Fatalf("stageStrictJailerResources() error = %v, want nil", err)
+	}
+
+	first := result.releaseOwnedRoot()
+	if !errors.Is(first, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("releaseOwnedRoot() error = %v, want cleanup incomplete", first)
+	}
+	second := result.releaseOwnedRoot()
+	if !errors.Is(second, errJailerStagingCleanupIncomplete) || second.Error() != first.Error() {
+		t.Fatalf("second release error = %v, want cached %v", second, first)
+	}
+	if filesystem.root.removeCalls != 1 || filesystem.root.closeCalls != 1 {
+		t.Fatalf("uncertain cleanup remove/close calls = %d/%d, want exactly 1/1", filesystem.root.removeCalls, filesystem.root.closeCalls)
+	}
+	if verifyErr := result.verifyOwnedRoot(); !errors.Is(verifyErr, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("verify after uncertain release = %v, want cleanup incomplete", verifyErr)
+	}
+	assertJailerStagingErrorRedacted(t, first)
+}
+
 func TestStageStrictJailerResourcesRejectsDigestAndSizeMismatch(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -272,6 +312,9 @@ func TestJailerStagingResultReturnsDefensiveCopiesAndNoJSON(t *testing.T) {
 	}
 	if string(encoded) != "{}" {
 		t.Fatalf("json.Marshal(result) = %s, want no durable shape", encoded)
+	}
+	if err := result.releaseOwnedRoot(); err != nil {
+		t.Fatalf("releaseOwnedRoot() error = %v, want nil", err)
 	}
 }
 
