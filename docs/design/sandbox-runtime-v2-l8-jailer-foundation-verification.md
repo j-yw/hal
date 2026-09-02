@@ -1,9 +1,9 @@
-# Sandbox Runtime v2 L8 Jailer Foundation Verification
+# Sandbox Runtime v2 L8-D7 Jailer Prerequisite Foundation Verification
 
 ## Status and authority
 
 This note verifies the package-private Jailer foundation at
-`750dbab9568613df690e3bde49e91fe160687896`, the implementation head before
+`d484bd901cd0ff58b961f89e650f3b4399df6631`, the implementation head before
 the verification-only commits. It records code that exists at that exact head;
 it is not prepared-host evidence and does not enable a runtime.
 
@@ -21,10 +21,10 @@ All of these components remain private to
 | Component | Implemented boundary | Truth limit |
 | --- | --- | --- |
 | Host inspection | The read-only host inspector checks canonical configured paths, trusted root-owned directory chains, separate expected SHA-256 identities, and safe numeric runtime identity inputs. | Inspection closes the opened binaries before launch and is not a pinned executable handoff or live proof. |
-| Staging | The retained-dirfd stager exclusively creates one private jail generation, caps inputs at one GiB per staged resource and four GiB in aggregate, copies and measures the correlated config, kernel, rootfs, and support files, and retains cleanup authority over that exact root. | The byte budgets bound staging I/O; they are not guest runtime or cgroup enforcement, and staging proves the files it created rather than that a later live Jailer consumed them. |
+| Staging | The retained-dirfd stager exclusively creates one private jail generation, caps inputs at one GiB per staged resource and four GiB in aggregate, copies and measures the correlated config, kernel, rootfs, and support files, and retains cleanup authority over that exact root. It retains exact root authority when staging and initial cleanup both fail so the coordinator can retry handle-bound removal. | The byte budgets bound staging I/O; they are not guest runtime or cgroup enforcement, and staging proves the files it created rather than that a later live Jailer consumed them. |
 | Namespace launch | The network-only direct `setns` runner changes only the locked creating OS thread's network namespace, keeps initial-user-namespace root, passes an empty environment and no asset descriptors, and starts the foreground Jailer. | It has deterministic process and descriptor tests, but no prepared-host execution proof. |
 | Process lifecycle | The private strict Jailer lifecycle atomically carries the structured launch plan, authoritative host cleanup paths, and expected runtime UID through start, inspection, stop, and uncertain-start cleanup. It retires the exact terminal process record only after terminal root release. | It owns process lifecycle state; it does not prove guest or vsock readiness. |
-| Composition | The private strict Jailer coordinator validates config/resource correlation, permits only correlated log, metrics, and optional initrd files, rejects network-interface and entropy configuration, inspects, stages, re-verifies the retained root, plans, starts, stops, and retries cleanup for one active or cleanup-pending generation. | It is the full private coordinator for this foundation, but it is not constructed or selected by a default production runtime path. Network-enabled composition needs a typed, live-topology-correlated config handoff. |
+| Composition | The private strict Jailer coordinator validates config/resource correlation, permits only correlated log, metrics, and optional initrd files, rejects network-interface and non-empty entropy configuration, accepts the existing renderer's exact empty entropy object, inspects, stages, re-verifies the retained root, plans, starts, stops, and retries cleanup for one active or cleanup-pending generation. | It is the full private coordinator for this prerequisite foundation, but it is not constructed or selected by a default production runtime path. Network-enabled composition needs a typed, live-topology-correlated config handoff. |
 
 The compatibility `NamespaceProcessRunner` and direct Firecracker compatibility
 behavior is unchanged. The new runner does not reinterpret the legacy
@@ -59,7 +59,11 @@ claim:
 7. The required runtime and cgroup resource controls must be configured and
    inspected. The new staging byte caps bound input copying only; positive guest vCPU and
    memory values are config correlation, not host runtime bounds.
-8. A no-skip prepared-host lane must prove boot, readiness, isolation, negative
+8. The required durable crash reconciliation must reuse the runtime-owner and recovery
+   layers to rediscover or safely quarantine a strict process and jail root
+   after daemon restart. The private in-memory coordinator and retained file
+   descriptor are not restart recovery.
+9. A no-skip prepared-host lane must prove boot, readiness, isolation, negative
    cases, and zero owned-resource leaks. The prepared-Linux acceptance has not
    run.
 
