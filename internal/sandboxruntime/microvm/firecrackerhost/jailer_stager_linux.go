@@ -290,11 +290,11 @@ func (root *linuxJailerStagingRoot) verifyOwned() error {
 			unix.Fsync(root.commonFD) != nil {
 			return newJailerStagingError(errJailerStagingFailed, "root_verify")
 		}
-		root.finalized = true
 	}
 	if err := root.verifyLocked(true); err != nil {
 		return newJailerStagingError(errJailerStagingFailed, "root_verify")
 	}
+	root.finalized = true
 	return nil
 }
 
@@ -372,7 +372,7 @@ func (root *linuxJailerStagingRoot) removeOwned() error {
 	}
 	root.cleanupStarted = true
 	if !root.rootUnlinked {
-		if err := removeLinuxJailerDirectoryContents(root.rootFD, "", root.entries); err != nil || unix.Fsync(root.rootFD) != nil {
+		if err := removeLinuxJailerDirectoryContents(root.rootFD, "", root.entries, root.finalized); err != nil || unix.Fsync(root.rootFD) != nil {
 			return newJailerStagingError(errJailerStagingCleanupIncomplete, "root")
 		}
 		rootStat, err := linuxJailerFstatat(root.runtimeFD, "root")
@@ -382,7 +382,7 @@ func (root *linuxJailerStagingRoot) removeOwned() error {
 		root.rootUnlinked = true
 	}
 	if !root.runtimeUnlinked {
-		if removeLinuxJailerDirectoryContents(root.runtimeFD, "", nil) != nil || unix.Fsync(root.runtimeFD) != nil {
+		if removeLinuxJailerDirectoryContents(root.runtimeFD, "", nil, root.finalized) != nil || unix.Fsync(root.runtimeFD) != nil {
 			return newJailerStagingError(errJailerStagingCleanupIncomplete, "root")
 		}
 		runtimeStat, err := linuxJailerFstatat(root.commonFD, root.authority.RuntimeID)
@@ -784,7 +784,11 @@ func removeLinuxJailerFileEntry(parentFD int, name string, expected linuxJailerS
 	return unix.Unlinkat(parentFD, name, 0)
 }
 
-func removeLinuxJailerDirectoryContents(directoryFD int, prefix string, expected map[string]linuxJailerStagingEntry) error {
+// removeLinuxJailerDirectoryContents admits entries outside the staging ledger
+// only after the complete generation has passed final ownership verification.
+// That distinction lets terminal post-Jailer cleanup remove runtime output
+// without adopting an entry whose staging-time identity check never completed.
+func removeLinuxJailerDirectoryContents(directoryFD int, prefix string, expected map[string]linuxJailerStagingEntry, allowUnrecorded bool) error {
 	readFD, err := openLinuxJailerDirectoryAt(directoryFD, ".")
 	if err != nil {
 		return err
@@ -813,7 +817,11 @@ func removeLinuxJailerDirectoryContents(directoryFD int, prefix string, expected
 		if prefix != "" {
 			relative = filepath.Join(prefix, name)
 		}
-		if entry, exists := expected[relative]; exists {
+		entry, exists := expected[relative]
+		if !exists && !allowUnrecorded {
+			return errJailerStagingCleanupIncomplete
+		}
+		if exists {
 			if !linuxJailerSameIdentity(before, entry.id) || entry.directory != (before.Mode&unix.S_IFMT == unix.S_IFDIR) {
 				return errJailerStagingCleanupIncomplete
 			}
@@ -828,7 +836,7 @@ func removeLinuxJailerDirectoryContents(directoryFD int, prefix string, expected
 				_ = unix.Close(childFD)
 				return errJailerStagingCleanupIncomplete
 			}
-			removeErr := removeLinuxJailerDirectoryContents(childFD, relative, expected)
+			removeErr := removeLinuxJailerDirectoryContents(childFD, relative, expected, allowUnrecorded)
 			closeErr := unix.Close(childFD)
 			if removeErr != nil || closeErr != nil {
 				return errors.Join(removeErr, closeErr)
