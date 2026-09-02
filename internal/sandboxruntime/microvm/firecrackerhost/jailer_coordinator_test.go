@@ -285,6 +285,41 @@ func TestStrictJailerCoordinatorAcceptsCorrelatedOptionalConfigResources(t *test
 	})
 }
 
+func TestStrictJailerCoordinatorRejectsInitrdRoleAliases(t *testing.T) {
+	tests := map[string]struct {
+		path   string
+		mutate func(*strictJailerCoordinatorRequest)
+	}{
+		"log": {
+			path: "/run/fc-run-1/firecracker.log",
+			mutate: func(request *strictJailerCoordinatorRequest) {
+				request.support[0].Mode = 0o400
+			},
+		},
+		"metrics": {
+			path: "/run/fc-run-1/firecracker.metrics",
+			mutate: func(request *strictJailerCoordinatorRequest) {
+				request.support[1].Mode = 0o400
+			},
+		},
+		"kernel": {path: "/boot/vmlinux"},
+		"rootfs": {path: "/images/rootfs.ext4"},
+		"config": {path: "/run/fc-run-1/firecracker-config.json"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			request := validStrictJailerCoordinatorRequest(t)
+			if test.mutate != nil {
+				test.mutate(&request)
+			}
+			replaceCoordinatorConfig(t, &request, coordinatorConfigWithInitrd(test.path))
+			if err := validateStrictJailerCoordinatorConfig(request); !errors.Is(err, errStrictJailerCoordinatorInvalid) {
+				t.Fatalf("validate initrd alias = %v, want invalid config", err)
+			}
+		})
+	}
+}
+
 func TestStrictJailerCoordinatorAcceptsExactProductionVsockEntropyConfig(t *testing.T) {
 	request := validStrictJailerCoordinatorRequest(t)
 	config := productionVsockCoordinatorConfig(t, request)
@@ -660,6 +695,16 @@ func productionVsockCoordinatorConfig(t *testing.T, request strictJailerCoordina
 
 func coordinatorConfigWith(fields string) string {
 	return strings.TrimSuffix(validCoordinatorConfig(), "}") + "," + fields + "}"
+}
+
+func coordinatorConfigWithInitrd(path string) string {
+	encoded, _ := json.Marshal(path)
+	return strings.Replace(
+		validCoordinatorConfig(),
+		`"kernel_image_path":"/boot/vmlinux"`,
+		`"kernel_image_path":"/boot/vmlinux","initrd_path":`+string(encoded),
+		1,
+	)
 }
 
 func replaceCoordinatorConfig(t *testing.T, request *strictJailerCoordinatorRequest, content string) {
