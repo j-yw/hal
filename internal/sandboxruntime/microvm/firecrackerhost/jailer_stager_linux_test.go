@@ -657,6 +657,69 @@ func TestLinuxJailerStagerCleansPartialGenerationAfterMeasurementFailure(t *test
 	assertJailerStagingErrorRedacted(t, err)
 }
 
+func TestLinuxJailerStagerPreFinalizationCleanupPreservesUnrecordedEntries(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		create func(*testing.T, string) string
+	}{
+		{
+			name: "file",
+			create: func(t *testing.T, root string) string {
+				t.Helper()
+				path := filepath.Join(root, "unrecorded")
+				if err := os.WriteFile(path, []byte("preserve"), 0o600); err != nil {
+					t.Fatalf("WriteFile(unrecorded): %v", err)
+				}
+				return path
+			},
+		},
+		{
+			name: "directory descendant",
+			create: func(t *testing.T, root string) string {
+				t.Helper()
+				directory := filepath.Join(root, "unrecorded")
+				if err := os.Mkdir(directory, 0o700); err != nil {
+					t.Fatalf("Mkdir(unrecorded): %v", err)
+				}
+				path := filepath.Join(directory, "sentinel")
+				if err := os.WriteFile(path, []byte("preserve"), 0o600); err != nil {
+					t.Fatalf("WriteFile(sentinel): %v", err)
+				}
+				return path
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request, _ := newLinuxJailerStagingRequest(t)
+			filesystem, err := newLinuxJailerStagingFilesystem(request.Authority)
+			if err != nil {
+				t.Fatalf("newLinuxJailerStagingFilesystem() error = %v, want nil", err)
+			}
+			root, err := filesystem.createExclusiveRoot(jailerStagingRootRequest{
+				HostRoot: request.Authority.JailRootHostPath,
+				Mode:     request.Authority.DirectoryMode,
+				UID:      request.Authority.UID,
+				GID:      request.Authority.GID,
+			})
+			if err != nil {
+				t.Fatalf("createExclusiveRoot() error = %v, want nil", err)
+			}
+			linuxRoot := root.(*linuxJailerStagingRoot)
+			t.Cleanup(func() { _ = linuxRoot.close() })
+
+			// Model a staging syscall that created an entry but failed before its
+			// first identity/metadata check could add it to the ownership ledger.
+			sentinel := tt.create(t, request.Authority.JailRootHostPath)
+			if err := linuxRoot.removeOwned(); !errors.Is(err, errJailerStagingCleanupIncomplete) {
+				t.Fatalf("removeOwned() error = %v, want cleanup-incomplete", err)
+			}
+			if data, err := os.ReadFile(sentinel); err != nil || string(data) != "preserve" {
+				t.Fatalf("unrecorded staging entry changed: data=%q error=%v", data, err)
+			}
+		})
+	}
+}
+
 func newLinuxJailerStagingRequest(t *testing.T) (jailerStagingRequest, string) {
 	t.Helper()
 	request, common := newLinuxJailerStagingRequestWithoutCommon(t)
