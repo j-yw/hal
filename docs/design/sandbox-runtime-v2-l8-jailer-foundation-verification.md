@@ -3,8 +3,8 @@
 ## Status and authority
 
 This note verifies the package-private Jailer foundation at
-`64391caec0e9e9503f820cefb00eb3665801a4e5`, the implementation head before
-this verification-only commit. It records code that exists at that exact head;
+`750dbab9568613df690e3bde49e91fe160687896`, the implementation head before
+the verification-only commits. It records code that exists at that exact head;
 it is not prepared-host evidence and does not enable a runtime.
 
 The architecture decision remains in
@@ -21,10 +21,10 @@ All of these components remain private to
 | Component | Implemented boundary | Truth limit |
 | --- | --- | --- |
 | Host inspection | The read-only host inspector checks canonical configured paths, trusted root-owned directory chains, separate expected SHA-256 identities, and safe numeric runtime identity inputs. | Inspection closes the opened binaries before launch and is not a pinned executable handoff or live proof. |
-| Staging | The retained-dirfd stager exclusively creates one private jail generation, copies and measures the correlated config, kernel, rootfs, and support files, and retains cleanup authority over that exact root. | Staging proves the files it created, not that a later live Jailer consumed them. |
+| Staging | The retained-dirfd stager exclusively creates one private jail generation, caps inputs at one GiB per staged resource and four GiB in aggregate, copies and measures the correlated config, kernel, rootfs, and support files, and retains cleanup authority over that exact root. | The byte budgets bound staging I/O; they are not guest runtime or cgroup enforcement, and staging proves the files it created rather than that a later live Jailer consumed them. |
 | Namespace launch | The network-only direct `setns` runner changes only the locked creating OS thread's network namespace, keeps initial-user-namespace root, passes an empty environment and no asset descriptors, and starts the foreground Jailer. | It has deterministic process and descriptor tests, but no prepared-host execution proof. |
-| Process lifecycle | The private strict Jailer lifecycle atomically carries the structured launch plan, authoritative host cleanup paths, and expected runtime UID through start, inspection, stop, and uncertain-start cleanup. | It owns process lifecycle state; it does not prove guest or vsock readiness. |
-| Composition | The private strict Jailer coordinator validates config/resource correlation, inspects, stages, re-verifies the retained root, plans, starts, stops, and retries cleanup for one active or cleanup-pending generation. | It is the full private coordinator for this foundation, but it is not constructed or selected by a default production runtime path. |
+| Process lifecycle | The private strict Jailer lifecycle atomically carries the structured launch plan, authoritative host cleanup paths, and expected runtime UID through start, inspection, stop, and uncertain-start cleanup. It retires the exact terminal process record only after terminal root release. | It owns process lifecycle state; it does not prove guest or vsock readiness. |
+| Composition | The private strict Jailer coordinator validates config/resource correlation, permits only correlated log, metrics, and optional initrd files, rejects network-interface and entropy configuration, inspects, stages, re-verifies the retained root, plans, starts, stops, and retries cleanup for one active or cleanup-pending generation. | It is the full private coordinator for this foundation, but it is not constructed or selected by a default production runtime path. Network-enabled composition needs a typed, live-topology-correlated config handoff. |
 
 The compatibility `NamespaceProcessRunner` and direct Firecracker compatibility
 behavior is unchanged. The new runner does not reinterpret the legacy
@@ -52,10 +52,14 @@ claim:
 5. The expected-runtime-UID vsock readiness path must be composed with the
    strict process identity. Expected-UID state and socket cleanup checks exist,
    but the coordinator does not attach a production readiness session.
-6. The bounded Jailer resource and cgroup controls must be configured and
-   inspected. Positive guest vCPU and memory values are config correlation, not
-   host resource bounds.
-7. A no-skip prepared-host lane must prove boot, readiness, isolation, negative
+6. A typed network topology handoff must correlate the exact Firecracker
+   interface configuration with the retained namespace generation and active
+   policy proof. Until then, the foundation rejects network-interface and
+   entropy configuration instead of accepting opaque device input.
+7. The required runtime and cgroup resource controls must be configured and
+   inspected. The new staging byte caps bound input copying only; positive guest vCPU and
+   memory values are config correlation, not host runtime bounds.
+8. A no-skip prepared-host lane must prove boot, readiness, isolation, negative
    cases, and zero owned-resource leaks. The prepared-Linux acceptance has not
    run.
 
@@ -71,7 +75,7 @@ The focused checks are deterministic and select no live tags:
 
 ```sh
 go test -count=1 ./cmd -run '^TestL8JailerFoundation'
-go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailerLaunch|StrictJailerLifecycle|StrictJailerNamespaceRunner|StrictJailerOSExecLaunch|StageStrictJailerResources|JailerStaging|LinuxJailerStager|StrictJailerCoordinator)'
+go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailerLaunch|StrictJailerLifecycle|StrictJailerNamespaceRunner|StrictJailerOSExecLaunch|StageStrictJailerResources|ValidateJailerStagingResources|JailerStaging|LinuxJailerStager|StrictJailerCoordinator)'
 go test -count=1 -run '^$' ./...
 go vet ./...
 make docs-check
@@ -106,7 +110,7 @@ This foundation does not establish:
 - prepared-host boot, guest readiness, network enforcement, credential
   delivery, workspace integrity, or leak-free teardown;
 - executable pinning, dedicated host identity allocation, post-drop orphan
-  containment, or resource-bound evidence;
+  containment, or runtime/cgroup resource-bound evidence;
 - strict runtime selection, a public runtime capability, or a security posture
   upgrade;
 - L8 acceptance, HL8E issuance, L10 live composition, or L11 final closure.
