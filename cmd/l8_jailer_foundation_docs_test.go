@@ -9,7 +9,7 @@ import (
 
 const (
 	l8JailerFoundationVerificationDoc = "sandbox-runtime-v2-l8-jailer-foundation-verification.md"
-	l8JailerFoundationImplementation  = "750dbab9568613df690e3bde49e91fe160687896"
+	l8JailerFoundationImplementation  = "d484bd901cd0ff58b961f89e650f3b4399df6631"
 )
 
 func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
@@ -27,7 +27,8 @@ func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
 		"one active or cleanup-pending generation",
 		"one GiB per staged resource and four GiB in aggregate",
 		"only correlated log, metrics, and optional initrd files",
-		"rejects network-interface and entropy configuration",
+		"rejects network-interface and non-empty entropy configuration",
+		"retains exact root authority when staging and initial cleanup both fail",
 		"retires the exact terminal process record only after terminal root release",
 		"prepared initial-user-namespace-root live host",
 		"dedicated UID/GID authority",
@@ -36,6 +37,7 @@ func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
 		"expected-runtime-UID vsock readiness",
 		"runtime and cgroup resource controls",
 		"typed network topology handoff",
+		"durable crash reconciliation",
 		"prepared-Linux acceptance has not run",
 		"strict runtime selection remains unchanged and default-off",
 		"No L8, HL8E, L10, or L11 claim is made",
