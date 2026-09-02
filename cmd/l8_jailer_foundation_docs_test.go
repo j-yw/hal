@@ -9,7 +9,7 @@ import (
 
 const (
 	l8JailerFoundationVerificationDoc = "sandbox-runtime-v2-l8-jailer-foundation-verification.md"
-	l8JailerFoundationImplementation  = "12a4b8826a8c453ca92c364a5e05c9f4fefd9ace"
+	l8JailerFoundationImplementation  = "c7d471d60a9e960306cce262cda8475569e4fef8"
 )
 
 func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
@@ -33,6 +33,10 @@ func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
 		"Creation-time quarantine removes only exact verified empty directories",
 		"Before finalization, cleanup removes only identity-recorded staged entries and quarantines unexpected/unrecorded descendants",
 		"recursive deletion of unrecorded Jailer output is reserved for a fully finalized generation",
+		"opened directory exact identity/type is verified before any metadata mutation",
+		"every recorded intermediate parent and retained file/link authority is revalidated immediately before nested/file mutation",
+		"same-UID check-use race remains an explicit dedicated/quiescent UID prerequisite",
+		"does not provide durable recovery or live proof",
 		"terminal cleanup recursively removes correlated staged content and Jailer-created runtime output without following symlinks",
 		"unresolved identity blocks reuse rather than guessing by path",
 		"private and in-memory only and does not provide durable crash recovery",
