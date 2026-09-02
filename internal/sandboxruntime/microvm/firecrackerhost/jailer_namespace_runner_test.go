@@ -12,7 +12,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
 )
 
-func TestStrictJailerNamespaceRunnerUsesOnlyUserAndNetworkDescriptors(t *testing.T) {
+func TestStrictJailerNamespaceRunnerUsesOnlyNetworkDescriptor(t *testing.T) {
 	plan := atomicJailerTestPlan(t, "run-alpha")
 	process := newAtomicJailerTestProcess()
 	runner, starter, provider := atomicJailerTestRunner(t, process, nil)
@@ -24,16 +24,12 @@ func TestStrictJailerNamespaceRunnerUsesOnlyUserAndNetworkDescriptors(t *testing
 	if provider.calls != 1 || starter.calls != 1 {
 		t.Fatalf("namespace/start calls = %d/%d, want 1/1", provider.calls, starter.calls)
 	}
-	wantArgs := []string{
-		"--preserve-credentials", "--keep-caps", "--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--",
-		plan.processRequest().Executable,
+	want := plan.processRequest()
+	if starter.strictRequest.executable != want.Executable || !reflect.DeepEqual(starter.strictRequest.args, want.Args) {
+		t.Fatalf("strict request = %#v, want exact foreground Jailer command", starter.strictRequest)
 	}
-	wantArgs = append(wantArgs, plan.processRequest().Args...)
-	if starter.request.Executable != "/usr/bin/nsenter" || !reflect.DeepEqual(starter.request.Args, wantArgs) {
-		t.Fatalf("namespace request = %#v, want exact foreground Jailer wrapper", starter.request)
-	}
-	if len(starter.request.InheritedFiles) != 2 {
-		t.Fatalf("namespace descriptors = %d, want user+network only", len(starter.request.InheritedFiles))
+	if starter.strictRequest.networkNamespace != provider.nextNetwork {
+		t.Fatalf("network namespace = %p, want exact private descriptor %p", starter.strictRequest.networkNamespace, provider.nextNetwork)
 	}
 	for _, file := range provider.files {
 		if _, statErr := file.Stat(); statErr == nil {
@@ -44,6 +40,40 @@ func TestStrictJailerNamespaceRunnerUsesOnlyUserAndNetworkDescriptors(t *testing
 		if arg == "--daemonize" || arg == "--new-pid-ns" {
 			t.Fatalf("foreground Jailer request contains %q", arg)
 		}
+	}
+}
+
+func TestStrictJailerNamespaceRunnerNeverEntersUserNamespace(t *testing.T) {
+	source, err := os.ReadFile("jailer_namespace_runner.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"--user=", "--net=", "--preserve-credentials", "--keep-caps", "NamespaceProcessFileProvider",
+		"DuplicateForNamespaceProcess", "nsenterPath",
+	} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("strict Jailer namespace runner retained forbidden user-namespace contract %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"strictJailerNetworkNamespaceProvider", "DuplicateNetworkNamespaceForStrictJailer", "networkNamespace",
+	} {
+		if !strings.Contains(string(source), required) {
+			t.Fatalf("strict Jailer namespace runner missing network-only contract %q", required)
+		}
+	}
+}
+
+func TestStrictJailerNetworkNamespaceProviderCannotExpressDuplicateDescriptors(t *testing.T) {
+	providerType := reflect.TypeOf((*strictJailerNetworkNamespaceProvider)(nil)).Elem()
+	if providerType.NumMethod() != 1 {
+		t.Fatalf("provider method count = %d, want one network-only authority", providerType.NumMethod())
+	}
+	method := providerType.Method(0)
+	if method.Name != "DuplicateNetworkNamespaceForStrictJailer" || method.Type.NumIn() != 0 || method.Type.NumOut() != 2 ||
+		method.Type.Out(0) != reflect.TypeOf((*os.File)(nil)) || method.Type.Out(1) != reflect.TypeOf((*error)(nil)).Elem() {
+		t.Fatalf("provider method = %#v, want one file plus error", method)
 	}
 }
 
@@ -86,34 +116,28 @@ func TestStrictJailerNamespaceRunnerRejectsAssetsEnvironmentAndDetachedJailer(t 
 	}
 }
 
-func TestStrictJailerNamespaceRunnerRejectsAndClosesNilOrDuplicateNamespaceDescriptors(t *testing.T) {
+func TestStrictJailerNamespaceRunnerRejectsAndClosesNilOrClosedNetworkDescriptor(t *testing.T) {
 	tests := []struct {
-		name  string
-		files func(*testing.T) (*os.File, *os.File, []*os.File)
+		name string
+		file func(*testing.T) (*os.File, []*os.File)
 	}{
-		{name: "nil network", files: func(t *testing.T) (*os.File, *os.File, []*os.File) {
-			user, writer := atomicJailerTestPipe(t)
-			writer.Close()
-			return user, nil, []*os.File{user}
+		{name: "nil network", file: func(*testing.T) (*os.File, []*os.File) {
+			return nil, nil
 		}},
-		{name: "duplicate", files: func(t *testing.T) (*os.File, *os.File, []*os.File) {
-			user, writer := atomicJailerTestPipe(t)
+		{name: "closed network", file: func(t *testing.T) (*os.File, []*os.File) {
+			network, writer := atomicJailerTestPipe(t)
 			writer.Close()
-			return user, user, []*os.File{user}
-		}},
-		{name: "closed user", files: func(t *testing.T) (*os.File, *os.File, []*os.File) {
-			user, network := atomicJailerTestDescriptorPair(t)
-			user.Close()
-			return user, network, []*os.File{user, network}
+			network.Close()
+			return network, []*os.File{network}
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			user, network, owned := tt.files(t)
-			provider := &atomicJailerNamespaceProvider{nextUser: user, nextNetwork: network}
+			network, owned := tt.file(t)
+			provider := &atomicJailerNamespaceProvider{nextNetwork: network}
 			starter := &atomicJailerNamespaceStarter{process: newAtomicJailerTestProcess()}
 			runner, err := newStrictJailerNamespaceRunner(strictJailerNamespaceRunnerOptions{
-				namespace: provider, starter: starter, nsenterPath: "/usr/bin/nsenter",
+				namespace: provider, starter: starter,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -131,6 +155,55 @@ func TestStrictJailerNamespaceRunnerRejectsAndClosesNilOrDuplicateNamespaceDescr
 				}
 			}
 		})
+	}
+}
+
+func TestStrictJailerNamespaceRunnerClosesNetworkDescriptorReturnedWithProviderError(t *testing.T) {
+	network, writer := atomicJailerTestPipe(t)
+	writer.Close()
+	provider := &atomicJailerNamespaceProvider{
+		nextNetwork: network,
+		err:         errors.New("unsafe /Users/alice/private namespace failure"),
+	}
+	starter := &atomicJailerNamespaceStarter{process: newAtomicJailerTestProcess()}
+	runner, err := newStrictJailerNamespaceRunner(strictJailerNamespaceRunnerOptions{
+		namespace: provider, starter: starter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.StartHostProcess(context.Background(), atomicJailerTestPlan(t, "run-alpha").processRequest())
+	if !errors.Is(err, errStrictJailerNamespaceInvalid) {
+		t.Fatalf("StartHostProcess() error = %v, want namespace invalid", err)
+	}
+	if containsAny(err.Error(), "/Users/alice", "private", "namespace failure") {
+		t.Fatalf("provider error leaked cause: %q", err)
+	}
+	if starter.calls != 0 {
+		t.Fatalf("starter calls = %d, want zero", starter.calls)
+	}
+	if _, statErr := network.Stat(); statErr == nil {
+		t.Fatal("provider descriptor remained open after provider error")
+	}
+}
+
+func TestStrictJailerNamespaceRunnerContainsStartedProcessWhenNetworkCloseFails(t *testing.T) {
+	process := newAtomicJailerTestProcess()
+	runner, starter, _ := atomicJailerTestRunner(t, process, nil)
+	starter.closeNetwork = true
+
+	_, err := runner.StartHostProcess(context.Background(), atomicJailerTestPlan(t, "run-alpha").processRequest())
+	if !errors.Is(err, errStrictJailerNamespaceCleanupIncomplete) {
+		t.Fatalf("StartHostProcess() error = %v, want cleanup incomplete", err)
+	}
+	if process.killCalls != 1 || process.waitCalls != 1 {
+		t.Fatalf("started process kill/wait = %d/%d, want 1/1", process.killCalls, process.waitCalls)
+	}
+	if containsAny(err.Error(), "/proc/self/fd/3", "bad file descriptor") {
+		t.Fatalf("network close error leaked cause: %q", err)
+	}
+	if strictJailerLifecycleStartCleanupUncertain(err) {
+		t.Fatal("contained close failure was classified cleanup-uncertain")
 	}
 }
 
@@ -214,6 +287,13 @@ type atomicJailerNamespaceProvider struct {
 	nextNetwork *os.File
 	files       []*os.File
 	calls       int
+	err         error
+}
+
+func (provider *atomicJailerNamespaceProvider) DuplicateNetworkNamespaceForStrictJailer() (*os.File, error) {
+	provider.calls++
+	provider.files = []*os.File{provider.nextNetwork}
+	return provider.nextNetwork, provider.err
 }
 
 func (provider *atomicJailerNamespaceProvider) DuplicateForNamespaceProcess() (*os.File, *os.File, error) {
@@ -223,10 +303,12 @@ func (provider *atomicJailerNamespaceProvider) DuplicateForNamespaceProcess() (*
 }
 
 type atomicJailerNamespaceStarter struct {
-	request NamespaceProcessStartRequest
-	process HostProcess
-	err     error
-	calls   int
+	request       NamespaceProcessStartRequest
+	strictRequest strictJailerNamespaceProcessStartRequest
+	process       HostProcess
+	err           error
+	calls         int
+	closeNetwork  bool
 }
 
 func (starter *atomicJailerNamespaceStarter) StartNamespaceProcess(_ context.Context, request NamespaceProcessStartRequest) (HostProcess, error) {
@@ -243,9 +325,13 @@ func (starter *atomicJailerNamespaceStarter) startStrictJailerNamespaceProcess(
 	request strictJailerNamespaceProcessStartRequest,
 ) (HostProcess, error) {
 	starter.calls++
-	starter.request = NamespaceProcessStartRequest{
-		Executable: request.executable, Args: append([]string(nil), request.args...),
-		InheritedFiles: append([]*os.File(nil), request.inheritedFiles...),
+	starter.strictRequest = strictJailerNamespaceProcessStartRequest{
+		executable:       request.executable,
+		args:             append([]string(nil), request.args...),
+		networkNamespace: request.networkNamespace,
+	}
+	if starter.closeNetwork && request.networkNamespace != nil {
+		_ = request.networkNamespace.Close()
 	}
 	return starter.process, starter.err
 }
@@ -315,11 +401,12 @@ func (process *atomicJailerTestProcess) closeLocked() {
 
 func atomicJailerTestRunner(t *testing.T, process HostProcess, startErr error) (*strictJailerNamespaceRunner, *atomicJailerNamespaceStarter, *atomicJailerNamespaceProvider) {
 	t.Helper()
-	user, network := atomicJailerTestDescriptorPair(t)
-	provider := &atomicJailerNamespaceProvider{nextUser: user, nextNetwork: network}
+	network, writer := atomicJailerTestPipe(t)
+	writer.Close()
+	provider := &atomicJailerNamespaceProvider{nextNetwork: network}
 	starter := &atomicJailerNamespaceStarter{process: process, err: startErr}
 	runner, err := newStrictJailerNamespaceRunner(strictJailerNamespaceRunnerOptions{
-		namespace: provider, starter: starter, nsenterPath: "/usr/bin/nsenter",
+		namespace: provider, starter: starter,
 	})
 	if err != nil {
 		t.Fatalf("newStrictJailerNamespaceRunner() error = %v", err)
