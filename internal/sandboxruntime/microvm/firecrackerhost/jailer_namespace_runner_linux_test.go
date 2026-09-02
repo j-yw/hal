@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"reflect"
+	"syscall"
 	"testing"
 )
 
@@ -45,5 +47,41 @@ func TestStrictJailerNamespaceRunnerRealStarterKeepsTwoFDsAndEmptyEnvironment(t 
 		if _, statErr := file.Stat(); statErr == nil {
 			t.Fatal("namespace descriptor remained open after real starter returned")
 		}
+	}
+}
+
+func TestStrictJailerOSExecLaunchRetainsCreatingThreadThroughWait(t *testing.T) {
+	var events []string
+	runStrictJailerOSExecLaunch(strictJailerOSExecLaunchOps{
+		lockOSThread: func() { events = append(events, "lock") },
+		unshareFilesystem: func() error {
+			events = append(events, "unshare")
+			return nil
+		},
+		umask: func(mask int) int {
+			if mask == 0o177 {
+				events = append(events, "umask-private")
+				return 0o022
+			}
+			events = append(events, "umask-restore")
+			return 0o177
+		},
+		armParentDeathSignal: func() { events = append(events, "arm") },
+		start:                func() error { events = append(events, "start"); return nil },
+		publishStarted:       func(error) { events = append(events, "publish") },
+		wait:                 func() error { events = append(events, "wait"); return nil },
+		publishCompleted:     func(error) { events = append(events, "complete") },
+	})
+	want := []string{"lock", "unshare", "umask-private", "arm", "start", "publish", "wait", "complete", "umask-restore"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("launch events = %#v, want locked creator retained through wait %#v", events, want)
+	}
+}
+
+func TestStrictJailerOSExecLaunchArmsSIGKILLParentDeath(t *testing.T) {
+	command := exec.Command("/bin/true")
+	armStrictJailerParentDeathSignal(command)
+	if command.SysProcAttr == nil || command.SysProcAttr.Pdeathsig != syscall.SIGKILL {
+		t.Fatalf("SysProcAttr = %#v, want Pdeathsig SIGKILL", command.SysProcAttr)
 	}
 }

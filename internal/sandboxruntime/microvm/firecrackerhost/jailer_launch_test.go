@@ -51,6 +51,10 @@ func TestPlanStrictJailerLaunchBuildsHostOwnedCommand(t *testing.T) {
 	if plan.jailPathPlan() != request.JailPaths {
 		t.Fatalf("jail paths = %#v, want Firecracker-visible paths", plan.jailPathPlan())
 	}
+	if plan.runtimeID != request.RuntimeID || plan.runtimeUID != request.UID || plan.runtimeGID != request.GID ||
+		plan.chrootBaseDir != request.ChrootBaseDir || plan.firecrackerPath != request.CanonicalFirecrackerPath {
+		t.Fatalf("structured authority = %#v, want runtime/uid/gid/chroot/executable retained outside argv", plan)
+	}
 }
 
 func TestPlanStrictJailerLaunchFailsClosedAtEveryMissingBoundary(t *testing.T) {

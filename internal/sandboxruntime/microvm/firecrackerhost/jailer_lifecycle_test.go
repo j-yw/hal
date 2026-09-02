@@ -3,6 +3,7 @@ package firecrackerhost
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -133,6 +134,26 @@ func TestStrictJailerLifecycleErrorsRemainSanitized(t *testing.T) {
 		if strings.Contains(err.Error(), unsafe) {
 			t.Fatalf("error leaked %q in %q", unsafe, err)
 		}
+	}
+}
+
+func TestStrictJailerLifecycleRejectsUIDArgvDriftFromStructuredPlan(t *testing.T) {
+	plan := atomicJailerTestPlan(t, "run-alpha")
+	plan.process.Args[5] = strconv.FormatUint(uint64(plan.runtimeUID+1), 10)
+	runner, starter, provider := atomicJailerTestRunner(t, newAtomicJailerTestProcess(), nil)
+	lifecycle, err := newStrictJailerLifecycle(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = lifecycle.start(context.Background(), strictJailerLifecycleStartRequest{
+		launchPlan: plan, hostPaths: plan.hostPathPlan(),
+	})
+	if !errors.Is(err, errStrictJailerLifecycleInvalid) {
+		t.Fatalf("start() error = %v, want structured-plan integrity failure", err)
+	}
+	if starter.calls != 0 || provider.calls != 0 {
+		t.Fatalf("namespace/start calls = %d/%d, want no live boundary", provider.calls, starter.calls)
 	}
 }
 
