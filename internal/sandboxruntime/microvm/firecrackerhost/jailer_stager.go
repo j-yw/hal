@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 var (
@@ -70,13 +71,15 @@ type jailerStagingRequest struct {
 // to retained directory file descriptors without following symlinks. It must
 // return nil on any creation error. This slice intentionally supplies no
 // path-based os adapter because Lstat followed by path mutation would not
-// satisfy that contract.
+// satisfy that contract. close releases constructor authority not transferred
+// to a successfully created root and must be idempotent.
 //
 // A later lifecycle slice must also prove that Jailer consumes this same root
 // generation without replacing it before calling the coordinator production
 // capable.
 type jailerStagingFilesystem interface {
 	createExclusiveRoot(jailerStagingRootRequest) (jailerStagingRoot, error)
+	close() error
 }
 
 type jailerStagingRootRequest struct {
@@ -125,10 +128,78 @@ type jailerStagingPathCorrelation struct {
 // correlations are for the future atomic lifecycle consumer only.
 type jailerStagingResult struct {
 	correlations []jailerStagingPathCorrelation
+	lease        *jailerStagingLease
+}
+
+// jailerStagingLease retains the exact root authority across the staging to
+// process-lifecycle handoff. A copied result shares this one release state.
+type jailerStagingLease struct {
+	mu         sync.Mutex
+	root       jailerStagingRoot
+	released   bool
+	releaseErr error
+	uncertain  bool
 }
 
 func (result jailerStagingResult) pathCorrelations() []jailerStagingPathCorrelation {
 	return append([]jailerStagingPathCorrelation(nil), result.correlations...)
+}
+
+func (result jailerStagingResult) verifyOwnedRoot() error {
+	if result.lease == nil {
+		return newJailerStagingError(errJailerStagingInvalid, "lease")
+	}
+	result.lease.mu.Lock()
+	defer result.lease.mu.Unlock()
+	if result.lease.released {
+		if result.lease.releaseErr != nil {
+			return result.lease.releaseErr
+		}
+		return newJailerStagingError(errJailerStagingInvalid, "lease")
+	}
+	if result.lease.uncertain {
+		return newJailerStagingError(errJailerStagingCleanupIncomplete, "root")
+	}
+	if interfaceValueIsNil(result.lease.root) {
+		return newJailerStagingError(errJailerStagingInvalid, "lease")
+	}
+	if err := result.lease.root.verifyOwned(); err != nil {
+		return newJailerStagingError(errJailerStagingFailed, "root_verify")
+	}
+	return nil
+}
+
+// releaseOwnedRoot is called only after launch failure or process termination.
+// A failed exact removal retains the authority and blocks verification until a
+// caller retries cleanup. Successful removal, including a subsequent close
+// failure, is terminal and idempotent.
+func (result jailerStagingResult) releaseOwnedRoot() error {
+	if result.lease == nil {
+		return newJailerStagingError(errJailerStagingInvalid, "lease")
+	}
+	result.lease.mu.Lock()
+	defer result.lease.mu.Unlock()
+	if result.lease.released {
+		return result.lease.releaseErr
+	}
+	root := result.lease.root
+	if interfaceValueIsNil(root) {
+		result.lease.released = true
+		result.lease.releaseErr = newJailerStagingError(errJailerStagingCleanupIncomplete, "root")
+		return result.lease.releaseErr
+	}
+	if removeErr := root.removeOwned(); removeErr != nil {
+		result.lease.uncertain = true
+		return newJailerStagingError(errJailerStagingCleanupIncomplete, "root")
+	}
+	result.lease.uncertain = false
+	closeErr := root.close()
+	result.lease.root = nil
+	result.lease.released = true
+	if closeErr != nil {
+		result.lease.releaseErr = newJailerStagingError(errJailerStagingCleanupIncomplete, "root")
+	}
+	return result.lease.releaseErr
 }
 
 // processInheritedFiles is deliberately empty: Jailer closes inherited asset
@@ -149,15 +220,19 @@ type validatedJailerStagingResource struct {
 	mode      os.FileMode
 }
 
-// stageStrictJailerResources is only an injected staging coordinator. It
-// creates one private resource tree through the supplied handle-oriented
-// filesystem; this package does not yet provide a production filesystem
-// implementation. It performs no process launch, runtime selection, security
+// stageStrictJailerResources is an injected staging coordinator. Linux has a
+// retained-dirfd implementation, but no production path selects or launches
+// through it yet. It performs no process launch, runtime selection, security
 // projection, network operation, or credential delivery.
-func stageStrictJailerResources(filesystem jailerStagingFilesystem, request jailerStagingRequest) (jailerStagingResult, error) {
+func stageStrictJailerResources(filesystem jailerStagingFilesystem, request jailerStagingRequest) (result jailerStagingResult, returnedErr error) {
 	if interfaceValueIsNil(filesystem) {
 		return jailerStagingResult{}, newJailerStagingError(errJailerStagingInvalid, "filesystem")
 	}
+	defer func() {
+		if closeErr := filesystem.close(); closeErr != nil {
+			returnedErr = errors.Join(returnedErr, newJailerStagingError(errJailerStagingCleanupIncomplete, "root_close"))
+		}
+	}()
 	authority, err := validateJailerStagingAuthority(request.Authority)
 	if err != nil {
 		return jailerStagingResult{}, err
@@ -174,20 +249,18 @@ func stageStrictJailerResources(filesystem jailerStagingFilesystem, request jail
 		GID:      authority.GID,
 	})
 	if createErr != nil || interfaceValueIsNil(root) {
-		return jailerStagingResult{}, newJailerStagingError(errJailerStagingFailed, "root")
+		primary := error(newJailerStagingError(errJailerStagingFailed, "root"))
+		if errors.Is(createErr, errJailerStagingCleanupIncomplete) {
+			primary = errors.Join(primary, newJailerStagingError(errJailerStagingCleanupIncomplete, "root"))
+		}
+		return jailerStagingResult{}, primary
 	}
 
 	result, stageErr := stageJailerOwnedRoot(root, authority, resources)
 	if stageErr != nil {
 		return jailerStagingResult{}, cleanupFailedJailerStagingRoot(root, stageErr)
 	}
-	if closeErr := root.close(); closeErr != nil {
-		primary := newJailerStagingError(errJailerStagingFailed, "root_close")
-		if removeErr := root.removeOwned(); removeErr != nil {
-			return jailerStagingResult{}, errors.Join(primary, newJailerStagingError(errJailerStagingCleanupIncomplete, "root"))
-		}
-		return jailerStagingResult{}, errors.Join(primary, newJailerStagingError(errJailerStagingCleanupIncomplete, "root_close"))
-	}
+	result.lease = &jailerStagingLease{root: root}
 	return result, nil
 }
 
@@ -344,7 +417,16 @@ func jailerStagingDirectories(resources []validatedJailerStagingResource) []stri
 
 func stageJailerResource(root jailerStagingRoot, authority jailerStagingAuthority, resource validatedJailerStagingResource) error {
 	file, err := root.createFileExclusive(resource.relative)
-	if err != nil || interfaceValueIsNil(file) {
+	if err != nil {
+		primary := error(newJailerStagingError(errJailerStagingFailed, "file"))
+		if !interfaceValueIsNil(file) {
+			if closeErr := file.close(); closeErr != nil {
+				primary = errors.Join(primary, newJailerStagingError(errJailerStagingCleanupIncomplete, "file_close"))
+			}
+		}
+		return primary
+	}
+	if interfaceValueIsNil(file) {
 		return newJailerStagingError(errJailerStagingFailed, "file")
 	}
 	stageErr := writeAndVerifyJailerResource(file, authority, resource)
@@ -420,14 +502,14 @@ func (err *jailerStagingError) Error() string {
 	if err == nil || safeJailerStagingErrorCode(err.code) == "" || err.kind == nil {
 		return errJailerStagingFailed.Error()
 	}
-	return err.kind.Error() + ": " + safeJailerStagingErrorCode(err.code)
+	return safeJailerStagingErrorKind(err.kind).Error() + ": " + safeJailerStagingErrorCode(err.code)
 }
 
 func (err *jailerStagingError) Unwrap() error {
 	if err == nil {
 		return nil
 	}
-	return err.kind
+	return safeJailerStagingErrorKind(err.kind)
 }
 
 func newJailerStagingError(kind error, code string) *jailerStagingError {
@@ -445,7 +527,7 @@ func safeJailerStagingErrorKind(kind error) error {
 
 func safeJailerStagingErrorCode(code string) string {
 	switch strings.TrimSpace(code) {
-	case "filesystem", "authority", "resources", "root", "root_close", "root_verify", "directory", "file", "file_close",
+	case "filesystem", "authority", "resources", "root", "root_close", "root_verify", "directory", "file", "file_close", "lease",
 		"file_verify", "source", "write", "verify", "ownership", "mode", "sync":
 		return strings.TrimSpace(code)
 	default:
