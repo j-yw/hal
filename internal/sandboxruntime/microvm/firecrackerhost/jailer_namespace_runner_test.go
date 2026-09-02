@@ -64,6 +64,11 @@ func TestStrictJailerNamespaceRunnerRejectsAssetsEnvironmentAndDetachedJailer(t 
 		{name: "new pid namespace", edit: func(req *firecracker.ProcessRunnerStartRequest) {
 			req.Args = atomicJailerInsertBeforeSeparator(req.Args, "--new-pid-ns")
 		}},
+		{name: "runtime whitespace", edit: func(req *firecracker.ProcessRunnerStartRequest) { req.Args[1] = " run-alpha " }},
+		{name: "noncanonical uid", edit: func(req *firecracker.ProcessRunnerStartRequest) { req.Args[5] = "01001" }},
+		{name: "noncanonical jail path", edit: func(req *firecracker.ProcessRunnerStartRequest) {
+			req.Args[12] = "/run/fc-run-alpha/./firecracker.sock"
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -95,6 +100,11 @@ func TestStrictJailerNamespaceRunnerRejectsAndClosesNilOrDuplicateNamespaceDescr
 			user, writer := atomicJailerTestPipe(t)
 			writer.Close()
 			return user, user, []*os.File{user}
+		}},
+		{name: "closed user", files: func(t *testing.T) (*os.File, *os.File, []*os.File) {
+			user, network := atomicJailerTestDescriptorPair(t)
+			user.Close()
+			return user, network, []*os.File{user, network}
 		}},
 	}
 	for _, tt := range tests {
@@ -138,6 +148,35 @@ func TestStrictJailerNamespaceRunnerContainsPartialStartFailure(t *testing.T) {
 	}
 	if err != nil && (containsAny(err.Error(), "/Users/alice", "private", "starter failure")) {
 		t.Fatalf("partial start error leaked cause: %q", err)
+	}
+	if strictJailerLifecycleStartCleanupUncertain(err) {
+		t.Fatal("contained partial start was classified cleanup-uncertain")
+	}
+}
+
+func TestStrictJailerNamespaceRunnerRetainsAndRetriesCleanupUncertainProcess(t *testing.T) {
+	process := newAtomicJailerTestProcess()
+	process.killErr = errors.New("kill failed")
+	process.waitErr = errors.New("wait failed")
+	runner, _, _ := atomicJailerTestRunner(t, process, errors.New("start failed"))
+	lifecycle, err := newStrictJailerLifecycle(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := atomicJailerTestPlan(t, "run-alpha")
+
+	_, err = lifecycle.start(context.Background(), strictJailerLifecycleStartRequest{
+		launchPlan: plan, hostPaths: plan.hostPathPlan(),
+	})
+	if !strictJailerLifecycleStartCleanupUncertain(err) {
+		t.Fatalf("start() error = %v, want cleanup-uncertain classification", err)
+	}
+	process.mu.Lock()
+	process.killErr = nil
+	process.waitErr = nil
+	process.mu.Unlock()
+	if err := lifecycle.retryUncertainStartCleanup(context.Background()); err != nil {
+		t.Fatalf("retryUncertainStartCleanup() error = %v", err)
 	}
 }
 
@@ -195,6 +234,18 @@ func (starter *atomicJailerNamespaceStarter) StartNamespaceProcess(_ context.Con
 	starter.request = NamespaceProcessStartRequest{
 		Executable: request.Executable, Args: append([]string(nil), request.Args...),
 		InheritedFiles: append([]*os.File(nil), request.InheritedFiles...),
+	}
+	return starter.process, starter.err
+}
+
+func (starter *atomicJailerNamespaceStarter) startStrictJailerNamespaceProcess(
+	_ context.Context,
+	request strictJailerNamespaceProcessStartRequest,
+) (HostProcess, error) {
+	starter.calls++
+	starter.request = NamespaceProcessStartRequest{
+		Executable: request.executable, Args: append([]string(nil), request.args...),
+		InheritedFiles: append([]*os.File(nil), request.inheritedFiles...),
 	}
 	return starter.process, starter.err
 }
