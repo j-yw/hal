@@ -40,3 +40,17 @@ func TestOSStrictJailerHostInspectionOpenDoesNotFollowLeafSymlink(t *testing.T) 
 		t.Fatal("OpenNoFollow(symlink) error = nil, want fail closed")
 	}
 }
+
+func TestOSStrictJailerHostInspectionDefaultsTrustedFilesystemAnchorToRoot(t *testing.T) {
+	filesystem := osStrictJailerHostInspectionFilesystem{}
+	path, info, err := inspectStrictJailerTrustedFilesystemAnchor(filesystem, "")
+	if err != nil {
+		t.Fatalf("inspectStrictJailerTrustedFilesystemAnchor() error = %v, want nil", err)
+	}
+	if path != string(filepath.Separator) || info == nil || !info.IsDir() {
+		t.Fatalf("trusted filesystem anchor = %q/%#v, want filesystem root directory", path, info)
+	}
+	if uid, ok := filesystem.OwnerUID(info); !ok || uid != 0 {
+		t.Fatalf("trusted filesystem anchor owner = %d/%t, want root", uid, ok)
+	}
+}

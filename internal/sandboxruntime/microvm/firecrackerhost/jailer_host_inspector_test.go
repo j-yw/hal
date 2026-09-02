@@ -36,6 +36,91 @@ func TestInspectStrictJailerHostBindsConfiguredPair(t *testing.T) {
 	}
 }
 
+func TestInspectStrictJailerHostBindsExactTrustedFilesystemAnchor(t *testing.T) {
+	filesystem, request := validStrictJailerHostInspectionFixture()
+	request.trustedFilesystemAnchor = "/opt/hal"
+	request.chrootBaseDir = "/opt/hal/jailer-root"
+	filesystem.infos[request.chrootBaseDir] = fakeStrictJailerHostFileInfo{
+		name: request.chrootBaseDir, mode: os.ModeDir | 0o755, identity: "anchored-chroot",
+	}
+
+	result, err := inspectStrictJailerHostWithFilesystem(request, filesystem)
+	if err != nil {
+		t.Fatalf("inspectStrictJailerHostWithFilesystem() error = %v, want nil", err)
+	}
+	if result.canonicalTrustedFilesystemAnchor != request.trustedFilesystemAnchor ||
+		!filesystem.SameFile(result.trustedFilesystemAnchorInfo, filesystem.infos[request.trustedFilesystemAnchor]) {
+		t.Fatalf("trusted filesystem anchor = %#v, want exact inspected %q", result, request.trustedFilesystemAnchor)
+	}
+}
+
+func TestInspectStrictJailerHostDefaultsTrustedFilesystemAnchorToRoot(t *testing.T) {
+	filesystem, request := validStrictJailerHostInspectionFixture()
+
+	result, err := inspectStrictJailerHostWithFilesystem(request, filesystem)
+	if err != nil {
+		t.Fatalf("inspectStrictJailerHostWithFilesystem() error = %v, want nil", err)
+	}
+	if result.canonicalTrustedFilesystemAnchor != "/" ||
+		!filesystem.SameFile(result.trustedFilesystemAnchorInfo, filesystem.infos["/"]) {
+		t.Fatalf("trusted filesystem anchor = %#v, want exact inspected filesystem root", result)
+	}
+}
+
+func TestInspectStrictJailerHostRejectsPathsOutsideTrustedFilesystemAnchor(t *testing.T) {
+	filesystem, request := validStrictJailerHostInspectionFixture()
+	request.trustedFilesystemAnchor = "/opt/hal"
+
+	_, err := inspectStrictJailerHostWithFilesystem(request, filesystem)
+	assertStrictJailerHostInspectionError(t, err, "chrootBaseDir")
+}
+
+func TestInspectStrictJailerHostRejectsUnsafeTrustedFilesystemAnchor(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*strictJailerHostInspectionRequest, *fakeStrictJailerHostInspectionFilesystem)
+	}{
+		{name: "relative", edit: func(request *strictJailerHostInspectionRequest, _ *fakeStrictJailerHostInspectionFilesystem) {
+			request.trustedFilesystemAnchor = "opt/hal"
+		}},
+		{name: "unclean", edit: func(request *strictJailerHostInspectionRequest, _ *fakeStrictJailerHostInspectionFilesystem) {
+			request.trustedFilesystemAnchor = "/opt/hal/../hal"
+		}},
+		{name: "symlink canonical drift", edit: func(request *strictJailerHostInspectionRequest, filesystem *fakeStrictJailerHostInspectionFilesystem) {
+			request.trustedFilesystemAnchor = "/opt/hal"
+			filesystem.resolved[request.trustedFilesystemAnchor] = "/opt/hal-release"
+		}},
+		{name: "world writable", edit: func(request *strictJailerHostInspectionRequest, filesystem *fakeStrictJailerHostInspectionFilesystem) {
+			request.trustedFilesystemAnchor = "/opt/hal"
+			filesystem.infos[request.trustedFilesystemAnchor] = fakeStrictJailerHostFileInfo{
+				name: "hal", mode: os.ModeDir | 0o757, identity: "unsafe-anchor",
+			}
+		}},
+		{name: "untrusted owner", edit: func(request *strictJailerHostInspectionRequest, filesystem *fakeStrictJailerHostInspectionFilesystem) {
+			request.trustedFilesystemAnchor = "/opt/hal"
+			filesystem.infos[request.trustedFilesystemAnchor] = fakeStrictJailerHostFileInfo{
+				name: "hal", mode: os.ModeDir | 0o755, identity: "unsafe-anchor", ownerUID: 1000,
+			}
+		}},
+		{name: "not directory", edit: func(request *strictJailerHostInspectionRequest, filesystem *fakeStrictJailerHostInspectionFilesystem) {
+			request.trustedFilesystemAnchor = "/opt/hal"
+			filesystem.infos[request.trustedFilesystemAnchor] = fakeStrictJailerHostFileInfo{
+				name: "hal", mode: 0o755, identity: "unsafe-anchor",
+			}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filesystem, request := validStrictJailerHostInspectionFixture()
+			tt.edit(&request, filesystem)
+
+			_, err := inspectStrictJailerHostWithFilesystem(request, filesystem)
+			assertStrictJailerHostInspectionError(t, err, "trustedFilesystemAnchor")
+		})
+	}
+}
+
 func TestInspectStrictJailerHostRejectsUnsafeBinaryInputs(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -203,6 +288,17 @@ func TestStrictJailerHostInspectionErrorsAreSanitized(t *testing.T) {
 	direct := &strictJailerHostInspectionError{field: "/Users/alice/private"}
 	if got := direct.Error(); got != errStrictJailerHostInspectionInvalid.Error() {
 		t.Fatalf("direct error = %q, want sanitized sentinel", got)
+	}
+
+	filesystem, request = validStrictJailerHostInspectionFixture()
+	request.trustedFilesystemAnchor = "/opt/hal"
+	filesystem.resolveErrs[request.trustedFilesystemAnchor] = errors.New("resolve /Users/alice/private/anchor: token=secret")
+	_, err = inspectStrictJailerHostWithFilesystem(request, filesystem)
+	assertStrictJailerHostInspectionError(t, err, "trustedFilesystemAnchor")
+	for _, unsafe := range []string{"/Users/alice", request.trustedFilesystemAnchor, "token=secret"} {
+		if strings.Contains(err.Error(), unsafe) {
+			t.Fatalf("anchor error leaked %q in %q", unsafe, err)
+		}
 	}
 }
 
