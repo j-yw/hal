@@ -74,8 +74,32 @@ func armStrictJailerParentDeathSignal(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 }
 
+// prepareStrictJailerNetworkNamespaceForExec preserves any existing descriptor
+// flags while requiring close-on-exec. The descriptor remains usable for the
+// parent-side setns call, but cannot cross the following Jailer exec.
+func prepareStrictJailerNetworkNamespaceForExec(networkNamespace *os.File) error {
+	if !validStrictJailerNetworkNamespaceFile(networkNamespace) {
+		return errStrictJailerNamespaceStartFailed
+	}
+	fd := networkNamespace.Fd()
+	flags, err := unix.FcntlInt(fd, unix.F_GETFD, 0)
+	if err != nil {
+		return errStrictJailerNamespaceStartFailed
+	}
+	if flags&unix.FD_CLOEXEC == 0 {
+		if _, err := unix.FcntlInt(fd, unix.F_SETFD, flags|unix.FD_CLOEXEC); err != nil {
+			return errStrictJailerNamespaceStartFailed
+		}
+	}
+	flags, err = unix.FcntlInt(fd, unix.F_GETFD, 0)
+	if err != nil || flags&unix.FD_CLOEXEC == 0 {
+		return errStrictJailerNamespaceStartFailed
+	}
+	return nil
+}
+
 func startStrictJailerOSExecCommand(command *exec.Cmd, networkNamespace *os.File) (HostProcess, error) {
-	if command == nil || !validStrictJailerNetworkNamespaceFile(networkNamespace) {
+	if command == nil || prepareStrictJailerNetworkNamespaceForExec(networkNamespace) != nil {
 		return nil, errStrictJailerNamespaceStartFailed
 	}
 	process := &osExecHostProcess{cmd: command, done: make(chan struct{})}

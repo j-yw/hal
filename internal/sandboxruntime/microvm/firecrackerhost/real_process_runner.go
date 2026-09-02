@@ -101,6 +101,9 @@ func (starter OSExecNamespaceProcessStarter) startStrictJailerNamespaceProcess(
 	if err := validateStrictJailerNamespaceProcessStartRequest(request); err != nil {
 		return nil, errStrictJailerNamespaceRequestInvalid
 	}
+	if err := prepareStrictJailerNetworkNamespaceForExec(request.networkNamespace); err != nil {
+		return nil, errStrictJailerNamespaceStartFailed
+	}
 	command := exec.Command(request.executable, request.args...)
 	command.Env = []string{}
 	command.Stdin = nil
