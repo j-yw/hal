@@ -312,7 +312,7 @@ func TestStrictJailerCoordinatorRejectsInitrdRoleAliases(t *testing.T) {
 			if test.mutate != nil {
 				test.mutate(&request)
 			}
-			replaceCoordinatorConfig(t, &request, coordinatorConfigWithInitrd(test.path))
+			replaceCoordinatorConfig(t, &request, coordinatorConfigWithInitrd(t, test.path))
 			if err := validateStrictJailerCoordinatorConfig(request); !errors.Is(err, errStrictJailerCoordinatorInvalid) {
 				t.Fatalf("validate initrd alias = %v, want invalid config", err)
 			}
@@ -697,8 +697,12 @@ func coordinatorConfigWith(fields string) string {
 	return strings.TrimSuffix(validCoordinatorConfig(), "}") + "," + fields + "}"
 }
 
-func coordinatorConfigWithInitrd(path string) string {
-	encoded, _ := json.Marshal(path)
+func coordinatorConfigWithInitrd(t *testing.T, path string) string {
+	t.Helper()
+	encoded, err := json.Marshal(path)
+	if err != nil {
+		t.Fatalf("marshal initrd path: %v", err)
+	}
 	return strings.Replace(
 		validCoordinatorConfig(),
 		`"kernel_image_path":"/boot/vmlinux"`,
