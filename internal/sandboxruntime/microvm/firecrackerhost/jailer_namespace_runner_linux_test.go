@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestStrictJailerNamespaceRunnerRealStarterExecsJailerWithNoInheritedFDsAndEmptyEnvironment(t *testing.T) {
@@ -53,6 +55,105 @@ func TestStrictJailerNamespaceRunnerRealStarterExecsJailerWithNoInheritedFDsAndE
 	}
 	if _, statErr := network.Stat(); statErr == nil {
 		t.Fatal("network namespace descriptor remained open after real starter returned")
+	}
+}
+
+func TestStrictJailerNamespaceRunnerMarksRawDuplicatedNetworkDescriptorCloseOnExec(t *testing.T) {
+	source, writer := atomicJailerTestPipe(t)
+	defer source.Close()
+	defer writer.Close()
+	rawFD, err := unix.Dup(int(source.Fd()))
+	if err != nil {
+		t.Fatalf("duplicate network descriptor: %v", err)
+	}
+	network := os.NewFile(uintptr(rawFD), "raw-network-namespace-duplicate")
+	if network == nil {
+		_ = unix.Close(rawFD)
+		t.Fatal("wrap raw network descriptor")
+	}
+	defer network.Close()
+	flags, err := unix.FcntlInt(network.Fd(), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatalf("inspect raw network descriptor flags: %v", err)
+	}
+	if flags&unix.FD_CLOEXEC != 0 {
+		t.Fatal("unix.Dup unexpectedly returned a close-on-exec descriptor")
+	}
+
+	provider := &atomicJailerNamespaceProvider{nextNetwork: network}
+	startCalls := 0
+	starter := OSExecNamespaceProcessStarter{startCommand: func(*exec.Cmd) error {
+		startCalls++
+		flags, flagErr := unix.FcntlInt(network.Fd(), unix.F_GETFD, 0)
+		if flagErr != nil {
+			t.Fatalf("inspect prepared network descriptor flags: %v", flagErr)
+		}
+		if flags&unix.FD_CLOEXEC == 0 {
+			t.Fatal("network namespace descriptor could be inherited by Jailer")
+		}
+		return errors.New("injected start stop")
+	}}
+	runner, err := newStrictJailerNamespaceRunner(strictJailerNamespaceRunnerOptions{
+		namespace: provider, starter: starter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = runner.StartHostProcess(context.Background(), atomicJailerTestPlan(t, "run-alpha").processRequest())
+	if !errors.Is(err, errStrictJailerNamespaceStartFailed) {
+		t.Fatalf("StartHostProcess() error = %v, want sanitized start failure", err)
+	}
+	if startCalls != 1 {
+		t.Fatalf("start calls = %d, want one", startCalls)
+	}
+	if _, statErr := network.Stat(); statErr == nil {
+		t.Fatal("network namespace descriptor remained open after failed start")
+	}
+}
+
+func TestStrictJailerNamespaceRunnerFailsClosedAndClosesDescriptorWhenCloseOnExecCannotBeSet(t *testing.T) {
+	source, writer := atomicJailerTestPipe(t)
+	defer source.Close()
+	defer writer.Close()
+	rawFD, err := unix.Dup(int(source.Fd()))
+	if err != nil {
+		t.Fatalf("duplicate network descriptor: %v", err)
+	}
+	network := os.NewFile(uintptr(rawFD), "invalid-network-namespace-duplicate")
+	if network == nil {
+		_ = unix.Close(rawFD)
+		t.Fatal("wrap raw network descriptor")
+	}
+	if err := unix.Close(rawFD); err != nil {
+		t.Fatalf("invalidate raw network descriptor: %v", err)
+	}
+
+	provider := &atomicJailerNamespaceProvider{nextNetwork: network}
+	startCalls := 0
+	starter := OSExecNamespaceProcessStarter{startCommand: func(*exec.Cmd) error {
+		startCalls++
+		return nil
+	}}
+	runner, err := newStrictJailerNamespaceRunner(strictJailerNamespaceRunnerOptions{
+		namespace: provider, starter: starter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = runner.StartHostProcess(context.Background(), atomicJailerTestPlan(t, "run-alpha").processRequest())
+	if !errors.Is(err, errStrictJailerNamespaceStartFailed) || !errors.Is(err, errStrictJailerNamespaceCleanupIncomplete) {
+		t.Fatalf("StartHostProcess() error = %v, want start failure plus close warning", err)
+	}
+	if startCalls != 0 {
+		t.Fatalf("start calls = %d, want zero after close-on-exec failure", startCalls)
+	}
+	if containsAny(err.Error(), "bad file descriptor", "invalid-network", "/proc/self/fd") {
+		t.Fatalf("close-on-exec failure leaked descriptor detail: %q", err)
+	}
+	if _, statErr := network.Stat(); statErr == nil {
+		t.Fatal("invalid network namespace descriptor remained open")
 	}
 }
 
