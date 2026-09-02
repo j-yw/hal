@@ -204,7 +204,7 @@ func (root *linuxJailerStagingRoot) createDirectory(relative string, mode os.Fil
 	if _, exists := root.entries[relative]; exists {
 		return newJailerStagingError(errJailerStagingFailed, "directory")
 	}
-	parentFD, name, err := openLinuxJailerRelativeParent(root.rootFD, relative)
+	parentFD, name, err := root.openVerifiedRelativeParent(relative)
 	if err != nil {
 		return newJailerStagingError(errJailerStagingFailed, "directory")
 	}
@@ -261,7 +261,7 @@ func (root *linuxJailerStagingRoot) createFileExclusive(relative string) (jailer
 	if _, exists := root.entries[relative]; exists {
 		return nil, newJailerStagingError(errJailerStagingFailed, "file")
 	}
-	parentFD, name, err := openLinuxJailerRelativeParent(root.rootFD, relative)
+	parentFD, name, err := root.openVerifiedRelativeParent(relative)
 	if err != nil {
 		return nil, newJailerStagingError(errJailerStagingFailed, "file")
 	}
@@ -565,7 +565,7 @@ func (file *linuxJailerStagingFile) Read(output []byte) (int, error) {
 func (file *linuxJailerStagingFile) Write(input []byte) (int, error) {
 	file.mu.Lock()
 	defer file.mu.Unlock()
-	if file.closed {
+	if file.closed || !file.validForMutationLocked() {
 		return 0, newJailerStagingError(errJailerStagingFailed, "file")
 	}
 	n, err := unix.Write(file.fd, input)
@@ -600,7 +600,8 @@ func (file *linuxJailerStagingFile) sync() error {
 func (file *linuxJailerStagingFile) setOwnership(uid, gid uint32) error {
 	file.mu.Lock()
 	defer file.mu.Unlock()
-	if file.closed || uid != file.root.authority.UID || gid != file.root.authority.GID || unix.Fchown(file.fd, int(uid), int(gid)) != nil {
+	if file.closed || uid != file.root.authority.UID || gid != file.root.authority.GID || !file.validForMutationLocked() ||
+		unix.Fchown(file.fd, int(uid), int(gid)) != nil {
 		return newJailerStagingError(errJailerStagingFailed, "ownership")
 	}
 	file.uid, file.gid = uid, gid
@@ -611,12 +612,21 @@ func (file *linuxJailerStagingFile) setOwnership(uid, gid uint32) error {
 func (file *linuxJailerStagingFile) setMode(mode os.FileMode) error {
 	file.mu.Lock()
 	defer file.mu.Unlock()
-	if file.closed || !validJailerStagingFileMode(mode) || unix.Fchmod(file.fd, uint32(mode.Perm())) != nil {
+	if file.closed || !validJailerStagingFileMode(mode) || !file.validForMutationLocked() || unix.Fchmod(file.fd, uint32(mode.Perm())) != nil {
 		return newJailerStagingError(errJailerStagingFailed, "mode")
 	}
 	file.mode = uint32(mode.Perm())
 	file.root.updateEntryMetadata(file.relative, file.uid, file.gid, file.mode)
 	return nil
+}
+
+func (file *linuxJailerStagingFile) validForMutationLocked() bool {
+	linked, err := linuxJailerFstatat(file.parentFD, file.name)
+	if err != nil || !linuxJailerFileStateMatches(linked, file.id, file.uid, file.gid, file.mode) {
+		return false
+	}
+	opened, err := linuxJailerFstat(file.fd)
+	return err == nil && linuxJailerFileStateMatches(opened, file.id, file.uid, file.gid, file.mode)
 }
 
 func (file *linuxJailerStagingFile) verifyIdentity() error {
@@ -733,6 +743,52 @@ func openLinuxJailerRelativeParent(rootFD int, relative string) (int, string, er
 		parentFD = next
 	}
 	return parentFD, components[len(components)-1], nil
+}
+
+func (root *linuxJailerStagingRoot) openVerifiedRelativeParent(relative string) (int, string, error) {
+	if !validLinuxJailerRelativePath(relative) {
+		return -1, "", errJailerStagingInvalid
+	}
+	components := strings.Split(relative, string(filepath.Separator))
+	parentFD, err := unix.FcntlInt(uintptr(root.rootFD), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return -1, "", err
+	}
+	for index, component := range components[:len(components)-1] {
+		relativeParent := filepath.Join(components[:index+1]...)
+		expected, exists := root.entries[relativeParent]
+		if !exists || !expected.directory {
+			_ = unix.Close(parentFD)
+			return -1, "", errJailerStagingFailed
+		}
+		linked, statErr := linuxJailerFstatat(parentFD, component)
+		if statErr != nil || !linuxJailerDirectoryStateMatches(linked, expected) {
+			_ = unix.Close(parentFD)
+			return -1, "", errJailerStagingFailed
+		}
+		next, openErr := openLinuxJailerDirectoryAt(parentFD, component)
+		_ = unix.Close(parentFD)
+		if openErr != nil {
+			return -1, "", openErr
+		}
+		opened, statErr := linuxJailerFstat(next)
+		if statErr != nil || !linuxJailerDirectoryStateMatches(opened, expected) {
+			_ = unix.Close(next)
+			return -1, "", errJailerStagingFailed
+		}
+		parentFD = next
+	}
+	return parentFD, components[len(components)-1], nil
+}
+
+func linuxJailerDirectoryStateMatches(stat unix.Stat_t, expected linuxJailerStagingEntry) bool {
+	return stat.Mode&unix.S_IFMT == unix.S_IFDIR && linuxJailerSameIdentity(stat, expected.id) &&
+		linuxJailerMetadataMatches(stat, expected.uid, expected.gid, expected.mode)
+}
+
+func linuxJailerFileStateMatches(stat unix.Stat_t, expected linuxJailerStagingIdentity, uid, gid, mode uint32) bool {
+	return stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Nlink == 1 && linuxJailerSameIdentity(stat, expected) &&
+		linuxJailerMetadataMatches(stat, uid, gid, mode) && stat.Mode&(unix.S_ISUID|unix.S_ISGID|unix.S_ISVTX) == 0
 }
 
 func statLinuxJailerRelative(rootFD int, relative string) (unix.Stat_t, error) {

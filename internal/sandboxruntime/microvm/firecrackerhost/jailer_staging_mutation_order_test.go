@@ -143,6 +143,27 @@ func TestLinuxJailerStagerRejectsAliasedFileBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestLinuxJailerStagerRejectsRenamedFileBeforeMutation(t *testing.T) {
+	request, root := newMutationOrderLinuxJailerRoot(t)
+	value, err := root.createFileExclusive("payload")
+	if err != nil {
+		t.Fatalf("createFileExclusive(payload): %v", err)
+	}
+	file := value.(*linuxJailerStagingFile)
+	t.Cleanup(func() { _ = file.close() })
+	external := filepath.Join(request.Authority.ChrootBaseDir, "renamed-payload")
+	if err := os.Rename(filepath.Join(request.Authority.JailRootHostPath, "payload"), external); err != nil {
+		t.Fatalf("Rename(payload): %v", err)
+	}
+
+	if _, err := file.Write([]byte("mutated")); !errors.Is(err, errJailerStagingFailed) {
+		t.Fatalf("renamed mutation error = %v, want staging failure", err)
+	}
+	if data, err := os.ReadFile(external); err != nil || len(data) != 0 {
+		t.Fatalf("renamed file data = %q, error = %v; want empty", data, err)
+	}
+}
+
 func newMutationOrderLinuxJailerRoot(t *testing.T) (jailerStagingRequest, *linuxJailerStagingRoot) {
 	t.Helper()
 	request, _ := newLinuxJailerStagingRequest(t)
