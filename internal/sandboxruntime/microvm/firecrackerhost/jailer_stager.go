@@ -72,9 +72,10 @@ type jailerStagingRequest struct {
 // inspected chroot authority. A real implementation must create the exact
 // precreated Jailer HostRoot exclusively and resolve every component relative
 // to retained directory file descriptors without following symlinks. When a
-// post-creation check fails after exact directory authority has been acquired,
-// it returns that root with the error for retry-only quarantine; failures with
-// no retained authority return nil. This slice intentionally supplies no
+// post-creation check fails and exact empty rollback is incomplete, it returns
+// the available directory-generation authority with the error for retry-only
+// quarantine. Failures before mutation, and failures whose exact rollback
+// completed, return nil. This slice intentionally supplies no
 // path-based os adapter because Lstat followed by path mutation would not
 // satisfy that contract. close releases constructor authority not transferred
 // to a successfully created or quarantined root and must be idempotent.
@@ -94,9 +95,11 @@ type jailerStagingRootRequest struct {
 	GID      uint32
 }
 
-// jailerStagingRoot represents exactly the newly created generation. All
-// relative operations must remain handle-bound, reject symlinks and existing
-// entries, and verify that the retained root generation has not changed.
+// jailerStagingRoot represents the available authority for one newly created
+// generation. A creation-only quarantine may retain only a verified ancestor
+// or runtime directory and remains fail-closed when an identity is unresolved.
+// All relative operations must remain handle-bound, reject symlinks and
+// existing entries, and verify that the retained generation has not changed.
 type jailerStagingRoot interface {
 	createDirectory(relative string, mode os.FileMode, uid, gid uint32) error
 	createFileExclusive(relative string) (jailerStagingFile, error)
@@ -136,9 +139,9 @@ type jailerStagingResult struct {
 	lease        *jailerStagingLease
 }
 
-// jailerStagingLease retains the exact root authority across either the
-// staging-to-process handoff or an uncertain staging-failure cleanup retry. A
-// copied result shares this one release state.
+// jailerStagingLease retains the available directory-generation authority
+// across either the staging-to-process handoff or an uncertain creation or
+// staging cleanup retry. A copied result shares this one release state.
 type jailerStagingLease struct {
 	mu         sync.Mutex
 	root       jailerStagingRoot
@@ -186,8 +189,10 @@ func (result jailerStagingResult) verifyOwnedRoot() error {
 
 // releaseOwnedRoot is called only after launch failure or process termination.
 // A failed exact removal retains the authority and blocks verification until a
-// caller retries cleanup. Successful removal, including a subsequent close
-// failure, is terminal and idempotent.
+// caller retries cleanup. An unresolved creation identity can remain
+// nonterminal indefinitely; this in-memory foundation does not guess by path.
+// Successful removal, including a subsequent close failure, is terminal and
+// idempotent.
 func (result jailerStagingResult) releaseOwnedRoot() error {
 	if result.lease == nil {
 		return newJailerStagingError(errJailerStagingInvalid, "lease")
@@ -250,9 +255,10 @@ type validatedJailerStagingResource struct {
 // stageStrictJailerResources is an injected staging coordinator. Linux has a
 // retained-dirfd implementation, but no production path selects or launches
 // through it yet. It performs no process launch, runtime selection, security
-// projection, network operation, or credential delivery. When staging and
-// exact removal both fail, the nonzero result carries retry-only root authority
-// which the caller must retain until releaseOwnedRoot reaches a terminal state.
+// projection, network operation, or credential delivery. When exact creation
+// rollback or later removal fails, the nonzero result carries retry-only
+// generation authority which the caller must retain until releaseOwnedRoot
+// reaches a terminal state.
 func stageStrictJailerResources(filesystem jailerStagingFilesystem, request jailerStagingRequest) (result jailerStagingResult, returnedErr error) {
 	if interfaceValueIsNil(filesystem) {
 		return jailerStagingResult{}, newJailerStagingError(errJailerStagingInvalid, "filesystem")
