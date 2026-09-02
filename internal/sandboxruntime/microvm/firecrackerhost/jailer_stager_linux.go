@@ -271,7 +271,7 @@ func (root *linuxJailerStagingRoot) createFileExclusive(relative string) (jailer
 		return nil, newJailerStagingError(errJailerStagingFailed, "file")
 	}
 	stat, statErr := linuxJailerFstat(fd)
-	if statErr != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 || unix.Fchmod(fd, 0o600) != nil || unix.Fsync(parentFD) != nil {
+	if statErr != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
 		id := linuxJailerIdentity(stat)
 		_ = unix.Close(fd)
 		_ = removeLinuxJailerFileEntry(parentFD, name, id)
@@ -280,11 +280,24 @@ func (root *linuxJailerStagingRoot) createFileExclusive(relative string) (jailer
 	}
 	id := linuxJailerIdentity(stat)
 	entry := linuxJailerStagingEntry{id: id, uid: stat.Uid, gid: stat.Gid, mode: 0o600}
+	if secureLinuxJailerOpenedFile(fd, parentFD, name, entry) != nil {
+		_ = unix.Close(fd)
+		_ = removeLinuxJailerFileEntry(parentFD, name, id)
+		_ = unix.Close(parentFD)
+		return nil, newJailerStagingError(errJailerStagingFailed, "file")
+	}
 	root.entries[relative] = entry
 	return &linuxJailerStagingFile{
 		root: root, relative: relative, name: name, parentFD: parentFD, fd: fd, id: id,
 		uid: entry.uid, gid: entry.gid, mode: entry.mode,
 	}, nil
+}
+
+func secureLinuxJailerOpenedFile(fd, parentFD int, _ string, expected linuxJailerStagingEntry) error {
+	if unix.Fchmod(fd, expected.mode) != nil || unix.Fsync(parentFD) != nil {
+		return errJailerStagingFailed
+	}
+	return nil
 }
 
 // verifyOwned re-resolves the authority and every staged entry. The future
