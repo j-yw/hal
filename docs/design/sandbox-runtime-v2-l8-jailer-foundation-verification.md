@@ -81,7 +81,7 @@ The focused checks are deterministic and select no live tags:
 
 ```sh
 go test -count=1 ./cmd -run '^TestL8JailerFoundation'
-go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailerLaunch|StrictJailerLifecycle|StrictJailerNamespaceRunner|StrictJailerOSExecLaunch|StageStrictJailerResources|ValidateJailerStagingResources|JailerStaging|LinuxJailer|StrictJailerCoordinator)'
+go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailer|StageStrictJailerResources|ValidateJailerStagingResources|JailerStaging|LinuxJailer)'
 go test -count=1 -run '^$' ./...
 go vet ./...
 make docs-check
