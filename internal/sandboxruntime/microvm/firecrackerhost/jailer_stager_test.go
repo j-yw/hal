@@ -101,6 +101,8 @@ func TestStageStrictJailerResourcesRejectsUnsafeOrAmbiguousInputs(t *testing.T) 
 			request.Config.JailPath = "/run/fc-run-alpha/../outside/firecracker-config.json"
 		}},
 		{name: "relative jail path", edit: func(request *jailerStagingRequest) { request.Kernel.JailPath = "boot/vmlinux" }},
+		{name: "leading jail path whitespace", edit: func(request *jailerStagingRequest) { request.Kernel.JailPath = " /boot/vmlinux" }},
+		{name: "trailing jail path whitespace", edit: func(request *jailerStagingRequest) { request.Kernel.JailPath = "/boot/vmlinux\t" }},
 		{name: "duplicate path", edit: func(request *jailerStagingRequest) { request.Rootfs.JailPath = request.Kernel.JailPath }},
 		{name: "duplicate support id", edit: func(request *jailerStagingRequest) {
 			request.Support = append(request.Support, request.Support[0])

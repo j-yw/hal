@@ -262,6 +262,95 @@ func TestStrictJailerCoordinatorRejectsInvalidConfigBeforeDependencies(t *testin
 	}
 }
 
+func TestStrictJailerCoordinatorRejectsNoncanonicalJSONFieldAliases(t *testing.T) {
+	base := validCoordinatorConfig()
+	withEntropy := coordinatorConfigWith(`"entropy":{}`)
+	withInitrd := coordinatorConfigWithInitrd(t, "/boot/initrd")
+	withBootArgs := strings.Replace(
+		base,
+		`"kernel_image_path":"/boot/vmlinux"`,
+		`"kernel_image_path":"/boot/vmlinux","boot_args":"console=ttyS0"`,
+		1,
+	)
+	tests := []struct {
+		field  string
+		config string
+	}{
+		{field: "machine-config", config: base},
+		{field: "boot-source", config: base},
+		{field: "drives", config: base},
+		{field: "vsock", config: base},
+		{field: "entropy", config: withEntropy},
+		{field: "vcpu_count", config: base},
+		{field: "mem_size_mib", config: base},
+		{field: "kernel_image_path", config: base},
+		{field: "initrd_path", config: withInitrd},
+		{field: "boot_args", config: withBootArgs},
+		{field: "drive_id", config: base},
+		{field: "path_on_host", config: base},
+		{field: "is_root_device", config: base},
+		{field: "is_read_only", config: base},
+		{field: "guest_cid", config: base},
+		{field: "uds_path", config: base},
+	}
+	for _, test := range tests {
+		t.Run(test.field, func(t *testing.T) {
+			canonical := `"` + test.field + `":`
+			alias := `"` + strings.ToUpper(test.field[:1]) + test.field[1:] + `":`
+			aliased := strings.Replace(test.config, canonical, alias, 1)
+			if aliased == test.config {
+				t.Fatalf("fixture omits canonical field %q", test.field)
+			}
+			resource := coordinatorTestResource("config", "/run/fc-run-1/firecracker-config.json", aliased, 0o400)
+			if _, err := readStrictJailerConfig(resource); !errors.Is(err, errStrictJailerCoordinatorInvalid) {
+				t.Fatalf("read config field %q alias = %v, want invalid config", test.field, err)
+			}
+		})
+	}
+}
+
+func TestStrictJailerCoordinatorRejectsResourcesOverlappingOwnedEndpoints(t *testing.T) {
+	request := validStrictJailerCoordinatorRequest(t)
+	tests := map[string]string{
+		"executable":            "/firecracker",
+		"executable descendant": "/firecracker/assets/kernel",
+		"API socket":            request.jailPaths.APISocketPath,
+		"API socket descendant": request.jailPaths.APISocketPath + "/kernel",
+		"vsock":                 request.jailPaths.VsockSocketPath,
+		"vsock descendant":      request.jailPaths.VsockSocketPath + "/kernel",
+		"socket parent":         request.jailPaths.StateDir,
+		"socket ancestor":       "/run",
+	}
+	for name, jailPath := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := validStrictJailerCoordinatorRequest(t)
+			setCoordinatorKernelPath(t, &candidate, jailPath)
+			if err := validateStrictJailerCoordinatorConfig(candidate); !errors.Is(err, errStrictJailerCoordinatorInvalid) {
+				t.Fatalf("validate endpoint resource %q = %v, want invalid config", jailPath, err)
+			}
+		})
+	}
+}
+
+func TestStrictJailerCoordinatorAcceptsOwnedEndpointNearPrefixSiblings(t *testing.T) {
+	request := validStrictJailerCoordinatorRequest(t)
+	tests := map[string]string{
+		"executable":                "/firecracker-helper",
+		"API socket":                request.jailPaths.APISocketPath + "-cache",
+		"vsock":                     request.jailPaths.VsockSocketPath + "-cache",
+		"shared endpoint directory": request.jailPaths.StateDir + "/kernel",
+	}
+	for name, jailPath := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := validStrictJailerCoordinatorRequest(t)
+			setCoordinatorKernelPath(t, &candidate, jailPath)
+			if err := validateStrictJailerCoordinatorConfig(candidate); err != nil {
+				t.Fatalf("validate near-prefix resource %q: %v", jailPath, err)
+			}
+		})
+	}
+}
+
 func TestStrictJailerCoordinatorAcceptsCorrelatedOptionalConfigResources(t *testing.T) {
 	t.Run("without vsock", func(t *testing.T) {
 		request := validStrictJailerCoordinatorRequest(t)
@@ -709,6 +798,22 @@ func coordinatorConfigWithInitrd(t *testing.T, path string) string {
 		`"kernel_image_path":"/boot/vmlinux","initrd_path":`+string(encoded),
 		1,
 	)
+}
+
+func setCoordinatorKernelPath(t *testing.T, request *strictJailerCoordinatorRequest, jailPath string) {
+	t.Helper()
+	encoded, err := json.Marshal(jailPath)
+	if err != nil {
+		t.Fatalf("marshal kernel jail path: %v", err)
+	}
+	request.kernel.JailPath = jailPath
+	config := strings.Replace(
+		validCoordinatorConfig(),
+		`"kernel_image_path":"/boot/vmlinux"`,
+		`"kernel_image_path":`+string(encoded),
+		1,
+	)
+	replaceCoordinatorConfig(t, request, config)
 }
 
 func replaceCoordinatorConfig(t *testing.T, request *strictJailerCoordinatorRequest, content string) {
