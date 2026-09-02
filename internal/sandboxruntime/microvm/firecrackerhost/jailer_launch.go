@@ -65,9 +65,21 @@ type strictJailerLaunchRequest struct {
 // derives host ownership from Firecracker argv, while this plan's argv is
 // intentionally jail-visible.
 type strictJailerLaunchPlan struct {
-	process   firecracker.ProcessRunnerStartRequest
-	hostPaths firecracker.PathPlan
-	jailPaths firecracker.PathPlan
+	process         firecracker.ProcessRunnerStartRequest
+	runtimeID       string
+	firecrackerPath string
+	runtimeUID      uint32
+	runtimeGID      uint32
+	chrootBaseDir   string
+	enablePCI       bool
+	hostPaths       firecracker.PathPlan
+	jailPaths       firecracker.PathPlan
+}
+
+type strictJailerLaunchAuthority struct {
+	process    firecracker.ProcessRunnerStartRequest
+	runtimeUID uint32
+	hostPaths  firecracker.PathPlan
 }
 
 // processRequest returns a copy of the exact Jailer command. The result has no
@@ -93,6 +105,53 @@ func (plan strictJailerLaunchPlan) hostPathPlan() firecracker.PathPlan {
 // stager. These paths are never serialized as launch evidence.
 func (plan strictJailerLaunchPlan) jailPathPlan() firecracker.PathPlan {
 	return plan.jailPaths
+}
+
+// validatedAuthority re-renders the exact command from private structured
+// fields. Lifecycle code consumes this authority and never derives host
+// identity, ownership, or paths from jail-visible argv. Raw argv parsing stays
+// confined to the final namespace runner validation boundary.
+func (plan strictJailerLaunchPlan) validatedAuthority() (strictJailerLaunchAuthority, error) {
+	if !validStrictJailerRuntimeID(plan.runtimeID) || strings.TrimSpace(plan.runtimeID) != plan.runtimeID ||
+		!filepathIsCleanAbsolute(plan.firecrackerPath) || cleanupFilesystemRoot(plan.firecrackerPath) ||
+		plan.runtimeUID == 0 || plan.runtimeGID == 0 ||
+		!filepathIsCleanAbsolute(plan.chrootBaseDir) || cleanupFilesystemRoot(plan.chrootBaseDir) {
+		return strictJailerLaunchAuthority{}, errStrictJailerLaunchInvalid
+	}
+	jailerPath := strings.TrimSpace(plan.process.Executable)
+	if jailerPath != plan.process.Executable || !filepathIsCleanAbsolute(jailerPath) ||
+		cleanupFilesystemRoot(jailerPath) || jailerPath == plan.firecrackerPath ||
+		len(plan.process.Environment) != 0 || len(plan.process.InheritedFiles) != 0 {
+		return strictJailerLaunchAuthority{}, errStrictJailerLaunchInvalid
+	}
+	jailPaths, removeJailState, err := validatedCleanupPathPlan(plan.jailPaths)
+	if err != nil || !removeJailState || !cleanupPathPlansEqual(jailPaths, plan.jailPaths) {
+		return strictJailerLaunchAuthority{}, errStrictJailerLaunchInvalid
+	}
+	hostPaths, removeHostState, err := validatedCleanupPathPlan(plan.hostPaths)
+	if err != nil || !removeHostState || !cleanupPathPlansEqual(hostPaths, plan.hostPaths) {
+		return strictJailerLaunchAuthority{}, errStrictJailerLaunchInvalid
+	}
+	jailRoot := filepath.Join(plan.chrootBaseDir, filepath.Base(plan.firecrackerPath), plan.runtimeID, "root")
+	wantHostPaths, err := strictJailerHostPaths(jailRoot, jailPaths)
+	if err != nil || !cleanupPathPlansEqual(wantHostPaths, hostPaths) {
+		return strictJailerLaunchAuthority{}, errStrictJailerLaunchInvalid
+	}
+	wantArgs := strictJailerArguments(
+		plan.runtimeID, plan.firecrackerPath, plan.runtimeUID, plan.runtimeGID,
+		plan.chrootBaseDir, jailPaths, plan.enablePCI,
+	)
+	if !equalJailerStrings(plan.process.Args, wantArgs) {
+		return strictJailerLaunchAuthority{}, errStrictJailerLaunchInvalid
+	}
+	return strictJailerLaunchAuthority{
+		process: firecracker.ProcessRunnerStartRequest{
+			Executable: jailerPath, Args: append([]string(nil), wantArgs...),
+			Environment: []string{}, InheritedFiles: []*os.File{},
+		},
+		runtimeUID: plan.runtimeUID,
+		hostPaths:  hostPaths,
+	}, nil
 }
 
 // planStrictJailerLaunch validates and builds the immutable Jailer command
@@ -154,15 +213,7 @@ func planStrictJailerLaunch(request strictJailerLaunchRequest) (strictJailerLaun
 		return strictJailerLaunchPlan{}, newStrictJailerLaunchError("hostPaths")
 	}
 
-	jailerArgs := []string{
-		"--id", runtimeID,
-		"--exec-file", firecrackerPath,
-		"--uid", strconv.FormatUint(uint64(request.UID), 10),
-		"--gid", strconv.FormatUint(uint64(request.GID), 10),
-		"--chroot-base-dir", chrootBaseDir,
-		"--",
-	}
-	jailerArgs = append(jailerArgs, strictFirecrackerPathArgs(jailPaths, enablePCI)...)
+	jailerArgs := strictJailerArguments(runtimeID, firecrackerPath, request.UID, request.GID, chrootBaseDir, jailPaths, enablePCI)
 
 	return strictJailerLaunchPlan{
 		process: firecracker.ProcessRunnerStartRequest{
@@ -171,9 +222,29 @@ func planStrictJailerLaunch(request strictJailerLaunchRequest) (strictJailerLaun
 			Environment:    []string{},
 			InheritedFiles: []*os.File{},
 		},
-		hostPaths: hostPaths,
-		jailPaths: jailPaths,
+		runtimeID: runtimeID, firecrackerPath: firecrackerPath,
+		runtimeUID: request.UID, runtimeGID: request.GID,
+		chrootBaseDir: chrootBaseDir, enablePCI: enablePCI,
+		hostPaths: hostPaths, jailPaths: jailPaths,
 	}, nil
+}
+
+func strictJailerArguments(
+	runtimeID, firecrackerPath string,
+	runtimeUID, runtimeGID uint32,
+	chrootBaseDir string,
+	jailPaths firecracker.PathPlan,
+	enablePCI bool,
+) []string {
+	args := []string{
+		"--id", runtimeID,
+		"--exec-file", firecrackerPath,
+		"--uid", strconv.FormatUint(uint64(runtimeUID), 10),
+		"--gid", strconv.FormatUint(uint64(runtimeGID), 10),
+		"--chroot-base-dir", chrootBaseDir,
+		"--",
+	}
+	return append(args, strictFirecrackerPathArgs(jailPaths, enablePCI)...)
 }
 
 func newStrictJailerLaunchError(field string) *strictJailerLaunchError {

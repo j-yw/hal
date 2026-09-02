@@ -167,6 +167,8 @@ type trackedProcess struct {
 	hasPaths         bool
 	stateIdentity    privateStateDirIdentity
 	hasStateIdentity bool
+	strictRuntimeUID uint32
+	hasStrictUID     bool
 }
 
 // NewProcessLifecycleManager constructs a fake-safe lifecycle manager. Without
@@ -399,6 +401,18 @@ func (manager *ProcessLifecycleManager) completeProcessCleanup(id string, forget
 }
 
 func (manager *ProcessLifecycleManager) storeProcess(process HostProcess, paths firecracker.PathPlan, hasPaths bool, stateIdentity privateStateDirIdentity, hasStateIdentity bool) firecracker.ProcessHandleMetadata {
+	return manager.storeProcessRecord(process, paths, hasPaths, stateIdentity, hasStateIdentity, 0, false)
+}
+
+func (manager *ProcessLifecycleManager) storeProcessRecord(
+	process HostProcess,
+	paths firecracker.PathPlan,
+	hasPaths bool,
+	stateIdentity privateStateDirIdentity,
+	hasStateIdentity bool,
+	strictRuntimeUID uint32,
+	hasStrictUID bool,
+) firecracker.ProcessHandleMetadata {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if manager.processes == nil {
@@ -409,6 +423,7 @@ func (manager *ProcessLifecycleManager) storeProcess(process HostProcess, paths 
 	manager.processes[id] = &trackedProcess{
 		process: process, paths: paths, hasPaths: hasPaths,
 		stateIdentity: stateIdentity, hasStateIdentity: hasStateIdentity,
+		strictRuntimeUID: strictRuntimeUID, hasStrictUID: hasStrictUID,
 	}
 	return firecracker.ProcessHandleMetadata{
 		ID:     id,
@@ -466,6 +481,8 @@ type trackedProcessSnapshot struct {
 	stateRemoved     bool
 	stateIdentity    privateStateDirIdentity
 	hasStateIdentity bool
+	strictRuntimeUID uint32
+	hasStrictUID     bool
 }
 
 func (manager *ProcessLifecycleManager) lookupProcessSnapshot(handle firecracker.ProcessHandleMetadata) (trackedProcessSnapshot, bool) {
@@ -488,6 +505,8 @@ func (manager *ProcessLifecycleManager) lookupProcessSnapshot(handle firecracker
 		stateRemoved:     tracked.stateRemoved,
 		stateIdentity:    tracked.stateIdentity,
 		hasStateIdentity: tracked.hasStateIdentity,
+		strictRuntimeUID: tracked.strictRuntimeUID,
+		hasStrictUID:     tracked.hasStrictUID,
 	}, true
 }
 

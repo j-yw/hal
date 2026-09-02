@@ -3,6 +3,7 @@ package firecrackerhost
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
@@ -25,8 +26,9 @@ type strictJailerLifecycleStartRequest struct {
 // strictJailerLifecycleProcess binds one opaque process generation to the host
 // paths recorded by ProcessLifecycleManager. It has no public JSON shape.
 type strictJailerLifecycleProcess struct {
-	handle    firecracker.ProcessHandleMetadata
-	hostPaths firecracker.PathPlan
+	handle     firecracker.ProcessHandleMetadata
+	hostPaths  firecracker.PathPlan
+	runtimeUID uint32
 }
 
 type strictJailerLifecycleInspection struct {
@@ -60,15 +62,15 @@ func (lifecycle *strictJailerLifecycle) start(
 	if lifecycle == nil || lifecycle.manager == nil {
 		return strictJailerLifecycleProcess{}, errStrictJailerLifecycleInvalid
 	}
-	processRequest, hostPaths, err := validateStrictJailerLifecycleStartRequest(request)
+	processRequest, hostPaths, runtimeUID, err := validateStrictJailerLifecycleStartRequest(request)
 	if err != nil {
 		return strictJailerLifecycleProcess{}, errStrictJailerLifecycleInvalid
 	}
-	handle, err := lifecycle.manager.startStrictJailerProcess(ctx, processRequest, hostPaths)
+	handle, err := lifecycle.manager.startStrictJailerProcess(ctx, processRequest, hostPaths, runtimeUID)
 	if err != nil {
 		return strictJailerLifecycleProcess{}, err
 	}
-	return strictJailerLifecycleProcess{handle: handle, hostPaths: hostPaths}, nil
+	return strictJailerLifecycleProcess{handle: handle, hostPaths: hostPaths, runtimeUID: runtimeUID}, nil
 }
 
 func (lifecycle *strictJailerLifecycle) inspect(
@@ -123,7 +125,7 @@ func (lifecycle *strictJailerLifecycle) validProcess(process strictJailerLifecyc
 	if err != nil || !hasPaths || !cleanupPathPlansEqual(hostPaths, process.hostPaths) {
 		return false
 	}
-	return lifecycle.manager.validateTrackedProcessPathPlan(process.handle, hostPaths) == nil
+	return lifecycle.manager.validateTrackedStrictJailerProcess(process.handle, hostPaths, process.runtimeUID) == nil
 }
 
 // startStrictJailerProcess is deliberately separate from StartProcess. It uses
@@ -133,6 +135,7 @@ func (manager *ProcessLifecycleManager) startStrictJailerProcess(
 	ctx context.Context,
 	request firecracker.ProcessRunnerStartRequest,
 	hostPaths firecracker.PathPlan,
+	runtimeUID uint32,
 ) (firecracker.ProcessHandleMetadata, error) {
 	if manager == nil || manager.runner == nil {
 		return firecracker.ProcessHandleMetadata{}, dependencyNotConfigured("hostProcessRunner")
@@ -142,24 +145,24 @@ func (manager *ProcessLifecycleManager) startStrictJailerProcess(
 		return firecracker.ProcessHandleMetadata{}, err
 	}
 	paths, hasPaths, err := validatedCleanupPathPlan(hostPaths)
-	if err != nil || !hasPaths || !cleanupPathPlansEqual(paths, hostPaths) {
+	if err != nil || !hasPaths || !cleanupPathPlansEqual(paths, hostPaths) || runtimeUID == 0 {
 		return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, ErrUnsafeCleanupPath)
 	}
 
 	var stateIdentity privateStateDirIdentity
 	var hasStateIdentity bool
 	if manager.productionVsock {
-		identity, identityErr := statPrivateFirecrackerStateDir(paths.StateDir)
+		identity, identityErr := statStrictJailerPrivateStateDir(paths.StateDir, runtimeUID)
 		if identityErr != nil {
 			return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, ErrUnsafeCleanupPath)
 		}
 		stateIdentity = identity
 		hasStateIdentity = true
 	}
-	if err := manager.removeStaleAPISocketBeforeStart(paths, stateIdentity, hasStateIdentity); err != nil {
+	if err := manager.removeStrictJailerStaleAPISocketBeforeStart(paths, stateIdentity, hasStateIdentity, runtimeUID); err != nil {
 		return firecracker.ProcessHandleMetadata{}, err
 	}
-	if err := manager.removeOwnedStaleVsockBeforeStart(paths, stateIdentity, hasStateIdentity); err != nil {
+	if err := manager.removeStrictJailerStaleVsockBeforeStart(paths, stateIdentity, hasStateIdentity, runtimeUID); err != nil {
 		return firecracker.ProcessHandleMetadata{}, err
 	}
 
@@ -170,33 +173,111 @@ func (manager *ProcessLifecycleManager) startStrictJailerProcess(
 	if interfaceValueIsNil(process) {
 		return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, ErrHostProcessRequired)
 	}
-	return manager.storeProcess(process, paths, true, stateIdentity, hasStateIdentity), nil
+	return manager.storeStrictJailerProcess(process, paths, stateIdentity, hasStateIdentity, runtimeUID), nil
 }
 
 func validateStrictJailerLifecycleStartRequest(
 	request strictJailerLifecycleStartRequest,
-) (firecracker.ProcessRunnerStartRequest, firecracker.PathPlan, error) {
-	processRequest := request.launchPlan.processRequest()
-	command, err := parseStrictJailerCommand(processRequest)
+) (firecracker.ProcessRunnerStartRequest, firecracker.PathPlan, uint32, error) {
+	authority, err := request.launchPlan.validatedAuthority()
 	if err != nil {
-		return firecracker.ProcessRunnerStartRequest{}, firecracker.PathPlan{}, errStrictJailerLifecycleInvalid
+		return firecracker.ProcessRunnerStartRequest{}, firecracker.PathPlan{}, 0, errStrictJailerLifecycleInvalid
 	}
-	planHostPaths, hasPlanHostPaths, err := validatedCleanupPathPlan(request.launchPlan.hostPathPlan())
+	planHostPaths, hasPlanHostPaths, err := validatedCleanupPathPlan(authority.hostPaths)
 	if err != nil || !hasPlanHostPaths {
-		return firecracker.ProcessRunnerStartRequest{}, firecracker.PathPlan{}, errStrictJailerLifecycleInvalid
+		return firecracker.ProcessRunnerStartRequest{}, firecracker.PathPlan{}, 0, errStrictJailerLifecycleInvalid
 	}
 	authoritativeHostPaths, hasAuthoritativeHostPaths, err := validatedCleanupPathPlan(request.hostPaths)
 	if err != nil || !hasAuthoritativeHostPaths || !cleanupPathPlansEqual(planHostPaths, authoritativeHostPaths) {
-		return firecracker.ProcessRunnerStartRequest{}, firecracker.PathPlan{}, errStrictJailerLifecycleInvalid
+		return firecracker.ProcessRunnerStartRequest{}, firecracker.PathPlan{}, 0, errStrictJailerLifecycleInvalid
 	}
-	planJailPaths, hasPlanJailPaths, err := validatedCleanupPathPlan(request.launchPlan.jailPathPlan())
-	if err != nil || !hasPlanJailPaths || !cleanupPathPlansEqual(planJailPaths, command.jailPaths) {
-		return firecracker.ProcessRunnerStartRequest{}, firecracker.PathPlan{}, errStrictJailerLifecycleInvalid
+	return authority.process, authoritativeHostPaths, authority.runtimeUID, nil
+}
+
+func strictJailerCallerMayCleanup(callerUID, expectedRuntimeUID uint32) bool {
+	return expectedRuntimeUID != 0 && (callerUID == 0 || callerUID == expectedRuntimeUID)
+}
+
+func (manager *ProcessLifecycleManager) removeStrictJailerStaleAPISocketBeforeStart(
+	plan firecracker.PathPlan,
+	stateIdentity privateStateDirIdentity,
+	hasStateIdentity bool,
+	runtimeUID uint32,
+) error {
+	if manager == nil || !manager.productionVsock {
+		return manager.removeStaleAPISocketBeforeStart(plan, stateIdentity, hasStateIdentity)
 	}
-	jailRoot := filepath.Join(command.chrootBaseDir, filepath.Base(command.firecrackerPath), command.runtimeID, "root")
-	expectedHostPaths, err := strictJailerHostPaths(jailRoot, planJailPaths)
-	if err != nil || !cleanupPathPlansEqual(expectedHostPaths, authoritativeHostPaths) {
-		return firecracker.ProcessRunnerStartRequest{}, firecracker.PathPlan{}, errStrictJailerLifecycleInvalid
+	info, err := os.Lstat(plan.APISocketPath)
+	switch {
+	case os.IsNotExist(err):
+		return nil
+	case err != nil:
+		return newProcessLifecycleError(processOperationCleanup, errors.New("API socket inspection failed"))
+	case info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0o077 != 0:
+		return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
 	}
-	return processRequest, authoritativeHostPaths, nil
+	if !hasStateIdentity || validateStrictJailerSocketOwnership(plan.APISocketPath, runtimeUID) != nil ||
+		!manager.hasTerminalProcessForPaths(plan, stateIdentity, true) {
+		return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+	}
+	if err := removeStrictJailerPinnedStateEntry(plan.StateDir, filepath.Base(plan.APISocketPath), stateIdentity, runtimeUID); err != nil {
+		return newProcessLifecycleError(processOperationCleanup, err)
+	}
+	return nil
+}
+
+func (manager *ProcessLifecycleManager) removeStrictJailerStaleVsockBeforeStart(
+	plan firecracker.PathPlan,
+	stateIdentity privateStateDirIdentity,
+	hasStateIdentity bool,
+	runtimeUID uint32,
+) error {
+	if manager == nil || !manager.productionVsock {
+		return manager.removeOwnedStaleVsockBeforeStart(plan, stateIdentity, hasStateIdentity)
+	}
+	info, err := os.Lstat(plan.VsockSocketPath)
+	switch {
+	case os.IsNotExist(err):
+		return nil
+	case err != nil:
+		return newProcessLifecycleError(processOperationCleanup, errors.New("vsock socket inspection failed"))
+	case info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm()&0o077 != 0:
+		return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+	}
+	if !hasStateIdentity || validateStrictJailerSocketOwnership(plan.VsockSocketPath, runtimeUID) != nil ||
+		!manager.hasTerminalProcessForPaths(plan, stateIdentity, true) {
+		return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+	}
+	if err := removeStrictJailerPinnedStateEntry(plan.StateDir, filepath.Base(plan.VsockSocketPath), stateIdentity, runtimeUID); err != nil {
+		return newProcessLifecycleError(processOperationCleanup, err)
+	}
+	return nil
+}
+
+func (manager *ProcessLifecycleManager) storeStrictJailerProcess(
+	process HostProcess,
+	paths firecracker.PathPlan,
+	stateIdentity privateStateDirIdentity,
+	hasStateIdentity bool,
+	runtimeUID uint32,
+) firecracker.ProcessHandleMetadata {
+	return manager.storeProcessRecord(process, paths, true, stateIdentity, hasStateIdentity, runtimeUID, true)
+}
+
+func (manager *ProcessLifecycleManager) validateTrackedStrictJailerProcess(
+	handle firecracker.ProcessHandleMetadata,
+	paths firecracker.PathPlan,
+	runtimeUID uint32,
+) error {
+	if runtimeUID == 0 {
+		return ErrUnsafeCleanupPath
+	}
+	if err := manager.validateTrackedProcessPathPlan(handle, paths); err != nil {
+		return err
+	}
+	snapshot, ok := manager.lookupProcessSnapshot(handle)
+	if !ok || !snapshot.hasStrictUID || snapshot.strictRuntimeUID != runtimeUID {
+		return ErrUnsafeCleanupPath
+	}
+	return nil
 }

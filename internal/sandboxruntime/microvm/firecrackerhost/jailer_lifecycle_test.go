@@ -110,6 +110,14 @@ func TestStrictJailerLifecycleRejectsCrossGenerationHandlePaths(t *testing.T) {
 	if process.signalCalls != 0 || process.killCalls != 0 {
 		t.Fatalf("forged handle reached process: signal/kill = %d/%d", process.signalCalls, process.killCalls)
 	}
+	forged = started
+	forged.runtimeUID++
+	if _, err := lifecycle.inspect(forged); !errors.Is(err, errStrictJailerLifecycleInvalid) {
+		t.Fatalf("inspect(forged UID) error = %v, want invalid", err)
+	}
+	if err := lifecycle.stop(context.Background(), forged); !errors.Is(err, errStrictJailerLifecycleInvalid) {
+		t.Fatalf("stop(forged UID) error = %v, want invalid", err)
+	}
 	if err := lifecycle.stop(context.Background(), started); err != nil {
 		t.Fatalf("stop(valid) error = %v", err)
 	}
