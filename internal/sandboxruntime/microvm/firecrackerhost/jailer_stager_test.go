@@ -225,7 +225,42 @@ func TestStageStrictJailerResourcesCleansOwnedPartialStateOnFailure(t *testing.T
 	assertJailerStagingErrorRedacted(t, err)
 }
 
-func TestJailerStagingLeaseCachesUncertainCleanupWithoutRetrying(t *testing.T) {
+func TestStageStrictJailerResourcesClosesFileReturnedWithCreateError(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		closeError error
+		wantClose  bool
+	}{
+		{name: "close succeeds", wantClose: false},
+		{name: "close fails", closeError: errors.New("close failed at /srv/private/file-secret"), wantClose: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := validJailerStagingRequest()
+			filesystem := newFakeJailerStagingFilesystem()
+			filesystem.failCreatePath = filepath.FromSlash("boot/vmlinux")
+			filesystem.returnFileWithCreateError = true
+			filesystem.fileCloseErr = tt.closeError
+
+			_, err := stageStrictJailerResources(filesystem, request)
+			if !errors.Is(err, errJailerStagingFailed) {
+				t.Fatalf("error = %v, want staging failure", err)
+			}
+			if errors.Is(err, errJailerStagingCleanupIncomplete) != tt.wantClose {
+				t.Fatalf("cleanup incomplete = %t, want %t: %v", errors.Is(err, errJailerStagingCleanupIncomplete), tt.wantClose, err)
+			}
+			file := filesystem.root.files[filesystem.failCreatePath]
+			if file == nil || !file.closed || file.closeCalls != 1 {
+				t.Fatalf("returned file = %#v, want closed exactly once", file)
+			}
+			if filesystem.root.removeCalls != 1 || filesystem.root.closeCalls != 1 {
+				t.Fatalf("root cleanup calls = %d/%d, want 1/1", filesystem.root.removeCalls, filesystem.root.closeCalls)
+			}
+			assertJailerStagingErrorRedacted(t, err)
+		})
+	}
+}
+
+func TestJailerStagingLeaseRetainsAuthorityAndRetriesUncertainCleanup(t *testing.T) {
 	filesystem := newFakeJailerStagingFilesystem()
 	filesystem.removeErr = errors.New("cleanup failed at /srv/private/jail-secret")
 	result, err := stageStrictJailerResources(filesystem, validJailerStagingRequest())
@@ -237,17 +272,60 @@ func TestJailerStagingLeaseCachesUncertainCleanupWithoutRetrying(t *testing.T) {
 	if !errors.Is(first, errJailerStagingCleanupIncomplete) {
 		t.Fatalf("releaseOwnedRoot() error = %v, want cleanup incomplete", first)
 	}
-	second := result.releaseOwnedRoot()
-	if !errors.Is(second, errJailerStagingCleanupIncomplete) || second.Error() != first.Error() {
-		t.Fatalf("second release error = %v, want cached %v", second, first)
-	}
-	if filesystem.root.removeCalls != 1 || filesystem.root.closeCalls != 1 {
-		t.Fatalf("uncertain cleanup remove/close calls = %d/%d, want exactly 1/1", filesystem.root.removeCalls, filesystem.root.closeCalls)
+	if filesystem.root.removeCalls != 1 || filesystem.root.closeCalls != 0 {
+		t.Fatalf("uncertain cleanup remove/close calls = %d/%d, want retained 1/0", filesystem.root.removeCalls, filesystem.root.closeCalls)
 	}
 	if verifyErr := result.verifyOwnedRoot(); !errors.Is(verifyErr, errJailerStagingCleanupIncomplete) {
 		t.Fatalf("verify after uncertain release = %v, want cleanup incomplete", verifyErr)
 	}
+	filesystem.root.removeErr = nil
+	if second := result.releaseOwnedRoot(); second != nil {
+		t.Fatalf("retry release error = %v, want nil", second)
+	}
+	if third := result.releaseOwnedRoot(); third != nil {
+		t.Fatalf("terminal idempotent release error = %v, want nil", third)
+	}
+	if filesystem.root.removeCalls != 2 || filesystem.root.closeCalls != 1 {
+		t.Fatalf("retried cleanup remove/close calls = %d/%d, want 2/1", filesystem.root.removeCalls, filesystem.root.closeCalls)
+	}
 	assertJailerStagingErrorRedacted(t, first)
+}
+
+func TestJailerStagingLeaseCachesTerminalCloseFailureAfterRemoval(t *testing.T) {
+	filesystem := newFakeJailerStagingFilesystem()
+	filesystem.rootCloseErr = errors.New("close failed at /srv/private/root-secret")
+	result, err := stageStrictJailerResources(filesystem, validJailerStagingRequest())
+	if err != nil {
+		t.Fatalf("stageStrictJailerResources() error = %v, want nil", err)
+	}
+	first := result.releaseOwnedRoot()
+	if !errors.Is(first, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("release error = %v, want cleanup incomplete", first)
+	}
+	second := result.releaseOwnedRoot()
+	if second == nil || second.Error() != first.Error() {
+		t.Fatalf("second release error = %v, want cached %v", second, first)
+	}
+	if filesystem.root.removeCalls != 1 || filesystem.root.closeCalls != 1 {
+		t.Fatalf("terminal cleanup remove/close calls = %d/%d, want 1/1", filesystem.root.removeCalls, filesystem.root.closeCalls)
+	}
+	assertJailerStagingErrorRedacted(t, first)
+}
+
+func TestStageStrictJailerResourcesSurfacesFilesystemCloseFailureBeforeTransfer(t *testing.T) {
+	filesystem := newFakeJailerStagingFilesystem()
+	filesystem.closeErr = errors.New("close failed at /srv/private/common-secret")
+	request := validJailerStagingRequest()
+	request.Kernel.Source = nil
+
+	_, err := stageStrictJailerResources(filesystem, request)
+	if !errors.Is(err, errJailerStagingInvalid) || !errors.Is(err, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("stage error = %v, want invalid plus cleanup incomplete", err)
+	}
+	if filesystem.closeCalls != 1 || filesystem.createCalls != 0 {
+		t.Fatalf("filesystem close/create calls = %d/%d, want 1/0", filesystem.closeCalls, filesystem.createCalls)
+	}
+	assertJailerStagingErrorRedacted(t, err)
 }
 
 func TestStageStrictJailerResourcesRejectsDigestAndSizeMismatch(t *testing.T) {
@@ -318,6 +396,21 @@ func TestJailerStagingResultReturnsDefensiveCopiesAndNoJSON(t *testing.T) {
 	}
 }
 
+func TestJailerStagingErrorSanitizesDirectLiteral(t *testing.T) {
+	raw := errors.New("raw failure at /srv/private/direct-secret")
+	stagingErr := &jailerStagingError{
+		kind: raw,
+		code: "root",
+	}
+	err := stagingErr.Error()
+	if err != "strict Jailer resource staging failed: root" {
+		t.Fatalf("direct staging error = %q, want sanitized kind and safe code", err)
+	}
+	if errors.Is(stagingErr, raw) || !errors.Is(stagingErr, errJailerStagingFailed) {
+		t.Fatalf("direct staging unwrap exposed raw kind: %#v", errors.Unwrap(stagingErr))
+	}
+}
+
 func validJailerStagingRequest() jailerStagingRequest {
 	chrootBase := filepath.Join(string(filepath.Separator), "srv", "hal", "private", "jailer")
 	jailRoot := filepath.Join(chrootBase, "firecracker", "run-alpha", "root")
@@ -358,16 +451,21 @@ func assertJailerStagingErrorRedacted(t *testing.T, err error) {
 }
 
 type fakeJailerStagingFilesystem struct {
-	createCalls         int
-	createErr           error
-	failDirectoryPath   string
-	failCreatePath      string
-	replacePath         string
-	replaceIdentityPath string
-	replaceRoot         bool
-	failure             error
-	removeErr           error
-	root                *fakeJailerStagingRoot
+	createCalls               int
+	createErr                 error
+	failDirectoryPath         string
+	failCreatePath            string
+	returnFileWithCreateError bool
+	fileCloseErr              error
+	replacePath               string
+	replaceIdentityPath       string
+	replaceRoot               bool
+	failure                   error
+	removeErr                 error
+	rootCloseErr              error
+	closeErr                  error
+	closeCalls                int
+	root                      *fakeJailerStagingRoot
 }
 
 func newFakeJailerStagingFilesystem() *fakeJailerStagingFilesystem {
@@ -384,10 +482,16 @@ func (filesystem *fakeJailerStagingFilesystem) createExclusiveRoot(request jaile
 		directoryMetadata: map[string]fakeJailerStagingMetadata{}, files: map[string]*fakeJailerStagingFile{},
 		failDirectoryPath: filesystem.failDirectoryPath, failCreatePath: filesystem.failCreatePath, replacePath: filesystem.replacePath,
 		replaceIdentityPath: filesystem.replaceIdentityPath, replaceRoot: filesystem.replaceRoot,
-		failure: filesystem.failure, removeErr: filesystem.removeErr,
+		returnFileWithCreateError: filesystem.returnFileWithCreateError, fileCloseErr: filesystem.fileCloseErr,
+		failure: filesystem.failure, removeErr: filesystem.removeErr, closeErr: filesystem.rootCloseErr,
 	}
 	filesystem.root = root
 	return root, nil
+}
+
+func (filesystem *fakeJailerStagingFilesystem) close() error {
+	filesystem.closeCalls++
+	return filesystem.closeErr
 }
 
 type fakeJailerStagingMetadata struct {
@@ -397,23 +501,26 @@ type fakeJailerStagingMetadata struct {
 }
 
 type fakeJailerStagingRoot struct {
-	hostRoot            string
-	mode                os.FileMode
-	uid                 uint32
-	gid                 uint32
-	directories         []string
-	directoryMetadata   map[string]fakeJailerStagingMetadata
-	files               map[string]*fakeJailerStagingFile
-	failDirectoryPath   string
-	failCreatePath      string
-	replacePath         string
-	replaceIdentityPath string
-	replaceRoot         bool
-	failure             error
-	removeErr           error
-	removeCalls         int
-	closeCalls          int
-	verifyCalls         int
+	hostRoot                  string
+	mode                      os.FileMode
+	uid                       uint32
+	gid                       uint32
+	directories               []string
+	directoryMetadata         map[string]fakeJailerStagingMetadata
+	files                     map[string]*fakeJailerStagingFile
+	failDirectoryPath         string
+	failCreatePath            string
+	returnFileWithCreateError bool
+	fileCloseErr              error
+	replacePath               string
+	replaceIdentityPath       string
+	replaceRoot               bool
+	failure                   error
+	removeErr                 error
+	removeCalls               int
+	closeCalls                int
+	closeErr                  error
+	verifyCalls               int
 }
 
 func (root *fakeJailerStagingRoot) createDirectory(relative string, mode os.FileMode, uid, gid uint32) error {
@@ -430,6 +537,11 @@ func (root *fakeJailerStagingRoot) createDirectory(relative string, mode os.File
 
 func (root *fakeJailerStagingRoot) createFileExclusive(relative string) (jailerStagingFile, error) {
 	if relative == root.failCreatePath {
+		if root.returnFileWithCreateError {
+			file := &fakeJailerStagingFile{closeErr: root.fileCloseErr}
+			root.files[relative] = file
+			return file, errors.New("fake create failure at /srv/private/file-secret")
+		}
 		if root.failure != nil {
 			return nil, root.failure
 		}
@@ -461,7 +573,7 @@ func (root *fakeJailerStagingRoot) removeOwned() error {
 
 func (root *fakeJailerStagingRoot) close() error {
 	root.closeCalls++
-	return nil
+	return root.closeErr
 }
 
 type fakeJailerStagingFile struct {
@@ -476,6 +588,8 @@ type fakeJailerStagingFile struct {
 	replaced        bool
 	identityChanged bool
 	verifyCalls     int
+	closeCalls      int
+	closeErr        error
 }
 
 func (file *fakeJailerStagingFile) Read(output []byte) (int, error) {
@@ -546,5 +660,6 @@ func (file *fakeJailerStagingFile) verifyIdentity() error {
 
 func (file *fakeJailerStagingFile) close() error {
 	file.closed = true
-	return nil
+	file.closeCalls++
+	return file.closeErr
 }

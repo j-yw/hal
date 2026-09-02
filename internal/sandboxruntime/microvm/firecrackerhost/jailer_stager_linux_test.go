@@ -177,6 +177,7 @@ func TestLinuxJailerStagingLeaseDetectsReplacementAndFailsCleanupClosed(t *testi
 		name    string
 		replace func(*testing.T, jailerStagingRequest, jailerStagingResult)
 		check   func(*testing.T, jailerStagingRequest)
+		restore func(*testing.T, jailerStagingRequest)
 	}{
 		{
 			name: "staged file",
@@ -197,6 +198,16 @@ func TestLinuxJailerStagingLeaseDetectsReplacementAndFailsCleanupClosed(t *testi
 					t.Fatalf("replacement file was removed: data=%q error=%v", data, err)
 				}
 			},
+			restore: func(t *testing.T, request jailerStagingRequest) {
+				t.Helper()
+				kernel := filepath.Join(request.Authority.JailRootHostPath, "boot", "vmlinux")
+				if err := os.Remove(kernel); err != nil {
+					t.Fatalf("Remove(replacement kernel): %v", err)
+				}
+				if err := os.Rename(kernel+".owned", kernel); err != nil {
+					t.Fatalf("Restore(kernel): %v", err)
+				}
+			},
 		},
 		{
 			name: "root generation",
@@ -214,6 +225,16 @@ func TestLinuxJailerStagingLeaseDetectsReplacementAndFailsCleanupClosed(t *testi
 				t.Helper()
 				if info, err := os.Stat(request.Authority.JailRootHostPath); err != nil || !info.IsDir() {
 					t.Fatalf("replacement root was removed: info=%v error=%v", info, err)
+				}
+			},
+			restore: func(t *testing.T, request jailerStagingRequest) {
+				t.Helper()
+				root := request.Authority.JailRootHostPath
+				if err := os.Remove(root); err != nil {
+					t.Fatalf("Remove(replacement root): %v", err)
+				}
+				if err := os.Rename(root+".owned", root); err != nil {
+					t.Fatalf("Restore(root): %v", err)
 				}
 			},
 		},
@@ -239,11 +260,14 @@ func TestLinuxJailerStagingLeaseDetectsReplacementAndFailsCleanupClosed(t *testi
 			if !errors.Is(first, errJailerStagingCleanupIncomplete) {
 				t.Fatalf("release replaced root error = %v, want cleanup incomplete", first)
 			}
-			second := result.releaseOwnedRoot()
-			if second == nil || second.Error() != first.Error() {
-				t.Fatalf("second release error = %v, want cached %v", second, first)
-			}
 			tt.check(t, request)
+			tt.restore(t, request)
+			if second := result.releaseOwnedRoot(); second != nil {
+				t.Fatalf("release retry after restoring exact identity = %v, want nil", second)
+			}
+			if third := result.releaseOwnedRoot(); third != nil {
+				t.Fatalf("terminal idempotent release = %v, want nil", third)
+			}
 			assertJailerStagingErrorRedacted(t, first)
 		})
 	}
