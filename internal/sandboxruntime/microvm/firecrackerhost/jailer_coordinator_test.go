@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -284,6 +285,23 @@ func TestStrictJailerCoordinatorAcceptsCorrelatedOptionalConfigResources(t *test
 	})
 }
 
+func TestStrictJailerCoordinatorAcceptsExactProductionVsockEntropyConfig(t *testing.T) {
+	request := validStrictJailerCoordinatorRequest(t)
+	config := productionVsockCoordinatorConfig(t, request)
+	replaceCoordinatorConfig(t, &request, string(config))
+
+	if err := validateStrictJailerCoordinatorConfig(request); err != nil {
+		t.Fatalf("validate production-vsock config: %v", err)
+	}
+	staged, err := io.ReadAll(request.config.Source)
+	if err != nil {
+		t.Fatalf("read reset config source: %v", err)
+	}
+	if !bytes.Equal(staged, config) {
+		t.Fatalf("config source changed during validation:\n got %q\nwant %q", staged, config)
+	}
+}
+
 func TestStrictJailerCoordinatorRejectsUncorrelatedSupportResources(t *testing.T) {
 	tests := map[string]jailerStagingResourceInput{
 		"dynamic loader preload": coordinatorTestResource("support-preload", "/etc/ld.so.preload", "preload", 0o400),
@@ -303,11 +321,19 @@ func TestStrictJailerCoordinatorRejectsUncorrelatedSupportResources(t *testing.T
 	}
 }
 
-func TestStrictJailerCoordinatorRejectsUncorrelatedOpaqueDeviceConfig(t *testing.T) {
+func TestStrictJailerCoordinatorRejectsUnsupportedDeviceConfig(t *testing.T) {
 	tests := map[string]string{
-		"network interfaces":       `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"network-interfaces":[{"iface_id":"eth0","host_dev_name":"tap0"}],"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`,
-		"empty network interfaces": `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"network-interfaces":[],"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`,
-		"entropy":                  `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"entropy":{"rate_limiter":{}},"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`,
+		"network interfaces":       coordinatorConfigWith(`"network-interfaces":[{"iface_id":"eth0","host_dev_name":"tap0"}]`),
+		"empty network interfaces": coordinatorConfigWith(`"network-interfaces":[]`),
+		"null entropy":             coordinatorConfigWith(`"entropy":null`),
+		"array entropy":            coordinatorConfigWith(`"entropy":[]`),
+		"string entropy":           coordinatorConfigWith(`"entropy":"empty"`),
+		"boolean entropy":          coordinatorConfigWith(`"entropy":false`),
+		"number entropy":           coordinatorConfigWith(`"entropy":0`),
+		"entropy rate limiter":     coordinatorConfigWith(`"entropy":{"rate_limiter":{}}`),
+		"entropy unexpected field": coordinatorConfigWith(`"entropy":{"unexpected":true}`),
+		"duplicate entropy":        coordinatorConfigWith(`"entropy":{},"entropy":{}`),
+		"duplicate entropy field":  coordinatorConfigWith(`"entropy":{"rate_limiter":{},"rate_limiter":{}}`),
 	}
 	for name, config := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -585,6 +611,55 @@ func coordinatorTestResource(id, jailPath, content string, mode os.FileMode) jai
 
 func validCoordinatorConfig() string {
 	return `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true,"is_read_only":false}],"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`
+}
+
+func productionVsockCoordinatorConfig(t *testing.T, request strictJailerCoordinatorRequest) []byte {
+	t.Helper()
+	config := firecracker.BackendConfig{
+		CPUCount:        1,
+		MemoryMiB:       128,
+		KernelImagePath: request.kernel.JailPath,
+		RootfsPath:      request.rootfs.JailPath,
+		Paths:           request.jailPaths,
+		ProductionVsock: true,
+	}
+	machineConfig, err := firecracker.RenderMachineConfigPayload(config)
+	if err != nil {
+		t.Fatalf("render production machine config: %v", err)
+	}
+	bootSource, err := firecracker.RenderBootSourcePayload(config)
+	if err != nil {
+		t.Fatalf("render production boot source: %v", err)
+	}
+	rootDrive, err := firecracker.RenderRootDrivePayload(config)
+	if err != nil {
+		t.Fatalf("render production root drive: %v", err)
+	}
+	rendered := struct {
+		MachineConfig firecracker.MachineConfigPayload `json:"machine-config"`
+		BootSource    firecracker.BootSourcePayload    `json:"boot-source"`
+		Drives        []firecracker.RootDrivePayload   `json:"drives"`
+		Vsock         struct {
+			GuestCID uint32 `json:"guest_cid"`
+			UDSPath  string `json:"uds_path"`
+		} `json:"vsock"`
+		Entropy struct{} `json:"entropy"`
+	}{
+		MachineConfig: machineConfig,
+		BootSource:    bootSource,
+		Drives:        []firecracker.RootDrivePayload{rootDrive},
+	}
+	rendered.Vsock.GuestCID = 3
+	rendered.Vsock.UDSPath = request.jailPaths.VsockSocketPath
+	encoded, err := json.Marshal(rendered)
+	if err != nil {
+		t.Fatalf("marshal production-vsock config: %v", err)
+	}
+	return append(encoded, '\n')
+}
+
+func coordinatorConfigWith(fields string) string {
+	return strings.TrimSuffix(validCoordinatorConfig(), "}") + "," + fields + "}"
 }
 
 func replaceCoordinatorConfig(t *testing.T, request *strictJailerCoordinatorRequest, content string) {
