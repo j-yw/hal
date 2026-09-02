@@ -112,7 +112,24 @@ func (filesystem *linuxJailerStagingFilesystem) createExclusiveRoot(request jail
 	}
 	runtimeLinked, err := filesystem.statEntry(filesystem.commonFD, runtimeName)
 	if err != nil || runtimeLinked.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return nil, joinLinuxJailerCreationError(errJailerStagingCleanupIncomplete)
+		root := &linuxJailerStagingRoot{
+			authority: filesystem.authority, commonPath: filesystem.commonPath,
+			commonFD: filesystem.commonFD, runtimeFD: -1, rootFD: -1,
+			commonID: filesystem.commonID,
+			entries:  make(map[string]linuxJailerStagingEntry), cleanupStarted: true, rootUnlinked: true,
+		}
+		runtimeFD, openErr := openLinuxJailerDirectoryAt(filesystem.commonFD, runtimeName)
+		if openErr == nil {
+			runtimeStat, statErr := linuxJailerFstat(runtimeFD)
+			if statErr == nil && runtimeStat.Mode&unix.S_IFMT == unix.S_IFDIR {
+				root.runtimeFD = runtimeFD
+				root.runtimeID = linuxJailerIdentity(runtimeStat)
+			} else {
+				_ = unix.Close(runtimeFD)
+			}
+		}
+		filesystem.commonFD = -1
+		return root, joinLinuxJailerCreationError(errJailerStagingCleanupIncomplete)
 	}
 	runtimeID := linuxJailerIdentity(runtimeLinked)
 	runtimeFD, err := openLinuxJailerDirectoryAt(filesystem.commonFD, runtimeName)
