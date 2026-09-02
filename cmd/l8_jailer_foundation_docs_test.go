@@ -9,7 +9,7 @@ import (
 
 const (
 	l8JailerFoundationVerificationDoc = "sandbox-runtime-v2-l8-jailer-foundation-verification.md"
-	l8JailerFoundationImplementation  = "d484bd901cd0ff58b961f89e650f3b4399df6631"
+	l8JailerFoundationImplementation  = "2acbd01687844ada3a9d9c6ca6090aac9822e94c"
 )
 
 func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
@@ -29,7 +29,12 @@ func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
 		"only correlated log, metrics, and optional initrd files",
 		"rejects network-interface and non-empty entropy configuration",
 		"retains exact root authority when staging and initial cleanup both fail",
+		"retains exact or quarantined directory authority after post-creation checks fail",
 		"retires the exact terminal process record only after terminal root release",
+		"closed process completion as terminal proof regardless of exit status",
+		"close-on-exec namespace descriptor",
+		"canonical JSON field casing",
+		"rejects whitespace-bearing or endpoint-overlapping jail paths",
 		"prepared initial-user-namespace-root live host",
 		"dedicated UID/GID authority",
 		"measured executable handoff",
@@ -79,7 +84,7 @@ func TestL8JailerFoundationImplementationMarkers(t *testing.T) {
 	if strings.Contains(runner, "DuplicateUserNamespace") {
 		t.Error("private Jailer namespace runner accepts a user namespace descriptor")
 	}
-	for _, required := range []string{"unix.Setns", "unix.CLONE_NEWNET", "runtime.LockOSThread"} {
+	for _, required := range []string{"unix.Setns", "unix.CLONE_NEWNET", "runtime.LockOSThread", "unix.FD_CLOEXEC"} {
 		if !strings.Contains(linuxRunner, required) {
 			t.Errorf("Linux Jailer namespace runner omits %q", required)
 		}
