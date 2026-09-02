@@ -366,6 +366,7 @@ type strictJailerConfigFile struct {
 		GuestCID uint32 `json:"guest_cid"`
 		UDSPath  string `json:"uds_path"`
 	} `json:"vsock,omitempty"`
+	Entropy json.RawMessage `json:"entropy,omitempty"`
 }
 
 func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorRequest) error {
@@ -386,6 +387,7 @@ func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorReques
 		rendered.BootSource.KernelImagePath != request.kernel.JailPath || len(rendered.Drives) != 1 ||
 		rendered.Drives[0].DriveID != "rootfs" || !rendered.Drives[0].IsRootDevice || rendered.Drives[0].PathOnHost != request.rootfs.JailPath ||
 		(rendered.Vsock != nil && (rendered.Vsock.GuestCID < 3 || rendered.Vsock.UDSPath != paths.VsockSocketPath)) ||
+		!validStrictJailerEntropy(rendered.Entropy) ||
 		request.enablePCI != (rendered.Vsock != nil) || request.kernel.Mode != 0o400 || request.rootfs.Mode != 0o600 || request.config.Mode != 0o400 {
 		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
 	}
@@ -426,6 +428,14 @@ func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorReques
 		}
 	}
 	return nil
+}
+
+func validStrictJailerEntropy(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var fields map[string]json.RawMessage
+	return json.Unmarshal(raw, &fields) == nil && fields != nil && len(fields) == 0
 }
 
 func readStrictJailerConfig(resource jailerStagingResourceInput) (strictJailerConfigFile, error) {
