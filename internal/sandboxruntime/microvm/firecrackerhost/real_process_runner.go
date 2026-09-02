@@ -109,9 +109,7 @@ func (starter OSExecNamespaceProcessStarter) startStrictJailerNamespaceProcess(
 	command.ExtraFiles = append([]*os.File(nil), request.inheritedFiles...)
 	startCommand := starter.startCommand
 	if startCommand == nil {
-		startCommand = func(command *exec.Cmd) error {
-			return startOSExecCommandWithPrivateUmask(command.Start)
-		}
+		return startStrictJailerOSExecCommand(command)
 	}
 	if err := startCommand(command); err != nil {
 		return nil, errStrictJailerNamespaceStartFailed

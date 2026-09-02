@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -83,5 +84,17 @@ func TestStrictJailerOSExecLaunchArmsSIGKILLParentDeath(t *testing.T) {
 	armStrictJailerParentDeathSignal(command)
 	if command.SysProcAttr == nil || command.SysProcAttr.Pdeathsig != syscall.SIGKILL {
 		t.Fatalf("SysProcAttr = %#v, want Pdeathsig SIGKILL", command.SysProcAttr)
+	}
+}
+
+func TestStrictJailerOSExecLaunchDoesNotClaimPostCredentialDropContainment(t *testing.T) {
+	source, err := os.ReadFile("jailer_namespace_runner_linux.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"does not prove final", "credential changes", "Production selection therefore remains blocked"} {
+		if !strings.Contains(string(source), marker) {
+			t.Fatalf("strict Jailer launch documentation lost containment limit %q", marker)
+		}
 	}
 }
