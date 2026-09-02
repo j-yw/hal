@@ -233,9 +233,20 @@ func (root *linuxJailerStagingRoot) createDirectory(relative string, mode os.Fil
 }
 
 func secureLinuxJailerOpenedDirectory(directoryFD, parentFD int, expected linuxJailerStagingIdentity, mode os.FileMode, uid, gid uint32) error {
-	stat, statErr := linuxJailerFstat(directoryFD)
-	metadataErr := errors.Join(statErr, unix.Fchown(directoryFD, int(uid), int(gid)), unix.Fchmod(directoryFD, uint32(mode.Perm())), unix.Fsync(directoryFD), unix.Fsync(parentFD))
-	if statErr != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || !linuxJailerSameIdentity(stat, expected) || metadataErr != nil {
+	stat, err := linuxJailerFstat(directoryFD)
+	if err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || !linuxJailerSameIdentity(stat, expected) {
+		return errJailerStagingFailed
+	}
+	if err := unix.Fchown(directoryFD, int(uid), int(gid)); err != nil {
+		return errJailerStagingFailed
+	}
+	if err := unix.Fchmod(directoryFD, uint32(mode.Perm())); err != nil {
+		return errJailerStagingFailed
+	}
+	if err := unix.Fsync(directoryFD); err != nil {
+		return errJailerStagingFailed
+	}
+	if err := unix.Fsync(parentFD); err != nil {
 		return errJailerStagingFailed
 	}
 	return nil
