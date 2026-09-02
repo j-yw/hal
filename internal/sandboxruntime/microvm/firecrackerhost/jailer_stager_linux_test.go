@@ -720,6 +720,58 @@ func TestLinuxJailerStagerPreFinalizationCleanupPreservesUnrecordedEntries(t *te
 	}
 }
 
+func TestLinuxJailerCreateDirectoryDoesNotMutateUncorrelatedOpenedDirectory(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.Mkdir(filepath.Join(parent, "expected"), 0o700); err != nil {
+		t.Fatalf("Mkdir(expected): %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(parent, "replacement"), 0o700); err != nil {
+		t.Fatalf("Mkdir(replacement): %v", err)
+	}
+	if err := os.Chmod(filepath.Join(parent, "replacement"), 0o751); err != nil {
+		t.Fatalf("Chmod(replacement): %v", err)
+	}
+
+	parentFD, err := openLinuxJailerAbsoluteDirectory(parent)
+	if err != nil {
+		t.Fatalf("openLinuxJailerAbsoluteDirectory(parent) error = %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Close(parentFD) })
+	expected, err := linuxJailerFstatat(parentFD, "expected")
+	if err != nil {
+		t.Fatalf("linuxJailerFstatat(expected) error = %v", err)
+	}
+	replacementFD, err := openLinuxJailerDirectoryAt(parentFD, "replacement")
+	if err != nil {
+		t.Fatalf("openLinuxJailerDirectoryAt(replacement) error = %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Close(replacementFD) })
+	before, err := linuxJailerFstat(replacementFD)
+	if err != nil {
+		t.Fatalf("linuxJailerFstat(replacement before) error = %v", err)
+	}
+
+	err = secureLinuxJailerOpenedDirectory(
+		replacementFD,
+		parentFD,
+		linuxJailerIdentity(expected),
+		0o700,
+		before.Uid,
+		before.Gid,
+	)
+	if !errors.Is(err, errJailerStagingFailed) {
+		t.Fatalf("secureLinuxJailerOpenedDirectory() error = %v, want staging failure", err)
+	}
+	after, err := linuxJailerFstat(replacementFD)
+	if err != nil {
+		t.Fatalf("linuxJailerFstat(replacement after) error = %v", err)
+	}
+	if !linuxJailerSameIdentity(after, linuxJailerIdentity(before)) || after.Uid != before.Uid || after.Gid != before.Gid || after.Mode&0o777 != before.Mode&0o777 {
+		t.Fatalf("uncorrelated opened directory metadata changed: before=%#o/%d/%d after=%#o/%d/%d",
+			before.Mode&0o777, before.Uid, before.Gid, after.Mode&0o777, after.Uid, after.Gid)
+	}
+}
+
 func newLinuxJailerStagingRequest(t *testing.T) (jailerStagingRequest, string) {
 	t.Helper()
 	request, common := newLinuxJailerStagingRequestWithoutCommon(t)

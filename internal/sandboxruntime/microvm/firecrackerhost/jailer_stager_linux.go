@@ -222,15 +222,22 @@ func (root *linuxJailerStagingRoot) createDirectory(relative string, mode os.Fil
 		_ = removeLinuxJailerEmptyEntry(parentFD, name, id)
 		return newJailerStagingError(errJailerStagingFailed, "directory")
 	}
-	stat, statErr := linuxJailerFstat(directoryFD)
-	metadataErr := errors.Join(statErr, unix.Fchown(directoryFD, int(uid), int(gid)), unix.Fchmod(directoryFD, uint32(mode.Perm())), unix.Fsync(directoryFD), unix.Fsync(parentFD))
-	if statErr != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || !linuxJailerSameIdentity(stat, id) || metadataErr != nil {
+	if secureLinuxJailerOpenedDirectory(directoryFD, parentFD, id, mode, uid, gid) != nil {
 		_ = unix.Close(directoryFD)
 		_ = removeLinuxJailerEmptyEntry(parentFD, name, id)
 		return newJailerStagingError(errJailerStagingFailed, "directory")
 	}
 	_ = unix.Close(directoryFD)
 	root.entries[relative] = linuxJailerStagingEntry{id: id, directory: true, uid: uid, gid: gid, mode: uint32(mode.Perm())}
+	return nil
+}
+
+func secureLinuxJailerOpenedDirectory(directoryFD, parentFD int, expected linuxJailerStagingIdentity, mode os.FileMode, uid, gid uint32) error {
+	stat, statErr := linuxJailerFstat(directoryFD)
+	metadataErr := errors.Join(statErr, unix.Fchown(directoryFD, int(uid), int(gid)), unix.Fchmod(directoryFD, uint32(mode.Perm())), unix.Fsync(directoryFD), unix.Fsync(parentFD))
+	if statErr != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || !linuxJailerSameIdentity(stat, expected) || metadataErr != nil {
+		return errJailerStagingFailed
+	}
 	return nil
 }
 
