@@ -274,6 +274,42 @@ func TestStrictJailerCoordinatorAcceptsCorrelatedOptionalConfigResources(t *test
 	})
 }
 
+func TestStrictJailerCoordinatorRejectsUncorrelatedSupportResources(t *testing.T) {
+	tests := map[string]jailerStagingResourceInput{
+		"dynamic loader preload": coordinatorTestResource("support-preload", "/etc/ld.so.preload", "preload", 0o400),
+		"dynamic loader":         coordinatorTestResource("support-loader", "/lib64/ld-linux-x86-64.so.2", "loader", 0o400),
+		"shared library":         coordinatorTestResource("support-library", "/lib64/libc.so.6", "library", 0o400),
+		"undeclared initrd":      coordinatorTestResource("support-initrd", "/boot/initrd", "initrd", 0o400),
+		"arbitrary support":      coordinatorTestResource("support-extra", "/opt/extra", "extra", 0o400),
+	}
+	for name, extra := range tests {
+		t.Run(name, func(t *testing.T) {
+			request := validStrictJailerCoordinatorRequest(t)
+			request.support = append(request.support, extra)
+			if err := validateStrictJailerCoordinatorConfig(request); !errors.Is(err, errStrictJailerCoordinatorInvalid) {
+				t.Fatalf("validate extra support = %v", err)
+			}
+		})
+	}
+}
+
+func TestStrictJailerCoordinatorRejectsUncorrelatedOpaqueDeviceConfig(t *testing.T) {
+	tests := map[string]string{
+		"network interfaces":       `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"network-interfaces":[{"iface_id":"eth0","host_dev_name":"tap0"}],"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`,
+		"empty network interfaces": `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"network-interfaces":[],"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`,
+		"entropy":                  `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"entropy":{"rate_limiter":{}},"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`,
+	}
+	for name, config := range tests {
+		t.Run(name, func(t *testing.T) {
+			request := validStrictJailerCoordinatorRequest(t)
+			replaceCoordinatorConfig(t, &request, config)
+			if err := validateStrictJailerCoordinatorConfig(request); !errors.Is(err, errStrictJailerCoordinatorInvalid) {
+				t.Fatalf("validate opaque device config = %v", err)
+			}
+		})
+	}
+}
+
 func TestStrictJailerCoordinatorCleanupStateMachine(t *testing.T) {
 	tests := []struct {
 		name            string
