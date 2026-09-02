@@ -20,6 +20,7 @@ type linuxJailerStagingFilesystem struct {
 	commonPath string
 	commonFD   int
 	commonID   linuxJailerStagingIdentity
+	statEntry  func(int, string) (unix.Stat_t, error)
 	used       bool
 }
 
@@ -89,14 +90,14 @@ func newLinuxJailerStagingFilesystem(authority jailerStagingAuthority) (jailerSt
 	}
 	return &linuxJailerStagingFilesystem{
 		authority: validated, commonPath: commonPath, commonFD: commonFD,
-		commonID: linuxJailerIdentity(stat),
+		commonID: linuxJailerIdentity(stat), statEntry: linuxJailerFstatat,
 	}, nil
 }
 
 func (filesystem *linuxJailerStagingFilesystem) createExclusiveRoot(request jailerStagingRootRequest) (jailerStagingRoot, error) {
 	filesystem.mu.Lock()
 	defer filesystem.mu.Unlock()
-	if filesystem.used || filesystem.commonFD < 0 || request.HostRoot != filesystem.authority.JailRootHostPath ||
+	if filesystem.used || filesystem.commonFD < 0 || filesystem.statEntry == nil || request.HostRoot != filesystem.authority.JailRootHostPath ||
 		request.Mode != filesystem.authority.DirectoryMode || request.UID != filesystem.authority.UID || request.GID != filesystem.authority.GID {
 		return nil, newJailerStagingError(errJailerStagingInvalid, "root")
 	}
@@ -109,7 +110,7 @@ func (filesystem *linuxJailerStagingFilesystem) createExclusiveRoot(request jail
 	if err := unix.Mkdirat(filesystem.commonFD, runtimeName, 0o700); err != nil {
 		return nil, newJailerStagingError(errJailerStagingFailed, "root")
 	}
-	runtimeLinked, err := linuxJailerFstatat(filesystem.commonFD, runtimeName)
+	runtimeLinked, err := filesystem.statEntry(filesystem.commonFD, runtimeName)
 	if err != nil || runtimeLinked.Mode&unix.S_IFMT != unix.S_IFDIR {
 		return nil, joinLinuxJailerCreationError(errJailerStagingCleanupIncomplete)
 	}
@@ -130,8 +131,29 @@ func (filesystem *linuxJailerStagingFilesystem) createExclusiveRoot(request jail
 		cleanupErr := removeLinuxJailerEmptyEntry(filesystem.commonFD, runtimeName, runtimeID)
 		return nil, joinLinuxJailerCreationError(cleanupErr)
 	}
-	rootLinked, err := linuxJailerFstatat(runtimeFD, "root")
-	if err != nil || rootLinked.Mode&unix.S_IFMT != unix.S_IFDIR {
+	rootLinked, err := filesystem.statEntry(runtimeFD, "root")
+	if err != nil {
+		root := &linuxJailerStagingRoot{
+			authority: filesystem.authority, commonPath: filesystem.commonPath,
+			commonFD: filesystem.commonFD, runtimeFD: runtimeFD, rootFD: -1,
+			commonID: filesystem.commonID, runtimeID: runtimeID,
+			entries: make(map[string]linuxJailerStagingEntry), cleanupStarted: true,
+		}
+		rootFD, openErr := openLinuxJailerDirectoryAt(runtimeFD, "root")
+		if openErr == nil {
+			rootStat, statErr := linuxJailerFstat(rootFD)
+			if statErr == nil && rootStat.Mode&unix.S_IFMT == unix.S_IFDIR {
+				root.rootFD = rootFD
+				root.rootID = linuxJailerIdentity(rootStat)
+				root.cleanupStarted = false
+			} else {
+				_ = unix.Close(rootFD)
+			}
+		}
+		filesystem.commonFD = -1
+		return root, joinLinuxJailerCreationError(errJailerStagingCleanupIncomplete)
+	}
+	if rootLinked.Mode&unix.S_IFMT != unix.S_IFDIR {
 		_ = unix.Close(runtimeFD)
 		cleanupRuntimeErr := removeLinuxJailerEmptyEntry(filesystem.commonFD, runtimeName, runtimeID)
 		return nil, joinLinuxJailerCreationError(errors.Join(errJailerStagingCleanupIncomplete, cleanupRuntimeErr))

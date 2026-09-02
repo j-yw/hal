@@ -182,6 +182,9 @@ func (runner *strictJailerNamespaceRunner) terminateAndReap(process HostProcess)
 	defer cancel()
 	killErr := process.Kill(ctx)
 	waitErr := process.Wait(ctx)
+	if hostProcessExitObserved(process) {
+		return nil
+	}
 	if killErr != nil || waitErr != nil {
 		return errStrictJailerNamespaceCleanupIncomplete
 	}

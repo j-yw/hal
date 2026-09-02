@@ -71,11 +71,13 @@ type jailerStagingRequest struct {
 // jailerStagingFilesystem is a capability boundary rooted in an already
 // inspected chroot authority. A real implementation must create the exact
 // precreated Jailer HostRoot exclusively and resolve every component relative
-// to retained directory file descriptors without following symlinks. It must
-// return nil on any creation error. This slice intentionally supplies no
+// to retained directory file descriptors without following symlinks. When a
+// post-creation check fails after exact directory authority has been acquired,
+// it returns that root with the error for retry-only quarantine; failures with
+// no retained authority return nil. This slice intentionally supplies no
 // path-based os adapter because Lstat followed by path mutation would not
 // satisfy that contract. close releases constructor authority not transferred
-// to a successfully created root and must be idempotent.
+// to a successfully created or quarantined root and must be idempotent.
 //
 // A later lifecycle slice must also prove that Jailer consumes this same root
 // generation without replacing it before calling the coordinator production
@@ -275,12 +277,21 @@ func stageStrictJailerResources(filesystem jailerStagingFilesystem, request jail
 		UID:      authority.UID,
 		GID:      authority.GID,
 	})
-	if createErr != nil || interfaceValueIsNil(root) {
+	if createErr != nil {
 		primary := error(newJailerStagingError(errJailerStagingFailed, "root"))
+		if !interfaceValueIsNil(root) {
+			return jailerStagingResult{lease: &jailerStagingLease{root: root, uncertain: true}}, errors.Join(
+				primary,
+				newJailerStagingError(errJailerStagingCleanupIncomplete, "root"),
+			)
+		}
 		if errors.Is(createErr, errJailerStagingCleanupIncomplete) {
 			primary = errors.Join(primary, newJailerStagingError(errJailerStagingCleanupIncomplete, "root"))
 		}
 		return jailerStagingResult{}, primary
+	}
+	if interfaceValueIsNil(root) {
+		return jailerStagingResult{}, newJailerStagingError(errJailerStagingFailed, "root")
 	}
 
 	result, stageErr := stageJailerOwnedRoot(root, authority, resources)
