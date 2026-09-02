@@ -208,19 +208,32 @@ func TestStageStrictJailerResourcesRejectsSymlinkAndReplacementAttempts(t *testi
 	})
 }
 
-func TestStageStrictJailerResourcesCleansOwnedPartialStateOnFailure(t *testing.T) {
+func TestStageStrictJailerResourcesRetainsUncertainPartialCleanup(t *testing.T) {
 	request := validJailerStagingRequest()
 	filesystem := newFakeJailerStagingFilesystem()
 	filesystem.failCreatePath = filepath.FromSlash("run/fc-run-alpha/firecracker-config.json")
 	filesystem.failure = errors.New("write failed at /srv/private/config-secret")
 	filesystem.removeErr = errors.New("cleanup failed at /srv/private/jail-secret")
 
-	_, err := stageStrictJailerResources(filesystem, request)
+	result, err := stageStrictJailerResources(filesystem, request)
 	if !errors.Is(err, errJailerStagingFailed) || !errors.Is(err, errJailerStagingCleanupIncomplete) {
 		t.Fatalf("error = %v, want staging and cleanup sentinels", err)
 	}
-	if filesystem.root == nil || filesystem.root.removeCalls != 1 || filesystem.root.closeCalls != 1 {
-		t.Fatalf("partial root cleanup = %#v, want remove and close exactly once", filesystem.root)
+	if filesystem.root == nil || filesystem.root.removeCalls != 1 || filesystem.root.closeCalls != 0 {
+		t.Fatalf("partial root cleanup = %#v, want failed remove and retained handle", filesystem.root)
+	}
+	if !result.retainsOwnedRoot() || result.rootReleaseTerminal() {
+		t.Fatalf("partial staging result = %#v, want retryable retained authority", result)
+	}
+	if verifyErr := result.verifyOwnedRoot(); !errors.Is(verifyErr, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("verify uncertain root = %v, want cleanup incomplete", verifyErr)
+	}
+	filesystem.root.removeErr = nil
+	if retryErr := result.releaseOwnedRoot(); retryErr != nil {
+		t.Fatalf("releaseOwnedRoot() retry error = %v, want nil", retryErr)
+	}
+	if filesystem.root.removeCalls != 2 || filesystem.root.closeCalls != 1 || !result.rootReleaseTerminal() || result.retainsOwnedRoot() {
+		t.Fatalf("terminal root cleanup = %#v, want one exact retry and close", filesystem.root)
 	}
 	assertJailerStagingErrorRedacted(t, err)
 }
