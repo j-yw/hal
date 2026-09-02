@@ -37,7 +37,7 @@ type strictJailerLifecycleInspection struct {
 
 // strictJailerLifecycle is default-off and package-private. It cannot be
 // constructed with the legacy direct or asset-FD namespace runner. It owns the
-// retained process only; a future outer coordinator must retain and clean the
+// retained process only; its outer coordinator must retain and clean the
 // stager's complete jail-root lease after terminal process proof. PathPlan
 // cleanup is not complete jail-root or staged-asset cleanup.
 type strictJailerLifecycle struct {
@@ -94,6 +94,18 @@ func (lifecycle *strictJailerLifecycle) stop(
 		return errStrictJailerLifecycleInvalid
 	}
 	return lifecycle.manager.StopLiveProcess(nonNilContext(ctx), firecracker.LiveProcessRequest{
+		Handle: process.handle,
+		Paths:  process.hostPaths,
+	})
+}
+
+// terminated requires positive terminal proof for this exact private process
+// authority. An inactive or unknown lookup is not proof and fails closed.
+func (lifecycle *strictJailerLifecycle) terminated(process strictJailerLifecycleProcess) bool {
+	if !lifecycle.validProcess(process) {
+		return false
+	}
+	return lifecycle.manager.LiveProcessTerminated(firecracker.LiveProcessRequest{
 		Handle: process.handle,
 		Paths:  process.hostPaths,
 	})
@@ -204,8 +216,11 @@ func (manager *ProcessLifecycleManager) removeStrictJailerStaleAPISocketBeforeSt
 	hasStateIdentity bool,
 	runtimeUID uint32,
 ) error {
-	if manager == nil || !manager.productionVsock {
-		return manager.removeStaleAPISocketBeforeStart(plan, stateIdentity, hasStateIdentity)
+	if manager == nil {
+		return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+	}
+	if !manager.productionVsock {
+		return nil
 	}
 	info, err := os.Lstat(plan.APISocketPath)
 	switch {
@@ -232,8 +247,11 @@ func (manager *ProcessLifecycleManager) removeStrictJailerStaleVsockBeforeStart(
 	hasStateIdentity bool,
 	runtimeUID uint32,
 ) error {
-	if manager == nil || !manager.productionVsock {
-		return manager.removeOwnedStaleVsockBeforeStart(plan, stateIdentity, hasStateIdentity)
+	if manager == nil {
+		return newProcessLifecycleError(processOperationCleanup, ErrUnsafeCleanupPath)
+	}
+	if !manager.productionVsock {
+		return nil
 	}
 	info, err := os.Lstat(plan.VsockSocketPath)
 	switch {

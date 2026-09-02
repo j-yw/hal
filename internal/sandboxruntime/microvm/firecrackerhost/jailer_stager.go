@@ -31,10 +31,10 @@ const (
 	jailerStagingRoleSupport jailerStagingResourceRole = "support"
 )
 
-// jailerStagingAuthority is produced only after a later host inspector has
-// pinned the chroot base, canonical Firecracker executable, generation, and
-// dedicated non-root ownership. This slice validates their correlation but
-// does not claim to perform that inspection.
+// jailerStagingAuthority is produced only after the host inspector has checked
+// the chroot base, canonical Firecracker executable, and non-root numeric
+// identity. This slice validates their correlation but does not claim that a
+// dedicated account assignment was proved.
 type jailerStagingAuthority struct {
 	RuntimeID                string
 	CanonicalFirecrackerPath string
@@ -200,6 +200,18 @@ func (result jailerStagingResult) releaseOwnedRoot() error {
 		result.lease.releaseErr = newJailerStagingError(errJailerStagingCleanupIncomplete, "root")
 	}
 	return result.lease.releaseErr
+}
+
+// rootReleaseTerminal distinguishes retryable exact-root removal failure from
+// the terminal case where removal succeeded but closing the retained handle
+// failed. The latter must be reported, but no caller can safely retry removal.
+func (result jailerStagingResult) rootReleaseTerminal() bool {
+	if result.lease == nil {
+		return false
+	}
+	result.lease.mu.Lock()
+	defer result.lease.mu.Unlock()
+	return result.lease.released
 }
 
 // processInheritedFiles is deliberately empty: Jailer closes inherited asset

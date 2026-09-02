@@ -19,10 +19,13 @@ type coordinatorFakeRoot struct {
 	events       *[]string
 	verifyErr    error
 	removeErrors []error
+	closeErr     error
 }
 
 func (*coordinatorFakeRoot) createDirectory(string, os.FileMode, uint32, uint32) error { return nil }
-func (*coordinatorFakeRoot) createFileExclusive(string) (jailerStagingFile, error)      { return nil, errors.New("unused") }
+func (*coordinatorFakeRoot) createFileExclusive(string) (jailerStagingFile, error) {
+	return nil, errors.New("unused")
+}
 func (root *coordinatorFakeRoot) verifyOwned() error {
 	*root.events = append(*root.events, "verify")
 	return root.verifyErr
@@ -36,9 +39,20 @@ func (root *coordinatorFakeRoot) removeOwned() error {
 	root.removeErrors = root.removeErrors[1:]
 	return err
 }
-func (*coordinatorFakeRoot) close() error { return nil }
+func (root *coordinatorFakeRoot) close() error { return root.closeErr }
 
 type coordinatorFakeFS struct{ events *[]string }
+
+type coordinatorRejectingCleanupFS struct{ calls int }
+
+func (filesystem *coordinatorRejectingCleanupFS) Lstat(string) (os.FileInfo, error) {
+	filesystem.calls++
+	return nil, errors.New("unexpected generic cleanup inspection")
+}
+func (filesystem *coordinatorRejectingCleanupFS) RemoveAll(string) error {
+	filesystem.calls++
+	return errors.New("unexpected generic cleanup removal")
+}
 
 func (*coordinatorFakeFS) createExclusiveRoot(jailerStagingRootRequest) (jailerStagingRoot, error) {
 	return nil, errors.New("unused")
@@ -49,12 +63,13 @@ func (filesystem *coordinatorFakeFS) close() error {
 }
 
 type coordinatorFakeLifecycle struct {
-	events            *[]string
-	startErr          error
-	stopErrors        []error
-	retryStartErrors  []error
-	process           strictJailerLifecycleProcess
-	lastStart         strictJailerLifecycleStartRequest
+	events           *[]string
+	startErr         error
+	stopErrors       []error
+	retryStartErrors []error
+	terminatedValues []bool
+	process          strictJailerLifecycleProcess
+	lastStart        strictJailerLifecycleStartRequest
 }
 
 func (lifecycle *coordinatorFakeLifecycle) start(_ context.Context, request strictJailerLifecycleStartRequest) (strictJailerLifecycleProcess, error) {
@@ -70,6 +85,15 @@ func (lifecycle *coordinatorFakeLifecycle) stop(context.Context, strictJailerLif
 	err := lifecycle.stopErrors[0]
 	lifecycle.stopErrors = lifecycle.stopErrors[1:]
 	return err
+}
+func (lifecycle *coordinatorFakeLifecycle) terminated(strictJailerLifecycleProcess) bool {
+	*lifecycle.events = append(*lifecycle.events, "terminated")
+	if len(lifecycle.terminatedValues) == 0 {
+		return true
+	}
+	value := lifecycle.terminatedValues[0]
+	lifecycle.terminatedValues = lifecycle.terminatedValues[1:]
+	return value
 }
 func (lifecycle *coordinatorFakeLifecycle) retryUncertainStartCleanup(context.Context) error {
 	*lifecycle.events = append(*lifecycle.events, "retry-process")
@@ -106,11 +130,12 @@ func TestStrictJailerCoordinatorStartsInExactOrderAndKeepsPrivateShape(t *testin
 			if got.Kernel.JailPath != "/boot/vmlinux" || got.Rootfs.JailPath != "/images/rootfs.ext4" || len(got.Support) != 2 {
 				t.Fatalf("unexpected staging request: %#v", got)
 			}
+			got.Support[0].ID = "mutated"
 			return jailerStagingResult{lease: &jailerStagingLease{root: root}}, nil
 		},
 		plan: func(got strictJailerLaunchRequest) (strictJailerLaunchPlan, error) {
 			events = append(events, "plan")
-			if got.HostPaths.ConfigPath != "/srv/jailer/firecracker/run-1/root/run/config.json" || got.JailPaths != request.jailPaths {
+			if got.HostPaths.ConfigPath != "/srv/jailer/firecracker/run-1/root/run/fc-run-1/firecracker-config.json" || got.JailPaths != request.jailPaths {
 				t.Fatalf("unexpected path correlation: %#v", got)
 			}
 			if got.Firecracker.Executable != "/opt/firecracker" || len(got.Firecracker.Environment) != 0 || len(got.Firecracker.InheritedFiles) != 0 {
@@ -128,6 +153,9 @@ func TestStrictJailerCoordinatorStartsInExactOrderAndKeepsPrivateShape(t *testin
 	if got, want := events, []string{"inspect", "filesystem", "stage", "verify", "plan", "start"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
+	if request.support[0].ID != "support-log" {
+		t.Fatalf("caller support mutated: %#v", request.support)
+	}
 	if encoded, _ := json.Marshal(coordinator); string(encoded) != "{}" {
 		t.Fatalf("coordinator JSON = %s", encoded)
 	}
@@ -140,8 +168,32 @@ func TestStrictJailerCoordinatorStartsInExactOrderAndKeepsPrivateShape(t *testin
 	if err := coordinator.stop(context.Background(), session); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if got, want := events[len(events)-2:], []string{"stop", "release"}; !reflect.DeepEqual(got, want) {
+	if got, want := events[len(events)-3:], []string{"stop", "terminated", "release"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("stop events = %v", got)
+	}
+}
+
+func TestStrictJailerCoordinatorRequestHasNoUnsafeAssemblyInputs(t *testing.T) {
+	typeOf := reflect.TypeOf(strictJailerCoordinatorRequest{})
+	for _, forbidden := range []string{"hostPaths", "args", "argv", "firecracker", "startRequest", "executable"} {
+		if _, ok := typeOf.FieldByName(forbidden); ok {
+			t.Fatalf("request exposes forbidden assembly input %q", forbidden)
+		}
+	}
+}
+
+func TestStrictJailerLifecycleDefaultStrictStartDoesNotUseGenericStaleRemoval(t *testing.T) {
+	filesystem := &coordinatorRejectingCleanupFS{}
+	manager := NewProcessLifecycleManager(nil, WithProcessLifecycleCleanupFilesystem(filesystem))
+	paths := validStrictJailerCoordinatorRequest(t).jailPaths
+	if err := manager.removeStrictJailerStaleAPISocketBeforeStart(paths, privateStateDirIdentity{}, false, 1001); err != nil {
+		t.Fatalf("API cleanup: %v", err)
+	}
+	if err := manager.removeStrictJailerStaleVsockBeforeStart(paths, privateStateDirIdentity{}, false, 1001); err != nil {
+		t.Fatalf("vsock cleanup: %v", err)
+	}
+	if filesystem.calls != 0 {
+		t.Fatalf("generic cleanup filesystem calls = %d", filesystem.calls)
 	}
 }
 
@@ -149,17 +201,34 @@ func TestStrictJailerCoordinatorRejectsInvalidConfigBeforeDependencies(t *testin
 	base := validStrictJailerCoordinatorRequest(t)
 	tests := map[string]func(*strictJailerCoordinatorRequest){
 		"config path": func(r *strictJailerCoordinatorRequest) { r.config.JailPath = "/run/other.json" },
-		"kernel": func(r *strictJailerCoordinatorRequest) { replaceCoordinatorConfig(t, r, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/wrong"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}]}`) },
-		"two drives": func(r *strictJailerCoordinatorRequest) { replaceCoordinatorConfig(t, r, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true},{"drive_id":"other","path_on_host":"/images/other","is_root_device":false}]}`) },
-		"root drive": func(r *strictJailerCoordinatorRequest) { replaceCoordinatorConfig(t, r, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/wrong","is_root_device":true}]}`) },
-		"vsock": func(r *strictJailerCoordinatorRequest) { replaceCoordinatorConfig(t, r, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"vsock":{"guest_cid":3,"uds_path":"/run/wrong.vsock"}}`) },
-		"missing metrics": func(r *strictJailerCoordinatorRequest) { r.support = r.support[:1] },
-		"reserved api": func(r *strictJailerCoordinatorRequest) { r.kernel.JailPath = r.jailPaths.APISocketPath },
-		"reserved vsock": func(r *strictJailerCoordinatorRequest) { r.rootfs.JailPath = r.jailPaths.VsockSocketPath },
+		"kernel": func(r *strictJailerCoordinatorRequest) {
+			replaceCoordinatorConfig(t, r, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/wrong"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}]}`)
+		},
+		"two drives": func(r *strictJailerCoordinatorRequest) {
+			replaceCoordinatorConfig(t, r, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true},{"drive_id":"other","path_on_host":"/images/other","is_root_device":false}]}`)
+		},
+		"root drive": func(r *strictJailerCoordinatorRequest) {
+			replaceCoordinatorConfig(t, r, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/wrong","is_root_device":true}]}`)
+		},
+		"vsock": func(r *strictJailerCoordinatorRequest) {
+			replaceCoordinatorConfig(t, r, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"vsock":{"guest_cid":3,"uds_path":"/run/wrong.vsock"}}`)
+		},
+		"missing metrics":     func(r *strictJailerCoordinatorRequest) { r.support = r.support[:1] },
+		"reserved api":        func(r *strictJailerCoordinatorRequest) { r.kernel.JailPath = r.jailPaths.APISocketPath },
+		"reserved vsock":      func(r *strictJailerCoordinatorRequest) { r.rootfs.JailPath = r.jailPaths.VsockSocketPath },
 		"reserved executable": func(r *strictJailerCoordinatorRequest) { r.support[0].JailPath = "/firecracker" },
-		"reserved dev": func(r *strictJailerCoordinatorRequest) { r.support[0].JailPath = "/dev/log" },
-		"digest": func(r *strictJailerCoordinatorRequest) { r.config.SHA256 = strings.Repeat("0", sha256.Size*2) },
-		"trailing JSON": func(r *strictJailerCoordinatorRequest) { replaceCoordinatorConfig(t, r, validCoordinatorConfig()+` {}`) },
+		"reserved dev":        func(r *strictJailerCoordinatorRequest) { r.support[0].JailPath = "/dev/log" },
+		"digest":              func(r *strictJailerCoordinatorRequest) { r.config.SHA256 = strings.Repeat("0", sha256.Size*2) },
+		"kernel mode":         func(r *strictJailerCoordinatorRequest) { r.kernel.Mode = 0o600 },
+		"config mode":         func(r *strictJailerCoordinatorRequest) { r.config.Mode = 0o600 },
+		"metrics mode":        func(r *strictJailerCoordinatorRequest) { r.support[1].Mode = 0o400 },
+		"pci config mismatch": func(r *strictJailerCoordinatorRequest) { r.enablePCI = false },
+		"duplicate JSON": func(r *strictJailerCoordinatorRequest) {
+			replaceCoordinatorConfig(t, r, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"machine-config":{"vcpu_count":2,"mem_size_mib":256},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`)
+		},
+		"trailing JSON": func(r *strictJailerCoordinatorRequest) {
+			replaceCoordinatorConfig(t, r, validCoordinatorConfig()+` {}`)
+		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -167,7 +236,10 @@ func TestStrictJailerCoordinatorRejectsInvalidConfigBeforeDependencies(t *testin
 			mutate(&request)
 			called := false
 			coordinator := newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
-				inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) { called = true; return strictJailerHostInspectionResult{}, nil },
+				inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
+					called = true
+					return strictJailerHostInspectionResult{}, nil
+				},
 			})
 			if _, err := coordinator.start(context.Background(), request); !errors.Is(err, errStrictJailerCoordinatorInvalid) {
 				t.Fatalf("start error = %v", err)
@@ -179,6 +251,29 @@ func TestStrictJailerCoordinatorRejectsInvalidConfigBeforeDependencies(t *testin
 	}
 }
 
+func TestStrictJailerCoordinatorAcceptsCorrelatedOptionalConfigResources(t *testing.T) {
+	t.Run("without vsock", func(t *testing.T) {
+		request := validStrictJailerCoordinatorRequest(t)
+		request.enablePCI = false
+		replaceCoordinatorConfig(t, &request, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}]}`)
+		if err := validateStrictJailerCoordinatorConfig(request); err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+	})
+	t.Run("with initrd", func(t *testing.T) {
+		request := validStrictJailerCoordinatorRequest(t)
+		request.support = append(request.support, coordinatorTestResource("support-initrd", "/boot/initrd", "initrd", 0o400))
+		replaceCoordinatorConfig(t, &request, `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux","initrd_path":"/boot/initrd"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true}],"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`)
+		if err := validateStrictJailerCoordinatorConfig(request); err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		request.support[2].Mode = 0o600
+		if err := validateStrictJailerCoordinatorConfig(request); !errors.Is(err, errStrictJailerCoordinatorInvalid) {
+			t.Fatalf("unsafe initrd mode = %v", err)
+		}
+	})
+}
+
 func TestStrictJailerCoordinatorCleanupStateMachine(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -186,38 +281,94 @@ func TestStrictJailerCoordinatorCleanupStateMachine(t *testing.T) {
 		stopErrors      []error
 		retryErrors     []error
 		removeErrors    []error
+		terminated      []bool
 		wantStartEvents []string
 		wantRetryEvents []string
 	}{
 		{name: "contained start", startErr: errors.New("sensitive contained failure"), wantStartEvents: []string{"start", "release"}},
 		{name: "uncertain start", startErr: errStrictJailerNamespaceCleanupIncomplete, wantStartEvents: []string{"start"}, wantRetryEvents: []string{"retry-process", "release"}},
-		{name: "stop retry", stopErrors: []error{errors.New("sensitive stop failure"), nil}, wantStartEvents: []string{"start", "stop"}, wantRetryEvents: []string{"stop", "release"}},
-		{name: "root retry", removeErrors: []error{errors.New("sensitive remove failure"), nil}, wantStartEvents: []string{"start", "stop", "release"}, wantRetryEvents: []string{"release"}},
+		{name: "stop retry", stopErrors: []error{errors.New("sensitive stop failure"), nil}, terminated: []bool{false, true}, wantStartEvents: []string{"start", "stop", "terminated"}, wantRetryEvents: []string{"stop", "terminated", "release"}},
+		{name: "stop error but terminal", stopErrors: []error{errors.New("sensitive stop failure")}, terminated: []bool{true}, wantStartEvents: []string{"start", "stop", "terminated", "release"}},
+		{name: "root retry", removeErrors: []error{errors.New("sensitive remove failure"), nil}, terminated: []bool{true}, wantStartEvents: []string{"start", "stop", "terminated", "release"}, wantRetryEvents: []string{"release"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			events := []string{}
 			root := &coordinatorFakeRoot{events: &events, removeErrors: append([]error(nil), test.removeErrors...)}
-			lifecycle := &coordinatorFakeLifecycle{events: &events, startErr: test.startErr, stopErrors: append([]error(nil), test.stopErrors...), retryStartErrors: append([]error(nil), test.retryErrors...)}
+			lifecycle := &coordinatorFakeLifecycle{events: &events, startErr: test.startErr, stopErrors: append([]error(nil), test.stopErrors...), retryStartErrors: append([]error(nil), test.retryErrors...), terminatedValues: append([]bool(nil), test.terminated...)}
 			coordinator := coordinatorForStateTest(&events, root, lifecycle)
 			session, startErr := coordinator.start(context.Background(), validStrictJailerCoordinatorRequest(t))
 			if test.startErr == nil {
-				if startErr != nil { t.Fatalf("start: %v", startErr) }
+				if startErr != nil {
+					t.Fatalf("start: %v", startErr)
+				}
 				stopErr := coordinator.stop(context.Background(), session)
 				if len(test.stopErrors) > 0 || len(test.removeErrors) > 0 {
-					if stopErr == nil { t.Fatal("expected stop error") }
+					if stopErr == nil {
+						t.Fatal("expected stop error")
+					}
 				}
 			} else if startErr == nil {
 				t.Fatal("expected start error")
 			}
 			prefix := events[len(events)-len(test.wantStartEvents):]
-			if !reflect.DeepEqual(prefix, test.wantStartEvents) { t.Fatalf("initial tail = %v, want %v", prefix, test.wantStartEvents) }
-			if len(test.wantRetryEvents) == 0 { return }
-			if _, err := coordinator.start(context.Background(), validStrictJailerCoordinatorRequest(t)); !errors.Is(err, errStrictJailerCoordinatorBusy) { t.Fatalf("pending start = %v", err) }
+			if !reflect.DeepEqual(prefix, test.wantStartEvents) {
+				t.Fatalf("initial tail = %v, want %v", prefix, test.wantStartEvents)
+			}
+			if len(test.wantRetryEvents) == 0 {
+				return
+			}
+			if _, err := coordinator.start(context.Background(), validStrictJailerCoordinatorRequest(t)); !errors.Is(err, errStrictJailerCoordinatorBusy) {
+				t.Fatalf("pending start = %v", err)
+			}
 			before := len(events)
-			if err := coordinator.retryCleanup(context.Background(), session); err != nil { t.Fatalf("retry: %v", err) }
-			if got := events[before:]; !reflect.DeepEqual(got, test.wantRetryEvents) { t.Fatalf("retry events = %v, want %v", got, test.wantRetryEvents) }
+			if err := coordinator.retryCleanup(context.Background(), session); err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+			if got := events[before:]; !reflect.DeepEqual(got, test.wantRetryEvents) {
+				t.Fatalf("retry events = %v, want %v", got, test.wantRetryEvents)
+			}
 		})
+	}
+}
+
+func TestStrictJailerCoordinatorDoesNotReleaseWithoutPositiveTerminalProof(t *testing.T) {
+	events := []string{}
+	root := &coordinatorFakeRoot{events: &events}
+	lifecycle := &coordinatorFakeLifecycle{events: &events, terminatedValues: []bool{false, true}}
+	coordinator := coordinatorForStateTest(&events, root, lifecycle)
+	session, err := coordinator.start(context.Background(), validStrictJailerCoordinatorRequest(t))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := coordinator.stop(context.Background(), session); !errors.Is(err, errStrictJailerCoordinatorCleanupIncomplete) {
+		t.Fatalf("stop without terminal proof = %v", err)
+	}
+	if events[len(events)-1] != "terminated" {
+		t.Fatalf("root released without proof: %v", events)
+	}
+	if err := coordinator.retryCleanup(context.Background(), session); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if got, want := events[len(events)-3:], []string{"stop", "terminated", "release"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("retry order = %v, want %v", got, want)
+	}
+}
+
+func TestStrictJailerCoordinatorDoesNotRetainTerminalRootCloseFailure(t *testing.T) {
+	events := []string{}
+	root := &coordinatorFakeRoot{events: &events, closeErr: errors.New("sensitive close failure")}
+	lifecycle := &coordinatorFakeLifecycle{events: &events}
+	coordinator := coordinatorForStateTest(&events, root, lifecycle)
+	session, err := coordinator.start(context.Background(), validStrictJailerCoordinatorRequest(t))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := coordinator.stop(context.Background(), session); !errors.Is(err, errStrictJailerCoordinatorCleanupIncomplete) {
+		t.Fatalf("stop close failure = %v", err)
+	}
+	if _, err := coordinator.start(context.Background(), validStrictJailerCoordinatorRequest(t)); errors.Is(err, errStrictJailerCoordinatorBusy) {
+		t.Fatalf("terminal removal remained busy: %v", err)
 	}
 }
 
@@ -230,36 +381,45 @@ func TestStrictJailerCoordinatorErrorsAreSanitizedAtRenderTime(t *testing.T) {
 
 func coordinatorForStateTest(events *[]string, root *coordinatorFakeRoot, lifecycle *coordinatorFakeLifecycle) *strictJailerCoordinator {
 	return newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
-		inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) { return validCoordinatorInspection(), nil },
-		newFilesystem: func(jailerStagingAuthority) (jailerStagingFilesystem, error) { return &coordinatorFakeFS{events: events}, nil },
-		stage: func(jailerStagingFilesystem, jailerStagingRequest) (jailerStagingResult, error) { return jailerStagingResult{lease: &jailerStagingLease{root: root}}, nil },
-		plan: func(request strictJailerLaunchRequest) (strictJailerLaunchPlan, error) { return strictJailerLaunchPlan{hostPaths: request.HostPaths}, nil },
+		inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
+			return validCoordinatorInspection(), nil
+		},
+		newFilesystem: func(jailerStagingAuthority) (jailerStagingFilesystem, error) {
+			return &coordinatorFakeFS{events: events}, nil
+		},
+		stage: func(jailerStagingFilesystem, jailerStagingRequest) (jailerStagingResult, error) {
+			return jailerStagingResult{lease: &jailerStagingLease{root: root}}, nil
+		},
+		plan: func(request strictJailerLaunchRequest) (strictJailerLaunchPlan, error) {
+			return strictJailerLaunchPlan{hostPaths: request.HostPaths}, nil
+		},
 		lifecycle: lifecycle,
 	})
 }
 
 func validStrictJailerCoordinatorRequest(t *testing.T) strictJailerCoordinatorRequest {
 	t.Helper()
-	paths := firecracker.PathPlan{StateDir: "/run", APISocketPath: "/run/api.sock", ConfigPath: "/run/config.json", LogPath: "/run/firecracker.log", MetricsPath: "/run/metrics.fifo", VsockSocketPath: "/run/guest.vsock"}
-	resource := func(id, jailPath, content string, mode os.FileMode) jailerStagingResourceInput {
-		digest := sha256.Sum256([]byte(content))
-		return jailerStagingResourceInput{ID: id, JailPath: jailPath, Source: bytes.NewReader([]byte(content)), SizeBytes: int64(len(content)), SHA256: hex.EncodeToString(digest[:]), Mode: mode}
-	}
+	paths := firecracker.PathPlan{StateDir: "/run/fc-run-1", APISocketPath: "/run/fc-run-1/firecracker.sock", ConfigPath: "/run/fc-run-1/firecracker-config.json", LogPath: "/run/fc-run-1/firecracker.log", MetricsPath: "/run/fc-run-1/firecracker.metrics", VsockSocketPath: "/run/fc-run-1/guest.vsock"}
 	config := validCoordinatorConfig()
 	return strictJailerCoordinatorRequest{
-		runtimeID: "run-1",
+		runtimeID:  "run-1",
 		inspection: strictJailerHostInspectionRequest{jailerPath: "/opt/jailer", firecrackerPath: "/opt/firecracker", runtimeUID: 1001, runtimeGID: 1002, chrootBaseDir: "/srv/jailer"},
-		jailPaths: paths,
-		kernel: resource("kernel", "/boot/vmlinux", "kernel", 0o400),
-		rootfs: resource("rootfs", "/images/rootfs.ext4", "rootfs", 0o600),
-		config: resource("config", paths.ConfigPath, config, 0o600),
-		support: []jailerStagingResourceInput{resource("support-log", paths.LogPath, "", 0o600), resource("support-metrics", paths.MetricsPath, "", 0o600)},
-		enablePCI: true,
+		jailPaths:  paths,
+		kernel:     coordinatorTestResource("kernel", "/boot/vmlinux", "kernel", 0o400),
+		rootfs:     coordinatorTestResource("rootfs", "/images/rootfs.ext4", "rootfs", 0o600),
+		config:     coordinatorTestResource("config", paths.ConfigPath, config, 0o400),
+		support:    []jailerStagingResourceInput{coordinatorTestResource("support-log", paths.LogPath, "", 0o600), coordinatorTestResource("support-metrics", paths.MetricsPath, "", 0o600)},
+		enablePCI:  true,
 	}
 }
 
+func coordinatorTestResource(id, jailPath, content string, mode os.FileMode) jailerStagingResourceInput {
+	digest := sha256.Sum256([]byte(content))
+	return jailerStagingResourceInput{ID: id, JailPath: jailPath, Source: bytes.NewReader([]byte(content)), SizeBytes: int64(len(content)), SHA256: hex.EncodeToString(digest[:]), Mode: mode}
+}
+
 func validCoordinatorConfig() string {
-	return `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true,"is_read_only":false}]}`
+	return `{"machine-config":{"vcpu_count":1,"mem_size_mib":128},"boot-source":{"kernel_image_path":"/boot/vmlinux"},"drives":[{"drive_id":"rootfs","path_on_host":"/images/rootfs.ext4","is_root_device":true,"is_read_only":false}],"vsock":{"guest_cid":3,"uds_path":"/run/fc-run-1/guest.vsock"}}`
 }
 
 func replaceCoordinatorConfig(t *testing.T, request *strictJailerCoordinatorRequest, content string) {
