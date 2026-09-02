@@ -84,9 +84,13 @@ func TestLinuxJailerStagerRetainsRootWhenPostMkdirStatFails(t *testing.T) {
 	linuxFilesystem := filesystem.(*linuxJailerStagingFilesystem)
 	realStatEntry := linuxFilesystem.statEntry
 	failRootStat := true
+	sentinel := filepath.Join(request.Authority.JailRootHostPath, "unowned")
 	linuxFilesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
 		if name == "root" && failRootStat {
 			failRootStat = false
+			if writeErr := os.WriteFile(sentinel, []byte("preserve"), 0o600); writeErr != nil {
+				t.Fatalf("WriteFile(unexpected root descendant): %v", writeErr)
+			}
 			return unix.Stat_t{}, unix.EIO
 		}
 		return realStatEntry(parentFD, name)
@@ -102,12 +106,16 @@ func TestLinuxJailerStagerRetainsRootWhenPostMkdirStatFails(t *testing.T) {
 	if _, statErr := os.Stat(request.Authority.JailRootHostPath); statErr != nil {
 		t.Fatalf("quarantined root is unavailable before retry: %v", statErr)
 	}
-	if releaseErr := result.releaseOwnedRoot(); releaseErr != nil {
-		t.Fatalf("releaseOwnedRoot() error = %v, want exact retry cleanup", releaseErr)
+	if releaseErr := result.releaseOwnedRoot(); !errors.Is(releaseErr, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("releaseOwnedRoot() error = %v, want cleanup-incomplete", releaseErr)
 	}
-	if _, statErr := os.Lstat(filepath.Dir(request.Authority.JailRootHostPath)); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("runtime generation remains after terminal retry: %v", statErr)
+	if !result.retainsOwnedRoot() {
+		t.Fatal("unresolved root identity did not remain quarantined")
 	}
+	if data, readErr := os.ReadFile(sentinel); readErr != nil || string(data) != "preserve" {
+		t.Fatalf("unexpected root descendant changed: data=%q error=%v", data, readErr)
+	}
+	t.Cleanup(func() { _ = result.lease.root.close() })
 }
 
 func TestLinuxJailerStagerRetainsRuntimeWhenPostMkdirStatFails(t *testing.T) {
@@ -138,12 +146,16 @@ func TestLinuxJailerStagerRetainsRuntimeWhenPostMkdirStatFails(t *testing.T) {
 	if _, statErr := os.Stat(runtimeRoot); statErr != nil {
 		t.Fatalf("quarantined runtime is unavailable before retry: %v", statErr)
 	}
-	if releaseErr := result.releaseOwnedRoot(); releaseErr != nil {
-		t.Fatalf("releaseOwnedRoot() error = %v, want exact retry cleanup", releaseErr)
+	if releaseErr := result.releaseOwnedRoot(); !errors.Is(releaseErr, errJailerStagingCleanupIncomplete) {
+		t.Fatalf("releaseOwnedRoot() error = %v, want cleanup-incomplete", releaseErr)
 	}
-	if _, statErr := os.Lstat(runtimeRoot); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("runtime generation remains after terminal retry: %v", statErr)
+	if !result.retainsOwnedRoot() {
+		t.Fatal("unresolved runtime identity did not remain quarantined")
 	}
+	if _, statErr := os.Stat(runtimeRoot); statErr != nil {
+		t.Fatalf("unresolved runtime generation changed: %v", statErr)
+	}
+	t.Cleanup(func() { _ = result.lease.root.close() })
 }
 
 func TestLinuxJailerStagerQuarantinesRuntimeWhenPostMkdirStatCannotBePinned(t *testing.T) {
@@ -155,12 +167,20 @@ func TestLinuxJailerStagerQuarantinesRuntimeWhenPostMkdirStatCannotBePinned(t *t
 	linuxFilesystem := filesystem.(*linuxJailerStagingFilesystem)
 	realStatEntry := linuxFilesystem.statEntry
 	movedName := request.Authority.RuntimeID + "-moved"
+	runtimeRoot := filepath.Dir(request.Authority.JailRootHostPath)
+	sentinel := filepath.Join(runtimeRoot, "unowned")
 	failRuntimeStat := true
 	linuxFilesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
 		if name == request.Authority.RuntimeID && failRuntimeStat {
 			failRuntimeStat = false
 			if renameErr := unix.Renameat(parentFD, name, parentFD, movedName); renameErr != nil {
 				t.Fatalf("Renameat(runtime): %v", renameErr)
+			}
+			if mkdirErr := unix.Mkdirat(parentFD, name, 0o700); mkdirErr != nil {
+				t.Fatalf("Mkdirat(replacement runtime): %v", mkdirErr)
+			}
+			if writeErr := os.WriteFile(sentinel, []byte("preserve"), 0o600); writeErr != nil {
+				t.Fatalf("WriteFile(replacement sentinel): %v", writeErr)
 			}
 			return unix.Stat_t{}, unix.EIO
 		}
@@ -180,14 +200,6 @@ func TestLinuxJailerStagerQuarantinesRuntimeWhenPostMkdirStatCannotBePinned(t *t
 		}
 	})
 
-	runtimeRoot := filepath.Dir(request.Authority.JailRootHostPath)
-	if mkdirErr := os.Mkdir(runtimeRoot, 0o700); mkdirErr != nil {
-		t.Fatalf("Mkdir(replacement runtime): %v", mkdirErr)
-	}
-	sentinel := filepath.Join(runtimeRoot, "unowned")
-	if writeErr := os.WriteFile(sentinel, []byte("preserve"), 0o600); writeErr != nil {
-		t.Fatalf("WriteFile(replacement sentinel): %v", writeErr)
-	}
 	if releaseErr := result.releaseOwnedRoot(); !errors.Is(releaseErr, errJailerStagingCleanupIncomplete) {
 		t.Fatalf("releaseOwnedRoot() error = %v, want cleanup-incomplete", releaseErr)
 	}
@@ -199,6 +211,233 @@ func TestLinuxJailerStagerQuarantinesRuntimeWhenPostMkdirStatCannotBePinned(t *t
 	}
 	if info, statErr := os.Stat(filepath.Join(common, movedName)); statErr != nil || !info.IsDir() {
 		t.Fatalf("unresolved created runtime changed: info=%v error=%v", info, statErr)
+	}
+}
+
+func TestLinuxJailerStagerRetainsPostMkdirRollbackAuthority(t *testing.T) {
+	tests := []struct {
+		name             string
+		configure        func(*testing.T, jailerStagingRequest, *linuxJailerStagingFilesystem) func(*testing.T)
+		unexpectedParent func(jailerStagingRequest) string
+	}{
+		{
+			name: "runtime open",
+			unexpectedParent: func(request jailerStagingRequest) string {
+				return filepath.Dir(request.Authority.JailRootHostPath)
+			},
+			configure: func(t *testing.T, request jailerStagingRequest, filesystem *linuxJailerStagingFilesystem) func(*testing.T) {
+				realStatEntry := filesystem.statEntry
+				moved := filepath.Dir(request.Authority.JailRootHostPath) + ".owned"
+				filesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
+					stat, err := realStatEntry(parentFD, name)
+					if err == nil && name == request.Authority.RuntimeID {
+						if renameErr := unix.Renameat(parentFD, name, parentFD, name+".owned"); renameErr != nil {
+							t.Fatalf("Renameat(runtime): %v", renameErr)
+						}
+					}
+					return stat, err
+				}
+				return func(t *testing.T) {
+					if err := os.Rename(moved, filepath.Dir(request.Authority.JailRootHostPath)); err != nil {
+						t.Fatalf("restore runtime: %v", err)
+					}
+				}
+			},
+		},
+		{
+			name: "runtime opened identity",
+			configure: func(t *testing.T, request jailerStagingRequest, filesystem *linuxJailerStagingFilesystem) func(*testing.T) {
+				realStatEntry := filesystem.statEntry
+				runtimePath := filepath.Dir(request.Authority.JailRootHostPath)
+				moved := runtimePath + ".owned"
+				filesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
+					stat, err := realStatEntry(parentFD, name)
+					if err == nil && name == request.Authority.RuntimeID {
+						if renameErr := unix.Renameat(parentFD, name, parentFD, name+".owned"); renameErr != nil {
+							t.Fatalf("Renameat(runtime): %v", renameErr)
+						}
+						if mkdirErr := unix.Mkdirat(parentFD, name, 0o700); mkdirErr != nil {
+							t.Fatalf("Mkdirat(replacement runtime): %v", mkdirErr)
+						}
+					}
+					return stat, err
+				}
+				return func(t *testing.T) {
+					if err := os.Remove(runtimePath); err != nil {
+						t.Fatalf("remove replacement runtime: %v", err)
+					}
+					if err := os.Rename(moved, runtimePath); err != nil {
+						t.Fatalf("restore runtime: %v", err)
+					}
+				}
+			},
+		},
+		{
+			name: "root mkdir collision",
+			configure: func(t *testing.T, request jailerStagingRequest, filesystem *linuxJailerStagingFilesystem) func(*testing.T) {
+				realStatEntry := filesystem.statEntry
+				sentinel := filepath.Join(request.Authority.JailRootHostPath, "unowned")
+				filesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
+					stat, err := realStatEntry(parentFD, name)
+					if err == nil && name == request.Authority.RuntimeID {
+						if mkdirErr := os.Mkdir(request.Authority.JailRootHostPath, 0o700); mkdirErr != nil {
+							t.Fatalf("Mkdir(unexpected root): %v", mkdirErr)
+						}
+						if writeErr := os.WriteFile(sentinel, []byte("preserve"), 0o600); writeErr != nil {
+							t.Fatalf("WriteFile(unexpected root child): %v", writeErr)
+						}
+					}
+					return stat, err
+				}
+				return func(t *testing.T) {
+					if data, err := os.ReadFile(sentinel); err != nil || string(data) != "preserve" {
+						t.Fatalf("unexpected root child changed: data=%q error=%v", data, err)
+					}
+					if err := os.Remove(sentinel); err != nil {
+						t.Fatalf("remove unexpected root child: %v", err)
+					}
+					if err := os.Remove(request.Authority.JailRootHostPath); err != nil {
+						t.Fatalf("remove unexpected root: %v", err)
+					}
+				}
+			},
+		},
+		{
+			name: "root linked type",
+			configure: func(t *testing.T, request jailerStagingRequest, filesystem *linuxJailerStagingFilesystem) func(*testing.T) {
+				realStatEntry := filesystem.statEntry
+				filesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
+					if name != "root" {
+						return realStatEntry(parentFD, name)
+					}
+					if err := unix.Unlinkat(parentFD, name, unix.AT_REMOVEDIR); err != nil {
+						t.Fatalf("Unlinkat(created root): %v", err)
+					}
+					fd, err := unix.Openat(parentFD, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+					if err != nil {
+						t.Fatalf("Openat(replacement root): %v", err)
+					}
+					if _, err := unix.Write(fd, []byte("preserve")); err != nil {
+						_ = unix.Close(fd)
+						t.Fatalf("Write(replacement root): %v", err)
+					}
+					if err := unix.Close(fd); err != nil {
+						t.Fatalf("Close(replacement root): %v", err)
+					}
+					return realStatEntry(parentFD, name)
+				}
+				return func(t *testing.T) {
+					if data, err := os.ReadFile(request.Authority.JailRootHostPath); err != nil || string(data) != "preserve" {
+						t.Fatalf("replacement root changed: data=%q error=%v", data, err)
+					}
+					if err := os.Remove(request.Authority.JailRootHostPath); err != nil {
+						t.Fatalf("remove replacement root: %v", err)
+					}
+				}
+			},
+		},
+		{
+			name: "root open",
+			unexpectedParent: func(request jailerStagingRequest) string {
+				return request.Authority.JailRootHostPath
+			},
+			configure: func(t *testing.T, request jailerStagingRequest, filesystem *linuxJailerStagingFilesystem) func(*testing.T) {
+				realStatEntry := filesystem.statEntry
+				moved := request.Authority.JailRootHostPath + ".owned"
+				filesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
+					stat, err := realStatEntry(parentFD, name)
+					if err == nil && name == "root" {
+						if renameErr := unix.Renameat(parentFD, name, parentFD, name+".owned"); renameErr != nil {
+							t.Fatalf("Renameat(root): %v", renameErr)
+						}
+					}
+					return stat, err
+				}
+				return func(t *testing.T) {
+					if err := os.Rename(moved, request.Authority.JailRootHostPath); err != nil {
+						t.Fatalf("restore root: %v", err)
+					}
+				}
+			},
+		},
+		{
+			name: "root opened identity",
+			configure: func(t *testing.T, request jailerStagingRequest, filesystem *linuxJailerStagingFilesystem) func(*testing.T) {
+				realStatEntry := filesystem.statEntry
+				rootPath := request.Authority.JailRootHostPath
+				moved := rootPath + ".owned"
+				filesystem.statEntry = func(parentFD int, name string) (unix.Stat_t, error) {
+					stat, err := realStatEntry(parentFD, name)
+					if err == nil && name == "root" {
+						if renameErr := unix.Renameat(parentFD, name, parentFD, name+".owned"); renameErr != nil {
+							t.Fatalf("Renameat(root): %v", renameErr)
+						}
+						if mkdirErr := unix.Mkdirat(parentFD, name, 0o700); mkdirErr != nil {
+							t.Fatalf("Mkdirat(replacement root): %v", mkdirErr)
+						}
+					}
+					return stat, err
+				}
+				return func(t *testing.T) {
+					if err := os.Remove(rootPath); err != nil {
+						t.Fatalf("remove replacement root: %v", err)
+					}
+					if err := os.Rename(moved, rootPath); err != nil {
+						t.Fatalf("restore root: %v", err)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request, _ := newLinuxJailerStagingRequest(t)
+			filesystem, err := newLinuxJailerStagingFilesystem(request.Authority)
+			if err != nil {
+				t.Fatalf("newLinuxJailerStagingFilesystem() error = %v, want nil", err)
+			}
+			linuxFilesystem := filesystem.(*linuxJailerStagingFilesystem)
+			prepareRetry := tt.configure(t, request, linuxFilesystem)
+
+			result, err := stageStrictJailerResources(filesystem, request)
+			if !errors.Is(err, errJailerStagingFailed) || !errors.Is(err, errJailerStagingCleanupIncomplete) {
+				t.Fatalf("stage error = %v, want failed and cleanup-incomplete", err)
+			}
+			if !result.retainsOwnedRoot() {
+				t.Fatal("post-mkdir rollback failure discarded retained authority")
+			}
+			t.Cleanup(func() {
+				if result.lease != nil && !interfaceValueIsNil(result.lease.root) {
+					_ = result.lease.root.close()
+				}
+			})
+			if releaseErr := result.releaseOwnedRoot(); !errors.Is(releaseErr, errJailerStagingCleanupIncomplete) {
+				t.Fatalf("release before exact restoration = %v, want cleanup-incomplete", releaseErr)
+			}
+			prepareRetry(t)
+			if tt.unexpectedParent != nil {
+				sentinel := filepath.Join(tt.unexpectedParent(request), "unowned")
+				if err := os.WriteFile(sentinel, []byte("preserve"), 0o600); err != nil {
+					t.Fatalf("WriteFile(unexpected child): %v", err)
+				}
+				if releaseErr := result.releaseOwnedRoot(); !errors.Is(releaseErr, errJailerStagingCleanupIncomplete) {
+					t.Fatalf("release with unexpected child = %v, want cleanup-incomplete", releaseErr)
+				}
+				if data, err := os.ReadFile(sentinel); err != nil || string(data) != "preserve" {
+					t.Fatalf("unexpected child changed: data=%q error=%v", data, err)
+				}
+				if err := os.Remove(sentinel); err != nil {
+					t.Fatalf("Remove(unexpected child): %v", err)
+				}
+			}
+			if releaseErr := result.releaseOwnedRoot(); releaseErr != nil {
+				t.Fatalf("release after exact restoration = %v, want nil", releaseErr)
+			}
+			if _, statErr := os.Lstat(filepath.Dir(request.Authority.JailRootHostPath)); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("runtime generation remains after terminal retry: %v", statErr)
+			}
+		})
 	}
 }
 
