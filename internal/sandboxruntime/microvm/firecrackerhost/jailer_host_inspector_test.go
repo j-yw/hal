@@ -68,8 +68,42 @@ func TestInspectStrictJailerHostDefaultsTrustedFilesystemAnchorToRoot(t *testing
 }
 
 func TestInspectStrictJailerHostRejectsPathsOutsideTrustedFilesystemAnchor(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		edit  func(*strictJailerHostInspectionRequest)
+	}{
+		{name: "jailer sibling prefix", field: "jailerPath", edit: func(request *strictJailerHostInspectionRequest) {
+			request.jailerPath = "/opt/hal-untrusted/jailer"
+		}},
+		{name: "Firecracker sibling prefix", field: "firecrackerPath", edit: func(request *strictJailerHostInspectionRequest) {
+			request.firecrackerPath = "/opt/hal-untrusted/firecracker"
+		}},
+		{name: "chroot outside", field: "chrootBaseDir", edit: func(*strictJailerHostInspectionRequest) {}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filesystem, request := validStrictJailerHostInspectionFixture()
+			request.trustedFilesystemAnchor = "/opt/hal"
+			tt.edit(&request)
+
+			_, err := inspectStrictJailerHostWithFilesystem(request, filesystem)
+			assertStrictJailerHostInspectionError(t, err, tt.field)
+		})
+	}
+}
+
+func TestInspectStrictJailerHostRejectsUnmatchedTrustedFilesystemAnchorIdentity(t *testing.T) {
 	filesystem, request := validStrictJailerHostInspectionFixture()
 	request.trustedFilesystemAnchor = "/opt/hal"
+	request.chrootBaseDir = "/opt/hal/jailer-root"
+	filesystem.infos[request.chrootBaseDir] = fakeStrictJailerHostFileInfo{
+		name: request.chrootBaseDir, mode: os.ModeDir | 0o755, identity: "anchored-chroot",
+	}
+	anchor := filesystem.infos[request.trustedFilesystemAnchor].(fakeStrictJailerHostFileInfo)
+	anchor.identity = ""
+	filesystem.infos[request.trustedFilesystemAnchor] = anchor
 
 	_, err := inspectStrictJailerHostWithFilesystem(request, filesystem)
 	assertStrictJailerHostInspectionError(t, err, "chrootBaseDir")
@@ -89,6 +123,18 @@ func TestInspectStrictJailerHostRejectsUnsafeTrustedFilesystemAnchor(t *testing.
 		{name: "symlink canonical drift", edit: func(request *strictJailerHostInspectionRequest, filesystem *fakeStrictJailerHostInspectionFilesystem) {
 			request.trustedFilesystemAnchor = "/opt/hal"
 			filesystem.resolved[request.trustedFilesystemAnchor] = "/opt/hal-release"
+		}},
+		{name: "symlink entry", edit: func(request *strictJailerHostInspectionRequest, filesystem *fakeStrictJailerHostInspectionFilesystem) {
+			request.trustedFilesystemAnchor = "/opt/hal"
+			filesystem.infos[request.trustedFilesystemAnchor] = fakeStrictJailerHostFileInfo{
+				name: "hal", mode: os.ModeSymlink | 0o777, identity: "unsafe-anchor",
+			}
+		}},
+		{name: "group writable", edit: func(request *strictJailerHostInspectionRequest, filesystem *fakeStrictJailerHostInspectionFilesystem) {
+			request.trustedFilesystemAnchor = "/opt/hal"
+			filesystem.infos[request.trustedFilesystemAnchor] = fakeStrictJailerHostFileInfo{
+				name: "hal", mode: os.ModeDir | 0o775, identity: "unsafe-anchor",
+			}
 		}},
 		{name: "world writable", edit: func(request *strictJailerHostInspectionRequest, filesystem *fakeStrictJailerHostInspectionFilesystem) {
 			request.trustedFilesystemAnchor = "/opt/hal"

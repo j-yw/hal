@@ -41,6 +41,10 @@ type strictJailerHostInspectionRequest struct {
 	firecrackerPath           string
 	expectedJailerSHA256      [sha256.Size]byte
 	expectedFirecrackerSHA256 [sha256.Size]byte
+	// trustedFilesystemAnchor bounds every configured path and every directory
+	// chain inspected for this binary pair and chroot. Empty preserves the
+	// compatibility boundary by selecting the filesystem root.
+	trustedFilesystemAnchor string
 	// A later prepared-host identity authority must prove that this non-root
 	// pair is dedicated to the run. Numeric input alone cannot prove that.
 	runtimeUID    uint32
@@ -50,19 +54,22 @@ type strictJailerHostInspectionRequest struct {
 
 // strictJailerHostInspectionResult binds the inspected values for the next
 // private preparation step. It is not launch evidence: stable symlinks are
-// rejected and the leaf is opened without following links, but pathnames are
-// not retained or pinned across a later exec by this read-only slice.
+// rejected, leaves are opened without following links, and every chain reaches
+// the same inspected anchor snapshot. No pathname or directory descriptor is
+// retained or pinned across a later exec by this read-only slice.
 type strictJailerHostInspectionResult struct {
-	canonicalJailerPath      string
-	canonicalFirecrackerPath string
-	jailerSHA256             [sha256.Size]byte
-	firecrackerSHA256        [sha256.Size]byte
-	jailerInfo               os.FileInfo
-	firecrackerInfo          os.FileInfo
-	chrootInfo               os.FileInfo
-	runtimeUID               uint32
-	runtimeGID               uint32
-	canonicalChrootBaseDir   string
+	canonicalJailerPath              string
+	canonicalFirecrackerPath         string
+	jailerSHA256                     [sha256.Size]byte
+	firecrackerSHA256                [sha256.Size]byte
+	jailerInfo                       os.FileInfo
+	firecrackerInfo                  os.FileInfo
+	chrootInfo                       os.FileInfo
+	trustedFilesystemAnchorInfo      os.FileInfo
+	runtimeUID                       uint32
+	runtimeGID                       uint32
+	canonicalChrootBaseDir           string
+	canonicalTrustedFilesystemAnchor string
 }
 
 type strictJailerHostInspectionFile interface {
@@ -120,14 +127,24 @@ func inspectStrictJailerHostWithFilesystem(request strictJailerHostInspectionReq
 	if request.expectedJailerSHA256 == request.expectedFirecrackerSHA256 {
 		return strictJailerHostInspectionResult{}, newStrictJailerHostInspectionError("binaryPair")
 	}
+	trustedFilesystemAnchor, trustedFilesystemAnchorInfo, err := inspectStrictJailerTrustedFilesystemAnchor(filesystem, request.trustedFilesystemAnchor)
+	if err != nil {
+		return strictJailerHostInspectionResult{}, err
+	}
 
 	jailerPath, err := strictJailerHostConfiguredPath(request.jailerPath, "jailerPath")
 	if err != nil {
 		return strictJailerHostInspectionResult{}, err
 	}
+	if !strictJailerHostPathWithinAnchor(trustedFilesystemAnchor, jailerPath) {
+		return strictJailerHostInspectionResult{}, newStrictJailerHostInspectionError("jailerPath")
+	}
 	firecrackerPath, err := strictJailerHostConfiguredPath(request.firecrackerPath, "firecrackerPath")
 	if err != nil {
 		return strictJailerHostInspectionResult{}, err
+	}
+	if !strictJailerHostPathWithinAnchor(trustedFilesystemAnchor, firecrackerPath) {
+		return strictJailerHostInspectionResult{}, newStrictJailerHostInspectionError("firecrackerPath")
 	}
 	if jailerPath == firecrackerPath {
 		return strictJailerHostInspectionResult{}, newStrictJailerHostInspectionError("binaryPair")
@@ -136,16 +153,19 @@ func inspectStrictJailerHostWithFilesystem(request strictJailerHostInspectionReq
 	if err != nil {
 		return strictJailerHostInspectionResult{}, err
 	}
-	chrootInfo, err := inspectStrictJailerTrustedDirectory(filesystem, chrootBaseDir, "chrootBaseDir")
+	if !strictJailerHostPathWithinAnchor(trustedFilesystemAnchor, chrootBaseDir) {
+		return strictJailerHostInspectionResult{}, newStrictJailerHostInspectionError("chrootBaseDir")
+	}
+	chrootInfo, err := inspectStrictJailerTrustedDirectory(filesystem, chrootBaseDir, "chrootBaseDir", trustedFilesystemAnchor, trustedFilesystemAnchorInfo)
 	if err != nil {
 		return strictJailerHostInspectionResult{}, err
 	}
 
-	jailer, err := inspectStrictJailerHostBinary(filesystem, jailerPath, request.expectedJailerSHA256, "jailerPath", "jailerIdentity")
+	jailer, err := inspectStrictJailerHostBinary(filesystem, jailerPath, request.expectedJailerSHA256, "jailerPath", "jailerIdentity", trustedFilesystemAnchor, trustedFilesystemAnchorInfo)
 	if err != nil {
 		return strictJailerHostInspectionResult{}, err
 	}
-	firecrackerBinary, err := inspectStrictJailerHostBinary(filesystem, firecrackerPath, request.expectedFirecrackerSHA256, "firecrackerPath", "firecrackerIdentity")
+	firecrackerBinary, err := inspectStrictJailerHostBinary(filesystem, firecrackerPath, request.expectedFirecrackerSHA256, "firecrackerPath", "firecrackerIdentity", trustedFilesystemAnchor, trustedFilesystemAnchorInfo)
 	if err != nil {
 		return strictJailerHostInspectionResult{}, err
 	}
@@ -154,16 +174,18 @@ func inspectStrictJailerHostWithFilesystem(request strictJailerHostInspectionReq
 	}
 
 	return strictJailerHostInspectionResult{
-		canonicalJailerPath:      jailerPath,
-		canonicalFirecrackerPath: firecrackerPath,
-		jailerSHA256:             jailer.digest,
-		firecrackerSHA256:        firecrackerBinary.digest,
-		jailerInfo:               jailer.info,
-		firecrackerInfo:          firecrackerBinary.info,
-		chrootInfo:               chrootInfo,
-		runtimeUID:               request.runtimeUID,
-		runtimeGID:               request.runtimeGID,
-		canonicalChrootBaseDir:   chrootBaseDir,
+		canonicalJailerPath:              jailerPath,
+		canonicalFirecrackerPath:         firecrackerPath,
+		jailerSHA256:                     jailer.digest,
+		firecrackerSHA256:                firecrackerBinary.digest,
+		jailerInfo:                       jailer.info,
+		firecrackerInfo:                  firecrackerBinary.info,
+		chrootInfo:                       chrootInfo,
+		trustedFilesystemAnchorInfo:      trustedFilesystemAnchorInfo,
+		runtimeUID:                       request.runtimeUID,
+		runtimeGID:                       request.runtimeGID,
+		canonicalChrootBaseDir:           chrootBaseDir,
+		canonicalTrustedFilesystemAnchor: trustedFilesystemAnchor,
 	}, nil
 }
 
@@ -172,12 +194,19 @@ type strictJailerHostInspectedBinary struct {
 	digest [sha256.Size]byte
 }
 
-func inspectStrictJailerHostBinary(filesystem strictJailerHostInspectionFilesystem, path string, expected [sha256.Size]byte, pathField, identityField string) (strictJailerHostInspectedBinary, error) {
+func inspectStrictJailerHostBinary(
+	filesystem strictJailerHostInspectionFilesystem,
+	path string,
+	expected [sha256.Size]byte,
+	pathField, identityField string,
+	trustedFilesystemAnchor string,
+	trustedFilesystemAnchorInfo os.FileInfo,
+) (strictJailerHostInspectedBinary, error) {
 	resolved, err := filesystem.EvalSymlinks(path)
 	if err != nil || resolved != path || !filepathIsCleanAbsolute(resolved) || cleanupFilesystemRoot(resolved) {
 		return strictJailerHostInspectedBinary{}, newStrictJailerHostInspectionError(pathField)
 	}
-	if _, err := inspectStrictJailerTrustedDirectoryChain(filesystem, filepath.Dir(path), pathField); err != nil {
+	if _, err := inspectStrictJailerTrustedDirectoryChain(filesystem, filepath.Dir(path), pathField, trustedFilesystemAnchor, trustedFilesystemAnchorInfo); err != nil {
 		return strictJailerHostInspectedBinary{}, err
 	}
 
@@ -216,15 +245,26 @@ func strictJailerHostHashSum(hasher hash.Hash) [sha256.Size]byte {
 	return digest
 }
 
-func inspectStrictJailerTrustedDirectory(filesystem strictJailerHostInspectionFilesystem, path, field string) (os.FileInfo, error) {
+func inspectStrictJailerTrustedDirectory(
+	filesystem strictJailerHostInspectionFilesystem,
+	path, field, trustedFilesystemAnchor string,
+	trustedFilesystemAnchorInfo os.FileInfo,
+) (os.FileInfo, error) {
 	resolved, err := filesystem.EvalSymlinks(path)
 	if err != nil || resolved != path || !filepathIsCleanAbsolute(resolved) || cleanupFilesystemRoot(resolved) {
 		return nil, newStrictJailerHostInspectionError(field)
 	}
-	return inspectStrictJailerTrustedDirectoryChain(filesystem, path, field)
+	return inspectStrictJailerTrustedDirectoryChain(filesystem, path, field, trustedFilesystemAnchor, trustedFilesystemAnchorInfo)
 }
 
-func inspectStrictJailerTrustedDirectoryChain(filesystem strictJailerHostInspectionFilesystem, path, field string) (os.FileInfo, error) {
+func inspectStrictJailerTrustedDirectoryChain(
+	filesystem strictJailerHostInspectionFilesystem,
+	path, field, trustedFilesystemAnchor string,
+	trustedFilesystemAnchorInfo os.FileInfo,
+) (os.FileInfo, error) {
+	if !strictJailerHostPathWithinAnchor(trustedFilesystemAnchor, path) || trustedFilesystemAnchorInfo == nil {
+		return nil, newStrictJailerHostInspectionError(field)
+	}
 	var inspected os.FileInfo
 	for current := path; ; current = filepath.Dir(current) {
 		info, err := filesystem.Lstat(current)
@@ -234,7 +274,10 @@ func inspectStrictJailerTrustedDirectoryChain(filesystem strictJailerHostInspect
 		if inspected == nil {
 			inspected = info
 		}
-		if cleanupFilesystemRoot(current) {
+		if current == trustedFilesystemAnchor {
+			if !filesystem.SameFile(info, trustedFilesystemAnchorInfo) {
+				return nil, newStrictJailerHostInspectionError(field)
+			}
 			return inspected, nil
 		}
 		next := filepath.Dir(current)
@@ -242,6 +285,37 @@ func inspectStrictJailerTrustedDirectoryChain(filesystem strictJailerHostInspect
 			return nil, newStrictJailerHostInspectionError(field)
 		}
 	}
+}
+
+func inspectStrictJailerTrustedFilesystemAnchor(
+	filesystem strictJailerHostInspectionFilesystem,
+	configured string,
+) (string, os.FileInfo, error) {
+	anchor := configured
+	if anchor == "" {
+		anchor = string(filepath.Separator)
+	}
+	if strings.TrimSpace(anchor) != anchor || !filepathIsCleanAbsolute(anchor) {
+		return "", nil, newStrictJailerHostInspectionError("trustedFilesystemAnchor")
+	}
+	resolved, err := filesystem.EvalSymlinks(anchor)
+	if err != nil || resolved != anchor || !filepathIsCleanAbsolute(resolved) {
+		return "", nil, newStrictJailerHostInspectionError("trustedFilesystemAnchor")
+	}
+	info, err := filesystem.Lstat(anchor)
+	if err != nil || !validStrictJailerHostDirectoryInfo(filesystem, info) || info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, newStrictJailerHostInspectionError("trustedFilesystemAnchor")
+	}
+	return anchor, info, nil
+}
+
+func strictJailerHostPathWithinAnchor(anchor, candidate string) bool {
+	if !filepathIsCleanAbsolute(anchor) || !filepathIsCleanAbsolute(candidate) {
+		return false
+	}
+	relative, err := filepath.Rel(anchor, candidate)
+	return err == nil && !filepath.IsAbs(relative) && relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func validStrictJailerHostBinaryInfo(filesystem strictJailerHostInspectionFilesystem, info os.FileInfo) bool {
@@ -257,7 +331,7 @@ func validStrictJailerHostBinaryInfo(filesystem strictJailerHostInspectionFilesy
 }
 
 func validStrictJailerHostDirectoryInfo(filesystem strictJailerHostInspectionFilesystem, info os.FileInfo) bool {
-	if info == nil || !info.IsDir() {
+	if info == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
 	ownerUID, ownerKnown := filesystem.OwnerUID(info)
@@ -279,7 +353,7 @@ func newStrictJailerHostInspectionError(field string) *strictJailerHostInspectio
 func safeStrictJailerHostInspectionField(field string) string {
 	switch strings.TrimSpace(field) {
 	case "filesystem", "jailerPath", "firecrackerPath", "jailerIdentity", "firecrackerIdentity",
-		"binaryPair", "uid", "gid", "chrootBaseDir":
+		"binaryPair", "uid", "gid", "chrootBaseDir", "trustedFilesystemAnchor":
 		return strings.TrimSpace(field)
 	default:
 		return ""
