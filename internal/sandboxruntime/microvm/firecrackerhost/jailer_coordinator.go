@@ -94,6 +94,7 @@ type strictJailerCoordinatorLifecycle interface {
 	start(context.Context, strictJailerLifecycleStartRequest) (strictJailerLifecycleProcess, error)
 	stop(context.Context, strictJailerLifecycleProcess) error
 	terminated(strictJailerLifecycleProcess) bool
+	forgetTerminated(strictJailerLifecycleProcess) error
 	retryUncertainStartCleanup(context.Context) error
 }
 
@@ -115,10 +116,11 @@ const (
 )
 
 type strictJailerCoordinatorGeneration struct {
-	id      uint64
-	state   strictJailerCoordinatorState
-	staging jailerStagingResult
-	process strictJailerLifecycleProcess
+	id         uint64
+	state      strictJailerCoordinatorState
+	staging    jailerStagingResult
+	process    strictJailerLifecycleProcess
+	hasProcess bool
 }
 
 // strictJailerSession is an opaque ownership token for one coordinator
@@ -226,6 +228,7 @@ func (coordinator *strictJailerCoordinator) start(ctx context.Context, request s
 		return coordinator.failBeforeProcess(generation, session, "start")
 	}
 	generation.process = process
+	generation.hasProcess = true
 	generation.state = strictJailerCoordinatorActive
 	coordinator.generation = generation
 	return session, nil
@@ -316,13 +319,26 @@ func (coordinator *strictJailerCoordinator) sessionGeneration(session strictJail
 }
 
 func (coordinator *strictJailerCoordinator) releaseGenerationRoot(generation *strictJailerCoordinatorGeneration) error {
-	if err := generation.staging.releaseOwnedRoot(); err != nil {
-		if generation.staging.rootReleaseTerminal() {
-			coordinator.generation = nil
-		}
+	releaseErr := generation.staging.releaseOwnedRoot()
+	if !generation.staging.rootReleaseTerminal() {
 		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup")
 	}
+	if generation.hasProcess {
+		if err := coordinator.deps.lifecycle.forgetTerminated(generation.process); err != nil {
+			processErr := newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "process_cleanup")
+			if releaseErr != nil {
+				return errors.Join(
+					newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup"),
+					processErr,
+				)
+			}
+			return processErr
+		}
+	}
 	coordinator.generation = nil
+	if releaseErr != nil {
+		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup")
+	}
 	return nil
 }
 

@@ -111,6 +111,24 @@ func (lifecycle *strictJailerLifecycle) terminated(process strictJailerLifecycle
 	})
 }
 
+// forgetTerminated retires only the exact structured process authority after
+// rechecking positive terminal proof. The outer coordinator calls it only
+// after the corresponding retained jail root has reached terminal release.
+func (lifecycle *strictJailerLifecycle) forgetTerminated(process strictJailerLifecycleProcess) error {
+	if lifecycle == nil || lifecycle.manager == nil {
+		return errStrictJailerLifecycleInvalid
+	}
+	err := lifecycle.manager.forgetTerminatedStrictJailerProcess(process.handle, process.hostPaths, process.runtimeUID)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, errStrictJailerLifecycleInactive):
+		return errStrictJailerLifecycleInactive
+	default:
+		return errStrictJailerLifecycleInvalid
+	}
+}
+
 // retryUncertainStartCleanup lets the future outer coordinator retain its jail
 // root lease while retrying an exact partial process. The lease must not be
 // released until this returns nil.
@@ -297,5 +315,40 @@ func (manager *ProcessLifecycleManager) validateTrackedStrictJailerProcess(
 	if !ok || !snapshot.hasStrictUID || snapshot.strictRuntimeUID != runtimeUID {
 		return ErrUnsafeCleanupPath
 	}
+	return nil
+}
+
+// forgetTerminatedStrictJailerProcess atomically validates and retires one
+// strict process record. Unknown handles, path/UID drift, and generations
+// without positive terminal proof fail closed and leave the record intact.
+func (manager *ProcessLifecycleManager) forgetTerminatedStrictJailerProcess(
+	handle firecracker.ProcessHandleMetadata,
+	paths firecracker.PathPlan,
+	runtimeUID uint32,
+) error {
+	if manager == nil || runtimeUID == 0 {
+		return ErrUnsafeCleanupPath
+	}
+	validatedPaths, hasPaths, err := validatedCleanupPathPlan(paths)
+	id := normalizeProcessHandleID(handle)
+	if err != nil || !hasPaths || !cleanupPathPlansEqual(validatedPaths, paths) ||
+		id == "" || handle.ID != id || handle.Source != processHandleSource {
+		return ErrUnsafeCleanupPath
+	}
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	tracked, ok := manager.processes[id]
+	if !ok || tracked == nil || !tracked.hasPaths || !cleanupPathPlansEqual(tracked.paths, validatedPaths) ||
+		!tracked.hasStrictUID || tracked.strictRuntimeUID != runtimeUID {
+		return ErrUnsafeCleanupPath
+	}
+	if !tracked.finished {
+		if !hostProcessExitObserved(tracked.process) {
+			return errStrictJailerLifecycleInactive
+		}
+		tracked.finished = true
+	}
+	delete(manager.processes, id)
 	return nil
 }
