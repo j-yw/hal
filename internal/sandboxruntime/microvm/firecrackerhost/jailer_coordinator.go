@@ -333,12 +333,10 @@ type strictJailerConfigFile struct {
 	} `json:"machine-config"`
 	BootSource firecracker.BootSourcePayload  `json:"boot-source"`
 	Drives     []firecracker.RootDrivePayload `json:"drives"`
-	Network    []json.RawMessage              `json:"network-interfaces,omitempty"`
 	Vsock      *struct {
 		GuestCID uint32 `json:"guest_cid"`
 		UDSPath  string `json:"uds_path"`
 	} `json:"vsock,omitempty"`
-	Entropy json.RawMessage `json:"entropy,omitempty"`
 }
 
 func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorRequest) error {
@@ -381,13 +379,20 @@ func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorReques
 			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
 		}
 	}
-	if seen[paths.LogPath] != 1 || seen[paths.MetricsPath] != 1 || !supportContainsExactPath(request.support, paths.LogPath) || !supportContainsExactPath(request.support, paths.MetricsPath) ||
-		supportModeAtPath(request.support, paths.LogPath) != 0o600 || supportModeAtPath(request.support, paths.MetricsPath) != 0o600 {
-		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
-	}
+	allowedSupport := map[string]os.FileMode{paths.LogPath: 0o600, paths.MetricsPath: 0o600}
 	if rendered.BootSource.InitrdPath != nil {
 		initrd := *rendered.BootSource.InitrdPath
-		if initrd == "" || !supportContainsExactPath(request.support, initrd) || seen[initrd] != 1 || supportModeAtPath(request.support, initrd) != 0o400 {
+		if initrd == "" {
+			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
+		}
+		allowedSupport[initrd] = 0o400
+	}
+	if len(request.support) != len(allowedSupport) {
+		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
+	}
+	for _, resource := range request.support {
+		mode, allowed := allowedSupport[resource.JailPath]
+		if !allowed || resource.Mode != mode || seen[resource.JailPath] != 1 {
 			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
 		}
 	}
@@ -466,24 +471,6 @@ func strictJailerConfigHasDuplicateFields(data []byte) bool {
 	}
 	first, err := decoder.Token()
 	return err != nil || visit(first)
-}
-
-func supportContainsExactPath(support []jailerStagingResourceInput, jailPath string) bool {
-	for _, resource := range support {
-		if resource.JailPath == jailPath {
-			return true
-		}
-	}
-	return false
-}
-
-func supportModeAtPath(support []jailerStagingResourceInput, jailPath string) os.FileMode {
-	for _, resource := range support {
-		if resource.JailPath == jailPath {
-			return resource.Mode
-		}
-	}
-	return 0
 }
 
 func strictJailerCoordinatorAuthority(request strictJailerCoordinatorRequest, inspection strictJailerHostInspectionResult) (jailerStagingAuthority, firecracker.PathPlan, error) {
