@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,7 +19,11 @@ var (
 	errJailerStagingCleanupIncomplete = errors.New("strict Jailer resource staging cleanup is incomplete")
 )
 
-const maxJailerStagingSupportFiles = 16
+const (
+	maxJailerStagingSupportFiles          = 16
+	maxJailerStagingResourceBytes  int64  = 1 << 30
+	maxJailerStagingAggregateBytes uint64 = 1 << 32
+)
 
 type jailerStagingResourceRole string
 
@@ -321,16 +324,26 @@ func validateJailerStagingResources(authority jailerStagingAuthority, request ja
 	seenIDs := make(map[string]struct{}, len(candidates))
 	seenPaths := make(map[string]struct{}, len(candidates))
 	resources := make([]validatedJailerStagingResource, 0, len(candidates))
+	var aggregateBytes uint64
 	for _, candidate := range candidates {
 		input := candidate.input
 		input.ID = strings.TrimSpace(input.ID)
 		input.SHA256 = strings.TrimSpace(input.SHA256)
 		if candidate.required != "" && input.ID != candidate.required ||
 			candidate.role == jailerStagingRoleSupport && (!strings.HasPrefix(input.ID, "support-") || !validStrictJailerRuntimeID(input.ID)) ||
-			interfaceValueIsNil(input.Source) || input.SizeBytes < 0 || input.SizeBytes == math.MaxInt64 ||
+			interfaceValueIsNil(input.Source) || input.SizeBytes < 0 ||
 			!validJailerStagingDigest(input.SHA256) || !validJailerStagingFileMode(input.Mode) {
 			return nil, newJailerStagingError(errJailerStagingInvalid, "resources")
 		}
+		resourceLimit := maxJailerStagingResourceBytes
+		if candidate.role == jailerStagingRoleConfig {
+			resourceLimit = maxStrictJailerConfigBytes
+		}
+		resourceBytes := uint64(input.SizeBytes)
+		if input.SizeBytes > resourceLimit || resourceBytes > maxJailerStagingAggregateBytes-aggregateBytes {
+			return nil, newJailerStagingError(errJailerStagingInvalid, "resources")
+		}
+		aggregateBytes += resourceBytes
 		jailPath, relative, pathErr := validateJailerStagingPath(input.JailPath)
 		if pathErr != nil {
 			return nil, newJailerStagingError(errJailerStagingInvalid, "resources")
