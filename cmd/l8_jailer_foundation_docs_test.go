@@ -106,6 +106,7 @@ func TestL8JailerFoundationDefaultCommandsStayFakeOnly(t *testing.T) {
 func TestL8JailerFoundationOptionalAcceptanceRemainsUnaccepted(t *testing.T) {
 	doc := readL8JailerFoundationFile(t, filepath.Join("..", "docs", "design", l8JailerFoundationVerificationDoc))
 	section := l8JailerFoundationSection(t, doc, "## Optional future prepared-Linux acceptance", "## Non-claims")
+	section = strings.Join(strings.Fields(section), " ")
 	for _, required := range []string{
 		"internal/sandboxruntime/microvm/firecrackerhost/jailer_live_acceptance_test.go",
 		"linux && firecracker_live && l8_jailer_live",
