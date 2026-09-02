@@ -413,7 +413,8 @@ func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorReques
 	allowedSupport := map[string]os.FileMode{paths.LogPath: 0o600, paths.MetricsPath: 0o600}
 	if rendered.BootSource.InitrdPath != nil {
 		initrd := *rendered.BootSource.InitrdPath
-		if initrd == "" {
+		if initrd == "" || initrd == request.kernel.JailPath || initrd == request.rootfs.JailPath ||
+			initrd == request.config.JailPath || initrd == paths.LogPath || initrd == paths.MetricsPath {
 			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
 		}
 		allowedSupport[initrd] = 0o400
