@@ -56,7 +56,7 @@ func TestStageStrictJailerResourcesCreatesExactPrivateTree(t *testing.T) {
 		if file == nil {
 			t.Fatalf("%s staged file is missing", correlation.role)
 		}
-		if file.mode != correlation.mode || file.uid != 1001 || file.gid != 1002 || file.syncCalls != 2 || !file.closed {
+		if file.mode != correlation.mode || file.uid != 1001 || file.gid != 1002 || file.syncCalls != 2 || file.verifyCalls != 1 || !file.closed {
 			t.Fatalf("%s staged metadata = %#v, correlation %#v", correlation.role, file, correlation)
 		}
 		if int64(len(file.data)) != correlation.sizeBytes || sha256Hex(file.data) != correlation.sha256 {
@@ -66,7 +66,7 @@ func TestStageStrictJailerResourcesCreatesExactPrivateTree(t *testing.T) {
 	if inherited := result.processInheritedFiles(); inherited == nil || len(inherited) != 0 {
 		t.Fatalf("inherited files = %#v, want explicit empty list", inherited)
 	}
-	if filesystem.root.removeCalls != 0 || filesystem.root.closeCalls != 1 {
+	if filesystem.root.verifyCalls != 1 || filesystem.root.removeCalls != 0 || filesystem.root.closeCalls != 1 {
 		t.Fatalf("successful root cleanup/close calls = %d/%d, want 0/1", filesystem.root.removeCalls, filesystem.root.closeCalls)
 	}
 }
@@ -115,6 +115,22 @@ func TestStageStrictJailerResourcesRejectsUnsafeOrAmbiguousInputs(t *testing.T) 
 }
 
 func TestStageStrictJailerResourcesRejectsSymlinkAndReplacementAttempts(t *testing.T) {
+	t.Run("symlink in parent directory", func(t *testing.T) {
+		request := validJailerStagingRequest()
+		filesystem := newFakeJailerStagingFilesystem()
+		filesystem.failDirectoryPath = "drives"
+		filesystem.failure = errors.New("symlink /Users/alice/private/parent-secret")
+
+		_, err := stageStrictJailerResources(filesystem, request)
+		if !errors.Is(err, errJailerStagingFailed) {
+			t.Fatalf("error = %v, want errJailerStagingFailed", err)
+		}
+		if filesystem.root == nil || filesystem.root.removeCalls != 1 {
+			t.Fatalf("owned partial root removal = %#v, want exactly once", filesystem.root)
+		}
+		assertJailerStagingErrorRedacted(t, err)
+	})
+
 	t.Run("symlink at destination", func(t *testing.T) {
 		request := validJailerStagingRequest()
 		filesystem := newFakeJailerStagingFilesystem()
@@ -135,6 +151,36 @@ func TestStageStrictJailerResourcesRejectsSymlinkAndReplacementAttempts(t *testi
 		request := validJailerStagingRequest()
 		filesystem := newFakeJailerStagingFilesystem()
 		filesystem.replacePath = filepath.FromSlash("boot/vmlinux")
+
+		_, err := stageStrictJailerResources(filesystem, request)
+		if !errors.Is(err, errJailerStagingFailed) {
+			t.Fatalf("error = %v, want errJailerStagingFailed", err)
+		}
+		if filesystem.root == nil || filesystem.root.removeCalls != 1 {
+			t.Fatalf("owned partial root removal = %#v, want exactly once", filesystem.root)
+		}
+		assertJailerStagingErrorRedacted(t, err)
+	})
+
+	t.Run("directory entry replaced", func(t *testing.T) {
+		request := validJailerStagingRequest()
+		filesystem := newFakeJailerStagingFilesystem()
+		filesystem.replaceIdentityPath = filepath.FromSlash("boot/vmlinux")
+
+		_, err := stageStrictJailerResources(filesystem, request)
+		if !errors.Is(err, errJailerStagingFailed) {
+			t.Fatalf("error = %v, want errJailerStagingFailed", err)
+		}
+		if filesystem.root == nil || filesystem.root.removeCalls != 1 {
+			t.Fatalf("owned partial root removal = %#v, want exactly once", filesystem.root)
+		}
+		assertJailerStagingErrorRedacted(t, err)
+	})
+
+	t.Run("root generation replaced", func(t *testing.T) {
+		request := validJailerStagingRequest()
+		filesystem := newFakeJailerStagingFilesystem()
+		filesystem.replaceRoot = true
 
 		_, err := stageStrictJailerResources(filesystem, request)
 		if !errors.Is(err, errJailerStagingFailed) {
@@ -269,13 +315,16 @@ func assertJailerStagingErrorRedacted(t *testing.T, err error) {
 }
 
 type fakeJailerStagingFilesystem struct {
-	createCalls    int
-	createErr      error
-	failCreatePath string
-	replacePath    string
-	failure        error
-	removeErr      error
-	root           *fakeJailerStagingRoot
+	createCalls         int
+	createErr           error
+	failDirectoryPath   string
+	failCreatePath      string
+	replacePath         string
+	replaceIdentityPath string
+	replaceRoot         bool
+	failure             error
+	removeErr           error
+	root                *fakeJailerStagingRoot
 }
 
 func newFakeJailerStagingFilesystem() *fakeJailerStagingFilesystem {
@@ -290,7 +339,8 @@ func (filesystem *fakeJailerStagingFilesystem) createExclusiveRoot(request jaile
 	root := &fakeJailerStagingRoot{
 		hostRoot: request.HostRoot, mode: request.Mode, uid: request.UID, gid: request.GID,
 		directoryMetadata: map[string]fakeJailerStagingMetadata{}, files: map[string]*fakeJailerStagingFile{},
-		failCreatePath: filesystem.failCreatePath, replacePath: filesystem.replacePath,
+		failDirectoryPath: filesystem.failDirectoryPath, failCreatePath: filesystem.failCreatePath, replacePath: filesystem.replacePath,
+		replaceIdentityPath: filesystem.replaceIdentityPath, replaceRoot: filesystem.replaceRoot,
 		failure: filesystem.failure, removeErr: filesystem.removeErr,
 	}
 	filesystem.root = root
@@ -304,22 +354,29 @@ type fakeJailerStagingMetadata struct {
 }
 
 type fakeJailerStagingRoot struct {
-	hostRoot          string
-	mode              os.FileMode
-	uid               uint32
-	gid               uint32
-	directories       []string
-	directoryMetadata map[string]fakeJailerStagingMetadata
-	files             map[string]*fakeJailerStagingFile
-	failCreatePath    string
-	replacePath       string
-	failure           error
-	removeErr         error
-	removeCalls       int
-	closeCalls        int
+	hostRoot            string
+	mode                os.FileMode
+	uid                 uint32
+	gid                 uint32
+	directories         []string
+	directoryMetadata   map[string]fakeJailerStagingMetadata
+	files               map[string]*fakeJailerStagingFile
+	failDirectoryPath   string
+	failCreatePath      string
+	replacePath         string
+	replaceIdentityPath string
+	replaceRoot         bool
+	failure             error
+	removeErr           error
+	removeCalls         int
+	closeCalls          int
+	verifyCalls         int
 }
 
 func (root *fakeJailerStagingRoot) createDirectory(relative string, mode os.FileMode, uid, gid uint32) error {
+	if relative == root.failDirectoryPath {
+		return root.failure
+	}
 	if _, exists := root.directoryMetadata[relative]; exists {
 		return fmt.Errorf("duplicate directory: %s", relative)
 	}
@@ -338,9 +395,20 @@ func (root *fakeJailerStagingRoot) createFileExclusive(relative string) (jailerS
 	if _, exists := root.files[relative]; exists {
 		return nil, errors.New("duplicate file")
 	}
-	file := &fakeJailerStagingFile{replaceOnVerify: relative == root.replacePath}
+	file := &fakeJailerStagingFile{
+		replaceOnVerify: relative == root.replacePath,
+		identityChanged: relative == root.replaceIdentityPath,
+	}
 	root.files[relative] = file
 	return file, nil
+}
+
+func (root *fakeJailerStagingRoot) verifyOwned() error {
+	root.verifyCalls++
+	if root.replaceRoot {
+		return errors.New("root generation replaced at /srv/private/root-secret")
+	}
+	return nil
 }
 
 func (root *fakeJailerStagingRoot) removeOwned() error {
@@ -363,6 +431,8 @@ type fakeJailerStagingFile struct {
 	closed          bool
 	replaceOnVerify bool
 	replaced        bool
+	identityChanged bool
+	verifyCalls     int
 }
 
 func (file *fakeJailerStagingFile) Read(output []byte) (int, error) {
@@ -420,6 +490,14 @@ func (file *fakeJailerStagingFile) setOwnership(uid, gid uint32) error {
 
 func (file *fakeJailerStagingFile) setMode(mode os.FileMode) error {
 	file.mode = mode
+	return nil
+}
+
+func (file *fakeJailerStagingFile) verifyIdentity() error {
+	file.verifyCalls++
+	if file.identityChanged {
+		return errors.New("file identity replaced at /srv/private/file-secret")
+	}
 	return nil
 }
 
