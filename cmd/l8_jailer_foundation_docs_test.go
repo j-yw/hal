@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -106,7 +107,7 @@ func TestL8JailerFoundationDefaultCommandsStayFakeOnly(t *testing.T) {
 	section := l8JailerFoundationSection(t, doc, "## Default fake-safe verification", "## Optional future prepared-Linux acceptance")
 	for _, required := range []string{
 		"go test -count=1 ./cmd -run '^TestL8JailerFoundation'",
-		"go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailerLaunch|StrictJailerLifecycle|StrictJailerNamespaceRunner|StrictJailerOSExecLaunch|StageStrictJailerResources|ValidateJailerStagingResources|JailerStaging|LinuxJailerStager|StrictJailerCoordinator)'",
+		"go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailerLaunch|StrictJailerLifecycle|StrictJailerNamespaceRunner|StrictJailerOSExecLaunch|StageStrictJailerResources|ValidateJailerStagingResources|JailerStaging|LinuxJailer|StrictJailerCoordinator)'",
 		"go test -count=1 -run '^$' ./...",
 		"go vet ./...",
 		"make docs-check",
@@ -121,6 +122,41 @@ func TestL8JailerFoundationDefaultCommandsStayFakeOnly(t *testing.T) {
 	for _, forbidden := range []string{" -tags", "HAL_", "/dev/kvm", "sudo ", "prepared-Linux acceptance passed"} {
 		if strings.Contains(section, forbidden) {
 			t.Errorf("default fake-safe verification contains live prerequisite %q", forbidden)
+		}
+	}
+}
+
+func TestL8JailerFoundationFocusedSelectorIncludesCriticalRegressions(t *testing.T) {
+	doc := readL8JailerFoundationFile(t, filepath.Join("..", "docs", "design", l8JailerFoundationVerificationDoc))
+	section := l8JailerFoundationSection(t, doc, "## Default fake-safe verification", "## Optional future prepared-Linux acceptance")
+	selector := l8JailerFoundationPackageSelector(t, section)
+	compiled, err := regexp.Compile(selector)
+	if err != nil {
+		t.Fatalf("documented Jailer package selector is invalid: %v", err)
+	}
+
+	testFiles, err := filepath.Glob(filepath.Join("..", "internal", "sandboxruntime", "microvm", "firecrackerhost", "*_test.go"))
+	if err != nil || len(testFiles) == 0 {
+		t.Fatalf("locate Jailer package tests: files=%d error=%v", len(testFiles), err)
+	}
+	var source strings.Builder
+	for _, testFile := range testFiles {
+		source.WriteString(readL8JailerFoundationFile(t, testFile))
+	}
+	for _, testName := range []string{
+		"TestLinuxJailerCreateDirectoryDoesNotMutateUncorrelatedOpenedDirectory",
+		"TestLinuxJailerStagingLeaseDetectsReplacementAndFailsCleanupClosed",
+		"TestLinuxJailerStagerRejectsReplacedNestedMutationParent",
+		"TestLinuxJailerStagerRejectsAliasedFileBeforeMutation",
+		"TestLinuxJailerStagerRejectsRenamedFileBeforeMutation",
+		"TestLinuxJailerStagerPreFinalizationCleanupPreservesUnrecordedEntries",
+		"TestLinuxJailerStagerQuarantinesRuntimeWhenPostMkdirStatCannotBePinned",
+	} {
+		if !strings.Contains(source.String(), "func "+testName+"(") {
+			t.Fatalf("critical Jailer regression %s no longer exists", testName)
+		}
+		if !compiled.MatchString(testName) {
+			t.Errorf("documented Jailer package selector skips %s", testName)
 		}
 	}
 }
@@ -171,6 +207,21 @@ func l8JailerFoundationSection(t *testing.T, doc, start, end string) string {
 		t.Fatalf("Jailer foundation verification document omits section %q after %q", end, start)
 	}
 	return doc[startIndex : startIndex+len(start)+endIndex]
+}
+
+func l8JailerFoundationPackageSelector(t *testing.T, section string) string {
+	t.Helper()
+	prefix := "go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '"
+	start := strings.Index(section, prefix)
+	if start < 0 {
+		t.Fatalf("Jailer verification section omits focused package command")
+	}
+	remainder := section[start+len(prefix):]
+	end := strings.Index(remainder, "'")
+	if end < 0 {
+		t.Fatalf("Jailer focused package command omits closing selector quote")
+	}
+	return remainder[:end]
 }
 
 func readL8JailerFoundationFile(t *testing.T, path string) string {
