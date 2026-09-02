@@ -9,7 +9,7 @@ import (
 
 const (
 	l8JailerFoundationVerificationDoc = "sandbox-runtime-v2-l8-jailer-foundation-verification.md"
-	l8JailerFoundationImplementation  = "64391caec0e9e9503f820cefb00eb3665801a4e5"
+	l8JailerFoundationImplementation  = "750dbab9568613df690e3bde49e91fe160687896"
 )
 
 func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
@@ -18,19 +18,24 @@ func TestL8JailerFoundationVerificationDocumentation(t *testing.T) {
 
 	for _, required := range []string{
 		l8JailerFoundationImplementation,
-		"implementation head before this verification-only commit",
+		"implementation head before the verification-only commits",
 		"read-only host inspector",
 		"retained-dirfd stager",
 		"network-only direct `setns` runner",
 		"private strict Jailer lifecycle",
 		"private strict Jailer coordinator",
 		"one active or cleanup-pending generation",
+		"one GiB per staged resource and four GiB in aggregate",
+		"only correlated log, metrics, and optional initrd files",
+		"rejects network-interface and entropy configuration",
+		"retires the exact terminal process record only after terminal root release",
 		"prepared initial-user-namespace-root live host",
 		"dedicated UID/GID authority",
 		"measured executable handoff",
 		"post-credential-drop crash containment",
 		"expected-runtime-UID vsock readiness",
-		"bounded Jailer resource and cgroup controls",
+		"runtime and cgroup resource controls",
+		"typed network topology handoff",
 		"prepared-Linux acceptance has not run",
 		"strict runtime selection remains unchanged and default-off",
 		"No L8, HL8E, L10, or L11 claim is made",
@@ -84,7 +89,7 @@ func TestL8JailerFoundationDefaultCommandsStayFakeOnly(t *testing.T) {
 	section := l8JailerFoundationSection(t, doc, "## Default fake-safe verification", "## Optional future prepared-Linux acceptance")
 	for _, required := range []string{
 		"go test -count=1 ./cmd -run '^TestL8JailerFoundation'",
-		"go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailerLaunch|StrictJailerLifecycle|StrictJailerNamespaceRunner|StrictJailerOSExecLaunch|StageStrictJailerResources|JailerStaging|LinuxJailerStager|StrictJailerCoordinator)'",
+		"go test -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test(InspectStrictJailerHost|OSStrictJailerHostInspection|PlanStrictJailerLaunch|StrictJailerLaunch|StrictJailerLifecycle|StrictJailerNamespaceRunner|StrictJailerOSExecLaunch|StageStrictJailerResources|ValidateJailerStagingResources|JailerStaging|LinuxJailerStager|StrictJailerCoordinator)'",
 		"go test -count=1 -run '^$' ./...",
 		"go vet ./...",
 		"make docs-check",
