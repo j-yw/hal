@@ -20,10 +20,10 @@ A Go `cmd/hal-guest-role-bootstrap` package is not an L8 native identity. Node
 22.22.0 and `@earendil-works/pi-coding-agent` 0.82.1 are fail-closed required
 cache filenames (`node-v22.22.0.tar.xz`, `pi-coding-agent-0.82.1.tgz`,
 `pi-shrinkwrap-0.82.1.json`). This slice does not download them.
-Exact L8 cache digests are still unissued, so L8 `cache.manifest` remains
-absent and `verify-cache.sh` fails closed. A later source-locking slice must
-author that manifest with the exact Node, Pi, shrinkwrap, and every transitive
-npm archive filename, size, and SHA-256 before this pipeline can build.
+The exact L8 cache manifest is checked in with the Node, Pi, shrinkwrap, and
+transitive npm archive filename, size, and SHA-256 locks. The external cache
+directory must contain that exact set; missing, additional, or mismatched cache
+content still fails closed, and this pipeline does not download it.
 
 The seven-file bundle layout is:
 
@@ -61,8 +61,25 @@ tools/microvm/l8/build-in-container.sh
 tools/microvm/l8/post-build.sh
 tools/microvm/l8/verify-reproducible.sh
 tools/microvm/l8/verify-final-image.sh
+tools/microvm/l8/verify-image-profile.sh
 tools/microvm/l8/verify-cache.sh
 ```
+
+`build-in-container.sh` invokes `verify-image-profile.sh` for immutable rootfs
+inspection without using HL8E as an image-layout prerequisite.
+`verify-final-image.sh` remains the separate HL8E and parent-L7 gated wrapper;
+the profile-only verifier does not issue evidence or accept L8.
+
+The immutable inspection is bounded to the fixed profile's 65,536 inodes and
+512 MiB of aggregate logical regular-file content. It lists every allocated
+directory with `debugfs ls -p -r`, verifies that every directory produced a
+listing, rejects the existing `.npmrc`, `.npm`, `id_rsa`, `*.pem`, and
+`npm-session` filename policy, and streams allocated regular-file bytes through
+a PEM-style private-key marker check. This is defense in depth, not an
+exhaustive secret detector: it does not identify DER, PKCS#12, encoded,
+compressed, archive-contained, or custom key blobs. Changes to the image size,
+inode count, or secret-pattern policy must update the Buildroot profile,
+verifier, and tests together.
 
 Reproducible verification, when a later issuance slice supplies HL8E, parent
 L7, native bootstrap, and the locked cache, is:
@@ -82,7 +99,7 @@ cover argument and safety gates without running Buildroot.
 ```sh
 go test ./tools/microvm/l8 -count=1
 go test ./cmd -run 'TestL8D7ImagePipeline' -count=1
-bash -n tools/microvm/l8/build.sh tools/microvm/l8/build-in-container.sh tools/microvm/l8/post-build.sh tools/microvm/l8/verify-reproducible.sh tools/microvm/l8/verify-final-image.sh tools/microvm/l8/verify-cache.sh
+bash -n tools/microvm/l8/build.sh tools/microvm/l8/build-in-container.sh tools/microvm/l8/post-build.sh tools/microvm/l8/verify-reproducible.sh tools/microvm/l8/verify-final-image.sh tools/microvm/l8/verify-image-profile.sh tools/microvm/l8/verify-cache.sh
 go vet ./tools/microvm/l8 ./cmd
 ```
 

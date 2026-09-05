@@ -112,8 +112,11 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 		"`cgroup.kill`/zero-population proof",
 		"mandatory key and algorithm/flag allowlists",
 		"server-derived authenticated",
-		"trusted same-UID host control-plane boundary",
-		"every file that declares either selected prepared-Linux test",
+			"trusted same-UID host control-plane boundary",
+			"every file that declares either selected prepared-Linux test",
+			"PEM-style private-key markers",
+			"does not claim exhaustive secret detection",
+			"DER, PKCS#12, encoded, compressed, archive-contained, or custom key blobs",
 	} {
 		if !strings.Contains(doc, required) {
 			t.Fatalf("L8 credential-delivery verification omits %q", required)

@@ -554,7 +554,8 @@ The final-image verifier proves the exact v2 guest agent/init/controller,
 single-threaded native role-bootstrap, mount-monitor, and workload-shim binaries,
 musl target Node 22.22.0, `@earendil-works/pi-coding-agent` 0.82.1 and its
 locked dependency-tree digest, root-owned non-setuid `/usr/bin/node` and
-`/usr/bin/pi`, and absence of npm cache/config/session material. It also proves
+`/usr/bin/pi`, and absence of the locked npm cache/config/session filename set.
+It also proves
 dedicated agent UID/GID 998 and workload UID/GID 1000, PID1 controller launch
 before agent privilege drop, protected proc, exact launch-base/controller/
 agent/monitor/shim capability and seccomp policies, native no-libc/no-loader/
@@ -564,7 +565,10 @@ controller/agent/workload capability sets, controller-public-key boot input
 without private material, L7 network profile, absence of
 setuid/setgid/file capabilities, private filesystem modes, required
 tmpfs/fd-mount/pidfd/mount namespace and cgroup-v2/`cgroup.kill` kernel support,
-and absence of embedded secret/test keys. Test probes are copied into the
+and absence of PEM-style private-key markers in allocated regular-file bytes.
+The bounded marker and filename scan does not claim exhaustive secret detection
+for DER, PKCS#12, encoded, compressed, archive-contained, or custom key blobs.
+Test probes are copied into the
 workspace through the existing bounded guest copy contract; they are not
 installed in the production image and cannot manufacture proof.
 
