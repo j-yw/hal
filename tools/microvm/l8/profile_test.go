@@ -167,6 +167,17 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 			t.Fatalf("verify-image-profile.sh must not depend on %q", forbidden)
 		}
 	}
+	for _, required := range []string{
+		"L8_MAX_PROFILE_INODES",
+		"L8_MAX_PROFILE_CONTENT_BYTES",
+		"directory.commands",
+		"regular-content.commands",
+		"ls -p -r <%d>",
+	} {
+		if !strings.Contains(imageProfile, required) {
+			t.Errorf("verify-image-profile.sh missing bounded secret-inspection marker %q", required)
+		}
+	}
 	if !strings.Contains(container, `"$profile_root/verify-image-profile.sh" "$rootfs_stage"`) {
 		t.Fatal("build-in-container.sh must run the evidence-independent immutable image-profile verifier")
 	}
@@ -218,6 +229,169 @@ func TestL8ImageProfileVerifierRunsWithoutHL8E(t *testing.T) {
 		t.Fatalf("verify-image-profile.sh output = %s, must not require HL8E", payload)
 	}
 }
+
+func TestL8ImageProfileVerifierRejectsForbiddenNamesPrivateKeysAndOversizedContent(t *testing.T) {
+	tests := []struct {
+		name           string
+		forbiddenName  string
+		privateKey     string
+		regularSize    string
+		incompleteDirs bool
+		wantDiagnostic string
+	}{
+		{
+			name:           "forbidden filename",
+			forbiddenName:  ".npmrc",
+			wantDiagnostic: "forbidden secret or package-manager filename",
+		},
+		{
+			name:           "npm cache directory",
+			forbiddenName:  ".npm",
+			wantDiagnostic: "forbidden secret or package-manager filename",
+		},
+		{
+			name:           "rsa key filename",
+			forbiddenName:  "id_rsa",
+			wantDiagnostic: "forbidden secret or package-manager filename",
+		},
+		{
+			name:           "pem filename",
+			forbiddenName:  "credential.pem",
+			wantDiagnostic: "forbidden secret or package-manager filename",
+		},
+		{
+			name:           "npm session filename",
+			forbiddenName:  "npm-session-token",
+			wantDiagnostic: "forbidden secret or package-manager filename",
+		},
+		{
+			name:           "private-key bytes",
+			privateKey:     "-----BEGIN OPENSSH PRIVATE KEY-----",
+			wantDiagnostic: "private-key material",
+		},
+		{
+			name:           "encrypted private-key bytes",
+			privateKey:     "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+			wantDiagnostic: "private-key material",
+		},
+		{
+			name:           "oversized regular content",
+			regularSize:    "1073741825",
+			wantDiagnostic: "regular-file content exceeds bounded scan limit",
+		},
+		{
+			name:           "incomplete directory report",
+			incompleteDirs: true,
+			wantDiagnostic: "directory inspection failed",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			payload, err := runL8ImageProfileVerifierFixture(t, tt.forbiddenName, tt.privateKey, tt.regularSize, tt.incompleteDirs)
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || exitErr.ExitCode() == 2 {
+				t.Fatalf("verify-image-profile.sh exit = %v output = %s, want fail-closed inspection rejection", err, payload)
+			}
+			if !strings.Contains(string(payload), tt.wantDiagnostic) {
+				t.Fatalf("verify-image-profile.sh output = %s, want sanitized diagnostic %q", payload, tt.wantDiagnostic)
+			}
+		})
+	}
+
+	t.Run("safe bounded image", func(t *testing.T) {
+		payload, err := runL8ImageProfileVerifierFixture(t, "", "", "64", false)
+		if err != nil {
+			t.Fatalf("verify-image-profile.sh safe fixture error = %v output = %s", err, payload)
+		}
+	})
+}
+
+func runL8ImageProfileVerifierFixture(t *testing.T, forbiddenName, privateKey, regularSize string, incompleteDirs bool) ([]byte, error) {
+	t.Helper()
+	root := t.TempDir()
+	image := filepath.Join(root, "rootfs.ext4")
+	if err := os.WriteFile(image, []byte("synthetic-image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	debugfs := filepath.Join(bin, "debugfs")
+	if err := os.WriteFile(debugfs, []byte(l8ImageProfileDebugfsFixture), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("bash", "verify-image-profile.sh", image)
+	command.Env = append(os.Environ(),
+		"PATH="+bin+":"+os.Getenv("PATH"),
+		"HAL_L8_IMAGE_PROFILE_FAKE_FORBIDDEN_NAME="+forbiddenName,
+		"HAL_L8_IMAGE_PROFILE_FAKE_PRIVATE_KEY="+privateKey,
+		"HAL_L8_IMAGE_PROFILE_FAKE_REGULAR_SIZE="+regularSize,
+		fmt.Sprintf("HAL_L8_IMAGE_PROFILE_FAKE_INCOMPLETE_DIRS=%t", incompleteDirs),
+	)
+	return command.CombinedOutput()
+}
+
+const l8ImageProfileDebugfsFixture = `#!/bin/sh
+set -eu
+if [ "$1" = "-R" ]; then
+	case "$2" in
+		"stat /workspace")
+			printf '%s\n' 'Inode: 2   Type: directory    Mode:  0700' 'User:  1000   Group:  1000   Project: 0   Size: 1024'
+			;;
+		"stat /run/agent")
+			printf '%s\n' 'Inode: 2   Type: directory    Mode:  0700' 'User:   998   Group:   998   Project: 0   Size: 1024'
+			;;
+		"stat /etc/resolv.conf")
+			printf '%s\n' 'Inode: 1   Type: regular    Mode:  0644' 'User:     0   Group:     0   Project: 0   Size: 0'
+			;;
+		stat\ *)
+			printf '%s\n' 'Inode: 1   Type: regular    Mode:  0755' 'User:     0   Group:     0   Project: 0   Size: 64'
+			;;
+		"cat /usr/bin/setpriv")
+			printf '%s\n' '--reuid --regid --clear-groups --no-new-privs --bounding-set --inh-caps --ambient-caps --securebits'
+			;;
+		"cat /etc/passwd")
+			printf '%s\n' 'agent:x:998:998:Agent:/run/agent:/bin/sh' 'workload:x:1000:1000:Workload:/workspace:/bin/sh'
+			;;
+		"cat /etc/group")
+			printf '%s\n' 'agent:x:998:' 'workload:x:1000:'
+			;;
+		"cat /etc/shadow")
+			printf '%s\n' 'agent:!:::::::' 'workload:!:::::::'
+			;;
+		stats)
+			printf '%s\n' 'Inode count: 16'
+			;;
+		*) exit 72 ;;
+	esac
+	exit 0
+fi
+if [ "$1" = "-f" ]; then
+	commands=$2
+	if grep -Fq 'ls -p' "$commands"; then
+		if [ "${HAL_L8_IMAGE_PROFILE_FAKE_INCOMPLETE_DIRS:-false}" != true ]; then
+			printf '%s\n' '/2/040755/0/0/.//'
+		fi
+		name=${HAL_L8_IMAGE_PROFILE_FAKE_FORBIDDEN_NAME:-safe.txt}
+		[ -n "$name" ] || name=safe.txt
+		printf '/3/100644/0/0/%s/12/\n' "$name"
+	elif grep -Fq 'cat <' "$commands"; then
+		printf '%s\n' "${HAL_L8_IMAGE_PROFILE_FAKE_PRIVATE_KEY:-safe-content}"
+	else
+		size=${HAL_L8_IMAGE_PROFILE_FAKE_REGULAR_SIZE:-64}
+		[ -n "$size" ] || size=64
+		printf '%s\n' \
+			'Inode: 1   Type: regular    Mode:  0644' \
+			"User:     0   Group:     0   Project: 0   Size: $size" \
+			'Inode: 2   Type: directory    Mode:  0755' \
+			'User:     0   Group:     0   Project: 0   Size: 1024'
+	fi
+	exit 0
+fi
+exit 73
+`
 
 func TestL8BuildScriptsRejectUnsafeArgumentsWithoutBuildroot(t *testing.T) {
 	t.Parallel()
