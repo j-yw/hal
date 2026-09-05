@@ -61,8 +61,14 @@ func testL2ExecCancellationDescendant(t *testing.T, script string) {
 		t.Fatal("RunExecCommand() did not return after cancellation")
 	}
 
-	if l2ProcessAlive(descendantPID) {
-		t.Fatalf("descendant process %d remained alive after daemon-owned exec cancellation", descendantPID)
+	// SIGKILL delivery to a descendant need not complete before the leader is
+	// reaped. Observe the result within a bound rather than racing the scheduler.
+	deadline := time.Now().Add(time.Second)
+	for l2ProcessAlive(descendantPID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant process %d remained alive after daemon-owned exec cancellation", descendantPID)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

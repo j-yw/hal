@@ -72,7 +72,7 @@ func terminateExecProcessGroupAfter(cmd *exec.Cmd, completionCh <-chan error, gr
 	// be recycled while it is used below.
 	select {
 	case observationErr := <-completionCh:
-		return waitExecProcess(cmd, observationErr)
+		return finishCancelledExecProcessGroup(cmd, observationErr)
 	default:
 	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
@@ -80,10 +80,21 @@ func terminateExecProcessGroupAfter(cmd *exec.Cmd, completionCh <-chan error, gr
 	defer timer.Stop()
 	select {
 	case observationErr := <-completionCh:
-		return waitExecProcess(cmd, observationErr)
+		return finishCancelledExecProcessGroup(cmd, observationErr)
 	case <-timer.C:
 	}
 
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	return waitExecProcess(cmd, <-completionCh)
+}
+
+func finishCancelledExecProcessGroup(cmd *exec.Cmd, observationErr error) error {
+	// Leader exit does not mean descendants have exited. It can leave children
+	// ignoring SIGTERM, including children holding our output pipes open. A
+	// successful WNOWAIT observation still pins the group ID, so finish signaling
+	// before Wait reaps the leader. An observation failure grants no such proof.
+	if observationErr == nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	return waitExecProcess(cmd, observationErr)
 }
