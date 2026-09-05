@@ -77,14 +77,14 @@ func TestL8ContractResetSupersedesClaimsWithoutRewritingHistory(t *testing.T) {
 func TestL8ContractResetImplementationOrder(t *testing.T) {
 	doc := strings.Join(strings.Fields(readL8CredentialDeliveryFile(t, filepath.Join("..", "docs", "design", l8ContractResetDoc))), " ")
 	ordered := []string{
-		"1. RED: detach HL8E from the runnable L8 path",
+		"1. RED: add a distinct minimal runtime profile, bundle verifier, and selector",
 		"2. RED: lock the minimum guest topology",
 		"3. GREEN: compose one host credential owner",
 		"4. GREEN: bind activation to one fresh VM and job",
 		"5. LIVE: prove each delivery mode",
 		"6. LIVE: run the terminal and restart matrix",
 		"7. LIVE: prove absence and redaction",
-		"8. HANDOFF: unlock L10 only after L8 passes",
+		"8. HANDOFF: make L8 evidence available to L10 only after L8 passes",
 	}
 	previous := -1
 	for _, marker := range ordered {
@@ -120,10 +120,11 @@ func TestL8ContractResetImplementationOrder(t *testing.T) {
 
 func TestL8ContractResetPreservesLegacyAndStrictBoundaries(t *testing.T) {
 	designRoot := filepath.Join("..", "docs", "design")
-	reset := readL8CredentialDeliveryFile(t, filepath.Join(designRoot, l8ContractResetDoc))
-	canonical := readL8CredentialDeliveryFile(t, filepath.Join(designRoot, "sandbox-runtime-v2-linux-completion-architecture.md"))
-	legacy := readL8CredentialDeliveryFile(t, filepath.Join(designRoot, l8CredentialArchitectureDoc))
-	hostBoundary := readL8CredentialDeliveryFile(t, filepath.Join(designRoot, l8HostOwnedStrictBoundaryDoc))
+	normalize := func(value string) string { return strings.Join(strings.Fields(value), " ") }
+	reset := normalize(readL8CredentialDeliveryFile(t, filepath.Join(designRoot, l8ContractResetDoc)))
+	canonical := normalize(readL8CredentialDeliveryFile(t, filepath.Join(designRoot, "sandbox-runtime-v2-linux-completion-architecture.md")))
+	legacy := normalize(readL8CredentialDeliveryFile(t, filepath.Join(designRoot, l8CredentialArchitectureDoc)))
+	hostBoundary := normalize(readL8CredentialDeliveryFile(t, filepath.Join(designRoot, l8HostOwnedStrictBoundaryDoc)))
 	build := readL8CredentialDeliveryFile(t, filepath.Join("..", "tools", "microvm", "l8", "build.sh"))
 	finalVerifier := readL8CredentialDeliveryFile(t, filepath.Join("..", "tools", "microvm", "l8", "verify-final-image.sh"))
 	liveWrapper := readL8CredentialDeliveryFile(t, filepath.Join("..", "tools", "microvm", "l8", "verify-selected-live.sh"))
@@ -148,10 +149,11 @@ func TestL8ContractResetPreservesLegacyAndStrictBoundaries(t *testing.T) {
 			t.Errorf("%s does not resolve the L8 topology authority through %s", name, l8ContractResetDoc)
 		}
 	}
-	for _, required := range []string{"mandatory for every strict launch", "fresh Jailer-owned launch proof"} {
-		if !strings.Contains(hostBoundary, required) || !strings.Contains(reset, required) {
-			t.Errorf("reset and host boundary do not both preserve Jailer invariant %q", required)
-		}
+	if !strings.Contains(hostBoundary, "mandatory for every strict launch") ||
+		!strings.Contains(reset, "mandatory for every strict launch") ||
+		!strings.Contains(hostBoundary, "fresh Jailer-owned Firecracker launch proof") ||
+		!strings.Contains(reset, "fresh Jailer-owned launch proof") {
+		t.Error("reset and host boundary do not both preserve mandatory fresh Jailer-owned launch proof")
 	}
 	for _, required := range []string{
 		"http_only file_tmpfs_only ssh_agent_only all_modes failure_recovery_matrix",

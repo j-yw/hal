@@ -11,8 +11,17 @@ The three locked issue comments remain authoritative:
 
 A phase-specific design may refine internal names and algorithms. It must not
 weaken the locked behavior, move an acceptance proof to a fake, or claim work
-owned by a later phase. A conflict is resolved in the issue before code is
-merged.
+owned by a later phase. A conflict with locked issue behavior is resolved in
+the issue before code is merged. A conflict between checked-in internal designs
+must be resolved by an explicit supersession record rather than allowing both
+to remain current.
+
+`sandbox-runtime-v2-l8-credential-runtime-contract-reset.md` is the current
+selected L8 topology decision. It supersedes the mandatory six-role and HL8E
+critical-path assumptions in later D2-D7 supplements while preserving their
+historical evidence and all locked L8 behavior. The existing legacy D7 build,
+verifier, and HL8E gates remain fail-closed; only a distinct replacement
+profile, verifier, and selector may detach from them.
 
 PR #44 and `feature/sandbox-runtime-secure-default-v2` are the integration
 baseline. The long-lived Linux-completion branch is stacked on that branch;
@@ -34,7 +43,7 @@ Strict success is a conjunction, not a score:
 
 ```text
 strict =
-  Firecracker guest isolation and readiness
+  fresh Jailer-owned Firecracker guest isolation and readiness
   AND proxy plus inspected Linux network enforcement
   AND live credential-delivery proof
   AND verified immutable template descriptor

@@ -59,8 +59,10 @@ behavior: one fresh Firecracker VM per job, with the execution chain
 `hal-init -> hal-guest-agent -> job workload`. The host owns credential
 authority, network authority, and job lifecycle. L8 proves usability and
 cleanup for the three production modes. L10 owns strict secure-default
-selection and correlates L5, L7, L8, L9, and workspace proof; L8 does not
-select or advertise the strict default.
+selection and correlates the fresh Jailer-owned launch proof with L5, L7, L8,
+L9, and workspace proof; L8 does not select or advertise the strict default.
+The Jailer remains mandatory for every strict launch. Direct Firecracker
+credential evidence is insufficient to unlock or support a strict claim.
 
 ## Ownership and data flow
 
@@ -135,17 +137,23 @@ equivalent negative isolation.
 
 HL8E v1 remains unissued and stays an offline diagnostic. We preserve its
 format, importer, generator analysis, and historical tests for investigation;
-we do not manufacture weaker evidence or claim a bounded Go call graph. It is
-not a runnable L8 build, boot, activation, or acceptance prerequisite.
+we do not manufacture weaker evidence or claim a bounded Go call graph.
 
-That critical-path change must be made only through future product tests:
-first prove red that the selected L8 image/build/run path still requires HL8E,
-then remove only that dependency while keeping exact required-role/image
-digests and fail-closed image behavior. This cutover does not claim the
+Legacy `tools/microvm/l8/build.sh`, `verify-final-image.sh`, and
+`VerifyL8DistributionBundle` remain unchanged and fail closed when HL8E is
+absent. Their existing tests remain active. This note does not authorize
+removing HL8E from those legacy D7 paths.
+
+Detachment may happen only through a distinct minimal runtime profile, bundle
+verifier, and selector. Red tests must first prove that this new path cannot be
+confused with or accepted as the legacy profile, validates exact image and
+required-process identities, consumes correlated L7 evidence, and still fails
+closed on missing or corrupt replacement evidence. The new path may then avoid
+reading HL8E without changing the legacy gate. This cutover does not claim the
 currently inactive guest seccomp path. A documentation assertion alone cannot
-detach HL8E. The diagnostic may become a release-hardening gate in a future
-issue if a tractable analysis and a clearly stated security property are
-demonstrated.
+detach HL8E: the change requires future product tests against the distinct path.
+The diagnostic may become a release-hardening gate in a future issue if a
+tractable analysis and a clearly stated security property are demonstrated.
 
 ## Options and tradeoffs
 
@@ -178,10 +186,12 @@ its minimal implementation, then focused, race-relevant, broad, and live gates
 are rerun. The order below is dependency order, not evidence that any step is
 already green.
 
-1. RED: detach HL8E from the runnable L8 path. Add product tests proving the
-   selected L8 image/build/run path neither reads nor requires HL8E, while a
-   corrupt image identity still fails closed. Keep the offline analyzer tests
-   and the unissued status intact; make no guest seccomp claim.
+1. RED: add a distinct minimal runtime profile, bundle verifier, and selector.
+   Prove it cannot be relabeled as or accepted by the legacy L8 profile, neither
+   reads nor requires HL8E, validates replacement image/process/L7 evidence,
+   and fails closed when any of that evidence is absent or corrupt. Keep the
+   legacy build, final-image verifier, bundle issuer, offline analyzer tests,
+   and unissued HL8E status intact; make no guest seccomp claim.
 2. RED: lock the minimum guest topology. Add image-manifest, PID 1, process
    enumeration, and teardown tests for exactly
    `hal-init -> hal-guest-agent -> job workload`; prove the three historical
@@ -206,10 +216,12 @@ already green.
    per-test canaries and inspect that no owned host route, listener, relay,
    buffer, file, mount, socket, VM, or cleanup-pending job remains; a skip is a
    blocker, never a pass.
-8. HANDOFF: unlock L10 only after L8 passes. Record exact artifact digests,
-   selected tests, pass/fail/skip counts, and cleanup evidence. L10 then owns
-   the correlated strict-default selection and its missing/corrupt-proof
-   negatives.
+8. HANDOFF: make L8 evidence available to L10 only after L8 passes. Record exact
+   artifact digests, selected tests, pass/fail/skip counts, and cleanup
+   evidence. L10 remains locked until it also consumes a fresh Jailer-owned
+   launch proof and every other correlated strict authority. Direct Firecracker
+   credential evidence is insufficient. L10 owns strict-default selection and
+   its missing/corrupt-proof negatives.
 
 ## Verification for this documentation slice
 
