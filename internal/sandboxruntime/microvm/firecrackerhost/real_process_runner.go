@@ -84,6 +84,42 @@ func (starter OSExecNamespaceProcessStarter) StartNamespaceProcess(ctx context.C
 	return newOSExecHostProcess(command), nil
 }
 
+// startStrictJailerNamespaceProcess is the real direct-Jailer os/exec seam.
+// The legacy exported StartNamespaceProcess method and its four-descriptor
+// validation are not changed or widened.
+func (starter OSExecNamespaceProcessStarter) startStrictJailerNamespaceProcess(
+	ctx context.Context,
+	request strictJailerNamespaceProcessStartRequest,
+) (HostProcess, error) {
+	if runtime.GOOS != "linux" {
+		return nil, errStrictJailerNamespaceInvalidConfiguration
+	}
+	ctx = nonNilContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validateStrictJailerNamespaceProcessStartRequest(request); err != nil {
+		return nil, errStrictJailerNamespaceRequestInvalid
+	}
+	if err := prepareStrictJailerNetworkNamespaceForExec(request.networkNamespace); err != nil {
+		return nil, errStrictJailerNamespaceStartFailed
+	}
+	command := exec.Command(request.executable, request.args...)
+	command.Env = []string{}
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	command.ExtraFiles = []*os.File{}
+	startCommand := starter.startCommand
+	if startCommand == nil {
+		return startStrictJailerOSExecCommand(command, request.networkNamespace)
+	}
+	if err := startCommand(command); err != nil {
+		return nil, errStrictJailerNamespaceStartFailed
+	}
+	return newOSExecHostProcess(command), nil
+}
+
 func validateNamespaceProcessStartRequest(request NamespaceProcessStartRequest) error {
 	if !filepathIsCleanAbsolute(request.Executable) || len(request.InheritedFiles) != 4 || len(request.Args) < 6 ||
 		request.Args[0] != "--preserve-credentials" || request.Args[1] != "--keep-caps" ||

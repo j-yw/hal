@@ -655,6 +655,7 @@ func phase50ApprovedLiveMarkerFile(rel string) bool {
 func phase50ApprovedLiveMarkerFiles() map[string]bool {
 	return map[string]bool{
 		"cmd/credential_proxy_manifest_test.go":                      true,
+		"cmd/l8_jailer_foundation_docs_test.go":                      true,
 		"cmd/l3_prepared_linux_verification_test.go":                 true,
 		"cmd/l2_worker_job_docs_test.go":                             true,
 		"cmd/l4_guest_agent_server_docs_test.go":                     true,
