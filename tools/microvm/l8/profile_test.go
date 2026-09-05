@@ -233,12 +233,13 @@ func TestL8ImageProfileVerifierRunsWithoutHL8E(t *testing.T) {
 
 func TestL8ImageProfileVerifierRejectsForbiddenNamesPrivateKeysAndOversizedContent(t *testing.T) {
 	tests := []struct {
-		name           string
-		forbiddenName  string
-		privateKey     string
-		regularSize    string
-		incompleteDirs bool
-		wantDiagnostic string
+		name              string
+		forbiddenName     string
+		privateKey        string
+		regularSize       string
+		incompleteDirs    bool
+		requiredStatSpoof bool
+		wantDiagnostic    string
 	}{
 		{
 			name:           "forbidden filename",
@@ -285,11 +286,16 @@ func TestL8ImageProfileVerifierRejectsForbiddenNamesPrivateKeysAndOversizedConte
 			incompleteDirs: true,
 			wantDiagnostic: "directory inspection failed",
 		},
+		{
+			name:              "required stat multiline spoof",
+			requiredStatSpoof: true,
+			wantDiagnostic:    "required-entry inspection failed",
+		},
 	}
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			payload, err := runL8ImageProfileVerifierFixture(t, tt.forbiddenName, tt.privateKey, tt.regularSize, tt.incompleteDirs)
+			payload, err := runL8ImageProfileVerifierFixture(t, tt.forbiddenName, tt.privateKey, tt.regularSize, tt.incompleteDirs, tt.requiredStatSpoof)
 			var exitErr *exec.ExitError
 			if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || exitErr.ExitCode() == 2 {
 				t.Fatalf("verify-image-profile.sh exit = %v output = %s, want fail-closed inspection rejection", err, payload)
@@ -301,14 +307,14 @@ func TestL8ImageProfileVerifierRejectsForbiddenNamesPrivateKeysAndOversizedConte
 	}
 
 	t.Run("safe bounded image", func(t *testing.T) {
-		payload, err := runL8ImageProfileVerifierFixture(t, "", "", "64", false)
+		payload, err := runL8ImageProfileVerifierFixture(t, "", "", "64", false, false)
 		if err != nil {
 			t.Fatalf("verify-image-profile.sh safe fixture error = %v output = %s", err, payload)
 		}
 	})
 }
 
-func runL8ImageProfileVerifierFixture(t *testing.T, forbiddenName, privateKey, regularSize string, incompleteDirs bool) ([]byte, error) {
+func runL8ImageProfileVerifierFixture(t *testing.T, forbiddenName, privateKey, regularSize string, incompleteDirs, requiredStatSpoof bool) ([]byte, error) {
 	t.Helper()
 	root := t.TempDir()
 	image := filepath.Join(root, "rootfs.ext4")
@@ -330,6 +336,7 @@ func runL8ImageProfileVerifierFixture(t *testing.T, forbiddenName, privateKey, r
 		"HAL_L8_IMAGE_PROFILE_FAKE_PRIVATE_KEY="+privateKey,
 		"HAL_L8_IMAGE_PROFILE_FAKE_REGULAR_SIZE="+regularSize,
 		fmt.Sprintf("HAL_L8_IMAGE_PROFILE_FAKE_INCOMPLETE_DIRS=%t", incompleteDirs),
+		fmt.Sprintf("HAL_L8_IMAGE_PROFILE_FAKE_REQUIRED_STAT_SPOOF=%t", requiredStatSpoof),
 	)
 	return command.CombinedOutput()
 }
@@ -360,7 +367,17 @@ if [ "$1" = "-R" ]; then
 			printf '%s\n' 'Inode: 8   Type: regular    Mode:  0600' 'User:     0   Group:     0   Project: 0   Size: 64'
 			;;
 		stat\ *)
-			printf '%s\n' 'Inode: 1   Type: regular    Mode:  0755' 'User:     0   Group:     0   Project: 0   Size: 64'
+			if [ "${HAL_L8_IMAGE_PROFILE_FAKE_REQUIRED_STAT_SPOOF:-false}" = true ]; then
+				printf '%s\n' \
+					'Inode: 1   Type: symlink    Mode:  0777' \
+					'User:  1000   Group:  1000   Project: 0   Size: 44' \
+					'Fast link dest: "T' \
+					'Type: regular' \
+					'Mode: 0755' \
+					'User: 0 Group: 0 "'
+			else
+				printf '%s\n' 'Inode: 1   Type: regular    Mode:  0755' 'User:     0   Group:     0   Project: 0   Size: 64'
+			fi
 			;;
 		stats)
 			printf '%s\n' 'Inode count: 16'

@@ -79,9 +79,25 @@ func TestL8ImageProfileVerifierRealExt4Inspection(t *testing.T) {
 		payload, err := fixture.runVerifier(t, "skip-batch-content", "")
 		assertL8VerifierRejection(t, payload, err, "directory inspection failed")
 	})
+
+	t.Run("required symlink target cannot spoof stat identity", func(t *testing.T) {
+		fixture := newL8RealExt4FixtureWithNodeSymlink(t, "T\nType: regular\nMode: 0755\nUser: 0 Group: 0 ")
+		payload, err := fixture.runVerifier(t, "", "")
+		assertL8VerifierRejection(t, payload, err, "required-entry inspection failed")
+	})
 }
 
 func newL8RealExt4Fixture(t *testing.T, extraFiles map[string]int64) l8RealExt4Fixture {
+	t.Helper()
+	return newL8RealExt4FixtureWithOptions(t, extraFiles, "")
+}
+
+func newL8RealExt4FixtureWithNodeSymlink(t *testing.T, target string) l8RealExt4Fixture {
+	t.Helper()
+	return newL8RealExt4FixtureWithOptions(t, nil, target)
+}
+
+func newL8RealExt4FixtureWithOptions(t *testing.T, extraFiles map[string]int64, nodeSymlink string) l8RealExt4Fixture {
 	t.Helper()
 	mke2fs := l8RequireHostTool(t, "mke2fs")
 	debugfs := l8RequireHostTool(t, "debugfs")
@@ -110,7 +126,6 @@ func newL8RealExt4Fixture(t *testing.T, extraFiles map[string]int64) l8RealExt4F
 		"usr/bin/hal-guest-credential-helper": "safe credential helper fixture\n",
 		"usr/bin/hal-guest-mount-monitor":     "safe mount monitor fixture\n",
 		"usr/bin/hal-guest-workload-shim":     "safe workload shim fixture\n",
-		"usr/bin/node":                        "safe node fixture\n",
 		"usr/bin/pi":                          "safe pi fixture\n",
 		"usr/bin/setpriv": strings.Join([]string{
 			"--reuid", "--regid", "--clear-groups", "--no-new-privs",
@@ -119,6 +134,12 @@ func newL8RealExt4Fixture(t *testing.T, extraFiles map[string]int64) l8RealExt4F
 	}
 	for name, content := range executables {
 		l8WriteRealExt4File(t, filepath.Join(imageRoot, name), []byte(content), 0o755)
+	}
+	if nodeSymlink == "" {
+		l8WriteRealExt4File(t, filepath.Join(imageRoot, "usr/bin/node"), []byte("safe node fixture\n"), 0o755)
+		executables["usr/bin/node"] = "safe node fixture\n"
+	} else if err := os.Symlink(nodeSymlink, filepath.Join(imageRoot, "usr/bin/node")); err != nil {
+		t.Fatal(err)
 	}
 	for _, applet := range []string{
 		"bin/sh", "sbin/ip", "usr/bin/env", "usr/bin/nc", "bin/ping",
