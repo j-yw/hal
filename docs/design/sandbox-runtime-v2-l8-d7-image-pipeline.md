@@ -79,6 +79,11 @@ parse, and every visited directory must contain exactly one matching `.`
 record. Reserved metadata and unlinked inodes are not guest-reachable entries
 and are not treated as files.
 
+Required-entry identity comes only from the actual first `debugfs stat` header
+and the first owner record. Later output lines cannot supply those fields, so a
+multiline symlink-target field injection cannot impersonate a regular,
+root-owned executable or required directory.
+
 The traversal rejects control-byte filenames (including newline), plus the
 existing `.npmrc`, `.npm`, `id_rsa`, `*.pem`, and `npm-session` filename
 policy. It deduplicates hard-linked regular inode IDs, sums the logical size
