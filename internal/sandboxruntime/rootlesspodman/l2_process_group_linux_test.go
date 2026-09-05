@@ -92,6 +92,56 @@ func TestL2DefaultExecStreamingDoesNotDuplicateOutputCapture(t *testing.T) {
 	}
 }
 
+func TestL2DefaultExecCancellationAfterLeaderExitWithDescendantOutput(t *testing.T) {
+	dir := t.TempDir()
+	pidPath, leaderPath := dir+"/descendant.pid", dir+"/leader.pid"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := (DefaultCommandRunner{}).RunExecCommand(ctx, CommandRequest{
+			Operation: OperationExec,
+			Args: []string{"sh", "-c", `printf '%s' "$$" > "$L2_LEADER_PID_FILE"; sh -c 'trap "" TERM; printf "%s" "$$" > "$L2_PID_FILE"; exec sleep 30' & exit 0`},
+			Env: map[string]string{"L2_PID_FILE": pidPath, "L2_LEADER_PID_FILE": leaderPath},
+		})
+		resultCh <- err
+	}()
+	descendantPID := waitForL2PIDFile(t, pidPath)
+	t.Cleanup(func() { _ = syscall.Kill(descendantPID, syscall.SIGKILL) })
+	leaderPID := waitForL2PIDFile(t, leaderPath)
+	deadline := time.Now().Add(time.Second)
+	for l2ProcessAlive(leaderPID) {
+		if time.Now().After(deadline) {
+			t.Fatal("fixture leader did not exit independently of cancellation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !l2ProcessAlive(descendantPID) {
+		t.Fatal("fixture descendant exited before cancellation")
+	}
+	select {
+	case err := <-resultCh:
+		t.Fatalf("exec returned before descendant output completed: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("late cancellation = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("late cancellation was ignored while descendant retained stdout")
+	}
+	deadline = time.Now().Add(time.Second)
+	for l2ProcessAlive(descendantPID) {
+		if time.Now().After(deadline) {
+			t.Fatal("late cancellation left descendant alive")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func waitForL2PIDFile(t *testing.T, path string) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
