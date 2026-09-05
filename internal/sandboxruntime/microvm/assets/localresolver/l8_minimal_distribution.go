@@ -121,7 +121,7 @@ func VerifyL8MinimalDistributionBundle(request L8MinimalDistributionRequest) (re
 	}{
 		{distributionManifestName, &manifest}, {distributionProvenanceName, &provenance}, {l8SourceLockName, &sources}, {l8FinalInspectionName, &inspection},
 	} {
-		if err := decodeL8RetainedParentJSON(state.files[document.name].file, document.destination); err != nil {
+		if err := decodeMinimalMetadata(state.files[document.name], document.destination); err != nil {
 			return result, err
 		}
 	}
@@ -323,6 +323,10 @@ func verifyMinimalChecksums(files map[string]l8PinnedAsset) error {
 }
 
 func minimalPinnedDigest(pinned l8PinnedAsset) string { return hex.EncodeToString(pinned.digest[:]) }
+
+func decodeMinimalMetadata(pinned l8PinnedAsset, destination any) error {
+	return decodeL8RetainedParentJSON(pinned.file, destination)
+}
 
 func cloneMinimalParent(parent VerifiedDistribution) (VerifiedDistribution, error) {
 	manifest, err := json.Marshal(parent.Manifest)
