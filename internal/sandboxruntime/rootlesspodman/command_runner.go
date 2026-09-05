@@ -103,20 +103,12 @@ func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResu
 	cmd.Stdout = stdoutWriter
 	cmd.Stderr = stderrWriter
 
-	if err := cmd.Start(); err != nil {
+	cancellationAttempted, err := runExecProcess(ctx, cmd)
+	if cmd.Process == nil {
 		return CommandResult{ExitCode: commandExitCode(err)}, err
 	}
-	completionCh := observeExecProcess(cmd)
-
-	var err error
 	var cancellationErr error
-	cancellationAttempted := false
-	select {
-	case observationErr := <-completionCh:
-		err = waitExecProcess(cmd, observationErr)
-	case <-ctx.Done():
-		cancellationAttempted = true
-		err = terminateExecProcessGroup(cmd, completionCh)
+	if cancellationAttempted {
 		cancellationErr = runExecCancellationCommand(req.CancellationArgs)
 	}
 	result := CommandResult{

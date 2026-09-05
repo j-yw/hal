@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestL2DefaultExecCancellationTerminatesDescendantProcessGroup(t *testing.T) {
@@ -93,16 +95,37 @@ func TestL2DefaultExecStreamingDoesNotDuplicateOutputCapture(t *testing.T) {
 }
 
 func TestL2DefaultExecCancellationAfterLeaderExitWithDescendantOutput(t *testing.T) {
+	for _, helper := range []string{"absent", "success", "failure"} {
+		t.Run(helper, func(t *testing.T) {
+			testL2ExecLateCancellation(t, helper)
+		})
+	}
+}
+
+func testL2ExecLateCancellation(t *testing.T, helper string) {
+	t.Helper()
 	dir := t.TempDir()
 	pidPath, leaderPath := dir+"/descendant.pid", dir+"/leader.pid"
+	helperPath := dir + "/cleanup-called"
+	var cancellationArgs []string
+	if helper != "absent" {
+		exitCode := "0"
+		if helper == "failure" {
+			exitCode = "1"
+		}
+		cancellationArgs = []string{"sh", "-c", `printf called >> "$1"; exit "$2"`, "cleanup", helperPath, exitCode}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	resultCh := make(chan error, 1)
+	var result CommandResult
 	go func() {
-		_, err := (DefaultCommandRunner{}).RunExecCommand(ctx, CommandRequest{
-			Operation: OperationExec,
-			Args: []string{"sh", "-c", `printf '%s' "$$" > "$L2_LEADER_PID_FILE"; sh -c 'trap "" TERM; printf "%s" "$$" > "$L2_PID_FILE"; exec sleep 30' & exit 0`},
-			Env: map[string]string{"L2_PID_FILE": pidPath, "L2_LEADER_PID_FILE": leaderPath},
+		var err error
+		result, err = (DefaultCommandRunner{}).RunExecCommand(ctx, CommandRequest{
+			Operation:        OperationExec,
+			Args:             []string{"sh", "-c", `printf '%s' "$$" > "$L2_LEADER_PID_FILE"; sh -c 'trap "" TERM; printf "%s" "$$" > "$L2_PID_FILE"; exec sleep 30' & exit 0`},
+			Env:              map[string]string{"L2_PID_FILE": pidPath, "L2_LEADER_PID_FILE": leaderPath},
+			CancellationArgs: cancellationArgs,
 		})
 		resultCh <- err
 	}()
@@ -119,6 +142,7 @@ func TestL2DefaultExecCancellationAfterLeaderExitWithDescendantOutput(t *testing
 	if !l2ProcessAlive(descendantPID) {
 		t.Fatal("fixture descendant exited before cancellation")
 	}
+	assertL2LeaderUnreaped(t, leaderPID)
 	select {
 	case err := <-resultCh:
 		t.Fatalf("exec returned before descendant output completed: %v", err)
@@ -130,8 +154,24 @@ func TestL2DefaultExecCancellationAfterLeaderExitWithDescendantOutput(t *testing
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("late cancellation = %v, want context.Canceled", err)
 		}
+		if helper == "failure" && !strings.Contains(err.Error(), "cleanup failed") {
+			t.Fatalf("failed cancellation helper error was lost: %v", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("late cancellation was ignored while descendant retained stdout")
+	}
+	if result.CancellationProcessGroupTerminated != (helper == "success") {
+		t.Fatalf("cancellation proof = %v for %s helper", result.CancellationProcessGroupTerminated, helper)
+	}
+	if helper != "absent" {
+		data, err := os.ReadFile(helperPath)
+		if err != nil || string(data) != "called" {
+			t.Fatalf("cancellation helper execution = %q, %v, want exactly once", data, err)
+		}
+	}
+	var info unix.Siginfo
+	if err := unix.Waitid(unix.P_PID, leaderPID, &info, unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, nil); !errors.Is(err, unix.ECHILD) {
+		t.Fatalf("leader was not reaped after cancellation: %v", err)
 	}
 	deadline = time.Now().Add(time.Second)
 	for l2ProcessAlive(descendantPID) {
@@ -139,6 +179,14 @@ func TestL2DefaultExecCancellationAfterLeaderExitWithDescendantOutput(t *testing
 			t.Fatal("late cancellation left descendant alive")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func assertL2LeaderUnreaped(t *testing.T, pid int) {
+	t.Helper()
+	var info unix.Siginfo
+	if err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, nil); err != nil {
+		t.Fatalf("leader was reaped before output drained, losing the process-group identity anchor: %v", err)
 	}
 }
 
