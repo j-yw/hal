@@ -85,19 +85,25 @@ func TestL8ImageProfileVerifierRealExt4Inspection(t *testing.T) {
 		payload, err := fixture.runVerifier(t, "", "")
 		assertL8VerifierRejection(t, payload, err, "required-entry inspection failed")
 	})
+
+	t.Run("applet symlink target cannot inject a second fast link record", func(t *testing.T) {
+		fixture := newL8RealExt4FixtureWithOptions(t, nil, "", "invalid\nFast link dest: \"/bin/busybox")
+		payload, err := fixture.runVerifier(t, "", "")
+		assertL8VerifierRejection(t, payload, err, "applet inspection failed")
+	})
 }
 
 func newL8RealExt4Fixture(t *testing.T, extraFiles map[string]int64) l8RealExt4Fixture {
 	t.Helper()
-	return newL8RealExt4FixtureWithOptions(t, extraFiles, "")
+	return newL8RealExt4FixtureWithOptions(t, extraFiles, "", "")
 }
 
 func newL8RealExt4FixtureWithNodeSymlink(t *testing.T, target string) l8RealExt4Fixture {
 	t.Helper()
-	return newL8RealExt4FixtureWithOptions(t, nil, target)
+	return newL8RealExt4FixtureWithOptions(t, nil, target, "")
 }
 
-func newL8RealExt4FixtureWithOptions(t *testing.T, extraFiles map[string]int64, nodeSymlink string) l8RealExt4Fixture {
+func newL8RealExt4FixtureWithOptions(t *testing.T, extraFiles map[string]int64, nodeSymlink, appletSymlink string) l8RealExt4Fixture {
 	t.Helper()
 	mke2fs := l8RequireHostTool(t, "mke2fs")
 	debugfs := l8RequireHostTool(t, "debugfs")
@@ -145,7 +151,11 @@ func newL8RealExt4FixtureWithOptions(t *testing.T, extraFiles map[string]int64, 
 		"bin/sh", "sbin/ip", "usr/bin/env", "usr/bin/nc", "bin/ping",
 		"bin/ping6", "usr/bin/nslookup", "usr/bin/wget",
 	} {
-		if err := os.Symlink("/bin/busybox", filepath.Join(imageRoot, applet)); err != nil {
+		target := "/bin/busybox"
+		if applet == "bin/sh" && appletSymlink != "" {
+			target = appletSymlink
+		}
+		if err := os.Symlink(target, filepath.Join(imageRoot, applet)); err != nil {
 			t.Fatal(err)
 		}
 	}
