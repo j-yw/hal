@@ -190,7 +190,7 @@ install -d -m 0700 -- "$rootfs_stage_dir"
 install -m 0644 -- "$rootfs_payload" "$rootfs_stage"
 [[ -f "$rootfs_stage" && ! -L "$rootfs_stage" ]]
 PATH="$buildroot_output/host/sbin:$PATH" e2fsck -fn "$rootfs_stage"
-PATH="$buildroot_output/host/sbin:$PATH" "$profile_root/verify-final-image.sh" "$rootfs_stage"
+PATH="$buildroot_output/host/sbin:$PATH" "$profile_root/verify-image-profile.sh" "$rootfs_stage"
 install -m 0644 -- "$buildroot_output/images/vmlinux" /export/vmlinux
 install -m 0644 -- "$rootfs_stage" /export/rootfs.ext4
 [[ -f /export/rootfs.ext4 && ! -L /export/rootfs.ext4 ]]

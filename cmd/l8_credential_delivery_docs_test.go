@@ -114,6 +114,17 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 		"server-derived authenticated",
 		"trusted same-UID host control-plane boundary",
 		"every file that declares either selected prepared-Linux test",
+		"PEM-style private-key markers",
+		"reachable regular-file bytes",
+		"control-byte filenames",
+		"per-file extraction",
+		"exact requested-inode order",
+		"actual first `debugfs stat` header",
+		"first owner record",
+		"multiline symlink-target field injection",
+		"never before aggregate size validation",
+		"does not claim exhaustive secret detection",
+		"DER, PKCS#12, encoded, compressed, archive-contained, or custom key blobs",
 	} {
 		if !strings.Contains(doc, required) {
 			t.Fatalf("L8 credential-delivery verification omits %q", required)
