@@ -4,20 +4,25 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 	"gopkg.in/yaml.v3"
 )
 
 type rawPolicyConfig struct {
-	SandboxRequired      *bool     `yaml:"sandboxRequired"`
-	AllowedEngines       *[]string `yaml:"allowedEngines"`
-	MaxRunAttempts       *int      `yaml:"maxRunAttempts"`
-	MaxReviewFixAttempts *int      `yaml:"maxReviewFixAttempts"`
-	MaxCIFixAttempts     *int      `yaml:"maxCiFixAttempts"`
-	VerificationRequired *bool     `yaml:"verificationRequired"`
-	PRCreationAllowed    *bool     `yaml:"prCreationAllowed"`
-	MergeAllowed         *bool     `yaml:"mergeAllowed"`
-	CleanupBehavior      *string   `yaml:"cleanupBehavior"`
+	SandboxRequired                 *bool                                                     `yaml:"sandboxRequired"`
+	AllowedEngines                  *[]string                                                 `yaml:"allowedEngines"`
+	MaxRunAttempts                  *int                                                      `yaml:"maxRunAttempts"`
+	MaxCommandRetries               *int                                                      `yaml:"maxCommandRetries"`
+	MaxReviewFixAttempts            *int                                                      `yaml:"maxReviewFixAttempts"`
+	MaxCIFixAttempts                *int                                                      `yaml:"maxCiFixAttempts"`
+	VerificationRequired            *bool                                                     `yaml:"verificationRequired"`
+	PRCreationAllowed               *bool                                                     `yaml:"prCreationAllowed"`
+	MergeAllowed                    *bool                                                     `yaml:"mergeAllowed"`
+	CleanupBehavior                 *string                                                   `yaml:"cleanupBehavior"`
+	CIPolicy                        *string                                                   `yaml:"ciPolicy"`
+	PublishPolicy                   *string                                                   `yaml:"publishPolicy"`
+	SecurityReadinessGatePolicyMode *sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `yaml:"securityReadinessGatePolicyMode"`
 }
 
 // LoadPolicyConfig reads factory.policy from .hal/config.yaml and merges any
@@ -63,6 +68,9 @@ func mergePolicyConfig(policy *FactoryPolicy, raw rawPolicyConfig) {
 	if raw.MaxRunAttempts != nil {
 		policy.MaxRunAttempts = *raw.MaxRunAttempts
 	}
+	if raw.MaxCommandRetries != nil {
+		policy.MaxCommandRetries = *raw.MaxCommandRetries
+	}
 	if raw.MaxReviewFixAttempts != nil {
 		policy.MaxReviewFixAttempts = *raw.MaxReviewFixAttempts
 	}
@@ -80,5 +88,14 @@ func mergePolicyConfig(policy *FactoryPolicy, raw rawPolicyConfig) {
 	}
 	if raw.CleanupBehavior != nil {
 		policy.CleanupBehavior = *raw.CleanupBehavior
+	}
+	if raw.CIPolicy != nil {
+		policy.CIPolicy = *raw.CIPolicy
+	}
+	if raw.PublishPolicy != nil {
+		policy.PublishPolicy = *raw.PublishPolicy
+	}
+	if raw.SecurityReadinessGatePolicyMode != nil {
+		policy.SecurityReadinessGatePolicyMode = *raw.SecurityReadinessGatePolicyMode
 	}
 }

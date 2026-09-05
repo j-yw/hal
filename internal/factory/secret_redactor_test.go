@@ -1,8 +1,11 @@
 package factory
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/verify"
 )
 
@@ -93,6 +96,39 @@ func TestRunSecretRedactorRedactsURLEncodedValues(t *testing.T) {
 	}
 }
 
+func TestRunSecretRedactorRedactsPostRunPublishPullRequestURL(t *testing.T) {
+	secretValue := "ghp_publish_url_secret_789"
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Value: secretValue},
+	})
+
+	record := RunRecord{
+		RunID:  "run-post-run-publish-redaction",
+		Status: RunStatusSucceeded,
+		PostRun: &PostRunState{
+			Publish: &PublishOutcome{
+				Status:         RunStatusSucceeded,
+				Policy:         PublishPolicyPR,
+				BranchName:     "hal/redact-publish-url",
+				PullRequestURL: "https://github.com/jywlabs/hal/pull/9?token=" + secretValue,
+				Source:         "manual",
+			},
+		},
+	}
+
+	safe := redactor.RedactRunRecord(record)
+	data, err := json.Marshal(safe)
+	if err != nil {
+		t.Fatalf("json.Marshal(redacted record) error: %v", err)
+	}
+	if strings.Contains(string(data), secretValue) {
+		t.Fatalf("redacted postRun publish leaked secret value: %s", data)
+	}
+	if !strings.Contains(string(data), RunSecretRedactionPlaceholder) {
+		t.Fatalf("redacted postRun publish missing placeholder: %s", data)
+	}
+}
+
 func TestRunSecretRedactorRedactsArtifactSummaryTypedCollections(t *testing.T) {
 	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
 		{Name: "GITHUB_TOKEN", Source: RunSecretSourceEnv, Required: true, Value: "ghp_factory_secret_value_123"},
@@ -134,6 +170,89 @@ func TestRunSecretRedactorRedactsArtifactSummaryTypedCollections(t *testing.T) {
 	}
 }
 
+func TestRunSecretRedactorSanitizesCredentialDeliveryEventMetadataWithoutConfiguredSecrets(t *testing.T) {
+	redactor := NewRunSecretRedactor(nil)
+	event := redactor.RedactEventRecord(EventRecord{
+		RunID:     "run-credential-delivery-redaction",
+		EventType: EventTypePolicyDecision,
+		Metadata: map[string]any{
+			"credentialDelivery": map[string]any{
+				"id":             "credential-delivery-active",
+				"requestId":      "https://credentials.example.invalid/request?token=raw",
+				"planId":         "credential-plan-active",
+				"activationId":   "credential-activation-active",
+				"requestedModes": []string{sandbox.SandboxSecretModeHTTPProxy, "Authorization: Bearer raw-token"},
+				"activeModes":    []string{sandbox.SandboxSecretModeHTTPProxy},
+				"status":         "active",
+				"reasonCode":     "requested",
+			},
+			"providerPayload": "Authorization: Bearer raw-token",
+		},
+	})
+
+	status := requireRedactedCredentialDeliveryMetadata(t, event.Metadata)
+	if status.Status == "active" {
+		t.Fatalf("credentialDelivery status = %#v, want non-active without proof summary", status)
+	}
+	if len(status.ActiveModes) != 0 || len(status.ActiveProofs) != 0 {
+		t.Fatalf("credentialDelivery active metadata = modes %#v proofs %#v, want omitted without proof", status.ActiveModes, status.ActiveProofs)
+	}
+	assertFactoryCredentialDeliveryRedactionAbsent(t, event, []string{
+		"https://credentials.example.invalid",
+		"raw-token",
+		"Authorization",
+	})
+}
+
+func TestRunSecretRedactorPreservesSanitizedCredentialDeliveryProofMetadata(t *testing.T) {
+	redactor := NewRunSecretRedactor(nil)
+	event := redactor.RedactEventRecord(EventRecord{
+		RunID:     "run-credential-delivery-proof",
+		EventType: EventTypePolicyDecision,
+		Metadata: map[string]any{
+			"credentialDelivery": sandbox.SandboxCredentialDeliveryStatusMetadata{
+				ID:             "credential-delivery-active",
+				PlanID:         "credential-plan-active",
+				ActivationID:   "credential-activation-active",
+				RequestedModes: []string{sandbox.SandboxSecretModeFileTmpfs, sandbox.SandboxSecretModeEnv},
+				ActiveModes:    []string{sandbox.SandboxSecretModeFileTmpfs, sandbox.SandboxSecretModeEnv},
+				ActiveProofs: []sandbox.SandboxCredentialDeliveryProofSummary{{
+					ProofID:      "credential-proof-file-tmpfs",
+					BindingID:    "credential-binding-file-tmpfs",
+					DeliveryMode: sandbox.SandboxSecretModeFileTmpfs,
+					Status:       "active",
+					Source:       "simulation",
+				}, {
+					ProofID:      "/private/tmp/credential.sock",
+					BindingID:    "credential-binding-unsafe",
+					DeliveryMode: sandbox.SandboxSecretModeHTTPProxy,
+					Status:       "active",
+					Source:       "credential_proxy",
+				}},
+				Status:     "active",
+				ReasonCode: "requested",
+			},
+		},
+	})
+
+	status := requireRedactedCredentialDeliveryMetadata(t, event.Metadata)
+	if status.Status != "active" {
+		t.Fatalf("credentialDelivery status = %#v, want active with proof summary", status)
+	}
+	if len(status.ActiveModes) != 1 || status.ActiveModes[0] != sandbox.SandboxSecretModeFileTmpfs {
+		t.Fatalf("active modes = %#v, want file_tmpfs only", status.ActiveModes)
+	}
+	if len(status.ActiveProofs) != 1 {
+		t.Fatalf("active proofs = %#v, want only safe proof", status.ActiveProofs)
+	}
+	if proof := status.ActiveProofs[0]; proof.ProofID != "credential-proof-file-tmpfs" || proof.BindingID != "credential-binding-file-tmpfs" || proof.DeliveryMode != sandbox.SandboxSecretModeFileTmpfs {
+		t.Fatalf("active proof = %#v, want sanitized file_tmpfs proof", proof)
+	}
+	assertFactoryCredentialDeliveryRedactionAbsent(t, event, []string{
+		"/private/tmp/credential.sock",
+	})
+}
+
 func TestRunSecretRedactorPreservesSecretMetadataIdentifiers(t *testing.T) {
 	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
 		{Name: "env", Source: RunSecretSourceEnv, Required: true, Value: "env"},
@@ -156,6 +275,37 @@ func TestRunSecretRedactorPreservesSecretMetadataIdentifiers(t *testing.T) {
 	}
 	if got.Secrets[0] != wantSecret {
 		t.Fatalf("Secrets[0] = %#v, want %#v", got.Secrets[0], wantSecret)
+	}
+}
+
+func requireRedactedCredentialDeliveryMetadata(t *testing.T, metadata map[string]any) sandbox.SandboxCredentialDeliveryStatusMetadata {
+	t.Helper()
+	raw, ok := metadata["credentialDelivery"]
+	if !ok {
+		t.Fatalf("credentialDelivery metadata missing: %#v", metadata)
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("Marshal(credentialDelivery) error = %v", err)
+	}
+	var status sandbox.SandboxCredentialDeliveryStatusMetadata
+	if err := json.Unmarshal(data, &status); err != nil {
+		t.Fatalf("Unmarshal(credentialDelivery) error = %v\n%s", err, string(data))
+	}
+	return status
+}
+
+func assertFactoryCredentialDeliveryRedactionAbsent(t *testing.T, value any, forbidden []string) {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal(redacted value) error = %v", err)
+	}
+	payload := string(data)
+	for _, needle := range forbidden {
+		if strings.Contains(payload, needle) {
+			t.Fatalf("redacted value leaked %q in %s", needle, payload)
+		}
 	}
 }
 
@@ -325,6 +475,58 @@ func TestRunSecretRedactorPreservesRunRecordControlFields(t *testing.T) {
 	}
 }
 
+func TestRunSecretRedactorRedactsPublishOutcomeMetadata(t *testing.T) {
+	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
+		{Name: "PUBLISH_SECRET", Source: RunSecretSourceEnv, Required: true, Value: "secret-fragment"},
+	})
+
+	got := redactor.RedactRunRecord(RunRecord{
+		PostRun: &PostRunState{
+			Publish: &PublishOutcome{
+				Status:          RunStatusSucceeded,
+				Policy:          "pr",
+				BranchName:      "hal/secret-fragment",
+				RecoveredBundle: "recovery/secret-fragment",
+				PullRequestURL:  "https://github.com/jywlabs/secret-fragment/pull/42",
+				Runner:          PublishRunnerSandbox,
+				FallbackFrom:    PublishRunnerHost,
+				CredentialMode:  "env-secret-fragment",
+				Commit:          "abc123-secret-fragment",
+				Attempts: []PublishAttempt{{
+					Runner: PublishRunnerSandbox,
+					Status: RunStatusFailed,
+					Error:  "sandbox publish failed: secret-fragment",
+				}},
+				Source: "manual-secret-fragment",
+			},
+		},
+	})
+
+	if got.PostRun == nil || got.PostRun.Publish == nil {
+		t.Fatalf("PostRun.Publish = %#v, want redacted publish outcome", got.PostRun)
+	}
+	publish := got.PostRun.Publish
+	if publish.Runner != PublishRunnerSandbox || publish.FallbackFrom != PublishRunnerHost {
+		t.Fatalf("publish runner metadata = %#v", publish)
+	}
+	if publish.BranchName != "hal/"+RunSecretRedactionPlaceholder {
+		t.Fatalf("BranchName = %q, want redacted branch", publish.BranchName)
+	}
+	if publish.CredentialMode != "env-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("CredentialMode = %q, want redacted credential mode", publish.CredentialMode)
+	}
+	if publish.Commit != "abc123-"+RunSecretRedactionPlaceholder {
+		t.Fatalf("Commit = %q, want redacted commit metadata", publish.Commit)
+	}
+	if len(publish.Attempts) != 1 {
+		t.Fatalf("attempts = %#v, want one redacted attempt", publish.Attempts)
+	}
+	if publish.Attempts[0].Error != "sandbox publish failed: "+RunSecretRedactionPlaceholder {
+		t.Fatalf("attempt error = %q, want redacted error", publish.Attempts[0].Error)
+	}
+	assertFactoryCredentialDeliveryRedactionAbsent(t, got, []string{"secret-fragment"})
+}
+
 func TestRunSecretRedactorRedactsSandboxMetadataName(t *testing.T) {
 	redactor := NewRunSecretRedactor([]ResolvedRunSecret{
 		{Name: "SANDBOX_SECRET", Source: RunSecretSourceEnv, Required: true, Value: "secret-sandbox"},
@@ -334,7 +536,7 @@ func TestRunSecretRedactorRedactsSandboxMetadataName(t *testing.T) {
 		SandboxName: "factory-secret-sandbox",
 		Sandbox: &SandboxMetadata{
 			Name:       "factory-secret-sandbox",
-			Provider:   "daytona",
+			Provider:   "hetzner",
 			Status:     "running",
 			SSHCommand: "hal sandbox ssh factory-secret-sandbox",
 		},

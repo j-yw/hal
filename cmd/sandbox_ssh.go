@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/spf13/cobra"
 )
 
@@ -17,21 +19,26 @@ var sandboxSSHCmd = &cobra.Command{
 	Short: "Open an interactive shell or run a remote command",
 	Long: `Open an interactive SSH session to a sandbox, or run a remote command.
 
-With just a name, opens an interactive shell that replaces the current process.
-With arguments after --, runs the command in the sandbox and streams output.
+With just a name, opens an interactive shell that replaces the current process
+for provider-backed sandboxes. Worker-backed sandboxes require a command after
+-- because the sandboxd transport does not provide an interactive PTY.
+With arguments after --, runs the command in the sandbox. Provider SSH streams
+output; worker-backed commands return bounded stdout and stderr after completion
+and may be truncated at worker protocol limits.
 
 When no name is provided, the command auto-resolves:
   - If exactly one sandbox exists, it is selected automatically.
   - If zero sandboxes exist, an error is returned.
   - If multiple exist, an error lists the available choices.
 
-The provider determines the SSH transport.
+The sandbox host determines whether Hal uses provider SSH or sandboxd runtime exec.
 
 Hal redacts addresses from its own connection messages and noninteractive
 command output by default. Once an interactive shell starts, remote programs
 can still print raw network addresses.`,
 	Example: `  hal sandbox ssh my-sandbox
   hal sandbox ssh my-sandbox -- ls -la
+  hal sandbox ssh local-worker-check -- sh -lc 'echo ready'
   hal sandbox ssh my-sandbox -- bash -c 'echo hello'
   hal sandbox ssh`,
 	DisableFlagParsing: true,
@@ -61,7 +68,12 @@ var sandboxSSHLoadInstance = sandbox.LoadActiveInstance
 
 // sandboxSSHResolveProvider is injectable for testing.
 var sandboxSSHResolveProvider = func(providerName string) (sandbox.Provider, error) {
-	return resolveProviderWithFallback(".", providerName)
+	return resolveStoredProviderWithFallback(".", providerName)
+}
+
+// sandboxSSHResolveRuntime resolves worker-backed runtime drivers for command execution.
+var sandboxSSHResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+	return resolveFactoryStoredSandboxRuntime(".", target)
 }
 
 // sshResult is returned in test mode to allow inspecting the command that
@@ -101,6 +113,42 @@ func runSandboxSSHWithDeps(args []string, out io.Writer, provider sandbox.Provid
 
 	if hint != "" {
 		fmt.Fprintln(renderOut, hint)
+	}
+	if sandboxTargetUsesWorkerHost(instance) {
+		if len(remoteArgs) == 0 {
+			return fmt.Errorf("interactive shell is not supported for worker-backed sandbox %q; pass a command after --, for example: hal sandbox ssh %s -- sh", instance.Name, instance.Name)
+		}
+		driver, resolveErr := sandboxSSHResolveRuntime(instance)
+		if resolveErr != nil {
+			return sandboxSanitizeError(fmt.Errorf("resolving runtime for %q: %w", instance.Name, resolveErr), redactor)
+		}
+		if driver == nil {
+			return fmt.Errorf("resolving runtime for %q: sandbox runtime driver is required", instance.Name)
+		}
+		fmt.Fprintf(renderOut, "Running command on %s via sandboxd worker...\n", instance.Name)
+		result, execErr := driver.Exec(context.Background(), sandboxruntime.ExecRequest{
+			Target: sandboxRuntimeTargetFromState(instance),
+			Args:   append([]string(nil), remoteArgs...),
+			Stdout: renderOut,
+			Stderr: renderOut,
+		})
+		if execErr != nil {
+			safeErr := sandboxSanitizeError(execErr, redactor)
+			if result != nil && result.ExitCode > 0 {
+				return &ExitCodeError{Code: result.ExitCode, Err: safeErr}
+			}
+			return safeErr
+		}
+		if result == nil {
+			return fmt.Errorf("sandbox runtime returned no exec result")
+		}
+		if result.ExitCode > 0 {
+			return &ExitCodeError{Code: result.ExitCode, Err: fmt.Errorf("sandbox command exited with code %d", result.ExitCode)}
+		}
+		if result.ExitCode < 0 {
+			return fmt.Errorf("sandbox command failed before an exit code was available")
+		}
+		return nil
 	}
 
 	// Build ConnectInfo with preferred IP

@@ -51,8 +51,8 @@ func TestResolveStopByNames_PreservesRegistryLoadErrors(t *testing.T) {
 
 func TestResolveStopTargets_IgnoresStagedRemovalEntries(t *testing.T) {
 	setupStopGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "active-box", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "staged-box", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "active-box", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "staged-box", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	if _, err := sandbox.StageInstanceRemoval("staged-box"); err != nil {

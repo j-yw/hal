@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,8 +23,9 @@ var sandboxCmd = &cobra.Command{
 	Short: "Manage sandbox environments",
 	Long: `Manage sandbox environments for isolated development.
 
-Supports multiple providers (Daytona, Hetzner, DigitalOcean, AWS Lightsail) — run
-'hal sandbox setup' to choose a provider and configure credentials.
+Supports multiple providers (Hetzner, DigitalOcean, AWS Lightsail) and
+registered sandboxd worker hosts. Run 'hal sandbox setup' to choose a provider
+and configure cloud credentials.
 
 Human output redacts public cloud and Tailscale addresses by default. Use
 --show-addresses only when you intentionally need raw network addresses.
@@ -32,20 +34,25 @@ Side effects:
 - setup writes global sandbox config under HAL_CONFIG_HOME, XDG_CONFIG_HOME, or
   ~/.config/hal.
 - Lifecycle commands may create, start, stop, connect to, or delete remote cloud
-  resources and update the global sandbox registry.
+  resources or worker runtime instances and update the global sandbox registry.
 
 Subcommands:
   auth        Manage sandbox agent auth profiles
+  apply       Apply one completed sandbox execution to the current worktree
   setup       Configure provider, credentials, and environment
   create      Provision a new sandbox
   start       Start a stopped sandbox
   stop        Power off / shut down a running sandbox
   status      Show sandbox status
   delete      Delete a sandbox
+  host        Manage durable sandbox host records
+  runtime     Inspect sandbox runtime metadata
   ssh         Open an interactive shell or run a remote command`,
 	Example: `  hal sandbox setup
   hal sandbox create
+  hal sandbox apply run-1784128525446734264
   hal sandbox auth sync my-sandbox
+  hal sandbox runtime list local-worker
   hal sandbox start my-sandbox
   hal sandbox status`,
 }
@@ -57,10 +64,9 @@ var sandboxSetupCmd = &cobra.Command{
 	Long: `Interactive setup for sandbox credentials and environment variables.
 
 First prompts for a provider:
-  (1) Daytona — managed cloud sandbox (prompts for API key, server URL)
-  (2) Hetzner — self-managed VPS (prompts for SSH key name, server type, image)
-  (3) DigitalOcean — managed VPS via doctl (prompts for SSH key fingerprint, droplet size)
-  (4) AWS Lightsail — lightweight VPS via aws CLI (prompts for key pair name, bundle, region)
+  (1) Hetzner — self-managed VPS (prompts for SSH key name, server type, image)
+  (2) DigitalOcean — managed VPS via doctl (prompts for SSH key fingerprint, droplet size)
+  (3) AWS Lightsail — lightweight VPS via aws CLI (prompts for key pair name, bundle, region)
 
 Then prompts for shared environment variables:
   • API keys (Anthropic, OpenAI) — masked input
@@ -111,7 +117,12 @@ func renderSandboxCobraError(cmd *cobra.Command, title string, err error) error 
 	if out != nil {
 		ui.NewDisplay(out).ShowCommandError(title, []ui.ValidationIssue{{Message: err.Error()}}, nil)
 	}
-	return exitWithCode(cmd, ExitCodeExpectedNonZero, nil)
+	exitCode := ExitCodeExpectedNonZero
+	var explicitExit *ExitCodeError
+	if errors.As(err, &explicitExit) && explicitExit.Code > 0 {
+		exitCode = explicitExit.Code
+	}
+	return exitWithCode(cmd, exitCode, nil)
 }
 
 func resolveProviderConfig(dir string) (string, sandbox.ProviderConfig, error) {
@@ -150,21 +161,13 @@ func resolveProviderConfig(dir string) (string, sandbox.ProviderConfig, error) {
 	if err != nil {
 		return "", sandbox.ProviderConfig{}, fmt.Errorf("loading legacy sandbox config: %w", err)
 	}
-	dayCfg, err := compound.LoadDaytonaConfig(dir)
-	if err != nil {
-		return "", sandbox.ProviderConfig{}, fmt.Errorf("loading legacy daytona config: %w", err)
-	}
 
-	providerName := "daytona"
-	if sandboxCfg != nil && strings.TrimSpace(sandboxCfg.Provider) != "" {
+	providerName := ""
+	if sandboxCfg != nil {
 		providerName = strings.TrimSpace(sandboxCfg.Provider)
 	}
 
 	provCfg := sandbox.ProviderConfig{}
-	if dayCfg != nil {
-		provCfg.DaytonaAPIKey = dayCfg.APIKey
-		provCfg.DaytonaServerURL = dayCfg.ServerURL
-	}
 	if sandboxCfg != nil {
 		provCfg.HetznerSSHKey = sandboxCfg.Hetzner.SSHKey
 		provCfg.HetznerServerType = sandboxCfg.Hetzner.ServerType
@@ -189,16 +192,35 @@ func resolveProviderWithFallback(dir, providerName string) (sandbox.Provider, er
 	return sandbox.ProviderFromConfig(providerName, provCfg)
 }
 
+func resolveStoredProviderWithFallback(dir, providerName string) (sandbox.Provider, error) {
+	_, provCfg, err := resolveProviderConfig(dir)
+	if err != nil {
+		return nil, err
+	}
+	return resolveStoredProviderFromConfig(providerName, provCfg)
+}
+
+func resolveStoredProviderFromConfig(providerName string, provCfg sandbox.ProviderConfig) (sandbox.Provider, error) {
+	provider, err := sandbox.ProviderFromConfig(providerName, provCfg)
+	if err == nil {
+		return provider, nil
+	}
+
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return nil, errors.New("stored sandbox record has no provider; HAL cannot safely manage its resource: verify and delete the resource with its original provider, then repair or remove the stale registry entry before retrying")
+	}
+	return nil, fmt.Errorf("stored sandbox record uses unsupported provider %q; HAL cannot safely manage its resource: verify and delete the resource with that provider, then repair or remove the stale registry entry before retrying", providerName)
+}
+
 func providerConfigFromGlobal(cfg *sandbox.GlobalConfig) (string, sandbox.ProviderConfig) {
-	providerName := "daytona"
-	if cfg != nil && strings.TrimSpace(cfg.Provider) != "" {
+	providerName := ""
+	if cfg != nil {
 		providerName = strings.TrimSpace(cfg.Provider)
 	}
 
 	provCfg := sandbox.ProviderConfig{}
 	if cfg != nil {
-		provCfg.DaytonaAPIKey = cfg.Daytona.APIKey
-		provCfg.DaytonaServerURL = cfg.Daytona.ServerURL
 		provCfg.HetznerSSHKey = cfg.Hetzner.SSHKey
 		provCfg.HetznerServerType = cfg.Hetzner.ServerType
 		provCfg.HetznerImage = cfg.Hetzner.Image
@@ -224,12 +246,11 @@ func resolveProviderFromState(dir string, state *sandbox.SandboxState) (sandbox.
 		return nil, err
 	}
 
-	providerName := configuredProvider
-	if state != nil && strings.TrimSpace(state.Provider) != "" {
-		providerName = strings.TrimSpace(state.Provider)
+	if state == nil {
+		return sandbox.ProviderFromConfig(configuredProvider, provCfg)
 	}
 
-	return sandbox.ProviderFromConfig(providerName, provCfg)
+	return resolveStoredProviderFromConfig(state.Provider, provCfg)
 }
 
 // resolveProviderFromName creates a Provider for delete-by-name paths where no
@@ -277,12 +298,6 @@ type setupField struct {
 	secret   bool   // mask input
 	required bool   // cannot be empty
 	defVal   string // default if user presses Enter with no existing value
-}
-
-// daytona connection fields
-var daytonaFields = []setupField{
-	{key: "_daytona_api_key", label: "Daytona API key", secret: true, required: true},
-	{key: "_daytona_server_url", label: "Server URL", defVal: "https://app.daytona.io/api"},
 }
 
 // sandbox env var fields
@@ -345,36 +360,40 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 	fmt.Fprintln(out, "")
 
 	// Determine default provider choice
-	defaultChoice := "1"
+	defaultChoice := ""
 	switch existingGlobal.Provider {
 	case "hetzner":
-		defaultChoice = "2"
+		defaultChoice = "1"
 	case "digitalocean":
-		defaultChoice = "3"
+		defaultChoice = "2"
 	case "lightsail":
-		defaultChoice = "4"
+		defaultChoice = "3"
 	}
-	fmt.Fprintf(out, "  %s Daytona  %s Hetzner  %s DigitalOcean  %s Lightsail [%s]: ",
-		ui.StyleBold.Render("(1)"), ui.StyleBold.Render("(2)"), ui.StyleBold.Render("(3)"), ui.StyleBold.Render("(4)"),
-		ui.StyleMuted.Render(defaultChoice))
+	fmt.Fprintf(out, "  %s Hetzner  %s DigitalOcean  %s Lightsail",
+		ui.StyleBold.Render("(1)"), ui.StyleBold.Render("(2)"), ui.StyleBold.Render("(3)"))
+	if defaultChoice != "" {
+		fmt.Fprintf(out, " [%s]", ui.StyleMuted.Render(defaultChoice))
+	}
+	fmt.Fprint(out, ": ")
 	line, _ := reader.ReadString('\n')
 	choice := strings.TrimSpace(strings.TrimRight(line, "\r\n"))
 	if choice == "" {
+		if defaultChoice == "" {
+			return errors.New("provider choice is required; enter 1, 2, or 3")
+		}
 		choice = defaultChoice
 	}
 
 	var selectedProvider string
 	switch choice {
 	case "1":
-		selectedProvider = "daytona"
-	case "2":
 		selectedProvider = "hetzner"
-	case "3":
+	case "2":
 		selectedProvider = "digitalocean"
-	case "4":
+	case "3":
 		selectedProvider = "lightsail"
 	default:
-		return fmt.Errorf("invalid provider choice %q — enter 1, 2, 3, or 4", choice)
+		return fmt.Errorf("invalid provider choice %q — enter 1, 2, or 3", choice)
 	}
 
 	// Check CLI availability before prompting
@@ -394,29 +413,6 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 
 	// ── Provider-specific credentials ──
 	switch selectedProvider {
-	case "daytona":
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "  "+ui.StyleBold.Render("Daytona"))
-		fmt.Fprintln(out, "")
-
-		// API key
-		val, err := promptField(reader, in, out, readPassword, daytonaFields[0], existingGlobal.Daytona.APIKey)
-		if err != nil {
-			return err
-		}
-		collected["_daytona_api_key"] = val
-
-		// Server URL
-		currentURL := existingGlobal.Daytona.ServerURL
-		if currentURL == "" {
-			currentURL = daytonaFields[1].defVal
-		}
-		val, err = promptField(reader, in, out, readPassword, daytonaFields[1], currentURL)
-		if err != nil {
-			return err
-		}
-		collected["_daytona_server_url"] = val
-
 	case "hetzner":
 		fmt.Fprintln(out, "")
 		fmt.Fprintln(out, "  "+ui.StyleBold.Render("Hetzner"))
@@ -570,23 +566,21 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 	}
 
 	lockdown := false
-	if selectedProvider != "daytona" {
-		fmt.Fprintf(out, "  %s (y/n) [%s]: ", ui.StyleBold.Render("Lock down to Tailscale only?"), ui.StyleMuted.Render(yesNoDefault(existingGlobal.TailscaleLockdown)))
-		line, _ := reader.ReadString('\n')
-		v := strings.ToLower(strings.TrimSpace(strings.TrimRight(line, "\r\n")))
-		switch v {
-		case "":
-			lockdown = existingGlobal.TailscaleLockdown
-		case "y", "yes":
-			lockdown = true
-		case "n", "no":
-			lockdown = false
-		default:
-			return fmt.Errorf("invalid answer %q (expected y or n)", v)
-		}
-		if lockdown && strings.TrimSpace(collected["TAILSCALE_AUTHKEY"]) == "" {
-			return fmt.Errorf("Tailscale auth key required for lockdown")
-		}
+	fmt.Fprintf(out, "  %s (y/n) [%s]: ", ui.StyleBold.Render("Lock down to Tailscale only?"), ui.StyleMuted.Render(yesNoDefault(existingGlobal.TailscaleLockdown)))
+	line, _ = reader.ReadString('\n')
+	v := strings.ToLower(strings.TrimSpace(strings.TrimRight(line, "\r\n")))
+	switch v {
+	case "":
+		lockdown = existingGlobal.TailscaleLockdown
+	case "y", "yes":
+		lockdown = true
+	case "n", "no":
+		lockdown = false
+	default:
+		return fmt.Errorf("invalid answer %q (expected y or n)", v)
+	}
+	if lockdown && strings.TrimSpace(collected["TAILSCALE_AUTHKEY"]) == "" {
+		return fmt.Errorf("Tailscale auth key required for lockdown")
 	}
 
 	// ── Save ──
@@ -603,11 +597,6 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 	cfg.Env = envVars
 
 	switch selectedProvider {
-	case "daytona":
-		cfg.Daytona = sandbox.DaytonaGlobalConfig{
-			APIKey:    collected["_daytona_api_key"],
-			ServerURL: collected["_daytona_server_url"],
-		}
 	case "hetzner":
 		cfg.Hetzner = sandbox.HetznerGlobalConfig{
 			SSHKey:     collected["_hetzner_ssh_key"],
@@ -643,8 +632,6 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 	fmt.Fprintf(out, "  Provider:   %s\n", selectedProvider)
 
 	switch selectedProvider {
-	case "daytona":
-		fmt.Fprintln(out, "  Daytona:    ✓ configured")
 	case "hetzner":
 		fmt.Fprintln(out, "  Hetzner:    ✓ configured")
 		fmt.Fprintf(out, "  Size:       type=%s image=%s\n", collected["_hetzner_server_type"], collected["_hetzner_image"])
@@ -656,12 +643,10 @@ func runSandboxSetupWithDeps(dir string, in io.Reader, out io.Writer, readPasswo
 		fmt.Fprintf(out, "  Size:       bundle=%s region=%s az=%s\n", collected["_ls_bundle"], collected["_ls_region"], collected["_ls_az"])
 	}
 
-	if selectedProvider != "daytona" {
-		if lockdown {
-			fmt.Fprintln(out, "  Tailscale:  ✓ locked down (Tailscale-only access)")
-		} else {
-			fmt.Fprintln(out, "  Tailscale:  configured (public SSH allowed)")
-		}
+	if lockdown {
+		fmt.Fprintln(out, "  Tailscale:  ✓ locked down (Tailscale-only access)")
+	} else {
+		fmt.Fprintln(out, "  Tailscale:  configured (public SSH allowed)")
 	}
 
 	configuredCount := 0
@@ -690,16 +675,6 @@ func saveLegacyProjectSandboxConfigIfPresent(
 			return nil
 		}
 		return fmt.Errorf("stat %s: %w", halDir, err)
-	}
-
-	if selectedProvider == "daytona" {
-		daytonaCfg := &compound.DaytonaConfig{
-			APIKey:    collected["_daytona_api_key"],
-			ServerURL: collected["_daytona_server_url"],
-		}
-		if err := compound.SaveConfig(dir, daytonaCfg); err != nil {
-			return fmt.Errorf("saving legacy daytona config: %w", err)
-		}
 	}
 
 	sandboxCfg := &compound.SandboxConfig{

@@ -631,6 +631,15 @@ func convertPRDToJSON(ctx context.Context, eng engine.Engine, skill, prdContent,
 		}
 	}
 
+	if err := validateExplicitStoryStructure(jsonContent, explicitMarkdownStoryIDs(prdContent)); err != nil {
+		if outPath != "" {
+			if rollbackErr := restoreOutputSnapshot(outPath, beforeOutput); rollbackErr != nil {
+				return "", fmt.Errorf("%w (and failed to restore previous output: %v)", err, rollbackErr)
+			}
+		}
+		return "", err
+	}
+
 	return jsonContent, nil
 }
 

@@ -27,14 +27,19 @@ import (
 // Text content uses: text_start, text_delta, text_end.
 // Thinking/reasoning uses: thinking_start, thinking_delta, thinking_end.
 type Parser struct {
-	model       string
-	totalTokens int
-	hasFailure  bool
-	text        strings.Builder
-	isThinking  bool // tracks whether model is currently in a thinking block
-	now         func() time.Time
-	runStart    time.Time
+	model                  string
+	totalTokens            int
+	hasFailure             bool
+	hasTerminalOutcome     bool
+	lastAssistantCompleted bool
+	terminalError          string
+	text                   strings.Builder
+	isThinking             bool // tracks whether model is currently in a thinking block
+	now                    func() time.Time
+	runStart               time.Time
 }
+
+const incompletePiTerminalError = "pi agent ended without a completed assistant response"
 
 // NewParser creates a new Pi output parser.
 func NewParser() *Parser {
@@ -50,9 +55,22 @@ func (p *Parser) TotalTokens() int {
 	return p.totalTokens
 }
 
-// HasFailure returns true if any error was encountered.
+// HasFailure returns true if the current terminal outcome is a failure.
 func (p *Parser) HasFailure() bool {
 	return p.hasFailure
+}
+
+// HasTerminalOutcome reports whether agent_end established a completed final
+// assistant outcome. Process exit alone is not a successful Pi run boundary.
+func (p *Parser) HasTerminalOutcome() bool {
+	return p.hasTerminalOutcome
+}
+
+// TerminalError returns safe user-facing guidance for a terminal assistant
+// failure. Provider error text is classified rather than returned verbatim
+// because it may contain credentials or sensitive request details.
+func (p *Parser) TerminalError() string {
+	return p.terminalError
 }
 
 // CollectedText returns all assistant text accumulated during parsing.
@@ -77,6 +95,8 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 	switch eventType {
 	case "session":
 		return p.parseSession(raw)
+	case "agent_start":
+		return p.parseAgentStart(raw)
 	case "message_start":
 		return p.parseMessageStart(raw)
 	case "message_update":
@@ -97,9 +117,8 @@ func (p *Parser) ParseLine(line []byte) *engine.Event {
 }
 
 func (p *Parser) parseSession(raw map[string]interface{}) *engine.Event {
-	if p.runStart.IsZero() {
-		p.markRunStart()
-	}
+	p.resetRunState()
+	p.model = ""
 
 	// Session event doesn't include model; we'll pick it up from message_start.
 	// Model left empty — the real model name arrives in the first assistant message_start.
@@ -111,11 +130,28 @@ func (p *Parser) parseSession(raw map[string]interface{}) *engine.Event {
 	}
 }
 
+func (p *Parser) parseAgentStart(raw map[string]interface{}) *engine.Event {
+	p.resetRunState()
+	return nil
+}
+
+func (p *Parser) resetRunState() {
+	p.totalTokens = 0
+	p.hasFailure = false
+	p.hasTerminalOutcome = false
+	p.lastAssistantCompleted = false
+	p.terminalError = ""
+	p.text.Reset()
+	p.isThinking = false
+	p.markRunStart()
+}
+
 func (p *Parser) parseMessageStart(raw map[string]interface{}) *engine.Event {
 	msg, ok := raw["message"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
+	p.lastAssistantCompleted = false
 
 	// Only care about assistant messages for model extraction.
 	role, _ := msg["role"].(string)
@@ -276,18 +312,31 @@ func (p *Parser) parseMessageEnd(raw map[string]interface{}) *engine.Event {
 	role, _ := msg["role"].(string)
 	if role == "assistant" {
 		p.accumulateUsage(msg)
+		if stopReason, errorMessage, failed := terminalAssistantFailure(msg); failed {
+			p.lastAssistantCompleted = false
+			message := p.markTerminalFailure(stopReason, errorMessage)
+			return &engine.Event{
+				Type: engine.EventError,
+				Data: engine.EventData{Message: message},
+			}
+		}
+		p.lastAssistantCompleted = terminalAssistantCompleted(msg)
+	} else {
+		p.lastAssistantCompleted = false
 	}
 
 	return nil
 }
 
 func (p *Parser) parseToolExecutionStart(raw map[string]interface{}) *engine.Event {
+	p.lastAssistantCompleted = false
 	// We already show tool calls from toolcall_end; this is supplementary.
 	// Could show a spinner message here, but toolcall_end already handles it.
 	return nil
 }
 
 func (p *Parser) parseToolExecutionEnd(raw map[string]interface{}) *engine.Event {
+	p.lastAssistantCompleted = false
 	isError, _ := raw["isError"].(bool)
 	if !isError {
 		return nil
@@ -296,21 +345,9 @@ func (p *Parser) parseToolExecutionEnd(raw map[string]interface{}) *engine.Event
 	toolName, _ := raw["toolName"].(string)
 	p.hasFailure = true
 
-	// Extract error message from result
-	message := toolName + " failed"
-	if result, ok := raw["result"].(map[string]interface{}); ok {
-		if content, ok := result["content"].([]interface{}); ok {
-			for _, item := range content {
-				block, ok := item.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if text, _ := block["text"].(string); text != "" {
-					message = truncate(text, 80)
-					break
-				}
-			}
-		}
+	message := "tool execution failed"
+	if toolName != "" {
+		message = toolName + " failed"
 	}
 
 	return &engine.Event{
@@ -331,9 +368,15 @@ func (p *Parser) parseTurnEnd(raw map[string]interface{}) *engine.Event {
 }
 
 func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
+	p.hasTerminalOutcome = false
+	if willRetry, _ := raw["willRetry"].(bool); willRetry {
+		p.lastAssistantCompleted = false
+		return nil
+	}
 	// Fallback text recovery: some providers may not emit text_end events.
 	// In that case, extract text from the last assistant message in agent_end.
 	if messages, ok := raw["messages"].([]interface{}); ok {
+		p.reconcileTerminalOutcome(messages)
 		if finalText := extractLastAssistantText(messages); finalText != "" {
 			collected := p.text.String()
 			if !strings.Contains(collected, finalText) {
@@ -343,10 +386,12 @@ func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 				p.text.WriteString(finalText)
 			}
 		}
+	} else {
+		p.markIncompleteTerminalOutcome()
 	}
 
 	// agent_end is the final event. Emit a result.
-	success := !p.hasFailure
+	success := p.hasTerminalOutcome && !p.hasFailure
 
 	return &engine.Event{
 		Type: engine.EventResult,
@@ -354,7 +399,115 @@ func (p *Parser) parseAgentEnd(raw map[string]interface{}) *engine.Event {
 			Success:    success,
 			Tokens:     p.totalTokens,
 			DurationMs: p.elapsedRunDurationMs(),
+			Message:    p.terminalError,
 		},
+	}
+}
+
+func (p *Parser) reconcileTerminalOutcome(messages []interface{}) {
+	if len(messages) == 0 {
+		if p.lastAssistantCompleted {
+			p.markTerminalSuccess()
+			return
+		}
+		p.markIncompleteTerminalOutcome()
+		return
+	}
+
+	msg, ok := messages[len(messages)-1].(map[string]interface{})
+	if !ok {
+		p.markIncompleteTerminalOutcome()
+		return
+	}
+
+	if stopReason, errorMessage, failed := terminalAssistantFailure(msg); failed {
+		p.markTerminalFailure(stopReason, errorMessage)
+		p.hasTerminalOutcome = true
+		return
+	}
+	if terminalAssistantCompleted(msg) {
+		p.markTerminalSuccess()
+		return
+	}
+	p.markIncompleteTerminalOutcome()
+}
+
+func (p *Parser) markTerminalSuccess() {
+	p.hasFailure = false
+	p.hasTerminalOutcome = true
+	p.lastAssistantCompleted = true
+	p.terminalError = ""
+}
+
+func (p *Parser) markIncompleteTerminalOutcome() {
+	p.hasFailure = true
+	p.hasTerminalOutcome = false
+	p.lastAssistantCompleted = false
+	p.terminalError = incompletePiTerminalError
+}
+
+func (p *Parser) markTerminalFailure(stopReason, errorMessage string) string {
+	p.hasFailure = true
+	p.terminalError = sanitizePiTerminalError(stopReason, errorMessage)
+	return p.terminalError
+}
+
+func terminalAssistantFailure(msg map[string]interface{}) (stopReason, errorMessage string, failed bool) {
+	role, _ := msg["role"].(string)
+	if role != "assistant" {
+		return "", "", false
+	}
+
+	stopReason, _ = msg["stopReason"].(string)
+	if stopReason != "error" && stopReason != "aborted" {
+		return "", "", false
+	}
+
+	errorMessage, _ = msg["errorMessage"].(string)
+	return stopReason, errorMessage, true
+}
+
+func terminalAssistantCompleted(msg map[string]interface{}) bool {
+	role, _ := msg["role"].(string)
+	if role != "assistant" {
+		return false
+	}
+	stopReason, _ := msg["stopReason"].(string)
+	return stopReason == "stop" || stopReason == "end"
+}
+
+func sanitizePiTerminalError(stopReason, errorMessage string) string {
+	message := strings.ToLower(errorMessage)
+
+	switch {
+	case strings.Contains(message, "api key"),
+		strings.Contains(message, "authentication"),
+		strings.Contains(message, "unauthorized"),
+		strings.Contains(message, "forbidden"),
+		strings.Contains(message, "oauth"),
+		strings.Contains(message, "credential"),
+		strings.Contains(message, "401"),
+		strings.Contains(message, "403"):
+		return "pi authentication failed; run pi and use /login for the selected provider, then retry"
+	case strings.Contains(message, "rate limit"),
+		strings.Contains(message, "quota"),
+		strings.Contains(message, "too many requests"),
+		strings.Contains(message, "429"):
+		return "pi provider rate limit or quota exceeded; retry later or check the provider account"
+	case strings.Contains(message, "websocket"),
+		strings.Contains(message, "network"),
+		strings.Contains(message, "connection"),
+		strings.Contains(message, "timed out"),
+		strings.Contains(message, "timeout"):
+		return "pi provider request failed; check network connectivity and retry"
+	case strings.Contains(message, "context length"),
+		strings.Contains(message, "context window"),
+		strings.Contains(message, "too many tokens"):
+		return "pi model context limit exceeded; reduce the prompt or choose a larger-context model"
+	case stopReason == "aborted":
+		return "pi request was aborted; retry unless cancellation was intentional"
+	default:
+		return "pi agent reported a terminal error; run pi directly for provider diagnostics"
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/engine"
+	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/template"
 	"gopkg.in/yaml.v3"
 )
@@ -101,12 +103,6 @@ type rawAutoConfig struct {
 	ReviewMaxIterations *int     `yaml:"reviewMaxIterations"`
 }
 
-// DaytonaConfig contains configuration for Daytona sandbox integration.
-type DaytonaConfig struct {
-	APIKey    string `yaml:"apiKey"`
-	ServerURL string `yaml:"serverURL"`
-}
-
 // HetznerConfig contains Hetzner-specific sandbox settings.
 type HetznerConfig struct {
 	SSHKey     string `yaml:"sshKey"`
@@ -130,18 +126,22 @@ type LightsailConfig struct {
 
 // SandboxConfig contains sandbox configuration including provider selection and env vars.
 type SandboxConfig struct {
-	Provider          string             `yaml:"provider"`
-	TailscaleLockdown bool               `yaml:"tailscaleLockdown"`
-	Env               map[string]string  `yaml:"env"`
-	Hetzner           HetznerConfig      `yaml:"hetzner"`
-	DigitalOcean      DigitalOceanConfig `yaml:"digitalocean"`
-	Lightsail         LightsailConfig    `yaml:"lightsail"`
+	Provider                        string                                                   `yaml:"provider"`
+	TailscaleLockdown               bool                                                     `yaml:"tailscaleLockdown"`
+	Env                             map[string]string                                        `yaml:"env"`
+	Hetzner                         HetznerConfig                                            `yaml:"hetzner"`
+	DigitalOcean                    DigitalOceanConfig                                       `yaml:"digitalocean"`
+	Lightsail                       LightsailConfig                                          `yaml:"lightsail"`
+	NetworkPolicy                   *sandbox.SandboxNetworkPolicyIntent                      `yaml:"networkPolicy,omitempty"`
+	Secrets                         *SandboxSecretConfig                                     `yaml:"secrets,omitempty"`
+	SecurityReadinessGatePolicyMode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `yaml:"securityReadinessGatePolicyMode,omitempty"`
 }
 
-// rawDaytonaConfig is used for YAML unmarshaling to distinguish missing keys from explicit values.
-type rawDaytonaConfig struct {
-	APIKey    *string `yaml:"apiKey"`
-	ServerURL *string `yaml:"serverURL"`
+// SandboxSecretConfig contains requested and active secret delivery mode
+// metadata parsed from local sandbox configuration.
+type SandboxSecretConfig struct {
+	RequestedModes []string `yaml:"requestedModes"`
+	ActiveModes    []string `yaml:"activeModes"`
 }
 
 // RawEngineConfig holds per-engine settings from YAML.
@@ -160,7 +160,6 @@ type Config struct {
 	MaxRetries    int                         `yaml:"maxRetries"`
 	Engines       map[string]*RawEngineConfig `yaml:"engines"`
 	Auto          rawAutoConfig               `yaml:"auto"`
-	Daytona       rawDaytonaConfig            `yaml:"daytona"`
 }
 
 // DefaultAutoConfig returns sensible defaults for auto configuration.
@@ -384,51 +383,17 @@ func LoadEngineConfig(dir, engineName string) *engine.EngineConfig {
 	return cfg
 }
 
-// DefaultDaytonaConfig returns zero-value defaults for Daytona configuration.
-// Both fields default to empty; the SDK uses its own default server URL when empty.
-func DefaultDaytonaConfig() DaytonaConfig {
-	return DaytonaConfig{}
-}
-
-// LoadDaytonaConfig reads the daytona: section from .hal/config.yaml.
-// If the file or section is missing, zero-value defaults are returned (no error).
-func LoadDaytonaConfig(dir string) (*DaytonaConfig, error) {
-	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			cfg := DefaultDaytonaConfig()
-			return &cfg, nil
-		}
-		return nil, err
-	}
-
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
-
-	cfg := DefaultDaytonaConfig()
-	if config.Daytona.APIKey != nil {
-		cfg.APIKey = *config.Daytona.APIKey
-	}
-	if config.Daytona.ServerURL != nil {
-		cfg.ServerURL = *config.Daytona.ServerURL
-	}
-
-	return &cfg, nil
-}
-
 // LoadSandboxConfig reads the sandbox: section from .hal/config.yaml.
-// If the file or section is missing, a config with Provider defaulting to "daytona" is returned.
+// If the file or section is missing, a config with no selected provider is
+// returned. Callers should direct users to `hal sandbox setup` before creating
+// or resolving a provider-backed sandbox.
 func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 	configPath := filepath.Join(dir, template.HalDir, template.ConfigFile)
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &SandboxConfig{Provider: "daytona", Env: map[string]string{}}, nil
+			return &SandboxConfig{Env: map[string]string{}}, nil
 		}
 		return nil, err
 	}
@@ -453,6 +418,9 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 				Bundle           *string `yaml:"bundle"`
 				KeyPairName      *string `yaml:"keyPairName"`
 			} `yaml:"lightsail"`
+			NetworkPolicy                   *sandbox.SandboxNetworkPolicyIntent                       `yaml:"networkPolicy"`
+			Secrets                         *SandboxSecretConfig                                      `yaml:"secrets"`
+			SecurityReadinessGatePolicyMode *sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode `yaml:"securityReadinessGatePolicyMode"`
 		} `yaml:"sandbox"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -464,16 +432,15 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 	}
 
 	cfg := &SandboxConfig{
-		Provider: "daytona",
-		Env:      raw.Sandbox.Env,
+		Env: raw.Sandbox.Env,
 	}
 
 	if raw.Sandbox.TailscaleLockdown != nil {
 		cfg.TailscaleLockdown = *raw.Sandbox.TailscaleLockdown
 	}
 
-	if raw.Sandbox.Provider != nil && *raw.Sandbox.Provider != "" {
-		cfg.Provider = *raw.Sandbox.Provider
+	if raw.Sandbox.Provider != nil {
+		cfg.Provider = strings.TrimSpace(*raw.Sandbox.Provider)
 	}
 	if raw.Sandbox.Hetzner.SSHKey != nil {
 		cfg.Hetzner.SSHKey = *raw.Sandbox.Hetzner.SSHKey
@@ -502,8 +469,92 @@ func LoadSandboxConfig(dir string) (*SandboxConfig, error) {
 	if raw.Sandbox.Lightsail.KeyPairName != nil {
 		cfg.Lightsail.KeyPairName = *raw.Sandbox.Lightsail.KeyPairName
 	}
+	if raw.Sandbox.NetworkPolicy != nil {
+		networkPolicy, err := normalizeSandboxNetworkPolicyConfig(*raw.Sandbox.NetworkPolicy)
+		if err != nil {
+			return nil, err
+		}
+		cfg.NetworkPolicy = networkPolicy
+	}
+	if raw.Sandbox.Secrets != nil {
+		secrets, err := normalizeSandboxSecretConfig(*raw.Sandbox.Secrets)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Secrets = secrets
+	}
+	if raw.Sandbox.SecurityReadinessGatePolicyMode != nil {
+		mode, err := normalizeSandboxSecurityReadinessGatePolicyModeConfig(*raw.Sandbox.SecurityReadinessGatePolicyMode)
+		if err != nil {
+			return nil, err
+		}
+		cfg.SecurityReadinessGatePolicyMode = mode
+	}
 
 	return cfg, nil
+}
+
+func normalizeSandboxNetworkPolicyConfig(intent sandbox.SandboxNetworkPolicyIntent) (*sandbox.SandboxNetworkPolicyIntent, error) {
+	normalized := sandbox.SandboxNetworkPolicyIntent{
+		Preset: sandbox.SandboxNetworkPolicyPreset(strings.TrimSpace(string(intent.Preset))),
+	}
+	if len(intent.Rules) > 0 {
+		normalized.Rules = make([]sandbox.SandboxNetworkPolicyRule, 0, len(intent.Rules))
+		for _, rule := range intent.Rules {
+			normalized.Rules = append(normalized.Rules, sandbox.SandboxNetworkPolicyRule{
+				Kind:     sandbox.SandboxNetworkPolicyRuleKind(strings.TrimSpace(string(rule.Kind))),
+				Value:    strings.TrimSpace(rule.Value),
+				Decision: sandbox.SandboxNetworkPolicyDecision(strings.TrimSpace(string(rule.Decision))),
+			})
+		}
+	}
+
+	validation := sandbox.ValidateSandboxNetworkPolicyIntent(normalized)
+	if !validation.Valid {
+		return nil, sandboxNetworkPolicyConfigError(validation)
+	}
+	return &normalized, nil
+}
+
+func sandboxNetworkPolicyConfigError(validation sandbox.SandboxNetworkPolicyValidationResult) error {
+	if len(validation.Errors) == 0 {
+		return fmt.Errorf("sandbox.networkPolicy invalid")
+	}
+	err := validation.Errors[0]
+	location := "sandbox.networkPolicy"
+	if err.RuleIndex >= 0 {
+		location = fmt.Sprintf("%s.rules[%d]", location, err.RuleIndex)
+	} else if err.Code == sandbox.SandboxNetworkPolicyValidationInvalidPreset {
+		location = location + ".preset"
+	}
+	return fmt.Errorf("%s invalid: %s", location, err.Code)
+}
+
+func normalizeSandboxSecretConfig(secrets SandboxSecretConfig) (*SandboxSecretConfig, error) {
+	metadata, err := factory.ValidateSecretBrokerDeliveryModes(factory.SecretBrokerDeliveryModeValidationRequest{
+		RequestedModes: secrets.RequestedModes,
+		ActiveModes:    secrets.ActiveModes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sandbox.secrets: %w", err)
+	}
+	return &SandboxSecretConfig{
+		RequestedModes: append([]string(nil), metadata.RequestedModes...),
+		ActiveModes:    append([]string(nil), metadata.ActiveModes...),
+	}, nil
+}
+
+func normalizeSandboxSecurityReadinessGatePolicyModeConfig(mode sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode) (sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode, error) {
+	normalized := sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode(strings.ToLower(strings.TrimSpace(string(mode))))
+	if normalized == "" {
+		return "", nil
+	}
+	for _, supported := range factory.SupportedSecurityReadinessGatePolicyModes() {
+		if normalized == supported {
+			return normalized, nil
+		}
+	}
+	return "", fmt.Errorf("sandbox.securityReadinessGatePolicyMode must be one of off, advisory, strict")
 }
 
 // SaveSandboxConfig merges the given SandboxConfig into .hal/config.yaml without
@@ -591,6 +642,15 @@ func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
 		}
 		sandboxMap["lightsail"] = lightsailMap
 	}
+	if sandbox.NetworkPolicy != nil {
+		sandboxMap["networkPolicy"] = sandbox.NetworkPolicy
+	}
+	if sandbox.Secrets != nil {
+		sandboxMap["secrets"] = sandbox.Secrets
+	}
+	if sandbox.SecurityReadinessGatePolicyMode != "" {
+		sandboxMap["securityReadinessGatePolicyMode"] = sandbox.SecurityReadinessGatePolicyMode
+	}
 
 	existing["sandbox"] = sandboxMap
 
@@ -602,53 +662,6 @@ func SaveSandboxConfig(dir string, sandbox *SandboxConfig) error {
 	if err := os.WriteFile(configPath, out, 0600); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
-	if err := os.Chmod(configPath, 0600); err != nil {
-		return fmt.Errorf("setting config permissions: %w", err)
-	}
-
-	return nil
-}
-
-// SaveConfig merges the given DaytonaConfig into .hal/config.yaml without clobbering
-// other sections. It reads the existing file, updates only the daytona: section, and
-// writes back the result.
-func SaveConfig(dir string, daytona *DaytonaConfig) error {
-	halDir := filepath.Join(dir, template.HalDir)
-	configPath := filepath.Join(halDir, template.ConfigFile)
-
-	// Ensure .hal directory exists
-	if err := os.MkdirAll(halDir, 0755); err != nil {
-		return fmt.Errorf("creating config directory: %w", err)
-	}
-
-	// Read existing config as a generic map to preserve all sections
-	existing := make(map[string]interface{})
-	data, err := os.ReadFile(configPath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("reading config: %w", err)
-	}
-	if len(data) > 0 {
-		if err := yaml.Unmarshal(data, &existing); err != nil {
-			return fmt.Errorf("parsing config: %w", err)
-		}
-	}
-
-	// Update only the daytona section
-	existing["daytona"] = map[string]interface{}{
-		"apiKey":    daytona.APIKey,
-		"serverURL": daytona.ServerURL,
-	}
-
-	out, err := yaml.Marshal(existing)
-	if err != nil {
-		return fmt.Errorf("marshaling config: %w", err)
-	}
-
-	if err := os.WriteFile(configPath, out, 0600); err != nil {
-		return fmt.Errorf("writing config: %w", err)
-	}
-	// Ensure existing files are tightened as well (WriteFile does not change mode
-	// when truncating an existing file).
 	if err := os.Chmod(configPath, 0600); err != nil {
 		return fmt.Errorf("setting config permissions: %w", err)
 	}

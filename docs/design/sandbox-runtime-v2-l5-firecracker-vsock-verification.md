@@ -1,0 +1,182 @@
+# Sandbox Runtime v2 L5 Firecracker Guest Image and Vsock Verification
+
+This document is the issue #49 L5 verification boundary. The locked issue
+comments, Linux completion architecture, L4 architecture, and L5 architecture
+remain authoritative.
+
+## Scope
+
+L5 delivers reproducible digest-described kernel/rootfs assets containing the
+guest agent, production Firecracker virtio-vsock transport and readiness
+composition, proof-gated exec/copy capability, and actual prepared-Linux KVM
+guest execution and teardown.
+
+API socket availability, a configured UDS, a downloaded demo image, a skipped
+test, or synthetic readiness metadata is not an L5 pass.
+
+## Default red-first matrix
+
+Default tests are deterministic and fake-safe. They lock asset/provenance
+schemas and digest checks, machine vsock payload rendering, host CONNECT
+framing and bounds, guest listener dispatch and cleanup, readiness correlation,
+capability honesty, redaction, cancellation, and lifecycle cleanup. They make
+no downloads, mounts, KVM calls, Firecracker launches, cloud calls, or network
+connections.
+
+The fake lifecycle matrix proves that start, stop, and delete share one
+exclusive per-runtime lifecycle reservation: overlapping starts cannot launch a
+second process, stop/delete cannot report success during an in-flight start,
+and delete cannot overlap an active stop.
+
+The restart matrix also proves that host-process ownership begins at launch,
+survives bridge/session loss and failed cleanup, and clears only after
+successful owned cleanup or positive exact-generation terminal-state
+verification. Missing terminal verification fails closed. Stale socket cleanup
+requires every matching path/state generation to be terminal. A missing safe
+opaque process handle fails before guest readiness and
+retains unverified process ownership.
+
+The matrix includes canonical unsigned 32-bit assigned-host-port checks,
+including zero, overflow, sign, leading-zero, and reserved
+`VMADDR_PORT_ANY` rejection; partial and
+pre-acknowledgement data, wrong/stale socket rejection, state/UDS
+type-owner-mode and runtime/process/inode correlation, symlink/socket
+substitution, Linux `SO_PEERCRED` PID/generation binding, boot/readiness races,
+and post-cleanup reconnect failure. The full
+config must contain the fixed boot arguments, read-only root drive, guest CID,
+and target-owned UDS before process start.
+
+Authorization negatives construct caller-carried ready metadata and
+cross-runtime/stale targets and prove they cannot exec or copy without the
+backend-owned live-session proof. The matrix invalidates proof on stop, delete,
+process exit, restart, bridge loss, and readiness failure. Daemon-wide worker
+descriptors remain lifecycle-only, and synthetic isolation labels never become
+strict evidence.
+
+Cleanup tests lock an independent cleanup timeout, TERM deadline, KILL
+escalation, wait/reap, ownership-proven state deletion, and fail-closed
+cleanup uncertainty that cannot become stopped/ready/success.
+
+The docs and source guards require the dedicated guest identity, fixed protocol
+CID/port, exact one-request-per-connection framing, no AF_INET fallback, no raw
+path/endpoint evidence, and no cross-phase network/credential/OCI behavior.
+
+## Prepared-Linux acceptance
+
+`TestL5PreparedLinuxFirecrackerVsockE2E` is selected only by
+`l5_firecracker_vsock_integration`. Once selected it must not skip. It consumes
+only the pinned Firecracker binary and assets produced by the checked-in
+pipeline. The executable itself must match SHA-256
+`7e8b57e88c459396d4680d83dcdd8c7f72305447cb55b11f4ac98ad70a3f7825`.
+The test uses a scratch rootfs and proves real readiness, exec exit/output,
+copy integrity, bounded workspace tmpfs, timeout/cancellation
+process-group cleanup before teardown, independently probed guest-agent failure,
+escaped-process containment by VM teardown, and zero owned
+processes/sockets/state afterward. Its identity probe requires UID/GID `1000`,
+a disabled agent password, no supplementary groups, and `NoNewPrivs: 1` in guest process
+status.
+Guest transport tests separately prove that request `POLLRDHUP` framing does
+not cancel dispatch, while fixed 4-byte big-endian length-prefixed request and
+response frames do not rely on a half-close for message delivery. A later
+full-peer `POLLHUP` does cancel the live handler and reaches L4 process-group
+cleanup.
+Before constructing the live driver, the test copies the digest-verified
+Firecracker executable, kernel, and rootfs into its private mode-`0700` launch
+root and launches only those private copies. It verifies the installed master
+asset digests again after teardown.
+The same tag first selects `TestL5PreparedLinuxImagePrerequisites`, with
+`HAL_L5_DISTRIBUTION_DIR` naming the caller-installed distribution. That test
+must fail, not skip, when the host, architecture, manifest, or installed asset
+locks do not satisfy the L5 image contract. It also correlates provenance,
+requires the exact `SHA256SUMS` output set and verified bytes, rejects
+symlinked/non-directory roots and symlinked/non-regular files, and uses
+read-only rootfs inspection to require `/usr/bin/hal-guest-agent` and a
+regular util-linux binary at `/usr/bin/setpriv`. It performs non-executing inspection
+of that binary's embedded option identifiers to prove the exact
+non-root privilege-drop option names required by guest init; the live E2E
+proves their behavior inside the guest rather than executing rootfs content on
+the host. The prerequisite first makes a private digest-verified rootfs copy
+through a no-follow file descriptor, then performs bounded read-only debugfs inspection
+through a fixed stat/cat allowlist only on that copy, so
+caller-controlled path swaps, commands, and oversized file output fail before
+inspection evidence is accepted.
+`TestL5CopyVerifiedRootfsForInspectionCopiesDigestLockedBytes` is a tagged
+fake-only regression check for that private copy boundary.
+
+Missing prerequisites or a zero-match selector is a failure. Retained evidence
+contains versions, digests, safe IDs, pass/fail codes, and cleanup counts only;
+it contains no host paths, endpoints, machine identity, credentials, or raw
+process arguments.
+
+The asset gate verifies Buildroot `2026.05.1` tag/commit/signed-release
+identity, Linux `6.1.178`, BusyBox `1.38.0`, e2fsprogs `1.47.4`, Go `1.25.7`,
+Firecracker `v1.15.1`, the full pinned `linux/amd64` Buildroot build-image
+digest, every exact offline dependency filename and digest, clean source/tree
+identity, deterministic Go/kernel/ext4 controls, `CONFIG_MODULES=n`,
+`CONFIG_SMP=y`, `CONFIG_HW_RANDOM_VIRTIO=y`, `CONFIG_ACPI=y`,
+`CONFIG_PCI=y`, `CONFIG_VIRTIO_PCI=y`, `CONFIG_X86_MPPARSE=n`, and
+`CONFIG_VIRTIO_MMIO=n`, plus
+`BR2_ROOTFS_DEVICE_CREATION_STATIC=y` Buildroot `/dev` bootstrap configuration
+that prevents `CONFIG_DEVTMPFS_MOUNT` from being forced on, matching the
+production `--enable-pci` start plan and the absence of `pci=off` plus
+`devtmpfs.mount=0` in the fixed boot arguments, matching
+6.1 kernel headers, the exact
+`/workspace` guest path mapping, and `e2fsck -fn`. It rejects missing and extra
+downloads under a real no-network boundary with `BR2_PRIMARY_SITE_ONLY`,
+`BR2_DOWNLOAD_FORCE_CHECK_HASHES`, and no ccache.
+The build preflights the exact local container image and disables daemon
+pulls, so a missing image cannot be satisfied during the offline step.
+Canonical cache/output roots require private mode-`0700` ownership; cache
+verification includes hidden entries and repeats inside the host-identity
+container against the expected host UID. Guest Go compilation uses the exact
+cached module artifacts with `GOPROXY=off` and `-mod=readonly`. Ephemeral build
+trees are created below the validated private output parent, not an ambient
+system temporary directory; cleanup changes only caller write bits and does
+not recursively repair ownership.
+
+The e2fsprogs source evidence is specifically the Buildroot-selected
+`e2fsprogs-1.47.4.tar.xz` archive. The upstream signed checksum record maps
+that filename to
+`fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b`;
+the lock rejects a suffix/digest pairing from any alternate compression.
+
+The two reproducibility runs use independent clean namespaces/containers but
+the same canonical internal Buildroot source and `O=` paths, a fixed
+`hal-l5-build` container hostname, and fresh host/staging/target/download
+state. They export to distinct caller
+directories and byte-compare the kernel, rootfs, path-free distribution
+manifest, provenance, and checksums. No distribution artifact may contain
+either caller path; runtime-materialized launch descriptors are tested
+separately and are not reproducibility outputs.
+
+## Focused and broad commands
+
+```sh
+go test -count=1 -timeout=180s ./internal/sandboxruntime/microvm/assets/build ./internal/sandboxruntime/microvm/guestagent/frame ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
+go test -race -count=1 -timeout=240s ./internal/sandboxruntime/microvm/guestagent/frame ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecracker ./internal/sandboxruntime/microvm/firecrackerhost
+go test -count=1 -timeout=180s ./cmd -run '^TestL5'
+GOOS=darwin GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
+GOOS=windows GOARCH=amd64 go test -exec=true -count=1 -run '^$' ./internal/sandboxruntime/microvm/guestagent/vsock ./internal/sandboxruntime/microvm/firecrackerhost
+test "$(go env GOOS)" = linux
+go test -count=1 -timeout=60s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/assets/localresolver -run '^(TestL5CopyVerifiedRootfsForInspectionCopiesDigestLockedBytes|TestL5PreparedLinuxImagePrerequisites)$'
+go test -list '^TestL5PreparedLinuxFirecrackerVsockE2E$' -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost | grep -qx 'TestL5PreparedLinuxFirecrackerVsockE2E'
+go test -race -count=1 -timeout=900s -tags=l5_firecracker_vsock_integration ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestL5PreparedLinuxFirecrackerVsockE2E$'
+go test -count=1 -timeout=420s ./...
+go test -count=1 -run '^$' ./...
+go vet ./...
+make docs-check
+make build
+git diff --check
+```
+
+Run changed-file gofmt verification. Because `golangci-lint` is installed on
+the prepared host, run:
+
+```sh
+golangci-lint run --new-from-rev 762ee1a61d2efc5bb9241a6e87409ca20d68f976 ./...
+```
+
+## Boundaries
+
+L5 makes no proxy, firewall, topology, credential, OCI, cloud, default-runtime,
+or strict-composition change. Those remain L6-L10 work.

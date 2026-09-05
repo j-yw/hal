@@ -676,6 +676,8 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 			Version:         "dev",
 			RunID:           record.RunID,
 			Status:          record.Status,
+			ExecutorMode:    factory.ExecutorModeSandbox,
+			BaseBranch:      "develop",
 			NextAction: &FactoryRunNextAction{
 				ID:          "inspect_factory_run",
 				Command:     "hal factory status run-contract --json",
@@ -695,7 +697,7 @@ func TestMachineContractFields_FactoryCommandOutputs(t *testing.T) {
 		}
 
 		raw := parseJSON(t, buf.Bytes())
-		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
 		if raw["contractVersion"] != FactoryRunContractVersion {
 			t.Fatalf("factory run contractVersion = %v, want %q", raw["contractVersion"], FactoryRunContractVersion)
 		}
@@ -1181,7 +1183,7 @@ func TestMachineContractFields_SandboxList(t *testing.T) {
 				{
 					ID:        "test-id",
 					Name:      "minimal",
-					Provider:  "daytona",
+					Provider:  "hetzner",
 					Status:    "running",
 					CreatedAt: time.Now(),
 				},
@@ -1241,7 +1243,7 @@ func TestMachineContractFields_SandboxList(t *testing.T) {
 				{
 					ID:        "0192d4e5-6f78-7abc-def0-123456789abd",
 					Name:      "worker",
-					Provider:  "daytona",
+					Provider:  "hetzner",
 					Status:    "stopped",
 					CreatedAt: now,
 				},
@@ -1458,11 +1460,13 @@ func TestMachineContractFields_AutoV2Examples(t *testing.T) {
 	validEntryModes := map[string]bool{"markdown_path": true, "report_discovery": true}
 
 	testCases := []struct {
-		name string
-		path string
+		name        string
+		path        string
+		wantSyncOut bool
 	}{
 		{name: "success example", path: filepath.Join("..", "docs", "contracts", "examples", "auto-v2-success.json")},
 		{name: "failure example", path: filepath.Join("..", "docs", "contracts", "examples", "auto-v2-failure.json")},
+		{name: "sandbox sync-out example", path: filepath.Join("..", "docs", "contracts", "examples", "auto-v2-sandbox-sync-out.json"), wantSyncOut: true},
 	}
 
 	for _, tc := range testCases {
@@ -1536,6 +1540,57 @@ func TestMachineContractFields_AutoV2Examples(t *testing.T) {
 						t.Fatalf("nextAction.%s should be a string", field)
 					}
 				}
+			}
+
+			var result AutoResult
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("decode %s as AutoResult: %v", tc.path, err)
+			}
+			if tc.wantSyncOut {
+				if result.SandboxExecutionID == "" {
+					t.Fatalf("sync-out example missing decoded SandboxExecutionID")
+				}
+				if result.SyncOut == nil {
+					t.Fatalf("sync-out example missing decoded SyncOut")
+				}
+				if result.SyncOutApply == nil {
+					t.Fatalf("sync-out example missing decoded SyncOutApply")
+				}
+			}
+		})
+	}
+}
+
+func TestMachineContractFields_RunV1Examples(t *testing.T) {
+	testCases := []struct {
+		name   string
+		path   string
+		wantOK bool
+	}{
+		{name: "success", path: filepath.Join("..", "docs", "contracts", "examples", "run-v1-success.json"), wantOK: true},
+		{name: "failure", path: filepath.Join("..", "docs", "contracts", "examples", "run-v1-failure.json"), wantOK: false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.path, err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("decode %s: %v", tc.path, err)
+			}
+			for _, field := range []string{"contractVersion", "ok", "iterations", "complete", "summary"} {
+				if _, ok := raw[field]; !ok {
+					t.Fatalf("example %s missing required field %q", tc.path, field)
+				}
+			}
+			if raw["contractVersion"] != float64(1) || raw["ok"] != tc.wantOK {
+				t.Fatalf("example %s version/ok = %v/%v, want 1/%v", tc.path, raw["contractVersion"], raw["ok"], tc.wantOK)
+			}
+			var result RunResult
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("decode %s as RunResult: %v", tc.path, err)
 			}
 		})
 	}

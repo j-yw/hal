@@ -21,61 +21,103 @@ docker run --rm hal-sandbox /test.sh
 
 The `sandbox-build` and `sandbox-test` jobs in `.github/workflows/ci.yml` build the Docker image and run `/test.sh` on every push and PR to `main`, `develop`, `sandbox*`, and `compound/sandbox*` branches. The `sandbox-test` job uses path filtering — it only runs the smoke tests when files under `sandbox/` or the `Makefile` change.
 
-## Integration Tests (Daytona API)
+## Contained Podman lab
 
-Integration tests exercise the full sandbox lifecycle against a live Daytona environment: snapshot create, sandbox start, status, exec, stop, delete, and state file management.
+Use `sandbox/podman-lab.sh` for local rootless Podman and `sandboxd` testing. The
+script owns an isolated home directory, Hal config root, XDG config/data/cache
+roots, temp root, local Hal binary, disposable repository clones, daemon socket,
+image, and Podman storage. Linux defaults to native rootless Podman inside those
+isolated roots; other hosts use a named Podman machine. Set
+`HAL_SANDBOX_LAB_PODMAN_MODE=machine` to request the machine lane explicitly or
+`HAL_SANDBOX_LAB_PODMAN_MODE=native` to request native mode. The script does not
+install the feature binary or write runtime state to the normal user
+configuration. `seed-auth` explicitly copies
+supported Codex, Pi, and Claude auth files into the isolated home when live agent
+execution is required. A custom `HAL_SANDBOX_LAB_ROOT` must be absolute and use
+a `hal-sandbox-*` leaf directory so teardown cannot target a broad filesystem
+path.
 
-### Required environment variables
+The default lab root is
+`$XDG_DATA_HOME/hal-sandbox-lab-$USER` when `XDG_DATA_HOME` is set, otherwise
+`$HOME/.local/share/hal-sandbox-lab-$USER`. Persistent user data storage avoids
+the small tmpfs quotas commonly applied to `/tmp`; the lab is still disposable
+and `sandbox/podman-lab.sh destroy` removes it. Override the location with
+`HAL_SANDBOX_LAB_ROOT` when needed.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DAYTONA_API_KEY` | Yes | Daytona API key for authentication |
-| `DAYTONA_SERVER_URL` | No | Daytona server URL (SDK uses its default if not set) |
+Remote bootstrap downloads use bounded retries for transient connection and TLS
+failures. A persistent registry or package-source failure still stops the image
+build without disabling certificate verification.
 
-### Run locally
+When host TUN/DNS routing cannot reach registries directly, set separate proxy
+URLs instead of disabling TLS. `HAL_SANDBOX_LAB_HOST_PROXY` is used only while
+the host downloads the Podman machine image. `HAL_SANDBOX_LAB_GUEST_PROXY` is
+used only for image build traffic inside the Podman VM. Neither value is stored
+in the lab manifest.
 
-```bash
-# Set credentials
-export DAYTONA_API_KEY="your-api-key"
-export DAYTONA_SERVER_URL="https://your-server.daytona.io"  # optional
+When machine mode reports the QEMU provider, install
+the host QEMU image tool and architecture-specific system emulator before
+preparing the lab. The prepare command checks these prerequisites before it
+downloads a machine image. On Arch Linux, install the complete headless set with:
 
-# Run all sandbox integration tests
-go test -tags=integration -v -timeout 10m ./internal/sandbox/...
+```sh
+sudo pacman -S --needed qemu-base
 ```
 
-Without `-tags=integration`, these tests are completely excluded from compilation. Running `go test ./...` without the tag does not require Daytona credentials.
+```sh
+export HAL_SANDBOX_LAB_HOST_PROXY=http://127.0.0.1:PORT
+export HAL_SANDBOX_LAB_GUEST_PROXY=http://host.containers.internal:PORT
+make sandbox-lab-prepare
+make sandbox-lab-start
+./sandbox/podman-lab.sh seed-auth
+./sandbox/podman-lab.sh clone /path/to/browser-game browser-game
+./sandbox/podman-lab.sh run -- hal sandbox host status hal-lab-worker --live
+./sandbox/podman-lab.sh run -- hal factory run --sandbox --base main \
+  --sandbox-host hal-lab-worker --sandbox-runtime rootless_podman
+make sandbox-lab-destroy
+```
 
-### Skip behavior
+Run `make sandbox-lab-destroy` after testing. It deletes registered lab
+sandboxes through Hal while the daemon is available, stops the daemon, removes
+remaining Hal-labeled containers, deletes the named Podman machine, and removes
+the lab root.
 
-When `DAYTONA_API_KEY` is not set (empty or unset), all integration tests skip gracefully via `t.Skip` with a descriptive message. This means:
+## Runtime Integration Tests
 
-- `go test ./...` (no integration tag) always works without credentials
-- `go test -tags=integration ./...` without credentials reports skipped tests, not failures
-- Fork PRs that cannot access repository secrets still pass CI
+Runtime integration tests are opt-in and use provider-independent local
+resources. The default `go test ./...` suite remains deterministic and does not
+require cloud credentials, Podman, Firecracker, or KVM.
+
+### Rootless Podman
+
+Set `HAL_PODMAN_TEST_IMAGE` to a locally available image, then run:
+
+```bash
+HAL_PODMAN_TEST_IMAGE=hal-sandbox:latest \
+  go test -tags=podman_integration -v -timeout 5m \
+  ./internal/sandboxruntime/rootlesspodman
+```
+
+The test exercises create, start, inspect, exec, copy, stop, and delete. It
+skips when the image is not configured or Podman is unavailable.
+
+### Firecracker
+
+The Firecracker live test requires a Linux KVM host plus explicit executable,
+kernel, and root filesystem paths. Run:
+
+```bash
+HAL_FIRECRACKER_LIVE_FIRECRACKER=/path/to/firecracker \
+HAL_FIRECRACKER_LIVE_KERNEL=/path/to/vmlinux \
+HAL_FIRECRACKER_LIVE_ROOTFS=/path/to/rootfs.ext4 \
+  go test -tags=firecracker_live -v -timeout 5m \
+  ./internal/sandboxruntime/microvm/firecracker
+```
+
+The test validates a real boot/start/stop/delete lifecycle and skips with a
+clear prerequisite message when the host cannot run it.
 
 ### CI behavior
 
-The `integration-test` job in `.github/workflows/ci.yml` runs integration tests on **push events only** (not pull requests) to branches matching `main`, `develop`, `sandbox*`, and `compound/sandbox*`. It depends on the `test` job passing first.
-
-CI secrets are configured as GitHub repository secrets:
-
-- `DAYTONA_API_KEY` — set in repository Settings > Secrets and variables > Actions
-- `DAYTONA_SERVER_URL` — set in repository Settings > Secrets and variables > Actions
-
-The job passes these secrets as environment variables to the test command:
-
-```yaml
-env:
-  DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-  DAYTONA_SERVER_URL: ${{ secrets.DAYTONA_SERVER_URL }}
-```
-
-### Test structure
-
-Integration test files use the `//go:build integration` build tag:
-
-| File | Tests |
-|------|-------|
-| `internal/sandbox/integration_helpers_test.go` | Shared helpers: `requireDaytonaEnv`, `newIntegrationClient`, `integrationHalDir` |
-| `internal/sandbox/snapshot_integration_test.go` | Snapshot create and delete lifecycle |
-| `internal/sandbox/lifecycle_integration_test.go` | Sandbox start, status, exec, stop, delete, and state file verification |
+The `integration-test` job compiles and runs the opt-in runtime test packages.
+On ordinary GitHub-hosted runners, live cases skip because their explicit local
+prerequisites are absent. No cloud-provider secrets are read by the workflow.

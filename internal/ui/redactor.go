@@ -72,18 +72,62 @@ func sortedNonEmpty(values []string) []string {
 }
 
 func redactIPCandidates(text string, pattern *regexp.Regexp) string {
-	return pattern.ReplaceAllStringFunc(text, func(candidate string) string {
-		if !validIPCandidate(candidate) {
-			return candidate
+	matches := pattern.FindAllStringIndex(text, -1)
+	if len(matches) == 0 {
+		return text
+	}
+
+	var builder strings.Builder
+	changed := false
+	last := 0
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		if start < last {
+			continue
 		}
-		return addressPlaceholder
-	})
+		if !validIPCandidateAt(text, start, end) {
+			continue
+		}
+		if !changed {
+			builder.Grow(len(text))
+			changed = true
+		}
+		builder.WriteString(text[last:start])
+		builder.WriteString(addressPlaceholder)
+		last = end
+	}
+	if !changed {
+		return text
+	}
+	builder.WriteString(text[last:])
+	return builder.String()
 }
 
 func validIPCandidate(candidate string) bool {
 	trimmed := strings.Trim(candidate, "[]")
 	_, err := netip.ParseAddr(trimmed)
 	return err == nil
+}
+
+func validIPCandidateAt(text string, start, end int) bool {
+	if start < 0 || end > len(text) || start >= end {
+		return false
+	}
+	if !validIPCandidate(text[start:end]) {
+		return false
+	}
+	return !cssPseudoSelectorPrefixAt(text, start, end)
+}
+
+func cssPseudoSelectorPrefixAt(text string, start, end int) bool {
+	return text[start:end] == "::" && end < len(text) && isCSSIdentifierStartByte(text[end])
+}
+
+func isCSSIdentifierStartByte(ch byte) bool {
+	return ch == '-' ||
+		ch == '_' ||
+		(ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z')
 }
 
 // RedactingWriter sanitizes complete lines as they are written. Call Flush at
@@ -232,7 +276,7 @@ func adjustFlushLenForLiteral(text string, cut int, literal string) int {
 func adjustFlushLenForIPPattern(text string, cut int, pattern *regexp.Regexp) int {
 	for _, match := range pattern.FindAllStringIndex(text, -1) {
 		start, end := match[0], match[1]
-		if start < cut && cut < end && validIPCandidate(text[start:end]) {
+		if start < cut && cut < end && validIPCandidateAt(text, start, end) {
 			cut = start
 		}
 	}

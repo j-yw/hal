@@ -16,9 +16,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/compound"
+	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/projectconfig"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/verify"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -378,12 +382,167 @@ func TestParseFactoryRunRequest(t *testing.T) {
 	}
 }
 
+func TestParseFactoryRunRequestWithTargetSelectionFlags(t *testing.T) {
+	req, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", true, true, sandboxTargetFlagValues{
+		HostID:         "worker-1",
+		HostChanged:    true,
+		RuntimeDriver:  sandboxruntime.DriverMicroVM,
+		RuntimeChanged: true,
+	}, "dev", true, "", false, false, false, "", false)
+	if err != nil {
+		t.Fatalf("parseFactoryRunRequestWithTarget() unexpected error: %v", err)
+	}
+	if req.SandboxName != "dev" {
+		t.Fatalf("SandboxName = %q, want dev", req.SandboxName)
+	}
+	if req.SandboxHostID != "worker-1" {
+		t.Fatalf("SandboxHostID = %q, want worker-1", req.SandboxHostID)
+	}
+	if req.SandboxRuntime != sandboxruntime.DriverMicroVM {
+		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverMicroVM)
+	}
+
+	tests := []struct {
+		name    string
+		target  sandboxTargetFlagValues
+		wantErr string
+	}{
+		{
+			name: "empty host",
+			target: sandboxTargetFlagValues{
+				HostChanged: true,
+			},
+			wantErr: "--sandbox-host must not be empty",
+		},
+		{
+			name: "empty runtime",
+			target: sandboxTargetFlagValues{
+				RuntimeChanged: true,
+			},
+			wantErr: "--sandbox-runtime must not be empty",
+		},
+		{
+			name: "unknown runtime",
+			target: sandboxTargetFlagValues{
+				RuntimeDriver:  "worker_only",
+				RuntimeChanged: true,
+			},
+			wantErr: "--sandbox-runtime must be one of ssh_machine, rootless_podman, or microvm",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", false, true, tt.target, "", false, "", false, false, false, "", false)
+			if err == nil {
+				t.Fatal("parseFactoryRunRequestWithTarget() error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("parseFactoryRunRequestWithTarget() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseFactoryRunRequestWithSandboxName(t *testing.T) {
+	req, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", true, true, sandboxTargetFlagValues{}, " dev ", true, "", false, false, false, "", false)
+	if err != nil {
+		t.Fatalf("parseFactoryRunRequestWithTarget() unexpected error: %v", err)
+	}
+	if req.SandboxName != "dev" {
+		t.Fatalf("SandboxName = %q, want dev", req.SandboxName)
+	}
+
+	tests := []struct {
+		name               string
+		sandboxMode        bool
+		sandboxName        string
+		sandboxNameChanged bool
+		wantErr            string
+	}{
+		{
+			name:               "empty sandbox name",
+			sandboxMode:        true,
+			sandboxNameChanged: true,
+			wantErr:            "--sandbox-name must not be empty",
+		},
+		{
+			name:               "requires sandbox",
+			sandboxName:        "dev",
+			sandboxNameChanged: true,
+			wantErr:            "--sandbox-name requires --sandbox",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", false, tt.sandboxMode, sandboxTargetFlagValues{}, tt.sandboxName, tt.sandboxNameChanged, "", false, false, false, "", false)
+			if err == nil {
+				t.Fatal("parseFactoryRunRequestWithTarget() error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("parseFactoryRunRequestWithTarget() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseFactoryRunRequestWithPolicyFlags(t *testing.T) {
+	req, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", true, true, sandboxTargetFlagValues{}, "", false, " Required ", true, false, false, " PR ", true)
+	if err != nil {
+		t.Fatalf("parseFactoryRunRequestWithTarget() unexpected error: %v", err)
+	}
+	if req.CIPolicy != factory.CIPolicyRequired {
+		t.Fatalf("CIPolicy = %q, want %q", req.CIPolicy, factory.CIPolicyRequired)
+	}
+	if req.PublishPolicy != factory.PublishPolicyPR {
+		t.Fatalf("PublishPolicy = %q, want %q", req.PublishPolicy, factory.PublishPolicyPR)
+	}
+
+	req, err = parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", true, true, sandboxTargetFlagValues{}, "", false, "", false, true, true, "", false)
+	if err != nil {
+		t.Fatalf("parseFactoryRunRequestWithTarget() unexpected --no-ci error: %v", err)
+	}
+	if req.CIPolicy != factory.CIPolicyDisabled {
+		t.Fatalf("CIPolicy = %q, want %q for --no-ci", req.CIPolicy, factory.CIPolicyDisabled)
+	}
+
+	tests := []struct {
+		name                 string
+		ciPolicy             string
+		ciPolicyChanged      bool
+		noCI                 bool
+		noCIChanged          bool
+		publishPolicy        string
+		publishPolicyChanged bool
+		wantErr              string
+	}{
+		{name: "empty ci policy", ciPolicyChanged: true, wantErr: "--ci-policy must not be empty"},
+		{name: "unknown ci policy", ciPolicy: "best-effort", ciPolicyChanged: true, wantErr: "--ci-policy must be one of required, skip-if-unavailable, disabled"},
+		{name: "no-ci conflicts", ciPolicy: "required", ciPolicyChanged: true, noCI: true, noCIChanged: true, wantErr: "--no-ci cannot be combined with --ci-policy required"},
+		{name: "empty publish", publishPolicyChanged: true, wantErr: "--publish must not be empty"},
+		{name: "unknown publish", publishPolicy: "release", publishPolicyChanged: true, wantErr: "--publish must be one of none, push, pr"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseFactoryRunRequestWithTarget([]string{".hal/prd-feature.md"}, "", "main", true, true, sandboxTargetFlagValues{}, "", false, tt.ciPolicy, tt.ciPolicyChanged, tt.noCI, tt.noCIChanged, tt.publishPolicy, tt.publishPolicyChanged)
+			if err == nil {
+				t.Fatal("parseFactoryRunRequestWithTarget() error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("parseFactoryRunRequestWithTarget() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestFactoryRunCommandRegisteredWithInputFlags(t *testing.T) {
 	cmd, err := commandAtPath(Root(), "factory", "run")
 	if err != nil {
 		t.Fatalf("factory run command missing: %v", err)
 	}
-	for _, flagName := range []string{"report", "base", "secret-env", "sandbox", "json"} {
+	for _, flagName := range []string{"report", "base", "secret-env", "ci-policy", "no-ci", "publish", "publish-from", "sandbox", "sandbox-name", "sandbox-host", "sandbox-runtime", "json"} {
 		if cmd.Flags().Lookup(flagName) == nil {
 			t.Fatalf("factory run should expose --%s flag", flagName)
 		}
@@ -399,6 +558,8 @@ func TestFactoryRunRequestFromCommandParsesSecretEnvFlags(t *testing.T) {
 	cmd.Flags().String("base", "", "")
 	cmd.Flags().StringArray("secret-env", nil, "")
 	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
 	cmd.Flags().Bool("json", false, "")
 	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN"); err != nil {
 		t.Fatalf("Set(secret-env) error: %v", err)
@@ -427,6 +588,8 @@ func TestFactoryRunRequestFromCommandRejectsSecretEnvAssignments(t *testing.T) {
 	cmd.Flags().String("base", "", "")
 	cmd.Flags().StringArray("secret-env", nil, "")
 	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
 	cmd.Flags().Bool("json", false, "")
 	if err := cmd.Flags().Set("secret-env", "GITHUB_TOKEN=ghp_secret"); err != nil {
 		t.Fatalf("Set(secret-env) error: %v", err)
@@ -439,6 +602,278 @@ func TestFactoryRunRequestFromCommandRejectsSecretEnvAssignments(t *testing.T) {
 	if strings.Contains(err.Error(), "ghp_secret") || strings.Contains(err.Error(), "GITHUB_TOKEN=ghp_secret") {
 		t.Fatalf("error should not echo secret-env value: %v", err)
 	}
+}
+
+func TestFactoryRunRequestFromCommandParsesTargetSelectionFlags(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
+	cmd.Flags().Bool("json", false, "")
+	for flag, value := range map[string]string{
+		"base":            "main",
+		"sandbox":         "true",
+		"sandbox-host":    "worker-1",
+		"sandbox-runtime": sandboxruntime.DriverRootlessPodman,
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("Set(%s) error: %v", flag, err)
+		}
+	}
+
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.SandboxHostID != "worker-1" {
+		t.Fatalf("SandboxHostID = %q, want worker-1", req.SandboxHostID)
+	}
+	if req.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
+	}
+}
+
+func TestFactoryRunRequestFromCommandParsesPublishFrom(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().String("publish", "", "")
+	cmd.Flags().String("publish-from", factory.PublishRunnerHost, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
+	cmd.Flags().Bool("json", false, "")
+	for flag, value := range map[string]string{
+		"base":         "main",
+		"publish":      factory.PublishPolicyPR,
+		"publish-from": factory.PublishRunnerSandbox,
+		"sandbox":      "true",
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("Set(%s) error: %v", flag, err)
+		}
+	}
+
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.PublishPolicy != factory.PublishPolicyPR || req.PublishFrom != factory.PublishRunnerSandbox {
+		t.Fatalf("publish request fields = policy %q from %q", req.PublishPolicy, req.PublishFrom)
+	}
+}
+
+func TestFactoryRunRequestFromCommandRejectsSandboxPublishFromWithoutSandbox(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().String("publish-from", factory.PublishRunnerHost, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set("publish-from", factory.PublishRunnerSandbox); err != nil {
+		t.Fatalf("Set(publish-from) error: %v", err)
+	}
+
+	_, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err == nil {
+		t.Fatal("factoryRunRequestFromCommand() error = nil")
+	}
+	if !strings.Contains(err.Error(), "--publish-from sandbox requires --sandbox") {
+		t.Fatalf("factoryRunRequestFromCommand() error = %q", err.Error())
+	}
+}
+
+func TestFactoryRunRequestFromCommandRejectsTargetSelectionFlagsWithoutSandbox(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-host", "", "")
+	cmd.Flags().String("sandbox-runtime", "", "")
+	cmd.Flags().Bool("json", false, "")
+	if err := cmd.Flags().Set(sandboxRuntimeFlagName, sandboxruntime.DriverRootlessPodman); err != nil {
+		t.Fatalf("Set(sandbox-runtime) error: %v", err)
+	}
+
+	_, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err == nil {
+		t.Fatal("factoryRunRequestFromCommand() error = nil, want sandbox target flag validation")
+	}
+	if !strings.Contains(err.Error(), "--sandbox-runtime requires --sandbox") {
+		t.Fatalf("error = %q, want sandbox-runtime require sandbox", err.Error())
+	}
+}
+
+func TestFactoryRunRequestFromCommandLoadsProjectConfigDefaults(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  defaults:
+    base: develop
+    executor: sandbox
+    sandboxName: dev
+    sandboxHost: local-worker
+    sandboxRuntime: ssh_machine
+    publishFrom: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+`)
+
+	cmd := newFactoryRunRequestTestCommand()
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want develop", req.BaseBranch)
+	}
+	if !req.Sandbox {
+		t.Fatal("Sandbox = false, want true from factory.defaults.executor")
+	}
+	if req.SandboxName != "dev" {
+		t.Fatalf("SandboxName = %q, want dev", req.SandboxName)
+	}
+	if req.SandboxHostID != "local-worker" {
+		t.Fatalf("SandboxHostID = %q, want local-worker", req.SandboxHostID)
+	}
+	if req.SandboxRuntime != sandboxruntime.DriverSSHMachine {
+		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverSSHMachine)
+	}
+	if req.PublishFrom != factory.PublishRunnerSandbox {
+		t.Fatalf("PublishFrom = %q, want %q", req.PublishFrom, factory.PublishRunnerSandbox)
+	}
+	wantSecrets := []factory.RunSecretInput{{Name: "GITHUB_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("Secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestFactoryRunRequestFromCommandCLIOverridesProjectConfigDefaults(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  defaults:
+    base: develop
+    executor: sandbox
+    publishFrom: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+`)
+
+	cmd := newFactoryRunRequestTestCommand()
+	for flag, value := range map[string]string{
+		"base":         "main",
+		"sandbox":      "false",
+		"publish-from": factory.PublishRunnerHost,
+		"secret-env":   "NPM_TOKEN",
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("Set(%s) error: %v", flag, err)
+		}
+	}
+
+	req, err := factoryRunRequestFromCommand(cmd, []string{".hal/prd-feature.md"})
+	if err != nil {
+		t.Fatalf("factoryRunRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.BaseBranch != "main" {
+		t.Fatalf("BaseBranch = %q, want main", req.BaseBranch)
+	}
+	if req.Sandbox {
+		t.Fatal("Sandbox = true, want explicit CLI false to win over config executor")
+	}
+	if req.PublishFrom != factory.PublishRunnerHost {
+		t.Fatalf("PublishFrom = %q, want %q", req.PublishFrom, factory.PublishRunnerHost)
+	}
+	wantSecrets := []factory.RunSecretInput{{Name: "NPM_TOKEN", Source: factory.RunSecretSourceEnv, Required: true}}
+	if !reflect.DeepEqual(req.Secrets, wantSecrets) {
+		t.Fatalf("Secrets = %#v, want %#v", req.Secrets, wantSecrets)
+	}
+}
+
+func TestApplyFactoryRunConfigDefaultsKeepsSandboxTargetCLIOverrides(t *testing.T) {
+	cfg := &projectconfig.Config{Factory: projectconfig.FactoryDefaults{
+		SandboxName:    projectconfig.Value[string]{Value: "config-dev", Set: true},
+		SandboxHost:    projectconfig.Value[string]{Value: "config-worker", Set: true},
+		SandboxRuntime: projectconfig.Value[string]{Value: sandboxruntime.DriverSSHMachine, Set: true},
+	}}
+	req, _, _ := applyFactoryRunConfigDefaults(factoryRunRequest{
+		Sandbox:        true,
+		SandboxName:    "cli-dev",
+		SandboxHostID:  "cli-worker",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
+	}, nil, factoryRunConfigFlagChanges{
+		Sandbox:        true,
+		SandboxName:    true,
+		SandboxHost:    true,
+		SandboxRuntime: true,
+	}, cfg)
+
+	if req.SandboxName != "cli-dev" {
+		t.Fatalf("SandboxName = %q, want cli-dev", req.SandboxName)
+	}
+	if req.SandboxHostID != "cli-worker" {
+		t.Fatalf("SandboxHostID = %q, want cli-worker", req.SandboxHostID)
+	}
+	if req.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
+		t.Fatalf("SandboxRuntime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
+	}
+}
+
+func newFactoryRunRequestTestCommand() *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("report", "", "")
+	cmd.Flags().String("base", "", "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().String("ci-policy", "", "")
+	cmd.Flags().Bool("no-ci", false, "")
+	cmd.Flags().String("publish", "", "")
+	cmd.Flags().String("publish-from", factory.PublishRunnerHost, "")
+	cmd.Flags().Bool("sandbox", false, "")
+	cmd.Flags().String("sandbox-name", "", "")
+	cmd.Flags().String(sandboxHostFlagName, "", "")
+	cmd.Flags().String(sandboxRuntimeFlagName, "", "")
+	cmd.Flags().Bool("json", false, "")
+	return cmd
+}
+
+func newFactoryPublishRequestTestCommand() *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("policy", "", "")
+	cmd.Flags().String("publish-from", factory.PublishRunnerHost, "")
+	cmd.Flags().StringArray("secret-env", nil, "")
+	cmd.Flags().Bool("allow-unverified", false, "")
+	cmd.Flags().Bool("json", false, "")
+	return cmd
+}
+
+func chdirFactoryConfigTestProject(t *testing.T, config string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0o755); err != nil {
+		t.Fatalf("mkdir .hal: %v", err)
+	}
+	writeFile(t, halDir, "config.yaml", strings.TrimLeft(config, "\n"))
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir config project: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(cwd)
+	})
+	return dir
 }
 
 func TestFactoryRunArgsValidationRejectsReportWithPositionalBeforeExecution(t *testing.T) {
@@ -494,6 +929,9 @@ func TestRunFactoryRunWithDepsDefaultsToLocalPipelineWithoutSandboxFlag(t *testi
 			if req.Record.ExecutorMode != factory.ExecutorModeLocal {
 				t.Fatalf("local executorMode = %q, want %q", req.Record.ExecutorMode, factory.ExecutorModeLocal)
 			}
+			if req.Record.BaseBranch != "hal/factory" || req.Request.BaseBranch != "hal/factory" {
+				t.Fatalf("effective base = record %q request %q, want hal/factory", req.Record.BaseBranch, req.Request.BaseBranch)
+			}
 			if req.Engine != factory.PolicyEngineClaude {
 				t.Fatalf("pipeline engine = %q, want %q", req.Engine, factory.PolicyEngineClaude)
 			}
@@ -526,16 +964,19 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
 	target := &sandbox.SandboxState{
 		Name:     "factory-selected",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
 	sandboxCalled := false
 
 	err := runFactoryRunWithDeps(context.Background(), "/workspace/hal", factoryRunRequest{
-		MarkdownPath: ".hal/prd-feature.md",
-		BaseBranch:   "main",
-		Sandbox:      true,
+		MarkdownPath:   ".hal/prd-feature.md",
+		BaseBranch:     "main",
+		Sandbox:        true,
+		SandboxName:    target.Name,
+		SandboxHostID:  "worker-1",
+		SandboxRuntime: sandboxruntime.DriverRootlessPodman,
 	}, io.Discard, factoryRunDeps{
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		newRunID:     func() (string, error) { return "run-sandbox-selected", nil },
@@ -548,7 +989,15 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			return "git@github.com:jywlabs/hal.git", nil
 		},
 		loadEngine: func(string) (string, error) {
-			return factory.PolicyEngineCodex, nil
+			return factory.PolicyEnginePi, nil
+		},
+		loadAutoConfig: func(string) (*compound.AutoConfig, error) {
+			cfg := compound.DefaultAutoConfig()
+			cfg.MaxIterations = 4
+			return &cfg, nil
+		},
+		loadEngineConfig: func(string, string) *engine.EngineConfig {
+			return &engine.EngineConfig{Provider: "xai", Model: "grok-4.5", Timeout: 2 * time.Minute}
 		},
 		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
 			t.Fatal("local pipeline should not be called with --sandbox")
@@ -562,10 +1011,29 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 			if req.RunRecord.ExecutorMode != factory.ExecutorModeSandbox {
 				t.Fatalf("sandbox executorMode = %q, want %q", req.RunRecord.ExecutorMode, factory.ExecutorModeSandbox)
 			}
+			if req.SandboxName != target.Name {
+				t.Fatalf("sandbox name = %q, want %q", req.SandboxName, target.Name)
+			}
+			if req.SandboxHostID != "worker-1" {
+				t.Fatalf("sandbox host ID = %q, want worker-1", req.SandboxHostID)
+			}
+			if req.SandboxRuntime != sandboxruntime.DriverRootlessPodman {
+				t.Fatalf("sandbox runtime = %q, want %q", req.SandboxRuntime, sandboxruntime.DriverRootlessPodman)
+			}
 			wantAuto := factoryRunAutoRequest{
-				Args:       []string{".hal/prd-feature.md"},
-				BaseBranch: "main",
-				Engine:     factory.PolicyEngineCodex,
+				Args:               []string{".hal/prd-feature.md"},
+				BaseBranch:         "main",
+				Engine:             factory.PolicyEnginePi,
+				MaxCommandRetries:  2,
+				CIPolicy:           factory.CIPolicySkipIfUnavailable,
+				RuntimeStatePolicy: compound.RuntimeStatePolicyCheckpointFactoryState,
+				ExecutionProfile: &factoryAutoExecutionProfile{
+					Engine:        factory.PolicyEnginePi,
+					Provider:      "xai",
+					Model:         "grok-4.5",
+					Timeout:       2 * time.Minute,
+					MaxIterations: 4,
+				},
 			}
 			if !reflect.DeepEqual(req.RemoteAuto, wantAuto) {
 				t.Fatalf("remote auto request = %#v, want %#v", req.RemoteAuto, wantAuto)
@@ -614,6 +1082,146 @@ func TestRunFactoryRunWithDepsSelectsSandboxExecutorWithSandboxFlag(t *testing.T
 	}
 	if record.ExecutorMode != factory.ExecutorModeSandbox {
 		t.Fatalf("persisted executorMode = %q, want %q", record.ExecutorMode, factory.ExecutorModeSandbox)
+	}
+}
+
+func TestRunFactoryRunWithDepsPropagatesConfiguredSandboxSecurityIntent(t *testing.T) {
+	dir := t.TempDir()
+	writeRunSandboxConfig(t, dir, factorySandboxConfiguredSecurityConfigYAML())
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
+	secretValue := "ghp_factory_security_secret_123"
+	stopErr := errors.New("stop after factory sandbox security capture")
+
+	var captured factorySandboxExecutorRequest
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+		BaseBranch:   "main",
+		Sandbox:      true,
+		Secrets: []factory.RunSecretInput{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+		}},
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-factory-security-config", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory-security-config", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		lookupEnv: func(name string) (string, bool) {
+			if name != "GITHUB_TOKEN" {
+				t.Fatalf("lookup env name = %q, want GITHUB_TOKEN", name)
+			}
+			return secretValue, true
+		},
+		loadPolicy: func(string) (*factory.FactoryPolicy, error) {
+			policy := factory.DefaultFactoryPolicy()
+			return &policy, nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runPipeline: func(context.Context, factoryRunPipelineRequest) error {
+			t.Fatal("local pipeline should not be called with --sandbox")
+			return nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			captured = req
+			return stopErr
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), stopErr.Error()) {
+		t.Fatalf("runFactoryRunWithDeps() error = %v, want sandbox capture stop", err)
+	}
+
+	requireFactoryConfiguredSandboxSecurityRequest(t, captured.Security)
+	if len(captured.ResolvedSecrets) != 1 || captured.ResolvedSecrets[0].Value != secretValue {
+		t.Fatalf("resolved secrets = %#v, want live secret on executor request only", captured.ResolvedSecrets)
+	}
+
+	record, loadErr := store.LoadRun("run-factory-security-config")
+	if loadErr != nil {
+		t.Fatalf("LoadRun() error: %v", loadErr)
+	}
+	events, loadErr := store.LoadEvents("run-factory-security-config")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	payload, marshalErr := json.Marshal(struct {
+		Run    *factory.RunRecord    `json:"run"`
+		Events []factory.EventRecord `json:"events"`
+		Error  string                `json:"error"`
+	}{
+		Run:    record,
+		Events: events,
+		Error:  err.Error(),
+	})
+	if marshalErr != nil {
+		t.Fatalf("Marshal(factory durable surfaces) error: %v", marshalErr)
+	}
+	if strings.Contains(string(payload), secretValue) {
+		t.Fatalf("factory durable surfaces leaked raw resolved secret: %s", payload)
+	}
+}
+
+func factorySandboxConfiguredSecurityConfigYAML() string {
+	return `
+sandbox:
+  networkPolicy:
+    preset: allow_listed
+    rules:
+      - kind: domain
+        value: api.example.com
+        decision: allow
+      - kind: metadata_endpoint
+        value: 169.254.169.254
+        decision: deny
+  secrets:
+    requestedModes:
+      - env
+      - file_tmpfs
+    activeModes:
+      - env
+`
+}
+
+func requireFactoryConfiguredSandboxSecurityRequest(t *testing.T, security sandbox.SecurityEvaluationRequest) {
+	t.Helper()
+	if security.RuntimeDriver != sandbox.SandboxRuntimeDriverSSHMachine {
+		t.Fatalf("RuntimeDriver = %q, want %q", security.RuntimeDriver, sandbox.SandboxRuntimeDriverSSHMachine)
+	}
+	if security.RequestedNetworkPolicy != sandbox.SandboxNetworkPolicyDenyByDefault {
+		t.Fatalf("RequestedNetworkPolicy = %q, want deny_by_default compatibility label", security.RequestedNetworkPolicy)
+	}
+	if security.RequestedNetworkPolicyIntent == nil {
+		t.Fatal("RequestedNetworkPolicyIntent = nil, want configured policy")
+	}
+	if security.RequestedNetworkPolicyIntent.Preset != sandbox.SandboxNetworkPolicyPresetAllowListed {
+		t.Fatalf("RequestedNetworkPolicyIntent.Preset = %q, want allow_listed", security.RequestedNetworkPolicyIntent.Preset)
+	}
+	wantRules := []sandbox.SandboxNetworkPolicyRule{
+		{Kind: sandbox.SandboxNetworkPolicyRuleKindDomain, Value: "api.example.com", Decision: sandbox.SandboxNetworkPolicyDecisionAllow},
+		{Kind: sandbox.SandboxNetworkPolicyRuleKindMetadataEndpoint, Value: "169.254.169.254", Decision: sandbox.SandboxNetworkPolicyDecisionDeny},
+	}
+	if !reflect.DeepEqual(security.RequestedNetworkPolicyIntent.Rules, wantRules) {
+		t.Fatalf("RequestedNetworkPolicyIntent.Rules = %#v, want %#v", security.RequestedNetworkPolicyIntent.Rules, wantRules)
+	}
+	if !reflect.DeepEqual(security.RequestedSecretModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeFileTmpfs}) {
+		t.Fatalf("RequestedSecretModes = %#v, want configured modes", security.RequestedSecretModes)
+	}
+	if !reflect.DeepEqual(security.ActiveSecretModes, []string{sandbox.SandboxSecretModeEnv}) {
+		t.Fatalf("ActiveSecretModes = %#v, want configured active mode", security.ActiveSecretModes)
+	}
+	if !security.CompatibilityAuthSync {
+		t.Fatal("CompatibilityAuthSync = false, want legacy auth sync preserved")
 	}
 }
 
@@ -1883,6 +2491,1216 @@ func TestRecordFactoryRunVerificationAdvisoryFailedWithRedactorRedactsError(t *t
 	}
 }
 
+func TestFactoryRunSucceededStatusUsesWarningsForCIUnavailable(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   string
+	}{
+		{name: "unavailable", status: "unavailable", want: factory.RunStatusSucceededWithWarnings},
+		{name: "skipped", status: "skipped", want: factory.RunStatusSucceededWithWarnings},
+		{name: "passed", status: "passed", want: factory.RunStatusSucceeded},
+		{name: "empty", status: "", want: factory.RunStatusSucceeded},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			record := factory.RunRecord{
+				Artifacts: []factory.ArtifactReference{{
+					Summary: map[string]any{
+						"outcomeKind": "ci",
+						"status":      tt.status,
+					},
+				}},
+			}
+			if got := factoryRunSucceededStatus(record); got != tt.want {
+				t.Fatalf("factoryRunSucceededStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPublishFactoryRunAfterVerifiedSuccessPushAppliesSandboxBundle(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 7, 8, 0, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:       "run-publish-push",
+		Status:      factory.RunStatusRunning,
+		BranchName:  "hal/game-ripple",
+		BaseBranch:  "main",
+		SandboxName: "dev",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	var gitCalls [][]string
+	deps := factoryRunDeps{
+		now: func() time.Time { return now },
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/game-ripple"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+	}
+	got, err := publishFactoryRunAfterVerifiedSuccess(context.Background(), store, dir, factoryRunRequest{
+		Sandbox:    true,
+		BaseBranch: "main",
+	}, record, deps, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPush}, factory.RunSecretRedactor{}, "automatic", false)
+	if err != nil {
+		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"check-ref-format", "--branch", "hal/game-ripple"},
+		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
+		{"show-ref", "--verify", "--quiet", "refs/heads/hal/game-ripple"},
+		{"checkout", "-b", "hal/game-ripple", "FETCH_HEAD"},
+		{"push", "-u", "origin", "hal/game-ripple"},
+	}
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
+	}
+	requireFactoryPublishOutcomeArtifact(t, got, factory.PublishPolicyPush, "hal/game-ripple", true)
+}
+
+func TestRunFactoryPublishBranchPushUsesPushDependency(t *testing.T) {
+	dir := t.TempDir()
+	var gitCalls [][]string
+	var pushedBranch string
+	var out bytes.Buffer
+
+	err := runFactoryPublishBranchWithDeps(context.Background(), dir, factoryPublishBranchRequest{
+		Policy:     factory.PublishPolicyPush,
+		BranchName: "hal/escape-to-pause",
+		JSON:       true,
+	}, &out, factoryPublishBranchDeps{
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"branch", "--show-current"}):
+				return "hal/escape-to-pause", nil
+			case reflect.DeepEqual(args, []string{"rev-parse", "HEAD"}):
+				return "abc123", nil
+			default:
+				return "", nil
+			}
+		},
+		pushBranchInDir: func(_ context.Context, gotDir, branch string) error {
+			if gotDir != dir {
+				t.Fatalf("push dir = %q, want %q", gotDir, dir)
+			}
+			pushedBranch = branch
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishBranchWithDeps() error = %v", err)
+	}
+	if pushedBranch != "hal/escape-to-pause" {
+		t.Fatalf("pushed branch = %q, want hal/escape-to-pause", pushedBranch)
+	}
+	for _, call := range gitCalls {
+		if len(call) > 0 && call[0] == "push" {
+			t.Fatalf("plain git push was called instead of push dependency: %#v", gitCalls)
+		}
+	}
+	var result factorySandboxPublishResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("Unmarshal(publish result) error = %v; output = %s", err, out.String())
+	}
+	if !result.OK || !result.Push.Pushed || result.Commit != "abc123" {
+		t.Fatalf("publish result = %#v", result)
+	}
+}
+
+func TestPublishFactoryRunAfterVerifiedSuccessPROpensFromHostBranch(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 7, 8, 30, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:       "run-publish-pr",
+		Status:      factory.RunStatusRunning,
+		BranchName:  "hal/game-polish",
+		BaseBranch:  "develop",
+		SandboxName: "dev",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	var gitCalls [][]string
+	var capturedPushDir string
+	var capturedPushOpts ci.PushOptions
+	deps := factoryRunDeps{
+		now: func() time.Time { return now },
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			return "", nil
+		},
+		pushAndCreatePRInDir: func(_ context.Context, gotDir string, opts ci.PushOptions) (ci.PushResult, error) {
+			capturedPushDir = gotDir
+			capturedPushOpts = opts
+			return ci.PushResult{
+				ContractVersion: ci.PushContractVersion,
+				Branch:          "hal/game-polish",
+				Pushed:          true,
+				PullRequest: ci.PullRequest{
+					URL:     "https://github.com/example/game/pull/7",
+					HeadRef: "hal/game-polish",
+					BaseRef: "develop",
+				},
+				Summary: "pushed branch hal/game-polish and reused existing pull request",
+			}, nil
+		},
+	}
+	got, err := publishFactoryRunAfterVerifiedSuccess(context.Background(), store, dir, factoryRunRequest{
+		Sandbox:    true,
+		BaseBranch: "develop",
+	}, record, deps, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPR}, factory.RunSecretRedactor{}, "automatic", false)
+	if err != nil {
+		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"check-ref-format", "--branch", "hal/game-polish"},
+		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
+		{"show-ref", "--verify", "--quiet", "refs/heads/hal/game-polish"},
+		{"checkout", "hal/game-polish"},
+		{"merge", "--ff-only", "FETCH_HEAD"},
+	}
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
+	}
+	if capturedPushDir != dir {
+		t.Fatalf("push dir = %q, want %q", capturedPushDir, dir)
+	}
+	if capturedPushOpts.BaseRef != "develop" || !strings.Contains(capturedPushOpts.Title, "hal/game-polish") || !strings.Contains(capturedPushOpts.Body, "run-publish-pr") {
+		t.Fatalf("push opts = %#v", capturedPushOpts)
+	}
+	requireFactoryPublishOutcomeArtifact(t, got, factory.PublishPolicyPR, "hal/game-polish", true)
+}
+
+func TestPublishFactoryRunAfterVerifiedSuccessSandboxPublishesRemotely(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 8, 13, 0, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "dev",
+		Provider: "digitalocean",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	record := factory.RunRecord{
+		RunID:        "run-publish-sandbox",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoRemote:   "git@github.com:example/game.git",
+		BranchName:   "hal/sandbox-publish",
+		BaseBranch:   "main",
+		SandboxName:  target.Name,
+		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var capturedArgs []string
+	var capturedEnv map[string]string
+	got, err := publishFactoryRunAfterVerifiedSuccess(context.Background(), store, dir, factoryRunRequest{
+		Sandbox:     true,
+		SandboxName: target.Name,
+		BaseBranch:  "main",
+		PublishFrom: factory.PublishRunnerSandbox,
+		ResolvedSecrets: []factory.ResolvedRunSecret{{
+			Name:     "GITHUB_TOKEN",
+			Source:   factory.RunSecretSourceEnv,
+			Required: true,
+			Value:    "test-secret-token",
+		}},
+	}, record, factoryRunDeps{
+		now: func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(gotDir, provider string) (sandbox.Provider, error) {
+			if gotDir != dir {
+				t.Fatalf("resolveProvider dir = %q, want %q", gotDir, dir)
+			}
+			if provider != target.Provider {
+				t.Fatalf("resolveProvider provider = %q, want %q", provider, target.Provider)
+			}
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
+			if info == nil || info.Name != target.Name {
+				t.Fatalf("connect info = %#v, want sandbox %q", info, target.Name)
+			}
+			capturedArgs = append([]string(nil), args...)
+			capturedEnv = map[string]string{}
+			for key, value := range env {
+				capturedEnv[key] = value
+			}
+			result := ci.PushResult{
+				ContractVersion: ci.PushContractVersion,
+				Branch:          "hal/sandbox-publish",
+				Pushed:          true,
+				PullRequest: ci.PullRequest{
+					Number:  9,
+					URL:     "https://github.com/example/game/pull/9",
+					HeadRef: "hal/sandbox-publish",
+					BaseRef: "main",
+				},
+			}
+			return json.NewEncoder(out).Encode(factorySandboxPublishResult{
+				ContractVersion: "factory-publish-branch-v1",
+				OK:              true,
+				Push:            result,
+				Commit:          "abc123def456",
+			})
+		},
+		runGit: func(context.Context, string, ...string) (string, error) {
+			t.Fatal("host git should not be called for sandbox publish")
+			return "", nil
+		},
+	}, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPR}, factory.RunSecretRedactor{}, "automatic", false)
+	if err != nil {
+		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
+	}
+	if !strings.Contains(strings.Join(capturedArgs, " "), "_publish-branch") {
+		t.Fatalf("remote publish args = %#v, want hidden publish command", capturedArgs)
+	}
+	if capturedEnv["GITHUB_TOKEN"] != "test-secret-token" {
+		t.Fatalf("remote env did not include resolved secret: %#v", capturedEnv)
+	}
+	requireFactoryPublishOutcomeArtifact(t, got, factory.PublishPolicyPR, "hal/sandbox-publish", true)
+	postRun := factory.DerivePostRunState(got)
+	if postRun == nil || postRun.Publish == nil {
+		t.Fatalf("derived postRun publish missing: %#v", postRun)
+	}
+	if postRun.Publish.Runner != factory.PublishRunnerSandbox || postRun.Publish.CredentialMode != factory.SecretBrokerDeliveryModeEnv || postRun.Publish.Commit != "abc123def456" {
+		t.Fatalf("postRun publish = %#v", postRun.Publish)
+	}
+	if len(postRun.Publish.Attempts) != 1 || postRun.Publish.Attempts[0].Runner != factory.PublishRunnerSandbox || postRun.Publish.Attempts[0].Status != factory.RunStatusSucceeded {
+		t.Fatalf("publish attempts = %#v", postRun.Publish.Attempts)
+	}
+}
+
+func TestPublishFactoryRunAfterVerifiedSuccessAutoFallsBackToHost(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 8, 13, 30, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "auto",
+		Provider: "hetzner",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	record := factory.RunRecord{
+		RunID:        "run-publish-auto-fallback",
+		Status:       factory.RunStatusRunning,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		RepoRemote:   "git@github.com:example/game.git",
+		BranchName:   "hal/auto-fallback",
+		BaseBranch:   "main",
+		SandboxName:  target.Name,
+		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	var gitCalls [][]string
+	got, err := publishFactoryRunAfterVerifiedSuccess(context.Background(), store, dir, factoryRunRequest{
+		Sandbox:     true,
+		SandboxName: target.Name,
+		BaseBranch:  "main",
+		PublishFrom: factory.PublishRunnerAuto,
+	}, record, factoryRunDeps{
+		now: func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, _ []string, _ map[string]string, out io.Writer) error {
+			return json.NewEncoder(out).Encode(factorySandboxPublishResult{
+				ContractVersion: "factory-publish-branch-v1",
+				OK:              false,
+				Error:           "simulated sandbox publish failure",
+			})
+		},
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/auto-fallback"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+	}, factory.FactoryPolicy{PublishPolicy: factory.PublishPolicyPush}, factory.RunSecretRedactor{}, "automatic", false)
+	if err != nil {
+		t.Fatalf("publishFactoryRunAfterVerifiedSuccess() error = %v", err)
+	}
+	wantCalls := [][]string{
+		{"check-ref-format", "--branch", "hal/auto-fallback"},
+		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
+		{"show-ref", "--verify", "--quiet", "refs/heads/hal/auto-fallback"},
+		{"checkout", "-b", "hal/auto-fallback", "FETCH_HEAD"},
+		{"push", "-u", "origin", "hal/auto-fallback"},
+	}
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
+	}
+	requireFactoryPublishOutcomeArtifact(t, got, factory.PublishPolicyPush, "hal/auto-fallback", true)
+	postRun := factory.DerivePostRunState(got)
+	if postRun == nil || postRun.Publish == nil {
+		t.Fatalf("derived postRun publish missing: %#v", postRun)
+	}
+	if postRun.Publish.Runner != factory.PublishRunnerHost || postRun.Publish.FallbackFrom != factory.PublishRunnerSandbox {
+		t.Fatalf("postRun publish runner fields = %#v", postRun.Publish)
+	}
+	if len(postRun.Publish.Attempts) != 2 {
+		t.Fatalf("publish attempts = %#v, want sandbox failure then host success", postRun.Publish.Attempts)
+	}
+	if postRun.Publish.Attempts[0].Runner != factory.PublishRunnerSandbox || postRun.Publish.Attempts[0].Status != factory.RunStatusFailed {
+		t.Fatalf("first publish attempt = %#v", postRun.Publish.Attempts[0])
+	}
+	if postRun.Publish.Attempts[1].Runner != factory.PublishRunnerHost || postRun.Publish.Attempts[1].Status != factory.RunStatusSucceeded {
+		t.Fatalf("second publish attempt = %#v", postRun.Publish.Attempts[1])
+	}
+}
+
+func TestRunFactoryRecoverAppliesBundleWithoutPublishing(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-recover",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BranchName:   "hal/recoverable",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	var gitCalls [][]string
+	var out bytes.Buffer
+	err := runFactoryRecoverWithDeps(context.Background(), &out, record.RunID, true, factoryRecoverDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/recoverable"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRecoverWithDeps() error = %v", err)
+	}
+	wantCalls := [][]string{
+		{"check-ref-format", "--branch", "hal/recoverable"},
+		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
+		{"show-ref", "--verify", "--quiet", "refs/heads/hal/recoverable"},
+		{"checkout", "-b", "hal/recoverable", "FETCH_HEAD"},
+	}
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
+	}
+	var resp FactoryRecoverResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(recover response) error = %v", err)
+	}
+	if resp.ContractVersion != FactoryRecoverContractVersion || resp.BranchName != "hal/recoverable" || resp.RecoveredBundle == "" {
+		t.Fatalf("recover response = %#v", resp)
+	}
+}
+
+func TestRunFactoryRecoverJSONReportsMissingRecoveryBundle(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 7, 9, 15, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-recover-missing-bundle",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BranchName:   "hal/recoverable",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryRecoverWithDeps(context.Background(), &out, record.RunID, true, factoryRecoverDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			if !reflect.DeepEqual(args, []string{"check-ref-format", "--branch", "hal/recoverable"}) {
+				t.Fatalf("git args = %#v, want branch format check", args)
+			}
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRecoverWithDeps() error = %v", err)
+	}
+	var resp FactoryRecoverResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(recover error response) error = %v; output = %s", err, out.String())
+	}
+	if resp.ContractVersion != FactoryRecoverContractVersion || resp.OK || !strings.Contains(resp.Error, "recovery bundle artifact is unavailable") {
+		t.Fatalf("recover error response = %#v", resp)
+	}
+}
+
+func TestFactoryPublishRequestFromCommandLoadsProjectConfigDefaults(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  defaults:
+    publishFrom: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+  policy:
+    publishPolicy: pr
+`)
+
+	req, err := factoryPublishRequestFromCommand(newFactoryPublishRequestTestCommand())
+	if err != nil {
+		t.Fatalf("factoryPublishRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.Policy != factory.PublishPolicyPR {
+		t.Fatalf("Policy = %q, want %q", req.Policy, factory.PublishPolicyPR)
+	}
+	if req.PublishFrom != factory.PublishRunnerSandbox {
+		t.Fatalf("PublishFrom = %q, want %q", req.PublishFrom, factory.PublishRunnerSandbox)
+	}
+	if !reflect.DeepEqual(req.SecretEnv, []string{"GITHUB_TOKEN"}) {
+		t.Fatalf("SecretEnv = %#v, want GITHUB_TOKEN", req.SecretEnv)
+	}
+	if req.AllowUnverified {
+		t.Fatal("AllowUnverified = true, want flag-only false default")
+	}
+}
+
+func TestFactoryPublishRequestFromCommandCLIOverridesProjectConfigDefaults(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  defaults:
+    publishFrom: sandbox
+    secretEnv:
+      - GITHUB_TOKEN
+  policy:
+    publishPolicy: pr
+`)
+
+	cmd := newFactoryPublishRequestTestCommand()
+	for flag, value := range map[string]string{
+		"policy":       factory.PublishPolicyPush,
+		"publish-from": factory.PublishRunnerHost,
+		"secret-env":   "NPM_TOKEN",
+	} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("Set(%s) error: %v", flag, err)
+		}
+	}
+	if err := cmd.Flags().Set("allow-unverified", "true"); err != nil {
+		t.Fatalf("Set(allow-unverified) error: %v", err)
+	}
+
+	req, err := factoryPublishRequestFromCommand(cmd)
+	if err != nil {
+		t.Fatalf("factoryPublishRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.Policy != factory.PublishPolicyPush {
+		t.Fatalf("Policy = %q, want %q", req.Policy, factory.PublishPolicyPush)
+	}
+	if req.PublishFrom != factory.PublishRunnerHost {
+		t.Fatalf("PublishFrom = %q, want %q", req.PublishFrom, factory.PublishRunnerHost)
+	}
+	if !reflect.DeepEqual(req.SecretEnv, []string{"NPM_TOKEN"}) {
+		t.Fatalf("SecretEnv = %#v, want NPM_TOKEN", req.SecretEnv)
+	}
+	if !req.AllowUnverified {
+		t.Fatal("AllowUnverified = false, want explicit CLI true")
+	}
+}
+
+func TestFactoryPublishRequestFromCommandIgnoresPolicyNoneDefault(t *testing.T) {
+	chdirFactoryConfigTestProject(t, `
+factory:
+  policy:
+    publishPolicy: none
+`)
+
+	req, err := factoryPublishRequestFromCommand(newFactoryPublishRequestTestCommand())
+	if err != nil {
+		t.Fatalf("factoryPublishRequestFromCommand() unexpected error: %v", err)
+	}
+	if req.Policy != "" {
+		t.Fatalf("Policy = %q, want empty so --policy remains required", req.Policy)
+	}
+}
+
+func TestRunFactoryPublishRefusesFailedRunWithoutAllowUnverified(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 7, 7, 9, 30, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-publish-refuse",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BranchName:   "hal/refuse",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	err := runFactoryPublishWithDeps(context.Background(), io.Discard, record.RunID, factoryPublishRequest{
+		Policy: factory.PublishPolicyPush,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return t.TempDir(), nil },
+		now:          func() time.Time { return now },
+		runGit: func(context.Context, string, ...string) (string, error) {
+			t.Fatal("runGit should not be called without --allow-unverified")
+			return "", nil
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryPublishWithDeps() error = nil, want refusal")
+	}
+	if !strings.Contains(err.Error(), "--allow-unverified") {
+		t.Fatalf("runFactoryPublishWithDeps() error = %q, want --allow-unverified", err.Error())
+	}
+}
+
+func TestRunFactoryPublishJSONRefusesFailedRunWithoutAllowUnverified(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 7, 7, 9, 45, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-publish-refuse-json",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BranchName:   "hal/refuse-json",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryPublishWithDeps(context.Background(), &out, record.RunID, factoryPublishRequest{
+		Policy: factory.PublishPolicyPush,
+		JSON:   true,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return t.TempDir(), nil },
+		now:          func() time.Time { return now },
+		runGit: func(context.Context, string, ...string) (string, error) {
+			t.Fatal("runGit should not be called without --allow-unverified")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
+	}
+	var resp FactoryPublishResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(publish refusal response) error = %v; output = %s", err, out.String())
+	}
+	if resp.ContractVersion != FactoryPublishContractVersion || resp.OK || resp.Policy != factory.PublishPolicyPush || !strings.Contains(resp.Error, "--allow-unverified") {
+		t.Fatalf("publish refusal response = %#v", resp)
+	}
+}
+
+func TestRunFactoryPublishJSONReportsMissingRecoveryBundle(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 7, 9, 50, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-publish-missing-bundle",
+		Status:       factory.RunStatusSucceeded,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BranchName:   "hal/missing-bundle",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryPublishWithDeps(context.Background(), &out, record.RunID, factoryPublishRequest{
+		Policy: factory.PublishPolicyPush,
+		JSON:   true,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			if !reflect.DeepEqual(args, []string{"check-ref-format", "--branch", "hal/missing-bundle"}) {
+				t.Fatalf("git args = %#v, want branch format check", args)
+			}
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
+	}
+	var resp FactoryPublishResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(publish missing bundle response) error = %v; output = %s", err, out.String())
+	}
+	if resp.ContractVersion != FactoryPublishContractVersion || resp.OK || resp.Policy != factory.PublishPolicyPush || !strings.Contains(resp.Error, "recovery bundle artifact is unavailable") {
+		t.Fatalf("publish missing bundle response = %#v", resp)
+	}
+}
+
+func TestRunFactoryPublishAllowsFailedRunWithRecoveryBundleWhenExplicit(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:        "run-publish-allow",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BranchName:   "hal/allow",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+	record = saveFactoryRecoveryBundleArtifact(t, store, record)
+
+	var gitCalls [][]string
+	var out bytes.Buffer
+	err := runFactoryPublishWithDeps(context.Background(), &out, record.RunID, factoryPublishRequest{
+		Policy:          factory.PublishPolicyPush,
+		AllowUnverified: true,
+		JSON:            true,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/allow"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
+	}
+	wantCalls := [][]string{
+		{"check-ref-format", "--branch", "hal/allow"},
+		{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, record), "HEAD"},
+		{"show-ref", "--verify", "--quiet", "refs/heads/hal/allow"},
+		{"checkout", "-b", "hal/allow", "FETCH_HEAD"},
+		{"push", "-u", "origin", "hal/allow"},
+	}
+	if !reflect.DeepEqual(gitCalls, wantCalls) {
+		t.Fatalf("git calls = %#v, want %#v", gitCalls, wantCalls)
+	}
+	updated, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	requireFactoryPublishOutcomeArtifact(t, *updated, factory.PublishPolicyPush, "hal/allow", true)
+	var resp FactoryPublishResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(publish response) error = %v", err)
+	}
+	if resp.ContractVersion != FactoryPublishContractVersion || resp.Policy != factory.PublishPolicyPush || !resp.AllowUnverified {
+		t.Fatalf("publish response = %#v", resp)
+	}
+}
+
+func TestRunFactoryPublishPublishesFromSandboxWhenRequested(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 8, 14, 0, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "manual-sandbox",
+		Provider: "digitalocean",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	record := factory.RunRecord{
+		RunID:        "run-manual-sandbox-publish",
+		Status:       factory.RunStatusSucceeded,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  target.Name,
+		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
+		RepoRemote:   "git@github.com:j-yw/test-keyboard-game.git",
+		BranchName:   "hal/manual-sandbox",
+		BaseBranch:   "main",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runFactoryPublishWithDeps(context.Background(), &out, record.RunID, factoryPublishRequest{
+		Policy:      factory.PublishPolicyPR,
+		PublishFrom: factory.PublishRunnerSandbox,
+		JSON:        true,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExecWithEnv: func(_ context.Context, _ sandbox.Provider, _ *sandbox.ConnectInfo, args []string, env map[string]string, out io.Writer) error {
+			if len(env) != 0 {
+				t.Fatalf("manual sandbox publish env = %#v, want no persisted secrets", env)
+			}
+			if !strings.Contains(strings.Join(args, " "), "_publish-branch") {
+				t.Fatalf("remote publish args = %#v, want hidden publish command", args)
+			}
+			result := ci.PushResult{
+				ContractVersion: ci.PushContractVersion,
+				Branch:          "hal/manual-sandbox",
+				Pushed:          true,
+				PullRequest: ci.PullRequest{
+					Number:  12,
+					URL:     "https://github.com/j-yw/test-keyboard-game/pull/12",
+					HeadRef: "hal/manual-sandbox",
+					BaseRef: "main",
+				},
+			}
+			return json.NewEncoder(out).Encode(factorySandboxPublishResult{
+				ContractVersion: "factory-publish-branch-v1",
+				OK:              true,
+				Push:            result,
+				Commit:          "def456abc123",
+			})
+		},
+		runGit: func(context.Context, string, ...string) (string, error) {
+			t.Fatal("host git should not be called for manual sandbox publish")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
+	}
+	var resp FactoryPublishResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(publish response) error = %v; output = %s", err, out.String())
+	}
+	if !resp.OK || resp.PublishFrom != factory.PublishRunnerSandbox || resp.Runner != factory.PublishRunnerSandbox || resp.PullRequestURL != "https://github.com/j-yw/test-keyboard-game/pull/12" {
+		t.Fatalf("publish response = %#v", resp)
+	}
+	updated, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error = %v", err)
+	}
+	postRun := factory.DerivePostRunState(*updated)
+	if postRun == nil || postRun.Publish == nil || postRun.Publish.Commit != "def456abc123" {
+		t.Fatalf("postRun publish = %#v", postRun)
+	}
+}
+
+func TestRunFactoryPublishCollectsSandboxRecoveryBundleBeforeManualPublish(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "dev",
+		Provider: "digitalocean",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	record := factory.RunRecord{
+		RunID:        "run-publish-collect",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  target.Name,
+		Sandbox:      &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status},
+		RepoRemote:   "git@github.com:j-yw/test-keyboard-game.git",
+		BranchName:   "hal/wasd-movement-controls",
+		BaseBranch:   "hal/time-attack-mode",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	var bundleCopied bool
+	var gitCalls [][]string
+	var out bytes.Buffer
+	err := runFactoryPublishWithDeps(context.Background(), &out, record.RunID, factoryPublishRequest{
+		Policy:          factory.PublishPolicyPR,
+		AllowUnverified: true,
+		JSON:            true,
+	}, factoryPublishDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		workingDir:   func() (string, error) { return dir, nil },
+		now:          func() time.Time { return now },
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		sandboxRequests: defaultFactorySandboxArtifactRequests,
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			if info == nil || info.Name != target.Name {
+				t.Fatalf("connect info = %#v, want sandbox %q", info, target.Name)
+			}
+			switch {
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/recovery/git-bundle.bundle"):
+				bundleCopied = true
+				_, err := io.WriteString(out, "bundle bytes\n")
+				return err
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/recovery/git-format-patch.patch"):
+				_, err := io.WriteString(out, "patch bytes\n")
+				return err
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/auto-state.json"):
+				_, err := io.WriteString(out, `{"step":"done"}`+"\n")
+				return err
+			default:
+				return factory.ErrSandboxArtifactNotFound
+			}
+		},
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/wasd-movement-controls"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+		pushAndCreatePRInDir: func(_ context.Context, gotDir string, opts ci.PushOptions) (ci.PushResult, error) {
+			if gotDir != dir {
+				t.Fatalf("push dir = %q, want %q", gotDir, dir)
+			}
+			if opts.BaseRef != "hal/time-attack-mode" {
+				t.Fatalf("push base = %q, want hal/time-attack-mode", opts.BaseRef)
+			}
+			return ci.PushResult{
+				Branch: "hal/wasd-movement-controls",
+				Pushed: true,
+				PullRequest: ci.PullRequest{
+					Number:  4,
+					URL:     "https://github.com/j-yw/test-keyboard-game/pull/4",
+					HeadRef: "hal/wasd-movement-controls",
+					BaseRef: "hal/time-attack-mode",
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryPublishWithDeps() error = %v", err)
+	}
+	if !bundleCopied {
+		t.Fatal("recovery bundle was not copied before manual publish")
+	}
+	updated, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	bundle := requireStoredFactoryArtifactPath(t, store, updated.RunID, updated.Artifacts, "factory/git-bundle.bundle")
+	if got := readStoredFactoryArtifact(t, store, updated.RunID, bundle); got != "bundle bytes\n" {
+		t.Fatalf("stored recovery bundle = %q", got)
+	}
+	wantFetch := []string{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, *updated), "HEAD"}
+	if len(gitCalls) < 2 || !reflect.DeepEqual(gitCalls[1], wantFetch) {
+		t.Fatalf("git calls = %#v, want second call %#v", gitCalls, wantFetch)
+	}
+	requireFactoryPublishOutcomeArtifact(t, *updated, factory.PublishPolicyPR, "hal/wasd-movement-controls", true)
+	var resp FactoryPublishResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal(publish response) error = %v; output = %s", err, out.String())
+	}
+	if !resp.OK || resp.Policy != factory.PublishPolicyPR || resp.BranchName != "hal/wasd-movement-controls" {
+		t.Fatalf("publish response = %#v", resp)
+	}
+	if resp.PipelineStatus != factory.RunStatusFailed || resp.PublishStatus != factory.RunStatusSucceeded || resp.DisplayStatus != "failed_published" {
+		t.Fatalf("publish response statuses = %#v", resp)
+	}
+	if resp.PullRequestURL != "https://github.com/j-yw/test-keyboard-game/pull/4" {
+		t.Fatalf("publish response pullRequestUrl = %q", resp.PullRequestURL)
+	}
+	if updated.PostRun == nil || updated.PostRun.Publish == nil {
+		t.Fatalf("updated postRun publish missing: %#v", updated.PostRun)
+	}
+	if updated.PostRun.Publish.Status != factory.RunStatusSucceeded ||
+		updated.PostRun.Publish.Source != "manual" ||
+		!updated.PostRun.Publish.AllowUnverified ||
+		updated.PostRun.Publish.PullRequestURL != "https://github.com/j-yw/test-keyboard-game/pull/4" {
+		t.Fatalf("updated postRun publish = %#v", updated.PostRun.Publish)
+	}
+}
+
+func TestFactoryStatusDerivesFailedPublishedDisplayFromPublishArtifact(t *testing.T) {
+	completedAt := time.Date(2026, 7, 8, 12, 30, 0, 0, time.UTC)
+	record := factory.RunRecord{
+		RunID:       "run-artifact-published",
+		Status:      factory.RunStatusFailed,
+		BranchName:  "hal/published",
+		BaseBranch:  "main",
+		CurrentStep: "verify",
+		CreatedAt:   completedAt.Add(-time.Minute),
+		UpdatedAt:   completedAt,
+		Artifacts: []factory.ArtifactReference{{
+			Name:      "publish-outcome",
+			Type:      "json",
+			Path:      "factory/publish-outcome.json",
+			CreatedAt: &completedAt,
+			Summary: map[string]any{
+				"outcomeKind":    "publish",
+				"policy":         factory.PublishPolicyPR,
+				"branch":         "hal/published",
+				"pushed":         true,
+				"pullRequestUrl": "https://github.com/example/repo/pull/12",
+			},
+		}},
+	}
+
+	statusRun := newFactoryStatusRun(record, nil, nil)
+	if statusRun.Status != factory.RunStatusFailed || statusRun.PipelineStatus != factory.RunStatusFailed {
+		t.Fatalf("status run pipeline fields = %#v", statusRun)
+	}
+	if statusRun.DisplayStatus != "failed_published" || statusRun.PublishStatus != factory.RunStatusSucceeded {
+		t.Fatalf("status run display fields = %#v", statusRun)
+	}
+	if statusRun.PostRun == nil || statusRun.PostRun.Publish == nil {
+		t.Fatalf("status run postRun missing: %#v", statusRun.PostRun)
+	}
+	if statusRun.PostRun.Publish.Source != "artifact" || statusRun.PostRun.Publish.PullRequestURL != "https://github.com/example/repo/pull/12" {
+		t.Fatalf("status run postRun publish = %#v", statusRun.PostRun.Publish)
+	}
+
+	summary := summarizeFactoryRun(record)
+	if summary.DisplayStatus != "failed_published" || summary.PublishStatus != factory.RunStatusSucceeded {
+		t.Fatalf("summary display fields = %#v", summary)
+	}
+}
+
+func saveFactoryRecoveryBundleArtifact(t *testing.T, store factory.Store, record factory.RunRecord) factory.RunRecord {
+	t.Helper()
+	sourcePath := filepath.Join(t.TempDir(), "git-bundle.bundle")
+	if err := os.WriteFile(sourcePath, []byte("bundle payload"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	if _, err := store.SaveArtifactFile(record.RunID, factory.ArtifactReference{
+		ID:   "sandbox-recovery-bundle",
+		Name: "sandbox-recovery-bundle",
+		Type: "bundle",
+		Path: filepath.ToSlash(filepath.Join("factory", "git-bundle.bundle")),
+		Summary: map[string]any{
+			"outcomeKind": "recovery_bundle",
+		},
+	}, sourcePath); err != nil {
+		t.Fatalf("SaveArtifactFile() error: %v", err)
+	}
+	loaded, err := store.LoadRun(record.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	return *loaded
+}
+
+func mustFactoryRecoveryBundleStoredPath(t *testing.T, store factory.Store, record factory.RunRecord) string {
+	t.Helper()
+	artifact, ok := factoryRunRecoveryBundleArtifact(record)
+	if !ok {
+		t.Fatal("recovery bundle artifact missing")
+	}
+	path, err := store.ResolveArtifactPath(record.RunID, artifact.StoredPath)
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath() error: %v", err)
+	}
+	return path
+}
+
+func requireFactoryPublishOutcomeArtifact(t *testing.T, record factory.RunRecord, policy, branch string, pushed bool) {
+	t.Helper()
+	for _, artifact := range record.Artifacts {
+		if summaryString(artifact.Summary, "outcomeKind") != "publish" {
+			continue
+		}
+		if artifact.Name != "publish-outcome" || artifact.Type != "json" {
+			t.Fatalf("publish artifact = %#v", artifact)
+		}
+		if summaryString(artifact.Summary, "policy") != policy {
+			t.Fatalf("publish policy summary = %#v, want %q", artifact.Summary, policy)
+		}
+		if summaryString(artifact.Summary, "branch") != branch {
+			t.Fatalf("publish branch summary = %#v, want %q", artifact.Summary, branch)
+		}
+		if got, _ := artifact.Summary["pushed"].(bool); got != pushed {
+			t.Fatalf("publish pushed summary = %#v, want %v", artifact.Summary["pushed"], pushed)
+		}
+		return
+	}
+	t.Fatalf("publish outcome artifact missing from %#v", record.Artifacts)
+}
+
+func TestDefaultFactorySandboxArtifactRequestsIncludesRecoveryDirectory(t *testing.T) {
+	requests := defaultFactorySandboxArtifactRequests("", factory.RunRecord{
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "factory-sandbox",
+	})
+
+	var sawRecoveryDir, sawPatch, sawBundle bool
+	for _, request := range requests {
+		switch request.ID {
+		case "sandbox-recovery":
+			sawRecoveryDir = true
+			if !request.Optional || !request.Directory || request.Type != "directory" {
+				t.Fatalf("sandbox-recovery request = %#v", request)
+			}
+			if request.RemotePath != ".hal/recovery" || request.Path != ".hal/recovery" {
+				t.Fatalf("sandbox-recovery paths = %q/%q, want .hal/recovery", request.RemotePath, request.Path)
+			}
+			if summaryString(request.Summary, "outcomeKind") != "recovery_directory" {
+				t.Fatalf("sandbox-recovery summary = %#v", request.Summary)
+			}
+		case "sandbox-recovery-patch":
+			sawPatch = true
+		case "sandbox-recovery-bundle":
+			sawBundle = true
+		}
+	}
+	if !sawRecoveryDir || !sawPatch || !sawBundle {
+		t.Fatalf("requests missing recovery artifacts: dir=%v patch=%v bundle=%v in %#v", sawRecoveryDir, sawPatch, sawBundle, requests)
+	}
+}
+
+func TestFactoryRunNextActionSuggestsRecoverForFailedSandboxBundle(t *testing.T) {
+	record := factory.RunRecord{
+		RunID:        "run-recoverable",
+		Status:       factory.RunStatusFailed,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		Artifacts: []factory.ArtifactReference{{
+			ID:         "sandbox-recovery-bundle",
+			Name:       "sandbox-recovery-bundle",
+			Type:       "bundle",
+			StoredPath: "artifacts/run-recoverable/factory/git-bundle.bundle",
+			Summary: map[string]any{
+				"outcomeKind": "recovery_bundle",
+			},
+		}},
+	}
+
+	nextAction := newFactoryRunNextAction(record)
+	if nextAction == nil {
+		t.Fatal("newFactoryRunNextAction() = nil, want recovery action")
+	}
+	if nextAction.Command != "hal factory recover run-recoverable" {
+		t.Fatalf("nextAction.command = %q, want recovery command", nextAction.Command)
+	}
+	if strings.Contains(nextAction.Command, "artifacts/") {
+		t.Fatalf("nextAction command exposes artifact path: %q", nextAction.Command)
+	}
+	failure := newFactoryRunFailure(factory.RunRecord{
+		RunID:        record.RunID,
+		Status:       record.Status,
+		ExecutorMode: record.ExecutorMode,
+		Artifacts:    record.Artifacts,
+		Failure: &factory.FailureSummary{
+			Message:          "remote pipeline failed",
+			SuggestedCommand: "hal sandbox ssh factory-recoverable",
+		},
+	})
+	if failure == nil || failure.SuggestedCommand != "hal factory recover run-recoverable" {
+		t.Fatalf("failure suggested command = %#v, want recovery command", failure)
+	}
+}
+
 func TestRunFactoryRunWithDepsRecordsMarkdownArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	halDir := filepath.Join(dir, ".hal")
@@ -2295,9 +4113,14 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	startedAt := createdAt.Add(1 * time.Minute)
 	completedAt := createdAt.Add(2 * time.Minute)
 	times := []time.Time{createdAt, startedAt, completedAt}
+	recoveryPatch := "diff --git a/src/style.css b/src/style.css\n" +
+		"+.collection-ripple::before { content: \"\"; }\n" +
+		"+.collection-ripple::after { content: \"\"; }\n"
 	copier := &fakeFactorySandboxArtifactCopier{
 		files: map[string]string{
-			"/workspace/.hal/auto-state.json": `{"step":"done"}` + "\n",
+			"/workspace/.hal/auto-state.json":                 `{"step":"done"}` + "\n",
+			"/workspace/.hal/recovery/git-format-patch.patch": recoveryPatch,
+			"/workspace/.hal/recovery/git-bundle.bundle":      "bundle bytes\n",
 		},
 		dirs: map[string]map[string]string{
 			"/workspace/.hal/reports": {
@@ -2309,7 +4132,7 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-sandbox",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -2406,6 +4229,30 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 						"sandboxName":  record.SandboxName,
 					},
 				},
+				{
+					ID:         "sandbox-recovery-patch",
+					Name:       "sandbox-recovery-patch",
+					Type:       "patch",
+					RemotePath: "/workspace/.hal/recovery/git-format-patch.patch",
+					Path:       "factory/git-format-patch.patch",
+					Optional:   true,
+					Summary: map[string]any{
+						"executorMode": factory.ExecutorModeSandbox,
+						"sandboxName":  record.SandboxName,
+					},
+				},
+				{
+					ID:         "sandbox-recovery-bundle",
+					Name:       "sandbox-recovery-bundle",
+					Type:       "bundle",
+					RemotePath: "/workspace/.hal/recovery/git-bundle.bundle",
+					Path:       "factory/git-bundle.bundle",
+					Optional:   true,
+					Summary: map[string]any{
+						"executorMode": factory.ExecutorModeSandbox,
+						"sandboxName":  record.SandboxName,
+					},
+				},
 			}
 		},
 	})
@@ -2415,7 +4262,12 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	if requestCalls != 1 {
 		t.Fatalf("sandboxRequests calls = %d, want 1", requestCalls)
 	}
-	if len(copier.fileCalls) != 1 || copier.fileCalls[0] != "/workspace/.hal/auto-state.json" {
+	wantFileCalls := []string{
+		"/workspace/.hal/auto-state.json",
+		"/workspace/.hal/recovery/git-format-patch.patch",
+		"/workspace/.hal/recovery/git-bundle.bundle",
+	}
+	if !reflect.DeepEqual(copier.fileCalls, wantFileCalls) {
 		t.Fatalf("file copy calls = %#v", copier.fileCalls)
 	}
 	if len(copier.dirCalls) != 1 || copier.dirCalls[0] != "/workspace/.hal/reports" {
@@ -2439,6 +4291,11 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsOnSuccess(t *testing.T) {
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/review.md")
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/verify/stdout.txt")
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/reports/verify/result.json")
+	patchArtifact := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/git-format-patch.patch")
+	if got := readStoredFactoryArtifact(t, store, record.RunID, patchArtifact); got != recoveryPatch {
+		t.Fatalf("recovery patch payload = %q, want byte-preserved CSS patch", got)
+	}
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/git-bundle.bundle")
 	if _, err := os.Stat(filepath.Join(halDir, "artifacts")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("sandbox artifact collection should not create project .hal artifacts, stat error = %v", err)
 	}
@@ -2453,7 +4310,7 @@ func TestRunFactoryRunWithDepsCollectsPreservedSandboxArtifactsWithProviderExec(
 	times := []time.Time{createdAt, startedAt, completedAt}
 	target := &sandbox.SandboxState{
 		Name:     "factory-preserved",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -2557,6 +4414,300 @@ func TestRunFactoryRunWithDepsCollectsPreservedSandboxArtifactsWithProviderExec(
 	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
 }
 
+func TestRunFactoryRunWithDepsCollectsProviderExecRecoveryBundleBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	pipelineAt := createdAt.Add(2 * time.Minute)
+	verifiedAt := createdAt.Add(3 * time.Minute)
+	publishedAt := createdAt.Add(4 * time.Minute)
+	succeededAt := createdAt.Add(5 * time.Minute)
+	times := []time.Time{createdAt, startedAt, pipelineAt, verifiedAt, publishedAt, succeededAt}
+	target := &sandbox.SandboxState{
+		Name:     "factory-publish",
+		Provider: "hetzner",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(factory.RunRecord{RepoRemote: "git@github.com:jywlabs/hal.git"})
+	var bundleCopied bool
+	var gitCalls [][]string
+	var providerCalls [][]string
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		BaseBranch:    "main",
+		Sandbox:       true,
+		SandboxName:   target.Name,
+		PublishPolicy: factory.PublishPolicyPR,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-publish-recovery", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return succeededAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.BranchName = "hal/factory-feature"
+			record.Sandbox = &factory.SandboxMetadata{
+				Name:       target.Name,
+				Provider:   target.Provider,
+				Status:     target.Status,
+				Connection: &factory.SandboxConnectionMetadata{Address: target.IP, PublicIP: target.IP},
+			}
+			return store.SaveRun(&record)
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		sandboxRequests: defaultFactorySandboxArtifactRequests,
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			providerCalls = append(providerCalls, append([]string(nil), args...))
+			if info == nil || info.Name != target.Name {
+				t.Fatalf("connect info = %#v, want sandbox %q", info, target.Name)
+			}
+			switch {
+			case strings.Contains(strings.Join(args, " "), `"$HOME/.local/bin/hal" 'verify' '--json'`):
+				data, err := json.Marshal(verify.Result{
+					SchemaVersion: verify.SchemaVersion,
+					Status:        verify.StatusPass,
+					Summary:       verify.Summary{},
+					Checks:        []verify.CheckResult{},
+				})
+				if err != nil {
+					t.Fatalf("Marshal(verify result) error: %v", err)
+				}
+				_, err = out.Write(append(data, '\n'))
+				return err
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/recovery/git-bundle.bundle"):
+				bundleCopied = true
+				_, err := io.WriteString(out, "bundle bytes\n")
+				return err
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/recovery/git-format-patch.patch"):
+				_, err := io.WriteString(out, "patch bytes\n")
+				return err
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/auto-state.json"):
+				_, err := io.WriteString(out, `{"step":"done"}`+"\n")
+				return err
+			case isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/prd.json"),
+				isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/progress.txt"):
+				return factory.ErrSandboxArtifactNotFound
+			default:
+				return factory.ErrSandboxArtifactNotFound
+			}
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		runGit: func(_ context.Context, gotDir string, args ...string) (string, error) {
+			if gotDir != dir {
+				t.Fatalf("git dir = %q, want %q", gotDir, dir)
+			}
+			gitCalls = append(gitCalls, append([]string(nil), args...))
+			switch {
+			case reflect.DeepEqual(args, []string{"show-ref", "--verify", "--quiet", "refs/heads/hal/factory-feature"}):
+				return "", errors.New("missing branch")
+			default:
+				return "", nil
+			}
+		},
+		pushAndCreatePRInDir: func(_ context.Context, gotDir string, opts ci.PushOptions) (ci.PushResult, error) {
+			if gotDir != dir {
+				t.Fatalf("push dir = %q, want %q", gotDir, dir)
+			}
+			if opts.BaseRef != "main" {
+				t.Fatalf("push base = %q, want main", opts.BaseRef)
+			}
+			return ci.PushResult{
+				Branch: "hal/factory-feature",
+				Pushed: true,
+				PullRequest: ci.PullRequest{
+					Number:  1,
+					URL:     "https://github.com/jywlabs/hal/pull/1",
+					HeadRef: "hal/factory-feature",
+					BaseRef: "main",
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunWithDeps() unexpected error: %v; provider calls = %#v", err, providerCalls)
+	}
+	if !bundleCopied {
+		t.Fatal("recovery bundle was not copied before publish")
+	}
+	record, err := store.LoadRun("run-sandbox-publish-recovery")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	bundle := requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, "factory/git-bundle.bundle")
+	if got := readStoredFactoryArtifact(t, store, record.RunID, bundle); got != "bundle bytes\n" {
+		t.Fatalf("stored recovery bundle = %q", got)
+	}
+	wantFetch := []string{"fetch", "--no-tags", mustFactoryRecoveryBundleStoredPath(t, store, *record), "HEAD"}
+	if len(gitCalls) < 2 || !reflect.DeepEqual(gitCalls[1], wantFetch) {
+		t.Fatalf("git calls = %#v, want second call %#v", gitCalls, wantFetch)
+	}
+	requireFactoryPublishOutcomeArtifact(t, *record, factory.PublishPolicyPR, "hal/factory-feature", true)
+}
+
+func TestNormalizeFactoryRunDepsKeepsDefaultSandboxArtifactRequestsForDefaultProviderExec(t *testing.T) {
+	deps := normalizeFactoryRunDeps(defaultFactoryRunDeps)
+	requests := deps.sandboxRequests("", factory.RunRecord{
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "dev",
+		RepoRemote:   "git@github.com:j-yw/test-keyboard-game.git",
+	})
+	if len(requests) == 0 {
+		t.Fatal("sandboxRequests returned no requests for default provider exec deps")
+	}
+	if _, ok := findFactorySandboxArtifactRequest(requests, "sandbox-recovery-bundle"); !ok {
+		t.Fatalf("default sandbox artifact requests = %#v, want recovery bundle request", requests)
+	}
+}
+
+func TestNormalizeFactoryRunDepsDisablesDefaultSandboxArtifactRequestsForCustomProviderExec(t *testing.T) {
+	deps := normalizeFactoryRunDeps(factoryRunDeps{
+		runProviderExec: func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error {
+			return nil
+		},
+	})
+	requests := deps.sandboxRequests("", factory.RunRecord{
+		ExecutorMode: factory.ExecutorModeSandbox,
+		SandboxName:  "dev",
+		RepoRemote:   "git@github.com:j-yw/test-keyboard-game.git",
+	})
+	if len(requests) != 0 {
+		t.Fatalf("sandboxRequests returned %#v for custom provider exec deps, want none", requests)
+	}
+}
+
+func findFactorySandboxArtifactRequest(requests []factory.SandboxArtifactRequest, id string) (factory.SandboxArtifactRequest, bool) {
+	for _, request := range requests {
+		if request.ID == id || request.Name == id {
+			return request, true
+		}
+	}
+	return factory.SandboxArtifactRequest{}, false
+}
+
+func TestRunFactoryRunWithDepsCollectsFailedSandboxArtifactsWithProviderExecWithoutInjectedCopier(t *testing.T) {
+	dir := t.TempDir()
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	now := time.Date(2026, 6, 21, 4, 4, 0, 0, time.UTC)
+	target := &sandbox.SandboxState{
+		Name:     "factory-failed",
+		Provider: "hetzner",
+		Status:   sandbox.StatusRunning,
+		IP:       "127.0.0.1",
+	}
+	workspaceDir := factorySandboxRemoteWorkspaceDir(factory.RunRecord{RepoRemote: "git@github.com:jywlabs/hal.git"})
+	var artifactCopied bool
+	runFailure := errors.New("remote pipeline failed")
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		BaseBranch: "main",
+		Sandbox:    true,
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-failed-artifacts", nil },
+		now:          func() time.Time { return now },
+		workingDir:   func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		loadEngine: func(string) (string, error) {
+			return factory.PolicyEngineCodex, nil
+		},
+		runSandbox: func(_ context.Context, req factorySandboxExecutorRequest) error {
+			record := req.RunRecord
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = target.Name
+			record.Sandbox = &factory.SandboxMetadata{Name: target.Name, Provider: target.Provider, Status: target.Status}
+			if err := store.SaveRun(&record); err != nil {
+				return err
+			}
+			return runFailure
+		},
+		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
+			if name != target.Name {
+				t.Fatalf("loadSandbox name = %q, want %q", name, target.Name)
+			}
+			return target, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			return fakeFactorySandboxProvider{}, nil
+		},
+		runProviderExec: func(_ context.Context, _ sandbox.Provider, info *sandbox.ConnectInfo, args []string, out io.Writer) error {
+			if info == nil || info.Name != target.Name {
+				t.Fatalf("connect info = %#v, want sandbox %q", info, target.Name)
+			}
+			if isFactorySandboxArtifactCopyArgs(args, workspaceDir, ".hal/auto-state.json") {
+				artifactCopied = true
+				_, err := io.WriteString(out, `{"step":"failed"}`+"\n")
+				return err
+			}
+			t.Fatalf("unexpected provider exec args = %#v", args)
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxRequests: func(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-auto-state",
+				Name:       "sandbox-auto-state",
+				Type:       "json",
+				RemotePath: ".hal/auto-state.json",
+				Path:       ".hal/auto-state.json",
+				Optional:   true,
+				Summary: map[string]any{
+					"executorMode": factory.ExecutorModeSandbox,
+					"sandboxName":  record.SandboxName,
+				},
+			}}
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() error = nil, want sandbox failure")
+	}
+	if !strings.Contains(err.Error(), runFailure.Error()) {
+		t.Fatalf("runFactoryRunWithDeps() error = %q, want original failure", err.Error())
+	}
+	if !artifactCopied {
+		t.Fatal("sandbox artifact was not copied through provider exec on failure")
+	}
+	record, err := store.LoadRun("run-sandbox-failed-artifacts")
+	if err != nil {
+		t.Fatalf("LoadRun() error: %v", err)
+	}
+	if record.Status != factory.RunStatusFailed {
+		t.Fatalf("status = %q, want %q", record.Status, factory.RunStatusFailed)
+	}
+	requireStoredFactoryArtifactPath(t, store, record.RunID, record.Artifacts, ".hal/auto-state.json")
+}
+
 func TestRunFactoryRunWithDepsCollectsSandboxArtifactsBeforeSandboxCleanup(t *testing.T) {
 	dir := t.TempDir()
 	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
@@ -2571,7 +4722,7 @@ func TestRunFactoryRunWithDepsCollectsSandboxArtifactsBeforeSandboxCleanup(t *te
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-sandbox",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -2750,6 +4901,113 @@ func TestRunFactoryRunWithDepsCollectsSandboxWarningsOnFailure(t *testing.T) {
 	}
 	if missing.Summary["sandboxName"] != "factory-sandbox" || missing.Summary["collectionStatus"] != "missing" {
 		t.Fatalf("missing sandbox artifact summary = %#v", missing.Summary)
+	}
+}
+
+func TestRunFactoryRunWithDepsRecordsArtifactSyncEventWhenSandboxCopyFails(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(halDir) error: %v", err)
+	}
+	writeFile(t, halDir, "prd-feature.md", "# PRD: Feature\n")
+
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	createdAt := time.Date(2026, 7, 1, 9, 20, 0, 0, time.UTC)
+	startedAt := createdAt.Add(1 * time.Minute)
+	pipelineCompletedAt := createdAt.Add(2 * time.Minute)
+	artifactSyncAt := createdAt.Add(3 * time.Minute)
+	failedAt := createdAt.Add(4 * time.Minute)
+	times := []time.Time{createdAt, startedAt, pipelineCompletedAt, artifactSyncAt, failedAt}
+	copyErr := errors.New("copy failed from unix:///tmp/private/worker-1.sock at /workspace/.hal/tmp/session https://deploy:secret@example.test/repo.git?token=secret")
+
+	err := runFactoryRunWithDeps(context.Background(), dir, factoryRunRequest{
+		MarkdownPath: ".hal/prd-feature.md",
+	}, io.Discard, factoryRunDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+		newRunID:     func() (string, error) { return "run-sandbox-copy-failed", nil },
+		now: func() time.Time {
+			if len(times) == 0 {
+				return failedAt
+			}
+			next := times[0]
+			times = times[1:]
+			return next
+		},
+		workingDir: func() (string, error) { return dir, nil },
+		currentBranch: func(string) (string, error) {
+			return "hal/factory", nil
+		},
+		repoRemote: func(string) (string, error) {
+			return "git@github.com:jywlabs/hal.git", nil
+		},
+		runPipeline: func(_ context.Context, req factoryRunPipelineRequest) error {
+			writeFile(t, halDir, "prd.json", `{"project":"factory"}`)
+			record, err := req.Store.LoadRun(req.RunID)
+			if err != nil {
+				t.Fatalf("LoadRun() during pipeline error: %v", err)
+			}
+			record.ExecutorMode = factory.ExecutorModeSandbox
+			record.SandboxName = "factory-sandbox"
+			if err := req.Store.SaveRun(record); err != nil {
+				t.Fatalf("SaveRun() sandbox record error: %v", err)
+			}
+			return nil
+		},
+		statusSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		doctorSnapshot: func(string) (factorySnapshotArtifact, error) { return factorySnapshotArtifact{}, nil },
+		sandboxCopier: &fakeFactorySandboxArtifactCopier{
+			fileErrs: map[string]error{
+				"/workspace/.hal/progress.txt": copyErr,
+			},
+		},
+		sandboxRequests: func(_ string, record factory.RunRecord) []factory.SandboxArtifactRequest {
+			return []factory.SandboxArtifactRequest{{
+				ID:         "sandbox-progress",
+				Name:       "sandbox-progress",
+				Type:       "text",
+				RemotePath: "/workspace/.hal/progress.txt",
+				Path:       ".hal/progress.txt",
+				Optional:   true,
+				Summary: map[string]any{
+					"executorMode": factory.ExecutorModeSandbox,
+					"sandboxName":  record.SandboxName,
+				},
+			}}
+		},
+	})
+	if err == nil {
+		t.Fatal("runFactoryRunWithDeps() expected sandbox artifact copy failure")
+	}
+
+	events, loadErr := store.LoadEvents("run-sandbox-copy-failed")
+	if loadErr != nil {
+		t.Fatalf("LoadEvents() error: %v", loadErr)
+	}
+	assertFactoryEventTypes(t, events, []string{
+		factory.EventTypeRunCreated,
+		factory.EventTypeStepStarted,
+		factory.EventTypeStepEnded,
+		factory.EventTypeArtifactSync,
+		factory.EventTypeStepEnded,
+		factory.EventTypeFailureClassification,
+	})
+	if !events[3].Timestamp.Equal(artifactSyncAt) {
+		t.Fatalf("artifact sync timestamp = %s, want %s", events[3].Timestamp, artifactSyncAt)
+	}
+	if events[3].Summary != "Factory sandbox artifact sync failed" ||
+		events[3].Metadata["step"] != factory.RunDurationStepArtifactCollect ||
+		events[3].Metadata["status"] != factory.RunStatusFailed {
+		t.Fatalf("artifact sync event = %#v, want failed artifact collection metadata", events[3])
+	}
+	encoded, marshalErr := json.Marshal(events)
+	if marshalErr != nil {
+		t.Fatalf("Marshal(events) error: %v", marshalErr)
+	}
+	for _, forbidden := range []string{"unix://", "/tmp/private/worker-1.sock", "/workspace/.hal/tmp/session", "deploy:secret", "token=secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("factory artifact timeline leaked %q: %s", forbidden, encoded)
+		}
 	}
 }
 
@@ -3003,7 +5261,7 @@ func TestRunFactoryRunWithDepsPreservesOnSuccessSandboxWhenArtifactCollectionFai
 	artifactErr := errors.New("status snapshot unavailable")
 	target := &sandbox.SandboxState{
 		Name:     "factory-artifact-failed",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -3566,7 +5824,7 @@ func TestRunFactoryRunWithDepsCleansDeferredSandboxAfterVerificationPasses(t *te
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-verified",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -3774,7 +6032,7 @@ func TestCleanupFactoryRunDeferredSandboxCopiesArtifactsWithProviderExecBeforeCl
 	policy.CleanupBehavior = factory.CleanupBehaviorOnSuccess
 	target := &sandbox.SandboxState{
 		Name:     "factory-copy-before-cleanup",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -3885,7 +6143,7 @@ func TestRunFactoryRunWithDepsCleansOnSuccessSandboxAfterFinalSuccessWithoutVeri
 	}
 	target := &sandbox.SandboxState{
 		Name:     "factory-final-success",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4039,7 +6297,7 @@ func TestRunFactoryRunWithDepsPreservesDeferredSandboxWhenVerificationFails(t *t
 	policy.VerificationRequired = true
 	target := &sandbox.SandboxState{
 		Name:     "factory-verification-failed",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4163,7 +6421,7 @@ func TestRunFactorySandboxRemoteVerificationUsesResolvedSecretsAndRedactsArtifac
 
 	target := &sandbox.SandboxState{
 		Name:     record.SandboxName,
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 	}
 	resolvedSecrets := []factory.ResolvedRunSecret{{
@@ -4263,7 +6521,7 @@ func TestRunFactoryRunWithDepsRecordsAlwaysCleanupWhenFailureArtifactCopyErrors(
 	policy.VerificationRequired = true
 	target := &sandbox.SandboxState{
 		Name:     "factory-always-cleanup-copy-error",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4422,7 +6680,7 @@ func TestRunFactoryRunWithDepsBlocksRequiredSandboxVerificationWithNoRemoteCheck
 	policy.VerificationRequired = true
 	target := &sandbox.SandboxState{
 		Name:     "factory-no-remote-checks",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -4927,7 +7185,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 	times := []time.Time{createdAt, startedAt, completedAt}
 	target := &sandbox.SandboxState{
 		Name:     "factory-remote",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "203.0.113.42",
 	}
@@ -4977,7 +7235,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 				Metadata: map[string]any{
 					"source":      "remote_sandbox",
 					"sandboxName": "factory-remote",
-					"provider":    "daytona",
+					"provider":    "hetzner",
 					"status":      factory.RunStatusRunning,
 				},
 			}); err != nil {
@@ -4993,7 +7251,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 				Metadata: map[string]any{
 					"source":      "remote_sandbox",
 					"sandboxName": "factory-remote",
-					"provider":    "daytona",
+					"provider":    "hetzner",
 				},
 			}); err != nil {
 				return err
@@ -5004,7 +7262,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 				Metadata: map[string]any{
 					"source":      "remote_sandbox",
 					"sandboxName": "factory-remote",
-					"provider":    "daytona",
+					"provider":    "hetzner",
 					"status":      factory.RunStatusSucceeded,
 				},
 			}); err != nil {
@@ -5055,7 +7313,7 @@ func TestRunFactoryRunWithDepsPersistsSuccessfulSandboxRunOutcome(t *testing.T) 
 	if record.SandboxName != "factory-remote" || record.Sandbox == nil {
 		t.Fatalf("sandbox metadata = %#v", record.Sandbox)
 	}
-	if record.Sandbox.Provider != "daytona" || record.Sandbox.Status != sandbox.StatusRunning {
+	if record.Sandbox.Provider != "hetzner" || record.Sandbox.Status != sandbox.StatusRunning {
 		t.Fatalf("sandbox provider/status = %#v", record.Sandbox)
 	}
 	if record.Sandbox.Connection == nil || record.Sandbox.Connection.PublicIP != "203.0.113.42" {
@@ -5115,7 +7373,7 @@ func TestRunFactoryRunWithDepsSuppressesSandboxRemoteOutputForJSON(t *testing.T)
 	times := []time.Time{createdAt, startedAt, completedAt}
 	target := &sandbox.SandboxState{
 		Name:     "factory-json",
-		Provider: "daytona",
+		Provider: "hetzner",
 		Status:   sandbox.StatusRunning,
 		IP:       "127.0.0.1",
 	}
@@ -5258,7 +7516,7 @@ func TestRunFactoryRunWithDepsPreservesSandboxFailureHandoffCommand(t *testing.T
 			record.SandboxName = "factory-remote"
 			record.Sandbox = &factory.SandboxMetadata{
 				Name:           "factory-remote",
-				Provider:       "daytona",
+				Provider:       "hetzner",
 				Status:         sandbox.StatusRunning,
 				SSHCommand:     "hal sandbox ssh factory-remote",
 				CleanupCommand: "hal sandbox delete factory-remote",
@@ -6041,6 +8299,8 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 			MaxReviewFixAttempts: 2,
 			MaxCIFixAttempts:     3,
 		},
+		MaxCommandRetries:  2,
+		RuntimeStatePolicy: compound.RuntimeStatePolicyCheckpointFactoryState,
 		Request: factoryRunRequest{
 			MarkdownPath: " .hal/prd-feature.md ",
 			BaseBranch:   " develop ",
@@ -6072,6 +8332,8 @@ func TestRunFactoryRunPipelineWithDepsPassesMarkdownEntryToAuto(t *testing.T) {
 			MaxReviewFixAttempts: 2,
 			MaxCIFixAttempts:     3,
 		},
+		MaxCommandRetries:  2,
+		RuntimeStatePolicy: compound.RuntimeStatePolicyCheckpointFactoryState,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("auto request = %#v, want %#v", got, want)
@@ -6297,6 +8559,85 @@ func TestRunFactoryRunPipelineWithDepsRedactsCredentialedRemoteFromFailureLogChu
 	}
 }
 
+func TestRunFactoryRunPipelineWithDepsRetriesWithResumeWhenStateExists(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("mkdir hal dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(halDir, "auto-state.json"), []byte(`{"step":"review"}`), 0644); err != nil {
+		t.Fatalf("write auto state: %v", err)
+	}
+
+	firstErr := errors.New("transient engine failure")
+	var got []factoryRunAutoRequest
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID:             "run-command-retry",
+		Store:             store,
+		WorkDir:           dir,
+		MaxCommandRetries: 2,
+		Request: factoryRunRequest{
+			MarkdownPath: ".hal/prd-feature.md",
+			ReportPath:   ".hal/reports/ignored.md",
+			BaseBranch:   "develop",
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(_ context.Context, req factoryRunAutoRequest) error {
+			got = append(got, req)
+			if len(got) == 1 {
+				return firstErr
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runFactoryRunPipelineWithDeps() unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("auto calls = %d, want 2: %#v", len(got), got)
+	}
+	if got[0].Resume {
+		t.Fatalf("first auto request Resume = true, want false: %#v", got[0])
+	}
+	if !reflect.DeepEqual(got[0].Args, []string{".hal/prd-feature.md"}) {
+		t.Fatalf("first auto args = %#v", got[0].Args)
+	}
+	if !got[1].Resume {
+		t.Fatalf("second auto request Resume = false, want true: %#v", got[1])
+	}
+	if len(got[1].Args) != 0 || got[1].ReportPath != "" || got[1].BaseBranch != "" {
+		t.Fatalf("resume auto request replayed source inputs: %#v", got[1])
+	}
+}
+
+func TestRunFactoryRunPipelineWithDepsDoesNotRetryWithoutAutoState(t *testing.T) {
+	store := factory.NewStore(t.TempDir())
+	dir := t.TempDir()
+	wantErr := errors.New("deterministic failure")
+	calls := 0
+	err := runFactoryRunPipelineWithDeps(context.Background(), factoryRunPipelineRequest{
+		RunID:             "run-command-no-retry",
+		Store:             store,
+		WorkDir:           dir,
+		MaxCommandRetries: 2,
+		Request: factoryRunRequest{
+			MarkdownPath: ".hal/prd-feature.md",
+		},
+	}, factoryRunPipelineDeps{
+		runAuto: func(context.Context, factoryRunAutoRequest) error {
+			calls++
+			return wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runFactoryRunPipelineWithDeps() error = %v, want %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Fatalf("auto calls = %d, want 1", calls)
+	}
+}
+
 func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	chdirTemp(t)
 
@@ -6349,9 +8690,7 @@ func TestRunAutoForFactoryRunKeepsDirectAutoBehaviorIsolated(t *testing.T) {
 	if err := jsonCmd.Flags().Set("json", "true"); err != nil {
 		t.Fatalf("set json flag: %v", err)
 	}
-	if err := runAuto(jsonCmd, nil); err != nil {
-		t.Fatalf("direct runAuto JSON returned error after factory wrapper: %v", err)
-	}
+	requireRenderedJSONExitCode(t, runAuto(jsonCmd, nil), ExitCodeValidation)
 	assertAutoJSONContractV2(t, jsonOut.Bytes())
 
 	reportPath := filepath.Join(".", "report.md")
@@ -6669,6 +9008,8 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 		Version:         "dev",
 		RunID:           "run-json-contract",
 		Status:          factory.RunStatusFailed,
+		ExecutorMode:    factory.ExecutorModeSandbox,
+		BaseBranch:      "develop",
 		NextAction: &FactoryRunNextAction{
 			ID:          "inspect_factory_run",
 			Command:     "hal factory status run-json-contract --json",
@@ -6742,9 +9083,15 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 		t.Fatalf("json.Unmarshal(raw) error: %v", err)
 	}
 	requireExactKeys(t, raw, []string{
-		"contractVersion", "version", "runId", "status", "nextAction",
+		"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction",
 		"artifacts", "telemetry", "eventSummary", "failure",
 	})
+	if decoded.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("executorMode = %q, want %q", decoded.ExecutorMode, factory.ExecutorModeSandbox)
+	}
+	if decoded.BaseBranch != "develop" {
+		t.Fatalf("baseBranch = %q, want develop", decoded.BaseBranch)
+	}
 
 	nextAction, ok := raw["nextAction"].(map[string]any)
 	if !ok {
@@ -6789,6 +9136,74 @@ func TestRenderFactoryRunJSONLocksResultContract(t *testing.T) {
 		t.Fatalf("failure should be an object, got %T", raw["failure"])
 	}
 	requireFactoryFields(t, "factory run failure", failure, []string{"classification", "errorMessage", "suggestedCommand"})
+}
+
+func TestRenderFactoryRunJSONKeepsUnresolvedExecutorAndBaseFields(t *testing.T) {
+	resp := FactoryRunResponse{
+		ContractVersion: FactoryRunContractVersion,
+		Version:         "dev",
+		RunID:           "run-unresolved-effective-fields",
+		Status:          factory.RunStatusFailed,
+	}
+
+	var out bytes.Buffer
+	if err := renderFactoryRunJSON(&out, resp); err != nil {
+		t.Fatalf("renderFactoryRunJSON() error: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, out.String())
+	}
+	requireExactKeys(t, raw, []string{
+		"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction",
+		"artifacts", "eventSummary", "failure",
+	})
+	if raw["executorMode"] != "" {
+		t.Fatalf("executorMode = %#v, want an explicit empty string", raw["executorMode"])
+	}
+	if raw["baseBranch"] != "" {
+		t.Fatalf("baseBranch = %#v, want an explicit empty string", raw["baseBranch"])
+	}
+}
+
+func TestFactoryRunResultSurfacesEffectiveExecutorAndBase(t *testing.T) {
+	record := factory.RunRecord{
+		RunID:        "run-effective-config",
+		Status:       factory.RunStatusSucceeded,
+		ExecutorMode: factory.ExecutorModeSandbox,
+		BaseBranch:   "develop",
+	}
+
+	resp := newFactoryRunResponse(record, nil)
+	if resp.ExecutorMode != factory.ExecutorModeSandbox {
+		t.Fatalf("ExecutorMode = %q, want %q", resp.ExecutorMode, factory.ExecutorModeSandbox)
+	}
+	if resp.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want develop", resp.BaseBranch)
+	}
+
+	var out bytes.Buffer
+	if err := renderFactoryRunSummary(&out, resp); err != nil {
+		t.Fatalf("renderFactoryRunSummary() error: %v", err)
+	}
+	for _, want := range []string{"Executor: sandbox", "Base: develop"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("human output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestFactoryRunHelpExplainsExecutorAndBasePrecedence(t *testing.T) {
+	for _, want := range []string{
+		"explicit flags override project config defaults",
+		"safe local fallback",
+		"Sandbox execution still blocks when no base resolves",
+	} {
+		if !strings.Contains(factoryRunCmd.Long, want) {
+			t.Fatalf("factory run long help missing %q:\n%s", want, factoryRunCmd.Long)
+		}
+	}
 }
 
 func TestNewFactoryRunResponseDerivesTelemetryDurations(t *testing.T) {
@@ -6850,7 +9265,7 @@ func TestNewFactoryRunNextActionUsesInspectCommandForSandboxFailures(t *testing.
 		SandboxName:  "fallback-sandbox",
 		Sandbox: &factory.SandboxMetadata{
 			Name:       "factory-handoff",
-			Provider:   "daytona",
+			Provider:   "hetzner",
 			Status:     sandbox.StatusRunning,
 			SSHCommand: "ssh root@203.0.113.10",
 			Connection: &factory.SandboxConnectionMetadata{
@@ -7096,7 +9511,7 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 			Model: "gpt-5",
 		},
 		Sandbox: &factory.RunSandboxTelemetry{
-			Provider: "daytona",
+			Provider: "hetzner",
 			Size:     "medium",
 		},
 		EstimatedSandboxCost: &factory.SandboxCostEstimate{
@@ -7233,6 +9648,73 @@ func TestRunFactoryStatusJSONIncludesRunAndOrderedTimeline(t *testing.T) {
 	requireFactoryFields(t, "factory status event", firstEvent, []string{
 		"sequence", "runId", "eventType", "timestamp", "message", "summary", "metadata",
 	})
+}
+
+func TestRunFactoryStatusJSONEmitsRootlessPodmanSandboxMetadata(t *testing.T) {
+	store := factory.NewStore(filepath.Join(t.TempDir(), "factory"))
+	base := time.Date(2026, 7, 1, 3, 0, 0, 0, time.UTC)
+	record := testFactoryRunRecord("run-status-rootless", base, base.Add(time.Minute))
+	record.ExecutorMode = factory.ExecutorModeSandbox
+	record.Status = factory.RunStatusRunning
+	record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(&sandbox.SandboxState{
+		Name:     "factory-rootless",
+		Provider: "local",
+		Status:   sandbox.StatusRunning,
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+			RuntimeID:      "container-123",
+			Image:          "localhost/hal-test:latest",
+			WorkerID:       "local-worker",
+		},
+		Security: sandbox.EvaluateSandboxSecurity(sandbox.SecurityEvaluationRequest{
+			RuntimeDriver:          sandbox.SandboxRuntimeDriverRootlessPodman,
+			RequestedNetworkPolicy: sandbox.SandboxNetworkPolicyDenyByDefault,
+			RequestedSecretModes:   []string{sandbox.SandboxSecretModeHTTPProxy},
+			CompatibilityAuthSync:  true,
+		}),
+	})
+	if err := store.SaveRun(&record); err != nil {
+		t.Fatalf("SaveRun() error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runFactoryStatusWithDeps(&buf, record.RunID, true, factoryStatusDeps{
+		defaultStore: func() (factory.Store, error) { return store, nil },
+	})
+	if err != nil {
+		t.Fatalf("runFactoryStatusWithDeps() unexpected error: %v", err)
+	}
+
+	var resp FactoryStatusResponse
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nraw: %s", err, buf.String())
+	}
+	if resp.Run.Sandbox == nil {
+		t.Fatal("run.sandbox = nil")
+	}
+	if resp.Run.Sandbox.Runtime == nil {
+		t.Fatal("run.sandbox.runtime = nil")
+	}
+	if resp.Run.Sandbox.Runtime.Driver != sandbox.SandboxRuntimeDriverRootlessPodman {
+		t.Fatalf("runtime.driver = %q, want %q", resp.Run.Sandbox.Runtime.Driver, sandbox.SandboxRuntimeDriverRootlessPodman)
+	}
+	if resp.Run.Sandbox.Runtime.IsolationLevel != sandbox.SandboxIsolationLevelContainer {
+		t.Fatalf("runtime.isolationLevel = %q, want %q", resp.Run.Sandbox.Runtime.IsolationLevel, sandbox.SandboxIsolationLevelContainer)
+	}
+	if strings.Contains(buf.String(), `"isolationLevel": "vm"`) {
+		t.Fatalf("factory status rootless Podman metadata must not report VM isolation:\n%s", buf.String())
+	}
+	if resp.Run.Sandbox.Security == nil || resp.Run.Sandbox.Security.Network == nil {
+		t.Fatalf("run.sandbox.security.network = %#v", resp.Run.Sandbox.Security)
+	}
+	network := resp.Run.Sandbox.Security.Network
+	if network.PolicyEnforced != sandbox.SandboxNetworkPolicyBestEffort {
+		t.Fatalf("security.network.policyEnforced = %q, want %q", network.PolicyEnforced, sandbox.SandboxNetworkPolicyBestEffort)
+	}
+	if network.EnforcementMode != sandbox.SandboxNetworkEnforcementModeNone {
+		t.Fatalf("security.network.enforcementMode = %q, want %q", network.EnforcementMode, sandbox.SandboxNetworkEnforcementModeNone)
+	}
 }
 
 func TestRunFactoryStatusJSONDerivesTelemetryDurations(t *testing.T) {
@@ -8541,12 +11023,17 @@ type fakeFactorySandboxArtifactCopier struct {
 	files     map[string]string
 	dirs      map[string]map[string]string
 	missing   map[string]bool
+	fileErrs  map[string]error
+	dirErrs   map[string]error
 	fileCalls []string
 	dirCalls  []string
 }
 
 func (f *fakeFactorySandboxArtifactCopier) CopyFile(_ context.Context, remotePath, localPath string) error {
 	f.fileCalls = append(f.fileCalls, remotePath)
+	if err := f.fileErrs[remotePath]; err != nil {
+		return err
+	}
 	if f.missing[remotePath] {
 		return factory.ErrSandboxArtifactNotFound
 	}
@@ -8562,6 +11049,9 @@ func (f *fakeFactorySandboxArtifactCopier) CopyFile(_ context.Context, remotePat
 
 func (f *fakeFactorySandboxArtifactCopier) CopyDir(_ context.Context, remotePath, localPath string) error {
 	f.dirCalls = append(f.dirCalls, remotePath)
+	if err := f.dirErrs[remotePath]; err != nil {
+		return err
+	}
 	if f.missing[remotePath] {
 		return factory.ErrSandboxArtifactNotFound
 	}

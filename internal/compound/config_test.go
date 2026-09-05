@@ -3,10 +3,12 @@ package compound
 import (
 	"os"
 	"path/filepath"
-	"runtime"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jywlabs/hal/internal/sandbox"
 )
 
 func TestDefaultAutoConfig(t *testing.T) {
@@ -632,299 +634,14 @@ func TestLoadDefaultEngine(t *testing.T) {
 	}
 }
 
-func TestDefaultDaytonaConfig(t *testing.T) {
-	cfg := DefaultDaytonaConfig()
-	if cfg.APIKey != "" {
-		t.Errorf("APIKey = %q, want empty", cfg.APIKey)
-	}
-	if cfg.ServerURL != "" {
-		t.Errorf("ServerURL = %q, want empty", cfg.ServerURL)
-	}
-}
-
-func TestLoadDaytonaConfig_MissingFile(t *testing.T) {
-	t.Run("non-existent directory returns defaults", func(t *testing.T) {
-		cfg, err := LoadDaytonaConfig(filepath.Join(t.TempDir(), "does-not-exist"))
-		if err != nil {
-			t.Fatalf("LoadDaytonaConfig() unexpected error: %v", err)
-		}
-		if cfg.APIKey != "" {
-			t.Errorf("APIKey = %q, want empty", cfg.APIKey)
-		}
-		if cfg.ServerURL != "" {
-			t.Errorf("ServerURL = %q, want empty", cfg.ServerURL)
-		}
-	})
-
-	t.Run("directory exists but no config.yaml returns defaults", func(t *testing.T) {
-		cfg, err := LoadDaytonaConfig(t.TempDir())
-		if err != nil {
-			t.Fatalf("LoadDaytonaConfig() unexpected error: %v", err)
-		}
-		if cfg.APIKey != "" {
-			t.Errorf("APIKey = %q, want empty", cfg.APIKey)
-		}
-		if cfg.ServerURL != "" {
-			t.Errorf("ServerURL = %q, want empty", cfg.ServerURL)
-		}
-	})
-}
-
-func TestLoadDaytonaConfig_ValidYAML(t *testing.T) {
-	tests := []struct {
-		name          string
-		yaml          string
-		wantAPIKey    string
-		wantServerURL string
-	}{
-		{
-			name: "full daytona config",
-			yaml: `daytona:
-  apiKey: "my-secret-key"
-  serverURL: "https://daytona.example.com"
-`,
-			wantAPIKey:    "my-secret-key",
-			wantServerURL: "https://daytona.example.com",
-		},
-		{
-			name: "only apiKey set",
-			yaml: `daytona:
-  apiKey: "key-only"
-`,
-			wantAPIKey:    "key-only",
-			wantServerURL: "",
-		},
-		{
-			name: "only serverURL set",
-			yaml: `daytona:
-  serverURL: "https://custom.server"
-`,
-			wantAPIKey:    "",
-			wantServerURL: "https://custom.server",
-		},
-		{
-			name:          "empty daytona section uses defaults",
-			yaml:          "daytona:\n",
-			wantAPIKey:    "",
-			wantServerURL: "",
-		},
-		{
-			name:          "no daytona section uses defaults",
-			yaml:          "engine: claude\n",
-			wantAPIKey:    "",
-			wantServerURL: "",
-		},
-		{
-			name: "daytona alongside other sections",
-			yaml: `engine: claude
-auto:
-  reportsDir: .hal/reports
-  branchPrefix: compound/
-  maxIterations: 25
-daytona:
-  apiKey: "alongside-key"
-  serverURL: "https://alongside.server"
-`,
-			wantAPIKey:    "alongside-key",
-			wantServerURL: "https://alongside.server",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			halDir := filepath.Join(dir, ".hal")
-			if err := os.MkdirAll(halDir, 0755); err != nil {
-				t.Fatalf("Failed to create .hal dir: %v", err)
-			}
-			if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(tt.yaml), 0644); err != nil {
-				t.Fatalf("Failed to write config.yaml: %v", err)
-			}
-
-			cfg, err := LoadDaytonaConfig(dir)
-			if err != nil {
-				t.Fatalf("LoadDaytonaConfig() unexpected error: %v", err)
-			}
-			if cfg.APIKey != tt.wantAPIKey {
-				t.Errorf("APIKey = %q, want %q", cfg.APIKey, tt.wantAPIKey)
-			}
-			if cfg.ServerURL != tt.wantServerURL {
-				t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, tt.wantServerURL)
-			}
-		})
-	}
-}
-
-func TestLoadDaytonaConfig_InvalidYAML(t *testing.T) {
-	dir := t.TempDir()
-	halDir := filepath.Join(dir, ".hal")
-	if err := os.MkdirAll(halDir, 0755); err != nil {
-		t.Fatalf("Failed to create .hal dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(":::not yaml"), 0644); err != nil {
-		t.Fatalf("Failed to write config.yaml: %v", err)
-	}
-
-	_, err := LoadDaytonaConfig(dir)
-	if err == nil {
-		t.Fatal("LoadDaytonaConfig() expected error for invalid YAML, got nil")
-	}
-}
-
-func TestSaveConfig(t *testing.T) {
-	t.Run("creates config.yaml when none exists", func(t *testing.T) {
-		dir := t.TempDir()
-		daytona := &DaytonaConfig{
-			APIKey:    "new-key",
-			ServerURL: "https://new.server",
-		}
-
-		if err := SaveConfig(dir, daytona); err != nil {
-			t.Fatalf("SaveConfig() unexpected error: %v", err)
-		}
-
-		// Verify we can read it back
-		cfg, err := LoadDaytonaConfig(dir)
-		if err != nil {
-			t.Fatalf("LoadDaytonaConfig() unexpected error: %v", err)
-		}
-		if cfg.APIKey != "new-key" {
-			t.Errorf("APIKey = %q, want %q", cfg.APIKey, "new-key")
-		}
-		if cfg.ServerURL != "https://new.server" {
-			t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, "https://new.server")
-		}
-	})
-
-	t.Run("tightens existing config.yaml permissions", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("permission bits are not portable on Windows")
-		}
-
-		dir := t.TempDir()
-		halDir := filepath.Join(dir, ".hal")
-		if err := os.MkdirAll(halDir, 0755); err != nil {
-			t.Fatalf("Failed to create .hal dir: %v", err)
-		}
-
-		configPath := filepath.Join(halDir, "config.yaml")
-		if err := os.WriteFile(configPath, []byte("engine: claude\n"), 0644); err != nil {
-			t.Fatalf("Failed to write config.yaml: %v", err)
-		}
-
-		daytona := &DaytonaConfig{
-			APIKey:    "saved-key",
-			ServerURL: "https://saved.server",
-		}
-		if err := SaveConfig(dir, daytona); err != nil {
-			t.Fatalf("SaveConfig() unexpected error: %v", err)
-		}
-
-		info, err := os.Stat(configPath)
-		if err != nil {
-			t.Fatalf("Failed to stat config.yaml: %v", err)
-		}
-		if info.Mode().Perm() != 0600 {
-			t.Errorf("config.yaml permissions = %o, want %o", info.Mode().Perm(), 0600)
-		}
-	})
-
-	t.Run("preserves existing engine and auto sections", func(t *testing.T) {
-		dir := t.TempDir()
-		halDir := filepath.Join(dir, ".hal")
-		if err := os.MkdirAll(halDir, 0755); err != nil {
-			t.Fatalf("Failed to create .hal dir: %v", err)
-		}
-
-		existingYAML := `engine: pi
-maxIterations: 5
-auto:
-  reportsDir: custom/reports
-  branchPrefix: feature/
-  maxIterations: 10
-`
-		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644); err != nil {
-			t.Fatalf("Failed to write config.yaml: %v", err)
-		}
-
-		daytona := &DaytonaConfig{
-			APIKey:    "saved-key",
-			ServerURL: "https://saved.server",
-		}
-		if err := SaveConfig(dir, daytona); err != nil {
-			t.Fatalf("SaveConfig() unexpected error: %v", err)
-		}
-
-		// Verify daytona was saved
-		dayCfg, err := LoadDaytonaConfig(dir)
-		if err != nil {
-			t.Fatalf("LoadDaytonaConfig() unexpected error: %v", err)
-		}
-		if dayCfg.APIKey != "saved-key" {
-			t.Errorf("APIKey = %q, want %q", dayCfg.APIKey, "saved-key")
-		}
-
-		// Verify auto section was not clobbered
-		autoCfg, err := LoadConfig(dir)
-		if err != nil {
-			t.Fatalf("LoadConfig() unexpected error: %v", err)
-		}
-		if autoCfg.ReportsDir != "custom/reports" {
-			t.Errorf("ReportsDir = %q, want %q", autoCfg.ReportsDir, "custom/reports")
-		}
-		if autoCfg.BranchPrefix != "feature/" {
-			t.Errorf("BranchPrefix = %q, want %q", autoCfg.BranchPrefix, "feature/")
-		}
-		if autoCfg.MaxIterations != 10 {
-			t.Errorf("MaxIterations = %d, want %d", autoCfg.MaxIterations, 10)
-		}
-	})
-
-	t.Run("overwrites previous daytona section", func(t *testing.T) {
-		dir := t.TempDir()
-		halDir := filepath.Join(dir, ".hal")
-		if err := os.MkdirAll(halDir, 0755); err != nil {
-			t.Fatalf("Failed to create .hal dir: %v", err)
-		}
-
-		existingYAML := `engine: claude
-daytona:
-  apiKey: "old-key"
-  serverURL: "https://old.server"
-`
-		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644); err != nil {
-			t.Fatalf("Failed to write config.yaml: %v", err)
-		}
-
-		daytona := &DaytonaConfig{
-			APIKey:    "updated-key",
-			ServerURL: "https://updated.server",
-		}
-		if err := SaveConfig(dir, daytona); err != nil {
-			t.Fatalf("SaveConfig() unexpected error: %v", err)
-		}
-
-		cfg, err := LoadDaytonaConfig(dir)
-		if err != nil {
-			t.Fatalf("LoadDaytonaConfig() unexpected error: %v", err)
-		}
-		if cfg.APIKey != "updated-key" {
-			t.Errorf("APIKey = %q, want %q", cfg.APIKey, "updated-key")
-		}
-		if cfg.ServerURL != "https://updated.server" {
-			t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, "https://updated.server")
-		}
-	})
-}
-
 func TestLoadSandboxConfig_MissingFile(t *testing.T) {
-	t.Run("non-existent directory returns defaults with daytona provider", func(t *testing.T) {
+	t.Run("non-existent directory returns empty provider", func(t *testing.T) {
 		cfg, err := LoadSandboxConfig(filepath.Join(t.TempDir(), "does-not-exist"))
 		if err != nil {
 			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
 		}
-		if cfg.Provider != "daytona" {
-			t.Errorf("Provider = %q, want %q", cfg.Provider, "daytona")
+		if cfg.Provider != "" {
+			t.Errorf("Provider = %q, want empty", cfg.Provider)
 		}
 		if len(cfg.Env) != 0 {
 			t.Errorf("Env length = %d, want 0", len(cfg.Env))
@@ -936,8 +653,8 @@ func TestLoadSandboxConfig_MissingFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
 		}
-		if cfg.Provider != "daytona" {
-			t.Errorf("Provider = %q, want %q", cfg.Provider, "daytona")
+		if cfg.Provider != "" {
+			t.Errorf("Provider = %q, want empty", cfg.Provider)
 		}
 	})
 }
@@ -957,23 +674,23 @@ func TestLoadSandboxConfig_ValidYAML(t *testing.T) {
 		wantLSKeyPair  string
 	}{
 		{
-			name:         "missing provider defaults to daytona",
+			name:         "missing provider remains empty",
 			yaml:         "engine: claude\n",
-			wantProvider: "daytona",
+			wantProvider: "",
 		},
 		{
-			name:         "empty sandbox section defaults provider to daytona",
+			name:         "empty sandbox section keeps provider empty",
 			yaml:         "sandbox:\n",
-			wantProvider: "daytona",
+			wantProvider: "",
 		},
 		{
-			name: "explicit daytona provider",
+			name: "explicit unsupported provider remains visible",
 			yaml: `sandbox:
-  provider: daytona
+  provider: retired-provider
   env:
     KEY: value
 `,
-			wantProvider: "daytona",
+			wantProvider: "retired-provider",
 			wantEnvCount: 1,
 		},
 		{
@@ -1021,11 +738,11 @@ func TestLoadSandboxConfig_ValidYAML(t *testing.T) {
 			wantLSKeyPair: "my-ls-key",
 		},
 		{
-			name: "explicit empty provider defaults to daytona",
+			name: "explicit empty provider remains empty",
 			yaml: `sandbox:
   provider: ""
 `,
-			wantProvider: "daytona",
+			wantProvider: "",
 		},
 		{
 			name: "sandbox alongside other sections",
@@ -1169,11 +886,10 @@ func TestSaveSandboxConfig_RoundTrip(t *testing.T) {
 		}
 	})
 
-	t.Run("round-trips daytona provider without hetzner section", func(t *testing.T) {
+	t.Run("round-trips empty provider without provider-specific sections", func(t *testing.T) {
 		dir := t.TempDir()
 		cfg := &SandboxConfig{
-			Provider: "daytona",
-			Env:      map[string]string{"TOKEN": "abc"},
+			Env: map[string]string{"TOKEN": "abc"},
 		}
 
 		if err := SaveSandboxConfig(dir, cfg); err != nil {
@@ -1184,8 +900,8 @@ func TestSaveSandboxConfig_RoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
 		}
-		if loaded.Provider != "daytona" {
-			t.Errorf("Provider = %q, want %q", loaded.Provider, "daytona")
+		if loaded.Provider != "" {
+			t.Errorf("Provider = %q, want empty", loaded.Provider)
 		}
 		if loaded.Env["TOKEN"] != "abc" {
 			t.Errorf("Env[TOKEN] = %q, want %q", loaded.Env["TOKEN"], "abc")
@@ -1208,8 +924,8 @@ auto:
   reportsDir: custom/reports
   branchPrefix: feature/
   maxIterations: 10
-daytona:
-  apiKey: "keep-this"
+customMetadata:
+  keep: this
 `
 		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644); err != nil {
 			t.Fatalf("Failed to write config.yaml: %v", err)
@@ -1233,13 +949,13 @@ daytona:
 			t.Errorf("ReportsDir = %q, want %q", autoCfg.ReportsDir, "custom/reports")
 		}
 
-		// Verify daytona section was not clobbered
-		dayCfg, err := LoadDaytonaConfig(dir)
+		// Verify unrelated metadata was not clobbered.
+		raw, err := os.ReadFile(filepath.Join(halDir, "config.yaml"))
 		if err != nil {
-			t.Fatalf("LoadDaytonaConfig() unexpected error: %v", err)
+			t.Fatalf("read config.yaml: %v", err)
 		}
-		if dayCfg.APIKey != "keep-this" {
-			t.Errorf("APIKey = %q, want %q", dayCfg.APIKey, "keep-this")
+		if !strings.Contains(string(raw), "customMetadata:") || !strings.Contains(string(raw), "keep: this") {
+			t.Fatalf("config.yaml lost unrelated metadata:\n%s", raw)
 		}
 
 		// Verify sandbox was saved
@@ -1269,5 +985,204 @@ func TestLoadSandboxConfig_InvalidYAML(t *testing.T) {
 	_, err := LoadSandboxConfig(dir)
 	if err == nil {
 		t.Fatal("LoadSandboxConfig() expected error for invalid YAML, got nil")
+	}
+}
+
+func TestSandboxPolicyConfig(t *testing.T) {
+	t.Run("loads local sandbox network policy metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+		yaml := `sandbox:
+  provider: hetzner
+  networkPolicy:
+    preset: allow_listed
+    rules:
+      - kind: domain
+        value: api.example.com
+        decision: allow
+      - kind: metadata_endpoint
+        value: "169.254.169.254"
+        decision: deny
+`
+		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(yaml), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		cfg, err := LoadSandboxConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if cfg.NetworkPolicy == nil {
+			t.Fatal("NetworkPolicy = nil, want parsed policy")
+		}
+		if cfg.NetworkPolicy.Preset != sandbox.SandboxNetworkPolicyPresetAllowListed {
+			t.Fatalf("NetworkPolicy.Preset = %q, want %q", cfg.NetworkPolicy.Preset, sandbox.SandboxNetworkPolicyPresetAllowListed)
+		}
+		wantRules := []sandbox.SandboxNetworkPolicyRule{
+			{Kind: sandbox.SandboxNetworkPolicyRuleKindDomain, Value: "api.example.com", Decision: sandbox.SandboxNetworkPolicyDecisionAllow},
+			{Kind: sandbox.SandboxNetworkPolicyRuleKindMetadataEndpoint, Value: "169.254.169.254", Decision: sandbox.SandboxNetworkPolicyDecisionDeny},
+		}
+		if !reflect.DeepEqual(cfg.NetworkPolicy.Rules, wantRules) {
+			t.Fatalf("NetworkPolicy.Rules = %#v, want %#v", cfg.NetworkPolicy.Rules, wantRules)
+		}
+	})
+
+	t.Run("rejects invalid policy with sanitized error", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+		yaml := `sandbox:
+  networkPolicy:
+    preset: allow_listed
+    rules:
+      - kind: domain
+        value: "https://user:secret@example.com/query"
+        decision: allow
+`
+		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(yaml), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		_, err := LoadSandboxConfig(dir)
+		if err == nil {
+			t.Fatal("LoadSandboxConfig() error = nil, want policy validation error")
+		}
+		got := err.Error()
+		if !strings.Contains(got, "sandbox.networkPolicy.rules[0]") || !strings.Contains(got, string(sandbox.SandboxNetworkPolicyValidationCredentialBearingURL)) {
+			t.Fatalf("error = %q, want sanitized policy location and code", got)
+		}
+		for _, unsafe := range []string{"user:secret", "example.com/query", "https://"} {
+			if strings.Contains(got, unsafe) {
+				t.Fatalf("error = %q leaks unsafe policy value fragment %q", got, unsafe)
+			}
+		}
+	})
+}
+
+func TestSandboxSecretConfig(t *testing.T) {
+	t.Run("loads local sandbox secret mode metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+		yaml := `sandbox:
+  secrets:
+    requestedModes:
+      - " env "
+      - http_proxy
+      - env
+    activeModes:
+      - env
+      - legacy_auth_sync
+`
+		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(yaml), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		cfg, err := LoadSandboxConfig(dir)
+		if err != nil {
+			t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+		}
+		if cfg.Secrets == nil {
+			t.Fatal("Secrets = nil, want parsed secret metadata")
+		}
+		if !reflect.DeepEqual(cfg.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeHTTPProxy}) {
+			t.Fatalf("Secrets.RequestedModes = %#v, want normalized unique modes", cfg.Secrets.RequestedModes)
+		}
+		if !reflect.DeepEqual(cfg.Secrets.ActiveModes, []string{sandbox.SandboxSecretModeEnv, sandbox.SandboxSecretModeLegacyAuthSync}) {
+			t.Fatalf("Secrets.ActiveModes = %#v, want normalized modes", cfg.Secrets.ActiveModes)
+		}
+	})
+
+	t.Run("rejects invalid secret mode with sanitized error", func(t *testing.T) {
+		dir := t.TempDir()
+		halDir := filepath.Join(dir, ".hal")
+		if err := os.MkdirAll(halDir, 0755); err != nil {
+			t.Fatalf("Failed to create .hal dir: %v", err)
+		}
+		yaml := `sandbox:
+  secrets:
+    requestedModes:
+      - token://secret-value
+`
+		if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(yaml), 0644); err != nil {
+			t.Fatalf("Failed to write config.yaml: %v", err)
+		}
+
+		_, err := LoadSandboxConfig(dir)
+		if err == nil {
+			t.Fatal("LoadSandboxConfig() error = nil, want secret mode validation error")
+		}
+		got := err.Error()
+		if !strings.Contains(got, "sandbox.secrets") || !strings.Contains(got, "requestedModes[0]") {
+			t.Fatalf("error = %q, want sanitized secret mode location", got)
+		}
+		if strings.Contains(got, "token://secret-value") {
+			t.Fatalf("error = %q leaks rejected secret mode value", got)
+		}
+	})
+}
+
+func TestSandboxConfigPreservesPolicySecretAndReadinessGateMetadata(t *testing.T) {
+	dir := t.TempDir()
+	halDir := filepath.Join(dir, ".hal")
+	if err := os.MkdirAll(halDir, 0755); err != nil {
+		t.Fatalf("Failed to create .hal dir: %v", err)
+	}
+	existingYAML := `engine: codex
+auto:
+  reportsDir: custom/reports
+sandbox:
+  provider: hetzner
+  securityReadinessGatePolicyMode: " Strict "
+  env:
+    EXISTING: keep
+  networkPolicy:
+    preset: deny_by_default
+  secrets:
+    requestedModes:
+      - env
+`
+	if err := os.WriteFile(filepath.Join(halDir, "config.yaml"), []byte(existingYAML), 0644); err != nil {
+		t.Fatalf("Failed to write config.yaml: %v", err)
+	}
+
+	cfg, err := LoadSandboxConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSandboxConfig() unexpected error: %v", err)
+	}
+	cfg.Env["NEW"] = "value"
+	if err := SaveSandboxConfig(dir, cfg); err != nil {
+		t.Fatalf("SaveSandboxConfig() unexpected error: %v", err)
+	}
+
+	autoCfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig() unexpected error: %v", err)
+	}
+	if autoCfg.ReportsDir != "custom/reports" {
+		t.Fatalf("auto.reportsDir = %q, want custom/reports", autoCfg.ReportsDir)
+	}
+	loaded, err := LoadSandboxConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadSandboxConfig() after save unexpected error: %v", err)
+	}
+	if loaded.Env["EXISTING"] != "keep" || loaded.Env["NEW"] != "value" {
+		t.Fatalf("Env = %#v, want existing and new keys preserved", loaded.Env)
+	}
+	if loaded.NetworkPolicy == nil || loaded.NetworkPolicy.Preset != sandbox.SandboxNetworkPolicyPresetDenyByDefault {
+		t.Fatalf("NetworkPolicy = %#v, want deny_by_default policy preserved", loaded.NetworkPolicy)
+	}
+	if loaded.Secrets == nil || !reflect.DeepEqual(loaded.Secrets.RequestedModes, []string{sandbox.SandboxSecretModeEnv}) {
+		t.Fatalf("Secrets = %#v, want env request preserved", loaded.Secrets)
+	}
+	if loaded.SecurityReadinessGatePolicyMode != sandbox.SandboxSecurityCapabilityReadinessGatePolicyModeStrict {
+		t.Fatalf("SecurityReadinessGatePolicyMode = %q, want strict", loaded.SecurityReadinessGatePolicyMode)
 	}
 }

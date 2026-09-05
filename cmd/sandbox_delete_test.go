@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/template"
 )
 
@@ -34,6 +36,157 @@ type mockDeletePendingRemoval struct {
 	commitErr     error
 	rollbackErr   error
 	alreadyStaged bool
+}
+
+func TestDeleteSandboxTargetResourceUsesWorkerRuntime(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-delete")
+	var deleted sandboxruntime.Target
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		deleteFn: func(_ context.Context, req sandboxruntime.LifecycleRequest) error {
+			deleted = req.Target
+			return nil
+		},
+	}
+	_, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			t.Fatal("provider resolution should not run for worker delete")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("deleteSandboxTargetResource() error: %v", err)
+	}
+	if deleted.Runtime.RuntimeID != target.Runtime.RuntimeID {
+		t.Fatalf("deleted target = %#v, want runtime ID %q", deleted, target.Runtime.RuntimeID)
+	}
+}
+
+func TestDeleteSandboxTargetResourceMalformedWorkerDoesNotFallThroughToProvider(t *testing.T) {
+	target := workerManagementSandbox("worker-malformed-delete", sandbox.StatusRunning)
+	target.Runtime = nil
+	runtimeCalls := 0
+	_, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			runtimeCalls++
+			return nil, errors.New("worker runtime metadata is required")
+		},
+		resolveProvider: func(string, string) (sandbox.Provider, error) {
+			t.Fatal("provider resolution should not run for malformed worker delete")
+			return nil, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "worker runtime metadata is required") {
+		t.Fatalf("delete error = %v", err)
+	}
+	if runtimeCalls != 1 {
+		t.Fatalf("runtime resolver calls = %d, want 1", runtimeCalls)
+	}
+}
+
+func TestDeleteSandboxTargetResourceReconcilesAlreadyAbsentWorkerRuntime(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-delete-absent")
+	inspectCalls := 0
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		deleteFn: func(context.Context, sandboxruntime.LifecycleRequest) error {
+			return errors.New(`rootless_podman delete failed: Error: no such object: "runtime-worker-delete-absent"`)
+		},
+		inspectFn: func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+			inspectCalls++
+			return nil, errors.New("inspect should not run after explicit absence")
+		},
+	}
+
+	result, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("deleteSandboxTargetResource() error: %v", err)
+	}
+	if inspectCalls != 0 {
+		t.Fatalf("inspect calls = %d, want 0", inspectCalls)
+	}
+	if !reflect.DeepEqual(result.Warnings, []string{sandboxDeleteAlreadyAbsentWarning}) {
+		t.Fatalf("warnings = %#v, want already-absent warning", result.Warnings)
+	}
+}
+
+func TestDeleteSandboxTargetResourceReconcilesDeleteErrorWhenInspectProvesAbsent(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-delete-partial")
+	driver := fakeFactorySandboxRuntimeDriver{
+		id: sandboxruntime.DriverRootlessPodman,
+		deleteFn: func(context.Context, sandboxruntime.LifecycleRequest) error {
+			return errors.New("rootless_podman delete failed: cleaning up storage: directory not empty")
+		},
+		inspectFn: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+			if req.Target.Runtime.RuntimeID != target.Runtime.RuntimeID {
+				t.Fatalf("inspect runtime ID = %q, want %q", req.Target.Runtime.RuntimeID, target.Runtime.RuntimeID)
+			}
+			return nil, errors.New(`rootless_podman inspect failed: Error: no such object: "runtime-worker-delete-partial"`)
+		},
+	}
+
+	result, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return driver, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("deleteSandboxTargetResource() error: %v", err)
+	}
+	if !reflect.DeepEqual(result.Warnings, []string{sandboxDeletePostErrorAbsentWarning}) {
+		t.Fatalf("warnings = %#v, want post-error-absent warning", result.Warnings)
+	}
+}
+
+func TestDeleteSandboxTargetResourcePreservesDeleteErrorWithoutAbsenceProof(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-delete-uncertain")
+	deleteErr := errors.New("rootless_podman delete failed: cleaning up storage: directory not empty")
+
+	tests := []struct {
+		name      string
+		inspectFn func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error)
+	}{
+		{
+			name: "runtime still present",
+			inspectFn: func(_ context.Context, req sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+				return &req.Target, nil
+			},
+		},
+		{
+			name: "inspect transport failure",
+			inspectFn: func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+				return nil, errors.New("rootless_podman inspect failed: connection refused")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := fakeFactorySandboxRuntimeDriver{
+				id:        sandboxruntime.DriverRootlessPodman,
+				deleteFn:  func(context.Context, sandboxruntime.LifecycleRequest) error { return deleteErr },
+				inspectFn: tt.inspectFn,
+			}
+			result, err := deleteSandboxTargetResource(context.Background(), target, t.TempDir(), io.Discard, nil, sandboxDeleteResourceDeps{
+				resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+					return driver, nil
+				},
+			})
+			if !errors.Is(err, deleteErr) {
+				t.Fatalf("error = %v, want original delete error", err)
+			}
+			if len(result.Warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none", result.Warnings)
+			}
+		})
+	}
 }
 
 func (m *mockDeletePendingRemoval) Commit() error {
@@ -166,7 +319,7 @@ func TestRunSandboxDelete_RemovesConflictingLocalState(t *testing.T) {
 		{
 			ID:          "global-id",
 			Name:        "my-sandbox",
-			Provider:    "daytona",
+			Provider:    "hetzner",
 			WorkspaceID: "workspace-global",
 			Status:      sandbox.StatusRunning,
 			CreatedAt:   time.Now(),
@@ -176,7 +329,7 @@ func TestRunSandboxDelete_RemovesConflictingLocalState(t *testing.T) {
 	localPath := writeDeleteLocalState(t, projectDir, &sandbox.SandboxState{
 		ID:          "local-id",
 		Name:        "my-sandbox",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "workspace-local",
 		Status:      sandbox.StatusRunning,
 		CreatedAt:   time.Now(),
@@ -211,7 +364,7 @@ func TestRunSandboxDelete_AllRemovesMatchingLocalState(t *testing.T) {
 		{
 			ID:          "global-api",
 			Name:        "api-backend",
-			Provider:    "daytona",
+			Provider:    "hetzner",
 			WorkspaceID: "workspace-api",
 			Status:      sandbox.StatusRunning,
 			CreatedAt:   time.Now(),
@@ -219,7 +372,7 @@ func TestRunSandboxDelete_AllRemovesMatchingLocalState(t *testing.T) {
 		{
 			ID:          "global-frontend",
 			Name:        "frontend",
-			Provider:    "daytona",
+			Provider:    "hetzner",
 			WorkspaceID: "workspace-frontend",
 			Status:      sandbox.StatusRunning,
 			CreatedAt:   time.Now(),
@@ -229,7 +382,7 @@ func TestRunSandboxDelete_AllRemovesMatchingLocalState(t *testing.T) {
 	localPath := writeDeleteLocalState(t, projectDir, &sandbox.SandboxState{
 		ID:          "local-frontend",
 		Name:        "frontend",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "workspace-local-frontend",
 		Status:      sandbox.StatusRunning,
 		CreatedAt:   time.Now(),
@@ -250,7 +403,7 @@ func TestDeleteOneTarget_RemovesRegistryWhenLocalCleanupFails(t *testing.T) {
 	target := &sandbox.SandboxState{
 		ID:          "global-id",
 		Name:        "my-sandbox",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "workspace-global",
 		Status:      sandbox.StatusRunning,
 		CreatedAt:   time.Now(),
@@ -279,7 +432,7 @@ func TestDeleteMultipleTargets_RemovesRegistryWhenLocalCleanupFails(t *testing.T
 	target := &sandbox.SandboxState{
 		ID:          "global-id",
 		Name:        "worker-01",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "workspace-global",
 		Status:      sandbox.StatusRunning,
 		CreatedAt:   time.Now(),
@@ -308,7 +461,7 @@ func TestDeleteOneTarget_FailsWhenCommitFails(t *testing.T) {
 	target := &sandbox.SandboxState{
 		ID:          "global-id",
 		Name:        "my-sandbox",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "workspace-global",
 		Status:      sandbox.StatusRunning,
 		CreatedAt:   time.Now(),
@@ -348,7 +501,7 @@ func TestDeleteMultipleTargets_FailsWhenCommitFails(t *testing.T) {
 	target := &sandbox.SandboxState{
 		ID:          "global-id",
 		Name:        "worker-01",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "workspace-global",
 		Status:      sandbox.StatusRunning,
 		CreatedAt:   time.Now(),
@@ -391,7 +544,7 @@ func TestDeleteOneTarget_RemovesMatchingLocalState(t *testing.T) {
 	target := &sandbox.SandboxState{
 		ID:          "global-id",
 		Name:        "my-sandbox",
-		Provider:    "daytona",
+		Provider:    "hetzner",
 		WorkspaceID: "workspace-global",
 		Status:      sandbox.StatusRunning,
 		CreatedAt:   time.Now(),
@@ -411,8 +564,8 @@ func TestDeleteOneTarget_RemovesMatchingLocalState(t *testing.T) {
 
 func TestResolveDeleteTargets_ExplicitNames(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
@@ -552,9 +705,9 @@ func TestResolveDeleteTargets_AllFlag(t *testing.T) {
 		{
 			name: "returns all sandboxes including stopped",
 			instances: []*sandbox.SandboxState{
-				{Name: "backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-				{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-				{Name: "stopped-one", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+				{Name: "backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "frontend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "stopped-one", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 			},
 			wantNames: []string{"backend", "frontend", "stopped-one"},
 		},
@@ -613,7 +766,7 @@ func TestResolveDeleteTargets_PatternFlag(t *testing.T) {
 			instances: []*sandbox.SandboxState{
 				{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 				{Name: "worker-02", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
-				{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 			},
 			pattern:   "worker-*",
 			wantNames: []string{"worker-01", "worker-02"}, // includes stopped
@@ -621,7 +774,7 @@ func TestResolveDeleteTargets_PatternFlag(t *testing.T) {
 		{
 			name: "no matches returns error",
 			instances: []*sandbox.SandboxState{
-				{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 			},
 			pattern: "worker-*",
 			wantErr: "no sandboxes matching pattern",
@@ -680,7 +833,7 @@ func TestResolveDeleteTargets_AutoSelect(t *testing.T) {
 		{
 			name: "single sandbox auto-selects with hint",
 			instances: []*sandbox.SandboxState{
-				{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "my-sandbox", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 			},
 			wantNames: []string{"my-sandbox"},
 			wantHint:  `Deleting only sandbox "my-sandbox"...`,
@@ -693,8 +846,8 @@ func TestResolveDeleteTargets_AutoSelect(t *testing.T) {
 		{
 			name: "multiple sandboxes returns error with choices",
 			instances: []*sandbox.SandboxState{
-				{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-				{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+				{Name: "frontend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+				{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 				{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 			},
 			wantErr: "multiple sandboxes found: api-backend, frontend, worker-01",
@@ -742,7 +895,7 @@ func TestResolveDeleteTargets_AutoSelect(t *testing.T) {
 
 func TestResolveDeleteTargets_NonExplicitSelectorsIncludeStagedRemovalEntries(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
@@ -859,7 +1012,7 @@ func TestConfirmDeleteAllFlushesPromptBeforeRead(t *testing.T) {
 
 func TestRunSandboxDelete_ExplicitName(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "digitalocean", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -883,8 +1036,8 @@ func TestRunSandboxDelete_ExplicitName(t *testing.T) {
 
 func TestRunSandboxDelete_MultipleNames(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -910,7 +1063,7 @@ func TestRunSandboxDelete_MultipleNames(t *testing.T) {
 
 func TestRunSandboxDelete_AutoSelectSingleSandbox(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "only-one", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "only-one", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -934,8 +1087,8 @@ func TestRunSandboxDelete_AutoSelectSingleSandbox(t *testing.T) {
 
 func TestRunSandboxDelete_AutoSelectErrorsWithActiveAndStagedEntries(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "only-one", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "staged-backup", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "only-one", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "staged-backup", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	if _, err := sandbox.StageInstanceRemoval("staged-backup"); err != nil {
@@ -976,8 +1129,8 @@ func TestRunSandboxDelete_NoSandboxesError(t *testing.T) {
 
 func TestRunSandboxDelete_MultipleSandboxesError(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	var out bytes.Buffer
@@ -996,9 +1149,9 @@ func TestRunSandboxDelete_MultipleSandboxesError(t *testing.T) {
 
 func TestRunSandboxDelete_AllFlagWithYes(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "stopped-one", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "stopped-one", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1027,7 +1180,7 @@ func TestRunSandboxDelete_AllFlagWithYes(t *testing.T) {
 
 func TestRunSandboxDelete_AllFlagPromptConfirms(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1049,7 +1202,7 @@ func TestRunSandboxDelete_AllFlagPromptConfirms(t *testing.T) {
 
 func TestRunSandboxDelete_AllFlagPromptDeclines(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1072,7 +1225,7 @@ func TestRunSandboxDelete_AllFlagPromptDeclines(t *testing.T) {
 
 func TestRunSandboxDelete_AllFlagPromptEOF(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1097,7 +1250,7 @@ func TestRunSandboxDelete_PatternFlag(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
 		{Name: "worker-01", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 		{Name: "worker-02", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
-		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1123,7 +1276,7 @@ func TestRunSandboxDelete_PatternFlag(t *testing.T) {
 
 func TestRunSandboxDelete_ProviderDeleteFails(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("API error: sandbox not found")}
@@ -1140,7 +1293,7 @@ func TestRunSandboxDelete_ProviderDeleteFails(t *testing.T) {
 
 func TestRunSandboxDelete_PrintsDeletingMessage(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-box", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-box", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1161,9 +1314,9 @@ func TestRunSandboxDelete_PrintsDeletingMessage(t *testing.T) {
 
 func TestResolveDeleteTargets_DedupAndSort(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "charlie", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
-		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "charlie", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "alpha", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	// Provide names out of order with duplicates
@@ -1204,7 +1357,7 @@ func TestSandboxDeleteCommand_Flags(t *testing.T) {
 
 func TestSandboxDeleteCommand_UsesCommandIOStreamsWhenPrompting(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "writer-box", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "writer-box", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	origOut := sandboxDeleteCmd.OutOrStdout()
@@ -1283,7 +1436,7 @@ func TestRunSandboxDelete_AutoMigratesBeforeTargetResolution(t *testing.T) {
 	sandboxMigrate = func(projectDir string, out io.Writer) error {
 		return sandbox.SaveInstance(&sandbox.SandboxState{
 			Name:      "migrated-box",
-			Provider:  "daytona",
+			Provider:  "hetzner",
 			Status:    sandbox.StatusRunning,
 			CreatedAt: time.Now(),
 		})
@@ -1305,7 +1458,7 @@ func TestRunSandboxDelete_AutoMigratesBeforeTargetResolution(t *testing.T) {
 func TestRunSandboxDelete_AutoSelectStoppedSandbox(t *testing.T) {
 	// Delete auto-select works on all sandboxes, not just running
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "stopped-only", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "stopped-only", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1328,7 +1481,7 @@ func TestRunSandboxDelete_AutoSelectStoppedSandbox(t *testing.T) {
 
 func TestRunSandboxDelete_RegistryRemovalAfterSuccess(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1348,7 +1501,7 @@ func TestRunSandboxDelete_RegistryRemovalAfterSuccess(t *testing.T) {
 
 func TestRunSandboxDelete_RegistryPreservedOnProviderFailure(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("API error: not found")}
@@ -1369,16 +1522,91 @@ func TestRunSandboxDelete_RegistryPreservedOnProviderFailure(t *testing.T) {
 	}
 }
 
+func TestRunSandboxDelete_ReconcilesWorkerRegistryWhenPostErrorInspectProvesAbsent(t *testing.T) {
+	target := workerRootlessCachedSandbox("worker-partial-delete")
+	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{target})
+
+	originalDeps := defaultSandboxDeleteResourceDeps
+	t.Cleanup(func() { defaultSandboxDeleteResourceDeps = originalDeps })
+	defaultSandboxDeleteResourceDeps = sandboxDeleteResourceDeps{
+		resolveRuntime: func(string, *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{
+				id: sandboxruntime.DriverRootlessPodman,
+				deleteFn: func(context.Context, sandboxruntime.LifecycleRequest) error {
+					return errors.New("rootless_podman delete failed: replacing mount point /home/alice/secret-worktree token=raw-secret: directory not empty")
+				},
+				inspectFn: func(context.Context, sandboxruntime.InspectRequest) (*sandboxruntime.Target, error) {
+					return nil, errors.New(`rootless_podman inspect failed: Error: no such object: "runtime-worker-partial-delete"`)
+				},
+			}, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := runSandboxDelete([]string{target.Name}, false, false, "", nil, &out, nil); err != nil {
+		t.Fatalf("runSandboxDelete() error: %v", err)
+	}
+	if _, err := sandbox.LoadInstance(target.Name); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("LoadInstance() error = %v, want not exist after proven-absent reconciliation", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, sandboxDeletePostErrorAbsentWarning) {
+		t.Fatalf("output missing reconciliation warning:\n%s", output)
+	}
+	for _, leaked := range []string{"alice", "secret-worktree", "raw-secret", target.Runtime.RuntimeID} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("output leaked %q:\n%s", leaked, output)
+		}
+	}
+}
+
+func TestDeleteMultipleTargets_ReconcilesAlreadyAbsentWorkerRuntimeWithWarning(t *testing.T) {
+	targets := []*sandbox.SandboxState{
+		workerRootlessCachedSandbox("alpha-absent"),
+		workerRootlessCachedSandbox("bravo-present"),
+	}
+	setupDeleteGlobalRegistry(t, targets)
+
+	originalDeps := defaultSandboxDeleteResourceDeps
+	t.Cleanup(func() { defaultSandboxDeleteResourceDeps = originalDeps })
+	defaultSandboxDeleteResourceDeps = sandboxDeleteResourceDeps{
+		resolveRuntime: func(_ string, target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+			return fakeFactorySandboxRuntimeDriver{
+				id: sandboxruntime.DriverRootlessPodman,
+				deleteFn: func(context.Context, sandboxruntime.LifecycleRequest) error {
+					if target.Name == "alpha-absent" {
+						return errors.New("rootless_podman delete failed: no such container")
+					}
+					return nil
+				},
+			}, nil
+		},
+	}
+
+	var out bytes.Buffer
+	if err := deleteMultipleTargets(targets, t.TempDir(), &out, nil); err != nil {
+		t.Fatalf("deleteMultipleTargets() error: %v", err)
+	}
+	for _, target := range targets {
+		if _, err := sandbox.LoadInstance(target.Name); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("LoadInstance(%q) error = %v, want not exist", target.Name, err)
+		}
+	}
+	if !strings.Contains(out.String(), "warning: alpha-absent: "+sandboxDeleteAlreadyAbsentWarning) {
+		t.Fatalf("output missing batch reconciliation warning:\n%s", out.String())
+	}
+}
+
 func TestRunSandboxDelete_RetryWithStagedRegistryEntryCommitsOnNotFound(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "digitalocean", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	if _, err := sandbox.StageInstanceRemoval("my-sandbox"); err != nil {
 		t.Fatalf("setup: stage instance removal: %v", err)
 	}
 
-	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("API error: not found")}
+	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("doctl compute droplet get failed: droplet not found")}
 	var out bytes.Buffer
 
 	err := runSandboxDelete([]string{"my-sandbox"}, false, false, "", nil, &out, mock)
@@ -1394,7 +1622,7 @@ func TestDeleteMultipleTargets_RetryWithStagedRegistryEntryCommitsOnNotFound(t *
 	projectDir := t.TempDir()
 	target := &sandbox.SandboxState{
 		Name:      "my-sandbox",
-		Provider:  "daytona",
+		Provider:  "digitalocean",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	}
@@ -1404,7 +1632,7 @@ func TestDeleteMultipleTargets_RetryWithStagedRegistryEntryCommitsOnNotFound(t *
 		t.Fatalf("setup: stage instance removal: %v", err)
 	}
 
-	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("API error: not found")}
+	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("doctl compute droplet get failed: droplet not found")}
 	var out bytes.Buffer
 
 	err := deleteMultipleTargets([]*sandbox.SandboxState{target}, projectDir, &out, mock)
@@ -1421,9 +1649,9 @@ func TestDeleteMultipleTargets_RetryWithStagedRegistryEntryCommitsOnNotFound(t *
 
 func TestRunSandboxDelete_ConcurrentMultipleTargets(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "charlie", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "alpha", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "charlie", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1456,8 +1684,8 @@ func TestRunSandboxDelete_ConcurrentMultipleTargets(t *testing.T) {
 
 func TestRunSandboxDelete_ConcurrentRegistryUpdates(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "api-backend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "frontend", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "api-backend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "frontend", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1479,9 +1707,9 @@ func TestRunSandboxDelete_ConcurrentRegistryUpdates(t *testing.T) {
 
 func TestRunSandboxDelete_PartialFailurePreservesSuccesses(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "charlie", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "alpha", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "charlie", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{
@@ -1513,8 +1741,8 @@ func TestRunSandboxDelete_PartialFailurePreservesSuccesses(t *testing.T) {
 
 func TestRunSandboxDelete_AllFailExitsNonZero(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "alpha", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("service unavailable")}
@@ -1539,8 +1767,8 @@ func TestRunSandboxDelete_AllFailExitsNonZero(t *testing.T) {
 
 func TestRunSandboxDelete_AllSuccessExitsZero(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
+		{Name: "alpha", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "hetzner", Status: sandbox.StatusStopped, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1562,7 +1790,7 @@ func TestRunSandboxDelete_AllSuccessExitsZero(t *testing.T) {
 
 func TestRunSandboxDelete_SingleTargetResultLine(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1580,8 +1808,8 @@ func TestRunSandboxDelete_SingleTargetResultLine(t *testing.T) {
 
 func TestRunSandboxDelete_MultiTargetResultLines(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "alpha", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{}
@@ -1603,8 +1831,8 @@ func TestRunSandboxDelete_MultiTargetResultLines(t *testing.T) {
 
 func TestRunSandboxDelete_PartialFailureResultLines(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "alpha", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
-		{Name: "bravo", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "alpha", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "bravo", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{
@@ -1630,7 +1858,7 @@ func TestRunSandboxDelete_PartialFailureResultLines(t *testing.T) {
 
 func TestRunSandboxDelete_SingleTargetProviderFailureNoRegistryRemoval(t *testing.T) {
 	setupDeleteGlobalRegistry(t, []*sandbox.SandboxState{
-		{Name: "my-sandbox", Provider: "daytona", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
+		{Name: "my-sandbox", Provider: "hetzner", Status: sandbox.StatusRunning, CreatedAt: time.Now()},
 	})
 
 	mock := &mockDeleteProvider{deleteErr: fmt.Errorf("connection refused")}
@@ -1690,8 +1918,8 @@ func TestDeleteConnectInfo_DigitalOceanFallbackOrder(t *testing.T) {
 		{
 			name: "non-digitalocean does not assign workspace id fallback",
 			target: &sandbox.SandboxState{
-				Name:     "daytona-box",
-				Provider: "daytona",
+				Name:     "hetzner-box",
+				Provider: "hetzner",
 				ID:       "123456",
 			},
 			wantWorkspaceID: "",

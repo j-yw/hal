@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/verify"
 )
 
@@ -45,6 +46,35 @@ func (r RunSecretRedactor) RedactString(value string) string {
 	return value
 }
 
+// RedactError returns an error with run-scoped secret values removed from its
+// message while preserving the original error for unwrapping.
+func (r RunSecretRedactor) RedactError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := r.RedactString(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	return runSecretRedactedError{
+		message: message,
+		cause:   err,
+	}
+}
+
+type runSecretRedactedError struct {
+	message string
+	cause   error
+}
+
+func (e runSecretRedactedError) Error() string {
+	return e.message
+}
+
+func (e runSecretRedactedError) Unwrap() error {
+	return e.cause
+}
+
 // RedactArtifactReference returns a copy of artifact with run-scoped secret
 // values removed from persisted string metadata.
 func (r RunSecretRedactor) RedactArtifactReference(artifact ArtifactReference) ArtifactReference {
@@ -67,6 +97,13 @@ func (r RunSecretRedactor) RedactArtifactReference(artifact ArtifactReference) A
 // values removed from durable string metadata.
 func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 	if len(r.secretValues) == 0 {
+		if record.Sandbox != nil {
+			safe := *record.Sandbox
+			safe.NetworkProxySession = r.redactSandboxNetworkProxySessionMetadata(safe.NetworkProxySession)
+			safe.CredentialDelivery = r.redactCredentialDeliveryStatusMetadata(safe.CredentialDelivery)
+			record.Sandbox = &safe
+		}
+		record.PostRun = r.redactPostRunState(record.PostRun)
 		return record
 	}
 	record.Source = r.redactSourceMetadata(record.Source)
@@ -83,7 +120,34 @@ func (r RunSecretRedactor) RedactRunRecord(record RunRecord) RunRecord {
 	record.Telemetry = r.redactRunTelemetry(record.Telemetry)
 	record.Failure = r.redactFailureSummary(record.Failure)
 	record.Secrets = r.redactSecretMetadata(record.Secrets)
+	record.PostRun = r.redactPostRunState(record.PostRun)
 	return record
+}
+
+// RedactEventRecord returns a copy of event with run-scoped secret values
+// removed from durable timeline output fields.
+func (r RunSecretRedactor) RedactEventRecord(event EventRecord) EventRecord {
+	if len(r.secretValues) == 0 {
+		event.Metadata = r.redactArtifactSummary(event.Metadata)
+		event.NetworkPolicyDecisionLogs = sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(event.NetworkPolicyDecisionLogs)
+		return event
+	}
+	event.Message = r.RedactString(event.Message)
+	event.Summary = r.RedactString(event.Summary)
+	event.Metadata = r.redactArtifactSummary(event.Metadata)
+	event.NetworkPolicyDecisionLogs = r.redactSandboxNetworkPolicyDecisionLogRecords(event.NetworkPolicyDecisionLogs)
+	return event
+}
+
+// RedactLogChunk returns a copy of chunk with run-scoped secret values removed
+// from durable log text fields.
+func (r RunSecretRedactor) RedactLogChunk(chunk LogChunk) LogChunk {
+	if len(r.secretValues) == 0 {
+		return chunk
+	}
+	chunk.Text = r.RedactString(chunk.Text)
+	chunk.Summary = r.RedactString(chunk.Summary)
+	return chunk
 }
 
 func (r RunSecretRedactor) redactSourceMetadata(source SourceMetadata) SourceMetadata {
@@ -116,6 +180,22 @@ func (r RunSecretRedactor) redactSandboxMetadata(sandbox *SandboxMetadata) *Sand
 	safe.SSHCommand = r.RedactString(safe.SSHCommand)
 	safe.CleanupCommand = r.RedactString(safe.CleanupCommand)
 	safe.Handoff = r.RedactString(safe.Handoff)
+	safe.NetworkProxySession = r.redactSandboxNetworkProxySessionMetadata(safe.NetworkProxySession)
+	safe.CredentialProxyPlan = r.redactSandboxCredentialProxyPlanMetadata(safe.CredentialProxyPlan)
+	safe.CredentialProxySession = r.redactSandboxCredentialProxySessionMetadata(safe.CredentialProxySession)
+	safe.CredentialProxyBindings = r.redactSandboxCredentialProxyBindingMetadata(safe.CredentialProxyBindings)
+	safe.CredentialDelivery = r.redactCredentialDeliveryStatusMetadata(safe.CredentialDelivery)
+	return &safe
+}
+
+func (r RunSecretRedactor) redactCredentialDeliveryStatusMetadata(status *sandbox.SandboxCredentialDeliveryStatusMetadata) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	if status == nil {
+		return nil
+	}
+	safe := sandbox.SanitizeSandboxCredentialDeliverySurfaceStatusMetadata(*status)
+	if safe.ID == "" {
+		return nil
+	}
 	return &safe
 }
 
@@ -129,6 +209,107 @@ func (r RunSecretRedactor) redactSandboxConnectionMetadata(connection *SandboxCo
 	safe.TailscaleIP = r.RedactString(safe.TailscaleIP)
 	safe.TailscaleHostname = r.RedactString(safe.TailscaleHostname)
 	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxNetworkProxySessionMetadata(session *sandbox.SandboxNetworkProxySessionMetadata) *sandbox.SandboxNetworkProxySessionMetadata {
+	if session == nil {
+		return nil
+	}
+	safe := sandbox.SanitizeSandboxNetworkProxySessionMetadata(*session)
+	if safe.ID == "" && safe.Source == "" && safe.PolicySnapshot == nil && safe.EnforcementMode == "" {
+		return nil
+	}
+	safe.ID = r.RedactString(safe.ID)
+	safe.EnforcementMode = r.RedactString(safe.EnforcementMode)
+	safe.PolicySnapshot = r.redactSandboxNetworkPolicySnapshotIdentity(safe.PolicySnapshot)
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxCredentialProxyPlanMetadata(plan *sandbox.SandboxCredentialProxyPlanMetadata) *sandbox.SandboxCredentialProxyPlanMetadata {
+	if plan == nil {
+		return nil
+	}
+	safe := *plan
+	safe.ID = r.RedactString(safe.ID)
+	safe.Source = sandbox.SandboxCredentialProxySource(r.RedactString(string(safe.Source)))
+	safe.SecretBrokerSessionID = r.RedactString(safe.SecretBrokerSessionID)
+	safe.NetworkProxySessionID = r.RedactString(safe.NetworkProxySessionID)
+	safe.PolicySnapshot = r.redactSandboxNetworkPolicySnapshotIdentity(safe.PolicySnapshot)
+	safe.Mode = sandbox.SandboxCredentialProxyMode(r.RedactString(string(safe.Mode)))
+	safe.Status = sandbox.SandboxCredentialProxyStatus(r.RedactString(string(safe.Status)))
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxCredentialProxySessionMetadata(session *sandbox.SandboxCredentialProxySessionMetadata) *sandbox.SandboxCredentialProxySessionMetadata {
+	if session == nil {
+		return nil
+	}
+	safe := *session
+	safe.ID = r.RedactString(safe.ID)
+	safe.PlanID = r.RedactString(safe.PlanID)
+	safe.Source = sandbox.SandboxCredentialProxySource(r.RedactString(string(safe.Source)))
+	safe.SecretBrokerSessionID = r.RedactString(safe.SecretBrokerSessionID)
+	safe.NetworkProxySessionID = r.RedactString(safe.NetworkProxySessionID)
+	safe.PolicySnapshot = r.redactSandboxNetworkPolicySnapshotIdentity(safe.PolicySnapshot)
+	safe.Status = sandbox.SandboxCredentialProxyStatus(r.RedactString(string(safe.Status)))
+	safe.WarningCode = sandbox.SandboxCredentialProxyWarningCode(r.RedactString(string(safe.WarningCode)))
+	safe.ReasonCode = sandbox.SandboxCredentialProxyReasonCode(r.RedactString(string(safe.ReasonCode)))
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxCredentialProxyBindingMetadata(bindings []sandbox.SandboxCredentialProxyBindingMetadata) []sandbox.SandboxCredentialProxyBindingMetadata {
+	if len(bindings) == 0 {
+		return nil
+	}
+	safe := make([]sandbox.SandboxCredentialProxyBindingMetadata, len(bindings))
+	for i, binding := range bindings {
+		safe[i] = sandbox.SandboxCredentialProxyBindingMetadata{
+			ID:                  r.RedactString(binding.ID),
+			PlanID:              r.RedactString(binding.PlanID),
+			SessionID:           r.RedactString(binding.SessionID),
+			SecretID:            r.RedactString(binding.SecretID),
+			DeliveryMode:        sandbox.SandboxCredentialProxyDeliveryMode(r.RedactString(string(binding.DeliveryMode))),
+			RequestCategory:     sandbox.SandboxCredentialProxyRequestCategory(r.RedactString(string(binding.RequestCategory))),
+			DestinationCategory: sandbox.SandboxNetworkPolicyDestinationCategory(r.RedactString(string(binding.DestinationCategory))),
+			Outcome:             sandbox.SandboxCredentialProxyBindingOutcome(r.RedactString(string(binding.Outcome))),
+			Status:              sandbox.SandboxCredentialProxyStatus(r.RedactString(string(binding.Status))),
+			ReasonCode:          sandbox.SandboxCredentialProxyReasonCode(r.RedactString(string(binding.ReasonCode))),
+		}
+	}
+	return safe
+}
+
+func (r RunSecretRedactor) redactSandboxNetworkPolicySnapshotIdentity(snapshot *sandbox.SandboxNetworkPolicySnapshotIdentity) *sandbox.SandboxNetworkPolicySnapshotIdentity {
+	if snapshot == nil {
+		return nil
+	}
+	safe := *snapshot
+	safe.ID = r.RedactString(safe.ID)
+	safe.Version = r.RedactString(safe.Version)
+	safe.Preset = sandbox.SandboxNetworkPolicyPreset(r.RedactString(string(safe.Preset)))
+	safe.RuleSetID = r.RedactString(safe.RuleSetID)
+	return &safe
+}
+
+func (r RunSecretRedactor) redactSandboxNetworkPolicyDecisionLogRecords(records []sandbox.SandboxNetworkPolicyDecisionLogRecord) []sandbox.SandboxNetworkPolicyDecisionLogRecord {
+	records = sandbox.SanitizeSandboxNetworkPolicyDecisionLogRecords(records)
+	if len(records) == 0 {
+		return nil
+	}
+	safe := make([]sandbox.SandboxNetworkPolicyDecisionLogRecord, len(records))
+	for i, record := range records {
+		record.ID = r.RedactString(record.ID)
+		record.ProxySessionID = r.RedactString(record.ProxySessionID)
+		record.PolicySnapshot = r.redactSandboxNetworkPolicySnapshotIdentity(record.PolicySnapshot)
+		if record.Request != nil {
+			request := *record.Request
+			request.ID = r.RedactString(request.ID)
+			request.Operation = r.RedactString(request.Operation)
+			record.Request = &request
+		}
+		safe[i] = record
+	}
+	return safe
 }
 
 func (r RunSecretRedactor) redactArtifactReferences(artifacts []ArtifactReference) []ArtifactReference {
@@ -182,6 +363,46 @@ func (r RunSecretRedactor) redactRunTelemetry(telemetry *RunTelemetry) *RunTelem
 	return &safe
 }
 
+func (r RunSecretRedactor) redactPostRunState(postRun *PostRunState) *PostRunState {
+	if postRun == nil {
+		return nil
+	}
+	safe := *postRun
+	if postRun.Recovery != nil {
+		recovery := *postRun.Recovery
+		recovery.Status = r.RedactString(recovery.Status)
+		recovery.RecoveredBundle = r.RedactString(recovery.RecoveredBundle)
+		recovery.BranchName = r.RedactString(recovery.BranchName)
+		recovery.Source = r.RedactString(recovery.Source)
+		safe.Recovery = &recovery
+	}
+	if postRun.Publish != nil {
+		publish := *postRun.Publish
+		publish.Status = r.RedactString(publish.Status)
+		publish.Policy = r.RedactString(publish.Policy)
+		publish.Runner = r.RedactString(publish.Runner)
+		publish.BranchName = r.RedactString(publish.BranchName)
+		publish.Commit = r.RedactString(publish.Commit)
+		publish.RecoveredBundle = r.RedactString(publish.RecoveredBundle)
+		publish.PullRequestURL = r.RedactString(publish.PullRequestURL)
+		publish.CredentialMode = r.RedactString(publish.CredentialMode)
+		publish.FallbackFrom = r.RedactString(publish.FallbackFrom)
+		if len(postRun.Publish.Attempts) > 0 {
+			publish.Attempts = make([]PublishAttempt, len(postRun.Publish.Attempts))
+			for i, attempt := range postRun.Publish.Attempts {
+				attempt = clonePublishAttempt(attempt)
+				attempt.Runner = r.RedactString(attempt.Runner)
+				attempt.Status = r.RedactString(attempt.Status)
+				attempt.Error = r.RedactString(attempt.Error)
+				publish.Attempts[i] = attempt
+			}
+		}
+		publish.Source = r.RedactString(publish.Source)
+		safe.Publish = &publish
+	}
+	return &safe
+}
+
 func (r RunSecretRedactor) redactFailureSummary(failure *FailureSummary) *FailureSummary {
 	if failure == nil {
 		return nil
@@ -218,9 +439,41 @@ func (r RunSecretRedactor) redactArtifactSummary(summary map[string]any) map[str
 	}
 	out := make(map[string]any, len(summary))
 	for key, value := range summary {
-		out[r.RedactString(key)] = r.redactArtifactValue(value)
+		safeKey := r.RedactString(key)
+		if runSecretRedactorMetadataKeyOmitted(key) || runSecretRedactorMetadataKeyOmitted(safeKey) {
+			continue
+		}
+		if runSecretRedactorCredentialDeliveryKey(key) || runSecretRedactorCredentialDeliveryKey(safeKey) {
+			if status := r.redactCredentialDeliveryStatusMetadataValue(value); status != nil {
+				out[safeKey] = *status
+			}
+			continue
+		}
+		out[safeKey] = r.redactArtifactValue(value)
 	}
 	return out
+}
+
+func (r RunSecretRedactor) redactCredentialDeliveryStatusMetadataValue(value any) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	var status sandbox.SandboxCredentialDeliveryStatusMetadata
+	switch typed := value.(type) {
+	case sandbox.SandboxCredentialDeliveryStatusMetadata:
+		status = typed
+	case *sandbox.SandboxCredentialDeliveryStatusMetadata:
+		if typed == nil {
+			return nil
+		}
+		status = *typed
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil
+		}
+		if err := json.Unmarshal(data, &status); err != nil {
+			return nil
+		}
+	}
+	return r.redactCredentialDeliveryStatusMetadata(&status)
 }
 
 func (r RunSecretRedactor) redactArtifactValue(value any) any {
@@ -231,6 +484,31 @@ func (r RunSecretRedactor) redactArtifactValue(value any) any {
 		return r.redactArtifactSummary(v)
 	default:
 		return r.redactArtifactReflectValue(reflect.ValueOf(value))
+	}
+}
+
+func runSecretRedactorCredentialDeliveryKey(key string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.TrimSpace(key)))
+	return normalized == "credentialdelivery"
+}
+
+func runSecretRedactorMetadataKeyOmitted(key string) bool {
+	switch strings.ToLower(strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.TrimSpace(key))) {
+	case "providerpayload",
+		"rawproviderpayload",
+		"authorizationheader",
+		"rawheader",
+		"headers",
+		"socketpath",
+		"hostpath",
+		"localpath",
+		"servicedomain",
+		"servicedomains",
+		"rawurl",
+		"upstreamurl":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -267,7 +545,11 @@ func (r RunSecretRedactor) redactArtifactReflectValue(value reflect.Value) any {
 			if key.Kind() != reflect.String {
 				continue
 			}
-			out[r.RedactString(key.String())] = r.redactArtifactReflectValue(iter.Value())
+			safeKey := r.RedactString(key.String())
+			if runSecretRedactorMetadataKeyOmitted(key.String()) || runSecretRedactorMetadataKeyOmitted(safeKey) {
+				continue
+			}
+			out[safeKey] = r.redactArtifactReflectValue(iter.Value())
 		}
 		return out
 	default:

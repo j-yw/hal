@@ -12,6 +12,7 @@ import (
 
 	display "github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/spf13/cobra"
 )
 
@@ -20,8 +21,10 @@ var sandboxStatusCmd = &cobra.Command{
 	Short: "Show sandbox status",
 	Long: `Show detailed status of a named sandbox, or list all sandboxes.
 
-When a NAME is provided, queries the provider for live status and displays
-identity, networking access state, lifecycle, config, and labels.
+When a NAME is provided, queries its provider or worker runtime for live status and displays
+identity, networking access state, lifecycle, config, runtime metadata, and
+labels. When selected-template runtime metadata is present, the human view shows
+sanitized trust, provenance, digest, and blocked readiness reason-code status.
 
 Human output redacts public cloud and Tailscale addresses by default. Use
 --show-addresses only when you intentionally need raw network addresses.
@@ -29,7 +32,8 @@ Human output redacts public cloud and Tailscale addresses by default. Use
 When no NAME is provided, delegates to 'hal sandbox list' to show all
 sandboxes in the global registry.`,
 	Example: `  hal sandbox status my-sandbox
-  hal sandbox status`,
+  hal sandbox status
+  hal sandbox status NAME --live --json`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := io.Writer(os.Stdout)
@@ -40,14 +44,26 @@ sandboxes in the global registry.`,
 		}
 		return runSandboxCobra(cmd, "Sandbox Status failed", func() error {
 			if len(args) == 0 {
-				return runSandboxListWithWriters(out, errOut, false, false)
+				return runSandboxListWithWriters(out, errOut, sandboxStatusJSONFlag, sandboxStatusLiveFlag)
+			}
+			if sandboxStatusJSONFlag {
+				ctx := context.Background()
+				if cmd != nil && cmd.Context() != nil {
+					ctx = cmd.Context()
+				}
+				return runSandboxL3StatusJSON(ctx, args[0], sandboxStatusLiveFlag, out)
 			}
 			return runSandboxStatus(args[0], out, nil)
 		})
 	},
 }
 
+var sandboxStatusLiveFlag bool
+var sandboxStatusJSONFlag bool
+
 func init() {
+	sandboxStatusCmd.Flags().BoolVar(&sandboxStatusLiveFlag, "live", false, "Refresh the selected durable worker execution")
+	sandboxStatusCmd.Flags().BoolVar(&sandboxStatusJSONFlag, "json", false, "Output machine-readable JSON (sandbox-status-v1 contract)")
 	sandboxCmd.AddCommand(sandboxStatusCmd)
 }
 
@@ -57,21 +73,37 @@ var sandboxStatusLoadInstance = sandbox.LoadActiveInstance
 
 // sandboxStatusResolveProvider is injectable for testing.
 var sandboxStatusResolveProvider = func(providerName string) (sandbox.Provider, error) {
-	return resolveProviderWithFallback(".", providerName)
+	return resolveStoredProviderWithFallback(".", providerName)
+}
+
+// sandboxStatusResolveRuntime resolves worker-backed runtime drivers for live inspection.
+var sandboxStatusResolveRuntime = func(target *sandbox.SandboxState) (sandboxruntime.Driver, error) {
+	return resolveFactoryStoredSandboxRuntime(".", target)
 }
 
 // sandboxStatusLoadActiveInstance checks whether a sandbox still has an active
 // registry entry before a live refresh persists updates.
 var sandboxStatusLoadActiveInstance = sandbox.LoadActiveInstance
 
-// sandboxStatusForceWrite persists successful live status refreshes.
-var sandboxStatusForceWrite = sandbox.ForceWriteInstance
+// sandboxStatusForceWrite persists successful live status refreshes only while
+// the selected stable sandbox identity remains active.
+var sandboxStatusForceWrite = updateActiveSandboxInstanceExact
 
 // sandboxStatusNow is injectable for deterministic tests.
 var sandboxStatusNow = func() time.Time { return time.Now() }
 
+func updateActiveSandboxInstanceExact(updated *sandbox.SandboxState) error {
+	if updated == nil {
+		return errors.New("active sandbox update is unavailable")
+	}
+	return sandbox.UpdateActiveInstanceExact(updated.Name, updated.ID, func(current *sandbox.SandboxState) error {
+		*current = *updated
+		return nil
+	})
+}
+
 func liveStatusWriteTarget(
-	name string,
+	selected *sandbox.SandboxState,
 	loadActive func(string) (*sandbox.SandboxState, error),
 	write func(*sandbox.SandboxState) error,
 ) (func(*sandbox.SandboxState) error, error) {
@@ -79,20 +111,40 @@ func liveStatusWriteTarget(
 		return write, nil
 	}
 
-	if _, err := loadActive(name); err != nil {
+	if selected == nil {
+		return nil, errors.New("active sandbox identity is unavailable for live status refresh")
+	}
+	selectedID := strings.TrimSpace(selected.ID)
+	selectedName := strings.TrimSpace(selected.Name)
+	if selectedID == "" || selectedName == "" {
+		return nil, errors.New("active sandbox identity is unavailable for live status refresh")
+	}
+	current, err := loadActive(selectedName)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	if current == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(current.ID) != selectedID ||
+		strings.TrimSpace(current.Name) != selectedName {
+		return nil, errors.New("sandbox instance changed during live status refresh")
+	}
 
 	return func(updated *sandbox.SandboxState) error {
-		current, err := loadActive(name)
+		current, err := loadActive(selectedName)
 		if err != nil {
 			return err
 		}
 		if current == nil {
 			return fs.ErrNotExist
+		}
+		if strings.TrimSpace(current.ID) != selectedID ||
+			strings.TrimSpace(current.Name) != selectedName {
+			return errors.New("sandbox instance changed during live status refresh")
 		}
 
 		current.Status = updated.Status
@@ -113,7 +165,7 @@ func runSandboxStatus(name string, out io.Writer, provider sandbox.Provider) err
 }
 
 // runSandboxStatusWithDeps contains the testable logic for the sandbox status command.
-// It loads the instance from the global registry, queries the provider for live status,
+// It loads the instance from the global registry, queries its management backend for live status,
 // and displays all SandboxState fields.
 func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provider) error {
 	if err := runSandboxAutoMigrate(".", out); err != nil {
@@ -129,28 +181,34 @@ func runSandboxStatusWithDeps(name string, out io.Writer, provider sandbox.Provi
 		return fmt.Errorf("load sandbox %q from registry: %w", name, err)
 	}
 
-	// Resolve provider if not injected
-	p := provider
-	if p == nil {
-		p, err = sandboxStatusResolveProvider(instance.Provider)
-		if err != nil {
-			return fmt.Errorf("resolving provider for %q: %w", instance.Name, err)
-		}
-	}
-
-	// Query live status from provider
-	info := sandbox.ConnectInfoFromState(instance)
 	ctx, cancel := context.WithTimeout(context.Background(), liveStatusTimeout)
 	defer cancel()
 
-	liveStatus, liveErr := queryProviderLiveStatus(ctx, p, info)
+	var liveStatus liveStatusResult
+	var liveErr error
+	if sandboxTargetUsesWorkerHost(instance) {
+		driver, resolveErr := sandboxStatusResolveRuntime(instance)
+		if resolveErr != nil {
+			return fmt.Errorf("resolving runtime for %q: %w", instance.Name, resolveErr)
+		}
+		liveStatus, liveErr = queryRuntimeLiveStatus(ctx, driver, instance)
+	} else {
+		p := provider
+		if p == nil {
+			p, err = sandboxStatusResolveProvider(instance.Provider)
+			if err != nil {
+				return fmt.Errorf("resolving provider for %q: %w", instance.Name, err)
+			}
+		}
+		liveStatus, liveErr = queryProviderLiveStatus(ctx, p, sandbox.ConnectInfoFromState(instance))
+	}
 	var liveWarning error
 	if errors.Is(liveErr, errLiveStatusUnparseable) {
 		liveWarning = fmt.Errorf("provider status output was unparseable; using cached state")
 		liveErr = nil
 	}
 	if liveErr == nil {
-		writeTarget, err := liveStatusWriteTarget(instance.Name, sandboxStatusLoadActiveInstance, sandboxStatusForceWrite)
+		writeTarget, err := liveStatusWriteTarget(instance, sandboxStatusLoadActiveInstance, sandboxStatusForceWrite)
 		if err != nil {
 			liveErr = fmt.Errorf("load active sandbox %q: %w", instance.Name, err)
 		} else if liveWarning == nil {
@@ -219,34 +277,39 @@ func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liv
 
 	fmt.Fprintln(out)
 
-	// Networking
+	// Networking and command transport
 	fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Networking:"))
-	fmt.Fprintf(out, "  Access:             %s\n", sandboxAccessLabel(inst))
-	fmt.Fprintf(out, "  SSH command:        %s\n", display.StyleInfo.Render(sandboxSSHCommand(inst.Name)))
-	if inst.TailscaleLockdown {
-		fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("blocked"))
-	} else if strings.TrimSpace(inst.IP) != "" {
-		fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleWarning.Render("available"))
+	if sandboxTargetUsesWorkerHost(inst) {
+		fmt.Fprintf(out, "  Access:             %s\n", display.StyleInfo.Render("sandboxd worker"))
+		fmt.Fprintf(out, "  Command transport:  %s\n", display.StyleInfo.Render(fmt.Sprintf("hal sandbox ssh %s -- <command>", inst.Name)))
 	} else {
-		fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("unknown"))
-	}
-	if showAddresses {
-		if inst.IP != "" {
-			fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleInfo.Render(inst.IP))
+		fmt.Fprintf(out, "  Access:             %s\n", sandboxAccessLabel(inst))
+		fmt.Fprintf(out, "  SSH command:        %s\n", display.StyleInfo.Render(sandboxSSHCommand(inst.Name)))
+		if inst.TailscaleLockdown {
+			fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("blocked"))
+		} else if strings.TrimSpace(inst.IP) != "" {
+			fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleWarning.Render("available"))
 		} else {
-			fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleMuted.Render("—"))
+			fmt.Fprintf(out, "  Public SSH:         %s\n", display.StyleMuted.Render("unknown"))
 		}
-		if inst.TailscaleIP != "" {
-			fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleInfo.Render(inst.TailscaleIP))
-		} else {
-			fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleMuted.Render("—"))
-		}
-		if inst.TailscaleHostname != "" {
-			fmt.Fprintf(out, "  Tailscale Hostname: %s\n", inst.TailscaleHostname)
-		}
-		preferredIP := sandbox.PreferredIP(inst)
-		if preferredIP != "" {
-			fmt.Fprintf(out, "  Active SSH address: %s\n", display.StyleSuccess.Render(preferredIP))
+		if showAddresses {
+			if inst.IP != "" {
+				fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleInfo.Render(inst.IP))
+			} else {
+				fmt.Fprintf(out, "  Public IP:          %s\n", display.StyleMuted.Render("—"))
+			}
+			if inst.TailscaleIP != "" {
+				fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleInfo.Render(inst.TailscaleIP))
+			} else {
+				fmt.Fprintf(out, "  Tailscale IP:       %s\n", display.StyleMuted.Render("—"))
+			}
+			if inst.TailscaleHostname != "" {
+				fmt.Fprintf(out, "  Tailscale Hostname: %s\n", inst.TailscaleHostname)
+			}
+			preferredIP := sandbox.PreferredIP(inst)
+			if preferredIP != "" {
+				fmt.Fprintf(out, "  Active SSH address: %s\n", display.StyleSuccess.Render(preferredIP))
+			}
 		}
 	}
 
@@ -288,6 +351,23 @@ func renderSandboxDetail(out io.Writer, inst *sandbox.SandboxState, liveErr, liv
 	cost := sandbox.EstimatedCost(inst, func() time.Time { return now })
 	if cost >= 0 {
 		fmt.Fprintf(out, "  Est. cost:     %s\n", display.StyleWarning.Render(fmt.Sprintf("$%.2f", cost)))
+	}
+
+	if inst.Runtime != nil {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s\n", display.StyleBold.Render("Runtime:"))
+		fmt.Fprintf(out, "  Driver:            %s\n", sandboxHostDisplayValue(inst.Runtime.Driver, "unknown"))
+		if inst.Runtime.RuntimeID != "" {
+			fmt.Fprintf(out, "  Runtime ID:        %s\n", display.StyleMuted.Render(inst.Runtime.RuntimeID))
+		}
+		if inst.Runtime.IsolationLevel != "" {
+			fmt.Fprintf(out, "  Isolation:         %s\n", inst.Runtime.IsolationLevel)
+		}
+		if inst.Runtime.WorkerID != "" {
+			fmt.Fprintf(out, "  Worker ID:         %s\n", display.StyleMuted.Render(inst.Runtime.WorkerID))
+		}
+		selectedTemplate := newSandboxRuntimeSelectedTemplateFromSandboxLock(inst.Runtime.TemplateLock, inst.Security)
+		fmt.Fprintf(out, "  Selected template: %s\n", sandboxRuntimeSelectedTemplateHuman(selectedTemplate))
 	}
 
 	// Labels

@@ -137,3 +137,52 @@ func TestRunPRStep_CIDependenciesUnavailableMarksSkipped(t *testing.T) {
 		t.Fatal("pipeline state should be saved when CI gate blocks on missing dependencies")
 	}
 }
+
+func TestRunPRStep_CIDependenciesUnavailableSkipIfUnavailableAdvancesToReport(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultAutoConfig()
+
+	var out bytes.Buffer
+	pipeline := NewPipeline(&cfg, nil, engine.NewDisplay(&out), dir)
+	state := &PipelineState{
+		Step:       StepCI,
+		BaseBranch: "develop",
+		BranchName: "hal/ci-unavailable",
+		StartedAt:  time.Now(),
+	}
+
+	origCheckCIDependencies := checkCIDependencies
+	checkCIDependencies = func() error {
+		return errors.New("gh CLI not found in PATH")
+	}
+	t.Cleanup(func() {
+		checkCIDependencies = origCheckCIDependencies
+	})
+
+	err := pipeline.runPRStep(context.Background(), state, RunOptions{CIPolicy: CIPolicySkipIfUnavailable})
+	if err != nil {
+		t.Fatalf("runPRStep returned error: %v", err)
+	}
+
+	if state.Step != StepReport {
+		t.Fatalf("state.Step = %q, want %q", state.Step, StepReport)
+	}
+	if state.CI == nil {
+		t.Fatal("state.CI is nil")
+	}
+	if state.CI.Status != "unavailable" {
+		t.Fatalf("state.CI.Status = %q, want unavailable", state.CI.Status)
+	}
+	if state.CI.Reason != "ci_unavailable" {
+		t.Fatalf("state.CI.Reason = %q, want ci_unavailable", state.CI.Reason)
+	}
+	if state.CI.Policy != CIPolicySkipIfUnavailable {
+		t.Fatalf("state.CI.Policy = %q, want %q", state.CI.Policy, CIPolicySkipIfUnavailable)
+	}
+	if !strings.Contains(out.String(), "continuing because CI policy is skip-if-unavailable") {
+		t.Fatalf("expected skip-if-unavailable output message, got %q", out.String())
+	}
+	if !pipeline.HasState() {
+		t.Fatal("pipeline state should be saved after CI unavailable warning")
+	}
+}

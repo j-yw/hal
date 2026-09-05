@@ -1,0 +1,126 @@
+{
+  "contractVersion": 2,
+  "ok": true,
+  "entryMode": "report_discovery",
+  "resumed": false,
+  "duration": "12s",
+  "sandboxExecutionId": "auto-123",
+  "steps": {
+    "analyze": {
+      "status": "completed"
+    },
+    "spec": {
+      "status": "completed"
+    },
+    "branch": {
+      "status": "completed"
+    },
+    "convert": {
+      "status": "completed"
+    },
+    "validate": {
+      "status": "completed"
+    },
+    "run": {
+      "status": "completed"
+    },
+    "review": {
+      "status": "skipped"
+    },
+    "ci": {
+      "status": "skipped"
+    },
+    "report": {
+      "status": "completed"
+    },
+    "archive": {
+      "status": "skipped"
+    }
+  },
+  "syncOut": {
+    "workspace": {
+      "mode": "clone",
+      "inputSource": "remote_ref",
+      "branch": "feature/sandbox-sync-out",
+      "syncRef": "refs/remotes/origin/feature/sandbox-sync-out"
+    },
+    "committed": {
+      "patch": {
+        "id": "committed-patch",
+        "displayName": "committed-patch",
+        "kind": "patch",
+        "displayPath": ".hal/sync/committed.patch",
+        "storedPath": "auto-123/artifacts/sync/committed.patch",
+        "applyEligibility": {
+          "eligible": true,
+          "mode": "patch",
+          "reasons": [
+            "eligible_patch"
+          ]
+        }
+      }
+    },
+    "uncommitted": {},
+    "untracked": {},
+    "coreArtifacts": [
+      {
+        "id": "hal-prd",
+        "displayName": "PRD",
+        "kind": "core",
+        "displayPath": ".hal/prd.json",
+        "storedPath": "auto-123/artifacts/core/hal-prd.json"
+      }
+    ],
+    "recovery": {
+      "status": "collected",
+      "artifacts": [
+        {
+          "id": "recovery-patch",
+          "displayName": "recovery-patch",
+          "kind": "recovery",
+          "displayPath": ".hal/recovery/workspace.patch",
+          "storedPath": "auto-123/recovery/workspace.patch"
+        }
+      ]
+    },
+    "apply": {
+      "eligible": true,
+      "mode": "patch",
+      "artifactId": "committed-patch",
+      "reasons": [
+        "eligible_patch"
+      ]
+    }
+  },
+  "syncOutApply": {
+    "status": "handoff_required",
+    "applied": false,
+    "reasons": [
+      "apply_disabled"
+    ],
+    "handoffInstructions": [
+      {
+        "reason": "apply_disabled",
+        "message": "Automatic apply is disabled; inspect the listed sandbox sync-out artifacts before applying changes manually.",
+        "artifacts": [
+          {
+            "id": "committed-patch",
+            "displayName": "committed-patch",
+            "displayPath": ".hal/sync/committed.patch"
+          },
+          {
+            "id": "recovery-patch",
+            "displayName": "recovery-patch",
+            "displayPath": ".hal/recovery/workspace.patch"
+          }
+        ]
+      }
+    ]
+  },
+  "summary": "Auto pipeline completed successfully.",
+  "nextAction": {
+    "id": "run_continue",
+    "command": "hal continue",
+    "description": "Check workflow status and the next recommended command."
+  }
+}

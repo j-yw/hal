@@ -121,8 +121,8 @@ func isAlreadyStoppedLifecycleOutput(output string) bool {
 }
 
 // Provider defines the interface for sandbox backends.
-// Implementations shell out to CLI tools (daytona, hcloud+ssh) rather than
-// using SDKs, keeping dependencies minimal.
+// Implementations shell out to provider CLIs and SSH rather than using SDKs,
+// keeping dependencies minimal.
 type Provider interface {
 	// Create provisions a new sandbox with the given name and env vars.
 	// Output is streamed to out. Returns the result or an error.
@@ -197,14 +197,14 @@ func RunCmdContext(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 }
 
 // ProviderFromConfig returns the Provider implementation matching the given
-// provider name. Known providers: "daytona", "hetzner", "digitalocean", "lightsail".
+// provider name.
 func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return nil, errors.New("sandbox provider is not configured; run `hal sandbox setup`")
+	}
+
 	switch provider {
-	case "daytona":
-		return &DaytonaProvider{
-			APIKey:    cfg.DaytonaAPIKey,
-			ServerURL: cfg.DaytonaServerURL,
-		}, nil
 	case "hetzner":
 		return &HetznerProvider{
 			SSHKey:            cfg.HetznerSSHKey,
@@ -227,15 +227,13 @@ func ProviderFromConfig(provider string, cfg ProviderConfig) (Provider, error) {
 			TailscaleLockdown: cfg.TailscaleLockdown,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unknown sandbox provider: %q (supported: daytona, hetzner, digitalocean, lightsail)", provider)
+		return nil, fmt.Errorf("unsupported sandbox provider %q; run `hal sandbox setup` to choose one of: hetzner, digitalocean, lightsail", provider)
 	}
 }
 
 // ProviderConfig holds the configuration needed to instantiate any Provider.
 // Fields are populated from .hal/config.yaml by the caller.
 type ProviderConfig struct {
-	DaytonaAPIKey             string
-	DaytonaServerURL          string
 	HetznerSSHKey             string
 	HetznerServerType         string
 	HetznerImage              string

@@ -68,6 +68,28 @@ func TestSandboxesDir(t *testing.T) {
 	}
 }
 
+func TestSandboxHostsDir(t *testing.T) {
+	global := t.TempDir()
+	t.Setenv(halConfigHomeEnv, global)
+	t.Setenv(xdgConfigHomeEnv, "")
+
+	want := filepath.Join(global, sandboxHostsDirName)
+	if got := SandboxHostsDir(); got != want {
+		t.Fatalf("SandboxHostsDir() = %q, want %q", got, want)
+	}
+}
+
+func TestSandboxLeasesDir(t *testing.T) {
+	global := t.TempDir()
+	t.Setenv(halConfigHomeEnv, global)
+	t.Setenv(xdgConfigHomeEnv, "")
+
+	want := filepath.Join(global, sandboxLeasesDirName)
+	if got := SandboxLeasesDir(); got != want {
+		t.Fatalf("SandboxLeasesDir() = %q, want %q", got, want)
+	}
+}
+
 func TestEnsureGlobalDir(t *testing.T) {
 	global := filepath.Join(t.TempDir(), "global-hal")
 	t.Setenv(halConfigHomeEnv, global)
@@ -126,6 +148,44 @@ func TestSandboxesDir_FallbacksWhenHomeUnavailable(t *testing.T) {
 
 	if got := SandboxesDir(); got != "" {
 		t.Fatalf("SandboxesDir() = %q, want empty when no configured home is available", got)
+	}
+}
+
+func TestSandboxHostsDir_FallbacksWhenHomeUnavailable(t *testing.T) {
+	origHomeFn := userHomeDirFn
+	t.Cleanup(func() {
+		userHomeDirFn = origHomeFn
+	})
+
+	t.Setenv(halConfigHomeEnv, "")
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", "")
+
+	userHomeDirFn = func() (string, error) {
+		return "", errors.New("no home")
+	}
+
+	if got := SandboxHostsDir(); got != "" {
+		t.Fatalf("SandboxHostsDir() = %q, want empty when no configured home is available", got)
+	}
+}
+
+func TestSandboxLeasesDir_FallbacksWhenHomeUnavailable(t *testing.T) {
+	origHomeFn := userHomeDirFn
+	t.Cleanup(func() {
+		userHomeDirFn = origHomeFn
+	})
+
+	t.Setenv(halConfigHomeEnv, "")
+	t.Setenv(xdgConfigHomeEnv, "")
+	t.Setenv("HOME", "")
+
+	userHomeDirFn = func() (string, error) {
+		return "", errors.New("no home")
+	}
+
+	if got := SandboxLeasesDir(); got != "" {
+		t.Fatalf("SandboxLeasesDir() = %q, want empty when no configured home is available", got)
 	}
 }
 

@@ -126,16 +126,6 @@ func TestEstimatedCost(t *testing.T) {
 			want: -1,
 		},
 		{
-			name: "daytona provider returns -1",
-			instance: &SandboxState{
-				Provider:  "daytona",
-				Size:      "",
-				CreatedAt: baseTime,
-			},
-			now:  func() time.Time { return baseTime.Add(10 * time.Hour) },
-			want: -1,
-		},
-		{
 			name: "empty size returns -1",
 			instance: &SandboxState{
 				Provider:  "hetzner",

@@ -94,6 +94,7 @@ type Pipeline struct {
 	display         *engine.Display
 	dir             string
 	lastCIState     *CIState
+	lastArchivePath string
 	pushAndCreatePR func(context.Context, ci.PushOptions) (ci.PushResult, error)
 	currentBranch   func(string) (string, error)
 }
@@ -268,6 +269,15 @@ func (p *Pipeline) LastCIState() *CIState {
 	return &ci
 }
 
+// LastArchivePath returns the workspace-relative archive directory created by
+// the most recent successful pipeline run.
+func (p *Pipeline) LastArchivePath() string {
+	if p == nil {
+		return ""
+	}
+	return p.lastArchivePath
+}
+
 func (p *Pipeline) recordCIState(ci *CIState) {
 	if ci == nil {
 		p.lastCIState = nil
@@ -279,16 +289,18 @@ func (p *Pipeline) recordCIState(ci *CIState) {
 
 // RunOptions contains options for the pipeline Run method.
 type RunOptions struct {
-	Resume            bool   // Continue from last saved state
-	DryRun            bool   // Show what would happen without executing
-	SkipCI            bool   // Skip CI step (push + draft PR) at the end
-	SkipReview        bool   // Skip review gate before CI
-	ReviewCleanStreak int    // Consecutive clean review cycles required to pass
-	ReviewMaxCycles   int    // Maximum review cycles before failing the gate
-	ReportPath        string // Specific report file to use (skips find latest)
-	SourceMarkdown    string // Positional markdown path (skips analyze/spec)
-	ConvertMode       string // Resolved convert mode for this run (standard|granular)
-	BaseBranch        string // Base branch for creating work branch / PR target
+	Resume             bool   // Continue from last saved state
+	DryRun             bool   // Show what would happen without executing
+	SkipCI             bool   // Skip CI step (push + draft PR) at the end
+	CIPolicy           string // Factory CI policy; empty preserves required behavior
+	RuntimeStatePolicy string // Internal runtime-state policy; empty preserves strict behavior
+	SkipReview         bool   // Skip review gate before CI
+	ReviewCleanStreak  int    // Consecutive clean review cycles required to pass
+	ReviewMaxCycles    int    // Maximum review cycles before failing the gate
+	ReportPath         string // Specific report file to use (skips find latest)
+	SourceMarkdown     string // Positional markdown path (skips analyze/spec)
+	ConvertMode        string // Resolved convert mode for this run (standard|granular)
+	BaseBranch         string // Base branch for creating work branch / PR target
 
 	MaxRunAttempts       int // Optional factory policy cap; 0 means no policy cap
 	MaxReviewFixAttempts int // Optional factory policy cap; 0 means no policy cap
@@ -298,6 +310,7 @@ type RunOptions struct {
 // Run executes the compound pipeline from the current state or from the beginning.
 func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	p.recordCIState(nil)
+	p.lastArchivePath = ""
 
 	// Load or create initial state
 	var state *PipelineState
@@ -1268,6 +1281,13 @@ func (p *Pipeline) runReviewStep(ctx context.Context, state *PipelineState, opts
 					}
 					state.Review.PendingFixes = false
 				}
+				if err := p.checkpointRuntimeStateForFinalVerification(ctx, opts); err != nil {
+					state.Review.Status = "failed"
+					if saveErr := p.saveState(state); saveErr != nil {
+						return fmt.Errorf("review gate blocked: final verification failed: %w (also failed to save state: %v)", err, saveErr)
+					}
+					return fmt.Errorf("review gate blocked: final verification failed: %w", err)
+				}
 				if err := p.runFinalVerification(ctx, state); err != nil {
 					state.Review.Status = "failed"
 					if saveErr := p.saveState(state); saveErr != nil {
@@ -1383,6 +1403,70 @@ func (p *Pipeline) finalizeReviewFixes(ctx context.Context) error {
 	return nil
 }
 
+func (p *Pipeline) checkpointRuntimeStateForFinalVerification(ctx context.Context, opts RunOptions) error {
+	commitMessage := "chore: checkpoint Hal runtime state"
+	displayLabel := "Hal runtime state"
+	switch strings.ToLower(strings.TrimSpace(opts.RuntimeStatePolicy)) {
+	case "", RuntimeStatePolicyStrict:
+		return nil
+	case RuntimeStatePolicyCheckpointFactoryState:
+		commitMessage = "chore: checkpoint Hal factory runtime state"
+		displayLabel = "Hal factory runtime state"
+	case RuntimeStatePolicyCheckpointHalState:
+	default:
+		return fmt.Errorf("unsupported runtime state policy %q", opts.RuntimeStatePolicy)
+	}
+
+	paths, err := workingTreeChangesInDirFn(p.dir)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	unexpected := unexpectedFactoryRuntimeStatePaths(paths)
+	if len(unexpected) > 0 {
+		return fmt.Errorf("runtime state checkpoint blocked: unexpected dirty files: %s", strings.Join(unexpected, ", "))
+	}
+
+	p.display.ShowInfo("   Checkpointing %s before final verification\n", displayLabel)
+	if err := gitAddAllInDirFn(ctx, p.dir); err != nil {
+		return fmt.Errorf("stage %s checkpoint: %w", displayLabel, err)
+	}
+	if err := gitCommitInDirFn(ctx, p.dir, commitMessage); err != nil {
+		return fmt.Errorf("commit %s checkpoint: %w", displayLabel, err)
+	}
+	return nil
+}
+
+func unexpectedFactoryRuntimeStatePaths(paths []string) []string {
+	unexpected := make([]string, 0)
+	for _, path := range paths {
+		if !isFactoryRuntimeStatePath(path) {
+			unexpected = append(unexpected, path)
+		}
+	}
+	return unexpected
+}
+
+func isFactoryRuntimeStatePath(path string) bool {
+	normalized := filepath.ToSlash(strings.TrimSpace(path))
+	normalized = strings.TrimPrefix(normalized, "./")
+	switch normalized {
+	case filepath.ToSlash(filepath.Join(template.HalDir, template.PRDFile)),
+		filepath.ToSlash(filepath.Join(template.HalDir, template.ProgressFile)),
+		filepath.ToSlash(filepath.Join(template.HalDir, template.AutoStateFile)):
+		return true
+	default:
+		halPRDPrefix := filepath.ToSlash(filepath.Join(template.HalDir, "prd-"))
+		if strings.HasPrefix(normalized, halPRDPrefix) && strings.HasSuffix(normalized, ".md") && !strings.Contains(strings.TrimPrefix(normalized, filepath.ToSlash(template.HalDir)+"/"), "/") {
+			return true
+		}
+		return strings.HasPrefix(normalized, filepath.ToSlash(filepath.Join(template.HalDir, "archive"))+"/")
+	}
+}
+
 func (p *Pipeline) runFinalVerification(ctx context.Context, state *PipelineState) error {
 	if err := p.ensureCleanWorkingTree(); err != nil {
 		return err
@@ -1451,8 +1535,9 @@ func (p *Pipeline) migrateAutoProgress() error {
 func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts RunOptions) error {
 	p.display.ShowInfo("   Step: ci\n")
 
-	if opts.SkipCI {
-		state.CI = &CIState{Status: "skipped", Reason: "skip_ci_flag"}
+	ciPolicy := ciPolicyForRun(opts)
+	if opts.SkipCI || ciPolicy == CIPolicyDisabled {
+		state.CI = &CIState{Status: "skipped", Reason: "skip_ci_flag", Policy: ciPolicy}
 		p.recordCIState(state.CI)
 		p.display.ShowInfo("   Skipping CI step (--no-ci)\n")
 		state.Step = StepReport
@@ -1480,7 +1565,17 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	if err := checkCIDependencies(); err != nil {
-		state.CI = &CIState{Status: "failed", Reason: "ci_unavailable"}
+		if ciPolicySkipsUnavailable(ciPolicy) {
+			state.CI = &CIState{Status: "unavailable", Reason: "ci_unavailable", Policy: ciPolicy}
+			p.recordCIState(state.CI)
+			p.display.ShowInfo("   CI dependencies unavailable (%v); continuing because CI policy is %s\n", err, ciPolicy)
+			state.Step = StepReport
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to save CI unavailable state: %w", saveErr)
+			}
+			return nil
+		}
+		state.CI = &CIState{Status: "failed", Reason: "ci_unavailable", Policy: ciPolicy}
 		p.recordCIState(state.CI)
 		p.display.ShowInfo("   CI dependencies unavailable (%v); stopping at CI step\n", err)
 		state.Step = StepCI
@@ -1559,6 +1654,7 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	if state.CI == nil {
 		state.CI = &CIState{}
 	}
+	state.CI.Policy = ciPolicy
 	state.CI.PRURL = prURL
 	state.CI.PRNumber = pushResult.PullRequest.Number
 	state.CI.PRTitle = strings.TrimSpace(pushResult.PullRequest.Title)
@@ -1584,6 +1680,18 @@ func (p *Pipeline) runPRStep(ctx context.Context, state *PipelineState, opts Run
 	}
 
 	if !status.ChecksDiscovered {
+		if ciPolicySkipsUnavailable(ciPolicy) {
+			p.display.ShowInfo("   No CI checks discovered; continuing because CI policy is %s\n", ciPolicy)
+			state.CI.Status = "unavailable"
+			state.CI.Reason = ci.WaitTerminalReasonNoChecksDetected
+			state.CI.Policy = ciPolicy
+			p.recordCIState(state.CI)
+			state.Step = StepReport
+			if saveErr := p.saveState(state); saveErr != nil {
+				return fmt.Errorf("failed to save CI no-checks state: %w", saveErr)
+			}
+			return nil
+		}
 		p.display.ShowInfo("   No CI checks discovered; stopping at CI step\n")
 		state.CI.Status = ci.StatusPending
 		state.CI.Reason = ci.WaitTerminalReasonNoChecksDetected
@@ -1746,6 +1854,24 @@ func ciFixMaxAttemptsForRun(state *PipelineState, opts RunOptions) int {
 	return maxCIFixAttempts
 }
 
+func ciPolicyForRun(opts RunOptions) string {
+	if opts.SkipCI {
+		return CIPolicyDisabled
+	}
+	switch strings.ToLower(strings.TrimSpace(opts.CIPolicy)) {
+	case CIPolicyDisabled:
+		return CIPolicyDisabled
+	case CIPolicySkipIfUnavailable:
+		return CIPolicySkipIfUnavailable
+	default:
+		return CIPolicyRequired
+	}
+}
+
+func ciPolicySkipsUnavailable(policy string) bool {
+	return strings.TrimSpace(policy) == CIPolicySkipIfUnavailable
+}
+
 func ciFixPolicyLimitError(attempts, limit int) *PolicyLimitError {
 	return &PolicyLimitError{
 		PolicyField: "factory.policy.maxCiFixAttempts",
@@ -1777,6 +1903,9 @@ func (p *Pipeline) runArchiveStep(ctx context.Context, state *PipelineState, opt
 		return nil
 	}
 
+	if err := p.checkpointRuntimeStateForFinalVerification(ctx, opts); err != nil {
+		return fmt.Errorf("archive gate blocked: %w", err)
+	}
 	if err := p.ensureCleanWorkingTree(); err != nil {
 		return fmt.Errorf("archive gate blocked: %w", err)
 	}
@@ -1800,6 +1929,14 @@ func (p *Pipeline) runArchiveStep(ctx context.Context, state *PipelineState, opt
 	if err != nil {
 		return fmt.Errorf("failed to archive feature state: %w", err)
 	}
+	archivePath, err := filepath.Rel(p.dir, archiveDir)
+	if err != nil {
+		return fmt.Errorf("resolve archived state path: %w", err)
+	}
+	if archivePath == ".." || strings.HasPrefix(archivePath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("resolve archived state path: archive is outside the pipeline workspace")
+	}
+	p.lastArchivePath = filepath.ToSlash(archivePath)
 	p.display.ShowInfo("   Archived state to %s\n", filepath.Base(archiveDir))
 
 	if err := p.clearState(); err != nil {

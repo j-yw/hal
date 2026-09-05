@@ -148,6 +148,57 @@ func TestRunSandboxStatus_DetailedView(t *testing.T) {
 	}
 }
 
+func TestRunSandboxStatusRootlessPodmanDoesNotOverstateIsolation(t *testing.T) {
+	setupStatusTest(t)
+
+	now := time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC)
+	origNow := sandboxStatusNow
+	sandboxStatusNow = func() time.Time { return now }
+	t.Cleanup(func() { sandboxStatusNow = origNow })
+
+	saveStatusTestInstance(t, &sandbox.SandboxState{
+		ID:        "podman-container-1",
+		Name:      "podman-dev",
+		Provider:  "local",
+		Status:    sandbox.StatusRunning,
+		CreatedAt: now.Add(-30 * time.Minute),
+		Runtime: &sandbox.SandboxRuntimeState{
+			Driver:         sandbox.SandboxRuntimeDriverRootlessPodman,
+			IsolationLevel: sandbox.SandboxIsolationLevelContainer,
+			RuntimeID:      "podman-container-1",
+			Image:          "ghcr.io/example/hal-dev:latest",
+		},
+		Security: &sandbox.SandboxSecurity{
+			Network: &sandbox.SandboxNetworkSecurity{
+				PolicyRequested: sandbox.SandboxNetworkPolicyDenyByDefault,
+				PolicyEnforced:  sandbox.SandboxNetworkPolicyBestEffort,
+				EnforcementMode: sandbox.SandboxNetworkEnforcementModeNone,
+			},
+		},
+	})
+
+	mock := &mockStatusProvider{statusOut: "Status: active"}
+	var out bytes.Buffer
+	if err := runSandboxStatusWithDeps("podman-dev", &out, mock); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	assertContains(t, output, "Name:       podman-dev")
+	assertContains(t, output, "Live query: status refreshed")
+
+	normalized := strings.ToLower(output)
+	for _, disallowed := range []string{
+		"vm isolation",
+		"isolation: vm",
+		"production default",
+		"production-ready",
+		"production ready",
+	} {
+		assertNotContains(t, normalized, disallowed)
+	}
+}
+
 func TestRunSandboxStatus_LiveQueryFailed(t *testing.T) {
 	setupStatusTest(t)
 
@@ -225,7 +276,7 @@ func TestRunSandboxStatus_PersistsProviderReportedStatus(t *testing.T) {
 
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		Name:      "persisted-status",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})
@@ -299,7 +350,7 @@ func TestRunSandboxStatus_ContinuesWhenLocalSyncFails(t *testing.T) {
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		ID:        "id-1",
 		Name:      "warn-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})
@@ -342,7 +393,7 @@ func TestRunSandboxStatus_IgnoresStagedRemovalBackup(t *testing.T) {
 
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		Name:      "frontend",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})
@@ -422,7 +473,7 @@ func TestRunSandboxStatus_AutoMigratesLegacyState(t *testing.T) {
 		}
 		return sandbox.SaveInstance(&sandbox.SandboxState{
 			Name:      "migrated-box",
-			Provider:  "daytona",
+			Provider:  "hetzner",
 			Status:    sandbox.StatusRunning,
 			CreatedAt: time.Now(),
 		})
@@ -446,7 +497,7 @@ func TestRunSandboxStatus_MinimalFields(t *testing.T) {
 
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		Name:      "minimal",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})
@@ -461,7 +512,7 @@ func TestRunSandboxStatus_MinimalFields(t *testing.T) {
 
 	output := out.String()
 	assertContains(t, output, "Name:       minimal")
-	assertContains(t, output, "Provider:   daytona")
+	assertContains(t, output, "Provider:   hetzner")
 	assertContains(t, output, "Access:             unknown")
 	assertContains(t, output, "SSH command:        hal sandbox ssh minimal")
 	assertContains(t, output, "Public SSH:         unknown")
@@ -552,7 +603,7 @@ func TestRunSandboxStatus_NoArgsListDelegation(t *testing.T) {
 	})
 	saveStatusTestInstance(t, &sandbox.SandboxState{
 		Name:      "sb-two",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusStopped,
 		CreatedAt: time.Now(),
 	})
@@ -679,7 +730,7 @@ func TestSandboxStatusCommand_UsesCommandOutputWriterWhenListing(t *testing.T) {
 	setupListTest(t)
 	writeInstance(t, &sandbox.SandboxState{
 		Name:      "writer-box",
-		Provider:  "daytona",
+		Provider:  "hetzner",
 		Status:    sandbox.StatusRunning,
 		CreatedAt: time.Now(),
 	})

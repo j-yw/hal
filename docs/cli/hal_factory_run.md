@@ -10,10 +10,12 @@ pipeline, or pass --sandbox to run the factory executor in a managed sandbox.
 Provide at most one positional PRD markdown path to start from an existing
 spec, or use --report <path> to start from an analysis report. The positional
 path and --report are mutually exclusive. Use --base <branch> to pass a target
-base branch to the executor. Sandbox mode requires --base so the remote
-workspace can be checked out deterministically. Use --secret-env to declare
-required environment variables that should be resolved only for this run. Use
---sandbox for remote sandbox-backed execution, and --json for machine-readable
+base branch to the executor. Executor/base precedence is: explicit flags override project config defaults,
+followed by a safe local fallback to the current branch.
+Sandbox execution still blocks when no base resolves; it never infers a base
+from the current sandbox workspace. Use --secret-env to declare required
+environment variables that should be resolved only for this run. Use --sandbox
+for remote sandbox-backed execution, and --json for machine-readable
 factory-run-v1 output.
 
 ```
@@ -28,17 +30,27 @@ hal factory run [prd-path] [flags]
   hal factory run .hal/prd-feature.md --secret-env GITHUB_TOKEN
   hal factory run .hal/prd-feature.md --base main --json
   hal factory run .hal/prd-feature.md --sandbox --base main
+  hal factory run .hal/prd-feature.md --sandbox --base main --sandbox-host worker-1 --sandbox-runtime rootless_podman
 ```
 
 ### Options
 
 ```
-      --base string              Target base branch for follow-up review or CI
-  -h, --help                     help for run
-      --json                     Output machine-readable JSON (factory-run-v1 contract)
-      --report string            Start from an analysis report path
-      --sandbox                  Run the factory executor in a managed sandbox
-      --secret-env stringArray   Required environment variable secret for the run (repeatable)
+      --base string                     Target base branch for follow-up review or CI
+      --ci-policy string                CI policy for factory runs (required, skip-if-unavailable, disabled)
+  -h, --help                            help for run
+      --json                            Output machine-readable JSON (factory-run-v1 contract)
+      --no-ci                           Alias for --ci-policy disabled
+      --publish string                  Host publish policy after factory execution (none, push, pr)
+      --publish-from string             Publish runner after factory execution (host, sandbox, auto) (default "host")
+      --report string                   Start from an analysis report path
+      --sandbox                         Run the factory executor in a managed sandbox
+      --sandbox-host string             Cached sandbox host ID for target selection
+      --sandbox-name string             Sandbox name for --sandbox execution
+      --sandbox-runtime string          Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)
+      --sandbox-template string         OCI sandbox template reference to select before runtime construction
+      --sandbox-template-trust string   Sandbox template trust mode (strict or advisory) (default "strict")
+      --secret-env stringArray          Required environment variable secret for the run (repeatable)
 ```
 
 ### SEE ALSO

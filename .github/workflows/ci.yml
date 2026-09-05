@@ -30,14 +30,20 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run vet
-        run: make vet
+      - name: Run default tests
+        run: go test ./...
 
-      - name: Run tests
-        run: make test
+      - name: Run vet
+        run: go vet ./...
 
       - name: Check CLI docs drift
         run: make docs-check
+
+      - name: Build Hal binary
+        run: make build
+
+      - name: Check whitespace
+        run: git diff --check
 
   goreleaser-check:
     runs-on: ubuntu-latest
@@ -136,34 +142,12 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Check Daytona integration secrets
-        id: daytona_secrets
+      - name: Run integration-tagged command and package tests
         if: steps.changes.outputs.integration == 'true'
-        env:
-          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-          DAYTONA_SERVER_URL: ${{ secrets.DAYTONA_SERVER_URL }}
+        run: go test -tags=integration -v -timeout 30m ./cmd ./internal/compound/...
+
+      - name: Run opt-in runtime integration packages
+        if: steps.changes.outputs.integration == 'true'
         run: |
-          if [ -n "$DAYTONA_API_KEY" ] && [ -n "$DAYTONA_SERVER_URL" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping integration tests because Daytona secrets are not configured."
-          fi
-
-      - name: Run integration tests
-        if: steps.changes.outputs.integration == 'true' && steps.daytona_secrets.outputs.available == 'true'
-        env:
-          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-          DAYTONA_SERVER_URL: ${{ secrets.DAYTONA_SERVER_URL }}
-        run: go test -tags=integration -v -timeout 30m ./cmd -run TestSandboxCommandIntegration
-
-      - name: Run package integration tests
-        if: steps.changes.outputs.integration == 'true'
-        run: go test -tags=integration -v -timeout 30m ./internal/compound/...
-
-      - name: Run sandbox package integration tests
-        if: steps.changes.outputs.integration == 'true' && steps.daytona_secrets.outputs.available == 'true'
-        env:
-          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-          DAYTONA_SERVER_URL: ${{ secrets.DAYTONA_SERVER_URL }}
-        run: go test -tags=integration -v -timeout 30m ./internal/sandbox/...
+          go test -tags=podman_integration -v -timeout 5m ./internal/sandboxruntime/rootlesspodman
+          go test -tags=firecracker_live -v -timeout 5m ./internal/sandboxruntime/microvm/firecracker

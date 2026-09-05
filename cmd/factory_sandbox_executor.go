@@ -14,6 +14,7 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -21,14 +22,21 @@ import (
 
 	"github.com/jywlabs/hal/internal/factory"
 	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxexec"
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxtemplate/selection"
 )
 
 type factorySandboxProvisionRequest struct {
-	ProjectDir string
-	Name       string
-	BranchName string
-	Repo       string
-	Out        io.Writer
+	ProjectDir             string
+	Name                   string
+	BranchName             string
+	Repo                   string
+	TemplateRuntimeDriver  string
+	TemplateIsolationLevel string
+	TemplateRuntimeImage   string
+	TemplateLock           *sandbox.SandboxTemplateLockMetadata
+	Out                    io.Writer
 }
 
 type factorySandboxCleanupRequest struct {
@@ -43,48 +51,79 @@ type factorySandboxAuthFile struct {
 }
 
 type factorySandboxExecutorRequest struct {
-	ProjectDir          string
-	SandboxName         string
-	RunRecord           factory.RunRecord
-	ResolvedSecrets     []factory.ResolvedRunSecret
-	RemoteAuto          factoryRunAutoRequest
-	RemoteOutput        io.Writer
-	BeforeCleanup       func(context.Context, factory.RunRecord) error
-	DeferSuccessCleanup bool
+	ProjectDir                   string
+	SandboxName                  string
+	SandboxHostID                string
+	SandboxRuntime               string
+	Security                     sandbox.SecurityEvaluationRequest
+	SecurityReadinessGateMode    sandbox.SandboxSecurityCapabilityReadinessGatePolicyMode
+	NetworkProxySession          *sandbox.SandboxNetworkProxySessionMetadata
+	NetworkPolicyDecisionLogs    []sandbox.SandboxNetworkPolicyDecisionLogRecord
+	CredentialDeliveryActivation credentialDeliveryActivationResult
+	RunRecord                    factory.RunRecord
+	ResolvedSecrets              []factory.ResolvedRunSecret
+	RemoteAuto                   factoryRunAutoRequest
+	RemoteOutput                 io.Writer
+	BeforeCleanup                func(context.Context, factory.RunRecord) error
+	DeferSuccessCleanup          bool
+	TemplateSelection            *selection.Result
 }
 
 type factorySandboxExecutorDeps struct {
 	defaultStore           func() (factory.Store, error)
+	durableLeaseStore      bool
 	now                    func() time.Time
 	resolveDefault         func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error)
 	loadSandbox            func(string) (*sandbox.SandboxState, error)
+	listSandboxes          func() ([]*sandbox.SandboxState, error)
+	listHosts              func() ([]*sandbox.SandboxHost, error)
+	listLeases             func() ([]*sandbox.SandboxLease, error)
 	provision              func(context.Context, factorySandboxProvisionRequest) (*sandbox.SandboxState, error)
-	startSandbox           func(context.Context, *sandbox.SandboxState, io.Writer) (*sandbox.SandboxState, error)
+	acquireLease           func(sandbox.SandboxLeaseAcquireRequest, time.Duration) (*sandbox.SandboxLease, error)
+	releaseLease           func(string) (*sandbox.SandboxLease, error)
 	resolveProvider        func(string) (sandbox.Provider, error)
+	resolveRuntimeDriver   func(sandboxruntime.Target) (sandboxruntime.Driver, error)
+	resolveWorkerRuntime   func(sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error)
+	persistSandboxState    func(*sandbox.SandboxState) error
 	runProviderExec        func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, io.Writer) error
 	runProviderScript      func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, string, io.Writer) error
 	runProviderExecWithEnv func(context.Context, sandbox.Provider, *sandbox.ConnectInfo, []string, map[string]string, io.Writer) error
+	generateRecovery       func(context.Context, factorySandboxRecoveryArtifactRequest) error
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
 	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
 	saveRun                func(factory.Store, *factory.RunRecord) error
 	appendEvent            func(factory.Store, *factory.EventRecord) error
 	appendLog              func(factory.Store, *factory.LogChunk) error
+
+	customRuntimeResolver bool
 }
 
 var defaultFactorySandboxExecutorDeps = factorySandboxExecutorDeps{
-	defaultStore:   factory.DefaultStore,
-	now:            time.Now,
-	resolveDefault: sandbox.ResolveDefault,
-	loadSandbox:    sandbox.LoadActiveInstance,
-	provision:      provisionFactorySandbox,
-	startSandbox:   startFactorySandbox,
+	defaultStore:        factory.DefaultStore,
+	durableLeaseStore:   true,
+	now:                 time.Now,
+	resolveDefault:      sandbox.ResolveDefault,
+	loadSandbox:         sandbox.LoadActiveInstance,
+	listSandboxes:       sandbox.ListActiveInstances,
+	listHosts:           sandbox.ListHosts,
+	provision:           provisionFactorySandbox,
+	persistSandboxState: sandbox.ForceWriteInstance,
 	resolveProvider: func(providerName string) (sandbox.Provider, error) {
-		return resolveProviderWithFallback(".", providerName)
+		return resolveStoredProviderWithFallback(".", providerName)
+	},
+	resolveRuntimeDriver: func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+		return sandboxRuntimeDriverFromTarget(target, func(providerName string) (sandbox.Provider, error) {
+			return resolveStoredProviderWithFallback(".", providerName)
+		})
+	},
+	resolveWorkerRuntime: func(req sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+		return sandboxWorkerRuntimeDriverFromTarget(req, sandboxWorkerRuntimeDriverFactories{})
 	},
 	runProviderExec:        runFactorySandboxProviderExec,
 	runProviderScript:      runFactorySandboxProviderScript,
 	runProviderExecWithEnv: runFactorySandboxProviderExecWithEnv,
+	generateRecovery:       generateFactorySandboxRecoveryArtifacts,
 	engineAuthFiles:        factorySandboxEngineAuthFiles,
 	bootstrap:              factory.BootstrapWorkspace,
 	cleanupSandbox:         cleanupFactorySandbox,
@@ -100,30 +139,65 @@ const factorySandboxCopyInputChunkEncodedBytes = 32 * 1024
 const factorySandboxRemoteWorkspaceRoot = "/root/workspace"
 
 func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factorySandboxExecutorDeps {
+	customDefaultStore := deps.defaultStore != nil && !deps.durableLeaseStore
+	customResolveDefault := deps.resolveDefault != nil
+	customRuntimeResolver := deps.resolveRuntimeDriver != nil
+	customLoadSandbox := deps.loadSandbox != nil
 	customRunProviderExec := deps.runProviderExec != nil
 	customRunProviderScript := deps.runProviderScript != nil
 	customRunProviderExecWithEnv := deps.runProviderExecWithEnv != nil
+	customGenerateRecovery := deps.generateRecovery != nil
 	if deps.defaultStore == nil {
 		deps.defaultStore = defaultFactorySandboxExecutorDeps.defaultStore
+		deps.durableLeaseStore = defaultFactorySandboxExecutorDeps.durableLeaseStore
+		customDefaultStore = !deps.durableLeaseStore
 	}
 	if deps.now == nil {
 		deps.now = defaultFactorySandboxExecutorDeps.now
 	}
 	if deps.resolveDefault == nil {
-		deps.resolveDefault = defaultFactorySandboxExecutorDeps.resolveDefault
+		if customLoadSandbox {
+			deps.resolveDefault = func(func(*sandbox.SandboxState) bool) (*sandbox.SandboxState, string, error) {
+				return nil, "", errors.New("no running sandboxes")
+			}
+		} else {
+			deps.resolveDefault = defaultFactorySandboxExecutorDeps.resolveDefault
+		}
 	}
 	if deps.loadSandbox == nil {
 		deps.loadSandbox = defaultFactorySandboxExecutorDeps.loadSandbox
 	}
+	if deps.listSandboxes == nil {
+		if customResolveDefault {
+			deps.listSandboxes = sandboxCommandListSandboxesFromDefault(deps.resolveDefault)
+		} else {
+			deps.listSandboxes = defaultFactorySandboxExecutorDeps.listSandboxes
+		}
+	}
+	if deps.listHosts == nil {
+		deps.listHosts = defaultFactorySandboxExecutorDeps.listHosts
+	}
+	if deps.listLeases == nil {
+		deps.listLeases = sandboxCommandDefaultLeaseLister(deps.now, customDefaultStore)
+	}
 	if deps.provision == nil {
 		deps.provision = defaultFactorySandboxExecutorDeps.provision
 	}
-	if deps.startSandbox == nil {
-		deps.startSandbox = defaultFactorySandboxExecutorDeps.startSandbox
+	if deps.acquireLease == nil {
+		deps.acquireLease = sandboxCommandDefaultLeaseAcquirer(deps.now, customDefaultStore)
+	}
+	if deps.releaseLease == nil {
+		deps.releaseLease = sandboxCommandDefaultLeaseReleaser(deps.now, customDefaultStore)
 	}
 	if deps.resolveProvider == nil {
 		deps.resolveProvider = defaultFactorySandboxExecutorDeps.resolveProvider
 	}
+	if deps.resolveRuntimeDriver == nil {
+		deps.resolveRuntimeDriver = func(target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			return sandboxRuntimeDriverFromTarget(target, deps.resolveProvider)
+		}
+	}
+	deps.customRuntimeResolver = customRuntimeResolver
 	if deps.runProviderExec == nil {
 		deps.runProviderExec = defaultFactorySandboxExecutorDeps.runProviderExec
 	}
@@ -145,6 +219,13 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 			}
 		} else {
 			deps.runProviderExecWithEnv = defaultFactorySandboxExecutorDeps.runProviderExecWithEnv
+		}
+	}
+	if deps.generateRecovery == nil {
+		if customGenerateRecovery || customRuntimeResolver || customRunProviderExec || customRunProviderScript || customRunProviderExecWithEnv {
+			deps.generateRecovery = func(context.Context, factorySandboxRecoveryArtifactRequest) error { return nil }
+		} else {
+			deps.generateRecovery = defaultFactorySandboxExecutorDeps.generateRecovery
 		}
 	}
 	if deps.engineAuthFiles == nil {
@@ -200,93 +281,87 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	}
 
 	var target *sandbox.SandboxState
-	if name := strings.TrimSpace(req.SandboxName); name != "" {
-		target, err = deps.loadSandbox(name)
-		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("load factory sandbox %q: %w", name, err)
+	var selectedTarget *sandbox.SandboxState
+	var provider sandbox.Provider
+	var runtimeDriver sandboxruntime.Driver
+	var workerRuntimeSelected bool
+	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}
+	defer func() {
+		leaseRelease.observe(target)
+		leaseRelease.observe(selectedTarget)
+		if releaseErr := leaseRelease.release(); releaseErr != nil {
+			if returnErr != nil {
+				returnErr = errors.Join(returnErr, releaseErr)
+				return
 			}
-			record.SandboxName, record.Sandbox = factorySandboxMetadataFromName(name)
-			target, err = deps.provision(ctx, factorySandboxProvisionRequest{
-				ProjectDir: req.ProjectDir,
-				Name:       name,
-				BranchName: record.BranchName,
-				Repo:       provisionRepo,
-				Out:        req.RemoteOutput,
-			})
-			if err != nil {
-				_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err, secretRedactor)
-				return factorySandboxRecordedError("provision factory sandbox", nil, err, secretRedactor)
-			}
+			returnErr = releaseErr
 		}
-	} else {
-		target, _, err = deps.resolveDefault(factoryRunningSandboxFilter)
-		if err != nil {
-			if !isFactorySandboxProvisionableResolutionError(err) {
-				return err
-			}
-			name := factorySandboxProvisionName(record)
-			record.SandboxName, record.Sandbox = factorySandboxMetadataFromName(name)
-			target, err = deps.loadSandbox(name)
-			if err != nil {
-				if !errors.Is(err, fs.ErrNotExist) {
-					return fmt.Errorf("load factory sandbox %q: %w", name, err)
-				}
-				target, err = deps.provision(ctx, factorySandboxProvisionRequest{
-					ProjectDir: req.ProjectDir,
-					Name:       name,
-					BranchName: record.BranchName,
-					Repo:       provisionRepo,
-					Out:        req.RemoteOutput,
-				})
-				if err != nil {
-					_ = recordFactorySandboxFailure(store, deps, &record, nil, "provision", err, secretRedactor)
-					return factorySandboxRecordedError("provision factory sandbox", nil, err, secretRedactor)
-				}
-			}
+	}()
+	ensureProvider := func(providerName string) (sandbox.Provider, error) {
+		if provider != nil {
+			return provider, nil
 		}
-	}
-	if target == nil {
-		return fmt.Errorf("factory sandbox target is required")
-	}
-
-	if target.Status != sandbox.StatusRunning {
-		startedTarget, err := deps.startSandbox(ctx, target, req.RemoteOutput)
+		resolved, err := deps.resolveProvider(providerName)
 		if err != nil {
-			_ = recordFactorySandboxFailure(store, deps, &record, target, "start", err, secretRedactor)
-			startErr := factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", target.Name), target, err, secretRedactor)
-			if cleanupErr := cleanupFactorySandboxAfterFailedStart(ctx, store, deps, req, record, target); cleanupErr != nil {
-				sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr), secretRedactor))
-				return errors.Join(startErr, sanitizedCleanupErr)
-			}
-			return startErr
+			return nil, err
 		}
-		target = startedTarget
+		provider = resolved
+		return provider, nil
 	}
-
-	record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
-	record.UpdatedAt = deps.now().UTC()
-	if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
-		return fmt.Errorf("record factory sandbox metadata: %w", err)
-	}
-
-	remoteOutput := newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
-	provider, err := deps.resolveProvider(target.Provider)
-	if err != nil {
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "resolve_provider", err, secretRedactor)
-		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", target.Provider), target, err, secretRedactor)
-	}
+	var remoteOutput *factorySandboxTimelineWriter
+	preparedRemoteAuto := req.RemoteAuto
 	cleanupBehavior := factorySandboxCleanupBehavior(record)
 	if req.DeferSuccessCleanup && cleanupBehavior == factory.CleanupBehaviorOnSuccess {
 		cleanupBehavior = factory.CleanupBehaviorPreserve
 	}
 	cleanupSucceeded := false
 	defer func() {
+		if target == nil {
+			return
+		}
 		deferredCleanupBehavior := cleanupBehavior
 		if req.DeferSuccessCleanup && returnErr == nil && cleanupBehavior == factory.CleanupBehaviorAlways {
 			deferredCleanupBehavior = factory.CleanupBehaviorPreserve
 		}
-		cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, deferredCleanupBehavior, cleanupSucceeded)
+		if !factorySandboxCleanupBehaviorWillRun(deferredCleanupBehavior, cleanupSucceeded) {
+			return
+		}
+		if workerRuntimeSelected && runtimeDriver != nil {
+			cleaned, cleanupErr := cleanupFactorySandboxRuntimeAfterRun(ctx, req, record, target, runtimeDriver, deferredCleanupBehavior, cleanupSucceeded)
+			if cleaned {
+				if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
+					if cleanupErr != nil {
+						cleanupErr = errors.Join(cleanupErr, recordErr)
+					} else {
+						cleanupErr = recordErr
+					}
+				}
+			}
+			if cleanupErr != nil {
+				sanitizedCleanupErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("cleanup factory sandbox: %w", cleanupErr), secretRedactor))
+				if returnErr != nil {
+					returnErr = errors.Join(returnErr, sanitizedCleanupErr)
+					return
+				}
+				returnErr = sanitizedCleanupErr
+			}
+			return
+		}
+		cleanupProvider := provider
+		if cleanupProvider == nil {
+			var providerErr error
+			cleanupProvider, providerErr = ensureProvider(target.Provider)
+			if providerErr != nil {
+				sanitizedProviderErr := fmt.Errorf("%s", factorySandboxSanitizedError(target, fmt.Errorf("resolve sandbox provider for cleanup: %w", providerErr), secretRedactor))
+				if returnErr != nil {
+					returnErr = errors.Join(returnErr, sanitizedProviderErr)
+					return
+				}
+				returnErr = sanitizedProviderErr
+				return
+			}
+		}
+		cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, cleanupProvider, req.RemoteOutput, deferredCleanupBehavior, cleanupSucceeded)
 		if cleaned {
 			if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
 				if cleanupErr != nil {
@@ -306,75 +381,564 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 		}
 	}()
 
-	if bootstrapReq, ok := factorySandboxBootstrapRequest(record, req.ResolvedSecrets); ok {
-		connectInfo := sandbox.ConnectInfoFromState(target)
-		bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
-			Executor: &factorySandboxBootstrapExecutor{
-				provider:               provider,
-				connectInfo:            connectInfo,
-				runProviderExecWithEnv: deps.runProviderExecWithEnv,
-				// Bootstrap timelines are persisted from sanitized BootstrapResult
-				// events; stream redacted command output to the caller-facing writer.
-				out:          req.RemoteOutput,
-				outputRedact: factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString,
-			},
-			Now: deps.now,
-			RepoExists: func(path string) (bool, error) {
-				return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, deps.runProviderScript, path, bootstrapReq.RepositoryURL)
-			},
-		})
-		if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, &record, target, bootstrapResult, remoteOutput); appendErr != nil {
-			return fmt.Errorf("record sandbox bootstrap timeline: %w", appendErr)
+	commandReq := sandboxexec.CommandRequest{
+		Purpose:     sandbox.SandboxLeasePurposeFactory,
+		ProjectDir:  req.ProjectDir,
+		SandboxName: req.SandboxName,
+		Command:     factorySandboxRemoteCommandArgs(record, req.RemoteAuto),
+		WorkDir:     factorySandboxRemoteWorkspaceDir(record),
+		Env:         factorySandboxResolvedSecretEnv(req.ResolvedSecrets),
+		Security:    sandboxSecurityRequestOrDefault(req.Security, req.SandboxRuntime),
+		Stdout:      req.RemoteOutput,
+		Stderr:      req.RemoteOutput,
+		SetupStdout: req.RemoteOutput,
+		SetupStderr: req.RemoteOutput,
+	}
+	_, execErr := sandboxexec.Run(ctx, commandReq, sandboxexec.Dependencies{
+		SelectedRuntimeImage: templateSelectionRuntimeImage(req.TemplateSelection),
+		ResolveTarget: func(ctx context.Context, _ sandboxexec.TargetRequest) (*sandbox.SandboxState, error) {
+			resolved, err := resolveFactorySandboxTarget(ctx, req, &record, provisionRepo, deps)
+			if err == nil {
+				selectedTarget = cloneFactorySandboxSelectedTarget(resolved)
+			}
+			return resolved, err
+		},
+		ValidateTarget: func(_ context.Context, target *sandbox.SandboxState) error {
+			return validateSelectedTemplateConstructionTarget(req.TemplateSelection, target)
+		},
+		OnTargetReady: func(_ context.Context, ready *sandbox.SandboxState) error {
+			if _, err := bindSelectedTemplateToSandboxTarget(req.TemplateSelection, record.RunID, ready); err != nil {
+				return err
+			}
+			target = ready
+			if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{
+				SandboxHostID:  req.SandboxHostID,
+				SandboxRuntime: req.SandboxRuntime,
+				Target:         target,
+				Workspace:      factorySandboxWorkspaceStateFromRecord(record),
+				Save:           deps.persistSandboxState,
+			}); err != nil {
+				return err
+			}
+			metadataTarget := factorySandboxTargetWithSelectedSecurity(target, selectedTarget)
+			record.SandboxName, record.Sandbox = factorySandboxPersistentMetadataFromState(req, record, metadataTarget)
+			record.UpdatedAt = deps.now().UTC()
+			if err := saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor); err != nil {
+				return fmt.Errorf("record factory sandbox metadata: %w", err)
+			}
+			if err := recordFactorySandboxSecurityPolicyEvent(store, deps, &record, metadataTarget, req.NetworkPolicyDecisionLogs, secretRedactor); err != nil {
+				return fmt.Errorf("record factory sandbox security metadata: %w", err)
+			}
+			if err := recordFactorySandboxCredentialDeliveryActivationLog(store, deps, &record, secretRedactor); err != nil {
+				return fmt.Errorf("record factory sandbox credential activation status: %w", err)
+			}
+			if err := enforceFactorySandboxReadinessGate(store, deps, req, &record, secretRedactor); err != nil {
+				return err
+			}
+			remoteOutput = newFactorySandboxTimelineWriter(store, deps, &record, target, req.RemoteOutput, req.ResolvedSecrets)
+			return nil
+		},
+		ResolveDriver: func(_ context.Context, target sandboxruntime.Target) (sandboxruntime.Driver, error) {
+			driver, handled, err := deps.resolveFactorySandboxRuntimeDriver(req, target, selectedTarget)
+			if !handled {
+				driver, err = deps.resolveRuntimeDriver(target)
+			}
+			if err == nil {
+				runtimeDriver = driver
+				workerRuntimeSelected = handled
+			}
+			return driver, err
+		},
+		OnDriverReady: func(_ context.Context, ready sandboxruntime.Target, _ sandboxruntime.Driver) error {
+			if target == nil {
+				target = sandboxStateFromRuntimeTarget(ready)
+			}
+			return nil
+		},
+		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if factorySandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				return prepareFactorySandboxWorkspaceRuntime(ctx, store, deps, &record, req, prep, remoteOutput)
+			}
+			provider, err := ensureProvider(prep.Target.Provider)
+			if err != nil {
+				return err
+			}
+			return prepareFactorySandboxWorkspace(ctx, store, deps, &record, req, sandboxStateFromRuntimeTarget(prep.Target), provider, sandboxConnectInfoFromRuntimeTarget(prep.Target), remoteOutput)
+		},
+		PrepareAuth: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if factorySandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				return factorySandboxSyncEngineAuthRuntime(ctx, prep, deps)
+			}
+			provider, err := ensureProvider(prep.Target.Provider)
+			if err != nil {
+				return err
+			}
+			return factorySandboxSyncEngineAuth(ctx, provider, sandboxStateFromRuntimeTarget(prep.Target), newFactorySandboxRemoteUserOutputWriter(remoteOutput), deps)
+		},
+		PrepareCommand: func(ctx context.Context, prep sandboxexec.PrepareContext, command *sandboxexec.CommandRequest) error {
+			userOutput := newFactorySandboxRemoteUserOutputWriter(remoteOutput)
+			var remoteAuto factoryRunAutoRequest
+			var err error
+			if factorySandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
+				remoteAuto, err = factorySandboxPrepareRemoteInputsRuntime(ctx, req, prep)
+			} else {
+				provider, providerErr := ensureProvider(prep.Target.Provider)
+				if providerErr != nil {
+					return providerErr
+				}
+				remoteAuto, err = factorySandboxPrepareRemoteInputs(ctx, req, provider, sandboxStateFromRuntimeTarget(prep.Target), userOutput, deps)
+			}
+			if err != nil {
+				return err
+			}
+			preparedRemoteAuto = remoteAuto
+			command.Command = factorySandboxRemoteCommandArgs(record, remoteAuto)
+			command.WorkDir = factorySandboxRemoteWorkspaceDir(record)
+			command.Env = factorySandboxResolvedSecretEnv(req.ResolvedSecrets)
+			command.Stdout = userOutput
+			command.Stderr = command.Stdout
+			return nil
+		},
+		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
+			return runFactorySandboxRuntimeExecWithRetries(ctx, run, command, record, preparedRemoteAuto, remoteOutput)
+		},
+		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
+			return handleFactorySandboxExecutorEvent(remoteOutput, event)
+		},
+	})
+	if execErr != nil {
+		if phaseErr, ok := sandboxexec.AsPhaseError(execErr); ok {
+			if phaseErr.Target != nil && target == nil {
+				target = phaseErr.Target
+			}
 		}
-		if syncErr := remoteOutput.SyncNextSequence(); syncErr != nil {
-			return fmt.Errorf("sync sandbox timeline sequence: %w", syncErr)
+		if target != nil && workerRuntimeSelected && runtimeDriver != nil {
+			attemptFactorySandboxRuntimeRecoveryArtifacts(ctx, deps, record, target, runtimeDriver, remoteOutput)
+		} else if target != nil && provider != nil {
+			attemptFactorySandboxRecoveryArtifacts(ctx, deps, record, target, provider, remoteOutput)
 		}
-		if bootstrapErr != nil {
-			_ = recordFactorySandboxFailure(store, deps, &record, target, "bootstrap", bootstrapErr, secretRedactor)
-			return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, bootstrapErr, secretRedactor)
-		}
+		returnErr = handleFactorySandboxExecutorError(ctx, store, deps, req, &record, target, execErr, secretRedactor)
+		return returnErr
 	}
-
-	if err := factorySandboxSyncEngineAuth(ctx, provider, target, remoteOutput, deps); err != nil {
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_auth", err, secretRedactor)
-		return factorySandboxRecordedError("prepare factory sandbox auth", target, err, secretRedactor)
-	}
-
-	remoteAuto, err := factorySandboxPrepareRemoteInputs(ctx, req, provider, target, remoteOutput, deps)
-	if err != nil {
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "prepare_inputs", err, secretRedactor)
-		return factorySandboxRecordedError("prepare factory sandbox inputs", target, err, secretRedactor)
-	}
-
-	remoteArgs := factorySandboxRemoteCommandArgs(record, remoteAuto)
-	if err := remoteOutput.appendExecutorEvent(factory.EventTypeStepStarted, "Remote sandbox execution started", map[string]any{
-		"command": strings.Join(remoteArgs, " "),
-		"status":  factory.RunStatusRunning,
-	}); err != nil {
-		return fmt.Errorf("record remote sandbox start: %w", err)
-	}
-	runErr := deps.runProviderExecWithEnv(ctx, provider, sandbox.ConnectInfoFromState(target), remoteArgs, factorySandboxResolvedSecretEnv(req.ResolvedSecrets), remoteOutput)
-	flushErr := remoteOutput.Flush()
-	if runErr != nil {
-		if flushErr != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("record remote sandbox output: %w", flushErr))
-		}
-		sanitizedErr := factorySandboxSanitizedError(target, runErr, secretRedactor)
-		_ = recordFactorySandboxFailure(store, deps, &record, target, "run", runErr, secretRedactor)
-		return fmt.Errorf("execute factory sandbox command: %s", sanitizedErr)
-	}
-	if flushErr != nil {
-		return fmt.Errorf("record remote sandbox output: %w", flushErr)
-	}
-	if err := remoteOutput.appendExecutorEvent(factory.EventTypeStepEnded, "Remote sandbox execution completed", map[string]any{
-		"status": factory.RunStatusSucceeded,
-	}); err != nil {
-		return err
+	if workerRuntimeSelected && runtimeDriver != nil {
+		attemptFactorySandboxRuntimeRecoveryArtifacts(ctx, deps, record, target, runtimeDriver, remoteOutput)
+	} else {
+		attemptFactorySandboxRecoveryArtifacts(ctx, deps, record, target, provider, remoteOutput)
 	}
 	if !req.DeferSuccessCleanup {
 		cleanupSucceeded = true
 	}
 	return nil
+}
+
+func attemptFactorySandboxRecoveryArtifacts(ctx context.Context, deps factorySandboxExecutorDeps, record factory.RunRecord, target *sandbox.SandboxState, provider sandbox.Provider, remoteOutput *factorySandboxTimelineWriter) {
+	if deps.generateRecovery == nil {
+		return
+	}
+	if err := deps.generateRecovery(ctx, factorySandboxRecoveryArtifactRequest{
+		Deps:         deps,
+		Record:       record,
+		Target:       target,
+		Provider:     provider,
+		RemoteOutput: remoteOutput,
+	}); err != nil {
+		if remoteOutput != nil {
+			_ = remoteOutput.appendExecutorEvent(factory.EventTypeArtifactSync, "Sandbox recovery artifact generation skipped", map[string]any{
+				"status": "warning",
+				"reason": "recovery_generation_failed",
+			})
+		}
+	}
+}
+
+func attemptFactorySandboxRuntimeRecoveryArtifacts(ctx context.Context, deps factorySandboxExecutorDeps, record factory.RunRecord, target *sandbox.SandboxState, driver sandboxruntime.Driver, remoteOutput *factorySandboxTimelineWriter) {
+	if err := generateFactorySandboxRuntimeRecoveryArtifacts(ctx, record, target, driver, remoteOutput); err != nil && remoteOutput != nil {
+		_ = remoteOutput.appendExecutorEvent(factory.EventTypeArtifactSync, "Sandbox recovery artifact generation skipped", map[string]any{
+			"status": "warning",
+			"reason": "recovery_generation_failed",
+		})
+	}
+}
+
+func generateFactorySandboxRuntimeRecoveryArtifacts(ctx context.Context, record factory.RunRecord, target *sandbox.SandboxState, driver sandboxruntime.Driver, remoteOutput *factorySandboxTimelineWriter) error {
+	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
+	if workspaceDir == "" || target == nil || driver == nil {
+		return nil
+	}
+	script := factorySandboxRecoveryArtifactScript(workspaceDir, record.BaseBranch)
+	if strings.TrimSpace(script) == "" {
+		return nil
+	}
+	_, err := driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target: sandboxRuntimeTargetFromState(target),
+		Args:   []string{"sh", "-c", script},
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+	})
+	if err != nil {
+		return err
+	}
+	if remoteOutput != nil {
+		return remoteOutput.appendExecutorEvent(factory.EventTypeArtifactSync, "Sandbox recovery artifacts generated", map[string]any{
+			"status": "generated",
+		})
+	}
+	return nil
+}
+
+type factorySandboxRecoveryArtifactRequest struct {
+	Deps         factorySandboxExecutorDeps
+	Record       factory.RunRecord
+	Target       *sandbox.SandboxState
+	Provider     sandbox.Provider
+	RemoteOutput *factorySandboxTimelineWriter
+}
+
+func generateFactorySandboxRecoveryArtifacts(ctx context.Context, req factorySandboxRecoveryArtifactRequest) error {
+	workspaceDir := factorySandboxRemoteWorkspaceDir(req.Record)
+	if workspaceDir == "" || req.Target == nil || req.Provider == nil || req.Deps.runProviderScript == nil {
+		return nil
+	}
+	script := factorySandboxRecoveryArtifactScript(workspaceDir, req.Record.BaseBranch)
+	if strings.TrimSpace(script) == "" {
+		return nil
+	}
+	out := io.Discard
+	if req.RemoteOutput != nil {
+		out = req.RemoteOutput
+	}
+	if err := req.Deps.runProviderScript(ctx, req.Provider, sandbox.ConnectInfoFromState(req.Target), script, out); err != nil {
+		return err
+	}
+	if req.RemoteOutput != nil {
+		return req.RemoteOutput.appendExecutorEvent(factory.EventTypeArtifactSync, "Sandbox recovery artifacts generated", map[string]any{
+			"status": "generated",
+		})
+	}
+	return nil
+}
+
+func factorySandboxRecoveryArtifactScript(workspaceDir, baseBranch string) string {
+	workspaceDir = strings.TrimSpace(workspaceDir)
+	if workspaceDir == "" {
+		return ""
+	}
+	baseBranch = strings.TrimSpace(baseBranch)
+	var script strings.Builder
+	script.WriteString("set -eu\n")
+	script.WriteString("cd " + shellQuote(workspaceDir) + "\n")
+	script.WriteString("mkdir -p .hal/recovery\n")
+	script.WriteString("git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0\n")
+	script.WriteString("git rev-parse HEAD > .hal/recovery/head.txt 2>/dev/null || true\n")
+	script.WriteString("git branch --show-current > .hal/recovery/branch.txt 2>/dev/null || true\n")
+	script.WriteString("git status --short --branch > .hal/recovery/status.txt 2>/dev/null || true\n")
+	script.WriteString("git log --oneline --decorate -20 > .hal/recovery/log.txt 2>/dev/null || true\n")
+	script.WriteString("git diff --binary --no-ext-diff > .hal/recovery/dirty.patch 2>/dev/null || true\n")
+	script.WriteString("git diff --cached --binary --no-ext-diff > .hal/recovery/staged.patch 2>/dev/null || true\n")
+	script.WriteString("for hal_file in .hal/auto-state.json .hal/prd.json .hal/progress.txt; do\n")
+	script.WriteString("  if [ -f \"$hal_file\" ]; then cp \"$hal_file\" \".hal/recovery/$(basename \"$hal_file\")\" 2>/dev/null || true; fi\n")
+	script.WriteString("done\n")
+	script.WriteString("base_ref=''\n")
+	if baseBranch != "" {
+		script.WriteString("for candidate in " + shellQuote(baseBranch) + " " + shellQuote("origin/"+baseBranch) + "; do\n")
+		script.WriteString("  if git rev-parse --verify \"$candidate^{commit}\" >/dev/null 2>&1; then base_ref=\"$candidate\"; break; fi\n")
+		script.WriteString("done\n")
+	}
+	script.WriteString("if [ -z \"$base_ref\" ]; then base_ref=\"$(git rev-list --max-parents=0 HEAD 2>/dev/null | tail -n 1 || true)\"; fi\n")
+	script.WriteString("if [ -n \"$base_ref\" ]; then\n")
+	script.WriteString("  git format-patch --stdout \"$base_ref\"..HEAD > .hal/recovery/git-format-patch.patch 2>/dev/null || git diff --binary --no-ext-diff \"$base_ref\"..HEAD > .hal/recovery/git-format-patch.patch 2>/dev/null || true\n")
+	script.WriteString("  git bundle create .hal/recovery/git-bundle.bundle HEAD \"$base_ref\"..HEAD >/dev/null 2>&1 || rm -f .hal/recovery/git-bundle.bundle\n")
+	script.WriteString("else\n")
+	script.WriteString("  git diff --binary --no-ext-diff > .hal/recovery/git-format-patch.patch 2>/dev/null || true\n")
+	script.WriteString("fi\n")
+	script.WriteString("[ -s .hal/recovery/git-format-patch.patch ] || rm -f .hal/recovery/git-format-patch.patch\n")
+	script.WriteString("[ -s .hal/recovery/dirty.patch ] || rm -f .hal/recovery/dirty.patch\n")
+	script.WriteString("[ -s .hal/recovery/staged.patch ] || rm -f .hal/recovery/staged.patch\n")
+	script.WriteString("json_escape() { printf '%s' \"$1\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'; }\n")
+	script.WriteString("head_value=\"$(cat .hal/recovery/head.txt 2>/dev/null || true)\"\n")
+	script.WriteString("branch_value=\"$(cat .hal/recovery/branch.txt 2>/dev/null || true)\"\n")
+	script.WriteString("created_at=\"$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date 2>/dev/null || true)\"\n")
+	script.WriteString("{\n")
+	script.WriteString("  printf '{\\n'\n")
+	script.WriteString("  printf '  \"baseBranch\": \"%s\",\\n' \"$(json_escape " + shellQuote(baseBranch) + ")\"\n")
+	script.WriteString("  printf '  \"head\": \"%s\",\\n' \"$(json_escape \"$head_value\")\"\n")
+	script.WriteString("  printf '  \"branch\": \"%s\",\\n' \"$(json_escape \"$branch_value\")\"\n")
+	script.WriteString("  printf '  \"createdAt\": \"%s\"\\n' \"$(json_escape \"$created_at\")\"\n")
+	script.WriteString("  printf '}\\n'\n")
+	script.WriteString("} > .hal/recovery/manifest.json 2>/dev/null || true\n")
+	return script.String()
+}
+
+func (deps factorySandboxExecutorDeps) resolveFactorySandboxRuntimeDriver(req factorySandboxExecutorRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) (sandboxruntime.Driver, bool, error) {
+	if !factorySandboxWorkerRuntimeRouteSelected(req, target, selectedTarget) {
+		return nil, false, nil
+	}
+	resolver := deps.resolveWorkerRuntime
+	if resolver == nil && !deps.customRuntimeResolver {
+		resolver = func(req sandboxWorkerRuntimeRequest) (sandboxruntime.Driver, error) {
+			return sandboxWorkerRuntimeDriverFromTarget(req, sandboxWorkerRuntimeDriverFactories{})
+		}
+	}
+	if resolver == nil {
+		return nil, false, nil
+	}
+	driver, err := resolver(sandboxWorkerRuntimeRequest{
+		Target: target,
+		Host:   selectedTarget.Host,
+	})
+	return driver, true, err
+}
+
+func factorySandboxWorkerRuntimeRouteSelected(req factorySandboxExecutorRequest, target sandboxruntime.Target, selectedTarget *sandbox.SandboxState) bool {
+	return sandboxWorkerRuntimeRouteSelected(req.SandboxHostID, req.SandboxRuntime, target, selectedTarget)
+}
+
+func resolveFactorySandboxTarget(ctx context.Context, req factorySandboxExecutorRequest, record *factory.RunRecord, provisionRepo string, deps factorySandboxExecutorDeps) (*sandbox.SandboxState, error) {
+	if record == nil {
+		return nil, fmt.Errorf("factory run record is required")
+	}
+	if name := strings.TrimSpace(req.SandboxName); name != "" {
+		record.SandboxName, record.Sandbox = factorySandboxMetadataFromName(name)
+	} else if strings.TrimSpace(record.SandboxName) != "" {
+		req.SandboxName = strings.TrimSpace(record.SandboxName)
+	}
+	target, err := resolveSandboxCommandExecutionTarget(
+		ctx,
+		sandboxCommandTargetRequest{
+			Purpose:                   sandbox.SandboxLeasePurposeFactory,
+			SandboxName:               req.SandboxName,
+			SandboxHostID:             req.SandboxHostID,
+			SandboxRuntime:            req.SandboxRuntime,
+			SecurityReadinessGateMode: req.SecurityReadinessGateMode,
+			ProjectDir:                req.ProjectDir,
+			Repository:                provisionRepo,
+			Branch:                    record.BranchName,
+			ProvisionRepository:       provisionRepo,
+			TemplateRuntimeDriver:     templateSelectionRuntimeDriver(req.TemplateSelection),
+			TemplateIsolationLevel:    templateSelectionIsolationLevel(req.TemplateSelection),
+			TemplateRuntimeImage:      templateSelectionRuntimeImage(req.TemplateSelection),
+			TemplateLock:              selectedTemplateConstructionLock(req.TemplateSelection),
+			LoadContext:               "factory sandbox",
+			Out:                       req.RemoteOutput,
+			WrapProvisionFailure:      true,
+		},
+		sandboxCommandTargetDeps{
+			loadSandbox:    deps.loadSandbox,
+			listSandboxes:  deps.listSandboxes,
+			listHosts:      deps.listHosts,
+			resolveDefault: deps.resolveDefault,
+			provision:      deps.provision,
+		},
+		sandboxCommandScheduledTargetRequest{
+			Purpose:        sandbox.SandboxLeasePurposeFactory,
+			SandboxName:    req.SandboxName,
+			SandboxHostID:  req.SandboxHostID,
+			SandboxRuntime: req.SandboxRuntime,
+			ProjectDir:     req.ProjectDir,
+			Repository:     provisionRepo,
+			Branch:         record.BranchName,
+			RunID:          record.RunID,
+			Workspace:      factorySandboxWorkspaceStateFromRecord(*record),
+		},
+		sandboxCommandScheduledTargetDeps{
+			listHosts:    deps.listHosts,
+			listLeases:   deps.listLeases,
+			now:          deps.now,
+			acquireLease: deps.acquireLease,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) {
+		target = sandboxCommandSSHMachineCompatWorkerTarget(target)
+	}
+	if req.TemplateSelection == nil {
+		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+	}
+	return target, nil
+}
+
+func prepareFactorySandboxWorkspace(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, req factorySandboxExecutorRequest, target *sandbox.SandboxState, provider sandbox.Provider, connectInfo *sandbox.ConnectInfo, remoteOutput *factorySandboxTimelineWriter) error {
+	bootstrapReq, ok := factorySandboxBootstrapRequest(*record, req.ResolvedSecrets)
+	if !ok {
+		return nil
+	}
+	if connectInfo == nil {
+		connectInfo = sandbox.ConnectInfoFromState(target)
+	}
+	bootstrapResult, bootstrapErr := deps.bootstrap(ctx, bootstrapReq, factory.BootstrapDeps{
+		Executor: &factorySandboxBootstrapExecutor{
+			provider:               provider,
+			connectInfo:            connectInfo,
+			runProviderExecWithEnv: deps.runProviderExecWithEnv,
+			// Bootstrap timelines are persisted from sanitized BootstrapResult
+			// events; stream redacted command output to the caller-facing writer.
+			out:          req.RemoteOutput,
+			outputRedact: factory.NewBootstrapSanitizer(bootstrapReq).SanitizeString,
+		},
+		Now: deps.now,
+		RepoExists: func(path string) (bool, error) {
+			return factorySandboxRemoteRepoExists(ctx, provider, connectInfo, deps.runProviderScript, path, bootstrapReq.RepositoryURL)
+		},
+	})
+	if appendErr := appendFactorySandboxBootstrapTimeline(store, deps, record, target, bootstrapResult, remoteOutput); appendErr != nil {
+		return fmt.Errorf("record sandbox bootstrap timeline: %w", appendErr)
+	}
+	if syncErr := remoteOutput.SyncNextSequence(); syncErr != nil {
+		return fmt.Errorf("sync sandbox timeline sequence: %w", syncErr)
+	}
+	return bootstrapErr
+}
+
+func handleFactorySandboxExecutorEvent(remoteOutput *factorySandboxTimelineWriter, event sandboxexec.Event) error {
+	if remoteOutput == nil {
+		return nil
+	}
+	switch event.Type {
+	case sandboxexec.EventCommandStarted:
+		if err := remoteOutput.appendExecutorEvent(factory.EventTypeStepStarted, "Remote sandbox execution started", map[string]any{
+			"command": strings.Join(event.Command, " "),
+			"status":  factory.RunStatusRunning,
+		}); err != nil {
+			return fmt.Errorf("record remote sandbox start: %w", err)
+		}
+	case sandboxexec.EventCommandOutput:
+		return remoteOutput.appendOutputLine(event.Line)
+	case sandboxexec.EventCommandCompleted:
+		if err := remoteOutput.Flush(); err != nil {
+			return fmt.Errorf("record remote sandbox output: %w", err)
+		}
+		return remoteOutput.appendExecutorEvent(factory.EventTypeStepEnded, "Remote sandbox execution completed", map[string]any{
+			"status": factory.RunStatusSucceeded,
+		})
+	case sandboxexec.EventCommandFailed:
+		return nil
+	}
+	return nil
+}
+
+func runFactorySandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
+	if run.Driver == nil {
+		return fmt.Errorf("sandbox runtime driver is required")
+	}
+	_, err := run.Driver.Exec(ctx, sandboxruntime.ExecRequest{
+		Target: run.Target,
+		Args:   append([]string(nil), command.Command...),
+		Stdout: command.Stdout,
+		Stderr: command.Stderr,
+		Stdin:  command.Stdin,
+		Env:    command.Env,
+	})
+	return err
+}
+
+func runFactorySandboxRuntimeExecWithRetries(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest, record factory.RunRecord, req factoryRunAutoRequest, remoteOutput *factorySandboxTimelineWriter) error {
+	attempts := factoryCommandAttemptCount(req.MaxCommandRetries)
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		runCommand := command
+		if attempt > 1 {
+			resumeReq := factoryRunResumeAutoRequest(req)
+			runCommand.Command = factorySandboxRemoteCommandArgs(record, resumeReq)
+			if remoteOutput != nil {
+				_ = remoteOutput.appendExecutorEvent(factory.EventTypeStepStarted, "Retrying remote sandbox execution", map[string]any{
+					"attempt":     attempt,
+					"maxAttempts": attempts,
+					"mode":        "resume",
+					"status":      factory.RunStatusRunning,
+				})
+			}
+		}
+		err = runFactorySandboxRuntimeExec(ctx, run, runCommand)
+		if err == nil {
+			return nil
+		}
+		if attempt >= attempts || !factorySandboxCanRetryRemoteAuto(ctx, run, command, err) {
+			return err
+		}
+		if remoteOutput != nil {
+			_ = remoteOutput.appendExecutorEvent(factory.EventTypeStepEnded, "Remote sandbox execution attempt failed; retrying with resume", map[string]any{
+				"attempt":     attempt,
+				"maxAttempts": attempts,
+				"status":      factory.RunStatusFailed,
+			})
+		}
+	}
+	return err
+}
+
+func factorySandboxCanRetryRemoteAuto(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest, err error) bool {
+	if !factoryCommandErrorIsRetryable(ctx, err) {
+		return false
+	}
+	if run.Driver == nil {
+		return false
+	}
+	workspaceDir := strings.TrimSpace(command.WorkDir)
+	if workspaceDir == "" {
+		return false
+	}
+	checkCommand := sandboxexec.CommandRequest{
+		Command: []string{"sh", "-c", "cd " + shellQuote(workspaceDir) + " && test -f .hal/auto-state.json"},
+		Stdout:  io.Discard,
+		Stderr:  io.Discard,
+	}
+	return runFactorySandboxRuntimeExec(ctx, run, checkCommand) == nil
+}
+
+func handleFactorySandboxExecutorError(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record *factory.RunRecord, target *sandbox.SandboxState, err error, secretRedactor factory.RunSecretRedactor) error {
+	phaseErr, ok := sandboxexec.AsPhaseError(err)
+	if !ok {
+		return err
+	}
+	failureErr := phaseErr.Err
+	if failureErr == nil {
+		failureErr = err
+	}
+	if phaseErr.Target != nil && target == nil {
+		target = phaseErr.Target
+	}
+	switch phaseErr.Phase {
+	case sandboxexec.PhaseResolveTarget:
+		if strings.TrimSpace(failureErr.Error()) == "sandbox target is required" {
+			return fmt.Errorf("factory sandbox target is required")
+		}
+		_ = recordFactorySandboxFailure(store, deps, record, target, "resolve_target", failureErr, secretRedactor)
+		return failureErr
+	case sandboxexec.PhaseProvisionTarget:
+		_ = recordFactorySandboxFailure(store, deps, record, target, "provision", failureErr, secretRedactor)
+		return factorySandboxRecordedError("provision factory sandbox", target, failureErr, secretRedactor)
+	case sandboxexec.PhaseStartTarget:
+		_ = recordFactorySandboxFailure(store, deps, record, target, "start", failureErr, secretRedactor)
+		name := ""
+		if target != nil {
+			name = target.Name
+		}
+		return factorySandboxRecordedError(fmt.Sprintf("start factory sandbox %q", name), target, failureErr, secretRedactor)
+	case sandboxexec.PhaseResolveDriver:
+		_ = recordFactorySandboxFailure(store, deps, record, target, "resolve_driver", failureErr, secretRedactor)
+		providerName := ""
+		if target != nil {
+			providerName = target.Provider
+		}
+		return factorySandboxRecordedError(fmt.Sprintf("resolve sandbox provider %q", providerName), target, failureErr, secretRedactor)
+	case sandboxexec.PhasePrepareWorkspace:
+		_ = recordFactorySandboxFailure(store, deps, record, target, "bootstrap", failureErr, secretRedactor)
+		return factorySandboxRecordedError("bootstrap factory sandbox workspace", target, failureErr, secretRedactor)
+	case sandboxexec.PhasePrepareAuth:
+		_ = recordFactorySandboxFailure(store, deps, record, target, "prepare_auth", failureErr, secretRedactor)
+		return factorySandboxRecordedError("prepare factory sandbox auth", target, failureErr, secretRedactor)
+	case sandboxexec.PhasePrepareCommand:
+		_ = recordFactorySandboxFailure(store, deps, record, target, "prepare_inputs", failureErr, secretRedactor)
+		return factorySandboxRecordedError("prepare factory sandbox inputs", target, failureErr, secretRedactor)
+	case sandboxexec.PhaseRun:
+		sanitizedErr := factorySandboxSanitizedError(target, failureErr, secretRedactor)
+		_ = recordFactorySandboxFailure(store, deps, record, target, "run", failureErr, secretRedactor)
+		return fmt.Errorf("execute factory sandbox command: %s", sanitizedErr)
+	default:
+		return failureErr
+	}
 }
 
 func factorySandboxCleanupBehavior(record factory.RunRecord) string {
@@ -391,14 +955,19 @@ func factorySandboxCleanupBehavior(record factory.RunRecord) string {
 	}
 }
 
-func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState, provider sandbox.Provider, out io.Writer, behavior string, succeeded bool) (bool, error) {
+func factorySandboxCleanupBehaviorWillRun(behavior string, succeeded bool) bool {
 	switch behavior {
 	case factory.CleanupBehaviorAlways:
+		return true
 	case factory.CleanupBehaviorOnSuccess:
-		if !succeeded {
-			return false, nil
-		}
+		return succeeded
 	default:
+		return false
+	}
+}
+
+func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState, provider sandbox.Provider, out io.Writer, behavior string, succeeded bool) (bool, error) {
+	if !factorySandboxCleanupBehaviorWillRun(behavior, succeeded) {
 		return false, nil
 	}
 	if req.BeforeCleanup != nil {
@@ -416,26 +985,22 @@ func cleanupFactorySandboxAfterRun(ctx context.Context, deps factorySandboxExecu
 	return true, nil
 }
 
-func cleanupFactorySandboxAfterFailedStart(ctx context.Context, store factory.Store, deps factorySandboxExecutorDeps, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState) error {
-	if factorySandboxCleanupBehavior(record) != factory.CleanupBehaviorAlways {
-		return nil
+func cleanupFactorySandboxRuntimeAfterRun(ctx context.Context, req factorySandboxExecutorRequest, record factory.RunRecord, target *sandbox.SandboxState, driver sandboxruntime.Driver, behavior string, succeeded bool) (bool, error) {
+	if !factorySandboxCleanupBehaviorWillRun(behavior, succeeded) {
+		return false, nil
 	}
-	secretRedactor := factory.NewRunSecretRedactor(req.ResolvedSecrets)
-	provider, err := deps.resolveProvider(target.Provider)
-	if err != nil {
-		return fmt.Errorf("resolve sandbox provider %q: %w", target.Provider, err)
-	}
-	cleaned, cleanupErr := cleanupFactorySandboxAfterRun(ctx, deps, req, record, target, provider, req.RemoteOutput, factory.CleanupBehaviorAlways, false)
-	if cleaned {
-		if recordErr := recordFactorySandboxCleanedUp(store, deps, &record, target, secretRedactor); recordErr != nil {
-			if cleanupErr != nil {
-				cleanupErr = errors.Join(cleanupErr, recordErr)
-			} else {
-				cleanupErr = recordErr
-			}
+	if req.BeforeCleanup != nil {
+		if err := req.BeforeCleanup(ctx, record); err != nil {
+			return false, fmt.Errorf("prepare factory sandbox cleanup: %w", err)
 		}
 	}
-	return cleanupErr
+	if target == nil || driver == nil {
+		return false, fmt.Errorf("sandbox runtime cleanup target and driver are required")
+	}
+	if err := driver.Delete(ctx, sandboxruntime.LifecycleRequest{Target: sandboxRuntimeTargetFromState(target)}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 type factorySandboxTimelineWriter struct {
@@ -570,6 +1135,17 @@ func (w *factorySandboxTimelineWriter) appendExecutorEvent(eventType, summary st
 	return w.appendExecutorEventLocked(eventType, summary, metadata)
 }
 
+func (w *factorySandboxTimelineWriter) appendOutputLine(line string) error {
+	if w == nil || strings.TrimSpace(w.runID) == "" {
+		return nil
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.appendLineLocked(strings.TrimSpace(line))
+}
+
 func (w *factorySandboxTimelineWriter) flushCompleteLinesLocked() error {
 	for {
 		idx := strings.IndexByte(w.pending, '\n')
@@ -610,7 +1186,7 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 		line = w.eventRedact(line)
 	}
 	metadata := map[string]any{
-		"source":      "remote_sandbox",
+		"source":      factory.LogSourceRemoteSandbox,
 		"stream":      "remote",
 		"sandboxName": w.sandboxName,
 		"provider":    w.provider,
@@ -645,7 +1221,7 @@ func (w *factorySandboxTimelineWriter) appendLineLocked(line string) error {
 
 func (w *factorySandboxTimelineWriter) appendExecutorEventLocked(eventType, summary string, metadata map[string]any) error {
 	eventMetadata := map[string]any{
-		"source":       "remote_sandbox",
+		"source":       factory.LogSourceRemoteSandbox,
 		"step":         factory.RunDurationStepEngineRun,
 		"executorMode": factory.ExecutorModeSandbox,
 		"sandboxName":  w.sandboxName,
@@ -739,6 +1315,39 @@ func (w *factorySandboxTimelineWriter) redactExecutorEventValue(value any) any {
 	default:
 		return value
 	}
+}
+
+type factorySandboxRemoteUserOutputWriter struct {
+	mu     sync.Mutex
+	dst    io.Writer
+	redact func(string) string
+}
+
+func newFactorySandboxRemoteUserOutputWriter(remoteOutput *factorySandboxTimelineWriter) io.Writer {
+	if remoteOutput == nil {
+		return io.Discard
+	}
+	return &factorySandboxRemoteUserOutputWriter{
+		dst:    remoteOutput.dst,
+		redact: remoteOutput.outputRedact,
+	}
+}
+
+func (w *factorySandboxRemoteUserOutputWriter) Write(p []byte) (int, error) {
+	if w == nil {
+		return len(p), nil
+	}
+	line := string(p)
+	if w.redact != nil {
+		line = w.redact(line)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.dst == nil || line == "" {
+		return len(p), nil
+	}
+	_, err := w.dst.Write([]byte(line))
+	return len(p), err
 }
 
 type factorySandboxBootstrapExecutor struct {
@@ -933,9 +1542,6 @@ func factorySandboxBootstrapRequest(record factory.RunRecord, secrets []factory.
 		WorkspaceDir:    workspaceDir,
 		RequiredEnvKeys: factorySandboxBootstrapRequiredEnvKeys(record.Secrets),
 		Env:             factorySandboxResolvedSecretEnv(secrets),
-		Options: factory.BootstrapOptions{
-			RefreshHal: true,
-		},
 	}
 	return factory.BootstrapRequestWithResolvedSecrets(request, secrets), true
 }
@@ -996,7 +1602,7 @@ func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySand
 			eventType = factory.EventTypeFailureClassification
 		}
 		metadata := map[string]any{
-			"source":       "remote_sandbox",
+			"source":       factory.LogSourceRemoteSandbox,
 			"phase":        "bootstrap",
 			"step":         timeline.Step,
 			"status":       timeline.Status,
@@ -1037,16 +1643,20 @@ func appendFactorySandboxBootstrapTimeline(store factory.Store, deps factorySand
 
 func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
 	args := []string{"auto"}
-	for _, arg := range req.Args {
-		if trimmed := strings.TrimSpace(arg); trimmed != "" {
-			args = append(args, trimmed)
+	if req.Resume {
+		args = append(args, "--resume")
+	} else {
+		for _, arg := range req.Args {
+			if trimmed := strings.TrimSpace(arg); trimmed != "" {
+				args = append(args, trimmed)
+			}
 		}
-	}
-	if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
-		args = append(args, "--report", reportPath)
-	}
-	if baseBranch := strings.TrimSpace(req.BaseBranch); baseBranch != "" {
-		args = append(args, "--base", baseBranch)
+		if reportPath := strings.TrimSpace(req.ReportPath); reportPath != "" {
+			args = append(args, "--report", reportPath)
+		}
+		if baseBranch := strings.TrimSpace(req.BaseBranch); baseBranch != "" {
+			args = append(args, "--base", baseBranch)
+		}
 	}
 	if engineName := normalizeFactoryRunEngineName(req.Engine); engineName != "" {
 		args = append(args, "--engine", engineName)
@@ -1058,14 +1668,22 @@ func factorySandboxRemoteAutoArgs(req factoryRunAutoRequest) []string {
 }
 
 func factorySandboxRemoteAutoScript(req factoryRunAutoRequest) string {
-	return factorySandboxRemoteHalScriptWithEnv(factorySandboxRemoteAutoArgs(req), factorySandboxRemoteAutoEnv(req.AttemptPolicy))
+	return factorySandboxRemoteHalScriptWithEnv(factorySandboxRemoteAutoArgs(req), factorySandboxRemoteAutoEnv(req))
 }
 
-func factorySandboxRemoteAutoEnv(policy autoFactoryAttemptPolicy) []string {
-	env := make([]string, 0, 3)
+func factorySandboxRemoteAutoEnv(req factoryRunAutoRequest) []string {
+	policy := req.AttemptPolicy
+	env := make([]string, 0, 10)
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxRunAttemptsEnv, policy.MaxRunAttempts))
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxReviewFixAttemptsEnv, policy.MaxReviewFixAttempts))
 	env = append(env, fmt.Sprintf("%s=%d", autoFactoryMaxCIFixAttemptsEnv, policy.MaxCIFixAttempts))
+	if ciPolicy := strings.TrimSpace(req.CIPolicy); ciPolicy != "" {
+		env = append(env, fmt.Sprintf("%s=%s", autoFactoryCIPolicyEnv, shellQuote(ciPolicy)))
+	}
+	if runtimeStatePolicy := strings.TrimSpace(req.RuntimeStatePolicy); runtimeStatePolicy != "" {
+		env = append(env, fmt.Sprintf("%s=%s", autoFactoryRuntimeStatePolicyEnv, shellQuote(runtimeStatePolicy)))
+	}
+	env = append(env, factoryAutoExecutionProfileEnv(req.ExecutionProfile)...)
 	return env
 }
 
@@ -1566,14 +2184,31 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 	if record == nil {
 		return nil
 	}
+	previousSandbox := record.Sandbox
 	if existing, err := store.LoadRun(record.RunID); err == nil && existing != nil {
 		record.Artifacts = existing.Artifacts
+		if previousSandbox == nil || (previousSandbox.Security == nil && existing.Sandbox != nil && existing.Sandbox.Security != nil) {
+			previousSandbox = existing.Sandbox
+		}
 	}
 	failedAt := deps.now().UTC()
 	if target != nil {
-		record.SandboxName, record.Sandbox = factorySandboxMetadataFromState(target)
+		name, metadata := factorySandboxMetadataFromState(target)
+		record.SandboxName = name
+		record.Sandbox = factorySandboxFailureMetadataWithPersistentOverlay(metadata, previousSandbox)
 	} else if strings.TrimSpace(record.SandboxName) == "" && record.Sandbox == nil {
 		record.SandboxName, record.Sandbox = factorySandboxMetadataFromName("")
+	} else if target == nil && previousSandbox != nil {
+		record.Sandbox = previousSandbox
+		if strings.TrimSpace(record.SandboxName) == "" {
+			record.SandboxName = strings.TrimSpace(previousSandbox.Name)
+		}
+	}
+	record.Sandbox = sanitizeFactorySandboxFailureMetadata(record.Sandbox)
+	if record.Sandbox != nil && strings.TrimSpace(record.Sandbox.Name) != "" {
+		record.SandboxName = strings.TrimSpace(record.Sandbox.Name)
+	} else {
+		record.SandboxName = factorySandboxFailureSafeMetadataString(record.SandboxName)
 	}
 	record.Status = factory.RunStatusFailed
 	record.CurrentStep = step
@@ -1609,6 +2244,107 @@ func recordFactorySandboxFailure(store factory.Store, deps factorySandboxExecuto
 			"source":      "remote_sandbox",
 		},
 	})
+}
+
+func factorySandboxFailureMetadataWithPersistentOverlay(metadata *factory.SandboxMetadata, previous *factory.SandboxMetadata) *factory.SandboxMetadata {
+	if metadata == nil || previous == nil {
+		return metadata
+	}
+	metadata.NetworkProxySession = previous.NetworkProxySession
+	metadata.CredentialProxyPlan = previous.CredentialProxyPlan
+	metadata.CredentialProxySession = previous.CredentialProxySession
+	if len(previous.CredentialProxyBindings) > 0 {
+		metadata.CredentialProxyBindings = append([]sandbox.SandboxCredentialProxyBindingMetadata(nil), previous.CredentialProxyBindings...)
+	}
+	metadata.CredentialDelivery = previous.CredentialDelivery
+	factorySandboxSanitizeCredentialProxyMetadata(metadata)
+	return metadata
+}
+
+func sanitizeFactorySandboxFailureMetadata(metadata *factory.SandboxMetadata) *factory.SandboxMetadata {
+	if metadata == nil {
+		return nil
+	}
+	safe := *metadata
+	safe.Name = factorySandboxFailureSafeMetadataString(safe.Name)
+	safe.Provider = factorySandboxFailureSafeMetadataString(safe.Provider)
+	safe.Size = factorySandboxFailureSafeMetadataString(safe.Size)
+	safe.SSHCommand = factorySandboxFailureSafeMetadataString(safe.SSHCommand)
+	safe.CleanupCommand = factorySandboxFailureSafeMetadataString(safe.CleanupCommand)
+	safe.Handoff = factorySandboxFailureSafeMetadataString(safe.Handoff)
+	safe.Host = sanitizeFactorySandboxFailureHostMetadata(safe.Host)
+	safe.Runtime = sanitizeFactorySandboxFailureRuntimeMetadata(safe.Runtime)
+	safe.Workspace = sanitizeFactorySandboxFailureWorkspaceMetadata(safe.Workspace)
+	safe.Security = cloneFactorySandboxSecurityMetadata(safe.Security)
+	safe.NetworkProxySession = factorySandboxNetworkProxySession(safe.NetworkProxySession)
+	factorySandboxSanitizeCredentialProxyMetadata(&safe)
+	if safe.CredentialDelivery != nil {
+		status := sandbox.SanitizeSandboxCredentialDeliverySurfaceStatusMetadata(*safe.CredentialDelivery)
+		if status.ID == "" {
+			safe.CredentialDelivery = nil
+		} else {
+			safe.CredentialDelivery = &status
+		}
+	}
+	safe.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(safe.TemplateLock)
+	return &safe
+}
+
+func sanitizeFactorySandboxFailureHostMetadata(host *factory.SandboxHostMetadata) *factory.SandboxHostMetadata {
+	if host == nil {
+		return nil
+	}
+	safe := *host
+	safe.ID = factorySandboxFailureSafeMetadataString(safe.ID)
+	safe.Name = factorySandboxFailureSafeMetadataString(safe.Name)
+	safe.Kind = factorySandboxFailureSafeMetadataString(safe.Kind)
+	if safe.ID == "" && safe.Name == "" && safe.Kind == "" {
+		return nil
+	}
+	return &safe
+}
+
+func sanitizeFactorySandboxFailureRuntimeMetadata(runtime *factory.SandboxRuntimeMetadata) *factory.SandboxRuntimeMetadata {
+	if runtime == nil {
+		return nil
+	}
+	safe := *runtime
+	safe.Driver = factorySandboxFailureSafeMetadataString(safe.Driver)
+	safe.IsolationLevel = factorySandboxFailureSafeMetadataString(safe.IsolationLevel)
+	safe.RuntimeID = factorySandboxFailureSafeMetadataString(safe.RuntimeID)
+	safe.Image = factorySandboxFailureSafeMetadataString(safe.Image)
+	safe.WorkerID = factorySandboxFailureSafeMetadataString(safe.WorkerID)
+	if safe.Driver == "" && safe.IsolationLevel == "" && safe.RuntimeID == "" && safe.Image == "" && safe.WorkerID == "" {
+		return nil
+	}
+	return &safe
+}
+
+func sanitizeFactorySandboxFailureWorkspaceMetadata(workspace *factory.SandboxWorkspaceMetadata) *factory.SandboxWorkspaceMetadata {
+	if workspace == nil {
+		return nil
+	}
+	safe := *workspace
+	safe.Mode = factorySandboxFailureSafeMetadataString(safe.Mode)
+	safe.InputSource = factorySandboxFailureSafeMetadataString(safe.InputSource)
+	safe.Branch = factorySandboxFailureSafeMetadataString(safe.Branch)
+	safe.SyncRef = factorySandboxFailureSafeMetadataString(safe.SyncRef)
+	if safe.Mode == "" && safe.InputSource == "" && safe.Branch == "" && safe.SyncRef == "" {
+		return nil
+	}
+	return &safe
+}
+
+func factorySandboxFailureSafeMetadataString(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	safe := sanitizeFactorySandboxFailureText(trimmed)
+	if safe != trimmed || strings.Contains(strings.ToLower(safe), "redacted") {
+		return ""
+	}
+	return safe
 }
 
 func recordFactorySandboxCleanedUp(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, secretRedactor factory.RunSecretRedactor) error {
@@ -1676,6 +2412,7 @@ func factorySandboxCleanedMetadata(record factory.RunRecord, target *sandbox.San
 	metadata.SSHCommand = ""
 	metadata.CleanupCommand = ""
 	metadata.Handoff = ""
+	factorySandboxSanitizeCredentialProxyMetadata(metadata)
 	return name, metadata
 }
 
@@ -1688,10 +2425,28 @@ func factorySandboxSanitizedError(target *sandbox.SandboxState, err error, secre
 		message = "sandbox factory executor failed"
 	}
 	if target == nil {
-		return sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(message))
+		return sanitizeFactorySandboxFailureText(sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(message)))
 	}
 	redactor := sandboxRedactor(false, nil, target)
-	return sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(redactor.Redact(message)))
+	return sanitizeFactorySandboxFailureText(sanitizeCredentialedRemoteReferences(secretRedactor.RedactString(redactor.Redact(message))))
+}
+
+var factorySandboxFailureSensitiveTextPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b\S+\s+-A\s+OUTPUT\s+-d\s+[^\n;]+?\s+-j\s+\S+`),
+	regexp.MustCompile("https?://[^\\s\"'`]+"),
+	regexp.MustCompile(`(?:/Users|/private|/tmp|/var|/home|/root)/[^\s"'` + "`" + `]+`),
+	regexp.MustCompile(`(?i)\b\S*(?:token|secret|credential|authorization|bearer|raw-template|registry-token|password)\S*\b`),
+}
+
+func sanitizeFactorySandboxFailureText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, pattern := range factorySandboxFailureSensitiveTextPatterns {
+		value = pattern.ReplaceAllString(value, factory.RunSecretRedactionPlaceholder)
+	}
+	return value
 }
 
 func factorySandboxRecordedError(prefix string, target *sandbox.SandboxState, err error, secretRedactor factory.RunSecretRedactor) error {
@@ -1728,8 +2483,129 @@ func factorySandboxMetadataFromState(instance *sandbox.SandboxState) (string, *f
 		SSHCommand:     fmt.Sprintf("hal sandbox ssh %s", instance.Name),
 		CleanupCommand: fmt.Sprintf("hal sandbox delete %s", instance.Name),
 		Handoff:        fmt.Sprintf("Inspect sandbox with `hal sandbox ssh %s`.", instance.Name),
+		Host:           factorySandboxHostMetadataFromState(instance),
+		Runtime:        factorySandboxRuntimeMetadataFromState(instance),
+		Workspace:      factorySandboxWorkspaceMetadataFromState(instance),
+		Security:       factorySandboxSecurityMetadataFromState(instance),
+		Lease:          factorySandboxLeaseMetadataFromState(instance),
+	}
+	metadata.SetTemplateLockFromRuntime(instance.Runtime)
+	if selectedWorkerRootlessSandboxState(instance) {
+		metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
 	}
 	return instance.Name, metadata
+}
+
+func cloneFactorySandboxSelectedTarget(target *sandbox.SandboxState) *sandbox.SandboxState {
+	if target == nil {
+		return nil
+	}
+	clone := *target
+	if target.Host != nil {
+		host := *target.Host
+		host.Labels = cloneFactorySandboxStringMap(target.Host.Labels)
+		host.SupportedRuntimes = append([]string(nil), target.Host.SupportedRuntimes...)
+		if target.Host.Capacity != nil {
+			capacity := *target.Host.Capacity
+			host.Capacity = &capacity
+		}
+		if target.Host.Health != nil {
+			health := *target.Host.Health
+			host.Health = &health
+		}
+		host.Security = cloneFactorySandboxSecurity(target.Host.Security)
+		if target.Host.Cost != nil {
+			cost := *target.Host.Cost
+			host.Cost = &cost
+		}
+		clone.Host = &host
+	}
+	if target.Runtime != nil {
+		runtime := *target.Runtime
+		runtime.TemplateLock = sandbox.SanitizeSandboxTemplateLockMetadata(target.Runtime.TemplateLock)
+		clone.Runtime = &runtime
+	}
+	if target.Workspace != nil {
+		workspace := *target.Workspace
+		clone.Workspace = &workspace
+	}
+	clone.Security = cloneFactorySandboxSecurity(target.Security)
+	return &clone
+}
+
+func cloneFactorySandboxStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
+}
+
+func factorySandboxTargetWithSelectedSecurity(target, selected *sandbox.SandboxState) *sandbox.SandboxState {
+	if target == nil || selected == nil || selected.Security == nil || selected.Security.SecurityReadinessGate == nil {
+		return target
+	}
+	clone := *target
+	clone.Security = cloneFactorySandboxSecurity(selected.Security)
+	return &clone
+}
+
+func cloneFactorySandboxSecurity(security *sandbox.SandboxSecurity) *sandbox.SandboxSecurity {
+	if security == nil {
+		return nil
+	}
+	clone := &sandbox.SandboxSecurity{
+		CapabilityReadiness:            sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		CapabilityReadinessDiagnostics: cloneCommandSandboxSecurityCapabilityReadinessDiagnostics(security.CapabilityReadinessDiagnostics),
+		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
+		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
+	}
+	if security.Network != nil {
+		network := *security.Network
+		network.PolicyResult = sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult)
+		clone.Network = &network
+	}
+	if security.Secrets != nil {
+		secrets := *security.Secrets
+		secrets.RequestedModes = append([]string(nil), security.Secrets.RequestedModes...)
+		secrets.ActiveModes = append([]string(nil), security.Secrets.ActiveModes...)
+		clone.Secrets = &secrets
+	}
+	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil && clone.CapabilityReadinessDiagnostics == nil && clone.SecurityReadinessGate == nil && clone.StrictComposition == nil {
+		return nil
+	}
+	return clone
+}
+
+func factorySandboxPersistentMetadataFromState(req factorySandboxExecutorRequest, record factory.RunRecord, instance *sandbox.SandboxState) (string, *factory.SandboxMetadata) {
+	name, metadata := factorySandboxMetadataFromState(instance)
+	if metadata == nil {
+		return name, nil
+	}
+	networkProxySession := factorySandboxNetworkProxySession(req.NetworkProxySession)
+	metadata.NetworkProxySession = networkProxySession
+	applyFactorySandboxCredentialProxyMetadata(metadata, req, record, networkProxySession)
+	if !sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) || !selectedWorkerRootlessSandboxState(instance) {
+		applyFactorySandboxCapabilityReadinessMetadata(req, metadata, instance)
+		return name, metadata
+	}
+	if workspace := factorySandboxWorkspaceMetadataFromWorkspace(factorySandboxWorkspaceStateFromRecord(record)); workspace != nil {
+		metadata.Workspace = workspace
+	}
+	metadata.WorkerRouting = sandboxWorkerRoutingMetadataFromState(instance)
+	applyFactorySandboxCapabilityReadinessMetadata(req, metadata, instance)
+	return name, metadata
+}
+
+func factorySandboxNetworkProxySession(session *sandbox.SandboxNetworkProxySessionMetadata) *sandbox.SandboxNetworkProxySessionMetadata {
+	if session == nil {
+		return nil
+	}
+	sanitized := sandbox.SanitizeSandboxNetworkProxySessionMetadata(*session)
+	return &sanitized
 }
 
 func factorySandboxMetadataFromName(name string) (string, *factory.SandboxMetadata) {
@@ -1768,6 +2644,348 @@ func factorySandboxConnectionMetadataFromState(instance *sandbox.SandboxState) *
 	return connection
 }
 
+func factorySandboxHostMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxHostMetadata {
+	if instance == nil || instance.Host == nil {
+		return nil
+	}
+	host := instance.Host
+	if strings.TrimSpace(host.ID) == "" && strings.TrimSpace(host.Name) == "" && strings.TrimSpace(host.Kind) == "" {
+		return nil
+	}
+	return &factory.SandboxHostMetadata{
+		ID:   host.ID,
+		Name: host.Name,
+		Kind: host.Kind,
+	}
+}
+
+func factorySandboxRuntimeMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxRuntimeMetadata {
+	if instance == nil || instance.Runtime == nil {
+		return nil
+	}
+	runtime := instance.Runtime
+	if strings.TrimSpace(runtime.Driver) == "" &&
+		strings.TrimSpace(runtime.IsolationLevel) == "" &&
+		strings.TrimSpace(runtime.RuntimeID) == "" &&
+		strings.TrimSpace(runtime.Image) == "" &&
+		strings.TrimSpace(runtime.WorkerID) == "" {
+		return nil
+	}
+	driver := strings.TrimSpace(runtime.Driver)
+	isolationLevel := strings.TrimSpace(runtime.IsolationLevel)
+	if driver == sandbox.SandboxRuntimeDriverRootlessPodman {
+		isolationLevel = sandbox.SandboxIsolationLevelContainer
+	}
+	return &factory.SandboxRuntimeMetadata{
+		Driver:         driver,
+		IsolationLevel: isolationLevel,
+		RuntimeID:      runtime.RuntimeID,
+		Image:          runtime.Image,
+		WorkerID:       runtime.WorkerID,
+	}
+}
+
+func factorySandboxWorkspaceMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxWorkspaceMetadata {
+	if instance == nil || instance.Workspace == nil {
+		return nil
+	}
+	return factorySandboxWorkspaceMetadataFromWorkspace(instance.Workspace)
+}
+
+func factorySandboxWorkspaceMetadataFromWorkspace(workspace *sandbox.SandboxWorkspace) *factory.SandboxWorkspaceMetadata {
+	if workspace == nil {
+		return nil
+	}
+	if strings.TrimSpace(workspace.Mode) == "" &&
+		strings.TrimSpace(workspace.InputSource) == "" &&
+		strings.TrimSpace(workspace.Branch) == "" &&
+		strings.TrimSpace(workspace.SyncRef) == "" {
+		return nil
+	}
+	return &factory.SandboxWorkspaceMetadata{
+		Mode:        workspace.Mode,
+		InputSource: workspace.InputSource,
+		Branch:      workspace.Branch,
+		SyncRef:     workspace.SyncRef,
+	}
+}
+
+func factorySandboxSecurityMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxSecurityMetadata {
+	if instance == nil || instance.Security == nil {
+		return nil
+	}
+	return factorySandboxSecurityMetadata(instance.Security)
+}
+
+func factorySandboxSecurityMetadata(security *sandbox.SandboxSecurity) *factory.SandboxSecurityMetadata {
+	if security == nil {
+		return nil
+	}
+	providedDiagnostics := cloneCommandSandboxSecurityCapabilityReadinessDiagnostics(security.CapabilityReadinessDiagnostics)
+	security = sanitizeCommandSandboxSecurity(security)
+	if security == nil {
+		return nil
+	}
+	capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
+	capabilityReadinessDiagnostics := providedDiagnostics
+	if capabilityReadinessDiagnostics == nil {
+		capabilityReadinessDiagnostics = factorySandboxCapabilityReadinessDiagnostics(capabilityReadiness)
+	}
+	metadata := &factory.SandboxSecurityMetadata{
+		CapabilityReadiness:            capabilityReadiness,
+		CapabilityReadinessDiagnostics: capabilityReadinessDiagnostics,
+		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
+		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
+	}
+	if security.Network != nil {
+		metadata.Network = &factory.SandboxNetworkSecurityMetadata{
+			PolicyRequested: security.Network.PolicyRequested,
+			PolicyEnforced:  security.Network.PolicyEnforced,
+			EnforcementMode: security.Network.EnforcementMode,
+			PolicyResult:    sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult),
+		}
+	}
+	if security.Secrets != nil {
+		metadata.Secrets = &factory.SandboxSecretSecurityMetadata{
+			RequestedModes: append([]string(nil), security.Secrets.RequestedModes...),
+			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
+		}
+	}
+	if metadata.Network == nil && metadata.Secrets == nil && metadata.CapabilityReadiness == nil && metadata.SecurityReadinessGate == nil && metadata.StrictComposition == nil {
+		return nil
+	}
+	return metadata
+}
+
+func factorySandboxLeaseMetadataFromState(instance *sandbox.SandboxState) *factory.SandboxLeaseMetadata {
+	lease := sandboxLeaseRefFromState(instance)
+	if lease == nil {
+		return nil
+	}
+	return &factory.SandboxLeaseMetadata{
+		ID:            lease.ID,
+		HostID:        lease.HostID,
+		HostName:      lease.HostName,
+		RuntimeDriver: lease.RuntimeDriver,
+		ResourceKey:   lease.ResourceKey,
+		Purpose:       lease.Purpose,
+		RunID:         lease.RunID,
+		AcquiredAt:    lease.AcquiredAt,
+		ExpiresAt:     lease.ExpiresAt,
+	}
+}
+
+func recordFactorySandboxSecurityPolicyEvent(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, target *sandbox.SandboxState, decisionLogs []sandbox.SandboxNetworkPolicyDecisionLogRecord, redactor factory.RunSecretRedactor) error {
+	if record == nil || strings.TrimSpace(record.RunID) == "" {
+		return nil
+	}
+	security := factorySandboxSecurityMetadataForPolicyEvent(record, target)
+	if security == nil {
+		return nil
+	}
+	sandboxName, provider := factorySandboxPolicyEventTargetIdentity(record, target)
+	metadata := map[string]any{
+		"policyField": "sandbox.security",
+		"decision":    factory.PolicyDecisionAllowedExecution,
+		"outcome":     factory.PolicyOutcomeAllowed,
+		"reason":      "compatibility runtime security metadata recorded",
+		"source":      "remote_sandbox",
+		"sandboxName": sandboxName,
+		"provider":    provider,
+		"security":    factorySandboxSecurityTimelineMetadata(security),
+	}
+	if status := factorySandboxCredentialDeliveryActivationStatusFromRecord(record); status != nil {
+		metadata["credentialDelivery"] = *status
+	}
+	event := redactFactoryTimelineEvent(factoryTimelineEvent{
+		EventType:                 factory.EventTypePolicyDecision,
+		Summary:                   "Sandbox security policy evaluated",
+		Metadata:                  metadata,
+		NetworkPolicyDecisionLogs: decisionLogs,
+	}, redactor)
+	events, err := store.LoadEvents(record.RunID)
+	if err != nil {
+		return fmt.Errorf("load factory sandbox security timeline %q: %w", record.RunID, err)
+	}
+	return deps.appendEvent(store, &factory.EventRecord{
+		Sequence:                  nextFactoryRunEventSequence(events),
+		RunID:                     record.RunID,
+		EventType:                 event.EventType,
+		Timestamp:                 deps.now().UTC(),
+		Summary:                   event.Summary,
+		Metadata:                  event.Metadata,
+		NetworkPolicyDecisionLogs: event.NetworkPolicyDecisionLogs,
+	})
+}
+
+func recordFactorySandboxCredentialDeliveryActivationLog(store factory.Store, deps factorySandboxExecutorDeps, record *factory.RunRecord, redactor factory.RunSecretRedactor) error {
+	if record == nil || strings.TrimSpace(record.RunID) == "" || deps.appendLog == nil {
+		return nil
+	}
+	status := factorySandboxCredentialDeliveryActivationStatusFromRecord(record)
+	if status == nil {
+		return nil
+	}
+	chunk := factory.LogChunk{
+		RunID:     record.RunID,
+		Stream:    factory.LogStreamSummary,
+		Source:    factory.LogSourceRemoteSandbox,
+		Summary:   factorySandboxCredentialDeliveryActivationLogSummary(status),
+		CreatedAt: deps.now().UTC(),
+	}
+	chunk = redactor.RedactLogChunk(chunk)
+	chunk.Text = sanitizeFactoryLogText(chunk.Text)
+	chunk.Summary = sanitizeFactoryLogText(chunk.Summary)
+	return deps.appendLog(store, &chunk)
+}
+
+func factorySandboxCredentialDeliveryActivationStatusFromRecord(record *factory.RunRecord) *sandbox.SandboxCredentialDeliveryStatusMetadata {
+	if record == nil || record.Sandbox == nil {
+		return nil
+	}
+	return sandboxCommandJSONCredentialDeliveryStatus(record.Sandbox.CredentialDelivery)
+}
+
+func factorySandboxCredentialDeliveryActivationLogSummary(status *sandbox.SandboxCredentialDeliveryStatusMetadata) string {
+	state := "recorded"
+	if status != nil && strings.TrimSpace(status.Status) != "" {
+		state = strings.TrimSpace(status.Status)
+	}
+	return "Credential delivery activation " + state
+}
+
+func factorySandboxSecurityTimelineMetadata(security *factory.SandboxSecurityMetadata) map[string]any {
+	security = cloneFactorySandboxSecurityMetadata(security)
+	if security == nil {
+		return nil
+	}
+	out := make(map[string]any)
+	if security.Network != nil {
+		out["network"] = map[string]any{
+			"policyRequested": security.Network.PolicyRequested,
+			"policyEnforced":  security.Network.PolicyEnforced,
+			"enforcementMode": security.Network.EnforcementMode,
+			"policyResult":    sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult),
+		}
+	}
+	if security.Secrets != nil {
+		out["secrets"] = map[string]any{
+			"requestedModes": append([]string(nil), security.Secrets.RequestedModes...),
+			"activeModes":    append([]string(nil), security.Secrets.ActiveModes...),
+		}
+	}
+	if capabilityReadiness := sanitizedFactorySandboxCapabilityReadiness(security.CapabilityReadiness); capabilityReadiness != nil {
+		out["capabilityReadiness"] = capabilityReadiness
+		if diagnostics := factorySandboxCapabilityReadinessDiagnostics(capabilityReadiness); diagnostics != nil {
+			out["capabilityReadinessDiagnostics"] = diagnostics
+		}
+	}
+	if gate := sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate); gate != nil {
+		out["securityReadinessGate"] = gate
+	}
+	if composition := sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition); composition != nil {
+		out["strictComposition"] = composition
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func factorySandboxPolicyEventTargetIdentity(record *factory.RunRecord, target *sandbox.SandboxState) (string, string) {
+	if target != nil {
+		return target.Name, target.Provider
+	}
+	if record != nil && record.Sandbox != nil {
+		return record.Sandbox.Name, record.Sandbox.Provider
+	}
+	return "", ""
+}
+
+func factorySandboxSecurityMetadataForPolicyEvent(record *factory.RunRecord, target *sandbox.SandboxState) *factory.SandboxSecurityMetadata {
+	if record != nil && record.Sandbox != nil && record.Sandbox.Security != nil {
+		return cloneFactorySandboxSecurityMetadata(record.Sandbox.Security)
+	}
+	return factorySandboxSecurityMetadataFromState(target)
+}
+
+func cloneFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetadata) *factory.SandboxSecurityMetadata {
+	if security == nil {
+		return nil
+	}
+	security = sanitizeFactorySandboxSecurityMetadata(security)
+	capabilityReadiness := sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness)
+	capabilityReadinessDiagnostics := cloneCommandSandboxSecurityCapabilityReadinessDiagnostics(security.CapabilityReadinessDiagnostics)
+	if capabilityReadinessDiagnostics == nil {
+		capabilityReadinessDiagnostics = factorySandboxCapabilityReadinessDiagnostics(capabilityReadiness)
+	}
+	clone := &factory.SandboxSecurityMetadata{
+		CapabilityReadiness:            capabilityReadiness,
+		CapabilityReadinessDiagnostics: capabilityReadinessDiagnostics,
+		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
+		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
+	}
+	if security.Network != nil {
+		clone.Network = &factory.SandboxNetworkSecurityMetadata{
+			PolicyRequested: security.Network.PolicyRequested,
+			PolicyEnforced:  security.Network.PolicyEnforced,
+			EnforcementMode: security.Network.EnforcementMode,
+			PolicyResult:    sandbox.CloneSandboxNetworkPolicyResultPtr(security.Network.PolicyResult),
+		}
+	}
+	if security.Secrets != nil {
+		clone.Secrets = &factory.SandboxSecretSecurityMetadata{
+			RequestedModes: append([]string(nil), security.Secrets.RequestedModes...),
+			ActiveModes:    append([]string(nil), security.Secrets.ActiveModes...),
+		}
+	}
+	if clone.Network == nil && clone.Secrets == nil && clone.CapabilityReadiness == nil && clone.SecurityReadinessGate == nil && clone.StrictComposition == nil {
+		return nil
+	}
+	return clone
+}
+
+func sanitizeFactorySandboxSecurityMetadata(security *factory.SandboxSecurityMetadata) *factory.SandboxSecurityMetadata {
+	if security == nil {
+		return nil
+	}
+	network := factorySandboxNetworkSecurityToSandbox(security.Network)
+	sanitized := sanitizeCommandSandboxSecurity(&sandbox.SandboxSecurity{
+		Network:                        network,
+		CapabilityReadiness:            sandbox.CloneSandboxSecurityCapabilityReadinessOutputPtr(security.CapabilityReadiness),
+		CapabilityReadinessDiagnostics: cloneCommandSandboxSecurityCapabilityReadinessDiagnostics(security.CapabilityReadinessDiagnostics),
+		SecurityReadinessGate:          sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(security.SecurityReadinessGate),
+		StrictComposition:              sandbox.CloneSandboxStrictCompositionDecisionPtr(security.StrictComposition),
+		Secrets:                        factorySandboxSecretSecurityToSandbox(security.Secrets),
+	})
+	if sanitized == nil {
+		return nil
+	}
+	return factorySandboxSecurityMetadata(sanitized)
+}
+
+func factorySandboxNetworkSecurityToSandbox(network *factory.SandboxNetworkSecurityMetadata) *sandbox.SandboxNetworkSecurity {
+	if network == nil {
+		return nil
+	}
+	return &sandbox.SandboxNetworkSecurity{
+		PolicyRequested: network.PolicyRequested,
+		PolicyEnforced:  network.PolicyEnforced,
+		EnforcementMode: network.EnforcementMode,
+		PolicyResult:    sandbox.CloneSandboxNetworkPolicyResultPtr(network.PolicyResult),
+	}
+}
+
+func factorySandboxSecretSecurityToSandbox(secrets *factory.SandboxSecretSecurityMetadata) *sandbox.SandboxSecretSecurity {
+	if secrets == nil {
+		return nil
+	}
+	return &sandbox.SandboxSecretSecurity{
+		RequestedModes: append([]string(nil), secrets.RequestedModes...),
+		ActiveModes:    append([]string(nil), secrets.ActiveModes...),
+	}
+}
+
 func factoryRunningSandboxFilter(instance *sandbox.SandboxState) bool {
 	return instance != nil && instance.Status == sandbox.StatusRunning
 }
@@ -1777,7 +2995,30 @@ func provisionFactorySandbox(ctx context.Context, req factorySandboxProvisionReq
 	if name == "" {
 		name = sandbox.SandboxNameFromBranch(req.BranchName)
 	}
-	if err := runSandboxCreate(req.ProjectDir, name, 1, false, false, "", req.Repo, nil, autoShutdownOpts{}, req.Out, nil); err != nil {
+	templateRuntime := &sandbox.SandboxRuntimeState{
+		Driver:         strings.TrimSpace(req.TemplateRuntimeDriver),
+		IsolationLevel: strings.TrimSpace(req.TemplateIsolationLevel),
+		Image:          strings.TrimSpace(req.TemplateRuntimeImage),
+		TemplateLock:   sandbox.SanitizeSandboxTemplateLockMetadata(req.TemplateLock),
+	}
+	if templateRuntime.Driver == "" && templateRuntime.IsolationLevel == "" && templateRuntime.Image == "" && templateRuntime.TemplateLock == nil {
+		templateRuntime = nil
+	}
+	if err := runSandboxCreateWithDepsAndCountOption(
+		req.ProjectDir,
+		name,
+		1,
+		false,
+		false,
+		"",
+		req.Repo,
+		nil,
+		autoShutdownOpts{},
+		req.Out,
+		nil,
+		nil,
+		templateRuntime,
+	); err != nil {
 		return nil, err
 	}
 	return sandbox.LoadActiveInstance(name)

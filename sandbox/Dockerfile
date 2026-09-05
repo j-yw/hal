@@ -1,8 +1,8 @@
 # =============================================================================
-# Hal Dev Sandbox — mirrors the local dev environment for Daytona snapshots
+# Hal Dev Sandbox — portable local or remote development image
 # =============================================================================
 # Build (local/native):  docker build -f sandbox/Dockerfile -t hal-sandbox .
-# Build (Daytona/amd64): docker build --platform=linux/amd64 -f sandbox/Dockerfile -t hal-sandbox .
+# Build (linux/amd64):  docker build --platform=linux/amd64 -f sandbox/Dockerfile -t hal-sandbox .
 # Run:                    docker run --rm -it --env-file sandbox/.env hal-sandbox
 # =============================================================================
 
@@ -11,9 +11,9 @@ FROM ubuntu:22.04
 # -- Build args (override version pins from setup.sh if needed) ---------------
 ARG GO_VERSION=1.25.7
 ARG NODE_MAJOR=22
-ARG CLAUDE_CODE_VERSION=latest
-ARG PI_CODING_AGENT_VERSION=latest
-ARG CODEX_VERSION=latest
+ARG CLAUDE_CODE_VERSION=2.1.207
+ARG PI_CODING_AGENT_VERSION=0.80.6
+ARG CODEX_VERSION=0.144.1
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
@@ -50,7 +50,9 @@ RUN make build VERSION="${VERSION}" COMMIT="${COMMIT}" BUILD_DATE="${BUILD_DATE}
 RUN rm -rf /tmp/hal-build /tmp/sandbox
 
 # -- Workspace ----------------------------------------------------------------
-WORKDIR /root/workspace
+# Keep this aligned with rootlesspodman.DefaultWorkDir. Factory commands create
+# repository-specific checkouts under /root/workspace after the container starts.
+WORKDIR /workspace
 
 # -- Test & entrypoint scripts ------------------------------------------------
 COPY sandbox/test.sh /test.sh

@@ -12,6 +12,7 @@ import (
 	"github.com/jywlabs/hal/internal/ci"
 	"github.com/jywlabs/hal/internal/doctor"
 	"github.com/jywlabs/hal/internal/factory"
+	"github.com/jywlabs/hal/internal/sandbox"
 	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/jywlabs/hal/internal/verify"
@@ -31,6 +32,11 @@ func TestContractDocsExist(t *testing.T) {
 		{"continue-v1", "../docs/contracts/continue-v1.md"},
 		{"plan-v1", "../docs/contracts/plan-v1.md"},
 		{"sandbox-list-v1", "../docs/contracts/sandbox-list-v1.md"},
+		{"sandbox-host-list-v1", "../docs/contracts/sandbox-host-list-v1.md"},
+		{"sandbox-host-status-v1", "../docs/contracts/sandbox-host-status-v1.md"},
+		{"sandbox-runtime-list-v1", "../docs/contracts/sandbox-runtime-list-v1.md"},
+		{"sandbox-runtime-status-v1", "../docs/contracts/sandbox-runtime-status-v1.md"},
+		{"run-v1", "../docs/contracts/run-v1.md"},
 		{"auto-v2", "../docs/contracts/auto-v2.md"},
 		{"ci-push-v1", "../docs/contracts/ci-push-v1.md"},
 		{"ci-status-v1", "../docs/contracts/ci-status-v1.md"},
@@ -56,6 +62,29 @@ func TestContractDocsExist(t *testing.T) {
 				t.Fatalf("contract doc %s is missing at %s", doc.name, doc.path)
 			}
 		})
+	}
+}
+
+func TestContractDocsIncludeRunV1FieldsAndExamples(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/run-v1.md")
+	if err != nil {
+		t.Fatalf("read run-v1.md: %v", err)
+	}
+	content := string(data)
+	for _, field := range []string{"contractVersion", "ok", "iterations", "complete", "summary"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("run-v1.md missing required field %q", field)
+		}
+	}
+	for _, value := range []string{"Contract Version:** 1", "run-v1-success.json", "run-v1-failure.json", "| `2` |", "| `4` |"} {
+		if !strings.Contains(content, value) {
+			t.Errorf("run-v1.md missing contract detail %q", value)
+		}
+	}
+	for _, path := range []string{"../docs/contracts/examples/run-v1-success.json", "../docs/contracts/examples/run-v1-failure.json"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("run v1 example missing at %s: %v", path, err)
+		}
 	}
 }
 
@@ -133,6 +162,240 @@ func TestContractDocsIncludeSandboxListFields(t *testing.T) {
 	// Contract version value
 	if !strings.Contains(content, "sandbox-list-v1") {
 		t.Error("sandbox-list-v1.md missing contract version value \"sandbox-list-v1\"")
+	}
+}
+
+func TestContractDocsIncludeSandboxHostListFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/sandbox-host-list-v1.md")
+	if err != nil {
+		t.Skipf("cannot read sandbox-host-list-v1.md: %v", err)
+	}
+	content := string(data)
+
+	for _, field := range []string{"contractVersion", "hosts", "totals"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-list-v1.md missing top-level field %q", field)
+		}
+	}
+	for _, field := range []string{"id", "name", "kind", "endpoint", "health", "supportedRuntimes", "capacity"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-list-v1.md missing host field %q", field)
+		}
+	}
+	for _, field := range []string{"type", "summary", "scheme", "status", "checkedAt", "lastHeartbeatAt", "message", "cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes", "total"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-list-v1.md missing nested field %q", field)
+		}
+	}
+	if !strings.Contains(content, SandboxHostListContractVersion) {
+		t.Errorf("sandbox-host-list-v1.md missing contract value %q", SandboxHostListContractVersion)
+	}
+	for _, value := range []string{"unix_socket", "endpoint", "configured", "none", "local Unix socket"} {
+		if !strings.Contains(content, value) {
+			t.Errorf("sandbox-host-list-v1.md missing endpoint value %q", value)
+		}
+	}
+}
+
+func TestContractDocsIncludeSandboxHostStatusFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/sandbox-host-status-v1.md")
+	if err != nil {
+		t.Skipf("cannot read sandbox-host-status-v1.md: %v", err)
+	}
+	content := string(data)
+
+	for _, field := range []string{"contractVersion", "source", "refresh", "host"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-status-v1.md missing top-level field %q", field)
+		}
+	}
+	for _, field := range []string{"mode", "summary", "requestedLive", "cacheUpdated", "refreshedAt"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-status-v1.md missing source/refresh field %q", field)
+		}
+	}
+	for _, field := range []string{"id", "name", "kind", "endpoint", "health", "supportedRuntimes", "capacity"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-status-v1.md missing host field %q", field)
+		}
+	}
+	for _, field := range []string{"type", "scheme", "status", "checkedAt", "lastHeartbeatAt", "message", "cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-host-status-v1.md missing nested field %q", field)
+		}
+	}
+	if !strings.Contains(content, SandboxHostStatusContractVersion) {
+		t.Errorf("sandbox-host-status-v1.md missing contract value %q", SandboxHostStatusContractVersion)
+	}
+	for _, value := range []string{SandboxHostStatusSourceCached, SandboxHostStatusSourceLiveRefreshed, "unix_socket", "endpoint", "local Unix socket"} {
+		if !strings.Contains(content, value) {
+			t.Errorf("sandbox-host-status-v1.md missing value %q", value)
+		}
+	}
+}
+
+func TestContractDocsIncludeSandboxRuntimeListFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/sandbox-runtime-list-v1.md")
+	if err != nil {
+		t.Skipf("cannot read sandbox-runtime-list-v1.md: %v", err)
+	}
+	content := string(data)
+	normalizedContent := strings.Join(strings.Fields(content), " ")
+
+	for _, field := range []string{
+		"contractType", "contractVersion", "host", "source", "runtimes",
+		"capacity", "security", "diagnostics", "errors",
+	} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing top-level field %q", field)
+		}
+	}
+	for _, field := range []string{"id", "name", "kind", "endpoint", "type", "summary", "scheme"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing host/endpoint field %q", field)
+		}
+	}
+	for _, field := range []string{"mode", "requestedLive", "cacheUpdated", "refreshedAt"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing source field %q", field)
+		}
+	}
+	for _, field := range []string{"hostKind", "isolationLevel", "supportedOperations", "selectedTemplate"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing runtime field %q", field)
+		}
+	}
+	for _, field := range []string{"state", "present", "sourceKind", "referenceKind", "lockStatus", "trustMode", "trustDecision", "digest", "provenanceStatus", "blockedReadinessReasonCodes"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing selectedTemplate field %q", field)
+		}
+	}
+	for _, field := range []string{"cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes", "activeSandboxes"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing capacity field %q", field)
+		}
+	}
+	for _, field := range []string{"requested", "enforced", "networkPolicy", "networkEnforcement", "credentialModes", "credentialProxyMode"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-list-v1.md missing security field %q", field)
+		}
+	}
+	for _, value := range []string{
+		SandboxRuntimeListContractType,
+		SandboxRuntimeListContractVersion,
+		SandboxRuntimeSourceCached,
+		SandboxRuntimeSourceLiveRefreshed,
+		SandboxRuntimeSourceUnsupportedLive,
+		"local Unix socket",
+		"ssh endpoint",
+	} {
+		if !strings.Contains(content, value) {
+			t.Errorf("sandbox-runtime-list-v1.md missing value %q", value)
+		}
+	}
+	for _, phrase := range []string{
+		"raw socket paths, hostnames, credentials, URL query strings, temp paths, or sensitive endpoint details",
+		"Empty arrays",
+		"Empty objects",
+		"Explicit `null`",
+		"does not change `sandbox-list-v1`, `sandbox-host-list-v1`, or `sandbox-host-status-v1`",
+	} {
+		if !strings.Contains(normalizedContent, phrase) {
+			t.Errorf("sandbox-runtime-list-v1.md missing safety/sparse metadata phrase %q", phrase)
+		}
+	}
+	for _, example := range sandboxRuntimeListExamplePaths() {
+		if !strings.Contains(content, strings.TrimPrefix(example, "../")) {
+			t.Errorf("sandbox-runtime-list-v1.md missing example reference %q", example)
+		}
+	}
+}
+
+func TestContractDocsIncludeSandboxRuntimeStatusFields(t *testing.T) {
+	data, err := os.ReadFile("../docs/contracts/sandbox-runtime-status-v1.md")
+	if err != nil {
+		t.Skipf("cannot read sandbox-runtime-status-v1.md: %v", err)
+	}
+	content := string(data)
+	normalizedContent := strings.Join(strings.Fields(content), " ")
+
+	for _, field := range []string{
+		"contractType", "contractVersion", "host", "runtime", "selectedTemplate", "source",
+		"supportedOperations", "capacity", "readiness", "security",
+		"diagnostics", "errors",
+	} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-status-v1.md missing top-level field %q", field)
+		}
+	}
+	for _, field := range []string{"id", "name", "kind", "endpoint", "type", "summary", "scheme"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-status-v1.md missing host/endpoint field %q", field)
+		}
+	}
+	for _, field := range []string{"hostKind", "isolationLevel"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-status-v1.md missing runtime field %q", field)
+		}
+	}
+	for _, field := range []string{"state", "present", "sourceKind", "referenceKind", "lockStatus", "trustMode", "trustDecision", "digest", "provenanceStatus", "blockedReadinessReasonCodes"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-status-v1.md missing selectedTemplate field %q", field)
+		}
+	}
+	for _, field := range []string{"mode", "requestedLive", "cacheUpdated", "refreshedAt"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-status-v1.md missing source field %q", field)
+		}
+	}
+	for _, field := range []string{"cpuCores", "memoryMb", "diskGb", "maxConcurrentSandboxes", "activeSandboxes"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-status-v1.md missing capacity field %q", field)
+		}
+	}
+	for _, field := range []string{"status", "checkedAt"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-status-v1.md missing readiness field %q", field)
+		}
+	}
+	for _, field := range []string{"requested", "enforced", "networkPolicy", "networkEnforcement", "credentialModes", "credentialProxyMode"} {
+		if !strings.Contains(content, "`"+field+"`") {
+			t.Errorf("sandbox-runtime-status-v1.md missing security field %q", field)
+		}
+	}
+	for _, value := range []string{
+		SandboxRuntimeStatusContractType,
+		SandboxRuntimeStatusContractVersion,
+		SandboxRuntimeSourceCached,
+		SandboxRuntimeSourceLiveRefreshed,
+		SandboxRuntimeSourceUnsupportedLive,
+		SandboxRuntimeReadinessReady,
+		SandboxRuntimeReadinessUnavailable,
+		SandboxRuntimeReadinessUnknown,
+		SandboxRuntimeStatusErrorRuntimeNotFound,
+		"local Unix socket",
+		"ssh endpoint",
+	} {
+		if !strings.Contains(content, value) {
+			t.Errorf("sandbox-runtime-status-v1.md missing value %q", value)
+		}
+	}
+	for _, phrase := range []string{
+		"raw socket paths, hostnames, credentials, URL query strings, temp paths, or sensitive endpoint details",
+		"must not imply deny-by-default networking, firewall or proxy enforcement, credential proxy support, or microVM isolation unless those claims are present in durable metadata or live worker capabilities",
+		"Empty arrays",
+		"Empty objects",
+		"Explicit `null`",
+		"does not change `sandbox-list-v1`, `sandbox-host-list-v1`, `sandbox-host-status-v1`, or `sandbox-runtime-list-v1`",
+	} {
+		if !strings.Contains(normalizedContent, phrase) {
+			t.Errorf("sandbox-runtime-status-v1.md missing safety/sparse metadata phrase %q", phrase)
+		}
+	}
+	for _, example := range sandboxRuntimeStatusExamplePaths() {
+		if !strings.Contains(content, strings.TrimPrefix(example, "../")) {
+			t.Errorf("sandbox-runtime-status-v1.md missing example reference %q", example)
+		}
 	}
 }
 
@@ -437,12 +700,14 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			path:          "../docs/contracts/factory-run-v1.md",
 			contractValue: FactoryRunContractVersion,
 			requiredFields: []string{
-				"contractVersion", "version", "runId", "status", "nextAction", "artifacts",
-				"telemetry", "eventSummary", "failure", "id", "command", "description", "total", "byType",
+				"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction", "artifacts",
+				"runner", "publishFrom", "postRun", "publish", "telemetry", "eventSummary", "failure", "id", "command", "description", "total", "byType",
 				"lastEventType", "lastSummary", "totalDurationMs", "stepDurations", "engine", "sandbox",
 				"estimatedSandboxCost", "ciOutcome", "verificationOutcome", "failureCategory",
 				"startedAt", "finishedAt", "durationMs", "provider", "size", "amountUsd", "estimated",
-				"model", "classification", "errorMessage", "suggestedCommand",
+				"model", "classification", "errorMessage", "suggestedCommand", "mode", "pullRequestUrl",
+				"pullRequestId", "allowUnverified", "completedAt", "recoveredBundle", "pushed", "fallbackFrom",
+				"credentialMode", "commit", "attempts",
 				"name", "type", "path", "storedPath", "sizeBytes", "createdAt", "partial",
 			},
 			requiredValues: append([]string{
@@ -485,6 +750,8 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 				"branchName", "baseBranch", "policy", "policyDecisions", "sandboxName", "sandbox", "currentStep", "createdAt", "updatedAt",
 				"finishedAt", "artifacts", "verification", "summary", "total", "passed", "failed", "timedOut",
 				"missing", "skipped", "warnings", "checkId", "kind", "failure", "suggestedCommand", "secrets", "present",
+				"runner", "publishFrom", "postRun", "publish", "mode", "pullRequestUrl", "pullRequestId", "allowUnverified",
+				"completedAt", "recoveredBundle", "pushed", "fallbackFrom", "credentialMode", "commit", "attempts",
 				"name", "provider", "connection", "sshCommand", "cleanupCommand", "handoff",
 				"address", "publicIp", "tailscaleIp", "tailscaleHostname", "tailscaleLockdown",
 				"sandboxRequired", "allowedEngines", "maxRunAttempts", "maxReviewFixAttempts", "maxCiFixAttempts",
@@ -576,7 +843,7 @@ func TestContractDocsIncludeFactoryFields(t *testing.T) {
 			path:          "../docs/contracts/factory-timeline-v1.md",
 			contractValue: "factory-status-v1",
 			requiredFields: []string{
-				"sequence", "runId", "eventType", "timestamp", "message", "summary", "metadata",
+				"sequence", "runId", "eventType", "timestamp", "message", "summary", "metadata", "networkPolicyDecisionLogs",
 			},
 			requiredValues: []string{
 				factory.EventTypeRunCreated,
@@ -695,20 +962,123 @@ func TestFactoryStatusDocsIncludeSandboxMetadataJSONFields(t *testing.T) {
 		t.Fatalf("cannot read factory-status-v1.md: %v", err)
 	}
 	content := string(data)
+	sandboxContent := requiredMarkdownSection(t, content, "## Sandbox Metadata", "## Source Metadata")
 
 	fields := append(
 		jsonFieldNames(t, reflect.TypeOf(factory.SandboxMetadata{})),
 		jsonFieldNames(t, reflect.TypeOf(factory.SandboxConnectionMetadata{}))...,
 	)
 	for _, field := range fields {
-		if !strings.Contains(content, "`"+field+"`") {
-			t.Errorf("factory-status-v1.md missing sandbox metadata JSON field %q", field)
+		requireDocumentedJSONField(t, "factory-status-v1.md sandbox metadata", sandboxContent, field)
+	}
+
+	for _, doc := range factorySandboxSummaryDocs(t) {
+		t.Run(doc.name, func(t *testing.T) {
+			block := requiredMarkdownBlock(t, sandboxContent, doc.marker)
+			for _, field := range jsonFieldNames(t, doc.typ) {
+				requireDocumentedJSONField(t, doc.marker, block, field)
+			}
+			requireUndocumentedJSONFields(t, doc.marker, block, forbiddenFactorySandboxDocFields())
+		})
+	}
+
+	requireUndocumentedJSONFields(t, "factory-status-v1.md sandbox metadata", sandboxContent, forbiddenFactorySandboxDocFields())
+}
+
+type factorySandboxSummaryDoc struct {
+	name      string
+	jsonField string
+	marker    string
+	typ       reflect.Type
+}
+
+func factorySandboxSummaryDocs(t *testing.T) []factorySandboxSummaryDoc {
+	t.Helper()
+
+	docs := []factorySandboxSummaryDoc{
+		{name: "host", jsonField: "host", marker: "When `sandbox.host` is present:", typ: reflect.TypeOf(factory.SandboxHostMetadata{})},
+		{name: "runtime", jsonField: "runtime", marker: "When `sandbox.runtime` is present:", typ: reflect.TypeOf(factory.SandboxRuntimeMetadata{})},
+		{name: "workspace", jsonField: "workspace", marker: "When `sandbox.workspace` is present:", typ: reflect.TypeOf(factory.SandboxWorkspaceMetadata{})},
+		{name: "security", jsonField: "security", marker: "When `sandbox.security` is present:", typ: reflect.TypeOf(factory.SandboxSecurityMetadata{})},
+		{name: "network security", jsonField: "network", marker: "When `sandbox.security.network` is present:", typ: reflect.TypeOf(factory.SandboxNetworkSecurityMetadata{})},
+		{name: "secret security", jsonField: "secrets", marker: "When `sandbox.security.secrets` is present:", typ: reflect.TypeOf(factory.SandboxSecretSecurityMetadata{})},
+		{name: "lease", jsonField: "lease", marker: "When `sandbox.lease` is present:", typ: reflect.TypeOf(factory.SandboxLeaseMetadata{})},
+		{name: "worker routing", jsonField: "workerRouting", marker: "When `sandbox.workerRouting` is present:", typ: reflect.TypeOf(sandbox.WorkerRoutingMetadata{})},
+	}
+
+	metadataFields := jsonFieldsByName(t, reflect.TypeOf(factory.SandboxMetadata{}))
+	for _, doc := range docs {
+		if doc.name == "network security" || doc.name == "secret security" {
+			continue
+		}
+		field, ok := metadataFields[doc.jsonField]
+		if !ok {
+			t.Fatalf("SandboxMetadata missing nested summary field %q", doc.jsonField)
+		}
+
+		fieldType := field.Type
+		if fieldType.Kind() == reflect.Pointer {
+			fieldType = fieldType.Elem()
+		}
+		if fieldType != doc.typ {
+			t.Fatalf("SandboxMetadata field %q has type %s, want %s", doc.jsonField, field.Type, doc.typ)
 		}
 	}
-	for _, forbidden := range []string{"`token`", "`privateKey`", "`credential`", "`env`", "`apiKey`"} {
+
+	return docs
+}
+
+func forbiddenFactorySandboxDocFields() []string {
+	return []string{
+		"`path`",
+		"`paths`",
+		"`sourcePath`",
+		"`storedPath`",
+		"`workspacePath`",
+		"`workspaceRoot`",
+		"`filesystemPath`",
+		"`rawFilesystemPath`",
+		"`rawWorkspacePath`",
+		"`repo`",
+		"`secretName`",
+		"`secretNames`",
+		"`secretValue`",
+		"`secretValues`",
+		"`token`",
+		"`tokens`",
+		"`credential`",
+		"`credentials`",
+		"`privateKey`",
+		"`privateKeys`",
+		"`env`",
+		"`rawEnv`",
+		"`environment`",
+		"`environmentValue`",
+		"`environmentValues`",
+		"`apiKey`",
+		"`apiKeys`",
+		"`providerCredential`",
+		"`providerCredentials`",
+		"`holder`",
+		"`Holder`",
+	}
+}
+
+func requireUndocumentedJSONFields(t *testing.T, label, content string, fields []string) {
+	t.Helper()
+
+	for _, forbidden := range fields {
 		if strings.Contains(content, forbidden) {
-			t.Errorf("factory-status-v1.md documents forbidden sandbox field %s", forbidden)
+			t.Errorf("%s documents forbidden sandbox field %s", label, forbidden)
 		}
+	}
+}
+
+func requireDocumentedJSONField(t *testing.T, label, content, field string) {
+	t.Helper()
+
+	if !strings.Contains(content, "`"+field+"`") {
+		t.Errorf("%s missing JSON field %q", label, field)
 	}
 }
 
@@ -721,17 +1091,70 @@ func jsonFieldNames(t *testing.T, typ reflect.Type) []string {
 		if !field.IsExported() {
 			continue
 		}
-		tag := field.Tag.Get("json")
-		if tag == "" || tag == "-" {
-			t.Fatalf("%s.%s missing json tag", typ.Name(), field.Name)
-		}
-		name, _, _ := strings.Cut(tag, ",")
-		if name == "" {
-			t.Fatalf("%s.%s has empty json tag name", typ.Name(), field.Name)
-		}
-		fields = append(fields, name)
+		fields = append(fields, jsonFieldName(t, typ, field))
 	}
 	return fields
+}
+
+func jsonFieldsByName(t *testing.T, typ reflect.Type) map[string]reflect.StructField {
+	t.Helper()
+
+	fields := map[string]reflect.StructField{}
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		fields[jsonFieldName(t, typ, field)] = field
+	}
+	return fields
+}
+
+func jsonFieldName(t *testing.T, typ reflect.Type, field reflect.StructField) string {
+	t.Helper()
+
+	tag := field.Tag.Get("json")
+	if tag == "" || tag == "-" {
+		t.Fatalf("%s.%s missing json tag", typ.Name(), field.Name)
+	}
+	name, _, _ := strings.Cut(tag, ",")
+	if name == "" {
+		t.Fatalf("%s.%s has empty json tag name", typ.Name(), field.Name)
+	}
+	return name
+}
+
+func requiredMarkdownSection(t *testing.T, content, startMarker, endMarker string) string {
+	t.Helper()
+
+	start := strings.Index(content, startMarker)
+	if start == -1 {
+		t.Fatalf("missing markdown section %q", startMarker)
+	}
+	section := content[start:]
+	end := strings.Index(section, endMarker)
+	if end == -1 {
+		t.Fatalf("markdown section %q missing end marker %q", startMarker, endMarker)
+	}
+	return section[:end]
+}
+
+func requiredMarkdownBlock(t *testing.T, content, marker string) string {
+	t.Helper()
+
+	start := strings.Index(content, marker)
+	if start == -1 {
+		t.Fatalf("missing markdown block %q", marker)
+	}
+	block := content[start:]
+	searchStart := len(marker)
+	end := len(block)
+	for _, delimiter := range []string{"\nWhen `sandbox.", "\n## "} {
+		if next := strings.Index(block[searchStart:], delimiter); next != -1 && searchStart+next < end {
+			end = searchStart + next
+		}
+	}
+	return block[:end]
 }
 
 func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
@@ -867,12 +1290,18 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 		var resp FactoryRunResponse
 		raw := decodeStrictJSONExample(t, "../docs/contracts/examples/factory-run-v1.json", &resp)
 
-		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
+		requireExactKeys(t, raw, []string{"contractVersion", "version", "runId", "status", "executorMode", "baseBranch", "nextAction", "artifacts", "telemetry", "eventSummary", "failure"})
 		if resp.ContractVersion != FactoryRunContractVersion {
 			t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, FactoryRunContractVersion)
 		}
 		if resp.RunID == "" {
 			t.Fatal("factory run example should include a run ID")
+		}
+		if resp.ExecutorMode != factory.ExecutorModeSandbox {
+			t.Fatalf("factory run example executorMode = %q, want %q", resp.ExecutorMode, factory.ExecutorModeSandbox)
+		}
+		if resp.BaseBranch != "develop" {
+			t.Fatalf("factory run example baseBranch = %q, want develop", resp.BaseBranch)
 		}
 		if resp.NextAction == nil {
 			t.Fatal("factory run example should include nextAction")
@@ -991,6 +1420,350 @@ func TestFactoryContractExamplesMatchCommandSchemas(t *testing.T) {
 			t.Fatalf("factory queue work noop entry = %#v, want nil", resp.Entry)
 		}
 	})
+}
+
+func TestSandboxRuntimeListContractExamplesMatchSchema(t *testing.T) {
+	for _, path := range sandboxRuntimeListExamplePaths() {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			var resp SandboxRuntimeListResponse
+			raw := decodeStrictJSONExample(t, path, &resp)
+
+			requireExactKeys(t, raw, []string{
+				"contractType",
+				"contractVersion",
+				"host",
+				"source",
+				"runtimes",
+				"capacity",
+				"security",
+				"diagnostics",
+				"errors",
+			})
+			if resp.ContractType != SandboxRuntimeListContractType {
+				t.Fatalf("contractType = %q, want %q", resp.ContractType, SandboxRuntimeListContractType)
+			}
+			if resp.ContractVersion != SandboxRuntimeListContractVersion {
+				t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, SandboxRuntimeListContractVersion)
+			}
+			if resp.Host.ID == "" || resp.Host.Kind == "" {
+				t.Fatalf("example host identity must include id and kind: %#v", resp.Host)
+			}
+			if resp.Host.Endpoint.Summary == "" {
+				t.Fatalf("example endpoint must include a safe summary: %#v", resp.Host.Endpoint)
+			}
+			switch resp.Source.Mode {
+			case SandboxRuntimeSourceCached, SandboxRuntimeSourceLiveRefreshed, SandboxRuntimeSourceUnsupportedLive:
+			default:
+				t.Fatalf("source.mode = %q, want documented source mode", resp.Source.Mode)
+			}
+			requireRuntimeListExamplesSorted(t, resp.Runtimes)
+			requireRuntimeListExampleRawKeys(t, raw)
+			requireRuntimeListExampleSafe(t, path)
+		})
+	}
+}
+
+func sandboxRuntimeListExamplePaths() []string {
+	return []string{
+		"../docs/contracts/examples/sandbox-runtime-list-v1-cached.json",
+		"../docs/contracts/examples/sandbox-runtime-list-v1-live-refreshed.json",
+		"../docs/contracts/examples/sandbox-runtime-list-v1-unsupported-live.json",
+	}
+}
+
+func requireRuntimeListExamplesSorted(t *testing.T, entries []SandboxRuntimeListEntry) {
+	t.Helper()
+	for i := 1; i < len(entries); i++ {
+		if entries[i-1].ID > entries[i].ID {
+			t.Fatalf("runtime entries are not sorted by id: %q before %q", entries[i-1].ID, entries[i].ID)
+		}
+	}
+}
+
+func requireRuntimeListExampleRawKeys(t *testing.T, raw map[string]interface{}) {
+	t.Helper()
+
+	host, ok := raw["host"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("host should be an object, got %T", raw["host"])
+	}
+	requireExactKeys(t, host, []string{"id", "name", "kind", "endpoint"})
+	endpoint, ok := host["endpoint"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("host.endpoint should be an object, got %T", host["endpoint"])
+	}
+	requireExactKeys(t, endpoint, []string{"type", "summary", "scheme"})
+
+	source, ok := raw["source"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("source should be an object, got %T", raw["source"])
+	}
+	requireExactKeys(t, source, []string{"mode", "requestedLive", "cacheUpdated", "refreshedAt", "summary"})
+
+	runtimes, ok := raw["runtimes"].([]interface{})
+	if !ok {
+		t.Fatalf("runtimes should be an array, got %T", raw["runtimes"])
+	}
+	for i, item := range runtimes {
+		runtimeEntry, ok := item.(map[string]interface{})
+		if !ok {
+			t.Fatalf("runtimes[%d] should be an object, got %T", i, item)
+		}
+		requireExactKeys(t, runtimeEntry, []string{
+			"id",
+			"hostKind",
+			"isolationLevel",
+			"supportedOperations",
+			"selectedTemplate",
+			"security",
+			"diagnostics",
+		})
+		selectedTemplate, ok := runtimeEntry["selectedTemplate"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("runtimes[%d].selectedTemplate should be an object, got %T", i, runtimeEntry["selectedTemplate"])
+		}
+		requireRuntimeSelectedTemplateExampleKeys(t, selectedTemplate)
+	}
+
+	capacity, ok := raw["capacity"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("capacity should be an object, got %T", raw["capacity"])
+	}
+	requireExactKeys(t, capacity, []string{
+		"summary",
+		"cpuCores",
+		"memoryMb",
+		"diskGb",
+		"maxConcurrentSandboxes",
+		"activeSandboxes",
+	})
+
+	security, ok := raw["security"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("security should be an object, got %T", raw["security"])
+	}
+	requireExactKeys(t, security, []string{"requested", "enforced"})
+}
+
+func requireRuntimeSelectedTemplateExampleKeys(t *testing.T, selectedTemplate map[string]interface{}) {
+	t.Helper()
+	for _, key := range []string{"state", "present"} {
+		if _, ok := selectedTemplate[key]; !ok {
+			t.Fatalf("selectedTemplate missing required key %q: %#v", key, selectedTemplate)
+		}
+	}
+	if digest, ok := selectedTemplate["digest"]; ok {
+		digestObject, ok := digest.(map[string]interface{})
+		if !ok {
+			t.Fatalf("selectedTemplate.digest should be an object, got %T", digest)
+		}
+		requireExactKeys(t, digestObject, []string{"algorithm", "value", "source"})
+	}
+}
+
+func requireRuntimeListExampleSafe(t *testing.T, path string) {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", path, err)
+	}
+	content := string(data)
+	for _, forbidden := range []string{
+		"socketPath",
+		"/tmp/",
+		"token=",
+		"password",
+		"secret",
+		"builder.internal",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("runtime list example %s contains forbidden sensitive detail %q", path, forbidden)
+		}
+	}
+}
+
+func TestSandboxRuntimeStatusContractExamplesMatchSchema(t *testing.T) {
+	for _, path := range sandboxRuntimeStatusExamplePaths() {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			var resp SandboxRuntimeStatusResponse
+			raw := decodeStrictJSONExample(t, path, &resp)
+
+			requireExactKeys(t, raw, []string{
+				"contractType",
+				"contractVersion",
+				"host",
+				"runtime",
+				"selectedTemplate",
+				"source",
+				"supportedOperations",
+				"capacity",
+				"readiness",
+				"security",
+				"diagnostics",
+				"errors",
+			})
+			if resp.ContractType != SandboxRuntimeStatusContractType {
+				t.Fatalf("contractType = %q, want %q", resp.ContractType, SandboxRuntimeStatusContractType)
+			}
+			if resp.ContractVersion != SandboxRuntimeStatusContractVersion {
+				t.Fatalf("contractVersion = %q, want %q", resp.ContractVersion, SandboxRuntimeStatusContractVersion)
+			}
+			if resp.Host.ID == "" || resp.Host.Kind == "" {
+				t.Fatalf("example host identity must include id and kind: %#v", resp.Host)
+			}
+			if resp.Host.Endpoint.Summary == "" {
+				t.Fatalf("example endpoint must include a safe summary: %#v", resp.Host.Endpoint)
+			}
+			if resp.Runtime.ID == "" {
+				t.Fatalf("example runtime identity must include id: %#v", resp.Runtime)
+			}
+			switch resp.Source.Mode {
+			case SandboxRuntimeSourceCached, SandboxRuntimeSourceLiveRefreshed, SandboxRuntimeSourceUnsupportedLive:
+			default:
+				t.Fatalf("source.mode = %q, want documented source mode", resp.Source.Mode)
+			}
+			switch resp.Readiness.Status {
+			case SandboxRuntimeReadinessReady, SandboxRuntimeReadinessUnavailable, SandboxRuntimeReadinessUnknown:
+			default:
+				t.Fatalf("readiness.status = %q, want documented readiness status", resp.Readiness.Status)
+			}
+			requireRuntimeStatusExampleOperationsSorted(t, resp.SupportedOperations)
+			requireRuntimeStatusExampleRawKeys(t, raw)
+			requireRuntimeStatusExampleSafe(t, path)
+
+			if filepath.Base(path) == "sandbox-runtime-status-v1-missing-runtime.json" {
+				if len(resp.Errors) != 1 {
+					t.Fatalf("missing-runtime example errors len = %d, want 1", len(resp.Errors))
+				}
+				if resp.Errors[0].Code != SandboxRuntimeStatusErrorRuntimeNotFound {
+					t.Fatalf("missing-runtime error code = %q, want %q", resp.Errors[0].Code, SandboxRuntimeStatusErrorRuntimeNotFound)
+				}
+				if resp.Readiness.Status != SandboxRuntimeReadinessUnavailable {
+					t.Fatalf("missing-runtime readiness = %q, want %q", resp.Readiness.Status, SandboxRuntimeReadinessUnavailable)
+				}
+			}
+		})
+	}
+}
+
+func sandboxRuntimeStatusExamplePaths() []string {
+	return []string{
+		"../docs/contracts/examples/sandbox-runtime-status-v1-success.json",
+		"../docs/contracts/examples/sandbox-runtime-status-v1-missing-runtime.json",
+	}
+}
+
+func requireRuntimeStatusExampleOperationsSorted(t *testing.T, operations []string) {
+	t.Helper()
+	for i := 1; i < len(operations); i++ {
+		if operations[i-1] > operations[i] {
+			t.Fatalf("supportedOperations are not sorted: %q before %q", operations[i-1], operations[i])
+		}
+	}
+}
+
+func requireRuntimeStatusExampleRawKeys(t *testing.T, raw map[string]interface{}) {
+	t.Helper()
+
+	host, ok := raw["host"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("host should be an object, got %T", raw["host"])
+	}
+	requireExactKeys(t, host, []string{"id", "name", "kind", "endpoint"})
+	endpoint, ok := host["endpoint"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("host.endpoint should be an object, got %T", host["endpoint"])
+	}
+	requireExactKeys(t, endpoint, []string{"type", "summary", "scheme"})
+
+	runtimeEntry, ok := raw["runtime"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("runtime should be an object, got %T", raw["runtime"])
+	}
+	requireExactKeys(t, runtimeEntry, []string{"id", "hostKind", "isolationLevel"})
+	selectedTemplate, ok := raw["selectedTemplate"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("selectedTemplate should be an object, got %T", raw["selectedTemplate"])
+	}
+	requireRuntimeSelectedTemplateExampleKeys(t, selectedTemplate)
+
+	source, ok := raw["source"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("source should be an object, got %T", raw["source"])
+	}
+	requireExactKeys(t, source, []string{"mode", "requestedLive", "cacheUpdated", "refreshedAt", "summary"})
+
+	capacity, ok := raw["capacity"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("capacity should be an object, got %T", raw["capacity"])
+	}
+	requireExactKeys(t, capacity, []string{
+		"summary",
+		"cpuCores",
+		"memoryMb",
+		"diskGb",
+		"maxConcurrentSandboxes",
+		"activeSandboxes",
+	})
+
+	readiness, ok := raw["readiness"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("readiness should be an object, got %T", raw["readiness"])
+	}
+	requireExactKeys(t, readiness, []string{"status", "checkedAt", "summary"})
+
+	security, ok := raw["security"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("security should be an object, got %T", raw["security"])
+	}
+	requireExactKeys(t, security, []string{"requested", "enforced"})
+
+	diagnostics, ok := raw["diagnostics"].([]interface{})
+	if !ok {
+		t.Fatalf("diagnostics should be an array, got %T", raw["diagnostics"])
+	}
+	for i, item := range diagnostics {
+		diagnostic, ok := item.(map[string]interface{})
+		if !ok {
+			t.Fatalf("diagnostics[%d] should be an object, got %T", i, item)
+		}
+		requireExactKeys(t, diagnostic, []string{"code", "severity", "message"})
+	}
+
+	errors, ok := raw["errors"].([]interface{})
+	if !ok {
+		t.Fatalf("errors should be an array, got %T", raw["errors"])
+	}
+	for i, item := range errors {
+		errEntry, ok := item.(map[string]interface{})
+		if !ok {
+			t.Fatalf("errors[%d] should be an object, got %T", i, item)
+		}
+		requireExactKeys(t, errEntry, []string{"code", "message"})
+	}
+}
+
+func requireRuntimeStatusExampleSafe(t *testing.T, path string) {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", path, err)
+	}
+	content := string(data)
+	for _, forbidden := range []string{
+		"socketPath",
+		"/tmp/",
+		"token=",
+		"password",
+		"secret",
+		"builder.internal",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("runtime status example %s contains forbidden sensitive detail %q", path, forbidden)
+		}
+	}
 }
 
 func TestVerifyContractExamplesMatchSchema(t *testing.T) {

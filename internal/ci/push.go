@@ -259,6 +259,12 @@ func gitPushBranch(ctx context.Context, branch string) error {
 	return gitPushBranchInDir(ctx, "", branch)
 }
 
+// PushBranchInDir pushes the named branch using the configured GitHub token
+// environment when one is available.
+func PushBranchInDir(ctx context.Context, dir, branch string) error {
+	return gitPushBranchInDir(ctx, dir, branch)
+}
+
 func gitCurrentBranchInDir(ctx context.Context, dir string) (string, error) {
 	branch, err := runGitInDir(ctx, dir, "branch", "--show-current")
 	if err != nil {

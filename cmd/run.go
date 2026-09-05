@@ -7,11 +7,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jywlabs/hal/internal/compound"
 	"github.com/jywlabs/hal/internal/engine"
 	"github.com/jywlabs/hal/internal/loop"
+	"github.com/jywlabs/hal/internal/projectconfig"
+	"github.com/jywlabs/hal/internal/sandbox"
+	"github.com/jywlabs/hal/internal/sandboxworkspace"
+	"github.com/jywlabs/hal/internal/status"
 	"github.com/jywlabs/hal/internal/template"
 	"github.com/spf13/cobra"
 )
@@ -34,23 +39,38 @@ var (
 	storyFlag   string
 	runBaseFlag string
 	runJSONFlag bool
+
+	// Sandbox execution
+	runSandboxFlag              bool
+	runSandboxNameFlag          string
+	runSandboxHostFlag          string
+	runSandboxRuntimeFlag       string
+	runSandboxTemplateFlag      string
+	runSandboxTemplateTrustFlag string
+	runSandboxSyncOutFlag       bool
+	runSandboxApplyFlag         bool
 )
 
 // RunResult is the machine-readable output of hal run --json.
 type RunResult struct {
-	ContractVersion int            `json:"contractVersion"`
-	OK              bool           `json:"ok"`
-	Engine          string         `json:"engine,omitempty"`
-	Iterations      int            `json:"iterations"`
-	Complete        bool           `json:"complete"`
-	StoryID         string         `json:"storyId,omitempty"`
-	LastStoryID     string         `json:"lastStoryId,omitempty"`
-	DryRun          bool           `json:"dryRun,omitempty"`
-	Duration        string         `json:"duration,omitempty"`
-	PRD             *RunPRDInfo    `json:"prd,omitempty"`
-	NextAction      *RunNextAction `json:"nextAction,omitempty"`
-	Error           string         `json:"error,omitempty"`
-	Summary         string         `json:"summary"`
+	ContractVersion       int                                                     `json:"contractVersion"`
+	OK                    bool                                                    `json:"ok"`
+	Engine                string                                                  `json:"engine,omitempty"`
+	Iterations            int                                                     `json:"iterations"`
+	Complete              bool                                                    `json:"complete"`
+	StoryID               string                                                  `json:"storyId,omitempty"`
+	LastStoryID           string                                                  `json:"lastStoryId,omitempty"`
+	DryRun                bool                                                    `json:"dryRun,omitempty"`
+	Duration              string                                                  `json:"duration,omitempty"`
+	PRD                   *RunPRDInfo                                             `json:"prd,omitempty"`
+	CredentialDelivery    *sandbox.SandboxCredentialDeliveryStatusMetadata        `json:"credentialDelivery,omitempty"`
+	SyncOut               *sandboxworkspace.SyncOutSummary                        `json:"syncOut,omitempty"`
+	SyncOutApply          *sandboxworkspace.SafeApplyResult                       `json:"syncOutApply,omitempty"`
+	SandboxExecutionID    string                                                  `json:"sandboxExecutionId,omitempty"`
+	SecurityReadinessGate *sandbox.SandboxSecurityCapabilityReadinessGateDecision `json:"securityReadinessGate,omitempty"`
+	NextAction            *RunNextAction                                          `json:"nextAction,omitempty"`
+	Error                 string                                                  `json:"error,omitempty"`
+	Summary               string                                                  `json:"summary"`
 }
 
 // RunPRDInfo provides PRD state at the time the run completed.
@@ -83,6 +103,12 @@ The loop spawns fresh AI instances that:
 With --json, outputs machine-readable result JSON suitable for agent
 orchestration and tooling integration.
 
+Exit status with --json:
+- 0 when ok=true, including successful runs with stories remaining
+- 2 when validation or preflight fails after emitting ok=false JSON
+- 4 when loop execution finishes with ok=false
+- Sandbox execution preserves the inner hal command's nonzero status
+
 Examples:
   hal run                          # Run with defaults (10 iterations)
   hal run 5                        # Run 5 iterations (positional)
@@ -93,12 +119,24 @@ Examples:
   hal run --dry-run                # Show what would execute
   hal run --base develop           # Branch from develop when needed
   hal run --json                   # Machine-readable result output
+  hal run --sandbox                # Run inside a sandbox
+  hal run --sandbox 3              # Run 3 iterations inside a sandbox
+  hal run --sandbox my-box         # Run inside a named sandbox
+  hal run --sandbox --sandbox-sync-out # Collect sync-out handoff metadata without host apply
+  hal run --sandbox --sandbox-apply    # Run a new execution, then apply its eligible artifacts
+  hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman # Explicit worker/rootless target selection
 `,
 	Example: `  hal run
   hal run 5
   hal run --story US-001
   hal run --timeout 30m
   hal run --json
+  hal run --sandbox
+  hal run --sandbox 3
+  hal run --sandbox my-box
+  hal run --sandbox --sandbox-sync-out
+  hal run --sandbox --sandbox-apply
+  hal run --sandbox --sandbox-host worker-1 --sandbox-runtime rootless_podman
   hal run --engine codex --base develop`,
 	Args: maxArgsValidation(1),
 	RunE: runRun,
@@ -121,6 +159,14 @@ func init() {
 	runCmd.Flags().StringVarP(&storyFlag, "story", "s", "", "Run specific story by ID (e.g., US-001)")
 	runCmd.Flags().StringVarP(&runBaseFlag, "base", "b", "", "Base branch for creating the PRD branch (default: current branch, or HEAD when detached)")
 	runCmd.Flags().BoolVar(&runJSONFlag, "json", false, "Output machine-readable JSON result")
+	runCmd.Flags().BoolVar(&runSandboxFlag, "sandbox", false, "Run inside a sandbox")
+	runCmd.Flags().StringVar(&runSandboxNameFlag, "sandbox-name", "", "Sandbox name for --sandbox execution")
+	runCmd.Flags().StringVar(&runSandboxHostFlag, sandboxHostFlagName, "", "Cached sandbox host ID for target selection")
+	runCmd.Flags().StringVar(&runSandboxRuntimeFlag, sandboxRuntimeFlagName, "", "Cached runtime constraint for target selection (ssh_machine, rootless_podman, microvm)")
+	runCmd.Flags().StringVar(&runSandboxTemplateFlag, sandboxTemplateFlagName, "", "OCI sandbox template reference to select before runtime construction")
+	runCmd.Flags().StringVar(&runSandboxTemplateTrustFlag, sandboxTemplateTrustFlagName, defaultSandboxTemplateTrustMode, "Sandbox template trust mode (strict or advisory)")
+	runCmd.Flags().BoolVar(&runSandboxSyncOutFlag, sandboxSyncOutFlagName, false, "Collect sandbox sync-out metadata without applying to the host worktree")
+	runCmd.Flags().BoolVar(&runSandboxApplyFlag, sandboxApplyFlagName, false, "explicit opt-in: run a new sandbox execution, then dry-run and apply its eligible artifacts to the host worktree")
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -142,15 +188,38 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	}
 
 	engineName := engineFlag
+	engineChanged := false
 	iterationsFlag := runIterationsFlag
 	iterationsChanged := false
 	baseFlag := runBaseFlag
+	baseChanged := false
 	retries := maxRetries
+	retriesChanged := false
 	delay := retryDelay
+	delayChanged := false
 	timeoutOverride := runTimeout
+	timeoutChanged := false
 	dryRun := dryRunFlag
+	dryRunChanged := false
 	story := storyFlag
+	storyChanged := false
 	jsonMode := runJSONFlag
+	jsonChanged := false
+	sandboxMode := runSandboxFlag
+	sandboxName := runSandboxNameFlag
+	sandboxNameChanged := strings.TrimSpace(runSandboxNameFlag) != ""
+	sandboxHost := runSandboxHostFlag
+	sandboxHostChanged := strings.TrimSpace(runSandboxHostFlag) != ""
+	sandboxRuntime := runSandboxRuntimeFlag
+	sandboxRuntimeChanged := strings.TrimSpace(runSandboxRuntimeFlag) != ""
+	sandboxTemplate := runSandboxTemplateFlag
+	sandboxTemplateChanged := strings.TrimSpace(runSandboxTemplateFlag) != ""
+	sandboxTemplateTrust := runSandboxTemplateTrustFlag
+	sandboxTemplateTrustChanged := false
+	sandboxSyncOut := runSandboxSyncOutFlag
+	sandboxSyncOutChanged := false
+	sandboxApply := runSandboxApplyFlag
+	sandboxApplyChanged := false
 
 	if cmd != nil {
 		flags := cmd.Flags()
@@ -161,6 +230,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 				return err
 			}
 			engineName = value
+			engineChanged = flags.Changed("engine")
 		}
 
 		if flags.Lookup("iterations") != nil {
@@ -178,6 +248,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 				return err
 			}
 			baseFlag = value
+			baseChanged = flags.Changed("base")
 		}
 
 		if flags.Lookup("retries") != nil {
@@ -186,6 +257,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 				return err
 			}
 			retries = value
+			retriesChanged = flags.Changed("retries")
 		}
 
 		if flags.Lookup("retry-delay") != nil {
@@ -194,6 +266,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 				return err
 			}
 			delay = value
+			delayChanged = flags.Changed("retry-delay")
 		}
 
 		if flags.Lookup("timeout") != nil {
@@ -202,6 +275,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 				return err
 			}
 			timeoutOverride = value
+			timeoutChanged = flags.Changed("timeout")
 		}
 
 		if flags.Lookup("dry-run") != nil {
@@ -210,6 +284,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 				return err
 			}
 			dryRun = value
+			dryRunChanged = flags.Changed("dry-run")
 		}
 
 		if flags.Lookup("story") != nil {
@@ -218,6 +293,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 				return err
 			}
 			story = value
+			storyChanged = flags.Changed("story")
 		}
 
 		if flags.Lookup("json") != nil {
@@ -226,19 +302,197 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 				return err
 			}
 			jsonMode = value
+			jsonChanged = flags.Changed("json")
 		}
+
+		if flags.Lookup("sandbox") != nil {
+			value, err := flags.GetBool("sandbox")
+			if err != nil {
+				return err
+			}
+			sandboxMode = value
+		}
+
+		if flags.Lookup("sandbox-name") != nil {
+			value, err := flags.GetString("sandbox-name")
+			if err != nil {
+				return err
+			}
+			sandboxName = value
+			sandboxNameChanged = flags.Changed("sandbox-name")
+		}
+
+		if flags.Lookup(sandboxHostFlagName) != nil {
+			value, err := flags.GetString(sandboxHostFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxHost = value
+			sandboxHostChanged = flags.Changed(sandboxHostFlagName)
+		}
+
+		if flags.Lookup(sandboxRuntimeFlagName) != nil {
+			value, err := flags.GetString(sandboxRuntimeFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxRuntime = value
+			sandboxRuntimeChanged = flags.Changed(sandboxRuntimeFlagName)
+		}
+		if flags.Lookup(sandboxTemplateFlagName) != nil {
+			value, err := flags.GetString(sandboxTemplateFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxTemplate = value
+			sandboxTemplateChanged = flags.Changed(sandboxTemplateFlagName)
+		}
+		if flags.Lookup(sandboxTemplateTrustFlagName) != nil {
+			value, err := flags.GetString(sandboxTemplateTrustFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxTemplateTrust = value
+			sandboxTemplateTrustChanged = flags.Changed(sandboxTemplateTrustFlagName)
+		}
+
+		if flags.Lookup(sandboxSyncOutFlagName) != nil {
+			value, err := flags.GetBool(sandboxSyncOutFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxSyncOut = value
+			sandboxSyncOutChanged = flags.Changed(sandboxSyncOutFlagName)
+		}
+
+		if flags.Lookup(sandboxApplyFlagName) != nil {
+			value, err := flags.GetBool(sandboxApplyFlagName)
+			if err != nil {
+				return err
+			}
+			sandboxApply = value
+			sandboxApplyChanged = flags.Changed(sandboxApplyFlagName)
+		}
+	}
+
+	projectCfg, err := loadCommandProjectConfig(".")
+	if err != nil {
+		err = fmt.Errorf("failed to load project config: %w", err)
+		if jsonMode {
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	applyRunProjectConfigDefaults(projectCfg, &baseFlag, &baseChanged, &timeoutOverride, &timeoutChanged)
+	if sandboxMode {
+		sandboxDefaults := commandSandboxDefaultState{
+			SandboxName:           sandboxName,
+			SandboxNameChanged:    sandboxNameChanged,
+			PositionalSandboxName: runSandboxPositionalNamePresent(args),
+			SandboxHostID:         sandboxHost,
+			SandboxHostChanged:    sandboxHostChanged,
+			SandboxRuntime:        sandboxRuntime,
+			SandboxRuntimeChanged: sandboxRuntimeChanged,
+			SandboxSyncOut:        sandboxSyncOut,
+			SandboxSyncOutChanged: sandboxSyncOutChanged,
+			SandboxApply:          sandboxApply,
+			SandboxApplyChanged:   sandboxApplyChanged,
+		}
+		applyProjectSandboxDefaults(projectCfg, sandboxMode, &sandboxDefaults)
+		sandboxName = sandboxDefaults.SandboxName
+		sandboxHost = sandboxDefaults.SandboxHostID
+		sandboxRuntime = sandboxDefaults.SandboxRuntime
+		sandboxSyncOut = sandboxDefaults.SandboxSyncOut
+		sandboxApply = sandboxDefaults.SandboxApply
+	}
+
+	targetFlags, err := parseSandboxTargetFlagValues(sandboxTargetFlagValues{
+		HostID:         sandboxHost,
+		HostChanged:    sandboxHostChanged,
+		RuntimeDriver:  sandboxRuntime,
+		RuntimeChanged: sandboxRuntimeChanged,
+	})
+	if err == nil {
+		err = validateSandboxTargetFlagsRequireSandbox(sandboxMode, sandboxTargetFlagValues{
+			HostChanged:    sandboxHostChanged,
+			RuntimeChanged: sandboxRuntimeChanged,
+		})
+	}
+	if err == nil {
+		_, err = validateSandboxTemplateFlagValues(sandboxTemplateFlagValues{
+			Sandbox:          sandboxMode,
+			Reference:        sandboxTemplate,
+			ReferenceChanged: sandboxTemplateChanged,
+			TrustMode:        sandboxTemplateTrust,
+			TrustChanged:     sandboxTemplateTrustChanged,
+		})
+	}
+	if err == nil {
+		err = validateSandboxSyncOutFlagsRequireSandbox(sandboxMode, sandboxSyncOutFlagValues{
+			SyncOutChanged: sandboxSyncOutChanged,
+			ApplyChanged:   sandboxApplyChanged,
+		})
+	}
+	if err != nil {
+		if jsonMode {
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
+		}
+		return exitWithCode(cmd, ExitCodeValidation, err)
+	}
+	sandboxHost = targetFlags.HostID
+	sandboxRuntime = targetFlags.RuntimeDriver
+
+	if sandboxMode {
+		ctx := context.Background()
+		if cmd != nil {
+			ctx = cmd.Context()
+		}
+		return runRunSandboxWithWriter(ctx, cmd, args, runSandboxOptions{
+			Engine:                      engineName,
+			EngineChanged:               engineChanged,
+			IterationsFlag:              iterationsFlag,
+			IterationsChanged:           iterationsChanged,
+			Base:                        baseFlag,
+			BaseChanged:                 baseChanged,
+			Retries:                     retries,
+			RetriesChanged:              retriesChanged,
+			RetryDelay:                  delay,
+			RetryDelayChanged:           delayChanged,
+			Timeout:                     timeoutOverride,
+			TimeoutChanged:              timeoutChanged,
+			DryRun:                      dryRun,
+			DryRunChanged:               dryRunChanged,
+			Story:                       story,
+			StoryChanged:                storyChanged,
+			JSON:                        jsonMode,
+			JSONChanged:                 jsonChanged,
+			SandboxName:                 sandboxName,
+			SandboxNameChanged:          sandboxNameChanged,
+			SandboxHostID:               sandboxHost,
+			SandboxHostChanged:          sandboxHostChanged,
+			SandboxRuntime:              sandboxRuntime,
+			SandboxRuntimeChanged:       sandboxRuntimeChanged,
+			SandboxTemplate:             sandboxTemplate,
+			SandboxTemplateChanged:      sandboxTemplateChanged,
+			SandboxTemplateTrust:        sandboxTemplateTrust,
+			SandboxTemplateTrustChanged: sandboxTemplateTrustChanged,
+			SandboxSyncOut:              sandboxSyncOut,
+			SandboxSyncOutChanged:       sandboxSyncOutChanged,
+			SandboxApply:                sandboxApply,
+			SandboxApplyChanged:         sandboxApplyChanged,
+		}, out, errOut, defaultRunSandboxDeps)
 	}
 
 	iterations, err := parseIterations(args, iterationsFlag, iterationsChanged, 10)
 	if err != nil {
 		if jsonMode {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
 	if timeoutOverride < 0 {
 		if jsonMode {
-			return outputRunJSONError(out, "--timeout must be greater than or equal to 0")
+			return outputRunJSONErrorForCommand(cmd, out, "--timeout must be greater than or equal to 0")
 		}
 		return exitWithCode(cmd, ExitCodeValidation, fmt.Errorf("--timeout must be greater than or equal to 0"))
 	}
@@ -247,7 +501,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	halDir := template.HalDir
 	if _, err := os.Stat(halDir); os.IsNotExist(err) {
 		if jsonMode {
-			return outputRunJSONError(out, ".hal/ not found. Run 'hal init' first")
+			return outputRunJSONErrorForCommand(cmd, out, ".hal/ not found. Run 'hal init' first")
 		}
 		return fmt.Errorf(".hal/ not found. Run 'hal init' first")
 	}
@@ -256,7 +510,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	prdPath := halDir + "/prd.json"
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
 		if jsonMode {
-			return outputRunJSONError(out, "prd.json not found at "+prdPath+". Create your task list first")
+			return outputRunJSONErrorForCommand(cmd, out, "prd.json not found at "+prdPath+". Create your task list first")
 		}
 		return fmt.Errorf("prd.json not found at %s. Create your task list first", prdPath)
 	}
@@ -272,7 +526,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	resolvedEngine, err := resolveEngine(cmd, "engine", engineName, ".")
 	if err != nil {
 		if jsonMode {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return exitWithCode(cmd, ExitCodeValidation, err)
 	}
@@ -281,13 +535,18 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 		engineCfg = withTimeoutOverride(engineCfg, timeoutOverride)
 	}
 
+	loopOut := out
+	if jsonMode {
+		loopOut = io.Discard
+	}
+
 	// Create and run the loop
 	runner, err := loop.New(loop.Config{
 		Dir:           halDir,
 		MaxIterations: iterations,
 		Engine:        resolvedEngine,
 		EngineConfig:  engineCfg,
-		Logger:        out,
+		Logger:        loopOut,
 		RetryDelay:    delay,
 		MaxRetries:    retries,
 		DryRun:        dryRun,
@@ -296,7 +555,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	})
 	if err != nil {
 		if jsonMode {
-			return outputRunJSONError(out, err.Error())
+			return outputRunJSONErrorForCommand(cmd, out, err.Error())
 		}
 		return err
 	}
@@ -304,7 +563,7 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	result := runner.Run(context.Background())
 
 	if jsonMode {
-		return outputRunJSON(out, result, story, dryRun, resolvedEngine)
+		return outputRunJSONForCommand(cmd, out, result, story, dryRun, resolvedEngine)
 	}
 
 	// Show completion summary in terminal mode
@@ -316,6 +575,78 @@ func runRunWithWriter(cmd *cobra.Command, args []string, errOut io.Writer) error
 	}
 
 	return nil
+}
+
+func loadCommandProjectConfig(dir string) (*projectconfig.Config, error) {
+	return projectconfig.Load(dir)
+}
+
+func applyRunProjectConfigDefaults(cfg *projectconfig.Config, base *string, baseChanged *bool, timeout *time.Duration, timeoutChanged *bool) {
+	if cfg == nil {
+		return
+	}
+	if base != nil && baseChanged != nil && !*baseChanged && cfg.Run.Base.Set {
+		*base = cfg.Run.Base.Value
+		*baseChanged = true
+	}
+	if timeout != nil && timeoutChanged != nil && !*timeoutChanged && cfg.Run.Timeout.Set {
+		*timeout = cfg.Run.Timeout.Value
+		*timeoutChanged = true
+	}
+}
+
+func applyAutoProjectConfigDefaults(cfg *projectconfig.Config, base *string, baseChanged *bool) {
+	if cfg == nil {
+		return
+	}
+	if base != nil && baseChanged != nil && !*baseChanged && cfg.Auto.Base.Set {
+		*base = cfg.Auto.Base.Value
+		*baseChanged = true
+	}
+}
+
+type commandSandboxDefaultState struct {
+	SandboxName           string
+	SandboxNameChanged    bool
+	PositionalSandboxName bool
+	SandboxHostID         string
+	SandboxHostChanged    bool
+	SandboxRuntime        string
+	SandboxRuntimeChanged bool
+	SandboxSyncOut        bool
+	SandboxSyncOutChanged bool
+	SandboxApply          bool
+	SandboxApplyChanged   bool
+}
+
+func applyProjectSandboxDefaults(cfg *projectconfig.Config, sandboxMode bool, state *commandSandboxDefaultState) {
+	if cfg == nil || !sandboxMode || state == nil {
+		return
+	}
+	defaults := cfg.Sandbox
+	if !state.SandboxNameChanged && !state.PositionalSandboxName && defaults.Name.Set {
+		state.SandboxName = defaults.Name.Value
+	}
+	if !state.SandboxHostChanged && defaults.Host.Set {
+		state.SandboxHostID = defaults.Host.Value
+	}
+	if !state.SandboxRuntimeChanged && defaults.Runtime.Set {
+		state.SandboxRuntime = defaults.Runtime.Value
+	}
+	if !state.SandboxSyncOutChanged && defaults.SyncOut.Set {
+		state.SandboxSyncOut = defaults.SyncOut.Value
+	}
+	if !state.SandboxApplyChanged && defaults.Apply.Set {
+		state.SandboxApply = defaults.Apply.Value
+	}
+}
+
+func runSandboxPositionalNamePresent(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	positional := strings.TrimSpace(args[0])
+	return positional != "" && !isRunSandboxInteger(positional)
 }
 
 // showRunSummary renders a human-readable completion summary after the loop finishes.
@@ -340,9 +671,11 @@ func showRunSummary(out io.Writer, result loop.Result) {
 
 	// Show last story worked on
 	if result.LastStoryID != "" {
-		storyLabel := engine.StyleInfo.Render(result.LastStoryID)
-		if result.LastStoryTitle != "" {
-			storyLabel += " — " + result.LastStoryTitle
+		storyID := sanitizeRunPublicString(result.LastStoryID)
+		storyTitle := sanitizeRunPublicString(result.LastStoryTitle)
+		storyLabel := engine.StyleInfo.Render(storyID)
+		if storyTitle != "" {
+			storyLabel += " — " + storyTitle
 		}
 		fmt.Fprintf(out, "%s %s\n", engine.StyleBold.Render("Last story:"), storyLabel)
 	}
@@ -369,24 +702,45 @@ func formatRunDuration(d time.Duration) string {
 }
 
 func outputRunJSONError(out io.Writer, errMsg string) error {
-	jr := RunResult{
-		ContractVersion: 1,
-		OK:              false,
-		Error:           errMsg,
-		Summary:         errMsg,
+	return outputRunJSONErrorWithReadinessGate(out, errMsg, nil)
+}
+
+func outputRunJSONErrorForCommand(cmd *cobra.Command, out io.Writer, errMsg string) error {
+	if err := outputRunJSONError(out, errMsg); err != nil {
+		return err
 	}
-	data, _ := json.MarshalIndent(jr, "", "  ")
-	fmt.Fprintln(out, string(data))
+	return exitWithCode(cmd, ExitCodeValidation, nil)
+}
+
+func outputRunJSONErrorWithReadinessGate(out io.Writer, errMsg string, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
+	errMsg = sanitizeRunPublicString(errMsg)
+	jr := RunResult{
+		ContractVersion:       1,
+		OK:                    false,
+		Error:                 errMsg,
+		Summary:               errMsg,
+		SecurityReadinessGate: sandbox.CloneSandboxSecurityCapabilityReadinessGateDecisionPtr(gate),
+	}
+	if err := writeRunJSON(out, jr); err != nil {
+		return err
+	}
 	return nil
+}
+
+func outputRunJSONErrorWithReadinessGateForCommand(cmd *cobra.Command, out io.Writer, errMsg string, gate *sandbox.SandboxSecurityCapabilityReadinessGateDecision) error {
+	if err := outputRunJSONErrorWithReadinessGate(out, errMsg, gate); err != nil {
+		return err
+	}
+	return exitWithCode(cmd, ExitCodeValidation, nil)
 }
 
 func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun bool, engineName string) error {
 	jr := RunResult{
 		ContractVersion: 1,
 		OK:              result.Success,
-		Engine:          engineName,
+		Engine:          sanitizeRunPublicString(engineName),
 		Iterations:      result.Iterations,
-		StoryID:         storyID,
+		StoryID:         sanitizeRunPublicString(storyID),
 		DryRun:          dryRun,
 		Complete:        result.Complete,
 	}
@@ -394,7 +748,7 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 		jr.Duration = result.Duration.Round(time.Second).String()
 	}
 	if result.LastStoryID != "" {
-		jr.LastStoryID = result.LastStoryID
+		jr.LastStoryID = sanitizeRunPublicString(result.LastStoryID)
 	}
 
 	// Story progress from loop result
@@ -407,7 +761,7 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 	}
 
 	if result.Error != nil {
-		jr.Error = result.Error.Error()
+		jr.Error = sanitizeRunPublicString(result.Error.Error())
 	}
 
 	if result.Complete {
@@ -433,12 +787,35 @@ func outputRunJSON(out io.Writer, result loop.Result, storyID string, dryRun boo
 		}
 	}
 
+	if err := writeRunJSON(out, jr); err != nil {
+		return err
+	}
+	return nil
+}
+
+func outputRunJSONForCommand(cmd *cobra.Command, out io.Writer, result loop.Result, storyID string, dryRun bool, engineName string) error {
+	if err := outputRunJSON(out, result, storyID, dryRun, engineName); err != nil {
+		return err
+	}
+	if !result.Success {
+		return exitWithCode(cmd, ExitCodeExpectedNonZero, nil)
+	}
+	return nil
+}
+
+func writeRunJSON(out io.Writer, jr RunResult) error {
 	data, err := json.MarshalIndent(jr, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal run result: %w", err)
 	}
-	fmt.Fprintln(out, string(data))
+	if _, err := fmt.Fprintln(out, string(data)); err != nil {
+		return fmt.Errorf("write run result: %w", err)
+	}
 	return nil
+}
+
+func sanitizeRunPublicString(value string) string {
+	return sanitizeFactorySandboxFailureText(status.SanitizePublicString(value))
 }
 
 func withTimeoutOverride(cfg *engine.EngineConfig, timeout time.Duration) *engine.EngineConfig {

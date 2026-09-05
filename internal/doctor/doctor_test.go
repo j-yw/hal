@@ -131,6 +131,46 @@ func TestRun_HealthyNonCodexRepo(t *testing.T) {
 	}
 }
 
+func TestRun_MissingProgressAggregatesWarning(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	halDir := setupHalDir(t, dir)
+	installSkills(t, dir)
+	installCommands(t, dir)
+	if err := os.Remove(filepath.Join(halDir, template.ProgressFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Run(Options{Dir: dir, Engine: "pi"})
+
+	if result.OverallStatus != StatusWarn {
+		t.Fatalf("overallStatus = %q, want %q", result.OverallStatus, StatusWarn)
+	}
+	if len(result.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", result.Failures)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0] != "progress_file" {
+		t.Fatalf("warnings = %v, want [progress_file]", result.Warnings)
+	}
+	if result.PrimaryRemediation == nil || result.PrimaryRemediation.Command != "hal init" {
+		t.Fatalf("primaryRemediation = %#v, want hal init", result.PrimaryRemediation)
+	}
+	if !strings.Contains(result.Summary, "Hal is usable with warnings") || !strings.Contains(result.Summary, "run hal init") {
+		t.Fatalf("summary = %q, want usable warning with hal init guidance", result.Summary)
+	}
+	for _, check := range result.Checks {
+		if check.ID == "progress_file" {
+			if check.Status != StatusWarn || check.Applicability != ApplicabilityRequired {
+				t.Fatalf("progress check = %#v, want required warning", check)
+			}
+			return
+		}
+	}
+	t.Fatal("progress_file check not found")
+}
+
 func TestRun_MissingSkills(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, ".git"), 0755)

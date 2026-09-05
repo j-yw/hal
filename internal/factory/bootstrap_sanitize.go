@@ -50,7 +50,7 @@ func NewBootstrapSanitizer(request BootstrapRequest) BootstrapSanitizer {
 	for _, key := range request.RequiredEnvKeys {
 		addKey(key)
 	}
-	if credential := bootstrapGitHubBasicAuthCredential(request.Env[bootstrapGitHubTokenEnvKey]); credential != "" {
+	if credential := bootstrapGitHubBasicAuthCredential(bootstrapGitHubTokenForRequest(request)); credential != "" {
 		addBootstrapRedactionValue(valueSet, credential)
 	}
 	addURLCredentialRedactionTokens(valueSet, request.RepositoryURL)

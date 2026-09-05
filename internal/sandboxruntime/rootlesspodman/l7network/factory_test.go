@@ -1,0 +1,1012 @@
+package l7network_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/linuxrules"
+	"github.com/jywlabs/hal/internal/sandboxruntime/networkenforcement/policyproxy"
+	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman"
+	"github.com/jywlabs/hal/internal/sandboxruntime/rootlesspodman/l7network"
+)
+
+const testTCPNetwork = "tcp"
+
+func TestL7ComposedRootlessPodmanActivationCorrelatesProxyNamespaceRawPacketAndRules(t *testing.T) {
+	sequence := &sequenceLog{}
+	proxy := newFakeProxy(sequence)
+	namespace := &fakeNamespaceResolver{sequence: sequence, result: validNamespaceResolution()}
+	rules := &fakeRules{sequence: sequence}
+	factory, err := l7network.NewFactory(l7network.FactoryOptions{
+		Identity:                 testIdentity(),
+		Plan:                     testPlan(),
+		Proxy:                    proxy,
+		NamespaceResolver:        namespace,
+		Rules:                    rules,
+		RawPacketVerifierFactory: fakeRawPacketVerifierFactory,
+		GuestProxyAddress:        "169.254.77.2",
+		TableName:                "hal_l7_a",
+		CleanupTimeout:           time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewFactory() unexpected error: %v", err)
+	}
+	preparation, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+	if err != nil {
+		t.Fatalf("PrepareNetworkTopology() unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(preparation.CreateArgs, []string{"--network", "pasta:--no-map-gw,--address=192.0.2.3/24,--gateway=192.0.2.1,--address=fd00:6861:6c::2/64,--gateway=fe80::1,--map-host-loopback=169.254.77.2,-t,none,-u,none,-T,none,-U,none"}) {
+		t.Fatalf("CreateArgs = %#v", preparation.CreateArgs)
+	}
+	target := testTarget()
+	proof, err := preparation.Session.Activate(context.Background(), rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: target})
+	if err != nil {
+		t.Fatalf("Activate() unexpected error: %v", err)
+	}
+	if proof.Identity != testIdentity() || proof.RuntimeID != target.ID || !proof.ProxyActive || !proof.RulesInspected || proof.RuleDigest == "" {
+		t.Fatalf("Activate() proof = %#v, want exact active correlated proof", proof)
+	}
+	if got, want := sequence.snapshot(), []string{"proxy_start", "proxy_endpoint", "proxy_active", "namespace_resolve", "proxy_active", "rules_apply_inspect", "proxy_active"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("activation sequence = %#v, want %#v", got, want)
+	}
+	if rules.lastCorrelation != testCorrelation() {
+		t.Fatalf("rules correlation = %#v, want %#v", rules.lastCorrelation, testCorrelation())
+	}
+	if rules.lastRawPacketVerifier != (fakeRawPacketVerifier{}) {
+		t.Fatalf("raw packet verifier not bound into exact expected rule set")
+	}
+}
+
+func TestL7ComposedRootlessPodmanRechecksProxyAndQuarantinesBeforeCleanup(t *testing.T) {
+	sequence := &sequenceLog{}
+	proxy := newFakeProxy(sequence)
+	rules := &fakeRules{sequence: sequence}
+	factory := mustFactory(t, l7network.FactoryOptions{
+		Identity: testIdentity(), Plan: testPlan(), Proxy: proxy,
+		NamespaceResolver: &fakeNamespaceResolver{sequence: sequence, result: validNamespaceResolution()},
+		Rules:             rules, RawPacketVerifierFactory: fakeRawPacketVerifierFactory, GuestProxyAddress: "169.254.77.2", TableName: "hal_l7_a",
+	})
+	prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if _, err := prepared.Session.Activate(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	sequence.reset()
+	proxy.activeErr = errors.New("endpoint=/run/user/private.sock token=secret")
+	if _, err := prepared.Session.Inspect(context.Background(), req); !errors.Is(err, l7network.ErrProxyUnavailable) {
+		t.Fatalf("Inspect() error = %v, want ErrProxyUnavailable", err)
+	} else if strings.Contains(err.Error(), "private.sock") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("Inspect() leaked private error: %v", err)
+	}
+	proxy.activeErr = nil
+	if err := prepared.Session.Revoke(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Cleanup(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sequence.snapshot(), []string{"proxy_active", "rules_quarantine", "rules_cleanup", "namespace_close", "proxy_stop"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("loss cleanup sequence = %#v, want %#v", got, want)
+	}
+}
+
+func TestL7ComposedRootlessPodmanPreparedActivationFailureRollsBackForRetry(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		wantError error
+		fail      func(*fakeProxy, *fakeRules)
+	}{
+		{
+			name:      "pre-rule proxy proof",
+			wantError: l7network.ErrProxyUnavailable,
+			fail: func(proxy *fakeProxy, _ *fakeRules) {
+				proxy.activeErrors = []error{nil, errors.New("private pre-rule proxy failure")}
+			},
+		},
+		{
+			name:      "final proxy proof",
+			wantError: l7network.ErrProxyUnavailable,
+			fail: func(proxy *fakeProxy, _ *fakeRules) {
+				proxy.activeErrors = []error{nil, nil, errors.New("private final proxy failure")}
+			},
+		},
+		{
+			name:      "rule application",
+			wantError: l7network.ErrRuleProofUnverified,
+			fail: func(_ *fakeProxy, rules *fakeRules) {
+				rules.applyErr = errors.New("private partial rule failure")
+			},
+		},
+		{
+			name:      "rule proof conversion",
+			wantError: l7network.ErrRuleProofUnverified,
+			fail: func(_ *fakeProxy, rules *fakeRules) {
+				rules.mutateMetadata = func(metadata *networkenforcement.RuleLifecycleMetadata) {
+					metadata.Status = networkenforcement.LifecycleStatusFailed
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sequence := &sequenceLog{}
+			proxy := newFakeProxy(sequence)
+			closer := &retryCloser{sequence: sequence}
+			resolution := validNamespaceResolution()
+			resolution.Close = closer
+			rules := &fakeRules{sequence: sequence}
+			factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{sequence: sequence, result: resolution}, rules))
+			prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+			test.fail(proxy, rules)
+			if _, err := prepared.Session.Activate(context.Background(), request); !errors.Is(err, test.wantError) || errors.Is(err, l7network.ErrCleanupIncomplete) {
+				t.Fatalf("Activate() = %v, want clean %v rollback", err, test.wantError)
+			}
+			if rules.cleanupCalls != 1 || closer.calls != 1 {
+				t.Fatalf("activation rollback calls = rules:%d namespace:%d, want one each", rules.cleanupCalls, closer.calls)
+			}
+			got := sequence.snapshot()
+			if len(got) < 2 || !reflect.DeepEqual(got[len(got)-2:], []string{"rules_cleanup", "namespace_close"}) {
+				t.Fatalf("activation rollback order = %#v", got)
+			}
+			if environment := prepared.Session.ProxyEnvironment(request); environment != nil {
+				t.Fatalf("failed activation exposed proxy environment: %#v", environment)
+			}
+
+			proxy.activeErrors = nil
+			rules.applyErr = nil
+			rules.mutateMetadata = nil
+			if _, err := prepared.Session.Activate(context.Background(), request); err != nil {
+				t.Fatalf("Activate() retry = %v", err)
+			}
+			if err := prepared.Session.Revoke(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+			if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+			if rules.cleanupCalls != 2 || closer.calls != 2 {
+				t.Fatalf("final cleanup calls = rules:%d namespace:%d, want two total", rules.cleanupCalls, closer.calls)
+			}
+		})
+	}
+}
+
+func TestL7ComposedRootlessPodmanPreparedActivationRollbackRetainsUncertainOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name                  string
+		ruleCleanupFailures   int
+		namespaceFailures     int
+		wantRulesAfterFailure int
+		wantCloseAfterFailure int
+		wantRulesAfterCleanup int
+		wantCloseAfterCleanup int
+	}{
+		{name: "rule cleanup", ruleCleanupFailures: 1, wantRulesAfterFailure: 1, wantRulesAfterCleanup: 2, wantCloseAfterCleanup: 1},
+		{name: "namespace close", namespaceFailures: 1, wantRulesAfterFailure: 1, wantCloseAfterFailure: 1, wantRulesAfterCleanup: 1, wantCloseAfterCleanup: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sequence := &sequenceLog{}
+			proxy := newFakeProxy(sequence)
+			proxy.activeErrors = []error{nil, nil, errors.New("private final proxy failure")}
+			closer := &retryCloser{sequence: sequence, failures: test.namespaceFailures}
+			resolution := validNamespaceResolution()
+			resolution.Close = closer
+			rules := &fakeRules{sequence: sequence, cleanupFailures: test.ruleCleanupFailures}
+			factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{sequence: sequence, result: resolution}, rules))
+			prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+			if _, err := prepared.Session.Activate(context.Background(), request); !errors.Is(err, l7network.ErrProxyUnavailable) || !errors.Is(err, l7network.ErrCleanupIncomplete) {
+				t.Fatalf("Activate() = %v, want proxy plus cleanup sentinels", err)
+			}
+			if rules.cleanupCalls != test.wantRulesAfterFailure || closer.calls != test.wantCloseAfterFailure {
+				t.Fatalf("failed rollback calls = rules:%d namespace:%d", rules.cleanupCalls, closer.calls)
+			}
+			if _, err := prepared.Session.Activate(context.Background(), request); !errors.Is(err, l7network.ErrCleanupIncomplete) {
+				t.Fatalf("Activate() before cleanup retry = %v, want ErrCleanupIncomplete", err)
+			}
+			if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+				t.Fatalf("Cleanup() retry = %v", err)
+			}
+			if rules.cleanupCalls != test.wantRulesAfterCleanup || closer.calls != test.wantCloseAfterCleanup {
+				t.Fatalf("cleanup retry calls = rules:%d namespace:%d", rules.cleanupCalls, closer.calls)
+			}
+		})
+	}
+}
+
+func TestL7ComposedRootlessPodmanRejectsMismatchedRevokeBeforeMutation(t *testing.T) {
+	proxy := newFakeProxy(&sequenceLog{})
+	rules := &fakeRules{}
+	factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{result: validNamespaceResolution()}, rules))
+	prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if _, err := prepared.Session.Activate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	mismatch := request
+	mismatch.Identity.RuleGenerationID = "other-rule-generation"
+	if err := prepared.Session.Revoke(context.Background(), mismatch); !errors.Is(err, l7network.ErrIdentityMismatch) {
+		t.Fatalf("Revoke(mismatch) = %v, want ErrIdentityMismatch", err)
+	}
+	if environment := prepared.Session.ProxyEnvironment(request); len(environment) != 4 {
+		t.Fatalf("mismatched revoke mutated active environment: %#v", environment)
+	}
+	if _, err := prepared.Session.Inspect(context.Background(), request); err != nil {
+		t.Fatalf("Inspect() after mismatched revoke = %v", err)
+	}
+	if err := prepared.Session.Revoke(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestL7ComposedRootlessPodmanReleasesSelectedPortOnlyAfterRuleCleanup(t *testing.T) {
+	plan := testPlan()
+	adapter, err := policyproxy.New(policyproxy.Config{Policy: networkenforcement.NewPolicyProxyPolicyInput(plan, nil), ListenAddress: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := l7network.NewProductionProxy(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := &fakeRules{}
+	factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{result: validNamespaceResolution()}, rules))
+	prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, ok := adapter.Endpoint()
+	if !ok {
+		t.Fatal("selected composed endpoint unavailable")
+	}
+	rules.cleanupHook = func() {
+		rebound, bindErr := net.Listen(testTCPNetwork, endpoint)
+		if bindErr == nil {
+			_ = rebound.Close()
+			t.Error("selected endpoint rebound before exact composed proxy stop")
+		}
+	}
+	request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if _, err := prepared.Session.Activate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Revoke(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	rebound, err := net.Listen(testTCPNetwork, endpoint)
+	if err != nil {
+		t.Fatalf("selected endpoint remained reserved after exact composed cleanup: %v", err)
+	}
+	_ = rebound.Close()
+}
+
+func TestL7ComposedRootlessPodmanRejectsMismatchBeforeMutationAndCleansPartialStart(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*l7network.FactoryOptions)
+	}{
+		{name: "unsafe identity", mutate: func(o *l7network.FactoryOptions) { o.Identity.RuleGenerationID = "/private/rule" }},
+		{name: "plan id mismatch", mutate: func(o *l7network.FactoryOptions) { o.Plan.ID = "other-plan" }},
+		{name: "proxy session mismatch", mutate: func(o *l7network.FactoryOptions) { o.Plan.Proxy.ProxySessionID = "other-proxy" }},
+		{name: "loopback guest mapping", mutate: func(o *l7network.FactoryOptions) { o.GuestProxyAddress = "127.0.0.1" }},
+		{name: "missing namespace resolver", mutate: func(o *l7network.FactoryOptions) { o.NamespaceResolver = nil }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sequence := &sequenceLog{}
+			proxy := newFakeProxy(sequence)
+			options := l7network.FactoryOptions{Identity: testIdentity(), Plan: testPlan(), Proxy: proxy,
+				NamespaceResolver: &fakeNamespaceResolver{result: validNamespaceResolution()}, Rules: &fakeRules{},
+				RawPacketVerifierFactory: fakeRawPacketVerifierFactory, GuestProxyAddress: "169.254.77.2", TableName: "hal_l7_a"}
+			tt.mutate(&options)
+			if _, err := l7network.NewFactory(options); !errors.Is(err, l7network.ErrInvalidConfiguration) {
+				t.Fatalf("NewFactory() error = %v, want ErrInvalidConfiguration", err)
+			}
+			if got := sequence.snapshot(); len(got) != 0 {
+				t.Fatalf("mutation before validation: %#v", got)
+			}
+		})
+	}
+
+	t.Run("partial proxy start", func(t *testing.T) {
+		sequence := &sequenceLog{}
+		proxy := newFakeProxy(sequence)
+		proxy.endpointErr = errors.New("private endpoint failure")
+		factory := mustFactory(t, l7network.FactoryOptions{Identity: testIdentity(), Plan: testPlan(), Proxy: proxy,
+			NamespaceResolver: &fakeNamespaceResolver{result: validNamespaceResolution()}, Rules: &fakeRules{},
+			RawPacketVerifierFactory: fakeRawPacketVerifierFactory, GuestProxyAddress: "169.254.77.2", TableName: "hal_l7_a"})
+		if _, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"}); !errors.Is(err, l7network.ErrProxyUnavailable) {
+			t.Fatalf("PrepareNetworkTopology() error = %v, want ErrProxyUnavailable", err)
+		}
+		if got, want := sequence.snapshot(), []string{"proxy_start", "proxy_endpoint", "proxy_stop"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("partial start sequence = %#v, want %#v", got, want)
+		}
+	})
+}
+
+func TestL7ComposedRootlessPodmanDefaultAndNonLinuxRemainFailClosed(t *testing.T) {
+	driver := rootlesspodman.New(rootlesspodman.Options{})
+	if driver == nil || driver.ID() != rootlesspodman.DriverID {
+		t.Fatal("default constructor changed")
+	}
+	if _, err := l7network.NewProductionNamespaceResolver(l7network.ProductionNamespaceResolverOptions{}); err == nil {
+		t.Fatal("empty production namespace resolver must fail closed")
+	}
+}
+
+func TestL7ComposedRootlessPodmanPartialOwnershipAndCleanupRetry(t *testing.T) {
+	t.Run("partial proxy generation is stopped and cleanup uncertainty survives", func(t *testing.T) {
+		sequence := &sequenceLog{}
+		proxy := newFakeProxy(sequence)
+		proxy.startErr = errors.New("private start failure")
+		proxy.stopErr = errors.New("private stop failure")
+		factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{result: validNamespaceResolution()}, &fakeRules{}))
+		_, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+		if !errors.Is(err, l7network.ErrProxyUnavailable) || !errors.Is(err, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("PrepareNetworkTopology() error = %v, want proxy plus cleanup sentinels", err)
+		}
+		if got, want := sequence.snapshot(), []string{"proxy_start", "proxy_stop"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("partial proxy sequence = %#v, want %#v", got, want)
+		}
+		retrier, ok := factory.(interface {
+			RetryNetworkTopologyCleanup(context.Context) error
+		})
+		if !ok {
+			t.Fatal("factory discarded partial proxy cleanup authority")
+		}
+		if retryErr := retrier.RetryNetworkTopologyCleanup(context.Background()); !errors.Is(retryErr, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("first retained cleanup retry = %v, want ErrCleanupIncomplete", retryErr)
+		}
+		proxy.stopErr = nil
+		if retryErr := retrier.RetryNetworkTopologyCleanup(context.Background()); retryErr != nil {
+			t.Fatalf("second retained cleanup retry = %v", retryErr)
+		}
+		if got, want := sequence.snapshot(), []string{"proxy_start", "proxy_stop", "proxy_stop", "proxy_stop"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("retained partial proxy sequence = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("partial namespace is closed", func(t *testing.T) {
+		sequence := &sequenceLog{}
+		proxy := newFakeProxy(sequence)
+		closer := &retryCloser{sequence: sequence}
+		resolution := validNamespaceResolution()
+		resolution.Close = closer
+		resolver := &fakeNamespaceResolver{sequence: sequence, result: resolution, err: errors.New("private namespace drift")}
+		factory := mustFactory(t, baseFactoryOptions(proxy, resolver, &fakeRules{sequence: sequence}))
+		prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := prepared.Session.Activate(context.Background(), rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}); !errors.Is(err, l7network.ErrNamespaceUnverified) {
+			t.Fatalf("Activate() error = %v, want ErrNamespaceUnverified", err)
+		}
+		if closer.calls != 1 {
+			t.Fatalf("partial namespace close calls = %d, want 1", closer.calls)
+		}
+	})
+
+	t.Run("failed closer is retained for cleanup retry", func(t *testing.T) {
+		proxy := newFakeProxy(&sequenceLog{})
+		closer := &retryCloser{failures: 1}
+		resolution := validNamespaceResolution()
+		resolution.Close = closer
+		factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{result: resolution}, &fakeRules{}))
+		prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+		if _, err := prepared.Session.Activate(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+		if err := prepared.Session.Revoke(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+		if err := prepared.Session.Cleanup(context.Background(), req); !errors.Is(err, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("first Cleanup() = %v", err)
+		}
+		if err := prepared.Session.Cleanup(context.Background(), req); err != nil {
+			t.Fatalf("retry Cleanup() = %v", err)
+		}
+		if closer.calls != 2 {
+			t.Fatalf("closer calls = %d, want 2", closer.calls)
+		}
+	})
+
+	t.Run("reactivation cannot replace failed namespace cleanup", func(t *testing.T) {
+		sequence := &sequenceLog{}
+		proxy := newFakeProxy(sequence)
+		firstCloser := &retryCloser{sequence: sequence, failures: 1}
+		secondCloser := &retryCloser{sequence: sequence}
+		resolution := validNamespaceResolution()
+		resolution.Close = firstCloser
+		resolver := &fakeNamespaceResolver{sequence: sequence, result: resolution}
+		verifierCalls := 0
+		factory := mustFactory(t, l7network.FactoryOptions{
+			Identity: testIdentity(), Plan: testPlan(), Proxy: proxy,
+			NamespaceResolver: resolver, Rules: &fakeRules{sequence: sequence},
+			RawPacketVerifierFactory: func(rootlesspodman.NetworkTopologyTargetRequest) (linuxrules.RawPacketIsolationVerifier, error) {
+				verifierCalls++
+				if verifierCalls == 1 {
+					return nil, errors.New("private verifier failure")
+				}
+				return fakeRawPacketVerifier{}, nil
+			},
+			GuestProxyAddress: "169.254.77.2", TableName: "hal_l7_a",
+		})
+		prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+		t.Cleanup(func() { _ = prepared.Session.Cleanup(context.Background(), request) })
+		if _, err := prepared.Session.Activate(context.Background(), request); !errors.Is(err, l7network.ErrNamespaceUnverified) || !errors.Is(err, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("first Activate() = %v, want namespace and cleanup errors", err)
+		}
+		resolver.result.Close = secondCloser
+		if _, err := prepared.Session.Activate(context.Background(), request); !errors.Is(err, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("second Activate() = %v, want ErrCleanupIncomplete", err)
+		}
+		if verifierCalls != 1 {
+			t.Fatalf("verifier calls = %d, want 1 before retained cleanup", verifierCalls)
+		}
+		if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+			t.Fatalf("Cleanup() = %v", err)
+		}
+		if firstCloser.calls != 2 || secondCloser.calls != 0 {
+			t.Fatalf("namespace closes = first:%d second:%d, want retried first only", firstCloser.calls, secondCloser.calls)
+		}
+	})
+
+	t.Run("successful namespace rollback permits clean reactivation", func(t *testing.T) {
+		sequence := &sequenceLog{}
+		proxy := newFakeProxy(sequence)
+		firstCloser := &retryCloser{sequence: sequence}
+		secondCloser := &retryCloser{sequence: sequence}
+		resolution := validNamespaceResolution()
+		resolution.Close = firstCloser
+		resolver := &fakeNamespaceResolver{sequence: sequence, result: resolution}
+		verifierCalls := 0
+		factory := mustFactory(t, l7network.FactoryOptions{
+			Identity: testIdentity(), Plan: testPlan(), Proxy: proxy,
+			NamespaceResolver: resolver, Rules: &fakeRules{sequence: sequence},
+			RawPacketVerifierFactory: func(rootlesspodman.NetworkTopologyTargetRequest) (linuxrules.RawPacketIsolationVerifier, error) {
+				verifierCalls++
+				if verifierCalls == 1 {
+					return nil, errors.New("private verifier failure")
+				}
+				return fakeRawPacketVerifier{}, nil
+			},
+			GuestProxyAddress: "169.254.77.2", TableName: "hal_l7_a",
+		})
+		prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+		t.Cleanup(func() { _ = prepared.Session.Cleanup(context.Background(), request) })
+		if _, err := prepared.Session.Activate(context.Background(), request); !errors.Is(err, l7network.ErrNamespaceUnverified) || errors.Is(err, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("first Activate() = %v, want clean namespace rollback", err)
+		}
+		if firstCloser.calls != 1 {
+			t.Fatalf("first namespace close calls = %d, want 1", firstCloser.calls)
+		}
+		resolver.result.Close = secondCloser
+		if _, err := prepared.Session.Activate(context.Background(), request); err != nil {
+			t.Fatalf("second Activate() = %v", err)
+		}
+		if verifierCalls != 2 {
+			t.Fatalf("verifier calls = %d, want clean retry", verifierCalls)
+		}
+		if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+			t.Fatalf("Cleanup() = %v", err)
+		}
+		if firstCloser.calls != 1 || secondCloser.calls != 1 {
+			t.Fatalf("namespace closes = first:%d second:%d, want one each", firstCloser.calls, secondCloser.calls)
+		}
+	})
+
+	t.Run("transient rule cleanup retains namespace for exact retry", func(t *testing.T) {
+		sequence := &sequenceLog{}
+		proxy := newFakeProxy(sequence)
+		closer := &retryCloser{sequence: sequence}
+		resolution := validNamespaceResolution()
+		resolution.Close = closer
+		rules := &fakeRules{sequence: sequence, cleanupFailures: 1}
+		factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{sequence: sequence, result: resolution}, rules))
+		prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+		if _, err := prepared.Session.Activate(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+		if err := prepared.Session.Revoke(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+		sequence.reset()
+		if err := prepared.Session.Cleanup(context.Background(), request); !errors.Is(err, l7network.ErrCleanupIncomplete) {
+			t.Fatalf("first Cleanup() = %v, want ErrCleanupIncomplete", err)
+		}
+		if closer.calls != 0 {
+			t.Fatalf("namespace closed while transient rule cleanup still needs it: %d", closer.calls)
+		}
+		if got, want := sequence.snapshot(), []string{"rules_cleanup", "proxy_stop"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("first cleanup sequence = %#v, want %#v", got, want)
+		}
+		sequence.reset()
+		if err := prepared.Session.Cleanup(context.Background(), request); err != nil {
+			t.Fatalf("retry Cleanup() = %v", err)
+		}
+		if closer.calls != 1 || rules.cleanupCalls != 2 {
+			t.Fatalf("retry cleanup calls = rules:%d namespace:%d", rules.cleanupCalls, closer.calls)
+		}
+		if got, want := sequence.snapshot(), []string{"rules_cleanup", "namespace_close"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("retry cleanup sequence = %#v, want %#v", got, want)
+		}
+	})
+}
+
+func TestL7ComposedRootlessPodmanCollisionAndLossBeforeEnvironmentFailClosed(t *testing.T) {
+	proxy := newFakeProxy(&sequenceLog{})
+	factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{result: validNamespaceResolution()}, &fakeRules{})).(*l7network.Factory)
+	prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"}); !errors.Is(err, l7network.ErrTopologyCollision) {
+		t.Fatalf("second PrepareNetworkTopology() = %v, want collision", err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if _, err := prepared.Session.Activate(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	close(proxy.endpoint.loss)
+	if environment := prepared.Session.ProxyEnvironment(req); environment != nil {
+		t.Fatalf("ProxyEnvironment() after generation loss = %#v, want nil", environment)
+	}
+}
+
+func TestL7ComposedRootlessPodmanRetiresGenerationAfterCleanup(t *testing.T) {
+	proxy := newFakeProxy(&sequenceLog{})
+	factory := mustFactory(t, baseFactoryOptions(proxy, &fakeNamespaceResolver{result: validNamespaceResolution()}, &fakeRules{})).(*l7network.Factory)
+	prepared, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if _, err := prepared.Session.Activate(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Revoke(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Session.Cleanup(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factory.PrepareNetworkTopology(context.Background(), rootlesspodman.NetworkTopologyPrepareRequest{SandboxName: "hal-l7"}); !errors.Is(err, l7network.ErrTopologyCollision) {
+		t.Fatalf("retired generation prepare=%v", err)
+	}
+}
+
+func TestL7RootlessPodmanRestartReconcilerQuarantinesBeforeExactCleanupWithoutActiveProof(t *testing.T) {
+	sequence := &sequenceLog{}
+	rules := &fakeRules{sequence: sequence}
+	runtime := &fakeRuntimeReconciler{sequence: sequence}
+	reconciler, err := l7network.NewReconciler(l7network.ReconcilerOptions{Identity: testIdentity(),
+		NamespaceResolver: &fakeNamespaceResolver{sequence: sequence, result: validNamespaceResolution()}, Rules: rules,
+		RawPacketVerifierFactory: fakeRawPacketVerifierFactory, Runtime: runtime, GuestProxyAddress: "169.254.77.2", ProxyPort: 31077,
+		TableName: "hal_l7_a", CleanupTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewReconciler() error: %v", err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile() error: %v", err)
+	}
+	if got, want := sequence.snapshot(), []string{"namespace_resolve", "rules_quarantine", "runtime_stop", "rules_cleanup", "namespace_close", "runtime_delete"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("restart sequence = %#v, want %#v", got, want)
+	}
+	sequence.reset()
+	postSuccess := req
+	postSuccess.Target.ID = "container-generation-b"
+	postSuccess.Target.Name = "hal-l7-b"
+	postSuccess.Target.Runtime.RuntimeID = "container-generation-b"
+	if err := reconciler.Reconcile(context.Background(), postSuccess); !errors.Is(err, l7network.ErrIdentityMismatch) {
+		t.Fatalf("post-success swapped target=%v", err)
+	}
+	if got := sequence.snapshot(); len(got) != 0 {
+		t.Fatalf("post-success mismatch mutated retired generation: %#v", got)
+	}
+	mismatch := req
+	mismatch.Identity.TopologyGenerationID = "other-generation"
+	if err := reconciler.Reconcile(context.Background(), mismatch); !errors.Is(err, l7network.ErrIdentityMismatch) {
+		t.Fatalf("mismatched Reconcile() = %v", err)
+	}
+}
+
+func TestL7RootlessPodmanRestartReconcilerRetainsEnforcementUntilQuarantineAndStopSucceed(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		failQuarantine bool
+		failStop       bool
+		first          []string
+		second         []string
+	}{
+		{name: "quarantine failure", failQuarantine: true, first: []string{"namespace_resolve", "rules_quarantine"}, second: []string{"rules_quarantine", "runtime_stop", "rules_cleanup", "namespace_close", "runtime_delete"}},
+		{name: "stop failure", failStop: true, first: []string{"namespace_resolve", "rules_quarantine", "runtime_stop"}, second: []string{"runtime_stop", "rules_cleanup", "namespace_close", "runtime_delete"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sequence := &sequenceLog{}
+			rules := &fakeRules{sequence: sequence}
+			runtime := &fakeRuntimeReconciler{sequence: sequence}
+			if tt.failQuarantine {
+				rules.quarantineFailures = 1
+			}
+			if tt.failStop {
+				runtime.stopFailures = 1
+			}
+			reconciler, err := l7network.NewReconciler(l7network.ReconcilerOptions{Identity: testIdentity(), NamespaceResolver: &fakeNamespaceResolver{sequence: sequence, result: validNamespaceResolution()}, Rules: rules, RawPacketVerifierFactory: fakeRawPacketVerifierFactory, Runtime: runtime, GuestProxyAddress: "169.254.77.2", ProxyPort: 31077, TableName: "hal_l7_a"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+			if err := reconciler.Reconcile(context.Background(), req); !errors.Is(err, l7network.ErrCleanupIncomplete) {
+				t.Fatalf("first Reconcile()=%v", err)
+			}
+			if got := sequence.snapshot(); !reflect.DeepEqual(got, tt.first) {
+				t.Fatalf("first sequence=%#v want %#v", got, tt.first)
+			}
+			sequence.reset()
+			if err := reconciler.Reconcile(context.Background(), req); err != nil {
+				t.Fatalf("retry Reconcile()=%v", err)
+			}
+			if got := sequence.snapshot(); !reflect.DeepEqual(got, tt.second) {
+				t.Fatalf("retry sequence=%#v want %#v", got, tt.second)
+			}
+		})
+	}
+}
+
+func TestL7RootlessPodmanRestartReconcilerRejectsTargetSwapAcrossRetry(t *testing.T) {
+	sequence := &sequenceLog{}
+	rules := &fakeRules{sequence: sequence, quarantineFailures: 1}
+	runtime := &fakeRuntimeReconciler{sequence: sequence}
+	reconciler, err := l7network.NewReconciler(l7network.ReconcilerOptions{Identity: testIdentity(), NamespaceResolver: &fakeNamespaceResolver{sequence: sequence, result: validNamespaceResolution()}, Rules: rules, RawPacketVerifierFactory: fakeRawPacketVerifierFactory, Runtime: runtime, GuestProxyAddress: "169.254.77.2", ProxyPort: 31077, TableName: "hal_l7_a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if err := reconciler.Reconcile(context.Background(), req); !errors.Is(err, l7network.ErrCleanupIncomplete) {
+		t.Fatalf("first Reconcile()=%v", err)
+	}
+	sequence.reset()
+	swapped := req
+	swapped.Target.ID = "container-generation-b"
+	swapped.Target.Name = "hal-l7-b"
+	swapped.Target.Runtime.RuntimeID = "container-generation-b"
+	if err := reconciler.Reconcile(context.Background(), swapped); !errors.Is(err, l7network.ErrIdentityMismatch) {
+		t.Fatalf("swapped retry=%v", err)
+	}
+	if got := sequence.snapshot(); len(got) != 0 {
+		t.Fatalf("swapped retry mutated retained generation: %#v", got)
+	}
+	if err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("original retry=%v", err)
+	}
+}
+
+func TestL7RootlessPodmanRestartReconcilerRetainsCloseFailureAfterExpectedRuleValidation(t *testing.T) {
+	closer := &retryCloser{failures: 1}
+	resolution := validNamespaceResolution()
+	resolution.InterfaceName = "invalid/interface"
+	resolution.Close = closer
+	reconciler, err := l7network.NewReconciler(l7network.ReconcilerOptions{Identity: testIdentity(), NamespaceResolver: &fakeNamespaceResolver{result: resolution}, Rules: &fakeRules{}, RawPacketVerifierFactory: fakeRawPacketVerifierFactory, Runtime: &fakeRuntimeReconciler{}, GuestProxyAddress: "169.254.77.2", ProxyPort: 31077, TableName: "hal_l7_a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if err := reconciler.Reconcile(context.Background(), req); !errors.Is(err, l7network.ErrNamespaceUnverified) || !errors.Is(err, l7network.ErrCleanupIncomplete) {
+		t.Fatalf("first Reconcile()=%v", err)
+	}
+	if closer.calls != 1 {
+		t.Fatalf("first close calls=%d", closer.calls)
+	}
+	if err := reconciler.Reconcile(context.Background(), req); !errors.Is(err, l7network.ErrNamespaceUnverified) || errors.Is(err, l7network.ErrCleanupIncomplete) {
+		t.Fatalf("retry Reconcile()=%v", err)
+	}
+	if closer.calls != 2 {
+		t.Fatalf("retry close calls=%d", closer.calls)
+	}
+}
+
+func TestL7RootlessPodmanRestartReconcilerRetainsPartialResolverCloseFailure(t *testing.T) {
+	closer := &retryCloser{failures: 1}
+	resolution := validNamespaceResolution()
+	resolution.Close = closer
+	reconciler, err := l7network.NewReconciler(l7network.ReconcilerOptions{Identity: testIdentity(), NamespaceResolver: &fakeNamespaceResolver{result: resolution, err: errors.New("private resolver drift")}, Rules: &fakeRules{}, RawPacketVerifierFactory: fakeRawPacketVerifierFactory, Runtime: &fakeRuntimeReconciler{}, GuestProxyAddress: "169.254.77.2", ProxyPort: 31077, TableName: "hal_l7_a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := rootlesspodman.NetworkTopologyTargetRequest{Identity: testIdentity(), Target: testTarget()}
+	if err := reconciler.Reconcile(context.Background(), req); !errors.Is(err, l7network.ErrNamespaceUnverified) || !errors.Is(err, l7network.ErrCleanupIncomplete) {
+		t.Fatalf("first Reconcile()=%v", err)
+	}
+	swapped := req
+	swapped.Target.ID = "container-generation-b"
+	swapped.Target.Name = "hal-l7-b"
+	swapped.Target.Runtime.RuntimeID = "container-generation-b"
+	if err := reconciler.Reconcile(context.Background(), swapped); !errors.Is(err, l7network.ErrIdentityMismatch) {
+		t.Fatalf("swapped Reconcile()=%v", err)
+	}
+	if closer.calls != 1 {
+		t.Fatalf("swapped retry touched closer: %d", closer.calls)
+	}
+	if err := reconciler.Reconcile(context.Background(), req); !errors.Is(err, l7network.ErrNamespaceUnverified) || errors.Is(err, l7network.ErrCleanupIncomplete) {
+		t.Fatalf("exact retry=%v", err)
+	}
+	if closer.calls != 2 {
+		t.Fatalf("exact retry close calls=%d", closer.calls)
+	}
+}
+
+type fakeEndpoint struct {
+	address string
+	loss    chan struct{}
+}
+
+func (e *fakeEndpoint) Address() string       { return e.address }
+func (e *fakeEndpoint) Loss() <-chan struct{} { return e.loss }
+
+type fakeProxy struct {
+	sequence     *sequenceLog
+	endpoint     *fakeEndpoint
+	activeErr    error
+	activeErrors []error
+	endpointErr  error
+	startErr     error
+	stopErr      error
+}
+
+func newFakeProxy(sequence *sequenceLog) *fakeProxy {
+	return &fakeProxy{sequence: sequence, endpoint: &fakeEndpoint{address: "127.0.0.1:31077", loss: make(chan struct{})}}
+}
+func (p *fakeProxy) Start(context.Context, networkenforcement.Plan) (l7network.ProxyGeneration, error) {
+	p.sequence.add("proxy_start")
+	return p.endpoint, p.startErr
+}
+func (p *fakeProxy) Endpoint(l7network.ProxyGeneration) (string, error) {
+	p.sequence.add("proxy_endpoint")
+	if p.endpointErr != nil {
+		return "", p.endpointErr
+	}
+	return p.endpoint.address, nil
+}
+func (p *fakeProxy) Active(context.Context, networkenforcement.Plan, l7network.ProxyGeneration) error {
+	p.sequence.add("proxy_active")
+	if len(p.activeErrors) != 0 {
+		err := p.activeErrors[0]
+		p.activeErrors = p.activeErrors[1:]
+		return err
+	}
+	return p.activeErr
+}
+func (p *fakeProxy) Stop(context.Context, networkenforcement.Plan, l7network.ProxyGeneration) error {
+	p.sequence.add("proxy_stop")
+	return p.stopErr
+}
+
+type fakeNamespaceResolver struct {
+	sequence *sequenceLog
+	result   l7network.NamespaceResolution
+	err      error
+}
+
+func (r *fakeNamespaceResolver) Resolve(context.Context, rootlesspodman.NetworkTopologyTargetRequest) (l7network.NamespaceResolution, error) {
+	if r.sequence != nil {
+		r.sequence.add("namespace_resolve")
+	}
+	if _, ok := r.result.Close.(fakeCloser); ok {
+		r.result.Close = fakeCloser{sequence: r.sequence}
+	}
+	return r.result, r.err
+}
+
+type fakeCloser struct{ sequence *sequenceLog }
+
+func (c fakeCloser) Close() error {
+	if c.sequence != nil {
+		c.sequence.add("namespace_close")
+	}
+	return nil
+}
+
+type retryCloser struct {
+	sequence *sequenceLog
+	failures int
+	calls    int
+}
+
+type fakeRuntimeReconciler struct {
+	sequence                *sequenceLog
+	stopFailures, stopCalls int
+}
+
+func (r *fakeRuntimeReconciler) Stop(context.Context, rootlesspodman.NetworkTopologyTargetRequest) error {
+	r.sequence.add("runtime_stop")
+	if r.stopCalls < r.stopFailures {
+		r.stopCalls++
+		return errors.New("private stop failure")
+	}
+	r.stopCalls++
+	return nil
+}
+func (r *fakeRuntimeReconciler) Delete(context.Context, rootlesspodman.NetworkTopologyTargetRequest) error {
+	r.sequence.add("runtime_delete")
+	return nil
+}
+
+func (c *retryCloser) Close() error {
+	c.calls++
+	if c.sequence != nil {
+		c.sequence.add("namespace_close")
+	}
+	if c.calls <= c.failures {
+		return errors.New("private close failure")
+	}
+	return nil
+}
+
+type fakeRules struct {
+	sequence              *sequenceLog
+	lastCorrelation       networkenforcement.EnforcementCorrelation
+	lastRawPacketVerifier fakeRawPacketVerifier
+	quarantineFailures    int
+	quarantineCalls       int
+	cleanupFailures       int
+	cleanupCalls          int
+	cleanupHook           func()
+	applyErr              error
+	mutateMetadata        func(*networkenforcement.RuleLifecycleMetadata)
+}
+
+func (r *fakeRules) ApplyAndInspect(_ context.Context, expected linuxrules.ExpectedRuleSet) (networkenforcement.RuleLifecycleMetadata, error) {
+	r.sequence.add("rules_apply_inspect")
+	metadata := r.metadata(expected)
+	if r.mutateMetadata != nil {
+		r.mutateMetadata(&metadata)
+	}
+	return metadata, r.applyErr
+}
+func (r *fakeRules) Inspect(_ context.Context, expected linuxrules.ExpectedRuleSet) (networkenforcement.RuleLifecycleMetadata, error) {
+	r.sequence.add("rules_inspect")
+	return r.metadata(expected), nil
+}
+func (r *fakeRules) Quarantine(context.Context, linuxrules.ExpectedRuleSet) error {
+	r.sequence.add("rules_quarantine")
+	if r.quarantineCalls < r.quarantineFailures {
+		r.quarantineCalls++
+		return errors.New("private quarantine failure")
+	}
+	r.quarantineCalls++
+	return nil
+}
+func (r *fakeRules) Cleanup(context.Context, linuxrules.ExpectedRuleSet) error {
+	r.sequence.add("rules_cleanup")
+	r.cleanupCalls++
+	if r.cleanupHook != nil {
+		r.cleanupHook()
+	}
+	if r.cleanupCalls <= r.cleanupFailures {
+		return errors.New("private transient cleanup failure")
+	}
+	return nil
+}
+func (r *fakeRules) metadata(expected linuxrules.ExpectedRuleSet) networkenforcement.RuleLifecycleMetadata {
+	var encoded struct {
+		Correlation networkenforcement.EnforcementCorrelation `json:"correlation"`
+		RuleDigest  string                                    `json:"ruleDigest"`
+	}
+	payload, _ := expected.MarshalJSON()
+	_ = json.Unmarshal(payload, &encoded)
+	r.lastCorrelation = encoded.Correlation
+	r.lastRawPacketVerifier = fakeRawPacketVerifier{}
+	correlation := encoded.Correlation
+	return networkenforcement.RuleLifecycleMetadata{ID: correlation.RuleGenerationID, PlanID: correlation.PlanID,
+		Status: networkenforcement.LifecycleStatusActive, Correlation: &correlation,
+		Inspection: &networkenforcement.InspectedRuleProof{ID: "proof-a", RuleDigest: encoded.RuleDigest, Status: networkenforcement.RuleInspectionStatusInspected,
+			InspectedAtUnixMilli: 1000, Correlation: &correlation, Mechanisms: []networkenforcement.EnforcementMechanism{networkenforcement.EnforcementMechanismFirewall},
+			CapabilityLabels: []string{"default_deny"}, ReasonCode: networkenforcement.LifecycleReasonRuleInspected},
+		LinkLayerIsolation: &networkenforcement.RawPacketIsolationProof{ID: "raw-proof-a", Status: networkenforcement.RawPacketIsolationStatusVerified,
+			VerifiedAtUnixMilli: 1000, Correlation: &correlation, ReasonCode: networkenforcement.LifecycleReasonRawPacketIsolationVerified},
+		ReasonCode: networkenforcement.LifecycleReasonActive}
+}
+
+type fakeRawPacketVerifier struct{}
+
+func (fakeRawPacketVerifier) VerifyRawPacketIsolation(context.Context, networkenforcement.EnforcementCorrelation) (networkenforcement.RawPacketIsolationProof, error) {
+	panic("called only by real rules adapter")
+}
+
+func fakeRawPacketVerifierFactory(rootlesspodman.NetworkTopologyTargetRequest) (linuxrules.RawPacketIsolationVerifier, error) {
+	return fakeRawPacketVerifier{}, nil
+}
+
+type sequenceLog struct {
+	mu     sync.Mutex
+	values []string
+}
+
+func (s *sequenceLog) add(value string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values = append(s.values, value)
+}
+func (s *sequenceLog) snapshot() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.values...)
+}
+func (s *sequenceLog) reset() { s.mu.Lock(); defer s.mu.Unlock(); s.values = nil }
+
+func validNamespaceResolution() l7network.NamespaceResolution {
+	return l7network.NamespaceResolution{Namespace: linuxrules.NewNamespaceHandle(10, 11), InterfaceName: "eth0", WorkloadIPv6Address: "fd00:7::2", GatewayIPv6Address: "fd00:7::1", IPv6PrefixBits: 64, Close: fakeCloser{}}
+}
+func testIdentity() rootlesspodman.NetworkTopologyIdentity {
+	return rootlesspodman.NetworkTopologyIdentity{SandboxID: "sandbox-a", ExecutionID: "execution-a", WorkerID: "worker-a", RuntimeDriver: rootlesspodman.DriverID, RuntimeGenerationID: "runtime-generation-a", PlanID: "plan-a", PolicySnapshotID: "policy-a", ProxySessionID: "proxy-session-a", ProxyGenerationID: "proxy-generation-a", TopologyGenerationID: "topology-generation-a", RuleGenerationID: "rule-generation-a"}
+}
+func testCorrelation() networkenforcement.EnforcementCorrelation {
+	i := testIdentity()
+	return networkenforcement.EnforcementCorrelation{SandboxID: i.SandboxID, ExecutionID: i.ExecutionID, WorkerID: i.WorkerID, RuntimeID: i.RuntimeGenerationID, PlanID: i.PlanID, PolicySnapshotID: i.PolicySnapshotID, ProxySessionID: i.ProxySessionID, ProxyGenerationID: i.ProxyGenerationID, TopologyGenerationID: i.TopologyGenerationID, RuleGenerationID: i.RuleGenerationID}
+}
+func testPlan() networkenforcement.Plan {
+	return networkenforcement.Plan{ID: "plan-a", Source: networkenforcement.PlanSourceRuntime, Operation: "l7_topology", PolicySnapshot: &networkenforcement.PolicySnapshotIdentity{ID: "policy-a", Preset: networkenforcement.PolicyPresetDenyByDefault}, DefaultPosture: networkenforcement.DefaultPostureDenyByDefault, Proxy: &networkenforcement.ProxyRoutingIntent{HTTP: networkenforcement.ProxyRoutingModeRouteViaProxy, HTTPS: networkenforcement.ProxyRoutingModeRouteViaProxy, ProxySessionID: "proxy-session-a", Mechanism: networkenforcement.EnforcementMechanismProxy, Operations: []string{"proxy_listener"}}, Firewall: &networkenforcement.FirewallIntent{Mode: networkenforcement.FirewallIntentModeApply, Mechanism: networkenforcement.EnforcementMechanismFirewall, Operations: []string{"apply_rules", "inspect_rules"}}}
+}
+func testTarget() sandboxruntime.Target {
+	return sandboxruntime.Target{ID: "container-generation-a", Name: "hal-l7", Provider: rootlesspodman.DriverID, Runtime: sandboxruntime.RuntimeState{Driver: rootlesspodman.DriverID, RuntimeID: "container-generation-a", IsolationLevel: rootlesspodman.IsolationLevel}}
+}
+func mustFactory(t *testing.T, options l7network.FactoryOptions) rootlesspodman.NetworkTopologyFactory {
+	t.Helper()
+	factory, err := l7network.NewFactory(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return factory
+}
+
+func baseFactoryOptions(proxy l7network.Proxy, resolver l7network.NamespaceResolver, rules l7network.RuleAdapter) l7network.FactoryOptions {
+	return l7network.FactoryOptions{Identity: testIdentity(), Plan: testPlan(), Proxy: proxy, NamespaceResolver: resolver,
+		Rules: rules, RawPacketVerifierFactory: fakeRawPacketVerifierFactory, GuestProxyAddress: "169.254.77.2", TableName: "hal_l7_a"}
+}

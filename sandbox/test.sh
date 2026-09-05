@@ -89,6 +89,8 @@ fi
 
 echo ""
 echo "── Runtime Config ────────────────────────────────────"
+check "workspace" test -d /workspace
+
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo -e "  ${GREEN}✓${NC} ANTHROPIC_API_KEY is set"
   inc_pass

@@ -14,8 +14,8 @@ import (
 func TestDefaultGlobalConfig(t *testing.T) {
 	cfg := DefaultGlobalConfig()
 
-	if cfg.Provider != "daytona" {
-		t.Fatalf("Provider = %q, want %q", cfg.Provider, "daytona")
+	if cfg.Provider != "" {
+		t.Fatalf("Provider = %q, want empty", cfg.Provider)
 	}
 	if !cfg.Defaults.AutoShutdown {
 		t.Fatalf("Defaults.AutoShutdown = %v, want %v", cfg.Defaults.AutoShutdown, true)
@@ -40,14 +40,13 @@ func TestLoadGlobalConfig(t *testing.T) {
 		wantIdleHours         int
 		wantEnv               map[string]string
 		wantTailscaleLockdown bool
-		wantDaytonaAPIKey     string
 		wantDOSize            string
 		wantHetznerImage      string
 		wantLightsailAZ       string
 	}{
 		{
 			name:                  "missing file returns defaults",
-			wantProvider:          "daytona",
+			wantProvider:          "",
 			wantAutoShutdown:      true,
 			wantIdleHours:         48,
 			wantEnv:               map[string]string{},
@@ -88,9 +87,6 @@ defaults:
 env:
   GITHUB_TOKEN: ghp_test
 tailscaleLockdown: true
-daytona:
-  apiKey: day-key
-  serverURL: https://custom.daytona.io/api
 digitalocean:
   sshKey: do-key
   size: s-4vcpu-8gb
@@ -109,7 +105,6 @@ lightsail:
 			wantIdleHours:         72,
 			wantEnv:               map[string]string{"GITHUB_TOKEN": "ghp_test"},
 			wantTailscaleLockdown: true,
-			wantDaytonaAPIKey:     "day-key",
 			wantDOSize:            "s-4vcpu-8gb",
 			wantHetznerImage:      "ubuntu-24.04",
 			wantLightsailAZ:       "us-east-1b",
@@ -148,9 +143,6 @@ lightsail:
 			}
 			if cfg.TailscaleLockdown != tt.wantTailscaleLockdown {
 				t.Fatalf("TailscaleLockdown = %v, want %v", cfg.TailscaleLockdown, tt.wantTailscaleLockdown)
-			}
-			if cfg.Daytona.APIKey != tt.wantDaytonaAPIKey {
-				t.Fatalf("Daytona.APIKey = %q, want %q", cfg.Daytona.APIKey, tt.wantDaytonaAPIKey)
 			}
 			if cfg.DigitalOcean.Size != tt.wantDOSize {
 				t.Fatalf("DigitalOcean.Size = %q, want %q", cfg.DigitalOcean.Size, tt.wantDOSize)
@@ -202,10 +194,6 @@ func TestSaveGlobalConfig(t *testing.T) {
 			"GITHUB_TOKEN":   "ghp-token",
 		},
 		TailscaleLockdown: true,
-		Daytona: DaytonaGlobalConfig{
-			APIKey:    "day-api-key",
-			ServerURL: "https://app.daytona.io/api",
-		},
 		DigitalOcean: DigitalOceanGlobalConfig{
 			SSHKey: "aa:bb:cc",
 			Size:   "s-2vcpu-4gb",
@@ -267,7 +255,7 @@ func TestSaveGlobalConfig(t *testing.T) {
 func TestSaveGlobalConfig_RetriesWhenRenameCannotReplace(t *testing.T) {
 	home := setGlobalConfigHome(t)
 
-	if err := SaveGlobalConfig(&GlobalConfig{Provider: "daytona"}); err != nil {
+	if err := SaveGlobalConfig(&GlobalConfig{Provider: "hetzner"}); err != nil {
 		t.Fatalf("initial SaveGlobalConfig() failed: %v", err)
 	}
 

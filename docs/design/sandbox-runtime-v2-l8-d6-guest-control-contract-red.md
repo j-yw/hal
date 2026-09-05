@@ -1,0 +1,69 @@
+# L8 D6 guest control contract verification
+
+This candidate implements the accepted default-off guest-side request inspector,
+readiness dispatcher, controller prepare/renew/revoke/exec identity dispatch, and
+process-local lifecycle composition around the frozen contracts for a persistent
+authenticated control session on fixed VSOCK port 1025. Controller credential
+operations prepare, renew, revoke, and exec are accepted packet constructors
+alongside readiness. First prepare is admitted with `expectedIdentitySet=false`
+and derives the session-bound credential digest through
+`DecodeInitialCredentialPrepareRequest`, while bounding the requested expiry by
+the authenticated transport hard expiry; later receive expectations pin that
+digest rather than raw session bytes. Renew, revoke, and exec require
+`expectedIdentitySet`. Each success constructor consumes the exact originating
+controller packet as its sequence, session, request-ID, identity-digest, and
+lifecycle-correlation authority. Helper receive construction, helper packet
+unions, and helper `writeCanonicalBody` for non-payload send arms follow that
+same consume-once sequence and identity discipline as metadata constructors.
+Controller unknown, malformed-known, private, stream, credit, and close-notify
+packet constructors are accepted private issuers. Private and nonempty stdin
+packets retain one locked body capability; the current `Serve` path destroys and
+rejects every such body because live payload forwarding remains unaccepted.
+Helper send constructors
+for prepare-begin, prepare-commit, renew, revoke, exec, stdout/stderr exec-credit,
+and close-notify are accepted metadata-only issuers and write canonical bodies
+through `writeCanonicalBody`. Receive and helper-send sequences are bounded to
+the frozen `2^32` record cap, and helper close-notify uses an exact zero request
+ID. Live helper transport, SCM_RIGHTS, bind/listen/dial,
+SSH-accepted send, and payload-bearing helper send (prepare-file, exec-private,
+and nonempty exec-stream) remain `dependency_unaccepted` because they require
+live rights or locked payload delivery. Serve fails closed when a later
+operation needs an unimplemented helper payload send issuer instead of
+synthesizing proofs.
+
+The frozen surface is limited to:
+
+- a bodyless canonical v2 request-root inspector and initial-prepare decoder;
+- an injected inherited/preopened `ControlConnectionOwner` returning only a
+  same-object revalidated `VerifiedControlStream`;
+- immutable runtime-owned control boot identity and public-key correlation;
+- package-private controller/helper packet issuers, body capabilities, send
+  sinks, authenticated transport identity, and complete closed unions;
+- one `credentialclient.Client.Serve` dispatcher and synchronous terminal
+  `Close` owner; and
+- an explicit optional `server.Options.CredentialClient` plus a process-local
+  `l8composition.Agent` wrapper. A nil credential client preserves the existing
+  v1 lifecycle and default entrypoints.
+
+Focused selectors:
+
+```sh
+go test ./internal/sandboxruntime/microvm/guestagent/v2control -run '^TestL8D6GuestV2' -count=1
+go test ./internal/sandboxruntime/microvm/guestagent/server/credentialclient -run '^TestL8D6Guest(Control|Transport|Packet|CredentialClient)' -count=1
+go test ./internal/sandboxruntime/microvm/guestagent/server -run '^TestL8D6GuestServer' -count=1
+go test ./internal/sandboxruntime/microvm/guestagent/l8composition -run '^TestL8D6Guest(ControlBoot|Agent)' -count=1
+```
+
+Compile-only boundary check:
+
+```sh
+go test ./internal/sandboxruntime/microvm/guestagent/v2control ./internal/sandboxruntime/microvm/guestagent/server/credentialclient ./internal/sandboxruntime/microvm/guestagent/server ./internal/sandboxruntime/microvm/guestagent/l8composition -run '^$' -count=1
+```
+
+Source guards require no bind, listen, dial, socket creation, ambient
+credential discovery, externally exported packet issuer, or external
+production packet-authority reference. The Go role accepts only injected,
+preopened, revalidated ownership. This candidate adds no command/default
+wiring, host/provider/worker/recovery integration, credential proof constructor,
+synthetic active or cleanup proof, production readiness/liveness claim, D7 or
+HL8E acceptance, live integration test, or absence proof.

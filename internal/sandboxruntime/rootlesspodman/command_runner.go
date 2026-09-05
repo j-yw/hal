@@ -1,0 +1,230 @@
+package rootlesspodman
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+const execCancellationTimeout = 10 * time.Second
+
+// ErrCommandOutputLimitExceeded is the redaction-safe result when a command
+// produces more output than its request permits.
+var ErrCommandOutputLimitExceeded = errors.New("rootless Podman command output limit exceeded")
+
+// DefaultCommandRunner executes the Podman argv constructed by Driver methods.
+// Tests normally inject fake runners instead, so normal unit tests do not
+// require Podman to be installed.
+type DefaultCommandRunner struct{}
+
+func (DefaultCommandRunner) RunLifecycleCommand(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	return runDefaultCommand(ctx, req)
+}
+
+func (DefaultCommandRunner) RunExecCommand(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	return runDefaultExecCommand(ctx, req)
+}
+
+func (DefaultCommandRunner) RunCopyCommand(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	return runDefaultCommand(ctx, req)
+}
+
+func runDefaultCommand(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(req.Args) == 0 || strings.TrimSpace(req.Args[0]) == "" {
+		return CommandResult{ExitCode: -1}, fmt.Errorf("podman command args are required")
+	}
+	if !validCommandOutputLimits(req) {
+		return CommandResult{ExitCode: -1}, fmt.Errorf("podman command output limits are invalid")
+	}
+	cmd := exec.CommandContext(ctx, req.Args[0], req.Args[1:]...)
+	if trimmedWorkDir := strings.TrimSpace(req.WorkDir); trimmedWorkDir != "" {
+		cmd.Dir = trimmedWorkDir
+	}
+	cmd.Env = commandEnvironment(req.Env)
+	cmd.Stdin = req.Stdin
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stdoutWriter := newBoundedCommandWriter(commandWriter(req.Stdout, &stdout), req.MaxStdoutBytes)
+	stderrWriter := newBoundedCommandWriter(commandWriter(req.Stderr, &stderr), req.MaxStderrBytes)
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
+
+	err := cmd.Run()
+	result := CommandResult{
+		ExitCode: commandExitCode(err),
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+	}
+	if err != nil && ctx.Err() != nil {
+		return result, ctx.Err()
+	}
+	if stdoutWriter.exceeded || stderrWriter.exceeded {
+		return result, ErrCommandOutputLimitExceeded
+	}
+	return result, err
+}
+
+func runDefaultExecCommand(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(req.Args) == 0 || strings.TrimSpace(req.Args[0]) == "" {
+		return CommandResult{ExitCode: -1}, fmt.Errorf("podman command args are required")
+	}
+	if !validCommandOutputLimits(req) {
+		return CommandResult{ExitCode: -1}, fmt.Errorf("podman command output limits are invalid")
+	}
+	if err := ctx.Err(); err != nil {
+		return CommandResult{ExitCode: -1}, err
+	}
+
+	cmd := exec.Command(req.Args[0], req.Args[1:]...)
+	configureExecProcessGroup(cmd)
+	if trimmedWorkDir := strings.TrimSpace(req.WorkDir); trimmedWorkDir != "" {
+		cmd.Dir = trimmedWorkDir
+	}
+	cmd.Env = commandEnvironment(req.Env)
+	cmd.Stdin = req.Stdin
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	stdoutWriter := newBoundedCommandWriter(execCommandWriter(req.Stdout, &stdout), req.MaxStdoutBytes)
+	stderrWriter := newBoundedCommandWriter(execCommandWriter(req.Stderr, &stderr), req.MaxStderrBytes)
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
+
+	if err := cmd.Start(); err != nil {
+		return CommandResult{ExitCode: commandExitCode(err)}, err
+	}
+	completionCh := observeExecProcess(cmd)
+
+	var err error
+	var cancellationErr error
+	cancellationAttempted := false
+	select {
+	case observationErr := <-completionCh:
+		err = waitExecProcess(cmd, observationErr)
+	case <-ctx.Done():
+		cancellationAttempted = true
+		err = terminateExecProcessGroup(cmd, completionCh)
+		cancellationErr = runExecCancellationCommand(req.CancellationArgs)
+	}
+	result := CommandResult{
+		ExitCode: commandExitCode(err),
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		CancellationProcessGroupTerminated: cancellationProcessGroupTerminationProven(
+			cancellationAttempted,
+			req.CancellationArgs,
+			cancellationErr,
+		),
+	}
+	if ctx.Err() != nil {
+		return result, errors.Join(ctx.Err(), cancellationErr)
+	}
+	if stdoutWriter.exceeded || stderrWriter.exceeded {
+		return result, ErrCommandOutputLimitExceeded
+	}
+	return result, err
+}
+
+func cancellationProcessGroupTerminationProven(attempted bool, args []string, err error) bool {
+	return attempted && len(args) > 0 && err == nil
+}
+
+func runExecCancellationCommand(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("podman exec cancellation command is invalid")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), execCancellationTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Env = commandEnvironment(nil)
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("podman exec cancellation cleanup timed out: %w", ctx.Err())
+		}
+		return fmt.Errorf("podman exec cancellation cleanup failed: %w", err)
+	}
+	return nil
+}
+
+func commandEnvironment(env map[string]string) []string {
+	if len(env) == 0 {
+		return os.Environ()
+	}
+	values := os.Environ()
+	for _, key := range sortedMapKeys(env) {
+		values = append(values, key+"="+env[key])
+	}
+	return values
+}
+
+func commandWriter(dst io.Writer, capture *bytes.Buffer) io.Writer {
+	if dst == nil {
+		return capture
+	}
+	return io.MultiWriter(dst, capture)
+}
+
+func execCommandWriter(dst io.Writer, capture *bytes.Buffer) io.Writer {
+	if dst != nil {
+		return dst
+	}
+	return capture
+}
+
+type boundedCommandWriter struct {
+	destination io.Writer
+	remaining   int64
+	limited     bool
+	exceeded    bool
+}
+
+func newBoundedCommandWriter(destination io.Writer, maxBytes int64) *boundedCommandWriter {
+	return &boundedCommandWriter{
+		destination: destination,
+		remaining:   maxBytes,
+		limited:     maxBytes > 0,
+	}
+}
+
+func (w *boundedCommandWriter) Write(payload []byte) (int, error) {
+	if w.limited && int64(len(payload)) > w.remaining {
+		w.exceeded = true
+		return 0, ErrCommandOutputLimitExceeded
+	}
+	n, err := w.destination.Write(payload)
+	if w.limited {
+		w.remaining -= int64(n)
+	}
+	return n, err
+}
+
+func validCommandOutputLimits(req CommandRequest) bool {
+	return req.MaxStdoutBytes >= 0 && req.MaxStderrBytes >= 0
+}
+
+func commandExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}

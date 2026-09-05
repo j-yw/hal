@@ -17,6 +17,8 @@ Safety controls:
 - --archive archives existing feature state before writing canonical .hal/prd.json.
 - --archive is only supported when output is canonical .hal/prd.json.
 - Canonical writes are protected from branchName switches; use --archive or --force to override.
+- Standard conversion preserves explicitly numbered source stories one-to-one.
+- --granular intentionally decomposes source stories into 8-15 atomic tasks.
 
 Examples:
   hal convert                                # Auto-discover source (no archive)

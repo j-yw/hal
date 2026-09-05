@@ -214,9 +214,9 @@ Pause, resume, and stop controls are also proposed server behavior. The implemen
               │ SSH
 ┌─────────────▼──────────────┐
 │     Sandbox VMs            │
-│     (Daytona/Hetzner/      │
+│     (Hetzner/              │
 │      DigitalOcean/         │
-│      Lightsail)            │
+│      Lightsail/Podman)     │
 │                            │
 │  • Git repo cloned         │
 │  • hal CLI installed       │
