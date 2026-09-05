@@ -45,10 +45,14 @@ We infer that the six-role guest topology and static reachable-call-graph gate
 became an internal solution larger than the product property it was meant to
 support. The call graph can improve build-time review coverage, but it is not
 a runtime CFI control: it does not stop a compromised guest process from using
-a syscall that its runtime seccomp profile permits. Runtime default-deny
-seccomp, exact image identities, the VM boundary, host-owned authority, and
-live negative tests are the controls that enforce or directly test the L8
-property.
+a syscall that an installed filter permits. The existing runnable
+`hal-init`/`hal-guest-agent` path does not currently install a guest seccomp
+filter, so default-deny guest syscall enforcement must not be presented as an
+active L8 control. Exact image identities, the VM boundary, host-owned
+authority, and live negative tests are the controls available to enforce or
+directly test the reset L8 property. A future guest seccomp slice remains
+useful defense in depth, but must have its own executable-path and live
+evidence before it becomes a claim.
 
 We therefore select the smallest topology that can satisfy the locked
 behavior: one fresh Firecracker VM per job, with the execution chain
@@ -136,11 +140,12 @@ not a runnable L8 build, boot, activation, or acceptance prerequisite.
 
 That critical-path change must be made only through future product tests:
 first prove red that the selected L8 image/build/run path still requires HL8E,
-then remove only that dependency while keeping exact role/image digests,
-default-deny runtime seccomp, and failure behavior. A documentation assertion
-alone cannot detach it. The diagnostic may become a release-hardening gate in
-a future issue if a tractable analysis and a clearly stated security property
-are demonstrated.
+then remove only that dependency while keeping exact required-role/image
+digests and fail-closed image behavior. This cutover does not claim the
+currently inactive guest seccomp path. A documentation assertion alone cannot
+detach HL8E. The diagnostic may become a release-hardening gate in a future
+issue if a tractable analysis and a clearly stated security property are
+demonstrated.
 
 ## Options and tradeoffs
 
@@ -151,7 +156,7 @@ proxy for live credential safety.
 
 | Dimension | Option 1: minimal two-process guest, runtime enforcement | Option 2: six roles plus bounded call graph/HL8E |
 | --- | --- | --- |
-| Security | Fewer guest principals and IPC edges; depends on exact image identity, default-deny seccomp, VM isolation, host authority, and live negatives. Residual risk is a permitted syscall used maliciously after guest compromise. | Adds source-derived syscall review coverage if the proof is sound. It still is not CFI and keeps more privileged processes, IPC, and lifecycle edges. |
+| Security | Fewer guest principals and IPC edges; depends on exact image identity, VM isolation, host authority, and live negatives. It makes no guest syscall-filter claim, so a guest-kernel exploit has a wider syscall surface than it would under a proven default-deny guest filter. | Adds source-derived syscall review coverage if the proof is sound. It still is not CFI and keeps more privileged processes, IPC, and lifecycle edges. |
 | Performance | Pays one fresh VM boot per job; no extra helper hops. No performance result is claimed until measured. | Also pays VM boot and adds process/control hops; analysis and build issuance add release time. |
 | Memory | Two required guest processes reduce baseline process state. The exact saving is unmeasured. | Additional binaries/processes and ledgers consume guest memory; the exact cost is unmeasured. |
 | Reliability | One host owner and one guest control process reduce partial-start and cleanup states. VM teardown provides a clear final boundary. | Dedicated roles can isolate individual failures, but increase coordination, restart, and proof-correlation states. |
@@ -160,11 +165,11 @@ proxy for live credential safety.
 | Rollback | Re-enable an explicitly tested role or restore an HL8E product gate if later evidence shows a lost property. | Removing the graph gate later repeats this reset after more implementation has coupled to it. |
 
 Option 1 deliberately gives up a static completeness claim that the repository
-cannot currently support. It does not give up default-deny syscall enforcement
-or final-binary identity. Option 2 becomes preferable only if reviewers define
-a falsifiable property that HL8E uniquely enforces, demonstrate a tractable
-proof for the pinned Go toolchain, and accept the extra topology and release
-cost.
+cannot currently support. It retains final-binary identity, but it cannot
+retain or give up a guest seccomp control that the selected runnable path never
+installed. Option 2 becomes preferable only if reviewers define a falsifiable
+property that HL8E uniquely enforces, demonstrate a tractable proof for the
+pinned Go toolchain, and accept the extra topology and release cost.
 
 ## TDD implementation order
 
@@ -174,9 +179,9 @@ are rerun. The order below is dependency order, not evidence that any step is
 already green.
 
 1. RED: detach HL8E from the runnable L8 path. Add product tests proving the
-   default selected L8 image/build/run path neither reads nor requires HL8E,
-   while corrupt image identity and missing runtime seccomp still fail closed.
-   Keep the offline analyzer tests and the unissued status intact.
+   selected L8 image/build/run path neither reads nor requires HL8E, while a
+   corrupt image identity still fails closed. Keep the offline analyzer tests
+   and the unissued status intact; make no guest seccomp claim.
 2. RED: lock the minimum guest topology. Add image-manifest, PID 1, process
    enumeration, and teardown tests for exactly
    `hal-init -> hal-guest-agent -> job workload`; prove the three historical
