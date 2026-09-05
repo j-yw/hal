@@ -62,6 +62,7 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 	container := readProfileFile(t, "build-in-container.sh")
 	reproducible := readProfileFile(t, "verify-reproducible.sh")
 	finalImage := readProfileFile(t, "verify-final-image.sh")
+	imageProfile := readProfileFile(t, "verify-image-profile.sh")
 	cache := readProfileFile(t, "verify-cache.sh")
 	for _, required := range []string{
 		"--pull=never",
@@ -144,15 +145,33 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 	for _, required := range []string{
 		"HL8E is unissued; L8 final-image verification fails closed",
 		"HAL_L8_PARENT_L7",
+		`"$script_dir/verify-image-profile.sh" "$image"`,
+	} {
+		if !strings.Contains(finalImage, required) {
+			t.Errorf("verify-final-image.sh missing %q", required)
+		}
+	}
+	for _, required := range []string{
 		"/usr/bin/node",
 		"/usr/bin/pi",
 		"/sbin/hal-guest-role-bootstrap",
 		"agent:x:998:998",
 		"workload:x:1000:1000",
 	} {
-		if !strings.Contains(finalImage, required) {
-			t.Errorf("verify-final-image.sh missing %q", required)
+		if !strings.Contains(imageProfile, required) {
+			t.Errorf("verify-image-profile.sh missing %q", required)
 		}
+	}
+	for _, forbidden := range []string{"HL8E", "verified-pinned-callsites", "callgraph", "call graph"} {
+		if strings.Contains(imageProfile, forbidden) {
+			t.Fatalf("verify-image-profile.sh must not depend on %q", forbidden)
+		}
+	}
+	if !strings.Contains(container, `"$profile_root/verify-image-profile.sh" "$rootfs_stage"`) {
+		t.Fatal("build-in-container.sh must run the evidence-independent immutable image-profile verifier")
+	}
+	if strings.Contains(container, `"$profile_root/verify-final-image.sh" "$rootfs_stage"`) {
+		t.Fatal("build-in-container.sh must not use the HL8E-gated acceptance wrapper for immutable image inspection")
 	}
 	for _, required := range []string{
 		"cache.manifest",
@@ -167,6 +186,36 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 	}
 	if strings.Contains(cache, "l8_extra_count") || strings.Contains(cache, "manifest_count + l8_extra_count") {
 		t.Fatal("verify-cache.sh must not accept unpinned L8 files outside an exact manifest")
+	}
+}
+
+func TestL8ImageProfileVerifierRunsWithoutHL8E(t *testing.T) {
+	root := t.TempDir()
+	image := filepath.Join(root, "rootfs.ext4")
+	if err := os.WriteFile(image, []byte("not-an-ext-image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	debugfs := filepath.Join(bin, "debugfs")
+	marker := filepath.Join(root, "image-profile-inspection-reached")
+	if err := os.WriteFile(debugfs, []byte("#!/bin/sh\n: > \"$HAL_L8_IMAGE_PROFILE_TEST_MARKER\"\nexit 71\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("bash", "verify-image-profile.sh", image)
+	command.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "HAL_L8_IMAGE_PROFILE_TEST_MARKER="+marker)
+	payload, err := command.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 71 {
+		t.Fatalf("verify-image-profile.sh invalid-image exit = %v output = %s, want inspection failure", err, payload)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("verify-image-profile.sh did not reach immutable image inspection: %v", err)
+	}
+	if strings.Contains(string(payload), "HL8E") {
+		t.Fatalf("verify-image-profile.sh output = %s, must not require HL8E", payload)
 	}
 }
 
