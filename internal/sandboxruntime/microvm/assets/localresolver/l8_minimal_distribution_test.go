@@ -48,7 +48,7 @@ func TestL8MinimalDistributionRequiresDistinctExplicitSelection(t *testing.T) {
 }
 
 func TestL8MinimalDistributionRejectsMissingCorruptAndRelabeledEvidence(t *testing.T) {
-	for _, scenario := range []string{"missing_expected", "wrong_init", "wrong_agent", "wrong_workload", "wrong_rootfs", "wrong_source", "missing_parent", "other_parent", "parent_mutated", "missing_file", "extra_file", "corrupt_file", "symlink", "legacy_label", "l5_label", "unknown_field", "unknown_process", "privileged_binary", "incomplete_inventory"} {
+	for _, scenario := range []string{"missing_expected", "wrong_init", "wrong_agent", "wrong_workload", "wrong_rootfs", "wrong_source", "wrong_provenance", "missing_parent", "other_parent", "parent_mutated", "missing_file", "extra_file", "corrupt_file", "symlink", "legacy_label", "l5_label", "unknown_field", "unknown_process", "privileged_binary", "incomplete_inventory"} {
 		t.Run(scenario, func(t *testing.T) {
 			request := minimalDistributionFixture(t)
 			switch scenario {
@@ -64,6 +64,8 @@ func TestL8MinimalDistributionRejectsMissingCorruptAndRelabeledEvidence(t *testi
 				request.Expected.RootfsSHA256 = strings.Repeat("a", 64)
 			case "wrong_source":
 				request.Expected.SourceRevision = strings.Repeat("a", 40)
+			case "wrong_provenance":
+				request.Expected.ProvenanceSHA256 = strings.Repeat("a", 64)
 			case "missing_parent":
 				request.ParentL7 = VerifiedDistribution{}
 			case "other_parent":
@@ -197,6 +199,12 @@ func minimalDistributionFixture(t *testing.T) L8MinimalDistributionRequest {
 		Executables: []assetbuild.L8MinimalExecutable{{Role: "hal-init", SHA256: initDigest, SizeBytes: 10, Mode: 0755}, {Role: "hal-guest-agent", SHA256: agentDigest, SizeBytes: 10, Mode: 0755}, {Role: "node", SHA256: runtime.NodeSHA256, SizeBytes: 10, Mode: 0755}, {Role: "pi-launcher", SHA256: runtime.PiLauncherSHA256, SizeBytes: 10, Mode: 0755}},
 		Inventory:   assetbuild.L8MinimalInventory{Inodes: 20, DirectoryRecords: 30, LogicalBytes: 100}, AgentUID: 1000, WorkloadUID: 1000, WorkspaceUID: 1000, WorkspaceMode: 0700,
 	}
+	for index := range inspection.Executables {
+		inspection.Executables[index].Type = "regular"
+		inspection.Executables[index].UID = new(uint32)
+		inspection.Executables[index].GID = new(uint32)
+	}
+	inspection.Inventory.Findings = []string{}
 	inspectionBytes := minimalJSON(t, inspection)
 	profile := assetbuild.L8MinimalProfileFacts{ContractVersion: assetbuild.L8MinimalProfileContractV1, ParentL7: parentFacts, Runtime: runtime, GuestInitSHA256: initDigest, GuestAgentSHA256: agentDigest, SourceLockSHA256: l5SHA256(sourceBytes), FinalInspectionSHA256: l5SHA256(inspectionBytes)}
 	manifest := assetbuild.L8MinimalDistributionManifest{SchemaVersion: assetbuild.SchemaVersionV1, ImageProfile: assetbuild.ImageProfileL8MinimalCredentials, Architecture: parent.Manifest.Architecture, Versions: parent.Manifest.Versions, GuestAgent: parent.Manifest.GuestAgent, GuestNetwork: parent.Manifest.GuestNetwork, MinimalProfile: profile, Assets: l5DistributionManifest(kernel, rootfs).Assets}
@@ -209,7 +217,7 @@ func minimalDistributionFixture(t *testing.T) L8MinimalDistributionRequest {
 		writeL5DistributionFile(t, root, name, data)
 	}
 	minimalWriteChecksums(t, root)
-	return L8MinimalDistributionRequest{DistributionRequest: DistributionRequest{RootDir: root, LockedAtUnixMillis: 1785024000000}, ParentL7: parent, Expected: L8MinimalExpectedIdentity{SourceRevision: sources.SourceRevision, RootfsSHA256: l5SHA256(rootfs), GuestInitSHA256: initDigest, GuestAgentSHA256: agentDigest, Runtime: runtime, SourceLockSHA256: profile.SourceLockSHA256, FinalInspectionSHA256: profile.FinalInspectionSHA256}}
+	return L8MinimalDistributionRequest{DistributionRequest: DistributionRequest{RootDir: root, LockedAtUnixMillis: 1785024000000}, ParentL7: parent, Expected: L8MinimalExpectedIdentity{SourceRevision: sources.SourceRevision, RootfsSHA256: l5SHA256(rootfs), GuestInitSHA256: initDigest, GuestAgentSHA256: agentDigest, Runtime: runtime, SourceLockSHA256: profile.SourceLockSHA256, FinalInspectionSHA256: profile.FinalInspectionSHA256, ProvenanceSHA256: l5SHA256(minimalJSON(t, provenance))}}
 }
 
 func minimalJSON(t *testing.T, value any) []byte {
