@@ -81,7 +81,8 @@ A later accepted live active request must contain:
    sandbox/execution/runtime and digest-pinned runtime image;
 6. one isolated-workspace evidence envelope correlated to the same sandbox,
    execution, and workspace-policy ID, observed within the bounded freshness
-   horizon, with a sanitized sync-out summary and optional safe-apply result;
+   horizon, with a sanitized input reference; no output summary or safe-apply
+   result is required before execution;
 7. no fallback, simulation, compatibility mode, warning, or retained cleanup
    failure marker.
 
@@ -89,12 +90,39 @@ The evaluator derives the L7 identity and the template/workspace policy IDs
 from the authoritative evidence. Caller-supplied duplicates must match exactly
 or the request is rejected. Unknown fields do not become authority.
 
-Workspace evidence is strict-ready only for `clone` or `copy`, never `direct`;
-its workspace reference must match the sanitized sync-out workspace reference;
-recovery must be collected; sync-out and apply warnings must be empty; and an
-apply result, when present, must be either an exact successful dry-run or an
-exact successful apply of the summary's eligible artifact. Handoff-required,
-dirty, partial, unavailable, unknown, or mismatched output fails closed.
+Workspace input accepts `clone` or `copy`, never `direct`, with the
+corresponding input-source kind, a nonempty sync reference,
+no raw repository URL, and no warning. The input reference must already match
+the shared workspace sanitizer. The active fingerprint binds sandbox,
+execution, workspace-policy ID, mode, input source, branch, and sync reference;
+it deliberately excludes output artifact IDs, paths, recovery, and apply state.
+For compatibility, a supplied nonempty output summary is still checked rather
+than silently ignored, but callers must not fabricate output before execution.
+
+Terminal evidence must be freshly observed, no earlier than admission, with
+the exact same input reference and policy. Its sanitized sync-out reference
+must match that input; recovery must be collected; warnings must be empty;
+and every supplied artifact must have a unique safe ID, the expected kind,
+display/store-relative paths, and coherent eligibility. A selected patch or
+bundle must have exact eligible reasons. An optional safe-apply result must be
+an exact successful dry-run or apply of that selected artifact. Artifacts can
+first appear or change after admission without changing the input identity.
+
+A no-change run is distinct from missing output evidence: it requires a fresh
+collected summary containing recovery artifact metadata, no committed,
+uncommitted, or untracked change artifacts, no safe-apply result, and exactly
+`no_eligible_artifact` with no apply mode or artifact ID. Core and recovery
+artifacts may still describe the completed run. Handoff-required, dirty,
+partial, unavailable, unknown, contradictory, or mismatched output fails closed.
+
+This phase split validates metadata consistency and correlation only. Existing
+workspace contracts contain neither an input-content digest authority nor a
+live payload-verification token. Sanitized paths and `collected` labels do not
+prove bytes or an empty diff. A future accepted host caller must verify input
+materialization and actual collected payload integrity, including actual
+absence of changes for a no-change result, before presenting these contracts.
+No new metadata field, token issuer, production caller, or live acceptance is
+introduced by this preparatory reconciliation.
 
 ## Outputs, states, and failure codes
 
@@ -143,10 +171,15 @@ preparatory slice has no caller capable of reaching that success path.
 In the future accepted flow, `EvaluateTerminal` consumes the exact active
 attestation after execution. It requires the active credential proof to have
 been discarded and the mutually exclusive, fresh `JobCredentialCleanupProof`
-for the same complete identity and revision. It revalidates immutable
-template/workspace correlation and rejects warnings or cleanup uncertainty. It
-never accepts both active and cleanup proofs. A successful terminal decision
-is `complete`; it is not reusable for strict default selection.
+for the same complete identity and revision. It revalidates immutable template
+and workspace input correlation, then validates post-execution output metadata
+independently of the active input fingerprint. It rejects warnings or cleanup
+uncertainty and never accepts both active and cleanup proofs. A successful
+terminal decision is `complete`; it is not reusable for strict default selection.
+
+The short admission expiry limits selection, not job duration. Terminal
+correlation survives that expiry, provided cleanup and output observations are
+fresh and the exact attestation has not already been consumed.
 
 L10 terminal completion establishes the L8 credential-absence boundary and
 the immutable/correlated decision history. L11 separately proves whole-system
@@ -185,6 +218,9 @@ The first L10 tests must be red before implementation and must cover:
 - command/factory/status projections remaining sanitized and unable to mint
   strict state;
 - deterministic output and cancellation/error redaction;
+- input-only admission followed by new or changed patch/bundle outputs and
+  explicit no-change collection, including executions longer than admission
+  expiry, absent-output rejection, stale output observation, and input drift;
 - import-boundary and JSON-shape guards.
 
 The fake matrix validates the fail-closed conjunction contract but does not

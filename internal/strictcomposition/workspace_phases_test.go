@@ -18,6 +18,7 @@ func TestL10WorkspaceActiveAdmissionDoesNotRequireFutureOutputs(t *testing.T) {
 			if mode == sandbox.SandboxWorkspaceModeCopy {
 				request.Workspace.Workspace.Mode = mode
 				request.Workspace.Workspace.InputSource = sandbox.SandboxWorkspaceInputSourceCopy
+				request.Workspace.Workspace.SyncRef = "working_tree"
 			}
 			attestation, decision := EvaluateActive(context.Background(), request)
 			if decision.State != sandbox.SandboxStrictCompositionStateActive || !AttestationValid(attestation, request.Identity.SandboxID, request.Identity.ExecutionID, request.Identity.RuntimeID, request.Now) {
@@ -58,8 +59,7 @@ func TestL10WorkspaceTerminalAcceptsOutputsCreatedAfterAdmission(t *testing.T) {
 				output.SyncOut.Committed = sandboxworkspace.SyncOutCommittedArtifacts{Bundle: &bundle}
 				output.SyncOut.Apply = sandboxworkspace.SyncOutApplyDecision{Eligible: true, Mode: sandboxworkspace.SyncOutApplyModeBundle, ArtifactID: bundle.ID, Reasons: []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonEligibleBundle}}
 			case "no_changes":
-				output.SyncOut.Committed = sandboxworkspace.SyncOutCommittedArtifacts{}
-				output.SyncOut.Apply = sandboxworkspace.SyncOutApplyDecision{Reasons: []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonNoEligibleArtifact}}
+				l10WorkspaceNoChanges(&output)
 			}
 			terminal := l10WorkspaceTerminalRequest(t, active, attestation, output, now)
 			completed := EvaluateTerminal(context.Background(), terminal)
@@ -117,6 +117,79 @@ func TestL10WorkspaceTerminalRejectsMissingInconsistentOrUncorrelatedOutputs(t *
 			}
 		})
 	}
+}
+
+func TestL10WorkspaceNoChangeRequiresExplicitConsistentCollection(t *testing.T) {
+	for _, scenario := range []string{"missing_recovery_payload", "unavailable", "unknown", "missing_reason", "mixed_reasons", "apply_mode", "apply_artifact", "safe_apply", "untracked", "duplicate_payload_id", "unknown_eligibility"} {
+		t.Run(scenario, func(t *testing.T) {
+			active := l10CompleteActiveRequest(t)
+			attestation, _ := EvaluateActive(context.Background(), active)
+			now := active.Now.Add(time.Second)
+			output := l10WorkspaceEvidence(active.Identity, now)
+			l10WorkspaceNoChanges(&output)
+			switch scenario {
+			case "missing_recovery_payload":
+				output.SyncOut.Recovery.Artifacts = nil
+			case "unavailable":
+				output.SyncOut.Recovery.Status = sandboxworkspace.SyncOutRecoveryStatusUnavailable
+			case "unknown":
+				output.SyncOut.Recovery.Status = "unknown"
+			case "missing_reason":
+				output.SyncOut.Apply.Reasons = nil
+			case "mixed_reasons":
+				output.SyncOut.Apply.Reasons = append(output.SyncOut.Apply.Reasons, sandboxworkspace.SyncOutApplyEligibilityReasonManualReviewRequired)
+			case "apply_mode":
+				output.SyncOut.Apply.Mode = sandboxworkspace.SyncOutApplyModePatch
+			case "apply_artifact":
+				output.SyncOut.Apply.ArtifactID = "phantom-patch"
+			case "safe_apply":
+				output.SafeApply = l10WorkspaceEvidence(active.Identity, now).SafeApply
+			case "untracked":
+				output.SyncOut.Untracked.List = &sandboxworkspace.SyncOutArtifact{ID: "untracked", Kind: sandboxworkspace.SyncOutArtifactKindFileList, DisplayPath: "artifacts/untracked.txt", StoredPath: "payloads/untracked.txt"}
+			case "duplicate_payload_id":
+				output.SyncOut.Recovery.Artifacts = append(output.SyncOut.Recovery.Artifacts, output.SyncOut.Recovery.Artifacts[0])
+			case "unknown_eligibility":
+				output.SyncOut.Recovery.Artifacts[0].ApplyEligibility = &sandboxworkspace.SyncOutApplyEligibility{Mode: "unknown"}
+			}
+			decision := EvaluateTerminal(context.Background(), l10WorkspaceTerminalRequest(t, active, attestation, output, now))
+			if decision.Code != sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe {
+				t.Fatalf("inconsistent no-change output = %#v, want workspace_proof_unsafe", decision)
+			}
+		})
+	}
+}
+
+func TestL10WorkspaceInputOnlyStillRejectsUnsafeReferences(t *testing.T) {
+	for _, scenario := range []string{"raw_repo", "unsafe_ref", "missing_ref", "unknown_input", "warning"} {
+		t.Run(scenario, func(t *testing.T) {
+			request := l10CompleteActiveRequest(t)
+			request.Workspace.SyncOut = sandboxworkspace.SyncOutSummary{}
+			request.Workspace.SafeApply = nil
+			switch scenario {
+			case "raw_repo":
+				request.Workspace.Workspace.Repo = "https://private.example/repo"
+			case "unsafe_ref":
+				request.Workspace.Workspace.SyncRef = "token=secret-value"
+			case "missing_ref":
+				request.Workspace.Workspace.SyncRef = ""
+			case "unknown_input":
+				request.Workspace.Workspace.InputSource = "unknown"
+			case "warning":
+				request.Workspace.WarningCodes = []string{"partial"}
+			}
+			_, decision := EvaluateActive(context.Background(), request)
+			if decision.Code != sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe {
+				t.Fatalf("unsafe input-only admission = %#v", decision)
+			}
+		})
+	}
+}
+
+func l10WorkspaceNoChanges(output *WorkspaceEvidence) {
+	output.SyncOut.Committed = sandboxworkspace.SyncOutCommittedArtifacts{}
+	output.SyncOut.Apply = sandboxworkspace.SyncOutApplyDecision{Reasons: []sandboxworkspace.SyncOutApplyEligibilityReason{sandboxworkspace.SyncOutApplyEligibilityReasonNoEligibleArtifact}}
+	output.SyncOut.Recovery.Artifacts = []sandboxworkspace.SyncOutArtifact{{ID: "recovery-after-work", Kind: sandboxworkspace.SyncOutArtifactKindRecovery, DisplayPath: "artifacts/recovery.patch", StoredPath: "payloads/recovery.patch"}}
+	output.SafeApply = nil
 }
 
 func l10WorkspaceTerminalRequest(t *testing.T, active ActiveRequest, attestation ActiveAttestation, output WorkspaceEvidence, now time.Time) TerminalRequest {
