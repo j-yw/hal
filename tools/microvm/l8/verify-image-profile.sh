@@ -57,12 +57,66 @@ debugfs_batch() {
 	debugfs_stderr_is_clean "$stderr_file"
 }
 
+stat_matches_entry() {
+	local output=$1 type=$2 mode=$3 uid=$4 gid=$5
+	awk -v type="$type" -v mode="$mode" -v uid="$uid" -v gid="$gid" '
+		NR == 1 {
+			header = ($1 == "Inode:" && $2 ~ /^[1-9][0-9]*$/ &&
+				$3 == "Type:" && $4 == type && $5 == "Mode:" && $6 == mode)
+		}
+		!owner_seen && $1 == "User:" {
+			owner_seen = 1
+			owner = ($2 == uid && $3 == "Group:" && $4 == gid)
+		}
+		END { exit !(header && owner_seen && owner) }
+	' "$output"
+}
+
+stat_inode_of_type() {
+	local output=$1 type=$2
+	awk -v type="$type" '
+		NR == 1 && $1 == "Inode:" && $2 ~ /^[1-9][0-9]*$/ &&
+			$3 == "Type:" && $4 == type && $5 == "Mode:" {
+			print $2
+			found = 1
+		}
+		END { exit !found }
+	' "$output"
+}
+
+stat_entry_type() {
+	local output=$1
+	awk '
+		NR == 1 && $1 == "Inode:" && $2 ~ /^[1-9][0-9]*$/ &&
+			$3 == "Type:" && $5 == "Mode:" {
+			print $4
+			found = 1
+		}
+		END { exit !found }
+	' "$output"
+}
+
+stat_logical_size() {
+	local output=$1
+	awk '
+		!found_owner && $1 == "User:" {
+			found_owner = 1
+			for (field_index = 1; field_index < NF; field_index++) {
+				if ($field_index == "Size:" && $(field_index + 1) ~ /^[0-9]+$/) {
+					print $(field_index + 1)
+					found_size = 1
+					exit
+				}
+			}
+		}
+		END { exit !(found_owner && found_size) }
+	' "$output"
+}
+
 require_entry() {
 	local path=$1 type=$2 mode=$3 uid=$4 gid=$5 output=$scratch/entry.stat
 	debugfs_request "stat $path" "$output" || fail "final rootfs required-entry inspection failed"
-	grep -Eq "Type:[[:space:]]+$type" "$output"
-	grep -Eq "Mode:[[:space:]]+$mode([[:space:]]|$)" "$output"
-	grep -Eq "User:[[:space:]]+$uid[[:space:]]+Group:[[:space:]]+$gid([[:space:]]|$)" "$output"
+	stat_matches_entry "$output" "$type" "$mode" "$uid" "$gid" || fail "final rootfs required-entry inspection failed"
 }
 
 for path in /sbin/init /sbin/hal-init /sbin/hal-guest-role-bootstrap /usr/bin/hal-guest-agent /usr/bin/hal-guest-credential-helper /usr/bin/hal-guest-mount-monitor /usr/bin/hal-guest-workload-shim /usr/bin/node /usr/bin/pi /bin/busybox /usr/bin/setpriv; do
@@ -72,24 +126,25 @@ require_entry /workspace directory 0700 1000 1000
 require_entry /run/agent directory 0700 998 998
 require_entry /etc/resolv.conf regular 0644 0 0
 debugfs_request 'stat /etc/resolv.conf' "$scratch/resolver.stat" || fail "final rootfs required-entry inspection failed"
-grep -Eq 'Size:[[:space:]]+0([[:space:]]|$)' "$scratch/resolver.stat"
+stat_matches_entry "$scratch/resolver.stat" regular 0644 0 0 || fail "final rootfs required-entry inspection failed"
+[[ "$(stat_logical_size "$scratch/resolver.stat")" == 0 ]] || fail "final rootfs required-entry inspection failed"
 
 debugfs_request 'stat /bin/busybox' "$scratch/busybox.stat" || fail "final rootfs required-entry inspection failed"
-busybox_inode=$(awk '/^Inode:/ {print $2; exit}' "$scratch/busybox.stat")
+busybox_inode=$(stat_inode_of_type "$scratch/busybox.stat" regular) || fail "final rootfs required-entry inspection failed"
 [[ "$busybox_inode" =~ ^[1-9][0-9]*$ ]]
 
 require_busybox_applet() {
 	local path=$1
 	debugfs_request "stat $path" "$scratch/applet.stat" || fail "final rootfs applet inspection failed"
-	if grep -Eq 'Type:[[:space:]]+regular' "$scratch/applet.stat"; then
-		grep -Eq 'Mode:[[:space:]]+0755([[:space:]]|$)' "$scratch/applet.stat"
-		grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0([[:space:]]|$)' "$scratch/applet.stat"
-		applet_inode=$(awk '/^Inode:/ {print $2; exit}' "$scratch/applet.stat")
+	applet_type=$(stat_entry_type "$scratch/applet.stat") || fail "final rootfs applet inspection failed"
+	if [[ "$applet_type" == regular ]]; then
+		stat_matches_entry "$scratch/applet.stat" regular 0755 0 0 || fail "final rootfs applet inspection failed"
+		applet_inode=$(stat_inode_of_type "$scratch/applet.stat" regular) || fail "final rootfs applet inspection failed"
 		[[ "$applet_inode" == "$busybox_inode" ]]
 	else
-		grep -Eq 'Type:[[:space:]]+symlink' "$scratch/applet.stat"
+		[[ "$applet_type" == symlink ]] || fail "final rootfs applet inspection failed"
 		target=$(sed -n 's/^Fast link dest: "\(.*\)"$/\1/p' "$scratch/applet.stat")
-		[[ -n "$target" ]]
+		[[ -n "$target" ]] || fail "final rootfs applet inspection failed"
 		"$script_dir/verify-applet-target.sh" "$path" "$target"
 	fi
 }
@@ -117,8 +172,7 @@ record_required_content_inode() {
 	local path=$1 destination=$2
 	local output=$scratch/required-content.stat inode
 	debugfs_request "stat $path" "$output" || fail "final rootfs required-content inspection failed"
-	grep -Eq 'Type:[[:space:]]+regular' "$output" || fail "final rootfs required-content inspection failed"
-	inode=$(awk '/^Inode:/ {print $2; exit}' "$output")
+	inode=$(stat_inode_of_type "$output" regular) || fail "final rootfs required-content inspection failed"
 	[[ "$inode" =~ ^[1-9][0-9]*$ && ${#inode} -le 6 ]] && ((10#$inode <= inode_count)) || fail "final rootfs required-content inspection failed"
 	printf -v "$destination" '%d' "$((10#$inode))"
 }
