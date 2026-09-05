@@ -15,8 +15,23 @@ import (
 )
 
 func TestL2DefaultExecCancellationTerminatesDescendantProcessGroup(t *testing.T) {
+	for _, test := range []struct {
+		name, script string
+	}{
+		{"leader ignores term", `trap '' TERM; sleep 30 & child=$!; printf '%s' "$child" > "$L2_PID_FILE"; wait "$child"`},
+		{"leader exits before descendant", `trap 'exit 0' TERM; sh -c 'trap "" TERM; printf "%s" "$$" > "$L2_PID_FILE"; exec sleep 30' & wait "$!"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testL2ExecCancellationDescendant(t, test.script)
+		})
+	}
+}
+
+func testL2ExecCancellationDescendant(t *testing.T, script string) {
+	t.Helper()
 	pidPath := t.TempDir() + "/descendant.pid"
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	resultCh := make(chan error, 1)
 	go func() {
 		_, err := (DefaultCommandRunner{}).RunExecCommand(ctx, CommandRequest{
@@ -24,7 +39,7 @@ func TestL2DefaultExecCancellationTerminatesDescendantProcessGroup(t *testing.T)
 			Args: []string{
 				"sh",
 				"-c",
-				`trap '' TERM; sleep 30 & child=$!; printf '%s' "$child" > "$L2_PID_FILE"; wait "$child"`,
+				script,
 			},
 			Env: map[string]string{"L2_PID_FILE": pidPath},
 		})
