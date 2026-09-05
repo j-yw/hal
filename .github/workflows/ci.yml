@@ -8,6 +8,7 @@ on:
       - 'sandbox*'
       - 'hal/sandbox*'
       - 'compound/sandbox*'
+      - feature/sandbox-runtime-secure-default-v2
   pull_request:
     branches:
       - main
@@ -15,6 +16,7 @@ on:
       - 'sandbox*'
       - 'hal/sandbox*'
       - 'compound/sandbox*'
+      - feature/sandbox-runtime-secure-default-v2
 
 permissions:
   contents: read
