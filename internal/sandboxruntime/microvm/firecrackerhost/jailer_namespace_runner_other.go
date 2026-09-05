@@ -11,6 +11,6 @@ func prepareStrictJailerNetworkNamespaceForExec(*os.File) error {
 	return errStrictJailerNamespaceInvalidConfiguration
 }
 
-func startStrictJailerOSExecCommand(*exec.Cmd, *os.File) (HostProcess, error) {
+func startStrictJailerOSExecCommand(*exec.Cmd, *os.File, *strictJailerExecutableLease) (HostProcess, error) {
 	return nil, errStrictJailerNamespaceInvalidConfiguration
 }

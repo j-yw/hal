@@ -33,7 +33,7 @@ func TestStrictJailerNamespaceRunnerRealStarterExecsJailerWithNoInheritedFDsAndE
 
 	plan := atomicJailerTestPlan(t, "run-alpha")
 	request := plan.processRequest()
-	_, err = runner.StartHostProcess(context.Background(), request)
+	_, err = runner.startWithExecutables(context.Background(), request, strictJailerTestExecutablePair(t, request.Executable, request.Args[3]))
 	if !errors.Is(err, errStrictJailerNamespaceStartFailed) {
 		t.Fatalf("StartHostProcess() error = %v, want sanitized start failure", err)
 	}
@@ -100,7 +100,8 @@ func TestStrictJailerNamespaceRunnerMarksRawDuplicatedNetworkDescriptorCloseOnEx
 		t.Fatal(err)
 	}
 
-	_, err = runner.StartHostProcess(context.Background(), atomicJailerTestPlan(t, "run-alpha").processRequest())
+	request := atomicJailerTestPlan(t, "run-alpha").processRequest()
+	_, err = runner.startWithExecutables(context.Background(), request, strictJailerTestExecutablePair(t, request.Executable, request.Args[3]))
 	if !errors.Is(err, errStrictJailerNamespaceStartFailed) {
 		t.Fatalf("StartHostProcess() error = %v, want sanitized start failure", err)
 	}
@@ -169,6 +170,7 @@ func TestStrictJailerOSExecLaunchSetsNetworkOnLockedCreatingThreadAndRetainsItTh
 			events = append(events, "setns-network")
 			return nil
 		},
+		pinExecutables: func() error { events = append(events, "pin-executables"); return nil },
 		umask: func(mask int) int {
 			if mask == 0o177 {
 				events = append(events, "umask-private")
@@ -183,7 +185,7 @@ func TestStrictJailerOSExecLaunchSetsNetworkOnLockedCreatingThreadAndRetainsItTh
 		wait:                 func() error { events = append(events, "wait"); return nil },
 		publishCompleted:     func(error) { events = append(events, "complete") },
 	})
-	want := []string{"lock", "unshare", "setns-network", "umask-private", "arm", "start", "publish", "wait", "complete", "umask-restore"}
+	want := []string{"lock", "unshare", "setns-network", "pin-executables", "umask-private", "arm", "start", "publish", "wait", "complete", "umask-restore"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("launch events = %#v, want locked creator retained through wait %#v", events, want)
 	}
@@ -202,6 +204,7 @@ func TestStrictJailerOSExecLaunchSetnsFailurePreventsProcessStart(t *testing.T) 
 			events = append(events, "setns-network")
 			return errors.New("unsafe /Users/alice/network namespace failure")
 		},
+		pinExecutables:       func() error { t.Fatal("pinning reached after setns failure"); return nil },
 		umask:                func(int) int { events = append(events, "umask"); return 0o022 },
 		armParentDeathSignal: func() { events = append(events, "arm") },
 		start:                func() error { events = append(events, "start"); return nil },

@@ -11,9 +11,61 @@ The architecture decision remains in
 [`sandbox-runtime-v2-host-owned-strict-boundary.md`](sandbox-runtime-v2-host-owned-strict-boundary.md).
 That historical note is pinned to the earlier `3713cdda` baseline and remains
 the authority for why the host-owned Jailer direction was selected. This
-document adds current implementation status without rewriting that trail.
+document preserves that implementation status without rewriting the trail.
+The following executable-handoff increment supersedes only the historical
+executable gap; it is not prepared-host acceptance.
 
-## Implemented private foundation
+## Executable-handoff increment
+
+The private coordinator now calls `inspectAndPinStrictJailerHost`. The original
+read-only inspector remains metadata-only. The new composition reopens each
+no-follow source, requires the same inspected inode and trusted ownership,
+copies at most 128 MiB per executable into an anonymous Linux memfd, measures
+that copy against the separately configured digest, and seals writes, growth,
+shrinkage, and further seal changes. Both initial inspection and copying have
+bounded reads. A source replacement, changed bytes, unsafe ownership, missing
+seals, or failed acquisition returns a sanitized failure and no launch owner.
+
+The coordinator carries this private pair through the existing lifecycle. The
+real starter requires exact Jailer/Firecracker path correlation and duplicates
+both snapshots atomically with close-on-exec before launching. The creating
+thread creates a separate mount namespace and makes its mount tree recursively
+private **before** binding either sealed snapshot over its configured canonical
+executable path. Bind mounts are read-only, nosuid, and nodev. After both binds,
+the runner rechecks canonical paths, trusted root-owned directory chains, and
+the exact mounted inode pair; only then can foreground exec proceed. Existing
+host/jail path correlation and the Firecracker basename remain unchanged.
+The source paths and parent directories remain trusted host administration
+inputs; this is not protection against a malicious host root administrator.
+
+This is necessary because upstream Jailer canonicalizes `--exec-file` and then
+reopens that canonical path while copying Firecracker into the chroot. Merely
+retaining a source FD or passing a memfd proc path as `--exec-file` would not
+preserve the existing canonicalized path/basename contract. See the upstream
+[path validation](https://github.com/firecracker-microvm/firecracker/blob/v1.15.0/src/jailer/src/env.rs#L264)
+and [executable copy](https://github.com/firecracker-microvm/firecracker/blob/v1.15.0/src/jailer/src/env.rs#L430).
+These source references explain the handoff; they do not verify a prepared
+host's configured binary pair.
+
+No executable, namespace, or asset descriptor is inherited across Jailer exec.
+The original snapshot pair is closed on every coordinator return; the launch
+duplicates are closed on every starter return. On success, the child and its
+retained creating thread hold the private mounts until process exit. On any
+mount, inspection, or exec failure the locked thread is retired without being
+reused, releasing its private namespace, including any partial bind. There is
+no host-wide mount mutation or path-based cleanup of these anonymous snapshots.
+
+The default tests exercise actual unprivileged memfd sealing, source replacement,
+read bounds, independent descriptor ownership and close behavior, plus injected
+mount and launch ordering/failure paths. They do **not** execute privileged
+mounts, start Jailer, or prove kernel mount/exec behavior on a prepared host.
+The remaining prepared-host lane must verify that actual canonicalized
+`--exec-file` consumption sees only the pinned bytes, including replacement
+attempts, and that partial mount namespaces disappear after failure. Dedicated
+UID/GID authority, post-drop containment, cgroups, readiness, network topology,
+durable recovery, and selected live acceptance remain blockers.
+
+## Historical implemented private foundation
 
 All of these components remain private to
 `internal/sandboxruntime/microvm/firecrackerhost`:
@@ -30,7 +82,7 @@ The compatibility `NamespaceProcessRunner` and direct Firecracker compatibility
 behavior is unchanged. The new runner does not reinterpret the legacy
 user/network/kernel/rootfs descriptor contract.
 
-## Remaining blockers
+## Historical blockers and remaining acceptance
 
 The following are required before this foundation can support a strict runtime
 claim:
@@ -42,9 +94,9 @@ claim:
 2. A dedicated UID/GID authority must prove that the configured non-root
    identity is reserved for the run. Numeric validation and propagation do not
    establish dedication.
-3. A measured executable handoff must close the gap between read-only digest
-   inspection and later pathname execution. The current inspector deliberately
-   retains no executable file descriptor across launch.
+3. The measured executable handoff above must be accepted on prepared Linux.
+   The historical read-only digest inspection alone still cannot authorize
+   pathname execution; the real starter now rejects a missing pinned pair.
 4. The required post-credential-drop crash containment must be demonstrated or
    replaced by a retained supervisor design. The locked-thread parent-death
    signal protects the foreground launch boundary, but Linux may clear it when
@@ -115,7 +167,7 @@ This foundation does not establish:
 
 - prepared-host boot, guest readiness, network enforcement, credential
   delivery, workspace integrity, or leak-free teardown;
-- executable pinning, dedicated host identity allocation, post-drop orphan
+- prepared-host executable pinning, dedicated host identity allocation, post-drop orphan
   containment, or runtime/cgroup resource-bound evidence;
 - strict runtime selection, a public runtime capability, or a security posture
   upgrade;

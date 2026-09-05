@@ -47,6 +47,7 @@ type strictJailerNamespaceProcessStartRequest struct {
 	executable       string
 	args             []string
 	networkNamespace *os.File
+	executables      *strictJailerExecutablePair
 }
 
 // strictJailerNetworkNamespaceProvider exposes one independently owned
@@ -89,6 +90,16 @@ func (runner *strictJailerNamespaceRunner) StartHostProcess(
 	ctx context.Context,
 	request firecracker.ProcessRunnerStartRequest,
 ) (HostProcess, error) {
+	return runner.startWithExecutables(ctx, request, nil)
+}
+
+// The real OS starter rejects the pathname-only HostProcessRunner interface.
+// Only the private lifecycle supplies the measured executable owner here.
+func (runner *strictJailerNamespaceRunner) startWithExecutables(
+	ctx context.Context,
+	request firecracker.ProcessRunnerStartRequest,
+	executables *strictJailerExecutablePair,
+) (HostProcess, error) {
 	if !runner.configured() {
 		return nil, errStrictJailerNamespaceInvalidConfiguration
 	}
@@ -119,6 +130,7 @@ func (runner *strictJailerNamespaceRunner) StartHostProcess(
 		executable:       command.jailerPath,
 		args:             append([]string(nil), command.args...),
 		networkNamespace: network,
+		executables:      executables,
 	})
 	closeErr := closeStrictJailerNetworkNamespaceFile(network)
 	if startErr == nil && interfaceValueIsNil(process) {

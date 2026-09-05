@@ -141,7 +141,7 @@ type strictJailerCoordinator struct {
 
 func newStrictJailerCoordinator(lifecycle *strictJailerLifecycle) *strictJailerCoordinator {
 	return newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
-		inspect: inspectStrictJailerHost,
+		inspect: inspectAndPinStrictJailerHost,
 		newFilesystem: func(authority jailerStagingAuthority) (jailerStagingFilesystem, error) {
 			return newLinuxJailerStagingFilesystem(authority)
 		},
@@ -155,7 +155,7 @@ func newStrictJailerCoordinatorWithDependencies(deps strictJailerCoordinatorDepe
 	return &strictJailerCoordinator{deps: deps}
 }
 
-func (coordinator *strictJailerCoordinator) start(ctx context.Context, request strictJailerCoordinatorRequest) (strictJailerSession, error) {
+func (coordinator *strictJailerCoordinator) start(ctx context.Context, request strictJailerCoordinatorRequest) (result strictJailerSession, resultErr error) {
 	if coordinator == nil {
 		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "session")
 	}
@@ -173,6 +173,11 @@ func (coordinator *strictJailerCoordinator) start(ctx context.Context, request s
 	}
 
 	inspection, err := coordinator.deps.inspect(request.inspection)
+	defer func() {
+		if err := inspection.executables.close(); err != nil {
+			resultErr = errors.Join(resultErr, newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "inspect"))
+		}
+	}()
 	if err != nil {
 		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "inspect")
 	}
@@ -231,7 +236,7 @@ func (coordinator *strictJailerCoordinator) start(ctx context.Context, request s
 	if err != nil {
 		return coordinator.failBeforeProcess(generation, session, "plan")
 	}
-	process, err := coordinator.deps.lifecycle.start(nonNilContext(ctx), strictJailerLifecycleStartRequest{launchPlan: launchPlan, hostPaths: hostPaths})
+	process, err := coordinator.deps.lifecycle.start(nonNilContext(ctx), strictJailerLifecycleStartRequest{launchPlan: launchPlan, hostPaths: hostPaths, executables: inspection.executables})
 	if err != nil {
 		if strictJailerLifecycleStartCleanupUncertain(err) {
 			generation.state = strictJailerCoordinatorStartCleanupPending

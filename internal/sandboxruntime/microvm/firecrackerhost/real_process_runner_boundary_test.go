@@ -19,6 +19,7 @@ func TestOSExecImportIsConfinedToRealProcessRunner(t *testing.T) {
 		"real_process_runner.go":               false,
 		"jailer_namespace_runner_linux.go":     false,
 		"jailer_namespace_runner_other.go":     false,
+		"jailer_namespace_starter.go":          false,
 		"l8_runtime_owner_executable_linux.go": false,
 	}
 
