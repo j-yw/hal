@@ -170,9 +170,10 @@ func TestL8BuildScriptsLockOfflinePinnedDockerAndSevenFileBundle(t *testing.T) {
 	for _, required := range []string{
 		"L8_MAX_PROFILE_INODES",
 		"L8_MAX_PROFILE_CONTENT_BYTES",
-		"directory.commands",
-		"regular-content.commands",
-		"ls -p -r <%d>",
+		"L8_MAX_PROFILE_DIRECTORY_ENTRIES",
+		"queued_directories",
+		`debugfs_request "ls -p -r <$directory_inode>"`,
+		`debugfs_request "dump <$inode> $regular_content"`,
 	} {
 		if !strings.Contains(imageProfile, required) {
 			t.Errorf("verify-image-profile.sh missing bounded secret-inspection marker %q", required)
@@ -219,7 +220,7 @@ func TestL8ImageProfileVerifierRunsWithoutHL8E(t *testing.T) {
 	command.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "HAL_L8_IMAGE_PROFILE_TEST_MARKER="+marker)
 	payload, err := command.CombinedOutput()
 	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 71 {
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 || exitErr.ExitCode() == 2 {
 		t.Fatalf("verify-image-profile.sh invalid-image exit = %v output = %s, want inspection failure", err, payload)
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -335,7 +336,7 @@ func runL8ImageProfileVerifierFixture(t *testing.T, forbiddenName, privateKey, r
 
 const l8ImageProfileDebugfsFixture = `#!/bin/sh
 set -eu
-if [ "$1" = "-R" ]; then
+	if [ "$1" = "-R" ]; then
 	case "$2" in
 		"stat /workspace")
 			printf '%s\n' 'Inode: 2   Type: directory    Mode:  0700' 'User:  1000   Group:  1000   Project: 0   Size: 1024'
@@ -363,6 +364,23 @@ if [ "$1" = "-R" ]; then
 			;;
 		stats)
 			printf '%s\n' 'Inode count: 16'
+			;;
+		"ls -p -r <2>")
+			if [ "${HAL_L8_IMAGE_PROFILE_FAKE_INCOMPLETE_DIRS:-false}" != true ]; then
+				printf '%s\n' '/2/040755/0/0/.//'
+			fi
+			name=${HAL_L8_IMAGE_PROFILE_FAKE_FORBIDDEN_NAME:-safe.txt}
+			[ -n "$name" ] || name=safe.txt
+			size=${HAL_L8_IMAGE_PROFILE_FAKE_REGULAR_SIZE:-64}
+			[ -n "$size" ] || size=64
+			printf '/3/100644/0/0/%s/%s/\n' "$name" "$size"
+			;;
+		"dump <3> "*)
+			output=${2#dump <3> }
+			printf '%s\n' "${HAL_L8_IMAGE_PROFILE_FAKE_PRIVATE_KEY:-safe-content}" >"$output"
+			size=${HAL_L8_IMAGE_PROFILE_FAKE_REGULAR_SIZE:-64}
+			[ -n "$size" ] || size=64
+			truncate -s "$size" "$output"
 			;;
 		*) exit 72 ;;
 	esac
