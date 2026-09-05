@@ -31,6 +31,19 @@ func TestL8ImageProfileVerifierRealExt4Inspection(t *testing.T) {
 		assertL8VerifierRejection(t, payload, err, "regular-file content exceeds bounded scan limit")
 	})
 
+	t.Run("required content is size checked before extraction", func(t *testing.T) {
+		fixture := newL8RealExt4Fixture(t, map[string]int64{
+			"usr/bin/setpriv": l8ProfileContentLimit + 1,
+		})
+		payload, err := fixture.runVerifier(t, "reject-premature-required-cat", "")
+		assertL8VerifierRejection(t, payload, err, "regular-file content exceeds bounded scan limit")
+		if data, readErr := os.ReadFile(fixture.log); readErr == nil {
+			t.Fatalf("verify-image-profile.sh read oversized required content before its size check: %s", data)
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatal(readErr)
+		}
+	})
+
 	t.Run("reserved metadata inode is not extracted", func(t *testing.T) {
 		fixture := newL8RealExt4Fixture(t, nil)
 		reserved := fixture.stat(t, "<7>")
@@ -119,7 +132,7 @@ func newL8RealExt4Fixture(t *testing.T, extraFiles map[string]int64) l8RealExt4F
 		"agent:!:::::::\nworkload:!:::::::\n"), 0o600)
 	for name, size := range extraFiles {
 		path := filepath.Join(imageRoot, name)
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,6 +277,12 @@ const l8RealExt4DebugfsWrapper = `#!/bin/sh
 set -eu
 
 mode=${HAL_L8_REAL_EXT4_TEST_MODE:-}
+if [ "${1:-}" = "-R" ] && [ "$mode" = "reject-premature-required-cat" ] && [ "$2" = "cat /usr/bin/setpriv" ]; then
+	printf '%s\n' 'oversized required content read before size check' >"$HAL_L8_REAL_EXT4_TEST_LOG"
+	printf '%s\n' 'debugfs test wrapper: premature required-content read rejected' >&2
+	exit 0
+fi
+
 if [ "${1:-}" = "-f" ] && grep -Fq 'cat <' "$2"; then
 	case "$mode" in
 		reject-reserved-batch)
