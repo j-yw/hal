@@ -9,12 +9,22 @@ completed L7 topology and enforcement proof and consumes L2/L3 durable job and
 recovery ownership plus L4/L5 guest execution. It does not weaken or replace
 any of those proofs.
 
-Two D2 supplements are normative parts of this architecture:
+`sandbox-runtime-v2-l8-credential-runtime-contract-reset.md` is the current
+selected L8 topology. It preserves this document's observable credential,
+isolation, cleanup, and redaction exit contract, but supersedes the mandatory
+six-role guest decomposition and HL8E critical-path assumptions below. Those
+sections remain historical design evidence, not authority to claim that an
+unimplemented role is live. The legacy HL8E-gated build and verifier remain
+unchanged and fail closed until a distinct replacement profile is implemented
+and accepted.
+
+Two D2 supplements were normative parts of the historical six-role design:
 `sandbox-runtime-v2-l8-helper-syscall-policy.md` freezes the helper's exact
 syscall/argument boundary, and
 `sandbox-runtime-v2-l8-guest-extension-seams.md` freezes the D4/D5 package,
 registry, host-agent, composition, and image-profile ownership seams. A later
-slice may implement those contracts but may not reinterpret them locally.
+slice may reuse those contracts, but the reset document determines which roles
+are mandatory for the current selected L8 topology.
 
 L8 owns production credential activation in this order:
 
