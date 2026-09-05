@@ -205,11 +205,17 @@ done
 
 attribute_commands=$scratch/regular-attribute.commands
 : >"$attribute_commands"
+expected_attribute_prompts=$scratch/regular-attribute-prompts.expected
+: >"$expected_attribute_prompts"
 for inode in "${regular_inodes[@]}"; do
-	printf 'ea_list <%d>\n' "$((10#$inode))"
-done >"$attribute_commands"
+	printf 'ea_list <%d>\n' "$((10#$inode))" >>"$attribute_commands"
+	printf 'debugfs: ea_list <%d>\n' "$((10#$inode))" >>"$expected_attribute_prompts"
+done
 attribute_report=$scratch/regular-attribute.report
 debugfs_batch "$attribute_commands" "$attribute_report" || fail "final rootfs regular-file attribute inspection failed"
+observed_attribute_prompts=$scratch/regular-attribute-prompts.observed
+awk '/^debugfs: ea_list <[1-9][0-9]*>$/ { print }' "$attribute_report" >"$observed_attribute_prompts"
+cmp -s "$expected_attribute_prompts" "$observed_attribute_prompts" || fail "final rootfs regular-file attribute inspection failed"
 if grep -Fq 'security.capability' "$attribute_report"; then
 	fail "final rootfs contains file capabilities"
 fi
