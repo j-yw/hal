@@ -347,20 +347,20 @@ if [ "$1" = "-R" ]; then
 		"stat /etc/resolv.conf")
 			printf '%s\n' 'Inode: 1   Type: regular    Mode:  0644' 'User:     0   Group:     0   Project: 0   Size: 0'
 			;;
+		"stat /usr/bin/setpriv")
+			printf '%s\n' 'Inode: 4   Type: regular    Mode:  0755' 'User:     0   Group:     0   Project: 0   Size: 128'
+			;;
+		"stat /etc/passwd")
+			printf '%s\n' 'Inode: 5   Type: regular    Mode:  0644' 'User:     0   Group:     0   Project: 0   Size: 128'
+			;;
+		"stat /etc/group")
+			printf '%s\n' 'Inode: 6   Type: regular    Mode:  0644' 'User:     0   Group:     0   Project: 0   Size: 64'
+			;;
+		"stat /etc/shadow")
+			printf '%s\n' 'Inode: 8   Type: regular    Mode:  0600' 'User:     0   Group:     0   Project: 0   Size: 64'
+			;;
 		stat\ *)
 			printf '%s\n' 'Inode: 1   Type: regular    Mode:  0755' 'User:     0   Group:     0   Project: 0   Size: 64'
-			;;
-		"cat /usr/bin/setpriv")
-			printf '%s\n' '--reuid --regid --clear-groups --no-new-privs --bounding-set --inh-caps --ambient-caps --securebits'
-			;;
-		"cat /etc/passwd")
-			printf '%s\n' 'agent:x:998:998:Agent:/run/agent:/bin/sh' 'workload:x:1000:1000:Workload:/workspace:/bin/sh'
-			;;
-		"cat /etc/group")
-			printf '%s\n' 'agent:x:998:' 'workload:x:1000:'
-			;;
-		"cat /etc/shadow")
-			printf '%s\n' 'agent:!:::::::' 'workload:!:::::::'
 			;;
 		stats)
 			printf '%s\n' 'Inode count: 16'
@@ -374,6 +374,11 @@ if [ "$1" = "-R" ]; then
 			size=${HAL_L8_IMAGE_PROFILE_FAKE_REGULAR_SIZE:-64}
 			[ -n "$size" ] || size=64
 			printf '/3/100644/0/0/%s/%s/\n' "$name" "$size"
+			printf '%s\n' \
+				'/4/100755/0/0/setpriv/128/' \
+				'/5/100644/0/0/passwd/128/' \
+				'/6/100644/0/0/group/64/' \
+				'/8/100600/0/0/shadow/64/'
 			;;
 		"dump <3> "*)
 			output=${2#dump <3> }
@@ -382,30 +387,38 @@ if [ "$1" = "-R" ]; then
 			[ -n "$size" ] || size=64
 			truncate -s "$size" "$output"
 			;;
+		"dump <4> "*)
+			output=${2#dump <4> }
+			printf '%s\n' '--reuid --regid --clear-groups --no-new-privs --bounding-set --inh-caps --ambient-caps --securebits' >"$output"
+			truncate -s 128 "$output"
+			;;
+		"dump <5> "*)
+			output=${2#dump <5> }
+			printf '%s\n' 'agent:x:998:998:Agent:/run/agent:/bin/sh' 'workload:x:1000:1000:Workload:/workspace:/bin/sh' >"$output"
+			truncate -s 128 "$output"
+			;;
+		"dump <6> "*)
+			output=${2#dump <6> }
+			printf '%s\n' 'agent:x:998:' 'workload:x:1000:' >"$output"
+			truncate -s 64 "$output"
+			;;
+		"dump <8> "*)
+			output=${2#dump <8> }
+			printf '%s\n' 'agent:!:::::::' 'workload:!:::::::' >"$output"
+			truncate -s 64 "$output"
+			;;
 		*) exit 72 ;;
 	esac
 	exit 0
 fi
 if [ "$1" = "-f" ]; then
 	commands=$2
-	if grep -Fq 'ls -p' "$commands"; then
-		if [ "${HAL_L8_IMAGE_PROFILE_FAKE_INCOMPLETE_DIRS:-false}" != true ]; then
-			printf '%s\n' '/2/040755/0/0/.//'
-		fi
-		name=${HAL_L8_IMAGE_PROFILE_FAKE_FORBIDDEN_NAME:-safe.txt}
-		[ -n "$name" ] || name=safe.txt
-		printf '/3/100644/0/0/%s/12/\n' "$name"
-	elif grep -Fq 'cat <' "$commands"; then
-		printf '%s\n' "${HAL_L8_IMAGE_PROFILE_FAKE_PRIVATE_KEY:-safe-content}"
-	else
-		size=${HAL_L8_IMAGE_PROFILE_FAKE_REGULAR_SIZE:-64}
-		[ -n "$size" ] || size=64
-		printf '%s\n' \
-			'Inode: 1   Type: regular    Mode:  0644' \
-			"User:     0   Group:     0   Project: 0   Size: $size" \
-			'Inode: 2   Type: directory    Mode:  0755' \
-			'User:     0   Group:     0   Project: 0   Size: 1024'
-	fi
+	while IFS= read -r request; do
+		case "$request" in
+			ea_list\ \<*\>) printf 'debugfs: %s\n' "$request" ;;
+			*) exit 74 ;;
+		esac
+	done <"$commands"
 	exit 0
 fi
 exit 73

@@ -98,20 +98,6 @@ for path in /bin/sh /usr/bin/env; do
 	require_busybox_applet "$path"
 done
 
-debugfs_request 'cat /usr/bin/setpriv' "$scratch/setpriv" || fail "final rootfs required-content inspection failed"
-for option in --reuid --regid --clear-groups --no-new-privs --bounding-set --inh-caps --ambient-caps --securebits; do
-	grep -Fq -- "$option" "$scratch/setpriv"
-done
-debugfs_request 'cat /etc/passwd' "$scratch/passwd" || fail "final rootfs required-content inspection failed"
-grep -Fq 'agent:x:998:998:Agent:/run/agent:/bin/sh' "$scratch/passwd"
-grep -Fq 'workload:x:1000:1000:Workload:/workspace:/bin/sh' "$scratch/passwd"
-debugfs_request 'cat /etc/group' "$scratch/group" || fail "final rootfs required-content inspection failed"
-grep -Fq 'agent:x:998:' "$scratch/group"
-grep -Fq 'workload:x:1000:' "$scratch/group"
-debugfs_request 'cat /etc/shadow' "$scratch/shadow" || fail "final rootfs required-content inspection failed"
-grep -Fq 'agent:!:::::::' "$scratch/shadow"
-grep -Fq 'workload:!:::::::' "$scratch/shadow"
-
 for path in /sbin/ip /usr/bin/nc /bin/ping /bin/ping6 /usr/bin/nslookup /usr/bin/wget; do
 	require_busybox_applet "$path"
 done
@@ -126,6 +112,21 @@ if ((${#inode_count} > 6)) || ((10#$inode_count > L8_MAX_PROFILE_INODES)); then
 	echo "final rootfs inode inventory exceeds bounded scan limit" >&2
 	exit 1
 fi
+
+record_required_content_inode() {
+	local path=$1 destination=$2
+	local output=$scratch/required-content.stat inode
+	debugfs_request "stat $path" "$output" || fail "final rootfs required-content inspection failed"
+	grep -Eq 'Type:[[:space:]]+regular' "$output" || fail "final rootfs required-content inspection failed"
+	inode=$(awk '/^Inode:/ {print $2; exit}' "$output")
+	[[ "$inode" =~ ^[1-9][0-9]*$ && ${#inode} -le 6 ]] && ((10#$inode <= inode_count)) || fail "final rootfs required-content inspection failed"
+	printf -v "$destination" '%d' "$((10#$inode))"
+}
+
+record_required_content_inode /usr/bin/setpriv setpriv_inode
+record_required_content_inode /etc/passwd passwd_inode
+record_required_content_inode /etc/group group_inode
+record_required_content_inode /etc/shadow shadow_inode
 
 # Walk only directory entries reachable from the root. Reserved filesystem
 # metadata and unlinked inodes are not guest-visible files and are excluded.
@@ -172,10 +173,10 @@ while ((directory_index < ${#directory_queue[@]})); do
 				if [[ "$entry_name" == . ]]; then
 					[[ "$entry_inode" == "$directory_inode" ]] || fail "final rootfs directory inspection failed"
 					directory_self_entries=$((directory_self_entries + 1))
-			elif [[ "$entry_name" != .. && -z ${queued_directories[$entry_inode]+x} ]]; then
+				elif [[ "$entry_name" != .. && -z ${queued_directories[$entry_inode]+x} ]]; then
 					queued_directories[$entry_inode]=1
-				directory_queue+=("$entry_inode")
-				((${#directory_queue[@]} <= inode_count)) || fail "final rootfs directory inventory is invalid"
+					directory_queue+=("$entry_inode")
+					((${#directory_queue[@]} <= inode_count)) || fail "final rootfs directory inventory is invalid"
 				fi
 				;;
 			10)
@@ -198,6 +199,10 @@ while ((directory_index < ${#directory_queue[@]})); do
 	((directory_self_entries == 1)) || fail "final rootfs directory inspection failed"
 done
 
+for inode in "$setpriv_inode" "$passwd_inode" "$group_inode" "$shadow_inode"; do
+	[[ -n ${regular_sizes[$inode]+x} ]] || fail "final rootfs required-content inspection failed"
+done
+
 attribute_commands=$scratch/regular-attribute.commands
 : >"$attribute_commands"
 for inode in "${regular_inodes[@]}"; do
@@ -216,6 +221,23 @@ for inode in "${regular_inodes[@]}"; do
 	[[ -f "$regular_content" && ! -L "$regular_content" ]] || fail "final rootfs regular-file content inspection failed"
 	extracted_size=$(stat -c %s -- "$regular_content") || fail "final rootfs regular-file content inspection failed"
 	[[ "$extracted_size" == "${regular_sizes[$inode]}" ]] || fail "final rootfs regular-file content inspection failed"
+	if [[ "$inode" == "$setpriv_inode" ]]; then
+		for option in --reuid --regid --clear-groups --no-new-privs --bounding-set --inh-caps --ambient-caps --securebits; do
+			grep -Fq -- "$option" "$regular_content" || fail "final rootfs required-content inspection failed"
+		done
+	fi
+	if [[ "$inode" == "$passwd_inode" ]]; then
+		grep -Fq 'agent:x:998:998:Agent:/run/agent:/bin/sh' "$regular_content" || fail "final rootfs required-content inspection failed"
+		grep -Fq 'workload:x:1000:1000:Workload:/workspace:/bin/sh' "$regular_content" || fail "final rootfs required-content inspection failed"
+	fi
+	if [[ "$inode" == "$group_inode" ]]; then
+		grep -Fq 'agent:x:998:' "$regular_content" || fail "final rootfs required-content inspection failed"
+		grep -Fq 'workload:x:1000:' "$regular_content" || fail "final rootfs required-content inspection failed"
+	fi
+	if [[ "$inode" == "$shadow_inode" ]]; then
+		grep -Fq 'agent:!:::::::' "$regular_content" || fail "final rootfs required-content inspection failed"
+		grep -Fq 'workload:!:::::::' "$regular_content" || fail "final rootfs required-content inspection failed"
+	fi
 	set +e
 	grep -aEi 'BEGIN ([[:alnum:]_-]+[[:space:]]+)*PRIVATE KEY' "$regular_content" >/dev/null
 	content_scan_status=$?

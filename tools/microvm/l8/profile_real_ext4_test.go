@@ -283,6 +283,16 @@ if [ "${1:-}" = "-R" ] && [ "$mode" = "reject-premature-required-cat" ] && [ "$2
 	exit 0
 fi
 
+if [ "${1:-}" = "-R" ] && [ "$mode" = "reject-reserved-batch" ]; then
+	case "$2" in
+		"dump <7> "*)
+			printf '%s\n' 'reserved inode 7 extraction attempted' >"$HAL_L8_REAL_EXT4_TEST_LOG"
+			printf '%s\n' 'debugfs test wrapper: reserved inode rejected' >&2
+			exit 91
+			;;
+	esac
+fi
+
 if [ "${1:-}" = "-f" ] && grep -Fq 'cat <' "$2"; then
 	case "$mode" in
 		reject-reserved-batch)
