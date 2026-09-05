@@ -68,6 +68,12 @@ func TestL8ImageProfileVerifierRealExt4Inspection(t *testing.T) {
 		assertL8VerifierRejection(t, payload, err, "regular-file content inspection failed")
 	})
 
+	t.Run("incomplete attribute batch fails closed", func(t *testing.T) {
+		fixture := newL8RealExt4Fixture(t, nil)
+		payload, err := fixture.runVerifier(t, "omit-attribute-prompts", "")
+		assertL8VerifierRejection(t, payload, err, "regular-file attribute inspection failed")
+	})
+
 	t.Run("newline filename fails closed", func(t *testing.T) {
 		fixture := newL8RealExt4Fixture(t, map[string]int64{"npm-session\n-token": 12})
 		payload, err := fixture.runVerifier(t, "skip-batch-content", "")
@@ -291,6 +297,11 @@ if [ "${1:-}" = "-R" ] && [ "$mode" = "reject-reserved-batch" ]; then
 			exit 91
 			;;
 	esac
+fi
+
+if [ "${1:-}" = "-f" ] && [ "$mode" = "omit-attribute-prompts" ] && grep -Fq 'ea_list <' "$2"; then
+	printf '%s\n' 'debugfs 1.47.4 (test wrapper)' >&2
+	exit 0
 fi
 
 if [ "${1:-}" = "-f" ] && grep -Fq 'cat <' "$2"; then
