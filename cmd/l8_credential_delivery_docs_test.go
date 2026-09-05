@@ -118,6 +118,8 @@ func TestL8CredentialDeliveryVerification(t *testing.T) {
 		"reachable regular-file bytes",
 		"control-byte filenames",
 		"per-file extraction",
+		"exact requested-inode order",
+		"never before aggregate size validation",
 		"does not claim exhaustive secret detection",
 		"DER, PKCS#12, encoded, compressed, archive-contained, or custom key blobs",
 	} {

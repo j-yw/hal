@@ -83,11 +83,14 @@ The traversal rejects control-byte filenames (including newline), plus the
 existing `.npmrc`, `.npm`, `id_rsa`, `*.pem`, and `npm-session` filename
 policy. It deduplicates hard-linked regular inode IDs, sums the logical size
 reported by their directory entries, rejects setuid/setgid mode bits, and
-checks reachable regular inodes for file capabilities. It then extracts each
-deduplicated regular inode with an independent debugfs request, requires the
-extracted size to equal the inventoried logical size, and searches that file
-for PEM-style private-key markers. There is no shared content pipeline whose
-early consumer exit could hide a producer failure.
+checks reachable regular inodes for file capabilities. The batched attribute
+query is accepted only when debugfs echoes every requested inode in exact
+order. It then extracts each deduplicated regular inode with an independent
+debugfs request, requires the extracted size to equal the inventoried logical
+size, validates the required setpriv/account content from those bounded
+extractions, and searches each file for PEM-style private-key markers. There
+is no shared content pipeline whose early consumer exit could hide a producer
+failure, and required content is not read before aggregate size validation.
 
 This is defense in depth, not an exhaustive secret detector: it does not
 identify DER, PKCS#12, encoded, compressed, archive-contained, or custom key

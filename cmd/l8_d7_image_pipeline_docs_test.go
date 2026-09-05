@@ -51,6 +51,8 @@ func TestL8D7ImagePipelineVerificationContract(t *testing.T) {
 		"control-byte filenames",
 		"deduplicates hard-linked regular inode IDs",
 		"independent debugfs request",
+		"every requested inode in exact order",
+		"required content is not read before aggregate size validation",
 		"PEM-style private-key marker",
 		"not an exhaustive secret detector",
 		"local real-ext4 fixtures",

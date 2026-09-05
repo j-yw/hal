@@ -571,11 +571,12 @@ tmpfs/fd-mount/pidfd/mount namespace and cgroup-v2/`cgroup.kill` kernel support,
 and absence of PEM-style private-key markers in reachable regular-file bytes.
 The scanner walks directory entries from root inode 2, validates each debugfs
 directory request and record, rejects control-byte filenames, deduplicates
-hard-linked regular inode IDs, and validates each per-file extraction and
-logical size before scanning it. Reserved metadata and unlinked inodes are
-excluded because they are not guest-reachable files. The bounded marker and
-filename scan does not claim exhaustive secret detection for DER, PKCS#12, encoded, compressed, archive-contained, or custom key blobs, and it makes no
-claim about inaccessible filesystem slack or unlinked data.
+hard-linked regular inode IDs, reconciles the exact requested-inode order of
+the batched attribute response, and validates each per-file extraction and
+logical size before scanning it. Required setpriv/account content is checked
+from those bounded per-file extractions, never before aggregate size validation.
+Reserved metadata and unlinked inodes are excluded because they are not
+guest-reachable files. The bounded marker and filename scan does not claim exhaustive secret detection for DER, PKCS#12, encoded, compressed, archive-contained, or custom key blobs, and it makes no claim about inaccessible filesystem slack or unlinked data.
 Test probes are copied into the
 workspace through the existing bounded guest copy contract; they are not
 installed in the production image and cannot manufacture proof.
