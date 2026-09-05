@@ -116,6 +116,42 @@ func TestL10PreparatoryGuardRejectsEveryAuthorityReference(t *testing.T) {
 		wantForbidden      bool
 	}{
 		{
+			name: "L8 active proof owner", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go",
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc mintL8JobCredentialActiveProofFromAdmittedHelperSuccess() { runtimeproof.NewJobCredentialActiveProof() }\n",
+		},
+		{
+			name: "L8 cleanup proof owner", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go",
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc mintL8JobCredentialCleanupProofFromAdmittedHelperSuccess() { runtimeproof.NewJobCredentialCleanupProof() }\n",
+		},
+		{
+			name: "L8 recovery owner", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go",
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc (runtime *L8JobCredentialRuntime) RecoverJobCredentials() { runtimeproof.NewJobCredentialCleanupProof() }\n",
+		},
+		{
+			name: "L8 abort owner", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go",
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc (preflight *l8JobCredentialRuntimePreflight) Abort() { runtimeproof.NewJobCredentialCleanupProof() }\n",
+		},
+		{
+			name: "L8 owner cannot evaluate L10", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport composition \"github.com/jywlabs/hal/internal/strictcomposition\"\nfunc mintL8JobCredentialActiveProofFromAdmittedHelperSuccess() { composition.EvaluateActive() }\n",
+		},
+		{
+			name: "L8 owner cannot export constructor alias", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc mintL8JobCredentialActiveProofFromAdmittedHelperSuccess() { mint := runtimeproof.NewJobCredentialActiveProof; mint() }\n",
+		},
+		{
+			name: "L8 owner filename is exact", path: "../internal/sandboxruntime/microvm/firecrackerhost/other.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc mintL8JobCredentialActiveProofFromAdmittedHelperSuccess() { runtimeproof.NewJobCredentialActiveProof() }\n",
+		},
+		{
+			name: "L8 owner function is exact", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc wireL10() { runtimeproof.NewJobCredentialActiveProof() }\n",
+		},
+		{
+			name: "L8 recovery cannot mint active proof", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc (runtime *L8JobCredentialRuntime) RecoverJobCredentials() { runtimeproof.NewJobCredentialActiveProof() }\n",
+		},
+		{
 			name: "qualified evaluator call", path: "../cmd/wire.go", wantForbidden: true,
 			source: "package cmd\nimport composition \"github.com/jywlabs/hal/internal/strictcomposition\"\nfunc wire() { _, _ = composition.EvaluateActive(nil, composition.ActiveRequest{}) }\n",
 		},
