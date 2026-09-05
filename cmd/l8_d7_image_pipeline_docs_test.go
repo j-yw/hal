@@ -55,6 +55,8 @@ func TestL8D7ImagePipelineVerificationContract(t *testing.T) {
 		"actual first `debugfs stat` header",
 		"first owner record",
 		"multiline symlink-target field injection",
+		"exactly one complete, control-byte-free fast-link",
+		"inode's logical byte length",
 		"required content is not read before aggregate size validation",
 		"PEM-style private-key marker",
 		"not an exhaustive secret detector",

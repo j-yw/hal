@@ -113,6 +113,26 @@ stat_logical_size() {
 	' "$output"
 }
 
+stat_fast_link_target() {
+	local output=$1
+	# The target is guest-controlled text, not another debugfs record. Require
+	# exactly one complete record, including malformed prefix occurrences, so a
+	# newline in the target cannot inject a second acceptable-looking record.
+	awk '
+		/^Fast link dest:/ {
+			count++
+			if ($0 ~ /^Fast link dest: "[^"[:cntrl:]]+"$/) {
+				target = substr($0, 18, length($0) - 18)
+				valid = 1
+			}
+		}
+		END {
+			if (count != 1 || !valid) exit 1
+			print target
+		}
+	' "$output"
+}
+
 require_entry() {
 	local path=$1 type=$2 mode=$3 uid=$4 gid=$5 output=$scratch/entry.stat
 	debugfs_request "stat $path" "$output" || fail "final rootfs required-entry inspection failed"
@@ -143,8 +163,8 @@ require_busybox_applet() {
 		[[ "$applet_inode" == "$busybox_inode" ]]
 	else
 		[[ "$applet_type" == symlink ]] || fail "final rootfs applet inspection failed"
-		target=$(sed -n 's/^Fast link dest: "\(.*\)"$/\1/p' "$scratch/applet.stat")
-		[[ -n "$target" ]] || fail "final rootfs applet inspection failed"
+		target=$(stat_fast_link_target "$scratch/applet.stat") || fail "final rootfs applet inspection failed"
+		[[ "$(stat_logical_size "$scratch/applet.stat")" == "${#target}" ]] || fail "final rootfs applet inspection failed"
 		"$script_dir/verify-applet-target.sh" "$path" "$target"
 	fi
 }

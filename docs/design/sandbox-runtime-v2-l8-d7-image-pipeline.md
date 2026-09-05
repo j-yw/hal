@@ -83,6 +83,9 @@ Required-entry identity comes only from the actual first `debugfs stat` header
 and the first owner record. Later output lines cannot supply those fields, so a
 multiline symlink-target field injection cannot impersonate a regular,
 root-owned executable or required directory.
+Applet targets must come from exactly one complete, control-byte-free fast-link
+record and match the inode's logical byte length. A malformed first record
+cannot be discarded in favor of a later injected target record.
 
 The traversal rejects control-byte filenames (including newline), plus the
 existing `.npmrc`, `.npm`, `id_rsa`, `*.pem`, and `npm-session` filename
