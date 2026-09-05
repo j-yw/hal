@@ -157,7 +157,10 @@ const l8D6CanonicalHelperOptionsBlock = "type HelperOptions struct {\n" +
 	"}"
 
 // l8D6GuestExtensionSeamsSHA256 changes only with an explicit review of the complete normative document.
-const l8D6GuestExtensionSeamsSHA256 = "97cef3d6bd397a5580847d759c97cd667061ceba37ab5d49c5ba33cf87964c3b"
+// Relative to the previously locked 77c314c5 document, 6af1a84c adds only
+// Client.ServeStarted and its process-local lifecycle handoff explanation; the
+// independent HelperOptions dependencies and all authority contracts are intact.
+const l8D6GuestExtensionSeamsSHA256 = "be97d7607a2bceb95ef06d49b771c2ddc8506d280dd045cb9367b251e209bd88"
 
 func validateL8D6HelperCompositionDocument(document string) error {
 	digest := sha256.Sum256([]byte(document))
