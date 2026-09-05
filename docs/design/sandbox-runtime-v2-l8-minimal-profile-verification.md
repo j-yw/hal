@@ -62,6 +62,20 @@ byte-identical file replacements after retention fail closed.
 Directory enumeration reads at most eight entries to establish the exact
 seven-file set, rather than loading every entry from an oversized directory.
 
+Each of the four child JSON documents and `SHA256SUMS` is decoded from a
+private byte snapshot bounded to 4 MiB. Its exact size and SHA-256 must match
+the retained file pin before any semantic decode or checksum scan. Strict JSON
+decoding rejects unknown fields and trailing data. This prevents a file from
+being hashed, changed for decoding, and restored before the final currentness
+check; later file mutation cannot change the already authenticated buffer.
+Retained-file and directory currentness checks still run independently.
+
+This snapshot binding is specific to the new minimal child metadata path.
+Existing L7 parent verification and `measureL8ParentEvidence` retain their
+pre-existing read/hash behavior and are not repaired or strengthened by this
+slice. The minimal verifier continues to require that existing parent
+authority; no new parent-verifier or legacy HL8E guarantee is claimed here.
+
 The minimal executable inventory is exactly `hal-init`, `hal-guest-agent`,
 `node`, and `pi-launcher`, each a regular root-owned executable with mode 0755
 and pinned digest/size. The runtime identity binds Node 22.22.0, Pi 0.82.1, and

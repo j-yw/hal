@@ -2,6 +2,8 @@ package localresolver
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -303,11 +305,11 @@ func confirmMinimalFiles(root *os.File, files map[string]l8PinnedAsset) error {
 }
 
 func verifyMinimalChecksums(files map[string]l8PinnedAsset) error {
-	file := files[distributionChecksumsName].file
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return ErrFileUnavailable
+	snapshot, err := snapshotMinimalMetadata(files[distributionChecksumsName])
+	if err != nil {
+		return err
 	}
-	scanner := bufio.NewScanner(io.LimitReader(file, l8MaxMetadataBytes+1))
+	scanner := bufio.NewScanner(bytes.NewReader(snapshot))
 	for _, name := range l8RequiredDistributionOutputs {
 		if name == distributionChecksumsName {
 			continue
@@ -325,7 +327,45 @@ func verifyMinimalChecksums(files map[string]l8PinnedAsset) error {
 func minimalPinnedDigest(pinned l8PinnedAsset) string { return hex.EncodeToString(pinned.digest[:]) }
 
 func decodeMinimalMetadata(pinned l8PinnedAsset, destination any) error {
-	return decodeL8RetainedParentJSON(pinned.file, destination)
+	snapshot, err := snapshotMinimalMetadata(pinned)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(snapshot))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return ErrManifestInvalid
+	}
+	return nil
+}
+
+// Snapshot once and authenticate those exact bytes before semantic decoding.
+// Rehashing the file later cannot bind a prior mutable decoder read to its pin.
+// The returned buffer owns its bytes and is bounded before allocation.
+func snapshotMinimalMetadata(pinned l8PinnedAsset) ([]byte, error) {
+	if pinned.file == nil || pinned.size <= 0 || pinned.size > l8MaxMetadataBytes {
+		return nil, ErrAssetLockMismatch
+	}
+	before, err := pinned.file.Stat()
+	if err != nil {
+		return nil, ErrFileUnavailable
+	}
+	if !before.Mode().IsRegular() || before.Size() != pinned.size {
+		return nil, ErrAssetLockMismatch
+	}
+	snapshot := make([]byte, int(pinned.size))
+	if count, err := pinned.file.ReadAt(snapshot, 0); err != nil || int64(count) != pinned.size {
+		return nil, ErrAssetLockMismatch
+	}
+	var trailing [1]byte
+	if count, err := pinned.file.ReadAt(trailing[:], pinned.size); count != 0 || err != io.EOF {
+		return nil, ErrAssetLockMismatch
+	}
+	after, err := pinned.file.Stat()
+	if err != nil || !after.Mode().IsRegular() || after.Size() != pinned.size || !os.SameFile(before, after) || sha256.Sum256(snapshot) != pinned.digest {
+		return nil, ErrAssetLockMismatch
+	}
+	return snapshot, nil
 }
 
 func cloneMinimalParent(parent VerifiedDistribution) (VerifiedDistribution, error) {

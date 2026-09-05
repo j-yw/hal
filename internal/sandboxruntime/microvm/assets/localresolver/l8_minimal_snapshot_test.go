@@ -3,10 +3,63 @@ package localresolver
 import (
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestL8MinimalMetadataCallsitesUseAuthenticatedSnapshots(t *testing.T) {
+	source, err := os.ReadFile("l8_minimal_distribution.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "l8_minimal_distribution.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately narrow wiring guard: behavioral helper tests alone would
+	// still pass if the production verifier stopped calling the safe helper.
+	required := map[string][]string{
+		"VerifyL8MinimalDistributionBundle": {
+			"{distributionManifestName, &manifest}", "{distributionProvenanceName, &provenance}",
+			"{l8SourceLockName, &sources}", "{l8FinalInspectionName, &inspection}",
+			"decodeMinimalMetadata(state.files[document.name], document.destination)",
+			"verifyMinimalChecksums(state.files)",
+		},
+		"decodeMinimalMetadata": {
+			"snapshotMinimalMetadata(pinned)", "json.NewDecoder(bytes.NewReader(snapshot))",
+		},
+		"verifyMinimalChecksums": {
+			"snapshotMinimalMetadata(files[distributionChecksumsName])", "bufio.NewScanner(bytes.NewReader(snapshot))",
+		},
+	}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || required[function.Name.Name] == nil {
+			continue
+		}
+		body := string(source[function.Body.Pos()-1 : function.Body.End()-1])
+		for _, fragment := range required[function.Name.Name] {
+			if !strings.Contains(body, fragment) {
+				t.Errorf("%s lost authenticated metadata wiring %q", function.Name.Name, fragment)
+			}
+		}
+		delete(required, function.Name.Name)
+	}
+	if len(required) != 0 {
+		t.Fatalf("missing metadata verification functions: %v", required)
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		if identifier, ok := node.(*ast.Ident); ok && identifier.Name == "decodeL8RetainedParentJSON" {
+			t.Error("minimal metadata path references mutable legacy JSON decoder")
+		}
+		return true
+	})
+}
 
 func TestL8MinimalMetadataRejectsMutationBetweenPinAndDecode(t *testing.T) {
 	rootDir := t.TempDir()
