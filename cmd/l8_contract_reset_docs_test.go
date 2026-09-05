@@ -27,6 +27,8 @@ func TestL8ContractResetArchitectureDecision(t *testing.T) {
 		"HL8E v1 remains unissued",
 		"offline diagnostic",
 		"not a runtime CFI control",
+		"does not currently install a guest seccomp filter",
+		"must not be presented as an active L8 control",
 		"future product tests",
 		"hal-guest-credential-helper",
 		"hal-guest-mount-monitor",
@@ -63,6 +65,7 @@ func TestL8ContractResetSupersedesClaimsWithoutRewritingHistory(t *testing.T) {
 		"prepared-Linux acceptance passed",
 		"HL8E is issued",
 		"strict secure default is active",
+		"depends on exact image identity, default-deny seccomp",
 	} {
 		if strings.Contains(doc, forbidden) {
 			t.Errorf("L8 contract-reset document contains forbidden completion claim %q", forbidden)
