@@ -598,6 +598,52 @@ func TestL8D2HelperServiceReadinessProductGuard(t *testing.T) {
 	}
 }
 
+func TestL8D2HelperServiceReadinessReusesOneImportAnalysisPerBuildContext(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "credentialhelper")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, source := range map[string]string{
+		"service.go":      "package credentialhelper\ntype Service struct{}\n",
+		"service_test.go": "package credentialhelper\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts := make(map[string]map[*ast.File]int)
+	resolve := func(context build.Context, _ string, file *ast.File) map[string]string {
+		if counts[context.GOOS] == nil {
+			counts[context.GOOS] = make(map[*ast.File]int)
+		}
+		counts[context.GOOS][file]++
+		return nil
+	}
+	results, err := l8D2ReadinessExactServiceBehavioralTestsWithImportResolver(root, map[string]l8D2ReadinessServiceTestRequirement{
+		"TestMissingOne": {}, "TestMissingTwo": {},
+	}, resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results["TestMissingOne"] || results["TestMissingTwo"] {
+		t.Fatalf("missing behavioral tests were not rejected: %v", results)
+	}
+	if len(counts) == 0 {
+		t.Fatal("no build context was analyzed")
+	}
+	for goos, files := range counts {
+		if len(files) != 2 {
+			t.Fatalf("%s analyzed %d files, want 2", goos, len(files))
+		}
+		for _, count := range files {
+			if count != 1 {
+				t.Fatalf("%s resolved the same file %d times, want once per analysis", goos, count)
+			}
+		}
+	}
+}
+
 func TestL8D2HelperServiceReadinessRequiredTestGuardSelfTest(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -13574,6 +13620,10 @@ func l8D2ReadinessServiceTestRequirements() map[string]l8D2ReadinessServiceTestR
 }
 
 func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[string]l8D2ReadinessServiceTestRequirement) (map[string]bool, error) {
+	return l8D2ReadinessExactServiceBehavioralTestsWithImportResolver(root, requirements, l8D2ReadinessNewImportResolver().resolve)
+}
+
+func l8D2ReadinessExactServiceBehavioralTestsWithImportResolver(root string, requirements map[string]l8D2ReadinessServiceTestRequirement, resolve func(build.Context, string, *ast.File) map[string]string) (map[string]bool, error) {
 	dir := filepath.Join(root, "credentialhelper")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -13621,7 +13671,6 @@ func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[stri
 		applicable = contexts
 	}
 	results := make(map[string]bool)
-	resolver := l8D2ReadinessNewImportResolver()
 	terminalFactsByContext := make(map[int]l8D2ReadinessTerminalFacts, len(applicable))
 	for name, requirement := range requirements {
 		validEverywhere := true
@@ -13635,7 +13684,7 @@ func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[stri
 				}
 				if matched {
 					contextFiles = append(contextFiles, file)
-					resolvedImports[file] = resolver.resolve(context, filepath.Dir(path), file)
+					resolvedImports[file] = resolve(context, filepath.Dir(path), file)
 				}
 			}
 			for path, file := range testFiles {
@@ -13645,7 +13694,7 @@ func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[stri
 				}
 				if matched {
 					contextFiles = append(contextFiles, file)
-					resolvedImports[file] = resolver.resolve(context, filepath.Dir(path), file)
+					resolvedImports[file] = resolve(context, filepath.Dir(path), file)
 				}
 			}
 			environment := l8D2ReadinessTerminalEnvironmentForFilesWithImports(contextFiles, resolvedImports)
