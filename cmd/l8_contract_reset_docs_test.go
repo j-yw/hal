@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -114,5 +115,56 @@ func TestL8ContractResetImplementationOrder(t *testing.T) {
 		if !strings.Contains(doc, required) {
 			t.Errorf("L8 contract-reset implementation plan omits %q", required)
 		}
+	}
+}
+
+func TestL8ContractResetPreservesLegacyAndStrictBoundaries(t *testing.T) {
+	designRoot := filepath.Join("..", "docs", "design")
+	reset := readL8CredentialDeliveryFile(t, filepath.Join(designRoot, l8ContractResetDoc))
+	canonical := readL8CredentialDeliveryFile(t, filepath.Join(designRoot, "sandbox-runtime-v2-linux-completion-architecture.md"))
+	legacy := readL8CredentialDeliveryFile(t, filepath.Join(designRoot, l8CredentialArchitectureDoc))
+	hostBoundary := readL8CredentialDeliveryFile(t, filepath.Join(designRoot, l8HostOwnedStrictBoundaryDoc))
+	build := readL8CredentialDeliveryFile(t, filepath.Join("..", "tools", "microvm", "l8", "build.sh"))
+	finalVerifier := readL8CredentialDeliveryFile(t, filepath.Join("..", "tools", "microvm", "l8", "verify-final-image.sh"))
+	liveWrapper := readL8CredentialDeliveryFile(t, filepath.Join("..", "tools", "microvm", "l8", "verify-selected-live.sh"))
+
+	for _, required := range []string{
+		"distinct minimal runtime profile, bundle verifier, and selector",
+		"Legacy `tools/microvm/l8/build.sh`, `verify-final-image.sh`, and `VerifyL8DistributionBundle`",
+		"remain unchanged and fail closed when HL8E is absent",
+		"fresh Jailer-owned launch proof",
+		"Direct Firecracker credential evidence is insufficient",
+	} {
+		if !strings.Contains(reset, required) {
+			t.Errorf("L8 contract-reset document omits preserved boundary %q", required)
+		}
+	}
+	if !strings.Contains(build, "HL8E is unissued; L8 builds fail closed") ||
+		!strings.Contains(finalVerifier, "HL8E is unissued; L8 final-image verification fails closed") {
+		t.Fatal("legacy D7 build/final-image HL8E gates must remain fail closed")
+	}
+	for name, doc := range map[string]string{"canonical architecture": canonical, "historical L8 architecture": legacy} {
+		if !strings.Contains(doc, l8ContractResetDoc) || !strings.Contains(doc, "current selected L8 topology") {
+			t.Errorf("%s does not resolve the L8 topology authority through %s", name, l8ContractResetDoc)
+		}
+	}
+	for _, required := range []string{"mandatory for every strict launch", "fresh Jailer-owned launch proof"} {
+		if !strings.Contains(hostBoundary, required) || !strings.Contains(reset, required) {
+			t.Errorf("reset and host boundary do not both preserve Jailer invariant %q", required)
+		}
+	}
+	for _, required := range []string{
+		"http_only file_tmpfs_only ssh_agent_only all_modes failure_recovery_matrix",
+		"skipped != 0",
+		"subtest_pass[required[i]] != 1",
+	} {
+		if !strings.Contains(liveWrapper, required) {
+			t.Errorf("selected live wrapper omits no-skip invariant %q", required)
+		}
+	}
+	if _, err := os.Stat(filepath.Join("..", "tools", "microvm", "l8", "policy", "verified-pinned-callsites.hl8e")); err == nil {
+		t.Fatal("HL8E must remain unissued; the contract reset cannot manufacture it")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
 }
