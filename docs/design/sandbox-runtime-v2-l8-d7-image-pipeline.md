@@ -70,16 +70,31 @@ inspection without using HL8E as an image-layout prerequisite.
 `verify-final-image.sh` remains the separate HL8E and parent-L7 gated wrapper;
 the profile-only verifier does not issue evidence or accept L8.
 
-The immutable inspection is bounded to the fixed profile's 65,536 inodes and
-512 MiB of aggregate logical regular-file content. It lists every allocated
-directory with `debugfs ls -p -r`, verifies that every directory produced a
-listing, rejects the existing `.npmrc`, `.npm`, `id_rsa`, `*.pem`, and
-`npm-session` filename policy, and streams allocated regular-file bytes through
-a PEM-style private-key marker check. This is defense in depth, not an
-exhaustive secret detector: it does not identify DER, PKCS#12, encoded,
-compressed, archive-contained, or custom key blobs. Changes to the image size,
-inode count, or secret-pattern policy must update the Buildroot profile,
-verifier, and tests together.
+The immutable inspection is bounded to the fixed profile's 65,536 inodes,
+262,144 parsed directory records, and 512 MiB of aggregate logical
+regular-file content. Starting at root inode 2, it visits each reachable
+directory once with an independent `debugfs ls -p -r` request. Every request
+must complete without a debugfs diagnostic, every nonempty output record must
+parse, and every visited directory must contain exactly one matching `.`
+record. Reserved metadata and unlinked inodes are not guest-reachable entries
+and are not treated as files.
+
+The traversal rejects control-byte filenames (including newline), plus the
+existing `.npmrc`, `.npm`, `id_rsa`, `*.pem`, and `npm-session` filename
+policy. It deduplicates hard-linked regular inode IDs, sums the logical size
+reported by their directory entries, rejects setuid/setgid mode bits, and
+checks reachable regular inodes for file capabilities. It then extracts each
+deduplicated regular inode with an independent debugfs request, requires the
+extracted size to equal the inventoried logical size, and searches that file
+for PEM-style private-key markers. There is no shared content pipeline whose
+early consumer exit could hide a producer failure.
+
+This is defense in depth, not an exhaustive secret detector: it does not
+identify DER, PKCS#12, encoded, compressed, archive-contained, or custom key
+blobs. It also makes no claim about inaccessible filesystem slack or unlinked
+data. Changes to the image size, inode count, directory-record bound, or
+secret-pattern policy must update the Buildroot profile, verifier, and tests
+together.
 
 Reproducible verification, when a later issuance slice supplies HL8E, parent
 L7, native bootstrap, and the locked cache, is:
@@ -103,8 +118,11 @@ bash -n tools/microvm/l8/build.sh tools/microvm/l8/build-in-container.sh tools/m
 go vet ./tools/microvm/l8 ./cmd
 ```
 
-These commands are fake-only. This slice does not boot a VM, run a full
-Buildroot build, call billed APIs, or select live tags.
+The profile package includes deterministic, bounded local real-ext4 fixtures
+for the image scanner. Those tests require host `mke2fs` and `debugfs` and skip
+when either tool is unavailable; the remaining focused tests are fake-only.
+This slice does not boot a VM, run a full Buildroot build, call billed APIs, or
+select live tags.
 
 ## Broad verification
 

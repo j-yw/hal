@@ -336,7 +336,7 @@ func runL8ImageProfileVerifierFixture(t *testing.T, forbiddenName, privateKey, r
 
 const l8ImageProfileDebugfsFixture = `#!/bin/sh
 set -eu
-	if [ "$1" = "-R" ]; then
+if [ "$1" = "-R" ]; then
 	case "$2" in
 		"stat /workspace")
 			printf '%s\n' 'Inode: 2   Type: directory    Mode:  0700' 'User:  1000   Group:  1000   Project: 0   Size: 1024'
