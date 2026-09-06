@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/minimalcontrol"
 	"golang.org/x/sys/unix"
 )
 
@@ -21,20 +22,44 @@ func run(arguments []string) int {
 	if len(arguments) == 0 || os.Getpid() != 1 {
 		return 127
 	}
-	network, present, err := loadL7NetworkBootConfig()
+	return runGuestInitEntry(arguments, requireNetwork, guestInitEntryDependencies{
+		readBootCommandLine: minimalcontrol.ReadLinuxBootCommandLine,
+		configureNetwork:    configureL7GuestNetwork,
+		releaseAgentGate:    func() int { return releasePID1AgentStartGate() },
+		superviseChild:      superviseGuestInitChild,
+	})
+}
+
+type guestInitEntryDependencies struct {
+	readBootCommandLine func(context.Context) (string, error)
+	configureNetwork    func(l7NetworkBootConfig) error
+	releaseAgentGate    func() int
+	superviseChild      func([]string, []string) int
+}
+
+func runGuestInitEntry(arguments []string, requireNetwork bool, deps guestInitEntryDependencies) int {
+	commandLine, err := deps.readBootCommandLine(context.Background())
+	if err != nil {
+		return 127
+	}
+	network, present, err := parseL7NetworkBootConfig(commandLine)
 	if err != nil || (requireNetwork && !present) {
 		return 127
 	}
 	var childEnvironment []string
 	if present {
-		if err := configureL7GuestNetwork(network); err != nil {
+		if err := deps.configureNetwork(network); err != nil {
 			return 127
 		}
 		childEnvironment = l7NetworkBootstrapEnvironment(network)
 	}
-	if code := releasePID1AgentStartGate(); code != 0 {
+	if code := deps.releaseAgentGate(); code != 0 {
 		return code
 	}
+	return deps.superviseChild(arguments, childEnvironment)
+}
+
+func superviseGuestInitChild(arguments, childEnvironment []string) int {
 	signals := make(chan os.Signal, 32)
 	signal.Notify(signals, syscall.SIGCHLD, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT)
 	defer signal.Stop(signals)
