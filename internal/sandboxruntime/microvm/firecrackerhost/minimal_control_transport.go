@@ -6,11 +6,13 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
@@ -30,6 +32,7 @@ type minimalControlTransport struct {
 	checks                     vsockOwnerChecks
 	dial                       func(context.Context, string, string) (net.Conn, error)
 	handshakeTimeout, lifetime time.Duration
+	startupPollInterval        time.Duration // private bounded test acceleration; zero uses 100 ms
 }
 
 func newMinimalControlTransport(manager *ProcessLifecycleManager, handle firecracker.ProcessHandleMetadata, runtimeID string) (*minimalControlTransport, error) {
@@ -40,20 +43,21 @@ func newMinimalControlTransport(manager *ProcessLifecycleManager, handle firecra
 }
 
 type minimalControlStream struct {
-	manager         *ProcessLifecycleManager
-	process         liveProcessIdentity
-	identity        vsockSocketIdentity
-	checks          vsockOwnerChecks
-	ctx             context.Context
-	cancel          context.CancelFunc
-	hardDeadline    time.Time
-	reader          *bufio.Reader
-	done, watchDone chan struct{}
-	mu              sync.Mutex
-	conn            *net.UnixConn
-	closed          bool
-	err             error
-	generation      uint64
+	manager           *ProcessLifecycleManager
+	process           liveProcessIdentity
+	identity          vsockSocketIdentity
+	checks            vsockOwnerChecks
+	ctx               context.Context
+	cancel            context.CancelFunc
+	hardDeadline      time.Time
+	admissionDeadline time.Time // selected startup only; carried through later authentication
+	reader            *bufio.Reader
+	done, watchDone   chan struct{}
+	mu                sync.Mutex
+	conn              *net.UnixConn
+	closed            bool
+	err               error
+	generation        uint64
 }
 
 func minimalControlBound(value, limit time.Duration) time.Duration {
@@ -68,29 +72,43 @@ func (c *minimalControlTransport) Open(ctx context.Context) (*minimalControlStre
 		return nil, errMinimalControlTransport
 	}
 	started := time.Now()
-	process, err := c.manager.resolveLiveProcessIdentity(c.handle)
-	if err != nil || process.handle != c.handle || process.owner == nil || !process.owner.active() || process.pid <= 0 || process.done == nil {
-		return nil, errMinimalControlTransport
-	}
-	// Reuse canonical runtime/path validation without accepting a caller path.
-	paths, err := firecracker.PlanPaths(firecracker.PathPlanRequest{RuntimeID: c.runtimeID, BaseStateDir: filepath.Dir(process.paths.StateDir)})
-	if err != nil || paths.StateDir != process.paths.StateDir || paths.VsockSocketPath != process.paths.VsockSocketPath {
-		return nil, errMinimalControlTransport
+	process, err := c.resolveProcess()
+	if err != nil {
+		return nil, err
 	}
 	identity, err := statVsockSocketForOwner(process.paths.VsockSocketPath, process.owner, c.checks)
 	if err != nil {
 		return nil, errMinimalControlTransport
 	}
 	hard := started.Add(minimalControlBound(c.lifetime, session.MaxGuestCredentialSessionLifetime))
+	deadline := started.Add(minimalControlBound(c.handshakeTimeout, session.HandshakeDeadline))
+	return c.openAttempt(ctx, process, identity, hard, deadline, time.Time{})
+}
+
+func (c *minimalControlTransport) resolveProcess() (liveProcessIdentity, error) {
+	process, err := c.manager.resolveLiveProcessIdentity(c.handle)
+	if err != nil || process.handle != c.handle || process.owner == nil || !process.owner.active() || process.pid <= 0 || process.done == nil {
+		return liveProcessIdentity{}, errMinimalControlTransport
+	}
+	// Reuse canonical runtime/path validation without accepting a caller path.
+	paths, err := firecracker.PlanPaths(firecracker.PathPlanRequest{RuntimeID: c.runtimeID, BaseStateDir: filepath.Dir(process.paths.StateDir)})
+	if err != nil || paths.StateDir != process.paths.StateDir || paths.VsockSocketPath != process.paths.VsockSocketPath {
+		return liveProcessIdentity{}, errMinimalControlTransport
+	}
+	return process, nil
+}
+
+// Each attempt retains the caller's original identity and absolute hard limit.
+// Only selected startup receives a retry classification; Open stays one-shot.
+func (c *minimalControlTransport) openAttempt(ctx context.Context, process liveProcessIdentity, identity vsockSocketIdentity, hard, deadline, startupDeadline time.Time) (*minimalControlStream, error) {
 	lifetime, cancel := context.WithDeadline(ctx, hard)
 	s := &minimalControlStream{manager: c.manager, process: process, identity: identity, checks: c.checks,
-		ctx: lifetime, cancel: cancel, hardDeadline: hard, done: make(chan struct{}), watchDone: make(chan struct{})}
+		ctx: lifetime, cancel: cancel, hardDeadline: hard, admissionDeadline: startupDeadline, done: make(chan struct{}), watchDone: make(chan struct{})}
 	go s.watch()
 	fail := func() (*minimalControlStream, error) { _ = s.Close(); return nil, s.failure() }
 	if !s.current() {
 		return fail()
 	}
-	deadline := started.Add(minimalControlBound(c.handshakeTimeout, session.HandshakeDeadline))
 	admission, stopAdmission := context.WithDeadline(lifetime, deadline)
 	defer stopAdmission()
 	dial := c.dial
@@ -132,6 +150,18 @@ func (c *minimalControlTransport) Open(ctx context.Context) (*minimalControlStre
 		return fail()
 	}
 	ack, err := s.reader.ReadSlice('\n')
+	if !startupDeadline.IsZero() && len(ack) == 0 && (errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)) {
+		// A whole CONNECT was written, but no ACK was received. Check the
+		// actual peer/owner again before distinguishing unavailable from fatal.
+		if s.current() {
+			if admission.Err() != nil || !time.Now().Before(deadline) {
+				s.finish(minimalControlContextError(admission))
+			} else {
+				s.finish(errors.Join(errMinimalControlTransport, errMinimalControlPortPending))
+			}
+		}
+		return fail() // closes and joins this attempt before a possible retry
+	}
 	if err != nil || len(ack) > maxVsockHandshakeBytes || s.reader.Buffered() != 0 || !validVsockAck(string(ack)) {
 		s.finish(minimalControlContextError(admission))
 		return fail()

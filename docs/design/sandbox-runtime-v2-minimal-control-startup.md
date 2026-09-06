@@ -2,10 +2,12 @@
 
 ## Status and boundary
 
-DESIGN/compiling RED at base `b6a440fe`. Production startup remains unavailable;
-the new private method is an explicit fail-closed stub. Existing single-attempt
-`minimalControlTransport.Open`, legacy v1/v2, Jailer, worker, guest and L7 paths
-are unchanged. This slice returns only a retained raw stream after CONNECT/ACK,
+DESIGN/compiling RED was committed as `65a1a882` at base `b6a440fe`. GREEN
+implements the private startup method; it has no production selector/caller.
+Existing single-attempt `minimalControlTransport.Open` delegates to a shared
+private attempt core with its original one-shot/fail-closed behavior. Legacy
+v1/v2, Jailer, worker, guest and L7 paths are unchanged. This slice returns only
+a retained raw stream after CONNECT/ACK,
 not authenticated readiness, credential/helper authority or cleanup proof.
 
 Firecracker's host UDS can precede the guest listener. The pinned dependency is
@@ -35,6 +37,10 @@ attempt is additionally capped at five seconds and the remaining startup/hard
 budget. Wait 100 ms between availability probes; allow at most 150 CONNECT
 attempts. Reject elapsed absolute time even if a context timer is not scheduled
 yet. A long caller deadline cannot enlarge any bound.
+The private poll-interval test override can only shorten the 100 ms delay; it
+does not enlarge the 150-attempt or absolute time bounds and is not a public
+runtime option. It permits a deterministic real-UDS attempt-cap regression
+without making every ordinary test wait 15 seconds.
 
 ## Authority and state sequence
 
@@ -81,7 +87,7 @@ no privileged UID change, Jailer execution, AF_VSOCK, KVM or live VM is involved
 The root-UID fixture is skipped rather than pretending UID zero is a valid
 strict runtime UID. Fixture watchdog cleanup is not product cleanup evidence.
 
-The compiling stub must fail eventual socket/ACK and lifetime regressions.
+The compiling RED stub failed eventual socket/ACK and lifetime regressions.
 Negative tests must observe the relevant real transcript before accepting a
 rejection; an unconditional unavailable stub is not credited for those cases.
 Passing controls exercise existing single-attempt Open and its fail-closed
@@ -96,8 +102,10 @@ go vet -p 2 ./internal/sandboxruntime/microvm/firecrackerhost
 git diff --check
 ```
 
-Before GREEN acceptance, extend focused coverage for exact 150-attempt/15-second
-caps, every terminal dial/write cause, concurrent one-shot use, pending-I/O
-joining and final absolute deadline checks. Supervisor/controller selection and
+GREEN adds exact 150-attempt exhaustion and effective 15-second/input/hard/context
+deadline checks, real reset-then-success, terminal dial/write causes, concurrent
+one-shot use, pending dial/write cancellation, failed watcher joining before
+retry and post-ACK final absolute deadline rejection. The original RED tests
+remain byte-identical. Supervisor/controller selection and
 the original-client readiness handoff remain separate work; no default is
 enabled and no guest authentication or terminal cleanup claim is made here.
