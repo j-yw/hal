@@ -69,6 +69,21 @@ caller UID/GID and output ownership. Existing Docker builder defaults remain
 compatible. Cache and source inputs are read-only, fresh staging/output roots
 are private, and no host home, credential directory or runtime socket is mounted.
 
+The shared L5/L7 entry scripts accept only the additive explicit
+`--runtime docker|podman` selector; omission still selects Docker. Podman must
+report rootless operation and the exact locally installed image digest before
+launch, with no Docker fallback or implicit pull. Its UID/GID-preserving run
+uses at most three requested compiler jobs, three CPUs, 12GiB memory, 512 PIDs
+and no-new-privileges. Neither runtime selector changes L5's exact 52-file cache
+validation. The combined cache must supply a separately verified L5-only view;
+shared L7 post-build ownership behavior is not changed by this runner slice.
+
+Tagged fake-CLI tests run the actual entry scripts, covering default Docker,
+explicit Docker/Podman, rootful rejection, wrong local digest, unsupported
+runtime and excessive jobs. These are runner argv tests, not successful builds.
+The trusted archive staging and installed Pi tree still require inspection of
+the genuine pinned Buildroot/Node/npm source rules and two actual clean builds.
+
 The selected filesystem installs only untagged hal-init and hal-guest-agent,
 Node22.22.0 and Pi0.82.1 plus the exact shrinkwrap closure. The guest bootstrap
 retains L7 configuration and UID1000 capability-dropping semantics; the three
