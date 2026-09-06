@@ -2,12 +2,14 @@
 
 ## Scope and contract
 
-DESIGN/RED only at base `47ddd3ecc069406d57aac21860ee420914feb1e9`.
+Compiling RED is frozen at `5e7bd73b`, from base
+`47ddd3ecc069406d57aac21860ee420914feb1e9`. GREEN implements only the two pure
+methods below; it does not wire a host consumer or issue readiness authority.
 This is item 1 of the separately frozen controller design `2d8f6585`, not
 implementation approval for that controller, eight-FD handoff or producer.
 The Linux completion architecture and L8 reset remain authoritative.
 
-Add precisely these pure methods to `guestagent/minimalcontrol.Binding`:
+The shared methods on `guestagent/minimalcontrol.Binding` are:
 
 ```go
 func (binding Binding) EncodeReadinessRequest(requestID string, sessionID [32]byte) ([]byte, error)
@@ -23,12 +25,14 @@ with the existing fixed `ErrInvalid`; an invalid encoder returns nil bytes.
 The existing request-ID contract accepts 32 zero hexadecimal characters; this
 slice does not invent a nonzero-ID requirement. Session IDs remain nonzero.
 
-The smallest GREEN constructs the existing canonical request from the immutable
+GREEN constructs the existing canonical request from the immutable
 binding, expected request ID and session-bound digest. Response validation first
 checks its bounded input, then compares it byte-for-byte to `encodeReadiness`
 for those exact expected values. That existing encoder remains the sole response
 schema and capability-list source. Do not add a second host response struct,
 generic JSON decoder, extensibility registry, new capability or crypto protocol.
+The methods check the request ID's exact length before hexadecimal decoding;
+the validator checks the payload bound before constructing its expected bytes.
 
 Canonical equality rejects unknown/duplicate/aliased/escaped keys, field order,
 null/type changes, whitespace/trailing/multiple objects, modified request/session/
@@ -39,7 +43,8 @@ validated plaintext remain data, not authenticated/current runtime authority.
 
 ## Meaningful compiling RED and preserved controls
 
-The two methods initially return `ErrUnavailable` without accepting input.
+At the RED revision the two methods return `ErrUnavailable` without accepting
+input.
 `host_readiness_codec_red_test.go` passes the actual pre-existing request through
 the unchanged guest decoder and response encoder before calling those stubs.
 Thus valid existing guest exchanges demonstrate the missing host functionality;
@@ -55,25 +60,29 @@ locks both old codec outputs without calling the new methods.
 The RED assertions require host encoding/validation success before mutation,
 cross-tuple/session and invalid-argument negatives. At the stub revision those
 later assertions are acceptance requirements, NOT negative-validation evidence.
-GREEN must reach them unchanged, including all 27 tuple members (runtimeDriver
+GREEN reaches them unchanged, including all 27 tuple members (runtimeDriver
 is a fixed microvm discriminator, not another valid binding), changed request/
 session identity, malformed wire categories, constructor-input copying and
 caller-payload/output immutability. Existing codec/boot goldens and full guest
 server transcript files remain unchanged.
 
+The focused GREEN race run repeated three times passes all 393 test events,
+with zero failures/skips: each repetition reaches 84 response mutation cases,
+27 tuple cases and 10 invalid-input cases after its positive controls.
+
 Focused checks, using the pinned Go toolchain and low parallelism:
 
 ```sh
 go test -p 2 ./internal/sandboxruntime/microvm/guestagent/minimalcontrol -run '^TestHostReadinessCodec' -count=1
-go test -p 2 -race ./internal/sandboxruntime/microvm/guestagent/minimalcontrol -skip '^TestHostReadinessCodecRED' -count=3
+go test -p 2 -race ./internal/sandboxruntime/microvm/guestagent/minimalcontrol -count=3
 go test -p 2 -race ./cmd/hal-guest-agent -run '^TestMinimalControl' -count=3
 go vet -p 2 ./internal/sandboxruntime/microvm/guestagent/minimalcontrol
 git diff --check
 ```
 
-The first command intentionally fails at RED after the old-codec golden control
-passes. Freeze that commit and exact evidence before GREEN. After approval run
-the complete new selector, adjacent session/minimalcontrol/guest-entrypoint race
-checks, vet and Darwin compilation; the integration owner owns broad gates.
+The first command intentionally fails at the frozen RED after the old-codec
+golden control passes, and passes at GREEN without changing that test file.
+Also run adjacent session/minimalcontrol/guest-entrypoint race checks, vet and
+Darwin compilation; the integration owner owns broad gates.
 No test here binds real sockets, uses privileged state, executes a VM, activates
 credentials or demonstrates an actual host controller consumer.

@@ -153,14 +153,42 @@ type readinessRequest struct {
 	RequestID       string `json:"requestId"`
 }
 
-// EncodeReadinessRequest is unavailable until the shared host codec is implemented.
+// EncodeReadinessRequest returns fresh canonical bytes for this session-bound
+// tuple. Encoding does not authenticate the peer or establish runtime authority.
 func (binding Binding) EncodeReadinessRequest(requestID string, sessionID [32]byte) ([]byte, error) {
-	return nil, ErrUnavailable
+	if len(requestID) != 32 || !canonicalRequestID(requestID) {
+		return nil, ErrInvalid
+	}
+	digest, err := binding.Digest(sessionID)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	request := readinessRequest{Operation: "readiness", ProtocolVersion: ProtocolVersion, RequestID: requestID}
+	request.Body.Binding, request.Body.BindingDigest = binding.fields, digest
+	payload, err := json.Marshal(request)
+	if err != nil || !boundedJSON(payload) {
+		return nil, ErrInvalid
+	}
+	return payload, nil
 }
 
-// ValidateReadinessResponse is unavailable until the shared host codec is implemented.
+// ValidateReadinessResponse accepts only the existing guest encoder's exact
+// response for this request and session. The caller owns authentication/lifetime.
 func (binding Binding) ValidateReadinessResponse(payload []byte, requestID string, sessionID [32]byte) error {
-	return ErrUnavailable
+	if !boundedJSON(payload) || len(requestID) != 32 || !canonicalRequestID(requestID) {
+		return ErrInvalid
+	}
+	digest, err := binding.Digest(sessionID)
+	if err != nil {
+		return ErrInvalid
+	}
+	request := readinessRequest{RequestID: requestID}
+	request.Body.BindingDigest = digest
+	expected, err := encodeReadiness(request, sessionID)
+	if err != nil || !bytes.Equal(payload, expected) {
+		return ErrInvalid
+	}
+	return nil
 }
 
 func (binding Binding) decodeReadiness(payload []byte, sessionID [32]byte) (readinessRequest, error) {
