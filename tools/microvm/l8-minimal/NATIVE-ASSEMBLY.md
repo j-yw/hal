@@ -57,8 +57,9 @@ archive pairs derived by no-download `defconfig` and `show-info` from the genuin
 Buildroot archive inside the pinned builder. Host Bison, Flex and GNU tar are
 conditional on the builder's installed tools; the initial 55-pair developer-host
 evaluation omitted them. The first actual builder run rejected that mismatch
-before compilation or publication. All three archives were already pinned in
-the unchanged L5 cache, so the correction adds no source or download authority.
+before Buildroot package compilation or image publication. All three archives
+were already pinned in the unchanged L5 cache, so the correction adds no source
+or download authority.
 The pinned-builder staging regression requires all three and rejects missing,
 extra or relabeled entries before writing. Each assembly repeats the evaluation
 and compares the exact
