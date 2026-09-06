@@ -64,6 +64,7 @@ func phase19PrivateVsockFixtureAllows(path, marker string) bool {
 	switch path {
 	case "internal/sandboxruntime/microvm/firecrackerhost/l5_vsock_transport_red_test.go",
 		"internal/sandboxruntime/microvm/firecrackerhost/production_vsock_bridge_test.go",
+		"internal/sandboxruntime/microvm/firecrackerhost/minimal_control_startup_test.go",
 		"internal/sandboxruntime/microvm/firecrackerhost/real_process_runner_private_umask_linux_test.go":
 		return true
 	default:
