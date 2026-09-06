@@ -4509,6 +4509,7 @@ func l8WorkerV2ProductionGuardPolicy() l8WorkerV2GuardPolicy {
 			"minimal_launch_file_other.go":     true,
 			"minimal_launch_file_unix.go":      true,
 			"minimal_launch_store.go":          true,
+			"minimal_launch_store_ops.go":      true,
 			"protocol_decode.go":               true,
 		},
 		mixed: map[string]bool{
@@ -6882,6 +6883,9 @@ func l8WorkerV2UnixFixturePackage() *types.Package {
 	for index, name := range []string{"LOCK_SH", "LOCK_EX", "LOCK_NB", "LOCK_UN"} {
 		scope.Insert(types.NewConst(token.NoPos, pkg, name, types.Typ[types.UntypedInt], constant.MakeInt64(int64(index+1))))
 	}
+	for index, name := range []string{"O_NOFOLLOW", "O_CLOEXEC", "O_DIRECTORY"} {
+		scope.Insert(types.NewConst(token.NoPos, pkg, name, types.Typ[types.UntypedInt], constant.MakeInt64(int64(1<<(index+16)))))
+	}
 	pkg.MarkComplete()
 	return pkg
 }
@@ -7075,6 +7079,9 @@ func l8WorkerV2ReferencedDeclarationScopes(scope l8WorkerV2GuardScope) []l8Worke
 }
 
 func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, staticFunctionAliases map[types.Object]*types.Func, operationAnalysis *l8WorkerV2OperationAnalysis) error {
+	if l8WorkerV2MinimalDeclarationDigest(scope) != "" && !l8WorkerV2ExactMinimalDeclaration(scope) {
+		return fmt.Errorf("worker-v2 production path in %s changed exact minimal lifecycle/readback composition", scope.file.path)
+	}
 	if invalid, _ := l8WorkerV2ContainsInvalidOperationValue(scope, info, operationAnalysis); invalid {
 		name := "declaration"
 		if function, ok := scope.node.(*ast.FuncDecl); ok {
@@ -7102,7 +7109,7 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 			inspectionErr = fmt.Errorf("worker-v2 production path in %s declaration %s violates exact decoder caller composition", scope.file.path, scopeName)
 			return false
 		}
-		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) && !l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope, call, info) && !l8WorkerV2AllowedExactJobCredentialRuntimeRecoveryCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info) && !l8WorkerV2AllowedExactPrincipalAuthorityCall(scope, call, info) {
+		if l8WorkerV2CallMayInvokeImplicitInterface(call, info) && !l8WorkerV2AllowedBoundedStrictDecoderCall(scope, call, info) && !l8WorkerV2AllowedExactJSONMarshalCall(scope, call, info) && !l8WorkerV2AllowedExactJSONEncoderCall(scope, call, info) && !l8WorkerV2AllowedExactClientRoundTripFormatting(scope, call, info) && !l8WorkerV2AllowedExactServerRequestValidationFormatting(scope, call, info) && !l8WorkerV2AllowedExactClientContextClassification(scope, call, info) && !l8WorkerV2AllowedExactJobCredentialRuntimeBindingCall(scope, call, info) && !l8WorkerV2AllowedExactJobCredentialRuntimeRecoveryCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreRootMetadataCall(scope, call, info) && !l8WorkerV2AllowedExactJobStoreDirectoryEntryCall(scope, call, info) && !l8WorkerV2AllowedExactPrincipalAuthorityCall(scope, call, info) && !l8WorkerV2AllowedExactMinimalDispatchCall(scope, call, info) && !l8WorkerV2AllowedExactMinimalLifetimeCall(scope, call, info) && !l8WorkerV2AllowedExactMinimalStoreCall(scope, call, info) {
 			scopeName := "declaration"
 			if function, ok := scope.node.(*ast.FuncDecl); ok {
 				scopeName = function.Name.Name
@@ -7116,6 +7123,9 @@ func l8InspectWorkerV2Scope(scope l8WorkerV2GuardScope, info *types.Info, static
 			return false
 		}
 		kind := l8WorkerV2DynamicCallKind(call.Fun, info)
+		if (kind == "function-value" || kind == "interface") && (l8WorkerV2AllowedExactMinimalDispatchCall(scope, call, info) || l8WorkerV2AllowedExactMinimalLifetimeCall(scope, call, info) || l8WorkerV2AllowedExactMinimalStoreCall(scope, call, info)) {
+			kind = ""
+		}
 		if kind == "function-value" && scope.initializerEvaluation && staticFunctionAliases[l8WorkerV2CalledObject(call.Fun, info)] != nil {
 			kind = ""
 		}
@@ -7729,7 +7739,7 @@ func l8WorkerV2AllowedExactDecoderCallerCall(scope l8WorkerV2GuardScope, call *a
 	case "decodeWorkerResponseInto":
 		return l8WorkerV2ExactUnixResponseDecoderCall(scope, call, info) || l8WorkerV2ExactBehavioralResponseDecoderCall(scope, call, info)
 	case "decodeStoredJobStateV2Into":
-		return l8WorkerV2ExactStoreStateDecoderCall(scope, call, info)
+		return l8WorkerV2ExactStoreStateDecoderCall(scope, call, info) || l8WorkerV2AllowedExactMinimalStoreCall(scope, call, info)
 	default:
 		return false
 	}
@@ -11050,6 +11060,10 @@ func l8WorkerV2DecoderBoundaryInnerName(path string, function *ast.FuncDecl, inf
 		if function.Name.Name == "load" && l8WorkerV2ReceiverNamed(function, "jobStoreV2", info) {
 			return "decodeStoredJobStateV2Into"
 		}
+	case "minimal_launch_store.go":
+		if (function.Name.Name == "saveMinimalLaunch" || function.Name.Name == "readMinimalLaunchFile") && l8WorkerV2ReceiverNamed(function, "jobStoreV2", info) {
+			return "decodeStoredJobStateV2Into"
+		}
 	case "protocol_decode.go":
 		if function.Name.Name == "decodeWorkerResponse" && function.Recv == nil {
 			return "decodeWorkerResponseInto"
@@ -11941,7 +11955,10 @@ func l8WorkerV2ExactEmptyStringAndObjectReturn(statement ast.Stmt, object types.
 
 func l8WorkerV2IsExactStoredJobStateSchema(typ types.Type) bool {
 	structure, ok := l8WorkerV2ExactNamedStructUnderlying(typ, "storedJobStateV2")
-	if !ok || structure.NumFields() != 6 {
+	if !ok || (structure.NumFields() != 6 && structure.NumFields() != 7) {
+		return false
+	}
+	if structure.NumFields() == 7 && (!l8WorkerV2IsExactLocalNamedStructPointerField(structure, 6, "MinimalLaunch", "storedMinimalLaunchV1", `json:"minimalLaunch,omitempty"`) || !l8WorkerV2IsExactMinimalLaunchSchema(structure.Field(6).Type())) {
 		return false
 	}
 	return l8WorkerV2IsExactNamedStructField(structure, 0, "JobV2", "JobV2", "") &&
@@ -12348,7 +12365,7 @@ func l8RejectWorkerV2SemanticExternalSurfaces(scope l8WorkerV2GuardScope, info *
 			}
 			surface = l8WorkerV2ForbiddenObjectSurface(info.Uses[typed])
 		}
-		if surface != "" {
+		if surface != "" && !l8WorkerV2AllowedExactMinimalFileSurface(scope, surface) {
 			inspectionErr = fmt.Errorf("worker-v2 production path in %s uses forbidden external live surface %q", scope.file.path, surface)
 			return false
 		}
