@@ -52,9 +52,12 @@ type L8DurableServiceOptions struct {
 }
 
 type L8MinimalLaunchOptions struct {
-	Authorizer *sandboxruntime.MinimalLaunchAuthorizer
-	Provider   *sandboxruntime.MinimalLaunchProviderBinding
+	Authorizer         *sandboxruntime.MinimalLaunchAuthorizer
+	Provider           *sandboxruntime.MinimalLaunchProviderBinding
+	PreparationTimeout time.Duration
 }
+
+const maxMinimalLaunchPreparationTimeout = 5 * time.Minute
 
 // L8AuthenticatedServerOptions attaches one durable L8 service to the
 // otherwise unchanged worker server. The service's authority is the sole

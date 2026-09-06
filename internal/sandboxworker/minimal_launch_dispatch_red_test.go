@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 )
@@ -157,7 +158,7 @@ func (fixture *minimalLaunchDispatchFixture) options() L8DurableServiceOptions {
 	return L8DurableServiceOptions{
 		WorkerID: "worker-l8-neutral", DaemonGeneration: l8WorkerV2DaemonGeneration,
 		StateDir: fixture.stateDir, PrincipalAuthority: fixture.authority,
-		MinimalLaunch: &L8MinimalLaunchOptions{Authorizer: fixture.authorizer, Provider: fixture.binding},
+		MinimalLaunch: &L8MinimalLaunchOptions{Authorizer: fixture.authorizer, Provider: fixture.binding, PreparationTimeout: time.Minute},
 	}
 }
 
