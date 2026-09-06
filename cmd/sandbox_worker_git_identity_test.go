@@ -244,7 +244,7 @@ func TestWorkerGitIdentityDeliveredPerCommandForRunAutoFactory(t *testing.T) {
 					id: sandboxruntime.DriverRootlessPodman,
 					exec: func(_ context.Context, req sandboxruntime.ExecRequest) (*sandboxruntime.ExecResult, error) {
 						joined := strings.Join(req.Args, " ")
-						if strings.Contains(joined, "'hal' 'run'") || strings.Contains(joined, "'hal' 'auto'") ||
+						if strings.Contains(joined, "'hal' 'run'") || strings.Contains(joined, "'hal' 'auto'") || strings.Contains(joined, "exec hal 'auto'") ||
 							strings.Contains(joined, `exec "$HOME/.local/bin/hal"`) {
 							finalEnvs = append(finalEnvs, req.Env)
 							for _, value := range []string{identity.name, identity.email, "not-an-identity-secret"} {
@@ -410,6 +410,7 @@ func executeWorkerGitIdentityFixture(t *testing.T, purpose, projectDir string, t
 			loadSandbox: load, listHosts: hosts, resolveWorkerRuntime: resolve, engineAuthFiles: auth,
 			resolveProvider: provider, resolveRuntimeDriver: legacyDriver,
 			persistSandboxState: func(*sandbox.SandboxState) error { return nil },
+			planBundle:          fakeFactoryBundlePlan, materializeWorkspace: fakeFactoryBundleMaterialize, prepareCommandContext: fakeFactoryBundleCommandContext,
 			bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
 				return factory.BootstrapResult{}, nil
 			},

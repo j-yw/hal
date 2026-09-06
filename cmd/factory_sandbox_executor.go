@@ -25,6 +25,7 @@ import (
 	"github.com/jywlabs/hal/internal/sandboxexec"
 	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxtemplate/selection"
+	"github.com/jywlabs/hal/internal/sandboxworkspace"
 )
 
 type factorySandboxProvisionRequest struct {
@@ -91,6 +92,9 @@ type factorySandboxExecutorDeps struct {
 	generateRecovery       func(context.Context, factorySandboxRecoveryArtifactRequest) error
 	engineAuthFiles        func() []factorySandboxAuthFile
 	bootstrap              func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error)
+	planBundle             func(context.Context, string, factory.RunRecord) (*factorySandboxBundlePlan, error)
+	materializeWorkspace   func(context.Context, sandboxexec.PrepareContext, sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error)
+	prepareCommandContext  func(context.Context, sandboxexec.PrepareContext, string, string, io.Writer) (sandboxworkspace.MaterializationOperation, error)
 	cleanupSandbox         func(context.Context, factorySandboxCleanupRequest) error
 	saveRun                func(factory.Store, *factory.RunRecord) error
 	appendEvent            func(factory.Store, *factory.EventRecord) error
@@ -238,6 +242,15 @@ func normalizeFactorySandboxExecutorDeps(deps factorySandboxExecutorDeps) factor
 	if deps.bootstrap == nil {
 		deps.bootstrap = defaultFactorySandboxExecutorDeps.bootstrap
 	}
+	if deps.planBundle == nil {
+		deps.planBundle = planFactorySandboxBundle
+	}
+	if deps.materializeWorkspace == nil {
+		deps.materializeWorkspace = sandboxexec.MaterializeBundleWorkspace
+	}
+	if deps.prepareCommandContext == nil {
+		deps.prepareCommandContext = prepareSandboxCommandContextRuntime
+	}
 	if deps.cleanupSandbox == nil {
 		deps.cleanupSandbox = defaultFactorySandboxExecutorDeps.cleanupSandbox
 	}
@@ -285,6 +298,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 	var provider sandbox.Provider
 	var runtimeDriver sandboxruntime.Driver
 	var workerRuntimeSelected bool
+	var localBundle *factorySandboxBundlePlan
 	leaseRelease := sandboxCommandLeaseReleaseTracker{releaseLease: deps.releaseLease}
 	defer func() {
 		leaseRelease.observe(target)
@@ -400,6 +414,19 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			resolved, err := resolveFactorySandboxTarget(ctx, req, &record, provisionRepo, deps)
 			if err == nil {
 				selectedTarget = cloneFactorySandboxSelectedTarget(resolved)
+				if sandboxWorkerRoutingRequested(req.SandboxHostID, req.SandboxRuntime) && selectedWorkerRootlessSandboxState(resolved) {
+					localBundle, err = deps.planBundle(ctx, req.ProjectDir, record)
+					if err != nil {
+						return nil, err
+					}
+					if localBundle == nil {
+						return nil, errors.New("factory local workspace plan is required")
+					}
+					if record.Sandbox == nil {
+						record.Sandbox = &factory.SandboxMetadata{}
+					}
+					record.Sandbox.Workspace = &factory.SandboxWorkspaceMetadata{Mode: sandbox.SandboxWorkspaceModeClone, InputSource: sandbox.SandboxWorkspaceInputSourceGitBundle, SyncRef: localBundle.Workspace.SyncRef}
+				}
 			}
 			return resolved, err
 		},
@@ -456,6 +483,16 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return nil
 		},
 		PrepareWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ *sandboxexec.CommandRequest) error {
+			if localBundle != nil {
+				if err := prepareFactorySandboxBundle(ctx, deps, req, prep, localBundle); err != nil {
+					return err
+				}
+				record.Sandbox.Workspace.Branch = localBundle.RunBranch
+				if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{SandboxHostID: req.SandboxHostID, SandboxRuntime: req.SandboxRuntime, Target: target, Workspace: factorySandboxWorkspaceStateFromRecord(record), Save: deps.persistSandboxState}); err != nil {
+					return err
+				}
+				return saveFactorySandboxRunRecordWithRedactor(store, deps, &record, secretRedactor)
+			}
 			if factorySandboxWorkerRuntimeRouteSelected(req, prep.Target, selectedTarget) {
 				return prepareFactorySandboxWorkspaceRuntime(ctx, store, deps, &record, req, prep, remoteOutput)
 			}
@@ -493,6 +530,9 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			}
 			preparedRemoteAuto = remoteAuto
 			command.Command = factorySandboxRemoteCommandArgs(record, remoteAuto)
+			if localBundle != nil {
+				command.Command = factorySandboxImageCommandArgs(record, remoteAuto)
+			}
 			command.WorkDir = factorySandboxRemoteWorkspaceDir(record)
 			command.Env = factorySandboxResolvedSecretEnv(req.ResolvedSecrets)
 			command.Stdout = userOutput
@@ -505,7 +545,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 					return err
 				}
 			}
-			return runFactorySandboxRuntimeExecWithRetries(ctx, run, command, record, preparedRemoteAuto, remoteOutput)
+			return runFactorySandboxRuntimeExecWithRetriesForImage(ctx, run, command, record, preparedRemoteAuto, remoteOutput, localBundle != nil)
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {
 			return handleFactorySandboxExecutorEvent(remoteOutput, event)
@@ -839,6 +879,10 @@ func runFactorySandboxRuntimeExec(ctx context.Context, run sandboxexec.RunContex
 }
 
 func runFactorySandboxRuntimeExecWithRetries(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest, record factory.RunRecord, req factoryRunAutoRequest, remoteOutput *factorySandboxTimelineWriter) error {
+	return runFactorySandboxRuntimeExecWithRetriesForImage(ctx, run, command, record, req, remoteOutput, false)
+}
+
+func runFactorySandboxRuntimeExecWithRetriesForImage(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest, record factory.RunRecord, req factoryRunAutoRequest, remoteOutput *factorySandboxTimelineWriter, imageHal bool) error {
 	attempts := factoryCommandAttemptCount(req.MaxCommandRetries)
 	var err error
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -846,6 +890,9 @@ func runFactorySandboxRuntimeExecWithRetries(ctx context.Context, run sandboxexe
 		if attempt > 1 {
 			resumeReq := factoryRunResumeAutoRequest(req)
 			runCommand.Command = factorySandboxRemoteCommandArgs(record, resumeReq)
+			if imageHal {
+				runCommand.Command = factorySandboxImageCommandArgs(record, resumeReq)
+			}
 			if remoteOutput != nil {
 				_ = remoteOutput.appendExecutorEvent(factory.EventTypeStepStarted, "Retrying remote sandbox execution", map[string]any{
 					"attempt":     attempt,
@@ -1500,7 +1547,14 @@ func factorySandboxRemoteHalScript(args []string) string {
 }
 
 func factorySandboxRemoteHalScriptWithEnv(args []string, env []string) string {
+	return factorySandboxHalScriptWithEnv(args, env, false)
+}
+
+func factorySandboxHalScriptWithEnv(args []string, env []string, imageHal bool) string {
 	command := `exec "$HOME/.local/bin/hal"`
+	if imageHal {
+		command = "exec hal"
+	}
 	if len(args) > 0 {
 		command += " " + shellCommand(args)
 	}
