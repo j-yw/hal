@@ -340,7 +340,7 @@ func TestStrictJailerExecutableCoordinatorReleasesPairOnEveryStartReturn(t *test
 			if failAt == "start" {
 				lifecycle.startErr = errors.New("injected start failure")
 			}
-			coordinator := newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+			coordinator := newJailerCgroupTestCoordinator(strictJailerCoordinatorDependencies{
 				inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
 					if failAt == "inspect" {
 						return inspection, errors.New("injected inspect failure")

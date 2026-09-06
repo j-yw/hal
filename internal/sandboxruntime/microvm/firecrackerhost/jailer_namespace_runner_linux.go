@@ -76,7 +76,26 @@ func armStrictJailerParentDeathSignal(command *exec.Cmd) {
 	if command == nil {
 		return
 	}
-	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	if command.SysProcAttr == nil {
+		command.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	command.SysProcAttr.Pdeathsig = syscall.SIGKILL
+}
+
+func configureStrictJailerCgroup(command *exec.Cmd, file *os.File) error {
+	if command == nil || file == nil || file.Fd() <= 2 {
+		return errJailerCgroup
+	}
+	flags, err := unix.FcntlInt(file.Fd(), unix.F_GETFD, 0)
+	if err != nil || flags&unix.FD_CLOEXEC == 0 {
+		return errJailerCgroup
+	}
+	if command.SysProcAttr == nil {
+		command.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	command.SysProcAttr.UseCgroupFD = true
+	command.SysProcAttr.CgroupFD = int(file.Fd())
+	return nil
 }
 
 // prepareStrictJailerNetworkNamespaceForExec preserves any existing descriptor
@@ -104,7 +123,7 @@ func prepareStrictJailerNetworkNamespaceForExec(networkNamespace *os.File) error
 }
 
 func startStrictJailerOSExecCommand(command *exec.Cmd, networkNamespace *os.File, executables *strictJailerExecutableLease) (HostProcess, error) {
-	if command == nil || executables == nil || prepareStrictJailerNetworkNamespaceForExec(networkNamespace) != nil {
+	if command == nil || command.SysProcAttr == nil || !command.SysProcAttr.UseCgroupFD || command.SysProcAttr.CgroupFD <= 2 || executables == nil || prepareStrictJailerNetworkNamespaceForExec(networkNamespace) != nil {
 		return nil, errStrictJailerNamespaceStartFailed
 	}
 	process := &osExecHostProcess{cmd: command, done: make(chan struct{})}

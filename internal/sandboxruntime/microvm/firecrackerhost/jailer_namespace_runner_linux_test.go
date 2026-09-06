@@ -33,7 +33,7 @@ func TestStrictJailerNamespaceRunnerRealStarterExecsJailerWithNoInheritedFDsAndE
 
 	plan := atomicJailerTestPlan(t, "run-alpha")
 	request := plan.processRequest()
-	_, err = runner.startWithExecutables(context.Background(), request, strictJailerTestExecutablePair(t, request.Executable, request.Args[3]))
+	_, err = runner.startWithExecutables(context.Background(), request, strictJailerTestExecutablePair(t, request.Executable, request.Args[3]), testJailerCgroupLease(t, "run-alpha"))
 	if !errors.Is(err, errStrictJailerNamespaceStartFailed) {
 		t.Fatalf("StartHostProcess() error = %v, want sanitized start failure", err)
 	}
@@ -101,7 +101,7 @@ func TestStrictJailerNamespaceRunnerMarksRawDuplicatedNetworkDescriptorCloseOnEx
 	}
 
 	request := atomicJailerTestPlan(t, "run-alpha").processRequest()
-	_, err = runner.startWithExecutables(context.Background(), request, strictJailerTestExecutablePair(t, request.Executable, request.Args[3]))
+	_, err = runner.startWithExecutables(context.Background(), request, strictJailerTestExecutablePair(t, request.Executable, request.Args[3]), testJailerCgroupLease(t, "run-alpha"))
 	if !errors.Is(err, errStrictJailerNamespaceStartFailed) {
 		t.Fatalf("StartHostProcess() error = %v, want sanitized start failure", err)
 	}

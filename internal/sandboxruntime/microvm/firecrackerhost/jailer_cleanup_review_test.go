@@ -64,7 +64,7 @@ func TestStrictJailerCoordinatorQuarantinesCreationFailureUntilTerminalCleanup(t
 		events:       &events,
 		removeErrors: []error{errors.New("temporary cleanup failure"), nil},
 	}
-	coordinator := newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+	coordinator := newJailerCgroupTestCoordinator(strictJailerCoordinatorDependencies{
 		inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
 			return validCoordinatorInspection(), nil
 		},

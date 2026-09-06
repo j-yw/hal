@@ -19,9 +19,11 @@ var (
 // is intentional: equality with the plan is checked before any live boundary,
 // preventing a caller from pairing a command generation with another jail.
 type strictJailerLifecycleStartRequest struct {
-	launchPlan  strictJailerLaunchPlan
-	hostPaths   firecracker.PathPlan
-	executables *strictJailerExecutablePair
+	cgroup       *strictJailerCgroupLease
+	configSHA256 string
+	launchPlan   strictJailerLaunchPlan
+	hostPaths    firecracker.PathPlan
+	executables  *strictJailerExecutablePair
 }
 
 // strictJailerLifecycleProcess binds one opaque process generation to the host
@@ -67,7 +69,10 @@ func (lifecycle *strictJailerLifecycle) start(
 	if err != nil {
 		return strictJailerLifecycleProcess{}, errStrictJailerLifecycleInvalid
 	}
-	handle, err := lifecycle.manager.startStrictJailerProcess(ctx, processRequest, hostPaths, runtimeUID, request.executables)
+	if request.cgroup != nil && !request.cgroup.matches(request.launchPlan.runtimeID, request.configSHA256) {
+		return strictJailerLifecycleProcess{}, errStrictJailerLifecycleInvalid
+	}
+	handle, err := lifecycle.manager.startStrictJailerProcess(ctx, processRequest, hostPaths, runtimeUID, request.executables, request.cgroup)
 	if err != nil {
 		return strictJailerLifecycleProcess{}, err
 	}
@@ -168,6 +173,7 @@ func (manager *ProcessLifecycleManager) startStrictJailerProcess(
 	hostPaths firecracker.PathPlan,
 	runtimeUID uint32,
 	executables *strictJailerExecutablePair,
+	cgroups ...*strictJailerCgroupLease,
 ) (firecracker.ProcessHandleMetadata, error) {
 	if manager == nil || manager.runner == nil {
 		return firecracker.ProcessHandleMetadata{}, dependencyNotConfigured("hostProcessRunner")
@@ -202,7 +208,7 @@ func (manager *ProcessLifecycleManager) startStrictJailerProcess(
 	if !ok {
 		return firecracker.ProcessHandleMetadata{}, errStrictJailerLifecycleInvalid
 	}
-	process, err := runner.startWithExecutables(ctx, cloneProcessRunnerStartRequest(request), executables)
+	process, err := runner.startWithExecutables(ctx, cloneProcessRunnerStartRequest(request), executables, cgroups...)
 	if err != nil {
 		return firecracker.ProcessHandleMetadata{}, newProcessLifecycleError(processOperationStart, err)
 	}

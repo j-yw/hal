@@ -121,7 +121,7 @@ func TestStrictJailerCoordinatorStartsInExactOrderAndKeepsPrivateShape(t *testin
 	root := &coordinatorFakeRoot{events: &events}
 	lifecycle := &coordinatorFakeLifecycle{events: &events, process: strictJailerLifecycleProcess{runtimeUID: 1001}}
 	request := validStrictJailerCoordinatorRequest(t)
-	coordinator := newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+	coordinator := newJailerCgroupTestCoordinator(strictJailerCoordinatorDependencies{
 		inspect: func(got strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
 			events = append(events, "inspect")
 			if got != request.inspection {
@@ -246,7 +246,7 @@ func TestStrictJailerCoordinatorRejectsInvalidConfigBeforeDependencies(t *testin
 			request := cloneCoordinatorRequest(base)
 			mutate(&request)
 			called := false
-			coordinator := newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+			coordinator := newJailerCgroupTestCoordinator(strictJailerCoordinatorDependencies{
 				inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
 					called = true
 					return strictJailerHostInspectionResult{}, nil
@@ -592,7 +592,7 @@ func TestStrictJailerCoordinatorForgetsOnlyAfterTerminalProcessAndRootProof(t *t
 func TestStrictJailerCoordinatorSuccessfulGenerationsDoNotRetainProcessRecords(t *testing.T) {
 	events := []string{}
 	lifecycle := newCoordinatorRetainedLifecycle(&events)
-	coordinator := newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+	coordinator := newJailerCgroupTestCoordinator(strictJailerCoordinatorDependencies{
 		inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
 			return validCoordinatorInspection(), nil
 		},
@@ -695,7 +695,7 @@ func TestStrictJailerCoordinatorErrorsAreSanitizedAtRenderTime(t *testing.T) {
 }
 
 func coordinatorForStateTest(events *[]string, root *coordinatorFakeRoot, lifecycle *coordinatorFakeLifecycle) *strictJailerCoordinator {
-	return newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+	return newJailerCgroupTestCoordinator(strictJailerCoordinatorDependencies{
 		inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
 			return validCoordinatorInspection(), nil
 		},
@@ -717,6 +717,7 @@ func validStrictJailerCoordinatorRequest(t *testing.T) strictJailerCoordinatorRe
 	paths := firecracker.PathPlan{StateDir: "/run/fc-run-1", APISocketPath: "/run/fc-run-1/firecracker.sock", ConfigPath: "/run/fc-run-1/firecracker-config.json", LogPath: "/run/fc-run-1/firecracker.log", MetricsPath: "/run/fc-run-1/firecracker.metrics", VsockSocketPath: "/run/fc-run-1/guest.vsock"}
 	config := validCoordinatorConfig()
 	return strictJailerCoordinatorRequest{
+		cgroup:     testJailerCgroupResources(),
 		runtimeID:  "run-1",
 		inspection: strictJailerHostInspectionRequest{jailerPath: "/opt/jailer", firecrackerPath: "/opt/firecracker", runtimeUID: 1001, runtimeGID: 1002, chrootBaseDir: "/srv/jailer"},
 		jailPaths:  paths,

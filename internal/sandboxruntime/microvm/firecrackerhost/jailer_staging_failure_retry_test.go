@@ -36,7 +36,7 @@ func TestStrictJailerCoordinatorRetainsFailedStagingCleanupUntilExactRetry(t *te
 	secondRoot := &coordinatorFakeRoot{events: &events}
 	lifecycle := &coordinatorFakeLifecycle{events: &events, process: strictJailerLifecycleProcess{runtimeUID: 1001}}
 	stageCalls := 0
-	coordinator := newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+	coordinator := newJailerCgroupTestCoordinator(strictJailerCoordinatorDependencies{
 		inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
 			events = append(events, "inspect")
 			return validCoordinatorInspection(), nil
@@ -104,7 +104,7 @@ func TestStrictJailerCoordinatorRetainsFailedStagingCleanupUntilExactRetry(t *te
 func TestStrictJailerCoordinatorDoesNotRetainTerminalFailedStagingCleanup(t *testing.T) {
 	events := []string{}
 	lifecycle := &coordinatorFakeLifecycle{events: &events}
-	coordinator := newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+	coordinator := newJailerCgroupTestCoordinator(strictJailerCoordinatorDependencies{
 		inspect: func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
 			return validCoordinatorInspection(), nil
 		},

@@ -44,6 +44,7 @@ type strictJailerNamespaceRunner struct {
 var _ HostProcessRunner = (*strictJailerNamespaceRunner)(nil)
 
 type strictJailerNamespaceProcessStartRequest struct {
+	cgroup           *strictJailerCgroupLease
 	executable       string
 	args             []string
 	networkNamespace *os.File
@@ -99,7 +100,15 @@ func (runner *strictJailerNamespaceRunner) startWithExecutables(
 	ctx context.Context,
 	request firecracker.ProcessRunnerStartRequest,
 	executables *strictJailerExecutablePair,
+	cgroups ...*strictJailerCgroupLease,
 ) (HostProcess, error) {
+	if len(cgroups) > 1 {
+		return nil, errStrictJailerNamespaceRequestInvalid
+	}
+	var cgroup *strictJailerCgroupLease
+	if len(cgroups) == 1 {
+		cgroup = cgroups[0]
+	}
 	if !runner.configured() {
 		return nil, errStrictJailerNamespaceInvalidConfiguration
 	}
@@ -127,6 +136,7 @@ func (runner *strictJailerNamespaceRunner) startWithExecutables(
 	}
 
 	process, startErr := runner.starter.startStrictJailerNamespaceProcess(ctx, strictJailerNamespaceProcessStartRequest{
+		cgroup:           cgroup,
 		executable:       command.jailerPath,
 		args:             append([]string(nil), command.args...),
 		networkNamespace: network,

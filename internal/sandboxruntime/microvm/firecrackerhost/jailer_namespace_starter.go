@@ -50,11 +50,26 @@ func (starter OSExecNamespaceProcessStarter) startStrictJailerNamespaceProcess(
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
 	command.ExtraFiles = []*os.File{}
-	if starter.startCommand == nil {
-		return startStrictJailerOSExecCommand(command, request.networkNamespace, lease)
+	err = request.cgroup.withLaunchFD(ctx, parsed.runtimeID, func(cgroup *os.File) error {
+		if configureStrictJailerCgroup(command, cgroup) != nil {
+			return errStrictJailerNamespaceStartFailed
+		}
+		if ctx.Err() != nil {
+			return errStrictJailerNamespaceStartFailed
+		}
+		if starter.startCommand == nil {
+			var err error
+			process, err = startStrictJailerOSExecCommand(command, request.networkNamespace, lease)
+			return err
+		}
+		if err := starter.startCommand(command); err != nil {
+			return errStrictJailerNamespaceStartFailed
+		}
+		process = newOSExecHostProcess(command)
+		return nil
+	})
+	if err != nil {
+		return process, errStrictJailerNamespaceStartFailed
 	}
-	if err := starter.startCommand(command); err != nil {
-		return nil, errStrictJailerNamespaceStartFailed
-	}
-	return newOSExecHostProcess(command), nil
+	return process, nil
 }

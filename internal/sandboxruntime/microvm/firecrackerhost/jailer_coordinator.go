@@ -30,6 +30,7 @@ const maxStrictJailerConfigBytes = 1 << 20
 // argv, or process-start request. Those values are derived only after the
 // private inspection and config/resource correlation complete.
 type strictJailerCoordinatorRequest struct {
+	cgroup     *strictJailerCgroupResources
 	runtimeID  string
 	inspection strictJailerHostInspectionRequest
 	jailPaths  firecracker.PathPlan
@@ -100,6 +101,7 @@ type strictJailerCoordinatorLifecycle interface {
 }
 
 type strictJailerCoordinatorDependencies struct {
+	prepareCgroup func(context.Context, strictJailerCgroupRequest) (*strictJailerCgroupLease, error)
 	inspect       func(strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error)
 	newFilesystem func(jailerStagingAuthority) (jailerStagingFilesystem, error)
 	stage         func(jailerStagingFilesystem, jailerStagingRequest) (jailerStagingResult, error)
@@ -117,11 +119,13 @@ const (
 )
 
 type strictJailerCoordinatorGeneration struct {
-	id         uint64
-	state      strictJailerCoordinatorState
-	staging    jailerStagingResult
-	process    strictJailerLifecycleProcess
-	hasProcess bool
+	cgroup            *strictJailerCgroupLease
+	unresolvedStaging bool
+	id                uint64
+	state             strictJailerCoordinatorState
+	staging           jailerStagingResult
+	process           strictJailerLifecycleProcess
+	hasProcess        bool
 }
 
 // strictJailerSession is an opaque ownership token for one coordinator
@@ -142,7 +146,8 @@ type strictJailerCoordinator struct {
 
 func newStrictJailerCoordinator(lifecycle *strictJailerLifecycle) *strictJailerCoordinator {
 	return newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
-		inspect: inspectAndPinStrictJailerHost,
+		prepareCgroup: prepareStrictJailerCgroup,
+		inspect:       inspectAndPinStrictJailerHost,
 		newFilesystem: func(authority jailerStagingAuthority) (jailerStagingFilesystem, error) {
 			return newLinuxJailerStagingFilesystem(authority)
 		},
@@ -176,6 +181,10 @@ func (coordinator *strictJailerCoordinator) startWithMinimalLease(ctx context.Co
 	if err := validateStrictJailerCoordinatorConfig(request); err != nil {
 		return strictJailerSession{}, err
 	}
+	cgroupRequest, cgroupErr := strictJailerCoordinatorCgroupRequest(request)
+	if cgroupErr != nil || coordinator.deps.prepareCgroup == nil {
+		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "config")
+	}
 	if coordinator.deps.inspect == nil || coordinator.deps.newFilesystem == nil || coordinator.deps.stage == nil ||
 		coordinator.deps.plan == nil || interfaceValueIsNil(coordinator.deps.lifecycle) {
 		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "session")
@@ -194,9 +203,20 @@ func (coordinator *strictJailerCoordinator) startWithMinimalLease(ctx context.Co
 	if err != nil {
 		return strictJailerSession{}, err
 	}
+	cgroup, cgroupErr := coordinator.deps.prepareCgroup(ctx, cgroupRequest)
+	if cgroup == nil {
+		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "verify")
+	}
+	coordinator.next++
+	generation := &strictJailerCoordinatorGeneration{id: coordinator.next, cgroup: cgroup, state: strictJailerCoordinatorRootCleanupPending}
+	session := strictJailerSession{coordinator: coordinator, generation: generation.id}
+	coordinator.generation = generation
+	if cgroupErr != nil || !cgroup.matches(request.runtimeID, request.config.SHA256) {
+		return coordinator.failBeforeProcess(generation, session, "verify")
+	}
 	filesystem, err := coordinator.deps.newFilesystem(authority)
 	if err != nil || interfaceValueIsNil(filesystem) {
-		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "filesystem")
+		return coordinator.failBeforeProcess(generation, session, "filesystem")
 	}
 	stagingRequest := jailerStagingRequest{
 		Authority: authority,
@@ -212,25 +232,19 @@ func (coordinator *strictJailerCoordinator) startWithMinimalLease(ctx context.Co
 		staging, err = stageStrictJailerMinimalAssets(ctx, assets, coordinator.deps.stage, filesystem, stagingRequest)
 	}
 	if err != nil {
-		primary := error(newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "stage"))
-		cleanupErr := error(newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup"))
-		if staging.retainsOwnedRoot() {
-			coordinator.next++
-			generation := &strictJailerCoordinatorGeneration{
-				id: coordinator.next, state: strictJailerCoordinatorRootCleanupPending, staging: staging,
-			}
-			coordinator.generation = generation
-			return strictJailerSession{coordinator: coordinator, generation: generation.id}, errors.Join(primary, cleanupErr)
+		generation.staging = staging
+		generation.unresolvedStaging = !staging.retainsOwnedRoot() && !staging.rootReleaseTerminal() && errors.Is(err, errJailerStagingCleanupIncomplete) && !jailerCgroupOnlyTerminalStagingClose(err, 0)
+		if staging.retainsOwnedRoot() || generation.unresolvedStaging {
+			return session, errors.Join(newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "stage"), newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup"))
 		}
+		result, cleanupErr := coordinator.failBeforeProcess(generation, session, "stage")
 		if errors.Is(err, errJailerStagingCleanupIncomplete) {
-			return strictJailerSession{}, errors.Join(primary, cleanupErr)
+			cleanupErr = errors.Join(cleanupErr, newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup"))
 		}
-		return strictJailerSession{}, primary
+		return result, cleanupErr
 	}
 
-	coordinator.next++
-	generation := &strictJailerCoordinatorGeneration{id: coordinator.next, staging: staging, state: strictJailerCoordinatorRootCleanupPending}
-	session := strictJailerSession{coordinator: coordinator, generation: generation.id}
+	generation.staging = staging
 	if ctx.Err() != nil {
 		return coordinator.failBeforeProcess(generation, session, "stage")
 	}
@@ -259,10 +273,13 @@ func (coordinator *strictJailerCoordinator) startWithMinimalLease(ctx context.Co
 			return coordinator.failBeforeProcess(generation, session, "verify")
 		}
 	}
+	if cgroup.verifyForLaunch() != nil {
+		return coordinator.failBeforeProcess(generation, session, "verify")
+	}
 	if ctx.Err() != nil {
 		return coordinator.failBeforeProcess(generation, session, "start")
 	}
-	process, err := coordinator.deps.lifecycle.start(nonNilContext(ctx), strictJailerLifecycleStartRequest{launchPlan: launchPlan, hostPaths: hostPaths, executables: inspection.executables})
+	process, err := coordinator.deps.lifecycle.start(nonNilContext(ctx), strictJailerLifecycleStartRequest{launchPlan: launchPlan, hostPaths: hostPaths, executables: inspection.executables, cgroup: cgroup, configSHA256: request.config.SHA256})
 	if err != nil {
 		if strictJailerLifecycleStartCleanupUncertain(err) {
 			generation.state = strictJailerCoordinatorStartCleanupPending
@@ -279,21 +296,12 @@ func (coordinator *strictJailerCoordinator) startWithMinimalLease(ctx context.Co
 }
 
 func (coordinator *strictJailerCoordinator) failBeforeProcess(generation *strictJailerCoordinatorGeneration, session strictJailerSession, operation string) (strictJailerSession, error) {
-	if err := generation.staging.releaseOwnedRoot(); err != nil {
-		if generation.staging.rootReleaseTerminal() {
-			return strictJailerSession{}, errors.Join(
-				newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, operation),
-				newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup"),
-			)
-		}
-		generation.state = strictJailerCoordinatorRootCleanupPending
-		coordinator.generation = generation
-		return session, errors.Join(
-			newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, operation),
-			newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup"),
-		)
+	generation.state = strictJailerCoordinatorRootCleanupPending
+	err := coordinator.releaseGenerationRoot(context.Background(), generation)
+	if coordinator.generation == nil {
+		session = strictJailerSession{}
 	}
-	return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, operation)
+	return session, errors.Join(newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, operation), err)
 }
 
 func (coordinator *strictJailerCoordinator) stop(ctx context.Context, session strictJailerSession) error {
@@ -307,12 +315,16 @@ func (coordinator *strictJailerCoordinator) stop(ctx context.Context, session st
 		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "session")
 	}
 	stopErr := coordinator.deps.lifecycle.stop(nonNilContext(ctx), generation.process)
+	if generation.cgroup.quiesce(ctx) != nil {
+		generation.state = strictJailerCoordinatorStopCleanupPending
+		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "process_cleanup")
+	}
 	if !coordinator.deps.lifecycle.terminated(generation.process) {
 		generation.state = strictJailerCoordinatorStopCleanupPending
 		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "process_cleanup")
 	}
 	generation.state = strictJailerCoordinatorRootCleanupPending
-	releaseErr := coordinator.releaseGenerationRoot(generation)
+	releaseErr := coordinator.releaseGenerationRoot(ctx, generation)
 	if stopErr != nil {
 		return errors.Join(newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "stop"), releaseErr)
 	}
@@ -331,17 +343,23 @@ func (coordinator *strictJailerCoordinator) retryCleanup(ctx context.Context, se
 	}
 	switch generation.state {
 	case strictJailerCoordinatorStartCleanupPending:
+		if generation.cgroup.quiesce(ctx) != nil {
+			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "process_cleanup")
+		}
 		if err := coordinator.deps.lifecycle.retryUncertainStartCleanup(nonNilContext(ctx)); err != nil {
 			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "process_cleanup")
 		}
 		generation.state = strictJailerCoordinatorRootCleanupPending
 	case strictJailerCoordinatorStopCleanupPending:
 		stopErr := coordinator.deps.lifecycle.stop(nonNilContext(ctx), generation.process)
+		if generation.cgroup.quiesce(ctx) != nil {
+			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "process_cleanup")
+		}
 		if !coordinator.deps.lifecycle.terminated(generation.process) {
 			return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "process_cleanup")
 		}
 		generation.state = strictJailerCoordinatorRootCleanupPending
-		if err := coordinator.releaseGenerationRoot(generation); err != nil {
+		if err := coordinator.releaseGenerationRoot(ctx, generation); err != nil {
 			return err
 		}
 		if stopErr != nil {
@@ -352,7 +370,7 @@ func (coordinator *strictJailerCoordinator) retryCleanup(ctx context.Context, se
 	default:
 		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "session")
 	}
-	return coordinator.releaseGenerationRoot(generation)
+	return coordinator.releaseGenerationRoot(ctx, generation)
 }
 
 func (coordinator *strictJailerCoordinator) sessionGeneration(session strictJailerSession) (*strictJailerCoordinatorGeneration, error) {
@@ -362,9 +380,18 @@ func (coordinator *strictJailerCoordinator) sessionGeneration(session strictJail
 	return coordinator.generation, nil
 }
 
-func (coordinator *strictJailerCoordinator) releaseGenerationRoot(generation *strictJailerCoordinatorGeneration) error {
-	releaseErr := generation.staging.releaseOwnedRoot()
-	if !generation.staging.rootReleaseTerminal() {
+func (coordinator *strictJailerCoordinator) releaseGenerationRoot(ctx context.Context, generation *strictJailerCoordinatorGeneration) error {
+	if generation.cgroup.quiesce(ctx) != nil || generation.unresolvedStaging {
+		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup")
+	}
+	var releaseErr error
+	if generation.staging.lease != nil {
+		releaseErr = generation.staging.releaseOwnedRoot()
+	}
+	if generation.staging.lease != nil && !generation.staging.rootReleaseTerminal() {
+		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup")
+	}
+	if generation.cgroup.release() != nil {
 		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup")
 	}
 	if generation.hasProcess {
