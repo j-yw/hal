@@ -140,6 +140,13 @@ func (service *L8Service) Close() {
 	if service == nil {
 		return
 	}
+	if service.minimalLaunch != nil && service.jobs != nil {
+		service.liveMu.Lock()
+		service.closed = true
+		service.liveMu.Unlock()
+		service.jobs.close()
+		return
+	}
 	service.liveMu.Lock()
 	if service.closed {
 		service.liveMu.Unlock()

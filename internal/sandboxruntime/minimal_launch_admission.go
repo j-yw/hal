@@ -124,8 +124,16 @@ func (selection *MinimalLaunchPreparedSelection) Close() error {
 
 // Reserve binds caller-allocated IDs to the exact checked selection. It does
 // not arm dispatch; the manager must first persist and read back both phases.
-func (selection *MinimalLaunchPreparedSelection) Reserve(ctx context.Context, workerJobID, jobGeneration, requestKey string, deadline time.Time) (*MinimalLaunchReservation, error) {
-	if selection.Current(ctx) != nil || !validMinimalLaunchID(workerJobID) || !validMinimalLaunchID(jobGeneration) || workerJobID == jobGeneration || !validMinimalLaunchRequestKey(requestKey) || !time.Now().Before(deadline) {
+func (selection *MinimalLaunchPreparedSelection) Reserve(ctx, ownerContext context.Context, workerJobID, jobGeneration, requestKey string, deadline time.Time) (*MinimalLaunchReservation, error) {
+	if selection == nil || selection.self != selection || ctx == nil || ctx.Err() != nil || ownerContext == nil || ownerContext.Err() != nil || !validMinimalLaunchID(workerJobID) || !validMinimalLaunchID(jobGeneration) || workerJobID == jobGeneration || !validMinimalLaunchRequestKey(requestKey) || !time.Now().Before(deadline) {
+		return nil, ErrMinimalLaunchUnavailable
+	}
+	// Provider Current runs outside the bookkeeper lock before this cheap
+	// issuance boundary, then again at Start before provider entry. Issuance
+	// checks only our retained local identity/lifetime, never provider IO.
+	selection.mu.Lock()
+	defer selection.mu.Unlock()
+	if selection.closed || selection.authorizer.ctx.Err() != nil {
 		return nil, ErrMinimalLaunchUnavailable
 	}
 	var entropy [16]byte
@@ -140,7 +148,7 @@ func (selection *MinimalLaunchPreparedSelection) Reserve(ctx context.Context, wo
 		RuntimeGeneration: selection.identity.RuntimeGeneration, PlanID: selection.identity.PlanID, RequestKey: requestKey,
 		LaunchGrantID: grantID, LaunchPolicyID: selection.scope.PolicyID, LaunchPolicyRevision: selection.scope.Revision,
 	}
-	owned, cancel := context.WithDeadline(context.Background(), deadline)
+	owned, cancel := context.WithDeadline(ownerContext, deadline)
 	value := &MinimalLaunchReservation{identity: identity, selection: selection, ctx: owned, cancel: cancel, deadline: deadline}
 	value.self = value
 	value.stopAuthority = context.AfterFunc(selection.authorizer.ctx, cancel)

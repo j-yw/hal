@@ -2,6 +2,7 @@ package sandboxworker
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime"
@@ -11,6 +12,34 @@ type minimalLaunchEntry struct {
 	reservation *sandboxruntime.MinimalLaunchReservation
 	selection   *sandboxruntime.MinimalLaunchPreparedSelection
 	owner       *sandboxruntime.MinimalLaunchOwnerBinding
+}
+
+type minimalLaunchPreparation struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	stop   func() bool
+	once   sync.Once
+}
+
+func (manager *jobManagerV2) beginMinimalPreparation(ctx context.Context, deadline time.Time) (*minimalLaunchPreparation, error) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if !manager.minimal || manager.closed || manager.minimalPoisoned || manager.stateLock == nil || ctx == nil || ctx.Err() != nil || manager.minimalContext.Err() != nil {
+		return nil, errMinimalLaunchState
+	}
+	preparation := &minimalLaunchPreparation{}
+	preparation.ctx, preparation.cancel = context.WithDeadline(ctx, deadline)
+	preparation.stop = context.AfterFunc(manager.minimalContext, preparation.cancel)
+	manager.minimalActive.Add(1)
+	return preparation, nil
+}
+
+func (manager *jobManagerV2) endMinimalPreparation(preparation *minimalLaunchPreparation) {
+	preparation.once.Do(func() {
+		preparation.cancel()
+		preparation.stop()
+		manager.minimalActive.Done()
+	})
 }
 
 func (service *L8Service) handleMinimalLaunch(ctx context.Context, principal sandboxruntime.AuthenticatedWorkerPrincipal, principalID string, request Request) Response {
@@ -32,15 +61,22 @@ func (service *L8Service) handleMinimalLaunch(ctx context.Context, principal san
 	}
 	started := time.Now().UTC()
 	deadline := started.Add(service.minimalLaunch.PreparationTimeout)
-	preparation, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
+	preparation, err := service.jobs.beginMinimalPreparation(ctx, deadline)
+	if err != nil {
+		return l8ServiceFailureResponse(request)
+	}
+	defer service.jobs.endMinimalPreparation(preparation)
 	hints := sandboxruntime.MinimalLaunchSelectionHints{SandboxID: workerV2RequestSandboxID(start.Exec.Target), ExecutionID: start.Exec.OperationID, SubmissionID: start.SubmissionID,
 		RuntimeID: start.Exec.Target.Runtime.RuntimeID, PlanID: start.PlanID, TemplatePolicyID: start.TemplatePolicyID, WorkspacePolicyID: start.WorkspacePolicyID}
-	selection, err := service.minimalLaunch.Authorizer.ResolveSelection(preparation, principal, service.workerID, hints)
+	selection, err := service.minimalLaunch.Authorizer.ResolveSelection(preparation.ctx, principal, service.workerID, hints)
 	if err != nil || selection == nil {
 		return l8ServiceFailureResponse(request)
 	}
-	entry, job, retained, err := service.jobs.reserveMinimalLaunch(preparation, principalID, key, start, selection, started, deadline)
+	if selection.Current(preparation.ctx) != nil {
+		_ = selection.Close()
+		return l8ServiceFailureResponse(request)
+	}
+	entry, job, retained, err := service.jobs.reserveMinimalLaunch(preparation.ctx, principalID, key, start, selection, started, deadline)
 	if !retained {
 		_ = selection.Close()
 	}
@@ -104,7 +140,7 @@ func (manager *jobManagerV2) reserveMinimalLaunch(ctx context.Context, principal
 	if _, exists := manager.states[jobID]; exists {
 		return nil, JobV2{}, false, errMinimalLaunchState
 	}
-	reservation, err := selection.Reserve(ctx, jobID, generation, requestKey, deadline)
+	reservation, err := selection.Reserve(ctx, manager.minimalContext, jobID, generation, requestKey, deadline)
 	if err != nil {
 		return nil, JobV2{}, false, errMinimalLaunchState
 	}
@@ -147,7 +183,6 @@ func (manager *jobManagerV2) reserveMinimalLaunch(ctx context.Context, principal
 	if manager.store.save(state) != nil || reservation.ArmDispatch(reservation.Context(), identity) != nil {
 		return poison()
 	}
-	manager.minimalActive.Add(1)
 	return entry, job, true, nil
 }
 
@@ -159,10 +194,15 @@ func (manager *jobManagerV2) finishMinimalDispatch(entry *minimalLaunchEntry, ow
 		entry.reservation.Revoke()
 	}
 	manager.mu.Unlock()
-	manager.minimalActive.Done()
 }
 
 func (manager *jobManagerV2) closeMinimalLaunch() {
+	manager.minimalClose.Do(manager.finishMinimalClose)
+}
+
+func (manager *jobManagerV2) finishMinimalClose() {
+	// Cancellation cannot wait for a provider to release the bookkeeper lock.
+	manager.minimalCancel()
 	manager.mu.Lock()
 	manager.closed = true
 	for _, entry := range manager.minimalLive {
@@ -170,7 +210,7 @@ func (manager *jobManagerV2) closeMinimalLaunch() {
 	}
 	manager.mu.Unlock()
 	// No manager lock across provider completion. Keep the process-shared lock
-	// until every entered callback has returned and ownership is retained.
+	// until every selection/dispatch has returned and ownership is retained.
 	manager.minimalActive.Wait()
 	manager.mu.Lock()
 	stateLock := manager.stateLock

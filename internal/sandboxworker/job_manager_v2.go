@@ -37,6 +37,9 @@ type jobManagerV2 struct {
 	minimalPoisoned  bool
 	minimalLive      map[string]*minimalLaunchEntry
 	minimalActive    sync.WaitGroup
+	minimalContext   context.Context
+	minimalCancel    context.CancelFunc
+	minimalClose     sync.Once
 }
 
 func newJobManagerV2(options jobManagerV2Options) (*jobManagerV2, error) {
@@ -74,6 +77,9 @@ func newJobManagerV2(options jobManagerV2Options) (*jobManagerV2, error) {
 		daemonGeneration: daemonGeneration,
 		states:           make(map[string]storedJobStateV2, len(states)),
 		submissions:      make(map[string]string, len(states)),
+	}
+	if manager.minimal {
+		manager.minimalContext, manager.minimalCancel = context.WithCancel(context.Background())
 	}
 	for _, state := range states {
 		if state.JobV2.WorkerID != manager.workerID || state.DaemonGeneration != manager.daemonGeneration {
