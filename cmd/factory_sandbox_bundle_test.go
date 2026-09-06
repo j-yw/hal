@@ -82,7 +82,7 @@ func TestFactoryRootlessBundleUsesImageHal(t *testing.T) {
 }
 
 func TestFactoryRootlessBundlePhaseFailuresAndMetadata(t *testing.T) {
-	for _, phase := range []string{"success", "plan", "nil_plan", "materialize", "branches", "context"} {
+	for _, phase := range []string{"success", "unsafe_branch", "plan", "nil_plan", "materialize", "branches", "context"} {
 		t.Run(phase, func(t *testing.T) {
 			t.Setenv("HAL_CONFIG_HOME", t.TempDir())
 			target := workerRootlessCachedSandbox("phase-factory")
@@ -105,6 +105,9 @@ func TestFactoryRootlessBundlePhaseFailuresAndMetadata(t *testing.T) {
 				},
 			}
 			record := factory.RunRecord{RunID: "phase-factory", RepoRemote: "https://example.invalid/repo.git", BaseBranch: "local-base", BranchName: "hal/output"}
+			if phase == "unsafe_branch" {
+				record.BranchName = "hal/raw-token-fixture"
+			}
 			err := runFactorySandboxExecutorWithDeps(context.Background(), factorySandboxExecutorRequest{
 				ProjectDir: t.TempDir(), SandboxName: target.Name, SandboxHostID: target.Host.ID, SandboxRuntime: sandboxruntime.DriverRootlessPodman,
 				RunRecord: record, RemoteOutput: io.Discard, DeferSuccessCleanup: true,
@@ -151,7 +154,7 @@ func TestFactoryRootlessBundlePhaseFailuresAndMetadata(t *testing.T) {
 				},
 			})
 			want := []string{"plan", "driver", "materialize", "branches", "context", "auth", "final"}
-			if phase != "success" {
+			if phase != "success" && phase != "unsafe_branch" {
 				if err == nil {
 					t.Fatal("phase failure returned success")
 				}
@@ -170,12 +173,25 @@ func TestFactoryRootlessBundlePhaseFailuresAndMetadata(t *testing.T) {
 				if index == 0 && workspace.Branch != "" {
 					t.Fatal("run branch claimed before materialization")
 				}
-				if index > 0 && workspace.Branch != record.BranchName {
+				expectedBranch := record.BranchName
+				if phase == "unsafe_branch" {
+					expectedBranch = ""
+				}
+				if index > 0 && workspace.Branch != expectedBranch {
 					t.Fatal("completed workspace did not preserve factory run branch")
 				}
 			}
-			if phase == "success" && len(persisted) != 2 {
+			if (phase == "success" || phase == "unsafe_branch") && len(persisted) != 2 {
 				t.Fatalf("workspace updates=%d", len(persisted))
+			}
+			if phase == "unsafe_branch" {
+				saved, err := store.LoadRun(record.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if saved.Sandbox.Workspace.Branch != "" {
+					t.Fatal("completed workspace metadata retained a raw-looking branch")
+				}
 			}
 		})
 	}

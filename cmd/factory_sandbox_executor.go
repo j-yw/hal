@@ -488,6 +488,7 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 					return err
 				}
 				record.Sandbox.Workspace.Branch = localBundle.RunBranch
+				record.Sandbox.Workspace = sanitizeFactorySandboxFailureWorkspaceMetadata(record.Sandbox.Workspace)
 				if err := persistSandboxCommandSelectedState(sandboxCommandStatePersistenceRequest{SandboxHostID: req.SandboxHostID, SandboxRuntime: req.SandboxRuntime, Target: target, Workspace: factorySandboxWorkspaceStateFromRecord(record), Save: deps.persistSandboxState}); err != nil {
 					return err
 				}
