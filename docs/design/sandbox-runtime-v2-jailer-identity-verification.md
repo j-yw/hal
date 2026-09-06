@@ -1,8 +1,9 @@
-# Jailer reserved identity lease: design and RED checkpoint
+# Jailer reserved identity lease: verification
 
-Status: approved design and a failing regression only. This checkpoint adds no
-production identity authority, changes no default path, and does not establish
-UID dedication, Jailer launch acceptance, or daemon-restart recovery.
+Status: the private identity lease is implemented in the existing coordinator.
+It changes no default path and does not establish outside-Hal UID dedication,
+prepared-host readiness, Jailer launch acceptance, or daemon-restart recovery.
+The initial design/RED commit is `e296c576bab4210d2cf8048459cd031946b9d0e6`.
 
 ## Required prepared-host assumptions
 
@@ -58,13 +59,16 @@ recovery daemon or use its legacy direct-Firecracker behavior as Jailer proof.
 
 ## Private authority and lifetime
 
-The proposed private authority is supplied through coordinator construction,
+The private authority is supplied through coordinator construction,
 not a job request, runtime/guest JSON, durable capability metadata, or a boolean
 claim. It names the trusted prepared slot; it does not let a job choose a UID,
 GID or alternate lock anchor. Existing numeric inspection fields must agree
 with the lease-derived pair before they can reach staging and launch.
 
-Reservation returns an opaque in-memory lease bound to the exact authority,
+`newStrictJailerCoordinator` requires the separately configured
+`strictJailerIdentityAuthority`. A missing authority fails closed. Its existing
+fake dependency constructor is not a production bypass. `reserve` returns an
+opaque in-memory lease bound to the exact authority,
 UID/GID, runtime ID, measured config digest, and a fresh ownership nonce. Copies
 refer to one synchronized lease state. Neither deserializing its journal nor
 knowing its numeric pair creates a release handle. Acquisition reopens and
@@ -73,20 +77,33 @@ lock, and validates the current bounded journal before committing busy intent.
 An in-process mutex alone is insufficient across independent coordinators.
 
 Keep the lock inode permanent: never unlink or rename it on release. The
-proposed minimal journal also keeps its prepared inode stable, using bounded
+minimal journal also keeps its prepared inode stable, using bounded
 in-place writes under the permanent lock. This avoids treating our own rename
 as a hostile replacement. Validate retained descriptors against current
 nofollow directory entries, owner/mode/type/device/inode/link count and the
 expected record both before and after an update. No partial read, trailing
 bytes, duplicate/unknown fields or unsupported record version becomes idle.
-The precise private encoding is an implementation detail; it is not a public
-proof format or an additional runtime-owner store.
+The private `jailerIdentityRecord` uses exact canonical JSON plus one newline:
+version, UID/GID, state, runtime ID, config digest, and a fresh 32-byte random
+nonce. An idle record has no runtime/config/nonce values. This is allocation
+journaling, not a public proof format or a replacement runtime-owner record.
+The operator supplies the initial canonical idle record and an empty
+`identity.lock`; the runtime never creates either file. `identity.json` is
+bounded to 1 KiB, ancestry to 64 path components and the path to 4096 bytes.
+Production requires root-owned ancestors without group/other write permission,
+final directory mode 0700, and same-filesystem regular mode-0600 files with one
+link. Retained device, inode, mode, UID/GID and filesystem type are rechecked.
 
 Keep every descriptor close-on-exec and retain authority through the complete
-generation. Close/revoke without a successful exact-owner release leaves the
-busy journal intact. A stale alias cannot close another generation's lock or
+generation. Close/revoke without a successful exact-owner release never rewrites
+the journal as idle. A stale alias cannot close another generation's lock or
 mark its journal idle. Concurrent close/acquire/release must serialize on the
-shared lease state, with bounded, cancellation-aware operations.
+shared lease state. The final launch callback holds that mutex through the
+existing lifecycle start, preserving its returned process/cleanup ownership.
+Reads/writes are size-bounded and locking is nonblocking. Context is checked
+before mutation and immediately before launch. Kernel filesystem calls such as
+fsync are not themselves interruptible by the Go context. Once a journal write
+starts, finish synchronization/readback; do not roll it back on cancellation.
 
 ## Durability and crash ordering
 
@@ -117,10 +134,21 @@ before cleanup to make crash recovery appear successful.
 
 An unresolved partial cgroup/staging acquisition, failed kill/empty observation,
 socket or jail-root removal, process-forget failure, replaced authority, or
-uncertain close retains/quarantines identity ownership. A later retry needs the
-same exact live owner. Reclaiming a stale journal after daemon crash requires
+uncertainty before the idle commit retains/quarantines identity ownership. A
+later retry needs the same exact live owner. A failed write/sync/readback or
+identity check poisons that lease rather than attempting journal repair.
+Reclaiming a stale journal after daemon crash requires
 separate integration with the existing runtime-owner recovery authority; it is
 explicitly not implemented by this slice.
+
+After exact resource cleanup and a fully synchronized/readback-confirmed idle
+commit, a subsequent descriptor Close error is different: report it, retain the
+original error on the lease, and retry only old retained handles. If the kernel
+already released the lock, a successor can safely reserve the clean slot.
+Never rewrite busy, reacquire authority, or access a successor's journal to
+simulate quarantine. The coordinator records that the old process was already
+forgotten, so a close retry cannot forget a newer generation. A successful
+handle-close retry may converge while retaining the original error for audit.
 
 ## RED and subsequent acceptance
 
@@ -134,22 +162,37 @@ coordinator instead allocates a fake cgroup and reaches process start.
 go test -p 2 -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestJailerIdentityCoordinatorRejectsNumericIdentityWithoutReservation$'
 ```
 
-The GREEN implementation is not authorized by this checkpoint. Its required
-tests are: genuine process-shared lock behavior on ordinary filesystem
-fixtures; fake root-owned admission; absent/zero/mismatched identity; concurrent
-coordinators; busy/stale/torn/missing journals; wrong/replaced/symlinked/hardlinked
-anchor or files; bounded reads and failed write/sync/readback; cancellation
-before and after busy commit; no PID/age-based reuse; shared-alias close races;
-every partial cleanup failure; exact cleanup-before-idle ordering; idempotent
-same-owner retry; stale-owner rejection after a successful new reservation;
-and preservation of unselected/legacy behavior. Actual root-owned filesystem
-acceptance remains distinct from injected ownership observations. Any tests
-requiring external CLIs must be explicitly tagged, not availability-skipped
-default tests.
+The regression is now GREEN. Default `TestJailerIdentity*` coverage includes
+fake configured admission; absent/zero/mismatched identity; two coordinators
+sharing one slot; busy/stale/torn/missing journals; PID/expiry assertions;
+wrong/replaced/symlinked/hardlinked entries; bounded reads; partial writes and
+failed sync/readback; cancellation before/after busy and at the last launch
+check; cleanup-before-idle ordering; partial cleanup quarantine; idempotent
+same-owner retry; and concurrent Close waiting for the launch callback.
+Linux tests use ordinary files and private per-open ownership checks to exercise
+real descriptor lifetime, nofollow refusal, inode stability, kernel-lock
+contention between independent open file descriptions, and stale aliases after
+successor admission. The unchanged production ownership checks explicitly
+reject those ordinary user/writable-ancestor fixtures. No root ownership is
+manufactured or claimed.
 
-After GREEN, run the full firecrackerhost package, race three times, vet,
-Darwin compile, and the relevant default/source guards. Those unprivileged
-checks do not replace prepared-Linux Jailer launch, dedicated-identity host
+The separate `linux && integration` subprocess test runs only the current Go
+test executable with an empty environment and a 10-second deadline. It verifies
+actual cross-process kernel-lock contention while held and acquisition after
+release. It performs no namespace, cgroup, VM, network or credential operation.
+It is not part of the default test selection and does not skip by availability.
+
+```sh
+go test -p 2 -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestJailerIdentity'
+go test -p 2 -tags integration -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestJailerIdentityProcessSharedLock$'
+go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/firecrackerhost
+go vet -p 2 ./internal/sandboxruntime/microvm/firecrackerhost
+GOOS=darwin GOARCH=arm64 go test -p 2 -c -o /dev/null ./internal/sandboxruntime/microvm/firecrackerhost
+go test -p 2 -count=1 ./cmd -run '^(TestL8D2ImageProfileMintAuthorityStaysNarrow|TestL8CredentialDelivery(DefaultGuards|SourceGuards)|TestL8ContractReset|TestL8D7PreparedLinuxLiveStubGuard)'
+```
+
+Run the full firecrackerhost package as well as the commands above. Those
+unprivileged checks do not replace prepared-Linux Jailer launch, dedicated-identity host
 validation, cgroup enforcement, guest operations, teardown, or daemon-crash
 recovery acceptance. The selected minimal guest topology and strict admission
 gates remain unchanged.

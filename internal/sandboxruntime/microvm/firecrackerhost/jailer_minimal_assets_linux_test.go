@@ -25,6 +25,12 @@ func TestStrictJailerMinimalLinuxFDStagingAndReadback(t *testing.T) {
 			events := []string{}
 			lifecycle := &coordinatorFakeLifecycle{events: &events}
 			coordinator := coordinatorForStateTest(&events, &coordinatorFakeRoot{events: &events}, lifecycle)
+			// This unprivileged stager fixture uses its actual caller-owned pair,
+			// with a matching fake reservation, not prepared-host dedication.
+			identity, identityStore := newFakeJailerIdentityAuthority()
+			identity.slot.uid, identity.slot.gid = staging.Authority.UID, staging.Authority.GID
+			identityStore.payload = idleJailerIdentityRecord(identity.slot).payload()
+			coordinator.deps.identity = identity
 			coordinator.deps.inspect = func(input strictJailerHostInspectionRequest) (strictJailerHostInspectionResult, error) {
 				return strictJailerHostInspectionResult{canonicalJailerPath: input.jailerPath, canonicalFirecrackerPath: input.firecrackerPath, runtimeUID: input.runtimeUID, runtimeGID: input.runtimeGID, canonicalChrootBaseDir: input.chrootBaseDir}, nil
 			}

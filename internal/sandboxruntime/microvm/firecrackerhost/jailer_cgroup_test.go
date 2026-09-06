@@ -88,6 +88,9 @@ func prepareFakeJailerCgroup(ctx context.Context, request strictJailerCgroupRequ
 // Existing strict-only fixtures now explicitly provide resource preparation.
 // This is not a production nil/default fallback.
 func newJailerCgroupTestCoordinator(deps strictJailerCoordinatorDependencies) *strictJailerCoordinator {
+	// Strict fixtures explicitly inject a fake prepared identity; the real
+	// constructor still rejects absent host-owned identity configuration.
+	deps.identity, _ = newFakeJailerIdentityAuthority()
 	deps.prepareCgroup = func(ctx context.Context, request strictJailerCgroupRequest) (*strictJailerCgroupLease, error) {
 		return prepareFakeJailerCgroup(ctx, request, newFakeJailerCgroupFilesystem())
 	}
