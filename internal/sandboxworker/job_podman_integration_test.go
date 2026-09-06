@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,7 +82,7 @@ func TestWorkerJobPodmanIntegrationSurvivesClientDisconnect(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	socketPath := filepath.Join(root, "worker.sock")
+	socketPath := liveWorkerJobSocketPath(t)
 	stateDir := filepath.Join(root, "jobs")
 	daemonCtx, daemonCancel := context.WithCancel(context.Background())
 	defer daemonCancel()
@@ -231,7 +232,7 @@ func TestWorkerJobPodmanIntegrationCrashRestartDoesNotRerun(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	socketPath := filepath.Join(root, "worker.sock")
+	socketPath := liveWorkerJobSocketPath(t)
 	stateDir := filepath.Join(root, "jobs")
 	testBinary, err := os.Executable()
 	if err != nil {
@@ -378,6 +379,39 @@ func TestWorkerJobPodmanIntegrationCrashHelper(t *testing.T) {
 	if err := server.ListenAndServe(context.Background()); err != nil {
 		t.Fatalf("ListenAndServe() error: %v", err)
 	}
+}
+
+func TestWorkerJobPodmanIntegrationSocketPathIgnoresLongTMPDIR(t *testing.T) {
+	longRoot := filepath.Join(t.TempDir(), strings.Repeat("long-temp-root-", 10))
+	if err := os.MkdirAll(longRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", longRoot)
+	t.Run("socket", func(t *testing.T) {
+		socketPath := liveWorkerJobSocketPath(t)
+		listener, err := net.Listen("unix", socketPath)
+		if err != nil {
+			t.Fatalf("live worker socket must bind independently of TMPDIR length: %v", err)
+		}
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func liveWorkerJobSocketPath(t *testing.T) string {
+	t.Helper()
+	// Unix sockets have a short path limit, independent of the lab's TMPDIR.
+	root, err := os.MkdirTemp("/tmp", "hal-l2-live-")
+	if err != nil {
+		t.Fatalf("create private worker socket directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove private worker socket directory: %v", err)
+		}
+	})
+	return filepath.Join(root, "worker.sock")
 }
 
 func waitForWorkerJobSocket(t *testing.T, path string) {
