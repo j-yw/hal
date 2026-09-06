@@ -101,7 +101,7 @@ func TestJailerRecoveryActualSelectedOwnerRetainsCoordinatorAcrossReconnect(t *t
 				root.removeErrors = []error{errors.New("owned root incomplete"), nil}
 			}
 			nextToken := byte(10)
-			owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{Store: owned.store, GenesisRecord: owned.genesis, ExpectedUID: 0, CommitKey: make([]byte, 32), CommitID: jailerRecoveryCommitID, RandomToken: func() (string, error) { nextToken++; return l8RuntimeOwnerTestToken(nextToken), nil }, StartChild: owned.startChild, ContainChild: owned.containChild, ReinspectAbsence: owned.reinspectAbsence, CloseNamespaces: owned.closeNamespaces})
+			owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{Store: owned.store, GenesisRecord: owned.genesis, ExpectedUID: 0, CommitKey: make([]byte, 32), commitID: jailerRecoveryCommitID, RandomToken: func() (string, error) { nextToken++; return l8RuntimeOwnerTestToken(nextToken), nil }, StartChild: owned.startChild, ContainChild: owned.containChild, ReinspectAbsence: owned.reinspectAbsence, CloseNamespaces: owned.closeNamespaces})
 			if err != nil {
 				t.Fatal(err)
 			}

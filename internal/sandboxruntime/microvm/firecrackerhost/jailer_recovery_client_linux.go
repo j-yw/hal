@@ -107,10 +107,11 @@ func (client *jailerRecoveryClient) stopAndCommit(ctx context.Context) error {
 		return errL8RuntimeOwnerInvalid
 	}
 	current, err := client.readRecord()
-	if err != nil || current.State != "finalized" || current.FinalizedCommitID != finalized.CommitID || current.FinalizeTargetRevision != finalized.FinalizedRevision || current.AbsenceRevision != record.AbsenceRevision {
+	expected := l8RuntimeOwnerFinalizeAckV1{CommitID: current.FinalizedCommitID, FinalizedRevision: current.FinalizeTargetRevision}
+	if err != nil || current.State != "finalized" || finalized != expected || current.AbsenceRevision != record.AbsenceRevision {
 		return errL8RuntimeOwnerInvalid
 	}
-	body, err = encodeL8RuntimeOwnerCommitRequest(l8RuntimeOwnerCommitRequestV1{ControllerSessionGeneration: client.session, CommitID: finalized.CommitID, FinalizedRevision: finalized.FinalizedRevision})
+	body, err = encodeL8RuntimeOwnerCommitRequest(l8RuntimeOwnerCommitRequestV1{ControllerSessionGeneration: client.session, CommitID: current.FinalizedCommitID, FinalizedRevision: current.FinalizeTargetRevision})
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}

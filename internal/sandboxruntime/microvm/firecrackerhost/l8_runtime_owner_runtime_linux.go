@@ -70,7 +70,7 @@ func runL8RuntimeOwnerSupervisorLinux(fds [6]int) error {
 		CommitKey:           owned.commitKey,
 	}
 	if owned.selected != nil {
-		opts.CommitID = jailerRecoveryCommitID
+		opts.commitID = jailerRecoveryCommitID
 	}
 	owner, err := newL8RuntimeOwnerSupervisor(opts)
 	if err != nil {

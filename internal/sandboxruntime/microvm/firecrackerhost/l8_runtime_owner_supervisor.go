@@ -149,7 +149,7 @@ type l8RuntimeOwnerStartedChild struct {
 }
 
 type l8RuntimeOwnerSupervisorOptions struct {
-	CommitID            func([]byte, [32]byte, uint64) (string, error)
+	commitID            func([]byte, [32]byte, uint64) (string, error)
 	Store               l8RuntimeOwnerRecordStore
 	GenesisRecord       firecrackerRuntimeOwnerRecordV1
 	ExpectedUID         uint32

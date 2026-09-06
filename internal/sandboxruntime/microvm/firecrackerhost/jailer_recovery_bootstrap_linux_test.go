@@ -26,7 +26,7 @@ func TestJailerRecoveryBootstrapFailureRetainsAuthenticatedRetry(t *testing.T) {
 				owned.selected.coordinator.deps.lifecycle.(*coordinatorFakeLifecycle).startErr = errors.New("fake start refused")
 			}
 			next := byte(12)
-			owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{Store: owned.store, GenesisRecord: owned.genesis, ExpectedUID: 0, CommitKey: make([]byte, 32), CommitID: jailerRecoveryCommitID, RandomToken: func() (string, error) { next++; return l8RuntimeOwnerTestToken(next), nil }, StartChild: owned.startChild, ContainChild: owned.containChild, ReinspectAbsence: owned.reinspectAbsence, CloseNamespaces: owned.closeNamespaces})
+			owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{Store: owned.store, GenesisRecord: owned.genesis, ExpectedUID: 0, CommitKey: make([]byte, 32), commitID: jailerRecoveryCommitID, RandomToken: func() (string, error) { next++; return l8RuntimeOwnerTestToken(next), nil }, StartChild: owned.startChild, ContainChild: owned.containChild, ReinspectAbsence: owned.reinspectAbsence, CloseNamespaces: owned.closeNamespaces})
 			if err != nil {
 				t.Fatal(err)
 			}

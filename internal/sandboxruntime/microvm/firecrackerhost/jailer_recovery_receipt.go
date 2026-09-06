@@ -8,8 +8,8 @@ import (
 )
 
 func (owner *l8RuntimeOwnerSupervisor) commitID(digest [32]byte, revision uint64) (string, error) {
-	if owner.opts.CommitID != nil {
-		return owner.opts.CommitID(owner.opts.CommitKey, digest, revision)
+	if owner.opts.commitID != nil {
+		return owner.opts.commitID(owner.opts.CommitKey, digest, revision)
 	}
 	return l8RuntimeOwnerCommitID(owner.opts.CommitKey, digest, revision)
 }
