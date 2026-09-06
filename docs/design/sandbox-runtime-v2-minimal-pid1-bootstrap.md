@@ -50,3 +50,23 @@ process roles, boot fields, durable/public schemas, image permission changes,
 credentials, host consumers, or default strict selection. The resulting exact
 guest binary must later be rebuilt into the measured image and accepted with
 the real Linux lifecycle and credential matrix.
+
+## Integration diagnostic follow-up
+
+The full default suite at `ff278306` exposed two existing regression gates not
+selected by the focused checks: the legacy call-graph diagnostic lost its named
+`clone`/`clone3` rejection reason when child supervision moved behind an injected
+function pointer, and the checked-in HL8Q source-lock outputs became stale.
+Neither failure authorizes changing the diagnostic, syscall catalog or HL8E gate.
+
+Production therefore calls the existing child supervisor directly after
+preparation; the optional private callback remains only a deterministic test
+override. This restores the diagnostic's direct production call edge without
+changing startup order or any original test assertion. Regenerate the four
+changed HL8Q/source-lock outputs using the existing generator, not edited pins.
+HL8Q is not HL8E, and the unchanged graph test must still reject issuing HL8E
+because the named process-creation syscalls remain reachable.
+
+```sh
+go test ./tools/microvm/l8/policy/generate -run '^TestL8D7(ReachableGraphNamesGoLaunchBaseExtraSyscalls|ArtifactGenerationIsDeterministicAndMatchesCheckedInOutputs)$' -count=1
+```

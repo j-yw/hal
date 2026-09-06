@@ -26,7 +26,6 @@ func run(arguments []string) int {
 		readBootCommandLine: minimalcontrol.ReadLinuxBootCommandLine,
 		configureNetwork:    configureL7GuestNetwork,
 		releaseAgentGate:    func() int { return releasePID1AgentStartGate() },
-		superviseChild:      superviseGuestInitChild,
 	})
 }
 
@@ -59,7 +58,10 @@ func runGuestInitEntry(arguments []string, requireNetwork bool, deps guestInitEn
 	if code := deps.releaseAgentGate(); code != 0 {
 		return code
 	}
-	return deps.superviseChild(arguments, childEnvironment)
+	if deps.superviseChild != nil {
+		return deps.superviseChild(arguments, childEnvironment)
+	}
+	return superviseGuestInitChild(arguments, childEnvironment)
 }
 
 func superviseGuestInitChild(arguments, childEnvironment []string) int {
