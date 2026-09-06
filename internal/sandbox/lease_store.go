@@ -455,6 +455,22 @@ func (s *SandboxLeaseStore) Release(id string) (*SandboxLease, error) {
 // lease released while holding the store lock. Releasing an already released
 // exact match is idempotent.
 func (s *SandboxLeaseStore) ReleaseExact(req SandboxLeaseExactReleaseRequest) (*SandboxLease, error) {
+	return s.releaseExact(req, false)
+}
+
+// ReleaseExactHostReservation releases an exact host-capacity reservation that
+// may have been acquired before runtime creation assigned a sandbox ID. The
+// caller must correlate hostID with its durable execution host. A reservation
+// already bound to a sandbox must still match that exact sandbox ID.
+func (s *SandboxLeaseStore) ReleaseExactHostReservation(req SandboxLeaseExactReleaseRequest, hostID string) (*SandboxLease, error) {
+	hostID = strings.TrimSpace(hostID)
+	if hostID == "" || strings.TrimSpace(req.ResourceKey) != "host:"+hostID {
+		return nil, fmt.Errorf("lease host reservation identity did not match")
+	}
+	return s.releaseExact(req, true)
+}
+
+func (s *SandboxLeaseStore) releaseExact(req SandboxLeaseExactReleaseRequest, hostReservation bool) (*SandboxLease, error) {
 	if err := validateSandboxLeaseExactReleaseRequest(req); err != nil {
 		return nil, err
 	}
@@ -482,7 +498,13 @@ func (s *SandboxLeaseStore) ReleaseExact(req SandboxLeaseExactReleaseRequest) (*
 	if err != nil {
 		return nil, fmt.Errorf("read exact lease: %w", err)
 	}
-	if !sandboxLeaseMatchesExactReleaseRequest(lease, req) {
+	exact := req
+	if hostReservation && strings.TrimSpace(lease.SandboxID) == "" {
+		// Preserve the acquisition identity of a pre-create reservation; do
+		// not invent a runtime binding or weaken an existing nonempty one.
+		exact.SandboxID = ""
+	}
+	if !sandboxLeaseMatchesExactReleaseRequest(lease, exact) {
 		return nil, fmt.Errorf("lease identity did not match exact release request")
 	}
 	switch lease.Status {
