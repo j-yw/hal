@@ -1689,6 +1689,7 @@ func TestWorkerRootlessFactorySandboxFailureRecoveryMetadata(t *testing.T) {
 				RepoRemote:  "https://deploy:secret@example.test/org/repo.git?token=secret",
 			},
 		}, factorySandboxExecutorDeps{
+			planBundle:   fakeFactoryBundlePlan,
 			defaultStore: func() (factory.Store, error) { return store, nil },
 			now:          func() time.Time { return now },
 			loadSandbox: func(name string) (*sandbox.SandboxState, error) {
@@ -2903,7 +2904,7 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 	}
 	var out bytes.Buffer
 	var workerResolverCalls int
-	var bootstrapRuntimeCalls int
+	var workspaceRuntimeCalls int
 
 	workerDriver := fakeRunSandboxRuntimeDriver{
 		id: sandboxruntime.DriverRootlessPodman,
@@ -2915,8 +2916,8 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 				t.Fatalf("Exec worker ID = %q, want worker-1", req.Target.Runtime.WorkerID)
 			}
 			joinedArgs := strings.Join(req.Args, " ")
-			if strings.Contains(joinedArgs, "bootstrap-runtime-probe") {
-				bootstrapRuntimeCalls++
+			if strings.Contains(joinedArgs, "bundle-runtime-probe") {
+				workspaceRuntimeCalls++
 			} else if strings.Contains(joinedArgs, "hal-factory-verify-stderr") {
 				_, _ = io.WriteString(req.Stdout, `{"schemaVersion":"verify-v1","status":"pass","summary":{"total":0},"checks":[]}`+"\n")
 			} else {
@@ -2954,6 +2955,12 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 		runSandbox: func(ctx context.Context, req factorySandboxExecutorRequest) error {
 			req.SandboxName = "worker-rootless"
 			return runFactorySandboxExecutorWithDeps(ctx, req, factorySandboxExecutorDeps{
+				planBundle:            fakeFactoryBundlePlan,
+				prepareCommandContext: fakeFactoryBundleCommandContext,
+				materializeWorkspace: func(ctx context.Context, prep sandboxexec.PrepareContext, _ sandboxexec.WorkspaceMaterializationRequest) (sandboxworkspace.MaterializationResult, error) {
+					_, err := prep.Driver.Exec(ctx, sandboxruntime.ExecRequest{Target: prep.Target, Args: []string{"printf", "bundle-runtime-probe"}, Stdout: io.Discard, Stderr: io.Discard})
+					return sandboxworkspace.MaterializationResult{}, err
+				},
 				defaultStore: func() (factory.Store, error) { return store, nil },
 				now:          now,
 				loadSandbox: func(name string) (*sandbox.SandboxState, error) {
@@ -2998,15 +3005,9 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 					}
 					return workerDriver, nil
 				},
-				bootstrap: func(ctx context.Context, _ factory.BootstrapRequest, deps factory.BootstrapDeps) (factory.BootstrapResult, error) {
-					if deps.Executor == nil {
-						t.Fatal("worker-backed factory bootstrap executor is nil")
-					}
-					_, err := deps.Executor.Run(ctx, factory.BootstrapCommand{
-						Name: "printf",
-						Args: []string{"bootstrap-runtime-probe"},
-					})
-					return factory.BootstrapResult{}, err
+				bootstrap: func(context.Context, factory.BootstrapRequest, factory.BootstrapDeps) (factory.BootstrapResult, error) {
+					t.Fatal("worker local-bundle preparation must not clone a remote")
+					return factory.BootstrapResult{}, nil
 				},
 				engineAuthFiles: func() []factorySandboxAuthFile {
 					return nil
@@ -3051,8 +3052,8 @@ func TestWorkerRootlessFactorySandboxUsesSharedWorkerRuntimeResolver(t *testing.
 	if workerResolverCalls != 1 {
 		t.Fatalf("worker resolver calls = %d, want 1", workerResolverCalls)
 	}
-	if bootstrapRuntimeCalls != 1 {
-		t.Fatalf("bootstrap runtime calls = %d, want 1", bootstrapRuntimeCalls)
+	if workspaceRuntimeCalls != 1 {
+		t.Fatalf("workspace runtime calls = %d, want 1", workspaceRuntimeCalls)
 	}
 	if !strings.Contains(out.String(), "worker-backed factory path") {
 		t.Fatalf("output = %q, want worker-backed runtime output", out.String())
@@ -3109,6 +3110,7 @@ func TestWorkerRootlessFactorySandboxPersistsSafeSandboxMetadata(t *testing.T) {
 		},
 		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
 	}, factorySandboxExecutorDeps{
+		planBundle: fakeFactoryBundlePlan, materializeWorkspace: fakeFactoryBundleMaterialize, prepareCommandContext: fakeFactoryBundleCommandContext,
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		now:          now,
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
@@ -3207,6 +3209,7 @@ func TestWorkerRootlessFactorySandboxStreamsOutputInOrder(t *testing.T) {
 		},
 		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
 	}, factorySandboxExecutorDeps{
+		planBundle: fakeFactoryBundlePlan, materializeWorkspace: fakeFactoryBundleMaterialize, prepareCommandContext: fakeFactoryBundleCommandContext,
 		defaultStore: func() (factory.Store, error) { return store, nil },
 		now:          now,
 		loadSandbox: func(name string) (*sandbox.SandboxState, error) {
@@ -3478,6 +3481,7 @@ func TestWorkerClientFactorySandboxJSONFailureIsSanitized(t *testing.T) {
 				resolveRuntimeDriver: func(sandboxruntime.Target) (sandboxruntime.Driver, error) {
 					return nil, unsafeWorkerClientConnectionFailure()
 				},
+				planBundle: fakeFactoryBundlePlan,
 			})
 		},
 	})
@@ -4106,9 +4110,9 @@ func requireWorkerRootlessFactorySandboxMetadata(t *testing.T, metadata *factory
 	requireWorkerRoutingMetadata(t, metadata.WorkerRouting)
 	if metadata.Workspace == nil ||
 		metadata.Workspace.Mode != sandbox.SandboxWorkspaceModeClone ||
-		metadata.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceRemoteRef ||
+		metadata.Workspace.InputSource != sandbox.SandboxWorkspaceInputSourceGitBundle ||
 		metadata.Workspace.Branch != "feature/worker-rootless" ||
-		metadata.Workspace.SyncRef != "main" {
+		metadata.Workspace.SyncRef != strings.Repeat("a", 40) {
 		t.Fatalf("factory sandbox workspace = %#v, want selected worker workspace metadata", metadata.Workspace)
 	}
 }
