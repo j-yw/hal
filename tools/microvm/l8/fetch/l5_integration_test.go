@@ -61,3 +61,51 @@ func TestL5BoundedTransferOptInPreservesDefault(t *testing.T) {
 		})
 	}
 }
+
+func TestL5ReleaseRefByteBoundIncludesTrailingNewlines(t *testing.T) {
+	source, err := os.ReadFile("../../l5/fetch.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(source), "read_release_ref() {")
+	if start < 0 {
+		t.Fatal("bounded release-ref helper missing")
+	}
+	end := strings.Index(string(source[start:]), "\n}\n")
+	if end < 0 {
+		t.Fatal("release-ref helper not delimited")
+	}
+	helper := string(source[start : start+end+3])
+	for _, oversize := range []bool{false, true} {
+		t.Run(map[bool]string{false: "exact_ref", true: "newline_overflow"}[oversize], func(t *testing.T) {
+			root := t.TempDir()
+			bin := filepath.Join(root, "bin")
+			if err := os.Mkdir(bin, 0700); err != nil {
+				t.Fatal(err)
+			}
+			ref := strings.Repeat("a", 40) + "\trefs/tags/2026.05.1\n"
+			if oversize {
+				ref += strings.Repeat("\n", 4097-len(ref))
+			}
+			input := filepath.Join(root, "ref")
+			if err := os.WriteFile(input, []byte(ref), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexec cat \"$FETCH_TEST_REF\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "/bin/bash", "-c", "set -euo pipefail\n"+helper+"\nbounded_transfers=true\nrepository_url=https://example.invalid/locked.git\nmetadata=$1\nread_release_ref refs/tags/2026.05.1", "test", root)
+			cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + root, "FETCH_TEST_REF=" + input}
+			output, err := cmd.Output()
+			if oversize {
+				if err == nil {
+					t.Fatal("oversized metadata accepted after newline trimming")
+				}
+			} else if err != nil || string(output) != ref {
+				t.Fatalf("valid ref=%q err=%v", output, err)
+			}
+		})
+	}
+}
