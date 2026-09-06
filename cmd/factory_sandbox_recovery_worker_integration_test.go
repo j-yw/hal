@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/factory"
-	"github.com/jywlabs/hal/internal/sandboxruntime"
 	"github.com/jywlabs/hal/internal/sandboxworker"
 )
 
@@ -57,16 +56,13 @@ func TestFactoryFinalizationRecoveryWorkerRoundTrip(t *testing.T) {
 			t.Errorf("worker fixture shutdown: %v", err)
 		}
 	})
-	client, err := sandboxworker.NewClient(sandboxworker.ClientOptions{SocketPath: socketPath})
-	if err != nil {
-		t.Fatal(err)
-	}
-	driver, err := sandboxworker.NewClientDriver(sandboxworker.ClientDriverOptions{DriverID: sandboxruntime.DriverRootlessPodman, Client: client})
+	target := workerRootlessCachedSandbox("recovery-wire")
+	target.Host.Endpoint = "unix://" + socketPath
+	driver, err := sandboxWorkerRuntimeDriverFromTarget(sandboxWorkerRuntimeRequest{Target: sandboxRuntimeTargetFromState(target), Host: target.Host}, sandboxWorkerRuntimeDriverFactories{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := factory.RunRecord{RepoPath: "/workspace/repo", BaseBranch: "local-base"}
-	target := workerRootlessCachedSandbox("recovery-wire")
 	if err := generateFactorySandboxRuntimeRecoveryArtifacts(ctx, record, target, driver, nil); err != nil {
 		t.Fatalf("actual recovery script worker round-trip: %v", err)
 	}
