@@ -97,6 +97,17 @@ accounts, empty resolver file and UID1000 workspace/run directories are checked.
 Safe Busybox symlink resolution is bounded; long/non-fast symlinks fail closed
 in this initial profile.
 
+Account checks parse complete passwd/group/shadow records with unique names,
+valid field counts, safe names/paths and numeric IDs. Root is UID/GID0 with
+`/root` and `/bin/sh`; workload is UID/GID1000 with `/workspace` and `/bin/sh`.
+Their UID/GID identities cannot be aliased by another account/group. Passwd
+entries require the `x` shadow placeholder, never empty or inline passwords;
+each account must have exactly one matching shadow record locked by `!` or `*`.
+Missing, duplicate or orphan shadow records and malformed aging fields fail.
+Primary groups and group members must resolve consistently; group passwords
+are restricted to `x`, `!`, or `*`. Additional coherently locked accounts and
+groups are allowed. This does not add a general guest user-policy evaluator.
+
 Pi lives at `/usr/lib/pi`, with its complete dependencies below
 `/usr/lib/pi/node_modules`. The inspector checks package name/version and
 requires dependency contents, root ownership, workload-readable files and
@@ -138,6 +149,16 @@ Competing publishers cannot overwrite one another. A filesystem error after
 the final rename can leave the complete output present with uncertain directory
 durability; callers must treat an error as failure and verify any such output
 before manual recovery, never blindly retry with overwrite.
+
+Standalone image cancellation remains active through the final image hash,
+publication copy and file sync. Cancellation observed at the final context
+check immediately before the no-replace rename aborts publication and releases
+its private temporary output. The final context check and filesystem rename
+cannot be one atomic operation: cancellation racing after that check may
+commit successfully. Once rename commits, there is no retroactive deletion;
+directory sync still determines durability. Deterministic CLI-free primitive
+tests exercise cancellation during copy and at EOF, while a tagged inotify
+regression observes cancellation after inspection and before publication.
 
 The JSON `Receipt` is returned **outside** the seven-file bundle. Retain its
 `Expected`, archive digest and installed-tree digest through the trusted

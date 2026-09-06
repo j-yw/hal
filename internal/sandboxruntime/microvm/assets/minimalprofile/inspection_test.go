@@ -166,7 +166,7 @@ func TestMinimalImageReleasesPrivateScratch(t *testing.T) {
 	if err := parent.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := publishFile(parent, "closed.ext4", filepath.Join(output, "valid.ext4"), fileHash(t, filepath.Join(output, "valid.ext4"))); err == nil {
+	if err := publishFile(context.Background(), parent, "closed.ext4", filepath.Join(output, "valid.ext4"), fileHash(t, filepath.Join(output, "valid.ext4"))); err == nil {
 		t.Fatal("closed output ownership accepted")
 	}
 }

@@ -37,7 +37,7 @@ func inspectImage(ctx context.Context, image string, pins Pins) (Measurement, er
 	}
 	defer f.Close()
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(f, (1<<30)+1))
+	n, err := copyContext(ctx, h, io.LimitReader(f, (1<<30)+1))
 	if err != nil || n > 1<<30 {
 		return Measurement{}, errImage
 	}
@@ -242,14 +242,8 @@ func inspect(query imageQuery, pins Pins) (Measurement, error) {
 			return Measurement{}, errImage
 		}
 	}
-	if !strings.Contains(string(contents[entries["/etc/passwd"].inode]), "workload:x:1000:1000:Workload:/workspace:/bin/sh\n") || !strings.Contains(string(contents[entries["/etc/group"].inode]), "workload:x:1000:\n") {
+	if !validLockedAccounts(contents[entries["/etc/passwd"].inode], contents[entries["/etc/group"].inode], contents[entries["/etc/shadow"].inode]) {
 		return Measurement{}, errImage
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(contents[entries["/etc/shadow"].inode])), "\n") {
-		parts := strings.Split(line, ":")
-		if len(parts) != 9 || (parts[1] != "!" && parts[1] != "*") {
-			return Measurement{}, errImage
-		}
 	}
 	var pkg struct {
 		Name    string `json:"name"`
@@ -365,4 +359,113 @@ func resolveEntry(entries map[string]imageEntry, name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+var accountName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]{0,63}$`)
+var accountID = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+
+// Account data is parsed as complete correlated records, not substring
+// evidence. Additional locked accounts/groups remain allowed; only the
+// expected root/workload identities and their numeric IDs are reserved.
+func validLockedAccounts(passwdData, groupData, shadowData []byte) bool {
+	passwd, ok := accountRecords(passwdData, 7)
+	if !ok {
+		return false
+	}
+	groups, ok := accountRecords(groupData, 4)
+	if !ok {
+		return false
+	}
+	shadow, ok := accountRecords(shadowData, 9)
+	if !ok || len(shadow) != len(passwd) {
+		return false
+	}
+	for _, expected := range []struct{ name, id, home string }{{"root", "0", "/root"}, {"workload", "1000", "/workspace"}} {
+		p, present := passwd[expected.name]
+		if !present || p[2] != expected.id || p[3] != expected.id || p[5] != expected.home || p[6] != "/bin/sh" {
+			return false
+		}
+		g, present := groups[expected.name]
+		if !present || g[2] != expected.id {
+			return false
+		}
+	}
+	groupIDs := map[string]bool{}
+	for name, g := range groups {
+		if (g[1] != "x" && g[1] != "!" && g[1] != "*") || !validAccountID(g[2]) || (g[2] == "0" && name != "root") || (g[2] == "1000" && name != "workload") {
+			return false
+		}
+		groupIDs[g[2]] = true
+		if g[3] != "" {
+			members := map[string]bool{}
+			for _, member := range strings.Split(g[3], ",") {
+				if _, exists := passwd[member]; !exists || members[member] {
+					return false
+				}
+				members[member] = true
+			}
+		}
+	}
+	for name, p := range passwd {
+		if p[1] != "x" || !validAccountID(p[2]) || !validAccountID(p[3]) || !groupIDs[p[3]] || (p[2] == "0" && name != "root") || (p[2] == "1000" && name != "workload") {
+			return false
+		}
+		for _, location := range []string{p[5], p[6]} {
+			if !strings.HasPrefix(location, "/") || path.Clean(location) != location || !safeName.MatchString(location) {
+				return false
+			}
+		}
+		s, present := shadow[name]
+		if !present || (s[1] != "!" && s[1] != "*") || s[8] != "" {
+			return false
+		}
+		for _, value := range s[2:8] {
+			if value == "" {
+				continue
+			}
+			// Empty or -1 disables a shadow aging field; other values are
+			// canonical nonnegative decimal fields, not policy assertions.
+			if value == "-1" {
+				continue
+			}
+			if !accountID.MatchString(value) {
+				return false
+			}
+			if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validAccountID(value string) bool {
+	if !accountID.MatchString(value) {
+		return false
+	}
+	_, err := strconv.ParseUint(value, 10, 32)
+	return err == nil
+}
+
+func accountRecords(data []byte, fields int) (map[string][]string, bool) {
+	if len(data) == 0 || len(data) > 1<<20 {
+		return nil, false
+	}
+	records := map[string][]string{}
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		for _, character := range line {
+			if character < 0x20 || character == 0x7f {
+				return nil, false
+			}
+		}
+		parts := strings.Split(line, ":")
+		if len(parts) != fields || !accountName.MatchString(parts[0]) {
+			return nil, false
+		}
+		if _, duplicate := records[parts[0]]; duplicate {
+			return nil, false
+		}
+		records[parts[0]] = parts
+	}
+	return records, true
 }

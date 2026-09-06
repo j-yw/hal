@@ -41,10 +41,18 @@ func TestMinimalRealExt4Production(t *testing.T) {
 
 func TestMinimalImageRejectsUntrustedStage(t *testing.T) {
 	requireImageTools(t)
-	for _, scenario := range []string{"digest", "missing_tree_pin", "tree_tamper", "role_tamper", "credentials", "private_key", "privilege", "traversal", "symlink_parent", "historical_role", "wrong_workspace_uid", "untraversable_parent", "missing_agent", "duplicate", "oversize"} {
+	for _, scenario := range []string{"digest", "missing_tree_pin", "tree_tamper", "role_tamper", "credentials", "private_key", "privilege", "traversal", "symlink_parent", "historical_role", "wrong_workspace_uid", "untraversable_parent", "missing_agent", "duplicate", "oversize", "unlocked_root", "duplicate_workload"} {
 		t.Run(scenario, func(t *testing.T) {
 			archive, pins := stagedFixture(t, func(entries map[string]fixtureEntry) {
 				switch scenario {
+				case "unlocked_root":
+					e := entries["etc/passwd"]
+					e.data = strings.Replace(e.data, "root:x:", "root::", 1)
+					entries["etc/passwd"] = e
+				case "duplicate_workload":
+					e := entries["etc/passwd"]
+					e.data = "workload:x:0:0:Workload:/root:/bin/sh\n" + e.data
+					entries["etc/passwd"] = e
 				case "credentials":
 					entries["etc/.npmrc"] = fixtureEntry{mode: 0600, data: "fixture token"}
 				case "private_key":

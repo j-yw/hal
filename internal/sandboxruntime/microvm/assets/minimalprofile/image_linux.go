@@ -183,7 +183,7 @@ func BuildImage(ctx context.Context, req ImageRequest) (result Measurement, retE
 		return Measurement{}, err
 	}
 	phase = "publication"
-	if err := publishFile(parent, base, image, measurement.RootfsSHA256); err != nil {
+	if err := publishFile(ctx, parent, base, image, measurement.RootfsSHA256); err != nil {
 		return Measurement{}, errImage
 	}
 	return measurement, nil
@@ -374,7 +374,26 @@ func copyPinned(source, dest, digest string, limit int64) (int64, error) {
 	return n, nil
 }
 
-func publishFile(parent *os.File, base, source, digest string) error {
+func publishFile(ctx context.Context, parent *os.File, base, source, digest string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	in, err := os.Open(source)
+	if err != nil {
+		return errImage
+	}
+	defer in.Close()
+	return publishReader(ctx, parent, base, in, digest)
+}
+
+// publishReader is the private, CLI-free publication primitive. Cancellation
+// must be observed before the final check adjacent to rename. Cancellation
+// racing after that check may commit; a committed output is never deleted in
+// response to late cancellation.
+func publishReader(ctx context.Context, parent *os.File, base string, source io.Reader, digest string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Temp names are created relative to the retained output directory. Use
 	// /proc only for our own pinned directory, never for unverified input.
 	root := fmt.Sprintf("/proc/self/fd/%d", parent.Fd())
@@ -384,23 +403,50 @@ func publishFile(parent *os.File, base, source, digest string) error {
 	}
 	tempBase := filepath.Base(tmp.Name())
 	defer unix.Unlinkat(int(parent.Fd()), tempBase, 0)
-	in, err := os.Open(source)
-	if err != nil {
-		tmp.Close()
-		return errImage
-	}
 	h := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(tmp, h), in)
-	in.Close()
-	syncErr := tmp.Sync()
+	_, copyErr := copyContext(ctx, io.MultiWriter(tmp, h), source)
+	var syncErr error
+	if copyErr == nil && ctx.Err() == nil {
+		syncErr = tmp.Sync()
+	}
 	closeErr := tmp.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if copyErr != nil || syncErr != nil || closeErr != nil || hex.EncodeToString(h.Sum(nil)) != digest {
 		return errImage
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if unix.Renameat2(int(parent.Fd()), tempBase, int(parent.Fd()), base, unix.RENAME_NOREPLACE) != nil {
 		return errImage
 	}
 	return parent.Sync()
+}
+
+func copyContext(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {
+	n, err := io.Copy(destination, contextReader{ctx: ctx, source: source})
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		return n, cancelErr
+	}
+	return n, err
+}
+
+type contextReader struct {
+	ctx    context.Context
+	source io.Reader
+}
+
+func (r contextReader) Read(data []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.source.Read(data)
+	if cancelErr := r.ctx.Err(); cancelErr != nil {
+		return n, cancelErr
+	}
+	return n, err
 }
 
 type boundedBuffer struct {
