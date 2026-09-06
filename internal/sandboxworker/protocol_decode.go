@@ -617,7 +617,7 @@ func (parser *workerJSONPreflightV2) parseString() (string, error) {
 			continue
 		}
 		if current == '"' {
-			quoted := strings.ReplaceAll(parser.raw[start:parser.offset], `\/`, `/`)
+			quoted := workerJSONSlashEscapesForUnquoteV2(parser.raw[start:parser.offset])
 			value, err := strconv.Unquote(quoted)
 			if err != nil {
 				return "", errors.New("worker JSON string is invalid")
@@ -626,6 +626,29 @@ func (parser *workerJSONPreflightV2) parseString() (string, error) {
 		}
 	}
 	return "", errors.New("worker JSON string is incomplete")
+}
+
+// strconv.Unquote accepts Go string syntax, so genuine JSON slash escapes need
+// normalization. Skip complete escape pairs: the slash after an escaped
+// backslash is literal, and removing that backslash would change its meaning.
+func workerJSONSlashEscapesForUnquoteV2(quoted string) string {
+	var normalized strings.Builder
+	start := 0
+	for index := 0; index+1 < len(quoted); index++ {
+		if quoted[index] != '\\' {
+			continue
+		}
+		if quoted[index+1] == '/' {
+			normalized.WriteString(quoted[start:index])
+			start = index + 1
+		}
+		index++
+	}
+	if start == 0 {
+		return quoted
+	}
+	normalized.WriteString(quoted[start:])
+	return normalized.String()
 }
 
 func (parser *workerJSONPreflightV2) parseLiteral(literal string) error {
