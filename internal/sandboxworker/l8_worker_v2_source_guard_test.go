@@ -6883,9 +6883,6 @@ func l8WorkerV2UnixFixturePackage() *types.Package {
 	for index, name := range []string{"LOCK_SH", "LOCK_EX", "LOCK_NB", "LOCK_UN"} {
 		scope.Insert(types.NewConst(token.NoPos, pkg, name, types.Typ[types.UntypedInt], constant.MakeInt64(int64(index+1))))
 	}
-	for index, name := range []string{"O_NOFOLLOW", "O_CLOEXEC", "O_DIRECTORY"} {
-		scope.Insert(types.NewConst(token.NoPos, pkg, name, types.Typ[types.UntypedInt], constant.MakeInt64(int64(1<<(index+16)))))
-	}
 	pkg.MarkComplete()
 	return pkg
 }

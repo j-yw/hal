@@ -21,7 +21,7 @@ func l8WorkerV2AllowedExactMinimalFileSurface(scope l8WorkerV2GuardScope, surfac
 	if function.Name.Name != "openMinimalLaunchNoFollow" && function.Name.Name != "openMinimalLaunchRelative" {
 		return false
 	}
-	return surface == "golang.org/x/sys/unix.O_NOFOLLOW" || surface == "golang.org/x/sys/unix.O_CLOEXEC" || surface == "golang.org/x/sys/unix.O_DIRECTORY"
+	return surface == "syscall.O_NOFOLLOW" || surface == "syscall.O_CLOEXEC" || surface == "syscall.O_DIRECTORY" || function.Name.Name == "openMinimalLaunchRelative" && surface == "syscall.O_NONBLOCK"
 }
 
 func TestMinimalLaunchSourceGuardLocksReadOnlyNoFollow(t *testing.T) {
@@ -42,20 +42,20 @@ func TestMinimalLaunchSourceGuardLocksReadOnlyNoFollow(t *testing.T) {
 		return false
 	}
 	for _, symbol := range []string{"O_NOFOLLOW", "O_CLOEXEC", "O_DIRECTORY"} {
-		if !check(source, "golang.org/x/sys/unix."+symbol) {
+		if !check(source, "syscall."+symbol) {
 			t.Fatal("actual read-only opening flags were not recognized")
 		}
 	}
-	for _, surface := range []string{"golang.org/x/sys/unix.Mount", "os.Geteuid", "syscall.O_NOFOLLOW"} {
+	for _, surface := range []string{"syscall.Mount", "os.Geteuid", "golang.org/x/sys/unix.O_NOFOLLOW", "syscall.O_NONBLOCK"} {
 		if check(source, surface) {
 			t.Fatal("read-only helper admitted unrelated kernel surface")
 		}
 	}
 	for _, fixture := range []struct{ name, old, replacement string }{
-		{"omitted nofollow", " | unix.O_NOFOLLOW", ""},
-		{"omitted cloexec", " | unix.O_CLOEXEC", ""},
-		{"aliased flags", "unix.O_NOFOLLOW", "aliasFlag"},
-		{"conditional weakening", "flags |= unix.O_DIRECTORY", "flags = unix.O_DIRECTORY"},
+		{"omitted nofollow", " | syscall.O_NOFOLLOW", ""},
+		{"omitted cloexec", " | syscall.O_CLOEXEC", ""},
+		{"aliased flags", "syscall.O_NOFOLLOW", "aliasFlag"},
+		{"conditional weakening", "flags |= syscall.O_DIRECTORY", "flags = syscall.O_DIRECTORY"},
 		{"write", "os.O_RDONLY", "os.O_RDWR"},
 		{"create", "os.O_RDONLY", "os.O_RDONLY | os.O_CREATE"},
 		{"truncate", "os.O_RDONLY", "os.O_RDONLY | os.O_TRUNC"},
@@ -65,7 +65,7 @@ func TestMinimalLaunchSourceGuardLocksReadOnlyNoFollow(t *testing.T) {
 			if !strings.Contains(source, fixture.old) {
 				t.Fatal("nofollow mutation did not match")
 			}
-			if check(strings.Replace(source, fixture.old, fixture.replacement, 1), "golang.org/x/sys/unix.O_NOFOLLOW") {
+			if check(strings.Replace(source, fixture.old, fixture.replacement, 1), "syscall.O_NOFOLLOW") {
 				t.Fatal("changed file opening borrowed read-only authority")
 			}
 		})
