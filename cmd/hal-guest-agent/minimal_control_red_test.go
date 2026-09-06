@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/frame"
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/minimalcontrol"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/server"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/session"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/guestagent/vsock"
@@ -170,10 +171,15 @@ type minimalREDServe func(context.Context) error
 type minimalREDAdapter func(*testing.T, vsock.Listener, *minimalREDBackend, minimalREDGuestConfig) minimalREDServe
 
 func newMinimalREDAdapter(t *testing.T, listener vsock.Listener, backend *minimalREDBackend, config minimalREDGuestConfig) minimalREDServe {
-	// Intentionally delegate to today's selected v1 construction. Identity,
-	// binding and pinned key have no consumer yet. Do not implement a fake
-	// guest here: GREEN must supply the real, separately reviewed constructor.
-	return newMinimalREDLegacyAdapter(t, listener, backend, config)
+	t.Helper()
+	agent, err := minimalcontrol.New(minimalcontrol.Options{
+		Listener: listener, Identity: config.identity, Binding: config.binding,
+		PinnedControllerPublicKey: config.public, OwnerDone: make(chan struct{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return agent.Serve
 }
 
 func newMinimalREDLegacyAdapter(t *testing.T, listener vsock.Listener, backend *minimalREDBackend, _ minimalREDGuestConfig) minimalREDServe {

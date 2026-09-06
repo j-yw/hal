@@ -2,22 +2,29 @@
 
 ## Status and authority
 
-This is DESIGN/RED only against `3a8430e778dd2ec3c009cd9b557cda2c59262b4d`.
-There is no production implementation, selected minimal listener, credential
-activation, new readiness proof, or live acceptance in this change. GREEN needs
-review of this fixed revision first. The authority is the selected fresh-VM/job
+The design and executable RED were frozen in `5ca721efbe7ef9b5433e07571ecbcdcdbcc32566`
+against `3a8430e778dd2ec3c009cd9b557cda2c59262b4d`. This GREEN implements
+only the injected codec/acceptor described below, with the RED transcript and
+legacy assertions preserved. There is still no selected minimal listener,
+credential activation, strict readiness proof or live acceptance. The authority
+is the selected fresh-VM/job
 contract in [the L8 reset](sandbox-runtime-v2-l8-credential-runtime-contract-reset.md),
 not the historical helper topology. L7 owns enforcement, L8 owns credentials,
 and L10 owns strict selection. Their current fail-closed dependencies remain.
 
 The first slice is a pure minimal readiness codec plus an injectable,
-authenticated guest connection handler. Proposed package:
+authenticated guest connection handler. Package:
 `internal/sandboxruntime/microvm/guestagent/minimalcontrol`. Its construction
 receives immutable public boot/session identity, complete job/network binding,
 pinned controller public key, an injected listener, clock and randomness. It
 does not construct a listener, process, network policy, credential owner or
 workload backend. Only the injected test adapter changes to that constructor in
 GREEN; production entrypoint/host wiring requires a separate reviewed slice.
+`New(Options)` validates and copies the identity, binding and public key;
+`Serve(ctx)` is one-shot. `Done()` means only that this injected server stopped,
+not that any host resource is absent. A required owner-loss channel closes the
+session independently of caller cancellation. Short/error entropy, partial
+accept results and adapter/caller errors fail without public raw error detail.
 
 ## What exists and why it is insufficient
 
@@ -116,6 +123,10 @@ than zero. Require nonzero boot nonce, image digest and session ID. The host
 pins every binding field, not merely its digest. Runtime fields must also equal
 the handshake identity. `jobGeneration` is a fresh admission correlation token,
 not a fake credential activation/helper generation or a new durable store.
+This selected-profile 64-byte limit is intentionally narrower than existing
+L7/credential safe IDs, which allow 128 bytes. Tests reject both 65- and 128-byte
+IDs without truncation. The eventual host preflight must reject incompatible
+input, not silently truncate, hash or remap a real identity.
 
 The last six fields map to the existing L7 identity: plan, policy snapshot,
 proxy session/generation, topology generation and rule generation. Match its
@@ -169,6 +180,24 @@ readiness must complete within the same initial deadline. An idle established
 connection is still bounded by the existing 35-minute session hard expiry and
 caller lifetime. Failed authentication consumes an attempt. Once claimed,
 loss is terminal: revoke state, notify the host owner, no reconnect/fallback.
+The implemented idle-boot acceptance budget is three handshake deadlines
+(15 seconds); serial acceptance never has more than one pending/active stream.
+After the sole ready response, the listener closes and only loss/replay/expiry
+can follow on that stream. Every supported transport read/write phase has
+observed-I/O cancellation and fake-clock deadline tests; those tests do not
+substitute a watchdog close for a product close.
+
+These lifetime bounds assume the injected listener/stream honor cancellation
+and bounded Close/unblock, and clock callbacks/timers honor their contract.
+An explicit `Random` dependency is trusted bounded/nonblocking. Nil preserves
+the existing `crypto/rand.Reader` semantics. `session.NewGuestHandshake` reads
+32 entropy bytes synchronously; this acceptor cannot interrupt an arbitrary
+blocking entropy reader, and no leaked-goroutine workaround or session crypto
+change is added. Early-boot OS entropy readiness is not established by these
+tests. Before claiming bounded **live** startup, the selected loader must
+resolve that dependency, for example verified nonblocking kernel entropy with
+fail-closed unavailable behavior. Short/error entropy is tested to exhaust the
+bounded attempt budget without output or a remaining transport handler.
 
 ## Boot and host producer handoff (not implemented here)
 
@@ -252,39 +281,43 @@ handler does not justify changing the default binary selection or listener.
 
 ## Executable RED and its limits
 
-`cmd/hal-guest-agent/minimal_control_red_test.go` deliberately adapts the actual
-current `vsock.NewTransport` + `server.New` construction with an in-memory
+At the RED revision, `cmd/hal-guest-agent/minimal_control_red_test.go` deliberately
+adapted the actual `vsock.NewTransport` + `server.New` construction with an in-memory
 `io.Pipe` listener and a backend that counts/rejects work. It does not pretend
 there is a minimal endpoint. Production v1 dispatch currently returns a framed
 `unsupported_protocol_version`, not a parseable cryptographic GuestHello.
 This is the observed protocol gap, not a missing-symbol/source-shape test.
 
 Every new rejection case first requires a real parseable GuestHello; application
-rejection cases additionally require Finished. Today they all fail at the
-absent GuestHello. Consequently missing/mismatched
+rejection cases additionally require Finished. At frozen RED `5ca721ef`, all
+26 subcases failed at the absent GuestHello. Consequently missing/mismatched
 binding, wrong key, cross-runtime, duplicate-key, replay and cancellation
-assertions are frozen future acceptance requirements, **not already exercised
-negative protocol evidence**. GREEN must retain their full transcripts while
-replacing only the explicit adapter construction with production minimal code.
+assertions were frozen acceptance requirements, **not negative protocol evidence
+at that RED revision**. GREEN retains their full transcripts while replacing
+only the explicit adapter construction/import with production minimal code;
+those full transcripts now execute against the injected acceptor.
 The legacy constructor has separate passing rejection assertions and may not
 be changed to accept either new minimal or historical v2 labels.
 
 The independent 2-second watchdog fails the test if it must close a stuck pipe;
 it is not counted as product cancellation/deadline behavior. All server
 goroutines are joined. No sockets, listeners bound to the host, subprocesses,
-KVM, privileges, credentials or network are used. Before GREEN acceptance add
-focused codec bounds/alias tests, deterministic clock expiry and three-attempt/
-one-claim tests around the real new acceptor; existing session tests alone do
-not prove acceptor integration. Host producer, public boot delivery, actual
+KVM, privileges, credentials or network are used. GREEN adds focused codec
+bounds/alias/all-27-field tests, deterministic clock expiry, immutable options,
+three-attempt/one-claim, blocked accept/read/write cancellation, owner loss and
+partial-failure tests around the real new acceptor. Existing session tests
+alone do not prove acceptor integration. Host producer, public boot delivery, actual
 listener selection, network/credential activation and live cleanup remain
-missing dependencies even if this first slice later becomes green.
+missing dependencies after this injected first slice becomes green.
 
-Focused commands (the two `RED` tests intentionally fail at this revision):
+Focused commands (the tests named `RED` intentionally fail at `5ca721ef`, and
+pass only after the reviewed construction change):
 
 ```sh
 go test -p 2 ./cmd/hal-guest-agent -run '^TestMinimalControlRED' -count=1
 go test -p 2 -race ./cmd/hal-guest-agent -run '^TestMinimalControl' -count=3
+go test -p 2 -race ./internal/sandboxruntime/microvm/guestagent/minimalcontrol -count=3 -timeout=60s
 go test -p 2 ./cmd/hal-guest-agent -skip '^TestMinimalControlRED' -count=1
 go test -p 2 -race ./internal/sandboxruntime/microvm/guestagent/session ./internal/sandboxruntime/microvm/guestagent/v2control -count=1
-go vet -p 2 ./cmd/hal-guest-agent
+go vet -p 2 ./cmd/hal-guest-agent ./internal/sandboxruntime/microvm/guestagent/minimalcontrol
 ```
