@@ -36,17 +36,52 @@ R2 verification uses fake worker/provider execution plus a local shell fixture
 with configured required checks. No network, credentials, container, publication,
 or privileged host operation is needed.
 
-## R1: recovery (next checkpoint)
+## R1: recovery
 
-Recovery will reuse the existing workspace lock and Git boundaries. It must
-reject dirty worktrees and unprovable or divergent bundle inputs before mutation,
-bind worker input ancestry to recorded immutable workspace metadata, and return
-a failing process status for rendered JSON failures. Legacy records without an
-immutable input pin must not manufacture one or fetch private history.
+The same apply helper serves explicit recovery and host publication (including
+automatic fallback). Its safety checks must hold for every caller; this does not
+add publication authority. A JSON failure remains one `factory-recover-v1`
+document, with `ok=false`, safe text and a nonzero returned error. Rendering
+failure joins the original error rather than converting recovery into success.
 
-R1 is not implemented or accepted by the R2 checkpoint. Its design and meaningful
-red cases must be committed before its production changes; real Git validation
-will use isolated repositories and remain explicitly tagged.
+Before host mutation, recovery checks canonical branch names (not checkout
+expressions), acquires the existing `hal-workspace-locks` manager using the
+`workspace:<canonical project root>` key, and rejects staged, unstaged or
+untracked work without listing paths. There is no stash/reset/force behavior.
+The same lock stays owned through host apply and is released on every outcome.
+
+Exactly one complete bundle artifact must resolve inside its run's artifact
+directory. Recovery opens a regular non-symlink file through a contained root
+and copies it into a private, context-aware, bounded snapshot (512 MiB maximum).
+All Git verification and consumption use that snapshot, not a reopened stored
+path. No new durable digest or schema is claimed. Temporary state is removed.
+
+A verified bundle must advertise one unambiguous `HEAD` commit. Analysis imports
+it only into a temporary bare shared clone of the already-local destination;
+local objects may be read, but no remote is contacted. Rejected history never
+changes host objects, refs, the index or worktree.
+
+- Worker `git_bundle` input requires the recorded immutable
+  `Sandbox.Workspace.SyncRef`, already present locally and ancestral to the
+  advertised output. A moving branch cannot replace missing recorded evidence.
+- Legacy records without an input pin may use the already-local canonical
+  `BaseBranch` tip as a conservative compatibility-only ancestry anchor. This
+  is not a claim about the original input commit. A missing or divergent local
+  base requires manual handoff; recovery does not fetch missing private history.
+
+Any existing destination branch must be an ancestor of the inspected output
+before checkout. Immediately before host mutation, recheck cleanliness and exact
+host refs. Fetch only the inspected local snapshot without writing `FETCH_HEAD`,
+and create/fast-forward the branch by immutable commit identity, preserving
+ignored-file collision protection. Never use `FETCH_HEAD` or force a branch.
+Cancellation or failed preflight cannot publish success. Cancellation during an
+accepted Git object import can leave unreachable objects, but does not authorize
+resetting user refs or deleting repository data to roll them back.
+
+R1 design/red tests precede implementation. Tagged real-Git cases cover clean
+and repeated recovery, dirty categories, canonical refs, missing/corrupt or
+unrelated bundles, missing pins/history, divergent destinations, lock contention,
+Git failures and cancellation; no real publication or runtime is required.
 
 ## Focused gates
 
