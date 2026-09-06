@@ -47,6 +47,7 @@ func TestMinimalLaunchStartupRequiresExactHeldLockEntry(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := store.requireMinimalLaunchEmpty(lock)
+			t.Cleanup(store.closeMinimalStore)
 			if (got == nil) != (kind == "original") {
 				t.Fatalf("startup held lock %s: %v", kind, got)
 			}

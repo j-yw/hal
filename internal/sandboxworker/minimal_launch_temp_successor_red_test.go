@@ -3,6 +3,7 @@ package sandboxworker
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -16,6 +17,8 @@ func TestMinimalLaunchPreservesConsumedTemporarySuccessor(t *testing.T) {
 		if err := original(old, new); err != nil {
 			return err
 		}
+		// Selected operations now use the retained root's relative names.
+		old = filepath.Join(fixture.stateDir, old)
 		if _, err := os.Lstat(old); !os.IsNotExist(err) {
 			t.Fatalf("rename did not consume temporary name: %v", err)
 		}

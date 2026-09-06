@@ -225,11 +225,14 @@ func (authorizer *MinimalLaunchAuthorizer) Close() {
 // Start dispatches only this binding's armed reservation and original input
 // handle. The caller must retain a nonnil returned owner even alongside errors.
 func (binding *MinimalLaunchProviderBinding) Start(reservation *MinimalLaunchReservation, selection *MinimalLaunchPreparedSelection, barrier func() error) (owner *MinimalLaunchOwnerBinding, err error) {
-	if binding == nil || binding.self != binding || reservation == nil || reservation.self != reservation || selection == nil || selection.self != selection || selection.binding != binding || reservation.selection != selection || selection.Current(reservation.ctx) != nil {
+	if binding == nil || binding.self != binding || reservation == nil || reservation.self != reservation || selection == nil || selection.self != selection || selection.binding != binding || reservation.selection != selection || barrier == nil {
 		return nil, ErrMinimalLaunchUnavailable
 	}
 	reservation.mu.Lock()
-	admitted := reservation.armed && !reservation.claimed && reservation.currentLocked()
+	admitted := reservation.armed && !reservation.attempted && !reservation.claimed && reservation.currentLocked()
+	if admitted {
+		reservation.attempted = true
+	}
 	reservation.mu.Unlock()
 	if !admitted {
 		return nil, ErrMinimalLaunchUnavailable
@@ -247,6 +250,17 @@ func (binding *MinimalLaunchProviderBinding) Start(reservation *MinimalLaunchRes
 			err = ErrMinimalLaunchUnavailable
 		}
 	}()
+	// No provider or barrier callback runs under either retained mutex. Mark
+	// the one attempt before callbacks, but leave ClaimLaunch to the provider.
+	if selection.Current(reservation.ctx) != nil || barrier() != nil {
+		return nil, ErrMinimalLaunchUnavailable
+	}
+	reservation.mu.Lock()
+	current := reservation.armed && !reservation.claimed && reservation.currentLocked()
+	reservation.mu.Unlock()
+	if !current {
+		return nil, ErrMinimalLaunchUnavailable
+	}
 	returned, err := binding.provider.StartMinimalJob(reservation.ctx, reservation, selection.source)
 	if !jobCredentialBindingValueIsNil(returned) {
 		owner = &MinimalLaunchOwnerBinding{binding: binding, owner: returned, identity: reservation.identity}

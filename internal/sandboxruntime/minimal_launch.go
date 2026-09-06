@@ -48,15 +48,15 @@ type MinimalLaunchIdentity struct {
 // MinimalLaunchReservation is a live one-shot dispatch latch. Only its original
 // manager-owned handle may arm it after exact durable dispatch readback.
 type MinimalLaunchReservation struct {
-	self                    *MinimalLaunchReservation
-	mu                      sync.Mutex
-	identity                MinimalLaunchIdentity
-	selection               *MinimalLaunchPreparedSelection
-	ctx                     context.Context
-	cancel                  context.CancelFunc
-	stopAuthority           func() bool
-	deadline                time.Time
-	armed, claimed, revoked bool
+	self                               *MinimalLaunchReservation
+	mu                                 sync.Mutex
+	identity                           MinimalLaunchIdentity
+	selection                          *MinimalLaunchPreparedSelection
+	ctx                                context.Context
+	cancel                             context.CancelFunc
+	stopAuthority                      func() bool
+	deadline                           time.Time
+	armed, attempted, claimed, revoked bool
 }
 
 // MinimalLaunchCleanupReceipt is bookkeeping returned by the same trusted

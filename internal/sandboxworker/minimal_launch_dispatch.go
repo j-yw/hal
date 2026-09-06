@@ -1,6 +1,7 @@
 package sandboxworker
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"time"
@@ -95,10 +96,30 @@ func (service *L8Service) handleMinimalLaunch(ctx context.Context, principal san
 	return l8ServiceFailureResponse(request)
 }
 
-// Compiling RED boundary. This exact callback must be checked after the last
-// provider Current and before provider entry; the binding does not call it yet.
+// This callback runs after the last provider Current. Only the original live
+// entry, held directory/lock, and exact durable dispatch bytes admit entry.
 func (manager *jobManagerV2) checkMinimalDispatch(entry *minimalLaunchEntry) error {
-	return errMinimalLaunchState
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if !manager.minimal || manager.closed || manager.minimalPoisoned || manager.stateLock == nil || entry == nil || entry.reservation == nil || entry.selection == nil {
+		return errMinimalLaunchState
+	}
+	identity := entry.reservation.Identity()
+	state, found := manager.states[identity.WorkerJobID]
+	if !found || manager.minimalLive[identity.WorkerJobID] != entry || state.MinimalLaunch == nil || state.MinimalLaunch.Phase != "dispatching" || state.MinimalLaunch.JobGeneration != identity.JobGeneration || state.MinimalLaunch.LaunchGrantID != identity.LaunchGrantID || entry.reservation.Context().Err() != nil || manager.store.checkMinimalAuthority(manager.stateLock) != nil {
+		manager.minimalPoisoned = true
+		entry.reservation.Revoke()
+		return errMinimalLaunchState
+	}
+	actual, err := manager.store.readMinimalLaunchFile(identity.WorkerJobID + ".json")
+	want, wantErr := encodeStoredJobStateV2(state)
+	got, gotErr := encodeStoredJobStateV2(actual)
+	if err != nil || wantErr != nil || gotErr != nil || !bytes.Equal(want, got) {
+		manager.minimalPoisoned = true
+		entry.reservation.Revoke()
+		return errMinimalLaunchState
+	}
+	return nil
 }
 
 func (manager *jobManagerV2) resolveMinimalSubmission(principalID, submissionID, requestKey string) (JobV2, bool, error) {
@@ -126,6 +147,10 @@ func (manager *jobManagerV2) reserveMinimalLaunch(ctx context.Context, principal
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if !manager.minimal || manager.closed || manager.minimalPoisoned || manager.stateLock == nil || ctx == nil || ctx.Err() != nil || selection == nil {
+		return nil, JobV2{}, false, errMinimalLaunchState
+	}
+	if manager.store.checkMinimalAuthority(manager.stateLock) != nil {
+		manager.minimalPoisoned = true
 		return nil, JobV2{}, false, errMinimalLaunchState
 	}
 	if job, found, err := manager.findMinimalSubmissionLocked(principalID, request.SubmissionID, requestKey); found || err != nil {
@@ -224,6 +249,7 @@ func (manager *jobManagerV2) finishMinimalClose() {
 	stateLock := manager.stateLock
 	manager.stateLock = nil
 	manager.mu.Unlock()
+	manager.store.closeMinimalStore()
 	closeJobManagerV2StateLock(stateLock)
 	// Pending owners/selections and durable records are deliberately retained.
 	// Exact terminal cleanup and cleanup-only recovery are the next boundary.

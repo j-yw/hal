@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -52,19 +52,19 @@ var errMinimalLaunchState = errors.New("worker minimal launch state is unavailab
 // The initial selected consumer does not recover records yet. Only the exact
 // held lock may exist: an unknown entry is not evidence of an empty job store.
 func (store *jobStoreV2) requireMinimalLaunchEmpty(lock *jobStateLock) error {
-	if store == nil || lock == nil {
-		return ErrL8RecoveryDependency
-	}
-	lock.mu.Lock()
-	defer lock.mu.Unlock()
-	if lock.file == nil {
+	if store == nil || lock == nil || store.minimalOps != nil {
 		return ErrL8RecoveryDependency
 	}
 	directory, err := openMinimalLaunchNoFollow(store.root, true)
 	if err != nil {
 		return ErrL8RecoveryDependency
 	}
-	defer directory.Close()
+	retained := false
+	defer func() {
+		if !retained {
+			_ = directory.Close()
+		}
+	}()
 	info, err := directory.Stat()
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || !minimalLaunchFileOwned(info) {
 		return ErrL8RecoveryDependency
@@ -73,12 +73,19 @@ func (store *jobStoreV2) requireMinimalLaunchEmpty(lock *jobStateLock) error {
 	if err != nil && err != io.EOF || len(names) != 1 || names[0] != jobStateLockFileName {
 		return ErrL8RecoveryDependency
 	}
-	held, heldErr := lock.file.Stat()
-	current, currentErr := os.Lstat(filepath.Join(store.root, jobStateLockFileName))
-	root, rootErr := os.Lstat(store.root)
-	if heldErr != nil || currentErr != nil || rootErr != nil || !os.SameFile(held, current) || !held.Mode().IsRegular() || held.Mode().Perm() != 0o600 || !minimalLaunchFileOwned(held) || !os.SameFile(info, root) || directory.Close() != nil {
+	root, err := os.OpenRoot(store.root)
+	if err != nil {
 		return ErrL8RecoveryDependency
 	}
+	// OpenRoot may follow a link. Bind it to the independently nofollow-opened
+	// directory and original held lock, never to another reopened successor.
+	store.minimalOps = newMinimalLaunchStoreOps(store, root, directory, lock)
+	if store.checkMinimalAuthority(lock) != nil {
+		store.minimalOps = nil
+		_ = root.Close()
+		return ErrL8RecoveryDependency
+	}
+	retained = true
 	return nil
 }
 
@@ -87,28 +94,25 @@ func (store *jobStoreV2) requireMinimalLaunchEmpty(lock *jobStateLock) error {
 // final symlink. Any error is uncertain; the manager must poison admission.
 // This selected path never calls the legacy write/rename rollback path.
 func (store *jobStoreV2) saveMinimalLaunch(state storedJobStateV2) error {
-	if store == nil || store.minimalOps == nil || store.minimalOps.owner != store || store.minimalOps.rename == nil || validateStoredMinimalLaunchV1(state) != nil {
+	if store == nil || store.minimalOps == nil || store.checkMinimalAuthority(store.minimalOps.lock) != nil || validateStoredMinimalLaunchV1(state) != nil {
 		return errMinimalLaunchState
 	}
 	payload, err := encodeStoredJobStateV2(state)
 	if err != nil || len(payload) == 0 || int64(len(payload)) > maxStoredJobStateV2Bytes {
 		return errMinimalLaunchState
 	}
-	directory, err := openMinimalLaunchNoFollow(store.root, true)
+	temporaryID, err := newOpaqueJobID()
 	if err != nil {
 		return errMinimalLaunchState
 	}
-	defer directory.Close()
-	dirInfo, err := directory.Stat()
-	if err != nil || !dirInfo.IsDir() || dirInfo.Mode().Perm() != 0o700 || !minimalLaunchFileOwned(dirInfo) {
-		return errMinimalLaunchState
-	}
-	file, err := os.CreateTemp(store.root, ".minimal-"+state.JobV2.ID+"-")
+	name := ".minimal-" + temporaryID
+	file, err := openMinimalLaunchRelative(store.minimalOps.root, name, true)
 	if err != nil {
 		return errMinimalLaunchState
 	}
 	defer file.Close()
-	defer os.Remove(file.Name())
+	// A failed transaction deliberately leaves an uncertain private entry.
+	// There is no name-based deferred cleanup that could remove a successor.
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !minimalLaunchFileOwned(info) {
 		return errMinimalLaunchState
@@ -119,11 +123,14 @@ func (store *jobStoreV2) saveMinimalLaunch(state storedJobStateV2) error {
 	if file.Sync() != nil {
 		return errMinimalLaunchState
 	}
-	path := filepath.Join(store.root, state.JobV2.ID+".json")
+	path := state.JobV2.ID + ".json"
+	if store.checkMinimalAuthority(store.minimalOps.lock) != nil {
+		return errMinimalLaunchState
+	}
 	if state.MinimalLaunch.Phase == "reserved" {
 		// Link is an exclusive initial publication, never an overwrite. The
 		// private temporary name is removed only after successful readback.
-		if os.Link(file.Name(), path) != nil {
+		if store.minimalOps.root.Link(name, path) != nil {
 			return errMinimalLaunchState
 		}
 	} else {
@@ -135,18 +142,19 @@ func (store *jobStoreV2) saveMinimalLaunch(state storedJobStateV2) error {
 		expected.MinimalLaunch.Phase, expected.MinimalLaunch.Revision = "reserved", 1
 		previous, err := encodeStoredJobStateV2(prior)
 		want, wantErr := encodeStoredJobStateV2(expected)
-		if err != nil || wantErr != nil || !bytes.Equal(previous, want) || store.minimalOps.rename(file.Name(), path) != nil {
+		if err != nil || wantErr != nil || !bytes.Equal(previous, want) || store.checkMinimalAuthority(store.minimalOps.lock) != nil {
+			return errMinimalLaunchState
+		}
+		// Relinquish the old name before attempting rename. Even an error may
+		// be after consumption; no later path may delete that name as ours.
+		if store.minimalOps.rename(name, path) != nil {
 			return errMinimalLaunchState
 		}
 	}
-	if directory.Sync() != nil {
+	if store.minimalOps.sync() != nil || store.checkMinimalAuthority(store.minimalOps.lock) != nil {
 		return errMinimalLaunchState
 	}
-	currentDir, err := os.Lstat(store.root)
-	if err != nil || !os.SameFile(dirInfo, currentDir) {
-		return errMinimalLaunchState
-	}
-	current, err := openMinimalLaunchNoFollow(path, false)
+	current, err := openMinimalLaunchRelative(store.minimalOps.root, path, false)
 	if err != nil {
 		return errMinimalLaunchState
 	}
@@ -164,26 +172,29 @@ func (store *jobStoreV2) saveMinimalLaunch(state storedJobStateV2) error {
 	if decodeStoredJobStateV2Into(bytes.NewReader(readback), maxStoredJobStateV2Bytes, &decoded) != nil || decoded.Validate() != nil {
 		return errMinimalLaunchState
 	}
-	finalInfo, err := os.Lstat(path)
+	finalInfo, err := store.minimalOps.root.Lstat(path)
 	if err != nil || !os.SameFile(writtenInfo, finalInfo) || !validMinimalLaunchStoredFile(finalInfo) {
 		return errMinimalLaunchState
 	}
-	if os.Remove(file.Name()) != nil && state.MinimalLaunch.Phase == "reserved" {
+	if state.MinimalLaunch.Phase == "reserved" && store.removeMinimalTemporary(name, file) != nil {
 		return errMinimalLaunchState
 	}
-	if directory.Sync() != nil {
+	if store.minimalOps.sync() != nil || store.checkMinimalAuthority(store.minimalOps.lock) != nil {
 		return errMinimalLaunchState
 	}
 	// Explicit close errors precede admission too; deferred closes are cleanup
 	// only and do not turn a failed close into an accepted transaction.
-	if current.Close() != nil || file.Close() != nil || directory.Close() != nil {
+	if current.Close() != nil || file.Close() != nil {
 		return errMinimalLaunchState
 	}
 	return nil
 }
 
 func (store *jobStoreV2) readMinimalLaunchFile(path string) (storedJobStateV2, error) {
-	file, err := openMinimalLaunchNoFollow(path, false)
+	if store == nil || store.minimalOps == nil || store.checkMinimalAuthority(store.minimalOps.lock) != nil || !strings.HasSuffix(path, ".json") || !validWorkerV2SafeID(strings.TrimSuffix(path, ".json")) {
+		return storedJobStateV2{}, errMinimalLaunchState
+	}
+	file, err := openMinimalLaunchRelative(store.minimalOps.root, path, false)
 	if err != nil {
 		return storedJobStateV2{}, errMinimalLaunchState
 	}
@@ -204,8 +215,8 @@ func (store *jobStoreV2) readMinimalLaunchFile(path string) (storedJobStateV2, e
 	if err != nil || !bytes.Equal(canonical, payload) {
 		return storedJobStateV2{}, errMinimalLaunchState
 	}
-	current, err := os.Lstat(path)
-	if err != nil || !os.SameFile(info, current) || !validMinimalLaunchStoredFile(current) || file.Close() != nil {
+	current, err := store.minimalOps.root.Lstat(path)
+	if err != nil || !os.SameFile(info, current) || !validMinimalLaunchStoredFile(current) || store.checkMinimalAuthority(store.minimalOps.lock) != nil || file.Close() != nil {
 		return storedJobStateV2{}, errMinimalLaunchState
 	}
 	return state, nil

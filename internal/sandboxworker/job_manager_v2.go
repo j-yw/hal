@@ -79,7 +79,6 @@ func newJobManagerV2(options jobManagerV2Options) (*jobManagerV2, error) {
 		submissions:      make(map[string]string, len(states)),
 	}
 	if manager.minimal {
-		store.minimalOps = newMinimalLaunchStoreOps(store)
 		manager.minimalContext, manager.minimalCancel = context.WithCancel(context.Background())
 	}
 	for _, state := range states {
