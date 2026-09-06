@@ -2123,7 +2123,7 @@ func TestWorkerRootlessRunSandboxStreamsOutputAndSummariesExcludePreparation(t *
 				_, _ = io.WriteString(req.Stdout, "run preparation output\n")
 				return &sandboxruntime.ExecResult{}, nil
 			}
-			_, _ = io.WriteString(req.Stdout, `{"contractVersion":1,"ok":true,"summary":"worker run stream"}`+"\n")
+			_, _ = io.WriteString(req.Stdout, `{"contractVersion":1,"ok":true,"iterations":1,"complete":false,"summary":"worker run stream"}`+"\n")
 			_, _ = io.WriteString(req.Stderr, "worker run stderr one\n")
 			_, _ = io.WriteString(req.Stderr, "worker run stderr two\n")
 			return &sandboxruntime.ExecResult{}, nil
@@ -2193,8 +2193,8 @@ func TestWorkerRootlessRunSandboxStreamsOutputAndSummariesExcludePreparation(t *
 	}
 	var result RunResult
 	decodeExactlyOneJSONDocument(t, out.Bytes(), &result)
-	if !result.OK || result.Summary != "worker run stream" {
-		t.Fatalf("RunResult = %#v, want successful remote JSON", result)
+	if !result.OK || result.Iterations != 1 || result.Complete || result.Summary != "worker run stream" {
+		t.Fatalf("RunResult = %#v, want successful bounded remote JSON", result)
 	}
 	if !strings.Contains(errOut.String(), "run preparation output") {
 		t.Fatalf("stderr/setup output = %q, want preparation output", errOut.String())
@@ -2205,7 +2205,7 @@ func TestWorkerRootlessRunSandboxStreamsOutputAndSummariesExcludePreparation(t *
 	}
 	stdoutSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stdout-summary.txt")
 	stderrSummary := requireSandboxOutputSummaryPayload(t, store, manifest, "output/stderr-summary.txt")
-	if stdoutSummary != `{"contractVersion":1,"ok":true,"summary":"worker run stream"}`+"\n" {
+	if stdoutSummary != `{"contractVersion":1,"ok":true,"iterations":1,"complete":false,"summary":"worker run stream"}`+"\n" {
 		t.Fatalf("stdout summary = %q, want only remote JSON output", stdoutSummary)
 	}
 	if stderrSummary != "worker run stderr one\nworker run stderr two\n" {
