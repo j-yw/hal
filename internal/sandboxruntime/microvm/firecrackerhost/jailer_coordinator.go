@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/assets/localresolver"
 	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
 )
 
@@ -156,11 +157,19 @@ func newStrictJailerCoordinatorWithDependencies(deps strictJailerCoordinatorDepe
 }
 
 func (coordinator *strictJailerCoordinator) start(ctx context.Context, request strictJailerCoordinatorRequest) (result strictJailerSession, resultErr error) {
+	return coordinator.startWithMinimalLease(ctx, request, nil)
+}
+
+func (coordinator *strictJailerCoordinator) startWithMinimalLease(ctx context.Context, request strictJailerCoordinatorRequest, assets *localresolver.VerifiedL8MinimalLaunchLease) (result strictJailerSession, resultErr error) {
 	if coordinator == nil {
 		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "session")
 	}
 	coordinator.mu.Lock()
 	defer coordinator.mu.Unlock()
+	ctx = nonNilContext(ctx)
+	if ctx.Err() != nil {
+		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "session")
+	}
 	if coordinator.generation != nil {
 		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorBusy, "session")
 	}
@@ -189,13 +198,19 @@ func (coordinator *strictJailerCoordinator) start(ctx context.Context, request s
 	if err != nil || interfaceValueIsNil(filesystem) {
 		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "filesystem")
 	}
-	staging, err := coordinator.deps.stage(filesystem, jailerStagingRequest{
+	stagingRequest := jailerStagingRequest{
 		Authority: authority,
 		Kernel:    request.kernel,
 		Rootfs:    request.rootfs,
 		Config:    request.config,
 		Support:   append([]jailerStagingResourceInput(nil), request.support...),
-	})
+	}
+	var staging jailerStagingResult
+	if assets == nil {
+		staging, err = coordinator.deps.stage(filesystem, stagingRequest)
+	} else {
+		staging, err = stageStrictJailerMinimalAssets(ctx, assets, coordinator.deps.stage, filesystem, stagingRequest)
+	}
 	if err != nil {
 		primary := error(newStrictJailerCoordinatorError(errStrictJailerCoordinatorFailed, "stage"))
 		cleanupErr := error(newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup"))
@@ -216,6 +231,9 @@ func (coordinator *strictJailerCoordinator) start(ctx context.Context, request s
 	coordinator.next++
 	generation := &strictJailerCoordinatorGeneration{id: coordinator.next, staging: staging, state: strictJailerCoordinatorRootCleanupPending}
 	session := strictJailerSession{coordinator: coordinator, generation: generation.id}
+	if ctx.Err() != nil {
+		return coordinator.failBeforeProcess(generation, session, "stage")
+	}
 	if err := staging.verifyOwnedRoot(); err != nil {
 		return coordinator.failBeforeProcess(generation, session, "verify")
 	}
@@ -235,6 +253,14 @@ func (coordinator *strictJailerCoordinator) start(ctx context.Context, request s
 	})
 	if err != nil {
 		return coordinator.failBeforeProcess(generation, session, "plan")
+	}
+	if assets != nil {
+		if err := assets.ConfirmCurrent(ctx); err != nil {
+			return coordinator.failBeforeProcess(generation, session, "verify")
+		}
+	}
+	if ctx.Err() != nil {
+		return coordinator.failBeforeProcess(generation, session, "start")
 	}
 	process, err := coordinator.deps.lifecycle.start(nonNilContext(ctx), strictJailerLifecycleStartRequest{launchPlan: launchPlan, hostPaths: hostPaths, executables: inspection.executables})
 	if err != nil {

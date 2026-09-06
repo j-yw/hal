@@ -51,6 +51,7 @@ type minimalDistributionState struct {
 	parentMetadata map[string]l8PinnedAsset
 	parentEvidence assetbuild.L8ParentL7Evidence
 	closed         bool
+	transferred    bool
 	closeErr       error
 }
 
@@ -172,6 +173,9 @@ func SelectL8MinimalDistribution(verified VerifiedL8MinimalDistribution) (assets
 	state := verified.state
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if state.transferred {
+		return assets.LaunchDescriptor{}, minimalDistributionError(ErrInvalidRequest)
+	}
 	if err := state.confirmCurrent(); err != nil {
 		return assets.LaunchDescriptor{}, minimalDistributionError(err)
 	}
@@ -185,6 +189,13 @@ func (verified VerifiedL8MinimalDistribution) Close() error {
 	state := verified.state
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if state.transferred {
+		return nil
+	}
+	return state.closeLocked()
+}
+
+func (state *minimalDistributionState) closeLocked() error {
 	if state.closed {
 		return state.closeErr
 	}
@@ -263,13 +274,17 @@ func pinMinimalFile(root *os.File, name string) (l8PinnedAsset, error) {
 // One extra entry suffices to reject an oversized directory. Do not enumerate
 // an unbounded attacker-controlled directory just to establish the exact set.
 func verifyMinimalEntrySet(root *os.File) error {
+	return verifyMinimalLaunchEntrySet(root, l8RequiredDistributionOutputs)
+}
+
+func verifyMinimalLaunchEntrySet(root *os.File, required []string) error {
 	clone, err := duplicateDistributionRoot(root)
 	if err != nil {
 		return ErrFileUnavailable
 	}
-	entries, readErr := clone.ReadDir(len(l8RequiredDistributionOutputs) + 1)
+	entries, readErr := clone.ReadDir(len(required) + 1)
 	closeErr := clone.Close()
-	if (readErr != nil && readErr != io.EOF) || closeErr != nil || len(entries) != len(l8RequiredDistributionOutputs) {
+	if (readErr != nil && readErr != io.EOF) || closeErr != nil || len(entries) != len(required) {
 		return ErrManifestInvalid
 	}
 	seen := make(map[string]bool, len(entries))
@@ -279,7 +294,7 @@ func verifyMinimalEntrySet(root *os.File) error {
 		}
 		seen[entry.Name()] = true
 	}
-	for _, name := range l8RequiredDistributionOutputs {
+	for _, name := range required {
 		if !seen[name] {
 			return ErrManifestInvalid
 		}

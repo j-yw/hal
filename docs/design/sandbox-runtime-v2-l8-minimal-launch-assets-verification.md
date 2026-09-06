@@ -55,6 +55,11 @@ metadata. No new durable schema or parallel launch framework is introduced.
 - A concrete coordinator test consumes a resolver-verified fixture bundle,
   uses the actual stager with a fake filesystem, and verifies the exact staged
   kernel/rootfs measurements and unchanged executable/namespace lifecycle.
+- A Linux-only unit test also uses the actual dirfd-backed filesystem, reads
+  and hashes its staged files, and checks exact tree removal. Separate attacks
+  change and restore the source inode during copying, or corrupt the real
+  destination FD after the copy hash but before readback. Both must deny start.
+  The host inspector and process lifecycle stay fake; this is not Jailer exec.
 
 Default tests are filesystem/fake tests only. They do not run image tools,
 Jailer, Firecracker, KVM, privileged mount operations, or a guest. Focused gates:
@@ -74,3 +79,6 @@ allocation, cgroup enforcement, orphan containment or restart recovery proof.
 The selected prepared-Linux L8 tests remain fail-closed and untouched. Strict
 admission stays disabled until real fresh Jailer launch, guest operations,
 credential matrix and owned teardown pass without skips on a prepared host.
+The existing host-owned, dedicated and quiescent runtime UID prerequisite is
+unchanged: this handoff does not defend staged mutable files against a trusted
+host administrator or an already-running process with that same host UID.

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestL8MinimalLaunchTransferOwnsFilesAndExpiresViews(t *testing.T) {
@@ -236,6 +237,74 @@ func TestL8MinimalLaunchConcurrentTransferAndClose(t *testing.T) {
 			if _, err := file.Stat(); err == nil {
 				t.Fatal("concurrent ownership leaked a descriptor")
 			}
+		}
+	}
+}
+
+func TestL8MinimalLaunchCloseWaitsForBorrowAndRevokesViews(t *testing.T) {
+	verified, err := VerifyL8MinimalDistributionBundle(minimalDistributionFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verified.Close()
+	lease, err := verified.TakeLaunchLease(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	entered, release := make(chan io.ReadSeeker, 1), make(chan struct{})
+	borrowDone := make(chan error, 1)
+	go func() {
+		borrowDone <- lease.WithAssets(context.Background(), func(kernel, rootfs L8MinimalLaunchAsset) error {
+			entered <- rootfs.Source
+			<-release
+			_, err := io.ReadAll(rootfs.Source)
+			return err
+		})
+	}()
+	reader := <-entered
+	closeStarted, closeDone := make(chan struct{}), make(chan error, 1)
+	go func() { close(closeStarted); closeDone <- lease.Close() }()
+	<-closeStarted
+	select {
+	case err := <-closeDone:
+		close(release)
+		<-borrowDone
+		t.Fatalf("close crossed active borrow: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-borrowDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.Read(make([]byte, 1)); err == nil {
+		t.Fatal("closed borrow retained readable bytes")
+	}
+}
+
+func TestL8MinimalLaunchCloseFailureStillClosesOtherFiles(t *testing.T) {
+	verified, err := VerifyL8MinimalDistributionBundle(minimalDistributionFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := minimalLaunchRetainedFiles(verified)
+	lease, err := verified.TakeLaunchLease(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	first := lease.Close()
+	if first == nil || lease.Close() != first {
+		t.Fatal("close failure not retained idempotently")
+	}
+	for _, file := range files {
+		if _, err := file.Stat(); err == nil {
+			t.Fatal("partial close failure leaked another descriptor")
 		}
 	}
 }
