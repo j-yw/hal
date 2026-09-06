@@ -144,9 +144,18 @@ go test -count=1 -timeout=90s \
 ```
 
 The rootless lane requires the global proxy/firewall markers, an L7 Podman
-marker, and a named already-local image. It performs no pull:
+marker, and a named already-local image. It performs no pull. Both the isolated
+raw-packet capability proof and the composed topology test require Linux plus
+all three build tags below; generic `podman_integration` CI does not select
+prepared-host acceptance. Neither selected test skips missing prerequisites.
+Generic tagged compilation/skips are not L7 acceptance evidence.
 
 ```sh
+go test -count=1 -timeout=5m \
+  -tags='network_enforcement_live podman_integration l7_linux_network_integration' \
+  ./internal/sandboxruntime/rootlesspodman \
+  -run '^TestL7PreparedLinuxRootlessPodmanRawPacketCapabilityProof$'
+
 go test -count=1 -timeout=5m \
   -tags='network_enforcement_live podman_integration l7_linux_network_integration' \
   ./internal/sandboxruntime/rootlesspodman \
