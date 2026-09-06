@@ -21,6 +21,7 @@ type jobManagerV2Options struct {
 	WorkerID         string
 	DaemonGeneration string
 	Recovery         sandboxruntime.JobCredentialRuntimeRecoveryProvider
+	MinimalLaunch    bool
 }
 
 type jobManagerV2 struct {
@@ -48,7 +49,18 @@ func newJobManagerV2(options jobManagerV2Options) (*jobManagerV2, error) {
 	if err != nil {
 		return nil, err
 	}
-	states, err := reconcileJobStoreV2AtStartupWithRecovery(store, time.Now().UTC(), options.Recovery)
+	var states []storedJobStateV2
+	if options.MinimalLaunch {
+		// Until selected cleanup-only recovery is available, every retained
+		// record requires quarantine. Never run legacy reconciliation or its
+		// callbacks before selected identity/discriminator validation.
+		states, err = store.list()
+		if err == nil && len(states) != 0 {
+			err = ErrL8RecoveryDependency
+		}
+	} else {
+		states, err = reconcileJobStoreV2AtStartupWithRecovery(store, time.Now().UTC(), options.Recovery)
+	}
 	if err != nil {
 		closeJobManagerV2StateLock(stateLock)
 		return nil, err

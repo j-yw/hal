@@ -88,7 +88,7 @@ func NewL8DurableService(options L8DurableServiceOptions) (*L8Service, error) {
 			return nil, ErrL8ServiceUnavailable
 		}
 	} else {
-		if options.Binder != nil || !options.MinimalLaunch.Authorizer.MatchesDependencies(options.PrincipalAuthority, options.MinimalLaunch.Provider) {
+		if options.Binder != nil || options.RecoveryProvider != nil || !options.MinimalLaunch.Authorizer.MatchesDependencies(options.PrincipalAuthority, options.MinimalLaunch.Provider) {
 			return nil, ErrL8ServiceUnavailable
 		}
 		copied := *options.MinimalLaunch
@@ -99,7 +99,8 @@ func NewL8DurableService(options L8DurableServiceOptions) (*L8Service, error) {
 	}
 	jobs, err := newJobManagerV2(jobManagerV2Options{
 		StateDir: options.StateDir, WorkerID: workerID, DaemonGeneration: daemonGeneration,
-		Recovery: options.RecoveryProvider,
+		Recovery:      options.RecoveryProvider,
+		MinimalLaunch: minimalLaunch != nil,
 	})
 	if err != nil {
 		return nil, err

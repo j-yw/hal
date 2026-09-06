@@ -469,3 +469,12 @@ No VM boot, credential activation, prepared-Linux acceptance, strict-default
 readiness or full restart recovery is claimed. GREEN requires supervisor review
 of this fixed RED, then the real coupled authorizer/manager/durable dispatch
 boundary; merely removing the unavailable return is not sufficient.
+
+The first startup correction rejects a simultaneous legacy `RecoveryProvider`
+before opening the selected state directory. Selected startup only reads the
+existing store and rejects every nonempty store without reconciliation or
+callbacks; legacy startup is unchanged. This is an intermediate quarantine,
+not implemented phase-specific minimal recovery. The later selected decoder and
+identity checks must precede cleanup-only recovery, and validated `reserved`
+records need their separate no-dispatch terminal handling before this worker
+slice can be integrated as complete.
