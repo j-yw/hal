@@ -91,6 +91,9 @@ func NewL8DurableService(options L8DurableServiceOptions) (*L8Service, error) {
 			return nil, ErrL8ServiceUnavailable
 		}
 	} else {
+		if options.MinimalLaunch.PreparationTimeout <= 0 || options.MinimalLaunch.PreparationTimeout > maxMinimalLaunchPreparationTimeout {
+			return nil, ErrL8ServiceUnavailable
+		}
 		if options.Binder != nil || options.RecoveryProvider != nil || !options.MinimalLaunch.Authorizer.MatchesDependencies(options.PrincipalAuthority, options.MinimalLaunch.Provider) {
 			return nil, ErrL8ServiceUnavailable
 		}
@@ -217,9 +220,7 @@ func (service *L8Service) HandleAuthenticatedRequest(ctx context.Context, princi
 		return response
 	}
 	if service.minimalLaunch != nil {
-		// Compiling RED boundary: no reservation issuer or durable dispatch yet.
-		// Never fall back to a complete credential seed or call a provider here.
-		return l8ServiceFailureResponse(request)
+		return service.handleMinimalLaunch(ctx, principal, principalID, request)
 	}
 	if request.Operation == OperationJobCancelV2 {
 		return service.handleAuthenticatedJobCancelV2(ctx, principalID, request)

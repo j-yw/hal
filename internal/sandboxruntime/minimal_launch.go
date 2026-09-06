@@ -3,6 +3,8 @@ package sandboxruntime
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 )
 
 var ErrMinimalLaunchUnavailable = errors.New("minimal launch unavailable")
@@ -43,13 +45,18 @@ type MinimalLaunchIdentity struct {
 	LaunchPolicyRevision                                      uint64
 }
 
-// MinimalLaunchReservation is deliberately unissuable in the compiling RED
-// checkpoint. Only the manager's reviewed durable dispatch boundary may later
-// create its one-shot live authority; a zero value never authorizes launch.
-type MinimalLaunchReservation struct{}
-
-func (*MinimalLaunchReservation) ClaimLaunch(context.Context) (MinimalLaunchIdentity, error) {
-	return MinimalLaunchIdentity{}, ErrMinimalLaunchUnavailable
+// MinimalLaunchReservation is a live one-shot dispatch latch. Only its original
+// manager-owned handle may arm it after exact durable dispatch readback.
+type MinimalLaunchReservation struct {
+	self                    *MinimalLaunchReservation
+	mu                      sync.Mutex
+	identity                MinimalLaunchIdentity
+	selection               *MinimalLaunchPreparedSelection
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	stopAuthority           func() bool
+	deadline                time.Time
+	armed, claimed, revoked bool
 }
 
 // MinimalLaunchCleanupReceipt is bookkeeping returned by the same trusted
@@ -75,8 +82,8 @@ type MinimalJobRuntimeProvider interface {
 }
 
 // MinimalLaunchProviderBinding retains the exact constructor-injected provider.
-// No dispatch method exists yet: wrapping an interface does not authorize a
-// callback, and a zero or copied binding is not operational.
+// A zero or copied binding is not operational. Provider callbacks are admitted
+// only through its exact authorizer/selection/reservation chain.
 type MinimalLaunchProviderBinding struct {
 	self     *MinimalLaunchProviderBinding
 	provider MinimalJobRuntimeProvider
@@ -91,19 +98,22 @@ func NewMinimalLaunchProviderBinding(provider MinimalJobRuntimeProvider) (*Minim
 	return binding, nil
 }
 
-// MinimalLaunchAuthorizer retains constructor scope and exact dependency
-// pairing only in this RED checkpoint. No grant issuance is implemented.
+// MinimalLaunchAuthorizer retains immutable constructor scope and one service-
+// lifetime revocation latch. It is not a job store or credential authorizer.
 type MinimalLaunchAuthorizer struct {
 	self      *MinimalLaunchAuthorizer
 	authority *AuthenticatedWorkerPrincipalAuthority
 	provider  *MinimalLaunchProviderBinding
 	scopes    []MinimalLaunchScope
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 func NewMinimalLaunchAuthorizer(authority *AuthenticatedWorkerPrincipalAuthority, provider *MinimalLaunchProviderBinding, scopes []MinimalLaunchScope) (*MinimalLaunchAuthorizer, error) {
 	if _, ok := loadAuthenticatedWorkerPrincipalAuthorityState(authority); !ok || provider == nil || provider.self != provider {
 		return nil, ErrMinimalLaunchUnavailable
 	}
+	seen := make(map[MinimalLaunchScope]bool)
 	for _, scope := range scopes {
 		if scope.Revision == 0 {
 			return nil, ErrMinimalLaunchUnavailable
@@ -113,9 +123,16 @@ func NewMinimalLaunchAuthorizer(authority *AuthenticatedWorkerPrincipalAuthority
 				return nil, ErrMinimalLaunchUnavailable
 			}
 		}
+		key := scope
+		key.PolicyID, key.Revision = "", 0
+		if seen[key] {
+			return nil, ErrMinimalLaunchUnavailable
+		}
+		seen[key] = true
 	}
 	value := &MinimalLaunchAuthorizer{authority: authority, provider: provider, scopes: append([]MinimalLaunchScope(nil), scopes...)}
 	value.self = value
+	value.ctx, value.cancel = context.WithCancel(context.Background())
 	return value, nil
 }
 
@@ -123,5 +140,5 @@ func NewMinimalLaunchAuthorizer(authority *AuthenticatedWorkerPrincipalAuthority
 // visible principal or provider labels is insufficient.
 func (authorizer *MinimalLaunchAuthorizer) MatchesDependencies(authority *AuthenticatedWorkerPrincipalAuthority, provider *MinimalLaunchProviderBinding) bool {
 	return authorizer != nil && authorizer.self == authorizer && authorizer.authority == authority &&
-		provider != nil && provider.self == provider && authorizer.provider == provider
+		provider != nil && provider.self == provider && authorizer.provider == provider && authorizer.ctx != nil && authorizer.ctx.Err() == nil
 }

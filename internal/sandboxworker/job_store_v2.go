@@ -110,6 +110,7 @@ type storedJobStateV2 struct {
 	DaemonGeneration          string                                       `json:"daemonGeneration"`
 	CredentialState           *storedJobCredentialStateV2                  `json:"credentialState,omitempty"`
 	CredentialRecoveryReceipt *storedJobCredentialRuntimeRecoveryReceiptV1 `json:"credentialRecoveryReceipt,omitempty"`
+	MinimalLaunch             *storedMinimalLaunchV1                       `json:"minimalLaunch,omitempty"`
 }
 
 type jobStoreV2 struct {
@@ -153,6 +154,9 @@ func (state storedJobStateV2) Validate() error {
 	}
 	if !validWorkerV2SafeID(state.PrincipalID) || !validWorkerV2SafeID(state.DaemonGeneration) {
 		return errors.New("stored worker job private identity is invalid")
+	}
+	if state.MinimalLaunch != nil {
+		return validateStoredMinimalLaunchV1(state)
 	}
 	return validateStoredJobCredentialStateV2(state)
 }
@@ -332,6 +336,10 @@ func cloneStoredJobStateV2(state storedJobStateV2) storedJobStateV2 {
 	state.JobV2 = cloneJobV2(state.JobV2)
 	state.CredentialState = cloneStoredJobCredentialStateV2(state.CredentialState)
 	state.CredentialRecoveryReceipt = cloneStoredJobCredentialRuntimeRecoveryReceiptV1(state.CredentialRecoveryReceipt)
+	if state.MinimalLaunch != nil {
+		copied := *state.MinimalLaunch
+		state.MinimalLaunch = &copied
+	}
 	return state
 }
 
@@ -398,6 +406,9 @@ func (store *jobStoreV2) save(state storedJobStateV2) error {
 	}
 	if err := state.Validate(); err != nil {
 		return err
+	}
+	if state.MinimalLaunch != nil {
+		return store.saveMinimalLaunch(state)
 	}
 	payload, err := encodeStoredJobStateV2(state)
 	if err != nil {

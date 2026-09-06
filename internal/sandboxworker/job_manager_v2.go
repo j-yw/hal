@@ -33,6 +33,10 @@ type jobManagerV2 struct {
 	states           map[string]storedJobStateV2
 	submissions      map[string]string
 	closed           bool
+	minimal          bool
+	minimalPoisoned  bool
+	minimalLive      map[string]*minimalLaunchEntry
+	minimalActive    sync.WaitGroup
 }
 
 func newJobManagerV2(options jobManagerV2Options) (*jobManagerV2, error) {
@@ -54,10 +58,7 @@ func newJobManagerV2(options jobManagerV2Options) (*jobManagerV2, error) {
 		// Until selected cleanup-only recovery is available, every retained
 		// record requires quarantine. Never run legacy reconciliation or its
 		// callbacks before selected identity/discriminator validation.
-		states, err = store.list()
-		if err == nil && len(states) != 0 {
-			err = ErrL8RecoveryDependency
-		}
+		err = store.requireMinimalLaunchEmpty(stateLock)
 	} else {
 		states, err = reconcileJobStoreV2AtStartupWithRecovery(store, time.Now().UTC(), options.Recovery)
 	}
@@ -66,6 +67,7 @@ func newJobManagerV2(options jobManagerV2Options) (*jobManagerV2, error) {
 		return nil, err
 	}
 	manager := &jobManagerV2{
+		minimal: options.MinimalLaunch, minimalLive: make(map[string]*minimalLaunchEntry),
 		store:            store,
 		stateLock:        stateLock,
 		workerID:         workerID,
@@ -96,6 +98,10 @@ func closeJobManagerV2StateLock(stateLock *jobStateLock) {
 
 func (manager *jobManagerV2) close() {
 	if manager == nil {
+		return
+	}
+	if manager.minimal {
+		manager.closeMinimalLaunch()
 		return
 	}
 	manager.mu.Lock()
