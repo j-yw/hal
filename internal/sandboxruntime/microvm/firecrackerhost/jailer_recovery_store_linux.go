@@ -21,11 +21,26 @@ import (
 type jailerRecoveryStore struct {
 	mu                          sync.Mutex
 	config                      jailerRecoverySupervisorConfig
+	publication                 *jailerRecoveryRecordPublicationOps
 	file                        *os.File
 	record                      firecrackerRuntimeOwnerRecordV1
 	reservation                 *strictJailerIdentityLease
 	busy                        *jailerIdentityRecord
 	terminal, poisoned, retired bool
+}
+
+// Private per-store concrete operations; nil preserves the existing Unix
+// publication path. Neither operation supplies a record or cleanup authority.
+type jailerRecoveryRecordPublicationOps struct {
+	rename        func(directoryFD int, temporaryName string, replaceExisting bool) error
+	syncDirectory func(directoryFD int) error
+}
+
+func renameJailerRecoveryRecord(directoryFD int, temporaryName string, replaceExisting bool) error {
+	if replaceExisting {
+		return unix.Renameat(directoryFD, temporaryName, directoryFD, l8RuntimeOwnerRecordName)
+	}
+	return unix.Renameat2(directoryFD, temporaryName, directoryFD, l8RuntimeOwnerRecordName, unix.RENAME_NOREPLACE)
 }
 
 func (store *l8RuntimeOwnerLinuxRecordStore) readRecord() (firecrackerRuntimeOwnerRecordV1, bool, error) {
@@ -95,6 +110,13 @@ func (store *l8RuntimeOwnerLinuxRecordStore) writeSelectedRecord(record firecrac
 	if s == nil || s.poisoned || s.retired || record.HostBootID != store.bootID {
 		return errL8RuntimeOwnerInvalid
 	}
+	publication := jailerRecoveryRecordPublicationOps{rename: renameJailerRecoveryRecord, syncDirectory: unix.Fsync}
+	if s.publication != nil {
+		publication = *s.publication
+		if publication.rename == nil || publication.syncDirectory == nil {
+			return errL8RuntimeOwnerInvalid
+		}
+	}
 	payload, err := encodeJailerRecoveryRecord(record, s.config, busy, terminal)
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
@@ -127,11 +149,11 @@ func (store *l8RuntimeOwnerLinuxRecordStore) writeSelectedRecord(record firecrac
 			s.poisoned = true
 			return errL8RuntimeOwnerInvalid
 		}
-		err = unix.Renameat(store.directoryFD, name, store.directoryFD, l8RuntimeOwnerRecordName)
+		err = publication.rename(store.directoryFD, name, true)
 	} else {
-		err = unix.Renameat2(store.directoryFD, name, store.directoryFD, l8RuntimeOwnerRecordName, unix.RENAME_NOREPLACE)
+		err = publication.rename(store.directoryFD, name, false)
 	}
-	if err != nil || unix.Fsync(store.directoryFD) != nil {
+	if err != nil || publication.syncDirectory(store.directoryFD) != nil {
 		s.poisoned = true
 		return errL8RuntimeOwnerInvalid
 	}
