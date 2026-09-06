@@ -57,7 +57,11 @@ func newMinimalControlAdmissionFixture(t *testing.T) *minimalControlAdmissionFix
 	}
 	f.files[0] = os.NewFile(uintptr(pair[0]), "minimal-test-control")
 	t.Cleanup(func() { _ = unix.Close(pair[1]) })
-	directory, err := os.Open(t.TempDir())
+	directoryPath := t.TempDir()
+	if err := os.Chmod(directoryPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.Open(directoryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
