@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && microvm_assets_integration
 
 package minimalprofile
 

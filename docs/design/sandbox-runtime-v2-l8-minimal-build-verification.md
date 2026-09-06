@@ -154,7 +154,11 @@ With trusted inputs already prepared (there are no automatic downloads):
 go run ./tools/microvm/l8-minimal -request /absolute/trusted-request.json -request-sha256 TRUSTED_REQUEST_SHA256
 ```
 
-Focused gates:
+Default gates are CLI-free. They use fake inspector transcripts, bounded local
+archive/file fixtures, request authentication, and receipt round trips. The
+source guard selects the actual untagged Linux test files and rejects process
+imports or references to image-production/probe helpers; seeded negative cases
+keep that guard effective.
 
 ```sh
 go test -p 2 -count=1 ./internal/sandboxruntime/microvm/assets/minimalprofile ./tools/microvm/l8-minimal
@@ -163,15 +167,24 @@ go vet ./internal/sandboxruntime/microvm/assets/minimalprofile ./tools/microvm/l
 go test -p 2 -count=1 ./internal/sandboxruntime/microvm/assets/localresolver -run '^TestL8Minimal'
 ```
 
+Real ext4 fixtures and all tool/version probes require the explicit
+`linux && microvm_assets_integration` build constraint:
+
+```sh
+go test -p 2 -tags=microvm_assets_integration -count=1 ./internal/sandboxruntime/microvm/assets/minimalprofile
+go test -p 2 -tags=microvm_assets_integration -race -count=3 ./internal/sandboxruntime/microvm/assets/minimalprofile
+```
+
 `TestMinimalRealExt4Production` makes and inspects real ext4 twice;
 `TestMinimalSevenFilePublisher` repeats all seven files and checks B1 selection
 with resolver-issued fixture parent correlation. Other focused tests cover
 archive/process/tree tamper, unsafe metadata, credentials, UID/traversal,
 incomplete scans, excessive bounds, cancellation, nofollow and competing
 publication. **Their executable, kernel and source payloads are fixtures.**
-They do not establish that the real Node/Pi closure builds or boots. Real-tool
-fixture tests skip if exact e2fsprogs1.47.4 is unavailable; a skip is not
-artifact acceptance and cannot satisfy the genuine build gate.
+They do not establish that the real Node/Pi closure builds or boots. Selected
+tagged real-tool fixtures fail if exact e2fsprogs1.47.4 is unavailable; there is
+no availability-based skip that can stand in for artifact acceptance. Untagged
+tests do not execute version probes, including when tools happen to be present.
 
 Full B2 artifact acceptance still requires a genuine L7 parent, independently
 verified offline cache and pinned builder, genuine staged runtime provenance,
