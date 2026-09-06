@@ -43,6 +43,8 @@ type l8RuntimeOwnerExecutableOps struct {
 	RunSupervisor func([6]int) error
 	RunChildGate  func([6]int) error
 	RunJailerGate func([2]int) error
+
+	SelectSupervisor func([6]int) (bool, error)
 }
 
 type l8RuntimeOwnerChildLaunchOps struct {
@@ -166,10 +168,18 @@ func runPrivateL8RuntimeOwnerExecutableWithOps(arguments []string, ops l8Runtime
 	copy(fds[:], opened)
 	var runErr error
 	if arguments[0] == l8RuntimeOwnerExecutableSupervise {
-		if ops.RunSupervisor == nil {
-			runErr = errL8RuntimeOwnerInvalid
-		} else {
-			runErr = ops.RunSupervisor(fds)
+		selected := false
+		if ops.SelectSupervisor != nil {
+			selected, runErr = ops.SelectSupervisor(fds)
+		}
+		// A selected admission owns its result, including unavailable; it
+		// must never fall through to the six/seven-role runtime.
+		if !selected && runErr == nil {
+			if ops.RunSupervisor == nil {
+				runErr = errL8RuntimeOwnerInvalid
+			} else {
+				runErr = ops.RunSupervisor(fds)
+			}
 		}
 	} else {
 		if ops.RunChildGate == nil {

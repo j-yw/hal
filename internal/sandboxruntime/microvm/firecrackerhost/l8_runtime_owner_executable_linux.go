@@ -42,31 +42,36 @@ func runPrivateL8RuntimeOwnerExecutable(arguments []string, file func(uintptr, s
 		}
 		return nil
 	}
+	openFD := func(fd uintptr, role string) (int, error) {
+		if file == nil {
+			return -1, errL8RuntimeOwnerInvalid
+		}
+		opened := file(fd, role)
+		if opened == nil {
+			return -1, errL8RuntimeOwnerInvalid
+		}
+		openedFD := int(opened.Fd())
+		if openedFD < 0 {
+			_ = opened.Close()
+			return -1, errL8RuntimeOwnerInvalid
+		}
+		if _, err := unix.FcntlInt(opened.Fd(), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+			_ = opened.Close()
+			return -1, errL8RuntimeOwnerInvalid
+		}
+		openedFiles[openedFD] = opened
+		return openedFD, nil
+	}
 	return runPrivateL8RuntimeOwnerExecutableWithOps(arguments, l8RuntimeOwnerExecutableOps{
-		OpenFD: func(fd uintptr, role string) (int, error) {
-			if file == nil {
-				return -1, errL8RuntimeOwnerInvalid
-			}
-			opened := file(fd, role)
-			if opened == nil {
-				return -1, errL8RuntimeOwnerInvalid
-			}
-			openedFD := int(opened.Fd())
-			if openedFD < 0 {
-				_ = opened.Close()
-				return -1, errL8RuntimeOwnerInvalid
-			}
-			if _, err := unix.FcntlInt(opened.Fd(), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
-				_ = opened.Close()
-				return -1, errL8RuntimeOwnerInvalid
-			}
-			openedFiles[openedFD] = opened
-			return openedFD, nil
-		},
+		OpenFD:        openFD,
 		CloseFD:       closeFD,
 		RunSupervisor: runL8RuntimeOwnerSupervisorLinux,
 		RunChildGate:  runL8RuntimeOwnerChildGateLinux,
 		RunJailerGate: func(fds [2]int) error { return runJailerRecoveryGateLinux(fds, closeFD) },
+
+		SelectSupervisor: func(fds [6]int) (bool, error) {
+			return withMinimalControlSupervisorAdmission(fds, openFD, closeFD, 0, unavailableMinimalControlSupervisor)
+		},
 	})
 }
 
