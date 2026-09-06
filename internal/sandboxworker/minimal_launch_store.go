@@ -87,7 +87,7 @@ func (store *jobStoreV2) requireMinimalLaunchEmpty(lock *jobStateLock) error {
 // final symlink. Any error is uncertain; the manager must poison admission.
 // This selected path never calls the legacy write/rename rollback path.
 func (store *jobStoreV2) saveMinimalLaunch(state storedJobStateV2) error {
-	if store == nil || validateStoredMinimalLaunchV1(state) != nil {
+	if store == nil || store.minimalOps == nil || store.minimalOps.owner != store || store.minimalOps.rename == nil || validateStoredMinimalLaunchV1(state) != nil {
 		return errMinimalLaunchState
 	}
 	payload, err := encodeStoredJobStateV2(state)
@@ -135,7 +135,7 @@ func (store *jobStoreV2) saveMinimalLaunch(state storedJobStateV2) error {
 		expected.MinimalLaunch.Phase, expected.MinimalLaunch.Revision = "reserved", 1
 		previous, err := encodeStoredJobStateV2(prior)
 		want, wantErr := encodeStoredJobStateV2(expected)
-		if err != nil || wantErr != nil || !bytes.Equal(previous, want) || os.Rename(file.Name(), path) != nil {
+		if err != nil || wantErr != nil || !bytes.Equal(previous, want) || store.minimalOps.rename(file.Name(), path) != nil {
 			return errMinimalLaunchState
 		}
 	}

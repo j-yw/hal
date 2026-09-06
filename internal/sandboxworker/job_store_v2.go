@@ -114,7 +114,8 @@ type storedJobStateV2 struct {
 }
 
 type jobStoreV2 struct {
-	root string
+	minimalOps *minimalLaunchStoreOps
+	root       string
 }
 
 type storedJobReaderV2 interface {
