@@ -122,7 +122,7 @@ func newJailerRecoveryLinuxRuntime(fds [6]int, config jailerRecoverySupervisorCo
 }
 
 func newJailerRecoveryLifecycle(runner *strictJailerNamespaceRunner) (*strictJailerLifecycle, error) {
-	return newStrictJailerLifecycle(runner)
+	return newStrictJailerLifecycle(runner, withProcessLifecycleProductionVsock())
 }
 
 func (selected *jailerRecoveryRuntime) request() (strictJailerCoordinatorRequest, error) {

@@ -4,25 +4,27 @@
 
 Base: `de9518fbcbcf4f81fa8b5626376dae8810fddb68`. The selected surviving
 supervisor owns the existing strict lifecycle manager and coordinator. Its
-constructor currently omits `withProcessLifecycleProductionVsock()`. Therefore
-`startStrictJailerProcess` records the runtime UID and mapped host paths but
-does not capture the private state-directory device/inode/owner before calling
-the namespace runner. The resulting strict socket owner remains invalid; it
-must not be repaired by statting an already running path.
+constructor at that base omitted `withProcessLifecycleProductionVsock()`.
+Therefore `startStrictJailerProcess` recorded the runtime UID and mapped host
+paths but did not capture the private state-directory device/inode/owner before
+calling the namespace runner. The resulting strict socket owner remained
+invalid; it must not be repaired by statting an already running path.
 
-This is DESIGN/RED, not a selected transport or live-runtime acceptance claim.
-The approved extraction `newJailerRecoveryLifecycle` preserves the current
-constructor behavior. Both the actual selected constructor and focused tests
-call it. The root-only enclosing constructor's sealed-FD admission, reconnect
-listener, coordinator staging and real Jailer are not exercised by these tests.
+The correction is implemented after reviewed RED `e45120d1`, not accepted as
+selected transport or live-runtime proof. The approved extraction
+`newJailerRecoveryLifecycle` preserved the baseline behavior for RED; GREEN
+adds only the existing option. Both the actual selected constructor and focused
+tests call it. The root-only enclosing constructor's sealed-FD admission,
+reconnect listener, coordinator staging and real Jailer are not exercised by
+these tests.
 
-## Minimal proposed correction
+## Implemented correction
 
-After RED review, add only the existing production-vsock option to this private
-selected helper. Do not change `newStrictJailerLifecycle` or the default
-`NewProcessLifecycleManager` behavior. The option must be selected before
-coordinator start, not attached after launch. No new manager, stat override,
-transport, public flag, durable schema, generation, or proof is needed.
+The private selected helper passes the existing production-vsock option.
+`newStrictJailerLifecycle` and the default `NewProcessLifecycleManager` behavior
+remain unchanged. The option is selected before coordinator start, not attached
+after launch. No new manager, stat override, transport, public flag, durable
+schema, generation, or proof is needed.
 
 The existing lifecycle owns these checks:
 
@@ -65,14 +67,21 @@ explicitly rather than chowning files or manufacturing an unprivileged owner):
 go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestJailerRecoveryPrelaunchVsock'
 ```
 
-RED must fail selected pin/rejection cases while existing-option and legacy
-controls pass. A compile failure, missing selected tests or skip is not that
-RED evidence. Focused tests and race checks suffice for this frozen RED; the
-supervisor owns broader integration gates.
+The frozen RED fails nine selected leaf cases while existing-option, legacy and
+cancellation controls pass. GREEN must pass every unchanged assertion. A compile
+failure, missing selected tests or skip is not RED or GREEN evidence. Focused
+race, adjacent Jailer/raw-transport checks and selected command guards cover this
+bounded correction; the supervisor owns broader integration gates.
+
+The fixed correction passes the focused race selector three times (81
+test/subtest events), adjacent Jailer recovery/raw transport/coordinator/lifecycle
+race checks three times (1,266 events), and selected command guards (17 events),
+all with zero failures or skips. Scoped vet, gofmt and diff checks pass. These
+results are fake/local-file regression evidence, not prepared-Linux acceptance.
 
 ## Remaining handoff
 
-After GREEN, the same surviving supervisor may later consume its retained
+The same surviving supervisor may later consume its retained
 manager and `selected.coordinator.generation.process` after gate release and
 the running-record transition. Public boot binding/key ownership, NIC/L7
 composition, authenticated readiness and credentials remain separate work.
