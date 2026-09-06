@@ -500,6 +500,11 @@ func runFactorySandboxExecutorWithDeps(ctx context.Context, req factorySandboxEx
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
+			if factorySandboxWorkerRuntimeRouteSelected(req, run.Target, selectedTarget) {
+				if err := prepareSandboxWorkerGitIdentity(req.ProjectDir, run.Target, &command); err != nil {
+					return err
+				}
+			}
 			return runFactorySandboxRuntimeExecWithRetries(ctx, run, command, record, preparedRemoteAuto, remoteOutput)
 		},
 		HandleEvent: func(_ context.Context, event sandboxexec.Event) error {

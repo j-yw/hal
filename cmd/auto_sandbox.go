@@ -818,6 +818,11 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
+			if autoSandboxWorkerRuntimeRouteSelected(req, run.Target, selectedTarget) {
+				if err := prepareSandboxWorkerGitIdentity(req.ProjectDir, run.Target, &command); err != nil {
+					return err
+				}
+			}
 			return runSandboxWorkerJobOrSync(ctx, sandboxWorkerJobCommandRequest{
 				ExecutionID:  req.ExecutionID,
 				UseWorkerJob: autoSandboxWorkerJobRouteSelected(req, run.Target, selectedTarget),

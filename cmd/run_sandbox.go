@@ -922,6 +922,11 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			})
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
+			if runSandboxWorkerRuntimeRouteSelected(req, run.Target, selectedTarget) {
+				if err := prepareSandboxWorkerGitIdentity(req.ProjectDir, run.Target, &command); err != nil {
+					return err
+				}
+			}
 			return runSandboxWorkerJobOrSync(ctx, sandboxWorkerJobCommandRequest{
 				ExecutionID:  req.ExecutionID,
 				UseWorkerJob: runSandboxWorkerJobRouteSelected(req, run.Target, selectedTarget),
