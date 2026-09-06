@@ -75,7 +75,7 @@ func TestMinimalNativeAssemblerRequiresCommittedOfflineInputs(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				command := exec.CommandContext(ctx, "git", args...)
-				command.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + root, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_PARAMETERS='commit.gpgsign=false'", "GIT_AUTHOR_NAME=fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid"}
+				command.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + root, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_PARAMETERS='commit.gpgsign=false' 'gc.auto=0' 'maintenance.auto=false'", "GIT_AUTHOR_NAME=fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid"}
 				data, err := command.CombinedOutput()
 				if err != nil {
 					t.Fatalf("local Git %v failed: %v %s", args, err, data)
