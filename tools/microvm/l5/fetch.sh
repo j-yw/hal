@@ -7,17 +7,22 @@ readonly buildroot_commit=cb857ba4c87a93e5265a9e4a3f32071abf39e14a
 readonly buildroot_digest=ae7f706f087b9ae9083a10a587368dfbf53103c28bf81c2d690198dc4090cb58
 
 usage() {
-	echo "usage: fetch.sh --cache ABSOLUTE_DIRECTORY" >&2
+	echo "usage: fetch.sh --cache ABSOLUTE_DIRECTORY [--bounded-transfers]" >&2
 	exit 2
 }
 
 cache=
+bounded_transfers=false
 while (($#)); do
 	case "$1" in
 	--cache)
 		(($# >= 2)) || usage
 		cache=$2
 		shift 2
+		;;
+	--bounded-transfers)
+		bounded_transfers=true
+		shift
 		;;
 	*)
 		usage
@@ -66,6 +71,46 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Opt-in only: existing callers retain their original transfer behavior.
+# The new L8 wrapper also sets an aggregate process-group deadline.
+fetch_url() (
+	maximum=$1
+	destination=$2
+	url=$3
+	if [[ "$bounded_transfers" == true ]]; then
+		# RLIMIT_FSIZE is an additional rounded-up disk bound even for a curl
+		# version whose size option trusts a Content-Length header.
+		ulimit -f "$(((maximum + 1023) / 1024))"
+		curl --disable --fail --location --retry 3 --retry-max-time 1200 \
+			--connect-timeout 20 --max-time 600 --max-redirs 5 \
+			--proto '=https' --proto-redir '=https' --proxy '' --noproxy '*' \
+			--max-filesize "$maximum" --output "$destination" "$url"
+	else
+		curl --fail --location --retry 3 --output "$destination" "$url"
+	fi
+)
+
+read_release_ref() {
+	if [[ "$bounded_transfers" == true ]]; then
+		local ref_file
+		ref_file=$(mktemp "$metadata/release-ref.XXXXXXXX")
+		if ! timeout --signal=TERM --kill-after=5s 120s \
+			git -c credential.helper= -c core.askPass= -c http.extraHeader= \
+			ls-remote "$repository_url" "$1" 2>/dev/null | head -c 4097 > "$ref_file"; then
+			echo "Buildroot release reference lookup failed" >&2
+			return 1
+		fi
+		[[ $(wc -c < "$ref_file") -le 4096 ]] || {
+			echo "Buildroot release reference exceeds metadata bound" >&2
+			return 1
+		}
+		cat -- "$ref_file"
+		rm -- "$ref_file"
+	else
+		git ls-remote "$repository_url" "$1"
+	fi
+}
+
 python3 - "$lock" <<'PY' |
 import json
 import sys
@@ -81,7 +126,7 @@ for item in lock["sources"]:
     )))
 PY
 while IFS=$'\t' read -r filename url expected_size expected_digest; do
-	curl --fail --location --retry 3 --output "$stage/$filename" "$url"
+	fetch_url "$expected_size" "$stage/$filename" "$url"
 	actual_size=$(wc -c <"$stage/$filename" | tr -d ' ')
 	actual_digest=$(sha256sum "$stage/$filename" | cut -d ' ' -f 1)
 	[[ "$actual_size" == "$expected_size" && "$actual_digest" == "$expected_digest" ]] || {
@@ -95,8 +140,8 @@ done
 signing_key_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["buildroot"]["signingKeyUrl"])' "$lock")
 signature_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["buildroot"]["signatureUrl"])' "$lock")
 repository_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["buildroot"]["repositoryUrl"])' "$lock")
-curl --fail --location --retry 3 --output "$metadata/release-key.asc" "$signing_key_url"
-curl --fail --location --retry 3 --output "$metadata/buildroot-2026.05.1.tar.xz.sign" "$signature_url"
+fetch_url 1048576 "$metadata/release-key.asc" "$signing_key_url"
+fetch_url 1048576 "$metadata/buildroot-2026.05.1.tar.xz.sign" "$signature_url"
 
 mkdir -m 0700 "$metadata/gnupg"
 GNUPGHOME=$metadata/gnupg gpg --batch --import "$metadata/release-key.asc" >/dev/null 2>&1
@@ -118,8 +163,8 @@ grep -Fq "SHA256: $buildroot_digest  buildroot-2026.05.1.tar.xz" \
 	exit 1
 }
 
-actual_tag_object=$(git ls-remote "$repository_url" refs/tags/2026.05.1 | awk '{print $1}')
-actual_commit=$(git ls-remote "$repository_url" 'refs/tags/2026.05.1^{}' | awk '{print $1}')
+actual_tag_object=$(read_release_ref refs/tags/2026.05.1 | awk '{print $1}')
+actual_commit=$(read_release_ref 'refs/tags/2026.05.1^{}' | awk '{print $1}')
 [[ "$actual_tag_object" == "$buildroot_tag_object" && "$actual_commit" == "$buildroot_commit" ]] || {
 	echo "Buildroot tag identity mismatch" >&2
 	exit 1

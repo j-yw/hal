@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -200,6 +202,9 @@ func TestDownloadPinsBoundsCancellationAndNoOverwrite(t *testing.T) {
 	for _, tc := range []string{"valid", "wrong_digest", "short", "oversize", "http_error", "redirect_origin", "cancelled", "existing", "symlink"} {
 		t.Run(tc, func(t *testing.T) {
 			root := t.TempDir()
+			if err := os.Chmod(root, 0700); err != nil {
+				t.Fatal(err)
+			}
 			spec := downloadSpec{File: testPin("pkg.tgz", "data"), URL: "https://registry.npmjs.org/pkg/-/pkg.tgz"}
 			body := "data"
 			if tc == "short" {

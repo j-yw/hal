@@ -21,9 +21,9 @@ Only then can its package names, versions and registry URLs identify the
 remaining locked archives. Exact npm URL paths and manifest filenames must
 agree; ambiguous, missing, extra and duplicate-source mappings fail closed.
 
-Each request has an explicit timeout, bounded redirect count and fixed HTTPS
-origin/path policy, without environment proxies, cookies, credentials or npm
-configuration. Bodies are copied with a locked-size-plus-one bound, hashed,
+Each new L8 request has an explicit timeout, bounded redirect count and fixed
+HTTPS origin/path policy, without environment proxies, cookies, credentials
+or npm configuration. Bodies are copied with a locked-size-plus-one bound, hashed,
 synced and closed before becoming cache entries. All 194 files must match the
 two exact manifests before a Linux no-replace directory rename. An existing
 cache is verified read-only; it is never repaired or overwritten implicitly.
@@ -34,7 +34,21 @@ No-replace rename is the publication commit point: cancellation observed before
 it aborts; cancellation racing after the final check does not roll back a
 committed cache. A directory-sync error may leave complete output present and
 requires explicit verification before reuse. The CLI's overall time budget
-also bounds the reused L5 fetcher; its legacy implementation is not rewritten.
+also bounds the reused L5 fetcher. Its additive `--bounded-transfers` option
+leaves legacy defaults unchanged: source curl calls receive exact locked size
+caps, 20s connection/600s transfer/1200s retry-start budgets, five HTTPS-only
+redirects and an additional rounded-up per-file RLIMIT_FSIZE. Signing metadata
+is capped at 1MiB each; release Git calls have 120s/4096-byte output bounds. The
+wrapper supplies a clean environment/cwd, and process-group deadlines of 5min
+for offline helper compilation, 30min for L5 and 16min for L8 (whose own context
+is 15min). No claim is made that the legacy unselected fetch path is bounded.
+
+The new cache stage is held open across creation, hashing and publication.
+Entry creation and owned-inode cleanup use that directory FD, not a reopened
+stage pathname. Rename/replacement negatives prove foreign directories and
+same-name files are neither written nor deleted. If an external actor renames
+the owned stage, its created files are cleaned through the retained FD, but the
+actor-selected empty directory name is not discovered or deleted by a scan.
 
 Default tests use synthetic tar/manifest fixtures and fake HTTP transports,
 with no network, npm or process calls. They cover path/link/duplicate attacks,
