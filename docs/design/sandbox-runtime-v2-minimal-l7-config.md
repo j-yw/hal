@@ -2,17 +2,18 @@
 
 ## Status and scope
 
-This is a DESIGN/RED checkpoint based on `de9518fb`. It refines the Linux
+This slice is based on `de9518fb`, with design/behavioral RED committed first at
+`fc3d98cc`. It refines the Linux
 completion architecture and selected L8 minimal contract reset without changing
-L7 enforcement, legacy image authority, or runtime selection. The only
-production delta in RED is an ignored private expectation field on
-`strictJailerCoordinatorRequest`; the existing validator is unchanged.
+L7 enforcement, legacy image authority, or runtime selection. RED introduced
+only an ignored private expectation field on `strictJailerCoordinatorRequest`;
+GREEN implements the selected schema/mapping boundary below.
 
-The selected Jailer schema currently rejects every `network-interfaces` key,
+The selected Jailer schema previously rejected every `network-interfaces` key,
 including an empty array. L7 already owns a descriptor for the exact prepared
-TAP and guest boot mapping. The next GREEN slice will consume that descriptor
-for private config validation and rendering, not create another network
-manager or claim that config intent establishes live enforcement.
+TAP and guest boot mapping. The mapper consumes that descriptor for private
+config validation and rendering; it does not create another network manager
+or claim that config intent establishes live enforcement.
 
 ## Inputs, outputs, and trust boundary
 
@@ -45,7 +46,7 @@ proxy, topology, and rule identities come from the existing trusted L7 intent.
 | `hal_l7_ipv6`, `hal_l7_ipv6_gateway` | Descriptor IPv6 address/prefix and gateway |
 | `hal_l7_proxy` | Descriptor's canonical public proxy URL |
 
-GREEN will add only these four JSON keys to strict parsing:
+GREEN adds only these four JSON keys to strict parsing:
 `network-interfaces`, `iface_id`, `host_dev_name`, `guest_mac`. A selected
 expectation requires exactly one complete object with all three values equal
 to the descriptor. Without an expectation, any presence of the network field
@@ -60,12 +61,22 @@ sanitized config category; do not append raw addresses, interfaces, or args.
 
 ## Boot composition and package boundary
 
-The new private mapper belongs in `firecrackerhost/minimal_l7_config*.go`. It
-will derive the six-field L7 boot fragment and exact NIC object from the opaque
-descriptor, validate the guest mapping through `guestnetwork.ParseBootCommandLine`,
-and leave inputs unchanged. Selected validation must reject missing, partial,
-duplicate, unknown, or substituted L7 settings rather than repair candidate
-values by normalization.
+The new private mapper belongs in `firecrackerhost/minimal_l7_config*.go`:
+
+```go
+renderMinimalL7Config(base string, expected *minimalL7ConfigExpectation) (minimalL7NetworkInterface, string, error)
+```
+
+It returns the exact NIC object and base extended by the six-field L7 fragment.
+It validates descriptor values through `guestnetwork.ParseBootCommandLine`
+and leaves inputs unchanged. Selected validation rejects missing, partial,
+duplicate, unknown, or substituted L7 settings rather than repairing candidate
+values by normalization. A separate bounded namespace scan rejects wrong-case,
+quoted, and bare settings that the guest parser otherwise treats as unrelated
+tokens. All six candidate values must equal the descriptor's raw strings;
+equivalent expanded/uppercase IPv6 spellings are not accepted through parser
+normalization. The nested NIC is decoded with `DisallowUnknownFields` in
+addition to the original whole-config canonical-key and duplicate scan.
 
 The selected prelaunch constructor, owned by a separate slice, supplies its
 trusted base boot arguments. Compose those with this exact L7 fragment before
@@ -100,13 +111,13 @@ also needs a selected authenticated guest binding: the existing production L7
 verifier is tied to the legacy `ProductionVsockBridge` and is not automatically
 reusable as minimal-control evidence.
 
-## RED evidence and next GREEN gates
+## RED evidence and GREEN gates
 
 The committed tests exercise the existing validator, not absent API symbols:
 
-1. Exact descriptor-derived selected NIC and six valid boot fields are rejected
-   today, for both IPv4 and IPv6 public proxy mappings.
-2. Selecting that expectation while omitting the NIC is accepted today.
+1. Exact descriptor-derived selected NIC and six valid boot fields were rejected
+   at RED, for both IPv4 and IPv6 public proxy mappings.
+2. Selecting that expectation while omitting the NIC was accepted at RED.
 3. Without an expectation, descriptor NIC, `null`, and empty array remain
    rejected; legacy no-network config remains accepted.
 
@@ -117,13 +128,14 @@ duplication, guest inspection, and VM inspection panic if reached. Cleanup
 aborts the fake pre-VM session and waits for its loss watcher. No external CLI,
 real namespace, firewall, TAP, socket, VM, or network is used.
 
-These REDs do not yet test a production mapper, the combined minimal boot
-renderer, or late session revocation. GREEN must add focused negatives for
+The original REDs remain unchanged and pass under GREEN. Additional tests cover
+the production mapper and combined minimal boot renderer, with negatives for
 zero descriptor; independently mismatched generations; changed interface/TAP/MAC;
 missing/null/empty/multiple NICs; wrong JSON types, aliases, duplicate/unknown
 keys; altered/partial/duplicate/unknown boot fields; combined budget boundary
-and overflow; and unchanged caller inputs. Keep legacy rejection controls and
-prove failures occur before the coordinator's host dependencies.
+and overflow; and unchanged caller inputs. Legacy rejection controls remain,
+and invalid requests fail at config validation before host dependencies. Late
+session revocation and selected runtime construction are not exercised here.
 
 Focused commands (Linux ordinary tests, no external CLI dependencies):
 
@@ -133,7 +145,7 @@ go test -p 2 -race ./internal/sandboxruntime/microvm/firecrackerhost -run '^Test
 go test -p 2 -race ./internal/sandboxruntime/microvm/firecrackerhost/l7network -run '^TestFirecrackerHostTopology(LaunchHandoff|Namespace)' -count=3
 ```
 
-After GREEN, repeat relevant legacy renderer, guest network, minimal bootstrap,
+For GREEN, repeat relevant legacy renderer, guest network, minimal bootstrap,
 coordinator, race, vet, and cross-platform compile gates. Main owns integrated
 broad QA. Neither this checkpoint nor GREEN can claim guest boot, live network
 enforcement, credentials, guest seccomp, HL8E issuance, or strict readiness.

@@ -463,6 +463,9 @@ type strictJailerConfigFile struct {
 		UDSPath  string `json:"uds_path"`
 	} `json:"vsock,omitempty"`
 	Entropy json.RawMessage `json:"entropy,omitempty"`
+	// Retain presence: an absent field differs from explicit null or []. Its
+	// nested schema is decoded strictly only for the selected L7 expectation.
+	NetworkInterfaces json.RawMessage `json:"network-interfaces,omitempty"`
 }
 
 func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorRequest) error {
@@ -477,6 +480,9 @@ func validateStrictJailerCoordinatorConfig(request strictJailerCoordinatorReques
 	}
 	rendered, err := readStrictJailerConfig(request.config)
 	if err != nil {
+		return err
+	}
+	if err := validateMinimalL7Config(rendered, request.minimalL7); err != nil {
 		return err
 	}
 	if rendered.MachineConfig.VCPUCount <= 0 || rendered.MachineConfig.MemSizeMiB <= 0 ||
@@ -618,9 +624,10 @@ func strictJailerConfigHasNoncanonicalOrDuplicateFields(data []byte) bool {
 
 func canonicalStrictJailerConfigField(field string) bool {
 	switch field {
-	case "machine-config", "boot-source", "drives", "vsock", "entropy",
+	case "machine-config", "boot-source", "drives", "vsock", "entropy", "network-interfaces",
 		"vcpu_count", "mem_size_mib", "kernel_image_path", "initrd_path", "boot_args",
-		"drive_id", "path_on_host", "is_root_device", "is_read_only", "guest_cid", "uds_path":
+		"drive_id", "path_on_host", "is_root_device", "is_read_only", "guest_cid", "uds_path",
+		"iface_id", "host_dev_name", "guest_mac":
 		return true
 	default:
 		return false
