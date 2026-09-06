@@ -15,6 +15,7 @@ type strictJailerOSExecLaunchOps struct {
 	lockOSThread         func()
 	unshareFilesystem    func() error
 	setNetworkNamespace  func() error
+	pinExecutables       func() error
 	umask                func(int) int
 	armParentDeathSignal func()
 	start                func() error
@@ -39,7 +40,7 @@ type strictJailerOSExecLaunchOps struct {
 // credential changes. Production selection therefore remains blocked on
 // post-drop containment proof or a retained supervisor design.
 func runStrictJailerOSExecLaunch(ops strictJailerOSExecLaunchOps) {
-	if ops.lockOSThread == nil || ops.unshareFilesystem == nil || ops.setNetworkNamespace == nil || ops.umask == nil ||
+	if ops.lockOSThread == nil || ops.unshareFilesystem == nil || ops.setNetworkNamespace == nil || ops.pinExecutables == nil || ops.umask == nil ||
 		ops.armParentDeathSignal == nil || ops.start == nil || ops.publishStarted == nil ||
 		ops.wait == nil || ops.publishCompleted == nil {
 		if ops.publishStarted != nil {
@@ -53,6 +54,10 @@ func runStrictJailerOSExecLaunch(ops strictJailerOSExecLaunchOps) {
 		return
 	}
 	if err := ops.setNetworkNamespace(); err != nil {
+		ops.publishStarted(errStrictJailerNamespaceStartFailed)
+		return
+	}
+	if err := ops.pinExecutables(); err != nil {
 		ops.publishStarted(errStrictJailerNamespaceStartFailed)
 		return
 	}
@@ -98,8 +103,8 @@ func prepareStrictJailerNetworkNamespaceForExec(networkNamespace *os.File) error
 	return nil
 }
 
-func startStrictJailerOSExecCommand(command *exec.Cmd, networkNamespace *os.File) (HostProcess, error) {
-	if command == nil || prepareStrictJailerNetworkNamespaceForExec(networkNamespace) != nil {
+func startStrictJailerOSExecCommand(command *exec.Cmd, networkNamespace *os.File, executables *strictJailerExecutableLease) (HostProcess, error) {
+	if command == nil || executables == nil || prepareStrictJailerNetworkNamespaceForExec(networkNamespace) != nil {
 		return nil, errStrictJailerNamespaceStartFailed
 	}
 	process := &osExecHostProcess{cmd: command, done: make(chan struct{})}
@@ -109,6 +114,9 @@ func startStrictJailerOSExecCommand(command *exec.Cmd, networkNamespace *os.File
 		unshareFilesystem: func() error { return unix.Unshare(unix.CLONE_FS) },
 		setNetworkNamespace: func() error {
 			return unix.Setns(int(networkNamespace.Fd()), unix.CLONE_NEWNET)
+		},
+		pinExecutables: func() error {
+			return mountStrictJailerExecutables(executables, linuxStrictJailerExecutableMountOps())
 		},
 		umask: unix.Umask,
 		armParentDeathSignal: func() {

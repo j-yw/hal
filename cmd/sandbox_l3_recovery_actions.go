@@ -544,11 +544,12 @@ func releaseSandboxL3DurableLease(_ context.Context, manifest *sandboxexecution.
 	if leaseID == "" {
 		return errors.New("lease_identity_missing: durable lease identity is required")
 	}
-	if strings.TrimSpace(reference.RunID) != strings.TrimSpace(manifest.ID) {
+	if strings.TrimSpace(reference.RunID) != strings.TrimSpace(manifest.ID) ||
+		strings.TrimSpace(reference.Purpose) != string(manifest.Purpose) {
 		return errors.New("lease_identity_mismatch: durable lease did not match execution")
 	}
 	store := sandbox.NewSandboxLeaseStore(nil)
-	if _, err := store.ReleaseExact(sandbox.SandboxLeaseExactReleaseRequest{
+	request := sandbox.SandboxLeaseExactReleaseRequest{
 		ID:          leaseID,
 		SandboxID:   strings.TrimSpace(manifest.SandboxID),
 		SandboxName: strings.TrimSpace(manifest.SandboxName),
@@ -556,7 +557,19 @@ func releaseSandboxL3DurableLease(_ context.Context, manifest *sandboxexecution.
 		Purpose:     strings.TrimSpace(reference.Purpose),
 		RunID:       strings.TrimSpace(reference.RunID),
 		AcquiredAt:  reference.AcquiredAt,
-	}); err != nil {
+	}
+	release := store.ReleaseExact
+	if strings.HasPrefix(request.ResourceKey, "host:") {
+		hostID := strings.TrimSpace(reference.HostID)
+		if manifest.Host == nil || hostID == "" ||
+			strings.TrimSpace(manifest.Host.ID) != hostID || request.ResourceKey != "host:"+hostID {
+			return errors.New("lease_identity_mismatch: durable lease host did not match execution")
+		}
+		release = func(req sandbox.SandboxLeaseExactReleaseRequest) (*sandbox.SandboxLease, error) {
+			return store.ReleaseExactHostReservation(req, hostID)
+		}
+	}
+	if _, err := release(request); err != nil {
 		return errors.New("lease_release_failed: exact durable lease was not released")
 	}
 	return nil

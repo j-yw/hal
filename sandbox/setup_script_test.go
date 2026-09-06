@@ -3,10 +3,51 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestSandboxImageVersionPinsStayAligned(t *testing.T) {
+	setup, err := os.ReadFile("setup.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile, err := os.ReadFile("Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"GO_VERSION": "1.25.7", "NODE_MAJOR": "22", "CLAUDE_CODE_VERSION": "2.1.207",
+		"PI_CODING_AGENT_VERSION": "0.85.0", "CODEX_VERSION": "0.144.1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			setupPattern := regexp.MustCompile(`(?m)^` + name + `="\$\{` + name + `:-([^}]+)\}"$`)
+			dockerPattern := regexp.MustCompile(`(?m)^ARG ` + name + `=(\S+)$`)
+			for source, match := range map[string][]string{"setup.sh": setupPattern.FindStringSubmatch(string(setup)), "Dockerfile": dockerPattern.FindStringSubmatch(string(dockerfile))} {
+				if len(match) != 2 || match[1] != want {
+					t.Errorf("%s %s default = %v, want %s", source, name, match, want)
+				}
+			}
+		})
+	}
+}
+
+func TestSandboxReadmeDocumentsPinnedAgentVersions(t *testing.T) {
+	data, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"| **Claude Code** | 2.1.207 |", "| **Pi** | 0.85.0 |", "| **Codex** | 0.144.1 |"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("README.md is missing pinned version %q", want)
+		}
+	}
+	if strings.Contains(string(data), "install the latest npm release by default") {
+		t.Error("README.md incorrectly claims unpinned default agent versions")
+	}
+}
 
 func TestSetupScriptRetriesRemoteDownloads(t *testing.T) {
 	_, sourcePath, _, ok := runtime.Caller(0)

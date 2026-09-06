@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -431,10 +430,11 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 
 	var target *sandbox.SandboxState
 	commandOut := out
-	var capturedJSON bytes.Buffer
+	var capturedJSON sandboxWorkerJobJSONCapture
 	augmentJSON := opts.JSON
 	if augmentJSON {
 		commandOut = &capturedJSON
+		ctx = context.WithValue(ctx, sandboxWorkerJobJSONContextKey{}, &capturedJSON)
 	}
 	execResult, execErr := deps.execute(ctx, req, commandOut, errOut, runSandboxExecutionHooks{
 		ValidateTarget: func(target *sandbox.SandboxState) error {
@@ -497,21 +497,25 @@ func runRunSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []str
 		applyRunSandboxSecurityReadinessGateError(&req, execErr)
 	}
 	if isSandboxWorkerJobDetachedError(execErr) {
+		if opts.JSON {
+			return outputSandboxWorkerJobJSON(out, sandboxWorkerJobJSONPublication{
+				purpose: sandboxexecution.PurposeRun, executionID: req.ExecutionID,
+				store: store, capture: &capturedJSON, commandErr: execErr,
+			})
+		}
 		return execErr
 	}
 	if req.WorkerJob != nil {
 		if finalizationErr := finalizeRunSandboxWorkerJob(ctx, store, req, execResult, target, deps); finalizationErr != nil {
 			execErr = errors.Join(execErr, finalizationErr)
 		}
-		if augmentJSON && execResult.RemoteStarted {
-			if outputErr := outputSandboxAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
-				execErr = errors.Join(execErr, outputErr)
-			}
+		if opts.JSON {
+			return outputSandboxWorkerJobJSON(out, sandboxWorkerJobJSONPublication{
+				purpose: sandboxexecution.PurposeRun, executionID: req.ExecutionID,
+				store: store, capture: &capturedJSON, commandErr: execErr,
+			})
 		}
 		if execErr != nil {
-			if opts.JSON && !execResult.RemoteStarted {
-				return outputRunJSONErrorWithReadinessGateForCommand(cmd, out, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
-			}
 			return execErr
 		}
 		return nil
@@ -922,6 +926,11 @@ func (deps runSandboxDeps) executeRunSandbox(ctx context.Context, req runSandbox
 			})
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
+			if runSandboxWorkerRuntimeRouteSelected(req, run.Target, selectedTarget) {
+				if err := prepareSandboxWorkerGitIdentity(req.ProjectDir, run.Target, &command); err != nil {
+					return err
+				}
+			}
 			return runSandboxWorkerJobOrSync(ctx, sandboxWorkerJobCommandRequest{
 				ExecutionID:  req.ExecutionID,
 				UseWorkerJob: runSandboxWorkerJobRouteSelected(req, run.Target, selectedTarget),

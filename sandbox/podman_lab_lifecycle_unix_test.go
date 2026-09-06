@@ -67,6 +67,9 @@ func TestPodmanLabStartSurvivesShellExitAndIsIdempotent(t *testing.T) {
 	if got := strings.Count(log, "sandboxd --socket "); got != 1 {
 		t.Fatalf("sandboxd launch count = %d, want 1:\n%s", got, log)
 	}
+	if !strings.Contains(log, "--image localhost/hal-agent:hal-lab --image-job-execution-supported") {
+		t.Fatalf("lab did not attest its custom image through the supported daemon option:\n%s", log)
+	}
 	if got := strings.Count(log, "sandbox host register worker"); got < 2 {
 		t.Fatalf("live worker readiness checks = %d, want at least 2:\n%s", got, log)
 	}

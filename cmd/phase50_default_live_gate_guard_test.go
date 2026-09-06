@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -18,6 +19,72 @@ const (
 	phase50WorkerIntegrationEnvPrefix = "HAL_WORKER_" + "INTEGRATION_"
 	phase50PodmanEnvPrefix            = "HAL_PODMAN_"
 )
+
+func TestPodmanIntegrationSelectionSeparatesPreparedLinuxL7Acceptance(t *testing.T) {
+	const capabilityTest = "TestL7PreparedLinuxRootlessPodmanRawPacketCapabilityProof"
+	const topologyTest = "TestL7PreparedLinuxRootlessPodmanNetworkTopology"
+	genericTests := []string{
+		"TestPodmanIntegrationLifecycleExecAndCopy",
+		"TestPodmanIntegrationCancellationStopsOnlyExecWorkload",
+		"TestPodmanIntegrationCancellationTamperDoesNotProduceFalseProof",
+	}
+	dir := filepath.Join("..", "internal", "sandboxruntime", "rootlesspodman")
+	files, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name        string
+		goos        string
+		tags        []string
+		wantGeneric int
+		wantL7      int
+	}{
+		{name: "default", goos: "linux"},
+		{name: "generic CI", goos: "linux", tags: []string{"podman_integration"}, wantGeneric: 1},
+		{name: "missing network tag", goos: "linux", tags: []string{"podman_integration", "l7_linux_network_integration"}, wantGeneric: 1},
+		{name: "missing L7 tag", goos: "linux", tags: []string{"podman_integration", "network_enforcement_live"}, wantGeneric: 1},
+		{name: "missing Podman tag", goos: "linux", tags: []string{"network_enforcement_live", "l7_linux_network_integration"}},
+		{name: "selected Linux", goos: "linux", tags: []string{"podman_integration", "network_enforcement_live", "l7_linux_network_integration"}, wantGeneric: 1, wantL7: 1},
+		{name: "non Linux", goos: "darwin", tags: []string{"podman_integration", "network_enforcement_live", "l7_linux_network_integration"}, wantGeneric: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buildContext := build.Default
+			buildContext.GOOS = tc.goos
+			buildContext.GOARCH = "amd64"
+			buildContext.BuildTags = tc.tags
+			selected := map[string]int{}
+			for _, path := range files {
+				matches, err := buildContext.MatchFile(dir, filepath.Base(path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !matches {
+					continue
+				}
+				file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, declaration := range file.Decls {
+					if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil {
+						selected[function.Name.Name]++
+					}
+				}
+			}
+			for _, name := range genericTests {
+				if got := selected[name]; got != tc.wantGeneric {
+					t.Errorf("selected %s %d times, want %d", name, got, tc.wantGeneric)
+				}
+			}
+			for _, name := range []string{capabilityTest, topologyTest} {
+				if got := selected[name]; got != tc.wantL7 {
+					t.Errorf("selected %s %d times, want %d", name, got, tc.wantL7)
+				}
+			}
+		})
+	}
+}
 
 func TestPhase50DefaultGoTestSuiteDoesNotRequireLivePrerequisites(t *testing.T) {
 	for _, path := range phase50RepositoryGoFiles(t) {

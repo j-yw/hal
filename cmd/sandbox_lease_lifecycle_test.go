@@ -303,6 +303,7 @@ func runScheduledFactoryLeaseLifecycle(t *testing.T, startedAt time.Time, execEr
 		},
 		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
 	}, factorySandboxExecutorDeps{
+		planBundle: fakeFactoryBundlePlan, materializeWorkspace: fakeFactoryBundleMaterialize, prepareCommandContext: fakeFactoryBundleCommandContext,
 		defaultStore: func() (factory.Store, error) {
 			return store, nil
 		},

@@ -53,6 +53,8 @@ func run(args []string, root *cobra.Command) error {
 	}
 
 	root.DisableAutoGenTag = true
+	restoreDefaults := portableSandboxdDefaults(root)
+	defer restoreDefaults()
 
 	switch opts.format {
 	case formatMarkdown:

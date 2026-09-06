@@ -139,6 +139,10 @@ func sandboxCommandPersistentWorkspace(workspace *sandbox.SandboxWorkspace) *san
 }
 
 func factorySandboxWorkspaceStateFromRecord(record factory.RunRecord) *sandbox.SandboxWorkspace {
+	if record.Sandbox != nil && record.Sandbox.Workspace != nil && record.Sandbox.Workspace.InputSource == sandbox.SandboxWorkspaceInputSourceGitBundle {
+		workspace := sanitizeFactorySandboxFailureWorkspaceMetadata(record.Sandbox.Workspace)
+		return &sandbox.SandboxWorkspace{Mode: workspace.Mode, InputSource: workspace.InputSource, Branch: workspace.Branch, SyncRef: workspace.SyncRef}
+	}
 	workspace := &sandbox.SandboxWorkspace{
 		Mode:        sandbox.SandboxWorkspaceModeClone,
 		InputSource: sandbox.SandboxWorkspaceInputSourceRemoteRef,

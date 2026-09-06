@@ -2189,7 +2189,7 @@ func runFactorySandboxRemoteVerification(ctx context.Context, store factory.Stor
 	if target == nil {
 		return nil, record, fmt.Errorf("load sandbox %q for verification: not found", sandboxName)
 	}
-	args, err := factorySandboxRemoteVerifyArgs(record)
+	args, err := factorySandboxVerifyArgsForImage(record, selectedWorkerRootlessSandboxState(target))
 	if err != nil {
 		return nil, record, err
 	}
@@ -2250,12 +2250,21 @@ func factoryRunSandboxName(record factory.RunRecord) string {
 }
 
 func factorySandboxRemoteVerifyArgs(record factory.RunRecord) ([]string, error) {
+	return factorySandboxVerifyArgsForImage(record, false)
+}
+
+func factorySandboxVerifyArgsForImage(record factory.RunRecord, imageHal bool) ([]string, error) {
 	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 	if workspaceDir == "" {
 		return nil, errFactorySandboxWorkspaceRequired
 	}
-	verifyScript := "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxRemoteHalScript([]string{"verify", "--json"}) + " 2>/tmp/hal-factory-verify-stderr"
-	return []string{"sh", "-lc", verifyScript}, nil
+	verifyScript := "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxHalScriptWithEnv([]string{"verify", "--json"}, nil, imageHal) + " 2>/tmp/hal-factory-verify-stderr"
+	shellFlag := "-lc"
+	if imageHal {
+		// Keep the attested image PATH, not a login profile's replacement.
+		shellFlag = "-c"
+	}
+	return []string{"sh", shellFlag, verifyScript}, nil
 }
 
 func parseFactorySandboxVerifyResult(data []byte) (*verify.Result, error) {
@@ -3219,7 +3228,7 @@ func publishFactoryRunWithSandboxRunner(ctx context.Context, dir string, req fac
 	if branchName == "" {
 		return factoryPublishRunnerResult{}, fmt.Errorf("factory sandbox publish requires a branch name")
 	}
-	args, err := factorySandboxRemotePublishArgs(record, req, publishPolicy, branchName)
+	args, err := factorySandboxPublishArgsForImage(record, req, publishPolicy, branchName, selectedWorkerRootlessSandboxState(target))
 	if err != nil {
 		return factoryPublishRunnerResult{}, err
 	}
@@ -3497,6 +3506,10 @@ func ensureFactoryPublishWorkspaceBranch(ctx context.Context, dir, branchName st
 }
 
 func factorySandboxRemotePublishArgs(record factory.RunRecord, req factoryRunRequest, publishPolicy, branchName string) ([]string, error) {
+	return factorySandboxPublishArgsForImage(record, req, publishPolicy, branchName, false)
+}
+
+func factorySandboxPublishArgsForImage(record factory.RunRecord, req factoryRunRequest, publishPolicy, branchName string, imageHal bool) ([]string, error) {
 	workspaceDir := factorySandboxRemoteWorkspaceDir(record)
 	if workspaceDir == "" {
 		return nil, errFactorySandboxWorkspaceRequired
@@ -3510,8 +3523,12 @@ func factorySandboxRemotePublishArgs(record factory.RunRecord, req factoryRunReq
 		"--body", factoryPublishPRBody(record),
 		"--json",
 	}
-	publishScript := "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxRemoteHalScript(args) + " 2>/tmp/hal-factory-publish-stderr"
-	return []string{"sh", "-lc", publishScript}, nil
+	publishScript := "set -eu\ncd " + shellQuote(workspaceDir) + "\n" + factorySandboxHalScriptWithEnv(args, nil, imageHal) + " 2>/tmp/hal-factory-publish-stderr"
+	shellFlag := "-lc"
+	if imageHal {
+		shellFlag = "-c"
+	}
+	return []string{"sh", shellFlag, publishScript}, nil
 }
 
 func parseFactorySandboxPublishResult(data []byte) (*factorySandboxPublishResult, error) {

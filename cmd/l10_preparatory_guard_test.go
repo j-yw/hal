@@ -116,6 +116,42 @@ func TestL10PreparatoryGuardRejectsEveryAuthorityReference(t *testing.T) {
 		wantForbidden      bool
 	}{
 		{
+			name: "L8 active proof owner", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go",
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc mintL8JobCredentialActiveProofFromAdmittedHelperSuccess() { runtimeproof.NewJobCredentialActiveProof() }\n",
+		},
+		{
+			name: "L8 cleanup proof owner", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go",
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc mintL8JobCredentialCleanupProofFromAdmittedHelperSuccess() { runtimeproof.NewJobCredentialCleanupProof() }\n",
+		},
+		{
+			name: "L8 recovery owner", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go",
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc (runtime *L8JobCredentialRuntime) RecoverJobCredentials() { runtimeproof.NewJobCredentialCleanupProof() }\n",
+		},
+		{
+			name: "L8 abort owner", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go",
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc (preflight *l8JobCredentialRuntimePreflight) Abort() { runtimeproof.NewJobCredentialCleanupProof() }\n",
+		},
+		{
+			name: "L8 owner cannot evaluate L10", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport composition \"github.com/jywlabs/hal/internal/strictcomposition\"\nfunc mintL8JobCredentialActiveProofFromAdmittedHelperSuccess() { composition.EvaluateActive() }\n",
+		},
+		{
+			name: "L8 owner cannot export constructor alias", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc mintL8JobCredentialActiveProofFromAdmittedHelperSuccess() { mint := runtimeproof.NewJobCredentialActiveProof; mint() }\n",
+		},
+		{
+			name: "L8 owner filename is exact", path: "../internal/sandboxruntime/microvm/firecrackerhost/other.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc mintL8JobCredentialActiveProofFromAdmittedHelperSuccess() { runtimeproof.NewJobCredentialActiveProof() }\n",
+		},
+		{
+			name: "L8 owner function is exact", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc wireL10() { runtimeproof.NewJobCredentialActiveProof() }\n",
+		},
+		{
+			name: "L8 recovery cannot mint active proof", path: "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go", wantForbidden: true,
+			source: "package firecrackerhost\nimport runtimeproof \"github.com/jywlabs/hal/internal/sandboxruntime\"\nfunc (runtime *L8JobCredentialRuntime) RecoverJobCredentials() { runtimeproof.NewJobCredentialActiveProof() }\n",
+		},
+		{
 			name: "qualified evaluator call", path: "../cmd/wire.go", wantForbidden: true,
 			source: "package cmd\nimport composition \"github.com/jywlabs/hal/internal/strictcomposition\"\nfunc wire() { _, _ = composition.EvaluateActive(nil, composition.ActiveRequest{}) }\n",
 		},
@@ -259,7 +295,9 @@ func l10ForbiddenProductionReference(file *ast.File, path string) string {
 			}
 			importPath := imports[qualifier.Name]
 			if _, blocked := l10ForbiddenProductionCalls[importPath][expression.Sel.Name]; blocked {
-				forbidden = importPath + "." + expression.Sel.Name
+				if !l10ExistingL8ProofIssuance(path, importPath, expression, parent, stack) {
+					forbidden = importPath + "." + expression.Sel.Name
+				}
 			}
 		case *ast.Ident:
 			if definitions[expression] || l10IdentifierIsSelectorName(parent, expression) {
@@ -283,6 +321,47 @@ func l10ForbiddenProductionReference(file *ast.File, path string) string {
 		return true
 	})
 	return forbidden
+}
+
+// The L8 runtime owns these already-existing direct proof constructors. This
+// preparatory L10 guard must not reject that distinct authority, but aliases,
+// new issuers, and every L10 evaluator reference remain forbidden. The L8
+// runtime tests, not this reference guard, establish issuance preconditions.
+func l10ExistingL8ProofIssuance(path, importPath string, expression *ast.SelectorExpr, parent ast.Node, stack []ast.Node) bool {
+	if filepath.ToSlash(filepath.Clean(path)) != "../internal/sandboxruntime/microvm/firecrackerhost/l8_job_credential_runtime.go" ||
+		importPath != "github.com/jywlabs/hal/internal/sandboxruntime" {
+		return false
+	}
+	call, ok := parent.(*ast.CallExpr)
+	if !ok || call.Fun != expression {
+		return false
+	}
+	var function *ast.FuncDecl
+	for _, node := range stack {
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		if declaration, ok := node.(*ast.FuncDecl); ok {
+			function = declaration
+		}
+	}
+	if function == nil {
+		return false
+	}
+	if function.Recv == nil {
+		return (function.Name.Name == "mintL8JobCredentialActiveProofFromAdmittedHelperSuccess" && expression.Sel.Name == "NewJobCredentialActiveProof") ||
+			(function.Name.Name == "mintL8JobCredentialCleanupProofFromAdmittedHelperSuccess" && expression.Sel.Name == "NewJobCredentialCleanupProof")
+	}
+	if expression.Sel.Name != "NewJobCredentialCleanupProof" || len(function.Recv.List) != 1 {
+		return false
+	}
+	pointer, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	receiver, ok := pointer.X.(*ast.Ident)
+	return ok && ((function.Name.Name == "RecoverJobCredentials" && receiver.Name == "L8JobCredentialRuntime") ||
+		(function.Name.Name == "Abort" && receiver.Name == "l8JobCredentialRuntimePreflight"))
 }
 
 func l10UnwrapIdentifier(expression ast.Expr) *ast.Ident {

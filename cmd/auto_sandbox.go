@@ -379,11 +379,12 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 
 	var target *sandbox.SandboxState
 	commandOut := out
-	var capturedJSON bytes.Buffer
+	var capturedJSON sandboxWorkerJobJSONCapture
 	capturedSummary := sandboxL3BoundedSummaryWriter{limit: sandboxL3RecoveryOutputSummaryBytes}
 	augmentJSON := opts.JSON
 	if augmentJSON {
 		commandOut = &capturedJSON
+		ctx = context.WithValue(ctx, sandboxWorkerJobJSONContextKey{}, &capturedJSON)
 	} else {
 		commandOut = io.MultiWriter(out, &capturedSummary)
 	}
@@ -453,33 +454,45 @@ func runAutoSandboxWithWriter(ctx context.Context, cmd *cobra.Command, args []st
 		applyAutoSandboxSecurityReadinessGateError(&req, execErr)
 	}
 	if isSandboxWorkerJobDetachedError(execErr) {
+		if opts.JSON {
+			return outputSandboxWorkerJobJSON(out, sandboxWorkerJobJSONPublication{
+				purpose: sandboxexecution.PurposeAuto, executionID: req.ExecutionID,
+				store: store, capture: &capturedJSON, commandErr: execErr,
+				autoEntryMode: sandboxWorkerJobJSONAutoEntryMode(args),
+			})
+		}
 		return execErr
 	}
 	if req.WorkerJob != nil {
 		foregroundOutput := capturedJSON.Bytes()
+		finalizationResult := execResult
 		if !augmentJSON {
 			foregroundOutput = []byte(capturedSummary.String())
+		} else if capturedJSON.truncated || decodeSandboxWorkerJobJSON(foregroundOutput, sandboxexecution.PurposeAuto) == nil {
+			// Invalid foreground JSON cannot supply archive proof through either
+			// its retained prefix or the executor's compatibility text summary.
+			foregroundOutput = nil
+			finalizationResult.StdoutSummary = ""
 		}
 		if finalizationErr := finalizeAutoSandboxWorkerJob(
 			ctx,
 			store,
 			req,
-			execResult,
+			finalizationResult,
 			target,
 			foregroundOutput,
 			deps,
 		); finalizationErr != nil {
 			execErr = errors.Join(execErr, finalizationErr)
 		}
-		if augmentJSON && execResult.RemoteStarted {
-			if outputErr := outputSandboxAugmentedJSON(out, capturedJSON.Bytes(), store, req.ExecutionID); outputErr != nil {
-				execErr = errors.Join(execErr, outputErr)
-			}
+		if opts.JSON {
+			return outputSandboxWorkerJobJSON(out, sandboxWorkerJobJSONPublication{
+				purpose: sandboxexecution.PurposeAuto, executionID: req.ExecutionID,
+				store: store, capture: &capturedJSON, commandErr: execErr,
+				autoEntryMode: sandboxWorkerJobJSONAutoEntryMode(args),
+			})
 		}
 		if execErr != nil {
-			if opts.JSON && !execResult.RemoteStarted {
-				return outputAutoSandboxJSONErrorWithReadinessGateForCommand(cmd, out, args, opts, execErr.Error(), sandboxCommandSecurityReadinessGateDecisionFromError(execErr))
-			}
 			return execErr
 		}
 		return nil
@@ -818,6 +831,11 @@ func (deps autoSandboxDeps) executeAutoSandbox(ctx context.Context, req autoSand
 			return nil
 		},
 		RunCommand: func(ctx context.Context, run sandboxexec.RunContext, command sandboxexec.CommandRequest) error {
+			if autoSandboxWorkerRuntimeRouteSelected(req, run.Target, selectedTarget) {
+				if err := prepareSandboxWorkerGitIdentity(req.ProjectDir, run.Target, &command); err != nil {
+					return err
+				}
+			}
 			return runSandboxWorkerJobOrSync(ctx, sandboxWorkerJobCommandRequest{
 				ExecutionID:  req.ExecutionID,
 				UseWorkerJob: autoSandboxWorkerJobRouteSelected(req, run.Target, selectedTarget),

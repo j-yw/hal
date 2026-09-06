@@ -677,6 +677,7 @@ start() {
 		--worker-id "$WORKER_ID" \
 		--driver rootless_podman \
 		--image "$IMAGE" \
+		--image-job-execution-supported \
 		</dev/null >>"$LOG_FILE" 2>&1 &
 	daemon_pid_value=$!
 	if ! launched_daemon_birth=$(capture_launched_daemon_birth "$daemon_pid_value"); then

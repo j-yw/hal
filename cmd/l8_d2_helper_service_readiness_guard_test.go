@@ -598,6 +598,127 @@ func TestL8D2HelperServiceReadinessProductGuard(t *testing.T) {
 	}
 }
 
+func TestL8D2HelperServiceReadinessReusesOneImportAnalysisPerBuildContext(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "credentialhelper")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, source := range map[string]string{
+		"service.go":      "package credentialhelper\ntype Service struct{}\n",
+		"service_test.go": "package credentialhelper\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts := make(map[string]map[*ast.File]int)
+	resolve := func(context build.Context, _ string, file *ast.File) map[string]string {
+		if counts[context.GOOS] == nil {
+			counts[context.GOOS] = make(map[*ast.File]int)
+		}
+		counts[context.GOOS][file]++
+		return nil
+	}
+	results, err := l8D2ReadinessExactServiceBehavioralTestsWithImportResolver(root, map[string]l8D2ReadinessServiceTestRequirement{
+		"TestMissingOne": {}, "TestMissingTwo": {},
+	}, resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results["TestMissingOne"] || results["TestMissingTwo"] {
+		t.Fatalf("missing behavioral tests were not rejected: %v", results)
+	}
+	if len(counts) == 0 {
+		t.Fatal("no build context was analyzed")
+	}
+	for goos, files := range counts {
+		if len(files) != 2 {
+			t.Fatalf("%s analyzed %d files, want 2", goos, len(files))
+		}
+		for _, count := range files {
+			if count != 1 {
+				t.Fatalf("%s resolved the same file %d times, want once per analysis", goos, count)
+			}
+		}
+	}
+}
+
+func TestL8D2HelperServiceReadinessStaticMemoKeepsLexicalIdentity(t *testing.T) {
+	source := `package credentialhelper
+const key = 3
+type numberMap map[int]string
+func example(unknown int) {
+	numbers := numberMap{}
+	_ = numbers[key]
+	_ = numbers[unknown]
+	{
+		const key = "three"
+		words := map[string]string{}
+		_ = words[key]
+	}
+}`
+	for _, input := range []string{source, strings.Replace(source, "key = 3", "key = 4", 1)} {
+		file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", input, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		function := file.Decls[2].(*ast.FuncDecl)
+		plain := l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{file})
+		cached := plain
+		cached.staticAnalysis = l8D2ReadinessNewStaticAnalysis()
+		var indices []*ast.IndexExpr
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			if index, ok := node.(*ast.IndexExpr); ok {
+				indices = append(indices, index)
+			}
+			return true
+		})
+		if len(indices) != 3 {
+			t.Fatalf("index fixture count = %d, want 3", len(indices))
+		}
+		for repeat := 0; repeat < 3; repeat++ {
+			for _, index := range indices {
+				want, wantExact := l8D2ReadinessStaticStorageIndex(function, index.X, index.Index, plain)
+				got, gotExact := l8D2ReadinessStaticStorageIndex(function, index.X, index.Index, cached)
+				if got != want || gotExact != wantExact {
+					t.Fatalf("memoized index = %q/%t, uncached = %q/%t", got, gotExact, want, wantExact)
+				}
+			}
+		}
+		if len(cached.staticAnalysis.indices) != len(indices) {
+			t.Fatalf("memoized %d index facts, want %d", len(cached.staticAnalysis.indices), len(indices))
+		}
+		wantBound := l8D2ReadinessWrapperStorageStateBound(function, plain)
+		if got := l8D2ReadinessWrapperStorageStateBound(function, cached); got != wantBound {
+			t.Fatalf("memoized bound = %d, uncached = %d", got, wantBound)
+		}
+		if len(cached.staticAnalysis.stateBounds) != 1 {
+			t.Fatal("storage bound was not retained for the immutable function")
+		}
+	}
+}
+
+func TestL8D2HelperServiceReadinessWrapperMemoTracksGrowingTerminalFacts(t *testing.T) {
+	for _, source := range []string{
+		`func caller() { wrappers := []func(func()){invoke}; wrappers[0](stop) }`,
+		`func caller() { wrapper := factory(); wrapper(stop) }
+func factory() func(func()) { return invoke }`,
+	} {
+		file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", "package credentialhelper\n"+source+`
+func invoke(callback func()) { callback() }
+func stop() { panic("terminal") }
+`, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		facts := l8D2ReadinessPackageTerminalFunctions(l8D2ReadinessTerminalEnvironmentForFiles([]*ast.File{file}))
+		if !facts.terminalParameter["invoke"][0] || !facts.neverReturns["stop"] || !facts.neverReturns["caller"] {
+			t.Fatalf("fixed point missed facts learned after caller analysis: %+v", facts)
+		}
+	}
+}
+
 func TestL8D2HelperServiceReadinessRequiredTestGuardSelfTest(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -13574,6 +13695,10 @@ func l8D2ReadinessServiceTestRequirements() map[string]l8D2ReadinessServiceTestR
 }
 
 func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[string]l8D2ReadinessServiceTestRequirement) (map[string]bool, error) {
+	return l8D2ReadinessExactServiceBehavioralTestsWithImportResolver(root, requirements, l8D2ReadinessNewImportResolver().resolve)
+}
+
+func l8D2ReadinessExactServiceBehavioralTestsWithImportResolver(root string, requirements map[string]l8D2ReadinessServiceTestRequirement, resolve func(build.Context, string, *ast.File) map[string]string) (map[string]bool, error) {
 	dir := filepath.Join(root, "credentialhelper")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -13621,40 +13746,35 @@ func l8D2ReadinessExactServiceBehavioralTests(root string, requirements map[stri
 		applicable = contexts
 	}
 	results := make(map[string]bool)
-	resolver := l8D2ReadinessNewImportResolver()
-	terminalFactsByContext := make(map[int]l8D2ReadinessTerminalFacts, len(applicable))
+	// An analysis owns an immutable parsed package snapshot. Resolve its files,
+	// imports, declarations, and terminal facts only once per build context, not
+	// once per required test. The cache is local so later mutation analyses cannot
+	// reuse stale source or package names.
+	environmentsByContext := make(map[int]l8D2ReadinessTerminalEnvironment, len(applicable))
 	for name, requirement := range requirements {
 		validEverywhere := true
 		for contextIndex, context := range applicable {
-			var contextFiles []*ast.File
-			resolvedImports := make(map[*ast.File]map[string]string)
-			for path, file := range productionFiles {
-				matched, matchErr := context.MatchFile(dir, filepath.Base(path))
-				if matchErr != nil {
-					return nil, matchErr
-				}
-				if matched {
-					contextFiles = append(contextFiles, file)
-					resolvedImports[file] = resolver.resolve(context, filepath.Dir(path), file)
-				}
-			}
-			for path, file := range testFiles {
-				matched, matchErr := context.MatchFile(dir, filepath.Base(path))
-				if matchErr != nil {
-					return nil, matchErr
-				}
-				if matched {
-					contextFiles = append(contextFiles, file)
-					resolvedImports[file] = resolver.resolve(context, filepath.Dir(path), file)
-				}
-			}
-			environment := l8D2ReadinessTerminalEnvironmentForFilesWithImports(contextFiles, resolvedImports)
-			terminalFacts, cached := terminalFactsByContext[contextIndex]
+			environment, cached := environmentsByContext[contextIndex]
 			if !cached {
-				terminalFacts = l8D2ReadinessPackageTerminalFunctions(environment)
-				terminalFactsByContext[contextIndex] = terminalFacts
+				var contextFiles []*ast.File
+				resolvedImports := make(map[*ast.File]map[string]string)
+				for _, files := range []map[string]*ast.File{productionFiles, testFiles} {
+					for path, file := range files {
+						matched, matchErr := context.MatchFile(dir, filepath.Base(path))
+						if matchErr != nil {
+							return nil, matchErr
+						}
+						if matched {
+							contextFiles = append(contextFiles, file)
+							resolvedImports[file] = resolve(context, filepath.Dir(path), file)
+						}
+					}
+				}
+				environment = l8D2ReadinessTerminalEnvironmentForFilesWithImports(contextFiles, resolvedImports)
+				terminalFacts := l8D2ReadinessPackageTerminalFunctions(environment)
+				environment.terminalFacts = &terminalFacts
+				environmentsByContext[contextIndex] = environment
 			}
-			environment.terminalFacts = &terminalFacts
 			validHere := false
 			for path, file := range testFiles {
 				matched, matchErr := context.MatchFile(dir, filepath.Base(path))
@@ -20368,6 +20488,43 @@ type l8D2ReadinessTerminalEnvironment struct {
 	packageLenShadowed bool
 	fileLenShadowed    map[*ast.File]bool
 	terminalFacts      *l8D2ReadinessTerminalFacts
+	staticAnalysis     *l8D2ReadinessStaticAnalysis
+}
+
+// Only immutable lexical facts are memoized during one terminal fixed point.
+// Mutable terminal/wrapper authority facts are deliberately excluded. A fresh
+// cache is allocated for each analysis, including each supported build context.
+type l8D2ReadinessStaticAnalysis struct {
+	bindings    map[l8D2ReadinessStaticBindingKey]ast.Expr
+	indices     map[l8D2ReadinessStaticIndexKey]l8D2ReadinessStaticIndexResult
+	stateBounds map[*ast.FuncDecl]int
+}
+
+type l8D2ReadinessStaticBindingKey struct {
+	function *ast.FuncDecl
+	name     string
+	position token.Pos
+}
+
+type l8D2ReadinessStaticIndexKey struct {
+	function   *ast.FuncDecl
+	collection ast.Expr
+	position   token.Pos
+	end        token.Pos
+	expression string
+}
+
+type l8D2ReadinessStaticIndexResult struct {
+	value string
+	exact bool
+}
+
+func l8D2ReadinessNewStaticAnalysis() *l8D2ReadinessStaticAnalysis {
+	return &l8D2ReadinessStaticAnalysis{
+		bindings:    make(map[l8D2ReadinessStaticBindingKey]ast.Expr),
+		indices:     make(map[l8D2ReadinessStaticIndexKey]l8D2ReadinessStaticIndexResult),
+		stateBounds: make(map[*ast.FuncDecl]int),
+	}
 }
 
 type l8D2ReadinessExpectedConstantDeclaration struct {
@@ -20585,14 +20742,22 @@ type l8D2ReadinessTerminalFacts struct {
 	returnsStop       map[string]bool
 	terminalParameter map[string]map[int]bool
 	returnedWrappers  map[string]map[string]bool
+	wrapperAliases    map[l8D2ReadinessWrapperAliasKey]map[string]map[string]bool
+}
+
+type l8D2ReadinessWrapperAliasKey struct {
+	function *ast.FuncDecl
+	before   token.Pos
 }
 
 func l8D2ReadinessPackageTerminalFunctions(environment l8D2ReadinessTerminalEnvironment) l8D2ReadinessTerminalFacts {
+	environment.staticAnalysis = l8D2ReadinessNewStaticAnalysis()
 	facts := l8D2ReadinessTerminalFacts{
 		neverReturns:      make(map[string]bool),
 		returnsStop:       make(map[string]bool),
 		terminalParameter: make(map[string]map[int]bool),
 		returnedWrappers:  make(map[string]map[string]bool),
+		wrapperAliases:    make(map[l8D2ReadinessWrapperAliasKey]map[string]map[string]bool),
 	}
 	for identity := range l8D2ReadinessExactRecursiveTerminalCycles(environment) {
 		facts.neverReturns[identity] = true
@@ -20607,10 +20772,12 @@ func l8D2ReadinessPackageTerminalFunctions(environment l8D2ReadinessTerminalEnvi
 			aliases := l8D2ReadinessTerminalCallableAliases(function, facts, environment, nil)
 			if !facts.neverReturns[identity] && l8D2ReadinessBlockNeverReturns(function, function.Body, aliases, facts, environment) {
 				facts.neverReturns[identity] = true
+				clear(facts.wrapperAliases)
 				changed = true
 			}
 			if !facts.returnsStop[identity] && l8D2ReadinessFunctionReturnsTerminalCallable(function, aliases, facts, environment) {
 				facts.returnsStop[identity] = true
+				clear(facts.wrapperAliases)
 				changed = true
 			}
 			for index, parameter := range l8D2ReadinessFunctionParameterNames(function) {
@@ -20625,6 +20792,7 @@ func l8D2ReadinessPackageTerminalFunctions(environment l8D2ReadinessTerminalEnvi
 					facts.terminalParameter[identity] = make(map[int]bool)
 				}
 				facts.terminalParameter[identity][index] = true
+				clear(facts.wrapperAliases)
 				changed = true
 			}
 			returnedWrappers := l8D2ReadinessFunctionReturnedWrapperIdentities(function, facts, environment)
@@ -20634,6 +20802,7 @@ func l8D2ReadinessPackageTerminalFunctions(environment l8D2ReadinessTerminalEnvi
 			for wrapper := range returnedWrappers {
 				if !facts.returnedWrappers[identity][wrapper] {
 					facts.returnedWrappers[identity][wrapper] = true
+					clear(facts.wrapperAliases)
 					changed = true
 				}
 			}
@@ -21689,11 +21858,17 @@ func l8D2ReadinessStaticBindingFromStatement(statement ast.Stmt, name string) (a
 	return nil, false
 }
 
-func l8D2ReadinessStaticBinding(function *ast.FuncDecl, name string, position token.Pos) ast.Expr {
+func l8D2ReadinessStaticBinding(function *ast.FuncDecl, name string, position token.Pos, environment l8D2ReadinessTerminalEnvironment) (result ast.Expr) {
+	if analysis := environment.staticAnalysis; analysis != nil {
+		key := l8D2ReadinessStaticBindingKey{function: function, name: name, position: position}
+		if binding, found := analysis.bindings[key]; found {
+			return binding
+		}
+		defer func() { analysis.bindings[key] = result }()
+	}
 	if function == nil || function.Body == nil {
 		return nil
 	}
-	var result ast.Expr
 	for _, fields := range []*ast.FieldList{function.Recv, function.Type.Params, function.Type.Results} {
 		if fields == nil {
 			continue
@@ -21895,7 +22070,7 @@ func l8D2ReadinessReceiverTypeExpression(function *ast.FuncDecl, expression ast.
 		case *ast.TypeAssertExpr:
 			return item.Type
 		case *ast.Ident:
-			binding := l8D2ReadinessStaticBinding(function, item.Name, position)
+			binding := l8D2ReadinessStaticBinding(function, item.Name, position, environment)
 			if binding == nil {
 				return nil
 			}
@@ -21982,7 +22157,7 @@ func l8D2ReadinessStaticCallResultType(function *ast.FuncDecl, call *ast.CallExp
 	case *ast.FuncLit:
 		return l8D2ReadinessFunctionLiteralResultType(called)
 	case *ast.Ident:
-		if binding := l8D2ReadinessStaticBinding(function, called.Name, position); binding != nil {
+		if binding := l8D2ReadinessStaticBinding(function, called.Name, position, environment); binding != nil {
 			if literal, ok := binding.(*ast.FuncLit); ok {
 				return l8D2ReadinessFunctionLiteralResultType(literal)
 			}
@@ -22000,7 +22175,7 @@ func l8D2ReadinessStaticCallResultType(function *ast.FuncDecl, call *ast.CallExp
 			name, arguments = identifier.Name, called.Indices
 		}
 	}
-	if name == "" || l8D2ReadinessStaticBinding(function, name, position) != nil {
+	if name == "" || l8D2ReadinessStaticBinding(function, name, position, environment) != nil {
 		return nil
 	}
 	var result ast.Expr
@@ -22036,7 +22211,7 @@ func l8D2ReadinessStaticExpressionType(function *ast.FuncDecl, expression ast.Ex
 				return nil
 			}
 			visited[item.Name] = true
-			binding := l8D2ReadinessStaticBinding(function, item.Name, position)
+			binding := l8D2ReadinessStaticBinding(function, item.Name, position, environment)
 			if binding == nil {
 				return nil
 			}
@@ -22120,7 +22295,16 @@ func l8D2ReadinessIndexedStorageMayBeMap(function *ast.FuncDecl, collection ast.
 	}
 }
 
-func l8D2ReadinessStaticStorageIndex(function *ast.FuncDecl, collection, expression ast.Expr, environment l8D2ReadinessTerminalEnvironment) (string, bool) {
+func l8D2ReadinessStaticStorageIndex(function *ast.FuncDecl, collection, expression ast.Expr, environment l8D2ReadinessTerminalEnvironment) (index string, ok bool) {
+	if analysis := environment.staticAnalysis; analysis != nil {
+		// Synthetic composite indices have fresh AST pointers on every visit;
+		// source position plus syntax identifies their same lexical expression.
+		key := l8D2ReadinessStaticIndexKey{function: function, collection: collection, position: expression.Pos(), end: expression.End(), expression: types.ExprString(expression)}
+		if result, found := analysis.indices[key]; found {
+			return result.value, result.exact
+		}
+		defer func() { analysis.indices[key] = l8D2ReadinessStaticIndexResult{value: index, exact: ok} }()
+	}
 	value, exact := l8D2ReadinessConstantExpression(expression, l8D2ReadinessWrapperConstantValues(function, expression.Pos(), environment))
 	if !exact {
 		return "", false
@@ -22258,11 +22442,17 @@ func l8D2ReadinessWrapperStorageMayAlias(left, right string) bool {
 	return true
 }
 
-func l8D2ReadinessWrapperStorageStateBound(function *ast.FuncDecl, environment l8D2ReadinessTerminalEnvironment) int {
+func l8D2ReadinessWrapperStorageStateBound(function *ast.FuncDecl, environment l8D2ReadinessTerminalEnvironment) (maximum int) {
+	if analysis := environment.staticAnalysis; analysis != nil {
+		if bound, found := analysis.stateBounds[function]; found {
+			return bound
+		}
+		defer func() { analysis.stateBounds[function] = maximum }()
+	}
 	if function == nil || function.Body == nil {
 		return 1
 	}
-	maximum := 1
+	maximum = 1
 	ast.Inspect(function.Body, func(node ast.Node) bool {
 		expression, ok := node.(ast.Expr)
 		if !ok {
@@ -22434,7 +22624,18 @@ func l8D2ReadinessWrapperCompositeExpression(expression ast.Expr) *ast.Composite
 }
 
 func l8D2ReadinessWrapperIdentityAliases(function *ast.FuncDecl, facts l8D2ReadinessTerminalFacts, environment l8D2ReadinessTerminalEnvironment, before token.Pos) map[string]map[string]bool {
-	return l8D2ReadinessWrapperIdentityAliasesInNode(function, function.Body, nil, facts, environment, before)
+	// Calls and each seeded parameter revisit the same prefix while the terminal
+	// facts are unchanged. Every newly learned fact above invalidates this cache;
+	// it must never conceal progress in the fixed point.
+	key := l8D2ReadinessWrapperAliasKey{function: function, before: before}
+	if result, found := facts.wrapperAliases[key]; found {
+		return result
+	}
+	result := l8D2ReadinessWrapperIdentityAliasesInNode(function, function.Body, nil, facts, environment, before)
+	if facts.wrapperAliases != nil {
+		facts.wrapperAliases[key] = result
+	}
+	return result
 }
 
 func l8D2ReadinessWrapperIdentityAliasesInNode(function *ast.FuncDecl, root ast.Node, seeds map[string]map[string]bool, facts l8D2ReadinessTerminalFacts, environment l8D2ReadinessTerminalEnvironment, before token.Pos) map[string]map[string]bool {

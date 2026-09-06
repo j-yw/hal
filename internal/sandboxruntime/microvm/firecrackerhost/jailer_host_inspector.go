@@ -58,6 +58,7 @@ type strictJailerHostInspectionRequest struct {
 // the same inspected anchor snapshot. No pathname or directory descriptor is
 // retained or pinned across a later exec by this read-only slice.
 type strictJailerHostInspectionResult struct {
+	executables                      *strictJailerExecutablePair
 	canonicalJailerPath              string
 	canonicalFirecrackerPath         string
 	jailerSHA256                     [sha256.Size]byte
@@ -233,7 +234,10 @@ func inspectStrictJailerHostBinary(
 
 func strictJailerHostFileSHA256(reader io.Reader) ([sha256.Size]byte, error) {
 	hasher := sha256.New()
-	if _, err := io.Copy(hasher, reader); err != nil {
+	if count, err := io.Copy(hasher, io.LimitReader(reader, maxStrictJailerExecutableBytes+1)); err != nil || count > maxStrictJailerExecutableBytes {
+		if err == nil {
+			err = errStrictJailerExecutablesInvalid
+		}
 		return [sha256.Size]byte{}, err
 	}
 	return strictJailerHostHashSum(hasher), nil
@@ -319,7 +323,7 @@ func strictJailerHostPathWithinAnchor(anchor, candidate string) bool {
 }
 
 func validStrictJailerHostBinaryInfo(filesystem strictJailerHostInspectionFilesystem, info os.FileInfo) bool {
-	if info == nil || !info.Mode().IsRegular() {
+	if info == nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxStrictJailerExecutableBytes {
 		return false
 	}
 	ownerUID, ownerKnown := filesystem.OwnerUID(info)

@@ -25,7 +25,7 @@
 | `sandboxPreview` | object | Pure sandbox dry-run intent preview; present only for `hal auto --sandbox --dry-run` |
 | `syncOut` | object | Sandbox sync-out summary when `hal auto --sandbox --sandbox-sync-out` or `--sandbox-apply` produced durable local sync-out metadata |
 | `syncOutApply` | object | Sandbox apply or handoff result when explicit sandbox sync-out/apply metadata was produced |
-| `sandboxExecutionId` | string | Durable execution ID emitted with sandbox sync-out metadata for later `hal sandbox apply EXECUTION_ID` |
+| `sandboxExecutionId` | string | Durable execution ID emitted with sandbox sync-out metadata for later `hal sandbox apply EXECUTION_ID`, or with a worker-backed sandbox failure/detach result for recovery |
 | `nextAction` | object | Recommended next command |
 
 ## Step Map (Required Keys)
@@ -90,6 +90,24 @@ status and the document's `ok` field must be evaluated together:
 Sandbox execution preserves the inner `hal auto --json` nonzero status. A
 rendered JSON failure does not also print the same error to stderr.
 
+For explicitly selected daemon-owned rootless sandbox jobs, `ok=true` also
+requires completed, consistent host-side finalization. Failure collecting
+artifacts, releasing the lease, or publishing durable terminal state produces
+one `ok=false` document with a sanitized error and `sandboxExecutionId`, even
+if the inner pipeline succeeded. Validated inner step facts remain intact;
+their completion does not imply successful host finalization.
+
+Worker stdout must contain exactly one non-null, correctly typed `auto-v2`
+object, including every required step status. Missing, malformed,
+multiple-document, oversized (more than 1 MiB), or explicitly truncated output
+fails closed with a normal typed failure envelope; invalid bytes are never
+passed through or used as archive proof. Detachment reports unconfirmed
+completion with recovery identity and a fresh non-completed step map, without
+canceling the daemon-owned job or finalizing it. Existing command errors retain
+their exit status; a JSON-only validation or inner failure without a command
+error exits `4`. Successful output retains its existing schema and optional
+augmentations. Legacy SSH output is unchanged.
+
 For `hal auto --sandbox --dry-run --json`, all required step statuses are
 `skipped` because no pipeline or sandbox execution occurs. `sandboxPreview`
 describes requested target, runtime, workspace, security, and post-execution
@@ -110,10 +128,11 @@ When present:
 
 ## Sandbox Sync-Out Fields
 
-`syncOut`, `syncOutApply`, and `sandboxExecutionId` are omitted by default.
-They are present only for
+`syncOut`, `syncOutApply`, and `sandboxExecutionId` are omitted by default on
+successful runs. Sync-out fields are present only for
 explicit local sandbox sync-out/apply runs after the remote auto JSON output is
-merged with local host-side metadata.
+merged with local host-side metadata. Worker-backed failure or detach results
+may also include the existing `sandboxExecutionId` field without sync-out.
 
 `sandboxExecutionId` selects the exact durable execution for the apply-only
 `hal sandbox apply EXECUTION_ID` path. The apply-only command does not launch a

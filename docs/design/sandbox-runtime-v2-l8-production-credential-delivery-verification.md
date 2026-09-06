@@ -7,12 +7,15 @@ This note verifies issue #49 L8 against
 produces live, job-scoped HTTP, tmpfs-file, and SSH-agent activation evidence.
 It does not select the strict default; L10 consumes the resulting proof.
 
-Default tests are fake-only except for exact isolated local Unix-socket
-protocol tests. Those deterministic framing tests are not live-tagged; they do
-not open IP or external listeners, resolve or dial destinations, read host
-agents, create mounts or namespaces, start a provider/runtime, access KVM, or
-read raw configured secrets. All other live behavior is isolated behind
-explicit build tags and prepared-host opt-in markers.
+Default tests use fakes or isolated local fixtures. The exceptions to
+fake-only coverage are exact local Unix-socket protocol tests and the bounded
+image-profile regressions that create a small ext4 fixture with host `mke2fs`
+and inspect it with host `debugfs`. The ext4 tests skip when either tool is
+unavailable. These deterministic tests are not live-tagged; they do not open
+IP or external listeners, resolve or dial destinations, read host agents,
+create mounts or namespaces, start a provider/runtime, access KVM, or read raw
+configured secrets. All other live behavior is isolated behind explicit build
+tags and prepared-host opt-in markers.
 
 A selected live test that skips is a failure, not a pass.
 
@@ -554,7 +557,8 @@ The final-image verifier proves the exact v2 guest agent/init/controller,
 single-threaded native role-bootstrap, mount-monitor, and workload-shim binaries,
 musl target Node 22.22.0, `@earendil-works/pi-coding-agent` 0.82.1 and its
 locked dependency-tree digest, root-owned non-setuid `/usr/bin/node` and
-`/usr/bin/pi`, and absence of npm cache/config/session material. It also proves
+`/usr/bin/pi`, and absence of the locked npm cache/config/session filename set.
+It also proves
 dedicated agent UID/GID 998 and workload UID/GID 1000, PID1 controller launch
 before agent privilege drop, protected proc, exact launch-base/controller/
 agent/monitor/shim capability and seccomp policies, native no-libc/no-loader/
@@ -564,7 +568,19 @@ controller/agent/workload capability sets, controller-public-key boot input
 without private material, L7 network profile, absence of
 setuid/setgid/file capabilities, private filesystem modes, required
 tmpfs/fd-mount/pidfd/mount namespace and cgroup-v2/`cgroup.kill` kernel support,
-and absence of embedded secret/test keys. Test probes are copied into the
+and absence of PEM-style private-key markers in reachable regular-file bytes.
+The scanner walks directory entries from root inode 2, validates each debugfs
+directory request and record, rejects control-byte filenames, deduplicates
+hard-linked regular inode IDs, reconciles the exact requested-inode order of
+the batched attribute response, and validates each per-file extraction and
+logical size before scanning it. Required entries are identified only from the
+actual first `debugfs stat` header and first owner record, preventing a
+multiline symlink-target field injection from supplying fake identity fields.
+Required setpriv/account content is checked
+from those bounded per-file extractions, never before aggregate size validation.
+Reserved metadata and unlinked inodes are excluded because they are not
+guest-reachable files. The bounded marker and filename scan does not claim exhaustive secret detection for DER, PKCS#12, encoded, compressed, archive-contained, or custom key blobs, and it makes no claim about inaccessible filesystem slack or unlinked data.
+Test probes are copied into the
 workspace through the existing bounded guest copy contract; they are not
 installed in the production image and cannot manufacture proof.
 

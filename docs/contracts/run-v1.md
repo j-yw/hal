@@ -33,7 +33,7 @@ process failure.
 | `credentialDelivery` | object | Redaction-safe sandbox credential-delivery status |
 | `syncOut` | object | Redaction-safe sandbox sync-out summary |
 | `syncOutApply` | object | Redaction-safe sandbox apply or handoff result |
-| `sandboxExecutionId` | string | Durable execution ID emitted with sandbox sync-out metadata for later `hal sandbox apply EXECUTION_ID` |
+| `sandboxExecutionId` | string | Durable execution ID emitted with sandbox sync-out metadata for later `hal sandbox apply EXECUTION_ID`, or with a worker-backed sandbox failure/detach result for recovery |
 | `securityReadinessGate` | object | Sandbox security readiness decision |
 | `sandboxPreview` | object | Pure sandbox dry-run intent preview; present only for `hal run --sandbox --dry-run` |
 | `nextAction` | object | Recommended next command |
@@ -52,6 +52,24 @@ status and `ok` must be evaluated together:
 
 Sandbox execution preserves the inner `hal run --json` nonzero status. A
 rendered JSON failure does not also print the same error to stderr.
+
+For explicitly selected daemon-owned rootless sandbox jobs, `ok=true` also
+requires completed, consistent host-side finalization. A failure collecting
+artifacts, releasing the lease, or publishing durable terminal state produces
+one `ok=false` document with a sanitized error and `sandboxExecutionId`, even
+if the inner loop succeeded. Validated inner `complete`, iteration, and story
+facts remain intact: `complete` describes PRD stories, not host finalization.
+Successful bounded runs (`ok=true`, `complete=false`) remain valid.
+
+Worker stdout must contain exactly one non-null, correctly typed `run-v1`
+object. Missing, malformed, multiple-document, oversized (more than 1 MiB),
+or explicitly truncated output fails closed with a normal `ok=false`,
+`complete=false` envelope; invalid bytes are not passed through. A detached
+worker job likewise reports unconfirmed completion with `complete=false` and
+its recovery identity, without canceling the daemon-owned job or finalizing it.
+Existing command errors retain their exit status; a JSON-only validation or
+inner failure without a command error exits `4`. Successful output retains
+its existing schema and optional augmentations. Legacy SSH output is unchanged.
 
 For `hal run --sandbox --dry-run --json`, `iterations` is `0`, `complete` is
 `false`, and `sandboxPreview` describes requested target, runtime, workspace,

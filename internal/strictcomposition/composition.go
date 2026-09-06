@@ -33,8 +33,10 @@ type RuntimeProofSource interface {
 	Inspect(context.Context, l7network.Identity) (l7network.Metadata, error)
 }
 
-// WorkspaceEvidence minimally correlates existing workspace and sync-out
-// contracts to the exact sandbox execution and workspace policy.
+// WorkspaceEvidence correlates stable input references and optional output
+// metadata to the exact execution and policy. SyncOut and SafeApply are not
+// required before execution; terminal evaluation requires a collected SyncOut.
+// These contracts describe host-verified evidence, not payload verification.
 type WorkspaceEvidence struct {
 	SandboxID         string
 	ExecutionID       string
@@ -164,9 +166,16 @@ func EvaluateActive(ctx context.Context, request ActiveRequest) (ActiveAttestati
 	if code != "" {
 		return ActiveAttestation{}, blocked(code)
 	}
-	workspaceFingerprint, code := validateWorkspace(request.Now, request.Identity, request.Workspace)
+	workspaceFingerprint, code := validateWorkspaceInput(request.Now, request.Identity, request.Workspace)
 	if code != "" {
 		return ActiveAttestation{}, blocked(code)
+	}
+	// Older callers may supply output metadata. Do not require future output,
+	// but do not silently discard an unsafe or contradictory supplied summary.
+	if !workspaceOutputAbsent(request.Workspace) {
+		if code := validateWorkspaceOutput(request.Workspace); code != "" {
+			return ActiveAttestation{}, blocked(code)
+		}
 	}
 
 	identityDigest, err := sandboxruntime.JobCredentialIdentityDigest(request.Identity)
@@ -194,7 +203,8 @@ func EvaluateActive(ctx context.Context, request ActiveRequest) (ActiveAttestati
 }
 
 // EvaluateTerminal consumes the exact active attestation only after fresh L8
-// absence and unchanged template/workspace evidence are both established.
+// absence, unchanged template/input identity, and fresh output metadata are
+// established. Output artifacts may first appear or change after admission.
 func EvaluateTerminal(ctx context.Context, request TerminalRequest) sandbox.SandboxStrictCompositionDecision {
 	if ctx == nil || request.Now.IsZero() || sandboxruntime.ValidateJobCredentialIdentity(request.Identity) != nil || request.CredentialRevision == 0 {
 		return blocked(sandbox.SandboxStrictCompositionCodeIdentityInvalid)
@@ -249,8 +259,14 @@ func EvaluateTerminal(ctx context.Context, request TerminalRequest) sandbox.Sand
 	if code != "" {
 		return blocked(code)
 	}
-	workspaceFingerprint, code := validateWorkspace(request.Now, request.Identity, request.Workspace)
+	workspaceFingerprint, code := validateWorkspaceInput(request.Now, request.Identity, request.Workspace)
 	if code != "" {
+		return blocked(code)
+	}
+	if request.Workspace.ObservedAt.Before(state.observedAt) {
+		return blocked(sandbox.SandboxStrictCompositionCodeWorkspaceProofStale)
+	}
+	if code := validateWorkspaceOutput(request.Workspace); code != "" {
 		return blocked(code)
 	}
 	if request.TemplatePolicyID != state.templatePolicyID || templateFingerprint != state.templateFingerprint {
@@ -386,7 +402,7 @@ func runtimeTemplateEntryWarningsEmpty(entry *sandboxruntime.RuntimeTemplateLock
 	return entry == nil || len(entry.WarningCodes) == 0
 }
 
-func validateWorkspace(now time.Time, identity sandboxruntime.JobCredentialIdentity, evidence WorkspaceEvidence) ([32]byte, sandbox.SandboxStrictCompositionCode) {
+func validateWorkspaceInput(now time.Time, identity sandboxruntime.JobCredentialIdentity, evidence WorkspaceEvidence) ([32]byte, sandbox.SandboxStrictCompositionCode) {
 	if strings.TrimSpace(evidence.SandboxID) == "" || strings.TrimSpace(evidence.ExecutionID) == "" ||
 		strings.TrimSpace(evidence.WorkspacePolicyID) == "" || evidence.ObservedAt.IsZero() {
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofMissing
@@ -398,19 +414,48 @@ func validateWorkspace(now time.Time, identity sandboxruntime.JobCredentialIdent
 		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofStale
 	}
 	workspace := evidence.Workspace
+	input := sandboxworkspace.SyncOutSummary{Workspace: workspaceReference(workspace)}
+	if workspace.Repo != "" || workspace.SyncRef == "" || !isolatedWorkspace(workspace) || len(evidence.WarningCodes) != 0 ||
+		!reflect.DeepEqual(input, sandboxworkspace.SanitizeSyncOutSummary(input)) {
+		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
+	}
+	digest := sha256.New()
+	for _, value := range []string{
+		"workspace-input-v1", evidence.SandboxID, evidence.ExecutionID, evidence.WorkspacePolicyID,
+		workspace.Mode, workspace.InputSource, workspace.Branch, workspace.SyncRef,
+	} {
+		writeDigestString(digest, value)
+	}
+	var fingerprint [32]byte
+	copy(fingerprint[:], digest.Sum(nil))
+	return fingerprint, ""
+}
+
+func workspaceReference(workspace sandbox.SandboxWorkspace) sandboxworkspace.SyncOutWorkspaceRef {
+	return sandboxworkspace.SyncOutWorkspaceRef{
+		Mode: workspace.Mode, InputSource: workspace.InputSource, Branch: workspace.Branch, SyncRef: workspace.SyncRef,
+	}
+}
+
+func workspaceOutputAbsent(evidence WorkspaceEvidence) bool {
+	return evidence.SafeApply == nil && reflect.DeepEqual(evidence.SyncOut, sandboxworkspace.SyncOutSummary{})
+}
+
+func validateWorkspaceOutput(evidence WorkspaceEvidence) sandbox.SandboxStrictCompositionCode {
 	if !reflect.DeepEqual(evidence.SyncOut, sandboxworkspace.SanitizeSyncOutSummary(evidence.SyncOut)) ||
 		(evidence.SafeApply != nil && !reflect.DeepEqual(*evidence.SafeApply, sandboxworkspace.SanitizeSafeApplyResult(*evidence.SafeApply))) {
-		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
+		return sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
 	}
-	if workspace.Repo != "" || !isolatedWorkspace(workspace) ||
-		workspace.Mode != evidence.SyncOut.Workspace.Mode || workspace.InputSource != evidence.SyncOut.Workspace.InputSource ||
-		workspace.Branch != evidence.SyncOut.Workspace.Branch || workspace.SyncRef != evidence.SyncOut.Workspace.SyncRef {
-		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
+	if workspaceReference(evidence.Workspace) != evidence.SyncOut.Workspace ||
+		len(evidence.SyncOut.Warnings) != 0 || evidence.SyncOut.Recovery.Status != sandboxworkspace.SyncOutRecoveryStatusCollected ||
+		!workspaceArtifactsExact(evidence.SyncOut) {
+		return sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
 	}
-	if len(evidence.WarningCodes) != 0 || len(evidence.SyncOut.Warnings) != 0 ||
-		evidence.SyncOut.Recovery.Status != sandboxworkspace.SyncOutRecoveryStatusCollected ||
-		!evidence.SyncOut.Apply.Eligible {
-		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
+	if !evidence.SyncOut.Apply.Eligible {
+		if workspaceNoChangesExact(evidence) {
+			return ""
+		}
+		return sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
 	}
 	artifact := workspaceApplyArtifact(evidence.SyncOut)
 	if artifact == nil || artifact.ApplyEligibility == nil || artifact.ID == "" ||
@@ -418,28 +463,71 @@ func validateWorkspace(now time.Time, identity sandboxruntime.JobCredentialIdent
 		evidence.SyncOut.Apply.Mode != artifact.ApplyEligibility.Mode || !artifact.ApplyEligibility.Eligible ||
 		!exactEligibleApplyReasons(evidence.SyncOut.Apply.Mode, evidence.SyncOut.Apply.Reasons) ||
 		!exactEligibleApplyReasons(artifact.ApplyEligibility.Mode, artifact.ApplyEligibility.Reasons) {
-		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
+		return sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
 	}
 	if evidence.SafeApply != nil && !safeApplyExact(*evidence.SafeApply, evidence.SyncOut.Apply) {
-		return [32]byte{}, sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
+		return sandbox.SandboxStrictCompositionCodeWorkspaceProofUnsafe
 	}
-	digest := sha256.New()
-	for _, value := range []string{
-		evidence.SandboxID, evidence.ExecutionID, evidence.WorkspacePolicyID,
-		workspace.Mode, workspace.InputSource, workspace.Branch, workspace.SyncRef,
-		string(evidence.SyncOut.Recovery.Status), string(evidence.SyncOut.Apply.Mode), evidence.SyncOut.Apply.ArtifactID,
-		artifact.ID, string(artifact.Kind), artifact.DisplayName, artifact.DisplayPath, artifact.StoredPath,
-	} {
-		writeDigestString(digest, value)
+	return ""
+}
+
+func workspaceNoChangesExact(evidence WorkspaceEvidence) bool {
+	summary := evidence.SyncOut
+	return summary.Committed.Patch == nil && summary.Committed.Bundle == nil && summary.Uncommitted.Diff == nil &&
+		summary.Untracked.Archive == nil && summary.Untracked.List == nil && evidence.SafeApply == nil &&
+		len(summary.Recovery.Artifacts) > 0 &&
+		!summary.Apply.Eligible && summary.Apply.Mode == "" && summary.Apply.ArtifactID == "" &&
+		len(summary.Apply.Reasons) == 1 && summary.Apply.Reasons[0] == sandboxworkspace.SyncOutApplyEligibilityReasonNoEligibleArtifact
+}
+
+// Metadata must identify every collected payload coherently, even when that
+// payload is not the selected apply artifact. Reading/verifying payload bytes
+// remains the host collector's responsibility before invoking the evaluator.
+func workspaceArtifactsExact(summary sandboxworkspace.SyncOutSummary) bool {
+	seen := make(map[string]bool)
+	validate := func(artifact *sandboxworkspace.SyncOutArtifact, kind sandboxworkspace.SyncOutArtifactKind) bool {
+		if artifact == nil {
+			return true
+		}
+		if artifact.ID == "" || artifact.Kind != kind || artifact.DisplayPath == "" || artifact.StoredPath == "" || seen[artifact.ID] ||
+			!workspaceArtifactEligibilityExact(*artifact) {
+			return false
+		}
+		seen[artifact.ID] = true
+		return true
 	}
-	if evidence.SafeApply != nil {
-		for _, value := range []string{string(evidence.SafeApply.Status), string(evidence.SafeApply.Mode), evidence.SafeApply.ArtifactID} {
-			writeDigestString(digest, value)
+	if !validate(summary.Committed.Patch, sandboxworkspace.SyncOutArtifactKindPatch) ||
+		!validate(summary.Committed.Bundle, sandboxworkspace.SyncOutArtifactKindBundle) ||
+		!validate(summary.Uncommitted.Diff, sandboxworkspace.SyncOutArtifactKindDiff) ||
+		!validate(summary.Untracked.Archive, sandboxworkspace.SyncOutArtifactKindArchive) ||
+		!validate(summary.Untracked.List, sandboxworkspace.SyncOutArtifactKindFileList) {
+		return false
+	}
+	for i := range summary.CoreArtifacts {
+		if !validate(&summary.CoreArtifacts[i], sandboxworkspace.SyncOutArtifactKindCore) {
+			return false
 		}
 	}
-	var fingerprint [32]byte
-	copy(fingerprint[:], digest.Sum(nil))
-	return fingerprint, ""
+	for i := range summary.Recovery.Artifacts {
+		if !validate(&summary.Recovery.Artifacts[i], sandboxworkspace.SyncOutArtifactKindRecovery) {
+			return false
+		}
+	}
+	return true
+}
+
+func workspaceArtifactEligibilityExact(artifact sandboxworkspace.SyncOutArtifact) bool {
+	eligibility := artifact.ApplyEligibility
+	switch artifact.Kind {
+	case sandboxworkspace.SyncOutArtifactKindPatch, sandboxworkspace.SyncOutArtifactKindBundle:
+		return eligibility != nil && eligibility.Eligible && string(eligibility.Mode) == string(artifact.Kind) &&
+			exactEligibleApplyReasons(eligibility.Mode, eligibility.Reasons)
+	case sandboxworkspace.SyncOutArtifactKindDiff:
+		return eligibility == nil || (!eligibility.Eligible && eligibility.Mode == "" && len(eligibility.Reasons) == 1 &&
+			eligibility.Reasons[0] == sandboxworkspace.SyncOutApplyEligibilityReasonManualReviewRequired)
+	default:
+		return eligibility == nil
+	}
 }
 
 func exactEligibleApplyReasons(mode sandboxworkspace.SyncOutApplyMode, reasons []sandboxworkspace.SyncOutApplyEligibilityReason) bool {

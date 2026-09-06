@@ -463,7 +463,14 @@ func newJobLiteralRedactor(req ExecRequest) *jobLiteralRedactor {
 	for _, value := range req.Args {
 		addJobLiteralLines(unique, []byte(value))
 	}
-	for _, value := range req.Env {
+	for key, value := range req.Env {
+		switch key {
+		case "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL":
+			// These exact keys carry public commit identity, not secrets.
+			// Do not remove a matching mask contributed by another env
+			// key, an argument, or stdin. Structural masking still applies.
+			continue
+		}
 		addJobLiteralLines(unique, []byte(value))
 	}
 	if req.Stdin != nil {

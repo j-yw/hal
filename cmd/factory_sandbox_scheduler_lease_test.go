@@ -91,6 +91,7 @@ func testFactorySandboxExplicitSchedulerAcquiresLeaseAndPersistsRecord(t *testin
 		},
 		RemoteAuto: factoryRunAutoRequest{BaseBranch: "main"},
 	}, factorySandboxExecutorDeps{
+		planBundle: fakeFactoryBundlePlan, materializeWorkspace: fakeFactoryBundleMaterialize, prepareCommandContext: fakeFactoryBundleCommandContext,
 		defaultStore: func() (factory.Store, error) {
 			return store, nil
 		},
