@@ -5,14 +5,12 @@ package sandboxworker
 import (
 	"os"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 func openMinimalLaunchNoFollow(path string, directory bool) (*os.File, error) {
-	flags := os.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	flags := os.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
 	if directory {
-		flags |= unix.O_DIRECTORY
+		flags |= syscall.O_DIRECTORY
 	}
 	return os.OpenFile(path, flags, 0)
 }
@@ -23,9 +21,10 @@ func minimalLaunchFileOwned(info os.FileInfo) bool {
 }
 
 func openMinimalLaunchRelative(root *os.Root, name string, create bool) (*os.File, error) {
-	flags, mode := os.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, os.FileMode(0)
+	// A substituted FIFO must not block open before metadata can reject it.
+	flags, mode := os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, os.FileMode(0)
 	if create {
-		flags, mode = os.O_WRONLY|os.O_CREATE|os.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600
+		flags, mode = os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600
 	}
 	return root.OpenFile(name, flags, mode)
 }

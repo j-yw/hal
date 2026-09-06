@@ -497,6 +497,12 @@ single-component names in that retained root; public root replacement, lock
 replacement, unsafe ownership/mode, or closed authority fails admission. No
 replacement directory is adopted. The original six-field private JSON remains
 byte-identical when the optional fourteen-field `minimalLaunch` record is absent.
+The platform helper uses standard-library `syscall` flag constants only, keeping
+the existing import boundary unchanged. Relative read-only opens also require
+`O_NONBLOCK`: a substituted FIFO is rejected by metadata before reading, rather
+than blocking cancellation and joined Close while the manager holds its mutex.
+The FIFO regression uses only an unprivileged local fixture and a controlled
+writer to quiesce the old blocking implementation; it launches no runtime.
 
 The manager publishes and independently reads back `reserved` revision 1, then
 `dispatching` revision 2, before arming the opaque live reservation. Every write,
