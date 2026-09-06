@@ -149,6 +149,7 @@ type l8RuntimeOwnerStartedChild struct {
 }
 
 type l8RuntimeOwnerSupervisorOptions struct {
+	CommitID            func([]byte, [32]byte, uint64) (string, error)
 	Store               l8RuntimeOwnerRecordStore
 	GenesisRecord       firecrackerRuntimeOwnerRecordV1
 	ExpectedUID         uint32
@@ -1226,7 +1227,7 @@ func (owner *l8RuntimeOwnerSupervisor) finalize(ctx context.Context, record fire
 	var seedDigest [32]byte
 	copy(seedDigest[:], digestBytes)
 	if record.State == "finalized" {
-		expected, err := l8RuntimeOwnerCommitID(owner.opts.CommitKey, seedDigest, record.FinalizeTargetRevision)
+		expected, err := owner.commitID(seedDigest, record.FinalizeTargetRevision)
 		if err != nil || subtle.ConstantTimeCompare([]byte(expected), []byte(record.FinalizedCommitID)) != 1 {
 			return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
 		}
@@ -1241,7 +1242,7 @@ func (owner *l8RuntimeOwnerSupervisor) finalize(ctx context.Context, record fire
 		finalizing.Revision = record.Revision + 1
 		finalizing.State = "finalizing"
 		finalizing.FinalizeTargetRevision = record.Revision + 2
-		finalizing.FinalizedCommitID, err = l8RuntimeOwnerCommitID(owner.opts.CommitKey, seedDigest, finalizing.FinalizeTargetRevision)
+		finalizing.FinalizedCommitID, err = owner.commitID(seedDigest, finalizing.FinalizeTargetRevision)
 		if err != nil {
 			return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
 		}
@@ -1249,7 +1250,7 @@ func (owner *l8RuntimeOwnerSupervisor) finalize(ctx context.Context, record fire
 			return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
 		}
 	} else {
-		expected, err := l8RuntimeOwnerCommitID(owner.opts.CommitKey, seedDigest, record.FinalizeTargetRevision)
+		expected, err := owner.commitID(seedDigest, record.FinalizeTargetRevision)
 		if err != nil || record.Revision == ^uint64(0) || record.FinalizeTargetRevision != record.Revision+1 ||
 			subtle.ConstantTimeCompare([]byte(expected), []byte(record.FinalizedCommitID)) != 1 {
 			return l8RuntimeOwnerFinalizeAckV1{}, errL8RuntimeOwnerInvalid
@@ -1281,7 +1282,7 @@ func (owner *l8RuntimeOwnerSupervisor) refreshFinalizingIntent(record *firecrack
 	var seedDigest [32]byte
 	copy(seedDigest[:], digestBytes)
 	record.FinalizeTargetRevision = record.Revision + 1
-	record.FinalizedCommitID, err = l8RuntimeOwnerCommitID(owner.opts.CommitKey, seedDigest, record.FinalizeTargetRevision)
+	record.FinalizedCommitID, err = owner.commitID(seedDigest, record.FinalizeTargetRevision)
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}

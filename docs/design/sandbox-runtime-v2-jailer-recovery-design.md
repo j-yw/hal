@@ -1,7 +1,8 @@
 # Jailer recovery through the existing runtime owner
 
-Status: DESIGN/RED only, based on `42a9517d119f205b486aea50f5e32dd6c13ea688`.
-No production behavior changes here. The selected first slice is daemon-client
+Status: private implementation in progress, based on
+`42a9517d119f205b486aea50f5e32dd6c13ea688`; not a Jailer live-acceptance report.
+The selected first slice is daemon-client
 loss/reconnect while the existing supervisor survives. Supervisor loss,
 all-handle loss, and host reboot remain incomplete/quarantined, not accepted J
 restart recovery. The Linux completion architecture and L8 minimal contract
@@ -182,6 +183,44 @@ anti-reuse identity for reopened cgroup/root/anchor objects, crash-consistent
 allocation/removal intent and slot correlation, and safe authority when any
 record is absent or torn. A serialised path, PID, timestamp or generation label
 alone cannot do that. No new recovery daemon is proposed.
+
+## Concrete private consumer trace
+
+`launchJailerRecoverySupervisor` takes the existing verified minimal launch
+lease. `WithAssets` measures bounded copied streams and independently reads back
+sealed read-only snapshots before the mutable views expire. Its final
+currentness check finishes **before** process creation; the lease itself stays
+retained through bootstrap acknowledgement. The bound is 128 MiB for a kernel,
+4 GiB for rootfs, 1 MiB for Firecracker config, and 128 MiB for the independently
+pinned owner executable. Resource exhaustion or cancellation fails closed; no
+dependency download or host preparation occurs here.
+
+The concrete producer invokes the same runtime-owner executable's `supervise`
+role with seven exact selected descriptors. `newL8RuntimeOwnerLinuxRuntime`
+recognizes only the sealed canonical selected config and delegates to
+`newJailerRecoveryLinuxRuntime`. The original six-descriptor credential config
+and legacy child gate remain separately decoded and unchanged.
+
+`l8RuntimeOwnerLinuxRuntime.startChild` selects `jailerRecoveryRuntime.startChild`,
+which owns the existing coordinator and strict lifecycle. Its manager, session,
+gate observation, identity, cgroup and staging descriptors stay in that same
+supervisor. The selected starter inserts the two-FD pre-exec gate into the
+existing retained-thread namespace/executable-mount/cgroup-at-clone path. The
+existing FSM publishes the armed PID/start-time before gate release.
+
+The existing locked record store uses a distinct canonical minimal disk schema
+and cleanup-receipt HMAC domain. It continuously retains its own current record
+inode and exact reservation pointer. A busy checkpoint precedes host allocation;
+a successfully synced/read-back terminal checkpoint precedes identity idle.
+Unlike the legacy store, selected failed write/sync/readback is never promoted
+to success by observing a renamed file. A restarted client can request cleanup
+through the existing authenticated protocol, but cannot reopen path metadata
+into a release authority or emit credential absence proof.
+
+The selected path creates measured empty log/metrics output files and rejects
+an initrd; it does not synthesize a historical helper or credential seed. A later
+minimal connector must use this retained lifecycle manager and session process,
+not serialize UID/PID metadata as ownership. All strict/default gates remain off.
 
 ## Tests and evidence boundary
 

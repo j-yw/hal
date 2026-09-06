@@ -91,6 +91,7 @@ func newJailerCgroupTestCoordinator(deps strictJailerCoordinatorDependencies) *s
 	// Strict fixtures explicitly inject a fake prepared identity; the real
 	// constructor still rejects absent host-owned identity configuration.
 	deps.identity, _ = newFakeJailerIdentityAuthority()
+	deps.recovery = newFakeJailerRecoveryAuthority()
 	deps.prepareCgroup = func(ctx context.Context, request strictJailerCgroupRequest) (*strictJailerCgroupLease, error) {
 		return prepareFakeJailerCgroup(ctx, request, newFakeJailerCgroupFilesystem())
 	}

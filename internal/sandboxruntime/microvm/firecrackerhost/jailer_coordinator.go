@@ -147,8 +147,9 @@ type strictJailerCoordinator struct {
 	generation *strictJailerCoordinatorGeneration
 }
 
-func newStrictJailerCoordinator(lifecycle *strictJailerLifecycle, identity *strictJailerIdentityAuthority) *strictJailerCoordinator {
+func newStrictJailerCoordinator(lifecycle *strictJailerLifecycle, identity *strictJailerIdentityAuthority, recovery *jailerRecoveryAuthority) *strictJailerCoordinator {
 	return newStrictJailerCoordinatorWithDependencies(strictJailerCoordinatorDependencies{
+		recovery:      recovery,
 		identity:      identity,
 		prepareCgroup: prepareStrictJailerCgroup,
 		inspect:       inspectAndPinStrictJailerHost,
@@ -193,6 +194,10 @@ func (coordinator *strictJailerCoordinator) startWithMinimalLease(ctx context.Co
 		coordinator.deps.plan == nil || interfaceValueIsNil(coordinator.deps.lifecycle) {
 		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "session")
 	}
+	owner := coordinator.deps.recovery
+	if owner == nil || owner.current == nil || owner.busy == nil || owner.terminal == nil || owner.current(ctx, request.runtimeID, request.config.SHA256) != nil {
+		return strictJailerSession{}, newStrictJailerCoordinatorError(errStrictJailerCoordinatorInvalid, "session")
+	}
 
 	identity, identityErr := coordinator.deps.identity.reserve(ctx, request.runtimeID, request.config.SHA256, request.inspection.runtimeUID, request.inspection.runtimeGID)
 	if identity == nil {
@@ -204,6 +209,11 @@ func (coordinator *strictJailerCoordinator) startWithMinimalLease(ctx context.Co
 	coordinator.generation = generation
 	if identityErr != nil || identity.verify(ctx) != nil {
 		return coordinator.failBeforeProcess(generation, session, "verify")
+	}
+	if owner.busy(ctx, identity) != nil {
+		// No host allocation has happened. The owner update may be uncertain;
+		// retain the exact busy lease, never infer idle from a failed checkpoint.
+		return session, newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "session")
 	}
 	inspection, err := coordinator.deps.inspect(request.inspection)
 	defer func() {
@@ -426,6 +436,9 @@ func (coordinator *strictJailerCoordinator) releaseGenerationRoot(ctx context.Co
 			return processErr
 		}
 		generation.hasProcess = false
+	}
+	if coordinator.deps.recovery == nil || coordinator.deps.recovery.terminal == nil || coordinator.deps.recovery.terminal(ctx, generation.identity) != nil {
+		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup")
 	}
 	if generation.identity.release(ctx) != nil {
 		return newStrictJailerCoordinatorError(errStrictJailerCoordinatorCleanupIncomplete, "root_cleanup")

@@ -141,6 +141,9 @@ func l8RuntimeOwnerSupervisorConfigJSONExact(payload []byte) bool {
 }
 
 func runPrivateL8RuntimeOwnerExecutableWithOps(arguments []string, ops l8RuntimeOwnerExecutableOps) int {
+	if len(arguments) == 1 && arguments[0] == jailerRecoveryGateRole {
+		return dispatchJailerRecoveryGate(ops)
+	}
 	if len(arguments) != 1 || (arguments[0] != l8RuntimeOwnerExecutableSupervise && arguments[0] != l8RuntimeOwnerExecutableChildGate) {
 		return 127
 	}

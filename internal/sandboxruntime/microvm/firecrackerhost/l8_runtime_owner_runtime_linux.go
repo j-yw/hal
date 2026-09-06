@@ -27,6 +27,7 @@ const (
 )
 
 type l8RuntimeOwnerLinuxRuntime struct {
+	selected    *jailerRecoveryRuntime
 	config      l8RuntimeOwnerSupervisorConfigV1
 	store       *l8RuntimeOwnerLinuxRecordStore
 	genesis     firecrackerRuntimeOwnerRecordV1
@@ -43,6 +44,7 @@ type l8RuntimeOwnerLinuxRuntime struct {
 }
 
 type l8RuntimeOwnerLinuxRecordStore struct {
+	selected    *jailerRecoveryStore
 	directoryFD int
 	seed        sandboxruntime.JobCredentialIdentitySeed
 	bootID      string
@@ -54,7 +56,7 @@ func runL8RuntimeOwnerSupervisorLinux(fds [6]int) error {
 		return errL8RuntimeOwnerInvalid
 	}
 	defer owned.close()
-	owner, err := newL8RuntimeOwnerSupervisor(l8RuntimeOwnerSupervisorOptions{
+	opts := l8RuntimeOwnerSupervisorOptions{
 		Store:               owned.store,
 		GenesisRecord:       owned.genesis,
 		ExpectedUID:         owned.config.DaemonUID,
@@ -66,13 +68,21 @@ func runL8RuntimeOwnerSupervisorLinux(fds [6]int) error {
 		CloseNamespaces:     owned.closeNamespaces,
 		AbortStartingZero:   owned.closeNamespaces,
 		CommitKey:           owned.commitKey,
-	})
+	}
+	if owned.selected != nil {
+		opts.CommitID = jailerRecoveryCommitID
+	}
+	owner, err := newL8RuntimeOwnerSupervisor(opts)
 	if err != nil {
 		return errL8RuntimeOwnerInvalid
 	}
 	defer clear(owner.opts.CommitKey)
 	if err := owned.serveBootstrap(owner, fds[0]); err != nil {
-		return errL8RuntimeOwnerInvalid
+		if owned.selected == nil || !owned.selected.attempted {
+			return errL8RuntimeOwnerInvalid
+		}
+		// A lost bootstrap reply or uncertain cleanup must not discard this
+		// selected owner's continuously retained coordinator/lease graph.
 	}
 	if err := owned.serveControllers(owner); err != nil {
 		return errL8RuntimeOwnerInvalid
@@ -132,6 +142,20 @@ func runL8RuntimeOwnerChildGateLinux(fds [6]int) error {
 }
 
 func newL8RuntimeOwnerLinuxRuntime(fds [6]int) (*l8RuntimeOwnerLinuxRuntime, error) {
+	selectedConfig, selected, selectedErr := readJailerRecoverySelectedConfigFD(fds[2])
+	if selectedErr != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	if selected {
+		// The first six roles retain their exact positions; only this selected
+		// version owns the separately bounded seventh Firecracker-config role.
+		if _, err := unix.FcntlInt(9, unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+			return nil, errL8RuntimeOwnerInvalid
+		}
+		file := os.NewFile(9, "jailer-owner-firecracker-config")
+		defer file.Close()
+		return newJailerRecoveryLinuxRuntime(fds, selectedConfig, 9)
+	}
 	if validateL8RuntimeOwnerSeqpacketFD(fds[0]) != nil || validateL8RuntimeOwnerDirectoryFD(fds[1]) != nil {
 		return nil, errL8RuntimeOwnerInvalid
 	}
@@ -202,6 +226,20 @@ func newL8RuntimeOwnerLinuxRuntime(fds [6]int) (*l8RuntimeOwnerLinuxRuntime, err
 func (owned *l8RuntimeOwnerLinuxRuntime) close() {
 	if owned == nil {
 		return
+	}
+	if owned.selected != nil {
+		if owned.selected.attempted {
+			_, _ = owned.selected.contain()
+		}
+		_ = owned.selected.starter.close()
+		for _, file := range owned.selected.files {
+			if file != nil {
+				_ = file.Close()
+			}
+		}
+		if owned.store != nil && owned.store.selected != nil && owned.store.selected.file != nil {
+			_ = owned.store.selected.file.Close()
+		}
 	}
 	owned.mu.Lock()
 	child := owned.child
@@ -337,6 +375,9 @@ func (owned *l8RuntimeOwnerLinuxRuntime) serveController(owner *l8RuntimeOwnerSu
 }
 
 func (owned *l8RuntimeOwnerLinuxRuntime) startChild() (l8RuntimeOwnerStartedChild, error) {
+	if owned.selected != nil {
+		return owned.selected.startChild()
+	}
 	owned.mu.Lock()
 	defer owned.mu.Unlock()
 	if owned.child != nil || owned.namespaces[0] == nil || owned.namespaces[1] == nil {
@@ -355,6 +396,9 @@ func (owned *l8RuntimeOwnerLinuxRuntime) startChild() (l8RuntimeOwnerStartedChil
 }
 
 func (owned *l8RuntimeOwnerLinuxRuntime) containChild() (l8RuntimeOwnerAbsenceObservation, error) {
+	if owned.selected != nil {
+		return owned.selected.contain()
+	}
 	owned.mu.Lock()
 	child := owned.child
 	owned.mu.Unlock()
@@ -373,6 +417,14 @@ func (owned *l8RuntimeOwnerLinuxRuntime) containChild() (l8RuntimeOwnerAbsenceOb
 }
 
 func (owned *l8RuntimeOwnerLinuxRuntime) reinspectAbsence() (l8RuntimeOwnerAbsenceObservation, error) {
+	if owned.selected != nil {
+		owned.selected.mu.Lock()
+		defer owned.selected.mu.Unlock()
+		if !owned.selected.terminal {
+			return l8RuntimeOwnerAbsenceObservation{}, errL8RuntimeOwnerInvalid
+		}
+		return owned.selected.observation, nil
+	}
 	owned.mu.Lock()
 	child := owned.child
 	owned.mu.Unlock()
@@ -412,6 +464,11 @@ func (owned *l8RuntimeOwnerLinuxRuntime) duplicateNamespaces() ([]int, error) {
 }
 
 func (owned *l8RuntimeOwnerLinuxRuntime) closeNamespaces() error {
+	if owned.selected != nil && owned.selected.attempted {
+		if _, err := owned.selected.contain(); err != nil {
+			return errL8RuntimeOwnerInvalid
+		}
+	}
 	owned.mu.Lock()
 	defer owned.mu.Unlock()
 	var failed bool
@@ -429,7 +486,7 @@ func (owned *l8RuntimeOwnerLinuxRuntime) closeNamespaces() error {
 
 func (store *l8RuntimeOwnerLinuxRecordStore) Load(ctx context.Context) (firecrackerRuntimeOwnerRecordV1, error) {
 	record, present, err := store.withLock(ctx, unix.LOCK_SH, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
-		return readL8RuntimeOwnerRecordAt(store.directoryFD, store.seed, store.bootID)
+		return store.readRecord()
 	})
 	if err != nil || !present {
 		return firecrackerRuntimeOwnerRecordV1{}, errL8RuntimeOwnerInvalid
@@ -439,7 +496,7 @@ func (store *l8RuntimeOwnerLinuxRecordStore) Load(ctx context.Context) (firecrac
 
 func (store *l8RuntimeOwnerLinuxRecordStore) RecordAbsent(ctx context.Context) (bool, error) {
 	_, present, err := store.withLock(ctx, unix.LOCK_SH, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
-		return readL8RuntimeOwnerRecordAt(store.directoryFD, store.seed, store.bootID)
+		return store.readRecord()
 	})
 	if err != nil {
 		return false, errL8RuntimeOwnerInvalid
@@ -449,11 +506,11 @@ func (store *l8RuntimeOwnerLinuxRecordStore) RecordAbsent(ctx context.Context) (
 
 func (store *l8RuntimeOwnerLinuxRecordStore) CreateGenesis(ctx context.Context, next firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, error) {
 	record, _, err := store.withLock(ctx, unix.LOCK_EX, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
-		_, present, readErr := readL8RuntimeOwnerRecordAt(store.directoryFD, store.seed, store.bootID)
+		_, present, readErr := store.readRecord()
 		if readErr != nil || present || next.Revision != 0 || next.State != "starting" || next.ControllerState != "none" {
 			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 		}
-		if writeL8RuntimeOwnerRecordAt(store.directoryFD, next, store.seed, store.bootID) != nil {
+		if store.writeRecord(next) != nil {
 			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 		}
 		return next, true, nil
@@ -463,12 +520,15 @@ func (store *l8RuntimeOwnerLinuxRecordStore) CreateGenesis(ctx context.Context, 
 
 func (store *l8RuntimeOwnerLinuxRecordStore) Transition(ctx context.Context, expected uint64, next firecrackerRuntimeOwnerRecordV1) (firecrackerRuntimeOwnerRecordV1, error) {
 	record, _, err := store.withLock(ctx, unix.LOCK_EX, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
-		current, present, readErr := readL8RuntimeOwnerRecordAt(store.directoryFD, store.seed, store.bootID)
+		current, present, readErr := store.readRecord()
 		if readErr != nil || !present || current.Revision != expected || !validL8RuntimeOwnerTransition(current, next) {
 			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 		}
-		if writeL8RuntimeOwnerRecordAt(store.directoryFD, next, store.seed, store.bootID) != nil {
-			observed, observedPresent, observedErr := readL8RuntimeOwnerRecordAt(store.directoryFD, store.seed, store.bootID)
+		if store.writeRecord(next) != nil {
+			if store.selected != nil {
+				return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
+			}
+			observed, observedPresent, observedErr := store.readRecord()
 			if observedErr != nil || !observedPresent || observed != next {
 				return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 			}
@@ -492,7 +552,7 @@ func (store *l8RuntimeOwnerLinuxRecordStore) RetireFinalized(ctx context.Context
 
 func (store *l8RuntimeOwnerLinuxRecordStore) retire(ctx context.Context, accept func(firecrackerRuntimeOwnerRecordV1) bool) error {
 	_, _, err := store.withLock(ctx, unix.LOCK_EX, func() (firecrackerRuntimeOwnerRecordV1, bool, error) {
-		record, present, readErr := readL8RuntimeOwnerRecordAt(store.directoryFD, store.seed, store.bootID)
+		record, present, readErr := store.readRecord()
 		if readErr != nil || !present || accept == nil || !accept(record) || unix.Unlinkat(store.directoryFD, l8RuntimeOwnerRecordName, 0) != nil || unix.Fsync(store.directoryFD) != nil {
 			return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 		}
@@ -502,6 +562,10 @@ func (store *l8RuntimeOwnerLinuxRecordStore) retire(ctx context.Context, accept 
 }
 
 func (store *l8RuntimeOwnerLinuxRecordStore) withLock(ctx context.Context, operation int, fn func() (firecrackerRuntimeOwnerRecordV1, bool, error)) (firecrackerRuntimeOwnerRecordV1, bool, error) {
+	if store != nil && store.selected != nil {
+		store.selected.mu.Lock()
+		defer store.selected.mu.Unlock()
+	}
 	if store == nil || store.directoryFD < 0 || fn == nil || ctx == nil {
 		return firecrackerRuntimeOwnerRecordV1{}, false, errL8RuntimeOwnerInvalid
 	}

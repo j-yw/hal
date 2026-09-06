@@ -1,6 +1,14 @@
 package firecrackerhost
 
-import "github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
+import (
+	"bytes"
+	"encoding/json"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/jywlabs/hal/internal/sandboxruntime/microvm/firecracker"
+)
 
 const jailerRecoveryConfigVersion = "jailer-runtime-owner-minimal-config-v1"
 const jailerRecoveryRecordVersion = "jailer-runtime-owner-minimal-record-v1"
@@ -56,6 +64,77 @@ type jailerRecoverySupervisorConfig struct {
 	Roles     []string                 `json:"roles"`
 }
 
-func decodeJailerRecoverySupervisorConfig([]byte) (jailerRecoverySupervisorConfig, error) {
-	return jailerRecoverySupervisorConfig{}, errL8RuntimeOwnerInvalid
+func jailerRecoverySupervisorRoles() []string {
+	return []string{"control-socket", "owner-directory", "supervisor-config", "kernel-asset", "rootfs-asset", "owner-root-key", "firecracker-config"}
+}
+
+func decodeJailerRecoverySupervisorConfig(payload []byte) (jailerRecoverySupervisorConfig, error) {
+	var config jailerRecoverySupervisorConfig
+	if len(payload) == 0 || len(payload) > l8RuntimeOwnerSupervisorConfigLimit || json.Unmarshal(payload, &config) != nil {
+		return config, errL8RuntimeOwnerInvalid
+	}
+	canonical, err := json.Marshal(config)
+	if err != nil || !bytes.Equal(canonical, payload) || validateJailerRecoverySupervisorConfig(config) != nil {
+		return jailerRecoverySupervisorConfig{}, errL8RuntimeOwnerInvalid
+	}
+	return config, nil
+}
+
+func validateJailerRecoverySupervisorConfig(config jailerRecoverySupervisorConfig) error {
+	if config.Version != jailerRecoveryConfigVersion || config.DaemonUID != 0 || !slices.Equal(config.Roles, jailerRecoverySupervisorRoles()) {
+		return errL8RuntimeOwnerInvalid
+	}
+	j := config.Job
+	for _, id := range []string{j.SandboxID, j.ExecutionID, j.WorkerID, j.HostID, j.RuntimeID, j.RuntimeGeneration} {
+		if !validL8RuntimeOwnerSafeID(id) {
+			return errL8RuntimeOwnerInvalid
+		}
+	}
+	if !validStrictJailerRuntimeID(j.RuntimeID) {
+		return errL8RuntimeOwnerInvalid
+	}
+	p := config.Policy
+	for _, path := range []string{p.IdentityDirectory, p.TrustedAnchor, p.ChrootBase, p.JailerPath, p.FirecrackerPath, p.CgroupAnchor} {
+		if !filepathIsCleanAbsolute(path) || cleanupFilesystemRoot(path) || strings.ContainsAny(path, "\x00\r\n") || strings.TrimSpace(path) != path {
+			return errL8RuntimeOwnerInvalid
+		}
+	}
+	for _, path := range []string{p.ChrootBase, p.JailerPath, p.FirecrackerPath} {
+		rel, err := filepath.Rel(p.TrustedAnchor, path)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return errL8RuntimeOwnerInvalid
+		}
+	}
+	if p.UID == 0 || p.GID == 0 || p.JailerPath == p.FirecrackerPath || !validJailerStagingDigest(p.JailerSHA256) || !validJailerStagingDigest(p.FirecrackerSHA256) || p.JailerSHA256 == p.FirecrackerSHA256 {
+		return errL8RuntimeOwnerInvalid
+	}
+	// Exact guest-memory and host-page correlation is checked again against the
+	// authenticated Firecracker config before any host mutation.
+	resources := strictJailerCgroupResources{anchor: p.CgroupAnchor, cpuQuota: p.CPUQuota, cpuPeriod: p.CPUPeriod, memoryMax: p.MemoryMax, swapMax: p.SwapMax, pidsMax: p.PidsMax}
+	if validateJailerCgroupRequest(strictJailerCgroupRequest{resources: resources, runtimeID: j.RuntimeID, configSHA256: config.Config.SHA256, guestMemoryMiB: 1}, 4096) != nil {
+		return errL8RuntimeOwnerInvalid
+	}
+	paths, present, err := validatedCleanupPathPlan(config.Paths)
+	if err != nil || !present || !cleanupPathPlansEqual(paths, config.Paths) {
+		return errL8RuntimeOwnerInvalid
+	}
+	assets := []jailerRecoveryAsset{config.Kernel, config.Rootfs, config.Config}
+	for index, asset := range assets {
+		limit := int64(4 << 30)
+		if index == 0 {
+			limit = 128 << 20
+		}
+		if index == 2 {
+			limit = maxStrictJailerConfigBytes
+		}
+		if asset.Kind != []string{"kernel", "rootfs", "config"}[index] || asset.Device == 0 || asset.Inode == 0 || asset.Size <= 0 || asset.Size > limit || !validJailerStagingDigest(asset.SHA256) {
+			return errL8RuntimeOwnerInvalid
+		}
+		for prior := 0; prior < index; prior++ {
+			if assets[prior].Device == asset.Device && assets[prior].Inode == asset.Inode {
+				return errL8RuntimeOwnerInvalid
+			}
+		}
+	}
+	return nil
 }

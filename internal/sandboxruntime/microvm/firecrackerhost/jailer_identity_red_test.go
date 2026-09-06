@@ -21,6 +21,7 @@ func TestJailerIdentityCoordinatorRejectsNumericIdentityWithoutReservation(t *te
 		t.Fatal("fixture must supply the currently accepted non-root numeric pair")
 	}
 	deps := strictJailerCoordinatorDependencies{
+		recovery:      fixture.deps.recovery,
 		prepareCgroup: fixture.deps.prepareCgroup,
 		inspect:       fixture.deps.inspect,
 		newFilesystem: fixture.deps.newFilesystem,

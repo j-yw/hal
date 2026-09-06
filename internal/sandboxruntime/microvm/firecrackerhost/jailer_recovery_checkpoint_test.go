@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+// Deliberately fake owner callbacks for pre-existing coordinator unit fixtures.
+// Production has no nil/default substitute for a live selected owner store.
+func newFakeJailerRecoveryAuthority() *jailerRecoveryAuthority {
+	return &jailerRecoveryAuthority{
+		current:  func(context.Context, string, string) error { return nil },
+		busy:     func(context.Context, *strictJailerIdentityLease) error { return nil },
+		terminal: func(context.Context, *strictJailerIdentityLease) error { return nil },
+	}
+}
+
 func TestJailerRecoveryCoordinatorRequiresBusyAndTerminalCheckpoints(t *testing.T) {
 	for _, failAt := range []string{"", "current", "busy", "terminal"} {
 		t.Run(failAt, func(t *testing.T) {

@@ -5,10 +5,12 @@ package firecrackerhost
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"syscall"
 
@@ -29,6 +31,17 @@ type l8RuntimeOwnerLinuxChild struct {
 func runPrivateL8RuntimeOwnerExecutable(arguments []string, file func(uintptr, string) *os.File) int {
 	_ = launchPrivateL8RuntimeOwnerLinuxChild
 	openedFiles := make(map[int]*os.File)
+	closeFD := func(fd int) error {
+		if fd < 0 {
+			return nil
+		}
+		opened := openedFiles[fd]
+		delete(openedFiles, fd)
+		if opened == nil || opened.Close() != nil {
+			return errL8RuntimeOwnerInvalid
+		}
+		return nil
+	}
 	return runPrivateL8RuntimeOwnerExecutableWithOps(arguments, l8RuntimeOwnerExecutableOps{
 		OpenFD: func(fd uintptr, role string) (int, error) {
 			if file == nil {
@@ -50,19 +63,10 @@ func runPrivateL8RuntimeOwnerExecutable(arguments []string, file func(uintptr, s
 			openedFiles[openedFD] = opened
 			return openedFD, nil
 		},
-		CloseFD: func(fd int) error {
-			if fd < 0 {
-				return nil
-			}
-			opened := openedFiles[fd]
-			delete(openedFiles, fd)
-			if opened == nil || opened.Close() != nil {
-				return errL8RuntimeOwnerInvalid
-			}
-			return nil
-		},
+		CloseFD:       closeFD,
 		RunSupervisor: runL8RuntimeOwnerSupervisorLinux,
 		RunChildGate:  runL8RuntimeOwnerChildGateLinux,
+		RunJailerGate: func(fds [2]int) error { return runJailerRecoveryGateLinux(fds, closeFD) },
 	})
 }
 
@@ -258,4 +262,94 @@ func (child *l8RuntimeOwnerLinuxChild) close() error {
 		return errL8RuntimeOwnerInvalid
 	}
 	return nil
+}
+
+// The selected gate uses the accepted locked-thread namespace/mount launcher,
+// including clone-time cgroup placement and its additive parent-death signal.
+// Only these two descriptors enter the gate; none enters the eventual Jailer.
+func startJailerRecoveryGateCommand(ctx context.Context, request strictJailerNamespaceProcessStartRequest, executables *strictJailerExecutableLease, runtimeID string, gate, config *os.File) (process HostProcess, resultErr error) {
+	if gate == nil || config == nil || prepareStrictJailerNetworkNamespaceForExec(request.networkNamespace) != nil {
+		return nil, errStrictJailerNamespaceStartFailed
+	}
+	command := exec.Command("/proc/self/exe", jailerRecoveryGateRole)
+	command.Env = []string{}
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	command.ExtraFiles = []*os.File{gate, config}
+	err := request.cgroup.withLaunchFD(ctx, runtimeID, func(cgroup *os.File) error {
+		if configureStrictJailerCgroup(command, cgroup) != nil || ctx.Err() != nil {
+			return errStrictJailerNamespaceStartFailed
+		}
+		var err error
+		process, err = startStrictJailerOSExecCommand(command, request.networkNamespace, executables)
+		return err
+	})
+	if err != nil {
+		return process, errStrictJailerNamespaceStartFailed
+	}
+	return process, nil
+}
+
+func startJailerRecoverySupervisorCommand(ctx context.Context, config jailerRecoverySupervisorConfig, executable, configFile *os.File, inputs [5]*os.File, namespaces [2]*os.File) (*jailerRecoveryClient, error) {
+	if ctx == nil || ctx.Err() != nil || executable == nil || configFile == nil || validateStrictJailerExecutableSnapshot(executable) != nil || validateL8RuntimeOwnerDirectoryFD(int(inputs[0].Fd())) != nil || namespaces[0] == nil || namespaces[1] == nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	if validateL8RuntimeOwnerNamespacePair(int(namespaces[0].Fd()), int(namespaces[1].Fd())) != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	sockets, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	parent := os.NewFile(uintptr(sockets[0]), "jailer-owner-bootstrap")
+	defer parent.Close()
+	child := os.NewFile(uintptr(sockets[1]), "jailer-owner-bootstrap-child")
+	defer child.Close()
+	directory, err := duplicateJailerRecoveryFile(inputs[0])
+	if err != nil {
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	client := &jailerRecoveryClient{config: config, directory: directory}
+	// Resolve the immutable executable through the producer's retained FD. It
+	// is not an inherited extra role and stays open through bootstrap reply.
+	path := "/proc/" + strconv.Itoa(os.Getpid()) + "/fd/" + strconv.FormatUint(uint64(executable.Fd()), 10)
+	command := exec.Command(path, l8RuntimeOwnerExecutableSupervise)
+	command.Env = []string{}
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	command.ExtraFiles = []*os.File{child, inputs[0], configFile, inputs[1], inputs[2], inputs[3], inputs[4]}
+	// The supervisor intentionally survives daemon loss; only its Jailer child
+	// uses Pdeathsig. A Wait goroutine reaps it while this daemon remains alive.
+	if ctx.Err() != nil || command.Start() != nil {
+		_ = client.close()
+		return nil, errL8RuntimeOwnerInvalid
+	}
+	go func() { _ = command.Wait() }()
+	supervisorObservation, err := inspectL8RuntimeOwnerProcess(uint32(command.Process.Pid))
+	client.supervisor = supervisorObservation
+	if err != nil || supervisorObservation.ParentPID != uint32(os.Getpid()) {
+		return client, errL8RuntimeOwnerInvalid
+	}
+	user, userErr := l8RuntimeOwnerStatNamespaceFD(int(namespaces[0].Fd()))
+	network, networkErr := l8RuntimeOwnerStatNamespaceFD(int(namespaces[1].Fd()))
+	if userErr != nil || networkErr != nil || setL8RuntimeOwnerSocketTimeout(int(parent.Fd()), l8RuntimeOwnerHandshakeTimeout) != nil {
+		return client, errL8RuntimeOwnerInvalid
+	}
+	packet := l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeBootstrapStart, Body: encodeL8RuntimeOwnerNamespaceCorrelation(l8RuntimeOwnerNamespaceCorrelationV1{UserDevice: user.device, UserInode: user.inode, NetworkDevice: network.device, NetworkInode: network.inode})}
+	if ctx.Err() != nil || sendL8RuntimeOwnerSeqpacket(int(parent.Fd()), packet, namespaces[:]) != nil {
+		return client, errL8RuntimeOwnerInvalid
+	}
+	response, err := receiveL8RuntimeOwnerSeqpacket(int(parent.Fd()))
+	closeL8RuntimeOwnerFiles(response.Files)
+	if err != nil || ctx.Err() != nil || validateL8RuntimeOwnerPacketRole(response.Packet, true, len(response.Files)) != nil || response.Packet.Opcode != l8RuntimeOwnerOpcodeBootstrapPublished {
+		// Never kill the owner to simulate cleanup. Ask that exact owner to
+		// finalize; if unavailable return the retained client for quarantine.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), l8RuntimeOwnerContainmentBudget)
+		defer cancel()
+		_ = client.stopAndCommit(cleanupCtx)
+		return client, errL8RuntimeOwnerInvalid
+	}
+	return client, nil
 }
