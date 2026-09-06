@@ -32,7 +32,7 @@ execution and the `verify-v1` result have been validated.
 - A legitimate failed verification remains a valid result: existing required
   versus advisory factory policy decides whether it blocks the run.
 
-R2 verification uses fake worker/provider execution plus a local shell fixture
+R2 focused tests use fake worker/provider execution plus a local shell fixture
 with configured required checks. No network, credentials, container, publication,
 or privileged host operation is needed.
 
@@ -110,3 +110,53 @@ git diff --check
 
 Whole-repository, live rootless and final PR gates remain supervisor-owned. A
 passing local fixture is not a new provider, macOS, or strict/microVM acceptance.
+
+## Native Linux R1/R2 checkpoint (2026-09-06)
+
+The reviewed `02757af4fd13e460dca02b8949a37e9d21a0642d` candidate ran the
+nonpublishing keyboard-game factory fixture with Pi inside rootless Podman.
+Its static Go 1.25.7 Linux/amd64 CLI SHA-256 was
+`ee7617f2ef797c57d51934648f80b331d43ac441072908be7a1998e2dcad3d35`;
+host and container binaries matched. All 18 image smoke checks passed offline.
+
+Run `01a076b4-6fbd-7a42-879a-af128531884a` returned one successful
+`factory-run-v1` document, process exit 0, no signal and empty stderr.
+Its own required Verification recorded three passing checks: 17 unit tests
+(zero skips), typecheck and production build. The three stored stdout artifacts
+and verification/policy timeline matched that same run. This is not a separate
+post-run verification substituted for an empty factory check set. Publication,
+CI, PR creation and merge were disabled. The earlier attempt failed before
+container creation when its background lab daemon disappeared; that failed
+attempt remains separate from the successful foreground-daemon retry.
+
+Actual recovery into a separate clean clone produced
+`9c6f36c6b4a5da817e59b1aa511323aba87482e4`, descending from recorded input
+`7974e05dd778b9ed033c0550b818d29216b09651`. The bundle SHA-256 was
+`719c1e918d4aba212ef059353a50d2db13d5a897fc0dd738565b2a00407559c9`.
+Repeated recovery succeeded without changes. Staged, unstaged and untracked
+dirt, a divergent destination, unrelated history, a missing run and a copied
+invalid-bundle fixture each returned nonzero with one `ok=false` document;
+destination refs and file contents remained unchanged.
+
+Independent review confirmed only the requested guide and one deterministic
+test were added to the game; its original source, package/lock files and 16
+tests were unchanged. All 17 tests also passed in the recovered host clone.
+The exact candidate's seven selected native lifecycle/recovery tests passed
+under race across three packages, with zero skips or failures.
+
+Evidence is retained under the supervisor's `hal-factory-safety-e2e.9Eoz16nK`
+task directory: `factory-required-checks-retry.*`, `native-recovery-acceptance.json`,
+individual recovery captures, and `02757af4-live-lifecycle.*`. The full ignored
+runtime archive was preserved separately and matched against original Git and
+stored artifacts; it is not native artifact-collection coverage. Three optional
+legacy artifact gaps (CI, PR and the archived source path) remain explicit.
+The separate doctor snapshot failed initialization checks: installed Hal skills
+were missing, with additional default/config and broken-link warnings. Passing
+the three project checks does not make that doctor snapshot successful; this
+initialization gap remains a release follow-up. The completed game sandbox,
+worker registration, foreground daemon and temporary copied auth were removed;
+the recovered source, bundle, archives, logs and original credentials remain.
+
+This checkpoint accepts the R1/R2 Linux slice only. It is not a fresh macOS run,
+complete Sandbox v2, strict network/credential enforcement, microVM boot or final
+PR acceptance. Later integrated changes still require their own affected gates.
