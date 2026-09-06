@@ -168,7 +168,7 @@ for case in ("valid","missing_source","changed_source","extra_source","missing_l
  if case=="valid":
   for record in layout:
    if (dest/record["directory"]/record["filename"]).read_bytes()!=(cache/record["filename"]).read_bytes():raise AssertionError("seed bytes")
-  if len([p for p in dest.rglob("*") if p.is_file()])!=55:raise AssertionError("seed count")
+  if len([p for p in dest.rglob("*") if p.is_file()])!=58:raise AssertionError("seed count")
  print(case+": PASS")
 `
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

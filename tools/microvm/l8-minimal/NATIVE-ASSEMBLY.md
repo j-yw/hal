@@ -52,9 +52,16 @@ source-built host Node, ICU and OpenSSL. Host QEMU is a build dependency only.
 Buildroot receives only the verified offline cache, a nonexistent download site
 and primary-site-only mode; neither npm resolution nor any download target is
 an accepted build step. A missing archive fails instead of fetching.
-The committed `buildroot-downloads.lock.json` records all 55 package-directory /
+The committed `buildroot-downloads.lock.json` records all 58 package-directory /
 archive pairs derived by no-download `defconfig` and `show-info` from the genuine
-Buildroot archive. Each assembly repeats that evaluation and compares the exact
+Buildroot archive inside the pinned builder. Host Bison, Flex and GNU tar are
+conditional on the builder's installed tools; the initial 55-pair developer-host
+evaluation omitted them. The first actual builder run rejected that mismatch
+before compilation or publication. All three archives were already pinned in
+the unchanged L5 cache, so the correction adds no source or download authority.
+The pinned-builder staging regression requires all three and rejects missing,
+extra or relabeled entries before writing. Each assembly repeats the evaluation
+and compares the exact
 layout before preseeding `DL_DIR/<package>/<archive>`. The final target is
 `rootfs-tar`, not the legacy 64MiB ext4 image target. The host's existing bounded
 ext4 producer creates and inspects the actual minimal image afterward.

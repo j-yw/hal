@@ -24,6 +24,10 @@
     "filename": "binutils-2.45.1.tar.xz"
   },
   {
+    "directory": "bison",
+    "filename": "bison-3.8.2.tar.xz"
+  },
+  {
     "directory": "busybox",
     "filename": "busybox-1.38.0.tar.bz2"
   },
@@ -50,6 +54,10 @@
   {
     "directory": "fakeroot",
     "filename": "fakeroot_1.37.2.orig.tar.gz"
+  },
+  {
+    "directory": "flex",
+    "filename": "flex-2.6.4.tar.gz"
   },
   {
     "directory": "gcc",
@@ -206,6 +214,10 @@
   {
     "directory": "slirp",
     "filename": "libslirp-v4.9.1.tar.bz2"
+  },
+  {
+    "directory": "tar",
+    "filename": "tar-1.35.cpio.gz"
   },
   {
     "directory": "util-linux",

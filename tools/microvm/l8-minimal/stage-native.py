@@ -124,7 +124,7 @@ def seed(cache, destination, info_path, layout_path):
     if set(os.listdir(cache)) != set(pins):
         reject()
     info, expected = read_json(info_path), read_json(layout_path)
-    if len(info) > 4096 or len(expected) != 55:
+    if len(info) > 4096 or len(expected) != 58:
         reject()
     observed = set()
     for package in info.values():
