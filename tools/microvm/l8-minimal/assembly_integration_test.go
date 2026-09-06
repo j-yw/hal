@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -23,6 +24,18 @@ import (
 // Real local Git selects each fixture's immutable source tree. Podman is a
 // deliberate fake that never executes a recipe or emits measured build proof.
 func TestMinimalNativeAssemblerRequiresCommittedOfflineInputs(t *testing.T) {
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheData, err := exec.Command(goPath, "env", "GOMODCACHE", "GOCACHE").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compilerCaches := strings.Split(strings.TrimSpace(string(cacheData)), "\n")
+	if len(compilerCaches) != 2 {
+		t.Fatal("missing offline host compiler caches")
+	}
 	entry, err := filepath.Abs("assemble.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -30,9 +43,12 @@ func TestMinimalNativeAssemblerRequiresCommittedOfflineInputs(t *testing.T) {
 	if _, err := os.Stat(entry); err != nil {
 		t.Fatalf("actual native assembler entrypoint is absent: %v", err)
 	}
-	for _, scenario := range []string{"valid_runner_failure", "missing_native", "altered_native", "extra_native", "native_symlink", "missing_lock", "duplicate_native_record", "unknown_native_field", "native_traversal", "modified_lock", "replaced_tree", "wrong_revision", "caller_tree", "caller_receipt", "fake_success_no_output"} {
+	for _, scenario := range []string{"valid_runner_failure", "missing_native", "altered_native", "extra_native", "native_symlink", "missing_lock", "duplicate_native_record", "unknown_native_field", "native_traversal", "modified_lock", "replaced_tree", "wrong_revision", "caller_tree", "caller_receipt", "fake_success_no_output", "signal_entrypoint"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
+			if err := os.Chmod(root, 0700); err != nil {
+				t.Fatal(err)
+			}
 			repo, cache, native, bin := filepath.Join(root, "repo"), filepath.Join(root, "cache"), filepath.Join(root, "native"), filepath.Join(root, "bin")
 			for _, dir := range []string{repo, cache, native, bin} {
 				if err := os.Mkdir(dir, 0700); err != nil {
@@ -71,11 +87,24 @@ func TestMinimalNativeAssemblerRequiresCommittedOfflineInputs(t *testing.T) {
 				if name == "" {
 					continue
 				}
-				data, err := os.ReadFile(filepath.Join(sourceRoot, name))
+				info, err := os.Lstat(filepath.Join(sourceRoot, name))
 				if err != nil {
 					t.Fatal(err)
 				}
-				info, err := os.Stat(filepath.Join(sourceRoot, name))
+				if info.Mode()&os.ModeSymlink != 0 {
+					link, err := os.Readlink(filepath.Join(sourceRoot, name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, name)), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(link, filepath.Join(repo, name)); err != nil {
+						t.Fatal(err)
+					}
+					continue
+				}
+				data, err := os.ReadFile(filepath.Join(sourceRoot, name))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -228,6 +257,10 @@ run)
  cid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
  printf '%s\n' "$cid" > "$cidfile"
  printf '%s %s\n' "$cid" "$label" > '`+filepath.Join(root, "runtime-state")+`'
+ if [ '`+scenario+`' = signal_entrypoint ]; then
+  trap 'exit 143' TERM INT
+  while :; do sleep 0.1; done
+ fi
  # No recipe is run. Even a zero exit below cannot mint assembly evidence.
  [ '`+runExit+`' != 0 ] || printf '{"SourceRevision":"`+revision+`","SourceTree":"tree-`+strings.Repeat("a", 40)+`","NativeLockSHA256":"`+strings.Repeat("b", 64)+`"}\n'
  exit `+runExit+` ;;
@@ -244,17 +277,54 @@ esac
 			for _, forbidden := range []string{"curl", "wget", "npm", "docker"} {
 				write(filepath.Join(bin, forbidden), []byte("#!/bin/sh\nprintf forbidden > '"+filepath.Join(root, "forbidden")+"'\nexit 99\n"), 0700)
 			}
-			goPath, err := exec.LookPath("go")
-			if err != nil {
-				t.Fatal(err)
-			}
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			command := exec.CommandContext(ctx, "/bin/bash", args...)
-			command.Env = []string{"PATH=" + bin + ":" + filepath.Dir(goPath) + ":/usr/bin:/bin", "HOME=" + root, "GOCACHE=" + filepath.Join(root, "gocache"), "GOMAXPROCS=3", "GOPROXY=off", "GOSUMDB=off", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "UNRELATED_SECRET=fixture-must-not-reach-build"}
+			command.Env = []string{"PATH=" + bin + ":" + filepath.Dir(goPath) + ":/usr/bin:/bin", "HOME=" + root, "GOCACHE=" + compilerCaches[1], "GOMODCACHE=" + compilerCaches[0], "GOMAXPROCS=3", "GOPROXY=off", "GOSUMDB=off", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "UNRELATED_SECRET=fixture-must-not-reach-build"}
 			var stdout, stderr bytes.Buffer
 			command.Stdout, command.Stderr = &stdout, &stderr
-			err = command.Run()
+			if scenario == "signal_entrypoint" {
+				if err := command.Start(); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan error, 1)
+				go func() { done <- command.Wait() }()
+				deadline := time.NewTimer(20 * time.Second)
+				ticker := time.NewTicker(20 * time.Millisecond)
+				defer deadline.Stop()
+				defer ticker.Stop()
+			waiting:
+				for {
+					select {
+					case err := <-done:
+						t.Fatalf("assembler exited before admitted launch: %v %s", err, stderr.String())
+					case <-deadline.C:
+						cancel()
+						<-done
+						t.Fatal("runtime launch timed out")
+					case <-ticker.C:
+						if data, err := os.ReadFile(filepath.Join(root, "runtime-state")); err == nil && len(data) > 65 {
+							break waiting
+						}
+					}
+				}
+				// Signal only the public entrypoint PID, not its process group.
+				if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err = <-done:
+				case <-time.After(15 * time.Second):
+					cancel()
+					<-done
+					t.Fatal("entrypoint signal failed bounded owned cleanup")
+				}
+				if _, err := os.Stat(filepath.Join(root, "runtime-state")); !os.IsNotExist(err) {
+					t.Fatalf("owned runtime remains: %v", err)
+				}
+			} else {
+				err = command.Run()
+			}
 			if err == nil || stdout.Len() != 0 {
 				t.Fatalf("unmeasured invocation issued success/receipt: %v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
 			}
@@ -265,17 +335,20 @@ esac
 				t.Fatal("offline route invoked forbidden acquisition/runtime fallback")
 			}
 			called, readErr := os.ReadFile(runLog)
-			if scenario == "valid_runner_failure" || scenario == "fake_success_no_output" {
+			if scenario == "valid_runner_failure" || scenario == "fake_success_no_output" || scenario == "signal_entrypoint" {
 				if readErr != nil {
 					t.Fatalf("valid selected fixture never reached bounded offline runner: %v stderr=%s", readErr, stderr.String())
 				}
-				for _, want := range []string{"--network=none", "--pull=never", "--userns=keep-id", "BR2_PRIMARY_SITE=file:///nonexistent", "BR2_PRIMARY_SITE_ONLY=y"} {
+				for _, want := range []string{"--network=none", "--pull=never", "--userns=keep-id", "BR2_PRIMARY_SITE=file:///nonexistent", "BR2_PRIMARY_SITE_ONLY=y", "--label=hal.microvm.build=.hal-l8-minimal-runtime."} {
 					if !strings.Contains(string(called), want) {
 						t.Fatalf("missing offline runner argument %s: %s", want, called)
 					}
 				}
 				if strings.Contains(string(called), "fixture-must-not-reach-build") {
 					t.Fatal("host environment leaked to build")
+				}
+				if scenario == "fake_success_no_output" && !strings.Contains(stderr.String(), "actual output measurement rejected") {
+					t.Fatalf("fake success must reach output measurement, not fail earlier cleanup: %s", stderr.String())
 				}
 			} else if !os.IsNotExist(readErr) {
 				t.Fatalf("invalid source/cache/authority reached runner: %s (%v)", called, readErr)

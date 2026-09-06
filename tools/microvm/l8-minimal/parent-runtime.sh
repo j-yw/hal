@@ -3,7 +3,7 @@
 
 prepare_parent_podman() {
 	local lane=$1
-	[[ "$lane" == l5 || "$lane" == l7 ]] || return 1
+	[[ "$lane" == l5 || "$lane" == l7 || "$lane" == l8-minimal ]] || return 1
 	[[ "$jobs" =~ ^[1-3]$ ]] || {
 		echo "rootless builds require one to three compiler jobs" >&2
 		return 1
