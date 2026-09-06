@@ -62,10 +62,13 @@ case "$1:$#" in
             /dev/null) ;;
             *) exit 91 ;;
         esac
-        exec /usr/bin/install "$1" "$2" "$3" "$source" "$5" ;;
+        mkdir -p "${5%/*}"
+        cp "$source" "$5"
+        chmod "$3" "$5" ;;
     -d:4)
         test "$4" = "$L7_TEST_TARGET/workspace"
-        exec /usr/bin/install "$@" ;;
+        mkdir -p "$4"
+        chmod "$3" "$4" ;;
     *) exit 92 ;;
 esac
 `
