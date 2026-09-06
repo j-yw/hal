@@ -24,10 +24,6 @@ func TestPhase19DefaultTestsAvoidPodmanDaemonsAndWorkerIntegrationEnv(t *testing
 		hasL3RecoveryE2ETag := phase19HasBuildTag(source, "l3_recovery_e2e")
 		isL3PreparedLinuxGuard := rel == "cmd/l3_prepared_linux_verification_test.go"
 		isL4PreparedLinuxGuard := rel == "cmd/l4_guest_agent_server_docs_test.go"
-		isL5PrivateVsockFixture := rel == "internal/sandboxruntime/microvm/firecrackerhost/l5_vsock_transport_red_test.go" ||
-			rel == "internal/sandboxruntime/microvm/firecrackerhost/production_vsock_bridge_test.go" ||
-			rel == "internal/sandboxruntime/microvm/firecrackerhost/real_process_runner_private_umask_linux_test.go"
-
 		if phase19UsesRealPodman(source) && !hasPodmanTag && !isL3PreparedLinuxGuard && !isL4PreparedLinuxGuard {
 			t.Fatalf("%s uses real Podman integration hooks without the podman_integration build tag", rel)
 		}
@@ -50,12 +46,58 @@ func TestPhase19DefaultTestsAvoidPodmanDaemonsAndWorkerIntegrationEnv(t *testing
 			"sandboxdCmd.Execute",
 		} {
 			if strings.Contains(source, forbidden) {
-				if isL5PrivateVsockFixture && forbidden == `net.Listen("unix"` {
+				if phase19PrivateVsockFixtureAllows(rel, forbidden) {
 					continue
 				}
 				t.Fatalf("%s contains %q; default tests outside internal/sandboxworker must not bind worker sockets or start sandboxd with production daemon deps", rel, forbidden)
 			}
 		}
+	}
+}
+
+// These ordinary private sockets exercise transport bytes with fake process
+// authority. This exception never permits a worker server or production daemon.
+func phase19PrivateVsockFixtureAllows(path, marker string) bool {
+	if marker != `net.Listen("unix"` {
+		return false
+	}
+	switch path {
+	case "internal/sandboxruntime/microvm/firecrackerhost/l5_vsock_transport_red_test.go",
+		"internal/sandboxruntime/microvm/firecrackerhost/production_vsock_bridge_test.go",
+		"internal/sandboxruntime/microvm/firecrackerhost/real_process_runner_private_umask_linux_test.go":
+		return true
+	default:
+		return false
+	}
+}
+
+func TestPhase19PrivateVsockFixtureExceptionIsExact(t *testing.T) {
+	privateFixtures := []string{
+		"internal/sandboxruntime/microvm/firecrackerhost/l5_vsock_transport_red_test.go",
+		"internal/sandboxruntime/microvm/firecrackerhost/production_vsock_bridge_test.go",
+		"internal/sandboxruntime/microvm/firecrackerhost/real_process_runner_private_umask_linux_test.go",
+		"internal/sandboxruntime/microvm/firecrackerhost/minimal_control_startup_test.go",
+	}
+	for _, path := range privateFixtures {
+		t.Run(path, func(t *testing.T) {
+			if !phase19PrivateVsockFixtureAllows(path, `net.Listen("unix"`) {
+				t.Error("ordinary private transport fixture rejected")
+			}
+			for _, marker := range []string{
+				"sandboxworker.NewServer(", `Listen(ctx, "unix"`,
+				"newSandboxdCommand(defaultSandboxdDeps())", "newTestSandboxdCommand(defaultSandboxdDeps())",
+				"runSandboxdCommand(", "sandboxdCmd.Execute", `net.Listen("tcp"`, "",
+			} {
+				if phase19PrivateVsockFixtureAllows(path, marker) {
+					t.Errorf("private fixture bypasses unrelated marker %q", marker)
+				}
+			}
+			for _, other := range []string{path + ".extra", "other/" + path, strings.Replace(path, "_test.go", ".go", 1), filepath.Base(path), strings.ToUpper(path), ""} {
+				if phase19PrivateVsockFixtureAllows(other, `net.Listen("unix"`) {
+					t.Errorf("nonexact fixture %q accepted", other)
+				}
+			}
+		})
 	}
 }
 
