@@ -137,7 +137,7 @@ Making the admission RED pass by adding an unused dependency is insufficient.
    same owner and finish revocation/cleanup before final strict publication or
    reuse; until then this private variant cannot admit credential-bearing jobs.
 
-Prospective implementation ownership (requires a new GREEN assignment): new
+Approved implementation ownership: new
 `jailer_recovery*` private files; narrow coordinator terminal-hook integration;
 existing `l8_runtime_owner_executable{,_linux}.go`,
 `l8_runtime_owner_runtime_linux.go`, `l8_runtime_owner_supervisor.go`,
@@ -222,6 +222,45 @@ an initrd; it does not synthesize a historical helper or credential seed. A late
 minimal connector must use this retained lifecycle manager and session process,
 not serialize UID/PID metadata as ownership. All strict/default gates remain off.
 
+### Fresh daemon and interrupted terminal cleanup
+
+`reconnectJailerRecoverySupervisor(ctx, ownerDirectoryFD, expectedJob)` is the
+cleanup-only fresh-client entrypoint. It does not need the initiating client,
+full launch config, manager or lease objects. The independently expected tuple
+contains sandbox, execution, worker, host, runtime and runtime-generation IDs.
+Its directory must be an already trusted root-owned 0700 CLOEXEC descriptor;
+this API does not turn an arbitrary path into a trusted host directory.
+
+The bounded canonical selected record decoder validates that tuple, common
+owner/config-digest fields, busy reservation shape and terminal checkpoint
+shape. These fields are correlation metadata, not release authority. Production
+checks the actual boot, supervisor pidfd/PID/start, root-owned 0600 socket type
+and before/after device/inode/mode/owner, and exact SO_PEERCRED PID/UID before
+the existing one-use handshake. Authentication rotates the secret/revision;
+the client rereads the current record and binds that acknowledged revision.
+Only the surviving supervisor, retaining the original full config and leases,
+can perform cleanup. The client never reconstructs those authorities.
+
+Running/stopping/uncertain retries use StopReap. Absent/finalizing/finalized
+retries resume Finalize directly, using the exact stored `AbsenceRevision` and
+observation time, not a newer controller revision. Commit requires the exact
+acknowledged final revision. A lost commit ACK or missing record remains
+unresolved; no missing-record success or automatic relaunch/reclamation exists.
+
+A selected bootstrap failure with retained ownership can change only
+starting/none to uncertain/unclaimed, preserving its actual PID/start (including
+zero before publication). The existing authenticated handshake and cleanup
+operations then retry that same coordinator. Zero PID never proves absence or
+allows identity idle. Poisoned record IO/currentness stays quarantined, even if
+old bytes later reappear. No new opcode or legacy transition is introduced.
+
+Successful record retirement synchronizes and checks exact removal before
+closing its retained inode. After the terminal commit point, later descriptor
+close errors remain old-handle errors: they cannot rewrite a record or affect a
+successor. Starter close errors are retained on retry. The private producer
+rejects nil/unknown completion and late cancellation while retaining any
+already-created owner client for cleanup/quarantine.
+
 ## Tests and evidence boundary
 
 `TestJailerRecoveryCoordinatorRejectsLaunchWithoutSurvivingOwner` is a compiling
@@ -254,6 +293,25 @@ session, exact terminal cleanup and partial-cleanup retry, successor safety,
 and supervisor-loss quarantine. Ordinary descriptor tests stay unprivileged;
 subprocess tests are explicitly tagged. Run whole-package/race, vet, Darwin
 compile, existing L8/source/default guards and broad integration gates.
+
+The selected tests additionally exercise actual canonical record files, sealed
+memfd asset/config snapshots, source mutation before export, closure of the
+producer's borrowed snapshots, and ordinary seqpacket client/FSM round trips.
+The fresh-daemon tests discard the first client, join its disconnected server
+session, then create a new client from only directory/expected job. Terminal
+interruption, wrong expected identity, malformed record, stale session,
+cancellation, and lost commit ACK are included. Directory/process/peer and VM
+observations are explicitly fake in these tests; synthetic minimal bundle bytes
+are not ext4/build/boot proof. No subprocess, cgroup or namespace operation is
+executed by this default test coverage.
+
+```sh
+go test -p 2 -count=1 ./internal/sandboxruntime/microvm/firecrackerhost -run '^TestJailerRecovery'
+go test -p 2 -race -count=3 ./internal/sandboxruntime/microvm/firecrackerhost
+go vet -p 2 ./internal/sandboxruntime/microvm/firecrackerhost
+GOOS=darwin GOARCH=arm64 go test -p 2 -c -o /tmp/hal-jailer-recovery-darwin.test ./internal/sandboxruntime/microvm/firecrackerhost
+go test -p 2 -count=1 ./cmd -run 'Test(L8|L10|Phase33|Phase35|Phase41|Phase50|SandboxdMicroVM)'
+```
 
 Prepared-Linux acceptance still must demonstrate the actual owner executable,
 fresh Jailer VM, reserved UID/GID, clone-time cgroup placement, authenticated

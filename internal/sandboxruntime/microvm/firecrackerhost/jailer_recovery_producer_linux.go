@@ -118,7 +118,13 @@ func withJailerRecoveryProducerInputs(ctx context.Context, request jailerRecover
 	}
 	// The five explicit inputs below are combined with the control socket and
 	// sealed supervisor config only by the concrete seven-role exec producer.
-	return start(ctx, config, executable, configFile, [5]*os.File{request.ownerDirectory, assets[0], assets[1], request.rootKey, assets[2]}, request.namespaces)
+	client, err := start(ctx, config, executable, configFile, [5]*os.File{request.ownerDirectory, assets[0], assets[1], request.rootKey, assets[2]}, request.namespaces)
+	if err != nil || client == nil || ctx.Err() != nil {
+		// A post-start failure must return the actual owner client for cleanup
+		// or quarantine, not discard it or report successful publication.
+		return client, errL8RuntimeOwnerInvalid
+	}
+	return client, nil
 }
 
 func duplicateJailerRecoveryFile(file *os.File) (*os.File, error) {

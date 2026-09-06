@@ -330,3 +330,58 @@ func TestJailerRecoveryCleanupRecordRejectsMalformedAuthority(t *testing.T) {
 		})
 	}
 }
+
+func TestJailerRecoveryFreshClientCancellationCloseAndStaleSession(t *testing.T) {
+	f := newJailerRecoveryWireFixture(t)
+	first := f.fresh(t)
+	staleSession := first.session
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if first.stopAndCommit(ctx) == nil {
+		t.Fatal("canceled cleanup succeeded")
+	}
+	if err := first.close(); err != nil {
+		t.Fatal(err)
+	}
+	f.waitConnection()
+	if first.stopAndCommit(context.Background()) == nil {
+		t.Fatal("closed client reclaimed authority")
+	}
+	second := f.fresh(t)
+	body, _ := encodeL8RuntimeOwnerControllerRequest(l8RuntimeOwnerControllerRequestV1{ControllerSessionGeneration: staleSession})
+	if _, err := jailerRecoveryClientExchange(context.Background(), int(second.socket.Fd()), l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeStopReap, Sequence: 1, Body: body}); err == nil {
+		t.Fatal("stale session reached cleanup")
+	}
+	_ = second.close()
+	f.waitConnection()
+	if f.owned.store.selected.terminal || f.owned.selected.coordinator.generation == nil {
+		t.Fatal("rejected session changed ownership")
+	}
+	last := f.fresh(t)
+	if err := last.stopAndCommit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJailerRecoveryFreshConstructorRejectsMalformedCurrentRecord(t *testing.T) {
+	f := newJailerRecoveryWireFixture(t)
+	if _, err := f.owned.store.selected.file.WriteAt([]byte("!"), 0); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.FcntlInt(uintptr(f.owned.store.directoryFD), unix.F_DUPFD_CLOEXEC, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := os.NewFile(uintptr(fd), "malformed-owner-record")
+	defer directory.Close()
+	client, err := reconnectJailerRecoverySupervisorWithOps(context.Background(), directory, f.owned.selected.config.Job, f.ops)
+	if client != nil {
+		_ = client.close()
+	}
+	if err == nil || client != nil {
+		t.Fatal("malformed disk record authenticated")
+	}
+	if f.owned.store.selected.terminal || f.owned.selected.coordinator.generation == nil {
+		t.Fatal("malformed record released resources")
+	}
+}
