@@ -30,6 +30,10 @@ type jailerRecoveryWireFixture struct {
 }
 
 func newJailerRecoveryWireFixture(t *testing.T) *jailerRecoveryWireFixture {
+	return newJailerRecoveryBootstrapWireFixture(t, nil)
+}
+
+func newJailerRecoveryBootstrapWireFixture(t *testing.T, failBeforeBootstrap func(*l8RuntimeOwnerLinuxRuntime)) *jailerRecoveryWireFixture {
 	t.Helper()
 	owned, _, _, _ := jailerRecoveryRuntimeFixture(t)
 	f := &jailerRecoveryWireFixture{owned: owned}
@@ -39,9 +43,12 @@ func newJailerRecoveryWireFixture(t *testing.T) *jailerRecoveryWireFixture {
 		t.Fatal(err)
 	}
 	f.owner = owner
+	if failBeforeBootstrap != nil {
+		failBeforeBootstrap(owned)
+	}
 	_, err = owner.HandleBootstrap(context.Background(), 0, l8RuntimeOwnerReceivedPacketV1{Packet: l8RuntimeOwnerPacketV1{Opcode: l8RuntimeOwnerOpcodeBootstrapStart, Body: make([]byte, 32)}, Files: make([]*os.File, 2)})
-	if err != nil {
-		t.Fatal(err)
+	if (err != nil) != (failBeforeBootstrap != nil) {
+		t.Fatalf("bootstrap fixture result: %v", err)
 	}
 	f.ops = jailerRecoveryReconnectOps{
 		directory: func(*os.File) error { return nil },
